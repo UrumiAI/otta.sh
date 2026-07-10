@@ -69,6 +69,52 @@ describe.skipIf(PG === undefined)("HttpCommerceClient [live @urumi/service, Post
 		expect(row?.sku).toBe("SKU-C4"); // commercial data preserved, not wiped
 	});
 
+	// ── Phase 2: catalog batch read (plan §6 step 4 — wire ⇄ port fidelity) ──
+
+	test("getCommerceBatch posts productIds and returns only known items, inStock included from the service's single join", async () => {
+		await client.upsertProductCommerce(
+			"prod-cb1",
+			{ sku: "SKU-CB1", price: { amount: 1999, currency: "USD" }, initialOnHand: 3 },
+			"kcb1",
+		);
+		await client.upsertProductCommerce(
+			"prod-cb2",
+			{ sku: "SKU-CB2", price: { amount: 500, currency: "EUR" } },
+			"kcb2",
+		);
+
+		const items = await client.getCommerceBatch(["prod-cb1", "prod-cb2", "prod-cb-unknown"]);
+
+		expect(items).toHaveLength(2);
+		const byId = new Map(items.map((item) => [item.productId, item]));
+		expect(byId.get("prod-cb1")).toEqual({
+			productId: "prod-cb1",
+			sku: "SKU-CB1",
+			price: { amount: 1999, currency: "USD" },
+			inStock: true,
+			active: false, // unpublished until the deferred afterPublish wiring lands
+		});
+		expect(byId.get("prod-cb2")).toEqual({
+			productId: "prod-cb2",
+			sku: "SKU-CB2",
+			price: { amount: 500, currency: "EUR" },
+			inStock: false, // never seeded — coarse out-of-stock, still listed
+			active: false,
+		});
+		// The unknown id is OMITTED — absence, not an error entry.
+		expect(byId.has("prod-cb-unknown")).toBe(false);
+	});
+
+	test("getCommerceBatch over the service's id cap surfaces the 400 as a structured CommerceClientError", async () => {
+		const ids = Array.from({ length: 101 }, (_, i) => `prod-cap-${i}`);
+		await expect(client.getCommerceBatch(ids)).rejects.toMatchObject({
+			name: "CommerceClientError",
+			status: 400,
+		});
+	});
+
+	// ── end Phase 2 catalog batch read ────────────────────────────────────
+
 	test("a MISSING_PRODUCT_ID rejection (empty product id) surfaces as a structured CommerceClientError, not a silent create", async () => {
 		// An empty productId collapses the URL to `/products//commerce`, which
 		// Hono's router itself declines to match (404) before ever reaching the

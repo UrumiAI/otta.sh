@@ -18,9 +18,43 @@ export {
 	type CommerceMoney,
 	type CommerceProductKind,
 	type ProductCommerce,
+	type ProductCommerceBatchItem,
 	type UpsertProductCommerceInput,
 } from "./product-commerce/commerce-client.js";
 export { HttpCommerceClient } from "./product-commerce/http-commerce-client.js";
+// ── Phase 2: catalog display (plan §7 steps 4–10, route shape per ADR-0003) ──
+export {
+	CommerceBatchLoader,
+	DEFAULT_MAX_BATCH_SIZE,
+	type CommerceBatchFetch,
+	type CommerceBatchLoaderOptions,
+} from "./catalog/commerce-batch-loader.js";
+export { parseCommerceBatchItem, type CatalogProductCommerce } from "./catalog/commerce-view.js";
+export { joinProduct, type CmsProductContent, type JoinedProduct } from "./catalog/join-product.js";
+export { buildProductJsonLd } from "./catalog/product-json-ld.js";
+export { formatMoney, majorUnits } from "./presentation/format-money.js";
+export { cents, currency, type Cents, type Currency } from "./presentation/money.js";
+export {
+	createPdpRouteHandler,
+	STOREFRONT_PRODUCT_ROUTE,
+	type PdpRouteInput,
+	type PdpRouteResult,
+} from "./storefront/pdp-route.js";
+export {
+	createPlpRouteHandler,
+	PLP_PAGE_SIZE_CAP,
+	STOREFRONT_LIST_ROUTE,
+	type PlpQuery,
+	type PlpRouteInput,
+	type PlpRouteResult,
+} from "./storefront/plp-route.js";
+export {
+	buildProductViewModel,
+	type AvailabilityToken,
+	type ProductPriceViewModel,
+	type ProductViewModel,
+} from "./storefront/product-view-model.js";
+// ── end Phase 2 catalog display ──────────────────────────────────────────────
 export {
 	deriveDeleteIdempotencyKey,
 	deriveSaveIdempotencyKey,

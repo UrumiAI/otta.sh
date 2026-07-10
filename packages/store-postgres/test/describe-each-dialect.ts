@@ -93,7 +93,28 @@ export async function makePgHarness(): Promise<DialectHarness> {
 
 function buildProductCommerceHarness(db: Kysely<Database>): ProductCommerceStoreHarness {
 	const clock = new FixedClock(new Date("2026-07-10T00:00:00.000Z"));
-	return { store: new KyselyProductCommerceStore({ db, clock }) };
+	return {
+		store: new KyselyProductCommerceStore({ db, clock }),
+		// Phase 2 (`listCommerceByIds`): seed the REAL inventory table the
+		// store's single-statement inStock join reads.
+		async seedStock(sku, qty) {
+			await db
+				.insertInto("inventory")
+				.values({ sku, on_hand: qty })
+				.onConflict((oc) => oc.column("sku").doUpdateSet({ on_hand: qty }))
+				.execute();
+		},
+		// Phase 2: stand-in for the deferred afterPublish→activate wiring —
+		// flips the real row so the contract can pin active:true views.
+		async activate(productId) {
+			await db
+				.updateTable("product_commerce")
+				.set({ active: 1 })
+				.where("product_id", "=", productId)
+				.where("deleted_at", "is", null)
+				.execute();
+		},
+	};
 }
 
 /** Fresh, isolated in-memory SQLite db, migrated to latest. */

@@ -3,6 +3,7 @@ import {
 	CommerceClientError,
 	type CommerceClient,
 	type ProductCommerce,
+	type ProductCommerceBatchItem,
 	type UpsertProductCommerceInput,
 } from "./commerce-client.js";
 
@@ -54,6 +55,25 @@ export class HttpCommerceClient implements CommerceClient {
 		});
 		await this.#json<{ ok: true }>(res);
 	}
+
+	// ── Phase 2: catalog batch read (plan §6) ─────────────────────────────
+	// (A later Phase-3 task adds its cart methods below this block — keep
+	// the delimiters so the diff surfaces stay additive.)
+
+	/** `POST /catalog/commerce/batch` — one request per page of ids (the
+	 *  request-scoped loader guarantees the "one" part; the service's id cap
+	 *  is the size guard). No idempotency key: a pure read. */
+	async getCommerceBatch(productIds: string[]): Promise<ProductCommerceBatchItem[]> {
+		const res = await this.#fetch(`${this.#baseUrl}/catalog/commerce/batch`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ productIds }),
+		});
+		const body = await this.#json<{ items: ProductCommerceBatchItem[] }>(res);
+		return body.items;
+	}
+
+	// ── end Phase 2 catalog batch read ────────────────────────────────────
 
 	#url(productId: string): string {
 		return `${this.#baseUrl}/products/${encodeURIComponent(productId)}/commerce`;

@@ -89,6 +89,23 @@ export const upsertProductCommerceBody = z.object({
 		.optional(),
 });
 
+// Catalog batch read (Phase 2 §6): ids are opaque tokens, same charset/bound
+// discipline as the cart path params; the array-length cap is the endpoint's
+// request-size guard (COMMERCE_BATCH_ID_CAP in routes/catalog.ts — kept in
+// sync by the route's own 400 test).
+export const commerceBatchBody = z.object({
+	productIds: z
+		.array(
+			z
+				.string()
+				.min(1)
+				.max(200)
+				.regex(/^[\x21-\x7e]+$/),
+		)
+		.max(100),
+});
+
+export type CommerceBatchBody = z.infer<typeof commerceBatchBody>;
 export type UpsertProductCommerceBody = z.infer<typeof upsertProductCommerceBody>;
 export type CreateCartBody = z.infer<typeof createCartBody>;
 export type AddLineBody = z.infer<typeof addLineBody>;

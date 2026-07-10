@@ -11,6 +11,7 @@ import {
 	type IdempotencyKey,
 	type ProductCommerce,
 	type ProductCommerceStore,
+	type ProductCommerceView,
 	type ProductId,
 	type ProductKind,
 	type UpsertProductCommerceInput,
@@ -173,6 +174,63 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 	async getByProductId(productId: ProductId): Promise<ProductCommerce | null> {
 		const row = await this.#selectByProductId(productId);
 		return row === undefined ? null : toDomain(row);
+	}
+
+	/**
+	 * Batch catalog read (Phase 2 §6/§7 step 2): ONE statement —
+	 * `product_commerce LEFT JOIN inventory ON inventory.sku =
+	 * product_commerce.sku WHERE product_id IN (:ids) AND <commerce-complete
+	 * guards>` — identical on both dialects; no interactive transaction (a
+	 * read, but the single-statement discipline holds).
+	 *
+	 * INVARIANT (do not weaken — see the port doc): `inStock` (`on_hand > 0`,
+	 * LEFT JOIN so a missing inventory row reads as out-of-stock, never a
+	 * dropped product) is computed HERE, in the same statement — never split
+	 * into a separate inventory query. Pinned by the query-count test in
+	 * `test/product-commerce-batch.dialects.test.ts`.
+	 *
+	 * Missing/soft-deleted/commerce-incomplete ids are simply absent from the
+	 * result; `IN` collapses duplicates; no ORDER BY (no guaranteed order).
+	 * Inactive rows are RETURNED with `active: false` — the purchasability
+	 * gate is the plugin's `joinProduct`, not the store (port doc). The empty
+	 * id list short-circuits without touching the DB (`IN ()` is not SQL).
+	 */
+	async listCommerceByIds(productIds: ProductId[]): Promise<ProductCommerceView[]> {
+		if (productIds.length === 0) return [];
+		const rows = await this.#db
+			.selectFrom("product_commerce")
+			.leftJoin("inventory", "inventory.sku", "product_commerce.sku")
+			.select([
+				"product_commerce.product_id",
+				"product_commerce.sku",
+				"product_commerce.price_cents",
+				"product_commerce.price_currency",
+				"product_commerce.active",
+				"inventory.on_hand",
+			])
+			.where("product_commerce.product_id", "in", productIds)
+			.where("product_commerce.deleted_at", "is", null)
+			.where("product_commerce.sku", "is not", null)
+			.where("product_commerce.price_cents", "is not", null)
+			.where("product_commerce.price_currency", "is not", null)
+			.execute();
+
+		return rows.map((row) => {
+			// The WHERE guards make these non-null; the narrowing is for the
+			// type system, with a loud failure if the query ever drifts.
+			if (row.sku === null || row.price_cents === null || row.price_currency === null) {
+				throw new Error(
+					`listCommerceByIds returned a commerce-incomplete row for product_id ${row.product_id}`,
+				);
+			}
+			return {
+				productId: toProductId(row.product_id),
+				sku: toSku(row.sku),
+				price: money(cents(row.price_cents), currency(row.price_currency)),
+				inStock: (row.on_hand ?? 0) > 0,
+				active: row.active === 1,
+			};
+		});
 	}
 
 	async softDelete(productId: ProductId, key: IdempotencyKey): Promise<void> {

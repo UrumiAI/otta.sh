@@ -3,6 +3,8 @@ import {
 	createProductCommerceRouteHandler,
 	PRODUCT_COMMERCE_ROUTE,
 } from "./admin/product-commerce-route.js";
+import { createPdpRouteHandler, STOREFRONT_PRODUCT_ROUTE } from "./storefront/pdp-route.js";
+import { createPlpRouteHandler, STOREFRONT_LIST_ROUTE } from "./storefront/plp-route.js";
 import { createAfterDeleteHandler, createAfterSaveHandler } from "./sync/hooks.js";
 import type { SandboxedPlugin } from "./types.js";
 
@@ -13,7 +15,11 @@ import type { SandboxedPlugin } from "./types.js";
  * `packages/plugins/{sandboxed-test,webhook-notifier}/src/plugin.ts`) —
  * this is the module `sandbox-entry.ts` loads inside workerd.
  *
- * Declares ONLY the two hooks and two routes Phase 1 needs. No
+ * Phase 1: the two content-sync hooks and two non-public admin routes.
+ * Phase 2 (ADR-0003): the two PUBLIC storefront routes — PDP and PLP are
+ * plugin-owned routes (`page:fragments` is trusted-only and unavailable to
+ * this sandboxed plugin); `public: true` is the em-dash route flag that
+ * skips auth/CSRF so the theme's public pages can invoke them. No
  * `admin.fieldWidgets`/manifest declarations live here — those are a
  * separate wire-manifest concern (`emdash-plugin.jsonc` in a real deploy);
  * `admin/product-data-widget.ts` is the shared source of truth both a
@@ -34,6 +40,8 @@ const plugin: SandboxedPlugin = {
 			public: false,
 		},
 		[PANEL_STATE_ROUTE]: { handler: createPanelStateRouteHandler() as never, public: false },
+		[STOREFRONT_PRODUCT_ROUTE]: { handler: createPdpRouteHandler() as never, public: true },
+		[STOREFRONT_LIST_ROUTE]: { handler: createPlpRouteHandler() as never, public: true },
 	},
 };
 

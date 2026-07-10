@@ -70,6 +70,39 @@ export interface ProductCommerce {
 }
 
 /**
+ * The read model one catalog price/availability slot needs (Phase 2 §6) —
+ * deliberately narrower than `ProductCommerce`: only "commerce-complete"
+ * rows (live, sku set, price set) ever become a view, so every field here is
+ * non-null and the plugin's join never re-derives "is this sellable" from
+ * nullable parts. Money stays branded (`Cents` + `Currency`) end-to-end.
+ */
+export interface ProductCommerceView {
+	productId: ProductId;
+	sku: Sku;
+	price: Money;
+	/**
+	 * Coarse display-only stock signal: `inventory.on_hand > 0` at read time
+	 * (Phase 2 §8 risk 5, pre-approved). NOT reservation-aware — it can say
+	 * "in stock" moments before a concurrent buyer takes the last unit.
+	 * Display/JSON-LD convenience only; Phase 3's `reserve` is the authority
+	 * on whether a purchase actually succeeds.
+	 */
+	inStock: boolean;
+	/**
+	 * The publish gate (Phase 1 §4: flipped true by `content:afterPublish`;
+	 * Phase 2 §4.2: "purchasable: false iff commerce === null (or explicitly
+	 * inactive)"). The store RETURNS inactive rows, flagged — the ONE place
+	 * purchasability is decided is the plugin's `joinProduct`
+	 * (`purchasable ⟺ commerce !== null && commerce.active`), so listing
+	 * visibility and sellability stay separate concerns. NOTE the honest
+	 * current state: the afterPublish→activate wiring is deferred (its own
+	 * follow-up task), so nothing sets `active=true` yet and storefronts
+	 * render EVERY product not-purchasable until it lands.
+	 */
+	active: boolean;
+}
+
+/**
  * Intent, not SQL (Phase 1 §7): insert-or-update by `product_id`, idempotent
  * under `key` (a replay whose incoming key equals the stored key is a no-op
  * returning the existing row unchanged; a new key applies and overwrites the
@@ -89,4 +122,33 @@ export interface ProductCommerceStore {
 	 *  replay with the same key (or an already-deleted / unknown row) is a
 	 *  no-op. */
 	softDelete(productId: ProductId, key: IdempotencyKey): Promise<void>;
+	/**
+	 * Batch catalog read (Phase 2 §6) — a query, not a command: mutates
+	 * nothing, carries no idempotency key. Returns a `ProductCommerceView`
+	 * for every id with a commerce-complete row (live, sku + price set), in
+	 * no guaranteed order; duplicates in the input collapse to one record.
+	 *
+	 * Missing ids are silently OMITTED, never an error — unknown id,
+	 * soft-deleted row, and "create, then price" not finished all look the
+	 * same to the caller (absence ⇒ `commerce: null` ⇒ `purchasable: false`
+	 * at the plugin's join; "no status-code-as-logic").
+	 *
+	 * Inactive (unpublished) rows ARE returned, carrying `active: false` —
+	 * the store reports state; the purchasability DECISION lives in one
+	 * place, the plugin's `joinProduct` gate (see `ProductCommerceView.active`).
+	 * Until the deferred afterPublish→activate wiring lands, `active=false`
+	 * is every row's state and the whole catalog renders not-purchasable.
+	 *
+	 * INVARIANT — protect from refactoring (Phase 2 §6, do not weaken
+	 * without updating the plan): `inStock` MUST be computed inside the
+	 * store, joining `product_commerce` + `inventory` in ONE statement (an
+	 * intra-service-DB join — both tables live in the commerce DB; the
+	 * "no cross-DB joins" rule is about CMS-DB↔commerce-DB). It must never
+	 * split into a second client-visible round trip (e.g. a separate
+	 * inventory-by-ids call from the plugin) — that would reintroduce the
+	 * N+1/extra-round-trip problem the batch shape exists to prevent. Pinned
+	 * by a store-level query-count test and the PLP-level "zero
+	 * inventory-only HTTP calls" test, not just this comment.
+	 */
+	listCommerceByIds(productIds: ProductId[]): Promise<ProductCommerceView[]>;
 }
