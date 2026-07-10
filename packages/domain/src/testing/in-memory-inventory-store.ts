@@ -55,6 +55,16 @@ export class InMemoryInventoryStore implements InventoryStore {
 			throw new RangeError(`reserve() requires a positive integer qty, got ${String(qty)}`);
 		}
 
+		// Unknown/unseeded sku: pre-claim rejection, OUTSIDE R2's idempotency scope
+		// ("no product row ⇒ no idempotency scope"). No reservation row is written
+		// and the key is NOT consumed — mirroring the real store, whose
+		// `reservations.sku → inventory.sku` FK aborts the claim. This is distinct
+		// from a genuine OUT_OF_STOCK on a *known* sku (insufficient/zero stock),
+		// which DOES consume the key and stays `failed` per R2 (see #finalize).
+		if (!this.#onHand.has(sku)) {
+			return { ok: false, reason: "OUT_OF_STOCK" };
+		}
+
 		// Idempotency claim (mirrors INSERT … ON CONFLICT DO NOTHING).
 		const existingId = this.#byKey.get(key);
 		let id: string;

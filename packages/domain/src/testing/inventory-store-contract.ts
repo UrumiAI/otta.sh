@@ -44,11 +44,29 @@ export function inventoryStoreContract(
 
 		test("reserve on an unknown (unseeded) sku returns OUT_OF_STOCK", async () => {
 			const h = await makeStore();
-			// No inventory row exists for this sku — effectively zero stock. Every
-			// adapter resolves this to OUT_OF_STOCK (the store's `reservations.sku`
-			// FK makes the claim insert fail, which maps to the same outcome).
+			// No inventory row exists for this sku. Every adapter resolves this to
+			// OUT_OF_STOCK as a pre-claim rejection (the store's `reservations.sku`
+			// FK aborts the claim; the fake rejects before claiming).
 			const result = await h.store.reserve("SKU-MISSING", 1, idempotencyKey("k1"));
 			expect(result).toEqual({ ok: false, reason: "OUT_OF_STOCK" });
+		});
+
+		test("unknown-sku reserve is OUTSIDE R2 idempotency scope: the key is not consumed and stays usable once the sku exists", async () => {
+			const h = await makeStore();
+			const key = idempotencyKey("k1");
+			// Unknown sku ⇒ OUT_OF_STOCK, but this is a pre-claim rejection: NO
+			// reservation row is written and the key is NOT consumed (unlike a
+			// genuine OUT_OF_STOCK on a known sku, which stays `failed` per R2).
+			const miss = await h.store.reserve("SKU-LATER", 1, key);
+			expect(miss).toEqual({ ok: false, reason: "OUT_OF_STOCK" });
+
+			// Once the sku exists, the SAME key performs a FRESH reserve — proof the
+			// key was never consumed by the unknown-sku rejection. Every adapter
+			// (fake, sqlite, pg) must agree on this parity.
+			await h.seed("SKU-LATER", 5);
+			const hit = await h.store.reserve("SKU-LATER", 1, key);
+			expect(hit.ok).toBe(true);
+			expect(await h.onHand("SKU-LATER")).toBe(4);
 		});
 
 		test("reserve exactly at stock succeeds and leaves on_hand at 0", async () => {
@@ -71,6 +89,9 @@ export function inventoryStoreContract(
 
 		test("a failed (OUT_OF_STOCK) key replays to OUT_OF_STOCK — the key stays consumed (R2)", async () => {
 			const h = await makeStore();
+			// A genuine OUT_OF_STOCK on a KNOWN sku (insufficient/zero stock) DOES
+			// consume the key and stays `failed` — the R2 counterpart to the
+			// unknown-sku pre-claim rejection above (which is outside R2 scope).
 			await h.seed("SKU-1", 1);
 			const first = await h.store.reserve("SKU-1", 5, idempotencyKey("k1"));
 			expect(first).toEqual({ ok: false, reason: "OUT_OF_STOCK" });
