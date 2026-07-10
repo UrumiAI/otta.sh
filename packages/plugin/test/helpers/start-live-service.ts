@@ -1,9 +1,13 @@
 import { serve } from "@hono/node-server";
 import { FixedClock } from "@urumi/domain/testing";
+import { StripePaymentGateway } from "@urumi/payments-stripe";
 import { createApp } from "@urumi/service/app";
 import {
 	KyselyCartStore,
+	KyselyEntitlementStore,
 	KyselyInventoryStore,
+	KyselyOrderStore,
+	KyselyPaymentEventStore,
 	KyselyProductCommerceStore,
 	uuidIdGen,
 } from "@urumi/store-postgres";
@@ -34,7 +38,20 @@ export async function startLiveService(): Promise<LiveService> {
 	// Phase 3 grew AppDeps with the cart surface; the plugin exercises only the
 	// product routes here, but the real app wires everything.
 	const cartStore = new KyselyCartStore({ db, idGen: uuidIdGen, clock });
-	const app = createApp({ store, productCommerce, cartStore, clock });
+	const orderStore = new KyselyOrderStore({ db, idGen: uuidIdGen, clock });
+	const entitlementStore = new KyselyEntitlementStore({ db, idGen: uuidIdGen, clock });
+	const paymentEventStore = new KyselyPaymentEventStore({ db, idGen: uuidIdGen });
+	const app = createApp({
+		store,
+		productCommerce,
+		cartStore,
+		orderStore,
+		entitlementStore,
+		paymentEventStore,
+		idGen: uuidIdGen,
+		gateways: { stripe: new StripePaymentGateway({ webhookSecret: "whsec_plugin_live_test" }) },
+		clock,
+	});
 
 	const server = await new Promise<ReturnType<typeof serve>>((resolve) => {
 		const s = serve({ fetch: app.fetch, port: 0 }, () => resolve(s));

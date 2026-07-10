@@ -1,13 +1,32 @@
 import { serve } from "@hono/node-server";
+import {
+	cents,
+	currency,
+	idempotencyKey,
+	money,
+	type PaymentGateway,
+	type PaymentMethod,
+	productId,
+	sku,
+} from "@urumi/domain";
 import { FixedClock } from "@urumi/domain/testing";
+import { StripePaymentGateway } from "@urumi/payments-stripe";
+import { createTestFacilitator, X402PaymentGateway } from "@urumi/payments-x402";
 import {
 	KyselyCartStore,
+	KyselyEntitlementStore,
 	KyselyInventoryStore,
+	KyselyOrderStore,
+	KyselyPaymentEventStore,
 	KyselyProductCommerceStore,
 	uuidIdGen,
 } from "@urumi/store-postgres";
 import { createIsolatedPgSchema } from "@urumi/store-postgres/testing";
 import { createApp } from "../../src/app.js";
+
+/** Known test secrets so tests can sign valid Stripe webhooks / x402 proofs. */
+export const STRIPE_WEBHOOK_SECRET = "whsec_test_service_phase4";
+export const X402_FACILITATOR_SECRET = "x402_facilitator_test_service";
 
 export interface TestServer {
 	baseUrl: string;
@@ -15,6 +34,15 @@ export interface TestServer {
 	internalToken: string | undefined;
 	seed(sku: string, qty: number): Promise<void>;
 	onHand(sku: string): Promise<number>;
+	/** Seed a priced product (with title) + optional stock, for checkout tests. */
+	seedProduct(input: {
+		productId: string;
+		sku: string;
+		priceCents: number;
+		title: string;
+		kind: "physical" | "digital";
+		onHand?: number;
+	}): Promise<void>;
 	/** Advance the server's injected Clock (fast-forward past a hold TTL). */
 	advance(ms: number): void;
 	stop(): Promise<void>;
@@ -44,7 +72,29 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
 	const store = new KyselyInventoryStore({ db, idGen: uuidIdGen, clock });
 	const productCommerce = new KyselyProductCommerceStore({ db, clock });
 	const cartStore = new KyselyCartStore({ db, idGen: uuidIdGen, clock });
-	const app = createApp({ store, productCommerce, cartStore, clock, internalToken });
+	const orderStore = new KyselyOrderStore({ db, idGen: uuidIdGen, clock });
+	const entitlementStore = new KyselyEntitlementStore({ db, idGen: uuidIdGen, clock });
+	const paymentEventStore = new KyselyPaymentEventStore({ db, idGen: uuidIdGen });
+	const gateways: Partial<Record<PaymentMethod, PaymentGateway>> = {
+		stripe: new StripePaymentGateway({ webhookSecret: STRIPE_WEBHOOK_SECRET }),
+		x402: new X402PaymentGateway({
+			facilitator: createTestFacilitator(X402_FACILITATOR_SECRET),
+			payTo: "0xTEST",
+			accepts: ["eip155:8453"],
+		}),
+	};
+	const app = createApp({
+		store,
+		productCommerce,
+		cartStore,
+		orderStore,
+		entitlementStore,
+		paymentEventStore,
+		idGen: uuidIdGen,
+		gateways,
+		clock,
+		internalToken,
+	});
 
 	const server = await new Promise<ReturnType<typeof serve>>((resolve) => {
 		const s = serve({ fetch: app.fetch, port: 0 }, () => resolve(s));
@@ -55,20 +105,35 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
 	return {
 		baseUrl: `http://127.0.0.1:${port}`,
 		internalToken,
-		async seed(sku, qty) {
+		async seed(skuValue, qty) {
 			await db
 				.insertInto("inventory")
-				.values({ sku, on_hand: qty })
+				.values({ sku: skuValue, on_hand: qty })
 				.onConflict((oc) => oc.column("sku").doUpdateSet({ on_hand: qty }))
 				.execute();
 		},
-		async onHand(sku) {
+		async onHand(skuValue) {
 			const row = await db
 				.selectFrom("inventory")
 				.select("on_hand")
-				.where("sku", "=", sku)
+				.where("sku", "=", skuValue)
 				.executeTakeFirst();
 			return row?.on_hand ?? 0;
+		},
+		async seedProduct(input) {
+			await productCommerce.upsert(
+				{
+					productId: productId(input.productId),
+					sku: sku(input.sku),
+					price: money(cents(input.priceCents), currency("USD")),
+					title: input.title,
+					productKind: input.kind,
+				},
+				idempotencyKey(`seed-${input.productId}`),
+			);
+			if (input.kind === "physical") {
+				await store.seedOnHand(input.sku, input.onHand ?? 0);
+			}
 		},
 		advance(ms) {
 			clock.advance(ms);

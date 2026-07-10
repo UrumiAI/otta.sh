@@ -27,6 +27,11 @@ export const createCartBody = z.object({
 export const addLineBody = z.object({
 	sku: z.string().min(1),
 	qty: z.number().int().positive(),
+	// Phase 4: the product this line references. Optional for backward-compat with
+	// bare Phase-3 adds; REQUIRED to later check out (an order needs a priced
+	// product). When present, the service resolves the fulfillment kind from
+	// `product_commerce` (server-authoritative) so a digital line reserves nothing.
+	productId: z.string().min(1).max(200).optional(),
 });
 
 export const patchLineBody = z.object({
@@ -45,6 +50,39 @@ const idParam = z
 export const pathParams = z.object({ cartId: idParam });
 export const linePathParams = z.object({ cartId: idParam, lineId: idParam });
 
+// Phase 4 (§7). Checkout, order read, the x402 page-gate proof, and the
+// entitlement check.
+export const checkoutBody = z.object({
+	cartId: idParam,
+	paymentMethod: z.enum(["stripe", "x402"]),
+	// Email/session claim token — the pre-Phase-5 entitlement key (§6).
+	buyerRef: z.string().min(1).max(320),
+});
+
+export const orderPathParams = z.object({ orderId: idParam });
+
+// The x402 facilitator SettleResponse proof forwarded by the page layer (§6).
+// Money on the wire is an integer minor unit + an ISO-4217 string (never a float).
+export const x402ProofBody = z.object({
+	orderId: idParam,
+	transaction: z.string().min(1).max(200),
+	network: z.string().min(1).max(64),
+	payer: z.string().min(1).max(200),
+	amount: z.number().int().nonnegative(),
+	currency: z.string().regex(/^[A-Z]{3}$/),
+	signature: z.string().min(1).max(4096),
+});
+
+export const entitlementCheckQuery = z
+	.object({
+		orderId: z.string().min(1).max(200).optional(),
+		buyerRef: z.string().min(1).max(320).optional(),
+		sku: z.string().min(1).max(200),
+	})
+	.refine((q) => q.orderId !== undefined || q.buyerRef !== undefined, {
+		message: "one of orderId or buyerRef is required",
+	});
+
 export type ReserveBody = z.infer<typeof reserveBody>;
 export type CommitBody = z.infer<typeof commitBody>;
 export type ReleaseBody = z.infer<typeof releaseBody>;
@@ -61,6 +99,8 @@ export const upsertProductCommerceBody = z.object({
 			currency: z.string().regex(/^[A-Z]{3}$/),
 		})
 		.optional(),
+	// Phase 4 §4: the title an order line snapshots at purchase time.
+	title: z.string().min(1).max(500).nullable().optional(),
 	taxClass: z.string().nullable().optional(),
 	weightGrams: z.number().int().nullable().optional(),
 	lengthMm: z.number().int().nullable().optional(),

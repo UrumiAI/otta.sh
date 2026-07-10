@@ -29,6 +29,8 @@
 	"dependencies": {
 		"@hono/node-server": "catalog:",
 		"@urumi/domain": "workspace:*",
+		"@urumi/payments-stripe": "workspace:*",
+		"@urumi/payments-x402": "workspace:*",
 		"@urumi/store-postgres": "workspace:*",
 		"hono": "catalog:",
 		"zod": "catalog:"

@@ -30,6 +30,7 @@
 		"@hono/node-server": "catalog:",
 		"@types/node": "catalog:",
 		"@urumi/domain": "workspace:*",
+		"@urumi/payments-stripe": "workspace:*",
 		"@urumi/service": "workspace:*",
 		"@urumi/store-postgres": "workspace:*",
 		"tsdown": "catalog:",
