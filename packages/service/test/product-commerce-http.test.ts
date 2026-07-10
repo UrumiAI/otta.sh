@@ -144,4 +144,69 @@ describe.skipIf(PG === undefined)("HTTP product-commerce contract [live server, 
 		const res = await del("prod-http-8");
 		expect(res.status).toBe(400);
 	});
+
+	test("a priced row stranded without an inventory row is healed by retrying the save with initialOnHand (B1, Postgres)", async () => {
+		// Simulate the stranded state review B1 flagged: the product upsert
+		// committed (sku durably set) but no inventory row ever landed — here
+		// by a first save that carried no stock figure.
+		await put(
+			"prod-http-b1",
+			{ sku: "SKU-HB1", price: { amount: 300, currency: "USD" } },
+			{ "Idempotency-Key": "kb1" },
+		);
+		expect(await server.onHand("SKU-HB1")).toBe(0);
+
+		// The retried save (same idempotency key — the upsert replays as a
+		// no-op) carries the stock figure; the always-attempt, create-if-absent
+		// seed heals the missing inventory row.
+		await put(
+			"prod-http-b1",
+			{ sku: "SKU-HB1", price: { amount: 300, currency: "USD" }, initialOnHand: 12 },
+			{ "Idempotency-Key": "kb1" },
+		);
+		expect(await server.onHand("SKU-HB1")).toBe(12);
+
+		// And a later save can still never clobber the live figure.
+		await put("prod-http-b1", { initialOnHand: 999 }, { "Idempotency-Key": "kb1-later" });
+		expect(await server.onHand("SKU-HB1")).toBe(12);
+	});
+
+	test("a stale sync PUT (older contentUpdatedAt) arriving after a newer one is a no-op over the wire (S1)", async () => {
+		const newer = await put(
+			"prod-http-s1",
+			{
+				sku: "SKU-HS1",
+				price: { amount: 2000, currency: "USD" },
+				contentUpdatedAt: "2026-07-10T02:00:00.000Z",
+			},
+			{ "Idempotency-Key": "ks1-newer" },
+		);
+		const stale = await put(
+			"prod-http-s1",
+			{ price: { amount: 1, currency: "USD" }, contentUpdatedAt: "2026-07-10T01:00:00.000Z" },
+			{ "Idempotency-Key": "ks1-stale" },
+		);
+		expect(stale.status).toBe(200);
+		expect(stale.body).toEqual(newer.body);
+
+		const read = await get("prod-http-s1");
+		expect(read.body).toMatchObject({ price: { amount: 2000, currency: "USD" } });
+	});
+
+	test("panel-style PUTs (no contentUpdatedAt) are last-writer-wins — the documented lost-update semantics (S1)", async () => {
+		await put(
+			"prod-http-s1b",
+			{ sku: "SKU-HS1B", price: { amount: 100, currency: "USD" } },
+			{ "Idempotency-Key": "ks1b-1" },
+		);
+		// A second explicit merchant save (e.g. a slower tab finishing later)
+		// overwrites — accepted and pinned deliberately: explicit human saves
+		// carry no ordering watermark, so the last write wins.
+		const second = await put(
+			"prod-http-s1b",
+			{ price: { amount: 200, currency: "USD" } },
+			{ "Idempotency-Key": "ks1b-2" },
+		);
+		expect(second.body).toMatchObject({ price: { amount: 200, currency: "USD" } });
+	});
 });

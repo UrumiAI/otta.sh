@@ -37,9 +37,14 @@ export const upsertProductCommerceBody = z.object({
 	widthMm: z.number().int().nullable().optional(),
 	heightMm: z.number().int().nullable().optional(),
 	productKind: z.enum(["physical", "digital"]).optional(),
-	// Initial stock (Phase 1 §8 Risk 4) — only consumed the moment a sku is
-	// first set; never a restock path.
+	// Initial stock (Phase 1 §8 Risk 4) — a create-if-absent seed attempted on
+	// any save that carries it (self-healing after a partial failure, review
+	// B1); never a restock path.
 	initialOnHand: z.number().int().nonnegative().optional(),
+	// Sync-ordering watermark (review S1): the CMS content's own updatedAt,
+	// carried by content:afterSave syncs; a strictly-older value is a stale
+	// no-op at the store. Panel saves omit it (last-writer-wins).
+	contentUpdatedAt: z.string().min(1).optional(),
 });
 
 export type UpsertProductCommerceBody = z.infer<typeof upsertProductCommerceBody>;

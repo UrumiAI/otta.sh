@@ -9,17 +9,15 @@ import {
 	softDeleteProductCommerce,
 	sku,
 	upsertProductCommerce,
-	type InventoryStore,
 	type ProductCommerce,
-	type ProductCommerceStore,
+	type ProductCommerceDeps,
 } from "@urumi/domain";
 import { Hono } from "hono";
 import { upsertProductCommerceBody } from "../schemas.js";
 
-export interface ProductCommerceDeps {
-	productCommerce: ProductCommerceStore;
-	inventory: InventoryStore;
-}
+// The domain use-case's own deps type is the single source of truth (N3);
+// re-exported so existing importers keep working.
+export type { ProductCommerceDeps };
 
 /**
  * Product-commerce routes — 1:1 with the port (Phase 1 §7): `PUT`/`GET`/
@@ -61,6 +59,7 @@ export function productCommerceRoutes(deps: ProductCommerceDeps): Hono {
 					widthMm: body.widthMm,
 					heightMm: body.heightMm,
 					productKind: body.productKind,
+					contentUpdatedAt: body.contentUpdatedAt,
 				},
 				idempotencyKey(key),
 				body.initialOnHand,
@@ -112,6 +111,7 @@ function serialize(row: ProductCommerce): Record<string, unknown> {
 		productKind: row.productKind,
 		active: row.active,
 		deletedAt: row.deletedAt === null ? null : row.deletedAt.toISOString(),
+		contentUpdatedAt: row.contentUpdatedAt,
 		createdAt: row.createdAt.toISOString(),
 		updatedAt: row.updatedAt.toISOString(),
 	};
