@@ -8,6 +8,7 @@ import {
 	productId,
 	softDeleteProductCommerce,
 	sku,
+	SkuConflictError,
 	upsertProductCommerce,
 	type ProductCommerce,
 	type ProductCommerceDeps,
@@ -68,6 +69,12 @@ export function productCommerceRoutes(deps: ProductCommerceDeps): Hono {
 		} catch (err) {
 			if (err instanceof MissingProductIdError) {
 				return c.json({ error: "MISSING_PRODUCT_ID" }, 400);
+			}
+			// Review F2: a live-SKU conflict is a structured 409, not an opaque
+			// 500 — the most likely real merchant input error deserves a shape
+			// the panel can render.
+			if (err instanceof SkuConflictError) {
+				return c.json({ ok: false, error: "SKU_TAKEN", sku: err.sku }, 409);
 			}
 			throw err;
 		}

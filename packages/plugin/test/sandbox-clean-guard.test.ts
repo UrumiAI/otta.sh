@@ -15,10 +15,14 @@ const SANCTIONED_FILE = "sandbox-entry.ts";
 
 /** Direct invocation of a bare `fetch(` — not preceded by `.`, `#`, or a
  *  word char (so `ctx.http.fetch(`, `this.#fetch(`, `options.fetch` and the
- *  property-style type declaration don't match). */
+ *  property-style type declaration don't match). NOTE: no `/g` flag on the
+ *  detection patterns — a global regex used with `.test()` in a loop keeps
+ *  a stateful `lastIndex` and under-reports offenders (review N1). */
 const BARE_FETCH_CALL = /(?<![.\w$#])fetch\s*\(/;
-const GLOBAL_THIS_FETCH = /globalThis\s*\.\s*fetch/g;
+const AMBIENT_FETCH = /(?:globalThis|self|window)\s*\.\s*fetch/;
 const XML_HTTP_REQUEST = /XMLHttpRequest/;
+/** Counting variant — `/g` is correct with `.match()`; sanctioned file only. */
+const GLOBAL_THIS_FETCH_ALL = /globalThis\s*\.\s*fetch/g;
 
 function listSourceFiles(dir: string): string[] {
 	const out: string[] = [];
@@ -47,7 +51,7 @@ describe("sandbox-clean guard: no direct network egress in plugin src (S4)", () 
 			const content = readFileSync(file, "utf8");
 			for (const [name, pattern] of [
 				["bare fetch(", BARE_FETCH_CALL],
-				["globalThis.fetch", GLOBAL_THIS_FETCH],
+				["ambient globalThis/self/window fetch", AMBIENT_FETCH],
 				["XMLHttpRequest", XML_HTTP_REQUEST],
 			] as const) {
 				if (pattern.test(content)) {
@@ -60,7 +64,7 @@ describe("sandbox-clean guard: no direct network egress in plugin src (S4)", () 
 
 	test("the sanctioned ctx.http implementation contains exactly one globalThis.fetch call site, after the allowedHosts check", () => {
 		const content = readFileSync(path.join(SRC_DIR, SANCTIONED_FILE), "utf8");
-		const calls = content.match(GLOBAL_THIS_FETCH) ?? [];
+		const calls = content.match(GLOBAL_THIS_FETCH_ALL) ?? [];
 		expect(calls).toHaveLength(1);
 		// And it lives inside createHttpAccess (the allowedHosts-guarded path),
 		// not loose in the dispatcher.

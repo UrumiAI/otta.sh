@@ -1,6 +1,9 @@
 import { COMMERCE_SERVICE_BASE_URL } from "../manifest.js";
 import { HttpCommerceClient } from "../product-commerce/http-commerce-client.js";
-import type { UpsertProductCommerceInput } from "../product-commerce/commerce-client.js";
+import {
+	CommerceClientError,
+	type UpsertProductCommerceInput,
+} from "../product-commerce/commerce-client.js";
 import type { RouteHandler } from "../types.js";
 
 /** The non-public route path the panel's Save action posts to (plan §5). */
@@ -32,7 +35,11 @@ export interface ProductCommerceRouteInput {
 export type ProductCommerceRouteResult =
 	| { ok: true; productCommerce: unknown }
 	| { ok: false; error: "MISSING_PRODUCT_ID" }
-	| { ok: false; error: "INVALID_FIELDS"; fields: Record<string, string> };
+	| { ok: false; error: "INVALID_FIELDS"; fields: Record<string, string> }
+	// Review F2: a live-SKU conflict (service 409 SKU_TAKEN) surfaces in the
+	// same structured per-field shape the panel already renders for
+	// INVALID_FIELDS — never an opaque failure.
+	| { ok: false; error: "SKU_TAKEN"; fields: Record<string, string> };
 
 /**
  * Stable, content-derived idempotency key for a panel save (review S2).
@@ -184,7 +191,29 @@ export function createProductCommerceRouteHandler(): RouteHandler<ProductCommerc
 		// a different key and applies. (The content-sync path derives its key
 		// from the CMS revision instead — sync/derive-idempotency-key.ts.)
 		const key = derivePanelIdempotencyKey(productId, body);
-		const row = await client.upsertProductCommerce(productId, body, key);
-		return { ok: true, productCommerce: row };
+		try {
+			const row = await client.upsertProductCommerce(productId, body, key);
+			return { ok: true, productCommerce: row };
+		} catch (err) {
+			// Review F2: the service's structured 409 SKU_TAKEN becomes a
+			// per-field error the panel can render next to the SKU input.
+			if (err instanceof CommerceClientError && err.status === 409 && isSkuTaken(err.body)) {
+				return {
+					ok: false,
+					error: "SKU_TAKEN",
+					fields: { sku: `SKU "${err.body.sku}" is already used by another live product` },
+				};
+			}
+			throw err;
+		}
 	};
+}
+
+function isSkuTaken(body: unknown): body is { error: "SKU_TAKEN"; sku: string } {
+	return (
+		typeof body === "object" &&
+		body !== null &&
+		(body as { error?: unknown }).error === "SKU_TAKEN" &&
+		typeof (body as { sku?: unknown }).sku === "string"
+	);
 }

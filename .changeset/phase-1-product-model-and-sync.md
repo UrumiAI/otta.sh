@@ -35,4 +35,11 @@ Phase 1 — product model + sync (domain/adapter/service slice).
   now a PARTIAL unique index over live rows (`WHERE deleted_at IS NULL`), so
   a soft-deleted product's SKU is reusable by a new product while two live
   products still cannot share one — enforced identically on Postgres and
-  SQLite and mirrored by the in-memory fake.
+  SQLite and mirrored by the in-memory fake. A live-SKU conflict is the
+  structured domain `SkuConflictError` (caught narrowly on the partial-index
+  violation in the Kysely store, thrown directly by the fake) and maps to
+  HTTP 409 `{ok:false, error:"SKU_TAKEN", sku}` at the service — never an
+  opaque 500. The sync-ordering watermark is strictly validated at the wire
+  boundary as `Date.toISOString()`-format UTC (it feeds a raw lexicographic
+  SQL comparison; one garbage high-sorting value stored once would make
+  every future legitimate sync stale forever) — anything else is a 400.

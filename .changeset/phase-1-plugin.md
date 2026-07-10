@@ -58,8 +58,14 @@ trusted in-process.
   `contentUpdatedAt` as the sync-ordering watermark (a delayed out-of-order
   older save is a stale no-op at the service); and the sandbox-clean guard
   now also forbids undici/node-fetch/axios/ws/hono imports AND direct
-  `fetch`/`globalThis.fetch`/`XMLHttpRequest` usage in plugin src outside
-  the sanctioned `ctx.http` implementation (grep-guard test).
+  `fetch`/`globalThis.fetch`/`self.fetch`/`window.fetch`/`XMLHttpRequest`
+  usage in plugin src outside the sanctioned `ctx.http` implementation
+  (grep-guard test). The panel route surfaces a service 409 `SKU_TAKEN`
+  (live-SKU conflict — the most likely merchant input error) as a
+  structured per-field error next to the SKU input, and `content:afterSave`
+  normalizes the CMS `updatedAt` to strict `Date.toISOString()` form before
+  sending it as the sync watermark (the service now validates that format
+  hard at the boundary).
 
 Deferred (plan §6 step 9 / §2, both explicitly optional/out-of-scope this
 phase): the reconcile cron and `content:afterPublish` → `activate` — the

@@ -41,13 +41,17 @@ export function createAfterSaveHandler(
 
 		const updatedAt = event.content["updatedAt"];
 		const key = deriveSaveIdempotencyKey(event.collection, id, updatedAt);
+		// The service validates the watermark STRICTLY as Date.toISOString()
+		// output (review F1 — it feeds a raw lexicographic SQL comparison), so
+		// normalize whatever date shape the CMS hands us through toISOString();
+		// an unparseable value omits the watermark (bare upsert, no ordering
+		// guard) rather than failing the whole sync on a 400.
+		const watermark = normalizeWatermark(updatedAt);
 		try {
 			await clientFor(ctx).upsertProductCommerce(
 				id,
 				// Ordering watermark only — no commercial fields (see above).
-				typeof updatedAt === "string" && updatedAt.length > 0
-					? { contentUpdatedAt: updatedAt }
-					: {},
+				watermark !== undefined ? { contentUpdatedAt: watermark } : {},
 				key,
 			);
 		} catch (err) {
@@ -57,6 +61,14 @@ export function createAfterSaveHandler(
 			);
 		}
 	};
+}
+
+/** Normalize a CMS `updatedAt` (string or Date-serializable) to strict
+ *  `Date.toISOString()` form, or undefined when unparseable (review F1). */
+function normalizeWatermark(updatedAt: unknown): string | undefined {
+	if (typeof updatedAt !== "string" && typeof updatedAt !== "number") return undefined;
+	const parsed = new Date(updatedAt);
+	return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
 }
 
 /**

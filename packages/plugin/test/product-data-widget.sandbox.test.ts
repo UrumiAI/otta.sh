@@ -260,6 +260,31 @@ describe('"Product data" widget + save route (plan §6 step 8)', () => {
 		expect(stub.requests.filter((r) => r.method === "PUT")).toHaveLength(0);
 	});
 
+	test("a live-SKU conflict (service 409 SKU_TAKEN) surfaces as a structured per-field error in the panel — under the sandbox (F2)", async () => {
+		stub = await startStubCommerceServer();
+		stub.respondWith("PUT", () => ({
+			status: 409,
+			body: { ok: false, error: "SKU_TAKEN", sku: "SKU-DUP" },
+		}));
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+
+		const outcome = await sandbox.invokeRoute("product-commerce", {
+			productId: "prod-f2",
+			sku: "SKU-DUP",
+		});
+
+		expect(outcome).toEqual({
+			result: {
+				ok: false,
+				error: "SKU_TAKEN",
+				fields: { sku: 'SKU "SKU-DUP" is already used by another live product' },
+			},
+		});
+	});
+
 	test("sandbox-clean guard: the manifest declares EXACTLY content:read + network:request, no storage/db surface", () => {
 		expect(URUMI_PLUGIN_CAPABILITIES).toEqual(["content:read", "network:request"]);
 		expect(URUMI_PLUGIN_CAPABILITIES).not.toContain("network:request:unrestricted");

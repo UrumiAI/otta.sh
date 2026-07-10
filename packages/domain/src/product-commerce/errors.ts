@@ -10,3 +10,22 @@ export class MissingProductIdError extends Error {
 		this.name = "MissingProductIdError";
 	}
 }
+
+/**
+ * Domain error for a live-SKU uniqueness conflict (review F2): a merchant
+ * assigning a SKU another LIVE (non-deleted) product already holds — the
+ * most likely real merchant input error. Raised by every
+ * `ProductCommerceStore` adapter (the fake's live-sku check; the Kysely
+ * store's narrowly-scoped catch of the `product_commerce_live_sku_unique`
+ * partial-index violation) and mapped to a structured HTTP 409 `SKU_TAKEN`
+ * by `@urumi/service` — never an opaque 500.
+ */
+export class SkuConflictError extends Error {
+	readonly sku: string;
+
+	constructor(sku: string) {
+		super(`sku "${sku}" is already used by another live product`);
+		this.name = "SkuConflictError";
+		this.sku = sku;
+	}
+}

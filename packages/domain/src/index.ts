@@ -21,7 +21,7 @@ export type {
 	ProductKind,
 	UpsertProductCommerceInput,
 } from "./ports/product-commerce-store.js";
-export { MissingProductIdError } from "./product-commerce/errors.js";
+export { MissingProductIdError, SkuConflictError } from "./product-commerce/errors.js";
 export {
 	getProductCommerce,
 	softDeleteProductCommerce,

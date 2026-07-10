@@ -5,7 +5,7 @@ import type {
 	ProductCommerceStore,
 	UpsertProductCommerceInput,
 } from "../ports/product-commerce-store.js";
-import { MissingProductIdError } from "../product-commerce/errors.js";
+import { MissingProductIdError, SkuConflictError } from "../product-commerce/errors.js";
 
 export interface InMemoryProductCommerceStoreOptions {
 	clock: Clock;
@@ -104,14 +104,14 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 	}
 
 	/** Mirrors the store's `UNIQUE (sku) WHERE deleted_at IS NULL` partial
-	 *  index: only LIVE rows contend for a sku. */
+	 *  index: only LIVE rows contend for a sku. Throws the structured domain
+	 *  `SkuConflictError` (review F2), exactly like the Kysely store's
+	 *  narrowly-scoped constraint-violation catch. */
 	#assertLiveSkuFree(input: UpsertProductCommerceInput): void {
 		if (input.sku === undefined) return;
 		for (const row of this.#rows.values()) {
 			if (row.productId !== input.productId && row.sku === input.sku && row.deletedAt === null) {
-				throw new Error(
-					`UNIQUE constraint failed: product_commerce.sku ("${input.sku}" is held by live product ${row.productId})`,
-				);
+				throw new SkuConflictError(input.sku);
 			}
 		}
 	}

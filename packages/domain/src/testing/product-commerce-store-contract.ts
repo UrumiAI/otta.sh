@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { cents, currency, money } from "../money/cents.js";
 import { idempotencyKey, productId, sku } from "../money/ids.js";
-import { MissingProductIdError } from "../product-commerce/errors.js";
+import { MissingProductIdError, SkuConflictError } from "../product-commerce/errors.js";
 import type { ProductCommerceStore } from "../ports/product-commerce-store.js";
 
 export interface ProductCommerceStoreHarness {
@@ -271,10 +271,15 @@ export function productCommerceStoreContract(
 				idempotencyKey("k1"),
 			);
 
-			// While prod-10a is LIVE, a second product cannot take its sku.
+			// While prod-10a is LIVE, a second product cannot take its sku — and
+			// the failure is the STRUCTURED domain error (review F2), carrying
+			// the contested sku, on every adapter.
 			await expect(
 				h.store.upsert({ productId: second, sku: sku("SKU-10") }, idempotencyKey("k2")),
-			).rejects.toThrow();
+			).rejects.toMatchObject({ name: "SkuConflictError", sku: "SKU-10" });
+			await expect(
+				h.store.upsert({ productId: second, sku: sku("SKU-10") }, idempotencyKey("k2b")),
+			).rejects.toBeInstanceOf(SkuConflictError);
 
 			// Soft-deleting the holder frees the sku for a new product…
 			await h.store.softDelete(first, idempotencyKey("del-1"));

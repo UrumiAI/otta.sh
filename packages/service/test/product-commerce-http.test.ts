@@ -209,4 +209,51 @@ describe.skipIf(PG === undefined)("HTTP product-commerce contract [live server, 
 		);
 		expect(second.body).toMatchObject({ price: { amount: 200, currency: "USD" } });
 	});
+
+	test("a malformed contentUpdatedAt (non-ISO / garbage high-sorting value) is a 400 and writes nothing (F1)", async () => {
+		// The watermark feeds a raw lexicographic SQL comparison — a stored
+		// "ZZZZ" would make every future legitimate sync a stale no-op forever
+		// (panel saves preserve, never heal, the watermark).
+		for (const bad of ["ZZZZ", "2026-07-10", "2026-07-10T02:00:00Z", "not-a-date", " "]) {
+			const res = await put(
+				"prod-http-f1",
+				{ sku: "SKU-HF1", contentUpdatedAt: bad },
+				{ "Idempotency-Key": `kf1-${bad}` },
+			);
+			expect(res.status, `contentUpdatedAt=${JSON.stringify(bad)}`).toBe(400);
+		}
+		// Nothing was minted by any of the rejected requests.
+		const read = await get("prod-http-f1");
+		expect(read.body).toBeNull();
+
+		// The exact Date.toISOString() shape is accepted.
+		const ok = await put(
+			"prod-http-f1",
+			{ sku: "SKU-HF1", contentUpdatedAt: "2026-07-10T02:00:00.000Z" },
+			{ "Idempotency-Key": "kf1-ok" },
+		);
+		expect(ok.status).toBe(200);
+	});
+
+	test("two live products contending a SKU is a structured 409 SKU_TAKEN — nothing leaked (F2, Postgres)", async () => {
+		await put(
+			"prod-http-f2a",
+			{ sku: "SKU-HF2", price: { amount: 100, currency: "USD" } },
+			{ "Idempotency-Key": "kf2a" },
+		);
+		const conflict = await put("prod-http-f2b", { sku: "SKU-HF2" }, { "Idempotency-Key": "kf2b" });
+		expect(conflict.status).toBe(409);
+		expect(conflict.body).toEqual({ ok: false, error: "SKU_TAKEN", sku: "SKU-HF2" });
+		// No internal message/stack/constraint detail leaks.
+		expect(JSON.stringify(conflict.body)).not.toMatch(/constraint|violates|duplicate key/i);
+		expect(conflict.body).not.toHaveProperty("stack");
+		// No row was minted for the loser.
+		const read = await get("prod-http-f2b");
+		expect(read.body).toBeNull();
+
+		// Soft-deleting the holder frees the sku — the same PUT now succeeds.
+		await del("prod-http-f2a", { "Idempotency-Key": "kf2-del" });
+		const retry = await put("prod-http-f2b", { sku: "SKU-HF2" }, { "Idempotency-Key": "kf2c" });
+		expect(retry.status).toBe(200);
+	});
 });
