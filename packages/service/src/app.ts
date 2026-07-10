@@ -1,17 +1,23 @@
+import type { ProductCommerceStore } from "@urumi/domain";
 import { Hono } from "hono";
 import { type InventoryDeps, inventoryRoutes } from "./routes/inventory.js";
+import { productCommerceRoutes } from "./routes/product-commerce.js";
 
-export type AppDeps = InventoryDeps;
+export type AppDeps = InventoryDeps & { productCommerce: ProductCommerceStore };
 
 /**
  * Build the Hono app without listening (§0.6) so tests can mount it and the bin
- * (`index.ts`) can serve it. The concrete `InventoryStore` is injected — the
- * app knows nothing about pg/sqlite.
+ * (`index.ts`) can serve it. The concrete stores are injected — the app knows
+ * nothing about pg/sqlite.
  */
 export function createApp(deps: AppDeps): Hono {
 	const app = new Hono();
 	app.get("/health", (c) => c.json({ ok: true }));
 	app.route("/inventory", inventoryRoutes(deps));
+	app.route(
+		"/products",
+		productCommerceRoutes({ productCommerce: deps.productCommerce, inventory: deps.store }),
+	);
 
 	// Consistent error envelope for anything thrown past the routes (e.g. a
 	// domain error on commit/release of a non-`held`/unknown reservation, or a
