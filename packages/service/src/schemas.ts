@@ -33,6 +33,18 @@ export const patchLineBody = z.object({
 	qty: z.number().int().positive(),
 });
 
+// Path-parameter sanity (N3): ids are opaque tokens — non-empty, bounded, and
+// free of whitespace/control characters. Routing guarantees non-empty; the
+// bound and charset keep garbage out of the store layer.
+const idParam = z
+	.string()
+	.min(1)
+	.max(200)
+	.regex(/^[\x21-\x7e]+$/);
+
+export const pathParams = z.object({ cartId: idParam });
+export const linePathParams = z.object({ cartId: idParam, lineId: idParam });
+
 export type ReserveBody = z.infer<typeof reserveBody>;
 export type CommitBody = z.infer<typeof commitBody>;
 export type ReleaseBody = z.infer<typeof releaseBody>;

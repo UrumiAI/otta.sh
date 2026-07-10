@@ -17,7 +17,13 @@ import {
 	updateLine,
 } from "@urumi/domain";
 import { type Context, Hono } from "hono";
-import { addLineBody, createCartBody, patchLineBody } from "../schemas.js";
+import {
+	addLineBody,
+	createCartBody,
+	linePathParams,
+	patchLineBody,
+	pathParams,
+} from "../schemas.js";
 
 export interface CartRoutesDeps {
 	store: InventoryStore;
@@ -25,6 +31,12 @@ export interface CartRoutesDeps {
 	clock: Clock;
 	/** Hold TTL in ms; defaults to the domain's DEFAULT_HOLD_TTL_MS. */
 	ttlMs?: number;
+	/**
+	 * Shared secret for the internal endpoints (`X-Internal-Token` header). When
+	 * unset, `/internal/*` is DISABLED (503) rather than open — the minimal
+	 * auth'd-internal stance §6 requires; a fuller authn story is deferred.
+	 */
+	internalToken?: string;
 }
 
 const DEFAULT_CURRENCY = "USD";
@@ -54,7 +66,9 @@ export function cartRoutes(deps: CartRoutesDeps): Hono {
 	});
 
 	app.get("/:cartId", async (c) => {
-		const cart = await getCart(cartDeps, c.req.param("cartId"));
+		const params = pathParams.safeParse(c.req.param());
+		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
+		const cart = await getCart(cartDeps, params.data.cartId);
 		if (cart === null) return c.json({ ok: false, reason: "CART_NOT_FOUND" }, 404);
 		return c.json({ ok: true, cart: serializeCart(cart) }, 200);
 	});
@@ -62,13 +76,15 @@ export function cartRoutes(deps: CartRoutesDeps): Hono {
 	app.post("/:cartId/lines", async (c) => {
 		const key = requireKey(c);
 		if (key === null) return c.json({ error: "missing Idempotency-Key header" }, 400);
+		const params = pathParams.safeParse(c.req.param());
+		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
 		const parsed = addLineBody.safeParse(await readJson(c));
 		if (!parsed.success) {
 			return c.json({ error: "invalid request body", issues: parsed.error.issues }, 400);
 		}
 		const res = await addLine(
 			cartDeps,
-			c.req.param("cartId"),
+			params.data.cartId,
 			sku(parsed.data.sku),
 			null,
 			parsed.data.qty,
@@ -81,14 +97,16 @@ export function cartRoutes(deps: CartRoutesDeps): Hono {
 	app.patch("/:cartId/lines/:lineId", async (c) => {
 		const key = requireKey(c);
 		if (key === null) return c.json({ error: "missing Idempotency-Key header" }, 400);
+		const params = linePathParams.safeParse(c.req.param());
+		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
 		const parsed = patchLineBody.safeParse(await readJson(c));
 		if (!parsed.success) {
 			return c.json({ error: "invalid request body", issues: parsed.error.issues }, 400);
 		}
 		const res = await updateLine(
 			cartDeps,
-			c.req.param("cartId"),
-			c.req.param("lineId"),
+			params.data.cartId,
+			params.data.lineId,
 			parsed.data.qty,
 			idempotencyKey(key),
 		);
@@ -99,10 +117,12 @@ export function cartRoutes(deps: CartRoutesDeps): Hono {
 	app.delete("/:cartId/lines/:lineId", async (c) => {
 		const key = requireKey(c);
 		if (key === null) return c.json({ error: "missing Idempotency-Key header" }, 400);
+		const params = linePathParams.safeParse(c.req.param());
+		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
 		const res = await removeLine(
 			cartDeps,
-			c.req.param("cartId"),
-			c.req.param("lineId"),
+			params.data.cartId,
+			params.data.lineId,
 			idempotencyKey(key),
 		);
 		if (res.ok) return c.json({ ok: true }, 200);
@@ -112,7 +132,11 @@ export function cartRoutes(deps: CartRoutesDeps): Hono {
 	return app;
 }
 
-/** Internal (non-public) sweep endpoint: reclaim globally-expired holds (§6). */
+/**
+ * Internal (non-public) sweep endpoint: reclaim globally-expired holds (§6).
+ * Guarded by a shared-secret `X-Internal-Token` header: 503 when no token is
+ * configured (endpoint disabled, never silently open), 401 on a mismatch.
+ */
 export function expireHoldsRoutes(deps: CartRoutesDeps): Hono {
 	const app = new Hono();
 	const cartDeps: CartDeps = {
@@ -122,6 +146,13 @@ export function expireHoldsRoutes(deps: CartRoutesDeps): Hono {
 		ttlMs: deps.ttlMs,
 	};
 	app.post("/expire-holds", async (c) => {
+		const token = deps.internalToken;
+		if (token === undefined || token.length === 0) {
+			return c.json({ ok: false, error: "internal endpoints disabled" }, 503);
+		}
+		if (c.req.header("X-Internal-Token") !== token) {
+			return c.json({ ok: false, error: "unauthorized" }, 401);
+		}
 		const reclaimed = await expireHolds(cartDeps);
 		return c.json({ ok: true, reclaimed }, 200);
 	});

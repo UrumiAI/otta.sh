@@ -26,7 +26,18 @@ const store = new KyselyInventoryStore({ db, idGen: uuidIdGen, clock });
 const productCommerce = new KyselyProductCommerceStore({ db, clock });
 const cartStore = new KyselyCartStore({ db, idGen: uuidIdGen, clock });
 
-const app = createApp({ store, productCommerce, cartStore, clock });
+// Hold TTL (§5): default 15 min, configurable via CART_HOLD_TTL_MS.
+const ttlEnv = process.env.CART_HOLD_TTL_MS;
+const ttlMs = ttlEnv === undefined ? undefined : Number(ttlEnv);
+if (ttlMs !== undefined && (!Number.isFinite(ttlMs) || ttlMs <= 0)) {
+	throw new Error(`CART_HOLD_TTL_MS must be a positive number, got "${ttlEnv}"`);
+}
+
+// Shared secret for /internal/* (INTERNAL_API_TOKEN). Unset ⇒ the internal
+// endpoints answer 503 (disabled) — never silently open.
+const internalToken = process.env.INTERNAL_API_TOKEN;
+
+const app = createApp({ store, productCommerce, cartStore, clock, ttlMs, internalToken });
 const port = Number(process.env.PORT ?? 3000);
 serve({ fetch: app.fetch, port });
 console.log(`@urumi/service listening on :${port}`);
@@ -35,7 +46,7 @@ console.log(`@urumi/service listening on :${port}`);
 // instead drives POST /internal/expire-holds via the plugin `cron` hook. Lazy
 // on-read keeps correctness independent of this timer. Unref'd so it never
 // keeps the process alive on its own.
-const sweepDeps: CartDeps = { cartStore, inventoryStore: store, clock };
+const sweepDeps: CartDeps = { cartStore, inventoryStore: store, clock, ttlMs };
 const sweepMs = Number(process.env.HOLD_SWEEP_INTERVAL_MS ?? 60_000);
 setInterval(() => {
 	void expireHolds(sweepDeps).catch((err: unknown) => {

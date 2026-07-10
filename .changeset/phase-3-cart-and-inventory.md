@@ -7,23 +7,33 @@
 Phase 3 — cart + inventory (service-side; plugin/storefront deferred to Wave 3).
 
 - `@urumi/domain`: additive `InventoryStore.adjust(reservationId, newQty, key)`
-  (delta reserve / partial release, idempotent by absolute `newQty`, leaving
-  `reserve/commit/release` byte-for-byte); a new `CartStore` port and IO-free
-  cart use-cases (create/get with lazy-on-read expiry, add, delta update,
-  remove, and the `expireHolds` sweep) orchestrating `CartStore` +
+  (delta reserve / partial release) — **exactly-once, ledger-first**: the key is
+  claimed before any movement, a stale replay returns the recorded result (ok or
+  OUT_OF_STOCK) and moves nothing, and a hold that left `held` throws the typed
+  `ReservationNotHeldError`; `reserve/commit/release` stay byte-for-byte. A new
+  `CartStore` port (claim/complete `cart_mutations` ledger, guarded `expireHold`
+  flip) and IO-free cart use-cases (create/get with lazy-on-read expiry, add,
+  delta update, remove, and the `expireHolds` sweep) orchestrating `CartStore` +
   `InventoryStore` + `Clock` with no cross-store transaction; the reusable
-  `cartStoreContract`, plus fence guards (`LINE_CHECKED_OUT` /
-  `CART_CHECKED_OUT`) and reserve↔cart-line crash-window healing. Cart lines
-  snapshot no price (an order invariant, Phase 4).
+  `cartStoreContract`, fence guards (`LINE_CHECKED_OUT` / `CART_CHECKED_OUT`),
+  and reserve↔cart-line + remove crash-window healing. Cart lines snapshot no
+  price (an order invariant, Phase 4).
 - `@urumi/store-postgres`: forward-only migration `0003_cart` (`carts`,
   `cart_lines` with `UNIQUE(cart_id, sku)` and nullable `reservation_id`/
-  `expires_at`, the dedicated `cart_mutations` idempotency ledger, and an ALTER
-  adding nullable `expires_at` to `reservations`); a Kysely `CartStore` whose
-  mutations co-locate the line write, reservation-deadline stamp, and ledger
-  entry per connection, with a guarded-flip expiry sweep. Green on better-sqlite3
-  and pg, including the **no-oversell-through-cart** Postgres acceptance gate.
+  `expires_at`, the claim/complete `cart_mutations` idempotency ledger, the
+  `inventory_adjustments` per-mutation claim ledger, and an ALTER adding
+  nullable `expires_at` to `reservations`); `KyselyInventoryStore.adjust` as a
+  claim + guarded-CAS + movement single transaction (exactly-once under real
+  concurrency); a Kysely `CartStore` whose expiry is the guarded `held →
+  released` flip that re-checks the deadline atomically (a TTL-reset hold is
+  never reaped; raw non-cart reserves are never swept). Green on better-sqlite3
+  and pg, including the **no-oversell-through-cart** Postgres acceptance gate
+  and same-key/different-key adjust races. `migrateToLatest` accepts
+  `migrationTableSchema` so schema-isolated test databases don't collide on the
+  Migrator's bookkeeping tables.
 - `@urumi/service`: cart REST endpoints (`POST /carts`, `GET /carts/:id`,
   `POST/PATCH/DELETE /carts/:id/lines[/:lineId]`) mirroring the use-cases 1:1
-  with `Idempotency-Key` → domain key and `OUT_OF_STOCK` as a typed 200 body,
-  plus the internal `POST /internal/expire-holds` sweep trigger and a self-
-  scheduled Node sweep interval.
+  with `Idempotency-Key` → domain key and `OUT_OF_STOCK` as a typed 200 body;
+  the internal `POST /internal/expire-holds` sweep trigger guarded by an
+  `X-Internal-Token` shared secret (`INTERNAL_API_TOKEN`; unset ⇒ 503 disabled);
+  a self-scheduled Node sweep interval; and `CART_HOLD_TTL_MS` for the hold TTL.
