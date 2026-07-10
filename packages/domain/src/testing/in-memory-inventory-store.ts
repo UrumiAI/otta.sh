@@ -111,6 +111,20 @@ export class InMemoryInventoryStore implements InventoryStore {
 		this.#onHand.set(row.sku, (this.#onHand.get(row.sku) ?? 0) + row.qty);
 	}
 
+	/**
+	 * Additive (Phase 1 §8 Risk 4): create-if-absent initial stock write.
+	 * Mirrors `INSERT … ON CONFLICT (sku) DO NOTHING` — a no-op when the sku
+	 * already has an `on_hand` row, so it can never clobber a concurrent
+	 * `reserve`/`release`/future `adjust`.
+	 */
+	async seedOnHand(sku: string, qty: number): Promise<void> {
+		if (!Number.isSafeInteger(qty) || qty < 0) {
+			throw new RangeError(`seedOnHand() requires a non-negative integer, got ${String(qty)}`);
+		}
+		if (this.#onHand.has(sku)) return; // create-if-absent: never overwrite a live on_hand.
+		this.#onHand.set(sku, qty);
+	}
+
 	// -- test surface ---------------------------------------------------------
 
 	seed(sku: string, onHand: number): void {

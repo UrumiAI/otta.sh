@@ -15,3 +15,16 @@ export type { OrderStore } from "./ports/order-store.js";
 export type { Clock } from "./ports/clock.js";
 export type { IdGen } from "./ports/id-gen.js";
 export { commit, release, reserve } from "./inventory/use-cases.js";
+export type {
+	ProductCommerce,
+	ProductCommerceStore,
+	ProductKind,
+	UpsertProductCommerceInput,
+} from "./ports/product-commerce-store.js";
+export { MissingProductIdError } from "./product-commerce/errors.js";
+export {
+	getProductCommerce,
+	softDeleteProductCommerce,
+	upsertProductCommerce,
+	type ProductCommerceDeps,
+} from "./product-commerce/use-cases.js";

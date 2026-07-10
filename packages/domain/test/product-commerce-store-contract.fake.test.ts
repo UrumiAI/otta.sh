@@ -1,0 +1,17 @@
+import {
+	FixedClock,
+	InMemoryProductCommerceStore,
+	productCommerceStoreContract,
+} from "@urumi/domain/testing";
+
+// Phase 1 step 3: the reusable behavioral spec runs against its first
+// adapter — the IO-free fake — proving the suite is real and the port shape
+// is right before any DB. Every DB dialect (step 4) runs the *same* suite.
+productCommerceStoreContract(
+	async () => ({
+		store: new InMemoryProductCommerceStore({
+			clock: new FixedClock(new Date("2026-07-10T00:00:00.000Z")),
+		}),
+	}),
+	{ dialect: "fake" },
+);
