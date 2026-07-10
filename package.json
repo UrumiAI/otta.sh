@@ -1,0 +1,25 @@
+{
+	"name": "urumi",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"lint": "oxlint && depcruise --config .dependency-cruiser.cjs packages",
+		"typecheck": "tsc -b",
+		"test": "vitest run",
+		"test:pg": "vitest run",
+		"format": "oxfmt",
+		"format:check": "oxfmt --check",
+		"build": "pnpm -r build",
+		"changeset": "changeset"
+	},
+	"devDependencies": {
+		"@changesets/cli": "catalog:",
+		"@types/node": "catalog:",
+		"dependency-cruiser": "catalog:",
+		"oxfmt": "catalog:",
+		"oxlint": "catalog:",
+		"typescript": "catalog:",
+		"vitest": "catalog:"
+	},
+	"packageManager": "pnpm@11.10.0"
+}

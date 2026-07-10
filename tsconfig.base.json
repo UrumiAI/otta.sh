@@ -1,0 +1,19 @@
+{
+	"compilerOptions": {
+		"strict": true,
+		"noUncheckedIndexedAccess": true,
+		"noImplicitOverride": true,
+		"verbatimModuleSyntax": true,
+		"module": "preserve",
+		"moduleResolution": "bundler",
+		"target": "ES2023",
+		"lib": ["ES2023"],
+		"types": ["node"],
+		"declaration": true,
+		"declarationMap": true,
+		"composite": true,
+		"skipLibCheck": true,
+		"isolatedModules": true,
+		"forceConsistentCasingInFileNames": true
+	}
+}

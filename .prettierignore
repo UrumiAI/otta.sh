@@ -1,0 +1,3 @@
+# oxfmt ignore file (oxfmt reads .prettierignore).
+# Docs are hand-formatted; oxfmt owns code + JSON only.
+*.md
