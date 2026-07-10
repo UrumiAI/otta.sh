@@ -3,6 +3,7 @@
 	"references": [
 		{ "path": "packages/domain" },
 		{ "path": "packages/store-postgres" },
-		{ "path": "packages/service" }
+		{ "path": "packages/service" },
+		{ "path": "packages/plugin" }
 	]
 }

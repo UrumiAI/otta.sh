@@ -3,6 +3,7 @@ packages:
 
 allowBuilds:
   better-sqlite3: true
+  workerd: true
 
 catalog:
   typescript: ^5.9.3
@@ -24,3 +25,9 @@ catalog:
 
 minimumReleaseAgeExclude:
   - hono@4.12.29
+  - "@cloudflare/workerd-darwin-64@1.20260710.1"
+  - "@cloudflare/workerd-darwin-arm64@1.20260710.1"
+  - "@cloudflare/workerd-linux-64@1.20260710.1"
+  - "@cloudflare/workerd-linux-arm64@1.20260710.1"
+  - "@cloudflare/workerd-windows-64@1.20260710.1"
+  - workerd@1.20260710.1

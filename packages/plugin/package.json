@@ -1,7 +1,7 @@
 {
-	"name": "@urumi/service",
+	"name": "@urumi/plugin",
 	"version": "0.1.0",
-	"description": "Urumi commerce service — thin Hono REST API mirroring the domain ports 1:1.",
+	"description": "Urumi EmDash plugin — sandbox-clean (workerd, Block Kit, ctx.http + allowedHosts only). No React, no DB/storage capability.",
 	"license": "MIT",
 	"files": [
 		"dist"
@@ -9,7 +9,7 @@
 	"type": "module",
 	"exports": {
 		".": "./src/index.ts",
-		"./app": "./src/app.ts"
+		"./sandbox-entry": "./src/sandbox-entry.ts"
 	},
 	"publishConfig": {
 		"exports": {
@@ -17,26 +17,24 @@
 				"types": "./dist/index.d.mts",
 				"default": "./dist/index.mjs"
 			},
-			"./app": {
-				"types": "./dist/app.d.mts",
-				"default": "./dist/app.mjs"
+			"./sandbox-entry": {
+				"types": "./dist/sandbox-entry.d.mts",
+				"default": "./dist/sandbox-entry.mjs"
 			}
 		}
 	},
 	"scripts": {
 		"build": "tsdown"
 	},
-	"dependencies": {
-		"@hono/node-server": "catalog:",
-		"@urumi/domain": "workspace:*",
-		"@urumi/store-postgres": "workspace:*",
-		"hono": "catalog:",
-		"zod": "catalog:"
-	},
 	"devDependencies": {
+		"@hono/node-server": "catalog:",
 		"@types/node": "catalog:",
+		"@urumi/domain": "workspace:*",
+		"@urumi/service": "workspace:*",
+		"@urumi/store-postgres": "workspace:*",
 		"tsdown": "catalog:",
 		"typescript": "catalog:",
-		"vitest": "catalog:"
+		"vitest": "catalog:",
+		"workerd": "^1.20260710.1"
 	}
 }

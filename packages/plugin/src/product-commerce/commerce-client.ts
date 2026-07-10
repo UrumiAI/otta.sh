@@ -1,0 +1,74 @@
+/**
+ * The `CommerceClient` transport port (ADR-0002 §3 / plan §5): storefront
+ * routes and the widget's save route depend on this INTERFACE, never on
+ * `fetch` directly. `HttpCommerceClient` (http-commerce-client.ts) is the
+ * only adapter this phase builds — `InProcessCommerceClient` is deferred
+ * (ADR-0002 §6: no premature abstraction beyond a second real adapter).
+ *
+ * Wire types mirror `@urumi/service`'s `PUT/GET/DELETE /products/:id/commerce`
+ * 1:1 (money as an integer + ISO-4217 string, never a float).
+ */
+
+export interface CommerceMoney {
+	amount: number;
+	currency: string;
+}
+
+export type CommerceProductKind = "physical" | "digital";
+
+/** Every commercial field is optional — "create then price" (plan §1 case
+ *  3): a bare content sync carries only the product_id. */
+export interface UpsertProductCommerceInput {
+	sku?: string;
+	price?: CommerceMoney;
+	taxClass?: string | null;
+	weightGrams?: number | null;
+	lengthMm?: number | null;
+	widthMm?: number | null;
+	heightMm?: number | null;
+	productKind?: CommerceProductKind;
+	/** Initial stock — consumed only the moment a sku is first set (plan §8
+	 *  Risk 4); never a restock path. */
+	initialOnHand?: number;
+}
+
+export interface ProductCommerce {
+	productId: string;
+	sku: string | null;
+	price: CommerceMoney | null;
+	taxClass: string | null;
+	weightGrams: number | null;
+	lengthMm: number | null;
+	widthMm: number | null;
+	heightMm: number | null;
+	productKind: CommerceProductKind;
+	active: boolean;
+	deletedAt: string | null;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface CommerceClient {
+	upsertProductCommerce(
+		productId: string,
+		input: UpsertProductCommerceInput,
+		idempotencyKey: string,
+	): Promise<ProductCommerce>;
+	getProductCommerce(productId: string): Promise<ProductCommerce | null>;
+	softDeleteProductCommerce(productId: string, idempotencyKey: string): Promise<void>;
+}
+
+/** Structured failure — status + parsed body, so callers can distinguish
+ *  e.g. a 400 `MISSING_PRODUCT_ID` reject from a 503/network failure
+ *  (afterSave must treat the latter as fire-and-forget, plan §4). */
+export class CommerceClientError extends Error {
+	readonly status: number;
+	readonly body: unknown;
+
+	constructor(status: number, body: unknown) {
+		super(`commerce service request failed with status ${status}`);
+		this.name = "CommerceClientError";
+		this.status = status;
+		this.body = body;
+	}
+}
