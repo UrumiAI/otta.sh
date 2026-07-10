@@ -10,8 +10,12 @@ import type { Database } from "./schema.js";
  */
 
 export function makeSqliteDb(path = ":memory:"): Kysely<Database> {
+	const database = new BetterSqlite3(path);
+	// Postgres enforces FKs natively; better-sqlite3 does NOT unless this pragma
+	// is set per connection (it uses a single connection, so this covers all).
+	database.pragma("foreign_keys = ON");
 	return new Kysely<Database>({
-		dialect: new SqliteDialect({ database: new BetterSqlite3(path) }),
+		dialect: new SqliteDialect({ database }),
 	});
 }
 

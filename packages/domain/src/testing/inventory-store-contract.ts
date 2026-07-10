@@ -42,6 +42,15 @@ export function inventoryStoreContract(
 			expect(await h.onHand("SKU-1")).toBe(3);
 		});
 
+		test("reserve on an unknown (unseeded) sku returns OUT_OF_STOCK", async () => {
+			const h = await makeStore();
+			// No inventory row exists for this sku — effectively zero stock. Every
+			// adapter resolves this to OUT_OF_STOCK (the store's `reservations.sku`
+			// FK makes the claim insert fail, which maps to the same outcome).
+			const result = await h.store.reserve("SKU-MISSING", 1, idempotencyKey("k1"));
+			expect(result).toEqual({ ok: false, reason: "OUT_OF_STOCK" });
+		});
+
 		test("reserve exactly at stock succeeds and leaves on_hand at 0", async () => {
 			const h = await makeStore();
 			await h.seed("SKU-1", 2);

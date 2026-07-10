@@ -17,7 +17,7 @@ export const migration0001PhaseInventory: Migration = {
 		await db.schema
 			.createTable("reservations")
 			.addColumn("id", "text", (col) => col.primaryKey())
-			.addColumn("sku", "text", (col) => col.notNull())
+			.addColumn("sku", "text", (col) => col.notNull().references("inventory.sku"))
 			.addColumn("qty", "integer", (col) => col.notNull().check(sql`qty > 0`))
 			.addColumn("state", "text", (col) => col.notNull())
 			.addColumn("idempotency_key", "text", (col) => col.notNull().unique())

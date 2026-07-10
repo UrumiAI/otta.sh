@@ -54,20 +54,30 @@ export class KyselyInventoryStore implements InventoryStore {
 			throw new RangeError(`reserve() requires a positive integer qty, got ${String(qty)}`);
 		}
 
-		// 1. Idempotency claim.
-		const claim = await this.#db
-			.insertInto("reservations")
-			.values({
-				id: this.#idGen.newId(),
-				sku,
-				qty,
-				state: "pending",
-				idempotency_key: key,
-				created_at: this.#clock.now().toISOString(),
-			})
-			.onConflict((oc) => oc.column("idempotency_key").doNothing())
-			.returning("id")
-			.executeTakeFirst();
+		// 1. Idempotency claim. The `reservations.sku → inventory.sku` FK means an
+		// unknown/unseeded sku raises an FK violation here (no inventory row to
+		// reference) — which is the same observable outcome as zero stock, so it
+		// maps to OUT_OF_STOCK, preserving the port contract (see the contract's
+		// unknown-sku case).
+		let claim: { id: string } | undefined;
+		try {
+			claim = await this.#db
+				.insertInto("reservations")
+				.values({
+					id: this.#idGen.newId(),
+					sku,
+					qty,
+					state: "pending",
+					idempotency_key: key,
+					created_at: this.#clock.now().toISOString(),
+				})
+				.onConflict((oc) => oc.column("idempotency_key").doNothing())
+				.returning("id")
+				.executeTakeFirst();
+		} catch (err) {
+			if (isForeignKeyViolation(err)) return { ok: false, reason: "OUT_OF_STOCK" };
+			throw err;
+		}
 
 		if (claim !== undefined) {
 			// Freshly claimed by this caller — finalize as the claimant.
@@ -227,4 +237,11 @@ export class KyselyInventoryStore implements InventoryStore {
 
 function delay(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Portable FK-violation check: pg SQLSTATE `23503` / better-sqlite3 code. */
+function isForeignKeyViolation(err: unknown): boolean {
+	if (typeof err !== "object" || err === null) return false;
+	const code = (err as { code?: unknown }).code;
+	return code === "23503" || code === "SQLITE_CONSTRAINT_FOREIGNKEY";
 }
