@@ -3,12 +3,21 @@ import type { Clock } from "../ports/clock.js";
 import type {
 	ProductCommerce,
 	ProductCommerceStore,
+	ProductCommerceView,
 	UpsertProductCommerceInput,
 } from "../ports/product-commerce-store.js";
 import { MissingProductIdError, SkuConflictError } from "../product-commerce/errors.js";
 
 export interface InMemoryProductCommerceStoreOptions {
 	clock: Clock;
+	/**
+	 * Phase 2 (`listCommerceByIds`): the fake's stand-in for the real store's
+	 * intra-service `inventory` join — a plain lookup the harness seeds
+	 * (`InMemoryInventoryStore.onHand` satisfies it structurally). Defaults
+	 * to "no inventory row" (0) so `inStock` is coarsely false, mirroring a
+	 * LEFT JOIN miss.
+	 */
+	inventoryOnHand?: (sku: string) => number;
 }
 
 /**
@@ -31,9 +40,11 @@ export interface InMemoryProductCommerceStoreOptions {
 export class InMemoryProductCommerceStore implements ProductCommerceStore {
 	#clock: Clock;
 	#rows = new Map<string, ProductCommerce>();
+	#inventoryOnHand: (sku: string) => number;
 
 	constructor(options: InMemoryProductCommerceStoreOptions) {
 		this.#clock = options.clock;
+		this.#inventoryOnHand = options.inventoryOnHand ?? (() => 0);
 	}
 
 	async upsert(input: UpsertProductCommerceInput, key: IdempotencyKey): Promise<ProductCommerce> {
@@ -118,6 +129,32 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 
 	async getByProductId(productId: ProductId): Promise<ProductCommerce | null> {
 		return this.#rows.get(productId) ?? null;
+	}
+
+	/**
+	 * Batch catalog read (Phase 2 §6) — mirrors the Kysely store's single
+	 * `product_commerce LEFT JOIN inventory` statement: only commerce-complete
+	 * live rows become views; `inStock` is the coarse `on_hand > 0`; missing
+	 * ids are omitted; duplicates collapse; `active` is not a gate
+	 * (afterPublish deferred — see the port doc).
+	 */
+	async listCommerceByIds(productIds: ProductId[]): Promise<ProductCommerceView[]> {
+		const views: ProductCommerceView[] = [];
+		const seen = new Set<string>();
+		for (const id of productIds) {
+			if (seen.has(id)) continue;
+			seen.add(id);
+			const row = this.#rows.get(id);
+			if (row === undefined || row.deletedAt !== null) continue;
+			if (row.sku === null || row.price === null) continue;
+			views.push({
+				productId: row.productId,
+				sku: row.sku,
+				price: row.price,
+				inStock: this.#inventoryOnHand(row.sku) > 0,
+			});
+		}
+		return views;
 	}
 
 	async softDelete(productId: ProductId, key: IdempotencyKey): Promise<void> {

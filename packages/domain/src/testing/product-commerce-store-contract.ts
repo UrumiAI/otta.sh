@@ -6,6 +6,10 @@ import type { ProductCommerceStore } from "../ports/product-commerce-store.js";
 
 export interface ProductCommerceStoreHarness {
 	store: ProductCommerceStore;
+	/** Phase 2 (`listCommerceByIds`): seed the inventory `on_hand` the store's
+	 *  intra-service `inStock` join reads — the dialect harness writes the real
+	 *  `inventory` table; the fake harness feeds the fake's lookup. */
+	seedStock(sku: string, qty: number): Promise<void>;
 }
 
 export interface ProductCommerceStoreContractOptions {
@@ -294,6 +298,126 @@ export function productCommerceStoreContract(
 			const tombstone = await h.store.getByProductId(first);
 			expect(tombstone?.sku).toBe("SKU-10");
 			expect(tombstone?.deletedAt).not.toBeNull();
+		});
+
+		// -- Phase 2: listCommerceByIds (batch catalog read, plan §6) -----------
+
+		test("listCommerceByIds returns records for existing ids and omits missing ids", async () => {
+			const h = await makeStore();
+			const p1 = productId("prod-b1");
+			const p2 = productId("prod-b2");
+			await h.store.upsert(
+				{ productId: p1, sku: sku("SKU-B1"), price: money(cents(1999), currency("USD")) },
+				idempotencyKey("k1"),
+			);
+			await h.store.upsert(
+				{ productId: p2, sku: sku("SKU-B2"), price: money(cents(500), currency("EUR")) },
+				idempotencyKey("k2"),
+			);
+			await h.seedStock("SKU-B1", 5);
+
+			const views = await h.store.listCommerceByIds([p1, p2, productId("prod-b-missing")]);
+
+			// Missing ids are silently omitted — never an error, never a per-id
+			// error entry ("no status-code-as-logic"; absence ⇒ purchasable:false
+			// at the plugin's join). No order is guaranteed.
+			expect(views).toHaveLength(2);
+			expect(new Set(views.map((v) => v.productId))).toEqual(new Set([p1, p2]));
+			const v1 = views.find((v) => v.productId === p1);
+			expect(v1).toEqual({
+				productId: p1,
+				sku: "SKU-B1",
+				price: { amount: 1999, currency: "USD" },
+				inStock: true,
+			});
+		});
+
+		test("listCommerceByIds computes inStock via the store's own inventory join: on_hand > 0 ⇒ true; 0 or no inventory row ⇒ false", async () => {
+			const h = await makeStore();
+			const stocked = productId("prod-b3");
+			const drained = productId("prod-b4");
+			const unseeded = productId("prod-b5");
+			await h.store.upsert(
+				{ productId: stocked, sku: sku("SKU-B3"), price: money(cents(100), currency("USD")) },
+				idempotencyKey("k1"),
+			);
+			await h.store.upsert(
+				{ productId: drained, sku: sku("SKU-B4"), price: money(cents(100), currency("USD")) },
+				idempotencyKey("k2"),
+			);
+			await h.store.upsert(
+				{ productId: unseeded, sku: sku("SKU-B5"), price: money(cents(100), currency("USD")) },
+				idempotencyKey("k3"),
+			);
+			await h.seedStock("SKU-B3", 1);
+			await h.seedStock("SKU-B4", 0);
+			// SKU-B5 never seeded — no inventory row at all.
+
+			const views = await h.store.listCommerceByIds([stocked, drained, unseeded]);
+
+			const bySku = new Map(views.map((v) => [v.sku as string, v.inStock]));
+			expect(bySku.get("SKU-B3")).toBe(true);
+			expect(bySku.get("SKU-B4")).toBe(false);
+			// A priced product with no inventory row still LISTS (it has commerce
+			// data) — it is merely out of stock, coarsely (plan §8 risk 5).
+			expect(bySku.get("SKU-B5")).toBe(false);
+		});
+
+		test("listCommerceByIds omits soft-deleted and commerce-incomplete (unpriced / sku-less) rows — absence, not an error", async () => {
+			const h = await makeStore();
+			const deleted = productId("prod-b6");
+			const unpriced = productId("prod-b7");
+			const skuless = productId("prod-b8");
+			const live = productId("prod-b9");
+			await h.store.upsert(
+				{ productId: deleted, sku: sku("SKU-B6"), price: money(cents(100), currency("USD")) },
+				idempotencyKey("k1"),
+			);
+			await h.store.softDelete(deleted, idempotencyKey("del-1"));
+			// "Create, then price" not finished: a bare sync row with no price yet.
+			await h.store.upsert({ productId: unpriced, sku: sku("SKU-B7") }, idempotencyKey("k2"));
+			// Priced but no sku assigned yet — commerce-incomplete the other way.
+			await h.store.upsert(
+				{ productId: skuless, price: money(cents(100), currency("USD")) },
+				idempotencyKey("k3"),
+			);
+			await h.store.upsert(
+				{ productId: live, sku: sku("SKU-B9"), price: money(cents(100), currency("USD")) },
+				idempotencyKey("k4"),
+			);
+
+			const views = await h.store.listCommerceByIds([deleted, unpriced, skuless, live]);
+
+			expect(views.map((v) => v.productId)).toEqual([live]);
+		});
+
+		test("listCommerceByIds returns active=false rows — `active` is not a listing gate while afterPublish is deferred (Phase 1 handoff)", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-b10");
+			const row = await h.store.upsert(
+				{ productId: pid, sku: sku("SKU-B10"), price: money(cents(100), currency("USD")) },
+				idempotencyKey("k1"),
+			);
+			// Nothing sets active=true yet — every synced row is active=false.
+			// Pin that the batch read does NOT gate on it (or the entire catalog
+			// would render non-purchasable today).
+			expect(row.active).toBe(false);
+
+			const views = await h.store.listCommerceByIds([pid]);
+			expect(views).toHaveLength(1);
+		});
+
+		test("listCommerceByIds with an empty id list returns [], and duplicate ids collapse to one record", async () => {
+			const h = await makeStore();
+			expect(await h.store.listCommerceByIds([])).toEqual([]);
+
+			const pid = productId("prod-b11");
+			await h.store.upsert(
+				{ productId: pid, sku: sku("SKU-B11"), price: money(cents(100), currency("USD")) },
+				idempotencyKey("k1"),
+			);
+			const views = await h.store.listCommerceByIds([pid, pid, pid]);
+			expect(views).toHaveLength(1);
 		});
 	});
 }

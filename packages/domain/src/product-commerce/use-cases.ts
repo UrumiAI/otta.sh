@@ -3,6 +3,7 @@ import type { InventoryStore } from "../ports/inventory-store.js";
 import type {
 	ProductCommerce,
 	ProductCommerceStore,
+	ProductCommerceView,
 	UpsertProductCommerceInput,
 } from "../ports/product-commerce-store.js";
 
@@ -57,6 +58,20 @@ export async function getProductCommerce(
 	productId: ProductId,
 ): Promise<ProductCommerce | null> {
 	return store.getByProductId(productId);
+}
+
+/**
+ * Batch catalog read (Phase 2 §6) — a query, not a command (no idempotency
+ * key). Straight pass-through: the semantics (missing ids omitted,
+ * commerce-complete rows only, intra-store `inStock` join) are the PORT's
+ * contract; this wrapper exists so `@urumi/service` composes use-cases, not
+ * store methods, like its siblings.
+ */
+export async function listProductCommerceByIds(
+	store: ProductCommerceStore,
+	productIds: ProductId[],
+): Promise<ProductCommerceView[]> {
+	return store.listCommerceByIds(productIds);
 }
 
 export async function softDeleteProductCommerce(

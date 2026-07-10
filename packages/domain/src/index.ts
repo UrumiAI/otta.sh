@@ -23,12 +23,14 @@ export { commit, release, reserve } from "./inventory/use-cases.js";
 export type {
 	ProductCommerce,
 	ProductCommerceStore,
+	ProductCommerceView,
 	ProductKind,
 	UpsertProductCommerceInput,
 } from "./ports/product-commerce-store.js";
 export { MissingProductIdError, SkuConflictError } from "./product-commerce/errors.js";
 export {
 	getProductCommerce,
+	listProductCommerceByIds,
 	softDeleteProductCommerce,
 	upsertProductCommerce,
 	type ProductCommerceDeps,
