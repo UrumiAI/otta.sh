@@ -76,6 +76,25 @@ describe.skipIf(PG === undefined)("HTTP inventory contract [live server, Postgre
 		expect(await server.onHand("SKU-4")).toBe(3); // release returns the held stock
 	});
 
+	test("commit on an unknown reservation returns the structured 500 envelope, no internal/stack leak", async () => {
+		const res = await post("/inventory/commit", { reservationId: "does-not-exist" });
+		expect(res.status).toBe(500);
+		expect(res.body).toEqual({ ok: false, error: "internal_error" });
+		// The raw domain message ("unknown reservation: does-not-exist") must not leak.
+		expect(JSON.stringify(res.body)).not.toContain("does-not-exist");
+		expect(res.body).not.toHaveProperty("stack");
+	});
+
+	test("release on a non-held reservation returns the structured 500 envelope", async () => {
+		await server.seed("SKU-5", 3);
+		const r = await reserve("SKU-5", 1, "k5");
+		const reservationId = r.body.reservationId;
+		await post("/inventory/commit", { reservationId }); // now committed, not held
+		const res = await post("/inventory/release", { reservationId });
+		expect(res.status).toBe(500);
+		expect(res.body).toEqual({ ok: false, error: "internal_error" });
+	});
+
 	test("schema-invalid body returns 400", async () => {
 		const res = await post("/inventory/reserve", { sku: "", qty: -1 }, { "Idempotency-Key": "kx" });
 		expect(res.status).toBe(400);
