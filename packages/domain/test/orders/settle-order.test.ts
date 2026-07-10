@@ -3,6 +3,7 @@ import {
 	expireOrders,
 	idempotencyKey,
 	type Order,
+	type OrderStore,
 	settleOrder,
 	sku as brandSku,
 } from "@urumi/domain";
@@ -180,5 +181,147 @@ describe("settleOrder", () => {
 		await expect(h.inventory.commit(reservationId)).resolves.toBeUndefined();
 		expect(h.inventory.reservationState(reservationId)).toBe("committed");
 		expect(h.paymentEventStore.anomalies()).toHaveLength(0);
+	});
+
+	// -- review round: mid-flight flip loss (F1) + crash-window resumption (F2) --
+
+	/** An OrderStore wrapper whose markPaid first lets the expiry sweep win —
+	 *  forcing the exact load→(expire)→flip interleave of F1. */
+	function raceExpiryIntoMarkPaid(): OrderStore {
+		return {
+			createFromCart: (i) => h.orderStore.createFromCart(i),
+			getById: (id) => h.orderStore.getById(id),
+			markPaid: async (id) => {
+				await expireOrders(h.expireDeps);
+				return h.orderStore.markPaid(id);
+			},
+			markFailed: (id) => h.orderStore.markFailed(id),
+			expire: (id, at) => h.orderStore.expire(id, at),
+			listExpirable: (at) => h.orderStore.listExpirable(at),
+			recordPayment: (i) => h.orderStore.recordPayment(i),
+			flagReconciliation: (id, d) => h.orderStore.flagReconciliation(id, d),
+		};
+	}
+
+	test("a settle losing the paid flip to a mid-flight expiry records the paid-but-released anomaly and flags reconciliation — never a silent no-op", async () => {
+		const order = await pendingPhysical();
+		const reservationId = order.lines[0]!.reservationId!;
+		// Past the checkout TTL, but the sweep has not run yet: settle loads the
+		// order still `pending`, then the sweep wins between load and flip.
+		h.clock.advance(16 * 60 * 1000);
+		const res = await settleOrder(
+			{ ...h.settleDeps, orderStore: raceExpiryIntoMarkPaid() },
+			h.stripeGw,
+			evt(order),
+		);
+		expect(res.ok).toBe(true);
+		if (res.ok) expect(res.noop).toBe(true);
+		const fresh = await h.orderStore.getById(order.id);
+		expect(fresh?.state).toBe("expired");
+		expect(fresh?.reconciliationFlag).not.toBeNull(); // flagged for manual reconciliation
+		expect(h.paymentEventStore.anomalies().some((a) => a.kind === "PAID_FLIP_LOST")).toBe(true);
+		// The expiry released the stock — which is exactly why this must be loud.
+		expect(h.inventory.reservationState(reservationId)).toBe("released");
+	});
+
+	test("a settle retry after a crash between dedupe and markPaid completes the settlement", async () => {
+		const order = await pendingPhysical();
+		const reservationId = order.lines[0]!.reservationId!;
+		// Simulate the crash: the payment_events dedupe row landed, nothing else.
+		await h.paymentEventStore.dedupe(
+			"evt-crash-a",
+			order.id,
+			"stripe",
+			h.clock.now().toISOString(),
+		);
+		// The gateway retry re-delivers the SAME event: it must RESUME, not no-op.
+		const res = await settleOrder(
+			h.settleDeps,
+			h.stripeGw,
+			evt(order, { dedupeKey: "evt-crash-a" }),
+		);
+		expect(res.ok).toBe(true);
+		if (res.ok) expect(res.noop).toBe(false); // it genuinely settled on this drive
+		expect((await h.orderStore.getById(order.id))?.state).toBe("paid");
+		expect(h.inventory.reservationState(reservationId)).toBe("committed");
+		expect(h.orderStore.payments(order.id)).toHaveLength(1);
+	});
+
+	test("a settle retry after a crash between markPaid and commit completes the side-effects exactly once", async () => {
+		const order = await pendingPhysical();
+		const reservationId = order.lines[0]!.reservationId!;
+		// Simulate the crash: dedupe row + the paid flip landed; commit/record did not.
+		await h.paymentEventStore.dedupe(
+			"evt-crash-b",
+			order.id,
+			"stripe",
+			h.clock.now().toISOString(),
+		);
+		await h.orderStore.markPaid(order.id);
+		expect(h.inventory.reservationState(reservationId)).toBe("adopted"); // not yet committed
+
+		const res = await settleOrder(
+			h.settleDeps,
+			h.stripeGw,
+			evt(order, { dedupeKey: "evt-crash-b" }),
+		);
+		expect(res.ok).toBe(true);
+		expect(h.inventory.reservationState(reservationId)).toBe("committed");
+		expect(h.orderStore.payments(order.id)).toHaveLength(1);
+
+		// A further retry moves nothing more (exactly once).
+		await settleOrder(h.settleDeps, h.stripeGw, evt(order, { dedupeKey: "evt-crash-b" }));
+		expect(h.orderStore.payments(order.id)).toHaveLength(1);
+		expect(h.paymentEventStore.anomalies()).toHaveLength(0);
+	});
+
+	test("a settle retry after a crash between markPaid and grant heals the missing entitlement exactly once", async () => {
+		const order = await pendingDigital();
+		// Simulate the crash: dedupe + paid flip landed; the grant did not.
+		await h.paymentEventStore.dedupe("rcpt-crash", order.id, "x402", h.clock.now().toISOString());
+		await h.orderStore.markPaid(order.id);
+		expect(await h.entitlementStore.check({ orderId: order.id, sku: brandSku("DIG-1") })).toBe(
+			false,
+		);
+
+		const raw = h.x402Gw.webhook({
+			outcome: "succeeded",
+			orderId: order.id,
+			providerRef: "rcpt_crash",
+			amount: order.totals.total,
+			currency: "USD",
+			dedupeKey: "rcpt-crash",
+		});
+		const res = await settleOrder(h.settleDeps, h.x402Gw, raw);
+		expect(res.ok).toBe(true);
+		expect(await h.entitlementStore.check({ orderId: order.id, sku: brandSku("DIG-1") })).toBe(
+			true,
+		);
+		// A further retry grants nothing more.
+		await settleOrder(h.settleDeps, h.x402Gw, raw);
+		expect(h.entitlementStore.all()).toHaveLength(1);
+	});
+
+	test("a retry after a crash between markFailed and release completes the release", async () => {
+		const order = await pendingPhysical();
+		const reservationId = order.lines[0]!.reservationId!;
+		// Simulate the crash: dedupe + failed flip landed; the release did not.
+		await h.paymentEventStore.dedupe(
+			"evt-fail-crash",
+			order.id,
+			"stripe",
+			h.clock.now().toISOString(),
+		);
+		await h.orderStore.markFailed(order.id);
+		expect(h.inventory.reservationState(reservationId)).toBe("adopted"); // stock still gone
+
+		const res = await settleOrder(
+			h.settleDeps,
+			h.stripeGw,
+			evt(order, { outcome: "failed", dedupeKey: "evt-fail-crash" }),
+		);
+		expect(res.ok).toBe(true);
+		expect(h.inventory.reservationState(reservationId)).toBe("released");
+		expect(h.inventory.onHand("SKU-1")).toBe(5); // stock returned exactly once
 	});
 });
