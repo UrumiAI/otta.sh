@@ -7,8 +7,18 @@ export {
 	KyselyInventoryStore,
 	type KyselyInventoryStoreOptions,
 } from "./kysely-inventory-store.js";
+export {
+	KyselyProductCommerceStore,
+	type KyselyProductCommerceStoreOptions,
+} from "./kysely-product-commerce-store.js";
 export { migrateToLatest, migrationProvider } from "./migrations/index.js";
-export type { Database, InventoryTable, ReservationsTable, ReservationState } from "./schema.js";
+export type {
+	Database,
+	InventoryTable,
+	ProductCommerceTable,
+	ReservationsTable,
+	ReservationState,
+} from "./schema.js";
 
 /** Zero-dep collision-free id source for production adapters (risk R5). */
 export const uuidIdGen: IdGen = {
