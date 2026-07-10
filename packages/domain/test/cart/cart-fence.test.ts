@@ -51,7 +51,7 @@ describe("cart-mutation fences (fake)", () => {
 		const cartId = await createCart(h.deps, USD);
 		const add = await addLine(h.deps, cartId, sku("SKU-1"), null, 2, idempotencyKey("k1"));
 		if (!add.ok) throw new Error("add must succeed");
-		h.cartStore.checkout(cartId);
+		await h.cartStore.checkout(cartId);
 
 		const addAfter = await addLine(h.deps, cartId, sku("SKU-1"), null, 1, idempotencyKey("k2"));
 		const upAfter = await updateLine(h.deps, cartId, add.line.lineId, 3, idempotencyKey("k3"));

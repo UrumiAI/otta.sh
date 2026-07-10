@@ -18,6 +18,9 @@ export type IdempotencyKey = string & { readonly [IdempotencyKeyBrand]: true };
 declare const ReservationIdBrand: unique symbol;
 export type ReservationId = string & { readonly [ReservationIdBrand]: true };
 
+declare const OrderIdBrand: unique symbol;
+export type OrderId = string & { readonly [OrderIdBrand]: true };
+
 function requireNonEmpty(value: string, label: string): string {
 	if (value.length === 0) {
 		throw new RangeError(`${label} must be a non-empty string`);
@@ -39,4 +42,8 @@ export function idempotencyKey(value: string): IdempotencyKey {
 
 export function reservationId(value: string): ReservationId {
 	return requireNonEmpty(value, "reservationId") as ReservationId;
+}
+
+export function orderId(value: string): OrderId {
+	return requireNonEmpty(value, "orderId") as OrderId;
 }

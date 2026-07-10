@@ -1,5 +1,6 @@
 import type { Currency } from "../money/cents.js";
 import type { IdempotencyKey, Sku } from "../money/ids.js";
+import type { FulfillmentKind } from "../orders/model.js";
 import {
 	type Cart,
 	type CartLine,
@@ -113,6 +114,7 @@ export async function addLine(
 	productId: string | null,
 	qty: number,
 	key: IdempotencyKey,
+	fulfillmentKind: FulfillmentKind = "physical",
 ): Promise<AddLineResult> {
 	const recorded = await deps.cartStore.recordedMutation(key);
 	if (recorded !== null && recorded.completed) return replayLine(deps, cartId, recorded);
@@ -124,6 +126,22 @@ export async function addLine(
 	if (!claim.claimed && claim.recorded.completed) return replayLine(deps, cartId, claim.recorded);
 	// Claim won, or lost to an incomplete (crashed/in-flight) peer: resume — every
 	// step below is idempotent (reserve replays by state; upsertLine by ledger).
+
+	// v1 digital goods NEVER reserve (Phase 4 §6, decision 6): unlimited stock ⇒
+	// no inventory row, no reserve, the line carries reservation_id/expires_at NULL
+	// and is thus invisible to the Phase-3 hold sweep.
+	if (fulfillmentKind === "digital") {
+		const line = await deps.cartStore.upsertLine({
+			cartId,
+			sku,
+			productId,
+			qty,
+			reservationId: null,
+			expiresAt: null,
+			key,
+		});
+		return { ok: true, line };
+	}
 
 	const reserved = await deps.inventoryStore.reserve(sku, qty, key);
 	if (!reserved.ok) return { ok: false, reason: "OUT_OF_STOCK" };
@@ -174,6 +192,26 @@ export async function updateLine(
 
 	const line = guard.cart.lines.find((l) => l.lineId === lineId);
 	if (line === undefined) return { ok: false, reason: "LINE_NOT_FOUND" };
+
+	// Digital line (Phase 4 §6): no reservation ever existed — adjust the qty
+	// directly, moving no inventory. Distinguished from a checked-out physical
+	// line (reservationId set / reservationState adopted-or-gone) by BOTH the id
+	// and the live state being null.
+	if (line.reservationId === null && line.reservationState === null) {
+		const dclaim = await deps.cartStore.claimMutation({ key, cartId, kind: "adjust", lineId });
+		if (!dclaim.claimed && dclaim.recorded.completed) {
+			return replayLine(deps, cartId, dclaim.recorded);
+		}
+		const updated = await deps.cartStore.adjustLine({
+			cartId,
+			lineId,
+			newQty,
+			expiresAt: null,
+			key,
+		});
+		return { ok: true, line: updated };
+	}
+
 	if (line.reservationId === null || line.reservationState !== "held") {
 		return { ok: false, reason: "LINE_CHECKED_OUT" };
 	}

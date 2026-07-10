@@ -24,6 +24,13 @@ export interface UpsertProductCommerceInput {
 	productId: ProductId;
 	sku?: Sku;
 	price?: Money;
+	/**
+	 * Product title (Phase 4 §4): the commercial projection of the CMS content
+	 * title, and the source an order line snapshots at purchase time. Optional +
+	 * nullable like every other commercial field (undefined preserves, null
+	 * clears); "create then price" may land a row before a title exists.
+	 */
+	title?: string | null;
 	taxClass?: string | null;
 	weightGrams?: number | null;
 	lengthMm?: number | null;
@@ -49,6 +56,8 @@ export interface ProductCommerce {
 	productId: ProductId;
 	sku: Sku | null;
 	price: Money | null;
+	/** Snapshot source for an order line's title (Phase 4 §4); null until set. */
+	title: string | null;
 	taxClass: string | null;
 	weightGrams: number | null;
 	lengthMm: number | null;

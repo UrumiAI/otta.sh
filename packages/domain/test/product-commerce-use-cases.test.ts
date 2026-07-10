@@ -70,6 +70,7 @@ describe("product-commerce use-cases (over the in-memory fakes)", () => {
 			commit: (id) => inventory.commit(id),
 			release: (id) => inventory.release(id),
 			adjust: (id, q, k) => inventory.adjust(id, q, k),
+			adopt: (i) => inventory.adopt(i),
 			seedOnHand: async (s, q) => {
 				if (failNextSeed) {
 					failNextSeed = false;

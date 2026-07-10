@@ -14,8 +14,24 @@ export interface InventoryStore {
 	// never assume the original call completed — see §0.5's replay choreography and the
 	// concurrent-same-key / crash-window contract cases it requires.
 	reserve(sku: string, qty: number, key: IdempotencyKey): Promise<ReserveResult>;
+	// `commit`/`release` are the Phase-0 guarded flips with their source state
+	// widened (additively) to include Phase-4's `adopted`: `held` still works, so
+	// Phase-0's own contract is unaffected. A double-commit / double-release stays
+	// a benign no-op. A `commit` against a reservation that is neither
+	// `held`/`adopted` nor already `committed` (it was `released`/lost) throws the
+	// typed `ReservationCommitLostError` — settle turns that into the loud
+	// 0-row-commit anomaly (§5), never a silent no-op.
 	commit(reservationId: string): Promise<void>;
 	release(reservationId: string): Promise<void>;
+	// Additive (Phase 4 §5): the single guarded `held → adopted` flip that hands a
+	// cart's live reservation to an order. Sets `order_id` and re-points
+	// `expires_at` to the order's hold deadline, scoped `WHERE state='held' AND
+	// expires_at > :now` so it can never adopt a hold the Phase-3 sweep is about to
+	// reap. 0 rows ⇒ the hold was swept/committed → typed `RESERVATION_LOST`,
+	// EXCEPT an already-`adopted` row for THIS `orderId` (idempotent replay of
+	// createOrderFromCart), which resolves to `ok`. `adopted` is a new additive
+	// reservation state, structurally invisible to Phase-3's `held`-scoped sweep.
+	adopt(input: AdoptInput): Promise<AdoptResult>;
 
 	// Additive (Phase 1 §7/§8 Risk 4) — a dedicated create-if-absent initial
 	// stock write, NOT part of the reserve/commit/release authority path.
@@ -49,6 +65,30 @@ export interface InventoryStore {
 export type ReserveResult =
 	| { ok: true; reservationId: string }
 	| { ok: false; reason: "OUT_OF_STOCK" };
+
+export interface AdoptInput {
+	reservationId: string;
+	orderId: string;
+	/** The order's hold deadline (ISO-8601 UTC) the reservation is re-pointed to. */
+	holdExpiresAt: string;
+	/** Clock-driven `:now` (ISO-8601 UTC); the flip requires `expires_at > now`. */
+	now: string;
+}
+
+export type AdoptResult = { ok: true } | { ok: false; reason: "RESERVATION_LOST" };
+
+/**
+ * Thrown by `commit` when the reservation is neither adoptable (`held`/`adopted`)
+ * nor already `committed` — it was `released`/lost, so stock was resold under a
+ * paid order. Settle records this as the loud 0-row-commit anomaly (§5) and flags
+ * the order for manual reconciliation; it is never swallowed.
+ */
+export class ReservationCommitLostError extends Error {
+	constructor(reservationId: string, state: string) {
+		super(`cannot commit reservation ${reservationId}: it is ${state}, not held/adopted/committed`);
+		this.name = "ReservationCommitLostError";
+	}
+}
 
 /**
  * Thrown by `adjust` when the reservation is not (or no longer) `held` — the
