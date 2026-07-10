@@ -155,15 +155,18 @@ export class KyselyCartStore implements CartStore {
 			// Reservation FIRST (lock order), and the deadline stamp doubles as the
 			// attach guard: scoped to `state='held'`, so a reservation the sweep
 			// already reaped (a crashed hold whose add is replayed late) matches 0
-			// rows and the line is NOT resurrected over dead stock.
-			const stamped = await trx
-				.updateTable("reservations")
-				.set({ expires_at: input.expiresAt })
-				.where("id", "=", input.reservationId)
-				.where("state", "=", "held")
-				.returning("id")
-				.executeTakeFirst();
-			if (stamped === undefined) throw new HoldExpiredError(input.reservationId);
+			// rows and the line is NOT resurrected over dead stock. A digital line
+			// (Phase 4 §6) carries NO reservation — nothing to stamp or guard.
+			if (input.reservationId !== null) {
+				const stamped = await trx
+					.updateTable("reservations")
+					.set({ expires_at: input.expiresAt })
+					.where("id", "=", input.reservationId)
+					.where("state", "=", "held")
+					.returning("id")
+					.executeTakeFirst();
+				if (stamped === undefined) throw new HoldExpiredError(input.reservationId);
+			}
 
 			const upserted = await trx
 				.insertInto("cart_lines")
@@ -263,6 +266,20 @@ export class KyselyCartStore implements CartStore {
 				.where("cart_id", "=", cartId)
 				.execute();
 		});
+	}
+
+	async checkout(cartId: string): Promise<boolean> {
+		// Secondary cart-state fence (§5): guarded `active → checked_out`. Idempotent
+		// — a replay finds the cart already `checked_out` (0 rows) → false (success
+		// for the same order). `checked_out` is terminal (nothing re-opens it).
+		const flipped = await this.#db
+			.updateTable("carts")
+			.set({ state: "checked_out", updated_at: this.#clock.now().toISOString() })
+			.where("id", "=", cartId)
+			.where("state", "=", "active")
+			.returning("id")
+			.executeTakeFirst();
+		return flipped !== undefined;
 	}
 
 	async listExpired(now: string, cutoff: string): Promise<ExpiredHold[]> {

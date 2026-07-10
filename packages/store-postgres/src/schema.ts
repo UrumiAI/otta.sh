@@ -4,7 +4,7 @@
 
 import type { ColumnType } from "kysely";
 
-export type ReservationState = "pending" | "held" | "committed" | "released" | "failed";
+export type ReservationState = "pending" | "held" | "committed" | "released" | "failed" | "adopted";
 
 export interface InventoryTable {
 	sku: string;
@@ -22,6 +22,9 @@ export interface ReservationsTable {
 	// created by a raw `reserve` before any cart write carries none). Omittable on
 	// insert so Phase-0's `reserve` is left byte-for-byte.
 	expires_at: ColumnType<string | null, string | null | undefined, string | null>;
+	// Phase 4: the owning order once the hold is adopted (nullable; omittable on
+	// insert so Phase-0/3 writes are byte-for-byte).
+	order_id: ColumnType<string | null, string | null | undefined, string | null>;
 }
 
 export type CartState = "active" | "checked_out";
@@ -88,6 +91,8 @@ export interface ProductCommerceTable {
 	sku: string | null;
 	price_cents: number | null;
 	price_currency: string | null;
+	/** Phase 4 §4: the title an order line snapshots (nullable; added additively). */
+	title: string | null;
 	tax_class: string | null;
 	weight_grams: number | null;
 	length_mm: number | null;
@@ -115,6 +120,94 @@ export interface ProductCommerceTable {
 	updated_at: string;
 }
 
+/** Phase 4 §4: orders carry NO money column — keys / state / TTL / identity only. */
+export type OrderStateColumn = "pending" | "paid" | "failed" | "expired";
+
+export interface OrdersTable {
+	id: string;
+	cart_id: string | null;
+	currency: string;
+	state: OrderStateColumn;
+	idempotency_key: string;
+	hold_expires_at: string;
+	payment_method: string | null;
+	buyer_ref: string;
+	/** Phase-5 hook (added here forward-only, populated by Phase 5). */
+	customer_id: ColumnType<string | null, string | null | undefined, string | null>;
+	/** Set when settle loses an adopted hold → manual reconciliation (§5). */
+	reconciliation_flag: ColumnType<string | null, string | null | undefined, string | null>;
+	created_at: string;
+	updated_at: string;
+}
+
+/** Insert-once (§4): price/title/currency are snapshots, never updated. */
+export interface OrderItemsTable {
+	id: string;
+	order_id: string;
+	product_id: string;
+	sku: string;
+	title: string;
+	unit_price_cents: number;
+	currency: string;
+	quantity: number;
+	fulfillment_kind: string;
+	reservation_id: string | null;
+}
+
+/** 1:1 with orders — the authoritative totals home (§4). Phase 4 writes the stub. */
+export interface OrderTotalsTable {
+	order_id: string;
+	currency: string;
+	subtotal_cents: number;
+	discount_cents: number;
+	shipping_cents: number;
+	tax_cents: number;
+	total_cents: number;
+	applied_coupon_code: string | null;
+	/** jsonb in pg / text in sqlite — stored as a JSON string, null in Phase 4. */
+	shipping_method_snapshot: string | null;
+	tax_breakdown: string | null;
+}
+
+export interface PaymentsTable {
+	id: string;
+	order_id: string;
+	gateway: string;
+	provider_ref: string;
+	amount_cents: number;
+	currency: string;
+	status: string;
+	created_at: string;
+}
+
+/**
+ * Webhook/settlement dedupe + anomaly log (§5). A DEDUPE row carries a non-null
+ * `dedupe_key` (UNIQUE — redelivery is a no-op) and null `kind`; an ANOMALY row
+ * carries a null `dedupe_key` (multiple nulls allowed under UNIQUE) and a set
+ * `kind`/`detail`.
+ */
+export interface PaymentEventsTable {
+	id: string;
+	dedupe_key: string | null;
+	order_id: string;
+	gateway: string;
+	kind: string | null;
+	detail: string | null;
+	received_at: string;
+}
+
+export interface EntitlementsTable {
+	id: string;
+	order_id: string;
+	product_id: string | null;
+	sku: string;
+	buyer_ref: string;
+	state: string;
+	source: string;
+	granted_at: string;
+	grant_idempotency_key: string;
+}
+
 export interface Database {
 	inventory: InventoryTable;
 	reservations: ReservationsTable;
@@ -123,4 +216,10 @@ export interface Database {
 	cart_lines: CartLinesTable;
 	cart_mutations: CartMutationsTable;
 	inventory_adjustments: InventoryAdjustmentsTable;
+	orders: OrdersTable;
+	order_items: OrderItemsTable;
+	order_totals: OrderTotalsTable;
+	payments: PaymentsTable;
+	payment_events: PaymentEventsTable;
+	entitlements: EntitlementsTable;
 }

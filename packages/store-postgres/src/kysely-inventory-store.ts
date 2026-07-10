@@ -1,9 +1,12 @@
 import {
+	type AdoptInput,
+	type AdoptResult,
 	AdjustReservationMismatchError,
 	type Clock,
 	type IdGen,
 	type IdempotencyKey,
 	type InventoryStore,
+	ReservationCommitLostError,
 	ReservationNotHeldError,
 	type ReserveResult,
 } from "@urumi/domain";
@@ -111,32 +114,35 @@ export class KyselyInventoryStore implements InventoryStore {
 
 	async commit(reservationId: string): Promise<void> {
 		const row = await this.#selectById(reservationId);
-		if (row.state === "committed") return; // double-commit: no-op
-		if (row.state !== "held") {
-			throw new Error(`cannot commit reservation ${reservationId} in state ${row.state}`);
+		if (row.state === "committed") return; // double-commit / idempotent replay: no-op
+		// Widened (Phase 4 §5) to accept `adopted` alongside Phase-0's `held`.
+		if (row.state !== "held" && row.state !== "adopted") {
+			// released / failed / … ⇒ the adopted hold was lost: the loud 0-row anomaly.
+			throw new ReservationCommitLostError(reservationId, row.state);
 		}
 		await this.#db
 			.updateTable("reservations")
 			.set({ state: "committed" })
 			.where("id", "=", reservationId)
-			.where("state", "=", "held")
+			.where("state", "in", ["held", "adopted"])
 			.execute();
 	}
 
 	async release(reservationId: string): Promise<void> {
 		const row = await this.#selectById(reservationId);
 		if (row.state === "released") return; // double-release: no-op
-		if (row.state !== "held") {
+		// Widened (Phase 4 §5) to accept `adopted` alongside Phase-0's `held`.
+		if (row.state !== "held" && row.state !== "adopted") {
 			throw new Error(`cannot release reservation ${reservationId} in state ${row.state}`);
 		}
-		// Flip `held → released` and return the stock all-or-nothing; the state
-		// guard makes exactly one caller increment (no double return).
+		// Flip `held|adopted → released` and return the stock all-or-nothing; the
+		// state guard makes exactly one caller increment (no double return).
 		await this.#db.transaction().execute(async (trx) => {
 			const flipped = await trx
 				.updateTable("reservations")
 				.set({ state: "released" })
 				.where("id", "=", reservationId)
-				.where("state", "=", "held")
+				.where("state", "in", ["held", "adopted"])
 				.returning("id")
 				.executeTakeFirst();
 			if (flipped === undefined) return; // lost the race: peer already released
@@ -146,6 +152,35 @@ export class KyselyInventoryStore implements InventoryStore {
 				.where("sku", "=", row.sku)
 				.execute();
 		});
+	}
+
+	/**
+	 * The guarded `held → adopted` flip (Phase 4 §5): a single conditional
+	 * statement, no interactive transaction. Scoped `state='held' AND expires_at >
+	 * :now`, so it can never adopt a hold the Phase-3 sweep is about to reap. Sets
+	 * `order_id` and re-points `expires_at` to the order's hold deadline, taking the
+	 * hold out of the `held`-scoped sweep's reach. 0 rows ⇒ re-read: an already-
+	 * `adopted` row for THIS order is an idempotent replay (ok); anything else is
+	 * `RESERVATION_LOST`.
+	 */
+	async adopt(input: AdoptInput): Promise<AdoptResult> {
+		const flipped = await this.#db
+			.updateTable("reservations")
+			.set({ state: "adopted", order_id: input.orderId, expires_at: input.holdExpiresAt })
+			.where("id", "=", input.reservationId)
+			.where("state", "=", "held")
+			.where("expires_at", ">", input.now)
+			.returning("id")
+			.executeTakeFirst();
+		if (flipped !== undefined) return { ok: true };
+
+		const row = await this.#db
+			.selectFrom("reservations")
+			.select(["state", "order_id"])
+			.where("id", "=", input.reservationId)
+			.executeTakeFirst();
+		if (row?.state === "adopted" && row.order_id === input.orderId) return { ok: true };
+		return { ok: false, reason: "RESERVATION_LOST" };
 	}
 
 	/**
@@ -303,8 +338,9 @@ export class KyselyInventoryStore implements InventoryStore {
 			case "held":
 			case "committed":
 			case "released":
-				// `held` (and its post-commit/release terminals) is proof the stock
-				// was durably removed together with the flip.
+			case "adopted":
+				// `held` (and its post-commit/release/adopt terminals) is proof the
+				// stock was durably removed together with the flip.
 				return { ok: true, reservationId: id };
 			case "failed":
 				return { ok: false, reason: "OUT_OF_STOCK" };

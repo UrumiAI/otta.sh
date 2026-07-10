@@ -4,6 +4,7 @@ import { migration0001PhaseInventory } from "./0001_phase0_inventory.js";
 import { migration0002ProductCommerce } from "./0002_product_commerce.js";
 import { migration0003Cart } from "./0003_cart.js";
 import { migration0004ProductCommerceActiveUpdatedAt } from "./0004_product_commerce_active_updated_at.js";
+import { migration0005Orders } from "./0005_orders.js";
 
 /** Ordered, append-only migration list (forward-only). */
 const migrations: Record<string, Migration> = {
@@ -11,6 +12,7 @@ const migrations: Record<string, Migration> = {
 	"0002_product_commerce": migration0002ProductCommerce,
 	"0003_cart": migration0003Cart,
 	"0004_product_commerce_active_updated_at": migration0004ProductCommerceActiveUpdatedAt,
+	"0005_orders": migration0005Orders,
 };
 
 export const migrationProvider: MigrationProvider = {
