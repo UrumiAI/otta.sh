@@ -12,13 +12,17 @@ import {
 productCommerceStoreContract(
 	async () => {
 		const onHand = new Map<string, number>();
+		const store = new InMemoryProductCommerceStore({
+			clock: new FixedClock(new Date("2026-07-10T00:00:00.000Z")),
+			inventoryOnHand: (sku) => onHand.get(sku) ?? 0,
+		});
 		return {
-			store: new InMemoryProductCommerceStore({
-				clock: new FixedClock(new Date("2026-07-10T00:00:00.000Z")),
-				inventoryOnHand: (sku) => onHand.get(sku) ?? 0,
-			}),
+			store,
 			async seedStock(sku, qty) {
 				onHand.set(sku, qty);
+			},
+			async activate(productId) {
+				store.activate(productId);
 			},
 		};
 	},

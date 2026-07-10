@@ -88,6 +88,18 @@ export interface ProductCommerceView {
 	 * on whether a purchase actually succeeds.
 	 */
 	inStock: boolean;
+	/**
+	 * The publish gate (Phase 1 §4: flipped true by `content:afterPublish`;
+	 * Phase 2 §4.2: "purchasable: false iff commerce === null (or explicitly
+	 * inactive)"). The store RETURNS inactive rows, flagged — the ONE place
+	 * purchasability is decided is the plugin's `joinProduct`
+	 * (`purchasable ⟺ commerce !== null && commerce.active`), so listing
+	 * visibility and sellability stay separate concerns. NOTE the honest
+	 * current state: the afterPublish→activate wiring is deferred (its own
+	 * follow-up task), so nothing sets `active=true` yet and storefronts
+	 * render EVERY product not-purchasable until it lands.
+	 */
+	active: boolean;
 }
 
 /**
@@ -121,10 +133,11 @@ export interface ProductCommerceStore {
 	 * same to the caller (absence ⇒ `commerce: null` ⇒ `purchasable: false`
 	 * at the plugin's join; "no status-code-as-logic").
 	 *
-	 * `active` is deliberately NOT a gate here: `content:afterPublish` is
-	 * deferred (Phase 1 §6 step 7), so nothing sets `active=true` yet and
-	 * every synced row is `active=false` — gating on it would render the
-	 * entire catalog non-purchasable. Revisit when publish-gating lands.
+	 * Inactive (unpublished) rows ARE returned, carrying `active: false` —
+	 * the store reports state; the purchasability DECISION lives in one
+	 * place, the plugin's `joinProduct` gate (see `ProductCommerceView.active`).
+	 * Until the deferred afterPublish→activate wiring lands, `active=false`
+	 * is every row's state and the whole catalog renders not-purchasable.
 	 *
 	 * INVARIANT — protect from refactoring (Phase 2 §6, do not weaken
 	 * without updating the plan): `inStock` MUST be computed inside the

@@ -135,8 +135,10 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 	 * Batch catalog read (Phase 2 §6) — mirrors the Kysely store's single
 	 * `product_commerce LEFT JOIN inventory` statement: only commerce-complete
 	 * live rows become views; `inStock` is the coarse `on_hand > 0`; missing
-	 * ids are omitted; duplicates collapse; `active` is not a gate
-	 * (afterPublish deferred — see the port doc).
+	 * ids are omitted; duplicates collapse. Inactive rows are RETURNED with
+	 * `active: false` — the purchasability gate is the plugin's `joinProduct`
+	 * (`purchasable ⟺ commerce !== null && commerce.active`), not the store
+	 * (see the port doc).
 	 */
 	async listCommerceByIds(productIds: ProductId[]): Promise<ProductCommerceView[]> {
 		const views: ProductCommerceView[] = [];
@@ -152,10 +154,25 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 				sku: row.sku,
 				price: row.price,
 				inStock: this.#inventoryOnHand(row.sku) > 0,
+				active: row.active,
 			});
 		}
 		return views;
 	}
+
+	// -- test surface ---------------------------------------------------------
+
+	/** Stand-in for the deferred afterPublish→activate wiring (no port method
+	 *  exists yet): flips a live row to `active=true` so contract cases can pin
+	 *  the store-reports/join-gates split. Mirrors what the future publish
+	 *  hook's write will do; a real store adapter's harness does it via SQL. */
+	activate(productId: string): void {
+		const existing = this.#rows.get(productId);
+		if (existing === undefined || existing.deletedAt !== null) return;
+		this.#rows.set(productId, { ...existing, active: true, updatedAt: this.#clock.now() });
+	}
+
+	// -- writes ---------------------------------------------------------------
 
 	async softDelete(productId: ProductId, key: IdempotencyKey): Promise<void> {
 		const existing = this.#rows.get(productId);

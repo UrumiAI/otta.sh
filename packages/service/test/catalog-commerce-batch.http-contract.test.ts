@@ -68,6 +68,9 @@ describe.skipIf(PG === undefined)("HTTP catalog commerce batch [live server, Pos
 			sku: "SKU-CB1",
 			price: { amount: 1999, currency: "USD" },
 			inStock: true,
+			// Unpublished until the deferred afterPublish→activate wiring lands
+			// — the wire carries the flag the plugin's join gates on.
+			active: false,
 		});
 		// No inventory row seeded for SKU-CB2 ⇒ coarsely out of stock, still listed.
 		expect(byId.get("prod-cb-2")).toEqual({
@@ -75,6 +78,7 @@ describe.skipIf(PG === undefined)("HTTP catalog commerce batch [live server, Pos
 			sku: "SKU-CB2",
 			price: { amount: 500, currency: "EUR" },
 			inStock: false,
+			active: false,
 		});
 		// The unknown id is simply ABSENT — no error entry, no 404.
 		expect(byId.has("prod-cb-nope")).toBe(false);

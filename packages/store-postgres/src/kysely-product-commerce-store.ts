@@ -191,7 +191,8 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 	 *
 	 * Missing/soft-deleted/commerce-incomplete ids are simply absent from the
 	 * result; `IN` collapses duplicates; no ORDER BY (no guaranteed order).
-	 * `active` is not a gate (afterPublish deferred — port doc). The empty
+	 * Inactive rows are RETURNED with `active: false` — the purchasability
+	 * gate is the plugin's `joinProduct`, not the store (port doc). The empty
 	 * id list short-circuits without touching the DB (`IN ()` is not SQL).
 	 */
 	async listCommerceByIds(productIds: ProductId[]): Promise<ProductCommerceView[]> {
@@ -204,6 +205,7 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 				"product_commerce.sku",
 				"product_commerce.price_cents",
 				"product_commerce.price_currency",
+				"product_commerce.active",
 				"inventory.on_hand",
 			])
 			.where("product_commerce.product_id", "in", productIds)
@@ -226,6 +228,7 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 				sku: toSku(row.sku),
 				price: money(cents(row.price_cents), currency(row.price_currency)),
 				inStock: (row.on_hand ?? 0) > 0,
+				active: row.active === 1,
 			};
 		});
 	}

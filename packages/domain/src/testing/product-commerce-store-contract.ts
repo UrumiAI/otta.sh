@@ -10,6 +10,11 @@ export interface ProductCommerceStoreHarness {
 	 *  intra-service `inStock` join reads — the dialect harness writes the real
 	 *  `inventory` table; the fake harness feeds the fake's lookup. */
 	seedStock(sku: string, qty: number): Promise<void>;
+	/** Phase 2: flip a row to `active=true`, standing in for the deferred
+	 *  afterPublish→activate wiring (queued as its own follow-up task) — no
+	 *  port method exists yet, so the harness writes the state directly (the
+	 *  dialect harness via SQL, the fake via its row map). */
+	activate(productId: string): Promise<void>;
 }
 
 export interface ProductCommerceStoreContractOptions {
@@ -329,6 +334,7 @@ export function productCommerceStoreContract(
 				sku: "SKU-B1",
 				price: { amount: 1999, currency: "USD" },
 				inStock: true,
+				active: false, // afterPublish deferred — unpublished until it lands
 			});
 		});
 
@@ -391,20 +397,33 @@ export function productCommerceStoreContract(
 			expect(views.map((v) => v.productId)).toEqual([live]);
 		});
 
-		test("listCommerceByIds returns active=false rows — `active` is not a listing gate while afterPublish is deferred (Phase 1 handoff)", async () => {
+		test("listCommerceByIds returns inactive rows FLAGGED active:false and published rows active:true — the store reports state; purchasability is gated at the join", async () => {
 			const h = await makeStore();
-			const pid = productId("prod-b10");
-			const row = await h.store.upsert(
-				{ productId: pid, sku: sku("SKU-B10"), price: money(cents(100), currency("USD")) },
+			const unpublished = productId("prod-b10");
+			const published = productId("prod-b10b");
+			await h.store.upsert(
+				{ productId: unpublished, sku: sku("SKU-B10"), price: money(cents(100), currency("USD")) },
 				idempotencyKey("k1"),
 			);
-			// Nothing sets active=true yet — every synced row is active=false.
-			// Pin that the batch read does NOT gate on it (or the entire catalog
-			// would render non-purchasable today).
-			expect(row.active).toBe(false);
+			await h.store.upsert(
+				{ productId: published, sku: sku("SKU-B10B"), price: money(cents(100), currency("USD")) },
+				idempotencyKey("k2"),
+			);
+			// Stand-in for the deferred afterPublish→activate wiring: until it
+			// lands, EVERY row is active=false and joinProduct renders the whole
+			// catalog not-purchasable — the honest current state (plan §4.2:
+			// "purchasable: false iff commerce === null (or explicitly
+			// inactive)").
+			await h.activate(published);
 
-			const views = await h.store.listCommerceByIds([pid]);
-			expect(views).toHaveLength(1);
+			const views = await h.store.listCommerceByIds([unpublished, published]);
+
+			// Both rows LIST (content visibility ≠ purchasability, §4.5) — the
+			// flag is what the join gates on.
+			expect(views).toHaveLength(2);
+			const byId = new Map(views.map((v) => [v.productId as string, v.active]));
+			expect(byId.get("prod-b10")).toBe(false);
+			expect(byId.get("prod-b10b")).toBe(true);
 		});
 
 		test("listCommerceByIds with an empty id list returns [], and duplicate ids collapse to one record", async () => {

@@ -4,6 +4,11 @@
  * `Cents` is a branded number: a plain `number` reaching a money field is a
  * type error, and `cents()` is the only way to mint one. Amounts always
  * travel with an explicit `Currency`.
+ *
+ * MIRRORED by `@urumi/plugin`'s `src/presentation/money.ts` (see its header
+ * for why it does not import this module) — behavior parity between the two
+ * is pinned by `packages/plugin/test/money-parity.test.ts`. Change the
+ * accept/reject semantics of `cents()`/`currency()` in BOTH places together.
  */
 
 declare const CentsBrand: unique symbol;

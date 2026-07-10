@@ -56,6 +56,10 @@ function serializeView(view: ProductCommerceView): Record<string, unknown> {
 		sku: view.sku,
 		price: { amount: view.price.amount, currency: view.price.currency },
 		inStock: view.inStock,
+		// The publish gate the plugin's join derives purchasability from
+		// (purchasable ⟺ present && active) — false for every row until the
+		// deferred afterPublish→activate wiring lands.
+		active: view.active,
 	};
 }
 
