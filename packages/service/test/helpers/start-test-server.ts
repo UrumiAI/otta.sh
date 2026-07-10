@@ -1,12 +1,7 @@
 import { serve } from "@hono/node-server";
 import { FixedClock } from "@urumi/domain/testing";
-import {
-	KyselyInventoryStore,
-	makePostgresDb,
-	makePostgresPool,
-	migrateToLatest,
-	uuidIdGen,
-} from "@urumi/store-postgres";
+import { KyselyInventoryStore, uuidIdGen } from "@urumi/store-postgres";
+import { createIsolatedPgSchema } from "@urumi/store-postgres/testing";
 import { createApp } from "../../src/app.js";
 
 export interface TestServer {
@@ -24,18 +19,8 @@ export interface TestServer {
 export async function startTestServer(): Promise<TestServer> {
 	const connectionString = process.env.PG_CONNECTION_STRING;
 	if (connectionString === undefined) throw new Error("PG_CONNECTION_STRING is not set");
-	const schema = `test_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
-
-	const admin = makePostgresPool({ connectionString, max: 1 });
-	await admin.query(`CREATE SCHEMA "${schema}"`);
-
-	const pool = makePostgresPool({
-		connectionString,
-		max: 8,
-		options: `-c search_path=${schema}`,
-	});
-	const db = makePostgresDb(pool);
-	await migrateToLatest(db);
+	const iso = await createIsolatedPgSchema(connectionString, { poolMax: 8 });
+	const db = iso.db;
 
 	const store = new KyselyInventoryStore({
 		db,
@@ -71,9 +56,7 @@ export async function startTestServer(): Promise<TestServer> {
 			await new Promise<void>((resolve, reject) => {
 				server.close((err) => (err ? reject(err) : resolve()));
 			});
-			await db.destroy();
-			await admin.query(`DROP SCHEMA "${schema}" CASCADE`);
-			await admin.end();
+			await iso.teardown();
 		},
 	};
 }

@@ -2,14 +2,9 @@ import { idempotencyKey } from "@urumi/domain";
 import { FixedClock } from "@urumi/domain/testing";
 import type { Kysely } from "kysely";
 import { afterEach, describe, expect, test } from "vitest";
-import {
-	KyselyInventoryStore,
-	makePostgresDb,
-	makePostgresPool,
-	migrateToLatest,
-	uuidIdGen,
-} from "../src/index.js";
+import { KyselyInventoryStore, uuidIdGen } from "../src/index.js";
 import type { Database } from "../src/schema.js";
+import { createIsolatedPgSchema } from "../src/testing.js";
 
 const PG = process.env.PG_CONNECTION_STRING;
 
@@ -27,30 +22,14 @@ afterEach(async () => {
 
 /**
  * A schema-isolated pg store whose pool can hold `poolMax` connections — so N
- * concurrent reserves each acquire an INDEPENDENT connection (a real race,
- * §8 R7 per-schema isolation).
+ * concurrent reserves each acquire an INDEPENDENT connection (a real race).
  */
 async function freshPgStore(poolMax: number): Promise<PgFixture> {
 	const connectionString = PG;
 	if (connectionString === undefined) throw new Error("PG_CONNECTION_STRING is not set");
-	const schema = `test_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
-
-	const admin = makePostgresPool({ connectionString, max: 1 });
-	await admin.query(`CREATE SCHEMA "${schema}"`);
-
-	const pool = makePostgresPool({
-		connectionString,
-		max: poolMax,
-		options: `-c search_path=${schema}`,
-	});
-	const db = makePostgresDb(pool);
-	await migrateToLatest(db);
-
-	cleanups.push(async () => {
-		await db.destroy();
-		await admin.query(`DROP SCHEMA "${schema}" CASCADE`);
-		await admin.end();
-	});
+	const iso = await createIsolatedPgSchema(connectionString, { poolMax });
+	cleanups.push(() => iso.teardown());
+	const db = iso.db;
 
 	const store = new KyselyInventoryStore({
 		db,
