@@ -56,9 +56,7 @@ export class KyselyInventoryStore implements InventoryStore {
 
 		// 1. Idempotency claim. The `reservations.sku → inventory.sku` FK means an
 		// unknown/unseeded sku raises an FK violation here (no inventory row to
-		// reference) — which is the same observable outcome as zero stock, so it
-		// maps to OUT_OF_STOCK, preserving the port contract (see the contract's
-		// unknown-sku case).
+		// reference), which maps to OUT_OF_STOCK below.
 		let claim: { id: string } | undefined;
 		try {
 			claim = await this.#db
@@ -75,6 +73,12 @@ export class KyselyInventoryStore implements InventoryStore {
 				.returning("id")
 				.executeTakeFirst();
 		} catch (err) {
+			// Unknown-sku FK abort: no reservation row is written, so the key is NOT
+			// consumed — a pre-claim rejection OUTSIDE R2's idempotency scope ("no
+			// product row ⇒ no idempotency scope"). A later replay of the same key
+			// against a now-seeded sku is therefore a fresh reserve. This is distinct
+			// from a genuine OUT_OF_STOCK on a known sku, which stays `failed` and
+			// keeps the key consumed (R2).
 			if (isForeignKeyViolation(err)) return { ok: false, reason: "OUT_OF_STOCK" };
 			throw err;
 		}
