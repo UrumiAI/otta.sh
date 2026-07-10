@@ -37,6 +37,10 @@ export interface ProductCommerceTable {
 	active: number;
 	deleted_at: string | null;
 	idempotency_key: string;
+	/** Sync-ordering watermark: last CMS `content.updatedAt` applied by a sync
+	 *  upsert (ISO-8601 text; lexicographic = chronological). Null until a
+	 *  sync ever carries one. */
+	content_updated_at: string | null;
 	created_at: string;
 	updated_at: string;
 }

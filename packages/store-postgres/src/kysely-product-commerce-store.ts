@@ -14,7 +14,7 @@ import {
 	type ProductKind,
 	type UpsertProductCommerceInput,
 } from "@urumi/domain";
-import type { Kysely } from "kysely";
+import { type Kysely, sql, type SqlBool } from "kysely";
 import type { Database, ProductCommerceTable } from "./schema.js";
 
 export interface KyselyProductCommerceStoreOptions {
@@ -27,16 +27,35 @@ export interface KyselyProductCommerceStoreOptions {
  * across better-sqlite3 and pg.
  *
  * `upsert` is ONE conditional statement (adapter-architecture §2): an
- * `INSERT … ON CONFLICT (product_id) DO UPDATE … WHERE idempotency_key !=
- * :key` (per-row compare-on-write dedupe, plan §4 — deliberately NOT a
- * global unique constraint). Fields omitted from the input (`undefined`)
- * resolve to the EXISTING column via the `product_commerce.<col>` reference
- * in the SET list rather than `excluded.<col>`, so a partial upsert never
- * clobbers fields it didn't touch. When the WHERE guard makes the statement
- * a no-op (replay with the same stored key), `RETURNING` yields no row, and
- * the current row is re-read with one follow-up `SELECT` — this is not an
- * oversell-style race target (plan §7: no new concurrency test here), so
- * the extra read does not compromise any invariant.
+ * `INSERT … ON CONFLICT (product_id) DO UPDATE … WHERE <guards>` with two
+ * guards ANDed together:
+ *  1. replay dedupe — `product_commerce.idempotency_key != :key` (per-row
+ *     compare-on-write, plan §4 — deliberately NOT a global unique
+ *     constraint);
+ *  2. sync ordering (review S1) — `excluded.content_updated_at IS NULL OR
+ *     product_commerce.content_updated_at IS NULL OR
+ *     excluded.content_updated_at >= product_commerce.content_updated_at`:
+ *     a sync carrying a STRICTLY OLDER content watermark than the stored one
+ *     is a stale no-op (out-of-order hook delivery converges); panel saves
+ *     (no watermark ⇒ excluded is NULL) always pass — explicit merchant
+ *     intent is last-writer-wins, the documented lost-update semantics.
+ * ISO-8601 text compares lexicographically = chronologically, identically on
+ * both dialects.
+ *
+ * Fields omitted from the input (`undefined`) resolve to the EXISTING column
+ * via the `product_commerce.<col>` reference in the SET list rather than
+ * `excluded.<col>`, so a partial upsert never clobbers fields it didn't
+ * touch. When a WHERE guard makes the statement a no-op (same-key replay or
+ * stale sync), `RETURNING` yields no row, and the current row is re-read
+ * with one follow-up `SELECT` — this is not an oversell-style race target
+ * (plan §7: no new concurrency test here), so the extra read does not
+ * compromise any invariant.
+ *
+ * Live-sku uniqueness is the migration's partial unique index
+ * (`UNIQUE (sku) WHERE deleted_at IS NULL`, review S3) — the `ON CONFLICT`
+ * target stays the `product_id` PK, so the partial index never arbitrates
+ * the upsert; a genuinely conflicting live sku surfaces as a constraint
+ * error on both dialects, and a soft-deleted row's sku is reusable.
  */
 export class KyselyProductCommerceStore implements ProductCommerceStore {
 	readonly #db: Kysely<Database>;
@@ -61,6 +80,7 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 		const hasWidthMm = input.widthMm !== undefined;
 		const hasHeightMm = input.heightMm !== undefined;
 		const hasProductKind = input.productKind !== undefined;
+		const hasContentUpdatedAt = input.contentUpdatedAt !== undefined;
 
 		const row = await this.#db
 			.insertInto("product_commerce")
@@ -78,6 +98,7 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 				active: 0,
 				deleted_at: null,
 				idempotency_key: key,
+				content_updated_at: input.contentUpdatedAt ?? null,
 				created_at: now,
 				updated_at: now,
 			})
@@ -111,9 +132,20 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 							? eb.ref("excluded.product_kind")
 							: eb.ref("product_commerce.product_kind"),
 						idempotency_key: eb.ref("excluded.idempotency_key"),
+						content_updated_at: hasContentUpdatedAt
+							? eb.ref("excluded.content_updated_at")
+							: eb.ref("product_commerce.content_updated_at"),
 						updated_at: eb.ref("excluded.updated_at"),
 					}))
-					.where("product_commerce.idempotency_key", "!=", key),
+					// Guard 1: same-key replay is a no-op.
+					.where("product_commerce.idempotency_key", "!=", key)
+					// Guard 2 (review S1): a strictly-older sync watermark is a stale
+					// no-op; NULL on either side (panel save / never-synced row)
+					// passes. Raw SQL for the excluded-vs-row comparison — portable
+					// text comparison on both dialects.
+					.where(
+						sql<SqlBool>`(excluded.content_updated_at is null or product_commerce.content_updated_at is null or excluded.content_updated_at >= product_commerce.content_updated_at)`,
+					),
 			)
 			.returningAll()
 			.executeTakeFirst();
@@ -166,6 +198,7 @@ function toDomain(row: ProductCommerceTable): ProductCommerce {
 		active: row.active === 1,
 		deletedAt: row.deleted_at === null ? null : new Date(row.deleted_at),
 		idempotencyKey: toIdempotencyKey(row.idempotency_key),
+		contentUpdatedAt: row.content_updated_at,
 		createdAt: new Date(row.created_at),
 		updatedAt: new Date(row.updated_at),
 	};
