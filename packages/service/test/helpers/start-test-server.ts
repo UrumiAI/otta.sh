@@ -1,6 +1,11 @@
 import { serve } from "@hono/node-server";
 import { FixedClock } from "@urumi/domain/testing";
-import { KyselyInventoryStore, KyselyProductCommerceStore, uuidIdGen } from "@urumi/store-postgres";
+import {
+	KyselyCartStore,
+	KyselyInventoryStore,
+	KyselyProductCommerceStore,
+	uuidIdGen,
+} from "@urumi/store-postgres";
 import { createIsolatedPgSchema } from "@urumi/store-postgres/testing";
 import { createApp } from "../../src/app.js";
 
@@ -8,6 +13,8 @@ export interface TestServer {
 	baseUrl: string;
 	seed(sku: string, qty: number): Promise<void>;
 	onHand(sku: string): Promise<number>;
+	/** Advance the server's injected Clock (fast-forward past a hold TTL). */
+	advance(ms: number): void;
 	stop(): Promise<void>;
 }
 
@@ -25,7 +32,8 @@ export async function startTestServer(): Promise<TestServer> {
 
 	const store = new KyselyInventoryStore({ db, idGen: uuidIdGen, clock });
 	const productCommerce = new KyselyProductCommerceStore({ db, clock });
-	const app = createApp({ store, productCommerce });
+	const cartStore = new KyselyCartStore({ db, idGen: uuidIdGen, clock });
+	const app = createApp({ store, productCommerce, cartStore, clock });
 
 	const server = await new Promise<ReturnType<typeof serve>>((resolve) => {
 		const s = serve({ fetch: app.fetch, port: 0 }, () => resolve(s));
@@ -49,6 +57,9 @@ export async function startTestServer(): Promise<TestServer> {
 				.where("sku", "=", sku)
 				.executeTakeFirst();
 			return row?.on_hand ?? 0;
+		},
+		advance(ms) {
+			clock.advance(ms);
 		},
 		async stop() {
 			await new Promise<void>((resolve, reject) => {
