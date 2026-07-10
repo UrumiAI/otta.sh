@@ -1,6 +1,6 @@
 ---
 "@urumi/plugin": minor
-"@urumi/service": patch
+"@urumi/service": minor
 ---
 
 Phase 1 — `@urumi/plugin`, the first Urumi EmDash plugin package: sandbox-clean
@@ -46,9 +46,20 @@ trusted in-process.
   `plugin-is-sandbox-clean` dependency-cruiser rule (`.dependency-cruiser.cjs`,
   wired into `pnpm lint`) forbidding any DB/storage/filesystem import in
   `packages/plugin/src`.
-- `@urumi/service` additively exports `./app` (`createApp`) so the plugin's
-  own tests can boot a live, Postgres-backed instance without duplicating
-  route-mounting logic.
+- `@urumi/service` additively exports `./app` (`createApp`) — new public
+  export surface, hence the minor bump — so the plugin's own tests can boot
+  a live, Postgres-backed instance without duplicating route-mounting logic.
+- Review round 1: the panel Save route derives a STABLE content-derived
+  idempotency key (hash of productId + submitted form state — em-dash's
+  `FormSubmit` exposes no event/delivery id), so a host retry/double-submit
+  of the same click dedupes to one applied write; the route returns
+  structured `INVALID_FIELDS` per-field errors for bad numerics/currency/
+  floats instead of an opaque 500; `content:afterSave` forwards
+  `contentUpdatedAt` as the sync-ordering watermark (a delayed out-of-order
+  older save is a stale no-op at the service); and the sandbox-clean guard
+  now also forbids undici/node-fetch/axios/ws/hono imports AND direct
+  `fetch`/`globalThis.fetch`/`XMLHttpRequest` usage in plugin src outside
+  the sanctioned `ctx.http` implementation (grep-guard test).
 
 Deferred (plan §6 step 9 / §2, both explicitly optional/out-of-scope this
 phase): the reconcile cron and `content:afterPublish` → `activate` — the

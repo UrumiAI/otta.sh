@@ -74,6 +74,7 @@ describe('"Product data" widget + save route (plan §6 step 8)', () => {
 				productKind: "physical",
 				active: false,
 				deletedAt: null,
+				contentUpdatedAt: null,
 				createdAt: "x",
 				updatedAt: "x",
 			},
@@ -177,6 +178,86 @@ describe('"Product data" widget + save route (plan §6 step 8)', () => {
 			initialOnHand: 20,
 		});
 		expect(putHeaders["idempotency-key"]).toBeTruthy();
+	});
+
+	test("a retransmitted identical panel submission derives the SAME idempotency key; a different edit derives a different one (S2)", async () => {
+		stub = await startStubCommerceServer();
+		stub.respondWith("PUT", () => ({
+			status: 200,
+			body: {
+				productId: "prod-s2",
+				sku: "SKU-S2",
+				price: { amount: 1000, currency: "USD" },
+				taxClass: null,
+				weightGrams: null,
+				lengthMm: null,
+				widthMm: null,
+				heightMm: null,
+				productKind: "physical",
+				active: false,
+				deletedAt: null,
+				contentUpdatedAt: null,
+				createdAt: "x",
+				updatedAt: "x",
+			},
+		}));
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+
+		const submission = { productId: "prod-s2", sku: "SKU-S2", price: 1000, currency: "USD" };
+		// A host retry / double-submit retransmits the SAME form_submit
+		// (em-dash's FormSubmit carries no event id — the key must be
+		// content-derived): both invocations must carry the SAME
+		// Idempotency-Key so the service's once-only guard covers the
+		// explicit-Save path too.
+		await sandbox.invokeRoute("product-commerce", submission);
+		await sandbox.invokeRoute("product-commerce", submission);
+		// A genuinely new edit (any field changed) is a new intended write.
+		await sandbox.invokeRoute("product-commerce", { ...submission, price: 2000 });
+
+		const keys = stub.requests
+			.filter((r) => r.method === "PUT")
+			.map((r) => r.headers["idempotency-key"]);
+		expect(keys).toHaveLength(3);
+		expect(keys[0]).toBe(keys[1]);
+		expect(keys[2]).not.toBe(keys[0]);
+	});
+
+	test("panel route returns structured field errors for invalid numerics/currency — not an opaque 500 (S6)", async () => {
+		stub = await startStubCommerceServer();
+		stub.respondWith("PUT", () => ({ status: 200, body: {} }));
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+
+		const outcome = await sandbox.invokeRoute("product-commerce", {
+			productId: "prod-s6",
+			sku: "",
+			price: 19.99, // float — must never reach a money field
+			currency: "usd", // not ISO-4217 upper-case
+			onHand: -5,
+			weightGrams: 1.5,
+			productKind: "subscription",
+		});
+
+		expect(outcome).toMatchObject({
+			result: {
+				ok: false,
+				error: "INVALID_FIELDS",
+				fields: {
+					sku: expect.stringContaining("non-empty"),
+					price: expect.stringContaining("integer"),
+					onHand: expect.stringContaining("non-negative integer"),
+					weightGrams: expect.stringContaining("non-negative integer"),
+					productKind: expect.stringContaining("physical or digital"),
+				},
+			},
+		});
+		// Nothing invalid ever reaches the service.
+		expect(stub.requests.filter((r) => r.method === "PUT")).toHaveLength(0);
 	});
 
 	test("sandbox-clean guard: the manifest declares EXACTLY content:read + network:request, no storage/db surface", () => {

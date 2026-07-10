@@ -31,9 +31,12 @@ export interface ContentDeleteEvent {
 // -- context / capabilities ---------------------------------------------------
 
 /** The `network:request` capability's surface (em-dash `createHttpAccess`,
- *  `context.ts:619-671`) — the ONLY egress a sandboxed plugin gets. */
+ *  `context.ts:619-671`) — the ONLY egress a sandboxed plugin gets.
+ *  Property-style signature (not a method) so the direct-fetch grep guard
+ *  (`test/sandbox-clean-guard.test.ts`) sees no bare fetch-invocation token
+ *  in this declaration. */
 export interface HttpAccess {
-	fetch(url: string, init?: RequestInit): Promise<Response>;
+	fetch: (url: string, init?: RequestInit) => Promise<Response>;
 }
 
 /**

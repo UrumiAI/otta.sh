@@ -18,13 +18,18 @@ function clientFor(ctx: PluginContext): HttpCommerceClient {
  * route, `admin/product-commerce-route.ts`; a duplicated write path here
  * would let a stale/re-fired afterSave clobber a merchant's in-progress
  * pricing edit). Firing this hook twice with the same `content.updatedAt`
- * yields exactly one applied write (idempotency-key replay dedupe).
+ * yields exactly one applied write (idempotency-key replay dedupe), and the
+ * body also carries `contentUpdatedAt` so the SERVICE's ordering guard makes
+ * a delayed/out-of-order delivery of an OLDER save a stale no-op (review S1
+ * — out-of-order delivery converges, plan §4/Risk 3).
  *
  * Fire-and-forget (plan §4): `afterSave` requires only `content:read` and
  * must never fail the CMS save. A network failure / non-2xx response is
- * logged, not thrown — durable retry is the reconcile cron's job (deferred,
- * plan §6 step 9), and the service's upsert being idempotent makes a later
- * reconcile safe to replay.
+ * logged, not thrown. NOTE the honest guarantee (review N2): there is no
+ * reconcile cron yet (plan §6 step 9, deferred) — a failed sync is LOST
+ * until the next human save of the same product re-fires this hook (the
+ * idempotent upsert makes that later replay safe). Until the cron lands,
+ * that next save is the only self-healing path.
  */
 export function createAfterSaveHandler(
 	allowedHosts: readonly string[] = ALLOWED_HOSTS,
@@ -34,12 +39,20 @@ export function createAfterSaveHandler(
 		const id = event.content["id"];
 		if (typeof id !== "string" || id.length === 0) return; // no CMS id yet — nothing to sync.
 
-		const key = deriveSaveIdempotencyKey(event.collection, id, event.content["updatedAt"]);
+		const updatedAt = event.content["updatedAt"];
+		const key = deriveSaveIdempotencyKey(event.collection, id, updatedAt);
 		try {
-			await clientFor(ctx).upsertProductCommerce(id, {}, key);
+			await clientFor(ctx).upsertProductCommerce(
+				id,
+				// Ordering watermark only — no commercial fields (see above).
+				typeof updatedAt === "string" && updatedAt.length > 0
+					? { contentUpdatedAt: updatedAt }
+					: {},
+				key,
+			);
 		} catch (err) {
 			console.error(
-				`[urumi] content:afterSave sync failed for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}); will be healed by reconcile:`,
+				`[urumi] content:afterSave sync failed for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}). No reconcile cron exists yet — this sync is lost until the product is saved again:`,
 				err,
 			);
 		}

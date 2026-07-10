@@ -22,6 +22,7 @@ const EMPTY_ROW = {
 	productKind: "physical",
 	active: false,
 	deletedAt: null,
+	contentUpdatedAt: null,
 	createdAt: "2026-07-10T00:00:00.000Z",
 	updatedAt: "2026-07-10T00:00:00.000Z",
 };
@@ -58,8 +59,10 @@ describe("sync hooks — the headline (plan §1 / §6 step 7, under the workerd 
 		expect(putRequests[0]?.url).toBe("/products/prod-1/commerce");
 		expect(putRequests[0]?.headers["idempotency-key"]).toBeTruthy();
 		// A bare content sync carries NO commercial fields (plan §4 — the panel's
-		// own save route, not afterSave, is what sets sku/price).
-		expect(putBody).toEqual({});
+		// own save route, not afterSave, is what sets sku/price). It DOES carry
+		// the ordering watermark (review S1), so the service can reject a
+		// delayed/out-of-order delivery of an OLDER save as a stale no-op.
+		expect(putBody).toEqual({ contentUpdatedAt: "2026-07-10T00:00:00.000Z" });
 	});
 
 	test("content:afterSave replay with the SAME content.updatedAt derives the SAME idempotency key (upserts once)", async () => {

@@ -23,4 +23,16 @@ Phase 1 — product model + sync (domain/adapter/service slice).
 - `@urumi/service`: `PUT`/`GET`/`DELETE /products/:id/commerce`, a 1:1
   serialization of the port (`Idempotency-Key` header, zod-validated body, money
   on the wire as integer + ISO-4217 string, `MISSING_PRODUCT_ID` → 400), wired to
-  seed initial `on_hand` on first creation of a priced row.
+  seed initial `on_hand` via the create-if-absent `seedOnHand`.
+- Review round 1: the `seedOnHand` seed is attempted on EVERY save carrying a
+  stock figure (create-if-absent makes it a no-op once the row exists), so a
+  partial failure after the product upsert can no longer permanently strand a
+  priced product without an inventory row — a retried save heals it. The
+  upsert is order-aware: it stores a `content_updated_at` watermark (the CMS
+  content's own `updatedAt`, sent by sync upserts) and a strictly-older sync
+  is a stale no-op, so out-of-order hook delivery converges; panel saves omit
+  the watermark (last-writer-wins, documented + pinned). `sku` uniqueness is
+  now a PARTIAL unique index over live rows (`WHERE deleted_at IS NULL`), so
+  a soft-deleted product's SKU is reusable by a new product while two live
+  products still cannot share one — enforced identically on Postgres and
+  SQLite and mirrored by the in-memory fake.

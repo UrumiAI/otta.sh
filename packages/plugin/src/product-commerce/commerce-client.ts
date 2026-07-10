@@ -27,9 +27,15 @@ export interface UpsertProductCommerceInput {
 	widthMm?: number | null;
 	heightMm?: number | null;
 	productKind?: CommerceProductKind;
-	/** Initial stock — consumed only the moment a sku is first set (plan §8
-	 *  Risk 4); never a restock path. */
+	/** Initial stock — a create-if-absent seed attempted on any save that
+	 *  carries it (self-healing after a partial failure, review B1); never a
+	 *  restock path (plan §8 Risk 4). */
 	initialOnHand?: number;
+	/** Sync-ordering watermark (review S1): the CMS content's `updatedAt`,
+	 *  sent by `content:afterSave` syncs so the service rejects a
+	 *  delayed/out-of-order OLDER save as a stale no-op. Panel saves omit it
+	 *  (explicit merchant intent = last-writer-wins, documented). */
+	contentUpdatedAt?: string;
 }
 
 export interface ProductCommerce {
@@ -44,6 +50,7 @@ export interface ProductCommerce {
 	productKind: CommerceProductKind;
 	active: boolean;
 	deletedAt: string | null;
+	contentUpdatedAt: string | null;
 	createdAt: string;
 	updatedAt: string;
 }
