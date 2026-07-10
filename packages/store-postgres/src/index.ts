@@ -11,8 +11,14 @@ export {
 	KyselyProductCommerceStore,
 	type KyselyProductCommerceStoreOptions,
 } from "./kysely-product-commerce-store.js";
+export { KyselyCartStore, type KyselyCartStoreOptions } from "./kysely-cart-store.js";
 export { migrateToLatest, migrationProvider } from "./migrations/index.js";
 export type {
+	CartLinesTable,
+	CartMutationKind,
+	CartMutationsTable,
+	CartState,
+	CartsTable,
 	Database,
 	InventoryTable,
 	ProductCommerceTable,
