@@ -15,17 +15,23 @@ export interface ProductCommerceDeps {
  * Thin IO-free orchestration over the `ProductCommerceStore` +
  * `InventoryStore` ports (Phase 1 §7/§8 Risk 4).
  *
- * Composes two ports: the commercial upsert itself, plus — ONLY the moment a
- * sku is first set on a product_commerce row (the "create then price"
- * moment, not merely the moment the row first exists — an `afterSave` sync
- * upsert may create a bare row with no sku long before pricing happens) —
- * a single create-if-absent `InventoryStore.seedOnHand` write for the
- * initial stock the panel's Stock field captured. `seedOnHand`'s own
- * `ON CONFLICT (sku) DO NOTHING` guard makes this safe to attempt even if it
- * somehow re-fires; it can never clobber a concurrent reserve/adjust.
+ * Composes two ports: the commercial upsert itself, plus a create-if-absent
+ * `InventoryStore.seedOnHand` write for the initial stock the panel's Stock
+ * field captured. The seed is attempted on EVERY save that carries a stock
+ * figure and a known sku — deliberately NOT gated on "sku was just set"
+ * (review B1): the two writes are separate IO calls with no shared
+ * transaction, so a crash/fault after the upsert commits but before the
+ * seed lands would otherwise strand a durably-priced product with no
+ * inventory row forever (the Stock field is create-only and no other Phase-1
+ * path writes inventory). Because `seedOnHand` is a single-statement
+ * `INSERT … ON CONFLICT (sku) DO NOTHING` (contract-proven to never clobber
+ * an existing or already-decremented `on_hand`), the always-attempt shape is
+ * safe AND self-healing: a retried save re-attempts the seed and heals the
+ * stranding. On seed failure the error propagates (the command fails, the
+ * caller retries) — never swallowed.
  *
- * `initialOnHand` is undefined when the caller has no stock figure yet (e.g.
- * a bare content sync) — no inventory write happens in that case.
+ * `initialOnHand` is undefined when the caller has no stock figure (e.g. a
+ * bare content sync) — no inventory write happens in that case.
  */
 export async function upsertProductCommerce(
 	deps: ProductCommerceDeps,
@@ -33,12 +39,14 @@ export async function upsertProductCommerce(
 	key: IdempotencyKey,
 	initialOnHand?: number,
 ): Promise<ProductCommerce> {
-	const existing = await deps.productCommerce.getByProductId(input.productId).catch(() => null);
 	const row = await deps.productCommerce.upsert(input, key);
 
-	const skuWasUnset = existing === null || existing.sku === null;
-	if (skuWasUnset && input.sku !== undefined && initialOnHand !== undefined) {
-		await deps.inventory.seedOnHand(input.sku, initialOnHand);
+	// The sku to seed against: the input's if this save set it, else the
+	// stored one (a retry after a failed seed replays the upsert as a
+	// same-key no-op, so the sku arrives via the returned row).
+	const seedSku = input.sku ?? row.sku ?? undefined;
+	if (initialOnHand !== undefined && seedSku !== undefined) {
+		await deps.inventory.seedOnHand(seedSku, initialOnHand);
 	}
 
 	return row;

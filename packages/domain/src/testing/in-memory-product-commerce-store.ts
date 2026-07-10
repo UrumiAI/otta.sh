@@ -21,6 +21,12 @@ export interface InMemoryProductCommerceStoreOptions {
  * the stored `idempotencyKey` is a no-op returning the existing row
  * unchanged; any other key applies the update and overwrites the stored key
  * (per-row compare-on-write — Phase 1 §4, NOT a global unique constraint).
+ * A sync upsert whose `contentUpdatedAt` is strictly older than the stored
+ * watermark is a stale no-op (out-of-order hook delivery converges). A LIVE
+ * row's sku is unique across live rows only (mirrors the store's
+ * `UNIQUE (sku) WHERE deleted_at IS NULL` partial index): assigning a sku
+ * held by another non-deleted row throws; a sku freed by a soft delete is
+ * reusable.
  */
 export class InMemoryProductCommerceStore implements ProductCommerceStore {
 	#clock: Clock;
@@ -43,6 +49,19 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 				// Replay with the same stored key: a provable no-op.
 				return existing;
 			}
+			if (
+				input.contentUpdatedAt !== undefined &&
+				existing.contentUpdatedAt !== null &&
+				input.contentUpdatedAt < existing.contentUpdatedAt
+			) {
+				// Stale sync (strictly older content revision than the stored
+				// watermark): a delayed/re-ordered hook delivery never overwrites
+				// fresher data.
+				return existing;
+			}
+			// After the no-op guards, mirroring the store: a skipped DO UPDATE
+			// never contends for the sku index.
+			this.#assertLiveSkuFree(input);
 			const updated: ProductCommerce = {
 				...existing,
 				sku: input.sku !== undefined ? input.sku : existing.sku,
@@ -54,12 +73,15 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 				heightMm: input.heightMm !== undefined ? input.heightMm : existing.heightMm,
 				productKind: input.productKind ?? existing.productKind,
 				idempotencyKey: key,
+				contentUpdatedAt:
+					input.contentUpdatedAt !== undefined ? input.contentUpdatedAt : existing.contentUpdatedAt,
 				updatedAt: now,
 			};
 			this.#rows.set(input.productId, updated);
 			return updated;
 		}
 
+		this.#assertLiveSkuFree(input);
 		const created: ProductCommerce = {
 			productId: input.productId,
 			sku: input.sku ?? null,
@@ -73,11 +95,25 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 			active: false,
 			deletedAt: null,
 			idempotencyKey: key,
+			contentUpdatedAt: input.contentUpdatedAt ?? null,
 			createdAt: now,
 			updatedAt: now,
 		};
 		this.#rows.set(input.productId, created);
 		return created;
+	}
+
+	/** Mirrors the store's `UNIQUE (sku) WHERE deleted_at IS NULL` partial
+	 *  index: only LIVE rows contend for a sku. */
+	#assertLiveSkuFree(input: UpsertProductCommerceInput): void {
+		if (input.sku === undefined) return;
+		for (const row of this.#rows.values()) {
+			if (row.productId !== input.productId && row.sku === input.sku && row.deletedAt === null) {
+				throw new Error(
+					`UNIQUE constraint failed: product_commerce.sku ("${input.sku}" is held by live product ${row.productId})`,
+				);
+			}
+		}
 	}
 
 	async getByProductId(productId: ProductId): Promise<ProductCommerce | null> {

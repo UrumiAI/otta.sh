@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, test } from "vitest";
 import { cents, currency, money } from "../src/money/cents.js";
 import { idempotencyKey, productId, sku } from "../src/money/ids.js";
+import type { InventoryStore } from "../src/ports/inventory-store.js";
 import { MissingProductIdError } from "../src/product-commerce/errors.js";
 import {
 	getProductCommerce,
@@ -21,7 +22,7 @@ describe("product-commerce use-cases (over the in-memory fakes)", () => {
 		inventory = new InMemoryInventoryStore({ idGen: new CountingIdGen("res"), clock });
 	});
 
-	test("upsertProductCommerce seeds initial on_hand exactly once, the moment a sku is first set", async () => {
+	test("upsertProductCommerce seeds initial on_hand effectively once: create-if-absent on every save that carries a stock figure", async () => {
 		const pid = productId("prod-1");
 
 		// Bare content sync (no sku/price yet, e.g. content:afterSave before any
@@ -33,8 +34,8 @@ describe("product-commerce use-cases (over the in-memory fakes)", () => {
 		);
 		expect(inventory.onHand("SKU-1")).toBe(0);
 
-		// The panel Save action sets sku/price/stock together: THIS is the
-		// create-then-price moment, and seeds on_hand once.
+		// The panel Save action sets sku/price/stock together: the
+		// create-then-price moment, and seeds on_hand.
 		await upsertProductCommerce(
 			{ productCommerce, inventory },
 			{ productId: pid, sku: sku("SKU-1"), price: money(cents(1999), currency("USD")) },
@@ -43,8 +44,10 @@ describe("product-commerce use-cases (over the in-memory fakes)", () => {
 		);
 		expect(inventory.onHand("SKU-1")).toBe(10);
 
-		// A later edit (sku already set) must NOT reseed, even if it supplies a
-		// stock figure — the field is create-only (Phase 1 §5/§8 Risk 4).
+		// A later edit carrying a stock figure re-ATTEMPTS the seed (B1:
+		// always-attempt, so a stranded row can heal), but seedOnHand's
+		// create-if-absent guard makes it a no-op — the live on_hand is never
+		// clobbered (the field is create-only, Phase 1 §5/§8 Risk 4).
 		await upsertProductCommerce(
 			{ productCommerce, inventory },
 			{ productId: pid, price: money(cents(2500), currency("USD")) },
@@ -52,6 +55,46 @@ describe("product-commerce use-cases (over the in-memory fakes)", () => {
 			999,
 		);
 		expect(inventory.onHand("SKU-1")).toBe(10);
+	});
+
+	test("a save retried after a failed seedOnHand heals the missing inventory row (B1)", async () => {
+		const pid = productId("prod-b1");
+		let failNextSeed = true;
+		// A flaky inventory adapter: the FIRST seed write dies after the
+		// product upsert has already committed — the exact partial-failure
+		// window review B1 flagged.
+		const flakyInventory: InventoryStore = {
+			reserve: (s, q, k) => inventory.reserve(s, q, k),
+			commit: (id) => inventory.commit(id),
+			release: (id) => inventory.release(id),
+			seedOnHand: async (s, q) => {
+				if (failNextSeed) {
+					failNextSeed = false;
+					throw new Error("injected seed fault");
+				}
+				return inventory.seedOnHand(s, q);
+			},
+		};
+
+		const deps = { productCommerce, inventory: flakyInventory };
+		const input = {
+			productId: pid,
+			sku: sku("SKU-B1"),
+			price: money(cents(700), currency("USD")),
+		};
+
+		// First attempt: upsert commits, seed fails, the command FAILS LOUDLY
+		// (never swallowed) — leaving the stranded state: priced row, no stock.
+		await expect(upsertProductCommerce(deps, input, idempotencyKey("k-b1"), 7)).rejects.toThrow(
+			"injected seed fault",
+		);
+		expect((await productCommerce.getByProductId(pid))?.sku).toBe("SKU-B1");
+		expect(inventory.onHand("SKU-B1")).toBe(0);
+
+		// Retry of the SAME save (same idempotency key — the upsert replays as
+		// a no-op) re-attempts the seed and heals the missing inventory row.
+		await upsertProductCommerce(deps, input, idempotencyKey("k-b1"), 7);
+		expect(inventory.onHand("SKU-B1")).toBe(7);
 	});
 
 	test("upsertProductCommerce without an initialOnHand figure never touches inventory", async () => {

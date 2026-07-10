@@ -191,5 +191,104 @@ export function productCommerceStoreContract(
 			expect(updated.productKind).toBe("physical");
 			expect(updated.weightGrams).toBe(250);
 		});
+
+		// Review S1 — ordering: out-of-order sync delivery converges.
+		test("a stale sync upsert (strictly older contentUpdatedAt) arriving after a newer one is a no-op returning the existing row unchanged", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-8");
+			const newer = await h.store.upsert(
+				{
+					productId: pid,
+					sku: sku("SKU-8"),
+					price: money(cents(2000), currency("USD")),
+					contentUpdatedAt: "2026-07-10T02:00:00.000Z",
+				},
+				idempotencyKey("k-newer"),
+			);
+
+			// A DELAYED delivery of an OLDER save (different key, older
+			// watermark, different payload) must not overwrite fresher data.
+			const stale = await h.store.upsert(
+				{
+					productId: pid,
+					price: money(cents(1), currency("USD")),
+					contentUpdatedAt: "2026-07-10T01:00:00.000Z",
+				},
+				idempotencyKey("k-stale"),
+			);
+
+			expect(stale).toEqual(newer);
+			const read = await h.store.getByProductId(pid);
+			expect(read).toEqual(newer);
+			// The stale key was NOT stamped onto the row.
+			expect(read?.idempotencyKey).toBe("k-newer");
+		});
+
+		test("an equal-or-newer contentUpdatedAt applies; an upsert with no contentUpdatedAt (panel save) is last-writer-wins and preserves the stored watermark", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-9");
+			await h.store.upsert(
+				{
+					productId: pid,
+					sku: sku("SKU-9"),
+					price: money(cents(1000), currency("USD")),
+					contentUpdatedAt: "2026-07-10T01:00:00.000Z",
+				},
+				idempotencyKey("k1"),
+			);
+
+			// Newer sync applies and advances the watermark.
+			const newer = await h.store.upsert(
+				{
+					productId: pid,
+					price: money(cents(1500), currency("USD")),
+					contentUpdatedAt: "2026-07-10T02:00:00.000Z",
+				},
+				idempotencyKey("k2"),
+			);
+			expect(newer.price).toEqual({ amount: 1500, currency: "USD" });
+			expect(newer.contentUpdatedAt).toBe("2026-07-10T02:00:00.000Z");
+
+			// A panel save (no contentUpdatedAt) is explicit merchant intent:
+			// last-writer-wins by design (the documented, accepted lost-update
+			// semantics), and it preserves the stored watermark rather than
+			// clearing it.
+			const panel = await h.store.upsert(
+				{ productId: pid, price: money(cents(1750), currency("USD")) },
+				idempotencyKey("k3"),
+			);
+			expect(panel.price).toEqual({ amount: 1750, currency: "USD" });
+			expect(panel.contentUpdatedAt).toBe("2026-07-10T02:00:00.000Z");
+		});
+
+		// Review S3 — soft-delete frees the SKU for reuse; live rows still contend.
+		test("a SKU freed by soft-delete can be assigned to a new product; two LIVE products still cannot share a SKU", async () => {
+			const h = await makeStore();
+			const first = productId("prod-10a");
+			const second = productId("prod-10b");
+			await h.store.upsert(
+				{ productId: first, sku: sku("SKU-10"), price: money(cents(500), currency("USD")) },
+				idempotencyKey("k1"),
+			);
+
+			// While prod-10a is LIVE, a second product cannot take its sku.
+			await expect(
+				h.store.upsert({ productId: second, sku: sku("SKU-10") }, idempotencyKey("k2")),
+			).rejects.toThrow();
+
+			// Soft-deleting the holder frees the sku for a new product…
+			await h.store.softDelete(first, idempotencyKey("del-1"));
+			const reused = await h.store.upsert(
+				{ productId: second, sku: sku("SKU-10") },
+				idempotencyKey("k3"),
+			);
+			expect(reused.sku).toBe("SKU-10");
+
+			// …while the tombstoned row retains its own sku for order-history
+			// integrity (soft delete never wipes commercial data).
+			const tombstone = await h.store.getByProductId(first);
+			expect(tombstone?.sku).toBe("SKU-10");
+			expect(tombstone?.deletedAt).not.toBeNull();
+		});
 	});
 }
