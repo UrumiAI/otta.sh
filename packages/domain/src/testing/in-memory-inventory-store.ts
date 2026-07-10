@@ -1,7 +1,12 @@
 import type { IdempotencyKey } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
 import type { IdGen } from "../ports/id-gen.js";
-import type { InventoryStore, ReserveResult } from "../ports/inventory-store.js";
+import {
+	AdjustReservationMismatchError,
+	type InventoryStore,
+	ReservationNotHeldError,
+	type ReserveResult,
+} from "../ports/inventory-store.js";
 
 export type ReservationState = "pending" | "held" | "committed" | "released" | "failed";
 
@@ -41,6 +46,9 @@ export class InMemoryInventoryStore implements InventoryStore {
 	#onHand = new Map<string, number>();
 	#reservations = new Map<string, ReservationRow>();
 	#byKey = new Map<string, string>();
+	/** Per-mutation adjust ledger: key → the reservation it was recorded against
+	 *  plus its terminal result (exactly-once; mis-keyed replays are rejected). */
+	#adjustments = new Map<string, { reservationId: string; result: ReserveResult }>();
 
 	constructor(options: InMemoryInventoryStoreOptions) {
 		this.#idGen = options.idGen;
@@ -90,6 +98,54 @@ export class InMemoryInventoryStore implements InventoryStore {
 		}
 
 		return this.#finalize(id);
+	}
+
+	async adjust(reservationId: string, newQty: number, key: IdempotencyKey): Promise<ReserveResult> {
+		if (!Number.isSafeInteger(newQty) || newQty <= 0) {
+			throw new RangeError(`adjust() requires a positive integer newQty, got ${String(newQty)}`);
+		}
+
+		// Ledger-first (exactly-once): a replayed key — even a stale one arriving
+		// after later same-reservation adjusts — returns the RECORDED result and
+		// moves no stock. Only the claim winner ever moves inventory. A key
+		// recorded against a DIFFERENT reservation is a mis-keyed caller: typed
+		// rejection, never ok for the wrong hold.
+		const recorded = this.#adjustments.get(key);
+		if (recorded !== undefined) {
+			if (recorded.reservationId !== reservationId) {
+				throw new AdjustReservationMismatchError(key, recorded.reservationId, reservationId);
+			}
+			return { ...recorded.result };
+		}
+
+		const row = this.#mustGet(reservationId);
+		// Guard-first: only a `held` (cart-owned) hold may move.
+		if (row.state !== "held") {
+			throw new ReservationNotHeldError(reservationId, row.state);
+		}
+
+		const delta = newQty - row.qty;
+		// The claim, qty change, and inventory movement are applied as one
+		// synchronous block — never a state where the reservation qty moved
+		// without the stock, or the claim without its outcome.
+		if (delta > 0) {
+			// Increase: oversell-critical conditional decrement of the delta.
+			const onHand = this.#onHand.get(row.sku) ?? 0;
+			if (onHand < delta) {
+				const failed: ReserveResult = { ok: false, reason: "OUT_OF_STOCK" };
+				this.#adjustments.set(key, { reservationId, result: failed }); // R2: key consumed
+				return { ...failed };
+			}
+			this.#onHand.set(row.sku, onHand - delta);
+			row.qty = newQty;
+		} else if (delta < 0) {
+			// Decrease: unconditional partial release, always succeeds.
+			this.#onHand.set(row.sku, (this.#onHand.get(row.sku) ?? 0) + -delta);
+			row.qty = newQty;
+		}
+		const ok: ReserveResult = { ok: true, reservationId };
+		this.#adjustments.set(key, { reservationId, result: ok });
+		return { ...ok };
 	}
 
 	async commit(reservationId: string): Promise<void> {

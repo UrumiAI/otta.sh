@@ -1,7 +1,12 @@
 import { serve } from "@hono/node-server";
 import { FixedClock } from "@urumi/domain/testing";
 import { createApp } from "@urumi/service/app";
-import { KyselyInventoryStore, KyselyProductCommerceStore, uuidIdGen } from "@urumi/store-postgres";
+import {
+	KyselyCartStore,
+	KyselyInventoryStore,
+	KyselyProductCommerceStore,
+	uuidIdGen,
+} from "@urumi/store-postgres";
 import { createIsolatedPgSchema } from "@urumi/store-postgres/testing";
 
 export interface LiveService {
@@ -26,7 +31,10 @@ export async function startLiveService(): Promise<LiveService> {
 
 	const store = new KyselyInventoryStore({ db, idGen: uuidIdGen, clock });
 	const productCommerce = new KyselyProductCommerceStore({ db, clock });
-	const app = createApp({ store, productCommerce });
+	// Phase 3 grew AppDeps with the cart surface; the plugin exercises only the
+	// product routes here, but the real app wires everything.
+	const cartStore = new KyselyCartStore({ db, idGen: uuidIdGen, clock });
+	const app = createApp({ store, productCommerce, cartStore, clock });
 
 	const server = await new Promise<ReturnType<typeof serve>>((resolve) => {
 		const s = serve({ fetch: app.fetch, port: 0 }, () => resolve(s));

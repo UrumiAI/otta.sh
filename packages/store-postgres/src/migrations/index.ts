@@ -2,11 +2,13 @@ import type { Kysely } from "kysely";
 import { type Migration, type MigrationProvider, Migrator } from "kysely/migration";
 import { migration0001PhaseInventory } from "./0001_phase0_inventory.js";
 import { migration0002ProductCommerce } from "./0002_product_commerce.js";
+import { migration0003Cart } from "./0003_cart.js";
 
 /** Ordered, append-only migration list (forward-only). */
 const migrations: Record<string, Migration> = {
 	"0001_phase0_inventory": migration0001PhaseInventory,
 	"0002_product_commerce": migration0002ProductCommerce,
+	"0003_cart": migration0003Cart,
 };
 
 export const migrationProvider: MigrationProvider = {

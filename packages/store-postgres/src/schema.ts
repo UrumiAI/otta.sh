@@ -1,5 +1,8 @@
-// Kysely table typings for the Phase-0 inventory schema (§6). Portable types
-// only (text/integer) so the same DDL and queries serve better-sqlite3 and pg.
+// Kysely table typings for the Phase-0 inventory schema (§6) plus the Phase-3
+// cart schema. Portable types only (text/integer) so the same DDL and queries
+// serve better-sqlite3 and pg.
+
+import type { ColumnType } from "kysely";
 
 export type ReservationState = "pending" | "held" | "committed" | "released" | "failed";
 
@@ -14,6 +17,64 @@ export interface ReservationsTable {
 	qty: number;
 	state: ReservationState;
 	idempotency_key: string;
+	created_at: string;
+	// Phase 3: the cart stamps the hold deadline here (nullable — a reservation
+	// created by a raw `reserve` before any cart write carries none). Omittable on
+	// insert so Phase-0's `reserve` is left byte-for-byte.
+	expires_at: ColumnType<string | null, string | null | undefined, string | null>;
+}
+
+export type CartState = "active" | "checked_out";
+
+export interface CartsTable {
+	id: string;
+	customer_id: string | null;
+	state: CartState;
+	currency: string;
+	created_at: string;
+	updated_at: string;
+}
+
+export interface CartLinesTable {
+	id: string;
+	cart_id: string;
+	product_id: string | null;
+	sku: string;
+	qty: number;
+	reservation_id: string | null;
+	expires_at: string | null;
+	created_at: string;
+	updated_at: string;
+}
+
+export type CartMutationKind = "add" | "adjust" | "remove";
+
+export interface CartMutationsTable {
+	idempotency_key: string;
+	cart_id: string;
+	line_id: string | null;
+	kind: CartMutationKind;
+	resulting_qty: number | null;
+	/** 0 = claimed (pre-movement), 1 = completed. Claim-first: the row exists
+	 *  BEFORE any inventory movement; a replay of an incomplete claim resumes. */
+	completed: number;
+	created_at: string;
+}
+
+export type AdjustOutcome = "ok" | "out_of_stock";
+
+/**
+ * Per-mutation claim ledger for `InventoryStore.adjust` — the adjust analogue of
+ * `reservations.idempotency_key` (which is already consumed by the original
+ * reserve and cannot guard the many adjusts over a hold's life). The claim
+ * INSERT and the inventory movement commit in one short transaction, so exactly
+ * one caller per key moves stock and a replay returns the recorded outcome.
+ */
+export interface InventoryAdjustmentsTable {
+	idempotency_key: string;
+	reservation_id: string;
+	to_qty: number;
+	outcome: AdjustOutcome;
 	created_at: string;
 }
 
@@ -49,4 +110,8 @@ export interface Database {
 	inventory: InventoryTable;
 	reservations: ReservationsTable;
 	product_commerce: ProductCommerceTable;
+	carts: CartsTable;
+	cart_lines: CartLinesTable;
+	cart_mutations: CartMutationsTable;
+	inventory_adjustments: InventoryAdjustmentsTable;
 }

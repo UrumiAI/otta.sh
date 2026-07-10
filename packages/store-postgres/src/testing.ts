@@ -29,7 +29,12 @@ export async function createIsolatedPgSchema(
 	const schema = `test_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
 
 	const admin = makePostgresPool({ connectionString, max: 1 });
-	await admin.query(`CREATE SCHEMA "${schema}"`);
+	try {
+		await admin.query(`CREATE SCHEMA "${schema}"`);
+	} catch (err) {
+		await admin.end().catch(() => {});
+		throw err;
+	}
 
 	const pool = makePostgresPool({
 		connectionString,
@@ -37,12 +42,34 @@ export async function createIsolatedPgSchema(
 		options: `-c search_path=${schema}`,
 	});
 	const db = makePostgresDb(pool);
-	// Pin kysely's migration bookkeeping tables to THIS schema — without it,
-	// the Migrator's table-existence check matches by name across ALL schemas,
-	// so any concurrently-alive (or leftover) test schema poisons the
-	// migration ("relation kysely_migration_lock does not exist"); see
-	// MigrateToLatestOptions.migrationTableSchema.
-	await migrateToLatest(db, { migrationTableSchema: schema });
+	try {
+		// Scoped to THIS schema: without `migrationTableSchema` the Migrator's
+		// existence check can match another live test schema's tables and fail —
+		// the concurrent-schema flake (see MigrateToLatestOptions). Retried: the Migrator's
+		// existence check introspects EVERY table in the database, so it can trip
+		// over a peer test's `DROP SCHEMA … CASCADE` mid-scan (a transient pg
+		// catalog race). The schema is brand new and empty, so re-running the
+		// migration is safe.
+		let lastError: unknown;
+		for (let attempt = 0; attempt < 3; attempt++) {
+			try {
+				await migrateToLatest(db, { migrationTableSchema: schema });
+				lastError = undefined;
+				break;
+			} catch (err) {
+				lastError = err;
+				await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+			}
+		}
+		if (lastError !== undefined) throw lastError;
+	} catch (err) {
+		// Setup failure must not leak the pool (connection exhaustion for every
+		// later test) or the schema (test_* litter in the shared test database).
+		await db.destroy().catch(() => {});
+		await admin.query(`DROP SCHEMA "${schema}" CASCADE`).catch(() => {});
+		await admin.end().catch(() => {});
+		throw err;
+	}
 
 	return {
 		db,

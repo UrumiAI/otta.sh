@@ -10,7 +10,12 @@ export {
 	type ReservationId,
 	type Sku,
 } from "./money/ids.js";
-export type { InventoryStore, ReserveResult } from "./ports/inventory-store.js";
+export {
+	AdjustReservationMismatchError,
+	ReservationNotHeldError,
+	type InventoryStore,
+	type ReserveResult,
+} from "./ports/inventory-store.js";
 export type { OrderStore } from "./ports/order-store.js";
 export type { Clock } from "./ports/clock.js";
 export type { IdGen } from "./ports/id-gen.js";
@@ -28,3 +33,32 @@ export {
 	upsertProductCommerce,
 	type ProductCommerceDeps,
 } from "./product-commerce/use-cases.js";
+export {
+	HoldExpiredError,
+	type AdjustLineInput,
+	type Cart,
+	type CartLine,
+	type CartMutationKind,
+	type CartState,
+	type CartStore,
+	type ClaimMutationInput,
+	type ClaimMutationResult,
+	type ExpiredHold,
+	type RecordedCartMutation,
+	type ReservationLifecycle,
+	type UpsertLineInput,
+} from "./ports/cart-store.js";
+export {
+	addLine,
+	createCart,
+	DEFAULT_HOLD_TTL_MS,
+	expireHolds,
+	getCart,
+	removeLine,
+	updateLine,
+	type AddLineResult,
+	type CartDeps,
+	type CartFailure,
+	type RemoveLineResult,
+	type UpdateLineResult,
+} from "./cart/use-cases.js";

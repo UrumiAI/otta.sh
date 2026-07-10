@@ -1,11 +1,17 @@
-import type { InventoryStoreHarness, ProductCommerceStoreHarness } from "@urumi/domain/testing";
+import type {
+	CartStoreHarness,
+	InventoryStoreHarness,
+	ProductCommerceStoreHarness,
+} from "@urumi/domain/testing";
 import { CountingIdGen, FixedClock } from "@urumi/domain/testing";
 import type { Kysely } from "kysely";
 import {
+	KyselyCartStore,
 	KyselyInventoryStore,
 	KyselyProductCommerceStore,
 	makeSqliteDb,
 	migrateToLatest,
+	uuidIdGen,
 } from "../src/index.js";
 import type { Database } from "../src/schema.js";
 import { createIsolatedPgSchema } from "../src/testing.js";
@@ -107,4 +113,57 @@ export async function makePgProductCommerceHarness(): Promise<ProductCommerceSto
 	const iso = await createIsolatedPgSchema(connectionString, { poolMax: 4 });
 	cleanups.push(() => iso.teardown());
 	return buildProductCommerceHarness(iso.db);
+}
+
+// -- cart harness ------------------------------------------------------------
+
+export interface CartDialectHarness extends CartStoreHarness {
+	db: Kysely<Database>;
+	clock: FixedClock;
+}
+
+function buildCartHarness(db: Kysely<Database>): CartDialectHarness {
+	const clock = new FixedClock(new Date("2026-07-10T00:00:00.000Z"));
+	const inventory = new KyselyInventoryStore({ db, idGen: uuidIdGen, clock });
+	const cartStore = new KyselyCartStore({ db, idGen: uuidIdGen, clock });
+	return {
+		deps: { cartStore, inventoryStore: inventory, clock },
+		db,
+		clock,
+		async seedStock(sku, qty) {
+			await db
+				.insertInto("inventory")
+				.values({ sku, on_hand: qty })
+				.onConflict((oc) => oc.column("sku").doUpdateSet({ on_hand: qty }))
+				.execute();
+		},
+		async onHand(sku) {
+			const row = await db
+				.selectFrom("inventory")
+				.select("on_hand")
+				.where("sku", "=", sku)
+				.executeTakeFirst();
+			return row?.on_hand ?? 0;
+		},
+		advance(ms) {
+			clock.advance(ms);
+		},
+	};
+}
+
+export async function makeSqliteCartHarness(): Promise<CartDialectHarness> {
+	const db = makeSqliteDb(":memory:");
+	await migrateToLatest(db);
+	cleanups.push(async () => {
+		await db.destroy();
+	});
+	return buildCartHarness(db);
+}
+
+export async function makePgCartHarness(): Promise<CartDialectHarness> {
+	const connectionString = process.env.PG_CONNECTION_STRING;
+	if (connectionString === undefined) throw new Error("PG_CONNECTION_STRING is not set");
+	const iso = await createIsolatedPgSchema(connectionString, { poolMax: 4 });
+	cleanups.push(() => iso.teardown());
+	return buildCartHarness(iso.db);
 }

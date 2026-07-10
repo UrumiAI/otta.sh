@@ -15,6 +15,36 @@ export const releaseBody = z.object({
 	reservationId: z.string().min(1),
 });
 
+// Cart bodies (§6). Money is intentionally absent — a cart line snapshots no
+// price (that is an order invariant, Phase 4).
+export const createCartBody = z.object({
+	currency: z
+		.string()
+		.regex(/^[A-Z]{3}$/)
+		.optional(),
+});
+
+export const addLineBody = z.object({
+	sku: z.string().min(1),
+	qty: z.number().int().positive(),
+});
+
+export const patchLineBody = z.object({
+	qty: z.number().int().positive(),
+});
+
+// Path-parameter sanity (N3): ids are opaque tokens — non-empty, bounded, and
+// free of whitespace/control characters. Routing guarantees non-empty; the
+// bound and charset keep garbage out of the store layer.
+const idParam = z
+	.string()
+	.min(1)
+	.max(200)
+	.regex(/^[\x21-\x7e]+$/);
+
+export const pathParams = z.object({ cartId: idParam });
+export const linePathParams = z.object({ cartId: idParam, lineId: idParam });
+
 export type ReserveBody = z.infer<typeof reserveBody>;
 export type CommitBody = z.infer<typeof commitBody>;
 export type ReleaseBody = z.infer<typeof releaseBody>;
@@ -60,3 +90,6 @@ export const upsertProductCommerceBody = z.object({
 });
 
 export type UpsertProductCommerceBody = z.infer<typeof upsertProductCommerceBody>;
+export type CreateCartBody = z.infer<typeof createCartBody>;
+export type AddLineBody = z.infer<typeof addLineBody>;
+export type PatchLineBody = z.infer<typeof patchLineBody>;

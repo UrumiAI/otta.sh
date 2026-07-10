@@ -1,10 +1,26 @@
-import type { Clock, IdGen, IdempotencyKey, InventoryStore, ReserveResult } from "@urumi/domain";
+import {
+	AdjustReservationMismatchError,
+	type Clock,
+	type IdGen,
+	type IdempotencyKey,
+	type InventoryStore,
+	ReservationNotHeldError,
+	type ReserveResult,
+} from "@urumi/domain";
 import { type Kysely, sql } from "kysely";
 import type { Database, ReservationState } from "./schema.js";
 
 /** Losing the guarded finalize flip: another caller owns this reservation. */
 const LOST = Symbol("finalize-lost");
 type FinalizeOutcome = ReserveResult | typeof LOST;
+
+/** Internal: aborts the adjust tx (rolling back its claim) when the guarded CAS
+ *  matches 0 rows — a different-key adjust or a checkout raced the hold. */
+class LostCasError extends Error {
+	constructor() {
+		super("adjust lost the guarded reservation CAS");
+	}
+}
 
 export interface KyselyInventoryStoreOptions {
 	db: Kysely<Database>;
@@ -148,6 +164,131 @@ export class KyselyInventoryStore implements InventoryStore {
 			.values({ sku, on_hand: qty })
 			.onConflict((oc) => oc.column("sku").doNothing())
 			.execute();
+	}
+
+	async adjust(reservationId: string, newQty: number, key: IdempotencyKey): Promise<ReserveResult> {
+		if (!Number.isSafeInteger(newQty) || newQty <= 0) {
+			throw new RangeError(`adjust() requires a positive integer newQty, got ${String(newQty)}`);
+		}
+
+		// Exactly-once choreography (mirrors reserve's claim discipline):
+		//   1. ledger-first — a recorded `inventory_adjustments` row for `key`
+		//      short-circuits to its outcome: a replay (even a stale one after
+		//      later same-reservation adjusts) moves NOTHING.
+		//   2. one short tx: claim the key (`INSERT … ON CONFLICT DO NOTHING`),
+		//      then a guarded CAS on the reservation (`WHERE state='held' AND
+		//      qty=:prev`) BEFORE the movement, then the conditional movement.
+		//      Claim + CAS + movement commit all-or-nothing, so only the claim
+		//      winner moves stock and `held` qty ⟺ the durable movement.
+		//   3. a lost CAS (a different-key adjust or a checkout raced the row)
+		//      rolls the tx back — claim included — and retries with fresh reads;
+		//      a hold no longer `held` throws `ReservationNotHeldError` (typed,
+		//      guard-first: no movement ever lands against a non-held hold).
+		for (let attempt = 0; attempt < this.#maxAttempts; attempt++) {
+			const recorded = await this.#db
+				.selectFrom("inventory_adjustments")
+				.select(["outcome", "reservation_id"])
+				.where("idempotency_key", "=", key)
+				.executeTakeFirst();
+			if (recorded !== undefined) {
+				// A key recorded against a DIFFERENT reservation is a mis-keyed
+				// caller: typed rejection, never an ok echoed for the wrong hold.
+				if (recorded.reservation_id !== reservationId) {
+					throw new AdjustReservationMismatchError(key, recorded.reservation_id, reservationId);
+				}
+				return recorded.outcome === "ok"
+					? { ok: true, reservationId }
+					: { ok: false, reason: "OUT_OF_STOCK" };
+			}
+
+			const row = await this.#selectById(reservationId);
+			if (row.state !== "held") {
+				throw new ReservationNotHeldError(reservationId, row.state);
+			}
+			const prevQty = row.qty;
+			const delta = newQty - prevQty;
+
+			const outcome = await this.#db
+				.transaction()
+				.execute<ReserveResult | typeof LOST>(async (trx) => {
+					// Claim: exactly one caller per key proceeds to move inventory. A
+					// concurrent same-key peer blocks here until this tx resolves, then
+					// falls to the recorded row (or retries if this tx aborted).
+					const claim = await trx
+						.insertInto("inventory_adjustments")
+						.values({
+							idempotency_key: key,
+							reservation_id: reservationId,
+							to_qty: newQty,
+							outcome: "ok",
+							created_at: this.#clock.now().toISOString(),
+						})
+						.onConflict((oc) => oc.column("idempotency_key").doNothing())
+						.returning("idempotency_key")
+						.executeTakeFirst();
+					if (claim === undefined) return LOST; // peer holds the key: re-read
+
+					if (delta === 0) return { ok: true, reservationId };
+
+					// Guard-first CAS: move the reservation to `newQty` only if it is
+					// still `held` at the qty we computed the delta from. This row lock
+					// serializes every adjust/checkout on the hold; 0 rows ⇒ the state
+					// or qty changed under us ⇒ roll everything back and re-read.
+					const cas = await trx
+						.updateTable("reservations")
+						.set({ qty: newQty })
+						.where("id", "=", reservationId)
+						.where("state", "=", "held")
+						.where("qty", "=", prevQty)
+						.returning("id")
+						.executeTakeFirst();
+					if (cas === undefined) throw new LostCasError();
+
+					if (delta > 0) {
+						// Increase: oversell-critical single conditional decrement.
+						const decremented = await trx
+							.updateTable("inventory")
+							.set({ on_hand: sql<number>`on_hand - ${delta}` })
+							.where("sku", "=", row.sku)
+							.where("on_hand", ">=", delta)
+							.returning("on_hand")
+							.executeTakeFirst();
+						if (decremented === undefined) {
+							// OUT_OF_STOCK: restore the reservation qty and record the failed
+							// outcome in the SAME tx (key stays consumed, R2) — externally the
+							// hold never moved.
+							await trx
+								.updateTable("reservations")
+								.set({ qty: prevQty })
+								.where("id", "=", reservationId)
+								.execute();
+							await trx
+								.updateTable("inventory_adjustments")
+								.set({ outcome: "out_of_stock" })
+								.where("idempotency_key", "=", key)
+								.execute();
+							return { ok: false, reason: "OUT_OF_STOCK" };
+						}
+						return { ok: true, reservationId };
+					}
+
+					// Decrease: unconditional partial release, always succeeds.
+					await trx
+						.updateTable("inventory")
+						.set({ on_hand: sql<number>`on_hand + ${-delta}` })
+						.where("sku", "=", row.sku)
+						.execute();
+					return { ok: true, reservationId };
+				})
+				.catch((err: unknown): ReserveResult | typeof LOST => {
+					if (err instanceof LostCasError) return LOST;
+					throw err;
+				});
+
+			if (outcome !== LOST) return outcome;
+			await delay(this.#delayMs);
+		}
+		throw new Error(`adjust of reservation ${reservationId} did not settle in time`);
 	}
 
 	// -- internals ------------------------------------------------------------
