@@ -1,6 +1,6 @@
-import { Kysely, type Migration, Migrator, sql } from "kysely";
-import { SqliteDialect } from "kysely";
 import BetterSqlite3 from "better-sqlite3";
+import { Kysely, SqliteDialect, sql } from "kysely";
+import { type Migration, Migrator } from "kysely/migration";
 import { expect, test } from "vitest";
 import { makeSqliteDb, migrateToLatest, migrationProvider } from "../src/index.js";
 
@@ -19,9 +19,9 @@ test("the real provider lists 0001, 0002, 0003 in order and migrates cleanly", a
 	const db = makeSqliteDb(":memory:");
 	try {
 		await migrateToLatest(db);
-		const ran = await sql<{ name: string }>`SELECT name FROM kysely_migration ORDER BY name`.execute(
-			db,
-		);
+		const ran = await sql<{
+			name: string;
+		}>`SELECT name FROM kysely_migration ORDER BY name`.execute(db);
 		expect(ran.rows.map((r) => r.name)).toEqual([
 			"0001_phase0_inventory",
 			"0002_product_commerce",
@@ -84,10 +84,11 @@ test("the Migrator tolerates a numbering gap in an ordered migration list", asyn
 		});
 		const { error, results } = await migrator.migrateToLatest();
 		expect(error).toBeUndefined();
-		expect(results?.map((r) => `${r.migrationName}:${r.status}`)).toEqual([
-			"0001_first:Success",
-			"0003_third:Success",
-		]);
+		expect(
+			results?.map(
+				(r: { migrationName: string; status: string }) => `${r.migrationName}:${r.status}`,
+			),
+		).toEqual(["0001_first:Success", "0003_third:Success"]);
 	} finally {
 		await db.destroy();
 	}
