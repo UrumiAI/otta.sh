@@ -10,3 +10,12 @@ export {
 	type InventoryStoreHarness,
 	type InventoryStoreContractOptions,
 } from "./inventory-store-contract.js";
+export {
+	InMemoryProductCommerceStore,
+	type InMemoryProductCommerceStoreOptions,
+} from "./in-memory-product-commerce-store.js";
+export {
+	productCommerceStoreContract,
+	type ProductCommerceStoreHarness,
+	type ProductCommerceStoreContractOptions,
+} from "./product-commerce-store-contract.js";

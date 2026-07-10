@@ -1,0 +1,40 @@
+{
+	"name": "@urumi/plugin",
+	"version": "0.1.0",
+	"description": "Urumi EmDash plugin — sandbox-clean (workerd, Block Kit, ctx.http + allowedHosts only). No React, no DB/storage capability.",
+	"license": "MIT",
+	"files": [
+		"dist"
+	],
+	"type": "module",
+	"exports": {
+		".": "./src/index.ts",
+		"./sandbox-entry": "./src/sandbox-entry.ts"
+	},
+	"publishConfig": {
+		"exports": {
+			".": {
+				"types": "./dist/index.d.mts",
+				"default": "./dist/index.mjs"
+			},
+			"./sandbox-entry": {
+				"types": "./dist/sandbox-entry.d.mts",
+				"default": "./dist/sandbox-entry.mjs"
+			}
+		}
+	},
+	"scripts": {
+		"build": "tsdown"
+	},
+	"devDependencies": {
+		"@hono/node-server": "catalog:",
+		"@types/node": "catalog:",
+		"@urumi/domain": "workspace:*",
+		"@urumi/service": "workspace:*",
+		"@urumi/store-postgres": "workspace:*",
+		"tsdown": "catalog:",
+		"typescript": "catalog:",
+		"vitest": "catalog:",
+		"workerd": "^1.20260710.1"
+	}
+}

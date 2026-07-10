@@ -1,6 +1,6 @@
 import { serve } from "@hono/node-server";
 import { FixedClock } from "@urumi/domain/testing";
-import { KyselyInventoryStore, uuidIdGen } from "@urumi/store-postgres";
+import { KyselyInventoryStore, KyselyProductCommerceStore, uuidIdGen } from "@urumi/store-postgres";
 import { createIsolatedPgSchema } from "@urumi/store-postgres/testing";
 import { createApp } from "../../src/app.js";
 
@@ -12,22 +12,20 @@ export interface TestServer {
 }
 
 /**
- * Boot `createApp(deps)` on an ephemeral port with a Postgres-backed
- * `KyselyInventoryStore` in an isolated schema (§0.6). Returns the base URL plus
- * seed/onHand helpers (there is no HTTP endpoint to seed stock in Phase 0).
+ * Boot `createApp(deps)` on an ephemeral port with Postgres-backed stores in
+ * an isolated schema (§0.6). Returns the base URL plus seed/onHand helpers
+ * (there is no HTTP endpoint to seed stock).
  */
 export async function startTestServer(): Promise<TestServer> {
 	const connectionString = process.env.PG_CONNECTION_STRING;
 	if (connectionString === undefined) throw new Error("PG_CONNECTION_STRING is not set");
 	const iso = await createIsolatedPgSchema(connectionString, { poolMax: 8 });
 	const db = iso.db;
+	const clock = new FixedClock(new Date("2026-07-10T00:00:00.000Z"));
 
-	const store = new KyselyInventoryStore({
-		db,
-		idGen: uuidIdGen,
-		clock: new FixedClock(new Date("2026-07-10T00:00:00.000Z")),
-	});
-	const app = createApp({ store });
+	const store = new KyselyInventoryStore({ db, idGen: uuidIdGen, clock });
+	const productCommerce = new KyselyProductCommerceStore({ db, clock });
+	const app = createApp({ store, productCommerce });
 
 	const server = await new Promise<ReturnType<typeof serve>>((resolve) => {
 		const s = serve({ fetch: app.fetch, port: 0 }, () => resolve(s));

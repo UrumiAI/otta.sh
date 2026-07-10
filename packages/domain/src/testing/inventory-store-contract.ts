@@ -155,5 +155,33 @@ export function inventoryStoreContract(
 			expect(again).toEqual(healed);
 			expect(await h.onHand("SKU-1")).toBe(3);
 		});
+
+		// Phase 1 §8 Risk 4 — additive create-if-absent seed, not a reserve/commit/
+		// release path. Natural key = sku; no idempotencyKey (see the port doc).
+		test("seedOnHand creates on_hand once for a new sku", async () => {
+			const h = await makeStore();
+			await h.store.seedOnHand("SKU-NEW", 7);
+			expect(await h.onHand("SKU-NEW")).toBe(7);
+		});
+
+		test("seedOnHand re-seeding an existing sku is a no-op that never clobbers the current on_hand", async () => {
+			const h = await makeStore();
+			await h.seed("SKU-1", 5);
+			await h.store.seedOnHand("SKU-1", 999);
+			expect(await h.onHand("SKU-1")).toBe(5);
+		});
+
+		test("seedOnHand does not clobber on_hand already decremented by a reserve", async () => {
+			const h = await makeStore();
+			await h.seed("SKU-1", 5);
+			const result = await h.store.reserve("SKU-1", 2, idempotencyKey("k1"));
+			expect(result.ok).toBe(true);
+			expect(await h.onHand("SKU-1")).toBe(3);
+
+			// A re-seed attempt (e.g. a re-save of the already-priced product) must
+			// never overwrite the live, already-decremented on_hand.
+			await h.store.seedOnHand("SKU-1", 999);
+			expect(await h.onHand("SKU-1")).toBe(3);
+		});
 	});
 }

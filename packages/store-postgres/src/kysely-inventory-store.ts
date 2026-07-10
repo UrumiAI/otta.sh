@@ -132,6 +132,24 @@ export class KyselyInventoryStore implements InventoryStore {
 		});
 	}
 
+	/**
+	 * Additive (Phase 1 §8 Risk 4): create-if-absent initial stock write, a
+	 * single portable statement — `INSERT … ON CONFLICT (sku) DO NOTHING` —
+	 * NOT part of the reserve/commit/release finalize choreography. It can
+	 * never clobber a concurrent reserve/release/adjust because a conflict
+	 * leaves the existing row untouched.
+	 */
+	async seedOnHand(sku: string, qty: number): Promise<void> {
+		if (!Number.isSafeInteger(qty) || qty < 0) {
+			throw new RangeError(`seedOnHand() requires a non-negative integer, got ${String(qty)}`);
+		}
+		await this.#db
+			.insertInto("inventory")
+			.values({ sku, on_hand: qty })
+			.onConflict((oc) => oc.column("sku").doNothing())
+			.execute();
+	}
+
 	// -- internals ------------------------------------------------------------
 
 	async #resolveState(

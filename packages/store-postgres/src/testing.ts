@@ -37,7 +37,12 @@ export async function createIsolatedPgSchema(
 		options: `-c search_path=${schema}`,
 	});
 	const db = makePostgresDb(pool);
-	await migrateToLatest(db);
+	// Pin kysely's migration bookkeeping tables to THIS schema — without it,
+	// the Migrator's table-existence check matches by name across ALL schemas,
+	// so any concurrently-alive (or leftover) test schema poisons the
+	// migration ("relation kysely_migration_lock does not exist"); see
+	// MigrateToLatestOptions.migrationTableSchema.
+	await migrateToLatest(db, { migrationTableSchema: schema });
 
 	return {
 		db,

@@ -1,7 +1,12 @@
-import type { InventoryStoreHarness } from "@urumi/domain/testing";
+import type { InventoryStoreHarness, ProductCommerceStoreHarness } from "@urumi/domain/testing";
 import { CountingIdGen, FixedClock } from "@urumi/domain/testing";
 import type { Kysely } from "kysely";
-import { KyselyInventoryStore, makeSqliteDb, migrateToLatest } from "../src/index.js";
+import {
+	KyselyInventoryStore,
+	KyselyProductCommerceStore,
+	makeSqliteDb,
+	migrateToLatest,
+} from "../src/index.js";
 import type { Database } from "../src/schema.js";
 import { createIsolatedPgSchema } from "../src/testing.js";
 
@@ -76,4 +81,30 @@ export async function makePgHarness(): Promise<DialectHarness> {
 	const iso = await createIsolatedPgSchema(connectionString, { poolMax: 4 });
 	cleanups.push(() => iso.teardown());
 	return buildHarness(iso.db);
+}
+
+// -- Phase 1: ProductCommerceStore harness ----------------------------------
+
+function buildProductCommerceHarness(db: Kysely<Database>): ProductCommerceStoreHarness {
+	const clock = new FixedClock(new Date("2026-07-10T00:00:00.000Z"));
+	return { store: new KyselyProductCommerceStore({ db, clock }) };
+}
+
+/** Fresh, isolated in-memory SQLite db, migrated to latest. */
+export async function makeSqliteProductCommerceHarness(): Promise<ProductCommerceStoreHarness> {
+	const db = makeSqliteDb(":memory:");
+	await migrateToLatest(db);
+	cleanups.push(async () => {
+		await db.destroy();
+	});
+	return buildProductCommerceHarness(db);
+}
+
+/** Fresh, isolated Postgres schema per test (§8 R7) via the shared helper. */
+export async function makePgProductCommerceHarness(): Promise<ProductCommerceStoreHarness> {
+	const connectionString = process.env.PG_CONNECTION_STRING;
+	if (connectionString === undefined) throw new Error("PG_CONNECTION_STRING is not set");
+	const iso = await createIsolatedPgSchema(connectionString, { poolMax: 4 });
+	cleanups.push(() => iso.teardown());
+	return buildProductCommerceHarness(iso.db);
 }

@@ -18,6 +18,24 @@ module.exports = {
 				path: "(node_modules/(pg|pg-pool|kysely|better-sqlite3|hono|node-fetch|undici)(/|$)|^(pg|pg-pool|kysely|better-sqlite3|hono|node-fetch|undici)(/|$)|^(node:)?(http|https)(/|$)|^packages/(store-[^/]+|service|plugin)/)",
 			},
 		},
+		{
+			name: "plugin-is-sandbox-clean",
+			comment:
+				"@urumi/plugin's src (loaded inside the workerd sandbox) has NO DB/" +
+				"storage/filesystem/process/network-client surface — its only egress " +
+				"is the injected ctx.http (DEVELOPMENT.md §5, sandbox-clean guard). " +
+				"The forbidden list is a superset of domain-is-io-free's, plus " +
+				"HTTP/WS client libs (undici, node-fetch, axios, ws). Test helpers " +
+				"(test/) are exempt — they run in Node, driving the sandbox from " +
+				"outside it. Complemented by the direct-fetch grep guard in " +
+				"packages/plugin/test/sandbox-clean-guard.test.ts (depcruise can't " +
+				"see ambient globals like workerd's own fetch).",
+			severity: "error",
+			from: { path: "^packages/plugin/src" },
+			to: {
+				path: "(node_modules/(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|^(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|^node:(fs|child_process|net|http|https|os|dgram|dns|tls|worker_threads|cluster|vm)(/|$)|^packages/(store-[^/]+|service)/)",
+			},
+		},
 	],
 	options: {
 		doNotFollow: { path: "node_modules" },

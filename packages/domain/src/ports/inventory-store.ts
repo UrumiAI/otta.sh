@@ -16,6 +16,15 @@ export interface InventoryStore {
 	reserve(sku: string, qty: number, key: IdempotencyKey): Promise<ReserveResult>;
 	commit(reservationId: string): Promise<void>;
 	release(reservationId: string): Promise<void>;
+
+	// Additive (Phase 1 §7/§8 Risk 4) — a dedicated create-if-absent initial
+	// stock write, NOT part of the reserve/commit/release authority path.
+	// `INSERT … ON CONFLICT (sku) DO NOTHING` shape: seeding a new sku creates
+	// it; re-seeding an existing sku (including one already decremented by a
+	// `reserve`) is a no-op that never clobbers the current `on_hand`. Its
+	// natural key is `sku` — deliberately no `idempotencyKey` (the
+	// create-if-absent guard IS the idempotency; see Phase 1 plan §8 Risk 4).
+	seedOnHand(sku: string, qty: number): Promise<void>;
 }
 
 export type ReserveResult =
