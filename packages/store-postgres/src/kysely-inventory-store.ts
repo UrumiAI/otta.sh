@@ -148,6 +148,70 @@ export class KyselyInventoryStore implements InventoryStore {
 			.values({ sku, on_hand: qty })
 			.onConflict((oc) => oc.column("sku").doNothing())
 			.execute();
+	async adjust(
+		reservationId: string,
+		newQty: number,
+		_key: IdempotencyKey,
+	): Promise<ReserveResult> {
+		if (!Number.isSafeInteger(newQty) || newQty <= 0) {
+			throw new RangeError(`adjust() requires a positive integer newQty, got ${String(newQty)}`);
+		}
+		// Short finalize transaction (mirrors `reserve`): couple the conditional
+		// inventory movement with the reservation-qty change so the reservation
+		// qty never moves without the matching durable stock movement. Idempotent
+		// by absolute `newQty` — a replay reads the already-applied qty, computes a
+		// zero delta, and is a stable no-op.
+		return this.#db.transaction().execute<ReserveResult>(async (trx) => {
+			const row = await trx
+				.selectFrom("reservations")
+				.select(["sku", "qty", "state"])
+				.where("id", "=", reservationId)
+				.executeTakeFirst();
+			if (row === undefined) {
+				throw new Error(`unknown reservation: ${reservationId}`);
+			}
+			if (row.state !== "held") {
+				// Cart mutations are fenced to `held` upstream; a non-`held` hold here
+				// is a caller invariant violation, never a silent stock movement.
+				throw new Error(`cannot adjust reservation ${reservationId} in state ${row.state}`);
+			}
+
+			const delta = newQty - row.qty;
+			if (delta === 0) return { ok: true, reservationId };
+
+			if (delta > 0) {
+				// Increase: oversell-critical single conditional decrement of the delta.
+				const decremented = await trx
+					.updateTable("inventory")
+					.set({ on_hand: sql<number>`on_hand - ${delta}` })
+					.where("sku", "=", row.sku)
+					.where("on_hand", ">=", delta)
+					.returning("on_hand")
+					.executeTakeFirst();
+				if (decremented === undefined) return { ok: false, reason: "OUT_OF_STOCK" };
+				await trx
+					.updateTable("reservations")
+					.set({ qty: newQty })
+					.where("id", "=", reservationId)
+					.where("state", "=", "held")
+					.execute();
+				return { ok: true, reservationId };
+			}
+
+			// Decrease: unconditional partial release, always succeeds.
+			await trx
+				.updateTable("inventory")
+				.set({ on_hand: sql<number>`on_hand + ${-delta}` })
+				.where("sku", "=", row.sku)
+				.execute();
+			await trx
+				.updateTable("reservations")
+				.set({ qty: newQty })
+				.where("id", "=", reservationId)
+				.where("state", "=", "held")
+				.execute();
+			return { ok: true, reservationId };
+		});
 	}
 
 	// -- internals ------------------------------------------------------------

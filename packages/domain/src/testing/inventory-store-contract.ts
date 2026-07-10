@@ -131,6 +131,58 @@ export function inventoryStoreContract(
 			expect(await h.onHand("SKU-1")).toBe(3);
 		});
 
+		test("adjust up reserves the delta and decrements on_hand", async () => {
+			const h = await makeStore();
+			await h.seed("SKU-1", 5);
+			const r = await h.store.reserve("SKU-1", 2, idempotencyKey("k1"));
+			if (!r.ok) throw new Error("seed reserve must succeed");
+			expect(await h.onHand("SKU-1")).toBe(3);
+			const up = await h.store.adjust(r.reservationId, 4, idempotencyKey("a1"));
+			expect(up).toEqual({ ok: true, reservationId: r.reservationId });
+			expect(await h.onHand("SKU-1")).toBe(1);
+		});
+
+		test("adjust up beyond stock returns OUT_OF_STOCK and changes nothing", async () => {
+			const h = await makeStore();
+			await h.seed("SKU-1", 5);
+			const r = await h.store.reserve("SKU-1", 4, idempotencyKey("k1"));
+			if (!r.ok) throw new Error("seed reserve must succeed");
+			expect(await h.onHand("SKU-1")).toBe(1);
+			// Delta of 2 exceeds the 1 remaining on hand.
+			const up = await h.store.adjust(r.reservationId, 6, idempotencyKey("a1"));
+			expect(up).toEqual({ ok: false, reason: "OUT_OF_STOCK" });
+			expect(await h.onHand("SKU-1")).toBe(1);
+			// The reservation qty is unchanged: a later adjust *down* to 2 returns
+			// exactly the 2 units held above 2 (proving qty stayed at 4).
+			const down = await h.store.adjust(r.reservationId, 2, idempotencyKey("a2"));
+			expect(down.ok).toBe(true);
+			expect(await h.onHand("SKU-1")).toBe(3);
+		});
+
+		test("adjust down returns stock and always succeeds", async () => {
+			const h = await makeStore();
+			await h.seed("SKU-1", 5);
+			const r = await h.store.reserve("SKU-1", 4, idempotencyKey("k1"));
+			if (!r.ok) throw new Error("seed reserve must succeed");
+			expect(await h.onHand("SKU-1")).toBe(1);
+			const down = await h.store.adjust(r.reservationId, 1, idempotencyKey("a1"));
+			expect(down).toEqual({ ok: true, reservationId: r.reservationId });
+			expect(await h.onHand("SKU-1")).toBe(4);
+		});
+
+		test("adjust replayed with the same target applies the delta exactly once", async () => {
+			const h = await makeStore();
+			await h.seed("SKU-1", 5);
+			const r = await h.store.reserve("SKU-1", 2, idempotencyKey("k1"));
+			if (!r.ok) throw new Error("seed reserve must succeed");
+			const first = await h.store.adjust(r.reservationId, 4, idempotencyKey("a1"));
+			const replay = await h.store.adjust(r.reservationId, 4, idempotencyKey("a1"));
+			expect(first.ok).toBe(true);
+			expect(replay).toEqual(first);
+			// Decremented once (5 → 3 on reserve → 1 on adjust), not twice.
+			expect(await h.onHand("SKU-1")).toBe(1);
+		});
+
 		test("reserve heals a reservation abandoned in 'pending' before finalize (crash window W1) on same-key replay", async () => {
 			const h = await makeStore();
 			// This case only applies to stores that expose the abandon-pending hook

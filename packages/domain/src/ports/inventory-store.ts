@@ -25,6 +25,17 @@ export interface InventoryStore {
 	// natural key is `sku` — deliberately no `idempotencyKey` (the
 	// create-if-absent guard IS the idempotency; see Phase 1 plan §8 Risk 4).
 	seedOnHand(sku: string, qty: number): Promise<void>;
+	// Additive (Phase 3): atomically move a *held* reservation to `newQty` and
+	// couple the change with the matching durable inventory movement, so the
+	// invariant "reservation qty changed ⟺ a durable inventory movement" holds
+	// (the same crash-window discipline as `reserve`). An *increase* is the
+	// oversell-critical single conditional decrement of the delta (may return
+	// OUT_OF_STOCK, reservation unchanged); a *decrease* is an unconditional
+	// increment (always ok). Idempotent by construction: `newQty` is absolute,
+	// so a replay computes a zero delta and is a stable no-op — the `key` carries
+	// the cart-mutation identity down but the inventory move needs no ledger.
+	// Leaves `reserve/commit/release` byte-for-byte (Phase-0 contract untouched).
+	adjust(reservationId: string, newQty: number, key: IdempotencyKey): Promise<ReserveResult>;
 }
 
 export type ReserveResult =

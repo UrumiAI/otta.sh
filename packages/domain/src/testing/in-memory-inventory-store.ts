@@ -92,6 +92,41 @@ export class InMemoryInventoryStore implements InventoryStore {
 		return this.#finalize(id);
 	}
 
+	async adjust(
+		reservationId: string,
+		newQty: number,
+		_key: IdempotencyKey,
+	): Promise<ReserveResult> {
+		if (!Number.isSafeInteger(newQty) || newQty <= 0) {
+			throw new RangeError(`adjust() requires a positive integer newQty, got ${String(newQty)}`);
+		}
+		const row = this.#mustGet(reservationId);
+		// Cart mutations are fenced to `held` reservations upstream; if one still
+		// reaches here on a non-`held` hold it is a caller invariant violation.
+		if (row.state !== "held") {
+			throw new Error(`cannot adjust reservation ${reservationId} in state ${row.state}`);
+		}
+
+		const delta = newQty - row.qty;
+		if (delta === 0) return { ok: true, reservationId }; // replay / no-op
+
+		// The qty change and the inventory movement are applied as one synchronous
+		// block — never a state where the reservation qty moved without the stock.
+		if (delta > 0) {
+			// Increase: oversell-critical conditional decrement of the delta.
+			const onHand = this.#onHand.get(row.sku) ?? 0;
+			if (onHand < delta) return { ok: false, reason: "OUT_OF_STOCK" };
+			this.#onHand.set(row.sku, onHand - delta);
+			row.qty = newQty;
+			return { ok: true, reservationId };
+		}
+
+		// Decrease: unconditional partial release, always succeeds.
+		this.#onHand.set(row.sku, (this.#onHand.get(row.sku) ?? 0) + -delta);
+		row.qty = newQty;
+		return { ok: true, reservationId };
+	}
+
 	async commit(reservationId: string): Promise<void> {
 		const row = this.#mustGet(reservationId);
 		if (row.state === "committed") return; // double-commit: no-op
