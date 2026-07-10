@@ -55,6 +55,21 @@ export interface ProductCommerce {
 	updatedAt: string;
 }
 
+// ── Phase 2: catalog batch read (plan §6) ────────────────────────────────
+// Wire item for `POST /catalog/commerce/batch` — mirrors the service's
+// ProductCommerceView DTO 1:1. Only ids that exist come back; missing ids
+// are OMITTED, never per-id errors. `inStock` is the service's own
+// single intra-DB join (§6 invariant — the plugin never makes a second
+// inventory round trip). Branding (Cents/Currency) happens one layer up,
+// at `catalog/commerce-view.ts`'s parse boundary.
+export interface ProductCommerceBatchItem {
+	productId: string;
+	sku: string;
+	price: CommerceMoney;
+	inStock: boolean;
+}
+// ── end Phase 2 catalog batch read ───────────────────────────────────────
+
 export interface CommerceClient {
 	upsertProductCommerce(
 		productId: string,
@@ -63,6 +78,12 @@ export interface CommerceClient {
 	): Promise<ProductCommerce>;
 	getProductCommerce(productId: string): Promise<ProductCommerce | null>;
 	softDeleteProductCommerce(productId: string, idempotencyKey: string): Promise<void>;
+
+	// ── Phase 2: catalog batch read (plan §6) ─────────────────────────────
+	// (A later Phase-3 task adds its cart methods below this block — keep
+	// the delimiters so the diff surfaces stay additive.)
+	getCommerceBatch(productIds: string[]): Promise<ProductCommerceBatchItem[]>;
+	// ── end Phase 2 catalog batch read ────────────────────────────────────
 }
 
 /** Structured failure — status + parsed body, so callers can distinguish
