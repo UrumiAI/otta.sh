@@ -5,3 +5,8 @@ export {
 	type InMemoryInventoryStoreOptions,
 	type ReservationState,
 } from "./in-memory-inventory-store.js";
+export {
+	inventoryStoreContract,
+	type InventoryStoreHarness,
+	type InventoryStoreContractOptions,
+} from "./inventory-store-contract.js";
