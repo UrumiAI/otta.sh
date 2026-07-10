@@ -17,6 +17,10 @@ import {
 	STOREFRONT_CART_READ_ROUTE,
 } from "./storefront/cart-routes.js";
 // ── end Phase 3 group E: cart routes ───────────────────────────────────────
+import {
+	createEntitlementDownloadHandler,
+	ENTITLEMENT_DOWNLOAD_ROUTE,
+} from "./entitlements/download-route.js";
 import { createPdpRouteHandler, STOREFRONT_PRODUCT_ROUTE } from "./storefront/pdp-route.js";
 import { createPlpRouteHandler, STOREFRONT_LIST_ROUTE } from "./storefront/plp-route.js";
 import {
@@ -26,6 +30,10 @@ import {
 	createAfterUnpublishHandler,
 } from "./sync/hooks.js";
 import type { SandboxedPlugin } from "./types.js";
+import {
+	createStripeWebhookProxyHandler,
+	STRIPE_WEBHOOK_PROXY_ROUTE,
+} from "./webhooks/stripe-proxy-route.js";
 
 /**
  * The sandboxed plugin entry (plan §5/§6). Mirrors the real EmDash
@@ -85,6 +93,17 @@ const plugin: SandboxedPlugin = {
 			public: true,
 		},
 		// ── end Phase 3 group E: cart ───────────────────────────────────────
+		// Phase 4 (§9 decision 1 / §6): PUBLIC routes. The webhook proxy is a dumb
+		// pipe (no secret) forwarding the base64-exact raw body to the service; the
+		// download route authorizes a digital delivery via the entitlement check.
+		[STRIPE_WEBHOOK_PROXY_ROUTE]: {
+			handler: createStripeWebhookProxyHandler() as never,
+			public: true,
+		},
+		[ENTITLEMENT_DOWNLOAD_ROUTE]: {
+			handler: createEntitlementDownloadHandler() as never,
+			public: true,
+		},
 	},
 };
 

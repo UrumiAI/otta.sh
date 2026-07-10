@@ -13,6 +13,9 @@ import {
 } from "@urumi/store-postgres";
 import { createIsolatedPgSchema } from "@urumi/store-postgres/testing";
 
+/** The Stripe webhook signing secret the live test service verifies against. */
+export const LIVE_STRIPE_WEBHOOK_SECRET = "whsec_plugin_live_test";
+
 export interface LiveService {
 	baseUrl: string;
 	host: string;
@@ -49,7 +52,7 @@ export async function startLiveService(): Promise<LiveService> {
 		entitlementStore,
 		paymentEventStore,
 		idGen: uuidIdGen,
-		gateways: { stripe: new StripePaymentGateway({ webhookSecret: "whsec_plugin_live_test" }) },
+		gateways: { stripe: new StripePaymentGateway({ webhookSecret: LIVE_STRIPE_WEBHOOK_SECRET }) },
 		clock,
 	});
 
