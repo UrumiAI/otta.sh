@@ -116,6 +116,31 @@ export function cartStoreContract(
 			expect(cart?.lines[0]?.qty).toBe(4);
 		});
 
+		test("adjust replay after an intervening different-key adjust is a no-op returning the recorded result and moves no stock", async () => {
+			const h = await makeHarness();
+			await h.seedStock("SKU-1", 100);
+			const cartId = await createCart(h.deps, USD);
+			const add = await addLine(h.deps, cartId, sku("SKU-1"), null, 2, idempotencyKey("kAdd"));
+			if (!add.ok) throw new Error("seed add must succeed");
+			// keyA: 2 → 3, then keyB: 3 → 5. On-hand: 100 → 98 → 97 → 95.
+			const a = await updateLine(h.deps, cartId, add.line.lineId, 3, idempotencyKey("keyA"));
+			const b = await updateLine(h.deps, cartId, add.line.lineId, 5, idempotencyKey("keyB"));
+			expect(a.ok && b.ok).toBe(true);
+			expect(await h.onHand("SKU-1")).toBe(95);
+
+			// A LATE retry of keyA is ledger-first: it returns keyA's recorded
+			// result (qty 3, the original response), re-applies NOTHING — no stock
+			// movement, no reservation/line split-brain.
+			const stale = await updateLine(h.deps, cartId, add.line.lineId, 3, idempotencyKey("keyA"));
+			expect(stale.ok).toBe(true);
+			if (!stale.ok) return;
+			expect(stale.line.qty).toBe(3); // the recorded original response
+			expect(await h.onHand("SKU-1")).toBe(95); // moved nothing
+			// Current truth is untouched: the line and its hold still carry 5.
+			const cart = await getCart(h.deps, cartId);
+			expect(cart?.lines[0]?.qty).toBe(5);
+		});
+
 		test("decrease partial-releases and always succeeds", async () => {
 			const h = await makeHarness();
 			await h.seedStock("SKU-1", 5);

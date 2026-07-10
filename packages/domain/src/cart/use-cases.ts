@@ -1,14 +1,18 @@
 import type { Currency } from "../money/cents.js";
 import type { IdempotencyKey, Sku } from "../money/ids.js";
-import type { Cart, CartLine, CartStore } from "../ports/cart-store.js";
+import type { Cart, CartLine, CartStore, RecordedCartMutation } from "../ports/cart-store.js";
 import type { Clock } from "../ports/clock.js";
-import type { InventoryStore } from "../ports/inventory-store.js";
+import { type InventoryStore, ReservationNotHeldError } from "../ports/inventory-store.js";
 
 /**
  * IO-free cart orchestration over `CartStore` + `InventoryStore` + `Clock`
- * (Phase 3 §6). Partial failure between "reserve/adjust succeeded" and "cart
- * line written" is healed by idempotency (a replay recovers) + TTL (a dangling
- * hold is reaped) — no cross-store interactive transaction (D1 can't).
+ * (Phase 3 §6), **ledger-first** (§4): every mutation consults, then claims, its
+ * `idempotencyKey` in the `cart_mutations` ledger BEFORE any inventory movement.
+ * A completed entry short-circuits to the recorded result — so a stale replay
+ * arriving after intervening mutations re-applies nothing — and an incomplete
+ * entry (a crashed/in-flight peer) resumes the choreography, whose every step is
+ * itself idempotent. Partial failure between steps is healed by that resumption
+ * plus the TTL sweep — no cross-store interactive transaction (D1 can't).
  */
 
 /** 15 minutes — the default hold TTL (§5), configurable per deployment. */
@@ -42,6 +46,10 @@ function deadline(deps: CartDeps): string {
 	return new Date(deps.clock.now().getTime() + ttl(deps)).toISOString();
 }
 
+function cutoffIso(deps: CartDeps, now: Date): string {
+	return new Date(now.getTime() - ttl(deps)).toISOString();
+}
+
 function isExpiredHeld(
 	line: CartLine,
 	nowIso: string,
@@ -61,29 +69,35 @@ export async function createCart(deps: CartDeps, currency: Currency): Promise<st
 /**
  * Read a cart, running **lazy expiry first** (§5): any of this cart's held lines
  * whose hold has lapsed is released and dropped before the caller sees it, so a
- * shopper never acts on stock they no longer hold. The release is guarded and
- * idempotent, so a lazy read racing the scheduled sweep never double-returns.
+ * shopper never acts on stock they no longer hold. The release is the store's
+ * guarded `expireHold` flip, which re-checks the deadline atomically — a lazy
+ * read racing the sweep never double-returns, and one racing a concurrent
+ * TTL-reset (or checkout) reaps nothing and throws nothing.
  */
 export async function getCart(deps: CartDeps, cartId: string): Promise<Cart | null> {
 	const cart = await deps.cartStore.get(cartId);
 	if (cart === null) return null;
 
-	const nowIso = deps.clock.now().toISOString();
+	const now = deps.clock.now();
+	const nowIso = now.toISOString();
+	const cutoff = cutoffIso(deps, now);
 	let expiredAny = false;
 	for (const line of cart.lines) {
 		if (isExpiredHeld(line, nowIso)) {
-			await deps.inventoryStore.release(line.reservationId);
-			await deps.cartStore.releaseExpired(line.reservationId);
-			expiredAny = true;
+			const won = await deps.cartStore.expireHold(line.reservationId, nowIso, cutoff);
+			expiredAny = expiredAny || won;
 		}
 	}
 	return expiredAny ? deps.cartStore.get(cartId) : cart;
 }
 
 /**
- * Add `{sku, qty}` to a cart: reserve via the atomic inventory port, then record
- * the line. `OUT_OF_STOCK` writes **no** line. Idempotent: reserve is keyed and
- * the ledger dedupes the line write, so a double-click decrements once.
+ * Add `{sku, qty}` to a cart. Ledger-first: a completed replay returns the
+ * recorded line; otherwise claim the key, reserve via the atomic inventory port,
+ * then complete the line. `OUT_OF_STOCK` writes **no** line (the claim stays
+ * incomplete; a replay resumes and re-reads reserve's recorded `failed` state).
+ * The pre-reserve claim marks the hold cart-originated so a crash between
+ * reserve and the line write leaves a hold the sweep can identify and reap.
  */
 export async function addLine(
 	deps: CartDeps,
@@ -93,8 +107,16 @@ export async function addLine(
 	qty: number,
 	key: IdempotencyKey,
 ): Promise<AddLineResult> {
+	const recorded = await deps.cartStore.recordedMutation(key);
+	if (recorded !== null && recorded.completed) return replayLine(deps, cartId, recorded);
+
 	const guard = await guardActiveCart(deps, cartId);
 	if (!guard.ok) return guard;
+
+	const claim = await deps.cartStore.claimMutation({ key, cartId, kind: "add" });
+	if (!claim.claimed && claim.recorded.completed) return replayLine(deps, cartId, claim.recorded);
+	// Claim won, or lost to an incomplete (crashed/in-flight) peer: resume — every
+	// step below is idempotent (reserve replays by state; upsertLine by ledger).
 
 	const reserved = await deps.inventoryStore.reserve(sku, qty, key);
 	if (!reserved.ok) return { ok: false, reason: "OUT_OF_STOCK" };
@@ -112,11 +134,14 @@ export async function addLine(
 }
 
 /**
- * Change a line to `newQty` via **delta reserve / partial release** (§4). Fenced
- * guard-first: reject a non-`active` cart (`CART_CHECKED_OUT`) or a line whose
- * hold is no longer `held` (`LINE_CHECKED_OUT`) **before** touching inventory. An
- * increase that outruns stock leaves the line untouched and reports
- * `OUT_OF_STOCK`.
+ * Change a line to `newQty` via **delta reserve / partial release** (§4).
+ * Ledger-first (a completed replay short-circuits to the recorded result, moving
+ * no stock), then fenced guard-first: reject a non-`active` cart
+ * (`CART_CHECKED_OUT`) or a line whose hold is no longer `held`
+ * (`LINE_CHECKED_OUT`) **before** touching inventory — and `adjust` itself
+ * re-verifies `held` inside its guarded CAS, so a checkout racing this call
+ * surfaces as `LINE_CHECKED_OUT`, never a leaked movement. An increase that
+ * outruns stock leaves the line untouched and reports `OUT_OF_STOCK`.
  */
 export async function updateLine(
 	deps: CartDeps,
@@ -125,6 +150,9 @@ export async function updateLine(
 	newQty: number,
 	key: IdempotencyKey,
 ): Promise<UpdateLineResult> {
+	const recorded = await deps.cartStore.recordedMutation(key);
+	if (recorded !== null && recorded.completed) return replayLine(deps, cartId, recorded);
+
 	const guard = await guardActiveCart(deps, cartId);
 	if (!guard.ok) return guard;
 
@@ -134,7 +162,18 @@ export async function updateLine(
 		return { ok: false, reason: "LINE_CHECKED_OUT" };
 	}
 
-	const adjusted = await deps.inventoryStore.adjust(line.reservationId, newQty, key);
+	const claim = await deps.cartStore.claimMutation({ key, cartId, kind: "adjust", lineId });
+	if (!claim.claimed && claim.recorded.completed) return replayLine(deps, cartId, claim.recorded);
+
+	let adjusted;
+	try {
+		adjusted = await deps.inventoryStore.adjust(line.reservationId, newQty, key);
+	} catch (err) {
+		// The hold left `held` between the fence read and the guarded CAS (e.g. a
+		// racing checkout adopted it): typed rejection, no stock moved.
+		if (err instanceof ReservationNotHeldError) return { ok: false, reason: "LINE_CHECKED_OUT" };
+		throw err;
+	}
 	if (!adjusted.ok) return { ok: false, reason: "OUT_OF_STOCK" };
 
 	const updated = await deps.cartStore.adjustLine({
@@ -148,9 +187,12 @@ export async function updateLine(
 }
 
 /**
- * Remove a line: release the whole (held) reservation, then drop the line.
- * Double-remove is a no-op. Fenced: a line whose hold is no longer `held`
- * (adopted by a Phase-4 order) is `LINE_CHECKED_OUT` and never released.
+ * Remove a line: claim the key, release the (held) reservation, then drop the
+ * line and complete the claim. Double-remove is a no-op; a replay of a remove
+ * that crashed after `release` but before the line delete finds the reservation
+ * `released` and COMPLETES the removal (never a spurious `LINE_CHECKED_OUT`).
+ * Fenced: a hold that is `committed`/`adopted` (a Phase-4 order owns it) is
+ * `LINE_CHECKED_OUT` and never released.
  */
 export async function removeLine(
 	deps: CartDeps,
@@ -158,6 +200,9 @@ export async function removeLine(
 	lineId: string,
 	key: IdempotencyKey,
 ): Promise<RemoveLineResult> {
+	const recorded = await deps.cartStore.recordedMutation(key);
+	if (recorded !== null && recorded.completed) return { ok: true };
+
 	const guard = await guardActiveCart(deps, cartId);
 	if (!guard.ok) return guard;
 
@@ -165,29 +210,39 @@ export async function removeLine(
 	if (line === undefined) return { ok: true }; // already gone: idempotent no-op
 
 	if (line.reservationId !== null) {
-		if (line.reservationState !== "held") return { ok: false, reason: "LINE_CHECKED_OUT" };
-		await deps.inventoryStore.release(line.reservationId);
+		// `held` → release it; `released` → a crashed/expired remove already freed
+		// the stock, so the removal is completable; anything else (committed /
+		// adopted / …) is no longer the cart's to touch.
+		if (line.reservationState === "held") {
+			await deps.cartStore.claimMutation({ key, cartId, kind: "remove", lineId });
+			await deps.inventoryStore.release(line.reservationId);
+		} else if (line.reservationState !== "released") {
+			return { ok: false, reason: "LINE_CHECKED_OUT" };
+		}
 	}
 	await deps.cartStore.removeLine(cartId, lineId, key);
 	return { ok: true };
 }
 
 /**
- * Reclaim every globally-expired hold (the scheduled sweep §5). Shares the exact
- * guarded, idempotent release path with lazy-on-read, so the two racing the same
- * reservation cannot double-return stock. Returns the count reclaimed.
+ * Reclaim every globally-expired hold (the scheduled sweep §5) via the store's
+ * guarded `expireHold` flip — the exact same atomic path lazy-on-read uses, so
+ * the two racing the same reservation cannot double-return, and a hold whose
+ * TTL was reset between listing and flipping is left alone. Returns the count
+ * actually reclaimed (flips won).
  */
 export async function expireHolds(deps: CartDeps, at?: Date): Promise<number> {
 	const now = at ?? deps.clock.now();
 	const nowIso = now.toISOString();
-	const cutoff = new Date(now.getTime() - ttl(deps)).toISOString();
+	const cutoff = cutoffIso(deps, now);
 
 	const expired = await deps.cartStore.listExpired(nowIso, cutoff);
+	let reclaimed = 0;
 	for (const hold of expired) {
-		await deps.inventoryStore.release(hold.reservationId);
-		await deps.cartStore.releaseExpired(hold.reservationId);
+		const won = await deps.cartStore.expireHold(hold.reservationId, nowIso, cutoff);
+		if (won) reclaimed++;
 	}
-	return expired.length;
+	return reclaimed;
 }
 
 type ActiveCartGuard = { ok: true; cart: Cart } | { ok: false; reason: CartFailure };
@@ -198,4 +253,22 @@ async function guardActiveCart(deps: CartDeps, cartId: string): Promise<ActiveCa
 	if (cart === null) return { ok: false, reason: "CART_NOT_FOUND" };
 	if (cart.state !== "active") return { ok: false, reason: "CART_CHECKED_OUT" };
 	return { ok: true, cart };
+}
+
+/**
+ * Build the response for a completed ledger replay: the recorded line with its
+ * RECORDED qty (the original response), regardless of later mutations — plan §4:
+ * "a replay looks up the row and returns its recorded result instead of
+ * re-applying". If the line was since removed, the replay cannot (and must not)
+ * recreate it: report `LINE_NOT_FOUND` rather than resurrect a released hold.
+ */
+async function replayLine(
+	deps: CartDeps,
+	cartId: string,
+	recorded: RecordedCartMutation,
+): Promise<{ ok: true; line: CartLine } | { ok: false; reason: CartFailure }> {
+	const cart = await deps.cartStore.get(cartId);
+	const line = cart?.lines.find((l) => l.lineId === recorded.lineId);
+	if (line === undefined) return { ok: false, reason: "LINE_NOT_FOUND" };
+	return { ok: true, line: { ...line, qty: recorded.resultingQty ?? line.qty } };
 }

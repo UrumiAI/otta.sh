@@ -46,10 +46,16 @@ export const migration0003Cart: Migration = {
 			.addUniqueConstraint("cart_lines_cart_id_sku_unique", ["cart_id", "sku"])
 			.execute();
 
-		// Dedicated cart-mutation idempotency ledger (§4): one row per accepted
-		// add/adjust/remove, keyed uniquely on the client's idempotency key. Required
-		// (not a reuse of `reservations.idempotency_key`, which is already consumed by
-		// the original reserve and cannot guard the many adjusts over a line's life).
+		// Dedicated cart-mutation idempotency ledger (§4): one row per cart
+		// mutation, keyed uniquely on the client's idempotency key. Required (not a
+		// reuse of `reservations.idempotency_key`, which is already consumed by the
+		// original reserve and cannot guard the many adjusts over a line's life).
+		// Claim-first: the row is inserted `completed=0` BEFORE any inventory
+		// movement and flipped to 1 when the mutation's final write lands — a
+		// replay of a completed key returns the recorded result; an incomplete one
+		// resumes the (idempotent) choreography. The pre-movement claim also marks
+		// a reservation's key as cart-originated, which scopes the sweep's
+		// dangling-hold fallback to cart holds (raw reserves are never reaped).
 		await db.schema
 			.createTable("cart_mutations")
 			.addColumn("idempotency_key", "text", (col) => col.primaryKey())
@@ -57,6 +63,21 @@ export const migration0003Cart: Migration = {
 			.addColumn("line_id", "text")
 			.addColumn("kind", "text", (col) => col.notNull())
 			.addColumn("resulting_qty", "integer")
+			.addColumn("completed", "integer", (col) => col.notNull().defaultTo(0))
+			.addColumn("created_at", "text", (col) => col.notNull())
+			.execute();
+
+		// Per-mutation claim ledger for `InventoryStore.adjust` (exactly-once):
+		// the claim INSERT and the delta's inventory movement commit in ONE short
+		// transaction, so only the claim winner moves stock; a replay — even a
+		// stale one after later same-reservation adjusts — returns the recorded
+		// outcome instead of recomputing (and re-applying) a delta.
+		await db.schema
+			.createTable("inventory_adjustments")
+			.addColumn("idempotency_key", "text", (col) => col.primaryKey())
+			.addColumn("reservation_id", "text", (col) => col.notNull().references("reservations.id"))
+			.addColumn("to_qty", "integer", (col) => col.notNull().check(sql`to_qty > 0`))
+			.addColumn("outcome", "text", (col) => col.notNull())
 			.addColumn("created_at", "text", (col) => col.notNull())
 			.execute();
 	},

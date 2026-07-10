@@ -55,6 +55,26 @@ export interface CartMutationsTable {
 	line_id: string | null;
 	kind: CartMutationKind;
 	resulting_qty: number | null;
+	/** 0 = claimed (pre-movement), 1 = completed. Claim-first: the row exists
+	 *  BEFORE any inventory movement; a replay of an incomplete claim resumes. */
+	completed: number;
+	created_at: string;
+}
+
+export type AdjustOutcome = "ok" | "out_of_stock";
+
+/**
+ * Per-mutation claim ledger for `InventoryStore.adjust` — the adjust analogue of
+ * `reservations.idempotency_key` (which is already consumed by the original
+ * reserve and cannot guard the many adjusts over a hold's life). The claim
+ * INSERT and the inventory movement commit in one short transaction, so exactly
+ * one caller per key moves stock and a replay returns the recorded outcome.
+ */
+export interface InventoryAdjustmentsTable {
+	idempotency_key: string;
+	reservation_id: string;
+	to_qty: number;
+	outcome: AdjustOutcome;
 	created_at: string;
 }
 
@@ -93,4 +113,5 @@ export interface Database {
 	carts: CartsTable;
 	cart_lines: CartLinesTable;
 	cart_mutations: CartMutationsTable;
+	inventory_adjustments: InventoryAdjustmentsTable;
 }

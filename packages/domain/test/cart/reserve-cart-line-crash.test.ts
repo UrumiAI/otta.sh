@@ -6,6 +6,7 @@ import {
 	expireHolds,
 	getCart,
 	idempotencyKey,
+	removeLine,
 	sku,
 } from "@urumi/domain";
 import { describe, expect, test } from "vitest";
@@ -61,5 +62,28 @@ describe("reserve ↔ cart-line crash window (fake)", () => {
 		h.advance(DEFAULT_HOLD_TTL_MS + 60 * 1000);
 		expect(await expireHolds(h.deps)).toBe(1);
 		expect(await h.onHand("SKU-1")).toBe(5);
+	});
+
+	test("a remove that crashed after release is healed on replay: line removed, stock returned exactly once", async () => {
+		const h = makeFakeCartHarness();
+		await h.seedStock("SKU-1", 5);
+		const cartId = await createCart(h.deps, USD);
+		const add = await addLine(h.deps, cartId, sku("SKU-1"), null, 2, idempotencyKey("k1"));
+		if (!add.ok) throw new Error("add must succeed");
+		const reservationId = add.line.reservationId ?? "";
+		expect(await h.onHand("SKU-1")).toBe(3);
+
+		// Crash simulation: the remove's `release` landed (stock returned,
+		// reservation `released`) but the line delete never ran.
+		await h.inventory.release(reservationId);
+		expect(await h.onHand("SKU-1")).toBe(5);
+		expect((await getCart(h.deps, cartId))?.lines).toHaveLength(1);
+
+		// The replay finds the line with a `released` reservation and COMPLETES
+		// the removal — never a spurious LINE_CHECKED_OUT, never a second return.
+		const replay = await removeLine(h.deps, cartId, add.line.lineId, idempotencyKey("k2"));
+		expect(replay).toEqual({ ok: true });
+		expect((await getCart(h.deps, cartId))?.lines).toHaveLength(0);
+		expect(await h.onHand("SKU-1")).toBe(5); // returned exactly once
 	});
 });

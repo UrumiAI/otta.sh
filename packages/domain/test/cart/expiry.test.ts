@@ -69,4 +69,44 @@ describe("hold expiry (fake)", () => {
 		expect(await expireHolds(h.deps)).toBe(1);
 		expect(await h.onHand("SKU-1")).toBe(5);
 	});
+
+	test("expiry flip re-checks expires_at: a hold TTL-reset between listing and release is not reaped", async () => {
+		const h = makeFakeCartHarness();
+		await h.seedStock("SKU-1", 5);
+		const cartId = await createCart(h.deps, USD);
+		const add = await addLine(h.deps, cartId, sku("SKU-1"), null, 2, idempotencyKey("k1"));
+		if (!add.ok) throw new Error("add must succeed");
+		const reservationId = add.line.reservationId ?? "";
+
+		// Script the sweep's TOCTOU window by hand: list at a `now` where the hold
+		// looks expired…
+		h.advance(PAST_TTL_MS);
+		const staleNow = h.deps.clock.now().toISOString();
+		const listed = await h.cartStore.listExpired(staleNow, staleNow);
+		expect(listed).toEqual([{ reservationId }]);
+
+		// …then an active shopper's mutation resets the hold before the release
+		// lands. The guarded flip re-checks the deadline atomically: NOT reaped.
+		const up = await updateLine(h.deps, cartId, add.line.lineId, 3, idempotencyKey("k2"));
+		if (!up.ok) throw new Error("adjust must succeed");
+		const won = await h.cartStore.expireHold(reservationId, staleNow, staleNow);
+		expect(won).toBe(false);
+		expect(await h.onHand("SKU-1")).toBe(2); // 5 − 3: the hold is intact
+		expect((await getCart(h.deps, cartId))?.lines).toHaveLength(1);
+	});
+
+	test("a raw non-cart hold older than the TTL is not reaped by the cart sweep", async () => {
+		const h = makeFakeCartHarness();
+		await h.seedStock("SKU-1", 5);
+		// A direct Phase-0 reserve (no cart involvement, no ledger entry, no
+		// stamped deadline) — e.g. an admin/API hold awaiting an explicit
+		// commit/release. The cart sweep must never silently release it.
+		const raw = await h.inventory.reserve("SKU-1", 2, idempotencyKey("raw-1"));
+		if (!raw.ok) throw new Error("raw reserve must succeed");
+
+		h.advance(PAST_TTL_MS * 10);
+		expect(await expireHolds(h.deps)).toBe(0);
+		expect(await h.onHand("SKU-1")).toBe(3); // still held
+		expect(h.inventory.reservationState(raw.reservationId)).toBe("held");
+	});
 });

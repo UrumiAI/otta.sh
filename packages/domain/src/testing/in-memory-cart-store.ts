@@ -1,11 +1,16 @@
 import type { Currency } from "../money/cents.js";
+import type { IdempotencyKey } from "../money/ids.js";
 import type {
 	AdjustLineInput,
 	Cart,
 	CartLine,
+	CartMutationKind,
 	CartState,
 	CartStore,
+	ClaimMutationInput,
+	ClaimMutationResult,
 	ExpiredHold,
+	RecordedCartMutation,
 	ReservationLifecycle,
 	UpsertLineInput,
 } from "../ports/cart-store.js";
@@ -27,12 +32,23 @@ interface LineRow {
 	expiresAt: string | null;
 }
 
-/** Ledger-free hold deadline the cart stamped on a reservation (mirrors the
- *  real store's `reservations.expires_at`), keyed by reservation id. */
+/** Hold deadline the cart stamped on a reservation (mirrors the real store's
+ *  `reservations.expires_at`), keyed by reservation id. Raw (non-cart) reserves
+ *  never appear here — the sweep scoping the real store gets from its
+ *  `cart_mutations` ledger JOIN. */
 interface HoldRow {
 	reservationId: string;
 	sku: string;
 	expiresAt: string;
+}
+
+interface LedgerRow {
+	key: string;
+	cartId: string;
+	kind: CartMutationKind;
+	lineId: string | null;
+	resultingQty: number | null;
+	completed: boolean;
 }
 
 export interface InMemoryCartStoreOptions {
@@ -43,28 +59,36 @@ export interface InMemoryCartStoreOptions {
 	 * same reservation lifecycle the inventory authority does.
 	 */
 	reservationState: (reservationId: string) => ReservationLifecycle | undefined;
+	/**
+	 * Return an expired hold's stock (the real adapter increments `on_hand` inside
+	 * the same guarded-flip transaction). Wired to the inventory fake's `release`.
+	 */
+	releaseHold: (reservationId: string) => void;
 }
 
 /**
  * IO-free `CartStore` fake — the first adapter to pass `cartStoreContract`
  * (§7 B2/B3). It models the real adapter's behavior: one line per `(cartId,
- * sku)`, a `cart_mutations` idempotency ledger, per-reservation hold deadlines,
- * and lifecycle-aware expiry. Deterministic and synchronous so the contract's
- * replay/expiry/fence cases run here before any DB.
+ * sku)`, the claim/complete `cart_mutations` idempotency ledger (ledger-first
+ * replay), per-reservation hold deadlines, and the guarded,
+ * deadline-re-checking `expireHold` flip. Deterministic and synchronous so the
+ * contract's replay/expiry/fence cases run here before any DB.
  */
 export class InMemoryCartStore implements CartStore {
 	#idGen: IdGen;
 	#reservationState: (reservationId: string) => ReservationLifecycle | undefined;
+	#releaseHold: (reservationId: string) => void;
 
 	#carts = new Map<string, CartRow>();
 	#lines = new Map<string, LineRow>();
 	#holds = new Map<string, HoldRow>();
-	/** `cart_mutations` ledger: idempotencyKey → recorded outcome. */
-	#ledger = new Map<string, { lineId: string | null }>();
+	/** `cart_mutations` ledger: idempotencyKey → claim/completion record. */
+	#ledger = new Map<string, LedgerRow>();
 
 	constructor(options: InMemoryCartStoreOptions) {
 		this.#idGen = options.idGen;
 		this.#reservationState = options.reservationState;
+		this.#releaseHold = options.releaseHold;
 	}
 
 	async create(currency: Currency): Promise<string> {
@@ -84,9 +108,30 @@ export class InMemoryCartStore implements CartStore {
 		return { cartId: cart.id, state: cart.state, currency: cart.currency, lines };
 	}
 
+	async recordedMutation(key: IdempotencyKey): Promise<RecordedCartMutation | null> {
+		const row = this.#ledger.get(key);
+		return row === undefined ? null : this.#toRecorded(row);
+	}
+
+	async claimMutation(input: ClaimMutationInput): Promise<ClaimMutationResult> {
+		const existing = this.#ledger.get(input.key);
+		if (existing !== undefined) {
+			return { claimed: false, recorded: this.#toRecorded(existing) };
+		}
+		this.#ledger.set(input.key, {
+			key: input.key,
+			cartId: input.cartId,
+			kind: input.kind,
+			lineId: input.lineId ?? null,
+			resultingQty: null,
+			completed: false,
+		});
+		return { claimed: true };
+	}
+
 	async upsertLine(input: UpsertLineInput): Promise<CartLine> {
 		const recorded = this.#ledger.get(input.key);
-		if (recorded !== undefined && recorded.lineId !== null) {
+		if (recorded !== undefined && recorded.completed && recorded.lineId !== null) {
 			return this.#toLine(this.#mustLine(recorded.lineId));
 		}
 
@@ -110,13 +155,13 @@ export class InMemoryCartStore implements CartStore {
 			sku: input.sku,
 			expiresAt: input.expiresAt,
 		});
-		this.#ledger.set(input.key, { lineId: row.id });
+		this.#complete(input.key, input.cartId, "add", row.id, input.qty);
 		return this.#toLine(row);
 	}
 
 	async adjustLine(input: AdjustLineInput): Promise<CartLine> {
 		const recorded = this.#ledger.get(input.key);
-		if (recorded !== undefined) {
+		if (recorded !== undefined && recorded.completed) {
 			return this.#toLine(this.#mustLine(input.lineId));
 		}
 
@@ -130,14 +175,15 @@ export class InMemoryCartStore implements CartStore {
 				expiresAt: input.expiresAt,
 			});
 		}
-		this.#ledger.set(input.key, { lineId: row.id });
+		this.#complete(input.key, input.cartId, "adjust", row.id, input.newQty);
 		return this.#toLine(row);
 	}
 
-	async removeLine(cartId: string, lineId: string, key: string): Promise<void> {
-		if (this.#ledger.has(key)) return; // replay: already removed
+	async removeLine(cartId: string, lineId: string, key: IdempotencyKey): Promise<void> {
+		const recorded = this.#ledger.get(key);
+		if (recorded !== undefined && recorded.completed) return; // replay: already removed
+		this.#complete(key, cartId, "remove", lineId, null);
 		const row = this.#lines.get(lineId);
-		this.#ledger.set(key, { lineId: null });
 		if (row === undefined) return; // double-remove: no-op
 		this.#lines.delete(lineId);
 		if (row.reservationId !== null) this.#holds.delete(row.reservationId);
@@ -153,11 +199,21 @@ export class InMemoryCartStore implements CartStore {
 		return out;
 	}
 
-	async releaseExpired(reservationId: string): Promise<void> {
+	async expireHold(reservationId: string, now: string, _cutoff: string): Promise<boolean> {
+		// The guarded flip, atomically re-checking the deadline (synchronous, so
+		// check + release + drop are one block like the real store's transaction):
+		// 0 rows — unknown, TTL-reset, or no longer `held` — is a quiet false.
+		const hold = this.#holds.get(reservationId);
+		if (hold === undefined) return false;
+		if (hold.expiresAt > now) return false; // TTL was reset: an active shopper
+		if (this.#reservationState(reservationId) !== "held") return false;
+
+		this.#releaseHold(reservationId); // the flip winner returns the stock…
 		this.#holds.delete(reservationId);
 		for (const [id, row] of this.#lines) {
-			if (row.reservationId === reservationId) this.#lines.delete(id);
+			if (row.reservationId === reservationId) this.#lines.delete(id); // …and drops the line
 		}
+		return true;
 	}
 
 	// -- test surface ---------------------------------------------------------
@@ -179,6 +235,27 @@ export class InMemoryCartStore implements CartStore {
 	}
 
 	// -- internals ------------------------------------------------------------
+
+	#complete(
+		key: string,
+		cartId: string,
+		kind: CartMutationKind,
+		lineId: string | null,
+		resultingQty: number | null,
+	): void {
+		this.#ledger.set(key, { key, cartId, kind, lineId, resultingQty, completed: true });
+	}
+
+	#toRecorded(row: LedgerRow): RecordedCartMutation {
+		return {
+			key: row.key as IdempotencyKey,
+			cartId: row.cartId,
+			kind: row.kind,
+			lineId: row.lineId,
+			resultingQty: row.resultingQty,
+			completed: row.completed,
+		};
+	}
 
 	#toLine(row: LineRow): CartLine {
 		return {

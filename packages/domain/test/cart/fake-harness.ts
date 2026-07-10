@@ -26,6 +26,11 @@ export function makeFakeCartHarness(): FakeCartHarness {
 				return undefined;
 			}
 		},
+		releaseHold: (id) => {
+			// Synchronous under the hood; the guarded expireHold flip already
+			// verified `held`, so this cannot throw.
+			void inventory.release(id);
+		},
 	});
 	const deps: CartDeps = { cartStore, inventoryStore: inventory, clock };
 	return {

@@ -3,16 +3,19 @@ import type {
 	Cart,
 	CartLine,
 	CartStore,
+	ClaimMutationInput,
+	ClaimMutationResult,
 	Clock,
 	Currency,
 	ExpiredHold,
 	IdempotencyKey,
 	IdGen,
+	RecordedCartMutation,
 	ReservationLifecycle,
 	UpsertLineInput,
 } from "@urumi/domain";
-import type { Kysely, Transaction } from "kysely";
-import type { Database } from "./schema.js";
+import { type Kysely, sql, type Transaction } from "kysely";
+import type { CartMutationsTable, Database } from "./schema.js";
 
 export interface KyselyCartStoreOptions {
 	db: Kysely<Database>;
@@ -23,13 +26,15 @@ export interface KyselyCartStoreOptions {
 /**
  * `CartStore` over Kysely (§4/§6), dialect-agnostic across better-sqlite3 and pg.
  *
- * Each mutation is a SHORT transaction that co-locates the cart-line write, the
- * reservation-deadline stamp (`reservations.expires_at`), and the
- * `cart_mutations` idempotency-ledger entry on one connection — the adapter-level
- * optimization §6 permits (the domain never assumes it). Cross-store atomicity
- * with `reserve`/`adjust` is instead healed by idempotency + TTL. The oversell
- * invariant lives entirely in the inventory port; the cart adds no stock-moving
- * SQL of its own beyond stamping deadlines.
+ * The `cart_mutations` ledger is claim/complete: the use-cases claim a key
+ * (`INSERT … ON CONFLICT DO NOTHING`, `completed=0`) BEFORE any inventory
+ * movement, and each mutation write here marks it `completed=1` in the same
+ * short transaction as the cart-line write and the reservation-deadline stamp —
+ * the adapter-level co-location §6 permits (the domain never assumes it).
+ * Cross-store atomicity with `reserve`/`adjust` is healed by resuming an
+ * incomplete claim + the TTL sweep. Expiry is the guarded `expireHold` flip:
+ * the `held → released` transition re-checks the deadline in the same
+ * conditional statement, and only the winner returns stock and drops lines.
  */
 export class KyselyCartStore implements CartStore {
 	readonly #db: Kysely<Database>;
@@ -92,14 +97,50 @@ export class KyselyCartStore implements CartStore {
 		};
 	}
 
+	async recordedMutation(key: IdempotencyKey): Promise<RecordedCartMutation | null> {
+		const row = await this.#db
+			.selectFrom("cart_mutations")
+			.selectAll()
+			.where("idempotency_key", "=", key)
+			.executeTakeFirst();
+		return row === undefined ? null : toRecorded(row);
+	}
+
+	async claimMutation(input: ClaimMutationInput): Promise<ClaimMutationResult> {
+		const claimed = await this.#db
+			.insertInto("cart_mutations")
+			.values({
+				idempotency_key: input.key,
+				cart_id: input.cartId,
+				line_id: input.lineId ?? null,
+				kind: input.kind,
+				resulting_qty: null,
+				completed: 0,
+				created_at: this.#clock.now().toISOString(),
+			})
+			.onConflict((oc) => oc.column("idempotency_key").doNothing())
+			.returning("idempotency_key")
+			.executeTakeFirst();
+		if (claimed !== undefined) return { claimed: true };
+
+		const existing = await this.#db
+			.selectFrom("cart_mutations")
+			.selectAll()
+			.where("idempotency_key", "=", input.key)
+			.executeTakeFirstOrThrow();
+		return { claimed: false, recorded: toRecorded(existing) };
+	}
+
 	async upsertLine(input: UpsertLineInput): Promise<CartLine> {
 		return this.#db.transaction().execute(async (trx) => {
 			const recorded = await trx
 				.selectFrom("cart_mutations")
-				.select("line_id")
+				.select(["line_id", "completed"])
 				.where("idempotency_key", "=", input.key)
 				.executeTakeFirst();
-			if (recorded?.line_id != null) return this.#lineById(trx, recorded.line_id);
+			if (recorded !== undefined && recorded.completed === 1 && recorded.line_id !== null) {
+				return this.#lineById(trx, recorded.line_id);
+			}
 
 			const now = this.#clock.now().toISOString();
 			const upserted = await trx
@@ -134,19 +175,7 @@ export class KyselyCartStore implements CartStore {
 				.where("id", "=", input.reservationId)
 				.execute();
 
-			await trx
-				.insertInto("cart_mutations")
-				.values({
-					idempotency_key: input.key,
-					cart_id: input.cartId,
-					line_id: upserted.id,
-					kind: "add",
-					resulting_qty: input.qty,
-					created_at: now,
-				})
-				.onConflict((oc) => oc.column("idempotency_key").doNothing())
-				.execute();
-
+			await this.#complete(trx, input.key, input.cartId, "add", upserted.id, input.qty);
 			return this.#lineById(trx, upserted.id);
 		});
 	}
@@ -155,10 +184,12 @@ export class KyselyCartStore implements CartStore {
 		return this.#db.transaction().execute(async (trx) => {
 			const recorded = await trx
 				.selectFrom("cart_mutations")
-				.select("line_id")
+				.select(["line_id", "completed"])
 				.where("idempotency_key", "=", input.key)
 				.executeTakeFirst();
-			if (recorded !== undefined) return this.#lineById(trx, input.lineId);
+			if (recorded !== undefined && recorded.completed === 1) {
+				return this.#lineById(trx, input.lineId);
+			}
 
 			const now = this.#clock.now().toISOString();
 			const line = await trx
@@ -167,9 +198,23 @@ export class KyselyCartStore implements CartStore {
 				.where("id", "=", input.lineId)
 				.executeTakeFirstOrThrow();
 
+			// The line qty mirrors the reservation's own qty (the inventory
+			// authority's serialized truth) when a hold exists, so racing
+			// different-key adjusts converge instead of last-writer desync.
 			await trx
 				.updateTable("cart_lines")
-				.set({ qty: input.newQty, expires_at: input.expiresAt, updated_at: now })
+				.set({
+					qty:
+						line.reservation_id === null
+							? input.newQty
+							: (eb) =>
+									eb
+										.selectFrom("reservations")
+										.select("reservations.qty")
+										.whereRef("reservations.id", "=", "cart_lines.reservation_id"),
+					expires_at: input.expiresAt,
+					updated_at: now,
+				})
 				.where("id", "=", input.lineId)
 				.execute();
 
@@ -181,19 +226,7 @@ export class KyselyCartStore implements CartStore {
 					.execute();
 			}
 
-			await trx
-				.insertInto("cart_mutations")
-				.values({
-					idempotency_key: input.key,
-					cart_id: input.cartId,
-					line_id: input.lineId,
-					kind: "adjust",
-					resulting_qty: input.newQty,
-					created_at: now,
-				})
-				.onConflict((oc) => oc.column("idempotency_key").doNothing())
-				.execute();
-
+			await this.#complete(trx, input.key, input.cartId, "adjust", input.lineId, input.newQty);
 			return this.#lineById(trx, input.lineId);
 		});
 	}
@@ -202,24 +235,12 @@ export class KyselyCartStore implements CartStore {
 		await this.#db.transaction().execute(async (trx) => {
 			const recorded = await trx
 				.selectFrom("cart_mutations")
-				.select("idempotency_key")
+				.select("completed")
 				.where("idempotency_key", "=", key)
 				.executeTakeFirst();
-			if (recorded !== undefined) return; // replay: already removed
+			if (recorded !== undefined && recorded.completed === 1) return; // replay
 
-			await trx
-				.insertInto("cart_mutations")
-				.values({
-					idempotency_key: key,
-					cart_id: cartId,
-					line_id: lineId,
-					kind: "remove",
-					resulting_qty: null,
-					created_at: this.#clock.now().toISOString(),
-				})
-				.onConflict((oc) => oc.column("idempotency_key").doNothing())
-				.execute();
-
+			await this.#complete(trx, key, cartId, "remove", lineId, null);
 			await trx
 				.deleteFrom("cart_lines")
 				.where("id", "=", lineId)
@@ -229,9 +250,12 @@ export class KyselyCartStore implements CartStore {
 	}
 
 	async listExpired(now: string, cutoff: string): Promise<ExpiredHold[]> {
-		// Every lapsed held reservation: those the cart stamped (`expires_at`
-		// passed) plus a crashed hold whose cart-line write never landed
-		// (`expires_at IS NULL`, reaped via `created_at` + TTL).
+		// Lapsed held holds: those the cart stamped (`expires_at` passed) plus a
+		// CART-ORIGINATED crashed hold whose line write never landed (`expires_at
+		// IS NULL`, reaped via `created_at` + TTL, scoped by its claim in the
+		// `cart_mutations` ledger). A raw Phase-0 reserve — held, unstamped, no
+		// ledger claim — is deliberately never listed: it awaits an explicit
+		// commit/release, not the cart sweep.
 		const rows = await this.#db
 			.selectFrom("reservations")
 			.select("id")
@@ -239,20 +263,97 @@ export class KyselyCartStore implements CartStore {
 			.where((eb) =>
 				eb.or([
 					eb.and([eb("expires_at", "is not", null), eb("expires_at", "<=", now)]),
-					eb.and([eb("expires_at", "is", null), eb("created_at", "<=", cutoff)]),
+					eb.and([
+						eb("expires_at", "is", null),
+						eb("created_at", "<=", cutoff),
+						eb.exists(
+							eb
+								.selectFrom("cart_mutations")
+								.select("cart_mutations.idempotency_key")
+								.whereRef("cart_mutations.idempotency_key", "=", "reservations.idempotency_key"),
+						),
+					]),
 				]),
 			)
 			.execute();
 		return rows.map((r) => ({ reservationId: r.id }));
 	}
 
-	async releaseExpired(reservationId: string): Promise<void> {
-		// Ledger-free line drop; the guarded stock return is the caller's
-		// `InventoryStore.release`.
-		await this.#db.deleteFrom("cart_lines").where("reservation_id", "=", reservationId).execute();
+	async expireHold(reservationId: string, now: string, cutoff: string): Promise<boolean> {
+		return this.#db.transaction().execute(async (trx) => {
+			// The guarded flip re-checks the deadline ATOMICALLY with the state
+			// transition (plan §5): a hold whose TTL was reset between listing and
+			// this statement no longer matches, and one that left `held` (adopted /
+			// released) matches nothing either. 0 rows ⇒ quietly lose (never throw):
+			// a lazy read racing the sweep, a TTL reset, or a checkout is normal.
+			const flipped = await trx
+				.updateTable("reservations")
+				.set({ state: "released" })
+				.where("id", "=", reservationId)
+				.where("state", "=", "held")
+				.where((eb) =>
+					eb.or([
+						eb.and([eb("expires_at", "is not", null), eb("expires_at", "<=", now)]),
+						eb.and([
+							eb("expires_at", "is", null),
+							eb("created_at", "<=", cutoff),
+							eb.exists(
+								eb
+									.selectFrom("cart_mutations")
+									.select("cart_mutations.idempotency_key")
+									.whereRef("cart_mutations.idempotency_key", "=", "reservations.idempotency_key"),
+							),
+						]),
+					]),
+				)
+				.returning(["qty", "sku"])
+				.executeTakeFirst();
+			if (flipped === undefined) return false;
+
+			// Only the flip winner returns the stock and drops the line(s) — all in
+			// this same transaction, so the return happens exactly once.
+			await trx
+				.updateTable("inventory")
+				.set({ on_hand: sql<number>`on_hand + ${flipped.qty}` })
+				.where("sku", "=", flipped.sku)
+				.execute();
+			await trx.deleteFrom("cart_lines").where("reservation_id", "=", reservationId).execute();
+			return true;
+		});
 	}
 
 	// -- internals ------------------------------------------------------------
+
+	/** Mark the ledger entry completed (insert-or-update: the claim may or may
+	 *  not pre-exist, e.g. legacy callers or a peer's rolled-back claim). */
+	async #complete(
+		trx: Transaction<Database>,
+		key: string,
+		cartId: string,
+		kind: "add" | "adjust" | "remove",
+		lineId: string | null,
+		resultingQty: number | null,
+	): Promise<void> {
+		await trx
+			.insertInto("cart_mutations")
+			.values({
+				idempotency_key: key,
+				cart_id: cartId,
+				line_id: lineId,
+				kind,
+				resulting_qty: resultingQty,
+				completed: 1,
+				created_at: this.#clock.now().toISOString(),
+			})
+			.onConflict((oc) =>
+				oc.column("idempotency_key").doUpdateSet({
+					line_id: lineId,
+					resulting_qty: resultingQty,
+					completed: 1,
+				}),
+			)
+			.execute();
+	}
 
 	async #lineById(trx: Transaction<Database>, lineId: string): Promise<CartLine> {
 		const row = await trx
@@ -295,4 +396,15 @@ export class KyselyCartStore implements CartStore {
 			expiresAt: row.expires_at,
 		};
 	}
+}
+
+function toRecorded(row: CartMutationsTable): RecordedCartMutation {
+	return {
+		key: row.idempotency_key as IdempotencyKey,
+		cartId: row.cart_id,
+		kind: row.kind,
+		lineId: row.line_id,
+		resultingQty: row.resulting_qty,
+		completed: row.completed === 1,
+	};
 }

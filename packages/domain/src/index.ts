@@ -10,7 +10,11 @@ export {
 	type ReservationId,
 	type Sku,
 } from "./money/ids.js";
-export type { InventoryStore, ReserveResult } from "./ports/inventory-store.js";
+export {
+	ReservationNotHeldError,
+	type InventoryStore,
+	type ReserveResult,
+} from "./ports/inventory-store.js";
 export type { OrderStore } from "./ports/order-store.js";
 export type { Clock } from "./ports/clock.js";
 export type { IdGen } from "./ports/id-gen.js";
@@ -32,9 +36,13 @@ export type {
 	AdjustLineInput,
 	Cart,
 	CartLine,
+	CartMutationKind,
 	CartState,
 	CartStore,
+	ClaimMutationInput,
+	ClaimMutationResult,
 	ExpiredHold,
+	RecordedCartMutation,
 	ReservationLifecycle,
 	UpsertLineInput,
 } from "./ports/cart-store.js";

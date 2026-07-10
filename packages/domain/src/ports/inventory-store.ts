@@ -31,13 +31,33 @@ export interface InventoryStore {
 	// (the same crash-window discipline as `reserve`). An *increase* is the
 	// oversell-critical single conditional decrement of the delta (may return
 	// OUT_OF_STOCK, reservation unchanged); a *decrease* is an unconditional
-	// increment (always ok). Idempotent by construction: `newQty` is absolute,
-	// so a replay computes a zero delta and is a stable no-op — the `key` carries
-	// the cart-mutation identity down but the inventory move needs no ledger.
-	// Leaves `reserve/commit/release` byte-for-byte (Phase-0 contract untouched).
+	// increment (always ok).
+	//
+	// Exactly-once, ledger-first: every call claims `key` in a per-mutation
+	// idempotency ledger BEFORE any inventory movement (mirroring `reserve`'s
+	// `INSERT … ON CONFLICT` claim discipline). A replay — even a stale one
+	// arriving after later same-reservation adjusts — returns the RECORDED
+	// result (ok or OUT_OF_STOCK) and moves no stock; only the claim winner
+	// moves inventory. The qty change is a guarded CAS scoped to `state='held'`
+	// executed before the movement in the same short transaction (guard-first):
+	// a hold that left `held` (adopted/committed/released) throws
+	// `ReservationNotHeldError`, never a silent movement. Leaves
+	// `reserve/commit/release` byte-for-byte (Phase-0 contract untouched).
 	adjust(reservationId: string, newQty: number, key: IdempotencyKey): Promise<ReserveResult>;
 }
 
 export type ReserveResult =
 	| { ok: true; reservationId: string }
 	| { ok: false; reason: "OUT_OF_STOCK" };
+
+/**
+ * Thrown by `adjust` when the reservation is not (or no longer) `held` — the
+ * hold has been adopted/committed/released and is no longer the caller's to
+ * move. The cart layer maps this to its typed `LINE_CHECKED_OUT` failure.
+ */
+export class ReservationNotHeldError extends Error {
+	constructor(reservationId: string, state: string) {
+		super(`cannot adjust reservation ${reservationId} in state ${state}`);
+		this.name = "ReservationNotHeldError";
+	}
+}

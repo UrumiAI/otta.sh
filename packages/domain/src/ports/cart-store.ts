@@ -18,33 +18,83 @@ export interface CartStore {
 	/** Read a cart with its lines (each carrying its live reservation state), or null. */
 	get(cartId: string): Promise<Cart | null>;
 	/**
-	 * Write/replace the line for `input.sku` and record the add in the
-	 * `cart_mutations` ledger under `input.key` (once-only). Also stamps the
-	 * reservation's `expires_at` so an abandoned hold is reaped by the sweep. A
-	 * replay (same key) returns the already-recorded line without re-applying.
+	 * Read the `cart_mutations` ledger entry for `key`, or null. The use-cases
+	 * consult this BEFORE any inventory movement (ledger-first): a `completed`
+	 * entry short-circuits the whole mutation to its recorded result, so a stale
+	 * replay after intervening mutations can never re-apply a delta.
+	 */
+	recordedMutation(key: IdempotencyKey): Promise<RecordedCartMutation | null>;
+	/**
+	 * Claim `key` in the ledger (atomic `INSERT … ON CONFLICT DO NOTHING`),
+	 * `completed: false`, BEFORE the inventory movement runs. Losing the claim
+	 * returns the existing entry: completed ⇒ replay (the caller returns the
+	 * recorded result); incomplete ⇒ a crashed/in-flight peer — the caller resumes
+	 * the choreography, whose every step is itself idempotent. The pre-movement
+	 * claim also marks the reservation's key as cart-originated, which is what
+	 * scopes the sweep's dangling-hold fallback to cart holds (never raw reserves).
+	 */
+	claimMutation(input: ClaimMutationInput): Promise<ClaimMutationResult>;
+	/**
+	 * Write/replace the line for `input.sku` and mark the `input.key` ledger
+	 * entry completed (recording the resulting line). Also stamps the
+	 * reservation's `expires_at` so an abandoned hold is reaped by the sweep.
+	 * Idempotent: an already-completed entry returns the line without re-applying.
 	 */
 	upsertLine(input: UpsertLineInput): Promise<CartLine>;
 	/**
-	 * Set the line to `input.newQty` (absolute) and reset its hold `expires_at`,
-	 * recorded once in the ledger under `input.key`. A replay returns the recorded
-	 * line — the load-bearing "a retried +1 must not become +2" guard.
+	 * Set the line qty, reset its hold `expires_at`, and mark the ledger entry
+	 * completed. The stored line qty is written from the reservation's own qty
+	 * when one exists (the inventory authority's truth), so racing different-key
+	 * adjusts converge instead of last-writer desync. Idempotent on a completed
+	 * entry.
 	 */
 	adjustLine(input: AdjustLineInput): Promise<CartLine>;
-	/** Delete the line and record the removal in the ledger; double-remove is a no-op. */
+	/** Delete the line and mark the removal completed in the ledger; double-remove is a no-op. */
 	removeLine(cartId: string, lineId: string, key: IdempotencyKey): Promise<void>;
 	/**
-	 * Held reservations whose hold has lapsed: `expires_at <= now`, or — for a hold
-	 * whose cart-line write never landed (crash window) — `expires_at IS NULL AND
-	 * created_at <= cutoff`. Drives both lazy-on-read and the scheduled sweep.
+	 * Held reservations whose hold has lapsed: `expires_at <= now`, or — for a
+	 * CART-ORIGINATED hold whose cart-line write never landed (crash window) —
+	 * `expires_at IS NULL AND created_at <= cutoff` with the reservation's key
+	 * present in the `cart_mutations` ledger. A raw (non-cart) reserve is never
+	 * listed. Drives both lazy-on-read and the scheduled sweep.
 	 */
 	listExpired(now: string, cutoff: string): Promise<ExpiredHold[]>;
 	/**
-	 * Drop the cart line(s) for an expired reservation. Ledger-free (expiry is not
-	 * a client mutation) and idempotent (0 rows if already reaped). The stock
-	 * return is the caller's guarded `InventoryStore.release`.
+	 * Atomically expire one hold: the guarded flip `held → released` RE-CHECKS
+	 * the deadline inside the same conditional statement (`expires_at <= now`, or
+	 * the ledger-scoped NULL/`created_at <= cutoff` fallback), and only the flip
+	 * winner returns the stock and drops the cart line(s). Returns false — never
+	 * throws — on 0 rows: the hold was TTL-reset by a concurrent mutation, already
+	 * released, or adopted. A lazy read racing the sweep (or a checkout) can
+	 * therefore never double-return or reap an active shopper's hold.
 	 */
-	releaseExpired(reservationId: string): Promise<void>;
+	expireHold(reservationId: string, now: string, cutoff: string): Promise<boolean>;
 }
+
+export type CartMutationKind = "add" | "adjust" | "remove";
+
+/** A `cart_mutations` ledger entry — the uniform replay record (§4). */
+export interface RecordedCartMutation {
+	key: IdempotencyKey;
+	cartId: string;
+	kind: CartMutationKind;
+	lineId: string | null;
+	resultingQty: number | null;
+	/** False until the mutation's final write landed; a replay of an incomplete
+	 *  entry RESUMES the choreography instead of short-circuiting. */
+	completed: boolean;
+}
+
+export interface ClaimMutationInput {
+	key: IdempotencyKey;
+	cartId: string;
+	kind: CartMutationKind;
+	lineId?: string | null;
+}
+
+export type ClaimMutationResult =
+	| { claimed: true }
+	| { claimed: false; recorded: RecordedCartMutation };
 
 export type CartState = "active" | "checked_out";
 
