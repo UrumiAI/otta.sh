@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Domain purity is a CI gate (dependency-cruiser domain-is-io-free).
+      - run: pnpm lint
+      # The branded-money negative type-test is enforced here.
+      - run: pnpm typecheck
+      - run: pnpm -r build
+      # SQLite + fake contract suites; pg-required specs self-skip
+      # because PG_CONNECTION_STRING is unset.
+      - run: pnpm test
+
+  integration:
+    needs: unit
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: urumi_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PG_CONNECTION_STRING: postgres://postgres:postgres@localhost:5432/urumi_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Postgres contract dialect, the no-oversell acceptance test, and the
+      # live-server HTTP contract test all run for real here.
+      - run: pnpm test:pg

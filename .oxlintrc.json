@@ -1,0 +1,35 @@
+{
+	"$schema": "./node_modules/oxlint/configuration_schema.json",
+	"categories": {
+		"correctness": "error",
+		"suspicious": "error"
+	},
+	"ignorePatterns": ["**/dist/**", "**/node_modules/**"],
+	"env": {
+		"node": true
+	},
+	"overrides": [
+		{
+			"files": ["packages/domain/src/**/*.ts"],
+			"rules": {
+				"no-restricted-imports": [
+					"error",
+					{
+						"paths": [
+							{ "name": "pg", "message": "@urumi/domain is IO-free (DEVELOPMENT.md §3)" },
+							{ "name": "kysely", "message": "@urumi/domain is IO-free (DEVELOPMENT.md §3)" },
+							{
+								"name": "better-sqlite3",
+								"message": "@urumi/domain is IO-free (DEVELOPMENT.md §3)"
+							},
+							{ "name": "hono", "message": "@urumi/domain is IO-free (DEVELOPMENT.md §3)" },
+							{ "name": "node:http", "message": "@urumi/domain is IO-free (DEVELOPMENT.md §3)" },
+							{ "name": "node:https", "message": "@urumi/domain is IO-free (DEVELOPMENT.md §3)" },
+							{ "name": "node-fetch", "message": "@urumi/domain is IO-free (DEVELOPMENT.md §3)" }
+						]
+					}
+				]
+			}
+		}
+	]
+}

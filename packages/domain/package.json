@@ -1,0 +1,35 @@
+{
+	"name": "@urumi/domain",
+	"version": "0.1.0",
+	"description": "Urumi commerce domain — pure ports, use-cases, and branded types. No IO.",
+	"license": "MIT",
+	"files": [
+		"dist"
+	],
+	"type": "module",
+	"exports": {
+		".": "./src/index.ts",
+		"./testing": "./src/testing/index.ts"
+	},
+	"publishConfig": {
+		"exports": {
+			".": {
+				"types": "./dist/index.d.mts",
+				"default": "./dist/index.mjs"
+			},
+			"./testing": {
+				"types": "./dist/testing/index.d.mts",
+				"default": "./dist/testing/index.mjs"
+			}
+		}
+	},
+	"scripts": {
+		"build": "tsdown"
+	},
+	"devDependencies": {
+		"@types/node": "catalog:",
+		"tsdown": "catalog:",
+		"typescript": "catalog:",
+		"vitest": "catalog:"
+	}
+}
