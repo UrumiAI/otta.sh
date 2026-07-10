@@ -223,6 +223,26 @@ export function inventoryStoreContract(
 			expect(await h.onHand("SKU-1")).toBe(50);
 		});
 
+		test("an adjust key replayed against a different reservation is rejected, never ok for the wrong hold", async () => {
+			const h = await makeStore();
+			await h.seed("SKU-1", 10);
+			const a = await h.store.reserve("SKU-1", 2, idempotencyKey("kA"));
+			const b = await h.store.reserve("SKU-1", 2, idempotencyKey("kB"));
+			if (!a.ok || !b.ok) throw new Error("seed reserves must succeed");
+
+			const first = await h.store.adjust(a.reservationId, 3, idempotencyKey("adj-1"));
+			expect(first).toEqual({ ok: true, reservationId: a.reservationId });
+			expect(await h.onHand("SKU-1")).toBe(5);
+
+			// A mis-keyed caller reusing adj-1 against reservation B must get a
+			// typed rejection — not an `ok` echoing B's id for a movement that was
+			// recorded against A. Nothing moves.
+			await expect(h.store.adjust(b.reservationId, 4, idempotencyKey("adj-1"))).rejects.toThrow(
+				/recorded against reservation/,
+			);
+			expect(await h.onHand("SKU-1")).toBe(5);
+		});
+
 		test("reserve heals a reservation abandoned in 'pending' before finalize (crash window W1) on same-key replay", async () => {
 			const h = await makeStore();
 			// This case only applies to stores that expose the abandon-pending hook

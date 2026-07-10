@@ -1,4 +1,5 @@
 import {
+	AdjustReservationMismatchError,
 	type Clock,
 	type IdGen,
 	type IdempotencyKey,
@@ -186,10 +187,15 @@ export class KyselyInventoryStore implements InventoryStore {
 		for (let attempt = 0; attempt < this.#maxAttempts; attempt++) {
 			const recorded = await this.#db
 				.selectFrom("inventory_adjustments")
-				.select("outcome")
+				.select(["outcome", "reservation_id"])
 				.where("idempotency_key", "=", key)
 				.executeTakeFirst();
 			if (recorded !== undefined) {
+				// A key recorded against a DIFFERENT reservation is a mis-keyed
+				// caller: typed rejection, never an ok echoed for the wrong hold.
+				if (recorded.reservation_id !== reservationId) {
+					throw new AdjustReservationMismatchError(key, recorded.reservation_id, reservationId);
+				}
 				return recorded.outcome === "ok"
 					? { ok: true, reservationId }
 					: { ok: false, reason: "OUT_OF_STOCK" };

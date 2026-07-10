@@ -16,7 +16,11 @@ Phase 3 — cart + inventory (service-side; plugin/storefront deferred to Wave 3
   delta update, remove, and the `expireHolds` sweep) orchestrating `CartStore` +
   `InventoryStore` + `Clock` with no cross-store transaction; the reusable
   `cartStoreContract`, fence guards (`LINE_CHECKED_OUT` / `CART_CHECKED_OUT`),
-  and reserve↔cart-line + remove crash-window healing. Cart lines snapshot no
+  and reserve↔cart-line + remove crash-window healing — including the
+  "visible line ⟺ live hold" attach guard: a late add replay whose crashed hold
+  the sweep already reaped returns a typed `HOLD_EXPIRED` (409 over HTTP)
+  instead of resurrecting a line over dead stock, and a mis-keyed adjust replay
+  against the wrong reservation is a typed rejection. Cart lines snapshot no
   price (an order invariant, Phase 4).
 - `@urumi/store-postgres`: forward-only migration `0003_cart` (`carts`,
   `cart_lines` with `UNIQUE(cart_id, sku)` and nullable `reservation_id`/
@@ -35,5 +39,6 @@ Phase 3 — cart + inventory (service-side; plugin/storefront deferred to Wave 3
   `POST/PATCH/DELETE /carts/:id/lines[/:lineId]`) mirroring the use-cases 1:1
   with `Idempotency-Key` → domain key and `OUT_OF_STOCK` as a typed 200 body;
   the internal `POST /internal/expire-holds` sweep trigger guarded by an
-  `X-Internal-Token` shared secret (`INTERNAL_API_TOKEN`; unset ⇒ 503 disabled);
+  `X-Internal-Token` shared secret compared in constant time
+  (`INTERNAL_API_TOKEN`; unset ⇒ 503 disabled);
   a self-scheduled Node sweep interval; and `CART_HOLD_TTL_MS` for the hold TTL.

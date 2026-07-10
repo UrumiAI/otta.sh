@@ -1,18 +1,19 @@
 import type { Currency } from "../money/cents.js";
 import type { IdempotencyKey } from "../money/ids.js";
-import type {
-	AdjustLineInput,
-	Cart,
-	CartLine,
-	CartMutationKind,
-	CartState,
-	CartStore,
-	ClaimMutationInput,
-	ClaimMutationResult,
-	ExpiredHold,
-	RecordedCartMutation,
-	ReservationLifecycle,
-	UpsertLineInput,
+import {
+	type AdjustLineInput,
+	type Cart,
+	type CartLine,
+	type CartMutationKind,
+	type CartState,
+	type CartStore,
+	type ClaimMutationInput,
+	type ClaimMutationResult,
+	type ExpiredHold,
+	HoldExpiredError,
+	type RecordedCartMutation,
+	type ReservationLifecycle,
+	type UpsertLineInput,
 } from "../ports/cart-store.js";
 import type { IdGen } from "../ports/id-gen.js";
 
@@ -133,6 +134,13 @@ export class InMemoryCartStore implements CartStore {
 		const recorded = this.#ledger.get(input.key);
 		if (recorded !== undefined && recorded.completed && recorded.lineId !== null) {
 			return this.#toLine(this.#mustLine(recorded.lineId));
+		}
+
+		// Attach guard (mirrors the real store's `state='held'`-scoped deadline
+		// stamp): never attach a visible line to a reservation that is no longer
+		// held — e.g. the sweep reaped a crashed hold before this late replay.
+		if (this.#reservationState(input.reservationId) !== "held") {
+			throw new HoldExpiredError(input.reservationId);
 		}
 
 		const existing = this.#findLine(input.cartId, input.sku);

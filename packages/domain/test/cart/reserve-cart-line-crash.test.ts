@@ -64,6 +64,36 @@ describe("reserve ↔ cart-line crash window (fake)", () => {
 		expect(await h.onHand("SKU-1")).toBe(5);
 	});
 
+	test("a late add replay after the sweep reaped its crashed hold does not resurrect a line (HOLD_EXPIRED)", async () => {
+		const h = makeFakeCartHarness();
+		await h.seedStock("SKU-1", 5);
+		const cartId = await createCart(h.deps, USD);
+		const key = idempotencyKey("k1");
+
+		// Crash simulation, faithful to the ledger-first choreography: the add
+		// claimed its key and the reserve finalized (held, stock removed), but the
+		// cart-line write never landed.
+		await h.cartStore.claimMutation({ key, cartId, kind: "add" });
+		const reserved = await h.inventory.reserve("SKU-1", 2, key);
+		if (!reserved.ok) throw new Error("seed reserve must succeed");
+		const deadline = new Date(h.clock.now().getTime() + DEFAULT_HOLD_TTL_MS).toISOString();
+		h.cartStore.seedDanglingHold(reserved.reservationId, "SKU-1", deadline);
+		expect(await h.onHand("SKU-1")).toBe(3);
+
+		// The sweep reaps the dangling hold; its stock returns to the shelf.
+		h.advance(DEFAULT_HOLD_TTL_MS + 60 * 1000);
+		expect(await expireHolds(h.deps)).toBe(1);
+		expect(await h.onHand("SKU-1")).toBe(5);
+
+		// The ORIGINAL key is finally replayed (offline retry). reserve replays
+		// `released` as ok (Phase-0 semantics), but the attach guard refuses to
+		// resurrect a visible line over stock the shopper no longer holds.
+		const late = await addLine(h.deps, cartId, sku("SKU-1"), null, 2, key);
+		expect(late).toEqual({ ok: false, reason: "HOLD_EXPIRED" });
+		expect((await getCart(h.deps, cartId))?.lines).toHaveLength(0);
+		expect(await h.onHand("SKU-1")).toBe(5); // stock unchanged
+	});
+
 	test("a remove that crashed after release is healed on replay: line removed, stock returned exactly once", async () => {
 		const h = makeFakeCartHarness();
 		await h.seedStock("SKU-1", 5);

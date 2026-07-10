@@ -37,8 +37,13 @@ export interface CartStore {
 	/**
 	 * Write/replace the line for `input.sku` and mark the `input.key` ledger
 	 * entry completed (recording the resulting line). Also stamps the
-	 * reservation's `expires_at` so an abandoned hold is reaped by the sweep.
-	 * Idempotent: an already-completed entry returns the line without re-applying.
+	 * reservation's `expires_at` so an abandoned hold is reaped by the sweep —
+	 * and that stamp doubles as the attach guard: it is scoped to
+	 * `state='held'`, and a reservation that is no longer held (the sweep reaped
+	 * a crashed hold before this late replay arrived) throws `HoldExpiredError`
+	 * instead of resurrecting a visible line over dead stock ("visible line ⟺
+	 * live hold"). Idempotent: an already-completed entry returns the line
+	 * without re-applying.
 	 */
 	upsertLine(input: UpsertLineInput): Promise<CartLine>;
 	/**
@@ -95,6 +100,20 @@ export interface ClaimMutationInput {
 export type ClaimMutationResult =
 	| { claimed: true }
 	| { claimed: false; recorded: RecordedCartMutation };
+
+/**
+ * Thrown by `CartStore.upsertLine` when the reservation to attach is no longer
+ * `held` — e.g. the sweep reaped a crashed dangling hold before the original
+ * add's late replay arrived. The add use-case maps it to the typed
+ * `HOLD_EXPIRED` failure: the replay must NOT create a visible cart line over
+ * stock the shopper no longer holds.
+ */
+export class HoldExpiredError extends Error {
+	constructor(reservationId: string) {
+		super(`reservation ${reservationId} is no longer held; the hold expired or was reaped`);
+		this.name = "HoldExpiredError";
+	}
+}
 
 export type CartState = "active" | "checked_out";
 

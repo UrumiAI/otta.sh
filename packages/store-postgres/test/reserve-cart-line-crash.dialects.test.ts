@@ -123,6 +123,41 @@ function runCrashWindow(make: () => Promise<CartDialectHarness>, dialect: string
 			expect(res?.state).toBe("released");
 		});
 
+		test("a late add replay after the sweep reaped its crashed hold does not resurrect a line (HOLD_EXPIRED)", async () => {
+			const h = await make();
+			await h.seedStock("SKU-1", 5);
+			const cartId = await createCart(h.deps, USD);
+			// Crashed add: claim + held reservation, no cart line; TTL long past.
+			const stale = new Date(h.clock.now().getTime() - 20 * 60 * 1000).toISOString();
+			await seedCrashedHold(h, {
+				id: "res-crash-3",
+				cartId,
+				sku: "SKU-1",
+				qty: 2,
+				key: "k1",
+				createdAt: stale,
+				onHandAfter: 3,
+			});
+
+			// The sweep reaps the dangling hold and returns its stock.
+			expect(await expireHolds(h.deps)).toBe(1);
+			expect(await h.onHand("SKU-1")).toBe(5);
+
+			// The ORIGINAL key finally replays: reserve resolves the released hold
+			// as ok (Phase-0 replay-by-state), but the `state='held'`-scoped attach
+			// guard matches 0 rows — no visible line over dead stock, typed failure.
+			const late = await addLine(h.deps, cartId, sku("SKU-1"), null, 2, idempotencyKey("k1"));
+			expect(late).toEqual({ ok: false, reason: "HOLD_EXPIRED" });
+			expect((await getCart(h.deps, cartId))?.lines).toHaveLength(0);
+			expect(await h.onHand("SKU-1")).toBe(5); // stock unchanged
+			const res = await h.db
+				.selectFrom("reservations")
+				.select("state")
+				.where("id", "=", "res-crash-3")
+				.executeTakeFirst();
+			expect(res?.state).toBe("released");
+		});
+
 		test("a remove that crashed after release is healed on replay: line removed, stock returned exactly once", async () => {
 			const h = await make();
 			await h.seedStock("SKU-1", 5);

@@ -11,6 +11,7 @@ export {
 	type Sku,
 } from "./money/ids.js";
 export {
+	AdjustReservationMismatchError,
 	ReservationNotHeldError,
 	type InventoryStore,
 	type ReserveResult,
@@ -32,19 +33,20 @@ export {
 	upsertProductCommerce,
 	type ProductCommerceDeps,
 } from "./product-commerce/use-cases.js";
-export type {
-	AdjustLineInput,
-	Cart,
-	CartLine,
-	CartMutationKind,
-	CartState,
-	CartStore,
-	ClaimMutationInput,
-	ClaimMutationResult,
-	ExpiredHold,
-	RecordedCartMutation,
-	ReservationLifecycle,
-	UpsertLineInput,
+export {
+	HoldExpiredError,
+	type AdjustLineInput,
+	type Cart,
+	type CartLine,
+	type CartMutationKind,
+	type CartState,
+	type CartStore,
+	type ClaimMutationInput,
+	type ClaimMutationResult,
+	type ExpiredHold,
+	type RecordedCartMutation,
+	type ReservationLifecycle,
+	type UpsertLineInput,
 } from "./ports/cart-store.js";
 export {
 	addLine,

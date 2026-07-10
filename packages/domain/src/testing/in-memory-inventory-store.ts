@@ -2,6 +2,7 @@ import type { IdempotencyKey } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
 import type { IdGen } from "../ports/id-gen.js";
 import {
+	AdjustReservationMismatchError,
 	type InventoryStore,
 	ReservationNotHeldError,
 	type ReserveResult,
@@ -45,8 +46,9 @@ export class InMemoryInventoryStore implements InventoryStore {
 	#onHand = new Map<string, number>();
 	#reservations = new Map<string, ReservationRow>();
 	#byKey = new Map<string, string>();
-	/** Per-mutation adjust ledger: key → recorded terminal result (exactly-once). */
-	#adjustments = new Map<string, ReserveResult>();
+	/** Per-mutation adjust ledger: key → the reservation it was recorded against
+	 *  plus its terminal result (exactly-once; mis-keyed replays are rejected). */
+	#adjustments = new Map<string, { reservationId: string; result: ReserveResult }>();
 
 	constructor(options: InMemoryInventoryStoreOptions) {
 		this.#idGen = options.idGen;
@@ -105,9 +107,16 @@ export class InMemoryInventoryStore implements InventoryStore {
 
 		// Ledger-first (exactly-once): a replayed key — even a stale one arriving
 		// after later same-reservation adjusts — returns the RECORDED result and
-		// moves no stock. Only the claim winner ever moves inventory.
+		// moves no stock. Only the claim winner ever moves inventory. A key
+		// recorded against a DIFFERENT reservation is a mis-keyed caller: typed
+		// rejection, never ok for the wrong hold.
 		const recorded = this.#adjustments.get(key);
-		if (recorded !== undefined) return { ...recorded };
+		if (recorded !== undefined) {
+			if (recorded.reservationId !== reservationId) {
+				throw new AdjustReservationMismatchError(key, recorded.reservationId, reservationId);
+			}
+			return { ...recorded.result };
+		}
 
 		const row = this.#mustGet(reservationId);
 		// Guard-first: only a `held` (cart-owned) hold may move.
@@ -124,7 +133,7 @@ export class InMemoryInventoryStore implements InventoryStore {
 			const onHand = this.#onHand.get(row.sku) ?? 0;
 			if (onHand < delta) {
 				const failed: ReserveResult = { ok: false, reason: "OUT_OF_STOCK" };
-				this.#adjustments.set(key, failed); // R2: the key stays consumed
+				this.#adjustments.set(key, { reservationId, result: failed }); // R2: key consumed
 				return { ...failed };
 			}
 			this.#onHand.set(row.sku, onHand - delta);
@@ -135,7 +144,7 @@ export class InMemoryInventoryStore implements InventoryStore {
 			row.qty = newQty;
 		}
 		const ok: ReserveResult = { ok: true, reservationId };
-		this.#adjustments.set(key, ok);
+		this.#adjustments.set(key, { reservationId, result: ok });
 		return { ...ok };
 	}
 

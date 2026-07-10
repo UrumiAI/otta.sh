@@ -16,6 +16,7 @@ import {
 	sku,
 	updateLine,
 } from "@urumi/domain";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { type Context, Hono } from "hono";
 import {
 	addLineBody,
@@ -150,7 +151,7 @@ export function expireHoldsRoutes(deps: CartRoutesDeps): Hono {
 		if (token === undefined || token.length === 0) {
 			return c.json({ ok: false, error: "internal endpoints disabled" }, 503);
 		}
-		if (c.req.header("X-Internal-Token") !== token) {
+		if (!tokenMatches(c.req.header("X-Internal-Token"), token)) {
 			return c.json({ ok: false, error: "unauthorized" }, 401);
 		}
 		const reclaimed = await expireHolds(cartDeps);
@@ -202,8 +203,21 @@ function failure(c: Context, reason: CartFailure): Response {
 			return c.json(body, 404);
 		case "CART_CHECKED_OUT":
 		case "LINE_CHECKED_OUT":
+		case "HOLD_EXPIRED":
+			// HOLD_EXPIRED: a late add replay whose hold the sweep already reaped —
+			// the line was not resurrected; the client adds again with a fresh key.
 			return c.json(body, 409);
 	}
+}
+
+/** Constant-time shared-secret comparison: hash both sides to a fixed length
+ *  first so `timingSafeEqual` applies to arbitrary token lengths — a plain
+ *  `!==` would leak the match length/prefix through timing. */
+function tokenMatches(provided: string | undefined, expected: string): boolean {
+	if (provided === undefined) return false;
+	const a = createHash("sha256").update(provided).digest();
+	const b = createHash("sha256").update(expected).digest();
+	return timingSafeEqual(a, b);
 }
 
 function requireKey(c: { req: { header(name: string): string | undefined } }): string | null {

@@ -1,6 +1,12 @@
 import type { Currency } from "../money/cents.js";
 import type { IdempotencyKey, Sku } from "../money/ids.js";
-import type { Cart, CartLine, CartStore, RecordedCartMutation } from "../ports/cart-store.js";
+import {
+	type Cart,
+	type CartLine,
+	type CartStore,
+	HoldExpiredError,
+	type RecordedCartMutation,
+} from "../ports/cart-store.js";
 import type { Clock } from "../ports/clock.js";
 import { type InventoryStore, ReservationNotHeldError } from "../ports/inventory-store.js";
 
@@ -32,6 +38,7 @@ export type CartFailure =
 	| "CART_CHECKED_OUT"
 	| "LINE_NOT_FOUND"
 	| "LINE_CHECKED_OUT"
+	| "HOLD_EXPIRED"
 	| "OUT_OF_STOCK";
 
 export type AddLineResult = { ok: true; line: CartLine } | { ok: false; reason: CartFailure };
@@ -121,16 +128,25 @@ export async function addLine(
 	const reserved = await deps.inventoryStore.reserve(sku, qty, key);
 	if (!reserved.ok) return { ok: false, reason: "OUT_OF_STOCK" };
 
-	const line = await deps.cartStore.upsertLine({
-		cartId,
-		sku,
-		productId,
-		qty,
-		reservationId: reserved.reservationId,
-		expiresAt: deadline(deps),
-		key,
-	});
-	return { ok: true, line };
+	try {
+		const line = await deps.cartStore.upsertLine({
+			cartId,
+			sku,
+			productId,
+			qty,
+			reservationId: reserved.reservationId,
+			expiresAt: deadline(deps),
+			key,
+		});
+		return { ok: true, line };
+	} catch (err) {
+		// The hold is no longer held — the sweep reaped a crashed dangling hold
+		// before this late replay arrived (reserve replays `released` as ok, per
+		// Phase-0 semantics). Refuse to resurrect a visible line over dead stock;
+		// the shopper simply adds again with a fresh key.
+		if (err instanceof HoldExpiredError) return { ok: false, reason: "HOLD_EXPIRED" };
+		throw err;
+	}
 }
 
 /**

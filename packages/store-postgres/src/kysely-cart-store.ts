@@ -1,18 +1,19 @@
-import type {
-	AdjustLineInput,
-	Cart,
-	CartLine,
-	CartStore,
-	ClaimMutationInput,
-	ClaimMutationResult,
-	Clock,
-	Currency,
-	ExpiredHold,
-	IdempotencyKey,
-	IdGen,
-	RecordedCartMutation,
-	ReservationLifecycle,
-	UpsertLineInput,
+import {
+	type AdjustLineInput,
+	type Cart,
+	type CartLine,
+	type CartStore,
+	type ClaimMutationInput,
+	type ClaimMutationResult,
+	type Clock,
+	type Currency,
+	type ExpiredHold,
+	HoldExpiredError,
+	type IdempotencyKey,
+	type IdGen,
+	type RecordedCartMutation,
+	type ReservationLifecycle,
+	type UpsertLineInput,
 } from "@urumi/domain";
 import { type Kysely, sql, type Transaction } from "kysely";
 import type { CartMutationsTable, Database } from "./schema.js";
@@ -35,6 +36,13 @@ export interface KyselyCartStoreOptions {
  * incomplete claim + the TTL sweep. Expiry is the guarded `expireHold` flip:
  * the `held → released` transition re-checks the deadline in the same
  * conditional statement, and only the winner returns stock and drops lines.
+ *
+ * LOCK ORDER (deadlock freedom): every multi-table transaction here and in
+ * `KyselyInventoryStore` acquires row locks in the fixed order
+ * `reservations → inventory → cart_lines` — `upsertLine`/`adjustLine` stamp the
+ * reservation BEFORE touching the line, matching `expireHold`
+ * (flip → return → drop) and `adjust` (CAS → movement), so a shopper's
+ * mutation racing the sweep on one hold cannot AB-BA deadlock.
  */
 export class KyselyCartStore implements CartStore {
 	readonly #db: Kysely<Database>;
@@ -143,6 +151,20 @@ export class KyselyCartStore implements CartStore {
 			}
 
 			const now = this.#clock.now().toISOString();
+
+			// Reservation FIRST (lock order), and the deadline stamp doubles as the
+			// attach guard: scoped to `state='held'`, so a reservation the sweep
+			// already reaped (a crashed hold whose add is replayed late) matches 0
+			// rows and the line is NOT resurrected over dead stock.
+			const stamped = await trx
+				.updateTable("reservations")
+				.set({ expires_at: input.expiresAt })
+				.where("id", "=", input.reservationId)
+				.where("state", "=", "held")
+				.returning("id")
+				.executeTakeFirst();
+			if (stamped === undefined) throw new HoldExpiredError(input.reservationId);
+
 			const upserted = await trx
 				.insertInto("cart_lines")
 				.values({
@@ -168,13 +190,6 @@ export class KyselyCartStore implements CartStore {
 				.returning("id")
 				.executeTakeFirstOrThrow();
 
-			// Co-locate: stamp the hold deadline so the sweep can reap an abandoned hold.
-			await trx
-				.updateTable("reservations")
-				.set({ expires_at: input.expiresAt })
-				.where("id", "=", input.reservationId)
-				.execute();
-
 			await this.#complete(trx, input.key, input.cartId, "add", upserted.id, input.qty);
 			return this.#lineById(trx, upserted.id);
 		});
@@ -198,9 +213,18 @@ export class KyselyCartStore implements CartStore {
 				.where("id", "=", input.lineId)
 				.executeTakeFirstOrThrow();
 
-			// The line qty mirrors the reservation's own qty (the inventory
-			// authority's serialized truth) when a hold exists, so racing
-			// different-key adjusts converge instead of last-writer desync.
+			// Reservation FIRST (lock order: reservations → cart_lines, matching
+			// expireHold), then the line — whose qty mirrors the reservation's own
+			// qty (the inventory authority's serialized truth) when a hold exists,
+			// so racing different-key adjusts converge instead of last-writer desync.
+			if (line.reservation_id !== null) {
+				await trx
+					.updateTable("reservations")
+					.set({ expires_at: input.expiresAt })
+					.where("id", "=", line.reservation_id)
+					.execute();
+			}
+
 			await trx
 				.updateTable("cart_lines")
 				.set({
@@ -217,14 +241,6 @@ export class KyselyCartStore implements CartStore {
 				})
 				.where("id", "=", input.lineId)
 				.execute();
-
-			if (line.reservation_id !== null) {
-				await trx
-					.updateTable("reservations")
-					.set({ expires_at: input.expiresAt })
-					.where("id", "=", line.reservation_id)
-					.execute();
-			}
 
 			await this.#complete(trx, input.key, input.cartId, "adjust", input.lineId, input.newQty);
 			return this.#lineById(trx, input.lineId);

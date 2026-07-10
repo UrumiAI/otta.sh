@@ -61,3 +61,17 @@ export class ReservationNotHeldError extends Error {
 		this.name = "ReservationNotHeldError";
 	}
 }
+
+/**
+ * Thrown by `adjust` when a key's recorded ledger entry belongs to a DIFFERENT
+ * reservation — a mis-keyed caller must never receive `ok` for the wrong hold.
+ */
+export class AdjustReservationMismatchError extends Error {
+	constructor(key: string, expected: string, actual: string) {
+		super(
+			`adjust key ${key} was recorded against reservation ${expected}, not ${actual} — ` +
+				"an idempotency key must not be reused across reservations",
+		);
+		this.name = "AdjustReservationMismatchError";
+	}
+}
