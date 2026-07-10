@@ -19,3 +19,9 @@ export {
 	type ProductCommerceStoreHarness,
 	type ProductCommerceStoreContractOptions,
 } from "./product-commerce-store-contract.js";
+export { InMemoryCartStore, type InMemoryCartStoreOptions } from "./in-memory-cart-store.js";
+export {
+	cartStoreContract,
+	type CartStoreHarness,
+	type CartStoreContractOptions,
+} from "./cart-store-contract.js";

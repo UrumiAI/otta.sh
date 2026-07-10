@@ -28,3 +28,27 @@ export {
 	upsertProductCommerce,
 	type ProductCommerceDeps,
 } from "./product-commerce/use-cases.js";
+export type {
+	AdjustLineInput,
+	Cart,
+	CartLine,
+	CartState,
+	CartStore,
+	ExpiredHold,
+	ReservationLifecycle,
+	UpsertLineInput,
+} from "./ports/cart-store.js";
+export {
+	addLine,
+	createCart,
+	DEFAULT_HOLD_TTL_MS,
+	expireHolds,
+	getCart,
+	removeLine,
+	updateLine,
+	type AddLineResult,
+	type CartDeps,
+	type CartFailure,
+	type RemoveLineResult,
+	type UpdateLineResult,
+} from "./cart/use-cases.js";
