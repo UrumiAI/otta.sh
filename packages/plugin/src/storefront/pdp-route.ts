@@ -45,7 +45,29 @@ export interface PdpRouteInput {
 
 export type PdpRouteResult =
 	| { ok: true; product: ProductViewModel; jsonLd: Record<string, unknown> }
-	| { ok: false; error: "INVALID_CONTENT" };
+	| { ok: false; error: "INVALID_CONTENT" }
+	| { ok: false; error: "RENDER_FAILED" };
+
+/**
+ * Unexpected-failure guard for the PUBLIC storefront handlers: an uncaught
+ * throw would surface through em-dash's route envelope as
+ * `ROUTE_ERROR: <error.message>` (`handleSandboxedRoute`,
+ * `emdash-runtime.ts:3563-3571`) — leaking internals (e.g. a `cents()`
+ * RangeError describing a malformed upstream amount) to anonymous callers.
+ * Expected rejections keep their structured shapes; anything else is logged
+ * server-side and collapsed to a message-free `RENDER_FAILED`.
+ */
+export async function renderGuard<T>(
+	route: string,
+	render: () => Promise<T>,
+): Promise<T | { ok: false; error: "RENDER_FAILED" }> {
+	try {
+		return await render();
+	} catch (err) {
+		console.error(`[urumi] ${route} render failed:`, err);
+		return { ok: false, error: "RENDER_FAILED" };
+	}
+}
 
 /** One loader per invocation = the plan's request-scoped lifecycle
  *  (§4.3.2): no cross-request cache in v1 (pre-approved decision 3). */
@@ -60,23 +82,29 @@ export function createCommerceLoader(ctx: PluginContext): CommerceBatchLoader {
 }
 
 export function createPdpRouteHandler(): RouteHandler<PdpRouteInput> {
-	return async (routeCtx, ctx): Promise<PdpRouteResult> => {
-		const content = parseCmsProductContent(routeCtx.input.content);
-		if (content === null) {
-			return { ok: false, error: "INVALID_CONTENT" };
-		}
-		const locale = sanitizeLocale(routeCtx.input.locale);
+	// Caveat (public route, reachable directly): the caller-supplied
+	// `content` is NOT independently verified against the CMS — the route
+	// joins whatever content it is handed with public-by-design commercial
+	// data, so a fabricated call yields at worst a view model for invented
+	// content; no privileged data path exists here.
+	return (routeCtx, ctx): Promise<PdpRouteResult> =>
+		renderGuard(STOREFRONT_PRODUCT_ROUTE, async () => {
+			const content = parseCmsProductContent(routeCtx.input.content);
+			if (content === null) {
+				return { ok: false, error: "INVALID_CONTENT" } as const;
+			}
+			const locale = sanitizeLocale(routeCtx.input.locale);
 
-		const loader = createCommerceLoader(ctx);
-		const commerce = await loader.load(content.id);
-		// null covers unsynced / soft-deleted / batch-omitted identically
-		// (§4.2): the page renders not-purchasable instead of 500ing.
-		const joined = joinProduct(content, commerce);
+			const loader = createCommerceLoader(ctx);
+			const commerce = await loader.load(content.id);
+			// null covers unsynced / soft-deleted / batch-omitted identically
+			// (§4.2): the page renders not-purchasable instead of 500ing.
+			const joined = joinProduct(content, commerce);
 
-		return {
-			ok: true,
-			product: buildProductViewModel(joined, locale),
-			jsonLd: buildProductJsonLd(joined),
-		};
-	};
+			return {
+				ok: true as const,
+				product: buildProductViewModel(joined, locale),
+				jsonLd: buildProductJsonLd(joined),
+			};
+		});
 }

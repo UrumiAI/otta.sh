@@ -31,7 +31,10 @@ let sandboxHandle: SandboxHandle;
 
 /** Answer the batch endpoint from a per-test map of known commerce items. */
 function respondFromCatalog(
-	known: Record<string, { amount: number; currency: string; sku: string; inStock: boolean }>,
+	known: Record<
+		string,
+		{ amount: number; currency: string; sku: string; inStock: boolean; active?: boolean }
+	>,
 ): void {
 	stubServer.respondWith("POST", (req: RecordedRequest) => {
 		const productIds = (req.body as { productIds?: string[] }).productIds ?? [];
@@ -44,6 +47,10 @@ function respondFromCatalog(
 					sku: item.sku,
 					price: { amount: item.amount, currency: item.currency },
 					inStock: item.inStock,
+					// Tests default to published (active) so purchasable paths
+					// are exercisable; the deferred afterPublish wiring is what
+					// will make this true in production.
+					active: item.active ?? true,
 				};
 			});
 		return { status: 200, body: { items } };
@@ -198,6 +205,62 @@ describe("storefront PDP route (workerd sandbox)", () => {
 		// ICU builds differ on WHICH space precedes the symbol (NBSP vs
 		// narrow NBSP) — normalize the space, pin everything else exactly.
 		expect(formatted.replace(/[\u00A0\u202F]/g, " ")).toBe("1.234,56 €");
+	});
+
+	test("a commerce-complete but INACTIVE (unpublished) product renders not-purchasable: no price, Product-only JSON-LD (§4.2's inactive arm)", async () => {
+		respondFromCatalog({
+			"prod-1": { amount: 1999, currency: "USD", sku: "SKU-1", inStock: true, active: false },
+		});
+
+		const outcome = await sandboxHandle.invokeRoute("storefront/product", {
+			content: CONTENT,
+			locale: "en-US",
+		});
+		const result = (outcome as { result: Record<string, unknown> }).result;
+		expect(result["ok"]).toBe(true);
+
+		// Behaves exactly like the no-commerce case: flagged, no price, no sku.
+		const product = result["product"] as Record<string, unknown>;
+		expect(product).toMatchObject({
+			purchasable: false,
+			sku: null,
+			price: null,
+			availability: null,
+		});
+
+		const jsonLd = result["jsonLd"] as Record<string, unknown>;
+		expect(jsonLd["@type"]).toBe("Product");
+		expect("offers" in jsonLd).toBe(false);
+	});
+
+	test("an unexpected render failure (malformed upstream amount) returns a structured, message-free RENDER_FAILED — no internal leak through the public envelope", async () => {
+		// A float amount off the wire makes the branded cents() parse throw a
+		// RangeError mid-render — exactly the class of internal error that
+		// must NOT surface its message to an anonymous caller.
+		stubServer.respondWith("POST", () => ({
+			status: 200,
+			body: {
+				items: [
+					{
+						productId: "prod-1",
+						sku: "SKU-1",
+						price: { amount: 19.99, currency: "USD" },
+						inStock: true,
+						active: true,
+					},
+				],
+			},
+		}));
+
+		const outcome = await sandboxHandle.invokeRoute("storefront/product", {
+			content: CONTENT,
+			locale: "en-US",
+		});
+
+		expect(outcome).toEqual({ result: { ok: false, error: "RENDER_FAILED" } });
+		// Nothing about the internal failure leaks through the envelope.
+		const wire = JSON.stringify(outcome);
+		expect(wire).not.toMatch(/RangeError|safe integer|cents\(/i);
 	});
 
 	test("invalid content (missing CMS id) is a structured rejection before any commerce call", async () => {

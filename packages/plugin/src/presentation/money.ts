@@ -3,16 +3,22 @@
  * `@urumi/domain`'s `money/cents.ts` (same brands, same constructors, same
  * float-literal rejection), NOT an import of it.
  *
- * Why not import: the plugin is a standalone sandbox artifact — its bundle
- * (`sandbox-entry.ts`, built from a bare copy of `src/` by the harness and
- * by a real plugin deploy) must resolve with no workspace `node_modules`,
- * and by ADR-0001/0002 the plugin reaches commerce truth ONLY over HTTP
- * (`ctx.http`), never by linking domain code. Same standalone discipline as
+ * Why not import: OUR OWN sandbox test harness (`test/sandbox/harness.ts`)
+ * deliberately bundles `sandbox-entry.ts` from a bare copy of `src/` with
+ * no workspace `node_modules` — a design choice of the harness (it pins
+ * that the shipped bundle is self-contained), not an inherent platform
+ * constraint (a bundler CAN inline a workspace dependency). Given that
+ * choice, plus ADR-0001/0002's rule that the plugin reaches commerce truth
+ * ONLY over HTTP (`ctx.http`) and never by linking domain code, `src/`
+ * keeps zero runtime workspace imports — the same standalone discipline as
  * `types.ts`'s mirror of the em-dash plugin surface. The two `Cents` types
  * are intentionally NOT cross-assignable — a value crosses the wire as an
  * integer and is re-validated/re-branded here at the plugin edge
  * (`catalog/commerce-view.ts`), so each side's brand proves ITS OWN
- * validation ran, not the other's.
+ * validation ran, not the other's. Behavior parity with the domain module
+ * is pinned by `test/money-parity.test.ts` (test files run in Node with
+ * workspace resolution and are never sandbox-bundled, so importing BOTH
+ * there is safe) — change accept/reject semantics in both places together.
  *
  * Money is integer minor units, never floats (DEVELOPMENT.md §4): `cents()`
  * is the only mint, and a raw `number` reaching a branded field is a type

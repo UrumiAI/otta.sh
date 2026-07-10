@@ -9,6 +9,7 @@ function view(productId: string): CatalogProductCommerce {
 		sku: `SKU-${productId}`,
 		price: { amount: cents(1999), currency: currency("USD") },
 		inStock: true,
+		active: true,
 	};
 }
 

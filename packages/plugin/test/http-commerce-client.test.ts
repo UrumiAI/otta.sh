@@ -92,12 +92,14 @@ describe.skipIf(PG === undefined)("HttpCommerceClient [live @urumi/service, Post
 			sku: "SKU-CB1",
 			price: { amount: 1999, currency: "USD" },
 			inStock: true,
+			active: false, // unpublished until the deferred afterPublish wiring lands
 		});
 		expect(byId.get("prod-cb2")).toEqual({
 			productId: "prod-cb2",
 			sku: "SKU-CB2",
 			price: { amount: 500, currency: "EUR" },
 			inStock: false, // never seeded — coarse out-of-stock, still listed
+			active: false,
 		});
 		// The unknown id is OMITTED — absence, not an error entry.
 		expect(byId.has("prod-cb-unknown")).toBe(false);

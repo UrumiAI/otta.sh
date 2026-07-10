@@ -67,6 +67,9 @@ export interface ProductCommerceBatchItem {
 	sku: string;
 	price: CommerceMoney;
 	inStock: boolean;
+	/** The publish gate: the join derives purchasability from it
+	 *  (`purchasable ⟺ present && active`). */
+	active: boolean;
 }
 // ── end Phase 2 catalog batch read ───────────────────────────────────────
 

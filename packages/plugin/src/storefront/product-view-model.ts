@@ -55,20 +55,24 @@ export interface ProductViewModel {
 
 export function buildProductViewModel(joined: JoinedProduct, locale: string): ProductViewModel {
 	const { content, commerce, purchasable } = joined;
+	// Commercial fields render only for a PURCHASABLE product (§4.5, and
+	// §4.2's inactive arm): an inactive/unpublished commerce row displays
+	// exactly like a missing one — flagged, no price, no availability.
+	const sellable = purchasable && commerce !== null ? commerce : null;
 	const model: ProductViewModel = {
 		id: content.id,
 		title: content.title,
 		purchasable,
-		sku: commerce === null ? null : commerce.sku,
+		sku: sellable === null ? null : sellable.sku,
 		price:
-			commerce === null
+			sellable === null
 				? null
 				: {
-						amount: commerce.price.amount,
-						currency: commerce.price.currency,
-						formatted: formatMoney(commerce.price.amount, commerce.price.currency, locale),
+						amount: sellable.price.amount,
+						currency: sellable.price.currency,
+						formatted: formatMoney(sellable.price.amount, sellable.price.currency, locale),
 					},
-		availability: commerce === null ? null : commerce.inStock ? "in_stock" : "out_of_stock",
+		availability: sellable === null ? null : sellable.inStock ? "in_stock" : "out_of_stock",
 		slots: { addToCart: null },
 	};
 	if (content.slug !== undefined) model.slug = content.slug;

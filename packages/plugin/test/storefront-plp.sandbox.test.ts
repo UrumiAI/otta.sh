@@ -23,6 +23,8 @@ interface StubItem {
 	currency: string;
 	sku: string;
 	inStock: boolean;
+	/** defaults to true (published) so purchasable paths are exercisable. */
+	active?: boolean;
 }
 
 let stubServer: StubCommerceServer;
@@ -49,6 +51,7 @@ function respondFromCatalog(known: Record<string, StubItem>): void {
 					sku: item.sku,
 					price: { amount: item.amount, currency: item.currency },
 					inStock: item.inStock,
+					active: item.active ?? true,
 				};
 			});
 		return { status: 200, body: { items } };
@@ -167,19 +170,26 @@ describe("storefront PLP route (workerd sandbox)", () => {
 		expect(searchBody?.productIds).toEqual(["prod-hit-1"]);
 	});
 
-	test("a non-purchasable product still appears in the listing, flagged, without a price slot (shown, not filtered)", async () => {
+	test("non-purchasable products still appear in the listing, flagged, without a price slot (shown, not filtered) — both the no-commerce AND the inactive kind", async () => {
 		respondFromCatalog({
 			"prod-priced": { amount: 1999, currency: "USD", sku: "SKU-P", inStock: true },
 			// prod-unpriced is absent from the stub catalog — the batch omits it.
+			// prod-inactive is commerce-complete but unpublished (§4.2's
+			// "or explicitly inactive" arm — the norm until afterPublish lands).
+			"prod-inactive": { amount: 500, currency: "USD", sku: "SKU-I", inStock: true, active: false },
 		});
 
 		const result = await renderList({
-			items: [contentItem("prod-priced"), contentItem("prod-unpriced")],
+			items: [
+				contentItem("prod-priced"),
+				contentItem("prod-unpriced"),
+				contentItem("prod-inactive"),
+			],
 			locale: "en-US",
 		});
 
 		const items = result["items"] as Array<Record<string, unknown>>;
-		expect(items).toHaveLength(2);
+		expect(items).toHaveLength(3);
 
 		const priced = items.find((i) => i["id"] === "prod-priced");
 		expect(priced).toMatchObject({
@@ -192,6 +202,16 @@ describe("storefront PLP route (workerd sandbox)", () => {
 		expect(unpriced).toMatchObject({
 			title: "Product prod-unpriced",
 			purchasable: false,
+			price: null,
+			availability: null,
+		});
+
+		// Inactive renders EXACTLY like no-commerce: flagged, no price slot.
+		const inactive = items.find((i) => i["id"] === "prod-inactive");
+		expect(inactive).toMatchObject({
+			title: "Product prod-inactive",
+			purchasable: false,
+			sku: null,
 			price: null,
 			availability: null,
 		});
@@ -210,6 +230,21 @@ describe("storefront PLP route (workerd sandbox)", () => {
 		expect(stubServer.requests).toHaveLength(1);
 		const dupBody = stubServer.requests[0]?.body as { productIds: string[] } | undefined;
 		expect(dupBody?.productIds).toEqual(["prod-dup"]);
+	});
+
+	test("a page at EXACTLY the size cap (48) is accepted and still one batch call — the cap boundary is inclusive", async () => {
+		const ids = Array.from({ length: 48 }, (_, i) => `prod-cap-${i}`);
+		respondFromCatalog(
+			Object.fromEntries(
+				ids.map((id) => [id, { amount: 100, currency: "USD", sku: `SKU-${id}`, inStock: true }]),
+			),
+		);
+
+		const result = await renderList({ items: ids.map(contentItem) });
+
+		expect(result["ok"]).toBe(true);
+		expect(result["items"]).toHaveLength(48);
+		expect(stubServer.requests).toHaveLength(1);
 	});
 
 	test("a page over the PLP size cap is a structured rejection BEFORE any commerce call (cap keeps one page = one batch)", async () => {

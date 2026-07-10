@@ -18,6 +18,11 @@ export interface CatalogProductCommerce {
 	 *  plan §8 risk 5) — NOT reservation-aware; Phase 3's `reserve` is the
 	 *  authority on whether a purchase actually succeeds. */
 	inStock: boolean;
+	/** The publish gate (plan §4.2: "purchasable: false iff commerce === null
+	 *  (or explicitly inactive)") — `joinProduct` gates purchasability on it.
+	 *  Until the deferred afterPublish→activate wiring lands, every row is
+	 *  false and the whole catalog renders not-purchasable. */
+	active: boolean;
 }
 
 export function parseCommerceBatchItem(item: ProductCommerceBatchItem): CatalogProductCommerce {
@@ -26,5 +31,6 @@ export function parseCommerceBatchItem(item: ProductCommerceBatchItem): CatalogP
 		sku: item.sku,
 		price: { amount: cents(item.price.amount), currency: currency(item.price.currency) },
 		inStock: item.inStock === true,
+		active: item.active === true,
 	};
 }

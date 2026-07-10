@@ -9,12 +9,18 @@ Phase 2 — catalog display (batch commerce read + storefront PDP/PLP).
 
 - `@urumi/domain`: additive `listCommerceByIds(productIds)` query on the
   existing `ProductCommerceStore` port returning `ProductCommerceView`
-  (`productId`, `sku`, branded `price`, coarse `inStock`) — missing /
-  soft-deleted / commerce-incomplete ids are silently omitted, never errors
-  ("no status-code-as-logic"); `active` is deliberately not a gate while
-  `afterPublish` is deferred. Implemented on the in-memory fake (with an
-  `inventoryOnHand` seam mirroring the store's inventory join) and pinned by
-  five new `productCommerceStoreContract` cases; harnesses grow `seedStock`.
+  (`productId`, `sku`, branded `price`, coarse `inStock`, and the `active`
+  publish flag) — missing / soft-deleted / commerce-incomplete ids are
+  silently omitted, never errors ("no status-code-as-logic"); INACTIVE rows
+  are returned flagged, and purchasability is gated at the plugin's join
+  (`purchasable ⟺ commerce !== null && commerce.active`, plan §4.2's "or
+  explicitly inactive" arm). Until the deferred afterPublish→activate wiring
+  lands (its own follow-up task), every row is `active=false` and
+  storefronts honestly render the whole catalog not-purchasable. Implemented
+  on the in-memory fake (with an `inventoryOnHand` seam mirroring the
+  store's inventory join) and pinned by five new
+  `productCommerceStoreContract` cases; harnesses grow `seedStock` and
+  `activate`.
 - `@urumi/store-postgres`: `KyselyProductCommerceStore.listCommerceByIds` as
   ONE statement — `product_commerce LEFT JOIN inventory` with the
   commerce-complete guards inline, identical on sqlite + pg. The §6
@@ -47,6 +53,10 @@ Phase 2 — catalog display (batch commerce read + storefront PDP/PLP).
   localize; the PLP page cap (48) plus the loader guarantee the headline
   N+1 gate — one page render issues exactly ONE commerce-batch HTTP call
   and ZERO inventory-only calls (both pinned by call-count sandbox tests);
-  non-purchasable items are shown and flagged, not filtered. The PDP view
+  non-purchasable items — the no-commerce AND the inactive kind alike — are
+  shown and flagged, not filtered; unexpected render failures collapse to a
+  structured, message-free `RENDER_FAILED` instead of leaking internals
+  through the public route envelope; and a money-parity test pins the
+  plugin's branded-money mirror against the domain's. The PDP view
   model carries the marked `slots.addToCart` extension seam Phase 3
   group E hangs its affordance on, gated on the same `purchasable` flag.

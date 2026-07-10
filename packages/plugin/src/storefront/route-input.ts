@@ -4,6 +4,13 @@
  * by hand here, mirroring the admin route's style; the plugin has no
  * schema-library dependency). Strict on the load-bearing fields (`id` — the
  * join key — and `title`), lenient-drop on cosmetic optionals.
+ *
+ * Caveat: this validates SHAPE only — the content is not independently
+ * verified against the CMS (the plugin has no content-read surface at
+ * render time; the intended caller is the theme page, but the route is
+ * reachable directly). Acceptable because the joined commercial data is
+ * public-by-design: a fabricated call yields a view model for invented
+ * content, nothing more.
  */
 import type { CmsProductContent } from "../catalog/join-product.js";
 

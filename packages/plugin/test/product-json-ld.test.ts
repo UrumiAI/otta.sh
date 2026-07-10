@@ -18,6 +18,7 @@ function commerce(overrides: Partial<CatalogProductCommerce> = {}): CatalogProdu
 		sku: "SKU-1",
 		price: { amount: cents(1999), currency: currency("USD") },
 		inStock: true,
+		active: true,
 		...overrides,
 	};
 }
@@ -61,6 +62,15 @@ describe("buildProductJsonLd", () => {
 
 		expect(jsonLd["@type"]).toBe("Product");
 		expect(jsonLd["name"]).toBe("Bamboo Water Bottle");
+		expect("offers" in jsonLd).toBe(false);
+		expect("sku" in jsonLd).toBe(false);
+		expect(JSON.stringify(jsonLd)).not.toContain("Offer");
+	});
+
+	test("a commerce-complete but INACTIVE product emits Product only — no Offer, no sku — exactly like the no-commerce case", () => {
+		const jsonLd = buildProductJsonLd(joinProduct(CONTENT, commerce({ active: false })));
+
+		expect(jsonLd["@type"]).toBe("Product");
 		expect("offers" in jsonLd).toBe(false);
 		expect("sku" in jsonLd).toBe(false);
 		expect(JSON.stringify(jsonLd)).not.toContain("Offer");

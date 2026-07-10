@@ -4,9 +4,10 @@
  * view model; the theme page injects it as
  * `<script type="application/ld+json">`.
  *
- * Offer emission is gated on `purchasable` and ONLY on it (§1 case 3): a
- * non-purchasable product emits a Product node with the `offers` key ABSENT
- * — omission, never `offers: null` or a null price.
+ * Offer emission is gated on `purchasable` and ONLY on it (§1 case 3 +
+ * §4.2's "or explicitly inactive" arm): a non-purchasable product — no
+ * commerce row OR an inactive one — emits a Product node with the `offers`
+ * key ABSENT — omission, never `offers: null` or a null price.
  *
  * `availability` is the COARSE `inStock` boolean (plan §8 risk 5,
  * pre-approved): `inventory.on_hand > 0` at the service's read time, not
@@ -37,7 +38,10 @@ export function buildProductJsonLd(joined: JoinedProduct): Record<string, unknow
 	}
 	if (content.url !== undefined) product["url"] = content.url;
 
-	if (commerce !== null) {
+	// Gated on the JOIN's purchasable flag (not merely on the row's
+	// presence): an inactive/unpublished commerce row emits Product-only
+	// JSON-LD exactly like the no-commerce case — no Offer, no sku.
+	if (joined.purchasable && commerce !== null) {
 		product["sku"] = commerce.sku;
 		product["offers"] = {
 			"@type": "Offer",

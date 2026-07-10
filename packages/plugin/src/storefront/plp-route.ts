@@ -24,7 +24,7 @@
 import { joinProduct } from "../catalog/join-product.js";
 import type { CmsProductContent } from "../catalog/join-product.js";
 import type { RouteHandler } from "../types.js";
-import { createCommerceLoader } from "./pdp-route.js";
+import { createCommerceLoader, renderGuard } from "./pdp-route.js";
 import { buildProductViewModel, type ProductViewModel } from "./product-view-model.js";
 import { parseCmsProductContent, sanitizeLocale } from "./route-input.js";
 
@@ -55,40 +55,50 @@ export interface PlpRouteInput {
 export type PlpRouteResult =
 	| { ok: true; items: ProductViewModel[]; query: PlpQuery }
 	| { ok: false; error: "INVALID_ITEMS" }
-	| { ok: false; error: "PAGE_TOO_LARGE"; max: number };
+	| { ok: false; error: "PAGE_TOO_LARGE"; max: number }
+	| { ok: false; error: "RENDER_FAILED" };
 
 export function createPlpRouteHandler(): RouteHandler<PlpRouteInput> {
-	return async (routeCtx, ctx): Promise<PlpRouteResult> => {
-		const rawItems = routeCtx.input.items;
-		if (!Array.isArray(rawItems)) {
-			return { ok: false, error: "INVALID_ITEMS" };
-		}
-		if (rawItems.length > PLP_PAGE_SIZE_CAP) {
-			// Rejected BEFORE any commerce call — the cap is what keeps
-			// "one page ⇒ one batch call" true by construction.
-			return { ok: false, error: "PAGE_TOO_LARGE", max: PLP_PAGE_SIZE_CAP };
-		}
-		const contents: CmsProductContent[] = [];
-		for (const raw of rawItems) {
-			const content = parseCmsProductContent(raw);
-			if (content === null) {
-				return { ok: false, error: "INVALID_ITEMS" };
+	// Caveat (public route, reachable directly): caller-supplied `items` are
+	// NOT independently verified against the CMS — see pdp-route.ts; the
+	// joined commercial data is public-by-design, so nothing privileged is
+	// reachable through fabricated content.
+	//
+	// JSON-LD is deliberately PDP-only in this phase (plan §1 case 3 emits
+	// Product/Offer on the product page); the PLP view model carries no
+	// graph — a listing-level ItemList would be additive later.
+	return (routeCtx, ctx): Promise<PlpRouteResult> =>
+		renderGuard(STOREFRONT_LIST_ROUTE, async () => {
+			const rawItems = routeCtx.input.items;
+			if (!Array.isArray(rawItems)) {
+				return { ok: false, error: "INVALID_ITEMS" } as const;
 			}
-			contents.push(content);
-		}
-		const locale = sanitizeLocale(routeCtx.input.locale);
-		const query = parsePlpQuery(routeCtx.input.query);
+			if (rawItems.length > PLP_PAGE_SIZE_CAP) {
+				// Rejected BEFORE any commerce call — the cap is what keeps
+				// "one page ⇒ one batch call" true by construction.
+				return { ok: false, error: "PAGE_TOO_LARGE", max: PLP_PAGE_SIZE_CAP } as const;
+			}
+			const contents: CmsProductContent[] = [];
+			for (const raw of rawItems) {
+				const content = parseCmsProductContent(raw);
+				if (content === null) {
+					return { ok: false, error: "INVALID_ITEMS" } as const;
+				}
+				contents.push(content);
+			}
+			const locale = sanitizeLocale(routeCtx.input.locale);
+			const query = parsePlpQuery(routeCtx.input.query);
 
-		// Collect every CMS id on the page, then ONE batched call (§4.3.1);
-		// the loader dedupes duplicates within the page.
-		const loader = createCommerceLoader(ctx);
-		const commerceById = await loader.loadMany(contents.map((content) => content.id));
+			// Collect every CMS id on the page, then ONE batched call (§4.3.1);
+			// the loader dedupes duplicates within the page.
+			const loader = createCommerceLoader(ctx);
+			const commerceById = await loader.loadMany(contents.map((content) => content.id));
 
-		const items = contents.map((content) =>
-			buildProductViewModel(joinProduct(content, commerceById.get(content.id) ?? null), locale),
-		);
-		return { ok: true, items, query };
-	};
+			const items = contents.map((content) =>
+				buildProductViewModel(joinProduct(content, commerceById.get(content.id) ?? null), locale),
+			);
+			return { ok: true as const, items, query };
+		});
 }
 
 /** Malformed query metadata degrades to "all" — it only labels which CMS

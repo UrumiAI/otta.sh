@@ -16,6 +16,7 @@ const COMMERCE: CatalogProductCommerce = {
 	sku: "SKU-1",
 	price: { amount: cents(1999), currency: currency("USD") },
 	inStock: true,
+	active: true,
 };
 
 /**
@@ -34,6 +35,18 @@ describe("joinProduct", () => {
 		expect(joined.commerce).toBe(COMMERCE);
 		expect(joined.commerce?.price.amount).toBe(1999);
 		expect(joined.commerce?.inStock).toBe(true);
+	});
+
+	test("returns purchasable:false for a commerce-complete but INACTIVE (unpublished) record — §4.2's 'or explicitly inactive' arm", () => {
+		// The honest current state everywhere until the deferred
+		// afterPublish→activate wiring lands: rows exist, priced, active=false.
+		const joined = joinProduct(CONTENT, { ...COMMERCE, active: false });
+
+		expect(joined.purchasable).toBe(false);
+		// The row is still attached (the store reports state) — but every
+		// downstream consumer gates on the flag, not on presence.
+		expect(joined.commerce).not.toBeNull();
+		expect(joined.content.title).toBe("Bamboo Water Bottle");
 	});
 
 	test("returns purchasable:false and commerce:null when no commerce record exists", () => {
