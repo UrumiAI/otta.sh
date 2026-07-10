@@ -48,3 +48,28 @@ Phase 4 — checkout + payment gateways.
 
 Entitlements are keyed on `order_id` + `buyer_ref` (email/session claim token);
 Phase 5 re-associates them to customer accounts.
+
+Review-round hardening (settle-path defect family):
+
+- `settleOrder` no longer short-circuits on a duplicate `dedupe_key` — every
+  delivery **re-drives the idempotent, state-guarded steps** (guarded flips,
+  `provider_ref`-keyed payment record, state-guarded commit, grant-once
+  entitlement), so a crash between dedupe→flip or flip→commit/grant (and
+  markFailed→release) is healed by the next gateway retry instead of silently
+  no-oping while the order expires.
+- Losing the `pending→paid` flip to a **mid-flight** expiry/failure is now as
+  loud as finding the order already terminal: a new `PAID_FLIP_LOST`
+  `payment_events` anomaly + the manual-reconciliation flag (money captured,
+  stock released — never silent).
+- `KyselyInventoryStore.commit` is guard-first (conditional
+  `UPDATE … WHERE state IN ('held','adopted') RETURNING`; 0 rows re-reads to
+  distinguish the benign already-`committed` replay from the loud lost-hold
+  anomaly).
+- Stripe webhook verification enforces a configurable **freshness window** on
+  the signed `t` (default 300s, injectable Clock) and checks **all** `v1`
+  signatures (secret rotation).
+- The x402 adapter rejects a receipt settled on a network outside the
+  gateway's `accepts`, and the facilitator swap-in point documents the
+  load-bearing production requirements (attest amount + recipient; the
+  amount==`order_totals.total` check and tx-hash dedupe are what bind a
+  receipt to an order — `orderId` is never on-chain-attestable).
