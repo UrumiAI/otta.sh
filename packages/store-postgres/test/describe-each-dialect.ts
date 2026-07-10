@@ -93,7 +93,18 @@ export async function makePgHarness(): Promise<DialectHarness> {
 
 function buildProductCommerceHarness(db: Kysely<Database>): ProductCommerceStoreHarness {
 	const clock = new FixedClock(new Date("2026-07-10T00:00:00.000Z"));
-	return { store: new KyselyProductCommerceStore({ db, clock }) };
+	return {
+		store: new KyselyProductCommerceStore({ db, clock }),
+		// Phase 2 (`listCommerceByIds`): seed the REAL inventory table the
+		// store's single-statement inStock join reads.
+		async seedStock(sku, qty) {
+			await db
+				.insertInto("inventory")
+				.values({ sku, on_hand: qty })
+				.onConflict((oc) => oc.column("sku").doUpdateSet({ on_hand: qty }))
+				.execute();
+		},
+	};
 }
 
 /** Fresh, isolated in-memory SQLite db, migrated to latest. */
