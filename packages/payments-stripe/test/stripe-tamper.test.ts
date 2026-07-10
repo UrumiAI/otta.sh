@@ -56,4 +56,77 @@ describe("StripePaymentGateway verifyConfirmation", () => {
 		const res = await gateway.verifyConfirmation({ kind: "webhook", body: s.body, headers: {} });
 		expect(res).toEqual({ ok: false, reason: "INVALID_SIGNATURE" });
 	});
+
+	// -- review round: freshness window + secret-rotation (F3) -----------------
+
+	test("rejects a correctly-signed webhook whose timestamp is outside the freshness window", async () => {
+		// Signed with the RIGHT secret but a stale `t` (10 min ago > the 300s
+		// default tolerance): replay hardening rejects it as INVALID_SIGNATURE.
+		const stale = signStripeWebhook(
+			{
+				eventId: "evt_stale",
+				type: "payment_intent.succeeded",
+				paymentIntentId: "pi_stale",
+				orderId: "ord-1",
+				amountCents: 1500,
+				currency: "usd",
+			},
+			SECRET,
+			{ timestamp: Math.floor(Date.now() / 1000) - 600 },
+		);
+		const res = await gateway.verifyConfirmation({
+			kind: "webhook",
+			body: stale.body,
+			headers: { "Stripe-Signature": stale.signatureHeader },
+		});
+		expect(res).toEqual({ ok: false, reason: "INVALID_SIGNATURE" });
+	});
+
+	test("accepts a stale-but-signed webhook when the tolerance window is widened (configurable)", async () => {
+		const lenient = new StripePaymentGateway({ webhookSecret: SECRET, toleranceSeconds: 3600 });
+		const stale = signStripeWebhook(
+			{
+				eventId: "evt_stale2",
+				type: "payment_intent.succeeded",
+				paymentIntentId: "pi_stale2",
+				orderId: "ord-1",
+				amountCents: 1500,
+				currency: "usd",
+			},
+			SECRET,
+			{ timestamp: Math.floor(Date.now() / 1000) - 600 },
+		);
+		const res = await lenient.verifyConfirmation({
+			kind: "webhook",
+			body: stale.body,
+			headers: { "Stripe-Signature": stale.signatureHeader },
+		});
+		expect(res.ok).toBe(true);
+	});
+
+	test("accepts a header carrying multiple v1 signatures when ANY matches (secret rotation)", async () => {
+		const s = signed(1500);
+		// During rotation Stripe signs with each active secret and sends one v1
+		// per signature. Prepend a bogus v1 (the "old secret") before the real one.
+		const [tPart, realV1] = s.signatureHeader.split(",");
+		const rotated = `${tPart},v1=${"0".repeat(64)},${realV1}`;
+		const res = await gateway.verifyConfirmation({
+			kind: "webhook",
+			body: s.body,
+			headers: { "Stripe-Signature": rotated },
+		});
+		expect(res.ok).toBe(true);
+	});
+
+	test("rejects when no v1 signature in the header matches", async () => {
+		const s = signed(1500);
+		const [tPart] = s.signatureHeader.split(",");
+		const allWrong = `${tPart},v1=${"0".repeat(64)},v1=${"f".repeat(64)}`;
+		const res = await gateway.verifyConfirmation({
+			kind: "webhook",
+			body: s.body,
+			headers: { "Stripe-Signature": allWrong },
+		});
+		expect(res).toEqual({ ok: false, reason: "INVALID_SIGNATURE" });
+	});
 });

@@ -3,6 +3,7 @@ import {
 	currency as toCurrency,
 	orderId as toOrderId,
 	type ClientAction,
+	type Clock,
 	type ConfirmationResult,
 	type CreateIntentInput,
 	type PaymentGateway,
@@ -10,6 +11,10 @@ import {
 	type RawConfirmation,
 } from "@urumi/domain";
 import { createHmac, timingSafeEqual } from "node:crypto";
+
+/** Default replay-window tolerance for the signed `t` timestamp — 300s, matching
+ *  Stripe's own recommended default. */
+export const DEFAULT_TOLERANCE_SECONDS = 300;
 
 export interface StripePaymentGatewayOptions {
 	/**
@@ -20,6 +25,12 @@ export interface StripePaymentGatewayOptions {
 	/** Stripe secret key (`sk_…`); service-env only. Reserved for real intent
 	 *  creation — Phase 4 creates the client handle offline (see `createIntent`). */
 	secretKey?: string;
+	/** Freshness window for the signed `t` timestamp (replay hardening): a webhook
+	 *  whose `|now − t|` exceeds this is rejected as INVALID_SIGNATURE even when the
+	 *  HMAC matches. Defaults to {@link DEFAULT_TOLERANCE_SECONDS}. */
+	toleranceSeconds?: number;
+	/** Injectable time source for the freshness check; defaults to system time. */
+	clock?: Clock;
 }
 
 /**
@@ -39,12 +50,16 @@ export interface StripePaymentGatewayOptions {
 export class StripePaymentGateway implements PaymentGateway {
 	readonly id = "stripe" as const;
 	readonly #secret: string;
+	readonly #toleranceSeconds: number;
+	readonly #clock: Clock;
 
 	constructor(options: StripePaymentGatewayOptions) {
 		if (options.webhookSecret.length === 0) {
 			throw new Error("StripePaymentGateway requires a non-empty webhookSecret");
 		}
 		this.#secret = options.webhookSecret;
+		this.#toleranceSeconds = options.toleranceSeconds ?? DEFAULT_TOLERANCE_SECONDS;
+		this.#clock = options.clock ?? { now: () => new Date() };
 	}
 
 	async createIntent(input: CreateIntentInput): Promise<PaymentIntentHandle> {
@@ -65,11 +80,25 @@ export class StripePaymentGateway implements PaymentGateway {
 		const parts = parseSignatureHeader(signature);
 		if (parts === undefined) return { ok: false, reason: "INVALID_SIGNATURE" };
 
+		// Freshness window (replay hardening): the signed `t` must be within the
+		// tolerance of now — a stale-but-correctly-signed webhook is rejected in
+		// the same INVALID_SIGNATURE class (matching Stripe's own guidance).
+		const timestampSec = Number(parts.timestamp);
+		if (!Number.isFinite(timestampSec)) return { ok: false, reason: "INVALID_SIGNATURE" };
+		const nowSec = Math.floor(this.#clock.now().getTime() / 1000);
+		if (Math.abs(nowSec - timestampSec) > this.#toleranceSeconds) {
+			return { ok: false, reason: "INVALID_SIGNATURE" };
+		}
+
 		// HMAC over the EXACT raw bytes — `{t}.{rawBody}` — never a re-serialized body.
+		// ALL `v1` tags are tried (Stripe sends one per active signing secret during
+		// secret rotation); any match accepts.
 		const rawBody = Buffer.from(raw.body);
 		const signedPayload = Buffer.concat([Buffer.from(`${parts.timestamp}.`), rawBody]);
 		const expected = createHmac("sha256", this.#secret).update(signedPayload).digest("hex");
-		if (!safeEqualHex(parts.v1, expected)) return { ok: false, reason: "INVALID_SIGNATURE" };
+		if (!parts.v1s.some((candidate) => safeEqualHex(candidate, expected))) {
+			return { ok: false, reason: "INVALID_SIGNATURE" };
+		}
 
 		let event: unknown;
 		try {
@@ -126,16 +155,18 @@ function normalizeEvent(event: unknown): ConfirmationResult {
 	};
 }
 
-function parseSignatureHeader(header: string): { timestamp: string; v1: string } | undefined {
+function parseSignatureHeader(header: string): { timestamp: string; v1s: string[] } | undefined {
 	let timestamp: string | undefined;
-	let v1: string | undefined;
+	const v1s: string[] = [];
 	for (const part of header.split(",")) {
 		const [k, v] = part.split("=", 2);
 		if (k === "t") timestamp = v;
-		else if (k === "v1" && v1 === undefined) v1 = v; // first v1 scheme
+		// Collect EVERY v1 tag: during secret rotation Stripe signs with each
+		// active secret and sends one v1 per signature — any match must verify.
+		else if (k === "v1" && v !== undefined) v1s.push(v);
 	}
-	if (timestamp === undefined || v1 === undefined) return undefined;
-	return { timestamp, v1 };
+	if (timestamp === undefined || v1s.length === 0) return undefined;
+	return { timestamp, v1s };
 }
 
 function headerCaseInsensitive(headers: Record<string, string>, name: string): string | undefined {
@@ -195,7 +226,9 @@ export function signStripeWebhook(
 		},
 	};
 	const body = new TextEncoder().encode(JSON.stringify(event));
-	const timestamp = opts.timestamp ?? 1_752_105_600;
+	// Default to NOW so the signed webhook passes the gateway's freshness window;
+	// tests exercising staleness pass an explicit past timestamp.
+	const timestamp = opts.timestamp ?? Math.floor(Date.now() / 1000);
 	const signedPayload = Buffer.concat([Buffer.from(`${timestamp}.`), Buffer.from(body)]);
 	const v1 = createHmac("sha256", secret).update(signedPayload).digest("hex");
 	return { body, signatureHeader: `t=${timestamp},v1=${v1}` };

@@ -16,6 +16,21 @@ import { createHmac, timingSafeEqual } from "node:crypto";
  * to the x402 facilitator (`@x402/core`'s `HTTPFacilitatorClient`, which the
  * `@emdash-cms/x402` Astro integration uses); in tests it is the offline HMAC
  * facilitator below (no network).
+ *
+ * ⚠️ PRODUCTION SWAP-IN REQUIREMENTS (load-bearing — read before wiring a real
+ * facilitator client here):
+ *  - The facilitator MUST cryptographically attest the settlement's **amount,
+ *    asset/currency, and recipient** for `proof.transaction` on `proof.network`
+ *    — "the tx exists" is NOT sufficient. `proof.orderId` is NEVER
+ *    on-chain-attestable (it exists only in our DB), so the ONLY things binding
+ *    a receipt to an order are (a) the domain's `amount == order_totals.total`
+ *    equality check in `settleOrder` and (b) the tx-hash dedupe (one settlement
+ *    consumes one on-chain payment, so a receipt cannot be replayed onto a
+ *    second same-priced order). Both checks are therefore LOAD-BEARING: weaken
+ *    either and a single payment could settle an arbitrary same-priced order.
+ *  - The adapter MUST additionally verify the attested **recipient equals this
+ *    gateway's `payTo`** once the real client exposes it — otherwise a payment
+ *    to the attacker's own wallet would satisfy the amount check.
  */
 export interface X402Facilitator {
 	verifyReceipt(proof: X402Proof): Promise<{ valid: boolean }>;
@@ -65,6 +80,13 @@ export class X402PaymentGateway implements PaymentGateway {
 		const proof = raw.proof;
 		if (typeof proof.transaction !== "string" || proof.transaction.length === 0) {
 			return { ok: false, reason: "MALFORMED" };
+		}
+		// The settlement network must be one this gateway's challenge accepts — a
+		// receipt from a foreign network is rejected as unverified (a facilitator
+		// attestation for a network we never offered proves nothing about our
+		// requirements).
+		if (!this.#accepts.includes(proof.network)) {
+			return { ok: false, reason: "INVALID_SIGNATURE" };
 		}
 		// Facilitator-verified server-side — never trust the plugin's word.
 		const { valid } = await this.#facilitator.verifyReceipt(proof);

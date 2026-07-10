@@ -4,6 +4,7 @@ import {
 	getCart,
 	idempotencyKey,
 	type Order,
+	type OrderStore,
 	removeLine,
 	settleOrder,
 	sku as brandSku,
@@ -265,6 +266,171 @@ function orderFlowTests(makeHarness: () => Promise<OrderFlowHarness>, dialect: s
 				.where("order_id", "=", res.order.id)
 				.execute();
 			expect(anomalies).toHaveLength(1);
+		});
+
+		// -- review round: mid-flight flip loss (F1) + crash-window resumption (F2) --
+
+		test("a settle losing the paid flip to a concurrent expiry records the PAID_FLIP_LOST anomaly and flags reconciliation (mid-flight loser is loud)", async () => {
+			const h = await makeHarness();
+			await h.seedPhysical({
+				productId: "p1",
+				sku: "SKU-1",
+				priceCents: 1500,
+				title: "W",
+				onHand: 5,
+			});
+			const cartId = await h.cartWith([
+				{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" },
+			]);
+			const res = await createOrderFromCart(h.createDeps, cmd(cartId));
+			if (!res.ok) throw new Error(res.reason);
+			const reservationId = res.order.lines[0]!.reservationId!;
+			h.clock.advance(16 * 60 * 1000); // past the checkout TTL; sweep not yet run
+
+			// Force the interleave on the REAL store: settle loads `pending`, then
+			// the expiry sweep wins between the load and the pending→paid flip.
+			// (Explicit delegation — a prototype proxy would break the Kysely
+			// store's #private-field receivers.)
+			const racingOrderStore: OrderStore = {
+				createFromCart: (i) => h.orderStore.createFromCart(i),
+				getById: (id) => h.orderStore.getById(id),
+				markPaid: async (id) => {
+					await expireOrders(h.expireDeps);
+					return h.orderStore.markPaid(id);
+				},
+				markFailed: (id) => h.orderStore.markFailed(id),
+				expire: (id, at) => h.orderStore.expire(id, at),
+				listExpirable: (at) => h.orderStore.listExpirable(at),
+				recordPayment: (i) => h.orderStore.recordPayment(i),
+				flagReconciliation: (id, d) => h.orderStore.flagReconciliation(id, d),
+			};
+
+			const settled = await settleOrder(
+				{ ...h.settleDeps, orderStore: racingOrderStore },
+				h.stripeGw,
+				h.stripeGw.webhook(evt(res.order)),
+			);
+			expect(settled.ok).toBe(true);
+			if (settled.ok) expect(settled.noop).toBe(true);
+			const order = await h.orderStore.getById(res.order.id);
+			expect(order?.state).toBe("expired");
+			expect(order?.reconciliationFlag).not.toBeNull();
+			const anomalies = await h.db
+				.selectFrom("payment_events")
+				.selectAll()
+				.where("kind", "=", "PAID_FLIP_LOST")
+				.where("order_id", "=", res.order.id)
+				.execute();
+			expect(anomalies).toHaveLength(1);
+			expect(await h.reservationState(reservationId)).toBe("released");
+		});
+
+		test("a settle retry after a crash between dedupe and markPaid completes the settlement", async () => {
+			const h = await makeHarness();
+			await h.seedPhysical({
+				productId: "p1",
+				sku: "SKU-1",
+				priceCents: 1500,
+				title: "W",
+				onHand: 5,
+			});
+			const cartId = await h.cartWith([
+				{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" },
+			]);
+			const res = await createOrderFromCart(h.createDeps, cmd(cartId));
+			if (!res.ok) throw new Error(res.reason);
+			const reservationId = res.order.lines[0]!.reservationId!;
+			const event = evt(res.order);
+			// Simulate the crash: only the payment_events dedupe row landed.
+			await h.paymentEventStore.dedupe(event.dedupeKey, res.order.id, "stripe", FUTURE);
+
+			// The gateway retry re-delivers the SAME event: it must RESUME, not no-op.
+			const settled = await settleOrder(h.settleDeps, h.stripeGw, h.stripeGw.webhook(event));
+			expect(settled.ok).toBe(true);
+			if (settled.ok) expect(settled.noop).toBe(false);
+			expect((await h.orderStore.getById(res.order.id))?.state).toBe("paid");
+			expect(await h.reservationState(reservationId)).toBe("committed");
+			const payments = await h.db
+				.selectFrom("payments")
+				.selectAll()
+				.where("order_id", "=", res.order.id)
+				.execute();
+			expect(payments).toHaveLength(1);
+		});
+
+		test("a settle retry after a crash between markPaid and commit completes the side-effects exactly once", async () => {
+			const h = await makeHarness();
+			await h.seedPhysical({
+				productId: "p1",
+				sku: "SKU-1",
+				priceCents: 1500,
+				title: "W",
+				onHand: 5,
+			});
+			const cartId = await h.cartWith([
+				{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" },
+			]);
+			const res = await createOrderFromCart(h.createDeps, cmd(cartId));
+			if (!res.ok) throw new Error(res.reason);
+			const reservationId = res.order.lines[0]!.reservationId!;
+			const event = evt(res.order);
+			// Simulate the crash: dedupe + the paid flip landed; commit/record did not.
+			await h.paymentEventStore.dedupe(event.dedupeKey, res.order.id, "stripe", FUTURE);
+			await h.orderStore.markPaid(res.order.id);
+			expect(await h.reservationState(reservationId)).toBe("adopted");
+
+			const settled = await settleOrder(h.settleDeps, h.stripeGw, h.stripeGw.webhook(event));
+			expect(settled.ok).toBe(true);
+			expect(await h.reservationState(reservationId)).toBe("committed");
+			// A further retry moves nothing more (exactly once).
+			await settleOrder(h.settleDeps, h.stripeGw, h.stripeGw.webhook(event));
+			const payments = await h.db
+				.selectFrom("payments")
+				.selectAll()
+				.where("order_id", "=", res.order.id)
+				.execute();
+			expect(payments).toHaveLength(1);
+			const anomalies = await h.db
+				.selectFrom("payment_events")
+				.selectAll()
+				.where("kind", "is not", null)
+				.execute();
+			expect(anomalies).toHaveLength(0);
+		});
+
+		test("commit against a released reservation throws the loud ReservationCommitLostError; against a committed one it is a benign no-op (guard-first)", async () => {
+			const h = await makeHarness();
+			await h.seedPhysical({
+				productId: "p1",
+				sku: "SKU-1",
+				priceCents: 1500,
+				title: "W",
+				onHand: 5,
+			});
+			const cartId = await h.cartWith([
+				{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" },
+			]);
+			const cart = (await h.cartStore.get(cartId))!;
+			const reservationId = cart.lines[0]!.reservationId!;
+			await h.inventory.commit(reservationId); // held → committed
+			await expect(h.inventory.commit(reservationId)).resolves.toBeUndefined(); // benign replay
+			expect(await h.reservationState(reservationId)).toBe("committed");
+
+			// A second, lost hold: released before commit → the loud typed anomaly.
+			await h.seedPhysical({
+				productId: "p2",
+				sku: "SKU-2",
+				priceCents: 500,
+				title: "X",
+				onHand: 5,
+			});
+			const cartId2 = await h.cartWith([
+				{ sku: "SKU-2", productId: "p2", qty: 1, kind: "physical" },
+			]);
+			const cart2 = (await h.cartStore.get(cartId2))!;
+			const lost = cart2.lines[0]!.reservationId!;
+			await h.inventory.release(lost);
+			await expect(h.inventory.commit(lost)).rejects.toThrow("not held/adopted/committed");
 		});
 	});
 }

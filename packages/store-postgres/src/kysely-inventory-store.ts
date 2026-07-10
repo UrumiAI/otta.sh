@@ -113,19 +113,25 @@ export class KyselyInventoryStore implements InventoryStore {
 	}
 
 	async commit(reservationId: string): Promise<void> {
-		const row = await this.#selectById(reservationId);
-		if (row.state === "committed") return; // double-commit / idempotent replay: no-op
-		// Widened (Phase 4 §5) to accept `adopted` alongside Phase-0's `held`.
-		if (row.state !== "held" && row.state !== "adopted") {
-			// released / failed / … ⇒ the adopted hold was lost: the loud 0-row anomaly.
-			throw new ReservationCommitLostError(reservationId, row.state);
-		}
-		await this.#db
+		// GUARD-FIRST (defense-in-depth, not SELECT-then-UPDATE): the conditional
+		// flip itself is the authority — a hold that leaves `held|adopted` between
+		// any read and this statement can never be silently "committed". Widened
+		// (Phase 4 §5) to accept `adopted` alongside Phase-0's `held`.
+		const flipped = await this.#db
 			.updateTable("reservations")
 			.set({ state: "committed" })
 			.where("id", "=", reservationId)
 			.where("state", "in", ["held", "adopted"])
-			.execute();
+			.returning("id")
+			.executeTakeFirst();
+		if (flipped !== undefined) return;
+
+		// 0 rows: re-read to distinguish the benign idempotent replay (already
+		// `committed`) from a LOST hold (released/failed/unknown) — the latter is
+		// the loud anomaly (§5), never a silent no-op.
+		const row = await this.#selectById(reservationId);
+		if (row.state === "committed") return; // double-commit / idempotent replay: no-op
+		throw new ReservationCommitLostError(reservationId, row.state);
 	}
 
 	async release(reservationId: string): Promise<void> {
