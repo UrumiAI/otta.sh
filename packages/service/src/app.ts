@@ -1,6 +1,7 @@
 import type { ProductCommerceStore } from "@urumi/domain";
 import { Hono } from "hono";
 import { type CartRoutesDeps, cartRoutes, expireHoldsRoutes } from "./routes/carts.js";
+import { catalogRoutes } from "./routes/catalog.js";
 import { type InventoryDeps, inventoryRoutes } from "./routes/inventory.js";
 import { productCommerceRoutes } from "./routes/product-commerce.js";
 
@@ -19,6 +20,7 @@ export function createApp(deps: AppDeps): Hono {
 		"/products",
 		productCommerceRoutes({ productCommerce: deps.productCommerce, inventory: deps.store }),
 	);
+	app.route("/catalog", catalogRoutes({ productCommerce: deps.productCommerce }));
 	app.route("/carts", cartRoutes(deps));
 	// Internal (non-public) sweep trigger — self-interval or plugin-cron hits this.
 	app.route("/internal", expireHoldsRoutes(deps));
