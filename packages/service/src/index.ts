@@ -1,7 +1,6 @@
 import { serve } from "@hono/node-server";
 import { type CartDeps, expireHolds, type PaymentGateway, type PaymentMethod } from "@urumi/domain";
 import { StripePaymentGateway } from "@urumi/payments-stripe";
-import { createTestFacilitator, X402PaymentGateway } from "@urumi/payments-x402";
 import {
 	KyselyCartStore,
 	KyselyEntitlementStore,
@@ -15,6 +14,7 @@ import {
 	uuidIdGen,
 } from "@urumi/store-postgres";
 import { createApp } from "./app.js";
+import { wireX402Gateway } from "./x402-wiring.js";
 
 // Bin entry (§0.6): wire the real pg-backed stores and serve on PORT.
 const connectionString = process.env.PG_CONNECTION_STRING;
@@ -44,21 +44,13 @@ if (stripeWebhookSecret !== undefined && stripeWebhookSecret.length > 0) {
 		secretKey: process.env.STRIPE_SECRET_KEY,
 	});
 }
-// x402: the challenge payTo + a server-side facilitator. The offline HMAC
-// facilitator (X402_FACILITATOR_SECRET) is the v1 stand-in for a real
-// `HTTPFacilitatorClient`-backed verifier; wire the latter for production.
-const x402PayTo = process.env.X402_PAYTO;
-const x402FacilitatorSecret = process.env.X402_FACILITATOR_SECRET;
-if (
-	x402PayTo !== undefined &&
-	x402FacilitatorSecret !== undefined &&
-	x402FacilitatorSecret.length > 0
-) {
-	gateways.x402 = new X402PaymentGateway({
-		facilitator: createTestFacilitator(x402FacilitatorSecret),
-		payTo: x402PayTo,
-		accepts: (process.env.X402_ACCEPTS ?? "eip155:8453").split(","),
-	});
+// x402 (review G4): FAIL-CLOSED wiring. The only available facilitator is the
+// offline TEST one, so `wireX402Gateway` throws at startup when x402 env is
+// set without the explicit X402_ALLOW_TEST_FACILITATOR=true opt-in, and warns
+// loudly (non-production) when it is. See src/x402-wiring.ts.
+const x402Gateway = wireX402Gateway(process.env);
+if (x402Gateway !== undefined) {
+	gateways.x402 = x402Gateway;
 }
 
 // Hold TTL (§5): default 15 min, configurable via CART_HOLD_TTL_MS.
