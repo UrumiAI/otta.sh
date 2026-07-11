@@ -105,3 +105,35 @@ export {
 	type CouponStoreHarness,
 	type CouponStoreContractOptions,
 } from "./coupon-store-contract.js";
+// Phase 7: reporting + settings fakes, contract suites, and the shared fixture.
+export {
+	InMemoryReportingStore,
+	truncateToBucket,
+	type SeedInventoryRow,
+	type SeedOrderItemRow,
+	type SeedOrderRow,
+} from "./in-memory-reporting-store.js";
+export { InMemorySettingsStore } from "./in-memory-settings-store.js";
+export {
+	reportingStoreContract,
+	type ReportingStoreHarness,
+	type ReportingStoreContractOptions,
+} from "./reporting-store-contract.js";
+export {
+	settingsStoreContract,
+	type SettingsStoreHarness,
+	type SettingsStoreContractOptions,
+} from "./settings-store-contract.js";
+export {
+	EXPECTED_ORDERS_BY_STATUS,
+	EXPECTED_REVENUE_BY_DAY,
+	EXPECTED_SUM_ALL,
+	EXPECTED_SUM_EXCLUDING_CANCELLED_REFUNDED,
+	EXPECTED_TOP_BY_QUANTITY,
+	EXPECTED_TOP_BY_REVENUE,
+	EXPECTED_TOTAL_REVENUE,
+	FIXTURE_INVENTORY,
+	FIXTURE_ITEMS,
+	FIXTURE_ORDERS,
+	REPORTING_WINDOW,
+} from "./reporting-fixture.js";
