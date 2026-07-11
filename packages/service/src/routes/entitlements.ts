@@ -62,6 +62,12 @@ export function entitlementRoutes(deps: OrderServiceDeps): Hono {
 		return c.json({ ok: false, reason: res.reason }, status);
 	});
 
+	// ACCEPTED RISK (review round G, deferred to Phase 5): this public check is
+	// an enumeration oracle — `buyerRef` is an email/session string, so a caller
+	// can probe whether a given email owns a given sku. Phase 5 replaces
+	// `buyerRef` with unguessable claim tokens tied to customer accounts, which
+	// closes the oracle; until then the exposure is one boolean per (ref, sku)
+	// probe, with no order contents readable.
 	app.get("/check", async (c) => {
 		const parsed = entitlementCheckQuery.safeParse(c.req.query());
 		if (!parsed.success) {
