@@ -35,6 +35,7 @@ than rewriting history.
 - [0003. Storefront pages are plugin-owned public routes](./0003-storefront-plugin-routes.md) — accepted, refines 0001
 - [0004. Storefront customer auth is magic-link](./0004-customer-auth-mechanism.md) — accepted, refines 0001
 - [0005. The commerce service sends transactional email directly](./0005-transactional-email-transport.md) — accepted, refines 0002
+- [0006. First-party deployments may register the plugin trusted (in-process)](./0006-trusted-in-process-deployment.md) — accepted, refines 0001/0003
 
 ## Queued (to promote from draft-plans)
 

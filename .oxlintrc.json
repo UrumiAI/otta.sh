@@ -10,6 +10,17 @@
 	},
 	"overrides": [
 		{
+			"files": ["packages/plugin/src/manifest.ts"],
+			"rules": {
+				"no-underscore-dangle": [
+					"error",
+					{
+						"allow": ["__URUMI_COMMERCE_SERVICE_URL__"]
+					}
+				]
+			}
+		},
+		{
 			"files": ["packages/domain/src/**/*.ts"],
 			"rules": {
 				"no-restricted-imports": [

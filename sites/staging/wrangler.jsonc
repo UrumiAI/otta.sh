@@ -1,0 +1,64 @@
+// Urumi storefront Worker — TEMPLATE (plan D5). This tracked file carries
+// PLACEHOLDER resource values: copy it to `wrangler.local.jsonc` (gitignored)
+// — or edit this file in place — and fill in YOUR Worker name, D1 database
+// name/id, and R2 bucket (see the README's "fill in your resource ids" step).
+// When `wrangler.local.jsonc` exists, astro.config.ts points the Cloudflare
+// adapter at it (`configPath`) at BUILD time; plain `wrangler deploy` then
+// deploys those values via the adapter-generated dist config — do NOT use
+// `wrangler deploy --config wrangler.local.jsonc` (it bypasses the
+// .wrangler/deploy redirect and tries to rebundle the raw worker source).
+//
+// Structure mirrors em-dash's templates/starter-cloudflare/wrangler.jsonc
+// MINUS `worker_loaders`: the LOADER binding is consumed only by the plugin
+// sandbox runner and flips the account onto Workers Paid; this deployment
+// runs the Urumi plugin trusted in-process instead (ADR-0006).
+//
+// Secrets are NEVER committed here. Post-merge:
+//   npx emdash secrets generate && wrangler secret put EMDASH_ENCRYPTION_KEY
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	// PLACEHOLDER — your Worker name (pick one that cannot collide with any
+	// existing Worker on your account).
+	"name": "my-urumi-store",
+	"main": "./src/worker.ts",
+	"compatibility_date": "2026-02-24",
+	// `global_fetch_strictly_public` is REQUIRED here (deploy-verified):
+	// Cloudflare blocks Worker→*.workers.dev subrequests and stubs them 404
+	// — without the flag the site's ctx.http calls to a commerce-service
+	// Worker on workers.dev never left Cloudflare (parallel wrangler tails
+	// proved the request never arrived; direct curl worked). PAIRING
+	// INVARIANT: the flag is incompatible with D1 read-replica sessions
+	// (every SSR request hangs, silently — em-dash docs
+	// deployment/cloudflare.mdx:121-130, emdash issue #1273), so d1() in
+	// astro.config must keep `session` OFF while this flag is present. Both
+	// halves are pinned by test/{wrangler,site}-config tests. A custom
+	// domain on the service would lift the subrequest block and allow
+	// removing the flag.
+	"compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+	"d1_databases": [
+		{
+			"binding": "DB",
+			// PLACEHOLDERS — from `wrangler d1 create <name>` (README runbook).
+			// The id is a syntactically-valid dummy, not a real database.
+			"database_name": "YOUR-D1-DATABASE-NAME",
+			"database_id": "00000000-0000-0000-0000-000000000000",
+		},
+	],
+	"r2_buckets": [
+		{
+			"binding": "MEDIA",
+			// PLACEHOLDER — from `wrangler r2 bucket create <name>`.
+			"bucket_name": "your-media-bucket",
+		},
+	],
+	"observability": {
+		"enabled": true,
+	},
+	// Drives scheduled publishing, plugin cron, and maintenance (src/worker.ts).
+	// Every-minute matches EmDash's minute-granular scheduled publishing and is
+	// free (D1 free limits unaffected); may be relaxed (e.g. "*/5 * * * *") if
+	// cron noise ever matters more than publish latency.
+	"triggers": {
+		"crons": ["* * * * *"],
+	},
+}

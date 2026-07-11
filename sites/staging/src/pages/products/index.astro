@@ -1,0 +1,118 @@
+---
+/**
+ * PLP — thin theme page (ADR-0003): the tier-① CMS query runs HERE, the
+ * page of content goes to the plugin's public `storefront/list` route
+ * in-process, and the returned view models are rendered to cards.
+ *
+ * Degraded state is a feature, not a crash: when the commerce service is
+ * unreachable the route returns RENDER_FAILED (or dispatch yields null) and
+ * this page still renders the CONTENT catalog with a friendly notice —
+ * content visibility never depends on commerce availability.
+ */
+import {
+	PLP_PAGE_SIZE_CAP,
+	STOREFRONT_LIST_ROUTE,
+	type PlpRouteResult,
+	type ProductViewModel,
+} from "@urumi/plugin";
+import { getEmDashCollection } from "emdash";
+import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
+import Base from "../../layouts/Base.astro";
+import { toCmsProductContent, type ProductEntryData } from "../../lib/products.js";
+import { dispatchUrumiRoute } from "../../lib/urumi-api.js";
+
+const { entries } = await getEmDashCollection("products", { limit: PLP_PAGE_SIZE_CAP });
+// Defensive second bound: the route rejects pages over the cap outright.
+const items = entries
+	.slice(0, PLP_PAGE_SIZE_CAP)
+	.map((entry) => toCmsProductContent(entry.data as unknown as ProductEntryData));
+
+const result = await dispatchUrumiRoute<PlpRouteResult>(
+	getPublicPluginApiRouteHandler(Astro.locals),
+	STOREFRONT_LIST_ROUTE,
+	{ items, query: { kind: "all" } },
+	Astro.url,
+);
+const view: ProductViewModel[] | null = result !== null && result.ok ? result.items : null;
+---
+
+<Base title="Products">
+	<h1>Products</h1>
+
+	{
+		view === null && items.length > 0 && (
+			<p class="notice">
+				Live pricing and availability are temporarily unavailable — the catalog below is
+				content-only for now.
+			</p>
+		)
+	}
+
+	{
+		items.length === 0 ? (
+			<p>
+				No products yet. <a href="/_emdash/admin">Create one in the admin</a>.
+			</p>
+		) : (
+			<ul class="cards">
+				{(
+					view ??
+					items.map((content) => ({
+						...content,
+						purchasable: false,
+						price: null,
+						availability: null,
+					}))
+				).map((product) => (
+					<li>
+						<a href={product.url ?? `/products/${product.slug ?? product.id}`}>
+							{product.images?.[0] && <img src={product.images[0]} alt={product.title} />}
+							<h2>{product.title}</h2>
+						</a>
+						{product.description && <p>{product.description}</p>}
+						{product.purchasable && product.price ? (
+							<p class="price">
+								{product.price.formatted}
+								{product.availability === "out_of_stock" && <span> — out of stock</span>}
+							</p>
+						) : (
+							<p class="price muted">Not currently available for purchase</p>
+						)}
+					</li>
+				))}
+			</ul>
+		)
+	}
+</Base>
+
+<style>
+	.cards {
+		list-style: none;
+		padding: 0;
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+		gap: 1.5rem;
+	}
+	.cards li {
+		border: 1px solid #ddd;
+		border-radius: 0.5rem;
+		padding: 1rem;
+	}
+	.cards img {
+		max-width: 100%;
+		border-radius: 0.25rem;
+	}
+	.price {
+		font-weight: 600;
+	}
+	.muted {
+		color: #666;
+		font-weight: 400;
+	}
+	.notice {
+		background: #fff7e0;
+		border: 1px solid #e6c200;
+		border-radius: 0.5rem;
+		padding: 0.75rem 1rem;
+	}
+</style>

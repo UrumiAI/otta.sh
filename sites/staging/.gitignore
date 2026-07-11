@@ -1,0 +1,9 @@
+# Astro / wrangler build + runtime state (root .gitignore already covers
+# dist/, .env*, node_modules/)
+.astro/
+.wrangler/
+worker-configuration.d.ts
+
+# Account-specific deploy config (real Worker name / D1 id / R2 bucket) —
+# copied from the tracked wrangler.jsonc template, NEVER committed.
+wrangler.local.jsonc

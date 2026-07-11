@@ -4,7 +4,7 @@ import { defineConfig } from "vitest/config";
 // packages/*/vitest.config.ts and are aggregated here.
 export default defineConfig({
 	test: {
-		projects: ["packages/*/vitest.config.ts"],
+		projects: ["packages/*/vitest.config.ts", "sites/*/vitest.config.ts"],
 		// When Postgres is enabled, run test FILES sequentially: every pg file
 		// opens schema-isolated pools against ONE database, and the no-oversell
 		// race alone needs a ~54-connection pool — fully parallel files can

@@ -1,0 +1,89 @@
+{
+	"$schema": "https://emdashcms.com/seed.schema.json",
+	"version": "1",
+	"meta": {
+		"name": "Urumi staging store",
+		"description": "Products collection matching CmsProductContent + a json field for the Urumi Product-data widget, with sample entries for an immediately browsable catalog.",
+		"author": "Urumi"
+	},
+	"settings": {
+		"title": "Urumi Store (staging)",
+		"tagline": "The Urumi staging storefront"
+	},
+	"collections": [
+		{
+			"slug": "products",
+			"label": "Products",
+			"labelSingular": "Product",
+			"urlPattern": "/products/{slug}",
+			"supports": ["drafts", "revisions", "search", "seo"],
+			"fields": [
+				{
+					"slug": "title",
+					"label": "Title",
+					"type": "string",
+					"required": true,
+					"searchable": true
+				},
+				{
+					"slug": "description",
+					"label": "Description",
+					"type": "text",
+					"searchable": true
+				},
+				{
+					"slug": "images",
+					"label": "Images",
+					"type": "image"
+				},
+				{
+					"slug": "commerce",
+					"label": "Commerce",
+					"type": "json"
+				}
+			]
+		}
+	],
+	"menus": [
+		{
+			"name": "primary",
+			"label": "Primary Navigation",
+			"items": [
+				{ "type": "custom", "label": "Home", "url": "/" },
+				{ "type": "custom", "label": "Products", "url": "/products" },
+				{ "type": "custom", "label": "Cart", "url": "/cart" }
+			]
+		}
+	],
+	"content": {
+		"products": [
+			{
+				"id": "product:urumi-tee",
+				"slug": "urumi-tee",
+				"status": "published",
+				"data": {
+					"title": "Urumi Tee",
+					"description": "A staging-catalog classic: the Urumi logo tee. Content lives in the CMS; price and stock arrive from the commerce service once this product is priced in the Product data panel."
+				}
+			},
+			{
+				"id": "product:urumi-mug",
+				"slug": "urumi-mug",
+				"status": "published",
+				"data": {
+					"title": "Urumi Mug",
+					"description": "Holds exactly one coffee, atomically. No oversell under concurrency."
+				}
+			},
+			{
+				"id": "product:urumi-stickers",
+				"slug": "urumi-stickers",
+				"status": "published",
+				"data": {
+					"title": "Urumi Sticker Pack",
+					"description": "Ten stickers, integer minor units, zero floats."
+				}
+			}
+		]
+	}
+}
