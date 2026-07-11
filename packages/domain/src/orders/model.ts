@@ -9,9 +9,24 @@
 import type { Cents, Currency } from "../money/cents.js";
 import type { IdempotencyKey, OrderId, ProductId, ReservationId, Sku } from "../money/ids.js";
 
-/** Order state machine (§4). `paid`/`failed`/`expired` are terminal for Phase 4;
- *  `fulfilled/refunded/cancelled` are Phase-5 extensions. */
-export type OrderState = "pending" | "paid" | "failed" | "expired";
+/**
+ * Order state machine (Phase 4 §4 + Phase 5 §5). Phase 4 ships
+ * `pending`/`paid`/`failed`/`expired`; Phase 5 adds the fulfillment + terminal
+ * states. The legal-transition table + per-state email template live in
+ * `orders/state-machine.ts` (a single exported map, not scattered conditionals).
+ */
+export type OrderState =
+	| "pending"
+	| "paid"
+	| "failed"
+	| "expired"
+	// Phase 5 additions:
+	| "processing"
+	| "shipped"
+	| "delivered"
+	| "completed"
+	| "cancelled"
+	| "refunded";
 
 /** A line's fulfillment path — copied from `product_commerce.product_kind` onto
  *  the order line so settle's commit-vs-grant branch has a stable input (§4). */

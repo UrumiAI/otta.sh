@@ -1,11 +1,15 @@
 // Public barrel of @urumi/domain — ports, use-cases, and branded types.
 export { cents, currency, money, type Cents, type Currency, type Money } from "./money/cents.js";
 export {
+	customerId,
+	email,
 	idempotencyKey,
 	orderId,
 	productId,
 	reservationId,
 	sku,
+	type CustomerId,
+	type Email,
 	type IdempotencyKey,
 	type OrderId,
 	type ProductId,
@@ -27,8 +31,54 @@ export type {
 	CreateOrderResult,
 	OrderStore,
 	OrderState,
+	OrderTransitionInput,
+	OrderTransitionResult,
+	OutboxEmail,
 	RecordPaymentInput,
 } from "./ports/order-store.js";
+export type { EmailSender, EmailTemplate, SendEmailInput } from "./ports/email-sender.js";
+export type {
+	CreateCustomerInput,
+	CustomerStore,
+	UpdateCustomerInput,
+} from "./ports/customer-store.js";
+export type {
+	AddressStore,
+	CreateAddressInput,
+	UpdateAddressInput,
+} from "./ports/address-store.js";
+export type { Session, SessionStore } from "./ports/session-store.js";
+export type {
+	CustomerCredentialVerifier,
+	IssueChallengeResult,
+	VerifyChallengeResult,
+} from "./ports/credential-verifier.js";
+export type { Address, AddressKind, Customer } from "./customers/model.js";
+export { DuplicateCustomerEmailError, type LoginFailure } from "./customers/errors.js";
+export {
+	emailTemplateForState,
+	isLegalOrderTransition,
+	ORDER_EMAIL_TEMPLATE_FOR_STATE,
+	ORDER_STATE_MACHINE,
+} from "./orders/state-machine.js";
+export {
+	buildOrderEmailData,
+	dispatchOrderEmails,
+	transitionOrder,
+	type DispatchOrderEmailsDeps,
+	type DispatchOrderEmailsOptions,
+	type TransitionOrderCommand,
+	type TransitionOrderDeps,
+	type TransitionOrderResult,
+} from "./orders/transition.js";
+export {
+	requestLogin,
+	verifyLogin,
+	type RequestLoginDeps,
+	type RequestLoginResult,
+	type VerifyLoginDeps,
+	type VerifyLoginResult,
+} from "./customers/auth.js";
 export type {
 	Entitlement,
 	EntitlementQuery,

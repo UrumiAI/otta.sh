@@ -1,14 +1,18 @@
 import { cents } from "../money/cents.js";
-import type { IdempotencyKey, OrderId } from "../money/ids.js";
+import type { CustomerId, IdempotencyKey, OrderId } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
 import type { IdGen } from "../ports/id-gen.js";
 import type {
 	CreateOrderInput,
 	CreateOrderResult,
 	OrderStore,
+	OrderTransitionInput,
+	OrderTransitionResult,
+	OutboxEmail,
 	RecordPaymentInput,
 } from "../ports/order-store.js";
 import type { Order, OrderLine, OrderState, OrderTotals } from "../orders/model.js";
+import { emailTemplateForState } from "../orders/state-machine.js";
 
 interface StoredOrder {
 	order: Order;
@@ -17,6 +21,19 @@ interface StoredOrder {
 interface StoredPayment {
 	orderId: string;
 	providerRef: string;
+}
+
+type OutboxStatus = "pending" | "sending" | "sent" | "failed";
+
+interface StoredOutbox {
+	id: string;
+	orderId: string;
+	toState: OrderState;
+	status: OutboxStatus;
+	attempts: number;
+	leaseUntil: string | null;
+	sentAt: string | null;
+	createdAt: string;
 }
 
 /**
@@ -33,6 +50,7 @@ export class InMemoryOrderStore implements OrderStore {
 	#orders = new Map<string, StoredOrder>();
 	#byKey = new Map<string, string>();
 	#payments: StoredPayment[] = [];
+	#outbox: StoredOutbox[] = [];
 
 	constructor(options: { idGen: IdGen; clock: Clock }) {
 		this.#idGen = options.idGen;
@@ -105,11 +123,11 @@ export class InMemoryOrderStore implements OrderStore {
 	}
 
 	async markPaid(orderId: OrderId): Promise<boolean> {
-		return this.#transition(orderId, "pending", "paid");
+		return this.#guardedFlip(orderId, "pending", "paid");
 	}
 
 	async markFailed(orderId: OrderId): Promise<boolean> {
-		return this.#transition(orderId, "pending", "failed");
+		return this.#guardedFlip(orderId, "pending", "failed");
 	}
 
 	async expire(orderId: OrderId, now: string): Promise<boolean> {
@@ -119,6 +137,8 @@ export class InMemoryOrderStore implements OrderStore {
 		if (stored.order.holdExpiresAt > now) return false; // not yet due (re-checked)
 		stored.order.state = "expired";
 		stored.order.updatedAt = this.#clock.now().toISOString();
+		// Same-"transaction" outbox enqueue as the real adapter (§5).
+		this.#enqueue(orderId, "expired");
 		return true;
 	}
 
@@ -144,6 +164,83 @@ export class InMemoryOrderStore implements OrderStore {
 		stored.order.updatedAt = this.#clock.now().toISOString();
 	}
 
+	// -- Phase 5: state machine + outbox --------------------------------------
+
+	async transition(input: OrderTransitionInput): Promise<OrderTransitionResult> {
+		const transitioned = this.#guardedFlip(
+			input.orderId,
+			input.fromState,
+			input.toState,
+			input.enqueueEmail,
+		);
+		const order = await this.getById(input.orderId);
+		return { transitioned, order };
+	}
+
+	async listForCustomer(customerId: CustomerId): Promise<Order[]> {
+		return [...this.#orders.values()]
+			.filter((s) => s.order.customerId === customerId)
+			.toSorted((a, b) => a.order.createdAt.localeCompare(b.order.createdAt))
+			.map((s) => this.#clone(s.order));
+	}
+
+	async linkGuestOrders(customerId: CustomerId, buyerRef: string): Promise<number> {
+		let linked = 0;
+		for (const stored of this.#orders.values()) {
+			if (stored.order.buyerRef === buyerRef && stored.order.customerId === null) {
+				stored.order.customerId = customerId;
+				stored.order.updatedAt = this.#clock.now().toISOString();
+				linked++;
+			}
+		}
+		return linked;
+	}
+
+	async claimNextEmail(now: string, leaseUntil: string): Promise<OutboxEmail | null> {
+		// Claimability is lease-driven: a row is claimable when it isn't sent, isn't
+		// failed, and has no live lease (null, or elapsed). This unifies "fresh
+		// pending", "crashed 'sending' whose lease expired", and "rescheduled with a
+		// retry backoff" — a rescheduled row is not re-claimed until its lease passes.
+		const claimable = this.#outbox
+			.filter(
+				(r) =>
+					r.sentAt === null &&
+					r.status !== "failed" &&
+					(r.leaseUntil === null || r.leaseUntil <= now),
+			)
+			.toSorted((a, b) => a.createdAt.localeCompare(b.createdAt));
+		const row = claimable[0];
+		if (row === undefined) return null;
+		row.status = "sending";
+		row.leaseUntil = leaseUntil;
+		row.attempts += 1;
+		return {
+			id: row.id,
+			orderId: row.orderId as OrderId,
+			toState: row.toState,
+			attempts: row.attempts,
+		};
+	}
+
+	async markEmailSent(id: string, now: string): Promise<void> {
+		const row = this.#outbox.find((r) => r.id === id);
+		if (row === undefined) return;
+		row.status = "sent";
+		row.sentAt = now;
+	}
+
+	async rescheduleEmail(id: string, retryAt: string | null): Promise<void> {
+		const row = this.#outbox.find((r) => r.id === id);
+		if (row === undefined) return;
+		if (retryAt === null) {
+			row.status = "failed";
+			row.leaseUntil = null;
+		} else {
+			row.status = "pending";
+			row.leaseUntil = retryAt; // backoff — not re-claimable until retryAt
+		}
+	}
+
 	// -- test surface ---------------------------------------------------------
 
 	/** Payments recorded (for contract assertions). */
@@ -151,14 +248,40 @@ export class InMemoryOrderStore implements OrderStore {
 		return this.#payments.filter((p) => p.orderId === orderId);
 	}
 
+	/** Outbox rows for an order (for contract assertions). */
+	outboxFor(orderId: string): { toState: OrderState; status: OutboxStatus }[] {
+		return this.#outbox
+			.filter((r) => r.orderId === orderId)
+			.map((r) => ({ toState: r.toState, status: r.status }));
+	}
+
 	// -- internals ------------------------------------------------------------
 
-	#transition(orderId: OrderId, from: OrderState, to: OrderState): boolean {
+	#guardedFlip(orderId: OrderId, from: OrderState, to: OrderState, enqueue?: boolean): boolean {
 		const stored = this.#orders.get(orderId);
 		if (stored === undefined || stored.order.state !== from) return false;
 		stored.order.state = to;
 		stored.order.updatedAt = this.#clock.now().toISOString();
+		// markPaid/markFailed pass no explicit flag → enqueue iff the target state
+		// has a template (paid ⇒ yes, failed ⇒ no); `transition` passes it explicitly.
+		const shouldEnqueue = enqueue ?? emailTemplateForState(to) !== null;
+		if (shouldEnqueue) this.#enqueue(orderId, to);
 		return true;
+	}
+
+	/** Outbox INSERT … ON CONFLICT(order_id, to_state) DO NOTHING (§5). */
+	#enqueue(orderId: string, toState: OrderState): void {
+		if (this.#outbox.some((r) => r.orderId === orderId && r.toState === toState)) return;
+		this.#outbox.push({
+			id: this.#idGen.newId(),
+			orderId,
+			toState,
+			status: "pending",
+			attempts: 0,
+			leaseUntil: null,
+			sentAt: null,
+			createdAt: this.#clock.now().toISOString(),
+		});
 	}
 
 	#clone(order: Order): Order {
