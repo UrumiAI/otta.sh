@@ -56,6 +56,8 @@ export interface WorkerEnv {
 
 export interface WorkerExecutionContext {
 	waitUntil(promise: Promise<unknown>): void;
+	/** Present on workerd's real ctx; optional so test stubs stay minimal. */
+	passThroughOnException?(): void;
 }
 
 export interface WorkerScheduledController {
@@ -98,8 +100,13 @@ function requireConnectionString(env: WorkerEnv): string {
  *  that ran no query), so end the pool explicitly as well — guarded by
  *  `pool.ending` because an initialized driver's destroy already ends it. */
 async function destroyEventDb(db: Db, pool: PgPool): Promise<void> {
-	await db.destroy();
-	if (!pool.ending) await pool.end();
+	try {
+		await db.destroy();
+	} finally {
+		// Runs even when db.destroy() rejects: the sockets must close regardless
+		// (the rejection still propagates to teardown's catch for logging).
+		if (!pool.ending) await pool.end();
+	}
 }
 
 /** Defer teardown past the response via waitUntil; never let it reject. */
@@ -146,7 +153,10 @@ export function createWorker(overrides: CreateWorkerOverrides = {}): UrumiWorker
 			}
 		}
 		if (!configMemo.ok) throw configMemo.error;
-		if (configMemo.value.serviceToken === undefined && !warnedOpenGate) {
+		// Unset OR empty both leave the gate open (the middleware treats an
+		// empty token as disabled) — warn once per isolate for either.
+		const serviceToken = configMemo.value.serviceToken;
+		if ((serviceToken === undefined || serviceToken.length === 0) && !warnedOpenGate) {
 			warnedOpenGate = true;
 			console.warn(
 				"[service] SERVICE_API_TOKEN is unset — the write surface is OPEN. " +
@@ -258,7 +268,11 @@ export function createWorker(overrides: CreateWorkerOverrides = {}): UrumiWorker
 				const app = buildApp(db, config, gateways);
 				// Every route returns a buffered `c.json(...)` body, so `finally`
 				// (which only DEFERS destroy via waitUntil) can never truncate it.
-				return await app.fetch(request);
+				// env/ctx are threaded through for any future route that reads
+				// `c.env`/`c.executionCtx` (no current route does — no behavior
+				// change). workerd's real ctx satisfies Hono's ExecutionContext;
+				// test stubs only carry waitUntil, which is all Hono itself calls.
+				return await app.fetch(request, env, ctx as Parameters<typeof app.fetch>[2]);
 			} catch (err) {
 				console.error("[service] worker event failed:", err);
 				return Response.json({ ok: false, error: "internal_error" }, { status: 500 });
@@ -292,12 +306,25 @@ export function createWorker(overrides: CreateWorkerOverrides = {}): UrumiWorker
 					ttlMs: config.ttlMs,
 				};
 				const expireDeps: ExpireOrdersDeps = { orderStore, inventoryStore: store, clock };
-				const reclaimed = await expireHolds(cartDeps);
-				console.log(`[service] cron sweep reclaimed ${reclaimed}`);
-				const expired = await expireOrders(expireDeps);
-				console.log(`[service] cron sweep expired ${expired} orders`);
+				// Each janitor gets its OWN catch: a persistently failing hold sweep
+				// must not starve order expiry (or vice versa), and each failure
+				// carries its own label for diagnostics.
+				try {
+					const reclaimed = await expireHolds(cartDeps);
+					console.log(`[service] cron sweep reclaimed ${reclaimed}`);
+				} catch (err) {
+					console.error("[service] hold sweep failed:", err);
+				}
+				try {
+					const expired = await expireOrders(expireDeps);
+					console.log(`[service] cron sweep expired ${expired} orders`);
+				} catch (err) {
+					console.error("[service] order sweep failed:", err);
+				}
 			} catch (err) {
-				console.error("[service] hold sweep failed:", err);
+				// Setup failures only (config/binding/pool/migration) — the sweeps
+				// catch their own.
+				console.error("[service] cron event failed:", err);
 			} finally {
 				teardown(ctx, db, pool);
 			}

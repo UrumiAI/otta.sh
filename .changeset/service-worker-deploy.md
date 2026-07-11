@@ -18,10 +18,15 @@ and every existing consumer are behavior-identical.
   `scheduled` cron handler calls the `expireHolds` AND (Phase 4) `expireOrders`
   domain use-cases directly (no HTTP self-call, no secret dependency), logging
   and never throwing — on Workers this cron is order expiry's production
-  driver (it is clock-driven, unlike lazy-on-read hold expiry). Phase 4
-  gateways wire from env bindings exactly like the Node bin (`wrangler secret
-  put STRIPE_WEBHOOK_SECRET` etc.; x402 keeps its fail-closed test-facilitator
-  opt-in), memoized per isolate.
+  driver (it is clock-driven, unlike lazy-on-read hold expiry). Each sweep has
+  its own catch + log label, so a persistently failing hold sweep cannot
+  starve order expiry. Phase 4 gateways wire from env bindings exactly like
+  the Node bin (`wrangler secret put STRIPE_WEBHOOK_SECRET` etc.; x402 keeps
+  its fail-closed test-facilitator opt-in), memoized per isolate.
+  Known follow-up (separate task, not in this change): the NODE bin's
+  self-interval still sweeps only holds — order-expiry parity for the Node
+  entry (an `expireOrders` interval or equivalent) is tracked separately;
+  until then Node deployments drive it via `POST /internal/expire-orders`.
 - **`SERVICE_API_TOKEN` write gate**: new optional `AppDeps.serviceToken`; a
   Hono middleware registered first in `createApp` — when set, GET/HEAD (and
   `/health`) stay open and every other method on every path requires

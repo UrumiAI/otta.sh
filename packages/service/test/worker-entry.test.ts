@@ -15,8 +15,10 @@ interface RecordedPool {
 }
 
 /** A fake pg Pool factory satisfying exactly what kysely's PostgresDriver
- *  touches: `connect()` → client with `query`/`release`, `end()`, `ending`. */
-function fakePools(options: { failQueries?: boolean } = {}): {
+ *  touches: `connect()` → client with `query`/`release`, `end()`, `ending`.
+ *  `failFirstEnd` makes the FIRST `end()` call reject without marking the
+ *  pool ended (simulating a rejecting `db.destroy()`); retries succeed. */
+function fakePools(options: { failQueries?: boolean; failFirstEnd?: boolean } = {}): {
 	pools: RecordedPool[];
 	makePool: typeof makePostgresPool;
 } {
@@ -24,6 +26,7 @@ function fakePools(options: { failQueries?: boolean } = {}): {
 	const makePool = ((): PgPool => {
 		const record: RecordedPool = { ended: false, queries: [] };
 		pools.push(record);
+		let endCalls = 0;
 		const client = {
 			query: (sql: string): Promise<{ command: string; rowCount: number; rows: never[] }> => {
 				record.queries.push(sql);
@@ -36,6 +39,10 @@ function fakePools(options: { failQueries?: boolean } = {}): {
 			ending: false,
 			connect: () => Promise.resolve(client),
 			end: (): Promise<void> => {
+				endCalls++;
+				if (options.failFirstEnd === true && endCalls === 1) {
+					return Promise.reject(new Error("fake destroy failure"));
+				}
 				pool.ending = true;
 				record.ended = true;
 				return Promise.resolve();
@@ -209,6 +216,34 @@ describe("createWorker fetch", () => {
 		await settle();
 	});
 
+	test("the one-time open-gate warning fires for an EMPTY SERVICE_API_TOKEN too (empty opens the gate)", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const { makePool } = fakePools();
+		const worker = createWorker({ makePool, migrate: () => Promise.resolve() });
+		const env: WorkerEnv = { ...ENV, SERVICE_API_TOKEN: "" };
+		const { ctx, settle } = makeCtx();
+
+		await worker.fetch(new Request("http://worker.test/health"), env, ctx);
+		await worker.fetch(new Request("http://worker.test/health"), env, ctx);
+		await settle();
+
+		const warnings = warn.mock.calls
+			.map((call) => call.map(String).join(" "))
+			.filter((line) => line.includes("SERVICE_API_TOKEN"));
+		expect(warnings).toHaveLength(1); // fired, and only once per isolate
+
+		// A set token never warns.
+		const warned = createWorker({ makePool, migrate: () => Promise.resolve() });
+		warn.mockClear();
+		await warned.fetch(
+			new Request("http://worker.test/health"),
+			{ ...ENV, SERVICE_API_TOKEN: "tok" },
+			ctx,
+		);
+		await settle();
+		expect(warn.mock.calls.flat().map(String).join("\n")).not.toContain("SERVICE_API_TOKEN");
+	});
+
 	test("Phase 4 gateways wire from the env binding; the webhook stays Bearer-exempt", async () => {
 		vi.spyOn(console, "warn").mockImplementation(() => {});
 		const { makePool } = fakePools();
@@ -297,7 +332,7 @@ describe("createWorker scheduled", () => {
 		expect(pools[0]?.ended).toBe(true);
 	});
 
-	test("test 10 (failure): a rejecting sweep is caught and logged, the handler resolves, the pool is still destroyed", async () => {
+	test("test 10 (failure): each sweep has its own catch — a failing hold sweep does not starve order expiry, labels are distinct, the pool is still destroyed", async () => {
 		const { error } = silence();
 		vi.spyOn(console, "warn").mockImplementation(() => {});
 		const { pools, makePool } = fakePools({ failQueries: true });
@@ -308,8 +343,29 @@ describe("createWorker scheduled", () => {
 		await settle();
 
 		const logged = error.mock.calls.map((call) => call.map(String).join(" ")).join("\n");
+		// The hold sweep rejected AND the order sweep still ran (its own,
+		// distinctly-labeled rejection proves it was reached).
 		expect(logged).toContain("hold sweep failed");
+		expect(logged).toContain("order sweep failed");
 		expect(pools.length).toBe(1);
 		expect(pools[0]?.ended).toBe(true);
+	});
+
+	test("teardown: a rejecting db.destroy() cannot skip pool.end()", async () => {
+		const { error } = silence();
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		// scheduled runs real queries, so kysely's driver initializes and
+		// db.destroy() reaches pool.end() — whose first call rejects here.
+		const { pools, makePool } = fakePools({ failFirstEnd: true });
+		const worker = createWorker({ makePool, migrate: () => Promise.resolve() });
+		const { ctx, settle } = makeCtx();
+
+		await worker.scheduled(CONTROLLER, ENV, ctx);
+		await settle();
+
+		expect(pools.length).toBe(1);
+		expect(pools[0]?.ended).toBe(true); // the finally-side end() still ran
+		const logged = error.mock.calls.map((call) => call.map(String).join(" ")).join("\n");
+		expect(logged).toContain("pool teardown failed"); // rejection surfaced, not swallowed silently
 	});
 });

@@ -147,10 +147,15 @@ describe("SERVICE_API_TOKEN write gate (token set)", () => {
 		expect(await res.json()).toEqual({ ok: false, reason: "INVALID_SIGNATURE" });
 	});
 
-	test("the webhook exemption is exact-path: other /webhooks paths stay gated", async () => {
+	test("the webhook exemption is exact method+path: other paths AND other verbs stay gated", async () => {
 		const { app } = makeApp({ serviceToken: TOKEN });
-		const res = await app.request("/webhooks/other", { method: "POST", headers: json });
-		expect(res.status).toBe(401);
+		const otherPath = await app.request("/webhooks/other", { method: "POST", headers: json });
+		expect(otherPath.status).toBe(401);
+		// Same path, different verb: only POST carries Stripe's signature auth.
+		const put = await app.request("/webhooks/stripe", { method: "PUT", headers: json });
+		expect(put.status).toBe(401);
+		const del = await app.request("/webhooks/stripe", { method: "DELETE" });
+		expect(del.status).toBe(401);
 	});
 
 	test("/internal/expire-holds with both secrets set needs Bearer AND X-Internal-Token", async () => {
@@ -174,6 +179,51 @@ describe("SERVICE_API_TOKEN write gate (token set)", () => {
 		});
 		expect(both.status).toBe(200);
 		expect(await both.json()).toEqual({ ok: true, reclaimed: 0 });
+	});
+
+	test("/internal/expire-orders with both secrets set needs Bearer AND X-Internal-Token", async () => {
+		const { app } = makeApp({ serviceToken: TOKEN, internalToken: "int-secret" });
+		const onlyInternal = await app.request("/internal/expire-orders", {
+			method: "POST",
+			headers: { "X-Internal-Token": "int-secret" },
+		});
+		expect(onlyInternal.status).toBe(401); // blocked at the Bearer gate
+		const onlyBearer = await app.request("/internal/expire-orders", {
+			method: "POST",
+			headers: bearer,
+		});
+		expect(onlyBearer.status).toBe(401); // passes the gate, 401s at the internal check
+		const both = await app.request("/internal/expire-orders", {
+			method: "POST",
+			headers: { ...bearer, "X-Internal-Token": "int-secret" },
+		});
+		expect(both.status).toBe(200);
+		expect(await both.json()).toEqual({ ok: true, expired: 0 });
+	});
+
+	test("/entitlements/grant with both secrets set needs Bearer AND X-Internal-Token", async () => {
+		const { app } = makeApp({ serviceToken: TOKEN, internalToken: "int-secret" });
+		const onlyInternal = await app.request("/entitlements/grant", {
+			method: "POST",
+			headers: { ...json, "X-Internal-Token": "int-secret" },
+			body: "{}",
+		});
+		expect(onlyInternal.status).toBe(401); // blocked at the Bearer gate
+		const onlyBearer = await app.request("/entitlements/grant", {
+			method: "POST",
+			headers: { ...json, ...bearer },
+			body: "{}",
+		});
+		expect(onlyBearer.status).toBe(401); // passes the gate, 401s at the internal check
+		// Both headers clear BOTH auth layers: the route's next check is the x402
+		// gateway (unwired in this stub app → 503), proving auth was passed.
+		const both = await app.request("/entitlements/grant", {
+			method: "POST",
+			headers: { ...json, ...bearer, "X-Internal-Token": "int-secret" },
+			body: "{}",
+		});
+		expect(both.status).toBe(503);
+		expect(await both.json()).toEqual({ ok: false, error: "x402 not configured" });
 	});
 });
 

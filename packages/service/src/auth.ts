@@ -22,20 +22,28 @@ export function tokenMatches(provided: string | undefined, expected: string): bo
  * (RFC 6750). Note: Hono serves HEAD via GET handlers, so HEAD is explicitly
  * listed to keep it as open as the GET it delegates to.
  *
- * `exemptPaths` is an EXACT-path allowlist for endpoints that carry their own
- * cryptographic caller authentication and whose third-party caller cannot be
- * given our Bearer token (e.g. a payment provider's webhook receiver). Every
- * entry must document its own auth mechanism at the registration site
- * (app.ts) — the default remains deny.
+ * `exemptions` is an EXACT method+path allowlist for endpoints that carry
+ * their own cryptographic caller authentication and whose third-party caller
+ * cannot be given our Bearer token (e.g. a payment provider's webhook
+ * receiver). Scoping to the method keeps every other verb on the same path
+ * gated. Every entry must document its own auth mechanism at the
+ * registration site (app.ts) — the default remains deny.
  */
+export interface BearerExemption {
+	method: string;
+	path: string;
+}
+
 export function requireBearerToken(
 	token: string | undefined,
-	exemptPaths: readonly string[] = [],
+	exemptions: readonly BearerExemption[] = [],
 ): MiddlewareHandler {
 	return async (c, next) => {
 		if (token === undefined || token.length === 0) return next();
 		if (c.req.method === "GET" || c.req.method === "HEAD") return next();
-		if (exemptPaths.includes(c.req.path)) return next();
+		if (exemptions.some((e) => e.method === c.req.method && e.path === c.req.path)) {
+			return next();
+		}
 
 		const header = c.req.header("Authorization");
 		const spaceAt = header?.indexOf(" ") ?? -1;

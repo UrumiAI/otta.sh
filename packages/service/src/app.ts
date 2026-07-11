@@ -76,14 +76,18 @@ export type AppDeps = InventoryDeps &
 export function createApp(deps: AppDeps): Hono {
 	const app = new Hono();
 	// The write gate is registered FIRST so no route — present or future — can
-	// be mounted in front of it. Exemptions (exact paths, each with its OWN
-	// caller authentication — never an open hole):
+	// be mounted in front of it. Exemptions (exact method+path, each with its
+	// OWN caller authentication — never an open hole):
 	//  - POST /webhooks/stripe: called directly by Stripe (deliberately no
 	//    plugin proxy — the sandbox bridge destroys the raw bytes the HMAC
 	//    needs); authenticated by `Stripe-Signature` HMAC verification over the
 	//    raw body inside settleOrder, with a freshness window and rotation-aware
-	//    v1 checks. Stripe cannot carry our Bearer token.
-	app.use("*", requireBearerToken(deps.serviceToken, ["/webhooks/stripe"]));
+	//    v1 checks. Stripe cannot carry our Bearer token. Every other verb on
+	//    the path stays gated.
+	app.use(
+		"*",
+		requireBearerToken(deps.serviceToken, [{ method: "POST", path: "/webhooks/stripe" }]),
+	);
 	app.get("/health", (c) => c.json({ ok: true }));
 	app.route("/inventory", inventoryRoutes(deps));
 	app.route(
