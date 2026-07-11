@@ -1,14 +1,16 @@
 packages:
   - "packages/*"
+  - "sites/*"
 
 allowBuilds:
   better-sqlite3: true
   # esbuild's postinstall only validates the preinstalled platform binary —
-  # wrangler bundles through it.
+  # wrangler and the Astro toolchain (sites/staging) bundle through it.
   esbuild: true
-  # wrangler's optional image codec (Workers static-assets tooling); nothing in
-  # this repo feeds it images, so skip the native build.
-  sharp: false
+  # sharp: originally skipped for the service Worker (wrangler's optional
+  # image codec, nothing fed it images) — sites/staging's Astro/EmDash chain
+  # installs it as a real dependency, so the native build is allowed now.
+  sharp: true
   workerd: true
 
 catalog:
@@ -39,3 +41,15 @@ minimumReleaseAgeExclude:
   - "@cloudflare/workerd-linux-arm64@1.20260710.1"
   - "@cloudflare/workerd-windows-64@1.20260710.1"
   - workerd@1.20260710.1
+  # emdash 0.29.0 (published 2026-07-10) — pinned EXACT in sites/staging;
+  # a stray emdash@1.0.0 exists on npm from an out-of-order publish, so the
+  # pin must never float. Same-day transitives of the 0.29.0 release train.
+  - emdash@0.29.0
+  - "@emdash-cms/cloudflare@0.29.0"
+  - "@emdash-cms/auth@0.29.0"
+  - "@emdash-cms/admin@0.29.0"
+  - "@emdash-cms/gutenberg-to-portable-text@0.29.0"
+  - "@emdash-cms/blocks@0.29.0"
+  - "@emdash-cms/plugin-types@0.2.0"
+  - "@emdash-cms/registry-client@0.3.3"
+  - "@emdash-cms/registry-lexicons@0.2.0"

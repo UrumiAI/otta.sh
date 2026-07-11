@@ -1,0 +1,71 @@
+---
+/**
+ * Thin base layout (ADR-0003: themes own the HTML; the plugin serves JSON
+ * view models). Deliberately minimal — this is the staging storefront, not
+ * a design system.
+ */
+import { getMenu, getSiteSettings } from "emdash";
+
+interface Props {
+	title: string;
+	description?: string | null;
+}
+
+const { title, description } = Astro.props;
+const settings = (await getSiteSettings()) as { title?: string; tagline?: string };
+const siteTitle = settings.title ?? "Urumi Store (staging)";
+const fullTitle = title.includes(siteTitle) ? title : `${title} — ${siteTitle}`;
+const menu = await getMenu("primary");
+---
+
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>{fullTitle}</title>
+		{description && <meta name="description" content={description} />}
+	</head>
+	<body>
+		<header>
+			<nav>
+				<a href="/" class="site-title">{siteTitle}</a>
+				{menu?.items.map((item) => <a href={item.url}>{item.label}</a>)}
+			</nav>
+		</header>
+		<main>
+			<slot />
+		</main>
+		<footer>
+			<p>Urumi staging — content by EmDash, commerce by @urumi/service.</p>
+		</footer>
+	</body>
+</html>
+
+<style>
+	body {
+		font-family: system-ui, sans-serif;
+		max-width: 60rem;
+		margin: 0 auto;
+		padding: 0 1rem;
+		line-height: 1.5;
+	}
+	header nav {
+		display: flex;
+		gap: 1rem;
+		align-items: baseline;
+		padding: 1rem 0;
+		border-bottom: 1px solid #ddd;
+	}
+	.site-title {
+		font-weight: 700;
+		font-size: 1.25rem;
+	}
+	footer {
+		margin-top: 3rem;
+		padding: 1rem 0;
+		border-top: 1px solid #ddd;
+		color: #666;
+		font-size: 0.875rem;
+	}
+</style>

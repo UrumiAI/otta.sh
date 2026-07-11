@@ -1,0 +1,5 @@
+# Astro / wrangler build + runtime state (root .gitignore already covers
+# dist/, .env*, node_modules/)
+.astro/
+.wrangler/
+worker-configuration.d.ts

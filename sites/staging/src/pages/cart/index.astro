@@ -1,0 +1,143 @@
+---
+/**
+ * Cart view — the theme shim side of ADR-0003's cart contract: this page
+ * reads ITS OWN `urumi_cart` cookie and passes the id as plain route input
+ * to the plugin's public `storefront/cart/read` (plugin routes are
+ * cookie-blind by design in sandboxed mode; ADR-0004 records the trusted-
+ * mode caveat). Line totals are quantity-only — the cart wire carries no
+ * price (a cart line snapshots no price; that is an order invariant).
+ *
+ * Idempotency: each rendered update/remove form embeds a fresh
+ * crypto.randomUUID() key, so a double-submit of the same form replays in
+ * the service instead of double-applying. The endpoints never invent keys.
+ */
+import {
+	CART_COOKIE_NAME,
+	STOREFRONT_CART_READ_ROUTE,
+	totalQty,
+	type CartReadRouteResult,
+	type CartWire,
+} from "@urumi/plugin";
+import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
+import Base from "../../layouts/Base.astro";
+import { dispatchUrumiRoute } from "../../lib/urumi-api.js";
+
+const cartId = Astro.cookies.get(CART_COOKIE_NAME)?.value;
+const error = Astro.url.searchParams.get("error");
+
+const result =
+	cartId !== undefined && cartId.length > 0
+		? await dispatchUrumiRoute<CartReadRouteResult>(
+				getPublicPluginApiRouteHandler(Astro.locals),
+				STOREFRONT_CART_READ_ROUTE,
+				{ cartId },
+				Astro.url,
+			)
+		: null;
+
+const cart: CartWire | null = result !== null && result.ok ? result.cart : null;
+// A cart cookie exists but the read failed → distinguish "service down"
+// (RENDER_FAILED / dispatch null) from "cart gone" (CART_NOT_FOUND).
+const degraded =
+	cartId !== undefined && cart === null && !(result !== null && !result.ok && "reason" in result);
+
+const lines = cart?.lines ?? [];
+// One fresh key per rendered form (double-submit = replay, not duplicate).
+const lineForms = lines.map((line) => ({
+	line,
+	updateKey: crypto.randomUUID(),
+	removeKey: crypto.randomUUID(),
+}));
+---
+
+<Base title="Cart">
+	<h1>Cart</h1>
+
+	{error !== null && <p class="notice">Cart update failed: {error}</p>}
+	{degraded && (
+		<p class="notice">The cart service is temporarily unavailable — please try again shortly.</p>
+	)}
+
+	{
+		cart === null || lines.length === 0 ? (
+			!degraded && (
+				<p>
+					Your cart is empty. <a href="/products">Browse products</a>.
+				</p>
+			)
+		) : (
+			<>
+				<table>
+					<thead>
+						<tr>
+							<th>SKU</th>
+							<th>Qty</th>
+							<th>Hold expires</th>
+							<th />
+						</tr>
+					</thead>
+					<tbody>
+						{lineForms.map(({ line, updateKey, removeKey }) => (
+							<tr>
+								<td>{line.sku}</td>
+								<td>
+									<form method="POST" action="/cart/update">
+										<input type="hidden" name="lineId" value={line.lineId} />
+										<input type="hidden" name="idempotencyKey" value={updateKey} />
+										<input type="number" name="qty" value={line.qty} min="1" step="1" />
+										<button type="submit">Update</button>
+									</form>
+								</td>
+								<td>{line.expiresAt ?? "—"}</td>
+								<td>
+									<form method="POST" action="/cart/remove">
+										<input type="hidden" name="lineId" value={line.lineId} />
+										<input type="hidden" name="idempotencyKey" value={removeKey} />
+										<button type="submit">Remove</button>
+									</form>
+								</td>
+							</tr>
+						))}
+					</tbody>
+				</table>
+				<p>
+					Total items: <strong>{totalQty(cart)}</strong> ({cart.currency})
+				</p>
+				<p class="muted">
+					Prices are shown on product pages; cart lines hold stock, they do not snapshot
+					price (that happens at order time).
+				</p>
+			</>
+		)
+	}
+</Base>
+
+<style>
+	table {
+		border-collapse: collapse;
+		width: 100%;
+	}
+	th,
+	td {
+		text-align: left;
+		padding: 0.5rem;
+		border-bottom: 1px solid #ddd;
+	}
+	form {
+		display: flex;
+		gap: 0.5rem;
+	}
+	input[type="number"] {
+		width: 4.5rem;
+	}
+	.muted {
+		color: #666;
+		font-size: 0.875rem;
+	}
+	.notice {
+		background: #fff7e0;
+		border: 1px solid #e6c200;
+		border-radius: 0.5rem;
+		padding: 0.75rem 1rem;
+	}
+</style>

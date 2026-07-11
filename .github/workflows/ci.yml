@@ -20,6 +20,9 @@ jobs:
       - run: pnpm lint
       # The branded-money negative type-test is enforced here.
       - run: pnpm typecheck
+      # Per-package typecheck for workspaces outside root tsc -b (the
+      # sites/* Astro packages typecheck with `astro check`).
+      - run: pnpm -r --if-present typecheck
       - run: pnpm -r build
       # SQLite + fake contract suites; pg-required specs self-skip
       # because PG_CONNECTION_STRING is unset.

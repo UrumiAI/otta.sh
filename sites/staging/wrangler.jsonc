@@ -1,0 +1,41 @@
+// Urumi staging storefront Worker (plan D5) — mirrors em-dash's
+// templates/starter-cloudflare/wrangler.jsonc MINUS `worker_loaders`:
+// the LOADER binding is consumed only by the plugin sandbox runner and
+// flips the account onto Workers Paid; this deployment runs the Urumi
+// plugin trusted in-process instead (ADR-0004).
+//
+// Secrets are NEVER committed here. Post-merge:
+//   npx emdash secrets generate && wrangler secret put EMDASH_ENCRYPTION_KEY
+//
+// Do NOT add `global_fetch_strictly_public` — it deadlocks D1
+// `session: "auto"` (em-dash docs deployment/cloudflare.mdx, issue #1273).
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "urumi-store-staging",
+	"main": "./src/worker.ts",
+	"compatibility_date": "2026-02-24",
+	"compatibility_flags": ["nodejs_compat"],
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "urumi-cms",
+			"database_id": "0a7c4962-bc2a-46cb-8c7e-8227b0f00433",
+		},
+	],
+	"r2_buckets": [
+		{
+			"binding": "MEDIA",
+			"bucket_name": "urumi-media",
+		},
+	],
+	"observability": {
+		"enabled": true,
+	},
+	// Drives scheduled publishing, plugin cron, and maintenance (src/worker.ts).
+	// Every-minute matches EmDash's minute-granular scheduled publishing and is
+	// free (D1 free limits unaffected); may be relaxed (e.g. "*/5 * * * *") if
+	// cron noise ever matters more than publish latency.
+	"triggers": {
+		"crons": ["* * * * *"],
+	},
+}

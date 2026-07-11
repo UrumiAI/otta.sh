@@ -1,0 +1,146 @@
+---
+/**
+ * PDP — thin theme page (ADR-0003): CMS read HERE, then the plugin's
+ * public `storefront/product` route in-process; renders the view model,
+ * the Product/Offer JSON-LD, and — for a purchasable product — the
+ * add-to-cart form.
+ *
+ * Idempotency: the form forwards the view model's `slots.addToCart`
+ * idempotencyKey — minted FRESH by the plugin per rendered PDP (see
+ * product-view-model.ts) — so a double-submit of the same rendered form
+ * replays in the service instead of duplicating, while a fresh page load
+ * mints a new key. The /cart/add endpoint never invents a key.
+ *
+ * Degraded state: with the commerce service unreachable the route returns
+ * RENDER_FAILED and this page still renders the CMS content (no price, no
+ * add-to-cart) with a friendly notice — 200, never a crash.
+ */
+import {
+	STOREFRONT_PRODUCT_ROUTE,
+	type PdpRouteResult,
+	type ProductViewModel,
+} from "@urumi/plugin";
+import { getEmDashEntry } from "emdash";
+import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
+import Base from "../../layouts/Base.astro";
+import { toCmsProductContent, type ProductEntryData } from "../../lib/products.js";
+import { dispatchUrumiRoute } from "../../lib/urumi-api.js";
+
+const { slug } = Astro.params;
+if (slug === undefined) return Astro.redirect("/products");
+
+const { entry } = await getEmDashEntry("products", slug);
+if (entry === null) {
+	Astro.response.status = 404;
+}
+
+const content = entry !== null ? toCmsProductContent(entry.data as unknown as ProductEntryData) : null;
+
+const result =
+	content !== null
+		? await dispatchUrumiRoute<PdpRouteResult>(
+				getPublicPluginApiRouteHandler(Astro.locals),
+				STOREFRONT_PRODUCT_ROUTE,
+				{ content },
+				Astro.url,
+			)
+		: null;
+
+const product: ProductViewModel | null = result !== null && result.ok ? result.product : null;
+const jsonLd = result !== null && result.ok ? result.jsonLd : null;
+const addToCart = product?.slots.addToCart ?? null;
+const degraded = content !== null && product === null;
+const error = Astro.url.searchParams.get("error");
+---
+
+<Base title={content?.title ?? "Product not found"} description={content?.description}>
+	{
+		content === null ? (
+			<>
+				<h1>Product not found</h1>
+				<p>
+					<a href="/products">Back to all products</a>
+				</p>
+			</>
+		) : (
+			<>
+				<h1>{content.title}</h1>
+				{degraded && (
+					<p class="notice">
+						Live pricing and availability are temporarily unavailable — check back soon.
+					</p>
+				)}
+				{error !== null && <p class="notice">Could not add to cart: {error}</p>}
+				{(product?.images?.[0] ?? content.images?.[0]) && (
+					<img src={product?.images?.[0] ?? content.images?.[0]} alt={content.title} />
+				)}
+				{content.description && <p>{content.description}</p>}
+
+				{product?.purchasable && product.price ? (
+					<>
+						<p class="price">{product.price.formatted}</p>
+						<p class:list={["availability", product.availability]}>
+							{product.availability === "in_stock" ? "In stock" : "Out of stock"}
+						</p>
+						{addToCart && product.availability === "in_stock" && (
+							<form method="POST" action="/cart/add">
+								<input type="hidden" name="sku" value={addToCart.sku} />
+								<input type="hidden" name="idempotencyKey" value={addToCart.idempotencyKey} />
+								<input
+									type="hidden"
+									name="returnTo"
+									value={content.url ?? `/products/${slug}`}
+								/>
+								<label>
+									Quantity
+									<input type="number" name="qty" value="1" min="1" step="1" />
+								</label>
+								<button type="submit">Add to cart</button>
+							</form>
+						)}
+					</>
+				) : (
+					!degraded && <p class="price muted">Not currently available for purchase</p>
+				)}
+			</>
+		)
+	}
+	{jsonLd && <script is:inline type="application/ld+json" set:html={JSON.stringify(jsonLd)} />}
+</Base>
+
+<style>
+	img {
+		max-width: 24rem;
+		border-radius: 0.5rem;
+	}
+	.price {
+		font-size: 1.5rem;
+		font-weight: 700;
+	}
+	.muted {
+		color: #666;
+		font-size: 1rem;
+		font-weight: 400;
+	}
+	.availability.in_stock {
+		color: #1a7f37;
+	}
+	.availability.out_of_stock {
+		color: #b35900;
+	}
+	.notice {
+		background: #fff7e0;
+		border: 1px solid #e6c200;
+		border-radius: 0.5rem;
+		padding: 0.75rem 1rem;
+	}
+	form {
+		display: flex;
+		gap: 1rem;
+		align-items: end;
+	}
+	input[type="number"] {
+		width: 5rem;
+		display: block;
+	}
+</style>
