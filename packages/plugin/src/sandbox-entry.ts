@@ -23,7 +23,7 @@
  */
 import { ALLOWED_HOSTS } from "./manifest.js";
 import plugin from "./plugin.js";
-import type { HttpAccess, PluginContext, RouteEntry } from "./types.js";
+import type { HttpAccess, KvAccess, PluginContext, RouteEntry } from "./types.js";
 
 function isHostAllowed(hostname: string, allowedHosts: readonly string[]): boolean {
 	for (const pattern of allowedHosts) {
@@ -58,6 +58,37 @@ function createHttpAccess(allowedHosts: readonly string[]): HttpAccess {
 	};
 }
 
+/**
+ * The host's `ctx.kv` bridge, mirrored for the standalone sandbox the exact way
+ * `createHttpAccess` mirrors `ctx.http`. In a real EmDash deploy `kv/*` bridges
+ * to the host's `_plugin_storage` store (em-dash `emdash-runtime.ts:151-159`);
+ * here it is an in-memory Map scoped to this worker boot. Module-scoped (not
+ * per-request) so a value written by one route invocation is readable by the
+ * next within the same worker — matching the host's persistence contract.
+ * NON-SECRET display prefs only (§5); no secret is ever written here.
+ */
+const KV_STORE = new Map<string, unknown>();
+function createKvAccess(): KvAccess {
+	return {
+		async get<T>(key: string): Promise<T | null> {
+			return KV_STORE.has(key) ? (KV_STORE.get(key) as T) : null;
+		},
+		async set(key: string, value: unknown): Promise<void> {
+			KV_STORE.set(key, value);
+		},
+		async delete(key: string): Promise<boolean> {
+			return KV_STORE.delete(key);
+		},
+		async list(prefix?: string): Promise<Array<{ key: string; value: unknown }>> {
+			const out: Array<{ key: string; value: unknown }> = [];
+			for (const [key, value] of KV_STORE) {
+				if (prefix === undefined || key.startsWith(prefix)) out.push({ key, value });
+			}
+			return out;
+		},
+	};
+}
+
 function jsonResponse(body: unknown, status: number): Response {
 	return new Response(JSON.stringify(body), {
 		status,
@@ -73,7 +104,10 @@ interface RouteInvocationBody {
 export default {
 	async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url);
-		const ctx: PluginContext = { http: createHttpAccess(ALLOWED_HOSTS) };
+		const ctx: PluginContext = {
+			http: createHttpAccess(ALLOWED_HOSTS),
+			kv: createKvAccess(),
+		};
 
 		try {
 			if (request.method === "POST" && url.pathname.startsWith("/hook/")) {
