@@ -14,6 +14,10 @@ export {
 } from "./manifest.js";
 export {
 	CommerceClientError,
+	type CartFailureReason,
+	type CartLineWire,
+	type CartResult,
+	type CartWire,
 	type CommerceClient,
 	type CommerceMoney,
 	type CommerceProductKind,
@@ -50,11 +54,38 @@ export {
 } from "./storefront/plp-route.js";
 export {
 	buildProductViewModel,
+	type AddToCartSlot,
 	type AvailabilityToken,
 	type ProductPriceViewModel,
 	type ProductViewModel,
 } from "./storefront/product-view-model.js";
 // ── end Phase 2 catalog display ──────────────────────────────────────────────
+// ── Phase 3 group E: cart (plan §7 step E1, shape per ADR-0003) ─────────────
+export {
+	CART_COOKIE_NAME,
+	createCartCreateRouteHandler,
+	createCartLineAddRouteHandler,
+	createCartLineRemoveRouteHandler,
+	createCartLineUpdateRouteHandler,
+	createCartReadRouteHandler,
+	STOREFRONT_CART_CREATE_ROUTE,
+	STOREFRONT_CART_LINE_ADD_ROUTE,
+	STOREFRONT_CART_LINE_REMOVE_ROUTE,
+	STOREFRONT_CART_LINE_UPDATE_ROUTE,
+	STOREFRONT_CART_READ_ROUTE,
+	totalQty,
+	type CartCookieDescriptor,
+	type CartCreateRouteInput,
+	type CartCreateRouteResult,
+	type CartLineAddRouteInput,
+	type CartLineMutationRouteResult,
+	type CartLineRemoveRouteInput,
+	type CartLineRemoveRouteResult,
+	type CartLineUpdateRouteInput,
+	type CartReadRouteInput,
+	type CartReadRouteResult,
+} from "./storefront/cart-routes.js";
+// ── end Phase 3 group E: cart ────────────────────────────────────────────────
 export {
 	deriveDeleteIdempotencyKey,
 	derivePublishIdempotencyKey,

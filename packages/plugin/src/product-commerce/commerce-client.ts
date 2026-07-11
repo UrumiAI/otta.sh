@@ -107,7 +107,73 @@ export interface CommerceClient {
 	// the delimiters so the diff surfaces stay additive.)
 	getCommerceBatch(productIds: string[]): Promise<ProductCommerceBatchItem[]>;
 	// ── end Phase 2 catalog batch read ────────────────────────────────────
+
+	// ── Phase 3 group E: cart (plan §6, wire mirrors @urumi/service's ─────
+	// `/carts` routes 1:1, hand-rolled like the wire types above — the
+	// plugin declares no runtime dependency on @urumi/domain/service). ────
+	createCart(currency?: string): Promise<{ cartId: string }>;
+	getCart(cartId: string): Promise<CartResult<{ cart: CartWire }>>;
+	addCartLine(
+		cartId: string,
+		sku: string,
+		qty: number,
+		idempotencyKey: string,
+	): Promise<CartResult<{ line: CartLineWire }>>;
+	adjustCartLine(
+		cartId: string,
+		lineId: string,
+		qty: number,
+		idempotencyKey: string,
+	): Promise<CartResult<{ line: CartLineWire }>>;
+	removeCartLine(
+		cartId: string,
+		lineId: string,
+		idempotencyKey: string,
+	): Promise<CartResult<Record<string, never>>>;
+	// ── end Phase 3 group E: cart ─────────────────────────────────────────
 }
+
+// ── Phase 3 group E: cart wire types (plan §6) ─────────────────────────────
+// Mirror `@urumi/service`'s `routes/carts.ts` serialization 1:1: NO price
+// field on a line (a cart line snapshots no price — domain `CartStore`'s own
+// documented invariant; the live price is read from `product_commerce`
+// elsewhere, at display/checkout, never stored on the line).
+export interface CartLineWire {
+	lineId: string;
+	sku: string;
+	productId: string | null;
+	qty: number;
+	reservationId: string | null;
+	expiresAt: string | null;
+}
+
+export interface CartWire {
+	cartId: string;
+	state: string;
+	currency: string;
+	lines: CartLineWire[];
+}
+
+/**
+ * Typed cart-mutation failures — SEMANTIC TOKENS, never English (matches
+ * Phase 2's `AvailabilityToken` pattern): `@urumi/service`'s `CartFailure`
+ * union verbatim (adapter-architecture rule #2, "no status-code-as-logic" —
+ * `OUT_OF_STOCK` rides a 200, `CART_NOT_FOUND`/`LINE_NOT_FOUND` a 404,
+ * `CART_CHECKED_OUT`/`LINE_CHECKED_OUT`/`HOLD_EXPIRED` a 409 — the CLIENT
+ * normalizes all of these back to a uniform `{ ok: false; reason }` value,
+ * see `HttpCommerceClient`'s `#cartResult`, so callers branch on the token,
+ * never the HTTP status).
+ */
+export type CartFailureReason =
+	| "OUT_OF_STOCK"
+	| "CART_NOT_FOUND"
+	| "LINE_NOT_FOUND"
+	| "CART_CHECKED_OUT"
+	| "LINE_CHECKED_OUT"
+	| "HOLD_EXPIRED";
+
+export type CartResult<T> = ({ ok: true } & T) | { ok: false; reason: CartFailureReason };
+// ── end Phase 3 group E: cart wire types ───────────────────────────────────
 
 /** Structured failure — status + parsed body, so callers can distinguish
  *  e.g. a 400 `MISSING_PRODUCT_ID` reject from a 503/network failure
