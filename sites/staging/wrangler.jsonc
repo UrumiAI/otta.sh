@@ -1,7 +1,7 @@
 // Urumi storefront Worker — TEMPLATE (plan D5). This tracked file carries
 // PLACEHOLDER resource values: copy it to `wrangler.local.jsonc` (gitignored)
 // — or edit this file in place — and fill in YOUR Worker name, D1 database
-// name/id, and R2 bucket (see the README's "fill in your resource ids" step).
+// name/id, and R2 bucket (see the root DEPLOYMENT.md §3.2 runbook).
 // When `wrangler.local.jsonc` exists, astro.config.ts points the Cloudflare
 // adapter at it (`configPath`) at BUILD time; plain `wrangler deploy` then
 // deploys those values via the adapter-generated dist config — do NOT use
@@ -38,7 +38,7 @@
 	"d1_databases": [
 		{
 			"binding": "DB",
-			// PLACEHOLDERS — from `wrangler d1 create <name>` (README runbook).
+			// PLACEHOLDERS — from `wrangler d1 create <name>` (DEPLOYMENT.md §3.2).
 			// The id is a syntactically-valid dummy, not a real database.
 			"database_name": "YOUR-D1-DATABASE-NAME",
 			"database_id": "00000000-0000-0000-0000-000000000000",
