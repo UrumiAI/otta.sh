@@ -205,6 +205,33 @@ export function couponStoreContract(
 			expect((await store.findById("c1"))?.usesCount).toBe(0);
 		});
 
+		test("releaseByOrder deletes the order's redemption, decrements uses_count, and is idempotent", async () => {
+			const { store } = await makeStore();
+			await store.create(fixedCoupon({ maxUses: 5 }));
+			const res = await store.redeem({
+				couponId: "c1",
+				orderId: orderId("o1"),
+				idempotencyKey: idempotencyKey("k1"),
+				createdAt: "2026-07-10T00:00:00.000Z",
+			});
+			expect(res.ok).toBe(true);
+			const released = await store.releaseByOrder(orderId("o1"));
+			expect(released).toBe(1);
+			expect((await store.findById("c1"))?.usesCount).toBe(0);
+			const remaining = await store.listRedemptionsCreatedBefore(FAR_FUTURE);
+			expect(remaining).toHaveLength(0);
+			// Idempotent: a second release finds nothing.
+			expect(await store.releaseByOrder(orderId("o1"))).toBe(0);
+			expect((await store.findById("c1"))?.usesCount).toBe(0);
+		});
+
+		test("releaseByOrder on an order with no redemption is a no-op returning 0", async () => {
+			const { store } = await makeStore();
+			await store.create(fixedCoupon({ maxUses: 5 }));
+			expect(await store.releaseByOrder(orderId("no-such-order"))).toBe(0);
+			expect((await store.findById("c1"))?.usesCount).toBe(0);
+		});
+
 		test("listRedemptionsCreatedBefore returns only rows strictly older than the cutoff", async () => {
 			const { store } = await makeStore();
 			await store.create(fixedCoupon({ maxUses: 5 }));

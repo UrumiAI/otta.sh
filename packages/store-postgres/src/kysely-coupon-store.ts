@@ -196,6 +196,25 @@ export class KyselyCouponStore implements CouponStore {
 		});
 	}
 
+	async releaseByOrder(orderId: string): Promise<number> {
+		return this.#db.transaction().execute(async (trx) => {
+			const deleted = await trx
+				.deleteFrom("coupon_redemptions")
+				.where("order_id", "=", orderId)
+				.returning("coupon_id")
+				.execute();
+			for (const row of deleted) {
+				await trx
+					.updateTable("coupons")
+					.set({ uses_count: sql<number>`uses_count - 1` })
+					.where("id", "=", row.coupon_id)
+					.where("uses_count", ">", 0)
+					.execute();
+			}
+			return deleted.length;
+		});
+	}
+
 	async listRedemptionsCreatedBefore(cutoff: string): Promise<CouponRedemption[]> {
 		const rows = await this.#db
 			.selectFrom("coupon_redemptions")

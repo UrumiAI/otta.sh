@@ -58,6 +58,7 @@ export interface OrderFlowHarness {
 	orderStore: KyselyOrderStore;
 	entitlementStore: KyselyEntitlementStore;
 	paymentEventStore: KyselyPaymentEventStore;
+	couponStore: KyselyCouponStore;
 	inventory: KyselyInventoryStore;
 	cartStore: KyselyCartStore;
 	stripeGw: FakePaymentGateway;
@@ -101,6 +102,7 @@ function build(db: Kysely<Database>): OrderFlowHarness {
 	const x402Gw = new FakePaymentGateway({ id: "x402" });
 	let seq = 0;
 
+	const couponStore = new KyselyCouponStore({ db, idGen: uuidIdGen });
 	const cartDeps: CartDeps = { cartStore, inventoryStore: inventory, clock };
 	const createDeps: CreateOrderDeps = {
 		orderStore,
@@ -109,7 +111,7 @@ function build(db: Kysely<Database>): OrderFlowHarness {
 		productCommerce,
 		shippingRules: new KyselyShippingRulesStore({ db }),
 		taxRules: new KyselyTaxRulesStore({ db }),
-		couponStore: new KyselyCouponStore({ db, idGen: uuidIdGen }),
+		couponStore,
 		clock,
 		idGen: new CountingIdGen("order"),
 		gateways: { stripe: stripeGw, x402: x402Gw },
@@ -119,9 +121,15 @@ function build(db: Kysely<Database>): OrderFlowHarness {
 		entitlementStore,
 		paymentEventStore,
 		inventoryStore: inventory,
+		couponStore,
 		clock,
 	};
-	const expireDeps: ExpireOrdersDeps = { orderStore, inventoryStore: inventory, clock };
+	const expireDeps: ExpireOrdersDeps = {
+		orderStore,
+		inventoryStore: inventory,
+		couponStore,
+		clock,
+	};
 
 	return {
 		db,
@@ -133,6 +141,7 @@ function build(db: Kysely<Database>): OrderFlowHarness {
 		orderStore,
 		entitlementStore,
 		paymentEventStore,
+		couponStore,
 		inventory,
 		cartStore,
 		stripeGw,

@@ -28,6 +28,7 @@ export function entitlementRoutes(deps: OrderServiceDeps): Hono {
 		entitlementStore: deps.entitlementStore,
 		paymentEventStore: deps.paymentEventStore,
 		inventoryStore: deps.store,
+		couponStore: deps.couponStore,
 		clock: deps.clock,
 	};
 

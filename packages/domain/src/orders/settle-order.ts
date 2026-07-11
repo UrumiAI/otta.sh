@@ -1,5 +1,6 @@
 import { idempotencyKey } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
+import type { CouponStore } from "../ports/coupon-store.js";
 import type { ConfirmationResult } from "../ports/payment-gateway.js";
 import type { EntitlementStore } from "../ports/entitlement-store.js";
 import { type InventoryStore, ReservationCommitLostError } from "../ports/inventory-store.js";
@@ -14,6 +15,9 @@ export interface SettleDeps {
 	entitlementStore: EntitlementStore;
 	paymentEventStore: PaymentEventStore;
 	inventoryStore: InventoryStore;
+	/** Phase 6 (review I2): release the failed order's coupon, symmetric with the
+	 *  inventory-hold release on the payment-failure path. */
+	couponStore: CouponStore;
 	clock: Clock;
 }
 
@@ -81,7 +85,13 @@ export async function settleOrder(
 	if (conf.outcome === "failed") {
 		const won = await deps.orderStore.markFailed(order.id);
 		const fresh = (await deps.orderStore.getById(order.id)) ?? order;
-		if (fresh.state === "failed") await releaseAll(deps, fresh);
+		if (fresh.state === "failed") {
+			await releaseAll(deps, fresh);
+			// Review I2: free the coupon on payment failure, symmetric with the
+			// inventory release. Order-scoped + idempotent (re-driven failed events
+			// release exactly once).
+			await deps.couponStore.releaseByOrder(fresh.id);
+		}
 		return { ok: true, order: fresh, noop: !won };
 	}
 

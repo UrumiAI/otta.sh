@@ -112,9 +112,15 @@ export function makeOrderHarness(): OrderHarness {
 		entitlementStore,
 		paymentEventStore,
 		inventoryStore: inventory,
+		couponStore,
 		clock,
 	};
-	const expireDeps: ExpireOrdersDeps = { orderStore, inventoryStore: inventory, clock };
+	const expireDeps: ExpireOrdersDeps = {
+		orderStore,
+		inventoryStore: inventory,
+		couponStore,
+		clock,
+	};
 
 	return {
 		clock,

@@ -125,6 +125,18 @@ export class InMemoryCouponStore implements CouponStore {
 		if (coupon !== undefined && coupon.usesCount > 0) coupon.usesCount -= 1;
 	}
 
+	async releaseByOrder(orderId: string): Promise<number> {
+		let released = 0;
+		for (const [id, row] of this.#redemptions) {
+			if (row.orderId !== orderId) continue;
+			this.#redemptions.delete(id);
+			const coupon = this.#coupons.get(row.couponId);
+			if (coupon !== undefined && coupon.usesCount > 0) coupon.usesCount -= 1;
+			released++;
+		}
+		return released;
+	}
+
 	async listRedemptionsCreatedBefore(cutoff: string): Promise<CouponRedemption[]> {
 		return [...this.#redemptions.values()]
 			.filter((r) => r.createdAt < cutoff)

@@ -33,6 +33,17 @@ export interface CouponStore {
 	release(redemptionId: string): Promise<void>;
 
 	/**
+	 * Order-scoped release (§5, review round I2 — mirrors
+	 * `InventoryStore.releaseAdopted`): delete the order's redemption(s) and
+	 * decrement `uses_count`, guarded + idempotent (0 rows ⇒ silent no-op, never
+	 * a double-release). Called by `expireOrders` and the payment-failure path so
+	 * a coupon consumed by an abandoned-then-expired (or failed) checkout is freed
+	 * exactly like its inventory hold. Returns the number of redemptions released.
+	 * A paid/completed order never calls this, so its coupon stays consumed.
+	 */
+	releaseByOrder(orderId: OrderId): Promise<number>;
+
+	/**
 	 * Reconciliation read (§5): redemptions created strictly before `cutoff` —
 	 * the crash-recovery sweep pairs these with `OrderStore.getById` to release any
 	 * whose order never became durable. Mirrors `OrderStore.listExpirable`.

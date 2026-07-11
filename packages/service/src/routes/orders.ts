@@ -75,6 +75,7 @@ export function orderRoutes(deps: OrderServiceDeps): Hono {
 	const expireDeps: ExpireOrdersDeps = {
 		orderStore: deps.orderStore,
 		inventoryStore: deps.store,
+		couponStore: deps.couponStore,
 		clock: deps.clock,
 	};
 

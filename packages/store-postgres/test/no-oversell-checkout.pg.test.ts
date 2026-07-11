@@ -92,6 +92,7 @@ async function freshFixture(poolMax: number): Promise<Fixture> {
 			entitlementStore,
 			paymentEventStore,
 			inventoryStore: inventory,
+			couponStore: new KyselyCouponStore({ db, idGen: uuidIdGen }),
 			clock,
 		},
 		gateway,
