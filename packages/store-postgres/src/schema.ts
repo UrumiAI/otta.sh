@@ -120,8 +120,20 @@ export interface ProductCommerceTable {
 	updated_at: string;
 }
 
-/** Phase 4 §4: orders carry NO money column — keys / state / TTL / identity only. */
-export type OrderStateColumn = "pending" | "paid" | "failed" | "expired";
+/** Phase 4 §4 + Phase 5 §5: orders carry NO money column — keys / state / TTL /
+ *  identity only. Phase 5 widens the `state` value set (a text column — no DDL
+ *  change for the new values). */
+export type OrderStateColumn =
+	| "pending"
+	| "paid"
+	| "failed"
+	| "expired"
+	| "processing"
+	| "shipped"
+	| "delivered"
+	| "completed"
+	| "cancelled"
+	| "refunded";
 
 export interface OrdersTable {
 	id: string;
@@ -208,6 +220,79 @@ export interface EntitlementsTable {
 	grant_idempotency_key: string;
 }
 
+// -- Phase 5 (§4/§5): customers, addresses, sessions, login challenges, outbox --
+
+/** Storefront customer identity — separate from EmDash `ctx.users` (§4). */
+export interface CustomersTable {
+	id: string;
+	/** Unique, lower-normalized (the domain `Email` brand normalizes). */
+	email: string;
+	display_name: string | null;
+	email_verified_at: string | null;
+	created_at: string;
+}
+
+/** Opaque DB-backed sessions (§4/§9 decision 5). Only `token_hash` is stored —
+ *  never the plaintext token. */
+export interface CustomerSessionsTable {
+	id: string;
+	customer_id: string;
+	token_hash: string;
+	created_at: string;
+	expires_at: string;
+	revoked_at: string | null;
+}
+
+/** One-time magic-link challenges (§4). Token stored as a hash; single-use via
+ *  `consumed_at`. */
+export interface LoginChallengesTable {
+	id: string;
+	email: string;
+	token_hash: string;
+	created_at: string;
+	expires_at: string;
+	consumed_at: string | null;
+}
+
+export interface AddressesTable {
+	id: string;
+	customer_id: string;
+	kind: string;
+	name: string;
+	line1: string;
+	line2: string | null;
+	city: string;
+	region: string | null;
+	postal_code: string;
+	country: string;
+	/** Portable 0/1 (not SQL boolean — better-sqlite3 cannot bind a JS boolean). */
+	is_default: number;
+	created_at: string;
+}
+
+/**
+ * Order-status email outbox (§5). The guarded state `UPDATE` and the outbox
+ * `INSERT` commit in one transaction; `UNIQUE(order_id, to_state)` makes the
+ * enqueue exactly-once, and the conditional claim (`status`/`lease_until`) makes
+ * the CLAIM exactly-once (no two dispatchers hold the same row's lease at once).
+ * Actual delivery is at-least-once: a crash between `EmailSender.send()` and
+ * marking the row sent lets the lease expire and the row be re-claimed and
+ * re-sent. Dedup to effectively-once relies on the provider's `Idempotency-Key`
+ * (see `HttpEmailSender`).
+ */
+export interface OrderEmailsOutboxTable {
+	id: string;
+	order_id: string;
+	to_state: string;
+	/** pending | sending | sent | failed. */
+	status: string;
+	attempts: number;
+	/** Claim lease deadline (nullable — set on claim, cleared on reschedule). */
+	lease_until: string | null;
+	sent_at: string | null;
+	created_at: string;
+}
+
 export interface Database {
 	inventory: InventoryTable;
 	reservations: ReservationsTable;
@@ -222,4 +307,9 @@ export interface Database {
 	payments: PaymentsTable;
 	payment_events: PaymentEventsTable;
 	entitlements: EntitlementsTable;
+	customers: CustomersTable;
+	customer_sessions: CustomerSessionsTable;
+	login_challenges: LoginChallengesTable;
+	addresses: AddressesTable;
+	order_emails_outbox: OrderEmailsOutboxTable;
 }

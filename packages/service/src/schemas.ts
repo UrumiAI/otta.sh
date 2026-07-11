@@ -166,6 +166,55 @@ export const commerceBatchBody = z.object({
 		.max(100),
 });
 
+// Phase 5 (§7): customer auth, /me, address book, admin transition.
+export const loginRequestBody = z.object({
+	email: z.string().min(3).max(320),
+});
+
+export const loginVerifyBody = z.object({
+	challengeId: idParam,
+	token: z.string().min(1).max(400),
+});
+
+/** All modeled order states — the domain rejects any illegal transition; this
+ *  only bounds the wire value to a known state. */
+export const transitionBody = z.object({
+	toState: z.enum([
+		"pending",
+		"paid",
+		"failed",
+		"expired",
+		"processing",
+		"shipped",
+		"delivered",
+		"completed",
+		"cancelled",
+		"refunded",
+	]),
+});
+
+const addressFields = {
+	kind: z.enum(["billing", "shipping"]),
+	name: z.string().min(1).max(200),
+	line1: z.string().min(1).max(300),
+	line2: z.string().max(300).nullable().optional(),
+	city: z.string().min(1).max(200),
+	region: z.string().max(200).nullable().optional(),
+	postalCode: z.string().min(1).max(40),
+	country: z.string().min(2).max(2),
+	isDefault: z.boolean().optional(),
+};
+
+export const createAddressBody = z.object(addressFields);
+export const updateAddressBody = z.object(addressFields).partial();
+
+export const addressPathParams = z.object({ addressId: idParam });
+
+export type LoginRequestBody = z.infer<typeof loginRequestBody>;
+export type LoginVerifyBody = z.infer<typeof loginVerifyBody>;
+export type TransitionBody = z.infer<typeof transitionBody>;
+export type CreateAddressBody = z.infer<typeof createAddressBody>;
+
 export type CommerceBatchBody = z.infer<typeof commerceBatchBody>;
 export type UpsertProductCommerceBody = z.infer<typeof upsertProductCommerceBody>;
 export type CreateCartBody = z.infer<typeof createCartBody>;

@@ -1,10 +1,14 @@
 import type { HttpAccess } from "../types.js";
 import {
 	CommerceClientError,
+	type AddressWire,
+	type AuthedResult,
 	type CartLineWire,
 	type CartResult,
 	type CartWire,
 	type CommerceClient,
+	type LoginVerifyResult,
+	type OrderSummaryWire,
 	type ProductCommerce,
 	type ProductCommerceBatchItem,
 	type UpsertProductCommerceInput,
@@ -225,6 +229,92 @@ export class HttpCommerceClient implements CommerceClient {
 	}
 
 	// -------------------------------------------------------------------------
+
+	// ── Phase 5: storefront customer account (plan §7) ─────────────────────
+	// 1:1 mirrors of the service's /auth + /me routes. The bearer session token
+	// is threaded from the plugin's first-party cookie layer; a 401 is
+	// normalized to a typed `UNAUTHENTICATED` the account route turns into a
+	// redirect (never a thrown error for that expected case).
+
+	/** `POST /auth/login/request` — always a generic success (no enumeration
+	 *  oracle, §9 Risk 4). */
+	async requestLoginLink(email: string): Promise<{ ok: true }> {
+		await this.#fetch(`${this.#baseUrl}/auth/login/request`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ email }),
+		});
+		return { ok: true };
+	}
+
+	/** `POST /auth/login/verify` — 200 ⇒ session token; 401 ⇒ typed reason. */
+	async verifyLogin(challengeId: string, token: string): Promise<LoginVerifyResult> {
+		const res = await this.#fetch(`${this.#baseUrl}/auth/login/verify`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ challengeId, token }),
+		});
+		const body = (await res.json().catch(() => undefined)) as
+			| { sessionToken?: string; expiresAt?: string; reason?: string }
+			| undefined;
+		if (res.ok && body?.sessionToken !== undefined && body.expiresAt !== undefined) {
+			return { ok: true, sessionToken: body.sessionToken, expiresAt: body.expiresAt };
+		}
+		const reason = body?.reason;
+		if (reason === "EXPIRED" || reason === "INVALID" || reason === "CONSUMED") {
+			return { ok: false, reason };
+		}
+		return { ok: false, reason: "INVALID" };
+	}
+
+	/** `POST /auth/logout` — best-effort revoke; idempotent server-side. */
+	async logout(sessionToken: string): Promise<void> {
+		await this.#fetch(`${this.#baseUrl}/auth/logout`, {
+			method: "POST",
+			headers: this.#authHeaders(sessionToken),
+		});
+	}
+
+	async listMyOrders(sessionToken: string): Promise<AuthedResult<{ orders: OrderSummaryWire[] }>> {
+		const res = await this.#fetch(`${this.#baseUrl}/me/orders`, {
+			method: "GET",
+			headers: this.#authHeaders(sessionToken),
+		});
+		if (res.status === 401) return { ok: false, reason: "UNAUTHENTICATED" };
+		const body = await this.#json<{ orders: OrderSummaryWire[] }>(res);
+		return { ok: true, orders: body.orders };
+	}
+
+	async getMyOrder(
+		sessionToken: string,
+		orderId: string,
+	): Promise<
+		{ ok: true; order: OrderSummaryWire } | { ok: false; reason: "UNAUTHENTICATED" | "NOT_FOUND" }
+	> {
+		const res = await this.#fetch(`${this.#baseUrl}/me/orders/${encodeURIComponent(orderId)}`, {
+			method: "GET",
+			headers: this.#authHeaders(sessionToken),
+		});
+		if (res.status === 401) return { ok: false, reason: "UNAUTHENTICATED" };
+		if (res.status === 404) return { ok: false, reason: "NOT_FOUND" };
+		const body = await this.#json<{ order: OrderSummaryWire }>(res);
+		return { ok: true, order: body.order };
+	}
+
+	async listMyAddresses(sessionToken: string): Promise<AuthedResult<{ addresses: AddressWire[] }>> {
+		const res = await this.#fetch(`${this.#baseUrl}/me/addresses`, {
+			method: "GET",
+			headers: this.#authHeaders(sessionToken),
+		});
+		if (res.status === 401) return { ok: false, reason: "UNAUTHENTICATED" };
+		const body = await this.#json<{ addresses: AddressWire[] }>(res);
+		return { ok: true, addresses: body.addresses };
+	}
+
+	#authHeaders(sessionToken: string): Record<string, string> {
+		return { authorization: `Bearer ${sessionToken}` };
+	}
+	// ── end Phase 5 customer account ───────────────────────────────────────
 
 	#url(productId: string): string {
 		return `${this.#baseUrl}/products/${encodeURIComponent(productId)}/commerce`;

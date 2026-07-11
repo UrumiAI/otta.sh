@@ -38,6 +38,40 @@ export {
 	type OrderStoreContractOptions,
 } from "./order-store-contract.js";
 export {
+	orderTransitionContract,
+	type OrderTransitionHarness,
+	type OrderTransitionContractOptions,
+} from "./order-transition-contract.js";
+export { InMemoryCustomerStore } from "./in-memory-customer-store.js";
+export { InMemoryAddressStore } from "./in-memory-address-store.js";
+export { InMemorySessionStore, DEFAULT_SESSION_TTL_MS } from "./in-memory-session-store.js";
+export {
+	InMemoryCredentialVerifier,
+	DEFAULT_CHALLENGE_TTL_MS,
+	DEFAULT_MAX_ACTIVE_CHALLENGES,
+} from "./in-memory-credential-verifier.js";
+export { FakeEmailSender } from "./fake-email-sender.js";
+export {
+	customerStoreContract,
+	type CustomerStoreHarness,
+	type CustomerStoreContractOptions,
+} from "./customer-store-contract.js";
+export {
+	addressBookContract,
+	type AddressBookHarness,
+	type AddressBookContractOptions,
+} from "./address-book-contract.js";
+export {
+	sessionContract,
+	type SessionHarness,
+	type SessionContractOptions,
+} from "./session-contract.js";
+export {
+	credentialVerifierContract,
+	type CredentialVerifierHarness,
+	type CredentialVerifierContractOptions,
+} from "./credential-verifier-contract.js";
+export {
 	entitlementStoreContract,
 	type EntitlementStoreHarness,
 	type EntitlementStoreContractOptions,

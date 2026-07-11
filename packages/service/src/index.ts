@@ -1,19 +1,30 @@
 import { serve } from "@hono/node-server";
-import { type CartDeps, expireHolds, type PaymentGateway, type PaymentMethod } from "@urumi/domain";
+import {
+	type CartDeps,
+	dispatchOrderEmails,
+	expireHolds,
+	type PaymentGateway,
+	type PaymentMethod,
+} from "@urumi/domain";
 import { StripePaymentGateway } from "@urumi/payments-stripe";
 import {
+	KyselyAddressStore,
 	KyselyCartStore,
+	KyselyCredentialVerifier,
+	KyselyCustomerStore,
 	KyselyEntitlementStore,
 	KyselyInventoryStore,
 	KyselyOrderStore,
 	KyselyPaymentEventStore,
 	KyselyProductCommerceStore,
+	KyselySessionStore,
 	makePostgresDb,
 	makePostgresPool,
 	migrateToLatest,
 	uuidIdGen,
 } from "@urumi/store-postgres";
 import { createApp } from "./app.js";
+import { ConsoleEmailSender, HttpEmailSender } from "./email/senders.js";
 import { wireX402Gateway } from "./x402-wiring.js";
 
 // Bin entry (§0.6): wire the real pg-backed stores and serve on PORT.
@@ -33,6 +44,28 @@ const cartStore = new KyselyCartStore({ db, idGen: uuidIdGen, clock });
 const orderStore = new KyselyOrderStore({ db, idGen: uuidIdGen, clock });
 const entitlementStore = new KyselyEntitlementStore({ db, idGen: uuidIdGen, clock });
 const paymentEventStore = new KyselyPaymentEventStore({ db, idGen: uuidIdGen });
+
+// Phase 5 (§4/§7): storefront customer identity, address book, sessions, magic-
+// link verifier, and the email transport (the service sends directly — §6 ADR).
+const customerStore = new KyselyCustomerStore({ db, idGen: uuidIdGen, clock });
+const addressStore = new KyselyAddressStore({ db, idGen: uuidIdGen, clock });
+const sessionStore = new KyselySessionStore({ db, idGen: uuidIdGen, clock });
+const credentialVerifier = new KyselyCredentialVerifier({
+	db,
+	customerStore,
+	idGen: uuidIdGen,
+	clock,
+});
+const emailApiUrl = process.env.EMAIL_API_URL;
+const emailSender =
+	emailApiUrl !== undefined && emailApiUrl.length > 0
+		? new HttpEmailSender({
+				apiUrl: emailApiUrl,
+				apiKey: process.env.EMAIL_API_KEY,
+				from: process.env.EMAIL_FROM ?? "no-reply@urumi.local",
+			})
+		: new ConsoleEmailSender();
+const storefrontBaseUrl = process.env.STOREFRONT_BASE_URL;
 
 // Payment gateways (§5). Secrets are SERVICE-ENV ONLY (CLAUDE.md) — never in the
 // plugin / ctx.kv. A gateway is wired only when its secret is present.
@@ -71,16 +104,37 @@ const app = createApp({
 	orderStore,
 	entitlementStore,
 	paymentEventStore,
+	customerStore,
+	addressStore,
+	sessionStore,
+	credentialVerifier,
+	emailSender,
 	idGen: uuidIdGen,
 	gateways,
 	clock,
 	ttlMs,
 	checkoutTtlMs: ttlMs,
 	internalToken,
+	...(storefrontBaseUrl !== undefined ? { storefrontBaseUrl } : {}),
 });
 const port = Number(process.env.PORT ?? 3000);
 serve({ fetch: app.fetch, port });
 console.log(`@urumi/service listening on :${port}`);
+
+// Self-scheduled email outbox dispatcher + login-challenge prune (§5.8 +
+// review round H1) — the Node convenience wiring (a Worker deployment drives
+// POST /internal/dispatch-emails via the cron hook instead, which does both).
+// Unref'd so it never keeps the process alive on its own.
+const emailDispatchDeps = { orderStore, emailSender, customerStore, clock };
+const emailSweepMs = Number(process.env.EMAIL_DISPATCH_INTERVAL_MS ?? 30_000);
+setInterval(() => {
+	void dispatchOrderEmails(emailDispatchDeps).catch((err: unknown) => {
+		console.error("[service] email dispatch failed:", err);
+	});
+	void credentialVerifier.pruneChallenges(clock.now().toISOString()).catch((err: unknown) => {
+		console.error("[service] login-challenge prune failed:", err);
+	});
+}, emailSweepMs).unref();
 
 // Self-scheduled sweep (§5) — the Node convenience wiring; a Worker deployment
 // instead drives POST /internal/expire-holds via the plugin `cron` hook. Lazy

@@ -9,18 +9,23 @@ import {
 	type Clock,
 	type CreateOrderInput,
 	type CreateOrderResult,
+	type CustomerId,
 	type FulfillmentKind,
 	type IdempotencyKey,
 	type IdGen,
 	type Order,
 	type OrderId,
 	type OrderLine,
+	type OrderState,
 	type OrderStore,
 	type OrderTotals,
+	type OrderTransitionInput,
+	type OrderTransitionResult,
+	type OutboxEmail,
 	type PaymentMethod,
 	type RecordPaymentInput,
 } from "@urumi/domain";
-import type { Kysely, Selectable } from "kysely";
+import { type Kysely, type Selectable, sql, type Transaction } from "kysely";
 import type { Database, OrderItemsTable, OrdersTable, OrderTotalsTable } from "./schema.js";
 
 export interface KyselyOrderStoreOptions {
@@ -122,23 +127,37 @@ export class KyselyOrderStore implements OrderStore {
 	}
 
 	async markPaid(orderId: OrderId): Promise<boolean> {
-		return this.#guardedFlip(orderId, "pending", "paid");
+		// pending → paid also enqueues the order-confirmation email (§5), in the
+		// same transaction as the flip.
+		return this.#guardedTransition({
+			orderId,
+			fromState: "pending",
+			toState: "paid",
+			enqueueEmail: true,
+		});
 	}
 
 	async markFailed(orderId: OrderId): Promise<boolean> {
-		return this.#guardedFlip(orderId, "pending", "failed");
+		// pending → failed has no template (§9 Risk 8), so no outbox row.
+		return this.#guardedTransition({
+			orderId,
+			fromState: "pending",
+			toState: "failed",
+			enqueueEmail: false,
+		});
 	}
 
 	async expire(orderId: OrderId, now: string): Promise<boolean> {
-		const flipped = await this.#db
-			.updateTable("orders")
-			.set({ state: "expired", updated_at: this.#clock.now().toISOString() })
-			.where("id", "=", orderId)
-			.where("state", "=", "pending")
-			.where("hold_expires_at", "<=", now)
-			.returning("id")
-			.executeTakeFirst();
-		return flipped !== undefined;
+		// Phase 4's deadline-guarded flip, now wrapped with the outbox INSERT in one
+		// transaction (§5 "Wiring, not duplication"). The guard predicate is
+		// unchanged; the reservation-release logic stays in `expireOrders`.
+		return this.#guardedTransition({
+			orderId,
+			fromState: "pending",
+			toState: "expired",
+			enqueueEmail: true,
+			holdExpiresBefore: now,
+		});
 	}
 
 	async listExpirable(now: string): Promise<OrderId[]> {
@@ -176,17 +195,213 @@ export class KyselyOrderStore implements OrderStore {
 			.execute();
 	}
 
+	// -- Phase 5: state machine + email outbox --------------------------------
+
+	async transition(input: OrderTransitionInput): Promise<OrderTransitionResult> {
+		// input.idempotencyKey is intentionally unused: dedup here is structural —
+		// the guarded `WHERE state=:fromState` flip plus the outbox
+		// `UNIQUE(order_id, to_state)` already make a replay a no-op (review round
+		// H4). The field is kept on the port for CLAUDE.md command-shape
+		// consistency ("every command carries one"), not because this adapter
+		// keys off it.
+		const transitioned = await this.#guardedTransition({
+			orderId: input.orderId,
+			fromState: input.fromState,
+			toState: input.toState,
+			enqueueEmail: input.enqueueEmail,
+		});
+		const order = await this.#loadById(input.orderId);
+		return { transitioned, order };
+	}
+
+	async listForCustomer(customerId: CustomerId): Promise<Order[]> {
+		const rows = await this.#db
+			.selectFrom("orders")
+			.select("id")
+			.where("customer_id", "=", customerId)
+			.orderBy("created_at")
+			.orderBy("id")
+			.execute();
+		const orders: Order[] = [];
+		for (const row of rows) {
+			const order = await this.#loadById(row.id);
+			if (order !== null) orders.push(order);
+		}
+		return orders;
+	}
+
+	async linkGuestOrders(customerId: CustomerId, buyerRef: string): Promise<number> {
+		// Case-insensitive on buyer_ref (review round H2): checkout stores the
+		// buyer's email VERBATIM, while the login email is lower-normalized —
+		// compare-side folding (lower(buyer_ref) = lower(?)) links a mixed-case
+		// guest checkout without rewriting the Phase-4 value. Dialect-agnostic:
+		// `lower()` is standard SQL, works identically on sqlite and pg.
+		const res = await this.#db
+			.updateTable("orders")
+			.set({ customer_id: customerId, updated_at: this.#clock.now().toISOString() })
+			.where(sql`lower(buyer_ref)`, "=", buyerRef.toLowerCase())
+			.where("customer_id", "is", null)
+			.executeTakeFirst();
+		return Number(res.numUpdatedRows);
+	}
+
+	async claimNextEmail(now: string, leaseUntil: string): Promise<OutboxEmail | null> {
+		// Lease-driven claimability (§5): not sent, not failed, and no live lease
+		// (null, or elapsed) — covers fresh-pending, crashed-'sending', and
+		// rescheduled-with-backoff uniformly.
+		const claimable = (eb: import("kysely").ExpressionBuilder<Database, "order_emails_outbox">) =>
+			eb.and([
+				eb("sent_at", "is", null),
+				eb("status", "!=", "failed"),
+				eb.or([eb("lease_until", "is", null), eb("lease_until", "<=", now)]),
+			]);
+
+		const candidate = await this.#db
+			.selectFrom("order_emails_outbox")
+			.select("id")
+			.where(claimable)
+			.orderBy("created_at")
+			.orderBy("id")
+			.limit(1)
+			.executeTakeFirst();
+		if (candidate === undefined) return null;
+
+		// Guarded claim — only one runner wins even under concurrent dispatch.
+		const claimed = await this.#db
+			.updateTable("order_emails_outbox")
+			.set({ status: "sending", lease_until: leaseUntil, attempts: sql`attempts + 1` })
+			.where("id", "=", candidate.id)
+			.where(claimable)
+			.returning(["id", "order_id", "to_state", "attempts"])
+			.executeTakeFirst();
+		if (claimed === undefined) return null; // lost the claim race — next tick retries
+
+		return {
+			id: claimed.id,
+			orderId: toOrderId(claimed.order_id),
+			toState: claimed.to_state as OrderState,
+			attempts: claimed.attempts,
+		};
+	}
+
+	async markEmailSent(id: string, now: string): Promise<void> {
+		await this.#db
+			.updateTable("order_emails_outbox")
+			.set({ status: "sent", sent_at: now, lease_until: null })
+			.where("id", "=", id)
+			.execute();
+	}
+
+	async rescheduleEmail(id: string, retryAt: string | null): Promise<void> {
+		await this.#db
+			.updateTable("order_emails_outbox")
+			.set(
+				retryAt === null
+					? { status: "failed", lease_until: null }
+					: { status: "pending", lease_until: retryAt }, // backoff until retryAt
+			)
+			.where("id", "=", id)
+			.execute();
+	}
+
+	/**
+	 * TEST-ONLY (§5 / 5.5 atomicity case; review round H5) — run the REAL
+	 * transition transaction — guarded `UPDATE` + outbox `INSERT` — then throw
+	 * before `COMMIT`, forcing a rollback. Proves the two writes are atomic:
+	 * after this rejects, neither is visible.
+	 *
+	 * Safe co-location, not a production path: this method is NOT part of the
+	 * `OrderStore` port, so no port consumer (use-case, route, dispatcher) can
+	 * reach it through the interface they're typed against — only test code
+	 * holding a concrete `KyselyOrderStore` (see `order-harness.ts`'s
+	 * `forceFailedTransition`) can call it. It also isn't a candidate to hoist
+	 * into a standalone test helper: it reuses the private `#flipAndEnqueue` to
+	 * exercise the exact production write path rather than a re-implementation
+	 * that could drift from it.
+	 */
+	async transitionForTestRollback(input: {
+		orderId: OrderId;
+		fromState: OrderState;
+		toState: OrderState;
+	}): Promise<void> {
+		const now = this.#clock.now().toISOString();
+		await this.#db.transaction().execute(async (trx) => {
+			await this.#flipAndEnqueue(trx, {
+				orderId: input.orderId,
+				fromState: input.fromState,
+				toState: input.toState,
+				enqueueEmail: true,
+				now,
+			});
+			throw new Error("injected mid-transition failure");
+		});
+	}
+
 	// -- internals ------------------------------------------------------------
 
-	async #guardedFlip(orderId: OrderId, from: string, to: "paid" | "failed"): Promise<boolean> {
-		const flipped = await this.#db
+	/** The guarded flip + conditional outbox insert, in one transaction on one
+	 *  connection (§5). Returns whether this call won the flip. */
+	async #guardedTransition(input: {
+		orderId: OrderId;
+		fromState: OrderState;
+		toState: OrderState;
+		enqueueEmail: boolean;
+		holdExpiresBefore?: string;
+	}): Promise<boolean> {
+		const now = this.#clock.now().toISOString();
+		return this.#db.transaction().execute((trx) =>
+			this.#flipAndEnqueue(trx, {
+				orderId: input.orderId,
+				fromState: input.fromState,
+				toState: input.toState,
+				enqueueEmail: input.enqueueEmail,
+				now,
+				...(input.holdExpiresBefore !== undefined
+					? { holdExpiresBefore: input.holdExpiresBefore }
+					: {}),
+			}),
+		);
+	}
+
+	async #flipAndEnqueue(
+		trx: Transaction<Database>,
+		input: {
+			orderId: OrderId;
+			fromState: OrderState;
+			toState: OrderState;
+			enqueueEmail: boolean;
+			now: string;
+			holdExpiresBefore?: string;
+		},
+	): Promise<boolean> {
+		let flip = trx
 			.updateTable("orders")
-			.set({ state: to, updated_at: this.#clock.now().toISOString() })
-			.where("id", "=", orderId)
-			.where("state", "=", from as OrdersTable["state"])
-			.returning("id")
-			.executeTakeFirst();
-		return flipped !== undefined;
+			.set({ state: input.toState, updated_at: input.now })
+			.where("id", "=", input.orderId)
+			.where("state", "=", input.fromState);
+		if (input.holdExpiresBefore !== undefined) {
+			flip = flip.where("hold_expires_at", "<=", input.holdExpiresBefore);
+		}
+		const flipped = await flip.returning("id").executeTakeFirst();
+		if (flipped === undefined) return false; // already transitioned / not due
+
+		if (input.enqueueEmail) {
+			await trx
+				.insertInto("order_emails_outbox")
+				.values({
+					id: this.#idGen.newId(),
+					order_id: input.orderId,
+					to_state: input.toState,
+					status: "pending",
+					attempts: 0,
+					lease_until: null,
+					sent_at: null,
+					created_at: input.now,
+				})
+				.onConflict((oc) => oc.columns(["order_id", "to_state"]).doNothing())
+				.execute();
+		}
+		return true;
 	}
 
 	async #loadByKey(key: string): Promise<Order | null> {

@@ -1,5 +1,12 @@
 import type { Cents, Currency } from "../money/cents.js";
-import type { IdempotencyKey, OrderId, ProductId, ReservationId, Sku } from "../money/ids.js";
+import type {
+	CustomerId,
+	IdempotencyKey,
+	OrderId,
+	ProductId,
+	ReservationId,
+	Sku,
+} from "../money/ids.js";
 import type { FulfillmentKind, Order, OrderState, PaymentMethod } from "../orders/model.js";
 
 /**
@@ -45,6 +52,80 @@ export interface OrderStore {
 	recordPayment(input: RecordPaymentInput): Promise<void>;
 	/** Flag an order for manual reconciliation (§5 loud anomaly); idempotent. */
 	flagReconciliation(orderId: OrderId, detail: string): Promise<void>;
+
+	// -- Phase 5 (§5/§7): order state machine + email outbox ------------------
+
+	/**
+	 * The unified guarded transition primitive (Phase 5 §5). Runs the guarded
+	 * `UPDATE … WHERE id=:orderId AND state=:fromState RETURNING id` **and**, when
+	 * `enqueueEmail`, the outbox `INSERT … ON CONFLICT (order_id, to_state) DO
+	 * NOTHING` in a **single transaction on one connection** — so no reachable
+	 * state has the order transitioned but no outbox row (or vice versa). A guard
+	 * that matches 0 rows (already transitioned / raced) is a no-op:
+	 * `transitioned:false`, no outbox write. `markPaid`/`markFailed`/`expire`
+	 * route through the same primitive so the Phase-4 transitions also enqueue.
+	 */
+	transition(input: OrderTransitionInput): Promise<OrderTransitionResult>;
+
+	/** Every order owned by a customer (Phase 5 §7). The identity is derived
+	 *  server-side from the session — the customer id is never client-supplied —
+	 *  which is the actual mechanism behind "sees only own orders" (§4). */
+	listForCustomer(customerId: CustomerId): Promise<Order[]>;
+
+	/**
+	 * Claim guest orders for a just-authenticated customer (Phase 5 §9 Risk 3):
+	 * `UPDATE orders SET customer_id=:customerId WHERE buyer_ref=:buyerRef AND
+	 * customer_id IS NULL`. Safe because a magic-link login already proves the
+	 * person owns that inbox. Returns the number of orders linked. Idempotent —
+	 * a second login links nothing new.
+	 */
+	linkGuestOrders(customerId: CustomerId, buyerRef: string): Promise<number>;
+
+	/**
+	 * Claim the next dispatchable outbox row (Phase 5 §5 step 2 / §8 5.8) with an
+	 * atomic conditional `UPDATE … SET status='sending', lease_until=:leaseUntil
+	 * WHERE id=:id AND (status='pending' OR (status='sending' AND lease_until <=
+	 * :now)) RETURNING *`. Only one dispatcher can win a claim, and a crashed
+	 * run's row becomes claimable again once its lease expires. `null` ⇒ nothing
+	 * to dispatch.
+	 */
+	claimNextEmail(now: string, leaseUntil: string): Promise<OutboxEmail | null>;
+	/** Mark a claimed row delivered (`sent_at`), terminal. */
+	markEmailSent(id: string, now: string): Promise<void>;
+	/** Return a claimed row to `pending` for a later retry (`retryAt`), or mark it
+	 *  `failed` (retries exhausted) when `retryAt` is null. */
+	rescheduleEmail(id: string, retryAt: string | null): Promise<void>;
+}
+
+export interface OrderTransitionInput {
+	orderId: OrderId;
+	fromState: OrderState;
+	toState: OrderState;
+	/** Every command carries one (CLAUDE.md). NOT the dedup mechanism here — a
+	 *  replay is already a structural no-op via the guarded `WHERE
+	 *  state=:fromState` flip plus the outbox `UNIQUE(order_id, to_state)`
+	 *  (review round H4). Adapters accept but do not key off this field; it's
+	 *  retained for command-shape consistency across the domain. */
+	idempotencyKey: IdempotencyKey;
+	/** Enqueue an outbox row for `toState` in the same transaction. False for a
+	 *  state with no template (`failed`) so no undeliverable row is ever written. */
+	enqueueEmail: boolean;
+}
+
+export interface OrderTransitionResult {
+	/** True iff this call won the guarded flip; false ⇒ already transitioned. */
+	transitioned: boolean;
+	/** The order after the attempt (current state either way), or null if gone. */
+	order: Order | null;
+}
+
+/** A claimed outbox row the dispatcher renders + sends (Phase 5 §5). */
+export interface OutboxEmail {
+	id: string;
+	orderId: OrderId;
+	toState: OrderState;
+	/** Delivery attempts so far (incremented on claim) — drives retry budgeting. */
+	attempts: number;
 }
 
 /** A line to snapshot into `order_items` — price + title already resolved from

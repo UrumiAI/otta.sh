@@ -21,6 +21,20 @@ import {
 	createEntitlementDownloadHandler,
 	ENTITLEMENT_DOWNLOAD_ROUTE,
 } from "./entitlements/download-route.js";
+// ── Phase 5: storefront customer account routes (plan §9) ─────────────────
+import {
+	ACCOUNT_ADDRESSES_ROUTE,
+	ACCOUNT_LOGIN_REQUEST_ROUTE,
+	ACCOUNT_LOGIN_VERIFY_ROUTE,
+	ACCOUNT_ORDER_ROUTE,
+	ACCOUNT_ORDERS_ROUTE,
+	createAccountAddressesHandler,
+	createAccountLoginRequestHandler,
+	createAccountLoginVerifyHandler,
+	createAccountOrderHandler,
+	createAccountOrdersHandler,
+} from "./storefront/account-routes.js";
+// ── end Phase 5 account routes ─────────────────────────────────────────────
 import { createPdpRouteHandler, STOREFRONT_PRODUCT_ROUTE } from "./storefront/pdp-route.js";
 import { createPlpRouteHandler, STOREFRONT_LIST_ROUTE } from "./storefront/plp-route.js";
 import {
@@ -102,6 +116,22 @@ const plugin: SandboxedPlugin = {
 			handler: createEntitlementDownloadHandler() as never,
 			public: true,
 		},
+		// Phase 5 (§9): PUBLIC storefront account routes — thin HTTP-only proxies
+		// over ctx.http to the service's /auth + /me surface. No new capability
+		// beyond network:request/allowedHosts; the plugin holds no session state
+		// (the bearer token is threaded in as route input from the theme's
+		// first-party cookie layer — see account-routes.ts's platform note).
+		[ACCOUNT_LOGIN_REQUEST_ROUTE]: {
+			handler: createAccountLoginRequestHandler() as never,
+			public: true,
+		},
+		[ACCOUNT_LOGIN_VERIFY_ROUTE]: {
+			handler: createAccountLoginVerifyHandler() as never,
+			public: true,
+		},
+		[ACCOUNT_ORDERS_ROUTE]: { handler: createAccountOrdersHandler() as never, public: true },
+		[ACCOUNT_ORDER_ROUTE]: { handler: createAccountOrderHandler() as never, public: true },
+		[ACCOUNT_ADDRESSES_ROUTE]: { handler: createAccountAddressesHandler() as never, public: true },
 	},
 };
 

@@ -120,6 +120,8 @@ async function freshFixture(poolMax: number): Promise<Fixture> {
 			await db.deleteFrom("entitlements").execute();
 			await db.deleteFrom("payments").execute();
 			await db.deleteFrom("payment_events").execute();
+			// Phase 5: outbox rows FK-reference orders; delete children first.
+			await db.deleteFrom("order_emails_outbox").execute();
 			await db.deleteFrom("order_items").execute();
 			await db.deleteFrom("order_totals").execute();
 			await db.deleteFrom("orders").execute();

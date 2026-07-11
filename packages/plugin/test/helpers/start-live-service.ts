@@ -1,14 +1,18 @@
 import { serve } from "@hono/node-server";
-import { FixedClock } from "@urumi/domain/testing";
+import { FakeEmailSender, FixedClock } from "@urumi/domain/testing";
 import { StripePaymentGateway } from "@urumi/payments-stripe";
 import { createApp } from "@urumi/service/app";
 import {
+	KyselyAddressStore,
 	KyselyCartStore,
+	KyselyCredentialVerifier,
+	KyselyCustomerStore,
 	KyselyEntitlementStore,
 	KyselyInventoryStore,
 	KyselyOrderStore,
 	KyselyPaymentEventStore,
 	KyselyProductCommerceStore,
+	KyselySessionStore,
 	uuidIdGen,
 } from "@urumi/store-postgres";
 import { createIsolatedPgSchema } from "@urumi/store-postgres/testing";
@@ -19,6 +23,9 @@ export const LIVE_STRIPE_WEBHOOK_SECRET = "whsec_plugin_live_test";
 export interface LiveService {
 	baseUrl: string;
 	host: string;
+	/** The in-memory email sender — the account tests read the emitted magic-link
+	 *  token from here to complete a login over the wire. */
+	emailSender: FakeEmailSender;
 	stop(): Promise<void>;
 }
 
@@ -44,6 +51,16 @@ export async function startLiveService(): Promise<LiveService> {
 	const orderStore = new KyselyOrderStore({ db, idGen: uuidIdGen, clock });
 	const entitlementStore = new KyselyEntitlementStore({ db, idGen: uuidIdGen, clock });
 	const paymentEventStore = new KyselyPaymentEventStore({ db, idGen: uuidIdGen });
+	const customerStore = new KyselyCustomerStore({ db, idGen: uuidIdGen, clock });
+	const addressStore = new KyselyAddressStore({ db, idGen: uuidIdGen, clock });
+	const sessionStore = new KyselySessionStore({ db, idGen: uuidIdGen, clock });
+	const credentialVerifier = new KyselyCredentialVerifier({
+		db,
+		customerStore,
+		idGen: uuidIdGen,
+		clock,
+	});
+	const emailSender = new FakeEmailSender();
 	const app = createApp({
 		store,
 		productCommerce,
@@ -51,6 +68,11 @@ export async function startLiveService(): Promise<LiveService> {
 		orderStore,
 		entitlementStore,
 		paymentEventStore,
+		customerStore,
+		addressStore,
+		sessionStore,
+		credentialVerifier,
+		emailSender,
 		idGen: uuidIdGen,
 		gateways: { stripe: new StripePaymentGateway({ webhookSecret: LIVE_STRIPE_WEBHOOK_SECRET }) },
 		clock,
@@ -65,6 +87,7 @@ export async function startLiveService(): Promise<LiveService> {
 	return {
 		baseUrl: `http://127.0.0.1:${port}`,
 		host: "127.0.0.1",
+		emailSender,
 		async stop() {
 			await new Promise<void>((resolve, reject) => {
 				server.close((err: Error | undefined) => (err ? reject(err) : resolve()));
