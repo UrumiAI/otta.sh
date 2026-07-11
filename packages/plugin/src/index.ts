@@ -3,17 +3,17 @@
 // clean guard test asserts against.
 export { buildProductDataElements, productDataWidget } from "./admin/product-data-widget.js";
 export { PANEL_STATE_ROUTE } from "./admin/panel-state-route.js";
-// ── Phase 7: admin Reports page + Settings form (plan §6 Steps 6–7) ──────────
+// ── Phase 7: single `admin` dispatch route + Reports page + Settings form ────
+export { ADMIN_ROUTE, createAdminRouteHandler } from "./admin/admin-route.js";
 export {
 	buildReportsBlocks,
 	createReportsPageHandler,
 	REPORTS_PAGE,
-	REPORTS_ROUTE,
 	type ReportsPageInput,
 } from "./admin/reports-page.js";
 export {
 	createSettingsFormHandler,
-	SETTINGS_ROUTE,
+	SETTINGS_PAGE,
 	SETTINGS_SCHEMA,
 	STORE_DISPLAY_NAME_KEY,
 	type SettingsFormInput,

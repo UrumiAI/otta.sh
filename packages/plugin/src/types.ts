@@ -257,9 +257,22 @@ export interface FormFieldSpec {
 	label: string;
 	initial_value?: string | number;
 }
+/** A masked, write-only secret input (em-dash `SecretInputElement`,
+ *  `packages/blocks/src/types.ts:58-64`). Deliberately carries NO
+ *  `initial_value`: the stored secret is NEVER rendered back into a block.
+ *  `has_value` lets the admin UI show a "current value set" affordance without
+ *  exposing the value; `placeholder` carries the "leave blank to keep current"
+ *  hint. */
+export interface SecretInputFieldSpec {
+	type: "secret_input";
+	action_id: string;
+	label: string;
+	placeholder?: string;
+	has_value?: boolean;
+}
 export interface FormBlock {
 	type: "form";
-	fields: FormFieldSpec[];
+	fields: Array<FormFieldSpec | SecretInputFieldSpec>;
 	submit: { label: string; action_id: string };
 }
 
