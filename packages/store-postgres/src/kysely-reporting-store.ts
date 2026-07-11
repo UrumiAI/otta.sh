@@ -23,6 +23,34 @@ export interface KyselyReportingStoreOptions {
 	dialect: ReportingDialect;
 }
 
+const MAX_SAFE_BIG = BigInt(Number.MAX_SAFE_INTEGER);
+
+/**
+ * Convert a SQL aggregate (`SUM`/`COUNT`) to a JS integer WITHOUT silent
+ * precision loss. Postgres returns `SUM(int)`/`COUNT(*)` as a bigint/numeric
+ * STRING; a naive `Number("9007199254740993")` would round to a nearby safe
+ * integer that `cents()` then happily accepts. Range-check via BigInt FIRST so an
+ * out-of-safe-range aggregate THROWS rather than coercing. SQLite returns a
+ * number directly; assert it's a safe integer (guards the dynamic-typing float
+ * footgun too). Exported for a focused unit test (an actual >2^53 sum would need
+ * millions of rows to reproduce end-to-end).
+ */
+export function parseAggregate(raw: number | string): number {
+	if (typeof raw === "number") {
+		if (!Number.isSafeInteger(raw)) {
+			throw new RangeError(`reporting aggregate ${String(raw)} is not a safe integer`);
+		}
+		return raw;
+	}
+	const big = BigInt(raw);
+	if (big > MAX_SAFE_BIG || big < -MAX_SAFE_BIG) {
+		throw new RangeError(
+			`reporting aggregate ${raw} exceeds Number.MAX_SAFE_INTEGER — refusing to coerce`,
+		);
+	}
+	return Number(big);
+}
+
 /** The revenue-counting state allow-list as a parameterized SQL `IN (…)` list —
  *  built ONCE from the domain constant so both revenue and top-products share it
  *  (never reimplemented, never drifts). */
@@ -63,7 +91,7 @@ export class KyselyReportingStore implements ReportingStore {
 		return result.rows.map((r) => ({
 			bucketStart: r.bucket,
 			currency: toCurrency(r.currency),
-			revenueCents: cents(Number(r.revenue)),
+			revenueCents: cents(parseAggregate(r.revenue)),
 		}));
 	}
 
@@ -75,7 +103,10 @@ export class KyselyReportingStore implements ReportingStore {
 			GROUP BY state
 			ORDER BY state ASC
 		`.execute(this.#db);
-		return result.rows.map((r) => ({ status: r.status, orderCount: Number(r.order_count) }));
+		return result.rows.map((r) => ({
+			status: r.status,
+			orderCount: parseAggregate(r.order_count),
+		}));
 	}
 
 	async topProducts(
@@ -109,8 +140,8 @@ export class KyselyReportingStore implements ReportingStore {
 		return result.rows.map((r) => ({
 			productId: r.product_id,
 			titleSnapshot: r.title,
-			qtySold: Number(r.qty_sold),
-			revenueCents: cents(Number(r.revenue)),
+			qtySold: parseAggregate(r.qty_sold),
+			revenueCents: cents(parseAggregate(r.revenue)),
 		}));
 	}
 
