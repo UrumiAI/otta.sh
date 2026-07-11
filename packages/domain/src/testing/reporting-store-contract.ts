@@ -152,6 +152,32 @@ export function reportingStoreContract(
 			expect(p4?.qtySold).toBe(2); // not 12
 		});
 
+		test("topProducts revenue does not overflow when a single line's quantity × unit_price exceeds a 32-bit int", async () => {
+			// On pg both columns are int4; `quantity * unit_price_cents` is evaluated
+			// as integer and would raise "integer out of range" BEFORE SUM widens to
+			// bigint. SQLite (64-bit) would not — a real dialect divergence on money.
+			// 40000 × 60000 = 2.4e9 > 2^31 (2,147,483,647), still a safe JS integer.
+			const h = await makeStore();
+			await h.seedOrder({
+				id: "big",
+				state: "paid",
+				currency: "USD",
+				createdAt: "2026-07-11T00:00:00.000Z",
+				totalCents: 1,
+			});
+			await h.seedOrderItem({
+				orderId: "big",
+				productId: "pbig",
+				title: "Bulk",
+				unitPriceCents: 60_000,
+				quantity: 40_000,
+			});
+			const top = await h.store.topProducts(REPORTING_WINDOW, "revenue", 10);
+			expect(top).toEqual([
+				{ productId: "pbig", titleSnapshot: "Bulk", qtySold: 40_000, revenueCents: 2_400_000_000 },
+			]);
+		});
+
 		test("lowStock returns SKUs at or below threshold, ascending by on_hand", async () => {
 			const { store } = await seeded();
 			expect(await store.lowStock(5)).toEqual([

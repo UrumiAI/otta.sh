@@ -93,7 +93,11 @@ export class KyselyReportingStore implements ReportingStore {
 			SELECT oi.product_id AS product_id,
 			       oi.title AS title,
 			       SUM(oi.quantity) AS qty_sold,
-			       SUM(oi.quantity * oi.unit_price_cents) AS revenue
+			       -- CAST one factor to bigint so the per-line product is computed in
+			       -- 64 bits: on pg both columns are int4 and the qty*price product would
+			       -- raise "integer out of range" BEFORE SUM widens (sqlite is 64-bit
+			       -- natively). CAST(... AS bigint) is portable across both dialects.
+			       SUM(CAST(oi.quantity AS bigint) * oi.unit_price_cents) AS revenue
 			FROM order_items oi
 			JOIN orders o ON o.id = oi.order_id
 			WHERE o.created_at BETWEEN ${range.from} AND ${range.to}
