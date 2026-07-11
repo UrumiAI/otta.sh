@@ -86,3 +86,22 @@ export {
 	type GatewayHarnessConfig,
 	type PaymentGatewayHarness,
 } from "./gateway-harness.js";
+// Phase 6: shipping / tax / coupon fakes + contract suites.
+export { InMemoryShippingRulesStore } from "./in-memory-shipping-rules-store.js";
+export { InMemoryTaxRulesStore } from "./in-memory-tax-rules-store.js";
+export { InMemoryCouponStore } from "./in-memory-coupon-store.js";
+export {
+	shippingRulesStoreContract,
+	type ShippingRulesStoreHarness,
+	type ShippingRulesStoreContractOptions,
+} from "./shipping-rules-store-contract.js";
+export {
+	taxRulesStoreContract,
+	type TaxRulesStoreHarness,
+	type TaxRulesStoreContractOptions,
+} from "./tax-rules-store-contract.js";
+export {
+	couponStoreContract,
+	type CouponStoreHarness,
+	type CouponStoreContractOptions,
+} from "./coupon-store-contract.js";
