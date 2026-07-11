@@ -1,14 +1,20 @@
 import type {
 	CartStoreHarness,
+	CouponStoreHarness,
 	InventoryStoreHarness,
 	ProductCommerceStoreHarness,
+	ShippingRulesStoreHarness,
+	TaxRulesStoreHarness,
 } from "@urumi/domain/testing";
 import { CountingIdGen, FixedClock } from "@urumi/domain/testing";
 import type { Kysely } from "kysely";
 import {
 	KyselyCartStore,
+	KyselyCouponStore,
 	KyselyInventoryStore,
 	KyselyProductCommerceStore,
+	KyselyShippingRulesStore,
+	KyselyTaxRulesStore,
 	makeSqliteDb,
 	migrateToLatest,
 	uuidIdGen,
@@ -177,4 +183,49 @@ export async function makePgCartHarness(): Promise<CartDialectHarness> {
 	const iso = await createIsolatedPgSchema(connectionString, { poolMax: 4 });
 	cleanups.push(() => iso.teardown());
 	return buildCartHarness(iso.db);
+}
+
+// -- Phase 6: shipping / tax / coupon harnesses ------------------------------
+
+async function makeSqliteDbMigrated(): Promise<Kysely<Database>> {
+	const db = makeSqliteDb(":memory:");
+	await migrateToLatest(db);
+	cleanups.push(async () => {
+		await db.destroy();
+	});
+	return db;
+}
+
+async function makePgDbMigrated(poolMax = 4): Promise<Kysely<Database>> {
+	const connectionString = process.env.PG_CONNECTION_STRING;
+	if (connectionString === undefined) throw new Error("PG_CONNECTION_STRING is not set");
+	const iso = await createIsolatedPgSchema(connectionString, { poolMax });
+	cleanups.push(() => iso.teardown());
+	return iso.db;
+}
+
+export async function makeSqliteShippingHarness(): Promise<ShippingRulesStoreHarness> {
+	return { store: new KyselyShippingRulesStore({ db: await makeSqliteDbMigrated() }) };
+}
+export async function makePgShippingHarness(): Promise<ShippingRulesStoreHarness> {
+	return { store: new KyselyShippingRulesStore({ db: await makePgDbMigrated() }) };
+}
+
+export async function makeSqliteTaxHarness(): Promise<TaxRulesStoreHarness> {
+	return { store: new KyselyTaxRulesStore({ db: await makeSqliteDbMigrated() }) };
+}
+export async function makePgTaxHarness(): Promise<TaxRulesStoreHarness> {
+	return { store: new KyselyTaxRulesStore({ db: await makePgDbMigrated() }) };
+}
+
+export async function makeSqliteCouponHarness(): Promise<CouponStoreHarness> {
+	return {
+		store: new KyselyCouponStore({
+			db: await makeSqliteDbMigrated(),
+			idGen: new CountingIdGen("red"),
+		}),
+	};
+}
+export async function makePgCouponHarness(): Promise<CouponStoreHarness> {
+	return { store: new KyselyCouponStore({ db: await makePgDbMigrated(), idGen: uuidIdGen }) };
 }
