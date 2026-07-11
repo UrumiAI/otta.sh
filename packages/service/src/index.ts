@@ -18,7 +18,9 @@ import {
 	KyselyOrderStore,
 	KyselyPaymentEventStore,
 	KyselyProductCommerceStore,
+	KyselyReportingStore,
 	KyselySessionStore,
+	KyselySettingsStore,
 	KyselyShippingRulesStore,
 	KyselyTaxRulesStore,
 	makePostgresDb,
@@ -51,6 +53,9 @@ const paymentEventStore = new KyselyPaymentEventStore({ db, idGen: uuidIdGen });
 const shippingRules = new KyselyShippingRulesStore({ db });
 const taxRules = new KyselyTaxRulesStore({ db });
 const couponStore = new KyselyCouponStore({ db, idGen: uuidIdGen });
+// Phase 7 (§6): read-only reporting + operational settings (service-DB tier).
+const reportingStore = new KyselyReportingStore({ db, dialect: "postgres" });
+const settingsStore = new KyselySettingsStore({ db, clock });
 
 // Phase 5 (§4/§7): storefront customer identity, address book, sessions, magic-
 // link verifier, and the email transport (the service sends directly — §6 ADR).
@@ -114,6 +119,8 @@ const app = createApp({
 	shippingRules,
 	taxRules,
 	couponStore,
+	reportingStore,
+	settingsStore,
 	customerStore,
 	addressStore,
 	sessionStore,
