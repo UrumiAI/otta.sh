@@ -1,18 +1,7 @@
-import { createHash, timingSafeEqual } from "node:crypto";
 import type { Context } from "hono";
-
-/**
- * Constant-time shared-secret comparison for the `X-Internal-Token` header
- * (Phase 3 pattern §6): hash both sides to a fixed length first so
- * `timingSafeEqual` applies to arbitrary token lengths — a plain `!==` would leak
- * the match length/prefix through timing.
- */
-export function tokenMatches(provided: string | undefined, expected: string): boolean {
-	if (provided === undefined) return false;
-	const a = createHash("sha256").update(provided).digest();
-	const b = createHash("sha256").update(expected).digest();
-	return timingSafeEqual(a, b);
-}
+// The single timing-safe compare implementation lives in ../auth.js, shared by
+// this X-Internal-Token guard and the SERVICE_API_TOKEN Bearer write gate.
+import { tokenMatches } from "../auth.js";
 
 /**
  * Guard an internal endpoint: 503 when no token is configured (disabled, never

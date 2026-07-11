@@ -19,8 +19,8 @@ import {
 	sku,
 	updateLine,
 } from "@urumi/domain";
-import { createHash, timingSafeEqual } from "node:crypto";
 import { type Context, Hono } from "hono";
+import { tokenMatches } from "../auth.js";
 import {
 	addLineBody,
 	createCartBody,
@@ -225,16 +225,6 @@ function failure(c: Context, reason: CartFailure): Response {
 			// the line was not resurrected; the client adds again with a fresh key.
 			return c.json(body, 409);
 	}
-}
-
-/** Constant-time shared-secret comparison: hash both sides to a fixed length
- *  first so `timingSafeEqual` applies to arbitrary token lengths — a plain
- *  `!==` would leak the match length/prefix through timing. */
-function tokenMatches(provided: string | undefined, expected: string): boolean {
-	if (provided === undefined) return false;
-	const a = createHash("sha256").update(provided).digest();
-	const b = createHash("sha256").update(expected).digest();
-	return timingSafeEqual(a, b);
 }
 
 function requireKey(c: { req: { header(name: string): string | undefined } }): string | null {

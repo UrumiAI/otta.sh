@@ -18,11 +18,12 @@ import type {
 	TaxRulesStore,
 } from "@urumi/domain";
 import { Hono } from "hono";
+import { requireBearerToken } from "./auth.js";
 import { adminRoutes } from "./routes/admin.js";
-import { reportsRoutes } from "./routes/reports.js";
-import { settingsRoutes } from "./routes/settings.js";
-import { rulesAdminRoutes } from "./routes/rules-admin.js";
 import { authRoutes } from "./routes/auth.js";
+import { reportsRoutes } from "./routes/reports.js";
+import { rulesAdminRoutes } from "./routes/rules-admin.js";
+import { settingsRoutes } from "./routes/settings.js";
 import { type CartRoutesDeps, cartRoutes, expireHoldsRoutes } from "./routes/carts.js";
 import { catalogRoutes } from "./routes/catalog.js";
 import { entitlementRoutes } from "./routes/entitlements.js";
@@ -59,6 +60,12 @@ export type AppDeps = InventoryDeps &
 		emailSender: EmailSender;
 		/** Storefront base URL for the emailed magic link (optional). */
 		storefrontBaseUrl?: string;
+		/**
+		 * SERVICE_API_TOKEN write gate (D9): when set, every non-GET/HEAD request
+		 * must carry `Authorization: Bearer <serviceToken>`. Unset ⇒ fully open
+		 * (exactly the pre-gate behavior — local dev and existing tests).
+		 */
+		serviceToken?: string;
 	};
 
 /**
@@ -68,6 +75,15 @@ export type AppDeps = InventoryDeps &
  */
 export function createApp(deps: AppDeps): Hono {
 	const app = new Hono();
+	// The write gate is registered FIRST so no route — present or future — can
+	// be mounted in front of it. Exemptions (exact paths, each with its OWN
+	// caller authentication — never an open hole):
+	//  - POST /webhooks/stripe: called directly by Stripe (deliberately no
+	//    plugin proxy — the sandbox bridge destroys the raw bytes the HMAC
+	//    needs); authenticated by `Stripe-Signature` HMAC verification over the
+	//    raw body inside settleOrder, with a freshness window and rotation-aware
+	//    v1 checks. Stripe cannot carry our Bearer token.
+	app.use("*", requireBearerToken(deps.serviceToken, ["/webhooks/stripe"]));
 	app.get("/health", (c) => c.json({ ok: true }));
 	app.route("/inventory", inventoryRoutes(deps));
 	app.route(
