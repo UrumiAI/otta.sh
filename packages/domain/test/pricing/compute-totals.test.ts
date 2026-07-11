@@ -175,6 +175,29 @@ function arbInput(): fc.Arbitrary<TotalsInput> {
 	});
 }
 
+/**
+ * A SECOND, independently-written half-up implementation used only as a test
+ * oracle. Deliberately a different algorithm from `divRoundHalfUp`'s
+ * `floor((n + d/2)/d)`: floor-then-remainder-doubling. Plain-number math (safe
+ * for the generated magnitudes) so it shares NO code with the implementation —
+ * a drifted rounding intermediate makes the two disagree.
+ */
+function oracleHalfUp(numerator: number): number {
+	const d = 10_000;
+	const q = Math.floor(numerator / d);
+	const r = numerator - q * d;
+	return 2 * r >= d ? q + 1 : q;
+}
+
+/** Independent recomputation of the coupon discount (not via the engine). */
+function oracleDiscount(input: TotalsInput, subtotal: number): number {
+	if (input.coupon === undefined) return 0;
+	if (input.coupon.type === "fixed_amount") return Math.min(input.coupon.amountCents, subtotal);
+	const raw = oracleHalfUp(subtotal * input.coupon.bps);
+	const capped = input.coupon.capCents === null ? raw : Math.min(raw, input.coupon.capCents);
+	return Math.min(capped, subtotal);
+}
+
 describe("computeTotals — properties", () => {
 	test("sum-of-parts identity holds for arbitrary carts, coupons, shipping, tax rates", () => {
 		fc.assert(
@@ -188,6 +211,35 @@ describe("computeTotals — properties", () => {
 				// Per-line tax + shipping tax === tax total.
 				const lineTax = b.lineBreakdown.reduce((a, l) => a + l.taxCents, 0);
 				expect(lineTax + b.shippingTaxCents).toBe(b.taxCents);
+			}),
+			{ numRuns: 5000 },
+		);
+	});
+
+	test("INDEPENDENT ORACLE: discount and per-line/shipping tax match a second, separately-written integer path (catches a drifted intermediate, not just the identity)", () => {
+		fc.assert(
+			fc.property(arbInput(), (input) => {
+				const b = computeTotals(input);
+
+				// (1) Discount recomputed independently from subtotal + coupon.
+				expect(b.discountCents).toBe(oracleDiscount(input, b.subtotalCents));
+
+				// (2) Each line's tax recomputed by the independent half-up oracle over
+				//     the RETURNED discounted amount — a drift in computeLineTax's
+				//     rounding would make the two disagree here.
+				input.lines.forEach((line, i) => {
+					const rate = input.rules.taxRatesByClass[line.taxClassId] ?? 0;
+					const lb = b.lineBreakdown[i]!;
+					expect(lb.taxCents).toBe(oracleHalfUp(lb.discountedCents * rate));
+				});
+
+				// (3) Shipping tax recomputed independently.
+				const shipRate = input.rules.shippingTaxable
+					? (input.rules.taxRatesByClass[input.rules.shippingTaxClassId] ?? 0)
+					: 0;
+				expect(b.shippingTaxCents).toBe(
+					input.rules.shippingTaxable ? oracleHalfUp(b.shippingCents * shipRate) : 0,
+				);
 			}),
 			{ numRuns: 5000 },
 		);
