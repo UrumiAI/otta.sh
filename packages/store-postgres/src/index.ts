@@ -21,16 +21,34 @@ export {
 	KyselyPaymentEventStore,
 	type KyselyPaymentEventStoreOptions,
 } from "./kysely-payment-event-store.js";
+export { KyselyCustomerStore, type KyselyCustomerStoreOptions } from "./kysely-customer-store.js";
+export { KyselyAddressStore, type KyselyAddressStoreOptions } from "./kysely-address-store.js";
+export {
+	KyselySessionStore,
+	DEFAULT_SESSION_TTL_MS,
+	hashToken,
+	type KyselySessionStoreOptions,
+} from "./kysely-session-store.js";
+export {
+	KyselyCredentialVerifier,
+	DEFAULT_CHALLENGE_TTL_MS,
+	type KyselyCredentialVerifierOptions,
+} from "./kysely-credential-verifier.js";
 export { migrateToLatest, migrationProvider } from "./migrations/index.js";
 export type {
+	AddressesTable,
 	CartLinesTable,
 	CartMutationKind,
 	CartMutationsTable,
 	CartState,
 	CartsTable,
+	CustomerSessionsTable,
+	CustomersTable,
 	Database,
 	EntitlementsTable,
 	InventoryTable,
+	LoginChallengesTable,
+	OrderEmailsOutboxTable,
 	OrderItemsTable,
 	OrdersTable,
 	OrderStateColumn,

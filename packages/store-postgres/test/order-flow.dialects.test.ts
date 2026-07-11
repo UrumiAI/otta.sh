@@ -391,6 +391,12 @@ function orderFlowTests(makeHarness: () => Promise<OrderFlowHarness>, dialect: s
 				listExpirable: (at) => h.orderStore.listExpirable(at),
 				recordPayment: (i) => h.orderStore.recordPayment(i),
 				flagReconciliation: (id, d) => h.orderStore.flagReconciliation(id, d),
+				transition: (i) => h.orderStore.transition(i),
+				listForCustomer: (c) => h.orderStore.listForCustomer(c),
+				linkGuestOrders: (c, ref) => h.orderStore.linkGuestOrders(c, ref),
+				claimNextEmail: (now, lease) => h.orderStore.claimNextEmail(now, lease),
+				markEmailSent: (id, now) => h.orderStore.markEmailSent(id, now),
+				rescheduleEmail: (id, at) => h.orderStore.rescheduleEmail(id, at),
 			};
 
 			const settled = await settleOrder(
