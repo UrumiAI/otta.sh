@@ -94,6 +94,23 @@ export async function createOrderFromCart(
 		throw new Error(`no payment gateway configured for method "${command.paymentMethod}"`);
 	}
 
+	// I1 — top-level idempotency short-circuit (CLAUDE.md idempotency, plan §1
+	// case 6). A replay of the same key must return the ORIGINAL order WITHOUT
+	// re-running the pipeline: computeQuote→validateCoupon does a SOFT
+	// usesCount>=maxUses / expiresAt check that would wrongly reject a replay of a
+	// checkout that consumed the coupon's last use (or whose coupon has since
+	// expired). Re-issuing the payment intent is idempotent under the same key.
+	const already = await deps.orderStore.getByIdempotencyKey(command.idempotencyKey);
+	if (already !== null) {
+		const intent = await gateway.createIntent({
+			orderId: already.id,
+			amount: already.totals.total,
+			currency: already.totals.currency,
+			idempotencyKey: command.idempotencyKey,
+		});
+		return { ok: true, order: already, intent };
+	}
+
 	const cart = await deps.cartStore.get(command.cartId);
 	if (cart === null) return { ok: false, reason: "CART_NOT_FOUND" };
 	if (cart.lines.length === 0) return { ok: false, reason: "CART_EMPTY" };
@@ -101,10 +118,10 @@ export async function createOrderFromCart(
 		// Cart-state fence at the checkout entrance (§5, review G2): a checked-out
 		// cart never mints a SECOND order (two tabs with per-click keys would
 		// otherwise snapshot reservations the first order already adopted). A
-		// same-key REPLAY is still honored — the key already minted this cart's
-		// order, so fall through to the normal idempotent path.
-		const replayed = await deps.orderStore.getByIdempotencyKey(command.idempotencyKey);
-		if (replayed === null) return { ok: false, reason: "CART_CHECKED_OUT" };
+		// same-key REPLAY was already returned above by the idempotency
+		// short-circuit, so reaching here with a NON-active cart is always a
+		// distinct-key second checkout ⇒ reject.
+		return { ok: false, reason: "CART_CHECKED_OUT" };
 	}
 
 	// Snapshot price + title + fulfillment_kind from product_commerce (§4). This
@@ -182,8 +199,13 @@ export async function createOrderFromCart(
 	// Coupon redemption is the GATE, before order creation (§5): redeem atomically
 	// under the SAME idempotency key so a replay never double-redeems. If order
 	// creation/adoption then fails, we synchronously release (catch-and-release).
+	//
+	// I4 — a valid coupon that computes to ZERO discount is NOT redeemed: burning a
+	// max_uses slot for zero benefit would also leave a redemption with no audit
+	// link (order_totals.applied_coupon_code stays null when discount is 0). Only a
+	// discount-bearing coupon is redeemed and stamped.
 	let redemptionId: string | null = null;
-	if (quote.couponRecord !== null) {
+	if (quote.couponRecord !== null && breakdown.discountCents > 0) {
 		const redeemed = await deps.couponStore.redeem({
 			couponId: quote.couponRecord.id,
 			orderId: freshOrderId,

@@ -219,6 +219,128 @@ describe("checkout pipeline (Phase 6): totals reflect coupon/shipping/tax", () =
 		expect((await h.couponStore.findById("cpn"))?.usesCount).toBe(0);
 	});
 
+	test("I1: replaying a single-use (maxUses=1) checkout returns the SAME order + breakdown, not COUPON_EXHAUSTED", async () => {
+		await h.seedPhysical({
+			productId: "p1",
+			sku: "SKU-1",
+			priceCents: 1000,
+			title: "Widget",
+			onHand: 10,
+		});
+		await seedRules(h);
+		await h.couponStore.create({
+			id: "cpn",
+			code: "LAST1",
+			type: "fixed_amount",
+			amountCents: cents(500),
+			rateBps: null,
+			capCents: null,
+			currency: USD,
+			minSubtotalCents: null,
+			startsAt: null,
+			expiresAt: null,
+			maxUses: 1, // the checkout consumes the coupon's LAST (only) use
+			maxUsesPerCustomer: null,
+		});
+		const cartId = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" }]);
+		const first = await createOrderFromCart(
+			h.createDeps,
+			checkoutCmd(cartId, { couponCode: "LAST1" }),
+		);
+		expect(first.ok).toBe(true);
+		if (!first.ok) return;
+		// Replay the SAME idempotency key after the coupon is now exhausted.
+		const replay = await createOrderFromCart(
+			h.createDeps,
+			checkoutCmd(cartId, { couponCode: "LAST1" }),
+		);
+		expect(replay.ok).toBe(true);
+		if (!replay.ok) return;
+		expect(replay.order.id).toBe(first.order.id);
+		expect(replay.order.totals.total).toBe(first.order.totals.total);
+		expect(replay.order.totals.discount).toBe(first.order.totals.discount);
+		// Redeemed exactly once — the replay did not decrement again nor re-validate.
+		expect((await h.couponStore.findById("cpn"))?.usesCount).toBe(1);
+	});
+
+	test("I1: a coupon that EXPIRES between the original checkout and the retry still replays the original order", async () => {
+		await h.seedPhysical({
+			productId: "p1",
+			sku: "SKU-1",
+			priceCents: 1000,
+			title: "Widget",
+			onHand: 10,
+		});
+		await seedRules(h);
+		// Expires shortly after the fixed clock's 'now' (2026-07-10T00:00:00Z).
+		await h.couponStore.create({
+			id: "cpn",
+			code: "SOON",
+			type: "fixed_amount",
+			amountCents: cents(500),
+			rateBps: null,
+			capCents: null,
+			currency: USD,
+			minSubtotalCents: null,
+			startsAt: null,
+			expiresAt: "2026-07-10T00:05:00.000Z",
+			maxUses: 100,
+			maxUsesPerCustomer: null,
+		});
+		const cartId = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" }]);
+		const first = await createOrderFromCart(
+			h.createDeps,
+			checkoutCmd(cartId, { couponCode: "SOON" }),
+		);
+		expect(first.ok).toBe(true);
+		if (!first.ok) return;
+		// Advance past the coupon's expiry, then replay the same key.
+		h.clock.advance(10 * 60 * 1000);
+		const replay = await createOrderFromCart(
+			h.createDeps,
+			checkoutCmd(cartId, { couponCode: "SOON" }),
+		);
+		expect(replay.ok).toBe(true);
+		if (!replay.ok) return;
+		expect(replay.order.id).toBe(first.order.id);
+	});
+
+	test("I4: a valid coupon computing to zero discount is NOT redeemed and leaves order_totals.appliedCouponCode null", async () => {
+		await h.seedPhysical({
+			productId: "p1",
+			sku: "SKU-1",
+			priceCents: 1000,
+			title: "Widget",
+			onHand: 10,
+		});
+		await seedRules(h);
+		await h.couponStore.create({
+			id: "cpn",
+			code: "ZERO",
+			type: "percentage",
+			amountCents: null,
+			rateBps: 0, // 0% ⇒ zero discount
+			capCents: null,
+			currency: null,
+			minSubtotalCents: null,
+			startsAt: null,
+			expiresAt: null,
+			maxUses: 5,
+			maxUsesPerCustomer: null,
+		});
+		const cartId = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" }]);
+		const res = await createOrderFromCart(
+			h.createDeps,
+			checkoutCmd(cartId, { couponCode: "ZERO" }),
+		);
+		expect(res.ok).toBe(true);
+		if (!res.ok) return;
+		expect(res.order.totals.discount).toBe(0);
+		expect(res.order.totals.appliedCouponCode).toBeNull();
+		// No max_uses slot burned for zero benefit.
+		expect((await h.couponStore.findById("cpn"))?.usesCount).toBe(0);
+	});
+
 	test("a coupon at maxUses is rejected COUPON_EXHAUSTED and no order is minted", async () => {
 		await h.seedPhysical({
 			productId: "p1",
