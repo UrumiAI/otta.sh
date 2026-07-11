@@ -1,0 +1,47 @@
+// TEMPLATE - account-specific values are placeholders. To deploy: copy this
+// file to wrangler.local.jsonc (gitignored), fill in your own Worker `name`
+// and Hyperdrive config `id` (`wrangler hyperdrive create ...`), then run
+// `wrangler deploy --config wrangler.local.jsonc`.
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "my-urumi-commerce", // PLACEHOLDER - pick your own Worker name
+	"main": "src/worker.ts",
+	// Any date >= 2024-09-23 (the pg-over-Hyperdrive floor); pinned recent.
+	"compatibility_date": "2026-07-01",
+	"compatibility_flags": ["nodejs_compat"],
+	// The origin credentials live in the Hyperdrive config platform-side;
+	// workerd injects `connectionString` on the binding at runtime — no
+	// PG_CONNECTION_STRING secret on Workers.
+	// PLACEHOLDER id - replace with your Hyperdrive config id (32 hex chars).
+	"hyperdrive": [{ "binding": "HYPERDRIVE", "id": "00000000000000000000000000000000" }],
+	// Hold expiry is lazy-on-read, so for holds the 15-min cron is a janitor
+	// bounding a dead hold's lifetime to ~2x the default TTL. Order expiry
+	// (Phase 4) is clock-driven — this cron IS its production driver on Workers,
+	// as are the Phase-5 email-outbox drain and login-challenge prune (the Node
+	// bin runs those every 30s; at 15 min an order-status email can lag up to
+	// one tick — POST /internal/dispatch-emails is the on-demand lever).
+	// The cadence stays 15 min so a serverless Postgres origin (e.g. Neon)
+	// can still autosuspend between ticks.
+	"triggers": { "crons": ["*/15 * * * *"] },
+	// Secrets (set post-merge, never committed):
+	//   wrangler secret put SERVICE_API_TOKEN        — standard; ORDER MATTERS: set
+	//     it on the deployed Worker only AFTER the CMS-side plugin threads the same
+	//     token (issue #25), else storefront cart writes 401. NOTE: the customer-
+	//     session routes (POST /auth/logout, POST/PUT/DELETE /me/addresses) carry
+	//     the CUSTOMER session token in the same Authorization header — until
+	//     issue #25 resolves that collision, setting this secret also blocks them.
+	//   wrangler secret put INTERNAL_API_TOKEN       — optional; only to enable
+	//     HTTP /internal/* + the admin/reports/settings surface (the cron path
+	//     calls the domain directly, needs none).
+	//   wrangler secret put STRIPE_WEBHOOK_SECRET    — enables the Stripe gateway +
+	//     POST /webhooks/stripe (503 until set).
+	//   wrangler secret put STRIPE_SECRET_KEY        — optional (createIntent is a
+	//     Phase-5 stub; verification only needs the webhook secret).
+	//   wrangler secret put EMAIL_API_KEY            — with vars EMAIL_API_URL /
+	//     EMAIL_FROM / STOREFRONT_BASE_URL (non-secret, may live in "vars"):
+	//     Phase-5 email transport; EMAIL_API_URL unset ⇒ ConsoleEmailSender
+	//     (emails visible in `wrangler tail`, not delivered).
+	//   x402 (review G4, FAIL-CLOSED): X402_PAYTO + X402_FACILITATOR_SECRET wire
+	//     the OFFLINE TEST facilitator and refuse to boot without the explicit
+	//     X402_ALLOW_TEST_FACILITATOR=true opt-in — never set that in production.
+}

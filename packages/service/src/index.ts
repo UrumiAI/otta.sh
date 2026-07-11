@@ -29,6 +29,7 @@ import {
 	uuidIdGen,
 } from "@urumi/store-postgres";
 import { createApp } from "./app.js";
+import { resolveServiceConfig } from "./config.js";
 import { ConsoleEmailSender, HttpEmailSender } from "./email/senders.js";
 import { wireX402Gateway } from "./x402-wiring.js";
 
@@ -98,16 +99,11 @@ if (x402Gateway !== undefined) {
 	gateways.x402 = x402Gateway;
 }
 
-// Hold TTL (§5): default 15 min, configurable via CART_HOLD_TTL_MS.
-const ttlEnv = process.env.CART_HOLD_TTL_MS;
-const ttlMs = ttlEnv === undefined ? undefined : Number(ttlEnv);
-if (ttlMs !== undefined && (!Number.isFinite(ttlMs) || ttlMs <= 0)) {
-	throw new Error(`CART_HOLD_TTL_MS must be a positive number, got "${ttlEnv}"`);
-}
-
-// Shared secret for /internal/* (INTERNAL_API_TOKEN). Unset ⇒ the internal
-// endpoints answer 503 (disabled) — never silently open.
-const internalToken = process.env.INTERNAL_API_TOKEN;
+// Env-derived config (config.ts, shared with the Worker entry): hold TTL
+// (default 15 min via CART_HOLD_TTL_MS), the /internal/* shared secret
+// (INTERNAL_API_TOKEN — unset ⇒ 503, never silently open), and the write-gate
+// secret (SERVICE_API_TOKEN — unset ⇒ open, today's behavior).
+const { ttlMs, internalToken, serviceToken } = resolveServiceConfig(process.env);
 
 const app = createApp({
 	store,
@@ -132,6 +128,7 @@ const app = createApp({
 	ttlMs,
 	checkoutTtlMs: ttlMs,
 	internalToken,
+	serviceToken,
 	...(storefrontBaseUrl !== undefined ? { storefrontBaseUrl } : {}),
 });
 const port = Number(process.env.PORT ?? 3000);

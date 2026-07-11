@@ -6,6 +6,7 @@ node_modules/
 dist/
 build/
 *.tsbuildinfo
+.wrangler/
 
 # Local dev data
 *.db
@@ -26,3 +27,6 @@ npm-debug.log*
 .idea/
 
 draft-plans/
+
+# Local deploy config (real account identifiers; the tracked wrangler.jsonc is a template)
+packages/*/wrangler.local.jsonc

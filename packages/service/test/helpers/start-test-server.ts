@@ -73,6 +73,9 @@ export interface TestServerOptions {
 	/** Shared secret for /internal/*; defaults to a per-server random token.
 	 *  Pass `null` to start the server with the internal endpoints DISABLED. */
 	internalToken?: string | null;
+	/** SERVICE_API_TOKEN write gate; default unset (gate open — existing suites
+	 *  exercise the ungated surface). */
+	serviceToken?: string;
 }
 
 /**
@@ -140,6 +143,7 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
 		gateways,
 		clock,
 		internalToken,
+		serviceToken: options.serviceToken,
 	});
 
 	const server = await new Promise<ReturnType<typeof serve>>((resolve) => {
