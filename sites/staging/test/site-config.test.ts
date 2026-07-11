@@ -18,15 +18,30 @@
  *    silently never applies and every ctx.http call fails against
  *    allowedHosts at runtime.
  */
-import { productDataWidget, URUMI_PLUGIN_CAPABILITIES, URUMI_PLUGIN_ID } from "@urumi/plugin";
+import {
+	COMMERCE_SERVICE_BASE_URL,
+	productDataWidget,
+	URUMI_PLUGIN_CAPABILITIES,
+	URUMI_PLUGIN_ID,
+} from "@urumi/plugin";
 import { describe, expect, test } from "vitest";
-import { buildEmdashOptions } from "../src/emdash-options.js";
+import { buildEmdashOptions, COMMERCE_SERVICE_URL_PLACEHOLDER } from "../src/emdash-options.js";
 import { urumiPluginDescriptor } from "../src/urumi-plugin-descriptor.js";
 
 // Pin the env BEFORE astro.config is (dynamically) imported so the config
 // module reads a deterministic service URL.
 const SERVICE_URL = "https://svc.example.com";
 process.env["COMMERCE_SERVICE_URL"] = SERVICE_URL;
+
+describe("service-URL placeholder parity", () => {
+	test("the site placeholder equals the plugin manifest's un-defined fallback", () => {
+		// In this vitest run no __URUMI_COMMERCE_SERVICE_URL__ define exists,
+		// so the plugin constant IS its placeholder — the two literals must
+		// never diverge (a build without COMMERCE_SERVICE_URL must produce a
+		// consistent allowlist + client base URL).
+		expect(COMMERCE_SERVICE_URL_PLACEHOLDER).toBe(COMMERCE_SERVICE_BASE_URL);
+	});
+});
 
 describe("urumiPluginDescriptor", () => {
 	const descriptor = urumiPluginDescriptor(SERVICE_URL);

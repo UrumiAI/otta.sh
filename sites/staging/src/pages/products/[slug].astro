@@ -21,6 +21,7 @@ import {
 	type ProductViewModel,
 } from "@urumi/plugin";
 import { getEmDashEntry } from "emdash";
+import { safeJsonLdSerialize } from "emdash/page";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Base from "../../layouts/Base.astro";
 import { toCmsProductContent, type ProductEntryData } from "../../lib/products.js";
@@ -105,7 +106,14 @@ const error = Astro.url.searchParams.get("error");
 			</>
 		)
 	}
-	{jsonLd && <script is:inline type="application/ld+json" set:html={JSON.stringify(jsonLd)} />}
+	{
+		/* safeJsonLdSerialize, NOT JSON.stringify: a CMS-authored title with
+		   "</script>" would otherwise break out of this script tag (stored
+		   XSS) — pinned by test/json-ld-xss.test.ts. */
+		jsonLd && (
+			<script is:inline type="application/ld+json" set:html={safeJsonLdSerialize(jsonLd)} />
+		)
+	}
 </Base>
 
 <style>

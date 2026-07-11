@@ -10,13 +10,28 @@
  * The URL is baked in at BUILD time (define + allowedHosts); changing it
  * means rebuild + redeploy (see README).
  */
+import { readFileSync } from "node:fs";
 import cloudflare from "@astrojs/cloudflare";
 import react from "@astrojs/react";
 import { defineConfig } from "astro/config";
 import emdash from "emdash/astro";
+import { parseDotEnv } from "./src/lib/dot-env.js";
 import { buildEmdashOptions, resolveServiceUrl } from "./src/emdash-options.js";
 
-const serviceUrl = resolveServiceUrl(process.env.COMMERCE_SERVICE_URL);
+/** Astro does NOT load .env into process.env for THIS module (verified —
+ *  see src/lib/dot-env.ts), so fall back to sites/staging/.env explicitly:
+ *  shell env wins, then .env, then the placeholder. */
+function readDotEnvServiceUrl(): string | undefined {
+	try {
+		return parseDotEnv(readFileSync(new URL(".env", import.meta.url), "utf8"))[
+			"COMMERCE_SERVICE_URL"
+		];
+	} catch {
+		return undefined; // no .env — fine
+	}
+}
+
+const serviceUrl = resolveServiceUrl(process.env.COMMERCE_SERVICE_URL ?? readDotEnvServiceUrl());
 
 export default defineConfig({
 	output: "server",
@@ -28,8 +43,12 @@ export default defineConfig({
 		responsiveStyles: true,
 	},
 	integrations: [react(), emdash(buildEmdashOptions(serviceUrl))],
-	// `security.checkOrigin` stays at its default (true) — it is the CSRF
-	// protection for the /cart/* POST endpoints. Never disable it.
+	// CSRF: Astro's `security.checkOrigin` does NOT protect the /cart/*
+	// endpoints — the emdash integration force-injects `checkOrigin: false`
+	// and its replacement layer covers only /_emdash/api/* routes. The
+	// protection is the site-owned origin guard (src/lib/origin-guard.ts,
+	// ADR-0004). We still never set checkOrigin:false ourselves (pinned by
+	// the site-config test) so nothing regresses if emdash stops overriding.
 	vite: {
 		// Bake the service URL into the @urumi/plugin bundle (manifest.ts
 		// reads this compile-time global; falls back to its placeholder).

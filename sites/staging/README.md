@@ -26,9 +26,14 @@ PG_CONNECTION_STRING=postgres://postgres:postgres@127.0.0.1:55432/urumi_test \
 COMMERCE_SERVICE_URL=http://127.0.0.1:3000 pnpm --filter @urumi/site-staging dev
 ```
 
-First request runs the CMS migrations and applies `seed/seed.json` (products collection +
-sample entries) to an empty database. `/products` renders the catalog; a stopped commerce
-service degrades to a content-only catalog with a notice — never a crash.
+First request runs the CMS migrations and applies `seed/seed.json`'s **schema, settings,
+and menus** to an empty database — sample content entries are NOT applied at first boot
+(`applySeed` defaults `includeContent: false`); they land only when the setup wizard is
+completed **with sample content included**. In `astro dev` the fastest path is the
+dev-only bypass, which applies the full seed including the 3 sample products:
+`/_emdash/api/setup/dev-bypass?redirect=/_emdash/admin`. `/products` then renders the
+catalog; a stopped commerce service degrades to a content-only catalog with a notice —
+never a crash.
 
 ## The COMMERCE_SERVICE_URL build-time contract
 
@@ -57,23 +62,29 @@ Resources (`urumi-cms` D1, `urumi-media` R2) already exist and their ids are com
    COMMERCE_SERVICE_URL=https://<service>.workers.dev pnpm --filter @urumi/site-staging build
    ```
 
-4. Deploy from `sites/staging`: `wrangler deploy`.
-5. Hit the site once — the first request runs migrations and applies the seed (one-time
-   latency is expected).
+4. Deploy from `sites/staging`: `wrangler deploy` (or `pnpm deploy` — it does NOT
+   rebuild; step 3 owns the build so the service URL is never silently the placeholder).
+5. Hit the site once — the first request runs migrations and applies the seed's
+   **schema/settings/menus** (one-time latency is expected). Sample content entries are
+   NOT applied here — an empty `/products` at this point is healthy, not a failed boot.
 6. **Deploy-then-claim, immediately:** open `https://urumi-store-staging.<subdomain>.workers.dev/_emdash/admin`
-   and complete the setup wizard **in the same session** — the first visitor to complete
-   setup becomes the admin. Do not deploy and walk away. Optional hardening if the window
-   worries you: put Cloudflare Access in front of `/_emdash/*` until setup is claimed,
-   then remove it.
-7. Smoke: `/products` renders the seeded catalog; create + publish a product in the admin
-   and watch the service log the sync upsert; price it via the Product data panel;
-   add-to-cart sets `urumi_cart` and creates a hold.
-8. `wrangler tail` — first boot should be clean (migrations + seed, no errors).
+   and complete the setup wizard **in the same session, with "include sample content"
+   enabled** (that is what applies the 3 sample products; skip it and you simply start
+   with an empty catalog) — the first visitor to complete setup becomes the admin. Do
+   not deploy and walk away. Optional hardening if the window worries you: put
+   Cloudflare Access in front of `/_emdash/*` until setup is claimed, then remove it.
+7. Smoke: `/products` renders the sample catalog (or the friendly empty state if you
+   skipped sample content); create + publish a product in the admin and watch the
+   service log the sync upsert; price it via the Product data panel; add-to-cart sets
+   `urumi_cart` and creates a hold.
+8. `wrangler tail` — first boot should be clean (migrations + schema seed, no errors).
 
 ### Failed-first-boot recovery
 
-The seed applies only to an **empty** D1 database. If the first boot fails midway (partial
-migration/seed), do not retry in place:
+Only for an **actual failed boot** — errors in `wrangler tail` (migration failures,
+partial schema seed). An empty `/products` catalog is NOT a failed boot (see step 5);
+do not reset a healthy database. The seed applies only to an **empty** D1 database, so a
+midway failure cannot be retried in place:
 
 1. `wrangler d1 delete urumi-cms` and `wrangler d1 create urumi-cms`.
 2. Update `database_id` in `wrangler.jsonc` with the new id.
@@ -90,7 +101,9 @@ delete → create → id-rewrite → redeploy dance.)
   catalog + cart. The checkout page, the x402 payment gate (designed to live at THIS
   Astro page layer), and the digital-download delivery page (the plugin route
   authorizes; the site serves the bytes / signed URL) are not built yet — a separate
-  site task.
+  site task. Note for that task: `entitlements/download` is a public existence oracle
+  (it confirms whether an orderId/buyerRef/sku combination is entitled) — the delivery
+  page must rate-limit and/or tokenize access to it rather than exposing raw probing.
 - **Cron** is `* * * * *` (EmDash scheduled publishing is minute-granular; free-plan D1
   limits unaffected). May be relaxed — see the comment in `wrangler.jsonc`.
 - **`session: "auto"`** on the D1 adapter is inert until read replication is enabled on

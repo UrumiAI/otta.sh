@@ -14,6 +14,11 @@
  * send Origin on cross-site form POSTs, including the opaque "null");
  * an ABSENT Origin is allowed — that's curl / server-to-server, which
  * carries no ambient cookie and is not a CSRF vector.
+ *
+ * FOLLOW-UP (Phase 4 storefront task): when checkout/x402/download
+ * endpoints land, promote this per-endpoint call into a site
+ * `src/middleware.ts` guarding every non-/_emdash state-changing route,
+ * so a new endpoint can't ship unguarded by omission.
  */
 import type { APIContext } from "astro";
 

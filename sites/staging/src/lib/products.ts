@@ -15,6 +15,9 @@ export interface ProductEntryData {
 	images?: { src?: string; url?: string } | null;
 }
 
+/** The id fallback for null-slug entries is valid: em-dash's live loader
+ *  resolves entries with `WHERE (c.slug = :id OR c.id = :id)` (loadEntry,
+ *  packages/core/src/loader.ts) — getEmDashEntry accepts either. */
 export function productPath(slug: string | null, id: string): string {
 	return `/products/${slug ?? id}`;
 }

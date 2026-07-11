@@ -17,7 +17,11 @@ import type { DatabaseDescriptor, PluginDescriptor, StorageDescriptor } from "em
 import { urumiPluginDescriptor } from "./urumi-plugin-descriptor.js";
 
 /** Placeholder mirrors @urumi/plugin's manifest fallback — a build without
- *  COMMERCE_SERVICE_URL produces a deployable-but-inert commerce egress. */
+ *  COMMERCE_SERVICE_URL produces a deployable-but-inert commerce egress.
+ *  Kept as a literal (importing the plugin's resolved constant would be
+ *  circularly self-fulfilling); equality with the plugin's un-defined
+ *  COMMERCE_SERVICE_BASE_URL is pinned in site-config.test.ts so the two
+ *  can never diverge silently. */
 export const COMMERCE_SERVICE_URL_PLACEHOLDER = "https://commerce.urumi.internal";
 
 /** Resolve + validate the build-time service URL (throws early on garbage

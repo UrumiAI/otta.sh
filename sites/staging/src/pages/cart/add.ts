@@ -39,12 +39,19 @@ export const POST: APIRoute = async (context) => {
 
 	const form = await context.request.formData();
 	const sku = formString(form.get("sku"));
-	const qty = formPositiveInt(form.get("qty")) ?? 1;
 	const idempotencyKey = formString(form.get("idempotencyKey"));
 	const returnTo = safeReturnPath(form.get("returnTo"), "/products");
 
-	if (sku === undefined || idempotencyKey === undefined) {
-		return new Response("Bad request: sku and idempotencyKey are required", { status: 400 });
+	// Absent/blank qty defaults to 1; a PRESENT-but-invalid qty ("abc",
+	// "-3", "2.5") is a 400, matching /cart/update — never silently 1.
+	const rawQty = form.get("qty");
+	const qty = formString(rawQty) === undefined ? 1 : formPositiveInt(rawQty);
+
+	if (sku === undefined || idempotencyKey === undefined || qty === undefined) {
+		return new Response(
+			"Bad request: sku and idempotencyKey are required; qty must be a positive integer",
+			{ status: 400 },
+		);
 	}
 
 	const handler = routeDispatcher(context);
