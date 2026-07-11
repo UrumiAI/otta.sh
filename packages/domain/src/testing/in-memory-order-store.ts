@@ -167,6 +167,10 @@ export class InMemoryOrderStore implements OrderStore {
 	// -- Phase 5: state machine + outbox --------------------------------------
 
 	async transition(input: OrderTransitionInput): Promise<OrderTransitionResult> {
+		// input.idempotencyKey is intentionally unused here too (review round H4)
+		// — mirrors the Kysely adapter: dedup is structural (guarded flip +
+		// outbox uniqueness), the field exists for CLAUDE.md command-shape
+		// consistency, not because the fake keys off it.
 		const transitioned = this.#guardedFlip(
 			input.orderId,
 			input.fromState,

@@ -101,6 +101,11 @@ export interface OrderTransitionInput {
 	orderId: OrderId;
 	fromState: OrderState;
 	toState: OrderState;
+	/** Every command carries one (CLAUDE.md). NOT the dedup mechanism here — a
+	 *  replay is already a structural no-op via the guarded `WHERE
+	 *  state=:fromState` flip plus the outbox `UNIQUE(order_id, to_state)`
+	 *  (review round H4). Adapters accept but do not key off this field; it's
+	 *  retained for command-shape consistency across the domain. */
 	idempotencyKey: IdempotencyKey;
 	/** Enqueue an outbox row for `toState` in the same transaction. False for a
 	 *  state with no template (`failed`) so no undeliverable row is ever written. */

@@ -198,6 +198,12 @@ export class KyselyOrderStore implements OrderStore {
 	// -- Phase 5: state machine + email outbox --------------------------------
 
 	async transition(input: OrderTransitionInput): Promise<OrderTransitionResult> {
+		// input.idempotencyKey is intentionally unused: dedup here is structural —
+		// the guarded `WHERE state=:fromState` flip plus the outbox
+		// `UNIQUE(order_id, to_state)` already make a replay a no-op (review round
+		// H4). The field is kept on the port for CLAUDE.md command-shape
+		// consistency ("every command carries one"), not because this adapter
+		// keys off it.
 		const transitioned = await this.#guardedTransition({
 			orderId: input.orderId,
 			fromState: input.fromState,

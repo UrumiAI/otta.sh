@@ -18,7 +18,10 @@ export interface TransitionOrderDeps {
 export interface TransitionOrderCommand {
 	orderId: OrderId;
 	toState: OrderState;
-	/** Every command carries one (CLAUDE.md); dedupes the outbox enqueue. */
+	/** Every command carries one (CLAUDE.md). NOT the dedup mechanism (review
+	 *  round H4): the outbox enqueue is already deduped structurally by the
+	 *  store's guarded flip + `UNIQUE(order_id, to_state)`, independent of this
+	 *  key. Forwarded to `OrderStore.transition` for command-shape consistency. */
 	idempotencyKey: IdempotencyKey;
 }
 
