@@ -14,8 +14,10 @@ async function json(res: Response): Promise<Record<string, unknown>> {
 
 describe.skipIf(PG === undefined)("reports HTTP contract", () => {
 	let server: TestServer;
+	let token: string;
 	beforeEach(async () => {
 		server = await startTestServer();
+		token = server.internalToken as string;
 		await server.seedReportingFixture();
 	});
 	afterEach(async () => {
@@ -23,7 +25,7 @@ describe.skipIf(PG === undefined)("reports HTTP contract", () => {
 	});
 
 	function get(path: string): Promise<Response> {
-		return fetch(`${server.baseUrl}/reports${path}`);
+		return fetch(`${server.baseUrl}/reports${path}`, { headers: { "X-Internal-Token": token } });
 	}
 
 	test("GET /reports/revenue returns per-day buckets grouped by currency, integer cents", async () => {
@@ -105,5 +107,20 @@ describe.skipIf(PG === undefined)("reports HTTP contract", () => {
 	test("GET /reports/revenue with a malformed date returns 400", async () => {
 		const res = await get(`/revenue?from=not-a-date&to=${TO}`);
 		expect(res.status).toBe(400);
+	});
+
+	test("SECURITY: /reports/* without the internal token is rejected (merchant data is not public)", async () => {
+		// No token header — every report endpoint must refuse (401), not leak data.
+		for (const path of [
+			`/revenue?from=${FROM}&to=${TO}`,
+			`/orders-by-status?from=${FROM}&to=${TO}`,
+			`/top-products?from=${FROM}&to=${TO}`,
+			"/low-stock",
+		]) {
+			const res = await fetch(`${server.baseUrl}/reports${path}`);
+			expect(res.status).toBe(401);
+		}
+		// With the token, the same read succeeds.
+		expect((await get(`/revenue?from=${FROM}&to=${TO}`)).status).toBe(200);
 	});
 });

@@ -23,6 +23,9 @@ export interface ReportsPageInput {
 	from?: unknown;
 	to?: unknown;
 	interval?: unknown;
+	/** Admin token forwarded to the guarded /reports/* reads (review J5). Arrives
+	 *  as transient route input (cookie-blind bearer-as-input); never persisted. */
+	adminToken?: unknown;
 }
 
 function resolveRange(input: ReportsPageInput): { from: string; to: string } {
@@ -51,9 +54,12 @@ export function createReportsPageHandler(): RouteHandler<ReportsPageInput> {
 		// Cosmetic label from ctx.kv (never the service) — the display-only tier.
 		const displayName = (await ctx.kv.get<string>("settings:storeDisplayName")) ?? "Store";
 
+		const adminToken =
+			typeof routeCtx.input.adminToken === "string" ? routeCtx.input.adminToken : undefined;
 		const client = new ReportingSettingsClient({
 			fetch: ctx.http.fetch,
 			baseUrl: COMMERCE_SERVICE_BASE_URL,
+			...(adminToken !== undefined ? { adminToken } : {}),
 		});
 		try {
 			const [revenue, statuses, top, low] = await Promise.all([

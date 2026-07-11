@@ -127,11 +127,17 @@ export function createApp(deps: AppDeps): Hono {
 			...(deps.internalToken !== undefined ? { internalToken: deps.internalToken } : {}),
 		}),
 	);
-	// Phase 7 (§6): read-only reports + operational settings. Reports GET is open
-	// (like catalog reads); PUT /settings is a privileged admin write.
+	// Phase 7 (§6): read-only reports + operational settings. BOTH are admin
+	// surface — /reports/* reads expose merchant financial/operational data and
+	// PUT /settings is a privileged write, so both require the internal token
+	// (review J5).
 	app.route(
 		"/reports",
-		reportsRoutes({ reportingStore: deps.reportingStore, settingsStore: deps.settingsStore }),
+		reportsRoutes({
+			reportingStore: deps.reportingStore,
+			settingsStore: deps.settingsStore,
+			...(deps.internalToken !== undefined ? { internalToken: deps.internalToken } : {}),
+		}),
 	);
 	app.route(
 		"/settings",

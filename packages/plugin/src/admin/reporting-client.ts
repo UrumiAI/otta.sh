@@ -54,15 +54,20 @@ export interface HttpErrorEnvelope {
 export interface ReportingSettingsClientOptions {
 	fetch: HttpAccess["fetch"];
 	baseUrl: string;
+	/** Admin token forwarded as `X-Internal-Token` on the guarded `/reports/*`
+	 *  reads (review J5). Transient route input — never persisted to ctx.kv. */
+	adminToken?: string;
 }
 
 export class ReportingSettingsClient {
 	readonly #fetch: HttpAccess["fetch"];
 	readonly #baseUrl: string;
+	readonly #adminToken: string | undefined;
 
 	constructor(options: ReportingSettingsClientOptions) {
 		this.#fetch = options.fetch;
 		this.#baseUrl = options.baseUrl.replace(/\/$/, "");
+		this.#adminToken = options.adminToken;
 	}
 
 	async getRevenue(
@@ -143,7 +148,9 @@ export class ReportingSettingsClient {
 	}
 
 	async #getJson<T>(path: string): Promise<T> {
-		const res = await this.#fetch(`${this.#baseUrl}${path}`, { method: "GET" });
+		const headers: Record<string, string> =
+			this.#adminToken === undefined ? {} : { "X-Internal-Token": this.#adminToken };
+		const res = await this.#fetch(`${this.#baseUrl}${path}`, { method: "GET", headers });
 		if (!res.ok) {
 			throw new Error(`GET ${path} failed (HTTP ${res.status})`);
 		}

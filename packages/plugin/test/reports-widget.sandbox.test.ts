@@ -61,7 +61,10 @@ describe("Reports admin page (workerd sandbox)", () => {
 			commerceServiceBaseUrl: stub.baseUrl,
 		});
 
-		const outcome = await sandbox.invokeRoute("admin/reports", RANGE);
+		const outcome = await sandbox.invokeRoute("admin/reports", {
+			...RANGE,
+			adminToken: "admin-token-xyz",
+		});
 		expect("result" in outcome).toBe(true);
 		if (!("result" in outcome)) return;
 		const blocks = (outcome.result as { blocks: Array<Record<string, unknown>> }).blocks;
@@ -87,6 +90,11 @@ describe("Reports admin page (workerd sandbox)", () => {
 				"/reports/low-stock",
 			]),
 		);
+		// The admin token was forwarded as X-Internal-Token on every guarded read
+		// (review J5) — the reports surface is admin-authenticated.
+		for (const req of stub.requests) {
+			expect(req.headers["x-internal-token"]).toBe("admin-token-xyz");
+		}
 	});
 
 	test("Reports page fails closed with an error block when ctx.http rejects, never throws", async () => {

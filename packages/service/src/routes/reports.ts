@@ -16,10 +16,16 @@ import {
 	reportRevenueQuery,
 	topProductsQuery,
 } from "../schemas.js";
+import { requireInternalToken } from "./internal-auth.js";
 
 export interface ReportsDeps {
 	reportingStore: ReportingStore;
 	settingsStore: SettingsStore;
+	/** Admin read guard — reports expose merchant financial/operational data
+	 *  (revenue, order counts, inventory levels), NOT public storefront data, so
+	 *  every /reports/* read requires the internal token like other admin surface
+	 *  (review J5). Unset ⇒ 503 (disabled), never silently open. */
+	internalToken?: string;
 }
 
 /**
@@ -28,9 +34,18 @@ export interface ReportsDeps {
  * floats on the wire. The three date-ranged endpoints reject a `from`/`to` window
  * wider than 400 days with a `400` + structured error (the domain use-case throws
  * `ReportRangeTooWideError`; a plugin-side date-picker cap is only a UX nicety).
+ * Every endpoint is admin-guarded by the internal token (review J5) — this is
+ * merchant-sensitive data, not public catalog data.
  */
 export function reportsRoutes(deps: ReportsDeps): Hono {
 	const app = new Hono();
+
+	// Admin guard on EVERY /reports/* read (merchant financial/operational data).
+	app.use("/*", async (c, next) => {
+		const denied = requireInternalToken(c, deps.internalToken);
+		if (denied !== null) return denied;
+		await next();
+	});
 
 	app.get("/revenue", async (c) => {
 		const parsed = reportRevenueQuery.safeParse({
