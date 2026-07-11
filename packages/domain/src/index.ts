@@ -1,5 +1,71 @@
 // Public barrel of @urumi/domain — ports, use-cases, and branded types.
 export { cents, currency, money, type Cents, type Currency, type Money } from "./money/cents.js";
+// Phase 6 pricing engines (pure, IO-free): the totals pipeline + its components.
+export { divRoundHalfUp } from "./pricing/round.js";
+export { allocateCents } from "./pricing/allocate.js";
+export { computeLineTax } from "./pricing/tax.js";
+export { computeCouponDiscount } from "./pricing/coupon.js";
+export { resolveShippingRate } from "./pricing/shipping.js";
+export { computeTotals } from "./pricing/compute-totals.js";
+export { CouponCurrencyMismatchError } from "./pricing/errors.js";
+export {
+	validateCoupon,
+	type CouponValidationContext,
+	type CouponValidationFailure,
+	type ValidateCouponResult,
+} from "./pricing/validate-coupon.js";
+export {
+	computeQuote,
+	sumLineSubtotals,
+	type QuoteCommand,
+	type QuoteDeps,
+	type QuoteFailure,
+	type QuoteResult,
+} from "./pricing/quote.js";
+export {
+	DEFAULT_COUPON_GRACE_MS,
+	reconcileCouponRedemptions,
+	type ReconcileCouponsDeps,
+	type ReconcileCouponsOptions,
+} from "./pricing/reconcile-coupons.js";
+export type {
+	Coupon,
+	CouponType,
+	FixedAmountCoupon,
+	PercentageCoupon,
+	RulesSnapshot,
+	ShippingMethodSnapshot,
+	ShippingMethodType,
+	TaxClassId,
+	TotalsBreakdown,
+	TotalsInput,
+	TotalsLineBreakdown,
+	TotalsLineInput,
+} from "./pricing/types.js";
+export type {
+	CreateShippingMethodInput,
+	CreateShippingRateInput,
+	CreateShippingZoneInput,
+	ShippingMethod,
+	ShippingRate,
+	ShippingRulesStore,
+	ShippingZone,
+} from "./ports/shipping-rules-store.js";
+export type {
+	CreateTaxClassInput,
+	CreateTaxRateInput,
+	TaxClass,
+	TaxRate,
+	TaxRulesStore,
+} from "./ports/tax-rules-store.js";
+export type {
+	CouponRecord,
+	CouponRedemption,
+	CouponStore,
+	CreateCouponInput,
+	RedeemCouponInput,
+	RedeemResult,
+} from "./ports/coupon-store.js";
 export {
 	customerId,
 	email,
@@ -29,6 +95,7 @@ export type {
 	CreateOrderInput,
 	CreateOrderLineInput,
 	CreateOrderResult,
+	CreateOrderTotalsInput,
 	OrderStore,
 	OrderState,
 	OrderTransitionInput,

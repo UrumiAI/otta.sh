@@ -1,10 +1,14 @@
 import type { Clock } from "../ports/clock.js";
+import type { CouponStore } from "../ports/coupon-store.js";
 import type { InventoryStore } from "../ports/inventory-store.js";
 import type { OrderStore } from "../ports/order-store.js";
 
 export interface ExpireOrdersDeps {
 	orderStore: OrderStore;
 	inventoryStore: InventoryStore;
+	/** Phase 6 (review I2): release the expired order's coupon, symmetric with
+	 *  the inventory-hold release below. */
+	couponStore: CouponStore;
 	clock: Clock;
 }
 
@@ -36,6 +40,9 @@ export async function expireOrders(deps: ExpireOrdersDeps, at?: Date): Promise<n
 				await deps.inventoryStore.releaseAdopted(line.reservationId, order.id);
 			}
 		}
+		// Review I2: free the coupon too — symmetric with the inventory release.
+		// Order-scoped + idempotent (a double-sweep releases exactly once).
+		await deps.couponStore.releaseByOrder(order.id);
 	}
 	return expired;
 }

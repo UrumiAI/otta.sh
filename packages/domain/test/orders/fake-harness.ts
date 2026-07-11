@@ -18,11 +18,14 @@ import {
 	FakePaymentGateway,
 	FixedClock,
 	InMemoryCartStore,
+	InMemoryCouponStore,
 	InMemoryEntitlementStore,
 	InMemoryInventoryStore,
 	InMemoryOrderStore,
 	InMemoryPaymentEventStore,
 	InMemoryProductCommerceStore,
+	InMemoryShippingRulesStore,
+	InMemoryTaxRulesStore,
 } from "@urumi/domain/testing";
 
 export const USD = currency("USD");
@@ -35,6 +38,9 @@ export interface OrderHarness {
 	orderStore: InMemoryOrderStore;
 	entitlementStore: InMemoryEntitlementStore;
 	paymentEventStore: InMemoryPaymentEventStore;
+	shippingRules: InMemoryShippingRulesStore;
+	taxRules: InMemoryTaxRulesStore;
+	couponStore: InMemoryCouponStore;
 	stripeGw: FakePaymentGateway;
 	x402Gw: FakePaymentGateway;
 	createDeps: CreateOrderDeps;
@@ -82,6 +88,9 @@ export function makeOrderHarness(): OrderHarness {
 	const orderStore = new InMemoryOrderStore({ idGen: new CountingIdGen("oi"), clock });
 	const entitlementStore = new InMemoryEntitlementStore({ idGen: new CountingIdGen("ent"), clock });
 	const paymentEventStore = new InMemoryPaymentEventStore();
+	const shippingRules = new InMemoryShippingRulesStore();
+	const taxRules = new InMemoryTaxRulesStore();
+	const couponStore = new InMemoryCouponStore({ idGen: new CountingIdGen("red") });
 	const stripeGw = new FakePaymentGateway({ id: "stripe" });
 	const x402Gw = new FakePaymentGateway({ id: "x402" });
 
@@ -91,6 +100,9 @@ export function makeOrderHarness(): OrderHarness {
 		cartStore,
 		inventoryStore: inventory,
 		productCommerce,
+		shippingRules,
+		taxRules,
+		couponStore,
 		clock,
 		idGen: new CountingIdGen("order"),
 		gateways: { stripe: stripeGw, x402: x402Gw },
@@ -100,9 +112,15 @@ export function makeOrderHarness(): OrderHarness {
 		entitlementStore,
 		paymentEventStore,
 		inventoryStore: inventory,
+		couponStore,
 		clock,
 	};
-	const expireDeps: ExpireOrdersDeps = { orderStore, inventoryStore: inventory, clock };
+	const expireDeps: ExpireOrdersDeps = {
+		orderStore,
+		inventoryStore: inventory,
+		couponStore,
+		clock,
+	};
 
 	return {
 		clock,
@@ -112,6 +130,9 @@ export function makeOrderHarness(): OrderHarness {
 		orderStore,
 		entitlementStore,
 		paymentEventStore,
+		shippingRules,
+		taxRules,
+		couponStore,
 		stripeGw,
 		x402Gw,
 		createDeps,

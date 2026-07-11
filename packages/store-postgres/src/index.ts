@@ -35,9 +35,19 @@ export {
 	DEFAULT_MAX_ACTIVE_CHALLENGES,
 	type KyselyCredentialVerifierOptions,
 } from "./kysely-credential-verifier.js";
+export { KyselyShippingRulesStore } from "./kysely-shipping-rules-store.js";
+export { KyselyTaxRulesStore } from "./kysely-tax-rules-store.js";
+export { KyselyCouponStore, type KyselyCouponStoreOptions } from "./kysely-coupon-store.js";
 export { migrateToLatest, migrationProvider } from "./migrations/index.js";
 export type {
 	AddressesTable,
+	CouponRedemptionsTable,
+	CouponsTable,
+	ShippingMethodsTable,
+	ShippingRatesTable,
+	ShippingZonesTable,
+	TaxClassesTable,
+	TaxRatesTable,
 	CartLinesTable,
 	CartMutationKind,
 	CartMutationsTable,

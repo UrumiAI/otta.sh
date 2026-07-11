@@ -293,6 +293,72 @@ export interface OrderEmailsOutboxTable {
 	created_at: string;
 }
 
+// -- Phase 6 (§5): shipping / tax / coupons -----------------------------------
+
+/** Country/state/postal match list is opaque JSON-as-text config. */
+export interface ShippingZonesTable {
+	id: string;
+	name: string;
+	regions: string | null;
+}
+
+export interface ShippingMethodsTable {
+	id: string;
+	zone_id: string;
+	name: string;
+	/** 'flat_rate' | 'free_shipping'. */
+	type: string;
+}
+
+export interface ShippingRatesTable {
+	method_id: string;
+	currency: string;
+	amount_cents: number;
+	/** Free-shipping threshold; null = none. */
+	min_subtotal_cents: number | null;
+}
+
+export interface TaxClassesTable {
+	id: string;
+	name: string;
+}
+
+export interface TaxRatesTable {
+	id: string;
+	tax_class_id: string;
+	zone_id: string;
+	rate_bps: number;
+	/** Portable 0/1 (not SQL boolean — better-sqlite3 cannot bind a JS boolean). */
+	applies_to_shipping: number;
+}
+
+export interface CouponsTable {
+	id: string;
+	code: string;
+	type: string;
+	amount_cents: number | null;
+	rate_bps: number | null;
+	cap_cents: number | null;
+	currency: string | null;
+	min_subtotal_cents: number | null;
+	starts_at: string | null;
+	expires_at: string | null;
+	max_uses: number | null;
+	max_uses_per_customer: number | null;
+	uses_count: number;
+}
+
+/** One row per redemption; `UNIQUE(coupon_id, idempotency_key)` makes a replay of
+ *  the same checkout a no-op re-read (mirrors `reservations.idempotency_key`). */
+export interface CouponRedemptionsTable {
+	id: string;
+	coupon_id: string;
+	order_id: string;
+	customer_id: string | null;
+	idempotency_key: string;
+	created_at: string;
+}
+
 export interface Database {
 	inventory: InventoryTable;
 	reservations: ReservationsTable;
@@ -312,4 +378,12 @@ export interface Database {
 	login_challenges: LoginChallengesTable;
 	addresses: AddressesTable;
 	order_emails_outbox: OrderEmailsOutboxTable;
+	// Phase 6:
+	shipping_zones: ShippingZonesTable;
+	shipping_methods: ShippingMethodsTable;
+	shipping_rates: ShippingRatesTable;
+	tax_classes: TaxClassesTable;
+	tax_rates: TaxRatesTable;
+	coupons: CouponsTable;
+	coupon_redemptions: CouponRedemptionsTable;
 }

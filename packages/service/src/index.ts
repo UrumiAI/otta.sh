@@ -10,6 +10,7 @@ import { StripePaymentGateway } from "@urumi/payments-stripe";
 import {
 	KyselyAddressStore,
 	KyselyCartStore,
+	KyselyCouponStore,
 	KyselyCredentialVerifier,
 	KyselyCustomerStore,
 	KyselyEntitlementStore,
@@ -18,6 +19,8 @@ import {
 	KyselyPaymentEventStore,
 	KyselyProductCommerceStore,
 	KyselySessionStore,
+	KyselyShippingRulesStore,
+	KyselyTaxRulesStore,
 	makePostgresDb,
 	makePostgresPool,
 	migrateToLatest,
@@ -44,6 +47,10 @@ const cartStore = new KyselyCartStore({ db, idGen: uuidIdGen, clock });
 const orderStore = new KyselyOrderStore({ db, idGen: uuidIdGen, clock });
 const entitlementStore = new KyselyEntitlementStore({ db, idGen: uuidIdGen, clock });
 const paymentEventStore = new KyselyPaymentEventStore({ db, idGen: uuidIdGen });
+// Phase 6 (§6): shipping / tax / coupon rules stores.
+const shippingRules = new KyselyShippingRulesStore({ db });
+const taxRules = new KyselyTaxRulesStore({ db });
+const couponStore = new KyselyCouponStore({ db, idGen: uuidIdGen });
 
 // Phase 5 (§4/§7): storefront customer identity, address book, sessions, magic-
 // link verifier, and the email transport (the service sends directly — §6 ADR).
@@ -104,6 +111,9 @@ const app = createApp({
 	orderStore,
 	entitlementStore,
 	paymentEventStore,
+	shippingRules,
+	taxRules,
+	couponStore,
 	customerStore,
 	addressStore,
 	sessionStore,

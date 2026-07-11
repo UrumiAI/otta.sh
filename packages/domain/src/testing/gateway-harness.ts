@@ -10,6 +10,7 @@ import type { OrderId, ReservationId, Sku } from "../money/ids.js";
 import type { PaymentGateway, RawConfirmation } from "../ports/payment-gateway.js";
 import type { SettleDeps } from "../orders/settle-order.js";
 import { CountingIdGen, FixedClock } from "./deterministic.js";
+import { InMemoryCouponStore } from "./in-memory-coupon-store.js";
 import { InMemoryEntitlementStore } from "./in-memory-entitlement-store.js";
 import { InMemoryInventoryStore } from "./in-memory-inventory-store.js";
 import { InMemoryOrderStore } from "./in-memory-order-store.js";
@@ -69,11 +70,13 @@ export function buildGatewayHarness(config: GatewayHarnessConfig): PaymentGatewa
 	const orderStore = new InMemoryOrderStore({ idGen: new CountingIdGen("oi"), clock });
 	const entitlementStore = new InMemoryEntitlementStore({ idGen: new CountingIdGen("ent"), clock });
 	const paymentEventStore = new InMemoryPaymentEventStore();
+	const couponStore = new InMemoryCouponStore({ idGen: new CountingIdGen("red") });
 	const settleDeps: SettleDeps = {
 		orderStore,
 		entitlementStore,
 		paymentEventStore,
 		inventoryStore: inventory,
+		couponStore,
 		clock,
 	};
 

@@ -99,13 +99,16 @@ export class KyselyOrderStore implements OrderStore {
 					order_id: input.orderId,
 					currency: input.totals.currency,
 					subtotal_cents: input.totals.subtotal,
-					discount_cents: 0,
-					shipping_cents: 0,
-					tax_cents: 0,
+					// Phase 6: the full computed breakdown. Phase-4/5 callers pass none
+					// of these ⇒ 0 / null, reproducing the stub byte-for-byte.
+					discount_cents: input.totals.discount ?? 0,
+					shipping_cents: input.totals.shipping ?? 0,
+					tax_cents: input.totals.tax ?? 0,
 					total_cents: input.totals.total,
-					applied_coupon_code: null,
-					shipping_method_snapshot: null,
-					tax_breakdown: null,
+					applied_coupon_code: input.totals.appliedCouponCode ?? null,
+					// jsonb-as-text: stored as a JSON string (null stays null).
+					shipping_method_snapshot: jsonOrNull(input.totals.shippingMethodSnapshot),
+					tax_breakdown: jsonOrNull(input.totals.taxBreakdown),
 				})
 				.execute();
 			return true;
@@ -435,6 +438,21 @@ export class KyselyOrderStore implements OrderStore {
 	}
 }
 
+/** Serialize a jsonb-as-text column value (null passes through). */
+function jsonOrNull(value: unknown | null | undefined): string | null {
+	return value === null || value === undefined ? null : JSON.stringify(value);
+}
+
+/** Parse a jsonb-as-text column back to data (null/invalid passes through as null). */
+function parseJsonOrNull(value: string | null): unknown | null {
+	if (value === null) return null;
+	try {
+		return JSON.parse(value);
+	} catch {
+		return value; // tolerate a legacy/plain-string value
+	}
+}
+
 function toOrder(
 	order: Selectable<OrdersTable>,
 	items: Selectable<OrderItemsTable>[],
@@ -462,8 +480,8 @@ function toOrder(
 		tax: cents(totals.tax_cents),
 		total: cents(totals.total_cents),
 		appliedCouponCode: totals.applied_coupon_code,
-		shippingMethodSnapshot: totals.shipping_method_snapshot,
-		taxBreakdown: totals.tax_breakdown,
+		shippingMethodSnapshot: parseJsonOrNull(totals.shipping_method_snapshot),
+		taxBreakdown: parseJsonOrNull(totals.tax_breakdown),
 	};
 	return {
 		id: oid,

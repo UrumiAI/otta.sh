@@ -5,6 +5,7 @@ import { createApp } from "@urumi/service/app";
 import {
 	KyselyAddressStore,
 	KyselyCartStore,
+	KyselyCouponStore,
 	KyselyCredentialVerifier,
 	KyselyCustomerStore,
 	KyselyEntitlementStore,
@@ -13,6 +14,8 @@ import {
 	KyselyPaymentEventStore,
 	KyselyProductCommerceStore,
 	KyselySessionStore,
+	KyselyShippingRulesStore,
+	KyselyTaxRulesStore,
 	uuidIdGen,
 } from "@urumi/store-postgres";
 import { createIsolatedPgSchema } from "@urumi/store-postgres/testing";
@@ -68,6 +71,9 @@ export async function startLiveService(): Promise<LiveService> {
 		orderStore,
 		entitlementStore,
 		paymentEventStore,
+		shippingRules: new KyselyShippingRulesStore({ db }),
+		taxRules: new KyselyTaxRulesStore({ db }),
+		couponStore: new KyselyCouponStore({ db, idGen: uuidIdGen }),
 		customerStore,
 		addressStore,
 		sessionStore,

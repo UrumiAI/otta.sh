@@ -19,11 +19,14 @@ import type { Kysely } from "kysely";
 import { afterEach, describe, expect, test } from "vitest";
 import {
 	KyselyCartStore,
+	KyselyCouponStore,
 	KyselyEntitlementStore,
 	KyselyInventoryStore,
 	KyselyOrderStore,
 	KyselyPaymentEventStore,
 	KyselyProductCommerceStore,
+	KyselyShippingRulesStore,
+	KyselyTaxRulesStore,
 	uuidIdGen,
 } from "../src/index.js";
 import type { Database } from "../src/schema.js";
@@ -77,6 +80,9 @@ async function freshFixture(poolMax: number): Promise<Fixture> {
 			cartStore,
 			inventoryStore: inventory,
 			productCommerce,
+			shippingRules: new KyselyShippingRulesStore({ db }),
+			taxRules: new KyselyTaxRulesStore({ db }),
+			couponStore: new KyselyCouponStore({ db, idGen: uuidIdGen }),
 			clock,
 			idGen: uuidIdGen,
 			gateways: { stripe: gateway },
@@ -86,6 +92,7 @@ async function freshFixture(poolMax: number): Promise<Fixture> {
 			entitlementStore,
 			paymentEventStore,
 			inventoryStore: inventory,
+			couponStore: new KyselyCouponStore({ db, idGen: uuidIdGen }),
 			clock,
 		},
 		gateway,

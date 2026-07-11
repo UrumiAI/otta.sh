@@ -57,9 +57,77 @@ export const checkoutBody = z.object({
 	paymentMethod: z.enum(["stripe", "x402"]),
 	// Email/session claim token — the pre-Phase-5 entitlement key (§6).
 	buyerRef: z.string().min(1).max(320),
+	// Phase 6: optional shipping selection + coupon (absent ⇒ zero shipping/tax).
+	shippingZoneId: idParam.optional(),
+	shippingMethodId: idParam.optional(),
+	couponCode: z.string().min(1).max(200).optional(),
 });
 
 export const orderPathParams = z.object({ orderId: idParam });
+
+// Phase 6 (§6): read-only totals preview — no coupon redemption, safe to repeat.
+export const quoteBody = z.object({
+	cartId: idParam,
+	shippingZoneId: idParam.optional(),
+	shippingMethodId: idParam.optional(),
+	couponCode: z.string().min(1).max(200).optional(),
+});
+
+// Phase 6 admin CRUD bodies (mirror the store ports 1:1). Money = integer minor
+// units; rates = integer basis points; never a float.
+export const shippingZoneBody = z.object({
+	id: idParam,
+	name: z.string().min(1).max(200),
+	regions: z.unknown().optional(),
+});
+
+export const shippingMethodBody = z.object({
+	id: idParam,
+	name: z.string().min(1).max(200),
+	type: z.enum(["flat_rate", "free_shipping"]),
+});
+
+export const shippingRateBody = z.object({
+	currency: z.string().regex(/^[A-Z]{3}$/),
+	amountCents: z.number().int().nonnegative(),
+	minSubtotalCents: z.number().int().nonnegative().nullable().optional(),
+});
+
+export const taxClassBody = z.object({
+	id: idParam,
+	name: z.string().min(1).max(200),
+});
+
+export const taxRateBody = z.object({
+	id: idParam,
+	taxClassId: idParam,
+	zoneId: idParam,
+	rateBps: z.number().int().min(0).max(100_000),
+	appliesToShipping: z.boolean().optional(),
+});
+
+export const couponBody = z.object({
+	id: idParam,
+	code: z.string().min(1).max(200),
+	type: z.enum(["fixed_amount", "percentage"]),
+	amountCents: z.number().int().nonnegative().nullable().optional(),
+	rateBps: z.number().int().min(0).max(100_000).nullable().optional(),
+	capCents: z.number().int().nonnegative().nullable().optional(),
+	currency: z
+		.string()
+		.regex(/^[A-Z]{3}$/)
+		.nullable()
+		.optional(),
+	minSubtotalCents: z.number().int().nonnegative().nullable().optional(),
+	startsAt: z.string().min(1).max(64).nullable().optional(),
+	expiresAt: z.string().min(1).max(64).nullable().optional(),
+	maxUses: z.number().int().nonnegative().nullable().optional(),
+	maxUsesPerCustomer: z.number().int().nonnegative().nullable().optional(),
+});
+
+export const zonePathParams = z.object({ zoneId: idParam });
+export const methodPathParams = z.object({ methodId: idParam });
+export const couponCodePathParams = z.object({ code: z.string().min(1).max(200) });
 
 // The x402 facilitator SettleResponse proof forwarded by the page layer (§6).
 // Money on the wire is an integer minor unit + an ISO-4217 string (never a float).

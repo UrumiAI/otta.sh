@@ -151,8 +151,26 @@ export interface CreateOrderInput {
 	buyerRef: string;
 	paymentMethod: PaymentMethod | null;
 	lines: CreateOrderLineInput[];
-	/** The `order_totals` stub (§4): subtotal = total = Σ(unitPrice × quantity). */
-	totals: { subtotal: Cents; total: Cents; currency: Currency };
+	/**
+	 * The `order_totals` write. Phase 4 passed only `{ subtotal, total, currency }`
+	 * (the stub); Phase 6 passes the full computed breakdown. The extra fields are
+	 * additive + optional so Phase-4/5 callers are byte-for-byte: `discount`,
+	 * `shipping`, `tax` default `0` and the snapshot columns default `null`,
+	 * reproducing the stub. Written ONCE at creation, never rewritten (§6).
+	 */
+	totals: CreateOrderTotalsInput;
+}
+
+export interface CreateOrderTotalsInput {
+	subtotal: Cents;
+	total: Cents;
+	currency: Currency;
+	discount?: Cents;
+	shipping?: Cents;
+	tax?: Cents;
+	appliedCouponCode?: string | null;
+	shippingMethodSnapshot?: unknown | null;
+	taxBreakdown?: unknown | null;
 }
 
 export type CreateOrderResult = { created: boolean; order: Order };

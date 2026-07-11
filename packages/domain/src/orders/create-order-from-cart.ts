@@ -1,5 +1,7 @@
-import { cents } from "../money/cents.js";
-import type { IdempotencyKey } from "../money/ids.js";
+import type { Currency } from "../money/cents.js";
+import type { CustomerId, IdempotencyKey, OrderId } from "../money/ids.js";
+import type { CouponRecord } from "../ports/coupon-store.js";
+import type { TotalsBreakdown } from "../pricing/types.js";
 import {
 	orderId as brandOrderId,
 	productId as brandProductId,
@@ -8,6 +10,7 @@ import {
 } from "../money/ids.js";
 import type { CartStore } from "../ports/cart-store.js";
 import type { Clock } from "../ports/clock.js";
+import type { CouponStore } from "../ports/coupon-store.js";
 import type { IdGen } from "../ports/id-gen.js";
 import type { InventoryStore } from "../ports/inventory-store.js";
 import type { CreateOrderLineInput, OrderStore } from "../ports/order-store.js";
@@ -17,6 +20,10 @@ import type {
 	PaymentIntentHandle,
 } from "../ports/payment-gateway.js";
 import type { ProductCommerceStore } from "../ports/product-commerce-store.js";
+import type { ShippingRulesStore } from "../ports/shipping-rules-store.js";
+import type { TaxRulesStore } from "../ports/tax-rules-store.js";
+import { computeQuote } from "../pricing/quote.js";
+import type { TotalsLineInput } from "../pricing/types.js";
 import type { CreateOrderFailure } from "./errors.js";
 import type { Order, PaymentMethod } from "./model.js";
 
@@ -28,6 +35,10 @@ export interface CreateOrderDeps {
 	cartStore: CartStore;
 	inventoryStore: InventoryStore;
 	productCommerce: ProductCommerceStore;
+	/** Phase 6: the totals-pipeline rules stores (shipping / tax / coupons). */
+	shippingRules: ShippingRulesStore;
+	taxRules: TaxRulesStore;
+	couponStore: CouponStore;
 	clock: Clock;
 	idGen: IdGen;
 	/** Payment adapters keyed by method — the buyer's chosen gateway is resolved here. */
@@ -42,6 +53,15 @@ export interface CreateOrderCommand {
 	/** Email/session claim token — the pre-Phase-5 entitlement key (§6). */
 	buyerRef: string;
 	paymentMethod: PaymentMethod;
+	// -- Phase 6 checkout inputs (all optional; absent ⇒ zero shipping/tax) ----
+	/** The buyer's tax zone. */
+	shippingZoneId?: string;
+	/** The selected shipping method. */
+	shippingMethodId?: string;
+	/** An optional coupon code, redeemed atomically alongside order creation. */
+	couponCode?: string;
+	/** Logged-in customer (Phase 5) — drives `maxUsesPerCustomer` when present. */
+	customerId?: CustomerId;
 }
 
 export type CreateOrderFromCartResult =
@@ -74,6 +94,23 @@ export async function createOrderFromCart(
 		throw new Error(`no payment gateway configured for method "${command.paymentMethod}"`);
 	}
 
+	// I1 — top-level idempotency short-circuit (CLAUDE.md idempotency, plan §1
+	// case 6). A replay of the same key must return the ORIGINAL order WITHOUT
+	// re-running the pipeline: computeQuote→validateCoupon does a SOFT
+	// usesCount>=maxUses / expiresAt check that would wrongly reject a replay of a
+	// checkout that consumed the coupon's last use (or whose coupon has since
+	// expired). Re-issuing the payment intent is idempotent under the same key.
+	const already = await deps.orderStore.getByIdempotencyKey(command.idempotencyKey);
+	if (already !== null) {
+		const intent = await gateway.createIntent({
+			orderId: already.id,
+			amount: already.totals.total,
+			currency: already.totals.currency,
+			idempotencyKey: command.idempotencyKey,
+		});
+		return { ok: true, order: already, intent };
+	}
+
 	const cart = await deps.cartStore.get(command.cartId);
 	if (cart === null) return { ok: false, reason: "CART_NOT_FOUND" };
 	if (cart.lines.length === 0) return { ok: false, reason: "CART_EMPTY" };
@@ -81,10 +118,10 @@ export async function createOrderFromCart(
 		// Cart-state fence at the checkout entrance (§5, review G2): a checked-out
 		// cart never mints a SECOND order (two tabs with per-click keys would
 		// otherwise snapshot reservations the first order already adopted). A
-		// same-key REPLAY is still honored — the key already minted this cart's
-		// order, so fall through to the normal idempotent path.
-		const replayed = await deps.orderStore.getByIdempotencyKey(command.idempotencyKey);
-		if (replayed === null) return { ok: false, reason: "CART_CHECKED_OUT" };
+		// same-key REPLAY was already returned above by the idempotency
+		// short-circuit, so reaching here with a NON-active cart is always a
+		// distinct-key second checkout ⇒ reject.
+		return { ok: false, reason: "CART_CHECKED_OUT" };
 	}
 
 	// Snapshot price + title + fulfillment_kind from product_commerce (§4). This
@@ -93,7 +130,7 @@ export async function createOrderFromCart(
 	// rewrite it (immutability is structural).
 	const currency = cart.currency;
 	const lines: CreateOrderLineInput[] = [];
-	let subtotalRaw = 0;
+	const totalsLines: TotalsLineInput[] = [];
 	for (const line of cart.lines) {
 		if (line.productId === null) return { ok: false, reason: "PRODUCT_NOT_PRICED" };
 		const pc = await deps.productCommerce.getByProductId(brandProductId(line.productId));
@@ -127,24 +164,131 @@ export async function createOrderFromCart(
 			// Physical lines adopt their cart reservation; digital carry none (§6).
 			reservationId: physical ? asReservationId(line.reservationId) : null,
 		});
-		subtotalRaw += pc.price.amount * line.qty;
+		// Tax base for the pipeline: the line's snapshot price × qty at its tax class.
+		totalsLines.push({
+			unitPriceCents: pc.price.amount,
+			qty: line.qty,
+			taxClassId: pc.taxClass ?? "standard",
+		});
 	}
-	const subtotal = cents(subtotalRaw);
 
-	// 1. Insert the pending order FIRST (guarded by idempotency_key UNIQUE),
-	//    before adopting any reservation (§5 ordering / self-healing).
+	// Phase 6: compute the full totals breakdown (subtotal → discount → shipping
+	// → tax) via the pipeline — this REPLACES the Phase-4 naive Σ(line) stub. Pure
+	// engine after the store reads; read-only (no redemption here).
+	const quote = await computeQuote(
+		{
+			shippingRules: deps.shippingRules,
+			taxRules: deps.taxRules,
+			couponStore: deps.couponStore,
+			clock: deps.clock,
+		},
+		{
+			currency,
+			lines: totalsLines,
+			...(command.shippingZoneId !== undefined ? { zoneId: command.shippingZoneId } : {}),
+			...(command.shippingMethodId !== undefined ? { methodId: command.shippingMethodId } : {}),
+			...(command.couponCode !== undefined ? { couponCode: command.couponCode } : {}),
+		},
+	);
+	if (!quote.ok) return { ok: false, reason: quote.reason };
+	const breakdown = quote.breakdown;
+
 	const freshOrderId = brandOrderId(deps.idGen.newId());
 	const holdExpiresAt = new Date(deps.clock.now().getTime() + ttl(deps)).toISOString();
+
+	// Coupon redemption is the GATE, before order creation (§5): redeem atomically
+	// under the SAME idempotency key so a replay never double-redeems. If order
+	// creation/adoption then fails, we synchronously release (catch-and-release).
+	//
+	// I4 — a valid coupon that computes to ZERO discount is NOT redeemed: burning a
+	// max_uses slot for zero benefit would also leave a redemption with no audit
+	// link (order_totals.applied_coupon_code stays null when discount is 0). Only a
+	// discount-bearing coupon is redeemed and stamped.
+	let redemptionId: string | null = null;
+	if (quote.couponRecord !== null && breakdown.discountCents > 0) {
+		const redeemed = await deps.couponStore.redeem({
+			couponId: quote.couponRecord.id,
+			orderId: freshOrderId,
+			idempotencyKey: command.idempotencyKey,
+			...(command.customerId !== undefined ? { customerId: command.customerId } : {}),
+			createdAt: deps.clock.now().toISOString(),
+		});
+		if (!redeemed.ok) return { ok: false, reason: redeemed.reason };
+		redemptionId = redeemed.redemptionId;
+	}
+
+	// From here on, any failure after a fresh redemption must release the coupon
+	// (synchronous path, §5). A replay (redeemed.replayed) is harmless to release
+	// only if we actually fail — on the happy replay path nothing fails.
+	try {
+		return await finalizeOrder(deps, command, {
+			freshOrderId,
+			currency,
+			holdExpiresAt,
+			lines,
+			breakdown,
+			couponRecord: quote.couponRecord,
+			shippingZoneId: command.shippingZoneId,
+			shippingMethodId: command.shippingMethodId,
+			gateway,
+			onFailure: async () => {
+				if (redemptionId !== null) await deps.couponStore.release(redemptionId);
+			},
+		});
+	} catch (err) {
+		if (redemptionId !== null) await deps.couponStore.release(redemptionId);
+		throw err;
+	}
+}
+
+interface FinalizeContext {
+	freshOrderId: OrderId;
+	currency: Currency;
+	holdExpiresAt: string;
+	lines: CreateOrderLineInput[];
+	breakdown: TotalsBreakdown;
+	couponRecord: CouponRecord | null;
+	shippingZoneId?: string;
+	shippingMethodId?: string;
+	gateway: PaymentGateway;
+	onFailure: () => Promise<void>;
+}
+
+async function finalizeOrder(
+	deps: CreateOrderDeps,
+	command: CreateOrderCommand,
+	ctx: FinalizeContext,
+): Promise<CreateOrderFromCartResult> {
+	const { breakdown } = ctx;
+	// 1. Insert the pending order FIRST (guarded by idempotency_key UNIQUE),
+	//    before adopting any reservation (§5 ordering / self-healing). Writes the
+	//    FULL breakdown into order_totals (§6), once, never rewritten.
 	const { order } = await deps.orderStore.createFromCart({
-		orderId: freshOrderId,
+		orderId: ctx.freshOrderId,
 		cartId: command.cartId,
-		currency,
+		currency: ctx.currency,
 		idempotencyKey: command.idempotencyKey,
-		holdExpiresAt,
+		holdExpiresAt: ctx.holdExpiresAt,
 		buyerRef: command.buyerRef,
 		paymentMethod: command.paymentMethod,
-		lines,
-		totals: { subtotal, total: subtotal, currency },
+		lines: ctx.lines,
+		totals: {
+			subtotal: breakdown.subtotalCents,
+			total: breakdown.totalCents,
+			currency: ctx.currency,
+			discount: breakdown.discountCents,
+			shipping: breakdown.shippingCents,
+			tax: breakdown.taxCents,
+			appliedCouponCode: breakdown.appliedCouponCode ?? null,
+			shippingMethodSnapshot:
+				ctx.shippingMethodId !== undefined
+					? { zoneId: ctx.shippingZoneId ?? null, methodId: ctx.shippingMethodId }
+					: null,
+			taxBreakdown: {
+				lines: breakdown.lineBreakdown,
+				shippingTaxCents: breakdown.shippingTaxCents,
+			},
+		},
 	});
 
 	// 2. Adopt each physical line's reservation via the guarded held → adopted flip
@@ -158,7 +302,13 @@ export async function createOrderFromCart(
 			holdExpiresAt: order.holdExpiresAt,
 			now,
 		});
-		if (!adopted.ok) return { ok: false, reason: "RESERVATION_LOST" };
+		if (!adopted.ok) {
+			// A lost hold after redemption: synchronously release the coupon (§5)
+			// before surfacing the failure. The pending order row stays and is
+			// healed by expireOrders; the coupon use is freed here.
+			await ctx.onFailure();
+			return { ok: false, reason: "RESERVATION_LOST" };
+		}
 	}
 
 	// 3. Secondary fence: flip the cart out of `active` (idempotent on replay).
@@ -171,7 +321,7 @@ export async function createOrderFromCart(
 		currency: order.totals.currency,
 		idempotencyKey: command.idempotencyKey,
 	};
-	const intent = await gateway.createIntent(intentInput);
+	const intent = await ctx.gateway.createIntent(intentInput);
 	return { ok: true, order, intent };
 }
 
