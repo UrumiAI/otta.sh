@@ -1,6 +1,6 @@
 # 0004. Storefront customer auth is magic-link (behind a two-port split)
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-07-11
 - Refines: ADR-0001 (the commerce service owns a customer identity separate from EmDash `ctx.users`)
 
@@ -47,4 +47,5 @@ the verifier. Sessions are opaque and DB-backed so revocation actually works.
   mechanism proving email ownership — revisit if the mechanism (this ADR) changes to one that
   doesn't (e.g. plain password).
 
-_Awaiting decision-maker sign-off (implemented per the Phase 5 plan §4 recommendation)._
+_Accepted 2026-07-11 — signed off by the maintainer (vedanshu@urumi.ai), implemented per the
+Phase 5 plan §4 recommendation._
