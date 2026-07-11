@@ -23,7 +23,7 @@ Phase 4 — checkout + payment gateways.
   `commit`/`release`, `CartStore.checkout`, the cart add/increase digital branch,
   and `product_commerce.title`. In-memory fakes +
   `orderStoreContract`/`entitlementStoreContract`/`paymentGatewayContract`.
-- `@urumi/store-postgres`: forward-only migration `0004_orders` (`orders` with no
+- `@urumi/store-postgres`: forward-only migration `0005_orders` (`orders` with no
   money column, insert-once `order_items`, 1:1 `order_totals` authoritative
   totals home, `payments`, `payment_events` dedupe+anomaly, `entitlements`;
   additive `reservations.order_id`/`adopted` + `product_commerce.title`). Kysely
