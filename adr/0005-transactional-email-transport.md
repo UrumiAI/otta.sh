@@ -1,6 +1,6 @@
 # 0005. The commerce service sends transactional email directly
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-07-11
 - Refines: ADR-0002 (the plugin→service direction; host-agnostic service)
 
@@ -42,4 +42,5 @@ transactional-API provider's idempotency key (`HttpEmailSender` passes the outbo
 - The plugin declares **no** `email:send` capability — confirmed by the sandbox capability-surface
   check (only `content:read` + `network:request`).
 
-_Awaiting decision-maker sign-off (implemented per the Phase 5 plan §6 recommendation)._
+_Accepted 2026-07-11 — signed off by the maintainer (vedanshu@urumi.ai), implemented per the
+Phase 5 plan §6 recommendation._
