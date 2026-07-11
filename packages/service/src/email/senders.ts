@@ -7,7 +7,9 @@ import { renderEmail } from "./render.js";
  * service-side. Both render via `renderEmail`; the transport differs.
  *
  * `FakeEmailSender` (in `@urumi/domain/testing`) remains the CI gate for the
- * exactly-once contract; these are the real transports a deployment picks.
+ * outbox contract (exactly-once enqueue + claim, at-least-once delivery —
+ * effectively-once only once a provider's `Idempotency-Key` dedupes it); these
+ * are the real transports a deployment picks.
  */
 
 /** Logs the rendered message — the dev/default transport, observable without any

@@ -90,10 +90,14 @@ const DEFAULT_BATCH_LIMIT = 100;
 /**
  * The outbox dispatcher (Phase 5 §5 step 2–3 / §8 5.8), reusing the Phase-3
  * hold-expiry cron pattern. Claims pending rows atomically (only one runner wins
- * a claim, so concurrent runs can't double-send), renders + sends each, then
- * marks it `sent`. A send failure returns the row to `pending` for a later tick
- * (or parks it `failed` after `maxAttempts`) — durable retry WITHOUT re-running
- * the state transition itself. Returns the number of emails actually sent.
+ * a claim — concurrent runs can't claim the same row at once), renders + sends
+ * each, then marks it `sent`. A send failure returns the row to `pending` for a
+ * later tick (or parks it `failed` after `maxAttempts`) — durable retry WITHOUT
+ * re-running the state transition itself. Note: claim is exactly-once but
+ * delivery is only at-least-once — a crash after `send()` but before the row is
+ * marked sent lets the lease lapse and the row be re-claimed and re-sent; dedup
+ * to effectively-once relies on the provider's `Idempotency-Key` (§6,
+ * `HttpEmailSender`). Returns the number of emails actually sent.
  */
 export async function dispatchOrderEmails(
 	deps: DispatchOrderEmailsDeps,

@@ -23,9 +23,11 @@ Phase 5 — order lifecycle, storefront customers, and transactional emails.
   login_challenges, order_emails_outbox with `UNIQUE(order_id, to_state)`) and the four new Kysely
   adapters + the extended order store. The guarded state `UPDATE` and outbox `INSERT` run in one
   real transaction on one connection (exactly-once enqueue, proven by a forced-rollback contract
-  case); the dispatcher claim is a lease-based conditional `UPDATE` (exactly-once send, retry on
-  the next tick). Tokens are stored only as SHA-256 hashes. All contract suites run on SQLite +
-  Postgres.
+  case); the dispatcher claim is a lease-based conditional `UPDATE` (exactly-once claim — only one
+  dispatcher ever wins a row). Delivery itself is at-least-once: a crash between `send()` and
+  marking the row sent re-leases it for retry on a later tick; dedup down to effectively-once
+  relies on the transactional-API provider's `Idempotency-Key` (wired in `HttpEmailSender`).
+  Tokens are stored only as SHA-256 hashes. All contract suites run on SQLite + Postgres.
 - `@urumi/service`: `POST /auth/login/request|verify`, `POST /auth/logout`, `GET /me`,
   `GET /me/orders(/:id)` (foreign id ⇒ 404, never 403 — no existence leak), `GET/POST/PUT/DELETE
   /me/addresses` (session-derived identity only, never a client-supplied id), `POST

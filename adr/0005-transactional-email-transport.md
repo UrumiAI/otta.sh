@@ -16,10 +16,15 @@ The **service sends email directly** — an `EmailSender` port with a concrete a
 (`ConsoleEmailSender` as the dev default; `HttpEmailSender` for a transactional-API provider;
 the vendor is an implementation detail behind the port) — **not** via EmDash's `email:send`.
 
-Delivery is exactly-once via a service-owned **outbox**: the guarded state `UPDATE` and the
-`order_emails_outbox` `INSERT` commit in one transaction (`UNIQUE(order_id, to_state)`), and a
-cron dispatcher claims rows with an atomic conditional `UPDATE` (lease-based), so neither a crash
-nor concurrent dispatchers can double-send.
+The outbox gives **exactly-once enqueue** and **exactly-once claim**, but only
+**at-least-once delivery**: the guarded state `UPDATE` and the `order_emails_outbox` `INSERT`
+commit in one transaction (`UNIQUE(order_id, to_state)`), so a status transition enqueues its
+email row exactly once, and a cron dispatcher claims rows with an atomic conditional `UPDATE`
+(lease-based), so concurrent dispatchers never claim the same row twice. A crash between
+`EmailSender.send()` and `markEmailSent`, however, leaves the row leased-but-unmarked; once the
+lease expires it is re-claimed and re-sent. Dedup down to **effectively-once** relies on the
+transactional-API provider's idempotency key (`HttpEmailSender` passes the outbox row id as an
+`Idempotency-Key`); `ConsoleEmailSender` has no such backstop and can print a duplicate line.
 
 ## Consequences
 

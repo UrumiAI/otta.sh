@@ -274,7 +274,11 @@ export interface AddressesTable {
  * Order-status email outbox (§5). The guarded state `UPDATE` and the outbox
  * `INSERT` commit in one transaction; `UNIQUE(order_id, to_state)` makes the
  * enqueue exactly-once, and the conditional claim (`status`/`lease_until`) makes
- * the dispatch exactly-once.
+ * the CLAIM exactly-once (no two dispatchers hold the same row's lease at once).
+ * Actual delivery is at-least-once: a crash between `EmailSender.send()` and
+ * marking the row sent lets the lease expire and the row be re-claimed and
+ * re-sent. Dedup to effectively-once relies on the provider's `Idempotency-Key`
+ * (see `HttpEmailSender`).
  */
 export interface OrderEmailsOutboxTable {
 	id: string;
