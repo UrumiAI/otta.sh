@@ -1,5 +1,5 @@
 import { type Cents, cents } from "../money/cents.js";
-import { divRoundHalfUp } from "./round.js";
+import { mulDivRoundHalfUp } from "./round.js";
 
 /**
  * Per-line tax (Phase 6 §4): `round_half_up(amount × rateBps / 10_000)`, in pure
@@ -8,9 +8,9 @@ import { divRoundHalfUp } from "./round.js";
  * an invoice.
  *
  * `computeLineTax(0, r) === 0` and `computeLineTax(a, 0) === 0` for all inputs.
- * `amount × rateBps` stays within the safe-integer range for realistic carts
- * (≤ ~4e9 cents × 10_000 bps = 4e13 ≪ 2^53); `divRoundHalfUp` additionally does
- * the multiply-free division in BigInt, so there is no float anywhere.
+ * The `amount × rateBps` multiply runs in `BigInt` (via `mulDivRoundHalfUp`,
+ * review I5) so no intermediate can overflow the safe-integer range and no float
+ * ever appears — uniform with `allocateCents`.
  */
 export function computeLineTax(amountCents: Cents, rateBps: number): Cents {
 	if (!Number.isSafeInteger(rateBps) || rateBps < 0) {
@@ -18,5 +18,5 @@ export function computeLineTax(amountCents: Cents, rateBps: number): Cents {
 			`computeLineTax requires a non-negative integer rateBps, got ${String(rateBps)}`,
 		);
 	}
-	return cents(divRoundHalfUp(amountCents * rateBps, 10_000));
+	return cents(mulDivRoundHalfUp(amountCents, rateBps, 10_000));
 }

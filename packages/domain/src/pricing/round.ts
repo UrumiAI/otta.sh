@@ -34,3 +34,25 @@ export function divRoundHalfUp(numerator: number, denominator: number): number {
 	const q = (n + d / 2n) / d;
 	return Number(q);
 }
+
+/**
+ * Half-up of `(a × b) / denominator`, with the multiply done in `BigInt` so no
+ * intermediate ever leaves the safe-integer range (review I5 — uniform with
+ * `allocateCents`). `a`, `b` non-negative safe integers; `denominator` a positive
+ * even integer. The quotient is bounded by the inputs and returned as a plain
+ * safe integer.
+ */
+export function mulDivRoundHalfUp(a: number, b: number, denominator: number): number {
+	if (!Number.isSafeInteger(a) || a < 0 || !Number.isSafeInteger(b) || b < 0) {
+		throw new RangeError(
+			`mulDivRoundHalfUp requires non-negative integer factors, got ${String(a)}, ${String(b)}`,
+		);
+	}
+	if (!Number.isSafeInteger(denominator) || denominator <= 0 || denominator % 2 !== 0) {
+		throw new RangeError(
+			`mulDivRoundHalfUp requires a positive even integer denominator, got ${String(denominator)}`,
+		);
+	}
+	const d = BigInt(denominator);
+	return Number((BigInt(a) * BigInt(b) + d / 2n) / d);
+}

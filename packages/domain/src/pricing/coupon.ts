@@ -1,6 +1,6 @@
 import { type Cents, cents, type Currency } from "../money/cents.js";
 import { CouponCurrencyMismatchError } from "./errors.js";
-import { divRoundHalfUp } from "./round.js";
+import { mulDivRoundHalfUp } from "./round.js";
 import type { Coupon } from "./types.js";
 
 /**
@@ -32,7 +32,7 @@ export function computeCouponDiscount(
 			`percentage coupon requires a non-negative integer bps, got ${String(coupon.bps)}`,
 		);
 	}
-	const raw = divRoundHalfUp(subtotalCents * coupon.bps, 10_000);
+	const raw = mulDivRoundHalfUp(subtotalCents, coupon.bps, 10_000);
 	const capped = coupon.capCents === null ? raw : Math.min(raw, coupon.capCents);
 	return cents(Math.min(capped, subtotalCents));
 }
