@@ -29,8 +29,33 @@ export const URUMI_PLUGIN_VERSION = "0.1.0";
  */
 export const URUMI_PLUGIN_CAPABILITIES = ["content:read", "network:request"] as const;
 
-/** Placeholder production value — a real deploy pipeline templates this. */
-export const COMMERCE_SERVICE_BASE_URL = "https://commerce.urumi.internal";
+/**
+ * Compile-time override hook (site deploy, plan D4): a deploying site
+ * (e.g. `sites/staging`) injects the real commerce-service URL into the
+ * plugin bundle via Vite `define: { __URUMI_COMMERCE_SERVICE_URL__: ... }`.
+ * This stays sandbox-clean — no runtime env/IO read; the `typeof` guard
+ * makes the undeclared global safe wherever no bundler defines it (tsdown
+ * dist, vitest, the sandbox test harness — which replaces this whole
+ * file's COPY before bundling anyway).
+ */
+declare const __URUMI_COMMERCE_SERVICE_URL__: string | undefined;
+
+/** Placeholder production value — a real deploy pipeline pins this via the
+ *  compile-time define above. */
+const COMMERCE_SERVICE_BASE_URL_PLACEHOLDER = "https://commerce.urumi.internal";
+
+/** Pure resolution (unit-tested without a bundler in the loop): a
+ *  non-empty compile-time override wins; anything else keeps the
+ *  placeholder. */
+export function resolveCommerceServiceBaseUrl(override: string | undefined): string {
+	return override !== undefined && override.length > 0
+		? override
+		: COMMERCE_SERVICE_BASE_URL_PLACEHOLDER;
+}
+
+export const COMMERCE_SERVICE_BASE_URL = resolveCommerceServiceBaseUrl(
+	typeof __URUMI_COMMERCE_SERVICE_URL__ === "string" ? __URUMI_COMMERCE_SERVICE_URL__ : undefined,
+);
 
 /** The plugin's egress allowlist — the host's `ctx.http.fetch` rejects any
  *  host not in this list (plan §5). Must stay in sync with
