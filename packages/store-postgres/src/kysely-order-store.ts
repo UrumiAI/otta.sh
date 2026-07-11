@@ -305,10 +305,19 @@ export class KyselyOrderStore implements OrderStore {
 	}
 
 	/**
-	 * TEST-ONLY (§5 / 5.5 atomicity case): run the REAL transition transaction —
-	 * guarded `UPDATE` + outbox `INSERT` — then throw before `COMMIT`, forcing a
-	 * rollback. Proves the two writes are atomic: after this rejects, neither is
-	 * visible. Never called on any production path.
+	 * TEST-ONLY (§5 / 5.5 atomicity case; review round H5) — run the REAL
+	 * transition transaction — guarded `UPDATE` + outbox `INSERT` — then throw
+	 * before `COMMIT`, forcing a rollback. Proves the two writes are atomic:
+	 * after this rejects, neither is visible.
+	 *
+	 * Safe co-location, not a production path: this method is NOT part of the
+	 * `OrderStore` port, so no port consumer (use-case, route, dispatcher) can
+	 * reach it through the interface they're typed against — only test code
+	 * holding a concrete `KyselyOrderStore` (see `order-harness.ts`'s
+	 * `forceFailedTransition`) can call it. It also isn't a candidate to hoist
+	 * into a standalone test helper: it reuses the private `#flipAndEnqueue` to
+	 * exercise the exact production write path rather than a re-implementation
+	 * that could drift from it.
 	 */
 	async transitionForTestRollback(input: {
 		orderId: OrderId;
