@@ -38,6 +38,12 @@ export {
 export { KyselyShippingRulesStore } from "./kysely-shipping-rules-store.js";
 export { KyselyTaxRulesStore } from "./kysely-tax-rules-store.js";
 export { KyselyCouponStore, type KyselyCouponStoreOptions } from "./kysely-coupon-store.js";
+export {
+	KyselyReportingStore,
+	type KyselyReportingStoreOptions,
+	type ReportingDialect,
+} from "./kysely-reporting-store.js";
+export { KyselySettingsStore, type KyselySettingsStoreOptions } from "./kysely-settings-store.js";
 export { migrateToLatest, migrationProvider } from "./migrations/index.js";
 export type {
 	AddressesTable,
@@ -69,6 +75,8 @@ export type {
 	ProductCommerceTable,
 	ReservationsTable,
 	ReservationState,
+	SettingsTable,
+	SettingsMutationsTable,
 } from "./schema.js";
 
 /** Zero-dep collision-free id source for production adapters (risk R5). */

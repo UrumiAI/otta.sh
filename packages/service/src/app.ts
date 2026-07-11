@@ -11,12 +11,16 @@ import type {
 	PaymentGateway,
 	PaymentMethod,
 	ProductCommerceStore,
+	ReportingStore,
 	SessionStore,
+	SettingsStore,
 	ShippingRulesStore,
 	TaxRulesStore,
 } from "@urumi/domain";
 import { Hono } from "hono";
 import { adminRoutes } from "./routes/admin.js";
+import { reportsRoutes } from "./routes/reports.js";
+import { settingsRoutes } from "./routes/settings.js";
 import { rulesAdminRoutes } from "./routes/rules-admin.js";
 import { authRoutes } from "./routes/auth.js";
 import { type CartRoutesDeps, cartRoutes, expireHoldsRoutes } from "./routes/carts.js";
@@ -40,6 +44,9 @@ export type AppDeps = InventoryDeps &
 		shippingRules: ShippingRulesStore;
 		taxRules: TaxRulesStore;
 		couponStore: CouponStore;
+		// Phase 7 (§6): read-only reporting + operational settings stores.
+		reportingStore: ReportingStore;
+		settingsStore: SettingsStore;
 		idGen: IdGen;
 		gateways: Partial<Record<PaymentMethod, PaymentGateway>>;
 		/** Checkout hold TTL in ms; defaults to the domain's DEFAULT_CHECKOUT_TTL_MS. */
@@ -117,6 +124,25 @@ export function createApp(deps: AppDeps): Hono {
 			shippingRules: deps.shippingRules,
 			taxRules: deps.taxRules,
 			couponStore: deps.couponStore,
+			...(deps.internalToken !== undefined ? { internalToken: deps.internalToken } : {}),
+		}),
+	);
+	// Phase 7 (§6): read-only reports + operational settings. BOTH are admin
+	// surface — /reports/* reads expose merchant financial/operational data and
+	// PUT /settings is a privileged write, so both require the internal token
+	// (review J5).
+	app.route(
+		"/reports",
+		reportsRoutes({
+			reportingStore: deps.reportingStore,
+			settingsStore: deps.settingsStore,
+			...(deps.internalToken !== undefined ? { internalToken: deps.internalToken } : {}),
+		}),
+	);
+	app.route(
+		"/settings",
+		settingsRoutes({
+			settingsStore: deps.settingsStore,
 			...(deps.internalToken !== undefined ? { internalToken: deps.internalToken } : {}),
 		}),
 	);

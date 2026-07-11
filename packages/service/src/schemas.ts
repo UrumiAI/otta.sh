@@ -283,6 +283,41 @@ export type LoginVerifyBody = z.infer<typeof loginVerifyBody>;
 export type TransitionBody = z.infer<typeof transitionBody>;
 export type CreateAddressBody = z.infer<typeof createAddressBody>;
 
+// Phase 7 (§6): reporting query params + settings body. Money on the wire stays
+// integer minor units + ISO-4217 currency (report responses); the domain
+// use-case enforces the 400-day range cap (mapped to a 400 by the route).
+export const reportRevenueQuery = z.object({
+	from: z.string().datetime(),
+	to: z.string().datetime(),
+	interval: z.enum(["day", "week", "month"]).optional().default("day"),
+});
+
+export const ordersByStatusQuery = z.object({
+	from: z.string().datetime(),
+	to: z.string().datetime(),
+});
+
+export const topProductsQuery = z.object({
+	from: z.string().datetime(),
+	to: z.string().datetime(),
+	metric: z.enum(["revenue", "quantity"]).optional().default("revenue"),
+	limit: z.coerce.number().int().positive().max(1000).optional().default(10),
+});
+
+export const lowStockQuery = z.object({
+	threshold: z.coerce.number().int().nonnegative().optional(),
+});
+
+// Settings body — both fields optional (partial update). Bounds mirror the
+// domain use-case (holdTtlMinutes positive, ≤ 1 week; lowStockThreshold ≥ 0):
+// invalid values are a 400, never silently clamped (§5.3).
+export const settingsBody = z.object({
+	holdTtlMinutes: z.number().int().positive().max(10_080).optional(),
+	lowStockThreshold: z.number().int().nonnegative().optional(),
+});
+
+export type SettingsBody = z.infer<typeof settingsBody>;
+
 export type CommerceBatchBody = z.infer<typeof commerceBatchBody>;
 export type UpsertProductCommerceBody = z.infer<typeof upsertProductCommerceBody>;
 export type CreateCartBody = z.infer<typeof createCartBody>;

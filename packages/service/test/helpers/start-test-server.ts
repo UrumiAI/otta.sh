@@ -9,7 +9,13 @@ import {
 	productId,
 	sku,
 } from "@urumi/domain";
-import { FakeEmailSender, FixedClock } from "@urumi/domain/testing";
+import {
+	FakeEmailSender,
+	FIXTURE_INVENTORY,
+	FIXTURE_ITEMS,
+	FIXTURE_ORDERS,
+	FixedClock,
+} from "@urumi/domain/testing";
 import { StripePaymentGateway } from "@urumi/payments-stripe";
 import { createTestFacilitator, X402PaymentGateway } from "@urumi/payments-x402";
 import {
@@ -23,7 +29,9 @@ import {
 	KyselyOrderStore,
 	KyselyPaymentEventStore,
 	KyselyProductCommerceStore,
+	KyselyReportingStore,
 	KyselySessionStore,
+	KyselySettingsStore,
 	KyselyShippingRulesStore,
 	KyselyTaxRulesStore,
 	uuidIdGen,
@@ -55,6 +63,9 @@ export interface TestServer {
 	}): Promise<void>;
 	/** Advance the server's injected Clock (fast-forward past a hold TTL). */
 	advance(ms: number): void;
+	/** Seed the shared Phase-7 reporting fixture (orders/totals/items/inventory)
+	 *  so the reports HTTP contract asserts the same hand-computed numbers. */
+	seedReportingFixture(): Promise<void>;
 	stop(): Promise<void>;
 }
 
@@ -106,6 +117,8 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
 	const shippingRules = new KyselyShippingRulesStore({ db });
 	const taxRules = new KyselyTaxRulesStore({ db });
 	const couponStore = new KyselyCouponStore({ db, idGen: uuidIdGen });
+	const reportingStore = new KyselyReportingStore({ db, dialect: "postgres" });
+	const settingsStore = new KyselySettingsStore({ db, clock });
 	const app = createApp({
 		store,
 		productCommerce,
@@ -116,6 +129,8 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
 		shippingRules,
 		taxRules,
 		couponStore,
+		reportingStore,
+		settingsStore,
 		customerStore,
 		addressStore,
 		sessionStore,
@@ -169,6 +184,64 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
 		},
 		advance(ms) {
 			clock.advance(ms);
+		},
+		async seedReportingFixture() {
+			for (const o of FIXTURE_ORDERS) {
+				await db
+					.insertInto("orders")
+					.values({
+						id: o.id,
+						cart_id: null,
+						currency: o.currency,
+						state: o.state as never,
+						idempotency_key: `seed-${o.id}`,
+						hold_expires_at: o.createdAt,
+						payment_method: null,
+						buyer_ref: "seed",
+						created_at: o.createdAt,
+						updated_at: o.createdAt,
+					})
+					.execute();
+				await db
+					.insertInto("order_totals")
+					.values({
+						order_id: o.id,
+						currency: o.currency,
+						subtotal_cents: o.totalCents,
+						discount_cents: 0,
+						shipping_cents: 0,
+						tax_cents: 0,
+						total_cents: o.totalCents,
+						applied_coupon_code: null,
+						shipping_method_snapshot: null,
+						tax_breakdown: null,
+					})
+					.execute();
+			}
+			for (const it of FIXTURE_ITEMS) {
+				await db
+					.insertInto("order_items")
+					.values({
+						id: `${it.orderId}-${it.productId}`,
+						order_id: it.orderId,
+						product_id: it.productId,
+						sku: `sku-${it.productId}`,
+						title: it.title,
+						unit_price_cents: it.unitPriceCents,
+						currency: "USD",
+						quantity: it.quantity,
+						fulfillment_kind: "physical",
+						reservation_id: null,
+					})
+					.execute();
+			}
+			for (const inv of FIXTURE_INVENTORY) {
+				await db
+					.insertInto("inventory")
+					.values({ sku: inv.sku, on_hand: inv.onHand })
+					.onConflict((oc) => oc.column("sku").doUpdateSet({ on_hand: inv.onHand }))
+					.execute();
+			}
 		},
 		async stop() {
 			await new Promise<void>((resolve, reject) => {

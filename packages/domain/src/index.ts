@@ -234,3 +234,32 @@ export {
 	type RemoveLineResult,
 	type UpdateLineResult,
 } from "./cart/use-cases.js";
+// Phase 7: reporting (read-only) + settings tiering.
+export type {
+	DateRange,
+	LowStockRow,
+	PeriodBucket,
+	ReportInterval,
+	ReportingStore,
+	StatusCount,
+	TopProduct,
+	TopProductsMetric,
+} from "./ports/reporting-store.js";
+export { REVENUE_COUNTING_STATES } from "./ports/reporting-store.js";
+export type { OperationalSettings, SettingsStore } from "./ports/settings-store.js";
+export { DEFAULT_OPERATIONAL_SETTINGS } from "./ports/settings-store.js";
+export {
+	getLowStockReport,
+	getOrdersByStatusReport,
+	getRevenueReport,
+	getTopProductsReport,
+	MAX_REPORT_RANGE_DAYS,
+	ReportRangeTooWideError,
+	type LowStockReportDeps,
+} from "./reporting/use-cases.js";
+export {
+	getSettings,
+	InvalidSettingsError,
+	MAX_HOLD_TTL_MINUTES,
+	updateSettings,
+} from "./settings/use-cases.js";

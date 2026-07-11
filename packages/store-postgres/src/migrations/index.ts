@@ -7,6 +7,7 @@ import { migration0004ProductCommerceActiveUpdatedAt } from "./0004_product_comm
 import { migration0005Orders } from "./0005_orders.js";
 import { migration0006CustomersSessionsOutbox } from "./0006_customers_sessions_outbox.js";
 import { migration0007ShippingTaxCoupons } from "./0007_shipping_tax_coupons.js";
+import { migration0008SettingsAndReportingIndices } from "./0008_settings_and_reporting_indices.js";
 
 /** Ordered, append-only migration list (forward-only). */
 const migrations: Record<string, Migration> = {
@@ -17,6 +18,7 @@ const migrations: Record<string, Migration> = {
 	"0005_orders": migration0005Orders,
 	"0006_customers_sessions_outbox": migration0006CustomersSessionsOutbox,
 	"0007_shipping_tax_coupons": migration0007ShippingTaxCoupons,
+	"0008_settings_and_reporting_indices": migration0008SettingsAndReportingIndices,
 };
 
 export const migrationProvider: MigrationProvider = {
