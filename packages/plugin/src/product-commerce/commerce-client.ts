@@ -131,7 +131,77 @@ export interface CommerceClient {
 		idempotencyKey: string,
 	): Promise<CartResult<Record<string, never>>>;
 	// ── end Phase 3 group E: cart ─────────────────────────────────────────
+
+	// ── Phase 5: storefront customer account (plan §7, wire mirrors ───────
+	// @urumi/service's /auth + /me routes 1:1; the bearer session token is
+	// passed through from the plugin's first-party cookie layer, never held
+	// by the sandboxed plugin itself). ────────────────────────────────────
+	requestLoginLink(email: string): Promise<{ ok: true }>;
+	verifyLogin(challengeId: string, token: string): Promise<LoginVerifyResult>;
+	logout(sessionToken: string): Promise<void>;
+	listMyOrders(sessionToken: string): Promise<AuthedResult<{ orders: OrderSummaryWire[] }>>;
+	getMyOrder(
+		sessionToken: string,
+		orderId: string,
+	): Promise<
+		{ ok: true; order: OrderSummaryWire } | { ok: false; reason: "UNAUTHENTICATED" | "NOT_FOUND" }
+	>;
+	listMyAddresses(sessionToken: string): Promise<AuthedResult<{ addresses: AddressWire[] }>>;
+	// ── end Phase 5 customer account ──────────────────────────────────────
 }
+
+// ── Phase 5: customer account wire types (plan §7) ─────────────────────────
+// Mirror @urumi/service's serializeOrder / serializeCustomer / serializeAddress
+// 1:1. Money is integer minor units + ISO-4217 string, never a float.
+export interface OrderTotalsWire {
+	currency: string;
+	subtotalCents: number;
+	discountCents: number;
+	shippingCents: number;
+	taxCents: number;
+	totalCents: number;
+}
+
+export interface OrderLineWire {
+	sku: string;
+	title: string;
+	unitPriceCents: number;
+	currency: string;
+	quantity: number;
+	fulfillmentKind: string;
+}
+
+export interface OrderSummaryWire {
+	id: string;
+	state: string;
+	currency: string;
+	paymentMethod: string | null;
+	holdExpiresAt: string;
+	totals: OrderTotalsWire;
+	lines: OrderLineWire[];
+}
+
+export interface AddressWire {
+	id: string;
+	kind: string;
+	name: string;
+	line1: string;
+	line2: string | null;
+	city: string;
+	region: string | null;
+	postalCode: string;
+	country: string;
+	isDefault: boolean;
+}
+
+export type LoginVerifyResult =
+	| { ok: true; sessionToken: string; expiresAt: string }
+	| { ok: false; reason: "EXPIRED" | "INVALID" | "CONSUMED" };
+
+/** A `/me/*` result: the success payload, or an unauthenticated (401) signal the
+ *  account route turns into a redirect to the login page. */
+export type AuthedResult<T> = ({ ok: true } & T) | { ok: false; reason: "UNAUTHENTICATED" };
+// ── end Phase 5 customer account wire types ────────────────────────────────
 
 // ── Phase 3 group E: cart wire types (plan §6) ─────────────────────────────
 // Mirror `@urumi/service`'s `routes/carts.ts` serialization 1:1: NO price
