@@ -28,7 +28,13 @@ export async function expireOrders(deps: ExpireOrdersDeps, at?: Date): Promise<n
 		const order = await deps.orderStore.getById(id);
 		if (order === null) continue;
 		for (const line of order.lines) {
-			if (line.reservationId !== null) await deps.inventoryStore.release(line.reservationId);
+			// Order-SCOPED release (review G2): only a hold THIS order adopted is
+			// released — a line pointing at another order's reservation (a stale
+			// pre-fence order) is a silent skip, never a foreign release or a throw
+			// that would crash every subsequent sweep run.
+			if (line.reservationId !== null) {
+				await deps.inventoryStore.releaseAdopted(line.reservationId, order.id);
+			}
 		}
 	}
 	return expired;

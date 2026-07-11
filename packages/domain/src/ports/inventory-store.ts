@@ -33,6 +33,17 @@ export interface InventoryStore {
 	// reservation state, structurally invisible to Phase-3's `held`-scoped sweep.
 	adopt(input: AdoptInput): Promise<AdoptResult>;
 
+	// Additive (review G2): the ORDER-SCOPED release used by every order-driven
+	// release path (`expireOrders`, settle's failed release). A single guarded
+	// flip `adopted → released` scoped `WHERE order_id = :orderId`, then the
+	// stock return — an order can only ever release a hold IT adopted. 0 rows is
+	// ALWAYS a silent no-op: already released/committed (benign replay), or
+	// owned by another order / still cart-`held` (not this order's to touch —
+	// an unscoped release here is how a stale order could free a live checkout's
+	// hold, or crash the sweep on a committed one). Never throws on state; the
+	// loud lost-hold anomaly stays `commit`'s.
+	releaseAdopted(reservationId: string, orderId: string): Promise<void>;
+
 	// Additive (Phase 1 §7/§8 Risk 4) — a dedicated create-if-absent initial
 	// stock write, NOT part of the reserve/commit/release authority path.
 	// `INSERT … ON CONFLICT (sku) DO NOTHING` shape: seeding a new sku creates

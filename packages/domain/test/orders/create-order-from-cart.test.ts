@@ -135,6 +135,29 @@ describe("createOrderFromCart", () => {
 		expect(h.inventory.reservationState(first)).toBe("released");
 	});
 
+	test("a second checkout of the same cart with a DIFFERENT idempotency key is rejected CART_CHECKED_OUT — no second order is minted", async () => {
+		await h.seedPhysical({
+			productId: "p1",
+			sku: "SKU-1",
+			priceCents: 500,
+			title: "Widget",
+			onHand: 10,
+		});
+		const cartId = await h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" }]);
+		const first = await createOrderFromCart(h.createDeps, cmd(cartId, "k-tab-1"));
+		expect(first.ok).toBe(true);
+		if (!first.ok) return;
+		const reservationId = first.order.lines[0]!.reservationId!;
+
+		// Two tabs, per-click keys (G2): the cart is checked_out, so a DISTINCT key
+		// must be rejected by the cart-state fence — never mint a second pending
+		// order whose line snapshots a reservation the first order already adopted.
+		const second = await createOrderFromCart(h.createDeps, cmd(cartId, "k-tab-2"));
+		expect(second).toEqual({ ok: false, reason: "CART_CHECKED_OUT" });
+		// The first order's adopted hold is untouched.
+		expect(h.inventory.reservationState(reservationId)).toBe("adopted");
+	});
+
 	test("is idempotent: replay with same key returns the same order, no double snapshot, no re-adopt", async () => {
 		await h.seedPhysical({
 			productId: "p1",

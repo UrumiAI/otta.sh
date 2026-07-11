@@ -161,6 +161,40 @@ export class KyselyInventoryStore implements InventoryStore {
 	}
 
 	/**
+	 * Order-scoped release (review G2): the guarded `adopted → released` flip
+	 * additionally scoped `WHERE order_id = :orderId`, so an order can only ever
+	 * release a hold IT adopted. 0 rows is ALWAYS a silent no-op — already
+	 * released/committed (benign replay), adopted by another order, or still
+	 * cart-`held` (not this order's to touch). Never throws on state: an unscoped
+	 * release here is how a stale order could free a live checkout's hold, or
+	 * crash the expiry sweep forever on a committed one.
+	 */
+	async releaseAdopted(reservationId: string, orderId: string): Promise<void> {
+		const row = await this.#db
+			.selectFrom("reservations")
+			.select(["sku", "qty"])
+			.where("id", "=", reservationId)
+			.executeTakeFirst();
+		if (row === undefined) return; // unknown id: nothing to release
+		await this.#db.transaction().execute(async (trx) => {
+			const flipped = await trx
+				.updateTable("reservations")
+				.set({ state: "released" })
+				.where("id", "=", reservationId)
+				.where("state", "=", "adopted")
+				.where("order_id", "=", orderId)
+				.returning("id")
+				.executeTakeFirst();
+			if (flipped === undefined) return; // not this order's adopted hold: no-op
+			await trx
+				.updateTable("inventory")
+				.set({ on_hand: sql<number>`on_hand + ${row.qty}` })
+				.where("sku", "=", row.sku)
+				.execute();
+		});
+	}
+
+	/**
 	 * The guarded `held → adopted` flip (Phase 4 §5): a single conditional
 	 * statement, no interactive transaction. Scoped `state='held' AND expires_at >
 	 * :now`, so it can never adopt a hold the Phase-3 sweep is about to reap. Sets

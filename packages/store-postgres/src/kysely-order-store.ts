@@ -10,6 +10,7 @@ import {
 	type CreateOrderInput,
 	type CreateOrderResult,
 	type FulfillmentKind,
+	type IdempotencyKey,
 	type IdGen,
 	type Order,
 	type OrderId,
@@ -114,6 +115,10 @@ export class KyselyOrderStore implements OrderStore {
 
 	async getById(orderId: OrderId): Promise<Order | null> {
 		return this.#loadById(orderId);
+	}
+
+	async getByIdempotencyKey(key: IdempotencyKey): Promise<Order | null> {
+		return this.#loadByKey(key);
 	}
 
 	async markPaid(orderId: OrderId): Promise<boolean> {

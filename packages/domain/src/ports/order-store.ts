@@ -21,6 +21,13 @@ export interface OrderStore {
 	createFromCart(input: CreateOrderInput): Promise<CreateOrderResult>;
 	/** Read an order with lines + totals, or null. */
 	getById(orderId: OrderId): Promise<Order | null>;
+	/**
+	 * Read the order a creation `idempotency_key` already minted, or null. Lets
+	 * `createOrderFromCart` distinguish a same-key REPLAY (honored — the cart is
+	 * legitimately `checked_out` by this very order) from a distinct-key second
+	 * checkout of a checked-out cart (rejected `CART_CHECKED_OUT`, review G2).
+	 */
+	getByIdempotencyKey(key: IdempotencyKey): Promise<Order | null>;
 	/** Guarded `pending → paid` flip. 0 rows (not pending) ⇒ false. */
 	markPaid(orderId: OrderId): Promise<boolean>;
 	/** Guarded `pending → failed` flip. 0 rows ⇒ false. */

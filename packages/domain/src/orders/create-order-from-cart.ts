@@ -77,6 +77,15 @@ export async function createOrderFromCart(
 	const cart = await deps.cartStore.get(command.cartId);
 	if (cart === null) return { ok: false, reason: "CART_NOT_FOUND" };
 	if (cart.lines.length === 0) return { ok: false, reason: "CART_EMPTY" };
+	if (cart.state !== "active") {
+		// Cart-state fence at the checkout entrance (§5, review G2): a checked-out
+		// cart never mints a SECOND order (two tabs with per-click keys would
+		// otherwise snapshot reservations the first order already adopted). A
+		// same-key REPLAY is still honored — the key already minted this cart's
+		// order, so fall through to the normal idempotent path.
+		const replayed = await deps.orderStore.getByIdempotencyKey(command.idempotencyKey);
+		if (replayed === null) return { ok: false, reason: "CART_CHECKED_OUT" };
+	}
 
 	// Snapshot price + title + fulfillment_kind from product_commerce (§4). This
 	// read is the ONLY code path from the product projection to an order line; the

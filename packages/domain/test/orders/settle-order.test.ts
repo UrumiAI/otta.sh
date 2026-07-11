@@ -1,9 +1,14 @@
 import {
+	cents,
 	createOrderFromCart,
+	currency,
 	expireOrders,
 	idempotencyKey,
 	type Order,
+	orderId as brandOrderId,
 	type OrderStore,
+	productId as brandProductId,
+	reservationId as brandReservationId,
 	settleOrder,
 	sku as brandSku,
 } from "@urumi/domain";
@@ -160,6 +165,66 @@ describe("settleOrder", () => {
 		expect(h.inventory.onHand("SKU-1")).toBe(5); // returned exactly once
 	});
 
+	/** A stale order (the pre-guard two-tab artifact) whose single line points at
+	 *  a reservation ANOTHER order owns — the shape the scoped release must
+	 *  tolerate forever, even though the cart fence now prevents minting new ones. */
+	async function staleOrderPointingAt(reservationId: string, suffix: string): Promise<void> {
+		await h.orderStore.createFromCart({
+			orderId: brandOrderId(`o-stale-${suffix}`),
+			cartId: `cart-stale-${suffix}`,
+			currency: currency("USD"),
+			idempotencyKey: idempotencyKey(`k-stale-${suffix}`),
+			holdExpiresAt: new Date(h.clock.now().getTime() + 60_000).toISOString(),
+			buyerRef: "stale@example.com",
+			paymentMethod: "stripe",
+			lines: [
+				{
+					productId: brandProductId("p1"),
+					sku: brandSku("SKU-1"),
+					title: "Widget",
+					unitPrice: cents(1500),
+					currency: currency("USD"),
+					quantity: 1,
+					fulfillmentKind: "physical",
+					reservationId: brandReservationId(reservationId),
+				},
+			],
+			totals: { subtotal: cents(1500), total: cents(1500), currency: currency("USD") },
+		});
+	}
+
+	test("expireOrders releases ONLY reservations adopted by the expiring order — a foreign order's adopted hold is untouched (scoped release)", async () => {
+		const owner = await pendingPhysical("k-owner");
+		const r1 = owner.lines[0]!.reservationId!;
+		expect(h.inventory.reservationState(r1)).toBe("adopted");
+
+		await staleOrderPointingAt(r1, "a");
+		h.clock.advance(2 * 60_000); // the stale TTL passes; the owner's 15-min hold is live
+
+		const expired = await expireOrders(h.expireDeps);
+		expect(expired).toBe(1); // the stale order expires…
+		// …but the OWNER's adopted hold is not released and stock does not return —
+		// otherwise the live checkout's stock is resold and its later commit is a
+		// false COMMIT_LOST.
+		expect(h.inventory.reservationState(r1)).toBe("adopted");
+		expect(h.inventory.onHand("SKU-1")).toBe(4);
+	});
+
+	test("expireOrders survives a stale order pointing at a COMMITTED foreign reservation — no throw, the commit stands", async () => {
+		const owner = await pendingPhysical("k-owner2");
+		const r1 = owner.lines[0]!.reservationId!;
+		await settleOrder(h.settleDeps, h.stripeGw, evt(owner)); // paid → committed
+		expect(h.inventory.reservationState(r1)).toBe("committed");
+
+		await staleOrderPointingAt(r1, "b");
+		h.clock.advance(2 * 60_000);
+
+		// An unscoped release would throw on the committed state and crash EVERY
+		// subsequent sweep run; the scoped release is a silent skip.
+		await expect(expireOrders(h.expireDeps)).resolves.toBe(1);
+		expect(h.inventory.reservationState(r1)).toBe("committed");
+	});
+
 	test("commit that matches 0 rows because the adopted hold was lost (released) records a payment_events anomaly + flags manual reconciliation — never a silent no-op", async () => {
 		const order = await pendingPhysical();
 		const reservationId = order.lines[0]!.reservationId!;
@@ -191,6 +256,7 @@ describe("settleOrder", () => {
 		return {
 			createFromCart: (i) => h.orderStore.createFromCart(i),
 			getById: (id) => h.orderStore.getById(id),
+			getByIdempotencyKey: (k) => h.orderStore.getByIdempotencyKey(k),
 			markPaid: async (id) => {
 				await expireOrders(h.expireDeps);
 				return h.orderStore.markPaid(id);

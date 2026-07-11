@@ -121,6 +121,93 @@ function orderFlowTests(makeHarness: () => Promise<OrderFlowHarness>, dialect: s
 			expect(await h.onHand("SKU-1")).toBe(10); // returned exactly once
 		});
 
+		test("a second checkout of the same cart with a DIFFERENT idempotency key is rejected CART_CHECKED_OUT at the store level", async () => {
+			const h = await makeHarness();
+			await h.seedPhysical({
+				productId: "p1",
+				sku: "SKU-1",
+				priceCents: 500,
+				title: "W",
+				onHand: 10,
+			});
+			const cartId = await h.cartWith([
+				{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" },
+			]);
+			const first = await createOrderFromCart(h.createDeps, cmd(cartId, "stripe", "k-tab-1"));
+			if (!first.ok) throw new Error(first.reason);
+			const reservationId = first.order.lines[0]!.reservationId!;
+
+			// Two tabs, per-click keys (G2): distinct key on the checked-out cart.
+			const second = await createOrderFromCart(h.createDeps, cmd(cartId, "stripe", "k-tab-2"));
+			expect(second).toEqual({ ok: false, reason: "CART_CHECKED_OUT" });
+			expect(await h.reservationState(reservationId)).toBe("adopted");
+			// And the same-key replay is still honored (the idempotent path).
+			const replay = await createOrderFromCart(h.createDeps, cmd(cartId, "stripe", "k-tab-1"));
+			expect(replay.ok).toBe(true);
+			if (replay.ok) expect(replay.order.id).toBe(first.order.id);
+		});
+
+		test("expireOrders' release is order-scoped: a stale order pointing at a foreign adopted (or committed) reservation never frees it and never crashes the sweep", async () => {
+			const h = await makeHarness();
+			await h.seedPhysical({
+				productId: "p1",
+				sku: "SKU-1",
+				priceCents: 500,
+				title: "W",
+				onHand: 10,
+			});
+			const cartId = await h.cartWith([
+				{ sku: "SKU-1", productId: "p1", qty: 2, kind: "physical" },
+			]);
+			const owner = await createOrderFromCart(h.createDeps, cmd(cartId, "stripe", "k-owner"));
+			if (!owner.ok) throw new Error(owner.reason);
+			const reservationId = owner.order.lines[0]!.reservationId!;
+			expect(await h.reservationState(reservationId)).toBe("adopted");
+
+			// A stale order (the pre-fence two-tab artifact) whose line points at the
+			// OWNER's reservation, already past its TTL.
+			await h.orderStore.createFromCart({
+				orderId: `stale-${owner.order.id}` as typeof owner.order.id,
+				cartId: "cart-stale",
+				currency: owner.order.currency,
+				idempotencyKey: idempotencyKey("k-stale"),
+				holdExpiresAt: "2026-07-10T00:01:00.000Z",
+				buyerRef: "stale@example.com",
+				paymentMethod: "stripe",
+				lines: [
+					{
+						productId: owner.order.lines[0]!.productId,
+						sku: brandSku("SKU-1"),
+						title: "W",
+						unitPrice: owner.order.lines[0]!.unitPrice,
+						currency: owner.order.currency,
+						quantity: 2,
+						fulfillmentKind: "physical",
+						reservationId,
+					},
+				],
+				totals: owner.order.totals,
+			});
+
+			h.clock.advance(2 * 60 * 1000); // stale TTL passed; owner's 15-min hold live
+			expect(await expireOrders(h.expireDeps)).toBe(1); // the stale order expires…
+			// …but the owner's adopted hold is untouched and stock did not return.
+			expect(await h.reservationState(reservationId)).toBe("adopted");
+			expect(await h.onHand("SKU-1")).toBe(8);
+
+			// The owner settles (commit) — and a later sweep must not throw on any
+			// stale row pointing at the now-COMMITTED reservation (an unscoped
+			// release would crash EVERY subsequent run).
+			const settled = await settleOrder(
+				h.settleDeps,
+				h.stripeGw,
+				h.stripeGw.webhook(evt(owner.order)),
+			);
+			expect(settled.ok).toBe(true);
+			expect(await h.reservationState(reservationId)).toBe("committed");
+			await expect(expireOrders(h.expireDeps)).resolves.toBe(0); // survives
+		});
+
 		test("a post-checkout cart removeLine/adjustLine cannot release or shrink an adopted hold — returns LINE_CHECKED_OUT, stock and reservation unchanged", async () => {
 			const h = await makeHarness();
 			await h.seedPhysical({
@@ -294,6 +381,7 @@ function orderFlowTests(makeHarness: () => Promise<OrderFlowHarness>, dialect: s
 			const racingOrderStore: OrderStore = {
 				createFromCart: (i) => h.orderStore.createFromCart(i),
 				getById: (id) => h.orderStore.getById(id),
+				getByIdempotencyKey: (k) => h.orderStore.getByIdempotencyKey(k),
 				markPaid: async (id) => {
 					await expireOrders(h.expireDeps);
 					return h.orderStore.markPaid(id);

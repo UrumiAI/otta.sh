@@ -1,5 +1,5 @@
 import { cents } from "../money/cents.js";
-import type { OrderId } from "../money/ids.js";
+import type { IdempotencyKey, OrderId } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
 import type { IdGen } from "../ports/id-gen.js";
 import type {
@@ -93,6 +93,13 @@ export class InMemoryOrderStore implements OrderStore {
 	}
 
 	async getById(orderId: OrderId): Promise<Order | null> {
+		const stored = this.#orders.get(orderId);
+		return stored === undefined ? null : this.#clone(stored.order);
+	}
+
+	async getByIdempotencyKey(key: IdempotencyKey): Promise<Order | null> {
+		const orderId = this.#byKey.get(key);
+		if (orderId === undefined) return null;
 		const stored = this.#orders.get(orderId);
 		return stored === undefined ? null : this.#clone(stored.order);
 	}

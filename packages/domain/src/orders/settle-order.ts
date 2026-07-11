@@ -223,9 +223,12 @@ async function applyPaidSideEffects(
 	}
 }
 
-/** Release every adopted reservation on an order (idempotent per reservation). */
+/** Release every reservation THIS order adopted (order-scoped, review G2;
+ *  idempotent per reservation — a foreign/committed hold is a silent skip). */
 async function releaseAll(deps: SettleDeps, order: Order): Promise<void> {
 	for (const line of order.lines) {
-		if (line.reservationId !== null) await deps.inventoryStore.release(line.reservationId);
+		if (line.reservationId !== null) {
+			await deps.inventoryStore.releaseAdopted(line.reservationId, order.id);
+		}
 	}
 }

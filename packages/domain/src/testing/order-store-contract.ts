@@ -88,6 +88,14 @@ export function orderStoreContract(
 			expect(replay.order.lines).toHaveLength(1);
 		});
 
+		test("getByIdempotencyKey returns the order the key minted; an unknown key is null", async () => {
+			const { store } = await makeHarness();
+			const { order } = await store.createFromCart(physicalInput());
+			const found = await store.getByIdempotencyKey(idempotencyKey("key-1"));
+			expect(found?.id).toBe(order.id);
+			expect(await store.getByIdempotencyKey(idempotencyKey("key-never-used"))).toBeNull();
+		});
+
 		test("order_items are insert-once: a re-read returns the exact price/title snapshot", async () => {
 			const { store } = await makeHarness();
 			await store.createFromCart(physicalInput());

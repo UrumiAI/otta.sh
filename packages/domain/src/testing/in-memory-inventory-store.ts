@@ -180,6 +180,21 @@ export class InMemoryInventoryStore implements InventoryStore {
 	}
 
 	/**
+	 * Order-scoped release (review G2): the guarded `adopted → released` flip
+	 * scoped to the OWNING order. Anything else — unknown id, released/committed,
+	 * adopted by another order, still cart-`held` — is a silent no-op, never a
+	 * throw: a stale order must not free (or crash the sweep on) a hold it never
+	 * adopted.
+	 */
+	async releaseAdopted(reservationId: string, orderId: string): Promise<void> {
+		const row = this.#reservations.get(reservationId);
+		if (row === undefined) return;
+		if (row.state !== "adopted" || row.orderId !== orderId) return;
+		row.state = "released";
+		this.#onHand.set(row.sku, (this.#onHand.get(row.sku) ?? 0) + row.qty);
+	}
+
+	/**
 	 * The guarded `held → adopted` flip (Phase 4 §5): hands a cart's live
 	 * reservation to an order, setting `orderId` and re-pointing `expiresAt` to the
 	 * order's hold deadline, scoped `state='held' AND expiresAt > now`. An
