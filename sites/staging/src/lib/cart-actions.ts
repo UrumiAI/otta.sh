@@ -7,7 +7,7 @@
  * CSRF: every /cart/* endpoint calls `rejectCrossOrigin` (origin-guard.ts)
  * FIRST — Astro's `security.checkOrigin` is force-disabled by the emdash
  * integration and its replacement layer covers only /_emdash/api/* routes
- * (ADR-0004) — plus the cart cookie's SameSite=Lax.
+ * (ADR-0006) — plus the cart cookie's SameSite=Lax.
  */
 import {
 	CART_COOKIE_NAME,

@@ -3,7 +3,7 @@
  *
  * Modeled on em-dash's `templates/starter-cloudflare/astro.config.mjs`
  * (no Access / Images / Stream / sandbox), plus the trusted Urumi plugin
- * descriptor (ADR-0004) and the build-time commerce-service URL:
+ * descriptor (ADR-0006) and the build-time commerce-service URL:
  *
  *   COMMERCE_SERVICE_URL=https://<service host> pnpm build
  *
@@ -47,7 +47,7 @@ export default defineConfig({
 	// endpoints — the emdash integration force-injects `checkOrigin: false`
 	// and its replacement layer covers only /_emdash/api/* routes. The
 	// protection is the site-owned origin guard (src/lib/origin-guard.ts,
-	// ADR-0004). We still never set checkOrigin:false ourselves (pinned by
+	// ADR-0006). We still never set checkOrigin:false ourselves (pinned by
 	// the site-config test) so nothing regresses if emdash stops overriding.
 	vite: {
 		// Bake the service URL into the @urumi/plugin bundle (manifest.ts

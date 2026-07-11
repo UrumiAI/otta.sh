@@ -2,7 +2,7 @@
 // templates/starter-cloudflare/wrangler.jsonc MINUS `worker_loaders`:
 // the LOADER binding is consumed only by the plugin sandbox runner and
 // flips the account onto Workers Paid; this deployment runs the Urumi
-// plugin trusted in-process instead (ADR-0004).
+// plugin trusted in-process instead (ADR-0006).
 //
 // Secrets are NEVER committed here. Post-merge:
 //   npx emdash secrets generate && wrangler secret put EMDASH_ENCRYPTION_KEY

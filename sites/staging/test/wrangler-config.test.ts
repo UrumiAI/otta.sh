@@ -2,7 +2,7 @@
  * wrangler.jsonc guard (plan §3.2): the deployment config is data, so the
  * paid-plan/footgun exclusions are pinned as tests:
  *  - NO `worker_loaders` (the LOADER binding is consumed only by the
- *    sandbox runner and flips the account onto Workers Paid — ADR-0004);
+ *    sandbox runner and flips the account onto Workers Paid — ADR-0006);
  *  - the real staging resource ids (D1 urumi-cms, R2 urumi-media);
  *  - `nodejs_compat` present (required by the emdash CF stack);
  *  - `global_fetch_strictly_public` PRESENT (deploy-verified: Cloudflare

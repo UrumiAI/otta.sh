@@ -18,7 +18,7 @@ import { dispatchUrumiRoute, formString } from "../../lib/urumi-api.js";
 
 export const POST: APIRoute = async (context) => {
 	// CSRF first: emdash disables Astro's checkOrigin; the shim enforces
-	// its own origin check (origin-guard.ts, ADR-0004).
+	// its own origin check (origin-guard.ts, ADR-0006).
 	const forbidden = rejectCrossOrigin(context);
 	if (forbidden !== null) return forbidden;
 

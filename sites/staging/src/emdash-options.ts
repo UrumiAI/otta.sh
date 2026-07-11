@@ -10,7 +10,7 @@
  *    by the pairing-invariant test in site-config.test.ts.
  *  - R2 (`MEDIA`) — zero-config media storage.
  *  - The Urumi plugin registered TRUSTED via a hand-written descriptor
- *    (ADR-0004). Deliberately NO `sandboxed:`, NO `sandboxRunner:` — the
+ *    (ADR-0006). Deliberately NO `sandboxed:`, NO `sandboxRunner:` — the
  *    Worker-Loader sandbox is the Workers-Paid cost pivot this deployment
  *    avoids — and no cloudflareImages/Stream/Access (paid / not needed:
  *    default passkey+password auth with the first-boot setup wizard).

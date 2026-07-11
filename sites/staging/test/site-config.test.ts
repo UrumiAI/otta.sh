@@ -5,7 +5,7 @@
  *  - the Urumi plugin descriptor is standard-format, entrypoint
  *    `@urumi/plugin/plugin`, capabilities EXACTLY the manifest's, and its
  *    allowedHosts is exactly the service URL's hostname (the egress gate
- *    that holds even in trusted mode — ADR-0004);
+ *    that holds even in trusted mode — ADR-0006);
  *  - NO `sandboxed:` / `sandboxRunner:` keys (a LOADER-consuming sandbox
  *    runner is the Workers-Paid cost pivot this deployment avoids);
  *  - database/storage are d1(DB, session OFF — paired with wrangler's
@@ -13,7 +13,7 @@
  *  - Astro `security.checkOrigin` is never disabled BY US — note the emdash
  *    integration force-disables it platform-wide and substitutes a CSRF
  *    layer covering only /_emdash/api/* routes, so the real cart-endpoint
- *    CSRF pin is origin-guard.test.ts (see ADR-0004);
+ *    CSRF pin is origin-guard.test.ts (see ADR-0006);
  *  - `vite.ssr.noExternal` contains "@urumi/plugin" UNCONDITIONALLY: if the
  *    plugin is externalized, the `__URUMI_COMMERCE_SERVICE_URL__` define
  *    silently never applies and every ctx.http call fails against
@@ -23,6 +23,7 @@ import { readFileSync } from "node:fs";
 import {
 	COMMERCE_SERVICE_BASE_URL,
 	productDataWidget,
+	REPORTS_PAGE,
 	URUMI_PLUGIN_CAPABILITIES,
 	URUMI_PLUGIN_ID,
 } from "@urumi/plugin";
@@ -66,7 +67,20 @@ describe("urumiPluginDescriptor", () => {
 		expect(descriptor.fieldWidgets).toEqual([productDataWidget]);
 	});
 
-	test("declares no storage collections (the plugin holds no state)", () => {
+	test("declares the plugin's admin pages (Phase 7 Reports)", () => {
+		// REPORTS_PAGE is the plugin's exported admin.pages entry — the
+		// trusted descriptor must carry it or the Reports page never appears
+		// in the admin nav. (The Settings form needs no descriptor entry:
+		// PluginDescriptor has no settingsSchema field; its route is reached
+		// through em-dash's plugin-settings surface.)
+		expect(descriptor.adminPages).toEqual([REPORTS_PAGE]);
+	});
+
+	test("declares no storage collections (ctx.kv is always-available; the plugin declares no storage tables)", () => {
+		// Phase 7's settings form uses ctx.kv, which em-dash provides
+		// UNGATED (context.ts: "Always available") — no capability, no
+		// storage declaration. Capabilities therefore stay exactly the two
+		// in the manifest (pinned above).
 		expect(descriptor.storage).toBeUndefined();
 	});
 });

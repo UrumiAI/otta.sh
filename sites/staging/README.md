@@ -3,7 +3,7 @@
 The Urumi **staging storefront + admin**: an EmDash site on Cloudflare Workers
 (`urumi-store-staging`) with D1 (`urumi-cms`) + R2 (`urumi-media`), and the Urumi plugin
 registered **trusted in-process** — no plugin sandbox, no Worker Loaders, Workers **free**
-plan. See [ADR-0004](../../adr/0004-trusted-in-process-deployment.md) for why that is
+plan. See [ADR-0006](../../adr/0006-trusted-in-process-deployment.md) for why that is
 allowed and what stays forbidden.
 
 Pages are thin theme shims per [ADR-0003](../../adr/0003-storefront-plugin-routes.md): the
@@ -104,6 +104,13 @@ delete → create → id-rewrite → redeploy dance.)
   site task. Note for that task: `entitlements/download` is a public existence oracle
   (it confirms whether an orderId/buyerRef/sku combination is entitled) — the delivery
   page must rate-limit and/or tokenize access to it rather than exposing raw probing.
+- **Phase 5 customer-account pages are also a follow-up** (same scope note — no theme
+  pages built here). The plugin now serves five public account routes the theme is
+  expected to surface with login/account pages plus a first-party session cookie (the
+  plugin is session-stateless; the bearer token is route INPUT, so the theme layer owns
+  the cookie exactly like the cart shim does): `storefront/account/login/request`,
+  `storefront/account/login/verify`, `storefront/account/orders`,
+  `storefront/account/order`, `storefront/account/addresses`.
 - **Cron** is `* * * * *` (EmDash scheduled publishing is minute-granular; free-plan D1
   limits unaffected). May be relaxed — see the comment in `wrangler.jsonc`.
 - **workers.dev→workers.dev subrequests are blocked** (deploy-verified): a Worker's

@@ -3,7 +3,7 @@
  * Cart view — the theme shim side of ADR-0003's cart contract: this page
  * reads ITS OWN `urumi_cart` cookie and passes the id as plain route input
  * to the plugin's public `storefront/cart/read` (plugin routes are
- * cookie-blind by design in sandboxed mode; ADR-0004 records the trusted-
+ * cookie-blind by design in sandboxed mode; ADR-0006 records the trusted-
  * mode caveat). Line totals are quantity-only — the cart wire carries no
  * price (a cart line snapshots no price; that is an order invariant).
  *

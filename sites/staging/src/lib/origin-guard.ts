@@ -6,7 +6,7 @@
  * own dual-origin CSRF layer can validate at runtime — em-dash
  * `astro/integration/index.ts`), and that replacement layer
  * (`checkPublicCsrf`) covers only `/_emdash/api/*` routes. Theme-owned
- * endpoints get NOTHING unless they check themselves. See ADR-0004's CSRF
+ * endpoints get NOTHING unless they check themselves. See ADR-0006's CSRF
  * section.
  *
  * Semantics mirror em-dash's `checkPublicCsrf` / Astro's origin check:

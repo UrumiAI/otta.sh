@@ -1,6 +1,6 @@
 /**
  * The Urumi plugin's TRUSTED (in-process) registration descriptor —
- * ADR-0004. A hand-written standard-format `PluginDescriptor`: em-dash's
+ * ADR-0006. A hand-written standard-format `PluginDescriptor`: em-dash's
  * integration generates `import def from "@urumi/plugin/plugin";
  * adaptSandboxEntry(def, {...this descriptor})` at build time, so the
  * plugin's `{hooks, routes}` default export runs in the host worker — but
@@ -14,6 +14,7 @@
 import type { FieldWidgetConfig, PluginDescriptor } from "emdash";
 import {
 	productDataWidget,
+	REPORTS_PAGE,
 	URUMI_PLUGIN_CAPABILITIES,
 	URUMI_PLUGIN_ID,
 	URUMI_PLUGIN_VERSION,
@@ -37,5 +38,12 @@ export function urumiPluginDescriptor(serviceUrl: string): PluginDescriptor {
 		// needed; the runtime shape is pinned by the plugin's own
 		// product-data-widget sandbox test.
 		fieldWidgets: [productDataWidget as unknown as FieldWidgetConfig],
+		// Phase 7's admin Reports page — the plugin's exported `admin.pages`
+		// entry; without it here the page never appears in the admin nav.
+		// (No entry for the Settings form: PluginDescriptor carries no
+		// settingsSchema; its non-public route rides em-dash's own
+		// plugin-settings surface. Phase 5/7 added NO capability: account
+		// routes are network:request proxies and ctx.kv is always-available.)
+		adminPages: [REPORTS_PAGE],
 	};
 }
