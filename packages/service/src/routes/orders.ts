@@ -149,6 +149,7 @@ function checkoutFailure(c: Context, reason: CreateOrderFailure): Response {
 		case "CART_CHECKED_OUT":
 		case "RESERVATION_LOST":
 		case "PRODUCT_NOT_PRICED":
+		case "CURRENCY_MISMATCH":
 			return c.json(body, 409);
 	}
 }

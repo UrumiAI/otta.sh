@@ -9,7 +9,10 @@ export type CreateOrderFailure =
 	| "CART_EMPTY"
 	| "CART_CHECKED_OUT"
 	| "RESERVATION_LOST"
-	| "PRODUCT_NOT_PRICED";
+	| "PRODUCT_NOT_PRICED"
+	/** A line's `product_commerce` price currency ≠ the cart currency (review G5)
+	 *  — summing it into the cart-currency total would mix monies. */
+	| "CURRENCY_MISMATCH";
 
 /** `settleOrder` outcomes (the confirmation path). */
 export type SettleFailure =

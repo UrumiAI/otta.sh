@@ -100,6 +100,12 @@ export async function createOrderFromCart(
 		if (pc === null || pc.price === null || pc.title === null) {
 			return { ok: false, reason: "PRODUCT_NOT_PRICED" };
 		}
+		if (pc.price.currency !== currency) {
+			// Review G5: order.currency (and the order_totals row) is stamped from
+			// the cart; a line priced in another currency must never be summed into
+			// that total — reject, never mix monies.
+			return { ok: false, reason: "CURRENCY_MISMATCH" };
+		}
 		const physical = pc.productKind === "physical";
 		if (physical && line.reservationId === null) {
 			// Review G3: the product flipped digital → physical between add-to-cart

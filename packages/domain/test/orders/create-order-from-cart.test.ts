@@ -167,6 +167,28 @@ describe("createOrderFromCart", () => {
 		expect(res).toEqual({ ok: false, reason: "RESERVATION_LOST" });
 	});
 
+	test("a line whose product price currency differs from the cart currency is rejected CURRENCY_MISMATCH — never summed into a foreign-currency total", async () => {
+		// Seed a digital product priced in EUR while the cart is USD.
+		await h.productCommerce.upsert(
+			{
+				productId: brandProductId("d-eur"),
+				sku: brandSku("DIG-EUR"),
+				price: money(cents(900), currency("EUR")),
+				title: "Ebook (EUR)",
+				productKind: "digital",
+			},
+			idempotencyKey("seed-eur"),
+		);
+		const cartId = await h.cartWith([
+			{ sku: "DIG-EUR", productId: "d-eur", qty: 1, kind: "digital" },
+		]);
+
+		// G5: order.currency is stamped from the cart; a EUR line summed into a
+		// USD total is money-mixing, not a checkout.
+		const res = await createOrderFromCart(h.createDeps, cmd(cartId));
+		expect(res).toEqual({ ok: false, reason: "CURRENCY_MISMATCH" });
+	});
+
 	test("a second checkout of the same cart with a DIFFERENT idempotency key is rejected CART_CHECKED_OUT — no second order is minted", async () => {
 		await h.seedPhysical({
 			productId: "p1",
