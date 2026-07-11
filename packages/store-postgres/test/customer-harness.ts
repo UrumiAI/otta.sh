@@ -20,6 +20,8 @@ import { createIsolatedPgSchema } from "../src/testing.js";
 /** Short TTLs so the session/challenge expiry cases can cross them by advancing. */
 const SESSION_TTL_MS = 1000;
 const CHALLENGE_TTL_MS = 1000;
+/** The per-email active-challenge cap under test (review round H1). */
+const MAX_ACTIVE_CHALLENGES = 3;
 
 const cleanups: Array<() => Promise<void>> = [];
 
@@ -107,12 +109,15 @@ function buildVerifierHarness(db: Kysely<Database>): CredentialVerifierHarness {
 		idGen: new CountingIdGen("chal"),
 		clock,
 		ttlMs: CHALLENGE_TTL_MS,
+		maxActiveChallenges: MAX_ACTIVE_CHALLENGES,
 	});
 	return {
 		verifier,
 		customerStore,
 		advance: (ms) => clock.advance(ms),
+		now: () => clock.now().toISOString(),
 		challengeTtlMs: CHALLENGE_TTL_MS,
+		maxActiveChallenges: MAX_ACTIVE_CHALLENGES,
 	};
 }
 

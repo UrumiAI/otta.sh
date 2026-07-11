@@ -73,12 +73,17 @@ function guestOrder(buyerRef: string, id: string): CreateOrderInput {
 	};
 }
 
+/** requestLogin that MUST succeed (narrows the H1 THROTTLED union — these
+ *  cases never approach the per-email cap). */
+async function requestLoginOk(to: string): Promise<{ challengeId: string; token: string }> {
+	const res = await requestLogin({ credentialVerifier: verifier }, { email: email(to) });
+	if (!res.ok) throw new Error(`unexpected throttle: ${res.reason}`);
+	return res;
+}
+
 describe("magic-link login use-cases (5.2)", () => {
 	test("a first-ever login creates the customer, verifies the email, and mints a session", async () => {
-		const { challengeId, token } = await requestLogin(
-			{ credentialVerifier: verifier },
-			{ email: email("new@example.com") },
-		);
+		const { challengeId, token } = await requestLoginOk("new@example.com");
 		const result = await verifyLogin(deps, { challengeId, token });
 		expect(result.ok).toBe(true);
 		if (result.ok) {
@@ -91,10 +96,7 @@ describe("magic-link login use-cases (5.2)", () => {
 
 	test("login links a pre-existing guest order with the same email (§9 Risk 3)", async () => {
 		await orderStore.createFromCart(guestOrder("guest@example.com", "ord-guest"));
-		const { challengeId, token } = await requestLogin(
-			{ credentialVerifier: verifier },
-			{ email: email("guest@example.com") },
-		);
+		const { challengeId, token } = await requestLoginOk("guest@example.com");
 		const result = await verifyLogin(deps, { challengeId, token });
 		expect(result.ok).toBe(true);
 		if (result.ok) {
@@ -104,10 +106,7 @@ describe("magic-link login use-cases (5.2)", () => {
 	});
 
 	test("a stale (consumed) challenge is rejected, mints no session", async () => {
-		const { challengeId, token } = await requestLogin(
-			{ credentialVerifier: verifier },
-			{ email: email("once@example.com") },
-		);
+		const { challengeId, token } = await requestLoginOk("once@example.com");
 		await verifyLogin(deps, { challengeId, token }); // consume
 		const replay = await verifyLogin(deps, { challengeId, token });
 		expect(replay).toEqual({ ok: false, reason: "CONSUMED" });

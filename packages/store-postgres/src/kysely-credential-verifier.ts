@@ -17,6 +17,9 @@ import type { Database } from "./schema.js";
 /** Default magic-link challenge lifetime. */
 export const DEFAULT_CHALLENGE_TTL_MS = 15 * 60 * 1000;
 
+/** Default per-email active-challenge cap (review round H1, §9 Risk 4). */
+export const DEFAULT_MAX_ACTIVE_CHALLENGES = 3;
+
 export interface KyselyCredentialVerifierOptions {
 	db: Kysely<Database>;
 	/** Used to get-or-create the customer on the first successful verify. */
@@ -24,6 +27,8 @@ export interface KyselyCredentialVerifierOptions {
 	idGen: IdGen;
 	clock: Clock;
 	ttlMs?: number;
+	/** Per-email active-challenge cap (H1). */
+	maxActiveChallenges?: number;
 }
 
 /**
@@ -32,6 +37,14 @@ export interface KyselyCredentialVerifierOptions {
  * The one-time token is stored as a hash (single-use via `consumed_at`, guarded
  * so a URL replay is `CONSUMED`), TTL-expired tokens are `EXPIRED`, and the
  * customer is get-or-created on the first successful verify.
+ *
+ * Rate limiting (review round H1, §9 Risk 4): `issueChallenge` is a DB-backed
+ * per-email window — when N unconsumed, unexpired challenges already exist for
+ * the address it no-ops (`THROTTLED`), bounding both the email-bombing rate and
+ * `login_challenges` growth per address. Per-IP limiting is gateway-layer scope
+ * (ADR-0004), not this adapter's. `pruneChallenges` deletes consumed/expired
+ * rows so the table cannot grow unboundedly (driven by the same internal
+ * maintenance tick as the outbox dispatcher).
  */
 export class KyselyCredentialVerifier implements CustomerCredentialVerifier {
 	readonly #db: Kysely<Database>;
@@ -39,6 +52,7 @@ export class KyselyCredentialVerifier implements CustomerCredentialVerifier {
 	readonly #idGen: IdGen;
 	readonly #clock: Clock;
 	readonly #ttlMs: number;
+	readonly #maxActive: number;
 
 	constructor(options: KyselyCredentialVerifierOptions) {
 		this.#db = options.db;
@@ -46,24 +60,45 @@ export class KyselyCredentialVerifier implements CustomerCredentialVerifier {
 		this.#idGen = options.idGen;
 		this.#clock = options.clock;
 		this.#ttlMs = options.ttlMs ?? DEFAULT_CHALLENGE_TTL_MS;
+		this.#maxActive = options.maxActiveChallenges ?? DEFAULT_MAX_ACTIVE_CHALLENGES;
 	}
 
 	async issueChallenge(email: Email): Promise<IssueChallengeResult> {
+		const now = this.#clock.now();
+		const nowIso = now.toISOString();
+
+		// Per-email window (H1): count active (unconsumed, unexpired) challenges.
+		const active = await this.#db
+			.selectFrom("login_challenges")
+			.select(({ fn }) => fn.countAll().as("n"))
+			.where("email", "=", email)
+			.where("consumed_at", "is", null)
+			.where("expires_at", ">", nowIso)
+			.executeTakeFirstOrThrow();
+		if (Number(active.n) >= this.#maxActive) return { ok: false, reason: "THROTTLED" };
+
 		const challengeId = this.#idGen.newId();
 		const token = this.#idGen.newId();
-		const now = this.#clock.now();
 		await this.#db
 			.insertInto("login_challenges")
 			.values({
 				id: challengeId,
 				email,
 				token_hash: hashToken(token),
-				created_at: now.toISOString(),
+				created_at: nowIso,
 				expires_at: new Date(now.getTime() + this.#ttlMs).toISOString(),
 				consumed_at: null,
 			})
 			.execute();
-		return { challengeId, token };
+		return { ok: true, challengeId, token };
+	}
+
+	async pruneChallenges(now: string): Promise<number> {
+		const res = await this.#db
+			.deleteFrom("login_challenges")
+			.where((eb) => eb.or([eb("consumed_at", "is not", null), eb("expires_at", "<=", now)]))
+			.executeTakeFirst();
+		return Number(res.numDeletedRows);
 	}
 
 	async verifyChallenge(challengeId: string, token: string): Promise<VerifyChallengeResult> {

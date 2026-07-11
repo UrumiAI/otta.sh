@@ -20,18 +20,23 @@ interface StoredChallenge {
 /** Default magic-link challenge lifetime. */
 export const DEFAULT_CHALLENGE_TTL_MS = 15 * 60 * 1000;
 
+/** Default per-email active-challenge cap (review round H1, §9 Risk 4). */
+export const DEFAULT_MAX_ACTIVE_CHALLENGES = 3;
+
 /**
  * IO-free magic-link `CustomerCredentialVerifier` fake — the first adapter to
  * pass `credentialVerifierContract`. Models the real adapter: a one-time token
  * (stored as a hash by the DB adapter; here directly), single-use
- * (`consumedAt`), TTL expiry against the clock, and get-or-create of the
- * customer on the first successful verify.
+ * (`consumedAt`), TTL expiry against the clock, get-or-create of the customer
+ * on the first successful verify, the per-email rate-limit window, and the
+ * consumed/expired prune (review round H1).
  */
 export class InMemoryCredentialVerifier implements CustomerCredentialVerifier {
 	#customerStore: CustomerStore;
 	#idGen: IdGen;
 	#clock: Clock;
 	#ttlMs: number;
+	#maxActive: number;
 	#challenges = new Map<string, StoredChallenge>();
 
 	constructor(options: {
@@ -39,14 +44,25 @@ export class InMemoryCredentialVerifier implements CustomerCredentialVerifier {
 		idGen: IdGen;
 		clock: Clock;
 		ttlMs?: number;
+		maxActiveChallenges?: number;
 	}) {
 		this.#customerStore = options.customerStore;
 		this.#idGen = options.idGen;
 		this.#clock = options.clock;
 		this.#ttlMs = options.ttlMs ?? DEFAULT_CHALLENGE_TTL_MS;
+		this.#maxActive = options.maxActiveChallenges ?? DEFAULT_MAX_ACTIVE_CHALLENGES;
 	}
 
 	async issueChallenge(email: Email): Promise<IssueChallengeResult> {
+		// Per-email window (H1): at most N unconsumed, unexpired challenges may
+		// exist for one address — the Nth+1 rapid request issues nothing.
+		const now = this.#clock.now().toISOString();
+		let active = 0;
+		for (const c of this.#challenges.values()) {
+			if (c.email === email && c.consumedAt === null && c.expiresAt > now) active++;
+		}
+		if (active >= this.#maxActive) return { ok: false, reason: "THROTTLED" };
+
 		const id = this.#idGen.newId();
 		const token = this.#idGen.newId();
 		this.#challenges.set(id, {
@@ -56,7 +72,18 @@ export class InMemoryCredentialVerifier implements CustomerCredentialVerifier {
 			expiresAt: new Date(this.#clock.now().getTime() + this.#ttlMs).toISOString(),
 			consumedAt: null,
 		});
-		return { challengeId: id, token };
+		return { ok: true, challengeId: id, token };
+	}
+
+	async pruneChallenges(now: string): Promise<number> {
+		let pruned = 0;
+		for (const [id, c] of this.#challenges) {
+			if (c.consumedAt !== null || c.expiresAt <= now) {
+				this.#challenges.delete(id);
+				pruned++;
+			}
+		}
+		return pruned;
 	}
 
 	async verifyChallenge(challengeId: string, token: string): Promise<VerifyChallengeResult> {

@@ -32,9 +32,19 @@ the verifier. Sessions are opaque and DB-backed so revocation actually works.
 - Swapping to passkey/password later means a new `CustomerCredentialVerifier` adapter and its
   two `/auth/*` routes only — zero changes to sessions, authorization, or account pages.
 - A customer without immediate email access can't log in; mitigated by a long-lived session.
+- **Abuse limiting (§9 Risk 4, review round H1):** `issueChallenge` enforces a DB-backed
+  **per-email window** — at most N unconsumed, unexpired challenges may exist per address
+  (default 3); past the cap the request no-ops (no insert, no email) while the HTTP response
+  stays byte-identical, so neither account existence nor the throttle itself is an oracle.
+  Consumed/expired challenges are pruned on the same internal maintenance tick as the email
+  outbox dispatcher, bounding `login_challenges` growth. **Per-IP limiting is deliberately
+  deferred to the gateway layer** (reverse proxy / WAF in front of the service, where the true
+  client IP is known and limiting is uniform across endpoints) — the domain port stays
+  IP-blind; only the per-email window is service code.
 - **Guest-order linking** (§9 Risk 3): a successful magic-link login proves inbox ownership, so
-  guest orders with a matching `buyer_ref` are claimed automatically at login. This linkage
-  depends on the mechanism proving email ownership — revisit if the mechanism (this ADR)
-  changes to one that doesn't (e.g. plain password).
+  guest orders with a matching `buyer_ref` are claimed automatically at login (case-insensitive
+  on `buyer_ref` — checkout stores it verbatim, review round H2). This linkage depends on the
+  mechanism proving email ownership — revisit if the mechanism (this ADR) changes to one that
+  doesn't (e.g. plain password).
 
 _Awaiting decision-maker sign-off (implemented per the Phase 5 plan §4 recommendation)._

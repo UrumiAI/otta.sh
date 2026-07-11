@@ -134,6 +134,48 @@ describe.skipIf(PG === undefined)("customers + auth + admin HTTP contract", () =
 		expect(server.emailSender.countByTemplate("customer-login-link")).toBe(1);
 	});
 
+	test("rapid login requests for one email are rate-limited: no extra email/challenge, response indistinguishable (H1)", async () => {
+		const bodies: string[] = [];
+		for (let i = 0; i < 5; i++) {
+			const res = await fetch(`${server.baseUrl}/auth/login/request`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ email: "bomb@example.com" }),
+			});
+			expect(res.status).toBe(200);
+			bodies.push(await res.text());
+		}
+		// The throttled responses are byte-identical to the issued ones — the
+		// limiter is not an oracle (§9 Risk 4).
+		expect(new Set(bodies).size).toBe(1);
+		// Only the capped number of emails ever went out (default cap: 3); a
+		// different address is unaffected.
+		expect(server.emailSender.countByTemplate("customer-login-link")).toBe(3);
+		await fetch(`${server.baseUrl}/auth/login/request`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ email: "someone-else@example.com" }),
+		});
+		expect(server.emailSender.countByTemplate("customer-login-link")).toBe(4);
+	});
+
+	test("the internal maintenance tick prunes consumed/expired login challenges (H1)", async () => {
+		// A completed login leaves exactly one consumed challenge behind.
+		await login("prune@example.com");
+		const res = await fetch(`${server.baseUrl}/internal/dispatch-emails`, {
+			method: "POST",
+			headers: { "X-Internal-Token": server.internalToken! },
+		});
+		expect(res.status).toBe(200);
+		expect((await json(res))["prunedChallenges"]).toBe(1);
+		// Idempotent: a second tick finds nothing left to prune.
+		const again = await fetch(`${server.baseUrl}/internal/dispatch-emails`, {
+			method: "POST",
+			headers: { "X-Internal-Token": server.internalToken! },
+		});
+		expect((await json(again))["prunedChallenges"]).toBe(0);
+	});
+
 	test("POST /auth/login/verify with a stale (consumed) challenge returns 401, not customer detail", async () => {
 		await fetch(`${server.baseUrl}/auth/login/request`, {
 			method: "POST",

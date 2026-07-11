@@ -107,6 +107,7 @@ export function createApp(deps: AppDeps): Hono {
 			orderStore: deps.orderStore,
 			emailSender: deps.emailSender,
 			customerStore: deps.customerStore,
+			credentialVerifier: deps.credentialVerifier,
 			clock: deps.clock,
 			...(deps.internalToken !== undefined ? { internalToken: deps.internalToken } : {}),
 		}),

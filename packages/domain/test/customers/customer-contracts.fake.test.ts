@@ -15,6 +15,7 @@ import {
 // contract suites, run against their in-memory fakes first (Phase-0.3 precedent).
 
 const TTL = 1000;
+const MAX_ACTIVE_CHALLENGES = 3;
 
 customerStoreContract(
 	async () => {
@@ -53,12 +54,15 @@ credentialVerifierContract(
 			idGen: new CountingIdGen("chal"),
 			clock,
 			ttlMs: TTL,
+			maxActiveChallenges: MAX_ACTIVE_CHALLENGES,
 		});
 		return {
 			verifier,
 			customerStore,
 			advance: (ms: number) => clock.advance(ms),
+			now: () => clock.now().toISOString(),
 			challengeTtlMs: TTL,
+			maxActiveChallenges: MAX_ACTIVE_CHALLENGES,
 		};
 	},
 	{ dialect: "fake" },

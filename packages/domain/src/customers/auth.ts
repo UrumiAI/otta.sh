@@ -1,5 +1,8 @@
 import type { Clock } from "../ports/clock.js";
-import type { CustomerCredentialVerifier } from "../ports/credential-verifier.js";
+import type {
+	CustomerCredentialVerifier,
+	IssueChallengeResult,
+} from "../ports/credential-verifier.js";
 import type { CustomerStore } from "../ports/customer-store.js";
 import type { OrderStore } from "../ports/order-store.js";
 import type { SessionStore } from "../ports/session-store.js";
@@ -10,19 +13,18 @@ export interface RequestLoginDeps {
 	credentialVerifier: CustomerCredentialVerifier;
 }
 
-export interface RequestLoginResult {
-	challengeId: string;
-	/** The one-time token to embed in the emailed magic link. The caller
-	 *  (service route) emails it via `EmailSender`; it is never returned to an
-	 *  API client. */
-	token: string;
-}
+/** `ok:true` carries the challenge + the one-time token to embed in the emailed
+ *  magic link (emailed by the service route, never returned to an API client);
+ *  `THROTTLED` (review round H1) means the per-email cap is hit — issue nothing,
+ *  email nothing, but respond identically. */
+export type RequestLoginResult = IssueChallengeResult;
 
 /**
- * Begin a magic-link login (Phase 5 §7). Always issues a challenge — for a
- * never-seen email too (first login creates the account on verify), so there is
- * **no account-existence oracle** (§9 Risk 4): the route returns an identical
- * "if an account exists, we've sent a link" response regardless.
+ * Begin a magic-link login (Phase 5 §7). Issues a challenge for a never-seen
+ * email too (first login creates the account on verify), so there is **no
+ * account-existence oracle** (§9 Risk 4): the route returns an identical
+ * "if an account exists, we've sent a link" response regardless — including
+ * when the request is rate-limited (`THROTTLED` must not be observable either).
  */
 export async function requestLogin(
 	deps: RequestLoginDeps,

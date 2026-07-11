@@ -46,21 +46,24 @@ export function authRoutes(deps: AuthRoutesDeps): Hono {
 		} catch {
 			return c.json({ error: "invalid email" }, 400);
 		}
-		const { challengeId, token } = await requestLogin(
-			{ credentialVerifier: deps.credentialVerifier },
-			{ email },
-		);
-		const loginUrl =
-			deps.storefrontBaseUrl === undefined
-				? undefined
-				: `${deps.storefrontBaseUrl.replace(/\/$/, "")}/account/login?challengeId=${encodeURIComponent(challengeId)}&token=${encodeURIComponent(token)}`;
-		await deps.emailSender.send({
-			to: email,
-			template: "customer-login-link",
-			data: { challengeId, token, ...(loginUrl !== undefined ? { loginUrl } : {}) },
-			idempotencyKey: `login:${challengeId}`,
-		});
-		// Identical response regardless of account existence.
+		const issued = await requestLogin({ credentialVerifier: deps.credentialVerifier }, { email });
+		if (issued.ok) {
+			const { challengeId, token } = issued;
+			const loginUrl =
+				deps.storefrontBaseUrl === undefined
+					? undefined
+					: `${deps.storefrontBaseUrl.replace(/\/$/, "")}/account/login?challengeId=${encodeURIComponent(challengeId)}&token=${encodeURIComponent(token)}`;
+			await deps.emailSender.send({
+				to: email,
+				template: "customer-login-link",
+				data: { challengeId, token, ...(loginUrl !== undefined ? { loginUrl } : {}) },
+				idempotencyKey: `login:${challengeId}`,
+			});
+		}
+		// Identical response regardless of account existence AND regardless of
+		// rate limiting (review round H1): a THROTTLED issue sends no email and
+		// inserts no challenge, but the caller must not be able to tell — else
+		// the limiter itself becomes a probing oracle (§9 Risk 4).
 		return c.json({ ok: true, message: "If an account exists, we've sent a sign-in link." }, 200);
 	});
 

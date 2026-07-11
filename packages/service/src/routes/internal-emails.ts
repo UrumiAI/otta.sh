@@ -1,6 +1,7 @@
 import {
 	dispatchOrderEmails,
 	type Clock,
+	type CustomerCredentialVerifier,
 	type CustomerStore,
 	type EmailSender,
 	type OrderStore,
@@ -12,15 +13,19 @@ export interface OutboxDispatchDeps {
 	orderStore: OrderStore;
 	emailSender: EmailSender;
 	customerStore: CustomerStore;
+	/** For the login-challenge prune (review round H1) — same maintenance tick. */
+	credentialVerifier: CustomerCredentialVerifier;
 	clock: Clock;
 	internalToken?: string;
 }
 
 /**
- * The email outbox dispatcher trigger (Phase 5 §8 5.8) — the Phase-3
- * hold-expiry-cron precedent, reused: a self-interval or plugin-cron POSTs here
- * to drain pending order-status emails. Claims are atomic, so concurrent runs
- * never double-send; a send failure is retried on the next tick.
+ * The email/auth maintenance trigger (Phase 5 §8 5.8 + review round H1) — the
+ * Phase-3 hold-expiry-cron precedent, reused: a self-interval or plugin-cron
+ * POSTs here to (a) drain pending order-status emails and (b) prune consumed/
+ * expired login challenges so `login_challenges` cannot grow unboundedly.
+ * Claims are atomic, so concurrent runs never double-send; a send failure is
+ * retried on the next tick; the prune is idempotent.
  */
 export function internalEmailRoutes(deps: OutboxDispatchDeps): Hono {
 	const app = new Hono();
@@ -33,7 +38,10 @@ export function internalEmailRoutes(deps: OutboxDispatchDeps): Hono {
 			customerStore: deps.customerStore,
 			clock: deps.clock,
 		});
-		return c.json({ ok: true, sent }, 200);
+		const prunedChallenges = await deps.credentialVerifier.pruneChallenges(
+			deps.clock.now().toISOString(),
+		);
+		return c.json({ ok: true, sent, prunedChallenges }, 200);
 	});
 	return app;
 }

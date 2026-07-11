@@ -32,6 +32,7 @@ export {
 export {
 	KyselyCredentialVerifier,
 	DEFAULT_CHALLENGE_TTL_MS,
+	DEFAULT_MAX_ACTIVE_CHALLENGES,
 	type KyselyCredentialVerifierOptions,
 } from "./kysely-credential-verifier.js";
 export { migrateToLatest, migrationProvider } from "./migrations/index.js";

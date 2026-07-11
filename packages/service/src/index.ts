@@ -121,14 +121,18 @@ const port = Number(process.env.PORT ?? 3000);
 serve({ fetch: app.fetch, port });
 console.log(`@urumi/service listening on :${port}`);
 
-// Self-scheduled email outbox dispatcher (§5.8) — the Node convenience wiring
-// (a Worker deployment drives POST /internal/dispatch-emails via the cron hook
-// instead). Unref'd so it never keeps the process alive on its own.
+// Self-scheduled email outbox dispatcher + login-challenge prune (§5.8 +
+// review round H1) — the Node convenience wiring (a Worker deployment drives
+// POST /internal/dispatch-emails via the cron hook instead, which does both).
+// Unref'd so it never keeps the process alive on its own.
 const emailDispatchDeps = { orderStore, emailSender, customerStore, clock };
 const emailSweepMs = Number(process.env.EMAIL_DISPATCH_INTERVAL_MS ?? 30_000);
 setInterval(() => {
 	void dispatchOrderEmails(emailDispatchDeps).catch((err: unknown) => {
 		console.error("[service] email dispatch failed:", err);
+	});
+	void credentialVerifier.pruneChallenges(clock.now().toISOString()).catch((err: unknown) => {
+		console.error("[service] login-challenge prune failed:", err);
 	});
 }, emailSweepMs).unref();
 

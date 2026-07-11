@@ -48,6 +48,7 @@ export { InMemorySessionStore, DEFAULT_SESSION_TTL_MS } from "./in-memory-sessio
 export {
 	InMemoryCredentialVerifier,
 	DEFAULT_CHALLENGE_TTL_MS,
+	DEFAULT_MAX_ACTIVE_CHALLENGES,
 } from "./in-memory-credential-verifier.js";
 export { FakeEmailSender } from "./fake-email-sender.js";
 export {
