@@ -3,6 +3,20 @@ import {
 	createProductCommerceRouteHandler,
 	PRODUCT_COMMERCE_ROUTE,
 } from "./admin/product-commerce-route.js";
+// ── Phase 3 group E: cart routes (plan §7 step E1, shape per ADR-0003) ────
+import {
+	createCartCreateRouteHandler,
+	createCartLineAddRouteHandler,
+	createCartLineRemoveRouteHandler,
+	createCartLineUpdateRouteHandler,
+	createCartReadRouteHandler,
+	STOREFRONT_CART_CREATE_ROUTE,
+	STOREFRONT_CART_LINE_ADD_ROUTE,
+	STOREFRONT_CART_LINE_REMOVE_ROUTE,
+	STOREFRONT_CART_LINE_UPDATE_ROUTE,
+	STOREFRONT_CART_READ_ROUTE,
+} from "./storefront/cart-routes.js";
+// ── end Phase 3 group E: cart routes ───────────────────────────────────────
 import { createPdpRouteHandler, STOREFRONT_PRODUCT_ROUTE } from "./storefront/pdp-route.js";
 import { createPlpRouteHandler, STOREFRONT_LIST_ROUTE } from "./storefront/plp-route.js";
 import {
@@ -52,6 +66,25 @@ const plugin: SandboxedPlugin = {
 		[PANEL_STATE_ROUTE]: { handler: createPanelStateRouteHandler() as never, public: false },
 		[STOREFRONT_PRODUCT_ROUTE]: { handler: createPdpRouteHandler() as never, public: true },
 		[STOREFRONT_LIST_ROUTE]: { handler: createPlpRouteHandler() as never, public: true },
+		// ── Phase 3 group E: cart (public — proxies over ctx.http only) ────
+		[STOREFRONT_CART_CREATE_ROUTE]: {
+			handler: createCartCreateRouteHandler() as never,
+			public: true,
+		},
+		[STOREFRONT_CART_READ_ROUTE]: { handler: createCartReadRouteHandler() as never, public: true },
+		[STOREFRONT_CART_LINE_ADD_ROUTE]: {
+			handler: createCartLineAddRouteHandler() as never,
+			public: true,
+		},
+		[STOREFRONT_CART_LINE_UPDATE_ROUTE]: {
+			handler: createCartLineUpdateRouteHandler() as never,
+			public: true,
+		},
+		[STOREFRONT_CART_LINE_REMOVE_ROUTE]: {
+			handler: createCartLineRemoveRouteHandler() as never,
+			public: true,
+		},
+		// ── end Phase 3 group E: cart ───────────────────────────────────────
 	},
 };
 

@@ -153,7 +153,7 @@ describe("storefront PDP route (workerd sandbox)", () => {
 		expect(JSON.stringify(jsonLd)).not.toContain("Offer");
 	});
 
-	test("the P3-group-E extension seam: an addToCart slot exists, is empty in Phase 2, and rides the same purchasable flag", async () => {
+	test("the P3-group-E seam is now FILLED: a purchasable product carries a Block Kit add-to-cart slot riding the purchasable flag", async () => {
 		respondFromCatalog({
 			"prod-1": { amount: 1999, currency: "USD", sku: "SKU-1", inStock: true },
 		});
@@ -164,8 +164,43 @@ describe("storefront PDP route (workerd sandbox)", () => {
 		const result = (outcome as { result: Record<string, unknown> }).result;
 		const product = result["product"] as Record<string, unknown>;
 
-		// Phase 2 renders NO add-to-cart affordance, purchasable or not (§4.5)
-		// — but the slot Phase 3 hangs its affordance on is already there.
+		// Phase 3 fills the seam Phase 2 always rendered `null`: a purchasable
+		// product now carries an add-to-cart affordance descriptor (§4.5). It
+		// targets the plugin's public add-line route, carries the sku + a fresh
+		// idempotency key, and is a Block Kit fragment (a qty stepper + button),
+		// NOT React (DEVELOPMENT.md §5).
+		const slots = product["slots"] as { addToCart: Record<string, unknown> | null };
+		expect(slots.addToCart).not.toBeNull();
+		const slot = slots.addToCart!;
+		expect(slot["route"]).toBe("storefront/cart/lines/add");
+		expect(slot["sku"]).toBe("SKU-1");
+		expect(typeof slot["idempotencyKey"]).toBe("string");
+		expect((slot["idempotencyKey"] as string).length).toBeGreaterThan(0);
+
+		const elements = slot["elements"] as Array<Record<string, unknown>>;
+		expect(elements.map((e) => e["type"])).toEqual(["number_input", "button"]);
+		const button = elements[1]!;
+		expect(button).toMatchObject({
+			type: "button",
+			// The button's value is echoed back verbatim on click (Block Kit) —
+			// it forwards the payload the add-line route needs (plan §8 Risk 5).
+			value: {
+				route: "storefront/cart/lines/add",
+				sku: "SKU-1",
+				idempotencyKey: slot["idempotencyKey"],
+			},
+		});
+	});
+
+	test("the add-to-cart slot is null for a NON-purchasable product (no sku to add) — it rides the purchasable flag", async () => {
+		respondFromCatalog({}); // no commerce record ⇒ not purchasable
+
+		const outcome = await sandboxHandle.invokeRoute("storefront/product", {
+			content: { ...CONTENT, id: "prod-unsynced" },
+		});
+		const result = (outcome as { result: Record<string, unknown> }).result;
+		const product = result["product"] as Record<string, unknown>;
+		expect(product["purchasable"]).toBe(false);
 		expect(product["slots"]).toEqual({ addToCart: null });
 	});
 
