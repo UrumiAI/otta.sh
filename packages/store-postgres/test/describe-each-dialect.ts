@@ -3,6 +3,8 @@ import type {
 	CouponStoreHarness,
 	InventoryStoreHarness,
 	ProductCommerceStoreHarness,
+	ReportingStoreHarness,
+	SettingsStoreHarness,
 	ShippingRulesStoreHarness,
 	TaxRulesStoreHarness,
 } from "@urumi/domain/testing";
@@ -13,6 +15,8 @@ import {
 	KyselyCouponStore,
 	KyselyInventoryStore,
 	KyselyProductCommerceStore,
+	KyselyReportingStore,
+	KyselySettingsStore,
 	KyselyShippingRulesStore,
 	KyselyTaxRulesStore,
 	makeSqliteDb,
@@ -228,4 +232,95 @@ export async function makeSqliteCouponHarness(): Promise<CouponStoreHarness> {
 }
 export async function makePgCouponHarness(): Promise<CouponStoreHarness> {
 	return { store: new KyselyCouponStore({ db: await makePgDbMigrated(), idGen: uuidIdGen }) };
+}
+
+// -- Phase 7: reporting + settings harnesses ---------------------------------
+
+function buildReportingHarness(
+	db: Kysely<Database>,
+	dialect: "sqlite" | "postgres",
+): ReportingStoreHarness {
+	return {
+		store: new KyselyReportingStore({ db, dialect }),
+		async seedOrder(row) {
+			await db
+				.insertInto("orders")
+				.values({
+					id: row.id,
+					cart_id: null,
+					currency: row.currency,
+					state: row.state as Database["orders"]["state"],
+					idempotency_key: `seed-${row.id}`,
+					hold_expires_at: row.createdAt,
+					payment_method: null,
+					buyer_ref: "seed",
+					created_at: row.createdAt,
+					updated_at: row.createdAt,
+				})
+				.execute();
+			await db
+				.insertInto("order_totals")
+				.values({
+					order_id: row.id,
+					currency: row.currency,
+					subtotal_cents: row.totalCents,
+					discount_cents: 0,
+					shipping_cents: 0,
+					tax_cents: 0,
+					total_cents: row.totalCents,
+					applied_coupon_code: null,
+					shipping_method_snapshot: null,
+					tax_breakdown: null,
+				})
+				.execute();
+		},
+		async seedOrderItem(row) {
+			await db
+				.insertInto("order_items")
+				.values({
+					id: `${row.orderId}-${row.productId}`,
+					order_id: row.orderId,
+					product_id: row.productId,
+					sku: `sku-${row.productId}`,
+					title: row.title,
+					unit_price_cents: row.unitPriceCents,
+					currency: "USD",
+					quantity: row.quantity,
+					fulfillment_kind: "physical",
+					reservation_id: null,
+				})
+				.execute();
+		},
+		async seedInventory(row) {
+			await db
+				.insertInto("inventory")
+				.values({ sku: row.sku, on_hand: row.onHand })
+				.onConflict((oc) => oc.column("sku").doUpdateSet({ on_hand: row.onHand }))
+				.execute();
+		},
+	};
+}
+
+export async function makeSqliteReportingHarness(): Promise<ReportingStoreHarness> {
+	return buildReportingHarness(await makeSqliteDbMigrated(), "sqlite");
+}
+export async function makePgReportingHarness(): Promise<ReportingStoreHarness> {
+	return buildReportingHarness(await makePgDbMigrated(), "postgres");
+}
+
+export async function makeSqliteSettingsHarness(): Promise<SettingsStoreHarness> {
+	return {
+		store: new KyselySettingsStore({
+			db: await makeSqliteDbMigrated(),
+			clock: new FixedClock(new Date("2026-07-10T00:00:00.000Z")),
+		}),
+	};
+}
+export async function makePgSettingsHarness(): Promise<SettingsStoreHarness> {
+	return {
+		store: new KyselySettingsStore({
+			db: await makePgDbMigrated(),
+			clock: new FixedClock(new Date("2026-07-10T00:00:00.000Z")),
+		}),
+	};
 }

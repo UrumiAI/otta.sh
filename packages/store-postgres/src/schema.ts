@@ -359,6 +359,27 @@ export interface CouponRedemptionsTable {
 	created_at: string;
 }
 
+// -- Phase 7 (§5): operational settings (service-DB tier) ---------------------
+
+/** Single-row typed operational settings (§7 Step 3). `id` is a fixed sentinel
+ *  ('singleton') so there is at most one row; `get` returns defaults when absent. */
+export interface SettingsTable {
+	id: string;
+	hold_ttl_minutes: number;
+	low_stock_threshold: number;
+	updated_at: string;
+}
+
+/** Idempotency ledger for `SettingsStore.update` — records the RESULTING settings
+ *  per key so a replay returns the recorded snapshot without re-applying (a stale
+ *  replay never clobbers a newer write). Mirrors `coupon_redemptions`'s claim. */
+export interface SettingsMutationsTable {
+	idempotency_key: string;
+	hold_ttl_minutes: number;
+	low_stock_threshold: number;
+	created_at: string;
+}
+
 export interface Database {
 	inventory: InventoryTable;
 	reservations: ReservationsTable;
@@ -386,4 +407,7 @@ export interface Database {
 	tax_rates: TaxRatesTable;
 	coupons: CouponsTable;
 	coupon_redemptions: CouponRedemptionsTable;
+	// Phase 7:
+	settings: SettingsTable;
+	settings_mutations: SettingsMutationsTable;
 }
