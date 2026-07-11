@@ -1,0 +1,33 @@
+{
+	"name": "@urumi/payments-stripe",
+	"version": "0.1.0",
+	"description": "Stripe PaymentGateway adapter for Urumi — async-webhook confirmation with raw-body HMAC verification. Secrets are service-env only.",
+	"license": "MIT",
+	"files": [
+		"dist"
+	],
+	"type": "module",
+	"exports": {
+		".": "./src/index.ts"
+	},
+	"publishConfig": {
+		"exports": {
+			".": {
+				"types": "./dist/index.d.mts",
+				"default": "./dist/index.mjs"
+			}
+		}
+	},
+	"scripts": {
+		"build": "tsdown"
+	},
+	"dependencies": {
+		"@urumi/domain": "workspace:*"
+	},
+	"devDependencies": {
+		"@types/node": "catalog:",
+		"tsdown": "catalog:",
+		"typescript": "catalog:",
+		"vitest": "catalog:"
+	}
+}

@@ -17,6 +17,10 @@ import {
 	STOREFRONT_CART_READ_ROUTE,
 } from "./storefront/cart-routes.js";
 // ── end Phase 3 group E: cart routes ───────────────────────────────────────
+import {
+	createEntitlementDownloadHandler,
+	ENTITLEMENT_DOWNLOAD_ROUTE,
+} from "./entitlements/download-route.js";
 import { createPdpRouteHandler, STOREFRONT_PRODUCT_ROUTE } from "./storefront/pdp-route.js";
 import { createPlpRouteHandler, STOREFRONT_LIST_ROUTE } from "./storefront/plp-route.js";
 import {
@@ -85,6 +89,19 @@ const plugin: SandboxedPlugin = {
 			public: true,
 		},
 		// ── end Phase 3 group E: cart ───────────────────────────────────────
+		// Phase 4 (§6): PUBLIC download route — authorizes a digital delivery via
+		// the service's entitlement check over ctx.http. There is deliberately NO
+		// Stripe webhook proxy route (review G1): EmDash's handleSandboxedRoute
+		// JSON-parses the request body before any route runs (the raw bytes a
+		// Stripe HMAC needs are destroyed) and wraps the return `{success, data}`
+		// at HTTP 200 (Stripe's retry logic keys on status), so a byte-exact proxy
+		// is structurally impossible on the real host contract. Stripe posts
+		// directly to the SERVICE's /webhooks/stripe — the plan's preferred
+		// direct-to-service design (§9 Risk 1).
+		[ENTITLEMENT_DOWNLOAD_ROUTE]: {
+			handler: createEntitlementDownloadHandler() as never,
+			public: true,
+		},
 	},
 };
 

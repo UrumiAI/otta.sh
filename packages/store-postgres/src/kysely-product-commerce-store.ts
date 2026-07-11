@@ -76,6 +76,7 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 		const now = this.#clock.now().toISOString();
 		const hasSku = input.sku !== undefined;
 		const hasPrice = input.price !== undefined;
+		const hasTitle = input.title !== undefined;
 		const hasTaxClass = input.taxClass !== undefined;
 		const hasWeightGrams = input.weightGrams !== undefined;
 		const hasLengthMm = input.lengthMm !== undefined;
@@ -93,6 +94,7 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 					sku: input.sku ?? null,
 					price_cents: input.price?.amount ?? null,
 					price_currency: input.price?.currency ?? null,
+					title: input.title ?? null,
 					tax_class: input.taxClass ?? null,
 					weight_grams: input.weightGrams ?? null,
 					length_mm: input.lengthMm ?? null,
@@ -118,6 +120,7 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 							price_currency: hasPrice
 								? eb.ref("excluded.price_currency")
 								: eb.ref("product_commerce.price_currency"),
+							title: hasTitle ? eb.ref("excluded.title") : eb.ref("product_commerce.title"),
 							tax_class: hasTaxClass
 								? eb.ref("excluded.tax_class")
 								: eb.ref("product_commerce.tax_class"),
@@ -338,6 +341,7 @@ function toDomain(row: ProductCommerceTable): ProductCommerce {
 			row.price_cents === null || row.price_currency === null
 				? null
 				: money(cents(row.price_cents), currency(row.price_currency)),
+		title: row.title,
 		taxClass: row.tax_class,
 		weightGrams: row.weight_grams,
 		lengthMm: row.length_mm,

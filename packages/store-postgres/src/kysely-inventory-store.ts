@@ -1,9 +1,12 @@
 import {
+	type AdoptInput,
+	type AdoptResult,
 	AdjustReservationMismatchError,
 	type Clock,
 	type IdGen,
 	type IdempotencyKey,
 	type InventoryStore,
+	ReservationCommitLostError,
 	ReservationNotHeldError,
 	type ReserveResult,
 } from "@urumi/domain";
@@ -110,33 +113,42 @@ export class KyselyInventoryStore implements InventoryStore {
 	}
 
 	async commit(reservationId: string): Promise<void> {
-		const row = await this.#selectById(reservationId);
-		if (row.state === "committed") return; // double-commit: no-op
-		if (row.state !== "held") {
-			throw new Error(`cannot commit reservation ${reservationId} in state ${row.state}`);
-		}
-		await this.#db
+		// GUARD-FIRST (defense-in-depth, not SELECT-then-UPDATE): the conditional
+		// flip itself is the authority — a hold that leaves `held|adopted` between
+		// any read and this statement can never be silently "committed". Widened
+		// (Phase 4 §5) to accept `adopted` alongside Phase-0's `held`.
+		const flipped = await this.#db
 			.updateTable("reservations")
 			.set({ state: "committed" })
 			.where("id", "=", reservationId)
-			.where("state", "=", "held")
-			.execute();
+			.where("state", "in", ["held", "adopted"])
+			.returning("id")
+			.executeTakeFirst();
+		if (flipped !== undefined) return;
+
+		// 0 rows: re-read to distinguish the benign idempotent replay (already
+		// `committed`) from a LOST hold (released/failed/unknown) — the latter is
+		// the loud anomaly (§5), never a silent no-op.
+		const row = await this.#selectById(reservationId);
+		if (row.state === "committed") return; // double-commit / idempotent replay: no-op
+		throw new ReservationCommitLostError(reservationId, row.state);
 	}
 
 	async release(reservationId: string): Promise<void> {
 		const row = await this.#selectById(reservationId);
 		if (row.state === "released") return; // double-release: no-op
-		if (row.state !== "held") {
+		// Widened (Phase 4 §5) to accept `adopted` alongside Phase-0's `held`.
+		if (row.state !== "held" && row.state !== "adopted") {
 			throw new Error(`cannot release reservation ${reservationId} in state ${row.state}`);
 		}
-		// Flip `held → released` and return the stock all-or-nothing; the state
-		// guard makes exactly one caller increment (no double return).
+		// Flip `held|adopted → released` and return the stock all-or-nothing; the
+		// state guard makes exactly one caller increment (no double return).
 		await this.#db.transaction().execute(async (trx) => {
 			const flipped = await trx
 				.updateTable("reservations")
 				.set({ state: "released" })
 				.where("id", "=", reservationId)
-				.where("state", "=", "held")
+				.where("state", "in", ["held", "adopted"])
 				.returning("id")
 				.executeTakeFirst();
 			if (flipped === undefined) return; // lost the race: peer already released
@@ -146,6 +158,69 @@ export class KyselyInventoryStore implements InventoryStore {
 				.where("sku", "=", row.sku)
 				.execute();
 		});
+	}
+
+	/**
+	 * Order-scoped release (review G2): the guarded `adopted → released` flip
+	 * additionally scoped `WHERE order_id = :orderId`, so an order can only ever
+	 * release a hold IT adopted. 0 rows is ALWAYS a silent no-op — already
+	 * released/committed (benign replay), adopted by another order, or still
+	 * cart-`held` (not this order's to touch). Never throws on state: an unscoped
+	 * release here is how a stale order could free a live checkout's hold, or
+	 * crash the expiry sweep forever on a committed one.
+	 */
+	async releaseAdopted(reservationId: string, orderId: string): Promise<void> {
+		const row = await this.#db
+			.selectFrom("reservations")
+			.select(["sku", "qty"])
+			.where("id", "=", reservationId)
+			.executeTakeFirst();
+		if (row === undefined) return; // unknown id: nothing to release
+		await this.#db.transaction().execute(async (trx) => {
+			const flipped = await trx
+				.updateTable("reservations")
+				.set({ state: "released" })
+				.where("id", "=", reservationId)
+				.where("state", "=", "adopted")
+				.where("order_id", "=", orderId)
+				.returning("id")
+				.executeTakeFirst();
+			if (flipped === undefined) return; // not this order's adopted hold: no-op
+			await trx
+				.updateTable("inventory")
+				.set({ on_hand: sql<number>`on_hand + ${row.qty}` })
+				.where("sku", "=", row.sku)
+				.execute();
+		});
+	}
+
+	/**
+	 * The guarded `held → adopted` flip (Phase 4 §5): a single conditional
+	 * statement, no interactive transaction. Scoped `state='held' AND expires_at >
+	 * :now`, so it can never adopt a hold the Phase-3 sweep is about to reap. Sets
+	 * `order_id` and re-points `expires_at` to the order's hold deadline, taking the
+	 * hold out of the `held`-scoped sweep's reach. 0 rows ⇒ re-read: an already-
+	 * `adopted` row for THIS order is an idempotent replay (ok); anything else is
+	 * `RESERVATION_LOST`.
+	 */
+	async adopt(input: AdoptInput): Promise<AdoptResult> {
+		const flipped = await this.#db
+			.updateTable("reservations")
+			.set({ state: "adopted", order_id: input.orderId, expires_at: input.holdExpiresAt })
+			.where("id", "=", input.reservationId)
+			.where("state", "=", "held")
+			.where("expires_at", ">", input.now)
+			.returning("id")
+			.executeTakeFirst();
+		if (flipped !== undefined) return { ok: true };
+
+		const row = await this.#db
+			.selectFrom("reservations")
+			.select(["state", "order_id"])
+			.where("id", "=", input.reservationId)
+			.executeTakeFirst();
+		if (row?.state === "adopted" && row.order_id === input.orderId) return { ok: true };
+		return { ok: false, reason: "RESERVATION_LOST" };
 	}
 
 	/**
@@ -303,8 +378,9 @@ export class KyselyInventoryStore implements InventoryStore {
 			case "held":
 			case "committed":
 			case "released":
-				// `held` (and its post-commit/release terminals) is proof the stock
-				// was durably removed together with the flip.
+			case "adopted":
+				// `held` (and its post-commit/release/adopt terminals) is proof the
+				// stock was durably removed together with the flip.
 				return { ok: true, reservationId: id };
 			case "failed":
 				return { ok: false, reason: "OUT_OF_STOCK" };

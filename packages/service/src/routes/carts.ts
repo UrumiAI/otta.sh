@@ -9,9 +9,12 @@ import {
 	createCart,
 	currency,
 	expireHolds,
+	type FulfillmentKind,
 	getCart,
 	type InventoryStore,
 	idempotencyKey,
+	productId as toProductId,
+	type ProductCommerceStore,
 	removeLine,
 	sku,
 	updateLine,
@@ -29,6 +32,9 @@ import {
 export interface CartRoutesDeps {
 	store: InventoryStore;
 	cartStore: CartStore;
+	/** Resolves a line's fulfillment kind server-side (Phase 4 §6) — a digital
+	 *  product reserves nothing. Optional so `expireHoldsRoutes` can share the type. */
+	productCommerce?: ProductCommerceStore;
 	clock: Clock;
 	/** Hold TTL in ms; defaults to the domain's DEFAULT_HOLD_TTL_MS. */
 	ttlMs?: number;
@@ -83,13 +89,24 @@ export function cartRoutes(deps: CartRoutesDeps): Hono {
 		if (!parsed.success) {
 			return c.json({ error: "invalid request body", issues: parsed.error.issues }, 400);
 		}
+		// Resolve the product's fulfillment kind server-side (§6): a digital line
+		// reserves nothing. Requires the productId; without it we default physical
+		// (bare Phase-3 add). A provided-but-unknown product also defaults physical.
+		let productId: string | null = null;
+		let kind: FulfillmentKind = "physical";
+		if (parsed.data.productId !== undefined) {
+			productId = parsed.data.productId;
+			const pc = await deps.productCommerce?.getByProductId(toProductId(parsed.data.productId));
+			if (pc !== null && pc !== undefined) kind = pc.productKind;
+		}
 		const res = await addLine(
 			cartDeps,
 			params.data.cartId,
 			sku(parsed.data.sku),
-			null,
+			productId,
 			parsed.data.qty,
 			idempotencyKey(key),
+			kind,
 		);
 		if (res.ok) return c.json({ ok: true, line: serializeLine(res.line) }, 200);
 		return failure(c, res.reason);

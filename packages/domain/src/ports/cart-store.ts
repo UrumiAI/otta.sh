@@ -57,6 +57,17 @@ export interface CartStore {
 	/** Delete the line and mark the removal completed in the ledger; double-remove is a no-op. */
 	removeLine(cartId: string, lineId: string, key: IdempotencyKey): Promise<void>;
 	/**
+	 * Secondary cart-state fence (Phase 4 §5): the guarded flip
+	 * `UPDATE carts SET state='checked_out' WHERE id=:cartId AND state='active'
+	 * RETURNING id`. Order creation calls this once all lines are adopted, so a
+	 * post-checkout cart mutation is rejected `CART_CHECKED_OUT` before it can
+	 * reach an adopted reservation. `checked_out` is terminal — nothing flips a
+	 * cart back to `active` (reactivation would re-open the adopted-hold fence).
+	 * Idempotent: a replay finds the cart already `checked_out` (0 rows) and
+	 * returns `false` (treated as success for the same order).
+	 */
+	checkout(cartId: string): Promise<boolean>;
+	/**
 	 * Held reservations whose hold has lapsed: `expires_at <= now`, or — for a
 	 * CART-ORIGINATED hold whose cart-line write never landed (crash window) —
 	 * `expires_at IS NULL AND created_at <= cutoff` with the reservation's key
@@ -161,8 +172,11 @@ export interface UpsertLineInput {
 	sku: string;
 	productId: string | null;
 	qty: number;
-	reservationId: string;
-	expiresAt: string;
+	/** Null for a **digital** line (Phase 4 §6): it reserves nothing, so there is
+	 *  no hold to attach/stamp and no attach guard. Physical lines carry the held
+	 *  reservation as before. */
+	reservationId: string | null;
+	expiresAt: string | null;
 	key: IdempotencyKey;
 }
 
@@ -170,6 +184,7 @@ export interface AdjustLineInput {
 	cartId: string;
 	lineId: string;
 	newQty: number;
-	expiresAt: string;
+	/** Null for a digital line (no hold to re-stamp, Phase 4 §6). */
+	expiresAt: string | null;
 	key: IdempotencyKey;
 }

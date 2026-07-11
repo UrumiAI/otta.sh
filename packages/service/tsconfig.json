@@ -6,5 +6,10 @@
 		"rootDir": "."
 	},
 	"include": ["src", "test", "tsdown.config.ts", "vitest.config.ts"],
-	"references": [{ "path": "../domain" }, { "path": "../store-postgres" }]
+	"references": [
+		{ "path": "../domain" },
+		{ "path": "../store-postgres" },
+		{ "path": "../payments-stripe" },
+		{ "path": "../payments-x402" }
+	]
 }

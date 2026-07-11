@@ -138,8 +138,10 @@ export class InMemoryCartStore implements CartStore {
 
 		// Attach guard (mirrors the real store's `state='held'`-scoped deadline
 		// stamp): never attach a visible line to a reservation that is no longer
-		// held — e.g. the sweep reaped a crashed hold before this late replay.
-		if (this.#reservationState(input.reservationId) !== "held") {
+		// held — e.g. the sweep reaped a crashed hold before this late replay. A
+		// digital line (Phase 4 §6) carries NO reservation, so there is nothing to
+		// guard or stamp.
+		if (input.reservationId !== null && this.#reservationState(input.reservationId) !== "held") {
 			throw new HoldExpiredError(input.reservationId);
 		}
 
@@ -158,11 +160,13 @@ export class InMemoryCartStore implements CartStore {
 		row.reservationId = input.reservationId;
 		row.expiresAt = input.expiresAt;
 		this.#lines.set(row.id, row);
-		this.#holds.set(input.reservationId, {
-			reservationId: input.reservationId,
-			sku: input.sku,
-			expiresAt: input.expiresAt,
-		});
+		if (input.reservationId !== null) {
+			this.#holds.set(input.reservationId, {
+				reservationId: input.reservationId,
+				sku: input.sku,
+				expiresAt: input.expiresAt ?? "",
+			});
+		}
 		this.#complete(input.key, input.cartId, "add", row.id, input.qty);
 		return this.#toLine(row);
 	}
@@ -180,7 +184,7 @@ export class InMemoryCartStore implements CartStore {
 			this.#holds.set(row.reservationId, {
 				reservationId: row.reservationId,
 				sku: row.sku,
-				expiresAt: input.expiresAt,
+				expiresAt: input.expiresAt ?? "",
 			});
 		}
 		this.#complete(input.key, input.cartId, "adjust", row.id, input.newQty);
@@ -224,14 +228,20 @@ export class InMemoryCartStore implements CartStore {
 		return true;
 	}
 
-	// -- test surface ---------------------------------------------------------
-
-	/** Flip a cart to `checked_out` (Phase 4 does this at order creation). */
-	checkout(cartId: string): void {
+	/**
+	 * Secondary cart-state fence (Phase 4 §5): the guarded `active → checked_out`
+	 * flip. Idempotent — a cart already `checked_out` returns `false` (treated as
+	 * success for the same order). `checked_out` is terminal.
+	 */
+	async checkout(cartId: string): Promise<boolean> {
 		const cart = this.#carts.get(cartId);
 		if (cart === undefined) throw new Error(`unknown cart: ${cartId}`);
+		if (cart.state !== "active") return false;
 		cart.state = "checked_out";
+		return true;
 	}
+
+	// -- test surface ---------------------------------------------------------
 
 	/**
 	 * Simulate the reserve↔cart-line crash window: a hold that finalized (`held`)

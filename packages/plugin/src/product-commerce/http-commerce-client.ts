@@ -199,6 +199,33 @@ export class HttpCommerceClient implements CommerceClient {
 	}
 	// ── end Phase 3 group E: cart ─────────────────────────────────────────
 
+	// -- Phase 4: checkout + entitlement seam ---------------------------------
+	// (A clearly-delimited additive block — Phase 2 adds `getCommerceBatch` to
+	// this same file in parallel.) These mirror the service's Phase-4 endpoints
+	// 1:1; delivery authorization for a digital download is a pure READ, so it
+	// carries no secret and needs no auth header.
+
+	/**
+	 * Delivery authorization (§6/§7): true iff an active entitlement exists for
+	 * `{orderId|buyerRef} + sku`. The download route serves the file only when
+	 * this returns true.
+	 */
+	async checkEntitlement(
+		scope: { orderId?: string; buyerRef?: string },
+		sku: string,
+	): Promise<boolean> {
+		const params = new URLSearchParams({ sku });
+		if (scope.orderId !== undefined) params.set("orderId", scope.orderId);
+		if (scope.buyerRef !== undefined) params.set("buyerRef", scope.buyerRef);
+		const res = await this.#fetch(`${this.#baseUrl}/entitlements/check?${params.toString()}`, {
+			method: "GET",
+		});
+		const body = await this.#json<{ ok: boolean; active?: boolean }>(res);
+		return body.active === true;
+	}
+
+	// -------------------------------------------------------------------------
+
 	#url(productId: string): string {
 		return `${this.#baseUrl}/products/${encodeURIComponent(productId)}/commerce`;
 	}

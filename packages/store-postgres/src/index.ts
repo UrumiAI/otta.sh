@@ -12,6 +12,15 @@ export {
 	type KyselyProductCommerceStoreOptions,
 } from "./kysely-product-commerce-store.js";
 export { KyselyCartStore, type KyselyCartStoreOptions } from "./kysely-cart-store.js";
+export { KyselyOrderStore, type KyselyOrderStoreOptions } from "./kysely-order-store.js";
+export {
+	KyselyEntitlementStore,
+	type KyselyEntitlementStoreOptions,
+} from "./kysely-entitlement-store.js";
+export {
+	KyselyPaymentEventStore,
+	type KyselyPaymentEventStoreOptions,
+} from "./kysely-payment-event-store.js";
 export { migrateToLatest, migrationProvider } from "./migrations/index.js";
 export type {
 	CartLinesTable,
@@ -20,7 +29,14 @@ export type {
 	CartState,
 	CartsTable,
 	Database,
+	EntitlementsTable,
 	InventoryTable,
+	OrderItemsTable,
+	OrdersTable,
+	OrderStateColumn,
+	OrderTotalsTable,
+	PaymentEventsTable,
+	PaymentsTable,
 	ProductCommerceTable,
 	ReservationsTable,
 	ReservationState,

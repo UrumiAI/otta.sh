@@ -56,6 +56,7 @@ export function productCommerceRoutes(deps: ProductCommerceDeps): Hono {
 						body.price !== undefined
 							? money(cents(body.price.amount), currency(body.price.currency))
 							: undefined,
+					title: body.title,
 					taxClass: body.taxClass,
 					weightGrams: body.weightGrams,
 					lengthMm: body.lengthMm,
@@ -169,6 +170,7 @@ function serialize(row: ProductCommerce): Record<string, unknown> {
 		productId: row.productId,
 		sku: row.sku,
 		price: row.price === null ? null : { amount: row.price.amount, currency: row.price.currency },
+		title: row.title,
 		taxClass: row.taxClass,
 		weightGrams: row.weightGrams,
 		lengthMm: row.lengthMm,

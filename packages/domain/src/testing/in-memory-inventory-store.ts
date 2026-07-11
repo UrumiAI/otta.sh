@@ -2,13 +2,16 @@ import type { IdempotencyKey } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
 import type { IdGen } from "../ports/id-gen.js";
 import {
+	type AdoptInput,
+	type AdoptResult,
 	AdjustReservationMismatchError,
 	type InventoryStore,
+	ReservationCommitLostError,
 	ReservationNotHeldError,
 	type ReserveResult,
 } from "../ports/inventory-store.js";
 
-export type ReservationState = "pending" | "held" | "committed" | "released" | "failed";
+export type ReservationState = "pending" | "held" | "committed" | "released" | "failed" | "adopted";
 
 interface ReservationRow {
 	id: string;
@@ -17,6 +20,10 @@ interface ReservationRow {
 	state: ReservationState;
 	idempotencyKey: string;
 	createdAt: string;
+	/** Phase 4: the owning order once adopted; null while cart-held or raw. */
+	orderId: string | null;
+	/** Phase 4: re-pointed to the order's hold deadline on adoption. */
+	expiresAt: string | null;
 }
 
 export interface InMemoryInventoryStoreOptions {
@@ -86,6 +93,8 @@ export class InMemoryInventoryStore implements InventoryStore {
 				state: "pending",
 				idempotencyKey: key,
 				createdAt: this.#clock.now().toISOString(),
+				orderId: null,
+				expiresAt: null,
 			});
 		} else {
 			// Key already claimed: resolve from the stored state, never a blind ok.
@@ -150,9 +159,11 @@ export class InMemoryInventoryStore implements InventoryStore {
 
 	async commit(reservationId: string): Promise<void> {
 		const row = this.#mustGet(reservationId);
-		if (row.state === "committed") return; // double-commit: no-op
-		if (row.state !== "held") {
-			throw new Error(`cannot commit reservation ${reservationId} in state ${row.state}`);
+		if (row.state === "committed") return; // double-commit / idempotent replay: no-op
+		// Widened to accept `adopted` (Phase 4) as well as `held` (Phase 0).
+		if (row.state !== "held" && row.state !== "adopted") {
+			// released / failed / … ⇒ the adopted hold was lost: the loud anomaly (§5).
+			throw new ReservationCommitLostError(reservationId, row.state);
 		}
 		row.state = "committed";
 	}
@@ -160,11 +171,49 @@ export class InMemoryInventoryStore implements InventoryStore {
 	async release(reservationId: string): Promise<void> {
 		const row = this.#mustGet(reservationId);
 		if (row.state === "released") return; // double-release: no-op
-		if (row.state !== "held") {
+		// Widened to accept `adopted` (Phase 4) as well as `held` (Phase 0).
+		if (row.state !== "held" && row.state !== "adopted") {
 			throw new Error(`cannot release reservation ${reservationId} in state ${row.state}`);
 		}
 		row.state = "released";
 		this.#onHand.set(row.sku, (this.#onHand.get(row.sku) ?? 0) + row.qty);
+	}
+
+	/**
+	 * Order-scoped release (review G2): the guarded `adopted → released` flip
+	 * scoped to the OWNING order. Anything else — unknown id, released/committed,
+	 * adopted by another order, still cart-`held` — is a silent no-op, never a
+	 * throw: a stale order must not free (or crash the sweep on) a hold it never
+	 * adopted.
+	 */
+	async releaseAdopted(reservationId: string, orderId: string): Promise<void> {
+		const row = this.#reservations.get(reservationId);
+		if (row === undefined) return;
+		if (row.state !== "adopted" || row.orderId !== orderId) return;
+		row.state = "released";
+		this.#onHand.set(row.sku, (this.#onHand.get(row.sku) ?? 0) + row.qty);
+	}
+
+	/**
+	 * The guarded `held → adopted` flip (Phase 4 §5): hands a cart's live
+	 * reservation to an order, setting `orderId` and re-pointing `expiresAt` to the
+	 * order's hold deadline, scoped `state='held' AND expiresAt > now`. An
+	 * already-`adopted` row for THIS order resolves to `ok` (idempotent replay);
+	 * anything else (swept/committed/held-past-deadline) is `RESERVATION_LOST`.
+	 */
+	async adopt(input: AdoptInput): Promise<AdoptResult> {
+		const row = this.#mustGet(input.reservationId);
+		if (row.state === "adopted" && row.orderId === input.orderId) {
+			return { ok: true }; // idempotent replay of createOrderFromCart
+		}
+		if (row.state !== "held") return { ok: false, reason: "RESERVATION_LOST" };
+		if (row.expiresAt !== null && row.expiresAt <= input.now) {
+			return { ok: false, reason: "RESERVATION_LOST" }; // about to be swept
+		}
+		row.state = "adopted";
+		row.orderId = input.orderId;
+		row.expiresAt = input.holdExpiresAt;
+		return { ok: true };
 	}
 
 	/**
@@ -216,6 +265,8 @@ export class InMemoryInventoryStore implements InventoryStore {
 			state: "pending",
 			idempotencyKey: key,
 			createdAt: this.#clock.now().toISOString(),
+			orderId: null,
+			expiresAt: null,
 		});
 		return id;
 	}
