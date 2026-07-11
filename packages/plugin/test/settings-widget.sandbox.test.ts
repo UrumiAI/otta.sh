@@ -93,7 +93,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 		expect((outcome as { result: { toast: { type: string } } }).result.toast.type).toBe("success");
 	});
 
-	test("a service-side validation error (400) surfaces inline on the form, not swallowed", async () => {
+	test("a service-side validation error (400) surfaces inline and never zeroes an un-edited field", async () => {
 		stub = await startStubCommerceServer();
 		stub.respondWith("PUT", () => ({
 			status: 400,
@@ -103,6 +103,12 @@ describe("Settings admin form (workerd sandbox)", () => {
 				message: "holdTtlMinutes must be a positive integer",
 			},
 		}));
+		// The error re-render reads current stored settings (J6) so the un-edited
+		// field keeps its stored value instead of collapsing to 0.
+		stub.respondWith("GET", () => ({
+			status: 200,
+			body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } },
+		}));
 		sandbox = await loadPluginInSandbox({
 			allowedHosts: [stub.host],
 			commerceServiceBaseUrl: stub.baseUrl,
@@ -110,7 +116,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 
 		const outcome = await sandbox.invokeRoute("admin/settings", {
 			action_id: "save-operational",
-			values: { holdTtlMinutes: 0 },
+			values: { holdTtlMinutes: 0 }, // only holdTtlMinutes edited (invalid)
 			idempotencyKey: "k-bad",
 			adminToken: "admin-token-xyz",
 		});
@@ -120,6 +126,16 @@ describe("Settings admin form (workerd sandbox)", () => {
 		const banner = blocks.find((b) => b.type === "banner" && b.variant === "error");
 		expect(banner).toBeDefined();
 		expect(String(banner?.text)).toContain("holdTtlMinutes must be a positive integer");
+
+		// J6: the operational form re-renders the ATTEMPTED holdTtlMinutes (0) but
+		// the un-edited lowStockThreshold keeps its STORED value (5), not 0.
+		const opForm = blocks.find(
+			(b) => b.type === "form" && Array.isArray(b.fields) && (b.fields as unknown[]).length === 2,
+		);
+		const fields = (opForm?.fields ?? []) as Array<Record<string, unknown>>;
+		const byId = new Map(fields.map((f) => [f.action_id, f.initial_value]));
+		expect(byId.get("holdTtlMinutes")).toBe(0);
+		expect(byId.get("lowStockThreshold")).toBe(5);
 	});
 
 	test("SECURITY: the settings form manifest declares only content:read + network:request (no storage/kv/db), and the schema has no secret field", () => {

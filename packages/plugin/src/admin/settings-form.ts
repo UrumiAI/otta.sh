@@ -114,11 +114,23 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			const result = await client.updateSettings(patch, { idempotencyKey: key, adminToken });
 			if (!result.ok) {
 				// Surface the service's validation error INLINE (never a generic
-				// "save failed" that hides the real reason).
+				// "save failed" that hides the real reason). Re-render the ATTEMPTED
+				// value for edited fields over the STORED value for un-edited ones (J6)
+				// — never zero an un-edited field.
 				const displayName = (await ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY)) ?? "";
+				let stored: OperationalSettingsWire;
+				try {
+					stored = await client.getSettings();
+				} catch {
+					stored = { holdTtlMinutes: 0, lowStockThreshold: 0 };
+				}
+				const shown: OperationalSettingsWire = {
+					holdTtlMinutes: patch.holdTtlMinutes ?? stored.holdTtlMinutes,
+					lowStockThreshold: patch.lowStockThreshold ?? stored.lowStockThreshold,
+				};
 				return {
 					blocks: [
-						...formBlocks(displayName, patchToSettings(patch)),
+						...formBlocks(displayName, shown),
 						{
 							type: "banner",
 							variant: "error",
@@ -170,13 +182,6 @@ function extractOperationalPatch(
 		patch.lowStockThreshold = Number(values.lowStockThreshold);
 	}
 	return patch;
-}
-
-function patchToSettings(patch: Partial<OperationalSettingsWire>): OperationalSettingsWire {
-	return {
-		holdTtlMinutes: patch.holdTtlMinutes ?? 0,
-		lowStockThreshold: patch.lowStockThreshold ?? 0,
-	};
 }
 
 function formBlocks(displayName: string, settings: OperationalSettingsWire): Block[] {
