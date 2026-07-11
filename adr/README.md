@@ -33,6 +33,8 @@ than rewriting history.
 - [0001. Plugin + separate commerce service](./0001-plugin-plus-commerce-service.md) — accepted
 - [0002. Adapter-based split (boundary is a deployment choice)](./0002-adapter-based-split.md) — accepted, refines 0001
 - [0003. Storefront pages are plugin-owned public routes](./0003-storefront-plugin-routes.md) — accepted, refines 0001
+- [0004. Storefront customer auth is magic-link](./0004-customer-auth-mechanism.md) — proposed, refines 0001
+- [0005. The commerce service sends transactional email directly](./0005-transactional-email-transport.md) — proposed, refines 0002
 
 ## Queued (to promote from draft-plans)
 
