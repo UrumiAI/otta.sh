@@ -9,7 +9,8 @@
 	"type": "module",
 	"exports": {
 		".": "./src/index.ts",
-		"./app": "./src/app.ts"
+		"./app": "./src/app.ts",
+		"./worker": "./src/worker.ts"
 	},
 	"publishConfig": {
 		"exports": {
@@ -20,11 +21,17 @@
 			"./app": {
 				"types": "./dist/app.d.mts",
 				"default": "./dist/app.mjs"
+			},
+			"./worker": {
+				"types": "./dist/worker.d.mts",
+				"default": "./dist/worker.mjs"
 			}
 		}
 	},
 	"scripts": {
-		"build": "tsdown"
+		"build": "tsdown",
+		"dev:worker": "wrangler dev",
+		"deploy": "wrangler deploy"
 	},
 	"dependencies": {
 		"@hono/node-server": "catalog:",
@@ -39,6 +46,7 @@
 		"@types/node": "catalog:",
 		"tsdown": "catalog:",
 		"typescript": "catalog:",
-		"vitest": "catalog:"
+		"vitest": "catalog:",
+		"wrangler": "catalog:"
 	}
 }

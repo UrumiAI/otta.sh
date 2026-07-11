@@ -3,6 +3,12 @@ packages:
 
 allowBuilds:
   better-sqlite3: true
+  # esbuild's postinstall only validates the preinstalled platform binary —
+  # wrangler bundles through it.
+  esbuild: true
+  # wrangler's optional image codec (Workers static-assets tooling); nothing in
+  # this repo feeds it images, so skip the native build.
+  sharp: false
   workerd: true
 
 catalog:
@@ -20,6 +26,7 @@ catalog:
   hono: ^4.12.29
   "@hono/node-server": ^2.0.8
   dependency-cruiser: ^18.0.0
+  wrangler: ^4.68.0
   "@changesets/cli": ^2.31.0
   "@types/node": ^22.15.0
   fast-check: ^3.23.2
