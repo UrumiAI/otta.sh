@@ -28,7 +28,7 @@
 		"@types/react-dom": "^19.2.3",
 		"typescript": "catalog:",
 		"vitest": "catalog:",
-		"wrangler": "^4.110.0"
+		"wrangler": "catalog:"
 	},
 	"emdash": {
 		"seed": "seed/seed.json"
