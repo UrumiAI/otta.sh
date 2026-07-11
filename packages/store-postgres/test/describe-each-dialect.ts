@@ -104,16 +104,6 @@ function buildProductCommerceHarness(db: Kysely<Database>): ProductCommerceStore
 				.onConflict((oc) => oc.column("sku").doUpdateSet({ on_hand: qty }))
 				.execute();
 		},
-		// Phase 2: stand-in for the deferred afterPublish→activate wiring —
-		// flips the real row so the contract can pin active:true views.
-		async activate(productId) {
-			await db
-				.updateTable("product_commerce")
-				.set({ active: 1 })
-				.where("product_id", "=", productId)
-				.where("deleted_at", "is", null)
-				.execute();
-		},
 	};
 }
 

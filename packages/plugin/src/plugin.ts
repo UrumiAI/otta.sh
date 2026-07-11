@@ -5,7 +5,12 @@ import {
 } from "./admin/product-commerce-route.js";
 import { createPdpRouteHandler, STOREFRONT_PRODUCT_ROUTE } from "./storefront/pdp-route.js";
 import { createPlpRouteHandler, STOREFRONT_LIST_ROUTE } from "./storefront/plp-route.js";
-import { createAfterDeleteHandler, createAfterSaveHandler } from "./sync/hooks.js";
+import {
+	createAfterDeleteHandler,
+	createAfterPublishHandler,
+	createAfterSaveHandler,
+	createAfterUnpublishHandler,
+} from "./sync/hooks.js";
 import type { SandboxedPlugin } from "./types.js";
 
 /**
@@ -15,7 +20,10 @@ import type { SandboxedPlugin } from "./types.js";
  * `packages/plugins/{sandboxed-test,webhook-notifier}/src/plugin.ts`) —
  * this is the module `sandbox-entry.ts` loads inside workerd.
  *
- * Phase 1: the two content-sync hooks and two non-public admin routes.
+ * Phase 1: the four content-sync hooks (`afterSave`/`afterDelete`/
+ * `afterPublish`/`afterUnpublish` — the last two are the publish-gate
+ * follow-up, activating on publish and deactivating on unpublish) and two
+ * non-public admin routes.
  * Phase 2 (ADR-0003): the two PUBLIC storefront routes — PDP and PLP are
  * plugin-owned routes (`page:fragments` is trusted-only and unavailable to
  * this sandboxed plugin); `public: true` is the em-dash route flag that
@@ -29,6 +37,8 @@ const plugin: SandboxedPlugin = {
 	hooks: {
 		"content:afterSave": { handler: createAfterSaveHandler() },
 		"content:afterDelete": { handler: createAfterDeleteHandler() },
+		"content:afterPublish": { handler: createAfterPublishHandler() },
+		"content:afterUnpublish": { handler: createAfterUnpublishHandler() },
 	},
 	routes: {
 		// Cast to the route record's erased `unknown`-input shape — each

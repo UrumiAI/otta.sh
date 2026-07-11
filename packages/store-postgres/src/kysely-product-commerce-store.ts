@@ -103,6 +103,7 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 					deleted_at: null,
 					idempotency_key: key,
 					content_updated_at: input.contentUpdatedAt ?? null,
+					active_updated_at: null,
 					created_at: now,
 					updated_at: now,
 				})
@@ -240,6 +241,83 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 			.set({ active: 0, deleted_at: now, idempotency_key: key, updated_at: now })
 			.where("product_id", "=", productId)
 			.where("deleted_at", "is", null)
+			.execute();
+	}
+
+	/**
+	 * The afterPublish→activate follow-up (port doc): a single conditional
+	 * `UPDATE`, mirroring `softDelete`'s shape. Guards ANDed together:
+	 *  - `deleted_at IS NULL` — the load-bearing invariant: a soft-deleted row
+	 *    is never resurrected by a publish.
+	 *  - `active = 0` — already-active is a stable no-op under replay (leaves
+	 *    `updated_at`/`idempotency_key` untouched).
+	 *  - the ORDERING guard `active_updated_at IS NULL OR active_updated_at <=
+	 *    :t` — a stale, out-of-order publish (a watermark strictly older than
+	 *    the one a newer `deactivate` already applied) is a no-op, so a delayed
+	 *    `activate` can never re-latch an unpublished product to purchasable.
+	 *    NULL (never transitioned) is `-infinity`, so the first flip wins.
+	 *    Mirrors `upsert`'s `content_updated_at` guard but over the SEPARATE
+	 *    `active_updated_at` column (a `content:afterSave` must not poison the
+	 *    gate). A winning flip ADVANCES `active_updated_at` to `:t` so the gate
+	 *    stays monotonic (EmDash's publish/unpublish both bump
+	 *    content.updatedAt). ISO-8601 text compares lexicographically =
+	 *    chronologically, identically on both dialects.
+	 * An unknown `product_id` matches zero rows — also a no-op, no row minted.
+	 */
+	async activate(
+		productId: ProductId,
+		key: IdempotencyKey,
+		contentUpdatedAt: string,
+	): Promise<void> {
+		const now = this.#clock.now().toISOString();
+		await this.#db
+			.updateTable("product_commerce")
+			.set({
+				active: 1,
+				active_updated_at: contentUpdatedAt,
+				idempotency_key: key,
+				updated_at: now,
+			})
+			.where("product_id", "=", productId)
+			.where("deleted_at", "is", null)
+			.where("active", "=", 0)
+			.where(sql<SqlBool>`(active_updated_at is null or active_updated_at <= ${contentUpdatedAt})`)
+			.execute();
+	}
+
+	/**
+	 * The afterUnpublish→deactivate follow-up (port doc): the exact mirror of
+	 * `activate` — a single conditional `UPDATE`, guards ANDed together:
+	 *  - `deleted_at IS NULL` — a soft-deleted row's tombstone is left
+	 *    untouched (never resurrected, never re-stamped by an unpublish).
+	 *  - `active = 1` — already-inactive is a stable no-op under replay.
+	 *  - the ORDERING guard `active_updated_at IS NULL OR active_updated_at <=
+	 *    :t` — a stale, out-of-order unpublish is a no-op, so a delayed
+	 *    `deactivate` can never deactivate a row a newer `activate` has since
+	 *    re-published. A winning flip advances `active_updated_at` to `:t`.
+	 *    (See `activate` for the full watermark rationale.)
+	 * An unknown `product_id` matches zero rows — also a no-op, no row minted.
+	 * Flips ONLY the publish gate; `deleted_at` is never in the SET clause —
+	 * deactivation is not a soft delete.
+	 */
+	async deactivate(
+		productId: ProductId,
+		key: IdempotencyKey,
+		contentUpdatedAt: string,
+	): Promise<void> {
+		const now = this.#clock.now().toISOString();
+		await this.#db
+			.updateTable("product_commerce")
+			.set({
+				active: 0,
+				active_updated_at: contentUpdatedAt,
+				idempotency_key: key,
+				updated_at: now,
+			})
+			.where("product_id", "=", productId)
+			.where("deleted_at", "is", null)
+			.where("active", "=", 1)
+			.where(sql<SqlBool>`(active_updated_at is null or active_updated_at <= ${contentUpdatedAt})`)
 			.execute();
 	}
 

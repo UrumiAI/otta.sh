@@ -1,7 +1,18 @@
 import { ALLOWED_HOSTS, COMMERCE_SERVICE_BASE_URL } from "../manifest.js";
-import type { ContentDeleteEvent, ContentHookEvent, HookHandler, PluginContext } from "../types.js";
+import type {
+	ContentDeleteEvent,
+	ContentHookEvent,
+	ContentStateChangeEvent,
+	HookHandler,
+	PluginContext,
+} from "../types.js";
 import { HttpCommerceClient } from "../product-commerce/http-commerce-client.js";
-import { deriveDeleteIdempotencyKey, deriveSaveIdempotencyKey } from "./derive-idempotency-key.js";
+import {
+	deriveDeleteIdempotencyKey,
+	derivePublishIdempotencyKey,
+	deriveSaveIdempotencyKey,
+	deriveUnpublishIdempotencyKey,
+} from "./derive-idempotency-key.js";
 
 /** The only EmDash collection this plugin syncs (plan §2). */
 export const PRODUCTS_COLLECTION = "products";
@@ -85,6 +96,119 @@ export function createAfterDeleteHandler(): HookHandler<ContentDeleteEvent> {
 			await clientFor(ctx).softDeleteProductCommerce(event.id, key);
 		} catch (err) {
 			console.error(`[urumi] content:afterDelete sync failed for product_id=${event.id}:`, err);
+		}
+	};
+}
+
+/**
+ * `content:afterPublish` → activate (the afterPublish→activate follow-up,
+ * plan §1/§6 step 7 — deferred at Phase 1, this is that task). Confirmed
+ * against `~/em-dash`: sandboxed plugins receive `content:afterPublish` as
+ * `{ content, collection }` (`ContentStateChangeEvent`,
+ * `packages/core/src/plugins/types.ts:731-734`), dispatched via
+ * `EmDashRuntime.runDeferredContentHook` → `plugin.invokeHook("content:afterPublish",
+ * { content, collection })` (`emdash-runtime.ts:3496-3510`), requiring only
+ * `content:read` to register (`packages/core/src/plugins/hooks.ts`
+ * `HOOK_REQUIRED_CAPABILITY` — `["content:afterPublish", "content:read"]`),
+ * same as `afterSave`/`afterDelete`: no manifest/capability change needed.
+ *
+ * Mirrors `createAfterSaveHandler`'s shape (collection guard, missing-id
+ * guard, fire-and-forget failure handling — same honest "no reconcile cron
+ * yet" caveat) but calls `activateProductCommerce`, never `upsert`: `upsert`
+ * deliberately never touches `active`/`deletedAt` (a stale/replayed
+ * `content:afterSave` must never reactivate a soft-deleted row), so
+ * activation is its own dedicated call — see the port doc / the service
+ * route's doc. The service-side `activate` is itself the guard against
+ * resurrecting a soft-deleted product; this hook does not duplicate that
+ * check.
+ */
+export function createAfterPublishHandler(
+	allowedHosts: readonly string[] = ALLOWED_HOSTS,
+): HookHandler<ContentStateChangeEvent> {
+	return async (event, ctx) => {
+		if (event.collection !== PRODUCTS_COLLECTION) return;
+		const id = event.content["id"];
+		if (typeof id !== "string" || id.length === 0) return; // no CMS id — nothing to activate.
+
+		const updatedAt = event.content["updatedAt"];
+		// The ordering watermark the service gates on so a stale, out-of-order
+		// publish is a no-op (activate/deactivate are opposing flips on the same
+		// `active` flag — see the port doc). Normalized to strict
+		// Date.toISOString() form (the service validates it exactly, review F1).
+		// EmDash's publish() always carries a valid `updatedAt`; if it is somehow
+		// unparseable there is no watermark to gate the flip, so skip the sync
+		// (fire-and-forget, same honest "lost until next publish" caveat) rather
+		// than send an ungated flip that could re-latch out of order.
+		const watermark = normalizeWatermark(updatedAt);
+		if (watermark === undefined) {
+			console.error(
+				`[urumi] content:afterPublish for product_id=${id} carried no parseable updatedAt watermark — activation skipped (lost until the product is published again).`,
+			);
+			return;
+		}
+		const key = derivePublishIdempotencyKey(event.collection, id, updatedAt);
+		try {
+			await clientFor(ctx).activateProductCommerce(id, key, watermark);
+		} catch (err) {
+			console.error(
+				`[urumi] content:afterPublish sync failed for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}). No reconcile cron exists yet — this activation is lost until the product is saved/published again:`,
+				err,
+			);
+		}
+	};
+}
+
+/**
+ * `content:afterUnpublish` → deactivate (the afterUnpublish→deactivate
+ * follow-up, plan §1/§6 step 7) — the exact mirror of
+ * `createAfterPublishHandler`, closing the publish gate so an unpublished
+ * product stops being purchasable (without it `active` is a one-way latch).
+ * Confirmed against `~/em-dash`: `content:afterUnpublish` is a DISTINCT hook
+ * from `afterPublish` (separate dispatch case in
+ * `EmDashRuntime.runDeferredContentHook`, `emdash-runtime.ts:3477-3479`,
+ * fired only by `handleContentUnpublish` → `runAfterUnpublishHooks`,
+ * `emdash-runtime.ts:2920-2921/3519-3521`), so this handler can never misfire
+ * on a publish. Sandboxed plugins receive it as the SAME `{ content,
+ * collection }` shape as `afterPublish` (`ContentStateChangeEvent`,
+ * `packages/core/src/plugins/types.ts:731-734`; dispatched via
+ * `plugin.invokeHook("content:afterUnpublish", { content, collection })`,
+ * `emdash-runtime.ts:3504`), `content` being `contentItemToRecord(unpublished
+ * item)` so `content.id`/`content.updatedAt` are present. It requires only
+ * `content:read` to register (`packages/core/src/plugins/hooks.ts:285` —
+ * `["content:afterUnpublish", "content:read"]`), same as
+ * `afterSave`/`afterDelete`/`afterPublish`: no manifest/capability change
+ * needed. Same fire-and-forget "no reconcile cron yet" caveat; the
+ * service-side `deactivate` is itself the guard against touching a
+ * soft-deleted row's tombstone.
+ */
+export function createAfterUnpublishHandler(
+	allowedHosts: readonly string[] = ALLOWED_HOSTS,
+): HookHandler<ContentStateChangeEvent> {
+	return async (event, ctx) => {
+		if (event.collection !== PRODUCTS_COLLECTION) return;
+		const id = event.content["id"];
+		if (typeof id !== "string" || id.length === 0) return; // no CMS id — nothing to deactivate.
+
+		const updatedAt = event.content["updatedAt"];
+		// The ordering watermark (see createAfterPublishHandler): a stale,
+		// out-of-order unpublish is a no-op at the service. EmDash's unpublish()
+		// always carries a valid `updatedAt`; skip the sync if it is somehow
+		// unparseable rather than send an ungated flip.
+		const watermark = normalizeWatermark(updatedAt);
+		if (watermark === undefined) {
+			console.error(
+				`[urumi] content:afterUnpublish for product_id=${id} carried no parseable updatedAt watermark — deactivation skipped (lost until the product is unpublished again).`,
+			);
+			return;
+		}
+		const key = deriveUnpublishIdempotencyKey(event.collection, id, updatedAt);
+		try {
+			await clientFor(ctx).deactivateProductCommerce(id, key, watermark);
+		} catch (err) {
+			console.error(
+				`[urumi] content:afterUnpublish sync failed for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}). No reconcile cron exists yet — this deactivation is lost until the product is saved/unpublished again:`,
+				err,
+			);
 		}
 	};
 }

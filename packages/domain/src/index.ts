@@ -29,6 +29,8 @@ export type {
 } from "./ports/product-commerce-store.js";
 export { MissingProductIdError, SkuConflictError } from "./product-commerce/errors.js";
 export {
+	activateProductCommerce,
+	deactivateProductCommerce,
 	getProductCommerce,
 	listProductCommerceByIds,
 	softDeleteProductCommerce,
