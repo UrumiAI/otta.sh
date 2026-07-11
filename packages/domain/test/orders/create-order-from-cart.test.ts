@@ -1,4 +1,12 @@
-import { createOrderFromCart, idempotencyKey } from "@urumi/domain";
+import {
+	cents,
+	createOrderFromCart,
+	currency,
+	idempotencyKey,
+	money,
+	productId as brandProductId,
+	sku as brandSku,
+} from "@urumi/domain";
 import { beforeEach, describe, expect, test } from "vitest";
 import { makeOrderHarness, type OrderHarness } from "./fake-harness.js";
 
@@ -133,6 +141,30 @@ describe("createOrderFromCart", () => {
 		const expired = await expireOrders(h.expireDeps);
 		expect(expired).toBe(1);
 		expect(h.inventory.reservationState(first)).toBe("released");
+	});
+
+	test("a PHYSICAL line whose cart line carries no reservation (product flipped digital→physical after add-to-cart) fails loudly with RESERVATION_LOST — never an order that would settle with no commit", async () => {
+		await h.seedDigital({ productId: "d1", sku: "DIG-1", priceCents: 900, title: "Ebook" });
+		const cartId = await h.cartWith([{ sku: "DIG-1", productId: "d1", qty: 1, kind: "digital" }]);
+		// The product flips digital → physical between add-to-cart and checkout:
+		// the cart line reserved nothing (digital never reserves), but the checkout
+		// snapshot now reads productKind='physical'.
+		await h.productCommerce.upsert(
+			{
+				productId: brandProductId("d1"),
+				sku: brandSku("DIG-1"),
+				price: money(cents(900), currency("USD")),
+				title: "Ebook (now boxed)",
+				productKind: "physical",
+			},
+			idempotencyKey("flip-kind"),
+		);
+
+		// G3: a physical line with reservationId NULL must fail creation loudly —
+		// adoption and settle's commit branch would both silently skip it,
+		// producing a paid order that committed no inventory.
+		const res = await createOrderFromCart(h.createDeps, cmd(cartId));
+		expect(res).toEqual({ ok: false, reason: "RESERVATION_LOST" });
 	});
 
 	test("a second checkout of the same cart with a DIFFERENT idempotency key is rejected CART_CHECKED_OUT — no second order is minted", async () => {

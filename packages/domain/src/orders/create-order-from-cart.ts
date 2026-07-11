@@ -101,6 +101,15 @@ export async function createOrderFromCart(
 			return { ok: false, reason: "PRODUCT_NOT_PRICED" };
 		}
 		const physical = pc.productKind === "physical";
+		if (physical && line.reservationId === null) {
+			// Review G3: the product flipped digital → physical between add-to-cart
+			// and checkout, so this line holds NO reservation. Writing it as
+			// physical+NULL would make adoption AND settle's commit branch silently
+			// skip it — a paid order with zero inventory committed. Fail loudly
+			// before minting anything; the buyer re-adds (same recovery as a swept
+			// hold).
+			return { ok: false, reason: "RESERVATION_LOST" };
+		}
 		lines.push({
 			productId: pc.productId,
 			sku: brandSku(line.sku),
