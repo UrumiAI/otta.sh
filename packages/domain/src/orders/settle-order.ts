@@ -40,7 +40,10 @@ type VerifiedSuccess = Extract<ConfirmationResult, { ok: true }>;
  *    state-guarded `commit`, and the grant-once entitlement key — never by
  *    blind-trusting the dedupe row.
  * 3. Amount + currency MUST equal `order_totals.total` — mismatch ⇒ reject +
- *    record anomaly (§9 Risk 3); no auto-refund.
+ *    record anomaly (§9 Risk 3); no auto-refund. Checked only while the order
+ *    can still settle: a terminal order short-circuits FIRST (review G6), so a
+ *    stray mismatched duplicate on an already-paid order is a plain no-op, not
+ *    a false anomaly.
  * 4. Guarded `pending → paid`; record the `payments` row; per line: physical ⇒
  *    `commit(reservationId)` (a lost adopted hold is the loud 0-row anomaly, §5);
  *    digital ⇒ grant entitlement (grant-once). An already-`paid` order re-drives
@@ -82,25 +85,19 @@ export async function settleOrder(
 		return { ok: true, order: fresh, noop: !won };
 	}
 
-	// 3. Amount + currency must equal the order-total snapshot — checked on every
-	// drive (a crash-window resume can never skip it).
-	if (conf.amount !== order.totals.total || conf.currency !== order.totals.currency) {
-		await deps.paymentEventStore.recordAnomaly({
-			orderId: order.id,
-			gateway: conf.gateway,
-			kind: "AMOUNT_MISMATCH",
-			detail: `got ${String(conf.amount)} ${conf.currency}, expected ${String(order.totals.total)} ${order.totals.currency}`,
-			now,
-		});
-		return { ok: false, reason: "AMOUNT_MISMATCH" };
-	}
-
 	// Already paid (webhook-before-redirect, duplicate delivery, or a retry after
-	// a crash between the flip and its side-effects): RE-DRIVE the side-effects —
-	// each is idempotent (provider_ref-keyed payment record, state-guarded
-	// commit, grant-once entitlement) — then no-op.
+	// a crash between the flip and its side-effects) — the terminal-state
+	// short-circuit runs BEFORE the amount check (review G6): a stray verified
+	// duplicate with a mismatched amount on a correctly-settled order must not
+	// record a false AMOUNT_MISMATCH anomaly. RE-DRIVE the side-effects — each is
+	// idempotent (provider_ref-keyed payment record, state-guarded commit,
+	// grant-once entitlement) — only when the amounts MATCH (the crash-window
+	// heal is always a redelivery of the original, matching event; a
+	// wrong-amount stray re-drives nothing) — then no-op.
 	if (order.state === "paid") {
-		await applyPaidSideEffects(deps, conf, order, now);
+		if (conf.amount === order.totals.total && conf.currency === order.totals.currency) {
+			await applyPaidSideEffects(deps, conf, order, now);
+		}
 		const fresh = await deps.orderStore.getById(order.id);
 		return { ok: true, order: fresh, noop: true };
 	}
@@ -108,6 +105,8 @@ export async function settleOrder(
 	// Terminal non-paid + a verified success: money moved but cannot settle →
 	// anomaly + manual reconciliation (no auto-refund, v1). Gated on the flag so
 	// a gateway's retry storm records the incident once, not once per delivery.
+	// Also ahead of the amount check (G6): SETTLE_ON_NON_PENDING is the right
+	// signal for a terminal order, whatever amount the stray event carries.
 	if (order.state !== "pending") {
 		if (order.reconciliationFlag === null) {
 			await deps.paymentEventStore.recordAnomaly({
@@ -121,6 +120,20 @@ export async function settleOrder(
 		}
 		const fresh = await deps.orderStore.getById(order.id);
 		return { ok: true, order: fresh, noop: true };
+	}
+
+	// 3. Amount + currency must equal the order-total snapshot — checked on every
+	// drive that can still settle (the order is pending here; a crash-window
+	// resume of a paid order is re-driven above, gated on the same equality).
+	if (conf.amount !== order.totals.total || conf.currency !== order.totals.currency) {
+		await deps.paymentEventStore.recordAnomaly({
+			orderId: order.id,
+			gateway: conf.gateway,
+			kind: "AMOUNT_MISMATCH",
+			detail: `got ${String(conf.amount)} ${conf.currency}, expected ${String(order.totals.total)} ${order.totals.currency}`,
+			now,
+		});
+		return { ok: false, reason: "AMOUNT_MISMATCH" };
 	}
 
 	// 4. Guarded pending → paid.

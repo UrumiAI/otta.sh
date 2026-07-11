@@ -165,6 +165,27 @@ describe("settleOrder", () => {
 		expect(h.inventory.onHand("SKU-1")).toBe(5); // returned exactly once
 	});
 
+	test("a mismatched-amount verified duplicate on an ALREADY-PAID order is a no-op success — no false AMOUNT_MISMATCH anomaly, no wrong-amount side-effects", async () => {
+		const order = await pendingPhysical();
+		const paid = await settleOrder(h.settleDeps, h.stripeGw, evt(order));
+		expect(paid.ok).toBe(true);
+		expect((await h.orderStore.getById(order.id))?.state).toBe("paid");
+
+		// Review G6: a stray verified duplicate (fresh dedupe key) carrying a WRONG
+		// amount lands on the already-settled order. The order settled correctly —
+		// this must be the terminal-state no-op, never a false AMOUNT_MISMATCH.
+		const dup = await settleOrder(
+			h.settleDeps,
+			h.stripeGw,
+			evt(order, { amount: 1, dedupeKey: "evt-stray" }),
+		);
+		expect(dup.ok).toBe(true);
+		if (dup.ok) expect(dup.noop).toBe(true);
+		expect(h.paymentEventStore.anomalies()).toHaveLength(0);
+		// And the wrong-amount confirmation re-drove nothing: one payment record.
+		expect(h.orderStore.payments(order.id)).toHaveLength(1);
+	});
+
 	/** A stale order (the pre-guard two-tab artifact) whose single line points at
 	 *  a reservation ANOTHER order owns — the shape the scoped release must
 	 *  tolerate forever, even though the cart fence now prevents minting new ones. */
