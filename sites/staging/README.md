@@ -106,8 +106,19 @@ delete → create → id-rewrite → redeploy dance.)
   page must rate-limit and/or tokenize access to it rather than exposing raw probing.
 - **Cron** is `* * * * *` (EmDash scheduled publishing is minute-granular; free-plan D1
   limits unaffected). May be relaxed — see the comment in `wrangler.jsonc`.
-- **`session: "auto"`** on the D1 adapter is inert until read replication is enabled on
-  the database account-side; harmless before, free latency win after. Do not remove.
+- **workers.dev→workers.dev subrequests are blocked** (deploy-verified): a Worker's
+  `fetch` to another `*.workers.dev` host never leaves Cloudflare — it is stubbed with a
+  404 (parallel `wrangler tail`s showed the request never reached the service; direct
+  curl worked). The site therefore ships the `global_fetch_strictly_public`
+  compatibility flag, which is what lets its `ctx.http` calls reach the service Worker.
+- **D1 `session` must stay OFF** while `global_fetch_strictly_public` is present: the
+  flag silently blocks the D1 Sessions API's internal routing request and every SSR
+  request hangs with nothing in the logs (em-dash `deployment/cloudflare.mdx:121-130`,
+  emdash issue #1273). Read replication was inert here anyway (not enabled
+  account-side). The flag⇒session-off pairing is pinned by the site-config test. For
+  production, the alternative is a **custom domain on the commerce service** — custom
+  domains are not subject to the workers.dev subrequest block, so the flag could be
+  dropped and `session: "auto"` re-enabled.
 - **`SERVICE_API_TOKEN` follow-up:** the commerce service has an auth gate for its API
   token, but `HttpCommerceClient` does not send one yet. Keep the token **unset** on the
   service until the plugin threads it through; enabling it early would 401 every

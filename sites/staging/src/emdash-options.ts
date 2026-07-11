@@ -2,9 +2,12 @@
  * The emdash() integration options for the staging site — a pure builder
  * so the site-config test can assert the whole trusted-registration
  * surface (plan D6):
- *  - D1 (`DB`) with `session: "auto"` — inert until read replication is
- *    enabled on the D1 database account-side; harmless before that, free
- *    read-replica routing after. Do not remove.
+ *  - D1 (`DB`) with `session` OFF — it MUST stay off while wrangler.jsonc
+ *    carries `global_fetch_strictly_public` (required for the site's
+ *    Worker→*.workers.dev service subrequests; combining the two deadlocks
+ *    every SSR request, silently — em-dash cloudflare.mdx:121-130, #1273).
+ *    Read replication was inert anyway (not enabled account-side). Pinned
+ *    by the pairing-invariant test in site-config.test.ts.
  *  - R2 (`MEDIA`) — zero-config media storage.
  *  - The Urumi plugin registered TRUSTED via a hand-written descriptor
  *    (ADR-0004). Deliberately NO `sandboxed:`, NO `sandboxRunner:` — the
@@ -42,7 +45,8 @@ export interface StagingEmdashOptions {
 
 export function buildEmdashOptions(serviceUrl: string): StagingEmdashOptions {
 	return {
-		database: d1({ binding: "DB", session: "auto" }),
+		// No `session` — see the pairing invariant in the module doc above.
+		database: d1({ binding: "DB" }),
 		storage: r2({ binding: "MEDIA" }),
 		plugins: [urumiPluginDescriptor(serviceUrl)],
 	};

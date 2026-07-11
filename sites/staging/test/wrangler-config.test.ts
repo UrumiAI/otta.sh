@@ -5,8 +5,14 @@
  *    sandbox runner and flips the account onto Workers Paid — ADR-0004);
  *  - the real staging resource ids (D1 urumi-cms, R2 urumi-media);
  *  - `nodejs_compat` present (required by the emdash CF stack);
- *  - NO `global_fetch_strictly_public` (deadlocks D1 session:"auto" —
- *    em-dash docs deployment/cloudflare.mdx, issue #1273);
+ *  - `global_fetch_strictly_public` PRESENT (deploy-verified: Cloudflare
+ *    blocks Worker→*.workers.dev subrequests and stubs them 404 — the
+ *    site's ctx.http calls to the urumi-service Worker never arrived
+ *    without the flag). The flag is incompatible with D1 read-replica
+ *    sessions (every SSR request hangs, silently — em-dash docs
+ *    deployment/cloudflare.mdx:121-130, issue #1273), so D1 `session`
+ *    must stay OFF while it is present — the pairing invariant is pinned
+ *    in site-config.test.ts;
  *  - a cron trigger (scheduled publishing needs it on Workers);
  *  - no secret-shaped keys under `vars` (secrets go via `wrangler secret`).
  */
@@ -56,10 +62,14 @@ describe("wrangler.jsonc", () => {
 		expect(config["r2_buckets"]).toEqual([{ binding: "MEDIA", bucket_name: "urumi-media" }]);
 	});
 
-	test("nodejs_compat is on; global_fetch_strictly_public is absent", () => {
+	test("nodejs_compat on; global_fetch_strictly_public on (workers.dev subrequests are otherwise stubbed 404)", () => {
 		const flags = config["compatibility_flags"] as string[];
 		expect(flags).toContain("nodejs_compat");
-		expect(flags).not.toContain("global_fetch_strictly_public");
+		// Without this flag the deployed Worker's fetch to the commerce
+		// service on *.workers.dev never leaves Cloudflare (stub 404) —
+		// verified with parallel wrangler tails. Requires D1 session OFF
+		// (pairing invariant in site-config.test.ts).
+		expect(flags).toContain("global_fetch_strictly_public");
 	});
 
 	test("cron trigger present (scheduled publishing on Workers)", () => {

@@ -8,7 +8,8 @@
  *    that holds even in trusted mode — ADR-0004);
  *  - NO `sandboxed:` / `sandboxRunner:` keys (a LOADER-consuming sandbox
  *    runner is the Workers-Paid cost pivot this deployment avoids);
- *  - database/storage are d1(DB, session:"auto") / r2(MEDIA);
+ *  - database/storage are d1(DB, session OFF — paired with wrangler's
+ *    global_fetch_strictly_public flag) / r2(MEDIA);
  *  - Astro `security.checkOrigin` is never disabled BY US — note the emdash
  *    integration force-disables it platform-wide and substitutes a CSRF
  *    layer covering only /_emdash/api/* routes, so the real cart-endpoint
@@ -18,6 +19,7 @@
  *    silently never applies and every ctx.http call fails against
  *    allowedHosts at runtime.
  */
+import { readFileSync } from "node:fs";
 import {
 	COMMERCE_SERVICE_BASE_URL,
 	productDataWidget,
@@ -78,11 +80,29 @@ describe("buildEmdashOptions", () => {
 		expect(options).not.toHaveProperty("marketplace");
 	});
 
-	test("database is D1 binding DB with session:'auto' (read replicas)", () => {
+	test("database is D1 binding DB with session OFF (required by global_fetch_strictly_public)", () => {
 		expect(options.database).toMatchObject({
 			entrypoint: "@emdash-cms/cloudflare/db/d1",
-			config: { binding: "DB", session: "auto" },
+			config: { binding: "DB" },
 		});
+		// NOT session:"auto": read-replica sessions are incompatible with the
+		// wrangler.jsonc `global_fetch_strictly_public` flag (every SSR
+		// request hangs, silently — em-dash cloudflare.mdx:121-130, #1273).
+		const d1Config = (options.database as { config?: { session?: unknown } }).config;
+		expect(d1Config?.session).toBeUndefined();
+	});
+
+	test("PAIRING INVARIANT: global_fetch_strictly_public (wrangler) ⇒ D1 session OFF", () => {
+		// The flag is required (Worker→*.workers.dev subrequests are stubbed
+		// 404 without it) and deadlocks D1 sessions when combined — the two
+		// halves must only ever change TOGETHER.
+		const wrangler = readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8");
+		const flagPresent = wrangler.includes('"global_fetch_strictly_public"');
+		expect(flagPresent).toBe(true);
+		const d1Config = (options.database as { config?: { session?: unknown } }).config;
+		if (flagPresent) {
+			expect(d1Config?.session).toBeUndefined();
+		}
 	});
 
 	test("storage is R2 binding MEDIA", () => {

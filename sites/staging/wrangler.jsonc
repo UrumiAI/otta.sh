@@ -7,14 +7,23 @@
 // Secrets are NEVER committed here. Post-merge:
 //   npx emdash secrets generate && wrangler secret put EMDASH_ENCRYPTION_KEY
 //
-// Do NOT add `global_fetch_strictly_public` — it deadlocks D1
-// `session: "auto"` (em-dash docs deployment/cloudflare.mdx, issue #1273).
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "urumi-store-staging",
 	"main": "./src/worker.ts",
 	"compatibility_date": "2026-02-24",
-	"compatibility_flags": ["nodejs_compat"],
+	// `global_fetch_strictly_public` is REQUIRED here (deploy-verified):
+	// Cloudflare blocks Worker→*.workers.dev subrequests and stubs them 404
+	// — without the flag the site's ctx.http calls to the urumi-service
+	// Worker never left Cloudflare (parallel wrangler tails proved the
+	// request never arrived; direct curl worked). PAIRING INVARIANT: the
+	// flag is incompatible with D1 read-replica sessions (every SSR request
+	// hangs, silently — em-dash docs deployment/cloudflare.mdx:121-130,
+	// emdash issue #1273), so d1() in astro.config must keep `session` OFF
+	// while this flag is present. Both halves are pinned by
+	// test/{wrangler,site}-config tests. A custom domain on the service
+	// would lift the subrequest block and allow removing the flag.
+	"compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
 	"d1_databases": [
 		{
 			"binding": "DB",
