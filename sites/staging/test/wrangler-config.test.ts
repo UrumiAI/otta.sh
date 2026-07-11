@@ -3,12 +3,14 @@
  * paid-plan/footgun exclusions are pinned as tests:
  *  - NO `worker_loaders` (the LOADER binding is consumed only by the
  *    sandbox runner and flips the account onto Workers Paid — ADR-0006);
- *  - the real staging resource ids (D1 urumi-cms, R2 urumi-media);
+ *  - the DB/MEDIA binding SHAPE (the tracked file is a template — real
+ *    resource ids live in the gitignored wrangler.local.jsonc, so only
+ *    structure is pinned, never account-specific values);
  *  - `nodejs_compat` present (required by the emdash CF stack);
  *  - `global_fetch_strictly_public` PRESENT (deploy-verified: Cloudflare
  *    blocks Worker→*.workers.dev subrequests and stubs them 404 — the
- *    site's ctx.http calls to the urumi-service Worker never arrived
- *    without the flag). The flag is incompatible with D1 read-replica
+ *    site's ctx.http calls to a commerce-service Worker on workers.dev
+ *    never arrived without the flag). The flag is incompatible with D1 read-replica
  *    sessions (every SSR request hangs, silently — em-dash docs
  *    deployment/cloudflare.mdx:121-130, issue #1273), so D1 `session`
  *    must stay OFF while it is present — the pairing invariant is pinned
@@ -40,26 +42,38 @@ function parseJsonc(raw: string): Record<string, unknown> {
 const config = parseJsonc(readFileSync(WRANGLER_PATH, "utf8"));
 
 describe("wrangler.jsonc", () => {
-	test("worker name is urumi-store-staging (must not overwrite other Workers)", () => {
-		expect(config["name"]).toBe("urumi-store-staging");
+	test("worker name is a non-empty string", () => {
+		// Template value ("my-urumi-store") — the real name lives in the
+		// gitignored wrangler.local.jsonc.
+		expect(typeof config["name"]).toBe("string");
+		expect((config["name"] as string).length).toBeGreaterThan(0);
 	});
 
 	test("has NO worker_loaders (no sandbox runner → no Workers Paid)", () => {
 		expect(config).not.toHaveProperty("worker_loaders");
 	});
 
-	test("D1 binding DB → urumi-cms with the real database id", () => {
-		expect(config["d1_databases"]).toEqual([
-			{
-				binding: "DB",
-				database_name: "urumi-cms",
-				database_id: "0a7c4962-bc2a-46cb-8c7e-8227b0f00433",
-			},
-		]);
+	test("exactly one D1 database, bound as DB, with name+id strings", () => {
+		const d1 = config["d1_databases"] as {
+			binding?: string;
+			database_name?: string;
+			database_id?: string;
+		}[];
+		expect(d1).toHaveLength(1);
+		expect(d1[0]?.binding).toBe("DB");
+		expect(typeof d1[0]?.database_name).toBe("string");
+		expect(d1[0]?.database_name?.length).toBeGreaterThan(0);
+		// Placeholder must still be a syntactically-valid id so
+		// `wrangler deploy --dry-run` keeps working offline.
+		expect(d1[0]?.database_id).toMatch(/^[0-9a-f-]{36}$/);
 	});
 
-	test("R2 binding MEDIA → urumi-media", () => {
-		expect(config["r2_buckets"]).toEqual([{ binding: "MEDIA", bucket_name: "urumi-media" }]);
+	test("exactly one R2 bucket, bound as MEDIA, with a bucket name", () => {
+		const r2 = config["r2_buckets"] as { binding?: string; bucket_name?: string }[];
+		expect(r2).toHaveLength(1);
+		expect(r2[0]?.binding).toBe("MEDIA");
+		expect(typeof r2[0]?.bucket_name).toBe("string");
+		expect(r2[0]?.bucket_name?.length).toBeGreaterThan(0);
 	});
 
 	test("nodejs_compat on; global_fetch_strictly_public on (workers.dev subrequests are otherwise stubbed 404)", () => {

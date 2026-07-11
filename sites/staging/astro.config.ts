@@ -10,7 +10,7 @@
  * The URL is baked in at BUILD time (define + allowedHosts); changing it
  * means rebuild + redeploy (see README).
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import cloudflare from "@astrojs/cloudflare";
 import react from "@astrojs/react";
 import { defineConfig } from "astro/config";
@@ -33,11 +33,24 @@ function readDotEnvServiceUrl(): string | undefined {
 
 const serviceUrl = resolveServiceUrl(process.env.COMMERCE_SERVICE_URL ?? readDotEnvServiceUrl());
 
+/**
+ * Real deploy identifiers live in the gitignored `wrangler.local.jsonc`
+ * (the tracked `wrangler.jsonc` is a placeholder TEMPLATE). The adapter
+ * reads the wrangler config at BUILD time and emits the merged
+ * `dist/server/wrangler.json` that plain `wrangler deploy` then follows
+ * via `.wrangler/deploy/config.json` — so the local file must be selected
+ * HERE, not with `wrangler deploy --config` (which bypasses the redirect
+ * and tries to rebundle the raw worker source).
+ */
+const localWranglerConfig = existsSync(new URL("wrangler.local.jsonc", import.meta.url))
+	? "wrangler.local.jsonc"
+	: undefined;
+
 export default defineConfig({
 	output: "server",
 	// NOT `cloudflare({ imageService: "cloudflare" })` — that's the paid
 	// image resizing product; Astro's built-in service is fine for staging.
-	adapter: cloudflare(),
+	adapter: cloudflare(localWranglerConfig !== undefined ? { configPath: localWranglerConfig } : {}),
 	image: {
 		layout: "constrained",
 		responsiveStyles: true,

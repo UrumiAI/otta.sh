@@ -1,9 +1,8 @@
 # @urumi/site-staging
 
-The Urumi **staging storefront + admin**: an EmDash site on Cloudflare Workers
-(`urumi-store-staging`) with D1 (`urumi-cms`) + R2 (`urumi-media`), and the Urumi plugin
-registered **trusted in-process** — no plugin sandbox, no Worker Loaders, Workers **free**
-plan. See [ADR-0006](../../adr/0006-trusted-in-process-deployment.md) for why that is
+The Urumi **staging storefront + admin**: an EmDash site on Cloudflare Workers backed by
+a D1 content database and an R2 media bucket, with the Urumi plugin registered **trusted
+in-process** — no plugin sandbox, no Worker Loaders, Workers **free** plan. See [ADR-0006](../../adr/0006-trusted-in-process-deployment.md) for why that is
 allowed and what stays forbidden.
 
 Pages are thin theme shims per [ADR-0003](../../adr/0003-storefront-plugin-routes.md): the
@@ -44,10 +43,23 @@ rebuild + redeploy.** There is no runtime override.
 
 ## Deploy runbook
 
-Resources (`urumi-cms` D1, `urumi-media` R2) already exist and their ids are committed in
-`wrangler.jsonc` — do not re-run `d1 create`/`r2 bucket create`.
+The tracked `wrangler.jsonc` is a **template** with placeholder resource values — real
+Worker/D1/R2 identifiers are never committed. Your filled-in copy lives in the
+gitignored `wrangler.local.jsonc`.
 
-1. `wrangler whoami` — confirm the right account and token.
+1. **Fill in your resource ids.** Copy `wrangler.jsonc` → `wrangler.local.jsonc` (or
+   edit `wrangler.jsonc` in place if your fork is private) and set your own Worker
+   `name`, D1 `database_name`/`database_id`, and R2 `bucket_name`. When
+   `wrangler.local.jsonc` exists, the build picks it up automatically
+   (`astro.config.ts` passes it to the Cloudflare adapter as `configPath`). Fresh
+   account:
+
+   ```bash
+   wrangler whoami                            # confirm the right account and token
+   wrangler d1 create <your-d1-name>          # prints the database_id to paste in
+   wrangler r2 bucket create <your-media-bucket>
+   ```
+
 2. Generate and store the encryption secret (never committed, never echoed into logs;
    back it up in a password manager):
 
@@ -59,15 +71,19 @@ Resources (`urumi-cms` D1, `urumi-media` R2) already exist and their ids are com
 3. Build with the real service URL (see contract above):
 
    ```bash
-   COMMERCE_SERVICE_URL=https://<service>.workers.dev pnpm --filter @urumi/site-staging build
+   COMMERCE_SERVICE_URL=https://<your-service>.<your-subdomain>.workers.dev pnpm --filter @urumi/site-staging build
    ```
 
-4. Deploy from `sites/staging`: `wrangler deploy` (or `pnpm deploy` — it does NOT
-   rebuild; step 3 owns the build so the service URL is never silently the placeholder).
+4. Deploy from `sites/staging`: plain `wrangler deploy` (or `pnpm deploy`) — it follows
+   the `.wrangler/deploy` redirect to the adapter-generated dist config, which already
+   carries your `wrangler.local.jsonc` values from step 3's build. (Do NOT pass
+   `--config wrangler.local.jsonc`: that bypasses the redirect and rebundles the raw
+   worker source.) Deploy does NOT rebuild; step 3 owns the build so the service URL is
+   never silently the placeholder.
 5. Hit the site once — the first request runs migrations and applies the seed's
    **schema/settings/menus** (one-time latency is expected). Sample content entries are
    NOT applied here — an empty `/products` at this point is healthy, not a failed boot.
-6. **Deploy-then-claim, immediately:** open `https://urumi-store-staging.<subdomain>.workers.dev/_emdash/admin`
+6. **Deploy-then-claim, immediately:** open `https://<your-worker>.<your-subdomain>.workers.dev/_emdash/admin`
    and complete the setup wizard **in the same session, with "include sample content"
    enabled** (that is what applies the 3 sample products; skip it and you simply start
    with an empty catalog) — the first visitor to complete setup becomes the admin. Do
@@ -86,9 +102,11 @@ partial schema seed). An empty `/products` catalog is NOT a failed boot (see ste
 do not reset a healthy database. The seed applies only to an **empty** D1 database, so a
 midway failure cannot be retried in place:
 
-1. `wrangler d1 delete urumi-cms` and `wrangler d1 create urumi-cms`.
-2. Update `database_id` in `wrangler.jsonc` with the new id.
-3. Redeploy and claim the admin again (steps 4–6).
+1. `wrangler d1 delete <your-d1-name>` and `wrangler d1 create <your-d1-name>`.
+2. Update `database_id` in your `wrangler.local.jsonc` (or edited-in-place
+   `wrangler.jsonc`) with the new id.
+3. Rebuild (the wrangler config is read at build time — step 3) and redeploy, then
+   claim the admin again (steps 4–6).
 
 (Precedent: em-dash `demos/cloudflare/scripts/reset-db.sh` does exactly this
 delete → create → id-rewrite → redeploy dance.)
