@@ -62,9 +62,12 @@ and every existing consumer are behavior-identical.
 - **`src/config.ts`**: pure `parseHoldTtlMs`/`resolveServiceConfig` shared by
   both entries; the Node bin (`index.ts`) now reads env through it (no
   behavior change).
-- **`wrangler.jsonc`**: worker `urumi-service`, `nodejs_compat`, Hyperdrive
-  binding `HYPERDRIVE` (no `PG_CONNECTION_STRING` secret on Workers), cron
-  `*/15 * * * *` (janitor only — hold expiry stays lazy-on-read).
+- **`wrangler.jsonc`** (a TEMPLATE — copy to the gitignored
+  `wrangler.local.jsonc` with your own Worker name and Hyperdrive config id,
+  then `wrangler deploy --config wrangler.local.jsonc`): `nodejs_compat`,
+  Hyperdrive binding `HYPERDRIVE` (no `PG_CONNECTION_STRING` secret on
+  Workers), cron `*/15 * * * *` (janitor only — hold expiry stays
+  lazy-on-read).
 - **`@urumi/store-postgres/pg`**: sqlite-free subpath re-exporting the pg
   dialect factories, all six Kysely stores (incl. the Phase 4
   order/entitlement/payment-event stores), `migrateToLatest`, `uuidIdGen`

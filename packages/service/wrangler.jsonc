@@ -1,6 +1,10 @@
+// TEMPLATE - account-specific values are placeholders. To deploy: copy this
+// file to wrangler.local.jsonc (gitignored), fill in your own Worker `name`
+// and Hyperdrive config `id` (`wrangler hyperdrive create ...`), then run
+// `wrangler deploy --config wrangler.local.jsonc`.
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "urumi-service",
+	"name": "my-urumi-commerce", // PLACEHOLDER - pick your own Worker name
 	"main": "src/worker.ts",
 	// Any date >= 2024-09-23 (the pg-over-Hyperdrive floor); pinned recent.
 	"compatibility_date": "2026-07-01",
@@ -8,14 +12,16 @@
 	// The origin credentials live in the Hyperdrive config platform-side;
 	// workerd injects `connectionString` on the binding at runtime — no
 	// PG_CONNECTION_STRING secret on Workers.
-	"hyperdrive": [{ "binding": "HYPERDRIVE", "id": "79195e5a2aa64dafa25acd2f30468e18" }],
+	// PLACEHOLDER id - replace with your Hyperdrive config id (32 hex chars).
+	"hyperdrive": [{ "binding": "HYPERDRIVE", "id": "00000000000000000000000000000000" }],
 	// Hold expiry is lazy-on-read, so for holds the 15-min cron is a janitor
 	// bounding a dead hold's lifetime to ~2x the default TTL. Order expiry
 	// (Phase 4) is clock-driven — this cron IS its production driver on Workers,
 	// as are the Phase-5 email-outbox drain and login-challenge prune (the Node
 	// bin runs those every 30s; at 15 min an order-status email can lag up to
 	// one tick — POST /internal/dispatch-emails is the on-demand lever).
-	// The cadence stays 15 min so Neon can still autosuspend between ticks.
+	// The cadence stays 15 min so a serverless Postgres origin (e.g. Neon)
+	// can still autosuspend between ticks.
 	"triggers": { "crons": ["*/15 * * * *"] },
 	// Secrets (set post-merge, never committed):
 	//   wrangler secret put SERVICE_API_TOKEN        — standard; ORDER MATTERS: set
