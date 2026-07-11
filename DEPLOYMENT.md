@@ -12,9 +12,9 @@ self-contained — section references like "§4" point inside this file.
 Urumi is **two deployables and two databases**:
 
 1. **The commerce service** (`@urumi/service`) — a Hono REST API that owns all money and
-   stock truth. It ships two entries from one codebase: a Node bin (`dist/index.mjs`) and a
-   Cloudflare Worker (`src/worker.ts`). It needs a **Postgres** database and migrates itself
-   forward on boot.
+   stock truth. It ships two entries from one codebase: a Node bin (`dist/index.mjs`
+   post-publish; run via tsx from a checkout today — see §2.2) and a Cloudflare Worker
+   (`src/worker.ts`). It needs a **Postgres** database and migrates itself forward on boot.
 2. **The storefront site** (`sites/staging`) — an EmDash CMS site with the Urumi plugin
    registered trusted in-process. It needs a **content database of its own** (D1 on Workers),
    entirely separate from the commerce Postgres. `sites/staging` is the reference site: copy
@@ -89,7 +89,8 @@ write surface described in §4 — acceptable only if you knowingly accept this:
 
 ### 2.1 Provision Postgres
 
-Any Postgres 14+ works — managed or self-hosted. Pooled vs direct: the service runs its own
+Managed or self-hosted both work — the suite runs against Postgres 16 in CI; older
+versions are untested. Pooled vs direct: the service runs its own
 `pg` pool and a Kysely migrator that use **prepared statements**, so give it a **direct
 connection or a session-mode pooler**. A transaction-mode pooler (e.g. PgBouncer in
 transaction mode) breaks prepared statements and will fail in confusing ways. Size the pool
@@ -100,13 +101,13 @@ conservatively; the database is the scaling arbiter (§6).
 The `@urumi/*` packages are not published yet, and inside the workspace their export maps
 point at TypeScript sources — so from a checkout, run the Node entry with a TS-executing
 runner rather than the built `dist/index.mjs` (that file is the entry for a future
-published install; plain `node` cannot resolve its workspace imports today). From the repo
-root:
+published install; plain `node` cannot resolve its workspace imports today — issue #44;
+when it closes, this step becomes `node dist/index.mjs`). From the repo root:
 
 ```bash
 pnpm install
 PG_CONNECTION_STRING=postgres://USER:PASSWORD@YOUR-DB-HOST:5432/YOUR-DB-NAME \
-  pnpm dlx tsx packages/service/src/index.ts
+  pnpm dlx tsx@4 packages/service/src/index.ts
 ```
 
 `PG_CONNECTION_STRING` is required — the entry throws at startup without it. Migrations run
@@ -218,12 +219,18 @@ paid plan:
    wrangler deploy --config wrangler.local.jsonc
    ```
 
-   > **The `--config` asymmetry — the two deployables are exact opposites:**
+   > **The `--config` asymmetry — for `wrangler deploy`, the two deployables are exact
+   > opposites:**
    >
-   > | Deployable | Correct command | What the wrong form does |
+   > | Deployable | Correct deploy command | What the wrong form does |
    > |---|---|---|
    > | service (`packages/service`) | `wrangler deploy --config wrangler.local.jsonc` | plain `wrangler deploy` — including the package's `pnpm deploy` script — reads the tracked **template** and deploys a Worker named `my-urumi-commerce` with the all-zero Hyperdrive id |
    > | site (`sites/staging`) | plain `wrangler deploy` (after the §3.2 build) | `wrangler deploy --config wrangler.local.jsonc` bypasses the `.wrangler/deploy` redirect to the adapter-generated config and tries to rebundle the raw worker source |
+   >
+   > The asymmetry covers **deploy only**. `wrangler secret put` always takes
+   > `--config wrangler.local.jsonc`, on **both** deployables: it never reads the site's
+   > build redirect, and without `--config` it defaults to the tracked template and
+   > targets the placeholder-named Worker, not yours (§4).
 
 5. **Smoke it:**
 
@@ -260,8 +267,14 @@ paid plan:
 
    ```bash
    npx emdash secrets generate
-   wrangler secret put EMDASH_ENCRYPTION_KEY      # paste interactively; back it up
+   wrangler secret put EMDASH_ENCRYPTION_KEY --config wrangler.local.jsonc   # paste; back it up
    ```
+
+   The site's "never `--config`" rule (step 5) applies to **deploy only** — deploy must
+   follow the build's `.wrangler/deploy` redirect. `wrangler secret put` never reads that
+   redirect: without `--config` it defaults to the tracked template and targets a Worker
+   named `my-urumi-store` — a phantom; your real Worker would then first-boot without its
+   only required secret.
 
 4. **Build with the real service URL.** The Cloudflare adapter reads `wrangler.local.jsonc`
    at **build** time (`astro.config.ts` passes it as `configPath`), and the service URL is
@@ -336,7 +349,10 @@ cannot be retried in place:
 ## 4. Secrets & tokens checklist
 
 All of these live on the **service** (Node env vars / `wrangler secret put`) except the
-first. In order of appearance in a deployment's life:
+first. On Workers, **every `wrangler secret put` below — on either deployable — needs
+`--config wrangler.local.jsonc`**: without it, wrangler defaults to the tracked template
+and uploads the secret to the placeholder-named Worker, not yours (see the §3.1 asymmetry
+note). In order of appearance in a deployment's life:
 
 | Secret | Deployable | Required? | When to set |
 |---|---|---|---|
@@ -470,6 +486,6 @@ reads/writes past it is a database decision, not an app-tier one.
 | Stale reads after writes (Shape B) | Hyperdrive query caching left on — recreate the config with `--caching-disabled` (§3.1) |
 | `POST /webhooks/stripe` answers 503 | `STRIPE_WEBHOOK_SECRET` unset (§4) |
 | Node bin exits: `PG_CONNECTION_STRING is required` | Set the DSN (§2.2) |
-| Worker 500s: `Missing Hyperdrive connection string` | `hyperdrive` binding absent/wrong id — you deployed the template; use `--config wrangler.local.jsonc` (§3.1) |
+| Worker 500s: `Missing Hyperdrive connection string` | `hyperdrive` binding absent or misconfigured — check the binding name and id in the config you deployed with (§3.1) |
 | Service refuses to start: `x402 is configured … refusing to start` | Fail-closed x402 gate — remove the x402 vars or (non-production only) opt in (§4) |
 | Site deploy went out but still calls the placeholder service host | Deploy doesn't rebuild — rerun the §3.2 build with `COMMERCE_SERVICE_URL`, then redeploy |

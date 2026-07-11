@@ -17,9 +17,9 @@ one at POST time, so a double-submit replays instead of duplicating.
 ```bash
 # 1. Start the commerce service (repo root; LOCAL TEST Postgres on
 #    :55432 — never :5432, that tunnels to production). tsx, not the built
-#    dist bin: the unpublished workspace exports point at TS sources.
+#    dist bin: the unpublished workspace exports point at TS sources (#44).
 PG_CONNECTION_STRING=postgres://postgres:postgres@127.0.0.1:55432/urumi_test \
-  pnpm dlx tsx packages/service/src/index.ts
+  pnpm dlx tsx@4 packages/service/src/index.ts
 
 # 2. Run the site against it:
 COMMERCE_SERVICE_URL=http://127.0.0.1:3000 pnpm --filter @urumi/site-staging dev
