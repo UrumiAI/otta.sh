@@ -1,6 +1,8 @@
 import {
 	type CartStore,
 	type Clock,
+	computeQuote,
+	type CouponStore,
 	type CreateOrderDeps,
 	type CreateOrderFailure,
 	createOrderFromCart,
@@ -17,10 +19,15 @@ import {
 	type PaymentIntentHandle,
 	type PaymentMethod,
 	type PaymentEventStore,
+	productId as toProductId,
+	type QuoteFailure,
+	type ShippingRulesStore,
+	type TaxRulesStore,
+	type TotalsLineInput,
 	type ProductCommerceStore,
 } from "@urumi/domain";
 import { type Context, Hono } from "hono";
-import { checkoutBody, orderPathParams } from "../schemas.js";
+import { checkoutBody, orderPathParams, quoteBody } from "../schemas.js";
 import { requireInternalToken } from "./internal-auth.js";
 
 /** Shared deps for every Phase-4 order/payment/entitlement route (§7). */
@@ -31,6 +38,10 @@ export interface OrderServiceDeps {
 	orderStore: OrderStore;
 	entitlementStore: EntitlementStore;
 	paymentEventStore: PaymentEventStore;
+	// Phase 6: the totals-pipeline rules stores.
+	shippingRules: ShippingRulesStore;
+	taxRules: TaxRulesStore;
+	couponStore: CouponStore;
 	clock: Clock;
 	idGen: IdGen;
 	gateways: Partial<Record<PaymentMethod, PaymentGateway>>;
@@ -53,6 +64,9 @@ export function orderRoutes(deps: OrderServiceDeps): Hono {
 		cartStore: deps.cartStore,
 		inventoryStore: deps.store,
 		productCommerce: deps.productCommerce,
+		shippingRules: deps.shippingRules,
+		taxRules: deps.taxRules,
+		couponStore: deps.couponStore,
 		clock: deps.clock,
 		idGen: deps.idGen,
 		gateways: deps.gateways,
@@ -79,6 +93,13 @@ export function orderRoutes(deps: OrderServiceDeps): Hono {
 			idempotencyKey: idempotencyKey(key),
 			buyerRef: parsed.data.buyerRef,
 			paymentMethod: parsed.data.paymentMethod,
+			...(parsed.data.shippingZoneId !== undefined
+				? { shippingZoneId: parsed.data.shippingZoneId }
+				: {}),
+			...(parsed.data.shippingMethodId !== undefined
+				? { shippingMethodId: parsed.data.shippingMethodId }
+				: {}),
+			...(parsed.data.couponCode !== undefined ? { couponCode: parsed.data.couponCode } : {}),
 		});
 		if (res.ok) {
 			return c.json(
@@ -87,6 +108,71 @@ export function orderRoutes(deps: OrderServiceDeps): Hono {
 			);
 		}
 		return checkoutFailure(c, res.reason);
+	});
+
+	// Read-only totals preview (§6): cart + zone/method + coupon → breakdown. Does
+	// NOT redeem the coupon — safe to call repeatedly as the buyer edits selection.
+	app.post("/checkout/quote", async (c) => {
+		const parsed = quoteBody.safeParse(await readJson(c));
+		if (!parsed.success) {
+			return c.json({ error: "invalid request body", issues: parsed.error.issues }, 400);
+		}
+		const cart = await deps.cartStore.get(parsed.data.cartId);
+		if (cart === null) return c.json({ ok: false, reason: "CART_NOT_FOUND" }, 404);
+		if (cart.lines.length === 0) return c.json({ ok: false, reason: "CART_EMPTY" }, 409);
+
+		// Resolve each line's snapshot price + tax class (mirrors createOrderFromCart).
+		const lines: TotalsLineInput[] = [];
+		for (const line of cart.lines) {
+			if (line.productId === null) return c.json({ ok: false, reason: "PRODUCT_NOT_PRICED" }, 409);
+			const pc = await deps.productCommerce.getByProductId(toProductId(line.productId));
+			if (pc === null || pc.price === null) {
+				return c.json({ ok: false, reason: "PRODUCT_NOT_PRICED" }, 409);
+			}
+			if (pc.price.currency !== cart.currency) {
+				return c.json({ ok: false, reason: "CURRENCY_MISMATCH" }, 409);
+			}
+			lines.push({
+				unitPriceCents: pc.price.amount,
+				qty: line.qty,
+				taxClassId: pc.taxClass ?? "standard",
+			});
+		}
+
+		const quote = await computeQuote(
+			{
+				shippingRules: deps.shippingRules,
+				taxRules: deps.taxRules,
+				couponStore: deps.couponStore,
+				clock: deps.clock,
+			},
+			{
+				currency: cart.currency,
+				lines,
+				...(parsed.data.shippingZoneId !== undefined ? { zoneId: parsed.data.shippingZoneId } : {}),
+				...(parsed.data.shippingMethodId !== undefined
+					? { methodId: parsed.data.shippingMethodId }
+					: {}),
+				...(parsed.data.couponCode !== undefined ? { couponCode: parsed.data.couponCode } : {}),
+			},
+		);
+		if (!quote.ok) return quoteFailure(c, quote.reason);
+		const b = quote.breakdown;
+		return c.json(
+			{
+				ok: true,
+				breakdown: {
+					currency: b.currency,
+					subtotalCents: b.subtotalCents,
+					discountCents: b.discountCents,
+					shippingCents: b.shippingCents,
+					taxCents: b.taxCents,
+					totalCents: b.totalCents,
+					appliedCouponCode: b.appliedCouponCode ?? null,
+				},
+			},
+			200,
+		);
 	});
 
 	app.get("/orders/:orderId", async (c) => {
@@ -124,6 +210,7 @@ export function serializeOrder(order: Order): Record<string, unknown> {
 			shippingCents: order.totals.shipping,
 			taxCents: order.totals.tax,
 			totalCents: order.totals.total,
+			appliedCouponCode: order.totals.appliedCouponCode,
 		},
 		lines: order.lines.map((l) => ({
 			sku: l.sku,
@@ -144,12 +231,35 @@ function checkoutFailure(c: Context, reason: CreateOrderFailure): Response {
 	const body = { ok: false as const, reason };
 	switch (reason) {
 		case "CART_NOT_FOUND":
+		case "COUPON_NOT_FOUND":
 			return c.json(body, 404);
 		case "CART_EMPTY":
 		case "CART_CHECKED_OUT":
 		case "RESERVATION_LOST":
 		case "PRODUCT_NOT_PRICED":
 		case "CURRENCY_MISMATCH":
+		case "SHIPPING_METHOD_NOT_FOUND":
+		case "SHIPPING_RATE_NOT_FOUND":
+		case "COUPON_NOT_ACTIVE":
+		case "COUPON_MIN_SUBTOTAL":
+		case "COUPON_EXHAUSTED":
+		case "COUPON_MAX_PER_CUSTOMER":
+		case "COUPON_CURRENCY_MISMATCH":
+			return c.json(body, 409);
+	}
+}
+
+function quoteFailure(c: Context, reason: QuoteFailure): Response {
+	const body = { ok: false as const, reason };
+	switch (reason) {
+		case "COUPON_NOT_FOUND":
+			return c.json(body, 404);
+		case "SHIPPING_METHOD_NOT_FOUND":
+		case "SHIPPING_RATE_NOT_FOUND":
+		case "COUPON_NOT_ACTIVE":
+		case "COUPON_MIN_SUBTOTAL":
+		case "COUPON_EXHAUSTED":
+		case "COUPON_CURRENCY_MISMATCH":
 			return c.json(body, 409);
 	}
 }

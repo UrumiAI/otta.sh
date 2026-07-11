@@ -15,6 +15,7 @@ import { createTestFacilitator, X402PaymentGateway } from "@urumi/payments-x402"
 import {
 	KyselyAddressStore,
 	KyselyCartStore,
+	KyselyCouponStore,
 	KyselyCredentialVerifier,
 	KyselyCustomerStore,
 	KyselyEntitlementStore,
@@ -23,6 +24,8 @@ import {
 	KyselyPaymentEventStore,
 	KyselyProductCommerceStore,
 	KyselySessionStore,
+	KyselyShippingRulesStore,
+	KyselyTaxRulesStore,
 	uuidIdGen,
 } from "@urumi/store-postgres";
 import { createIsolatedPgSchema } from "@urumi/store-postgres/testing";
@@ -100,6 +103,9 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
 			accepts: ["eip155:8453"],
 		}),
 	};
+	const shippingRules = new KyselyShippingRulesStore({ db });
+	const taxRules = new KyselyTaxRulesStore({ db });
+	const couponStore = new KyselyCouponStore({ db, idGen: uuidIdGen });
 	const app = createApp({
 		store,
 		productCommerce,
@@ -107,6 +113,9 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
 		orderStore,
 		entitlementStore,
 		paymentEventStore,
+		shippingRules,
+		taxRules,
+		couponStore,
 		customerStore,
 		addressStore,
 		sessionStore,

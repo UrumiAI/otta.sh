@@ -1,5 +1,6 @@
 import type {
 	AddressStore,
+	CouponStore,
 	CustomerCredentialVerifier,
 	CustomerStore,
 	EmailSender,
@@ -11,9 +12,12 @@ import type {
 	PaymentMethod,
 	ProductCommerceStore,
 	SessionStore,
+	ShippingRulesStore,
+	TaxRulesStore,
 } from "@urumi/domain";
 import { Hono } from "hono";
 import { adminRoutes } from "./routes/admin.js";
+import { rulesAdminRoutes } from "./routes/rules-admin.js";
 import { authRoutes } from "./routes/auth.js";
 import { type CartRoutesDeps, cartRoutes, expireHoldsRoutes } from "./routes/carts.js";
 import { catalogRoutes } from "./routes/catalog.js";
@@ -32,6 +36,10 @@ export type AppDeps = InventoryDeps &
 		orderStore: OrderStore;
 		entitlementStore: EntitlementStore;
 		paymentEventStore: PaymentEventStore;
+		// Phase 6 (§6): shipping / tax / coupon rules stores.
+		shippingRules: ShippingRulesStore;
+		taxRules: TaxRulesStore;
+		couponStore: CouponStore;
 		idGen: IdGen;
 		gateways: Partial<Record<PaymentMethod, PaymentGateway>>;
 		/** Checkout hold TTL in ms; defaults to the domain's DEFAULT_CHECKOUT_TTL_MS. */
@@ -100,6 +108,17 @@ export function createApp(deps: AppDeps): Hono {
 	app.route(
 		"/admin",
 		adminRoutes({ orderStore: deps.orderStore, internalToken: deps.internalToken }),
+	);
+	// Phase 6 admin CRUD (shipping/tax/coupon config) — mounted at /admin too; no
+	// path collision with /admin/orders/:id/transition.
+	app.route(
+		"/admin",
+		rulesAdminRoutes({
+			shippingRules: deps.shippingRules,
+			taxRules: deps.taxRules,
+			couponStore: deps.couponStore,
+			...(deps.internalToken !== undefined ? { internalToken: deps.internalToken } : {}),
+		}),
 	);
 	app.route(
 		"/internal",
