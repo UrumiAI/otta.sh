@@ -138,26 +138,9 @@ export class KyselyCouponStore implements CouponStore {
 					return { ok: true, redemptionId: raced.id, replayed: true };
 				}
 
-				// 2b. Per-customer cap (soft Phase-5 dependency): only with a customerId.
-				//     The just-inserted row is counted, so `> cap` means over the limit.
-				if (input.customerId !== undefined) {
-					const coupon = await trx
-						.selectFrom("coupons")
-						.select("max_uses_per_customer")
-						.where("id", "=", input.couponId)
-						.executeTakeFirstOrThrow();
-					if (coupon.max_uses_per_customer !== null) {
-						const { count } = await trx
-							.selectFrom("coupon_redemptions")
-							.select((eb) => eb.fn.countAll<number>().as("count"))
-							.where("coupon_id", "=", input.couponId)
-							.where("customer_id", "=", input.customerId)
-							.executeTakeFirstOrThrow();
-						if (Number(count) > coupon.max_uses_per_customer) throw new CouponPerCustomerError();
-					}
-				}
-
-				// 2c. Guarded global max-uses increment — the atomic oversell-analogue.
+				// 2b. Guarded global max-uses increment — the atomic oversell-analogue.
+				//     This UPDATE takes a ROW LOCK on the coupon row, so EVERY concurrent
+				//     redeem for this coupon serializes here (mirrors inventory reserve).
 				const bumped = await trx
 					.updateTable("coupons")
 					.set({ uses_count: sql<number>`uses_count + 1` })
@@ -165,9 +148,25 @@ export class KyselyCouponStore implements CouponStore {
 					.where((eb) =>
 						eb.or([eb("max_uses", "is", null), eb("uses_count", "<", eb.ref("max_uses"))]),
 					)
-					.returning("uses_count")
+					.returning(["uses_count", "max_uses_per_customer"])
 					.executeTakeFirst();
 				if (bumped === undefined) throw new CouponExhaustedError();
+
+				// 2c. Per-customer cap (review I3): checked AFTER the guarded UPDATE so it
+				//     runs under the coupon-row lock acquired above. That lock serializes
+				//     every same-coupon redeem, making this COUNT race-free under READ
+				//     COMMITTED — a concurrent same-customer peer cannot reach here until we
+				//     commit, and then it sees our committed redemption. The just-inserted
+				//     own row is counted, so `> cap` means over the limit.
+				if (input.customerId !== undefined && bumped.max_uses_per_customer !== null) {
+					const { count } = await trx
+						.selectFrom("coupon_redemptions")
+						.select((eb) => eb.fn.countAll<number>().as("count"))
+						.where("coupon_id", "=", input.couponId)
+						.where("customer_id", "=", input.customerId)
+						.executeTakeFirstOrThrow();
+					if (Number(count) > bumped.max_uses_per_customer) throw new CouponPerCustomerError();
+				}
 
 				return { ok: true, redemptionId, replayed: false };
 			});

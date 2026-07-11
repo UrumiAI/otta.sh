@@ -1,4 +1,4 @@
-import { idempotencyKey, orderId } from "@urumi/domain";
+import { customerId, idempotencyKey, orderId } from "@urumi/domain";
 import type { Kysely } from "kysely";
 import { afterEach, describe, expect, test } from "vitest";
 import { KyselyCouponStore, uuidIdGen } from "../src/index.js";
@@ -24,7 +24,11 @@ async function freshStore(poolMax: number): Promise<Fixture> {
 	return { store: new KyselyCouponStore({ db: iso.db, idGen: uuidIdGen }), db: iso.db };
 }
 
-async function seedCoupon(db: Kysely<Database>, maxUses: number): Promise<void> {
+async function seedCoupon(
+	db: Kysely<Database>,
+	maxUses: number,
+	maxUsesPerCustomer: number | null = null,
+): Promise<void> {
 	await db
 		.insertInto("coupons")
 		.values({
@@ -39,7 +43,7 @@ async function seedCoupon(db: Kysely<Database>, maxUses: number): Promise<void> 
 			starts_at: null,
 			expires_at: null,
 			max_uses: maxUses,
-			max_uses_per_customer: null,
+			max_uses_per_customer: maxUsesPerCustomer,
 			uses_count: 0,
 		})
 		.execute();
@@ -83,6 +87,39 @@ describe.skipIf(PG === undefined)("coupon no-over-redeem [postgres]", () => {
 			expect(rows, `loop ${loop}: redemption rows`).toHaveLength(M);
 		}
 	}, 120_000);
+
+	test("I3: two same-customer concurrent redeems at maxUsesPerCustomer=1 (different keys) → exactly one succeeds — Postgres", async () => {
+		const LOOPS = 15;
+		const h = await freshStore(8);
+		const cust = customerId("cust-1");
+		for (let loop = 0; loop < LOOPS; loop++) {
+			await h.db.deleteFrom("coupon_redemptions").execute();
+			await h.db.deleteFrom("coupons").execute();
+			await seedCoupon(h.db, 100, 1); // ample global, per-customer cap of 1
+
+			const results = await Promise.all([
+				h.store.redeem({
+					couponId: "c1",
+					orderId: orderId(`o-${loop}-a`),
+					idempotencyKey: idempotencyKey(`k-${loop}-a`),
+					customerId: cust,
+					createdAt: "2026-07-10T00:00:00.000Z",
+				}),
+				h.store.redeem({
+					couponId: "c1",
+					orderId: orderId(`o-${loop}-b`),
+					idempotencyKey: idempotencyKey(`k-${loop}-b`),
+					customerId: cust,
+					createdAt: "2026-07-10T00:00:00.000Z",
+				}),
+			]);
+			const ok = results.filter((r) => r.ok).length;
+			expect(ok, `loop ${loop}: exactly one same-customer redeem succeeds`).toBe(1);
+			expect((await h.store.findById("c1"))?.usesCount, `loop ${loop}: uses_count`).toBe(1);
+			const rows = await h.db.selectFrom("coupon_redemptions").selectAll().execute();
+			expect(rows, `loop ${loop}: one redemption row`).toHaveLength(1);
+		}
+	}, 60_000);
 
 	test("concurrent redeem() sharing the same idempotency key redeems exactly once — Postgres", async () => {
 		const N = 20;
