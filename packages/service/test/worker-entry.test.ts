@@ -31,7 +31,11 @@ function fakePools(options: { failQueries?: boolean; failFirstEnd?: boolean } = 
 			query: (sql: string): Promise<{ command: string; rowCount: number; rows: never[] }> => {
 				record.queries.push(sql);
 				if (options.failQueries) return Promise.reject(new Error("fake query failure"));
-				return Promise.resolve({ command: "SELECT", rowCount: 0, rows: [] });
+				// Kysely only exposes numAffectedRows for mutation commands, so the
+				// fake must echo the real command tag (e.g. the challenge prune reads
+				// DeleteResult.numDeletedRows - a "SELECT" tag would make it NaN).
+				const command = /^\s*(delete|insert|update)/i.exec(sql)?.[1]?.toUpperCase() ?? "SELECT";
+				return Promise.resolve({ command, rowCount: 0, rows: [] });
 			},
 			release: (): void => {},
 		};
@@ -319,14 +323,17 @@ describe("createWorker scheduled", () => {
 		await settle();
 
 		expect(migrate).toHaveBeenCalledTimes(1);
-		// Both janitors run once per event: the hold sweep AND the Phase-4
-		// order-expiry sweep (clock-driven, no lazy-on-read fallback).
+		// All four janitors run once per event: the hold sweep, the Phase-4
+		// order-expiry sweep (clock-driven, no lazy-on-read fallback), and the
+		// Phase-5 email-outbox drain + login-challenge prune.
 		const sweepLogs = log.mock.calls
 			.map((call) => call.map(String).join(" "))
 			.filter((line) => line.includes("cron sweep"));
 		expect(sweepLogs).toEqual([
 			"[service] cron sweep reclaimed 0",
 			"[service] cron sweep expired 0 orders",
+			"[service] cron sweep sent 0 emails",
+			"[service] cron sweep pruned 0 login challenges",
 		]);
 		expect(pools.length).toBe(1);
 		expect(pools[0]?.ended).toBe(true);

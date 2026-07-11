@@ -1,12 +1,22 @@
 import {
 	CountingIdGen,
+	FakeEmailSender,
 	FixedClock,
+	InMemoryAddressStore,
 	InMemoryCartStore,
+	InMemoryCouponStore,
+	InMemoryCredentialVerifier,
+	InMemoryCustomerStore,
 	InMemoryEntitlementStore,
 	InMemoryInventoryStore,
 	InMemoryOrderStore,
 	InMemoryPaymentEventStore,
 	InMemoryProductCommerceStore,
+	InMemoryReportingStore,
+	InMemorySessionStore,
+	InMemorySettingsStore,
+	InMemoryShippingRulesStore,
+	InMemoryTaxRulesStore,
 } from "@urumi/domain/testing";
 import { StripePaymentGateway } from "@urumi/payments-stripe";
 import type { Hono } from "hono";
@@ -44,6 +54,7 @@ function makeApp(options: { serviceToken?: string; internalToken?: string } = {}
 		inventoryOnHand: (s) => inventory.onHand(s),
 	});
 	const idGen = new CountingIdGen("id");
+	const customerStore = new InMemoryCustomerStore({ idGen, clock });
 	const app = createApp({
 		store: inventory,
 		productCommerce,
@@ -51,6 +62,16 @@ function makeApp(options: { serviceToken?: string; internalToken?: string } = {}
 		orderStore: new InMemoryOrderStore({ idGen, clock }),
 		entitlementStore: new InMemoryEntitlementStore({ idGen, clock }),
 		paymentEventStore: new InMemoryPaymentEventStore(),
+		shippingRules: new InMemoryShippingRulesStore(),
+		taxRules: new InMemoryTaxRulesStore(),
+		couponStore: new InMemoryCouponStore({ idGen }),
+		reportingStore: new InMemoryReportingStore(),
+		settingsStore: new InMemorySettingsStore(),
+		customerStore,
+		addressStore: new InMemoryAddressStore({ idGen, clock }),
+		sessionStore: new InMemorySessionStore({ idGen, clock }),
+		credentialVerifier: new InMemoryCredentialVerifier({ customerStore, idGen, clock }),
+		emailSender: new FakeEmailSender(),
 		idGen,
 		// A REAL Stripe gateway with a test secret so the webhook route's OWN
 		// auth (Stripe-Signature HMAC over raw bytes) is live in these tests.

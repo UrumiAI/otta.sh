@@ -23,6 +23,12 @@ and every existing consumer are behavior-identical.
   starve order expiry. Phase 4 gateways wire from env bindings exactly like
   the Node bin (`wrangler secret put STRIPE_WEBHOOK_SECRET` etc.; x402 keeps
   its fail-closed test-facilitator opt-in), memoized per isolate.
+  Rebased over Phases 5–7: the cron also drains the order-email outbox and
+  prunes login challenges (the Node bin's 30s interval pair — at 15 min an
+  order email can lag one tick; `POST /internal/dispatch-emails` is the
+  on-demand lever), and the Worker wires the Phase 5–7 stores + the email
+  sender (`EMAIL_API_URL`/`EMAIL_API_KEY`/`EMAIL_FROM`/`STOREFRONT_BASE_URL`
+  env, ConsoleEmailSender fallback) exactly like the Node bin.
   Known follow-up (separate task, not in this change): the NODE bin's
   self-interval still sweeps only holds — order-expiry parity for the Node
   entry (an `expireOrders` interval or equivalent) is tracked separately;
@@ -41,8 +47,18 @@ and every existing consumer are behavior-identical.
   its own `Stripe-Signature` HMAC over the raw body — Stripe cannot carry our
   Bearer token. Every other Phase 4 mutating route (checkout included) is
   gated. Deploy ordering note: set `SERVICE_API_TOKEN` on the deployed Worker
-  only AFTER the CMS-side plugin threads the same token, or storefront cart
-  writes will 401.
+  only AFTER the CMS-side plugin threads the same token (issue #25), or
+  storefront cart writes will 401.
+  **Phase 5 interaction (flagged, unresolved here)**: the customer-session
+  routes (`POST /auth/logout`, `POST/PUT/DELETE /me/addresses`) authenticate
+  with the CUSTOMER session token in the SAME `Authorization: Bearer` header
+  the gate consumes — with `SERVICE_API_TOKEN` set they would 401 at the
+  gate. Issue #25's token threading must resolve the header collision (e.g. a
+  dedicated service-token header, or session-authenticated method+path
+  exemptions) before the secret is set in production. The internal-token
+  admin surface (`/admin/*` writes, `PUT /settings`, `/reports/*` reads) uses
+  `X-Internal-Token`, so it composes with the gate as dual headers (reads are
+  GET — ungated — anyway).
 - **`src/config.ts`**: pure `parseHoldTtlMs`/`resolveServiceConfig` shared by
   both entries; the Node bin (`index.ts`) now reads env through it (no
   behavior change).

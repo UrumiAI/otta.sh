@@ -1,6 +1,8 @@
 import {
 	type CartDeps,
 	type Clock,
+	dispatchOrderEmails,
+	type EmailSender,
 	type ExpireOrdersDeps,
 	expireHolds,
 	expireOrders,
@@ -9,12 +11,21 @@ import {
 } from "@urumi/domain";
 import { StripePaymentGateway } from "@urumi/payments-stripe";
 import {
+	KyselyAddressStore,
 	KyselyCartStore,
+	KyselyCouponStore,
+	KyselyCredentialVerifier,
+	KyselyCustomerStore,
 	KyselyEntitlementStore,
 	KyselyInventoryStore,
 	KyselyOrderStore,
 	KyselyPaymentEventStore,
 	KyselyProductCommerceStore,
+	KyselyReportingStore,
+	KyselySessionStore,
+	KyselySettingsStore,
+	KyselyShippingRulesStore,
+	KyselyTaxRulesStore,
 	makePostgresDb,
 	makePostgresPool,
 	migrateToLatest,
@@ -23,6 +34,7 @@ import {
 import type { Hono } from "hono";
 import { createApp } from "./app.js";
 import { resolveServiceConfig, type ServiceConfig } from "./config.js";
+import { ConsoleEmailSender, HttpEmailSender } from "./email/senders.js";
 import { wireX402Gateway } from "./x402-wiring.js";
 
 /**
@@ -52,6 +64,13 @@ export interface WorkerEnv {
 	X402_FACILITATOR_SECRET?: string;
 	X402_ACCEPTS?: string;
 	X402_ALLOW_TEST_FACILITATOR?: string;
+	// Phase 5 email transport + magic-link base URL — same names as the Node
+	// bin. EMAIL_API_URL unset ⇒ ConsoleEmailSender (workers `console.log`,
+	// visible in `wrangler tail`); set ⇒ HttpEmailSender over fetch.
+	EMAIL_API_URL?: string;
+	EMAIL_API_KEY?: string;
+	EMAIL_FROM?: string;
+	STOREFRONT_BASE_URL?: string;
 }
 
 export interface WorkerExecutionContext {
@@ -201,6 +220,24 @@ export function createWorker(overrides: CreateWorkerOverrides = {}): UrumiWorker
 		return gatewaysMemo.value;
 	}
 
+	// Email sender memo (Phase 5) — stateless like the gateways; HttpEmailSender
+	// performs its fetch inside the current event, so cross-request reuse is
+	// safe. Same env names as the Node bin; unset EMAIL_API_URL falls back to
+	// ConsoleEmailSender (visible via `wrangler tail`).
+	let emailSenderMemo: EmailSender | undefined;
+
+	function getEmailSender(env: WorkerEnv): EmailSender {
+		emailSenderMemo ??=
+			env.EMAIL_API_URL !== undefined && env.EMAIL_API_URL.length > 0
+				? new HttpEmailSender({
+						apiUrl: env.EMAIL_API_URL,
+						apiKey: env.EMAIL_API_KEY,
+						from: env.EMAIL_FROM ?? "no-reply@urumi.local",
+					})
+				: new ConsoleEmailSender();
+		return emailSenderMemo;
+	}
+
 	// Migrations: lazy, once per isolate, inside the first event (workers have
 	// no boot phase and forbid top-level I/O). A rejection clears the memo so
 	// the next event retries; cross-isolate races are serialized by kysely's
@@ -226,6 +263,7 @@ export function createWorker(overrides: CreateWorkerOverrides = {}): UrumiWorker
 
 	function buildApp(
 		db: Db,
+		env: WorkerEnv,
 		config: ServiceConfig,
 		gateways: Partial<Record<PaymentMethod, PaymentGateway>>,
 	): Hono {
@@ -235,6 +273,24 @@ export function createWorker(overrides: CreateWorkerOverrides = {}): UrumiWorker
 		const orderStore = new KyselyOrderStore({ db, idGen: uuidIdGen, clock });
 		const entitlementStore = new KyselyEntitlementStore({ db, idGen: uuidIdGen, clock });
 		const paymentEventStore = new KyselyPaymentEventStore({ db, idGen: uuidIdGen });
+		// Phase 6 rules + Phase 7 reporting/settings (reporting is SQL-dialect-
+		// aware; this entry is pg-only by construction).
+		const shippingRules = new KyselyShippingRulesStore({ db });
+		const taxRules = new KyselyTaxRulesStore({ db });
+		const couponStore = new KyselyCouponStore({ db, idGen: uuidIdGen });
+		const reportingStore = new KyselyReportingStore({ db, dialect: "postgres" });
+		const settingsStore = new KyselySettingsStore({ db, clock });
+		// Phase 5 customer identity + email surface — mirrors the Node bin.
+		const customerStore = new KyselyCustomerStore({ db, idGen: uuidIdGen, clock });
+		const addressStore = new KyselyAddressStore({ db, idGen: uuidIdGen, clock });
+		const sessionStore = new KyselySessionStore({ db, idGen: uuidIdGen, clock });
+		const credentialVerifier = new KyselyCredentialVerifier({
+			db,
+			customerStore,
+			idGen: uuidIdGen,
+			clock,
+		});
+		const storefrontBaseUrl = env.STOREFRONT_BASE_URL;
 		return createApp({
 			store,
 			productCommerce,
@@ -242,6 +298,16 @@ export function createWorker(overrides: CreateWorkerOverrides = {}): UrumiWorker
 			orderStore,
 			entitlementStore,
 			paymentEventStore,
+			shippingRules,
+			taxRules,
+			couponStore,
+			reportingStore,
+			settingsStore,
+			customerStore,
+			addressStore,
+			sessionStore,
+			credentialVerifier,
+			emailSender: getEmailSender(env),
 			idGen: uuidIdGen,
 			gateways,
 			clock,
@@ -250,6 +316,7 @@ export function createWorker(overrides: CreateWorkerOverrides = {}): UrumiWorker
 			checkoutTtlMs: config.ttlMs,
 			internalToken: config.internalToken,
 			serviceToken: config.serviceToken,
+			...(storefrontBaseUrl !== undefined ? { storefrontBaseUrl } : {}),
 		});
 	}
 
@@ -265,7 +332,7 @@ export function createWorker(overrides: CreateWorkerOverrides = {}): UrumiWorker
 				const gateways = getGateways(env);
 				({ pool, db } = makeEventDb(env));
 				await ensureMigrated(db);
-				const app = buildApp(db, config, gateways);
+				const app = buildApp(db, env, config, gateways);
 				// Every route returns a buffered `c.json(...)` body, so `finally`
 				// (which only DEFERS destroy via waitUntil) can never truncate it.
 				// env/ctx are threaded through for any future route that reads
@@ -299,13 +366,20 @@ export function createWorker(overrides: CreateWorkerOverrides = {}): UrumiWorker
 				const store = new KyselyInventoryStore({ db, idGen: uuidIdGen, clock });
 				const cartStore = new KyselyCartStore({ db, idGen: uuidIdGen, clock });
 				const orderStore = new KyselyOrderStore({ db, idGen: uuidIdGen, clock });
+				const couponStore = new KyselyCouponStore({ db, idGen: uuidIdGen });
 				const cartDeps: CartDeps = {
 					cartStore,
 					inventoryStore: store,
 					clock,
 					ttlMs: config.ttlMs,
 				};
-				const expireDeps: ExpireOrdersDeps = { orderStore, inventoryStore: store, clock };
+				// couponStore: Phase 6 (review I2) — expiry releases the order's coupon.
+				const expireDeps: ExpireOrdersDeps = {
+					orderStore,
+					inventoryStore: store,
+					couponStore,
+					clock,
+				};
 				// Each janitor gets its OWN catch: a persistently failing hold sweep
 				// must not starve order expiry (or vice versa), and each failure
 				// carries its own label for diagnostics.
@@ -320,6 +394,35 @@ export function createWorker(overrides: CreateWorkerOverrides = {}): UrumiWorker
 					console.log(`[service] cron sweep expired ${expired} orders`);
 				} catch (err) {
 					console.error("[service] order sweep failed:", err);
+				}
+				// Phase 5 maintenance legs — the same pair the Node bin's
+				// self-interval runs (and POST /internal/dispatch-emails triggers):
+				// drain the order-email outbox (claims are atomic, at-least-once,
+				// send failures retried next tick) and prune consumed/expired login
+				// challenges. Same labels as index.ts.
+				const customerStore = new KyselyCustomerStore({ db, idGen: uuidIdGen, clock });
+				const credentialVerifier = new KyselyCredentialVerifier({
+					db,
+					customerStore,
+					idGen: uuidIdGen,
+					clock,
+				});
+				try {
+					const sent = await dispatchOrderEmails({
+						orderStore,
+						emailSender: getEmailSender(env),
+						customerStore,
+						clock,
+					});
+					console.log(`[service] cron sweep sent ${sent} emails`);
+				} catch (err) {
+					console.error("[service] email dispatch failed:", err);
+				}
+				try {
+					const pruned = await credentialVerifier.pruneChallenges(clock.now().toISOString());
+					console.log(`[service] cron sweep pruned ${pruned} login challenges`);
+				} catch (err) {
+					console.error("[service] login-challenge prune failed:", err);
 				}
 			} catch (err) {
 				// Setup failures only (config/binding/pool/migration) — the sweeps
