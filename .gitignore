@@ -6,6 +6,7 @@ node_modules/
 dist/
 build/
 *.tsbuildinfo
+.wrangler/
 
 # Local dev data
 *.db
