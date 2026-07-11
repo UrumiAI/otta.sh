@@ -202,6 +202,22 @@ export function orderTransitionContract(
 			expect((await h.store.listForCustomer(custB)).map((o) => o.id)).toEqual([b]);
 		});
 
+		test("linkGuestOrders matches buyer_ref case-insensitively — a mixed-case guest checkout still links (H2)", async () => {
+			const h = await makeHarness();
+			// Phase-4 checkout stores buyer_ref VERBATIM (no normalization at the
+			// wire) — the customer email arriving from login is lower-normalized.
+			const id = await seed(h, {
+				orderId: orderId("ord-mixed"),
+				idempotencyKey: idempotencyKey("key-mixed"),
+				buyerRef: "Alice@Example.com",
+			});
+			const cust = customerId("cust-alice");
+			expect(await h.store.linkGuestOrders(cust, "alice@example.com")).toBe(1);
+			expect((await h.store.listForCustomer(cust)).map((o) => o.id)).toEqual([id]);
+			// Idempotent: a second login links nothing new.
+			expect(await h.store.linkGuestOrders(cust, "alice@example.com")).toBe(0);
+		});
+
 		test("a forced rollback mid-transition leaves neither the state change nor the outbox row", async () => {
 			const h = await makeHarness();
 			if (h.forceFailedTransition === undefined) return; // fake: no real transaction to roll back

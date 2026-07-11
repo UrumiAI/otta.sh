@@ -225,10 +225,15 @@ export class KyselyOrderStore implements OrderStore {
 	}
 
 	async linkGuestOrders(customerId: CustomerId, buyerRef: string): Promise<number> {
+		// Case-insensitive on buyer_ref (review round H2): checkout stores the
+		// buyer's email VERBATIM, while the login email is lower-normalized —
+		// compare-side folding (lower(buyer_ref) = lower(?)) links a mixed-case
+		// guest checkout without rewriting the Phase-4 value. Dialect-agnostic:
+		// `lower()` is standard SQL, works identically on sqlite and pg.
 		const res = await this.#db
 			.updateTable("orders")
 			.set({ customer_id: customerId, updated_at: this.#clock.now().toISOString() })
-			.where("buyer_ref", "=", buyerRef)
+			.where(sql`lower(buyer_ref)`, "=", buyerRef.toLowerCase())
 			.where("customer_id", "is", null)
 			.executeTakeFirst();
 		return Number(res.numUpdatedRows);

@@ -185,9 +185,14 @@ export class InMemoryOrderStore implements OrderStore {
 	}
 
 	async linkGuestOrders(customerId: CustomerId, buyerRef: string): Promise<number> {
+		// Case-insensitive on buyer_ref (review round H2): checkout stores the
+		// buyer's email VERBATIM, while the login email is lower-normalized —
+		// compare-side folding links a mixed-case guest checkout without rewriting
+		// the Phase-4 value (which is also the exact-match entitlement claim key).
+		const needle = buyerRef.toLowerCase();
 		let linked = 0;
 		for (const stored of this.#orders.values()) {
-			if (stored.order.buyerRef === buyerRef && stored.order.customerId === null) {
+			if (stored.order.buyerRef.toLowerCase() === needle && stored.order.customerId === null) {
 				stored.order.customerId = customerId;
 				stored.order.updatedAt = this.#clock.now().toISOString();
 				linked++;
