@@ -1,4 +1,8 @@
 import type {
+	AddressStore,
+	CustomerCredentialVerifier,
+	CustomerStore,
+	EmailSender,
 	EntitlementStore,
 	IdGen,
 	OrderStore,
@@ -6,12 +10,17 @@ import type {
 	PaymentGateway,
 	PaymentMethod,
 	ProductCommerceStore,
+	SessionStore,
 } from "@urumi/domain";
 import { Hono } from "hono";
+import { adminRoutes } from "./routes/admin.js";
+import { authRoutes } from "./routes/auth.js";
 import { type CartRoutesDeps, cartRoutes, expireHoldsRoutes } from "./routes/carts.js";
 import { catalogRoutes } from "./routes/catalog.js";
 import { entitlementRoutes } from "./routes/entitlements.js";
+import { internalEmailRoutes } from "./routes/internal-emails.js";
 import { type InventoryDeps, inventoryRoutes } from "./routes/inventory.js";
+import { meRoutes } from "./routes/me.js";
 import { orderRoutes } from "./routes/orders.js";
 import { productCommerceRoutes } from "./routes/product-commerce.js";
 import { webhookRoutes } from "./routes/webhooks.js";
@@ -27,6 +36,14 @@ export type AppDeps = InventoryDeps &
 		gateways: Partial<Record<PaymentMethod, PaymentGateway>>;
 		/** Checkout hold TTL in ms; defaults to the domain's DEFAULT_CHECKOUT_TTL_MS. */
 		checkoutTtlMs?: number;
+		// Phase 5 (§7): storefront customer identity, address book, email.
+		customerStore: CustomerStore;
+		addressStore: AddressStore;
+		sessionStore: SessionStore;
+		credentialVerifier: CustomerCredentialVerifier;
+		emailSender: EmailSender;
+		/** Storefront base URL for the emailed magic link (optional). */
+		storefrontBaseUrl?: string;
 	};
 
 /**
@@ -54,6 +71,46 @@ export function createApp(deps: AppDeps): Hono {
 	app.route("/", orderRoutes(orderDeps));
 	app.route("/webhooks", webhookRoutes(orderDeps));
 	app.route("/entitlements", entitlementRoutes(orderDeps));
+
+	// Phase 5 (§7): storefront customer auth, the authenticated /me surface, the
+	// admin transition, and the outbox dispatcher trigger.
+	app.route(
+		"/auth",
+		authRoutes({
+			credentialVerifier: deps.credentialVerifier,
+			customerStore: deps.customerStore,
+			sessionStore: deps.sessionStore,
+			orderStore: deps.orderStore,
+			emailSender: deps.emailSender,
+			clock: deps.clock,
+			...(deps.storefrontBaseUrl !== undefined
+				? { storefrontBaseUrl: deps.storefrontBaseUrl }
+				: {}),
+		}),
+	);
+	app.route(
+		"/me",
+		meRoutes({
+			sessionStore: deps.sessionStore,
+			customerStore: deps.customerStore,
+			orderStore: deps.orderStore,
+			addressStore: deps.addressStore,
+		}),
+	);
+	app.route(
+		"/admin",
+		adminRoutes({ orderStore: deps.orderStore, internalToken: deps.internalToken }),
+	);
+	app.route(
+		"/internal",
+		internalEmailRoutes({
+			orderStore: deps.orderStore,
+			emailSender: deps.emailSender,
+			customerStore: deps.customerStore,
+			clock: deps.clock,
+			...(deps.internalToken !== undefined ? { internalToken: deps.internalToken } : {}),
+		}),
+	);
 
 	// Consistent error envelope for anything thrown past the routes (e.g. a
 	// domain error on commit/release of a non-`held`/unknown reservation, or a

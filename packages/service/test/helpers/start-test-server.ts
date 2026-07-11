@@ -9,16 +9,20 @@ import {
 	productId,
 	sku,
 } from "@urumi/domain";
-import { FixedClock } from "@urumi/domain/testing";
+import { FakeEmailSender, FixedClock } from "@urumi/domain/testing";
 import { StripePaymentGateway } from "@urumi/payments-stripe";
 import { createTestFacilitator, X402PaymentGateway } from "@urumi/payments-x402";
 import {
+	KyselyAddressStore,
 	KyselyCartStore,
+	KyselyCredentialVerifier,
+	KyselyCustomerStore,
 	KyselyEntitlementStore,
 	KyselyInventoryStore,
 	KyselyOrderStore,
 	KyselyPaymentEventStore,
 	KyselyProductCommerceStore,
+	KyselySessionStore,
 	uuidIdGen,
 } from "@urumi/store-postgres";
 import { createIsolatedPgSchema } from "@urumi/store-postgres/testing";
@@ -32,6 +36,9 @@ export interface TestServer {
 	baseUrl: string;
 	/** The X-Internal-Token value the server accepts (undefined ⇒ disabled). */
 	internalToken: string | undefined;
+	/** The in-memory email sender the server sends through (Phase 5) — tests read
+	 *  the emitted magic-link token and assert exactly-once status emails. */
+	emailSender: FakeEmailSender;
 	seed(sku: string, qty: number): Promise<void>;
 	onHand(sku: string): Promise<number>;
 	/** Seed a priced product (with title) + optional stock, for checkout tests. */
@@ -75,6 +82,16 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
 	const orderStore = new KyselyOrderStore({ db, idGen: uuidIdGen, clock });
 	const entitlementStore = new KyselyEntitlementStore({ db, idGen: uuidIdGen, clock });
 	const paymentEventStore = new KyselyPaymentEventStore({ db, idGen: uuidIdGen });
+	const customerStore = new KyselyCustomerStore({ db, idGen: uuidIdGen, clock });
+	const addressStore = new KyselyAddressStore({ db, idGen: uuidIdGen, clock });
+	const sessionStore = new KyselySessionStore({ db, idGen: uuidIdGen, clock });
+	const credentialVerifier = new KyselyCredentialVerifier({
+		db,
+		customerStore,
+		idGen: uuidIdGen,
+		clock,
+	});
+	const emailSender = new FakeEmailSender();
 	const gateways: Partial<Record<PaymentMethod, PaymentGateway>> = {
 		stripe: new StripePaymentGateway({ webhookSecret: STRIPE_WEBHOOK_SECRET }),
 		x402: new X402PaymentGateway({
@@ -90,6 +107,11 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
 		orderStore,
 		entitlementStore,
 		paymentEventStore,
+		customerStore,
+		addressStore,
+		sessionStore,
+		credentialVerifier,
+		emailSender,
 		idGen: uuidIdGen,
 		gateways,
 		clock,
@@ -105,6 +127,7 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
 	return {
 		baseUrl: `http://127.0.0.1:${port}`,
 		internalToken,
+		emailSender,
 		async seed(skuValue, qty) {
 			await db
 				.insertInto("inventory")
