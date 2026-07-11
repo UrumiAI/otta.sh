@@ -42,9 +42,14 @@ Phase 4 — checkout + payment gateways.
   `POST /entitlements/grant`, and `GET /entitlements/check`; the cart add route
   resolves fulfillment kind server-side; product-commerce carries `title`. Live
   HTTP contract green.
-- `@urumi/plugin`: sandbox-clean PUBLIC Stripe webhook proxy (base64-exact raw
-  body, proven byte-exact under workerd against the live service) + an
-  entitlement-gated download route; `HttpCommerceClient.checkEntitlement`.
+- `@urumi/plugin`: sandbox-clean PUBLIC entitlement-gated download route;
+  `HttpCommerceClient.checkEntitlement`. **The Stripe webhook endpoint is the
+  SERVICE's public URL (`POST /webhooks/stripe`)** — there is deliberately no
+  plugin proxy route: EmDash's sandboxed-route bridge JSON-parses the request
+  body (destroying the raw bytes the HMAC verifies) and pins the HTTP response
+  to a wrapped 200 (Stripe retries key on status), so a byte-exact proxy is
+  structurally impossible; direct-to-service is the plan's preferred design
+  (§9 Risk 1).
 
 Entitlements are keyed on `order_id` + `buyer_ref` (email/session claim token);
 Phase 5 re-associates them to customer accounts.
@@ -73,3 +78,30 @@ Review-round hardening (settle-path defect family):
   load-bearing production requirements (attest amount + recipient; the
   amount==`order_totals.total` check and tx-hash dedupe are what bind a
   receipt to an order — `orderId` is never on-chain-attestable).
+
+Review round G (second review):
+
+- **Stripe webhooks are direct-to-service** — the plugin proxy route was
+  removed (see the `@urumi/plugin` bullet above; the host bridge destroys the
+  raw bytes and the status code, so the proxy validated a fictional contract).
+- `createOrderFromCart` enforces the **cart-state fence**: a checked-out cart
+  with a distinct idempotency key is rejected `CART_CHECKED_OUT` (same-key
+  replays still honored via `OrderStore.getByIdempotencyKey`); order-driven
+  releases are **order-scoped** (`InventoryStore.releaseAdopted`) so a stale
+  order can never free — or crash the sweep on — a hold it never adopted.
+- A **physical line with no reservation** (product flipped digital→physical
+  after add-to-cart) fails creation loudly (`RESERVATION_LOST`) instead of
+  minting an order that would settle with zero inventory committed.
+- A line priced in a **different currency than the cart** is rejected
+  (`CURRENCY_MISMATCH`) instead of being summed into the cart-currency total.
+- Settle short-circuits **terminal states before the amount check**, so a
+  mismatched-amount stray duplicate on an already-paid order no-ops instead of
+  recording a false `AMOUNT_MISMATCH` anomaly.
+- The service bin **fails closed on x402**: configuring `X402_PAYTO` +
+  `X402_FACILITATOR_SECRET` without `X402_ALLOW_TEST_FACILITATOR=true` refuses
+  to start (the only wireable facilitator is the offline test one); the opt-in
+  warns loudly that it is not production-safe.
+
+Known deferrals (Phase 5+): Stripe `createIntent` offline stub;
+`GET /entitlements/check` buyerRef enumeration oracle (closed by Phase-5 claim
+tokens; marked in-code).

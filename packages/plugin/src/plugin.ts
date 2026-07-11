@@ -30,10 +30,6 @@ import {
 	createAfterUnpublishHandler,
 } from "./sync/hooks.js";
 import type { SandboxedPlugin } from "./types.js";
-import {
-	createStripeWebhookProxyHandler,
-	STRIPE_WEBHOOK_PROXY_ROUTE,
-} from "./webhooks/stripe-proxy-route.js";
 
 /**
  * The sandboxed plugin entry (plan §5/§6). Mirrors the real EmDash
@@ -93,13 +89,15 @@ const plugin: SandboxedPlugin = {
 			public: true,
 		},
 		// ── end Phase 3 group E: cart ───────────────────────────────────────
-		// Phase 4 (§9 decision 1 / §6): PUBLIC routes. The webhook proxy is a dumb
-		// pipe (no secret) forwarding the base64-exact raw body to the service; the
-		// download route authorizes a digital delivery via the entitlement check.
-		[STRIPE_WEBHOOK_PROXY_ROUTE]: {
-			handler: createStripeWebhookProxyHandler() as never,
-			public: true,
-		},
+		// Phase 4 (§6): PUBLIC download route — authorizes a digital delivery via
+		// the service's entitlement check over ctx.http. There is deliberately NO
+		// Stripe webhook proxy route (review G1): EmDash's handleSandboxedRoute
+		// JSON-parses the request body before any route runs (the raw bytes a
+		// Stripe HMAC needs are destroyed) and wraps the return `{success, data}`
+		// at HTTP 200 (Stripe's retry logic keys on status), so a byte-exact proxy
+		// is structurally impossible on the real host contract. Stripe posts
+		// directly to the SERVICE's /webhooks/stripe — the plan's preferred
+		// direct-to-service design (§9 Risk 1).
 		[ENTITLEMENT_DOWNLOAD_ROUTE]: {
 			handler: createEntitlementDownloadHandler() as never,
 			public: true,

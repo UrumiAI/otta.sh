@@ -52,6 +52,25 @@ describe("workerd-on-Node sandbox harness (plan §6 step 1)", () => {
 		expect(stub.requests).toHaveLength(0);
 	});
 
+	test("the plugin registers NO Stripe webhook route — Stripe posts direct-to-service (review G1)", async () => {
+		// EmDash's handleSandboxedRoute parses the request body as JSON
+		// (`await request.json()`, em-dash packages/core/src/emdash-runtime.ts) —
+		// the raw bytes a Stripe HMAC needs are destroyed before any plugin route
+		// runs, and the route's return value is wrapped `{success, data}` at
+		// HTTP 200, so a proxy could never surface Stripe's retry-driving status
+		// codes either. A byte-exact proxy is structurally impossible on the real
+		// host contract; the webhook endpoint is the SERVICE's /webhooks/stripe.
+		stub = await startStubCommerceServer();
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+
+		const outcome = await sandbox.invokeRoute("webhooks/stripe", { bodyBase64: "e30=" });
+		expect(outcome).toEqual({ error: "unknown route: webhooks/stripe" });
+		expect(stub.requests).toHaveLength(0);
+	});
+
 	test("an unknown hook/route name resolves to a 404-shaped result, not a crash", async () => {
 		stub = await startStubCommerceServer();
 		sandbox = await loadPluginInSandbox({
