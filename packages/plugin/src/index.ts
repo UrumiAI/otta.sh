@@ -57,16 +57,21 @@ export {
 // ── end Phase 2 catalog display ──────────────────────────────────────────────
 export {
 	deriveDeleteIdempotencyKey,
+	derivePublishIdempotencyKey,
 	deriveSaveIdempotencyKey,
+	deriveUnpublishIdempotencyKey,
 } from "./sync/derive-idempotency-key.js";
 export {
 	createAfterDeleteHandler,
+	createAfterPublishHandler,
 	createAfterSaveHandler,
+	createAfterUnpublishHandler,
 	PRODUCTS_COLLECTION,
 } from "./sync/hooks.js";
 export type {
 	ContentDeleteEvent,
 	ContentHookEvent,
+	ContentStateChangeEvent,
 	Element,
 	FieldWidgetConfig,
 	HttpAccess,

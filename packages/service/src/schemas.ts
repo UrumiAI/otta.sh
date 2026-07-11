@@ -89,6 +89,27 @@ export const upsertProductCommerceBody = z.object({
 		.optional(),
 });
 
+// Publish-gate lifecycle actions (the afterPublish→activate /
+// afterUnpublish→deactivate follow-ups). `contentUpdatedAt` is the CMS
+// content's own `updatedAt` at publish/unpublish time — the ORDERING WATERMARK
+// the store gates on so a stale, out-of-order lifecycle POST is a no-op
+// (activate/deactivate are opposing flips on the same `active` flag delivered
+// by independent fire-and-forget hooks). REQUIRED and STRICT — exactly
+// `Date.toISOString()` output (same rationale as `upsert`'s contentUpdatedAt,
+// review F1: it feeds a raw lexicographic SQL comparison; a garbage
+// high-sorting value would wedge the gate). EmDash's publish()/unpublish()
+// always carry it, so it is never legitimately absent.
+export const lifecycleProductCommerceBody = z.object({
+	contentUpdatedAt: z
+		.string()
+		.regex(
+			/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/,
+			"contentUpdatedAt must be a Date.toISOString()-format UTC timestamp",
+		),
+});
+
+export type LifecycleProductCommerceBody = z.infer<typeof lifecycleProductCommerceBody>;
+
 // Catalog batch read (Phase 2 §6): ids are opaque tokens, same charset/bound
 // discipline as the cart path params; the array-length cap is the endpoint's
 // request-size guard (COMMERCE_BATCH_ID_CAP in routes/catalog.ts — kept in

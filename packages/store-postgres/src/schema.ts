@@ -102,6 +102,15 @@ export interface ProductCommerceTable {
 	 *  upsert (ISO-8601 text; lexicographic = chronological). Null until a
 	 *  sync ever carries one. */
 	content_updated_at: string | null;
+	/** Publish-GATE ordering watermark: the last CMS `content.updatedAt` a
+	 *  winning `activate`/`deactivate` applied. DELIBERATELY separate from
+	 *  `content_updated_at` — a plain `content:afterSave` advances that one
+	 *  without being a lifecycle event, so sharing it would let a save poison
+	 *  the gate and let a stale out-of-order publish/unpublish POST win. Null
+	 *  until the first lifecycle transition; NULL is treated as `-infinity` so
+	 *  the first transition always wins. ISO-8601 text (lexicographic =
+	 *  chronological). */
+	active_updated_at: string | null;
 	created_at: string;
 	updated_at: string;
 }

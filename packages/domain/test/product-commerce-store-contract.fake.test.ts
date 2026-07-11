@@ -21,9 +21,6 @@ productCommerceStoreContract(
 			async seedStock(sku, qty) {
 				onHand.set(sku, qty);
 			},
-			async activate(productId) {
-				store.activate(productId);
-			},
 		};
 	},
 	{ dialect: "fake" },

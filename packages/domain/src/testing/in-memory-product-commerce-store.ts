@@ -31,7 +31,9 @@ export interface InMemoryProductCommerceStoreOptions {
  * unchanged; any other key applies the update and overwrites the stored key
  * (per-row compare-on-write — Phase 1 §4, NOT a global unique constraint).
  * A sync upsert whose `contentUpdatedAt` is strictly older than the stored
- * watermark is a stale no-op (out-of-order hook delivery converges). A LIVE
+ * watermark is a stale no-op (out-of-order hook delivery converges); the
+ * publish gate (`activate`/`deactivate`) converges the same way under its own
+ * separate gate watermark (see `#activeWatermark`). A LIVE
  * row's sku is unique across live rows only (mirrors the store's
  * `UNIQUE (sku) WHERE deleted_at IS NULL` partial index): assigning a sku
  * held by another non-deleted row throws; a sku freed by a soft delete is
@@ -40,6 +42,17 @@ export interface InMemoryProductCommerceStoreOptions {
 export class InMemoryProductCommerceStore implements ProductCommerceStore {
 	#clock: Clock;
 	#rows = new Map<string, ProductCommerce>();
+	/**
+	 * The publish-gate ordering watermark (the last `contentUpdatedAt` a
+	 * winning `activate`/`deactivate` applied), kept in a DEDICATED map rather
+	 * than reusing the row's `contentUpdatedAt` (the sync/upsert watermark): a
+	 * plain `content:afterSave` advances that one WITHOUT being a lifecycle
+	 * event, so sharing it would let a save poison the gate and let a stale
+	 * lifecycle POST win. Mirrors the store's separate `active_updated_at`
+	 * column. Absent (never transitioned) is treated as `-infinity`, so the
+	 * first transition always wins.
+	 */
+	#activeWatermark = new Map<string, string>();
 	#inventoryOnHand: (sku: string) => number;
 
 	constructor(options: InMemoryProductCommerceStoreOptions) {
@@ -160,19 +173,66 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 		return views;
 	}
 
-	// -- test surface ---------------------------------------------------------
+	// -- writes ---------------------------------------------------------------
 
-	/** Stand-in for the deferred afterPublish→activate wiring (no port method
-	 *  exists yet): flips a live row to `active=true` so contract cases can pin
-	 *  the store-reports/join-gates split. Mirrors what the future publish
-	 *  hook's write will do; a real store adapter's harness does it via SQL. */
-	activate(productId: string): void {
+	/** The afterPublish→activate follow-up (port doc): unknown/soft-deleted/
+	 *  already-active rows are stable no-ops; a soft-deleted product is never
+	 *  resurrected by a publish; a stale `contentUpdatedAt` (strictly older
+	 *  than the gate watermark a newer lifecycle event applied) is a no-op so
+	 *  out-of-order publish/unpublish delivery converges. A winning flip
+	 *  advances the gate watermark. */
+	async activate(
+		productId: ProductId,
+		key: IdempotencyKey,
+		contentUpdatedAt: string,
+	): Promise<void> {
 		const existing = this.#rows.get(productId);
-		if (existing === undefined || existing.deletedAt !== null) return;
-		this.#rows.set(productId, { ...existing, active: true, updatedAt: this.#clock.now() });
+		if (existing === undefined) return; // unknown product_id: nothing to activate.
+		if (existing.deletedAt !== null) return; // soft-deleted: must not resurrect.
+		if (existing.active) return; // already active: stable no-op under replay.
+		if (this.#staleGate(productId, contentUpdatedAt)) return; // stale out-of-order publish.
+		this.#rows.set(productId, {
+			...existing,
+			active: true,
+			idempotencyKey: key,
+			updatedAt: this.#clock.now(),
+		});
+		this.#activeWatermark.set(productId, contentUpdatedAt);
 	}
 
-	// -- writes ---------------------------------------------------------------
+	/** The afterUnpublish→deactivate follow-up (port doc): the mirror of
+	 *  `activate`. Unknown/soft-deleted/already-inactive rows are stable
+	 *  no-ops; the tombstone is never touched (deactivation is not a soft
+	 *  delete, and a deleted row is never resurrected or re-stamped); a stale
+	 *  `contentUpdatedAt` is a no-op so out-of-order delivery converges. A
+	 *  winning flip advances the gate watermark. */
+	async deactivate(
+		productId: ProductId,
+		key: IdempotencyKey,
+		contentUpdatedAt: string,
+	): Promise<void> {
+		const existing = this.#rows.get(productId);
+		if (existing === undefined) return; // unknown product_id: nothing to deactivate.
+		if (existing.deletedAt !== null) return; // soft-deleted: leave the tombstone alone.
+		if (!existing.active) return; // already inactive: stable no-op under replay.
+		if (this.#staleGate(productId, contentUpdatedAt)) return; // stale out-of-order unpublish.
+		this.#rows.set(productId, {
+			...existing,
+			active: false,
+			idempotencyKey: key,
+			updatedAt: this.#clock.now(),
+		});
+		this.#activeWatermark.set(productId, contentUpdatedAt);
+	}
+
+	/** A lifecycle POST is stale iff the gate watermark a newer transition
+	 *  already applied is STRICTLY NEWER than this one (mirrors the store's
+	 *  `active_updated_at <= :t` guard; ISO-8601 lexicographic = chronological).
+	 *  Absent watermark (never transitioned) ⇒ never stale — first flip wins. */
+	#staleGate(productId: string, contentUpdatedAt: string): boolean {
+		const applied = this.#activeWatermark.get(productId);
+		return applied !== undefined && applied > contentUpdatedAt;
+	}
 
 	async softDelete(productId: ProductId, key: IdempotencyKey): Promise<void> {
 		const existing = this.#rows.get(productId);

@@ -56,6 +56,32 @@ export class HttpCommerceClient implements CommerceClient {
 		await this.#json<{ ok: true }>(res);
 	}
 
+	async activateProductCommerce(
+		productId: string,
+		idempotencyKey: string,
+		contentUpdatedAt: string,
+	): Promise<void> {
+		const res = await this.#fetch(`${this.#url(productId)}/activate`, {
+			method: "POST",
+			headers: { "content-type": "application/json", "Idempotency-Key": idempotencyKey },
+			body: JSON.stringify({ contentUpdatedAt }),
+		});
+		await this.#json<{ ok: true }>(res);
+	}
+
+	async deactivateProductCommerce(
+		productId: string,
+		idempotencyKey: string,
+		contentUpdatedAt: string,
+	): Promise<void> {
+		const res = await this.#fetch(`${this.#url(productId)}/deactivate`, {
+			method: "POST",
+			headers: { "content-type": "application/json", "Idempotency-Key": idempotencyKey },
+			body: JSON.stringify({ contentUpdatedAt }),
+		});
+		await this.#json<{ ok: true }>(res);
+	}
+
 	// ── Phase 2: catalog batch read (plan §6) ─────────────────────────────
 	// (A later Phase-3 task adds its cart methods below this block — keep
 	// the delimiters so the diff surfaces stay additive.)

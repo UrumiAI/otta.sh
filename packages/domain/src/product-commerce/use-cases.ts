@@ -81,3 +81,40 @@ export async function softDeleteProductCommerce(
 ): Promise<void> {
 	return store.softDelete(productId, key);
 }
+
+/**
+ * The afterPublish→activate follow-up (plan §6 step 7): a thin pass-through
+ * to `ProductCommerceStore.activate` — the port's doc carries the semantics
+ * (unknown/soft-deleted/already-active rows are no-ops; a soft-deleted
+ * product is never resurrected by a publish; a stale `contentUpdatedAt`
+ * watermark arriving after a newer lifecycle event is a no-op so out-of-order
+ * publish/unpublish delivery converges). Exists so `@urumi/service` composes
+ * use-cases, not store methods, like its siblings.
+ */
+export async function activateProductCommerce(
+	store: ProductCommerceStore,
+	productId: ProductId,
+	key: IdempotencyKey,
+	contentUpdatedAt: string,
+): Promise<void> {
+	return store.activate(productId, key, contentUpdatedAt);
+}
+
+/**
+ * The afterUnpublish→deactivate follow-up (plan §6 step 7): the mirror of
+ * `activateProductCommerce`, a thin pass-through to
+ * `ProductCommerceStore.deactivate` — the port's doc carries the semantics
+ * (unknown/soft-deleted/already-inactive rows are no-ops; deactivation flips
+ * only the publish gate and never touches `deletedAt`; a stale
+ * `contentUpdatedAt` watermark is a no-op so out-of-order delivery converges).
+ * Exists so `@urumi/service` composes use-cases, not store methods, like its
+ * siblings.
+ */
+export async function deactivateProductCommerce(
+	store: ProductCommerceStore,
+	productId: ProductId,
+	key: IdempotencyKey,
+	contentUpdatedAt: string,
+): Promise<void> {
+	return store.deactivate(productId, key, contentUpdatedAt);
+}

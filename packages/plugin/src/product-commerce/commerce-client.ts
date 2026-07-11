@@ -81,6 +81,26 @@ export interface CommerceClient {
 	): Promise<ProductCommerce>;
 	getProductCommerce(productId: string): Promise<ProductCommerce | null>;
 	softDeleteProductCommerce(productId: string, idempotencyKey: string): Promise<void>;
+	/** The afterPublish→activate follow-up (plan §6 step 7): mirrors
+	 *  `POST /products/:id/commerce/activate` 1:1. Deliberately separate from
+	 *  `upsertProductCommerce` — see the service route's doc for why `active`
+	 *  is not an upsert field. `contentUpdatedAt` is the CMS content's
+	 *  `updatedAt` at publish time — the ordering watermark the store gates on
+	 *  so a stale, out-of-order publish is a no-op (convergence). */
+	activateProductCommerce(
+		productId: string,
+		idempotencyKey: string,
+		contentUpdatedAt: string,
+	): Promise<void>;
+	/** The afterUnpublish→deactivate follow-up (plan §6 step 7): the mirror of
+	 *  `activateProductCommerce`, mirrors `POST /products/:id/commerce/deactivate`
+	 *  1:1 — closes the publish gate so an unpublished product stops being
+	 *  purchasable. `contentUpdatedAt` is the same ordering watermark. */
+	deactivateProductCommerce(
+		productId: string,
+		idempotencyKey: string,
+		contentUpdatedAt: string,
+	): Promise<void>;
 
 	// ── Phase 2: catalog batch read (plan §6) ─────────────────────────────
 	// (A later Phase-3 task adds its cart methods below this block — keep

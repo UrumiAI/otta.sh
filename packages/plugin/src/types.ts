@@ -28,6 +28,22 @@ export interface ContentDeleteEvent {
 	permanent: boolean;
 }
 
+/**
+ * `ContentStateChangeEvent` (em-dash `packages/core/src/plugins/types.ts:731-734`)
+ * — fired after publish/unpublish/restore/schedule/unschedule. Confirmed
+ * reaching SANDBOXED plugins verbatim as `{ content, collection }` via
+ * `EmDashRuntime.runDeferredContentHook` → `plugin.invokeHook(name, {
+ * content, collection })` (`emdash-runtime.ts:3496-3510`); `content` is the
+ * full published `ContentItem` record (spread by `contentItemToRecord`,
+ * `emdash-runtime.ts:363-365`), so `content.id`/`content.updatedAt` are
+ * present exactly like `ContentHookEvent`. `content:afterPublish` requires
+ * only `content:read` to register (`hooks.ts` `HOOK_REQUIRED_CAPABILITY`),
+ * same as `afterSave`/`afterDelete` — no new capability needed. */
+export interface ContentStateChangeEvent {
+	content: Record<string, unknown>;
+	collection: string;
+}
+
 // -- context / capabilities ---------------------------------------------------
 
 /** The `network:request` capability's surface (em-dash `createHttpAccess`,
@@ -79,6 +95,8 @@ export type HookHandler<TEvent> = (event: TEvent, ctx: PluginContext) => Promise
 export interface SandboxedPluginHooks {
 	"content:afterSave"?: { handler: HookHandler<ContentHookEvent> };
 	"content:afterDelete"?: { handler: HookHandler<ContentDeleteEvent> };
+	"content:afterPublish"?: { handler: HookHandler<ContentStateChangeEvent> };
+	"content:afterUnpublish"?: { handler: HookHandler<ContentStateChangeEvent> };
 }
 
 /** The shape a sandboxed plugin's entry module default-exports (em-dash:

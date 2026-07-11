@@ -10,11 +10,6 @@ export interface ProductCommerceStoreHarness {
 	 *  intra-service `inStock` join reads — the dialect harness writes the real
 	 *  `inventory` table; the fake harness feeds the fake's lookup. */
 	seedStock(sku: string, qty: number): Promise<void>;
-	/** Phase 2: flip a row to `active=true`, standing in for the deferred
-	 *  afterPublish→activate wiring (queued as its own follow-up task) — no
-	 *  port method exists yet, so the harness writes the state directly (the
-	 *  dialect harness via SQL, the fake via its row map). */
-	activate(productId: string): Promise<void>;
 }
 
 export interface ProductCommerceStoreContractOptions {
@@ -34,6 +29,13 @@ export function productCommerceStoreContract(
 	makeStore: () => Promise<ProductCommerceStoreHarness>,
 	opts: ProductCommerceStoreContractOptions,
 ): void {
+	// A fixed publish-gate watermark for cases whose intent is NOT ordering
+	// (the structural already-active/inactive/soft-deleted guards short-circuit
+	// before the watermark is consulted, so an equal watermark on an in-order
+	// activate→deactivate still applies). Convergence cases below use DISTINCT
+	// timestamps.
+	const WM = "2026-07-10T00:00:00.000Z";
+
 	describe(`productCommerceStoreContract [${opts.dialect}]`, () => {
 		test("upsert on an unknown product_id inserts a new row", async () => {
 			const h = await makeStore();
@@ -165,6 +167,247 @@ export function productCommerceStoreContract(
 			const h = await makeStore();
 			await h.store.softDelete(productId("does-not-exist"), idempotencyKey("del-1"));
 			expect(await h.store.getByProductId(productId("does-not-exist"))).toBeNull();
+		});
+
+		// -- activate (the afterPublish→activate follow-up) ---------------------
+
+		test("activate flips a live row to active=true", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-act-1");
+			await h.store.upsert(
+				{ productId: pid, sku: sku("SKU-ACT-1"), price: money(cents(500), currency("USD")) },
+				idempotencyKey("k1"),
+			);
+			expect((await h.store.getByProductId(pid))?.active).toBe(false);
+
+			await h.store.activate(pid, idempotencyKey("pub-1"), WM);
+
+			const read = await h.store.getByProductId(pid);
+			expect(read?.active).toBe(true);
+			// Commercial data is untouched by activation.
+			expect(read?.sku).toBe("SKU-ACT-1");
+		});
+
+		test("activate on an unknown product_id is a no-op (no row minted)", async () => {
+			const h = await makeStore();
+			await h.store.activate(productId("does-not-exist"), idempotencyKey("pub-1"), WM);
+			expect(await h.store.getByProductId(productId("does-not-exist"))).toBeNull();
+		});
+
+		test("activate of a SOFT-DELETED product does NOT resurrect it — the load-bearing invariant", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-act-2");
+			await h.store.upsert(
+				{ productId: pid, sku: sku("SKU-ACT-2"), price: money(cents(500), currency("USD")) },
+				idempotencyKey("k1"),
+			);
+			await h.store.softDelete(pid, idempotencyKey("del-1"));
+
+			// A publish arriving after (or racing) a soft-delete must not revive
+			// the row — order history / merchant intent integrity.
+			await h.store.activate(pid, idempotencyKey("pub-1"), WM);
+
+			const read = await h.store.getByProductId(pid);
+			expect(read?.active).toBe(false);
+			expect(read?.deletedAt).not.toBeNull();
+		});
+
+		test("activate is a stable no-op when replayed or called on an already-active row", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-act-3");
+			await h.store.upsert(
+				{ productId: pid, sku: sku("SKU-ACT-3"), price: money(cents(500), currency("USD")) },
+				idempotencyKey("k1"),
+			);
+			await h.store.activate(pid, idempotencyKey("pub-1"), WM);
+			const first = await h.store.getByProductId(pid);
+
+			// A later re-publish (a different key) finds the row already active —
+			// stable no-op, not a re-stamp.
+			await h.store.activate(pid, idempotencyKey("pub-2"), WM);
+			const again = await h.store.getByProductId(pid);
+
+			expect(again?.active).toBe(true);
+			expect(again?.updatedAt).toEqual(first?.updatedAt);
+			expect(again?.idempotencyKey).toBe(first?.idempotencyKey);
+		});
+
+		// -- deactivate (the afterUnpublish→deactivate follow-up) ---------------
+
+		test("deactivate flips an active row back to active=false", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-deact-1");
+			await h.store.upsert(
+				{ productId: pid, sku: sku("SKU-DEACT-1"), price: money(cents(500), currency("USD")) },
+				idempotencyKey("k1"),
+			);
+			await h.store.activate(pid, idempotencyKey("pub-1"), WM);
+			expect((await h.store.getByProductId(pid))?.active).toBe(true);
+
+			await h.store.deactivate(pid, idempotencyKey("unpub-1"), WM);
+
+			const read = await h.store.getByProductId(pid);
+			expect(read?.active).toBe(false);
+			// Deactivation flips the publish gate only — it is NOT a soft delete.
+			expect(read?.deletedAt).toBeNull();
+			// Commercial data is untouched by deactivation.
+			expect(read?.sku).toBe("SKU-DEACT-1");
+		});
+
+		test("deactivate on an unknown product_id is a no-op (no row minted)", async () => {
+			const h = await makeStore();
+			await h.store.deactivate(productId("does-not-exist"), idempotencyKey("unpub-1"), WM);
+			expect(await h.store.getByProductId(productId("does-not-exist"))).toBeNull();
+		});
+
+		test("deactivate of a SOFT-DELETED product leaves it soft-deleted (does NOT resurrect it)", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-deact-2");
+			await h.store.upsert(
+				{ productId: pid, sku: sku("SKU-DEACT-2"), price: money(cents(500), currency("USD")) },
+				idempotencyKey("k1"),
+			);
+			await h.store.softDelete(pid, idempotencyKey("del-1"));
+			const deleted = await h.store.getByProductId(pid);
+
+			// An unpublish arriving after (or racing) a soft-delete must not touch
+			// the tombstone — the deleted row stays deleted, never resurrected.
+			await h.store.deactivate(pid, idempotencyKey("unpub-1"), WM);
+
+			const read = await h.store.getByProductId(pid);
+			expect(read?.active).toBe(false);
+			expect(read?.deletedAt).not.toBeNull();
+			expect(read?.deletedAt).toEqual(deleted?.deletedAt);
+			// The soft-delete's key is not overwritten by a no-op deactivate.
+			expect(read?.idempotencyKey).toBe(deleted?.idempotencyKey);
+		});
+
+		test("deactivate is a stable no-op when replayed or called on an already-inactive row", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-deact-3");
+			await h.store.upsert(
+				{ productId: pid, sku: sku("SKU-DEACT-3"), price: money(cents(500), currency("USD")) },
+				idempotencyKey("k1"),
+			);
+			// Never activated — already inactive: deactivate is a stable no-op.
+			const first = await h.store.getByProductId(pid);
+			await h.store.deactivate(pid, idempotencyKey("unpub-1"), WM);
+			const afterFirst = await h.store.getByProductId(pid);
+			expect(afterFirst?.active).toBe(false);
+			expect(afterFirst?.updatedAt).toEqual(first?.updatedAt);
+			expect(afterFirst?.idempotencyKey).toBe(first?.idempotencyKey);
+
+			// Activate, deactivate once, then replay the deactivate with a fresh
+			// key — the row is already inactive, so the replay is a stable no-op.
+			await h.store.activate(pid, idempotencyKey("pub-1"), WM);
+			await h.store.deactivate(pid, idempotencyKey("unpub-1"), WM);
+			const settled = await h.store.getByProductId(pid);
+			await h.store.deactivate(pid, idempotencyKey("unpub-2"), WM);
+			const replayed = await h.store.getByProductId(pid);
+
+			expect(replayed?.active).toBe(false);
+			expect(replayed?.updatedAt).toEqual(settled?.updatedAt);
+			expect(replayed?.idempotencyKey).toBe(settled?.idempotencyKey);
+		});
+
+		// -- publish-gate convergence under OUT-OF-ORDER delivery ---------------
+		// activate/deactivate are OPPOSING transitions on the same `active`
+		// flag, delivered by independent fire-and-forget hook POSTs. Under hook
+		// reordering / a rapid publish→unpublish toggle, a stale POST can land
+		// after a newer one. The gate watermark (`contentUpdatedAt`, monotonic
+		// because EmDash's publish()/unpublish() both bump content.updatedAt)
+		// makes the stale POST a no-op so the row converges to the newest
+		// lifecycle event — the same guarantee `upsert` already gives.
+
+		const T1 = "2026-07-11T01:00:00.000Z"; // older lifecycle event
+		const T2 = "2026-07-11T02:00:00.000Z"; // newer lifecycle event
+		const T3 = "2026-07-11T03:00:00.000Z"; // newest lifecycle event
+
+		test("out-of-order: deactivate@T2 (newer) then a STALE activate@T1 (older) — the row stays active=false, purchasability is NOT re-latched", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-conv-1");
+			await h.store.upsert(
+				{ productId: pid, sku: sku("SKU-CONV-1"), price: money(cents(500), currency("USD")) },
+				idempotencyKey("k1"),
+			);
+			// The product was published then unpublished; the unpublish (newer
+			// watermark) is applied first…
+			await h.store.activate(pid, idempotencyKey("pub-early"), T1);
+			await h.store.deactivate(pid, idempotencyKey("unpub-2"), T2);
+			expect((await h.store.getByProductId(pid))?.active).toBe(false);
+
+			// …then a DELAYED, re-ordered activate carrying the OLDER publish
+			// watermark arrives. It must NOT re-activate the row.
+			await h.store.activate(pid, idempotencyKey("pub-1-late"), T1);
+
+			const read = await h.store.getByProductId(pid);
+			expect(read?.active).toBe(false);
+			// And a genuinely newer publish (T3 > T2) still wins — proof the gate
+			// watermark advanced to T2, not that the flag is stuck.
+			await h.store.activate(pid, idempotencyKey("pub-3"), T3);
+			expect((await h.store.getByProductId(pid))?.active).toBe(true);
+		});
+
+		test("out-of-order: activate@T2 (newer) then a STALE deactivate@T1 (older) — the row stays active=true", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-conv-2");
+			await h.store.upsert(
+				{ productId: pid, sku: sku("SKU-CONV-2"), price: money(cents(500), currency("USD")) },
+				idempotencyKey("k1"),
+			);
+			// A prior unpublish (older) then the current publish (newer) applied
+			// in order…
+			await h.store.deactivate(pid, idempotencyKey("unpub-early"), T1);
+			await h.store.activate(pid, idempotencyKey("pub-2"), T2);
+			expect((await h.store.getByProductId(pid))?.active).toBe(true);
+
+			// …then a DELAYED, re-ordered deactivate carrying the OLDER unpublish
+			// watermark arrives. It must NOT deactivate the row.
+			await h.store.deactivate(pid, idempotencyKey("unpub-1-late"), T1);
+
+			const read = await h.store.getByProductId(pid);
+			expect(read?.active).toBe(true);
+			// A genuinely newer unpublish (T3 > T2) still wins.
+			await h.store.deactivate(pid, idempotencyKey("unpub-3"), T3);
+			expect((await h.store.getByProductId(pid))?.active).toBe(false);
+		});
+
+		test("in-order publish→unpublish ends non-purchasable: activate@T1 then deactivate@T2 leaves active=false", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-conv-3");
+			await h.store.upsert(
+				{ productId: pid, sku: sku("SKU-CONV-3"), price: money(cents(500), currency("USD")) },
+				idempotencyKey("k1"),
+			);
+			await h.store.activate(pid, idempotencyKey("pub-1"), T1);
+			expect((await h.store.getByProductId(pid))?.active).toBe(true);
+			await h.store.deactivate(pid, idempotencyKey("unpub-2"), T2);
+
+			const read = await h.store.getByProductId(pid);
+			// publish→unpublish end state is non-purchasable (the flag the join
+			// gates on is false), and the row is NOT soft-deleted.
+			expect(read?.active).toBe(false);
+			expect(read?.deletedAt).toBeNull();
+		});
+
+		test("a stale activate does NOT resurrect a soft-deleted tombstone even with a newer watermark than the delete", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-conv-4");
+			await h.store.upsert(
+				{ productId: pid, sku: sku("SKU-CONV-4"), price: money(cents(500), currency("USD")) },
+				idempotencyKey("k1"),
+			);
+			await h.store.softDelete(pid, idempotencyKey("del-1"));
+			const deleted = await h.store.getByProductId(pid);
+
+			// The soft-delete guard is checked BEFORE the watermark — a newer
+			// watermark can never overrule the tombstone.
+			await h.store.activate(pid, idempotencyKey("pub-late"), T3);
+
+			const read = await h.store.getByProductId(pid);
+			expect(read?.active).toBe(false);
+			expect(read?.deletedAt).toEqual(deleted?.deletedAt);
+			expect(read?.idempotencyKey).toBe(deleted?.idempotencyKey);
 		});
 
 		test("upsert with a missing/empty product_id is rejected before any row is minted", async () => {
@@ -409,12 +652,11 @@ export function productCommerceStoreContract(
 				{ productId: published, sku: sku("SKU-B10B"), price: money(cents(100), currency("USD")) },
 				idempotencyKey("k2"),
 			);
-			// Stand-in for the deferred afterPublish→activate wiring: until it
-			// lands, EVERY row is active=false and joinProduct renders the whole
-			// catalog not-purchasable — the honest current state (plan §4.2:
-			// "purchasable: false iff commerce === null (or explicitly
-			// inactive)").
-			await h.activate(published);
+			// The afterPublish→activate follow-up, exercised via the real port
+			// method (not a test stand-in): joinProduct gates purchasability on
+			// this flag (plan §4.2: "purchasable: false iff commerce === null (or
+			// explicitly inactive)").
+			await h.store.activate(published, idempotencyKey("pub-1"), WM);
 
 			const views = await h.store.listCommerceByIds([unpublished, published]);
 

@@ -44,6 +44,40 @@ describe.skipIf(PG === undefined)("HTTP product-commerce contract [live server, 
 		);
 	}
 
+	// Default publish-gate watermark for lifecycle cases whose intent is NOT
+	// ordering; convergence cases below pass explicit distinct timestamps.
+	const WM = "2026-07-11T00:00:00.000Z";
+
+	function activate(
+		id: string,
+		headers: Record<string, string> = {},
+		contentUpdatedAt: string = WM,
+	): Promise<JsonResponse> {
+		return fetch(`${server.baseUrl}/products/${id}/commerce/activate`, {
+			method: "POST",
+			headers: { "content-type": "application/json", ...headers },
+			body: JSON.stringify({ contentUpdatedAt }),
+		}).then(async (res) => ({
+			status: res.status,
+			body: (await res.json()) as Record<string, unknown>,
+		}));
+	}
+
+	function deactivate(
+		id: string,
+		headers: Record<string, string> = {},
+		contentUpdatedAt: string = WM,
+	): Promise<JsonResponse> {
+		return fetch(`${server.baseUrl}/products/${id}/commerce/deactivate`, {
+			method: "POST",
+			headers: { "content-type": "application/json", ...headers },
+			body: JSON.stringify({ contentUpdatedAt }),
+		}).then(async (res) => ({
+			status: res.status,
+			body: (await res.json()) as Record<string, unknown>,
+		}));
+	}
+
 	test("PUT upserts a product_commerce row keyed by the CMS id (wire ⇄ port fidelity)", async () => {
 		const res = await put(
 			"prod-http-1",
@@ -255,5 +289,214 @@ describe.skipIf(PG === undefined)("HTTP product-commerce contract [live server, 
 		await del("prod-http-f2a", { "Idempotency-Key": "kf2-del" });
 		const retry = await put("prod-http-f2b", { sku: "SKU-HF2" }, { "Idempotency-Key": "kf2c" });
 		expect(retry.status).toBe(200);
+	});
+
+	// -- POST /products/:id/commerce/activate (the afterPublish→activate follow-up) --
+
+	test("POST .../commerce/activate flips a row to active=true", async () => {
+		await put(
+			"prod-http-act1",
+			{ sku: "SKU-HACT1", price: { amount: 100, currency: "USD" } },
+			{ "Idempotency-Key": "kact1" },
+		);
+		const res = await activate("prod-http-act1", { "Idempotency-Key": "pub-1" });
+		expect(res.status).toBe(200);
+		expect(res.body).toEqual({ ok: true });
+
+		const read = await get("prod-http-act1");
+		expect(read.body).toMatchObject({ active: true, sku: "SKU-HACT1" });
+	});
+
+	test("POST .../commerce/activate replayed (or called on an already-active row) is a stable no-op", async () => {
+		await put(
+			"prod-http-act2",
+			{ sku: "SKU-HACT2", price: { amount: 100, currency: "USD" } },
+			{ "Idempotency-Key": "kact2" },
+		);
+		await activate("prod-http-act2", { "Idempotency-Key": "pub-1" });
+		const first = await get("prod-http-act2");
+
+		await activate("prod-http-act2", { "Idempotency-Key": "pub-2" });
+		const again = await get("prod-http-act2");
+
+		expect(again.body).toMatchObject({ active: true });
+		expect(again.body?.["updatedAt"]).toBe(first.body?.["updatedAt"]);
+	});
+
+	test("POST .../commerce/activate on a SOFT-DELETED product does NOT resurrect it", async () => {
+		await put(
+			"prod-http-act3",
+			{ sku: "SKU-HACT3", price: { amount: 100, currency: "USD" } },
+			{ "Idempotency-Key": "kact3" },
+		);
+		await del("prod-http-act3", { "Idempotency-Key": "del-1" });
+
+		const res = await activate("prod-http-act3", { "Idempotency-Key": "pub-1" });
+		expect(res.status).toBe(200); // fire-and-forget action route: never a hard error
+
+		const read = await get("prod-http-act3");
+		expect(read.body).toMatchObject({ active: false });
+		expect(read.body?.["deletedAt"]).not.toBeNull();
+	});
+
+	test("POST .../commerce/activate on an unknown product_id is a no-op (200, no row minted)", async () => {
+		const res = await activate("prod-http-act-unknown", { "Idempotency-Key": "pub-1" });
+		expect(res.status).toBe(200);
+		expect(res.body).toEqual({ ok: true });
+		const read = await get("prod-http-act-unknown");
+		expect(read.body).toBeNull();
+	});
+
+	test("POST .../commerce/activate with a missing Idempotency-Key header returns 400", async () => {
+		const res = await activate("prod-http-act4");
+		expect(res.status).toBe(400);
+	});
+
+	// -- honest end-to-end wire proof: unpublished stays inactive -----------
+
+	test("a saved (priced) product that is never activated stays inactive over the wire", async () => {
+		await put(
+			"prod-http-act5",
+			{ sku: "SKU-HACT5", price: { amount: 100, currency: "USD" } },
+			{ "Idempotency-Key": "kact5" },
+		);
+		const read = await get("prod-http-act5");
+		expect(read.body).toMatchObject({ active: false });
+	});
+
+	// -- POST /products/:id/commerce/deactivate (the afterUnpublish→deactivate follow-up) --
+
+	test("POST .../commerce/deactivate flips an active row back to active=false", async () => {
+		await put(
+			"prod-http-deact1",
+			{ sku: "SKU-HDEACT1", price: { amount: 100, currency: "USD" } },
+			{ "Idempotency-Key": "kdeact1" },
+		);
+		await activate("prod-http-deact1", { "Idempotency-Key": "pub-1" });
+		expect((await get("prod-http-deact1")).body).toMatchObject({ active: true });
+
+		const res = await deactivate("prod-http-deact1", { "Idempotency-Key": "unpub-1" });
+		expect(res.status).toBe(200);
+		expect(res.body).toEqual({ ok: true });
+
+		const read = await get("prod-http-deact1");
+		// The publish gate closes; the row stays live (not soft-deleted).
+		expect(read.body).toMatchObject({ active: false, sku: "SKU-HDEACT1" });
+		expect(read.body?.["deletedAt"]).toBeNull();
+	});
+
+	test("POST .../commerce/deactivate replayed (or on an already-inactive row) is a stable no-op", async () => {
+		await put(
+			"prod-http-deact2",
+			{ sku: "SKU-HDEACT2", price: { amount: 100, currency: "USD" } },
+			{ "Idempotency-Key": "kdeact2" },
+		);
+		await activate("prod-http-deact2", { "Idempotency-Key": "pub-1" });
+		await deactivate("prod-http-deact2", { "Idempotency-Key": "unpub-1" });
+		const first = await get("prod-http-deact2");
+
+		await deactivate("prod-http-deact2", { "Idempotency-Key": "unpub-2" });
+		const again = await get("prod-http-deact2");
+
+		expect(again.body).toMatchObject({ active: false });
+		expect(again.body?.["updatedAt"]).toBe(first.body?.["updatedAt"]);
+	});
+
+	test("POST .../commerce/deactivate on a SOFT-DELETED product leaves it soft-deleted", async () => {
+		await put(
+			"prod-http-deact3",
+			{ sku: "SKU-HDEACT3", price: { amount: 100, currency: "USD" } },
+			{ "Idempotency-Key": "kdeact3" },
+		);
+		await del("prod-http-deact3", { "Idempotency-Key": "del-1" });
+
+		const res = await deactivate("prod-http-deact3", { "Idempotency-Key": "unpub-1" });
+		expect(res.status).toBe(200); // fire-and-forget action route: never a hard error
+
+		const read = await get("prod-http-deact3");
+		expect(read.body).toMatchObject({ active: false });
+		expect(read.body?.["deletedAt"]).not.toBeNull();
+	});
+
+	test("POST .../commerce/deactivate on an unknown product_id is a no-op (200, no row minted)", async () => {
+		const res = await deactivate("prod-http-deact-unknown", { "Idempotency-Key": "unpub-1" });
+		expect(res.status).toBe(200);
+		expect(res.body).toEqual({ ok: true });
+		const read = await get("prod-http-deact-unknown");
+		expect(read.body).toBeNull();
+	});
+
+	test("POST .../commerce/deactivate with a missing Idempotency-Key header returns 400", async () => {
+		const res = await deactivate("prod-http-deact4");
+		expect(res.status).toBe(400);
+	});
+
+	// -- publish-gate convergence under out-of-order delivery (over the wire) --
+
+	test("out-of-order over the wire: deactivate@T2 then a STALE activate@T1 leaves the product NON-purchasable (active=false)", async () => {
+		const T1 = "2026-07-11T01:00:00.000Z";
+		const T2 = "2026-07-11T02:00:00.000Z";
+		const T3 = "2026-07-11T03:00:00.000Z";
+		await put(
+			"prod-http-conv1",
+			{ sku: "SKU-HCONV1", price: { amount: 100, currency: "USD" } },
+			{ "Idempotency-Key": "kconv1" },
+		);
+		// publish@T1 then unpublish@T2 applied in order → inactive.
+		await activate("prod-http-conv1", { "Idempotency-Key": "pub-early" }, T1);
+		await deactivate("prod-http-conv1", { "Idempotency-Key": "unpub-2" }, T2);
+		expect((await get("prod-http-conv1")).body).toMatchObject({ active: false });
+
+		// A DELAYED, re-ordered stale activate (older T1) must NOT re-latch it.
+		const stale = await activate("prod-http-conv1", { "Idempotency-Key": "pub-1-late" }, T1);
+		expect(stale.status).toBe(200);
+		expect((await get("prod-http-conv1")).body).toMatchObject({ active: false });
+
+		// A genuinely newer publish (T3 > T2) still wins — the gate advanced,
+		// it is not stuck.
+		await activate("prod-http-conv1", { "Idempotency-Key": "pub-3" }, T3);
+		expect((await get("prod-http-conv1")).body).toMatchObject({ active: true });
+	});
+
+	test("out-of-order over the wire: activate@T2 then a STALE deactivate@T1 keeps the product active=true", async () => {
+		const T1 = "2026-07-11T01:00:00.000Z";
+		const T2 = "2026-07-11T02:00:00.000Z";
+		await put(
+			"prod-http-conv2",
+			{ sku: "SKU-HCONV2", price: { amount: 100, currency: "USD" } },
+			{ "Idempotency-Key": "kconv2" },
+		);
+		await deactivate("prod-http-conv2", { "Idempotency-Key": "unpub-early" }, T1);
+		await activate("prod-http-conv2", { "Idempotency-Key": "pub-2" }, T2);
+		expect((await get("prod-http-conv2")).body).toMatchObject({ active: true });
+
+		const stale = await deactivate("prod-http-conv2", { "Idempotency-Key": "unpub-1-late" }, T1);
+		expect(stale.status).toBe(200);
+		expect((await get("prod-http-conv2")).body).toMatchObject({ active: true });
+	});
+
+	test("POST .../commerce/activate|deactivate with a missing/malformed contentUpdatedAt body is a 400 (F1 — the gate watermark must be exact)", async () => {
+		await put(
+			"prod-http-conv3",
+			{ sku: "SKU-HCONV3", price: { amount: 100, currency: "USD" } },
+			{ "Idempotency-Key": "kconv3" },
+		);
+		for (const bad of ["ZZZZ", "2026-07-11", "2026-07-11T02:00:00Z", "not-a-date"]) {
+			const a = await fetch(`${server.baseUrl}/products/prod-http-conv3/commerce/activate`, {
+				method: "POST",
+				headers: { "content-type": "application/json", "Idempotency-Key": `kbad-${bad}` },
+				body: JSON.stringify({ contentUpdatedAt: bad }),
+			});
+			expect(a.status, `activate contentUpdatedAt=${JSON.stringify(bad)}`).toBe(400);
+		}
+		// A body with no contentUpdatedAt at all is also rejected (required).
+		const missing = await fetch(`${server.baseUrl}/products/prod-http-conv3/commerce/deactivate`, {
+			method: "POST",
+			headers: { "content-type": "application/json", "Idempotency-Key": "kmissing" },
+			body: JSON.stringify({}),
+		});
+		expect(missing.status).toBe(400);
+		// None of the rejected requests changed state — never activated.
+		expect((await get("prod-http-conv3")).body).toMatchObject({ active: false });
 	});
 });

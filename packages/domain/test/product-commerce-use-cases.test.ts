@@ -4,6 +4,8 @@ import { idempotencyKey, productId, sku } from "../src/money/ids.js";
 import type { InventoryStore } from "../src/ports/inventory-store.js";
 import { MissingProductIdError } from "../src/product-commerce/errors.js";
 import {
+	activateProductCommerce,
+	deactivateProductCommerce,
 	getProductCommerce,
 	softDeleteProductCommerce,
 	upsertProductCommerce,
@@ -138,5 +140,97 @@ describe("product-commerce use-cases (over the in-memory fakes)", () => {
 		const afterDelete = await getProductCommerce(productCommerce, pid);
 		expect(afterDelete?.deletedAt).not.toBeNull();
 		expect(afterDelete?.active).toBe(false);
+	});
+
+	// -- activateProductCommerce (the afterPublish→activate follow-up) ------
+
+	test("activateProductCommerce delegates to the store: a live row flips active=true", async () => {
+		const pid = productId("prod-4");
+		await upsertProductCommerce(
+			{ productCommerce, inventory },
+			{ productId: pid, sku: sku("SKU-4"), price: money(cents(500), currency("USD")) },
+			idempotencyKey("k1"),
+		);
+
+		await activateProductCommerce(
+			productCommerce,
+			pid,
+			idempotencyKey("pub-1"),
+			"2026-07-10T01:00:00.000Z",
+		);
+
+		const read = await getProductCommerce(productCommerce, pid);
+		expect(read?.active).toBe(true);
+	});
+
+	test("activateProductCommerce on a soft-deleted product does NOT resurrect it", async () => {
+		const pid = productId("prod-5");
+		await upsertProductCommerce(
+			{ productCommerce, inventory },
+			{ productId: pid, sku: sku("SKU-5"), price: money(cents(500), currency("USD")) },
+			idempotencyKey("k1"),
+		);
+		await softDeleteProductCommerce(productCommerce, pid, idempotencyKey("del-1"));
+
+		await activateProductCommerce(
+			productCommerce,
+			pid,
+			idempotencyKey("pub-1"),
+			"2026-07-10T01:00:00.000Z",
+		);
+
+		const read = await getProductCommerce(productCommerce, pid);
+		expect(read?.active).toBe(false);
+		expect(read?.deletedAt).not.toBeNull();
+	});
+
+	// -- deactivateProductCommerce (the afterUnpublish→deactivate follow-up) -
+
+	test("deactivateProductCommerce delegates to the store: an active row flips active=false", async () => {
+		const pid = productId("prod-6");
+		await upsertProductCommerce(
+			{ productCommerce, inventory },
+			{ productId: pid, sku: sku("SKU-6"), price: money(cents(500), currency("USD")) },
+			idempotencyKey("k1"),
+		);
+		await activateProductCommerce(
+			productCommerce,
+			pid,
+			idempotencyKey("pub-1"),
+			"2026-07-10T01:00:00.000Z",
+		);
+
+		await deactivateProductCommerce(
+			productCommerce,
+			pid,
+			idempotencyKey("unpub-1"),
+			"2026-07-10T02:00:00.000Z",
+		);
+
+		const read = await getProductCommerce(productCommerce, pid);
+		expect(read?.active).toBe(false);
+		// Deactivation is not a soft delete — the row stays live.
+		expect(read?.deletedAt).toBeNull();
+	});
+
+	test("deactivateProductCommerce on a soft-deleted product leaves it soft-deleted", async () => {
+		const pid = productId("prod-7");
+		await upsertProductCommerce(
+			{ productCommerce, inventory },
+			{ productId: pid, sku: sku("SKU-7"), price: money(cents(500), currency("USD")) },
+			idempotencyKey("k1"),
+		);
+		await softDeleteProductCommerce(productCommerce, pid, idempotencyKey("del-1"));
+
+		await deactivateProductCommerce(
+			productCommerce,
+			pid,
+			idempotencyKey("unpub-1"),
+			"2026-07-10T02:00:00.000Z",
+		);
+
+		const read = await getProductCommerce(productCommerce, pid);
+		expect(read?.active).toBe(false);
+		expect(read?.deletedAt).not.toBeNull();
 	});
 });

@@ -1,6 +1,8 @@
 import {
+	activateProductCommerce,
 	cents,
 	currency,
+	deactivateProductCommerce,
 	getProductCommerce,
 	idempotencyKey,
 	MissingProductIdError,
@@ -14,7 +16,7 @@ import {
 	type ProductCommerceDeps,
 } from "@urumi/domain";
 import { Hono } from "hono";
-import { upsertProductCommerceBody } from "../schemas.js";
+import { lifecycleProductCommerceBody, upsertProductCommerceBody } from "../schemas.js";
 
 // The domain use-case's own deps type is the single source of truth (N3);
 // re-exported so existing importers keep working.
@@ -99,6 +101,63 @@ export function productCommerceRoutes(deps: ProductCommerceDeps): Hono {
 			return c.json({ error: "MISSING_PRODUCT_ID" }, 400);
 		}
 		await softDeleteProductCommerce(deps.productCommerce, productId(id), idempotencyKey(key));
+		return c.json({ ok: true }, 200);
+	});
+
+	// The afterPublish→activate follow-up (Phase 1 §4/§6 step 7): a dedicated
+	// action route, not an extra PUT field — `upsert` deliberately never
+	// touches `active`/`deletedAt` (see the port doc / `UpsertProductCommerceInput`),
+	// so reactivation gets its own narrowly-scoped surface, mirroring the
+	// `/inventory/reserve|commit|release` action-route convention. The body
+	// carries only the ORDERING WATERMARK (`contentUpdatedAt`) the store gates
+	// on so a stale, out-of-order publish is a no-op (out-of-order delivery
+	// converges).
+	app.post("/:id/commerce/activate", async (c) => {
+		const id = c.req.param("id");
+		const key = c.req.header("Idempotency-Key");
+		if (key === undefined || key.length === 0) {
+			return c.json({ error: "missing Idempotency-Key header" }, 400);
+		}
+		if (id.length === 0) {
+			return c.json({ error: "MISSING_PRODUCT_ID" }, 400);
+		}
+		const parsed = lifecycleProductCommerceBody.safeParse(await readJson(c));
+		if (!parsed.success) {
+			return c.json({ error: "invalid request body", issues: parsed.error.issues }, 400);
+		}
+		await activateProductCommerce(
+			deps.productCommerce,
+			productId(id),
+			idempotencyKey(key),
+			parsed.data.contentUpdatedAt,
+		);
+		return c.json({ ok: true }, 200);
+	});
+
+	// The afterUnpublish→deactivate follow-up (Phase 1 §4/§6 step 7): the
+	// mirror of the activate route, closing the publish gate. A dedicated
+	// action route (not an extra PUT field) for the same reason activate is —
+	// `upsert` never touches `active`/`deletedAt`. The body carries only the
+	// ordering watermark (`contentUpdatedAt`) — see the activate route.
+	app.post("/:id/commerce/deactivate", async (c) => {
+		const id = c.req.param("id");
+		const key = c.req.header("Idempotency-Key");
+		if (key === undefined || key.length === 0) {
+			return c.json({ error: "missing Idempotency-Key header" }, 400);
+		}
+		if (id.length === 0) {
+			return c.json({ error: "MISSING_PRODUCT_ID" }, 400);
+		}
+		const parsed = lifecycleProductCommerceBody.safeParse(await readJson(c));
+		if (!parsed.success) {
+			return c.json({ error: "invalid request body", issues: parsed.error.issues }, 400);
+		}
+		await deactivateProductCommerce(
+			deps.productCommerce,
+			productId(id),
+			idempotencyKey(key),
+			parsed.data.contentUpdatedAt,
+		);
 		return c.json({ ok: true }, 200);
 	});
 

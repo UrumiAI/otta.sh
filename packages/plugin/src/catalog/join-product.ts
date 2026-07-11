@@ -49,9 +49,11 @@ export interface JoinedProduct {
  * exactly like the no-commerce case downstream: flagged not-purchasable, no
  * price, no Offer. Either way the product still renders its content — a
  * CMS product that isn't sellable is "hidden from purchase," not "hidden
- * from the catalog" (§4.5). Honest current state: the afterPublish→activate
- * wiring is deferred (its own follow-up task), so every synced row is
- * active=false and the whole catalog renders not-purchasable until it lands.
+ * from the catalog" (§4.5). The `active` flag now tracks the CMS publish
+ * lifecycle in both directions: `content:afterPublish` flips it true (via
+ * `ProductCommerceStore.activate`) and `content:afterUnpublish` flips it back
+ * false (via `deactivate`), so an unpublished product returns to
+ * not-purchasable rather than latching on.
  */
 export function joinProduct(
 	content: CmsProductContent,
