@@ -79,6 +79,43 @@ export function reportingStoreContract(
 			]);
 		});
 
+		test("revenueByPeriod buckets by week, truncating to the ISO Monday and SPLITTING across a Sunday→Monday boundary", async () => {
+			// A fresh, controlled set straddling the Sun 2026-07-12 → Mon 2026-07-13
+			// boundary. Week-of-Mon-Jul-6 (Jul 6–12) vs week-of-Mon-Jul-13 (Jul 13–19).
+			// All three impls (pg date_trunc('week'), sqlite '-6 days'+'weekday 1', the
+			// fake's (dow+6)%7) must agree on the same ISO-Monday bucket starts.
+			const h = await makeStore();
+			await h.seedOrder({
+				id: "w-sun",
+				state: "paid",
+				currency: "USD",
+				createdAt: "2026-07-12T23:00:00.000Z", // Sunday → week of Mon Jul 6
+				totalCents: 1000,
+			});
+			await h.seedOrder({
+				id: "w-mon",
+				state: "paid",
+				currency: "USD",
+				createdAt: "2026-07-13T01:00:00.000Z", // Monday → week of Mon Jul 13
+				totalCents: 2000,
+			});
+			await h.seedOrder({
+				id: "w-wed",
+				state: "shipped",
+				currency: "USD",
+				createdAt: "2026-07-15T12:00:00.000Z", // same week as w-mon → aggregates
+				totalCents: 500,
+			});
+			const weeks = await h.store.revenueByPeriod(
+				{ from: "2026-07-01T00:00:00.000Z", to: "2026-07-20T00:00:00.000Z" },
+				"week",
+			);
+			expect(weeks).toEqual([
+				{ bucketStart: "2026-07-06T00:00:00.000Z", currency: "USD", revenueCents: 1000 },
+				{ bucketStart: "2026-07-13T00:00:00.000Z", currency: "USD", revenueCents: 2500 },
+			]);
+		});
+
 		test("ordersByStatus counts orders per state for the window, including expired", async () => {
 			const { store } = await seeded();
 			expect(await store.ordersByStatus(REPORTING_WINDOW)).toEqual(EXPECTED_ORDERS_BY_STATUS);
