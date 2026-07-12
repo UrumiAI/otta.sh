@@ -181,6 +181,35 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 	}
 
 	/**
+	 * Bulk snapshot read (port doc): the batch companion to `getByProductId`,
+	 * ONE `SELECT … WHERE product_id IN (:ids)` so the two checkout paths fetch
+	 * every cart line's projection in a single round trip instead of one per
+	 * line (the per-cart-line N+1 this method kills).
+	 *
+	 * The RAW row read — `selectAll()`, NO inventory join, NO deleted_at / sku /
+	 * price guards (identical row semantics to `getByProductId`, deliberately
+	 * NOT `listCommerceByIds`): each row goes through the same `toDomain`, which
+	 * reads only `product_commerce` columns, so no join is needed. Missing ids
+	 * are simply absent from the Map; `IN` collapses duplicates (one row per
+	 * PK); no ORDER BY. The empty id list short-circuits without touching the DB
+	 * (`IN ()` is not SQL).
+	 */
+	async getManyByProductId(productIds: ProductId[]): Promise<Map<ProductId, ProductCommerce>> {
+		if (productIds.length === 0) return new Map();
+		const rows = await this.#db
+			.selectFrom("product_commerce")
+			.selectAll()
+			.where("product_commerce.product_id", "in", productIds)
+			.execute();
+
+		const result = new Map<ProductId, ProductCommerce>();
+		for (const row of rows) {
+			result.set(toProductId(row.product_id), toDomain(row));
+		}
+		return result;
+	}
+
+	/**
 	 * Batch catalog read (Phase 2 §6/§7 step 2): ONE statement —
 	 * `product_commerce LEFT JOIN inventory ON inventory.sku =
 	 * product_commerce.sku WHERE product_id IN (:ids) AND <commerce-complete

@@ -131,9 +131,20 @@ export async function createOrderFromCart(
 	const currency = cart.currency;
 	const lines: CreateOrderLineInput[] = [];
 	const totalsLines: TotalsLineInput[] = [];
+	// Bulk-fetch every priced line's product projection in ONE store round trip
+	// (kills the per-cart-line N+1). Branding only the non-null ids keeps a null
+	// line's PRODUCT_NOT_PRICED precedence identical to the per-line read: a null
+	// line is never branded here, and each surviving line is re-branded lazily at
+	// its own map lookup below, AFTER its own null guard.
+	const pcById = await deps.productCommerce.getManyByProductId(
+		cart.lines
+			.map((line) => line.productId)
+			.filter((id): id is string => id !== null)
+			.map((id) => brandProductId(id)),
+	);
 	for (const line of cart.lines) {
 		if (line.productId === null) return { ok: false, reason: "PRODUCT_NOT_PRICED" };
-		const pc = await deps.productCommerce.getByProductId(brandProductId(line.productId));
+		const pc = pcById.get(brandProductId(line.productId)) ?? null;
 		if (pc === null || pc.price === null || pc.title === null) {
 			return { ok: false, reason: "PRODUCT_NOT_PRICED" };
 		}

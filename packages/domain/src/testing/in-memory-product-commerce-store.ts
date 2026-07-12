@@ -147,6 +147,23 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 	}
 
 	/**
+	 * Bulk snapshot read (port doc): the batch companion to `getByProductId`,
+	 * the RAW row read the two checkout paths use to kill the per-cart-line
+	 * N+1. No deletedAt / sku / price filtering (that is `listCommerceByIds`);
+	 * missing ids are simply absent from the Map; duplicate ids collapse.
+	 */
+	async getManyByProductId(productIds: ProductId[]): Promise<Map<ProductId, ProductCommerce>> {
+		const result = new Map<ProductId, ProductCommerce>();
+		for (const id of productIds) {
+			if (result.has(id)) continue; // duplicate id: already resolved.
+			const row = this.#rows.get(id);
+			if (row === undefined) continue; // miss: absent from the Map, never null.
+			result.set(id, row);
+		}
+		return result;
+	}
+
+	/**
 	 * Batch catalog read (Phase 2 §6) — mirrors the Kysely store's single
 	 * `product_commerce LEFT JOIN inventory` statement: only commerce-complete
 	 * live rows become views; `inStock` is the coarse `on_hand > 0`; missing
