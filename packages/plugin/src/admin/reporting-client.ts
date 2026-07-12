@@ -55,7 +55,10 @@ export interface ReportingSettingsClientOptions {
 	fetch: HttpAccess["fetch"];
 	baseUrl: string;
 	/** Admin token forwarded as `X-Internal-Token` on the guarded `/reports/*`
-	 *  reads (review J5). Transient route input — never persisted to ctx.kv. */
+	 *  reads (review J5). Received here as a constructor option; the handlers
+	 *  source it from write-only `ctx.kv` (`settings:internalToken`). The client
+	 *  itself never persists it. (The privileged `PUT /settings` write takes its
+	 *  own `adminToken` per-call — see `updateSettings`.) */
 	adminToken?: string;
 }
 
@@ -138,10 +141,21 @@ export class ReportingSettingsClient {
 			!("settings" in parsed) ||
 			parsed.settings === undefined
 		) {
-			const message =
-				parsed !== undefined && "message" in parsed && typeof parsed.message === "string"
+			// Surface the service's own message ONLY for a designed validation
+			// failure (400 + JSON message) — that inline text ("holdTtlMinutes must
+			// be a positive integer") is desirable and shown as-is. For any other
+			// non-ok case (401/403/5xx/non-JSON) fall back to a GENERIC message that
+			// never leaks a raw HTTP status or URL (Part 5 consistency).
+			const validationMessage =
+				res.status === 400 &&
+				parsed !== undefined &&
+				"message" in parsed &&
+				typeof parsed.message === "string"
 					? parsed.message
-					: `settings update failed (HTTP ${res.status})`;
+					: undefined;
+			const message =
+				validationMessage ??
+				"settings update failed — check the admin token in Settings and the service connection";
 			return { ok: false, status: res.status, message };
 		}
 		return { ok: true, settings: parsed.settings };

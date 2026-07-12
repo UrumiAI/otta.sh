@@ -40,7 +40,8 @@ describe("Settings admin form (workerd sandbox)", () => {
 			commerceServiceBaseUrl: stub.baseUrl,
 		});
 
-		const saved = await sandbox.invokeRoute("admin/settings", {
+		const saved = await sandbox.invokeRoute("admin", {
+			type: "form_submit",
 			action_id: "save-display",
 			values: { storeDisplayName: "Acme Goods" },
 		});
@@ -53,13 +54,18 @@ describe("Settings admin form (workerd sandbox)", () => {
 
 		// It persisted in kv: a page load reflects it as the form's initial value
 		// (this load DOES call GET /settings for the operational fields).
-		const loaded = await sandbox.invokeRoute("admin/settings", { action_id: "load" });
+		const loaded = await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" });
 		const form = blocksOf(loaded).find(
-			(b) => b.type === "form" && Array.isArray(b.fields) && (b.fields as unknown[]).length === 1,
+			(b) =>
+				b.type === "form" &&
+				Array.isArray(b.fields) &&
+				(b.fields as Array<Record<string, unknown>>).some(
+					(f) => f.action_id === "storeDisplayName",
+				),
 		);
 		expect(form).toBeDefined();
 		const fields = (form?.fields ?? []) as Array<Record<string, unknown>>;
-		const nameField = fields[0];
+		const nameField = fields.find((f) => f.action_id === "storeDisplayName");
 		expect(nameField?.action_id).toBe("storeDisplayName");
 		expect(nameField?.initial_value).toBe("Acme Goods");
 	});
@@ -70,16 +76,31 @@ describe("Settings admin form (workerd sandbox)", () => {
 			status: 200,
 			body: { ok: true, settings: { holdTtlMinutes: 45, lowStockThreshold: 20 } },
 		}));
+		// GET /settings is needed by the save-token re-render (fails closed
+		// otherwise, but still seeds the token) — provide it so the seed is clean.
+		stub.respondWith("GET", () => ({
+			status: 200,
+			body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } },
+		}));
 		sandbox = await loadPluginInSandbox({
 			allowedHosts: [stub.host],
 			commerceServiceBaseUrl: stub.baseUrl,
 		});
 
-		const outcome = await sandbox.invokeRoute("admin/settings", {
+		// Seed the admin token into write-only kv via the Settings secret field,
+		// then clear the recorded requests so the PUT assertions are isolated.
+		await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-token",
+			values: { internalToken: "admin-token-xyz" },
+		});
+		stub.requests.length = 0;
+
+		const outcome = await sandbox.invokeRoute("admin", {
+			type: "form_submit",
 			action_id: "save-operational",
 			values: { holdTtlMinutes: 45, lowStockThreshold: 20 },
 			idempotencyKey: "k-op-1",
-			adminToken: "admin-token-xyz",
 		});
 
 		expect(stub.requests).toHaveLength(1);
@@ -87,6 +108,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 		expect(req?.method).toBe("PUT");
 		expect(req?.url).toBe("/settings");
 		expect(req?.body).toEqual({ holdTtlMinutes: 45, lowStockThreshold: 20 });
+		// The token was forwarded from write-only kv (not the interaction body).
 		expect(req?.headers["x-internal-token"]).toBe("admin-token-xyz");
 		expect(req?.headers["idempotency-key"]).toBe("k-op-1");
 		// The form re-renders with the saved values + a success toast.
@@ -114,11 +136,11 @@ describe("Settings admin form (workerd sandbox)", () => {
 			commerceServiceBaseUrl: stub.baseUrl,
 		});
 
-		const outcome = await sandbox.invokeRoute("admin/settings", {
+		const outcome = await sandbox.invokeRoute("admin", {
+			type: "form_submit",
 			action_id: "save-operational",
 			values: { holdTtlMinutes: 0 }, // only holdTtlMinutes edited (invalid)
 			idempotencyKey: "k-bad",
-			adminToken: "admin-token-xyz",
 		});
 		// Not a thrown {error} — a rendered inline error banner carrying the
 		// service's actual message.
@@ -136,6 +158,34 @@ describe("Settings admin form (workerd sandbox)", () => {
 		const byId = new Map(fields.map((f) => [f.action_id, f.initial_value]));
 		expect(byId.get("holdTtlMinutes")).toBe(0);
 		expect(byId.get("lowStockThreshold")).toBe(5);
+	});
+
+	test("a non-validation save failure (e.g. 401) surfaces a GENERIC banner with no raw HTTP status/URL", async () => {
+		stub = await startStubCommerceServer();
+		// Auth failure (no admin token seeded) — NOT a designed 400 validation.
+		stub.respondWith("PUT", () => ({
+			status: 401,
+			body: { ok: false, error: "unauthorized" },
+		}));
+		stub.respondWith("GET", () => ({
+			status: 200,
+			body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } },
+		}));
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+
+		const outcome = await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-operational",
+			values: { holdTtlMinutes: 45, lowStockThreshold: 20 },
+			idempotencyKey: "k-401",
+		});
+		const banner = blocksOf(outcome).find((b) => b.type === "banner" && b.variant === "error");
+		expect(banner).toBeDefined();
+		// Part 5: the auth/5xx/non-JSON fallback must not echo a raw status or URL.
+		expect(String(banner?.text)).not.toMatch(/HTTP \d|\/settings|401/);
 	});
 
 	test("SECURITY: the settings form manifest declares only content:read + network:request (no storage/kv/db), and the schema has no secret field", () => {

@@ -1,5 +1,6 @@
 import { COMMERCE_SERVICE_BASE_URL } from "../manifest.js";
 import type { AdminPageConfig, Block, BlockResponse, RouteHandler } from "../types.js";
+import { INTERNAL_TOKEN_KEY } from "./settings-form.js";
 import {
 	type LowStockWire,
 	type OperationalSettingsWire,
@@ -9,10 +10,10 @@ import {
 	type TopProductWire,
 } from "./reporting-client.js";
 
-/** The admin Reports page route + its `admin.pages` manifest entry (§4.4). The
- *  page renders numbers and tables — Block Kit ships no charting primitive
- *  (§2), so a graphical dashboard is a future trusted-React surface. */
-export const REPORTS_ROUTE = "admin/reports";
+/** The admin Reports page's `admin.pages` manifest entry (§4.4). The page
+ *  renders numbers and tables — Block Kit ships no charting primitive (§2), so
+ *  a graphical dashboard is a future trusted-React surface. Rendered by the
+ *  single `admin` dispatch route (see `admin-route.ts`). */
 export const REPORTS_PAGE: AdminPageConfig = { path: "/reports", label: "Reports", icon: "chart" };
 
 /** Trailing 30 days (UTC), the plugin-side default (a UX nicety only — the
@@ -23,9 +24,6 @@ export interface ReportsPageInput {
 	from?: unknown;
 	to?: unknown;
 	interval?: unknown;
-	/** Admin token forwarded to the guarded /reports/* reads (review J5). Arrives
-	 *  as transient route input (cookie-blind bearer-as-input); never persisted. */
-	adminToken?: unknown;
 }
 
 function resolveRange(input: ReportsPageInput): { from: string; to: string } {
@@ -54,8 +52,10 @@ export function createReportsPageHandler(): RouteHandler<ReportsPageInput> {
 		// Cosmetic label from ctx.kv (never the service) — the display-only tier.
 		const displayName = (await ctx.kv.get<string>("settings:storeDisplayName")) ?? "Store";
 
-		const adminToken =
-			typeof routeCtx.input.adminToken === "string" ? routeCtx.input.adminToken : undefined;
+		// The guarded /reports/* reads need X-Internal-Token, but em-dash's
+		// page_load carries NO token — source it from write-only kv (set via the
+		// Settings form's masked secret field), never from the interaction.
+		const adminToken = (await ctx.kv.get<string>(INTERNAL_TOKEN_KEY)) ?? undefined;
 		const client = new ReportingSettingsClient({
 			fetch: ctx.http.fetch,
 			baseUrl: COMMERCE_SERVICE_BASE_URL,
@@ -69,12 +69,19 @@ export function createReportsPageHandler(): RouteHandler<ReportsPageInput> {
 				client.getLowStock(),
 			]);
 			return buildReportsBlocks({ displayName, interval, revenue, statuses, top, low });
-		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err);
+		} catch {
+			// Fail CLOSED with a GENERIC message — never leak the raw HTTP
+			// status/URL (e.g. an auth 401 from a missing/expired admin token) into
+			// the admin banner. The remedy (service connection + admin token) is
+			// pointed at without echoing service internals.
 			const response: BlockResponse = {
 				blocks: [
 					{ type: "header", text: `${displayName} — Reports` },
-					{ type: "banner", variant: "error", text: `Reports are unavailable: ${message}` },
+					{
+						type: "banner",
+						variant: "error",
+						text: "Reports are unavailable — check the commerce service connection and the admin token in Settings.",
+					},
 				],
 				toast: { message: "Could not load reports", type: "error" },
 			};

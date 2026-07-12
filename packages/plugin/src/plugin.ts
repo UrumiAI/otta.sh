@@ -1,6 +1,5 @@
+import { ADMIN_ROUTE, createAdminRouteHandler } from "./admin/admin-route.js";
 import { createPanelStateRouteHandler, PANEL_STATE_ROUTE } from "./admin/panel-state-route.js";
-import { createReportsPageHandler, REPORTS_ROUTE } from "./admin/reports-page.js";
-import { createSettingsFormHandler, SETTINGS_ROUTE } from "./admin/settings-form.js";
 import {
 	createProductCommerceRouteHandler,
 	PRODUCT_COMMERCE_ROUTE,
@@ -134,12 +133,16 @@ const plugin: SandboxedPlugin = {
 		[ACCOUNT_ORDERS_ROUTE]: { handler: createAccountOrdersHandler() as never, public: true },
 		[ACCOUNT_ORDER_ROUTE]: { handler: createAccountOrderHandler() as never, public: true },
 		[ACCOUNT_ADDRESSES_ROUTE]: { handler: createAccountAddressesHandler() as never, public: true },
-		// Phase 7 (§6): ADMIN Reports page + Settings form. Non-public (admin
-		// surface). Reports reads /reports/* over ctx.http; Settings uses BOTH
-		// ctx.kv (display-only prefs) and ctx.http (operational settings) — no new
-		// capability (kv is ungated; egress stays network:request + allowedHosts).
-		[REPORTS_ROUTE]: { handler: createReportsPageHandler() as never, public: false },
-		[SETTINGS_ROUTE]: { handler: createSettingsFormHandler() as never, public: false },
+		// Phase 7 (§6): the SINGLE `admin` dispatch route em-dash's admin shell
+		// invokes (`POST /plugins/{id}/admin` with a BlockInteraction body). It
+		// fans out on `type` + `page`/`action_id` to the Reports page and the
+		// Settings form (see admin/admin-route.ts) — em-dash resolves admin pages
+		// by the literal `"admin"` key, so per-page keys never dispatch. Non-public
+		// (admin surface). Reports reads /reports/* over ctx.http; Settings uses
+		// BOTH ctx.kv (display prefs + write-only admin token) and ctx.http
+		// (operational settings) — no new capability (kv is ungated; egress stays
+		// network:request + allowedHosts).
+		[ADMIN_ROUTE]: { handler: createAdminRouteHandler() as never, public: false },
 	},
 };
 
