@@ -73,6 +73,24 @@ export interface OrderStore {
 	listForCustomer(customerId: CustomerId): Promise<Order[]>;
 
 	/**
+	 * Admin Orders console list (view-only). Returns a keyset-paginated page of
+	 * lightweight `OrderSummary` PROJECTIONS (never full `Order`s — the list must
+	 * not N+1 into `order_items`/`order_totals` per row; the adapter joins
+	 * `orders → order_totals` 1:1 in a single SELECT). Ordered `created_at DESC,
+	 * id DESC` (newest first, `id` the stable tie-break). Pagination is forward-only
+	 * keyset: the caller passes back the previous page's `nextCursor` position; the
+	 * adapter fetches `limit + 1` rows to decide whether a next page exists and
+	 * emits `nextCursor` from the LAST RETURNED row (null when the page is the last).
+	 *
+	 * The date window is HALF-OPEN `[from, to)` — `from` inclusive, `to`
+	 * EXCLUSIVE. This deliberately DIFFERS from `ReportingStore`'s inclusive/
+	 * inclusive `BETWEEN` window (MOD-7): the list is a browsing surface where an
+	 * exclusive upper bound composes cleanly for "up to but not including
+	 * midnight" day boundaries; the divergence is documented at every call site.
+	 */
+	listOrders(filter: OrderListFilter, page: OrderListPage): Promise<OrderListResult>;
+
+	/**
 	 * Claim guest orders for a just-authenticated customer (Phase 5 §9 Risk 3):
 	 * `UPDATE orders SET customer_id=:customerId WHERE buyer_ref=:buyerRef AND
 	 * customer_id IS NULL`. Safe because a magic-link login already proves the
@@ -174,6 +192,63 @@ export interface CreateOrderTotalsInput {
 }
 
 export type CreateOrderResult = { created: boolean; order: Order };
+
+// -- Admin Orders console: view-only list (keyset pagination) -----------------
+
+/** Filters for the admin Orders list. All optional — an empty filter lists every
+ *  order newest-first. `states` is an OR set (`state IN (...)`); `from`/`to` are a
+ *  HALF-OPEN `[from, to)` window on `created_at`; `search` matches an EXACT order
+ *  id OR a case-insensitive EXACT `buyer_ref` (never a substring — the fake and
+ *  the SQL keep identical `lower(buyer_ref) = lower(:search)` semantics). */
+export interface OrderListFilter {
+	states?: readonly OrderState[];
+	/** Inclusive lower bound (ISO-8601 UTC). */
+	from?: string;
+	/** EXCLUSIVE upper bound (ISO-8601 UTC) — half-open window (MOD-7). */
+	to?: string;
+	/** Exact order id OR case-insensitive exact buyer_ref. */
+	search?: string;
+}
+
+/** A keyset cursor POSITION — the `(created_at, id)` of the last row of the
+ *  previous page. Deliberately opaque-free in the domain (NO base64): the service
+ *  layer is what wraps this position (plus the active filter) into an opaque
+ *  base64url token for the wire. Ordering is `created_at DESC, id DESC`, so the
+ *  next page is every row strictly "less than" this position under that order. */
+export interface OrderListCursor {
+	createdAt: string;
+	id: OrderId;
+}
+
+/** One page request: an optional starting cursor (null/absent ⇒ first page) and a
+ *  page size. */
+export interface OrderListPage {
+	cursor?: OrderListCursor | null;
+	limit: number;
+}
+
+/** A lightweight order row for the admin list — a PROJECTION, not a full `Order`:
+ *  only what the console table + status badge need, so the list is one join, no
+ *  per-row line/totals fan-out. Money is branded `Cents`; `reconciliationFlag` is
+ *  a boolean badge (the list never leaks the free-text reconciliation detail). */
+export interface OrderSummary {
+	id: OrderId;
+	state: OrderState;
+	currency: Currency;
+	buyerRef: string;
+	customerId: string | null;
+	paymentMethod: PaymentMethod | null;
+	createdAt: string;
+	total: Cents;
+	reconciliationFlag: boolean;
+}
+
+export interface OrderListResult {
+	orders: OrderSummary[];
+	/** The position to pass back for the next page, or null when this is the last
+	 *  page (fewer than `limit + 1` rows matched). */
+	nextCursor: OrderListCursor | null;
+}
 
 export interface RecordPaymentInput {
 	orderId: OrderId;

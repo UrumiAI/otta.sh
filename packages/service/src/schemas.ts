@@ -244,22 +244,55 @@ export const loginVerifyBody = z.object({
 	token: z.string().min(1).max(400),
 });
 
-/** All modeled order states — the domain rejects any illegal transition; this
- *  only bounds the wire value to a known state. */
+/** The ten modeled order states as a shared enum — the single wire-value bound
+ *  reused by `transitionBody` (target state), `ordersListQuery` (CSV state
+ *  filter), and the opaque-cursor filter re-validation. The DOMAIN rejects any
+ *  illegal transition; this only bounds the wire value to a known state. */
+export const orderStateEnum = z.enum([
+	"pending",
+	"paid",
+	"failed",
+	"expired",
+	"processing",
+	"shipped",
+	"delivered",
+	"completed",
+	"cancelled",
+	"refunded",
+]);
+
 export const transitionBody = z.object({
-	toState: z.enum([
-		"pending",
-		"paid",
-		"failed",
-		"expired",
-		"processing",
-		"shipped",
-		"delivered",
-		"completed",
-		"cancelled",
-		"refunded",
-	]),
+	toState: orderStateEnum,
 });
+
+// Admin Orders console: view-only list query (§ admin-orders). The date window
+// is HALF-OPEN [from, to) — from inclusive, to EXCLUSIVE — deliberately DIFFERENT
+// from the reporting queries' inclusive/inclusive BETWEEN (MOD-7); the store
+// documents the same divergence. `states` is a CSV of the enum above (parsed +
+// per-token validated in the route). `limit` is coerced + clamped to 1..100
+// (default 25); `cursor` is the opaque base64url keyset token.
+export const ordersListQuery = z.object({
+	states: z.string().min(1).max(200).optional(),
+	from: z.string().datetime().optional(),
+	to: z.string().datetime().optional(),
+	search: z.string().min(1).max(200).optional(),
+	cursor: z.string().min(1).max(1000).optional(),
+	limit: z.coerce.number().int().min(1).max(100).optional().default(25),
+});
+
+/** Validates the FILTER object carried inside a decoded opaque cursor (MOD-1:
+ *  re-validate the decoded filter through zod before trusting it). `states` here
+ *  is already an array (the encoder stored the parsed array), each token bound to
+ *  the shared enum; the window bounds keep the ISO-8601 datetime discipline. */
+export const orderListFilterSchema = z.object({
+	states: z.array(orderStateEnum).optional(),
+	from: z.string().datetime().optional(),
+	to: z.string().datetime().optional(),
+	search: z.string().min(1).max(200).optional(),
+});
+
+export type OrdersListQuery = z.infer<typeof ordersListQuery>;
+export type OrderListFilterParsed = z.infer<typeof orderListFilterSchema>;
 
 const addressFields = {
 	kind: z.enum(["billing", "shipping"]),

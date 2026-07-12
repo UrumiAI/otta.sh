@@ -30,6 +30,13 @@ export function isLegalOrderTransition(from: OrderState, to: OrderState): boolea
 	return (ORDER_STATE_MACHINE[from] as readonly OrderState[]).includes(to);
 }
 
+/** The legal outbound transitions from `from` (empty for a terminal state). The
+ *  admin Orders console reads this to render exactly the transition buttons the
+ *  domain will accept — the single source of truth, never a UI-side re-listing. */
+export function legalNextStates(from: OrderState): readonly OrderState[] {
+	return ORDER_STATE_MACHINE[from];
+}
+
 /**
  * The email fired on entry to a state (Phase 5 §5/§6). `pending` (no entry
  * event) and `failed` have **no** template — the `pending → failed` asymmetry

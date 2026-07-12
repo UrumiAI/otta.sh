@@ -1,18 +1,52 @@
-import { cents } from "../money/cents.js";
-import type { CustomerId, IdempotencyKey, OrderId } from "../money/ids.js";
+import { cents, currency as toCurrency } from "../money/cents.js";
+import {
+	type CustomerId,
+	idempotencyKey as toIdempotencyKey,
+	type IdempotencyKey,
+	type OrderId,
+	orderId as toOrderId,
+} from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
 import type { IdGen } from "../ports/id-gen.js";
 import type {
 	CreateOrderInput,
 	CreateOrderResult,
+	OrderListFilter,
+	OrderListPage,
+	OrderListResult,
 	OrderStore,
+	OrderSummary,
 	OrderTransitionInput,
 	OrderTransitionResult,
 	OutboxEmail,
 	RecordPaymentInput,
 } from "../ports/order-store.js";
-import type { Order, OrderLine, OrderState, OrderTotals } from "../orders/model.js";
+import type { Order, OrderLine, OrderState, OrderTotals, PaymentMethod } from "../orders/model.js";
+
+/** Test-only seed shape for the admin-list contract — a direct order row (no
+ *  cart/reservation flow), so a case can pin an EXACT `createdAt`/`state`/
+ *  `buyerRef`/`total` per row (MOD-5: distinct clocks for ordering, identical
+ *  clocks for the tie-break). Mirrors the columns `KyselyOrderStore.listOrders`
+ *  reads, so the fake and the SQL agree byte-for-byte. */
+export interface SeedOrderSummaryRow {
+	id: string;
+	state: OrderState;
+	currency: string;
+	buyerRef: string;
+	customerId?: string | null;
+	paymentMethod?: PaymentMethod | null;
+	createdAt: string;
+	totalCents: number;
+	reconciliationFlag?: string | null;
+}
 import { emailTemplateForState } from "../orders/state-machine.js";
+
+/** Descending code-unit string comparison (`>` first) — the SAME plain code-unit
+ *  ordering the keyset predicate + from/to filters use, so the admin-list fake is
+ *  internally consistent (never `localeCompare`). */
+function codeUnitDesc(a: string, b: string): number {
+	return a > b ? -1 : a < b ? 1 : 0;
+}
 
 interface StoredOrder {
 	order: Order;
@@ -186,6 +220,107 @@ export class InMemoryOrderStore implements OrderStore {
 			.filter((s) => s.order.customerId === customerId)
 			.toSorted((a, b) => a.order.createdAt.localeCompare(b.order.createdAt))
 			.map((s) => this.#clone(s.order));
+	}
+
+	async listOrders(filter: OrderListFilter, page: OrderListPage): Promise<OrderListResult> {
+		// EXACT parity with `KyselyOrderStore.listOrders` (MOD-5): same filters,
+		// same `created_at DESC, id DESC` order, same half-open `[from, to)` window,
+		// same `lower(buyer_ref) = lower(:search)` (exact-lower-equals, NOT
+		// substring), same `limit + 1` next-page detection.
+		const states =
+			filter.states !== undefined && filter.states.length > 0 ? new Set(filter.states) : null;
+		const search = filter.search;
+		const searchLower = search === undefined ? undefined : search.toLowerCase();
+		const cursor = page.cursor ?? null;
+
+		const matched = [...this.#orders.values()]
+			.map((s) => s.order)
+			.filter((o) => {
+				if (states !== null && !states.has(o.state)) return false;
+				if (filter.from !== undefined && o.createdAt < filter.from) return false; // inclusive lower
+				if (filter.to !== undefined && o.createdAt >= filter.to) return false; // EXCLUSIVE upper
+				if (
+					search !== undefined &&
+					!(o.id === search || o.buyerRef.toLowerCase() === searchLower)
+				) {
+					return false;
+				}
+				// Keyset predicate: everything strictly "less than" the cursor position
+				// under `created_at DESC, id DESC`.
+				if (cursor !== null) {
+					if (o.createdAt > cursor.createdAt) return false;
+					if (o.createdAt === cursor.createdAt && o.id >= cursor.id) return false;
+				}
+				return true;
+			})
+			// Order ids and created_at are ASCII (opaque tokens / fixed-width ISO-8601),
+			// so plain code-unit comparison matches the store's byte ordering. Use the
+			// SAME code-unit `<`/`>` here as the keyset predicate + from/to filters above
+			// (never `localeCompare`), so the fake is internally consistent. Non-C
+			// Postgres collations are out of scope for the fake.
+			.toSorted(
+				(a, b) =>
+					a.createdAt === b.createdAt
+						? codeUnitDesc(a.id, b.id) // id DESC
+						: codeUnitDesc(a.createdAt, b.createdAt), // created_at DESC
+			);
+
+		const window = matched.slice(0, page.limit + 1);
+		const hasMore = window.length > page.limit;
+		const rows = hasMore ? window.slice(0, page.limit) : window;
+		const last = rows.at(-1);
+		const nextCursor =
+			hasMore && last !== undefined ? { createdAt: last.createdAt, id: last.id } : null;
+		return { orders: rows.map((o) => this.#toSummary(o)), nextCursor };
+	}
+
+	/** TEST-ONLY: directly seed an order row for the admin-list contract with an
+	 *  EXACT `createdAt`/`state`/`buyerRef`/`total`. Not part of `OrderStore`. */
+	seedSummaryOrder(row: SeedOrderSummaryRow): void {
+		const oid = toOrderId(row.id);
+		const cur = toCurrency(row.currency);
+		const order: Order = {
+			id: oid,
+			cartId: null,
+			currency: cur,
+			state: row.state,
+			idempotencyKey: toIdempotencyKey(`seed-${row.id}`),
+			holdExpiresAt: row.createdAt,
+			paymentMethod: row.paymentMethod ?? null,
+			buyerRef: row.buyerRef,
+			customerId: row.customerId ?? null,
+			createdAt: row.createdAt,
+			updatedAt: row.createdAt,
+			lines: [],
+			totals: {
+				orderId: oid,
+				currency: cur,
+				subtotal: cents(row.totalCents),
+				discount: cents(0),
+				shipping: cents(0),
+				tax: cents(0),
+				total: cents(row.totalCents),
+				appliedCouponCode: null,
+				shippingMethodSnapshot: null,
+				taxBreakdown: null,
+			},
+			reconciliationFlag: row.reconciliationFlag ?? null,
+		};
+		this.#orders.set(row.id, { order });
+	}
+
+	#toSummary(order: Order): OrderSummary {
+		return {
+			id: order.id,
+			state: order.state,
+			currency: order.currency,
+			buyerRef: order.buyerRef,
+			customerId: order.customerId,
+			paymentMethod: order.paymentMethod,
+			createdAt: order.createdAt,
+			total: order.totals.total,
+			reconciliationFlag: order.reconciliationFlag !== null,
+		};
 	}
 
 	async linkGuestOrders(customerId: CustomerId, buyerRef: string): Promise<number> {

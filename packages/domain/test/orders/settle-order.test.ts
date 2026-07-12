@@ -289,6 +289,7 @@ describe("settleOrder", () => {
 			flagReconciliation: (id, d) => h.orderStore.flagReconciliation(id, d),
 			transition: (i) => h.orderStore.transition(i),
 			listForCustomer: (c) => h.orderStore.listForCustomer(c),
+			listOrders: (f, p) => h.orderStore.listOrders(f, p),
 			linkGuestOrders: (c, ref) => h.orderStore.linkGuestOrders(c, ref),
 			claimNextEmail: (now, lease) => h.orderStore.claimNextEmail(now, lease),
 			markEmailSent: (id, now) => h.orderStore.markEmailSent(id, now),

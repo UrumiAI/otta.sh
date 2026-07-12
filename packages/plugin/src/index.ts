@@ -27,6 +27,23 @@ export {
 	type TopProductWire,
 	type UpdateSettingsResult,
 } from "./admin/reporting-client.js";
+export {
+	createOrdersPageHandler,
+	ORDERS_ACTION_IDS,
+	ORDERS_PAGE,
+	type OrdersPageInput,
+} from "./admin/orders-page.js";
+export {
+	AdminOrdersClient,
+	type OrderDetailResult,
+	type OrderDetailWire,
+	type OrderLineWire,
+	type OrdersListFilter,
+	type OrdersListResult,
+	type OrderSummaryWire,
+	type OrderTotalsWire,
+	type TransitionOrderResult,
+} from "./admin/admin-orders-client.js";
 export { PRODUCT_COMMERCE_ROUTE } from "./admin/product-commerce-route.js";
 export type { ProductCommerceRouteInput } from "./admin/product-commerce-route.js";
 export {

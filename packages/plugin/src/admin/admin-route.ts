@@ -1,4 +1,10 @@
 import type { RouteHandler, SandboxedRouteContext } from "../types.js";
+import {
+	createOrdersPageHandler,
+	ORDERS_ACTION_IDS,
+	ORDERS_PAGE,
+	type OrdersPageInput,
+} from "./orders-page.js";
 import { createReportsPageHandler, REPORTS_PAGE, type ReportsPageInput } from "./reports-page.js";
 import {
 	createSettingsFormHandler,
@@ -41,6 +47,7 @@ interface AdminInteractionInput {
 export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 	const reports = createReportsPageHandler();
 	const settings = createSettingsFormHandler();
+	const orders = createOrdersPageHandler();
 
 	return async (routeCtx, ctx) => {
 		const input = routeCtx.input;
@@ -48,7 +55,7 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 		const page = typeof input.page === "string" ? input.page : undefined;
 		const actionId = typeof input.action_id === "string" ? input.action_id : undefined;
 
-		// 1–2. GATE page branches on `type === "page_load"` (em-dash's reference
+		// 1–3. GATE page branches on `type === "page_load"` (em-dash's reference
 		// returns blocks-empty for a block_action that happens to carry a page).
 		if (type === "page_load" && page === REPORTS_PAGE.path) {
 			return reports(routeCtx as SandboxedRouteContext<ReportsPageInput>, ctx);
@@ -56,14 +63,22 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 		if (type === "page_load" && page === SETTINGS_PAGE.path) {
 			return settings(routeCtx as SandboxedRouteContext<SettingsFormInput>, ctx);
 		}
+		if (type === "page_load" && page === ORDERS_PAGE.path) {
+			return orders(routeCtx as SandboxedRouteContext<OrdersPageInput>, ctx);
+		}
 
-		// 3. Action interactions (block_action/form_submit) carry an action_id and
-		// no page — route Settings' actions to the Settings handler.
+		// 4. Action interactions (block_action/form_submit) carry an action_id and
+		// no page — route each page's actions to its handler. Every Orders action is
+		// namespaced `orders:*` and listed in ORDERS_ACTION_IDS (MOD-2), so none
+		// falls through to the blocks-empty fallback below.
 		if (actionId !== undefined && SETTINGS_ACTION_IDS.has(actionId)) {
 			return settings(routeCtx as SandboxedRouteContext<SettingsFormInput>, ctx);
 		}
+		if (actionId !== undefined && ORDERS_ACTION_IDS.has(actionId)) {
+			return orders(routeCtx as SandboxedRouteContext<OrdersPageInput>, ctx);
+		}
 
-		// 4. Fallback — em-dash house style for an unrecognized interaction.
+		// 5. Fallback — em-dash house style for an unrecognized interaction.
 		return { blocks: [] };
 	};
 }
