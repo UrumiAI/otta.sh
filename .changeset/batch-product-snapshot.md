@@ -1,7 +1,7 @@
 ---
 "@urumi/domain": minor
 "@urumi/store-postgres": minor
-"@urumi/service": minor
+"@urumi/service": patch
 ---
 
 Removes the per-cart-line N+1 product-snapshot read in both checkout paths by adding a single bulk store method and rewiring both callers to fetch once. Snapshot semantics are unchanged: an order line still snapshots price + title at purchase time, and every per-line null / price / currency / kind check is byte-for-byte identical.
