@@ -127,6 +127,33 @@ export interface ProductCommerceView {
 export interface ProductCommerceStore {
 	upsert(input: UpsertProductCommerceInput, key: IdempotencyKey): Promise<ProductCommerce>;
 	getByProductId(productId: ProductId): Promise<ProductCommerce | null>;
+	/**
+	 * Bulk snapshot read (checkout §4) — a query, not a command: mutates
+	 * nothing, carries no idempotency key. The batch companion to
+	 * `getByProductId`, so the two checkout paths (`createOrderFromCart` and
+	 * `POST /checkout/quote`) fetch every cart line's product projection in ONE
+	 * store round trip instead of one per line (the per-cart-line N+1 this
+	 * method exists to kill).
+	 *
+	 * Returns the FULL `ProductCommerce` per id — title / taxClass / productKind
+	 * included (UNLIKE `listCommerceByIds`, whose narrower `ProductCommerceView`
+	 * drops them) — because each caller snapshots price + title and branches on
+	 * `productKind` per line.
+	 *
+	 * Identical row semantics to `getByProductId`, NOT `listCommerceByIds`: this
+	 * is the RAW row read. It does NOT filter on `deleted_at`, `sku`, or `price`
+	 * and applies no commerce-complete guards — a soft-deleted, unpriced, or
+	 * sku-less row is returned as-is, because the callers do their own per-line
+	 * null / price / currency / kind checks (a store-side guard here would
+	 * silently turn a "row exists but isn't sellable" into a caller-visible
+	 * absence and change which failure reason the checkout returns).
+	 *
+	 * MISSING ids are ABSENT from the Map — never a null entry, never an error
+	 * (mirroring `getByProductId` returning null for a single miss). Duplicate
+	 * input ids collapse to one entry. NO ordering guarantee; look results up by
+	 * id, never by position.
+	 */
+	getManyByProductId(productIds: ProductId[]): Promise<Map<ProductId, ProductCommerce>>;
 	/** Soft delete: sets `deletedAt` + `active=false`; retains the row. A
 	 *  replay with the same key (or an already-deleted / unknown row) is a
 	 *  no-op. */

@@ -5,6 +5,7 @@ import {
 	idempotencyKey,
 	money,
 	productId as brandProductId,
+	type ProductCommerceStore,
 	sku as brandSku,
 } from "@urumi/domain";
 import { beforeEach, describe, expect, test } from "vitest";
@@ -210,6 +211,53 @@ describe("createOrderFromCart", () => {
 		expect(second).toEqual({ ok: false, reason: "CART_CHECKED_OUT" });
 		// The first order's adopted hold is untouched.
 		expect(h.inventory.reservationState(reservationId)).toBe("adopted");
+	});
+
+	test("anti-N+1: an N-line cart reads product snapshots via ONE getManyByProductId, never per-line getByProductId", async () => {
+		await h.seedPhysical({
+			productId: "p1",
+			sku: "SKU-1",
+			priceCents: 500,
+			title: "A",
+			onHand: 10,
+		});
+		await h.seedPhysical({
+			productId: "p2",
+			sku: "SKU-2",
+			priceCents: 700,
+			title: "B",
+			onHand: 10,
+		});
+		const cartId = await h.cartWith([
+			{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" },
+			{ sku: "SKU-2", productId: "p2", qty: 1, kind: "physical" },
+		]);
+
+		// Spy over the fake store, counting the two snapshot reads. This fails the
+		// day the per-cart-line loop is ever reintroduced.
+		let getOne = 0;
+		let getMany = 0;
+		const base = h.productCommerce;
+		const spy: ProductCommerceStore = {
+			upsert: (input, key) => base.upsert(input, key),
+			getByProductId: (id) => {
+				getOne++;
+				return base.getByProductId(id);
+			},
+			getManyByProductId: (ids) => {
+				getMany++;
+				return base.getManyByProductId(ids);
+			},
+			softDelete: (id, key) => base.softDelete(id, key),
+			activate: (id, key, t) => base.activate(id, key, t),
+			deactivate: (id, key, t) => base.deactivate(id, key, t),
+			listCommerceByIds: (ids) => base.listCommerceByIds(ids),
+		};
+
+		const res = await createOrderFromCart({ ...h.createDeps, productCommerce: spy }, cmd(cartId));
+		expect(res.ok).toBe(true);
+		expect(getMany).toBe(1);
+		expect(getOne).toBe(0);
 	});
 
 	test("is idempotent: replay with same key returns the same order, no double snapshot, no re-adopt", async () => {

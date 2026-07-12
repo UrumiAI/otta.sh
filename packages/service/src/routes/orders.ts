@@ -124,10 +124,19 @@ export function orderRoutes(deps: OrderServiceDeps): Hono {
 		if (cart.lines.length === 0) return c.json({ ok: false, reason: "CART_EMPTY" }, 409);
 
 		// Resolve each line's snapshot price + tax class (mirrors createOrderFromCart).
+		// Bulk-fetch every line's projection in ONE store round trip (kills the
+		// per-cart-line N+1); brand lazily per line below so a null line's
+		// PRODUCT_NOT_PRICED precedence is unchanged.
+		const pcById = await deps.productCommerce.getManyByProductId(
+			cart.lines
+				.map((line) => line.productId)
+				.filter((id): id is string => id !== null)
+				.map((id) => toProductId(id)),
+		);
 		const lines: TotalsLineInput[] = [];
 		for (const line of cart.lines) {
 			if (line.productId === null) return c.json({ ok: false, reason: "PRODUCT_NOT_PRICED" }, 409);
-			const pc = await deps.productCommerce.getByProductId(toProductId(line.productId));
+			const pc = pcById.get(toProductId(line.productId)) ?? null;
 			if (pc === null || pc.price === null) {
 				return c.json({ ok: false, reason: "PRODUCT_NOT_PRICED" }, 409);
 			}
