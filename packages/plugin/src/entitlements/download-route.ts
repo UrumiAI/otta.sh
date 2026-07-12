@@ -1,4 +1,4 @@
-import { COMMERCE_SERVICE_BASE_URL } from "../manifest.js";
+import { COMMERCE_SERVICE_BASE_URL, serviceTokenFromKv } from "../manifest.js";
 import { HttpCommerceClient } from "../product-commerce/http-commerce-client.js";
 import type { RouteHandler } from "../types.js";
 
@@ -38,9 +38,13 @@ export function createEntitlementDownloadHandler(): RouteHandler<EntitlementDown
 			return { authorized: false, reason: "INVALID_INPUT" };
 		}
 
+		// `checkEntitlement` is a GET (gate-exempt), but the token is threaded for
+		// uniformity (ADR-0007) — undefined ⇒ no header ⇒ unchanged wire.
+		const serviceToken = await serviceTokenFromKv(ctx);
 		const client = new HttpCommerceClient({
 			fetch: ctx.http.fetch,
 			baseUrl: COMMERCE_SERVICE_BASE_URL,
+			...(serviceToken !== undefined ? { serviceToken } : {}),
 		});
 		const entitled = await client.checkEntitlement(scope, sku);
 		return entitled ? { authorized: true, sku } : { authorized: false, reason: "NOT_ENTITLED" };

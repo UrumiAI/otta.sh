@@ -81,7 +81,7 @@ describe.skipIf(PG === undefined)("Worker entry [Postgres]", () => {
 			HYPERDRIVE: { connectionString: scopedConnectionString },
 			SERVICE_API_TOKEN: "worker-pg-secret",
 		};
-		const bearer = { Authorization: "Bearer worker-pg-secret" };
+		const serviceHeader = { "X-Service-Token": "worker-pg-secret" };
 		const { ctx, settle } = makeCtx();
 
 		// First event: the schema is empty — /health both proves the wiring and
@@ -106,11 +106,11 @@ describe.skipIf(PG === undefined)("Worker entry [Postgres]", () => {
 		);
 		expect(tokenless.status).toBe(401);
 
-		// The full cart round-trip with Bearer.
+		// The full cart round-trip with the X-Service-Token write gate (ADR-0007).
 		const created = await worker.fetch(
 			new Request("http://worker.test/carts", {
 				method: "POST",
-				headers: { "content-type": "application/json", ...bearer },
+				headers: { "content-type": "application/json", ...serviceHeader },
 				body: "{}",
 			}),
 			env,
@@ -125,7 +125,7 @@ describe.skipIf(PG === undefined)("Worker entry [Postgres]", () => {
 				headers: {
 					"content-type": "application/json",
 					"Idempotency-Key": "wk-1",
-					...bearer,
+					...serviceHeader,
 				},
 				body: JSON.stringify({ sku: "SKU-WORKER", qty: 2 }),
 			}),
@@ -184,7 +184,7 @@ describe.skipIf(PG === undefined)("Worker entry [Postgres]", () => {
 	});
 
 	test("test 13: /internal/expire-holds parity through worker.fetch (config-flow proof for the secrets)", async () => {
-		// Both secrets set: the endpoint needs Bearer AND X-Internal-Token.
+		// Both secrets set: the endpoint needs X-Service-Token AND X-Internal-Token.
 		const worker = createWorker({ migrate });
 		const env: WorkerEnv = {
 			HYPERDRIVE: { connectionString: scopedConnectionString },
@@ -197,7 +197,7 @@ describe.skipIf(PG === undefined)("Worker entry [Postgres]", () => {
 		const both = await worker.fetch(
 			new Request(url, {
 				method: "POST",
-				headers: { Authorization: "Bearer svc-w", "X-Internal-Token": "int-w" },
+				headers: { "X-Service-Token": "svc-w", "X-Internal-Token": "int-w" },
 			}),
 			env,
 			ctx,
@@ -208,19 +208,19 @@ describe.skipIf(PG === undefined)("Worker entry [Postgres]", () => {
 		const wrongInternal = await worker.fetch(
 			new Request(url, {
 				method: "POST",
-				headers: { Authorization: "Bearer svc-w", "X-Internal-Token": "wrong" },
+				headers: { "X-Service-Token": "svc-w", "X-Internal-Token": "wrong" },
 			}),
 			env,
 			ctx,
 		);
 		expect(wrongInternal.status).toBe(401);
 
-		const missingBearer = await worker.fetch(
+		const missingService = await worker.fetch(
 			new Request(url, { method: "POST", headers: { "X-Internal-Token": "int-w" } }),
 			env,
 			ctx,
 		);
-		expect(missingBearer.status).toBe(401);
+		expect(missingService.status).toBe(401);
 
 		// INTERNAL_API_TOKEN absent from env: 503 (disabled), never silently open.
 		const workerNoInternal = createWorker({ migrate });
@@ -229,7 +229,7 @@ describe.skipIf(PG === undefined)("Worker entry [Postgres]", () => {
 			SERVICE_API_TOKEN: "svc-w",
 		};
 		const disabled = await workerNoInternal.fetch(
-			new Request(url, { method: "POST", headers: { Authorization: "Bearer svc-w" } }),
+			new Request(url, { method: "POST", headers: { "X-Service-Token": "svc-w" } }),
 			envNoInternal,
 			ctx,
 		);

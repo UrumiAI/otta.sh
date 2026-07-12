@@ -35,6 +35,9 @@ export interface LiveService {
 	 *  answer 503). Exposed so the admin-orders live-client test can drive the
 	 *  guarded `/admin/orders` reads. */
 	internalToken: string | undefined;
+	/** The X-Service-Token the write gate enforces (undefined ⇒ gate OPEN). Exposed
+	 *  so the ADR-0007 contract test can drive the client with a matching token. */
+	serviceToken: string | undefined;
 	stop(): Promise<void>;
 }
 
@@ -42,6 +45,9 @@ export interface StartLiveServiceOptions {
 	/** Enable the guarded admin surface with this X-Internal-Token. Omitted ⇒ the
 	 *  internal endpoints stay DISABLED (503), preserving the prior behavior. */
 	internalToken?: string;
+	/** Enable the write gate (ADR-0007) with this X-Service-Token. Omitted ⇒ the
+	 *  gate stays OPEN (every non-GET passes), preserving the prior behavior. */
+	serviceToken?: string;
 }
 
 /**
@@ -99,6 +105,7 @@ export async function startLiveService(
 		gateways: { stripe: new StripePaymentGateway({ webhookSecret: LIVE_STRIPE_WEBHOOK_SECRET }) },
 		clock,
 		...(options.internalToken !== undefined ? { internalToken: options.internalToken } : {}),
+		...(options.serviceToken !== undefined ? { serviceToken: options.serviceToken } : {}),
 	});
 
 	const server = await new Promise<ReturnType<typeof serve>>((resolve) => {
@@ -112,6 +119,7 @@ export async function startLiveService(
 		host: "127.0.0.1",
 		emailSender,
 		internalToken: options.internalToken,
+		serviceToken: options.serviceToken,
 		async stop() {
 			await new Promise<void>((resolve, reject) => {
 				server.close((err: Error | undefined) => (err ? reject(err) : resolve()));

@@ -88,12 +88,24 @@ async function waitUntilReady(baseUrl: string, deadlineMs: number): Promise<void
 }
 
 function manifestSource(options: SandboxOptions): string {
+	// Mirrors the real `src/manifest.ts` exported surface (the rest of src imports
+	// from here). Includes the ADR-0007 write-gate token key + fail-closed kv
+	// reader so the sandbox bundle resolves them exactly as production does.
 	return [
 		'export const URUMI_PLUGIN_ID = "urumi";',
 		'export const URUMI_PLUGIN_VERSION = "0.1.0";',
 		'export const URUMI_PLUGIN_CAPABILITIES = ["content:read", "network:request"];',
 		`export const COMMERCE_SERVICE_BASE_URL = ${JSON.stringify(options.commerceServiceBaseUrl)};`,
 		`export const ALLOWED_HOSTS = ${JSON.stringify(options.allowedHosts)};`,
+		'export const SERVICE_TOKEN_KEY = "settings:serviceToken";',
+		"export async function serviceTokenFromKv(ctx) {",
+		"\ttry {",
+		"\t\tconst token = await ctx.kv.get(SERVICE_TOKEN_KEY);",
+		"\t\treturn token !== null && token !== undefined && token.length > 0 ? token : undefined;",
+		"\t} catch {",
+		"\t\treturn undefined;",
+		"\t}",
+		"}",
 		"",
 	].join("\n");
 }

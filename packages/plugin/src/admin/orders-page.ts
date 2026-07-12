@@ -1,4 +1,4 @@
-import { COMMERCE_SERVICE_BASE_URL } from "../manifest.js";
+import { COMMERCE_SERVICE_BASE_URL, serviceTokenFromKv } from "../manifest.js";
 import { formatMoney } from "../presentation/format-money.js";
 import { cents as toCents, currency as toCurrency } from "../presentation/money.js";
 import type {
@@ -91,10 +91,14 @@ export function createOrdersPageHandler(): RouteHandler<OrdersPageInput> {
 		const input = routeCtx.input;
 		const action = typeof input.action_id === "string" ? input.action_id : undefined;
 		const adminToken = (await ctx.kv.get<string>(INTERNAL_TOKEN_KEY)) ?? undefined;
+		// The transition POST is gated by the write gate (X-Service-Token) too when
+		// the service secret is set — source it from write-only kv (ADR-0007).
+		const serviceToken = await serviceTokenFromKv(ctx);
 		const client = new AdminOrdersClient({
 			fetch: ctx.http.fetch,
 			baseUrl: COMMERCE_SERVICE_BASE_URL,
 			...(adminToken !== undefined ? { adminToken } : {}),
+			...(serviceToken !== undefined ? { serviceToken } : {}),
 		});
 
 		// -- detail: open one order ------------------------------------------------

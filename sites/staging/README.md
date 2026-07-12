@@ -144,10 +144,23 @@ delete → create → id-rewrite → redeploy dance.)
   production, the alternative is a **custom domain on the commerce service** — custom
   domains are not subject to the workers.dev subrequest block, so the flag could be
   dropped and `session: "auto"` re-enabled.
-- **`SERVICE_API_TOKEN` follow-up:** the commerce service has an auth gate for its API
-  token, but `HttpCommerceClient` does not send one yet. Keep the token **unset** on the
-  service until the plugin threads it through; enabling it early would 401 every
-  storefront call.
+- **`SERVICE_API_TOKEN` write gate (ADR-0007):** the plugin now threads the write-gate
+  token to the service as the dedicated **`X-Service-Token`** header (NOT
+  `Authorization: Bearer`, which is the customer session credential). All three plugin
+  clients read it at runtime from write-only plugin kv (`settings:serviceToken`),
+  admin-provisioned via the masked **"Service token (X-Service-Token)"** field on the
+  Settings page. **Deploy ordering:** provision `settings:serviceToken` in this env's
+  plugin kv (via the Settings form) **before** flipping this env's `SERVICE_API_TOKEN`
+  service secret. The reverse order 401s every storefront call in the window — and note
+  the gate blocks POST *reads* too (`getCommerceBatch` for PDP/PLP and the login pre-auth
+  POSTs), so an unprovisioned token breaks catalog rendering and login, not just writes.
+  Both are now runtime actions (no redeploy), closable in seconds.
+- **Rotating `SERVICE_API_TOKEN`:** rotate in lockstep. Set the new `settings:serviceToken`
+  in plugin kv FIRST (the service still accepts the old token), THEN rotate the service
+  secret. Rotating the service secret without updating kv silently 401s every plugin call —
+  and the content-sync hooks are fire-and-forget with **no reconcile cron yet**, so a
+  failed sync is logged and then lost until the product is saved again. The service token is
+  the plugin's most sensitive value: a kv compromise yields the whole write surface.
 - No secrets anywhere in this package: `.env` is gitignored, `.env.example` holds
   placeholders, `wrangler.jsonc` `vars` must never grow a secret-shaped key (pinned by
   `test/wrangler-config.test.ts`).

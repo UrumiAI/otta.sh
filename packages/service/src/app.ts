@@ -18,7 +18,7 @@ import type {
 	TaxRulesStore,
 } from "@urumi/domain";
 import { Hono } from "hono";
-import { requireBearerToken } from "./auth.js";
+import { requireServiceToken } from "./auth.js";
 import { adminRoutes } from "./routes/admin.js";
 import { authRoutes } from "./routes/auth.js";
 import { reportsRoutes } from "./routes/reports.js";
@@ -61,9 +61,10 @@ export type AppDeps = InventoryDeps &
 		/** Storefront base URL for the emailed magic link (optional). */
 		storefrontBaseUrl?: string;
 		/**
-		 * SERVICE_API_TOKEN write gate (D9): when set, every non-GET/HEAD request
-		 * must carry `Authorization: Bearer <serviceToken>`. Unset ⇒ fully open
-		 * (exactly the pre-gate behavior — local dev and existing tests).
+		 * SERVICE_API_TOKEN write gate (D9 / ADR-0007): when set, every non-GET/HEAD
+		 * request must carry `X-Service-Token: <serviceToken>` (a dedicated header —
+		 * NOT `Authorization: Bearer`, which is owned by customer session auth).
+		 * Unset ⇒ fully open (exactly the pre-gate behavior — local dev and tests).
 		 */
 		serviceToken?: string;
 	};
@@ -82,11 +83,11 @@ export function createApp(deps: AppDeps): Hono {
 	//    plugin proxy — the sandbox bridge destroys the raw bytes the HMAC
 	//    needs); authenticated by `Stripe-Signature` HMAC verification over the
 	//    raw body inside settleOrder, with a freshness window and rotation-aware
-	//    v1 checks. Stripe cannot carry our Bearer token. Every other verb on
+	//    v1 checks. Stripe cannot carry our service token. Every other verb on
 	//    the path stays gated.
 	app.use(
 		"*",
-		requireBearerToken(deps.serviceToken, [{ method: "POST", path: "/webhooks/stripe" }]),
+		requireServiceToken(deps.serviceToken, [{ method: "POST", path: "/webhooks/stripe" }]),
 	);
 	app.get("/health", (c) => c.json({ ok: true }));
 	app.route("/inventory", inventoryRoutes(deps));

@@ -1,4 +1,4 @@
-import { COMMERCE_SERVICE_BASE_URL } from "../manifest.js";
+import { COMMERCE_SERVICE_BASE_URL, serviceTokenFromKv } from "../manifest.js";
 import { HttpCommerceClient } from "../product-commerce/http-commerce-client.js";
 import type { RouteHandler } from "../types.js";
 import { buildProductDataElements } from "./product-data-widget.js";
@@ -19,9 +19,13 @@ export function createPanelStateRouteHandler(): RouteHandler<PanelStateRouteInpu
 		if (typeof productId !== "string" || productId.length === 0) {
 			return { elements: buildProductDataElements({ hasProductId: false }) };
 		}
+		// `getProductCommerce` is a GET (gate-exempt); the token is threaded for
+		// uniformity (ADR-0007) — undefined ⇒ no header ⇒ unchanged wire.
+		const serviceToken = await serviceTokenFromKv(ctx);
 		const client = new HttpCommerceClient({
 			fetch: ctx.http.fetch,
 			baseUrl: COMMERCE_SERVICE_BASE_URL,
+			...(serviceToken !== undefined ? { serviceToken } : {}),
 		});
 		const commerce = await client.getProductCommerce(productId);
 		return { elements: buildProductDataElements({ hasProductId: true, commerce }) };
