@@ -13,6 +13,7 @@
  */
 import type { FieldWidgetConfig, PluginDescriptor } from "emdash";
 import {
+	ORDERS_PAGE,
 	productDataWidget,
 	REPORTS_PAGE,
 	SETTINGS_PAGE,
@@ -47,6 +48,6 @@ export function urumiPluginDescriptor(serviceUrl: string): PluginDescriptor {
 		// write-only secret persisted to ctx.kv (webhook-notifier pattern) — no
 		// new capability: account/reports routes are network:request proxies and
 		// ctx.kv is always-available.
-		adminPages: [REPORTS_PAGE, SETTINGS_PAGE],
+		adminPages: [REPORTS_PAGE, SETTINGS_PAGE, ORDERS_PAGE],
 	};
 }

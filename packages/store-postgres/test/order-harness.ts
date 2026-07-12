@@ -246,7 +246,46 @@ export async function makePgOrderFlow(): Promise<OrderFlowHarness> {
 
 export function buildOrderStoreHarness(db: Kysely<Database>): OrderStoreHarness {
 	const clock = new FixedClock(new Date("2026-07-10T00:00:00.000Z"));
-	return { store: new KyselyOrderStore({ db, idGen: new CountingIdGen("oi"), clock }) };
+	return {
+		store: new KyselyOrderStore({ db, idGen: new CountingIdGen("oi"), clock }),
+		// Direct orders + order_totals insert (mirrors the reporting harness) so the
+		// admin-list contract can pin an EXACT created_at/state/buyer_ref/total per
+		// row — the fake, sqlite, and pg then exercise the identical spec (MOD-5).
+		async seedOrder(row) {
+			await db
+				.insertInto("orders")
+				.values({
+					id: row.id,
+					cart_id: null,
+					currency: row.currency,
+					state: row.state as Database["orders"]["state"],
+					idempotency_key: `seed-${row.id}`,
+					hold_expires_at: row.createdAt,
+					payment_method: row.paymentMethod ?? null,
+					buyer_ref: row.buyerRef,
+					customer_id: row.customerId ?? null,
+					reconciliation_flag: row.reconciliationFlag ?? null,
+					created_at: row.createdAt,
+					updated_at: row.createdAt,
+				})
+				.execute();
+			await db
+				.insertInto("order_totals")
+				.values({
+					order_id: row.id,
+					currency: row.currency,
+					subtotal_cents: row.totalCents,
+					discount_cents: 0,
+					shipping_cents: 0,
+					tax_cents: 0,
+					total_cents: row.totalCents,
+					applied_coupon_code: null,
+					shipping_method_snapshot: null,
+					tax_breakdown: null,
+				})
+				.execute();
+		},
+	};
 }
 
 export function buildEntitlementHarness(db: Kysely<Database>): EntitlementStoreHarness {

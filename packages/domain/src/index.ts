@@ -96,8 +96,13 @@ export type {
 	CreateOrderLineInput,
 	CreateOrderResult,
 	CreateOrderTotalsInput,
+	OrderListCursor,
+	OrderListFilter,
+	OrderListPage,
+	OrderListResult,
 	OrderStore,
 	OrderState,
+	OrderSummary,
 	OrderTransitionInput,
 	OrderTransitionResult,
 	OutboxEmail,
@@ -125,6 +130,7 @@ export { DuplicateCustomerEmailError, type LoginFailure } from "./customers/erro
 export {
 	emailTemplateForState,
 	isLegalOrderTransition,
+	legalNextStates,
 	ORDER_EMAIL_TEMPLATE_FOR_STATE,
 	ORDER_STATE_MACHINE,
 } from "./orders/state-machine.js";

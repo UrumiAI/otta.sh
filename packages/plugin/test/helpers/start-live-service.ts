@@ -31,7 +31,17 @@ export interface LiveService {
 	/** The in-memory email sender — the account tests read the emitted magic-link
 	 *  token from here to complete a login over the wire. */
 	emailSender: FakeEmailSender;
+	/** The X-Internal-Token the service accepts (undefined ⇒ guarded admin routes
+	 *  answer 503). Exposed so the admin-orders live-client test can drive the
+	 *  guarded `/admin/orders` reads. */
+	internalToken: string | undefined;
 	stop(): Promise<void>;
+}
+
+export interface StartLiveServiceOptions {
+	/** Enable the guarded admin surface with this X-Internal-Token. Omitted ⇒ the
+	 *  internal endpoints stay DISABLED (503), preserving the prior behavior. */
+	internalToken?: string;
 }
 
 /**
@@ -41,7 +51,9 @@ export interface LiveService {
  * here so `HttpCommerceClient` (plan §6 step 6) is proven against the real
  * wire, not a hand-rolled stub.
  */
-export async function startLiveService(): Promise<LiveService> {
+export async function startLiveService(
+	options: StartLiveServiceOptions = {},
+): Promise<LiveService> {
 	const connectionString = process.env.PG_CONNECTION_STRING;
 	if (connectionString === undefined) throw new Error("PG_CONNECTION_STRING is not set");
 	const iso = await createIsolatedPgSchema(connectionString, { poolMax: 8 });
@@ -86,6 +98,7 @@ export async function startLiveService(): Promise<LiveService> {
 		idGen: uuidIdGen,
 		gateways: { stripe: new StripePaymentGateway({ webhookSecret: LIVE_STRIPE_WEBHOOK_SECRET }) },
 		clock,
+		...(options.internalToken !== undefined ? { internalToken: options.internalToken } : {}),
 	});
 
 	const server = await new Promise<ReturnType<typeof serve>>((resolve) => {
@@ -98,6 +111,7 @@ export async function startLiveService(): Promise<LiveService> {
 		baseUrl: `http://127.0.0.1:${port}`,
 		host: "127.0.0.1",
 		emailSender,
+		internalToken: options.internalToken,
 		async stop() {
 			await new Promise<void>((resolve, reject) => {
 				server.close((err: Error | undefined) => (err ? reject(err) : resolve()));

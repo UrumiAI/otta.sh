@@ -179,6 +179,17 @@ export interface SelectElement {
 	disabled?: boolean;
 }
 
+/** `ConfirmDialog` (em-dash `packages/blocks/src/types.ts:3-9`) — the modal a
+ *  button raises before firing. ALL of `{title, text, confirm, deny}` are
+ *  REQUIRED by the authoritative type (MOD-8); `style:"danger"` tints it. */
+export interface ConfirmDialog {
+	title: string;
+	text: string;
+	confirm: string;
+	deny: string;
+	style?: "danger";
+}
+
 export interface ButtonElement {
 	type: "button";
 	action_id: string;
@@ -187,6 +198,12 @@ export interface ButtonElement {
 	 *  `packages/blocks/src/types.ts:13-20`) — Block Kit elements CAN carry
 	 *  a payload straight to the plugin route (plan §8 Risk 5). */
 	value?: unknown;
+	/** Visual emphasis (em-dash `ButtonElement.style`) — `danger` for a
+	 *  destructive transition (cancel/refund). */
+	style?: "primary" | "danger" | "secondary";
+	/** A confirm dialog raised before the action fires (em-dash
+	 *  `ButtonElement.confirm`) — required on destructive transitions. */
+	confirm?: ConfirmDialog;
 	disabled?: boolean;
 }
 
@@ -236,26 +253,86 @@ export interface StatsBlock {
 export interface TableColumn {
 	key: string;
 	label: string;
-	format?: "text" | "number" | "badge" | "code";
+	/** Widened to include em-dash's `relative_time` (MOD-8) for the created-at
+	 *  column; the authoritative union is
+	 *  `"text"|"badge"|"relative_time"|"number"|"code"`. */
+	format?: "text" | "number" | "badge" | "code" | "relative_time";
 }
 export interface TableBlock {
 	type: "table";
 	columns: TableColumn[];
 	rows: Array<Record<string, unknown>>;
+	/** em-dash's authoritative `TableBlock` REQUIRES `page_action_id` (the
+	 *  block_action id its "Load more" fires) and allows an optional `next_cursor`
+	 *  (`packages/blocks/src/types.ts:271-278`). Kept OPTIONAL here (MOD-3
+	 *  backward-compat): the Phase-7 Reports tables — shipped in PR #46 — omit
+	 *  both, and widening must not break them. The Orders console ALWAYS supplies
+	 *  `page_action_id` (and `next_cursor` when a next page exists), which is what
+	 *  the production renderer requires. FOLLOW-UP: migrate the Reports tables to
+	 *  carry `page_action_id` and tighten this to required. */
+	page_action_id?: string;
+	next_cursor?: string;
 	empty_text?: string;
 }
-/** `banner` (em-dash `types.ts`) — used to fail closed: a plugin route that
- *  can't reach the service renders this instead of throwing into the host. */
+/**
+ * `banner` — WIDENED to a backward-compatible SUPERSET of em-dash's
+ * authoritative `BannerBlock` (`packages/blocks/src/types.ts:318-323`:
+ * `{variant?: "default"|"alert"|"error"; title?; description?}`) plus Urumi's
+ * legacy `{variant: "error"|"info"|"success"; text}` (MOD-3). The Reports/Settings
+ * pages emit the legacy `{variant, text}` shape (unchanged, still typechecks);
+ * the em-dash renderer shows NO body for those, so the Orders console emits the
+ * em-dash-correct `{variant:"error", title, description}` shape so its banners
+ * render in production. FOLLOW-UP: migrate Reports/Settings banners to
+ * title/description and drop the legacy `text` field.
+ */
 export interface BannerBlock {
 	type: "banner";
-	variant: "error" | "info" | "success";
-	text: string;
+	variant: "default" | "alert" | "error" | "info" | "success";
+	/** Legacy Urumi body (Reports/Settings). */
+	text?: string;
+	/** em-dash-authoritative banner body. */
+	title?: string;
+	description?: string;
+}
+/** `fields` (em-dash `packages/blocks/src/types.ts:266-269`) — a label/value
+ *  grid, used by the Orders detail view for the order's scalar fields (MOD-8). */
+export interface FieldsBlock {
+	type: "fields";
+	fields: Array<{ label: string; value: string }>;
+}
+/** `actions` (em-dash `packages/blocks/src/types.ts:280-283`) — a row of
+ *  interactive elements (buttons), used for the detail view's Back + transition
+ *  buttons (MOD-8). */
+export interface ActionsBlock {
+	type: "actions";
+	elements: Element[];
 }
 export interface FormFieldSpec {
 	type: "text_input" | "number_input";
 	action_id: string;
 	label: string;
 	initial_value?: string | number;
+	placeholder?: string;
+}
+/** A `select` form field (em-dash `SelectElement`,
+ *  `packages/blocks/src/types.ts:40-48`) — the Orders filter status picker + the
+ *  open-order picker (MOD-8: needs `options` + `label`). */
+export interface SelectFieldSpec {
+	type: "select";
+	action_id: string;
+	label: string;
+	options: SelectOption[];
+	initial_value?: string;
+}
+/** A `date_input` form field (em-dash `DateInputElement`,
+ *  `packages/blocks/src/types.ts:74-80`) — the Orders filter from/to bounds
+ *  (MOD-8). */
+export interface DateFieldSpec {
+	type: "date_input";
+	action_id: string;
+	label: string;
+	initial_value?: string;
+	placeholder?: string;
 }
 /** A masked, write-only secret input (em-dash `SecretInputElement`,
  *  `packages/blocks/src/types.ts:58-64`). Deliberately carries NO
@@ -272,7 +349,7 @@ export interface SecretInputFieldSpec {
 }
 export interface FormBlock {
 	type: "form";
-	fields: Array<FormFieldSpec | SecretInputFieldSpec>;
+	fields: Array<FormFieldSpec | SecretInputFieldSpec | SelectFieldSpec | DateFieldSpec>;
 	submit: { label: string; action_id: string };
 }
 
@@ -284,6 +361,8 @@ export type Block =
 	| StatsBlock
 	| TableBlock
 	| BannerBlock
+	| FieldsBlock
+	| ActionsBlock
 	| FormBlock;
 
 /** `BlockResponse` envelope (em-dash `types.ts:412-415`). */

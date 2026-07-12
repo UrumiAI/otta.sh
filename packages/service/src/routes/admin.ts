@@ -1,12 +1,23 @@
 import {
 	idempotencyKey as toIdempotencyKey,
+	legalNextStates,
+	type OrderListCursor,
+	type OrderListFilter,
 	orderId as toOrderId,
-	transitionOrder,
+	type OrderState,
 	type OrderStore,
+	transitionOrder,
 } from "@urumi/domain";
 import { Hono } from "hono";
-import { orderPathParams, transitionBody } from "../schemas.js";
-import { serializeOrder } from "./orders.js";
+import { z } from "zod";
+import {
+	orderListFilterSchema,
+	orderPathParams,
+	ordersListQuery,
+	orderStateEnum,
+	transitionBody,
+} from "../schemas.js";
+import { serializeOrder, serializeOrderSummary } from "./orders.js";
 import { requireInternalToken } from "./internal-auth.js";
 
 export interface AdminRoutesDeps {
@@ -26,6 +37,74 @@ export interface AdminRoutesDeps {
  */
 export function adminRoutes(deps: AdminRoutesDeps): Hono {
 	const app = new Hono();
+
+	// -- Admin Orders console: view-only list + detail (internal-token guarded) --
+
+	app.get("/orders", async (c) => {
+		const denied = requireInternalToken(c, deps.internalToken);
+		if (denied !== null) return denied;
+
+		const parsed = ordersListQuery.safeParse(c.req.query());
+		if (!parsed.success)
+			return c.json({ error: "invalid query", issues: parsed.error.issues }, 400);
+		const q = parsed.data;
+
+		let filter: OrderListFilter;
+		let limit: number;
+		let cursorPos: OrderListCursor | null;
+
+		if (q.cursor !== undefined) {
+			// Paged request: the opaque cursor carries the keyset POSITION plus the
+			// active filter (so filters survive paging) plus the page limit. Decoding
+			// MUST fail CLOSED to a 400 — a malformed/tampered/garbage token never
+			// 500s (MOD-1). The decoded filter is RE-VALIDATED through zod and the
+			// decoded limit RE-CLAMPED server-side (never trusted past max=100).
+			const decoded = decodeCursor(q.cursor);
+			if (decoded === null) return c.json({ error: "invalid cursor" }, 400);
+			const filterParsed = orderListFilterSchema.safeParse(decoded.filter);
+			const posParsed = cursorPosOf(decoded.pos);
+			if (!filterParsed.success || posParsed === null) {
+				return c.json({ error: "invalid cursor" }, 400);
+			}
+			filter = toFilter(filterParsed.data);
+			cursorPos = posParsed;
+			limit = clampLimit(decoded.limit, q.limit);
+		} else {
+			// First page: build the filter from the query string (CSV states →
+			// per-token validated enum array), validate the assembled filter, and take
+			// the already-clamped query limit.
+			const built = buildFilterFromQuery(q.states, q.from, q.to, q.search);
+			if (built === null) return c.json({ error: "invalid states filter" }, 400);
+			filter = built;
+			cursorPos = null;
+			limit = q.limit;
+		}
+
+		const result = await deps.orderStore.listOrders(filter, { cursor: cursorPos, limit });
+		const nextCursor =
+			result.nextCursor === null ? null : encodeCursor(result.nextCursor, filter, limit);
+		return c.json({ ok: true, orders: result.orders.map(serializeOrderSummary), nextCursor }, 200);
+	});
+
+	app.get("/orders/:orderId", async (c) => {
+		const denied = requireInternalToken(c, deps.internalToken);
+		if (denied !== null) return denied;
+
+		const params = orderPathParams.safeParse(c.req.param());
+		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
+		const order = await deps.orderStore.getById(toOrderId(params.data.orderId));
+		if (order === null) return c.json({ ok: false, reason: "ORDER_NOT_FOUND" }, 404);
+		// The transition buttons the console renders come straight from the domain
+		// state machine — the single source of truth (never a UI-side re-listing).
+		return c.json(
+			{
+				ok: true,
+				order: serializeOrder(order),
+				allowedTransitions: [...legalNextStates(order.state)],
+			},
+			200,
+		);
+	});
 
 	app.post("/orders/:orderId/transition", async (c) => {
 		const denied = requireInternalToken(c, deps.internalToken);
@@ -68,4 +147,124 @@ async function readJson(c: { req: { json(): Promise<unknown> } }): Promise<unkno
 	} catch {
 		return undefined;
 	}
+}
+
+const MAX_LIMIT = 100;
+const DEFAULT_LIMIT = 25;
+
+/** Clamp a page limit into [1, 100] (MOD-1: a decoded cursor's limit is
+ *  RE-CLAMPED, never honored past the max). Falls back to the query limit, then
+ *  the default, for a missing/garbage value. */
+function clampLimit(decoded: unknown, queryLimit: number): number {
+	const raw =
+		typeof decoded === "number" && Number.isFinite(decoded)
+			? decoded
+			: Number.isFinite(queryLimit)
+				? queryLimit
+				: DEFAULT_LIMIT;
+	return Math.min(Math.max(Math.trunc(raw), 1), MAX_LIMIT);
+}
+
+/** Build a domain filter from raw query params. CSV `states` are split and each
+ *  token validated against the shared enum — an unknown token ⇒ null (→ 400). */
+function buildFilterFromQuery(
+	states: string | undefined,
+	from: string | undefined,
+	to: string | undefined,
+	search: string | undefined,
+): OrderListFilter | null {
+	const filter: OrderListFilter = {};
+	if (states !== undefined) {
+		const tokens = states
+			.split(",")
+			.map((s) => s.trim())
+			.filter((s) => s.length > 0);
+		const parsed: OrderState[] = [];
+		for (const t of tokens) {
+			const r = orderStateEnum.safeParse(t);
+			if (!r.success) return null;
+			parsed.push(r.data);
+		}
+		if (parsed.length > 0) filter.states = parsed;
+	}
+	if (from !== undefined) filter.from = from;
+	if (to !== undefined) filter.to = to;
+	if (search !== undefined) filter.search = search;
+	return filter;
+}
+
+/** Narrow a validated-filter zod result back into the domain `OrderListFilter`
+ *  (drops `undefined` keys so the shape is exact). */
+function toFilter(parsed: {
+	states?: OrderState[];
+	from?: string;
+	to?: string;
+	search?: string;
+}): OrderListFilter {
+	const filter: OrderListFilter = {};
+	if (parsed.states !== undefined && parsed.states.length > 0) filter.states = parsed.states;
+	if (parsed.from !== undefined) filter.from = parsed.from;
+	if (parsed.to !== undefined) filter.to = parsed.to;
+	if (parsed.search !== undefined) filter.search = parsed.search;
+	return filter;
+}
+
+/** The decoded cursor's `createdAt` must be a valid ISO-8601 datetime — the SAME
+ *  check the query `from`/`to` bounds use — so a tampered/garbage position is a
+ *  malformed cursor (→ 400), never a raw string that reaches the store's keyset
+ *  comparison. */
+const cursorCreatedAt = z.string().datetime();
+
+/** Validate a decoded cursor position shape — `{ createdAt: <ISO datetime>, id:
+ *  <opaque, bounded string> }` — or null if malformed (→ 400). */
+function cursorPosOf(pos: unknown): OrderListCursor | null {
+	if (pos === null || typeof pos !== "object") return null;
+	const p = pos as { createdAt?: unknown; id?: unknown };
+	if (typeof p.createdAt !== "string" || !cursorCreatedAt.safeParse(p.createdAt).success) {
+		return null;
+	}
+	if (typeof p.id !== "string" || p.id.length === 0 || p.id.length > 200) return null;
+	return { createdAt: p.createdAt, id: toOrderId(p.id) };
+}
+
+interface DecodedCursor {
+	pos: unknown;
+	filter: unknown;
+	limit: unknown;
+}
+
+/** Encode the keyset position + active filter + limit into an opaque base64url
+ *  token, so paging preserves the filter and clamped limit. */
+function encodeCursor(pos: OrderListCursor, filter: OrderListFilter, limit: number): string {
+	const payload = { pos: { createdAt: pos.createdAt, id: pos.id }, filter, limit };
+	return toBase64Url(new TextEncoder().encode(JSON.stringify(payload)));
+}
+
+/** Decode an opaque cursor token; returns null on ANY malformed/garbage input so
+ *  the route answers 400 rather than 500 (MOD-1). */
+function decodeCursor(token: string): DecodedCursor | null {
+	try {
+		const json = new TextDecoder().decode(fromBase64Url(token));
+		const parsed = JSON.parse(json) as unknown;
+		if (parsed === null || typeof parsed !== "object") return null;
+		const p = parsed as DecodedCursor;
+		return { pos: p.pos, filter: p.filter, limit: p.limit };
+	} catch {
+		return null;
+	}
+}
+
+// Portable base64url (Node + workerd both provide btoa/atob + TextEncoder).
+function toBase64Url(bytes: Uint8Array): string {
+	let bin = "";
+	for (const b of bytes) bin += String.fromCharCode(b);
+	return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function fromBase64Url(token: string): Uint8Array {
+	const b64 = token.replace(/-/g, "+").replace(/_/g, "/");
+	const bin = atob(b64); // throws on invalid base64 ⇒ caught by decodeCursor ⇒ 400
+	const out = new Uint8Array(bin.length);
+	for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+	return out;
 }

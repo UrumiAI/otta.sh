@@ -16,8 +16,12 @@ import {
 	type Order,
 	type OrderId,
 	type OrderLine,
+	type OrderListFilter,
+	type OrderListPage,
+	type OrderListResult,
 	type OrderState,
 	type OrderStore,
+	type OrderSummary,
 	type OrderTotals,
 	type OrderTransitionInput,
 	type OrderTransitionResult,
@@ -231,6 +235,83 @@ export class KyselyOrderStore implements OrderStore {
 			if (order !== null) orders.push(order);
 		}
 		return orders;
+	}
+
+	async listOrders(filter: OrderListFilter, page: OrderListPage): Promise<OrderListResult> {
+		// A SINGLE SELECT joining orders → order_totals 1:1 (no N+1 into
+		// order_items/order_totals per row — the list is a projection, not a full
+		// Order load). Keyset pagination on `(created_at DESC, id DESC)`: fetch
+		// `limit + 1` to detect a next page, emit `nextCursor` from the last RETURNED
+		// row. `created_at` is fixed-width ISO-8601 text ⇒ lexical order IS
+		// chronological, so the raw text comparisons below are dialect-identical
+		// (no casts) across better-sqlite3 and pg.
+		let q = this.#db
+			.selectFrom("orders")
+			.innerJoin("order_totals", "order_totals.order_id", "orders.id")
+			.select([
+				"orders.id as id",
+				"orders.state as state",
+				"orders.currency as currency",
+				"orders.buyer_ref as buyer_ref",
+				"orders.customer_id as customer_id",
+				"orders.payment_method as payment_method",
+				"orders.created_at as created_at",
+				"orders.reconciliation_flag as reconciliation_flag",
+				"order_totals.total_cents as total_cents",
+			]);
+
+		if (filter.states !== undefined && filter.states.length > 0) {
+			q = q.where("orders.state", "in", filter.states as OrderState[]);
+		}
+		if (filter.from !== undefined) q = q.where("orders.created_at", ">=", filter.from); // inclusive
+		if (filter.to !== undefined) q = q.where("orders.created_at", "<", filter.to); // EXCLUSIVE (half-open, MOD-7)
+		if (filter.search !== undefined) {
+			const search = filter.search;
+			// Exact order id OR case-insensitive EXACT buyer_ref — `lower(buyer_ref) =
+			// lower(:search)`, matching the fake (never a substring/LIKE).
+			q = q.where((eb) =>
+				eb.or([
+					eb("orders.id", "=", search),
+					eb(sql`lower(orders.buyer_ref)`, "=", search.toLowerCase()),
+				]),
+			);
+		}
+		if (page.cursor !== undefined && page.cursor !== null) {
+			const cursor = page.cursor;
+			// (created_at < :c) OR (created_at = :c AND id < :cid) — everything
+			// strictly "after" the cursor position under `created_at DESC, id DESC`.
+			q = q.where((eb) =>
+				eb.or([
+					eb("orders.created_at", "<", cursor.createdAt),
+					eb.and([eb("orders.created_at", "=", cursor.createdAt), eb("orders.id", "<", cursor.id)]),
+				]),
+			);
+		}
+
+		const rows = await q
+			.orderBy("orders.created_at", "desc")
+			.orderBy("orders.id", "desc")
+			.limit(page.limit + 1)
+			.execute();
+
+		const hasMore = rows.length > page.limit;
+		const returned = hasMore ? rows.slice(0, page.limit) : rows;
+		const last = returned.at(-1);
+		const nextCursor =
+			hasMore && last !== undefined ? { createdAt: last.created_at, id: toOrderId(last.id) } : null;
+
+		const orders: OrderSummary[] = returned.map((r) => ({
+			id: toOrderId(r.id),
+			state: r.state as OrderState,
+			currency: toCurrency(r.currency),
+			buyerRef: r.buyer_ref,
+			customerId: r.customer_id,
+			paymentMethod: r.payment_method === null ? null : (r.payment_method as PaymentMethod),
+			createdAt: r.created_at,
+			total: cents(r.total_cents),
+			reconciliationFlag: r.reconciliation_flag !== null,
+		}));
+		return { orders, nextCursor };
 	}
 
 	async linkGuestOrders(customerId: CustomerId, buyerRef: string): Promise<number> {

@@ -22,6 +22,7 @@
 import { readFileSync } from "node:fs";
 import {
 	COMMERCE_SERVICE_BASE_URL,
+	ORDERS_PAGE,
 	productDataWidget,
 	REPORTS_PAGE,
 	SETTINGS_PAGE,
@@ -68,13 +69,12 @@ describe("urumiPluginDescriptor", () => {
 		expect(descriptor.fieldWidgets).toEqual([productDataWidget]);
 	});
 
-	test("declares the plugin's admin pages (Phase 7 Reports + Settings)", () => {
-		// REPORTS_PAGE and SETTINGS_PAGE are the plugin's exported admin.pages
-		// entries — the trusted descriptor must carry BOTH or the page never
-		// appears in the admin nav. Both render through the single `admin`
-		// dispatch route (em-dash resolves admin pages by the literal `"admin"`
-		// key and fans out on the interaction's `page`).
-		expect(descriptor.adminPages).toEqual([REPORTS_PAGE, SETTINGS_PAGE]);
+	test("declares the plugin's admin pages (Reports + Settings + Orders)", () => {
+		// The plugin's exported admin.pages entries — the trusted descriptor must
+		// carry ALL of them or the page never appears in the admin nav. All render
+		// through the single `admin` dispatch route (em-dash resolves admin pages by
+		// the literal `"admin"` key and fans out on the interaction's `page`).
+		expect(descriptor.adminPages).toEqual([REPORTS_PAGE, SETTINGS_PAGE, ORDERS_PAGE]);
 	});
 
 	test("declares no storage collections (ctx.kv is always-available; the plugin declares no storage tables)", () => {
