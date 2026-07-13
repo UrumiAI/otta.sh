@@ -33,6 +33,36 @@ export interface InventoryStore {
 	// reservation state, structurally invisible to Phase-3's `held`-scoped sweep.
 	adopt(input: AdoptInput): Promise<AdoptResult>;
 
+	// Additive (PR B — checkout-write batching): the BATCHED counterpart of
+	// `adopt`, folding one order's physical `held → adopted` flips into a single
+	// guarded `UPDATE … WHERE id IN (:ids) AND state='held' AND expires_at > :now`.
+	// Its per-id semantics are `adopt`'s, byte-for-byte: a flipped row is
+	// `adopted`; a 0-row id is re-classified — an already-`adopted` row for THIS
+	// `orderId` is the idempotent replay of createOrderFromCart (folded into
+	// `adopted`, and — like singular `adopt` — WITHOUT re-checking `expires_at`, so
+	// a row adopted-for-this-order past its deadline is still success), every other
+	// existing row (swept/committed/released/held-past-deadline/another order) is
+	// `RESERVATION_LOST` (in `lost`). An unknown id is folded into `lost` — the
+	// guarded `WHERE id IN (:ids)` never matches an absent row, so it classifies as
+	// `RESERVATION_LOST`, never a throw (unlike singular `adopt`, whose absent-row
+	// lookup throws — the batch method deliberately does not). An empty
+	// `reservationIds` is a no-op (`{ adopted: [], lost: [] }`, no DB round trip).
+	// Membership only — the returned arrays carry no order guarantee.
+	adoptMany(input: AdoptManyInput): Promise<AdoptManyResult>;
+
+	// Additive (PR B — checkout-write batching): the BATCHED counterpart of
+	// `commit`, folding a paid order's physical `held|adopted → committed` flips
+	// into a single guarded `UPDATE … WHERE id IN (:ids) AND state IN
+	// ('held','adopted')`. Deliberately order-UNSCOPED, exactly like singular
+	// `commit`. Its per-id semantics are `commit`'s, byte-for-byte: a flipped or
+	// already-`committed` row is a benign success (absent from `lost`); a 0-row id
+	// that is `released`/`failed`/etc. is a LOST hold (in `lost`) — settle turns
+	// each into the loud `COMMIT_LOST` anomaly (§5). An UNKNOWN id matches singular
+	// `commit`, whose `#selectById` THROWS a bare Error for an absent row, so a
+	// truly-unknown id PROPAGATES (never folded into `lost`). Empty `reservationIds`
+	// is a no-op (`{ lost: [] }`, no DB round trip). Membership only.
+	commitMany(reservationIds: string[]): Promise<CommitManyResult>;
+
 	// Additive (review G2): the ORDER-SCOPED release used by every order-driven
 	// release path (`expireOrders`, settle's failed release). A single guarded
 	// flip `adopted → released` scoped `WHERE order_id = :orderId`, then the
@@ -87,6 +117,33 @@ export interface AdoptInput {
 }
 
 export type AdoptResult = { ok: true } | { ok: false; reason: "RESERVATION_LOST" };
+
+/** Batched `adopt` (PR B): every physical `held` reservation of ONE order. */
+export interface AdoptManyInput {
+	/** The order's physical reservation ids (the digital lines carry none). */
+	reservationIds: string[];
+	/** The owning order the flips set `order_id` to. */
+	orderId: string;
+	/** The order's hold deadline (ISO-8601 UTC) each reservation is re-pointed to. */
+	holdExpiresAt: string;
+	/** Clock-driven `:now` (ISO-8601 UTC); each flip requires `expires_at > now`. */
+	now: string;
+}
+
+/**
+ * The outcome of {@link InventoryStore.adoptMany}. `adopted` carries every id now
+ * `adopted` for the order (freshly flipped OR an idempotent replay); `lost` carries
+ * every id whose hold could not be adopted (a `RESERVATION_LOST` per singular
+ * `adopt`). Both are membership sets — no order is guaranteed.
+ */
+export type AdoptManyResult = { adopted: string[]; lost: string[] };
+
+/**
+ * The outcome of {@link InventoryStore.commitMany}. `lost` carries every id whose
+ * adopted hold was lost (released/failed/…) — each a `COMMIT_LOST` anomaly at
+ * settle. A benign already-`committed` id is absent (not lost). Membership only.
+ */
+export type CommitManyResult = { lost: string[] };
 
 /**
  * Thrown by `commit` when the reservation is neither adoptable (`held`/`adopted`)

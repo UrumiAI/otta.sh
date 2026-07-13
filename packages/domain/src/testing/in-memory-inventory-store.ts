@@ -3,8 +3,11 @@ import type { Clock } from "../ports/clock.js";
 import type { IdGen } from "../ports/id-gen.js";
 import {
 	type AdoptInput,
+	type AdoptManyInput,
+	type AdoptManyResult,
 	type AdoptResult,
 	AdjustReservationMismatchError,
+	type CommitManyResult,
 	type InventoryStore,
 	ReservationCommitLostError,
 	ReservationNotHeldError,
@@ -217,6 +220,60 @@ export class InMemoryInventoryStore implements InventoryStore {
 	}
 
 	/**
+	 * Batched `adopt` (PR B): the CONTRACT ORACLE for `adoptMany`. An accumulating
+	 * loop over the singular `adopt` logic — `{ ok: false }` ⇒ `lost`, `ok` ⇒
+	 * `adopted` — that NEVER breaks early, so every id is classified exactly as the
+	 * store's single guarded statement + classification does. Unlike singular
+	 * `adopt` (whose `#mustGet` throws on a truly-unknown id), the batch classifies
+	 * an unknown id as `lost` — folding it in exactly like the Kysely store's
+	 * `WHERE id IN (:ids)` (an absent row never matches, so it lands in `lost`),
+	 * honoring `adoptMany`'s port JSDoc.
+	 */
+	async adoptMany(input: AdoptManyInput): Promise<AdoptManyResult> {
+		const adopted: string[] = [];
+		const lost: string[] = [];
+		for (const reservationId of input.reservationIds) {
+			if (!this.#reservations.has(reservationId)) {
+				lost.push(reservationId); // unknown id ⇒ lost (matches Kysely + JSDoc)
+				continue;
+			}
+			const result = await this.adopt({
+				reservationId,
+				orderId: input.orderId,
+				holdExpiresAt: input.holdExpiresAt,
+				now: input.now,
+			});
+			if (result.ok) adopted.push(reservationId);
+			else lost.push(reservationId);
+		}
+		return { adopted, lost };
+	}
+
+	/**
+	 * Batched `commit` (PR B): the CONTRACT ORACLE for `commitMany`. Singular
+	 * `commit` THROWS `ReservationCommitLostError` on a lost hold, so a bare loop
+	 * would short-circuit and diverge from the SQL batch — this MUST catch that
+	 * per id, push to `lost`, and CONTINUE. A benign already-`committed` hold is a
+	 * silent success (absent from `lost`). A truly-unknown id raises the bare
+	 * `#mustGet` Error, which PROPAGATES (matching the Kysely store's throw).
+	 */
+	async commitMany(reservationIds: string[]): Promise<CommitManyResult> {
+		const lost: string[] = [];
+		for (const reservationId of reservationIds) {
+			try {
+				await this.commit(reservationId);
+			} catch (err) {
+				if (err instanceof ReservationCommitLostError) {
+					lost.push(reservationId);
+					continue;
+				}
+				throw err; // unknown-id bare Error propagates
+			}
+		}
+		return { lost };
+	}
+
+	/**
 	 * Additive (Phase 1 §8 Risk 4): create-if-absent initial stock write.
 	 * Mirrors `INSERT … ON CONFLICT (sku) DO NOTHING` — a no-op when the sku
 	 * already has an `on_hand` row, so it can never clobber a concurrent
@@ -245,6 +302,15 @@ export class InMemoryInventoryStore implements InventoryStore {
 
 	reservationState(reservationId: string): ReservationState {
 		return this.#mustGet(reservationId).state;
+	}
+
+	/**
+	 * Stamp a held reservation's hold deadline (`expiresAt`) — the cart-flow
+	 * precondition `adopt`/`adoptMany` require (a bare `reserve` leaves it null).
+	 * Test surface only, mirroring the cart store's `expires_at` stamp.
+	 */
+	setHoldExpiry(reservationId: string, expiresAt: string): void {
+		this.#mustGet(reservationId).expiresAt = expiresAt;
 	}
 
 	/**
