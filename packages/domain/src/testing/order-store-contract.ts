@@ -87,6 +87,73 @@ export function orderStoreContract(
 			expect(order.totals.tax).toBe(0);
 		});
 
+		test("creates an order with multiple distinct-sku lines; all persist and reload", async () => {
+			const { store } = await makeHarness();
+			const lines: CreateOrderInput["lines"] = [
+				{
+					productId: productId("p1"),
+					sku: sku("SKU-1"),
+					title: "Widget",
+					unitPrice: cents(500),
+					currency: USD,
+					quantity: 3,
+					fulfillmentKind: "physical",
+					reservationId: reservationId("res-1"),
+				},
+				{
+					productId: productId("p2"),
+					sku: sku("SKU-2"),
+					title: "Gadget",
+					unitPrice: cents(1200),
+					currency: USD,
+					quantity: 1,
+					fulfillmentKind: "physical",
+					reservationId: reservationId("res-2"),
+				},
+				{
+					productId: productId("p3"),
+					sku: sku("SKU-3"),
+					title: "Ebook",
+					unitPrice: cents(999),
+					currency: USD,
+					quantity: 2,
+					fulfillmentKind: "digital",
+					reservationId: null,
+				},
+			];
+			const { created, order } = await store.createFromCart(
+				physicalInput({
+					lines,
+					totals: { subtotal: cents(4698), total: cents(4698), currency: USD },
+				}),
+			);
+			expect(created).toBe(true);
+			expect(order.lines).toHaveLength(3);
+
+			// Order-insensitive assertion: the Kysely store loads order_items `ORDER BY
+			// id` over RANDOM uuid ids while the fake preserves input order — so match
+			// each expected line by sku, NEVER by positional index / array equality.
+			const bySku = new Map(order.lines.map((l) => [l.sku, l]));
+			expect([...bySku.keys()].toSorted()).toEqual(["SKU-1", "SKU-2", "SKU-3"]);
+			for (const expected of lines) {
+				const got = bySku.get(expected.sku);
+				expect(got).toBeDefined();
+				expect(got?.productId).toBe(expected.productId);
+				expect(got?.title).toBe(expected.title);
+				expect(got?.unitPrice).toBe(expected.unitPrice);
+				expect(got?.currency).toBe(expected.currency);
+				expect(got?.quantity).toBe(expected.quantity);
+				expect(got?.fulfillmentKind).toBe(expected.fulfillmentKind);
+				expect(got?.reservationId).toBe(expected.reservationId);
+			}
+			// Every line got a distinct id (one `newId()` per line).
+			expect(new Set(order.lines.map((l) => l.id)).size).toBe(3);
+
+			// A reload returns the same membership (still order-insensitive).
+			const reloaded = await store.getById(order.id);
+			expect(reloaded?.lines.map((l) => l.sku).toSorted()).toEqual(["SKU-1", "SKU-2", "SKU-3"]);
+		});
+
 		test("getById returns the created order; an unknown id is null", async () => {
 			const { store } = await makeHarness();
 			await store.createFromCart(physicalInput());
