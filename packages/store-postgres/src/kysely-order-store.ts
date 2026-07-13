@@ -80,21 +80,28 @@ export class KyselyOrderStore implements OrderStore {
 				.executeTakeFirst();
 			if (inserted === undefined) return false; // key exists ⇒ replay
 
-			for (const line of input.lines) {
+			// One multi-row INSERT for the whole cart instead of a per-line loop:
+			// `newId()` is still called PER LINE (ids stay one-per-line) and every
+			// column mapping is byte-for-byte the old loop body. The length guard is
+			// defensive — a real order always has ≥1 line, but an empty array would
+			// otherwise emit invalid `INSERT ... VALUES ()` SQL.
+			if (input.lines.length > 0) {
 				await trx
 					.insertInto("order_items")
-					.values({
-						id: this.#idGen.newId(),
-						order_id: input.orderId,
-						product_id: line.productId,
-						sku: line.sku,
-						title: line.title,
-						unit_price_cents: line.unitPrice,
-						currency: line.currency,
-						quantity: line.quantity,
-						fulfillment_kind: line.fulfillmentKind,
-						reservation_id: line.reservationId,
-					})
+					.values(
+						input.lines.map((line) => ({
+							id: this.#idGen.newId(),
+							order_id: input.orderId,
+							product_id: line.productId,
+							sku: line.sku,
+							title: line.title,
+							unit_price_cents: line.unitPrice,
+							currency: line.currency,
+							quantity: line.quantity,
+							fulfillment_kind: line.fulfillmentKind,
+							reservation_id: line.reservationId,
+						})),
+					)
 					.execute();
 			}
 			await trx
