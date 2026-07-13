@@ -42,8 +42,10 @@ export interface InventoryStore {
 	// `adopted`, and — like singular `adopt` — WITHOUT re-checking `expires_at`, so
 	// a row adopted-for-this-order past its deadline is still success), every other
 	// existing row (swept/committed/released/held-past-deadline/another order) is
-	// `RESERVATION_LOST` (in `lost`). An unknown id matches singular `adopt`, which
-	// returns `RESERVATION_LOST` (so it lands in `lost`, never a throw). An empty
+	// `RESERVATION_LOST` (in `lost`). An unknown id is folded into `lost` — the
+	// guarded `WHERE id IN (:ids)` never matches an absent row, so it classifies as
+	// `RESERVATION_LOST`, never a throw (unlike singular `adopt`, whose absent-row
+	// lookup throws — the batch method deliberately does not). An empty
 	// `reservationIds` is a no-op (`{ adopted: [], lost: [] }`, no DB round trip).
 	// Membership only — the returned arrays carry no order guarantee.
 	adoptMany(input: AdoptManyInput): Promise<AdoptManyResult>;

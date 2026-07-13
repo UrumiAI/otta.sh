@@ -223,14 +223,20 @@ export class InMemoryInventoryStore implements InventoryStore {
 	 * Batched `adopt` (PR B): the CONTRACT ORACLE for `adoptMany`. An accumulating
 	 * loop over the singular `adopt` logic — `{ ok: false }` ⇒ `lost`, `ok` ⇒
 	 * `adopted` — that NEVER breaks early, so every id is classified exactly as the
-	 * store's single guarded statement + classification does. (Singular `adopt`'s
-	 * `#mustGet` throws on a truly-unknown id; the batch never passes one — the
-	 * caller collects ids off persisted order lines.)
+	 * store's single guarded statement + classification does. Unlike singular
+	 * `adopt` (whose `#mustGet` throws on a truly-unknown id), the batch classifies
+	 * an unknown id as `lost` — folding it in exactly like the Kysely store's
+	 * `WHERE id IN (:ids)` (an absent row never matches, so it lands in `lost`),
+	 * honoring `adoptMany`'s port JSDoc.
 	 */
 	async adoptMany(input: AdoptManyInput): Promise<AdoptManyResult> {
 		const adopted: string[] = [];
 		const lost: string[] = [];
 		for (const reservationId of input.reservationIds) {
+			if (!this.#reservations.has(reservationId)) {
+				lost.push(reservationId); // unknown id ⇒ lost (matches Kysely + JSDoc)
+				continue;
+			}
 			const result = await this.adopt({
 				reservationId,
 				orderId: input.orderId,

@@ -401,6 +401,21 @@ export function inventoryStoreContract(
 			expect(res).toEqual({ adopted: [], lost: [] });
 		});
 
+		test("adoptMany on an unknown reservation id lands in lost (never throws); the valid held sibling adopts", async () => {
+			const h = await makeStore();
+			if (!h.holdWithExpiry) return;
+			await h.seed("SKU-1", 10);
+			const held = await h.holdWithExpiry("SKU-1", 1, "k1", FUTURE);
+			const res = await h.store.adoptMany({
+				reservationIds: [held, "no-such-reservation"],
+				orderId: "ord-1",
+				holdExpiresAt: FUTURE,
+				now: NOW,
+			});
+			expect(sorted(res.adopted)).toEqual([held]);
+			expect(sorted(res.lost)).toEqual(["no-such-reservation"]);
+		});
+
 		// -- PR B: batched settle COMMIT (commitMany) ---------------------------
 
 		test("commitMany commits every held line of one order (all-success), idempotent on replay", async () => {
