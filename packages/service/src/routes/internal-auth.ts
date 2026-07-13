@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 // The single timing-safe compare implementation lives in ../auth.js, shared by
-// this X-Internal-Token guard and the SERVICE_API_TOKEN Bearer write gate.
+// this X-Internal-Token guard and the SERVICE_API_TOKEN X-Service-Token write gate.
 import { tokenMatches } from "../auth.js";
 
 /**

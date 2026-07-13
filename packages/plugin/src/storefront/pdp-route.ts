@@ -22,7 +22,7 @@
  * request-scoped batch loader, so the PDP exercises the same one-call path
  * the PLP proves at scale.
  */
-import { COMMERCE_SERVICE_BASE_URL } from "../manifest.js";
+import { COMMERCE_SERVICE_BASE_URL, serviceTokenFromKv } from "../manifest.js";
 import { HttpCommerceClient } from "../product-commerce/http-commerce-client.js";
 import { CommerceBatchLoader } from "../catalog/commerce-batch-loader.js";
 import { parseCommerceBatchItem } from "../catalog/commerce-view.js";
@@ -70,11 +70,17 @@ export async function renderGuard<T>(
 }
 
 /** One loader per invocation = the plan's request-scoped lifecycle
- *  (§4.3.2): no cross-request cache in v1 (pre-approved decision 3). */
-export function createCommerceLoader(ctx: PluginContext): CommerceBatchLoader {
+ *  (§4.3.2): no cross-request cache in v1 (pre-approved decision 3). Async
+ *  because it awaits the write-gate token from write-only kv (ADR-0007):
+ *  `getCommerceBatch` is a POST *read* the service gate blocks without
+ *  `X-Service-Token` — so PDP/PLP genuinely depend on kv provisioning when the
+ *  service secret is set. Undefined ⇒ no header ⇒ pre-gate wire. */
+export async function createCommerceLoader(ctx: PluginContext): Promise<CommerceBatchLoader> {
+	const serviceToken = await serviceTokenFromKv(ctx);
 	const client = new HttpCommerceClient({
 		fetch: ctx.http.fetch,
 		baseUrl: COMMERCE_SERVICE_BASE_URL,
+		...(serviceToken !== undefined ? { serviceToken } : {}),
 	});
 	return new CommerceBatchLoader(async (ids) =>
 		(await client.getCommerceBatch(ids)).map(parseCommerceBatchItem),
@@ -95,7 +101,7 @@ export function createPdpRouteHandler(): RouteHandler<PdpRouteInput> {
 			}
 			const locale = sanitizeLocale(routeCtx.input.locale);
 
-			const loader = createCommerceLoader(ctx);
+			const loader = await createCommerceLoader(ctx);
 			const commerce = await loader.load(content.id);
 			// null covers unsynced / soft-deleted / batch-omitted identically
 			// (§4.2): the page renders not-purchasable instead of 500ing.

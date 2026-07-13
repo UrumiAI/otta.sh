@@ -1,4 +1,4 @@
-import { COMMERCE_SERVICE_BASE_URL } from "../manifest.js";
+import { COMMERCE_SERVICE_BASE_URL, SERVICE_TOKEN_KEY, serviceTokenFromKv } from "../manifest.js";
 import type {
 	AdminPageConfig,
 	Block,
@@ -11,8 +11,8 @@ import type {
 import { type OperationalSettingsWire, ReportingSettingsClient } from "./reporting-client.js";
 
 /**
- * The admin Settings form (plan §5.3 / §6 Step 7) — ONE page, THREE save paths
- * made visible, not hidden:
+ * The admin Settings form (plan §5.3 / §6 Step 7, extended by ADR-0007) — ONE
+ * page, FOUR save paths made visible, not hidden:
  *  - `storeDisplayName` (kv tier) saves via `ctx.kv.set` with NO service call.
  *  - `holdTtlMinutes` / `lowStockThreshold` (service tier) save via
  *    `PUT /settings` over `ctx.http`, surfacing the service's `400` validation
@@ -21,12 +21,20 @@ import { type OperationalSettingsWire, ReportingSettingsClient } from "./reporti
  *    reads and the privileged `PUT /settings` need. Persisted WRITE-ONLY to
  *    `ctx.kv` under `settings:internalToken` (the em-dash webhook-notifier
  *    `secret_input` pattern) and NEVER rendered back into a block.
+ *  - `serviceToken` (secret tier, ADR-0007) — the machine write-gate token the
+ *    service enforces as `X-Service-Token` on every non-GET. Persisted
+ *    WRITE-ONLY to `ctx.kv` under `settings:serviceToken`, same discipline as
+ *    the admin token; read at runtime by every plugin client (storefront +
+ *    admin) via `serviceTokenFromKv`. This is the provisioning surface deploy
+ *    ordering depends on (provision here BEFORE flipping the service secret).
  *
- * SECURITY (§5): the display name is cosmetic. The admin token is a shared
- * secret that now lives in em-dash's plugin-settings kv (bounded by em-dash
- * admin/DB security, the same trade-off webhook-notifier accepts). It is
- * masked, treated write-only (only overwritten on a non-empty submit), and has
- * no read-back path into any block, toast, or error text.
+ * SECURITY (§5): the display name is cosmetic. The admin token AND the service
+ * token are shared secrets that live in em-dash's plugin-settings kv (bounded by
+ * em-dash admin/DB security, the same trade-off webhook-notifier accepts). Both
+ * are masked, treated write-only (only overwritten on a non-empty submit), and
+ * have no read-back path into any block, toast, or error text. NOTE the service
+ * token is MORE sensitive than the admin token — it unlocks the entire write
+ * surface, not just `/admin` + `/internal`.
  */
 export const SETTINGS_PAGE: AdminPageConfig = {
 	path: "/settings",
@@ -49,6 +57,7 @@ export const SETTINGS_ACTION_IDS: ReadonlySet<string> = new Set([
 	"save-display",
 	"save-operational",
 	"save-token",
+	"save-service-token",
 ]);
 
 /** The three settings fields this phase moves end-to-end (§2). */
@@ -100,9 +109,14 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 	return async (routeCtx, ctx) => {
 		const input = routeCtx.input;
 		const action = typeof input.action_id === "string" ? input.action_id : "load";
+		// The privileged PUT /settings is gated by BOTH the admin token
+		// (X-Internal-Token) AND the write gate (X-Service-Token) when both service
+		// secrets are set — thread the write-gate token from write-only kv (ADR-0007).
+		const serviceToken = await serviceTokenFromKv(ctx);
 		const client = new ReportingSettingsClient({
 			fetch: ctx.http.fetch,
 			baseUrl: COMMERCE_SERVICE_BASE_URL,
+			...(serviceToken !== undefined ? { serviceToken } : {}),
 		});
 
 		// -- kv save path: display name, NO ctx.http --------------------------------
@@ -152,6 +166,22 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			} satisfies BlockResponse;
 		}
 
+		// -- secret save path: SERVICE token, WRITE-ONLY to ctx.kv ------------------
+		if (action === "save-service-token") {
+			// Same write-only discipline as the admin token: persist ONLY on a
+			// non-empty submit so a blank submit (the masked field always renders
+			// empty) never clobbers an existing token. NEVER rendered back.
+			const raw = input.values?.serviceToken;
+			if (typeof raw === "string" && raw !== "") {
+				await ctx.kv.set(SERVICE_TOKEN_KEY, raw);
+			}
+			const page = await renderPage(ctx, client);
+			return {
+				...page,
+				toast: { message: "Service token saved", type: "success" },
+			} satisfies BlockResponse;
+		}
+
 		// -- service save path: operational settings via PUT /settings --------------
 		if (action === "save-operational") {
 			const patch = extractOperationalPatch(input.values ?? {});
@@ -170,6 +200,7 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 				// — never zero an un-edited field.
 				const displayName = (await ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY)) ?? "";
 				const hasToken = ((await ctx.kv.get<string>(INTERNAL_TOKEN_KEY)) ?? "").length > 0;
+				const hasServiceToken = serviceToken !== undefined;
 				let stored: OperationalSettingsWire;
 				try {
 					stored = await client.getSettings();
@@ -182,7 +213,7 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 				};
 				return {
 					blocks: [
-						...formBlocks(displayName, shown, hasToken),
+						...formBlocks(displayName, shown, hasToken, hasServiceToken),
 						{
 							type: "banner",
 							variant: "error",
@@ -194,8 +225,9 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			}
 			const displayName = (await ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY)) ?? "";
 			const hasToken = ((await ctx.kv.get<string>(INTERNAL_TOKEN_KEY)) ?? "").length > 0;
+			const hasServiceToken = serviceToken !== undefined;
 			return {
-				blocks: formBlocks(displayName, result.settings, hasToken),
+				blocks: formBlocks(displayName, result.settings, hasToken, hasServiceToken),
 				toast: { message: "Settings saved", type: "success" },
 			} satisfies BlockResponse;
 		}
@@ -214,20 +246,22 @@ async function renderPage(
 ): Promise<BlockResponse> {
 	const displayName = (await ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY)) ?? "";
 	const hasToken = ((await ctx.kv.get<string>(INTERNAL_TOKEN_KEY)) ?? "").length > 0;
+	const hasServiceToken = (await serviceTokenFromKv(ctx)) !== undefined;
 	try {
 		const settings = await client.getSettings();
-		return { blocks: formBlocks(displayName, settings, hasToken) };
+		return { blocks: formBlocks(displayName, settings, hasToken, hasServiceToken) };
 	} catch {
-		// Fail closed: render the kv field + token form + a GENERIC error banner.
+		// Fail closed: render the kv field + both token forms + a GENERIC error banner.
 		return {
 			blocks: [
 				{ type: "header", text: "Settings" },
 				{ type: "section", text: `Store display name: ${displayName || "(unset)"}` },
 				tokenForm(hasToken),
+				serviceTokenForm(hasServiceToken),
 				{
 					type: "banner",
 					variant: "error",
-					text: "Operational settings are unavailable — check the commerce service connection and the admin token.",
+					text: "Operational settings are unavailable — check the commerce service connection and the admin/service tokens.",
 				},
 			],
 			toast: { message: "Could not load operational settings", type: "error" },
@@ -252,12 +286,13 @@ function formBlocks(
 	displayName: string,
 	settings: OperationalSettingsWire,
 	hasToken: boolean,
+	hasServiceToken: boolean,
 ): Block[] {
 	return [
 		{ type: "header", text: "Settings" },
 		{
 			type: "context",
-			text: "Display name is stored in plugin kv (cosmetic). Operational settings persist in the service DB. The admin token is stored write-only in plugin kv.",
+			text: "Display name is stored in plugin kv (cosmetic). Operational settings persist in the service DB. The admin token and service token are stored write-only in plugin kv.",
 		},
 		{
 			type: "form",
@@ -290,6 +325,7 @@ function formBlocks(
 			submit: { label: "Save operational settings", action_id: "save-operational" },
 		},
 		tokenForm(hasToken),
+		serviceTokenForm(hasServiceToken),
 	];
 }
 
@@ -310,5 +346,25 @@ function tokenForm(hasToken: boolean): FormBlock {
 			},
 		],
 		submit: { label: "Save admin token", action_id: "save-token" },
+	};
+}
+
+/** The write-only SERVICE-token form (ADR-0007) — the machine write-gate token
+ *  the service enforces as `X-Service-Token`. Same masked, write-only discipline
+ *  as the admin token: no `initial_value`, `has_value` signals it is set, and a
+ *  blank submit keeps the current token. NEVER rendered back. */
+function serviceTokenForm(hasServiceToken: boolean): FormBlock {
+	return {
+		type: "form",
+		fields: [
+			{
+				type: "secret_input",
+				action_id: "serviceToken",
+				label: "Service token (X-Service-Token)",
+				placeholder: hasServiceToken ? "Leave blank to keep current token" : "Enter service token",
+				has_value: hasServiceToken,
+			},
+		],
+		submit: { label: "Save service token", action_id: "save-service-token" },
 	};
 }

@@ -60,17 +60,26 @@ export interface ReportingSettingsClientOptions {
 	 *  itself never persists it. (The privileged `PUT /settings` write takes its
 	 *  own `adminToken` per-call — see `updateSettings`.) */
 	adminToken?: string;
+	/** The machine write-gate token the service enforces as `X-Service-Token`
+	 *  (ADR-0007), sourced from write-only `ctx.kv` (`settings:serviceToken`).
+	 *  `PUT /settings` is a NON-GET, so the gate blocks it without this when the
+	 *  service secret is set — hence it is attached to the PUT (the `/reports/*`
+	 *  and `GET /settings` reads are gate-exempt, so they carry only the admin
+	 *  token). Undefined ⇒ no header ⇒ byte-identical to the pre-gate wire. */
+	serviceToken?: string;
 }
 
 export class ReportingSettingsClient {
 	readonly #fetch: HttpAccess["fetch"];
 	readonly #baseUrl: string;
 	readonly #adminToken: string | undefined;
+	readonly #serviceToken: string | undefined;
 
 	constructor(options: ReportingSettingsClientOptions) {
 		this.#fetch = options.fetch;
 		this.#baseUrl = options.baseUrl.replace(/\/$/, "");
 		this.#adminToken = options.adminToken;
+		this.#serviceToken = options.serviceToken;
 	}
 
 	async getRevenue(
@@ -126,6 +135,9 @@ export class ReportingSettingsClient {
 			"Idempotency-Key": opts.idempotencyKey,
 		};
 		if (opts.adminToken !== undefined) headers["X-Internal-Token"] = opts.adminToken;
+		// PUT /settings is gated by BOTH the write gate (X-Service-Token) AND the
+		// route's admin token (X-Internal-Token) when both service secrets are set.
+		if (this.#serviceToken !== undefined) headers["X-Service-Token"] = this.#serviceToken;
 		const res = await this.#fetch(`${this.#baseUrl}/settings`, {
 			method: "PUT",
 			headers,
@@ -155,7 +167,9 @@ export class ReportingSettingsClient {
 					: undefined;
 			const message =
 				validationMessage ??
-				"settings update failed — check the admin token in Settings and the service connection";
+				// A gate 401 can now stem from EITHER the admin token or the service
+				// token (ADR-0007) — name both so the remedy isn't misdirected (D5).
+				"settings update failed — check the admin token and service token in Settings, and the service connection";
 			return { ok: false, status: res.status, message };
 		}
 		return { ok: true, settings: parsed.settings };

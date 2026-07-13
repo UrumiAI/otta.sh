@@ -1,4 +1,4 @@
-import { ALLOWED_HOSTS, COMMERCE_SERVICE_BASE_URL } from "../manifest.js";
+import { ALLOWED_HOSTS, COMMERCE_SERVICE_BASE_URL, serviceTokenFromKv } from "../manifest.js";
 import type {
 	ContentDeleteEvent,
 	ContentHookEvent,
@@ -17,8 +17,16 @@ import {
 /** The only EmDash collection this plugin syncs (plan §2). */
 export const PRODUCTS_COLLECTION = "products";
 
-function clientFor(ctx: PluginContext): HttpCommerceClient {
-	return new HttpCommerceClient({ fetch: ctx.http.fetch, baseUrl: COMMERCE_SERVICE_BASE_URL });
+/** Async because it awaits the write-gate token from write-only kv (ADR-0007):
+ *  every sync write (upsert/activate/deactivate/soft-delete) is a non-GET the
+ *  service gate blocks without `X-Service-Token`. Undefined ⇒ no header. */
+async function clientFor(ctx: PluginContext): Promise<HttpCommerceClient> {
+	const serviceToken = await serviceTokenFromKv(ctx);
+	return new HttpCommerceClient({
+		fetch: ctx.http.fetch,
+		baseUrl: COMMERCE_SERVICE_BASE_URL,
+		...(serviceToken !== undefined ? { serviceToken } : {}),
+	});
 }
 
 /**
@@ -59,7 +67,9 @@ export function createAfterSaveHandler(
 		// guard) rather than failing the whole sync on a 400.
 		const watermark = normalizeWatermark(updatedAt);
 		try {
-			await clientFor(ctx).upsertProductCommerce(
+			await (
+				await clientFor(ctx)
+			).upsertProductCommerce(
 				id,
 				// Ordering watermark only — no commercial fields (see above).
 				watermark !== undefined ? { contentUpdatedAt: watermark } : {},
@@ -93,7 +103,7 @@ export function createAfterDeleteHandler(): HookHandler<ContentDeleteEvent> {
 		if (event.collection !== PRODUCTS_COLLECTION) return;
 		const key = deriveDeleteIdempotencyKey(event.collection, event.id);
 		try {
-			await clientFor(ctx).softDeleteProductCommerce(event.id, key);
+			await (await clientFor(ctx)).softDeleteProductCommerce(event.id, key);
 		} catch (err) {
 			console.error(`[urumi] content:afterDelete sync failed for product_id=${event.id}:`, err);
 		}
@@ -148,7 +158,7 @@ export function createAfterPublishHandler(
 		}
 		const key = derivePublishIdempotencyKey(event.collection, id, updatedAt);
 		try {
-			await clientFor(ctx).activateProductCommerce(id, key, watermark);
+			await (await clientFor(ctx)).activateProductCommerce(id, key, watermark);
 		} catch (err) {
 			console.error(
 				`[urumi] content:afterPublish sync failed for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}). No reconcile cron exists yet — this activation is lost until the product is saved/published again:`,
@@ -203,7 +213,7 @@ export function createAfterUnpublishHandler(
 		}
 		const key = deriveUnpublishIdempotencyKey(event.collection, id, updatedAt);
 		try {
-			await clientFor(ctx).deactivateProductCommerce(id, key, watermark);
+			await (await clientFor(ctx)).deactivateProductCommerce(id, key, watermark);
 		} catch (err) {
 			console.error(
 				`[urumi] content:afterUnpublish sync failed for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}). No reconcile cron exists yet — this deactivation is lost until the product is saved/unpublished again:`,

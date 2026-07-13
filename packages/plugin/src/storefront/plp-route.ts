@@ -91,7 +91,7 @@ export function createPlpRouteHandler(): RouteHandler<PlpRouteInput> {
 
 			// Collect every CMS id on the page, then ONE batched call (§4.3.1);
 			// the loader dedupes duplicates within the page.
-			const loader = createCommerceLoader(ctx);
+			const loader = await createCommerceLoader(ctx);
 			const commerceById = await loader.loadMany(contents.map((content) => content.id));
 
 			const items = contents.map((content) =>

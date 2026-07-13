@@ -19,6 +19,12 @@ export interface HttpCommerceClientOptions {
 	 *  + `allowedHosts`). Never the ambient global `fetch`. */
 	fetch: HttpAccess["fetch"];
 	baseUrl: string;
+	/** The machine write-gate token the service enforces as `X-Service-Token`
+	 *  (ADR-0007), sourced by the construction site from write-only `ctx.kv`
+	 *  (`settings:serviceToken`) via `serviceTokenFromKv`. Undefined ⇒ no header
+	 *  is attached ⇒ byte-identical to the pre-gate wire. Attached to EVERY
+	 *  request (incl. GET reads and `logout`) — see `#baseHeaders`. */
+	serviceToken?: string;
 }
 
 /**
@@ -31,10 +37,24 @@ export interface HttpCommerceClientOptions {
 export class HttpCommerceClient implements CommerceClient {
 	readonly #fetch: HttpAccess["fetch"];
 	readonly #baseUrl: string;
+	readonly #serviceToken: string | undefined;
 
 	constructor(options: HttpCommerceClientOptions) {
 		this.#fetch = options.fetch;
 		this.#baseUrl = options.baseUrl.replace(/\/$/, "");
+		this.#serviceToken = options.serviceToken;
+	}
+
+	/** Merge the `X-Service-Token` write-gate header (ADR-0007) into every
+	 *  request's headers when a token is configured. Attached uniformly —
+	 *  including GET reads (harmless: GET is gate-exempt) — so a future reader
+	 *  never has to reason about which verbs need it. NOTE `getCommerceBatch` is
+	 *  a POST *read* that genuinely requires the header (the write gate blocks
+	 *  ALL non-GET), so the header must NOT be "optimized off" storefront paths. */
+	#baseHeaders(extra: Record<string, string> = {}): Record<string, string> {
+		return this.#serviceToken === undefined
+			? extra
+			: { ...extra, "X-Service-Token": this.#serviceToken };
 	}
 
 	async upsertProductCommerce(
@@ -44,21 +64,27 @@ export class HttpCommerceClient implements CommerceClient {
 	): Promise<ProductCommerce> {
 		const res = await this.#fetch(this.#url(productId), {
 			method: "PUT",
-			headers: { "content-type": "application/json", "Idempotency-Key": idempotencyKey },
+			headers: this.#baseHeaders({
+				"content-type": "application/json",
+				"Idempotency-Key": idempotencyKey,
+			}),
 			body: JSON.stringify(input),
 		});
 		return this.#json<ProductCommerce>(res);
 	}
 
 	async getProductCommerce(productId: string): Promise<ProductCommerce | null> {
-		const res = await this.#fetch(this.#url(productId), { method: "GET" });
+		const res = await this.#fetch(this.#url(productId), {
+			method: "GET",
+			headers: this.#baseHeaders(),
+		});
 		return this.#json<ProductCommerce | null>(res);
 	}
 
 	async softDeleteProductCommerce(productId: string, idempotencyKey: string): Promise<void> {
 		const res = await this.#fetch(this.#url(productId), {
 			method: "DELETE",
-			headers: { "Idempotency-Key": idempotencyKey },
+			headers: this.#baseHeaders({ "Idempotency-Key": idempotencyKey }),
 		});
 		await this.#json<{ ok: true }>(res);
 	}
@@ -70,7 +96,10 @@ export class HttpCommerceClient implements CommerceClient {
 	): Promise<void> {
 		const res = await this.#fetch(`${this.#url(productId)}/activate`, {
 			method: "POST",
-			headers: { "content-type": "application/json", "Idempotency-Key": idempotencyKey },
+			headers: this.#baseHeaders({
+				"content-type": "application/json",
+				"Idempotency-Key": idempotencyKey,
+			}),
 			body: JSON.stringify({ contentUpdatedAt }),
 		});
 		await this.#json<{ ok: true }>(res);
@@ -83,7 +112,10 @@ export class HttpCommerceClient implements CommerceClient {
 	): Promise<void> {
 		const res = await this.#fetch(`${this.#url(productId)}/deactivate`, {
 			method: "POST",
-			headers: { "content-type": "application/json", "Idempotency-Key": idempotencyKey },
+			headers: this.#baseHeaders({
+				"content-type": "application/json",
+				"Idempotency-Key": idempotencyKey,
+			}),
 			body: JSON.stringify({ contentUpdatedAt }),
 		});
 		await this.#json<{ ok: true }>(res);
@@ -99,7 +131,7 @@ export class HttpCommerceClient implements CommerceClient {
 	async getCommerceBatch(productIds: string[]): Promise<ProductCommerceBatchItem[]> {
 		const res = await this.#fetch(`${this.#baseUrl}/catalog/commerce/batch`, {
 			method: "POST",
-			headers: { "content-type": "application/json" },
+			headers: this.#baseHeaders({ "content-type": "application/json" }),
 			body: JSON.stringify({ productIds }),
 		});
 		const body = await this.#json<{ items: ProductCommerceBatchItem[] }>(res);
@@ -123,7 +155,7 @@ export class HttpCommerceClient implements CommerceClient {
 	async createCart(currency?: string): Promise<{ cartId: string }> {
 		const res = await this.#fetch(`${this.#baseUrl}/carts`, {
 			method: "POST",
-			headers: { "content-type": "application/json" },
+			headers: this.#baseHeaders({ "content-type": "application/json" }),
 			body: JSON.stringify(currency === undefined ? {} : { currency }),
 		});
 		return this.#json<{ cartId: string }>(res);
@@ -134,6 +166,7 @@ export class HttpCommerceClient implements CommerceClient {
 	async getCart(cartId: string): Promise<CartResult<{ cart: CartWire }>> {
 		const res = await this.#fetch(`${this.#baseUrl}/carts/${encodeURIComponent(cartId)}`, {
 			method: "GET",
+			headers: this.#baseHeaders(),
 		});
 		return this.#cartResult<{ cart: CartWire }>(res);
 	}
@@ -148,7 +181,10 @@ export class HttpCommerceClient implements CommerceClient {
 	): Promise<CartResult<{ line: CartLineWire }>> {
 		const res = await this.#fetch(`${this.#baseUrl}/carts/${encodeURIComponent(cartId)}/lines`, {
 			method: "POST",
-			headers: { "content-type": "application/json", "Idempotency-Key": idempotencyKey },
+			headers: this.#baseHeaders({
+				"content-type": "application/json",
+				"Idempotency-Key": idempotencyKey,
+			}),
 			body: JSON.stringify({ sku, qty }),
 		});
 		return this.#cartResult<{ line: CartLineWire }>(res);
@@ -166,7 +202,10 @@ export class HttpCommerceClient implements CommerceClient {
 			`${this.#baseUrl}/carts/${encodeURIComponent(cartId)}/lines/${encodeURIComponent(lineId)}`,
 			{
 				method: "PATCH",
-				headers: { "content-type": "application/json", "Idempotency-Key": idempotencyKey },
+				headers: this.#baseHeaders({
+					"content-type": "application/json",
+					"Idempotency-Key": idempotencyKey,
+				}),
 				body: JSON.stringify({ qty }),
 			},
 		);
@@ -181,7 +220,7 @@ export class HttpCommerceClient implements CommerceClient {
 	): Promise<CartResult<Record<string, never>>> {
 		const res = await this.#fetch(
 			`${this.#baseUrl}/carts/${encodeURIComponent(cartId)}/lines/${encodeURIComponent(lineId)}`,
-			{ method: "DELETE", headers: { "Idempotency-Key": idempotencyKey } },
+			{ method: "DELETE", headers: this.#baseHeaders({ "Idempotency-Key": idempotencyKey }) },
 		);
 		return this.#cartResult<Record<string, never>>(res);
 	}
@@ -223,6 +262,7 @@ export class HttpCommerceClient implements CommerceClient {
 		if (scope.buyerRef !== undefined) params.set("buyerRef", scope.buyerRef);
 		const res = await this.#fetch(`${this.#baseUrl}/entitlements/check?${params.toString()}`, {
 			method: "GET",
+			headers: this.#baseHeaders(),
 		});
 		const body = await this.#json<{ ok: boolean; active?: boolean }>(res);
 		return body.active === true;
@@ -241,7 +281,7 @@ export class HttpCommerceClient implements CommerceClient {
 	async requestLoginLink(email: string): Promise<{ ok: true }> {
 		await this.#fetch(`${this.#baseUrl}/auth/login/request`, {
 			method: "POST",
-			headers: { "content-type": "application/json" },
+			headers: this.#baseHeaders({ "content-type": "application/json" }),
 			body: JSON.stringify({ email }),
 		});
 		return { ok: true };
@@ -251,7 +291,7 @@ export class HttpCommerceClient implements CommerceClient {
 	async verifyLogin(challengeId: string, token: string): Promise<LoginVerifyResult> {
 		const res = await this.#fetch(`${this.#baseUrl}/auth/login/verify`, {
 			method: "POST",
-			headers: { "content-type": "application/json" },
+			headers: this.#baseHeaders({ "content-type": "application/json" }),
 			body: JSON.stringify({ challengeId, token }),
 		});
 		const body = (await res.json().catch(() => undefined)) as
@@ -311,8 +351,13 @@ export class HttpCommerceClient implements CommerceClient {
 		return { ok: true, addresses: body.addresses };
 	}
 
+	/** Session-auth headers. `authorization: Bearer <session>` is the CUSTOMER
+	 *  session token (owned by the service's session auth); the write-gate
+	 *  `X-Service-Token` is merged in alongside it (ADR-0007) — the two headers
+	 *  are orthogonal, so `logout` and the `/me/*` reads carry BOTH when a service
+	 *  token is configured, exactly what the gate + session auth each require. */
 	#authHeaders(sessionToken: string): Record<string, string> {
-		return { authorization: `Bearer ${sessionToken}` };
+		return this.#baseHeaders({ authorization: `Bearer ${sessionToken}` });
 	}
 	// ── end Phase 5 customer account ───────────────────────────────────────
 

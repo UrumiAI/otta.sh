@@ -49,6 +49,8 @@ export type { ProductCommerceRouteInput } from "./admin/product-commerce-route.j
 export {
 	ALLOWED_HOSTS,
 	COMMERCE_SERVICE_BASE_URL,
+	SERVICE_TOKEN_KEY,
+	serviceTokenFromKv,
 	URUMI_PLUGIN_CAPABILITIES,
 	URUMI_PLUGIN_ID,
 	URUMI_PLUGIN_VERSION,

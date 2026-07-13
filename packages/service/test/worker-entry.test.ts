@@ -217,6 +217,20 @@ describe("createWorker fetch", () => {
 		);
 		expect(tokenless.status).toBe(401);
 		expect(await tokenless.json()).toEqual({ ok: false, error: "unauthorized" });
+
+		// The env-carried gate reads X-Service-Token (ADR-0007): the same POST with
+		// the matching header passes the write gate. It lands on /internal (whose
+		// own INTERNAL_API_TOKEN is unset here → 503 disabled), so a NON-401 status
+		// proves the gate honored the header — no DB round-trip needed.
+		const withServiceToken = await worker.fetch(
+			new Request("http://worker.test/internal/expire-holds", {
+				method: "POST",
+				headers: { "X-Service-Token": "worker-secret" },
+			}),
+			env,
+			ctx,
+		);
+		expect(withServiceToken.status).toBe(503);
 		await settle();
 	});
 
@@ -248,7 +262,7 @@ describe("createWorker fetch", () => {
 		expect(warn.mock.calls.flat().map(String).join("\n")).not.toContain("SERVICE_API_TOKEN");
 	});
 
-	test("Phase 4 gateways wire from the env binding; the webhook stays Bearer-exempt", async () => {
+	test("Phase 4 gateways wire from the env binding; the webhook stays service-token-exempt", async () => {
 		vi.spyOn(console, "warn").mockImplementation(() => {});
 		const { makePool } = fakePools();
 		const worker = createWorker({ makePool, migrate: () => Promise.resolve() });
@@ -268,8 +282,8 @@ describe("createWorker fetch", () => {
 				env,
 				ctx,
 			);
-		// No Bearer, gateway wired from env: the request reaches the route and is
-		// rejected by its OWN Stripe-Signature verification (400), never the gate.
+		// No X-Service-Token, gateway wired from env: the request reaches the route
+		// and is rejected by its OWN Stripe-Signature verification (400), never the gate.
 		const res = await webhook();
 		expect(res.status).toBe(400);
 		expect(await res.json()).toEqual({ ok: false, reason: "INVALID_SIGNATURE" });

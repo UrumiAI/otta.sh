@@ -23,10 +23,12 @@ import type { Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import { createApp } from "../src/app.js";
 
-// D9 — the SERVICE_API_TOKEN write gate at the app level, over the IO-free
-// in-memory stores via `app.request()` (no server, no PG). Token set ⇒ every
-// non-GET/HEAD method on every path needs `Authorization: Bearer <token>`;
-// GET/HEAD (and /health) stay open; token unset ⇒ exactly today's behavior.
+// D9 / ADR-0007 — the SERVICE_API_TOKEN write gate at the app level, over the
+// IO-free in-memory stores via `app.request()` (no server, no PG). Token set ⇒
+// every non-GET/HEAD method on every path needs `X-Service-Token: <token>`;
+// GET/HEAD (and /health) stay open; token unset ⇒ exactly today's behavior. The
+// gate reads ONLY `X-Service-Token`; `Authorization: Bearer` is owned by
+// customer session auth and the gate ignores it (headline regression below).
 interface TestApp {
 	app: Hono;
 	inventory: InMemoryInventoryStore;
@@ -84,7 +86,7 @@ function makeApp(options: { serviceToken?: string; internalToken?: string } = {}
 }
 
 const TOKEN = "svc-secret";
-const bearer = { Authorization: `Bearer ${TOKEN}` };
+const serviceHeader = { "X-Service-Token": TOKEN };
 const json = { "content-type": "application/json" };
 
 describe("SERVICE_API_TOKEN write gate (token set)", () => {
@@ -100,7 +102,7 @@ describe("SERVICE_API_TOKEN write gate (token set)", () => {
 		["POST", "/checkout/orders", { cartId: "c1", paymentMethod: "stripe", buyerRef: "b@x.io" }],
 		["POST", "/internal/expire-orders", undefined],
 		["POST", "/entitlements/grant", {}],
-	] as const)("%s %s without Authorization is 401", async (method, path, body) => {
+	] as const)("%s %s without X-Service-Token is 401", async (method, path, body) => {
 		const { app } = makeApp({ serviceToken: TOKEN });
 		const res = await app.request(path, {
 			method,
@@ -108,27 +110,38 @@ describe("SERVICE_API_TOKEN write gate (token set)", () => {
 			body: body === undefined ? undefined : JSON.stringify(body),
 		});
 		expect(res.status).toBe(401);
-		expect(res.headers.get("WWW-Authenticate")).toBe("Bearer");
+		// No challenge header — the machine token is not a Bearer scheme (ADR-0007).
+		expect(res.headers.get("WWW-Authenticate")).toBeNull();
 		expect(await res.json()).toEqual({ ok: false, error: "unauthorized" });
 	});
 
-	test("a wrong Bearer token is 401", async () => {
+	test("a wrong X-Service-Token is 401", async () => {
 		const { app } = makeApp({ serviceToken: TOKEN });
 		const res = await app.request("/carts", {
 			method: "POST",
-			headers: { ...json, Authorization: "Bearer wrong" },
+			headers: { ...json, "X-Service-Token": "wrong" },
 			body: "{}",
 		});
 		expect(res.status).toBe(401);
 	});
 
-	test("the correct Bearer token reaches the routes (full cart write path)", async () => {
+	test("a matching Authorization: Bearer does NOT open the gate (Authorization is session-only)", async () => {
+		const { app } = makeApp({ serviceToken: TOKEN });
+		const res = await app.request("/carts", {
+			method: "POST",
+			headers: { ...json, Authorization: `Bearer ${TOKEN}` },
+			body: "{}",
+		});
+		expect(res.status).toBe(401);
+	});
+
+	test("the correct X-Service-Token reaches the routes (full cart write path)", async () => {
 		const { app, inventory } = makeApp({ serviceToken: TOKEN });
 		inventory.seed("SKU-1", 5);
 
 		const created = await app.request("/carts", {
 			method: "POST",
-			headers: { ...json, ...bearer },
+			headers: { ...json, ...serviceHeader },
 			body: "{}",
 		});
 		expect(created.status).toBe(201);
@@ -136,7 +149,7 @@ describe("SERVICE_API_TOKEN write gate (token set)", () => {
 
 		const added = await app.request(`/carts/${cartId}/lines`, {
 			method: "POST",
-			headers: { ...json, ...bearer, "Idempotency-Key": "k1" },
+			headers: { ...json, ...serviceHeader, "Idempotency-Key": "k1" },
 			body: JSON.stringify({ sku: "SKU-1", qty: 2 }),
 		});
 		expect(added.status).toBe(200);
@@ -153,12 +166,12 @@ describe("SERVICE_API_TOKEN write gate (token set)", () => {
 		expect((await app.request("/products/nope/commerce")).status).toBe(200);
 	});
 
-	test("POST /webhooks/stripe is EXEMPT from the Bearer gate — its own Stripe-Signature auth still applies", async () => {
+	test("POST /webhooks/stripe is EXEMPT from the service-token gate — its own Stripe-Signature auth still applies", async () => {
 		const { app } = makeApp({ serviceToken: TOKEN });
-		// No Authorization header, garbage signature: the request REACHES the
+		// No X-Service-Token header, garbage signature: the request REACHES the
 		// webhook route (never 401 from the gate) and is rejected by the route's
 		// own HMAC verification (400 INVALID_SIGNATURE). Stripe cannot carry our
-		// Bearer token — signature auth is the exemption's justification.
+		// service token — signature auth is the exemption's justification.
 		const res = await app.request("/webhooks/stripe", {
 			method: "POST",
 			headers: { ...json, "Stripe-Signature": "t=1,v1=deadbeef" },
@@ -179,72 +192,149 @@ describe("SERVICE_API_TOKEN write gate (token set)", () => {
 		expect(del.status).toBe(401);
 	});
 
-	test("/internal/expire-holds with both secrets set needs Bearer AND X-Internal-Token", async () => {
+	test("/internal/expire-holds with both secrets set needs X-Service-Token AND X-Internal-Token", async () => {
 		const { app } = makeApp({ serviceToken: TOKEN, internalToken: "int-secret" });
-		// Only the internal token: blocked at the Bearer gate.
+		// Only the internal token: blocked at the service-token gate.
 		const onlyInternal = await app.request("/internal/expire-holds", {
 			method: "POST",
 			headers: { "X-Internal-Token": "int-secret" },
 		});
 		expect(onlyInternal.status).toBe(401);
-		// Only the Bearer token: passes the gate, 401s at the internal check.
-		const onlyBearer = await app.request("/internal/expire-holds", {
+		// Only the service token: passes the gate, 401s at the internal check.
+		const onlyService = await app.request("/internal/expire-holds", {
 			method: "POST",
-			headers: bearer,
+			headers: serviceHeader,
 		});
-		expect(onlyBearer.status).toBe(401);
+		expect(onlyService.status).toBe(401);
 		// Both: 200.
 		const both = await app.request("/internal/expire-holds", {
 			method: "POST",
-			headers: { ...bearer, "X-Internal-Token": "int-secret" },
+			headers: { ...serviceHeader, "X-Internal-Token": "int-secret" },
 		});
 		expect(both.status).toBe(200);
 		expect(await both.json()).toEqual({ ok: true, reclaimed: 0 });
 	});
 
-	test("/internal/expire-orders with both secrets set needs Bearer AND X-Internal-Token", async () => {
+	test("/internal/expire-orders with both secrets set needs X-Service-Token AND X-Internal-Token", async () => {
 		const { app } = makeApp({ serviceToken: TOKEN, internalToken: "int-secret" });
 		const onlyInternal = await app.request("/internal/expire-orders", {
 			method: "POST",
 			headers: { "X-Internal-Token": "int-secret" },
 		});
-		expect(onlyInternal.status).toBe(401); // blocked at the Bearer gate
-		const onlyBearer = await app.request("/internal/expire-orders", {
+		expect(onlyInternal.status).toBe(401); // blocked at the service-token gate
+		const onlyService = await app.request("/internal/expire-orders", {
 			method: "POST",
-			headers: bearer,
+			headers: serviceHeader,
 		});
-		expect(onlyBearer.status).toBe(401); // passes the gate, 401s at the internal check
+		expect(onlyService.status).toBe(401); // passes the gate, 401s at the internal check
 		const both = await app.request("/internal/expire-orders", {
 			method: "POST",
-			headers: { ...bearer, "X-Internal-Token": "int-secret" },
+			headers: { ...serviceHeader, "X-Internal-Token": "int-secret" },
 		});
 		expect(both.status).toBe(200);
 		expect(await both.json()).toEqual({ ok: true, expired: 0 });
 	});
 
-	test("/entitlements/grant with both secrets set needs Bearer AND X-Internal-Token", async () => {
+	test("/entitlements/grant with both secrets set needs X-Service-Token AND X-Internal-Token", async () => {
 		const { app } = makeApp({ serviceToken: TOKEN, internalToken: "int-secret" });
 		const onlyInternal = await app.request("/entitlements/grant", {
 			method: "POST",
 			headers: { ...json, "X-Internal-Token": "int-secret" },
 			body: "{}",
 		});
-		expect(onlyInternal.status).toBe(401); // blocked at the Bearer gate
-		const onlyBearer = await app.request("/entitlements/grant", {
+		expect(onlyInternal.status).toBe(401); // blocked at the service-token gate
+		const onlyService = await app.request("/entitlements/grant", {
 			method: "POST",
-			headers: { ...json, ...bearer },
+			headers: { ...json, ...serviceHeader },
 			body: "{}",
 		});
-		expect(onlyBearer.status).toBe(401); // passes the gate, 401s at the internal check
+		expect(onlyService.status).toBe(401); // passes the gate, 401s at the internal check
 		// Both headers clear BOTH auth layers: the route's next check is the x402
 		// gateway (unwired in this stub app → 503), proving auth was passed.
 		const both = await app.request("/entitlements/grant", {
 			method: "POST",
-			headers: { ...json, ...bearer, "X-Internal-Token": "int-secret" },
+			headers: { ...json, ...serviceHeader, "X-Internal-Token": "int-secret" },
 			body: "{}",
 		});
 		expect(both.status).toBe(503);
 		expect(await both.json()).toEqual({ ok: false, error: "x402 not configured" });
+	});
+
+	// ── #25: routes that ALSO carry X-Internal-Token now require BOTH the gate's
+	// X-Service-Token AND the route's own X-Internal-Token when both secrets are
+	// set. Pure new coverage — emergent from middleware order, no route change.
+
+	test("PUT /settings with both secrets set needs X-Service-Token AND X-Internal-Token", async () => {
+		const { app } = makeApp({ serviceToken: TOKEN, internalToken: "int-secret" });
+		const put = (headers: Record<string, string>) =>
+			app.request("/settings", {
+				method: "PUT",
+				headers: { ...json, "Idempotency-Key": "settings-1", ...headers },
+				body: JSON.stringify({ holdTtlMinutes: 30, lowStockThreshold: 5 }),
+			});
+		expect((await put({ "X-Internal-Token": "int-secret" })).status).toBe(401); // gate
+		expect((await put(serviceHeader)).status).toBe(401); // internal check
+		const both = await put({ ...serviceHeader, "X-Internal-Token": "int-secret" });
+		expect(both.status).toBe(200);
+		expect(await both.json()).toMatchObject({ ok: true });
+	});
+
+	test("POST /admin/orders/:id/transition with both secrets set needs X-Service-Token AND X-Internal-Token", async () => {
+		const { app } = makeApp({ serviceToken: TOKEN, internalToken: "int-secret" });
+		const transition = (headers: Record<string, string>) =>
+			app.request("/admin/orders/order-1/transition", {
+				method: "POST",
+				headers: { ...json, ...headers },
+				body: JSON.stringify({ toState: "paid" }),
+			});
+		expect((await transition({ "X-Internal-Token": "int-secret" })).status).toBe(401); // gate
+		expect((await transition(serviceHeader)).status).toBe(401); // internal check
+		// Both clear auth; the (absent) order then resolves to 404, NOT 401 — proof
+		// the request passed BOTH auth layers and reached the route body.
+		const both = await transition({ ...serviceHeader, "X-Internal-Token": "int-secret" });
+		expect(both.status).toBe(404);
+		expect(await both.json()).toEqual({ ok: false, reason: "ORDER_NOT_FOUND" });
+	});
+
+	test("a rules-admin POST (/admin/shipping/zones) with both secrets set needs X-Service-Token AND X-Internal-Token", async () => {
+		const { app } = makeApp({ serviceToken: TOKEN, internalToken: "int-secret" });
+		const create = (headers: Record<string, string>) =>
+			app.request("/admin/shipping/zones", {
+				method: "POST",
+				headers: { ...json, ...headers },
+				body: JSON.stringify({ id: "zone-1", name: "Zone 1" }),
+			});
+		expect((await create({ "X-Internal-Token": "int-secret" })).status).toBe(401); // gate
+		expect((await create(serviceHeader)).status).toBe(401); // internal check
+		const both = await create({ ...serviceHeader, "X-Internal-Token": "int-secret" });
+		expect(both.status).toBe(201);
+		expect(await both.json()).toMatchObject({ ok: true });
+	});
+
+	// ── #25 HEADLINE regression: the session route `POST /auth/logout` must NOT be
+	// 401'd at the write gate. Before ADR-0007 the gate consumed Authorization:
+	// Bearer, so enabling SERVICE_API_TOKEN would 401 every session route (whose
+	// Bearer carries a customer SESSION token, not the service token) before
+	// session auth ran. Now the gate reads only X-Service-Token.
+	test("POST /auth/logout: session Bearer alone is 401 at the gate; X-Service-Token + session Bearer passes", async () => {
+		const { app } = makeApp({ serviceToken: TOKEN });
+		// A customer's session token (any value — logout is idempotent) in
+		// Authorization, but no X-Service-Token: blocked at the gate.
+		const gated = await app.request("/auth/logout", {
+			method: "POST",
+			headers: { Authorization: "Bearer customer-session-xyz" },
+		});
+		expect(gated.status).toBe(401);
+		expect(await gated.json()).toEqual({ ok: false, error: "unauthorized" });
+
+		// BOTH headers: the gate passes on X-Service-Token, and the session route
+		// runs (revoke is idempotent) → 200. The two headers do not collide.
+		const ok = await app.request("/auth/logout", {
+			method: "POST",
+			headers: { ...serviceHeader, Authorization: "Bearer customer-session-xyz" },
+		});
+		expect(ok.status).toBe(200);
+		expect(await ok.json()).toEqual({ ok: true });
 	});
 });
 

@@ -1,4 +1,4 @@
-import { COMMERCE_SERVICE_BASE_URL } from "../manifest.js";
+import { COMMERCE_SERVICE_BASE_URL, serviceTokenFromKv } from "../manifest.js";
 import { HttpCommerceClient } from "../product-commerce/http-commerce-client.js";
 import {
 	CommerceClientError,
@@ -182,9 +182,13 @@ export function createProductCommerceRouteHandler(): RouteHandler<ProductCommerc
 			return { ok: false, error: "INVALID_FIELDS", fields: errors };
 		}
 
+		// The panel Save is a PUT (`upsertProductCommerce`), gated by the write gate
+		// (X-Service-Token) when the service secret is set — source it from kv.
+		const serviceToken = await serviceTokenFromKv(ctx);
 		const client = new HttpCommerceClient({
 			fetch: ctx.http.fetch,
 			baseUrl: COMMERCE_SERVICE_BASE_URL,
+			...(serviceToken !== undefined ? { serviceToken } : {}),
 		});
 		// Stable content-derived key (S2): a retry/double-submit of the SAME
 		// submission dedupes to one applied write; a genuinely new edit derives

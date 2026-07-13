@@ -95,17 +95,26 @@ export interface AdminOrdersClientOptions {
 	/** Admin token forwarded as `X-Internal-Token` on every guarded call. Sourced
 	 *  by the page handler from write-only `ctx.kv` (`settings:internalToken`). */
 	adminToken?: string;
+	/** The machine write-gate token the service enforces as `X-Service-Token`
+	 *  (ADR-0007), sourced from write-only `ctx.kv` (`settings:serviceToken`).
+	 *  `POST /admin/orders/:id/transition` is a NON-GET, so the gate blocks it
+	 *  without this when the service secret is set — hence it is attached to the
+	 *  transition (the list/detail GET reads are gate-exempt, so they carry only
+	 *  the admin token). Undefined ⇒ no header ⇒ byte-identical to today. */
+	serviceToken?: string;
 }
 
 export class AdminOrdersClient {
 	readonly #fetch: HttpAccess["fetch"];
 	readonly #baseUrl: string;
 	readonly #adminToken: string | undefined;
+	readonly #serviceToken: string | undefined;
 
 	constructor(options: AdminOrdersClientOptions) {
 		this.#fetch = options.fetch;
 		this.#baseUrl = options.baseUrl.replace(/\/$/, "");
 		this.#adminToken = options.adminToken;
+		this.#serviceToken = options.serviceToken;
 	}
 
 	async listOrders(
@@ -158,6 +167,9 @@ export class AdminOrdersClient {
 			"Idempotency-Key": opts.idempotencyKey,
 		};
 		if (this.#adminToken !== undefined) headers["X-Internal-Token"] = this.#adminToken;
+		// The transition POST is gated by BOTH the write gate (X-Service-Token) AND
+		// the route's admin token (X-Internal-Token) when both secrets are set.
+		if (this.#serviceToken !== undefined) headers["X-Service-Token"] = this.#serviceToken;
 		const res = await this.#fetch(
 			`${this.#baseUrl}/admin/orders/${encodeURIComponent(orderId)}/transition`,
 			{ method: "POST", headers, body: JSON.stringify({ toState }) },

@@ -12,8 +12,46 @@
  * file before bundling — `src/manifest.ts` itself is never mutated.
  */
 
+import type { PluginContext } from "./types.js";
+
 export const URUMI_PLUGIN_ID = "urumi";
 export const URUMI_PLUGIN_VERSION = "0.1.0";
+
+/**
+ * The write-only plugin-kv key holding the machine write-gate token the service
+ * enforces as `X-Service-Token` (ADR-0007). Admin-provisioned via the Settings
+ * form's masked secret field, exactly like the admin `settings:internalToken`
+ * (which it is DELIBERATELY distinct from — the two are different secrets: this
+ * one unlocks the whole write surface, the internal token unlocks only the
+ * `/admin` + `/internal` routes). Lives in this neutral module so BOTH the
+ * storefront clients and the admin clients can read it without a storefront →
+ * admin import edge. NEVER rendered back into a block.
+ */
+export const SERVICE_TOKEN_KEY = "settings:serviceToken";
+
+/**
+ * Read the service write-gate token from write-only plugin kv, for forwarding as
+ * `X-Service-Token`. Returns `undefined` when unset OR empty (kept consistent
+ * with the service gate, which treats an empty token as "gate open"), so a
+ * missing token simply attaches no header.
+ *
+ * FAIL-CLOSED (review D3): a kv read that REJECTS is swallowed to `undefined`
+ * — never propagated. An uncaught kv rejection escaping a fire-and-forget sync
+ * hook or a storefront route handler is worse than a clean 401; and undefined ⇒
+ * no header ⇒ a 401 if the service secret is set, matching the gate's own
+ * fail-closed posture.
+ */
+export async function serviceTokenFromKv(ctx: PluginContext): Promise<string | undefined> {
+	try {
+		const token = await ctx.kv.get<string>(SERVICE_TOKEN_KEY);
+		// `KV.get` contracts to `T | null`, but guard `undefined` too so this reads
+		// byte-identically to the sandbox-harness copy — and never hits
+		// `undefined.length` if kv ever diverges from its typed contract.
+		return token !== null && token !== undefined && token.length > 0 ? token : undefined;
+	} catch {
+		return undefined;
+	}
+}
 
 /**
  * Sandbox-clean guard (DEVELOPMENT.md §5, plan §5): EXACTLY these two
