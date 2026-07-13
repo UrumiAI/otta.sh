@@ -3,7 +3,7 @@ import type { Clock } from "../ports/clock.js";
 import type { CouponStore } from "../ports/coupon-store.js";
 import type { ConfirmationResult } from "../ports/payment-gateway.js";
 import type { EntitlementStore } from "../ports/entitlement-store.js";
-import { type InventoryStore, ReservationCommitLostError } from "../ports/inventory-store.js";
+import type { InventoryStore } from "../ports/inventory-store.js";
 import type { OrderStore } from "../ports/order-store.js";
 import type { PaymentEventStore } from "../ports/payment-event-store.js";
 import type { PaymentGateway, RawConfirmation } from "../ports/payment-gateway.js";
@@ -205,34 +205,37 @@ async function applyPaidSideEffects(
 		status: "succeeded",
 	});
 
+	// Physical lines: ONE batched held|adopted → committed flip (PR B). Each LOST
+	// hold in the result is a resold-under-a-paid-order invariant violation — the
+	// loud COMMIT_LOST anomaly + manual-reconciliation flag, NEVER a silent no-op.
+	// Recorded once PER lost line, each gated on the SAME stale reconciliationFlag
+	// read off the `order` loaded once (never re-read in the loop): N lost lines ⇒
+	// N anomalies + N flag writes, byte-for-byte with the pre-batch per-line loop.
+	const physicalReservationIds = order.lines
+		.filter((line) => line.fulfillmentKind === "physical" && line.reservationId !== null)
+		.map((line) => line.reservationId)
+		.filter((id): id is NonNullable<typeof id> => id !== null);
+	const { lost } = await deps.inventoryStore.commitMany(physicalReservationIds);
+	for (const reservationId of lost) {
+		if (order.reconciliationFlag === null) {
+			await deps.paymentEventStore.recordAnomaly({
+				orderId: order.id,
+				gateway: conf.gateway,
+				kind: "COMMIT_LOST",
+				detail: `commit matched 0 rows for reservation ${reservationId}`,
+				now,
+			});
+			await deps.orderStore.flagReconciliation(
+				order.id,
+				`commit lost for reservation ${reservationId}`,
+			);
+		}
+	}
+
+	// Digital lines: grant-once entitlement, per-line and UNCHANGED (disjoint
+	// state, idempotent under the deterministic (order, sku) grant key).
 	for (const line of order.lines) {
-		if (line.fulfillmentKind === "physical" && line.reservationId !== null) {
-			try {
-				await deps.inventoryStore.commit(line.reservationId);
-			} catch (err) {
-				if (err instanceof ReservationCommitLostError) {
-					// The adopted hold was lost (released) — stock was resold under a paid
-					// order. Loud anomaly + manual reconciliation, NEVER a silent no-op.
-					// Gated on the flag: the first drive records it; a later re-drive of
-					// an already-flagged order does not spam one row per gateway retry.
-					if (order.reconciliationFlag === null) {
-						await deps.paymentEventStore.recordAnomaly({
-							orderId: order.id,
-							gateway: conf.gateway,
-							kind: "COMMIT_LOST",
-							detail: `commit matched 0 rows for reservation ${line.reservationId}`,
-							now,
-						});
-						await deps.orderStore.flagReconciliation(
-							order.id,
-							`commit lost for reservation ${line.reservationId}`,
-						);
-					}
-				} else {
-					throw err;
-				}
-			}
-		} else if (line.fulfillmentKind === "digital") {
+		if (line.fulfillmentKind === "digital") {
 			await deps.entitlementStore.grant({
 				orderId: order.id,
 				productId: line.productId,

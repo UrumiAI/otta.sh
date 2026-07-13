@@ -8,6 +8,7 @@ import type {
 	ShippingRulesStoreHarness,
 	TaxRulesStoreHarness,
 } from "@urumi/domain/testing";
+import { idempotencyKey } from "@urumi/domain";
 import { CountingIdGen, FixedClock } from "@urumi/domain/testing";
 import type { Kysely } from "kysely";
 import {
@@ -76,6 +77,19 @@ function buildHarness(db: Kysely<Database>): DialectHarness {
 					created_at: clock.now().toISOString(),
 				})
 				.execute();
+		},
+		async holdWithExpiry(sku, qty, key, expiresAt) {
+			// A held reservation with the cart's hold deadline stamped on it — the
+			// precondition adoptMany's `expires_at > :now` guard needs (a bare
+			// `reserve` leaves `expires_at` NULL). Mirrors the cart store's stamp.
+			const r = await store.reserve(sku, qty, idempotencyKey(key));
+			if (!r.ok) throw new Error(`holdWithExpiry reserve failed for ${sku}`);
+			await db
+				.updateTable("reservations")
+				.set({ expires_at: expiresAt })
+				.where("id", "=", r.reservationId)
+				.execute();
+			return r.reservationId;
 		},
 	};
 }

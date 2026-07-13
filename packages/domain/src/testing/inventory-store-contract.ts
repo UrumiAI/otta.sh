@@ -2,10 +2,21 @@ import { describe, expect, test } from "vitest";
 import { idempotencyKey } from "../money/ids.js";
 import type { InventoryStore } from "../ports/inventory-store.js";
 
+/** Order-insensitive membership compare: pg RETURNING order ≠ IN order ≠ fake. */
+const sorted = (xs: string[]): string[] => xs.toSorted();
+
 export interface InventoryStoreHarness {
 	store: InventoryStore;
 	seed(sku: string, qty: number): Promise<void>;
 	onHand(sku: string): Promise<number>;
+	/**
+	 * Optional: create a HELD reservation with a stamped hold deadline
+	 * (`expires_at`) and return its id — the cart-flow precondition
+	 * `adoptMany`/`adopt` require (a bare `reserve` leaves `expires_at` NULL, and
+	 * the guarded flip is `WHERE … expires_at > :now`). Every adapter here (fake +
+	 * each DB dialect) implements it; the adoptMany cases skip if absent.
+	 */
+	holdWithExpiry?(sku: string, qty: number, key: string, expiresAt: string): Promise<string>;
 }
 
 export interface InventoryStoreContractOptions {
@@ -294,6 +305,145 @@ export function inventoryStoreContract(
 			// never overwrite the live, already-decremented on_hand.
 			await h.store.seedOnHand("SKU-1", 999);
 			expect(await h.onHand("SKU-1")).toBe(3);
+		});
+
+		// -- PR B: batched checkout ADOPT (adoptMany) ---------------------------
+		//
+		// The batch is the per-line singular semantics folded into ONE guarded
+		// statement. Membership is asserted ORDER-INSENSITIVELY (pg RETURNING order
+		// ≠ IN order ≠ fake insertion order), so every assertion sorts.
+		const NOW = "2026-07-10T00:05:00.000Z";
+		const FUTURE = "2026-07-10T00:15:00.000Z"; // hold deadline, > NOW
+		const PAST = "2026-07-10T00:01:00.000Z"; // < NOW ⇒ an expired hold
+		const LATER = "2026-07-10T01:00:00.000Z"; // > FUTURE ⇒ past the deadline
+
+		test("adoptMany flips every held line of one order to adopted (all-success)", async () => {
+			const h = await makeStore();
+			if (!h.holdWithExpiry) return;
+			await h.seed("SKU-1", 10);
+			const r1 = await h.holdWithExpiry("SKU-1", 1, "k1", FUTURE);
+			const r2 = await h.holdWithExpiry("SKU-1", 1, "k2", FUTURE);
+			const r3 = await h.holdWithExpiry("SKU-1", 1, "k3", FUTURE);
+			const res = await h.store.adoptMany({
+				reservationIds: [r1, r2, r3],
+				orderId: "ord-1",
+				holdExpiresAt: FUTURE,
+				now: NOW,
+			});
+			expect(sorted(res.adopted)).toEqual(sorted([r1, r2, r3]));
+			expect(res.lost).toEqual([]);
+		});
+
+		test("adoptMany partial: released / committed / expired holds land in lost; the held siblings adopt", async () => {
+			const h = await makeStore();
+			if (!h.holdWithExpiry) return;
+			await h.seed("SKU-1", 10);
+			const held1 = await h.holdWithExpiry("SKU-1", 1, "k1", FUTURE);
+			const held2 = await h.holdWithExpiry("SKU-1", 1, "k2", FUTURE);
+			const releasedHold = await h.holdWithExpiry("SKU-1", 1, "k3", FUTURE);
+			await h.store.release(releasedHold); // reaped before adoption
+			const committedHold = await h.holdWithExpiry("SKU-1", 1, "k4", FUTURE);
+			await h.store.commit(committedHold); // already consumed
+			const expiredHold = await h.holdWithExpiry("SKU-1", 1, "k5", PAST); // expires_at <= now
+
+			const res = await h.store.adoptMany({
+				reservationIds: [held1, held2, releasedHold, committedHold, expiredHold],
+				orderId: "ord-1",
+				holdExpiresAt: FUTURE,
+				now: NOW,
+			});
+			expect(sorted(res.adopted)).toEqual(sorted([held1, held2]));
+			expect(sorted(res.lost)).toEqual(sorted([releasedHold, committedHold, expiredHold]));
+		});
+
+		test("adoptMany replay is idempotent — a row already adopted for THIS order stays adopted even PAST its hold deadline (never lost)", async () => {
+			const h = await makeStore();
+			if (!h.holdWithExpiry) return;
+			await h.seed("SKU-1", 10);
+			const r1 = await h.holdWithExpiry("SKU-1", 1, "k1", FUTURE);
+			const first = await h.store.adoptMany({
+				reservationIds: [r1],
+				orderId: "ord-1",
+				holdExpiresAt: FUTURE,
+				now: NOW,
+			});
+			expect(sorted(first.adopted)).toEqual([r1]);
+			// Replay AFTER the hold deadline (now = LATER > FUTURE): the guarded flip
+			// matches 0 rows, but the classification recognises it as adopted-for-this
+			// -order and folds it back into adopted WITHOUT re-checking expires_at.
+			const replay = await h.store.adoptMany({
+				reservationIds: [r1],
+				orderId: "ord-1",
+				holdExpiresAt: FUTURE,
+				now: LATER,
+			});
+			expect(sorted(replay.adopted)).toEqual([r1]);
+			expect(replay.lost).toEqual([]);
+			// The SAME row for a DIFFERENT order is a lost hold, never a cross-order adopt.
+			const other = await h.store.adoptMany({
+				reservationIds: [r1],
+				orderId: "ord-2",
+				holdExpiresAt: FUTURE,
+				now: NOW,
+			});
+			expect(other.adopted).toEqual([]);
+			expect(other.lost).toEqual([r1]);
+		});
+
+		test("adoptMany with no ids is a no-op ({ adopted: [], lost: [] })", async () => {
+			const h = await makeStore();
+			const res = await h.store.adoptMany({
+				reservationIds: [],
+				orderId: "ord-1",
+				holdExpiresAt: FUTURE,
+				now: NOW,
+			});
+			expect(res).toEqual({ adopted: [], lost: [] });
+		});
+
+		// -- PR B: batched settle COMMIT (commitMany) ---------------------------
+
+		test("commitMany commits every held line of one order (all-success), idempotent on replay", async () => {
+			const h = await makeStore();
+			await h.seed("SKU-1", 10);
+			const a = await h.store.reserve("SKU-1", 1, idempotencyKey("k1"));
+			const b = await h.store.reserve("SKU-1", 1, idempotencyKey("k2"));
+			if (!a.ok || !b.ok) throw new Error("seed reserves must succeed");
+			const first = await h.store.commitMany([a.reservationId, b.reservationId]);
+			expect(first).toEqual({ lost: [] });
+			// A re-drive (already committed) is benign: still lost = [].
+			const replay = await h.store.commitMany([a.reservationId, b.reservationId]);
+			expect(replay).toEqual({ lost: [] });
+		});
+
+		test("commitMany partial: a released hold is lost; an already-committed hold is benign (absent); a held hold commits", async () => {
+			const h = await makeStore();
+			await h.seed("SKU-1", 10);
+			const released = await h.store.reserve("SKU-1", 1, idempotencyKey("k1"));
+			const committed = await h.store.reserve("SKU-1", 1, idempotencyKey("k2"));
+			const held = await h.store.reserve("SKU-1", 1, idempotencyKey("k3"));
+			if (!released.ok || !committed.ok || !held.ok) throw new Error("seed reserves must succeed");
+			await h.store.release(released.reservationId); // lost before commit
+			await h.store.commit(committed.reservationId); // already committed (benign replay)
+
+			const res = await h.store.commitMany([
+				released.reservationId,
+				committed.reservationId,
+				held.reservationId,
+			]);
+			expect(res.lost).toEqual([released.reservationId]);
+		});
+
+		test("commitMany with no ids is a no-op ({ lost: [] })", async () => {
+			const h = await makeStore();
+			expect(await h.store.commitMany([])).toEqual({ lost: [] });
+		});
+
+		test("commitMany on an unknown reservation id THROWS (matches singular commit's #selectById)", async () => {
+			const h = await makeStore();
+			await expect(h.store.commitMany(["no-such-reservation"])).rejects.toThrow(
+				/unknown reservation/,
+			);
 		});
 	});
 }

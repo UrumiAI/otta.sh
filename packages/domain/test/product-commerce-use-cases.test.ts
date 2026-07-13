@@ -71,6 +71,8 @@ describe("product-commerce use-cases (over the in-memory fakes)", () => {
 			release: (id) => inventory.release(id),
 			adjust: (id, q, k) => inventory.adjust(id, q, k),
 			adopt: (i) => inventory.adopt(i),
+			adoptMany: (i) => inventory.adoptMany(i),
+			commitMany: (ids) => inventory.commitMany(ids),
 			releaseAdopted: (id, o) => inventory.releaseAdopted(id, o),
 			seedOnHand: async (s, q) => {
 				if (failNextSeed) {

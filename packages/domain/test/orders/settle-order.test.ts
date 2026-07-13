@@ -259,6 +259,38 @@ describe("settleOrder", () => {
 		expect(h.paymentEventStore.anomalies().some((a) => a.kind === "COMMIT_LOST")).toBe(true);
 	});
 
+	test("a paid order with TWO physical lines both concurrently lost records EXACTLY 2 COMMIT_LOST anomalies + flags reconciliation (batched commitMany must not collapse N→1)", async () => {
+		// PR B fidelity: commitMany returns BOTH lost ids, and settle records one
+		// anomaly + one flag write per lost line off the SAME stale null flag — a
+		// 1-lost test cannot catch a regression that collapses N lost lines to one.
+		await h.seedPhysical({ productId: "p1", sku: "SKU-1", priceCents: 500, title: "A", onHand: 5 });
+		await h.seedPhysical({ productId: "p2", sku: "SKU-2", priceCents: 700, title: "B", onHand: 5 });
+		const cartId = await h.cartWith([
+			{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" },
+			{ sku: "SKU-2", productId: "p2", qty: 1, kind: "physical" },
+		]);
+		const created = await createOrderFromCart(h.createDeps, {
+			cartId,
+			idempotencyKey: idempotencyKey("k-2lost"),
+			buyerRef: "buyer@example.com",
+			paymentMethod: "stripe",
+		});
+		if (!created.ok) throw new Error(`seed order failed: ${created.reason}`);
+		const order = created.order;
+		// Stray-release BOTH adopted holds (the resold-under-paid invariant break).
+		for (const line of order.lines) {
+			await h.inventory.release(line.reservationId!);
+		}
+
+		const res = await settleOrder(h.settleDeps, h.stripeGw, evt(order));
+		expect(res.ok).toBe(true); // money received; the order is paid
+		const settled = await h.orderStore.getById(order.id);
+		expect(settled?.state).toBe("paid");
+		expect(settled?.reconciliationFlag).not.toBeNull();
+		const commitLost = h.paymentEventStore.anomalies().filter((a) => a.kind === "COMMIT_LOST");
+		expect(commitLost).toHaveLength(2);
+	});
+
 	test("commit on an already-committed reservation (idempotent replay) is a benign no-op, not an anomaly", async () => {
 		const order = await pendingPhysical();
 		const reservationId = order.lines[0]!.reservationId!;

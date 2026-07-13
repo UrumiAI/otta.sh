@@ -302,24 +302,27 @@ async function finalizeOrder(
 		},
 	});
 
-	// 2. Adopt each physical line's reservation via the guarded held → adopted flip
-	//    (from the persisted order lines, so a replay re-issues idempotently).
+	// 2. Adopt every physical line's reservation in ONE batched held → adopted flip
+	//    (PR B — checkout-write batching), collected from the persisted order lines
+	//    so a replay re-issues idempotently. Digital lines carry no reservation.
+	//    ANY lost hold aborts the checkout: the already-adopted siblings are left in
+	//    place (not stranded) and healed by expireOrders once the TTL passes.
 	const now = deps.clock.now().toISOString();
-	for (const line of order.lines) {
-		if (line.reservationId === null) continue; // digital: nothing to adopt
-		const adopted = await deps.inventoryStore.adopt({
-			reservationId: line.reservationId,
-			orderId: order.id,
-			holdExpiresAt: order.holdExpiresAt,
-			now,
-		});
-		if (!adopted.ok) {
-			// A lost hold after redemption: synchronously release the coupon (§5)
-			// before surfacing the failure. The pending order row stays and is
-			// healed by expireOrders; the coupon use is freed here.
-			await ctx.onFailure();
-			return { ok: false, reason: "RESERVATION_LOST" };
-		}
+	const physicalReservationIds = order.lines
+		.map((line) => line.reservationId)
+		.filter((id): id is NonNullable<typeof id> => id !== null);
+	const result = await deps.inventoryStore.adoptMany({
+		reservationIds: physicalReservationIds,
+		orderId: order.id,
+		holdExpiresAt: order.holdExpiresAt,
+		now,
+	});
+	if (result.lost.length > 0) {
+		// A lost hold after redemption: synchronously release the coupon (§5) before
+		// surfacing the failure. The pending order row stays and is healed by
+		// expireOrders; the coupon use is freed here.
+		await ctx.onFailure();
+		return { ok: false, reason: "RESERVATION_LOST" };
 	}
 
 	// 3. Secondary fence: flip the cart out of `active` (idempotent on replay).

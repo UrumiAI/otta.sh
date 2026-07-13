@@ -27,6 +27,12 @@ inventoryStoreContract(
 			async abandonPending(sku, qty, key) {
 				store.abandonPending(sku, qty, idempotencyKey(key));
 			},
+			async holdWithExpiry(sku, qty, key, expiresAt) {
+				const r = await store.reserve(sku, qty, idempotencyKey(key));
+				if (!r.ok) throw new Error(`holdWithExpiry reserve failed for ${sku}`);
+				store.setHoldExpiry(r.reservationId, expiresAt);
+				return r.reservationId;
+			},
 		} as InventoryStoreHarness & {
 			abandonPending(sku: string, qty: number, key: string): Promise<void>;
 		};

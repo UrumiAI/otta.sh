@@ -87,7 +87,10 @@ export {
 	ReservationCommitLostError,
 	ReservationNotHeldError,
 	type AdoptInput,
+	type AdoptManyInput,
+	type AdoptManyResult,
 	type AdoptResult,
+	type CommitManyResult,
 	type InventoryStore,
 	type ReserveResult,
 } from "./ports/inventory-store.js";
