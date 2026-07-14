@@ -45,6 +45,7 @@ RETURNING on_hand;   -- 0 rows = out of stock. No oversell, no lock.
   cron sweeps for cart/reservation expiry. First-party sites may register the plugin
   trusted (in-process) to stay on the Workers free plan — the plugin still passes the
   full workerd sandbox suite on every CI run, which is the binding contract (ADR-0006).
+  Step-by-step bootstrap guide: [`DEPLOYMENT.md`](./DEPLOYMENT.md).
 
 ## Repository layout
 
