@@ -11,7 +11,7 @@ import {
 	type GrantEntitlementInput,
 	type IdGen,
 } from "@urumi/domain";
-import type { Kysely } from "kysely";
+import { type Kysely, sql } from "kysely";
 import type { Database, EntitlementsTable } from "./schema.js";
 
 export interface KyselyEntitlementStoreOptions {
@@ -69,7 +69,13 @@ export class KyselyEntitlementStore implements EntitlementStore {
 			.where("state", "=", "active")
 			.where("sku", "=", query.sku);
 		if (query.orderId !== undefined) q = q.where("order_id", "=", query.orderId);
-		if (query.buyerRef !== undefined) q = q.where("buyer_ref", "=", query.buyerRef);
+		// buyer_ref carries email semantics: fold case (lower(buyer_ref) = lower(?))
+		// so the session scope's lower-normalized Email matches a mixed-case
+		// checkout ref — identical to KyselyOrderStore.linkGuestOrders. `lower()` is
+		// standard SQL, identical on sqlite and pg.
+		if (query.buyerRef !== undefined) {
+			q = q.where(sql`lower(buyer_ref)`, "=", query.buyerRef.toLowerCase());
+		}
 		// A query with neither scope matches nothing (delivery must be scoped).
 		if (query.orderId === undefined && query.buyerRef === undefined) return false;
 		const row = await q.executeTakeFirst();
