@@ -80,12 +80,14 @@ the public network by external means: an OS firewall, a private network / VPC, o
 loopback-mapped container port (e.g. `-p 127.0.0.1:3000:3000`).
 
 Expose nothing publicly until you enable Stripe; then expose **only** `POST
-/webhooks/stripe` through a reverse-proxy path allowlist. Anything more exposes the open
-write surface described in §4 — acceptable only if you knowingly accept this:
+/webhooks/stripe` through a reverse-proxy path allowlist. Anything more exposes the write
+surface described in §4 — which you close by provisioning `SERVICE_API_TOKEN` on both
+sides (§4). Until that token is set the write surface is open:
 
-> **Interim posture (policy):** until issue #25 lands, treat any deployment whose commerce
-> service is publicly reachable as non-production — test-mode payment credentials only,
-> never live-mode Stripe keys on an open write surface.
+> **Posture:** while `SERVICE_API_TOKEN` is unset, every mutating route is unauthenticated
+> (§4). Treat a publicly reachable service whose gate is still open as non-production —
+> test-mode payment credentials only, never live-mode Stripe keys on an open write surface.
+> Provisioning the token on both sides (§4) closes the gate and lifts this restriction.
 
 ### 2.1 Provision Postgres
 
@@ -148,8 +150,8 @@ Three options, in increasing effort:
 - **Point the Workers site at your Node service.** `sites/staging` happily targets any
   service URL: build it with `COMMERCE_SERVICE_URL=https://your-service.example.com` and
   deploy per §3.2. The service URL must be reachable **from Cloudflare's network** — which
-  conflicts with §2.0's keep-it-private posture unless you expose it deliberately (accept
-  the policy above, or wait for #25).
+  conflicts with §2.0's keep-it-private posture unless you expose it deliberately
+  (provision the `SERVICE_API_TOKEN` write gate per §4 first).
 - **Run an EmDash site on Node.** Follow EmDash's upstream Node deployment guide
   (`deployment/nodejs.mdx` in the [EmDash repo](https://github.com/emdash-cms/emdash)) and
   apply the Urumi deltas from `sites/staging`: register the plugin trusted via a descriptor
@@ -240,12 +242,13 @@ paid plan:
    ```
 
 > **Secrets at this point:** set only `EMDASH_ENCRYPTION_KEY` (on the site, §3.2). Every
-> other secret is optional at first boot, and one — `SERVICE_API_TOKEN` — is actively
-> harmful to set today (§4).
+> other secret is optional at first boot — including `SERVICE_API_TOKEN`, whose write gate
+> you provision in lockstep across the service secret and the plugin's kv once the site is
+> up and claimed (§4).
 >
-> **Interim posture (policy):** until issue #25 lands, treat any deployment whose commerce
-> service is publicly reachable as non-production — test-mode payment credentials only,
-> never live-mode Stripe keys on an open write surface.
+> **Posture:** while `SERVICE_API_TOKEN` is unset the service's write surface is open (§4).
+> Treat a publicly reachable service whose gate is still open as non-production — test-mode
+> payment credentials only, never live-mode Stripe keys on an open write surface.
 
 ### 3.2 The site Worker
 
@@ -349,7 +352,8 @@ cannot be retried in place:
 ## 4. Secrets & tokens checklist
 
 All of these live on the **service** (Node env vars / `wrangler secret put`) except the
-first. On Workers, **every `wrangler secret put` below — on either deployable — needs
+first (site) and the plugin-kv half of `SERVICE_API_TOKEN` (box below). On Workers, **every
+`wrangler secret put` below — on either deployable — needs
 `--config wrangler.local.jsonc`**: without it, wrangler defaults to the tracked template
 and uploads the secret to the placeholder-named Worker, not yours (see the §3.1 asymmetry
 note). In order of appearance in a deployment's life:
@@ -358,7 +362,7 @@ note). In order of appearance in a deployment's life:
 |---|---|---|---|
 | `EMDASH_ENCRYPTION_KEY` | site | yes | before the site's first boot |
 | `INTERNAL_API_TOKEN` | service | Shape A: yes (§2.4); Shape B: for the admin reports/settings UI | any time |
-| `SERVICE_API_TOKEN` | service | **not yet — do not set** | only after issue #25 |
+| `SERVICE_API_TOKEN` | service + plugin kv | to close the write gate | in lockstep, **plugin kv first** (box below) |
 | `STRIPE_WEBHOOK_SECRET` | service | for Stripe payments | before enabling Stripe |
 | `STRIPE_SECRET_KEY` | service | optional | with the webhook secret |
 | `X402_PAYTO` + `X402_FACILITATOR_SECRET` | service | for x402 (non-production only today) | see fail-closed box |
@@ -368,34 +372,39 @@ note). In order of appearance in a deployment's life:
   never echoed into logs; **back it up in a password manager** (it protects the CMS's
   encrypted data — losing it strands that data).
 
-> **`SERVICE_API_TOKEN` — the write gate. Do not set it yet (issue #25).**
+> **`SERVICE_API_TOKEN` — the write gate ([ADR-0007](./adr/0007-dedicated-service-token-header.md)).**
 >
-> When set, every non-GET/HEAD request to the service must carry
-> `Authorization: Bearer <token>`. The storefront plugin's HTTP client **does not send one
-> yet**, so the ordering rule is absolute: set this secret only **after** the plugin threads
-> the same token (#25) — setting it early 401s every storefront cart write.
+> When set, every non-GET/HEAD request to the service must carry the token in the dedicated
+> **`X-Service-Token`** header — *not* `Authorization: Bearer`, which is the customer session
+> credential. The storefront plugin threads it automatically: all three plugin clients read
+> it at runtime from **write-only plugin kv** (`settings:serviceToken`), provisioned by an
+> admin through the masked **"Service token (X-Service-Token)"** field on the plugin's
+> Settings page — the secret never enters the plugin bundle.
 >
-> **Concrete exposure while unset:** on a publicly reachable service URL, every mutating
-> route is unauthenticated — cart creation and line writes, `POST /checkout/orders`,
-> `/inventory/*` mutations, entitlement grants. Anyone who finds the URL can create orders
-> and burn inventory holds. The Worker entry logs a warning once per isolate when the gate
-> is open; **the Node entry is silent** — issue #42 tracks warning parity (fixed end-state:
-> both entries warn, that clause dies).
+> **Provisioning order — do not invert:** set `settings:serviceToken` in this env's plugin
+> kv (the Settings form) **before** setting this env's `SERVICE_API_TOKEN` service secret.
+> The reverse order 401s every storefront call in the window — and the gate covers POST
+> *reads* too (the `getCommerceBatch` behind every PDP/PLP, and the login pre-auth POSTs),
+> so an unprovisioned token breaks catalog rendering and login, not just cart writes. Both
+> are runtime actions — no redeploy — so the window is closable in seconds.
 >
-> **Header collision:** the customer-session routes (`POST /auth/logout` and the
-> `/me/addresses` writes) carry the **customer** session token in the same `Authorization`
-> header — until #25 resolves that collision, enabling the gate also blocks them.
+> **Rotation — lockstep, kv first:** set the new `settings:serviceToken` in plugin kv (the
+> service still accepts the old token), *then* rotate the service secret. Rotating the
+> service secret without updating kv silently 401s every plugin call — and the content-sync
+> hooks are fire-and-forget with **no reconcile cron yet**, so a failed sync is logged and
+> then lost until the product is saved again. The service token is the plugin's most
+> sensitive value: a kv compromise yields the whole write surface.
 >
-> **Interim posture (policy):** until issue #25 lands, treat any deployment whose commerce
-> service is publicly reachable as non-production — test-mode payment credentials only,
-> never live-mode Stripe keys on an open write surface.
+> **While unset the write surface is open:** every mutating route is unauthenticated — cart
+> creation and line writes, `POST /checkout/orders`, `/inventory/*` mutations, entitlement
+> grants — so on a publicly reachable URL anyone who finds it can create orders and burn
+> inventory holds. The Worker entry logs a warning once per isolate when the gate is open;
+> **the Node entry is silent** — issue #42 tracks warning parity. Provision the token (both
+> sides, above) before exposing the service publicly (§2.0, §3.1).
 >
-> Optional Shape B fronting until then: [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/access-controls/applications/http-apps/self-hosted-public-app/)
-> can protect a workers.dev hostname as a self-hosted application (allow only yourself
-> while testing); [WAF custom rules](https://developers.cloudflare.com/waf/custom-rules/)
-> that narrow traffic to the site's egress + the webhook path require a **custom domain**
-> on the service — the same move as issue #32 (§3.5). Shape A: §2.0. Fixed end-state: #25
-> closes, you set the token on both sides, and this box collapses to one table row.
+> **Interplay with `INTERNAL_API_TOKEN`:** routes behind both gates (e.g. `PUT /settings`,
+> the `/admin/*` writes) require **both** headers when both secrets are set — the plugin's
+> admin console forwards `X-Service-Token` alongside its `X-Internal-Token`.
 
 - **`INTERNAL_API_TOKEN`** — the shared secret for the operational surface. Unset, those
   endpoints answer **503** (disabled — never silently open): `POST /internal/expire-holds`,
@@ -406,8 +415,9 @@ note). In order of appearance in a deployment's life:
   The Worker cron path needs no token (it calls the domain directly, §6).
 - **Stripe** — `STRIPE_WEBHOOK_SECRET` wires the Stripe gateway; until set,
   `POST /webhooks/stripe` answers 503. The webhook URL is **public by design**: it is the
-  single exemption from the Bearer write gate, authenticated instead by `Stripe-Signature`
-  HMAC over the raw body (Stripe cannot carry our Bearer token). `STRIPE_SECRET_KEY` is
+  single exemption from the `X-Service-Token` write gate, authenticated instead by
+  `Stripe-Signature` HMAC over the raw body (Stripe cannot carry our token).
+  `STRIPE_SECRET_KEY` is
   optional today — verification needs only the webhook secret.
 
 > **x402 is fail-closed.** The only facilitator the service can currently wire is the
@@ -439,7 +449,7 @@ Node bin and Worker read the **same names by design** — on Workers, plain vars
 | `HOLD_SWEEP_INTERVAL_MS` | Node only | `60000` | self-interval hold-sweep cadence |
 | `EMAIL_DISPATCH_INTERVAL_MS` | Node only | `30000` | self-interval outbox-drain + challenge-prune cadence |
 | `INTERNAL_API_TOKEN` | both | unset ⇒ operational surface 503s | §4 |
-| `SERVICE_API_TOKEN` | both | unset ⇒ write surface **open** | §4 — do not set until #25 |
+| `SERVICE_API_TOKEN` | both | unset ⇒ write surface **open** | §4 — provision on both sides (kv first) to close the gate |
 | `STRIPE_WEBHOOK_SECRET` | both | unset ⇒ webhook 503, gateway unwired | §4 |
 | `STRIPE_SECRET_KEY` | both | unset | §4 — optional |
 | `X402_PAYTO` | both | unset ⇒ x402 not configured | x402 pay-to address |
@@ -480,7 +490,7 @@ reads/writes past it is a database decision, not an app-tier one.
 |---|---|
 | Storefront shows content-only catalog with a notice; service never logs the request | Worker→workers.dev subrequests stubbed 404 — the site must ship `global_fetch_strictly_public` (§3.5), or put a custom domain on the service (#32) |
 | Every SSR request hangs, nothing in logs | `global_fetch_strictly_public` + D1 `session` both on — pairing invariant violated (§3.5); turn `session` off |
-| Storefront cart writes all 401 | `SERVICE_API_TOKEN` set before #25 — unset it (§4) |
+| Storefront calls all 401 (cart writes, and PDP/PLP + login) | `SERVICE_API_TOKEN` set on the service but `settings:serviceToken` not provisioned in plugin kv — set it via the Settings form (§4) |
 | `/internal/*`, `/reports/*`, `PUT /settings` answer 503 | `INTERNAL_API_TOKEN` unset — set it and send `X-Internal-Token` (§4) |
 | `/products` empty right after deploy | Healthy (§1) — sample content lands via the wizard checkbox, not first boot |
 | Stale reads after writes (Shape B) | Hyperdrive query caching left on — recreate the config with `--caching-disabled` (§3.1) |

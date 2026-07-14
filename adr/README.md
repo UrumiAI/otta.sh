@@ -36,6 +36,7 @@ than rewriting history.
 - [0004. Storefront customer auth is magic-link](./0004-customer-auth-mechanism.md) — accepted, refines 0001
 - [0005. The commerce service sends transactional email directly](./0005-transactional-email-transport.md) — accepted, refines 0002
 - [0006. First-party deployments may register the plugin trusted (in-process)](./0006-trusted-in-process-deployment.md) — accepted, refines 0001/0003
+- [0007. The machine write-gate token uses a dedicated `X-Service-Token` header](./0007-dedicated-service-token-header.md) — accepted, refines the `SERVICE_API_TOKEN` write gate
 
 ## Queued (to promote from draft-plans)
 

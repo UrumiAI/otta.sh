@@ -25,7 +25,7 @@ export {
 	type CartStoreHarness,
 	type CartStoreContractOptions,
 } from "./cart-store-contract.js";
-export { InMemoryOrderStore } from "./in-memory-order-store.js";
+export { InMemoryOrderStore, type SeedOrderSummaryRow } from "./in-memory-order-store.js";
 export { InMemoryEntitlementStore } from "./in-memory-entitlement-store.js";
 export {
 	InMemoryPaymentEventStore,

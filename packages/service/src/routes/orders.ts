@@ -15,6 +15,7 @@ import {
 	type Order,
 	orderId as toOrderId,
 	type OrderStore,
+	type OrderSummary,
 	type PaymentGateway,
 	type PaymentIntentHandle,
 	type PaymentMethod,
@@ -123,10 +124,19 @@ export function orderRoutes(deps: OrderServiceDeps): Hono {
 		if (cart.lines.length === 0) return c.json({ ok: false, reason: "CART_EMPTY" }, 409);
 
 		// Resolve each line's snapshot price + tax class (mirrors createOrderFromCart).
+		// Bulk-fetch every line's projection in ONE store round trip (kills the
+		// per-cart-line N+1); brand lazily per line below so a null line's
+		// PRODUCT_NOT_PRICED precedence is unchanged.
+		const pcById = await deps.productCommerce.getManyByProductId(
+			cart.lines
+				.map((line) => line.productId)
+				.filter((id): id is string => id !== null)
+				.map((id) => toProductId(id)),
+		);
 		const lines: TotalsLineInput[] = [];
 		for (const line of cart.lines) {
 			if (line.productId === null) return c.json({ ok: false, reason: "PRODUCT_NOT_PRICED" }, 409);
-			const pc = await deps.productCommerce.getByProductId(toProductId(line.productId));
+			const pc = pcById.get(toProductId(line.productId)) ?? null;
 			if (pc === null || pc.price === null) {
 				return c.json({ ok: false, reason: "PRODUCT_NOT_PRICED" }, 409);
 			}
@@ -194,7 +204,9 @@ export function orderRoutes(deps: OrderServiceDeps): Hono {
 	return app;
 }
 
-/** Wire shape of an order (§7) — totals from `order_totals`, snapshots from lines. */
+/** Wire shape of an order (§7) — totals from `order_totals`, snapshots from lines.
+ *  Extended ADDITIVELY for the admin Orders console with `createdAt` +
+ *  `customerId` (existing consumers ignore unknown fields). */
 export function serializeOrder(order: Order): Record<string, unknown> {
 	return {
 		id: order.id,
@@ -202,7 +214,9 @@ export function serializeOrder(order: Order): Record<string, unknown> {
 		currency: order.currency,
 		paymentMethod: order.paymentMethod,
 		buyerRef: order.buyerRef,
+		customerId: order.customerId,
 		holdExpiresAt: order.holdExpiresAt,
+		createdAt: order.createdAt,
 		reconciliationFlag: order.reconciliationFlag,
 		totals: {
 			currency: order.totals.currency,
@@ -221,6 +235,23 @@ export function serializeOrder(order: Order): Record<string, unknown> {
 			quantity: l.quantity,
 			fulfillmentKind: l.fulfillmentKind,
 		})),
+	};
+}
+
+/** Wire shape of an admin Orders-list row (view-only projection). Money stays an
+ *  integer minor unit + an ISO-4217 currency string; `reconciliationFlag` is the
+ *  boolean list badge (the free-text detail lives only on the full order). */
+export function serializeOrderSummary(summary: OrderSummary): Record<string, unknown> {
+	return {
+		id: summary.id,
+		state: summary.state,
+		currency: summary.currency,
+		buyerRef: summary.buyerRef,
+		customerId: summary.customerId,
+		paymentMethod: summary.paymentMethod,
+		createdAt: summary.createdAt,
+		totalCents: summary.total,
+		reconciliationFlag: summary.reconciliationFlag,
 	};
 }
 

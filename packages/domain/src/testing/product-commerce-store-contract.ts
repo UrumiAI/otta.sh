@@ -680,5 +680,143 @@ export function productCommerceStoreContract(
 			const views = await h.store.listCommerceByIds([pid, pid, pid]);
 			expect(views).toHaveLength(1);
 		});
+
+		// -- Bulk snapshot read: getManyByProductId (the checkout N+1 kill) ------
+		// The batch companion to getByProductId. Unlike listCommerceByIds it is
+		// the RAW row read (full ProductCommerce, no deleted_at/sku/price guards),
+		// so its per-id value must deep-equal getByProductId's for every field —
+		// branded price (Cents + currency), title, taxClass, productKind, all of
+		// it. Missing ids are absent from the Map; duplicates collapse; no order.
+
+		test("getManyByProductId with an empty id list returns an empty Map", async () => {
+			const h = await makeStore();
+			const map = await h.store.getManyByProductId([]);
+			expect(map.size).toBe(0);
+		});
+
+		test("getManyByProductId with a single present id returns a size-1 Map whose value deep-equals getByProductId", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-gm-1");
+			await h.store.upsert(
+				{
+					productId: pid,
+					sku: sku("SKU-GM-1"),
+					price: money(cents(1999), currency("USD")),
+					title: "Widget",
+					taxClass: "standard",
+					productKind: "physical",
+				},
+				idempotencyKey("k1"),
+			);
+
+			const map = await h.store.getManyByProductId([pid]);
+			expect(map.size).toBe(1);
+			// The batch value must be byte-for-byte the single read (review-
+			// strengthened: catches any dropped/drifted field in the batch path).
+			expect(map.get(pid)).toEqual(await h.store.getByProductId(pid));
+		});
+
+		test("getManyByProductId returns, FOR EACH id, a value deep-equal to getByProductId (full ProductCommerce, no field drift)", async () => {
+			const h = await makeStore();
+			const p1 = productId("prod-gm-2a");
+			const p2 = productId("prod-gm-2b");
+			const p3 = productId("prod-gm-2c");
+			await h.store.upsert(
+				{
+					productId: p1,
+					sku: sku("SKU-GM-2A"),
+					price: money(cents(500), currency("USD")),
+					title: "A",
+					taxClass: "standard",
+					productKind: "physical",
+				},
+				idempotencyKey("k1"),
+			);
+			await h.store.upsert(
+				{
+					productId: p2,
+					sku: sku("SKU-GM-2B"),
+					price: money(cents(750), currency("EUR")),
+					title: "B",
+					taxClass: "reduced",
+					productKind: "digital",
+				},
+				idempotencyKey("k2"),
+			);
+			await h.store.upsert(
+				{
+					productId: p3,
+					sku: sku("SKU-GM-2C"),
+					price: money(cents(1234), currency("GBP")),
+					title: "C",
+					productKind: "physical",
+				},
+				idempotencyKey("k3"),
+			);
+
+			const map = await h.store.getManyByProductId([p1, p2, p3]);
+			expect(map.size).toBe(3);
+			// Per-id deep-equality against the single read is the spec: branded
+			// price (Cents + currency), title, taxClass, productKind, every field.
+			for (const pid of [p1, p2, p3]) {
+				expect(map.get(pid)).toEqual(await h.store.getByProductId(pid));
+			}
+		});
+
+		test("getManyByProductId omits MISSING ids (absent, not null) and still returns the present ones — no throw", async () => {
+			const h = await makeStore();
+			const present = productId("prod-gm-3");
+			const missing = productId("prod-gm-3-missing");
+			await h.store.upsert(
+				{ productId: present, sku: sku("SKU-GM-3"), price: money(cents(100), currency("USD")) },
+				idempotencyKey("k1"),
+			);
+
+			const map = await h.store.getManyByProductId([present, missing]);
+			// A miss is ABSENT from the Map — never a null entry (mirrors
+			// getByProductId returning null for a single miss).
+			expect(map.has(missing)).toBe(false);
+			expect(map.get(missing)).toBeUndefined();
+			expect(map.get(present)).toEqual(await h.store.getByProductId(present));
+		});
+
+		test("getManyByProductId collapses duplicate input ids to one entry", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-gm-4");
+			await h.store.upsert(
+				{ productId: pid, sku: sku("SKU-GM-4"), price: money(cents(100), currency("USD")) },
+				idempotencyKey("k1"),
+			);
+
+			const map = await h.store.getManyByProductId([pid, pid, pid]);
+			expect(map.size).toBe(1);
+			expect(map.get(pid)).toEqual(await h.store.getByProductId(pid));
+		});
+
+		test("getManyByProductId is a RAW read: soft-deleted and unpriced rows are STILL returned (it must NOT copy listCommerceByIds's guards)", async () => {
+			const h = await makeStore();
+			const deleted = productId("prod-gm-5-del");
+			const unpriced = productId("prod-gm-5-unpriced");
+			await h.store.upsert(
+				{ productId: deleted, sku: sku("SKU-GM-5"), price: money(cents(100), currency("USD")) },
+				idempotencyKey("k1"),
+			);
+			await h.store.softDelete(deleted, idempotencyKey("del-1"));
+			// "Create, then price" not finished: a bare row with no price yet.
+			await h.store.upsert({ productId: unpriced }, idempotencyKey("k2"));
+
+			const map = await h.store.getManyByProductId([deleted, unpriced]);
+			// A soft-deleted row is present with deletedAt !== null (mirrors
+			// getByProductId; the checkout caller decides PRODUCT_NOT_PRICED, not
+			// the store).
+			const del = map.get(deleted);
+			expect(del).toEqual(await h.store.getByProductId(deleted));
+			expect(del?.deletedAt).not.toBeNull();
+			// An unpriced row is returned too — the store does NOT decide
+			// sellability.
+			const un = map.get(unpriced);
+			expect(un).toEqual(await h.store.getByProductId(unpriced));
+			expect(un?.price).toBeNull();
+		});
 	});
 }

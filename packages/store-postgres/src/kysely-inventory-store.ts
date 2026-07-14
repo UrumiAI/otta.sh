@@ -1,8 +1,11 @@
 import {
 	type AdoptInput,
+	type AdoptManyInput,
+	type AdoptManyResult,
 	type AdoptResult,
 	AdjustReservationMismatchError,
 	type Clock,
+	type CommitManyResult,
 	type IdGen,
 	type IdempotencyKey,
 	type InventoryStore,
@@ -221,6 +224,106 @@ export class KyselyInventoryStore implements InventoryStore {
 			.executeTakeFirst();
 		if (row?.state === "adopted" && row.order_id === input.orderId) return { ok: true };
 		return { ok: false, reason: "RESERVATION_LOST" };
+	}
+
+	/**
+	 * Batched `adopt` (PR B): one order's physical `held → adopted` flips folded
+	 * into a SINGLE guarded `UPDATE … WHERE id IN (:ids) AND state='held' AND
+	 * expires_at > :now`, then ONE classification `SELECT` over the misses. Per-id
+	 * semantics are `adopt`'s, byte-for-byte:
+	 *  - a flipped row ⇒ `adopted`;
+	 *  - a 0-row id that is already `adopted` for THIS order ⇒ idempotent replay,
+	 *    folded into `adopted` — NO `expires_at` predicate on the classification
+	 *    (singular `adopt`'s replay branch ignores it, so an adopted-for-this-order
+	 *    hold past its deadline is still success, never lost);
+	 *  - every other missing id — wrong state, another order, or UNKNOWN (no row) —
+	 *    is `RESERVATION_LOST` (in `lost`), matching singular `adopt` (which returns
+	 *    `RESERVATION_LOST`, not a throw, for an unknown id).
+	 * Empty ids short-circuit (no DB round trip — `IN ()` is invalid SQL).
+	 */
+	async adoptMany(input: AdoptManyInput): Promise<AdoptManyResult> {
+		const { reservationIds, orderId, holdExpiresAt, now } = input;
+		if (reservationIds.length === 0) return { adopted: [], lost: [] };
+
+		const flipped = await this.#db
+			.updateTable("reservations")
+			.set({ state: "adopted", order_id: orderId, expires_at: holdExpiresAt })
+			.where("id", "in", reservationIds)
+			.where("state", "=", "held")
+			.where("expires_at", ">", now)
+			.returning("id")
+			.execute();
+		const adopted = flipped.map((r) => r.id);
+
+		const adoptedSet = new Set(adopted);
+		const missing = reservationIds.filter((id) => !adoptedSet.has(id));
+		if (missing.length === 0) return { adopted, lost: [] };
+
+		const rows = await this.#db
+			.selectFrom("reservations")
+			.select(["id", "state", "order_id"])
+			.where("id", "in", missing)
+			.execute();
+		const rowById = new Map(rows.map((r) => [r.id, r]));
+		const lost: string[] = [];
+		for (const id of missing) {
+			const row = rowById.get(id);
+			// Idempotent replay: adopted-for-THIS-order ⇒ success (no expires_at check,
+			// matching singular adopt). Everything else (incl. unknown) ⇒ lost.
+			if (row !== undefined && row.state === "adopted" && row.order_id === orderId) {
+				adopted.push(id);
+			} else {
+				lost.push(id);
+			}
+		}
+		return { adopted, lost };
+	}
+
+	/**
+	 * Batched `commit` (PR B): a paid order's physical `held|adopted → committed`
+	 * flips folded into a SINGLE guarded `UPDATE … WHERE id IN (:ids) AND state IN
+	 * ('held','adopted')`, then ONE classification `SELECT` over the misses.
+	 * Deliberately order-UNSCOPED, exactly like singular `commit`. Per-id semantics
+	 * are `commit`'s, byte-for-byte:
+	 *  - a flipped row ⇒ benign success (absent from `lost`);
+	 *  - a 0-row id that is already `committed` ⇒ benign idempotent replay (dropped);
+	 *  - a 0-row id in any OTHER existing state (released/failed/…) ⇒ LOST;
+	 *  - a 0-row id with NO row (unknown) ⇒ THROW a bare Error, matching singular
+	 *    `commit`'s `#selectById` — never folded into `lost`.
+	 * Empty ids short-circuit (no DB round trip).
+	 */
+	async commitMany(reservationIds: string[]): Promise<CommitManyResult> {
+		if (reservationIds.length === 0) return { lost: [] };
+
+		const flipped = await this.#db
+			.updateTable("reservations")
+			.set({ state: "committed" })
+			.where("id", "in", reservationIds)
+			.where("state", "in", ["held", "adopted"])
+			.returning("id")
+			.execute();
+		const committedSet = new Set(flipped.map((r) => r.id));
+		const missing = reservationIds.filter((id) => !committedSet.has(id));
+		if (missing.length === 0) return { lost: [] };
+
+		const rows = await this.#db
+			.selectFrom("reservations")
+			.select(["id", "state"])
+			.where("id", "in", missing)
+			.execute();
+		const stateById = new Map(rows.map((r) => [r.id, r.state]));
+		const lost: string[] = [];
+		for (const id of missing) {
+			const state = stateById.get(id);
+			if (state === undefined) {
+				// Unknown id: match singular commit's #selectById, which throws a bare
+				// Error — a truly-unknown id PROPAGATES, never folded into lost.
+				throw new Error(`unknown reservation: ${id}`);
+			}
+			if (state === "committed") continue; // benign idempotent replay
+			lost.push(id);
+		}
+		return { lost };
 	}
 
 	/**

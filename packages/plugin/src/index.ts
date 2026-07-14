@@ -3,17 +3,17 @@
 // clean guard test asserts against.
 export { buildProductDataElements, productDataWidget } from "./admin/product-data-widget.js";
 export { PANEL_STATE_ROUTE } from "./admin/panel-state-route.js";
-// ── Phase 7: admin Reports page + Settings form (plan §6 Steps 6–7) ──────────
+// ── Phase 7: single `admin` dispatch route + Reports page + Settings form ────
+export { ADMIN_ROUTE, createAdminRouteHandler } from "./admin/admin-route.js";
 export {
 	buildReportsBlocks,
 	createReportsPageHandler,
 	REPORTS_PAGE,
-	REPORTS_ROUTE,
 	type ReportsPageInput,
 } from "./admin/reports-page.js";
 export {
 	createSettingsFormHandler,
-	SETTINGS_ROUTE,
+	SETTINGS_PAGE,
 	SETTINGS_SCHEMA,
 	STORE_DISPLAY_NAME_KEY,
 	type SettingsFormInput,
@@ -27,11 +27,30 @@ export {
 	type TopProductWire,
 	type UpdateSettingsResult,
 } from "./admin/reporting-client.js";
+export {
+	createOrdersPageHandler,
+	ORDERS_ACTION_IDS,
+	ORDERS_PAGE,
+	type OrdersPageInput,
+} from "./admin/orders-page.js";
+export {
+	AdminOrdersClient,
+	type OrderDetailResult,
+	type OrderDetailWire,
+	type OrderLineWire,
+	type OrdersListFilter,
+	type OrdersListResult,
+	type OrderSummaryWire,
+	type OrderTotalsWire,
+	type TransitionOrderResult,
+} from "./admin/admin-orders-client.js";
 export { PRODUCT_COMMERCE_ROUTE } from "./admin/product-commerce-route.js";
 export type { ProductCommerceRouteInput } from "./admin/product-commerce-route.js";
 export {
 	ALLOWED_HOSTS,
 	COMMERCE_SERVICE_BASE_URL,
+	SERVICE_TOKEN_KEY,
+	serviceTokenFromKv,
 	URUMI_PLUGIN_CAPABILITIES,
 	URUMI_PLUGIN_ID,
 	URUMI_PLUGIN_VERSION,

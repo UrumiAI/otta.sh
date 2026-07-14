@@ -131,9 +131,20 @@ export async function createOrderFromCart(
 	const currency = cart.currency;
 	const lines: CreateOrderLineInput[] = [];
 	const totalsLines: TotalsLineInput[] = [];
+	// Bulk-fetch every priced line's product projection in ONE store round trip
+	// (kills the per-cart-line N+1). Branding only the non-null ids keeps a null
+	// line's PRODUCT_NOT_PRICED precedence identical to the per-line read: a null
+	// line is never branded here, and each surviving line is re-branded lazily at
+	// its own map lookup below, AFTER its own null guard.
+	const pcById = await deps.productCommerce.getManyByProductId(
+		cart.lines
+			.map((line) => line.productId)
+			.filter((id): id is string => id !== null)
+			.map((id) => brandProductId(id)),
+	);
 	for (const line of cart.lines) {
 		if (line.productId === null) return { ok: false, reason: "PRODUCT_NOT_PRICED" };
-		const pc = await deps.productCommerce.getByProductId(brandProductId(line.productId));
+		const pc = pcById.get(brandProductId(line.productId)) ?? null;
 		if (pc === null || pc.price === null || pc.title === null) {
 			return { ok: false, reason: "PRODUCT_NOT_PRICED" };
 		}
@@ -291,24 +302,27 @@ async function finalizeOrder(
 		},
 	});
 
-	// 2. Adopt each physical line's reservation via the guarded held → adopted flip
-	//    (from the persisted order lines, so a replay re-issues idempotently).
+	// 2. Adopt every physical line's reservation in ONE batched held → adopted flip
+	//    (PR B — checkout-write batching), collected from the persisted order lines
+	//    so a replay re-issues idempotently. Digital lines carry no reservation.
+	//    ANY lost hold aborts the checkout: the already-adopted siblings are left in
+	//    place (not stranded) and healed by expireOrders once the TTL passes.
 	const now = deps.clock.now().toISOString();
-	for (const line of order.lines) {
-		if (line.reservationId === null) continue; // digital: nothing to adopt
-		const adopted = await deps.inventoryStore.adopt({
-			reservationId: line.reservationId,
-			orderId: order.id,
-			holdExpiresAt: order.holdExpiresAt,
-			now,
-		});
-		if (!adopted.ok) {
-			// A lost hold after redemption: synchronously release the coupon (§5)
-			// before surfacing the failure. The pending order row stays and is
-			// healed by expireOrders; the coupon use is freed here.
-			await ctx.onFailure();
-			return { ok: false, reason: "RESERVATION_LOST" };
-		}
+	const physicalReservationIds = order.lines
+		.map((line) => line.reservationId)
+		.filter((id): id is NonNullable<typeof id> => id !== null);
+	const result = await deps.inventoryStore.adoptMany({
+		reservationIds: physicalReservationIds,
+		orderId: order.id,
+		holdExpiresAt: order.holdExpiresAt,
+		now,
+	});
+	if (result.lost.length > 0) {
+		// A lost hold after redemption: synchronously release the coupon (§5) before
+		// surfacing the failure. The pending order row stays and is healed by
+		// expireOrders; the coupon use is freed here.
+		await ctx.onFailure();
+		return { ok: false, reason: "RESERVATION_LOST" };
 	}
 
 	// 3. Secondary fence: flip the cart out of `active` (idempotent on replay).

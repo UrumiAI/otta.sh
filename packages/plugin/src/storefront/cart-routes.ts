@@ -38,7 +38,7 @@
  * Phase 5's session-cookie design, which makes the same now-disproven
  * assumption) — a candidate follow-up ADR, not resolved here.
  */
-import { COMMERCE_SERVICE_BASE_URL } from "../manifest.js";
+import { COMMERCE_SERVICE_BASE_URL, serviceTokenFromKv } from "../manifest.js";
 import type {
 	CartFailureReason,
 	CartLineWire,
@@ -95,9 +95,17 @@ function cartCookieDescriptor(cartId: string): CartCookieDescriptor {
 }
 
 /** One client per invocation (matches `createCommerceLoader`'s
- *  request-scoped lifecycle, pdp-route.ts) — no cross-request state. */
-function createCommerceClient(ctx: PluginContext): HttpCommerceClient {
-	return new HttpCommerceClient({ fetch: ctx.http.fetch, baseUrl: COMMERCE_SERVICE_BASE_URL });
+ *  request-scoped lifecycle, pdp-route.ts) — no cross-request state. Async
+ *  because it awaits the write-gate token from write-only kv (ADR-0007): the
+ *  cart writes (create/add/adjust/remove) are non-GETs the service gate blocks
+ *  without `X-Service-Token`. Undefined ⇒ no header ⇒ pre-gate wire. */
+async function createCommerceClient(ctx: PluginContext): Promise<HttpCommerceClient> {
+	const serviceToken = await serviceTokenFromKv(ctx);
+	return new HttpCommerceClient({
+		fetch: ctx.http.fetch,
+		baseUrl: COMMERCE_SERVICE_BASE_URL,
+		...(serviceToken !== undefined ? { serviceToken } : {}),
+	});
 }
 
 // ── Input shapes (hand-validated — the routes are PUBLIC, ADR-0003) ───────
@@ -181,7 +189,7 @@ export function createCartCreateRouteHandler(): RouteHandler<CartCreateRouteInpu
 			if (raw !== undefined && (typeof raw !== "string" || !CURRENCY_PATTERN.test(raw))) {
 				return { ok: false, error: "INVALID_CURRENCY" } as const;
 			}
-			const client = createCommerceClient(ctx);
+			const client = await createCommerceClient(ctx);
 			const { cartId } = await client.createCart(raw as string | undefined);
 			return { ok: true as const, cartId, cookie: cartCookieDescriptor(cartId) };
 		});
@@ -213,7 +221,7 @@ export function createCartReadRouteHandler(): RouteHandler<CartReadRouteInput> {
 			const cartId = routeCtx.input.cartId;
 			if (!isNonEmptyString(cartId)) return { ok: false, error: "INVALID_CART_ID" } as const;
 
-			const client = createCommerceClient(ctx);
+			const client = await createCommerceClient(ctx);
 			const result = await client.getCart(cartId);
 			if (!result.ok) return { ok: false as const, reason: result.reason };
 			return { ok: true as const, cart: result.cart };
@@ -241,7 +249,7 @@ export function createCartLineAddRouteHandler(): RouteHandler<CartLineAddRouteIn
 			) {
 				return { ok: false, error: "INVALID_INPUT" } as const;
 			}
-			const client = createCommerceClient(ctx);
+			const client = await createCommerceClient(ctx);
 			const result: CartResult<{ line: CartLineWire }> = await client.addCartLine(
 				cartId,
 				sku,
@@ -267,7 +275,7 @@ export function createCartLineUpdateRouteHandler(): RouteHandler<CartLineUpdateR
 			) {
 				return { ok: false, error: "INVALID_INPUT" } as const;
 			}
-			const client = createCommerceClient(ctx);
+			const client = await createCommerceClient(ctx);
 			const result: CartResult<{ line: CartLineWire }> = await client.adjustCartLine(
 				cartId,
 				lineId,
@@ -291,7 +299,7 @@ export function createCartLineRemoveRouteHandler(): RouteHandler<CartLineRemoveR
 			) {
 				return { ok: false, error: "INVALID_INPUT" } as const;
 			}
-			const client = createCommerceClient(ctx);
+			const client = await createCommerceClient(ctx);
 			const result: CartResult<Record<string, never>> = await client.removeCartLine(
 				cartId,
 				lineId,

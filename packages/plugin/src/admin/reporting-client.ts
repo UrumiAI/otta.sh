@@ -55,19 +55,31 @@ export interface ReportingSettingsClientOptions {
 	fetch: HttpAccess["fetch"];
 	baseUrl: string;
 	/** Admin token forwarded as `X-Internal-Token` on the guarded `/reports/*`
-	 *  reads (review J5). Transient route input — never persisted to ctx.kv. */
+	 *  reads (review J5). Received here as a constructor option; the handlers
+	 *  source it from write-only `ctx.kv` (`settings:internalToken`). The client
+	 *  itself never persists it. (The privileged `PUT /settings` write takes its
+	 *  own `adminToken` per-call — see `updateSettings`.) */
 	adminToken?: string;
+	/** The machine write-gate token the service enforces as `X-Service-Token`
+	 *  (ADR-0007), sourced from write-only `ctx.kv` (`settings:serviceToken`).
+	 *  `PUT /settings` is a NON-GET, so the gate blocks it without this when the
+	 *  service secret is set — hence it is attached to the PUT (the `/reports/*`
+	 *  and `GET /settings` reads are gate-exempt, so they carry only the admin
+	 *  token). Undefined ⇒ no header ⇒ byte-identical to the pre-gate wire. */
+	serviceToken?: string;
 }
 
 export class ReportingSettingsClient {
 	readonly #fetch: HttpAccess["fetch"];
 	readonly #baseUrl: string;
 	readonly #adminToken: string | undefined;
+	readonly #serviceToken: string | undefined;
 
 	constructor(options: ReportingSettingsClientOptions) {
 		this.#fetch = options.fetch;
 		this.#baseUrl = options.baseUrl.replace(/\/$/, "");
 		this.#adminToken = options.adminToken;
+		this.#serviceToken = options.serviceToken;
 	}
 
 	async getRevenue(
@@ -123,6 +135,9 @@ export class ReportingSettingsClient {
 			"Idempotency-Key": opts.idempotencyKey,
 		};
 		if (opts.adminToken !== undefined) headers["X-Internal-Token"] = opts.adminToken;
+		// PUT /settings is gated by BOTH the write gate (X-Service-Token) AND the
+		// route's admin token (X-Internal-Token) when both service secrets are set.
+		if (this.#serviceToken !== undefined) headers["X-Service-Token"] = this.#serviceToken;
 		const res = await this.#fetch(`${this.#baseUrl}/settings`, {
 			method: "PUT",
 			headers,
@@ -138,10 +153,23 @@ export class ReportingSettingsClient {
 			!("settings" in parsed) ||
 			parsed.settings === undefined
 		) {
-			const message =
-				parsed !== undefined && "message" in parsed && typeof parsed.message === "string"
+			// Surface the service's own message ONLY for a designed validation
+			// failure (400 + JSON message) — that inline text ("holdTtlMinutes must
+			// be a positive integer") is desirable and shown as-is. For any other
+			// non-ok case (401/403/5xx/non-JSON) fall back to a GENERIC message that
+			// never leaks a raw HTTP status or URL (Part 5 consistency).
+			const validationMessage =
+				res.status === 400 &&
+				parsed !== undefined &&
+				"message" in parsed &&
+				typeof parsed.message === "string"
 					? parsed.message
-					: `settings update failed (HTTP ${res.status})`;
+					: undefined;
+			const message =
+				validationMessage ??
+				// A gate 401 can now stem from EITHER the admin token or the service
+				// token (ADR-0007) — name both so the remedy isn't misdirected (D5).
+				"settings update failed — check the admin token and service token in Settings, and the service connection";
 			return { ok: false, status: res.status, message };
 		}
 		return { ok: true, settings: parsed.settings };

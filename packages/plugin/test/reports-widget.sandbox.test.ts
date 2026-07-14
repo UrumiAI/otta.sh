@@ -8,9 +8,25 @@ import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
 
 // Phase 7 §6 Step 6: the admin Reports Block Kit page, proven under the REAL
 // workerd-on-Node sandbox (not trusted in-process). Data reaches the page ONLY
-// via ctx.http → the stub standing in for @urumi/service.
+// via ctx.http → the stub standing in for @urumi/service. em-dash renders the
+// page by the single `admin` route with a `{type:"page_load", page:"/reports"}`
+// BlockInteraction — NO token in the interaction; the admin token is sourced
+// from write-only ctx.kv (seeded here via the Settings `save-token` action).
 
-const RANGE = { from: "2026-07-10T00:00:00.000Z", to: "2026-07-12T23:59:59.999Z" };
+const ADMIN_TOKEN = "admin-token-xyz";
+
+/** Seed the write-only admin token into the sandbox's ctx.kv via the Settings
+ *  form's `save-token` action (the only way to reach the worker's in-memory kv),
+ *  then clear the stub's recorded requests so the assertions see only the
+ *  reports reads. */
+async function seedAdminToken(sandbox: SandboxHandle, stub: StubCommerceServer): Promise<void> {
+	await sandbox.invokeRoute("admin", {
+		type: "form_submit",
+		action_id: "save-token",
+		values: { internalToken: ADMIN_TOKEN },
+	});
+	stub.requests.length = 0;
+}
 
 function reportsResponder(req: { url: string }): { status: number; body: unknown } {
 	if (req.url.startsWith("/reports/revenue")) {
@@ -60,10 +76,11 @@ describe("Reports admin page (workerd sandbox)", () => {
 			allowedHosts: [stub.host],
 			commerceServiceBaseUrl: stub.baseUrl,
 		});
+		await seedAdminToken(sandbox, stub);
 
-		const outcome = await sandbox.invokeRoute("admin/reports", {
-			...RANGE,
-			adminToken: "admin-token-xyz",
+		const outcome = await sandbox.invokeRoute("admin", {
+			type: "page_load",
+			page: "/reports",
 		});
 		expect("result" in outcome).toBe(true);
 		if (!("result" in outcome)) return;
@@ -91,9 +108,9 @@ describe("Reports admin page (workerd sandbox)", () => {
 			]),
 		);
 		// The admin token was forwarded as X-Internal-Token on every guarded read
-		// (review J5) — the reports surface is admin-authenticated.
+		// (review J5) — sourced from write-only ctx.kv, not the interaction body.
 		for (const req of stub.requests) {
-			expect(req.headers["x-internal-token"]).toBe("admin-token-xyz");
+			expect(req.headers["x-internal-token"]).toBe(ADMIN_TOKEN);
 		}
 	});
 
@@ -106,12 +123,15 @@ describe("Reports admin page (workerd sandbox)", () => {
 			commerceServiceBaseUrl: stub.baseUrl,
 		});
 
-		const outcome = await sandbox.invokeRoute("admin/reports", RANGE);
+		const outcome = await sandbox.invokeRoute("admin", { type: "page_load", page: "/reports" });
 		// Fails CLOSED: a rendered error block, NOT a thrown {error} envelope.
 		expect("result" in outcome).toBe(true);
 		if (!("result" in outcome)) return;
 		const blocks = (outcome.result as { blocks: Array<Record<string, unknown>> }).blocks;
-		expect(blocks.some((b) => b.type === "banner" && b.variant === "error")).toBe(true);
+		const banner = blocks.find((b) => b.type === "banner" && b.variant === "error");
+		expect(banner).toBeDefined();
+		// The generic message never leaks a raw HTTP status/URL (Part 5).
+		expect(String(banner?.text)).not.toMatch(/HTTP \d|\/reports\//);
 		// The allowlist blocked egress: no request ever reached the stub.
 		expect(stub.requests).toHaveLength(0);
 	});
