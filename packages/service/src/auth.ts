@@ -21,6 +21,13 @@ export function tokenMatches(provided: string | undefined, expected: string): bo
  * every other method on every path requires the `X-Service-Token: <token>`
  * header, else 401.
  *
+ * This blanket "GETs stay open" is the READ surface, not a promise that every
+ * GET is anonymous: `GET /entitlements/check` enforces its OWN route-level auth
+ * for the buyerRef scope (X-Internal-Token) so it is not an email existence
+ * oracle — see routes/entitlements.ts and ADR-0008. A GET being past this gate
+ * means only that the service token does not apply; the route may still demand a
+ * session or an internal token.
+ *
  * The machine token lives in its OWN dedicated header (`X-Service-Token`), NOT
  * `Authorization: Bearer` (ADR-0007): `Authorization: Bearer` is owned solely by
  * customer session auth (routes/session-auth.ts, used by `/auth/logout` and the

@@ -1,7 +1,9 @@
 import {
 	cents,
 	currency as toCurrency,
+	type CustomerStore,
 	orderId as toOrderId,
+	type SessionStore,
 	type SettleDeps,
 	settleOrder,
 	sku as toSku,
@@ -11,6 +13,20 @@ import { Hono } from "hono";
 import { entitlementCheckQuery, x402ProofBody } from "../schemas.js";
 import { requireInternalToken } from "./internal-auth.js";
 import { type OrderServiceDeps, serializeOrder } from "./orders.js";
+import { resolveCustomer } from "./session-auth.js";
+
+/**
+ * `entitlementRoutes` needs the session + customer stores (session scope of the
+ * `/check` oracle-close, ADR-0008) on top of `OrderServiceDeps`. Both are
+ * REQUIRED fields on `AppDeps`, satisfied by the spread at the app.ts mount site
+ * (`entitlementRoutes({ ...orderDeps, sessionStore, customerStore })`) — a future
+ * reader wiring this from a narrower deps object must pass them explicitly, like
+ * `productCommerceRoutes`' hand-built subset.
+ */
+export type EntitlementRoutesDeps = OrderServiceDeps & {
+	sessionStore: SessionStore;
+	customerStore: CustomerStore;
+};
 
 /**
  * Entitlement routes (§6/§7):
@@ -18,10 +34,19 @@ import { type OrderServiceDeps, serializeOrder } from "./orders.js";
  *    receives an x402 page-gate proof and runs `settleOrder(x402Gateway,
  *    {kind:"page_gate"})`, which verifies the proof server-side and grants the
  *    entitlement on success.
- *  - `GET /entitlements/check` — delivery authorization; the download route calls
- *    it and serves the file only if an active entitlement exists.
+ *  - `GET /entitlements/check` — delivery authorization with PRESENCE-BASED scope
+ *    precedence (issue #33 / ADR-0008), so it is no longer an unauthenticated
+ *    existence oracle over an email:
+ *      1. `buyerRef` present anywhere ⇒ operator auth (`X-Internal-Token`; 503
+ *         when unconfigured, never silently open) — admin/support tooling only.
+ *      2. else `orderId` present ⇒ open bearer-capability check (the order id is
+ *         an unguessable 122-bit UUID; a Bearer, if any, is ignored — with no
+ *         email in the query there is no oracle).
+ *      3. else valid `Authorization: Bearer <session>` ⇒ session scope; the
+ *         email is derived SERVER-SIDE from the session, never from the query.
+ *      4. else ⇒ 401.
  */
-export function entitlementRoutes(deps: OrderServiceDeps): Hono {
+export function entitlementRoutes(deps: EntitlementRoutesDeps): Hono {
 	const app = new Hono();
 	const settleDeps: SettleDeps = {
 		orderStore: deps.orderStore,
@@ -63,23 +88,55 @@ export function entitlementRoutes(deps: OrderServiceDeps): Hono {
 		return c.json({ ok: false, reason: res.reason }, status);
 	});
 
-	// ACCEPTED RISK (review round G, deferred to Phase 5): this public check is
-	// an enumeration oracle — `buyerRef` is an email/session string, so a caller
-	// can probe whether a given email owns a given sku. Phase 5 replaces
-	// `buyerRef` with unguessable claim tokens tied to customer accounts, which
-	// closes the oracle; until then the exposure is one boolean per (ref, sku)
-	// probe, with no order contents readable.
+	// Presence-based scope precedence closes the former email existence oracle
+	// (issue #33 / ADR-0008). The precedence is keyed on what the request
+	// CONTAINS, never on which scope it best "fits": the store ANDs orderId +
+	// buyerRef, so a shape-based "orderId ⇒ open" rule that forwarded the whole
+	// query would leave a residual "does order X belong to email Y" oracle.
 	app.get("/check", async (c) => {
 		const parsed = entitlementCheckQuery.safeParse(c.req.query());
 		if (!parsed.success) {
 			return c.json({ error: "invalid query", issues: parsed.error.issues }, 400);
 		}
-		const active = await deps.entitlementStore.check({
-			orderId: parsed.data.orderId === undefined ? undefined : toOrderId(parsed.data.orderId),
-			buyerRef: parsed.data.buyerRef,
-			sku: toSku(parsed.data.sku),
-		});
-		return c.json({ ok: true, active }, 200);
+		const sku = toSku(parsed.data.sku);
+
+		// 1. buyerRef present anywhere ⇒ operator-only (X-Internal-Token). Gating
+		//    at the parameter, not the shape: an accompanying orderId is still
+		//    forwarded (ANDed), but only for an authenticated operator.
+		if (parsed.data.buyerRef !== undefined) {
+			const denied = requireInternalToken(c, deps.internalToken);
+			if (denied !== null) return denied;
+			const active = await deps.entitlementStore.check({
+				orderId: parsed.data.orderId === undefined ? undefined : toOrderId(parsed.data.orderId),
+				buyerRef: parsed.data.buyerRef,
+				sku,
+			});
+			return c.json({ ok: true, active }, 200);
+		}
+
+		// 2. else orderId present ⇒ open bearer capability (unguessable order id).
+		if (parsed.data.orderId !== undefined) {
+			const active = await deps.entitlementStore.check({
+				orderId: toOrderId(parsed.data.orderId),
+				sku,
+			});
+			return c.json({ ok: true, active }, 200);
+		}
+
+		// 3. else a valid customer session ⇒ session scope. The buyerRef is the
+		//    session customer's own email (derived server-side, never the query),
+		//    so a customer can only ever probe their own entitlements.
+		const customerId = await resolveCustomer(c, deps.sessionStore);
+		if (customerId !== null) {
+			const customer = await deps.customerStore.get(customerId);
+			if (customer !== null) {
+				const active = await deps.entitlementStore.check({ buyerRef: customer.email, sku });
+				return c.json({ ok: true, active }, 200);
+			}
+		}
+
+		// 4. else no credential for any scope ⇒ closed.
+		return c.json({ ok: false, error: "unauthorized" }, 401);
 	});
 
 	return app;

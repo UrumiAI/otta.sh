@@ -275,15 +275,15 @@ export const x402ProofBody = z.object({
 	signature: z.string().min(1).max(4096),
 });
 
-export const entitlementCheckQuery = z
-	.object({
-		orderId: z.string().min(1).max(200).optional(),
-		buyerRef: z.string().min(1).max(320).optional(),
-		sku: z.string().min(1).max(200),
-	})
-	.refine((q) => q.orderId !== undefined || q.buyerRef !== undefined, {
-		message: "one of orderId or buyerRef is required",
-	});
+// Scope selection (which of orderId / buyerRef / session applies) is resolved in
+// the route, which — unlike a schema — can see the auth headers. `sku` is the
+// only always-required field; the presence-based precedence + per-scope auth
+// live in routes/entitlements.ts (see ADR-0008).
+export const entitlementCheckQuery = z.object({
+	orderId: z.string().min(1).max(200).optional(),
+	buyerRef: z.string().min(1).max(320).optional(),
+	sku: z.string().min(1).max(200),
+});
 
 export type ReserveBody = z.infer<typeof reserveBody>;
 export type CommitBody = z.infer<typeof commitBody>;

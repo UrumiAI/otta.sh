@@ -109,7 +109,16 @@ export function createApp(deps: AppDeps): Hono {
 	const orderDeps = { ...deps, checkoutTtlMs: deps.checkoutTtlMs };
 	app.route("/", orderRoutes(orderDeps));
 	app.route("/webhooks", webhookRoutes(orderDeps));
-	app.route("/entitlements", entitlementRoutes(orderDeps));
+	// sessionStore + customerStore for the /check session scope (ADR-0008); both
+	// are required AppDeps fields, so the spread satisfies EntitlementRoutesDeps.
+	app.route(
+		"/entitlements",
+		entitlementRoutes({
+			...orderDeps,
+			sessionStore: deps.sessionStore,
+			customerStore: deps.customerStore,
+		}),
+	);
 
 	// Phase 5 (§7): storefront customer auth, the authenticated /me surface, the
 	// admin transition, and the outbox dispatcher trigger.
