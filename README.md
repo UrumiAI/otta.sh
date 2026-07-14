@@ -17,10 +17,14 @@ Urumi turns an EmDash site into a store. It ships as two parts:
 
 ## Why two parts
 
-EmDash plugins run sandboxed with no direct DB access and **no atomic write / CAS
-primitive**, so safe inventory decrement is impossible inside the plugin. The commerce
-service holds the transactional database and performs the one atomic operation that
-matters:
+**The biggest blocker right now is a missing primitive: EmDash's plugin sandbox has no
+atomic write / compare-and-set / transaction.** Plugins run with no direct DB access — all
+data crosses a capability-scoped RPC bridge as JSON copies — and `ctx.storage` is an
+unconditional upsert whose declared unique indexes are silently downgraded. So a safe
+inventory decrement (read-then-write across two bridge calls) always races under
+concurrency, and nothing in the plugin surface closes it. Until that primitive exists,
+correct commerce needs a transactional database off to the side. The commerce service
+holds it and performs the one atomic operation that matters:
 
 ```sql
 UPDATE inventory SET on_hand = on_hand - :q
