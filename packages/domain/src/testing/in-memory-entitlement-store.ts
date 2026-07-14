@@ -43,7 +43,15 @@ export class InMemoryEntitlementStore implements EntitlementStore {
 		for (const e of this.#byGrantKey.values()) {
 			if (e.state !== "active" || e.sku !== query.sku) continue;
 			if (query.orderId !== undefined && e.orderId !== query.orderId) continue;
-			if (query.buyerRef !== undefined && e.buyerRef !== query.buyerRef) continue;
+			// buyer_ref carries email semantics — fold case so the session scope's
+			// lower-normalized Email matches a mixed-case checkout ref (mirrors
+			// OrderStore.linkGuestOrders; the Kysely adapter folds with lower()).
+			if (
+				query.buyerRef !== undefined &&
+				e.buyerRef.toLowerCase() !== query.buyerRef.toLowerCase()
+			) {
+				continue;
+			}
 			if (query.orderId === undefined && query.buyerRef === undefined) continue;
 			return true;
 		}

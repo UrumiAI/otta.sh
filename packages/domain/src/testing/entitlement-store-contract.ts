@@ -47,6 +47,21 @@ export function entitlementStoreContract(
 			expect(await store.check({ buyerRef: "buyer@example.com", sku: sku("OTHER") })).toBe(false);
 		});
 
+		// buyer_ref carries EMAIL semantics (the port doc + every fixture): a
+		// case-distinct ref is the SAME principal, so check folds case like
+		// OrderStore.linkGuestOrders — the session scope derives a lower-normalized
+		// Email from the session and must hit an entitlement granted from a
+		// mixed-case checkout buyer_ref. Non-email refs (hex wallet / opaque x402
+		// tokens) lower injectively, so folding stays safe. ASCII-cased fixture:
+		// SQLite lower() folds ASCII only vs JS toLowerCase full Unicode — the same
+		// accepted divergence as linkGuestOrders.
+		test("check by buyerRef is case-insensitive (email semantics)", async () => {
+			const { store } = await makeHarness();
+			await store.grant(grantInput({ buyerRef: "Buyer@Example.COM" }));
+			expect(await store.check({ buyerRef: "buyer@example.com", sku: sku("DIG-1") })).toBe(true);
+			expect(await store.check({ buyerRef: "BUYER@EXAMPLE.COM", sku: sku("DIG-1") })).toBe(true);
+		});
+
 		test("grant is idempotent under grantIdempotencyKey — a replay grants once", async () => {
 			const { store } = await makeHarness();
 			const first = await store.grant(grantInput());
