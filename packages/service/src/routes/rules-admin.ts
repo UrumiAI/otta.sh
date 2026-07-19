@@ -50,18 +50,29 @@ export interface RulesAdminDeps {
 
 /**
  * Phase 6 admin CRUD for shipping / tax / coupon config (§6). Each endpoint is a
- * 1:1 serialization of a store method; writes require the privileged internal
- * token (same mechanism as the Phase-5 admin transition). Money on the wire is
- * integer minor units, branded via `cents()`/`currency()` at the boundary; rates
- * are integer basis points.
+ * 1:1 serialization of a store method; EVERY endpoint — reads and writes alike —
+ * requires the privileged internal token (same mechanism as the Phase-5 admin
+ * transition and the `/reports/*` reads), because this is merchant config, not
+ * public catalog data. The GET reads in particular expose coupon amounts, caps,
+ * usage limits and live `usesCount`, so they must not be reachable ungated (the
+ * app-level SERVICE_API_TOKEN write gate exempts GET/HEAD, so it does NOT cover
+ * them — this guard does). Money on the wire is integer minor units, branded via
+ * `cents()`/`currency()` at the boundary; rates are integer basis points.
  */
 export function rulesAdminRoutes(deps: RulesAdminDeps): Hono {
 	const app = new Hono();
 
-	// -- Shipping --------------------------------------------------------------
-	app.post("/shipping/zones", async (c) => {
+	// Admin guard on EVERY /admin (rules) route — reads included (merchant
+	// shipping/tax/coupon config). Mirrors the `/reports/*` blanket guard; keeps
+	// any future route protected by default rather than opt-in per handler.
+	app.use("/*", async (c, next) => {
 		const denied = requireInternalToken(c, deps.internalToken);
 		if (denied !== null) return denied;
+		await next();
+	});
+
+	// -- Shipping --------------------------------------------------------------
+	app.post("/shipping/zones", async (c) => {
 		const parsed = shippingZoneBody.safeParse(await readJson(c));
 		if (!parsed.success) return c.json({ error: "invalid request body" }, 400);
 		const zone = await deps.shippingRules.createZone({
@@ -77,8 +88,6 @@ export function rulesAdminRoutes(deps: RulesAdminDeps): Hono {
 	});
 
 	app.post("/shipping/zones/:zoneId/methods", async (c) => {
-		const denied = requireInternalToken(c, deps.internalToken);
-		if (denied !== null) return denied;
 		const params = zonePathParams.safeParse(c.req.param());
 		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
 		const parsed = shippingMethodBody.safeParse(await readJson(c));
@@ -102,8 +111,6 @@ export function rulesAdminRoutes(deps: RulesAdminDeps): Hono {
 	});
 
 	app.post("/shipping/methods/:methodId/rates", async (c) => {
-		const denied = requireInternalToken(c, deps.internalToken);
-		if (denied !== null) return denied;
 		const params = methodPathParams.safeParse(c.req.param());
 		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
 		const parsed = shippingRateBody.safeParse(await readJson(c));
@@ -132,8 +139,6 @@ export function rulesAdminRoutes(deps: RulesAdminDeps): Hono {
 
 	// -- Tax -------------------------------------------------------------------
 	app.post("/tax/classes", async (c) => {
-		const denied = requireInternalToken(c, deps.internalToken);
-		if (denied !== null) return denied;
 		const parsed = taxClassBody.safeParse(await readJson(c));
 		if (!parsed.success) return c.json({ error: "invalid request body" }, 400);
 		const cls = await deps.taxRules.createClass({ id: parsed.data.id, name: parsed.data.name });
@@ -145,8 +150,6 @@ export function rulesAdminRoutes(deps: RulesAdminDeps): Hono {
 	});
 
 	app.post("/tax/rates", async (c) => {
-		const denied = requireInternalToken(c, deps.internalToken);
-		if (denied !== null) return denied;
 		const parsed = taxRateBody.safeParse(await readJson(c));
 		if (!parsed.success) return c.json({ error: "invalid request body" }, 400);
 		const rate = await deps.taxRules.createRate({
@@ -167,8 +170,6 @@ export function rulesAdminRoutes(deps: RulesAdminDeps): Hono {
 
 	// -- Coupons ---------------------------------------------------------------
 	app.post("/coupons", async (c) => {
-		const denied = requireInternalToken(c, deps.internalToken);
-		if (denied !== null) return denied;
 		const parsed = couponBody.safeParse(await readJson(c));
 		if (!parsed.success)
 			return c.json({ error: "invalid request body", issues: parsed.error.issues }, 400);
