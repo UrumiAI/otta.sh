@@ -128,6 +128,38 @@ function buildProductCommerceHarness(db: Kysely<Database>): ProductCommerceStore
 				.onConflict((oc) => oc.column("sku").doUpdateSet({ on_hand: qty }))
 				.execute();
 		},
+		// Admin-UX Increment 2: a direct `product_commerce` insert (mirrors
+		// `buildOrderStoreHarness.seedOrder`) so the admin-list contract can pin
+		// an EXACT `created_at` per row — the fake, sqlite, and pg then exercise
+		// the identical `listProducts` spec.
+		async seedProduct(row) {
+			await db
+				.insertInto("product_commerce")
+				.values({
+					product_id: row.id,
+					sku: row.sku ?? null,
+					price_cents: row.priceCents ?? null,
+					price_currency:
+						row.priceCents !== undefined && row.priceCents !== null
+							? (row.currency ?? "USD")
+							: null,
+					title: row.title ?? null,
+					tax_class: null,
+					weight_grams: null,
+					length_mm: null,
+					width_mm: null,
+					height_mm: null,
+					product_kind: row.productKind ?? "physical",
+					active: (row.active ?? false) ? 1 : 0,
+					deleted_at: row.deletedAt ?? null,
+					idempotency_key: `seed-${row.id}`,
+					content_updated_at: null,
+					active_updated_at: null,
+					created_at: row.createdAt,
+					updated_at: row.createdAt,
+				})
+				.execute();
+		},
 	};
 }
 

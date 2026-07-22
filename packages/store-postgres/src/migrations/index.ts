@@ -14,6 +14,7 @@ import { migration0011ReconciliationResolution } from "./0011_reconciliation_res
 import { migration0012OrderFulfillment } from "./0012_order_fulfillment.js";
 import { migration0013OrderCancellation } from "./0013_order_cancellation.js";
 import { migration0014OrderEvents } from "./0014_order_events.js";
+import { migration0015ProductCommerceAdminListIndices } from "./0015_product_commerce_admin_list_indices.js";
 
 /** Ordered, append-only migration list (forward-only). */
 const migrations: Record<string, Migration> = {
@@ -31,6 +32,7 @@ const migrations: Record<string, Migration> = {
 	"0012_order_fulfillment": migration0012OrderFulfillment,
 	"0013_order_cancellation": migration0013OrderCancellation,
 	"0014_order_events": migration0014OrderEvents,
+	"0015_product_commerce_admin_list_indices": migration0015ProductCommerceAdminListIndices,
 };
 
 export const migrationProvider: MigrationProvider = {

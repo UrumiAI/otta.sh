@@ -344,6 +344,19 @@ export class KyselyInventoryStore implements InventoryStore {
 			.execute();
 	}
 
+	/** Additive (admin-UX Increment 2, product detail): a bare `SELECT on_hand
+	 *  FROM inventory WHERE sku = :sku` — a single-row read, no join, no
+	 *  idempotency key. A missing row reads as `0` (mirrors `listCommerceByIds`'s
+	 *  LEFT JOIN "no row ⇒ out of stock" semantics). */
+	async getOnHand(sku: string): Promise<number> {
+		const row = await this.#db
+			.selectFrom("inventory")
+			.select("on_hand")
+			.where("sku", "=", sku)
+			.executeTakeFirst();
+		return row?.on_hand ?? 0;
+	}
+
 	async adjust(reservationId: string, newQty: number, key: IdempotencyKey): Promise<ReserveResult> {
 		if (!Number.isSafeInteger(newQty) || newQty <= 0) {
 			throw new RangeError(`adjust() requires a positive integer newQty, got ${String(newQty)}`);

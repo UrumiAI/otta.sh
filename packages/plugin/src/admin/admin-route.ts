@@ -5,6 +5,12 @@ import {
 	ORDERS_PAGE,
 	type OrdersPageInput,
 } from "./orders-page.js";
+import {
+	createProductsPageHandler,
+	PRODUCTS_ACTION_IDS,
+	PRODUCTS_PAGE,
+	type ProductsPageInput,
+} from "./products-page.js";
 import { createReportsPageHandler, REPORTS_PAGE, type ReportsPageInput } from "./reports-page.js";
 import {
 	createSettingsFormHandler,
@@ -48,6 +54,7 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 	const reports = createReportsPageHandler();
 	const settings = createSettingsFormHandler();
 	const orders = createOrdersPageHandler();
+	const products = createProductsPageHandler();
 
 	return async (routeCtx, ctx) => {
 		const input = routeCtx.input;
@@ -55,7 +62,7 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 		const page = typeof input.page === "string" ? input.page : undefined;
 		const actionId = typeof input.action_id === "string" ? input.action_id : undefined;
 
-		// 1–3. GATE page branches on `type === "page_load"` (em-dash's reference
+		// 1–4. GATE page branches on `type === "page_load"` (em-dash's reference
 		// returns blocks-empty for a block_action that happens to carry a page).
 		if (type === "page_load" && page === REPORTS_PAGE.path) {
 			return reports(routeCtx as SandboxedRouteContext<ReportsPageInput>, ctx);
@@ -66,19 +73,26 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 		if (type === "page_load" && page === ORDERS_PAGE.path) {
 			return orders(routeCtx as SandboxedRouteContext<OrdersPageInput>, ctx);
 		}
+		if (type === "page_load" && page === PRODUCTS_PAGE.path) {
+			return products(routeCtx as SandboxedRouteContext<ProductsPageInput>, ctx);
+		}
 
-		// 4. Action interactions (block_action/form_submit) carry an action_id and
-		// no page — route each page's actions to its handler. Every Orders action is
-		// namespaced `orders:*` and listed in ORDERS_ACTION_IDS (MOD-2), so none
-		// falls through to the blocks-empty fallback below.
+		// 5. Action interactions (block_action/form_submit) carry an action_id and
+		// no page — route each page's actions to its handler. Every Orders/Products
+		// action is namespaced `orders:*`/`products:*` and listed in
+		// ORDERS_ACTION_IDS/PRODUCTS_ACTION_IDS (MOD-2), so none falls through to
+		// the blocks-empty fallback below.
 		if (actionId !== undefined && SETTINGS_ACTION_IDS.has(actionId)) {
 			return settings(routeCtx as SandboxedRouteContext<SettingsFormInput>, ctx);
 		}
 		if (actionId !== undefined && ORDERS_ACTION_IDS.has(actionId)) {
 			return orders(routeCtx as SandboxedRouteContext<OrdersPageInput>, ctx);
 		}
+		if (actionId !== undefined && PRODUCTS_ACTION_IDS.has(actionId)) {
+			return products(routeCtx as SandboxedRouteContext<ProductsPageInput>, ctx);
+		}
 
-		// 5. Fallback — em-dash house style for an unrecognized interaction.
+		// 6. Fallback — em-dash house style for an unrecognized interaction.
 		return { blocks: [] };
 	};
 }

@@ -265,6 +265,11 @@ export type {
 	ProductCommerceStore,
 	ProductCommerceView,
 	ProductKind,
+	ProductListCursor,
+	ProductListFilter,
+	ProductListPage,
+	ProductListResult,
+	ProductSummary,
 	UpsertProductCommerceInput,
 } from "./ports/product-commerce-store.js";
 export { MissingProductIdError, SkuConflictError } from "./product-commerce/errors.js";

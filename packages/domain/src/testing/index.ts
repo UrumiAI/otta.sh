@@ -13,6 +13,7 @@ export {
 export {
 	InMemoryProductCommerceStore,
 	type InMemoryProductCommerceStoreOptions,
+	type SeedProductSummaryRow,
 } from "./in-memory-product-commerce-store.js";
 export {
 	productCommerceStoreContract,

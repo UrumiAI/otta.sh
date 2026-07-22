@@ -14,9 +14,20 @@ import {
 	type ProductCommerceView,
 	type ProductId,
 	type ProductKind,
+	type ProductListFilter,
+	type ProductListPage,
+	type ProductListResult,
+	type ProductSummary,
 	type UpsertProductCommerceInput,
 } from "@urumi/domain";
-import { type Kysely, sql, type SqlBool } from "kysely";
+import {
+	type Expression,
+	expressionBuilder,
+	type ExpressionBuilder,
+	type Kysely,
+	sql,
+	type SqlBool,
+} from "kysely";
 import type { Database, ProductCommerceTable } from "./schema.js";
 
 export interface KyselyProductCommerceStoreOptions {
@@ -353,6 +364,79 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 			.execute();
 	}
 
+	/**
+	 * Admin Products console list (view-only; port doc): a SINGLE SELECT over
+	 * `product_commerce` alone — no `inventory` join, so the list never N+1s
+	 * into stock per row (the detail leaf's single-sku `InventoryStore.
+	 * getOnHand` read covers that). Keyset pagination on `(created_at DESC,
+	 * product_id DESC)`, byte-for-byte mirroring `listOrders`: fetch `limit + 1`
+	 * to detect a next page, emit `nextCursor` from the last RETURNED row.
+	 * `created_at` is fixed-width ISO-8601 text ⇒ lexical order IS chronological,
+	 * so the raw text comparisons below are dialect-identical (no casts) across
+	 * better-sqlite3 and pg. Always excludes soft-deleted rows (port doc).
+	 */
+	async listProducts(filter: ProductListFilter, page: ProductListPage): Promise<ProductListResult> {
+		let q = this.#db
+			.selectFrom("product_commerce")
+			.select([
+				"product_commerce.product_id as product_id",
+				"product_commerce.sku as sku",
+				"product_commerce.title as title",
+				"product_commerce.price_cents as price_cents",
+				"product_commerce.price_currency as price_currency",
+				"product_commerce.product_kind as product_kind",
+				"product_commerce.active as active",
+				"product_commerce.created_at as created_at",
+			])
+			.where("product_commerce.deleted_at", "is", null);
+
+		const conds = productFilterConditions(filter);
+		if (conds.length > 0) q = q.where((eb) => eb.and(conds));
+		if (page.cursor !== undefined && page.cursor !== null) {
+			const cursor = page.cursor;
+			// (created_at < :c) OR (created_at = :c AND product_id < :cid) —
+			// everything strictly "after" the cursor position under
+			// `created_at DESC, product_id DESC`.
+			q = q.where((eb) =>
+				eb.or([
+					eb("product_commerce.created_at", "<", cursor.createdAt),
+					eb.and([
+						eb("product_commerce.created_at", "=", cursor.createdAt),
+						eb("product_commerce.product_id", "<", cursor.productId),
+					]),
+				]),
+			);
+		}
+
+		const rows = await q
+			.orderBy("product_commerce.created_at", "desc")
+			.orderBy("product_commerce.product_id", "desc")
+			.limit(page.limit + 1)
+			.execute();
+
+		const hasMore = rows.length > page.limit;
+		const returned = hasMore ? rows.slice(0, page.limit) : rows;
+		const last = returned.at(-1);
+		const nextCursor =
+			hasMore && last !== undefined
+				? { createdAt: last.created_at, productId: toProductId(last.product_id) }
+				: null;
+
+		const products: ProductSummary[] = returned.map((r) => ({
+			productId: toProductId(r.product_id),
+			sku: r.sku === null ? null : toSku(r.sku),
+			title: r.title,
+			price:
+				r.price_cents === null || r.price_currency === null
+					? null
+					: money(cents(r.price_cents), currency(r.price_currency)),
+			productKind: r.product_kind as ProductKind,
+			active: r.active === 1,
+			createdAt: r.created_at,
+		}));
+		return { products, nextCursor };
+	}
+
 	async #selectByProductId(productId: string): Promise<ProductCommerceTable | undefined> {
 		return this.#db
 			.selectFrom("product_commerce")
@@ -416,4 +500,44 @@ function isLiveSkuUniqueViolation(err: unknown): boolean {
 		);
 	}
 	return false;
+}
+
+/**
+ * The ONE `ProductListFilter` predicate `listProducts` builds from (mirrors
+ * `orderFilterConditions` — a single builder so semantics can never drift).
+ * Returns standalone expressions (a detached `expressionBuilder`) to AND onto
+ * the query. `search` matches EITHER an exact-lower sku OR a case-insensitive
+ * substring of `title` (port doc — deliberately diverges from `OrderListFilter
+ * .search`'s exact-only semantics); a NULL `sku`/`title` simply fails its half
+ * of the OR (SQL `NULL LIKE …` / `NULL = …` is unknown ⇒ false), never a throw.
+ */
+function productFilterConditions(filter: ProductListFilter): Expression<SqlBool>[] {
+	const eb: ExpressionBuilder<Database, "product_commerce"> = expressionBuilder();
+	const conds: Expression<SqlBool>[] = [];
+	if (filter.active !== undefined) {
+		conds.push(eb("product_commerce.active", "=", filter.active ? 1 : 0));
+	}
+	if (filter.productKind !== undefined) {
+		conds.push(eb("product_commerce.product_kind", "=", filter.productKind));
+	}
+	if (filter.search !== undefined) {
+		const search = filter.search;
+		const likePattern = `%${escapeLikePattern(search)}%`;
+		conds.push(
+			eb.or([
+				eb(sql`lower(product_commerce.sku)`, "=", search.toLowerCase()),
+				sql<SqlBool>`lower(product_commerce.title) like lower(${likePattern}) escape '\\'`,
+			]),
+		);
+	}
+	return conds;
+}
+
+/** Escape a raw user string for safe embedding in a SQL `LIKE` pattern —
+ *  `\`, `%`, and `_` are LIKE metacharacters (the escape char first, so it
+ *  never double-escapes itself). Portable across pg and better-sqlite3, both
+ *  of which support `LIKE … ESCAPE '\'`. A search for a literal `%`/`_` (e.g.
+ *  a title like "50% off") must match literally, never as a wildcard. */
+function escapeLikePattern(value: string): string {
+	return value.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
 }

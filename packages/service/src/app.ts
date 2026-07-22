@@ -145,6 +145,9 @@ export function createApp(deps: AppDeps): Hono {
 			customerStore: deps.customerStore,
 			addressStore: deps.addressStore,
 			sessionStore: deps.sessionStore,
+			// Admin-UX Increment 2: the Products console (view-only enumerate + detail).
+			productCommerce: deps.productCommerce,
+			inventoryStore: deps.store,
 			internalToken: deps.internalToken,
 		}),
 	);

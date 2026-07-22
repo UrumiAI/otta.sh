@@ -287,6 +287,12 @@ export class InMemoryInventoryStore implements InventoryStore {
 		this.#onHand.set(sku, qty);
 	}
 
+	/** Additive (admin-UX Increment 2): a bare read-only `on_hand` lookup — a
+	 *  sku with no row reads as `0`, mirroring the store's LEFT JOIN semantics. */
+	async getOnHand(sku: string): Promise<number> {
+		return this.#onHand.get(sku) ?? 0;
+	}
+
 	// -- test surface ---------------------------------------------------------
 
 	seed(sku: string, onHand: number): void {

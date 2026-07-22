@@ -44,6 +44,19 @@ export {
 	type OrderTotalsWire,
 	type TransitionOrderResult,
 } from "./admin/admin-orders-client.js";
+export {
+	createProductsPageHandler,
+	PRODUCTS_ACTION_IDS,
+	PRODUCTS_PAGE,
+	type ProductsPageInput,
+} from "./admin/products-page.js";
+export {
+	AdminProductsClient,
+	type ProductDetailWire,
+	type ProductsListFilter,
+	type ProductsListResult,
+	type ProductSummaryWire,
+} from "./admin/admin-products-client.js";
 export { PRODUCT_COMMERCE_ROUTE } from "./admin/product-commerce-route.js";
 export type { ProductCommerceRouteInput } from "./admin/product-commerce-route.js";
 export {

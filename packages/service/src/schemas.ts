@@ -371,6 +371,37 @@ export const orderListFilterSchema = z.object({
 export type OrdersListQuery = z.infer<typeof ordersListQuery>;
 export type OrderListFilterParsed = z.infer<typeof orderListFilterSchema>;
 
+// Admin Products console: view-only list query (admin-UX Increment 2). Mirrors
+// `ordersListQuery`'s shape: `limit` coerced + clamped to 1..100 (default 25),
+// `cursor` the opaque base64url keyset token. No date window (products aren't
+// filtered by creation date in this slice — see the port doc's ordering note);
+// `active` is a single boolean (a two-value axis, unlike orders' multi-state
+// `states` CSV); `search` matches EITHER an exact sku OR a substring of title
+// (the store's shared predicate, port doc).
+export const productKindEnum = z.enum(["physical", "digital"]);
+
+export const productsListQuery = z.object({
+	active: z.enum(["true", "false"]).optional(),
+	productKind: productKindEnum.optional(),
+	search: z.string().min(1).max(200).optional(),
+	cursor: z.string().min(1).max(1000).optional(),
+	limit: z.coerce.number().int().min(1).max(100).optional().default(25),
+});
+
+/** Validates the FILTER object carried inside a decoded opaque product-list
+ *  cursor (MOD-1: re-validate the decoded filter through zod before trusting
+ *  it) — mirrors `orderListFilterSchema`. */
+export const productListFilterSchema = z.object({
+	active: z.boolean().optional(),
+	productKind: productKindEnum.optional(),
+	search: z.string().min(1).max(200).optional(),
+});
+
+export type ProductsListQuery = z.infer<typeof productsListQuery>;
+export type ProductListFilterParsed = z.infer<typeof productListFilterSchema>;
+
+export const productPathParams = z.object({ productId: idParam });
+
 const addressFields = {
 	kind: z.enum(["billing", "shipping"]),
 	name: z.string().min(1).max(200),

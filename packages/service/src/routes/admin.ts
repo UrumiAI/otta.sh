@@ -6,6 +6,7 @@ import {
 	getOrderCustomerContext,
 	getOrderTimeline,
 	idempotencyKey as toIdempotencyKey,
+	type InventoryStore,
 	legalNextStates,
 	listOrderNotes,
 	type OrderCustomerContext,
@@ -17,6 +18,12 @@ import {
 	type OrderNotesStore,
 	type OrderState,
 	type OrderStore,
+	type ProductCommerce,
+	type ProductCommerceStore,
+	productId as toProductId,
+	type ProductListCursor,
+	type ProductListFilter,
+	type ProductSummary,
 	recordFulfillment,
 	resolveReconciliation,
 	type SessionStore,
@@ -31,6 +38,9 @@ import {
 	orderPathParams,
 	ordersListQuery,
 	orderStateEnum,
+	productListFilterSchema,
+	productPathParams,
+	productsListQuery,
 	recordFulfillmentBody,
 	resolveReconciliationBody,
 	transitionBody,
@@ -46,6 +56,11 @@ export interface AdminRoutesDeps {
 	customerStore: CustomerStore;
 	addressStore: AddressStore;
 	sessionStore: SessionStore;
+	// Admin Products console (admin-UX Increment 2) — view-only enumerate + detail.
+	productCommerce: ProductCommerceStore;
+	/** The detail leaf's single-sku stock read (`getOnHand`) — never used by the
+	 *  list, which must not N+1 into inventory per row (port doc). */
+	inventoryStore: InventoryStore;
 	/** Reuses the existing service privileged auth (X-Internal-Token). Phase 5
 	 *  introduces no separate admin identity (Risk 7): the internal token is the
 	 *  service's privileged mechanism; a real admin panel calls this with it. */
@@ -128,6 +143,81 @@ export function adminRoutes(deps: AdminRoutesDeps): Hono {
 			},
 			200,
 		);
+	});
+
+	// -- Admin Products console: view-only list + detail (admin-UX Increment 2) --
+	// Mirrors the Orders console's shape 1:1 (internal-token guarded reads, the
+	// same opaque-cursor-carries-filter-and-limit encoding, MOD-1 fail-closed
+	// decode). The list NEVER joins inventory (no N+1 into stock per row — port
+	// doc); the detail leaf reads the ONE product's stock via a single
+	// `InventoryStore.getOnHand` call.
+
+	app.get("/products", async (c) => {
+		const denied = requireInternalToken(c, deps.internalToken);
+		if (denied !== null) return denied;
+
+		const parsed = productsListQuery.safeParse(c.req.query());
+		if (!parsed.success)
+			return c.json({ error: "invalid query", issues: parsed.error.issues }, 400);
+		const q = parsed.data;
+
+		let filter: ProductListFilter;
+		let limit: number;
+		let cursorPos: ProductListCursor | null;
+
+		if (q.cursor !== undefined) {
+			// Paged request: the opaque cursor carries the keyset POSITION plus the
+			// active filter (so filters survive paging) plus the page limit. Decoding
+			// MUST fail CLOSED to a 400 — a malformed/tampered/garbage token never
+			// 500s (MOD-1, mirrors the Orders list). The decoded filter is
+			// RE-VALIDATED through zod and the decoded limit RE-CLAMPED server-side
+			// (never trusted past max=100).
+			const decoded = decodeProductCursor(q.cursor);
+			if (decoded === null) return c.json({ error: "invalid cursor" }, 400);
+			const filterParsed = productListFilterSchema.safeParse(decoded.filter);
+			const posParsed = productCursorPosOf(decoded.pos);
+			if (!filterParsed.success || posParsed === null) {
+				return c.json({ error: "invalid cursor" }, 400);
+			}
+			filter = toProductFilter(filterParsed.data);
+			cursorPos = posParsed;
+			limit = clampLimit(decoded.limit, q.limit);
+		} else {
+			filter = toProductFilter({
+				active: q.active === undefined ? undefined : q.active === "true",
+				productKind: q.productKind,
+				search: q.search,
+			});
+			cursorPos = null;
+			limit = q.limit;
+		}
+
+		const result = await deps.productCommerce.listProducts(filter, { cursor: cursorPos, limit });
+		const nextCursor =
+			result.nextCursor === null ? null : encodeProductCursor(result.nextCursor, filter, limit);
+		return c.json(
+			{ ok: true, products: result.products.map(serializeProductSummary), nextCursor },
+			200,
+		);
+	});
+
+	app.get("/products/:productId", async (c) => {
+		const denied = requireInternalToken(c, deps.internalToken);
+		if (denied !== null) return denied;
+
+		const params = productPathParams.safeParse(c.req.param());
+		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
+		const product = await deps.productCommerce.getByProductId(toProductId(params.data.productId));
+		if (product === null || product.deletedAt !== null) {
+			// A soft-deleted product reads as "not found" on the admin detail, same
+			// as an unknown id — there is no admin surface for browsing/restoring a
+			// tombstone yet (mirrors listProducts's always-excludes-deleted rule).
+			return c.json({ ok: false, reason: "PRODUCT_NOT_FOUND" }, 404);
+		}
+		// A single-sku read — never a per-row list join (port doc). A skuless
+		// "create then price" row has no sku to look up; stock reads as `0`.
+		const onHand = product.sku === null ? 0 : await deps.inventoryStore.getOnHand(product.sku);
+		return c.json({ ok: true, product: serializeProductDetail(product, onHand) }, 200);
 	});
 
 	// -- Admin Orders console: customer context (admin-UX Increment 1) -----------
@@ -464,6 +554,48 @@ function serializeNote(note: OrderNote): Record<string, unknown> {
 	};
 }
 
+/** Wire shape of an admin Products-list row (view-only projection; admin-UX
+ *  Increment 2). Money stays an integer minor unit + an ISO-4217 currency
+ *  string, null exactly like the stored row (a "create then price" product
+ *  may have neither sku nor price yet). NEVER carries stock — see the port
+ *  doc; the list must not N+1 into inventory per row. */
+function serializeProductSummary(summary: ProductSummary): Record<string, unknown> {
+	return {
+		productId: summary.productId,
+		sku: summary.sku,
+		title: summary.title,
+		priceCents: summary.price?.amount ?? null,
+		currency: summary.price?.currency ?? null,
+		productKind: summary.productKind,
+		active: summary.active,
+		createdAt: summary.createdAt,
+	};
+}
+
+/** Wire shape of the admin Product detail (view-only; admin-UX Increment 2) —
+ *  the FULL `ProductCommerce` row plus the single-sku `onHand` read (never a
+ *  list-level join). Money as integer minor units + ISO-4217, exactly like
+ *  `serializeOrder`'s money fields. */
+function serializeProductDetail(product: ProductCommerce, onHand: number): Record<string, unknown> {
+	return {
+		productId: product.productId,
+		sku: product.sku,
+		title: product.title,
+		priceCents: product.price?.amount ?? null,
+		currency: product.price?.currency ?? null,
+		taxClass: product.taxClass,
+		weightGrams: product.weightGrams,
+		lengthMm: product.lengthMm,
+		widthMm: product.widthMm,
+		heightMm: product.heightMm,
+		productKind: product.productKind,
+		active: product.active,
+		onHand,
+		createdAt: product.createdAt.toISOString(),
+		updatedAt: product.updatedAt.toISOString(),
+	};
+}
+
 async function readJson(c: { req: { json(): Promise<unknown> } }): Promise<unknown> {
 	try {
 		return await c.req.json();
@@ -566,6 +698,62 @@ function encodeCursor(pos: OrderListCursor, filter: OrderListFilter, limit: numb
 /** Decode an opaque cursor token; returns null on ANY malformed/garbage input so
  *  the route answers 400 rather than 500 (MOD-1). */
 function decodeCursor(token: string): DecodedCursor | null {
+	try {
+		const json = new TextDecoder().decode(fromBase64Url(token));
+		const parsed = JSON.parse(json) as unknown;
+		if (parsed === null || typeof parsed !== "object") return null;
+		const p = parsed as DecodedCursor;
+		return { pos: p.pos, filter: p.filter, limit: p.limit };
+	} catch {
+		return null;
+	}
+}
+
+/** Narrow a validated product-filter zod result back into the domain
+ *  `ProductListFilter` (drops `undefined` keys so the shape is exact) —
+ *  mirrors `toFilter`. */
+function toProductFilter(parsed: {
+	active?: boolean;
+	productKind?: "physical" | "digital";
+	search?: string;
+}): ProductListFilter {
+	const filter: ProductListFilter = {};
+	if (parsed.active !== undefined) filter.active = parsed.active;
+	if (parsed.productKind !== undefined) filter.productKind = parsed.productKind;
+	if (parsed.search !== undefined) filter.search = parsed.search;
+	return filter;
+}
+
+/** Validate a decoded product-cursor position shape — `{ createdAt: <ISO
+ *  datetime>, productId: <opaque, bounded string> }` — or null if malformed
+ *  (→ 400). Mirrors `cursorPosOf`. */
+function productCursorPosOf(pos: unknown): ProductListCursor | null {
+	if (pos === null || typeof pos !== "object") return null;
+	const p = pos as { createdAt?: unknown; productId?: unknown };
+	if (typeof p.createdAt !== "string" || !cursorCreatedAt.safeParse(p.createdAt).success) {
+		return null;
+	}
+	if (typeof p.productId !== "string" || p.productId.length === 0 || p.productId.length > 200) {
+		return null;
+	}
+	return { createdAt: p.createdAt, productId: toProductId(p.productId) };
+}
+
+/** Encode the product-list keyset position + active filter + limit into an
+ *  opaque base64url token — mirrors `encodeCursor`. */
+function encodeProductCursor(
+	pos: ProductListCursor,
+	filter: ProductListFilter,
+	limit: number,
+): string {
+	const payload = { pos: { createdAt: pos.createdAt, productId: pos.productId }, filter, limit };
+	return toBase64Url(new TextEncoder().encode(JSON.stringify(payload)));
+}
+
+/** Decode an opaque product-list cursor token; returns null on ANY malformed/
+ *  garbage input so the route answers 400 rather than 500 (MOD-1). Mirrors
+ *  `decodeCursor`. */
+function decodeProductCursor(token: string): DecodedCursor | null {
 	try {
 		const json = new TextDecoder().decode(fromBase64Url(token));
 		const parsed = JSON.parse(json) as unknown;

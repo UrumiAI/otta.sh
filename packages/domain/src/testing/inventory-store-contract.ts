@@ -307,6 +307,27 @@ export function inventoryStoreContract(
 			expect(await h.onHand("SKU-1")).toBe(3);
 		});
 
+		// -- getOnHand (admin-UX Increment 2: product detail's stock read) ------
+
+		test("getOnHand returns the current on_hand for a seeded sku", async () => {
+			const h = await makeStore();
+			await h.seed("SKU-GET-1", 12);
+			expect(await h.store.getOnHand("SKU-GET-1")).toBe(12);
+		});
+
+		test("getOnHand on a sku with no inventory row returns 0 (mirrors the LEFT JOIN miss)", async () => {
+			const h = await makeStore();
+			expect(await h.store.getOnHand("SKU-NEVER-SEEDED")).toBe(0);
+		});
+
+		test("getOnHand reflects a decrement already applied by reserve", async () => {
+			const h = await makeStore();
+			await h.seed("SKU-GET-2", 5);
+			const result = await h.store.reserve("SKU-GET-2", 2, idempotencyKey("k-get-2"));
+			expect(result.ok).toBe(true);
+			expect(await h.store.getOnHand("SKU-GET-2")).toBe(3);
+		});
+
 		// -- PR B: batched checkout ADOPT (adoptMany) ---------------------------
 		//
 		// The batch is the per-line singular semantics folded into ONE guarded
