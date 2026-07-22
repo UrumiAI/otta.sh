@@ -117,6 +117,15 @@ export interface OrderStore {
 	listOrders(filter: OrderListFilter, page: OrderListPage): Promise<OrderListResult>;
 
 	/**
+	 * Count the orders matching a filter (admin-UX Increment 1: "N orders total"
+	 * for the customer-context panel). Shares the EXACT predicate with
+	 * `listOrders` — same states/window/search semantics and the same union
+	 * `customer` dimension — so a count can never disagree with the list it
+	 * captions (one predicate builder in every adapter, MOD-5 in the fake).
+	 */
+	countOrders(filter: OrderListFilter): Promise<number>;
+
+	/**
 	 * Claim guest orders for a just-authenticated customer (Phase 5 §9 Risk 3):
 	 * `UPDATE orders SET customer_id=:customerId WHERE buyer_ref=:buyerRef AND
 	 * customer_id IS NULL`. Safe because a magic-link login already proves the
@@ -260,6 +269,30 @@ export interface OrderListFilter {
 	to?: string;
 	/** Exact order id OR case-insensitive exact buyer_ref. */
 	search?: string;
+	/** The customer dimension (admin-UX Increment 1) — see `OrderCustomerKey`.
+	 *  ANDed with the other filters; UNION inside the key. */
+	customer?: OrderCustomerKey;
+}
+
+/**
+ * One person's orders, as a UNION key (admin-UX Increment 1). Orders are born
+ * `customer_id = NULL` and only back-linked at the customer's NEXT magic-link
+ * login (`linkGuestOrders`), so on the common path the same human owns both
+ * linked rows (`customer_id` set) and not-yet-relinked rows (`customer_id`
+ * NULL, matching `buyer_ref`). A `customer_id`-only predicate silently
+ * undercounts; a `buyer_ref`-only one mislabels. The key therefore matches
+ * `customer_id = :customerId OR lower(buyer_ref) = lower(:buyerRef)` — safe
+ * because `linkGuestOrders` already treats a buyer_ref/email match as ownership
+ * proof — and an order matching BOTH halves matches ONCE (it is one row; OR is
+ * not additive). `buyerRef` folds case exactly like `search`'s buyer_ref match
+ * (`lower() = lower()`, exact, never substring); it exists as its own key —
+ * distinct from `search` — because `search` ALSO matches an exact order id.
+ * At least one half should be set; an empty key matches nothing it constrains
+ * (adapters ignore a key with neither half).
+ */
+export interface OrderCustomerKey {
+	customerId?: string;
+	buyerRef?: string;
 }
 
 /** A keyset cursor POSITION — the `(created_at, id)` of the last row of the

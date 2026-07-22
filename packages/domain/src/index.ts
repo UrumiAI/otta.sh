@@ -99,6 +99,7 @@ export type {
 	CreateOrderLineInput,
 	CreateOrderResult,
 	CreateOrderTotalsInput,
+	OrderCustomerKey,
 	OrderListCursor,
 	OrderListFilter,
 	OrderListPage,
@@ -124,7 +125,7 @@ export type {
 	CreateAddressInput,
 	UpdateAddressInput,
 } from "./ports/address-store.js";
-export type { Session, SessionStore } from "./ports/session-store.js";
+export type { Session, SessionStore, SessionSummary } from "./ports/session-store.js";
 export type {
 	CustomerCredentialVerifier,
 	IssueChallengeResult,
@@ -218,6 +219,14 @@ export {
 	type ResolveReconciliationFailure,
 	type ResolveReconciliationOutcome,
 } from "./orders/resolve-reconciliation.js";
+export {
+	DEFAULT_RECENT_ORDERS_LIMIT,
+	getOrderCustomerContext,
+	type CustomerLinkage,
+	type OrderCustomerContext,
+	type OrderCustomerContextDeps,
+	type OrderCustomerIdentity,
+} from "./orders/customer-context.js";
 export { expireOrders, type ExpireOrdersDeps } from "./orders/expire-orders.js";
 export type { Clock } from "./ports/clock.js";
 export type { IdGen } from "./ports/id-gen.js";

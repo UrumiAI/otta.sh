@@ -88,6 +88,54 @@ export interface OrderDetailResult {
 	allowedTransitions: string[];
 }
 
+/** A saved profile address on the wire (admin-UX Increment 1). This is the
+ *  customer's CURRENT address book — the domain captures no per-order shipping
+ *  address, so this must never be presented as "where this order shipped". */
+export interface AddressWire {
+	id: string;
+	kind: string;
+	name: string;
+	line1: string;
+	line2: string | null;
+	city: string;
+	region: string | null;
+	postalCode: string;
+	country: string;
+	isDefault: boolean;
+	createdAt: string;
+}
+
+/** Token-free session metadata on the wire (admin-UX Increment 1) — the service
+ *  never serializes a token or hash into this shape. */
+export interface SessionSummaryWire {
+	id: string;
+	createdAt: string;
+	expiresAt: string;
+	revokedAt: string | null;
+}
+
+/** Who the order's customer is (admin-UX Increment 1). `linkage` is the honest
+ *  story: "claimed" (order linked to the account), "unclaimed" (an account
+ *  exists for this email but the order predates its next login — links then),
+ *  or "guest" (no account at all). */
+export interface CustomerIdentityWire {
+	customerId: string | null;
+	buyerRef: string;
+	email: string | null;
+	displayName: string | null;
+	emailVerifiedAt: string | null;
+	linkage: string;
+}
+
+/** The customer-context panel payload (admin-UX Increment 1) — read-only. */
+export interface CustomerContextWire {
+	identity: CustomerIdentityWire;
+	addresses: AddressWire[];
+	sessions: SessionSummaryWire[];
+	orderCount: number;
+	recentOrders: OrderSummaryWire[];
+}
+
 /** An append-only order note (admin-UX Increment 0) on the wire. */
 export interface OrderNoteWire {
 	id: string;
@@ -260,6 +308,21 @@ export class AdminOrdersClient {
 				? parsed.reason
 				: undefined;
 		return { ok: false, status: res.status, ...(reason !== undefined ? { reason } : {}) };
+	}
+
+	/** GET an order's customer context (admin-token guarded read; admin-UX
+	 *  Increment 1). Mirrors `getOrder`'s shape: a 404 resolves to `null`; any
+	 *  other non-2xx throws — the caller degrades to an "unavailable" section,
+	 *  never a hard error (and never blanks the order detail). */
+	async getCustomerContext(orderId: string): Promise<CustomerContextWire | null> {
+		const res = await this.#fetch(
+			`${this.#baseUrl}/admin/orders/${encodeURIComponent(orderId)}/customer-context`,
+			{ method: "GET", headers: this.#authHeaders() },
+		);
+		if (res.status === 404) return null;
+		if (!res.ok) throw new Error(`GET customer context failed (HTTP ${res.status})`);
+		const body = (await res.json()) as { context?: CustomerContextWire };
+		return body.context ?? null;
 	}
 
 	/** GET an order's append-only notes (admin-token guarded read). A non-2xx

@@ -32,7 +32,16 @@ import {
 	type ResolveReconciliationInput,
 	type ResolveReconciliationStoreResult,
 } from "@urumi/domain";
-import { type Kysely, type Selectable, sql, type Transaction } from "kysely";
+import {
+	type Expression,
+	expressionBuilder,
+	type ExpressionBuilder,
+	type Kysely,
+	type Selectable,
+	sql,
+	type SqlBool,
+	type Transaction,
+} from "kysely";
 import type { Database, OrderItemsTable, OrdersTable, OrderTotalsTable } from "./schema.js";
 
 export interface KyselyOrderStoreOptions {
@@ -301,22 +310,8 @@ export class KyselyOrderStore implements OrderStore {
 				"order_totals.total_cents as total_cents",
 			]);
 
-		if (filter.states !== undefined && filter.states.length > 0) {
-			q = q.where("orders.state", "in", filter.states as OrderState[]);
-		}
-		if (filter.from !== undefined) q = q.where("orders.created_at", ">=", filter.from); // inclusive
-		if (filter.to !== undefined) q = q.where("orders.created_at", "<", filter.to); // EXCLUSIVE (half-open, MOD-7)
-		if (filter.search !== undefined) {
-			const search = filter.search;
-			// Exact order id OR case-insensitive EXACT buyer_ref — `lower(buyer_ref) =
-			// lower(:search)`, matching the fake (never a substring/LIKE).
-			q = q.where((eb) =>
-				eb.or([
-					eb("orders.id", "=", search),
-					eb(sql`lower(orders.buyer_ref)`, "=", search.toLowerCase()),
-				]),
-			);
-		}
+		const conds = orderFilterConditions(filter);
+		if (conds.length > 0) q = q.where((eb) => eb.and(conds));
 		if (page.cursor !== undefined && page.cursor !== null) {
 			const cursor = page.cursor;
 			// (created_at < :c) OR (created_at = :c AND id < :cid) — everything
@@ -353,6 +348,17 @@ export class KyselyOrderStore implements OrderStore {
 			reconciliationFlag: r.reconciliation_flag !== null,
 		}));
 		return { orders, nextCursor };
+	}
+
+	async countOrders(filter: OrderListFilter): Promise<number> {
+		// The SAME predicate as `listOrders` (one builder — `orderFilterConditions`)
+		// over `orders` alone: no totals join, no ordering, one scalar. A count can
+		// therefore never disagree with the list it captions.
+		let q = this.#db.selectFrom("orders").select(sql<number>`count(*)`.as("n"));
+		const conds = orderFilterConditions(filter);
+		if (conds.length > 0) q = q.where((eb) => eb.and(conds));
+		const row = await q.executeTakeFirstOrThrow();
+		return Number(row.n);
 	}
 
 	async linkGuestOrders(customerId: CustomerId, buyerRef: string): Promise<number> {
@@ -558,6 +564,46 @@ export class KyselyOrderStore implements OrderStore {
 			.executeTakeFirstOrThrow();
 		return toOrder(order, items, totals);
 	}
+}
+
+/**
+ * The ONE `OrderListFilter` predicate, shared by `listOrders` and `countOrders`
+ * so their semantics (incl. `lower()` case-folding) can never drift apart.
+ * Returns standalone expressions (a detached `expressionBuilder` — Kysely
+ * expressions are self-contained) to AND onto either query. The `customer` key
+ * is a UNION inside the key (`customer_id = :id OR lower(buyer_ref) =
+ * lower(:buyerRef)`) — lazy linking means one person's orders split across the
+ * two columns; a key with neither half set constrains nothing.
+ */
+function orderFilterConditions(filter: OrderListFilter): Expression<SqlBool>[] {
+	const eb: ExpressionBuilder<Database, "orders"> = expressionBuilder();
+	const conds: Expression<SqlBool>[] = [];
+	if (filter.states !== undefined && filter.states.length > 0) {
+		conds.push(eb("orders.state", "in", filter.states as OrderState[]));
+	}
+	if (filter.from !== undefined) conds.push(eb("orders.created_at", ">=", filter.from)); // inclusive
+	if (filter.to !== undefined) conds.push(eb("orders.created_at", "<", filter.to)); // EXCLUSIVE (half-open, MOD-7)
+	if (filter.search !== undefined) {
+		const search = filter.search;
+		// Exact order id OR case-insensitive EXACT buyer_ref — `lower(buyer_ref) =
+		// lower(:search)`, matching the fake (never a substring/LIKE).
+		conds.push(
+			eb.or([
+				eb("orders.id", "=", search),
+				eb(sql`lower(orders.buyer_ref)`, "=", search.toLowerCase()),
+			]),
+		);
+	}
+	if (filter.customer !== undefined) {
+		const { customerId, buyerRef } = filter.customer;
+		const halves: Expression<SqlBool>[] = [];
+		if (customerId !== undefined) halves.push(eb("orders.customer_id", "=", customerId));
+		if (buyerRef !== undefined) {
+			halves.push(eb(sql`lower(orders.buyer_ref)`, "=", buyerRef.toLowerCase()));
+		}
+		if (halves.length > 0) conds.push(eb.or(halves));
+	}
+	return conds;
 }
 
 /** Serialize a jsonb-as-text column value (null passes through). */
