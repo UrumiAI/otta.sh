@@ -154,6 +154,21 @@ export interface OrderStore {
 	listForCustomer(customerId: CustomerId): Promise<Order[]>;
 
 	/**
+	 * Every durable state-change event recorded for an order (admin-UX Increment
+	 * 1, timeline slice), in chronological order (`at ASC, id ASC` — the id is the
+	 * stable tie-break when two events share a timestamp under a fixed clock).
+	 * Append-only and scoped to the one order — another order's events never leak
+	 * in. Events are captured ATOMICALLY inside the guarded-flip transaction that
+	 * moves the order (the `#flipAndEnqueue` choke point), so a row exists iff the
+	 * flip won: a replay / lost race is a 0-row flip and writes NO event. State
+	 * transitions predating this slice's release have no events, so this returns
+	 * only the events written from the release onward — the timeline read merges
+	 * the order's derived artifacts to degrade gracefully for such orders. An order
+	 * with no events returns `[]`.
+	 */
+	listEventsForOrder(orderId: OrderId): Promise<OrderEvent[]>;
+
+	/**
 	 * Admin Orders console list (view-only). Returns a keyset-paginated page of
 	 * lightweight `OrderSummary` PROJECTIONS (never full `Order`s — the list must
 	 * not N+1 into `order_items`/`order_totals` per row; the adapter joins
@@ -457,6 +472,41 @@ export interface OrderListResult {
 	/** The position to pass back for the next page, or null when this is the last
 	 *  page (fewer than `limit + 1` rows matched). */
 	nextCursor: OrderListCursor | null;
+}
+
+// -- Order timeline / audit (admin-UX Increment 1, timeline slice) -------------
+
+/**
+ * The kind of a durably-audited order event. Currently only state transitions
+ * are written to `order_events`; the timeline read-model MERGES the other kinds
+ * of history (notes, fulfillment, cancellation, reconciliation resolution) from
+ * their EXISTING records at read time rather than double-writing them — so the
+ * audit table stays the single home of the state-change spine and never
+ * duplicates an artifact that already carries its own timestamp.
+ */
+export type OrderEventKind = "state_change";
+
+/**
+ * An append-only audit record of a durable state change to an order (admin-UX
+ * Increment 1, timeline slice). Written ATOMICALLY inside the SAME guarded-flip
+ * transaction as the state change it records (the `#flipAndEnqueue` choke
+ * point), so an event row exists iff the flip won — a replayed/lost-race flip
+ * matches 0 rows and writes no event (audit never double-counts a replay).
+ */
+export interface OrderEvent {
+	id: string;
+	orderId: OrderId;
+	/** ISO-8601 UTC — the store clock at the moment of the flip. */
+	at: string;
+	kind: OrderEventKind;
+	/** The state the order left (the flip's from-state); null if unknown. */
+	fromState: OrderState | null;
+	/** The state the order entered (the flip's to-state). */
+	toState: OrderState | null;
+	/** Who triggered it, when this domain readily knows (`recordFulfillment`'s
+	 *  `recordedBy`, `cancelOrder`'s `cancelledBy`); null for transitions where no
+	 *  actor is modeled (`markPaid`/`expire`/a bare `transition`). */
+	actor: string | null;
 }
 
 export interface RecordPaymentInput {

@@ -102,6 +102,8 @@ export type {
 	CreateOrderResult,
 	CreateOrderTotalsInput,
 	OrderCustomerKey,
+	OrderEvent,
+	OrderEventKind,
 	OrderListCursor,
 	OrderListFilter,
 	OrderListPage,
@@ -248,6 +250,12 @@ export {
 	type OrderCustomerContextDeps,
 	type OrderCustomerIdentity,
 } from "./orders/customer-context.js";
+export {
+	getOrderTimeline,
+	type OrderTimeline,
+	type OrderTimelineDeps,
+	type OrderTimelineEntry,
+} from "./orders/order-timeline.js";
 export { expireOrders, type ExpireOrdersDeps } from "./orders/expire-orders.js";
 export type { Clock } from "./ports/clock.js";
 export type { IdGen } from "./ports/id-gen.js";

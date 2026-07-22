@@ -17,6 +17,7 @@ import {
 	type IdempotencyKey,
 	type IdGen,
 	type Order,
+	type OrderEvent,
 	type OrderId,
 	type OrderLine,
 	type OrderListFilter,
@@ -48,7 +49,13 @@ import {
 	type Transaction,
 	type Updateable,
 } from "kysely";
-import type { Database, OrderItemsTable, OrdersTable, OrderTotalsTable } from "./schema.js";
+import type {
+	Database,
+	OrderEventsTable,
+	OrderItemsTable,
+	OrdersTable,
+	OrderTotalsTable,
+} from "./schema.js";
 
 export interface KyselyOrderStoreOptions {
 	db: Kysely<Database>;
@@ -281,6 +288,9 @@ export class KyselyOrderStore implements OrderStore {
 				toState: "shipped",
 				enqueueEmail: input.enqueueEmail,
 				now,
+				// The recorder is the who this domain knows for a fulfillment flip —
+				// stamped onto the state-change audit event.
+				actor: input.recordedBy,
 				extraSet: {
 					fulfillment_carrier: input.carrier,
 					fulfillment_tracking_number: input.trackingNumber,
@@ -319,6 +329,9 @@ export class KyselyOrderStore implements OrderStore {
 				toState: "cancelled",
 				enqueueEmail: input.enqueueEmail,
 				now,
+				// The canceller is the who this domain knows for a cancellation flip —
+				// stamped onto the state-change audit event.
+				actor: input.cancelledBy,
 				extraSet: {
 					cancellation_reason: input.reason,
 					cancellation_detail: input.detail,
@@ -364,6 +377,21 @@ export class KyselyOrderStore implements OrderStore {
 			if (order !== null) orders.push(order);
 		}
 		return orders;
+	}
+
+	async listEventsForOrder(orderId: OrderId): Promise<OrderEvent[]> {
+		// The one order's state-change audit in chronological order. `at` is
+		// fixed-width ISO-8601 text ⇒ lexical order IS chronological, so `at ASC, id
+		// ASC` (the `order_events_list_idx` order) is dialect-identical; `id` is the
+		// stable tie-break when two events share a timestamp under a fixed clock.
+		const rows = await this.#db
+			.selectFrom("order_events")
+			.selectAll()
+			.where("order_id", "=", orderId)
+			.orderBy("at", "asc")
+			.orderBy("id", "asc")
+			.execute();
+		return rows.map(toEvent);
 	}
 
 	async listOrders(filter: OrderListFilter, page: OrderListPage): Promise<OrderListResult> {
@@ -582,6 +610,9 @@ export class KyselyOrderStore implements OrderStore {
 			enqueueEmail: boolean;
 			now: string;
 			holdExpiresBefore?: string;
+			/** Who triggered the flip, when this domain knows (recorder/canceller);
+			 *  stamped onto the state-change audit event, else null. */
+			actor?: string;
 			/** Extra columns written IN the same guarded UPDATE as the flip (e.g.
 			 *  `recordFulfillment`'s tracking envelope) — so a caller composing "flip +
 			 *  record" atomically reuses THIS primitive instead of hand-rolling a
@@ -599,6 +630,22 @@ export class KyselyOrderStore implements OrderStore {
 		}
 		const flipped = await flip.returning("id").executeTakeFirst();
 		if (flipped === undefined) return false; // already transitioned / not due
+
+		// State-change audit — written IN the same transaction as the (won) flip, so
+		// a row exists iff this call won: the 0-row miss above already returned, so a
+		// replay/lost race records NO event. Append-only (unique id, no ON CONFLICT).
+		await trx
+			.insertInto("order_events")
+			.values({
+				id: this.#idGen.newId(),
+				order_id: input.orderId,
+				at: input.now,
+				kind: "state_change",
+				from_state: input.fromState,
+				to_state: input.toState,
+				actor: input.actor ?? null,
+			})
+			.execute();
 
 		if (input.enqueueEmail) {
 			await trx
@@ -703,6 +750,18 @@ function parseJsonOrNull(value: string | null): unknown | null {
 	} catch {
 		return value; // tolerate a legacy/plain-string value
 	}
+}
+
+function toEvent(row: Selectable<OrderEventsTable>): OrderEvent {
+	return {
+		id: row.id,
+		orderId: toOrderId(row.order_id),
+		at: row.at,
+		kind: "state_change",
+		fromState: row.from_state === null ? null : (row.from_state as OrderState),
+		toState: row.to_state === null ? null : (row.to_state as OrderState),
+		actor: row.actor,
+	};
 }
 
 function toOrder(

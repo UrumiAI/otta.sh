@@ -396,6 +396,7 @@ function orderFlowTests(makeHarness: () => Promise<OrderFlowHarness>, dialect: s
 				cancelOrder: (i) => h.orderStore.cancelOrder(i),
 				transition: (i) => h.orderStore.transition(i),
 				listForCustomer: (c) => h.orderStore.listForCustomer(c),
+				listEventsForOrder: (id) => h.orderStore.listEventsForOrder(id),
 				listOrders: (f, p) => h.orderStore.listOrders(f, p),
 				countOrders: (f) => h.orderStore.countOrders(f),
 				linkGuestOrders: (c, ref) => h.orderStore.linkGuestOrders(c, ref),
