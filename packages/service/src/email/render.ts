@@ -28,10 +28,12 @@ export function renderEmail(template: EmailTemplate, data: Record<string, unknow
 	// is no longer an empty "on its way" — rendered only when the order was
 	// fulfilled and the data carries it (any other template ignores fulfillment).
 	const tracking = template === "order-shipped" ? trackingLines(data["fulfillment"]) : null;
-	// Same rationale, "cancel with reason" slice: the cancelled email carries WHY
-	// instead of a reason-free notice — rendered only when cancelOrder recorded
-	// one (a bare-transition cancellation carries none, and degrades to the plain
-	// body, same as an unfulfilled shipped email).
+	// "Cancel with reason" slice: the cancelled email may carry WHY — but ONLY
+	// through the explicit CUSTOMER-SAFE mapping below (PR #64 review blocker).
+	// The recipient is the buyer, so sensitive reasons (fraud_suspected,
+	// pricing_error, other) and the admin's free-text detail must NEVER reach
+	// this channel; those render the plain generic body, exactly like a
+	// bare-transition cancellation that carries no reason at all.
 	const cancellation =
 		template === "order-cancelled" ? cancellationLines(data["cancellation"]) : null;
 	const extra = tracking ?? cancellation;
@@ -48,32 +50,42 @@ export function renderEmail(template: EmailTemplate, data: Record<string, unknow
 	};
 }
 
-/** Human-readable labels for the structured cancellation reason (admin-UX
- *  Increment 1) — the same enum the domain/service validate against. An
- *  unrecognized value (should never happen past validation) falls back to the
- *  raw string rather than throwing. */
-const CANCELLATION_REASON_LABEL: Record<string, string> = {
-	customer_request: "the customer requested it",
-	fraud_suspected: "a fraud concern",
-	out_of_stock: "the item being out of stock",
-	pricing_error: "a pricing error",
-	other: "other",
-};
+/**
+ * The CUSTOMER-SAFE cancellation-reason copy (PR #64 review blocker). This is an
+ * explicit ALLOWLIST, not a label table: only reasons that are safe to state to
+ * the buyer map to copy; every other reason — `fraud_suspected` (tips off
+ * fraudulent actors, and harms innocent customers on a false positive),
+ * `pricing_error` (invites disputes over the merchant's mistake), `other`
+ * (free-form catch-all), or any unrecognized value — returns `undefined` and the
+ * email renders NO reason line at all (just the generic cancellation body). The
+ * full reason + detail remain admin-only, on the order detail page.
+ */
+export function customerSafeCancellationCopy(reason: string): string | undefined {
+	switch (reason) {
+		case "customer_request":
+			return "at your request";
+		case "out_of_stock":
+			return "an item was unavailable";
+		default:
+			return undefined;
+	}
+}
 
 /** Render the cancellation-reason block for a cancelled email from the
  *  cancellation data the dispatcher passed (`buildOrderEmailData`). Returns null
- *  when the order carried no cancellation (e.g. cancelled via the bare
- *  transition) so the email degrades to the plain reason-free body. */
+ *  when the order carried no cancellation (a bare-transition cancellation) OR
+ *  when the reason has no customer-safe copy (the allowlist above) — either way
+ *  the email degrades to the plain reason-free body. The admin's free-text
+ *  `detail` is deliberately NEVER read here: it must not reach the customer
+ *  email for ANY reason value (admin-only context). */
 function cancellationLines(cancellation: unknown): { text: string; html: string } | null {
 	if (cancellation === null || typeof cancellation !== "object") return null;
-	const c = cancellation as { reason?: unknown; detail?: unknown };
+	const c = cancellation as { reason?: unknown };
 	const reason = str(c.reason);
 	if (reason === undefined) return null;
-	const label = CANCELLATION_REASON_LABEL[reason] ?? reason;
-	const detail = str(c.detail);
-	const text = `Reason: ${label}${detail !== undefined ? ` — ${detail}` : ""}`;
-	const html = `Reason: ${escapeHtml(label)}${detail !== undefined ? ` — ${escapeHtml(detail)}` : ""}`;
-	return { text, html };
+	const safeCopy = customerSafeCancellationCopy(reason);
+	if (safeCopy === undefined) return null; // not customer-safe ⇒ no reason line
+	return { text: `Reason: ${safeCopy}`, html: `Reason: ${escapeHtml(safeCopy)}` };
 }
 
 /** Render the tracking block for a shipped email from the fulfillment data the

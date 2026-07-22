@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { renderEmail } from "../src/email/render.js";
+import { customerSafeCancellationCopy, renderEmail } from "../src/email/render.js";
 
 // Email rendering (Phase 5 §6 + admin-UX Increment 1). The shipped template must
 // carry the recorded tracking (carrier / number / URL) instead of the old empty
@@ -69,10 +69,12 @@ describe("renderEmail order-shipped", () => {
 	});
 });
 
-// The cancelled template must carry WHY (admin-UX Increment 1, "cancel with
-// reason") instead of the old reason-free "Your order has been cancelled." —
-// and degrade gracefully when an order was cancelled without a reason (the
-// bare transition path).
+// The cancelled template carries WHY only through the explicit CUSTOMER-SAFE
+// allowlist (admin-UX Increment 1, "cancel with reason" + the PR #64 review
+// blocker): safe reasons (customer_request, out_of_stock) render exactly their
+// safe copy; sensitive reasons (fraud_suspected, pricing_error, other) render
+// NO reason line at all; and the admin's free-text detail NEVER reaches the
+// customer email for ANY reason value.
 
 describe("renderEmail order-cancelled", () => {
 	const base = {
@@ -82,37 +84,69 @@ describe("renderEmail order-cancelled", () => {
 		lines: [],
 	};
 
-	test("carries a human-readable reason label + detail when a cancellation is present", () => {
-		const rendered = renderEmail("order-cancelled", {
-			...base,
-			cancellation: { reason: "out_of_stock", detail: "last unit sold on another channel" },
-		});
-		expect(rendered.text).toContain("Reason: the item being out of stock");
-		expect(rendered.text).toContain("last unit sold on another channel");
-		expect(rendered.html).toContain("the item being out of stock");
-	});
-
-	test("omits the detail suffix when none was recorded", () => {
+	test("customer_request renders exactly its customer-safe copy", () => {
 		const rendered = renderEmail("order-cancelled", {
 			...base,
 			cancellation: { reason: "customer_request", detail: null },
 		});
-		expect(rendered.text).toContain("Reason: the customer requested it");
-		expect(rendered.text).not.toContain(" — null");
+		expect(rendered.text).toContain("Reason: at your request");
+		expect(rendered.html).toContain("Reason: at your request");
+	});
+
+	test("out_of_stock renders exactly its customer-safe copy — never the raw enum value", () => {
+		const rendered = renderEmail("order-cancelled", {
+			...base,
+			cancellation: { reason: "out_of_stock", detail: "last unit sold on another channel" },
+		});
+		expect(rendered.text).toContain("Reason: an item was unavailable");
+		expect(rendered.html).toContain("Reason: an item was unavailable");
+		expect(rendered.text).not.toContain("out_of_stock");
+	});
+
+	test.each(["fraud_suspected", "pricing_error", "other"])(
+		"%s produces NO reason text in the customer email (generic body only)",
+		(reason) => {
+			const rendered = renderEmail("order-cancelled", {
+				...base,
+				cancellation: { reason, detail: "sensitive internal context" },
+			});
+			expect(rendered.text).toContain("Your order has been cancelled.");
+			expect(rendered.text).not.toContain("Reason:");
+			expect(rendered.html).not.toContain("Reason:");
+			expect(rendered.text).not.toContain(reason);
+			expect(rendered.html).not.toContain(reason);
+			expect(rendered.text).not.toContain("fraud");
+			expect(rendered.html).not.toContain("fraud");
+		},
+	);
+
+	test.each(["customer_request", "fraud_suspected", "out_of_stock", "pricing_error", "other"])(
+		"the admin detail text never reaches the customer email (reason: %s)",
+		(reason) => {
+			const detail = "ADMIN-ONLY chargeback context for cust-a";
+			const rendered = renderEmail("order-cancelled", {
+				...base,
+				cancellation: { reason, detail },
+			});
+			expect(rendered.text).not.toContain(detail);
+			expect(rendered.html).not.toContain(detail);
+			expect(rendered.text).not.toContain("ADMIN-ONLY");
+		},
+	);
+
+	test("an unrecognized reason value is treated as not customer-safe (no reason line)", () => {
+		const rendered = renderEmail("order-cancelled", {
+			...base,
+			cancellation: { reason: "some_future_reason", detail: null },
+		});
+		expect(rendered.text).not.toContain("Reason:");
+		expect(rendered.text).not.toContain("some_future_reason");
 	});
 
 	test("degrades to the plain body when the order was cancelled without a reason", () => {
 		const rendered = renderEmail("order-cancelled", base);
 		expect(rendered.text).toContain("Your order has been cancelled.");
 		expect(rendered.text).not.toContain("Reason:");
-	});
-
-	test("escapes HTML in the reason detail", () => {
-		const rendered = renderEmail("order-cancelled", {
-			...base,
-			cancellation: { reason: "other", detail: "<b>x</b> & y" },
-		});
-		expect(rendered.html).toContain("&lt;b&gt;x&lt;/b&gt; &amp; y");
 	});
 
 	test("other order templates ignore cancellation data", () => {
@@ -122,4 +156,21 @@ describe("renderEmail order-cancelled", () => {
 		});
 		expect(rendered.text).not.toContain("Reason:");
 	});
+});
+
+// The mapping itself, pinned as the explicit allowlist the review asked for:
+// exactly two customer-safe reasons; everything else — incl. every sensitive
+// enum member and unknown values — is undefined (⇒ no reason line renders).
+describe("customerSafeCancellationCopy", () => {
+	test("safe reasons map to exactly their safe copy", () => {
+		expect(customerSafeCancellationCopy("customer_request")).toBe("at your request");
+		expect(customerSafeCancellationCopy("out_of_stock")).toBe("an item was unavailable");
+	});
+
+	test.each(["fraud_suspected", "pricing_error", "other", "anything_else", ""])(
+		"%s is not customer-safe (undefined)",
+		(reason) => {
+			expect(customerSafeCancellationCopy(reason)).toBeUndefined();
+		},
+	);
 });

@@ -48,9 +48,14 @@ The core design decisions:
   cancelled and shipped) — extending PR #63's record-vs-cancel race to the reasoned path.
 - **Service (`[Service]`).** `POST /admin/orders/:id/cancel` mirrors the use-case 1:1 under
   the internal-token guard + the X-Service-Token write gate (a non-GET); `serializeOrder`
-  gains `cancellation` (additive). `renderEmail`'s `order-cancelled` template now renders a
-  human-readable reason label + optional detail, degrading to the plain body when an order
-  was cancelled without a reason.
+  gains `cancellation` (additive). `renderEmail`'s `order-cancelled` template renders the
+  reason ONLY through an explicit CUSTOMER-SAFE allowlist (`customerSafeCancellationCopy`):
+  `customer_request` → "at your request", `out_of_stock` → "an item was unavailable";
+  everything else — `fraud_suspected`, `pricing_error`, `other`, or any unknown value —
+  renders NO reason line at all (just the generic cancellation body, same as a
+  bare-transition cancellation), and the admin's free-text `detail` NEVER reaches the
+  customer email for ANY reason value. The full reason + detail stay admin-only, on the
+  order detail page.
 - **Plugin (`[Plugin]`).** The order detail gains a "Cancellation" section: a still-
   cancellable order shows a danger-styled alert + the cancel form (reason select, optional
   detail, cancelledBy) and the bare "Mark cancelled" one-click is HIDDEN from the transition

@@ -155,7 +155,12 @@ export function orderCancellationContract(
 			expect((await h.store.getById(id))?.state).toBe("cancelled");
 		});
 
-		test("the cancelled notification carries the reason (not a reason-free notice)", async () => {
+		test("the cancelled email's dispatch DATA carries the cancellation (the renderer applies the customer-safe allowlist downstream)", async () => {
+			// This asserts the dispatcher's data plumbing (buildOrderEmailData), NOT
+			// what the customer sees: the service-side renderer filters this through
+			// an explicit customer-safe allowlist (sensitive reasons — e.g.
+			// fraud_suspected — and the admin detail never reach the rendered email;
+			// see the service's email-render tests).
 			const h = await makeHarness();
 			const id = await seedPending(h);
 			await cancel(h, id, { reason: "fraud_suspected", detail: "chargeback risk flagged" });
