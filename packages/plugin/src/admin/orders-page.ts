@@ -14,6 +14,7 @@ import type {
 import {
 	AdminOrdersClient,
 	type CustomerContextWire,
+	type OrderCancellationWire,
 	type OrderDetailResult,
 	type OrderDetailWire,
 	type OrderFulfillmentWire,
@@ -51,6 +52,7 @@ const ACTION_TRANSITION = ORDERS_ACTIONS.custom("transition");
 const ACTION_ADD_NOTE = ORDERS_ACTIONS.custom("add-note");
 const ACTION_RESOLVE = ORDERS_ACTIONS.custom("resolve-reconciliation");
 const ACTION_RECORD_FULFILLMENT = ORDERS_ACTIONS.custom("record-fulfillment");
+const ACTION_CANCEL = ORDERS_ACTIONS.custom("cancel");
 
 /**
  * The action ids the admin-route dispatcher recognizes as belonging to the
@@ -64,6 +66,7 @@ export const ORDERS_ACTION_IDS: ReadonlySet<string> = ORDERS_ACTIONS.actionIds(
 	"add-note",
 	"resolve-reconciliation",
 	"record-fulfillment",
+	"cancel",
 );
 
 const PAGE_LIMIT = 25;
@@ -121,6 +124,7 @@ export function createOrdersPageHandler(): RouteHandler<OrdersPageInput> {
 			[ACTION_ADD_NOTE]: addNoteAction(),
 			[ACTION_RESOLVE]: resolveReconciliationAction(),
 			[ACTION_RECORD_FULFILLMENT]: recordFulfillmentAction(),
+			[ACTION_CANCEL]: cancelOrderAction(),
 		},
 	});
 }
@@ -331,22 +335,34 @@ function detailBlocks(
 	});
 	// -- Fulfillment (admin-UX Increment 1) — recorded tracking + the ship form --
 	for (const block of fulfillmentBlocks(o)) blocks.push(block);
-	// UI steering (PR #63 review): on a `processing` order, the bare "Mark
-	// shipped" one-click is HIDDEN — it would ship without tracking and send the
-	// buyer an empty shipped email, defeating the fulfillment slice's whole point.
-	// Shipping happens via the Fulfillment form above (which records tracking and
-	// ships atomically). This is UI steering only: the SERVICE still accepts the
-	// bare transition for other callers/back-compat.
-	const offeredTransitions =
-		o.state === "processing"
-			? detail.allowedTransitions.filter((t) => t !== "shipped")
-			: detail.allowedTransitions;
+	// -- Cancellation (admin-UX Increment 1, "cancel with reason") --------------
+	for (const block of cancellationBlocks(o, detail)) blocks.push(block);
+	// UI steering (PR #63 review, extended here to cancel): on a `processing`
+	// order, the bare "Mark shipped" one-click is HIDDEN — it would ship without
+	// tracking and send the buyer an empty shipped email, defeating the
+	// fulfillment slice's whole point. Shipping happens via the Fulfillment form
+	// above (which records tracking and ships atomically). Likewise, whenever
+	// `cancelled` is a legal target, the bare "Mark cancelled" one-click is HIDDEN
+	// — cancelling without a reason defeats this slice's whole point — steered to
+	// the Cancel form above instead. This is UI steering only: the SERVICE still
+	// accepts both bare transitions for other callers/back-compat.
+	const offeredTransitions = detail.allowedTransitions.filter((t) => {
+		if (o.state === "processing" && t === "shipped") return false;
+		if (t === "cancelled") return false;
+		return true;
+	});
 	if (offeredTransitions.length > 0) {
 		blocks.push({ type: "section", text: "Move status" });
 		if (o.state === "processing" && detail.allowedTransitions.includes("shipped")) {
 			blocks.push({
 				type: "context",
 				text: "To mark this order shipped, use the Fulfillment form above — it records the tracking and emails it to the buyer. There is deliberately no bare “Mark shipped” button, so an order is never shipped without tracking.",
+			});
+		}
+		if (detail.allowedTransitions.includes("cancelled")) {
+			blocks.push({
+				type: "context",
+				text: "To cancel this order, use the Cancel form above — it records a reason. There is deliberately no bare “Mark cancelled” button, so an order is never cancelled without a reason on file.",
 			});
 		}
 		blocks.push(transitionActions(o.id, offeredTransitions));
@@ -735,6 +751,107 @@ function recordFulfillmentForm(orderId: string): FormBlock {
 	};
 }
 
+// -- cancellation surface (admin-UX Increment 1, "cancel with reason") -------
+
+/** The five structured cancellation reasons, offered in the cancel form's
+ *  select. Mirrors the domain `CancellationReason`; the service re-validates
+ *  the wire value. */
+const CANCELLATION_REASONS: readonly SelectOption[] = [
+	{ value: "customer_request", label: "Customer requested it" },
+	{ value: "fraud_suspected", label: "Fraud suspected" },
+	{ value: "out_of_stock", label: "Out of stock" },
+	{ value: "pricing_error", label: "Pricing error" },
+	{ value: "other", label: "Other (add detail below)" },
+];
+
+/**
+ * The cancellation section. An order carrying a recorded cancellation shows it
+ * (read-only); an order that is `cancelled` WITHOUT a recorded reason (the bare
+ * transition path) gets an honest note that none was captured; an order the
+ * state machine still allows to reach `cancelled` shows the danger-styled
+ * cancel form; anything else (a different terminal state) shows nothing.
+ */
+function cancellationBlocks(o: OrderDetailWire, detail: OrderDetailResult): Block[] {
+	// Tolerate a wire response that omits the field entirely (undefined) exactly
+	// like an explicit null.
+	if (o.cancellation !== null && o.cancellation !== undefined) {
+		return [{ type: "section", text: "Cancellation" }, cancellationFields(o.cancellation)];
+	}
+	if (o.state === "cancelled") {
+		return [
+			{ type: "section", text: "Cancellation" },
+			{
+				type: "context",
+				text: "This order is cancelled but no reason was recorded (it was moved to “cancelled” directly).",
+			},
+		];
+	}
+	if (detail.allowedTransitions.includes("cancelled")) {
+		return [
+			{ type: "section", text: "Cancellation" },
+			{
+				type: "banner",
+				variant: "alert",
+				title: "Cancelling is permanent",
+				description:
+					"Cancelling this order moves it to “cancelled” and emails the buyer — this cannot be undone. Choose the closest reason; add detail below for anything not covered.",
+			},
+			cancelOrderForm(o.id),
+		];
+	}
+	return [];
+}
+
+function cancellationFields(c: OrderCancellationWire): Block {
+	return {
+		type: "fields",
+		fields: [
+			{ label: "Reason", value: c.reason },
+			{ label: "Detail", value: c.detail ?? "—" },
+			{ label: "Cancelled by", value: c.cancelledBy },
+			{ label: "Cancelled (UTC)", value: c.cancelledAt },
+		],
+	};
+}
+
+/** The cancel form. The order id rides along as a single-option `select` (the
+ *  carry-the-id-in-values pattern the add-note / resolve / fulfillment forms
+ *  use) so a stateless `form_submit` knows which order to cancel. */
+function cancelOrderForm(orderId: string): FormBlock {
+	return {
+		type: "form",
+		fields: [
+			{
+				type: "select",
+				action_id: "orderId",
+				label: "Order",
+				options: [{ value: orderId, label: orderId }],
+				initial_value: orderId,
+			},
+			{
+				type: "select",
+				action_id: "reason",
+				label: "Reason",
+				options: [...CANCELLATION_REASONS],
+				initial_value: "customer_request",
+			},
+			{
+				type: "text_input",
+				action_id: "detail",
+				label: "Detail (optional)",
+				placeholder: "e.g. chargeback risk flagged",
+			},
+			{
+				type: "text_input",
+				action_id: "cancelledBy",
+				label: "Cancelled by",
+				placeholder: "your name",
+			},
+		],
+		submit: { label: "Cancel order (cannot be undone)", action_id: ACTION_CANCEL },
+	};
+}
+
 // -- custom actions: transition + add-note + resolve-reconciliation -----------
 
 function transitionAction() {
@@ -953,6 +1070,73 @@ function recordFulfillmentAction() {
 				variant: "default",
 				title: "Order shipped",
 				description: "Fulfillment recorded — the buyer has been emailed their tracking.",
+			};
+		}
+		return showLeaf([orderId], notice);
+	});
+}
+
+function cancelOrderAction() {
+	return customAction<AdminOrdersClient>(async ({ input, client, showLeaf, showList }) => {
+		const values = input.values ?? {};
+		const orderId = readString(values.orderId);
+		if (orderId === undefined) return showList();
+		const reason = readString(values.reason) ?? "";
+		const detail = (readString(values.detail) ?? "").trim();
+		const cancelledBy = (readString(values.cancelledBy) ?? "").trim();
+		// Local guard: a blank cancelledBy never leaves the plugin (the domain
+		// rejects it too, but this gives immediate inline feedback without a round
+		// trip). `detail` is optional; `reason` always carries a value (the select
+		// has an initial_value), so an empty one would mean a tampered submit.
+		if (reason.length === 0 || cancelledBy.length === 0) {
+			return showLeaf([orderId], {
+				variant: "error",
+				title: "Not cancelled",
+				description: "Choose a reason and enter who is cancelling it.",
+			});
+		}
+		// A stable per-order idempotency key: a double-submit is a guarded no-op,
+		// and the order cancels only once (the domain's guarded terminal flip).
+		const key = `admin-cancel:${orderId}`;
+		const result = await client.cancelOrder(
+			orderId,
+			{ reason, ...(detail.length > 0 ? { detail } : {}), cancelledBy },
+			{ idempotencyKey: key },
+		);
+		let notice: Notice | undefined;
+		if (!result.ok) {
+			// A NOT_CANCELLABLE conflict means the order can no longer be cancelled
+			// (e.g. it shipped, or was already cancelled without a reason) — the
+			// re-render below shows the new state; tell them to reload rather than
+			// check tokens.
+			notice =
+				result.reason === "NOT_CANCELLABLE"
+					? {
+							variant: "error",
+							title: "Order can’t be cancelled right now",
+							description:
+								"This order can no longer be cancelled — it may have shipped, or been cancelled without a reason on file. Reload and check its status.",
+						}
+					: {
+							variant: "error",
+							title: "Not cancelled",
+							description:
+								"That cancellation could not be recorded — check the order and the admin token in Settings.",
+						};
+		} else if (!result.cancelled) {
+			// The guarded flip matched 0 rows — already cancelled with a reason on
+			// file, or a lost race. Not a failure: surface a non-error notice so the
+			// merchant gets feedback rather than a silent, unchanged re-render.
+			notice = {
+				variant: "default",
+				title: "Already cancelled",
+				description: "This order was already cancelled; its recorded reason is shown above.",
+			};
+		} else {
+			notice = {
+				variant: "default",
+				title: "Order cancelled",
+				description: "The cancellation was recorded and the buyer has been emailed.",
 			};
 		}
 		return showLeaf([orderId], notice);

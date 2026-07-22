@@ -170,6 +170,17 @@ export interface OrdersTable {
 	fulfillment_recorded_by: ColumnType<string | null, string | null | undefined, string | null>;
 	/** ISO-8601 UTC record timestamp (store clock) — the presence witness. */
 	fulfillment_recorded_at: ColumnType<string | null, string | null | undefined, string | null>;
+	/** Structured cancellation (admin-UX Increment 1, "cancel with reason") —
+	 *  single-slot, written atomically with the `{pending,paid,processing} →
+	 *  cancelled` flip by `cancelOrder`. All nullable + omittable on insert;
+	 *  `cancellation_cancelled_at` is the presence witness — a bare-transition
+	 *  cancellation (back-compat) leaves these null even though `state =
+	 *  'cancelled'`. */
+	cancellation_reason: ColumnType<string | null, string | null | undefined, string | null>;
+	cancellation_detail: ColumnType<string | null, string | null | undefined, string | null>;
+	cancellation_cancelled_by: ColumnType<string | null, string | null | undefined, string | null>;
+	/** ISO-8601 UTC record timestamp (store clock) — the presence witness. */
+	cancellation_cancelled_at: ColumnType<string | null, string | null | undefined, string | null>;
 	created_at: string;
 	updated_at: string;
 }

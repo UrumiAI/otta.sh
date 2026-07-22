@@ -224,6 +224,11 @@ export function serializeOrder(order: Order): Record<string, unknown> {
 		// The shipping fulfillment once recorded (admin-UX Increment 1); null until
 		// the order ships with tracking. Additive — existing consumers ignore it.
 		fulfillment: order.fulfillment,
+		// The structured cancellation once recorded via cancelOrder (admin-UX
+		// Increment 1, "cancel with reason"); null while never cancelled OR
+		// cancelled via the bare transition (no reason on file). Additive —
+		// existing consumers ignore it.
+		cancellation: order.cancellation,
 		totals: {
 			currency: order.totals.currency,
 			subtotalCents: order.totals.subtotal,

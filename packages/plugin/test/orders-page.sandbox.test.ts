@@ -24,6 +24,7 @@ const ORDER_1 = {
 	reconciliationFlag: null,
 	reconciliationResolution: null,
 	fulfillment: null,
+	cancellation: null,
 	totals: {
 		currency: "USD",
 		subtotalCents: 1500,
@@ -125,6 +126,26 @@ const ORDER_SHIPPED = {
 		recordedBy: "ops@shop.test",
 		recordedAt: "2026-07-11T09:00:01.000Z",
 	},
+};
+
+// A cancelled order WITH a recorded reason, and one cancelled via the bare
+// transition (no reason on file) — admin-UX Increment 1, "cancel with reason".
+const ORDER_CANCELLED = {
+	...ORDER_1,
+	id: "ord-cancelled",
+	state: "cancelled",
+	cancellation: {
+		reason: "out_of_stock",
+		detail: "last unit sold on another channel",
+		cancelledBy: "ops@shop.test",
+		cancelledAt: "2026-07-11T09:00:01.000Z",
+	},
+};
+const ORDER_CANCELLED_NO_REASON = {
+	...ORDER_1,
+	id: "ord-cancelled-bare",
+	state: "cancelled",
+	cancellation: null,
 };
 
 /** Customer context for ord-1: a claimed account with an address, a session,
@@ -231,14 +252,21 @@ function makeGetResponder() {
 								? ORDER_PROCESSING
 								: path.includes("/ord-shipped")
 									? ORDER_SHIPPED
-									: ORDER_1;
+									: path.includes("/ord-cancelled-bare")
+										? ORDER_CANCELLED_NO_REASON
+										: path.includes("/ord-cancelled")
+											? ORDER_CANCELLED
+											: ORDER_1;
 			// State-appropriate transitions, as the real service derives them from the
 			// domain state machine: a processing order's legal targets INCLUDE the bare
-			// `shipped` — the PLUGIN is what must steer it away (PR #63 review).
+			// `shipped` — the PLUGIN is what must steer it away (PR #63 review); a
+			// cancelled order (either fixture) is TERMINAL — no legal transitions.
 			const allowedTransitions =
-				order.state === "processing"
-					? ["shipped", "cancelled", "refunded"]
-					: ["processing", "completed", "cancelled", "refunded"];
+				order.state === "cancelled"
+					? []
+					: order.state === "processing"
+						? ["shipped", "cancelled", "refunded"]
+						: ["processing", "completed", "cancelled", "refunded"];
 			return { status: 200, body: { ok: true, order, allowedTransitions } };
 		}
 		return { status: 404, body: { error: "unknown" } };
@@ -317,6 +345,26 @@ function makePostResponder() {
 							shippedAt: "2026-07-11T00:00:00.000Z",
 							recordedBy: b?.recordedBy ?? "",
 							recordedAt: "2026-07-11T00:00:01.000Z",
+						},
+					},
+				},
+			};
+		}
+		if (req.url.includes("/cancel")) {
+			const b = req.body as { reason?: string; detail?: string; cancelledBy?: string } | undefined;
+			return {
+				status: 200,
+				body: {
+					ok: true,
+					cancelled: true,
+					order: {
+						...ORDER_PROCESSING,
+						state: "cancelled",
+						cancellation: {
+							reason: b?.reason ?? "",
+							detail: b?.detail ?? null,
+							cancelledBy: b?.cancelledBy ?? "",
+							cancelledAt: "2026-07-11T00:00:01.000Z",
 						},
 					},
 				},
@@ -454,10 +502,12 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(tables.length).toBeGreaterThanOrEqual(1);
 		const itemRows = tables.flatMap((t) => (t.rows as Array<Record<string, unknown>>) ?? []);
 		expect(itemRows.some((r) => r.sku === "SKU-1")).toBe(true);
-		// One transition button per allowedTransition, with confirm on the destructive ones.
+		// One transition button per allowedTransition EXCEPT the bare `cancelled` —
+		// steered to the Cancel form instead (this slice's steering, mirroring #63's
+		// fulfillment steering) — with confirm on the still-bare destructive one.
 		const transitions = allButtons.filter((e) => e.action_id === "orders:transition");
 		const toStates = transitions.map((e) => (e.value as { toState: string }).toState);
-		expect(toStates.toSorted()).toEqual(["cancelled", "completed", "processing", "refunded"]);
+		expect(toStates.toSorted()).toEqual(["completed", "processing", "refunded"]);
 		const refund = transitions.find((e) => (e.value as { toState: string }).toState === "refunded");
 		expect(refund?.style).toBe("danger");
 		expect(refund?.confirm).toBeDefined();
@@ -631,7 +681,10 @@ describe("admin Orders console (workerd sandbox)", () => {
 			.map((f) => `${String(f.label)}=${String(f.value)}`);
 		expect(fieldValues).toContain("Outcome=fulfilled");
 		expect(fieldValues).toContain("Resolved by=ops@shop.test");
-		// No resolve form on an already-resolved order, and no alert banner.
+		// No resolve form on an already-resolved order, and no reconciliation alert
+		// banner (the order is still `paid` — legally cancellable — so it DOES carry
+		// the unrelated "Cancelling is permanent" alert from the cancellation
+		// section below; this assertion is scoped to reconciliation, not "any" alert).
 		const forms = blocks.filter((b) => b.type === "form");
 		expect(
 			forms.some(
@@ -640,7 +693,11 @@ describe("admin Orders console (workerd sandbox)", () => {
 					"orders:resolve-reconciliation",
 			),
 		).toBe(false);
-		expect(blocks.some((b) => b.type === "banner" && b.variant === "alert")).toBe(false);
+		expect(
+			blocks.some(
+				(b) => b.type === "banner" && b.variant === "alert" && b.title === "Needs reconciliation",
+			),
+		).toBe(false);
 	});
 
 	test("resolve form_submit POSTs the disposition (incl. expectedFlag) with Idempotency-Key + token, then re-renders detail", async () => {
@@ -767,11 +824,14 @@ describe("admin Orders console (workerd sandbox)", () => {
 			.filter((e) => e.action_id === "orders:transition");
 		const toStates = transitionButtons.map((e) => (e.value as { toState: string }).toState);
 		expect(toStates).not.toContain("shipped");
-		// The OTHER legal transitions still render (cancel/refund are not steered).
-		expect(toStates.toSorted()).toEqual(["cancelled", "refunded"]);
-		// The steering hint points at the Fulfillment form, which is present.
+		// `cancelled` is ALSO steered (this slice) to the Cancel form above; only
+		// `refunded` remains a bare one-click button.
+		expect(toStates.toSorted()).toEqual(["refunded"]);
+		// The steering hints point at the Fulfillment form and the Cancel form,
+		// both present.
 		const contexts = blocks.filter((b) => b.type === "context").map((b) => String(b.text));
 		expect(contexts.some((t) => t.includes("use the Fulfillment form above"))).toBe(true);
+		expect(contexts.some((t) => t.includes("use the Cancel form above"))).toBe(true);
 		const forms = blocks.filter((b) => b.type === "form");
 		expect(
 			forms.some(
@@ -875,6 +935,121 @@ describe("admin Orders console (workerd sandbox)", () => {
 		const blocks = blocksOf(outcome);
 		const banner = blocks.find((b) => b.type === "banner" && b.variant === "error");
 		expect(banner?.title).toBe("Not shipped");
+	});
+
+	test("open a cancellable (paid) order → detail shows the danger-styled Cancel form, no bare Mark-cancelled button", async () => {
+		await boot();
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "orders:open",
+			values: { orderId: "ord-1" },
+		});
+		const blocks = blocksOf(outcome);
+		expect(blocks.some((b) => b.type === "section" && b.text === "Cancellation")).toBe(true);
+		const alert = blocks.find((b) => b.type === "banner" && b.variant === "alert");
+		expect(alert?.title).toBe("Cancelling is permanent");
+		const forms = blocks.filter((b) => b.type === "form");
+		const cancelForm = forms.find(
+			(f) => (f.submit as { action_id?: string } | undefined)?.action_id === "orders:cancel",
+		);
+		expect(cancelForm).toBeDefined();
+		const fieldIds = ((cancelForm?.fields ?? []) as Array<{ action_id?: string }>).map(
+			(f) => f.action_id,
+		);
+		expect(fieldIds).toEqual(["orderId", "reason", "detail", "cancelledBy"]);
+		// No bare "Mark cancelled" button anywhere in the actions.
+		const transitionButtons = blocks
+			.filter((b) => b.type === "actions")
+			.flatMap((b) => (b.elements as Array<Record<string, unknown>>) ?? [])
+			.filter((e) => e.action_id === "orders:transition");
+		expect(transitionButtons.map((e) => (e.value as { toState: string }).toState)).not.toContain(
+			"cancelled",
+		);
+	});
+
+	test("cancel form_submit POSTs the reason with Idempotency-Key + token, then re-renders detail with a success notice", async () => {
+		await boot();
+		stub!.requests.length = 0;
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "orders:cancel",
+			values: {
+				orderId: "ord-proc",
+				reason: "out_of_stock",
+				detail: "last unit sold on another channel",
+				cancelledBy: "carol",
+			},
+		});
+		const post = stub!.requests.find((r) => r.method === "POST");
+		expect(post).toBeDefined();
+		expect(post!.url).toBe("/admin/orders/ord-proc/cancel");
+		expect(post!.headers["idempotency-key"]).toBe("admin-cancel:ord-proc");
+		expect(post!.headers["x-internal-token"]).toBe("admin-token-xyz");
+		const body = post!.body as Record<string, string>;
+		expect(body.reason).toBe("out_of_stock");
+		expect(body.detail).toBe("last unit sold on another channel");
+		expect(body.cancelledBy).toBe("carol");
+		const blocks = blocksOf(outcome);
+		expect(blocks.some((b) => b.type === "header" && b.text === "Order ord-proc")).toBe(true);
+		const banner = blocks.find((b) => b.type === "banner");
+		expect(banner?.title).toBe("Order cancelled");
+	});
+
+	test("cancel with a blank cancelledBy shows an inline error and makes NO POST", async () => {
+		await boot();
+		stub!.requests.length = 0;
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "orders:cancel",
+			values: { orderId: "ord-proc", reason: "customer_request", cancelledBy: "  " },
+		});
+		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
+		const blocks = blocksOf(outcome);
+		const banner = blocks.find((b) => b.type === "banner" && b.variant === "error");
+		expect(banner?.title).toBe("Not cancelled");
+	});
+
+	test("open a CANCELLED order WITH a recorded reason → shows it read-only, no Cancel form", async () => {
+		await boot();
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "orders:open",
+			values: { orderId: "ord-cancelled" },
+		});
+		const blocks = blocksOf(outcome);
+		expect(blocks.some((b) => b.type === "section" && b.text === "Cancellation")).toBe(true);
+		const fieldValues = blocks
+			.filter((b) => b.type === "fields")
+			.flatMap((b) => (b.fields as Array<{ label?: string; value?: string }>) ?? [])
+			.map((f) => `${String(f.label)}=${String(f.value)}`);
+		expect(fieldValues).toContain("Reason=out_of_stock");
+		expect(fieldValues).toContain("Detail=last unit sold on another channel");
+		expect(fieldValues).toContain("Cancelled by=ops@shop.test");
+		const forms = blocks.filter((b) => b.type === "form");
+		expect(
+			forms.some(
+				(f) => (f.submit as { action_id?: string } | undefined)?.action_id === "orders:cancel",
+			),
+		).toBe(false);
+	});
+
+	test("open a CANCELLED order cancelled WITHOUT a recorded reason (bare transition) → honest note, no Cancel form", async () => {
+		await boot();
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "orders:open",
+			values: { orderId: "ord-cancelled-bare" },
+		});
+		const blocks = blocksOf(outcome);
+		expect(blocks.some((b) => b.type === "section" && b.text === "Cancellation")).toBe(true);
+		const contexts = blocks.filter((b) => b.type === "context").map((b) => String(b.text));
+		expect(contexts.some((t) => t.includes("no reason was recorded"))).toBe(true);
+		const forms = blocks.filter((b) => b.type === "form");
+		expect(
+			forms.some(
+				(f) => (f.submit as { action_id?: string } | undefined)?.action_id === "orders:cancel",
+			),
+		).toBe(false);
 	});
 
 	test("open order → detail shows the Customer section: identity, address book (with ship-to disclaimer), sessions, other orders — token-free", async () => {

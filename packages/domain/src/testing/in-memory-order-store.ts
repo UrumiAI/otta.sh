@@ -9,6 +9,8 @@ import {
 import type { Clock } from "../ports/clock.js";
 import type { IdGen } from "../ports/id-gen.js";
 import type {
+	CancelOrderInput,
+	CancelOrderStoreResult,
 	CreateOrderInput,
 	CreateOrderResult,
 	OrderListFilter,
@@ -144,6 +146,7 @@ export class InMemoryOrderStore implements OrderStore {
 			reconciliationFlag: null,
 			reconciliationResolution: null,
 			fulfillment: null,
+			cancellation: null,
 		};
 		this.#orders.set(orderId, { order });
 		this.#byKey.set(input.idempotencyKey, orderId);
@@ -258,6 +261,35 @@ export class InMemoryOrderStore implements OrderStore {
 		// state has a template — the buyer's shipped email now carries this tracking.
 		if (input.enqueueEmail) this.#enqueue(input.orderId, "shipped");
 		return { recorded: true, order: this.#clone(stored.order) };
+	}
+
+	async cancelOrder(input: CancelOrderInput): Promise<CancelOrderStoreResult> {
+		// Guarded compose (mirrors the Kysely #flipAndEnqueue-routed UPDATE + outbox
+		// insert): the `state === input.fromState` guard is the
+		// `transition`/`recordFulfillment` fromState precedent — the use-case passes
+		// the state it validated against the state machine, so exactly one caller
+		// wins the flip and records the reason, and an order a concurrent
+		// transition/recordFulfillment already moved is a 0-row miss (never
+		// cancelled behind that transition's back). NEVER touches lines/totals.
+		const stored = this.#orders.get(input.orderId);
+		if (stored === undefined) return { cancelled: false, order: null };
+		if (stored.order.state !== input.fromState) {
+			return { cancelled: false, order: this.#clone(stored.order) };
+		}
+		const now = this.#clock.now().toISOString();
+		stored.order.state = "cancelled";
+		stored.order.cancellation = {
+			reason: input.reason,
+			detail: input.detail,
+			cancelledBy: input.cancelledBy,
+			cancelledAt: now,
+		};
+		stored.order.updatedAt = now;
+		// Same-"transaction" outbox enqueue as the real adapter (§5) when the
+		// cancelled state has a template — the buyer's cancellation email now
+		// carries the reason.
+		if (input.enqueueEmail) this.#enqueue(input.orderId, "cancelled");
+		return { cancelled: true, order: this.#clone(stored.order) };
 	}
 
 	// -- Phase 5: state machine + outbox --------------------------------------
@@ -399,6 +431,7 @@ export class InMemoryOrderStore implements OrderStore {
 			reconciliationFlag: row.reconciliationFlag ?? null,
 			reconciliationResolution: null,
 			fulfillment: null,
+			cancellation: null,
 		};
 		this.#orders.set(row.id, { order });
 	}
@@ -528,6 +561,7 @@ export class InMemoryOrderStore implements OrderStore {
 			lines: order.lines.map((l) => ({ ...l })),
 			totals: { ...order.totals },
 			fulfillment: order.fulfillment === null ? null : { ...order.fulfillment },
+			cancellation: order.cancellation === null ? null : { ...order.cancellation },
 		};
 	}
 }

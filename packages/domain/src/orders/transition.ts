@@ -188,5 +188,22 @@ export function buildOrderEmailData(order: Order, toState: OrderState): Record<s
 					},
 				}
 			: {}),
+		// Same rationale as fulfillment above: the cancellation travels with the
+		// data (never a store reach-back, §6). NOTE the customer-safety contract:
+		// the service renderer applies an explicit CUSTOMER-SAFE allowlist to this
+		// — only safe reasons (customer_request / out_of_stock) ever produce a
+		// reason line in the buyer's email; sensitive ones (fraud_suspected /
+		// pricing_error / other) and the admin `detail` never reach the rendered
+		// email (they stay admin-only, on the order detail page). Present only when
+		// cancelOrder recorded one (admin-UX Increment 1) — a bare-transition
+		// cancellation carries none.
+		...(order.cancellation !== null
+			? {
+					cancellation: {
+						reason: order.cancellation.reason,
+						detail: order.cancellation.detail,
+					},
+				}
+			: {}),
 	};
 }

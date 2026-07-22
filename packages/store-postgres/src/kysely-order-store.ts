@@ -6,6 +6,9 @@ import {
 	productId as toProductId,
 	reservationId as toReservationId,
 	sku as toSku,
+	type CancellationReason,
+	type CancelOrderInput,
+	type CancelOrderStoreResult,
 	type Clock,
 	type CreateOrderInput,
 	type CreateOrderResult,
@@ -290,6 +293,42 @@ export class KyselyOrderStore implements OrderStore {
 		);
 		const order = await this.#loadById(input.orderId);
 		return { recorded, order };
+	}
+
+	async cancelOrder(input: CancelOrderInput): Promise<CancelOrderStoreResult> {
+		// Cancel + record + enqueue, atomically (admin-UX Increment 1, "cancel with
+		// reason"). Routed through the SAME `#flipAndEnqueue` primitive as
+		// `transition`/`recordFulfillment` (one guarded-flip implementation, no
+		// parallel copy that could drift): the cancellation columns ride the guarded
+		// `WHERE id=:id AND state=:fromState` UPDATE as `extraSet`, then — when
+		// `enqueueEmail` — the `cancelled` outbox row is inserted (`ON CONFLICT DO
+		// NOTHING`), all in ONE transaction on one connection. So no reachable state
+		// is "cancelled without a reason" via this path, and the cancelled email
+		// that drains carries it. The fromState guard (validated by the use-case
+		// against the state machine) makes it once-only AND composes with the
+		// machine: an order a concurrent recordFulfillment/transition already moved
+		// is a 0-row miss (cancelled:false). NEVER touches order_items/order_totals
+		// (the snapshot invariant). input.idempotencyKey is intentionally unused —
+		// dedup is structural via the guard (mirrors `transition`/
+		// `recordFulfillment`, H4).
+		const now = this.#clock.now().toISOString();
+		const cancelled = await this.#db.transaction().execute((trx) =>
+			this.#flipAndEnqueue(trx, {
+				orderId: input.orderId,
+				fromState: input.fromState,
+				toState: "cancelled",
+				enqueueEmail: input.enqueueEmail,
+				now,
+				extraSet: {
+					cancellation_reason: input.reason,
+					cancellation_detail: input.detail,
+					cancellation_cancelled_by: input.cancelledBy,
+					cancellation_cancelled_at: now,
+				},
+			}),
+		);
+		const order = await this.#loadById(input.orderId);
+		return { cancelled, order };
 	}
 
 	// -- Phase 5: state machine + email outbox --------------------------------
@@ -734,6 +773,19 @@ function toOrder(
 						shippedAt: order.fulfillment_shipped_at ?? order.fulfillment_recorded_at,
 						recordedBy: order.fulfillment_recorded_by ?? "",
 						recordedAt: order.fulfillment_recorded_at,
+					},
+		// A cancellation exists iff it was recorded via cancelOrder (all columns
+		// written atomically); `cancelled_at` is the presence witness. A
+		// bare-transition cancellation (state='cancelled', no reason on file) reads
+		// as null here — an honest "no reason recorded" state.
+		cancellation:
+			order.cancellation_cancelled_at === null
+				? null
+				: {
+						reason: order.cancellation_reason as CancellationReason,
+						detail: order.cancellation_detail,
+						cancelledBy: order.cancellation_cancelled_by ?? "",
+						cancelledAt: order.cancellation_cancelled_at,
 					},
 	};
 }

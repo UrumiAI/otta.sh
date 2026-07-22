@@ -64,6 +64,44 @@ export interface ReconciliationResolution {
 }
 
 /**
+ * The structured reasons an admin may give when cancelling an order (admin-UX
+ * Increment 1, "cancel with reason" slice). A small closed set — commerce
+ * disposition, never free text alone — so cancellations are reportable; `other`
+ * is the escape hatch and is where the optional `detail` free text matters most.
+ */
+export type CancellationReason =
+	| "customer_request"
+	| "fraud_suspected"
+	| "out_of_stock"
+	| "pricing_error"
+	| "other";
+
+/**
+ * The cancellation recorded on an order (admin-UX Increment 1). A SINGLE-SLOT
+ * record: this domain's state machine cancels an order exactly once (`cancelled`
+ * is terminal — no outbound transition, `state-machine.ts`), so an order carries
+ * at most one cancellation. Part of the mutable envelope — recording it NEVER
+ * touches line items or prices (the snapshot invariant). Populated atomically
+ * with the `{pending,paid,processing} → cancelled` transition by `cancelOrder`;
+ * `null` until the order is cancelled through that path. A `cancelled` order
+ * reached via the bare `transitionOrder` (back-compat callers) has `state
+ * === "cancelled"` but `cancellation === null` — an honest "cancelled, no reason
+ * on file" state, mirroring `fulfillment`'s shipped-without-tracking case.
+ */
+export interface OrderCancellation {
+	reason: CancellationReason;
+	/** Optional free-text elaboration (trimmed; `null` when the admin gave none).
+	 *  Bounded by the service schema — the domain accepts whatever it is handed. */
+	detail: string | null;
+	/** Who cancelled it (free text, like a note author — the domain does not
+	 *  model admin identity). */
+	cancelledBy: string;
+	/** Server-assigned ISO-8601 UTC timestamp the cancellation was recorded (from
+	 *  the store's clock) — the presence witness that a reason is on file. */
+	cancelledAt: string;
+}
+
+/**
  * The shipping fulfillment recorded on an order (admin-UX Increment 1). A
  * SINGLE-SLOT record: this domain's state machine ships an order exactly once
  * (`processing → shipped`, one `shipped` state — no partial/split fulfillment),
@@ -176,4 +214,12 @@ export interface Order {
 	 * affects line items or totals (the snapshot invariant).
 	 */
 	fulfillment: OrderFulfillment | null;
+	/**
+	 * The structured cancellation recorded on this order (admin-UX Increment 1);
+	 * `null` while never cancelled, OR cancelled via the bare `transitionOrder`
+	 * without a reason (back-compat). Single-slot (cancellation is terminal). Part
+	 * of the mutable envelope — it never affects line items or totals (the
+	 * snapshot invariant).
+	 */
+	cancellation: OrderCancellation | null;
 }
