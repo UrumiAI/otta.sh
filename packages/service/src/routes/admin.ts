@@ -26,7 +26,9 @@ import {
 	type ProductListFilter,
 	type ProductSummary,
 	recordFulfillment,
+	removeStock,
 	resolveReconciliation,
+	restock,
 	type SessionStore,
 	SkuConflictError,
 	transitionOrder,
@@ -51,6 +53,7 @@ import {
 	productsListQuery,
 	recordFulfillmentBody,
 	resolveReconciliationBody,
+	stockMovementBody,
 	transitionBody,
 } from "../schemas.js";
 import { serializeOrder, serializeOrderSummary } from "./orders.js";
@@ -314,6 +317,88 @@ export function adminRoutes(deps: AdminRoutesDeps): Hono {
 			}
 			throw err;
 		}
+	});
+
+	// -- Admin Products console: merchant restock / stock removal (Increment 2) --
+	// The invariant-critical stock-movement writes. NON-GETs (app-level
+	// X-Service-Token write gate covers them when the secret is set) that ALSO
+	// require the internal token — the same double-gate as the product edit. Each
+	// resolves the productId to its AUTHORITATIVE sku (never trusting a
+	// client-supplied one) and mirrors the port 1:1: restock is a commutative
+	// oversell-safe increment; remove-stock is a guarded decrement that can never
+	// drive on-hand below 0. Because a restock is ADDITIVE (not idempotent by
+	// nature like a state flip), the `Idempotency-Key` header is REQUIRED — there
+	// is no safe content-only fallback (two deliberate "+5" restocks must NOT
+	// collapse), so the plugin sends a stable per-submission key.
+
+	app.post("/products/:productId/restock", async (c) => {
+		const denied = requireInternalToken(c, deps.internalToken);
+		if (denied !== null) return denied;
+
+		const params = productPathParams.safeParse(c.req.param());
+		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
+		const parsed = stockMovementBody.safeParse(await readJson(c));
+		if (!parsed.success) {
+			return c.json({ error: "invalid request body", issues: parsed.error.issues }, 400);
+		}
+		const key = c.req.header("Idempotency-Key");
+		if (key === undefined || key.length === 0) {
+			return c.json({ ok: false, reason: "MISSING_IDEMPOTENCY_KEY" }, 400);
+		}
+
+		const skuResolved = await resolveProductSku(deps, params.data.productId);
+		if (skuResolved.status === "not_found") {
+			return c.json({ ok: false, reason: "PRODUCT_NOT_FOUND" }, 404);
+		}
+		if (skuResolved.status === "no_sku") return c.json({ ok: false, reason: "NO_SKU" }, 409);
+
+		const res = await restock(
+			deps.inventoryStore,
+			toSku(skuResolved.sku),
+			parsed.data.qty,
+			toIdempotencyKey(key),
+		);
+		if (res.ok) return c.json({ ok: true, onHand: res.onHand }, 200);
+		// UNKNOWN_SKU: the product exists but has no inventory row yet (priced but
+		// never seeded). A stock movement cannot create one — 409, like a
+		// conflict-with-current-state.
+		return c.json({ ok: false, reason: "NO_INVENTORY_ROW" }, 409);
+	});
+
+	app.post("/products/:productId/remove-stock", async (c) => {
+		const denied = requireInternalToken(c, deps.internalToken);
+		if (denied !== null) return denied;
+
+		const params = productPathParams.safeParse(c.req.param());
+		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
+		const parsed = stockMovementBody.safeParse(await readJson(c));
+		if (!parsed.success) {
+			return c.json({ error: "invalid request body", issues: parsed.error.issues }, 400);
+		}
+		const key = c.req.header("Idempotency-Key");
+		if (key === undefined || key.length === 0) {
+			return c.json({ ok: false, reason: "MISSING_IDEMPOTENCY_KEY" }, 400);
+		}
+
+		const skuResolved = await resolveProductSku(deps, params.data.productId);
+		if (skuResolved.status === "not_found") {
+			return c.json({ ok: false, reason: "PRODUCT_NOT_FOUND" }, 404);
+		}
+		if (skuResolved.status === "no_sku") return c.json({ ok: false, reason: "NO_SKU" }, 409);
+
+		const res = await removeStock(
+			deps.inventoryStore,
+			toSku(skuResolved.sku),
+			parsed.data.qty,
+			toIdempotencyKey(key),
+		);
+		if (res.ok) return c.json({ ok: true, onHand: res.onHand }, 200);
+		if (res.reason === "INSUFFICIENT_STOCK") {
+			// Cannot remove more than is on hand — 409 with the current count so the
+			// panel can show it. Guarded in the domain (never drives on_hand < 0).
+			return c.json({ ok: false, reason: "INSUFFICIENT_STOCK", onHand: res.onHand }, 409);
+		}
+		return c.json({ ok: false, reason: "NO_INVENTORY_ROW" }, 409); // UNKNOWN_SKU
 	});
 
 	// -- Admin Orders console: customer context (admin-UX Increment 1) -----------
@@ -690,6 +775,21 @@ function serializeProductDetail(product: ProductCommerce, onHand: number): Recor
 		createdAt: product.createdAt.toISOString(),
 		updatedAt: product.updatedAt.toISOString(),
 	};
+}
+
+/** Resolve an admin productId to its AUTHORITATIVE sku for a stock movement —
+ *  never trusting a client-supplied sku. A missing/soft-deleted product ⇒
+ *  `not_found` (404, mirrors the product detail's not-found rule); a skuless
+ *  "create then price" product ⇒ `no_sku` (409, nothing to move stock against
+ *  yet). */
+async function resolveProductSku(
+	deps: AdminRoutesDeps,
+	productId: string,
+): Promise<{ status: "ok"; sku: string } | { status: "not_found" } | { status: "no_sku" }> {
+	const product = await deps.productCommerce.getByProductId(toProductId(productId));
+	if (product === null || product.deletedAt !== null) return { status: "not_found" };
+	if (product.sku === null) return { status: "no_sku" };
+	return { status: "ok", sku: product.sku };
 }
 
 async function readJson(c: { req: { json(): Promise<unknown> } }): Promise<unknown> {

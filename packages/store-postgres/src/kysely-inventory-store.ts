@@ -12,6 +12,9 @@ import {
 	ReservationCommitLostError,
 	ReservationNotHeldError,
 	type ReserveResult,
+	type RestockResult,
+	StockMovementMismatchError,
+	type StockRemovalResult,
 } from "@urumi/domain";
 import { type Kysely, sql } from "kysely";
 import type { Database, ReservationState } from "./schema.js";
@@ -25,6 +28,16 @@ type FinalizeOutcome = ReserveResult | typeof LOST;
 class LostCasError extends Error {
 	constructor() {
 		super("adjust lost the guarded reservation CAS");
+	}
+}
+
+/** Internal: aborts a restock/removeStock tx (rolling back its just-inserted
+ *  claim) when the target sku has no inventory row — an UNKNOWN_SKU is outside
+ *  the idempotency scope, exactly like `reserve`'s FK-abort on an unknown sku,
+ *  so the key must NOT be consumed. */
+class UnknownSkuError extends Error {
+	constructor() {
+		super("stock movement targets a sku with no inventory row");
 	}
 }
 
@@ -355,6 +368,172 @@ export class KyselyInventoryStore implements InventoryStore {
 			.where("sku", "=", sku)
 			.executeTakeFirst();
 		return row?.on_hand ?? 0;
+	}
+
+	/**
+	 * Merchant restock (admin-UX Increment 2): ADD `qty` to an existing sku's
+	 * on-hand. A single UNCONDITIONAL `on_hand + qty` — commutative with every
+	 * concurrent guarded decrement (`reserve`/`removeStock`), so it can never
+	 * cause an oversell (no `WHERE on_hand >= …` needed). Ledger-first exactly-
+	 * once via `#applyStockMovement`; an unknown sku is UNKNOWN_SKU (key not
+	 * consumed — never auto-creates the row).
+	 */
+	async restock(sku: string, qty: number, key: IdempotencyKey): Promise<RestockResult> {
+		if (!Number.isSafeInteger(qty) || qty <= 0) {
+			throw new RangeError(`restock() requires a positive integer qty, got ${String(qty)}`);
+		}
+		const res = await this.#applyStockMovement(sku, qty, key, "restock");
+		// A restock never yields INSUFFICIENT_STOCK (unconditional increment); the
+		// only failure the movement can record is UNKNOWN_SKU.
+		if (res.ok) return { ok: true, onHand: res.onHand };
+		return { ok: false, reason: "UNKNOWN_SKU" };
+	}
+
+	/**
+	 * Merchant stock removal (admin-UX Increment 2): REMOVE `qty` from an existing
+	 * sku's on-hand. The oversell-critical DECREMENT — a single GUARDED `on_hand -
+	 * qty WHERE on_hand >= qty`, the SAME guard shape as `reserve`'s decrement, so
+	 * it can never drive on-hand below 0 or race a reservation into oversell.
+	 * Ledger-first exactly-once; INSUFFICIENT_STOCK on a known sku consumes the
+	 * key (R2), UNKNOWN_SKU does not.
+	 */
+	async removeStock(sku: string, qty: number, key: IdempotencyKey): Promise<StockRemovalResult> {
+		if (!Number.isSafeInteger(qty) || qty <= 0) {
+			throw new RangeError(`removeStock() requires a positive integer qty, got ${String(qty)}`);
+		}
+		return this.#applyStockMovement(sku, qty, key, "removal");
+	}
+
+	/**
+	 * The shared exactly-once choreography for both admin stock movements (mirrors
+	 * `adjust`'s claim discipline):
+	 *   1. ledger-first — a recorded `inventory_stock_movements` row for `key`
+	 *      short-circuits to its outcome (a replay moves NOTHING; a key reused for
+	 *      a different (sku, direction, qty) is a typed `StockMovementMismatchError`).
+	 *   2. one short tx: claim the key (`INSERT … ON CONFLICT DO NOTHING`), then
+	 *      the movement — an unconditional `+qty` (restock) or a guarded `-qty
+	 *      WHERE on_hand >= qty` (removal). Claim + movement commit all-or-nothing,
+	 *      so only the claim winner moves stock.
+	 *   3. an unknown sku (no inventory row) throws `UnknownSkuError` INSIDE the tx
+	 *      → the claim rolls back → UNKNOWN_SKU (key not consumed, mirroring
+	 *      `reserve`). A lost claim (a concurrent same-key peer holds it) re-reads
+	 *      the ledger until the peer's outcome lands.
+	 */
+	async #applyStockMovement(
+		sku: string,
+		qty: number,
+		key: IdempotencyKey,
+		direction: "restock" | "removal",
+	): Promise<StockRemovalResult> {
+		for (let attempt = 0; attempt < this.#maxAttempts; attempt++) {
+			const replay = await this.#replayStockMovement(key, sku, direction, qty);
+			if (replay !== undefined) return replay;
+
+			const outcome = await this.#db
+				.transaction()
+				.execute<StockRemovalResult | typeof LOST>(async (trx) => {
+					const claim = await trx
+						.insertInto("inventory_stock_movements")
+						.values({
+							idempotency_key: key,
+							sku,
+							direction,
+							qty,
+							outcome: "ok",
+							result_on_hand: 0,
+							created_at: this.#clock.now().toISOString(),
+						})
+						.onConflict((oc) => oc.column("idempotency_key").doNothing())
+						.returning("idempotency_key")
+						.executeTakeFirst();
+					if (claim === undefined) return LOST; // peer holds the key: re-read.
+
+					if (direction === "restock") {
+						// Unconditional additive increment (oversell-safe: only raises).
+						const updated = await trx
+							.updateTable("inventory")
+							.set({ on_hand: sql<number>`on_hand + ${qty}` })
+							.where("sku", "=", sku)
+							.returning("on_hand")
+							.executeTakeFirst();
+						if (updated === undefined) throw new UnknownSkuError(); // rollback claim
+						await trx
+							.updateTable("inventory_stock_movements")
+							.set({ result_on_hand: updated.on_hand })
+							.where("idempotency_key", "=", key)
+							.execute();
+						return { ok: true, onHand: updated.on_hand };
+					}
+
+					// removal: oversell-critical single GUARDED decrement.
+					const decremented = await trx
+						.updateTable("inventory")
+						.set({ on_hand: sql<number>`on_hand - ${qty}` })
+						.where("sku", "=", sku)
+						.where("on_hand", ">=", qty)
+						.returning("on_hand")
+						.executeTakeFirst();
+					if (decremented !== undefined) {
+						await trx
+							.updateTable("inventory_stock_movements")
+							.set({ result_on_hand: decremented.on_hand })
+							.where("idempotency_key", "=", key)
+							.execute();
+						return { ok: true, onHand: decremented.on_hand };
+					}
+
+					// 0 rows: unknown sku (no row) OR genuinely insufficient (guard failed).
+					const row = await trx
+						.selectFrom("inventory")
+						.select("on_hand")
+						.where("sku", "=", sku)
+						.executeTakeFirst();
+					if (row === undefined) throw new UnknownSkuError(); // rollback claim
+					// Genuine INSUFFICIENT_STOCK on a known sku: record it, key CONSUMED.
+					await trx
+						.updateTable("inventory_stock_movements")
+						.set({ outcome: "insufficient_stock", result_on_hand: row.on_hand })
+						.where("idempotency_key", "=", key)
+						.execute();
+					return { ok: false, reason: "INSUFFICIENT_STOCK", onHand: row.on_hand };
+				})
+				.catch((err: unknown): StockRemovalResult | typeof LOST => {
+					if (err instanceof UnknownSkuError) return { ok: false, reason: "UNKNOWN_SKU" };
+					throw err;
+				});
+
+			if (outcome !== LOST) return outcome;
+			await delay(this.#delayMs);
+		}
+		throw new Error(`stock movement (${direction}) of sku ${sku} did not settle in time`);
+	}
+
+	/** Ledger-first replay resolver for a stock movement: returns the recorded
+	 *  result for a replayed key (throwing on a mis-keyed reuse), or undefined if
+	 *  unseen. */
+	async #replayStockMovement(
+		key: string,
+		sku: string,
+		direction: "restock" | "removal",
+		qty: number,
+	): Promise<StockRemovalResult | undefined> {
+		const recorded = await this.#db
+			.selectFrom("inventory_stock_movements")
+			.select(["sku", "direction", "qty", "outcome", "result_on_hand"])
+			.where("idempotency_key", "=", key)
+			.executeTakeFirst();
+		if (recorded === undefined) return undefined;
+		if (recorded.sku !== sku || recorded.direction !== direction || recorded.qty !== qty) {
+			throw new StockMovementMismatchError(
+				key,
+				`${recorded.direction} ${recorded.qty}×${recorded.sku}`,
+				`${direction} ${qty}×${sku}`,
+			);
+		}
+		if (recorded.outcome === "insufficient_stock") {
+			return { ok: false, reason: "INSUFFICIENT_STOCK", onHand: recorded.result_on_hand };
+		}
+		return { ok: true, onHand: recorded.result_on_hand };
 	}
 
 	async adjust(reservationId: string, newQty: number, key: IdempotencyKey): Promise<ReserveResult> {

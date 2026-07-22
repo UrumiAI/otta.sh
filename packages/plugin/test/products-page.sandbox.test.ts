@@ -393,3 +393,187 @@ describe("admin Products edit / save (workerd sandbox)", () => {
 		expect(banner).toBeDefined();
 	});
 });
+
+// -- merchant restock / stock removal (slice 3) under the sandbox -------------
+
+/** A POST responder for the stock-movement endpoints. Requires the admin token;
+ *  restock echoes the new on-hand; remove-stock echoes it or a magic qty=999
+ *  drives a 409 INSUFFICIENT_STOCK. */
+function makeStockResponder() {
+	return (req: RecordedRequest): { status: number; body: unknown } => {
+		if (req.headers["x-internal-token"] === undefined) {
+			return { status: 401, body: { ok: false, error: "unauthorized" } };
+		}
+		const qty = (req.body as { qty?: number } | undefined)?.qty ?? 0;
+		if (req.url === "/admin/products/prod-1/restock") {
+			return { status: 200, body: { ok: true, onHand: 42 + qty } };
+		}
+		if (req.url === "/admin/products/prod-1/remove-stock") {
+			if (qty === 999) {
+				return { status: 409, body: { ok: false, reason: "INSUFFICIENT_STOCK", onHand: 42 } };
+			}
+			return { status: 200, body: { ok: true, onHand: 42 - qty } };
+		}
+		return { status: 404, body: { ok: false, reason: "PRODUCT_NOT_FOUND" } };
+	};
+}
+
+describe("admin Products restock / remove-stock (workerd sandbox)", () => {
+	async function bootStock(): Promise<void> {
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", makeGetResponder());
+		stub.respondWith("POST", makeStockResponder());
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+		await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-token",
+			values: { internalToken: "admin-token-xyz" },
+		});
+		await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-service-token",
+			values: { serviceToken: "svc-token-abc" },
+		});
+		stub.requests.length = 0;
+	}
+
+	test("the product detail carries a restock form and a remove-stock form, each a qty TEXT input", async () => {
+		await bootStock();
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "products:open",
+			values: { productId: "prod-1" },
+		});
+		const forms = blocksOf(outcome).filter((b) => b.type === "form");
+		const restock = forms.find(
+			(f) => (f.submit as { action_id?: string })?.action_id === "products:restock",
+		);
+		const remove = forms.find(
+			(f) => (f.submit as { action_id?: string })?.action_id === "products:remove-stock",
+		);
+		expect(restock).toBeDefined();
+		expect(remove).toBeDefined();
+		const restockQty = ((restock?.fields ?? []) as Array<Record<string, unknown>>).find(
+			(f) => f.action_id === "qty",
+		);
+		expect(restockQty?.type).toBe("text_input"); // never number_input (integer discipline)
+		// A per-submission nonce carrier threads the idempotency seed.
+		expect(
+			((restock?.fields ?? []) as Array<Record<string, unknown>>).some(
+				(f) => f.action_id === "nonce",
+			),
+		).toBe(true);
+	});
+
+	test("restock POSTs {qty} with BOTH tokens + Idempotency-Key, then reloads with a 'Stock added' notice", async () => {
+		await bootStock();
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "products:restock",
+			values: { productId: "prod-1", nonce: "nonce-1", qty: "8" },
+		});
+		const post = stub!.requests.find((r) => r.method === "POST");
+		expect(post).toBeDefined();
+		expect(post!.url).toBe("/admin/products/prod-1/restock");
+		expect(post!.headers["x-internal-token"]).toBe("admin-token-xyz");
+		expect(post!.headers["x-service-token"]).toBe("svc-token-abc");
+		expect(typeof post!.headers["idempotency-key"]).toBe("string");
+		expect((post!.body as Record<string, unknown>).qty).toBe(8);
+		const banner = blocksOf(outcome).find((b) => b.type === "banner");
+		expect(banner?.variant).toBe("default");
+		expect(String(banner?.title)).toContain("Stock added");
+		// The leaf reloaded (a fresh GET) to show the new count.
+		expect(
+			stub!.requests.some((r) => r.method === "GET" && r.url === "/admin/products/prod-1"),
+		).toBe(true);
+	});
+
+	test("removing more than on hand is a clean INSUFFICIENT_STOCK notice, never a negative", async () => {
+		await bootStock();
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "products:remove-stock",
+			values: { productId: "prod-1", nonce: "nonce-2", qty: "999" },
+		});
+		const banner = blocksOf(outcome).find((b) => b.type === "banner" && b.variant === "error");
+		expect(banner).toBeDefined();
+		expect(String(banner?.title)).toMatch(/not enough stock/i);
+	});
+
+	test("a non-numeric qty is caught at the plugin boundary — no POST is sent", async () => {
+		await bootStock();
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "products:restock",
+			values: { productId: "prod-1", nonce: "nonce-3", qty: "-4" },
+		});
+		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
+		const banner = blocksOf(outcome).find((b) => b.type === "banner" && b.variant === "error");
+		expect(banner).toBeDefined();
+	});
+
+	test("a double-submit of the SAME rendered form (same nonce) dedupes to ONE movement; a fresh nonce applies again", async () => {
+		// A ledger-emulating stub: dedupes by Idempotency-Key exactly like the
+		// service's stock-movements ledger, tracking the on-hand it would produce.
+		let onHand = 42;
+		const seen = new Map<string, number>(); // key → recorded resulting onHand
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", makeGetResponder());
+		stub.respondWith("POST", (req: RecordedRequest): { status: number; body: unknown } => {
+			if (req.headers["x-internal-token"] === undefined) {
+				return { status: 401, body: { ok: false, error: "unauthorized" } };
+			}
+			const key = req.headers["idempotency-key"] as string;
+			const recorded = seen.get(key);
+			if (recorded !== undefined) {
+				return { status: 200, body: { ok: true, onHand: recorded } }; // replay: no movement
+			}
+			onHand += (req.body as { qty?: number } | undefined)?.qty ?? 0;
+			seen.set(key, onHand);
+			return { status: 200, body: { ok: true, onHand } };
+		});
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+		await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-token",
+			values: { internalToken: "admin-token-xyz" },
+		});
+		stub.requests.length = 0;
+
+		// The same RENDERED form submitted twice: em-dash resends the SAME captured
+		// values, nonce included — so both POSTs derive the SAME Idempotency-Key.
+		const submit = () =>
+			sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "products:restock",
+				values: { productId: "prod-1", nonce: "nonce-dupe", qty: "8" },
+			});
+		await submit();
+		const replay = await submit();
+
+		const posts = stub.requests.filter((r) => r.method === "POST");
+		expect(posts).toHaveLength(2);
+		expect(posts[0]!.headers["idempotency-key"]).toBe(posts[1]!.headers["idempotency-key"]);
+		// The ledger applied the +8 ONCE (42 → 50), and the replay echoed it.
+		expect(onHand).toBe(50);
+		const banner = blocksOf(replay).find((b) => b.type === "banner");
+		expect(String(banner?.description)).toContain("50");
+
+		// A FRESH render mints a new nonce ⇒ a different key ⇒ a second DELIBERATE
+		// restock applies (never collapsed into the first).
+		await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "products:restock",
+			values: { productId: "prod-1", nonce: "nonce-fresh", qty: "8" },
+		});
+		const allPosts = stub.requests.filter((r) => r.method === "POST");
+		expect(allPosts[2]!.headers["idempotency-key"]).not.toBe(posts[0]!.headers["idempotency-key"]);
+		expect(onHand).toBe(58);
+	});
+});

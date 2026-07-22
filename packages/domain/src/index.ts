@@ -86,6 +86,7 @@ export {
 	AdjustReservationMismatchError,
 	ReservationCommitLostError,
 	ReservationNotHeldError,
+	StockMovementMismatchError,
 	type AdoptInput,
 	type AdoptManyInput,
 	type AdoptManyResult,
@@ -93,6 +94,8 @@ export {
 	type CommitManyResult,
 	type InventoryStore,
 	type ReserveResult,
+	type RestockResult,
+	type StockRemovalResult,
 } from "./ports/inventory-store.js";
 export type {
 	CancelOrderInput,
@@ -259,7 +262,7 @@ export {
 export { expireOrders, type ExpireOrdersDeps } from "./orders/expire-orders.js";
 export type { Clock } from "./ports/clock.js";
 export type { IdGen } from "./ports/id-gen.js";
-export { commit, release, reserve } from "./inventory/use-cases.js";
+export { commit, release, removeStock, reserve, restock } from "./inventory/use-cases.js";
 export type {
 	ProductCommerce,
 	ProductCommerceStore,

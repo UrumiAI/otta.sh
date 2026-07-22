@@ -12,6 +12,9 @@ import {
 	ReservationCommitLostError,
 	ReservationNotHeldError,
 	type ReserveResult,
+	type RestockResult,
+	StockMovementMismatchError,
+	type StockRemovalResult,
 } from "../ports/inventory-store.js";
 
 export type ReservationState = "pending" | "held" | "committed" | "released" | "failed" | "adopted";
@@ -59,6 +62,15 @@ export class InMemoryInventoryStore implements InventoryStore {
 	/** Per-mutation adjust ledger: key → the reservation it was recorded against
 	 *  plus its terminal result (exactly-once; mis-keyed replays are rejected). */
 	#adjustments = new Map<string, { reservationId: string; result: ReserveResult }>();
+	/** Per-mutation stock-movement ledger (admin restock/removeStock): key → the
+	 *  movement it was recorded against plus its terminal result. Exactly-once;
+	 *  a key reused for a different (sku, direction, qty) is rejected. Only
+	 *  key-CONSUMING outcomes are recorded (ok / insufficient_stock) — an
+	 *  UNKNOWN_SKU rejection leaves the key unconsumed, mirroring `reserve`. */
+	#stockMovements = new Map<
+		string,
+		{ sku: string; direction: "restock" | "removal"; qty: number; result: StockRemovalResult }
+	>();
 
 	constructor(options: InMemoryInventoryStoreOptions) {
 		this.#idGen = options.idGen;
@@ -291,6 +303,86 @@ export class InMemoryInventoryStore implements InventoryStore {
 	 *  sku with no row reads as `0`, mirroring the store's LEFT JOIN semantics. */
 	async getOnHand(sku: string): Promise<number> {
 		return this.#onHand.get(sku) ?? 0;
+	}
+
+	/**
+	 * Merchant restock (admin-UX Increment 2): ADD `qty` to an existing sku's
+	 * on-hand. Ledger-first exactly-once (mirrors `adjust`): a replayed key
+	 * returns the recorded result and moves nothing; a key reused for a different
+	 * movement is a typed rejection. An unknown sku is a clean `UNKNOWN_SKU` that
+	 * does NOT consume the key (never auto-creates the row — `seedOnHand` owns
+	 * create). The movement itself is an unconditional, oversell-safe increment.
+	 */
+	async restock(sku: string, qty: number, key: IdempotencyKey): Promise<RestockResult> {
+		if (!Number.isSafeInteger(qty) || qty <= 0) {
+			throw new RangeError(`restock() requires a positive integer qty, got ${String(qty)}`);
+		}
+		const replay = this.#replayStockMovement(key, sku, "restock", qty);
+		if (replay !== undefined) return replay as RestockResult;
+
+		// Unknown sku: pre-claim rejection, key NOT consumed (mirrors reserve).
+		if (!this.#onHand.has(sku)) return { ok: false, reason: "UNKNOWN_SKU" };
+
+		const onHand = (this.#onHand.get(sku) ?? 0) + qty;
+		this.#onHand.set(sku, onHand);
+		const result: RestockResult = { ok: true, onHand };
+		this.#stockMovements.set(key, { sku, direction: "restock", qty, result });
+		return { ...result };
+	}
+
+	/**
+	 * Merchant stock removal (admin-UX Increment 2): REMOVE `qty` from an existing
+	 * sku's on-hand. The oversell-critical counterpart of `restock` — a GUARDED
+	 * decrement that never drives on-hand below 0 (`onHand >= qty`). Ledger-first
+	 * exactly-once: `INSUFFICIENT_STOCK` on a known sku is a terminal outcome that
+	 * DOES consume the key; `UNKNOWN_SKU` does not.
+	 */
+	async removeStock(sku: string, qty: number, key: IdempotencyKey): Promise<StockRemovalResult> {
+		if (!Number.isSafeInteger(qty) || qty <= 0) {
+			throw new RangeError(`removeStock() requires a positive integer qty, got ${String(qty)}`);
+		}
+		const replay = this.#replayStockMovement(key, sku, "removal", qty);
+		if (replay !== undefined) return replay;
+
+		// Unknown sku: pre-claim rejection, key NOT consumed (mirrors reserve).
+		if (!this.#onHand.has(sku)) return { ok: false, reason: "UNKNOWN_SKU" };
+
+		const current = this.#onHand.get(sku) ?? 0;
+		if (current < qty) {
+			// Genuine INSUFFICIENT_STOCK on a known sku: key CONSUMED (R2).
+			const failed: StockRemovalResult = {
+				ok: false,
+				reason: "INSUFFICIENT_STOCK",
+				onHand: current,
+			};
+			this.#stockMovements.set(key, { sku, direction: "removal", qty, result: failed });
+			return { ...failed };
+		}
+		const onHand = current - qty;
+		this.#onHand.set(sku, onHand);
+		const result: StockRemovalResult = { ok: true, onHand };
+		this.#stockMovements.set(key, { sku, direction: "removal", qty, result });
+		return { ...result };
+	}
+
+	/** Shared stock-movement replay resolver: returns the recorded result for a
+	 *  replayed key (throwing on a mis-keyed reuse), or undefined if unseen. */
+	#replayStockMovement(
+		key: string,
+		sku: string,
+		direction: "restock" | "removal",
+		qty: number,
+	): StockRemovalResult | undefined {
+		const recorded = this.#stockMovements.get(key);
+		if (recorded === undefined) return undefined;
+		if (recorded.sku !== sku || recorded.direction !== direction || recorded.qty !== qty) {
+			throw new StockMovementMismatchError(
+				key,
+				`${recorded.direction} ${recorded.qty}×${recorded.sku}`,
+				`${direction} ${qty}×${sku}`,
+			);
+		}
+		return { ...recorded.result };
 	}
 
 	// -- test surface ---------------------------------------------------------

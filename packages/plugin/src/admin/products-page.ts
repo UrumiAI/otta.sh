@@ -15,6 +15,8 @@ import {
 	type ProductEditWire,
 	type ProductsListFilter,
 	type ProductSummaryWire,
+	type RestockResult,
+	type StockRemovalResult,
 } from "./admin-products-client.js";
 import {
 	backButton,
@@ -53,6 +55,9 @@ const PRODUCTS_ACTIONS: ScreenActions = screenActions("products");
 
 /** The detail leaf's edit-form submit (`products:save`). */
 const ACTION_SAVE = PRODUCTS_ACTIONS.custom("save");
+/** The detail leaf's stock-movement submits (admin-UX Increment 2 slice 3). */
+const ACTION_RESTOCK = PRODUCTS_ACTIONS.custom("restock");
+const ACTION_REMOVE = PRODUCTS_ACTIONS.custom("remove-stock");
 
 /**
  * The action ids the admin-route dispatcher recognizes as belonging to the
@@ -61,7 +66,11 @@ const ACTION_SAVE = PRODUCTS_ACTIONS.custom("save");
  * here, so none falls through the dispatcher to the `{blocks:[]}` dead-end.
  * `products:page` is ALSO the table's `page_action_id`.
  */
-export const PRODUCTS_ACTION_IDS: ReadonlySet<string> = PRODUCTS_ACTIONS.actionIds("save");
+export const PRODUCTS_ACTION_IDS: ReadonlySet<string> = PRODUCTS_ACTIONS.actionIds(
+	"save",
+	"restock",
+	"remove-stock",
+);
 
 const PAGE_LIMIT = 25;
 
@@ -100,7 +109,11 @@ export function createProductsPageHandler(): RouteHandler<ProductsPageInput> {
 			return productId === undefined ? undefined : { targetPath: [productId] };
 		},
 		levels: [productsListLevel(), productDetailLevel()],
-		customActions: { [ACTION_SAVE]: saveAction() },
+		customActions: {
+			[ACTION_SAVE]: saveAction(),
+			[ACTION_RESTOCK]: restockAction(),
+			[ACTION_REMOVE]: removeStockAction(),
+		},
 	});
 }
 
@@ -280,7 +293,85 @@ function detailBlocks(
 		text: "Editing the commerce fields this store owns. The status (active/inactive) is the CMS publish state — publish or unpublish the document to change it, not here. Titles/images are also managed in the CMS. Money is shown in the product's own currency.",
 	});
 	blocks.push(editForm(actions, p));
+
+	// -- Stock management (admin-UX Increment 2 slice 3) ----------------------
+	// Only meaningful for a product with a sku AND an inventory row. A skuless
+	// "create then price" product has nothing to move stock against, so the forms
+	// are omitted (the service would 409 NO_SKU anyway).
+	if (p.sku !== null) {
+		blocks.push({ type: "divider" });
+		blocks.push({ type: "header", text: "Stock" });
+		blocks.push({
+			type: "context",
+			text: `Current available (on hand): ${p.onHand}. "On hand" is the count available to sell right now — every open cart hold has already been subtracted, so restocking adds to this number and it can never be oversold. Enter whole units only.`,
+		});
+		blocks.push(restockForm(actions, p));
+		blocks.push(removeStockForm(actions, p));
+	}
 	return blocks;
+}
+
+/**
+ * The restock form (admin-UX Increment 2 slice 3): ADD units. A hidden
+ * `productId` carrier threads the target through the stateless submit, and a
+ * hidden `nonce` (a fresh `crypto.randomUUID()` per render) is the per-
+ * submission idempotency seed — a true double-submit of THIS rendered form
+ * resends the same nonce (dedupes to one add), while every fresh reload mints a
+ * new nonce so two DELIBERATE restocks each apply. Qty is a TEXT input (never
+ * `number_input`, which would hand back a JS float) parsed to a positive whole
+ * number.
+ */
+function restockForm(actions: ScreenActions, p: ProductDetailWire): FormBlock {
+	return {
+		type: "form",
+		fields: [
+			stockCarrier("productId", p.productId),
+			stockCarrier("nonce", crypto.randomUUID()),
+			{
+				type: "text_input",
+				action_id: "qty",
+				label: "Units to add",
+				placeholder: "e.g. 12",
+			},
+		],
+		submit: { label: "Add stock", action_id: actions.custom("restock") },
+	};
+}
+
+/**
+ * The stock-removal form (admin-UX Increment 2 slice 3): REMOVE damaged/
+ * shrinkage units — a DANGER path, so the copy is explicit. Same hidden
+ * carriers + per-submission nonce as {@link restockForm}. The service applies a
+ * GUARDED decrement, so removing more than is on hand is refused cleanly (never
+ * a negative or an oversell), but the merchant is warned up front.
+ */
+function removeStockForm(actions: ScreenActions, p: ProductDetailWire): FormBlock {
+	return {
+		type: "form",
+		fields: [
+			stockCarrier("productId", p.productId),
+			stockCarrier("nonce", crypto.randomUUID()),
+			{
+				type: "text_input",
+				action_id: "qty",
+				label: "Units to remove (damaged / shrinkage)",
+				placeholder: "e.g. 3",
+			},
+		],
+		submit: { label: "Remove stock", action_id: actions.custom("remove-stock") },
+	};
+}
+
+/** A hidden single-option carrier (the scaffold's proven pattern) that threads
+ *  one value through a stateless `form_submit`. */
+function stockCarrier(actionId: string, value: string): FormBlock["fields"][number] {
+	return {
+		type: "select",
+		action_id: actionId,
+		label: actionId,
+		options: [{ value, label: value }],
+		initial_value: value,
+	};
 }
 
 /**
@@ -618,6 +709,155 @@ function saveAction() {
 		// (the merchant re-applies against current values).
 		return showLeaf([productId], editNotice(result));
 	});
+}
+
+// -- custom actions: merchant stock movements (Increment 2 slice 3) -----------
+
+/** Parse a merchant-entered stock quantity into a POSITIVE WHOLE number — a TEXT
+ *  input (never `number_input`, which hands back a float). Null for any non-
+ *  conforming or non-positive input; never throws. Exported for its own test. */
+export function parseStockQty(input: string | undefined): number | null {
+	if (input === undefined) return null;
+	const trimmed = input.trim();
+	if (!/^\d+$/.test(trimmed)) return null;
+	const n = Number.parseInt(trimmed, 10);
+	return Number.isSafeInteger(n) && n > 0 ? n : null;
+}
+
+/**
+ * The detail leaf's restock handler (admin-UX Increment 2 slice 3). Validates
+ * the qty, POSTs the additive restock under a stable per-submission key (the
+ * form's hidden `nonce`), then RE-RENDERS the leaf (a fresh reload showing the
+ * new on-hand) with a per-outcome notice.
+ */
+function restockAction() {
+	return customAction<AdminProductsClient>(async ({ input, client, showLeaf, showList }) => {
+		const values = input.values ?? {};
+		const productId = readString(values.productId);
+		if (productId === undefined) return showList();
+		const qty = parseStockQty(readString(values.qty));
+		if (qty === null) {
+			return showLeaf([productId], {
+				variant: "error",
+				title: "Enter a whole number of units",
+				description: "Units to add must be a positive whole number, like 12.",
+			});
+		}
+		const key = stockMovementKey(productId, "restock", readString(values.nonce), qty);
+		const result = await client.restock(productId, qty, key);
+		return showLeaf([productId], restockNotice(result, qty));
+	});
+}
+
+/**
+ * The detail leaf's stock-removal handler (admin-UX Increment 2 slice 3). Same
+ * shape as {@link restockAction}; the guarded decrement means an over-removal
+ * comes back as a clean `insufficient_stock` notice, never a silent negative.
+ */
+function removeStockAction() {
+	return customAction<AdminProductsClient>(async ({ input, client, showLeaf, showList }) => {
+		const values = input.values ?? {};
+		const productId = readString(values.productId);
+		if (productId === undefined) return showList();
+		const qty = parseStockQty(readString(values.qty));
+		if (qty === null) {
+			return showLeaf([productId], {
+				variant: "error",
+				title: "Enter a whole number of units",
+				description: "Units to remove must be a positive whole number, like 3.",
+			});
+		}
+		const key = stockMovementKey(productId, "removal", readString(values.nonce), qty);
+		const result = await client.removeStock(productId, qty, key);
+		return showLeaf([productId], removeStockNotice(result, qty));
+	});
+}
+
+/** Build the stable per-submission idempotency key for a stock movement. The
+ *  form's hidden `nonce` (a per-render `crypto.randomUUID()`) is the entropy: a
+ *  double-submit of the SAME rendered form reuses it (dedupes), a fresh reload
+ *  mints a new one. Falls back to the qty if a nonce is somehow absent. */
+function stockMovementKey(
+	productId: string,
+	direction: "restock" | "removal",
+	nonce: string | undefined,
+	qty: number,
+): string {
+	return `${productId}:${direction}:${nonce ?? String(qty)}`;
+}
+
+/** Map a restock outcome to the notice banner shown above the reloaded detail. */
+function restockNotice(result: RestockResult, qty: number): Notice {
+	if (result.ok) {
+		return {
+			variant: "default",
+			title: "Stock added",
+			description: `Added ${qty} unit${qty === 1 ? "" : "s"}. Available is now ${result.onHand}.`,
+		};
+	}
+	return stockFailureNotice(result.reason);
+}
+
+/** Map a stock-removal outcome to the notice banner. */
+function removeStockNotice(result: StockRemovalResult, qty: number): Notice {
+	if (result.ok) {
+		return {
+			variant: "default",
+			title: "Stock removed",
+			description: `Removed ${qty} unit${qty === 1 ? "" : "s"}. Available is now ${result.onHand}.`,
+		};
+	}
+	if (result.reason === "insufficient_stock") {
+		return {
+			variant: "error",
+			title: "Not enough stock to remove",
+			description: `Only ${result.onHand} unit${result.onHand === 1 ? "" : "s"} on hand — you cannot remove ${qty}. Stock is never driven below zero.`,
+		};
+	}
+	return stockFailureNotice(result.reason);
+}
+
+/** Shared mapping for the non-success stock-movement reasons common to both
+ *  restock and removal (no_sku / no_inventory_row / invalid / not_found /
+ *  error). */
+function stockFailureNotice(
+	reason: "not_found" | "no_sku" | "no_inventory_row" | "invalid" | "error",
+): Notice {
+	switch (reason) {
+		case "no_sku":
+			return {
+				variant: "error",
+				title: "No SKU set",
+				description:
+					"This product has no SKU yet, so it has no stock to manage. Set a SKU on the edit form above first.",
+			};
+		case "no_inventory_row":
+			return {
+				variant: "error",
+				title: "No stock record yet",
+				description:
+					"This product has a SKU but no inventory record was ever created for it, so there is nothing to add to or remove from. Initial stock is set when the product is first priced in the CMS.",
+			};
+		case "invalid":
+			return {
+				variant: "error",
+				title: "Invalid quantity",
+				description: "The quantity must be a positive whole number.",
+			};
+		case "not_found":
+			return {
+				variant: "error",
+				title: "Product not found",
+				description: "This product no longer exists — it may have been deleted in the CMS.",
+			};
+		default:
+			return {
+				variant: "error",
+				title: "Stock change failed",
+				description:
+					"The change could not be saved — check the service connection and the admin token in Settings.",
+			};
+	}
 }
 
 /** Map an edit outcome to the notice banner shown above the reloaded detail. */
