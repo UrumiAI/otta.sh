@@ -514,4 +514,66 @@ describe("admin Products restock / remove-stock (workerd sandbox)", () => {
 		const banner = blocksOf(outcome).find((b) => b.type === "banner" && b.variant === "error");
 		expect(banner).toBeDefined();
 	});
+
+	test("a double-submit of the SAME rendered form (same nonce) dedupes to ONE movement; a fresh nonce applies again", async () => {
+		// A ledger-emulating stub: dedupes by Idempotency-Key exactly like the
+		// service's stock-movements ledger, tracking the on-hand it would produce.
+		let onHand = 42;
+		const seen = new Map<string, number>(); // key → recorded resulting onHand
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", makeGetResponder());
+		stub.respondWith("POST", (req: RecordedRequest): { status: number; body: unknown } => {
+			if (req.headers["x-internal-token"] === undefined) {
+				return { status: 401, body: { ok: false, error: "unauthorized" } };
+			}
+			const key = req.headers["idempotency-key"] as string;
+			const recorded = seen.get(key);
+			if (recorded !== undefined) {
+				return { status: 200, body: { ok: true, onHand: recorded } }; // replay: no movement
+			}
+			onHand += (req.body as { qty?: number } | undefined)?.qty ?? 0;
+			seen.set(key, onHand);
+			return { status: 200, body: { ok: true, onHand } };
+		});
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+		await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-token",
+			values: { internalToken: "admin-token-xyz" },
+		});
+		stub.requests.length = 0;
+
+		// The same RENDERED form submitted twice: em-dash resends the SAME captured
+		// values, nonce included — so both POSTs derive the SAME Idempotency-Key.
+		const submit = () =>
+			sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "products:restock",
+				values: { productId: "prod-1", nonce: "nonce-dupe", qty: "8" },
+			});
+		await submit();
+		const replay = await submit();
+
+		const posts = stub.requests.filter((r) => r.method === "POST");
+		expect(posts).toHaveLength(2);
+		expect(posts[0]!.headers["idempotency-key"]).toBe(posts[1]!.headers["idempotency-key"]);
+		// The ledger applied the +8 ONCE (42 → 50), and the replay echoed it.
+		expect(onHand).toBe(50);
+		const banner = blocksOf(replay).find((b) => b.type === "banner");
+		expect(String(banner?.description)).toContain("50");
+
+		// A FRESH render mints a new nonce ⇒ a different key ⇒ a second DELIBERATE
+		// restock applies (never collapsed into the first).
+		await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "products:restock",
+			values: { productId: "prod-1", nonce: "nonce-fresh", qty: "8" },
+		});
+		const allPosts = stub.requests.filter((r) => r.method === "POST");
+		expect(allPosts[2]!.headers["idempotency-key"]).not.toBe(posts[0]!.headers["idempotency-key"]);
+		expect(onHand).toBe(58);
+	});
 });

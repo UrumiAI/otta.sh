@@ -95,6 +95,12 @@ export type StockMovementOutcome = "ok" | "insufficient_stock";
  * outcome (after the movement for `ok`; the current count for
  * `insufficient_stock`) so a replay echoes the original result. An UNKNOWN_SKU
  * is NOT recorded here (the claim rolls back — key not consumed).
+ *
+ * KEY SCOPING: keys are unique PER LEDGER — this table's `idempotency_key` PK is
+ * independent of `reservations.idempotency_key` and
+ * `inventory_adjustments.idempotency_key`. The same key value in different
+ * ledgers is NOT a collision; only a reuse WITHIN this ledger for a different
+ * (sku, direction, qty) is rejected (`StockMovementMismatchError`).
  */
 export interface InventoryStockMovementsTable {
 	idempotency_key: string;

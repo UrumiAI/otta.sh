@@ -62,7 +62,7 @@ async function freshPgStore(poolMax: number): Promise<PgFixture> {
 }
 
 describe.skipIf(PG === undefined)("restock / removeStock concurrency [postgres]", () => {
-	test("no oversell: a restock of +N races M reservations — every ok reservation is honored, final on_hand = initial + N − (ok × qty), never negative — Postgres", async () => {
+	test("no oversell: a restock of +N races M reservations — successes bounded by real units, exact conservation, losers fail cleanly, never negative — Postgres", async () => {
 		const INITIAL = 5;
 		const RESTOCK = 10;
 		const M = 40; // reservations of 1 unit each
@@ -76,6 +76,16 @@ describe.skipIf(PG === undefined)("restock / removeStock concurrency [postgres]"
 			// One restock (+N) racing M single-unit reservations on INDEPENDENT
 			// connections. The restock only ever RAISES availability, so no
 			// reservation it commutes with can be pushed into oversell.
+			//
+			// NOTE the success COUNT is deliberately asserted as a RANGE, not an
+			// exact number: how many reservations land depends on WHEN the restock
+			// commits relative to them. A reservation that runs after the initial
+			// units are drained but BEFORE the restock commits legitimately fails
+			// OUT_OF_STOCK — a terminal, key-consuming outcome (R2), NOT a bug.
+			// "Every reservation that could fit after +N succeeds" is a timing
+			// assumption, not an invariant; only the bounds below hold under EVERY
+			// legal interleaving. (The deterministic sequenced test that follows
+			// pins the "restock landed ⇒ new units are reservable" liveness.)
 			const restockP = h.store.restock("SKU-1", RESTOCK, idempotencyKey(`rs-${loop}`));
 			const reserveP = Array.from({ length: M }, (_u, i) =>
 				h.store.reserve("SKU-1", 1, idempotencyKey(`rv-${loop}-${i}`)),
@@ -84,14 +94,59 @@ describe.skipIf(PG === undefined)("restock / removeStock concurrency [postgres]"
 
 			expect(restock.ok, `loop ${loop}: restock ok`).toBe(true);
 			const okReserves = reserves.filter((r) => r.ok).length;
-			// Only INITIAL + RESTOCK units can ever be reserved; the rest fail cleanly.
 			const capacity = INITIAL + RESTOCK;
-			expect(okReserves, `loop ${loop}: honored reservations`).toBe(Math.min(M, capacity));
 
+			// (a) NO OVERSELL — the invariant: successes can never exceed the real
+			// units that ever existed (initial + restocked).
+			expect(okReserves, `loop ${loop}: no oversell`).toBeLessThanOrEqual(Math.min(M, capacity));
+			// Lower bound: a 1-unit guarded decrement only fails when on_hand = 0 at
+			// its moment, which requires ≥ INITIAL prior successes — so at least the
+			// initial units are ALWAYS honored, whatever the restock timing.
+			expect(okReserves, `loop ${loop}: initial units honored`).toBeGreaterThanOrEqual(
+				Math.min(M, INITIAL),
+			);
+			// (c) every loser failed CLEANLY with OUT_OF_STOCK (never a throw — all
+			// M promises resolved into the union) and its key stays consumed.
+			for (const r of reserves) {
+				if (!r.ok) expect(r.reason, `loop ${loop}: clean failure`).toBe("OUT_OF_STOCK");
+			}
+
+			// (b) EXACT CONSERVATION — forbids both a lost restock and a phantom
+			// unit: final on_hand = initial + N − (successful reservations × 1).
 			const finalOnHand = await h.onHand("SKU-1");
-			// Conservation: initial + restocked − reserved (each 1 unit).
 			expect(finalOnHand, `loop ${loop}: conservation`).toBe(capacity - okReserves);
 			expect(finalOnHand, `loop ${loop}: never negative`).toBeGreaterThanOrEqual(0);
+		}
+	}, 120_000);
+
+	test("liveness: once a restock has COMMITTED, the added units are reservable — M reservations then honor exactly min(M, initial + N) — Postgres", async () => {
+		const INITIAL = 5;
+		const RESTOCK = 10;
+		const M = 40;
+		const LOOPS = 10;
+		const h = await freshPgStore(M + 8);
+
+		for (let loop = 0; loop < LOOPS; loop++) {
+			await h.db.deleteFrom("reservations").execute();
+			await h.seed("SKU-1", INITIAL);
+
+			// SEQUENCED, not raced: the restock is awaited (durably committed)
+			// BEFORE any reservation starts. Now the exact count IS an invariant:
+			// every unit of initial + N is visible to the guarded decrements, so
+			// exactly min(M, capacity) reservations must be honored — pinning that a
+			// landed restock is never masked by ledger locking or a stale read.
+			const restock = await h.store.restock("SKU-1", RESTOCK, idempotencyKey(`rs-${loop}`));
+			expect(restock).toEqual({ ok: true, onHand: INITIAL + RESTOCK });
+
+			const reserves = await Promise.all(
+				Array.from({ length: M }, (_u, i) =>
+					h.store.reserve("SKU-1", 1, idempotencyKey(`rv-${loop}-${i}`)),
+				),
+			);
+			const okReserves = reserves.filter((r) => r.ok).length;
+			const capacity = INITIAL + RESTOCK;
+			expect(okReserves, `loop ${loop}: exact honor count`).toBe(Math.min(M, capacity));
+			expect(await h.onHand("SKU-1"), `loop ${loop}: conservation`).toBe(capacity - okReserves);
 		}
 	}, 120_000);
 

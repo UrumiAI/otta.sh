@@ -142,6 +142,14 @@ export interface InventoryStore {
 	// unknown-sku parity ("no inventory row ⇒ outside idempotency scope"). Restock
 	// deliberately does NOT auto-create the row: `seedOnHand` is the sole create
 	// path, so a typo'd sku can never conjure phantom inventory.
+	//
+	// KEY SCOPING: idempotency keys are scoped PER LEDGER. `reserve` claims in the
+	// reservations table, `adjust` in its adjustments ledger, and
+	// `restock`/`removeStock` share the stock-movements ledger. The same key value
+	// appearing across DIFFERENT ledgers is NOT a collision (each ledger's
+	// uniqueness is independent); reuse is only rejected WITHIN a ledger — for the
+	// stock-movements ledger, when the recorded (sku, direction, qty) differs
+	// (`StockMovementMismatchError`).
 	restock(sku: string, qty: number, key: IdempotencyKey): Promise<RestockResult>;
 
 	// Additive (admin-UX Increment 2, merchant stock removal): REMOVE `qty` units
