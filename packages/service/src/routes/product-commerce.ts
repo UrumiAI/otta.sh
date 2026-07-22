@@ -172,6 +172,17 @@ function serialize(row: ProductCommerce): Record<string, unknown> {
 		price: row.price === null ? null : { amount: row.price.amount, currency: row.price.currency },
 		title: row.title,
 		taxClass: row.taxClass,
+		// Increment 2 slice 5: compare-at (display data) + inventory policy round-
+		// trip on this raw commerce read. `unitCost` is DELIBERATELY OMITTED — this
+		// GET is NOT behind the internal token (the write gate only covers non-GET
+		// verbs), so it is a storefront-reachable read path, and unit cost is
+		// admin-only margin data that must never leak to a buyer. Cost is served
+		// ONLY by the internal-token admin product detail. Pinned by a test.
+		compareAt:
+			row.compareAtPrice === null
+				? null
+				: { amount: row.compareAtPrice.amount, currency: row.compareAtPrice.currency },
+		inventoryPolicy: row.inventoryPolicy,
 		weightGrams: row.weightGrams,
 		lengthMm: row.lengthMm,
 		widthMm: row.widthMm,

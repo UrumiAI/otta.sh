@@ -9,6 +9,7 @@ import {
 	SkuConflictError,
 	type Clock,
 	type IdempotencyKey,
+	type InventoryPolicy,
 	type ProductCommerce,
 	type ProductCommerceStore,
 	type ProductCommerceView,
@@ -109,6 +110,14 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 					price_currency: input.price?.currency ?? null,
 					title: input.title ?? null,
 					tax_class: input.taxClass ?? null,
+					// compare-at / cost / inventory-policy are EDIT-ONLY (never a
+					// CMS-sync upsert field) — a NEW row starts at defaults, and a later
+					// upsert PRESERVES them by omitting them from the DO UPDATE SET below.
+					compare_at_cents: null,
+					compare_at_currency: null,
+					unit_cost_cents: null,
+					unit_cost_currency: null,
+					inventory_policy: "deny",
 					weight_grams: input.weightGrams ?? null,
 					length_mm: input.lengthMm ?? null,
 					width_mm: input.widthMm ?? null,
@@ -327,6 +336,16 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 		}
 		if (input.title !== undefined) set.title = input.title;
 		if (input.taxClass !== undefined) set.tax_class = input.taxClass;
+		if (input.compareAtPrice !== undefined) {
+			set.compare_at_cents = input.compareAtPrice === null ? null : input.compareAtPrice.amount;
+			set.compare_at_currency =
+				input.compareAtPrice === null ? null : input.compareAtPrice.currency;
+		}
+		if (input.unitCost !== undefined) {
+			set.unit_cost_cents = input.unitCost === null ? null : input.unitCost.amount;
+			set.unit_cost_currency = input.unitCost === null ? null : input.unitCost.currency;
+		}
+		if (input.inventoryPolicy !== undefined) set.inventory_policy = input.inventoryPolicy;
 		if (input.weightGrams !== undefined) set.weight_grams = input.weightGrams;
 		if (input.lengthMm !== undefined) set.length_mm = input.lengthMm;
 		if (input.widthMm !== undefined) set.width_mm = input.widthMm;
@@ -347,6 +366,25 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 				// currency. NULL (first pricing) passes.
 				const cur = input.price.currency;
 				stmt = stmt.where(sql<SqlBool>`(price_currency is null or price_currency = ${cur})`);
+			} else {
+				// compare-at / cost supplied WITHOUT a price in the same edit must match
+				// the STORED price currency (the row currency). A NULL stored price
+				// currency FAILS this guard — compare-at / cost require a priced product
+				// (the within-edit currency agreement, when a price IS present, is the
+				// use-case's `InvalidProductFieldError` concern, so this branch only runs
+				// when price is absent). A cleared (null) field carries no currency and
+				// adds no guard.
+				const extraCur =
+					input.compareAtPrice != null
+						? input.compareAtPrice.currency
+						: input.unitCost != null
+							? input.unitCost.currency
+							: null;
+				if (extraCur !== null) {
+					stmt = stmt.where(
+						sql<SqlBool>`(price_currency is not null and price_currency = ${extraCur})`,
+					);
+				}
 			}
 			updated = await stmt.returningAll().executeTakeFirst();
 		} catch (err) {
@@ -376,6 +414,20 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 			current.price_currency !== input.price.currency
 		) {
 			return { ok: false, reason: "currency_mismatch", current: toDomain(current) };
+		}
+		// compare-at / cost supplied WITHOUT a price whose currency doesn't match the
+		// stored price currency (a null stored currency ⇒ mismatch — the product
+		// must be priced first). Mirrors the fake's 4b classification exactly.
+		if (input.price === undefined) {
+			const extraCur =
+				input.compareAtPrice != null
+					? input.compareAtPrice.currency
+					: input.unitCost != null
+						? input.unitCost.currency
+						: null;
+			if (extraCur !== null && current.price_currency !== extraCur) {
+				return { ok: false, reason: "currency_mismatch", current: toDomain(current) };
+			}
 		}
 		// No guard explains the no-op — the statement should have applied. Fail
 		// loudly rather than silently swallow a lost write.
@@ -540,6 +592,20 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 		return { products, nextCursor };
 	}
 
+	/** Count LIVE products referencing a tax class (port doc) — the product half
+	 *  of the `deleteTaxClass` delete-in-use guard. One aggregate `SELECT
+	 *  COUNT(*)`; excludes soft-deleted rows (a tombstone's tax reference is
+	 *  historical, not a live dependency). */
+	async countByTaxClass(taxClassId: string): Promise<number> {
+		const row = await this.#db
+			.selectFrom("product_commerce")
+			.select((eb) => eb.fn.countAll<number>().as("n"))
+			.where("tax_class", "=", taxClassId)
+			.where("deleted_at", "is", null)
+			.executeTakeFirst();
+		return Number(row?.n ?? 0);
+	}
+
 	async #selectByProductId(productId: string): Promise<ProductCommerceTable | undefined> {
 		return this.#db
 			.selectFrom("product_commerce")
@@ -559,6 +625,15 @@ function toDomain(row: ProductCommerceTable): ProductCommerce {
 				: money(cents(row.price_cents), currency(row.price_currency)),
 		title: row.title,
 		taxClass: row.tax_class,
+		compareAtPrice:
+			row.compare_at_cents === null || row.compare_at_currency === null
+				? null
+				: money(cents(row.compare_at_cents), currency(row.compare_at_currency)),
+		unitCost:
+			row.unit_cost_cents === null || row.unit_cost_currency === null
+				? null
+				: money(cents(row.unit_cost_cents), currency(row.unit_cost_currency)),
+		inventoryPolicy: row.inventory_policy as InventoryPolicy,
 		weightGrams: row.weight_grams,
 		lengthMm: row.length_mm,
 		widthMm: row.width_mm,

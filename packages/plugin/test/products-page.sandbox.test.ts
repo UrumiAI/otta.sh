@@ -59,6 +59,11 @@ const DETAIL_1 = {
 	priceCents: 1999,
 	currency: "USD",
 	taxClass: "standard",
+	compareAtCents: 3000,
+	compareAtCurrency: "USD",
+	unitCostCents: 850,
+	unitCostCurrency: "USD",
+	inventoryPolicy: "deny",
 	weightGrams: 300,
 	lengthMm: 10,
 	widthMm: 20,
@@ -78,6 +83,11 @@ const DETAIL_DELETED = {
 	priceCents: 500,
 	currency: "USD",
 	taxClass: null,
+	compareAtCents: null,
+	compareAtCurrency: null,
+	unitCostCents: null,
+	unitCostCurrency: null,
+	inventoryPolicy: "deny",
 	weightGrams: null,
 	lengthMm: null,
 	widthMm: null,
@@ -112,6 +122,18 @@ function makeGetResponder() {
 			return {
 				status: 200,
 				body: { ok: true, products: [SUMMARY_1, SUMMARY_2], nextCursor: "svc-cursor-1" },
+			};
+		}
+		if (path === "/admin/tax/classes") {
+			return {
+				status: 200,
+				body: {
+					ok: true,
+					classes: [
+						{ id: "standard", name: "Standard" },
+						{ id: "reduced", name: "Reduced" },
+					],
+				},
 			};
 		}
 		if (path === "/admin/products/prod-1") {
@@ -355,6 +377,49 @@ describe("admin Products console (workerd sandbox)", () => {
 		expect(byId.get("expectedUpdatedAt")?.initial_value).toBe("2026-07-12T01:00:00.000Z");
 		// The publish gate (active) is NOT an editable field on this page.
 		expect(byId.has("active")).toBe(false);
+	});
+
+	test("the edit form surfaces the data-model adds: compare-at, unit cost, tax-class registry select, deny-only policy", async () => {
+		await boot();
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "products:open",
+			values: { productId: "prod-1" },
+		});
+		const blocks = blocksOf(outcome);
+		const form = blocks.find(
+			(b) =>
+				b.type === "form" && (b.submit as { action_id?: string })?.action_id === "products:save",
+		);
+		const fields = (form?.fields ?? []) as Array<Record<string, unknown>>;
+		const byId = new Map(fields.map((f) => [f.action_id, f]));
+
+		// compare-at + unit cost are TEXT inputs (money is not a float), prefilled as
+		// hundredths decimals from the detail's minor units.
+		expect(byId.get("compareAt")?.type).toBe("text_input");
+		expect(byId.get("compareAt")?.initial_value).toBe("30.00");
+		expect(byId.get("unitCost")?.type).toBe("text_input");
+		expect(byId.get("unitCost")?.initial_value).toBe("8.50");
+
+		// Tax class is a SELECT sourced from the live registry (GET /admin/tax/classes),
+		// with a clear option and the product's current value preselected.
+		const taxClass = byId.get("taxClass") as {
+			type?: string;
+			options?: Array<{ value: string }>;
+			initial_value?: string;
+		};
+		expect(taxClass.type).toBe("select");
+		expect(taxClass.initial_value).toBe("standard");
+		expect(taxClass.options?.map((o) => o.value)).toEqual(["", "standard", "reduced"]);
+
+		// Inventory policy is a DENY-ONLY select — the no-oversell invariant means no
+		// allow_backorder option is offered this slice.
+		const policy = byId.get("inventoryPolicy") as {
+			type?: string;
+			options?: Array<{ value: string }>;
+		};
+		expect(policy.type).toBe("select");
+		expect(policy.options?.map((o) => o.value)).toEqual(["deny"]);
 	});
 });
 

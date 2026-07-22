@@ -245,11 +245,28 @@ export const editProductCommerceBody = z.object({
 		.optional(),
 	title: z.string().min(1).max(500).nullable().optional(),
 	taxClass: z.string().nullable().optional(),
+	// Increment 2 slice 5: compare-at / cost are money (integer minor units +
+	// ISO-4217), NON-NEGATIVE (unlike `price`, a $0 compare-at / cost is a
+	// meaningful "cleared to zero"), nullable to CLEAR. Currency integrity (share
+	// the product's price currency; no mixed-currency edit) is the domain +
+	// store's atomic concern, not re-checked here.
+	compareAtPrice: z
+		.object({ amount: z.number().int().nonnegative(), currency: z.string().regex(/^[A-Z]{3}$/) })
+		.nullable()
+		.optional(),
+	unitCost: z
+		.object({ amount: z.number().int().nonnegative(), currency: z.string().regex(/^[A-Z]{3}$/) })
+		.nullable()
+		.optional(),
 	weightGrams: z.number().int().nonnegative().nullable().optional(),
 	lengthMm: z.number().int().nonnegative().nullable().optional(),
 	widthMm: z.number().int().nonnegative().nullable().optional(),
 	heightMm: z.number().int().nonnegative().nullable().optional(),
 	productKind: z.enum(["physical", "digital"]).optional(),
+	// Out-of-stock policy — `"deny"` is the ONLY accepted value this slice (the
+	// wire enum is the boundary that keeps an `allow_backorder` from ever
+	// reaching the no-oversell reserve path; widening it is a future slice + ADR).
+	inventoryPolicy: z.enum(["deny"]).optional(),
 });
 
 export type EditProductCommerceBody = z.infer<typeof editProductCommerceBody>;

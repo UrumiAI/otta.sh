@@ -110,6 +110,25 @@ export interface ProductListResult {
 export type ProductKind = "physical" | "digital";
 
 /**
+ * How a product behaves when its available stock hits zero (product data-model
+ * adds, Increment 2 slice 5).
+ *
+ * DELIBERATELY A ONE-VALUE UNION for now — `"deny"` is the ONLY behavior this
+ * slice ships, and it is the ONLY value any adapter, the service enum, or the
+ * edit-form select accepts. The field EXISTS end-to-end (stored, edited,
+ * surfaced) so a merchant can see the store's stance and so a future
+ * backorder slice has a column to widen — but `allow_backorder` is
+ * NOT implemented here on purpose: the no-oversell invariant (CLAUDE.md
+ * headline contract) is enforced by the reserve guard, and letting stock go
+ * negative is a deep concurrency design question that needs its OWN races and
+ * an ADR. Widening this union to `"deny" | "allow"` is a future slice's job,
+ * gated on `allow` actually doing something defined; until then the type
+ * itself makes an `"allow"` value unrepresentable rather than silently
+ * accepted-and-ignored.
+ */
+export type InventoryPolicy = "deny";
+
+/**
  * Branded upsert input (Phase 1 §7). `productId` is the CMS content id (the
  * link key, Phase 1 §4) and is required. Every other commercial field is
  * OPTIONAL for two reasons:
@@ -180,11 +199,44 @@ export interface UpdateProductCommerceFieldsInput {
 	price?: Money;
 	title?: string | null;
 	taxClass?: string | null;
+	/**
+	 * Optional "compare-at" / was-price (product data-model adds, Increment 2
+	 * slice 5) — the struck-through reference price a discount is shown against.
+	 * MUST share the product's own currency (the same atomic currency-integrity
+	 * axis `price` carries — see `ProductCommerceUpdateResult.currency_mismatch`);
+	 * a mismatched currency is rejected, never silently coerced. `undefined`
+	 * PRESERVES, an explicit `null` CLEARS. Storefront strikethrough rendering is
+	 * OUT of scope for this slice (data model + admin edit only). `compareAt <
+	 * price` is the normal case, but `compareAt >= price` is DELIBERATELY NOT
+	 * rejected (Shopify allows it — a "was" price can legitimately be ≤ the
+	 * current one during a price rise); the admin form shows a soft warning
+	 * rather than blocking the save.
+	 */
+	compareAtPrice?: Money | null;
+	/**
+	 * Optional merchant unit cost / cost-of-goods (product data-model adds,
+	 * Increment 2 slice 5) — ADMIN-ONLY margin data. MUST share the product's
+	 * currency (same integrity axis as `price`/`compareAtPrice`). `undefined`
+	 * PRESERVES, `null` CLEARS. NEVER exposed on any storefront-facing read path:
+	 * it is absent from `ProductCommerceView` (the catalog wire) and from the
+	 * public `GET /products/:id/commerce` serialization — only the internal-token
+	 * admin product detail carries it. Kept off the wire the buyer can see, by
+	 * construction and pinned by a test.
+	 */
+	unitCost?: Money | null;
 	weightGrams?: number | null;
 	lengthMm?: number | null;
 	widthMm?: number | null;
 	heightMm?: number | null;
 	productKind?: ProductKind;
+	/**
+	 * The out-of-stock policy (product data-model adds, Increment 2 slice 5).
+	 * Only `"deny"` is a legal value this slice (the `InventoryPolicy` union has
+	 * no other member); the field round-trips end-to-end but changes NO
+	 * reservation semantics — the no-oversell guard is untouched. `undefined`
+	 * PRESERVES the stored value.
+	 */
+	inventoryPolicy?: InventoryPolicy;
 }
 
 /**
@@ -197,10 +249,18 @@ export interface UpdateProductCommerceFieldsInput {
  *  - `stale` — the optimistic compare-and-set on `updatedAt` failed: another
  *    writer (a second admin edit, a CMS sync, a publish flip) changed the row
  *    since the admin loaded the detail. `current` is the fresh row to reload.
- *  - `currency_mismatch` — a `price` update tried to change the currency of an
- *    already-priced product; `current` carries the stored row. Currency is an
- *    integrity axis, NEVER silently switched by a price edit (CLAUDE.md money
- *    rule); a deliberate re-currency is out of scope for this slice.
+ *  - `currency_mismatch` — a money edit would leave the row holding MIXED
+ *    currencies; `current` carries the stored row. Three sub-cases, all the
+ *    same integrity axis (CLAUDE.md money rule — currency is NEVER silently
+ *    switched or mixed):
+ *      · a `price` update tried to change an already-priced product's currency;
+ *      · a `compareAtPrice`/`unitCost` update disagreed with the product's price
+ *        currency (or was supplied for a product that has no price currency yet
+ *        — compare-at / cost require the product to be priced first, so there is
+ *        a currency to match). A deliberate re-currency is out of scope.
+ *    (A single edit that supplies several money fields in DIFFERENT currencies
+ *    is caught earlier, as an `InvalidProductFieldError` 400 — a client bug, not
+ *    a stored-state conflict.)
  */
 export type ProductCommerceUpdateResult =
 	| { ok: true; product: ProductCommerce }
@@ -215,7 +275,18 @@ export interface ProductCommerce {
 	price: Money | null;
 	/** Snapshot source for an order line's title (Phase 4 §4); null until set. */
 	title: string | null;
+	/** References a `TaxClass.id` (the `TaxRulesStore` registry); null ⇒ the
+	 *  checkout pipeline treats the line as `"standard"`. */
 	taxClass: string | null;
+	/** Optional compare-at / was-price (Increment 2 slice 5). Shares the
+	 *  product's price currency; display-only for now. Null until set. */
+	compareAtPrice: Money | null;
+	/** Optional admin-only unit cost (Increment 2 slice 5). Shares the product's
+	 *  price currency. NEVER on a storefront-facing wire. Null until set. */
+	unitCost: Money | null;
+	/** Out-of-stock policy (Increment 2 slice 5). Always `"deny"` this slice —
+	 *  the field exists but changes no reservation semantics. */
+	inventoryPolicy: InventoryPolicy;
 	weightGrams: number | null;
 	lengthMm: number | null;
 	widthMm: number | null;
@@ -336,10 +407,20 @@ export interface ProductCommerceStore {
 	 *     the current row: another edit/sync/lifecycle write landed since the
 	 *     admin loaded the detail. The lost-update guard — the deliberate
 	 *     DIVERGENCE from `upsert`'s accepted last-writer-wins panel semantics.
-	 *  4. a `price` whose currency differs from the STORED price's currency (only
-	 *     when a price is already set) → `currency_mismatch`: a price edit must
-	 *     never silently switch currency (CLAUDE.md money rule). A first pricing
-	 *     (stored price null) accepts any currency.
+	 *  4. a money-currency conflict → `currency_mismatch` (CLAUDE.md money rule —
+	 *     currency is an integrity axis, never silently switched or mixed):
+	 *      a. a `price` whose currency differs from the STORED price's currency
+	 *         (only when a price is already set — a first pricing accepts any
+	 *         currency); OR
+	 *      b. a `compareAtPrice`/`unitCost` supplied WITHOUT a `price` in the same
+	 *         edit whose currency differs from the stored price currency — which
+	 *         includes the "product not priced yet" case (stored price currency
+	 *         NULL ⇒ nothing to match ⇒ mismatch: compare-at / cost require the
+	 *         product to be priced first). When a `price` IS in the same edit, the
+	 *         within-edit currencies were already checked upstream
+	 *         (`InvalidProductFieldError`), and the price guard (4a) fixes the row
+	 *         currency, so compare-at / cost inherit it with no separate store
+	 *         guard.
 	 *  5. otherwise → applies the partial update, stamps `key` as the row's
 	 *     last-applied replay key, bumps `updatedAt`, returns the updated row.
 	 * NEVER touches `active`/`deletedAt`/`contentUpdatedAt`/`active_updated_at`
@@ -486,4 +567,19 @@ export interface ProductCommerceStore {
 	 * RETURNED row (null when the page is the last).
 	 */
 	listProducts(filter: ProductListFilter, page: ProductListPage): Promise<ProductListResult>;
+
+	/**
+	 * Count LIVE (non-soft-deleted) products whose `tax_class` references this
+	 * `taxClassId` (product data-model adds, Increment 2 slice 5). A query, not a
+	 * command — no idempotency key, mutates nothing.
+	 *
+	 * The delete-in-use guard for the tax-class registry: `deleteTaxClass`
+	 * composes this with `TaxRulesStore.deleteClass` so a class a product still
+	 * points at can never be deleted out from under it (which would strand the
+	 * product on a dangling reference and silently reclassify its tax at the next
+	 * checkout). Counts LIVE rows only — a soft-deleted product's tax reference is
+	 * historical, not a live dependency, so it does not block reclaiming the class
+	 * id. `0` ⇒ no live product references the class.
+	 */
+	countByTaxClass(taxClassId: string): Promise<number>;
 }

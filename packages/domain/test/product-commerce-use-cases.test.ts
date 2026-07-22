@@ -2,12 +2,13 @@ import { beforeEach, describe, expect, test } from "vitest";
 import { cents, currency, money } from "../src/money/cents.js";
 import { idempotencyKey, productId, sku } from "../src/money/ids.js";
 import type { InventoryStore } from "../src/ports/inventory-store.js";
-import { MissingProductIdError } from "../src/product-commerce/errors.js";
+import { InvalidProductFieldError, MissingProductIdError } from "../src/product-commerce/errors.js";
 import {
 	activateProductCommerce,
 	deactivateProductCommerce,
 	getProductCommerce,
 	softDeleteProductCommerce,
+	updateProductCommerceFields,
 	upsertProductCommerce,
 } from "../src/product-commerce/use-cases.js";
 import { CountingIdGen, FixedClock } from "../src/testing/deterministic.js";
@@ -239,5 +240,33 @@ describe("product-commerce use-cases (over the in-memory fakes)", () => {
 		const read = await getProductCommerce(productCommerce, pid);
 		expect(read?.active).toBe(false);
 		expect(read?.deletedAt).not.toBeNull();
+	});
+
+	test("updateProductCommerceFields rejects a mixed-currency edit atomically (400, nothing written)", async () => {
+		// Increment 2 slice 5: within-edit currency consistency (Layer A) — a single
+		// edit whose price / compare-at / cost disagree on currency is a client bug,
+		// rejected BEFORE any store write (never partially applied).
+		const pid = productId("prod-mix");
+		const seeded = await upsertProductCommerce(
+			{ productCommerce, inventory },
+			{ productId: pid, sku: sku("SKU-MIX"), price: money(cents(2000), currency("USD")) },
+			idempotencyKey("seed-mix"),
+		);
+
+		await expect(
+			updateProductCommerceFields(
+				productCommerce,
+				{
+					productId: pid,
+					price: money(cents(2000), currency("USD")),
+					compareAtPrice: money(cents(3000), currency("EUR")),
+				},
+				idempotencyKey("mix-edit"),
+				seeded.updatedAt.toISOString(),
+			),
+		).rejects.toBeInstanceOf(InvalidProductFieldError);
+
+		// The store row is untouched — no compare-at landed.
+		expect((await getProductCommerce(productCommerce, pid))?.compareAtPrice).toBeNull();
 	});
 });

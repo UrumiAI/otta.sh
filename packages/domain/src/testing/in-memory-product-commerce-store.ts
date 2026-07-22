@@ -153,6 +153,13 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 			price: input.price ?? null,
 			title: input.title ?? null,
 			taxClass: input.taxClass ?? null,
+			// compare-at / cost / inventory-policy are EDIT-ONLY (set via
+			// `updateCommerceFields`, never a CMS-sync upsert) — a fresh row always
+			// starts with them at their defaults, and a later upsert PRESERVES them
+			// (they are not part of `UpsertProductCommerceInput`).
+			compareAtPrice: null,
+			unitCost: null,
+			inventoryPolicy: "deny",
 			weightGrams: input.weightGrams ?? null,
 			lengthMm: input.lengthMm ?? null,
 			widthMm: input.widthMm ?? null,
@@ -218,13 +225,28 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 		if (existing.updatedAt.toISOString() !== expectedUpdatedAt) {
 			return { ok: false, reason: "stale", current: existing };
 		}
-		// 4. Currency integrity: a price edit never silently switches currency.
+		// 4a. Currency integrity: a price edit never silently switches currency.
 		if (
 			input.price !== undefined &&
 			existing.price !== null &&
 			existing.price.currency !== input.price.currency
 		) {
 			return { ok: false, reason: "currency_mismatch", current: existing };
+		}
+		// 4b. compare-at / cost supplied WITHOUT a price in the same edit must match
+		//     the STORED price currency (which is the row currency, since price
+		//     currency can never change once set). This includes the "not priced
+		//     yet" case: a null stored price currency ⇒ nothing to match ⇒ mismatch
+		//     (compare-at / cost require a priced product). When a price IS in the
+		//     same edit, the within-edit currencies were checked in the use-case and
+		//     4a fixed the row currency, so no separate guard is needed here.
+		if (input.price === undefined) {
+			const rowCurrency = existing.price?.currency ?? null;
+			for (const extra of [input.compareAtPrice, input.unitCost]) {
+				if (extra != null && extra.currency !== rowCurrency) {
+					return { ok: false, reason: "currency_mismatch", current: existing };
+				}
+			}
 		}
 		// 5. Apply. Live-sku collisions throw SkuConflictError, exactly like upsert.
 		this.#assertLiveSkuFree(input);
@@ -234,6 +256,11 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 			price: input.price !== undefined ? input.price : existing.price,
 			title: input.title !== undefined ? input.title : existing.title,
 			taxClass: input.taxClass !== undefined ? input.taxClass : existing.taxClass,
+			compareAtPrice:
+				input.compareAtPrice !== undefined ? input.compareAtPrice : existing.compareAtPrice,
+			unitCost: input.unitCost !== undefined ? input.unitCost : existing.unitCost,
+			inventoryPolicy:
+				input.inventoryPolicy !== undefined ? input.inventoryPolicy : existing.inventoryPolicy,
 			weightGrams: input.weightGrams !== undefined ? input.weightGrams : existing.weightGrams,
 			lengthMm: input.lengthMm !== undefined ? input.lengthMm : existing.lengthMm,
 			widthMm: input.widthMm !== undefined ? input.widthMm : existing.widthMm,
@@ -421,6 +448,17 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 		return { products: rows.map((row) => this.#toSummary(row)), nextCursor };
 	}
 
+	/** Count LIVE products referencing a tax class (port doc) — the delete-in-use
+	 *  guard's product half. Soft-deleted rows are historical, not live
+	 *  dependencies, so they never block reclaiming a class id. */
+	async countByTaxClass(taxClassId: string): Promise<number> {
+		let count = 0;
+		for (const row of this.#rows.values()) {
+			if (row.deletedAt === null && row.taxClass === taxClassId) count++;
+		}
+		return count;
+	}
+
 	#toSummary(row: ProductCommerce): ProductSummary {
 		return {
 			productId: row.productId,
@@ -449,6 +487,9 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 					: null,
 			title: row.title ?? null,
 			taxClass: null,
+			compareAtPrice: null,
+			unitCost: null,
+			inventoryPolicy: "deny",
 			weightGrams: null,
 			lengthMm: null,
 			widthMm: null,
