@@ -13,6 +13,10 @@ export {
 export { KyselyCartStore, type KyselyCartStoreOptions } from "./kysely-cart-store.js";
 export { KyselyOrderStore, type KyselyOrderStoreOptions } from "./kysely-order-store.js";
 export {
+	KyselyOrderNotesStore,
+	type KyselyOrderNotesStoreOptions,
+} from "./kysely-order-notes-store.js";
+export {
 	KyselyEntitlementStore,
 	type KyselyEntitlementStoreOptions,
 } from "./kysely-entitlement-store.js";
@@ -66,6 +70,7 @@ export type {
 	LoginChallengesTable,
 	OrderEmailsOutboxTable,
 	OrderItemsTable,
+	OrderNotesTable,
 	OrdersTable,
 	OrderStateColumn,
 	OrderTotalsTable,

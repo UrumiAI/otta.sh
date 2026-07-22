@@ -1,9 +1,13 @@
 import {
+	appendOrderNote,
 	idempotencyKey as toIdempotencyKey,
 	legalNextStates,
+	listOrderNotes,
 	type OrderListCursor,
 	type OrderListFilter,
 	orderId as toOrderId,
+	type OrderNote,
+	type OrderNotesStore,
 	type OrderState,
 	type OrderStore,
 	transitionOrder,
@@ -11,6 +15,7 @@ import {
 import { Hono } from "hono";
 import { z } from "zod";
 import {
+	appendNoteBody,
 	orderListFilterSchema,
 	orderPathParams,
 	ordersListQuery,
@@ -22,6 +27,8 @@ import { requireInternalToken } from "./internal-auth.js";
 
 export interface AdminRoutesDeps {
 	orderStore: OrderStore;
+	/** Append-only order notes (admin-UX Increment 0). */
+	orderNotesStore: OrderNotesStore;
 	/** Reuses the existing service privileged auth (X-Internal-Token). Phase 5
 	 *  introduces no separate admin identity (Risk 7): the internal token is the
 	 *  service's privileged mechanism; a real admin panel calls this with it. */
@@ -138,7 +145,70 @@ export function adminRoutes(deps: AdminRoutesDeps): Hono {
 		return c.json({ ok: false, reason: res.reason }, 409); // INVALID_TRANSITION
 	});
 
+	// -- Admin Orders console: append-only order notes (admin-UX Increment 0) ----
+	// GET is internal-token guarded (a read); POST is additionally covered by the
+	// app-level X-Service-Token write gate (any non-GET) when the service secret is
+	// set — no per-route gate is needed here.
+
+	app.get("/orders/:orderId/notes", async (c) => {
+		const denied = requireInternalToken(c, deps.internalToken);
+		if (denied !== null) return denied;
+
+		const params = orderPathParams.safeParse(c.req.param());
+		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
+		const notes = await listOrderNotes(
+			{ orderNotesStore: deps.orderNotesStore },
+			toOrderId(params.data.orderId),
+		);
+		return c.json({ ok: true, notes: notes.map(serializeNote) }, 200);
+	});
+
+	app.post("/orders/:orderId/notes", async (c) => {
+		const denied = requireInternalToken(c, deps.internalToken);
+		if (denied !== null) return denied;
+
+		const params = orderPathParams.safeParse(c.req.param());
+		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
+		const parsed = appendNoteBody.safeParse(await readJson(c));
+		if (!parsed.success) return c.json({ error: "invalid request body" }, 400);
+
+		// Idempotency (CLAUDE.md): the client `Idempotency-Key` header, or a fallback
+		// derived from the order id (so a header-less double-submit still dedupes on
+		// a stable key rather than always inserting).
+		const header = c.req.header("Idempotency-Key");
+		const key =
+			header !== undefined && header.length > 0
+				? header
+				: `admin:note:${params.data.orderId}:${parsed.data.author}:${parsed.data.body}`;
+		const res = await appendOrderNote(
+			{ orderNotesStore: deps.orderNotesStore, orderStore: deps.orderStore },
+			{
+				orderId: toOrderId(params.data.orderId),
+				author: parsed.data.author,
+				body: parsed.data.body,
+				idempotencyKey: toIdempotencyKey(key),
+			},
+		);
+		if (res.ok) {
+			return c.json({ ok: true, appended: res.appended, note: serializeNote(res.note) }, 201);
+		}
+		if (res.reason === "ORDER_NOT_FOUND") return c.json({ ok: false, reason: res.reason }, 404);
+		return c.json({ ok: false, reason: res.reason }, 400); // EMPTY_AUTHOR / EMPTY_BODY
+	});
+
 	return app;
+}
+
+/** Wire shape of an order note (admin-UX Increment 0). Plain annotation — no
+ *  money, no branded ids leaked beyond the string id. */
+function serializeNote(note: OrderNote): Record<string, unknown> {
+	return {
+		id: note.id,
+		orderId: note.orderId,
+		author: note.author,
+		body: note.body,
+		createdAt: note.createdAt,
+	};
 }
 
 async function readJson(c: { req: { json(): Promise<unknown> } }): Promise<unknown> {

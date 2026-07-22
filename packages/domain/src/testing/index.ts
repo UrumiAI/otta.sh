@@ -42,6 +42,12 @@ export {
 	type OrderTransitionHarness,
 	type OrderTransitionContractOptions,
 } from "./order-transition-contract.js";
+export { InMemoryOrderNotesStore } from "./in-memory-order-notes-store.js";
+export {
+	orderNotesStoreContract,
+	type OrderNotesStoreHarness,
+	type OrderNotesStoreContractOptions,
+} from "./order-notes-store-contract.js";
 export { InMemoryCustomerStore } from "./in-memory-customer-store.js";
 export { InMemoryAddressStore } from "./in-memory-address-store.js";
 export { InMemorySessionStore, DEFAULT_SESSION_TTL_MS } from "./in-memory-session-store.js";

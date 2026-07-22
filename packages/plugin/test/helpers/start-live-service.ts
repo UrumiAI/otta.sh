@@ -10,6 +10,7 @@ import {
 	KyselyCustomerStore,
 	KyselyEntitlementStore,
 	KyselyInventoryStore,
+	KyselyOrderNotesStore,
 	KyselyOrderStore,
 	KyselyPaymentEventStore,
 	KyselyProductCommerceStore,
@@ -72,6 +73,7 @@ export async function startLiveService(
 	// product routes here, but the real app wires everything.
 	const cartStore = new KyselyCartStore({ db, idGen: uuidIdGen, clock });
 	const orderStore = new KyselyOrderStore({ db, idGen: uuidIdGen, clock });
+	const orderNotesStore = new KyselyOrderNotesStore({ db, idGen: uuidIdGen, clock });
 	const entitlementStore = new KyselyEntitlementStore({ db, idGen: uuidIdGen, clock });
 	const paymentEventStore = new KyselyPaymentEventStore({ db, idGen: uuidIdGen });
 	const customerStore = new KyselyCustomerStore({ db, idGen: uuidIdGen, clock });
@@ -89,6 +91,7 @@ export async function startLiveService(
 		productCommerce,
 		cartStore,
 		orderStore,
+		orderNotesStore,
 		entitlementStore,
 		paymentEventStore,
 		shippingRules: new KyselyShippingRulesStore({ db }),

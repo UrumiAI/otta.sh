@@ -15,6 +15,7 @@ import {
 	KyselyCustomerStore,
 	KyselyEntitlementStore,
 	KyselyInventoryStore,
+	KyselyOrderNotesStore,
 	KyselyOrderStore,
 	KyselyPaymentEventStore,
 	KyselyProductCommerceStore,
@@ -48,6 +49,7 @@ const store = new KyselyInventoryStore({ db, idGen: uuidIdGen, clock });
 const productCommerce = new KyselyProductCommerceStore({ db, clock });
 const cartStore = new KyselyCartStore({ db, idGen: uuidIdGen, clock });
 const orderStore = new KyselyOrderStore({ db, idGen: uuidIdGen, clock });
+const orderNotesStore = new KyselyOrderNotesStore({ db, idGen: uuidIdGen, clock });
 const entitlementStore = new KyselyEntitlementStore({ db, idGen: uuidIdGen, clock });
 const paymentEventStore = new KyselyPaymentEventStore({ db, idGen: uuidIdGen });
 // Phase 6 (§6): shipping / tax / coupon rules stores.
@@ -110,6 +112,7 @@ const app = createApp({
 	productCommerce,
 	cartStore,
 	orderStore,
+	orderNotesStore,
 	entitlementStore,
 	paymentEventStore,
 	shippingRules,
