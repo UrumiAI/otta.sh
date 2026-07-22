@@ -294,12 +294,16 @@ export interface ProductCommerceStore {
 	 * EXISTING live product under an OPTIMISTIC compare-and-set on `updatedAt`
 	 * (the `OrderStore` `expectedFlag` compare-and-set precedent). Guard order —
 	 * MUST be identical in every adapter (contract-pinned):
-	 *  1. Idempotent replay FIRST: if the stored `idempotency_key` equals `key`,
-	 *     the edit already applied — a no-op returning the stored row as `ok`. A
-	 *     double-submit dedupes, and the stale guard never fires on a replay even
-	 *     though `updatedAt` has since advanced.
-	 *  2. Unknown or soft-deleted `product_id` → `not_found` (never mints a row —
-	 *     an edit is not a create; that is `upsert`'s job).
+	 *  1. Unknown or soft-deleted `product_id` → `not_found` FIRST (never mints a
+	 *     row — an edit is not a create; that is `upsert`'s job). This outranks
+	 *     the replay check: a same-key replay arriving AFTER the row was
+	 *     (soft-)deleted reports `not_found`, never a spurious `ok` over a
+	 *     tombstone (matching the SQL adapter, whose `deleted_at IS NULL` UPDATE
+	 *     guard makes a deleted row unreachable regardless of the stored key).
+	 *  2. Idempotent replay: if the LIVE row's stored `idempotency_key` equals
+	 *     `key`, the edit already applied — a no-op returning the stored row as
+	 *     `ok`. A double-submit dedupes, and the stale guard never fires on a
+	 *     replay even though `updatedAt` has since advanced.
 	 *  3. `updatedAt` (ISO-8601 text) != `expectedUpdatedAt` → `stale`, carrying
 	 *     the current row: another edit/sync/lifecycle write landed since the
 	 *     admin loaded the detail. The lost-update guard — the deliberate

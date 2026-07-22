@@ -318,6 +318,38 @@ export function productCommerceStoreContract(
 			expect(res).toEqual({ ok: false, reason: "not_found" });
 		});
 
+		test("updateCommerceFields: a same-key replay AFTER the row was soft-deleted is not_found (not a spurious ok)", async () => {
+			// Guard-order pin (port doc: not_found OUTRANKS replay): the edit
+			// applies with edit-1, then the row is soft-deleted with the SAME key —
+			// so the tombstoned row's stored idempotency_key still EQUALS the
+			// replay's key. A replay-first impl would return ok over the tombstone;
+			// every adapter must classify the deletion first and report not_found.
+			const h = await makeStore();
+			const pid = productId("prod-edit-replay-del");
+			const seeded = await seedEditable(h, "prod-edit-replay-del");
+
+			const applied = await h.store.updateCommerceFields(
+				{ productId: pid, title: "Applied once" },
+				idempotencyKey("edit-1"),
+				seeded.updatedAt.toISOString(),
+			);
+			expect(applied.ok).toBe(true);
+
+			// The row disappears — soft-deleted under the SAME key, so the stored
+			// key still matches the replay below.
+			await h.store.softDelete(pid, idempotencyKey("edit-1"));
+			expect((await h.store.getByProductId(pid))?.idempotencyKey).toBe("edit-1");
+
+			const replay = await h.store.updateCommerceFields(
+				{ productId: pid, title: "Applied once" },
+				idempotencyKey("edit-1"),
+				seeded.updatedAt.toISOString(),
+			);
+			expect(replay).toEqual({ ok: false, reason: "not_found" });
+			// The tombstone is untouched by the replay.
+			expect((await h.store.getByProductId(pid))?.deletedAt).not.toBeNull();
+		});
+
 		test("updateCommerceFields rejects a silent currency switch on an already-priced product", async () => {
 			const h = await makeStore();
 			const pid = productId("prod-edit-cur");

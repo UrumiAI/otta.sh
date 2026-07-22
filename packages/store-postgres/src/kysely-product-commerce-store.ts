@@ -301,8 +301,10 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 	 *
 	 * When the UPDATE applies, `RETURNING` yields the row → `ok`. When it matches
 	 * ZERO rows (some guard failed), a follow-up `SELECT` classifies the no-op in
-	 * the SAME order the fake does — replay (stored key == key) → not_found
-	 * (missing / soft-deleted) → stale (updatedAt moved) → currency_mismatch —
+	 * the SAME order the fake does — not_found (missing / soft-deleted) FIRST,
+	 * then replay (stored key == key), then stale (updatedAt moved), then
+	 * currency_mismatch (see the port doc: not_found outranks replay, so a
+	 * same-key replay after a soft delete is not_found on every adapter) —
 	 * mirroring `upsert`'s no-op-then-reread pattern (not an oversell race
 	 * target: the mutation itself is one atomic statement; a lost concurrent edit
 	 * surfaces deterministically as `stale`, never a torn write). Live-sku

@@ -188,9 +188,10 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 
 	/**
 	 * Guarded admin edit (port doc): optimistic compare-and-set on `updatedAt`
-	 * with the EXACT guard order the Kysely store mirrors — idempotent replay,
-	 * then not_found (missing / soft-deleted), then stale (updatedAt CAS), then
-	 * currency integrity, then apply. NEVER touches active/deletedAt/watermarks.
+	 * with the EXACT guard order the Kysely store's zero-row classifier uses —
+	 * not_found (missing / soft-deleted) FIRST, then idempotent replay, then
+	 * stale (updatedAt CAS), then currency integrity, then apply. NEVER touches
+	 * active/deletedAt/watermarks.
 	 */
 	async updateCommerceFields(
 		input: UpdateProductCommerceFieldsInput,
@@ -198,13 +199,19 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 		expectedUpdatedAt: string,
 	): Promise<ProductCommerceUpdateResult> {
 		const existing = this.#rows.get(input.productId);
-		// 1. Replay FIRST: a same-key retry is a no-op even after updatedAt moved.
-		if (existing !== undefined && existing.idempotencyKey === key) {
-			return { ok: true, product: existing };
-		}
-		// 2. An edit is not a create: unknown / soft-deleted ⇒ not_found.
+		// 1. An edit is not a create: unknown / soft-deleted ⇒ not_found — BEFORE
+		//    the replay check, exactly like the Kysely classifier (its UPDATE's
+		//    `deleted_at IS NULL` guard means a deleted row never applies, and the
+		//    re-read classifies the tombstone first): a same-key replay arriving
+		//    after the row was (soft-)deleted reports not_found, never a spurious
+		//    ok over a tombstone.
 		if (existing === undefined || existing.deletedAt !== null) {
 			return { ok: false, reason: "not_found" };
+		}
+		// 2. Replay: a same-key retry against the LIVE row is a no-op even after
+		//    updatedAt moved (replay precedence over the CAS).
+		if (existing.idempotencyKey === key) {
+			return { ok: true, product: existing };
 		}
 		// 3. Optimistic CAS on updatedAt (ISO text): a mismatch means another
 		//    writer moved the row since the admin loaded it.
