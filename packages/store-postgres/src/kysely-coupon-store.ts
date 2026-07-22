@@ -9,9 +9,12 @@ import {
 	type CouponStore,
 	type CouponType,
 	type CreateCouponInput,
+	type DeleteCouponResult,
 	type IdGen,
 	type RedeemCouponInput,
 	type RedeemResult,
+	type UpdateCouponInput,
+	type UpdateCouponResult,
 } from "@urumi/domain";
 import type { Kysely, Selectable } from "kysely";
 import { sql } from "kysely";
@@ -101,6 +104,59 @@ export class KyselyCouponStore implements CouponStore {
 			.where("id", "=", couponId)
 			.executeTakeFirst();
 		return r === undefined ? null : toRecord(r);
+	}
+
+	/** LWW edit (port doc). `code`/`type`/`currency`/`uses_count` are untouched
+	 *  (immutable identity/kind + store-owned counter). Zero rows ⇒ `not_found`. */
+	async update(couponId: string, input: UpdateCouponInput): Promise<UpdateCouponResult> {
+		const updated = await this.#db
+			.updateTable("coupons")
+			.set({
+				amount_cents: input.amountCents,
+				rate_bps: input.rateBps,
+				cap_cents: input.capCents,
+				min_subtotal_cents: input.minSubtotalCents,
+				starts_at: input.startsAt,
+				expires_at: input.expiresAt,
+				max_uses: input.maxUses,
+				max_uses_per_customer: input.maxUsesPerCustomer,
+			})
+			.where("id", "=", couponId)
+			.returningAll()
+			.executeTakeFirst();
+		if (updated === undefined) return { ok: false, reason: "not_found" };
+		return { ok: true, coupon: toRecord(updated) };
+	}
+
+	/**
+	 * Forbid-if-redeemed delete (port doc): the DELETE is conditioned on NO
+	 * `coupon_redemption` referencing the coupon, so a concurrent `redeem` can
+	 * never orphan a redemption (the FK stays satisfied) and the reconciliation
+	 * trail is preserved. Zero rows ⇒ classify unknown id vs still-redeemed.
+	 */
+	async delete(couponId: string): Promise<DeleteCouponResult> {
+		const res = await this.#db
+			.deleteFrom("coupons")
+			.where("id", "=", couponId)
+			.where((eb) =>
+				eb.not(
+					eb.exists(
+						eb
+							.selectFrom("coupon_redemptions")
+							.select("id")
+							.whereRef("coupon_redemptions.coupon_id", "=", "coupons.id"),
+					),
+				),
+			)
+			.executeTakeFirst();
+		if (Number(res.numDeletedRows) > 0) return { ok: true };
+		const exists = await this.#db
+			.selectFrom("coupons")
+			.select("id")
+			.where("id", "=", couponId)
+			.executeTakeFirst();
+		if (exists === undefined) return { ok: false, reason: "not_found" };
+		return { ok: false, reason: "in_use_by_redemptions" };
 	}
 
 	async redeem(input: RedeemCouponInput): Promise<RedeemResult> {

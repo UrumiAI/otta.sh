@@ -9,12 +9,20 @@ import { Hono } from "hono";
 import {
 	couponBody,
 	couponCodePathParams,
+	couponIdPathParams,
+	couponUpdateBody,
+	methodCurrencyPathParams,
 	methodPathParams,
+	rateIdPathParams,
 	shippingMethodBody,
+	shippingMethodUpdateBody,
 	shippingRateBody,
+	shippingRateUpdateBody,
 	shippingZoneBody,
+	shippingZoneUpdateBody,
 	taxClassBody,
 	taxRateBody,
+	taxRateUpdateBody,
 	zonePathParams,
 } from "../schemas.js";
 import { requireInternalToken } from "./internal-auth.js";
@@ -174,6 +182,164 @@ export function rulesAdminRoutes(deps: RulesAdminDeps): Hono {
 		const coupon = await deps.couponStore.findByCode(params.data.code);
 		if (coupon === null) return c.json({ ok: false, reason: "NOT_FOUND" }, 404);
 		return c.json({ ok: true, coupon: serializeCoupon(coupon) }, 200);
+	});
+
+	// -- Shipping UPDATE/DELETE (admin-UX Increment 3) --------------------------
+	// Every mutation is a NON-GET, so the global write gate (X-Service-Token,
+	// app.ts) covers it in addition to the per-route internal token below.
+
+	app.put("/shipping/zones/:zoneId", async (c) => {
+		const denied = requireInternalToken(c, deps.internalToken);
+		if (denied !== null) return denied;
+		const params = zonePathParams.safeParse(c.req.param());
+		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
+		const parsed = shippingZoneUpdateBody.safeParse(await readJson(c));
+		if (!parsed.success) return c.json({ error: "invalid request body" }, 400);
+		const res = await deps.shippingRules.updateZone(params.data.zoneId, {
+			name: parsed.data.name,
+			regions: parsed.data.regions ?? null,
+		});
+		if (res.ok) return c.json({ ok: true, zone: res.zone }, 200);
+		return c.json({ ok: false, reason: "NOT_FOUND" }, 404);
+	});
+
+	app.delete("/shipping/zones/:zoneId", async (c) => {
+		const denied = requireInternalToken(c, deps.internalToken);
+		if (denied !== null) return denied;
+		const params = zonePathParams.safeParse(c.req.param());
+		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
+		const res = await deps.shippingRules.deleteZone(params.data.zoneId);
+		if (res.ok) return c.json({ ok: true }, 200);
+		if (res.reason === "not_found") return c.json({ ok: false, reason: "NOT_FOUND" }, 404);
+		return c.json({ ok: false, reason: "IN_USE_BY_METHODS" }, 409);
+	});
+
+	app.put("/shipping/methods/:methodId", async (c) => {
+		const denied = requireInternalToken(c, deps.internalToken);
+		if (denied !== null) return denied;
+		const params = methodPathParams.safeParse(c.req.param());
+		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
+		const parsed = shippingMethodUpdateBody.safeParse(await readJson(c));
+		if (!parsed.success) return c.json({ error: "invalid request body" }, 400);
+		const res = await deps.shippingRules.updateMethod(params.data.methodId, {
+			name: parsed.data.name,
+			type: parsed.data.type,
+		});
+		if (res.ok) return c.json({ ok: true, method: res.method }, 200);
+		return c.json({ ok: false, reason: "NOT_FOUND" }, 404);
+	});
+
+	app.delete("/shipping/methods/:methodId", async (c) => {
+		const denied = requireInternalToken(c, deps.internalToken);
+		if (denied !== null) return denied;
+		const params = methodPathParams.safeParse(c.req.param());
+		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
+		const res = await deps.shippingRules.deleteMethod(params.data.methodId);
+		if (res.ok) return c.json({ ok: true }, 200);
+		if (res.reason === "not_found") return c.json({ ok: false, reason: "NOT_FOUND" }, 404);
+		return c.json({ ok: false, reason: "IN_USE_BY_RATES" }, 409);
+	});
+
+	app.put("/shipping/methods/:methodId/rates/:currency", async (c) => {
+		const denied = requireInternalToken(c, deps.internalToken);
+		if (denied !== null) return denied;
+		const params = methodCurrencyPathParams.safeParse(c.req.param());
+		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
+		const parsed = shippingRateUpdateBody.safeParse(await readJson(c));
+		if (!parsed.success) return c.json({ error: "invalid request body" }, 400);
+		const res = await deps.shippingRules.updateRate(
+			params.data.methodId,
+			toCurrency(params.data.currency),
+			{
+				amountCents: cents(parsed.data.amountCents),
+				minSubtotalCents:
+					parsed.data.minSubtotalCents === null || parsed.data.minSubtotalCents === undefined
+						? null
+						: cents(parsed.data.minSubtotalCents),
+			},
+			cents(parsed.data.expectedAmountCents),
+		);
+		if (res.ok) return c.json({ ok: true, rate: res.rate }, 200);
+		if (res.reason === "not_found") return c.json({ ok: false, reason: "NOT_FOUND" }, 404);
+		return c.json({ ok: false, reason: "STALE", current: res.current }, 409);
+	});
+
+	app.delete("/shipping/methods/:methodId/rates/:currency", async (c) => {
+		const denied = requireInternalToken(c, deps.internalToken);
+		if (denied !== null) return denied;
+		const params = methodCurrencyPathParams.safeParse(c.req.param());
+		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
+		const res = await deps.shippingRules.deleteRate(
+			params.data.methodId,
+			toCurrency(params.data.currency),
+		);
+		if (res.ok) return c.json({ ok: true }, 200);
+		return c.json({ ok: false, reason: "NOT_FOUND" }, 404);
+	});
+
+	// -- Tax UPDATE/DELETE ------------------------------------------------------
+
+	app.put("/tax/rates/:rateId", async (c) => {
+		const denied = requireInternalToken(c, deps.internalToken);
+		if (denied !== null) return denied;
+		const params = rateIdPathParams.safeParse(c.req.param());
+		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
+		const parsed = taxRateUpdateBody.safeParse(await readJson(c));
+		if (!parsed.success) return c.json({ error: "invalid request body" }, 400);
+		const res = await deps.taxRules.updateRate(
+			params.data.rateId,
+			{ rateBps: parsed.data.rateBps, appliesToShipping: parsed.data.appliesToShipping ?? false },
+			parsed.data.expectedRateBps,
+		);
+		if (res.ok) return c.json({ ok: true, rate: res.rate }, 200);
+		if (res.reason === "not_found") return c.json({ ok: false, reason: "NOT_FOUND" }, 404);
+		return c.json({ ok: false, reason: "STALE", current: res.current }, 409);
+	});
+
+	app.delete("/tax/rates/:rateId", async (c) => {
+		const denied = requireInternalToken(c, deps.internalToken);
+		if (denied !== null) return denied;
+		const params = rateIdPathParams.safeParse(c.req.param());
+		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
+		const res = await deps.taxRules.deleteRate(params.data.rateId);
+		if (res.ok) return c.json({ ok: true }, 200);
+		return c.json({ ok: false, reason: "NOT_FOUND" }, 404);
+	});
+
+	// -- Coupon UPDATE/DELETE ---------------------------------------------------
+
+	app.put("/coupons/:couponId", async (c) => {
+		const denied = requireInternalToken(c, deps.internalToken);
+		if (denied !== null) return denied;
+		const params = couponIdPathParams.safeParse(c.req.param());
+		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
+		const parsed = couponUpdateBody.safeParse(await readJson(c));
+		if (!parsed.success)
+			return c.json({ error: "invalid request body", issues: parsed.error.issues }, 400);
+		const d = parsed.data;
+		const res = await deps.couponStore.update(params.data.couponId, {
+			amountCents: nn(d.amountCents),
+			rateBps: d.rateBps ?? null,
+			capCents: nn(d.capCents),
+			minSubtotalCents: nn(d.minSubtotalCents),
+			startsAt: d.startsAt ?? null,
+			expiresAt: d.expiresAt ?? null,
+			maxUses: d.maxUses ?? null,
+			maxUsesPerCustomer: d.maxUsesPerCustomer ?? null,
+		});
+		if (res.ok) return c.json({ ok: true, coupon: serializeCoupon(res.coupon) }, 200);
+		return c.json({ ok: false, reason: "NOT_FOUND" }, 404);
+	});
+
+	app.delete("/coupons/:couponId", async (c) => {
+		const denied = requireInternalToken(c, deps.internalToken);
+		if (denied !== null) return denied;
+		const params = couponIdPathParams.safeParse(c.req.param());
+		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
+		const res = await deps.couponStore.delete(params.data.couponId);
+		if (res.ok) return c.json({ ok: true }, 200);
+		if (res.reason === "not_found") return c.json({ ok: false, reason: "NOT_FOUND" }, 404);
+		return c.json({ ok: false, reason: "IN_USE_BY_REDEMPTIONS" }, 409);
 	});
 
 	return app;

@@ -2,9 +2,12 @@ import type {
 	CreateTaxClassInput,
 	CreateTaxRateInput,
 	DeleteTaxClassStoreResult,
+	DeleteTaxRateResult,
 	TaxClass,
 	TaxRate,
 	TaxRulesStore,
+	UpdateTaxRateInput,
+	UpdateTaxRateResult,
 } from "../ports/tax-rules-store.js";
 
 /** IO-free `TaxRulesStore` fake — the first adapter to pass the contract. */
@@ -54,5 +57,28 @@ export class InMemoryTaxRulesStore implements TaxRulesStore {
 
 	async listRatesForZone(zoneId: string): Promise<TaxRate[]> {
 		return [...this.#rates.values()].filter((r) => r.zoneId === zoneId).map((r) => ({ ...r }));
+	}
+
+	/** Optimistic CAS on `rateBps` (port doc): not_found → stale → apply. */
+	async updateRate(
+		id: string,
+		input: UpdateTaxRateInput,
+		expectedRateBps: number,
+	): Promise<UpdateTaxRateResult> {
+		const rate = this.#rates.get(id);
+		if (rate === undefined) return { ok: false, reason: "not_found" };
+		if (rate.rateBps !== expectedRateBps) {
+			return { ok: false, reason: "stale", current: { ...rate } };
+		}
+		rate.rateBps = input.rateBps;
+		rate.appliesToShipping = input.appliesToShipping;
+		return { ok: true, rate: { ...rate } };
+	}
+
+	/** Leaf delete — idempotent no-op for an unknown id. */
+	async deleteRate(id: string): Promise<DeleteTaxRateResult> {
+		if (!this.#rates.has(id)) return { ok: false, reason: "not_found" };
+		this.#rates.delete(id);
+		return { ok: true };
 	}
 }

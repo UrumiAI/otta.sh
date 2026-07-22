@@ -60,6 +60,31 @@ export {
 export { PRODUCT_COMMERCE_ROUTE } from "./admin/product-commerce-route.js";
 export type { ProductCommerceRouteInput } from "./admin/product-commerce-route.js";
 export {
+	AdminRulesClient,
+	type AdminRulesClientOptions,
+	type CouponEdit,
+	type CouponInput,
+	type CouponWire,
+	type RulesCasUpdateResult,
+	type RulesCreateResult,
+	type RulesDeleteResult,
+	type RulesUpdateResult,
+	type ShippingMethodEdit,
+	type ShippingMethodInput,
+	type ShippingMethodWire,
+	type ShippingRateEdit,
+	type ShippingRateInput,
+	type ShippingRateWire,
+	type ShippingZoneEdit,
+	type ShippingZoneInput,
+	type ShippingZoneWire,
+	type TaxClassInput,
+	type TaxClassWire,
+	type TaxRateEdit,
+	type TaxRateInput,
+	type TaxRateWire,
+} from "./admin/admin-rules-client.js";
+export {
 	ALLOWED_HOSTS,
 	COMMERCE_SERVICE_BASE_URL,
 	SERVICE_TOKEN_KEY,

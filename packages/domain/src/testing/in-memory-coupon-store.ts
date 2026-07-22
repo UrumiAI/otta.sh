@@ -5,8 +5,11 @@ import type {
 	CouponRedemption,
 	CouponStore,
 	CreateCouponInput,
+	DeleteCouponResult,
 	RedeemCouponInput,
 	RedeemResult,
+	UpdateCouponInput,
+	UpdateCouponResult,
 } from "../ports/coupon-store.js";
 
 interface RedemptionRow {
@@ -72,6 +75,35 @@ export class InMemoryCouponStore implements CouponStore {
 	async findById(couponId: string): Promise<CouponRecord | null> {
 		const c = this.#coupons.get(couponId);
 		return c === undefined ? null : { ...c };
+	}
+
+	/** LWW edit of a coupon's economics/window (port doc). `code`/`type`/
+	 *  `usesCount` are untouched (immutable identity + store-owned counter). */
+	async update(couponId: string, input: UpdateCouponInput): Promise<UpdateCouponResult> {
+		const coupon = this.#coupons.get(couponId);
+		if (coupon === undefined) return { ok: false, reason: "not_found" };
+		coupon.amountCents = input.amountCents;
+		coupon.rateBps = input.rateBps;
+		coupon.capCents = input.capCents;
+		coupon.minSubtotalCents = input.minSubtotalCents;
+		coupon.startsAt = input.startsAt;
+		coupon.expiresAt = input.expiresAt;
+		coupon.maxUses = input.maxUses;
+		coupon.maxUsesPerCustomer = input.maxUsesPerCustomer;
+		return { ok: true, coupon: { ...coupon } };
+	}
+
+	/** Forbid-if-redeemed: a coupon with ≥1 redemption cannot be deleted (port
+	 *  doc). Idempotent no-op for an unknown id. */
+	async delete(couponId: string): Promise<DeleteCouponResult> {
+		if (!this.#coupons.has(couponId)) return { ok: false, reason: "not_found" };
+		for (const r of this.#redemptions.values()) {
+			if (r.couponId === couponId) return { ok: false, reason: "in_use_by_redemptions" };
+		}
+		const coupon = this.#coupons.get(couponId);
+		if (coupon !== undefined) this.#byCode.delete(coupon.code);
+		this.#coupons.delete(couponId);
+		return { ok: true };
 	}
 
 	async redeem(input: RedeemCouponInput): Promise<RedeemResult> {
