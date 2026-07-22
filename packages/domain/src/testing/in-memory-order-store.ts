@@ -231,14 +231,15 @@ export class InMemoryOrderStore implements OrderStore {
 	}
 
 	async recordFulfillment(input: RecordFulfillmentInput): Promise<RecordFulfillmentStoreResult> {
-		// Guarded compose (mirrors the Kysely single-transaction UPDATE + outbox
-		// insert): the `state === 'processing'` guard is the `transition` precedent —
-		// only a `processing` order ships, so exactly one caller wins the flip and
-		// records, and an order a concurrent cancel already moved is a 0-row miss
-		// (never shipped behind the cancel's back). NEVER touches lines/totals.
+		// Guarded compose (mirrors the Kysely #flipAndEnqueue-routed UPDATE + outbox
+		// insert): the `state === input.fromState` guard is the `transition`
+		// fromState precedent — the use-case passes the state it validated against
+		// the state machine, so exactly one caller wins the flip and records, and an
+		// order a concurrent cancel already moved is a 0-row miss (never shipped
+		// behind the cancel's back). NEVER touches lines/totals.
 		const stored = this.#orders.get(input.orderId);
 		if (stored === undefined) return { recorded: false, order: null };
-		if (stored.order.state !== "processing") {
+		if (stored.order.state !== input.fromState) {
 			return { recorded: false, order: this.#clone(stored.order) };
 		}
 		const now = this.#clock.now().toISOString();

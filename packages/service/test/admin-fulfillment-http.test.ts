@@ -154,6 +154,22 @@ describe.skipIf(PG === undefined)("admin record-fulfillment HTTP contract", () =
 		).toBe(400);
 	});
 
+	test("validation: a non-http(s) trackingUrl (javascript:/data:/relative) → 400, never stored", async () => {
+		for (const url of ["javascript:alert(1)", "data:text/html,x", "ftp://x", "not-a-url"]) {
+			const res = await post("ord-proc", {
+				carrier: "UPS",
+				trackingNumber: "1Z-1",
+				trackingUrl: url,
+				recordedBy: "ops",
+			});
+			expect(res.status).toBe(400);
+		}
+		// None of the rejected attempts shipped the order or stored a URL.
+		const reloaded = (await json(await getOrder("ord-proc"))).order as Record<string, unknown>;
+		expect(reloaded.state).toBe("processing");
+		expect(reloaded.fulfillment).toBeNull();
+	});
+
 	test("unknown order → 404", async () => {
 		const res = await post("does-not-exist", {
 			carrier: "UPS",

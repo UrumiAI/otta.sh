@@ -232,14 +232,14 @@ function makeGetResponder() {
 								: path.includes("/ord-shipped")
 									? ORDER_SHIPPED
 									: ORDER_1;
-			return {
-				status: 200,
-				body: {
-					ok: true,
-					order,
-					allowedTransitions: ["processing", "completed", "cancelled", "refunded"],
-				},
-			};
+			// State-appropriate transitions, as the real service derives them from the
+			// domain state machine: a processing order's legal targets INCLUDE the bare
+			// `shipped` — the PLUGIN is what must steer it away (PR #63 review).
+			const allowedTransitions =
+				order.state === "processing"
+					? ["shipped", "cancelled", "refunded"]
+					: ["processing", "completed", "cancelled", "refunded"];
+			return { status: 200, body: { ok: true, order, allowedTransitions } };
 		}
 		return { status: 404, body: { error: "unknown" } };
 	};
@@ -748,6 +748,59 @@ describe("admin Orders console (workerd sandbox)", () => {
 		// The copy is honest that recording ships the order + emails tracking.
 		const contexts = blocks.filter((b) => b.type === "context").map((b) => String(b.text));
 		expect(contexts.some((t) => t.includes("ships this order"))).toBe(true);
+	});
+
+	test("a PROCESSING order offers NO bare Mark-shipped button — shipping is steered to the Fulfillment form", async () => {
+		await boot();
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "orders:open",
+			values: { orderId: "ord-proc" },
+		});
+		const blocks = blocksOf(outcome);
+		// The service listed `shipped` as a legal target (the stub mirrors the state
+		// machine), but the UI must NOT render its one-click button: a tracking-less
+		// ship would send the buyer an empty shipped email.
+		const transitionButtons = blocks
+			.filter((b) => b.type === "actions")
+			.flatMap((b) => (b.elements as Array<Record<string, unknown>>) ?? [])
+			.filter((e) => e.action_id === "orders:transition");
+		const toStates = transitionButtons.map((e) => (e.value as { toState: string }).toState);
+		expect(toStates).not.toContain("shipped");
+		// The OTHER legal transitions still render (cancel/refund are not steered).
+		expect(toStates.toSorted()).toEqual(["cancelled", "refunded"]);
+		// The steering hint points at the Fulfillment form, which is present.
+		const contexts = blocks.filter((b) => b.type === "context").map((b) => String(b.text));
+		expect(contexts.some((t) => t.includes("use the Fulfillment form above"))).toBe(true);
+		const forms = blocks.filter((b) => b.type === "form");
+		expect(
+			forms.some(
+				(f) =>
+					(f.submit as { action_id?: string } | undefined)?.action_id ===
+					"orders:record-fulfillment",
+			),
+		).toBe(true);
+	});
+
+	test("record-fulfillment with a non-http(s) tracking URL shows an inline error and makes NO POST", async () => {
+		await boot();
+		stub!.requests.length = 0;
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "orders:record-fulfillment",
+			values: {
+				orderId: "ord-proc",
+				carrier: "UPS",
+				trackingNumber: "1Z-1",
+				trackingUrl: "javascript:alert(1)",
+				recordedBy: "carol",
+			},
+		});
+		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
+		const blocks = blocksOf(outcome);
+		const banner = blocks.find((b) => b.type === "banner" && b.variant === "error");
+		expect(banner?.title).toBe("Not shipped");
+		expect(String(banner?.description)).toContain("http://");
 	});
 
 	test("open a SHIPPED order with tracking → shows the recorded fulfillment, NO form", async () => {

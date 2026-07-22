@@ -1,7 +1,7 @@
 import type { IdempotencyKey, OrderId } from "../money/ids.js";
 import type { OrderStore } from "../ports/order-store.js";
 import type { Order } from "./model.js";
-import { emailTemplateForState } from "./state-machine.js";
+import { emailTemplateForState, isLegalOrderTransition } from "./state-machine.js";
 
 export interface RecordFulfillmentDeps {
 	orderStore: OrderStore;
@@ -30,10 +30,11 @@ export interface RecordFulfillmentCommand {
 export type RecordFulfillmentFailure =
 	| "ORDER_NOT_FOUND"
 	/** The order is not in a state where fulfillment is meaningful — recording
-	 *  fulfillment ships the order (`processing → shipped`), so the order must be
-	 *  in `processing`. Anything else (draft/pending/paid/cancelled/refunded/…, or
-	 *  already shipped by the bare transition without fulfillment) is rejected: the
-	 *  admin should move the order to `processing` first and ship it via this form. */
+	 *  fulfillment ships the order, so its current state must legally transition to
+	 *  `shipped` (per the state machine; today only `processing`). Anything else
+	 *  (pending/paid/cancelled/refunded/…, or already shipped by the bare
+	 *  transition without fulfillment) is rejected: the admin should move the order
+	 *  to `processing` first and ship it via this form. */
 	| "NOT_FULFILLABLE"
 	| "EMPTY_CARRIER"
 	| "EMPTY_TRACKING_NUMBER"
@@ -58,9 +59,11 @@ export type RecordFulfillmentOutcome =
  * or totals (the snapshot invariant).
  *
  * Legality + idempotency, mirroring `transitionOrder`/`resolveReconciliation`:
- *  - a **`processing`** order ships once; the store's guarded `WHERE
- *    state='processing'` flip makes concurrent/replayed calls a 0-row no-op, so
- *    exactly one fulfillment is written and exactly one shipped email enqueued;
+ *  - a state that can legally ship (per `isLegalOrderTransition(state,
+ *    "shipped")` — the ONE state machine, never a re-listing; today only
+ *    `processing`) ships once; the store's guarded `WHERE state=:fromState` flip
+ *    makes concurrent/replayed calls a 0-row no-op, so exactly one fulfillment is
+ *    written and exactly one shipped email enqueued;
  *  - an **already-shipped-with-fulfillment** order is an idempotent no-op success
  *    (`recorded:false`) — a redelivery / double-submit is not an error;
  *  - any **other state** (incl. an order shipped by the bare transition without
@@ -88,16 +91,25 @@ export async function recordFulfillment(
 	if (order === null) return { ok: false, reason: "ORDER_NOT_FOUND" };
 
 	// Already shipped WITH fulfillment ⇒ benign idempotent no-op (a replay / double
-	// submit). Any other non-`processing` state (incl. shipped-without-fulfillment,
-	// i.e. shipped by the bare transition) is not fulfillable via this compose.
+	// submit). Shipped WITHOUT fulfillment (the bare transition path) is not
+	// back-fillable via this compose.
 	if (order.state === "shipped") {
 		if (order.fulfillment !== null) return { ok: true, recorded: false, order };
 		return { ok: false, reason: "NOT_FULFILLABLE" };
 	}
-	if (order.state !== "processing") return { ok: false, reason: "NOT_FULFILLABLE" };
+	// Legality is DERIVED from the one state machine (never a hardcoded state
+	// list): fulfillable ⇔ the current state can legally transition to `shipped`
+	// (today only `processing`; if the machine ever grows another pre-`shipped`
+	// state, this — and the store's fromState guard below — follow automatically).
+	if (!isLegalOrderTransition(order.state, "shipped")) {
+		return { ok: false, reason: "NOT_FULFILLABLE" };
+	}
 
 	const res = await deps.orderStore.recordFulfillment({
 		orderId: cmd.orderId,
+		// The guarded flip's from-state — the state we just validated as legally
+		// able to ship (the `transition` fromState precedent).
+		fromState: order.state,
 		carrier,
 		trackingNumber,
 		trackingUrl,

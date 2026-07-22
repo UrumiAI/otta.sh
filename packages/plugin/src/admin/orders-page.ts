@@ -331,9 +331,25 @@ function detailBlocks(
 	});
 	// -- Fulfillment (admin-UX Increment 1) — recorded tracking + the ship form --
 	for (const block of fulfillmentBlocks(o)) blocks.push(block);
-	if (detail.allowedTransitions.length > 0) {
+	// UI steering (PR #63 review): on a `processing` order, the bare "Mark
+	// shipped" one-click is HIDDEN — it would ship without tracking and send the
+	// buyer an empty shipped email, defeating the fulfillment slice's whole point.
+	// Shipping happens via the Fulfillment form above (which records tracking and
+	// ships atomically). This is UI steering only: the SERVICE still accepts the
+	// bare transition for other callers/back-compat.
+	const offeredTransitions =
+		o.state === "processing"
+			? detail.allowedTransitions.filter((t) => t !== "shipped")
+			: detail.allowedTransitions;
+	if (offeredTransitions.length > 0) {
 		blocks.push({ type: "section", text: "Move status" });
-		blocks.push(transitionActions(o.id, detail.allowedTransitions));
+		if (o.state === "processing" && detail.allowedTransitions.includes("shipped")) {
+			blocks.push({
+				type: "context",
+				text: "To mark this order shipped, use the Fulfillment form above — it records the tracking and emails it to the buyer. There is deliberately no bare “Mark shipped” button, so an order is never shipped without tracking.",
+			});
+		}
+		blocks.push(transitionActions(o.id, offeredTransitions));
 	}
 	// -- Notes (append-only) ---------------------------------------------------
 	blocks.push({ type: "section", text: "Notes" });
@@ -877,6 +893,17 @@ function recordFulfillmentAction() {
 			});
 		}
 		const trackingUrl = (readString(values.trackingUrl) ?? "").trim();
+		// The tracking URL, when given, must be http(s) — the SAME bound the service
+		// schema enforces (defense-in-depth: this value is emailed to the buyer, so a
+		// javascript:/data: URI is rejected here with immediate inline feedback
+		// instead of a generic 400 from the service).
+		if (trackingUrl.length > 0 && !/^https?:\/\/\S+$/i.test(trackingUrl)) {
+			return showLeaf([orderId], {
+				variant: "error",
+				title: "Not shipped",
+				description: "The tracking URL must be a web link starting with http:// or https://.",
+			});
+		}
 		// A `date_input` yields YYYY-MM-DD; the service wants a full ISO datetime
 		// (padded to midnight UTC) — reuse the same normalization the filter uses.
 		const shippedAt = normalizeBound(readString(values.shippedAt));

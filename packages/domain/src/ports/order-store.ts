@@ -90,10 +90,13 @@ export interface OrderStore {
 	 * "fulfilled but not shipped", and the shipped email that drains carries the
 	 * tracking the buyer needs — never an empty notification.
 	 *
-	 * The guard is `WHERE id = :orderId AND state = 'processing'`: it makes the
-	 * record once-only under concurrency (exactly one caller ships + records) and
-	 * composes with the state machine — an order that a concurrent cancel already
-	 * moved out of `processing` is a 0-row miss (`recorded:false`), never shipped
+	 * The guard is `WHERE id = :orderId AND state = :fromState` — the SAME
+	 * fromState-equality guard as `transition` (the use-case passes the state it
+	 * validated via `isLegalOrderTransition(state, "shipped")`, so the port never
+	 * hardcodes a state list): it makes the record once-only under concurrency
+	 * (exactly one caller ships + records) and composes with the state machine — an
+	 * order that a concurrent cancel already moved out of the fulfillable state is
+	 * a 0-row miss (`recorded:false`), never shipped
 	 * behind the cancel's back. NEVER touches `order_items`/`order_totals` (the
 	 * snapshot invariant) — only the mutable fulfillment envelope + the guarded
 	 * state flip. `shippedAt` null ⇒ the store stamps its own clock; `recordedAt`
@@ -205,6 +208,11 @@ export interface ResolveReconciliationStoreResult {
  *  and stamps `recorded_at` from its own clock (and `shipped_at` too when null). */
 export interface RecordFulfillmentInput {
 	orderId: OrderId;
+	/** The guarded flip's from-state (the `transition` fromState precedent). The
+	 *  use-case derives it from the state machine (`isLegalOrderTransition(state,
+	 *  "shipped")`) — the adapter guards `WHERE state = :fromState` and never
+	 *  hardcodes a state list of its own. */
+	fromState: OrderState;
 	carrier: string;
 	trackingNumber: string;
 	trackingUrl: string | null;
@@ -212,7 +220,7 @@ export interface RecordFulfillmentInput {
 	shippedAt: string | null;
 	recordedBy: string;
 	/** Every command carries one (CLAUDE.md). NOT the dedup mechanism here — dedup
-	 *  is structural via the guarded `WHERE state='processing'` flip plus the outbox
+	 *  is structural via the guarded `WHERE state=:fromState` flip plus the outbox
 	 *  `UNIQUE(order_id, to_state)` (mirrors `transition`, H4). Adapters accept but
 	 *  do not key off it. */
 	idempotencyKey: IdempotencyKey;
@@ -222,9 +230,9 @@ export interface RecordFulfillmentInput {
 	enqueueEmail: boolean;
 }
 
-/** `recorded:false` ⇒ the guarded `processing → shipped` flip matched 0 rows
- *  (not in `processing` — already shipped, cancelled, or a lost race). `order` is
- *  the current row either way, or null if the order is gone. */
+/** `recorded:false` ⇒ the guarded `fromState → shipped` flip matched 0 rows
+ *  (no longer in `fromState` — already shipped, cancelled, or a lost race).
+ *  `order` is the current row either way, or null if the order is gone. */
 export interface RecordFulfillmentStoreResult {
 	recorded: boolean;
 	order: Order | null;

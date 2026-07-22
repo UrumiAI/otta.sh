@@ -301,10 +301,19 @@ export const resolveReconciliationBody = z.object({
 // `trackingUrl` is optional (the buyer's tracking link) and `shippedAt` optional
 // (absent ⇒ the store stamps its own clock at record time); both nullable so an
 // explicit null clears them at the boundary the same way an absent field does.
+// `trackingUrl` is SCHEME-BOUND to http(s) as defense-in-depth (PR #63 review):
+// the value is rendered into the buyer's shipped email and the admin panel, so a
+// `javascript:`/`data:` URI must never even be storable — the plugin validates
+// the same bound client-side, and the email renderer escapes regardless.
 export const recordFulfillmentBody = z.object({
 	carrier: z.string().min(1).max(200),
 	trackingNumber: z.string().min(1).max(200),
-	trackingUrl: z.string().max(2000).nullable().optional(),
+	trackingUrl: z
+		.string()
+		.max(2000)
+		.regex(/^https?:\/\/\S+$/i, "trackingUrl must be an http(s) URL")
+		.nullable()
+		.optional(),
 	shippedAt: z.string().datetime().nullable().optional(),
 	recordedBy: z.string().min(1).max(200),
 });
