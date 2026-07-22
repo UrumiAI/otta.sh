@@ -11,8 +11,10 @@
  *     customActions})` + `listLevel(...)` / `leafLevel(...)` / `customAction(...)`
  *     — the N-level dispatch engine (open/back/page/apply-filter) driven by an
  *     array of levels indexed by drill depth.
- *   - `NavPath` + `encodeListCursor`/`decodeListCursor` + `backButton(...)` —
- *     drill-path & keyset-cursor plumbing that survives stateless interactions.
+ *   - `NavPath` + `encodeListCursor`/`decodeListCursor` + `backButton(...)` +
+ *     `filterPathField(...)` — drill-path & keyset-cursor plumbing that survives
+ *     stateless interactions (the engine auto-injects the filter path carrier
+ *     into deep-level filter forms, so the carry cannot be silently omitted).
  *   - `readAdminTokens(ctx)` — admin + service token threading (one source).
  *   - `Notice`/`noticeBanner(...)`/`failClosedResponse(...)` — consistent
  *     banner + fail-closed rendering.
@@ -41,6 +43,8 @@ export {
 	decodePath,
 	encodeListCursor,
 	encodePath,
+	filterPathField,
+	PATH_FIELD,
 	type ListCursor,
 	type NavPath,
 } from "./nav.js";

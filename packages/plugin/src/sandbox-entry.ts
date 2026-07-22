@@ -23,7 +23,7 @@
  */
 import { ALLOWED_HOSTS } from "./manifest.js";
 import plugin from "./plugin.js";
-import type { HttpAccess, KvAccess, PluginContext, RouteEntry } from "./types.js";
+import type { HttpAccess, KvAccess, PluginContext, RouteEntry, SandboxedPlugin } from "./types.js";
 
 function isHostAllowed(hostname: string, allowedHosts: readonly string[]): boolean {
 	for (const pattern of allowedHosts) {
@@ -67,21 +67,20 @@ function createHttpAccess(allowedHosts: readonly string[]): HttpAccess {
  * next within the same worker — matching the host's persistence contract.
  * NON-SECRET display prefs only (§5); no secret is ever written here.
  */
-const KV_STORE = new Map<string, unknown>();
-function createKvAccess(): KvAccess {
+function createKvAccess(store: Map<string, unknown>): KvAccess {
 	return {
 		async get<T>(key: string): Promise<T | null> {
-			return KV_STORE.has(key) ? (KV_STORE.get(key) as T) : null;
+			return store.has(key) ? (store.get(key) as T) : null;
 		},
 		async set(key: string, value: unknown): Promise<void> {
-			KV_STORE.set(key, value);
+			store.set(key, value);
 		},
 		async delete(key: string): Promise<boolean> {
-			return KV_STORE.delete(key);
+			return store.delete(key);
 		},
 		async list(prefix?: string): Promise<Array<{ key: string; value: unknown }>> {
 			const out: Array<{ key: string; value: unknown }> = [];
-			for (const [key, value] of KV_STORE) {
+			for (const [key, value] of store) {
 				if (prefix === undefined || key.startsWith(prefix)) out.push({ key, value });
 			}
 			return out;
@@ -101,50 +100,68 @@ interface RouteInvocationBody {
 	request?: { method?: string; url?: string; headers?: Record<string, string> };
 }
 
-export default {
-	async fetch(request: Request): Promise<Response> {
-		const url = new URL(request.url);
-		const ctx: PluginContext = {
-			http: createHttpAccess(ALLOWED_HOSTS),
-			kv: createKvAccess(),
-		};
+/**
+ * Build the workerd worker for a `SandboxedPlugin` descriptor. Extracted (review
+ * round 2) so the sandbox test harness can boot a TEST-FIXTURE plugin (e.g. the
+ * scaffold's synthetic 3-level screen, `admin/scaffold/testing/geo-entry.ts`)
+ * under the exact same bridge — same `ctx.http` allowedHosts gate, same
+ * module-scoped kv persistence contract — that production uses. The default
+ * export below (the production entry) is `createSandboxWorker(plugin)`,
+ * byte-identical in behavior to the pre-refactor inline version.
+ */
+export function createSandboxWorker(pluginDef: SandboxedPlugin) {
+	// Module-boot-scoped (not per-request) so a value written by one route
+	// invocation is readable by the next within the same worker — matching the
+	// host's persistence contract.
+	const kvStore = new Map<string, unknown>();
 
-		try {
-			if (request.method === "POST" && url.pathname.startsWith("/hook/")) {
-				const name = url.pathname.slice("/hook/".length);
-				const entry = plugin.hooks?.[name as keyof typeof plugin.hooks];
-				if (entry === undefined) return jsonResponse({ error: `unknown hook: ${name}` }, 404);
-				const event = await request.json();
-				// The event's exact shape is per-hook (ContentHookEvent vs
-				// ContentDeleteEvent); the dispatcher is intentionally untyped here,
-				// each handler in sync/hooks.ts validates its own event shape.
-				const result = await entry.handler(event as never, ctx);
-				return jsonResponse({ result: result ?? null }, 200);
-			}
+	return {
+		async fetch(request: Request): Promise<Response> {
+			const url = new URL(request.url);
+			const ctx: PluginContext = {
+				http: createHttpAccess(ALLOWED_HOSTS),
+				kv: createKvAccess(kvStore),
+			};
 
-			if (request.method === "POST" && url.pathname.startsWith("/route/")) {
-				const name = url.pathname.slice("/route/".length);
-				const entry: RouteEntry | undefined = plugin.routes?.[name];
-				if (entry === undefined) return jsonResponse({ error: `unknown route: ${name}` }, 404);
-				const handler = typeof entry === "function" ? entry : entry.handler;
-				const body = (await request.json().catch(() => ({}))) as RouteInvocationBody;
-				const result = await handler(
-					{
-						input: body.input ?? {},
-						request: {
-							method: body.request?.method ?? "POST",
-							url: body.request?.url ?? url.pathname,
-							headers: body.request?.headers ?? {},
+			try {
+				if (request.method === "POST" && url.pathname.startsWith("/hook/")) {
+					const name = url.pathname.slice("/hook/".length);
+					const entry = pluginDef.hooks?.[name as keyof typeof pluginDef.hooks];
+					if (entry === undefined) return jsonResponse({ error: `unknown hook: ${name}` }, 404);
+					const event = await request.json();
+					// The event's exact shape is per-hook (ContentHookEvent vs
+					// ContentDeleteEvent); the dispatcher is intentionally untyped here,
+					// each handler in sync/hooks.ts validates its own event shape.
+					const result = await entry.handler(event as never, ctx);
+					return jsonResponse({ result: result ?? null }, 200);
+				}
+
+				if (request.method === "POST" && url.pathname.startsWith("/route/")) {
+					const name = url.pathname.slice("/route/".length);
+					const entry: RouteEntry | undefined = pluginDef.routes?.[name];
+					if (entry === undefined) return jsonResponse({ error: `unknown route: ${name}` }, 404);
+					const handler = typeof entry === "function" ? entry : entry.handler;
+					const body = (await request.json().catch(() => ({}))) as RouteInvocationBody;
+					const result = await handler(
+						{
+							input: body.input ?? {},
+							request: {
+								method: body.request?.method ?? "POST",
+								url: body.request?.url ?? url.pathname,
+								headers: body.request?.headers ?? {},
+							},
 						},
-					},
-					ctx,
-				);
-				return jsonResponse({ result }, 200);
-			}
+						ctx,
+					);
+					return jsonResponse({ result }, 200);
+				}
 
-			return jsonResponse({ error: "not found" }, 404);
-		} catch (err) {
-			return jsonResponse({ error: err instanceof Error ? err.message : String(err) }, 500);
-		}
-	},
-};
+				return jsonResponse({ error: "not found" }, 404);
+			} catch (err) {
+				return jsonResponse({ error: err instanceof Error ? err.message : String(err) }, 500);
+			}
+		},
+	};
+}
+
+export default createSandboxWorker(plugin);

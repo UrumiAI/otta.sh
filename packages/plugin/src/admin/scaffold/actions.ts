@@ -29,7 +29,25 @@ export interface ScreenActions {
 	actionIds(...customVerbs: string[]): ReadonlySet<string>;
 }
 
+/**
+ * The module-level registry of claimed entity namespaces. Two screens claiming
+ * the same entity would emit IDENTICAL action ids — and because the admin-route
+ * dispatcher routes purely on `action_id`, whichever screen registered first
+ * would SILENTLY receive the other's interactions. Registration happens at
+ * module load (each screen calls `screenActions` once at top level), so a
+ * duplicate is a build-time authoring error, not a runtime condition — fail
+ * loudly at import instead of mis-dispatching quietly forever.
+ */
+const CLAIMED_ENTITIES = new Set<string>();
+
 export function screenActions(entity: string): ScreenActions {
+	if (CLAIMED_ENTITIES.has(entity)) {
+		throw new Error(
+			`screenActions("${entity}"): entity namespace already claimed by another screen — ` +
+				"duplicate action ids would silently mis-dispatch in the admin route.",
+		);
+	}
+	CLAIMED_ENTITIES.add(entity);
 	const id = (verb: string) => `${entity}:${verb}`;
 	return {
 		entity,

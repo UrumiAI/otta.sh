@@ -1,7 +1,14 @@
 import type { Block, BlockResponse, PluginContext, RouteHandler } from "../../types.js";
 import type { ScreenActions } from "./actions.js";
 import type { Notice } from "./banner.js";
-import { decodeListCursor, decodePath, encodeListCursor, PATH_FIELD, type NavPath } from "./nav.js";
+import {
+	decodeListCursor,
+	decodePath,
+	encodeListCursor,
+	filterPathField,
+	PATH_FIELD,
+	type NavPath,
+} from "./nav.js";
 
 /**
  * The reusable admin list → detail (→ …) dispatch scaffold.
@@ -93,6 +100,14 @@ export type LevelDef =
 export function listLevel<Client, Filter, Summary>(
 	def: ListLevelDef<Client, Filter, Summary>,
 ): LevelDef {
+	// SAFETY (existential-type erasure): the engine stores levels type-erased
+	// (`unknown`) because one `levels` array mixes levels of different Client/
+	// Filter/Summary types. The casts below are sound because this closure is the
+	// ONLY producer AND consumer of those `unknown`s for this level: `client` is
+	// always the value `config.createClient` returned, `filter` is always a value
+	// THIS level's `filterFromValues` produced (the engine never fabricates or
+	// cross-wires one level's filter into another), and `items` are always what
+	// THIS level's `fetchPage` returned. The typed `def` never sees a foreign value.
 	return {
 		kind: "list",
 		limit: def.limit,
@@ -106,6 +121,9 @@ export function listLevel<Client, Filter, Summary>(
 }
 
 export function leafLevel<Client, Detail>(def: LeafLevelDef<Client, Detail>): LevelDef {
+	// SAFETY: same existential-erasure argument as `listLevel` — `client` is
+	// always `config.createClient`'s value, and `detail` is always what THIS
+	// level's `load` returned, round-tripped through the engine unchanged.
 	return {
 		kind: "leaf",
 		load: (client, path, id) => def.load(client as Client, path, id),
@@ -132,6 +150,8 @@ export interface CustomActionApi<Client> {
 export type CustomActionFn<Client> = (api: CustomActionApi<Client>) => Promise<BlockResponse>;
 
 export function customAction<Client>(fn: CustomActionFn<Client>): CustomActionFn<unknown> {
+	// SAFETY: same existential-erasure argument as `listLevel`/`leafLevel` —
+	// `api.client` is always the value `config.createClient` returned.
 	return (api) => fn({ ...api, client: api.client as Client });
 }
 
@@ -191,7 +211,16 @@ export function createListDetailHandler(
 									? { c: page.nextCursor, f: filter, p: path }
 									: { c: page.nextCursor, f: filter },
 							);
-				return { blocks: level.render({ actions, path, filter, items: page.items, nextToken }) };
+				const blocks = level.render({ actions, path, filter, items: page.items, nextToken });
+				// GUARANTEE the deep-level filter carry (review round 2, item 1): at
+				// depth ≥ 1 an `apply-filter` submit MUST carry the drill path, or it
+				// would silently re-filter the ROOT list. Screens don't have to
+				// remember this — every rendered form whose submit fires `applyFilter`
+				// gets the path-carrier field injected here (no-op if the screen
+				// already placed one via `filterPathField`).
+				return {
+					blocks: path.length === 0 ? blocks : withFilterPathCarry(blocks, actions, path),
+				};
 			} catch {
 				return level.onError();
 			}
@@ -269,6 +298,17 @@ export function createListDetailHandler(
 		// -- page load (or any other interaction routed here) ⇒ the root list ------
 		return rootList();
 	};
+}
+
+/** Inject the drill-path carrier ({@link filterPathField}) into every rendered
+ *  form whose submit fires this screen's `applyFilter` — skipping forms that
+ *  already carry one. Non-mutating: returns new block/field arrays. */
+function withFilterPathCarry(blocks: Block[], actions: ScreenActions, path: NavPath): Block[] {
+	return blocks.map((block) => {
+		if (block.type !== "form" || block.submit.action_id !== actions.applyFilter) return block;
+		if (block.fields.some((f) => f.action_id === PATH_FIELD)) return block;
+		return { ...block, fields: [...block.fields, filterPathField(path)] };
+	});
 }
 
 // -- shared payload parsing (exported: screens reuse the same coercions) -------

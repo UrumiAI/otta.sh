@@ -44,6 +44,11 @@ export interface SandboxOptions {
 	allowedHosts: string[];
 	/** Baked into the bundled plugin as `COMMERCE_SERVICE_BASE_URL`. */
 	commerceServiceBaseUrl: string;
+	/** Worker entry module, relative to `src/` (default the production
+	 *  `sandbox-entry.ts`). Test fixtures under `src/**\/testing/` (e.g. the
+	 *  scaffold's `admin/scaffold/testing/geo-entry.ts`) can be booted through
+	 *  the same `createSandboxWorker` bridge by pointing here. */
+	entry?: string;
 }
 
 export type InvocationOutcome = { result: unknown } | { error: string };
@@ -144,16 +149,18 @@ export async function loadPluginInSandbox(options: SandboxOptions): Promise<Sand
 	await cp(PLUGIN_SRC, srcDir, { recursive: true });
 	await writeFile(path.join(srcDir, "manifest.ts"), manifestSource(options), "utf8");
 
+	const entryRel = options.entry ?? "sandbox-entry.ts";
 	const distDir = path.join(workDir, "dist");
 	await build({
-		entry: [path.join(srcDir, "sandbox-entry.ts")],
+		entry: [path.join(srcDir, entryRel)],
 		outDir: distDir,
 		format: ["esm"],
 		dts: false,
 		logLevel: "silent",
 	});
 
-	const bundlePath = path.join(distDir, "sandbox-entry.mjs");
+	// tsdown emits a single entry flat into outDir under the entry's basename.
+	const bundlePath = path.join(distDir, `${path.basename(entryRel, ".ts")}.mjs`);
 	const configPath = path.join(workDir, "config.capnp");
 	const port = await findFreePort();
 	await writeFile(configPath, capnpConfig(port, path.relative(workDir, bundlePath)), "utf8");

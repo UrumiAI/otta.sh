@@ -1,4 +1,4 @@
-import type { ActionsBlock } from "../../types.js";
+import type { ActionsBlock, SelectFieldSpec } from "../../types.js";
 
 /**
  * Navigation primitives for the admin list/detail scaffold.
@@ -89,6 +89,28 @@ export function backButton(actionId: string, label: string, path?: NavPath): Act
 				...(carry ? { value: { [PATH_FIELD]: encodePath(path) } } : {}),
 			},
 		],
+	};
+}
+
+/**
+ * The filter form's drill-path carrier: a single-option `select` whose value is
+ * the encoded {@link NavPath}, so a stateless `apply-filter` `form_submit` at
+ * depth ≥ 1 re-lists the CURRENT level (not the root). Same
+ * carry-the-id-in-values pattern as the orders open-order form.
+ *
+ * Screens normally never need to call this — the scaffold engine AUTO-INJECTS
+ * this field into every rendered form whose submit fires `applyFilter` at
+ * depth ≥ 1 (see `createListDetailHandler`), so the carry cannot be silently
+ * omitted. It is exported for screens that want to control field placement.
+ */
+export function filterPathField(path: NavPath): SelectFieldSpec {
+	const encoded = encodePath(path);
+	return {
+		type: "select",
+		action_id: PATH_FIELD,
+		label: "Scope",
+		options: [{ value: encoded, label: "This level" }],
+		initial_value: encoded,
 	};
 }
 
