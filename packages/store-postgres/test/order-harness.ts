@@ -21,6 +21,7 @@ import {
 	FixedClock,
 	type OrderNotesStoreHarness,
 	type OrderStoreHarness,
+	type OrderTimelineHarness,
 	type OrderTransitionHarness,
 } from "@urumi/domain/testing";
 import type { Kysely } from "kysely";
@@ -403,4 +404,37 @@ export async function makePgOrderNotesStoreHarness(): Promise<
 	const iso = await createIsolatedPgSchema(connectionString, { poolMax: 8 });
 	cleanups.push(() => iso.teardown());
 	return buildOrderNotesStoreHarness(iso.db);
+}
+
+// -- order timeline / audit harness (admin-UX Increment 1, timeline slice) ----
+
+/** An order store + a notes store over ONE db, sharing a FixedClock the
+ *  contract's `tick()` advances — so the state-change audit (order_events) and
+ *  the notes interleave on one merged timeline, and sqlite/pg/the fake exercise
+ *  the identical spec. `CountingIdGen` gives lexically-increasing ids so `at ASC,
+ *  id ASC` IS chronological under a fixed clock. */
+export function buildOrderTimelineHarness(db: Kysely<Database>): OrderTimelineHarness {
+	const clock = new FixedClock(new Date("2026-07-10T00:00:00.000Z"));
+	return {
+		orderStore: new KyselyOrderStore({ db, idGen: new CountingIdGen("oi"), clock }),
+		orderNotesStore: new KyselyOrderNotesStore({ db, idGen: new CountingIdGen("note"), clock }),
+		tick: (ms: number) => clock.advance(ms),
+	};
+}
+
+export async function makeSqliteOrderTimelineHarness(): Promise<OrderTimelineHarness> {
+	const db = makeSqliteDb(":memory:");
+	await migrateToLatest(db);
+	cleanups.push(async () => {
+		await db.destroy();
+	});
+	return buildOrderTimelineHarness(db);
+}
+
+export async function makePgOrderTimelineHarness(): Promise<OrderTimelineHarness> {
+	const connectionString = process.env.PG_CONNECTION_STRING;
+	if (connectionString === undefined) throw new Error("PG_CONNECTION_STRING is not set");
+	const iso = await createIsolatedPgSchema(connectionString, { poolMax: 8 });
+	cleanups.push(() => iso.teardown());
+	return buildOrderTimelineHarness(iso.db);
 }

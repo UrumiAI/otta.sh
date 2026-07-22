@@ -170,6 +170,47 @@ export interface OrderNoteWire {
 	createdAt: string;
 }
 
+/**
+ * One entry in the order timeline (admin-UX Increment 1, timeline slice) on the
+ * wire. A discriminated union keyed by `kind`; every entry carries `at`, and the
+ * kind-specific fields are OPTIONAL here (the plugin reads only what a given
+ * `kind` populates), so an unknown/future kind degrades to a bare `at` row rather
+ * than throwing. Money-free — the timeline is an audit surface, not a totals one.
+ */
+export interface TimelineEntryWire {
+	kind: string;
+	at: string;
+	/** state_change */
+	fromState?: string | null;
+	toState?: string | null;
+	actor?: string | null;
+	/** note */
+	author?: string;
+	body?: string;
+	/** fulfillment */
+	carrier?: string;
+	trackingNumber?: string;
+	trackingUrl?: string | null;
+	shippedAt?: string;
+	recordedBy?: string;
+	/** cancellation */
+	reason?: string;
+	detail?: string | null;
+	cancelledBy?: string;
+	/** reconciliation_resolved */
+	outcome?: string;
+	resolvedBy?: string;
+}
+
+/** The order timeline payload (admin-UX Increment 1, timeline slice) — read-only.
+ *  `stateChangesAudited` is false for a historical order whose transitions
+ *  predate the audit table (a partial timeline). */
+export interface OrderTimelineWire {
+	orderId: string;
+	stateChangesAudited: boolean;
+	entries: TimelineEntryWire[];
+}
+
 /** POST add-note returns a discriminated result (like `transitionOrder`) so a
  *  failure surfaces a GENERIC inline banner rather than throwing into the host. */
 export type AddNoteResult =
@@ -451,6 +492,21 @@ export class AdminOrdersClient {
 		if (!res.ok) throw new Error(`GET customer context failed (HTTP ${res.status})`);
 		const body = (await res.json()) as { context?: CustomerContextWire };
 		return body.context ?? null;
+	}
+
+	/** GET an order's timeline (admin-token guarded read; admin-UX Increment 1).
+	 *  Mirrors `getCustomerContext`'s shape: a 404 resolves to `null`; any other
+	 *  non-2xx throws — the caller degrades to an "unavailable" timeline section,
+	 *  never a hard error (and never blanks the order detail). */
+	async getTimeline(orderId: string): Promise<OrderTimelineWire | null> {
+		const res = await this.#fetch(
+			`${this.#baseUrl}/admin/orders/${encodeURIComponent(orderId)}/timeline`,
+			{ method: "GET", headers: this.#authHeaders() },
+		);
+		if (res.status === 404) return null;
+		if (!res.ok) throw new Error(`GET timeline failed (HTTP ${res.status})`);
+		const body = (await res.json()) as { timeline?: OrderTimelineWire };
+		return body.timeline ?? null;
 	}
 
 	/** GET an order's append-only notes (admin-token guarded read). A non-2xx

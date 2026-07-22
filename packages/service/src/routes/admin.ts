@@ -4,10 +4,12 @@ import {
 	cancelOrder,
 	type CustomerStore,
 	getOrderCustomerContext,
+	getOrderTimeline,
 	idempotencyKey as toIdempotencyKey,
 	legalNextStates,
 	listOrderNotes,
 	type OrderCustomerContext,
+	type OrderTimeline,
 	type OrderListCursor,
 	type OrderListFilter,
 	orderId as toOrderId,
@@ -150,6 +152,28 @@ export function adminRoutes(deps: AdminRoutesDeps): Hono {
 		);
 		if (context === null) return c.json({ ok: false, reason: "ORDER_NOT_FOUND" }, 404);
 		return c.json({ ok: true, context: serializeCustomerContext(context) }, 200);
+	});
+
+	// -- Admin Orders console: order timeline / audit (admin-UX Increment 1) -----
+	// Read-only, internal-token guarded like the other admin GETs; mirrors the
+	// `getOrderTimeline` use-case 1:1. Merges the durably-audited state-change
+	// events with the order's derived artifacts (creation, notes, fulfillment,
+	// cancellation, reconciliation resolution) into ONE chronological view. It
+	// surfaces no money and no PII beyond what the order detail + notes already
+	// show; `stateChangesAudited` flags a historical order whose transitions
+	// predate the audit table (a partial timeline).
+	app.get("/orders/:orderId/timeline", async (c) => {
+		const denied = requireInternalToken(c, deps.internalToken);
+		if (denied !== null) return denied;
+
+		const params = orderPathParams.safeParse(c.req.param());
+		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
+		const timeline = await getOrderTimeline(
+			{ orderStore: deps.orderStore, orderNotesStore: deps.orderNotesStore },
+			toOrderId(params.data.orderId),
+		);
+		if (timeline === null) return c.json({ ok: false, reason: "ORDER_NOT_FOUND" }, 404);
+		return c.json({ ok: true, timeline: serializeTimeline(timeline) }, 200);
 	});
 
 	app.post("/orders/:orderId/transition", async (c) => {
@@ -411,6 +435,20 @@ function serializeCustomerContext(context: OrderCustomerContext): Record<string,
 		})),
 		orderCount: context.orderCount,
 		recentOrders: context.recentOrders.map(serializeOrderSummary),
+	};
+}
+
+/** Wire shape of the order timeline (admin-UX Increment 1, timeline slice).
+ *  Mirrors the domain shape 1:1: a chronological list of discriminated entries
+ *  (each `at` + `kind` + the kind's fields) plus `stateChangesAudited` (false ⇒
+ *  the order's transitions predate the audit table, so the state-change history
+ *  is partial). Each entry is a plain structured record — the plugin renders it;
+ *  no presentation strings on the wire. */
+function serializeTimeline(timeline: OrderTimeline): Record<string, unknown> {
+	return {
+		orderId: timeline.orderId,
+		stateChangesAudited: timeline.stateChangesAudited,
+		entries: timeline.entries.map((e) => ({ ...e })),
 	};
 }
 

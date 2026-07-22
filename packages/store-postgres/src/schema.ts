@@ -337,6 +337,25 @@ export interface OrderNotesTable {
 	created_at: string;
 }
 
+/**
+ * Append-only state-change audit (admin-UX Increment 1, timeline slice). One row
+ * is INSERTed inside the SAME guarded-flip transaction that moves an order (the
+ * `#flipAndEnqueue` choke point), so a row exists iff the flip won — no row for a
+ * replayed/lost-race flip. Listed `order_id` + `at ASC, id ASC` (both fixed-width
+ * text, so lexical order IS chronological — dialect-identical). `kind` is
+ * currently always `'state_change'` (a text column, so new kinds need no DDL).
+ */
+export interface OrderEventsTable {
+	id: string;
+	order_id: string;
+	/** ISO-8601 UTC — the store clock at the flip. */
+	at: string;
+	kind: string;
+	from_state: string | null;
+	to_state: string | null;
+	actor: string | null;
+}
+
 // -- Phase 6 (§5): shipping / tax / coupons -----------------------------------
 
 /** Country/state/postal match list is opaque JSON-as-text config. */
@@ -444,6 +463,7 @@ export interface Database {
 	addresses: AddressesTable;
 	order_emails_outbox: OrderEmailsOutboxTable;
 	order_notes: OrderNotesTable;
+	order_events: OrderEventsTable;
 	// Phase 6:
 	shipping_zones: ShippingZonesTable;
 	shipping_methods: ShippingMethodsTable;

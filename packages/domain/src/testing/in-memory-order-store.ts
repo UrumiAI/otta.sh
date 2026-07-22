@@ -13,6 +13,7 @@ import type {
 	CancelOrderStoreResult,
 	CreateOrderInput,
 	CreateOrderResult,
+	OrderEvent,
 	OrderListFilter,
 	OrderListPage,
 	OrderListResult,
@@ -91,6 +92,10 @@ export class InMemoryOrderStore implements OrderStore {
 	#byKey = new Map<string, string>();
 	#payments: StoredPayment[] = [];
 	#outbox: StoredOutbox[] = [];
+	/** Append-only state-change audit — the fake analogue of `order_events`,
+	 *  appended IN the same synchronous step as each guarded flip (mirrors the
+	 *  Kysely adapter writing the event inside the flip transaction). */
+	#events: OrderEvent[] = [];
 
 	constructor(options: { idGen: IdGen; clock: Clock }) {
 		this.#idGen = options.idGen;
@@ -180,7 +185,8 @@ export class InMemoryOrderStore implements OrderStore {
 		if (stored.order.holdExpiresAt > now) return false; // not yet due (re-checked)
 		stored.order.state = "expired";
 		stored.order.updatedAt = this.#clock.now().toISOString();
-		// Same-"transaction" outbox enqueue as the real adapter (§5).
+		// Same-"transaction" outbox enqueue + state-change audit as the real adapter.
+		this.#appendEvent(orderId, "pending", "expired", null);
 		this.#enqueue(orderId, "expired");
 		return true;
 	}
@@ -257,6 +263,9 @@ export class InMemoryOrderStore implements OrderStore {
 			recordedAt: now,
 		};
 		stored.order.updatedAt = now;
+		// Same-"transaction" state-change audit as the real adapter — the actor is
+		// the recorder (the who this domain knows for a fulfillment flip).
+		this.#appendEvent(input.orderId, input.fromState, "shipped", input.recordedBy);
 		// Same-"transaction" outbox enqueue as the real adapter (§5) when the shipped
 		// state has a template — the buyer's shipped email now carries this tracking.
 		if (input.enqueueEmail) this.#enqueue(input.orderId, "shipped");
@@ -285,6 +294,9 @@ export class InMemoryOrderStore implements OrderStore {
 			cancelledAt: now,
 		};
 		stored.order.updatedAt = now;
+		// Same-"transaction" state-change audit as the real adapter — the actor is
+		// the canceller (the who this domain knows for a cancellation flip).
+		this.#appendEvent(input.orderId, input.fromState, "cancelled", input.cancelledBy);
 		// Same-"transaction" outbox enqueue as the real adapter (§5) when the
 		// cancelled state has a template — the buyer's cancellation email now
 		// carries the reason.
@@ -314,6 +326,13 @@ export class InMemoryOrderStore implements OrderStore {
 			.filter((s) => s.order.customerId === customerId)
 			.toSorted((a, b) => a.order.createdAt.localeCompare(b.order.createdAt))
 			.map((s) => this.#clone(s.order));
+	}
+
+	async listEventsForOrder(orderId: OrderId): Promise<OrderEvent[]> {
+		// Insertion order IS chronological (appended on each won flip under the
+		// advancing clock); scoped to the one order. Cloned so a caller can't mutate
+		// the store's audit log. Mirrors the SQL `WHERE order_id=? ORDER BY at, id`.
+		return this.#events.filter((e) => e.orderId === orderId).map((e) => ({ ...e }));
 	}
 
 	/** The ONE `OrderListFilter` predicate, shared by `listOrders` and
@@ -533,11 +552,30 @@ export class InMemoryOrderStore implements OrderStore {
 		if (stored === undefined || stored.order.state !== from) return false;
 		stored.order.state = to;
 		stored.order.updatedAt = this.#clock.now().toISOString();
+		// State-change audit rides the (won) flip, exactly like the real adapter's
+		// event INSERT inside the guarded UPDATE transaction — so a 0-row miss above
+		// (already-flipped / lost race) writes NO event. No actor: a bare flip has
+		// no modeled who (markPaid/markFailed/transition).
+		this.#appendEvent(orderId, from, to, null);
 		// markPaid/markFailed pass no explicit flag → enqueue iff the target state
 		// has a template (paid ⇒ yes, failed ⇒ no); `transition` passes it explicitly.
 		const shouldEnqueue = enqueue ?? emailTemplateForState(to) !== null;
 		if (shouldEnqueue) this.#enqueue(orderId, to);
 		return true;
+	}
+
+	/** Append a state-change audit row (the fake analogue of the `order_events`
+	 *  INSERT). Called ONLY on a won flip, so a replay/lost race records nothing. */
+	#appendEvent(orderId: string, from: OrderState, to: OrderState, actor: string | null): void {
+		this.#events.push({
+			id: this.#idGen.newId(),
+			orderId: toOrderId(orderId),
+			at: this.#clock.now().toISOString(),
+			kind: "state_change",
+			fromState: from,
+			toState: to,
+			actor,
+		});
 	}
 
 	/** Outbox INSERT … ON CONFLICT(order_id, to_state) DO NOTHING (§5). */

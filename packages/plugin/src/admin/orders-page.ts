@@ -21,6 +21,8 @@ import {
 	type OrderNoteWire,
 	type OrderSummaryWire,
 	type OrdersListFilter,
+	type OrderTimelineWire,
+	type TimelineEntryWire,
 } from "./admin-orders-client.js";
 import {
 	asRecord,
@@ -248,15 +250,17 @@ function orderDetailLevel() {
 	return leafLevel<AdminOrdersClient, OrderDetailResult>({
 		load: (client, _path, id) => client.getOrder(id),
 		async render({ client, actions, id, detail, notice }) {
-			// Notes + customer context are SECONDARY surfaces: either read failing
-			// must not blank the whole detail view — each degrades independently
-			// (empty notes / an "unavailable" customer section), never fail closed.
-			// Fetched in parallel to avoid serial round-trip latency.
-			const [notes, customerContext] = await Promise.all([
+			// Notes, customer context, and the timeline are SECONDARY surfaces: any
+			// one read failing must not blank the whole detail view — each degrades
+			// independently (empty notes / an "unavailable" customer or timeline
+			// section), never fail closed. Fetched in parallel to avoid serial
+			// round-trip latency.
+			const [notes, customerContext, timeline] = await Promise.all([
 				client.listNotes(id).catch((): OrderNoteWire[] => []),
 				client.getCustomerContext(id).catch((): CustomerContextWire | null => null),
+				client.getTimeline(id).catch((): OrderTimelineWire | null => null),
 			]);
-			return detailBlocks(actions, detail, notes, customerContext, notice);
+			return detailBlocks(actions, detail, notes, customerContext, timeline, notice);
 		},
 		notFound({ actions, id }) {
 			return [
@@ -279,6 +283,7 @@ function detailBlocks(
 	detail: OrderDetailResult,
 	notes: OrderNoteWire[],
 	customerContext: CustomerContextWire | null,
+	timeline: OrderTimelineWire | null,
 	notice: Notice | undefined,
 ): Block[] {
 	const o = detail.order;
@@ -371,6 +376,8 @@ function detailBlocks(
 	blocks.push({ type: "section", text: "Notes" });
 	blocks.push(notesTable(actions, notes));
 	blocks.push(addNoteForm(o.id));
+	// -- Timeline (admin-UX Increment 1) — read-only chronological history -----
+	for (const block of timelineBlocks(actions, timeline)) blocks.push(block);
 	return blocks;
 }
 
@@ -530,6 +537,109 @@ function addNoteForm(orderId: string): FormBlock {
 		],
 		submit: { label: "Add note", action_id: ACTION_ADD_NOTE },
 	};
+}
+
+// -- timeline surface (admin-UX Increment 1) ----------------------------------
+
+/**
+ * The read-only "Timeline" section: one chronological table of everything that
+ * happened to the order — the durably-audited state changes MERGED with the
+ * derived artifacts (creation, notes, fulfillment, cancellation, reconciliation
+ * resolution). `null` (the timeline read failed or the order vanished mid-view)
+ * renders an explicit "unavailable" body — the section is never silently blank
+ * and never blanks the rest of the detail view. A historical order whose
+ * transitions predate the audit table (`stateChangesAudited:false`) gets an
+ * honest caption that its state-change history is partial.
+ */
+function timelineBlocks(actions: ScreenActions, timeline: OrderTimelineWire | null): Block[] {
+	const blocks: Block[] = [{ type: "section", text: "Timeline" }];
+	if (timeline === null) {
+		blocks.push({
+			type: "context",
+			text: "Timeline unavailable — it could not be loaded right now. The order itself is unaffected; reload, and check the admin token in Settings if this persists.",
+		});
+		return blocks;
+	}
+	blocks.push({
+		type: "context",
+		text: timeline.stateChangesAudited
+			? "Chronological history: state changes are recorded in the audit log; notes and recorded actions (fulfillment, cancellation, reconciliation) are merged in. Times in UTC."
+			: "Chronological history. This order's state changes predate the audit log, so earlier transitions aren't shown — its notes and recorded actions still appear. Times in UTC.",
+	});
+	blocks.push({
+		type: "table",
+		columns: [
+			{ key: "at", label: "When (UTC)", format: "relative_time" },
+			{ key: "what", label: "Event", format: "badge" },
+			{ key: "who", label: "Who" },
+			{ key: "detail", label: "Detail" },
+		],
+		rows: timeline.entries.map((e) => ({
+			at: e.at,
+			what: timelineWhat(e),
+			who: timelineWho(e),
+			detail: timelineDetail(e),
+		})),
+		page_action_id: actions.page, // never fires: no next_cursor, no sortable column
+		empty_text: "No timeline activity yet.",
+	});
+	return blocks;
+}
+
+/** The event label for a timeline row — a short, human "what happened". Unknown
+ *  kinds degrade to the raw kind string rather than throwing. */
+function timelineWhat(e: TimelineEntryWire): string {
+	switch (e.kind) {
+		case "created":
+			return "Order created";
+		case "state_change":
+			return `Status → ${e.toState ?? "?"}`;
+		case "note":
+			return "Note added";
+		case "fulfillment":
+			return "Fulfillment recorded";
+		case "cancellation":
+			return "Cancelled";
+		case "reconciliation_resolved":
+			return "Reconciliation resolved";
+		default:
+			return e.kind;
+	}
+}
+
+/** Who is responsible for a timeline row (the actor / author), or "—". */
+function timelineWho(e: TimelineEntryWire): string {
+	const who = e.actor ?? e.author ?? e.recordedBy ?? e.cancelledBy ?? e.resolvedBy ?? null;
+	return who !== null && who.length > 0 ? who : "—";
+}
+
+/** The human detail for a timeline row — the kind-specific specifics, or "—". */
+function timelineDetail(e: TimelineEntryWire): string {
+	switch (e.kind) {
+		case "state_change":
+			return e.fromState !== null && e.fromState !== undefined ? `from ${e.fromState}` : "—";
+		case "note":
+			return e.body ?? "—";
+		case "fulfillment": {
+			const parts = [e.carrier, e.trackingNumber].filter(
+				(p): p is string => p !== undefined && p.length > 0,
+			);
+			return parts.length > 0 ? parts.join(" ") : "—";
+		}
+		case "cancellation": {
+			const reason = e.reason ?? "";
+			const extra =
+				e.detail !== null && e.detail !== undefined && e.detail.length > 0 ? `: ${e.detail}` : "";
+			return reason.length > 0 ? `${reason}${extra}` : "—";
+		}
+		case "reconciliation_resolved": {
+			const outcome = e.outcome ?? "";
+			const reason = e.reason !== undefined && e.reason.length > 0 ? `: ${e.reason}` : "";
+			return outcome.length > 0 ? `${outcome}${reason}` : "—";
+		}
+		default:
+			return "—";
+	}
 }
 
 function transitionActions(orderId: string, allowed: string[]): ActionsBlock {

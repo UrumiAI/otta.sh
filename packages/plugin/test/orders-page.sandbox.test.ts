@@ -95,6 +95,45 @@ const NOTES = [
 	},
 ];
 
+// A merged timeline for ord-1: creation, a status change, a note, and a
+// fulfillment — the read-only audit surface (admin-UX Increment 1).
+const TIMELINE_ORD_1 = {
+	orderId: "ord-1",
+	stateChangesAudited: true,
+	entries: [
+		{ kind: "created", at: "2026-07-10T01:00:00.000Z" },
+		{
+			kind: "state_change",
+			at: "2026-07-10T01:10:00.000Z",
+			fromState: "pending",
+			toState: "paid",
+			actor: null,
+		},
+		{
+			kind: "note",
+			at: "2026-07-10T01:30:00.000Z",
+			author: "bob",
+			body: "Called the customer back.",
+		},
+		{
+			kind: "fulfillment",
+			at: "2026-07-11T09:00:01.000Z",
+			carrier: "UPS",
+			trackingNumber: "1Z-999",
+			trackingUrl: "https://track/1Z-999",
+			shippedAt: "2026-07-11T09:00:00.000Z",
+			recordedBy: "ops@shop.test",
+		},
+	],
+};
+
+// A historical order whose transitions predate the audit table — only creation.
+const TIMELINE_DEGRADED = {
+	orderId: "ord-proc",
+	stateChangesAudited: false,
+	entries: [{ kind: "created", at: "2026-07-10T01:00:00.000Z" }],
+};
+
 const SUMMARY_2 = {
 	id: "ord-2",
 	state: "shipped",
@@ -228,6 +267,11 @@ function makeGetResponder() {
 		// Order notes read (append order) — must be checked BEFORE the detail branch.
 		if (path?.endsWith("/notes")) {
 			return { status: 200, body: { ok: true, notes: NOTES } };
+		}
+		// Order timeline read — also BEFORE the detail branch.
+		if (path?.endsWith("/timeline")) {
+			const timeline = path.includes("/ord-proc") ? TIMELINE_DEGRADED : TIMELINE_ORD_1;
+			return { status: 200, body: { ok: true, timeline } };
 		}
 		// Customer context read — also BEFORE the detail branch.
 		if (path?.endsWith("/customer-context")) {
@@ -579,6 +623,48 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(fieldIds).toContain("author");
 		expect(fieldIds).toContain("body");
 		expect(fieldIds).toContain("orderId"); // carries the order id into the stateless submit
+	});
+
+	test("open order → detail shows the Timeline section merging state changes, a note, and fulfillment", async () => {
+		await boot();
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "orders:open",
+			values: { orderId: "ord-1" },
+		});
+		const blocks = blocksOf(outcome);
+		// A "Timeline" section header exists.
+		expect(blocks.some((b) => b.type === "section" && b.text === "Timeline")).toBe(true);
+		// The merged entries render as a table with when/what/who/detail columns.
+		const tables = blocks.filter((b) => b.type === "table");
+		const timelineTable = tables.find((t) =>
+			((t.columns as Array<{ key?: string }>) ?? []).some((c) => c.key === "what"),
+		);
+		expect(timelineTable).toBeDefined();
+		const rows = (timelineTable?.rows as Array<Record<string, unknown>>) ?? [];
+		const whats = rows.map((r) => r.what);
+		expect(whats).toContain("Order created");
+		expect(whats).toContain("Status → paid");
+		expect(whats).toContain("Note added");
+		expect(whats).toContain("Fulfillment recorded");
+		// The fulfillment row carries its recorder + tracking detail.
+		const fulfilRow = rows.find((r) => r.what === "Fulfillment recorded");
+		expect(fulfilRow?.who).toBe("ops@shop.test");
+		expect(String(fulfilRow?.detail)).toContain("1Z-999");
+	});
+
+	test("a historical order (stateChangesAudited:false) shows the partial-timeline caption", async () => {
+		await boot();
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "orders:open",
+			values: { orderId: "ord-proc" },
+		});
+		const blocks = blocksOf(outcome);
+		expect(blocks.some((b) => b.type === "section" && b.text === "Timeline")).toBe(true);
+		// The degradation caption is present (state-change history predates the log).
+		const contexts = blocks.filter((b) => b.type === "context");
+		expect(contexts.some((c) => /predate the audit log/i.test(String(c.text)))).toBe(true);
 	});
 
 	test("add-note form_submit POSTs the note with Idempotency-Key + token, then re-renders detail", async () => {

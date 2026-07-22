@@ -112,6 +112,14 @@ describe.skipIf(!PG_ENABLED)("[postgres]", () => {
 		// Exactly one shipped email drains.
 		expect(await dispatch(h)).toBe(1);
 		expect(h.emailSender.countByTemplate("order-shipped", id)).toBe(1);
+		// The state-change audit rode the SAME guarded flip transaction — exactly
+		// ONE `processing → shipped` event, never one per losing caller (timeline
+		// slice: a replay/lost race is a 0-row flip and records no event).
+		const shippedEvents = (await h.store.listEventsForOrder(id)).filter(
+			(e) => e.toState === "shipped",
+		);
+		expect(shippedEvents).toHaveLength(1);
+		expect(shippedEvents[0]).toMatchObject({ fromState: "processing", actor: "concurrent" });
 	});
 
 	// Record-vs-cancel: a record-fulfillment and a `processing → cancelled`
