@@ -19,6 +19,7 @@ import {
 	FakeEmailSender,
 	FakePaymentGateway,
 	FixedClock,
+	type OrderNotesStoreHarness,
 	type OrderStoreHarness,
 	type OrderTransitionHarness,
 } from "@urumi/domain/testing";
@@ -28,6 +29,7 @@ import {
 	KyselyCouponStore,
 	KyselyEntitlementStore,
 	KyselyInventoryStore,
+	KyselyOrderNotesStore,
 	KyselyOrderStore,
 	KyselyPaymentEventStore,
 	KyselyProductCommerceStore,
@@ -366,4 +368,39 @@ export async function makePgOrderTransitionHarness(): Promise<OrderTransitionHar
 	const iso = await createIsolatedPgSchema(connectionString, { poolMax: 4 });
 	cleanups.push(() => iso.teardown());
 	return buildOrderTransitionHarness(iso.db);
+}
+
+// -- order notes harness (admin-UX Increment 0) ------------------------------
+
+/** The concrete Kysely notes store + the FixedClock the contract's `tick()`
+ *  advances — so sqlite, pg, and the fake exercise the identical append-order
+ *  spec. `CountingIdGen("note")` gives lexically-increasing ids, so the
+ *  `created_at ASC, id ASC` order the SQL emits IS append order under a fixed
+ *  clock (mirrors `buildOrderStoreHarness`'s deterministic idGen). */
+export function buildOrderNotesStoreHarness(
+	db: Kysely<Database>,
+): OrderNotesStoreHarness & { store: KyselyOrderNotesStore; clock: FixedClock } {
+	const clock = new FixedClock(new Date("2026-07-10T00:00:00.000Z"));
+	const store = new KyselyOrderNotesStore({ db, idGen: new CountingIdGen("note"), clock });
+	return { store, clock, tick: (ms: number) => clock.advance(ms) };
+}
+
+export async function makeSqliteOrderNotesStoreHarness(): Promise<OrderNotesStoreHarness> {
+	const db = makeSqliteDb(":memory:");
+	await migrateToLatest(db);
+	cleanups.push(async () => {
+		await db.destroy();
+	});
+	return buildOrderNotesStoreHarness(db);
+}
+
+export async function makePgOrderNotesStoreHarness(): Promise<
+	OrderNotesStoreHarness & { store: KyselyOrderNotesStore }
+> {
+	const connectionString = process.env.PG_CONNECTION_STRING;
+	if (connectionString === undefined) throw new Error("PG_CONNECTION_STRING is not set");
+	// poolMax ≥ N so the concurrent-replay race runs on independent connections.
+	const iso = await createIsolatedPgSchema(connectionString, { poolMax: 8 });
+	cleanups.push(() => iso.teardown());
+	return buildOrderNotesStoreHarness(iso.db);
 }

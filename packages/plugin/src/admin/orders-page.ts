@@ -15,6 +15,7 @@ import type {
 import {
 	AdminOrdersClient,
 	type OrderDetailResult,
+	type OrderNoteWire,
 	type OrderSummaryWire,
 	type OrdersListFilter,
 } from "./admin-orders-client.js";
@@ -39,6 +40,7 @@ export const ORDERS_ACTION_IDS: ReadonlySet<string> = new Set([
 	"orders:open",
 	"orders:back",
 	"orders:transition",
+	"orders:add-note",
 ]);
 
 const ACTION_APPLY_FILTER = "orders:apply-filter";
@@ -46,6 +48,7 @@ const ACTION_PAGE = "orders:page";
 const ACTION_OPEN = "orders:open";
 const ACTION_BACK = "orders:back";
 const ACTION_TRANSITION = "orders:transition";
+const ACTION_ADD_NOTE = "orders:add-note";
 
 const PAGE_LIMIT = 25;
 
@@ -132,6 +135,44 @@ export function createOrdersPageHandler(): RouteHandler<OrdersPageInput> {
 					variant: "default",
 					title: "No change",
 					description: "The order is already in that state.",
+				};
+			}
+			return renderDetail(client, orderId, notice);
+		}
+
+		// -- detail: append an order note, then re-render the detail ---------------
+		if (action === ACTION_ADD_NOTE) {
+			const values = input.values ?? {};
+			const orderId = readString(values.orderId);
+			if (orderId === undefined) return renderList(client, {});
+			const author = (readString(values.author) ?? "").trim();
+			const body = (readString(values.body) ?? "").trim();
+			// Local guard: a blank note never leaves the plugin (the domain rejects it
+			// too, but this gives immediate inline feedback without a round trip).
+			if (author.length === 0 || body.length === 0) {
+				return renderDetail(client, orderId, {
+					variant: "error",
+					title: "Note not added",
+					description: "Enter both an author and a note body.",
+				});
+			}
+			// A content-derived idempotency key: a double-submit of the same note is a
+			// no-op, but a genuinely new note (different author/body) still appends.
+			const key = `admin-note:${orderId}:${author}:${body}`;
+			const result = await client.addNote(orderId, { author, body }, { idempotencyKey: key });
+			let notice: DetailNotice | undefined;
+			if (!result.ok) {
+				notice = {
+					variant: "error",
+					title: "Note not added",
+					description:
+						"That note could not be saved — check the order and the admin token in Settings.",
+				};
+			} else if (!result.appended) {
+				notice = {
+					variant: "default",
+					title: "Already added",
+					description: "That exact note is already on this order.",
 				};
 			}
 			return renderDetail(client, orderId, notice);
@@ -313,10 +354,22 @@ async function renderDetail(
 			],
 		};
 	}
-	return { blocks: detailBlocks(detail, notice) };
+	// Notes are a SECONDARY surface: a notes-read failure must not blank the whole
+	// detail view — degrade to an empty notes section rather than fail closed.
+	let notes: OrderNoteWire[] = [];
+	try {
+		notes = await client.listNotes(orderId);
+	} catch {
+		notes = [];
+	}
+	return { blocks: detailBlocks(detail, notes, notice) };
 }
 
-function detailBlocks(detail: OrderDetailResult, notice: DetailNotice | undefined): Block[] {
+function detailBlocks(
+	detail: OrderDetailResult,
+	notes: OrderNoteWire[],
+	notice: DetailNotice | undefined,
+): Block[] {
 	const o = detail.order;
 	const blocks: Block[] = [{ type: "header", text: `Order ${o.id}` }, backButton()];
 	if (notice !== undefined) {
@@ -371,7 +424,49 @@ function detailBlocks(detail: OrderDetailResult, notice: DetailNotice | undefine
 		blocks.push({ type: "section", text: "Move status" });
 		blocks.push(transitionActions(o.id, detail.allowedTransitions));
 	}
+	// -- Notes (append-only) ---------------------------------------------------
+	blocks.push({ type: "section", text: "Notes" });
+	blocks.push(notesTable(notes));
+	blocks.push(addNoteForm(o.id));
 	return blocks;
+}
+
+/** The order's notes, oldest-first (append order). Display-only table — no in-cell
+ *  action (Block Kit tables are display-only; the add-note form below is the
+ *  write surface). */
+function notesTable(notes: OrderNoteWire[]): TableBlock {
+	return {
+		type: "table",
+		columns: [
+			{ key: "createdAt", label: "When (UTC)", format: "relative_time" },
+			{ key: "author", label: "Author" },
+			{ key: "body", label: "Note" },
+		],
+		rows: notes.map((n) => ({ createdAt: n.createdAt, author: n.author, body: n.body })),
+		page_action_id: ACTION_PAGE, // never fires: no next_cursor, no sortable column
+		empty_text: "No notes yet.",
+	};
+}
+
+/** The add-note form. The current order id rides along as a single-option
+ *  `select` (the same carry-the-id-in-values pattern as the list's open-order
+ *  form) so a stateless `form_submit` knows which order to append to. */
+function addNoteForm(orderId: string): FormBlock {
+	return {
+		type: "form",
+		fields: [
+			{
+				type: "select",
+				action_id: "orderId",
+				label: "Order",
+				options: [{ value: orderId, label: orderId }],
+				initial_value: orderId,
+			},
+			{ type: "text_input", action_id: "author", label: "Author", placeholder: "e.g. your name" },
+			{ type: "text_input", action_id: "body", label: "Note", placeholder: "Add a note…" },
+		],
+		submit: { label: "Add note", action_id: ACTION_ADD_NOTE },
+	};
 }
 
 function transitionActions(orderId: string, allowed: string[]): ActionsBlock {

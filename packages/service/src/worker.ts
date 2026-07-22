@@ -18,6 +18,7 @@ import {
 	KyselyCustomerStore,
 	KyselyEntitlementStore,
 	KyselyInventoryStore,
+	KyselyOrderNotesStore,
 	KyselyOrderStore,
 	KyselyPaymentEventStore,
 	KyselyProductCommerceStore,
@@ -271,6 +272,7 @@ export function createWorker(overrides: CreateWorkerOverrides = {}): UrumiWorker
 		const productCommerce = new KyselyProductCommerceStore({ db, clock });
 		const cartStore = new KyselyCartStore({ db, idGen: uuidIdGen, clock });
 		const orderStore = new KyselyOrderStore({ db, idGen: uuidIdGen, clock });
+		const orderNotesStore = new KyselyOrderNotesStore({ db, idGen: uuidIdGen, clock });
 		const entitlementStore = new KyselyEntitlementStore({ db, idGen: uuidIdGen, clock });
 		const paymentEventStore = new KyselyPaymentEventStore({ db, idGen: uuidIdGen });
 		// Phase 6 rules + Phase 7 reporting/settings (reporting is SQL-dialect-
@@ -296,6 +298,7 @@ export function createWorker(overrides: CreateWorkerOverrides = {}): UrumiWorker
 			productCommerce,
 			cartStore,
 			orderStore,
+			orderNotesStore,
 			entitlementStore,
 			paymentEventStore,
 			shippingRules,

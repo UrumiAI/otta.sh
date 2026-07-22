@@ -265,6 +265,15 @@ export const transitionBody = z.object({
 	toState: orderStateEnum,
 });
 
+// Admin Orders console: append an order note (admin-UX Increment 0). Author +
+// body are bounded free text; the domain use-case trims and rejects empties (a
+// blank note is meaningless), so the min here is a cheap 1-char floor and the
+// substantive validation stays in the domain.
+export const appendNoteBody = z.object({
+	author: z.string().min(1).max(200),
+	body: z.string().min(1).max(4000),
+});
+
 // Admin Orders console: view-only list query (§ admin-orders). The date window
 // is HALF-OPEN [from, to) — from inclusive, to EXCLUSIVE — deliberately DIFFERENT
 // from the reporting queries' inclusive/inclusive BETWEEN (MOD-7); the store

@@ -293,6 +293,17 @@ export interface OrderEmailsOutboxTable {
 	created_at: string;
 }
 
+/** Append-only merchant notes on an order (admin-UX Increment 0). Guarded by
+ *  `idempotency_key` UNIQUE; listed `order_id` + `created_at ASC, id ASC`. */
+export interface OrderNotesTable {
+	id: string;
+	order_id: string;
+	author: string;
+	body: string;
+	idempotency_key: string;
+	created_at: string;
+}
+
 // -- Phase 6 (§5): shipping / tax / coupons -----------------------------------
 
 /** Country/state/postal match list is opaque JSON-as-text config. */
@@ -399,6 +410,7 @@ export interface Database {
 	login_challenges: LoginChallengesTable;
 	addresses: AddressesTable;
 	order_emails_outbox: OrderEmailsOutboxTable;
+	order_notes: OrderNotesTable;
 	// Phase 6:
 	shipping_zones: ShippingZonesTable;
 	shipping_methods: ShippingMethodsTable;

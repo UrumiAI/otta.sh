@@ -78,6 +78,21 @@ export interface OrderDetailResult {
 	allowedTransitions: string[];
 }
 
+/** An append-only order note (admin-UX Increment 0) on the wire. */
+export interface OrderNoteWire {
+	id: string;
+	orderId: string;
+	author: string;
+	body: string;
+	createdAt: string;
+}
+
+/** POST add-note returns a discriminated result (like `transitionOrder`) so a
+ *  failure surfaces a GENERIC inline banner rather than throwing into the host. */
+export type AddNoteResult =
+	| { ok: true; appended: boolean; note: OrderNoteWire }
+	| { ok: false; status: number };
+
 /** POST transition returns a discriminated result (like `updateSettings`) so a
  *  failure surfaces a GENERIC inline banner rather than throwing into the host. */
 export type TransitionOrderResult =
@@ -183,6 +198,43 @@ export class AdminOrdersClient {
 		}
 		// Fail with the status only — the caller renders a GENERIC banner that never
 		// echoes a raw HTTP status/URL into the admin UI.
+		return { ok: false, status: res.status };
+	}
+
+	/** GET an order's append-only notes (admin-token guarded read). A non-2xx
+	 *  throws — the caller degrades to an empty notes surface, never a hard error. */
+	async listNotes(orderId: string): Promise<OrderNoteWire[]> {
+		const body = await this.#getJson<{ notes?: OrderNoteWire[] }>(
+			`/admin/orders/${encodeURIComponent(orderId)}/notes`,
+		);
+		return body.notes ?? [];
+	}
+
+	/** POST a new note. Gated by BOTH the admin token (X-Internal-Token) AND the
+	 *  write gate (X-Service-Token) when both service secrets are set — a non-GET,
+	 *  same as the transition. Returns a discriminated result. */
+	async addNote(
+		orderId: string,
+		note: { author: string; body: string },
+		opts: { idempotencyKey: string },
+	): Promise<AddNoteResult> {
+		const headers: Record<string, string> = {
+			"content-type": "application/json",
+			"Idempotency-Key": opts.idempotencyKey,
+		};
+		if (this.#adminToken !== undefined) headers["X-Internal-Token"] = this.#adminToken;
+		if (this.#serviceToken !== undefined) headers["X-Service-Token"] = this.#serviceToken;
+		const res = await this.#fetch(
+			`${this.#baseUrl}/admin/orders/${encodeURIComponent(orderId)}/notes`,
+			{ method: "POST", headers, body: JSON.stringify(note) },
+		);
+		const parsed = (await res.json().catch(() => undefined)) as
+			| { ok?: boolean; appended?: boolean; note?: OrderNoteWire }
+			| HttpErrorEnvelope
+			| undefined;
+		if (res.ok && parsed !== undefined && "ok" in parsed && parsed.ok === true && parsed.note) {
+			return { ok: true, appended: parsed.appended ?? true, note: parsed.note };
+		}
 		return { ok: false, status: res.status };
 	}
 

@@ -26,6 +26,7 @@ import {
 	KyselyCustomerStore,
 	KyselyEntitlementStore,
 	KyselyInventoryStore,
+	KyselyOrderNotesStore,
 	KyselyOrderStore,
 	KyselyPaymentEventStore,
 	KyselyProductCommerceStore,
@@ -110,6 +111,7 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
 	const productCommerce = new KyselyProductCommerceStore({ db, clock });
 	const cartStore = new KyselyCartStore({ db, idGen: uuidIdGen, clock });
 	const orderStore = new KyselyOrderStore({ db, idGen: uuidIdGen, clock });
+	const orderNotesStore = new KyselyOrderNotesStore({ db, idGen: uuidIdGen, clock });
 	const entitlementStore = new KyselyEntitlementStore({ db, idGen: uuidIdGen, clock });
 	const paymentEventStore = new KyselyPaymentEventStore({ db, idGen: uuidIdGen });
 	const customerStore = new KyselyCustomerStore({ db, idGen: uuidIdGen, clock });
@@ -140,6 +142,7 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
 		productCommerce,
 		cartStore,
 		orderStore,
+		orderNotesStore,
 		entitlementStore,
 		paymentEventStore,
 		shippingRules,

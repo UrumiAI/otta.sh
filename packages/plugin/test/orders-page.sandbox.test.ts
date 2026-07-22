@@ -54,6 +54,23 @@ const SUMMARY_1 = {
 	totalCents: 1500,
 	reconciliationFlag: false,
 };
+const NOTES = [
+	{
+		id: "note-1",
+		orderId: "ord-1",
+		author: "alice",
+		body: "Customer asked to gift-wrap.",
+		createdAt: "2026-07-10T01:05:00.000Z",
+	},
+	{
+		id: "note-2",
+		orderId: "ord-1",
+		author: "bob",
+		body: "Called the customer back.",
+		createdAt: "2026-07-10T01:30:00.000Z",
+	},
+];
+
 const SUMMARY_2 = {
 	id: "ord-2",
 	state: "shipped",
@@ -88,6 +105,10 @@ function makeGetResponder() {
 				body: { ok: true, orders: [SUMMARY_1, SUMMARY_2], nextCursor: "svc-cursor-1" },
 			};
 		}
+		// Order notes read (append order) — must be checked BEFORE the detail branch.
+		if (path?.endsWith("/notes")) {
+			return { status: 200, body: { ok: true, notes: NOTES } };
+		}
 		if (path?.startsWith("/admin/orders/")) {
 			return {
 				status: 200,
@@ -110,6 +131,23 @@ function makePostResponder() {
 	}): { status: number; body: unknown } => {
 		if (req.headers["x-internal-token"] === undefined) {
 			return { status: 401, body: { ok: false, error: "unauthorized" } };
+		}
+		if (req.url.includes("/notes")) {
+			const b = req.body as { author?: string; body?: string } | undefined;
+			return {
+				status: 201,
+				body: {
+					ok: true,
+					appended: true,
+					note: {
+						id: "note-new",
+						orderId: "ord-1",
+						author: b?.author ?? "",
+						body: b?.body ?? "",
+						createdAt: "2026-07-10T02:00:00.000Z",
+					},
+				},
+			};
 		}
 		if (req.url.includes("/transition")) {
 			const toState = (req.body as { toState?: string } | undefined)?.toState;
@@ -289,6 +327,73 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(banner).toBeDefined();
 		expect(banner?.variant).not.toBe("error");
 		expect(banner?.title).toBe("No change");
+	});
+
+	test("open order → detail shows the Notes section, the seeded notes, and an add-note form", async () => {
+		await boot();
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "orders:open",
+			values: { orderId: "ord-1" },
+		});
+		const blocks = blocksOf(outcome);
+		// A "Notes" section header exists.
+		expect(blocks.some((b) => b.type === "section" && b.text === "Notes")).toBe(true);
+		// The seeded notes appear in a table (append order preserved from the wire).
+		const tables = blocks.filter((b) => b.type === "table");
+		const noteRows = tables.flatMap((t) => (t.rows as Array<Record<string, unknown>>) ?? []);
+		expect(noteRows.some((r) => r.body === "Customer asked to gift-wrap.")).toBe(true);
+		expect(noteRows.some((r) => r.body === "Called the customer back.")).toBe(true);
+		// An add-note form with author + body fields whose submit fires orders:add-note.
+		const forms = blocks.filter((b) => b.type === "form");
+		const addForm = forms.find(
+			(f) => (f.submit as { action_id?: string } | undefined)?.action_id === "orders:add-note",
+		);
+		expect(addForm).toBeDefined();
+		const fieldIds = ((addForm?.fields ?? []) as Array<{ action_id?: string }>).map(
+			(f) => f.action_id,
+		);
+		expect(fieldIds).toContain("author");
+		expect(fieldIds).toContain("body");
+		expect(fieldIds).toContain("orderId"); // carries the order id into the stateless submit
+	});
+
+	test("add-note form_submit POSTs the note with Idempotency-Key + token, then re-renders detail", async () => {
+		await boot();
+		stub!.requests.length = 0;
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "orders:add-note",
+			values: { orderId: "ord-1", author: "carol", body: "Packed and shipped." },
+		});
+		const post = stub!.requests.find((r) => r.method === "POST");
+		expect(post).toBeDefined();
+		expect(post!.url).toBe("/admin/orders/ord-1/notes");
+		expect(post!.headers["idempotency-key"]).toBe("admin-note:ord-1:carol:Packed and shipped.");
+		expect(post!.headers["x-internal-token"]).toBe("admin-token-xyz");
+		expect((post!.body as { author: string; body: string }).author).toBe("carol");
+		expect((post!.body as { author: string; body: string }).body).toBe("Packed and shipped.");
+		// Re-renders the detail view (GET after the POST).
+		const blocks = blocksOf(outcome);
+		expect(blocks.some((b) => b.type === "header" && b.text === "Order ord-1")).toBe(true);
+		expect(blocks.some((b) => b.type === "section" && b.text === "Notes")).toBe(true);
+	});
+
+	test("add-note with a blank body shows an inline error and makes NO POST", async () => {
+		await boot();
+		stub!.requests.length = 0;
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "orders:add-note",
+			values: { orderId: "ord-1", author: "carol", body: "   " },
+		});
+		// No write left the plugin.
+		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
+		// Still the detail view, with an error notice.
+		const blocks = blocksOf(outcome);
+		expect(blocks.some((b) => b.type === "header" && b.text === "Order ord-1")).toBe(true);
+		const banner = blocks.find((b) => b.type === "banner" && b.variant === "error");
+		expect(banner?.title).toBe("Note not added");
 	});
 
 	test("NO-TOKEN page_load /orders fails closed with a GENERIC banner (no raw HTTP status/URL)", async () => {

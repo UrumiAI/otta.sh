@@ -193,6 +193,20 @@ export {
 	type CreateOrderFromCartResult,
 } from "./orders/create-order-from-cart.js";
 export { settleOrder, type SettleDeps, type SettleResult } from "./orders/settle-order.js";
+export type {
+	AppendOrderNoteInput,
+	AppendOrderNoteResult,
+	OrderNote,
+	OrderNotesStore,
+} from "./ports/order-notes-store.js";
+export {
+	appendOrderNote,
+	listOrderNotes,
+	type AppendNoteFailure,
+	type AppendNoteOutcome,
+	type AppendOrderNoteCommand,
+	type AppendOrderNoteDeps,
+} from "./orders/append-order-note.js";
 export { expireOrders, type ExpireOrdersDeps } from "./orders/expire-orders.js";
 export type { Clock } from "./ports/clock.js";
 export type { IdGen } from "./ports/id-gen.js";

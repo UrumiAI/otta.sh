@@ -6,6 +6,7 @@ import type {
 	EmailSender,
 	EntitlementStore,
 	IdGen,
+	OrderNotesStore,
 	OrderStore,
 	PaymentEventStore,
 	PaymentGateway,
@@ -39,6 +40,8 @@ export type AppDeps = InventoryDeps &
 		productCommerce: ProductCommerceStore;
 		// Phase 4 (§7): order/payment/entitlement stores + the payment gateways.
 		orderStore: OrderStore;
+		// Admin-UX Increment 0: append-only order notes.
+		orderNotesStore: OrderNotesStore;
 		entitlementStore: EntitlementStore;
 		paymentEventStore: PaymentEventStore;
 		// Phase 6 (§6): shipping / tax / coupon rules stores.
@@ -135,7 +138,11 @@ export function createApp(deps: AppDeps): Hono {
 	);
 	app.route(
 		"/admin",
-		adminRoutes({ orderStore: deps.orderStore, internalToken: deps.internalToken }),
+		adminRoutes({
+			orderStore: deps.orderStore,
+			orderNotesStore: deps.orderNotesStore,
+			internalToken: deps.internalToken,
+		}),
 	);
 	// Phase 6 admin CRUD (shipping/tax/coupon config) — mounted at /admin too; no
 	// path collision with /admin/orders/:id/transition.
