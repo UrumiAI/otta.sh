@@ -99,6 +99,19 @@ export async function getOrderCustomerContext(
 	// With an account: id + canonical account email (what linkGuestOrders links
 	// on). Without one: whatever keys the order itself carries — including a
 	// dangling customer_id, so a defensive degrade still counts consistently.
+	//
+	// TRUST BOUNDARY: treating buyer_ref as ownership proof is the trust
+	// assumption `linkGuestOrders` established (a magic-link login proves the
+	// inbox, then claims every order whose buyer_ref matches that email) — this
+	// use-case propagates it into a PII-surfacing ADMIN read, and it holds on
+	// the unresolved/guest path too, where NO login ever proved anything.
+	// Consequence: buyer_ref is caller-supplied at checkout, so anyone who
+	// places an order with an arbitrary email as its buyer_ref makes that order
+	// surface under that customer's context here (inflating orderCount /
+	// recentOrders). Admin-side read only — nothing customer-facing exposes
+	// this — and the same spoofed ref would be claimed by linkGuestOrders at
+	// the victim's next login anyway; but do NOT reuse this union key on any
+	// customer-facing surface without a real ownership check.
 	const key: OrderCustomerKey =
 		customer !== null
 			? { customerId: customer.id, buyerRef: customer.email }
