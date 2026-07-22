@@ -46,6 +46,17 @@ export interface TaxRulesStore {
 	 * blind replay of an applied edit is therefore reported `stale`, never
 	 * double-applied (once-only under replay). `appliesToShipping` rides along
 	 * last-writer-wins within the winning update (a boolean flag, not money).
+	 *
+	 * ABA ACCEPTED (PR #71 review, reviewer A finding 1): the CAS token is the
+	 * VALUE, not a version — if admin A reads 500, admin B edits 500→600 and then
+	 * back 600→500, A's late CAS against 500 SUCCEEDS even though the row changed
+	 * twice under A. Deliberately accepted for a low-contention, single-admin
+	 * merchant console: the ABA outcome is a rate both admins independently
+	 * endorsed as 500 (never an unreviewed value), no money invariant is at risk,
+	 * and the window requires an implausible edit-and-revert interleave. If
+	 * multi-admin contention ever materializes, the upgrade path is a
+	 * version/`updated_at` column (the #67 `expectedUpdatedAt` precedent) via a
+	 * forward-only migration — not a redesign of this port.
 	 *  - unknown `id` → `not_found` (no row minted; an edit is not a create).
 	 *  - `rate_bps != expectedRateBps` → `stale`, carrying the current row.
 	 *  - otherwise → applies + returns the updated row.

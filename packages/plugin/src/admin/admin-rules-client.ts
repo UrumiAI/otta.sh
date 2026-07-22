@@ -107,9 +107,12 @@ export interface ShippingZoneInput {
 	name: string;
 	regions?: unknown;
 }
+/** Full-replace edit — `regions` is REQUIRED (the service 400s an omitted key
+ *  so an edit can never silently wipe the zone's match list); send `null` to
+ *  clear deliberately. */
 export interface ShippingZoneEdit {
 	name: string;
-	regions?: unknown;
+	regions: unknown;
 }
 export interface ShippingMethodInput {
 	id: string;
@@ -125,9 +128,12 @@ export interface ShippingRateInput {
 	amountCents: number;
 	minSubtotalCents?: number | null;
 }
+/** Full-replace edit — `minSubtotalCents` is REQUIRED-nullable (the service
+ *  400s an omitted key so an edit can never silently clear the free-shipping
+ *  threshold); send `null` to clear deliberately. */
 export interface ShippingRateEdit {
 	amountCents: number;
-	minSubtotalCents?: number | null;
+	minSubtotalCents: number | null;
 	/** The money-bearing CAS token — the amount the admin read on the detail. */
 	expectedAmountCents: number;
 }
@@ -142,9 +148,11 @@ export interface TaxRateInput {
 	rateBps: number;
 	appliesToShipping?: boolean;
 }
+/** Full-replace edit — `appliesToShipping` is REQUIRED (the service 400s an
+ *  omitted key so an edit can never silently flip the shipping-tax behavior). */
 export interface TaxRateEdit {
 	rateBps: number;
-	appliesToShipping?: boolean;
+	appliesToShipping: boolean;
 	/** The money-bearing CAS token — the rate the admin read on the detail. */
 	expectedRateBps: number;
 }

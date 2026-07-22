@@ -109,6 +109,18 @@ export function shippingRulesStoreContract(
 			});
 		});
 
+		test("updateZone is idempotent under replay (set-values, not deltas)", async () => {
+			const { store } = await makeStore();
+			await store.createZone({ id: "z-us", name: "US", regions: ["US"] });
+			const edit = { name: "United States", regions: ["US", "PR"] };
+			const first = await store.updateZone("z-us", edit);
+			const replay = await store.updateZone("z-us", edit);
+			expect(first.ok && replay.ok).toBe(true);
+			if (!first.ok || !replay.ok) return;
+			expect(replay.zone).toEqual(first.zone); // same row, no drift on re-apply
+			expect((await store.getZone("z-us"))?.regions).toEqual(["US", "PR"]);
+		});
+
 		test("deleteZone is forbidden while a method still references it (in_use_by_methods)", async () => {
 			const { store } = await makeStore();
 			await seedZoneMethodRate(store);
@@ -140,6 +152,19 @@ export function shippingRulesStoreContract(
 				ok: false,
 				reason: "not_found",
 			});
+		});
+
+		test("updateMethod is idempotent under replay (set-values, not deltas)", async () => {
+			const { store } = await makeStore();
+			await store.createZone({ id: "z-us", name: "US", regions: null });
+			await store.createMethod({ id: "m-flat", zoneId: "z-us", name: "Flat", type: "flat_rate" });
+			const edit = { name: "Standard", type: "free_shipping" as const };
+			const first = await store.updateMethod("m-flat", edit);
+			const replay = await store.updateMethod("m-flat", edit);
+			expect(first.ok && replay.ok).toBe(true);
+			if (!first.ok || !replay.ok) return;
+			expect(replay.method).toEqual(first.method); // same row, no drift on re-apply
+			expect((await store.getMethod("m-flat"))?.type).toBe("free_shipping");
 		});
 
 		test("deleteMethod is forbidden while a rate still references it (in_use_by_rates)", async () => {

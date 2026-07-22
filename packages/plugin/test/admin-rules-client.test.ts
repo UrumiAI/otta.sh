@@ -36,18 +36,23 @@ describe.skipIf(PG === undefined)("AdminRulesClient [live @urumi/service, Postgr
 		).toBe(true);
 		expect((await client.createRate("m1", { currency: "USD", amountCents: 599 })).ok).toBe(true);
 
-		// LWW zone edit round-trips.
-		const zoneEdit = await client.updateZone("z1", { name: "United States" });
+		// LWW zone edit round-trips (`regions` is a required full-replace field).
+		const zoneEdit = await client.updateZone("z1", { name: "United States", regions: ["US"] });
 		expect(zoneEdit.ok && zoneEdit.value.name).toBe("United States");
 
 		// A zone with a method cannot be deleted.
 		expect(await client.deleteZone("z1")).toEqual({ ok: false, reason: "in_use" });
 
 		// CAS rate edit: correct expected wins; a stale expected returns the fresh row.
-		const ok = await client.updateRate("m1", "USD", { amountCents: 699, expectedAmountCents: 599 });
+		const ok = await client.updateRate("m1", "USD", {
+			amountCents: 699,
+			minSubtotalCents: null,
+			expectedAmountCents: 599,
+		});
 		expect(ok.ok && ok.value.amountCents).toBe(699);
 		const stale = await client.updateRate("m1", "USD", {
 			amountCents: 799,
+			minSubtotalCents: null,
 			expectedAmountCents: 599,
 		});
 		expect(stale.ok).toBe(false);
@@ -74,11 +79,25 @@ describe.skipIf(PG === undefined)("AdminRulesClient [live @urumi/service, Postgr
 		const rates = await client.listTaxRates("z1");
 		expect(rates.map((r) => r.id)).toContain("t1");
 
-		const ok = await client.updateTaxRate("t1", { rateBps: 825, expectedRateBps: 725 });
+		const ok = await client.updateTaxRate("t1", {
+			rateBps: 825,
+			appliesToShipping: false,
+			expectedRateBps: 725,
+		});
 		expect(ok.ok && ok.value.rateBps).toBe(825);
-		const stale = await client.updateTaxRate("t1", { rateBps: 900, expectedRateBps: 725 });
+		const stale = await client.updateTaxRate("t1", {
+			rateBps: 900,
+			appliesToShipping: false,
+			expectedRateBps: 725,
+		});
 		expect(stale.ok === false && stale.reason).toBe("stale");
-		expect(await client.updateTaxRate("nope", { rateBps: 1, expectedRateBps: 0 })).toEqual({
+		expect(
+			await client.updateTaxRate("nope", {
+				rateBps: 1,
+				appliesToShipping: false,
+				expectedRateBps: 0,
+			}),
+		).toEqual({
 			ok: false,
 			reason: "not_found",
 		});

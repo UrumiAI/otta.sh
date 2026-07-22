@@ -197,6 +197,9 @@ export function rulesAdminRoutes(deps: RulesAdminDeps): Hono {
 		if (!parsed.success) return c.json({ error: "invalid request body" }, 400);
 		const res = await deps.shippingRules.updateZone(params.data.zoneId, {
 			name: parsed.data.name,
+			// Presence is enforced by the schema's refine (omission ⇒ 400); the `??
+			// null` only appeases `z.unknown()`'s optional-looking inferred type —
+			// JSON cannot carry `undefined`, so it never fires at runtime.
 			regions: parsed.data.regions ?? null,
 		});
 		if (res.ok) return c.json({ ok: true, zone: res.zone }, 200);
@@ -252,10 +255,10 @@ export function rulesAdminRoutes(deps: RulesAdminDeps): Hono {
 			toCurrency(params.data.currency),
 			{
 				amountCents: cents(parsed.data.amountCents),
+				// Required-nullable on the wire (schema doc): null clears, a number sets
+				// — omission was already a 400 at the boundary.
 				minSubtotalCents:
-					parsed.data.minSubtotalCents === null || parsed.data.minSubtotalCents === undefined
-						? null
-						: cents(parsed.data.minSubtotalCents),
+					parsed.data.minSubtotalCents === null ? null : cents(parsed.data.minSubtotalCents),
 			},
 			cents(parsed.data.expectedAmountCents),
 		);
@@ -288,7 +291,9 @@ export function rulesAdminRoutes(deps: RulesAdminDeps): Hono {
 		if (!parsed.success) return c.json({ error: "invalid request body" }, 400);
 		const res = await deps.taxRules.updateRate(
 			params.data.rateId,
-			{ rateBps: parsed.data.rateBps, appliesToShipping: parsed.data.appliesToShipping ?? false },
+			// `appliesToShipping` is REQUIRED on the wire (schema doc) — no silent
+			// default here; omission was already a 400 at the boundary.
+			{ rateBps: parsed.data.rateBps, appliesToShipping: parsed.data.appliesToShipping },
 			parsed.data.expectedRateBps,
 		);
 		if (res.ok) return c.json({ ok: true, rate: res.rate }, 200);

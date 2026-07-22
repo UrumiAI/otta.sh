@@ -76,6 +76,11 @@ export interface ShippingRulesStore {
 	 * silent clobber — a wrong shipping fee is money-affecting (CLAUDE.md). A blind
 	 * replay is reported `stale`, never double-applied. `minSubtotalCents` rides
 	 * along last-writer-wins within the winning update (a threshold, not the fee).
+	 *
+	 * ABA ACCEPTED: the CAS token is the VALUE, not a version — admin A reads
+	 * 500, admin B edits 500→600→500, A's late CAS against 500 succeeds. Same
+	 * deliberate acceptance (and same version-column upgrade path) as
+	 * `TaxRulesStore.updateRate` — see that doc for the full rationale.
 	 *  - unknown `(methodId, currency)` → `not_found`.
 	 *  - `amount_cents != expectedAmountCents` → `stale`, carrying the current row.
 	 *  - otherwise → applies + returns the updated row.

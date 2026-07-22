@@ -135,10 +135,19 @@ export const couponCodePathParams = z.object({ code: z.string().min(1).max(200) 
 // path param, never the body (a zone/method/rate/coupon id is immutable).
 
 // Shipping zone edit — LWW, no CAS (structural, money-free); `id` is the path.
-export const shippingZoneUpdateBody = z.object({
-	name: z.string().min(1).max(200),
-	regions: z.unknown().optional(),
-});
+// `regions` is REQUIRED-PRESENT (PR #71 review, reviewer B finding 1): the
+// port's `UpdateShippingZoneInput.regions` is a required full-replace field, so
+// an OMITTED key must be a 400 — never a silent wipe-to-null. Pass an explicit
+// `null` to clear. (`z.unknown()` alone treats an absent key as valid, hence
+// the presence refine.)
+export const shippingZoneUpdateBody = z
+	.object({
+		name: z.string().min(1).max(200),
+		regions: z.unknown(),
+	})
+	.refine((o) => Object.hasOwn(o, "regions"), {
+		message: "regions is required (pass null to clear)",
+	});
 
 // Shipping method edit — LWW; `zoneId` is immutable identity, never edited here.
 export const shippingMethodUpdateBody = z.object({
@@ -150,18 +159,27 @@ export const shippingMethodUpdateBody = z.object({
 // `expectedAmountCents` is the price the admin read; the store compare-and-sets
 // on it (a concurrent edit surfaces as a 409 stale reload, never a silent
 // clobber). `(methodId, currency)` is the rate's identity — both path params.
+// `minSubtotalCents` is REQUIRED (nullable, not optional — PR #71 review,
+// reviewer B finding 1): the port's `UpdateShippingRateInput.minSubtotalCents`
+// is a required full-replace field, so an omitted key is a 400 — never a silent
+// clear of the free-shipping threshold. Send `null` explicitly to clear it.
 export const shippingRateUpdateBody = z.object({
 	amountCents: z.number().int().nonnegative(),
-	minSubtotalCents: z.number().int().nonnegative().nullable().optional(),
+	minSubtotalCents: z.number().int().nonnegative().nullable(),
 	expectedAmountCents: z.number().int().nonnegative(),
 });
 
 // Tax rate edit — OPTIMISTIC CAS on the money-bearing `rateBps`
 // (`expectedRateBps` = the rate the admin read). `(taxClassId, zoneId)` identity
 // is immutable; the rate is addressed by its `id` path param.
+// `appliesToShipping` is REQUIRED (PR #71 review, reviewer B finding 1): the
+// port's `UpdateTaxRateInput.appliesToShipping` is a required full-replace
+// field, so an omitted key is a 400 — never a silent flip of the shipping-tax
+// behavior to false. (The CREATE body's optional-default-false is different:
+// there is no prior value to clobber at creation.)
 export const taxRateUpdateBody = z.object({
 	rateBps: z.number().int().min(0).max(100_000),
-	appliesToShipping: z.boolean().optional(),
+	appliesToShipping: z.boolean(),
 	expectedRateBps: z.number().int().min(0).max(100_000),
 });
 
@@ -169,6 +187,12 @@ export const taxRateUpdateBody = z.object({
 // `code`/`type`/`currency` are immutable identity/kind and are NOT editable; a
 // full replacement of the economics/window (undefined ⇒ cleared to null, the
 // LWW set-semantics). Addressed by `couponId` (the path param).
+// DELIBERATELY all-optional (the one intentional omit-⇒-null partial, PR #71
+// review): every field here is nullable in the port — "absent" and "null" both
+// mean "this coupon axis is unset" (a fixed-amount coupon has no rateBps, no
+// window ⇒ no window), so omit-⇒-clear IS the full-replace semantics, unlike
+// the zone/rate bodies above where an omitted required field would silently
+// destroy meaningful config.
 export const couponUpdateBody = z.object({
 	amountCents: z.number().int().nonnegative().nullable().optional(),
 	rateBps: z.number().int().min(0).max(100_000).nullable().optional(),
