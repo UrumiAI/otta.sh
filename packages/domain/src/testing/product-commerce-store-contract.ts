@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import { cents, currency, money } from "../money/cents.js";
 import { idempotencyKey, productId, sku } from "../money/ids.js";
 import { MissingProductIdError, SkuConflictError } from "../product-commerce/errors.js";
-import type { ProductCommerceStore } from "../ports/product-commerce-store.js";
+import type { ProductCommerce, ProductCommerceStore } from "../ports/product-commerce-store.js";
 import type { SeedProductSummaryRow } from "./in-memory-product-commerce-store.js";
 
 export interface ProductCommerceStoreHarness {
@@ -17,6 +17,25 @@ export interface ProductCommerceStoreHarness {
 	 *  the Kysely harness inserts a real row — so fake, sqlite, and pg exercise
 	 *  the identical `listProducts` spec (mirrors `OrderStoreHarness.seedOrder`). */
 	seedProduct(row: SeedProductSummaryRow): Promise<void>;
+}
+
+/** Seed a priced live product via upsert; return its post-seed row (its
+ *  `updatedAt` is the compare-and-set watermark a guarded edit passes back). */
+function seedEditable(
+	h: ProductCommerceStoreHarness,
+	id: string,
+	overrides: Partial<{ sku: string; priceCents: number; currency: string; title: string }> = {},
+): Promise<ProductCommerce> {
+	return h.store.upsert(
+		{
+			productId: productId(id),
+			sku: sku(overrides.sku ?? `SKU-${id}`),
+			price: money(cents(overrides.priceCents ?? 1000), currency(overrides.currency ?? "USD")),
+			title: overrides.title ?? `Product ${id}`,
+			productKind: "physical",
+		},
+		idempotencyKey(`seed-${id}`),
+	);
 }
 
 /** A summary-row seed with sensible defaults; overridable per admin-list case. */
@@ -190,6 +209,183 @@ export function productCommerceStoreContract(
 			const h = await makeStore();
 			await h.store.softDelete(productId("does-not-exist"), idempotencyKey("del-1"));
 			expect(await h.store.getByProductId(productId("does-not-exist"))).toBeNull();
+		});
+
+		// -- updateCommerceFields (guarded admin edit, admin-UX Increment 2) -----
+
+		test("updateCommerceFields applies a commerce edit when expectedUpdatedAt matches", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-edit-1");
+			const seeded = await seedEditable(h, "prod-edit-1", { priceCents: 1000 });
+
+			const res = await h.store.updateCommerceFields(
+				{ productId: pid, price: money(cents(2599), currency("USD")), title: "Renamed" },
+				idempotencyKey("edit-1"),
+				seeded.updatedAt.toISOString(),
+			);
+
+			expect(res.ok).toBe(true);
+			const row = await h.store.getByProductId(pid);
+			expect(row?.price).toEqual({ amount: 2599, currency: "USD" });
+			expect(row?.title).toBe("Renamed");
+			// The last-applied replay key advanced to the edit's key.
+			expect(row?.idempotencyKey).toBe("edit-1");
+		});
+
+		test("updateCommerceFields preserves untouched fields (partial update); null clears", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-edit-partial");
+			const seeded = await seedEditable(h, "prod-edit-partial", { title: "Keep me" });
+
+			const res = await h.store.updateCommerceFields(
+				{ productId: pid, taxClass: "reduced", weightGrams: null },
+				idempotencyKey("edit-1"),
+				seeded.updatedAt.toISOString(),
+			);
+
+			expect(res.ok).toBe(true);
+			const row = await h.store.getByProductId(pid);
+			expect(row?.title).toBe("Keep me"); // untouched ⇒ preserved.
+			expect(row?.taxClass).toBe("reduced");
+			expect(row?.weightGrams).toBeNull();
+			expect(row?.price).toEqual({ amount: 1000, currency: "USD" }); // untouched.
+		});
+
+		test("updateCommerceFields is an idempotent replay under the same key (stale guard never fires)", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-edit-replay");
+			const seeded = await seedEditable(h, "prod-edit-replay");
+
+			const first = await h.store.updateCommerceFields(
+				{ productId: pid, title: "Once" },
+				idempotencyKey("edit-1"),
+				seeded.updatedAt.toISOString(),
+			);
+			expect(first.ok).toBe(true);
+
+			// A retry with the SAME key but a now-stale expectedUpdatedAt must still
+			// dedupe to ok — replay precedence over the CAS (a double-submit).
+			const replay = await h.store.updateCommerceFields(
+				{ productId: pid, title: "Once" },
+				idempotencyKey("edit-1"),
+				"2000-01-01T00:00:00.000Z",
+			);
+			expect(replay).toEqual({ ok: true, product: await h.store.getByProductId(pid) });
+		});
+
+		test("updateCommerceFields returns stale (with the current row) when expectedUpdatedAt mismatches", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-edit-stale");
+			await seedEditable(h, "prod-edit-stale");
+
+			const res = await h.store.updateCommerceFields(
+				{ productId: pid, title: "loser" },
+				idempotencyKey("edit-1"),
+				"2000-01-01T00:00:00.000Z", // an admin who loaded an older revision.
+			);
+
+			expect(res.ok).toBe(false);
+			if (res.ok) throw new Error("unreachable");
+			expect(res.reason).toBe("stale");
+			if (res.reason !== "stale") throw new Error("unreachable");
+			expect(res.current).toEqual(await h.store.getByProductId(pid));
+			// The losing write never landed.
+			expect((await h.store.getByProductId(pid))?.title).toBe("Product prod-edit-stale");
+		});
+
+		test("updateCommerceFields returns not_found for an unknown product_id (never mints a row)", async () => {
+			const h = await makeStore();
+			const res = await h.store.updateCommerceFields(
+				{ productId: productId("nope"), title: "x" },
+				idempotencyKey("edit-1"),
+				"2026-07-10T00:00:00.000Z",
+			);
+			expect(res).toEqual({ ok: false, reason: "not_found" });
+			expect(await h.store.getByProductId(productId("nope"))).toBeNull();
+		});
+
+		test("updateCommerceFields returns not_found for a soft-deleted product", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-edit-deleted");
+			const seeded = await seedEditable(h, "prod-edit-deleted");
+			await h.store.softDelete(pid, idempotencyKey("del-1"));
+
+			const res = await h.store.updateCommerceFields(
+				{ productId: pid, title: "resurrect?" },
+				idempotencyKey("edit-1"),
+				seeded.updatedAt.toISOString(),
+			);
+			expect(res).toEqual({ ok: false, reason: "not_found" });
+		});
+
+		test("updateCommerceFields rejects a silent currency switch on an already-priced product", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-edit-cur");
+			const seeded = await seedEditable(h, "prod-edit-cur", { priceCents: 1000, currency: "USD" });
+
+			const res = await h.store.updateCommerceFields(
+				{ productId: pid, price: money(cents(1000), currency("EUR")) },
+				idempotencyKey("edit-1"),
+				seeded.updatedAt.toISOString(),
+			);
+
+			expect(res.ok).toBe(false);
+			if (res.ok) throw new Error("unreachable");
+			expect(res.reason).toBe("currency_mismatch");
+			// The stored price/currency is untouched.
+			expect((await h.store.getByProductId(pid))?.price).toEqual({ amount: 1000, currency: "USD" });
+		});
+
+		test("updateCommerceFields accepts any currency when first pricing an unpriced row", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-edit-firstprice");
+			// A "create then price" row: exists, but no price/currency yet.
+			const seeded = await h.store.upsert(
+				{ productId: pid, title: "Unpriced" },
+				idempotencyKey("seed-fp"),
+			);
+
+			const res = await h.store.updateCommerceFields(
+				{ productId: pid, price: money(cents(4200), currency("EUR")) },
+				idempotencyKey("edit-1"),
+				seeded.updatedAt.toISOString(),
+			);
+
+			expect(res.ok).toBe(true);
+			expect((await h.store.getByProductId(pid))?.price).toEqual({ amount: 4200, currency: "EUR" });
+		});
+
+		test("updateCommerceFields surfaces a live-SKU collision as SkuConflictError", async () => {
+			const h = await makeStore();
+			await seedEditable(h, "prod-A", { sku: "SKU-SHARED" });
+			const b = await seedEditable(h, "prod-B", { sku: "SKU-B" });
+
+			await expect(
+				h.store.updateCommerceFields(
+					{ productId: productId("prod-B"), sku: sku("SKU-SHARED") },
+					idempotencyKey("edit-1"),
+					b.updatedAt.toISOString(),
+				),
+			).rejects.toBeInstanceOf(SkuConflictError);
+		});
+
+		test("updateCommerceFields never touches the publish gate (active) or the tombstone", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-edit-active");
+			await seedEditable(h, "prod-edit-active");
+			await h.store.activate(pid, idempotencyKey("pub-1"), WM);
+			const active = await h.store.getByProductId(pid);
+			expect(active?.active).toBe(true);
+
+			const res = await h.store.updateCommerceFields(
+				{ productId: pid, title: "still active" },
+				idempotencyKey("edit-1"),
+				active!.updatedAt.toISOString(),
+			);
+			expect(res.ok).toBe(true);
+			const after = await h.store.getByProductId(pid);
+			expect(after?.active).toBe(true); // untouched.
+			expect(after?.deletedAt).toBeNull();
 		});
 
 		// -- activate (the afterPublish→activate follow-up) ---------------------

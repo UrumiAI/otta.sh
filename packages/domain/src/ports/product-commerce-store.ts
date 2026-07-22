@@ -128,6 +128,58 @@ export interface UpsertProductCommerceInput {
 	contentUpdatedAt?: string;
 }
 
+/**
+ * The commerce fields a standalone admin EDIT page may update (admin-UX
+ * Increment 2, slice 2 — the product edit surface). A STRICT SUBSET of
+ * `UpsertProductCommerceInput`: only the fields our commerce domain OWNS.
+ * Deliberately EXCLUDES:
+ *  - `productId` — the CMS content link key (§4); identity, threaded as the
+ *    target, never an editable field.
+ *  - `active` — the CMS PUBLISH GATE, owned by `content:afterPublish` /
+ *    `content:afterUnpublish` (→ `activate`/`deactivate`). A merchant toggle
+ *    here would be silently overwritten by the next publish/unpublish sync, so
+ *    `active` is NOT a domain-owned editable field — it is edited by publishing
+ *    the CMS document, not on this page.
+ *  - `contentUpdatedAt` — a CMS-sync ordering watermark, never merchant intent.
+ * Partial-update grain matches `upsert`: `undefined` PRESERVES the stored value,
+ * an explicit `null` CLEARS a nullable field. `sku`/`price` cannot be cleared
+ * to null once set (no "unprice" case in scope). A raw `number` price is a
+ * compile error — `price.amount` is branded `Cents`.
+ */
+export interface UpdateProductCommerceFieldsInput {
+	productId: ProductId;
+	sku?: Sku;
+	price?: Money;
+	title?: string | null;
+	taxClass?: string | null;
+	weightGrams?: number | null;
+	lengthMm?: number | null;
+	widthMm?: number | null;
+	heightMm?: number | null;
+	productKind?: ProductKind;
+}
+
+/**
+ * Outcome of a guarded admin edit (`ProductCommerceStore.updateCommerceFields`).
+ * A discriminated union rather than a bare row so the admin plugin renders each
+ * case without status-code-as-logic:
+ *  - `ok` — applied (or a same-key replay no-op), carrying the current row.
+ *  - `not_found` — no LIVE row for this `product_id` (unknown or soft-deleted);
+ *    an edit is not a create (that is `upsert`'s job), so no row is minted.
+ *  - `stale` — the optimistic compare-and-set on `updatedAt` failed: another
+ *    writer (a second admin edit, a CMS sync, a publish flip) changed the row
+ *    since the admin loaded the detail. `current` is the fresh row to reload.
+ *  - `currency_mismatch` — a `price` update tried to change the currency of an
+ *    already-priced product; `current` carries the stored row. Currency is an
+ *    integrity axis, NEVER silently switched by a price edit (CLAUDE.md money
+ *    rule); a deliberate re-currency is out of scope for this slice.
+ */
+export type ProductCommerceUpdateResult =
+	| { ok: true; product: ProductCommerce }
+	| { ok: false; reason: "not_found" }
+	| { ok: false; reason: "stale"; current: ProductCommerce }
+	| { ok: false; reason: "currency_mismatch"; current: ProductCommerce };
+
 /** The stored row (Phase 1 §4 schema), as read back from a store. */
 export interface ProductCommerce {
 	productId: ProductId;
@@ -235,6 +287,42 @@ export interface ProductCommerceStore {
 	 *  replay with the same key (or an already-deleted / unknown row) is a
 	 *  no-op. */
 	softDelete(productId: ProductId, key: IdempotencyKey): Promise<void>;
+	/**
+	 * Guarded admin EDIT of the commerce-owned fields (admin-UX Increment 2,
+	 * slice 2 — the standalone product edit page). UNLIKE `upsert` (a CMS-sync /
+	 * field-widget insert-or-update, last-writer-wins), this is an EDIT of an
+	 * EXISTING live product under an OPTIMISTIC compare-and-set on `updatedAt`
+	 * (the `OrderStore` `expectedFlag` compare-and-set precedent). Guard order —
+	 * MUST be identical in every adapter (contract-pinned):
+	 *  1. Idempotent replay FIRST: if the stored `idempotency_key` equals `key`,
+	 *     the edit already applied — a no-op returning the stored row as `ok`. A
+	 *     double-submit dedupes, and the stale guard never fires on a replay even
+	 *     though `updatedAt` has since advanced.
+	 *  2. Unknown or soft-deleted `product_id` → `not_found` (never mints a row —
+	 *     an edit is not a create; that is `upsert`'s job).
+	 *  3. `updatedAt` (ISO-8601 text) != `expectedUpdatedAt` → `stale`, carrying
+	 *     the current row: another edit/sync/lifecycle write landed since the
+	 *     admin loaded the detail. The lost-update guard — the deliberate
+	 *     DIVERGENCE from `upsert`'s accepted last-writer-wins panel semantics.
+	 *  4. a `price` whose currency differs from the STORED price's currency (only
+	 *     when a price is already set) → `currency_mismatch`: a price edit must
+	 *     never silently switch currency (CLAUDE.md money rule). A first pricing
+	 *     (stored price null) accepts any currency.
+	 *  5. otherwise → applies the partial update, stamps `key` as the row's
+	 *     last-applied replay key, bumps `updatedAt`, returns the updated row.
+	 * NEVER touches `active`/`deletedAt`/`contentUpdatedAt`/`active_updated_at`
+	 * (the publish-gate + sync axes; a commerce edit is orthogonal to them). A
+	 * live-SKU collision throws `SkuConflictError` — the same partial-index guard
+	 * `upsert` surfaces. `expectedUpdatedAt` is the `updatedAt` the admin read on
+	 * the detail (strict `Date.toISOString()` form — the wire round-trips it
+	 * unchanged), compared as raw ISO text (lexical = chronological) on both
+	 * dialects.
+	 */
+	updateCommerceFields(
+		input: UpdateProductCommerceFieldsInput,
+		key: IdempotencyKey,
+		expectedUpdatedAt: string,
+	): Promise<ProductCommerceUpdateResult>;
 	/**
 	 * The afterPublish→activate follow-up (Phase 1 §4/§6 step 7, deferred at
 	 * the time `upsert`/`softDelete` landed — this is that task): flips a LIVE

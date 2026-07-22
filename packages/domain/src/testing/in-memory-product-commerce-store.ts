@@ -4,12 +4,14 @@ import type { Clock } from "../ports/clock.js";
 import type {
 	ProductCommerce,
 	ProductCommerceStore,
+	ProductCommerceUpdateResult,
 	ProductCommerceView,
 	ProductKind,
 	ProductListFilter,
 	ProductListPage,
 	ProductListResult,
 	ProductSummary,
+	UpdateProductCommerceFieldsInput,
 	UpsertProductCommerceInput,
 } from "../ports/product-commerce-store.js";
 import { MissingProductIdError, SkuConflictError } from "../product-commerce/errors.js";
@@ -182,6 +184,59 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 
 	async getByProductId(productId: ProductId): Promise<ProductCommerce | null> {
 		return this.#rows.get(productId) ?? null;
+	}
+
+	/**
+	 * Guarded admin edit (port doc): optimistic compare-and-set on `updatedAt`
+	 * with the EXACT guard order the Kysely store mirrors — idempotent replay,
+	 * then not_found (missing / soft-deleted), then stale (updatedAt CAS), then
+	 * currency integrity, then apply. NEVER touches active/deletedAt/watermarks.
+	 */
+	async updateCommerceFields(
+		input: UpdateProductCommerceFieldsInput,
+		key: IdempotencyKey,
+		expectedUpdatedAt: string,
+	): Promise<ProductCommerceUpdateResult> {
+		const existing = this.#rows.get(input.productId);
+		// 1. Replay FIRST: a same-key retry is a no-op even after updatedAt moved.
+		if (existing !== undefined && existing.idempotencyKey === key) {
+			return { ok: true, product: existing };
+		}
+		// 2. An edit is not a create: unknown / soft-deleted ⇒ not_found.
+		if (existing === undefined || existing.deletedAt !== null) {
+			return { ok: false, reason: "not_found" };
+		}
+		// 3. Optimistic CAS on updatedAt (ISO text): a mismatch means another
+		//    writer moved the row since the admin loaded it.
+		if (existing.updatedAt.toISOString() !== expectedUpdatedAt) {
+			return { ok: false, reason: "stale", current: existing };
+		}
+		// 4. Currency integrity: a price edit never silently switches currency.
+		if (
+			input.price !== undefined &&
+			existing.price !== null &&
+			existing.price.currency !== input.price.currency
+		) {
+			return { ok: false, reason: "currency_mismatch", current: existing };
+		}
+		// 5. Apply. Live-sku collisions throw SkuConflictError, exactly like upsert.
+		this.#assertLiveSkuFree(input);
+		const updated: ProductCommerce = {
+			...existing,
+			sku: input.sku !== undefined ? input.sku : existing.sku,
+			price: input.price !== undefined ? input.price : existing.price,
+			title: input.title !== undefined ? input.title : existing.title,
+			taxClass: input.taxClass !== undefined ? input.taxClass : existing.taxClass,
+			weightGrams: input.weightGrams !== undefined ? input.weightGrams : existing.weightGrams,
+			lengthMm: input.lengthMm !== undefined ? input.lengthMm : existing.lengthMm,
+			widthMm: input.widthMm !== undefined ? input.widthMm : existing.widthMm,
+			heightMm: input.heightMm !== undefined ? input.heightMm : existing.heightMm,
+			productKind: input.productKind ?? existing.productKind,
+			idempotencyKey: key,
+			updatedAt: this.#clock.now(),
+		};
+		this.#rows.set(input.productId, updated);
+		return { ok: true, product: updated };
 	}
 
 	/**

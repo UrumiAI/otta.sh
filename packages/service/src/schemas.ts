@@ -218,6 +218,42 @@ export const lifecycleProductCommerceBody = z.object({
 
 export type LifecycleProductCommerceBody = z.infer<typeof lifecycleProductCommerceBody>;
 
+// Standalone admin product EDIT (admin-UX Increment 2, slice 2). A SUBSET of
+// `upsertProductCommerceBody` — the commerce-owned, merchant-editable fields
+// only — plus the REQUIRED optimistic-concurrency watermark `expectedUpdatedAt`
+// (the `updatedAt` the admin read on the detail; the store compare-and-sets on
+// it, so a concurrent edit surfaces as a 409 stale reload rather than a silent
+// clobber). Deliberately OMITS `active` (the CMS publish gate — edited by
+// publishing the document, not here), `contentUpdatedAt` / `initialOnHand`
+// (sync + create-time concerns), and `productId` (the path param). Money stays
+// an integer minor-units + ISO-4217 pair; `price.amount` is `.positive()` here
+// (a $0 edit is rejected — the domain's `price > 0` rule, mirrored so the
+// boundary 400s before the use-case throws).
+export const editProductCommerceBody = z.object({
+	expectedUpdatedAt: z
+		.string()
+		.regex(
+			/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/,
+			"expectedUpdatedAt must be a Date.toISOString()-format UTC timestamp",
+		),
+	sku: z.string().min(1).optional(),
+	price: z
+		.object({
+			amount: z.number().int().positive(),
+			currency: z.string().regex(/^[A-Z]{3}$/),
+		})
+		.optional(),
+	title: z.string().min(1).max(500).nullable().optional(),
+	taxClass: z.string().nullable().optional(),
+	weightGrams: z.number().int().nonnegative().nullable().optional(),
+	lengthMm: z.number().int().nonnegative().nullable().optional(),
+	widthMm: z.number().int().nonnegative().nullable().optional(),
+	heightMm: z.number().int().nonnegative().nullable().optional(),
+	productKind: z.enum(["physical", "digital"]).optional(),
+});
+
+export type EditProductCommerceBody = z.infer<typeof editProductCommerceBody>;
+
 // Catalog batch read (Phase 2 §6): ids are opaque tokens, same charset/bound
 // discipline as the cart path params; the array-length cap is the endpoint's
 // request-size guard (COMMERCE_BATCH_ID_CAP in routes/catalog.ts — kept in
