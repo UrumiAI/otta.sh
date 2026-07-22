@@ -95,6 +95,8 @@ export {
 	type ReserveResult,
 } from "./ports/inventory-store.js";
 export type {
+	CancelOrderInput,
+	CancelOrderStoreResult,
 	CreateOrderInput,
 	CreateOrderLineInput,
 	CreateOrderResult,
@@ -183,8 +185,10 @@ export type {
 	X402Proof,
 } from "./ports/payment-gateway.js";
 export type {
+	CancellationReason,
 	FulfillmentKind,
 	Order,
+	OrderCancellation,
 	OrderFulfillment,
 	OrderLine,
 	OrderTotals,
@@ -229,6 +233,13 @@ export {
 	type RecordFulfillmentFailure,
 	type RecordFulfillmentOutcome,
 } from "./orders/record-fulfillment.js";
+export {
+	cancelOrder,
+	type CancelOrderCommand,
+	type CancelOrderDeps,
+	type CancelOrderFailure,
+	type CancelOrderOutcome,
+} from "./orders/cancel-order.js";
 export {
 	DEFAULT_RECENT_ORDERS_LIMIT,
 	getOrderCustomerContext,

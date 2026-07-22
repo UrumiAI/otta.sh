@@ -318,6 +318,30 @@ export const recordFulfillmentBody = z.object({
 	recordedBy: z.string().min(1).max(200),
 });
 
+/** The five structured cancellation reasons (admin-UX Increment 1, "cancel with
+ *  reason") — the wire bound mirrors the domain `CancellationReason`. The
+ *  domain owns the legality (an order must actually be cancellable); this only
+ *  bounds the wire value. */
+export const cancellationReasonEnum = z.enum([
+	"customer_request",
+	"fraud_suspected",
+	"out_of_stock",
+	"pricing_error",
+	"other",
+]);
+
+// Admin Orders console: cancel an order with a structured reason (admin-UX
+// Increment 1). `reason` is the closed enum; `detail` is optional bounded free
+// text (the domain trims + normalizes a blank to null); `cancelledBy` is
+// bounded free text — the domain use-case trims and rejects an empty value, so
+// the 1-char floor here is cheap and the substantive validation stays in the
+// domain.
+export const cancelOrderBody = z.object({
+	reason: cancellationReasonEnum,
+	detail: z.string().max(4000).nullable().optional(),
+	cancelledBy: z.string().min(1).max(200),
+});
+
 // Admin Orders console: view-only list query (§ admin-orders). The date window
 // is HALF-OPEN [from, to) — from inclusive, to EXCLUSIVE — deliberately DIFFERENT
 // from the reporting queries' inclusive/inclusive BETWEEN (MOD-7); the store

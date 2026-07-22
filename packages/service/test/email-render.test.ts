@@ -68,3 +68,58 @@ describe("renderEmail order-shipped", () => {
 		expect(rendered.text).not.toContain("Carrier:");
 	});
 });
+
+// The cancelled template must carry WHY (admin-UX Increment 1, "cancel with
+// reason") instead of the old reason-free "Your order has been cancelled." —
+// and degrade gracefully when an order was cancelled without a reason (the
+// bare transition path).
+
+describe("renderEmail order-cancelled", () => {
+	const base = {
+		orderId: "ord-1",
+		currency: "USD",
+		totalCents: 1500,
+		lines: [],
+	};
+
+	test("carries a human-readable reason label + detail when a cancellation is present", () => {
+		const rendered = renderEmail("order-cancelled", {
+			...base,
+			cancellation: { reason: "out_of_stock", detail: "last unit sold on another channel" },
+		});
+		expect(rendered.text).toContain("Reason: the item being out of stock");
+		expect(rendered.text).toContain("last unit sold on another channel");
+		expect(rendered.html).toContain("the item being out of stock");
+	});
+
+	test("omits the detail suffix when none was recorded", () => {
+		const rendered = renderEmail("order-cancelled", {
+			...base,
+			cancellation: { reason: "customer_request", detail: null },
+		});
+		expect(rendered.text).toContain("Reason: the customer requested it");
+		expect(rendered.text).not.toContain(" — null");
+	});
+
+	test("degrades to the plain body when the order was cancelled without a reason", () => {
+		const rendered = renderEmail("order-cancelled", base);
+		expect(rendered.text).toContain("Your order has been cancelled.");
+		expect(rendered.text).not.toContain("Reason:");
+	});
+
+	test("escapes HTML in the reason detail", () => {
+		const rendered = renderEmail("order-cancelled", {
+			...base,
+			cancellation: { reason: "other", detail: "<b>x</b> & y" },
+		});
+		expect(rendered.html).toContain("&lt;b&gt;x&lt;/b&gt; &amp; y");
+	});
+
+	test("other order templates ignore cancellation data", () => {
+		const rendered = renderEmail("order-processing", {
+			...base,
+			cancellation: { reason: "customer_request", detail: null },
+		});
+		expect(rendered.text).not.toContain("Reason:");
+	});
+});

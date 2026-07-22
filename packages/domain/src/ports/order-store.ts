@@ -8,6 +8,7 @@ import type {
 	Sku,
 } from "../money/ids.js";
 import type {
+	CancellationReason,
 	FulfillmentKind,
 	Order,
 	OrderState,
@@ -104,6 +105,34 @@ export interface OrderStore {
 	 * consistency; dedup is structural via the guard (mirrors `transition`, H4).
 	 */
 	recordFulfillment(input: RecordFulfillmentInput): Promise<RecordFulfillmentStoreResult>;
+
+	/**
+	 * Cancel an order WITH a structured reason, atomically (admin-UX Increment 1,
+	 * "cancel with reason"). Routed through the SAME guarded-flip primitive as
+	 * `transition`/`recordFulfillment` (`#flipAndEnqueue`'s `extraSet`, PR #63
+	 * review precedent — one guarded-flip implementation, never a parallel copy
+	 * that could drift): the cancellation columns ride the guarded `WHERE
+	 * id=:orderId AND state=:fromState` UPDATE that also flips `state='cancelled'`,
+	 * then — when `enqueueEmail` — the `cancelled` outbox row is inserted (`ON
+	 * CONFLICT (order_id, to_state) DO NOTHING`), all in ONE transaction on one
+	 * connection. So no reachable state is "cancelled with no reason recorded" via
+	 * this path, and the cancelled email that drains can carry the reason.
+	 *
+	 * The guard is `WHERE id = :orderId AND state = :fromState` — the SAME
+	 * fromState-equality guard as `transition`/`recordFulfillment` (the use-case
+	 * passes the state it validated via `isLegalOrderTransition(state,
+	 * "cancelled")`, so the port never hardcodes a state list): it makes the
+	 * cancellation once-only under concurrency (exactly one caller cancels +
+	 * records the reason) and composes with the state machine — an order a
+	 * concurrent `recordFulfillment` (or any other transition) already moved out
+	 * of `fromState` is a 0-row miss (`cancelled:false`), never cancelled behind a
+	 * concurrent ship's back (and vice versa — see `recordFulfillment`'s doc).
+	 * NEVER touches `order_items`/`order_totals` (the snapshot invariant) — only
+	 * the mutable cancellation envelope + the guarded state flip.
+	 * `idempotencyKey` is retained for command-shape consistency; dedup is
+	 * structural via the guard (mirrors `transition`/`recordFulfillment`, H4).
+	 */
+	cancelOrder(input: CancelOrderInput): Promise<CancelOrderStoreResult>;
 
 	// -- Phase 5 (§5/§7): order state machine + email outbox ------------------
 
@@ -235,6 +264,39 @@ export interface RecordFulfillmentInput {
  *  `order` is the current row either way, or null if the order is gone. */
 export interface RecordFulfillmentStoreResult {
 	recorded: boolean;
+	order: Order | null;
+}
+
+/** The store-level cancel command. `reason`/`detail`/`cancelledBy` are already
+ *  validated (enum + trimmed) by the use-case; the store persists them verbatim
+ *  and stamps `cancelled_at` from its own clock. */
+export interface CancelOrderInput {
+	orderId: OrderId;
+	/** The guarded flip's from-state (the `transition`/`recordFulfillment`
+	 *  fromState precedent). The use-case derives it from the state machine
+	 *  (`isLegalOrderTransition(state, "cancelled")`) — the adapter guards `WHERE
+	 *  state = :fromState` and never hardcodes a state list of its own. */
+	fromState: OrderState;
+	reason: CancellationReason;
+	detail: string | null;
+	cancelledBy: string;
+	/** Every command carries one (CLAUDE.md). NOT the dedup mechanism here — dedup
+	 *  is structural via the guarded `WHERE state=:fromState` flip plus the outbox
+	 *  `UNIQUE(order_id, to_state)` (mirrors `transition`/`recordFulfillment`, H4).
+	 *  Adapters accept but do not key off it. */
+	idempotencyKey: IdempotencyKey;
+	/** Enqueue the `cancelled` outbox row in the same transaction. Passed by the
+	 *  use-case (`emailTemplateForState('cancelled') !== null`), for symmetry with
+	 *  `OrderTransitionInput`/`RecordFulfillmentInput` — `cancelled` always has a
+	 *  template. */
+	enqueueEmail: boolean;
+}
+
+/** `cancelled:false` ⇒ the guarded `fromState → cancelled` flip matched 0 rows
+ *  (no longer in `fromState` — already cancelled, shipped/refunded, or a lost
+ *  race). `order` is the current row either way, or null if the order is gone. */
+export interface CancelOrderStoreResult {
+	cancelled: boolean;
 	order: Order | null;
 }
 

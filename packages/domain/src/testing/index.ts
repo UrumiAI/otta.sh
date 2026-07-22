@@ -43,6 +43,7 @@ export {
 	type OrderTransitionContractOptions,
 } from "./order-transition-contract.js";
 export { orderFulfillmentContract } from "./order-fulfillment-contract.js";
+export { orderCancellationContract } from "./order-cancellation-contract.js";
 export { InMemoryOrderNotesStore } from "./in-memory-order-notes-store.js";
 export {
 	orderNotesStoreContract,

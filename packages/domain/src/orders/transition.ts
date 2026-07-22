@@ -188,5 +188,18 @@ export function buildOrderEmailData(order: Order, toState: OrderState): Record<s
 					},
 				}
 			: {}),
+		// Same rationale as fulfillment above: the cancellation reason travels with
+		// the data (never a store reach-back, §6) so the cancelled template can
+		// render WHY, instead of the old reason-free "Your order has been
+		// cancelled." Present only when cancelOrder recorded one (admin-UX
+		// Increment 1) — a bare-transition cancellation carries none.
+		...(order.cancellation !== null
+			? {
+					cancellation: {
+						reason: order.cancellation.reason,
+						detail: order.cancellation.detail,
+					},
+				}
+			: {}),
 	};
 }

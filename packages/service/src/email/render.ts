@@ -28,17 +28,52 @@ export function renderEmail(template: EmailTemplate, data: Record<string, unknow
 	// is no longer an empty "on its way" — rendered only when the order was
 	// fulfilled and the data carries it (any other template ignores fulfillment).
 	const tracking = template === "order-shipped" ? trackingLines(data["fulfillment"]) : null;
+	// Same rationale, "cancel with reason" slice: the cancelled email carries WHY
+	// instead of a reason-free notice — rendered only when cancelOrder recorded
+	// one (a bare-transition cancellation carries none, and degrades to the plain
+	// body, same as an unfulfilled shipped email).
+	const cancellation =
+		template === "order-cancelled" ? cancellationLines(data["cancellation"]) : null;
+	const extra = tracking ?? cancellation;
 	const text =
 		`${copy.body}\n\nOrder: ${orderId}\nTotal: ${total}` +
-		(tracking !== null ? `\n${tracking.text}` : "");
+		(extra !== null ? `\n${extra.text}` : "");
 	return {
 		subject,
 		text,
 		html: paragraph(
 			`${escapeHtml(copy.body)}<br>Order: ${escapeHtml(orderId)}<br>Total: ${escapeHtml(total)}` +
-				(tracking !== null ? `<br>${tracking.html}` : ""),
+				(extra !== null ? `<br>${extra.html}` : ""),
 		),
 	};
+}
+
+/** Human-readable labels for the structured cancellation reason (admin-UX
+ *  Increment 1) — the same enum the domain/service validate against. An
+ *  unrecognized value (should never happen past validation) falls back to the
+ *  raw string rather than throwing. */
+const CANCELLATION_REASON_LABEL: Record<string, string> = {
+	customer_request: "the customer requested it",
+	fraud_suspected: "a fraud concern",
+	out_of_stock: "the item being out of stock",
+	pricing_error: "a pricing error",
+	other: "other",
+};
+
+/** Render the cancellation-reason block for a cancelled email from the
+ *  cancellation data the dispatcher passed (`buildOrderEmailData`). Returns null
+ *  when the order carried no cancellation (e.g. cancelled via the bare
+ *  transition) so the email degrades to the plain reason-free body. */
+function cancellationLines(cancellation: unknown): { text: string; html: string } | null {
+	if (cancellation === null || typeof cancellation !== "object") return null;
+	const c = cancellation as { reason?: unknown; detail?: unknown };
+	const reason = str(c.reason);
+	if (reason === undefined) return null;
+	const label = CANCELLATION_REASON_LABEL[reason] ?? reason;
+	const detail = str(c.detail);
+	const text = `Reason: ${label}${detail !== undefined ? ` — ${detail}` : ""}`;
+	const html = `Reason: ${escapeHtml(label)}${detail !== undefined ? ` — ${escapeHtml(detail)}` : ""}`;
+	return { text, html };
 }
 
 /** Render the tracking block for a shipped email from the fulfillment data the

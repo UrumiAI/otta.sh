@@ -393,6 +393,7 @@ function orderFlowTests(makeHarness: () => Promise<OrderFlowHarness>, dialect: s
 				flagReconciliation: (id, d) => h.orderStore.flagReconciliation(id, d),
 				resolveReconciliation: (i) => h.orderStore.resolveReconciliation(i),
 				recordFulfillment: (i) => h.orderStore.recordFulfillment(i),
+				cancelOrder: (i) => h.orderStore.cancelOrder(i),
 				transition: (i) => h.orderStore.transition(i),
 				listForCustomer: (c) => h.orderStore.listForCustomer(c),
 				listOrders: (f, p) => h.orderStore.listOrders(f, p),

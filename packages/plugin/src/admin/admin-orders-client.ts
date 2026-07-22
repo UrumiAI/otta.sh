@@ -64,6 +64,16 @@ export interface OrderFulfillmentWire {
 	recordedAt: string;
 }
 
+/** The structured cancellation recorded on an order (admin-UX Increment 1,
+ *  "cancel with reason"); null while never cancelled OR cancelled via the bare
+ *  transition (no reason on file — an honest back-compat state). */
+export interface OrderCancellationWire {
+	reason: string;
+	detail: string | null;
+	cancelledBy: string;
+	cancelledAt: string;
+}
+
 export interface OrderDetailWire {
 	id: string;
 	state: string;
@@ -76,6 +86,7 @@ export interface OrderDetailWire {
 	reconciliationFlag: string | null;
 	reconciliationResolution: ReconciliationResolutionWire | null;
 	fulfillment: OrderFulfillmentWire | null;
+	cancellation: OrderCancellationWire | null;
 	totals: OrderTotalsWire;
 	lines: OrderLineWire[];
 }
@@ -192,6 +203,17 @@ export type ResolveReconciliationResult =
  *  status/URL. */
 export type RecordFulfillmentResult =
 	| { ok: true; recorded: boolean }
+	| { ok: false; status: number; reason?: string };
+
+/** POST cancel returns a discriminated result (like `transitionOrder`) so a
+ *  failure surfaces a GENERIC inline banner rather than throwing into the host.
+ *  `cancelled:false` on a 2xx ⇒ the guarded flip found the order already
+ *  cancelled with a reason on file (a benign no-op, not a failure). On a
+ *  failure, `reason` carries the service's typed reason when one was returned
+ *  (e.g. `NOT_CANCELLABLE` — the order can no longer be cancelled); the caller
+ *  renders GENERIC copy keyed off it, never the raw status/URL. */
+export type CancelOrderResult =
+	| { ok: true; cancelled: boolean }
 	| { ok: false; status: number; reason?: string };
 
 interface HttpErrorEnvelope {
@@ -375,6 +397,45 @@ export class AdminOrdersClient {
 				? parsed.reason
 				: undefined;
 		return { ok: false, status: res.status, ...(reason !== undefined ? { reason } : {}) };
+	}
+
+	/** POST cancel an order WITH a structured reason (admin-UX Increment 1,
+	 *  "cancel with reason"). Gated by BOTH the admin token (X-Internal-Token) AND
+	 *  the write gate (X-Service-Token) when both service secrets are set — a
+	 *  non-GET, same as the transition. Returns a discriminated result; forwards
+	 *  the service's typed reason (e.g. `NOT_CANCELLABLE`) so the console can pick
+	 *  the right GENERIC copy. */
+	async cancelOrder(
+		orderId: string,
+		cancellation: { reason: string; detail?: string | null; cancelledBy: string },
+		opts: { idempotencyKey: string },
+	): Promise<CancelOrderResult> {
+		const headers: Record<string, string> = {
+			"content-type": "application/json",
+			"Idempotency-Key": opts.idempotencyKey,
+		};
+		if (this.#adminToken !== undefined) headers["X-Internal-Token"] = this.#adminToken;
+		if (this.#serviceToken !== undefined) headers["X-Service-Token"] = this.#serviceToken;
+		const res = await this.#fetch(
+			`${this.#baseUrl}/admin/orders/${encodeURIComponent(orderId)}/cancel`,
+			{ method: "POST", headers, body: JSON.stringify(cancellation) },
+		);
+		const parsed = (await res.json().catch(() => undefined)) as
+			| { ok?: boolean; cancelled?: boolean }
+			| HttpErrorEnvelope
+			| undefined;
+		if (res.ok && parsed !== undefined && "ok" in parsed && parsed.ok === true) {
+			return { ok: true, cancelled: parsed.cancelled ?? true };
+		}
+		const cancelReason =
+			parsed !== undefined && "reason" in parsed && typeof parsed.reason === "string"
+				? parsed.reason
+				: undefined;
+		return {
+			ok: false,
+			status: res.status,
+			...(cancelReason !== undefined ? { reason: cancelReason } : {}),
+		};
 	}
 
 	/** GET an order's customer context (admin-token guarded read; admin-UX

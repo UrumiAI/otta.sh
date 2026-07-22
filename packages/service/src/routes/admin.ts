@@ -1,6 +1,7 @@
 import {
 	type AddressStore,
 	appendOrderNote,
+	cancelOrder,
 	type CustomerStore,
 	getOrderCustomerContext,
 	idempotencyKey as toIdempotencyKey,
@@ -23,6 +24,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import {
 	appendNoteBody,
+	cancelOrderBody,
 	orderListFilterSchema,
 	orderPathParams,
 	ordersListQuery,
@@ -271,6 +273,52 @@ export function adminRoutes(deps: AdminRoutesDeps): Hono {
 		// INVALID_TRANSITION; the trimmed-empty guards → 400.
 		if (res.reason === "NOT_FULFILLABLE") return c.json({ ok: false, reason: res.reason }, 409);
 		return c.json({ ok: false, reason: res.reason }, 400); // EMPTY_CARRIER / _TRACKING_NUMBER / _RECORDER
+	});
+
+	// -- Admin Orders console: cancel an order WITH a structured reason ----------
+	// (admin-UX Increment 1, "cancel with reason"). A NON-GET, so the app-level
+	// X-Service-Token write gate covers it when the service secret is set; the
+	// route additionally requires the internal token. Mirrors the port 1:1 —
+	// cancelling records the reason envelope AND drives the
+	// {pending,paid,processing} → cancelled transition AND enqueues the cancelled
+	// email, atomically. Legality (which states may cancel) lives in the domain,
+	// derived from the ONE state machine. The bare `POST .../transition {toState:
+	// "cancelled"}` above remains available for other callers/back-compat — a
+	// cancellation via that path carries no reason.
+	app.post("/orders/:orderId/cancel", async (c) => {
+		const denied = requireInternalToken(c, deps.internalToken);
+		if (denied !== null) return denied;
+
+		const params = orderPathParams.safeParse(c.req.param());
+		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
+		const parsed = cancelOrderBody.safeParse(await readJson(c));
+		if (!parsed.success) return c.json({ error: "invalid request body" }, 400);
+
+		// Idempotency (CLAUDE.md): the client `Idempotency-Key` header, or a stable
+		// fallback derived from the order id (a header-less double-submit dedupes on
+		// the guarded flip, not a fresh key each time).
+		const header = c.req.header("Idempotency-Key");
+		const key =
+			header !== undefined && header.length > 0 ? header : `admin:cancel:${params.data.orderId}`;
+		const res = await cancelOrder(
+			{ orderStore: deps.orderStore },
+			{
+				orderId: toOrderId(params.data.orderId),
+				reason: parsed.data.reason,
+				detail: parsed.data.detail ?? null,
+				cancelledBy: parsed.data.cancelledBy,
+				idempotencyKey: toIdempotencyKey(key),
+			},
+		);
+		if (res.ok) {
+			return c.json({ ok: true, cancelled: res.cancelled, order: serializeOrder(res.order) }, 200);
+		}
+		if (res.reason === "ORDER_NOT_FOUND") return c.json({ ok: false, reason: res.reason }, 404);
+		// NOT_CANCELLABLE (the order's state cannot legally reach `cancelled`, or it
+		// was already cancelled without a reason on file) → 409, like an
+		// INVALID_TRANSITION/NOT_FULFILLABLE; the trimmed-empty guard → 400.
+		if (res.reason === "NOT_CANCELLABLE") return c.json({ ok: false, reason: res.reason }, 409);
+		return c.json({ ok: false, reason: res.reason }, 400); // EMPTY_CANCELLED_BY
 	});
 
 	// -- Admin Orders console: append-only order notes (admin-UX Increment 0) ----
