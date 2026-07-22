@@ -79,6 +79,32 @@ export interface OrderStore {
 		input: ResolveReconciliationInput,
 	): Promise<ResolveReconciliationStoreResult>;
 
+	/**
+	 * Record shipping fulfillment on an order AND transition it `processing →
+	 * shipped`, atomically (admin-UX Increment 1). Recording fulfillment IS the act
+	 * of shipping: a **guarded flip** on `state` (the `transition` precedent) writes
+	 * the fulfillment columns, flips `processing → shipped`, and — when
+	 * `enqueueEmail` — enqueues the `shipped` outbox row (`ON CONFLICT (order_id,
+	 * to_state) DO NOTHING`) all in a SINGLE transaction on one connection. So no
+	 * reachable state is "shipped with no fulfillment recorded" (via this path) or
+	 * "fulfilled but not shipped", and the shipped email that drains carries the
+	 * tracking the buyer needs — never an empty notification.
+	 *
+	 * The guard is `WHERE id = :orderId AND state = :fromState` — the SAME
+	 * fromState-equality guard as `transition` (the use-case passes the state it
+	 * validated via `isLegalOrderTransition(state, "shipped")`, so the port never
+	 * hardcodes a state list): it makes the record once-only under concurrency
+	 * (exactly one caller ships + records) and composes with the state machine — an
+	 * order that a concurrent cancel already moved out of the fulfillable state is
+	 * a 0-row miss (`recorded:false`), never shipped
+	 * behind the cancel's back. NEVER touches `order_items`/`order_totals` (the
+	 * snapshot invariant) — only the mutable fulfillment envelope + the guarded
+	 * state flip. `shippedAt` null ⇒ the store stamps its own clock; `recordedAt`
+	 * is ALWAYS the store clock. `idempotencyKey` is retained for command-shape
+	 * consistency; dedup is structural via the guard (mirrors `transition`, H4).
+	 */
+	recordFulfillment(input: RecordFulfillmentInput): Promise<RecordFulfillmentStoreResult>;
+
 	// -- Phase 5 (§5/§7): order state machine + email outbox ------------------
 
 	/**
@@ -173,6 +199,42 @@ export interface ResolveReconciliationInput {
  *  flagged / lost race). `order` is the current row either way, or null if gone. */
 export interface ResolveReconciliationStoreResult {
 	resolved: boolean;
+	order: Order | null;
+}
+
+/** The store-level record-fulfillment command. `carrier`/`trackingNumber`/
+ *  `recordedBy` are already validated (trimmed non-empty) by the use-case;
+ *  `trackingUrl` is normalized (trimmed → null); the store persists them verbatim
+ *  and stamps `recorded_at` from its own clock (and `shipped_at` too when null). */
+export interface RecordFulfillmentInput {
+	orderId: OrderId;
+	/** The guarded flip's from-state (the `transition` fromState precedent). The
+	 *  use-case derives it from the state machine (`isLegalOrderTransition(state,
+	 *  "shipped")`) — the adapter guards `WHERE state = :fromState` and never
+	 *  hardcodes a state list of its own. */
+	fromState: OrderState;
+	carrier: string;
+	trackingNumber: string;
+	trackingUrl: string | null;
+	/** Admin-supplied ship time (ISO-8601 UTC), or null ⇒ the store stamps `now`. */
+	shippedAt: string | null;
+	recordedBy: string;
+	/** Every command carries one (CLAUDE.md). NOT the dedup mechanism here — dedup
+	 *  is structural via the guarded `WHERE state=:fromState` flip plus the outbox
+	 *  `UNIQUE(order_id, to_state)` (mirrors `transition`, H4). Adapters accept but
+	 *  do not key off it. */
+	idempotencyKey: IdempotencyKey;
+	/** Enqueue the `shipped` outbox row in the same transaction. Passed by the
+	 *  use-case (`emailTemplateForState('shipped') !== null`), for symmetry with
+	 *  `OrderTransitionInput` — the shipped state always has a template. */
+	enqueueEmail: boolean;
+}
+
+/** `recorded:false` ⇒ the guarded `fromState → shipped` flip matched 0 rows
+ *  (no longer in `fromState` — already shipped, cancelled, or a lost race).
+ *  `order` is the current row either way, or null if the order is gone. */
+export interface RecordFulfillmentStoreResult {
+	recorded: boolean;
 	order: Order | null;
 }
 

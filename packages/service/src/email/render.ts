@@ -24,14 +24,53 @@ export function renderEmail(template: EmailTemplate, data: Record<string, unknow
 	const total = formatMoney(data["totalCents"], str(data["currency"]));
 	const copy = ORDER_COPY[template];
 	const subject = `${copy.subject} — order ${orderId}`;
-	const text = `${copy.body}\n\nOrder: ${orderId}\nTotal: ${total}`;
+	// The shipped email carries the recorded tracking (admin-UX Increment 1) so it
+	// is no longer an empty "on its way" — rendered only when the order was
+	// fulfilled and the data carries it (any other template ignores fulfillment).
+	const tracking = template === "order-shipped" ? trackingLines(data["fulfillment"]) : null;
+	const text =
+		`${copy.body}\n\nOrder: ${orderId}\nTotal: ${total}` +
+		(tracking !== null ? `\n${tracking.text}` : "");
 	return {
 		subject,
 		text,
 		html: paragraph(
-			`${escapeHtml(copy.body)}<br>Order: ${escapeHtml(orderId)}<br>Total: ${escapeHtml(total)}`,
+			`${escapeHtml(copy.body)}<br>Order: ${escapeHtml(orderId)}<br>Total: ${escapeHtml(total)}` +
+				(tracking !== null ? `<br>${tracking.html}` : ""),
 		),
 	};
+}
+
+/** Render the tracking block for a shipped email from the fulfillment data the
+ *  dispatcher passed (`buildOrderEmailData`). Returns null when the order carried
+ *  no fulfillment (e.g. shipped via the bare transition) so the email degrades to
+ *  the plain body rather than showing empty "Carrier:" labels. */
+function trackingLines(fulfillment: unknown): { text: string; html: string } | null {
+	if (fulfillment === null || typeof fulfillment !== "object") return null;
+	const f = fulfillment as {
+		carrier?: unknown;
+		trackingNumber?: unknown;
+		trackingUrl?: unknown;
+	};
+	const carrier = str(f.carrier);
+	const trackingNumber = str(f.trackingNumber);
+	if (carrier === undefined && trackingNumber === undefined) return null;
+	const trackingUrl = str(f.trackingUrl);
+	const textParts: string[] = [];
+	const htmlParts: string[] = [];
+	if (carrier !== undefined) {
+		textParts.push(`Carrier: ${carrier}`);
+		htmlParts.push(`Carrier: ${escapeHtml(carrier)}`);
+	}
+	if (trackingNumber !== undefined) {
+		textParts.push(`Tracking: ${trackingNumber}`);
+		htmlParts.push(`Tracking: ${escapeHtml(trackingNumber)}`);
+	}
+	if (trackingUrl !== undefined) {
+		textParts.push(`Track your package: ${trackingUrl}`);
+		htmlParts.push(`Track your package: ${escapeHtml(trackingUrl)}`);
+	}
+	return { text: textParts.join("\n"), html: htmlParts.join("<br>") };
 }
 
 const ORDER_COPY: Record<

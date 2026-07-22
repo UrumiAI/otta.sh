@@ -51,6 +51,19 @@ export interface ReconciliationResolutionWire {
 	resolvedAt: string;
 }
 
+/** The shipping fulfillment recorded on an order (admin-UX Increment 1); null
+ *  until the order ships with tracking. `trackingUrl` is optional (null when the
+ *  admin recorded none); `shippedAt` is the ship time, `recordedAt` the server
+ *  stamp. */
+export interface OrderFulfillmentWire {
+	carrier: string;
+	trackingNumber: string;
+	trackingUrl: string | null;
+	shippedAt: string;
+	recordedBy: string;
+	recordedAt: string;
+}
+
 export interface OrderDetailWire {
 	id: string;
 	state: string;
@@ -62,6 +75,7 @@ export interface OrderDetailWire {
 	createdAt: string;
 	reconciliationFlag: string | null;
 	reconciliationResolution: ReconciliationResolutionWire | null;
+	fulfillment: OrderFulfillmentWire | null;
 	totals: OrderTotalsWire;
 	lines: OrderLineWire[];
 }
@@ -167,6 +181,17 @@ export type TransitionOrderResult =
  *  keyed off it, never the raw status/URL. */
 export type ResolveReconciliationResult =
 	| { ok: true; resolved: boolean }
+	| { ok: false; status: number; reason?: string };
+
+/** POST record-fulfillment returns a discriminated result (like `transitionOrder`)
+ *  so a failure surfaces a GENERIC inline banner rather than throwing into the host.
+ *  `recorded:false` on a 2xx ⇒ the guarded flip found the order already shipped (a
+ *  benign no-op, not a failure). On a failure, `reason` carries the service's typed
+ *  reason when one was returned (e.g. `NOT_FULFILLABLE` — the order is not in
+ *  `processing`); the caller renders GENERIC copy keyed off it, never the raw
+ *  status/URL. */
+export type RecordFulfillmentResult =
+	| { ok: true; recorded: boolean }
 	| { ok: false; status: number; reason?: string };
 
 interface HttpErrorEnvelope {
@@ -303,6 +328,48 @@ export class AdminOrdersClient {
 		// Forward the service's typed reason (if any) so the console can pick the
 		// right GENERIC copy (e.g. "reload" on a flag-changed conflict) — never the
 		// raw status/URL.
+		const reason =
+			parsed !== undefined && "reason" in parsed && typeof parsed.reason === "string"
+				? parsed.reason
+				: undefined;
+		return { ok: false, status: res.status, ...(reason !== undefined ? { reason } : {}) };
+	}
+
+	/** POST record shipping fulfillment on an order (admin-UX Increment 1).
+	 *  Recording fulfillment SHIPS the order (`processing → shipped`) and stores the
+	 *  tracking so the buyer's shipped email carries it. Gated by BOTH the admin
+	 *  token (X-Internal-Token) AND the write gate (X-Service-Token) when both
+	 *  service secrets are set — a non-GET, same as the transition. Returns a
+	 *  discriminated result; forwards the service's typed reason (e.g.
+	 *  `NOT_FULFILLABLE`) so the console can pick the right GENERIC copy. */
+	async recordFulfillment(
+		orderId: string,
+		fulfillment: {
+			carrier: string;
+			trackingNumber: string;
+			trackingUrl?: string | null;
+			shippedAt?: string | null;
+			recordedBy: string;
+		},
+		opts: { idempotencyKey: string },
+	): Promise<RecordFulfillmentResult> {
+		const headers: Record<string, string> = {
+			"content-type": "application/json",
+			"Idempotency-Key": opts.idempotencyKey,
+		};
+		if (this.#adminToken !== undefined) headers["X-Internal-Token"] = this.#adminToken;
+		if (this.#serviceToken !== undefined) headers["X-Service-Token"] = this.#serviceToken;
+		const res = await this.#fetch(
+			`${this.#baseUrl}/admin/orders/${encodeURIComponent(orderId)}/fulfillment`,
+			{ method: "POST", headers, body: JSON.stringify(fulfillment) },
+		);
+		const parsed = (await res.json().catch(() => undefined)) as
+			| { ok?: boolean; recorded?: boolean }
+			| HttpErrorEnvelope
+			| undefined;
+		if (res.ok && parsed !== undefined && "ok" in parsed && parsed.ok === true) {
+			return { ok: true, recorded: parsed.recorded ?? true };
+		}
 		const reason =
 			parsed !== undefined && "reason" in parsed && typeof parsed.reason === "string"
 				? parsed.reason

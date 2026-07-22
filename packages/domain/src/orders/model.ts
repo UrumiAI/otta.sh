@@ -64,6 +64,35 @@ export interface ReconciliationResolution {
 }
 
 /**
+ * The shipping fulfillment recorded on an order (admin-UX Increment 1). A
+ * SINGLE-SLOT record: this domain's state machine ships an order exactly once
+ * (`processing → shipped`, one `shipped` state — no partial/split fulfillment),
+ * so an order carries at most one fulfillment. It is part of the order's mutable
+ * envelope — recording it NEVER touches line items or prices (the snapshot
+ * invariant). Populated atomically with the `processing → shipped` transition by
+ * `recordFulfillment`; `null` until the order is shipped with tracking. Once set,
+ * it is what the shipped-notification email renders (so "shipped" is no longer an
+ * empty email).
+ */
+export interface OrderFulfillment {
+	/** The shipping carrier (free text, e.g. "UPS"), trimmed non-empty. */
+	carrier: string;
+	/** The carrier tracking number (free text), trimmed non-empty. */
+	trackingNumber: string;
+	/** An optional carrier tracking URL; null when the admin recorded none. */
+	trackingUrl: string | null;
+	/** When the order shipped (ISO-8601 UTC). Admin-supplied, or the server clock
+	 *  at record time when the admin left it blank. */
+	shippedAt: string;
+	/** Who recorded the fulfillment (free text, like a note author — the domain
+	 *  does not model admin identity). */
+	recordedBy: string;
+	/** Server-assigned ISO-8601 UTC timestamp the fulfillment was recorded (from
+	 *  the store's clock) — the presence witness that the order was fulfilled. */
+	recordedAt: string;
+}
+
+/**
  * An order line — **insert-once, never updated** (§4). `title`, `unitPrice`, and
  * `currency` are snapshots taken at creation; they are stored on the line, never
  * joined live from `product_commerce`, which is what makes the immutability
@@ -140,4 +169,11 @@ export interface Order {
 	 * benign no-op rather than an error.
 	 */
 	reconciliationResolution: ReconciliationResolution | null;
+	/**
+	 * The shipping fulfillment recorded on this order (admin-UX Increment 1);
+	 * `null` until the order is shipped with tracking via `recordFulfillment`.
+	 * Single-slot (this domain ships once). Part of the mutable envelope — it never
+	 * affects line items or totals (the snapshot invariant).
+	 */
+	fulfillment: OrderFulfillment | null;
 }

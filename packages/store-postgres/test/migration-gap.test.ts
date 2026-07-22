@@ -12,7 +12,7 @@ import { makeSqliteDb, migrateToLatest, migrationProvider } from "../src/index.j
 // gapped provider — if a Kysely upgrade ever starts rejecting gaps, the next
 // parallel-phase pair must know before they branch.
 
-test("the real provider lists 0001…0011 in order and migrates cleanly", async () => {
+test("the real provider lists 0001…0012 in order and migrates cleanly", async () => {
 	const provided = Object.keys(await migrationProvider.getMigrations());
 	expect(provided).toEqual([
 		"0001_phase0_inventory",
@@ -26,6 +26,7 @@ test("the real provider lists 0001…0011 in order and migrates cleanly", async 
 		"0009_orders_admin_list_indices",
 		"0010_order_notes",
 		"0011_reconciliation_resolution",
+		"0012_order_fulfillment",
 	]);
 
 	const db = makeSqliteDb(":memory:");
@@ -46,6 +47,7 @@ test("the real provider lists 0001…0011 in order and migrates cleanly", async 
 			"0009_orders_admin_list_indices",
 			"0010_order_notes",
 			"0011_reconciliation_resolution",
+			"0012_order_fulfillment",
 		]);
 
 		// And the 0003 tables exist and accept rows (spot check the ledger).

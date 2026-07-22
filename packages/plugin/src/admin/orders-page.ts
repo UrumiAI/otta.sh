@@ -16,6 +16,7 @@ import {
 	type CustomerContextWire,
 	type OrderDetailResult,
 	type OrderDetailWire,
+	type OrderFulfillmentWire,
 	type OrderNoteWire,
 	type OrderSummaryWire,
 	type OrdersListFilter,
@@ -49,6 +50,7 @@ const ORDERS_ACTIONS: ScreenActions = screenActions("orders");
 const ACTION_TRANSITION = ORDERS_ACTIONS.custom("transition");
 const ACTION_ADD_NOTE = ORDERS_ACTIONS.custom("add-note");
 const ACTION_RESOLVE = ORDERS_ACTIONS.custom("resolve-reconciliation");
+const ACTION_RECORD_FULFILLMENT = ORDERS_ACTIONS.custom("record-fulfillment");
 
 /**
  * The action ids the admin-route dispatcher recognizes as belonging to the
@@ -61,6 +63,7 @@ export const ORDERS_ACTION_IDS: ReadonlySet<string> = ORDERS_ACTIONS.actionIds(
 	"transition",
 	"add-note",
 	"resolve-reconciliation",
+	"record-fulfillment",
 );
 
 const PAGE_LIMIT = 25;
@@ -117,6 +120,7 @@ export function createOrdersPageHandler(): RouteHandler<OrdersPageInput> {
 			[ACTION_TRANSITION]: transitionAction(),
 			[ACTION_ADD_NOTE]: addNoteAction(),
 			[ACTION_RESOLVE]: resolveReconciliationAction(),
+			[ACTION_RECORD_FULFILLMENT]: recordFulfillmentAction(),
 		},
 	});
 }
@@ -325,9 +329,27 @@ function detailBlocks(
 			{ label: "Total", value: formatTotal(o.totals.totalCents, o.totals.currency) },
 		],
 	});
-	if (detail.allowedTransitions.length > 0) {
+	// -- Fulfillment (admin-UX Increment 1) — recorded tracking + the ship form --
+	for (const block of fulfillmentBlocks(o)) blocks.push(block);
+	// UI steering (PR #63 review): on a `processing` order, the bare "Mark
+	// shipped" one-click is HIDDEN — it would ship without tracking and send the
+	// buyer an empty shipped email, defeating the fulfillment slice's whole point.
+	// Shipping happens via the Fulfillment form above (which records tracking and
+	// ships atomically). This is UI steering only: the SERVICE still accepts the
+	// bare transition for other callers/back-compat.
+	const offeredTransitions =
+		o.state === "processing"
+			? detail.allowedTransitions.filter((t) => t !== "shipped")
+			: detail.allowedTransitions;
+	if (offeredTransitions.length > 0) {
 		blocks.push({ type: "section", text: "Move status" });
-		blocks.push(transitionActions(o.id, detail.allowedTransitions));
+		if (o.state === "processing" && detail.allowedTransitions.includes("shipped")) {
+			blocks.push({
+				type: "context",
+				text: "To mark this order shipped, use the Fulfillment form above — it records the tracking and emails it to the buyer. There is deliberately no bare “Mark shipped” button, so an order is never shipped without tracking.",
+			});
+		}
+		blocks.push(transitionActions(o.id, offeredTransitions));
 	}
 	// -- Notes (append-only) ---------------------------------------------------
 	blocks.push({ type: "section", text: "Notes" });
@@ -623,6 +645,96 @@ function resolveForm(orderId: string, displayedFlag: string): FormBlock {
 	};
 }
 
+// -- fulfillment surface (admin-UX Increment 1) -------------------------------
+
+/**
+ * The fulfillment section. A SHIPPED order with recorded tracking shows it
+ * (read-only fields); a `processing` order shows the record-fulfillment form
+ * (recording ships the order); any other state shows nothing (fulfillment is only
+ * meaningful from `processing`). A shipped order WITHOUT fulfillment (shipped via
+ * the bare status transition) gets an honest note that no tracking was recorded.
+ */
+function fulfillmentBlocks(o: OrderDetailWire): Block[] {
+	// Tolerate a wire response that omits the field entirely (undefined) exactly
+	// like an explicit null — either way, no recorded fulfillment.
+	if (o.fulfillment !== null && o.fulfillment !== undefined) {
+		return [{ type: "section", text: "Fulfillment" }, fulfillmentFields(o.fulfillment)];
+	}
+	if (o.state === "processing") {
+		return [
+			{ type: "section", text: "Fulfillment" },
+			{
+				type: "context",
+				text: "Recording fulfillment ships this order (moves it to “shipped”) and emails the buyer their tracking. Carrier and tracking number are required; the tracking URL and ship date are optional (a blank ship date uses now).",
+			},
+			recordFulfillmentForm(o.id),
+		];
+	}
+	if (o.state === "shipped") {
+		return [
+			{ type: "section", text: "Fulfillment" },
+			{
+				type: "context",
+				text: "This order is shipped but no tracking was recorded (it was moved to “shipped” directly). Tracking can only be captured while an order is “processing”.",
+			},
+		];
+	}
+	return [];
+}
+
+function fulfillmentFields(f: OrderFulfillmentWire): Block {
+	return {
+		type: "fields",
+		fields: [
+			{ label: "Carrier", value: f.carrier },
+			{ label: "Tracking number", value: f.trackingNumber },
+			{ label: "Tracking URL", value: f.trackingUrl ?? "—" },
+			{ label: "Shipped (UTC)", value: f.shippedAt },
+			{ label: "Recorded by", value: f.recordedBy },
+			{ label: "Recorded (UTC)", value: f.recordedAt },
+		],
+	};
+}
+
+/** The record-fulfillment form. The order id rides along as a single-option
+ *  `select` (the carry-the-id-in-values pattern the add-note / resolve forms use)
+ *  so a stateless `form_submit` knows which order to ship. */
+function recordFulfillmentForm(orderId: string): FormBlock {
+	return {
+		type: "form",
+		fields: [
+			{
+				type: "select",
+				action_id: "orderId",
+				label: "Order",
+				options: [{ value: orderId, label: orderId }],
+				initial_value: orderId,
+			},
+			{ type: "text_input", action_id: "carrier", label: "Carrier", placeholder: "e.g. UPS" },
+			{
+				type: "text_input",
+				action_id: "trackingNumber",
+				label: "Tracking number",
+				placeholder: "e.g. 1Z999AA10123456784",
+			},
+			{
+				type: "text_input",
+				action_id: "trackingUrl",
+				label: "Tracking URL (optional)",
+				placeholder: "https://…",
+			},
+			{ type: "date_input", action_id: "shippedAt", label: "Ship date (optional; UTC)" },
+			{
+				type: "text_input",
+				action_id: "recordedBy",
+				label: "Recorded by",
+				placeholder: "your name",
+			},
+		],
+		submit: { label: "Record fulfillment & ship", action_id: ACTION_RECORD_FULFILLMENT },
+	};
+}
+
 // -- custom actions: transition + add-note + resolve-reconciliation -----------
 
 function transitionAction() {
@@ -756,6 +868,91 @@ function resolveReconciliationAction() {
 				variant: "default",
 				title: "Reconciliation resolved",
 				description: "The flag is cleared and your disposition was recorded.",
+			};
+		}
+		return showLeaf([orderId], notice);
+	});
+}
+
+function recordFulfillmentAction() {
+	return customAction<AdminOrdersClient>(async ({ input, client, showLeaf, showList }) => {
+		const values = input.values ?? {};
+		const orderId = readString(values.orderId);
+		if (orderId === undefined) return showList();
+		const carrier = (readString(values.carrier) ?? "").trim();
+		const trackingNumber = (readString(values.trackingNumber) ?? "").trim();
+		const recordedBy = (readString(values.recordedBy) ?? "").trim();
+		// Local guard: blank required fields never leave the plugin (the domain
+		// rejects them too, but this gives immediate inline feedback without a round
+		// trip). The tracking URL + ship date are optional.
+		if (carrier.length === 0 || trackingNumber.length === 0 || recordedBy.length === 0) {
+			return showLeaf([orderId], {
+				variant: "error",
+				title: "Not shipped",
+				description: "Enter the carrier, tracking number, and who is recording it.",
+			});
+		}
+		const trackingUrl = (readString(values.trackingUrl) ?? "").trim();
+		// The tracking URL, when given, must be http(s) — the SAME bound the service
+		// schema enforces (defense-in-depth: this value is emailed to the buyer, so a
+		// javascript:/data: URI is rejected here with immediate inline feedback
+		// instead of a generic 400 from the service).
+		if (trackingUrl.length > 0 && !/^https?:\/\/\S+$/i.test(trackingUrl)) {
+			return showLeaf([orderId], {
+				variant: "error",
+				title: "Not shipped",
+				description: "The tracking URL must be a web link starting with http:// or https://.",
+			});
+		}
+		// A `date_input` yields YYYY-MM-DD; the service wants a full ISO datetime
+		// (padded to midnight UTC) — reuse the same normalization the filter uses.
+		const shippedAt = normalizeBound(readString(values.shippedAt));
+		// A stable per-order idempotency key: a double-submit is a guarded no-op, and
+		// the order ships exactly once (the domain's guarded processing→shipped flip).
+		const key = `admin-record-fulfillment:${orderId}`;
+		const result = await client.recordFulfillment(
+			orderId,
+			{
+				carrier,
+				trackingNumber,
+				...(trackingUrl.length > 0 ? { trackingUrl } : {}),
+				...(shippedAt !== undefined ? { shippedAt } : {}),
+				recordedBy,
+			},
+			{ idempotencyKey: key },
+		);
+		let notice: Notice | undefined;
+		if (!result.ok) {
+			// A NOT_FULFILLABLE conflict means the order moved out of `processing`
+			// (e.g. someone cancelled it, or it already shipped) — the re-render below
+			// shows the new state; tell them to reload rather than check tokens.
+			notice =
+				result.reason === "NOT_FULFILLABLE"
+					? {
+							variant: "error",
+							title: "Order can’t be shipped right now",
+							description:
+								"This order is no longer “processing” — it may have shipped or been cancelled. Reload and check its status.",
+						}
+					: {
+							variant: "error",
+							title: "Not shipped",
+							description:
+								"That fulfillment could not be recorded — check the order and the admin token in Settings.",
+						};
+		} else if (!result.recorded) {
+			// The guarded flip matched 0 rows — already shipped, or a lost race. Not a
+			// failure: surface a non-error notice so the merchant gets feedback.
+			notice = {
+				variant: "default",
+				title: "Already shipped",
+				description: "This order was already shipped; its recorded tracking is shown above.",
+			};
+		} else {
+			notice = {
+				variant: "default",
+				title: "Order shipped",
+				description: "Fulfillment recorded — the buyer has been emailed their tracking.",
 			};
 		}
 		return showLeaf([orderId], notice);

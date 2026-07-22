@@ -110,6 +110,8 @@ export type {
 	OrderTransitionInput,
 	OrderTransitionResult,
 	OutboxEmail,
+	RecordFulfillmentInput,
+	RecordFulfillmentStoreResult,
 	RecordPaymentInput,
 	ResolveReconciliationInput,
 	ResolveReconciliationStoreResult,
@@ -183,6 +185,7 @@ export type {
 export type {
 	FulfillmentKind,
 	Order,
+	OrderFulfillment,
 	OrderLine,
 	OrderTotals,
 	PaymentMethod,
@@ -219,6 +222,13 @@ export {
 	type ResolveReconciliationFailure,
 	type ResolveReconciliationOutcome,
 } from "./orders/resolve-reconciliation.js";
+export {
+	recordFulfillment,
+	type RecordFulfillmentCommand,
+	type RecordFulfillmentDeps,
+	type RecordFulfillmentFailure,
+	type RecordFulfillmentOutcome,
+} from "./orders/record-fulfillment.js";
 export {
 	DEFAULT_RECENT_ORDERS_LIMIT,
 	getOrderCustomerContext,

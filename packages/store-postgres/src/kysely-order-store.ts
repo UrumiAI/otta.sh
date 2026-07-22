@@ -28,6 +28,8 @@ import {
 	type OutboxEmail,
 	type PaymentMethod,
 	type ReconciliationOutcome,
+	type RecordFulfillmentInput,
+	type RecordFulfillmentStoreResult,
 	type RecordPaymentInput,
 	type ResolveReconciliationInput,
 	type ResolveReconciliationStoreResult,
@@ -41,6 +43,7 @@ import {
 	sql,
 	type SqlBool,
 	type Transaction,
+	type Updateable,
 } from "kysely";
 import type { Database, OrderItemsTable, OrdersTable, OrderTotalsTable } from "./schema.js";
 
@@ -250,6 +253,43 @@ export class KyselyOrderStore implements OrderStore {
 			.executeTakeFirst();
 		const order = await this.#loadById(input.orderId);
 		return { resolved: won !== undefined, order };
+	}
+
+	async recordFulfillment(input: RecordFulfillmentInput): Promise<RecordFulfillmentStoreResult> {
+		// Record + ship + enqueue, atomically (admin-UX Increment 1). Routed through
+		// the SAME `#flipAndEnqueue` primitive as `transition`/`markPaid`/`expire`
+		// (PR #63 review — one guarded-flip implementation, no parallel copy that
+		// could drift): the fulfillment columns ride the guarded `WHERE id=:id AND
+		// state=:fromState` UPDATE as `extraSet`, then — when `enqueueEmail` — the
+		// `shipped` outbox row is inserted (`ON CONFLICT DO NOTHING`), all in ONE
+		// transaction on one connection. So no reachable state is "shipped without
+		// fulfillment" via this path, and the shipped email that drains carries the
+		// tracking. The fromState guard (validated by the use-case against the state
+		// machine) makes it once-only AND composes with the machine: an order a
+		// concurrent cancel already moved is a 0-row miss (recorded:false). NEVER
+		// touches order_items/order_totals (the snapshot invariant).
+		// input.idempotencyKey is intentionally unused — dedup is structural via the
+		// guard (mirrors `transition`/`resolveReconciliation`, H4).
+		const now = this.#clock.now().toISOString();
+		const recorded = await this.#db.transaction().execute((trx) =>
+			this.#flipAndEnqueue(trx, {
+				orderId: input.orderId,
+				fromState: input.fromState,
+				toState: "shipped",
+				enqueueEmail: input.enqueueEmail,
+				now,
+				extraSet: {
+					fulfillment_carrier: input.carrier,
+					fulfillment_tracking_number: input.trackingNumber,
+					fulfillment_tracking_url: input.trackingUrl,
+					fulfillment_shipped_at: input.shippedAt ?? now,
+					fulfillment_recorded_by: input.recordedBy,
+					fulfillment_recorded_at: now,
+				},
+			}),
+		);
+		const order = await this.#loadById(input.orderId);
+		return { recorded, order };
 	}
 
 	// -- Phase 5: state machine + email outbox --------------------------------
@@ -503,11 +543,16 @@ export class KyselyOrderStore implements OrderStore {
 			enqueueEmail: boolean;
 			now: string;
 			holdExpiresBefore?: string;
+			/** Extra columns written IN the same guarded UPDATE as the flip (e.g.
+			 *  `recordFulfillment`'s tracking envelope) — so a caller composing "flip +
+			 *  record" atomically reuses THIS primitive instead of hand-rolling a
+			 *  parallel guarded UPDATE that could drift from it. */
+			extraSet?: Updateable<OrdersTable>;
 		},
 	): Promise<boolean> {
 		let flip = trx
 			.updateTable("orders")
-			.set({ state: input.toState, updated_at: input.now })
+			.set({ ...input.extraSet, state: input.toState, updated_at: input.now })
 			.where("id", "=", input.orderId)
 			.where("state", "=", input.fromState);
 		if (input.holdExpiresBefore !== undefined) {
@@ -676,6 +721,19 @@ function toOrder(
 						reason: order.reconciliation_reason ?? "",
 						resolvedBy: order.reconciliation_resolved_by ?? "",
 						resolvedAt: order.reconciliation_resolved_at,
+					},
+		// A fulfillment exists iff it was recorded (all columns written atomically by
+		// recordFulfillment); `recorded_at` is the presence witness.
+		fulfillment:
+			order.fulfillment_recorded_at === null
+				? null
+				: {
+						carrier: order.fulfillment_carrier ?? "",
+						trackingNumber: order.fulfillment_tracking_number ?? "",
+						trackingUrl: order.fulfillment_tracking_url,
+						shippedAt: order.fulfillment_shipped_at ?? order.fulfillment_recorded_at,
+						recordedBy: order.fulfillment_recorded_by ?? "",
+						recordedAt: order.fulfillment_recorded_at,
 					},
 	};
 }

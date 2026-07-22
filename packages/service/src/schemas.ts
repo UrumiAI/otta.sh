@@ -293,6 +293,31 @@ export const resolveReconciliationBody = z.object({
 	resolvedBy: z.string().min(1).max(200),
 });
 
+// Admin Orders console: record shipping fulfillment (admin-UX Increment 1).
+// Recording fulfillment ships the order (`processing → shipped`) and makes the
+// shipped email carry tracking. `carrier`/`trackingNumber`/`recordedBy` are
+// bounded free text — the domain use-case trims and rejects empties, so the
+// 1-char floor here is cheap and the substantive validation stays in the domain.
+// `trackingUrl` is optional (the buyer's tracking link) and `shippedAt` optional
+// (absent ⇒ the store stamps its own clock at record time); both nullable so an
+// explicit null clears them at the boundary the same way an absent field does.
+// `trackingUrl` is SCHEME-BOUND to http(s) as defense-in-depth (PR #63 review):
+// the value is rendered into the buyer's shipped email and the admin panel, so a
+// `javascript:`/`data:` URI must never even be storable — the plugin validates
+// the same bound client-side, and the email renderer escapes regardless.
+export const recordFulfillmentBody = z.object({
+	carrier: z.string().min(1).max(200),
+	trackingNumber: z.string().min(1).max(200),
+	trackingUrl: z
+		.string()
+		.max(2000)
+		.regex(/^https?:\/\/\S+$/i, "trackingUrl must be an http(s) URL")
+		.nullable()
+		.optional(),
+	shippedAt: z.string().datetime().nullable().optional(),
+	recordedBy: z.string().min(1).max(200),
+});
+
 // Admin Orders console: view-only list query (§ admin-orders). The date window
 // is HALF-OPEN [from, to) — from inclusive, to EXCLUSIVE — deliberately DIFFERENT
 // from the reporting queries' inclusive/inclusive BETWEEN (MOD-7); the store
