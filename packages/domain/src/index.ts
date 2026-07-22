@@ -263,6 +263,7 @@ export { commit, release, reserve } from "./inventory/use-cases.js";
 export type {
 	ProductCommerce,
 	ProductCommerceStore,
+	ProductCommerceUpdateResult,
 	ProductCommerceView,
 	ProductKind,
 	ProductListCursor,
@@ -270,15 +271,21 @@ export type {
 	ProductListPage,
 	ProductListResult,
 	ProductSummary,
+	UpdateProductCommerceFieldsInput,
 	UpsertProductCommerceInput,
 } from "./ports/product-commerce-store.js";
-export { MissingProductIdError, SkuConflictError } from "./product-commerce/errors.js";
+export {
+	InvalidProductFieldError,
+	MissingProductIdError,
+	SkuConflictError,
+} from "./product-commerce/errors.js";
 export {
 	activateProductCommerce,
 	deactivateProductCommerce,
 	getProductCommerce,
 	listProductCommerceByIds,
 	softDeleteProductCommerce,
+	updateProductCommerceFields,
 	upsertProductCommerce,
 	type ProductCommerceDeps,
 } from "./product-commerce/use-cases.js";

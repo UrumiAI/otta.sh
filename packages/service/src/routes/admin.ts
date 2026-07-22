@@ -7,6 +7,7 @@ import {
 	getOrderTimeline,
 	idempotencyKey as toIdempotencyKey,
 	type InventoryStore,
+	InvalidProductFieldError,
 	legalNextStates,
 	listOrderNotes,
 	type OrderCustomerContext,
@@ -27,13 +28,20 @@ import {
 	recordFulfillment,
 	resolveReconciliation,
 	type SessionStore,
+	SkuConflictError,
 	transitionOrder,
+	updateProductCommerceFields,
+	sku as toSku,
+	money as toMoney,
+	cents as toCents,
+	currency as toCurrency,
 } from "@urumi/domain";
 import { Hono } from "hono";
 import { z } from "zod";
 import {
 	appendNoteBody,
 	cancelOrderBody,
+	editProductCommerceBody,
 	orderListFilterSchema,
 	orderPathParams,
 	ordersListQuery,
@@ -218,6 +226,94 @@ export function adminRoutes(deps: AdminRoutesDeps): Hono {
 		// "create then price" row has no sku to look up; stock reads as `0`.
 		const onHand = product.sku === null ? 0 : await deps.inventoryStore.getOnHand(product.sku);
 		return c.json({ ok: true, product: serializeProductDetail(product, onHand) }, 200);
+	});
+
+	// -- Admin Products console: guarded commerce EDIT (admin-UX Increment 2) -----
+	// The standalone product edit page's write (slice 2). A NON-GET, so the
+	// app-level X-Service-Token write gate covers it when the service secret is
+	// set; the route additionally requires the internal token (same double-gate as
+	// the order-transition write). Edits only the commerce-owned fields — never the
+	// CMS publish gate (`active`) or the sync watermark. Optimistic-concurrency:
+	// `expectedUpdatedAt` compare-and-set → a concurrent edit is a structured 409
+	// STALE_EDIT the panel reloads on, never a silent last-writer-wins clobber.
+	app.patch("/products/:productId", async (c) => {
+		const denied = requireInternalToken(c, deps.internalToken);
+		if (denied !== null) return denied;
+
+		const params = productPathParams.safeParse(c.req.param());
+		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
+		const parsed = editProductCommerceBody.safeParse(await readJson(c));
+		if (!parsed.success) {
+			return c.json({ error: "invalid request body", issues: parsed.error.issues }, 400);
+		}
+		const body = parsed.data;
+
+		// A retry/double-submit dedupes when the client sends a stable
+		// Idempotency-Key; absent one, a deterministic fallback keyed by the target
+		// + the expected watermark keeps replays of THIS edit idempotent (a genuine
+		// second edit carries a fresher watermark ⇒ a distinct fallback key).
+		const header = c.req.header("Idempotency-Key");
+		const key =
+			header !== undefined && header.length > 0
+				? header
+				: `admin:product-edit:${params.data.productId}:${body.expectedUpdatedAt}`;
+
+		try {
+			const res = await updateProductCommerceFields(
+				deps.productCommerce,
+				{
+					productId: toProductId(params.data.productId),
+					...(body.sku !== undefined ? { sku: toSku(body.sku) } : {}),
+					...(body.price !== undefined
+						? { price: toMoney(toCents(body.price.amount), toCurrency(body.price.currency)) }
+						: {}),
+					...(body.title !== undefined ? { title: body.title } : {}),
+					...(body.taxClass !== undefined ? { taxClass: body.taxClass } : {}),
+					...(body.weightGrams !== undefined ? { weightGrams: body.weightGrams } : {}),
+					...(body.lengthMm !== undefined ? { lengthMm: body.lengthMm } : {}),
+					...(body.widthMm !== undefined ? { widthMm: body.widthMm } : {}),
+					...(body.heightMm !== undefined ? { heightMm: body.heightMm } : {}),
+					...(body.productKind !== undefined ? { productKind: body.productKind } : {}),
+				},
+				toIdempotencyKey(key),
+				body.expectedUpdatedAt,
+			);
+			if (res.ok) {
+				return c.json({ ok: true, updatedAt: res.product.updatedAt.toISOString() }, 200);
+			}
+			if (res.reason === "not_found") {
+				return c.json({ ok: false, reason: "PRODUCT_NOT_FOUND" }, 404);
+			}
+			if (res.reason === "stale") {
+				// The panel reloads the fresh detail; hand back the current watermark so
+				// a re-save can compare-and-set against it.
+				return c.json(
+					{
+						ok: false,
+						reason: "STALE_EDIT",
+						currentUpdatedAt: res.current.updatedAt.toISOString(),
+					},
+					409,
+				);
+			}
+			// currency_mismatch
+			return c.json(
+				{
+					ok: false,
+					reason: "CURRENCY_MISMATCH",
+					currency: res.current.price?.currency ?? null,
+				},
+				409,
+			);
+		} catch (err) {
+			if (err instanceof InvalidProductFieldError) {
+				return c.json({ ok: false, reason: "INVALID_FIELD", field: err.field }, 400);
+			}
+			if (err instanceof SkuConflictError) {
+				return c.json({ ok: false, reason: "SKU_TAKEN", sku: err.sku }, 409);
+			}
+			throw err;
+		}
 	});
 
 	// -- Admin Orders console: customer context (admin-UX Increment 1) -----------

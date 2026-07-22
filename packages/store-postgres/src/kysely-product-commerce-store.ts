@@ -15,9 +15,11 @@ import {
 	type ProductId,
 	type ProductKind,
 	type ProductListFilter,
+	type ProductCommerceUpdateResult,
 	type ProductListPage,
 	type ProductListResult,
 	type ProductSummary,
+	type UpdateProductCommerceFieldsInput,
 	type UpsertProductCommerceInput,
 } from "@urumi/domain";
 import {
@@ -285,6 +287,101 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 			.where("product_id", "=", productId)
 			.where("deleted_at", "is", null)
 			.execute();
+	}
+
+	/**
+	 * Guarded admin edit (port doc): a single conditional `UPDATE` under an
+	 * optimistic compare-and-set — the atomic mirror of the fake's guard chain.
+	 * The applying statement ANDs the guards: `product_id = :id`, `deleted_at IS
+	 * NULL`, `updated_at = :expectedUpdatedAt` (the CAS), `idempotency_key !=
+	 * :key` (replay dedupe), and — only when a price is supplied — a currency-
+	 * integrity guard (`price_currency IS NULL OR price_currency = :cur`). Fields
+	 * omitted from `input` are absent from the SET clause, so they are preserved
+	 * (the plain-UPDATE analogue of `upsert`'s excluded-vs-row SET).
+	 *
+	 * When the UPDATE applies, `RETURNING` yields the row → `ok`. When it matches
+	 * ZERO rows (some guard failed), a follow-up `SELECT` classifies the no-op in
+	 * the SAME order the fake does — not_found (missing / soft-deleted) FIRST,
+	 * then replay (stored key == key), then stale (updatedAt moved), then
+	 * currency_mismatch (see the port doc: not_found outranks replay, so a
+	 * same-key replay after a soft delete is not_found on every adapter) —
+	 * mirroring `upsert`'s no-op-then-reread pattern (not an oversell race
+	 * target: the mutation itself is one atomic statement; a lost concurrent edit
+	 * surfaces deterministically as `stale`, never a torn write). Live-sku
+	 * collisions surface as `SkuConflictError`, exactly like `upsert`.
+	 */
+	async updateCommerceFields(
+		input: UpdateProductCommerceFieldsInput,
+		key: IdempotencyKey,
+		expectedUpdatedAt: string,
+	): Promise<ProductCommerceUpdateResult> {
+		const now = this.#clock.now().toISOString();
+		const set: Record<string, string | number | null> = {
+			idempotency_key: key,
+			updated_at: now,
+		};
+		if (input.sku !== undefined) set.sku = input.sku;
+		if (input.price !== undefined) {
+			set.price_cents = input.price.amount;
+			set.price_currency = input.price.currency;
+		}
+		if (input.title !== undefined) set.title = input.title;
+		if (input.taxClass !== undefined) set.tax_class = input.taxClass;
+		if (input.weightGrams !== undefined) set.weight_grams = input.weightGrams;
+		if (input.lengthMm !== undefined) set.length_mm = input.lengthMm;
+		if (input.widthMm !== undefined) set.width_mm = input.widthMm;
+		if (input.heightMm !== undefined) set.height_mm = input.heightMm;
+		if (input.productKind !== undefined) set.product_kind = input.productKind;
+
+		let updated: ProductCommerceTable | undefined;
+		try {
+			let stmt = this.#db
+				.updateTable("product_commerce")
+				.set(set)
+				.where("product_id", "=", input.productId)
+				.where("deleted_at", "is", null)
+				.where("updated_at", "=", expectedUpdatedAt)
+				.where("idempotency_key", "!=", key);
+			if (input.price !== undefined) {
+				// Currency integrity: never silently switch an already-priced row's
+				// currency. NULL (first pricing) passes.
+				const cur = input.price.currency;
+				stmt = stmt.where(sql<SqlBool>`(price_currency is null or price_currency = ${cur})`);
+			}
+			updated = await stmt.returningAll().executeTakeFirst();
+		} catch (err) {
+			if (input.sku !== undefined && isLiveSkuUniqueViolation(err)) {
+				throw new SkuConflictError(input.sku);
+			}
+			throw err;
+		}
+
+		if (updated !== undefined) return { ok: true, product: toDomain(updated) };
+
+		// Zero rows applied — classify the no-op from a fresh read, in the fake's
+		// guard order so fake/sqlite/pg agree byte-for-byte.
+		const current = await this.#selectByProductId(input.productId);
+		if (current === undefined || current.deleted_at !== null) {
+			return { ok: false, reason: "not_found" };
+		}
+		if (current.idempotency_key === key) {
+			return { ok: true, product: toDomain(current) }; // replay no-op.
+		}
+		if (current.updated_at !== expectedUpdatedAt) {
+			return { ok: false, reason: "stale", current: toDomain(current) };
+		}
+		if (
+			input.price !== undefined &&
+			current.price_currency !== null &&
+			current.price_currency !== input.price.currency
+		) {
+			return { ok: false, reason: "currency_mismatch", current: toDomain(current) };
+		}
+		// No guard explains the no-op — the statement should have applied. Fail
+		// loudly rather than silently swallow a lost write.
+		throw new Error(
+			`updateCommerceFields matched zero rows but no guard explains it for product_id ${input.productId}`,
+		);
 	}
 
 	/**

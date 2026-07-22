@@ -3,9 +3,12 @@ import type { InventoryStore } from "../ports/inventory-store.js";
 import type {
 	ProductCommerce,
 	ProductCommerceStore,
+	ProductCommerceUpdateResult,
 	ProductCommerceView,
+	UpdateProductCommerceFieldsInput,
 	UpsertProductCommerceInput,
 } from "../ports/product-commerce-store.js";
+import { InvalidProductFieldError } from "./errors.js";
 
 export interface ProductCommerceDeps {
 	productCommerce: ProductCommerceStore;
@@ -72,6 +75,48 @@ export async function listProductCommerceByIds(
 	productIds: ProductId[],
 ): Promise<ProductCommerceView[]> {
 	return store.listCommerceByIds(productIds);
+}
+
+/**
+ * Guarded admin EDIT of the commerce-owned fields (admin-UX Increment 2,
+ * slice 2). A thin IO-free orchestration: pure field validation (the domain
+ * rules the branded types cannot express), then the store's optimistic
+ * compare-and-set (`ProductCommerceStore.updateCommerceFields`) — the port doc
+ * carries the guard semantics (replay dedupe, not_found, stale, currency
+ * integrity). Exists so `@urumi/service` composes a use-case, not a store
+ * method, like its siblings.
+ *
+ * Validation (throws `InvalidProductFieldError`, mapped to 400 upstream):
+ *  - `price.amount` must be STRICTLY POSITIVE — a $0 commerce price is not a
+ *    valid edit (branded `Cents` already rejects negatives/floats; ">0" is the
+ *    one rule left to the domain).
+ *  - `weightGrams` / `lengthMm` / `widthMm` / `heightMm`, when provided
+ *    non-null, must be non-negative safe integers.
+ * NOT re-checked here: currency integrity + existence + staleness are the
+ * STORE's atomic concern (checking them here would be a TOCTOU race the CAS
+ * already closes); SKU live-uniqueness stays the store's partial-index guard.
+ */
+export async function updateProductCommerceFields(
+	store: ProductCommerceStore,
+	input: UpdateProductCommerceFieldsInput,
+	key: IdempotencyKey,
+	expectedUpdatedAt: string,
+): Promise<ProductCommerceUpdateResult> {
+	if (input.price !== undefined && input.price.amount <= 0) {
+		throw new InvalidProductFieldError("price", "price must be greater than zero");
+	}
+	const dims = [
+		["weightGrams", input.weightGrams],
+		["lengthMm", input.lengthMm],
+		["widthMm", input.widthMm],
+		["heightMm", input.heightMm],
+	] as const;
+	for (const [field, value] of dims) {
+		if (value !== undefined && value !== null && (!Number.isSafeInteger(value) || value < 0)) {
+			throw new InvalidProductFieldError(field, `${field} must be a non-negative integer`);
+		}
+	}
+	return store.updateCommerceFields(input, key, expectedUpdatedAt);
 }
 
 export async function softDeleteProductCommerce(

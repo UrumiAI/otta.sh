@@ -10,8 +10,8 @@ import type { HttpAccess } from "../types.js";
  * the dependency-cruiser rule, MOD-4). `#fetch` is `#`-prefixed so the
  * sandbox-clean grep guard sees no bare fetch call.
  *
- * Read-only surface only in this slice: no create/edit/restock methods exist
- * here (a later increment).
+ * Read surface plus the guarded commerce EDIT (`updateProduct`, admin-UX
+ * Increment 2 slice 2): no create/restock methods here (a later increment).
  */
 
 /** A lightweight product row for the admin list — NEVER carries stock (the
@@ -63,6 +63,35 @@ export interface ProductsListResult {
 	nextCursor: string | null;
 }
 
+/** The commerce-owned fields a product edit may change (mirrors the service's
+ *  `editProductCommerceBody`). `expectedUpdatedAt` is the optimistic-concurrency
+ *  watermark the admin loaded; the service compare-and-sets on it. Money is an
+ *  integer minor-units + ISO-4217 pair — never a float. NO `active` (the CMS
+ *  publish gate is not edited here). */
+export interface ProductEditWire {
+	expectedUpdatedAt: string;
+	sku?: string;
+	price?: { amount: number; currency: string };
+	title?: string | null;
+	taxClass?: string | null;
+	weightGrams?: number | null;
+	lengthMm?: number | null;
+	widthMm?: number | null;
+	heightMm?: number | null;
+	productKind?: string;
+}
+
+/** Discriminated edit outcome — the plugin renders each without status-code-as-
+ *  logic (stale → reload notice, currency/sku → per-field warning). */
+export type ProductEditResult =
+	| { ok: true; updatedAt: string | null }
+	| { ok: false; reason: "not_found" }
+	| { ok: false; reason: "stale"; currentUpdatedAt: string | null }
+	| { ok: false; reason: "currency_mismatch"; currency: string | null }
+	| { ok: false; reason: "sku_taken"; sku: string | null }
+	| { ok: false; reason: "invalid"; field: string | null }
+	| { ok: false; reason: "error" };
+
 export interface AdminProductsClientOptions {
 	fetch: HttpAccess["fetch"];
 	baseUrl: string;
@@ -70,17 +99,73 @@ export interface AdminProductsClientOptions {
 	 *  Sourced by the page handler from write-only `ctx.kv`
 	 *  (`settings:internalToken`). */
 	adminToken?: string;
+	/** The machine write-gate token (`X-Service-Token`, ADR-0007), sourced from
+	 *  write-only `ctx.kv`. Attached to the edit PATCH (a NON-GET the gate blocks
+	 *  without it); undefined ⇒ no header ⇒ identical to a deployment with the
+	 *  service secret unset. */
+	serviceToken?: string;
 }
 
 export class AdminProductsClient {
 	readonly #fetch: HttpAccess["fetch"];
 	readonly #baseUrl: string;
 	readonly #adminToken: string | undefined;
+	readonly #serviceToken: string | undefined;
 
 	constructor(options: AdminProductsClientOptions) {
 		this.#fetch = options.fetch;
 		this.#baseUrl = options.baseUrl.replace(/\/$/, "");
 		this.#adminToken = options.adminToken;
+		this.#serviceToken = options.serviceToken;
+	}
+
+	/**
+	 * PATCH the commerce-owned fields of one product (admin-UX Increment 2 slice
+	 * 2). Gated by BOTH the admin token (X-Internal-Token) AND the write gate
+	 * (X-Service-Token) when both secrets are set. `key` is the stable
+	 * idempotency key (a double-submit dedupes). The HTTP status maps 1:1 to the
+	 * discriminated result so the caller never inspects a raw status.
+	 */
+	async updateProduct(
+		productId: string,
+		body: ProductEditWire,
+		key: string,
+	): Promise<ProductEditResult> {
+		const headers: Record<string, string> = {
+			"Content-Type": "application/json",
+			"Idempotency-Key": key,
+		};
+		if (this.#adminToken !== undefined) headers["X-Internal-Token"] = this.#adminToken;
+		if (this.#serviceToken !== undefined) headers["X-Service-Token"] = this.#serviceToken;
+		const res = await this.#fetch(
+			`${this.#baseUrl}/admin/products/${encodeURIComponent(productId)}`,
+			{ method: "PATCH", headers, body: JSON.stringify(body) },
+		);
+		if (res.status === 200) {
+			const parsed = (await safeJson(res)) as { updatedAt?: string } | undefined;
+			return { ok: true, updatedAt: parsed?.updatedAt ?? null };
+		}
+		if (res.status === 404) return { ok: false, reason: "not_found" };
+		if (res.status === 400) {
+			const parsed = (await safeJson(res)) as { field?: string } | undefined;
+			return { ok: false, reason: "invalid", field: parsed?.field ?? null };
+		}
+		if (res.status === 409) {
+			const parsed = (await safeJson(res)) as
+				| { reason?: string; currentUpdatedAt?: string; currency?: string; sku?: string }
+				| undefined;
+			if (parsed?.reason === "STALE_EDIT") {
+				return { ok: false, reason: "stale", currentUpdatedAt: parsed.currentUpdatedAt ?? null };
+			}
+			if (parsed?.reason === "CURRENCY_MISMATCH") {
+				return { ok: false, reason: "currency_mismatch", currency: parsed.currency ?? null };
+			}
+			if (parsed?.reason === "SKU_TAKEN") {
+				return { ok: false, reason: "sku_taken", sku: parsed.sku ?? null };
+			}
+			return { ok: false, reason: "error" };
+		}
+		return { ok: false, reason: "error" };
 	}
 
 	async listProducts(
@@ -131,5 +216,15 @@ export class AdminProductsClient {
 		});
 		if (!res.ok) throw new Error(`GET ${path} failed (HTTP ${res.status})`);
 		return (await res.json()) as T;
+	}
+}
+
+/** Parse a response body as JSON, tolerating an empty/invalid body (a structured
+ *  error the plugin still classifies by status). */
+async function safeJson(res: Response): Promise<unknown> {
+	try {
+		return await res.json();
+	} catch {
+		return undefined;
 	}
 }

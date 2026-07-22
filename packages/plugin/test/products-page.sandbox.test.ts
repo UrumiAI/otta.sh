@@ -1,6 +1,7 @@
 import { plugin } from "@urumi/plugin";
 import { afterEach, describe, expect, test } from "vitest";
 import {
+	type RecordedRequest,
 	startStubCommerceServer,
 	type StubCommerceServer,
 } from "./helpers/stub-commerce-server.js";
@@ -240,5 +241,155 @@ describe("admin Products console (workerd sandbox)", () => {
 		const blocks = blocksOf(outcome);
 		expect(blocks.some((b) => b.type === "header" && b.text === "Products")).toBe(true);
 		expect(blocks.some((b) => b.type === "table")).toBe(true);
+	});
+
+	test("the product detail carries an edit form (products:save) with price prefilled as a decimal", async () => {
+		await boot();
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "products:open",
+			values: { productId: "prod-1" },
+		});
+		const blocks = blocksOf(outcome);
+		const form = blocks.find(
+			(b) =>
+				b.type === "form" && (b.submit as { action_id?: string })?.action_id === "products:save",
+		);
+		expect(form).toBeDefined();
+		const fields = (form?.fields ?? []) as Array<Record<string, unknown>>;
+		const byId = new Map(fields.map((f) => [f.action_id, f]));
+		// Price is a TEXT input (never number_input — money is not a float), prefilled
+		// from minor units as a hundredths decimal.
+		expect(byId.get("price")?.type).toBe("text_input");
+		expect(byId.get("price")?.initial_value).toBe("19.99");
+		// Currency is FIXED for a priced product (a single-option carrier), so a price
+		// edit can never silently switch it.
+		expect(byId.get("currency")?.type).toBe("select");
+		// The optimistic-concurrency watermark rides along as a hidden carrier.
+		expect(byId.get("expectedUpdatedAt")?.initial_value).toBe("2026-07-12T01:00:00.000Z");
+		// The publish gate (active) is NOT an editable field on this page.
+		expect(byId.has("active")).toBe(false);
+	});
+});
+
+// -- the guarded commerce edit (save) under the sandbox -----------------------
+
+/** A PATCH responder: requires BOTH tokens, echoes an ok with a fresh watermark
+ *  by default; a magic expectedUpdatedAt drives a 409 stale. */
+function makePatchResponder() {
+	return (req: RecordedRequest): { status: number; body: unknown } => {
+		if (req.headers["x-internal-token"] === undefined) {
+			return { status: 401, body: { ok: false, error: "unauthorized" } };
+		}
+		const body = req.body as { expectedUpdatedAt?: string } | undefined;
+		if (body?.expectedUpdatedAt === "1999-01-01T00:00:00.000Z") {
+			return {
+				status: 409,
+				body: { ok: false, reason: "STALE_EDIT", currentUpdatedAt: "2026-07-12T02:00:00.000Z" },
+			};
+		}
+		return { status: 200, body: { ok: true, updatedAt: "2026-07-12T02:00:00.000Z" } };
+	};
+}
+
+describe("admin Products edit / save (workerd sandbox)", () => {
+	async function bootEdit(): Promise<void> {
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", makeGetResponder());
+		stub.respondWith("PATCH", makePatchResponder());
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+		// Seed BOTH tokens (admin read + service write gate).
+		await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-token",
+			values: { internalToken: "admin-token-xyz" },
+		});
+		await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-service-token",
+			values: { serviceToken: "svc-token-abc" },
+		});
+		stub.requests.length = 0;
+	}
+
+	test("save PATCHes the commerce fields with BOTH tokens + Idempotency-Key, then reloads with a Saved notice", async () => {
+		await bootEdit();
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "products:save",
+			values: {
+				productId: "prod-1",
+				expectedUpdatedAt: "2026-07-12T01:00:00.000Z",
+				title: "Blue Widget XL",
+				sku: "SKU-1",
+				price: "24.50",
+				currency: "USD",
+				productKind: "physical",
+				taxClass: "standard",
+			},
+		});
+
+		const patch = stub!.requests.find((r) => r.method === "PATCH");
+		expect(patch).toBeDefined();
+		expect(patch!.url).toBe("/admin/products/prod-1");
+		expect(patch!.headers["x-internal-token"]).toBe("admin-token-xyz");
+		expect(patch!.headers["x-service-token"]).toBe("svc-token-abc");
+		expect(typeof patch!.headers["idempotency-key"]).toBe("string");
+		const body = patch!.body as Record<string, unknown>;
+		// Money reached the wire as INTEGER minor units (24.50 → 2450), never a float.
+		expect(body.price).toEqual({ amount: 2450, currency: "USD" });
+		expect(body.expectedUpdatedAt).toBe("2026-07-12T01:00:00.000Z");
+		expect(body.title).toBe("Blue Widget XL");
+		expect("active" in body).toBe(false);
+
+		// The leaf reloaded (a fresh GET) and shows a success notice.
+		const blocks = blocksOf(outcome);
+		const banner = blocks.find((b) => b.type === "banner");
+		expect(banner?.variant).toBe("default");
+		expect(String(banner?.title)).toContain("Saved");
+		expect(
+			stub!.requests.some((r) => r.method === "GET" && r.url === "/admin/products/prod-1"),
+		).toBe(true);
+	});
+
+	test("a concurrent-edit conflict (409 STALE_EDIT) reloads the latest detail with a re-apply warning, never a clobber", async () => {
+		await bootEdit();
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "products:save",
+			values: {
+				productId: "prod-1",
+				expectedUpdatedAt: "1999-01-01T00:00:00.000Z", // an admin who loaded a stale revision
+				title: "loser edit",
+			},
+		});
+		const blocks = blocksOf(outcome);
+		const banner = blocks.find((b) => b.type === "banner" && b.variant === "error");
+		expect(banner).toBeDefined();
+		expect(String(banner?.title)).toMatch(/changed since you opened it/i);
+		// It re-rendered the FRESH detail (a reload GET happened).
+		expect(
+			stub!.requests.some((r) => r.method === "GET" && r.url === "/admin/products/prod-1"),
+		).toBe(true);
+	});
+
+	test("a malformed price is caught at the plugin boundary — no PATCH is sent", async () => {
+		await bootEdit();
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "products:save",
+			values: {
+				productId: "prod-1",
+				expectedUpdatedAt: "2026-07-12T01:00:00.000Z",
+				price: "19.999", // three decimals — rejected before egress
+				currency: "USD",
+			},
+		});
+		expect(stub!.requests.some((r) => r.method === "PATCH")).toBe(false);
+		const banner = blocksOf(outcome).find((b) => b.type === "banner" && b.variant === "error");
+		expect(banner).toBeDefined();
 	});
 });
