@@ -539,6 +539,71 @@ export function productCommerceStoreContract(
 			expect(res.reason).toBe("currency_mismatch");
 		});
 
+		test("updateCommerceFields: compare-at MATCHING + unit cost MISMATCHING in one edit is currency_mismatch — nothing written (both fields guarded independently)", async () => {
+			// PR #70 review (both reviewers): the Kysely adapter originally guarded
+			// only ONE of compareAtPrice/unitCost (an either/or pick), so this exact
+			// split — one field matching the stored currency, the other not — wrote a
+			// genuinely mixed-currency row. Locked across fake/sqlite/pg.
+			const h = await makeStore();
+			const pid = productId("prod-adds-split");
+			const seeded = await seedEditable(h, "prod-adds-split", {
+				priceCents: 2000,
+				currency: "USD",
+			});
+			const res = await h.store.updateCommerceFields(
+				{
+					productId: pid,
+					compareAtPrice: money(cents(3000), currency("USD")), // matches stored
+					unitCost: money(cents(850), currency("EUR")), // does NOT
+				},
+				idempotencyKey("adds-split"),
+				seeded.updatedAt.toISOString(),
+			);
+			expect(res.ok).toBe(false);
+			if (res.ok) throw new Error("unreachable");
+			expect(res.reason).toBe("currency_mismatch");
+			// ATOMIC: neither field landed — the matching compare-at must not be
+			// applied while the mismatching cost is rejected.
+			const row = await h.store.getByProductId(pid);
+			expect(row?.compareAtPrice).toBeNull();
+			expect(row?.unitCost).toBeNull();
+		});
+
+		test("updateCommerceFields rejects a unit-cost-ALONE currency mismatch against the stored price currency", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-adds-costmix");
+			const seeded = await seedEditable(h, "prod-adds-costmix", {
+				priceCents: 2000,
+				currency: "USD",
+			});
+			const res = await h.store.updateCommerceFields(
+				{ productId: pid, unitCost: money(cents(850), currency("EUR")) },
+				idempotencyKey("adds-costmix"),
+				seeded.updatedAt.toISOString(),
+			);
+			expect(res.ok).toBe(false);
+			if (res.ok) throw new Error("unreachable");
+			expect(res.reason).toBe("currency_mismatch");
+			expect((await h.store.getByProductId(pid))?.unitCost).toBeNull();
+		});
+
+		test("updateCommerceFields rejects unit cost ALONE on a product with no price yet (nothing to match)", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-adds-cost-unpriced");
+			const seeded = await h.store.upsert(
+				{ productId: pid, title: "Unpriced" },
+				idempotencyKey("seed-adds-cost-unpriced"),
+			);
+			const res = await h.store.updateCommerceFields(
+				{ productId: pid, unitCost: money(cents(850), currency("USD")) },
+				idempotencyKey("adds-cost-unpriced"),
+				seeded.updatedAt.toISOString(),
+			);
+			expect(res.ok).toBe(false);
+			if (res.ok) throw new Error("unreachable");
+			expect(res.reason).toBe("currency_mismatch");
+		});
+
 		test("updateCommerceFields accepts first-pricing + compare-at + cost in one edit when the currencies agree", async () => {
 			const h = await makeStore();
 			const pid = productId("prod-adds-firstprice");

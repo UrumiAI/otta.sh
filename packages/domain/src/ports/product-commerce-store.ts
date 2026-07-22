@@ -209,8 +209,9 @@ export interface UpdateProductCommerceFieldsInput {
 	 * OUT of scope for this slice (data model + admin edit only). `compareAt <
 	 * price` is the normal case, but `compareAt >= price` is DELIBERATELY NOT
 	 * rejected (Shopify allows it — a "was" price can legitimately be ≤ the
-	 * current one during a price rise); the admin form shows a soft warning
-	 * rather than blocking the save.
+	 * current one during a price rise); the admin form's STATIC help copy
+	 * documents that this is allowed (no value-triggered warning is rendered —
+	 * a dynamic per-save hint is a possible future UX nicety, not this slice).
 	 */
 	compareAtPrice?: Money | null;
 	/**

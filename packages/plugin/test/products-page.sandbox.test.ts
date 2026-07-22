@@ -421,6 +421,50 @@ describe("admin Products console (workerd sandbox)", () => {
 		expect(policy.type).toBe("select");
 		expect(policy.options?.map((o) => o.value)).toEqual(["deny"]);
 	});
+
+	test("the tax-class select falls back to the static defaults when the registry read fails — the detail still renders", async () => {
+		await boot();
+		// Replace the GET responder with one whose /admin/tax/classes read FAILS
+		// (500) while the product detail still serves — the registry read is a
+		// SECONDARY, best-effort fetch that must degrade, never break the leaf.
+		const base = makeGetResponder();
+		stub!.respondWith("GET", (req) => {
+			const [path] = req.url.split("?");
+			if (path === "/admin/tax/classes") {
+				return { status: 500, body: { ok: false, error: "boom" } };
+			}
+			return base(req);
+		});
+
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "products:open",
+			values: { productId: "prod-1" },
+		});
+		const blocks = blocksOf(outcome);
+		const form = blocks.find(
+			(b) =>
+				b.type === "form" && (b.submit as { action_id?: string })?.action_id === "products:save",
+		);
+		expect(form).toBeDefined(); // the leaf rendered despite the registry failure.
+		const fields = (form?.fields ?? []) as Array<Record<string, unknown>>;
+		const byId = new Map(fields.map((f) => [f.action_id, f]));
+		const taxClass = byId.get("taxClass") as {
+			options?: Array<{ value: string }>;
+			initial_value?: string;
+		};
+		// DEFAULT_TAX_CLASSES backstop: clear option + the four static defaults.
+		expect(taxClass.options?.map((o) => o.value)).toEqual([
+			"",
+			"standard",
+			"reduced",
+			"zero",
+			"digital",
+		]);
+		// The product's current value ("standard") is in the defaults, so it is
+		// still preselected — no extra verbatim option appended.
+		expect(taxClass.initial_value).toBe("standard");
+	});
 });
 
 // -- the guarded commerce edit (save) under the sandbox -----------------------

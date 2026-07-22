@@ -28,9 +28,14 @@ export type DeleteTaxClassResult =
  * buried in one adapter:
  *
  *  1. If any LIVE product still references the class → `in_use_by_products`
- *     (checked FIRST: a product dangling on a deleted class would silently fall
- *     back to `"standard"` tax at the next checkout — a money-affecting
- *     regression, the failure the merchant most needs protected).
+ *     (checked FIRST: a product dangling on a deleted class would be silently
+ *     UNTAXED at the next checkout — `computeTotals` treats a `taxClassId`
+ *     absent from `taxRatesByClass` as 0 bps (`rules.taxRatesByClass[id] ?? 0`),
+ *     and once the class's rates are gone the dangling id can never resolve a
+ *     rate again. Charging no tax where tax is owed is a compliance-grade,
+ *     money-affecting regression — the failure the merchant most needs
+ *     protected. NOTE: the `?? "standard"` fallback in the checkout paths
+ *     applies only to a NULL `taxClass`, never to a dangling id.)
  *  2. Otherwise delegate to `TaxRulesStore.deleteClass`, whose atomic guard
  *     refuses if a `tax_rate` references the class (`in_use_by_rates`) and
  *     reports `not_found` for an unknown id.
@@ -39,8 +44,9 @@ export type DeleteTaxClassResult =
  * delete: a product could be re-pointed at the class in the gap. This is
  * ACCEPTED for an admin-console registry-maintenance action (not a checkout hot
  * path) — the worst case is a class deleted moments after a product adopted it,
- * healed by the merchant re-selecting a class on that product; the no-oversell
- * class of invariant is not involved. A single-statement cross-aggregate guard
+ * leaving that product's lines UNTAXED (0 bps, per the `?? 0` above) until the
+ * merchant re-selects a class on it; the no-oversell class of invariant is not
+ * involved. A single-statement cross-aggregate guard
  * is not available (the two live in different store aggregates), and inventing a
  * distributed lock for a rare maintenance action would be over-engineering.
  *

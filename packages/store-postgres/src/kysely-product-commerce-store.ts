@@ -367,23 +367,23 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 				const cur = input.price.currency;
 				stmt = stmt.where(sql<SqlBool>`(price_currency is null or price_currency = ${cur})`);
 			} else {
-				// compare-at / cost supplied WITHOUT a price in the same edit must match
-				// the STORED price currency (the row currency). A NULL stored price
-				// currency FAILS this guard — compare-at / cost require a priced product
-				// (the within-edit currency agreement, when a price IS present, is the
-				// use-case's `InvalidProductFieldError` concern, so this branch only runs
-				// when price is absent). A cleared (null) field carries no currency and
-				// adds no guard.
-				const extraCur =
-					input.compareAtPrice != null
-						? input.compareAtPrice.currency
-						: input.unitCost != null
-							? input.unitCost.currency
-							: null;
-				if (extraCur !== null) {
-					stmt = stmt.where(
-						sql<SqlBool>`(price_currency is not null and price_currency = ${extraCur})`,
-					);
+				// compare-at / cost supplied WITHOUT a price in the same edit must EACH
+				// match the STORED price currency (the row currency) — BOTH fields are
+				// guarded INDEPENDENTLY, exactly like the fake's 4b loop (review of PR
+				// #70: a single either/or pick here let a "compare-at matches, cost
+				// doesn't" edit write a mixed-currency row). A NULL stored price
+				// currency FAILS the guard — compare-at / cost require a priced product.
+				// (The within-edit currency agreement, when a price IS present, is the
+				// use-case's `InvalidProductFieldError` concern, so this branch only
+				// runs when price is absent.) A cleared (null) field carries no
+				// currency and adds no guard.
+				for (const extra of [input.compareAtPrice, input.unitCost]) {
+					if (extra != null) {
+						const extraCur = extra.currency;
+						stmt = stmt.where(
+							sql<SqlBool>`(price_currency is not null and price_currency = ${extraCur})`,
+						);
+					}
 				}
 			}
 			updated = await stmt.returningAll().executeTakeFirst();
@@ -417,16 +417,13 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 		}
 		// compare-at / cost supplied WITHOUT a price whose currency doesn't match the
 		// stored price currency (a null stored currency ⇒ mismatch — the product
-		// must be priced first). Mirrors the fake's 4b classification exactly.
+		// must be priced first). BOTH fields checked INDEPENDENTLY, mirroring the
+		// fake's 4b loop byte-for-byte.
 		if (input.price === undefined) {
-			const extraCur =
-				input.compareAtPrice != null
-					? input.compareAtPrice.currency
-					: input.unitCost != null
-						? input.unitCost.currency
-						: null;
-			if (extraCur !== null && current.price_currency !== extraCur) {
-				return { ok: false, reason: "currency_mismatch", current: toDomain(current) };
+			for (const extra of [input.compareAtPrice, input.unitCost]) {
+				if (extra != null && current.price_currency !== extra.currency) {
+					return { ok: false, reason: "currency_mismatch", current: toDomain(current) };
+				}
 			}
 		}
 		// No guard explains the no-op — the statement should have applied. Fail

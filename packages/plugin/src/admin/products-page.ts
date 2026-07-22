@@ -405,7 +405,7 @@ function detailBlocks(
 	});
 	blocks.push({
 		type: "context",
-		text: 'Editing the commerce fields this store owns. The status (active/inactive) is the CMS publish state — publish or unpublish the document to change it, not here. Titles/images are also managed in the CMS. Money is shown in the product\'s own currency: price, compare-at, and unit cost must all use that one currency (set the price first on a new product). Compare-at is the struck-through "was" price; it is usually higher than the price, but a compare-at at or below the price is allowed (a warning, not a block). Unit cost is admin-only margin data and is never shown to buyers. Out-of-stock policy is Deny only for now — the store stops selling at zero stock (no overselling); backorders are a future capability.',
+		text: 'Editing the commerce fields this store owns. The status (active/inactive) is the CMS publish state — publish or unpublish the document to change it, not here. Titles/images are also managed in the CMS. Money is shown in the product\'s own currency: price, compare-at, and unit cost must all use that one currency (set the price first on a new product). Compare-at is the struck-through "was" price; it is usually higher than the price, but a compare-at at or below the price is also allowed and saved as-is — double-check it is what you intend. Unit cost is admin-only margin data and is never shown to buyers. Out-of-stock policy is Deny only for now — the store stops selling at zero stock (no overselling); backorders are a future capability.',
 	});
 	blocks.push(editForm(actions, p, taxClasses));
 
