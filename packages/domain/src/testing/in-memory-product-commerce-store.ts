@@ -370,9 +370,11 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 
 	/** The ONE `ProductListFilter` predicate (mirrors `OrderStore`'s
 	 *  `#matchesFilter` / the Kysely adapter's shared predicate builder) —
-	 *  always excludes soft-deleted rows first. */
+	 *  excludes soft-deleted rows UNLESS `filter.deleted: true` requests the
+	 *  archive view (product lifecycle surfacing — see the port doc). */
 	#matchesFilter(row: ProductCommerce, filter: ProductListFilter): boolean {
-		if (row.deletedAt !== null) return false; // never list a tombstone.
+		const wantDeleted = filter.deleted === true;
+		if (wantDeleted !== (row.deletedAt !== null)) return false;
 		if (filter.active !== undefined && row.active !== filter.active) return false;
 		if (filter.productKind !== undefined && row.productKind !== filter.productKind) return false;
 		if (filter.search !== undefined) {
@@ -427,6 +429,7 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 			price: row.price,
 			productKind: row.productKind,
 			active: row.active,
+			deletedAt: row.deletedAt === null ? null : row.deletedAt.toISOString(),
 			createdAt: row.createdAt.toISOString(),
 		};
 	}

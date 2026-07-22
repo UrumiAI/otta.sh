@@ -196,6 +196,7 @@ export function adminRoutes(deps: AdminRoutesDeps): Hono {
 		} else {
 			filter = toProductFilter({
 				active: q.active === undefined ? undefined : q.active === "true",
+				deleted: q.deleted === undefined ? undefined : q.deleted === "true",
 				productKind: q.productKind,
 				search: q.search,
 			});
@@ -219,14 +220,21 @@ export function adminRoutes(deps: AdminRoutesDeps): Hono {
 		const params = productPathParams.safeParse(c.req.param());
 		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
 		const product = await deps.productCommerce.getByProductId(toProductId(params.data.productId));
-		if (product === null || product.deletedAt !== null) {
-			// A soft-deleted product reads as "not found" on the admin detail, same
-			// as an unknown id — there is no admin surface for browsing/restoring a
-			// tombstone yet (mirrors listProducts's always-excludes-deleted rule).
+		if (product === null) {
+			// UNKNOWN id — genuinely never existed. Distinct from a soft-deleted
+			// row (see below): the two used to read identically as 404, which hid
+			// the tombstone from the admin (product lifecycle surfacing, port doc).
 			return c.json({ ok: false, reason: "PRODUCT_NOT_FOUND" }, 404);
 		}
 		// A single-sku read — never a per-row list join (port doc). A skuless
-		// "create then price" row has no sku to look up; stock reads as `0`.
+		// "create then price" row has no sku to look up; stock reads as `0`. A
+		// soft-deleted row still resolves here (200, `deletedAt` non-null) — the
+		// detail is now the HONEST read-only tombstone view, not a 404 masquerading
+		// as "never existed" (product lifecycle surfacing). Its `onHand` is still
+		// read for informational value only; the write routes below (PATCH/restock/
+		// remove-stock) remain blocked for a deleted row via their OWN not_found
+		// guards (`updateCommerceFields`'s guard order / `resolveProductSku`) —
+		// this GET is visibility only, never a path back to editability.
 		const onHand = product.sku === null ? 0 : await deps.inventoryStore.getOnHand(product.sku);
 		return c.json({ ok: true, product: serializeProductDetail(product, onHand) }, 200);
 	});
@@ -749,6 +757,7 @@ function serializeProductSummary(summary: ProductSummary): Record<string, unknow
 		currency: summary.price?.currency ?? null,
 		productKind: summary.productKind,
 		active: summary.active,
+		deletedAt: summary.deletedAt,
 		createdAt: summary.createdAt,
 	};
 }
@@ -771,6 +780,7 @@ function serializeProductDetail(product: ProductCommerce, onHand: number): Recor
 		heightMm: product.heightMm,
 		productKind: product.productKind,
 		active: product.active,
+		deletedAt: product.deletedAt === null ? null : product.deletedAt.toISOString(),
 		onHand,
 		createdAt: product.createdAt.toISOString(),
 		updatedAt: product.updatedAt.toISOString(),
@@ -910,11 +920,13 @@ function decodeCursor(token: string): DecodedCursor | null {
  *  mirrors `toFilter`. */
 function toProductFilter(parsed: {
 	active?: boolean;
+	deleted?: boolean;
 	productKind?: "physical" | "digital";
 	search?: string;
 }): ProductListFilter {
 	const filter: ProductListFilter = {};
 	if (parsed.active !== undefined) filter.active = parsed.active;
+	if (parsed.deleted !== undefined) filter.deleted = parsed.deleted;
 	if (parsed.productKind !== undefined) filter.productKind = parsed.productKind;
 	if (parsed.search !== undefined) filter.search = parsed.search;
 	return filter;

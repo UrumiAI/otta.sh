@@ -77,11 +77,20 @@ const PAGE_LIMIT = 25;
 /** The console's own filter form values, kept alongside the opaque service
  *  cursor so paging preserves the form (mirrors `OrdersFilterForm`).
  *  `active`/`productKind` are tri-state strings ("" ⇒ both) because a Block
- *  Kit `select` has no "unset" value distinct from its options. */
+ *  Kit `select` has no "unset" value distinct from its options.
+ *
+ *  `archived` (product lifecycle surfacing, admin-UX Increment 2) is the
+ *  archive-view toggle: unset ⇒ the ORIGINAL default (live products only,
+ *  active + inactive both listed); `"true"` ⇒ ONLY soft-deleted rows. A
+ *  soft-deleted row is always inactive (`softDelete` sets `active=false`), so
+ *  combining `active` with `archived: "true"` is a contradiction that returns
+ *  no rows — the filter form's own context copy calls this out rather than
+ *  silently reconciling the two into one control. */
 interface ProductsFilterForm {
 	active?: "true" | "false";
 	productKind?: "physical" | "digital";
 	search?: string;
+	archived?: "true";
 }
 
 /** The em-dash BlockInteraction envelope this page consumes (the scaffold's
@@ -137,6 +146,18 @@ function productsListLevel() {
 	});
 }
 
+/** The lifecycle status label a merchant reads (product lifecycle surfacing,
+ *  admin-UX Increment 2): a soft-deleted row shows "deleted", never
+ *  "inactive" — `deletedAt` outranks `active` (a tombstoned row is always
+ *  inactive too, but "deleted" is the honest, non-recoverable-from-here
+ *  status a merchant needs to see, not the publish-gate value underneath
+ *  it). Shared by the list table, the "Open product" picker, and the detail
+ *  fields so the three surfaces can never disagree. */
+function statusLabel(p: { active: boolean; deletedAt: string | null }): string {
+	if (p.deletedAt !== null) return "deleted";
+	return p.active ? "active" : "inactive";
+}
+
 function listBlocks(
 	actions: ScreenActions,
 	form: ProductsFilterForm,
@@ -156,19 +177,22 @@ function listBlocks(
 			title: p.title ?? "(untitled)",
 			sku: p.sku ?? "—",
 			price: formatOptionalTotal(p.priceCents, p.currency),
-			status: p.active ? "active" : "inactive",
+			status: statusLabel(p),
 			kind: p.productKind,
 		})),
 		page_action_id: actions.page,
 		...(nextToken !== undefined ? { next_cursor: nextToken } : {}),
-		empty_text: "No products match these filters.",
+		empty_text:
+			form.archived === "true"
+				? "No archived (deleted) products match these filters."
+				: "No products match these filters.",
 	};
 
 	const blocks: Block[] = [
 		{ type: "header", text: "Products" },
 		{
 			type: "context",
-			text: "View-only console. Filter and open a product for its full read-only detail. Stock is shown on the detail view only (kept off this list to avoid a per-row inventory lookup). Money shown in the product's own currency.",
+			text: 'View-only console. Filter and open a product for its full read-only detail. Stock is shown on the detail view only (kept off this list to avoid a per-row inventory lookup). Money shown in the product\'s own currency. "Archived" is a separate view of products deleted (trashed or permanently removed) in the CMS — they never appear alongside live products, and there is no restore here (restoring the CMS document does not un-delete the commerce record).',
 		},
 		filterForm(actions, form),
 		table,
@@ -177,17 +201,24 @@ function listBlocks(
 	return blocks;
 }
 
+/** The combined "Status" select's wire value: the ORIGINAL `active` tri-state
+ *  plus a 4th `"archived"` option — one control, mutually exclusive, so a
+ *  merchant can never combine "Active" with "Archived" into a filter
+ *  contradiction (a soft-deleted row is always inactive under the hood, but
+ *  the picker never exposes that as two independently-toggleable axes). */
 function filterForm(actions: ScreenActions, form: ProductsFilterForm): FormBlock {
-	const activeOptions: SelectOption[] = [
-		{ value: "", label: "All statuses" },
+	const statusOptions: SelectOption[] = [
+		{ value: "", label: "All statuses (live)" },
 		{ value: "true", label: "Active" },
 		{ value: "false", label: "Inactive" },
+		{ value: "archived", label: "Archived (deleted)" },
 	];
 	const kindOptions: SelectOption[] = [
 		{ value: "", label: "All kinds" },
 		{ value: "physical", label: "physical" },
 		{ value: "digital", label: "digital" },
 	];
+	const statusInitialValue = form.archived === "true" ? "archived" : (form.active ?? "");
 	return {
 		type: "form",
 		fields: [
@@ -195,8 +226,8 @@ function filterForm(actions: ScreenActions, form: ProductsFilterForm): FormBlock
 				type: "select",
 				action_id: "active",
 				label: "Status",
-				options: activeOptions,
-				initial_value: form.active ?? "",
+				options: statusOptions,
+				initial_value: statusInitialValue,
 			},
 			{
 				type: "select",
@@ -226,7 +257,7 @@ function openProductForm(actions: ScreenActions, products: ProductSummaryWire[])
 				label: "Open product",
 				options: products.map((p) => ({
 					value: p.productId,
-					label: `${p.title ?? p.productId} — ${p.active ? "active" : "inactive"}`,
+					label: `${p.title ?? p.productId} — ${statusLabel(p)}`,
 				})),
 			},
 		],
@@ -268,7 +299,7 @@ function detailBlocks(
 		{ label: "Title", value: p.title ?? "(untitled)" },
 		{ label: "SKU", value: p.sku ?? "—" },
 		{ label: "Price", value: formatOptionalTotal(p.priceCents, p.currency) },
-		{ label: "Status", value: p.active ? "active" : "inactive" },
+		{ label: "Status", value: statusLabel(p) },
 		{ label: "Kind", value: p.productKind },
 		{ label: "Stock on hand", value: String(p.onHand) },
 		{ label: "Tax class", value: p.taxClass ?? "—" },
@@ -283,6 +314,27 @@ function detailBlocks(
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
 	blocks.push({ type: "fields", fields });
+
+	// -- Soft-deleted (product lifecycle surfacing, admin-UX Increment 2) -----
+	// A tombstoned row is READ-ONLY here: no edit form, no stock forms. Editing
+	// or restocking a deleted product is meaningless (the write routes 404 it
+	// anyway — see `admin.ts`'s GET-vs-write-routes doc), so the forms are never
+	// rendered rather than rendered-then-rejected. There is no restore action:
+	// the CMS-sync/lifecycle paths (`softDelete`/`activate`/`deactivate`) are
+	// the only writers of this state, and restoring the CMS document does NOT
+	// undo a soft delete (`upsert` never touches `deletedAt`/`active` — see the
+	// port doc) — a known, called-out gap, not something this read-only view can
+	// paper over.
+	if (p.deletedAt !== null) {
+		blocks.push({
+			type: "banner",
+			variant: "default",
+			title: "This product was deleted",
+			description: `Deleted (trashed or permanently removed) in the CMS on ${p.deletedAt}. It no longer appears in the storefront or the default product list, and it cannot be edited or restocked from here. It stays visible in the "Archived" filter for reference; existing orders that included it are unaffected — an order snapshots its price and title at purchase time.`,
+		});
+		return blocks;
+	}
+
 	blocks.push({ type: "divider" });
 	blocks.push({
 		type: "header",
@@ -519,9 +571,18 @@ function failClosed() {
 }
 
 /** Translate the console's filter form into the client's list filter. */
+/** Translate the console's filter form into the client's list filter.
+ *  `archived` (product lifecycle surfacing) wins over `active`: the two are
+ *  mutually exclusive by construction (one combined "Status" select — see
+ *  `filterForm`), but `deleted: true` is asserted alone regardless, so a
+ *  hand-crafted `form_submit` can never smuggle both axes into one request. */
 function toClientFilter(form: ProductsFilterForm): ProductsListFilter {
 	const filter: ProductsListFilter = {};
-	if (form.active !== undefined) filter.active = form.active === "true";
+	if (form.archived === "true") {
+		filter.deleted = true;
+	} else if (form.active !== undefined) {
+		filter.active = form.active === "true";
+	}
 	if (form.productKind !== undefined) filter.productKind = form.productKind;
 	if (form.search !== undefined && form.search.length > 0) filter.search = form.search;
 	return filter;
@@ -532,7 +593,11 @@ function filterFromValues(values: Record<string, unknown>): ProductsFilterForm {
 	const active = readString(values.active);
 	const productKind = readString(values.productKind);
 	const search = readString(values.search);
-	if (active === "true" || active === "false") form.active = active;
+	if (active === "archived") {
+		form.archived = "true";
+	} else if (active === "true" || active === "false") {
+		form.active = active;
+	}
 	if (productKind === "physical" || productKind === "digital") form.productKind = productKind;
 	if (search !== undefined && search.length > 0) form.search = search;
 	return form;

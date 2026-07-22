@@ -32,6 +32,23 @@ export interface ProductListFilter {
 	 *  `sku` (see the filter doc for why the two axes diverge). A row with a
 	 *  null `title`/`sku` simply cannot match that half — never a throw. */
 	search?: string;
+	/**
+	 * The tombstone axis (admin-UX Increment 2, "product lifecycle surfacing"
+	 * — the archive-view follow-up to the always-excludes-deleted default).
+	 * Deliberately NOT an OR-able array like `OrderListFilter.states`: a row is
+	 * either live or soft-deleted, a strict two-value axis, so a single
+	 * equality filter is the honest, minimal mirror of `active`.
+	 *  - omitted or `false` ⇒ the ORIGINAL default: only LIVE rows list
+	 *    (`deleted_at IS NULL`) — unchanged behavior, so every existing caller
+	 *    that never set this field keeps seeing exactly what it saw before.
+	 *  - `true` ⇒ the archive view: ONLY soft-deleted rows list
+	 *    (`deleted_at IS NOT NULL`). There is no "both" value — mixing live and
+	 *    tombstoned rows into one page would force every consumer to re-derive
+	 *    "is this archived" from `deletedAt` instead of the deliberate,
+	 *    filterable either/or a merchant actually wants (browse the catalog,
+	 *    or browse the archive — never both at once).
+	 */
+	deleted?: boolean;
 }
 
 /** A keyset cursor POSITION — the `(createdAt, productId)` of the last row of
@@ -68,6 +85,17 @@ export interface ProductSummary {
 	price: Money | null;
 	productKind: ProductKind;
 	active: boolean;
+	/**
+	 * The soft-delete tombstone timestamp (admin-UX Increment 2, "product
+	 * lifecycle surfacing"), ISO-8601 text like `createdAt` (never a `Date` —
+	 * this is a wire-adjacent projection, not the full `ProductCommerce` row).
+	 * Null for every LIVE row; non-null ONLY when `ProductListFilter.deleted:
+	 * true` requested the archive view (the default list never returns a
+	 * tombstoned row, so this field is null on every row of a default page —
+	 * present unconditionally, not "sometimes on the wire", so a consumer never
+	 * has to guess whether the field exists before reading it).
+	 */
+	deletedAt: string | null;
 	createdAt: string;
 }
 
@@ -432,10 +460,14 @@ export interface ProductCommerceStore {
 	 * `ProductSummary` PROJECTIONS (never the full `ProductCommerce`, and never
 	 * joined with `inventory` — the list must not N+1 into stock per row; a
 	 * per-row stock signal is deferred to the detail leaf's single-sku
-	 * `InventoryStore.getOnHand` read). Always excludes soft-deleted rows
-	 * (`deleted_at IS NULL`) — mirrors `listCommerceByIds`'s tombstone
-	 * discipline; there is no admin surface for browsing/restoring a
-	 * soft-deleted product yet.
+	 * `InventoryStore.getOnHand` read). Excludes soft-deleted rows
+	 * (`deleted_at IS NULL`) by DEFAULT — mirrors `listCommerceByIds`'s
+	 * tombstone discipline — UNLESS `filter.deleted: true` requests the archive
+	 * view (`deleted_at IS NOT NULL` instead), the "product lifecycle
+	 * surfacing" slice's one new axis: browse what was soft-deleted (there is
+	 * still no RESTORE — a soft delete's `active`/`deletedAt` are flipped only
+	 * by the CMS-sync/lifecycle paths, `softDelete`/`activate`/`deactivate`;
+	 * this list is read-only visibility, not a new mutation).
 	 *
 	 * Ordered `created_at DESC, product_id DESC` (newest-first, `product_id`
 	 * the stable tie-break — the primary key, exactly like `OrderSummary.id`).

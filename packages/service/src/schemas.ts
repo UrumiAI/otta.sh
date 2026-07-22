@@ -427,8 +427,13 @@ export type OrderListFilterParsed = z.infer<typeof orderListFilterSchema>;
 // (the store's shared predicate, port doc).
 export const productKindEnum = z.enum(["physical", "digital"]);
 
+// `deleted` (product lifecycle surfacing, admin-UX Increment 2): the
+// tombstone-axis toggle for the admin archive view — omitted/"false" ⇒ the
+// ORIGINAL default (live rows only); "true" ⇒ ONLY soft-deleted rows. Same
+// tri-state-via-optional-enum shape as `active`.
 export const productsListQuery = z.object({
 	active: z.enum(["true", "false"]).optional(),
+	deleted: z.enum(["true", "false"]).optional(),
 	productKind: productKindEnum.optional(),
 	search: z.string().min(1).max(200).optional(),
 	cursor: z.string().min(1).max(1000).optional(),
@@ -440,6 +445,7 @@ export const productsListQuery = z.object({
  *  it) — mirrors `orderListFilterSchema`. */
 export const productListFilterSchema = z.object({
 	active: z.boolean().optional(),
+	deleted: z.boolean().optional(),
 	productKind: productKindEnum.optional(),
 	search: z.string().min(1).max(200).optional(),
 });
