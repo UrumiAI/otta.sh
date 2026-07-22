@@ -221,6 +221,9 @@ export function serializeOrder(order: Order): Record<string, unknown> {
 		// The admin disposition once the flag was resolved (admin-UX Increment 1);
 		// null while unflagged/unresolved. Additive — existing consumers ignore it.
 		reconciliationResolution: order.reconciliationResolution,
+		// The shipping fulfillment once recorded (admin-UX Increment 1); null until
+		// the order ships with tracking. Additive — existing consumers ignore it.
+		fulfillment: order.fulfillment,
 		totals: {
 			currency: order.totals.currency,
 			subtotalCents: order.totals.subtotal,

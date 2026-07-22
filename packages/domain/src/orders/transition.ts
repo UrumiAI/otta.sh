@@ -173,5 +173,20 @@ export function buildOrderEmailData(order: Order, toState: OrderState): Record<s
 			quantity: l.quantity,
 			unitPriceCents: l.unitPrice,
 		})),
+		// Tracking travels with the data (never a store reach-back, §6) so the
+		// shipped template renders it — the whole point of the fulfillment slice is a
+		// shipped email that carries tracking instead of being empty. Present only
+		// once the order has been fulfilled; the shipped email is the natural
+		// consumer, but any later transition's data carries it harmlessly too.
+		...(order.fulfillment !== null
+			? {
+					fulfillment: {
+						carrier: order.fulfillment.carrier,
+						trackingNumber: order.fulfillment.trackingNumber,
+						trackingUrl: order.fulfillment.trackingUrl,
+						shippedAt: order.fulfillment.shippedAt,
+					},
+				}
+			: {}),
 	};
 }

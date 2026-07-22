@@ -28,6 +28,8 @@ import {
 	type OutboxEmail,
 	type PaymentMethod,
 	type ReconciliationOutcome,
+	type RecordFulfillmentInput,
+	type RecordFulfillmentStoreResult,
 	type RecordPaymentInput,
 	type ResolveReconciliationInput,
 	type ResolveReconciliationStoreResult,
@@ -250,6 +252,60 @@ export class KyselyOrderStore implements OrderStore {
 			.executeTakeFirst();
 		const order = await this.#loadById(input.orderId);
 		return { resolved: won !== undefined, order };
+	}
+
+	async recordFulfillment(input: RecordFulfillmentInput): Promise<RecordFulfillmentStoreResult> {
+		// Record + ship + enqueue, atomically (admin-UX Increment 1). ONE transaction
+		// on one connection: the guarded `WHERE id=:id AND state='processing'` flip
+		// writes the fulfillment columns AND moves the order to `shipped`, then — when
+		// `enqueueEmail` — inserts the `shipped` outbox row (`ON CONFLICT DO NOTHING`).
+		// So no reachable state is "shipped without fulfillment" via this path, and
+		// the shipped email that drains carries the tracking. The state guard makes it
+		// once-only AND composes with the machine: an order a concurrent cancel already
+		// moved out of `processing` is a 0-row miss (recorded:false). NEVER touches
+		// order_items/order_totals (the snapshot invariant). input.idempotencyKey is
+		// intentionally unused — dedup is structural via the guard (mirrors
+		// `transition`/`resolveReconciliation`, H4).
+		const now = this.#clock.now().toISOString();
+		const shippedAt = input.shippedAt ?? now;
+		const recorded = await this.#db.transaction().execute(async (trx) => {
+			const flipped = await trx
+				.updateTable("orders")
+				.set({
+					state: "shipped",
+					fulfillment_carrier: input.carrier,
+					fulfillment_tracking_number: input.trackingNumber,
+					fulfillment_tracking_url: input.trackingUrl,
+					fulfillment_shipped_at: shippedAt,
+					fulfillment_recorded_by: input.recordedBy,
+					fulfillment_recorded_at: now,
+					updated_at: now,
+				})
+				.where("id", "=", input.orderId)
+				.where("state", "=", "processing")
+				.returning("id")
+				.executeTakeFirst();
+			if (flipped === undefined) return false; // not processing ⇒ lost race / already shipped
+			if (input.enqueueEmail) {
+				await trx
+					.insertInto("order_emails_outbox")
+					.values({
+						id: this.#idGen.newId(),
+						order_id: input.orderId,
+						to_state: "shipped",
+						status: "pending",
+						attempts: 0,
+						lease_until: null,
+						sent_at: null,
+						created_at: now,
+					})
+					.onConflict((oc) => oc.columns(["order_id", "to_state"]).doNothing())
+					.execute();
+			}
+			return true;
+		});
+		const order = await this.#loadById(input.orderId);
+		return { recorded, order };
 	}
 
 	// -- Phase 5: state machine + email outbox --------------------------------
@@ -676,6 +732,19 @@ function toOrder(
 						reason: order.reconciliation_reason ?? "",
 						resolvedBy: order.reconciliation_resolved_by ?? "",
 						resolvedAt: order.reconciliation_resolved_at,
+					},
+		// A fulfillment exists iff it was recorded (all columns written atomically by
+		// recordFulfillment); `recorded_at` is the presence witness.
+		fulfillment:
+			order.fulfillment_recorded_at === null
+				? null
+				: {
+						carrier: order.fulfillment_carrier ?? "",
+						trackingNumber: order.fulfillment_tracking_number ?? "",
+						trackingUrl: order.fulfillment_tracking_url,
+						shippedAt: order.fulfillment_shipped_at ?? order.fulfillment_recorded_at,
+						recordedBy: order.fulfillment_recorded_by ?? "",
+						recordedAt: order.fulfillment_recorded_at,
 					},
 	};
 }

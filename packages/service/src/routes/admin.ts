@@ -14,6 +14,7 @@ import {
 	type OrderNotesStore,
 	type OrderState,
 	type OrderStore,
+	recordFulfillment,
 	resolveReconciliation,
 	type SessionStore,
 	transitionOrder,
@@ -26,6 +27,7 @@ import {
 	orderPathParams,
 	ordersListQuery,
 	orderStateEnum,
+	recordFulfillmentBody,
 	resolveReconciliationBody,
 	transitionBody,
 } from "../schemas.js";
@@ -224,6 +226,51 @@ export function adminRoutes(deps: AdminRoutesDeps): Hono {
 		if (res.reason === "NOT_IN_RECONCILIATION" || res.reason === "RECONCILIATION_FLAG_CHANGED")
 			return c.json({ ok: false, reason: res.reason }, 409);
 		return c.json({ ok: false, reason: res.reason }, 400); // EMPTY_REASON / EMPTY_RESOLVER
+	});
+
+	// -- Admin Orders console: record shipping fulfillment (admin-UX Increment 1) -
+	// A NON-GET, so the app-level X-Service-Token write gate covers it when the
+	// service secret is set; the route additionally requires the internal token.
+	// Mirrors the port 1:1 — recording fulfillment ships the order
+	// (`processing → shipped`) and enqueues the shipped email (now carrying
+	// tracking), atomically. Legality (must be `processing`) lives in the domain.
+	app.post("/orders/:orderId/fulfillment", async (c) => {
+		const denied = requireInternalToken(c, deps.internalToken);
+		if (denied !== null) return denied;
+
+		const params = orderPathParams.safeParse(c.req.param());
+		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
+		const parsed = recordFulfillmentBody.safeParse(await readJson(c));
+		if (!parsed.success) return c.json({ error: "invalid request body" }, 400);
+
+		// Idempotency (CLAUDE.md): the client `Idempotency-Key` header, or a stable
+		// fallback derived from the order id (a header-less double-submit dedupes on
+		// the guarded flip, not a fresh key each time).
+		const header = c.req.header("Idempotency-Key");
+		const key =
+			header !== undefined && header.length > 0
+				? header
+				: `admin:fulfillment:${params.data.orderId}`;
+		const res = await recordFulfillment(
+			{ orderStore: deps.orderStore },
+			{
+				orderId: toOrderId(params.data.orderId),
+				carrier: parsed.data.carrier,
+				trackingNumber: parsed.data.trackingNumber,
+				trackingUrl: parsed.data.trackingUrl ?? null,
+				shippedAt: parsed.data.shippedAt ?? null,
+				recordedBy: parsed.data.recordedBy,
+				idempotencyKey: toIdempotencyKey(key),
+			},
+		);
+		if (res.ok) {
+			return c.json({ ok: true, recorded: res.recorded, order: serializeOrder(res.order) }, 200);
+		}
+		if (res.reason === "ORDER_NOT_FOUND") return c.json({ ok: false, reason: res.reason }, 404);
+		// NOT_FULFILLABLE (the order is not in `processing`) → 409, like an
+		// INVALID_TRANSITION; the trimmed-empty guards → 400.
+		if (res.reason === "NOT_FULFILLABLE") return c.json({ ok: false, reason: res.reason }, 409);
+		return c.json({ ok: false, reason: res.reason }, 400); // EMPTY_CARRIER / _TRACKING_NUMBER / _RECORDER
 	});
 
 	// -- Admin Orders console: append-only order notes (admin-UX Increment 0) ----

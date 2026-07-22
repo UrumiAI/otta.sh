@@ -158,6 +158,18 @@ export interface OrdersTable {
 	reconciliation_resolved_by: ColumnType<string | null, string | null | undefined, string | null>;
 	/** ISO-8601 UTC resolve timestamp; null while unresolved. */
 	reconciliation_resolved_at: ColumnType<string | null, string | null | undefined, string | null>;
+	/** Shipping fulfillment (admin-UX Increment 1) — single-slot, written atomically
+	 *  with the `processing → shipped` flip by `recordFulfillment`. All nullable +
+	 *  omittable on insert (Phase-4/5 order creation carries none); `fulfillment_
+	 *  recorded_at` is the presence witness. */
+	fulfillment_carrier: ColumnType<string | null, string | null | undefined, string | null>;
+	fulfillment_tracking_number: ColumnType<string | null, string | null | undefined, string | null>;
+	fulfillment_tracking_url: ColumnType<string | null, string | null | undefined, string | null>;
+	/** ISO-8601 UTC ship time (admin-supplied or the store clock). */
+	fulfillment_shipped_at: ColumnType<string | null, string | null | undefined, string | null>;
+	fulfillment_recorded_by: ColumnType<string | null, string | null | undefined, string | null>;
+	/** ISO-8601 UTC record timestamp (store clock) — the presence witness. */
+	fulfillment_recorded_at: ColumnType<string | null, string | null | undefined, string | null>;
 	created_at: string;
 	updated_at: string;
 }

@@ -23,6 +23,7 @@ const ORDER_1 = {
 	createdAt: "2026-07-10T01:00:00.000Z",
 	reconciliationFlag: null,
 	reconciliationResolution: null,
+	fulfillment: null,
 	totals: {
 		currency: "USD",
 		subtotalCents: 1500,
@@ -108,6 +109,23 @@ const SUMMARY_2 = {
 // A guest order (no account) and an order whose customer-context read fails.
 const ORDER_GUEST = { ...ORDER_1, id: "ord-guest", customerId: null };
 const ORDER_CTX_FAIL = { ...ORDER_1, id: "ord-ctx-fail" };
+
+// A processing order (ready to ship) and a shipped order that already has tracking
+// recorded (admin-UX Increment 1 — fulfillment).
+const ORDER_PROCESSING = { ...ORDER_1, id: "ord-proc", state: "processing", fulfillment: null };
+const ORDER_SHIPPED = {
+	...ORDER_1,
+	id: "ord-shipped",
+	state: "shipped",
+	fulfillment: {
+		carrier: "UPS",
+		trackingNumber: "1Z-999",
+		trackingUrl: "https://track/1Z-999",
+		shippedAt: "2026-07-11T09:00:00.000Z",
+		recordedBy: "ops@shop.test",
+		recordedAt: "2026-07-11T09:00:01.000Z",
+	},
+};
 
 /** Customer context for ord-1: a claimed account with an address, a session,
  *  and one other order. TOKEN-FREE by construction (the wire shape has no
@@ -209,7 +227,11 @@ function makeGetResponder() {
 						? ORDER_GUEST
 						: path.includes("/ord-ctx-fail")
 							? ORDER_CTX_FAIL
-							: ORDER_1;
+							: path.includes("/ord-proc")
+								? ORDER_PROCESSING
+								: path.includes("/ord-shipped")
+									? ORDER_SHIPPED
+									: ORDER_1;
 			return {
 				status: 200,
 				body: {
@@ -271,6 +293,30 @@ function makePostResponder() {
 							reason: b?.reason ?? "",
 							resolvedBy: b?.resolvedBy ?? "",
 							resolvedAt: "2026-07-10T02:00:00.000Z",
+						},
+					},
+				},
+			};
+		}
+		if (req.url.includes("/fulfillment")) {
+			const b = req.body as
+				| { carrier?: string; trackingNumber?: string; trackingUrl?: string; recordedBy?: string }
+				| undefined;
+			return {
+				status: 200,
+				body: {
+					ok: true,
+					recorded: true,
+					order: {
+						...ORDER_PROCESSING,
+						state: "shipped",
+						fulfillment: {
+							carrier: b?.carrier ?? "",
+							trackingNumber: b?.trackingNumber ?? "",
+							trackingUrl: b?.trackingUrl ?? null,
+							shippedAt: "2026-07-11T00:00:00.000Z",
+							recordedBy: b?.recordedBy ?? "",
+							recordedAt: "2026-07-11T00:00:01.000Z",
 						},
 					},
 				},
@@ -671,6 +717,111 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(blocks.some((b) => b.type === "header" && b.text === "Order ord-flagged")).toBe(true);
 		const banner = blocks.find((b) => b.type === "banner" && b.variant === "error");
 		expect(banner?.title).toBe("Not resolved");
+	});
+
+	test("open a PROCESSING order → detail shows the record-fulfillment form (ships the order)", async () => {
+		await boot();
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "orders:open",
+			values: { orderId: "ord-proc" },
+		});
+		const blocks = blocksOf(outcome);
+		expect(blocks.some((b) => b.type === "section" && b.text === "Fulfillment")).toBe(true);
+		const forms = blocks.filter((b) => b.type === "form");
+		const fulfilForm = forms.find(
+			(f) =>
+				(f.submit as { action_id?: string } | undefined)?.action_id === "orders:record-fulfillment",
+		);
+		expect(fulfilForm).toBeDefined();
+		const fieldIds = ((fulfilForm?.fields ?? []) as Array<{ action_id?: string }>).map(
+			(f) => f.action_id,
+		);
+		expect(fieldIds).toEqual([
+			"orderId",
+			"carrier",
+			"trackingNumber",
+			"trackingUrl",
+			"shippedAt",
+			"recordedBy",
+		]);
+		// The copy is honest that recording ships the order + emails tracking.
+		const contexts = blocks.filter((b) => b.type === "context").map((b) => String(b.text));
+		expect(contexts.some((t) => t.includes("ships this order"))).toBe(true);
+	});
+
+	test("open a SHIPPED order with tracking → shows the recorded fulfillment, NO form", async () => {
+		await boot();
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "orders:open",
+			values: { orderId: "ord-shipped" },
+		});
+		const blocks = blocksOf(outcome);
+		expect(blocks.some((b) => b.type === "section" && b.text === "Fulfillment")).toBe(true);
+		const fieldValues = blocks
+			.filter((b) => b.type === "fields")
+			.flatMap((b) => (b.fields as Array<{ label?: string; value?: string }>) ?? [])
+			.map((f) => `${String(f.label)}=${String(f.value)}`);
+		expect(fieldValues).toContain("Carrier=UPS");
+		expect(fieldValues).toContain("Tracking number=1Z-999");
+		// No record form on an already-fulfilled order.
+		const forms = blocks.filter((b) => b.type === "form");
+		expect(
+			forms.some(
+				(f) =>
+					(f.submit as { action_id?: string } | undefined)?.action_id ===
+					"orders:record-fulfillment",
+			),
+		).toBe(false);
+	});
+
+	test("record-fulfillment form_submit POSTs tracking with Idempotency-Key + token, then re-renders detail", async () => {
+		await boot();
+		stub!.requests.length = 0;
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "orders:record-fulfillment",
+			values: {
+				orderId: "ord-proc",
+				carrier: "UPS",
+				trackingNumber: "1Z-777",
+				trackingUrl: "https://track/1Z-777",
+				shippedAt: "2026-07-11",
+				recordedBy: "carol",
+			},
+		});
+		const post = stub!.requests.find((r) => r.method === "POST");
+		expect(post).toBeDefined();
+		expect(post!.url).toBe("/admin/orders/ord-proc/fulfillment");
+		expect(post!.headers["idempotency-key"]).toBe("admin-record-fulfillment:ord-proc");
+		expect(post!.headers["x-internal-token"]).toBe("admin-token-xyz");
+		const body = post!.body as Record<string, string>;
+		expect(body.carrier).toBe("UPS");
+		expect(body.trackingNumber).toBe("1Z-777");
+		expect(body.trackingUrl).toBe("https://track/1Z-777");
+		// A bare date is padded to a full UTC datetime the service accepts.
+		expect(body.shippedAt).toBe("2026-07-11T00:00:00.000Z");
+		expect(body.recordedBy).toBe("carol");
+		// Re-renders the detail view (GET after the POST) with a success notice.
+		const blocks = blocksOf(outcome);
+		expect(blocks.some((b) => b.type === "header" && b.text === "Order ord-proc")).toBe(true);
+		const banner = blocks.find((b) => b.type === "banner");
+		expect(banner?.title).toBe("Order shipped");
+	});
+
+	test("record-fulfillment with a blank carrier shows an inline error and makes NO POST", async () => {
+		await boot();
+		stub!.requests.length = 0;
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "orders:record-fulfillment",
+			values: { orderId: "ord-proc", carrier: "  ", trackingNumber: "1Z-1", recordedBy: "carol" },
+		});
+		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
+		const blocks = blocksOf(outcome);
+		const banner = blocks.find((b) => b.type === "banner" && b.variant === "error");
+		expect(banner?.title).toBe("Not shipped");
 	});
 
 	test("open order → detail shows the Customer section: identity, address book (with ship-to disclaimer), sessions, other orders — token-free", async () => {

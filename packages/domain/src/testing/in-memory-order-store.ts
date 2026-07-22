@@ -19,6 +19,8 @@ import type {
 	OrderTransitionInput,
 	OrderTransitionResult,
 	OutboxEmail,
+	RecordFulfillmentInput,
+	RecordFulfillmentStoreResult,
 	RecordPaymentInput,
 	ResolveReconciliationInput,
 	ResolveReconciliationStoreResult,
@@ -141,6 +143,7 @@ export class InMemoryOrderStore implements OrderStore {
 			totals,
 			reconciliationFlag: null,
 			reconciliationResolution: null,
+			fulfillment: null,
 		};
 		this.#orders.set(orderId, { order });
 		this.#byKey.set(input.idempotencyKey, orderId);
@@ -225,6 +228,35 @@ export class InMemoryOrderStore implements OrderStore {
 		};
 		stored.order.updatedAt = now;
 		return { resolved: true, order: this.#clone(stored.order) };
+	}
+
+	async recordFulfillment(input: RecordFulfillmentInput): Promise<RecordFulfillmentStoreResult> {
+		// Guarded compose (mirrors the Kysely single-transaction UPDATE + outbox
+		// insert): the `state === 'processing'` guard is the `transition` precedent —
+		// only a `processing` order ships, so exactly one caller wins the flip and
+		// records, and an order a concurrent cancel already moved is a 0-row miss
+		// (never shipped behind the cancel's back). NEVER touches lines/totals.
+		const stored = this.#orders.get(input.orderId);
+		if (stored === undefined) return { recorded: false, order: null };
+		if (stored.order.state !== "processing") {
+			return { recorded: false, order: this.#clone(stored.order) };
+		}
+		const now = this.#clock.now().toISOString();
+		stored.order.state = "shipped";
+		stored.order.fulfillment = {
+			carrier: input.carrier,
+			trackingNumber: input.trackingNumber,
+			trackingUrl: input.trackingUrl,
+			// A blank ship time defaults to the record time (the store's clock).
+			shippedAt: input.shippedAt ?? now,
+			recordedBy: input.recordedBy,
+			recordedAt: now,
+		};
+		stored.order.updatedAt = now;
+		// Same-"transaction" outbox enqueue as the real adapter (§5) when the shipped
+		// state has a template — the buyer's shipped email now carries this tracking.
+		if (input.enqueueEmail) this.#enqueue(input.orderId, "shipped");
+		return { recorded: true, order: this.#clone(stored.order) };
 	}
 
 	// -- Phase 5: state machine + outbox --------------------------------------
@@ -365,6 +397,7 @@ export class InMemoryOrderStore implements OrderStore {
 			},
 			reconciliationFlag: row.reconciliationFlag ?? null,
 			reconciliationResolution: null,
+			fulfillment: null,
 		};
 		this.#orders.set(row.id, { order });
 	}
@@ -493,6 +526,7 @@ export class InMemoryOrderStore implements OrderStore {
 			...order,
 			lines: order.lines.map((l) => ({ ...l })),
 			totals: { ...order.totals },
+			fulfillment: order.fulfillment === null ? null : { ...order.fulfillment },
 		};
 	}
 }
