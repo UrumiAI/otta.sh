@@ -14,6 +14,7 @@ import type {
 import {
 	AdminOrdersClient,
 	type OrderDetailResult,
+	type OrderDetailWire,
 	type OrderNoteWire,
 	type OrderSummaryWire,
 	type OrdersListFilter,
@@ -46,6 +47,7 @@ export const ORDERS_PAGE: AdminPageConfig = { path: "/orders", label: "Orders", 
 const ORDERS_ACTIONS: ScreenActions = screenActions("orders");
 const ACTION_TRANSITION = ORDERS_ACTIONS.custom("transition");
 const ACTION_ADD_NOTE = ORDERS_ACTIONS.custom("add-note");
+const ACTION_RESOLVE = ORDERS_ACTIONS.custom("resolve-reconciliation");
 
 /**
  * The action ids the admin-route dispatcher recognizes as belonging to the
@@ -57,6 +59,7 @@ const ACTION_ADD_NOTE = ORDERS_ACTIONS.custom("add-note");
 export const ORDERS_ACTION_IDS: ReadonlySet<string> = ORDERS_ACTIONS.actionIds(
 	"transition",
 	"add-note",
+	"resolve-reconciliation",
 );
 
 const PAGE_LIMIT = 25;
@@ -112,6 +115,7 @@ export function createOrdersPageHandler(): RouteHandler<OrdersPageInput> {
 		customActions: {
 			[ACTION_TRANSITION]: transitionAction(),
 			[ACTION_ADD_NOTE]: addNoteAction(),
+			[ACTION_RESOLVE]: resolveReconciliationAction(),
 		},
 	});
 }
@@ -280,9 +284,13 @@ function detailBlocks(
 			{ label: "Customer", value: o.customerId ?? o.buyerRef },
 			{ label: "Payment", value: o.paymentMethod ?? "—" },
 			{ label: "Created (UTC)", value: o.createdAt },
-			{ label: "Reconciliation", value: o.reconciliationFlag ?? "none" },
+			{ label: "Reconciliation", value: reconciliationSummary(o) },
 		],
 	});
+	// The reconciliation surface is PROMINENT (right below the header fields): an
+	// open flag gets an alert banner + the resolve form; a resolved flag shows the
+	// recorded disposition. A never-flagged order shows nothing here.
+	for (const block of reconciliationBlocks(o)) blocks.push(block);
 	blocks.push({ type: "section", text: "Line items" });
 	blocks.push({
 		type: "table",
@@ -386,7 +394,92 @@ function transitionActions(orderId: string, allowed: string[]): ActionsBlock {
 	return { type: "actions", elements };
 }
 
-// -- custom actions: transition + add-note ------------------------------------
+// -- reconciliation surface (admin-UX Increment 1) ----------------------------
+
+/** The three admin dispositions, offered in the resolve form's select. Mirrors the
+ *  domain `ReconciliationOutcome`; the service re-validates the wire value. */
+const RECONCILIATION_OUTCOMES = ["refunded", "fulfilled", "written_off"] as const;
+
+/** A one-line summary for the header fields block. */
+function reconciliationSummary(o: OrderDetailWire): string {
+	if (o.reconciliationFlag !== null) return "⚠ Needs reconciliation";
+	if (o.reconciliationResolution !== null)
+		return `resolved (${o.reconciliationResolution.outcome})`;
+	return "none";
+}
+
+/** The prominent reconciliation section: an OPEN flag ⇒ an alert banner explaining
+ *  what settle detected + a resolve form; a RESOLVED flag ⇒ the recorded
+ *  disposition (read-only); a never-flagged order ⇒ nothing. */
+function reconciliationBlocks(o: OrderDetailWire): Block[] {
+	if (o.reconciliationFlag !== null) {
+		return [
+			{
+				type: "banner",
+				variant: "alert",
+				title: "Needs reconciliation",
+				description: `Settlement flagged this order: ${o.reconciliationFlag}. Money moved but stock/settlement did not line up — record how you resolved it (this does not move the order status or its line items).`,
+			},
+			resolveForm(o.id),
+		];
+	}
+	if (o.reconciliationResolution !== null) {
+		const r = o.reconciliationResolution;
+		return [
+			{ type: "section", text: "Reconciliation resolved" },
+			{
+				type: "fields",
+				fields: [
+					{ label: "Outcome", value: r.outcome },
+					{ label: "Reason", value: r.reason },
+					{ label: "Resolved by", value: r.resolvedBy },
+					{ label: "Resolved (UTC)", value: r.resolvedAt },
+				],
+			},
+		];
+	}
+	return [];
+}
+
+/** The resolve form. The order id rides along as a single-option `select` (the
+ *  same carry-the-id-in-values pattern as the add-note / open-order forms) so a
+ *  stateless `form_submit` knows which order to resolve. */
+function resolveForm(orderId: string): FormBlock {
+	return {
+		type: "form",
+		fields: [
+			{
+				type: "select",
+				action_id: "orderId",
+				label: "Order",
+				options: [{ value: orderId, label: orderId }],
+				initial_value: orderId,
+			},
+			{
+				type: "select",
+				action_id: "outcome",
+				label: "Outcome",
+				options: RECONCILIATION_OUTCOMES.map((v) => ({ value: v, label: v })),
+				initial_value: RECONCILIATION_OUTCOMES[0],
+			},
+			{
+				type: "text_input",
+				action_id: "reason",
+				label: "Reason",
+				placeholder: "e.g. refunded the buyer; stock was gone",
+			},
+			{
+				type: "text_input",
+				action_id: "resolvedBy",
+				label: "Resolved by",
+				placeholder: "your name",
+			},
+		],
+		submit: { label: "Resolve reconciliation", action_id: ACTION_RESOLVE },
+	};
+}
+
+// -- custom actions: transition + add-note + resolve-reconciliation -----------
 
 function transitionAction() {
 	return customAction<AdminOrdersClient>(async ({ input, client, showLeaf, showList }) => {
@@ -451,6 +544,61 @@ function addNoteAction() {
 				variant: "default",
 				title: "Already added",
 				description: "That exact note is already on this order.",
+			};
+		}
+		return showLeaf([orderId], notice);
+	});
+}
+
+function resolveReconciliationAction() {
+	return customAction<AdminOrdersClient>(async ({ input, client, showLeaf, showList }) => {
+		const values = input.values ?? {};
+		const orderId = readString(values.orderId);
+		if (orderId === undefined) return showList();
+		const outcome = readString(values.outcome) ?? "";
+		const reason = (readString(values.reason) ?? "").trim();
+		const resolvedBy = (readString(values.resolvedBy) ?? "").trim();
+		// Local guard: a blank reason/resolver never leaves the plugin (the domain
+		// rejects it too, but this gives immediate inline feedback without a round trip).
+		if (reason.length === 0 || resolvedBy.length === 0) {
+			return showLeaf([orderId], {
+				variant: "error",
+				title: "Not resolved",
+				description: "Enter both a reason and who is resolving it.",
+			});
+		}
+		// A stable per-order idempotency key: a double-submit is a guarded no-op, and
+		// the disposition is only ever written once (the domain's guarded flip).
+		const key = `admin-resolve-reconciliation:${orderId}`;
+		const result = await client.resolveReconciliation(
+			orderId,
+			{ outcome, reason, resolvedBy },
+			{ idempotencyKey: key },
+		);
+		let notice: Notice | undefined;
+		if (!result.ok) {
+			notice = {
+				variant: "error",
+				title: "Not resolved",
+				description:
+					"That reconciliation could not be resolved — check the order and the admin token in Settings.",
+			};
+		} else if (!result.resolved) {
+			// The guarded flip matched 0 rows — already resolved, or a lost race. Not a
+			// failure: surface a non-error notice so the merchant gets feedback.
+			notice = {
+				variant: "default",
+				title: "Already resolved",
+				description: "This order's reconciliation flag was already cleared.",
+			};
+		} else {
+			// Success confirmation. Uses the `default` variant — the scaffold's Notice
+			// union is `default | error`; the cleared-flag re-render is the substantive
+			// feedback, this banner just acknowledges the write.
+			notice = {
+				variant: "default",
+				title: "Reconciliation resolved",
+				description: "The flag is cleared and your disposition was recorded.",
 			};
 		}
 		return showLeaf([orderId], notice);

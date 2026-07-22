@@ -10,6 +10,7 @@ import {
 	type OrderNotesStore,
 	type OrderState,
 	type OrderStore,
+	resolveReconciliation,
 	transitionOrder,
 } from "@urumi/domain";
 import { Hono } from "hono";
@@ -20,6 +21,7 @@ import {
 	orderPathParams,
 	ordersListQuery,
 	orderStateEnum,
+	resolveReconciliationBody,
 	transitionBody,
 } from "../schemas.js";
 import { serializeOrder, serializeOrderSummary } from "./orders.js";
@@ -143,6 +145,49 @@ export function adminRoutes(deps: AdminRoutesDeps): Hono {
 		}
 		if (res.reason === "ORDER_NOT_FOUND") return c.json({ ok: false, reason: res.reason }, 404);
 		return c.json({ ok: false, reason: res.reason }, 409); // INVALID_TRANSITION
+	});
+
+	// -- Admin Orders console: resolve a reconciliation flag (admin-UX Increment 1)
+	// A NON-GET, so the app-level X-Service-Token write gate covers it when the
+	// service secret is set; the route additionally requires the internal token.
+	// Mirrors the port 1:1 — clears the flag + records the disposition, never
+	// touching state/line items (the snapshot invariant lives in the domain).
+	app.post("/orders/:orderId/resolve-reconciliation", async (c) => {
+		const denied = requireInternalToken(c, deps.internalToken);
+		if (denied !== null) return denied;
+
+		const params = orderPathParams.safeParse(c.req.param());
+		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
+		const parsed = resolveReconciliationBody.safeParse(await readJson(c));
+		if (!parsed.success) return c.json({ error: "invalid request body" }, 400);
+
+		// Idempotency (CLAUDE.md): the client `Idempotency-Key` header, or a stable
+		// fallback derived from the order id (a header-less double-submit dedupes on
+		// the guarded flip, not a fresh key each time).
+		const header = c.req.header("Idempotency-Key");
+		const key =
+			header !== undefined && header.length > 0
+				? header
+				: `admin:resolve-reconciliation:${params.data.orderId}`;
+		const res = await resolveReconciliation(
+			{ orderStore: deps.orderStore },
+			{
+				orderId: toOrderId(params.data.orderId),
+				outcome: parsed.data.outcome,
+				reason: parsed.data.reason,
+				resolvedBy: parsed.data.resolvedBy,
+				idempotencyKey: toIdempotencyKey(key),
+			},
+		);
+		if (res.ok) {
+			return c.json({ ok: true, resolved: res.resolved, order: serializeOrder(res.order) }, 200);
+		}
+		if (res.reason === "ORDER_NOT_FOUND") return c.json({ ok: false, reason: res.reason }, 404);
+		// NOT_IN_RECONCILIATION is a reconciliation-axis legality error (like an
+		// INVALID_TRANSITION) → 409; the trimmed-empty guards → 400.
+		if (res.reason === "NOT_IN_RECONCILIATION")
+			return c.json({ ok: false, reason: res.reason }, 409);
+		return c.json({ ok: false, reason: res.reason }, 400); // EMPTY_REASON / EMPTY_RESOLVER
 	});
 
 	// -- Admin Orders console: append-only order notes (admin-UX Increment 0) ----

@@ -36,6 +36,34 @@ export type FulfillmentKind = "physical" | "digital";
 export type PaymentMethod = "stripe" | "x402";
 
 /**
+ * The admin's disposition when clearing a reconciliation flag (admin-UX
+ * Increment 1). A resolution is a RECORD of the decision, never itself a money
+ * movement: `refunded` means the refund was carried out through the ordinary
+ * `refunded` state transition (or out of band), `fulfilled` means the order was
+ * honored as-is (stock re-sourced), `written_off` means the loss/false-alarm was
+ * accepted. The order's state machine + line snapshots are untouched either way.
+ */
+export type ReconciliationOutcome = "refunded" | "fulfilled" | "written_off";
+
+/**
+ * The audit record written when an admin resolves an order's reconciliation flag
+ * (admin-UX Increment 1). Populated atomically with clearing `reconciliationFlag`;
+ * `null` while the order was never flagged OR is still awaiting resolution. The
+ * original anomaly detail stays queryable in `payment_events` (settle records it
+ * there); this record captures only the human disposition.
+ */
+export interface ReconciliationResolution {
+	outcome: ReconciliationOutcome;
+	/** Free-text justification (trimmed, required non-empty by the use-case). */
+	reason: string;
+	/** Who resolved it (free text, resolved by the caller — the domain does not
+	 *  model admin identity), mirroring an order note's `author`. */
+	resolvedBy: string;
+	/** Server-assigned ISO-8601 UTC timestamp (from the store's clock). */
+	resolvedAt: string;
+}
+
+/**
  * An order line — **insert-once, never updated** (§4). `title`, `unitPrice`, and
  * `currency` are snapshots taken at creation; they are stored on the line, never
  * joined live from `product_commerce`, which is what makes the immutability
@@ -100,7 +128,16 @@ export interface Order {
 	 * Set when settle could not commit an adopted hold that should have been
 	 * present (§5): the order is `paid` (money received) but stock was lost, so
 	 * it is flagged for manual reconciliation — never a silent no-op. Null on the
-	 * happy path.
+	 * happy path. **Cleared** (back to null) when an admin resolves the flag
+	 * (admin-UX Increment 1), which also writes `reconciliationResolution`.
 	 */
 	reconciliationFlag: string | null;
+	/**
+	 * The admin disposition recorded when the reconciliation flag was resolved
+	 * (admin-UX Increment 1); null while the order was never flagged OR is still
+	 * awaiting resolution. Distinguishes an ALREADY-RESOLVED order (flag null +
+	 * this set) from a NEVER-FLAGGED one (both null) — so a resolve replay is a
+	 * benign no-op rather than an error.
+	 */
+	reconciliationResolution: ReconciliationResolution | null;
 }

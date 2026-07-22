@@ -110,6 +110,8 @@ export type {
 	OrderTransitionResult,
 	OutboxEmail,
 	RecordPaymentInput,
+	ResolveReconciliationInput,
+	ResolveReconciliationStoreResult,
 } from "./ports/order-store.js";
 export type { EmailSender, EmailTemplate, SendEmailInput } from "./ports/email-sender.js";
 export type {
@@ -183,6 +185,8 @@ export type {
 	OrderLine,
 	OrderTotals,
 	PaymentMethod,
+	ReconciliationOutcome,
+	ReconciliationResolution,
 } from "./orders/model.js";
 export type { CreateOrderFailure, SettleFailure } from "./orders/errors.js";
 export {
@@ -207,6 +211,13 @@ export {
 	type AppendOrderNoteCommand,
 	type AppendOrderNoteDeps,
 } from "./orders/append-order-note.js";
+export {
+	resolveReconciliation,
+	type ResolveReconciliationCommand,
+	type ResolveReconciliationDeps,
+	type ResolveReconciliationFailure,
+	type ResolveReconciliationOutcome,
+} from "./orders/resolve-reconciliation.js";
 export { expireOrders, type ExpireOrdersDeps } from "./orders/expire-orders.js";
 export type { Clock } from "./ports/clock.js";
 export type { IdGen } from "./ports/id-gen.js";

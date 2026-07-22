@@ -374,5 +374,79 @@ export function orderStoreContract(
 			expect(res.orders.map((o) => o.id)).toEqual(["o2", "o1"]);
 			expect(res.nextCursor).toBeNull();
 		});
+
+		// -- resolveReconciliation: clear a flag + record the disposition ---------
+
+		test("resolveReconciliation clears the flag and records the disposition; state/lines untouched", async () => {
+			const h = await makeHarness();
+			await h.seedOrder(
+				summaryRow({ id: "ord-rec", state: "paid", reconciliationFlag: "commit lost" }),
+			);
+			const res = await h.store.resolveReconciliation({
+				orderId: orderId("ord-rec"),
+				outcome: "fulfilled",
+				reason: "re-sourced stock from warehouse B",
+				resolvedBy: "ops@shop.test",
+				idempotencyKey: idempotencyKey("res-1"),
+			});
+			expect(res.resolved).toBe(true);
+			const after = await h.store.getById(orderId("ord-rec"));
+			// Flag cleared; disposition recorded; state NOT moved by the resolve.
+			expect(after?.reconciliationFlag).toBeNull();
+			expect(after?.state).toBe("paid");
+			expect(after?.reconciliationResolution).toEqual({
+				outcome: "fulfilled",
+				reason: "re-sourced stock from warehouse B",
+				resolvedBy: "ops@shop.test",
+				resolvedAt: "2026-07-10T00:00:00.000Z", // the harness FixedClock
+			});
+			// The list badge flips off once the open flag is cleared.
+			const { orders } = await h.store.listOrders({}, { limit: 25 });
+			expect(orders.find((o) => o.id === "ord-rec")?.reconciliationFlag).toBe(false);
+		});
+
+		test("resolveReconciliation on a NON-flagged order is a guarded 0-row no-op (resolved:false)", async () => {
+			const h = await makeHarness();
+			await h.seedOrder(summaryRow({ id: "ord-clean", state: "paid" })); // no flag
+			const res = await h.store.resolveReconciliation({
+				orderId: orderId("ord-clean"),
+				outcome: "written_off",
+				reason: "n/a",
+				resolvedBy: "ops@shop.test",
+				idempotencyKey: idempotencyKey("res-2"),
+			});
+			expect(res.resolved).toBe(false);
+			const after = await h.store.getById(orderId("ord-clean"));
+			// Nothing recorded — a resolve never fabricates a disposition on a clean order.
+			expect(after?.reconciliationResolution).toBeNull();
+		});
+
+		test("resolveReconciliation is once-only: a second resolve is a 0-row no-op, disposition unchanged", async () => {
+			const h = await makeHarness();
+			await h.seedOrder(
+				summaryRow({ id: "ord-once", state: "paid", reconciliationFlag: "paid flip lost" }),
+			);
+			const first = await h.store.resolveReconciliation({
+				orderId: orderId("ord-once"),
+				outcome: "refunded",
+				reason: "refunded the buyer, stock was gone",
+				resolvedBy: "alice",
+				idempotencyKey: idempotencyKey("res-3a"),
+			});
+			expect(first.resolved).toBe(true);
+			// A second, different resolve attempt finds the flag already cleared.
+			const second = await h.store.resolveReconciliation({
+				orderId: orderId("ord-once"),
+				outcome: "written_off",
+				reason: "different call",
+				resolvedBy: "bob",
+				idempotencyKey: idempotencyKey("res-3b"),
+			});
+			expect(second.resolved).toBe(false);
+			// The FIRST disposition is authoritative — the loser never overwrote it.
+			const after = await h.store.getById(orderId("ord-once"));
+			expect(after?.reconciliationResolution?.outcome).toBe("refunded");
+			expect(after?.reconciliationResolution?.resolvedBy).toBe("alice");
+		});
 	});
 }

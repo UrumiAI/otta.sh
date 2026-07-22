@@ -42,6 +42,15 @@ export interface OrderTotalsWire {
 	appliedCouponCode: string | null;
 }
 
+/** The admin disposition recorded when an order's reconciliation flag was
+ *  resolved (admin-UX Increment 1); null while unflagged/unresolved. */
+export interface ReconciliationResolutionWire {
+	outcome: string;
+	reason: string;
+	resolvedBy: string;
+	resolvedAt: string;
+}
+
 export interface OrderDetailWire {
 	id: string;
 	state: string;
@@ -52,6 +61,7 @@ export interface OrderDetailWire {
 	holdExpiresAt: string;
 	createdAt: string;
 	reconciliationFlag: string | null;
+	reconciliationResolution: ReconciliationResolutionWire | null;
 	totals: OrderTotalsWire;
 	lines: OrderLineWire[];
 }
@@ -97,6 +107,14 @@ export type AddNoteResult =
  *  failure surfaces a GENERIC inline banner rather than throwing into the host. */
 export type TransitionOrderResult =
 	| { ok: true; transitioned: boolean }
+	| { ok: false; status: number };
+
+/** POST resolve-reconciliation returns a discriminated result (like `transitionOrder`)
+ *  so a failure surfaces a GENERIC inline banner rather than throwing into the host.
+ *  `resolved:false` on a 2xx ⇒ the guarded flip found nothing to resolve (already
+ *  resolved / lost race) — a benign no-op, not a failure. */
+export type ResolveReconciliationResult =
+	| { ok: true; resolved: boolean }
 	| { ok: false; status: number };
 
 interface HttpErrorEnvelope {
@@ -198,6 +216,35 @@ export class AdminOrdersClient {
 		}
 		// Fail with the status only — the caller renders a GENERIC banner that never
 		// echoes a raw HTTP status/URL into the admin UI.
+		return { ok: false, status: res.status };
+	}
+
+	/** POST resolve an order's reconciliation flag (admin-UX Increment 1). Gated by
+	 *  BOTH the admin token (X-Internal-Token) AND the write gate (X-Service-Token)
+	 *  when both service secrets are set — a non-GET, same as the transition. Returns
+	 *  a discriminated result. */
+	async resolveReconciliation(
+		orderId: string,
+		disposition: { outcome: string; reason: string; resolvedBy: string },
+		opts: { idempotencyKey: string },
+	): Promise<ResolveReconciliationResult> {
+		const headers: Record<string, string> = {
+			"content-type": "application/json",
+			"Idempotency-Key": opts.idempotencyKey,
+		};
+		if (this.#adminToken !== undefined) headers["X-Internal-Token"] = this.#adminToken;
+		if (this.#serviceToken !== undefined) headers["X-Service-Token"] = this.#serviceToken;
+		const res = await this.#fetch(
+			`${this.#baseUrl}/admin/orders/${encodeURIComponent(orderId)}/resolve-reconciliation`,
+			{ method: "POST", headers, body: JSON.stringify(disposition) },
+		);
+		const parsed = (await res.json().catch(() => undefined)) as
+			| { ok?: boolean; resolved?: boolean }
+			| HttpErrorEnvelope
+			| undefined;
+		if (res.ok && parsed !== undefined && "ok" in parsed && parsed.ok === true) {
+			return { ok: true, resolved: parsed.resolved ?? true };
+		}
 		return { ok: false, status: res.status };
 	}
 

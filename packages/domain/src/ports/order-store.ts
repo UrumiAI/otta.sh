@@ -7,7 +7,13 @@ import type {
 	ReservationId,
 	Sku,
 } from "../money/ids.js";
-import type { FulfillmentKind, Order, OrderState, PaymentMethod } from "../orders/model.js";
+import type {
+	FulfillmentKind,
+	Order,
+	OrderState,
+	PaymentMethod,
+	ReconciliationOutcome,
+} from "../orders/model.js";
 
 /**
  * The `OrderStore` port (Phase 4 §4/§7). Intent, never SQL: the Kysely adapter
@@ -52,6 +58,21 @@ export interface OrderStore {
 	recordPayment(input: RecordPaymentInput): Promise<void>;
 	/** Flag an order for manual reconciliation (§5 loud anomaly); idempotent. */
 	flagReconciliation(orderId: OrderId, detail: string): Promise<void>;
+	/**
+	 * Resolve an open reconciliation flag (admin-UX Increment 1). A **guarded
+	 * flip**, symmetric with `markPaid`/`transition`: `UPDATE orders SET
+	 * reconciliation_flag = NULL, reconciliation_outcome = :outcome,
+	 * reconciliation_reason = :reason, reconciliation_resolved_by = :resolvedBy,
+	 * reconciliation_resolved_at = :now, updated_at = :now WHERE id = :orderId AND
+	 * reconciliation_flag IS NOT NULL RETURNING id`. 0 rows ⇒ NOT currently flagged
+	 * (already resolved, or never flagged) ⇒ `resolved:false` (someone else won /
+	 * a replay). NEVER touches `order_items`/`order_totals` (the snapshot invariant)
+	 * or `orders.state` — only the mutable reconciliation envelope. Idempotent under
+	 * concurrency: exactly one caller wins the flip and writes the resolution once.
+	 */
+	resolveReconciliation(
+		input: ResolveReconciliationInput,
+	): Promise<ResolveReconciliationStoreResult>;
 
 	// -- Phase 5 (§5/§7): order state machine + email outbox ------------------
 
@@ -113,6 +134,28 @@ export interface OrderStore {
 	/** Return a claimed row to `pending` for a later retry (`retryAt`), or mark it
 	 *  `failed` (retries exhausted) when `retryAt` is null. */
 	rescheduleEmail(id: string, retryAt: string | null): Promise<void>;
+}
+
+/** The store-level resolve command. `outcome`/`reason`/`resolvedBy` are already
+ *  validated (enum + trimmed non-empty) by the use-case; the store persists them
+ *  verbatim and stamps `resolved_at` from its own clock. */
+export interface ResolveReconciliationInput {
+	orderId: OrderId;
+	outcome: ReconciliationOutcome;
+	reason: string;
+	resolvedBy: string;
+	/** Every command carries one (CLAUDE.md). NOT the dedup mechanism here — dedup
+	 *  is structural via the guarded `WHERE reconciliation_flag IS NOT NULL` flip
+	 *  (mirrors `transition`, review round H4). Retained for command-shape
+	 *  consistency; the adapter accepts but does not key off it. */
+	idempotencyKey: IdempotencyKey;
+}
+
+/** `resolved:false` ⇒ the guarded flip matched 0 rows (already resolved / never
+ *  flagged / lost race). `order` is the current row either way, or null if gone. */
+export interface ResolveReconciliationStoreResult {
+	resolved: boolean;
+	order: Order | null;
 }
 
 export interface OrderTransitionInput {

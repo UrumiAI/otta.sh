@@ -20,6 +20,8 @@ import type {
 	OrderTransitionResult,
 	OutboxEmail,
 	RecordPaymentInput,
+	ResolveReconciliationInput,
+	ResolveReconciliationStoreResult,
 } from "../ports/order-store.js";
 import type { Order, OrderLine, OrderState, OrderTotals, PaymentMethod } from "../orders/model.js";
 
@@ -138,6 +140,7 @@ export class InMemoryOrderStore implements OrderStore {
 			lines,
 			totals,
 			reconciliationFlag: null,
+			reconciliationResolution: null,
 		};
 		this.#orders.set(orderId, { order });
 		this.#byKey.set(input.idempotencyKey, orderId);
@@ -196,6 +199,30 @@ export class InMemoryOrderStore implements OrderStore {
 		if (stored === undefined) return;
 		stored.order.reconciliationFlag = detail;
 		stored.order.updatedAt = this.#clock.now().toISOString();
+	}
+
+	async resolveReconciliation(
+		input: ResolveReconciliationInput,
+	): Promise<ResolveReconciliationStoreResult> {
+		// Guarded flip: only a currently-flagged order can be resolved, so exactly
+		// one caller wins (mirrors the Kysely `WHERE reconciliation_flag IS NOT NULL`
+		// UPDATE). A second/racing call finds the flag already null → resolved:false,
+		// and NEVER overwrites the first disposition.
+		const stored = this.#orders.get(input.orderId);
+		if (stored === undefined) return { resolved: false, order: null };
+		if (stored.order.reconciliationFlag === null) {
+			return { resolved: false, order: this.#clone(stored.order) };
+		}
+		const now = this.#clock.now().toISOString();
+		stored.order.reconciliationFlag = null;
+		stored.order.reconciliationResolution = {
+			outcome: input.outcome,
+			reason: input.reason,
+			resolvedBy: input.resolvedBy,
+			resolvedAt: now,
+		};
+		stored.order.updatedAt = now;
+		return { resolved: true, order: this.#clone(stored.order) };
 	}
 
 	// -- Phase 5: state machine + outbox --------------------------------------
@@ -305,6 +332,7 @@ export class InMemoryOrderStore implements OrderStore {
 				taxBreakdown: null,
 			},
 			reconciliationFlag: row.reconciliationFlag ?? null,
+			reconciliationResolution: null,
 		};
 		this.#orders.set(row.id, { order });
 	}
