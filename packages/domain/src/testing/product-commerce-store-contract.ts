@@ -1102,6 +1102,7 @@ export function productCommerceStoreContract(
 			expect(p.price).toEqual({ amount: 4200, currency: "EUR" });
 			expect(p.productKind).toBe("digital");
 			expect(p.active).toBe(true);
+			expect(p.deletedAt).toBeNull();
 			expect(p.createdAt).toBe("2026-07-10T01:00:00.000Z");
 		});
 
@@ -1119,7 +1120,7 @@ export function productCommerceStoreContract(
 			expect(products[0]).toMatchObject({ sku: null, title: null, price: null });
 		});
 
-		test("listProducts always excludes soft-deleted rows (no toggle exists yet)", async () => {
+		test("listProducts excludes soft-deleted rows by DEFAULT (filter.deleted omitted or false)", async () => {
 			const h = await makeStore();
 			await h.seedProduct(productRow({ id: "prod-live", createdAt: "2026-07-10T01:00:00.000Z" }));
 			await h.seedProduct(
@@ -1129,8 +1130,52 @@ export function productCommerceStoreContract(
 					deletedAt: "2026-07-10T03:00:00.000Z",
 				}),
 			);
-			const { products } = await h.store.listProducts({}, { limit: 25 });
-			expect(products.map((p) => p.productId)).toEqual(["prod-live"]);
+			const omitted = await h.store.listProducts({}, { limit: 25 });
+			expect(omitted.products.map((p) => p.productId)).toEqual(["prod-live"]);
+			const explicitFalse = await h.store.listProducts({ deleted: false }, { limit: 25 });
+			expect(explicitFalse.products.map((p) => p.productId)).toEqual(["prod-live"]);
+		});
+
+		test("listProducts filter.deleted:true is the archive view — ONLY soft-deleted rows list, projecting deletedAt", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "prod-live", createdAt: "2026-07-10T01:00:00.000Z" }));
+			await h.seedProduct(
+				productRow({
+					id: "prod-deleted",
+					createdAt: "2026-07-10T02:00:00.000Z",
+					deletedAt: "2026-07-10T03:00:00.000Z",
+				}),
+			);
+			const { products } = await h.store.listProducts({ deleted: true }, { limit: 25 });
+			expect(products.map((p) => p.productId)).toEqual(["prod-deleted"]);
+			expect(products[0]?.deletedAt).toBe("2026-07-10T03:00:00.000Z");
+		});
+
+		test("listProducts filter.deleted:true composes with active/productKind/search like every other axis", async () => {
+			const h = await makeStore();
+			await h.seedProduct(
+				productRow({
+					id: "deleted-digital",
+					productKind: "digital",
+					title: "Findable Deleted Ebook",
+					createdAt: "2026-07-10T01:00:00.000Z",
+					deletedAt: "2026-07-10T02:00:00.000Z",
+				}),
+			);
+			await h.seedProduct(
+				productRow({
+					id: "deleted-physical",
+					productKind: "physical",
+					title: "Findable Deleted Mug",
+					createdAt: "2026-07-10T01:30:00.000Z",
+					deletedAt: "2026-07-10T02:30:00.000Z",
+				}),
+			);
+			const { products } = await h.store.listProducts(
+				{ deleted: true, productKind: "digital", search: "findable" },
+				{ limit: 25 },
+			);
+			expect(products.map((p) => p.productId)).toEqual(["deleted-digital"]);
 		});
 
 		test("listProducts filters by active", async () => {

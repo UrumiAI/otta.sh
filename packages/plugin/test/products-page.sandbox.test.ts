@@ -24,6 +24,7 @@ const SUMMARY_1 = {
 	currency: "USD",
 	productKind: "physical",
 	active: true,
+	deletedAt: null,
 	createdAt: "2026-07-12T00:00:00.000Z",
 };
 
@@ -35,7 +36,20 @@ const SUMMARY_2 = {
 	currency: "USD",
 	productKind: "digital",
 	active: false,
+	deletedAt: null,
 	createdAt: "2026-07-11T00:00:00.000Z",
+};
+
+const SUMMARY_DELETED = {
+	productId: "prod-deleted",
+	sku: "SKU-DEL",
+	title: "Deleted Widget",
+	priceCents: 500,
+	currency: "USD",
+	productKind: "physical",
+	active: false,
+	deletedAt: "2026-07-13T01:00:00.000Z",
+	createdAt: "2026-07-13T00:00:00.000Z",
 };
 
 const DETAIL_1 = {
@@ -51,9 +65,29 @@ const DETAIL_1 = {
 	heightMm: 30,
 	productKind: "physical",
 	active: true,
+	deletedAt: null,
 	onHand: 42,
 	createdAt: "2026-07-12T00:00:00.000Z",
 	updatedAt: "2026-07-12T01:00:00.000Z",
+};
+
+const DETAIL_DELETED = {
+	productId: "prod-deleted",
+	sku: "SKU-DEL",
+	title: "Deleted Widget",
+	priceCents: 500,
+	currency: "USD",
+	taxClass: null,
+	weightGrams: null,
+	lengthMm: null,
+	widthMm: null,
+	heightMm: null,
+	productKind: "physical",
+	active: false,
+	deletedAt: "2026-07-13T01:00:00.000Z",
+	onHand: 7,
+	createdAt: "2026-07-13T00:00:00.000Z",
+	updatedAt: "2026-07-13T01:00:00.000Z",
 };
 
 /** A GET responder for the guarded list + detail reads (200 only WITH the
@@ -69,6 +103,9 @@ function makeGetResponder() {
 		}
 		const [path, query = ""] = req.url.split("?");
 		if (path === "/admin/products") {
+			if (query.includes("deleted=true")) {
+				return { status: 200, body: { ok: true, products: [SUMMARY_DELETED], nextCursor: null } };
+			}
 			if (query.includes("cursor=")) {
 				return { status: 200, body: { ok: true, products: [SUMMARY_2], nextCursor: null } };
 			}
@@ -79,6 +116,9 @@ function makeGetResponder() {
 		}
 		if (path === "/admin/products/prod-1") {
 			return { status: 200, body: { ok: true, product: DETAIL_1 } };
+		}
+		if (path === "/admin/products/prod-deleted") {
+			return { status: 200, body: { ok: true, product: DETAIL_DELETED } };
 		}
 		if (path === "/admin/products/does-not-exist") {
 			return { status: 404, body: { ok: false, reason: "PRODUCT_NOT_FOUND" } };
@@ -172,6 +212,52 @@ describe("admin Products console (workerd sandbox)", () => {
 		expect(listReq!.url).toContain("active=true");
 		expect(listReq!.url).toContain("productKind=physical");
 		expect(listReq!.url).toContain("search=widget");
+	});
+
+	// -- product lifecycle surfacing (admin-UX Increment 2) -----------------------
+
+	test("the combined Status select's 'archived' option re-lists with deleted=true, never active=..., in the GET", async () => {
+		await boot();
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "products:apply-filter",
+			values: { active: "archived" },
+		});
+		const listReq = stub!.requests.find((r) => r.url.startsWith("/admin/products"));
+		expect(listReq).toBeDefined();
+		expect(listReq!.url).toContain("deleted=true");
+		expect(listReq!.url).not.toContain("active=");
+		// The archived response's row shows the honest "deleted" status, never
+		// "inactive" (deletedAt outranks active in the status label).
+		const table = blocksOf(outcome).find((b) => b.type === "table");
+		const rows = (table?.rows ?? []) as Array<Record<string, unknown>>;
+		expect(rows.map((r) => r.status)).toEqual(["deleted"]);
+	});
+
+	test("open a soft-deleted product → the read-only tombstone view: status 'deleted', NO edit form, NO stock forms", async () => {
+		await boot();
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "products:open",
+			values: { productId: "prod-deleted" },
+		});
+		const blocks = blocksOf(outcome);
+		// A tombstone banner explains the state.
+		const banner = blocks.find((b) => b.type === "banner");
+		expect(banner).toBeDefined();
+		expect(String(banner?.title)).toMatch(/deleted/i);
+		const fieldsBlocks = blocks.filter((b) => b.type === "fields");
+		const allFields = fieldsBlocks.flatMap(
+			(b) => (b.fields as Array<{ label: string; value: string }>) ?? [],
+		);
+		const byLabel = new Map(allFields.map((f) => [f.label, f.value]));
+		expect(byLabel.get("Status")).toBe("deleted");
+		// Never an edit or stock-movement form for a tombstoned row.
+		const forms = blocks.filter((b) => b.type === "form");
+		const submitIds = forms.map((f) => (f.submit as { action_id?: string })?.action_id);
+		expect(submitIds).not.toContain("products:save");
+		expect(submitIds).not.toContain("products:restock");
+		expect(submitIds).not.toContain("products:remove-stock");
 	});
 
 	test("Load more block_action re-lists with the service cursor", async () => {

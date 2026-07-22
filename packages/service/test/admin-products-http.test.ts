@@ -200,11 +200,54 @@ describe.skipIf(PG === undefined)("admin Products console HTTP contract", () => 
 		expect((await json(res)).reason).toBe("PRODUCT_NOT_FOUND");
 	});
 
-	test("GET /admin/products/:id 404s for a soft-deleted product (mirrors listProducts's tombstone exclusion)", async () => {
+	test("GET /admin/products/:id returns the read-only tombstone (200 + deletedAt) for a soft-deleted product — never masquerades as 'never existed' (product lifecycle surfacing)", async () => {
 		await seed();
 		const res = await get("/products/prod-deleted");
-		expect(res.status).toBe(404);
-		expect((await json(res)).reason).toBe("PRODUCT_NOT_FOUND");
+		expect(res.status).toBe(200);
+		const body = await json(res);
+		expect(body.ok).toBe(true);
+		const product = body.product as Record<string, unknown>;
+		expect(product.productId).toBe("prod-deleted");
+		expect(product.deletedAt).toBe("2026-07-13T01:00:00.000Z");
+	});
+
+	test("GET /admin/products excludes the archive by default; filter.deleted=true is the archive-only view, projecting deletedAt", async () => {
+		await seed();
+		const live = await json(await get("/products"));
+		expect(
+			(live.products as Array<Record<string, unknown>>).every((p) => p.deletedAt === null),
+		).toBe(true);
+		expect(
+			(live.products as Array<Record<string, unknown>>).some((p) => p.productId === "prod-deleted"),
+		).toBe(false);
+
+		const archived = await json(await get("/products?deleted=true"));
+		const archivedProducts = archived.products as Array<Record<string, unknown>>;
+		expect(archivedProducts.map((p) => p.productId)).toEqual(["prod-deleted"]);
+		expect(archivedProducts[0]?.deletedAt).toBe("2026-07-13T01:00:00.000Z");
+	});
+
+	test("a soft-deleted product remains blocked from the WRITE routes (edit / restock / remove-stock) — 404, never editable from the tombstone view", async () => {
+		await seed();
+		const patchRes = await fetch(`${server.baseUrl}/admin/products/prod-deleted`, {
+			method: "PATCH",
+			headers: { "X-Internal-Token": token, "Content-Type": "application/json" },
+			body: JSON.stringify({ expectedUpdatedAt: "2026-07-13T00:00:00.000Z", title: "New title" }),
+		});
+		expect(patchRes.status).toBe(404);
+		expect((await json(patchRes)).reason).toBe("PRODUCT_NOT_FOUND");
+
+		const restockRes = await fetch(`${server.baseUrl}/admin/products/prod-deleted/restock`, {
+			method: "POST",
+			headers: {
+				"X-Internal-Token": token,
+				"Content-Type": "application/json",
+				"Idempotency-Key": "restock-deleted-1",
+			},
+			body: JSON.stringify({ qty: 5 }),
+		});
+		expect(restockRes.status).toBe(404);
+		expect((await json(restockRes)).reason).toBe("PRODUCT_NOT_FOUND");
 	});
 
 	test("guard: no token ⇒ 401 on both list and detail", async () => {

@@ -26,6 +26,10 @@ export interface ProductSummaryWire {
 	currency: string | null;
 	productKind: string;
 	active: boolean;
+	/** Soft-delete tombstone (product lifecycle surfacing). Null on every row
+	 *  of a default (live) page; non-null only in the archive view
+	 *  (`ProductsListFilter.deleted: true`). */
+	deletedAt: string | null;
 	createdAt: string;
 }
 
@@ -44,6 +48,12 @@ export interface ProductDetailWire {
 	heightMm: number | null;
 	productKind: string;
 	active: boolean;
+	/** Soft-delete tombstone (product lifecycle surfacing). Non-null ⇒ this IS
+	 *  the read-only archive view — the detail leaf renders it instead of the
+	 *  edit/stock forms (see `products-page.ts`'s `detailBlocks`). A 404 (never
+	 *  existed) is still `getProduct` returning `null`; a deleted row is a 200
+	 *  with this field set. */
+	deletedAt: string | null;
 	onHand: number;
 	createdAt: string;
 	updatedAt: string;
@@ -51,9 +61,12 @@ export interface ProductDetailWire {
 
 /** The list filter the console builds from its filter form. `active` is a
  *  tri-state string ("" ⇒ both) so the wire query mirrors the service's
- *  `active=true|false` param exactly. */
+ *  `active=true|false` param exactly. `deleted` is the archive-view toggle
+ *  (product lifecycle surfacing): omitted/false ⇒ the original default (live
+ *  rows only); true ⇒ ONLY soft-deleted rows. */
 export interface ProductsListFilter {
 	active?: boolean;
+	deleted?: boolean;
 	productKind?: string;
 	search?: string;
 }
@@ -275,6 +288,7 @@ export class AdminProductsClient {
 			q.set("cursor", opts.cursor);
 		} else {
 			if (filter.active !== undefined) q.set("active", filter.active ? "true" : "false");
+			if (filter.deleted !== undefined) q.set("deleted", filter.deleted ? "true" : "false");
 			if (filter.productKind !== undefined && filter.productKind.length > 0) {
 				q.set("productKind", filter.productKind);
 			}

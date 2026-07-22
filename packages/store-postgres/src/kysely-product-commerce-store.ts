@@ -483,9 +483,14 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 				"product_commerce.price_currency as price_currency",
 				"product_commerce.product_kind as product_kind",
 				"product_commerce.active as active",
+				"product_commerce.deleted_at as deleted_at",
 				"product_commerce.created_at as created_at",
 			])
-			.where("product_commerce.deleted_at", "is", null);
+			// The tombstone axis (product lifecycle surfacing, port doc): the
+			// archive view (`filter.deleted: true`) flips this to `IS NOT NULL`;
+			// every other caller (the field omitted or `false`) keeps the
+			// ORIGINAL default — only live rows list.
+			.where("product_commerce.deleted_at", filter.deleted === true ? "is not" : "is", null);
 
 		const conds = productFilterConditions(filter);
 		if (conds.length > 0) q = q.where((eb) => eb.and(conds));
@@ -529,6 +534,7 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 					: money(cents(r.price_cents), currency(r.price_currency)),
 			productKind: r.product_kind as ProductKind,
 			active: r.active === 1,
+			deletedAt: r.deleted_at,
 			createdAt: r.created_at,
 		}));
 		return { products, nextCursor };
@@ -607,6 +613,10 @@ function isLiveSkuUniqueViolation(err: unknown): boolean {
  * substring of `title` (port doc — deliberately diverges from `OrderListFilter
  * .search`'s exact-only semantics); a NULL `sku`/`title` simply fails its half
  * of the OR (SQL `NULL LIKE …` / `NULL = …` is unknown ⇒ false), never a throw.
+ * `deleted` is DELIBERATELY absent from this builder — it flips the base
+ * query's `deleted_at IS [NOT] NULL` clause in `listProducts` directly, not an
+ * ANDed condition here (the two are mutually exclusive branches, not a
+ * composable filter half).
  */
 function productFilterConditions(filter: ProductListFilter): Expression<SqlBool>[] {
 	const eb: ExpressionBuilder<Database, "product_commerce"> = expressionBuilder();
