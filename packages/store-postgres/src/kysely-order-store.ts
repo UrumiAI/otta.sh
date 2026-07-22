@@ -27,7 +27,10 @@ import {
 	type OrderTransitionResult,
 	type OutboxEmail,
 	type PaymentMethod,
+	type ReconciliationOutcome,
 	type RecordPaymentInput,
+	type ResolveReconciliationInput,
+	type ResolveReconciliationStoreResult,
 } from "@urumi/domain";
 import { type Kysely, type Selectable, sql, type Transaction } from "kysely";
 import type { Database, OrderItemsTable, OrdersTable, OrderTotalsTable } from "./schema.js";
@@ -207,6 +210,37 @@ export class KyselyOrderStore implements OrderStore {
 			.set({ reconciliation_flag: detail, updated_at: this.#clock.now().toISOString() })
 			.where("id", "=", orderId)
 			.execute();
+	}
+
+	async resolveReconciliation(
+		input: ResolveReconciliationInput,
+	): Promise<ResolveReconciliationStoreResult> {
+		// EQUALITY-guarded compare-and-clear on the reconciliation axis — the
+		// `transition` fromState precedent: `WHERE reconciliation_flag =
+		// :expectedFlag` makes the resolve once-only under concurrency (exactly one
+		// caller clears the flag + records the disposition) AND stale-review-safe (a
+		// NEW anomaly re-flagging the order after the admin loaded the page no longer
+		// matches — a 0-row miss, never a blind clear). RETURNING id tells us who
+		// won. NEVER touches state / order_items / order_totals — only the mutable
+		// reconciliation envelope. input.idempotencyKey is intentionally unused:
+		// dedup is structural via the guard (mirrors `transition`, H4).
+		const now = this.#clock.now().toISOString();
+		const won = await this.#db
+			.updateTable("orders")
+			.set({
+				reconciliation_flag: null,
+				reconciliation_outcome: input.outcome,
+				reconciliation_reason: input.reason,
+				reconciliation_resolved_by: input.resolvedBy,
+				reconciliation_resolved_at: now,
+				updated_at: now,
+			})
+			.where("id", "=", input.orderId)
+			.where("reconciliation_flag", "=", input.expectedFlag)
+			.returning("id")
+			.executeTakeFirst();
+		const order = await this.#loadById(input.orderId);
+		return { resolved: won !== undefined, order };
 	}
 
 	// -- Phase 5: state machine + email outbox --------------------------------
@@ -586,5 +620,16 @@ function toOrder(
 		lines,
 		totals: t,
 		reconciliationFlag: order.reconciliation_flag,
+		// A resolution exists iff the flag was resolved (all four columns written
+		// atomically by resolveReconciliation); `resolved_at` is the presence witness.
+		reconciliationResolution:
+			order.reconciliation_resolved_at === null
+				? null
+				: {
+						outcome: order.reconciliation_outcome as ReconciliationOutcome,
+						reason: order.reconciliation_reason ?? "",
+						resolvedBy: order.reconciliation_resolved_by ?? "",
+						resolvedAt: order.reconciliation_resolved_at,
+					},
 	};
 }

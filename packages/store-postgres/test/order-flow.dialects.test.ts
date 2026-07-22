@@ -391,6 +391,7 @@ function orderFlowTests(makeHarness: () => Promise<OrderFlowHarness>, dialect: s
 				listExpirable: (at) => h.orderStore.listExpirable(at),
 				recordPayment: (i) => h.orderStore.recordPayment(i),
 				flagReconciliation: (id, d) => h.orderStore.flagReconciliation(id, d),
+				resolveReconciliation: (i) => h.orderStore.resolveReconciliation(i),
 				transition: (i) => h.orderStore.transition(i),
 				listForCustomer: (c) => h.orderStore.listForCustomer(c),
 				listOrders: (f, p) => h.orderStore.listOrders(f, p),

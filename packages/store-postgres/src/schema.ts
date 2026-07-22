@@ -146,8 +146,18 @@ export interface OrdersTable {
 	buyer_ref: string;
 	/** Phase-5 hook (added here forward-only, populated by Phase 5). */
 	customer_id: ColumnType<string | null, string | null | undefined, string | null>;
-	/** Set when settle loses an adopted hold → manual reconciliation (§5). */
+	/** Set when settle loses an adopted hold → manual reconciliation (§5); CLEARED
+	 *  back to null when an admin resolves it (admin-UX Increment 1). */
 	reconciliation_flag: ColumnType<string | null, string | null | undefined, string | null>;
+	/** The admin's disposition recorded on resolve (admin-UX Increment 1) —
+	 *  'refunded' | 'fulfilled' | 'written_off'. Null while unflagged/unresolved. */
+	reconciliation_outcome: ColumnType<string | null, string | null | undefined, string | null>;
+	/** Free-text justification recorded on resolve; null while unresolved. */
+	reconciliation_reason: ColumnType<string | null, string | null | undefined, string | null>;
+	/** Who resolved the flag (free text); null while unresolved. */
+	reconciliation_resolved_by: ColumnType<string | null, string | null | undefined, string | null>;
+	/** ISO-8601 UTC resolve timestamp; null while unresolved. */
+	reconciliation_resolved_at: ColumnType<string | null, string | null | undefined, string | null>;
 	created_at: string;
 	updated_at: string;
 }

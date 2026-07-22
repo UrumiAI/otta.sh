@@ -14,6 +14,7 @@ import type {
 import {
 	AdminOrdersClient,
 	type OrderDetailResult,
+	type OrderDetailWire,
 	type OrderNoteWire,
 	type OrderSummaryWire,
 	type OrdersListFilter,
@@ -46,6 +47,7 @@ export const ORDERS_PAGE: AdminPageConfig = { path: "/orders", label: "Orders", 
 const ORDERS_ACTIONS: ScreenActions = screenActions("orders");
 const ACTION_TRANSITION = ORDERS_ACTIONS.custom("transition");
 const ACTION_ADD_NOTE = ORDERS_ACTIONS.custom("add-note");
+const ACTION_RESOLVE = ORDERS_ACTIONS.custom("resolve-reconciliation");
 
 /**
  * The action ids the admin-route dispatcher recognizes as belonging to the
@@ -57,6 +59,7 @@ const ACTION_ADD_NOTE = ORDERS_ACTIONS.custom("add-note");
 export const ORDERS_ACTION_IDS: ReadonlySet<string> = ORDERS_ACTIONS.actionIds(
 	"transition",
 	"add-note",
+	"resolve-reconciliation",
 );
 
 const PAGE_LIMIT = 25;
@@ -112,6 +115,7 @@ export function createOrdersPageHandler(): RouteHandler<OrdersPageInput> {
 		customActions: {
 			[ACTION_TRANSITION]: transitionAction(),
 			[ACTION_ADD_NOTE]: addNoteAction(),
+			[ACTION_RESOLVE]: resolveReconciliationAction(),
 		},
 	});
 }
@@ -280,9 +284,13 @@ function detailBlocks(
 			{ label: "Customer", value: o.customerId ?? o.buyerRef },
 			{ label: "Payment", value: o.paymentMethod ?? "—" },
 			{ label: "Created (UTC)", value: o.createdAt },
-			{ label: "Reconciliation", value: o.reconciliationFlag ?? "none" },
+			{ label: "Reconciliation", value: reconciliationSummary(o) },
 		],
 	});
+	// The reconciliation surface is PROMINENT (right below the header fields): an
+	// open flag gets an alert banner + the resolve form; a resolved flag shows the
+	// recorded disposition. A never-flagged order shows nothing here.
+	for (const block of reconciliationBlocks(o)) blocks.push(block);
 	blocks.push({ type: "section", text: "Line items" });
 	blocks.push({
 		type: "table",
@@ -386,7 +394,112 @@ function transitionActions(orderId: string, allowed: string[]): ActionsBlock {
 	return { type: "actions", elements };
 }
 
-// -- custom actions: transition + add-note ------------------------------------
+// -- reconciliation surface (admin-UX Increment 1) ----------------------------
+
+/** The three admin dispositions, offered in the resolve form's select. Mirrors the
+ *  domain `ReconciliationOutcome`; the service re-validates the wire value. The
+ *  labels spell out that a disposition is a RECORD, not an action — "refunded"
+ *  must never read as "this button issues a refund". */
+const RECONCILIATION_OUTCOMES: readonly SelectOption[] = [
+	{ value: "refunded", label: "refunded (recorded only — issue the refund separately)" },
+	{ value: "fulfilled", label: "fulfilled (order honored as-is; e.g. stock re-sourced)" },
+	{ value: "written_off", label: "written_off (loss/false-alarm accepted)" },
+];
+
+/** A one-line summary for the header fields block. */
+function reconciliationSummary(o: OrderDetailWire): string {
+	if (o.reconciliationFlag !== null) return "⚠ Needs reconciliation";
+	if (o.reconciliationResolution !== null)
+		return `resolved (${o.reconciliationResolution.outcome})`;
+	return "none";
+}
+
+/** The prominent reconciliation section: an OPEN flag ⇒ an alert banner explaining
+ *  what settle detected + a resolve form; a RESOLVED flag ⇒ the recorded
+ *  disposition (read-only); a never-flagged order ⇒ nothing. */
+function reconciliationBlocks(o: OrderDetailWire): Block[] {
+	if (o.reconciliationFlag !== null) {
+		return [
+			{
+				type: "banner",
+				variant: "alert",
+				title: "Needs reconciliation",
+				description: `Settlement flagged this order: ${o.reconciliationFlag}. Money moved but stock/settlement did not line up — record how you resolved it (this does not move the order status or its line items).`,
+			},
+			{
+				type: "context",
+				text: "Resolving records your decision only — it does NOT move money or change the order. If the customer is owed a refund, issue it via your payment provider (or the refunded status flow) separately.",
+			},
+			resolveForm(o.id, o.reconciliationFlag),
+		];
+	}
+	if (o.reconciliationResolution !== null) {
+		const r = o.reconciliationResolution;
+		return [
+			{ type: "section", text: "Reconciliation resolved" },
+			{
+				type: "fields",
+				fields: [
+					{ label: "Outcome", value: r.outcome },
+					{ label: "Reason", value: r.reason },
+					{ label: "Resolved by", value: r.resolvedBy },
+					{ label: "Resolved (UTC)", value: r.resolvedAt },
+				],
+			},
+		];
+	}
+	return [];
+}
+
+/** The resolve form. The order id AND the displayed flag detail ride along as
+ *  single-option `select`s (the same carry-the-id-in-values pattern as the
+ *  add-note / open-order forms) so a stateless `form_submit` knows which order —
+ *  and which EXACT anomaly — the admin reviewed. The service compare-and-clears
+ *  on that flag: if a new anomaly re-flags the order mid-review, the resolve
+ *  conflicts instead of clearing it blind. */
+function resolveForm(orderId: string, displayedFlag: string): FormBlock {
+	return {
+		type: "form",
+		fields: [
+			{
+				type: "select",
+				action_id: "orderId",
+				label: "Order",
+				options: [{ value: orderId, label: orderId }],
+				initial_value: orderId,
+			},
+			{
+				type: "select",
+				action_id: "expectedFlag",
+				label: "Resolving this anomaly",
+				options: [{ value: displayedFlag, label: displayedFlag }],
+				initial_value: displayedFlag,
+			},
+			{
+				type: "select",
+				action_id: "outcome",
+				label: "Outcome (a record of what you did — does not move money)",
+				options: [...RECONCILIATION_OUTCOMES],
+				initial_value: "refunded",
+			},
+			{
+				type: "text_input",
+				action_id: "reason",
+				label: "Reason",
+				placeholder: "e.g. refunded the buyer via Stripe; stock was gone",
+			},
+			{
+				type: "text_input",
+				action_id: "resolvedBy",
+				label: "Resolved by",
+				placeholder: "your name",
+			},
+		],
+		submit: { label: "Resolve reconciliation", action_id: ACTION_RESOLVE },
+	};
+}
+
+// -- custom actions: transition + add-note + resolve-reconciliation -----------
 
 function transitionAction() {
 	return customAction<AdminOrdersClient>(async ({ input, client, showLeaf, showList }) => {
@@ -451,6 +564,74 @@ function addNoteAction() {
 				variant: "default",
 				title: "Already added",
 				description: "That exact note is already on this order.",
+			};
+		}
+		return showLeaf([orderId], notice);
+	});
+}
+
+function resolveReconciliationAction() {
+	return customAction<AdminOrdersClient>(async ({ input, client, showLeaf, showList }) => {
+		const values = input.values ?? {};
+		const orderId = readString(values.orderId);
+		if (orderId === undefined) return showList();
+		// The flag AS DISPLAYED when the form rendered — the compare-and-clear key.
+		const expectedFlag = readString(values.expectedFlag) ?? "";
+		const outcome = readString(values.outcome) ?? "";
+		const reason = (readString(values.reason) ?? "").trim();
+		const resolvedBy = (readString(values.resolvedBy) ?? "").trim();
+		// Local guard: a blank reason/resolver never leaves the plugin (the domain
+		// rejects it too, but this gives immediate inline feedback without a round trip).
+		if (reason.length === 0 || resolvedBy.length === 0) {
+			return showLeaf([orderId], {
+				variant: "error",
+				title: "Not resolved",
+				description: "Enter both a reason and who is resolving it.",
+			});
+		}
+		// A stable per-order idempotency key: a double-submit is a guarded no-op, and
+		// the disposition is only ever written once (the domain's guarded flip).
+		const key = `admin-resolve-reconciliation:${orderId}`;
+		const result = await client.resolveReconciliation(
+			orderId,
+			{ expectedFlag, outcome, reason, resolvedBy },
+			{ idempotencyKey: key },
+		);
+		let notice: Notice | undefined;
+		if (!result.ok) {
+			// A stale review gets its own copy: the flag changed under the admin (a
+			// new settle anomaly re-flagged the order) — the re-render below already
+			// shows the NEW flag; tell them to re-review it, not to check tokens.
+			notice =
+				result.reason === "RECONCILIATION_FLAG_CHANGED"
+					? {
+							variant: "error",
+							title: "The reconciliation state changed — reload",
+							description:
+								"A new anomaly was flagged on this order after you opened it. Nothing was cleared. Review the flag shown below and resolve again.",
+						}
+					: {
+							variant: "error",
+							title: "Not resolved",
+							description:
+								"That reconciliation could not be resolved — check the order and the admin token in Settings.",
+						};
+		} else if (!result.resolved) {
+			// The guarded flip matched 0 rows — already resolved, or a lost race. Not a
+			// failure: surface a non-error notice so the merchant gets feedback.
+			notice = {
+				variant: "default",
+				title: "Already resolved",
+				description: "This order's reconciliation flag was already cleared.",
+			};
+		} else {
+			// Success confirmation. Uses the `default` variant — the scaffold's Notice
+			// union is `default | error`; the cleared-flag re-render is the substantive
+			// feedback, this banner just acknowledges the write.
+			notice = {
+				variant: "default",
+				title: "Reconciliation resolved",
+				description: "The flag is cleared and your disposition was recorded.",
 			};
 		}
 		return showLeaf([orderId], notice);

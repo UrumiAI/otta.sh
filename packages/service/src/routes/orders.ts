@@ -218,6 +218,9 @@ export function serializeOrder(order: Order): Record<string, unknown> {
 		holdExpiresAt: order.holdExpiresAt,
 		createdAt: order.createdAt,
 		reconciliationFlag: order.reconciliationFlag,
+		// The admin disposition once the flag was resolved (admin-UX Increment 1);
+		// null while unflagged/unresolved. Additive — existing consumers ignore it.
+		reconciliationResolution: order.reconciliationResolution,
 		totals: {
 			currency: order.totals.currency,
 			subtotalCents: order.totals.subtotal,
