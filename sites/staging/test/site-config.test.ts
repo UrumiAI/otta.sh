@@ -24,6 +24,7 @@ import {
 	COMMERCE_SERVICE_BASE_URL,
 	ORDERS_PAGE,
 	productDataWidget,
+	PRODUCTS_PAGE,
 	REPORTS_PAGE,
 	SETTINGS_PAGE,
 	URUMI_PLUGIN_CAPABILITIES,
@@ -69,12 +70,17 @@ describe("urumiPluginDescriptor", () => {
 		expect(descriptor.fieldWidgets).toEqual([productDataWidget]);
 	});
 
-	test("declares the plugin's admin pages (Reports + Settings + Orders)", () => {
+	test("declares the plugin's admin pages (Reports + Settings + Orders + Products)", () => {
 		// The plugin's exported admin.pages entries — the trusted descriptor must
 		// carry ALL of them or the page never appears in the admin nav. All render
 		// through the single `admin` dispatch route (em-dash resolves admin pages by
 		// the literal `"admin"` key and fans out on the interaction's `page`).
-		expect(descriptor.adminPages).toEqual([REPORTS_PAGE, SETTINGS_PAGE, ORDERS_PAGE]);
+		expect(descriptor.adminPages).toEqual([
+			REPORTS_PAGE,
+			SETTINGS_PAGE,
+			ORDERS_PAGE,
+			PRODUCTS_PAGE,
+		]);
 	});
 
 	test("declares no storage collections (ctx.kv is always-available; the plugin declares no storage tables)", () => {

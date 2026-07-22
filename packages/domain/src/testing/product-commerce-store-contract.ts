@@ -3,6 +3,7 @@ import { cents, currency, money } from "../money/cents.js";
 import { idempotencyKey, productId, sku } from "../money/ids.js";
 import { MissingProductIdError, SkuConflictError } from "../product-commerce/errors.js";
 import type { ProductCommerceStore } from "../ports/product-commerce-store.js";
+import type { SeedProductSummaryRow } from "./in-memory-product-commerce-store.js";
 
 export interface ProductCommerceStoreHarness {
 	store: ProductCommerceStore;
@@ -10,6 +11,28 @@ export interface ProductCommerceStoreHarness {
 	 *  intra-service `inStock` join reads — the dialect harness writes the real
 	 *  `inventory` table; the fake harness feeds the fake's lookup. */
 	seedStock(sku: string, qty: number): Promise<void>;
+	/** Admin-UX Increment 2: seed a bare `product_commerce` row (no upsert/
+	 *  idempotency-key dance) with an EXACT `createdAt`, for the admin-list
+	 *  contract. The fake wraps `InMemoryProductCommerceStore.seedProductRow`;
+	 *  the Kysely harness inserts a real row — so fake, sqlite, and pg exercise
+	 *  the identical `listProducts` spec (mirrors `OrderStoreHarness.seedOrder`). */
+	seedProduct(row: SeedProductSummaryRow): Promise<void>;
+}
+
+/** A summary-row seed with sensible defaults; overridable per admin-list case. */
+function productRow(
+	overrides: Partial<SeedProductSummaryRow> & { id: string },
+): SeedProductSummaryRow {
+	return {
+		sku: `SKU-${overrides.id}`,
+		title: `Product ${overrides.id}`,
+		priceCents: 1000,
+		currency: "USD",
+		productKind: "physical",
+		active: true,
+		createdAt: "2026-07-10T00:00:00.000Z",
+		...overrides,
+	};
 }
 
 export interface ProductCommerceStoreContractOptions {
@@ -817,6 +840,238 @@ export function productCommerceStoreContract(
 			const un = map.get(unpriced);
 			expect(un).toEqual(await h.store.getByProductId(unpriced));
 			expect(un?.price).toBeNull();
+		});
+
+		// -- Admin Products console: view-only keyset list (admin-UX Increment 2) --
+
+		test("listProducts on an empty store returns no rows and a null cursor", async () => {
+			const h = await makeStore();
+			const res = await h.store.listProducts({}, { limit: 25 });
+			expect(res.products).toEqual([]);
+			expect(res.nextCursor).toBeNull();
+		});
+
+		test("listProducts projects the summary fields (money as Money, nullable sku/title/price preserved)", async () => {
+			const h = await makeStore();
+			await h.seedProduct(
+				productRow({
+					id: "prod-proj",
+					sku: "SKU-PROJ",
+					title: "Projected Widget",
+					priceCents: 4200,
+					currency: "EUR",
+					productKind: "digital",
+					active: true,
+					createdAt: "2026-07-10T01:00:00.000Z",
+				}),
+			);
+			const { products } = await h.store.listProducts({}, { limit: 25 });
+			expect(products).toHaveLength(1);
+			const p = products[0]!;
+			expect(p.productId).toBe("prod-proj");
+			expect(p.sku).toBe("SKU-PROJ");
+			expect(p.title).toBe("Projected Widget");
+			expect(p.price).toEqual({ amount: 4200, currency: "EUR" });
+			expect(p.productKind).toBe("digital");
+			expect(p.active).toBe(true);
+			expect(p.createdAt).toBe("2026-07-10T01:00:00.000Z");
+		});
+
+		test("listProducts projects a 'create then price' row (null sku/title/price) without throwing", async () => {
+			const h = await makeStore();
+			await h.seedProduct({
+				id: "prod-unpriced",
+				sku: null,
+				title: null,
+				priceCents: null,
+				createdAt: "2026-07-10T01:00:00.000Z",
+			});
+			const { products } = await h.store.listProducts({}, { limit: 25 });
+			expect(products).toHaveLength(1);
+			expect(products[0]).toMatchObject({ sku: null, title: null, price: null });
+		});
+
+		test("listProducts always excludes soft-deleted rows (no toggle exists yet)", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "prod-live", createdAt: "2026-07-10T01:00:00.000Z" }));
+			await h.seedProduct(
+				productRow({
+					id: "prod-deleted",
+					createdAt: "2026-07-10T02:00:00.000Z",
+					deletedAt: "2026-07-10T03:00:00.000Z",
+				}),
+			);
+			const { products } = await h.store.listProducts({}, { limit: 25 });
+			expect(products.map((p) => p.productId)).toEqual(["prod-live"]);
+		});
+
+		test("listProducts filters by active", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "a", active: true }));
+			await h.seedProduct(productRow({ id: "b", active: false }));
+			await h.seedProduct(productRow({ id: "c", active: true }));
+			const { products } = await h.store.listProducts({ active: true }, { limit: 25 });
+			expect(products.map((p) => p.productId).toSorted()).toEqual(["a", "c"]);
+			const inactive = await h.store.listProducts({ active: false }, { limit: 25 });
+			expect(inactive.products.map((p) => p.productId)).toEqual(["b"]);
+		});
+
+		test("listProducts filters by productKind", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "phys-1", productKind: "physical" }));
+			await h.seedProduct(productRow({ id: "dig-1", productKind: "digital" }));
+			await h.seedProduct(productRow({ id: "phys-2", productKind: "physical" }));
+			const { products } = await h.store.listProducts({ productKind: "digital" }, { limit: 25 });
+			expect(products.map((p) => p.productId)).toEqual(["dig-1"]);
+		});
+
+		test("listProducts with no filter orders by created_at DESC, then product_id DESC", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "prod-a", createdAt: "2026-07-10T00:00:02.000Z" }));
+			await h.seedProduct(productRow({ id: "prod-b", createdAt: "2026-07-10T00:00:02.000Z" }));
+			await h.seedProduct(productRow({ id: "prod-c", createdAt: "2026-07-10T00:00:01.000Z" }));
+			const { products } = await h.store.listProducts({}, { limit: 25 });
+			// Same created_at ⇒ product_id DESC (prod-b before prod-a); older prod-c last.
+			expect(products.map((p) => p.productId)).toEqual(["prod-b", "prod-a", "prod-c"]);
+		});
+
+		test("listProducts search matches an EXACT sku, case-insensitively", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "a", sku: "Widget-Blue" }));
+			await h.seedProduct(productRow({ id: "b", sku: "Widget-Red" }));
+			const { products } = await h.store.listProducts({ search: "widget-blue" }, { limit: 25 });
+			expect(products.map((p) => p.productId)).toEqual(["a"]);
+			// A substring of a sku must NOT match (exact-lower-equals only, like
+			// OrderListFilter's buyer_ref search).
+			const partial = await h.store.listProducts({ search: "widget" }, { limit: 25 });
+			expect(partial.products.map((p) => p.productId).toSorted()).toEqual([]);
+		});
+
+		test("listProducts search matches a title SUBSTRING, case-insensitively (deliberately diverges from the exact sku/order-search semantics)", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "a", title: "Blue Widget Deluxe" }));
+			await h.seedProduct(productRow({ id: "b", title: "Red Gadget" }));
+			const { products } = await h.store.listProducts({ search: "widget" }, { limit: 25 });
+			expect(products.map((p) => p.productId)).toEqual(["a"]);
+			// Case-insensitive.
+			const upper = await h.store.listProducts({ search: "WIDGET" }, { limit: 25 });
+			expect(upper.products.map((p) => p.productId)).toEqual(["a"]);
+		});
+
+		test("listProducts search treats LIKE metacharacters in the query LITERALLY, never as a SQL wildcard", async () => {
+			const h = await makeStore();
+			// `_` is a SQL LIKE single-char wildcard; an unescaped search for "a_b"
+			// would ALSO match "AXB" (any character in the `_` position) — a false
+			// positive this escaping exists to prevent.
+			await h.seedProduct(productRow({ id: "literal-underscore", title: "A_B Widget" }));
+			await h.seedProduct(productRow({ id: "wildcard-would-match", title: "AXB Widget" }));
+			const underscoreSearch = await h.store.listProducts({ search: "a_b" }, { limit: 25 });
+			expect(underscoreSearch.products.map((p) => p.productId)).toEqual(["literal-underscore"]);
+
+			// `%` is the SQL LIKE any-sequence wildcard; a literal search containing
+			// one (e.g. a "50% off" title) must match only the literal text.
+			await h.seedProduct(productRow({ id: "literal-percent", title: "50% off Widget" }));
+			await h.seedProduct(productRow({ id: "no-percent", title: "50X off Widget" }));
+			const percentSearch = await h.store.listProducts({ search: "50%" }, { limit: 25 });
+			expect(percentSearch.products.map((p) => p.productId)).toEqual(["literal-percent"]);
+		});
+
+		test("listProducts search matches EITHER the sku half or the title half (not both required)", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "by-sku", sku: "ZZZ-1", title: "Nothing relevant" }));
+			await h.seedProduct(
+				productRow({ id: "by-title", sku: "NOPE", title: "Special Findable Item" }),
+			);
+			const bySku = await h.store.listProducts({ search: "zzz-1" }, { limit: 25 });
+			expect(bySku.products.map((p) => p.productId)).toEqual(["by-sku"]);
+			const byTitle = await h.store.listProducts({ search: "findable" }, { limit: 25 });
+			expect(byTitle.products.map((p) => p.productId)).toEqual(["by-title"]);
+		});
+
+		test("listProducts search against a null sku/title never throws — it simply cannot match that half", async () => {
+			const h = await makeStore();
+			await h.seedProduct({
+				id: "prod-nulls",
+				sku: null,
+				title: null,
+				priceCents: null,
+				createdAt: "2026-07-10T00:00:00.000Z",
+			});
+			const { products } = await h.store.listProducts({ search: "anything" }, { limit: 25 });
+			expect(products).toEqual([]);
+		});
+
+		test("listProducts paginates forward with a keyset cursor — no overlap, no gap", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "p1", createdAt: "2026-07-10T00:00:01.000Z" }));
+			await h.seedProduct(productRow({ id: "p2", createdAt: "2026-07-10T00:00:02.000Z" }));
+			await h.seedProduct(productRow({ id: "p3", createdAt: "2026-07-10T00:00:03.000Z" }));
+			// Newest-first: p3, p2, p1.
+			const page1 = await h.store.listProducts({}, { limit: 2 });
+			expect(page1.products.map((p) => p.productId)).toEqual(["p3", "p2"]);
+			expect(page1.nextCursor).not.toBeNull();
+			expect(page1.nextCursor?.productId).toBe("p2"); // last returned row
+			const page2 = await h.store.listProducts({}, { limit: 2, cursor: page1.nextCursor });
+			expect(page2.products.map((p) => p.productId)).toEqual(["p1"]); // remainder
+			expect(page2.nextCursor).toBeNull();
+			// No overlap, no gap: the two pages concatenate to the full DESC order.
+			expect([...page1.products, ...page2.products].map((p) => p.productId)).toEqual([
+				"p3",
+				"p2",
+				"p1",
+			]);
+		});
+
+		test("listProducts keyset tie-break is stable across a page boundary on identical created_at", async () => {
+			const h = await makeStore();
+			const at = "2026-07-10T00:00:05.000Z";
+			for (const id of ["prod-01", "prod-02", "prod-03", "prod-04"]) {
+				await h.seedProduct(productRow({ id, createdAt: at }));
+			}
+			// All share created_at ⇒ pure product_id DESC.
+			const page1 = await h.store.listProducts({}, { limit: 2 });
+			expect(page1.products.map((p) => p.productId)).toEqual(["prod-04", "prod-03"]);
+			expect(page1.nextCursor).toEqual({ createdAt: at, productId: "prod-03" });
+			const page2 = await h.store.listProducts({}, { limit: 2, cursor: page1.nextCursor });
+			expect(page2.products.map((p) => p.productId)).toEqual(["prod-02", "prod-01"]);
+			expect(page2.nextCursor).toBeNull();
+		});
+
+		test("listProducts with rows exactly equal to the limit returns a null cursor (no phantom page)", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "p1", createdAt: "2026-07-10T00:00:01.000Z" }));
+			await h.seedProduct(productRow({ id: "p2", createdAt: "2026-07-10T00:00:02.000Z" }));
+			const res = await h.store.listProducts({}, { limit: 2 });
+			expect(res.products.map((p) => p.productId)).toEqual(["p2", "p1"]);
+			expect(res.nextCursor).toBeNull();
+		});
+
+		test("listProducts filters compose (active AND productKind AND search)", async () => {
+			const h = await makeStore();
+			await h.seedProduct(
+				productRow({ id: "match", active: true, productKind: "digital", title: "Findable Ebook" }),
+			);
+			await h.seedProduct(
+				productRow({
+					id: "wrong-kind",
+					active: true,
+					productKind: "physical",
+					title: "Findable Mug",
+				}),
+			);
+			await h.seedProduct(
+				productRow({
+					id: "wrong-active",
+					active: false,
+					productKind: "digital",
+					title: "Findable Ebook 2",
+				}),
+			);
+			const { products } = await h.store.listProducts(
+				{ active: true, productKind: "digital", search: "findable" },
+				{ limit: 25 },
+			);
+			expect(products.map((p) => p.productId)).toEqual(["match"]);
 		});
 	});
 }

@@ -1,12 +1,50 @@
+import { cents, currency as toCurrency, money } from "../money/cents.js";
 import type { IdempotencyKey, ProductId } from "../money/ids.js";
 import type { Clock } from "../ports/clock.js";
 import type {
 	ProductCommerce,
 	ProductCommerceStore,
 	ProductCommerceView,
+	ProductKind,
+	ProductListFilter,
+	ProductListPage,
+	ProductListResult,
+	ProductSummary,
 	UpsertProductCommerceInput,
 } from "../ports/product-commerce-store.js";
 import { MissingProductIdError, SkuConflictError } from "../product-commerce/errors.js";
+
+/** Test-only seed shape for the admin-list contract — a direct product row (no
+ *  upsert/idempotency-key dance), so a case can pin an EXACT `createdAt` per
+ *  row (mirrors `SeedOrderSummaryRow`: distinct clocks for ordering, identical
+ *  clocks for the tie-break). Mirrors the columns `KyselyProductCommerceStore.
+ *  listProducts` reads, so the fake and the SQL agree byte-for-byte. */
+export interface SeedProductSummaryRow {
+	id: string;
+	sku?: string | null;
+	title?: string | null;
+	priceCents?: number | null;
+	currency?: string;
+	productKind?: ProductKind;
+	active?: boolean;
+	createdAt: string;
+	deletedAt?: string | null;
+}
+
+/** Descending code-unit string comparison (`>` first) — the SAME plain
+ *  code-unit ordering `OrderStore`'s admin-list fake uses, so the two admin
+ *  list fakes stay internally consistent (never `localeCompare`). */
+function codeUnitDesc(a: string, b: string): number {
+	return a > b ? -1 : a < b ? 1 : 0;
+}
+
+/** Escape-free substring test — the fake's stand-in for the SQL adapter's
+ *  `lower(title) LIKE lower(:pattern) ESCAPE '\'`: a plain case-insensitive
+ *  `includes`, since the fake never builds a LIKE pattern (nothing to escape
+ *  here). */
+function containsCaseInsensitive(haystack: string, needle: string): boolean {
+	return haystack.toLowerCase().includes(needle.toLowerCase());
+}
 
 export interface InMemoryProductCommerceStoreOptions {
 	clock: Clock;
@@ -263,6 +301,101 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 			deletedAt: this.#clock.now(),
 			idempotencyKey: key,
 			updatedAt: this.#clock.now(),
+		});
+	}
+
+	// -- Admin Products console: view-only keyset list (admin-UX Increment 2) --
+
+	/** The ONE `ProductListFilter` predicate (mirrors `OrderStore`'s
+	 *  `#matchesFilter` / the Kysely adapter's shared predicate builder) —
+	 *  always excludes soft-deleted rows first. */
+	#matchesFilter(row: ProductCommerce, filter: ProductListFilter): boolean {
+		if (row.deletedAt !== null) return false; // never list a tombstone.
+		if (filter.active !== undefined && row.active !== filter.active) return false;
+		if (filter.productKind !== undefined && row.productKind !== filter.productKind) return false;
+		if (filter.search !== undefined) {
+			const bySku = row.sku !== null && row.sku.toLowerCase() === filter.search.toLowerCase();
+			const byTitle = row.title !== null && containsCaseInsensitive(row.title, filter.search);
+			if (!bySku && !byTitle) return false;
+		}
+		return true;
+	}
+
+	async listProducts(filter: ProductListFilter, page: ProductListPage): Promise<ProductListResult> {
+		// EXACT parity with `KyselyProductCommerceStore.listProducts` (mirrors
+		// `InMemoryOrderStore.listOrders`, MOD-5): same filters (via the shared
+		// `#matchesFilter` predicate), same `created_at DESC, product_id DESC`
+		// order, same `limit + 1` next-page detection.
+		const cursor = page.cursor ?? null;
+
+		const matched = [...this.#rows.values()]
+			.filter((row) => {
+				if (!this.#matchesFilter(row, filter)) return false;
+				if (cursor !== null) {
+					const createdAt = row.createdAt.toISOString();
+					if (createdAt > cursor.createdAt) return false;
+					if (createdAt === cursor.createdAt && row.productId >= cursor.productId) return false;
+				}
+				return true;
+			})
+			.toSorted((a, b) => {
+				const aCreated = a.createdAt.toISOString();
+				const bCreated = b.createdAt.toISOString();
+				return aCreated === bCreated
+					? codeUnitDesc(a.productId, b.productId) // product_id DESC
+					: codeUnitDesc(aCreated, bCreated); // created_at DESC
+			});
+
+		const window = matched.slice(0, page.limit + 1);
+		const hasMore = window.length > page.limit;
+		const rows = hasMore ? window.slice(0, page.limit) : window;
+		const last = rows.at(-1);
+		const nextCursor =
+			hasMore && last !== undefined
+				? { createdAt: last.createdAt.toISOString(), productId: last.productId }
+				: null;
+		return { products: rows.map((row) => this.#toSummary(row)), nextCursor };
+	}
+
+	#toSummary(row: ProductCommerce): ProductSummary {
+		return {
+			productId: row.productId,
+			sku: row.sku,
+			title: row.title,
+			price: row.price,
+			productKind: row.productKind,
+			active: row.active,
+			createdAt: row.createdAt.toISOString(),
+		};
+	}
+
+	/** TEST-ONLY: directly seed a product row for the admin-list contract with
+	 *  an EXACT `createdAt` (mirrors `InMemoryOrderStore.seedSummaryOrder`). Not
+	 *  part of `ProductCommerceStore`. */
+	seedProductRow(row: SeedProductSummaryRow): void {
+		const pid = row.id as ProductId;
+		const created = new Date(row.createdAt);
+		this.#rows.set(row.id, {
+			productId: pid,
+			sku: row.sku !== undefined ? (row.sku as ProductCommerce["sku"]) : null,
+			price:
+				row.priceCents !== undefined && row.priceCents !== null
+					? money(cents(row.priceCents), toCurrency(row.currency ?? "USD"))
+					: null,
+			title: row.title ?? null,
+			taxClass: null,
+			weightGrams: null,
+			lengthMm: null,
+			widthMm: null,
+			heightMm: null,
+			productKind: row.productKind ?? "physical",
+			active: row.active ?? false,
+			deletedAt:
+				row.deletedAt !== undefined && row.deletedAt !== null ? new Date(row.deletedAt) : null,
+			idempotencyKey: `seed-${row.id}` as IdempotencyKey,
+			contentUpdatedAt: null,
+			createdAt: created,
+			updatedAt: created,
 		});
 	}
 }

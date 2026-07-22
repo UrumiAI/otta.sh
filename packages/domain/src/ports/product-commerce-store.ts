@@ -1,6 +1,83 @@
 import type { Money } from "../money/cents.js";
 import type { IdempotencyKey, ProductId, Sku } from "../money/ids.js";
 
+// -- Admin product console: view-only list (keyset pagination) --------------
+// Admin-UX Increment 2, "product enumerate + product list" — the missing
+// atomic primitive this slice adds, mirroring `OrderStore.listOrders`'s
+// grain and proven keyset shape.
+
+/**
+ * Filters for the admin Products list. All optional — an empty filter lists
+ * every LIVE (non-soft-deleted) product. Deliberately narrower-cardinality
+ * than `OrderListFilter.states` (an OR-set): a product's `active` publish
+ * gate and `productKind` are each a two-value axis, so a single-value
+ * equality filter is the honest, minimal mirror rather than an over-general
+ * array.
+ *
+ * `search` DELIBERATELY DIVERGES from `OrderListFilter.search`'s exact-only
+ * semantics: an order's `id`/`buyer_ref` are identifiers a merchant looks up
+ * exactly, but a product `title` is free text a merchant partially
+ * remembers, so title matches as a case-insensitive SUBSTRING; `sku` — a
+ * structured identifier, like an order's `buyer_ref` — stays an exact,
+ * case-insensitive match. A row matches if EITHER half matches (never both
+ * required).
+ */
+export interface ProductListFilter {
+	/** Equality filter on the publish-gate flag; omitted ⇒ both active and
+	 *  inactive rows list. */
+	active?: boolean;
+	/** Equality filter on the v1 product kind; omitted ⇒ both kinds list. */
+	productKind?: ProductKind;
+	/** Case-insensitive: a SUBSTRING match on `title` OR an EXACT match on
+	 *  `sku` (see the filter doc for why the two axes diverge). A row with a
+	 *  null `title`/`sku` simply cannot match that half — never a throw. */
+	search?: string;
+}
+
+/** A keyset cursor POSITION — the `(createdAt, productId)` of the last row of
+ *  the previous page. Deliberately opaque-free in the domain (NO base64), like
+ *  `OrderListCursor` — the service layer wraps this into an opaque token.
+ *  Ordering is `created_at DESC, product_id DESC`, so the next page is every
+ *  row strictly "less than" this position under that order. */
+export interface ProductListCursor {
+	createdAt: string;
+	productId: ProductId;
+}
+
+/** One page request: an optional starting cursor (null/absent ⇒ first page)
+ *  and a page size. */
+export interface ProductListPage {
+	cursor?: ProductListCursor | null;
+	limit: number;
+}
+
+/**
+ * A lightweight product row for the admin list — a PROJECTION, not the full
+ * `ProductCommerce`: only what the console table needs, so the list is one
+ * statement and never N+1s into `inventory` per row (stock is deliberately
+ * OMITTED here — see `ProductCommerceStore.listProducts`'s doc; the detail
+ * leaf reads it via `InventoryStore.getOnHand` for the ONE product opened).
+ * Money stays branded `Money` (never a bare number), nullable exactly like
+ * the stored row (a "create then price" product may have neither sku nor
+ * price yet).
+ */
+export interface ProductSummary {
+	productId: ProductId;
+	sku: Sku | null;
+	title: string | null;
+	price: Money | null;
+	productKind: ProductKind;
+	active: boolean;
+	createdAt: string;
+}
+
+export interface ProductListResult {
+	products: ProductSummary[];
+	/** The position to pass back for the next page, or null when this is the
+	 *  last page (fewer than `limit + 1` rows matched). */
+	nextCursor: ProductListCursor | null;
+}
+
 /** v1 scope — no variations (Phase 1 §2/§4). */
 export type ProductKind = "physical" | "digital";
 
@@ -256,4 +333,33 @@ export interface ProductCommerceStore {
 	 * inventory-only HTTP calls" test, not just this comment.
 	 */
 	listCommerceByIds(productIds: ProductId[]): Promise<ProductCommerceView[]>;
+
+	/**
+	 * Admin Products console list (view-only; admin-UX Increment 2 — the missing
+	 * enumerate primitive). Returns a keyset-paginated page of lightweight
+	 * `ProductSummary` PROJECTIONS (never the full `ProductCommerce`, and never
+	 * joined with `inventory` — the list must not N+1 into stock per row; a
+	 * per-row stock signal is deferred to the detail leaf's single-sku
+	 * `InventoryStore.getOnHand` read). Always excludes soft-deleted rows
+	 * (`deleted_at IS NULL`) — mirrors `listCommerceByIds`'s tombstone
+	 * discipline; there is no admin surface for browsing/restoring a
+	 * soft-deleted product yet.
+	 *
+	 * Ordered `created_at DESC, product_id DESC` (newest-first, `product_id`
+	 * the stable tie-break — the primary key, exactly like `OrderSummary.id`).
+	 * This is the ONLY sort this slice offers: `title` would be the natural
+	 * catalog-browsing alternative, but `title` is NULLABLE ("create then
+	 * price" may land a row before a title exists), and a keyset cursor over a
+	 * nullable column needs NULLS-LAST handling that both dialects would have
+	 * to agree on for no real benefit yet — deferred as a follow-up, not
+	 * "sortable where cheap" for this slice. `created_at` is NOT NULL, so this
+	 * ordering needs no such handling and is a byte-for-byte mirror of
+	 * `listOrders`'s proven keyset shape.
+	 *
+	 * Pagination is forward-only keyset: the caller passes back the previous
+	 * page's `nextCursor` position; the adapter fetches `limit + 1` rows to
+	 * decide whether a next page exists and emits `nextCursor` from the LAST
+	 * RETURNED row (null when the page is the last).
+	 */
+	listProducts(filter: ProductListFilter, page: ProductListPage): Promise<ProductListResult>;
 }

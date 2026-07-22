@@ -15,6 +15,7 @@ import type { FieldWidgetConfig, PluginDescriptor } from "emdash";
 import {
 	ORDERS_PAGE,
 	productDataWidget,
+	PRODUCTS_PAGE,
 	REPORTS_PAGE,
 	SETTINGS_PAGE,
 	URUMI_PLUGIN_CAPABILITIES,
@@ -41,13 +42,14 @@ export function urumiPluginDescriptor(serviceUrl: string): PluginDescriptor {
 		// product-data-widget sandbox test.
 		fieldWidgets: [productDataWidget as unknown as FieldWidgetConfig],
 		// Phase 7's admin pages — the plugin's exported `admin.pages` entries;
-		// without them here neither page appears in the admin nav. Both are
+		// without them here neither page appears in the admin nav. All are
 		// rendered by the single `admin` dispatch route (which em-dash resolves
 		// by the literal `"admin"` key): Reports on `page:"/reports"`, Settings on
-		// `page:"/settings"`. The Settings form's admin token is a masked,
-		// write-only secret persisted to ctx.kv (webhook-notifier pattern) — no
-		// new capability: account/reports routes are network:request proxies and
-		// ctx.kv is always-available.
-		adminPages: [REPORTS_PAGE, SETTINGS_PAGE, ORDERS_PAGE],
+		// `page:"/settings"`, Orders on `page:"/orders"`, and (admin-UX Increment 2)
+		// Products on `page:"/products"`. The Settings form's admin token is a
+		// masked, write-only secret persisted to ctx.kv (webhook-notifier
+		// pattern) — no new capability: account/reports/products routes are
+		// network:request proxies and ctx.kv is always-available.
+		adminPages: [REPORTS_PAGE, SETTINGS_PAGE, ORDERS_PAGE, PRODUCTS_PAGE],
 	};
 }

@@ -101,6 +101,19 @@ export interface InventoryStore {
 	// `ReservationNotHeldError`, never a silent movement. Leaves
 	// `reserve/commit/release` byte-for-byte (Phase-0 contract untouched).
 	adjust(reservationId: string, newQty: number, key: IdempotencyKey): Promise<ReserveResult>;
+
+	// Additive (admin-UX Increment 2, product detail): a bare, read-only
+	// `on_hand` lookup — a query, not a command (no idempotency key, mutates
+	// nothing). Exists so a SINGLE product's admin detail view can show its raw
+	// stock count without a store-side join (unlike `ProductCommerceStore.
+	// listCommerceByIds`, whose `inStock` is a coarse boolean scoped to
+	// commerce-complete rows only). A sku with NO inventory row reads as `0` —
+	// the SAME "no row ⇒ out of stock" semantics `listCommerceByIds`'s LEFT JOIN
+	// already establishes — never a throw, never null-as-logic. Deliberately NOT
+	// a batch/list method: the admin list screen must not N+1 into inventory per
+	// row (the list omits stock entirely, mirroring the port's `listCommerceByIds`
+	// doc); this is a single-row read for the ONE product a detail view opens.
+	getOnHand(sku: string): Promise<number>;
 }
 
 export type ReserveResult =

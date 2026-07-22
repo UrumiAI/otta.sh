@@ -80,6 +80,20 @@ export interface TestServer {
 		totalCents: number;
 		reconciliationFlag?: string | null;
 	}): Promise<void>;
+	/** Seed a bare `product_commerce` row with an EXACT `createdAt` (admin-UX
+	 *  Increment 2, product list tests) — a direct insert, no upsert/
+	 *  idempotency-key dance, mirroring `seedOrder`. */
+	seedProductRow(row: {
+		id: string;
+		sku?: string | null;
+		title?: string | null;
+		priceCents?: number | null;
+		currency?: string;
+		productKind?: "physical" | "digital";
+		active?: boolean;
+		createdAt: string;
+		deletedAt?: string | null;
+	}): Promise<void>;
 	stop(): Promise<void>;
 }
 
@@ -294,6 +308,34 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
 					applied_coupon_code: null,
 					shipping_method_snapshot: null,
 					tax_breakdown: null,
+				})
+				.execute();
+		},
+		async seedProductRow(row) {
+			await db
+				.insertInto("product_commerce")
+				.values({
+					product_id: row.id,
+					sku: row.sku ?? null,
+					price_cents: row.priceCents ?? null,
+					price_currency:
+						row.priceCents !== undefined && row.priceCents !== null
+							? (row.currency ?? "USD")
+							: null,
+					title: row.title ?? null,
+					tax_class: null,
+					weight_grams: null,
+					length_mm: null,
+					width_mm: null,
+					height_mm: null,
+					product_kind: row.productKind ?? "physical",
+					active: (row.active ?? false) ? 1 : 0,
+					deleted_at: row.deletedAt ?? null,
+					idempotency_key: `seed-${row.id}`,
+					content_updated_at: null,
+					active_updated_at: null,
+					created_at: row.createdAt,
+					updated_at: row.createdAt,
 				})
 				.execute();
 		},

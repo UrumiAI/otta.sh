@@ -252,6 +252,7 @@ describe("createOrderFromCart", () => {
 			activate: (id, key, t) => base.activate(id, key, t),
 			deactivate: (id, key, t) => base.deactivate(id, key, t),
 			listCommerceByIds: (ids) => base.listCommerceByIds(ids),
+			listProducts: (filter, page) => base.listProducts(filter, page),
 		};
 
 		const res = await createOrderFromCart({ ...h.createDeps, productCommerce: spy }, cmd(cartId));
