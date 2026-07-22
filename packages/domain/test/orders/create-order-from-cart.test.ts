@@ -255,6 +255,7 @@ describe("createOrderFromCart", () => {
 			deactivate: (id, key, t) => base.deactivate(id, key, t),
 			listCommerceByIds: (ids) => base.listCommerceByIds(ids),
 			listProducts: (filter, page) => base.listProducts(filter, page),
+			countByTaxClass: (taxClassId) => base.countByTaxClass(taxClassId),
 		};
 
 		const res = await createOrderFromCart({ ...h.createDeps, productCommerce: spy }, cmd(cartId));

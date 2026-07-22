@@ -23,6 +23,36 @@ export function taxRulesStoreContract(
 			expect(classes.map((c) => c.id).toSorted()).toEqual(["standard", "zero"]);
 		});
 
+		test("deleteClass removes an unreferenced class", async () => {
+			const { store } = await makeStore();
+			await store.createClass({ id: "temp", name: "Temp" });
+			const res = await store.deleteClass("temp");
+			expect(res.ok).toBe(true);
+			expect((await store.listClasses()).map((c) => c.id)).not.toContain("temp");
+		});
+
+		test("deleteClass is not_found for an unknown id", async () => {
+			const { store } = await makeStore();
+			const res = await store.deleteClass("nope");
+			expect(res).toEqual({ ok: false, reason: "not_found" });
+		});
+
+		test("deleteClass refuses a class still referenced by a rate (in_use_by_rates)", async () => {
+			const { store } = await makeStore();
+			await store.createClass({ id: "standard", name: "Standard" });
+			await store.createRate({
+				id: "r1",
+				taxClassId: "standard",
+				zoneId: "z-us",
+				rateBps: 725,
+				appliesToShipping: false,
+			});
+			const res = await store.deleteClass("standard");
+			expect(res).toEqual({ ok: false, reason: "in_use_by_rates" });
+			// The class is untouched.
+			expect((await store.listClasses()).map((c) => c.id)).toContain("standard");
+		});
+
 		test("getRate returns the (class, zone) rate in integer bps, null otherwise", async () => {
 			const { store } = await makeStore();
 			await store.createClass({ id: "standard", name: "Standard" });

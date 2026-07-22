@@ -1,6 +1,7 @@
 import type {
 	CreateTaxClassInput,
 	CreateTaxRateInput,
+	DeleteTaxClassStoreResult,
 	TaxClass,
 	TaxRate,
 	TaxRulesStore,
@@ -19,6 +20,17 @@ export class InMemoryTaxRulesStore implements TaxRulesStore {
 
 	async listClasses(): Promise<TaxClass[]> {
 		return [...this.#classes.values()].map((c) => ({ ...c }));
+	}
+
+	/** Delete-in-use guard at the store's own grain (port doc): a class still
+	 *  referenced by any rate cannot be deleted; an unknown id is not_found. */
+	async deleteClass(id: string): Promise<DeleteTaxClassStoreResult> {
+		if (!this.#classes.has(id)) return { ok: false, reason: "not_found" };
+		for (const r of this.#rates.values()) {
+			if (r.taxClassId === id) return { ok: false, reason: "in_use_by_rates" };
+		}
+		this.#classes.delete(id);
+		return { ok: true };
 	}
 
 	async createRate(input: CreateTaxRateInput): Promise<TaxRate> {

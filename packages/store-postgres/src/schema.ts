@@ -125,6 +125,18 @@ export interface ProductCommerceTable {
 	/** Phase 4 §4: the title an order line snapshots (nullable; added additively). */
 	title: string | null;
 	tax_class: string | null;
+	/** Increment 2 slice 5: optional compare-at / was-price (nullable; shares the
+	 *  row's price currency, enforced by the edit guard not DDL). */
+	compare_at_cents: number | null;
+	compare_at_currency: string | null;
+	/** Increment 2 slice 5: optional ADMIN-ONLY unit cost (nullable; shares the
+	 *  price currency). Never on a storefront-facing wire. */
+	unit_cost_cents: number | null;
+	unit_cost_currency: string | null;
+	/** Increment 2 slice 5: out-of-stock policy. `NOT NULL DEFAULT 'deny'`;
+	 *  `'deny'` is the only value this slice (bounded by the domain union + zod,
+	 *  not the DB). */
+	inventory_policy: string;
 	weight_grams: number | null;
 	length_mm: number | null;
 	width_mm: number | null;

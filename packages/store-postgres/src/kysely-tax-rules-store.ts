@@ -1,6 +1,7 @@
 import type {
 	CreateTaxClassInput,
 	CreateTaxRateInput,
+	DeleteTaxClassStoreResult,
 	TaxClass,
 	TaxRate,
 	TaxRulesStore,
@@ -24,6 +25,41 @@ export class KyselyTaxRulesStore implements TaxRulesStore {
 	async listClasses(): Promise<TaxClass[]> {
 		const rows = await this.#db.selectFrom("tax_classes").selectAll().orderBy("id").execute();
 		return rows.map((r) => ({ id: r.id, name: r.name }));
+	}
+
+	/**
+	 * Delete a tax class (port doc), with the store's own-grain delete-in-use
+	 * guard: the DELETE is conditioned on NO `tax_rate` referencing the class, so
+	 * a concurrent rate insert can never orphan onto a just-deleted class. Zero
+	 * rows deleted ⇒ a fresh read classifies why (unknown id vs still-referenced),
+	 * mirroring the product-commerce store's no-op-then-reread pattern. The
+	 * PRODUCT-reference guard is the `deleteTaxClass` use-case's job (a different
+	 * aggregate).
+	 */
+	async deleteClass(id: string): Promise<DeleteTaxClassStoreResult> {
+		const res = await this.#db
+			.deleteFrom("tax_classes")
+			.where("id", "=", id)
+			.where((eb) =>
+				eb.not(
+					eb.exists(
+						eb
+							.selectFrom("tax_rates")
+							.select("id")
+							.whereRef("tax_rates.tax_class_id", "=", "tax_classes.id"),
+					),
+				),
+			)
+			.executeTakeFirst();
+		if (Number(res.numDeletedRows) > 0) return { ok: true };
+		// Zero rows: either the class does not exist, or a rate still references it.
+		const exists = await this.#db
+			.selectFrom("tax_classes")
+			.select("id")
+			.where("id", "=", id)
+			.executeTakeFirst();
+		if (exists === undefined) return { ok: false, reason: "not_found" };
+		return { ok: false, reason: "in_use_by_rates" };
 	}
 
 	async createRate(input: CreateTaxRateInput): Promise<TaxRate> {

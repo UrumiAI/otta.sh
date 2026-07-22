@@ -42,6 +42,17 @@ export interface ProductDetailWire {
 	priceCents: number | null;
 	currency: string | null;
 	taxClass: string | null;
+	/** Increment 2 slice 5: compare-at / was-price (shares the product currency;
+	 *  display-only). Both halves null ⇒ unset. */
+	compareAtCents: number | null;
+	compareAtCurrency: string | null;
+	/** Increment 2 slice 5: ADMIN-ONLY unit cost (shares the product currency).
+	 *  Present here because this is the internal-token admin detail — never on a
+	 *  storefront wire. Both halves null ⇒ unset. */
+	unitCostCents: number | null;
+	unitCostCurrency: string | null;
+	/** Increment 2 slice 5: out-of-stock policy (always `"deny"` this slice). */
+	inventoryPolicy: string;
 	weightGrams: number | null;
 	lengthMm: number | null;
 	widthMm: number | null;
@@ -88,11 +99,25 @@ export interface ProductEditWire {
 	price?: { amount: number; currency: string };
 	title?: string | null;
 	taxClass?: string | null;
+	/** Increment 2 slice 5: compare-at / cost — money (integer minor units +
+	 *  ISO-4217), null to CLEAR. Must share the product's price currency (the
+	 *  service/domain enforce it; a mismatch is a per-field error). */
+	compareAtPrice?: { amount: number; currency: string } | null;
+	unitCost?: { amount: number; currency: string } | null;
 	weightGrams?: number | null;
 	lengthMm?: number | null;
 	widthMm?: number | null;
 	heightMm?: number | null;
 	productKind?: string;
+	/** Out-of-stock policy — only `"deny"` is accepted this slice. */
+	inventoryPolicy?: string;
+}
+
+/** One tax-class registry entry (mirrors the domain `TaxClass`) — the edit
+ *  form's tax-class select is sourced from these. */
+export interface TaxClassWire {
+	id: string;
+	name: string;
 }
 
 /** Discriminated edit outcome — the plugin renders each without status-code-as-
@@ -313,6 +338,20 @@ export class AdminProductsClient {
 		if (!res.ok) throw new Error(`GET product failed (HTTP ${res.status})`);
 		const body = (await res.json()) as { product: ProductDetailWire };
 		return body.product;
+	}
+
+	/**
+	 * GET the tax-class registry (Increment 2 slice 5) — the source for the edit
+	 * form's tax-class select. A SECONDARY, best-effort read: the caller wraps it
+	 * in try/catch and falls back to a static default set, so a registry read
+	 * failure degrades the select (fewer options) rather than failing the whole
+	 * product detail. Reads `GET /admin/tax/classes` (the rules-admin surface;
+	 * GET is not write-gated). The forward admin token is attached like every
+	 * other read.
+	 */
+	async getTaxClasses(): Promise<TaxClassWire[]> {
+		const body = await this.#getJson<{ classes?: TaxClassWire[] }>("/admin/tax/classes");
+		return body.classes ?? [];
 	}
 
 	#authHeaders(): Record<string, string> {

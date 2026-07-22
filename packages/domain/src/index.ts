@@ -23,6 +23,11 @@ export {
 	type QuoteResult,
 } from "./pricing/quote.js";
 export {
+	deleteTaxClass,
+	type DeleteTaxClassDeps,
+	type DeleteTaxClassResult,
+} from "./pricing/delete-tax-class.js";
+export {
 	DEFAULT_COUPON_GRACE_MS,
 	reconcileCouponRedemptions,
 	type ReconcileCouponsDeps,
@@ -54,6 +59,7 @@ export type {
 export type {
 	CreateTaxClassInput,
 	CreateTaxRateInput,
+	DeleteTaxClassStoreResult,
 	TaxClass,
 	TaxRate,
 	TaxRulesStore,
@@ -264,6 +270,7 @@ export type { Clock } from "./ports/clock.js";
 export type { IdGen } from "./ports/id-gen.js";
 export { commit, release, removeStock, reserve, restock } from "./inventory/use-cases.js";
 export type {
+	InventoryPolicy,
 	ProductCommerce,
 	ProductCommerceStore,
 	ProductCommerceUpdateResult,

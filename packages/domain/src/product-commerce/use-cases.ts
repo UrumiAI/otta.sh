@@ -89,10 +89,19 @@ export async function listProductCommerceByIds(
  * Validation (throws `InvalidProductFieldError`, mapped to 400 upstream):
  *  - `price.amount` must be STRICTLY POSITIVE — a $0 commerce price is not a
  *    valid edit (branded `Cents` already rejects negatives/floats; ">0" is the
- *    one rule left to the domain).
+ *    one rule left to the domain). `compareAtPrice`/`unitCost` are NOT held to
+ *    ">0" (a $0 compare-at / cost is a meaningful "cleared to zero"; branded
+ *    `Cents` still rejects negatives/floats). `compareAtPrice >= price` is
+ *    deliberately allowed (see the port's `UpdateProductCommerceFieldsInput`).
+ *  - WITHIN-EDIT currency consistency: every money field SUPPLIED in a single
+ *    edit (`price`, `compareAtPrice`, `unitCost`) must share ONE currency. This
+ *    is a pure client-shape rule (independent of stored state), so a mixed-
+ *    currency edit is rejected atomically here as a 400 — never partially
+ *    applied — BEFORE the store's stored-vs-new `currency_mismatch` guard runs.
+ *    A cleared field (`null`) carries no currency and is exempt.
  *  - `weightGrams` / `lengthMm` / `widthMm` / `heightMm`, when provided
  *    non-null, must be non-negative safe integers.
- * NOT re-checked here: currency integrity + existence + staleness are the
+ * NOT re-checked here: stored-currency integrity + existence + staleness are the
  * STORE's atomic concern (checking them here would be a TOCTOU race the CAS
  * already closes); SKU live-uniqueness stays the store's partial-index guard.
  */
@@ -104,6 +113,27 @@ export async function updateProductCommerceFields(
 ): Promise<ProductCommerceUpdateResult> {
 	if (input.price !== undefined && input.price.amount <= 0) {
 		throw new InvalidProductFieldError("price", "price must be greater than zero");
+	}
+	// Within-edit currency consistency: every money field supplied in THIS edit
+	// must agree on one currency (a pure client-shape rule — the stored-vs-new
+	// axis is the store's CAS concern). A cleared (`null`) field carries no
+	// currency and is exempt.
+	const suppliedMoney: Array<{ field: string; currency: string }> = [];
+	if (input.price != null) suppliedMoney.push({ field: "price", currency: input.price.currency });
+	if (input.compareAtPrice != null) {
+		suppliedMoney.push({ field: "compareAtPrice", currency: input.compareAtPrice.currency });
+	}
+	if (input.unitCost != null) {
+		suppliedMoney.push({ field: "unitCost", currency: input.unitCost.currency });
+	}
+	const firstCurrency = suppliedMoney[0]?.currency;
+	for (const m of suppliedMoney) {
+		if (firstCurrency !== undefined && m.currency !== firstCurrency) {
+			throw new InvalidProductFieldError(
+				m.field,
+				"price, compare-at, and cost must all use the same currency",
+			);
+		}
 	}
 	const dims = [
 		["weightGrams", input.weightGrams],

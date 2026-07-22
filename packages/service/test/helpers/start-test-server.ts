@@ -324,6 +324,7 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
 							: null,
 					title: row.title ?? null,
 					tax_class: null,
+					inventory_policy: "deny",
 					weight_grams: null,
 					length_mm: null,
 					width_mm: null,

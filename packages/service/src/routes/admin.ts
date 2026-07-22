@@ -280,6 +280,26 @@ export function adminRoutes(deps: AdminRoutesDeps): Hono {
 						: {}),
 					...(body.title !== undefined ? { title: body.title } : {}),
 					...(body.taxClass !== undefined ? { taxClass: body.taxClass } : {}),
+					...(body.compareAtPrice !== undefined
+						? {
+								compareAtPrice:
+									body.compareAtPrice === null
+										? null
+										: toMoney(
+												toCents(body.compareAtPrice.amount),
+												toCurrency(body.compareAtPrice.currency),
+											),
+							}
+						: {}),
+					...(body.unitCost !== undefined
+						? {
+								unitCost:
+									body.unitCost === null
+										? null
+										: toMoney(toCents(body.unitCost.amount), toCurrency(body.unitCost.currency)),
+							}
+						: {}),
+					...(body.inventoryPolicy !== undefined ? { inventoryPolicy: body.inventoryPolicy } : {}),
 					...(body.weightGrams !== undefined ? { weightGrams: body.weightGrams } : {}),
 					...(body.lengthMm !== undefined ? { lengthMm: body.lengthMm } : {}),
 					...(body.widthMm !== undefined ? { widthMm: body.widthMm } : {}),
@@ -774,6 +794,15 @@ function serializeProductDetail(product: ProductCommerce, onHand: number): Recor
 		priceCents: product.price?.amount ?? null,
 		currency: product.price?.currency ?? null,
 		taxClass: product.taxClass,
+		// Increment 2 slice 5. This is the INTERNAL-TOKEN admin detail, so unit
+		// cost (admin-only margin data) is intentionally serialized HERE — and
+		// ONLY here (never on the public `GET /products/:id/commerce`, never on the
+		// catalog view). Compare-at + inventory policy round-trip alongside it.
+		compareAtCents: product.compareAtPrice?.amount ?? null,
+		compareAtCurrency: product.compareAtPrice?.currency ?? null,
+		unitCostCents: product.unitCost?.amount ?? null,
+		unitCostCurrency: product.unitCost?.currency ?? null,
+		inventoryPolicy: product.inventoryPolicy,
 		weightGrams: product.weightGrams,
 		lengthMm: product.lengthMm,
 		widthMm: product.widthMm,

@@ -165,6 +165,78 @@ describe.skipIf(PG === undefined)("admin product EDIT HTTP contract", () => {
 		expect(res.status).toBe(401);
 	});
 
+	// -- product data-model adds (Increment 2 slice 5) ------------------------
+
+	test("round-trips compare-at, unit cost, and inventory policy through the admin detail", async () => {
+		const watermark = await seedAndReadWatermark();
+		const res = await patch("prod-1", {
+			expectedUpdatedAt: watermark,
+			compareAtPrice: { amount: 3000, currency: "USD" },
+			unitCost: { amount: 850, currency: "USD" },
+			inventoryPolicy: "deny",
+		});
+		expect(res.status).toBe(200);
+
+		const after = (await json(await get("prod-1"))).product as Record<string, unknown>;
+		expect(after.compareAtCents).toBe(3000);
+		expect(after.compareAtCurrency).toBe("USD");
+		expect(after.unitCostCents).toBe(850);
+		expect(after.unitCostCurrency).toBe("USD");
+		expect(after.inventoryPolicy).toBe("deny");
+	});
+
+	test("rejects a compare-at in a different currency than the product's price (409 CURRENCY_MISMATCH)", async () => {
+		const watermark = await seedAndReadWatermark();
+		const res = await patch("prod-1", {
+			expectedUpdatedAt: watermark,
+			compareAtPrice: { amount: 3000, currency: "EUR" },
+		});
+		expect(res.status).toBe(409);
+		expect((await json(res)).reason).toBe("CURRENCY_MISMATCH");
+	});
+
+	test("rejects a mixed-currency edit (price USD + compare-at EUR) as a 400, nothing written", async () => {
+		const watermark = await seedAndReadWatermark();
+		const res = await patch("prod-1", {
+			expectedUpdatedAt: watermark,
+			price: { amount: 2599, currency: "USD" },
+			compareAtPrice: { amount: 3000, currency: "EUR" },
+		});
+		expect(res.status).toBe(400);
+		const after = (await json(await get("prod-1"))).product as Record<string, unknown>;
+		expect(after.compareAtCents).toBeNull();
+		expect(after.priceCents).toBe(1000); // untouched
+	});
+
+	test("unit cost NEVER leaks to a storefront-facing read path (admin-only)", async () => {
+		const watermark = await seedAndReadWatermark();
+		await patch("prod-1", {
+			expectedUpdatedAt: watermark,
+			compareAtPrice: { amount: 3000, currency: "USD" },
+			unitCost: { amount: 850, currency: "USD" },
+		});
+
+		// (a) The public (un-authenticated) raw commerce GET: compare-at is present,
+		//     unit cost is absent — it is admin-only margin data.
+		const publicRes = await fetch(`${server.baseUrl}/products/prod-1/commerce`);
+		const publicBody = await json(publicRes);
+		expect(publicBody).not.toHaveProperty("unitCost");
+		expect(publicBody).not.toHaveProperty("unitCostCents");
+		expect(publicBody.compareAt).toEqual({ amount: 3000, currency: "USD" });
+
+		// (b) The storefront catalog batch view: no cost of any kind.
+		const catalogRes = await fetch(`${server.baseUrl}/catalog/commerce/batch`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ productIds: ["prod-1"] }),
+		});
+		const items = (await json(catalogRes)).items as Array<Record<string, unknown>>;
+		for (const item of items) {
+			expect(item).not.toHaveProperty("unitCost");
+			expect(item).not.toHaveProperty("unitCostCents");
+		}
+	});
+
 	test("the write gate blocks a PATCH with no X-Service-Token when the service secret is set", async () => {
 		const gated = await startTestServer({ serviceToken: "svc-secret" });
 		try {

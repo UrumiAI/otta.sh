@@ -17,6 +17,7 @@ import {
 	type ProductSummaryWire,
 	type RestockResult,
 	type StockRemovalResult,
+	type TaxClassWire,
 } from "./admin-products-client.js";
 import {
 	backButton,
@@ -158,6 +159,34 @@ function statusLabel(p: { active: boolean; deletedAt: string | null }): string {
 	return p.active ? "active" : "inactive";
 }
 
+/** Human label for the out-of-stock policy (Increment 2 slice 5). Only `"deny"`
+ *  exists this slice; any other stored value renders verbatim (forward-safe). */
+function inventoryPolicyLabel(policy: string): string {
+	return policy === "deny" ? "Deny (stop selling at zero stock)" : policy;
+}
+
+/** Human label for a product's tax-class reference: the registry entry's name
+ *  when known, else the raw id (a class the registry read didn't include),
+ *  else "—" (unset ⇒ the checkout treats it as standard). */
+function taxClassLabel(taxClass: string | null, taxClasses: TaxClassWire[]): string {
+	if (taxClass === null) return "—";
+	const match = taxClasses.find((c) => c.id === taxClass);
+	return match !== undefined ? `${match.name} (${match.id})` : taxClass;
+}
+
+/** Build the tax-class select options: a "none" clear option, every registry
+ *  entry, and — if the product currently references a class the registry read
+ *  did not include — that id too, so an existing value is never silently
+ *  dropped from the picker. */
+function taxClassOptions(current: string | null, taxClasses: TaxClassWire[]): SelectOption[] {
+	const options: SelectOption[] = [{ value: "", label: "— None (standard) —" }];
+	for (const c of taxClasses) options.push({ value: c.id, label: `${c.name} (${c.id})` });
+	if (current !== null && !taxClasses.some((c) => c.id === current)) {
+		options.push({ value: current, label: current });
+	}
+	return options;
+}
+
 function listBlocks(
 	actions: ScreenActions,
 	form: ProductsFilterForm,
@@ -267,11 +296,35 @@ function openProductForm(actions: ScreenActions, products: ProductSummaryWire[])
 
 // -- level 1: the product detail ----------------------------------------------
 
+/**
+ * A small static tax-class registry the edit-form select falls back to when the
+ * live registry read is unavailable/empty (Increment 2 slice 5; the guardrail
+ * permits a static-seeded registry read). Deliberately the near-universal
+ * defaults; the live `GET /admin/tax/classes` set, when present, is the source
+ * of truth and this only backstops it.
+ */
+const DEFAULT_TAX_CLASSES: TaxClassWire[] = [
+	{ id: "standard", name: "Standard" },
+	{ id: "reduced", name: "Reduced" },
+	{ id: "zero", name: "Zero-rated" },
+	{ id: "digital", name: "Digital goods" },
+];
+
 function productDetailLevel() {
 	return leafLevel<AdminProductsClient, ProductDetailWire>({
 		load: (client, _path, id) => client.getProduct(id),
-		render({ actions, id, detail, notice }) {
-			return detailBlocks(actions, id, detail, notice);
+		async render({ client, actions, id, detail, notice }) {
+			// SECONDARY, best-effort read (the scaffold's documented pattern): the
+			// tax-class registry that sources the edit-form select. A failure/empty
+			// read degrades to the static defaults, never fails the whole detail.
+			let taxClasses: TaxClassWire[] = DEFAULT_TAX_CLASSES;
+			try {
+				const fetched = await client.getTaxClasses();
+				if (fetched.length > 0) taxClasses = fetched;
+			} catch {
+				// keep the static fallback — a registry read must never break the detail.
+			}
+			return detailBlocks(actions, id, detail, notice, taxClasses);
 		},
 		notFound({ actions, id }) {
 			return [
@@ -294,15 +347,25 @@ function detailBlocks(
 	id: string,
 	p: ProductDetailWire,
 	notice: Notice | undefined,
+	taxClasses: TaxClassWire[],
 ): Block[] {
 	const fields: Array<{ label: string; value: string }> = [
 		{ label: "Title", value: p.title ?? "(untitled)" },
 		{ label: "SKU", value: p.sku ?? "—" },
 		{ label: "Price", value: formatOptionalTotal(p.priceCents, p.currency) },
+		{
+			label: "Compare-at price",
+			value: formatOptionalTotal(p.compareAtCents, p.compareAtCurrency),
+		},
+		{
+			label: "Unit cost (admin only)",
+			value: formatOptionalTotal(p.unitCostCents, p.unitCostCurrency),
+		},
 		{ label: "Status", value: statusLabel(p) },
 		{ label: "Kind", value: p.productKind },
 		{ label: "Stock on hand", value: String(p.onHand) },
-		{ label: "Tax class", value: p.taxClass ?? "—" },
+		{ label: "Inventory policy", value: inventoryPolicyLabel(p.inventoryPolicy) },
+		{ label: "Tax class", value: taxClassLabel(p.taxClass, taxClasses) },
 		{ label: "Weight (g)", value: p.weightGrams === null ? "—" : String(p.weightGrams) },
 		{ label: "Dimensions (mm, LxWxH)", value: dimensionsSummary(p) },
 		{ label: "Created (UTC)", value: p.createdAt },
@@ -342,9 +405,9 @@ function detailBlocks(
 	});
 	blocks.push({
 		type: "context",
-		text: "Editing the commerce fields this store owns. The status (active/inactive) is the CMS publish state — publish or unpublish the document to change it, not here. Titles/images are also managed in the CMS. Money is shown in the product's own currency.",
+		text: 'Editing the commerce fields this store owns. The status (active/inactive) is the CMS publish state — publish or unpublish the document to change it, not here. Titles/images are also managed in the CMS. Money is shown in the product\'s own currency: price, compare-at, and unit cost must all use that one currency (set the price first on a new product). Compare-at is the struck-through "was" price; it is usually higher than the price, but a compare-at at or below the price is also allowed and saved as-is — double-check it is what you intend. Unit cost is admin-only margin data and is never shown to buyers. Out-of-stock policy is Deny only for now — the store stops selling at zero stock (no overselling); backorders are a future capability.',
 	});
-	blocks.push(editForm(actions, p));
+	blocks.push(editForm(actions, p, taxClasses));
 
 	// -- Stock management (admin-UX Increment 2 slice 3) ----------------------
 	// Only meaningful for a product with a sku AND an inventory row. A skuless
@@ -442,7 +505,11 @@ function stockCarrier(actionId: string, value: string): FormBlock["fields"][numb
  * already-priced product (a single-option carrier, so a price edit can never
  * silently switch it) and an editable input only for first-time pricing.
  */
-function editForm(actions: ScreenActions, p: ProductDetailWire): FormBlock {
+function editForm(
+	actions: ScreenActions,
+	p: ProductDetailWire,
+	taxClasses: TaxClassWire[],
+): FormBlock {
 	const priced = p.priceCents !== null && p.currency !== null;
 	const currencyField: FormBlock["fields"][number] = priced
 		? {
@@ -497,6 +564,24 @@ function editForm(actions: ScreenActions, p: ProductDetailWire): FormBlock {
 		},
 		currencyField,
 		{
+			type: "text_input",
+			action_id: "compareAt",
+			label: `Compare-at / was price (${p.currency ?? "same as price"}, e.g. 29.99) — blank to clear`,
+			...(p.compareAtCents !== null
+				? { initial_value: formatPriceMinorUnits(p.compareAtCents) }
+				: {}),
+			placeholder: "29.99",
+		},
+		{
+			type: "text_input",
+			action_id: "unitCost",
+			label: `Unit cost — admin only, never shown to buyers (${p.currency ?? "same as price"}) — blank to clear`,
+			...(p.unitCostCents !== null
+				? { initial_value: formatPriceMinorUnits(p.unitCostCents) }
+				: {}),
+			placeholder: "8.50",
+		},
+		{
 			type: "select",
 			action_id: "productKind",
 			label: "Kind",
@@ -507,10 +592,24 @@ function editForm(actions: ScreenActions, p: ProductDetailWire): FormBlock {
 			initial_value: p.productKind,
 		},
 		{
-			type: "text_input",
+			type: "select",
 			action_id: "taxClass",
-			label: "Tax class (blank to clear)",
-			...(p.taxClass !== null ? { initial_value: p.taxClass } : {}),
+			label: "Tax class",
+			options: taxClassOptions(p.taxClass, taxClasses),
+			initial_value: p.taxClass ?? "",
+		},
+		{
+			// Out-of-stock policy — DENY-ONLY this slice. The select shows a single
+			// option (no `allow_backorder`): the no-oversell invariant is
+			// non-negotiable, and backorders are a future capability that needs its
+			// own races + an ADR. Rendered as a select (not omitted) so the field is
+			// visible and future-extensible, with the context line below explaining
+			// the constraint.
+			type: "select",
+			action_id: "inventoryPolicy",
+			label: "When out of stock",
+			options: [{ value: "deny", label: "Deny — stop selling at zero stock" }],
+			initial_value: "deny",
 		},
 		{
 			type: "text_input",
@@ -672,6 +771,14 @@ function buildEditWire(
 	const sku = readString(values.sku)?.trim();
 	if (sku !== undefined && sku.length > 0) wire.sku = sku;
 
+	// The row currency (shared by price / compare-at / cost). For an already-
+	// priced product this is the fixed carrier (= the product currency); for a
+	// first pricing it is the merchant-entered code. Parsed ONCE so all three
+	// money fields agree by construction.
+	const currencyStr = readString(values.currency)?.trim().toUpperCase();
+	const currency =
+		currencyStr !== undefined && /^[A-Z]{3}$/.test(currencyStr) ? currencyStr : undefined;
+
 	const priceStr = readString(values.price)?.trim();
 	if (priceStr !== undefined && priceStr.length > 0) {
 		const minorUnits = parsePriceMinorUnits(priceStr);
@@ -681,17 +788,55 @@ function buildEditWire(
 				message: "Price must be a positive amount like 19.99 (up to two decimal places).",
 			};
 		}
-		const currency = readString(values.currency)?.trim().toUpperCase();
-		if (currency === undefined || !/^[A-Z]{3}$/.test(currency)) {
+		if (currency === undefined) {
 			return { ok: false, message: "Currency must be a 3-letter ISO-4217 code like USD." };
 		}
 		wire.price = { amount: minorUnits, currency };
 	}
 
+	// compare-at / unit cost: a BLANK entry clears the field (null); a value is
+	// parsed to minor units and MUST carry the row currency. They can only be set
+	// once the product has (or is being given) a currency — otherwise there is
+	// nothing to match. Both share the same `parseMoneyField` shape.
+	for (const [field, key] of [
+		["compareAt", "compareAtPrice"],
+		["unitCost", "unitCost"],
+	] as const) {
+		const raw = readString(values[field]);
+		if (raw === undefined) continue; // field not in the form ⇒ preserve.
+		const trimmed = raw.trim();
+		if (trimmed.length === 0) {
+			wire[key] = null; // explicit clear.
+			continue;
+		}
+		const minorUnits = parsePriceMinorUnits(trimmed);
+		if (minorUnits === null) {
+			return {
+				ok: false,
+				message: `${field === "compareAt" ? "Compare-at price" : "Unit cost"} must be a positive amount like 29.99, or blank to clear.`,
+			};
+		}
+		const rowCurrency = currency ?? (wire.price !== undefined ? wire.price.currency : undefined);
+		if (rowCurrency === undefined) {
+			return {
+				ok: false,
+				message:
+					"Set the product's price and currency before adding a compare-at price or unit cost.",
+			};
+		}
+		wire[key] = { amount: minorUnits, currency: rowCurrency };
+	}
+
 	const productKind = readString(values.productKind);
 	if (productKind === "physical" || productKind === "digital") wire.productKind = productKind;
 
-	// taxClass: an explicit blank clears it (null); a non-blank sets it.
+	// inventoryPolicy: only "deny" is a legal value this slice (the select offers
+	// no other). Anything else is ignored (preserve) rather than sent.
+	const inventoryPolicy = readString(values.inventoryPolicy);
+	if (inventoryPolicy === "deny") wire.inventoryPolicy = "deny";
+
+	// taxClass (now a registry select): an explicit blank clears it (null); a
+	// non-blank value is the chosen `TaxClass.id`.
 	const taxClass = readString(values.taxClass);
 	if (taxClass !== undefined) {
 		const trimmed = taxClass.trim();
@@ -727,6 +872,9 @@ function deriveEditIdempotencyKey(productId: string, wire: ProductEditWire): str
 		wire.price ?? null,
 		wire.title ?? null,
 		wire.taxClass ?? null,
+		wire.compareAtPrice ?? null,
+		wire.unitCost ?? null,
+		wire.inventoryPolicy ?? null,
 		wire.weightGrams ?? null,
 		wire.lengthMm ?? null,
 		wire.widthMm ?? null,

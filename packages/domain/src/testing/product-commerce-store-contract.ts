@@ -420,6 +420,273 @@ export function productCommerceStoreContract(
 			expect(after?.deletedAt).toBeNull();
 		});
 
+		// -- updateCommerceFields: product data-model adds (Increment 2 slice 5) --
+		// compare-at, unit cost, inventory policy, and their atomic currency
+		// integrity — the new merchant-standard commercial fields.
+
+		test("updateCommerceFields round-trips compare-at, unit cost, and inventory policy (CAS)", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-adds-1");
+			const seeded = await seedEditable(h, "prod-adds-1", { priceCents: 2000, currency: "USD" });
+
+			const res = await h.store.updateCommerceFields(
+				{
+					productId: pid,
+					compareAtPrice: money(cents(3000), currency("USD")),
+					unitCost: money(cents(850), currency("USD")),
+					inventoryPolicy: "deny",
+				},
+				idempotencyKey("adds-edit-1"),
+				seeded.updatedAt.toISOString(),
+			);
+			expect(res.ok).toBe(true);
+			const row = await h.store.getByProductId(pid);
+			expect(row?.compareAtPrice).toEqual({ amount: 3000, currency: "USD" });
+			expect(row?.unitCost).toEqual({ amount: 850, currency: "USD" });
+			expect(row?.inventoryPolicy).toBe("deny");
+			// The pre-existing price is untouched.
+			expect(row?.price).toEqual({ amount: 2000, currency: "USD" });
+		});
+
+		test("updateCommerceFields replay under the same key is a no-op ok for the adds too", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-adds-replay");
+			const seeded = await seedEditable(h, "prod-adds-replay", {
+				priceCents: 2000,
+				currency: "USD",
+			});
+			const first = await h.store.updateCommerceFields(
+				{ productId: pid, compareAtPrice: money(cents(3000), currency("USD")) },
+				idempotencyKey("adds-replay-key"),
+				seeded.updatedAt.toISOString(),
+			);
+			expect(first.ok).toBe(true);
+			// Same key, now-stale watermark ⇒ replay no-op returning the stored row.
+			const replay = await h.store.updateCommerceFields(
+				{ productId: pid, compareAtPrice: money(cents(9999), currency("USD")) },
+				idempotencyKey("adds-replay-key"),
+				seeded.updatedAt.toISOString(),
+			);
+			expect(replay.ok).toBe(true);
+			expect((await h.store.getByProductId(pid))?.compareAtPrice).toEqual({
+				amount: 3000,
+				currency: "USD",
+			});
+		});
+
+		test("updateCommerceFields clears compare-at / unit cost with an explicit null", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-adds-clear");
+			const seeded = await seedEditable(h, "prod-adds-clear", {
+				priceCents: 2000,
+				currency: "USD",
+			});
+			const set = await h.store.updateCommerceFields(
+				{
+					productId: pid,
+					compareAtPrice: money(cents(3000), currency("USD")),
+					unitCost: money(cents(850), currency("USD")),
+				},
+				idempotencyKey("adds-set"),
+				seeded.updatedAt.toISOString(),
+			);
+			expect(set.ok).toBe(true);
+			const afterSet = await h.store.getByProductId(pid);
+			const cleared = await h.store.updateCommerceFields(
+				{ productId: pid, compareAtPrice: null, unitCost: null },
+				idempotencyKey("adds-clear"),
+				afterSet!.updatedAt.toISOString(),
+			);
+			expect(cleared.ok).toBe(true);
+			const row = await h.store.getByProductId(pid);
+			expect(row?.compareAtPrice).toBeNull();
+			expect(row?.unitCost).toBeNull();
+		});
+
+		test("updateCommerceFields rejects compare-at / cost whose currency differs from the product's price currency", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-adds-curmix");
+			const seeded = await seedEditable(h, "prod-adds-curmix", {
+				priceCents: 2000,
+				currency: "USD",
+			});
+			const res = await h.store.updateCommerceFields(
+				{ productId: pid, compareAtPrice: money(cents(3000), currency("EUR")) },
+				idempotencyKey("adds-curmix"),
+				seeded.updatedAt.toISOString(),
+			);
+			expect(res.ok).toBe(false);
+			if (res.ok) throw new Error("unreachable");
+			expect(res.reason).toBe("currency_mismatch");
+			// Nothing was written.
+			expect((await h.store.getByProductId(pid))?.compareAtPrice).toBeNull();
+		});
+
+		test("updateCommerceFields rejects compare-at / cost on a product with no price yet (nothing to match)", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-adds-unpriced");
+			const seeded = await h.store.upsert(
+				{ productId: pid, title: "Unpriced" },
+				idempotencyKey("seed-adds-unpriced"),
+			);
+			const res = await h.store.updateCommerceFields(
+				{ productId: pid, compareAtPrice: money(cents(3000), currency("USD")) },
+				idempotencyKey("adds-unpriced"),
+				seeded.updatedAt.toISOString(),
+			);
+			expect(res.ok).toBe(false);
+			if (res.ok) throw new Error("unreachable");
+			expect(res.reason).toBe("currency_mismatch");
+		});
+
+		test("updateCommerceFields: compare-at MATCHING + unit cost MISMATCHING in one edit is currency_mismatch — nothing written (both fields guarded independently)", async () => {
+			// PR #70 review (both reviewers): the Kysely adapter originally guarded
+			// only ONE of compareAtPrice/unitCost (an either/or pick), so this exact
+			// split — one field matching the stored currency, the other not — wrote a
+			// genuinely mixed-currency row. Locked across fake/sqlite/pg.
+			const h = await makeStore();
+			const pid = productId("prod-adds-split");
+			const seeded = await seedEditable(h, "prod-adds-split", {
+				priceCents: 2000,
+				currency: "USD",
+			});
+			const res = await h.store.updateCommerceFields(
+				{
+					productId: pid,
+					compareAtPrice: money(cents(3000), currency("USD")), // matches stored
+					unitCost: money(cents(850), currency("EUR")), // does NOT
+				},
+				idempotencyKey("adds-split"),
+				seeded.updatedAt.toISOString(),
+			);
+			expect(res.ok).toBe(false);
+			if (res.ok) throw new Error("unreachable");
+			expect(res.reason).toBe("currency_mismatch");
+			// ATOMIC: neither field landed — the matching compare-at must not be
+			// applied while the mismatching cost is rejected.
+			const row = await h.store.getByProductId(pid);
+			expect(row?.compareAtPrice).toBeNull();
+			expect(row?.unitCost).toBeNull();
+		});
+
+		test("updateCommerceFields rejects a unit-cost-ALONE currency mismatch against the stored price currency", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-adds-costmix");
+			const seeded = await seedEditable(h, "prod-adds-costmix", {
+				priceCents: 2000,
+				currency: "USD",
+			});
+			const res = await h.store.updateCommerceFields(
+				{ productId: pid, unitCost: money(cents(850), currency("EUR")) },
+				idempotencyKey("adds-costmix"),
+				seeded.updatedAt.toISOString(),
+			);
+			expect(res.ok).toBe(false);
+			if (res.ok) throw new Error("unreachable");
+			expect(res.reason).toBe("currency_mismatch");
+			expect((await h.store.getByProductId(pid))?.unitCost).toBeNull();
+		});
+
+		test("updateCommerceFields rejects unit cost ALONE on a product with no price yet (nothing to match)", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-adds-cost-unpriced");
+			const seeded = await h.store.upsert(
+				{ productId: pid, title: "Unpriced" },
+				idempotencyKey("seed-adds-cost-unpriced"),
+			);
+			const res = await h.store.updateCommerceFields(
+				{ productId: pid, unitCost: money(cents(850), currency("USD")) },
+				idempotencyKey("adds-cost-unpriced"),
+				seeded.updatedAt.toISOString(),
+			);
+			expect(res.ok).toBe(false);
+			if (res.ok) throw new Error("unreachable");
+			expect(res.reason).toBe("currency_mismatch");
+		});
+
+		test("updateCommerceFields accepts first-pricing + compare-at + cost in one edit when the currencies agree", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-adds-firstprice");
+			const seeded = await h.store.upsert(
+				{ productId: pid, title: "Unpriced" },
+				idempotencyKey("seed-adds-fp"),
+			);
+			const res = await h.store.updateCommerceFields(
+				{
+					productId: pid,
+					price: money(cents(2000), currency("EUR")),
+					compareAtPrice: money(cents(3000), currency("EUR")),
+					unitCost: money(cents(800), currency("EUR")),
+				},
+				idempotencyKey("adds-fp"),
+				seeded.updatedAt.toISOString(),
+			);
+			expect(res.ok).toBe(true);
+			const row = await h.store.getByProductId(pid);
+			expect(row?.price).toEqual({ amount: 2000, currency: "EUR" });
+			expect(row?.compareAtPrice).toEqual({ amount: 3000, currency: "EUR" });
+			expect(row?.unitCost).toEqual({ amount: 800, currency: "EUR" });
+		});
+
+		test("updateCommerceFields allows compare-at ABOVE, equal to, or below price (never rejected)", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-adds-cmp");
+			const seeded = await seedEditable(h, "prod-adds-cmp", { priceCents: 2000, currency: "USD" });
+			// compare-at BELOW price (unusual but allowed — a price rise scenario).
+			const res = await h.store.updateCommerceFields(
+				{ productId: pid, compareAtPrice: money(cents(1500), currency("USD")) },
+				idempotencyKey("adds-cmp-below"),
+				seeded.updatedAt.toISOString(),
+			);
+			expect(res.ok).toBe(true);
+			expect((await h.store.getByProductId(pid))?.compareAtPrice).toEqual({
+				amount: 1500,
+				currency: "USD",
+			});
+		});
+
+		test("countByTaxClass counts LIVE referencing products only (soft-deleted excluded)", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "tc-a", createdAt: "2026-07-10T00:00:00.000Z" }));
+			await h.seedProduct(productRow({ id: "tc-b", createdAt: "2026-07-10T00:01:00.000Z" }));
+			// Point the two live rows at "reduced" via a guarded edit.
+			for (const id of ["tc-a", "tc-b"]) {
+				const cur = await h.store.getByProductId(productId(id));
+				await h.store.updateCommerceFields(
+					{ productId: productId(id), taxClass: "reduced" },
+					idempotencyKey(`tc-edit-${id}`),
+					cur!.updatedAt.toISOString(),
+				);
+			}
+			// A soft-deleted row referencing the class does NOT count.
+			await h.seedProduct(productRow({ id: "tc-deleted", createdAt: "2026-07-10T00:02:00.000Z" }));
+			const delCur = await h.store.getByProductId(productId("tc-deleted"));
+			await h.store.updateCommerceFields(
+				{ productId: productId("tc-deleted"), taxClass: "reduced" },
+				idempotencyKey("tc-edit-del"),
+				delCur!.updatedAt.toISOString(),
+			);
+			await h.store.softDelete(productId("tc-deleted"), idempotencyKey("tc-del"));
+
+			expect(await h.store.countByTaxClass("reduced")).toBe(2);
+			expect(await h.store.countByTaxClass("standard")).toBe(0);
+		});
+
+		test("a soft-deleted row is ALWAYS inactive (softDelete forces active=false)", async () => {
+			// Fast-follow pin (Increment 2 slice 5): the tombstone/publish-gate
+			// invariant — a soft delete can never leave a row both deleted AND active.
+			const h = await makeStore();
+			const pid = productId("prod-del-inactive");
+			await seedEditable(h, "prod-del-inactive");
+			await h.store.activate(pid, idempotencyKey("pub-1"), WM);
+			expect((await h.store.getByProductId(pid))?.active).toBe(true);
+
+			await h.store.softDelete(pid, idempotencyKey("del-1"));
+			const row = await h.store.getByProductId(pid);
+			expect(row?.deletedAt).not.toBeNull();
+			expect(row?.active).toBe(false);
+		});
+
 		// -- activate (the afterPublish→activate follow-up) ---------------------
 
 		test("activate flips a live row to active=true", async () => {
@@ -1176,6 +1443,39 @@ export function productCommerceStoreContract(
 				{ limit: 25 },
 			);
 			expect(products.map((p) => p.productId)).toEqual(["deleted-digital"]);
+		});
+
+		test("listProducts paginates the archive view (deleted:true) with a keyset cursor — no overlap, no gap", async () => {
+			// Fast-follow pin (Increment 2 slice 5): keyset pagination must work
+			// under the archive axis exactly as it does for the live default, so a
+			// merchant browsing a large trash can page through it deterministically.
+			const h = await makeStore();
+			for (let i = 1; i <= 3; i++) {
+				await h.seedProduct(
+					productRow({
+						id: `arch-${i}`,
+						createdAt: `2026-07-10T0${i}:00:00.000Z`,
+						deletedAt: `2026-07-10T0${i}:30:00.000Z`,
+					}),
+				);
+			}
+			// Also a live row that must NEVER appear in the archive pages.
+			await h.seedProduct(productRow({ id: "arch-live", createdAt: "2026-07-10T09:00:00.000Z" }));
+
+			const page1 = await h.store.listProducts({ deleted: true }, { limit: 2 });
+			// created_at DESC ⇒ newest deleted first.
+			expect(page1.products.map((p) => p.productId)).toEqual(["arch-3", "arch-2"]);
+			expect(page1.nextCursor).not.toBeNull();
+			const page2 = await h.store.listProducts(
+				{ deleted: true },
+				{ limit: 2, cursor: page1.nextCursor },
+			);
+			expect(page2.products.map((p) => p.productId)).toEqual(["arch-1"]);
+			expect(page2.nextCursor).toBeNull();
+			// Every row across both pages is a tombstone; the live row never leaks in.
+			for (const p of [...page1.products, ...page2.products]) {
+				expect(p.deletedAt).not.toBeNull();
+			}
 		});
 
 		test("listProducts filters by active", async () => {
