@@ -114,7 +114,68 @@ export interface InventoryStore {
 	// row (the list omits stock entirely, mirroring the port's `listCommerceByIds`
 	// doc); this is a single-row read for the ONE product a detail view opens.
 	getOnHand(sku: string): Promise<number>;
+
+	// Additive (admin-UX Increment 2, merchant restock): ADD `qty` units to an
+	// existing sku's on-hand — the merchant's "we received more stock" path.
+	// Distinct from `seedOnHand` (create-if-absent, natural key = sku, no delta)
+	// and from `adjust` (reservation-scoped): this is a bare, ADDITIVE stock
+	// movement on the raw `on_hand` count with its OWN per-mutation idempotency
+	// ledger (`qty > 0`).
+	//
+	// RACE-SAFETY: a restock is a single unconditional `on_hand = on_hand + qty`
+	// — commutative with every concurrent `reserve`/`removeStock` (each a guarded
+	// `on_hand >= n` decrement). Adding units can NEVER cause an oversell: it only
+	// ever raises the available count, so no concurrent reservation is invalidated
+	// and the final `on_hand` is order-independent. No guard is needed (unlike a
+	// decrement); the movement is the single statement, exactly like `reserve`'s
+	// decrement but with the sign flipped and no `WHERE on_hand >= …` predicate.
+	//
+	// Exactly-once, ledger-first: every call claims `key` in the shared
+	// `inventory_stock_movements` ledger BEFORE the movement (mirroring `adjust`'s
+	// claim discipline), so a double-clicked restock adds `qty` ONCE and a replay
+	// (even a stale one) returns the recorded result and moves nothing. A key
+	// recorded against a DIFFERENT (sku, direction, qty) is a mis-keyed caller:
+	// typed `StockMovementMismatchError`, never a wrong-movement `ok`.
+	//
+	// UNKNOWN SKU: a sku with no inventory row is a clean `UNKNOWN_SKU` failure
+	// that does NOT consume the key (the claim rolls back) — mirroring `reserve`'s
+	// unknown-sku parity ("no inventory row ⇒ outside idempotency scope"). Restock
+	// deliberately does NOT auto-create the row: `seedOnHand` is the sole create
+	// path, so a typo'd sku can never conjure phantom inventory.
+	restock(sku: string, qty: number, key: IdempotencyKey): Promise<RestockResult>;
+
+	// Additive (admin-UX Increment 2, merchant stock removal): REMOVE `qty` units
+	// from an existing sku's on-hand — the merchant's "these units are damaged /
+	// shrinkage" path. The oversell-critical DECREMENT counterpart of `restock`
+	// (`qty > 0`).
+	//
+	// RACE-SAFETY: a removal is a SINGLE GUARDED `on_hand = on_hand - qty WHERE
+	// on_hand >= qty` — the SAME guard shape as `reserve`'s decrement. It can
+	// never drive `on_hand` below 0, and it competes for the exact same units a
+	// concurrent `reserve` competes for: whichever guarded decrement the DB
+	// serializes first wins, the loser sees `on_hand < qty` and fails cleanly
+	// (`INSUFFICIENT_STOCK`). N concurrent removals + M reservations can therefore
+	// never oversell — every successful decrement is backed by real units.
+	//
+	// Exactly-once, ledger-first: identical claim discipline to `restock`. An
+	// `INSUFFICIENT_STOCK` on a KNOWN sku is a genuine terminal outcome that DOES
+	// consume the key (stays recorded, replays deterministically — the R2
+	// counterpart to `reserve`'s consumed OUT_OF_STOCK). An `UNKNOWN_SKU` does NOT
+	// consume the key (claim rolls back), exactly as `restock`.
+	removeStock(sku: string, qty: number, key: IdempotencyKey): Promise<StockRemovalResult>;
 }
+
+/** Outcome of {@link InventoryStore.restock}. `onHand` is the resulting count
+ *  AFTER the units were added (recorded in the ledger, so a replay echoes it). */
+export type RestockResult = { ok: true; onHand: number } | { ok: false; reason: "UNKNOWN_SKU" };
+
+/** Outcome of {@link InventoryStore.removeStock}. On success `onHand` is the
+ *  count after removal; on `INSUFFICIENT_STOCK` it is the current count (fewer
+ *  than `qty` units are available to remove). `UNKNOWN_SKU` carries no count. */
+export type StockRemovalResult =
+	| { ok: true; onHand: number }
+	| { ok: false; reason: "INSUFFICIENT_STOCK"; onHand: number }
+	| { ok: false; reason: "UNKNOWN_SKU" };
 
 export type ReserveResult =
 	| { ok: true; reservationId: string }
@@ -194,5 +255,21 @@ export class AdjustReservationMismatchError extends Error {
 				"an idempotency key must not be reused across reservations",
 		);
 		this.name = "AdjustReservationMismatchError";
+	}
+}
+
+/**
+ * Thrown by `restock`/`removeStock` when a key's recorded stock-movement ledger
+ * entry describes a DIFFERENT movement (sku, direction, or qty) than the caller
+ * now asks for — a mis-keyed caller must never receive an `ok` echoing the wrong
+ * stock movement. Direction is `"restock"` (add) or `"removal"` (remove).
+ */
+export class StockMovementMismatchError extends Error {
+	constructor(key: string, expected: string, actual: string) {
+		super(
+			`stock-movement key ${key} was recorded for ${expected}, not ${actual} — ` +
+				"an idempotency key must not be reused across distinct stock movements",
+		);
+		this.name = "StockMovementMismatchError";
 	}
 }

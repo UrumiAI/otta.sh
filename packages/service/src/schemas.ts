@@ -254,6 +254,17 @@ export const editProductCommerceBody = z.object({
 
 export type EditProductCommerceBody = z.infer<typeof editProductCommerceBody>;
 
+// Admin Products console: merchant restock / stock removal (admin-UX Increment
+// 2). `qty` is a positive integer count of whole units — NOT a money field, but
+// held to the same integer discipline (no floats). The domain enforces the
+// positive-integer bound too (defense-in-depth); this bounds the wire value and
+// caps it well below the safe-integer ceiling.
+export const stockMovementBody = z.object({
+	qty: z.number().int().positive().max(1_000_000_000),
+});
+
+export type StockMovementBody = z.infer<typeof stockMovementBody>;
+
 // Catalog batch read (Phase 2 §6): ids are opaque tokens, same charset/bound
 // discipline as the cart path params; the array-length cap is the endpoint's
 // request-size guard (COMMERCE_BATCH_ID_CAP in routes/catalog.ts — kept in

@@ -328,6 +328,127 @@ export function inventoryStoreContract(
 			expect(await h.store.getOnHand("SKU-GET-2")).toBe(3);
 		});
 
+		// -- restock / removeStock (admin-UX Increment 2: merchant restock) -----
+
+		test("restock adds units to an existing sku and returns the new on_hand", async () => {
+			const h = await makeStore();
+			await h.seed("SKU-R1", 5);
+			const res = await h.store.restock("SKU-R1", 3, idempotencyKey("r1"));
+			expect(res).toEqual({ ok: true, onHand: 8 });
+			expect(await h.onHand("SKU-R1")).toBe(8);
+		});
+
+		test("restock replayed with the same key adds the units exactly once", async () => {
+			const h = await makeStore();
+			await h.seed("SKU-R1", 5);
+			const first = await h.store.restock("SKU-R1", 3, idempotencyKey("r1"));
+			const replay = await h.store.restock("SKU-R1", 3, idempotencyKey("r1"));
+			expect(first).toEqual({ ok: true, onHand: 8 });
+			expect(replay).toEqual(first);
+			expect(await h.onHand("SKU-R1")).toBe(8); // added once, not twice
+		});
+
+		test("restock on an unknown sku is a clean UNKNOWN_SKU failure that never creates a row", async () => {
+			const h = await makeStore();
+			const res = await h.store.restock("SKU-MISSING", 4, idempotencyKey("r1"));
+			expect(res).toEqual({ ok: false, reason: "UNKNOWN_SKU" });
+			// Never auto-created (seedOnHand is the sole create path): still 0.
+			expect(await h.onHand("SKU-MISSING")).toBe(0);
+		});
+
+		test("an unknown-sku restock is OUTSIDE the idempotency scope: the key is not consumed and works once the sku exists", async () => {
+			const h = await makeStore();
+			const key = idempotencyKey("r1");
+			const miss = await h.store.restock("SKU-LATER", 4, key);
+			expect(miss).toEqual({ ok: false, reason: "UNKNOWN_SKU" });
+			// The SAME key performs a fresh restock once the sku exists — proof the
+			// unknown-sku rejection never consumed it (mirrors reserve's parity).
+			await h.seed("SKU-LATER", 2);
+			const hit = await h.store.restock("SKU-LATER", 4, key);
+			expect(hit).toEqual({ ok: true, onHand: 6 });
+			expect(await h.onHand("SKU-LATER")).toBe(6);
+		});
+
+		test("restock is additive over a stock already decremented by a reserve", async () => {
+			const h = await makeStore();
+			await h.seed("SKU-R1", 5);
+			const r = await h.store.reserve("SKU-R1", 2, idempotencyKey("k1"));
+			expect(r.ok).toBe(true);
+			expect(await h.onHand("SKU-R1")).toBe(3);
+			const res = await h.store.restock("SKU-R1", 10, idempotencyKey("r1"));
+			expect(res).toEqual({ ok: true, onHand: 13 });
+			expect(await h.onHand("SKU-R1")).toBe(13);
+		});
+
+		test("removeStock removes units from an existing sku and returns the new on_hand", async () => {
+			const h = await makeStore();
+			await h.seed("SKU-D1", 5);
+			const res = await h.store.removeStock("SKU-D1", 2, idempotencyKey("d1"));
+			expect(res).toEqual({ ok: true, onHand: 3 });
+			expect(await h.onHand("SKU-D1")).toBe(3);
+		});
+
+		test("removeStock down to exactly zero succeeds", async () => {
+			const h = await makeStore();
+			await h.seed("SKU-D1", 4);
+			const res = await h.store.removeStock("SKU-D1", 4, idempotencyKey("d1"));
+			expect(res).toEqual({ ok: true, onHand: 0 });
+			expect(await h.onHand("SKU-D1")).toBe(0);
+		});
+
+		test("removeStock beyond available is a guarded INSUFFICIENT_STOCK that removes nothing (never negative)", async () => {
+			const h = await makeStore();
+			await h.seed("SKU-D1", 3);
+			const res = await h.store.removeStock("SKU-D1", 5, idempotencyKey("d1"));
+			expect(res).toEqual({ ok: false, reason: "INSUFFICIENT_STOCK", onHand: 3 });
+			expect(await h.onHand("SKU-D1")).toBe(3);
+		});
+
+		test("an INSUFFICIENT_STOCK removeStock key replays to INSUFFICIENT_STOCK — the key stays consumed (R2)", async () => {
+			const h = await makeStore();
+			await h.seed("SKU-D1", 3);
+			const first = await h.store.removeStock("SKU-D1", 5, idempotencyKey("d1"));
+			expect(first).toEqual({ ok: false, reason: "INSUFFICIENT_STOCK", onHand: 3 });
+			// Even after stock rises, the SAME key deterministically replays the
+			// recorded terminal result, never a fresh attempt.
+			await h.store.restock("SKU-D1", 50, idempotencyKey("r-top-up"));
+			const replay = await h.store.removeStock("SKU-D1", 5, idempotencyKey("d1"));
+			expect(replay).toEqual(first);
+			expect(await h.onHand("SKU-D1")).toBe(53); // only the restock moved it
+		});
+
+		test("removeStock replayed with the same key removes the units exactly once", async () => {
+			const h = await makeStore();
+			await h.seed("SKU-D1", 10);
+			const first = await h.store.removeStock("SKU-D1", 4, idempotencyKey("d1"));
+			const replay = await h.store.removeStock("SKU-D1", 4, idempotencyKey("d1"));
+			expect(first).toEqual({ ok: true, onHand: 6 });
+			expect(replay).toEqual(first);
+			expect(await h.onHand("SKU-D1")).toBe(6); // removed once, not twice
+		});
+
+		test("removeStock on an unknown sku is a clean UNKNOWN_SKU failure, key not consumed", async () => {
+			const h = await makeStore();
+			const key = idempotencyKey("d1");
+			const miss = await h.store.removeStock("SKU-MISSING", 1, key);
+			expect(miss).toEqual({ ok: false, reason: "UNKNOWN_SKU" });
+			await h.seed("SKU-MISSING", 5);
+			const hit = await h.store.removeStock("SKU-MISSING", 1, key);
+			expect(hit).toEqual({ ok: true, onHand: 4 });
+		});
+
+		test("a stock-movement key reused for a different movement is rejected, never ok for the wrong movement", async () => {
+			const h = await makeStore();
+			await h.seed("SKU-D1", 10);
+			const key = idempotencyKey("shared");
+			const first = await h.store.restock("SKU-D1", 3, key);
+			expect(first).toEqual({ ok: true, onHand: 13 });
+			// Same key, DIFFERENT direction/qty ⇒ typed rejection; nothing moves.
+			await expect(h.store.removeStock("SKU-D1", 3, key)).rejects.toThrow(/was recorded for/);
+			await expect(h.store.restock("SKU-D1", 99, key)).rejects.toThrow(/was recorded for/);
+			expect(await h.onHand("SKU-D1")).toBe(13);
+		});
+
 		// -- PR B: batched checkout ADOPT (adoptMany) ---------------------------
 		//
 		// The batch is the per-line singular semantics folded into ONE guarded

@@ -81,6 +81,31 @@ export interface InventoryAdjustmentsTable {
 	created_at: string;
 }
 
+export type StockMovementDirection = "restock" | "removal";
+export type StockMovementOutcome = "ok" | "insufficient_stock";
+
+/**
+ * Per-mutation claim ledger for `InventoryStore.restock`/`removeStock` (admin-UX
+ * Increment 2) — the admin stock-movement analogue of `inventory_adjustments`
+ * (that ledger is reservation-scoped; this one is bare-sku-scoped). The claim
+ * INSERT and the guarded inventory movement commit in ONE short transaction, so
+ * exactly one caller per key moves stock and a replay returns the recorded
+ * outcome. `direction`/`qty` are recorded so a key reused for a DIFFERENT
+ * movement is rejected. `result_on_hand` is the on_hand recorded with the
+ * outcome (after the movement for `ok`; the current count for
+ * `insufficient_stock`) so a replay echoes the original result. An UNKNOWN_SKU
+ * is NOT recorded here (the claim rolls back — key not consumed).
+ */
+export interface InventoryStockMovementsTable {
+	idempotency_key: string;
+	sku: string;
+	direction: StockMovementDirection;
+	qty: number;
+	outcome: StockMovementOutcome;
+	result_on_hand: number;
+	created_at: string;
+}
+
 /**
  * Phase 1 (§4/§6 step 4): one row per product, keyed by the CMS content id.
  * `sku`/`price_*` are nullable — "create then price" (a bare afterSave sync
@@ -451,6 +476,7 @@ export interface Database {
 	cart_lines: CartLinesTable;
 	cart_mutations: CartMutationsTable;
 	inventory_adjustments: InventoryAdjustmentsTable;
+	inventory_stock_movements: InventoryStockMovementsTable;
 	orders: OrdersTable;
 	order_items: OrderItemsTable;
 	order_totals: OrderTotalsTable;
