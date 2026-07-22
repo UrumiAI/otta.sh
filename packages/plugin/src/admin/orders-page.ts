@@ -1,11 +1,10 @@
-import { COMMERCE_SERVICE_BASE_URL, serviceTokenFromKv } from "../manifest.js";
+import { COMMERCE_SERVICE_BASE_URL } from "../manifest.js";
 import { formatMoney } from "../presentation/format-money.js";
 import { cents as toCents, currency as toCurrency } from "../presentation/money.js";
 import type {
 	ActionsBlock,
 	AdminPageConfig,
 	Block,
-	BlockResponse,
 	ButtonElement,
 	FormBlock,
 	RouteHandler,
@@ -19,36 +18,46 @@ import {
 	type OrderSummaryWire,
 	type OrdersListFilter,
 } from "./admin-orders-client.js";
-import { INTERNAL_TOKEN_KEY } from "./settings-form.js";
+import {
+	asRecord,
+	backButton,
+	createListDetailHandler,
+	customAction,
+	failClosedResponse,
+	leafLevel,
+	listLevel,
+	noticeBanner,
+	readAdminTokens,
+	readString,
+	screenActions,
+	type ListDetailInput,
+	type Notice,
+	type ScreenActions,
+} from "./scaffold/index.js";
 
 /** The admin Orders console page's `admin.pages` manifest entry. View-only:
  *  browse orders + drill into one + fire a legal status transition. Rendered by
- *  the single `admin` dispatch route (see `admin-route.ts`). */
+ *  the single `admin` dispatch route (see `admin-route.ts`). Built on the shared
+ *  list/detail scaffold (`./scaffold`) — the first screen to prove that pattern. */
 export const ORDERS_PAGE: AdminPageConfig = { path: "/orders", label: "Orders", icon: "receipt" };
 
-/**
- * The action ids the admin-route dispatcher recognizes as belonging to the Orders
- * console (MOD-2). Every `block_action`/`form_submit` this page can emit is
- * namespaced `orders:*` and listed here, so NONE falls through the dispatcher to
- * the `{blocks:[]}` dead-end. `orders:page` is ALSO the table's `page_action_id`
- * (em-dash's "Load more" fires it) — its handler tolerates a value with no cursor
- * (treated as the first page).
- */
-export const ORDERS_ACTION_IDS: ReadonlySet<string> = new Set([
-	"orders:apply-filter",
-	"orders:page",
-	"orders:open",
-	"orders:back",
-	"orders:transition",
-	"orders:add-note",
-]);
+/** This screen's namespaced action ids — the four scaffold nav verbs plus the
+ *  two Orders-specific side-effecting verbs. */
+const ORDERS_ACTIONS: ScreenActions = screenActions("orders");
+const ACTION_TRANSITION = ORDERS_ACTIONS.custom("transition");
+const ACTION_ADD_NOTE = ORDERS_ACTIONS.custom("add-note");
 
-const ACTION_APPLY_FILTER = "orders:apply-filter";
-const ACTION_PAGE = "orders:page";
-const ACTION_OPEN = "orders:open";
-const ACTION_BACK = "orders:back";
-const ACTION_TRANSITION = "orders:transition";
-const ACTION_ADD_NOTE = "orders:add-note";
+/**
+ * The action ids the admin-route dispatcher recognizes as belonging to the
+ * Orders console (MOD-2). Every `block_action`/`form_submit` this page can emit
+ * is namespaced `orders:*` and listed here, so NONE falls through the dispatcher
+ * to the `{blocks:[]}` dead-end. `orders:page` is ALSO the table's
+ * `page_action_id` (em-dash's "Load more" fires it).
+ */
+export const ORDERS_ACTION_IDS: ReadonlySet<string> = ORDERS_ACTIONS.actionIds(
+	"transition",
+	"add-note",
+);
 
 const PAGE_LIMIT = 25;
 
@@ -78,155 +87,57 @@ interface OrdersFilterForm {
 	search?: string;
 }
 
-export interface OrdersPageInput {
-	/** em-dash BlockInteraction discriminant. */
-	type?: unknown;
-	action_id?: unknown;
-	/** `form_submit` payload. */
-	values?: Record<string, unknown>;
-	/** `block_action` payload (e.g. the table "Load more" `{ cursor, sort }`, or a
-	 *  transition button's `{ orderId, toState }`). */
-	value?: unknown;
-}
+/** The em-dash BlockInteraction envelope this page consumes (the scaffold's
+ *  input shape — `type`/`action_id`/`values`/`value`). */
+export type OrdersPageInput = ListDetailInput;
 
 export function createOrdersPageHandler(): RouteHandler<OrdersPageInput> {
-	return async (routeCtx, ctx) => {
-		const input = routeCtx.input;
-		const action = typeof input.action_id === "string" ? input.action_id : undefined;
-		const adminToken = (await ctx.kv.get<string>(INTERNAL_TOKEN_KEY)) ?? undefined;
-		// The transition POST is gated by the write gate (X-Service-Token) too when
-		// the service secret is set — source it from write-only kv (ADR-0007).
-		const serviceToken = await serviceTokenFromKv(ctx);
-		const client = new AdminOrdersClient({
-			fetch: ctx.http.fetch,
-			baseUrl: COMMERCE_SERVICE_BASE_URL,
-			...(adminToken !== undefined ? { adminToken } : {}),
-			...(serviceToken !== undefined ? { serviceToken } : {}),
-		});
-
-		// -- detail: open one order ------------------------------------------------
-		if (action === ACTION_OPEN) {
+	return createListDetailHandler({
+		actions: ORDERS_ACTIONS,
+		async createClient(ctx) {
+			const tokens = await readAdminTokens(ctx);
+			return new AdminOrdersClient({
+				fetch: ctx.http.fetch,
+				baseUrl: COMMERCE_SERVICE_BASE_URL,
+				...tokens,
+			});
+		},
+		// A list row's "Open order" form carries the order id in `values.orderId`;
+		// the target is a single-level drill, so the path is just `[orderId]`.
+		parseOpen(input) {
 			const orderId = readString(input.values?.orderId);
-			if (orderId === undefined) return renderList(client, {});
-			return renderDetail(client, orderId);
-		}
-
-		// -- detail: fire a legal transition, then re-render the detail ------------
-		if (action === ACTION_TRANSITION) {
-			const payload = asRecord(input.value);
-			const orderId = readString(payload?.orderId);
-			const toState = readString(payload?.toState);
-			if (orderId === undefined || toState === undefined) return renderList(client, {});
-			const key = `admin-transition:${orderId}:${toState}`;
-			const result = await client.transitionOrder(orderId, toState, { idempotencyKey: key });
-			let notice: DetailNotice | undefined;
-			if (!result.ok) {
-				notice = {
-					variant: "error",
-					title: "Status change failed",
-					description:
-						"That status change could not be applied — check the order state and the admin token in Settings.",
-				};
-			} else if (!result.transitioned) {
-				// The guarded flip matched 0 rows — already in that state, or a lost
-				// race. Not a failure: surface a non-error notice so the merchant gets
-				// feedback rather than a silent, unchanged re-render.
-				notice = {
-					variant: "default",
-					title: "No change",
-					description: "The order is already in that state.",
-				};
-			}
-			return renderDetail(client, orderId, notice);
-		}
-
-		// -- detail: append an order note, then re-render the detail ---------------
-		if (action === ACTION_ADD_NOTE) {
-			const values = input.values ?? {};
-			const orderId = readString(values.orderId);
-			if (orderId === undefined) return renderList(client, {});
-			const author = (readString(values.author) ?? "").trim();
-			const body = (readString(values.body) ?? "").trim();
-			// Local guard: a blank note never leaves the plugin (the domain rejects it
-			// too, but this gives immediate inline feedback without a round trip).
-			if (author.length === 0 || body.length === 0) {
-				return renderDetail(client, orderId, {
-					variant: "error",
-					title: "Note not added",
-					description: "Enter both an author and a note body.",
-				});
-			}
-			// A content-derived idempotency key: a double-submit of the same note is a
-			// no-op, but a genuinely new note (different author/body) still appends.
-			const key = `admin-note:${orderId}:${author}:${body}`;
-			const result = await client.addNote(orderId, { author, body }, { idempotencyKey: key });
-			let notice: DetailNotice | undefined;
-			if (!result.ok) {
-				notice = {
-					variant: "error",
-					title: "Note not added",
-					description:
-						"That note could not be saved — check the order and the admin token in Settings.",
-				};
-			} else if (!result.appended) {
-				notice = {
-					variant: "default",
-					title: "Already added",
-					description: "That exact note is already on this order.",
-				};
-			}
-			return renderDetail(client, orderId, notice);
-		}
-
-		// -- back to the list ------------------------------------------------------
-		if (action === ACTION_BACK) {
-			return renderList(client, {});
-		}
-
-		// -- Load more: keyset next page (defensive: no cursor ⇒ first page) --------
-		if (action === ACTION_PAGE) {
-			const payload = asRecord(input.value);
-			const token = readString(payload?.cursor);
-			const decoded = token === undefined ? null : decodePluginCursor(token);
-			if (decoded === null) return renderList(client, {}); // tolerate a missing/garbage cursor
-			return renderList(client, decoded.f, decoded.c);
-		}
-
-		// -- apply the filter form (first page of the filtered set) ----------------
-		if (action === ACTION_APPLY_FILTER) {
-			return renderList(client, filterFromValues(input.values ?? {}));
-		}
-
-		// -- page load (or any other interaction routed here) ⇒ the list -----------
-		return renderList(client, {});
-	};
+			return orderId === undefined ? undefined : { targetPath: [orderId] };
+		},
+		levels: [ordersListLevel(), orderDetailLevel()],
+		customActions: {
+			[ACTION_TRANSITION]: transitionAction(),
+			[ACTION_ADD_NOTE]: addNoteAction(),
+		},
+	});
 }
 
-// -- list view ----------------------------------------------------------------
+// -- level 0: the orders list -------------------------------------------------
 
-async function renderList(
-	client: AdminOrdersClient,
-	form: OrdersFilterForm,
-	cursor?: string,
-): Promise<BlockResponse> {
-	try {
-		const filter = toClientFilter(form);
-		const page = await client.listOrders(filter, {
-			limit: PAGE_LIMIT,
-			...(cursor !== undefined ? { cursor } : {}),
-		});
-		// The table's next_cursor carries BOTH the service cursor and the console's
-		// own form values, so "Load more" preserves the filter both functionally
-		// (the service token embeds it) and visually (the form re-populates).
-		const nextToken =
-			page.nextCursor === null ? undefined : encodePluginCursor({ c: page.nextCursor, f: form });
-		return { blocks: listBlocks(form, page.orders, nextToken) };
-	} catch {
-		return failClosed();
-	}
+function ordersListLevel() {
+	return listLevel<AdminOrdersClient, OrdersFilterForm, OrderSummaryWire>({
+		limit: PAGE_LIMIT,
+		filterFromValues,
+		async fetchPage(client, _path, form, opts) {
+			const page = await client.listOrders(toClientFilter(form), {
+				limit: opts.limit,
+				...(opts.cursor !== undefined ? { cursor: opts.cursor } : {}),
+			});
+			return { items: page.orders, nextCursor: page.nextCursor };
+		},
+		render({ actions, filter, items, nextToken }) {
+			return listBlocks(actions, filter, items, nextToken);
+		},
+		onError: () => failClosed(),
+	});
 }
 
 function listBlocks(
+	actions: ScreenActions,
 	form: OrdersFilterForm,
 	orders: OrderSummaryWire[],
 	nextToken: string | undefined,
@@ -247,7 +158,7 @@ function listBlocks(
 			customer: o.customerId ?? o.buyerRef,
 			total: formatTotal(o.totalCents, o.currency),
 		})),
-		page_action_id: ACTION_PAGE,
+		page_action_id: actions.page,
 		...(nextToken !== undefined ? { next_cursor: nextToken } : {}),
 		empty_text: "No orders match these filters.",
 	};
@@ -258,14 +169,14 @@ function listBlocks(
 			type: "context",
 			text: "View-only console. Filter, open an order, and move it through its status flow. Money shown as the order currency; dates in UTC.",
 		},
-		filterForm(form),
+		filterForm(actions, form),
 		table,
 	];
-	if (orders.length > 0) blocks.push(openOrderForm(orders));
+	if (orders.length > 0) blocks.push(openOrderForm(actions, orders));
 	return blocks;
 }
 
-function filterForm(form: OrdersFilterForm): FormBlock {
+function filterForm(actions: ScreenActions, form: OrdersFilterForm): FormBlock {
 	const statusOptions: SelectOption[] = [
 		{ value: "", label: "All statuses" },
 		...ORDER_STATES.map((s) => ({ value: s, label: s })),
@@ -299,11 +210,11 @@ function filterForm(form: OrdersFilterForm): FormBlock {
 				...(form.search !== undefined ? { initial_value: form.search } : {}),
 			},
 		],
-		submit: { label: "Apply filters", action_id: ACTION_APPLY_FILTER },
+		submit: { label: "Apply filters", action_id: actions.applyFilter },
 	};
 }
 
-function openOrderForm(orders: OrderSummaryWire[]): FormBlock {
+function openOrderForm(actions: ScreenActions, orders: OrderSummaryWire[]): FormBlock {
 	return {
 		type: "form",
 		fields: [
@@ -314,72 +225,54 @@ function openOrderForm(orders: OrderSummaryWire[]): FormBlock {
 				options: orders.map((o) => ({ value: o.id, label: `${o.id} — ${o.state}` })),
 			},
 		],
-		submit: { label: "Open order", action_id: ACTION_OPEN },
+		submit: { label: "Open order", action_id: actions.open },
 	};
 }
 
-// -- detail view --------------------------------------------------------------
+// -- level 1: the order detail ------------------------------------------------
 
-/** A banner surfaced above the detail view after a transition attempt — an
- *  `error` on failure, or a non-error `default` on a no-op (already-in-state /
- *  lost race). `variant` uses em-dash's authoritative banner union. */
-interface DetailNotice {
-	variant: "default" | "error";
-	title: string;
-	description: string;
-}
-
-async function renderDetail(
-	client: AdminOrdersClient,
-	orderId: string,
-	notice?: DetailNotice,
-): Promise<BlockResponse> {
-	let detail: OrderDetailResult | null;
-	try {
-		detail = await client.getOrder(orderId);
-	} catch {
-		return failClosed();
-	}
-	if (detail === null) {
-		return {
-			blocks: [
+function orderDetailLevel() {
+	return leafLevel<AdminOrdersClient, OrderDetailResult>({
+		load: (client, _path, id) => client.getOrder(id),
+		async render({ client, actions, id, detail, notice }) {
+			// Notes are a SECONDARY surface: a notes-read failure must not blank the
+			// whole detail view — degrade to an empty notes section, never fail closed.
+			let notes: OrderNoteWire[] = [];
+			try {
+				notes = await client.listNotes(id);
+			} catch {
+				notes = [];
+			}
+			return detailBlocks(actions, detail, notes, notice);
+		},
+		notFound({ actions, id }) {
+			return [
 				{ type: "header", text: "Order not found" },
-				backButton(),
+				backButton(actions.back, "← Back to orders"),
 				{
 					type: "banner",
 					variant: "error",
 					title: "Order not found",
-					description: `No order matches "${orderId}".`,
+					description: `No order matches "${id}".`,
 				},
-			],
-		};
-	}
-	// Notes are a SECONDARY surface: a notes-read failure must not blank the whole
-	// detail view — degrade to an empty notes section rather than fail closed.
-	let notes: OrderNoteWire[] = [];
-	try {
-		notes = await client.listNotes(orderId);
-	} catch {
-		notes = [];
-	}
-	return { blocks: detailBlocks(detail, notes, notice) };
+			];
+		},
+		onError: () => failClosed(),
+	});
 }
 
 function detailBlocks(
+	actions: ScreenActions,
 	detail: OrderDetailResult,
 	notes: OrderNoteWire[],
-	notice: DetailNotice | undefined,
+	notice: Notice | undefined,
 ): Block[] {
 	const o = detail.order;
-	const blocks: Block[] = [{ type: "header", text: `Order ${o.id}` }, backButton()];
-	if (notice !== undefined) {
-		blocks.push({
-			type: "banner",
-			variant: notice.variant,
-			title: notice.title,
-			description: notice.description,
-		});
-	}
+	const blocks: Block[] = [
+		{ type: "header", text: `Order ${o.id}` },
+		backButton(actions.back, "← Back to orders"),
+	];
+	if (notice !== undefined) blocks.push(noticeBanner(notice));
 	blocks.push({
 		type: "fields",
 		fields: [
@@ -407,7 +300,7 @@ function detailBlocks(
 			unitPrice: formatTotal(l.unitPriceCents, l.currency),
 			currency: l.currency,
 		})),
-		page_action_id: ACTION_PAGE, // never fires: no next_cursor, no sortable column
+		page_action_id: actions.page, // never fires: no next_cursor, no sortable column
 		empty_text: "No line items.",
 	});
 	blocks.push({
@@ -426,7 +319,7 @@ function detailBlocks(
 	}
 	// -- Notes (append-only) ---------------------------------------------------
 	blocks.push({ type: "section", text: "Notes" });
-	blocks.push(notesTable(notes));
+	blocks.push(notesTable(actions, notes));
 	blocks.push(addNoteForm(o.id));
 	return blocks;
 }
@@ -434,7 +327,7 @@ function detailBlocks(
 /** The order's notes, oldest-first (append order). Display-only table — no in-cell
  *  action (Block Kit tables are display-only; the add-note form below is the
  *  write surface). */
-function notesTable(notes: OrderNoteWire[]): TableBlock {
+function notesTable(actions: ScreenActions, notes: OrderNoteWire[]): TableBlock {
 	return {
 		type: "table",
 		columns: [
@@ -443,7 +336,7 @@ function notesTable(notes: OrderNoteWire[]): TableBlock {
 			{ key: "body", label: "Note" },
 		],
 		rows: notes.map((n) => ({ createdAt: n.createdAt, author: n.author, body: n.body })),
-		page_action_id: ACTION_PAGE, // never fires: no next_cursor, no sortable column
+		page_action_id: actions.page, // never fires: no next_cursor, no sortable column
 		empty_text: "No notes yet.",
 	};
 }
@@ -493,33 +386,89 @@ function transitionActions(orderId: string, allowed: string[]): ActionsBlock {
 	return { type: "actions", elements };
 }
 
-function backButton(): ActionsBlock {
-	return {
-		type: "actions",
-		elements: [{ type: "button", action_id: ACTION_BACK, label: "← Back to orders" }],
-	};
+// -- custom actions: transition + add-note ------------------------------------
+
+function transitionAction() {
+	return customAction<AdminOrdersClient>(async ({ input, client, showLeaf, showList }) => {
+		const payload = asRecord(input.value);
+		const orderId = readString(payload?.orderId);
+		const toState = readString(payload?.toState);
+		if (orderId === undefined || toState === undefined) return showList();
+		const key = `admin-transition:${orderId}:${toState}`;
+		const result = await client.transitionOrder(orderId, toState, { idempotencyKey: key });
+		let notice: Notice | undefined;
+		if (!result.ok) {
+			notice = {
+				variant: "error",
+				title: "Status change failed",
+				description:
+					"That status change could not be applied — check the order state and the admin token in Settings.",
+			};
+		} else if (!result.transitioned) {
+			// The guarded flip matched 0 rows — already in that state, or a lost race.
+			// Not a failure: surface a non-error notice so the merchant gets feedback
+			// rather than a silent, unchanged re-render.
+			notice = {
+				variant: "default",
+				title: "No change",
+				description: "The order is already in that state.",
+			};
+		}
+		return showLeaf([orderId], notice);
+	});
+}
+
+function addNoteAction() {
+	return customAction<AdminOrdersClient>(async ({ input, client, showLeaf, showList }) => {
+		const values = input.values ?? {};
+		const orderId = readString(values.orderId);
+		if (orderId === undefined) return showList();
+		const author = (readString(values.author) ?? "").trim();
+		const body = (readString(values.body) ?? "").trim();
+		// Local guard: a blank note never leaves the plugin (the domain rejects it
+		// too, but this gives immediate inline feedback without a round trip).
+		if (author.length === 0 || body.length === 0) {
+			return showLeaf([orderId], {
+				variant: "error",
+				title: "Note not added",
+				description: "Enter both an author and a note body.",
+			});
+		}
+		// A content-derived idempotency key: a double-submit of the same note is a
+		// no-op, but a genuinely new note (different author/body) still appends.
+		const key = `admin-note:${orderId}:${author}:${body}`;
+		const result = await client.addNote(orderId, { author, body }, { idempotencyKey: key });
+		let notice: Notice | undefined;
+		if (!result.ok) {
+			notice = {
+				variant: "error",
+				title: "Note not added",
+				description:
+					"That note could not be saved — check the order and the admin token in Settings.",
+			};
+		} else if (!result.appended) {
+			notice = {
+				variant: "default",
+				title: "Already added",
+				description: "That exact note is already on this order.",
+			};
+		}
+		return showLeaf([orderId], notice);
+	});
 }
 
 // -- shared -------------------------------------------------------------------
 
 /** Fail CLOSED with a GENERIC, em-dash-correct banner — never leaks a raw HTTP
- *  status/URL (e.g. an auth 401 from a missing/expired admin token). Emits the
- *  authoritative `{variant, title, description}` shape (MOD-3) so it renders in
- *  production, not the legacy `text` shape em-dash drops. */
-function failClosed(): BlockResponse {
-	return {
-		blocks: [
-			{ type: "header", text: "Orders" },
-			{
-				type: "banner",
-				variant: "error",
-				title: "Orders are unavailable",
-				description:
-					"Could not reach the commerce service. Check the service connection and the admin token in Settings.",
-			},
-		],
-		toast: { message: "Could not load orders", type: "error" },
-	};
+ *  status/URL (e.g. an auth 401 from a missing/expired admin token). */
+function failClosed() {
+	return failClosedResponse({
+		header: "Orders",
+		title: "Orders are unavailable",
+		description:
+			"Could not reach the commerce service. Check the service connection and the admin token in Settings.",
+		toast: "Could not load orders",
+	});
 }
 
 /** Translate the console's filter form into the client's list filter (single
@@ -565,53 +514,4 @@ function formatTotal(minorUnits: number, currencyCode: string): string {
 	} catch {
 		return `${currencyCode} ${minorUnits}`;
 	}
-}
-
-function readString(value: unknown): string | undefined {
-	return typeof value === "string" ? value : undefined;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-	return value !== null && typeof value === "object"
-		? (value as Record<string, unknown>)
-		: undefined;
-}
-
-// -- console cursor (wraps the service cursor + the form so paging preserves both) --
-
-interface PluginCursor {
-	/** The opaque SERVICE cursor token. */
-	c: string;
-	/** The console filter form (re-populated on the paged re-render). */
-	f: OrdersFilterForm;
-}
-
-function encodePluginCursor(cursor: PluginCursor): string {
-	return toBase64Url(new TextEncoder().encode(JSON.stringify(cursor)));
-}
-
-function decodePluginCursor(token: string): PluginCursor | null {
-	try {
-		const parsed = JSON.parse(new TextDecoder().decode(fromBase64Url(token))) as unknown;
-		if (parsed === null || typeof parsed !== "object") return null;
-		const p = parsed as { c?: unknown; f?: unknown };
-		if (typeof p.c !== "string") return null;
-		const f = p.f !== null && typeof p.f === "object" ? (p.f as OrdersFilterForm) : {};
-		return { c: p.c, f };
-	} catch {
-		return null;
-	}
-}
-
-function toBase64Url(bytes: Uint8Array): string {
-	let bin = "";
-	for (const b of bytes) bin += String.fromCharCode(b);
-	return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-function fromBase64Url(token: string): Uint8Array {
-	const bin = atob(token.replace(/-/g, "+").replace(/_/g, "/"));
-	const out = new Uint8Array(bin.length);
-	for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-	return out;
 }
