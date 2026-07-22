@@ -50,5 +50,68 @@ export function sessionContract(
 			h.advance(h.ttlMs + 1);
 			expect(await h.store.validate(session.token)).toBeNull();
 		});
+
+		// -- listForCustomer: token-free session history (admin-UX Increment 1) ---
+
+		test("listForCustomer returns newest-first, token-free summaries (never a token or hash)", async () => {
+			const h = await makeHarness();
+			const first = await h.store.create(CUST);
+			h.advance(10);
+			const second = await h.store.create(CUST);
+			h.advance(10);
+			const third = await h.store.create(CUST);
+
+			const sessions = await h.store.listForCustomer(CUST);
+			expect(sessions).toHaveLength(3);
+			// Newest-first — expiresAt = createdAt + ttl identifies each session
+			// without depending on adapter-specific id formats.
+			expect(sessions.map((s) => s.expiresAt)).toEqual([
+				third.expiresAt,
+				second.expiresAt,
+				first.expiresAt,
+			]);
+			// createdAt strictly descending (the clock advanced between creates).
+			expect(sessions[0]!.createdAt > sessions[1]!.createdAt).toBe(true);
+			expect(sessions[1]!.createdAt > sessions[2]!.createdAt).toBe(true);
+			// The summary shape is EXACTLY the four metadata fields — no `token`,
+			// no `tokenHash`, no credential material of any kind.
+			for (const s of sessions) {
+				expect(Object.keys(s).toSorted()).toEqual(["createdAt", "expiresAt", "id", "revokedAt"]);
+				expect(typeof s.id).toBe("string");
+				expect(s.id.length).toBeGreaterThan(0);
+				expect(s.revokedAt).toBeNull();
+			}
+		});
+
+		test("listForCustomer is scoped to one customer — another customer's sessions never leak in", async () => {
+			const h = await makeHarness();
+			const other = customerId("cust-other");
+			await h.store.create(CUST);
+			await h.store.create(other);
+			expect(await h.store.listForCustomer(CUST)).toHaveLength(1);
+			expect(await h.store.listForCustomer(other)).toHaveLength(1);
+		});
+
+		test("listForCustomer reflects a revoke (revokedAt set) and keeps expired sessions (it is a history)", async () => {
+			const h = await makeHarness();
+			const revoked = await h.store.create(CUST);
+			h.advance(10);
+			const kept = await h.store.create(CUST);
+			await h.store.revoke(revoked.token);
+			// Cross the TTL so BOTH sessions are expired: the history still lists them.
+			h.advance(h.ttlMs + 1);
+
+			const sessions = await h.store.listForCustomer(CUST);
+			expect(sessions).toHaveLength(2);
+			const revokedRow = sessions.find((s) => s.expiresAt === revoked.expiresAt);
+			const keptRow = sessions.find((s) => s.expiresAt === kept.expiresAt);
+			expect(revokedRow?.revokedAt).not.toBeNull();
+			expect(keptRow?.revokedAt).toBeNull();
+		});
+
+		test("listForCustomer on a customer with no sessions returns []", async () => {
+			const h = await makeHarness();
+			expect(await h.store.listForCustomer(customerId("cust-empty"))).toEqual([]);
+		});
 	});
 }

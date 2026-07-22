@@ -6,6 +6,7 @@ import {
 	type IdGen,
 	type Session,
 	type SessionStore,
+	type SessionSummary,
 } from "@urumi/domain";
 import type { Kysely } from "kysely";
 import type { Database } from "./schema.js";
@@ -75,6 +76,27 @@ export class KyselySessionStore implements SessionStore {
 			.where("token_hash", "=", hashToken(token))
 			.where("revoked_at", "is", null)
 			.execute();
+	}
+
+	async listForCustomer(customerId: CustomerId): Promise<SessionSummary[]> {
+		// Token-free session history for the admin customer-context read (admin-UX
+		// Increment 1). Deliberately NEVER selects `token_hash` — there is no path
+		// for credential material onto the admin surface even by accident. Includes
+		// expired + revoked rows (a history, not a liveness check — `validate`
+		// stays the sole authority on liveness).
+		const rows = await this.#db
+			.selectFrom("customer_sessions")
+			.select(["id", "created_at", "expires_at", "revoked_at"])
+			.where("customer_id", "=", customerId)
+			.orderBy("created_at", "desc")
+			.orderBy("id", "desc")
+			.execute();
+		return rows.map((r) => ({
+			id: r.id,
+			createdAt: r.created_at,
+			expiresAt: r.expires_at,
+			revokedAt: r.revoked_at,
+		}));
 	}
 }
 

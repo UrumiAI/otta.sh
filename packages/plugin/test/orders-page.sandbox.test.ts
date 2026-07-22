@@ -105,6 +105,65 @@ const SUMMARY_2 = {
 	reconciliationFlag: false,
 };
 
+// A guest order (no account) and an order whose customer-context read fails.
+const ORDER_GUEST = { ...ORDER_1, id: "ord-guest", customerId: null };
+const ORDER_CTX_FAIL = { ...ORDER_1, id: "ord-ctx-fail" };
+
+/** Customer context for ord-1: a claimed account with an address, a session,
+ *  and one other order. TOKEN-FREE by construction (the wire shape has no
+ *  credential field). */
+const CUSTOMER_CONTEXT_LINKED = {
+	identity: {
+		customerId: "cust-a",
+		buyerRef: "alice@example.com",
+		email: "alice@example.com",
+		displayName: "Alice Example",
+		emailVerifiedAt: "2026-07-09T00:00:00.000Z",
+		linkage: "claimed",
+	},
+	addresses: [
+		{
+			id: "addr-1",
+			kind: "shipping",
+			name: "Alice Example",
+			line1: "1 Main St",
+			line2: null,
+			city: "Springfield",
+			region: null,
+			postalCode: "12345",
+			country: "US",
+			isDefault: true,
+			createdAt: "2026-07-09T00:00:00.000Z",
+		},
+	],
+	sessions: [
+		{
+			id: "sess-1",
+			createdAt: "2026-07-09T00:00:00.000Z",
+			expiresAt: "2026-08-08T00:00:00.000Z",
+			revokedAt: null,
+		},
+	],
+	orderCount: 3,
+	recentOrders: [SUMMARY_2],
+};
+
+/** Customer context for a true guest: no account, nothing to list. */
+const CUSTOMER_CONTEXT_GUEST = {
+	identity: {
+		customerId: null,
+		buyerRef: "alice@example.com",
+		email: null,
+		displayName: null,
+		emailVerifiedAt: null,
+		linkage: "guest",
+	},
+	addresses: [],
+	sessions: [],
+	orderCount: 1,
+	recentOrders: [],
+};
+
 /** A GET responder for the guarded list + detail reads (200 only WITH the admin
  *  token, else 401 — mirroring the service guard). Distinguishes list vs detail
  *  by path, and page1 vs page2 by the `cursor=` query param. */
@@ -131,12 +190,26 @@ function makeGetResponder() {
 		if (path?.endsWith("/notes")) {
 			return { status: 200, body: { ok: true, notes: NOTES } };
 		}
+		// Customer context read — also BEFORE the detail branch.
+		if (path?.endsWith("/customer-context")) {
+			if (path.includes("/ord-ctx-fail")) {
+				return { status: 500, body: { ok: false, error: "internal_error" } };
+			}
+			if (path.includes("/ord-guest")) {
+				return { status: 200, body: { ok: true, context: CUSTOMER_CONTEXT_GUEST } };
+			}
+			return { status: 200, body: { ok: true, context: CUSTOMER_CONTEXT_LINKED } };
+		}
 		if (path?.startsWith("/admin/orders/")) {
 			const order = path.includes("/ord-flagged")
 				? ORDER_FLAGGED
 				: path.includes("/ord-resolved")
 					? ORDER_RESOLVED
-					: ORDER_1;
+					: path.includes("/ord-guest")
+						? ORDER_GUEST
+						: path.includes("/ord-ctx-fail")
+							? ORDER_CTX_FAIL
+							: ORDER_1;
 			return {
 				status: 200,
 				body: {
@@ -598,6 +671,81 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(blocks.some((b) => b.type === "header" && b.text === "Order ord-flagged")).toBe(true);
 		const banner = blocks.find((b) => b.type === "banner" && b.variant === "error");
 		expect(banner?.title).toBe("Not resolved");
+	});
+
+	test("open order → detail shows the Customer section: identity, address book (with ship-to disclaimer), sessions, other orders — token-free", async () => {
+		await boot();
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "orders:open",
+			values: { orderId: "ord-1" },
+		});
+		const blocks = blocksOf(outcome);
+		expect(blocks.some((b) => b.type === "section" && b.text === "Customer")).toBe(true);
+		// Identity fields: the resolved account email + the union order count.
+		const fieldValues = blocks
+			.filter((b) => b.type === "fields")
+			.flatMap((b) => (b.fields as Array<{ label?: string; value?: string }>) ?? [])
+			.map((f) => `${String(f.label)}=${String(f.value)}`);
+		expect(fieldValues).toContain("Email=alice@example.com");
+		expect(fieldValues).toContain("Name=Alice Example");
+		expect(fieldValues).toContain("Account=cust-a");
+		expect(fieldValues).toContain("Total orders=3");
+		// The address book carries the PROMINENT "not the ship-to" disclaimer.
+		const contexts = blocks.filter((b) => b.type === "context").map((b) => String(b.text));
+		expect(contexts.some((t) => t.includes("NOT the address this order shipped to"))).toBe(true);
+		// Address, session, and other-order rows all render.
+		const rows = blocks
+			.filter((b) => b.type === "table")
+			.flatMap((t) => (t.rows as Array<Record<string, unknown>>) ?? []);
+		expect(rows.some((r) => String(r.address ?? "").includes("1 Main St"))).toBe(true);
+		expect(rows.some((r) => r.createdAt === "2026-07-09T00:00:00.000Z")).toBe(true); // session
+		expect(rows.some((r) => r.id === "ord-2")).toBe(true); // other recent order
+		// NOTHING token-like reaches the rendered blocks (the wire shape is
+		// token-free; belt-and-braces that no credential material leaked through).
+		expect(JSON.stringify(blocks)).not.toMatch(/token/i);
+	});
+
+	test("open a GUEST order → honest guest labeling, empty address/session surfaces (not an error)", async () => {
+		await boot();
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "orders:open",
+			values: { orderId: "ord-guest" },
+		});
+		const blocks = blocksOf(outcome);
+		expect(blocks.some((b) => b.type === "header" && b.text === "Order ord-guest")).toBe(true);
+		const fieldValues = blocks
+			.filter((b) => b.type === "fields")
+			.flatMap((b) => (b.fields as Array<{ label?: string; value?: string }>) ?? [])
+			.map((f) => `${String(f.label)}=${String(f.value)}`);
+		expect(fieldValues).toContain("Account=Guest — no account");
+		expect(fieldValues).toContain("Total orders=1");
+		// The empty states explain themselves rather than looking like a bug.
+		const tables = blocks.filter((b) => b.type === "table");
+		const emptyTexts = tables.map((t) => String(t.empty_text ?? ""));
+		expect(emptyTexts.some((t) => t.includes("guests have no address book"))).toBe(true);
+		expect(emptyTexts.some((t) => t.includes("guests never sign in"))).toBe(true);
+	});
+
+	test("a FAILING customer-context read degrades to an explicit 'unavailable' section — the detail view still renders", async () => {
+		await boot();
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "orders:open",
+			values: { orderId: "ord-ctx-fail" },
+		});
+		const blocks = blocksOf(outcome);
+		// The detail view survives: header, line items, and notes all present.
+		expect(blocks.some((b) => b.type === "header" && b.text === "Order ord-ctx-fail")).toBe(true);
+		expect(blocks.some((b) => b.type === "section" && b.text === "Line items")).toBe(true);
+		expect(blocks.some((b) => b.type === "section" && b.text === "Notes")).toBe(true);
+		// The Customer section is present with an EXPLICIT unavailable body —
+		// never silently omitted, never a fail-closed banner for the whole page.
+		expect(blocks.some((b) => b.type === "section" && b.text === "Customer")).toBe(true);
+		const contexts = blocks.filter((b) => b.type === "context").map((b) => String(b.text));
+		expect(contexts.some((t) => t.includes("Customer context unavailable"))).toBe(true);
+		expect(blocks.some((b) => b.type === "banner" && b.variant === "error")).toBe(false);
 	});
 
 	test("NO-TOKEN page_load /orders fails closed with a GENERIC banner (no raw HTTP status/URL)", async () => {

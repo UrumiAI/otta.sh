@@ -1,8 +1,12 @@
 import {
+	type AddressStore,
 	appendOrderNote,
+	type CustomerStore,
+	getOrderCustomerContext,
 	idempotencyKey as toIdempotencyKey,
 	legalNextStates,
 	listOrderNotes,
+	type OrderCustomerContext,
 	type OrderListCursor,
 	type OrderListFilter,
 	orderId as toOrderId,
@@ -11,6 +15,7 @@ import {
 	type OrderState,
 	type OrderStore,
 	resolveReconciliation,
+	type SessionStore,
 	transitionOrder,
 } from "@urumi/domain";
 import { Hono } from "hono";
@@ -31,6 +36,10 @@ export interface AdminRoutesDeps {
 	orderStore: OrderStore;
 	/** Append-only order notes (admin-UX Increment 0). */
 	orderNotesStore: OrderNotesStore;
+	// Customer context on the order detail (admin-UX Increment 1) — read-only.
+	customerStore: CustomerStore;
+	addressStore: AddressStore;
+	sessionStore: SessionStore;
 	/** Reuses the existing service privileged auth (X-Internal-Token). Phase 5
 	 *  introduces no separate admin identity (Risk 7): the internal token is the
 	 *  service's privileged mechanism; a real admin panel calls this with it. */
@@ -113,6 +122,30 @@ export function adminRoutes(deps: AdminRoutesDeps): Hono {
 			},
 			200,
 		);
+	});
+
+	// -- Admin Orders console: customer context (admin-UX Increment 1) -----------
+	// Read-only, internal-token guarded like the other admin GETs; mirrors the
+	// `getOrderCustomerContext` use-case 1:1. The response aggregates PII (email,
+	// address book, session metadata) — it is NEVER logged; failures reach the
+	// app-level onError which logs only the thrown error, not this body.
+	app.get("/orders/:orderId/customer-context", async (c) => {
+		const denied = requireInternalToken(c, deps.internalToken);
+		if (denied !== null) return denied;
+
+		const params = orderPathParams.safeParse(c.req.param());
+		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
+		const context = await getOrderCustomerContext(
+			{
+				orderStore: deps.orderStore,
+				customerStore: deps.customerStore,
+				addressStore: deps.addressStore,
+				sessionStore: deps.sessionStore,
+			},
+			toOrderId(params.data.orderId),
+		);
+		if (context === null) return c.json({ ok: false, reason: "ORDER_NOT_FOUND" }, 404);
+		return c.json({ ok: true, context: serializeCustomerContext(context) }, 200);
 	});
 
 	app.post("/orders/:orderId/transition", async (c) => {
@@ -245,6 +278,45 @@ export function adminRoutes(deps: AdminRoutesDeps): Hono {
 	});
 
 	return app;
+}
+
+/** Wire shape of the order customer context (admin-UX Increment 1). Mirrors the
+ *  domain shape 1:1: identity + linkage, the profile address book (NOT a
+ *  per-order shipping snapshot — none exists in this domain), TOKEN-FREE
+ *  session summaries, and the union-keyed order aggregates (`recentOrders`
+ *  reuses the admin-list summary wire shape). */
+function serializeCustomerContext(context: OrderCustomerContext): Record<string, unknown> {
+	return {
+		identity: {
+			customerId: context.identity.customerId,
+			buyerRef: context.identity.buyerRef,
+			email: context.identity.email,
+			displayName: context.identity.displayName,
+			emailVerifiedAt: context.identity.emailVerifiedAt,
+			linkage: context.identity.linkage,
+		},
+		addresses: context.addresses.map((a) => ({
+			id: a.id,
+			kind: a.kind,
+			name: a.name,
+			line1: a.line1,
+			line2: a.line2,
+			city: a.city,
+			region: a.region,
+			postalCode: a.postalCode,
+			country: a.country,
+			isDefault: a.isDefault,
+			createdAt: a.createdAt,
+		})),
+		sessions: context.sessions.map((s) => ({
+			id: s.id,
+			createdAt: s.createdAt,
+			expiresAt: s.expiresAt,
+			revokedAt: s.revokedAt,
+		})),
+		orderCount: context.orderCount,
+		recentOrders: context.recentOrders.map(serializeOrderSummary),
+	};
 }
 
 /** Wire shape of an order note (admin-UX Increment 0). Plain annotation — no

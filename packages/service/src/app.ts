@@ -141,6 +141,10 @@ export function createApp(deps: AppDeps): Hono {
 		adminRoutes({
 			orderStore: deps.orderStore,
 			orderNotesStore: deps.orderNotesStore,
+			// Admin-UX Increment 1: the customer-context read on the order detail.
+			customerStore: deps.customerStore,
+			addressStore: deps.addressStore,
+			sessionStore: deps.sessionStore,
 			internalToken: deps.internalToken,
 		}),
 	);

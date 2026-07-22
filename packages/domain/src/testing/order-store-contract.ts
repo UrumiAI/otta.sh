@@ -375,6 +375,161 @@ export function orderStoreContract(
 			expect(res.nextCursor).toBeNull();
 		});
 
+		// -- customer dimension: UNION key + countOrders (admin-UX Increment 1) ----
+		// Orders are born customer_id=NULL and only back-linked at the next login,
+		// so ONE person routinely owns both linked rows (customer_id set) and
+		// not-yet-relinked rows (customer_id NULL, matching buyer_ref). The
+		// `customer` key must union the two — and `countOrders` must share the
+		// exact predicate with `listOrders` so a count never disagrees with the
+		// list it captions.
+
+		/** Seed one person's split ownership: a linked order A (customer_id set,
+		 *  buyer_ref retained) + a not-yet-relinked order B (customer_id NULL, same
+		 *  email), plus a foreign order C. */
+		async function seedSplitOwnership(h: OrderStoreHarness): Promise<void> {
+			await h.seedOrder(
+				summaryRow({
+					id: "ord-linked",
+					customerId: "cust-1",
+					buyerRef: "Bob@Example.com", // stored verbatim; linking folds case
+					createdAt: "2026-07-10T00:00:01.000Z",
+				}),
+			);
+			await h.seedOrder(
+				summaryRow({
+					id: "ord-unlinked",
+					customerId: null,
+					buyerRef: "bob@example.com",
+					createdAt: "2026-07-10T00:00:02.000Z",
+				}),
+			);
+			await h.seedOrder(
+				summaryRow({
+					id: "ord-foreign",
+					customerId: "cust-2",
+					buyerRef: "carol@example.com",
+					createdAt: "2026-07-10T00:00:03.000Z",
+				}),
+			);
+		}
+
+		test("listOrders customer key UNIONS customer_id and buyer_ref: linked + not-yet-relinked, never a foreign order", async () => {
+			const h = await makeHarness();
+			await seedSplitOwnership(h);
+			const { orders } = await h.store.listOrders(
+				{ customer: { customerId: "cust-1", buyerRef: "bob@example.com" } },
+				{ limit: 25 },
+			);
+			// Newest-first; B (unlinked) matched via buyer_ref, A via customer_id.
+			expect(orders.map((o) => o.id)).toEqual(["ord-unlinked", "ord-linked"]);
+		});
+
+		test("listOrders customer key: an order matching BOTH halves appears exactly once", async () => {
+			const h = await makeHarness();
+			// The linked order matches customer_id AND (case-folded) buyer_ref.
+			await h.seedOrder(
+				summaryRow({ id: "ord-both", customerId: "cust-1", buyerRef: "Bob@Example.com" }),
+			);
+			const { orders } = await h.store.listOrders(
+				{ customer: { customerId: "cust-1", buyerRef: "bob@example.com" } },
+				{ limit: 25 },
+			);
+			expect(orders.map((o) => o.id)).toEqual(["ord-both"]);
+		});
+
+		test("listOrders customer.buyerRef folds case exactly (never substring), matching search's semantics", async () => {
+			const h = await makeHarness();
+			await h.seedOrder(summaryRow({ id: "a", buyerRef: "Buyer@Example.com" }));
+			await h.seedOrder(summaryRow({ id: "b", buyerRef: "someone-else@example.com" }));
+			const exact = await h.store.listOrders(
+				{ customer: { buyerRef: "buyer@example.com" } },
+				{ limit: 25 },
+			);
+			expect(exact.orders.map((o) => o.id)).toEqual(["a"]);
+			const partial = await h.store.listOrders({ customer: { buyerRef: "buyer" } }, { limit: 25 });
+			expect(partial.orders).toHaveLength(0);
+		});
+
+		test("listOrders customer key with a single half set filters on that half alone", async () => {
+			const h = await makeHarness();
+			await seedSplitOwnership(h);
+			const byId = await h.store.listOrders({ customer: { customerId: "cust-1" } }, { limit: 25 });
+			expect(byId.orders.map((o) => o.id)).toEqual(["ord-linked"]);
+			const byRef = await h.store.listOrders(
+				{ customer: { buyerRef: "bob@example.com" } },
+				{ limit: 25 },
+			);
+			expect(byRef.orders.map((o) => o.id)).toEqual(["ord-unlinked", "ord-linked"]);
+		});
+
+		test("listOrders customer key ANDs with the states filter (union inside the key only)", async () => {
+			const h = await makeHarness();
+			await h.seedOrder(summaryRow({ id: "paid-1", customerId: "cust-1", state: "paid" }));
+			await h.seedOrder(summaryRow({ id: "refunded-1", customerId: "cust-1", state: "refunded" }));
+			await h.seedOrder(summaryRow({ id: "paid-foreign", customerId: "cust-2", state: "paid" }));
+			const { orders } = await h.store.listOrders(
+				{ states: ["paid"], customer: { customerId: "cust-1" } },
+				{ limit: 25 },
+			);
+			expect(orders.map((o) => o.id)).toEqual(["paid-1"]);
+		});
+
+		test("countOrders agrees with listOrders on the union customer key (and counts a both-halves order once)", async () => {
+			const h = await makeHarness();
+			await seedSplitOwnership(h);
+			const key = { customerId: "cust-1", buyerRef: "bob@example.com" };
+			expect(await h.store.countOrders({ customer: key })).toBe(2);
+			// The linked order matches both halves — still one row, counted once.
+			expect(await h.store.countOrders({ customer: { customerId: "cust-1" } })).toBe(1);
+			expect(await h.store.countOrders({})).toBe(3); // unfiltered: every order
+		});
+
+		test("countOrders on a customer with no orders returns 0", async () => {
+			const h = await makeHarness();
+			await seedSplitOwnership(h);
+			expect(
+				await h.store.countOrders({
+					customer: { customerId: "cust-none", buyerRef: "nobody@example.com" },
+				}),
+			).toBe(0);
+		});
+
+		test("countOrders applies the full listOrders predicate (states AND window AND customer)", async () => {
+			const h = await makeHarness();
+			await h.seedOrder(
+				summaryRow({
+					id: "in-window",
+					customerId: "cust-1",
+					state: "paid",
+					createdAt: "2026-07-10T12:00:00.000Z",
+				}),
+			);
+			await h.seedOrder(
+				summaryRow({
+					id: "out-of-window",
+					customerId: "cust-1",
+					state: "paid",
+					createdAt: "2026-07-11T00:00:00.000Z", // at the EXCLUSIVE upper bound
+				}),
+			);
+			await h.seedOrder(
+				summaryRow({
+					id: "wrong-state",
+					customerId: "cust-1",
+					state: "cancelled",
+					createdAt: "2026-07-10T13:00:00.000Z",
+				}),
+			);
+			expect(
+				await h.store.countOrders({
+					states: ["paid"],
+					from: "2026-07-10T00:00:00.000Z",
+					to: "2026-07-11T00:00:00.000Z",
+					customer: { customerId: "cust-1" },
+				}),
+			).toBe(1);
+		});
+
 		// -- resolveReconciliation: equality-guarded compare-and-clear ------------
 
 		test("resolveReconciliation clears the flag and records the disposition; state/lines untouched", async () => {

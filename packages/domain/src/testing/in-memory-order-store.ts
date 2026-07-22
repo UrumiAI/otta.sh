@@ -251,29 +251,59 @@ export class InMemoryOrderStore implements OrderStore {
 			.map((s) => this.#clone(s.order));
 	}
 
+	/** The ONE `OrderListFilter` predicate, shared by `listOrders` and
+	 *  `countOrders` (mirrors the Kysely adapter's single filter builder) — a
+	 *  count can never disagree with the list it captions. */
+	#matchesFilter(o: Order, filter: OrderListFilter): boolean {
+		if (
+			filter.states !== undefined &&
+			filter.states.length > 0 &&
+			!filter.states.includes(o.state)
+		) {
+			return false;
+		}
+		if (filter.from !== undefined && o.createdAt < filter.from) return false; // inclusive lower
+		if (filter.to !== undefined && o.createdAt >= filter.to) return false; // EXCLUSIVE upper
+		if (
+			filter.search !== undefined &&
+			!(o.id === filter.search || o.buyerRef.toLowerCase() === filter.search.toLowerCase())
+		) {
+			return false;
+		}
+		// The customer dimension: a UNION inside the key (customer_id = :id OR
+		// lower(buyer_ref) = lower(:buyerRef)), ANDed with everything above. A key
+		// with neither half set constrains nothing (matches the SQL adapter).
+		if (filter.customer !== undefined) {
+			const { customerId, buyerRef } = filter.customer;
+			if (customerId !== undefined || buyerRef !== undefined) {
+				const byId = customerId !== undefined && o.customerId === customerId;
+				const byRef = buyerRef !== undefined && o.buyerRef.toLowerCase() === buyerRef.toLowerCase();
+				if (!byId && !byRef) return false;
+			}
+		}
+		return true;
+	}
+
+	async countOrders(filter: OrderListFilter): Promise<number> {
+		let count = 0;
+		for (const s of this.#orders.values()) {
+			if (this.#matchesFilter(s.order, filter)) count++;
+		}
+		return count;
+	}
+
 	async listOrders(filter: OrderListFilter, page: OrderListPage): Promise<OrderListResult> {
-		// EXACT parity with `KyselyOrderStore.listOrders` (MOD-5): same filters,
-		// same `created_at DESC, id DESC` order, same half-open `[from, to)` window,
-		// same `lower(buyer_ref) = lower(:search)` (exact-lower-equals, NOT
-		// substring), same `limit + 1` next-page detection.
-		const states =
-			filter.states !== undefined && filter.states.length > 0 ? new Set(filter.states) : null;
-		const search = filter.search;
-		const searchLower = search === undefined ? undefined : search.toLowerCase();
+		// EXACT parity with `KyselyOrderStore.listOrders` (MOD-5): same filters
+		// (via the shared `#matchesFilter` predicate), same `created_at DESC, id
+		// DESC` order, same half-open `[from, to)` window, same `lower(buyer_ref)
+		// = lower(:search)` (exact-lower-equals, NOT substring), same `limit + 1`
+		// next-page detection.
 		const cursor = page.cursor ?? null;
 
 		const matched = [...this.#orders.values()]
 			.map((s) => s.order)
 			.filter((o) => {
-				if (states !== null && !states.has(o.state)) return false;
-				if (filter.from !== undefined && o.createdAt < filter.from) return false; // inclusive lower
-				if (filter.to !== undefined && o.createdAt >= filter.to) return false; // EXCLUSIVE upper
-				if (
-					search !== undefined &&
-					!(o.id === search || o.buyerRef.toLowerCase() === searchLower)
-				) {
-					return false;
-				}
+				if (!this.#matchesFilter(o, filter)) return false;
 				// Keyset predicate: everything strictly "less than" the cursor position
 				// under `created_at DESC, id DESC`.
 				if (cursor !== null) {

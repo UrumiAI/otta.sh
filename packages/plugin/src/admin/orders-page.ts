@@ -13,6 +13,7 @@ import type {
 } from "../types.js";
 import {
 	AdminOrdersClient,
+	type CustomerContextWire,
 	type OrderDetailResult,
 	type OrderDetailWire,
 	type OrderNoteWire,
@@ -239,15 +240,15 @@ function orderDetailLevel() {
 	return leafLevel<AdminOrdersClient, OrderDetailResult>({
 		load: (client, _path, id) => client.getOrder(id),
 		async render({ client, actions, id, detail, notice }) {
-			// Notes are a SECONDARY surface: a notes-read failure must not blank the
-			// whole detail view — degrade to an empty notes section, never fail closed.
-			let notes: OrderNoteWire[] = [];
-			try {
-				notes = await client.listNotes(id);
-			} catch {
-				notes = [];
-			}
-			return detailBlocks(actions, detail, notes, notice);
+			// Notes + customer context are SECONDARY surfaces: either read failing
+			// must not blank the whole detail view — each degrades independently
+			// (empty notes / an "unavailable" customer section), never fail closed.
+			// Fetched in parallel to avoid serial round-trip latency.
+			const [notes, customerContext] = await Promise.all([
+				client.listNotes(id).catch((): OrderNoteWire[] => []),
+				client.getCustomerContext(id).catch((): CustomerContextWire | null => null),
+			]);
+			return detailBlocks(actions, detail, notes, customerContext, notice);
 		},
 		notFound({ actions, id }) {
 			return [
@@ -269,6 +270,7 @@ function detailBlocks(
 	actions: ScreenActions,
 	detail: OrderDetailResult,
 	notes: OrderNoteWire[],
+	customerContext: CustomerContextWire | null,
 	notice: Notice | undefined,
 ): Block[] {
 	const o = detail.order;
@@ -291,6 +293,8 @@ function detailBlocks(
 	// open flag gets an alert banner + the resolve form; a resolved flag shows the
 	// recorded disposition. A never-flagged order shows nothing here.
 	for (const block of reconciliationBlocks(o)) blocks.push(block);
+	// -- Customer (admin-UX Increment 1) — read-only context, above line items --
+	for (const block of customerContextBlocks(actions, customerContext)) blocks.push(block);
 	blocks.push({ type: "section", text: "Line items" });
 	blocks.push({
 		type: "table",
@@ -330,6 +334,126 @@ function detailBlocks(
 	blocks.push(notesTable(actions, notes));
 	blocks.push(addNoteForm(o.id));
 	return blocks;
+}
+
+// -- customer context (admin-UX Increment 1) ----------------------------------
+
+/**
+ * The read-only "Customer" panel on the order detail: who the customer is
+ * (honestly labeled — see `accountSummary`), their profile address book (with a
+ * PROMINENT "not the ship-to" disclaimer: this domain snapshots no per-order
+ * address), token-free session history, and their other orders under the
+ * union customer key. `null` (the context read failed or the order vanished
+ * mid-view) renders an explicit "unavailable" body — the section is never
+ * silently blank and never blanks the rest of the detail view.
+ */
+function customerContextBlocks(actions: ScreenActions, ctx: CustomerContextWire | null): Block[] {
+	const blocks: Block[] = [{ type: "section", text: "Customer" }];
+	if (ctx === null) {
+		blocks.push({
+			type: "context",
+			text: "Customer context unavailable — it could not be loaded right now. The order itself is unaffected; reload, and check the admin token in Settings if this persists.",
+		});
+		return blocks;
+	}
+	const identity = ctx.identity;
+	blocks.push({
+		type: "fields",
+		fields: [
+			{ label: "Email", value: identity.email ?? "— (no account)" },
+			{ label: "Buyer reference", value: identity.buyerRef },
+			{ label: "Name", value: identity.displayName ?? "—" },
+			{ label: "Account", value: accountSummary(identity) },
+			{ label: "Email verified (UTC)", value: identity.emailVerifiedAt ?? "not verified" },
+			{ label: "Total orders", value: String(ctx.orderCount) },
+		],
+	});
+	if (identity.linkage === "unclaimed") {
+		blocks.push({
+			type: "context",
+			text: "An account exists for this email, but this order is not yet claimed by it — guest orders link automatically at the customer's next sign-in.",
+		});
+	}
+	// Saved addresses — prominent disclaimer FIRST: this is the profile address
+	// book, never a per-order ship-to (support must not read it as one).
+	blocks.push({ type: "section", text: "Saved addresses" });
+	blocks.push({
+		type: "context",
+		text: "Profile address book — NOT the address this order shipped to. Orders do not capture a shipping address.",
+	});
+	blocks.push({
+		type: "table",
+		columns: [
+			{ key: "kind", label: "Kind", format: "badge" },
+			{ key: "name", label: "Name" },
+			{ key: "address", label: "Address" },
+			{ key: "isDefault", label: "Default" },
+		],
+		rows: ctx.addresses.map((a) => ({
+			kind: a.kind,
+			name: a.name,
+			address: [a.line1, a.line2, a.city, a.region, a.postalCode, a.country]
+				.filter((part): part is string => part !== null && part.length > 0)
+				.join(", "),
+			isDefault: a.isDefault ? "yes" : "",
+		})),
+		page_action_id: actions.page, // never fires: no next_cursor, no sortable column
+		empty_text:
+			identity.linkage === "guest"
+				? "No saved addresses (guests have no address book)."
+				: "No saved addresses.",
+	});
+	// Sign-in sessions — metadata only; no token-like value exists on the wire.
+	blocks.push({ type: "section", text: "Sign-in sessions" });
+	blocks.push({
+		type: "table",
+		columns: [
+			{ key: "createdAt", label: "Signed in", format: "relative_time" },
+			{ key: "expiresAt", label: "Expires (UTC)" },
+			{ key: "revokedAt", label: "Revoked (UTC)" },
+		],
+		rows: ctx.sessions.map((s) => ({
+			createdAt: s.createdAt,
+			expiresAt: s.expiresAt,
+			revokedAt: s.revokedAt ?? "—",
+		})),
+		page_action_id: actions.page, // never fires: no next_cursor, no sortable column
+		empty_text:
+			identity.linkage === "guest" ? "No sessions (guests never sign in)." : "No sessions.",
+	});
+	// The person's OTHER most-recent orders (the viewed order is excluded
+	// server-side). Display-only — the list screen remains the drill-in surface.
+	blocks.push({ type: "section", text: "Other recent orders" });
+	blocks.push({
+		type: "table",
+		columns: [
+			{ key: "id", label: "Order #", format: "code" },
+			{ key: "createdAt", label: "Created", format: "relative_time" },
+			{ key: "state", label: "Status", format: "badge" },
+			{ key: "total", label: "Total" },
+		],
+		rows: ctx.recentOrders.map((o) => ({
+			id: o.id,
+			createdAt: o.createdAt,
+			state: o.state,
+			total: formatTotal(o.totalCents, o.currency),
+		})),
+		page_action_id: actions.page, // never fires: no next_cursor, no sortable column
+		empty_text: "No other orders from this customer.",
+	});
+	return blocks;
+}
+
+/** The honest account line: claimed / unclaimed / guest — a known account must
+ *  never read as "Guest" just because THIS order predates its next sign-in. */
+function accountSummary(identity: CustomerContextWire["identity"]): string {
+	if (identity.linkage === "claimed") return identity.customerId ?? "—";
+	if (identity.linkage === "unclaimed") {
+		return `${identity.customerId ?? "—"} (order not yet claimed)`;
+	}
+	return identity.customerId === null
+		? "Guest — no account"
+		: `Guest — account record missing (${identity.customerId})`;
 }
 
 /** The order's notes, oldest-first (append order). Display-only table — no in-cell
