@@ -84,6 +84,8 @@ describe.skipIf(PG === undefined)("resolveReconciliation race [postgres]", () =>
 				Array.from({ length: N }, (_unused, i) =>
 					h.store.resolveReconciliation({
 						orderId: toOrderId(id),
+						// Every caller reviewed the SAME live flag — the race is on the clear.
+						expectedFlag: "commit lost for reservation res-1",
 						outcome: i % 2 === 0 ? "fulfilled" : "refunded",
 						reason: `caller ${i}`,
 						resolvedBy: `admin-${i}`,

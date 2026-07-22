@@ -46,6 +46,10 @@ describe.skipIf(PG === undefined)("admin resolve-reconciliation HTTP contract", 
 		await server.stop();
 	});
 
+	// The flag detail seeded on ord-flagged — the "as displayed" value a real
+	// admin reviews; every resolve must echo it back (compare-and-clear).
+	const LIVE_FLAG = "commit lost for reservation res-1";
+
 	function post(
 		orderId: string,
 		body: Record<string, unknown>,
@@ -56,10 +60,12 @@ describe.skipIf(PG === undefined)("admin resolve-reconciliation HTTP contract", 
 		if (tk !== null) headers["X-Internal-Token"] = tk;
 		if (opts.idempotencyKey !== undefined) headers["Idempotency-Key"] = opts.idempotencyKey;
 		if (opts.serviceToken !== undefined) headers["X-Service-Token"] = opts.serviceToken;
+		// expectedFlag defaults to the live flag; a test overrides it to exercise
+		// the stale-review conflict.
 		return fetch(`${server.baseUrl}/admin/orders/${orderId}/resolve-reconciliation`, {
 			method: "POST",
 			headers,
-			body: JSON.stringify(body),
+			body: JSON.stringify({ expectedFlag: LIVE_FLAG, ...body }),
 		});
 	}
 
@@ -110,6 +116,21 @@ describe.skipIf(PG === undefined)("admin resolve-reconciliation HTTP contract", 
 		>;
 		expect(resolution.reason).toBe("refunded via stripe");
 		expect(resolution.resolvedBy).toBe("alice");
+	});
+
+	test("a STALE expectedFlag → 409 RECONCILIATION_FLAG_CHANGED; the live flag survives", async () => {
+		const res = await post("ord-flagged", {
+			expectedFlag: "an older anomaly the admin reviewed", // ≠ the live flag
+			outcome: "written_off",
+			reason: "reviewed the old anomaly",
+			resolvedBy: "ops",
+		});
+		expect(res.status).toBe(409);
+		expect((await json(res)).reason).toBe("RECONCILIATION_FLAG_CHANGED");
+		// The live flag is untouched — never cleared blind.
+		const reloaded = (await json(await getOrder("ord-flagged"))).order as Record<string, unknown>;
+		expect(reloaded.reconciliationFlag).toBe("commit lost for reservation res-1");
+		expect(reloaded.reconciliationResolution).toBeNull();
 	});
 
 	test("a never-flagged order → 409 NOT_IN_RECONCILIATION", async () => {
@@ -192,6 +213,7 @@ describe.skipIf(PG === undefined)("admin resolve-reconciliation HTTP contract", 
 			const common = { "content-type": "application/json", "X-Internal-Token": gatedToken };
 			const path = `${gated.baseUrl}/admin/orders/ord-g/resolve-reconciliation`;
 			const payload = JSON.stringify({
+				expectedFlag: "paid flip lost",
 				outcome: "written_off",
 				reason: "loss accepted",
 				resolvedBy: "ops",

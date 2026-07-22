@@ -112,10 +112,14 @@ export type TransitionOrderResult =
 /** POST resolve-reconciliation returns a discriminated result (like `transitionOrder`)
  *  so a failure surfaces a GENERIC inline banner rather than throwing into the host.
  *  `resolved:false` on a 2xx ⇒ the guarded flip found nothing to resolve (already
- *  resolved / lost race) — a benign no-op, not a failure. */
+ *  resolved / lost race) — a benign no-op, not a failure. On a failure, `reason`
+ *  carries the service's typed reason when one was returned (e.g.
+ *  `RECONCILIATION_FLAG_CHANGED` — the live flag differs from the one reviewed, the
+ *  console should tell the merchant to reload); the caller renders GENERIC copy
+ *  keyed off it, never the raw status/URL. */
 export type ResolveReconciliationResult =
 	| { ok: true; resolved: boolean }
-	| { ok: false; status: number };
+	| { ok: false; status: number; reason?: string };
 
 interface HttpErrorEnvelope {
 	error?: string;
@@ -219,13 +223,16 @@ export class AdminOrdersClient {
 		return { ok: false, status: res.status };
 	}
 
-	/** POST resolve an order's reconciliation flag (admin-UX Increment 1). Gated by
+	/** POST resolve an order's reconciliation flag (admin-UX Increment 1). The body
+	 *  carries `expectedFlag` — the flag detail AS DISPLAYED to the admin — and the
+	 *  service compare-and-clears against it, so a mid-review re-flag conflicts
+	 *  (`RECONCILIATION_FLAG_CHANGED`) instead of being cleared blind. Gated by
 	 *  BOTH the admin token (X-Internal-Token) AND the write gate (X-Service-Token)
 	 *  when both service secrets are set — a non-GET, same as the transition. Returns
 	 *  a discriminated result. */
 	async resolveReconciliation(
 		orderId: string,
-		disposition: { outcome: string; reason: string; resolvedBy: string },
+		disposition: { expectedFlag: string; outcome: string; reason: string; resolvedBy: string },
 		opts: { idempotencyKey: string },
 	): Promise<ResolveReconciliationResult> {
 		const headers: Record<string, string> = {
@@ -245,7 +252,14 @@ export class AdminOrdersClient {
 		if (res.ok && parsed !== undefined && "ok" in parsed && parsed.ok === true) {
 			return { ok: true, resolved: parsed.resolved ?? true };
 		}
-		return { ok: false, status: res.status };
+		// Forward the service's typed reason (if any) so the console can pick the
+		// right GENERIC copy (e.g. "reload" on a flag-changed conflict) — never the
+		// raw status/URL.
+		const reason =
+			parsed !== undefined && "reason" in parsed && typeof parsed.reason === "string"
+				? parsed.reason
+				: undefined;
+		return { ok: false, status: res.status, ...(reason !== undefined ? { reason } : {}) };
 	}
 
 	/** GET an order's append-only notes (admin-token guarded read). A non-2xx

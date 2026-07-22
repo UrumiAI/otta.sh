@@ -397,8 +397,14 @@ function transitionActions(orderId: string, allowed: string[]): ActionsBlock {
 // -- reconciliation surface (admin-UX Increment 1) ----------------------------
 
 /** The three admin dispositions, offered in the resolve form's select. Mirrors the
- *  domain `ReconciliationOutcome`; the service re-validates the wire value. */
-const RECONCILIATION_OUTCOMES = ["refunded", "fulfilled", "written_off"] as const;
+ *  domain `ReconciliationOutcome`; the service re-validates the wire value. The
+ *  labels spell out that a disposition is a RECORD, not an action — "refunded"
+ *  must never read as "this button issues a refund". */
+const RECONCILIATION_OUTCOMES: readonly SelectOption[] = [
+	{ value: "refunded", label: "refunded (recorded only — issue the refund separately)" },
+	{ value: "fulfilled", label: "fulfilled (order honored as-is; e.g. stock re-sourced)" },
+	{ value: "written_off", label: "written_off (loss/false-alarm accepted)" },
+];
 
 /** A one-line summary for the header fields block. */
 function reconciliationSummary(o: OrderDetailWire): string {
@@ -420,7 +426,11 @@ function reconciliationBlocks(o: OrderDetailWire): Block[] {
 				title: "Needs reconciliation",
 				description: `Settlement flagged this order: ${o.reconciliationFlag}. Money moved but stock/settlement did not line up — record how you resolved it (this does not move the order status or its line items).`,
 			},
-			resolveForm(o.id),
+			{
+				type: "context",
+				text: "Resolving records your decision only — it does NOT move money or change the order. If the customer is owed a refund, issue it via your payment provider (or the refunded status flow) separately.",
+			},
+			resolveForm(o.id, o.reconciliationFlag),
 		];
 	}
 	if (o.reconciliationResolution !== null) {
@@ -441,10 +451,13 @@ function reconciliationBlocks(o: OrderDetailWire): Block[] {
 	return [];
 }
 
-/** The resolve form. The order id rides along as a single-option `select` (the
- *  same carry-the-id-in-values pattern as the add-note / open-order forms) so a
- *  stateless `form_submit` knows which order to resolve. */
-function resolveForm(orderId: string): FormBlock {
+/** The resolve form. The order id AND the displayed flag detail ride along as
+ *  single-option `select`s (the same carry-the-id-in-values pattern as the
+ *  add-note / open-order forms) so a stateless `form_submit` knows which order —
+ *  and which EXACT anomaly — the admin reviewed. The service compare-and-clears
+ *  on that flag: if a new anomaly re-flags the order mid-review, the resolve
+ *  conflicts instead of clearing it blind. */
+function resolveForm(orderId: string, displayedFlag: string): FormBlock {
 	return {
 		type: "form",
 		fields: [
@@ -457,16 +470,23 @@ function resolveForm(orderId: string): FormBlock {
 			},
 			{
 				type: "select",
+				action_id: "expectedFlag",
+				label: "Resolving this anomaly",
+				options: [{ value: displayedFlag, label: displayedFlag }],
+				initial_value: displayedFlag,
+			},
+			{
+				type: "select",
 				action_id: "outcome",
-				label: "Outcome",
-				options: RECONCILIATION_OUTCOMES.map((v) => ({ value: v, label: v })),
-				initial_value: RECONCILIATION_OUTCOMES[0],
+				label: "Outcome (a record of what you did — does not move money)",
+				options: [...RECONCILIATION_OUTCOMES],
+				initial_value: "refunded",
 			},
 			{
 				type: "text_input",
 				action_id: "reason",
 				label: "Reason",
-				placeholder: "e.g. refunded the buyer; stock was gone",
+				placeholder: "e.g. refunded the buyer via Stripe; stock was gone",
 			},
 			{
 				type: "text_input",
@@ -555,6 +575,8 @@ function resolveReconciliationAction() {
 		const values = input.values ?? {};
 		const orderId = readString(values.orderId);
 		if (orderId === undefined) return showList();
+		// The flag AS DISPLAYED when the form rendered — the compare-and-clear key.
+		const expectedFlag = readString(values.expectedFlag) ?? "";
 		const outcome = readString(values.outcome) ?? "";
 		const reason = (readString(values.reason) ?? "").trim();
 		const resolvedBy = (readString(values.resolvedBy) ?? "").trim();
@@ -572,17 +594,28 @@ function resolveReconciliationAction() {
 		const key = `admin-resolve-reconciliation:${orderId}`;
 		const result = await client.resolveReconciliation(
 			orderId,
-			{ outcome, reason, resolvedBy },
+			{ expectedFlag, outcome, reason, resolvedBy },
 			{ idempotencyKey: key },
 		);
 		let notice: Notice | undefined;
 		if (!result.ok) {
-			notice = {
-				variant: "error",
-				title: "Not resolved",
-				description:
-					"That reconciliation could not be resolved — check the order and the admin token in Settings.",
-			};
+			// A stale review gets its own copy: the flag changed under the admin (a
+			// new settle anomaly re-flagged the order) — the re-render below already
+			// shows the NEW flag; tell them to re-review it, not to check tokens.
+			notice =
+				result.reason === "RECONCILIATION_FLAG_CHANGED"
+					? {
+							variant: "error",
+							title: "The reconciliation state changed — reload",
+							description:
+								"A new anomaly was flagged on this order after you opened it. Nothing was cleared. Review the flag shown below and resolve again.",
+						}
+					: {
+							variant: "error",
+							title: "Not resolved",
+							description:
+								"That reconciliation could not be resolved — check the order and the admin token in Settings.",
+						};
 		} else if (!result.resolved) {
 			// The guarded flip matched 0 rows — already resolved, or a lost race. Not a
 			// failure: surface a non-error notice so the merchant gets feedback.

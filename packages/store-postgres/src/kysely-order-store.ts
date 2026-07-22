@@ -215,13 +215,15 @@ export class KyselyOrderStore implements OrderStore {
 	async resolveReconciliation(
 		input: ResolveReconciliationInput,
 	): Promise<ResolveReconciliationStoreResult> {
-		// Guarded flip on the reconciliation axis — symmetric with markPaid: the
-		// `WHERE reconciliation_flag IS NOT NULL` predicate is what makes the resolve
-		// once-only under concurrency (exactly one caller clears the flag + records
-		// the disposition; a racing/replayed call matches 0 rows). RETURNING id tells
-		// us who won. NEVER touches state / order_items / order_totals — only the
-		// mutable reconciliation envelope. input.idempotencyKey is intentionally
-		// unused: dedup is structural via the guard (mirrors `transition`, H4).
+		// EQUALITY-guarded compare-and-clear on the reconciliation axis — the
+		// `transition` fromState precedent: `WHERE reconciliation_flag =
+		// :expectedFlag` makes the resolve once-only under concurrency (exactly one
+		// caller clears the flag + records the disposition) AND stale-review-safe (a
+		// NEW anomaly re-flagging the order after the admin loaded the page no longer
+		// matches — a 0-row miss, never a blind clear). RETURNING id tells us who
+		// won. NEVER touches state / order_items / order_totals — only the mutable
+		// reconciliation envelope. input.idempotencyKey is intentionally unused:
+		// dedup is structural via the guard (mirrors `transition`, H4).
 		const now = this.#clock.now().toISOString();
 		const won = await this.#db
 			.updateTable("orders")
@@ -234,7 +236,7 @@ export class KyselyOrderStore implements OrderStore {
 				updated_at: now,
 			})
 			.where("id", "=", input.orderId)
-			.where("reconciliation_flag", "is not", null)
+			.where("reconciliation_flag", "=", input.expectedFlag)
 			.returning("id")
 			.executeTakeFirst();
 		const order = await this.#loadById(input.orderId);

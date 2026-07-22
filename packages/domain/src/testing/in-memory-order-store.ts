@@ -204,13 +204,15 @@ export class InMemoryOrderStore implements OrderStore {
 	async resolveReconciliation(
 		input: ResolveReconciliationInput,
 	): Promise<ResolveReconciliationStoreResult> {
-		// Guarded flip: only a currently-flagged order can be resolved, so exactly
-		// one caller wins (mirrors the Kysely `WHERE reconciliation_flag IS NOT NULL`
-		// UPDATE). A second/racing call finds the flag already null → resolved:false,
-		// and NEVER overwrites the first disposition.
+		// EQUALITY-guarded compare-and-clear (mirrors the Kysely `WHERE
+		// reconciliation_flag = :expectedFlag` UPDATE, the `transition` fromState
+		// precedent): only the exact reviewed flag can be cleared, so exactly one
+		// caller wins AND a re-flagged order (different detail) is a 0-row miss —
+		// never a blind clear. A racing loser finds the flag cleared/changed →
+		// resolved:false, and NEVER overwrites the first disposition.
 		const stored = this.#orders.get(input.orderId);
 		if (stored === undefined) return { resolved: false, order: null };
-		if (stored.order.reconciliationFlag === null) {
+		if (stored.order.reconciliationFlag !== input.expectedFlag) {
 			return { resolved: false, order: this.#clone(stored.order) };
 		}
 		const now = this.#clock.now().toISOString();

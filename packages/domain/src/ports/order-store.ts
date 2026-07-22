@@ -60,15 +60,20 @@ export interface OrderStore {
 	flagReconciliation(orderId: OrderId, detail: string): Promise<void>;
 	/**
 	 * Resolve an open reconciliation flag (admin-UX Increment 1). A **guarded
-	 * flip**, symmetric with `markPaid`/`transition`: `UPDATE orders SET
-	 * reconciliation_flag = NULL, reconciliation_outcome = :outcome,
+	 * flip**, following `transition`'s fromState-EQUALITY precedent: `UPDATE
+	 * orders SET reconciliation_flag = NULL, reconciliation_outcome = :outcome,
 	 * reconciliation_reason = :reason, reconciliation_resolved_by = :resolvedBy,
 	 * reconciliation_resolved_at = :now, updated_at = :now WHERE id = :orderId AND
-	 * reconciliation_flag IS NOT NULL RETURNING id`. 0 rows ⇒ NOT currently flagged
-	 * (already resolved, or never flagged) ⇒ `resolved:false` (someone else won /
-	 * a replay). NEVER touches `order_items`/`order_totals` (the snapshot invariant)
-	 * or `orders.state` — only the mutable reconciliation envelope. Idempotent under
-	 * concurrency: exactly one caller wins the flip and writes the resolution once.
+	 * reconciliation_flag = :expectedFlag RETURNING id`. The **equality** guard
+	 * (not a bare `IS NOT NULL`) is what defends a stale read: if a NEW settle
+	 * anomaly re-flagged the order after the admin loaded the page, the expected
+	 * (displayed) flag no longer matches and the flip is a 0-row no-op — a resolve
+	 * never clears an anomaly nobody reviewed. 0 rows ⇒ `resolved:false` (already
+	 * resolved, re-flagged with a different detail, or never flagged — the
+	 * use-case disambiguates on a fresh read). NEVER touches `order_items`/
+	 * `order_totals` (the snapshot invariant) or `orders.state` — only the mutable
+	 * reconciliation envelope. Exactly one caller wins the flip and writes the
+	 * resolution once.
 	 */
 	resolveReconciliation(
 		input: ResolveReconciliationInput,
@@ -141,6 +146,10 @@ export interface OrderStore {
  *  verbatim and stamps `resolved_at` from its own clock. */
 export interface ResolveReconciliationInput {
 	orderId: OrderId;
+	/** The flag detail the ADMIN REVIEWED (as displayed). The guarded UPDATE
+	 *  requires `reconciliation_flag = :expectedFlag` — a compare-and-clear, so a
+	 *  re-flag between page load and submit is a 0-row miss, never a blind clear. */
+	expectedFlag: string;
 	outcome: ReconciliationOutcome;
 	reason: string;
 	resolvedBy: string;

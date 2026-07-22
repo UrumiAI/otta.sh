@@ -173,6 +173,7 @@ export function adminRoutes(deps: AdminRoutesDeps): Hono {
 			{ orderStore: deps.orderStore },
 			{
 				orderId: toOrderId(params.data.orderId),
+				expectedFlag: parsed.data.expectedFlag,
 				outcome: parsed.data.outcome,
 				reason: parsed.data.reason,
 				resolvedBy: parsed.data.resolvedBy,
@@ -183,9 +184,11 @@ export function adminRoutes(deps: AdminRoutesDeps): Hono {
 			return c.json({ ok: true, resolved: res.resolved, order: serializeOrder(res.order) }, 200);
 		}
 		if (res.reason === "ORDER_NOT_FOUND") return c.json({ ok: false, reason: res.reason }, 404);
-		// NOT_IN_RECONCILIATION is a reconciliation-axis legality error (like an
-		// INVALID_TRANSITION) → 409; the trimmed-empty guards → 400.
-		if (res.reason === "NOT_IN_RECONCILIATION")
+		// Reconciliation-axis conflicts (like an INVALID_TRANSITION) → 409:
+		// NOT_IN_RECONCILIATION (never flagged) and RECONCILIATION_FLAG_CHANGED
+		// (the live flag differs from the one the admin reviewed — reload and
+		// re-review). The trimmed-empty guards → 400.
+		if (res.reason === "NOT_IN_RECONCILIATION" || res.reason === "RECONCILIATION_FLAG_CHANGED")
 			return c.json({ ok: false, reason: res.reason }, 409);
 		return c.json({ ok: false, reason: res.reason }, 400); // EMPTY_REASON / EMPTY_RESOLVER
 	});

@@ -177,7 +177,14 @@ function makePostResponder() {
 			};
 		}
 		if (req.url.includes("/resolve-reconciliation")) {
-			const b = req.body as { outcome?: string; reason?: string; resolvedBy?: string } | undefined;
+			const b = req.body as
+				| { expectedFlag?: string; outcome?: string; reason?: string; resolvedBy?: string }
+				| undefined;
+			// Compare-and-clear, mirroring the service: a stale expectedFlag (≠ the
+			// live flag) is a 409 conflict — never a blind clear.
+			if (b?.expectedFlag !== ORDER_FLAGGED.reconciliationFlag) {
+				return { status: 409, body: { ok: false, reason: "RECONCILIATION_FLAG_CHANGED" } };
+			}
 			return {
 				status: 200,
 				body: {
@@ -468,9 +475,22 @@ describe("admin Orders console (workerd sandbox)", () => {
 			(f) => f.action_id,
 		);
 		expect(fieldIds).toContain("orderId");
+		expect(fieldIds).toContain("expectedFlag"); // the reviewed anomaly rides along
 		expect(fieldIds).toContain("outcome");
 		expect(fieldIds).toContain("reason");
 		expect(fieldIds).toContain("resolvedBy");
+		// Blocker-2 copy: the outcome must read as a RECORD, never a money movement —
+		// the "refunded" option label and the form context both say so.
+		const outcomeField = ((resolveForm?.fields ?? []) as Array<Record<string, unknown>>).find(
+			(f) => f.action_id === "outcome",
+		);
+		const refundedOption = ((outcomeField?.options ?? []) as Array<Record<string, unknown>>).find(
+			(opt) => opt.value === "refunded",
+		);
+		expect(String(refundedOption?.label)).toContain("recorded only");
+		expect(String(refundedOption?.label)).toContain("issue the refund separately");
+		const contexts = blocks.filter((b) => b.type === "context").map((b) => String(b.text));
+		expect(contexts.some((t) => t.includes("does NOT move money"))).toBe(true);
 	});
 
 	test("open a RESOLVED order shows the recorded disposition and NO resolve form", async () => {
@@ -504,7 +524,7 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(blocks.some((b) => b.type === "banner" && b.variant === "alert")).toBe(false);
 	});
 
-	test("resolve form_submit POSTs the disposition with Idempotency-Key + token, then re-renders detail", async () => {
+	test("resolve form_submit POSTs the disposition (incl. expectedFlag) with Idempotency-Key + token, then re-renders detail", async () => {
 		await boot();
 		stub!.requests.length = 0;
 		const outcome = await sandbox!.invokeRoute("admin", {
@@ -512,6 +532,7 @@ describe("admin Orders console (workerd sandbox)", () => {
 			action_id: "orders:resolve-reconciliation",
 			values: {
 				orderId: "ord-flagged",
+				expectedFlag: "commit lost for reservation res-1",
 				outcome: "refunded",
 				reason: "refunded the buyer",
 				resolvedBy: "carol",
@@ -522,8 +543,14 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(post!.url).toBe("/admin/orders/ord-flagged/resolve-reconciliation");
 		expect(post!.headers["idempotency-key"]).toBe("admin-resolve-reconciliation:ord-flagged");
 		expect(post!.headers["x-internal-token"]).toBe("admin-token-xyz");
-		const body = post!.body as { outcome: string; reason: string; resolvedBy: string };
+		const body = post!.body as {
+			expectedFlag: string;
+			outcome: string;
+			reason: string;
+			resolvedBy: string;
+		};
 		expect(body).toEqual({
+			expectedFlag: "commit lost for reservation res-1",
 			outcome: "refunded",
 			reason: "refunded the buyer",
 			resolvedBy: "carol",
@@ -531,6 +558,31 @@ describe("admin Orders console (workerd sandbox)", () => {
 		// Re-renders the detail view (GET after the POST).
 		const blocks = blocksOf(outcome);
 		expect(blocks.some((b) => b.type === "header" && b.text === "Order ord-flagged")).toBe(true);
+	});
+
+	test("resolve with a STALE expectedFlag (409 conflict) surfaces the reload notice, nothing cleared", async () => {
+		await boot();
+		stub!.requests.length = 0;
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "orders:resolve-reconciliation",
+			values: {
+				orderId: "ord-flagged",
+				expectedFlag: "an older anomaly the admin reviewed", // ≠ the live flag
+				outcome: "written_off",
+				reason: "reviewed the old anomaly",
+				resolvedBy: "carol",
+			},
+		});
+		// The POST fired and the stub answered 409 RECONCILIATION_FLAG_CHANGED.
+		expect(stub!.requests.some((r) => r.method === "POST")).toBe(true);
+		const blocks = blocksOf(outcome);
+		// Still the detail view (re-rendered with the LIVE flag), with the dedicated
+		// reload notice — not the generic token-check error.
+		expect(blocks.some((b) => b.type === "header" && b.text === "Order ord-flagged")).toBe(true);
+		const banner = blocks.find((b) => b.type === "banner" && b.variant === "error");
+		expect(banner?.title).toBe("The reconciliation state changed — reload");
+		expect(String(banner?.description)).toContain("Nothing was cleared");
 	});
 
 	test("resolve with a blank reason shows an inline error and makes NO POST", async () => {

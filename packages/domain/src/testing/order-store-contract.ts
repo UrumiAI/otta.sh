@@ -375,7 +375,7 @@ export function orderStoreContract(
 			expect(res.nextCursor).toBeNull();
 		});
 
-		// -- resolveReconciliation: clear a flag + record the disposition ---------
+		// -- resolveReconciliation: equality-guarded compare-and-clear ------------
 
 		test("resolveReconciliation clears the flag and records the disposition; state/lines untouched", async () => {
 			const h = await makeHarness();
@@ -384,6 +384,7 @@ export function orderStoreContract(
 			);
 			const res = await h.store.resolveReconciliation({
 				orderId: orderId("ord-rec"),
+				expectedFlag: "commit lost",
 				outcome: "fulfilled",
 				reason: "re-sourced stock from warehouse B",
 				resolvedBy: "ops@shop.test",
@@ -405,11 +406,34 @@ export function orderStoreContract(
 			expect(orders.find((o) => o.id === "ord-rec")?.reconciliationFlag).toBe(false);
 		});
 
+		test("resolveReconciliation with a STALE expectedFlag is a 0-row miss: the re-flagged anomaly survives", async () => {
+			const h = await makeHarness();
+			// The admin reviewed "commit lost" — but a NEW anomaly re-flagged the order
+			// before they submitted. The equality guard must NOT clear the new flag.
+			await h.seedOrder(
+				summaryRow({ id: "ord-stale", state: "paid", reconciliationFlag: "paid flip lost" }),
+			);
+			const res = await h.store.resolveReconciliation({
+				orderId: orderId("ord-stale"),
+				expectedFlag: "commit lost", // stale — the displayed flag, not the live one
+				outcome: "written_off",
+				reason: "reviewed the old anomaly",
+				resolvedBy: "ops@shop.test",
+				idempotencyKey: idempotencyKey("res-stale"),
+			});
+			expect(res.resolved).toBe(false);
+			const after = await h.store.getById(orderId("ord-stale"));
+			// The LIVE flag is untouched and no disposition was fabricated.
+			expect(after?.reconciliationFlag).toBe("paid flip lost");
+			expect(after?.reconciliationResolution).toBeNull();
+		});
+
 		test("resolveReconciliation on a NON-flagged order is a guarded 0-row no-op (resolved:false)", async () => {
 			const h = await makeHarness();
 			await h.seedOrder(summaryRow({ id: "ord-clean", state: "paid" })); // no flag
 			const res = await h.store.resolveReconciliation({
 				orderId: orderId("ord-clean"),
+				expectedFlag: "anything",
 				outcome: "written_off",
 				reason: "n/a",
 				resolvedBy: "ops@shop.test",
@@ -428,6 +452,7 @@ export function orderStoreContract(
 			);
 			const first = await h.store.resolveReconciliation({
 				orderId: orderId("ord-once"),
+				expectedFlag: "paid flip lost",
 				outcome: "refunded",
 				reason: "refunded the buyer, stock was gone",
 				resolvedBy: "alice",
@@ -437,6 +462,7 @@ export function orderStoreContract(
 			// A second, different resolve attempt finds the flag already cleared.
 			const second = await h.store.resolveReconciliation({
 				orderId: orderId("ord-once"),
+				expectedFlag: "paid flip lost",
 				outcome: "written_off",
 				reason: "different call",
 				resolvedBy: "bob",

@@ -280,10 +280,14 @@ export const appendNoteBody = z.object({
 export const reconciliationOutcomeEnum = z.enum(["refunded", "fulfilled", "written_off"]);
 
 // Admin Orders console: resolve an order's reconciliation flag (admin-UX
-// Increment 1). `outcome` is the disposition; `reason`/`resolvedBy` are bounded
-// free text — the domain use-case trims and rejects empties, so the 1-char floor
+// Increment 1). `expectedFlag` is the flag detail the admin REVIEWED (as
+// displayed) — the domain requires the live flag to still EQUAL it (a
+// compare-and-clear), so a mid-review re-flag is a 409 conflict, never a blind
+// clear. `outcome` is the disposition; `reason`/`resolvedBy` are bounded free
+// text — the domain use-case trims and rejects empties, so the 1-char floor
 // here is cheap and the substantive validation stays in the domain.
 export const resolveReconciliationBody = z.object({
+	expectedFlag: z.string().min(1).max(4000),
 	outcome: reconciliationOutcomeEnum,
 	reason: z.string().min(1).max(4000),
 	resolvedBy: z.string().min(1).max(200),

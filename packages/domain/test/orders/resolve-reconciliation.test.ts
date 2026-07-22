@@ -34,6 +34,7 @@ function build() {
 }
 
 const valid = {
+	expectedFlag: "commit lost for reservation res-9", // the flag as displayed/reviewed
 	outcome: "fulfilled" as const,
 	reason: "re-sourced the stock",
 	resolvedBy: "ops@shop.test",
@@ -64,6 +65,7 @@ describe("resolveReconciliation", () => {
 	test("trims reason + resolvedBy and persists the trimmed values", async () => {
 		const res = await resolveReconciliation(ctx.deps, {
 			orderId: FLAGGED,
+			expectedFlag: "commit lost for reservation res-9",
 			outcome: "refunded",
 			reason: "  refunded via stripe  ",
 			resolvedBy: "  alice  ",
@@ -106,6 +108,21 @@ describe("resolveReconciliation", () => {
 		expect(res).toEqual({ ok: false, reason: "ORDER_NOT_FOUND" });
 	});
 
+	test("rejects a STALE expectedFlag (RECONCILIATION_FLAG_CHANGED): a re-flagged anomaly is never cleared blind", async () => {
+		// The admin reviewed one anomaly, but a new settle anomaly re-flagged the
+		// order before they submitted — the resolve must conflict, not clear it.
+		const res = await resolveReconciliation(ctx.deps, {
+			orderId: FLAGGED,
+			...valid,
+			expectedFlag: "an older anomaly the admin was looking at",
+		});
+		expect(res).toEqual({ ok: false, reason: "RECONCILIATION_FLAG_CHANGED" });
+		const after = await ctx.deps.orderStore.getById(FLAGGED);
+		// The live flag survives, no disposition fabricated.
+		expect(after?.reconciliationFlag).toBe("commit lost for reservation res-9");
+		expect(after?.reconciliationResolution).toBeNull();
+	});
+
 	test("replay is a benign no-op: an already-resolved order resolves:false and keeps the first disposition", async () => {
 		const first = await resolveReconciliation(ctx.deps, { orderId: FLAGGED, ...valid });
 		expect(first.ok && first.resolved).toBe(true);
@@ -113,6 +130,7 @@ describe("resolveReconciliation", () => {
 		// error, and it does NOT overwrite the recorded resolution.
 		const replay = await resolveReconciliation(ctx.deps, {
 			orderId: FLAGGED,
+			expectedFlag: "commit lost for reservation res-9",
 			outcome: "written_off",
 			reason: "second call",
 			resolvedBy: "bob",
