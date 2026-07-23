@@ -39,7 +39,8 @@
 				{
 					"slug": "commerce",
 					"label": "Commerce",
-					"type": "json"
+					"type": "json",
+					"widget": "urumi:product-data"
 				}
 			]
 		}
