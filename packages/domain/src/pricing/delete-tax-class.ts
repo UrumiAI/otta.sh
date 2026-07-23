@@ -11,13 +11,16 @@ export interface DeleteTaxClassDeps {
  * Outcome of `deleteTaxClass` — a discriminated union so the caller renders each
  * case without status-code-as-logic. `in_use_by_products` and `in_use_by_rates`
  * are the two delete-in-use refusals (the cross-aggregate product guard and the
- * store's own-grain rate guard); `not_found` is an unknown id.
+ * store's own-grain rate guard), each carrying the referencing `count` so the
+ * admin surface can render an HONEST refusal ("N products/rates reference this
+ * class") instead of a bare boolean (Increment 3 closeout); `not_found` is an
+ * unknown id.
  */
 export type DeleteTaxClassResult =
 	| { ok: true }
 	| { ok: false; reason: "not_found" }
-	| { ok: false; reason: "in_use_by_products" }
-	| { ok: false; reason: "in_use_by_rates" };
+	| { ok: false; reason: "in_use_by_products"; count: number }
+	| { ok: false; reason: "in_use_by_rates"; count: number };
 
 /**
  * Delete a tax class from the registry with a DELETE-IN-USE guard spanning both
@@ -50,10 +53,12 @@ export type DeleteTaxClassResult =
  * is not available (the two live in different store aggregates), and inventing a
  * distributed lock for a rare maintenance action would be over-engineering.
  *
- * There is intentionally NO service endpoint for this in THIS slice — the tax
- * rules admin surface is Increment 3's scope. This use-case + its supporting
- * store primitives ship now (contract-tested) so Increment 3 builds on a proven
- * guard rather than reinventing it.
+ * WIRED to `DELETE /admin/tax/classes/:id` (Increment 3 closeout — the #72
+ * gap-audit finding: this use-case shipped contract-tested in Increment 2
+ * slice 5 with no service route at all). The 409 refusal carries a `count` on
+ * both in-use reasons (queried only on the refusal path, never the success
+ * path) so the admin console can render an honest "N products/rates
+ * reference this class" instead of a bare boolean.
  */
 export async function deleteTaxClass(
 	deps: DeleteTaxClassDeps,
@@ -61,9 +66,13 @@ export async function deleteTaxClass(
 ): Promise<DeleteTaxClassResult> {
 	const productRefs = await deps.productCommerce.countByTaxClass(id);
 	if (productRefs > 0) {
-		return { ok: false, reason: "in_use_by_products" };
+		return { ok: false, reason: "in_use_by_products", count: productRefs };
 	}
 	const res = await deps.taxRules.deleteClass(id);
 	if (res.ok) return { ok: true };
-	return { ok: false, reason: res.reason };
+	if (res.reason === "not_found") return { ok: false, reason: "not_found" };
+	// in_use_by_rates: the atomic guard only knows "≥1" (an EXISTS); fetch the
+	// honest count for the message on this rare refusal path.
+	const rateRefs = await deps.taxRules.countRatesByClass(id);
+	return { ok: false, reason: "in_use_by_rates", count: rateRefs };
 }

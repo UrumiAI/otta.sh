@@ -23,6 +23,35 @@ export interface TaxRulesStore {
 	 */
 	deleteClass(id: TaxClassId): Promise<DeleteTaxClassStoreResult>;
 
+	/**
+	 * Rename a tax class (Increment 3 closeout — the missing UPDATE the #72
+	 * gap-audit flagged: `TaxRulesStore` had create/list/delete but no edit at
+	 * all). `name` only; a class's `id` is its immutable identity and the
+	 * referent every rate/product points at, so a rename never orphans
+	 * anything — rates (`tax_rate.tax_class_id`) and products
+	 * (`product_commerce.tax_class`) keep resolving unchanged.
+	 *
+	 * DELIBERATELY LAST-WRITER-WINS (no CAS), exactly the `ShippingRulesStore
+	 * .updateZone`/`updateMethod` precedent (PR #71): a class carries NO
+	 * money — a rename is a structural, low-contention admin action, and the
+	 * accepted upsert-style lost-update semantics (a second admin's rename
+	 * wins) are harmless (no money invariant, no oversell). Naturally
+	 * idempotent — a replayed identical rename re-sets the same name. Unknown
+	 * `id` → `not_found` (an edit is not a create; no row minted).
+	 */
+	updateClass(id: TaxClassId, input: UpdateTaxClassInput): Promise<UpdateTaxClassResult>;
+
+	/**
+	 * Count of tax rates referencing a class (Increment 3 closeout). Used by
+	 * the `deleteTaxClass` use-case to render an HONEST in-use-by-rates
+	 * refusal ("N rates reference this class") instead of a bare boolean —
+	 * called only on `deleteClass`'s `in_use_by_rates` failure path (a rare
+	 * admin-console refusal, not a hot path), never as part of the atomic
+	 * delete guard itself (which stays an `EXISTS`, not a count, for the
+	 * cheapest possible conditioned DELETE).
+	 */
+	countRatesByClass(id: TaxClassId): Promise<number>;
+
 	createRate(input: CreateTaxRateInput): Promise<TaxRate>;
 	/** The rate for a (class, zone), or null (⇒ treated as 0 bps by the engine). */
 	getRate(taxClassId: TaxClassId, zoneId: string): Promise<TaxRate | null>;
@@ -104,6 +133,16 @@ export interface CreateTaxClassInput {
 	id: TaxClassId;
 	name: string;
 }
+
+export interface UpdateTaxClassInput {
+	name: string;
+}
+
+/** LWW rename outcome — no `stale` (no CAS on a money-free structural field,
+ *  mirrors `UpdateShippingZoneResult`). */
+export type UpdateTaxClassResult =
+	| { ok: true; class: TaxClass }
+	| { ok: false; reason: "not_found" };
 
 /** Outcome of `TaxRulesStore.deleteClass` — the store's own-grain delete-in-use
  *  guard (rate references). The product-reference guard is added by the

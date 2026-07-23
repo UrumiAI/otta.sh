@@ -51,7 +51,7 @@ describe("deleteTaxClass (delete-in-use guard over the in-memory fakes)", () => 
 		);
 
 		const res = await deleteTaxClass({ taxRules, productCommerce }, "reduced");
-		expect(res).toEqual({ ok: false, reason: "in_use_by_products" });
+		expect(res).toEqual({ ok: false, reason: "in_use_by_products", count: 1 });
 		// The class survives.
 		expect((await taxRules.listClasses()).map((c) => c.id)).toContain("reduced");
 	});
@@ -85,6 +85,30 @@ describe("deleteTaxClass (delete-in-use guard over the in-memory fakes)", () => 
 		expect(await deleteTaxClass({ taxRules, productCommerce }, "standard")).toEqual({
 			ok: false,
 			reason: "in_use_by_rates",
+			count: 1,
+		});
+	});
+
+	test("in_use_by_rates carries the FULL referencing count, not just >0", async () => {
+		await taxRules.createClass({ id: "standard", name: "Standard" });
+		await taxRules.createRate({
+			id: "r1",
+			taxClassId: "standard",
+			zoneId: "z-us",
+			rateBps: 725,
+			appliesToShipping: false,
+		});
+		await taxRules.createRate({
+			id: "r2",
+			taxClassId: "standard",
+			zoneId: "z-eu",
+			rateBps: 2000,
+			appliesToShipping: false,
+		});
+		expect(await deleteTaxClass({ taxRules, productCommerce }, "standard")).toEqual({
+			ok: false,
+			reason: "in_use_by_rates",
+			count: 2,
 		});
 	});
 });

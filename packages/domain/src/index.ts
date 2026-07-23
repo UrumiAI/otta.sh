@@ -73,6 +73,8 @@ export type {
 	TaxClass,
 	TaxRate,
 	TaxRulesStore,
+	UpdateTaxClassInput,
+	UpdateTaxClassResult,
 	UpdateTaxRateInput,
 	UpdateTaxRateResult,
 } from "./ports/tax-rules-store.js";

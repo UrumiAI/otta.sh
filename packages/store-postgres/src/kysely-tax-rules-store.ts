@@ -6,6 +6,8 @@ import type {
 	TaxClass,
 	TaxRate,
 	TaxRulesStore,
+	UpdateTaxClassInput,
+	UpdateTaxClassResult,
 	UpdateTaxRateInput,
 	UpdateTaxRateResult,
 } from "@urumi/domain";
@@ -63,6 +65,30 @@ export class KyselyTaxRulesStore implements TaxRulesStore {
 			.executeTakeFirst();
 		if (exists === undefined) return { ok: false, reason: "not_found" };
 		return { ok: false, reason: "in_use_by_rates" };
+	}
+
+	/** LWW rename (port doc): the UPDATE is unconditional on `name`; zero rows
+	 *  ⇒ unknown id (`not_found`, an edit never mints a row). */
+	async updateClass(id: string, input: UpdateTaxClassInput): Promise<UpdateTaxClassResult> {
+		const updated = await this.#db
+			.updateTable("tax_classes")
+			.set({ name: input.name })
+			.where("id", "=", id)
+			.returningAll()
+			.executeTakeFirst();
+		if (updated === undefined) return { ok: false, reason: "not_found" };
+		return { ok: true, class: { id: updated.id, name: updated.name } };
+	}
+
+	/** Count of rates referencing a class (port doc) — the in-use-by-rates
+	 *  refusal's honest count, queried only on that failure path. */
+	async countRatesByClass(id: string): Promise<number> {
+		const row = await this.#db
+			.selectFrom("tax_rates")
+			.select((eb) => eb.fn.countAll<number>().as("n"))
+			.where("tax_class_id", "=", id)
+			.executeTakeFirst();
+		return Number(row?.n ?? 0);
 	}
 
 	async createRate(input: CreateTaxRateInput): Promise<TaxRate> {

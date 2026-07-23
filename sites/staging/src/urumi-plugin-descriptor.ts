@@ -13,11 +13,14 @@
  */
 import type { FieldWidgetConfig, PluginDescriptor } from "emdash";
 import {
+	COUPONS_PAGE,
 	ORDERS_PAGE,
 	productDataWidget,
 	PRODUCTS_PAGE,
 	REPORTS_PAGE,
 	SETTINGS_PAGE,
+	SHIPPING_PAGE,
+	TAX_PAGE,
 	URUMI_PLUGIN_CAPABILITIES,
 	URUMI_PLUGIN_ID,
 	URUMI_PLUGIN_VERSION,
@@ -45,11 +48,25 @@ export function urumiPluginDescriptor(serviceUrl: string): PluginDescriptor {
 		// without them here neither page appears in the admin nav. All are
 		// rendered by the single `admin` dispatch route (which em-dash resolves
 		// by the literal `"admin"` key): Reports on `page:"/reports"`, Settings on
-		// `page:"/settings"`, Orders on `page:"/orders"`, and (admin-UX Increment 2)
-		// Products on `page:"/products"`. The Settings form's admin token is a
-		// masked, write-only secret persisted to ctx.kv (webhook-notifier
-		// pattern) — no new capability: account/reports/products routes are
-		// network:request proxies and ctx.kv is always-available.
-		adminPages: [REPORTS_PAGE, SETTINGS_PAGE, ORDERS_PAGE, PRODUCTS_PAGE],
+		// `page:"/settings"`, Orders on `page:"/orders"`, (admin-UX Increment 2)
+		// Products on `page:"/products"`, and (admin-UX Increment 3) Tax on
+		// `page:"/tax"`, Shipping on `page:"/shipping"`, Coupons on
+		// `page:"/coupons"` — landed in prior slices but never added HERE (the
+		// #72/#73 gap-audit finding this Increment 3 closeout slice fixes: the
+		// three screens existed and worked, but were unreachable from the admin
+		// nav because this descriptor never listed them). The Settings form's
+		// admin token is a masked, write-only secret persisted to ctx.kv
+		// (webhook-notifier pattern) — no new capability: account/reports/
+		// products/tax/shipping/coupons routes are network:request proxies and
+		// ctx.kv is always-available.
+		adminPages: [
+			REPORTS_PAGE,
+			SETTINGS_PAGE,
+			ORDERS_PAGE,
+			PRODUCTS_PAGE,
+			TAX_PAGE,
+			SHIPPING_PAGE,
+			COUPONS_PAGE,
+		],
 	};
 }

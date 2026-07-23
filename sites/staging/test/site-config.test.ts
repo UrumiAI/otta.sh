@@ -22,11 +22,14 @@
 import { readFileSync } from "node:fs";
 import {
 	COMMERCE_SERVICE_BASE_URL,
+	COUPONS_PAGE,
 	ORDERS_PAGE,
 	productDataWidget,
 	PRODUCTS_PAGE,
 	REPORTS_PAGE,
 	SETTINGS_PAGE,
+	SHIPPING_PAGE,
+	TAX_PAGE,
 	URUMI_PLUGIN_CAPABILITIES,
 	URUMI_PLUGIN_ID,
 } from "@urumi/plugin";
@@ -70,16 +73,23 @@ describe("urumiPluginDescriptor", () => {
 		expect(descriptor.fieldWidgets).toEqual([productDataWidget]);
 	});
 
-	test("declares the plugin's admin pages (Reports + Settings + Orders + Products)", () => {
+	test("declares the plugin's admin pages (Reports + Settings + Orders + Products + Tax + Shipping + Coupons)", () => {
 		// The plugin's exported admin.pages entries — the trusted descriptor must
 		// carry ALL of them or the page never appears in the admin nav. All render
 		// through the single `admin` dispatch route (em-dash resolves admin pages by
-		// the literal `"admin"` key and fans out on the interaction's `page`).
+		// the literal `"admin"` key and fans out on the interaction's `page`). Tax/
+		// Shipping/Coupons (admin-UX Increment 3) landed in prior slices but were
+		// missing HERE until the Increment 3 closeout slice (#72/#73 gap-audit
+		// finding) added them — each screen worked once opened directly, but was
+		// unreachable from the admin nav.
 		expect(descriptor.adminPages).toEqual([
 			REPORTS_PAGE,
 			SETTINGS_PAGE,
 			ORDERS_PAGE,
 			PRODUCTS_PAGE,
+			TAX_PAGE,
+			SHIPPING_PAGE,
+			COUPONS_PAGE,
 		]);
 	});
 

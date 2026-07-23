@@ -82,7 +82,9 @@ export interface TestServer {
 	}): Promise<void>;
 	/** Seed a bare `product_commerce` row with an EXACT `createdAt` (admin-UX
 	 *  Increment 2, product list tests) — a direct insert, no upsert/
-	 *  idempotency-key dance, mirroring `seedOrder`. */
+	 *  idempotency-key dance, mirroring `seedOrder`. `taxClass` (Increment 3
+	 *  closeout) lets the tax-class delete-in-use tests seed a LIVE product
+	 *  reference without going through the full upsert+edit dance. */
 	seedProductRow(row: {
 		id: string;
 		sku?: string | null;
@@ -93,6 +95,7 @@ export interface TestServer {
 		active?: boolean;
 		createdAt: string;
 		deletedAt?: string | null;
+		taxClass?: string | null;
 	}): Promise<void>;
 	/** Seed a bare `coupons` row with an EXACT `createdAt` (admin-UX Increment 3,
 	 *  coupon list tests) — a direct insert, no `create()`/clock dance,
@@ -342,7 +345,7 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
 							? (row.currency ?? "USD")
 							: null,
 					title: row.title ?? null,
-					tax_class: null,
+					tax_class: row.taxClass ?? null,
 					inventory_policy: "deny",
 					weight_grams: null,
 					length_mm: null,
