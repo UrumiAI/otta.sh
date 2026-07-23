@@ -18,6 +18,7 @@ import {
 	SETTINGS_PAGE,
 	type SettingsFormInput,
 } from "./settings-form.js";
+import { createTaxPageHandler, TAX_ACTION_IDS, TAX_PAGE, type TaxPageInput } from "./tax-page.js";
 
 /**
  * The SINGLE admin route em-dash's admin shell dispatches to. EmDash renders
@@ -55,6 +56,7 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 	const settings = createSettingsFormHandler();
 	const orders = createOrdersPageHandler();
 	const products = createProductsPageHandler();
+	const tax = createTaxPageHandler();
 
 	return async (routeCtx, ctx) => {
 		const input = routeCtx.input;
@@ -76,6 +78,9 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 		if (type === "page_load" && page === PRODUCTS_PAGE.path) {
 			return products(routeCtx as SandboxedRouteContext<ProductsPageInput>, ctx);
 		}
+		if (type === "page_load" && page === TAX_PAGE.path) {
+			return tax(routeCtx as SandboxedRouteContext<TaxPageInput>, ctx);
+		}
 
 		// 5. Action interactions (block_action/form_submit) carry an action_id and
 		// no page — route each page's actions to its handler. Every Orders/Products
@@ -90,6 +95,9 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 		}
 		if (actionId !== undefined && PRODUCTS_ACTION_IDS.has(actionId)) {
 			return products(routeCtx as SandboxedRouteContext<ProductsPageInput>, ctx);
+		}
+		if (actionId !== undefined && TAX_ACTION_IDS.has(actionId)) {
+			return tax(routeCtx as SandboxedRouteContext<TaxPageInput>, ctx);
 		}
 
 		// 6. Fallback — em-dash house style for an unrecognized interaction.

@@ -56,13 +56,19 @@ export interface ListLevelDef<Client, Filter, Summary> {
 		opts: { cursor?: string; limit: number },
 	): Promise<{ items: Summary[]; nextCursor: string | null }>;
 	/** Render the list blocks. `nextToken` is the scaffold-wrapped keyset cursor
-	 *  (undefined on the last page) to hand the table's `next_cursor`. */
+	 *  (undefined on the last page) to hand the table's `next_cursor`. `notice`
+	 *  is set when a list-level {@link CustomActionFn} re-renders this level via
+	 *  {@link CustomActionApi.showList}'s notice param (a create/edit/delete
+	 *  outcome on a screen whose mutable target is a LIST, not a leaf) —
+	 *  undefined on a plain open/back/page/apply-filter render. A level that
+	 *  never fires a list-scoped custom action can ignore it. */
 	render(args: {
 		actions: ScreenActions;
 		path: NavPath;
 		filter: Filter;
 		items: Summary[];
 		nextToken: string | undefined;
+		notice: Notice | undefined;
 	}): Block[];
 	/** Fail-closed response when the page read cannot reach the service. */
 	onError(): BlockResponse;
@@ -143,8 +149,11 @@ export interface CustomActionApi<Client> {
 	/** Re-render the leaf at `path` (its id is `path`'s last element), optionally
 	 *  with a notice banner. */
 	showLeaf(path: NavPath, notice?: Notice): Promise<BlockResponse>;
-	/** Re-render the list at `path` (default: the root list). */
-	showList(path?: NavPath): Promise<BlockResponse>;
+	/** Re-render the list at `path` (default: the root list), optionally with a
+	 *  notice banner — the list-level counterpart to `showLeaf`'s notice, for a
+	 *  custom action whose target level is a list (e.g. a create/edit/delete on
+	 *  a screen with no leaf level, such as a two-list-level registry drill-down). */
+	showList(path?: NavPath, notice?: Notice): Promise<BlockResponse>;
 }
 
 export type CustomActionFn<Client> = (api: CustomActionApi<Client>) => Promise<BlockResponse>;
@@ -195,6 +204,7 @@ export function createListDetailHandler(
 			path: NavPath,
 			filter: unknown,
 			cursor?: string,
+			notice?: Notice,
 		): Promise<BlockResponse> => {
 			const level = listLevelAt(path.length);
 			if (level === undefined) return { blocks: [] };
@@ -211,7 +221,14 @@ export function createListDetailHandler(
 									? { c: page.nextCursor, f: filter, p: path }
 									: { c: page.nextCursor, f: filter },
 							);
-				const blocks = level.render({ actions, path, filter, items: page.items, nextToken });
+				const blocks = level.render({
+					actions,
+					path,
+					filter,
+					items: page.items,
+					nextToken,
+					notice,
+				});
 				// GUARANTEE the deep-level filter carry (review round 2, item 1): at
 				// depth ≥ 1 an `apply-filter` submit MUST carry the drill path, or it
 				// would silently re-filter the ROOT list. Screens don't have to
@@ -246,14 +263,14 @@ export function createListDetailHandler(
 			const level = levels[path.length];
 			if (level === undefined) return { blocks: [] };
 			if (level.kind === "leaf") return renderLeaf(path, notice);
-			return renderList(path, level.filterFromValues({}));
+			return renderList(path, level.filterFromValues({}), undefined, notice);
 		};
 
-		const rootList = (): Promise<BlockResponse> => {
+		const rootList = (notice?: Notice): Promise<BlockResponse> => {
 			const root = listLevelAt(0);
 			return root === undefined
 				? Promise.resolve({ blocks: [] })
-				: renderList([], root.filterFromValues({}));
+				: renderList([], root.filterFromValues({}), undefined, notice);
 		};
 
 		// -- open: drill into the resolved target path ----------------------------
@@ -291,7 +308,8 @@ export function createListDetailHandler(
 				input,
 				client,
 				showLeaf: (path, notice) => renderLeaf(path, notice),
-				showList: (path) => (path === undefined ? rootList() : renderPath(path)),
+				showList: (path, notice) =>
+					path === undefined ? rootList(notice) : renderPath(path, notice),
 			})) as Awaited<ReturnType<RouteHandler<ListDetailInput>>>;
 		}
 

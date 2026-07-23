@@ -57,6 +57,14 @@ export {
 	type ProductsListResult,
 	type ProductSummaryWire,
 } from "./admin/admin-products-client.js";
+export {
+	createTaxPageHandler,
+	formatBpsAsPercent,
+	parsePercentToBps,
+	TAX_ACTION_IDS,
+	TAX_PAGE,
+	type TaxPageInput,
+} from "./admin/tax-page.js";
 export { PRODUCT_COMMERCE_ROUTE } from "./admin/product-commerce-route.js";
 export type { ProductCommerceRouteInput } from "./admin/product-commerce-route.js";
 export {
