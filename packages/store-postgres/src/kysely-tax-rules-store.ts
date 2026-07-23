@@ -2,9 +2,12 @@ import type {
 	CreateTaxClassInput,
 	CreateTaxRateInput,
 	DeleteTaxClassStoreResult,
+	DeleteTaxRateResult,
 	TaxClass,
 	TaxRate,
 	TaxRulesStore,
+	UpdateTaxRateInput,
+	UpdateTaxRateResult,
 } from "@urumi/domain";
 import type { Kysely, Selectable } from "kysely";
 import type { Database, TaxRatesTable } from "./schema.js";
@@ -94,6 +97,43 @@ export class KyselyTaxRulesStore implements TaxRulesStore {
 			.orderBy("id")
 			.execute();
 		return rows.map(toRate);
+	}
+
+	/**
+	 * Guarded edit (port doc): optimistic CAS on the money-bearing `rate_bps`. The
+	 * UPDATE is conditioned on `rate_bps = expectedRateBps`; zero rows updated ⇒ a
+	 * fresh read classifies unknown id (`not_found`) vs a concurrent change
+	 * (`stale`), mirroring `deleteClass`'s no-op-then-reread pattern.
+	 */
+	async updateRate(
+		id: string,
+		input: UpdateTaxRateInput,
+		expectedRateBps: number,
+	): Promise<UpdateTaxRateResult> {
+		const updated = await this.#db
+			.updateTable("tax_rates")
+			.set({
+				rate_bps: input.rateBps,
+				applies_to_shipping: input.appliesToShipping ? 1 : 0,
+			})
+			.where("id", "=", id)
+			.where("rate_bps", "=", expectedRateBps)
+			.returningAll()
+			.executeTakeFirst();
+		if (updated !== undefined) return { ok: true, rate: toRate(updated) };
+		const current = await this.#db
+			.selectFrom("tax_rates")
+			.selectAll()
+			.where("id", "=", id)
+			.executeTakeFirst();
+		if (current === undefined) return { ok: false, reason: "not_found" };
+		return { ok: false, reason: "stale", current: toRate(current) };
+	}
+
+	/** Leaf delete (port doc). Zero rows ⇒ `not_found` (idempotent no-op). */
+	async deleteRate(id: string): Promise<DeleteTaxRateResult> {
+		const res = await this.#db.deleteFrom("tax_rates").where("id", "=", id).executeTakeFirst();
+		return Number(res.numDeletedRows) > 0 ? { ok: true } : { ok: false, reason: "not_found" };
 	}
 }
 

@@ -17,6 +17,45 @@ export interface CouponStore {
 	findById(couponId: string): Promise<CouponRecord | null>;
 
 	/**
+	 * Edit a coupon's economics + window (admin-UX Increment 3 — the missing
+	 * UPDATE capability). `code` and `type` are the coupon's IMMUTABLE identity/kind
+	 * (a merchant supersedes a live promotion with a NEW code, never re-defines an
+	 * issued one), so only the amount/rate/cap/min-subtotal/window/max-uses fields
+	 * are editable.
+	 *
+	 * DELIBERATELY LAST-WRITER-WINS, not CAS — the documented exception to "prefer
+	 * CAS for money-bearing fields" (with the reasoning recorded so it is a
+	 * decision, not an oversight): a coupon's economics are effectively FIXED at
+	 * issue (edits are rare and typically administrative — extend `expiresAt`, bump
+	 * `maxUses` — not price re-cuts), a coupon has NO single non-null money scalar
+	 * to CAS on cleanly (amount/rate/cap are each null for the other `type`), and
+	 * two admins editing the SAME coupon concurrently is implausible for a
+	 * single-merchant console. The fields are set-values, not deltas, so a replay
+	 * is idempotent; `uses_count` (the ONE field under real concurrency, moved by
+	 * `redeem`/`release`) is NEVER touched by this admin edit, so an edit and a
+	 * concurrent redemption cannot corrupt each other. Unknown `couponId` →
+	 * `not_found` (an edit is not a create; no row minted).
+	 */
+	update(couponId: string, input: UpdateCouponInput): Promise<UpdateCouponResult>;
+
+	/**
+	 * Delete a coupon with a FORBID-IF-REDEEMED referential guard: a coupon with
+	 * ≥1 `coupon_redemption` cannot be deleted (`in_use_by_redemptions`) — an
+	 * ATOMIC guard (the DELETE is conditioned on no redemption row) so a concurrent
+	 * `redeem` can never orphan a redemption onto a just-deleted coupon, and the
+	 * `coupon_redemptions.coupon_id` foreign key stays satisfied. This also
+	 * preserves the reconciliation/audit trail (`releaseByOrder`,
+	 * `listRedemptionsCreatedBefore` rely on redemptions resolving to their
+	 * coupon). SNAPSHOT INVARIANT: an order's discount is snapshotted into
+	 * `order_totals.discount_cents` + `applied_coupon_code` at creation, so
+	 * deleting an UNREDEEMED coupon never rewrites an existing order; an in-flight
+	 * cart that had quoted the coupon recomputes on next quote/checkout and finds
+	 * it gone (`findByCode` → null ⇒ no discount). Idempotent: unknown id →
+	 * `not_found` no-op.
+	 */
+	delete(couponId: string): Promise<DeleteCouponResult>;
+
+	/**
 	 * Redeem atomically: claim `(couponId, idempotencyKey)` and, only when the
 	 * claim is fresh, run the guarded max-uses increment in the same transaction.
 	 * A replay (same key) returns the recorded redemption with `replayed: true`
@@ -85,6 +124,32 @@ export interface CreateCouponInput {
 	maxUses: number | null;
 	maxUsesPerCustomer: number | null;
 }
+
+/** The coupon fields a merchant may EDIT (admin-UX Increment 3). A strict subset
+ *  of `CreateCouponInput`: `id`/`code`/`type` are excluded (immutable identity +
+ *  kind), and `usesCount` is store-owned (moved only by redeem/release). Money
+ *  stays branded `Cents`; a `number` in a money field is a compile error. */
+export interface UpdateCouponInput {
+	amountCents: Cents | null;
+	rateBps: number | null;
+	capCents: Cents | null;
+	minSubtotalCents: Cents | null;
+	startsAt: string | null;
+	expiresAt: string | null;
+	maxUses: number | null;
+	maxUsesPerCustomer: number | null;
+}
+
+/** Outcome of `CouponStore.update` — LWW (no `stale`, see the method doc). */
+export type UpdateCouponResult =
+	| { ok: true; coupon: CouponRecord }
+	| { ok: false; reason: "not_found" };
+
+/** Outcome of `CouponStore.delete` — a referential guard on live redemptions. */
+export type DeleteCouponResult =
+	| { ok: true }
+	| { ok: false; reason: "not_found" }
+	| { ok: false; reason: "in_use_by_redemptions" };
 
 export interface RedeemCouponInput {
 	couponId: string;

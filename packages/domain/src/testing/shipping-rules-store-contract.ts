@@ -80,5 +80,167 @@ export function shippingRulesStoreContract(
 			});
 			expect((await store.getRate("m-free", USD))?.minSubtotalCents).toBe(50_00);
 		});
+
+		// -- zone: LWW update + forbid-if-methods delete -------------------------
+
+		async function seedZoneMethodRate(store: ShippingRulesStore): Promise<void> {
+			await store.createZone({ id: "z-us", name: "US", regions: ["US"] });
+			await store.createMethod({ id: "m-flat", zoneId: "z-us", name: "Flat", type: "flat_rate" });
+			await store.createRate({
+				methodId: "m-flat",
+				currency: USD,
+				amountCents: cents(599),
+				minSubtotalCents: null,
+			});
+		}
+
+		test("updateZone edits name + regions (last-writer-wins); unknown id is not_found", async () => {
+			const { store } = await makeStore();
+			await store.createZone({ id: "z-us", name: "US", regions: ["US"] });
+			const res = await store.updateZone("z-us", { name: "United States", regions: ["US", "PR"] });
+			expect(res.ok).toBe(true);
+			if (!res.ok) return;
+			expect(res.zone.name).toBe("United States");
+			expect(res.zone.regions).toEqual(["US", "PR"]);
+			expect((await store.getZone("z-us"))?.name).toBe("United States");
+			expect(await store.updateZone("missing", { name: "X", regions: null })).toEqual({
+				ok: false,
+				reason: "not_found",
+			});
+		});
+
+		test("updateZone is idempotent under replay (set-values, not deltas)", async () => {
+			const { store } = await makeStore();
+			await store.createZone({ id: "z-us", name: "US", regions: ["US"] });
+			const edit = { name: "United States", regions: ["US", "PR"] };
+			const first = await store.updateZone("z-us", edit);
+			const replay = await store.updateZone("z-us", edit);
+			expect(first.ok && replay.ok).toBe(true);
+			if (!first.ok || !replay.ok) return;
+			expect(replay.zone).toEqual(first.zone); // same row, no drift on re-apply
+			expect((await store.getZone("z-us"))?.regions).toEqual(["US", "PR"]);
+		});
+
+		test("deleteZone is forbidden while a method still references it (in_use_by_methods)", async () => {
+			const { store } = await makeStore();
+			await seedZoneMethodRate(store);
+			expect(await store.deleteZone("z-us")).toEqual({ ok: false, reason: "in_use_by_methods" });
+			expect(await store.getZone("z-us")).not.toBeNull(); // untouched
+		});
+
+		test("deleteZone succeeds once childless; is an idempotent not_found no-op after", async () => {
+			const { store } = await makeStore();
+			await store.createZone({ id: "z-empty", name: "Empty", regions: null });
+			expect(await store.deleteZone("z-empty")).toEqual({ ok: true });
+			expect(await store.deleteZone("z-empty")).toEqual({ ok: false, reason: "not_found" });
+			expect(await store.deleteZone("never")).toEqual({ ok: false, reason: "not_found" });
+		});
+
+		// -- method: LWW update + forbid-if-rates delete -------------------------
+
+		test("updateMethod edits name + type (LWW); unknown id is not_found", async () => {
+			const { store } = await makeStore();
+			await store.createZone({ id: "z-us", name: "US", regions: null });
+			await store.createMethod({ id: "m-flat", zoneId: "z-us", name: "Flat", type: "flat_rate" });
+			const res = await store.updateMethod("m-flat", { name: "Standard", type: "free_shipping" });
+			expect(res.ok).toBe(true);
+			if (!res.ok) return;
+			expect(res.method.name).toBe("Standard");
+			expect(res.method.type).toBe("free_shipping");
+			expect((await store.getMethod("m-flat"))?.zoneId).toBe("z-us"); // zone identity untouched
+			expect(await store.updateMethod("missing", { name: "X", type: "flat_rate" })).toEqual({
+				ok: false,
+				reason: "not_found",
+			});
+		});
+
+		test("updateMethod is idempotent under replay (set-values, not deltas)", async () => {
+			const { store } = await makeStore();
+			await store.createZone({ id: "z-us", name: "US", regions: null });
+			await store.createMethod({ id: "m-flat", zoneId: "z-us", name: "Flat", type: "flat_rate" });
+			const edit = { name: "Standard", type: "free_shipping" as const };
+			const first = await store.updateMethod("m-flat", edit);
+			const replay = await store.updateMethod("m-flat", edit);
+			expect(first.ok && replay.ok).toBe(true);
+			if (!first.ok || !replay.ok) return;
+			expect(replay.method).toEqual(first.method); // same row, no drift on re-apply
+			expect((await store.getMethod("m-flat"))?.type).toBe("free_shipping");
+		});
+
+		test("deleteMethod is forbidden while a rate still references it (in_use_by_rates)", async () => {
+			const { store } = await makeStore();
+			await seedZoneMethodRate(store);
+			expect(await store.deleteMethod("m-flat")).toEqual({ ok: false, reason: "in_use_by_rates" });
+			expect(await store.getMethod("m-flat")).not.toBeNull();
+		});
+
+		test("deleteMethod succeeds once rate-free; idempotent not_found no-op after", async () => {
+			const { store } = await makeStore();
+			await store.createZone({ id: "z-us", name: "US", regions: null });
+			await store.createMethod({ id: "m-x", zoneId: "z-us", name: "X", type: "flat_rate" });
+			expect(await store.deleteMethod("m-x")).toEqual({ ok: true });
+			expect(await store.deleteMethod("m-x")).toEqual({ ok: false, reason: "not_found" });
+		});
+
+		// -- rate: CAS on amount_cents + leaf delete -----------------------------
+
+		test("updateRate applies a new amount + threshold when the CAS matches", async () => {
+			const { store } = await makeStore();
+			await seedZoneMethodRate(store);
+			const res = await store.updateRate(
+				"m-flat",
+				USD,
+				{ amountCents: cents(699), minSubtotalCents: cents(75_00) },
+				cents(599),
+			);
+			expect(res.ok).toBe(true);
+			if (!res.ok) return;
+			expect(res.rate.amountCents).toBe(699);
+			expect(res.rate.minSubtotalCents).toBe(75_00);
+			expect((await store.getRate("m-flat", USD))?.amountCents).toBe(699);
+		});
+
+		test("updateRate is not_found for an unknown (method, currency)", async () => {
+			const { store } = await makeStore();
+			await seedZoneMethodRate(store);
+			expect(
+				await store.updateRate(
+					"m-flat",
+					EUR,
+					{ amountCents: cents(10), minSubtotalCents: null },
+					cents(0),
+				),
+			).toEqual({ ok: false, reason: "not_found" });
+		});
+
+		test("updateRate is stale when amount_cents moved (and replay is once-only)", async () => {
+			const { store } = await makeStore();
+			await seedZoneMethodRate(store);
+			const first = await store.updateRate(
+				"m-flat",
+				USD,
+				{ amountCents: cents(650), minSubtotalCents: null },
+				cents(599),
+			);
+			expect(first.ok).toBe(true);
+			const stale = await store.updateRate(
+				"m-flat",
+				USD,
+				{ amountCents: cents(700), minSubtotalCents: null },
+				cents(599), // still holding the pre-edit price
+			);
+			expect(stale.ok).toBe(false);
+			if (stale.ok || stale.reason !== "stale") return;
+			expect(stale.current.amountCents).toBe(650);
+		});
+
+		test("deleteRate removes the leaf; a subsequent read is null (recompute sees it)", async () => {
+			const { store } = await makeStore();
+			await seedZoneMethodRate(store);
+			expect(await store.deleteRate("m-flat", USD)).toEqual({ ok: true });
+			expect(await store.getRate("m-flat", USD)).toBeNull();
+			// Idempotent replay.
+			expect(await store.deleteRate("m-flat", USD)).toEqual({ ok: false, reason: "not_found" });
+		});
 	});
 }

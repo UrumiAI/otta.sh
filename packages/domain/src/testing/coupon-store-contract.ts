@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { cents, currency } from "../money/cents.js";
 import { customerId, idempotencyKey, orderId } from "../money/ids.js";
-import type { CouponStore, CreateCouponInput } from "../ports/coupon-store.js";
+import type { CouponStore, CreateCouponInput, UpdateCouponInput } from "../ports/coupon-store.js";
 
 export interface CouponStoreHarness {
 	store: CouponStore;
@@ -14,6 +14,20 @@ export interface CouponStoreContractOptions {
 const USD = currency("USD");
 
 const FAR_FUTURE = "9999-12-31T00:00:00.000Z";
+
+function updateInput(over: Partial<UpdateCouponInput> = {}): UpdateCouponInput {
+	return {
+		amountCents: cents(750),
+		rateBps: null,
+		capCents: null,
+		minSubtotalCents: cents(2000),
+		startsAt: null,
+		expiresAt: "2027-01-01T00:00:00.000Z",
+		maxUses: 100,
+		maxUsesPerCustomer: null,
+		...over,
+	};
+}
 
 function fixedCoupon(over: Partial<CreateCouponInput> = {}): CreateCouponInput {
 	return {
@@ -249,6 +263,86 @@ export function couponStoreContract(
 			});
 			const before = await store.listRedemptionsCreatedBefore("2026-07-10T00:30:00.000Z");
 			expect(before.map((r) => r.orderId)).toEqual(["o-old"]);
+		});
+
+		// -- update: LWW edit of a coupon's economics/window ---------------------
+
+		test("update edits economics + window (LWW); code/type/usesCount are preserved", async () => {
+			const { store } = await makeStore();
+			await store.create(fixedCoupon({ maxUses: 3 }));
+			await store.redeem({
+				couponId: "c1",
+				orderId: orderId("o1"),
+				idempotencyKey: idempotencyKey("k1"),
+				createdAt: "2026-07-10T00:00:00.000Z",
+			});
+			const res = await store.update("c1", updateInput());
+			expect(res.ok).toBe(true);
+			if (!res.ok) return;
+			expect(res.coupon.amountCents).toBe(750);
+			expect(res.coupon.minSubtotalCents).toBe(2000);
+			expect(res.coupon.maxUses).toBe(100);
+			expect(res.coupon.code).toBe("SAVE5"); // immutable identity
+			expect(res.coupon.type).toBe("fixed_amount"); // immutable kind
+			expect(res.coupon.usesCount).toBe(1); // store-owned counter, untouched by an edit
+			expect((await store.findByCode("SAVE5"))?.amountCents).toBe(750);
+		});
+
+		test("update is idempotent under replay (set-values, not deltas)", async () => {
+			const { store } = await makeStore();
+			await store.create(fixedCoupon());
+			await store.update("c1", updateInput({ maxUses: 5 }));
+			await store.update("c1", updateInput({ maxUses: 5 }));
+			expect((await store.findById("c1"))?.maxUses).toBe(5);
+		});
+
+		test("update is not_found for an unknown id (an edit never mints a coupon)", async () => {
+			const { store } = await makeStore();
+			expect(await store.update("nope", updateInput())).toEqual({ ok: false, reason: "not_found" });
+		});
+
+		// -- delete: forbid-if-redeemed + snapshot invariant ---------------------
+
+		test("delete removes an unredeemed coupon; findByCode then returns null (recompute sees it)", async () => {
+			const { store } = await makeStore();
+			await store.create(fixedCoupon());
+			expect(await store.delete("c1")).toEqual({ ok: true });
+			expect(await store.findById("c1")).toBeNull();
+			expect(await store.findByCode("SAVE5")).toBeNull();
+		});
+
+		test("delete is forbidden while a redemption references the coupon (in_use_by_redemptions)", async () => {
+			const { store } = await makeStore();
+			await store.create(fixedCoupon({ maxUses: 3 }));
+			await store.redeem({
+				couponId: "c1",
+				orderId: orderId("o1"),
+				idempotencyKey: idempotencyKey("k1"),
+				createdAt: "2026-07-10T00:00:00.000Z",
+			});
+			expect(await store.delete("c1")).toEqual({ ok: false, reason: "in_use_by_redemptions" });
+			expect(await store.findById("c1")).not.toBeNull(); // untouched, FK + audit trail intact
+		});
+
+		test("delete becomes possible once the redemption is released; then not_found is idempotent", async () => {
+			const { store } = await makeStore();
+			await store.create(fixedCoupon({ maxUses: 3 }));
+			const res = await store.redeem({
+				couponId: "c1",
+				orderId: orderId("o1"),
+				idempotencyKey: idempotencyKey("k1"),
+				createdAt: "2026-07-10T00:00:00.000Z",
+			});
+			expect(res.ok).toBe(true);
+			if (!res.ok) return;
+			await store.release(res.redemptionId);
+			expect(await store.delete("c1")).toEqual({ ok: true });
+			expect(await store.delete("c1")).toEqual({ ok: false, reason: "not_found" });
+		});
+
+		test("delete is an idempotent not_found no-op for an unknown id", async () => {
+			const { store } = await makeStore();
+			expect(await store.delete("never")).toEqual({ ok: false, reason: "not_found" });
 		});
 	});
 }

@@ -34,6 +34,16 @@ describe.skipIf(PG === undefined)("rules admin CRUD HTTP contract", () => {
 	function get(path: string): Promise<Response> {
 		return fetch(`${server.baseUrl}/admin${path}`, { headers: { "X-Internal-Token": token } });
 	}
+	function send(method: string, path: string, body?: unknown, withToken = true): Promise<Response> {
+		return fetch(`${server.baseUrl}/admin${path}`, {
+			method,
+			headers: {
+				...(body !== undefined ? { "content-type": "application/json" } : {}),
+				...(withToken ? { "X-Internal-Token": token } : {}),
+			},
+			...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+		});
+	}
 
 	test("shipping: create zone → method → rate, then read back", async () => {
 		expect((await post("/shipping/zones", { id: "z-us", name: "US" })).status).toBe(201);
@@ -88,5 +98,149 @@ describe.skipIf(PG === undefined)("rules admin CRUD HTTP contract", () => {
 	test("writes without the internal token are rejected 401", async () => {
 		const res = await post("/shipping/zones", { id: "z", name: "Z" }, false);
 		expect(res.status).toBe(401);
+	});
+
+	// -- UPDATE/DELETE (admin-UX Increment 3) ----------------------------------
+
+	test("shipping: update zone (LWW), CAS-update rate, and referential delete guards", async () => {
+		await post("/shipping/zones", { id: "z-us", name: "US" });
+		await post("/shipping/zones/z-us/methods", { id: "m", name: "Flat", type: "flat_rate" });
+		await post("/shipping/methods/m/rates", { currency: "USD", amountCents: 599 });
+
+		// Zone LWW edit — `regions` is a REQUIRED full-replace field.
+		const zoneUpd = await send("PUT", "/shipping/zones/z-us", {
+			name: "United States",
+			regions: ["US", "PR"],
+		});
+		expect(zoneUpd.status).toBe(200);
+		expect(((await json(zoneUpd)).zone as Record<string, unknown>).name).toBe("United States");
+
+		// Deleting a zone with a method is refused (409 IN_USE_BY_METHODS).
+		const zoneDel = await send("DELETE", "/shipping/zones/z-us");
+		expect(zoneDel.status).toBe(409);
+		expect((await json(zoneDel)).reason).toBe("IN_USE_BY_METHODS");
+
+		// Rate CAS: correct expected wins (200); a stale expected is 409 STALE.
+		const okUpd = await send("PUT", "/shipping/methods/m/rates/USD", {
+			amountCents: 699,
+			minSubtotalCents: null,
+			expectedAmountCents: 599,
+		});
+		expect(okUpd.status).toBe(200);
+		expect((await json(okUpd)).ok).toBe(true);
+		const stale = await send("PUT", "/shipping/methods/m/rates/USD", {
+			amountCents: 799,
+			minSubtotalCents: null,
+			expectedAmountCents: 599, // still the old value
+		});
+		expect(stale.status).toBe(409);
+		const staleBody = await json(stale);
+		expect(staleBody.reason).toBe("STALE");
+		expect((staleBody.current as Record<string, unknown>).amountCents).toBe(699);
+
+		// Leaf rate delete, then a method delete now succeeds; deletes are idempotent.
+		expect((await send("DELETE", "/shipping/methods/m/rates/USD")).status).toBe(200);
+		expect((await send("DELETE", "/shipping/methods/m/rates/USD")).status).toBe(404);
+		expect((await send("DELETE", "/shipping/methods/m")).status).toBe(200);
+		expect((await send("DELETE", "/shipping/zones/z-us")).status).toBe(200);
+	});
+
+	test("tax: CAS-update rate (stale ⇒ 409) and leaf delete (idempotent 404)", async () => {
+		await post("/tax/classes", { id: "standard", name: "Standard" });
+		await post("/tax/rates", { id: "t1", taxClassId: "standard", zoneId: "z-us", rateBps: 725 });
+
+		const ok = await send("PUT", "/tax/rates/t1", {
+			rateBps: 825,
+			appliesToShipping: false,
+			expectedRateBps: 725,
+		});
+		expect(ok.status).toBe(200);
+		expect(((await json(ok)).rate as Record<string, unknown>).rateBps).toBe(825);
+		const stale = await send("PUT", "/tax/rates/t1", {
+			rateBps: 900,
+			appliesToShipping: false,
+			expectedRateBps: 725,
+		});
+		expect(stale.status).toBe(409);
+		expect((await json(stale)).reason).toBe("STALE");
+
+		expect((await send("DELETE", "/tax/rates/t1")).status).toBe(200);
+		expect((await send("DELETE", "/tax/rates/t1")).status).toBe(404);
+	});
+
+	test("coupons: update (LWW) and forbid-if-... delete semantics", async () => {
+		await post("/coupons", {
+			id: "cpn",
+			code: "SAVE5",
+			type: "fixed_amount",
+			amountCents: 500,
+			currency: "USD",
+			maxUses: 10,
+		});
+		const upd = await send("PUT", "/coupons/cpn", { amountCents: 750, maxUses: 20 });
+		expect(upd.status).toBe(200);
+		const c = (await json(upd)).coupon as Record<string, unknown>;
+		expect(c.amountCents).toBe(750);
+		expect(c.code).toBe("SAVE5"); // identity preserved
+
+		expect((await send("PUT", "/coupons/missing", { amountCents: 1 })).status).toBe(404);
+		// Unredeemed coupon deletes; replay is an idempotent 404.
+		expect((await send("DELETE", "/coupons/cpn")).status).toBe(200);
+		expect((await send("DELETE", "/coupons/cpn")).status).toBe(404);
+	});
+
+	test("full-replace updates 400 on an OMITTED required field and write nothing (reviewer B finding 1)", async () => {
+		await post("/shipping/zones", { id: "z-req", name: "US", regions: ["US"] });
+		await post("/shipping/zones/z-req/methods", { id: "m-req", name: "Flat", type: "flat_rate" });
+		await post("/shipping/methods/m-req/rates", {
+			currency: "USD",
+			amountCents: 599,
+			minSubtotalCents: 5000,
+		});
+		await post("/tax/classes", { id: "std-req", name: "Standard" });
+		await post("/tax/rates", {
+			id: "t-req",
+			taxClassId: "std-req",
+			zoneId: "z-req",
+			rateBps: 725,
+			appliesToShipping: true,
+		});
+
+		// Omitted `regions` must be a 400 — never a silent wipe-to-null.
+		expect((await send("PUT", "/shipping/zones/z-req", { name: "Renamed" })).status).toBe(400);
+		const zone = (await json(await get("/shipping/zones"))).zones as Array<Record<string, unknown>>;
+		const zreq = zone.find((z) => z.id === "z-req");
+		expect(zreq?.name).toBe("US"); // nothing written
+		expect(zreq?.regions).toEqual(["US"]); // regions NOT wiped
+
+		// Omitted `minSubtotalCents` must be a 400 — never a silent threshold clear.
+		expect(
+			(
+				await send("PUT", "/shipping/methods/m-req/rates/USD", {
+					amountCents: 699,
+					expectedAmountCents: 599,
+				})
+			).status,
+		).toBe(400);
+		const rate = (await json(await get("/shipping/methods/m-req/rates?currency=USD")))
+			.rate as Record<string, unknown>;
+		expect(rate.amountCents).toBe(599); // nothing written
+		expect(rate.minSubtotalCents).toBe(5000); // threshold NOT cleared
+
+		// Omitted `appliesToShipping` must be a 400 — never a silent flip to false.
+		expect(
+			(await send("PUT", "/tax/rates/t-req", { rateBps: 825, expectedRateBps: 725 })).status,
+		).toBe(400);
+		const rates = (await json(await get("/tax/rates?zoneId=z-req"))).rates as Array<
+			Record<string, unknown>
+		>;
+		expect(rates[0]?.rateBps).toBe(725); // nothing written
+		expect(rates[0]?.appliesToShipping).toBe(true); // flag NOT flipped
+	});
+
+	test("UPDATE/DELETE without the internal token are rejected 401", async () => {
+		await post("/shipping/zones", { id: "z-guard", name: "Z" });
+		expect((await send("PUT", "/shipping/zones/z-guard", { name: "X" }, false)).status).toBe(401);
+		expect((await send("DELETE", "/shipping/zones/z-guard", undefined, false)).status).toBe(401);
 	});
 });

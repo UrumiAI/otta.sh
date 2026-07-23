@@ -29,7 +29,71 @@ export interface TaxRulesStore {
 	/** Every tax rate in a zone — the checkout read that builds the pipeline's
 	 *  `taxRatesByClass` map and identifies the shipping tax class. */
 	listRatesForZone(zoneId: string): Promise<TaxRate[]>;
+
+	/**
+	 * Guarded EDIT of a tax rate's money-bearing config (admin-UX Increment 3 —
+	 * the tax/shipping admin's missing UPDATE capability). Only the RATE
+	 * (`rateBps`) and the shipping-tax flag (`appliesToShipping`) are editable; a
+	 * rate's `(taxClassId, zoneId)` identity is immutable (re-pointing a rate at a
+	 * different class/zone is a create+delete, not an edit).
+	 *
+	 * OPTIMISTIC COMPARE-AND-SET on the money-bearing `rate_bps` (`expectedRateBps`
+	 * = the rate the admin read on the detail): the atomic UPDATE is conditioned on
+	 * `rate_bps = expectedRateBps`, so a concurrent admin edit that already moved
+	 * the rate surfaces as `stale` (carrying the current row to reload) rather than
+	 * silently CLOBBERING a rate change — a wrong tax rate is a money-affecting
+	 * regression, so `rate_bps` is CAS-guarded (CLAUDE.md money discipline). A
+	 * blind replay of an applied edit is therefore reported `stale`, never
+	 * double-applied (once-only under replay). `appliesToShipping` rides along
+	 * last-writer-wins within the winning update (a boolean flag, not money).
+	 *
+	 * ABA ACCEPTED (PR #71 review, reviewer A finding 1): the CAS token is the
+	 * VALUE, not a version — if admin A reads 500, admin B edits 500→600 and then
+	 * back 600→500, A's late CAS against 500 SUCCEEDS even though the row changed
+	 * twice under A. Deliberately accepted for a low-contention, single-admin
+	 * merchant console: the ABA outcome is a rate both admins independently
+	 * endorsed as 500 (never an unreviewed value), no money invariant is at risk,
+	 * and the window requires an implausible edit-and-revert interleave. If
+	 * multi-admin contention ever materializes, the upgrade path is a
+	 * version/`updated_at` column (the #67 `expectedUpdatedAt` precedent) via a
+	 * forward-only migration — not a redesign of this port.
+	 *  - unknown `id` → `not_found` (no row minted; an edit is not a create).
+	 *  - `rate_bps != expectedRateBps` → `stale`, carrying the current row.
+	 *  - otherwise → applies + returns the updated row.
+	 */
+	updateRate(
+		id: string,
+		input: UpdateTaxRateInput,
+		expectedRateBps: number,
+	): Promise<UpdateTaxRateResult>;
+
+	/**
+	 * Delete a tax RATE (a leaf — nothing references a rate row). Idempotent:
+	 * deleting an unknown/already-deleted id is a `not_found` no-op, never an
+	 * error (replay-safe). SNAPSHOT INVARIANT: an order snapshots its totals into
+	 * `order_totals` at creation, so deleting a rate NEVER retroactively changes an
+	 * existing order; an in-flight cart simply recomputes on its next
+	 * quote/checkout and sees the rate gone (`getRate` → null ⇒ the pure engine
+	 * treats the class as 0 bps — `computeTotals`' `taxRatesByClass[id] ?? 0`).
+	 */
+	deleteRate(id: string): Promise<DeleteTaxRateResult>;
 }
+
+export interface UpdateTaxRateInput {
+	/** Integer basis points, 0–10000 (0%–100%). */
+	rateBps: number;
+	appliesToShipping: boolean;
+}
+
+/** Outcome of `updateRate` — a discriminated union so the caller renders each
+ *  case without status-code-as-logic (mirrors `ProductCommerceUpdateResult`). */
+export type UpdateTaxRateResult =
+	| { ok: true; rate: TaxRate }
+	| { ok: false; reason: "not_found" }
+	| { ok: false; reason: "stale"; current: TaxRate };
+
+/** Outcome of `deleteRate` — a leaf delete with no referential guard. */
+export type DeleteTaxRateResult = { ok: true } | { ok: false; reason: "not_found" };
 
 export interface TaxClass {
 	id: TaxClassId;
