@@ -76,13 +76,19 @@ function installFakeCartService(): void {
 		if (cartId !== null) {
 			const cart = carts.get(cartId);
 			if (!cart) return { status: 404, body: { ok: false, reason: "CART_NOT_FOUND" } };
-			const { sku, qty } = req.body as { sku: string; qty: number };
+			const { sku, qty, productId } = req.body as {
+				sku: string;
+				qty: number;
+				productId?: string;
+			};
 			if (qty > STUB_STOCK) return { status: 200, body: { ok: false, reason: "OUT_OF_STOCK" } };
 			const lineId = `line-${++seq}`;
 			const line: FakeLine = {
 				lineId,
 				sku,
-				productId: null,
+				// Mirror the service: an add carrying a productId persists it; an
+				// absent productId stays null (issue #80 — legacy bare add).
+				productId: productId ?? null,
 				qty,
 				reservationId: `res-${seq}`,
 				expiresAt: "2099-01-01T00:00:00.000Z",
@@ -183,7 +189,7 @@ describe("storefront cart routes (workerd sandbox)", () => {
 		expect(stubServer.requests).toHaveLength(0);
 	});
 
-	test("add-to-cart route proxies to the service, forwarding the Idempotency-Key header, and returns the line", async () => {
+	test("add-to-cart route THREADS productId to the service body and returns the line carrying it (issue #80)", async () => {
 		const created = resultOf(await sandboxHandle.invokeRoute("storefront/cart/create", {}));
 		const cartId = created["cartId"] as string;
 		stubServer.requests.length = 0;
@@ -192,22 +198,59 @@ describe("storefront cart routes (workerd sandbox)", () => {
 			await sandboxHandle.invokeRoute("storefront/cart/lines/add", {
 				cartId,
 				sku: "SKU-CART-1",
+				productId: "prod-1",
 				qty: 2,
 				idempotencyKey: "idem-add-1",
 			}),
 		);
 
 		expect(result["ok"]).toBe(true);
-		expect(result["line"]).toMatchObject({ sku: "SKU-CART-1", qty: 2, productId: null });
+		expect(result["line"]).toMatchObject({ sku: "SKU-CART-1", qty: 2, productId: "prod-1" });
 
 		// Proxied to POST /carts/:id/lines, and the idempotency key rode as the
-		// `Idempotency-Key` header (CLAUDE.md: every command carries one).
+		// `Idempotency-Key` header (CLAUDE.md: every command carries one). The
+		// service body now carries productId (the join key to product_commerce).
 		expect(stubServer.requests).toHaveLength(1);
 		const req = stubServer.requests[0]!;
 		expect(req.method).toBe("POST");
 		expect(req.url).toBe(`/carts/${cartId}/lines`);
 		expect(req.headers["idempotency-key"]).toBe("idem-add-1");
-		expect(req.body).toEqual({ sku: "SKU-CART-1", qty: 2 });
+		expect(req.body).toEqual({ sku: "SKU-CART-1", qty: 2, productId: "prod-1" });
+	});
+
+	test("add-to-cart WITHOUT productId (legacy caller) omits it from the body — absent, never a fabricated value; the line's productId stays null", async () => {
+		const created = resultOf(await sandboxHandle.invokeRoute("storefront/cart/create", {}));
+		const cartId = created["cartId"] as string;
+		stubServer.requests.length = 0;
+
+		const result = resultOf(
+			await sandboxHandle.invokeRoute("storefront/cart/lines/add", {
+				cartId,
+				sku: "SKU-CART-1",
+				qty: 1,
+				idempotencyKey: "idem-legacy",
+			}),
+		);
+
+		expect(result["ok"]).toBe(true);
+		expect(result["line"]).toMatchObject({ sku: "SKU-CART-1", productId: null });
+		// The wire stays byte-identical to the pre-#80 shape when no productId is
+		// supplied — no `productId: null` key leaks onto the body.
+		expect(stubServer.requests[0]!.body).toEqual({ sku: "SKU-CART-1", qty: 1 });
+	});
+
+	test("add-to-cart rejects a present-but-blank productId before any egress (validated, not silently dropped)", async () => {
+		const result = resultOf(
+			await sandboxHandle.invokeRoute("storefront/cart/lines/add", {
+				cartId: "cart-x",
+				sku: "SKU-CART-1",
+				productId: "",
+				qty: 1,
+				idempotencyKey: "idem-blank-pid",
+			}),
+		);
+		expect(result).toEqual({ ok: false, error: "INVALID_INPUT" });
+		expect(stubServer.requests).toHaveLength(0);
 	});
 
 	test("add-to-cart surfaces the typed OUT_OF_STOCK token (a normalized non-throw result), not an error", async () => {

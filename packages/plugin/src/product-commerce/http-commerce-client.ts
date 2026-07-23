@@ -176,6 +176,7 @@ export class HttpCommerceClient implements CommerceClient {
 	async addCartLine(
 		cartId: string,
 		sku: string,
+		productId: string | null,
 		qty: number,
 		idempotencyKey: string,
 	): Promise<CartResult<{ line: CartLineWire }>> {
@@ -185,7 +186,13 @@ export class HttpCommerceClient implements CommerceClient {
 				"content-type": "application/json",
 				"Idempotency-Key": idempotencyKey,
 			}),
-			body: JSON.stringify({ sku, qty }),
+			// `productId` is the join key to `product_commerce` (issue #80): the
+			// service resolves price/fulfillment kind from it, and a null productId
+			// is why a storefront cart used to 409 PRODUCT_NOT_PRICED at checkout.
+			// OMIT the key when null so the wire stays byte-identical to the
+			// pre-#80 shape for a bare (legacy) add (the service body treats an
+			// absent productId as null — `addLineBody`).
+			body: JSON.stringify(productId === null ? { sku, qty } : { sku, qty, productId }),
 		});
 		return this.#cartResult<{ line: CartLineWire }>(res);
 	}

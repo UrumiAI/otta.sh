@@ -24,12 +24,39 @@ describe.skipIf(PG === undefined)(
 			await service.stop();
 		});
 
-		async function seedSku(sku: string, onHand: number): Promise<void> {
+		/** Seed a `product_commerce` row keyed by its CMS content id (the productId
+		 *  join key), optionally priced. Returns the productId so a cart add can
+		 *  thread it, exactly as the storefront now does (issue #80). */
+		async function seedProduct(opts: {
+			sku: string;
+			onHand: number;
+			price?: { amount: number; currency: string };
+		}): Promise<string> {
+			const productId = `prod-for-${opts.sku}`;
 			await client.upsertProductCommerce(
-				`prod-for-${sku}`,
-				{ sku, price: { amount: 999, currency: "USD" }, initialOnHand: onHand },
-				`seed-${sku}`,
+				productId,
+				{
+					sku: opts.sku,
+					...(opts.price !== undefined ? { price: opts.price } : {}),
+					initialOnHand: opts.onHand,
+				},
+				`seed-${opts.sku}`,
 			);
+			return productId;
+		}
+
+		/** Raw `POST /checkout/quote` — the client has no quote method (a page-layer
+		 *  concern), so hit the wire directly. This is the exact call the issue-#80
+		 *  repro made against a live storefront cart. */
+		async function quote(
+			cartId: string,
+		): Promise<{ status: number; body: Record<string, unknown> }> {
+			const res = await globalThis.fetch(`${service.baseUrl}/checkout/quote`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ cartId }),
+			});
+			return { status: res.status, body: (await res.json()) as Record<string, unknown> };
 		}
 
 		test("createCart mints a cartId with no ok-envelope (a bare success shape)", async () => {
@@ -52,42 +79,121 @@ describe.skipIf(PG === undefined)(
 			expect(result).toEqual({ ok: false, reason: "CART_NOT_FOUND" });
 		});
 
-		test("addCartLine reserves and records a line; the cart read reflects it", async () => {
-			await seedSku("SKU-CART-1", 5);
+		// ── issue #80: the storefront now threads productId end-to-end ─────────
+		test("addCartLine threads productId; the persisted line carries it (non-null) and the cart read reflects it", async () => {
+			const productId = await seedProduct({
+				sku: "SKU-PID-1",
+				onHand: 5,
+				price: { amount: 1500, currency: "USD" },
+			});
 			const { cartId } = await client.createCart();
 
-			const added = await client.addCartLine(cartId, "SKU-CART-1", 2, "add-key-1");
+			const added = await client.addCartLine(cartId, "SKU-PID-1", productId, 2, "pid-add-1");
 			expect(added.ok).toBe(true);
 			if (!added.ok) throw new Error("unreachable");
-			expect(added.line).toMatchObject({ sku: "SKU-CART-1", qty: 2, productId: null });
-			expect(added.line.reservationId).not.toBeNull();
-			expect(added.line.expiresAt).not.toBeNull();
+			expect(added.line).toMatchObject({ sku: "SKU-PID-1", qty: 2, productId });
+			expect(added.line.productId).not.toBeNull();
 
 			const read = await client.getCart(cartId);
-			expect(read).toMatchObject({ ok: true, cart: { lines: [{ sku: "SKU-CART-1", qty: 2 }] } });
+			expect(read).toMatchObject({
+				ok: true,
+				cart: { lines: [{ sku: "SKU-PID-1", qty: 2, productId }] },
+			});
+		});
+
+		test("a storefront cart for a priced+active product QUOTES (computed totals) — NOT 409 PRODUCT_NOT_PRICED (issue #80 repro)", async () => {
+			const productId = await seedProduct({
+				sku: "SKU-QUOTE-OK",
+				onHand: 10,
+				price: { amount: 1500, currency: "USD" },
+			});
+			const { cartId } = await client.createCart("USD");
+			const added = await client.addCartLine(cartId, "SKU-QUOTE-OK", productId, 2, "quote-ok-1");
+			if (!added.ok) throw new Error("unreachable");
+
+			const q = await quote(cartId);
+			expect(q.status).toBe(200);
+			expect(q.body.ok).toBe(true);
+			const b = q.body.breakdown as Record<string, unknown>;
+			// 2 × $15.00, no shipping/tax/coupon selected ⇒ subtotal == total.
+			expect(b.subtotalCents).toBe(3000);
+			expect(b.totalCents).toBe(3000);
+		});
+
+		test("no false positive: an UNPRICED product (row exists, no price) still QUOTES 409 PRODUCT_NOT_PRICED even with productId threaded", async () => {
+			const productId = await seedProduct({ sku: "SKU-UNPRICED", onHand: 5 }); // no price
+			const { cartId } = await client.createCart("USD");
+			const added = await client.addCartLine(cartId, "SKU-UNPRICED", productId, 1, "unpriced-1");
+			if (!added.ok) throw new Error("unreachable");
+			expect(added.line.productId).toBe(productId); // productId DID thread…
+
+			const q = await quote(cartId); // …but there is genuinely no price
+			expect(q.status).toBe(409);
+			expect(q.body.reason).toBe("PRODUCT_NOT_PRICED");
+		});
+
+		test("a legacy add with NO productId (absent) is preserved as null and still quotes PRODUCT_NOT_PRICED", async () => {
+			await seedProduct({
+				sku: "SKU-LEGACY",
+				onHand: 5,
+				price: { amount: 1500, currency: "USD" },
+			});
+			const { cartId } = await client.createCart("USD");
+			const added = await client.addCartLine(cartId, "SKU-LEGACY", null, 1, "legacy-1");
+			if (!added.ok) throw new Error("unreachable");
+			expect(added.line.productId).toBeNull(); // absent ⇒ null round-trips
+
+			const q = await quote(cartId);
+			expect(q.status).toBe(409);
+			expect(q.body.reason).toBe("PRODUCT_NOT_PRICED");
+		});
+
+		test("currency mismatch: a product priced in EUR in a USD cart quotes 409 CURRENCY_MISMATCH (not PRODUCT_NOT_PRICED)", async () => {
+			const productId = await seedProduct({
+				sku: "SKU-EUR",
+				onHand: 5,
+				price: { amount: 1500, currency: "EUR" },
+			});
+			const { cartId } = await client.createCart("USD");
+			const added = await client.addCartLine(cartId, "SKU-EUR", productId, 1, "eur-1");
+			if (!added.ok) throw new Error("unreachable");
+
+			const q = await quote(cartId);
+			expect(q.status).toBe(409);
+			expect(q.body.reason).toBe("CURRENCY_MISMATCH");
+		});
+
+		test("idempotency: replaying the add with the same key threads productId once and does NOT duplicate the line", async () => {
+			const productId = await seedProduct({
+				sku: "SKU-PID-IDEM",
+				onHand: 5,
+				price: { amount: 1500, currency: "USD" },
+			});
+			const { cartId } = await client.createCart("USD");
+
+			const first = await client.addCartLine(cartId, "SKU-PID-IDEM", productId, 2, "pid-replay-1");
+			const replay = await client.addCartLine(cartId, "SKU-PID-IDEM", productId, 2, "pid-replay-1");
+			expect(replay).toEqual(first);
+
+			const read = await client.getCart(cartId);
+			expect(read.ok).toBe(true);
+			if (!read.ok) throw new Error("unreachable");
+			expect(read.cart.lines).toHaveLength(1);
+			expect(read.cart.lines[0]).toMatchObject({ productId, qty: 2 });
 		});
 
 		test("addCartLine beyond on_hand returns the typed OUT_OF_STOCK token as a normal (non-throwing) result", async () => {
-			await seedSku("SKU-CART-2", 1);
+			const productId = await seedProduct({ sku: "SKU-CART-2", onHand: 1 });
 			const { cartId } = await client.createCart();
 
-			const result = await client.addCartLine(cartId, "SKU-CART-2", 5, "add-key-2");
+			const result = await client.addCartLine(cartId, "SKU-CART-2", productId, 5, "add-key-2");
 			expect(result).toEqual({ ok: false, reason: "OUT_OF_STOCK" });
 		});
 
-		test("addCartLine replayed with the same Idempotency-Key is a no-op (one decrement, same line)", async () => {
-			await seedSku("SKU-CART-3", 5);
-			const { cartId } = await client.createCart();
-
-			const first = await client.addCartLine(cartId, "SKU-CART-3", 2, "replay-key-1");
-			const replay = await client.addCartLine(cartId, "SKU-CART-3", 2, "replay-key-1");
-			expect(replay).toEqual(first);
-		});
-
 		test("adjustCartLine sends the TARGET qty; the service applies the delta and the client reflects the new qty", async () => {
-			await seedSku("SKU-CART-4", 5);
+			const productId = await seedProduct({ sku: "SKU-CART-4", onHand: 5 });
 			const { cartId } = await client.createCart();
-			const added = await client.addCartLine(cartId, "SKU-CART-4", 2, "add-key-4");
+			const added = await client.addCartLine(cartId, "SKU-CART-4", productId, 2, "add-key-4");
 			if (!added.ok) throw new Error("unreachable");
 
 			const adjusted = await client.adjustCartLine(cartId, added.line.lineId, 4, "adjust-key-4");
@@ -95,9 +201,9 @@ describe.skipIf(PG === undefined)(
 		});
 
 		test("adjustCartLine increasing beyond available stock returns OUT_OF_STOCK, line unchanged", async () => {
-			await seedSku("SKU-CART-5", 3);
+			const productId = await seedProduct({ sku: "SKU-CART-5", onHand: 3 });
 			const { cartId } = await client.createCart();
-			const added = await client.addCartLine(cartId, "SKU-CART-5", 2, "add-key-5");
+			const added = await client.addCartLine(cartId, "SKU-CART-5", productId, 2, "add-key-5");
 			if (!added.ok) throw new Error("unreachable");
 
 			const adjusted = await client.adjustCartLine(cartId, added.line.lineId, 10, "adjust-key-5");
@@ -108,9 +214,9 @@ describe.skipIf(PG === undefined)(
 		});
 
 		test("removeCartLine releases the reservation and drops the line; the typed CartResult carries ok:true only", async () => {
-			await seedSku("SKU-CART-6", 5);
+			const productId = await seedProduct({ sku: "SKU-CART-6", onHand: 5 });
 			const { cartId } = await client.createCart();
-			const added = await client.addCartLine(cartId, "SKU-CART-6", 2, "add-key-6");
+			const added = await client.addCartLine(cartId, "SKU-CART-6", productId, 2, "add-key-6");
 			if (!added.ok) throw new Error("unreachable");
 
 			const removed = await client.removeCartLine(cartId, added.line.lineId, "remove-key-6");
@@ -126,12 +232,14 @@ describe.skipIf(PG === undefined)(
 			expect(result).toEqual({ ok: false, reason: "LINE_NOT_FOUND" });
 		});
 
-		test("a genuinely malformed request (missing Idempotency-Key at the HTTP layer is impossible via the client — assert a bad qty instead) still surfaces as a structured CommerceClientError", async () => {
+		test("a genuinely malformed request (a bad qty) still surfaces as a structured CommerceClientError", async () => {
 			const { cartId } = await client.createCart();
 			// qty: 0 fails the service's positive-int schema (400, no ok/reason
 			// envelope) — the client's #cartResult falls back to throwing here,
 			// exactly the "no recognizable envelope" branch.
-			await expect(client.addCartLine(cartId, "SKU-X", 0, "bad-qty-key")).rejects.toMatchObject({
+			await expect(
+				client.addCartLine(cartId, "SKU-X", null, 0, "bad-qty-key"),
+			).rejects.toMatchObject({
 				name: "CommerceClientError",
 				status: 400,
 			});

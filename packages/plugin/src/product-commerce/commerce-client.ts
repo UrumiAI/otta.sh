@@ -116,6 +116,10 @@ export interface CommerceClient {
 	addCartLine(
 		cartId: string,
 		sku: string,
+		/** The CMS content id (the join key to `product_commerce`) so the line can
+		 *  be priced/quoted/ordered — issue #80. `null` for a bare (legacy) add that
+		 *  has no product reference; the wire OMITS the field when null. */
+		productId: string | null,
 		qty: number,
 		idempotencyKey: string,
 	): Promise<CartResult<{ line: CartLineWire }>>;

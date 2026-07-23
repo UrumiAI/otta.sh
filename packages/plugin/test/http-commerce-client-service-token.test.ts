@@ -67,7 +67,7 @@ async function driveAll(client: HttpCommerceClient): Promise<void> {
 	await client.getCommerceBatch(["p1"]); // POST read (gated!)
 	await client.createCart("USD"); // POST
 	await client.getCart("c1"); // GET
-	await client.addCartLine("c1", "S", 1, "k5"); // POST
+	await client.addCartLine("c1", "S", "p1", 1, "k5"); // POST
 	await client.adjustCartLine("c1", "l1", 2, "k6"); // PATCH
 	await client.removeCartLine("c1", "l1", "k7"); // DELETE
 	await client.checkEntitlement({ orderId: "o1" }, "S"); // GET

@@ -39,6 +39,11 @@ export const POST: APIRoute = async (context) => {
 
 	const form = await context.request.formData();
 	const sku = formString(form.get("sku"));
+	// The CMS content id (join key to product_commerce) minted into the PDP
+	// add-to-cart slot — forwarded so the cart line is priceable/quotable/
+	// orderable (issue #80). Optional (a legacy form without it still adds a
+	// bare line); when blank/absent it is simply not threaded.
+	const productId = formString(form.get("productId"));
 	const idempotencyKey = formString(form.get("idempotencyKey"));
 	const returnTo = safeReturnPath(form.get("returnTo"), "/products");
 
@@ -63,7 +68,7 @@ export const POST: APIRoute = async (context) => {
 	const result = await dispatchUrumiRoute<CartLineMutationRouteResult<{ line: CartLineWire }>>(
 		handler,
 		STOREFRONT_CART_LINE_ADD_ROUTE,
-		{ cartId, sku, qty, idempotencyKey },
+		{ cartId, sku, qty, idempotencyKey, ...(productId !== undefined ? { productId } : {}) },
 		context.url,
 	);
 
