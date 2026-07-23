@@ -1,5 +1,11 @@
 import type { RouteHandler, SandboxedRouteContext } from "../types.js";
 import {
+	COUPONS_ACTION_IDS,
+	COUPONS_PAGE,
+	createCouponsPageHandler,
+	type CouponsPageInput,
+} from "./coupons-page.js";
+import {
 	createOrdersPageHandler,
 	ORDERS_ACTION_IDS,
 	ORDERS_PAGE,
@@ -64,6 +70,7 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 	const products = createProductsPageHandler();
 	const tax = createTaxPageHandler();
 	const shipping = createShippingPageHandler();
+	const coupons = createCouponsPageHandler();
 
 	return async (routeCtx, ctx) => {
 		const input = routeCtx.input;
@@ -91,6 +98,9 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 		if (type === "page_load" && page === SHIPPING_PAGE.path) {
 			return shipping(routeCtx as SandboxedRouteContext<ShippingPageInput>, ctx);
 		}
+		if (type === "page_load" && page === COUPONS_PAGE.path) {
+			return coupons(routeCtx as SandboxedRouteContext<CouponsPageInput>, ctx);
+		}
 
 		// 5. Action interactions (block_action/form_submit) carry an action_id and
 		// no page — route each page's actions to its handler. Every Orders/Products
@@ -111,6 +121,9 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 		}
 		if (actionId !== undefined && SHIPPING_ACTION_IDS.has(actionId)) {
 			return shipping(routeCtx as SandboxedRouteContext<ShippingPageInput>, ctx);
+		}
+		if (actionId !== undefined && COUPONS_ACTION_IDS.has(actionId)) {
+			return coupons(routeCtx as SandboxedRouteContext<CouponsPageInput>, ctx);
 		}
 
 		// 6. Fallback — em-dash house style for an unrecognized interaction.

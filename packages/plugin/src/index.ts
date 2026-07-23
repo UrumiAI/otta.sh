@@ -71,6 +71,15 @@ export {
 	SHIPPING_PAGE,
 	type ShippingPageInput,
 } from "./admin/shipping-page.js";
+export {
+	couponDiscountSummary,
+	couponUsesSummary,
+	couponWindowSummary,
+	COUPONS_ACTION_IDS,
+	COUPONS_PAGE,
+	createCouponsPageHandler,
+	type CouponsPageInput,
+} from "./admin/coupons-page.js";
 export { formatMinorUnitsInput, parseMinorUnitsInput } from "./admin/money-input.js";
 export { PRODUCT_COMMERCE_ROUTE } from "./admin/product-commerce-route.js";
 export type { ProductCommerceRouteInput } from "./admin/product-commerce-route.js";
