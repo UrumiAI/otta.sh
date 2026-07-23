@@ -10,6 +10,13 @@ afterEach(async () => {
 	for (const fn of cleanups.splice(0)) await fn();
 });
 
+/** POST /activate requests recorded by the stub, for a given product id (#82). */
+function activatePosts(stubServer: StubCommerceServer, id: string) {
+	return stubServer.requests.filter(
+		(r) => r.method === "POST" && r.url === `/products/${id}/commerce/activate`,
+	);
+}
+
 const EMPTY_ROW = {
 	productId: "prod-x",
 	sku: null,
@@ -163,5 +170,84 @@ describe("sync hooks — the headline (plan §1 / §6 step 7, under the workerd 
 		});
 
 		expect(stubServer.requests).toHaveLength(0);
+	});
+
+	// -- issue #82: afterSave activates an already-published product ------------
+	// The genuinely host-wired fix: `content:afterSave` fires on every document
+	// save and carries the content record's `status` (verified against
+	// `~/em-dash`: `ContentItem.status` is spread verbatim into the hook record by
+	// `contentItemToRecord`). When the saved product is CURRENTLY PUBLISHED, the
+	// hook activates the (possibly just-created) row through the DEDICATED,
+	// guarded `/activate` route — closing the "publish first, price later"
+	// ordering gap where `content:afterPublish` already fired before the row
+	// existed. Best-effort; a soft-deleted row is protected by the store's
+	// activate no-op (store-contract invariant), not re-checked here.
+
+	test("content:afterSave for a PUBLISHED product activates the row in the same sync (closes #82 ordering gap)", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+		stubServer.respondWith("PUT", () => ({ status: 200, body: EMPTY_ROW }));
+		stubServer.respondWith("POST", () => ({ status: 200, body: { ok: true } }));
+
+		const outcome = await sandboxHandle.invokeHook("content:afterSave", {
+			content: { id: "prod-pub", updatedAt: "2026-07-11T09:00:00.000Z", status: "published" },
+			collection: "products",
+			isNew: false,
+		});
+		expect(outcome).toEqual({ result: null });
+
+		// Upsert first (bare, no commercial fields)…
+		const puts = stubServer.requests.filter((r) => r.method === "PUT");
+		expect(puts).toHaveLength(1);
+		expect(puts[0]?.url).toBe("/products/prod-pub/commerce");
+		// …then the guarded activate carrying the ordering watermark.
+		const acts = activatePosts(stubServer, "prod-pub");
+		expect(acts).toHaveLength(1);
+		expect(acts[0]?.body).toEqual({ contentUpdatedAt: "2026-07-11T09:00:00.000Z" });
+		expect(acts[0]?.headers["idempotency-key"]).toBeTruthy();
+	});
+
+	test("content:afterSave for a DRAFT (unpublished) product does NOT activate — the row stays inactive until publish", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+		stubServer.respondWith("PUT", () => ({ status: 200, body: EMPTY_ROW }));
+		stubServer.respondWith("POST", () => ({ status: 200, body: { ok: true } }));
+
+		await sandboxHandle.invokeHook("content:afterSave", {
+			content: { id: "prod-draft", updatedAt: "2026-07-11T09:00:00.000Z", status: "draft" },
+			collection: "products",
+			isNew: false,
+		});
+		// …and when the record carries no status at all.
+		await sandboxHandle.invokeHook("content:afterSave", {
+			content: { id: "prod-nostatus", updatedAt: "2026-07-11T09:00:00.000Z" },
+			collection: "products",
+			isNew: false,
+		});
+
+		expect(activatePosts(stubServer, "prod-draft")).toHaveLength(0);
+		expect(activatePosts(stubServer, "prod-nostatus")).toHaveLength(0);
+	});
+
+	test("content:afterSave activation reuses the publish idempotency key — it converges with content:afterPublish (one applied flip)", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+		stubServer.respondWith("PUT", () => ({ status: 200, body: EMPTY_ROW }));
+		stubServer.respondWith("POST", () => ({ status: 200, body: { ok: true } }));
+
+		const event = {
+			content: { id: "prod-conv", updatedAt: "2026-07-11T09:00:00.000Z", status: "published" },
+			collection: "products",
+			isNew: false,
+		};
+		// afterSave twice AND the real afterPublish for the SAME updatedAt — every
+		// activate must carry the identical Idempotency-Key so the store dedupes.
+		await sandboxHandle.invokeHook("content:afterSave", event);
+		await sandboxHandle.invokeHook("content:afterSave", event);
+		await sandboxHandle.invokeHook("content:afterPublish", {
+			content: event.content,
+			collection: "products",
+		});
+
+		const keys = activatePosts(stubServer, "prod-conv").map((r) => r.headers["idempotency-key"]);
+		expect(keys.length).toBeGreaterThanOrEqual(2);
+		expect(new Set(keys).size).toBe(1); // all identical → one applied flip.
 	});
 });

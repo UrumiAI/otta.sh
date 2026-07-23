@@ -5,6 +5,7 @@ import {
 	type UpsertProductCommerceInput,
 } from "../product-commerce/commerce-client.js";
 import type { RouteHandler } from "../types.js";
+import { normalizeWatermark } from "../sync/normalize-watermark.js";
 
 /** The non-public route path the panel's Save action posts to (plan §5). */
 export const PRODUCT_COMMERCE_ROUTE = "product-commerce";
@@ -30,6 +31,29 @@ export interface ProductCommerceRouteInput {
 	lengthMm?: unknown;
 	widthMm?: unknown;
 	heightMm?: unknown;
+	/**
+	 * Whether the CMS content this panel is pricing is CURRENTLY PUBLISHED
+	 * (issue #82). Threaded from the current document the SAME way `productId`
+	 * is — the panel-state route bakes it (plus `contentUpdatedAt`) into the
+	 * Save button's `value`, and the host echoes that `value` back into this
+	 * route's input on submit (em-dash `ButtonElement.value` → `BlockAction.value`,
+	 * the documented alternate to host document-context threading; see the
+	 * handler doc / `product-data-widget.ts`).
+	 *
+	 * WHY it exists: activation is otherwise driven ONLY by
+	 * `content:afterPublish` → `activateProductCommerce`. When a product is
+	 * published BEFORE it is priced, that hook already fired (and no-op'd —
+	 * the row did not exist yet), so a later pricing write would leave the row
+	 * `active=false` with no path to active until a manual unpublish→republish
+	 * (issue #82). When this flag is `true`, the handler issues an explicit,
+	 * guarded `/activate` in the same operation so the PDP becomes purchasable
+	 * without a republish.
+	 */
+	contentPublished?: unknown;
+	/** The current CMS content's `updatedAt` — the ORDERING WATERMARK the store
+	 *  gates the publish flip on (a stale, out-of-order activate is a no-op).
+	 *  Same source/threading as `contentPublished`. */
+	contentUpdatedAt?: unknown;
 }
 
 export type ProductCommerceRouteResult =
@@ -197,6 +221,19 @@ export function createProductCommerceRouteHandler(): RouteHandler<ProductCommerc
 		const key = derivePanelIdempotencyKey(productId, body);
 		try {
 			const row = await client.upsertProductCommerce(productId, body, key);
+			// Issue #82: a "publish first, price later" product is published BEFORE
+			// its row exists, so `content:afterPublish` → activate already no-op'd
+			// (unknown product_id) and nothing else flips `active`. When the panel
+			// reports the content is CURRENTLY PUBLISHED, activate the just-priced
+			// row in the SAME operation via the DEDICATED, guarded `/activate` route
+			// — never a field on the blanket upsert. Routing through `activate`
+			// preserves the load-bearing invariant that a SOFT-DELETED row is never
+			// resurrected (the store's `activate` no-ops on a tombstone; proven by
+			// the store-contract "activate of a SOFT-DELETED product does NOT
+			// resurrect it"). Best-effort, exactly like the fire-and-forget sync
+			// hooks: the row is durably priced regardless, and a failed activation
+			// self-heals on the next publish/price — it must never fail the save.
+			await activateIfPublished(client, productId, input);
 			return { ok: true, productCommerce: row };
 		} catch (err) {
 			// Review F2: the service's structured 409 SKU_TAKEN becomes a
@@ -211,6 +248,40 @@ export function createProductCommerceRouteHandler(): RouteHandler<ProductCommerc
 			throw err;
 		}
 	};
+}
+
+/**
+ * Issue #82 activation seam: when the panel reports the content is CURRENTLY
+ * PUBLISHED, flip the just-priced row `active=true` via the guarded
+ * `/activate` action route so the PDP is purchasable without a republish.
+ *
+ * Best-effort by design (mirrors the fire-and-forget sync hooks): the row is
+ * already durably priced, so a network failure / non-2xx is logged, never
+ * thrown — it must not fail the pricing save. A missing/false publish flag or
+ * an unparseable watermark skips activation entirely (no ungated flip): an
+ * unpublished product's row correctly stays inactive until `content:afterPublish`
+ * fires.
+ */
+async function activateIfPublished(
+	client: HttpCommerceClient,
+	productId: string,
+	input: ProductCommerceRouteInput,
+): Promise<void> {
+	if (input.contentPublished !== true) return;
+	const watermark = normalizeWatermark(input.contentUpdatedAt);
+	if (watermark === undefined) return;
+	// Stable per-(product, watermark) key: a replay of the SAME pricing
+	// submission derives the SAME key, so the store dedupes to one applied flip
+	// (and an already-active row is a stable no-op regardless of key).
+	const key = `${productId}:panel-activate:${watermark}`;
+	try {
+		await client.activateProductCommerce(productId, key, watermark);
+	} catch (err) {
+		console.error(
+			`[urumi] product-commerce panel activate failed for product_id=${productId} (row is priced but not yet active — self-heals on the next publish/price):`,
+			err,
+		);
+	}
 }
 
 function isSkuTaken(body: unknown): body is { error: "SKU_TAKEN"; sku: string } {

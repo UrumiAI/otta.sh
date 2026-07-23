@@ -298,4 +298,59 @@ describe('"Product data" widget + save route (plan §6 step 8)', () => {
 		// anywhere in packages/plugin/src — is the `plugin-is-sandbox-clean`
 		// dependency-cruiser rule, wired into `pnpm lint` (.dependency-cruiser.cjs).
 	});
+
+	// -- issue #82: "priced but not active" indicator (option 2) --------------
+	test("a priced-but-INACTIVE row shows a disabled 'priced but not active' notice with the republish remedy (#82 option 2)", () => {
+		const els = buildProductDataElements({
+			hasProductId: true,
+			commerce: commerceRow({ active: false }),
+		});
+		const notice = els.find((el) => el.action_id === "pricedInactiveNotice");
+		expect(notice).toBeDefined();
+		expect((notice as { disabled?: boolean }).disabled).toBe(true);
+		expect((notice as { label: string }).label).toMatch(/priced but not active/i);
+		expect((notice as { placeholder?: string }).placeholder).toMatch(/publish/i);
+	});
+
+	test("an ACTIVE priced row shows NO notice (the storefront can sell it)", () => {
+		const els = buildProductDataElements({
+			hasProductId: true,
+			commerce: commerceRow({ active: true }),
+		});
+		expect(els.find((el) => el.action_id === "pricedInactiveNotice")).toBeUndefined();
+	});
+
+	test("an inactive but UNPRICED row shows NO notice (not yet sellable for a legitimate reason)", () => {
+		const els = buildProductDataElements({
+			hasProductId: true,
+			commerce: commerceRow({ active: false, sku: "SKU-1", price: null }),
+		});
+		expect(els.find((el) => el.action_id === "pricedInactiveNotice")).toBeUndefined();
+	});
 });
+
+/** The subset of the plugin's `ProductCommerce` the widget reads — imported
+ *  structurally so the test row stays in lockstep with the real shape. */
+type ProductCommerceForWidget = NonNullable<
+	Parameters<typeof buildProductDataElements>[0]["commerce"]
+>;
+
+function commerceRow(overrides: Partial<ProductCommerceForWidget> = {}): ProductCommerceForWidget {
+	return {
+		productId: "prod-1",
+		sku: "SKU-1",
+		price: { amount: 1500, currency: "USD" },
+		taxClass: null,
+		weightGrams: null,
+		lengthMm: null,
+		widthMm: null,
+		heightMm: null,
+		productKind: "physical",
+		active: true,
+		deletedAt: null,
+		contentUpdatedAt: null,
+		createdAt: "2026-07-10T00:00:00.000Z",
+		updatedAt: "2026-07-10T00:00:00.000Z",
+		...overrides,
+	};
+}

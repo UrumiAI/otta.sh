@@ -16,6 +16,19 @@ export interface ProductDataWidgetState {
 	/** `event.isNew` / absence of `content.id` on the editor side (plan §5). */
 	hasProductId: boolean;
 	commerce?: ProductCommerce | null;
+	/**
+	 * Whether the CMS content being priced is CURRENTLY PUBLISHED (issue #82).
+	 * Baked into the Save button's `value` so the panel Save round-trips it back
+	 * to the `product-commerce` route (em-dash `ButtonElement.value` →
+	 * `BlockAction.value`), which then activates the just-priced row in the same
+	 * operation — no manual unpublish→republish. Undefined ⇒ the host did not
+	 * thread a publish signal ⇒ the button carries none ⇒ the route does not
+	 * activate (the row stays inactive until `content:afterPublish`).
+	 */
+	published?: boolean;
+	/** The content's `updatedAt` ordering watermark paired with `published`
+	 *  (issue #82) — carried alongside it in the Save button `value`. */
+	contentUpdatedAt?: string;
 }
 
 /**
@@ -56,8 +69,30 @@ export function buildProductDataElements(state: ProductDataWidgetState): Element
 
 	const commerce = state.commerce ?? null;
 	const hasSku = commerce?.sku !== null && commerce?.sku !== undefined;
+	const hasPrice = commerce?.price !== null && commerce?.price !== undefined;
 
-	const elements: Element[] = [
+	const elements: Element[] = [];
+
+	// Issue #82 (option 2): a lightweight "priced but not active" indicator.
+	// When the row is commerce-complete (sku + price set) yet `active=false`, the
+	// storefront PDP shows "Not currently available" with no admin signal — a
+	// narrow re-creation of #82 whenever activation is lost (e.g. a best-effort
+	// activate failed, or the host never carried the publish signal). Surface it
+	// so the merchant knows the remedy (publish / re-publish). Rendered as a
+	// disabled input because a sandboxed field widget only renders input-like
+	// elements (a static banner would show as "Unsupported element"); it carries
+	// no editable value and the route ignores its `action_id`.
+	if (hasSku && hasPrice && commerce?.active === false) {
+		elements.push({
+			type: "text_input",
+			action_id: "pricedInactiveNotice",
+			label: "⚠ Priced but not active — not yet purchasable",
+			placeholder: "Publish (or re-publish) this product to make it available on the storefront.",
+			disabled: true,
+		});
+	}
+
+	elements.push(
 		{
 			type: "text_input",
 			action_id: "sku",
@@ -137,8 +172,26 @@ export function buildProductDataElements(state: ProductDataWidgetState): Element
 				? { initial_value: commerce.heightMm }
 				: {}),
 		},
-		{ type: "button", action_id: "save", label: "Save" },
-	];
+		{
+			type: "button",
+			action_id: "save",
+			label: "Save",
+			// Issue #82: carry the CURRENT publish state back to the product-commerce
+			// route so a "publish first, price later" product is activated on save
+			// (no republish). Only attached when the host threaded a publish signal;
+			// absent ⇒ the route does not activate.
+			...(state.published !== undefined
+				? {
+						value: {
+							contentPublished: state.published,
+							...(state.contentUpdatedAt !== undefined
+								? { contentUpdatedAt: state.contentUpdatedAt }
+								: {}),
+						},
+					}
+				: {}),
+		},
+	);
 	return elements;
 }
 
