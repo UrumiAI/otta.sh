@@ -88,27 +88,79 @@ export interface OrderStore {
 
 	/**
 	 * Record a refund in the append-only ledger with the ceiling enforced
-	 * ATOMICALLY (ADR-0008). The whole operation runs in ONE transaction that
-	 * FIRST locks the `orders` row (a guarded touch — the serialization point, so
-	 * N concurrent refunds on the same order can never both read a stale `Σ` and
-	 * over-shoot the ceiling; sqlite serializes writes so the touch is a harmless
-	 * no-op there). Under the lock it:
+	 * ATOMICALLY (ADR-0008), as a one-shot **finalized** (`status:"recorded"`)
+	 * row — the MANUAL/record-only path, where no gateway leg exists (x402 /
+	 * no-secret). The gateway path must NOT use this: it goes through the
+	 * **reserve-before-issue** pair (`reserveRefund` → gateway → `finalizeRefund`)
+	 * so ceiling arbitration always precedes issuance. The whole operation runs
+	 * in ONE transaction that FIRST locks the `orders` row (a guarded touch — the
+	 * serialization point, so N concurrent refunds on the same order can never
+	 * both read a stale `Σ` and over-shoot the ceiling; sqlite serializes writes
+	 * so the touch is a harmless no-op there). Under the lock it:
 	 *  1. dedupes on `UNIQUE(idempotency_key)` — a replay records nothing and
 	 *     returns the existing row (`outcome:"duplicate"`);
 	 *  2. computes the ceiling `min(Σ captured payments, order_totals.total)` and
-	 *     rejects if `Σ refunds + amount` would exceed it (`outcome:"exceeds_ceiling"`,
-	 *     carrying `capturedTotal`/`frozenTotal` so the use-case picks
-	 *     `REFUND_EXCEEDS_CAPTURED` vs `REFUND_EXCEEDS_TOTAL`);
-	 *  3. inserts the ledger row; and when `Σ` reaches the ceiling (a FULL refund)
-	 *     drives the `→ refunded` transition through the SAME `#flipAndEnqueue`
-	 *     choke point (guarded flip + `order-refunded` email + state-change audit
-	 *     event), so the `refunded` state, the email, and the ledger row commit
-	 *     together — no reachable "refunded but no refund recorded" state. A
+	 *     rejects if `Σ ACTIVE refunds + amount` would exceed it (ACTIVE = every
+	 *     non-`voided` row: finalized rows AND held reservations/unverified rows
+	 *     all consume ceiling capacity) — `outcome:"exceeds_ceiling"`, carrying
+	 *     the authoritative in-transaction `capturedTotal`/`frozenTotal` so the
+	 *     use-case picks `REFUND_EXCEEDS_CAPTURED` vs `REFUND_EXCEEDS_TOTAL`;
+	 *  3. inserts the ledger row; and when the **finalized** `Σ` reaches the
+	 *     ceiling (a FULL refund) drives the `→ refunded` transition through the
+	 *     SAME `#flipAndEnqueue` choke point (guarded flip + `order-refunded`
+	 *     email + state-change audit event), so the `refunded` state, the email,
+	 *     and the ledger row commit together — no reachable "refunded but no
+	 *     refund recorded" state. A held reservation NEVER drives the flip. A
 	 *     partial refund records the row and does NOT transition (the derived
 	 *     "partially refunded" badge lives in the read model). NEVER touches
 	 *     `order_items`/`order_totals` (the snapshot invariant).
 	 */
 	recordRefund(input: RecordRefundInput): Promise<RecordRefundStoreResult>;
+
+	/**
+	 * RESERVE a refund's ledger slot BEFORE any gateway issuance (ADR-0008,
+	 * reserve-before-issue). Identical atomic shape to `recordRefund` — same
+	 * row lock, same dedupe, same ACTIVE-sum ceiling arbitration — but the row is
+	 * inserted `status:"reserved"` and the `→ refunded` flip is NEVER driven (a
+	 * reservation is not money moved). This is the arbitration point for the
+	 * gateway path: a caller whose reservation is rejected (`exceeds_ceiling`)
+	 * NEVER reaches the provider, so no interleaving can issue a refund the
+	 * ledger then refuses to record — money cannot leave the provider without a
+	 * ledger row already holding its capacity.
+	 */
+	reserveRefund(input: RecordRefundInput): Promise<RecordRefundStoreResult>;
+
+	/**
+	 * FINALIZE a reserved refund after the gateway confirmed issuance (ADR-0008):
+	 * stamp the provider `refundRef`, flip the row `reserved|unverified →
+	 * recorded`, and — when the FINALIZED `Σ` now reaches the ceiling — drive the
+	 * `→ refunded` transition through `#flipAndEnqueue`, all in ONE transaction
+	 * under the same `orders` row lock as the reserve. Finalize can never fail
+	 * arbitration: the reservation already holds the capacity. `found:false` ⇒
+	 * no reserved/unverified row exists under the key (impossible by
+	 * construction on the orchestrated path — the use-case treats it as a loud
+	 * anomaly, never a silent drop of the provider refundRef).
+	 */
+	finalizeRefund(input: FinalizeRefundInput): Promise<FinalizeRefundStoreResult>;
+
+	/**
+	 * VOID a reservation whose gateway leg definitively did NOT issue (a
+	 * pre-flight fail-closed, a terminal provider rejection, or a declared
+	 * UNSUPPORTED): guarded `reserved → voided` flip. A voided row RELEASES its
+	 * ceiling capacity (excluded from the ACTIVE sum) but stays in the ledger as
+	 * an audit record of the attempt. False ⇒ no reserved row under the key.
+	 */
+	voidRefund(idempotencyKey: IdempotencyKey): Promise<boolean>;
+
+	/**
+	 * Mark a reservation UNVERIFIED after an ambiguous gateway outcome (the
+	 * errored `refunds.create` whose fate is unknown, ADR-0008): guarded
+	 * `reserved → unverified` flip. An unverified row KEEPS holding its ceiling
+	 * capacity — the safe direction: if the provider did process it, the ledger
+	 * already bounds it; the admin re-checks the provider before anything is
+	 * retried or released. False ⇒ no reserved row under the key.
+	 */
+	markRefundUnverified(idempotencyKey: IdempotencyKey): Promise<boolean>;
 	/** Flag an order for manual reconciliation (§5 loud anomaly); idempotent. */
 	flagReconciliation(orderId: OrderId, detail: string): Promise<void>;
 	/**
@@ -594,7 +646,8 @@ export interface CapturedPayment {
 
 /** A refund row (ADR-0008). `kind:"gateway"` carries the provider `refundRef`
  *  (money actually moved); `kind:"manual"` has `refundRef:null` (an out-of-band
- *  return the admin recorded — x402's honest degraded path). */
+ *  return the admin recorded — x402's honest degraded path). `status` is the
+ *  row's reserve-before-issue lifecycle — see {@link RefundStatus}. */
 export interface RefundRecord {
 	id: string;
 	orderId: OrderId;
@@ -605,11 +658,49 @@ export interface RefundRecord {
 	refundRef: string | null;
 	reason: string | null;
 	refundedBy: string;
+	status: RefundStatus;
 	idempotencyKey: IdempotencyKey;
 	createdAt: string;
 }
 
 export type RefundKind = "gateway" | "manual";
+
+/**
+ * A refund row's lifecycle (ADR-0008, reserve-before-issue):
+ *  - `recorded`   — FINALIZED: money moved (gateway, `refundRef` set) or an
+ *    out-of-band return was recorded (manual). Counts toward the finalized `Σ`
+ *    that drives the full-refund `→ refunded` flip.
+ *  - `reserved`   — the ledger slot is held (ceiling arbitration won) but the
+ *    gateway leg has not confirmed yet. Holds ceiling capacity; never drives
+ *    the state flip. A crash here is resumable (same key re-issues, Stripe's
+ *    native idempotency dedupes provider-side).
+ *  - `unverified` — the gateway leg ended AMBIGUOUS (timeout, fate unknown).
+ *    KEEPS holding capacity — the safe direction — until a human re-checks the
+ *    provider. Never drives the flip.
+ *  - `voided`     — the gateway leg definitively did not issue (fail-closed
+ *    pre-flight / terminal rejection). Capacity RELEASED; kept as an audit
+ *    record of the attempt.
+ * Ceiling arbitration counts every non-`voided` row (`recorded` + `reserved` +
+ * `unverified` — the ACTIVE sum); the `→ refunded` flip counts `recorded` only.
+ */
+export type RefundStatus = "recorded" | "reserved" | "unverified" | "voided";
+
+/** Finalize a reserved refund with the gateway's confirmed `refundRef`. */
+export interface FinalizeRefundInput {
+	idempotencyKey: IdempotencyKey;
+	refundRef: string;
+}
+
+/** `found:false` ⇒ no reserved/unverified row under the key (impossible by
+ *  construction on the orchestrated path; the use-case surfaces it LOUDLY).
+ *  `fullyRefunded` ⇒ the finalized `Σ` reached the ceiling and this finalize
+ *  drove the `→ refunded` flip. */
+export interface FinalizeRefundStoreResult {
+	found: boolean;
+	refund: RefundRecord | null;
+	fullyRefunded: boolean;
+	order: Order | null;
+}
 
 /** The store-level record-refund command (ADR-0008). `amount`/`currency` are
  *  already validated (currency-consistent, positive) by the use-case; the gateway

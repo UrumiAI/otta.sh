@@ -151,6 +151,10 @@ export function createApp(deps: AppDeps): Hono {
 			// ADR-0008: the refund endpoint selects the order's gateway to issue
 			// (Stripe) or record-only (x402/no-secret) and reads its capability flag.
 			gateways: deps.gateways,
+			// ADR-0008 reserve-before-issue: the loud-anomaly seam + clock for the
+			// impossible-by-construction "issued but unrecorded" residual.
+			paymentEventStore: deps.paymentEventStore,
+			clock: deps.clock,
 			internalToken: deps.internalToken,
 		}),
 	);

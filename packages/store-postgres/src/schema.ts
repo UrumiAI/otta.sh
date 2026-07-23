@@ -319,6 +319,10 @@ export interface RefundsTable {
 	reason: string | null;
 	refunded_by: string;
 	idempotency_key: string;
+	/** Reserve-before-issue lifecycle (ADR-0008): 'recorded' | 'reserved' |
+	 *  'unverified' | 'voided'. Ceiling counts non-'voided'; the flip counts
+	 *  'recorded'. */
+	status: string;
 	created_at: string;
 }
 

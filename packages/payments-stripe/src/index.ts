@@ -366,7 +366,12 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 				return { ok: false, class: "retryable" }; // network error — read issued nothing
 			}
 			if (!res.ok) {
-				return { ok: false, class: res.status >= 500 ? "retryable" : "terminal" };
+				// 429 (rate-limited) is a transient throttle that issued nothing — RETRYABLE,
+				// not a terminal 4xx. A 5xx is likewise retryable on a READ.
+				return {
+					ok: false,
+					class: res.status >= 500 || res.status === 429 ? "retryable" : "terminal",
+				};
 			}
 			let body: unknown;
 			try {
@@ -407,8 +412,11 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 				return { ok: false, class: "ambiguous" };
 			}
 			if (!res.ok) {
-				// A 5xx on a CREATE is ambiguous (Stripe may have processed it); a 4xx is
-				// a definite terminal rejection.
+				// 429 (rate-limited) is throttled at Stripe's gate BEFORE the refund is
+				// processed — a transient RETRYABLE, safe to re-issue under the same native
+				// key. A 5xx on a CREATE is ambiguous (Stripe may have processed it); any
+				// other 4xx is a definite terminal rejection.
+				if (res.status === 429) return { ok: false, class: "retryable" };
 				return { ok: false, class: res.status >= 500 ? "ambiguous" : "terminal" };
 			}
 			let body: unknown;

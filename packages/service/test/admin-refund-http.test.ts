@@ -245,6 +245,84 @@ describe.skipIf(PG === undefined)("admin refund HTTP contract (Stripe, refundabl
 			await gated.stop();
 		}
 	});
+
+	test("ambiguous gateway timeout → 409 GATEWAY_UNVERIFIED end-to-end; reservation HELD (capacity kept), order NOT flipped, replay re-surfaces it", async () => {
+		// The reserve-before-issue seam through the REAL Stripe adapter: the create
+		// errors with an unknown fate (5xx/timeout → `ambiguous` → UNVERIFIED). The
+		// reservation is marked `unverified` and KEEPS holding its ceiling capacity
+		// (the safe direction) — the money's fate must be re-checked at the provider,
+		// never blind-retried. Previously proven only adapter-side; now driven over HTTP.
+		const gated = await startTestServer({
+			stripeSecretKey: "sk_test",
+			stripeTransport: (() => {
+				const t = new StubTransport();
+				// Pre-flight is clean; the CREATE is the ambiguous one.
+				t.createRefund = async (): Promise<StripeCreateRefundResult> => ({
+					ok: false,
+					class: "ambiguous",
+				});
+				return t;
+			})(),
+		});
+		try {
+			const tk = gated.internalToken as string;
+			await gated.seedOrder({
+				id: "ord-amb",
+				state: "paid",
+				currency: "USD",
+				buyerRef: "b@example.com",
+				paymentMethod: "stripe",
+				createdAt: "2026-07-10T00:00:00.000Z",
+				totalCents: 1000,
+			});
+			await gated.seedPayment({
+				orderId: "ord-amb",
+				gateway: "stripe",
+				providerRef: "pi_amb",
+				amountCents: 1000,
+				currency: "USD",
+			});
+			const res = await fetch(`${gated.baseUrl}/admin/orders/ord-amb/refund`, {
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+					"X-Internal-Token": tk,
+					"Idempotency-Key": "rf-amb",
+				},
+				body: JSON.stringify({ amountCents: 1000, currency: "USD", refundedBy: "ops" }),
+			});
+			expect(res.status).toBe(409);
+			expect((await json(res)).reason).toBe("GATEWAY_UNVERIFIED");
+
+			// The held reservation consumes the ceiling (remaining 0) but the order was
+			// NOT flipped to refunded — the money is unverified, not confirmed.
+			const after = await json(
+				await fetch(`${gated.baseUrl}/admin/orders/ord-amb/refunds`, {
+					headers: { "X-Internal-Token": tk },
+				}),
+			);
+			expect(after.refundedTotalCents, "unverified reservation HOLDS capacity").toBe(1000);
+			expect(after.remainingCents).toBe(0);
+			const refunds = after.refunds as Array<Record<string, unknown>>;
+			expect(refunds).toHaveLength(1);
+			expect(refunds[0]?.status).toBe("unverified");
+
+			// A same-key replay re-surfaces GATEWAY_UNVERIFIED — never a blind re-issue.
+			const replay = await fetch(`${gated.baseUrl}/admin/orders/ord-amb/refund`, {
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+					"X-Internal-Token": tk,
+					"Idempotency-Key": "rf-amb",
+				},
+				body: JSON.stringify({ amountCents: 1000, currency: "USD", refundedBy: "ops" }),
+			});
+			expect(replay.status).toBe(409);
+			expect((await json(replay)).reason).toBe("GATEWAY_UNVERIFIED");
+		} finally {
+			await gated.stop();
+		}
+	});
 });
 
 describe.skipIf(PG === undefined)("admin refund HTTP contract (x402, manual record-only)", () => {

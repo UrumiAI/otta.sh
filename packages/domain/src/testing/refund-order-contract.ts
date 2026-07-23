@@ -3,7 +3,7 @@ import { cents, currency as toCurrency } from "../money/cents.js";
 import { idempotencyKey, orderId as toOrderId, productId, sku } from "../money/ids.js";
 import type { OrderId } from "../money/ids.js";
 import type { PaymentMethod } from "../orders/model.js";
-import { refundOrder } from "../orders/refund-order.js";
+import { refundOrder, sumRefunds } from "../orders/refund-order.js";
 import type { OrderStore } from "../ports/order-store.js";
 import { FakePaymentGateway } from "./fake-payment-gateway.js";
 
@@ -248,7 +248,7 @@ export function refundOrderContract(
 			expect(gw.refundCalls).toHaveLength(0); // never called — capability, not discovery
 		});
 
-		test("a gateway PROVIDER_ALREADY_REFUNDED fails closed — nothing recorded", async () => {
+		test("a gateway PROVIDER_ALREADY_REFUNDED fails closed — reservation voided, capacity released", async () => {
 			const h = await makeHarness();
 			const id = await h.seedPaidOrder({ id: "ord-preflight", totalCents: 1000 });
 			const gw = new FakePaymentGateway({ id: "stripe" });
@@ -261,11 +261,126 @@ export function refundOrderContract(
 				idempotencyKey: idempotencyKey("rf-preflight"),
 			});
 			expect(res).toEqual({ ok: false, reason: "PROVIDER_ALREADY_REFUNDED" });
-			expect(await h.orderStore.listRefunds(id)).toHaveLength(0);
+			// Reserve-before-issue: the reservation was inserted then VOIDED (nothing
+			// issued). It stays as an audit row but releases its ceiling capacity — the
+			// ACTIVE Σ is 0 and the order never flipped.
+			const ledger = await h.orderStore.listRefunds(id);
+			expect(ledger.every((r) => r.status === "voided")).toBe(true);
+			expect(sumRefunds(ledger), "voided rows release capacity").toBe(0);
 			expect((await h.orderStore.getById(id))?.state).toBe("paid");
+			// Capacity released ⇒ a FRESH full refund (distinct key) now succeeds.
+			const retry = await refundOrder(
+				{ orderStore: h.orderStore },
+				new FakePaymentGateway({ id: "stripe" }),
+				{
+					orderId: id,
+					amount: cents(1000),
+					currency: USD,
+					refundedBy: "admin",
+					idempotencyKey: idempotencyKey("rf-preflight-retry"),
+				},
+			);
+			expect(retry.ok && retry.fullyRefunded).toBe(true);
 		});
 
-		test("refunding an unpaid order (no captured payment) is rejected, ceiling 0", async () => {
+		test("a terminal gateway rejection voids the reservation; an ambiguous timeout HOLDS it (capacity kept)", async () => {
+			const h = await makeHarness();
+			// TERMINAL → voided (capacity released).
+			const idT = await h.seedPaidOrder({ id: "ord-terminal", totalCents: 1000 });
+			const gwT = new FakePaymentGateway({ id: "stripe" });
+			gwT.setRefundResult({ ok: false, reason: "TERMINAL" });
+			const term = await refundOrder({ orderStore: h.orderStore }, gwT, {
+				orderId: idT,
+				amount: cents(400),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-terminal"),
+			});
+			expect(term).toEqual({ ok: false, reason: "GATEWAY_TERMINAL" });
+			expect(sumRefunds(await h.orderStore.listRefunds(idT))).toBe(0); // released
+
+			// UNVERIFIED (ambiguous timeout) → the row is HELD (unverified), keeps its
+			// ceiling capacity (the safe direction), and does NOT flip the order.
+			const idU = await h.seedPaidOrder({ id: "ord-unverified", totalCents: 1000 });
+			const gwU = new FakePaymentGateway({ id: "stripe" });
+			gwU.setRefundResult({ ok: false, reason: "UNVERIFIED" });
+			const unver = await refundOrder({ orderStore: h.orderStore }, gwU, {
+				orderId: idU,
+				amount: cents(1000),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-unverified"),
+			});
+			expect(unver).toEqual({ ok: false, reason: "GATEWAY_UNVERIFIED" });
+			const heldLedger = await h.orderStore.listRefunds(idU);
+			expect(heldLedger).toHaveLength(1);
+			expect(heldLedger[0]?.status).toBe("unverified");
+			expect(sumRefunds(heldLedger), "unverified HOLDS capacity").toBe(1000);
+			expect((await h.orderStore.getById(idU))?.state).toBe("paid"); // never flipped
+
+			// The held capacity BLOCKS a second full refund (distinct key) — the ceiling
+			// is already consumed by the unverified row until a human re-checks.
+			const blocked = await refundOrder(
+				{ orderStore: h.orderStore },
+				new FakePaymentGateway({ id: "stripe" }),
+				{
+					orderId: idU,
+					amount: cents(1000),
+					currency: USD,
+					refundedBy: "admin",
+					idempotencyKey: idempotencyKey("rf-unverified-2"),
+				},
+			);
+			expect(blocked).toEqual({ ok: false, reason: "REFUND_EXCEEDS_TOTAL" });
+			// A same-key replay of the unverified refund re-surfaces GATEWAY_UNVERIFIED
+			// (re-check the provider; NEVER a blind re-issue).
+			const replay = await refundOrder({ orderStore: h.orderStore }, gwU, {
+				orderId: idU,
+				amount: cents(1000),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-unverified"),
+			});
+			expect(replay).toEqual({ ok: false, reason: "GATEWAY_UNVERIFIED" });
+		});
+
+		test("a transient RETRYABLE keeps the reservation so a same-key retry resumes and finalizes it", async () => {
+			const h = await makeHarness();
+			const id = await h.seedPaidOrder({ id: "ord-retry", totalCents: 1000 });
+			const gw = new FakePaymentGateway({ id: "stripe" });
+			gw.setRefundResult({ ok: false, reason: "RETRYABLE" });
+			const first = await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: id,
+				amount: cents(1000),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-retry"),
+			});
+			expect(first).toEqual({ ok: false, reason: "GATEWAY_RETRYABLE" });
+			// The reservation is KEPT (still holding capacity), unflipped.
+			const held = await h.orderStore.listRefunds(id);
+			expect(held).toHaveLength(1);
+			expect(held[0]?.status).toBe("reserved");
+			expect((await h.orderStore.getById(id))?.state).toBe("paid");
+			// Same key retry, gateway now succeeds → RESUMES the existing reservation
+			// (no second reserved row) and finalizes it, flipping → refunded.
+			gw.setRefundResult({ ok: true, refundRef: "re_resumed", amount: cents(1000), currency: USD });
+			const resumed = await refundOrder({ orderStore: h.orderStore }, gw, {
+				orderId: id,
+				amount: cents(1000),
+				currency: USD,
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-retry"),
+			});
+			expect(resumed.ok && resumed.fullyRefunded).toBe(true);
+			const finalLedger = await h.orderStore.listRefunds(id);
+			expect(finalLedger, "still ONE row — the resumed reservation").toHaveLength(1);
+			expect(finalLedger[0]?.status).toBe("recorded");
+			expect(finalLedger[0]?.refundRef).toBe("re_resumed");
+			expect((await h.orderStore.getById(id))?.state).toBe("refunded");
+		});
+
+		test("refunding an unpaid order (no captured payment) is rejected before reserving", async () => {
 			const h = await makeHarness();
 			// Seed a paid order but with ZERO captured (no succeeded payment).
 			const oid = toOrderId("ord-unpaid");
@@ -300,7 +415,9 @@ export function refundOrderContract(
 				idempotencyKey: idempotencyKey("rf-unpaid"),
 			});
 			expect(res.ok).toBe(false);
-			if (!res.ok) expect(res.reason).toBe("REFUND_EXCEEDS_CAPTURED");
+			// A refundable gateway with NO succeeded payment to refund against is
+			// rejected at the issuable-target check — before any reservation exists.
+			if (!res.ok) expect(res.reason).toBe("NO_CAPTURED_PAYMENT");
 			expect(await h.orderStore.listRefunds(oid)).toHaveLength(0);
 			expect(gw.refundCalls).toHaveLength(0);
 		});

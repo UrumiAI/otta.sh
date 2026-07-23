@@ -17,13 +17,24 @@ import type { Migration } from "kysely/migration";
  *   - `reason`          — optional free-text reason (nullable)
  *   - `refunded_by`     — who issued/recorded it
  *   - `idempotency_key` — UNIQUE: the ledger dedupe AND (gateway) Stripe's native key
+ *   - `status`          — reserve-before-issue lifecycle (ADR-0008): 'recorded'
+ *                         (finalized — money moved / manual record), 'reserved'
+ *                         (slot held, gateway leg not yet confirmed), 'unverified'
+ *                         (ambiguous gateway outcome — capacity HELD pending a
+ *                         human re-check), 'voided' (gateway definitively did not
+ *                         issue — capacity RELEASED, kept as an audit row). The
+ *                         ceiling counts every non-'voided' row; the '→ refunded'
+ *                         flip counts 'recorded' only. Defaults to 'recorded' so
+ *                         the manual one-shot `recordRefund` path needs no change.
  *   - `created_at`      — ISO-8601 UTC (store clock)
  *
- * The ceiling `Σ refunds ≤ min(Σ captured payments, order_totals.total)` is
- * enforced in the domain/adapter guarded write (`recordRefund` locks the order
- * row, re-reads the sums, then inserts + optionally flips `→ refunded`), NOT by a
- * DB CHECK — the ceiling depends on live payment sums a column constraint cannot
- * see. `UNIQUE(idempotency_key)` is the structural once-only backstop. No hard FK
+ * The ceiling `Σ ACTIVE refunds ≤ min(Σ captured payments, order_totals.total)`
+ * (ACTIVE = every non-'voided' row: finalized rows AND held reservations) is
+ * enforced in the domain/adapter guarded write (reserve/record locks the order
+ * row, re-reads the sums, then inserts + — on finalize — optionally flips
+ * `→ refunded`), NOT by a DB CHECK — the ceiling depends on live payment sums a
+ * column constraint cannot see. `UNIQUE(idempotency_key)` is the structural
+ * once-only backstop. No hard FK
  * to `orders` — same rationale as `order_notes`/`order_events`: every read is
  * scoped by `order_id`. The composite index on `(order_id, created_at, id)` is
  * exactly the `listRefunds` order. Portable DDL via the Kysely schema builder so
@@ -43,6 +54,9 @@ export const migration0020Refunds: Migration = {
 			.addColumn("reason", "text")
 			.addColumn("refunded_by", "text", (col) => col.notNull())
 			.addColumn("idempotency_key", "text", (col) => col.notNull().unique())
+			// Reserve-before-issue lifecycle (ADR-0008). Defaults to 'recorded' so the
+			// manual one-shot path (which never sets it) reads as finalized.
+			.addColumn("status", "text", (col) => col.notNull().defaultTo("recorded"))
 			.addColumn("created_at", "text", (col) => col.notNull())
 			.execute();
 

@@ -2,6 +2,7 @@ import {
 	type AddressStore,
 	appendOrderNote,
 	cancelOrder,
+	type Clock,
 	computeRefundCeiling,
 	type CustomerStore,
 	getOrderCustomerContext,
@@ -20,6 +21,7 @@ import {
 	type OrderNotesStore,
 	type OrderState,
 	type OrderStore,
+	type PaymentEventStore,
 	type PaymentGateway,
 	type PaymentMethod,
 	type ProductCommerce,
@@ -85,6 +87,14 @@ export interface AdminRoutesDeps {
 	 *  the order's gateway to issue (Stripe) or record-only (x402/no-secret). The
 	 *  gateway's `refundable` flag drives the admin capability display. */
 	gateways: Partial<Record<PaymentMethod, PaymentGateway>>;
+	/** The loud-anomaly seam for the impossible-by-construction "gateway refund
+	 *  issued but its reserved ledger row could not be finalized" residual
+	 *  (ADR-0008, REFUND_UNRECORDED — the PAID_FLIP_LOST precedent). Wired so that
+	 *  residual records an anomaly carrying the provider refundRef; the refund flow
+	 *  also flags the order for reconciliation. */
+	paymentEventStore?: PaymentEventStore;
+	/** Timestamp source for the anomaly record (paired with `paymentEventStore`). */
+	clock?: Clock;
 	/** Reuses the existing service privileged auth (X-Internal-Token). Phase 5
 	 *  introduces no separate admin identity (Risk 7): the internal token is the
 	 *  service's privileged mechanism; a real admin panel calls this with it. */
@@ -731,14 +741,24 @@ export function adminRoutes(deps: AdminRoutesDeps): Hono {
 			return c.json({ ok: false, reason: "REFUND_GATEWAY_UNAVAILABLE" }, 409);
 		}
 
-		const res = await refundOrder({ orderStore: deps.orderStore }, gateway, {
-			orderId: oid,
-			amount: toCents(parsed.data.amountCents),
-			currency: toCurrency(parsed.data.currency),
-			reason: parsed.data.reason ?? null,
-			refundedBy: parsed.data.refundedBy,
-			idempotencyKey: toIdempotencyKey(key),
-		});
+		const res = await refundOrder(
+			{
+				orderStore: deps.orderStore,
+				...(deps.paymentEventStore !== undefined
+					? { paymentEventStore: deps.paymentEventStore }
+					: {}),
+				...(deps.clock !== undefined ? { clock: deps.clock } : {}),
+			},
+			gateway,
+			{
+				orderId: oid,
+				amount: toCents(parsed.data.amountCents),
+				currency: toCurrency(parsed.data.currency),
+				reason: parsed.data.reason ?? null,
+				refundedBy: parsed.data.refundedBy,
+				idempotencyKey: toIdempotencyKey(key),
+			},
+		);
 		if (res.ok) {
 			return c.json(
 				{
@@ -877,6 +897,7 @@ function serializeRefund(refund: RefundRecord): Record<string, unknown> {
 		refundRef: refund.refundRef,
 		reason: refund.reason,
 		refundedBy: refund.refundedBy,
+		status: refund.status,
 		createdAt: refund.createdAt,
 	};
 }
@@ -899,6 +920,12 @@ function refundFailureStatus(reason: RefundOrderFailure): 400 | 404 | 409 | 502 
 		case "PROVIDER_ALREADY_REFUNDED":
 		case "REFUND_NOT_SUPPORTED":
 		case "GATEWAY_UNVERIFIED":
+		// The loud residual (ADR-0008, reserve-before-issue): a gateway refund
+		// issued but its reserved ledger row could not be finalized. A DISTINCT 409
+		// (its own `reason` on the wire) so it is never conflated with a clean
+		// pre-issuance rejection — the money moved, an anomaly + reconciliation flag
+		// were recorded, and the operator must reconcile (never auto-retry).
+		case "REFUND_ISSUED_UNRECORDED":
 			return 409;
 		case "GATEWAY_TERMINAL":
 			return 502;

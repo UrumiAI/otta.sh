@@ -10,7 +10,13 @@ export type PaymentAnomalyKind =
 	 *  a mid-flight expiry/failure: money captured, stock already released. The
 	 *  mid-flight loser must be exactly as loud as the already-terminal-at-load
 	 *  case — never a silent no-op. */
-	| "PAID_FLIP_LOST";
+	| "PAID_FLIP_LOST"
+	/** A gateway refund ISSUED but its reserved ledger row could not be finalized
+	 *  (ADR-0008 — impossible by construction under reserve-before-issue, kept as
+	 *  the loud residual guard): money left the provider with no finalized ledger
+	 *  row. Recorded with the provider refundRef in the detail — NEVER silently
+	 *  dropped — and the order is flagged for manual reconciliation. */
+	| "REFUND_UNRECORDED";
 
 /**
  * The `PaymentEventStore` port (Phase 4 §5). Two jobs:

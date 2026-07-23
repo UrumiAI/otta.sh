@@ -151,8 +151,11 @@ export type {
 	RecordPaymentInput,
 	RecordRefundInput,
 	RecordRefundStoreResult,
+	FinalizeRefundInput,
+	FinalizeRefundStoreResult,
 	RefundKind,
 	RefundRecord,
+	RefundStatus,
 	ResolveReconciliationInput,
 	ResolveReconciliationStoreResult,
 } from "./ports/order-store.js";

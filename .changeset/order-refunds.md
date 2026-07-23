@@ -13,15 +13,27 @@ preserves every invariant.
 - **Port:** `PaymentGateway.refund(input): Promise<RefundResult>` + a `readonly
   refundable: boolean` capability flag. The domain and admin UI branch on the flag
   — never a `try/catch` to discover refundability.
-- **Ledger:** a new append-only `refunds` table with the ceiling `Σ refunds ≤
-  min(Σ captured payments, order_totals.total)` enforced ATOMICALLY in a
-  row-locked guarded write (`OrderStore.recordRefund`) — no read-modify-write, no
-  over-refund under any interleaving. `UNIQUE(idempotency_key)` is the once-only
-  backstop. The frozen order snapshot (`order_items`/`order_totals`) is never
-  touched. A FULL refund (Σ reaches the ceiling) drives `→ refunded` through the
-  existing `#flipAndEnqueue` choke point (guarded flip + `order-refunded` email +
-  audit event); a partial records the row and does not transition ("partially
-  refunded" is a derived badge).
+- **Ledger + reserve-before-issue:** a new append-only `refunds` table (with a
+  `status` lifecycle column) where the ceiling `Σ ACTIVE refunds ≤ min(Σ captured
+  payments, order_totals.total)` is enforced ATOMICALLY under the `orders` row
+  lock. For a gateway refund the ledger slot is **RESERVED first** (`reserveRefund`
+  wins the ceiling arbitration and inserts a `reserved` row) BEFORE the provider is
+  ever called, then the row is **FINALIZED** with the provider `refundRef` on
+  success (`finalizeRefund`), **VOIDED** on a terminal/fail-closed leg (capacity
+  released, audit row kept), or **HELD unverified** on an ambiguous timeout
+  (capacity kept — the safe direction — pending a human re-check). So no
+  interleaving can let money leave the gateway without a ledger row already holding
+  its capacity — ceiling arbitration always precedes issuance (proven by
+  gateway-interleaved Postgres races). ACTIVE = every non-`voided` row (finalized +
+  held reservations); the `→ refunded` flip counts FINALIZED (`recorded`) rows
+  only. The manual/record-only path (x402) stays the one-shot atomic
+  `recordRefund` (reserve+finalize collapsed). `UNIQUE(idempotency_key)` is the
+  once-only backstop; the frozen order snapshot is never touched. A FULL refund
+  drives `→ refunded` through the existing `#flipAndEnqueue` choke point; a partial
+  records the row and does not transition. The impossible-by-construction
+  "issued-but-unrecorded" residual records a loud `REFUND_UNRECORDED` anomaly with
+  the provider refundRef + a reconciliation flag and returns a DISTINCT reason —
+  never a silent drop.
 - **Stripe = real, x402 = honest.** The Stripe adapter gains a live outbound
   transport seam: a mandatory refund-time pre-flight reads `amount_refunded` and
   **fails closed** (`PROVIDER_ALREADY_REFUNDED`) before issuing, then

@@ -225,9 +225,13 @@ describe("createStripeHttpTransport (default live transport; stub fetch — NO n
 		).toEqual({ ok: false, class: "ambiguous" });
 	});
 
-	test("a 5xx on create is ambiguous; a 4xx is terminal", async () => {
+	test("a 5xx on create is ambiguous; a 429 is retryable; a 4xx is terminal", async () => {
+		// 429 (rate-limited) is throttled at the gate — the refund was NOT processed,
+		// so it is RETRYABLE, never conflated with a 5xx (which Stripe may have
+		// processed → ambiguous) or a plain 4xx rejection (terminal).
 		for (const [status, cls] of [
 			[500, "ambiguous"],
+			[429, "retryable"],
 			[400, "terminal"],
 		] as const) {
 			const transport = createStripeHttpTransport({
@@ -242,6 +246,23 @@ describe("createStripeHttpTransport (default live transport; stub fetch — NO n
 					secretKey: SK,
 				}),
 			).toEqual({ ok: false, class: cls });
+		}
+	});
+
+	test("a 429 on the pre-flight READ is retryable (nothing issued), a 4xx terminal", async () => {
+		for (const [status, cls] of [
+			[429, "retryable"],
+			[500, "retryable"],
+			[404, "terminal"],
+		] as const) {
+			const transport = createStripeHttpTransport({
+				baseUrl: "https://api.example",
+				fetch: stubFetch(() => new Response("{}", { status })),
+			});
+			expect(await transport.readRefundedAmount({ providerRef: "pi_1", secretKey: SK })).toEqual({
+				ok: false,
+				class: cls,
+			});
 		}
 	});
 });
