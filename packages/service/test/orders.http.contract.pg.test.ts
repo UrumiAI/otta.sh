@@ -152,6 +152,85 @@ describe.skipIf(PG === undefined)("orders + webhook + entitlements HTTP contract
 		expect(await orderState(orderId)).toBe("paid"); // poll after webhook
 	});
 
+	// ADR-0009: checkout address capture, end-to-end over the wire.
+	async function checkoutWithBody(
+		body: Record<string, unknown>,
+	): Promise<{ status: number; json: Record<string, unknown> }> {
+		await server.seedProduct({
+			productId: "pa",
+			sku: "SKU-A",
+			priceCents: 1200,
+			title: "Widget A",
+			kind: "physical",
+			onHand: 5,
+		});
+		const cart = await json(
+			await fetch(`${server.baseUrl}/carts`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ currency: "USD" }),
+			}),
+		);
+		const cartId = cart["cartId"] as string;
+		await fetch(`${server.baseUrl}/carts/${cartId}/lines`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", "Idempotency-Key": `add-${cartId}` },
+			body: JSON.stringify({ sku: "SKU-A", qty: 1, productId: "pa" }),
+		});
+		const res = await fetch(`${server.baseUrl}/checkout/orders`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", "Idempotency-Key": `co-${cartId}` },
+			body: JSON.stringify({
+				cartId,
+				paymentMethod: "stripe",
+				buyerRef: "buyer@example.com",
+				...body,
+			}),
+		});
+		return { status: res.status, json: await json(res) };
+	}
+
+	test("POST /checkout/orders captures a shipping address; GET /orders/:id serializes the frozen snapshot", async () => {
+		const shippingAddress = {
+			name: "Ada Lovelace",
+			line1: "12 Analytical Way",
+			city: "London",
+			postalCode: "EC1A 1BB",
+			country: "GB",
+			email: "ada@example.com",
+		};
+		const { status, json: created } = await checkoutWithBody({ shippingAddress });
+		expect(status).toBe(201);
+		const orderId = (created["order"] as Record<string, unknown>)["id"] as string;
+		const read = await json(await fetch(`${server.baseUrl}/orders/${orderId}`));
+		const order = read["order"] as Record<string, unknown>;
+		expect(order["shippingAddress"]).toEqual({
+			name: "Ada Lovelace",
+			line1: "12 Analytical Way",
+			line2: null,
+			city: "London",
+			region: null,
+			postalCode: "EC1A 1BB",
+			country: "GB",
+			email: "ada@example.com",
+			phone: null,
+		});
+	});
+
+	test("POST /checkout/orders with no address yields a null ship-to (capture optional this slice)", async () => {
+		const { status, json: created } = await checkoutWithBody({});
+		expect(status).toBe(201);
+		expect((created["order"] as Record<string, unknown>)["shippingAddress"]).toBeNull();
+	});
+
+	test("POST /checkout/orders rejects a malformed address (missing required field) with 400", async () => {
+		const { status } = await checkoutWithBody({
+			shippingAddress: { name: "Ada", line1: "12 Analytical Way", city: "London", country: "GB" },
+		});
+		// Missing postalCode ⇒ zod 400 (never a half-written order).
+		expect(status).toBe(400);
+	});
+
 	test("GET /entitlements/check returns active after a digital order is paid", async () => {
 		const { orderId, totalCents } = await createOrder({
 			sku: "DIG-1",

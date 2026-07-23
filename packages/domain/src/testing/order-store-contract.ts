@@ -154,6 +154,105 @@ export function orderStoreContract(
 			expect(reloaded?.lines.map((l) => l.sku).toSorted()).toEqual(["SKU-1", "SKU-2", "SKU-3"]);
 		});
 
+		// -- ADR-0009: immutable ship-to snapshot on the order --------------------
+
+		test("createFromCart freezes the submitted shipping address onto the order; a reload returns it", async () => {
+			const { store } = await makeHarness();
+			const { order } = await store.createFromCart(
+				physicalInput({
+					shippingAddress: {
+						name: "Ada Lovelace",
+						line1: "12 Analytical Way",
+						line2: "Unit 4",
+						city: "London",
+						region: "Greater London",
+						postalCode: "EC1A 1BB",
+						country: "GB",
+						email: "ada@example.com",
+						phone: "+44 20 7946 0000",
+					},
+				}),
+			);
+			expect(order.shippingAddress).toEqual({
+				name: "Ada Lovelace",
+				line1: "12 Analytical Way",
+				line2: "Unit 4",
+				city: "London",
+				region: "Greater London",
+				postalCode: "EC1A 1BB",
+				country: "GB",
+				email: "ada@example.com",
+				phone: "+44 20 7946 0000",
+			});
+			// The snapshot survives a fresh load (persisted, not just echoed).
+			const reloaded = await store.getById(order.id);
+			expect(reloaded?.shippingAddress?.name).toBe("Ada Lovelace");
+			expect(reloaded?.shippingAddress?.country).toBe("GB");
+		});
+
+		test("createFromCart with the optional contact/line fields omitted stores them as null", async () => {
+			const { store } = await makeHarness();
+			const { order } = await store.createFromCart(
+				physicalInput({
+					shippingAddress: {
+						name: "Grace Hopper",
+						line1: "1 Navy Yard",
+						line2: null,
+						city: "Arlington",
+						region: null,
+						postalCode: "22202",
+						country: "US",
+						email: null,
+						phone: null,
+					},
+				}),
+			);
+			const reloaded = await store.getById(order.id);
+			expect(reloaded?.shippingAddress).toEqual({
+				name: "Grace Hopper",
+				line1: "1 Navy Yard",
+				line2: null,
+				city: "Arlington",
+				region: null,
+				postalCode: "22202",
+				country: "US",
+				email: null,
+				phone: null,
+			});
+		});
+
+		test("an order created without a shipping address has shippingAddress null (historical + digital parity)", async () => {
+			const { store } = await makeHarness();
+			const { order } = await store.createFromCart(physicalInput());
+			expect(order.shippingAddress).toBeNull();
+			expect((await store.getById(order.id))?.shippingAddress).toBeNull();
+		});
+
+		test("a replay carries the shipping address exactly once (idempotent snapshot)", async () => {
+			const { store } = await makeHarness();
+			const address = {
+				name: "Ada Lovelace",
+				line1: "12 Analytical Way",
+				line2: null,
+				city: "London",
+				region: null,
+				postalCode: "EC1A 1BB",
+				country: "GB",
+				email: null,
+				phone: null,
+			};
+			const first = await store.createFromCart(physicalInput({ shippingAddress: address }));
+			// A replay (same key, fresh orderId) returns the ORIGINAL order + its one
+			// captured address — never a second row, never a rewrite.
+			const replay = await store.createFromCart(
+				physicalInput({ orderId: orderId("ord-2"), shippingAddress: address }),
+			);
+			expect(replay.created).toBe(false);
+			expect(replay.order.id).toBe(first.order.id);
+			expect(replay.order.shippingAddress).toEqual(address);
+			expect((await store.getById(first.order.id))?.shippingAddress).toEqual(address);
+		});
+
 		test("getById returns the created order; an unknown id is null", async () => {
 			const { store } = await makeHarness();
 			await store.createFromCart(physicalInput());

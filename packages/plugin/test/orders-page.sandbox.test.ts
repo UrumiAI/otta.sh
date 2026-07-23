@@ -25,6 +25,18 @@ const ORDER_1 = {
 	reconciliationResolution: null,
 	fulfillment: null,
 	cancellation: null,
+	// ADR-0009: the immutable ship-to snapshot captured at checkout.
+	shippingAddress: {
+		name: "Alice Example",
+		line1: "500 Shipping Ln",
+		line2: null,
+		city: "Portland",
+		region: "OR",
+		postalCode: "97201",
+		country: "US",
+		email: "alice@example.com",
+		phone: null,
+	},
 	totals: {
 		currency: "USD",
 		subtotalCents: 1500,
@@ -33,6 +45,7 @@ const ORDER_1 = {
 		taxCents: 0,
 		totalCents: 1500,
 		appliedCouponCode: null,
+		shippingZoneId: "zone-domestic",
 	},
 	lines: [
 		{
@@ -148,6 +161,14 @@ const SUMMARY_2 = {
 
 // A guest order (no account) and an order whose customer-context read fails.
 const ORDER_GUEST = { ...ORDER_1, id: "ord-guest", customerId: null };
+// ADR-0009: an order with NO captured ship-to (historical / digital-only) — the
+// section renders the honest "no ship-to on file" note, never the profile book.
+const ORDER_NO_ADDR = {
+	...ORDER_1,
+	id: "ord-no-addr",
+	shippingAddress: null,
+	totals: { ...ORDER_1.totals, shippingZoneId: null },
+};
 const ORDER_CTX_FAIL = { ...ORDER_1, id: "ord-ctx-fail" };
 
 // A processing order (ready to ship) and a shipped order that already has tracking
@@ -284,23 +305,25 @@ function makeGetResponder() {
 			return { status: 200, body: { ok: true, context: CUSTOMER_CONTEXT_LINKED } };
 		}
 		if (path?.startsWith("/admin/orders/")) {
-			const order = path.includes("/ord-flagged")
-				? ORDER_FLAGGED
-				: path.includes("/ord-resolved")
-					? ORDER_RESOLVED
-					: path.includes("/ord-guest")
-						? ORDER_GUEST
-						: path.includes("/ord-ctx-fail")
-							? ORDER_CTX_FAIL
-							: path.includes("/ord-proc")
-								? ORDER_PROCESSING
-								: path.includes("/ord-shipped")
-									? ORDER_SHIPPED
-									: path.includes("/ord-cancelled-bare")
-										? ORDER_CANCELLED_NO_REASON
-										: path.includes("/ord-cancelled")
-											? ORDER_CANCELLED
-											: ORDER_1;
+			const order = path.includes("/ord-no-addr")
+				? ORDER_NO_ADDR
+				: path.includes("/ord-flagged")
+					? ORDER_FLAGGED
+					: path.includes("/ord-resolved")
+						? ORDER_RESOLVED
+						: path.includes("/ord-guest")
+							? ORDER_GUEST
+							: path.includes("/ord-ctx-fail")
+								? ORDER_CTX_FAIL
+								: path.includes("/ord-proc")
+									? ORDER_PROCESSING
+									: path.includes("/ord-shipped")
+										? ORDER_SHIPPED
+										: path.includes("/ord-cancelled-bare")
+											? ORDER_CANCELLED_NO_REASON
+											: path.includes("/ord-cancelled")
+												? ORDER_CANCELLED
+												: ORDER_1;
 			// State-appropriate transitions, as the real service derives them from the
 			// domain state machine: a processing order's legal targets INCLUDE the bare
 			// `shipped` — the PLUGIN is what must steer it away (PR #63 review); a
@@ -1156,9 +1179,11 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(fieldValues).toContain("Name=Alice Example");
 		expect(fieldValues).toContain("Account=cust-a");
 		expect(fieldValues).toContain("Total orders=3");
-		// The address book carries the PROMINENT "not the ship-to" disclaimer.
+		// The profile address book is labeled prefill/context only (ADR-0009) — the
+		// order's own ship-to is the authoritative destination, shown separately.
 		const contexts = blocks.filter((b) => b.type === "context").map((b) => String(b.text));
-		expect(contexts.some((t) => t.includes("NOT the address this order shipped to"))).toBe(true);
+		expect(contexts.some((t) => t.includes("prefill/context only"))).toBe(true);
+		expect(contexts.some((t) => t.includes("shown above under “Shipping address”"))).toBe(true);
 		// Address, session, and other-order rows all render.
 		const rows = blocks
 			.filter((b) => b.type === "table")
@@ -1169,6 +1194,39 @@ describe("admin Orders console (workerd sandbox)", () => {
 		// NOTHING token-like reaches the rendered blocks (the wire shape is
 		// token-free; belt-and-braces that no credential material leaked through).
 		expect(JSON.stringify(blocks)).not.toMatch(/token/i);
+	});
+
+	test("ADR-0009: a captured ship-to renders the Shipping address section with the country/zone juxtaposition", async () => {
+		await boot();
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "orders:open",
+			values: { orderId: "ord-1" },
+		});
+		const blocks = blocksOf(outcome);
+		expect(blocks.some((b) => b.type === "section" && b.text === "Shipping address")).toBe(true);
+		const fieldValues = blocks
+			.filter((b) => b.type === "fields")
+			.flatMap((b) => (b.fields as Array<{ label?: string; value?: string }>) ?? [])
+			.map((f) => `${String(f.label)}=${String(f.value)}`);
+		// The frozen address fields render, and the display-only country/zone pair
+		// sit side by side (no matching — just the two facts).
+		expect(fieldValues.some((v) => v.includes("500 Shipping Ln"))).toBe(true);
+		expect(fieldValues).toContain("Country=US");
+		expect(fieldValues).toContain("Chosen shipping zone=zone-domestic");
+	});
+
+	test("ADR-0009: an order with NO captured ship-to renders the honest 'no ship-to on file' note", async () => {
+		await boot();
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "orders:open",
+			values: { orderId: "ord-no-addr" },
+		});
+		const blocks = blocksOf(outcome);
+		expect(blocks.some((b) => b.type === "section" && b.text === "Shipping address")).toBe(true);
+		const contexts = blocks.filter((b) => b.type === "context").map((b) => String(b.text));
+		expect(contexts.some((t) => t.includes("No shipping address captured"))).toBe(true);
 	});
 
 	test("open a GUEST order → honest guest labeling, empty address/session surfaces (not an error)", async () => {

@@ -2,14 +2,29 @@ import {
 	cents,
 	createOrderFromCart,
 	currency,
+	customerId as brandCustomerId,
 	idempotencyKey,
 	money,
+	type OrderAddressInput,
 	productId as brandProductId,
 	type ProductCommerceStore,
 	sku as brandSku,
 } from "@urumi/domain";
+import { CountingIdGen, FixedClock, InMemoryAddressStore } from "@urumi/domain/testing";
 import { beforeEach, describe, expect, test } from "vitest";
 import { makeOrderHarness, type OrderHarness } from "./fake-harness.js";
+
+const SHIP_TO: OrderAddressInput = {
+	name: "Ada Lovelace",
+	line1: "12 Analytical Way",
+	line2: "Unit 4",
+	city: "London",
+	region: "Greater London",
+	postalCode: "EC1A 1BB",
+	country: "GB",
+	email: "ada@example.com",
+	phone: "+44 20 7946 0000",
+};
 
 function cmd(cartId: string, key = "k-order", method: "stripe" | "x402" = "stripe") {
 	return {
@@ -283,5 +298,133 @@ describe("createOrderFromCart", () => {
 		// Stock decremented once (the original reserve), never re-reserved.
 		expect(h.inventory.onHand("SKU-1")).toBe(8);
 		expect(h.inventory.reservationState(first.order.lines[0]!.reservationId!)).toBe("adopted");
+	});
+
+	// -- ADR-0009: checkout address capture ------------------------------------
+
+	async function seededCart(): Promise<string> {
+		await h.seedPhysical({
+			productId: "p1",
+			sku: "SKU-1",
+			priceCents: 500,
+			title: "Widget",
+			onHand: 10,
+		});
+		return h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" }]);
+	}
+
+	test("captures the submitted ship-to snapshot immutably onto the order (trimmed)", async () => {
+		const cartId = await seededCart();
+		const res = await createOrderFromCart(h.createDeps, {
+			...cmd(cartId),
+			// Leading/trailing whitespace proves the domain trims before snapshotting.
+			shippingAddress: { ...SHIP_TO, name: "  Ada Lovelace  " },
+		});
+		expect(res.ok).toBe(true);
+		if (!res.ok) return;
+		expect(res.order.shippingAddress).toEqual({
+			name: "Ada Lovelace",
+			line1: "12 Analytical Way",
+			line2: "Unit 4",
+			city: "London",
+			region: "Greater London",
+			postalCode: "EC1A 1BB",
+			country: "GB",
+			email: "ada@example.com",
+			phone: "+44 20 7946 0000",
+		});
+		// Persisted, not just echoed — a reload returns the frozen snapshot.
+		expect((await h.orderStore.getById(res.order.id))?.shippingAddress?.name).toBe("Ada Lovelace");
+	});
+
+	test("an order created without a shipping address has shippingAddress null (capture is optional this slice)", async () => {
+		const cartId = await seededCart();
+		const res = await createOrderFromCart(h.createDeps, cmd(cartId));
+		expect(res.ok).toBe(true);
+		if (!res.ok) return;
+		// A PHYSICAL order with no address is still accepted — the required-for-physical
+		// enforcement is deferred until the storefront UI collects it (ADR-0009).
+		expect(res.order.shippingAddress).toBeNull();
+	});
+
+	test("rejects a malformed ship-to (empty required field) with INVALID_SHIPPING_ADDRESS — nothing minted", async () => {
+		const cartId = await seededCart();
+		const res = await createOrderFromCart(h.createDeps, {
+			...cmd(cartId),
+			shippingAddress: { ...SHIP_TO, city: "   " }, // required, empty after trim
+		});
+		expect(res.ok).toBe(false);
+		if (res.ok) return;
+		expect(res.reason).toBe("INVALID_SHIPPING_ADDRESS");
+		// The checkout aborted before minting: the cart is still active (no order).
+		expect((await h.cartStore.get(cartId))?.state).toBe("active");
+	});
+
+	test("rejects an over-length ship-to field with INVALID_SHIPPING_ADDRESS", async () => {
+		const cartId = await seededCart();
+		const res = await createOrderFromCart(h.createDeps, {
+			...cmd(cartId),
+			shippingAddress: { ...SHIP_TO, line1: "x".repeat(201) },
+		});
+		expect(res.ok).toBe(false);
+		if (res.ok) return;
+		expect(res.reason).toBe("INVALID_SHIPPING_ADDRESS");
+	});
+
+	test("the order ship-to is frozen: editing the profile address book afterward never rewrites it", async () => {
+		const cartId = await seededCart();
+		const custId = brandCustomerId("cust-1");
+		// A separate profile address book (ADR-0009 demotes it to prefill/context).
+		const addressStore = new InMemoryAddressStore({
+			idGen: new CountingIdGen("addr"),
+			clock: new FixedClock(new Date("2026-07-10T00:00:00.000Z")),
+		});
+		const saved = await addressStore.create(custId, {
+			kind: "shipping",
+			name: "Ada Lovelace",
+			line1: "12 Analytical Way",
+			city: "London",
+			postalCode: "EC1A 1BB",
+			country: "GB",
+		});
+
+		const res = await createOrderFromCart(h.createDeps, {
+			...cmd(cartId),
+			shippingAddress: SHIP_TO,
+		});
+		expect(res.ok).toBe(true);
+		if (!res.ok) return;
+		const orderId = res.order.id;
+
+		// The buyer later edits their saved profile address (moves house).
+		await addressStore.update(custId, saved.id, {
+			line1: "99 Somewhere Else",
+			city: "Manchester",
+			postalCode: "M1 1AA",
+		});
+
+		// The order's ship-to is UNCHANGED — a frozen copy, never a live pointer.
+		const reloaded = await h.orderStore.getById(orderId);
+		expect(reloaded?.shippingAddress?.line1).toBe("12 Analytical Way");
+		expect(reloaded?.shippingAddress?.city).toBe("London");
+		// And the profile book did move — proving the edit actually happened.
+		expect((await addressStore.list(custId))[0]?.line1).toBe("99 Somewhere Else");
+	});
+
+	test("a replay of a captured checkout carries the ship-to exactly once (idempotent)", async () => {
+		const cartId = await seededCart();
+		const first = await createOrderFromCart(h.createDeps, {
+			...cmd(cartId),
+			shippingAddress: SHIP_TO,
+		});
+		const replay = await createOrderFromCart(h.createDeps, {
+			...cmd(cartId),
+			shippingAddress: SHIP_TO,
+		});
+		expect(first.ok && replay.ok).toBe(true);
+		if (!first.ok || !replay.ok) return;
+		expect(replay.order.id).toBe(first.order.id);
+		expect(replay.order.shippingAddress).toEqual(first.order.shippingAddress);
+		expect(replay.order.shippingAddress?.name).toBe("Ada Lovelace");
 	});
 });

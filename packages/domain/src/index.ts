@@ -221,6 +221,7 @@ export type {
 	CancellationReason,
 	FulfillmentKind,
 	Order,
+	OrderAddress,
 	OrderCancellation,
 	OrderFulfillment,
 	OrderLine,
@@ -229,6 +230,12 @@ export type {
 	ReconciliationOutcome,
 	ReconciliationResolution,
 } from "./orders/model.js";
+export {
+	normalizeOrderAddress,
+	ORDER_ADDRESS_MAX_LENGTHS,
+	type NormalizeOrderAddressResult,
+	type OrderAddressInput,
+} from "./orders/order-address.js";
 export type { CreateOrderFailure, SettleFailure } from "./orders/errors.js";
 export {
 	createOrderFromCart,

@@ -52,6 +52,25 @@ export const linePathParams = z.object({ cartId: idParam, lineId: idParam });
 
 // Phase 4 (§7). Checkout, order read, the x402 page-gate proof, and the
 // entitlement check.
+/**
+ * ADR-0009: the optional shipping address a checkout submits. Required fields are
+ * non-empty; `line2`/`region`/`email`/`phone` are optional. Bounds mirror the
+ * domain's `ORDER_ADDRESS_MAX_LENGTHS` (the domain re-validates + trims — this is
+ * the wire's first line of defense, the domain the authoritative guard). No
+ * address→zone matching (ADR-0009 §5): `country` is a free string.
+ */
+export const shippingAddressBody = z.object({
+	name: z.string().min(1).max(200),
+	line1: z.string().min(1).max(200),
+	line2: z.string().max(200).nullish(),
+	city: z.string().min(1).max(120),
+	region: z.string().max(120).nullish(),
+	postalCode: z.string().min(1).max(32),
+	country: z.string().min(1).max(100),
+	email: z.string().max(320).nullish(),
+	phone: z.string().max(64).nullish(),
+});
+
 export const checkoutBody = z.object({
 	cartId: idParam,
 	paymentMethod: z.enum(["stripe", "x402"]),
@@ -61,6 +80,9 @@ export const checkoutBody = z.object({
 	shippingZoneId: idParam.optional(),
 	shippingMethodId: idParam.optional(),
 	couponCode: z.string().min(1).max(200).optional(),
+	// ADR-0009: optional ship-to snapshot captured at checkout (absent ⇒ none —
+	// capture is optional this slice; required-for-physical is a later flip).
+	shippingAddress: shippingAddressBody.optional(),
 });
 
 export const orderPathParams = z.object({ orderId: idParam });

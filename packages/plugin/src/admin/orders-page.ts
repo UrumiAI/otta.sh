@@ -14,6 +14,7 @@ import type {
 import {
 	AdminOrdersClient,
 	type CustomerContextWire,
+	type OrderAddressWire,
 	type OrderCancellationWire,
 	type OrderDetailResult,
 	type OrderDetailWire,
@@ -338,6 +339,8 @@ function detailBlocks(
 			{ label: "Total", value: formatTotal(o.totals.totalCents, o.totals.currency) },
 		],
 	});
+	// -- Shipping address (ADR-0009) — the immutable ship-to captured at checkout --
+	for (const block of shippingAddressBlocks(o)) blocks.push(block);
 	// -- Fulfillment (admin-UX Increment 1) — recorded tracking + the ship form --
 	for (const block of fulfillmentBlocks(o)) blocks.push(block);
 	// -- Cancellation (admin-UX Increment 1, "cancel with reason") --------------
@@ -385,10 +388,10 @@ function detailBlocks(
 
 /**
  * The read-only "Customer" panel on the order detail: who the customer is
- * (honestly labeled — see `accountSummary`), their profile address book (with a
- * PROMINENT "not the ship-to" disclaimer: this domain snapshots no per-order
- * address), token-free session history, and their other orders under the
- * union customer key. `null` (the context read failed or the order vanished
+ * (honestly labeled — see `accountSummary`), their profile address book (labeled
+ * prefill/context only — the order's own frozen ship-to is shown above under
+ * "Shipping address", ADR-0009), token-free session history, and their other
+ * orders under the union customer key. `null` (the context read failed or the order vanished
  * mid-view) renders an explicit "unavailable" body — the section is never
  * silently blank and never blanks the rest of the detail view.
  */
@@ -419,12 +422,14 @@ function customerContextBlocks(actions: ScreenActions, ctx: CustomerContextWire 
 			text: "An account exists for this email, but this order is not yet claimed by it — guest orders link automatically at the customer's next sign-in.",
 		});
 	}
-	// Saved addresses — prominent disclaimer FIRST: this is the profile address
-	// book, never a per-order ship-to (support must not read it as one).
+	// Saved addresses — the customer's mutable PROFILE book, prefill/context only
+	// (ADR-0009). The order's own frozen ship-to is shown above under "Shipping
+	// address"; this book is not it, and a later edit here never rewrites a placed
+	// order's destination.
 	blocks.push({ type: "section", text: "Saved addresses" });
 	blocks.push({
 		type: "context",
-		text: "Profile address book — NOT the address this order shipped to. Orders do not capture a shipping address.",
+		text: "Profile address book — prefill/context only. The address this order shipped to is shown above under “Shipping address”; this book is the customer's current saved addresses and can change at any time.",
 	});
 	blocks.push({
 		type: "table",
@@ -769,6 +774,58 @@ function resolveForm(orderId: string, displayedFlag: string): FormBlock {
 		],
 		submit: { label: "Resolve reconciliation", action_id: ACTION_RESOLVE },
 	};
+}
+
+// -- shipping address surface (ADR-0009) --------------------------------------
+
+/**
+ * The "Shipping address" section — the order's own IMMUTABLE ship-to captured at
+ * checkout (ADR-0009), authoritative for the warehouse. When present it shows the
+ * frozen address fields plus a DISPLAY-ONLY juxtaposition of the ship-to country
+ * next to the order's chosen shipping zone (no matching/validation — just the two
+ * facts side by side so a human spots a "domestic zone / foreign country" mismatch
+ * before packing the box). When absent it renders an honest "no ship-to on file"
+ * note (a historical order predating capture, or a digital-only order with no
+ * destination) — never the profile book, which is separate prefill/context on the
+ * Customer panel below.
+ */
+function shippingAddressBlocks(o: OrderDetailWire): Block[] {
+	const blocks: Block[] = [{ type: "section", text: "Shipping address" }];
+	// Tolerate a wire response that omits the field (undefined) exactly like null.
+	const address = o.shippingAddress ?? null;
+	const zoneId = o.totals.shippingZoneId ?? null;
+	if (address === null) {
+		blocks.push({
+			type: "context",
+			text: "No shipping address captured (order predates capture / digital). This order carries no ship-to on file — the profile address book below is context only, never where this order shipped.",
+		});
+		return blocks;
+	}
+	blocks.push({
+		type: "fields",
+		fields: [
+			{ label: "Name", value: address.name },
+			{ label: "Address", value: formatOrderAddress(address) },
+			{ label: "Country", value: address.country },
+			// Display-only juxtaposition (ADR-0009): country vs the priced zone.
+			{ label: "Chosen shipping zone", value: zoneId ?? "— (none selected)" },
+			{ label: "Email", value: address.email ?? "—" },
+			{ label: "Phone", value: address.phone ?? "—" },
+		],
+	});
+	blocks.push({
+		type: "context",
+		text: "This is the address captured at checkout — frozen on the order, never rewritten by later profile edits. The zone above is the buyer's priced choice; it is shown next to the country for a manual sanity check only (nothing cross-validates them).",
+	});
+	return blocks;
+}
+
+/** Join the ship-to street/city/region/postal parts into one line, skipping the
+ *  empty optionals (country is rendered on its own field for the zone check). */
+function formatOrderAddress(a: OrderAddressWire): string {
+	return [a.line1, a.line2, a.city, a.region, a.postalCode]
+		.filter((part): part is string => part !== null && part.length > 0)
+		.join(", ");
 }
 
 // -- fulfillment surface (admin-UX Increment 1) -------------------------------

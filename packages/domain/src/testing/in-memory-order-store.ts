@@ -28,7 +28,14 @@ import type {
 	ResolveReconciliationInput,
 	ResolveReconciliationStoreResult,
 } from "../ports/order-store.js";
-import type { Order, OrderLine, OrderState, OrderTotals, PaymentMethod } from "../orders/model.js";
+import type {
+	Order,
+	OrderAddress,
+	OrderLine,
+	OrderState,
+	OrderTotals,
+	PaymentMethod,
+} from "../orders/model.js";
 
 /** Test-only seed shape for the admin-list contract — a direct order row (no
  *  cart/reservation flow), so a case can pin an EXACT `createdAt`/`state`/
@@ -148,6 +155,9 @@ export class InMemoryOrderStore implements OrderStore {
 			updatedAt: now,
 			lines,
 			totals,
+			// ADR-0009: freeze the submitted ship-to snapshot (a COPY — never a live
+			// pointer to the profile book), or null when none was captured.
+			shippingAddress: cloneAddress(input.shippingAddress ?? null),
 			reconciliationFlag: null,
 			reconciliationResolution: null,
 			fulfillment: null,
@@ -447,6 +457,7 @@ export class InMemoryOrderStore implements OrderStore {
 				shippingMethodSnapshot: null,
 				taxBreakdown: null,
 			},
+			shippingAddress: null,
 			reconciliationFlag: row.reconciliationFlag ?? null,
 			reconciliationResolution: null,
 			fulfillment: null,
@@ -598,8 +609,17 @@ export class InMemoryOrderStore implements OrderStore {
 			...order,
 			lines: order.lines.map((l) => ({ ...l })),
 			totals: { ...order.totals },
+			// Deep-clone the frozen ship-to so a caller can never mutate the stored
+			// snapshot (mirrors the immutability the real adapter gets structurally).
+			shippingAddress: cloneAddress(order.shippingAddress),
 			fulfillment: order.fulfillment === null ? null : { ...order.fulfillment },
 			cancellation: order.cancellation === null ? null : { ...order.cancellation },
 		};
 	}
+}
+
+/** Copy an {@link OrderAddress} (or pass null through) so the fake never shares a
+ *  mutable reference with a caller — the snapshot must read frozen. */
+function cloneAddress(address: OrderAddress | null): OrderAddress | null {
+	return address === null ? null : { ...address };
 }
