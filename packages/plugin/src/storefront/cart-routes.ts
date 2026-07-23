@@ -121,6 +121,11 @@ export interface CartReadRouteInput {
 export interface CartLineAddRouteInput {
 	cartId?: unknown;
 	sku?: unknown;
+	/** The CMS content id (the join key to `product_commerce`), threaded from the
+	 *  PDP add-to-cart slot so the line is priceable/quotable/orderable — issue
+	 *  #80. Optional for backward-compat with a bare (legacy) add; when present it
+	 *  must be a non-empty string, and it flows to the service `addLine` call. */
+	productId?: unknown;
 	qty?: unknown;
 	/** Fresh per user action (plan §8 Risk 8) — the Block Kit add-to-cart
 	 *  affordance embeds one at render time; the caller forwards it verbatim
@@ -200,20 +205,18 @@ export function createCartCreateRouteHandler(): RouteHandler<CartCreateRouteInpu
  * ran); `cartId` arrives as route input, read by the caller from its own
  * cookie (see module doc's platform-verified deviation).
  *
- * No price/totals join here (documented gap, not this task's to close):
- * `@urumi/service`'s cart-line wire carries `sku` but never a `productId`
- * (`routes/carts.ts` hardcodes `productId: null` on every `addLine` call,
- * and `addLineBody` has no `productId` field at all — `schemas.ts`, "a cart
- * line snapshots no price"). The only commerce lookup this plugin has
- * (`getCommerceBatch`/`getProductCommerce`) is keyed by `productId`, so
- * there is no reachable path from a cart line's `sku` to a live price
- * without either a service change (out of this task's scope — plugin
- * package only) or fabricating a number, which CLAUDE.md forbids outright.
- * `totalQty` is the one total honestly computable from what the wire gives
- * today. Flagged in the PR report as a should-fix for a small follow-up
- * `[Service]` change (thread `productId` through `addLineBody`/the route —
- * the domain's `addLine` already accepts it — and join `product_commerce`
- * in `GET /carts/:cartId`).
+ * No price/totals join here yet (a documented follow-up, not closed by issue
+ * #80's fix): the cart-line wire now DOES carry a `productId` (the add-line
+ * path threads it through `addLineBody` → the service's `addLine`, so the line
+ * can be priced/quoted/ordered), but `GET /carts/:cartId` still returns only
+ * `{ sku, productId, qty, … }` — it does not join `product_commerce` to attach
+ * a live price. The plugin's commerce lookups (`getCommerceBatch`/
+ * `getProductCommerce`) ARE keyed by `productId`, so a price-annotated cart read
+ * is now REACHABLE (batch-load the lines' productIds); it is deferred as a
+ * separate `[Service]`/`[Plugin]` follow-up (join in `GET /carts/:cartId`, or a
+ * plugin-side batch join) to keep issue #80 scoped to the checkout-blocking
+ * thread. `totalQty` remains the one total honestly computable from the wire as
+ * returned today — no price is ever fabricated (CLAUDE.md).
  */
 export function createCartReadRouteHandler(): RouteHandler<CartReadRouteInput> {
 	return (routeCtx, ctx): Promise<CartReadRouteResult> =>
@@ -240,10 +243,14 @@ export function totalQty(cart: CartWire): number {
 export function createCartLineAddRouteHandler(): RouteHandler<CartLineAddRouteInput> {
 	return (routeCtx, ctx): Promise<CartLineMutationRouteResult<{ line: CartLineWire }>> =>
 		renderGuard(STOREFRONT_CART_LINE_ADD_ROUTE, async () => {
-			const { cartId, sku, qty, idempotencyKey } = routeCtx.input;
+			const { cartId, sku, productId, qty, idempotencyKey } = routeCtx.input;
+			// `productId` is OPTIONAL (bare/legacy add) but, when present, must be a
+			// non-empty string — a present-but-blank value is a validation reject,
+			// never silently dropped (issue #80). Absent ⇒ null on the wire.
 			if (
 				!isNonEmptyString(cartId) ||
 				!isNonEmptyString(sku) ||
+				(productId !== undefined && !isNonEmptyString(productId)) ||
 				!isPositiveInt(qty) ||
 				!isNonEmptyString(idempotencyKey)
 			) {
@@ -253,6 +260,7 @@ export function createCartLineAddRouteHandler(): RouteHandler<CartLineAddRouteIn
 			const result: CartResult<{ line: CartLineWire }> = await client.addCartLine(
 				cartId,
 				sku,
+				productId ?? null,
 				qty,
 				idempotencyKey,
 			);

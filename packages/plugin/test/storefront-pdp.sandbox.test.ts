@@ -174,6 +174,9 @@ describe("storefront PDP route (workerd sandbox)", () => {
 		const slot = slots.addToCart!;
 		expect(slot["route"]).toBe("storefront/cart/lines/add");
 		expect(slot["sku"]).toBe("SKU-1");
+		// issue #80: the slot carries the CMS content id as productId — the join
+		// key the add-to-cart path must thread so the line can be priced/quoted.
+		expect(slot["productId"]).toBe("prod-1");
 		expect(typeof slot["idempotencyKey"]).toBe("string");
 		expect((slot["idempotencyKey"] as string).length).toBeGreaterThan(0);
 
@@ -187,6 +190,7 @@ describe("storefront PDP route (workerd sandbox)", () => {
 			value: {
 				route: "storefront/cart/lines/add",
 				sku: "SKU-1",
+				productId: "prod-1",
 				idempotencyKey: slot["idempotencyKey"],
 			},
 		});

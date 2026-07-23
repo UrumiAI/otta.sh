@@ -116,6 +116,10 @@ export interface CommerceClient {
 	addCartLine(
 		cartId: string,
 		sku: string,
+		/** The CMS content id (the join key to `product_commerce`) so the line can
+		 *  be priced/quoted/ordered — issue #80. `null` for a bare (legacy) add that
+		 *  has no product reference; the wire OMITS the field when null. */
+		productId: string | null,
 		qty: number,
 		idempotencyKey: string,
 	): Promise<CartResult<{ line: CartLineWire }>>;
@@ -240,7 +244,12 @@ export type CartFailureReason =
 	| "LINE_NOT_FOUND"
 	| "CART_CHECKED_OUT"
 	| "LINE_CHECKED_OUT"
-	| "HOLD_EXPIRED";
+	| "HOLD_EXPIRED"
+	// A route-level (not domain-`CartFailure`) reject: the add's `sku` and
+	// `productId` disagree with the trusted catalog (issue #80 review). The
+	// service returns it as a 409 typed envelope; `#cartResult` normalizes it
+	// like any other typed cart failure.
+	| "SKU_MISMATCH";
 
 export type CartResult<T> = ({ ok: true } & T) | { ok: false; reason: CartFailureReason };
 // ── end Phase 3 group E: cart wire types ───────────────────────────────────

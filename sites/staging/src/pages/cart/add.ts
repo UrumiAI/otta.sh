@@ -39,6 +39,18 @@ export const POST: APIRoute = async (context) => {
 
 	const form = await context.request.formData();
 	const sku = formString(form.get("sku"));
+	// The CMS content id (join key to product_commerce) minted into the PDP
+	// add-to-cart slot — forwarded so the cart line is priceable/quotable/
+	// orderable (issue #80). `formString` normalizes a blank/absent value to
+	// `undefined`, so it is OMITTED here rather than forwarded as "" (the plugin
+	// route strictly rejects a present-but-blank productId with INVALID_INPUT;
+	// this shim never produces that shape). NOTE the divergence: a blank hidden
+	// input would degrade to a bare add (null productId) that a legit storefront
+	// never emits — it is not a security hole (an unpriced line is caught at
+	// checkout with PRODUCT_NOT_PRICED, never mispriced) but WOULD silently
+	// re-break #80's orderability, so the PDP slot must always render a non-blank
+	// productId (it does — `content.id` is always present).
+	const productId = formString(form.get("productId"));
 	const idempotencyKey = formString(form.get("idempotencyKey"));
 	const returnTo = safeReturnPath(form.get("returnTo"), "/products");
 
@@ -63,7 +75,7 @@ export const POST: APIRoute = async (context) => {
 	const result = await dispatchUrumiRoute<CartLineMutationRouteResult<{ line: CartLineWire }>>(
 		handler,
 		STOREFRONT_CART_LINE_ADD_ROUTE,
-		{ cartId, sku, qty, idempotencyKey },
+		{ cartId, sku, qty, idempotencyKey, ...(productId !== undefined ? { productId } : {}) },
 		context.url,
 	);
 

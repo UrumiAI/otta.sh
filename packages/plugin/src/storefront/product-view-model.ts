@@ -44,15 +44,20 @@ export interface AddToCartSlot {
 	 *  knowledge of the route name. */
 	route: typeof STOREFRONT_CART_LINE_ADD_ROUTE;
 	sku: string;
+	/** The CMS content id (the join key to `product_commerce`) — issue #80. The
+	 *  add-to-cart path MUST forward this so the created cart line carries a
+	 *  non-null `product_id`; without it the line cannot be priced and every
+	 *  `POST /checkout/quote` 409s `PRODUCT_NOT_PRICED`. */
+	productId: string;
 	idempotencyKey: string;
 	/** Block Kit elements — a qty stepper + submit button. The button's
 	 *  `value` carries the payload a click must forward verbatim (`sku`,
-	 *  `idempotencyKey`) — Block Kit `ButtonElement.value` is echoed back on
-	 *  click by design (`types.ts`), the mechanism plan §8 Risk 5 relies on. */
+	 *  `productId`, `idempotencyKey`) — Block Kit `ButtonElement.value` is echoed
+	 *  back on click by design (`types.ts`), the mechanism plan §8 Risk 5 relies on. */
 	elements: Element[];
 }
 
-function buildAddToCartSlot(sku: string): AddToCartSlot {
+function buildAddToCartSlot(sku: string, productId: string): AddToCartSlot {
 	const idempotencyKey = crypto.randomUUID();
 	const qtyInput: NumberInputElement = {
 		type: "number_input",
@@ -64,11 +69,12 @@ function buildAddToCartSlot(sku: string): AddToCartSlot {
 		type: "button",
 		action_id: "urumi_add_to_cart_submit",
 		label: "Add to cart",
-		value: { route: STOREFRONT_CART_LINE_ADD_ROUTE, sku, idempotencyKey },
+		value: { route: STOREFRONT_CART_LINE_ADD_ROUTE, sku, productId, idempotencyKey },
 	};
 	return {
 		route: STOREFRONT_CART_LINE_ADD_ROUTE,
 		sku,
+		productId,
 		idempotencyKey,
 		elements: [qtyInput, submitButton],
 	};
@@ -135,7 +141,12 @@ export function buildProductViewModel(joined: JoinedProduct, locale: string): Pr
 		// `purchasable`) means an inconsistent purchasable-but-no-sku state
 		// (shouldn't happen — `sellable` is derived from the same commerce
 		// row — but stays defensive rather than emitting an unsku'd button).
-		slots: { addToCart: sellable === null ? null : buildAddToCartSlot(sellable.sku) },
+		// `content.id` IS the productId (the CMS content id = product_commerce join
+		// key, join-product.ts) — thread it so the add-to-cart line is priceable
+		// (issue #80).
+		slots: {
+			addToCart: sellable === null ? null : buildAddToCartSlot(sellable.sku, content.id),
+		},
 	};
 	if (content.slug !== undefined) model.slug = content.slug;
 	if (content.description !== undefined) model.description = content.description;

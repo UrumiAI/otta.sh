@@ -86,6 +86,7 @@ const error = Astro.url.searchParams.get("error");
 						{addToCart && product.availability === "in_stock" && (
 							<form method="POST" action="/cart/add">
 								<input type="hidden" name="sku" value={addToCart.sku} />
+								<input type="hidden" name="productId" value={addToCart.productId} />
 								<input type="hidden" name="idempotencyKey" value={addToCart.idempotencyKey} />
 								<input
 									type="hidden"

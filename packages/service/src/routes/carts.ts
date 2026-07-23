@@ -92,12 +92,33 @@ export function cartRoutes(deps: CartRoutesDeps): Hono {
 		// Resolve the product's fulfillment kind server-side (§6): a digital line
 		// reserves nothing. Requires the productId; without it we default physical
 		// (bare Phase-3 add). A provided-but-unknown product also defaults physical.
+		//
+		// SECURITY (issue #80 review): `sku` and `productId` arrive as two
+		// INDEPENDENT client inputs (both editable on the storefront /cart/add
+		// POST). Checkout later takes price/title/currency AND grants the digital
+		// entitlement from the productId's product_commerce row, but stamps the
+		// order line's `sku` from the cart line (the client value). If the two are
+		// allowed to disagree, a caller can pair product A's productId (cheap /
+		// its entitlement) with product B's sku (pricey / a different good) and be
+		// charged A's price while reserving B's stock or being entitled to B.
+		// So when a product_commerce row EXISTS it is authoritative: its sku MUST
+		// equal the submitted sku, else reject (SKU_MISMATCH) — we reject rather
+		// than silently substituting, so a buggy/hostile caller gets a clear
+		// signal and we never reinterpret the request. A productId with NO
+		// product_commerce row has nothing to reconcile against and is harmless:
+		// checkout gates on that row existing (→ PRODUCT_NOT_PRICED), so such a
+		// line can confer neither price nor entitlement.
 		let productId: string | null = null;
 		let kind: FulfillmentKind = "physical";
 		if (parsed.data.productId !== undefined) {
 			productId = parsed.data.productId;
 			const pc = await deps.productCommerce?.getByProductId(toProductId(parsed.data.productId));
-			if (pc !== null && pc !== undefined) kind = pc.productKind;
+			if (pc !== null && pc !== undefined) {
+				if (pc.sku === null || String(pc.sku) !== parsed.data.sku) {
+					return c.json({ ok: false, reason: "SKU_MISMATCH" }, 409);
+				}
+				kind = pc.productKind;
+			}
 		}
 		const res = await addLine(
 			cartDeps,
