@@ -362,7 +362,11 @@ export class KyselyCouponStore implements CouponStore {
 /** The ONE `CouponListFilter` predicate `listCoupons` builds from (mirrors
  *  `productFilterConditions` — a single builder so semantics can never drift).
  *  Returns standalone expressions (a detached `expressionBuilder`) to AND onto
- *  the query. `search` is a case-insensitive EXACT match on `code` (port doc). */
+ *  the query. `search` is a case-insensitive EXACT match on `code` (port doc).
+ *  Known, accepted divergence (PR #74 review, matches the existing search
+ *  precedent in `productFilterConditions`): SQLite's built-in `lower()` folds
+ *  ASCII only, while JS `toLowerCase()` is Unicode-aware — a non-ASCII coupon
+ *  code (e.g. "ÉTÉ10") case-folds differently on sqlite than on pg/the fake. */
 function couponFilterConditions(filter: CouponListFilter): Expression<SqlBool>[] {
 	const eb: ExpressionBuilder<Database, "coupons"> = expressionBuilder();
 	const conds: Expression<SqlBool>[] = [];

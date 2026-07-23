@@ -71,11 +71,14 @@ export interface CouponWire {
 }
 
 /** One admin Coupons-list row (admin-UX Increment 3, view-only enumerate).
- *  Mirrors `CouponWire` plus `createdAt` — a small, header-only table has
- *  nothing expensive to trim off the list projection (unlike
- *  `ProductSummaryWire`, which deliberately narrows the full product row).
- *  `usesCount` doubles as the redeemed indicator (already a plain column, no
- *  join). */
+ *  The FULL coupon summary — every `CouponWire` field PLUS the validity
+ *  window (`startsAt`/`expiresAt`, absent from `CouponWire` because
+ *  `serializeCoupon` omits them) and `createdAt`: a small, header-only table
+ *  has nothing expensive to trim off the list projection (unlike
+ *  `ProductSummaryWire`, which deliberately narrows the full product row),
+ *  and the console list renders the expiry column directly — no per-row
+ *  detail fetch. `usesCount` doubles as the redeemed indicator (already a
+ *  plain column, no join). */
 export interface CouponSummaryWire {
 	id: string;
 	code: string;
@@ -85,6 +88,8 @@ export interface CouponSummaryWire {
 	capCents: number | null;
 	currency: string | null;
 	minSubtotalCents: number | null;
+	startsAt: string | null;
+	expiresAt: string | null;
 	maxUses: number | null;
 	maxUsesPerCustomer: number | null;
 	usesCount: number;

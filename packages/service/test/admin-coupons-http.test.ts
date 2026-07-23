@@ -57,6 +57,10 @@ describe.skipIf(PG === undefined)("admin Coupons console HTTP contract", () => {
 			type: "percentage",
 			rateBps: 1000,
 			capCents: 2000,
+			// Validity window: the list wire MUST carry it (PR #74 review) — the
+			// console renders the expiry column straight off the summary row.
+			startsAt: "2026-07-01T00:00:00.000Z",
+			expiresAt: "2026-08-01T00:00:00.000Z",
 			maxUses: 5,
 			usesCount: 2,
 			createdAt: "2026-07-11T01:00:00.000Z",
@@ -84,12 +88,20 @@ describe.skipIf(PG === undefined)("admin Coupons console HTTP contract", () => {
 			type: "percentage",
 			rateBps: 1000,
 			capCents: 2000,
+			// The validity window is ON the list wire (PR #74 review) — dropping
+			// it would force the console into a per-row detail fetch.
+			startsAt: "2026-07-01T00:00:00.000Z",
+			expiresAt: "2026-08-01T00:00:00.000Z",
 			maxUses: 5,
 			usesCount: 2,
 			createdAt: "2026-07-11T01:00:00.000Z",
 		});
 		const unredeemed = coupons.find((c) => c.id === "cpn-1")!;
 		expect(unredeemed.usesCount).toBe(0);
+		// A coupon with no window carries EXPLICIT nulls — present unconditionally
+		// on the wire, never "sometimes absent".
+		expect(unredeemed.startsAt).toBeNull();
+		expect(unredeemed.expiresAt).toBeNull();
 		expect(body.nextCursor).toBeNull();
 	});
 

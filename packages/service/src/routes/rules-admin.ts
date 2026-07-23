@@ -438,11 +438,15 @@ async function readJson(c: { req: { json(): Promise<unknown> } }): Promise<unkno
 }
 
 /** Wire shape of an admin Coupons-list row (view-only projection; admin-UX
- *  Increment 3). Mirrors `serializeCoupon` plus `createdAt` — a small,
- *  header-only table has nothing expensive to trim off the list projection
- *  (unlike `serializeProductSummary`, which deliberately narrows `ProductCommerce`).
- *  `usesCount` doubles as the redeemed indicator — already a plain column, no
- *  correlated-EXISTS join. */
+ *  Increment 3). Serializes the FULL `CouponSummary` — every `CouponRecord`
+ *  field plus `createdAt` — a small, header-only table has nothing expensive
+ *  to trim off the list projection (unlike `serializeProductSummary`, which
+ *  deliberately narrows `ProductCommerce`). `startsAt`/`expiresAt` are
+ *  DELIBERATELY carried here even though the sibling `serializeCoupon` omits
+ *  them (PR #74 review): the console list renders the validity window, so
+ *  dropping them would force the UI into a per-row detail fetch — the exact
+ *  N+1 this projection exists to prevent. `usesCount` doubles as the redeemed
+ *  indicator — already a plain column, no correlated-EXISTS join. */
 function serializeCouponSummary(summary: CouponSummary): Record<string, unknown> {
 	return {
 		id: summary.id,
@@ -453,6 +457,8 @@ function serializeCouponSummary(summary: CouponSummary): Record<string, unknown>
 		capCents: summary.capCents,
 		currency: summary.currency,
 		minSubtotalCents: summary.minSubtotalCents,
+		startsAt: summary.startsAt,
+		expiresAt: summary.expiresAt,
 		maxUses: summary.maxUses,
 		maxUsesPerCustomer: summary.maxUsesPerCustomer,
 		usesCount: summary.usesCount,

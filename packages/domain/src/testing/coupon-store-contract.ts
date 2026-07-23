@@ -387,6 +387,8 @@ export function couponStoreContract(
 					capCents: 2000,
 					currency: null,
 					minSubtotalCents: 5000,
+					startsAt: "2026-07-01T00:00:00.000Z",
+					expiresAt: "2026-08-01T00:00:00.000Z",
 					maxUses: 10,
 					maxUsesPerCustomer: 1,
 					usesCount: 3,
@@ -402,6 +404,10 @@ export function couponStoreContract(
 			expect(c.rateBps).toBe(1500);
 			expect(c.capCents).toBe(2000);
 			expect(c.minSubtotalCents).toBe(5000);
+			// The validity window is part of the summary (PR #74 review — the
+			// console list renders expiry straight off this row, no detail fetch).
+			expect(c.startsAt).toBe("2026-07-01T00:00:00.000Z");
+			expect(c.expiresAt).toBe("2026-08-01T00:00:00.000Z");
 			expect(c.maxUses).toBe(10);
 			expect(c.maxUsesPerCustomer).toBe(1);
 			expect(c.usesCount).toBe(3);
