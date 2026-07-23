@@ -67,12 +67,11 @@ export {
 } from "./admin/tax-page.js";
 export {
 	createShippingPageHandler,
-	formatCentsInput,
-	parseCentsInput,
 	SHIPPING_ACTION_IDS,
 	SHIPPING_PAGE,
 	type ShippingPageInput,
 } from "./admin/shipping-page.js";
+export { formatMinorUnitsInput, parseMinorUnitsInput } from "./admin/money-input.js";
 export { PRODUCT_COMMERCE_ROUTE } from "./admin/product-commerce-route.js";
 export type { ProductCommerceRouteInput } from "./admin/product-commerce-route.js";
 export {

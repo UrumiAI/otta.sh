@@ -19,6 +19,7 @@ import {
 	type StockRemovalResult,
 	type TaxClassWire,
 } from "./admin-products-client.js";
+import { formatMinorUnitsInput, parseMinorUnitsInput } from "./money-input.js";
 import {
 	backButton,
 	createListDetailHandler,
@@ -716,40 +717,24 @@ function formatOptionalTotal(minorUnits: number | null, currencyCode: string | n
 }
 
 // -- money input parsing (NO float arithmetic — CLAUDE.md) --------------------
+// The exact-integer-string parse/format pair lives in `./money-input.js`,
+// SHARED with the Shipping console; the one behavioral fork (whether zero is
+// a valid amount) is that module's explicit `allowZero` parameter. These two
+// thin wrappers pin the Products screens' choice — prices are strictly
+// positive (the domain's own `price > 0` invariant: a free product is
+// "unpriced", not priced at 0) — in one place instead of at every call site.
 
-/**
- * Parse a merchant-entered decimal price into integer MINOR UNITS with EXACT
- * integer string math — never `parseFloat(...)*100` (which yields 1998.9999…
- * for "19.99"). A Block Kit `number_input` hands back a JS float, so money is a
- * TEXT input parsed here instead. Hundredths scale (two fractional digits — the
- * near-universal case; zero-decimal currencies like JPY are out of scope for
- * this slice, consistent with the codebase's minor-units convention). Returns
- * null for any non-conforming or non-positive input (the caller surfaces a
- * per-field error); never throws. Exported for its own unit test.
- */
+/** Parse a merchant-entered decimal price into integer MINOR UNITS; null for
+ *  any non-conforming or NON-POSITIVE input (never throws). Exported for its
+ *  own unit test. */
 export function parsePriceMinorUnits(input: string): number | null {
-	const m = /^(\d+)(?:\.(\d{1,2}))?$/.exec(input.trim());
-	if (m === null) return null;
-	const major = Number.parseInt(m[1] ?? "", 10);
-	// Pad fractional digits to hundredths: ""→"00", "9"→"90", "99"→"99".
-	const minor = Number.parseInt((m[2] ?? "").padEnd(2, "0"), 10);
-	if (!Number.isSafeInteger(major)) return null;
-	// major×100 + minor: all integer operands, exact for safe integers.
-	const units = major * 100 + minor;
-	return Number.isSafeInteger(units) && units > 0 ? units : null;
+	return parseMinorUnitsInput(input, { allowZero: false });
 }
 
-/**
- * Format integer minor units back to a hundredths decimal string for a text
- * input's initial value — pure integer math (no float division on money).
- * Exported for its own unit test.
- */
+/** Format integer minor units back to a hundredths decimal string for a text
+ *  input's initial value. Exported for its own unit test. */
 export function formatPriceMinorUnits(minorUnits: number): string {
-	const abs = Math.abs(minorUnits);
-	const frac = abs % 100;
-	const major = (abs - frac) / 100; // (abs - frac) is a multiple of 100 ⇒ exact.
-	const fracStr = frac < 10 ? `0${frac}` : String(frac);
-	return `${minorUnits < 0 ? "-" : ""}${major}.${fracStr}`;
+	return formatMinorUnitsInput(minorUnits);
 }
 
 // -- custom action: the guarded commerce edit ---------------------------------

@@ -21,6 +21,7 @@ import {
 	type ShippingRateWire,
 	type ShippingZoneWire,
 } from "./admin-rules-client.js";
+import { formatMinorUnitsInput, parseMinorUnitsInput } from "./money-input.js";
 import {
 	asRecord,
 	backButton,
@@ -603,14 +604,14 @@ function editRateForm(zoneId: string, methodId: string, row: ShippingRateWire): 
 				type: "text_input",
 				action_id: "amount",
 				label: `Amount for ${row.currency} (up to 2 decimals)`,
-				initial_value: formatCentsInput(row.amountCents),
+				initial_value: formatMinorUnitsInput(row.amountCents),
 			},
 			{
 				type: "text_input",
 				action_id: "minSubtotal",
 				label: "Free-shipping threshold (blank = none)",
 				...(row.minSubtotalCents !== null
-					? { initial_value: formatCentsInput(row.minSubtotalCents) }
+					? { initial_value: formatMinorUnitsInput(row.minSubtotalCents) }
 					: {}),
 			},
 		],
@@ -680,38 +681,19 @@ function regionsSummary(regions: unknown): string {
 }
 
 // -- money input parsing (NO float arithmetic — CLAUDE.md) ----------------------
+// The exact-integer-string parse/format pair lives in `./money-input.js`,
+// SHARED with the Products console; the one behavioral fork (whether zero is
+// a valid amount) is that module's explicit `allowZero` parameter. This thin
+// wrapper pins the Shipping screens' choice — ZERO is accepted (a $0 flat
+// rate, or a free-shipping method's below-threshold fallback, are both
+// legitimate; the service's own `shippingRateBody`/`shippingRateUpdateBody`
+// schemas use `nonnegative()`, not `positive()`) — in one place instead of at
+// every call site.
 
-/**
- * Parse a merchant-entered decimal amount into integer minor units with EXACT
- * integer string math — never `parseFloat(x) * 100` (float drift). A Block
- * Kit `number_input` hands back a JS float, so the amount is a TEXT input
- * parsed here instead. Up to two fractional digits. UNLIKE
- * `products-page.ts`'s `parsePriceMinorUnits`, ZERO is accepted (a $0 flat
- * rate, or a free-shipping method's below-threshold fallback, are both
- * legitimate — the service's own `shippingRateBody`/`shippingRateUpdateBody`
- * schemas use `nonnegative()`, not `positive()`). Returns null for any
- * non-conforming or negative input; never throws. Exported for its own unit
- * test.
- */
-export function parseCentsInput(input: string): number | null {
-	const m = /^(\d+)(?:\.(\d{1,2}))?$/.exec(input.trim());
-	if (m === null) return null;
-	const major = Number.parseInt(m[1] ?? "", 10);
-	const minor = Number.parseInt((m[2] ?? "").padEnd(2, "0"), 10);
-	if (!Number.isSafeInteger(major)) return null;
-	const units = major * 100 + minor;
-	return Number.isSafeInteger(units) && units >= 0 ? units : null;
-}
-
-/** Format integer minor units back to a hundredths decimal string for a text
- *  input's initial value — pure integer math, no float division on money.
- *  Exported for its own unit test. */
-export function formatCentsInput(minorUnits: number): string {
-	const abs = Math.abs(minorUnits);
-	const frac = abs % 100;
-	const major = (abs - frac) / 100; // (abs - frac) is a multiple of 100 ⇒ exact.
-	const fracStr = frac < 10 ? `0${frac}` : String(frac);
-	return `${minorUnits < 0 ? "-" : ""}${major}.${fracStr}`;
+/** Parse a merchant-entered decimal amount into integer minor units; null
+ *  for any non-conforming or NEGATIVE input (never throws). */
+function parseAmountInput(input: string): number | null {
+	return parseMinorUnitsInput(input, { allowZero: true });
 }
 
 /** Display-format (with currency symbol) for the rates table — falls back to
@@ -721,7 +703,7 @@ function formatCentsForDisplay(minorUnits: number, currencyCode: string): string
 	try {
 		return formatMoney(toCents(minorUnits), toCurrency(currencyCode), "en-US");
 	} catch {
-		return `${currencyCode} ${formatCentsInput(minorUnits)}`;
+		return `${currencyCode} ${formatMinorUnitsInput(minorUnits)}`;
 	}
 }
 
@@ -983,7 +965,7 @@ function createRateAction() {
 				description: "Currency must be a 3-letter ISO-4217 code like USD.",
 			});
 		}
-		const amountCents = parseCentsInput(readString(values.amount) ?? "");
+		const amountCents = parseAmountInput(readString(values.amount) ?? "");
 		if (amountCents === null) {
 			return showList([zoneId, methodId], {
 				variant: "error",
@@ -994,7 +976,7 @@ function createRateAction() {
 		const minSubtotalRaw = (readString(values.minSubtotal) ?? "").trim();
 		let minSubtotalCents: number | null = null;
 		if (minSubtotalRaw.length > 0) {
-			minSubtotalCents = parseCentsInput(minSubtotalRaw);
+			minSubtotalCents = parseAmountInput(minSubtotalRaw);
 			if (minSubtotalCents === null) {
 				return showList([zoneId, methodId], {
 					variant: "error",
@@ -1042,7 +1024,7 @@ function saveRateAction() {
 			return showList();
 		}
 		const expectedAmountCents = Number.parseInt(expectedAmountCentsRaw, 10);
-		const amountCents = parseCentsInput(readString(values.amount) ?? "");
+		const amountCents = parseAmountInput(readString(values.amount) ?? "");
 		if (amountCents === null) {
 			return showList([zoneId, methodId], {
 				variant: "error",
@@ -1053,7 +1035,7 @@ function saveRateAction() {
 		const minSubtotalRaw = (readString(values.minSubtotal) ?? "").trim();
 		let minSubtotalCents: number | null = null;
 		if (minSubtotalRaw.length > 0) {
-			minSubtotalCents = parseCentsInput(minSubtotalRaw);
+			minSubtotalCents = parseAmountInput(minSubtotalRaw);
 			if (minSubtotalCents === null) {
 				return showList([zoneId, methodId], {
 					variant: "error",
