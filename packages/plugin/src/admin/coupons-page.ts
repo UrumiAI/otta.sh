@@ -22,6 +22,7 @@ import {
 	type RulesUpdateResult,
 } from "./admin-rules-client.js";
 import { formatMinorUnitsInput, parseMinorUnitsInput } from "./money-input.js";
+import { formatBpsAsPercent, parsePercentToBps } from "./percent-input.js";
 import {
 	asRecord,
 	backButton,
@@ -41,7 +42,6 @@ import {
 	type Notice,
 	type ScreenActions,
 } from "./scaffold/index.js";
-import { formatBpsAsPercent, parsePercentToBps } from "./tax-page.js";
 
 /**
  * The admin Coupons console page (admin-UX Increment 3, slice 4 — "coupon
@@ -50,8 +50,9 @@ import { formatBpsAsPercent, parsePercentToBps } from "./tax-page.js";
  * added) drilling into a per-coupon detail/edit LEAF (the first rules screen
  * with a true leaf level — tax/shipping are list-into-list). Rendered by the
  * single `admin` dispatch route (`admin-route.ts`), built on the shared
- * list/detail scaffold and `AdminRulesClient`. Percentage math reuses the Tax
- * console's exact-integer bps parser/formatter; money reuses the shared
+ * list/detail scaffold and `AdminRulesClient`. Percentage math reuses the
+ * shared `percent-input` exact-integer bps parser/formatter (extracted from
+ * the Tax console at this second consumer); money reuses the shared
  * `money-input` helper (never a float, never `number_input`).
  *
  * UNCHANGED-vs-CLEAR, presented honestly (the crux of this screen): coupon

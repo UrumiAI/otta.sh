@@ -1,11 +1,13 @@
 import { describe, expect, test } from "vitest";
-import { formatBpsAsPercent, parsePercentToBps } from "../src/admin/tax-page.js";
+import { formatBpsAsPercent, parsePercentToBps } from "../src/admin/percent-input.js";
 
 // The percent input for the tax admin drill-down (admin-UX Increment 3, slice
-// 2). `rate_bps` is integer basis points (CLAUDE.md: money/rate fields are
-// integers, never floats): a Block Kit `number_input` would hand back a JS
-// float, so the rate is a TEXT input parsed by EXACT integer string math.
-// These pin the exact round-trips called out in the slice's brief.
+// 2), now the SHARED `percent-input.ts` module (extracted when the Coupons
+// console became the second consumer — slice 4). `rate_bps` is integer basis
+// points (CLAUDE.md: money/rate fields are integers, never floats): a Block
+// Kit `number_input` would hand back a JS float, so the rate is a TEXT input
+// parsed by EXACT integer string math. These pin the exact round-trips called
+// out in the slice's brief and are the extraction's byte-identical spec.
 
 describe("parsePercentToBps", () => {
 	test("parses the brief's exact examples", () => {

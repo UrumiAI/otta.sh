@@ -16,7 +16,7 @@ import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
 // "clear" = "blank the field" — asserted explicitly below); delete with the
 // forbid-if-redeemed audit-trail conflict rendered honestly. Money is integer
 // minor units via the shared money-input helper; percentage rates are integer
-// basis points via the Tax console's exact-integer percent parser.
+// basis points via the shared exact-integer percent parser (percent-input).
 
 interface CouponRow {
 	id: string;
@@ -277,6 +277,23 @@ const FIVEOFF_PREFILL = {
 	expiresAt: "",
 	maxUses: "",
 	maxUsesPerCustomer: "",
+};
+
+/** The full edit-form value set for SUMMER25 (percentage) exactly as its
+ *  pre-fill renders it — the baseline for the percentage family's
+ *  unchanged/clear/changed round-trips (rateBps, capCents, maxUses,
+ *  maxUsesPerCustomer, expiresAt). */
+const SUMMER25_PREFILL = {
+	couponId: "c-summer",
+	code: "SUMMER25",
+	type: "percentage",
+	ratePercent: "10.00",
+	cap: "20.00",
+	minSubtotal: "",
+	startsAt: "",
+	expiresAt: "2026-09-01T00:00:00.000Z",
+	maxUses: "100",
+	maxUsesPerCustomer: "1",
 };
 
 describe("admin Coupons console — list level (workerd sandbox)", () => {
@@ -735,6 +752,144 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		const byId = new Map(fields.map((f) => [f.action_id, f]));
 		expect(byId.get("minSubtotal")?.initial_value).toBeUndefined();
 		expect(bannerOf(blocksOf(outcome))?.variant).toBe("default");
+	});
+
+	test("a PERCENTAGE coupon's edit form pre-fills its own family (rate, cap, window, use bounds) and renders no fixed-amount fields", async () => {
+		const state = makeCouponsState();
+		await boot(state);
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "coupons:open",
+			values: { target: encodePath(["SUMMER25"]) },
+		});
+		const fields = formFields(blocksOf(outcome), "coupons:save");
+		const byId = new Map(fields.map((f) => [f.action_id, f]));
+		expect(byId.get("couponId")?.initial_value).toBe("c-summer");
+		expect(byId.get("type")?.initial_value).toBe("percentage");
+		expect(byId.get("ratePercent")?.type).toBe("text_input"); // never number_input (float)
+		expect(byId.get("ratePercent")?.initial_value).toBe("10.00");
+		expect(byId.get("cap")?.initial_value).toBe("20.00");
+		expect(byId.get("expiresAt")?.initial_value).toBe("2026-09-01T00:00:00.000Z");
+		expect(byId.get("maxUses")?.initial_value).toBe("100");
+		expect(byId.get("maxUsesPerCustomer")?.initial_value).toBe("1");
+		expect(byId.get("minSubtotal")?.initial_value).toBeUndefined(); // unset ⇒ blank
+		expect(byId.get("startsAt")?.initial_value).toBeUndefined();
+		// a percentage coupon renders NO fixed-amount-only field
+		expect(byId.has("amount")).toBe(false);
+	});
+
+	test("UNCHANGED semantics (percentage): saving the untouched pre-fill PUTs a full replacement carrying rate/cap/window/use bounds — nothing is cleared", async () => {
+		const state = makeCouponsState();
+		await boot(state);
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "coupons:save",
+			values: { ...SUMMER25_PREFILL },
+		});
+		const put = stub!.requests.find((r) => r.method === "PUT");
+		expect(put!.url).toBe("/admin/coupons/c-summer");
+		expect(put!.body).toEqual({
+			amountCents: null,
+			rateBps: 1000,
+			capCents: 2000,
+			minSubtotalCents: null,
+			startsAt: null,
+			expiresAt: "2026-09-01T00:00:00.000Z",
+			maxUses: 100,
+			maxUsesPerCustomer: 1,
+		});
+		expect(bannerOf(blocksOf(outcome))?.variant).toBe("default");
+		const coupon = state.coupons.find((c) => c.id === "c-summer");
+		expect(coupon?.rateBps).toBe(1000); // unchanged
+		expect(coupon?.capCents).toBe(2000);
+		expect(coupon?.expiresAt).toBe("2026-09-01T00:00:00.000Z");
+		expect(coupon?.maxUses).toBe(100);
+		expect(coupon?.maxUsesPerCustomer).toBe(1);
+	});
+
+	test("CLEAR semantics (percentage): blanking cap/expiry/use bounds saves each as an explicit null while the rate is carried; the reloaded form shows them cleared", async () => {
+		const state = makeCouponsState();
+		await boot(state);
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "coupons:save",
+			values: {
+				...SUMMER25_PREFILL,
+				cap: "",
+				expiresAt: "",
+				maxUses: "",
+				maxUsesPerCustomer: "",
+			},
+		});
+		const put = stub!.requests.find((r) => r.method === "PUT");
+		expect(put!.body).toMatchObject({
+			rateBps: 1000, // carried, not clobbered
+			capCents: null,
+			expiresAt: null,
+			maxUses: null,
+			maxUsesPerCustomer: null,
+		});
+		const coupon = state.coupons.find((c) => c.id === "c-summer");
+		expect(coupon?.capCents).toBeNull();
+		expect(coupon?.expiresAt).toBeNull();
+		expect(coupon?.maxUses).toBeNull();
+		expect(coupon?.maxUsesPerCustomer).toBeNull();
+		expect(coupon?.rateBps).toBe(1000);
+		// The re-rendered edit form reflects the clears — pre-fills are blank now.
+		const fields = formFields(blocksOf(outcome), "coupons:save");
+		const byId = new Map(fields.map((f) => [f.action_id, f]));
+		expect(byId.get("cap")?.initial_value).toBeUndefined();
+		expect(byId.get("expiresAt")?.initial_value).toBeUndefined();
+		expect(byId.get("maxUses")?.initial_value).toBeUndefined();
+		expect(bannerOf(blocksOf(outcome))?.variant).toBe("default");
+	});
+
+	test("CHANGED semantics (percentage): edited rate/cap/expiry/use bounds PUT exact integers (bps, minor units) with the expiry normalized to ISO UTC", async () => {
+		const state = makeCouponsState();
+		await boot(state);
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "coupons:save",
+			values: {
+				...SUMMER25_PREFILL,
+				ratePercent: "12.5",
+				cap: "25.00",
+				expiresAt: "2026-10-01",
+				maxUses: "200",
+				maxUsesPerCustomer: "2",
+			},
+		});
+		const put = stub!.requests.find((r) => r.method === "PUT");
+		expect(put!.body).toEqual({
+			amountCents: null,
+			rateBps: 1250, // "12.5" ⇒ exact integer bps, padded fraction
+			capCents: 2500,
+			minSubtotalCents: null,
+			startsAt: null,
+			expiresAt: "2026-10-01T00:00:00.000Z", // normalized to ISO UTC
+			maxUses: 200,
+			maxUsesPerCustomer: 2,
+		});
+		const banner = bannerOf(blocksOf(outcome));
+		expect(banner?.variant).toBe("default");
+		expect(String(banner?.title)).toContain("saved");
+		const coupon = state.coupons.find((c) => c.id === "c-summer");
+		expect(coupon?.rateBps).toBe(1250);
+		expect(coupon?.capCents).toBe(2500);
+		expect(coupon?.maxUses).toBe(200);
+	});
+
+	test("a percentage coupon cannot blank its rate — the one axis with no 'unset'; no PUT sent, context preserved", async () => {
+		const state = makeCouponsState();
+		await boot(state);
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "coupons:save",
+			values: { ...SUMMER25_PREFILL, ratePercent: "" },
+		});
+		expect(stub!.requests.some((r) => r.method === "PUT")).toBe(false);
+		expect(bannerOf(blocksOf(outcome))?.variant).toBe("error");
+		expect(headerTexts(blocksOf(outcome))).toContain("Coupon — SUMMER25");
 	});
 
 	test("a fixed_amount coupon cannot blank its amount — the one axis with no 'unset' (the domain requires it); no PUT sent", async () => {
