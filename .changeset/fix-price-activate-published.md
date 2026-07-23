@@ -4,29 +4,38 @@
 
 Fix issue #82: pricing a product whose CMS content is ALREADY PUBLISHED left the
 `product_commerce` row `active=false` — the storefront PDP stayed "Not currently
-available for purchase" until a manual unpublish→republish. Activation was driven
-only by `content:afterPublish` → `activateProductCommerce`, which for a
-"publish first, price later" product already fired (and no-op'd — the row did not
-exist yet) before the pricing write, leaving no path to `active=true`.
+available for purchase" with no admin signal, and the only remedy was a manual
+unpublish→republish. Activation was driven only by `content:afterPublish` →
+`activateProductCommerce`, which for a "publish first, price later" product had
+already fired (and no-op'd — the row did not exist yet) before the pricing write,
+leaving no path to `active=true`.
 
-The primary, host-wired fix is in the `content:afterSave` sync hook (fires on
-every document save, carrying the content record's `status`): when the saved
-product is CURRENTLY PUBLISHED, the hook now activates the (possibly just-created)
-row in the same sync via the DEDICATED, guarded `POST /products/:id/commerce/activate`
-route — never a field on the blanket `upsert` (which must never touch
-`active`/`deletedAt`). It reuses the publish idempotency key + ordering watermark,
-so it converges with the real `content:afterPublish` to one applied flip and can
-never resurrect a SOFT-DELETED row (the store's `activate` no-ops on a tombstone —
-the load-bearing invariant, proven on SQLite + Postgres). The `product-commerce`
-panel Save route applies the same guarded activation when the panel carries the
-document's publish signal (baked into the Save button's `value` by the
-`product-data/panel-state` route and echoed back on submit). All activation is
-best-effort like the fire-and-forget sync hooks: the row is durably priced
-regardless, and a missing/false publish signal or unparseable watermark skips
-activation (no ungated flip).
+What this change resolves:
 
-Also adds issue #82's option-2 admin signal: when a `product_commerce` row is
-commerce-complete (sku + price) yet `active=false`, the Product-data panel now
-shows a lightweight "priced but not active — publish to make purchasable" notice
-so a lost activation is never silent. Capabilities stay exactly `content:read` +
-`network:request`; proven under the workerd-on-Node sandbox.
+- **The silent harm is gone.** When a `product_commerce` row is commerce-complete
+  (sku + price) yet `active=false`, the Product-data panel now shows a lightweight
+  "priced but not active — publish (or re-publish) to make purchasable" notice, so
+  the state is visible and the remedy is named.
+- **Auto-activation on the host-invoked content hooks.** `content:afterSave` and
+  `content:afterPublish` both now activate a currently-PUBLISHED product's row via
+  the DEDICATED, guarded `POST /products/:id/commerce/activate` route (never a
+  field on the blanket `upsert`, which must never touch `active`/`deletedAt`).
+  They share one publish idempotency key + ordering watermark, so the two hooks
+  converge to a single applied flip and can never resurrect a SOFT-DELETED row
+  (the store's `activate` no-ops on a tombstone — the load-bearing invariant,
+  proven on SQLite + Postgres).
+
+Honest limitation: **pricing alone does NOT instantly flip the row active.** The
+row activates on the NEXT content save/republish of the published product (which
+fires `content:afterSave`), and the panel indicator names exactly that remedy in
+the meantime. Fully-automatic activation directly from the pricing action remains
+a documented em-dash HOST follow-up: the stock admin renders the sandboxed
+field-widget from static manifest elements and does not drive it through the
+plugin's panel-state/route interaction pipeline, so the panel Save cannot yet
+carry the document's publish signal back to the service. The plugin side of that
+path (the panel-state route baking the signal into the Save button `value`, and
+the route activating when it is present) is wired and tested, ready for when the
+host threads it.
+
+Capabilities stay exactly `content:read` + `network:request`; proven under the
+workerd-on-Node sandbox.
