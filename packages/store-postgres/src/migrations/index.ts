@@ -17,6 +17,7 @@ import { migration0014OrderEvents } from "./0014_order_events.js";
 import { migration0015ProductCommerceAdminListIndices } from "./0015_product_commerce_admin_list_indices.js";
 import { migration0016InventoryStockMovements } from "./0016_inventory_stock_movements.js";
 import { migration0017ProductCommerceDataModelAdds } from "./0017_product_commerce_data_model_adds.js";
+import { migration0018CouponsAdminList } from "./0018_coupons_admin_list.js";
 
 /** Ordered, append-only migration list (forward-only). */
 const migrations: Record<string, Migration> = {
@@ -37,6 +38,7 @@ const migrations: Record<string, Migration> = {
 	"0015_product_commerce_admin_list_indices": migration0015ProductCommerceAdminListIndices,
 	"0016_inventory_stock_movements": migration0016InventoryStockMovements,
 	"0017_product_commerce_data_model_adds": migration0017ProductCommerceDataModelAdds,
+	"0018_coupons_admin_list": migration0018CouponsAdminList,
 };
 
 export const migrationProvider: MigrationProvider = {

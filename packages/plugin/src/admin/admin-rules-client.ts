@@ -70,6 +70,41 @@ export interface CouponWire {
 	usesCount: number;
 }
 
+/** One admin Coupons-list row (admin-UX Increment 3, view-only enumerate).
+ *  Mirrors `CouponWire` plus `createdAt` — a small, header-only table has
+ *  nothing expensive to trim off the list projection (unlike
+ *  `ProductSummaryWire`, which deliberately narrows the full product row).
+ *  `usesCount` doubles as the redeemed indicator (already a plain column, no
+ *  join). */
+export interface CouponSummaryWire {
+	id: string;
+	code: string;
+	type: string;
+	amountCents: number | null;
+	rateBps: number | null;
+	capCents: number | null;
+	currency: string | null;
+	minSubtotalCents: number | null;
+	maxUses: number | null;
+	maxUsesPerCustomer: number | null;
+	usesCount: number;
+	createdAt: string;
+}
+
+/** The list filter the console builds from its filter form. `search` is the
+ *  ONLY axis this slice ships (coupons have no soft-delete/publish-gate/kind
+ *  axis to mirror `ProductsListFilter`'s `deleted`/`active`/`productKind`) —
+ *  a case-insensitive EXACT match on `code`, never a substring. */
+export interface CouponsListFilter {
+	search?: string;
+}
+
+export interface CouponsListResult {
+	coupons: CouponSummaryWire[];
+	/** Opaque keyset cursor for the next page, or null on the last page. */
+	nextCursor: string | null;
+}
+
 // -- Discriminated results ----------------------------------------------------
 // A failure NEVER throws into the host; it surfaces a typed reason the caller
 // renders as GENERIC copy, never a raw HTTP status/URL.
@@ -356,6 +391,32 @@ export class AdminRulesClient {
 	}
 
 	// -- Coupons ---------------------------------------------------------------
+
+	/**
+	 * GET the admin Coupons console list (admin-UX Increment 3, view-only
+	 * enumerate — the missing atomic primitive this slice adds). Mirrors
+	 * `AdminProductsClient.listProducts`'s shape: pass EITHER a fresh `filter`
+	 * OR a previous page's `opts.cursor` (never both — the cursor already
+	 * embeds the active filter, so sending a filter alongside it could disagree
+	 * with what the server re-derives from the token).
+	 */
+	async listCoupons(
+		filter: CouponsListFilter,
+		opts: { cursor?: string; limit?: number } = {},
+	): Promise<CouponsListResult> {
+		const q = new URLSearchParams();
+		if (opts.cursor !== undefined && opts.cursor.length > 0) {
+			q.set("cursor", opts.cursor);
+		} else if (filter.search !== undefined && filter.search.length > 0) {
+			q.set("search", filter.search);
+		}
+		if (opts.limit !== undefined) q.set("limit", String(opts.limit));
+		const body = await this.#getJson<{
+			coupons?: CouponSummaryWire[];
+			nextCursor?: string | null;
+		}>(`/admin/coupons?${q.toString()}`);
+		return { coupons: body.coupons ?? [], nextCursor: body.nextCursor ?? null };
+	}
 
 	async getCoupon(code: string): Promise<CouponWire | null> {
 		const res = await this.#fetch(`${this.#baseUrl}/admin/coupons/${encodeURIComponent(code)}`, {

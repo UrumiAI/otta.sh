@@ -279,7 +279,7 @@ export function createWorker(overrides: CreateWorkerOverrides = {}): UrumiWorker
 		// aware; this entry is pg-only by construction).
 		const shippingRules = new KyselyShippingRulesStore({ db });
 		const taxRules = new KyselyTaxRulesStore({ db });
-		const couponStore = new KyselyCouponStore({ db, idGen: uuidIdGen });
+		const couponStore = new KyselyCouponStore({ db, idGen: uuidIdGen, clock });
 		const reportingStore = new KyselyReportingStore({ db, dialect: "postgres" });
 		const settingsStore = new KyselySettingsStore({ db, clock });
 		// Phase 5 customer identity + email surface — mirrors the Node bin.
@@ -369,7 +369,7 @@ export function createWorker(overrides: CreateWorkerOverrides = {}): UrumiWorker
 				const store = new KyselyInventoryStore({ db, idGen: uuidIdGen, clock });
 				const cartStore = new KyselyCartStore({ db, idGen: uuidIdGen, clock });
 				const orderStore = new KyselyOrderStore({ db, idGen: uuidIdGen, clock });
-				const couponStore = new KyselyCouponStore({ db, idGen: uuidIdGen });
+				const couponStore = new KyselyCouponStore({ db, idGen: uuidIdGen, clock });
 				const cartDeps: CartDeps = {
 					cartStore,
 					inventoryStore: store,

@@ -21,7 +21,14 @@ async function freshStore(poolMax: number): Promise<Fixture> {
 	if (PG === undefined) throw new Error("PG_CONNECTION_STRING is not set");
 	const iso = await createIsolatedPgSchema(PG, { poolMax });
 	cleanups.push(() => iso.teardown());
-	return { store: new KyselyCouponStore({ db: iso.db, idGen: uuidIdGen }), db: iso.db };
+	return {
+		store: new KyselyCouponStore({
+			db: iso.db,
+			idGen: uuidIdGen,
+			clock: { now: () => new Date() },
+		}),
+		db: iso.db,
+	};
 }
 
 async function seedCoupon(
@@ -45,6 +52,7 @@ async function seedCoupon(
 			max_uses: maxUses,
 			max_uses_per_customer: maxUsesPerCustomer,
 			uses_count: 0,
+			created_at: "2026-07-10T00:00:00.000Z",
 		})
 		.execute();
 }

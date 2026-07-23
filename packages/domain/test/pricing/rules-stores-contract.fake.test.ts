@@ -1,4 +1,4 @@
-import { CountingIdGen } from "@urumi/domain/testing";
+import { CountingIdGen, FixedClock } from "@urumi/domain/testing";
 import {
 	couponStoreContract,
 	InMemoryCouponStore,
@@ -15,6 +15,15 @@ shippingRulesStoreContract(async () => ({ store: new InMemoryShippingRulesStore(
 taxRulesStoreContract(async () => ({ store: new InMemoryTaxRulesStore() }), { dialect: "fake" });
 
 couponStoreContract(
-	async () => ({ store: new InMemoryCouponStore({ idGen: new CountingIdGen("red") }) }),
+	async () => {
+		const clock = new FixedClock(new Date("2026-07-10T00:00:00.000Z"));
+		const store = new InMemoryCouponStore({ idGen: new CountingIdGen("red"), clock });
+		return {
+			store,
+			async seedCoupon(row) {
+				store.seedCouponRow(row);
+			},
+		};
+	},
 	{ dialect: "fake" },
 );

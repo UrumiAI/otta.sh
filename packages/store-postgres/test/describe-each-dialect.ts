@@ -269,16 +269,45 @@ export async function makePgTaxHarness(): Promise<TaxRulesStoreHarness> {
 	return { store: new KyselyTaxRulesStore({ db: await makePgDbMigrated() }) };
 }
 
-export async function makeSqliteCouponHarness(): Promise<CouponStoreHarness> {
+// -- Phase 6 (§6, admin-UX Increment 3): CouponStore harness ----------------
+
+function buildCouponHarness(db: Kysely<Database>, idGen = uuidIdGen): CouponStoreHarness {
+	const clock = new FixedClock(new Date("2026-07-10T00:00:00.000Z"));
 	return {
-		store: new KyselyCouponStore({
-			db: await makeSqliteDbMigrated(),
-			idGen: new CountingIdGen("red"),
-		}),
+		store: new KyselyCouponStore({ db, idGen, clock }),
+		// Admin-UX Increment 3: a direct `coupons` insert (mirrors
+		// `buildProductCommerceHarness.seedProduct`) so the admin-list contract
+		// can pin an EXACT `created_at` per row — the fake, sqlite, and pg then
+		// exercise the identical `listCoupons` spec.
+		async seedCoupon(row) {
+			await db
+				.insertInto("coupons")
+				.values({
+					id: row.id,
+					code: row.code,
+					type: row.type ?? "fixed_amount",
+					amount_cents: row.amountCents ?? null,
+					rate_bps: row.rateBps ?? null,
+					cap_cents: row.capCents ?? null,
+					currency: row.currency ?? null,
+					min_subtotal_cents: row.minSubtotalCents ?? null,
+					starts_at: row.startsAt ?? null,
+					expires_at: row.expiresAt ?? null,
+					max_uses: row.maxUses ?? null,
+					max_uses_per_customer: row.maxUsesPerCustomer ?? null,
+					uses_count: row.usesCount ?? 0,
+					created_at: row.createdAt,
+				})
+				.execute();
+		},
 	};
 }
+
+export async function makeSqliteCouponHarness(): Promise<CouponStoreHarness> {
+	return buildCouponHarness(await makeSqliteDbMigrated(), new CountingIdGen("red"));
+}
 export async function makePgCouponHarness(): Promise<CouponStoreHarness> {
-	return { store: new KyselyCouponStore({ db: await makePgDbMigrated(), idGen: uuidIdGen }) };
+	return buildCouponHarness(await makePgDbMigrated());
 }
 
 // -- Phase 7: reporting + settings harnesses ---------------------------------

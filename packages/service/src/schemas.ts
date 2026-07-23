@@ -211,6 +211,28 @@ export const methodCurrencyPathParams = z.object({
 	currency: z.string().regex(/^[A-Z]{3}$/),
 });
 
+// Admin Coupons console: view-only list query (admin-UX Increment 3). Mirrors
+// `productsListQuery`'s shape: `limit` coerced + clamped to 1..100 (default
+// 25), `cursor` the opaque base64url keyset token. `search` is the ONLY filter
+// axis (coupons have no soft-delete/publish-gate/kind axis to mirror
+// `deleted`/`active`/`productKind` — port doc) and matches `code` EXACTLY,
+// case-insensitively (never a substring).
+export const couponsListQuery = z.object({
+	search: z.string().min(1).max(200).optional(),
+	cursor: z.string().min(1).max(1000).optional(),
+	limit: z.coerce.number().int().min(1).max(100).optional().default(25),
+});
+
+/** Validates the FILTER object carried inside a decoded opaque coupon-list
+ *  cursor (MOD-1: re-validate the decoded filter through zod before trusting
+ *  it) — mirrors `productListFilterSchema`. */
+export const couponListFilterSchema = z.object({
+	search: z.string().min(1).max(200).optional(),
+});
+
+export type CouponsListQuery = z.infer<typeof couponsListQuery>;
+export type CouponListFilterParsed = z.infer<typeof couponListFilterSchema>;
+
 // The x402 facilitator SettleResponse proof forwarded by the page layer (§6).
 // Money on the wire is an integer minor unit + an ISO-4217 string (never a float).
 export const x402ProofBody = z.object({

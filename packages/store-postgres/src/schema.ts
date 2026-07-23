@@ -452,6 +452,13 @@ export interface CouponsTable {
 	max_uses: number | null;
 	max_uses_per_customer: number | null;
 	uses_count: number;
+	/** Admin-UX Increment 3 (`listCoupons`'s keyset order): added additively by
+	 *  `0018_coupons_admin_list.ts`, `NOT NULL DEFAULT '1970-01-01T00:00:00.000Z'`
+	 *  — a pre-migration row (if any) sorts to the very end of the DESC list
+	 *  deterministically on BOTH dialects, avoiding the pg/sqlite NULL-ordering
+	 *  divergence a nullable column would introduce for the sort key. `create`
+	 *  stamps a real value from the injected `Clock` for every new coupon. */
+	created_at: string;
 }
 
 /** One row per redemption; `UNIQUE(coupon_id, idempotency_key)` makes a replay of

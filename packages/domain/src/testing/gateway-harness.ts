@@ -70,7 +70,7 @@ export function buildGatewayHarness(config: GatewayHarnessConfig): PaymentGatewa
 	const orderStore = new InMemoryOrderStore({ idGen: new CountingIdGen("oi"), clock });
 	const entitlementStore = new InMemoryEntitlementStore({ idGen: new CountingIdGen("ent"), clock });
 	const paymentEventStore = new InMemoryPaymentEventStore();
-	const couponStore = new InMemoryCouponStore({ idGen: new CountingIdGen("red") });
+	const couponStore = new InMemoryCouponStore({ idGen: new CountingIdGen("red"), clock });
 	const settleDeps: SettleDeps = {
 		orderStore,
 		entitlementStore,

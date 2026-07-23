@@ -31,7 +31,7 @@ function build(db: Kysely<Database>): Fixture {
 	return {
 		db,
 		clock,
-		couponStore: new KyselyCouponStore({ db, idGen: uuidIdGen }),
+		couponStore: new KyselyCouponStore({ db, idGen: uuidIdGen, clock }),
 		orderStore: new KyselyOrderStore({ db, idGen: new CountingIdGen("oi"), clock }),
 	};
 }
@@ -69,6 +69,7 @@ async function seedCoupon(db: Kysely<Database>): Promise<void> {
 			max_uses: 10,
 			max_uses_per_customer: null,
 			uses_count: 0,
+			created_at: "2026-07-10T00:00:00.000Z",
 		})
 		.execute();
 }
