@@ -380,6 +380,59 @@ export function refundOrderContract(
 			expect((await h.orderStore.getById(id))?.state).toBe("refunded");
 		});
 
+		test("finalizeRefund is status-guarded: it never clobbers a voided row, and a same-ref re-finalize is a benign duplicate", async () => {
+			const h = await makeHarness();
+			const id = await h.seedPaidOrder({ id: "ord-guarded", totalCents: 1000 });
+			const key = idempotencyKey("rf-guarded");
+			const reserveInput = {
+				orderId: id,
+				amount: cents(400),
+				currency: USD,
+				kind: "gateway" as const,
+				gateway: "stripe" as const,
+				refundRef: null,
+				reason: null,
+				refundedBy: "admin",
+				idempotencyKey: key,
+			};
+
+			// reserve → void → a STRAY finalize must be a 0-row miss: found:false, the
+			// voided row untouched (still voided, refundRef still null) — never a
+			// resurrection of released capacity.
+			expect((await h.orderStore.reserveRefund(reserveInput)).outcome).toBe("recorded");
+			expect(await h.orderStore.voidRefund(key)).toBe(true);
+			const stray = await h.orderStore.finalizeRefund({
+				idempotencyKey: key,
+				refundRef: "re_stray",
+			});
+			expect(stray.found).toBe(false);
+			expect(stray.alreadyFinalized).toBe(false);
+			const afterStray = await h.orderStore.getRefundByIdempotencyKey(key);
+			expect(afterStray?.status, "voided row NOT clobbered").toBe("voided");
+			expect(afterStray?.refundRef).toBeNull();
+
+			// reserve (fresh key) → finalize → a SECOND finalize with the SAME ref is
+			// the benign duplicate (found:true, alreadyFinalized:true, same row); a
+			// DIFFERENT ref is found:false (the loud residual) and the recorded row —
+			// including its refundRef — is untouched.
+			const key2 = idempotencyKey("rf-guarded-2");
+			expect(
+				(await h.orderStore.reserveRefund({ ...reserveInput, idempotencyKey: key2 })).outcome,
+			).toBe("recorded");
+			const first = await h.orderStore.finalizeRefund({ idempotencyKey: key2, refundRef: "re_a" });
+			expect(first.found).toBe(true);
+			expect(first.alreadyFinalized).toBe(false);
+			const dup = await h.orderStore.finalizeRefund({ idempotencyKey: key2, refundRef: "re_a" });
+			expect(dup.found).toBe(true);
+			expect(dup.alreadyFinalized, "same-ref re-finalize is benign").toBe(true);
+			expect(dup.refund?.refundRef).toBe("re_a");
+			const other = await h.orderStore.finalizeRefund({ idempotencyKey: key2, refundRef: "re_b" });
+			expect(other.found, "different ref is NOT benign").toBe(false);
+			const recordedRow = await h.orderStore.getRefundByIdempotencyKey(key2);
+			expect(recordedRow?.status).toBe("recorded");
+			expect(recordedRow?.refundRef, "recorded row not clobbered").toBe("re_a");
+		});
+
 		test("refunding an unpaid order (no captured payment) is rejected before reserving", async () => {
 			const h = await makeHarness();
 			// Seed a paid order but with ZERO captured (no succeeded payment).

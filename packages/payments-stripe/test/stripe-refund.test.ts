@@ -225,13 +225,18 @@ describe("createStripeHttpTransport (default live transport; stub fetch — NO n
 		).toEqual({ ok: false, class: "ambiguous" });
 	});
 
-	test("a 5xx on create is ambiguous; a 429 is retryable; a 4xx is terminal", async () => {
+	test("a 5xx on create is ambiguous; a 429/409 is retryable; a 4xx is terminal", async () => {
 		// 429 (rate-limited) is throttled at the gate — the refund was NOT processed,
 		// so it is RETRYABLE, never conflated with a 5xx (which Stripe may have
-		// processed → ambiguous) or a plain 4xx rejection (terminal).
+		// processed → ambiguous) or a plain 4xx rejection (terminal). 409 is Stripe's
+		// "Idempotency-Key still processing": the ORIGINAL request may yet succeed —
+		// mapping it terminal would void the reservation (releasing capacity) while
+		// the money may still move, so it is RETRYABLE (reservation kept; a same-key
+		// resume dedupes provider-side).
 		for (const [status, cls] of [
 			[500, "ambiguous"],
 			[429, "retryable"],
+			[409, "retryable"],
 			[400, "terminal"],
 		] as const) {
 			const transport = createStripeHttpTransport({

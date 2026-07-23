@@ -136,10 +136,14 @@ export interface OrderStore {
 	 * recorded`, and — when the FINALIZED `Σ` now reaches the ceiling — drive the
 	 * `→ refunded` transition through `#flipAndEnqueue`, all in ONE transaction
 	 * under the same `orders` row lock as the reserve. Finalize can never fail
-	 * arbitration: the reservation already holds the capacity. `found:false` ⇒
-	 * no reserved/unverified row exists under the key (impossible by
-	 * construction on the orchestrated path — the use-case treats it as a loud
-	 * anomaly, never a silent drop of the provider refundRef).
+	 * arbitration: the reservation already holds the capacity. The row UPDATE is
+	 * STATUS-GUARDED (`reserved|unverified` only) — a stray finalize can never
+	 * clobber a `voided` or `recorded` row. When the key's row is already
+	 * `recorded` with the SAME `refundRef` (a concurrent same-key caller finalized
+	 * first — the provider's native idempotency guarantees one refund), the result
+	 * is a BENIGN duplicate (`found:true, alreadyFinalized:true`); a DIFFERENT
+	 * `refundRef` stays `found:false` — the loud residual the use-case surfaces as
+	 * a `REFUND_UNRECORDED` anomaly, never a silent drop of the provider ref.
 	 */
 	finalizeRefund(input: FinalizeRefundInput): Promise<FinalizeRefundStoreResult>;
 
@@ -691,12 +695,18 @@ export interface FinalizeRefundInput {
 	refundRef: string;
 }
 
-/** `found:false` ⇒ no reserved/unverified row under the key (impossible by
- *  construction on the orchestrated path; the use-case surfaces it LOUDLY).
- *  `fullyRefunded` ⇒ the finalized `Σ` reached the ceiling and this finalize
- *  drove the `→ refunded` flip. */
+/** `found:false` ⇒ no reserved/unverified row under the key AND no benign
+ *  duplicate (impossible by construction on the orchestrated path; the use-case
+ *  surfaces it LOUDLY). `alreadyFinalized:true` ⇒ the key's row was ALREADY
+ *  `recorded` with the SAME `refundRef` — a concurrent same-key caller finalized
+ *  first (the provider's native idempotency guarantees one refund): a benign
+ *  duplicate carrying the existing row, NOT an anomaly. A different `refundRef`
+ *  under the key stays `found:false` (the loud residual). `fullyRefunded` ⇒ the
+ *  finalized `Σ` reached the ceiling: a fresh finalize drove the `→ refunded`
+ *  flip; a benign duplicate reports the order already sitting in `refunded`. */
 export interface FinalizeRefundStoreResult {
 	found: boolean;
+	alreadyFinalized: boolean;
 	refund: RefundRecord | null;
 	fullyRefunded: boolean;
 	order: Order | null;

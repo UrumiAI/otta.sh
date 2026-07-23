@@ -303,9 +303,14 @@ export async function refundOrder(
 	if (!finalized.found || finalized.refund === null || finalized.order === null) {
 		// The LOUD residual — impossible by construction (the reservation was
 		// committed before issuance and only this key-scoped flow settles it), but
-		// if it EVER fires: money left the provider. Record the refundRef as a
-		// REFUND_UNRECORDED anomaly + flag reconciliation; the distinct reason keeps
-		// it unconfusable with a clean rejection. Never a silent drop.
+		// if it EVER fires: money left the provider. NOT reached by a concurrent
+		// same-key double-issue: the loser's finalize finds the row already
+		// `recorded` with the SAME refundRef (Stripe's native key guarantees one
+		// refund) and the store returns it as a BENIGN duplicate (`found:true,
+		// alreadyFinalized:true`) — only a DIFFERENT refundRef lands here. Record
+		// the refundRef as a REFUND_UNRECORDED anomaly + flag reconciliation; the
+		// distinct reason keeps it unconfusable with a clean rejection. Never a
+		// silent drop.
 		const detail = `gateway refund ${gwRes.refundRef} (${String(cmd.amount)} ${cmd.currency}, key ${cmd.idempotencyKey}) issued but the reserved ledger row could not be finalized`;
 		if (deps.paymentEventStore !== undefined) {
 			await deps.paymentEventStore.recordAnomaly({
@@ -319,10 +324,13 @@ export async function refundOrder(
 		await deps.orderStore.flagReconciliation(cmd.orderId, detail);
 		return { ok: false, reason: "REFUND_ISSUED_UNRECORDED" };
 	}
+	// A benign same-ref duplicate (a concurrent same-key caller finalized first)
+	// surfaces as `duplicate:true, recorded:false` — the shape a pre-issuance
+	// replay already returns; a fresh finalize is `recorded:true`.
 	return {
 		ok: true,
-		recorded: true,
-		duplicate: false,
+		recorded: !finalized.alreadyFinalized,
+		duplicate: finalized.alreadyFinalized,
 		fullyRefunded: finalized.fullyRefunded,
 		refund: finalized.refund,
 		order: finalized.order,

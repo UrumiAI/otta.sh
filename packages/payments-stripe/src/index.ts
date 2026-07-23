@@ -414,9 +414,14 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 			if (!res.ok) {
 				// 429 (rate-limited) is throttled at Stripe's gate BEFORE the refund is
 				// processed — a transient RETRYABLE, safe to re-issue under the same native
-				// key. A 5xx on a CREATE is ambiguous (Stripe may have processed it); any
-				// other 4xx is a definite terminal rejection.
-				if (res.status === 429) return { ok: false, class: "retryable" };
+				// key. 409 is Stripe's "a request with this Idempotency-Key is still
+				// processing": the ORIGINAL create may yet succeed, so this must NOT be
+				// terminal (a terminal would void the reservation and release capacity
+				// while the money may still move) — RETRYABLE keeps the reservation held
+				// and a same-key resume dedupes provider-side. A 5xx on a CREATE is
+				// ambiguous (Stripe may have processed it); any other 4xx is a definite
+				// terminal rejection.
+				if (res.status === 429 || res.status === 409) return { ok: false, class: "retryable" };
 				return { ok: false, class: res.status >= 500 ? "ambiguous" : "terminal" };
 			}
 			let body: unknown;

@@ -474,36 +474,77 @@ export class KyselyOrderStore implements OrderStore {
 		// and — when the FINALIZED Σ now reaches the ceiling — drive `→ refunded`,
 		// all in ONE transaction under the same orders row lock as the reserve.
 		// Finalize can NEVER lose arbitration: the reservation already holds the
-		// capacity. `found:false` ⇒ no reserved/unverified row under the key.
+		// capacity. The row UPDATE is STATUS-GUARDED so a stray finalize can never
+		// clobber a voided/recorded row; a key already `recorded` with the SAME
+		// refundRef (a concurrent same-key caller finalized first — the provider's
+		// native idempotency guarantees one refund) is a BENIGN duplicate; anything
+		// else is `found:false` — the loud residual.
 		const now = this.#clock.now().toISOString();
+
+		/** The no-held-row disposition: benign duplicate (recorded, SAME ref) vs
+		 *  the loud residual (voided / different ref / no row at all). */
+		const settleMissing = async (
+			trx: Transaction<Database>,
+		): Promise<Omit<FinalizeRefundStoreResult, "order">> => {
+			const existing = await trx
+				.selectFrom("refunds")
+				.selectAll()
+				.where("idempotency_key", "=", input.idempotencyKey)
+				.executeTakeFirst();
+			if (
+				existing !== undefined &&
+				existing.status === "recorded" &&
+				existing.refund_ref === input.refundRef
+			) {
+				const ord = await trx
+					.selectFrom("orders")
+					.select("state")
+					.where("id", "=", existing.order_id)
+					.executeTakeFirst();
+				return {
+					found: true,
+					alreadyFinalized: true,
+					refund: toRefund(existing),
+					fullyRefunded: ord?.state === "refunded",
+				};
+			}
+			return { found: false, alreadyFinalized: false, refund: null, fullyRefunded: false };
+		};
+
 		const result = await this.#db
 			.transaction()
 			.execute(async (trx): Promise<Omit<FinalizeRefundStoreResult, "order">> => {
 				// Resolve the reserved/unverified row FIRST — its order_id is the lock
 				// target. A finalize only ever runs after a committed reservation, so an
-				// absent row is the loud residual the use-case surfaces (never a drop).
+				// absent held row is either the benign same-ref duplicate or the loud
+				// residual the use-case surfaces (never a drop).
 				const row = await trx
 					.selectFrom("refunds")
 					.selectAll()
 					.where("idempotency_key", "=", input.idempotencyKey)
 					.where("status", "in", ["reserved", "unverified"])
 					.executeTakeFirst();
-				if (row === undefined) {
-					return { found: false, refund: null, fullyRefunded: false };
-				}
+				if (row === undefined) return settleMissing(trx);
 				// Lock the order row (serialize with any concurrent refund on this order),
-				// then finalize the reserved row: stamp refundRef, flip → recorded.
+				// then finalize the reserved row: stamp refundRef, flip → recorded — the
+				// UPDATE is STATUS-GUARDED (`reserved|unverified` only), so it can never
+				// clobber a row a concurrent settle already moved to voided/recorded.
 				const lockedOrder = await trx
 					.updateTable("orders")
 					.set({ updated_at: now })
 					.where("id", "=", row.order_id)
 					.returning(["id", "state"])
 					.executeTakeFirst();
-				await trx
+				const won = await trx
 					.updateTable("refunds")
 					.set({ status: "recorded", refund_ref: input.refundRef })
 					.where("idempotency_key", "=", input.idempotencyKey)
-					.execute();
+					.where("status", "in", ["reserved", "unverified"])
+					.returning("id")
+					.executeTakeFirst();
+				// Lost the settle to a concurrent same-key caller between the read and the
+				// lock — re-disposition under the lock (benign same-ref dup, or residual).
+				if (won === undefined) return settleMissing(trx);
 
 				const capturedRow = await trx
 					.selectFrom("payments")
@@ -549,7 +590,7 @@ export class KyselyOrderStore implements OrderStore {
 					status: "recorded",
 					refundRef: input.refundRef,
 				};
-				return { found: true, refund, fullyRefunded };
+				return { found: true, alreadyFinalized: false, refund, fullyRefunded };
 			});
 		const order = result.refund === null ? null : await this.#loadById(result.refund.orderId);
 		return { ...result, order };

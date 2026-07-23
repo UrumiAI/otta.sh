@@ -375,13 +375,40 @@ export class InMemoryOrderStore implements OrderStore {
 		// FINALIZE a reserved refund after the gateway confirmed issuance (ADR-0008):
 		// stamp refundRef, flip `reserved|unverified → recorded`, and — when the
 		// FINALIZED Σ reaches the ceiling — drive → refunded. Never loses arbitration
-		// (the reservation already holds the capacity). found:false ⇒ no held row.
+		// (the reservation already holds the capacity). STATUS-GUARDED: only a
+		// reserved/unverified row is settled — a voided/recorded row is never
+		// clobbered. A key already `recorded` with the SAME refundRef (a concurrent
+		// same-key caller finalized first) is the BENIGN duplicate; anything else is
+		// found:false — the loud residual.
 		const row = this.#refunds.find(
 			(r) =>
 				r.idempotencyKey === input.idempotencyKey &&
 				(r.status === "reserved" || r.status === "unverified"),
 		);
-		if (row === undefined) return { found: false, refund: null, fullyRefunded: false, order: null };
+		if (row === undefined) {
+			const existing = this.#refunds.find((r) => r.idempotencyKey === input.idempotencyKey);
+			if (
+				existing !== undefined &&
+				existing.status === "recorded" &&
+				existing.refundRef === input.refundRef
+			) {
+				const dupOrder = this.#orders.get(existing.orderId);
+				return {
+					found: true,
+					alreadyFinalized: true,
+					refund: { ...existing },
+					fullyRefunded: dupOrder?.order.state === "refunded",
+					order: dupOrder === undefined ? null : this.#clone(dupOrder.order),
+				};
+			}
+			return {
+				found: false,
+				alreadyFinalized: false,
+				refund: null,
+				fullyRefunded: false,
+				order: null,
+			};
+		}
 		const stored = this.#orders.get(row.orderId);
 		const now = this.#clock.now().toISOString();
 		row.status = "recorded";
@@ -408,6 +435,7 @@ export class InMemoryOrderStore implements OrderStore {
 		}
 		return {
 			found: true,
+			alreadyFinalized: false,
 			refund: { ...row },
 			fullyRefunded,
 			order: stored === undefined ? null : this.#clone(stored.order),
