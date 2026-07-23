@@ -2,9 +2,30 @@ import { describe, expect, test } from "vitest";
 import { cents, currency } from "../money/cents.js";
 import { customerId, idempotencyKey, orderId } from "../money/ids.js";
 import type { CouponStore, CreateCouponInput, UpdateCouponInput } from "../ports/coupon-store.js";
+import type { SeedCouponSummaryRow } from "./in-memory-coupon-store.js";
 
 export interface CouponStoreHarness {
 	store: CouponStore;
+	/** Admin-UX Increment 3: seed a bare `coupons` row (no `create()`/clock
+	 *  dance) with an EXACT `createdAt`, for the admin-list contract. The fake
+	 *  wraps `InMemoryCouponStore.seedCouponRow`; the Kysely harness inserts a
+	 *  real row — so fake, sqlite, and pg exercise the identical `listCoupons`
+	 *  spec (mirrors `ProductCommerceStoreHarness.seedProduct`). */
+	seedCoupon(row: SeedCouponSummaryRow): Promise<void>;
+}
+
+/** A coupon-list row seed with sensible defaults; overridable per case. */
+function couponRow(
+	overrides: Partial<SeedCouponSummaryRow> & { id: string },
+): SeedCouponSummaryRow {
+	return {
+		code: `CODE-${overrides.id}`,
+		type: "fixed_amount",
+		amountCents: 500,
+		currency: "USD",
+		createdAt: "2026-07-10T00:00:00.000Z",
+		...overrides,
+	};
 }
 
 export interface CouponStoreContractOptions {
@@ -343,6 +364,116 @@ export function couponStoreContract(
 		test("delete is an idempotent not_found no-op for an unknown id", async () => {
 			const { store } = await makeStore();
 			expect(await store.delete("never")).toEqual({ ok: false, reason: "not_found" });
+		});
+
+		// -- listCoupons: admin Coupons console view-only keyset list (Increment 3) --
+
+		test("listCoupons on an empty store returns no rows and a null cursor", async () => {
+			const h = await makeStore();
+			const res = await h.store.listCoupons({}, { limit: 25 });
+			expect(res.coupons).toEqual([]);
+			expect(res.nextCursor).toBeNull();
+		});
+
+		test("listCoupons projects the summary fields (money as Cents, usesCount as the redemption indicator)", async () => {
+			const h = await makeStore();
+			await h.seedCoupon(
+				couponRow({
+					id: "c-proj",
+					code: "PROJECTED",
+					type: "percentage",
+					amountCents: null,
+					rateBps: 1500,
+					capCents: 2000,
+					currency: null,
+					minSubtotalCents: 5000,
+					startsAt: "2026-07-01T00:00:00.000Z",
+					expiresAt: "2026-08-01T00:00:00.000Z",
+					maxUses: 10,
+					maxUsesPerCustomer: 1,
+					usesCount: 3,
+					createdAt: "2026-07-10T01:00:00.000Z",
+				}),
+			);
+			const { coupons } = await h.store.listCoupons({}, { limit: 25 });
+			expect(coupons).toHaveLength(1);
+			const c = coupons[0]!;
+			expect(c.id).toBe("c-proj");
+			expect(c.code).toBe("PROJECTED");
+			expect(c.type).toBe("percentage");
+			expect(c.rateBps).toBe(1500);
+			expect(c.capCents).toBe(2000);
+			expect(c.minSubtotalCents).toBe(5000);
+			// The validity window is part of the summary (PR #74 review — the
+			// console list renders expiry straight off this row, no detail fetch).
+			expect(c.startsAt).toBe("2026-07-01T00:00:00.000Z");
+			expect(c.expiresAt).toBe("2026-08-01T00:00:00.000Z");
+			expect(c.maxUses).toBe(10);
+			expect(c.maxUsesPerCustomer).toBe(1);
+			expect(c.usesCount).toBe(3);
+			expect(c.createdAt).toBe("2026-07-10T01:00:00.000Z");
+		});
+
+		test("listCoupons with no filter orders by created_at DESC, then id DESC", async () => {
+			const h = await makeStore();
+			await h.seedCoupon(couponRow({ id: "cpn-a", createdAt: "2026-07-10T00:00:02.000Z" }));
+			await h.seedCoupon(couponRow({ id: "cpn-b", createdAt: "2026-07-10T00:00:02.000Z" }));
+			await h.seedCoupon(couponRow({ id: "cpn-c", createdAt: "2026-07-10T00:00:01.000Z" }));
+			const { coupons } = await h.store.listCoupons({}, { limit: 25 });
+			// Same created_at ⇒ id DESC (cpn-b before cpn-a); older cpn-c last.
+			expect(coupons.map((c) => c.id)).toEqual(["cpn-b", "cpn-a", "cpn-c"]);
+		});
+
+		test("listCoupons search matches an EXACT code, case-insensitively (never a substring)", async () => {
+			const h = await makeStore();
+			await h.seedCoupon(couponRow({ id: "a", code: "SAVE5" }));
+			await h.seedCoupon(couponRow({ id: "b", code: "SAVE50" }));
+			const { coupons } = await h.store.listCoupons({ search: "save5" }, { limit: 25 });
+			expect(coupons.map((c) => c.id)).toEqual(["a"]);
+			// A substring of a code must NOT match.
+			const partial = await h.store.listCoupons({ search: "save" }, { limit: 25 });
+			expect(partial.coupons).toEqual([]);
+		});
+
+		test("listCoupons paginates forward with a keyset cursor — no overlap, no gap", async () => {
+			const h = await makeStore();
+			await h.seedCoupon(couponRow({ id: "p1", createdAt: "2026-07-10T00:00:01.000Z" }));
+			await h.seedCoupon(couponRow({ id: "p2", createdAt: "2026-07-10T00:00:02.000Z" }));
+			await h.seedCoupon(couponRow({ id: "p3", createdAt: "2026-07-10T00:00:03.000Z" }));
+			// Newest-first: p3, p2, p1.
+			const page1 = await h.store.listCoupons({}, { limit: 2 });
+			expect(page1.coupons.map((c) => c.id)).toEqual(["p3", "p2"]);
+			expect(page1.nextCursor).not.toBeNull();
+			expect(page1.nextCursor?.couponId).toBe("p2"); // last returned row
+			const page2 = await h.store.listCoupons({}, { limit: 2, cursor: page1.nextCursor });
+			expect(page2.coupons.map((c) => c.id)).toEqual(["p1"]); // remainder
+			expect(page2.nextCursor).toBeNull();
+			// No overlap, no gap: the two pages concatenate to the full DESC order.
+			expect([...page1.coupons, ...page2.coupons].map((c) => c.id)).toEqual(["p3", "p2", "p1"]);
+		});
+
+		test("listCoupons keyset tie-break is stable across a page boundary on identical created_at", async () => {
+			const h = await makeStore();
+			const at = "2026-07-10T00:00:05.000Z";
+			for (const id of ["cpn-01", "cpn-02", "cpn-03", "cpn-04"]) {
+				await h.seedCoupon(couponRow({ id, createdAt: at }));
+			}
+			// All share created_at ⇒ pure id DESC.
+			const page1 = await h.store.listCoupons({}, { limit: 2 });
+			expect(page1.coupons.map((c) => c.id)).toEqual(["cpn-04", "cpn-03"]);
+			expect(page1.nextCursor).toEqual({ createdAt: at, couponId: "cpn-03" });
+			const page2 = await h.store.listCoupons({}, { limit: 2, cursor: page1.nextCursor });
+			expect(page2.coupons.map((c) => c.id)).toEqual(["cpn-02", "cpn-01"]);
+			expect(page2.nextCursor).toBeNull();
+		});
+
+		test("listCoupons with rows exactly equal to the limit returns a null cursor (no phantom page)", async () => {
+			const h = await makeStore();
+			await h.seedCoupon(couponRow({ id: "p1", createdAt: "2026-07-10T00:00:01.000Z" }));
+			await h.seedCoupon(couponRow({ id: "p2", createdAt: "2026-07-10T00:00:02.000Z" }));
+			const res = await h.store.listCoupons({}, { limit: 2 });
+			expect(res.coupons.map((c) => c.id)).toEqual(["p2", "p1"]);
+			expect(res.nextCursor).toBeNull();
 		});
 	});
 }

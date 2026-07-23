@@ -55,7 +55,7 @@ const paymentEventStore = new KyselyPaymentEventStore({ db, idGen: uuidIdGen });
 // Phase 6 (§6): shipping / tax / coupon rules stores.
 const shippingRules = new KyselyShippingRulesStore({ db });
 const taxRules = new KyselyTaxRulesStore({ db });
-const couponStore = new KyselyCouponStore({ db, idGen: uuidIdGen });
+const couponStore = new KyselyCouponStore({ db, idGen: uuidIdGen, clock });
 // Phase 7 (§6): read-only reporting + operational settings (service-DB tier).
 const reportingStore = new KyselyReportingStore({ db, dialect: "postgres" });
 const settingsStore = new KyselySettingsStore({ db, clock });

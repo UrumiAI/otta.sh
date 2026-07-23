@@ -103,7 +103,7 @@ export {
 // Phase 6: shipping / tax / coupon fakes + contract suites.
 export { InMemoryShippingRulesStore } from "./in-memory-shipping-rules-store.js";
 export { InMemoryTaxRulesStore } from "./in-memory-tax-rules-store.js";
-export { InMemoryCouponStore } from "./in-memory-coupon-store.js";
+export { InMemoryCouponStore, type SeedCouponSummaryRow } from "./in-memory-coupon-store.js";
 export {
 	shippingRulesStoreContract,
 	type ShippingRulesStoreHarness,

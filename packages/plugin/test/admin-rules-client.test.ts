@@ -131,4 +131,57 @@ describe.skipIf(PG === undefined)("AdminRulesClient [live @urumi/service, Postgr
 		expect(await client.deleteCoupon("cpn1")).toEqual({ ok: true });
 		expect(await client.deleteCoupon("cpn1")).toEqual({ ok: false, reason: "not_found" });
 	});
+
+	test("coupons: listCoupons enumerates newest-first, the search filter matches an EXACT code, and the cursor round-trips", async () => {
+		expect(
+			(
+				await client.createCoupon({
+					id: "list-1",
+					code: "LIST-ALPHA",
+					type: "fixed_amount",
+					amountCents: 100,
+					currency: "USD",
+					// Validity window — the LIST wire must carry it back (PR #74
+					// review); pinned below.
+					startsAt: "2026-07-01T00:00:00.000Z",
+					expiresAt: "2026-08-01T00:00:00.000Z",
+				})
+			).ok,
+		).toBe(true);
+		expect(
+			(
+				await client.createCoupon({
+					id: "list-2",
+					code: "LIST-BETA",
+					type: "fixed_amount",
+					amountCents: 200,
+					currency: "USD",
+				})
+			).ok,
+		).toBe(true);
+
+		const page1 = await client.listCoupons({}, { limit: 1 });
+		expect(page1.coupons).toHaveLength(1);
+		expect(typeof page1.nextCursor === "string" || page1.nextCursor === null).toBe(true);
+		if (page1.nextCursor !== null) {
+			const page2 = await client.listCoupons({}, { cursor: page1.nextCursor });
+			expect([...page1.coupons, ...page2.coupons].map((c) => c.id).toSorted()).toEqual(
+				["list-1", "list-2"].toSorted(),
+			);
+		}
+
+		const bySearch = await client.listCoupons({ search: "list-alpha" });
+		expect(bySearch.coupons.map((c) => c.id)).toEqual(["list-1"]);
+		// The validity window rides the LIST wire (PR #74 review): the console
+		// renders expiry straight off the summary row — no per-row detail fetch.
+		const windowed = bySearch.coupons[0]!;
+		expect(windowed.startsAt).toBe("2026-07-01T00:00:00.000Z");
+		expect(windowed.expiresAt).toBe("2026-08-01T00:00:00.000Z");
+		// And a windowless coupon carries EXPLICIT nulls, never absent fields.
+		const bare = await client.listCoupons({ search: "list-beta" });
+		expect(bare.coupons[0]?.startsAt).toBeNull();
+		expect(bare.coupons[0]?.expiresAt).toBeNull();
+		const noMatch = await client.listCoupons({ search: "list-alph" }); // substring must NOT match
+		expect(noMatch.coupons).toEqual([]);
+	});
 });

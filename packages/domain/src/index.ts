@@ -77,9 +77,14 @@ export type {
 	UpdateTaxRateResult,
 } from "./ports/tax-rules-store.js";
 export type {
+	CouponListCursor,
+	CouponListFilter,
+	CouponListPage,
+	CouponListResult,
 	CouponRecord,
 	CouponRedemption,
 	CouponStore,
+	CouponSummary,
 	CreateCouponInput,
 	DeleteCouponResult,
 	RedeemCouponInput,

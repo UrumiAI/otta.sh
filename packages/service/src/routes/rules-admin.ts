@@ -1,15 +1,21 @@
 import {
 	cents,
 	currency as toCurrency,
+	type CouponListCursor,
+	type CouponListFilter,
 	type CouponStore,
+	type CouponSummary,
 	type ShippingRulesStore,
 	type TaxRulesStore,
 } from "@urumi/domain";
 import { Hono } from "hono";
+import { z } from "zod";
 import {
 	couponBody,
 	couponCodePathParams,
 	couponIdPathParams,
+	couponListFilterSchema,
+	couponsListQuery,
 	couponUpdateBody,
 	methodCurrencyPathParams,
 	methodPathParams,
@@ -174,6 +180,58 @@ export function rulesAdminRoutes(deps: RulesAdminDeps): Hono {
 			maxUsesPerCustomer: d.maxUsesPerCustomer ?? null,
 		});
 		return c.json({ ok: true, coupon: serializeCoupon(coupon) }, 201);
+	});
+
+	// Admin Coupons console: view-only list (admin-UX Increment 3, "coupon
+	// enumerate + coupon list"). Mirrors the Products console list's shape 1:1
+	// (internal-token guarded, the same opaque-cursor-carries-filter-and-limit
+	// encoding, MOD-1 fail-closed decode) — see admin.ts's `GET /products`.
+	// Mounted at "/admin/coupons" (this router mounts at "/admin"); no path
+	// collision with `GET /coupons/:code` below (a different shape) or with
+	// `POST /coupons/:couponId/*` writes.
+	app.get("/coupons", async (c) => {
+		const denied = requireInternalToken(c, deps.internalToken);
+		if (denied !== null) return denied;
+
+		const parsed = couponsListQuery.safeParse(c.req.query());
+		if (!parsed.success)
+			return c.json({ error: "invalid query", issues: parsed.error.issues }, 400);
+		const q = parsed.data;
+
+		let filter: CouponListFilter;
+		let limit: number;
+		let cursorPos: CouponListCursor | null;
+
+		if (q.cursor !== undefined) {
+			// Paged request: the opaque cursor carries the keyset POSITION plus the
+			// active filter (so filters survive paging) plus the page limit. Decoding
+			// MUST fail CLOSED to a 400 — a malformed/tampered/garbage token never
+			// 500s (MOD-1, mirrors the Products list). The decoded filter is
+			// RE-VALIDATED through zod and the decoded limit RE-CLAMPED server-side
+			// (never trusted past max=100).
+			const decoded = decodeCouponCursor(q.cursor);
+			if (decoded === null) return c.json({ error: "invalid cursor" }, 400);
+			const filterParsed = couponListFilterSchema.safeParse(decoded.filter);
+			const posParsed = couponCursorPosOf(decoded.pos);
+			if (!filterParsed.success || posParsed === null) {
+				return c.json({ error: "invalid cursor" }, 400);
+			}
+			filter = toCouponFilter(filterParsed.data);
+			cursorPos = posParsed;
+			limit = clampLimit(decoded.limit, q.limit);
+		} else {
+			filter = toCouponFilter({ search: q.search });
+			cursorPos = null;
+			limit = q.limit;
+		}
+
+		const result = await deps.couponStore.listCoupons(filter, { cursor: cursorPos, limit });
+		const nextCursor =
+			result.nextCursor === null ? null : encodeCouponCursor(result.nextCursor, filter, limit);
+		return c.json(
+			{ ok: true, coupons: result.coupons.map(serializeCouponSummary), nextCursor },
+			200,
+		);
 	});
 
 	app.get("/coupons/:code", async (c) => {
@@ -377,4 +435,126 @@ async function readJson(c: { req: { json(): Promise<unknown> } }): Promise<unkno
 	} catch {
 		return undefined;
 	}
+}
+
+/** Wire shape of an admin Coupons-list row (view-only projection; admin-UX
+ *  Increment 3). Serializes the FULL `CouponSummary` — every `CouponRecord`
+ *  field plus `createdAt` — a small, header-only table has nothing expensive
+ *  to trim off the list projection (unlike `serializeProductSummary`, which
+ *  deliberately narrows `ProductCommerce`). `startsAt`/`expiresAt` are
+ *  DELIBERATELY carried here even though the sibling `serializeCoupon` omits
+ *  them (PR #74 review): the console list renders the validity window, so
+ *  dropping them would force the UI into a per-row detail fetch — the exact
+ *  N+1 this projection exists to prevent. `usesCount` doubles as the redeemed
+ *  indicator — already a plain column, no correlated-EXISTS join. */
+function serializeCouponSummary(summary: CouponSummary): Record<string, unknown> {
+	return {
+		id: summary.id,
+		code: summary.code,
+		type: summary.type,
+		amountCents: summary.amountCents,
+		rateBps: summary.rateBps,
+		capCents: summary.capCents,
+		currency: summary.currency,
+		minSubtotalCents: summary.minSubtotalCents,
+		startsAt: summary.startsAt,
+		expiresAt: summary.expiresAt,
+		maxUses: summary.maxUses,
+		maxUsesPerCustomer: summary.maxUsesPerCustomer,
+		usesCount: summary.usesCount,
+		createdAt: summary.createdAt,
+	};
+}
+
+const MAX_LIMIT = 100;
+const DEFAULT_LIMIT = 25;
+
+/** Clamp a page limit into [1, 100] (MOD-1: a decoded cursor's limit is
+ *  RE-CLAMPED, never honored past the max) — mirrors `admin.ts`'s `clampLimit`.
+ *  Falls back to the query limit, then the default, for a missing/garbage
+ *  value. */
+function clampLimit(decoded: unknown, queryLimit: number): number {
+	const raw =
+		typeof decoded === "number" && Number.isFinite(decoded)
+			? decoded
+			: Number.isFinite(queryLimit)
+				? queryLimit
+				: DEFAULT_LIMIT;
+	return Math.min(Math.max(Math.trunc(raw), 1), MAX_LIMIT);
+}
+
+/** Narrow a validated coupon-filter zod result back into the domain
+ *  `CouponListFilter` (drops `undefined` keys so the shape is exact) —
+ *  mirrors `toProductFilter`. */
+function toCouponFilter(parsed: { search?: string }): CouponListFilter {
+	const filter: CouponListFilter = {};
+	if (parsed.search !== undefined) filter.search = parsed.search;
+	return filter;
+}
+
+/** The decoded cursor's `createdAt` must be a valid ISO-8601 datetime — mirrors
+ *  `cursorCreatedAt` in admin.ts. */
+const couponCursorCreatedAt = z.string().datetime();
+
+/** Validate a decoded coupon-cursor position shape — `{ createdAt: <ISO
+ *  datetime>, couponId: <opaque, bounded string> }` — or null if malformed
+ *  (→ 400). Mirrors `productCursorPosOf`. */
+function couponCursorPosOf(pos: unknown): CouponListCursor | null {
+	if (pos === null || typeof pos !== "object") return null;
+	const p = pos as { createdAt?: unknown; couponId?: unknown };
+	if (typeof p.createdAt !== "string" || !couponCursorCreatedAt.safeParse(p.createdAt).success) {
+		return null;
+	}
+	if (typeof p.couponId !== "string" || p.couponId.length === 0 || p.couponId.length > 200) {
+		return null;
+	}
+	return { createdAt: p.createdAt, couponId: p.couponId };
+}
+
+interface DecodedCouponCursor {
+	pos: unknown;
+	filter: unknown;
+	limit: unknown;
+}
+
+/** Encode the coupon-list keyset position + active filter + limit into an
+ *  opaque base64url token — mirrors `encodeProductCursor`. */
+function encodeCouponCursor(
+	pos: CouponListCursor,
+	filter: CouponListFilter,
+	limit: number,
+): string {
+	const payload = { pos: { createdAt: pos.createdAt, couponId: pos.couponId }, filter, limit };
+	return toBase64Url(new TextEncoder().encode(JSON.stringify(payload)));
+}
+
+/** Decode an opaque coupon-list cursor token; returns null on ANY malformed/
+ *  garbage input so the route answers 400 rather than 500 (MOD-1). Mirrors
+ *  `decodeProductCursor`. */
+function decodeCouponCursor(token: string): DecodedCouponCursor | null {
+	try {
+		const json = new TextDecoder().decode(fromBase64Url(token));
+		const parsed = JSON.parse(json) as unknown;
+		if (parsed === null || typeof parsed !== "object") return null;
+		const p = parsed as DecodedCouponCursor;
+		return { pos: p.pos, filter: p.filter, limit: p.limit };
+	} catch {
+		return null;
+	}
+}
+
+// Portable base64url (Node + workerd both provide btoa/atob + TextEncoder) —
+// mirrors admin.ts's `toBase64Url`/`fromBase64Url`.
+function toBase64Url(bytes: Uint8Array): string {
+	let bin = "";
+	for (const b of bytes) bin += String.fromCharCode(b);
+	return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function fromBase64Url(token: string): Uint8Array {
+	const b64 = token.replace(/-/g, "+").replace(/_/g, "/");
+	const bin = atob(b64); // throws on invalid base64 ⇒ caught by decodeCouponCursor ⇒ 400
+	const out = new Uint8Array(bin.length);
+	for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+	return out;
 }

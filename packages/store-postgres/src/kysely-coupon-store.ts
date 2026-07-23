@@ -4,9 +4,14 @@ import {
 	customerId as toCustomerId,
 	idempotencyKey as toIdempotencyKey,
 	orderId as toOrderId,
+	type Clock,
+	type CouponListFilter,
+	type CouponListPage,
+	type CouponListResult,
 	type CouponRecord,
 	type CouponRedemption,
 	type CouponStore,
+	type CouponSummary,
 	type CouponType,
 	type CreateCouponInput,
 	type DeleteCouponResult,
@@ -16,8 +21,8 @@ import {
 	type UpdateCouponInput,
 	type UpdateCouponResult,
 } from "@urumi/domain";
-import type { Kysely, Selectable } from "kysely";
-import { sql } from "kysely";
+import type { Expression, ExpressionBuilder, Kysely, Selectable, SqlBool } from "kysely";
+import { expressionBuilder, sql } from "kysely";
 import type { CouponsTable, Database } from "./schema.js";
 
 /** Guarded max-uses lost: the coupon is at its cap. Rolls the redeem tx back. */
@@ -39,6 +44,9 @@ class CouponPerCustomerError extends Error {
 export interface KyselyCouponStoreOptions {
 	db: Kysely<Database>;
 	idGen: IdGen;
+	/** Stamps `created_at` on `create()` — the admin-list (`listCoupons`)
+	 *  keyset ordering column (Increment 3). */
+	clock: Clock;
 }
 
 /**
@@ -60,10 +68,12 @@ export interface KyselyCouponStoreOptions {
 export class KyselyCouponStore implements CouponStore {
 	readonly #db: Kysely<Database>;
 	readonly #idGen: IdGen;
+	readonly #clock: Clock;
 
 	constructor(options: KyselyCouponStoreOptions) {
 		this.#db = options.db;
 		this.#idGen = options.idGen;
+		this.#clock = options.clock;
 	}
 
 	async create(input: CreateCouponInput): Promise<CouponRecord> {
@@ -83,6 +93,7 @@ export class KyselyCouponStore implements CouponStore {
 				max_uses: input.maxUses,
 				max_uses_per_customer: input.maxUsesPerCustomer,
 				uses_count: 0,
+				created_at: this.#clock.now().toISOString(),
 			})
 			.execute();
 		return (await this.findById(input.id)) as CouponRecord;
@@ -288,6 +299,54 @@ export class KyselyCouponStore implements CouponStore {
 		}));
 	}
 
+	/**
+	 * Admin Coupons console list (view-only; admin-UX Increment 3 — the missing
+	 * enumerate primitive, mirroring `listProducts`'s proven keyset shape 1:1).
+	 * A single `coupons` SELECT — no join (the redeemed indicator is the
+	 * already-stored `uses_count` column, not a correlated `EXISTS`). Ordered
+	 * `created_at DESC, id DESC`; `search` is a case-insensitive EXACT match on
+	 * `code` (port doc — deliberately NOT a substring, unlike `listProducts`'s
+	 * title half). `limit + 1` next-page detection, exactly like `listProducts`.
+	 */
+	async listCoupons(filter: CouponListFilter, page: CouponListPage): Promise<CouponListResult> {
+		let q = this.#db.selectFrom("coupons").selectAll();
+
+		const conds = couponFilterConditions(filter);
+		if (conds.length > 0) q = q.where((eb) => eb.and(conds));
+		if (page.cursor !== undefined && page.cursor !== null) {
+			const cursor = page.cursor;
+			// (created_at < :c) OR (created_at = :c AND id < :cid) — everything
+			// strictly "after" the cursor position under `created_at DESC, id DESC`.
+			q = q.where((eb) =>
+				eb.or([
+					eb("coupons.created_at", "<", cursor.createdAt),
+					eb.and([
+						eb("coupons.created_at", "=", cursor.createdAt),
+						eb("coupons.id", "<", cursor.couponId),
+					]),
+				]),
+			);
+		}
+
+		const rows = await q
+			.orderBy("coupons.created_at", "desc")
+			.orderBy("coupons.id", "desc")
+			.limit(page.limit + 1)
+			.execute();
+
+		const hasMore = rows.length > page.limit;
+		const returned = hasMore ? rows.slice(0, page.limit) : rows;
+		const last = returned.at(-1);
+		const nextCursor =
+			hasMore && last !== undefined ? { createdAt: last.created_at, couponId: last.id } : null;
+
+		const coupons: CouponSummary[] = returned.map((r) => ({
+			...toRecord(r),
+			createdAt: r.created_at,
+		}));
+		return { coupons, nextCursor };
+	}
+
 	// -- internals ------------------------------------------------------------
 
 	async #findRedemption(couponId: string, key: string): Promise<{ id: string } | undefined> {
@@ -298,6 +357,23 @@ export class KyselyCouponStore implements CouponStore {
 			.where("idempotency_key", "=", key)
 			.executeTakeFirst();
 	}
+}
+
+/** The ONE `CouponListFilter` predicate `listCoupons` builds from (mirrors
+ *  `productFilterConditions` — a single builder so semantics can never drift).
+ *  Returns standalone expressions (a detached `expressionBuilder`) to AND onto
+ *  the query. `search` is a case-insensitive EXACT match on `code` (port doc).
+ *  Known, accepted divergence (PR #74 review, matches the existing search
+ *  precedent in `productFilterConditions`): SQLite's built-in `lower()` folds
+ *  ASCII only, while JS `toLowerCase()` is Unicode-aware — a non-ASCII coupon
+ *  code (e.g. "ÉTÉ10") case-folds differently on sqlite than on pg/the fake. */
+function couponFilterConditions(filter: CouponListFilter): Expression<SqlBool>[] {
+	const eb: ExpressionBuilder<Database, "coupons"> = expressionBuilder();
+	const conds: Expression<SqlBool>[] = [];
+	if (filter.search !== undefined) {
+		conds.push(eb(sql`lower(coupons.code)`, "=", filter.search.toLowerCase()));
+	}
+	return conds;
 }
 
 function toRecord(r: Selectable<CouponsTable>): CouponRecord {

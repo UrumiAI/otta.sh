@@ -105,7 +105,7 @@ function build(db: Kysely<Database>): OrderFlowHarness {
 	const x402Gw = new FakePaymentGateway({ id: "x402" });
 	let seq = 0;
 
-	const couponStore = new KyselyCouponStore({ db, idGen: uuidIdGen });
+	const couponStore = new KyselyCouponStore({ db, idGen: uuidIdGen, clock });
 	const cartDeps: CartDeps = { cartStore, inventoryStore: inventory, clock };
 	const createDeps: CreateOrderDeps = {
 		orderStore,

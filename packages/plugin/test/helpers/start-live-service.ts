@@ -96,7 +96,7 @@ export async function startLiveService(
 		paymentEventStore,
 		shippingRules: new KyselyShippingRulesStore({ db }),
 		taxRules: new KyselyTaxRulesStore({ db }),
-		couponStore: new KyselyCouponStore({ db, idGen: uuidIdGen }),
+		couponStore: new KyselyCouponStore({ db, idGen: uuidIdGen, clock }),
 		reportingStore: new KyselyReportingStore({ db, dialect: "postgres" }),
 		settingsStore: new KyselySettingsStore({ db, clock }),
 		customerStore,

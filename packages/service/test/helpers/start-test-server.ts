@@ -94,6 +94,25 @@ export interface TestServer {
 		createdAt: string;
 		deletedAt?: string | null;
 	}): Promise<void>;
+	/** Seed a bare `coupons` row with an EXACT `createdAt` (admin-UX Increment 3,
+	 *  coupon list tests) — a direct insert, no `create()`/clock dance,
+	 *  mirroring `seedProductRow`. */
+	seedCouponRow(row: {
+		id: string;
+		code: string;
+		type?: "fixed_amount" | "percentage";
+		amountCents?: number | null;
+		rateBps?: number | null;
+		capCents?: number | null;
+		currency?: string | null;
+		minSubtotalCents?: number | null;
+		startsAt?: string | null;
+		expiresAt?: string | null;
+		maxUses?: number | null;
+		maxUsesPerCustomer?: number | null;
+		usesCount?: number;
+		createdAt: string;
+	}): Promise<void>;
 	stop(): Promise<void>;
 }
 
@@ -148,7 +167,7 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
 	};
 	const shippingRules = new KyselyShippingRulesStore({ db });
 	const taxRules = new KyselyTaxRulesStore({ db });
-	const couponStore = new KyselyCouponStore({ db, idGen: uuidIdGen });
+	const couponStore = new KyselyCouponStore({ db, idGen: uuidIdGen, clock });
 	const reportingStore = new KyselyReportingStore({ db, dialect: "postgres" });
 	const settingsStore = new KyselySettingsStore({ db, clock });
 	const app = createApp({
@@ -337,6 +356,27 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
 					active_updated_at: null,
 					created_at: row.createdAt,
 					updated_at: row.createdAt,
+				})
+				.execute();
+		},
+		async seedCouponRow(row) {
+			await db
+				.insertInto("coupons")
+				.values({
+					id: row.id,
+					code: row.code,
+					type: row.type ?? "fixed_amount",
+					amount_cents: row.amountCents ?? null,
+					rate_bps: row.rateBps ?? null,
+					cap_cents: row.capCents ?? null,
+					currency: row.currency ?? null,
+					min_subtotal_cents: row.minSubtotalCents ?? null,
+					starts_at: row.startsAt ?? null,
+					expires_at: row.expiresAt ?? null,
+					max_uses: row.maxUses ?? null,
+					max_uses_per_customer: row.maxUsesPerCustomer ?? null,
+					uses_count: row.usesCount ?? 0,
+					created_at: row.createdAt,
 				})
 				.execute();
 		},

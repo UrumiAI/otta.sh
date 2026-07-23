@@ -88,6 +88,96 @@ export interface CouponStore {
 	 * whose order never became durable. Mirrors `OrderStore.listExpirable`.
 	 */
 	listRedemptionsCreatedBefore(cutoff: string): Promise<CouponRedemption[]>;
+
+	/**
+	 * Admin Coupons console: view-only list (admin-UX Increment 3, "coupon
+	 * enumerate + coupon list" — the missing atomic primitive this slice adds,
+	 * mirroring `ProductCommerceStore.listProducts`'s proven keyset shape 1:1).
+	 *
+	 * Ordered `created_at DESC, id DESC` (newest-first, `id` the stable
+	 * tie-break — the primary key, exactly like `ProductSummary.productId`).
+	 * `created_at` is a NEW column (coupons had none before this slice); `create`
+	 * now stamps it from the injected `Clock`. Pagination is forward-only
+	 * keyset: the caller passes back the previous page's `nextCursor` position;
+	 * the adapter fetches `limit + 1` rows to decide whether a next page exists
+	 * and emits `nextCursor` from the LAST RETURNED row (null when the page is
+	 * the last).
+	 *
+	 * Returns the FULL `CouponSummary` projection — unlike `ProductSummary`
+	 * (which deliberately trims heavy/detail-only fields off `ProductCommerce`),
+	 * `coupons` is a small, header-only table with nothing expensive to trim, so
+	 * the summary carries every economics/window field `CouponRecord` does, plus
+	 * `createdAt`. `usesCount` (already a plain column, no join) doubles as the
+	 * cheap "has this been redeemed" indicator the admin list needs — no
+	 * correlated `EXISTS` on `coupon_redemptions`, no N+1.
+	 *
+	 * `filter.search` is a case-insensitive EXACT match on `code` — a
+	 * structured identifier a merchant looks up precisely (mirrors
+	 * `OrderListFilter.search`'s exact-only semantics, NOT `ProductListFilter
+	 * .search`'s title-substring half — a coupon has no free-text field to
+	 * partially remember). No other filter axis ships this slice (coupons have
+	 * no soft-delete/publish-gate/kind axis to mirror `deleted`/`active`/
+	 * `productKind`) — deliberately minimal, not "filterable where cheap".
+	 */
+	listCoupons(filter: CouponListFilter, page: CouponListPage): Promise<CouponListResult>;
+}
+
+/**
+ * Filter for the admin Coupons list. Optional — an empty filter lists every
+ * coupon. See `CouponStore.listCoupons`'s doc for why `search` is the only
+ * axis this slice ships.
+ */
+export interface CouponListFilter {
+	/** Case-insensitive EXACT match on `code` (never a substring — see the
+	 *  port doc). A row with no match on this axis simply is not listed. */
+	search?: string;
+}
+
+/** A keyset cursor POSITION — the `(createdAt, id)` of the last row of the
+ *  previous page. Deliberately opaque-free in the domain (NO base64), like
+ *  `ProductListCursor` — the service layer wraps this into an opaque token.
+ *  Ordering is `created_at DESC, id DESC`, so the next page is every row
+ *  strictly "after" this position under that order. */
+export interface CouponListCursor {
+	createdAt: string;
+	couponId: string;
+}
+
+/** One page request: an optional starting cursor (null/absent ⇒ first page)
+ *  and a page size. */
+export interface CouponListPage {
+	cursor?: CouponListCursor | null;
+	limit: number;
+}
+
+/**
+ * The admin list row — mirrors `CouponRecord` exactly (a small, header-only
+ * table has nothing expensive to trim off the list projection, unlike
+ * `ProductSummary`) plus the new `createdAt` ordering column. Money stays
+ * branded (`Cents`/`Currency`), never a bare number.
+ */
+export interface CouponSummary {
+	id: string;
+	code: string;
+	type: CouponType;
+	amountCents: Cents | null;
+	rateBps: number | null;
+	capCents: Cents | null;
+	currency: Currency | null;
+	minSubtotalCents: Cents | null;
+	startsAt: string | null;
+	expiresAt: string | null;
+	maxUses: number | null;
+	maxUsesPerCustomer: number | null;
+	usesCount: number;
+	createdAt: string;
+}
+
+export interface CouponListResult {
+	coupons: CouponSummary[];
+	/** The position to pass back for the next page, or null when this is the
+	 *  last page (fewer than `limit + 1` rows matched). */
+	nextCursor: CouponListCursor | null;
 }
 
 export interface CouponRecord {

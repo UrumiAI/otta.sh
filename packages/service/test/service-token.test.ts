@@ -68,7 +68,7 @@ function makeApp(options: { serviceToken?: string; internalToken?: string } = {}
 		paymentEventStore: new InMemoryPaymentEventStore(),
 		shippingRules: new InMemoryShippingRulesStore(),
 		taxRules: new InMemoryTaxRulesStore(),
-		couponStore: new InMemoryCouponStore({ idGen }),
+		couponStore: new InMemoryCouponStore({ idGen, clock }),
 		reportingStore: new InMemoryReportingStore(),
 		settingsStore: new InMemorySettingsStore(),
 		customerStore,

@@ -90,7 +90,7 @@ export function makeOrderHarness(): OrderHarness {
 	const paymentEventStore = new InMemoryPaymentEventStore();
 	const shippingRules = new InMemoryShippingRulesStore();
 	const taxRules = new InMemoryTaxRulesStore();
-	const couponStore = new InMemoryCouponStore({ idGen: new CountingIdGen("red") });
+	const couponStore = new InMemoryCouponStore({ idGen: new CountingIdGen("red"), clock });
 	const stripeGw = new FakePaymentGateway({ id: "stripe" });
 	const x402Gw = new FakePaymentGateway({ id: "x402" });
 
