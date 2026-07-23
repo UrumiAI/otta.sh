@@ -14,6 +14,7 @@ import {
 	sku as brandSku,
 } from "@urumi/domain";
 import {
+	buildRefundSeed,
 	CountingIdGen,
 	type EntitlementStoreHarness,
 	FakeEmailSender,
@@ -23,6 +24,7 @@ import {
 	type OrderStoreHarness,
 	type OrderTimelineHarness,
 	type OrderTransitionHarness,
+	type RefundOrderHarness,
 } from "@urumi/domain/testing";
 import type { Kysely } from "kysely";
 import {
@@ -337,6 +339,52 @@ export async function makePgEntitlementHarness(): Promise<EntitlementStoreHarnes
 	const iso = await createIsolatedPgSchema(connectionString, { poolMax: 4 });
 	cleanups.push(() => iso.teardown());
 	return buildEntitlementHarness(iso.db);
+}
+
+// -- refunds ledger harness (ADR-0008) ---------------------------------------
+
+/** A Kysely order store + the adapter-agnostic `seedPaidOrder` (createFromCart →
+ *  markPaid → recordPayment), so the refunds contract runs identically on
+ *  sqlite/pg and the fake. `CountingIdGen` gives lexically-increasing ids so the
+ *  `created_at ASC, id ASC` refund order IS chronological under a fixed clock. */
+export function buildRefundOrderHarness(db: Kysely<Database>): RefundOrderHarness {
+	const clock = new FixedClock(new Date("2026-07-10T00:00:00.000Z"));
+	const orderStore = new KyselyOrderStore({ db, idGen: new CountingIdGen("oi"), clock });
+	return { orderStore, seedPaidOrder: buildRefundSeed(orderStore) };
+}
+
+export async function makeSqliteRefundOrderHarness(): Promise<RefundOrderHarness> {
+	const db = makeSqliteDb(":memory:");
+	await migrateToLatest(db);
+	cleanups.push(async () => {
+		await db.destroy();
+	});
+	return buildRefundOrderHarness(db);
+}
+
+export async function makePgRefundOrderHarness(): Promise<RefundOrderHarness> {
+	const connectionString = process.env.PG_CONNECTION_STRING;
+	if (connectionString === undefined) throw new Error("PG_CONNECTION_STRING is not set");
+	// poolMax ≥ N so the concurrent-refund race runs on independent connections.
+	const iso = await createIsolatedPgSchema(connectionString, { poolMax: 40 });
+	cleanups.push(() => iso.teardown());
+	return buildRefundOrderHarness(iso.db);
+}
+
+/** Like {@link makePgRefundOrderHarness} but exposes the concrete
+ *  `KyselyOrderStore` + `db` for the concurrency race (direct seeding + reads). */
+export async function makePgRefundOrderStore(): Promise<{
+	store: KyselyOrderStore;
+	db: Kysely<Database>;
+	seedPaidOrder: RefundOrderHarness["seedPaidOrder"];
+}> {
+	const connectionString = process.env.PG_CONNECTION_STRING;
+	if (connectionString === undefined) throw new Error("PG_CONNECTION_STRING is not set");
+	const iso = await createIsolatedPgSchema(connectionString, { poolMax: 40 });
+	cleanups.push(() => iso.teardown());
+	const clock = new FixedClock(new Date("2026-07-10T00:00:00.000Z"));
+	const store = new KyselyOrderStore({ db: iso.db, idGen: new CountingIdGen("oi"), clock });
+	return { store, db: iso.db, seedPaidOrder: buildRefundSeed(store) };
 }
 
 // -- order transition + email outbox harness (Phase 5 §5) --------------------

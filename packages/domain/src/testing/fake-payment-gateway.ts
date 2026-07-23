@@ -8,6 +8,8 @@ import type {
 	PaymentGateway,
 	PaymentIntentHandle,
 	RawConfirmation,
+	RefundInput,
+	RefundResult,
 	X402Proof,
 } from "../ports/payment-gateway.js";
 
@@ -33,11 +35,39 @@ const SIG_HEADER = "x-fake-signature";
  */
 export class FakePaymentGateway implements PaymentGateway {
 	readonly id: PaymentMethod;
+	readonly refundable: boolean;
 	#secret: string;
+	/** Every `refund` call, in order — lets a contract assert a replay makes NO
+	 *  second gateway call (ADR-0008 idempotency). */
+	readonly refundCalls: RefundInput[] = [];
+	/** Overrides the default success result when set (drives the error-taxonomy /
+	 *  fail-closed cases without a real transport). */
+	#refundResult: RefundResult | undefined;
 
-	constructor(options: { id?: PaymentMethod; secret?: string } = {}) {
+	constructor(options: { id?: PaymentMethod; secret?: string; refundable?: boolean } = {}) {
 		this.id = options.id ?? "stripe";
+		// Default mirrors the real adapters: Stripe refundable, x402 not — a test
+		// can override (e.g. a Stripe adapter with no secretKey ⇒ refundable:false).
+		this.refundable = options.refundable ?? this.id !== "x402";
 		this.#secret = options.secret ?? "test-secret";
+	}
+
+	/** Force the next (and subsequent) `refund` results — a typed failure to
+	 *  exercise the error taxonomy / fail-closed path, or a specific success. */
+	setRefundResult(result: RefundResult): void {
+		this.#refundResult = result;
+	}
+
+	async refund(input: RefundInput): Promise<RefundResult> {
+		this.refundCalls.push(input);
+		if (!this.refundable) return { ok: false, reason: "UNSUPPORTED" };
+		if (this.#refundResult !== undefined) return this.#refundResult;
+		return {
+			ok: true,
+			refundRef: `re_${input.idempotencyKey}`,
+			amount: input.amount,
+			currency: input.currency,
+		};
 	}
 
 	async createIntent(input: CreateIntentInput): Promise<PaymentIntentHandle> {

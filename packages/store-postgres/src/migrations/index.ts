@@ -19,6 +19,7 @@ import { migration0016InventoryStockMovements } from "./0016_inventory_stock_mov
 import { migration0017ProductCommerceDataModelAdds } from "./0017_product_commerce_data_model_adds.js";
 import { migration0018CouponsAdminList } from "./0018_coupons_admin_list.js";
 import { migration0019OrderShippingAddress } from "./0019_order_shipping_address.js";
+import { migration0020Refunds } from "./0020_refunds.js";
 
 /** Ordered, append-only migration list (forward-only). */
 const migrations: Record<string, Migration> = {
@@ -41,6 +42,7 @@ const migrations: Record<string, Migration> = {
 	"0017_product_commerce_data_model_adds": migration0017ProductCommerceDataModelAdds,
 	"0018_coupons_admin_list": migration0018CouponsAdminList,
 	"0019_order_shipping_address": migration0019OrderShippingAddress,
+	"0020_refunds": migration0020Refunds,
 };
 
 export const migrationProvider: MigrationProvider = {

@@ -128,6 +128,7 @@ export {
 export type {
 	CancelOrderInput,
 	CancelOrderStoreResult,
+	CapturedPayment,
 	CreateOrderInput,
 	CreateOrderLineInput,
 	CreateOrderResult,
@@ -148,6 +149,10 @@ export type {
 	RecordFulfillmentInput,
 	RecordFulfillmentStoreResult,
 	RecordPaymentInput,
+	RecordRefundInput,
+	RecordRefundStoreResult,
+	RefundKind,
+	RefundRecord,
 	ResolveReconciliationInput,
 	ResolveReconciliationStoreResult,
 } from "./ports/order-store.js";
@@ -215,6 +220,9 @@ export type {
 	PaymentGateway,
 	PaymentIntentHandle,
 	RawConfirmation,
+	RefundFailureReason,
+	RefundInput,
+	RefundResult,
 	X402Proof,
 } from "./ports/payment-gateway.js";
 export type {
@@ -245,6 +253,16 @@ export {
 	type CreateOrderFromCartResult,
 } from "./orders/create-order-from-cart.js";
 export { settleOrder, type SettleDeps, type SettleResult } from "./orders/settle-order.js";
+export {
+	computeRefundCeiling,
+	refundOrder,
+	sumCapturedPayments,
+	sumRefunds,
+	type RefundOrderCommand,
+	type RefundOrderDeps,
+	type RefundOrderFailure,
+	type RefundOrderOutcome,
+} from "./orders/refund-order.js";
 export type {
 	AppendOrderNoteInput,
 	AppendOrderNoteResult,

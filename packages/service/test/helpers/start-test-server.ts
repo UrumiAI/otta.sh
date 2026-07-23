@@ -16,7 +16,7 @@ import {
 	FIXTURE_ORDERS,
 	FixedClock,
 } from "@urumi/domain/testing";
-import { StripePaymentGateway } from "@urumi/payments-stripe";
+import { StripePaymentGateway, type StripeTransport } from "@urumi/payments-stripe";
 import { createTestFacilitator, X402PaymentGateway } from "@urumi/payments-x402";
 import {
 	KyselyAddressStore,
@@ -80,6 +80,16 @@ export interface TestServer {
 		totalCents: number;
 		reconciliationFlag?: string | null;
 	}): Promise<void>;
+	/** Seed a captured `payments` row for an order (ADR-0008 refund tests) — the
+	 *  ceiling's `Σ captured` source + the gateway refund's `providerRef` target. */
+	seedPayment(row: {
+		orderId: string;
+		gateway: string;
+		providerRef: string;
+		amountCents: number;
+		currency: string;
+		status?: string;
+	}): Promise<void>;
 	/** Seed a bare `product_commerce` row with an EXACT `createdAt` (admin-UX
 	 *  Increment 2, product list tests) — a direct insert, no upsert/
 	 *  idempotency-key dance, mirroring `seedOrder`. `taxClass` (Increment 3
@@ -126,6 +136,11 @@ export interface TestServerOptions {
 	/** SERVICE_API_TOKEN write gate; default unset (gate open — existing suites
 	 *  exercise the ungated surface). */
 	serviceToken?: string;
+	/** ADR-0008: a Stripe `secretKey` + injected offline `transport` to make the
+	 *  Stripe gateway `refundable:true` for the refund HTTP contract (default: no
+	 *  secretKey ⇒ refundable:false ⇒ the manual record-only path). */
+	stripeSecretKey?: string;
+	stripeTransport?: StripeTransport;
 }
 
 /**
@@ -161,7 +176,11 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
 	});
 	const emailSender = new FakeEmailSender();
 	const gateways: Partial<Record<PaymentMethod, PaymentGateway>> = {
-		stripe: new StripePaymentGateway({ webhookSecret: STRIPE_WEBHOOK_SECRET }),
+		stripe: new StripePaymentGateway({
+			webhookSecret: STRIPE_WEBHOOK_SECRET,
+			...(options.stripeSecretKey !== undefined ? { secretKey: options.stripeSecretKey } : {}),
+			...(options.stripeTransport !== undefined ? { transport: options.stripeTransport } : {}),
+		}),
 		x402: new X402PaymentGateway({
 			facilitator: createTestFacilitator(X402_FACILITATOR_SECRET),
 			payTo: "0xTEST",
@@ -330,6 +349,21 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
 					applied_coupon_code: null,
 					shipping_method_snapshot: null,
 					tax_breakdown: null,
+				})
+				.execute();
+		},
+		async seedPayment(row) {
+			await db
+				.insertInto("payments")
+				.values({
+					id: `pay-${row.orderId}-${row.providerRef}`,
+					order_id: row.orderId,
+					gateway: row.gateway,
+					provider_ref: row.providerRef,
+					amount_cents: row.amountCents,
+					currency: row.currency,
+					status: row.status ?? "succeeded",
+					created_at: "2026-07-10T00:00:00.000Z",
 				})
 				.execute();
 		},

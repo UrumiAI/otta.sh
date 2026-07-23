@@ -1,7 +1,9 @@
 import {
 	cents,
 	currency as toCurrency,
+	emailTemplateForState,
 	idempotencyKey as toIdempotencyKey,
+	isLegalOrderTransition,
 	orderId as toOrderId,
 	productId as toProductId,
 	reservationId as toReservationId,
@@ -9,6 +11,7 @@ import {
 	type CancellationReason,
 	type CancelOrderInput,
 	type CancelOrderStoreResult,
+	type CapturedPayment,
 	type Clock,
 	type CreateOrderInput,
 	type CreateOrderResult,
@@ -36,6 +39,10 @@ import {
 	type RecordFulfillmentInput,
 	type RecordFulfillmentStoreResult,
 	type RecordPaymentInput,
+	type RecordRefundInput,
+	type RecordRefundStoreResult,
+	type RefundKind,
+	type RefundRecord,
 	type ResolveReconciliationInput,
 	type ResolveReconciliationStoreResult,
 } from "@urumi/domain";
@@ -57,6 +64,7 @@ import type {
 	OrdersTable,
 	OrderShippingAddressTable,
 	OrderTotalsTable,
+	RefundsTable,
 } from "./schema.js";
 
 export interface KyselyOrderStoreOptions {
@@ -248,6 +256,172 @@ export class KyselyOrderStore implements OrderStore {
 			})
 			.onConflict((oc) => oc.column("provider_ref").doNothing())
 			.execute();
+	}
+
+	// -- Refunds ledger (ADR-0008) --------------------------------------------
+
+	async getCapturedPayments(orderId: OrderId): Promise<CapturedPayment[]> {
+		const rows = await this.#db
+			.selectFrom("payments")
+			.select(["gateway", "provider_ref", "amount_cents", "currency", "status"])
+			.where("order_id", "=", orderId)
+			.execute();
+		return rows.map((r) => ({
+			gateway: r.gateway as PaymentMethod,
+			providerRef: r.provider_ref,
+			amount: cents(r.amount_cents),
+			currency: toCurrency(r.currency),
+			status: r.status,
+		}));
+	}
+
+	async listRefunds(orderId: OrderId): Promise<RefundRecord[]> {
+		const rows = await this.#db
+			.selectFrom("refunds")
+			.selectAll()
+			.where("order_id", "=", orderId)
+			.orderBy("created_at", "asc")
+			.orderBy("id", "asc")
+			.execute();
+		return rows.map(toRefund);
+	}
+
+	async getRefundByIdempotencyKey(key: IdempotencyKey): Promise<RefundRecord | null> {
+		const row = await this.#db
+			.selectFrom("refunds")
+			.selectAll()
+			.where("idempotency_key", "=", key)
+			.executeTakeFirst();
+		return row === undefined ? null : toRefund(row);
+	}
+
+	async recordRefund(input: RecordRefundInput): Promise<RecordRefundStoreResult> {
+		// Money movement — the whole check-and-write is ONE transaction that first
+		// LOCKS the order row (a guarded touch: on pg it takes the row lock so N
+		// concurrent refunds serialize and none reads a stale Σ; sqlite serializes
+		// writes globally so it is a harmless no-op there). Under the lock: dedupe →
+		// ceiling `min(Σ captured, total)` → insert → full-refund flip via the SAME
+		// #flipAndEnqueue choke point. NEVER touches order_items/order_totals.
+		const now = this.#clock.now().toISOString();
+		const result = await this.#db
+			.transaction()
+			.execute(async (trx): Promise<Omit<RecordRefundStoreResult, "order">> => {
+				const locked = await trx
+					.updateTable("orders")
+					.set({ updated_at: now })
+					.where("id", "=", input.orderId)
+					.returning(["id", "state"])
+					.executeTakeFirst();
+				if (locked === undefined) {
+					return {
+						outcome: "order_not_found",
+						refund: null,
+						fullyRefunded: false,
+						capturedTotal: cents(0),
+						frozenTotal: cents(0),
+					};
+				}
+
+				const capturedRow = await trx
+					.selectFrom("payments")
+					.select(sql<number>`coalesce(sum(amount_cents), 0)`.as("captured"))
+					.where("order_id", "=", input.orderId)
+					.where("status", "=", "succeeded")
+					.executeTakeFirstOrThrow();
+				const capturedTotal = cents(Number(capturedRow.captured));
+				const totalsRow = await trx
+					.selectFrom("order_totals")
+					.select("total_cents")
+					.where("order_id", "=", input.orderId)
+					.executeTakeFirstOrThrow();
+				const frozenTotal = cents(totalsRow.total_cents);
+
+				const existing = await trx
+					.selectFrom("refunds")
+					.selectAll()
+					.where("idempotency_key", "=", input.idempotencyKey)
+					.executeTakeFirst();
+				if (existing !== undefined) {
+					return {
+						outcome: "duplicate",
+						refund: toRefund(existing),
+						fullyRefunded: locked.state === "refunded",
+						capturedTotal,
+						frozenTotal,
+					};
+				}
+
+				const ceiling = Math.min(capturedTotal, frozenTotal);
+				const priorRow = await trx
+					.selectFrom("refunds")
+					.select(sql<number>`coalesce(sum(amount_cents), 0)`.as("prior"))
+					.where("order_id", "=", input.orderId)
+					.executeTakeFirstOrThrow();
+				const prior = Number(priorRow.prior);
+				if (prior + input.amount > ceiling) {
+					return {
+						outcome: "exceeds_ceiling",
+						refund: null,
+						fullyRefunded: false,
+						capturedTotal,
+						frozenTotal,
+					};
+				}
+
+				const id = this.#idGen.newId();
+				await trx
+					.insertInto("refunds")
+					.values({
+						id,
+						order_id: input.orderId,
+						amount_cents: input.amount,
+						currency: input.currency,
+						kind: input.kind,
+						gateway: input.gateway,
+						refund_ref: input.refundRef,
+						reason: input.reason,
+						refunded_by: input.refundedBy,
+						idempotency_key: input.idempotencyKey,
+						created_at: now,
+					})
+					.execute();
+
+				let fullyRefunded = false;
+				// FULL refund (Σ reached the ceiling) → flip → refunded atomically with
+				// the ledger row, through the SAME guarded flip + audit + outbox as
+				// cancel/fulfillment. The actor is the refunder.
+				if (
+					prior + input.amount === ceiling &&
+					isLegalOrderTransition(locked.state as OrderState, "refunded")
+				) {
+					await this.#flipAndEnqueue(trx, {
+						orderId: input.orderId,
+						fromState: locked.state as OrderState,
+						toState: "refunded",
+						enqueueEmail: emailTemplateForState("refunded") !== null,
+						now,
+						actor: input.refundedBy,
+					});
+					fullyRefunded = true;
+				}
+
+				const refund: RefundRecord = {
+					id,
+					orderId: input.orderId,
+					amount: input.amount,
+					currency: input.currency,
+					kind: input.kind,
+					gateway: input.gateway,
+					refundRef: input.refundRef,
+					reason: input.reason,
+					refundedBy: input.refundedBy,
+					idempotencyKey: input.idempotencyKey,
+					createdAt: now,
+				};
+				return { outcome: "recorded", refund, fullyRefunded, capturedTotal, frozenTotal };
+			});
+		const order = await this.#loadById(input.orderId);
+		return { ...result, order };
 	}
 
 	async flagReconciliation(orderId: OrderId, detail: string): Promise<void> {
@@ -792,6 +966,22 @@ function toEvent(row: Selectable<OrderEventsTable>): OrderEvent {
 		fromState: row.from_state === null ? null : (row.from_state as OrderState),
 		toState: row.to_state === null ? null : (row.to_state as OrderState),
 		actor: row.actor,
+	};
+}
+
+function toRefund(row: Selectable<RefundsTable>): RefundRecord {
+	return {
+		id: row.id,
+		orderId: toOrderId(row.order_id),
+		amount: cents(row.amount_cents),
+		currency: toCurrency(row.currency),
+		kind: row.kind as RefundKind,
+		gateway: row.gateway as PaymentMethod,
+		refundRef: row.refund_ref,
+		reason: row.reason,
+		refundedBy: row.refunded_by,
+		idempotencyKey: toIdempotencyKey(row.idempotency_key),
+		createdAt: row.created_at,
 	};
 }
 

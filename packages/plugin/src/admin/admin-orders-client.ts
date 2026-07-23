@@ -187,6 +187,48 @@ export interface CustomerContextWire {
 	recentOrders: OrderSummaryWire[];
 }
 
+/** A refund row on the wire (ADR-0008). `kind` is "gateway" (money moved via the
+ *  provider — `refundRef` set) or "manual" (an out-of-band return the admin
+ *  recorded — `refundRef` null, x402's honest path). Money is integer minor
+ *  units + ISO-4217 currency. */
+export interface RefundWire {
+	id: string;
+	orderId: string;
+	amountCents: number;
+	currency: string;
+	kind: string;
+	gateway: string;
+	refundRef: string | null;
+	reason: string | null;
+	refundedBy: string;
+	createdAt: string;
+}
+
+/** The refunds summary for an order (ADR-0008): the append-only ledger plus the
+ *  derived ceiling / remaining-refundable and the gateway's HONEST `refundable`
+ *  capability, so the panel shows the right action (a real Stripe refund vs a
+ *  recorded manual refund) and never a button that silently no-ops. */
+export interface RefundsSummaryWire {
+	refunds: RefundWire[];
+	currency: string;
+	capturedTotalCents: number;
+	refundedTotalCents: number;
+	ceilingCents: number;
+	remainingCents: number;
+	paymentMethod: string | null;
+	refundable: boolean;
+}
+
+/** POST refund returns a discriminated result (like `transitionOrder`) so a
+ *  failure surfaces a GENERIC inline banner rather than throwing into the host.
+ *  `recorded:false` on a 2xx ⇒ an idempotent replay (`duplicate`). On a failure,
+ *  `reason` carries the service's typed reason when one was returned (e.g.
+ *  `REFUND_EXCEEDS_TOTAL`, `PROVIDER_ALREADY_REFUNDED`, `GATEWAY_UNVERIFIED`); the
+ *  caller renders GENERIC copy keyed off it, never the raw status/URL. */
+export type RefundOrderResult =
+	| { ok: true; recorded: boolean; duplicate: boolean; fullyRefunded: boolean }
+	| { ok: false; status: number; reason?: string };
+
 /** An append-only order note (admin-UX Increment 0) on the wire. */
 export interface OrderNoteWire {
 	id: string;
@@ -533,6 +575,71 @@ export class AdminOrdersClient {
 		if (!res.ok) throw new Error(`GET timeline failed (HTTP ${res.status})`);
 		const body = (await res.json()) as { timeline?: OrderTimelineWire };
 		return body.timeline ?? null;
+	}
+
+	/** GET an order's refunds summary (admin-token guarded read; ADR-0008): the
+	 *  ledger + derived ceiling/remaining + the gateway's honest capability. A 404
+	 *  resolves to `null`; any other non-2xx throws — the caller degrades to an
+	 *  "unavailable" refunds section, never a hard error (and never blanks the
+	 *  order detail). */
+	async getRefunds(orderId: string): Promise<RefundsSummaryWire | null> {
+		const res = await this.#fetch(
+			`${this.#baseUrl}/admin/orders/${encodeURIComponent(orderId)}/refunds`,
+			{ method: "GET", headers: this.#authHeaders() },
+		);
+		if (res.status === 404) return null;
+		if (!res.ok) throw new Error(`GET refunds failed (HTTP ${res.status})`);
+		const body = (await res.json()) as Partial<RefundsSummaryWire>;
+		return {
+			refunds: body.refunds ?? [],
+			currency: body.currency ?? "",
+			capturedTotalCents: body.capturedTotalCents ?? 0,
+			refundedTotalCents: body.refundedTotalCents ?? 0,
+			ceilingCents: body.ceilingCents ?? 0,
+			remainingCents: body.remainingCents ?? 0,
+			paymentMethod: body.paymentMethod ?? null,
+			refundable: body.refundable ?? false,
+		};
+	}
+
+	/** POST issue/record a refund (ADR-0008). Gated by BOTH the admin token
+	 *  (X-Internal-Token) AND the write gate (X-Service-Token) when both service
+	 *  secrets are set — a non-GET, same as the transition. The `Idempotency-Key`
+	 *  is REQUIRED (refunds are additive — two deliberate refunds must not
+	 *  collapse). Returns a discriminated result; forwards the service's typed
+	 *  reason so the console can pick the right GENERIC copy. */
+	async refundOrder(
+		orderId: string,
+		refund: { amountCents: number; currency: string; reason?: string | null; refundedBy: string },
+		opts: { idempotencyKey: string },
+	): Promise<RefundOrderResult> {
+		const headers: Record<string, string> = {
+			"content-type": "application/json",
+			"Idempotency-Key": opts.idempotencyKey,
+		};
+		if (this.#adminToken !== undefined) headers["X-Internal-Token"] = this.#adminToken;
+		if (this.#serviceToken !== undefined) headers["X-Service-Token"] = this.#serviceToken;
+		const res = await this.#fetch(
+			`${this.#baseUrl}/admin/orders/${encodeURIComponent(orderId)}/refund`,
+			{ method: "POST", headers, body: JSON.stringify(refund) },
+		);
+		const parsed = (await res.json().catch(() => undefined)) as
+			| { ok?: boolean; recorded?: boolean; duplicate?: boolean; fullyRefunded?: boolean }
+			| HttpErrorEnvelope
+			| undefined;
+		if (res.ok && parsed !== undefined && "ok" in parsed && parsed.ok === true) {
+			return {
+				ok: true,
+				recorded: parsed.recorded ?? true,
+				duplicate: parsed.duplicate ?? false,
+				fullyRefunded: parsed.fullyRefunded ?? false,
+			};
+		}
+		const reason =
+			parsed !== undefined && "reason" in parsed && typeof parsed.reason === "string"
+				? parsed.reason
+				: undefined;
+		return { ok: false, status: res.status, ...(reason !== undefined ? { reason } : {}) };
 	}
 
 	/** GET an order's append-only notes (admin-token guarded read). A non-2xx

@@ -5,6 +5,8 @@ import {
 	type PaymentGateway,
 	type PaymentIntentHandle,
 	type RawConfirmation,
+	type RefundInput,
+	type RefundResult,
 	type X402Proof,
 } from "@urumi/domain";
 import { createHmac, timingSafeEqual } from "node:crypto";
@@ -55,6 +57,14 @@ export interface X402PaymentGatewayOptions {
  */
 export class X402PaymentGateway implements PaymentGateway {
 	readonly id = "x402" as const;
+	/**
+	 * x402 CANNOT refund (ADR-0008). On-chain USDC settlement is irreversible and
+	 * this adapter holds no signing wallet — it only VERIFIES inbound receipts via
+	 * a facilitator. `refundable:false` is honest by construction; the domain
+	 * records an x402 refund as a `manual`, out-of-band entry instead of ever
+	 * pretending money moved.
+	 */
+	readonly refundable = false;
 	readonly #facilitator: X402Facilitator;
 	readonly #payTo: string;
 	readonly #accepts: string[];
@@ -101,6 +111,19 @@ export class X402PaymentGateway implements PaymentGateway {
 			dedupeKey: proof.transaction,
 			gateway: "x402",
 		};
+	}
+
+	/**
+	 * x402 has no outbound-payment capability (ADR-0008): an on-chain settlement
+	 * cannot be reversed and the service holds no signing wallet. Return the
+	 * capability statement `UNSUPPORTED` — NOT a thrown runtime error — so the
+	 * domain records a `manual` refund (the admin sends USDC back to the captured
+	 * `payer` out of band) rather than treating a failed "x402 refund" as
+	 * retryable. The declared `refundable:false` means the domain never even calls
+	 * this on the happy path; it is here only to satisfy the port completely.
+	 */
+	async refund(_input: RefundInput): Promise<RefundResult> {
+		return { ok: false, reason: "UNSUPPORTED" };
 	}
 }
 

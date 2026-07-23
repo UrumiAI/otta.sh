@@ -208,6 +208,46 @@ const ORDER_CANCELLED_NO_REASON = {
 	cancellation: null,
 };
 
+// ADR-0008: an x402-paid order — refunds are RECORD-ONLY (refundable:false).
+const ORDER_X402 = { ...ORDER_1, id: "ord-x402", paymentMethod: "x402" };
+
+// Refunds summaries (ADR-0008). Default: a Stripe order with money remaining
+// refundable ⇒ refundable:true, so the refund form appears with a REAL-refund
+// label. X402: record-only.
+const REFUNDS_DEFAULT = {
+	refunds: [
+		{
+			id: "rf-1",
+			orderId: "ord-1",
+			amountCents: 500,
+			currency: "USD",
+			kind: "gateway",
+			gateway: "stripe",
+			refundRef: "re_seed",
+			reason: "one item returned",
+			refundedBy: "ops@shop.test",
+			createdAt: "2026-07-12T00:00:00.000Z",
+		},
+	],
+	currency: "USD",
+	capturedTotalCents: 1500,
+	refundedTotalCents: 500,
+	ceilingCents: 1500,
+	remainingCents: 1000,
+	paymentMethod: "stripe",
+	refundable: true,
+};
+const REFUNDS_X402 = {
+	refunds: [],
+	currency: "USD",
+	capturedTotalCents: 1500,
+	refundedTotalCents: 0,
+	ceilingCents: 1500,
+	remainingCents: 1500,
+	paymentMethod: "x402",
+	refundable: false,
+};
+
 /** Customer context for ord-1: a claimed account with an address, a session,
  *  and one other order. TOKEN-FREE by construction (the wire shape has no
  *  credential field). */
@@ -294,6 +334,11 @@ function makeGetResponder() {
 			const timeline = path.includes("/ord-proc") ? TIMELINE_DEGRADED : TIMELINE_ORD_1;
 			return { status: 200, body: { ok: true, timeline } };
 		}
+		// Order refunds read (ADR-0008) — also BEFORE the detail branch.
+		if (path?.endsWith("/refunds")) {
+			const summary = path.includes("/ord-x402") ? REFUNDS_X402 : REFUNDS_DEFAULT;
+			return { status: 200, body: { ok: true, ...summary } };
+		}
 		// Customer context read — also BEFORE the detail branch.
 		if (path?.endsWith("/customer-context")) {
 			if (path.includes("/ord-ctx-fail")) {
@@ -323,7 +368,9 @@ function makeGetResponder() {
 											? ORDER_CANCELLED_NO_REASON
 											: path.includes("/ord-cancelled")
 												? ORDER_CANCELLED
-												: ORDER_1;
+												: path.includes("/ord-x402")
+													? ORDER_X402
+													: ORDER_1;
 			// State-appropriate transitions, as the real service derives them from the
 			// domain state machine: a processing order's legal targets INCLUDE the bare
 			// `shipped` — the PLUGIN is what must steer it away (PR #63 review); a
@@ -434,6 +481,40 @@ function makePostResponder() {
 							cancelledAt: "2026-07-11T00:00:01.000Z",
 						},
 					},
+				},
+			};
+		}
+		if (req.url.includes("/refund")) {
+			const b = req.body as
+				| { amountCents?: number; currency?: string; reason?: string; refundedBy?: string }
+				| undefined;
+			const amount = b?.amountCents ?? 0;
+			const isX402 = req.url.includes("/ord-x402");
+			const remaining = isX402 ? 1500 : 1000; // matches the REFUNDS_* fixtures
+			if (amount > remaining) {
+				return { status: 409, body: { ok: false, reason: "REFUND_EXCEEDS_TOTAL" } };
+			}
+			const fullyRefunded = amount === remaining;
+			return {
+				status: 200,
+				body: {
+					ok: true,
+					recorded: true,
+					duplicate: false,
+					fullyRefunded,
+					refund: {
+						id: "rf-new",
+						orderId: isX402 ? "ord-x402" : "ord-1",
+						amountCents: amount,
+						currency: b?.currency ?? "USD",
+						kind: isX402 ? "manual" : "gateway",
+						gateway: isX402 ? "x402" : "stripe",
+						refundRef: isX402 ? null : "re_new",
+						reason: b?.reason ?? null,
+						refundedBy: b?.refundedBy ?? "",
+						createdAt: "2026-07-12T01:00:00.000Z",
+					},
+					order: { ...(isX402 ? ORDER_X402 : ORDER_1), state: fullyRefunded ? "refunded" : "paid" },
 				},
 			};
 		}
@@ -765,10 +846,14 @@ describe("admin Orders console (workerd sandbox)", () => {
 		const refundedOption = ((outcomeField?.options ?? []) as Array<Record<string, unknown>>).find(
 			(opt) => opt.value === "refunded",
 		);
-		expect(String(refundedOption?.label)).toContain("recorded only");
-		expect(String(refundedOption?.label)).toContain("issue the refund separately");
+		// ADR-0008 refresh: a real refund path now exists, so the disposition copy
+		// points AT the Refunds section instead of "issue it separately". It still
+		// reads as a RECORD, never a money movement.
+		expect(String(refundedOption?.label)).toContain("records the disposition");
+		expect(String(refundedOption?.label)).toContain("Refunds");
 		const contexts = blocks.filter((b) => b.type === "context").map((b) => String(b.text));
 		expect(contexts.some((t) => t.includes("does NOT move money"))).toBe(true);
+		expect(contexts.some((t) => t.includes("issue it in the Refunds section"))).toBe(true);
 	});
 
 	test("open a RESOLVED order shows the recorded disposition and NO resolve form", async () => {
@@ -1283,5 +1368,141 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(banner?.description).toBeDefined();
 		const text = `${String(banner?.title)} ${String(banner?.description)}`;
 		expect(text).not.toMatch(/HTTP \d|\/admin\/|401/);
+	});
+
+	// -- Refunds (ADR-0008) ----------------------------------------------------
+
+	test("open a paid Stripe order → Refunds section shows the ledger, remaining, and a REAL-refund form", async () => {
+		await boot();
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "orders:open",
+			values: { orderId: "ord-1" },
+		});
+		const blocks = blocksOf(outcome);
+		expect(blocks.some((b) => b.type === "section" && b.text === "Refunds")).toBe(true);
+		// The derived captured/refunded/remaining + "partially refunded" badge.
+		const fieldValues = blocks
+			.filter((b) => b.type === "fields")
+			.flatMap((b) => (b.fields as Array<{ label?: string; value?: string }>) ?? [])
+			.map((f) => `${String(f.label)}=${String(f.value)}`);
+		expect(fieldValues.some((v) => v.startsWith("Remaining refundable="))).toBe(true);
+		expect(fieldValues.some((v) => v.startsWith("Status=Partially refunded"))).toBe(true);
+		// The existing refund row is listed.
+		const refundTable = blocks.find(
+			(b) =>
+				b.type === "table" && (b.columns as Array<{ key: string }>).some((c) => c.key === "ref"),
+		);
+		expect(refundTable).toBeDefined();
+		// The refund form — a REAL-refund label (refundable:true) + a money amount input.
+		const forms = blocks.filter((b) => b.type === "form");
+		const refundForm = forms.find(
+			(f) => (f.submit as { action_id?: string } | undefined)?.action_id === "orders:refund",
+		);
+		expect(refundForm).toBeDefined();
+		expect(String((refundForm?.submit as { label?: string } | undefined)?.label)).toContain(
+			"Issue refund",
+		);
+		const fieldIds = ((refundForm?.fields ?? []) as Array<{ action_id?: string }>).map(
+			(f) => f.action_id,
+		);
+		expect(fieldIds).toContain("orderId");
+		expect(fieldIds).toContain("currency");
+		expect(fieldIds).toContain("nonce"); // per-submission key ⇒ two deliberate refunds each apply
+		expect(fieldIds).toContain("amount");
+		expect(fieldIds).toContain("refundedBy");
+		// Capability copy is HONEST: money moves via Stripe.
+		const contexts = blocks.filter((b) => b.type === "context").map((b) => String(b.text));
+		expect(contexts.some((t) => t.includes("REAL refund through Stripe"))).toBe(true);
+	});
+
+	test("open an x402 order → Refunds section is RECORD-ONLY (honest capability, manual label)", async () => {
+		await boot();
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "orders:open",
+			values: { orderId: "ord-x402" },
+		});
+		const blocks = blocksOf(outcome);
+		const forms = blocks.filter((b) => b.type === "form");
+		const refundForm = forms.find(
+			(f) => (f.submit as { action_id?: string } | undefined)?.action_id === "orders:refund",
+		);
+		expect(refundForm).toBeDefined();
+		expect(String((refundForm?.submit as { label?: string } | undefined)?.label)).toBe(
+			"Record manual refund",
+		);
+		const contexts = blocks.filter((b) => b.type === "context").map((b) => String(b.text));
+		expect(contexts.some((t) => t.includes("on-chain (x402)") && t.includes("RECORD-ONLY"))).toBe(
+			true,
+		);
+	});
+
+	test("refund form_submit POSTs minor-unit amount + a nonce-keyed Idempotency-Key, then re-renders detail", async () => {
+		await boot();
+		stub!.requests.length = 0;
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "orders:refund",
+			values: {
+				orderId: "ord-1",
+				currency: "USD",
+				nonce: "nonce-abc",
+				amount: "10.00",
+				reason: "damaged",
+				refundedBy: "carol",
+			},
+		});
+		const post = stub!.requests.find((r) => r.method === "POST");
+		expect(post).toBeDefined();
+		expect(post!.url).toBe("/admin/orders/ord-1/refund");
+		expect(post!.headers["idempotency-key"]).toBe("admin-refund:ord-1:nonce-abc");
+		expect(post!.headers["x-internal-token"]).toBe("admin-token-xyz");
+		expect(post!.body).toEqual({
+			amountCents: 1000, // "10.00" parsed to integer minor units (no float)
+			currency: "USD",
+			reason: "damaged",
+			refundedBy: "carol",
+		});
+		const blocks = blocksOf(outcome);
+		// The full remaining (1000) was refunded ⇒ success notice + re-rendered detail.
+		expect(blocks.some((b) => b.type === "header" && b.text === "Order ord-1")).toBe(true);
+		const banner = blocks.find((b) => b.type === "banner" && b.variant === "default");
+		expect(banner?.title).toBe("Refund complete");
+	});
+
+	test("refund with a blank amount shows an inline error and makes NO POST", async () => {
+		await boot();
+		stub!.requests.length = 0;
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "orders:refund",
+			values: { orderId: "ord-1", currency: "USD", nonce: "n1", amount: "  ", refundedBy: "carol" },
+		});
+		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
+		const blocks = blocksOf(outcome);
+		const banner = blocks.find((b) => b.type === "banner" && b.variant === "error");
+		expect(banner?.title).toBe("Not refunded");
+	});
+
+	test("an over-refund (409 REFUND_EXCEEDS_TOTAL) surfaces the amount-too-high notice, nothing changed", async () => {
+		await boot();
+		stub!.requests.length = 0;
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "orders:refund",
+			values: {
+				orderId: "ord-1",
+				currency: "USD",
+				nonce: "n2",
+				amount: "99.99", // 9999 > remaining 1000
+				refundedBy: "carol",
+			},
+		});
+		expect(stub!.requests.some((r) => r.method === "POST")).toBe(true);
+		const blocks = blocksOf(outcome);
+		const banner = blocks.find((b) => b.type === "banner" && b.variant === "error");
+		expect(banner?.title).toBe("Amount too high");
+		expect(String(banner?.description)).not.toMatch(/HTTP \d|\/admin\/|409/);
 	});
 });

@@ -58,6 +58,57 @@ export interface OrderStore {
 	listExpirable(now: string): Promise<OrderId[]>;
 	/** Record the settled `payments` row (idempotent on `provider_ref`). */
 	recordPayment(input: RecordPaymentInput): Promise<void>;
+
+	// -- Refunds ledger (ADR-0008) --------------------------------------------
+
+	/**
+	 * The order's captured `payments` rows (ADR-0008) — the source of "how much
+	 * money we actually hold". `settleOrder` writes one `succeeded` row per
+	 * settlement; `refundOrder` sums the succeeded amounts for the refund ceiling
+	 * (`Σ captured`) and reads a succeeded row's `providerRef` (the charge/PI id)
+	 * as the target of a gateway refund. Scoped to the one order.
+	 */
+	getCapturedPayments(orderId: OrderId): Promise<CapturedPayment[]>;
+
+	/**
+	 * Every refund recorded against an order (ADR-0008), append-only, in
+	 * chronological order (`created_at ASC, id ASC`). The ledger — not the order
+	 * row — is the source of "how much came back"; the order snapshot
+	 * (`order_totals`/`order_items`) is never touched. Scoped to the one order.
+	 */
+	listRefunds(orderId: OrderId): Promise<RefundRecord[]>;
+
+	/**
+	 * The refund already minted under an `idempotencyKey`, or null (ADR-0008). The
+	 * `refundOrder` use-case reads this BEFORE calling the gateway so a replay
+	 * re-issues nothing (no second provider call) — the structural dedupe on the
+	 * `UNIQUE(idempotency_key)` in `recordRefund` is the final authority.
+	 */
+	getRefundByIdempotencyKey(key: IdempotencyKey): Promise<RefundRecord | null>;
+
+	/**
+	 * Record a refund in the append-only ledger with the ceiling enforced
+	 * ATOMICALLY (ADR-0008). The whole operation runs in ONE transaction that
+	 * FIRST locks the `orders` row (a guarded touch — the serialization point, so
+	 * N concurrent refunds on the same order can never both read a stale `Σ` and
+	 * over-shoot the ceiling; sqlite serializes writes so the touch is a harmless
+	 * no-op there). Under the lock it:
+	 *  1. dedupes on `UNIQUE(idempotency_key)` — a replay records nothing and
+	 *     returns the existing row (`outcome:"duplicate"`);
+	 *  2. computes the ceiling `min(Σ captured payments, order_totals.total)` and
+	 *     rejects if `Σ refunds + amount` would exceed it (`outcome:"exceeds_ceiling"`,
+	 *     carrying `capturedTotal`/`frozenTotal` so the use-case picks
+	 *     `REFUND_EXCEEDS_CAPTURED` vs `REFUND_EXCEEDS_TOTAL`);
+	 *  3. inserts the ledger row; and when `Σ` reaches the ceiling (a FULL refund)
+	 *     drives the `→ refunded` transition through the SAME `#flipAndEnqueue`
+	 *     choke point (guarded flip + `order-refunded` email + state-change audit
+	 *     event), so the `refunded` state, the email, and the ledger row commit
+	 *     together — no reachable "refunded but no refund recorded" state. A
+	 *     partial refund records the row and does NOT transition (the derived
+	 *     "partially refunded" badge lives in the read model). NEVER touches
+	 *     `order_items`/`order_totals` (the snapshot invariant).
+	 */
+	recordRefund(input: RecordRefundInput): Promise<RecordRefundStoreResult>;
 	/** Flag an order for manual reconciliation (§5 loud anomaly); idempotent. */
 	flagReconciliation(orderId: OrderId, detail: string): Promise<void>;
 	/**
@@ -526,6 +577,82 @@ export interface RecordPaymentInput {
 	amount: Cents;
 	currency: Currency;
 	status: string;
+}
+
+// -- Refunds ledger (ADR-0008) ------------------------------------------------
+
+/** A captured `payments` row surfaced for the refund ceiling + provider-ref
+ *  lookup (ADR-0008). `status` is the recorded settlement status — `succeeded`
+ *  rows count toward `Σ captured`. */
+export interface CapturedPayment {
+	gateway: PaymentMethod;
+	providerRef: string;
+	amount: Cents;
+	currency: Currency;
+	status: string;
+}
+
+/** A refund row (ADR-0008). `kind:"gateway"` carries the provider `refundRef`
+ *  (money actually moved); `kind:"manual"` has `refundRef:null` (an out-of-band
+ *  return the admin recorded — x402's honest degraded path). */
+export interface RefundRecord {
+	id: string;
+	orderId: OrderId;
+	amount: Cents;
+	currency: Currency;
+	kind: RefundKind;
+	gateway: PaymentMethod;
+	refundRef: string | null;
+	reason: string | null;
+	refundedBy: string;
+	idempotencyKey: IdempotencyKey;
+	createdAt: string;
+}
+
+export type RefundKind = "gateway" | "manual";
+
+/** The store-level record-refund command (ADR-0008). `amount`/`currency` are
+ *  already validated (currency-consistent, positive) by the use-case; the gateway
+ *  leg (if any) already ran and produced `refundRef`. The store stamps
+ *  `created_at` from its own clock. */
+export interface RecordRefundInput {
+	orderId: OrderId;
+	amount: Cents;
+	currency: Currency;
+	kind: RefundKind;
+	gateway: PaymentMethod;
+	/** Provider refund id for a `gateway` refund; null for a `manual` record. */
+	refundRef: string | null;
+	/** Optional free-text reason (trimmed → null by the use-case). */
+	reason: string | null;
+	refundedBy: string;
+	/** Every command carries one (CLAUDE.md); `UNIQUE(idempotency_key)` enforces
+	 *  once-only — the ledger dedupe AND (for gateway) Stripe's native key. */
+	idempotencyKey: IdempotencyKey;
+}
+
+/** The atomic outcome of {@link OrderStore.recordRefund} (ADR-0008).
+ *  - `recorded` — the ledger row was written; `fullyRefunded` iff `Σ` reached the
+ *    ceiling and the order flipped `→ refunded`.
+ *  - `duplicate` — the idempotency key already recorded a refund (`refund` is the
+ *    existing row); nothing new written.
+ *  - `exceeds_ceiling` — `Σ refunds + amount` would exceed
+ *    `min(capturedTotal, frozenTotal)`; nothing written. The use-case picks
+ *    `REFUND_EXCEEDS_CAPTURED`/`_TOTAL` from the two bounds.
+ *  - `order_not_found` — the order vanished before the guarded write. */
+export interface RecordRefundStoreResult {
+	outcome: "recorded" | "duplicate" | "exceeds_ceiling" | "order_not_found";
+	/** The recorded row (`recorded`) or the existing one (`duplicate`); null
+	 *  otherwise. */
+	refund: RefundRecord | null;
+	/** True iff this refund reached the ceiling and drove `→ refunded`. */
+	fullyRefunded: boolean;
+	/** Σ captured payments at write time (for the `exceeds_ceiling` bound choice). */
+	capturedTotal: Cents;
+	/** The frozen `order_totals.total` at write time (for the bound choice). */
+	frozenTotal: Cents;
+	/** The current order row after the attempt, or null if gone. */
+	order: Order | null;
 }
 
 export type { OrderState };

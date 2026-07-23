@@ -11,6 +11,16 @@ import type { PaymentMethod } from "../orders/model.js";
  */
 export interface PaymentGateway {
 	readonly id: PaymentMethod;
+	/**
+	 * Whether this gateway can move money BACK (ADR-0008). Stripe is `true` (a
+	 * first-class idempotent `refunds.create`); x402 is `false` (on-chain
+	 * settlement is irreversible and the adapter holds no signing wallet). The
+	 * domain and admin UI **branch on this flag** — never a `try/catch` to
+	 * *discover* refundability at runtime. A Stripe adapter wired WITHOUT a
+	 * `secretKey` is effectively `false` (there is no credential to call the live
+	 * refund API with), surfaced honestly rather than failing on first use.
+	 */
+	readonly refundable: boolean;
 	/** Begin payment for an order; returns the buyer-facing next action. */
 	createIntent(input: CreateIntentInput): Promise<PaymentIntentHandle>;
 	/**
@@ -18,7 +28,69 @@ export interface PaymentGateway {
 	 * proof) into a normalized, cryptographically VERIFIED settlement — or reject.
 	 */
 	verifyConfirmation(raw: RawConfirmation): Promise<ConfirmationResult>;
+	/**
+	 * Move money BACK for an order (ADR-0008) — the mirror of `createIntent`. All
+	 * secrets / crypto stay adapter-side, exactly like the money-in verbs.
+	 *
+	 * Stripe issues a REAL refund (the repo's first live outbound Stripe call):
+	 * it FIRST reads the charge/PaymentIntent's `amount_refunded` (the mandatory
+	 * refund-time pre-flight) and **fails closed** with `PROVIDER_ALREADY_REFUNDED`
+	 * — issuing nothing — when provider-side refunds already exceed the caller's
+	 * `priorRefunded` view or this refund would push the provider past what it
+	 * captured; only then does it call `refunds.create`, passing `idempotencyKey`
+	 * as Stripe's native `Idempotency-Key`. x402 returns `{ ok:false, reason:
+	 * "UNSUPPORTED" }` (a capability statement, not a runtime error) — the caller
+	 * records a manual, out-of-band refund instead.
+	 */
+	refund(input: RefundInput): Promise<RefundResult>;
 }
+
+export interface RefundInput {
+	orderId: OrderId;
+	/** The original charge / PaymentIntent id (from the settled `payments` row) to
+	 *  refund against. */
+	providerRef: string;
+	/** The amount to refund (integer minor units). Partial is supported. */
+	amount: Cents;
+	currency: Currency;
+	/**
+	 * The caller's (local ledger's) current Σ refunds for this order — the
+	 * pre-flight's reference for "have provider-side refunds already diverged past
+	 * what we recorded?" A gateway with no provider to ask (x402) ignores it.
+	 */
+	priorRefunded: Cents;
+	/** Every command carries one (CLAUDE.md); passed to Stripe as its native
+	 *  `Idempotency-Key` so a replay re-calls nothing. */
+	idempotencyKey: IdempotencyKey;
+}
+
+/**
+ * The normalized result of a `refund` attempt (ADR-0008). A success carries the
+ * provider refund id (`refundRef`) + the confirmed amount/currency. A failure is
+ * a typed reason from the explicit live-error taxonomy:
+ *  - `UNSUPPORTED` — the gateway cannot refund at all (x402): a capability
+ *    statement, never treat as retryable.
+ *  - `PROVIDER_ALREADY_REFUNDED` — the refund-time pre-flight found provider-side
+ *    refunds already exceed the local view (or this would over-refund): **nothing
+ *    was issued or recorded** — re-check before retrying.
+ *  - `RETRYABLE` — a transient transport failure (network / 5xx) BEFORE issuance
+ *    is confirmed one way or the other: safe to retry with the same key.
+ *  - `TERMINAL` — a definite provider rejection (4xx that is not the
+ *    already-refunded case): retrying the same request will not succeed.
+ *  - `UNVERIFIED` — the **ambiguous timeout**: `refunds.create` errored with an
+ *    unknown fate. NEVER a clean failure — surface as "unverified, re-check the
+ *    provider before retrying" (a blind retry could double-refund).
+ */
+export type RefundResult =
+	| { ok: true; refundRef: string; amount: Cents; currency: Currency }
+	| { ok: false; reason: RefundFailureReason };
+
+export type RefundFailureReason =
+	| "UNSUPPORTED"
+	| "PROVIDER_ALREADY_REFUNDED"
+	| "RETRYABLE"
+	| "TERMINAL"
+	| "UNVERIFIED";
 
 export interface CreateIntentInput {
 	orderId: OrderId;
