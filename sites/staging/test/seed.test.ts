@@ -42,14 +42,23 @@ const seedPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../
 const seed = JSON.parse(readFileSync(seedPath, "utf8")) as SeedFile;
 
 /**
- * Faithful model of em-dash `ContentEditor.tsx`'s field-widget decision
- * (the `if (field.widget)` branch): a plugin widget mounts ONLY when the
- * field declares `widget: "pluginId:widgetName"`, the named plugin has
- * registered a field widget of that name, AND that widget's `fieldTypes`
- * admit the field's type. Anything else falls through to the default,
- * type-driven editor (for a `json` field: the raw JSON <textarea>). Kept in
- * lockstep with the plugin's real registration surface (pinned separately by
- * site-config.test's "registers the Product-data Block Kit field widget").
+ * Approximate, CONSERVATIVE proxy for em-dash `ContentEditor.tsx`'s
+ * field-widget decision (the `if (field.widget)` branch) — NOT a faithful
+ * replica. Real em-dash mounts a plugin widget on: `field.widget` present +
+ * parseable as `pluginId:widgetName` + the named plugin registered a widget
+ * of that name (with non-empty `elements` for the sandboxed Block Kit path).
+ * It does NOT check `fieldTypes` at mount time.
+ *
+ * This proxy adds one STRICTER gate real em-dash omits: the registered
+ * widget's `fieldTypes` must admit the field's declared type. That extra
+ * check is deliberate config sanity for THIS seed — it asserts the binding
+ * points the `json` `commerce` field at a widget that declares it can edit
+ * `json`, catching a mis-bound field (right widget name, incompatible type)
+ * that em-dash would still try to mount. It only ever makes the proxy
+ * REJECT more than em-dash, never accept more, so a passing "widget" result
+ * here implies em-dash mounts too. Kept in lockstep with the plugin's real
+ * registration surface (pinned separately by site-config.test's "registers
+ * the Product-data Block Kit field widget").
  */
 function resolveFieldEditor(
 	field: SeedField,
@@ -61,6 +70,8 @@ function resolveFieldEditor(
 			const pluginId = field.widget.slice(0, sep);
 			const widgetName = field.widget.slice(sep + 1);
 			const widget = registry[pluginId]?.find((w) => w.name === widgetName);
+			// Stricter-than-em-dash config-sanity gate (see docstring): the
+			// widget must declare it can edit this field's type.
 			if (widget && (widget.fieldTypes as readonly string[]).includes(field.type)) {
 				return { kind: "widget", widget };
 			}
