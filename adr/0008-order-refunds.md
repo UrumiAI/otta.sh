@@ -1,7 +1,9 @@
 # 0008. Order refunds are an append-only ledger + a gateway `refund` port method (Stripe real, x402 record-only)
 
-- Status: accepted
-- Date: 2026-07-23
+- Status: accepted — second-expert concurrence **with conditions**, all three incorporated in the
+  2026-07-23 amendment: (1) refund-time provider pre-flight (never issue blind), (2) ceiling bound
+  to `min(Σ captured, total)`, (3) the Stripe-stub → first-live-API reality stated and scoped
+- Date: 2026-07-22 (amended 2026-07-23 per review of PR #77)
 - Refines: ADR-0001/0002 (pluggable payments; `PaymentGateway` port). Relates to Phase 4 settle
   (`settle-order.ts`), the order state machine (`state-machine.ts`), the reconciliation
   disposition (`resolve-reconciliation.ts` / #61), and the timeline/audit spine (#65).
@@ -33,6 +35,19 @@ The reality on disk:
   transfers are **irreversible**, and the x402 adapter only *verifies inbound receipts via a
   facilitator* — it holds **no signing wallet and no outbound-payment capability at all**. There
   is no "x402 refund" to call. This is the load-bearing fact of the whole ADR.
+- **The Stripe adapter is currently an offline deterministic stub — `refund` will be the repo's
+  FIRST live Stripe API call.** `packages/payments-stripe`'s `createIntent` makes **no network
+  call** (it constructs the `pi_…` handle offline so the whole suite runs without Stripe;
+  `secretKey` is accepted but *"reserved for real intent creation"* — `index.ts`); only
+  `verifyConfirmation` does real crypto, and that is inbound HMAC, not an outbound API call. A
+  real `refunds.create` therefore introduces the first outbound Stripe dependency the codebase
+  has ever had — live-API error classes (network failure, 4xx vs 5xx, ambiguous timeout), real
+  `secretKey` handling, and a test seam none of which exist today. The refunds slice must be
+  scoped for this, not treated as "one more offline adapter method".
+- **Settle admits short captures.** `settle-order.ts` records `AMOUNT_MISMATCH` anomalies and
+  can leave a `paid` order whose actually-captured `payments` amount differs from the frozen
+  `order_totals.total` — so "the order total" and "the money we actually hold" are NOT the same
+  number, and a refund ceiling must respect the smaller of the two.
 
 ### The Shopify / WooCommerce lens
 
@@ -63,9 +78,24 @@ invariant. Five parts:
    - The gateway also declares its capability: **`readonly refundable: boolean`** (Stripe `true`,
      x402 `false`). The domain and admin UI branch on this — never a `try/catch` to *discover* it.
 
-2. **Stripe adapter refunds for real.** `refund` calls `refunds.create` against the charge/PI,
-   passing our `idempotencyKey` as Stripe's native **`Idempotency-Key`** (double-charge-back
-   safety at the provider). Partial is supported (any `amount ≤ captured`).
+2. **Stripe adapter refunds for real — with a mandatory refund-time pre-flight (review
+   condition 1).** Before issuing, `refund` **synchronously reads the charge/PaymentIntent's
+   `amount_refunded`** from Stripe and **fails closed** (`PROVIDER_ALREADY_REFUNDED`, nothing
+   recorded, nothing issued) if provider-side refunds already exceed — or would exceed with this
+   refund — the local ledger's view. This kills the classic Woo+Stripe double-refund failure mode
+   (dashboard refund + app refund both going through): deferring `charge.refunded` webhooks is a
+   *visibility* gap we accept, but **issuing refunds blind is out**. Only after the pre-flight
+   passes does `refund` call `refunds.create`, passing our `idempotencyKey` as Stripe's native
+   **`Idempotency-Key`**. Partial is supported (any `amount ≤ captured − amount_refunded`).
+   - **This is the repo's first live Stripe API call** (see Context): the pre-flight
+     (`GET /charges|payment_intents`) and `refunds.create` both require the real `secretKey`
+     (service-env only, per the existing option's contract), explicit error taxonomy in the
+     normalized `RefundResult` (retryable transport failure vs terminal provider rejection vs the
+     **ambiguous timeout** — an errored `refunds.create` whose fate is unknown must surface as
+     "unverified, re-check before retry", never as a clean failure), and a **test strategy at the
+     adapter contract level with a mocked transport** (an injected fetch/HTTP seam playing
+     recorded Stripe responses — keeping the suite offline, the same philosophy as the existing
+     offline fake-Stripe webhook driver).
 
 3. **x402 is the honest degraded path — a *manual, recorded* refund.** `X402PaymentGateway.refund`
    returns `{ ok: false; reason: "UNSUPPORTED" }` (a capability statement, not a runtime error):
@@ -81,8 +111,12 @@ invariant. Five parts:
    `recordPayment`, or a sibling `RefundStore`). A refund row:
    `{ id, orderId, amount: Cents, currency, kind: "gateway" | "manual", gateway, refundRef | null,
    reason, refundedBy, createdAt, idempotencyKey }`. Invariants:
-   - **`Σ refunds(order) ≤ order_totals.total`** — the frozen total is the ceiling the ledger
-     *reads*; it is never rewritten. Over-refund is rejected (`REFUND_EXCEEDS_TOTAL`).
+   - **`Σ refunds(order) ≤ min(Σ captured payments, order_totals.total)`** (review condition 2)
+     — the ceiling is the smaller of the money we *actually captured* (the `payments` rows) and
+     the frozen total. `settle-order.ts` admits capture-amount anomalies, so refunding up to the
+     frozen total against a **short capture** would return money we never received; the frozen
+     total remains a hard upper bound (never rewritten, never exceeded even if a capture
+     over-recorded). Over-refund is rejected (`REFUND_EXCEEDS_CAPTURED` / `REFUND_EXCEEDS_TOTAL`).
    - **Idempotent once-only** via `UNIQUE(idempotency_key)` (CLAUDE.md), *and* Stripe's native
      `Idempotency-Key` for the gateway leg — a replay records nothing and re-calls nothing.
    - **No inventory restock** (deliberately unlike Shopify's toggle): `settle` already `commit`ted
@@ -90,7 +124,8 @@ invariant. Five parts:
      inventory decision. v1 records the refund only; re-stocking is a separate manual inventory act.
 
 5. **State interaction — reuse the `#flipAndEnqueue` choke point, do not widen the machine.**
-   - A **full** refund (`Σ refunds == total`) drives the existing `→ refunded` transition **and**
+   - A **full** refund (`Σ refunds` reaches the ceiling — all recoverable money returned) drives
+     the existing `→ refunded` transition **and**
      writes the ledger row **atomically**, in the exact "guarded flip + record the mutable
      envelope" shape as `cancelOrder`/`recordFulfillment` — so the `order-refunded` email fires
      once and a `state_change` audit event is captured, with no reachable "refunded but no refund
@@ -115,17 +150,29 @@ invariant. Five parts:
 - **The snapshot invariant is untouched.** Refunds are a new append-only table keyed to the order;
   `order_items`/`order_totals` are never mutated, so a refunded order's history is intact and the
   ledger, not the order row, is the source of "how much came back".
-- **Externally-initiated refunds are a documented v1 gap.** Settlement consumes only
-  `payment_intent.succeeded|failed`; we do **not** consume `charge.refunded`. A refund issued from
-  the Stripe dashboard (or any out-of-band return) is **invisible to the ledger**, so the
-  `Σ refunds ≤ total` ceiling reflects *Urumi-initiated* refunds only. Reconciling inbound refund
-  webhooks is explicitly deferred (a follow-up, in the spirit of the fire-and-forget reconcile
-  gaps noted in ADR-0007).
+- **Externally-initiated refunds are a *visibility* gap only — never an issuance hazard.**
+  Settlement consumes only `payment_intent.succeeded|failed`; we do **not** consume
+  `charge.refunded`, so a Stripe-dashboard refund stays invisible to the ledger *until the next
+  refund attempt*. But the mandatory refund-time pre-flight (Decision 2) reads the provider's
+  live `amount_refunded` before every issuance and fails closed on divergence — so an out-of-band
+  refund can make the ledger stale, it can no longer cause a **double refund**. Reconciling
+  inbound refund webhooks (closing the visibility gap and healing the ledger) remains an
+  explicitly deferred follow-up (in the spirit of the fire-and-forget reconcile gaps noted in
+  ADR-0007). The pre-flight guards Stripe only; the manual/x402 leg has no provider to ask (see
+  the residual risk below).
+- **The Stripe adapter stops being fully offline.** `refund` + its pre-flight are the first
+  outbound Stripe API calls in the repo; the adapter gains a transport seam (injected, mocked in
+  tests — the suite stays offline), a normalized live-error taxonomy including the ambiguous
+  timeout, and a hard requirement on `secretKey` for the refund path (unset ⇒ `refundable`
+  effectively false at wiring time, surfaced honestly in the admin UI). The refunds slice is
+  costed as a live-integration slice, not an offline-stub extension.
 - **No auto-restock** means a merchant refunding a physical order must return stock by hand — an
   accepted trade to keep the no-oversell invariant unbreached through a refund path.
-- Implementable as **1–3 vertical slices**: (a) `refund` port verb + Stripe adapter + x402
-  `UNSUPPORTED` + `refundable`; (b) `refundOrder` use-case + `recordRefund` ledger + migration +
-  full-refund `#flipAndEnqueue` compose; (c) admin order-page refund action + timeline entry.
+- Implementable as **1–3 vertical slices**: (a) `refund` port verb + x402 `UNSUPPORTED` +
+  `refundable`, and the Stripe adapter's live transport seam (pre-flight + `refunds.create`
+  behind a mocked transport at the adapter contract level); (b) `refundOrder` use-case (ceiling +
+  pre-flight orchestration) + `recordRefund` ledger + migration + full-refund `#flipAndEnqueue`
+  compose; (c) admin order-page refund action + timeline entry.
 
 ## Alternatives considered
 
@@ -146,20 +193,30 @@ invariant. Five parts:
   `settle-order.ts` (§9 Risk 3, "no auto-refund"); this ADR keeps that — refunds are always an
   admin-initiated, audited act, never an automatic consequence of a settlement race.
 
-## Status rationale — **ACCEPTED (scoped)**
+## Status rationale — **ACCEPTED (scoped; reviewer concurrence with conditions incorporated)**
 
 The invariant scaffolding refunds need already exists — frozen snapshots, idempotency keys,
 guarded flips, a payments ledger, the `#flipAndEnqueue` choke point, and adapter-side crypto — so
 the *risk is in scope creep, not in the primitive*. Accepting the tight shape (gateway `refund`
-verb; append-only amount-granular ledger with `Σ ≤ total`; full-refund reuses the existing
-transition; x402 = declared-unsupported / manual-record-only; no restock, no line-level refunds,
-no inbound-refund-webhook consumption) makes the `refunded` state truthful this increment while
-leaving every richer capability as an additive, non-breaking follow-up. Rejecting refunds would
-ship the admin build with a `refunded` label that actively lies to operators — the worse outcome.
+verb; append-only amount-granular ledger with `Σ ≤ min(Σ captured, total)`; full-refund reuses
+the existing transition; x402 = declared-unsupported / manual-record-only; no restock, no
+line-level refunds, no inbound-refund-webhook consumption) makes the `refunded` state truthful
+this increment while leaving every richer capability as an additive, non-breaking follow-up.
+Rejecting refunds would ship the admin build with a `refunded` label that actively lies to
+operators — the worse outcome.
 
-**Riskiest assumption (for the reviewing expert to attack):** that the `Σ refunds ≤ total` ceiling
-is trustworthy while it is enforced **only against Urumi's own ledger**. Any out-of-band return —
-a Stripe-dashboard refund, or a gateway `refunds.create` that succeeded but whose response we
-failed to record — makes the ceiling wrong and admits a **double refund**. The mitigations
-(Stripe `Idempotency-Key`, deferring inbound `charge.refunded` reconciliation) narrow but do not
-close this; whether v1 can ship without consuming inbound refund webhooks is the crux.
+The second reviewer concurred with three conditions, all incorporated above: the original draft's
+own named riskiest assumption (a ledger-only ceiling admits double refunds against out-of-band
+returns) is now closed on the issuance side by the **mandatory refund-time pre-flight** (Decision
+2) and the **captured-bound ceiling** (Decision 4), and the hidden implementation cliff is named:
+the Stripe adapter is an offline stub today, so `refund` is the repo's **first live Stripe API
+call** and the slice is scoped as a live integration (transport seam, error taxonomy, mocked
+transport at the adapter contract level).
+
+**Residual riskiest assumption (post-conditions):** that the pre-flight + ceiling actually close
+the double-refund window. Two attack surfaces remain: (a) the pre-flight is a **read-then-issue
+race** — a concurrent dashboard refund landing between the `amount_refunded` read and
+`refunds.create` can still double-refund (narrowed to seconds, not closed; only consuming
+`charge.refunded` or a Stripe-side atomic guard closes it); and (b) the **manual/x402 leg has no
+provider to pre-flight** — the ledger's `Σ` for manual refunds is only as truthful as the admin
+recording them, so the honest-record path can under- or over-count with no external check.

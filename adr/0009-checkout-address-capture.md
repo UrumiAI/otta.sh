@@ -1,7 +1,9 @@
 # 0009. Checkout captures an immutable shipping-address snapshot on the order
 
-- Status: accepted
-- Date: 2026-07-23
+- Status: accepted — second-expert concurrence, unconditional (two non-blocking recommendations
+  folded in as notes, 2026-07-23: the admin display-only country-vs-zone juxtaposition, and the
+  operational resolution of zone/address divergence via refunds — see ADR-0008)
+- Date: 2026-07-22 (amended 2026-07-23 per review of PR #77)
 - Refines: ADR-0001/0004 (the commerce service owns customer identity + the profile address book).
   Relates to `create-order-from-cart.ts`, `ports/address-store.ts`, `orders/customer-context.ts`
   (#62), the order snapshot invariant (`orders/model.ts`), and shipping zones (#73).
@@ -101,7 +103,19 @@ of the frozen order snapshot, never sourced from and never rewritten by the muta
 - **Zone/address divergence is possible and unguarded** in v1: a buyer can pick a "domestic" zone
   and type an international address; nothing cross-checks them (there is no matcher, #73). Accepted
   for this increment — the address is a record, the zone is the priced choice — and flagged as the
-  motivating case for a future address→zone resolution decision.
+  motivating case for a future address→zone resolution decision. Two reviewer-recommended
+  mitigations (non-blocking, folded in):
+  - **Display-only juxtaposition on the admin order page:** render the captured ship-to's
+    `country` directly next to the order's chosen shipping zone (from
+    `order_totals.shippingMethodSnapshot`'s `zoneId`). No matching logic, no validation — just
+    putting the two facts side by side so a human spots a "domestic zone / foreign country"
+    mismatch at a glance before packing the box.
+  - **Divergence resolves operationally via refunds (cross-ref ADR-0008).** When a mismatch does
+    slip through — under-charged international shipping the merchant won't honor — the recovery
+    path is not an order edit (the snapshot is frozen) but the ADR-0008 refund flow: cancel/refund
+    (full, driving `→ refunded`) or a partial refund recorded on the ledger, then re-order
+    correctly. Address capture (this ADR) plus refunds (0008) together make the divergence case
+    *recoverable*, which is what lets it stay unguarded at checkout time in v1.
 - **PII surface grows.** The order now stores a name + postal address (+ optional contact). It sits
   under the same admin-token / service-token gates as the rest of the order, but it is new
   personal data at rest on the order — retention/erasure is a follow-up to note, not solve here.
@@ -127,7 +141,7 @@ of the frozen order snapshot, never sourced from and never rewritten by the muta
 - **Require the address for *every* order (incl. digital).** Rejected: a digital-only order has no
   destination; forcing a ship-to there is a fiction and needless checkout friction.
 
-## Status rationale — **ACCEPTED (sequenced rollout)**
+## Status rationale — **ACCEPTED (sequenced rollout; unconditional reviewer concurrence)**
 
 Capturing the ship-to is a straight application of the invariant the codebase already lives by
 (freeze it on the order, like price + title), and both industry models we're measured against agree
