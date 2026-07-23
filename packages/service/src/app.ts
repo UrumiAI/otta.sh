@@ -148,6 +148,13 @@ export function createApp(deps: AppDeps): Hono {
 			// Admin-UX Increment 2: the Products console (view-only enumerate + detail).
 			productCommerce: deps.productCommerce,
 			inventoryStore: deps.store,
+			// ADR-0008: the refund endpoint selects the order's gateway to issue
+			// (Stripe) or record-only (x402/no-secret) and reads its capability flag.
+			gateways: deps.gateways,
+			// ADR-0008 reserve-before-issue: the loud-anomaly seam + clock for the
+			// impossible-by-construction "issued but unrecorded" residual.
+			paymentEventStore: deps.paymentEventStore,
+			clock: deps.clock,
 			internalToken: deps.internalToken,
 		}),
 	);

@@ -11,8 +11,11 @@ import type { IdGen } from "../ports/id-gen.js";
 import type {
 	CancelOrderInput,
 	CancelOrderStoreResult,
+	CapturedPayment,
 	CreateOrderInput,
 	CreateOrderResult,
+	FinalizeRefundInput,
+	FinalizeRefundStoreResult,
 	OrderEvent,
 	OrderListFilter,
 	OrderListPage,
@@ -25,6 +28,10 @@ import type {
 	RecordFulfillmentInput,
 	RecordFulfillmentStoreResult,
 	RecordPaymentInput,
+	RecordRefundInput,
+	RecordRefundStoreResult,
+	RefundRecord,
+	RefundStatus,
 	ResolveReconciliationInput,
 	ResolveReconciliationStoreResult,
 } from "../ports/order-store.js";
@@ -53,7 +60,7 @@ export interface SeedOrderSummaryRow {
 	totalCents: number;
 	reconciliationFlag?: string | null;
 }
-import { emailTemplateForState } from "../orders/state-machine.js";
+import { emailTemplateForState, isLegalOrderTransition } from "../orders/state-machine.js";
 
 /** Descending code-unit string comparison (`>` first) — the SAME plain code-unit
  *  ordering the keyset predicate + from/to filters use, so the admin-list fake is
@@ -68,7 +75,11 @@ interface StoredOrder {
 
 interface StoredPayment {
 	orderId: string;
+	gateway: PaymentMethod;
 	providerRef: string;
+	amount: number;
+	currency: string;
+	status: string;
 }
 
 type OutboxStatus = "pending" | "sending" | "sent" | "failed";
@@ -98,6 +109,9 @@ export class InMemoryOrderStore implements OrderStore {
 	#orders = new Map<string, StoredOrder>();
 	#byKey = new Map<string, string>();
 	#payments: StoredPayment[] = [];
+	/** Append-only refunds ledger — the fake analogue of the `refunds` table
+	 *  (ADR-0008). */
+	#refunds: RefundRecord[] = [];
 	#outbox: StoredOutbox[] = [];
 	/** Append-only state-change audit — the fake analogue of `order_events`,
 	 *  appended IN the same synchronous step as each guarded flip (mirrors the
@@ -213,7 +227,241 @@ export class InMemoryOrderStore implements OrderStore {
 
 	async recordPayment(input: RecordPaymentInput): Promise<void> {
 		if (this.#payments.some((p) => p.providerRef === input.providerRef)) return; // idempotent
-		this.#payments.push({ orderId: input.orderId, providerRef: input.providerRef });
+		this.#payments.push({
+			orderId: input.orderId,
+			gateway: input.gateway,
+			providerRef: input.providerRef,
+			amount: input.amount,
+			currency: input.currency,
+			status: input.status,
+		});
+	}
+
+	// -- Refunds ledger (ADR-0008) --------------------------------------------
+
+	async getCapturedPayments(orderId: OrderId): Promise<CapturedPayment[]> {
+		return this.#payments
+			.filter((p) => p.orderId === orderId)
+			.map((p) => ({
+				gateway: p.gateway,
+				providerRef: p.providerRef,
+				amount: cents(p.amount),
+				currency: toCurrency(p.currency),
+				status: p.status,
+			}));
+	}
+
+	async listRefunds(orderId: OrderId): Promise<RefundRecord[]> {
+		return this.#refunds.filter((r) => r.orderId === orderId).map((r) => ({ ...r }));
+	}
+
+	async getRefundByIdempotencyKey(key: IdempotencyKey): Promise<RefundRecord | null> {
+		const found = this.#refunds.find((r) => r.idempotencyKey === key);
+		return found === undefined ? null : { ...found };
+	}
+
+	async recordRefund(input: RecordRefundInput): Promise<RecordRefundStoreResult> {
+		// The MANUAL/record-only one-shot (ADR-0008): reserve + finalize collapsed —
+		// insert a FINALIZED ('recorded') row and drive the full-refund flip when the
+		// finalized Σ reaches the ceiling. The gateway path uses reserveRefund →
+		// gateway → finalizeRefund instead.
+		return this.#insertRefundRow(input, { status: "recorded", driveFlip: true });
+	}
+
+	async reserveRefund(input: RecordRefundInput): Promise<RecordRefundStoreResult> {
+		// RESERVE the ledger slot BEFORE any gateway call (ADR-0008): the SAME atomic
+		// arbitration as recordRefund but the row lands 'reserved' and NEVER drives
+		// the → refunded flip. A rejected reservation never reaches the provider.
+		return this.#insertRefundRow(input, { status: "reserved", driveFlip: false });
+	}
+
+	/** Shared dedupe/arbitrate/insert body for {@link recordRefund} (finalized
+	 *  one-shot) and {@link reserveRefund} (held slot). The real adapter's row lock +
+	 *  ceiling guard collapse to a straight-line check here; ceiling arbitrates the
+	 *  ACTIVE (non-'voided') Σ, the flip counts the FINALIZED ('recorded') Σ. */
+	#insertRefundRow(
+		input: RecordRefundInput,
+		opts: { status: Extract<RefundStatus, "recorded" | "reserved">; driveFlip: boolean },
+	): RecordRefundStoreResult {
+		const stored = this.#orders.get(input.orderId);
+		const capturedTotal = cents(
+			this.#payments
+				.filter((p) => p.orderId === input.orderId && p.status === "succeeded")
+				.reduce((sum, p) => sum + p.amount, 0),
+		);
+		if (stored === undefined) {
+			return {
+				outcome: "order_not_found",
+				refund: null,
+				fullyRefunded: false,
+				capturedTotal,
+				frozenTotal: cents(0),
+				order: null,
+			};
+		}
+		const frozenTotal = stored.order.totals.total;
+		// Dedupe on the idempotency key — a replay records nothing.
+		const existing = this.#refunds.find((r) => r.idempotencyKey === input.idempotencyKey);
+		if (existing !== undefined) {
+			return {
+				outcome: "duplicate",
+				refund: { ...existing },
+				fullyRefunded: stored.order.state === "refunded",
+				capturedTotal,
+				frozenTotal,
+				order: this.#clone(stored.order),
+			};
+		}
+		const ceiling = Math.min(capturedTotal, frozenTotal);
+		// ACTIVE Σ — every non-'voided' row (finalized + held reservations) consumes
+		// ceiling capacity; a voided row released its slot.
+		const activePrior = this.#refunds
+			.filter((r) => r.orderId === input.orderId && r.status !== "voided")
+			.reduce((sum, r) => sum + r.amount, 0);
+		if (activePrior + input.amount > ceiling) {
+			return {
+				outcome: "exceeds_ceiling",
+				refund: null,
+				fullyRefunded: false,
+				capturedTotal,
+				frozenTotal,
+				order: this.#clone(stored.order),
+			};
+		}
+		const now = this.#clock.now().toISOString();
+		const refund: RefundRecord = {
+			id: this.#idGen.newId(),
+			orderId: input.orderId,
+			amount: input.amount,
+			currency: input.currency,
+			kind: input.kind,
+			gateway: input.gateway,
+			refundRef: input.refundRef,
+			reason: input.reason,
+			refundedBy: input.refundedBy,
+			status: opts.status,
+			idempotencyKey: input.idempotencyKey,
+			createdAt: now,
+		};
+		this.#refunds.push(refund);
+		let fullyRefunded = false;
+		// FULL refund (finalized Σ reached the ceiling) → drive → refunded atomically
+		// with the ledger row (actor = the refunder). Finalized path only — a held
+		// reservation never flips; the finalized prior counts 'recorded' rows.
+		if (opts.driveFlip) {
+			const finalizedTotal = this.#refunds
+				.filter((r) => r.orderId === input.orderId && r.status === "recorded")
+				.reduce((sum, r) => sum + r.amount, 0);
+			if (finalizedTotal === ceiling && isLegalOrderTransition(stored.order.state, "refunded")) {
+				const fromState = stored.order.state;
+				stored.order.state = "refunded";
+				stored.order.updatedAt = now;
+				this.#appendEvent(input.orderId, fromState, "refunded", input.refundedBy);
+				if (emailTemplateForState("refunded") !== null) this.#enqueue(input.orderId, "refunded");
+				fullyRefunded = true;
+			}
+		}
+		return {
+			outcome: "recorded",
+			refund: { ...refund },
+			fullyRefunded,
+			capturedTotal,
+			frozenTotal,
+			order: this.#clone(stored.order),
+		};
+	}
+
+	async finalizeRefund(input: FinalizeRefundInput): Promise<FinalizeRefundStoreResult> {
+		// FINALIZE a reserved refund after the gateway confirmed issuance (ADR-0008):
+		// stamp refundRef, flip `reserved|unverified → recorded`, and — when the
+		// FINALIZED Σ reaches the ceiling — drive → refunded. Never loses arbitration
+		// (the reservation already holds the capacity). STATUS-GUARDED: only a
+		// reserved/unverified row is settled — a voided/recorded row is never
+		// clobbered. A key already `recorded` with the SAME refundRef (a concurrent
+		// same-key caller finalized first) is the BENIGN duplicate; anything else is
+		// found:false — the loud residual.
+		const row = this.#refunds.find(
+			(r) =>
+				r.idempotencyKey === input.idempotencyKey &&
+				(r.status === "reserved" || r.status === "unverified"),
+		);
+		if (row === undefined) {
+			const existing = this.#refunds.find((r) => r.idempotencyKey === input.idempotencyKey);
+			if (
+				existing !== undefined &&
+				existing.status === "recorded" &&
+				existing.refundRef === input.refundRef
+			) {
+				const dupOrder = this.#orders.get(existing.orderId);
+				return {
+					found: true,
+					alreadyFinalized: true,
+					refund: { ...existing },
+					fullyRefunded: dupOrder?.order.state === "refunded",
+					order: dupOrder === undefined ? null : this.#clone(dupOrder.order),
+				};
+			}
+			return {
+				found: false,
+				alreadyFinalized: false,
+				refund: null,
+				fullyRefunded: false,
+				order: null,
+			};
+		}
+		const stored = this.#orders.get(row.orderId);
+		const now = this.#clock.now().toISOString();
+		row.status = "recorded";
+		row.refundRef = input.refundRef;
+		let fullyRefunded = false;
+		if (stored !== undefined) {
+			stored.order.updatedAt = now;
+			const capturedTotal = cents(
+				this.#payments
+					.filter((p) => p.orderId === row.orderId && p.status === "succeeded")
+					.reduce((sum, p) => sum + p.amount, 0),
+			);
+			const ceiling = Math.min(capturedTotal, stored.order.totals.total);
+			const finalizedTotal = this.#refunds
+				.filter((r) => r.orderId === row.orderId && r.status === "recorded")
+				.reduce((sum, r) => sum + r.amount, 0);
+			if (finalizedTotal === ceiling && isLegalOrderTransition(stored.order.state, "refunded")) {
+				const fromState = stored.order.state;
+				stored.order.state = "refunded";
+				this.#appendEvent(row.orderId, fromState, "refunded", row.refundedBy);
+				if (emailTemplateForState("refunded") !== null) this.#enqueue(row.orderId, "refunded");
+				fullyRefunded = true;
+			}
+		}
+		return {
+			found: true,
+			alreadyFinalized: false,
+			refund: { ...row },
+			fullyRefunded,
+			order: stored === undefined ? null : this.#clone(stored.order),
+		};
+	}
+
+	async voidRefund(idempotencyKey: IdempotencyKey): Promise<boolean> {
+		// Guarded `reserved → voided` (ADR-0008): capacity RELEASED, row kept as an
+		// audit record. False ⇒ no reserved row under the key.
+		const row = this.#refunds.find(
+			(r) => r.idempotencyKey === idempotencyKey && r.status === "reserved",
+		);
+		if (row === undefined) return false;
+		row.status = "voided";
+		return true;
+	}
+
+	async markRefundUnverified(idempotencyKey: IdempotencyKey): Promise<boolean> {
+		// Guarded `reserved → unverified` (ADR-0008): capacity stays HELD (the safe
+		// direction) until a human re-checks the provider. False ⇒ no reserved row.
+		const row = this.#refunds.find(
+			(r) => r.idempotencyKey === idempotencyKey && r.status === "reserved",
+		);
+		if (row === undefined) return false;
+		row.status = "unverified";
+		return true;
 	}
 
 	async flagReconciliation(orderId: OrderId, detail: string): Promise<void> {

@@ -297,6 +297,35 @@ export interface PaymentsTable {
  * carries a null `dedupe_key` (multiple nulls allowed under UNIQUE) and a set
  * `kind`/`detail`.
  */
+/**
+ * Append-only refunds ledger (ADR-0008). One row per refund; the ceiling
+ * `Σ refunds ≤ min(Σ captured payments, order_totals.total)` is enforced by the
+ * guarded `recordRefund` write (row lock + re-read sums), not a DB constraint.
+ * `UNIQUE(idempotency_key)` is the once-only backstop. NEVER touches the frozen
+ * order snapshot — a refunded order's `order_totals`/`order_items` are intact and
+ * this table, not the order row, is the source of "how much came back".
+ */
+export interface RefundsTable {
+	id: string;
+	order_id: string;
+	amount_cents: number;
+	currency: string;
+	/** 'gateway' (money moved via the provider) | 'manual' (out-of-band record). */
+	kind: string;
+	/** 'stripe' | 'x402'. */
+	gateway: string;
+	/** Provider refund id for a gateway refund; null for a manual record. */
+	refund_ref: string | null;
+	reason: string | null;
+	refunded_by: string;
+	idempotency_key: string;
+	/** Reserve-before-issue lifecycle (ADR-0008): 'recorded' | 'reserved' |
+	 *  'unverified' | 'voided'. Ceiling counts non-'voided'; the flip counts
+	 *  'recorded'. */
+	status: string;
+	created_at: string;
+}
+
 export interface PaymentEventsTable {
 	id: string;
 	dedupe_key: string | null;
@@ -530,6 +559,7 @@ export interface Database {
 	order_totals: OrderTotalsTable;
 	order_shipping_address: OrderShippingAddressTable;
 	payments: PaymentsTable;
+	refunds: RefundsTable;
 	payment_events: PaymentEventsTable;
 	entitlements: EntitlementsTable;
 	customers: CustomersTable;

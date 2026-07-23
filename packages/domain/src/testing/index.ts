@@ -44,6 +44,12 @@ export {
 	type OrderTransitionContractOptions,
 } from "./order-transition-contract.js";
 export { orderFulfillmentContract } from "./order-fulfillment-contract.js";
+export {
+	buildRefundSeed,
+	refundOrderContract,
+	type RefundOrderContractOptions,
+	type RefundOrderHarness,
+} from "./refund-order-contract.js";
 export { orderCancellationContract } from "./order-cancellation-contract.js";
 export {
 	orderTimelineContract,

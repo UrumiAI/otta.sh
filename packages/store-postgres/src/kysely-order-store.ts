@@ -1,7 +1,9 @@
 import {
 	cents,
 	currency as toCurrency,
+	emailTemplateForState,
 	idempotencyKey as toIdempotencyKey,
+	isLegalOrderTransition,
 	orderId as toOrderId,
 	productId as toProductId,
 	reservationId as toReservationId,
@@ -9,10 +11,13 @@ import {
 	type CancellationReason,
 	type CancelOrderInput,
 	type CancelOrderStoreResult,
+	type CapturedPayment,
 	type Clock,
 	type CreateOrderInput,
 	type CreateOrderResult,
 	type CustomerId,
+	type FinalizeRefundInput,
+	type FinalizeRefundStoreResult,
 	type FulfillmentKind,
 	type IdempotencyKey,
 	type IdGen,
@@ -36,6 +41,11 @@ import {
 	type RecordFulfillmentInput,
 	type RecordFulfillmentStoreResult,
 	type RecordPaymentInput,
+	type RecordRefundInput,
+	type RecordRefundStoreResult,
+	type RefundKind,
+	type RefundRecord,
+	type RefundStatus,
 	type ResolveReconciliationInput,
 	type ResolveReconciliationStoreResult,
 } from "@urumi/domain";
@@ -57,6 +67,7 @@ import type {
 	OrdersTable,
 	OrderShippingAddressTable,
 	OrderTotalsTable,
+	RefundsTable,
 } from "./schema.js";
 
 export interface KyselyOrderStoreOptions {
@@ -248,6 +259,369 @@ export class KyselyOrderStore implements OrderStore {
 			})
 			.onConflict((oc) => oc.column("provider_ref").doNothing())
 			.execute();
+	}
+
+	// -- Refunds ledger (ADR-0008) --------------------------------------------
+
+	async getCapturedPayments(orderId: OrderId): Promise<CapturedPayment[]> {
+		const rows = await this.#db
+			.selectFrom("payments")
+			.select(["gateway", "provider_ref", "amount_cents", "currency", "status"])
+			.where("order_id", "=", orderId)
+			.execute();
+		return rows.map((r) => ({
+			gateway: r.gateway as PaymentMethod,
+			providerRef: r.provider_ref,
+			amount: cents(r.amount_cents),
+			currency: toCurrency(r.currency),
+			status: r.status,
+		}));
+	}
+
+	async listRefunds(orderId: OrderId): Promise<RefundRecord[]> {
+		const rows = await this.#db
+			.selectFrom("refunds")
+			.selectAll()
+			.where("order_id", "=", orderId)
+			.orderBy("created_at", "asc")
+			.orderBy("id", "asc")
+			.execute();
+		return rows.map(toRefund);
+	}
+
+	async getRefundByIdempotencyKey(key: IdempotencyKey): Promise<RefundRecord | null> {
+		const row = await this.#db
+			.selectFrom("refunds")
+			.selectAll()
+			.where("idempotency_key", "=", key)
+			.executeTakeFirst();
+		return row === undefined ? null : toRefund(row);
+	}
+
+	async recordRefund(input: RecordRefundInput): Promise<RecordRefundStoreResult> {
+		// The MANUAL/record-only one-shot (ADR-0008): reserve + finalize collapsed
+		// into ONE transaction because there is no gateway leg. Inserts a FINALIZED
+		// (`status:'recorded'`) row and — when the finalized Σ reaches the ceiling —
+		// flips `→ refunded`. The gateway path does NOT use this; it goes through
+		// reserveRefund → gateway → finalizeRefund. See `#insertRefundRow` for the
+		// shared locked/dedupe/arbitrate body.
+		return this.#insertRefundRow(input, { status: "recorded", driveFlip: true });
+	}
+
+	async reserveRefund(input: RecordRefundInput): Promise<RecordRefundStoreResult> {
+		// RESERVE the ledger slot BEFORE any gateway issuance (ADR-0008): the SAME
+		// atomic arbitration as recordRefund (row lock + dedupe + ACTIVE-sum ceiling)
+		// but the row lands `status:'reserved'` and the `→ refunded` flip is NEVER
+		// driven — a reservation is capacity held, not money moved. This is the
+		// arbitration point for the gateway path: a rejected reservation never
+		// reaches the provider, so money cannot leave without a ledger row holding
+		// its capacity.
+		return this.#insertRefundRow(input, { status: "reserved", driveFlip: false });
+	}
+
+	/** Shared locked/dedupe/arbitrate/insert body for {@link recordRefund} (finalized
+	 *  one-shot) and {@link reserveRefund} (held slot). ONE transaction that first
+	 *  LOCKS the order row (on pg the row lock serializes N concurrent refunds so
+	 *  none reads a stale Σ; sqlite serializes writes globally ⇒ a harmless no-op),
+	 *  then: dedupe → ceiling `min(Σ captured, total)` over the ACTIVE (non-'voided')
+	 *  refund Σ → insert → (finalized path only) full-refund flip. NEVER touches
+	 *  order_items/order_totals. */
+	async #insertRefundRow(
+		input: RecordRefundInput,
+		opts: { status: Extract<RefundStatus, "recorded" | "reserved">; driveFlip: boolean },
+	): Promise<RecordRefundStoreResult> {
+		const now = this.#clock.now().toISOString();
+		const result = await this.#db
+			.transaction()
+			.execute(async (trx): Promise<Omit<RecordRefundStoreResult, "order">> => {
+				const locked = await trx
+					.updateTable("orders")
+					.set({ updated_at: now })
+					.where("id", "=", input.orderId)
+					.returning(["id", "state"])
+					.executeTakeFirst();
+				if (locked === undefined) {
+					return {
+						outcome: "order_not_found",
+						refund: null,
+						fullyRefunded: false,
+						capturedTotal: cents(0),
+						frozenTotal: cents(0),
+					};
+				}
+
+				const capturedRow = await trx
+					.selectFrom("payments")
+					.select(sql<number>`coalesce(sum(amount_cents), 0)`.as("captured"))
+					.where("order_id", "=", input.orderId)
+					.where("status", "=", "succeeded")
+					.executeTakeFirstOrThrow();
+				const capturedTotal = cents(Number(capturedRow.captured));
+				const totalsRow = await trx
+					.selectFrom("order_totals")
+					.select("total_cents")
+					.where("order_id", "=", input.orderId)
+					.executeTakeFirstOrThrow();
+				const frozenTotal = cents(totalsRow.total_cents);
+
+				const existing = await trx
+					.selectFrom("refunds")
+					.selectAll()
+					.where("idempotency_key", "=", input.idempotencyKey)
+					.executeTakeFirst();
+				if (existing !== undefined) {
+					return {
+						outcome: "duplicate",
+						refund: toRefund(existing),
+						fullyRefunded: locked.state === "refunded",
+						capturedTotal,
+						frozenTotal,
+					};
+				}
+
+				const ceiling = Math.min(capturedTotal, frozenTotal);
+				// ACTIVE Σ — every non-'voided' row (finalized + held reservations +
+				// unverified) consumes ceiling capacity. A voided row released its slot.
+				const activeRow = await trx
+					.selectFrom("refunds")
+					.select(sql<number>`coalesce(sum(amount_cents), 0)`.as("active"))
+					.where("order_id", "=", input.orderId)
+					.where("status", "!=", "voided")
+					.executeTakeFirstOrThrow();
+				const activePrior = Number(activeRow.active);
+				if (activePrior + input.amount > ceiling) {
+					return {
+						outcome: "exceeds_ceiling",
+						refund: null,
+						fullyRefunded: false,
+						capturedTotal,
+						frozenTotal,
+					};
+				}
+
+				const id = this.#idGen.newId();
+				await trx
+					.insertInto("refunds")
+					.values({
+						id,
+						order_id: input.orderId,
+						amount_cents: input.amount,
+						currency: input.currency,
+						kind: input.kind,
+						gateway: input.gateway,
+						refund_ref: input.refundRef,
+						reason: input.reason,
+						refunded_by: input.refundedBy,
+						idempotency_key: input.idempotencyKey,
+						status: opts.status,
+						created_at: now,
+					})
+					.execute();
+
+				let fullyRefunded = false;
+				// FULL refund (finalized Σ reached the ceiling) → flip → refunded
+				// atomically with the ledger row, through the SAME guarded flip + audit +
+				// outbox as cancel/fulfillment. Driven ONLY on the finalized (record)
+				// path — a held reservation never flips. The finalized prior counts
+				// 'recorded' rows only.
+				if (opts.driveFlip) {
+					const finalizedRow = await trx
+						.selectFrom("refunds")
+						.select(sql<number>`coalesce(sum(amount_cents), 0)`.as("finalized"))
+						.where("order_id", "=", input.orderId)
+						.where("status", "=", "recorded")
+						.executeTakeFirstOrThrow();
+					const finalizedTotal = Number(finalizedRow.finalized); // includes the row just inserted
+					if (
+						finalizedTotal === ceiling &&
+						isLegalOrderTransition(locked.state as OrderState, "refunded")
+					) {
+						await this.#flipAndEnqueue(trx, {
+							orderId: input.orderId,
+							fromState: locked.state as OrderState,
+							toState: "refunded",
+							enqueueEmail: emailTemplateForState("refunded") !== null,
+							now,
+							actor: input.refundedBy,
+						});
+						fullyRefunded = true;
+					}
+				}
+
+				const refund: RefundRecord = {
+					id,
+					orderId: input.orderId,
+					amount: input.amount,
+					currency: input.currency,
+					kind: input.kind,
+					gateway: input.gateway,
+					refundRef: input.refundRef,
+					reason: input.reason,
+					refundedBy: input.refundedBy,
+					status: opts.status,
+					idempotencyKey: input.idempotencyKey,
+					createdAt: now,
+				};
+				return { outcome: "recorded", refund, fullyRefunded, capturedTotal, frozenTotal };
+			});
+		const order = await this.#loadById(input.orderId);
+		return { ...result, order };
+	}
+
+	async finalizeRefund(input: FinalizeRefundInput): Promise<FinalizeRefundStoreResult> {
+		// FINALIZE a reserved refund after the gateway confirmed issuance (ADR-0008):
+		// stamp the provider refundRef, flip the row `reserved|unverified → recorded`,
+		// and — when the FINALIZED Σ now reaches the ceiling — drive `→ refunded`,
+		// all in ONE transaction under the same orders row lock as the reserve.
+		// Finalize can NEVER lose arbitration: the reservation already holds the
+		// capacity. The row UPDATE is STATUS-GUARDED so a stray finalize can never
+		// clobber a voided/recorded row; a key already `recorded` with the SAME
+		// refundRef (a concurrent same-key caller finalized first — the provider's
+		// native idempotency guarantees one refund) is a BENIGN duplicate; anything
+		// else is `found:false` — the loud residual.
+		const now = this.#clock.now().toISOString();
+
+		/** The no-held-row disposition: benign duplicate (recorded, SAME ref) vs
+		 *  the loud residual (voided / different ref / no row at all). */
+		const settleMissing = async (
+			trx: Transaction<Database>,
+		): Promise<Omit<FinalizeRefundStoreResult, "order">> => {
+			const existing = await trx
+				.selectFrom("refunds")
+				.selectAll()
+				.where("idempotency_key", "=", input.idempotencyKey)
+				.executeTakeFirst();
+			if (
+				existing !== undefined &&
+				existing.status === "recorded" &&
+				existing.refund_ref === input.refundRef
+			) {
+				const ord = await trx
+					.selectFrom("orders")
+					.select("state")
+					.where("id", "=", existing.order_id)
+					.executeTakeFirst();
+				return {
+					found: true,
+					alreadyFinalized: true,
+					refund: toRefund(existing),
+					fullyRefunded: ord?.state === "refunded",
+				};
+			}
+			return { found: false, alreadyFinalized: false, refund: null, fullyRefunded: false };
+		};
+
+		const result = await this.#db
+			.transaction()
+			.execute(async (trx): Promise<Omit<FinalizeRefundStoreResult, "order">> => {
+				// Resolve the reserved/unverified row FIRST — its order_id is the lock
+				// target. A finalize only ever runs after a committed reservation, so an
+				// absent held row is either the benign same-ref duplicate or the loud
+				// residual the use-case surfaces (never a drop).
+				const row = await trx
+					.selectFrom("refunds")
+					.selectAll()
+					.where("idempotency_key", "=", input.idempotencyKey)
+					.where("status", "in", ["reserved", "unverified"])
+					.executeTakeFirst();
+				if (row === undefined) return settleMissing(trx);
+				// Lock the order row (serialize with any concurrent refund on this order),
+				// then finalize the reserved row: stamp refundRef, flip → recorded — the
+				// UPDATE is STATUS-GUARDED (`reserved|unverified` only), so it can never
+				// clobber a row a concurrent settle already moved to voided/recorded.
+				const lockedOrder = await trx
+					.updateTable("orders")
+					.set({ updated_at: now })
+					.where("id", "=", row.order_id)
+					.returning(["id", "state"])
+					.executeTakeFirst();
+				const won = await trx
+					.updateTable("refunds")
+					.set({ status: "recorded", refund_ref: input.refundRef })
+					.where("idempotency_key", "=", input.idempotencyKey)
+					.where("status", "in", ["reserved", "unverified"])
+					.returning("id")
+					.executeTakeFirst();
+				// Lost the settle to a concurrent same-key caller between the read and the
+				// lock — re-disposition under the lock (benign same-ref dup, or residual).
+				if (won === undefined) return settleMissing(trx);
+
+				const capturedRow = await trx
+					.selectFrom("payments")
+					.select(sql<number>`coalesce(sum(amount_cents), 0)`.as("captured"))
+					.where("order_id", "=", row.order_id)
+					.where("status", "=", "succeeded")
+					.executeTakeFirstOrThrow();
+				const totalsRow = await trx
+					.selectFrom("order_totals")
+					.select("total_cents")
+					.where("order_id", "=", row.order_id)
+					.executeTakeFirstOrThrow();
+				const ceiling = Math.min(Number(capturedRow.captured), totalsRow.total_cents);
+				// FINALIZED Σ (now includes the row just flipped to 'recorded') — the flip
+				// to → refunded counts ONLY finalized money, never held reservations.
+				const finalizedRow = await trx
+					.selectFrom("refunds")
+					.select(sql<number>`coalesce(sum(amount_cents), 0)`.as("finalized"))
+					.where("order_id", "=", row.order_id)
+					.where("status", "=", "recorded")
+					.executeTakeFirstOrThrow();
+				const finalizedTotal = Number(finalizedRow.finalized);
+
+				let fullyRefunded = false;
+				if (
+					lockedOrder !== undefined &&
+					finalizedTotal === ceiling &&
+					isLegalOrderTransition(lockedOrder.state as OrderState, "refunded")
+				) {
+					await this.#flipAndEnqueue(trx, {
+						orderId: toOrderId(row.order_id),
+						fromState: lockedOrder.state as OrderState,
+						toState: "refunded",
+						enqueueEmail: emailTemplateForState("refunded") !== null,
+						now,
+						actor: row.refunded_by,
+					});
+					fullyRefunded = true;
+				}
+
+				const refund: RefundRecord = {
+					...toRefund(row),
+					status: "recorded",
+					refundRef: input.refundRef,
+				};
+				return { found: true, alreadyFinalized: false, refund, fullyRefunded };
+			});
+		const order = result.refund === null ? null : await this.#loadById(result.refund.orderId);
+		return { ...result, order };
+	}
+
+	async voidRefund(idempotencyKey: IdempotencyKey): Promise<boolean> {
+		// Guarded `reserved → voided` (ADR-0008): the gateway leg definitively did
+		// not issue (fail-closed pre-flight / terminal rejection / unsupported). A
+		// voided row RELEASES its ceiling capacity but stays as an audit record.
+		const won = await this.#db
+			.updateTable("refunds")
+			.set({ status: "voided" })
+			.where("idempotency_key", "=", idempotencyKey)
+			.where("status", "=", "reserved")
+			.returning("id")
+			.executeTakeFirst();
+		return won !== undefined;
+	}
+
+	async markRefundUnverified(idempotencyKey: IdempotencyKey): Promise<boolean> {
+		// Guarded `reserved → unverified` (ADR-0008): an ambiguous gateway outcome.
+		// The row KEEPS holding its ceiling capacity — the safe direction — until a
+		// human re-checks the provider.
+		const won = await this.#db
+			.updateTable("refunds")
+			.set({ status: "unverified" })
+			.where("idempotency_key", "=", idempotencyKey)
+			.where("status", "=", "reserved")
+			.returning("id")
+			.executeTakeFirst();
+		return won !== undefined;
 	}
 
 	async flagReconciliation(orderId: OrderId, detail: string): Promise<void> {
@@ -792,6 +1166,23 @@ function toEvent(row: Selectable<OrderEventsTable>): OrderEvent {
 		fromState: row.from_state === null ? null : (row.from_state as OrderState),
 		toState: row.to_state === null ? null : (row.to_state as OrderState),
 		actor: row.actor,
+	};
+}
+
+function toRefund(row: Selectable<RefundsTable>): RefundRecord {
+	return {
+		id: row.id,
+		orderId: toOrderId(row.order_id),
+		amount: cents(row.amount_cents),
+		currency: toCurrency(row.currency),
+		kind: row.kind as RefundKind,
+		gateway: row.gateway as PaymentMethod,
+		refundRef: row.refund_ref,
+		reason: row.reason,
+		refundedBy: row.refunded_by,
+		status: row.status as RefundStatus,
+		idempotencyKey: toIdempotencyKey(row.idempotency_key),
+		createdAt: row.created_at,
 	};
 }
 

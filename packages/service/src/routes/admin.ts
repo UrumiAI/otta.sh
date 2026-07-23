@@ -2,6 +2,8 @@ import {
 	type AddressStore,
 	appendOrderNote,
 	cancelOrder,
+	type Clock,
+	computeRefundCeiling,
 	type CustomerStore,
 	getOrderCustomerContext,
 	getOrderTimeline,
@@ -19,6 +21,9 @@ import {
 	type OrderNotesStore,
 	type OrderState,
 	type OrderStore,
+	type PaymentEventStore,
+	type PaymentGateway,
+	type PaymentMethod,
 	type ProductCommerce,
 	type ProductCommerceStore,
 	productId as toProductId,
@@ -26,11 +31,16 @@ import {
 	type ProductListFilter,
 	type ProductSummary,
 	recordFulfillment,
+	type RefundOrderFailure,
+	type RefundRecord,
+	refundOrder,
 	removeStock,
 	resolveReconciliation,
 	restock,
 	type SessionStore,
 	SkuConflictError,
+	sumCapturedPayments,
+	sumRefunds,
 	transitionOrder,
 	updateProductCommerceFields,
 	sku as toSku,
@@ -52,6 +62,7 @@ import {
 	productPathParams,
 	productsListQuery,
 	recordFulfillmentBody,
+	refundOrderBody,
 	resolveReconciliationBody,
 	stockMovementBody,
 	transitionBody,
@@ -72,6 +83,18 @@ export interface AdminRoutesDeps {
 	/** The detail leaf's single-sku stock read (`getOnHand`) — never used by the
 	 *  list, which must not N+1 into inventory per row (port doc). */
 	inventoryStore: InventoryStore;
+	/** Payment gateways keyed by method (ADR-0008) — the refund endpoint selects
+	 *  the order's gateway to issue (Stripe) or record-only (x402/no-secret). The
+	 *  gateway's `refundable` flag drives the admin capability display. */
+	gateways: Partial<Record<PaymentMethod, PaymentGateway>>;
+	/** The loud-anomaly seam for the impossible-by-construction "gateway refund
+	 *  issued but its reserved ledger row could not be finalized" residual
+	 *  (ADR-0008, REFUND_UNRECORDED — the PAID_FLIP_LOST precedent). Wired so that
+	 *  residual records an anomaly carrying the provider refundRef; the refund flow
+	 *  also flags the order for reconciliation. */
+	paymentEventStore?: PaymentEventStore;
+	/** Timestamp source for the anomaly record (paired with `paymentEventStore`). */
+	clock?: Clock;
 	/** Reuses the existing service privileged auth (X-Internal-Token). Phase 5
 	 *  introduces no separate admin identity (Risk 7): the internal token is the
 	 *  service's privileged mechanism; a real admin panel calls this with it. */
@@ -644,6 +667,114 @@ export function adminRoutes(deps: AdminRoutesDeps): Hono {
 		return c.json({ ok: false, reason: res.reason }, 400); // EMPTY_CANCELLED_BY
 	});
 
+	// -- Admin Orders console: refunds (ADR-0008) --------------------------------
+	// GET is internal-token guarded (a read): the ledger + the derived
+	// ceiling/remaining + the gateway's honest `refundable` capability, so the
+	// panel can show the right action (Stripe refund vs record-a-manual-refund)
+	// and the remaining-refundable amount. POST issues/records a refund — a
+	// NON-GET, so the app-level X-Service-Token write gate covers it too; it
+	// mirrors the `refundOrder` use-case 1:1 (ceiling + capability + gateway error
+	// taxonomy all live in the domain/adapter).
+
+	app.get("/orders/:orderId/refunds", async (c) => {
+		const denied = requireInternalToken(c, deps.internalToken);
+		if (denied !== null) return denied;
+
+		const params = orderPathParams.safeParse(c.req.param());
+		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
+		const oid = toOrderId(params.data.orderId);
+		const order = await deps.orderStore.getById(oid);
+		if (order === null) return c.json({ ok: false, reason: "ORDER_NOT_FOUND" }, 404);
+
+		const [payments, refunds] = await Promise.all([
+			deps.orderStore.getCapturedPayments(oid),
+			deps.orderStore.listRefunds(oid),
+		]);
+		const capturedTotal = sumCapturedPayments(payments);
+		const ceiling = computeRefundCeiling(capturedTotal, order.totals.total);
+		const refundedTotal = sumRefunds(refunds);
+		const remaining = Math.max(0, ceiling - refundedTotal);
+		// The gateway's HONEST capability (ADR-0008): `refundable` true ⇒ money moves
+		// via the provider; false (x402, or Stripe with no secretKey) ⇒ the admin
+		// records a manual/off-platform refund. Never a button that silently no-ops.
+		const gateway = order.paymentMethod === null ? undefined : deps.gateways[order.paymentMethod];
+		return c.json(
+			{
+				ok: true,
+				refunds: refunds.map(serializeRefund),
+				currency: order.totals.currency,
+				capturedTotalCents: capturedTotal,
+				refundedTotalCents: refundedTotal,
+				ceilingCents: ceiling,
+				remainingCents: remaining,
+				paymentMethod: order.paymentMethod,
+				refundable: gateway?.refundable ?? false,
+			},
+			200,
+		);
+	});
+
+	app.post("/orders/:orderId/refund", async (c) => {
+		const denied = requireInternalToken(c, deps.internalToken);
+		if (denied !== null) return denied;
+
+		const params = orderPathParams.safeParse(c.req.param());
+		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
+		const parsed = refundOrderBody.safeParse(await readJson(c));
+		if (!parsed.success) return c.json({ error: "invalid request body" }, 400);
+
+		// A refund is ADDITIVE (not idempotent by nature like a state flip), so the
+		// `Idempotency-Key` header is REQUIRED — two deliberate refunds must not
+		// collapse, and there is no safe content-only fallback (mirrors restock).
+		const key = c.req.header("Idempotency-Key");
+		if (key === undefined || key.length === 0) {
+			return c.json({ ok: false, reason: "MISSING_IDEMPOTENCY_KEY" }, 400);
+		}
+
+		const oid = toOrderId(params.data.orderId);
+		const order = await deps.orderStore.getById(oid);
+		if (order === null) return c.json({ ok: false, reason: "ORDER_NOT_FOUND" }, 404);
+		const gateway = order.paymentMethod === null ? undefined : deps.gateways[order.paymentMethod];
+		if (gateway === undefined) {
+			// No gateway wired for the order's method — cannot even record a refund
+			// against it (the domain needs a gateway to declare capability).
+			return c.json({ ok: false, reason: "REFUND_GATEWAY_UNAVAILABLE" }, 409);
+		}
+
+		const res = await refundOrder(
+			{
+				orderStore: deps.orderStore,
+				...(deps.paymentEventStore !== undefined
+					? { paymentEventStore: deps.paymentEventStore }
+					: {}),
+				...(deps.clock !== undefined ? { clock: deps.clock } : {}),
+			},
+			gateway,
+			{
+				orderId: oid,
+				amount: toCents(parsed.data.amountCents),
+				currency: toCurrency(parsed.data.currency),
+				reason: parsed.data.reason ?? null,
+				refundedBy: parsed.data.refundedBy,
+				idempotencyKey: toIdempotencyKey(key),
+			},
+		);
+		if (res.ok) {
+			return c.json(
+				{
+					ok: true,
+					recorded: res.recorded,
+					duplicate: res.duplicate,
+					fullyRefunded: res.fullyRefunded,
+					refund: serializeRefund(res.refund),
+					order: serializeOrder(res.order),
+				},
+				200,
+			);
+		}
+		return c.json({ ok: false, reason: res.reason }, refundFailureStatus(res.reason));
+	});
+
 	// -- Admin Orders console: append-only order notes (admin-UX Increment 0) ----
 	// GET is internal-token guarded (a read); POST is additionally covered by the
 	// app-level X-Service-Token write gate (any non-GET) when the service secret is
@@ -749,6 +880,58 @@ function serializeTimeline(timeline: OrderTimeline): Record<string, unknown> {
 		stateChangesAudited: timeline.stateChangesAudited,
 		entries: timeline.entries.map((e) => ({ ...e })),
 	};
+}
+
+/** Wire shape of a refund row (ADR-0008). Money is an integer minor-unit
+ *  `amountCents` + an ISO-4217 currency string — never a float. `kind` is
+ *  'gateway' (money moved via the provider, `refundRef` set) or 'manual'
+ *  (out-of-band record, `refundRef` null). */
+function serializeRefund(refund: RefundRecord): Record<string, unknown> {
+	return {
+		id: refund.id,
+		orderId: refund.orderId,
+		amountCents: refund.amount,
+		currency: refund.currency,
+		kind: refund.kind,
+		gateway: refund.gateway,
+		refundRef: refund.refundRef,
+		reason: refund.reason,
+		refundedBy: refund.refundedBy,
+		status: refund.status,
+		createdAt: refund.createdAt,
+	};
+}
+
+/** Map a refund failure to an HTTP status (ADR-0008). Malformed input → 400;
+ *  ceiling / capability / provider-divergence conflicts → 409; a definite
+ *  provider rejection → 502; a transient transport failure → 503; the ambiguous
+ *  timeout → 409 (the caller must RE-CHECK before retrying, never auto-retry). */
+function refundFailureStatus(reason: RefundOrderFailure): 400 | 404 | 409 | 502 | 503 {
+	switch (reason) {
+		case "ORDER_NOT_FOUND":
+			return 404;
+		case "EMPTY_REFUNDED_BY":
+		case "INVALID_AMOUNT":
+			return 400;
+		case "CURRENCY_MISMATCH":
+		case "NO_CAPTURED_PAYMENT":
+		case "REFUND_EXCEEDS_CAPTURED":
+		case "REFUND_EXCEEDS_TOTAL":
+		case "PROVIDER_ALREADY_REFUNDED":
+		case "REFUND_NOT_SUPPORTED":
+		case "GATEWAY_UNVERIFIED":
+		// The loud residual (ADR-0008, reserve-before-issue): a gateway refund
+		// issued but its reserved ledger row could not be finalized. A DISTINCT 409
+		// (its own `reason` on the wire) so it is never conflated with a clean
+		// pre-issuance rejection — the money moved, an anomaly + reconciliation flag
+		// were recorded, and the operator must reconcile (never auto-retry).
+		case "REFUND_ISSUED_UNRECORDED":
+			return 409;
+		case "GATEWAY_TERMINAL":
+			return 502;
+		case "GATEWAY_RETRYABLE":
+			return 503;
+	}
 }
 
 /** Wire shape of an order note (admin-UX Increment 0). Plain annotation — no

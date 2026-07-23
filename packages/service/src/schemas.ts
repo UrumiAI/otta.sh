@@ -540,6 +540,25 @@ export const cancelOrderBody = z.object({
 	cancelledBy: z.string().min(1).max(200),
 });
 
+// Admin Orders console: issue / record a refund (ADR-0008). `amountCents` is
+// money — a POSITIVE integer minor-unit value (a $0 refund is meaningless; the
+// domain also rejects it) + an ISO-4217 `currency` the domain checks against the
+// order's currency. `reason` is optional bounded free text (the domain trims a
+// blank → null); `refundedBy` is bounded free text (the domain trims + rejects an
+// empty value, so the 1-char floor here is cheap and the substantive validation
+// stays in the domain). The ceiling / capability / gateway error taxonomy all live
+// in the domain + adapter — this only bounds the wire values. The `Idempotency-Key`
+// header is REQUIRED at the route (refunds are ADDITIVE, like a restock — two
+// deliberate refunds must NOT collapse), so there is no key field on the body.
+export const refundOrderBody = z.object({
+	amountCents: z.number().int().positive().max(1_000_000_000_000),
+	currency: z.string().regex(/^[A-Z]{3}$/),
+	reason: z.string().max(4000).nullable().optional(),
+	refundedBy: z.string().min(1).max(200),
+});
+
+export type RefundOrderBody = z.infer<typeof refundOrderBody>;
+
 // Admin Orders console: view-only list query (§ admin-orders). The date window
 // is HALF-OPEN [from, to) — from inclusive, to EXCLUSIVE — deliberately DIFFERENT
 // from the reporting queries' inclusive/inclusive BETWEEN (MOD-7); the store

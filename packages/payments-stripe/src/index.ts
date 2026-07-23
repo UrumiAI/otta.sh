@@ -9,6 +9,8 @@ import {
 	type PaymentGateway,
 	type PaymentIntentHandle,
 	type RawConfirmation,
+	type RefundInput,
+	type RefundResult,
 } from "@urumi/domain";
 import { createHmac, timingSafeEqual } from "node:crypto";
 
@@ -22,9 +24,27 @@ export interface StripePaymentGatewayOptions {
 	 * never in the plugin / `ctx.kv`. Used to HMAC-verify the raw webhook body.
 	 */
 	webhookSecret: string;
-	/** Stripe secret key (`sk_…`); service-env only. Reserved for real intent
-	 *  creation — Phase 4 creates the client handle offline (see `createIntent`). */
+	/**
+	 * Stripe secret key (`sk_…`); SERVICE-ENV ONLY (CLAUDE.md). Reserved for real
+	 * intent creation (Phase 4 creates the client handle offline — see
+	 * `createIntent`) AND now REQUIRED for the live refund path (ADR-0008): the
+	 * refund-time pre-flight (`GET`) and `refunds.create` both authenticate with
+	 * it. **Unset ⇒ `refundable` is false** — the adapter has no credential to call
+	 * the refund API with, surfaced honestly rather than failing on first use.
+	 */
 	secretKey?: string;
+	/**
+	 * The outbound Stripe transport for the refund path (ADR-0008) — the test seam.
+	 * Injected in tests with a mock playing recorded Stripe responses (keeping the
+	 * suite offline, the same philosophy as the offline fake-Stripe webhook
+	 * driver). In production, omit it: when `secretKey` is set the adapter builds a
+	 * default `fetch`-backed transport ({@link createStripeHttpTransport}) — the
+	 * repo's FIRST live outbound Stripe calls.
+	 */
+	transport?: StripeTransport;
+	/** Injectable `fetch` for the DEFAULT http transport (used only when
+	 *  `transport` is omitted and `secretKey` is set). Defaults to the global. */
+	fetch?: typeof fetch;
 	/** Freshness window for the signed `t` timestamp (replay hardening): a webhook
 	 *  whose `|now − t|` exceeds this is rejected as INVALID_SIGNATURE even when the
 	 *  HMAC matches. Defaults to {@link DEFAULT_TOLERANCE_SECONDS}. */
@@ -32,6 +52,55 @@ export interface StripePaymentGatewayOptions {
 	/** Injectable time source for the freshness check; defaults to system time. */
 	clock?: Clock;
 }
+
+/**
+ * The outbound Stripe transport the refund path drives (ADR-0008). Two calls, both
+ * requiring the real `secretKey`:
+ *  - `readRefundedAmount` — the mandatory refund-time PRE-FLIGHT: read the
+ *    charge/PaymentIntent's already-refunded + captured amounts so the adapter can
+ *    fail closed on divergence BEFORE issuing anything.
+ *  - `createRefund` — `POST /v1/refunds`, passing our `idempotencyKey` as Stripe's
+ *    native `Idempotency-Key`.
+ *
+ * Every method returns a NORMALIZED result with an explicit error CLASS — never a
+ * thrown Stripe SDK error — so the adapter maps a clean taxonomy (retryable /
+ * terminal / ambiguous-timeout) into the port's {@link RefundResult}.
+ */
+export interface StripeTransport {
+	readRefundedAmount(input: {
+		providerRef: string;
+		secretKey: string;
+	}): Promise<StripePreflightResult>;
+	createRefund(input: {
+		providerRef: string;
+		amountCents: number;
+		idempotencyKey: string;
+		secretKey: string;
+	}): Promise<StripeCreateRefundResult>;
+}
+
+/** The provider's live refund view for the pre-flight (minor units). */
+export interface StripeRefundedView {
+	/** Amount already refunded provider-side (`amount_refunded`). */
+	amountRefunded: number;
+	/** Amount captured provider-side — the provider's own refund ceiling. */
+	amountCaptured: number;
+	currency: string;
+}
+
+/** A READ failure: `retryable` (network / 5xx — the read issued nothing, always
+ *  safe to retry) or `terminal` (4xx — e.g. the charge id is unknown). */
+export type StripePreflightResult =
+	| { ok: true; view: StripeRefundedView }
+	| { ok: false; class: "retryable" | "terminal" };
+
+/** A `createRefund` failure class: `retryable` (definitely not processed — a 5xx
+ *  Stripe explicitly did-not-process), `terminal` (a definite 4xx rejection), or
+ *  `ambiguous` (network error / timeout — fate UNKNOWN, must be re-checked, never
+ *  blind-retried). */
+export type StripeCreateRefundResult =
+	| { ok: true; refundId: string; amountCents: number; currency: string }
+	| { ok: false; class: "retryable" | "terminal" | "ambiguous" };
 
 /**
  * Stripe `PaymentGateway` adapter (§5, step 4.6). `verifyConfirmation` is the
@@ -49,7 +118,13 @@ export interface StripePaymentGatewayOptions {
  */
 export class StripePaymentGateway implements PaymentGateway {
 	readonly id = "stripe" as const;
+	/** True iff a `secretKey` is configured (ADR-0008): the refund path needs it
+	 *  for both the pre-flight read and `refunds.create`. Unset ⇒ the admin UI
+	 *  honestly shows Stripe refunds as unavailable rather than the button no-oping. */
+	readonly refundable: boolean;
 	readonly #secret: string;
+	readonly #secretKey: string | undefined;
+	readonly #transport: StripeTransport | undefined;
 	readonly #toleranceSeconds: number;
 	readonly #clock: Clock;
 
@@ -58,8 +133,70 @@ export class StripePaymentGateway implements PaymentGateway {
 			throw new Error("StripePaymentGateway requires a non-empty webhookSecret");
 		}
 		this.#secret = options.webhookSecret;
+		const secretKey =
+			options.secretKey !== undefined && options.secretKey.length > 0
+				? options.secretKey
+				: undefined;
+		this.#secretKey = secretKey;
+		// A credential is what makes refunds possible: with a secretKey but no
+		// injected transport, build the default live fetch transport (the first real
+		// outbound Stripe dependency in the repo). No secretKey ⇒ no transport ⇒
+		// refundable:false.
+		this.#transport =
+			options.transport ??
+			(secretKey !== undefined
+				? createStripeHttpTransport({ fetch: options.fetch ?? globalThis.fetch })
+				: undefined);
+		this.refundable = secretKey !== undefined && this.#transport !== undefined;
 		this.#toleranceSeconds = options.toleranceSeconds ?? DEFAULT_TOLERANCE_SECONDS;
 		this.#clock = options.clock ?? { now: () => new Date() };
+	}
+
+	/**
+	 * Refund an order via Stripe (ADR-0008) — the repo's FIRST live outbound Stripe
+	 * call. Mandatory refund-time pre-flight, then issue:
+	 *  1. `refundable:false` (no `secretKey`) ⇒ `UNSUPPORTED` — never a blind call.
+	 *  2. Read the charge/PI's live `amount_refunded` + captured amount. A failed
+	 *     READ maps to `RETRYABLE`/`TERMINAL` — it issued nothing.
+	 *  3. **Fail closed** (`PROVIDER_ALREADY_REFUNDED`, nothing issued) when the
+	 *     provider has already refunded MORE than our local view (`priorRefunded`),
+	 *     or when this refund would push `amount_refunded` past what was captured —
+	 *     killing the dashboard-refund + app-refund double-refund failure mode.
+	 *  4. Only then `refunds.create`, passing `idempotencyKey` as Stripe's native
+	 *     `Idempotency-Key`. An errored create with UNKNOWN fate (network / timeout)
+	 *     surfaces as `UNVERIFIED` — re-check before retrying, never a clean failure.
+	 */
+	async refund(input: RefundInput): Promise<RefundResult> {
+		if (this.#secretKey === undefined || this.#transport === undefined) {
+			return { ok: false, reason: "UNSUPPORTED" };
+		}
+		const pre = await this.#transport.readRefundedAmount({
+			providerRef: input.providerRef,
+			secretKey: this.#secretKey,
+		});
+		if (!pre.ok) {
+			return { ok: false, reason: pre.class === "retryable" ? "RETRYABLE" : "TERMINAL" };
+		}
+		const { amountRefunded, amountCaptured } = pre.view;
+		if (amountRefunded > input.priorRefunded || amountRefunded + input.amount > amountCaptured) {
+			return { ok: false, reason: "PROVIDER_ALREADY_REFUNDED" };
+		}
+		const created = await this.#transport.createRefund({
+			providerRef: input.providerRef,
+			amountCents: input.amount,
+			idempotencyKey: input.idempotencyKey,
+			secretKey: this.#secretKey,
+		});
+		if (!created.ok) {
+			if (created.class === "ambiguous") return { ok: false, reason: "UNVERIFIED" };
+			return { ok: false, reason: created.class === "retryable" ? "RETRYABLE" : "TERMINAL" };
+		}
+		return {
+			ok: true,
+			refundRef: created.refundId,
+			amount: cents(created.amountCents),
+			currency: toCurrency(created.currency.toUpperCase()),
+		};
 	}
 
 	async createIntent(input: CreateIntentInput): Promise<PaymentIntentHandle> {
@@ -184,6 +321,155 @@ function safeEqualHex(a: string, b: string): boolean {
 	} catch {
 		return false;
 	}
+}
+
+// -- default live Stripe transport (ADR-0008; the first real outbound calls) --
+
+const STRIPE_API_BASE = "https://api.stripe.com";
+
+export interface StripeHttpTransportOptions {
+	fetch: typeof fetch;
+	/** Override the API base (tests point it at a recorder; defaults to Stripe). */
+	baseUrl?: string;
+}
+
+/**
+ * The default `fetch`-backed {@link StripeTransport} (ADR-0008) — used in
+ * production when a `secretKey` is set and no transport is injected. Every call
+ * classifies failures explicitly so the adapter never leaks a thrown error into
+ * the port result:
+ *  - a fetch REJECTION (network error / timeout) on the READ is `retryable`
+ *    (nothing issued), on the CREATE is `ambiguous` (fate unknown — must re-check);
+ *  - a 5xx is `retryable` on the read and `ambiguous` on the create (Stripe may or
+ *    may not have processed a create it 5xx'd on);
+ *  - a 4xx is `terminal` (a definite rejection — unknown id, invalid amount, …).
+ *
+ * The pre-flight reads the PaymentIntent's `latest_charge` (expanded) for
+ * `amount_refunded` + `amount_captured`; a bare charge id (`ch_…`) is read
+ * directly. This is the first cut of the live integration — the offline mock
+ * transport is what the contract suite exercises byte-for-byte.
+ */
+export function createStripeHttpTransport(options: StripeHttpTransportOptions): StripeTransport {
+	const doFetch = options.fetch;
+	const base = (options.baseUrl ?? STRIPE_API_BASE).replace(/\/$/, "");
+
+	return {
+		async readRefundedAmount({ providerRef, secretKey }): Promise<StripePreflightResult> {
+			const isCharge = providerRef.startsWith("ch_");
+			const url = isCharge
+				? `${base}/v1/charges/${encodeURIComponent(providerRef)}`
+				: `${base}/v1/payment_intents/${encodeURIComponent(providerRef)}?expand[]=latest_charge`;
+			let res: Response;
+			try {
+				res = await doFetch(url, { method: "GET", headers: stripeAuthHeaders(secretKey) });
+			} catch {
+				return { ok: false, class: "retryable" }; // network error — read issued nothing
+			}
+			if (!res.ok) {
+				// 429 (rate-limited) is a transient throttle that issued nothing — RETRYABLE,
+				// not a terminal 4xx. A 5xx is likewise retryable on a READ.
+				return {
+					ok: false,
+					class: res.status >= 500 || res.status === 429 ? "retryable" : "terminal",
+				};
+			}
+			let body: unknown;
+			try {
+				body = await res.json();
+			} catch {
+				return { ok: false, class: "retryable" };
+			}
+			const charge = isCharge ? body : (body as { latest_charge?: unknown }).latest_charge;
+			const view = refundedViewOf(charge);
+			if (view === null) return { ok: false, class: "terminal" };
+			return { ok: true, view };
+		},
+
+		async createRefund({
+			providerRef,
+			amountCents,
+			idempotencyKey,
+			secretKey,
+		}): Promise<StripeCreateRefundResult> {
+			const form = new URLSearchParams();
+			// A PI id vs a bare charge id — target the right Stripe param.
+			form.set(providerRef.startsWith("ch_") ? "charge" : "payment_intent", providerRef);
+			form.set("amount", String(amountCents));
+			let res: Response;
+			try {
+				res = await doFetch(`${base}/v1/refunds`, {
+					method: "POST",
+					headers: {
+						...stripeAuthHeaders(secretKey),
+						"content-type": "application/x-www-form-urlencoded",
+						// Stripe's NATIVE idempotency — a replay re-calls nothing provider-side.
+						"idempotency-key": idempotencyKey,
+					},
+					body: form.toString(),
+				});
+			} catch {
+				// Network error / timeout — the refund's fate is UNKNOWN. Never retry blind.
+				return { ok: false, class: "ambiguous" };
+			}
+			if (!res.ok) {
+				// 429 (rate-limited) is throttled at Stripe's gate BEFORE the refund is
+				// processed — a transient RETRYABLE, safe to re-issue under the same native
+				// key. 409 is Stripe's "a request with this Idempotency-Key is still
+				// processing": the ORIGINAL create may yet succeed, so this must NOT be
+				// terminal (a terminal would void the reservation and release capacity
+				// while the money may still move) — RETRYABLE keeps the reservation held
+				// and a same-key resume dedupes provider-side. A 5xx on a CREATE is
+				// ambiguous (Stripe may have processed it); any other 4xx is a definite
+				// terminal rejection.
+				if (res.status === 429 || res.status === 409) return { ok: false, class: "retryable" };
+				return { ok: false, class: res.status >= 500 ? "ambiguous" : "terminal" };
+			}
+			let body: unknown;
+			try {
+				body = await res.json();
+			} catch {
+				return { ok: false, class: "ambiguous" };
+			}
+			const refund = createdRefundOf(body);
+			if (refund === null) return { ok: false, class: "ambiguous" };
+			return { ok: true, ...refund };
+		},
+	};
+}
+
+/** Bearer auth header for the live Stripe REST calls (secret stays adapter-side). */
+function stripeAuthHeaders(secretKey: string): Record<string, string> {
+	return { authorization: `Bearer ${secretKey}` };
+}
+
+/** Parse a Stripe charge object into the refunded view, or null if malformed. */
+function refundedViewOf(charge: unknown): StripeRefundedView | null {
+	if (typeof charge !== "object" || charge === null) return null;
+	const c = charge as { amount_refunded?: unknown; amount_captured?: unknown; currency?: unknown };
+	if (
+		typeof c.amount_refunded !== "number" ||
+		typeof c.amount_captured !== "number" ||
+		typeof c.currency !== "string"
+	) {
+		return null;
+	}
+	return {
+		amountRefunded: c.amount_refunded,
+		amountCaptured: c.amount_captured,
+		currency: c.currency,
+	};
+}
+
+/** Parse a Stripe refund object into the created-refund result, or null. */
+function createdRefundOf(
+	refund: unknown,
+): { refundId: string; amountCents: number; currency: string } | null {
+	if (typeof refund !== "object" || refund === null) return null;
+	const r = refund as { id?: unknown; amount?: unknown; currency?: unknown };
+	if (typeof r.id !== "string" || typeof r.amount !== "number" || typeof r.currency !== "string") {
+		return null;
+	}
+	return { refundId: r.id, amountCents: r.amount, currency: r.currency };
 }
 
 // -- offline fake-Stripe driver (test/proxy helper; NO network) --------------

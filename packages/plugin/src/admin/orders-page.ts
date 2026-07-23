@@ -1,6 +1,7 @@
 import { COMMERCE_SERVICE_BASE_URL } from "../manifest.js";
 import { formatMoney } from "../presentation/format-money.js";
 import { cents as toCents, currency as toCurrency } from "../presentation/money.js";
+import { formatMinorUnitsInput, parseMinorUnitsInput } from "./money-input.js";
 import type {
 	ActionsBlock,
 	AdminPageConfig,
@@ -23,6 +24,8 @@ import {
 	type OrderSummaryWire,
 	type OrdersListFilter,
 	type OrderTimelineWire,
+	type RefundsSummaryWire,
+	type RefundWire,
 	type TimelineEntryWire,
 } from "./admin-orders-client.js";
 import {
@@ -56,6 +59,7 @@ const ACTION_ADD_NOTE = ORDERS_ACTIONS.custom("add-note");
 const ACTION_RESOLVE = ORDERS_ACTIONS.custom("resolve-reconciliation");
 const ACTION_RECORD_FULFILLMENT = ORDERS_ACTIONS.custom("record-fulfillment");
 const ACTION_CANCEL = ORDERS_ACTIONS.custom("cancel");
+const ACTION_REFUND = ORDERS_ACTIONS.custom("refund");
 
 /**
  * The action ids the admin-route dispatcher recognizes as belonging to the
@@ -70,6 +74,7 @@ export const ORDERS_ACTION_IDS: ReadonlySet<string> = ORDERS_ACTIONS.actionIds(
 	"resolve-reconciliation",
 	"record-fulfillment",
 	"cancel",
+	"refund",
 );
 
 const PAGE_LIMIT = 25;
@@ -128,6 +133,7 @@ export function createOrdersPageHandler(): RouteHandler<OrdersPageInput> {
 			[ACTION_RESOLVE]: resolveReconciliationAction(),
 			[ACTION_RECORD_FULFILLMENT]: recordFulfillmentAction(),
 			[ACTION_CANCEL]: cancelOrderAction(),
+			[ACTION_REFUND]: refundOrderAction(),
 		},
 	});
 }
@@ -256,12 +262,13 @@ function orderDetailLevel() {
 			// independently (empty notes / an "unavailable" customer or timeline
 			// section), never fail closed. Fetched in parallel to avoid serial
 			// round-trip latency.
-			const [notes, customerContext, timeline] = await Promise.all([
+			const [notes, customerContext, timeline, refunds] = await Promise.all([
 				client.listNotes(id).catch((): OrderNoteWire[] => []),
 				client.getCustomerContext(id).catch((): CustomerContextWire | null => null),
 				client.getTimeline(id).catch((): OrderTimelineWire | null => null),
+				client.getRefunds(id).catch((): RefundsSummaryWire | null => null),
 			]);
-			return detailBlocks(actions, detail, notes, customerContext, timeline, notice);
+			return detailBlocks(actions, detail, notes, customerContext, timeline, refunds, notice);
 		},
 		notFound({ actions, id }) {
 			return [
@@ -285,6 +292,7 @@ function detailBlocks(
 	notes: OrderNoteWire[],
 	customerContext: CustomerContextWire | null,
 	timeline: OrderTimelineWire | null,
+	refunds: RefundsSummaryWire | null,
 	notice: Notice | undefined,
 ): Block[] {
 	const o = detail.order;
@@ -345,6 +353,8 @@ function detailBlocks(
 	for (const block of fulfillmentBlocks(o)) blocks.push(block);
 	// -- Cancellation (admin-UX Increment 1, "cancel with reason") --------------
 	for (const block of cancellationBlocks(o, detail)) blocks.push(block);
+	// -- Refunds (ADR-0008) — the ledger + remaining-refundable + the refund form -
+	for (const block of refundsBlocks(actions, o, refunds)) blocks.push(block);
 	// UI steering (PR #63 review, extended here to cancel): on a `processing`
 	// order, the bare "Mark shipped" one-click is HIDDEN — it would ship without
 	// tracking and send the buyer an empty shipped email, defeating the
@@ -678,7 +688,10 @@ function transitionActions(orderId: string, allowed: string[]): ActionsBlock {
  *  labels spell out that a disposition is a RECORD, not an action — "refunded"
  *  must never read as "this button issues a refund". */
 const RECONCILIATION_OUTCOMES: readonly SelectOption[] = [
-	{ value: "refunded", label: "refunded (recorded only — issue the refund separately)" },
+	{
+		value: "refunded",
+		label: "refunded (records the disposition — issue the refund in Refunds below)",
+	},
 	{ value: "fulfilled", label: "fulfilled (order honored as-is; e.g. stock re-sourced)" },
 	{ value: "written_off", label: "written_off (loss/false-alarm accepted)" },
 ];
@@ -705,7 +718,7 @@ function reconciliationBlocks(o: OrderDetailWire): Block[] {
 			},
 			{
 				type: "context",
-				text: "Resolving records your decision only — it does NOT move money or change the order. If the customer is owed a refund, issue it via your payment provider (or the refunded status flow) separately.",
+				text: "Resolving records your decision only — it does NOT move money or change the order. If the customer is owed a refund, issue it in the Refunds section below: a real refund (Stripe) or a recorded manual refund (x402/off-platform).",
 			},
 			resolveForm(o.id, o.reconciliationFlag),
 		];
@@ -1019,6 +1032,157 @@ function cancelOrderForm(orderId: string): FormBlock {
 	};
 }
 
+// -- refunds surface (ADR-0008) ----------------------------------------------
+
+/**
+ * The refunds section: the append-only ledger, the derived captured/refunded/
+ * remaining totals + a "partially vs fully refunded" badge (Shopify's
+ * `financial_status` idea — never a stored state), and the refund form when
+ * money remains refundable. Capability is HONEST (ADR-0008): a `refundable`
+ * gateway (Stripe) offers a REAL refund; an x402 / no-secret gateway offers a
+ * RECORD-ONLY manual refund and says so — no button ever silently no-ops. A
+ * failed refunds read degrades to an "unavailable" note, never blanks the detail.
+ */
+function refundsBlocks(
+	actions: ScreenActions,
+	o: OrderDetailWire,
+	summary: RefundsSummaryWire | null,
+): Block[] {
+	const blocks: Block[] = [{ type: "section", text: "Refunds" }];
+	if (summary === null) {
+		blocks.push({
+			type: "context",
+			text: "Refunds are unavailable right now — the refunds service could not be reached. Reload to try again.",
+		});
+		return blocks;
+	}
+	const cur = summary.currency.length > 0 ? summary.currency : o.totals.currency;
+	// Derived status (a badge, not a stored state): partial vs fully refunded.
+	const derived =
+		summary.refundedTotalCents === 0
+			? "No refunds recorded."
+			: summary.remainingCents === 0
+				? `Fully refunded (${formatTotal(summary.refundedTotalCents, cur)}).`
+				: `Partially refunded: ${formatTotal(summary.refundedTotalCents, cur)} of ${formatTotal(summary.ceilingCents, cur)} refundable.`;
+	blocks.push({
+		type: "fields",
+		fields: [
+			{ label: "Captured", value: formatTotal(summary.capturedTotalCents, cur) },
+			{ label: "Refunded", value: formatTotal(summary.refundedTotalCents, cur) },
+			{ label: "Remaining refundable", value: formatTotal(summary.remainingCents, cur) },
+			{ label: "Status", value: derived },
+		],
+	});
+	if (summary.refunds.length > 0) blocks.push(refundsTable(actions, summary.refunds, cur));
+
+	if (summary.remainingCents > 0) {
+		blocks.push({ type: "context", text: refundCapabilityText(summary) });
+		blocks.push({
+			type: "banner",
+			variant: "alert",
+			title: "Refunds cannot be undone",
+			description: summary.refundable
+				? "Issuing a refund sends money back to the buyer via Stripe and cannot be reversed. Enter an amount up to the remaining refundable total."
+				: "This RECORDS that a refund was made out of band — it does NOT move money. Send the return first, then record it here. Enter an amount up to the remaining refundable total.",
+		});
+		blocks.push(refundOrderForm(o.id, cur, summary.remainingCents, summary.refundable));
+	} else if (summary.refundedTotalCents > 0) {
+		blocks.push({ type: "context", text: "Fully refunded — nothing left to refund." });
+	}
+	return blocks;
+}
+
+/** The honest per-gateway capability copy (ADR-0008): Stripe moves money; x402 /
+ *  no-secret is record-only, and says why. */
+function refundCapabilityText(s: RefundsSummaryWire): string {
+	if (s.refundable) {
+		return `This order was paid via ${s.paymentMethod ?? "the payment provider"} — refunding here issues a REAL refund through Stripe (money moves back to the buyer).`;
+	}
+	if (s.paymentMethod === "x402") {
+		return "This order was paid on-chain (x402), which cannot be reversed and has no signing wallet — refunds here are RECORD-ONLY. Send the return yourself (e.g. USDC to the buyer’s wallet), then record it below so the ledger reflects it.";
+	}
+	return "Automatic refunds are unavailable for this order (no Stripe key is configured, or the gateway can’t refund) — refunds here are RECORD-ONLY. Issue the refund via your payment provider, then record it below.";
+}
+
+function refundsTable(actions: ScreenActions, refunds: RefundWire[], cur: string): TableBlock {
+	return {
+		type: "table",
+		columns: [
+			{ key: "amount", label: "Amount" },
+			{ key: "kind", label: "Kind", format: "badge" },
+			{ key: "ref", label: "Provider ref", format: "code" },
+			{ key: "by", label: "By" },
+			{ key: "when", label: "When (UTC)" },
+		],
+		rows: refunds.map((r) => ({
+			amount: formatTotal(r.amountCents, r.currency.length > 0 ? r.currency : cur),
+			kind: r.kind,
+			ref: r.refundRef ?? "—",
+			by: r.refundedBy,
+			when: r.createdAt,
+		})),
+		page_action_id: actions.page, // never fires: no next_cursor, no sortable column
+		empty_text: "No refunds recorded.",
+	};
+}
+
+/** The refund form. The order id + currency + a per-submission nonce ride along as
+ *  hidden single-option `select`s (the carry-the-id-in-values pattern the other
+ *  forms use); the nonce keys the ADDITIVE refund so a double-submit dedupes while
+ *  a fresh reload mints a new nonce (two deliberate refunds each apply — the same
+ *  discipline as the products restock). The amount is a TEXT input parsed to
+ *  integer minor units (NO float money), defaulted to the full remaining. */
+function refundOrderForm(
+	orderId: string,
+	currencyCode: string,
+	remainingCents: number,
+	refundable: boolean,
+): FormBlock {
+	return {
+		type: "form",
+		fields: [
+			idCarrier("orderId", orderId),
+			idCarrier("currency", currencyCode),
+			idCarrier("nonce", crypto.randomUUID()),
+			{
+				type: "text_input",
+				action_id: "amount",
+				label: `Refund amount (${currencyCode})`,
+				placeholder: "e.g. 19.99",
+				initial_value: formatMinorUnitsInput(remainingCents),
+			},
+			{
+				type: "text_input",
+				action_id: "reason",
+				label: "Reason (optional)",
+				placeholder: "e.g. damaged in transit",
+			},
+			{
+				type: "text_input",
+				action_id: "refundedBy",
+				label: "Refunded by",
+				placeholder: "your name",
+			},
+		],
+		submit: {
+			label: refundable ? "Issue refund (cannot be undone)" : "Record manual refund",
+			action_id: ACTION_REFUND,
+		},
+	};
+}
+
+/** A hidden single-option carrier threading one value through a stateless
+ *  `form_submit` (the scaffold's proven pattern, shared by every form here). */
+function idCarrier(actionId: string, value: string): FormBlock["fields"][number] {
+	return {
+		type: "select",
+		action_id: actionId,
+		label: actionId,
+		options: [{ value, label: value }],
+		initial_value: value,
+	};
+}
+
 // -- custom actions: transition + add-note + resolve-reconciliation -----------
 
 function transitionAction() {
@@ -1308,6 +1472,132 @@ function cancelOrderAction() {
 		}
 		return showLeaf([orderId], notice);
 	});
+}
+
+function refundOrderAction() {
+	return customAction<AdminOrdersClient>(async ({ input, client, showLeaf, showList }) => {
+		const values = input.values ?? {};
+		const orderId = readString(values.orderId);
+		if (orderId === undefined) return showList();
+		const currency = (readString(values.currency) ?? "").trim();
+		const nonce = readString(values.nonce) ?? "";
+		const amountStr = (readString(values.amount) ?? "").trim();
+		const reason = (readString(values.reason) ?? "").trim();
+		const refundedBy = (readString(values.refundedBy) ?? "").trim();
+		// Local guards: a blank refundedBy / missing currency never leave the plugin
+		// (the domain rejects them too, but this gives immediate inline feedback).
+		if (refundedBy.length === 0 || currency.length === 0) {
+			return showLeaf([orderId], {
+				variant: "error",
+				title: "Not refunded",
+				description: "Enter the amount and who is issuing/recording it.",
+			});
+		}
+		// Money is parsed to integer MINOR UNITS with exact integer string math (NO
+		// float) — a $0 or malformed amount is rejected inline (the domain rejects it
+		// too). `allowZero:false`: a refund of nothing is meaningless.
+		const amountCents = parseMinorUnitsInput(amountStr, { allowZero: false });
+		if (amountCents === null) {
+			return showLeaf([orderId], {
+				variant: "error",
+				title: "Not refunded",
+				description: "Enter a valid refund amount greater than zero (e.g. 19.99).",
+			});
+		}
+		// Refunds are ADDITIVE — the per-submission nonce keys it so a double-submit
+		// dedupes to one refund while a fresh reload mints a new nonce (two deliberate
+		// refunds each apply). Mirrors the products restock nonce.
+		const key = `admin-refund:${orderId}:${nonce.length > 0 ? nonce : amountStr}`;
+		const result = await client.refundOrder(
+			orderId,
+			{ amountCents, currency, ...(reason.length > 0 ? { reason } : {}), refundedBy },
+			{ idempotencyKey: key },
+		);
+		let notice: Notice;
+		if (!result.ok) {
+			notice = refundFailureNotice(result.reason);
+		} else if (result.duplicate) {
+			// The idempotency key already recorded this refund — a benign no-op replay.
+			notice = {
+				variant: "default",
+				title: "Already refunded",
+				description:
+					"This refund was already recorded (a duplicate submission); the ledger above is unchanged.",
+			};
+		} else if (result.fullyRefunded) {
+			notice = {
+				variant: "default",
+				title: "Refund complete",
+				description:
+					"The refund was recorded and the order is now fully refunded — the buyer has been emailed.",
+			};
+		} else {
+			notice = {
+				variant: "default",
+				title: "Refund recorded",
+				description:
+					"The refund was recorded. The order stays in its current status; the Refunds section shows the remaining refundable amount.",
+			};
+		}
+		return showLeaf([orderId], notice);
+	});
+}
+
+/** GENERIC, em-dash-correct notices for a refund failure — keyed off the service's
+ *  typed reason, NEVER the raw status/URL. The ambiguous-timeout case is explicit:
+ *  do NOT retry, re-check the provider first (ADR-0008 error taxonomy). */
+function refundFailureNotice(reason: string | undefined): Notice {
+	switch (reason) {
+		case "REFUND_EXCEEDS_TOTAL":
+		case "REFUND_EXCEEDS_CAPTURED":
+			return {
+				variant: "error",
+				title: "Amount too high",
+				description:
+					"That is more than the remaining refundable amount for this order. Reload to see the current remaining total.",
+			};
+		case "PROVIDER_ALREADY_REFUNDED":
+			return {
+				variant: "error",
+				title: "Provider already refunded",
+				description:
+					"Your payment provider shows this order already refunded (possibly from its dashboard). Nothing was issued — reconcile the provider before trying again.",
+			};
+		case "GATEWAY_RETRYABLE":
+			return {
+				variant: "error",
+				title: "Temporary problem",
+				description:
+					"The payment provider could not be reached. Nothing was refunded — try again in a moment.",
+			};
+		case "GATEWAY_TERMINAL":
+			return {
+				variant: "error",
+				title: "Refund rejected",
+				description:
+					"The payment provider rejected this refund. Check the order in your provider dashboard.",
+			};
+		case "GATEWAY_UNVERIFIED":
+			return {
+				variant: "error",
+				title: "Refund status unknown",
+				description:
+					"The refund request timed out and its outcome is unknown. Do NOT retry — check your provider dashboard first, then reconcile.",
+			};
+		case "CURRENCY_MISMATCH":
+			return {
+				variant: "error",
+				title: "Not refunded",
+				description: "The refund currency does not match the order. Reload and try again.",
+			};
+		default:
+			return {
+				variant: "error",
+				title: "Not refunded",
+				description:
+					"That refund could not be processed — check the order and the admin token in Settings.",
+			};
+	}
 }
 
 // -- shared -------------------------------------------------------------------
