@@ -11,6 +11,14 @@ export const PANEL_STATE_ROUTE = "product-data/panel-state";
 
 export interface PanelStateRouteInput {
 	productId?: unknown;
+	/** Whether the current CMS document is PUBLISHED (issue #82) — host-threaded
+	 *  from the document alongside `productId`. Baked into the Save button's
+	 *  `value` so the panel Save can activate the just-priced row without a
+	 *  republish. Absent ⇒ no publish signal is carried. */
+	published?: unknown;
+	/** The current document's `updatedAt` ordering watermark, paired with
+	 *  `published` (issue #82). */
+	contentUpdatedAt?: unknown;
 }
 
 export function createPanelStateRouteHandler(): RouteHandler<PanelStateRouteInput> {
@@ -28,6 +36,18 @@ export function createPanelStateRouteHandler(): RouteHandler<PanelStateRouteInpu
 			...(serviceToken !== undefined ? { serviceToken } : {}),
 		});
 		const commerce = await client.getProductCommerce(productId);
-		return { elements: buildProductDataElements({ hasProductId: true, commerce }) };
+		// Issue #82: thread the document's publish state into the Save button so a
+		// "publish first, price later" product activates on save. Only forwarded
+		// when the host actually threaded a boolean signal — otherwise omitted so
+		// the button carries none and the route leaves the row inactive.
+		const { published, contentUpdatedAt } = routeCtx.input;
+		return {
+			elements: buildProductDataElements({
+				hasProductId: true,
+				commerce,
+				...(typeof published === "boolean" ? { published } : {}),
+				...(typeof contentUpdatedAt === "string" ? { contentUpdatedAt } : {}),
+			}),
+		};
 	};
 }
