@@ -131,6 +131,34 @@ export interface OrderFulfillment {
 }
 
 /**
+ * The shipping address snapshotted onto an order at checkout (ADR-0009). A single
+ * **immutable** slot written **once by `createFromCart`** (unlike
+ * `fulfillment`/`cancellation`, which the admin writes later) and **never**
+ * rewritten — the line-item snapshot precedent exactly. It is a frozen COPY, never
+ * a live pointer into the mutable profile `AddressStore`: editing or deleting the
+ * customer's saved address book can never change what a placed order shipped to.
+ *
+ * Fields mirror the profile `Address` **minus the profile concerns**
+ * (`id`/`customerId`/`isDefault`/`kind`) **plus** an optional contact channel
+ * (`email`/`phone`). Required fields (`name`/`line1`/`city`/`postalCode`/`country`)
+ * are non-empty; the rest are `null` when not supplied. `null` on the order means
+ * *no ship-to on file* — a historical order minted before ADR-0009, or a
+ * digital-only order with no destination (honest absence, never fabricated).
+ */
+export interface OrderAddress {
+	name: string;
+	line1: string;
+	line2: string | null;
+	city: string;
+	region: string | null;
+	postalCode: string;
+	country: string;
+	/** Optional contact channel captured at checkout (null when not supplied). */
+	email: string | null;
+	phone: string | null;
+}
+
+/**
  * An order line — **insert-once, never updated** (§4). `title`, `unitPrice`, and
  * `currency` are snapshots taken at creation; they are stored on the line, never
  * joined live from `product_commerce`, which is what makes the immutability
@@ -191,6 +219,14 @@ export interface Order {
 	updatedAt: string;
 	lines: OrderLine[];
 	totals: OrderTotals;
+	/**
+	 * The immutable shipping-address snapshot captured at checkout (ADR-0009), or
+	 * `null` when none was captured — a historical order predating capture, or a
+	 * digital-only order with no destination. Written **once** by
+	 * `createFromCart` and part of the frozen order snapshot: a later edit to the
+	 * customer's profile address book never rewrites it (the snapshot invariant).
+	 */
+	shippingAddress: OrderAddress | null;
 	/**
 	 * Set when settle could not commit an adopted hold that should have been
 	 * present (§5): the order is `paid` (money received) but stock was lost, so

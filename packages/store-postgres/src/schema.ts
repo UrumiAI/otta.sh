@@ -257,6 +257,29 @@ export interface OrderTotalsTable {
 	tax_breakdown: string | null;
 }
 
+/**
+ * 1:1 with orders — the immutable shipping-address snapshot captured at checkout
+ * (ADR-0009). Mirrors `order_totals`: written ONCE by `createFromCart` in the same
+ * guarded transaction, never rewritten (a later profile-address edit can't reach
+ * it — there is no code path that updates this table). A row is present iff a
+ * ship-to was captured; a historical/digital-only order simply has no row (the
+ * left join reads `null`). Required fields are `NOT NULL`; the profile concerns
+ * (`id`/`customer_id`/`is_default`/`kind`) are deliberately absent — a frozen copy,
+ * not a pointer into the mutable `addresses` book.
+ */
+export interface OrderShippingAddressTable {
+	order_id: string;
+	name: string;
+	line1: string;
+	line2: string | null;
+	city: string;
+	region: string | null;
+	postal_code: string;
+	country: string;
+	email: string | null;
+	phone: string | null;
+}
+
 export interface PaymentsTable {
 	id: string;
 	order_id: string;
@@ -505,6 +528,7 @@ export interface Database {
 	orders: OrdersTable;
 	order_items: OrderItemsTable;
 	order_totals: OrderTotalsTable;
+	order_shipping_address: OrderShippingAddressTable;
 	payments: PaymentsTable;
 	payment_events: PaymentEventsTable;
 	entitlements: EntitlementsTable;

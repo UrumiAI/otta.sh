@@ -17,6 +17,7 @@ import {
 	type IdempotencyKey,
 	type IdGen,
 	type Order,
+	type OrderAddress,
 	type OrderEvent,
 	type OrderId,
 	type OrderLine,
@@ -54,6 +55,7 @@ import type {
 	OrderEventsTable,
 	OrderItemsTable,
 	OrdersTable,
+	OrderShippingAddressTable,
 	OrderTotalsTable,
 } from "./schema.js";
 
@@ -147,6 +149,28 @@ export class KyselyOrderStore implements OrderStore {
 					tax_breakdown: jsonOrNull(input.totals.taxBreakdown),
 				})
 				.execute();
+			// ADR-0009: freeze the ship-to snapshot in the SAME guarded transaction as
+			// the order + totals, iff one was captured. A replay never reaches here
+			// (the order insert conflicted and returned `false` above), so the address
+			// is written exactly once — the line-snapshot precedent.
+			const address = input.shippingAddress;
+			if (address !== undefined && address !== null) {
+				await trx
+					.insertInto("order_shipping_address")
+					.values({
+						order_id: input.orderId,
+						name: address.name,
+						line1: address.line1,
+						line2: address.line2,
+						city: address.city,
+						region: address.region,
+						postal_code: address.postalCode,
+						country: address.country,
+						email: address.email,
+						phone: address.phone,
+					})
+					.execute();
+			}
 			return true;
 		});
 
@@ -693,7 +717,14 @@ export class KyselyOrderStore implements OrderStore {
 			.selectAll()
 			.where("order_id", "=", orderId)
 			.executeTakeFirstOrThrow();
-		return toOrder(order, items, totals);
+		// ADR-0009: the 1:1 ship-to snapshot, or undefined when none was captured
+		// (a historical/digital-only order) — mapped to `null` on the model.
+		const address = await this.#db
+			.selectFrom("order_shipping_address")
+			.selectAll()
+			.where("order_id", "=", orderId)
+			.executeTakeFirst();
+		return toOrder(order, items, totals, address ?? null);
 	}
 }
 
@@ -764,10 +795,26 @@ function toEvent(row: Selectable<OrderEventsTable>): OrderEvent {
 	};
 }
 
+function toAddress(row: Selectable<OrderShippingAddressTable> | null): OrderAddress | null {
+	if (row === null) return null;
+	return {
+		name: row.name,
+		line1: row.line1,
+		line2: row.line2,
+		city: row.city,
+		region: row.region,
+		postalCode: row.postal_code,
+		country: row.country,
+		email: row.email,
+		phone: row.phone,
+	};
+}
+
 function toOrder(
 	order: Selectable<OrdersTable>,
 	items: Selectable<OrderItemsTable>[],
 	totals: Selectable<OrderTotalsTable>,
+	shippingAddress: Selectable<OrderShippingAddressTable> | null,
 ): Order {
 	const oid = toOrderId(order.id);
 	const lines: OrderLine[] = items.map((i) => ({
@@ -808,6 +855,7 @@ function toOrder(
 		updatedAt: order.updated_at,
 		lines,
 		totals: t,
+		shippingAddress: toAddress(shippingAddress),
 		reconciliationFlag: order.reconciliation_flag,
 		// A resolution exists iff the flag was resolved (all four columns written
 		// atomically by resolveReconciliation); `resolved_at` is the presence witness.

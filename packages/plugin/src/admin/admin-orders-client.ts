@@ -40,6 +40,27 @@ export interface OrderTotalsWire {
 	taxCents: number;
 	totalCents: number;
 	appliedCouponCode: string | null;
+	/** The chosen shipping zone id (ADR-0009), or null when none was selected.
+	 *  DISPLAY-ONLY: rendered next to the captured ship-to country so a human can
+	 *  spot a "domestic zone / foreign country" mismatch — no matching/validation. */
+	shippingZoneId?: string | null;
+}
+
+/** The immutable shipping-address snapshot captured on an order at checkout
+ *  (ADR-0009), or null when none was captured (a historical order predating
+ *  capture, or a digital-only order). This IS the authoritative ship-to for the
+ *  order — unlike {@link AddressWire} (the mutable profile book), it never changes
+ *  after checkout. Optional contact fields are null when the buyer omitted them. */
+export interface OrderAddressWire {
+	name: string;
+	line1: string;
+	line2: string | null;
+	city: string;
+	region: string | null;
+	postalCode: string;
+	country: string;
+	email: string | null;
+	phone: string | null;
 }
 
 /** The admin disposition recorded when an order's reconciliation flag was
@@ -87,6 +108,10 @@ export interface OrderDetailWire {
 	reconciliationResolution: ReconciliationResolutionWire | null;
 	fulfillment: OrderFulfillmentWire | null;
 	cancellation: OrderCancellationWire | null;
+	/** The immutable ship-to snapshot captured at checkout (ADR-0009); null when
+	 *  the order predates capture or is digital-only. Authoritative — never the
+	 *  profile book (which is prefill/context, on the customer panel). */
+	shippingAddress: OrderAddressWire | null;
 	totals: OrderTotalsWire;
 	lines: OrderLineWire[];
 }
@@ -114,8 +139,9 @@ export interface OrderDetailResult {
 }
 
 /** A saved profile address on the wire (admin-UX Increment 1). This is the
- *  customer's CURRENT address book — the domain captures no per-order shipping
- *  address, so this must never be presented as "where this order shipped". */
+ *  customer's CURRENT address book — prefill/context only (ADR-0009). The order's
+ *  own authoritative ship-to is {@link OrderAddressWire} on the order detail; this
+ *  mutable book must never be presented as "where this order shipped". */
 export interface AddressWire {
 	id: string;
 	kind: string;

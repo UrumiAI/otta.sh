@@ -25,7 +25,8 @@ import type { TaxRulesStore } from "../ports/tax-rules-store.js";
 import { computeQuote } from "../pricing/quote.js";
 import type { TotalsLineInput } from "../pricing/types.js";
 import type { CreateOrderFailure } from "./errors.js";
-import type { Order, PaymentMethod } from "./model.js";
+import type { Order, OrderAddress, PaymentMethod } from "./model.js";
+import { normalizeOrderAddress, type OrderAddressInput } from "./order-address.js";
 
 /** 15 minutes — the checkout hold TTL (§9 decision 5), configurable. */
 export const DEFAULT_CHECKOUT_TTL_MS = 15 * 60 * 1000;
@@ -62,6 +63,15 @@ export interface CreateOrderCommand {
 	couponCode?: string;
 	/** Logged-in customer (Phase 5) — drives `maxUsesPerCustomer` when present. */
 	customerId?: CustomerId;
+	/**
+	 * The optional shipping address the checkout submitted (ADR-0009). Validated
+	 * (shape + bounds) and snapshotted IMMUTABLY onto the order — a frozen copy of
+	 * whatever checkout submitted (the Shopify model), never a live pointer to the
+	 * profile address book. Absent ⇒ no ship-to captured (allowed this slice:
+	 * required-for-physical enforcement is deferred until the storefront UI
+	 * collects it, per ADR-0009 sequencing).
+	 */
+	shippingAddress?: OrderAddressInput;
 }
 
 export type CreateOrderFromCartResult =
@@ -109,6 +119,18 @@ export async function createOrderFromCart(
 			idempotencyKey: command.idempotencyKey,
 		});
 		return { ok: true, order: already, intent };
+	}
+
+	// Validate + normalize the optional ship-to snapshot (ADR-0009) BEFORE minting
+	// anything: a malformed address must reject the checkout cleanly, never a
+	// half-written order. A replay short-circuited above, so this never re-runs for
+	// an order that already captured its address. Absent ⇒ null (capture-optional
+	// this slice — required-for-physical is a later flip).
+	let shippingAddress: OrderAddress | null = null;
+	if (command.shippingAddress !== undefined) {
+		const normalized = normalizeOrderAddress(command.shippingAddress);
+		if (!normalized.ok) return { ok: false, reason: "INVALID_SHIPPING_ADDRESS" };
+		shippingAddress = normalized.value;
 	}
 
 	const cart = await deps.cartStore.get(command.cartId);
@@ -241,6 +263,7 @@ export async function createOrderFromCart(
 			couponRecord: quote.couponRecord,
 			shippingZoneId: command.shippingZoneId,
 			shippingMethodId: command.shippingMethodId,
+			shippingAddress,
 			gateway,
 			onFailure: async () => {
 				if (redemptionId !== null) await deps.couponStore.release(redemptionId);
@@ -261,6 +284,8 @@ interface FinalizeContext {
 	couponRecord: CouponRecord | null;
 	shippingZoneId?: string;
 	shippingMethodId?: string;
+	/** The validated ship-to snapshot (ADR-0009), or null when none was captured. */
+	shippingAddress: OrderAddress | null;
 	gateway: PaymentGateway;
 	onFailure: () => Promise<void>;
 }
@@ -283,6 +308,9 @@ async function finalizeOrder(
 		buyerRef: command.buyerRef,
 		paymentMethod: command.paymentMethod,
 		lines: ctx.lines,
+		// ADR-0009: freeze the ship-to snapshot alongside the order, in the same
+		// guarded insert. A replay re-inserts nothing (idempotency-key conflict).
+		shippingAddress: ctx.shippingAddress,
 		totals: {
 			subtotal: breakdown.subtotalCents,
 			total: breakdown.totalCents,

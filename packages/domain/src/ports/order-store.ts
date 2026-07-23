@@ -11,6 +11,7 @@ import type {
 	CancellationReason,
 	FulfillmentKind,
 	Order,
+	OrderAddress,
 	OrderState,
 	PaymentMethod,
 	ReconciliationOutcome,
@@ -369,6 +370,15 @@ export interface CreateOrderInput {
 	buyerRef: string;
 	paymentMethod: PaymentMethod | null;
 	lines: CreateOrderLineInput[];
+	/**
+	 * The immutable shipping-address snapshot to freeze onto the order (ADR-0009),
+	 * already validated + normalized by the use-case. `null`/absent ⇒ no ship-to
+	 * captured (a digital-only order, or a checkout that submitted none). Written
+	 * ONCE into the 1:1 `order_shipping_address` alongside the order + totals, in
+	 * the same guarded transaction — a replay (idempotency-key conflict) re-inserts
+	 * nothing (the address, like the line snapshots, is carried exactly once).
+	 */
+	shippingAddress?: OrderAddress | null;
 	/**
 	 * The `order_totals` write. Phase 4 passed only `{ subtotal, total, currency }`
 	 * (the stub); Phase 6 passes the full computed breakdown. The extra fields are

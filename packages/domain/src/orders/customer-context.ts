@@ -44,8 +44,11 @@ export interface OrderCustomerIdentity {
 
 export interface OrderCustomerContext {
 	identity: OrderCustomerIdentity;
-	/** The customer's CURRENT saved address book — NOT a per-order shipping
-	 *  snapshot (this domain captures no order-level address). Empty for a guest. */
+	/** The customer's CURRENT saved profile address book — prefill/context only
+	 *  (ADR-0009). The order's own immutable ship-to now lives on
+	 *  `Order.shippingAddress`; this book is the mutable profile data a checkout
+	 *  MAY prefill from, never the authoritative destination for this order. Empty
+	 *  for a guest. */
 	addresses: Address[];
 	/** Token-free session history, newest-first. Empty for a guest. */
 	sessions: SessionSummary[];

@@ -102,6 +102,13 @@ export function orderRoutes(deps: OrderServiceDeps): Hono {
 				? { shippingMethodId: parsed.data.shippingMethodId }
 				: {}),
 			...(parsed.data.couponCode !== undefined ? { couponCode: parsed.data.couponCode } : {}),
+			// ADR-0009: forward the optional ship-to. The domain validates + trims
+			// (bounded lengths) and snapshots it immutably onto the order; a logged-in
+			// checkout may have prefilled it from the profile book, but the order copies
+			// the SUBMITTED value, never a live pointer to the profile row.
+			...(parsed.data.shippingAddress !== undefined
+				? { shippingAddress: parsed.data.shippingAddress }
+				: {}),
 		});
 		if (res.ok) {
 			return c.json(
@@ -229,6 +236,10 @@ export function serializeOrder(order: Order): Record<string, unknown> {
 		// cancelled via the bare transition (no reason on file). Additive —
 		// existing consumers ignore it.
 		cancellation: order.cancellation,
+		// The immutable ship-to snapshot captured at checkout (ADR-0009); null for a
+		// historical order (predates capture) or a digital-only order. Additive —
+		// existing consumers ignore it.
+		shippingAddress: order.shippingAddress,
 		totals: {
 			currency: order.totals.currency,
 			subtotalCents: order.totals.subtotal,
@@ -237,6 +248,12 @@ export function serializeOrder(order: Order): Record<string, unknown> {
 			taxCents: order.totals.tax,
 			totalCents: order.totals.total,
 			appliedCouponCode: order.totals.appliedCouponCode,
+			// ADR-0009 (admin display-only juxtaposition): the chosen shipping zone,
+			// read off the totals' method snapshot, so the admin can render the
+			// captured ship-to country NEXT TO the priced zone and spot a "domestic
+			// zone / foreign country" mismatch. No matching/validation — two facts,
+			// side by side. Null when no zone was selected.
+			shippingZoneId: shippingZoneIdOf(order.totals.shippingMethodSnapshot),
 		},
 		lines: order.lines.map((l) => ({
 			sku: l.sku,
@@ -266,6 +283,15 @@ export function serializeOrderSummary(summary: OrderSummary): Record<string, unk
 	};
 }
 
+/** Read the chosen shipping zone id off `order_totals.shippingMethodSnapshot`
+ *  (shape `{ zoneId, methodId }` — an opaque `unknown` on the model). Returns null
+ *  when absent/malformed. Display-only (ADR-0009): never used for matching. */
+function shippingZoneIdOf(snapshot: unknown | null): string | null {
+	if (snapshot === null || typeof snapshot !== "object") return null;
+	const zoneId = (snapshot as { zoneId?: unknown }).zoneId;
+	return typeof zoneId === "string" ? zoneId : null;
+}
+
 function serializeIntent(intent: PaymentIntentHandle): Record<string, unknown> {
 	return { gateway: intent.gateway, intentId: intent.intentId, clientAction: intent.clientAction };
 }
@@ -276,6 +302,10 @@ function checkoutFailure(c: Context, reason: CreateOrderFailure): Response {
 		case "CART_NOT_FOUND":
 		case "COUPON_NOT_FOUND":
 			return c.json(body, 404);
+		case "INVALID_SHIPPING_ADDRESS":
+			// Malformed input (a required ship-to field empty / over-length) — a 400,
+			// like the top-level zod parse failure, not a 409 conflict (ADR-0009).
+			return c.json(body, 400);
 		case "CART_EMPTY":
 		case "CART_CHECKED_OUT":
 		case "RESERVATION_LOST":
