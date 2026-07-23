@@ -1,10 +1,12 @@
 import {
 	cents,
 	currency as toCurrency,
+	deleteTaxClass,
 	type CouponListCursor,
 	type CouponListFilter,
 	type CouponStore,
 	type CouponSummary,
+	type ProductCommerceStore,
 	type ShippingRulesStore,
 	type TaxRulesStore,
 } from "@urumi/domain";
@@ -27,6 +29,8 @@ import {
 	shippingZoneBody,
 	shippingZoneUpdateBody,
 	taxClassBody,
+	taxClassPathParams,
+	taxClassUpdateBody,
 	taxRateBody,
 	taxRateUpdateBody,
 	zonePathParams,
@@ -37,6 +41,10 @@ export interface RulesAdminDeps {
 	shippingRules: ShippingRulesStore;
 	taxRules: TaxRulesStore;
 	couponStore: CouponStore;
+	// Increment 3 closeout: the tax-class DELETE route composes the
+	// `deleteTaxClass` use-case, whose in-use guard spans BOTH the tax-config
+	// aggregate (`taxRules`) and the product aggregate (`productCommerce`).
+	productCommerce: ProductCommerceStore;
 	internalToken?: string;
 }
 
@@ -340,6 +348,39 @@ export function rulesAdminRoutes(deps: RulesAdminDeps): Hono {
 
 	// -- Tax UPDATE/DELETE ------------------------------------------------------
 
+	// Increment 3 closeout (#72 gap-audit finding): `TaxRulesStore` had no
+	// rename at all, and `deleteTaxClass` (contract-tested since Increment 2
+	// slice 5) had no route. Both land together here.
+
+	app.put("/tax/classes/:classId", async (c) => {
+		const denied = requireInternalToken(c, deps.internalToken);
+		if (denied !== null) return denied;
+		const params = taxClassPathParams.safeParse(c.req.param());
+		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
+		const parsed = taxClassUpdateBody.safeParse(await readJson(c));
+		if (!parsed.success) return c.json({ error: "invalid request body" }, 400);
+		const res = await deps.taxRules.updateClass(params.data.classId, { name: parsed.data.name });
+		if (res.ok) return c.json({ ok: true, taxClass: res.class }, 200);
+		return c.json({ ok: false, reason: "NOT_FOUND" }, 404);
+	});
+
+	app.delete("/tax/classes/:classId", async (c) => {
+		const denied = requireInternalToken(c, deps.internalToken);
+		if (denied !== null) return denied;
+		const params = taxClassPathParams.safeParse(c.req.param());
+		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
+		const res = await deleteTaxClass(
+			{ taxRules: deps.taxRules, productCommerce: deps.productCommerce },
+			params.data.classId,
+		);
+		if (res.ok) return c.json({ ok: true }, 200);
+		if (res.reason === "not_found") return c.json({ ok: false, reason: "NOT_FOUND" }, 404);
+		if (res.reason === "in_use_by_products") {
+			return c.json({ ok: false, reason: "IN_USE_BY_PRODUCTS", count: res.count }, 409);
+		}
+		return c.json({ ok: false, reason: "IN_USE_BY_RATES", count: res.count }, 409);
+	});
+
 	app.put("/tax/rates/:rateId", async (c) => {
 		const denied = requireInternalToken(c, deps.internalToken);
 		if (denied !== null) return denied;
@@ -379,10 +420,37 @@ export function rulesAdminRoutes(deps: RulesAdminDeps): Hono {
 		const parsed = couponUpdateBody.safeParse(await readJson(c));
 		if (!parsed.success)
 			return c.json({ error: "invalid request body", issues: parsed.error.issues }, 400);
+		// Increment 3 closeout (#75 review finding): `couponUpdateBody` accepts
+		// null `amountCents`/`rateBps` unconditionally on the wire — the
+		// "can't blank the coupon's economic value" rule lived ONLY in the
+		// plugin (`coupons-page.ts`'s `parseEconomics`), so a direct API caller
+		// could blank a live coupon's discount. `type` (which axis is required)
+		// is NOT on the edit body — it is the coupon's immutable kind, stored on
+		// the record — so this is necessarily fetch-then-validate: read the
+		// coupon to learn its `type`, THEN validate the parsed body against it,
+		// 400ing before any write. A coupon deleted between this read and the
+		// `update()` call below still surfaces as the pre-existing 404 (`update`
+		// is itself not_found-safe), so the extra read adds no new race.
+		const existing = await deps.couponStore.findById(params.data.couponId);
+		if (existing === null) return c.json({ ok: false, reason: "NOT_FOUND" }, 404);
 		const d = parsed.data;
+		const amountCents = nn(d.amountCents);
+		const rateBps = d.rateBps ?? null;
+		if (existing.type === "fixed_amount" && amountCents === null) {
+			return c.json(
+				{ error: "amountCents is required and cannot be null for a fixed_amount coupon" },
+				400,
+			);
+		}
+		if (existing.type === "percentage" && rateBps === null) {
+			return c.json(
+				{ error: "rateBps is required and cannot be null for a percentage coupon" },
+				400,
+			);
+		}
 		const res = await deps.couponStore.update(params.data.couponId, {
-			amountCents: nn(d.amountCents),
-			rateBps: d.rateBps ?? null,
+			amountCents,
+			rateBps,
 			capCents: nn(d.capCents),
 			minSubtotalCents: nn(d.minSubtotalCents),
 			startsAt: d.startsAt ?? null,

@@ -159,6 +159,9 @@ export function createApp(deps: AppDeps): Hono {
 			shippingRules: deps.shippingRules,
 			taxRules: deps.taxRules,
 			couponStore: deps.couponStore,
+			// Increment 3 closeout: the tax-class DELETE route's `deleteTaxClass`
+			// use-case needs the product-reference guard.
+			productCommerce: deps.productCommerce,
 			...(deps.internalToken !== undefined ? { internalToken: deps.internalToken } : {}),
 		}),
 	);

@@ -140,6 +140,21 @@ export type RulesDeleteResult =
 	| { ok: false; reason: "in_use" }
 	| { ok: false; reason: "error"; status: number };
 
+/**
+ * Tax-class delete outcome (Increment 3 closeout). A DEDICATED result type,
+ * not the generic `RulesDeleteResult` — `deleteTaxClass`'s two in-use
+ * reasons (product vs. rate references) each carry a `count` (the service's
+ * 409 body), so the console can render an HONEST "N products/rates
+ * reference this class" instead of the generic screens' bare "in use, delete
+ * the children first" copy.
+ */
+export type TaxClassDeleteResult =
+	| { ok: true }
+	| { ok: false; reason: "not_found" }
+	| { ok: false; reason: "in_use_by_products"; count: number }
+	| { ok: false; reason: "in_use_by_rates"; count: number }
+	| { ok: false; reason: "error"; status: number };
+
 // -- Input shapes -------------------------------------------------------------
 
 export interface ShippingZoneInput {
@@ -179,6 +194,11 @@ export interface ShippingRateEdit {
 }
 export interface TaxClassInput {
 	id: string;
+	name: string;
+}
+/** Full-replace rename (LWW, no CAS — a class carries no money); `id` is
+ *  immutable identity and is never sent (the path param addresses it). */
+export interface TaxClassEdit {
 	name: string;
 }
 export interface TaxRateInput {
@@ -368,6 +388,38 @@ export class AdminRulesClient {
 
 	async createTaxClass(input: TaxClassInput): Promise<RulesCreateResult<TaxClassWire>> {
 		return this.#create<TaxClassWire>("/admin/tax/classes", input, "taxClass");
+	}
+
+	async updateTaxClass(
+		classId: string,
+		edit: TaxClassEdit,
+	): Promise<RulesUpdateResult<TaxClassWire>> {
+		const res = await this.#write("PUT", `/admin/tax/classes/${encodeURIComponent(classId)}`, edit);
+		return this.#lwwResult<TaxClassWire>(res, "taxClass");
+	}
+
+	/**
+	 * Delete a tax class (Increment 3 closeout — wiring the `deleteTaxClass`
+	 * use-case, contract-tested since Increment 2 slice 5 but never routed).
+	 * A dedicated parser (not `#deleteResult`): the 409 body carries a `count`
+	 * this method surfaces, unlike the generic zone/method/coupon deletes.
+	 */
+	async deleteTaxClass(classId: string): Promise<TaxClassDeleteResult> {
+		const res = await this.#write("DELETE", `/admin/tax/classes/${encodeURIComponent(classId)}`);
+		if (res.status === 200) return { ok: true };
+		if (res.status === 404) return { ok: false, reason: "not_found" };
+		if (res.status === 409) {
+			const parsed = (await safeJson(res)) as { reason?: string; count?: number } | undefined;
+			const count = typeof parsed?.count === "number" ? parsed.count : 0;
+			if (parsed?.reason === "IN_USE_BY_PRODUCTS") {
+				return { ok: false, reason: "in_use_by_products", count };
+			}
+			if (parsed?.reason === "IN_USE_BY_RATES") {
+				return { ok: false, reason: "in_use_by_rates", count };
+			}
+			return { ok: false, reason: "error", status: res.status };
+		}
+		return { ok: false, reason: "error", status: res.status };
 	}
 
 	// -- Tax: rates ------------------------------------------------------------

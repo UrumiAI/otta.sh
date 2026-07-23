@@ -6,6 +6,8 @@ import type {
 	TaxClass,
 	TaxRate,
 	TaxRulesStore,
+	UpdateTaxClassInput,
+	UpdateTaxClassResult,
 	UpdateTaxRateInput,
 	UpdateTaxRateResult,
 } from "../ports/tax-rules-store.js";
@@ -34,6 +36,24 @@ export class InMemoryTaxRulesStore implements TaxRulesStore {
 		}
 		this.#classes.delete(id);
 		return { ok: true };
+	}
+
+	/** LWW rename (port doc): unknown id → not_found; otherwise sets `name`. */
+	async updateClass(id: string, input: UpdateTaxClassInput): Promise<UpdateTaxClassResult> {
+		const cls = this.#classes.get(id);
+		if (cls === undefined) return { ok: false, reason: "not_found" };
+		cls.name = input.name;
+		return { ok: true, class: { ...cls } };
+	}
+
+	/** Count of rates referencing a class (port doc) — the in-use-by-rates
+	 *  refusal's honest count. */
+	async countRatesByClass(id: string): Promise<number> {
+		let count = 0;
+		for (const r of this.#rates.values()) {
+			if (r.taxClassId === id) count++;
+		}
+		return count;
 	}
 
 	async createRate(input: CreateTaxRateInput): Promise<TaxRate> {

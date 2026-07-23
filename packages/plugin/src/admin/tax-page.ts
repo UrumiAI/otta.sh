@@ -14,6 +14,8 @@ import {
 	type RulesCasUpdateResult,
 	type RulesCreateResult,
 	type RulesDeleteResult,
+	type RulesUpdateResult,
+	type TaxClassDeleteResult,
 	type TaxClassWire,
 	type TaxRateWire,
 } from "./admin-rules-client.js";
@@ -46,22 +48,16 @@ import {
  * re-render the relevant list via `showList(path, notice)` — the scaffold's
  * list-level notice surface this screen's own slice added (`list-detail.ts`).
  *
- * SCOPE NOTE (read before extending): renaming or deleting a tax CLASS is
- * NOT offered here. `deleteTaxClass` (the in-use guard, guarding on both
- * referencing products AND referencing rates) exists in `@urumi/domain`
- * (`packages/domain/src/pricing/delete-tax-class.ts`) and is contract-tested,
- * but has NO service HTTP route — its own doc comment says so explicitly
- * ("intentionally NO service endpoint for this in THIS slice"). Renaming a
- * class has no domain port method at all (`TaxRulesStore` only has
- * `createClass`/`listClasses`/`deleteClass`). Per this slice's own guardrail
- * ("if you find a missing capability, STOP and report rather than adding
- * domain surface in a UI slice"), this screen does NOT add a
- * `PUT`/`DELETE /admin/tax/classes/:id` route, a domain `updateClass` port
- * method, or client wrappers for either — that is real domain/service work
- * for a future slice. Tax RATES, by contrast, are fully wired end-to-end
- * (create/list/update-with-CAS/delete-idempotent all have live routes and
- * `AdminRulesClient` methods already) and get the full CRUD this slice asks
- * for.
+ * CLASS rename/delete (Increment 3 closeout — the #72 gap-audit finding this
+ * slice fills): a class row now carries a rename form (LWW, no CAS — a class
+ * carries no money) and a delete button. Delete wires the `deleteTaxClass`
+ * use-case (`@urumi/domain`'s `packages/domain/src/pricing/delete-tax-class.ts`,
+ * contract-tested since Increment 2 slice 5, now routed at
+ * `DELETE /admin/tax/classes/:id`): an in-use refusal is rendered HONESTLY —
+ * "N products reference this class" / "N rates reference this class" — from
+ * the `count` the service's 409 body carries, never a bare "can't delete".
+ * A rename never orphans a rate/product (both reference the class by its
+ * IMMUTABLE `id`, never its `name`).
  */
 export const TAX_PAGE: AdminPageConfig = { path: "/tax", label: "Tax", icon: "percent" };
 
@@ -69,6 +65,8 @@ export const TAX_PAGE: AdminPageConfig = { path: "/tax", label: "Tax", icon: "pe
  *  the class/rate side-effecting verbs. */
 const TAX_ACTIONS: ScreenActions = screenActions("tax");
 const ACTION_CREATE_CLASS = TAX_ACTIONS.custom("create-class");
+const ACTION_SAVE_CLASS = TAX_ACTIONS.custom("save-class");
+const ACTION_DELETE_CLASS = TAX_ACTIONS.custom("delete-class");
 const ACTION_CREATE_RATE = TAX_ACTIONS.custom("create-rate");
 const ACTION_SAVE_RATE = TAX_ACTIONS.custom("save-rate");
 const ACTION_DELETE_RATE = TAX_ACTIONS.custom("delete-rate");
@@ -81,6 +79,8 @@ const ACTION_DELETE_RATE = TAX_ACTIONS.custom("delete-rate");
  */
 export const TAX_ACTION_IDS: ReadonlySet<string> = TAX_ACTIONS.actionIds(
 	"create-class",
+	"save-class",
+	"delete-class",
 	"create-rate",
 	"save-rate",
 	"delete-rate",
@@ -127,6 +127,8 @@ export function createTaxPageHandler(): RouteHandler<TaxPageInput> {
 		levels: [taxClassesLevel(), taxRatesLevel()],
 		customActions: {
 			[ACTION_CREATE_CLASS]: createClassAction(),
+			[ACTION_SAVE_CLASS]: saveClassAction(),
+			[ACTION_DELETE_CLASS]: deleteClassAction(),
 			[ACTION_CREATE_RATE]: createRateAction(),
 			[ACTION_SAVE_RATE]: saveRateAction(),
 			[ACTION_DELETE_RATE]: deleteRateAction(),
@@ -174,7 +176,7 @@ function classesBlocks(
 		{ type: "header", text: "Tax classes" },
 		{
 			type: "context",
-			text: 'A tax class is a rate GROUP (e.g. "Standard", "Reduced", "Zero-rated") — products reference one by id; each class then has its own per-zone rate. Renaming or deleting a class is not available on this screen yet: create a new class instead if you need a different rate group.',
+			text: 'A tax class is a rate GROUP (e.g. "Standard", "Reduced", "Zero-rated") — products and rates reference one by id, so renaming a class never affects them. Deleting is blocked while any product or tax rate still references the class — clear those references first, or create a new class instead.',
 		},
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
@@ -182,6 +184,11 @@ function classesBlocks(
 	if (classes.length > 0) blocks.push(openClassForm(actions, classes));
 	blocks.push({ type: "divider" });
 	blocks.push(createClassForm());
+	for (const cls of classes) {
+		blocks.push({ type: "divider" });
+		blocks.push(editClassForm(cls));
+		blocks.push(deleteClassActions(cls));
+	}
 	return blocks;
 }
 
@@ -209,6 +216,42 @@ function createClassForm(): FormBlock {
 		],
 		submit: { label: "Create tax class", action_id: ACTION_CREATE_CLASS },
 	};
+}
+
+/** Full-replace rename (LWW, no CAS — a class carries no money): pre-filled
+ *  from the loaded row, mirroring `shipping-page.ts`'s `editZoneForm`. */
+function editClassForm(cls: TaxClassWire): FormBlock {
+	return {
+		type: "form",
+		fields: [
+			hiddenCarrier("classId", cls.id),
+			{
+				type: "text_input",
+				action_id: "name",
+				label: `Name for ${cls.id}`,
+				initial_value: cls.name,
+			},
+		],
+		submit: { label: `Save ${cls.id}`, action_id: ACTION_SAVE_CLASS },
+	};
+}
+
+function deleteClassActions(cls: TaxClassWire): ActionsBlock {
+	const button: ButtonElement = {
+		type: "button",
+		action_id: ACTION_DELETE_CLASS,
+		label: `Delete ${cls.id}`,
+		style: "danger",
+		value: { classId: cls.id },
+		confirm: {
+			title: `Delete tax class ${cls.id}?`,
+			text: "Deleting is blocked while any product or tax rate still references this class — clear those references first. This cannot be undone.",
+			confirm: "Yes, delete",
+			deny: "Keep it",
+			style: "danger",
+		},
+	};
+	return { type: "actions", elements: [button] };
 }
 
 function classesFailClosed() {
@@ -490,6 +533,96 @@ function createClassNotice(
 		variant: "error",
 		title: "Tax class not created",
 		description: `Could not create "${id}" — check the class ID isn't already in use, then try again.`,
+	};
+}
+
+// -- custom action: rename a tax class (LWW) -----------------------------------
+
+function saveClassAction() {
+	return customAction<AdminRulesClient>(async ({ input, client, showList }) => {
+		const values = input.values ?? {};
+		const classId = readString(values.classId);
+		if (classId === undefined) return showList();
+		const name = (readString(values.name) ?? "").trim();
+		if (name.length === 0) {
+			return showList(undefined, {
+				variant: "error",
+				title: "Class not saved",
+				description: "Enter a name.",
+			});
+		}
+		const result = await client.updateTaxClass(classId, { name });
+		return showList(undefined, saveClassNotice(result));
+	});
+}
+
+function saveClassNotice(result: RulesUpdateResult<TaxClassWire>): Notice {
+	if (result.ok) {
+		return { variant: "default", title: "Class saved", description: "The tax class was renamed." };
+	}
+	if (result.reason === "not_found") {
+		return {
+			variant: "error",
+			title: "Class not found",
+			description: "This tax class no longer exists — it may have already been deleted.",
+		};
+	}
+	return {
+		variant: "error",
+		title: "Class not saved",
+		description:
+			"The change could not be saved — check the service connection and the admin token in Settings.",
+	};
+}
+
+// -- custom action: delete a tax class (forbid-if-in-use, honest count) -------
+
+function deleteClassAction() {
+	return customAction<AdminRulesClient>(async ({ input, client, showList }) => {
+		const payload = asRecord(input.value);
+		const classId = readString(payload?.classId);
+		if (classId === undefined) return showList();
+		const result = await client.deleteTaxClass(classId);
+		return showList(undefined, deleteClassNotice(result));
+	});
+}
+
+function deleteClassNotice(result: TaxClassDeleteResult): Notice {
+	if (result.ok) {
+		return {
+			variant: "default",
+			title: "Class deleted",
+			description: "The tax class was removed.",
+		};
+	}
+	if (result.reason === "not_found") {
+		// Idempotent no-op (a double-submit, or someone else already deleted it) —
+		// not a failure: surface a non-error notice rather than a scary banner.
+		return {
+			variant: "default",
+			title: "Already deleted",
+			description: "This tax class was already removed.",
+		};
+	}
+	if (result.reason === "in_use_by_products") {
+		return {
+			variant: "error",
+			title: "Class not deleted",
+			description: `${result.count} product${result.count === 1 ? "" : "s"} still reference${result.count === 1 ? "s" : ""} this class — clear those references first, then retry.`,
+		};
+	}
+	if (result.reason === "in_use_by_rates") {
+		return {
+			variant: "error",
+			title: "Class not deleted",
+			description: `${result.count} tax rate${result.count === 1 ? "" : "s"} still reference${result.count === 1 ? "s" : ""} this class — delete those rates first, then retry.`,
+		};
+	}
+	return {
+		variant: "error",
+		title: "Class not deleted",
+		description:
+			"The class could not be deleted — check the service connection and the admin token in Settings.",
 	};
 }
 

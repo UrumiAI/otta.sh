@@ -204,7 +204,15 @@ export const couponUpdateBody = z.object({
 	maxUsesPerCustomer: z.number().int().nonnegative().nullable().optional(),
 });
 
+// Tax class rename — LWW, no CAS (structural, money-free; mirrors
+// `shippingZoneUpdateBody`); `id` is the path. The class id is the referent
+// rates/products point at, so a rename never orphans anything.
+export const taxClassUpdateBody = z.object({
+	name: z.string().min(1).max(200),
+});
+
 export const rateIdPathParams = z.object({ rateId: idParam });
+export const taxClassPathParams = z.object({ classId: idParam });
 export const couponIdPathParams = z.object({ couponId: idParam });
 export const methodCurrencyPathParams = z.object({
 	methodId: idParam,

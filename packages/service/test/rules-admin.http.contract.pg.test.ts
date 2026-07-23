@@ -243,4 +243,138 @@ describe.skipIf(PG === undefined)("rules admin CRUD HTTP contract", () => {
 		expect((await send("PUT", "/shipping/zones/z-guard", { name: "X" }, false)).status).toBe(401);
 		expect((await send("DELETE", "/shipping/zones/z-guard", undefined, false)).status).toBe(401);
 	});
+
+	// -- Increment 3 closeout: tax-class rename/delete wiring -----------------
+
+	test("tax class: rename (LWW) round-trips; unknown id is 404", async () => {
+		await post("/tax/classes", { id: "reduced", name: "Reduced" });
+		const upd = await send("PUT", "/tax/classes/reduced", { name: "Reduced rate" });
+		expect(upd.status).toBe(200);
+		const cls = (await json(upd)).taxClass as Record<string, unknown>;
+		expect(cls).toEqual({ id: "reduced", name: "Reduced rate" });
+		const classes = (await json(await get("/tax/classes"))).classes as Array<
+			Record<string, unknown>
+		>;
+		expect(classes.find((c) => c.id === "reduced")?.name).toBe("Reduced rate");
+
+		expect((await send("PUT", "/tax/classes/missing", { name: "X" })).status).toBe(404);
+	});
+
+	test("tax class: a rename never orphans an existing rate (still resolves by id)", async () => {
+		await post("/tax/classes", { id: "std-rn", name: "Standard" });
+		await post("/tax/rates", { id: "t-rn", taxClassId: "std-rn", zoneId: "z-rn", rateBps: 725 });
+		expect((await send("PUT", "/tax/classes/std-rn", { name: "Standard renamed" })).status).toBe(
+			200,
+		);
+		const rates = (await json(await get("/tax/rates?zoneId=z-rn"))).rates as Array<
+			Record<string, unknown>
+		>;
+		expect(rates[0]?.taxClassId).toBe("std-rn");
+		expect(rates[0]?.rateBps).toBe(725);
+	});
+
+	test("tax class: delete succeeds once unreferenced; idempotent 404 after; unknown id is 404", async () => {
+		await post("/tax/classes", { id: "temp-del", name: "Temp" });
+		expect((await send("DELETE", "/tax/classes/temp-del")).status).toBe(200);
+		expect((await send("DELETE", "/tax/classes/temp-del")).status).toBe(404);
+		expect((await send("DELETE", "/tax/classes/never-existed")).status).toBe(404);
+	});
+
+	test("tax class: delete is refused 409 with an honest count while a PRODUCT references it", async () => {
+		await post("/tax/classes", { id: "prod-ref", name: "Product referenced" });
+		await server.seedProductRow({
+			id: "p-tax-ref",
+			sku: "SKU-TAXREF",
+			priceCents: 1000,
+			createdAt: "2026-07-10T00:00:00.000Z",
+			taxClass: "prod-ref",
+		});
+		const del = await send("DELETE", "/tax/classes/prod-ref");
+		expect(del.status).toBe(409);
+		const body = await json(del);
+		expect(body.reason).toBe("IN_USE_BY_PRODUCTS");
+		expect(body.count).toBe(1);
+	});
+
+	test("tax class: delete is refused 409 with an honest count while a RATE references it", async () => {
+		await post("/tax/classes", { id: "rate-ref", name: "Rate referenced" });
+		await post("/tax/rates", {
+			id: "t-ref-1",
+			taxClassId: "rate-ref",
+			zoneId: "z-a",
+			rateBps: 500,
+		});
+		await post("/tax/rates", {
+			id: "t-ref-2",
+			taxClassId: "rate-ref",
+			zoneId: "z-b",
+			rateBps: 700,
+		});
+		const del = await send("DELETE", "/tax/classes/rate-ref");
+		expect(del.status).toBe(409);
+		const body = await json(del);
+		expect(body.reason).toBe("IN_USE_BY_RATES");
+		expect(body.count).toBe(2);
+		// The class survives the refused delete.
+		const classes = (await json(await get("/tax/classes"))).classes as Array<
+			Record<string, unknown>
+		>;
+		expect(classes.some((c) => c.id === "rate-ref")).toBe(true);
+	});
+
+	test("tax class UPDATE/DELETE without the internal token are rejected 401", async () => {
+		await post("/tax/classes", { id: "tc-guard", name: "Guard" });
+		expect((await send("PUT", "/tax/classes/tc-guard", { name: "X" }, false)).status).toBe(401);
+		expect((await send("DELETE", "/tax/classes/tc-guard", undefined, false)).status).toBe(401);
+	});
+
+	// -- Increment 3 closeout: coupon blank-economics server-side guard -------
+
+	test("coupon update: a fixed_amount coupon cannot be updated with a null amountCents (400, nothing written)", async () => {
+		await post("/coupons", {
+			id: "cpn-fixed",
+			code: "FIXED10",
+			type: "fixed_amount",
+			amountCents: 1000,
+			currency: "USD",
+		});
+		const res = await send("PUT", "/coupons/cpn-fixed", { amountCents: null, maxUses: 5 });
+		expect(res.status).toBe(400);
+		const coupon = (await json(await get("/coupons/FIXED10"))).coupon as Record<string, unknown>;
+		expect(coupon.amountCents).toBe(1000); // nothing written
+		expect(coupon.maxUses).toBeNull(); // nothing written
+	});
+
+	test("coupon update: a percentage coupon cannot be updated with a null rateBps (400, nothing written)", async () => {
+		await post("/coupons", {
+			id: "cpn-pct",
+			code: "PCT10",
+			type: "percentage",
+			rateBps: 1000,
+		});
+		const res = await send("PUT", "/coupons/cpn-pct", { rateBps: null, capCents: 500 });
+		expect(res.status).toBe(400);
+		const coupon = (await json(await get("/coupons/PCT10"))).coupon as Record<string, unknown>;
+		expect(coupon.rateBps).toBe(1000); // nothing written
+		expect(coupon.capCents).toBeNull(); // nothing written
+	});
+
+	test("coupon update: omitting the OTHER type's field is fine (only the owning type's blank is guarded)", async () => {
+		await post("/coupons", {
+			id: "cpn-fixed-2",
+			code: "FIXED20",
+			type: "fixed_amount",
+			amountCents: 2000,
+			currency: "USD",
+		});
+		// amountCents present and non-null; rateBps absent (irrelevant to fixed_amount).
+		const res = await send("PUT", "/coupons/cpn-fixed-2", { amountCents: 2500 });
+		expect(res.status).toBe(200);
+		const coupon = (await json(await get("/coupons/FIXED20"))).coupon as Record<string, unknown>;
+		expect(coupon.amountCents).toBe(2500);
+	});
+
+	test("coupon update: an unknown couponId is still 404 (fetch-then-validate doesn't change the not_found case)", async () => {
+		expect((await send("PUT", "/coupons/does-not-exist", { amountCents: 100 })).status).toBe(404);
+	});
 });

@@ -7,14 +7,12 @@ import {
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
 
 // The admin Tax console under the REAL workerd-on-Node sandbox (admin-UX
-// Increment 3, slice 2 — "tax admin drill-down"): tax classes (list/create)
-// drilling into a class's tax rates (list/create/edit-with-CAS/delete). This
-// is the first production screen where BOTH scaffold levels are LISTS (no
-// leaf) — row mutations re-render the list via the scaffold's list-level
-// notice surface. Renaming/deleting a CLASS is intentionally not offered
-// (no service route / no domain port method — see `tax-page.ts`'s top
-// comment); this suite proves what IS wired: the classes registry's
-// list+create, and rates' full create/list/update-with-CAS/delete-idempotent.
+// Increment 3, slice 2 — "tax admin drill-down"; class rename/delete added
+// in the Increment 3 closeout slice): tax classes (list/create/rename-LWW/
+// delete-forbid-if-in-use) drilling into a class's tax rates (list/create/
+// edit-with-CAS/delete). This is the first production screen where BOTH
+// scaffold levels are LISTS (no leaf) — row mutations re-render the list via
+// the scaffold's list-level notice surface.
 
 interface TaxClassRow {
 	id: string;
@@ -47,7 +45,11 @@ function makeRulesState() {
 		{ id: "std-us", taxClassId: "standard", zoneId: "us", rateBps: 725, appliesToShipping: false },
 		{ id: "std-eu", taxClassId: "standard", zoneId: "eu", rateBps: 2000, appliesToShipping: true },
 	];
-	return { zones, classes, rates };
+	// Simulates LIVE product references per tax-class id — the DELETE stub
+	// checks this map (mirroring the service's product-guard, checked BEFORE
+	// the rate guard) to exercise the honest in_use_by_products count.
+	const productRefCounts: Record<string, number> = {};
+	return { zones, classes, rates, productRefCounts };
 }
 
 function attachRulesStub(stub: StubCommerceServer, state: ReturnType<typeof makeRulesState>) {
@@ -102,6 +104,15 @@ function attachRulesStub(stub: StubCommerceServer, state: ReturnType<typeof make
 		if (req.headers["x-internal-token"] === undefined) {
 			return { status: 401, body: { ok: false, error: "unauthorized" } };
 		}
+		const classMatch = /^\/admin\/tax\/classes\/(.+)$/.exec(req.url);
+		if (classMatch !== null) {
+			const classId = decodeURIComponent(classMatch[1] ?? "");
+			const cls = state.classes.find((c) => c.id === classId);
+			if (cls === undefined) return { status: 404, body: { ok: false, reason: "NOT_FOUND" } };
+			const body = req.body as { name: string };
+			cls.name = body.name;
+			return { status: 200, body: { ok: true, taxClass: cls } };
+		}
 		const m = /^\/admin\/tax\/rates\/(.+)$/.exec(req.url);
 		if (m === null) return { status: 404, body: { error: "unknown" } };
 		const rateId = decodeURIComponent(m[1] ?? "");
@@ -123,6 +134,26 @@ function attachRulesStub(stub: StubCommerceServer, state: ReturnType<typeof make
 	stub.respondWith("DELETE", (req: RecordedRequest) => {
 		if (req.headers["x-internal-token"] === undefined) {
 			return { status: 401, body: { ok: false, error: "unauthorized" } };
+		}
+		const classMatch = /^\/admin\/tax\/classes\/(.+)$/.exec(req.url);
+		if (classMatch !== null) {
+			const classId = decodeURIComponent(classMatch[1] ?? "");
+			const idx = state.classes.findIndex((c) => c.id === classId);
+			if (idx === -1) return { status: 404, body: { ok: false, reason: "NOT_FOUND" } };
+			// Product guard checked first (mirrors `deleteTaxClass`'s ordering).
+			const productCount = state.productRefCounts[classId] ?? 0;
+			if (productCount > 0) {
+				return {
+					status: 409,
+					body: { ok: false, reason: "IN_USE_BY_PRODUCTS", count: productCount },
+				};
+			}
+			const rateCount = state.rates.filter((r) => r.taxClassId === classId).length;
+			if (rateCount > 0) {
+				return { status: 409, body: { ok: false, reason: "IN_USE_BY_RATES", count: rateCount } };
+			}
+			state.classes.splice(idx, 1);
+			return { status: 200, body: { ok: true } };
 		}
 		const m = /^\/admin\/tax\/rates\/(.+)$/.exec(req.url);
 		if (m === null) return { status: 404, body: { error: "unknown" } };
@@ -260,7 +291,7 @@ describe("admin Tax console — classes level (workerd sandbox)", () => {
 		expect(state.classes.filter((c) => c.id === "standard")).toHaveLength(1);
 	});
 
-	test("the classes screen offers NO rename/delete affordance (capability doesn't exist end-to-end)", async () => {
+	test("the classes screen offers a rename form and a delete button per row", async () => {
 		const state = makeRulesState();
 		await boot(state);
 		const outcome = await sandbox!.invokeRoute("admin", { type: "page_load", page: "/tax" });
@@ -275,8 +306,96 @@ describe("admin Tax console — classes level (workerd sandbox)", () => {
 				}
 			}
 		}
-		expect(allActionIds.has("tax:rename-class")).toBe(false);
-		expect(allActionIds.has("tax:delete-class")).toBe(false);
+		expect(allActionIds.has("tax:save-class")).toBe(true);
+		expect(allActionIds.has("tax:delete-class")).toBe(true);
+	});
+
+	test("save-class PUTs the rename and reloads the classes list with a 'saved' notice", async () => {
+		const state = makeRulesState();
+		await boot(state);
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "tax:save-class",
+			values: { classId: "standard", name: "Standard rate" },
+		});
+		const put = stub!.requests.find((r) => r.method === "PUT");
+		expect(put?.url).toBe("/admin/tax/classes/standard");
+		expect(put?.body).toEqual({ name: "Standard rate" });
+		const banner = bannerOf(blocksOf(outcome));
+		expect(banner?.variant).toBe("default");
+		expect(String(banner?.title)).toContain("saved");
+		// Reloaded from a real GET, not a locally-patched echo.
+		expect(tableRows(blocksOf(outcome))).toEqual([{ id: "standard", name: "Standard rate" }]);
+		expect(state.classes[0]?.name).toBe("Standard rate");
+	});
+
+	test("save-class with a blank name is caught at the plugin boundary — no PUT sent", async () => {
+		const state = makeRulesState();
+		await boot(state);
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "tax:save-class",
+			values: { classId: "standard", name: "" },
+		});
+		expect(stub!.requests.some((r) => r.method === "PUT")).toBe(false);
+		expect(bannerOf(blocksOf(outcome))?.variant).toBe("error");
+	});
+
+	test("delete-class DELETEs and reloads with a 'deleted' notice; a repeat delete is idempotent, never an error", async () => {
+		const state = makeRulesState();
+		state.classes.push({ id: "zero", name: "Zero-rated" });
+		await boot(state);
+		const first = await sandbox!.invokeRoute("admin", {
+			type: "block_action",
+			action_id: "tax:delete-class",
+			value: { classId: "zero" },
+		});
+		const del = stub!.requests.find((r) => r.method === "DELETE");
+		expect(del?.url).toBe("/admin/tax/classes/zero");
+		const firstBanner = bannerOf(blocksOf(first));
+		expect(firstBanner?.variant).toBe("default");
+		expect(String(firstBanner?.title)).toContain("deleted");
+		expect(tableRows(blocksOf(first)).some((r) => r.id === "zero")).toBe(false);
+
+		const second = await sandbox!.invokeRoute("admin", {
+			type: "block_action",
+			action_id: "tax:delete-class",
+			value: { classId: "zero" },
+		});
+		const secondBanner = bannerOf(blocksOf(second));
+		expect(secondBanner?.variant).toBe("default"); // idempotent no-op, never an error
+		expect(String(secondBanner?.title)).toMatch(/already deleted/i);
+	});
+
+	test("delete-class refused while a RATE references it renders the HONEST count, never a bare refusal", async () => {
+		const state = makeRulesState();
+		await boot(state); // "standard" has 2 seeded rates (std-us, std-eu)
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "block_action",
+			action_id: "tax:delete-class",
+			value: { classId: "standard" },
+		});
+		const banner = bannerOf(blocksOf(outcome));
+		expect(banner?.variant).toBe("error");
+		expect(String(banner?.description)).toContain("2 tax rates");
+		// Nothing was applied — the class survives.
+		expect(state.classes.some((c) => c.id === "standard")).toBe(true);
+	});
+
+	test("delete-class refused while a PRODUCT references it renders the HONEST count", async () => {
+		const state = makeRulesState();
+		state.classes.push({ id: "reduced", name: "Reduced" });
+		state.productRefCounts.reduced = 3;
+		await boot(state);
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "block_action",
+			action_id: "tax:delete-class",
+			value: { classId: "reduced" },
+		});
+		const banner = bannerOf(blocksOf(outcome));
+		expect(banner?.variant).toBe("error");
+		expect(String(banner?.description)).toContain("3 products");
+		expect(state.classes.some((c) => c.id === "reduced")).toBe(true);
 	});
 });
 

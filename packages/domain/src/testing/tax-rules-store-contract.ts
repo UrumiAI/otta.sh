@@ -47,6 +47,82 @@ export function taxRulesStoreContract(
 			expect(res).toEqual({ ok: false, reason: "not_found" });
 		});
 
+		// -- updateClass: LWW rename, id stays the referent rates/products use ---
+
+		test("updateClass renames a class (LWW); unknown id is not_found", async () => {
+			const { store } = await makeStore();
+			await store.createClass({ id: "standard", name: "Standard" });
+			const res = await store.updateClass("standard", { name: "Standard rate" });
+			expect(res.ok).toBe(true);
+			if (!res.ok) return;
+			expect(res.class).toEqual({ id: "standard", name: "Standard rate" });
+			expect((await store.listClasses()).find((c) => c.id === "standard")?.name).toBe(
+				"Standard rate",
+			);
+			expect(await store.updateClass("missing", { name: "X" })).toEqual({
+				ok: false,
+				reason: "not_found",
+			});
+		});
+
+		test("updateClass is idempotent under replay (set-value, not a delta)", async () => {
+			const { store } = await makeStore();
+			await store.createClass({ id: "standard", name: "Standard" });
+			const first = await store.updateClass("standard", { name: "Renamed" });
+			const replay = await store.updateClass("standard", { name: "Renamed" });
+			expect(first.ok && replay.ok).toBe(true);
+			if (!first.ok || !replay.ok) return;
+			expect(replay.class).toEqual(first.class); // no drift on re-apply
+		});
+
+		test("a rename never orphans a rate — the class id is the referent, not the name", async () => {
+			const { store } = await makeStore();
+			await store.createClass({ id: "standard", name: "Standard" });
+			await store.createRate({
+				id: "r1",
+				taxClassId: "standard",
+				zoneId: "z-us",
+				rateBps: 725,
+				appliesToShipping: false,
+			});
+			const res = await store.updateClass("standard", { name: "Renamed" });
+			expect(res.ok).toBe(true);
+			// The rate still resolves by id — a rename touches only the name column.
+			expect((await store.getRate("standard", "z-us"))?.rateBps).toBe(725);
+			expect((await store.listRatesForZone("z-us"))[0]?.taxClassId).toBe("standard");
+		});
+
+		// -- countRatesByClass: the delete-in-use honest count -------------------
+
+		test("countRatesByClass counts every rate referencing the class, 0 otherwise", async () => {
+			const { store } = await makeStore();
+			await store.createClass({ id: "standard", name: "Standard" });
+			await store.createRate({
+				id: "r1",
+				taxClassId: "standard",
+				zoneId: "z-us",
+				rateBps: 725,
+				appliesToShipping: false,
+			});
+			await store.createRate({
+				id: "r2",
+				taxClassId: "standard",
+				zoneId: "z-eu",
+				rateBps: 2000,
+				appliesToShipping: false,
+			});
+			await store.createRate({
+				id: "r3",
+				taxClassId: "zero",
+				zoneId: "z-us",
+				rateBps: 0,
+				appliesToShipping: false,
+			});
+			expect(await store.countRatesByClass("standard")).toBe(2);
+			expect(await store.countRatesByClass("zero")).toBe(1);
+			expect(await store.countRatesByClass("missing")).toBe(0);
+		});
+
 		test("deleteClass refuses a class still referenced by a rate (in_use_by_rates)", async () => {
 			const { store } = await makeStore();
 			await store.createClass({ id: "standard", name: "Standard" });
