@@ -59,18 +59,26 @@ export {
 } from "./admin/admin-products-client.js";
 export {
 	createTaxPageHandler,
-	formatBpsAsPercent,
-	parsePercentToBps,
 	TAX_ACTION_IDS,
 	TAX_PAGE,
 	type TaxPageInput,
 } from "./admin/tax-page.js";
+export { formatBpsAsPercent, parsePercentToBps } from "./admin/percent-input.js";
 export {
 	createShippingPageHandler,
 	SHIPPING_ACTION_IDS,
 	SHIPPING_PAGE,
 	type ShippingPageInput,
 } from "./admin/shipping-page.js";
+export {
+	couponDiscountSummary,
+	couponUsesSummary,
+	couponWindowSummary,
+	COUPONS_ACTION_IDS,
+	COUPONS_PAGE,
+	createCouponsPageHandler,
+	type CouponsPageInput,
+} from "./admin/coupons-page.js";
 export { formatMinorUnitsInput, parseMinorUnitsInput } from "./admin/money-input.js";
 export { PRODUCT_COMMERCE_ROUTE } from "./admin/product-commerce-route.js";
 export type { ProductCommerceRouteInput } from "./admin/product-commerce-route.js";
