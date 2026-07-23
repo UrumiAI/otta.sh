@@ -18,6 +18,12 @@ import {
 	SETTINGS_PAGE,
 	type SettingsFormInput,
 } from "./settings-form.js";
+import {
+	createShippingPageHandler,
+	SHIPPING_ACTION_IDS,
+	SHIPPING_PAGE,
+	type ShippingPageInput,
+} from "./shipping-page.js";
 import { createTaxPageHandler, TAX_ACTION_IDS, TAX_PAGE, type TaxPageInput } from "./tax-page.js";
 
 /**
@@ -57,6 +63,7 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 	const orders = createOrdersPageHandler();
 	const products = createProductsPageHandler();
 	const tax = createTaxPageHandler();
+	const shipping = createShippingPageHandler();
 
 	return async (routeCtx, ctx) => {
 		const input = routeCtx.input;
@@ -81,6 +88,9 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 		if (type === "page_load" && page === TAX_PAGE.path) {
 			return tax(routeCtx as SandboxedRouteContext<TaxPageInput>, ctx);
 		}
+		if (type === "page_load" && page === SHIPPING_PAGE.path) {
+			return shipping(routeCtx as SandboxedRouteContext<ShippingPageInput>, ctx);
+		}
 
 		// 5. Action interactions (block_action/form_submit) carry an action_id and
 		// no page — route each page's actions to its handler. Every Orders/Products
@@ -98,6 +108,9 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 		}
 		if (actionId !== undefined && TAX_ACTION_IDS.has(actionId)) {
 			return tax(routeCtx as SandboxedRouteContext<TaxPageInput>, ctx);
+		}
+		if (actionId !== undefined && SHIPPING_ACTION_IDS.has(actionId)) {
+			return shipping(routeCtx as SandboxedRouteContext<ShippingPageInput>, ctx);
 		}
 
 		// 6. Fallback — em-dash house style for an unrecognized interaction.
