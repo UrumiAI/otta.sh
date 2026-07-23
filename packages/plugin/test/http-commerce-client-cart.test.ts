@@ -148,6 +148,31 @@ describe.skipIf(PG === undefined)(
 			expect(q.body.reason).toBe("PRODUCT_NOT_PRICED");
 		});
 
+		test("SECURITY (issue #80 review): a mismatched sku/productId pair (sku of product B, productId of product A) is rejected SKU_MISMATCH and never reaches checkout", async () => {
+			const cheapId = await seedProduct({
+				sku: "SKU-CHEAP",
+				onHand: 10,
+				price: { amount: 100, currency: "USD" },
+			});
+			await seedProduct({
+				sku: "SKU-PRICEY",
+				onHand: 10,
+				price: { amount: 100000, currency: "USD" },
+			});
+			const { cartId } = await client.createCart("USD");
+
+			// Attack: pair the cheap product's productId with the pricey product's sku.
+			const added = await client.addCartLine(cartId, "SKU-PRICEY", cheapId, 1, "mismatch-1");
+			expect(added).toEqual({ ok: false, reason: "SKU_MISMATCH" });
+
+			// Nothing was persisted ⇒ the cart is empty ⇒ no priced checkout.
+			const read = await client.getCart(cartId);
+			expect(read).toMatchObject({ ok: true, cart: { lines: [] } });
+			const q = await quote(cartId);
+			expect(q.status).toBe(409);
+			expect(q.body.reason).toBe("CART_EMPTY");
+		});
+
 		test("currency mismatch: a product priced in EUR in a USD cart quotes 409 CURRENCY_MISMATCH (not PRODUCT_NOT_PRICED)", async () => {
 			const productId = await seedProduct({
 				sku: "SKU-EUR",

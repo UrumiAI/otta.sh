@@ -41,8 +41,15 @@ export const POST: APIRoute = async (context) => {
 	const sku = formString(form.get("sku"));
 	// The CMS content id (join key to product_commerce) minted into the PDP
 	// add-to-cart slot — forwarded so the cart line is priceable/quotable/
-	// orderable (issue #80). Optional (a legacy form without it still adds a
-	// bare line); when blank/absent it is simply not threaded.
+	// orderable (issue #80). `formString` normalizes a blank/absent value to
+	// `undefined`, so it is OMITTED here rather than forwarded as "" (the plugin
+	// route strictly rejects a present-but-blank productId with INVALID_INPUT;
+	// this shim never produces that shape). NOTE the divergence: a blank hidden
+	// input would degrade to a bare add (null productId) that a legit storefront
+	// never emits — it is not a security hole (an unpriced line is caught at
+	// checkout with PRODUCT_NOT_PRICED, never mispriced) but WOULD silently
+	// re-break #80's orderability, so the PDP slot must always render a non-blank
+	// productId (it does — `content.id` is always present).
 	const productId = formString(form.get("productId"));
 	const idempotencyKey = formString(form.get("idempotencyKey"));
 	const returnTo = safeReturnPath(form.get("returnTo"), "/products");

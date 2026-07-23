@@ -45,6 +45,77 @@ describe.skipIf(PG === undefined)("HTTP cart contract [live server, Postgres]", 
 		return req("POST", `/carts/${cartId}/lines`, { sku, qty }, { "Idempotency-Key": key });
 	}
 
+	function addLineWithProduct(
+		cartId: string,
+		sku: string,
+		productId: string,
+		qty: number,
+		key: string,
+	): Promise<JsonResponse> {
+		return req(
+			"POST",
+			`/carts/${cartId}/lines`,
+			{ sku, productId, qty },
+			{ "Idempotency-Key": key },
+		);
+	}
+
+	// SECURITY (issue #80 review): the client supplies `sku` and `productId`
+	// independently; the service must reconcile them against the trusted catalog
+	// so a caller cannot pair product A's productId (from which checkout takes
+	// price/title/entitlement) with product B's sku (a different good). When a
+	// product_commerce row exists it is authoritative — its sku MUST equal the
+	// submitted sku, else the add is rejected (SKU_MISMATCH) and never persisted.
+	test("add with a productId/sku pair that DISAGREES with the catalog is rejected (SKU_MISMATCH), no line, un-orderable", async () => {
+		await server.seedProduct({
+			productId: "prod-cheap",
+			sku: "SKU-CHEAP",
+			priceCents: 100,
+			title: "Cheap",
+			kind: "physical",
+			onHand: 10,
+		});
+		await server.seedProduct({
+			productId: "prod-pricey",
+			sku: "SKU-PRICEY",
+			priceCents: 100000,
+			title: "Pricey",
+			kind: "physical",
+			onHand: 10,
+		});
+		const cartId = await newCart();
+
+		// Attack: product A's (cheap) productId paired with product B's (pricey) sku.
+		const add = await addLineWithProduct(cartId, "SKU-PRICEY", "prod-cheap", 1, "k-mismatch");
+		expect(add.status).toBe(409);
+		expect(add.body).toEqual({ ok: false, reason: "SKU_MISMATCH" });
+
+		// The line was NOT persisted, so the cart cannot reach a priced checkout.
+		const get = await req("GET", `/carts/${cartId}`);
+		const cart = get.body.cart as { lines: unknown[] };
+		expect(cart.lines).toHaveLength(0);
+
+		const quote = await req("POST", "/checkout/quote", { cartId });
+		expect(quote.status).toBe(409);
+		expect(quote.body.reason).toBe("CART_EMPTY");
+	});
+
+	test("add with a MATCHING productId/sku pair is accepted and reflects productId on the line", async () => {
+		await server.seedProduct({
+			productId: "prod-match",
+			sku: "SKU-MATCH",
+			priceCents: 1500,
+			title: "Match",
+			kind: "physical",
+			onHand: 10,
+		});
+		const cartId = await newCart();
+		const add = await addLineWithProduct(cartId, "SKU-MATCH", "prod-match", 2, "k-match");
+		expect(add.status).toBe(200);
+		expect(add.body.ok).toBe(true);
+		expect((add.body.line as Record<string, unknown>).productId).toBe("prod-match");
+	});
+
 	test("POST /carts mints a cart id", async () => {
 		const res = await req("POST", "/carts", { currency: "USD" });
 		expect(res.status).toBe(201);
