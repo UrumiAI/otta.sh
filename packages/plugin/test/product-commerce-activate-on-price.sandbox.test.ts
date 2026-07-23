@@ -175,4 +175,61 @@ describe("issue #82 — pricing an already-published product activates it (worke
 		expect(resultOf(outcome)["ok"]).toBe(true);
 		expect(activateRequests(stubServer)).toHaveLength(1);
 	});
+
+	test("(7) EMIT→READBACK: the panel-state route bakes the publish signal into the Save button value, and the product-commerce route reads THAT value back and activates (no re-injected boolean)", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+		// The panel-state route reads the current row via GET (priced but inactive).
+		stubServer.respondWith("GET", () => ({ status: 200, body: pricedRow({ active: false }) }));
+
+		// (a) The host renders the panel with the current document's publish state.
+		const panel = resultOf(
+			await sandboxHandle.invokeRoute("product-data/panel-state", {
+				productId: "prod-1",
+				published: true,
+				contentUpdatedAt: WM,
+			}),
+		);
+		const elements = panel["elements"] as Array<Record<string, unknown>>;
+		const saveButton = elements.find((el) => el["action_id"] === "save");
+		expect(saveButton).toBeDefined();
+		// The publish signal is CARRIED IN the button value — this is the exact
+		// payload em-dash echoes back as `BlockAction.value` on the Save click.
+		const buttonValue = saveButton?.["value"] as Record<string, unknown> | undefined;
+		expect(buttonValue).toEqual({ contentPublished: true, contentUpdatedAt: WM });
+
+		// (b) Feed the button value straight back into the route (the read-back),
+		// merged with the form field values — NOT a hand-authored boolean.
+		await sandboxHandle.invokeRoute("product-commerce", {
+			productId: "prod-1",
+			sku: "SKU-1",
+			price: 1500,
+			currency: "USD",
+			...buttonValue,
+		});
+
+		const activates = activateRequests(stubServer);
+		expect(activates).toHaveLength(1);
+		expect(activates[0]?.body).toEqual({ contentUpdatedAt: WM });
+	});
+
+	test("(8) EMIT: with NO host publish signal, the panel-state Save button carries no value and a submit does not activate", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+		stubServer.respondWith("GET", () => ({ status: 200, body: pricedRow({ active: false }) }));
+
+		const panel = resultOf(
+			await sandboxHandle.invokeRoute("product-data/panel-state", { productId: "prod-1" }),
+		);
+		const elements = panel["elements"] as Array<Record<string, unknown>>;
+		const saveButton = elements.find((el) => el["action_id"] === "save");
+		expect(saveButton?.["value"]).toBeUndefined();
+
+		await sandboxHandle.invokeRoute("product-commerce", {
+			productId: "prod-1",
+			sku: "SKU-1",
+			price: 1500,
+			currency: "USD",
+			...(saveButton?.["value"] as Record<string, unknown> | undefined),
+		});
+		expect(activateRequests(stubServer)).toHaveLength(0);
+	});
 });

@@ -13,9 +13,21 @@ import {
 	deriveSaveIdempotencyKey,
 	deriveUnpublishIdempotencyKey,
 } from "./derive-idempotency-key.js";
+import { normalizeWatermark } from "./normalize-watermark.js";
 
 /** The only EmDash collection this plugin syncs (plan §2). */
 export const PRODUCTS_COLLECTION = "products";
+
+/**
+ * The EmDash content lifecycle status (`ContentItem.status`, verified against
+ * `~/em-dash` `packages/core/src/database/repositories/types.ts` — a `status:
+ * string` carried verbatim into every content-hook record by
+ * `contentItemToRecord = { ...item }`) that means "currently published". Saving
+ * an already-published item preserves this status (`content.ts` save path keeps
+ * `status = "published"`), so a `content:afterSave` for a live product reports
+ * it here.
+ */
+const PUBLISHED_STATUS = "published";
 
 /** Async because it awaits the write-gate token from write-only kv (ADR-0007):
  *  every sync write (upsert/activate/deactivate/soft-delete) is a non-GET the
@@ -67,14 +79,35 @@ export function createAfterSaveHandler(
 		// guard) rather than failing the whole sync on a 400.
 		const watermark = normalizeWatermark(updatedAt);
 		try {
-			await (
-				await clientFor(ctx)
-			).upsertProductCommerce(
+			const client = await clientFor(ctx);
+			await client.upsertProductCommerce(
 				id,
 				// Ordering watermark only — no commercial fields (see above).
 				watermark !== undefined ? { contentUpdatedAt: watermark } : {},
 				key,
 			);
+			// Issue #82: activation is otherwise driven ONLY by
+			// `content:afterPublish`. When a product is published BEFORE its
+			// commerce row exists (the "publish first, price later" ordering),
+			// that publish hook already fired and no-op'd (unknown product_id),
+			// leaving a later-created row stranded at `active=false` with no path
+			// to active until a manual unpublish→republish. So when THIS save is
+			// of a CURRENTLY-PUBLISHED product, activate the row in the same sync
+			// — through the DEDICATED, guarded `activate` (NEVER a field on the
+			// bare upsert, which must never touch `active`/`deletedAt`). Routing
+			// through `activate` preserves the load-bearing invariant that a
+			// SOFT-DELETED row is never resurrected (the store no-ops the flip on
+			// a tombstone), and the shared publish idempotency key + watermark
+			// make it converge with the real `content:afterPublish` (same
+			// `updatedAt` ⇒ same key/watermark ⇒ one applied flip). Best-effort,
+			// like the rest of this fire-and-forget hook.
+			if (event.content["status"] === PUBLISHED_STATUS && watermark !== undefined) {
+				await client.activateProductCommerce(
+					id,
+					derivePublishIdempotencyKey(event.collection, id, updatedAt),
+					watermark,
+				);
+			}
 		} catch (err) {
 			console.error(
 				`[urumi] content:afterSave sync failed for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}). No reconcile cron exists yet — this sync is lost until the product is saved again:`,
@@ -82,14 +115,6 @@ export function createAfterSaveHandler(
 			);
 		}
 	};
-}
-
-/** Normalize a CMS `updatedAt` (string or Date-serializable) to strict
- *  `Date.toISOString()` form, or undefined when unparseable (review F1). */
-function normalizeWatermark(updatedAt: unknown): string | undefined {
-	if (typeof updatedAt !== "string" && typeof updatedAt !== "number") return undefined;
-	const parsed = new Date(updatedAt);
-	return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
 }
 
 /**

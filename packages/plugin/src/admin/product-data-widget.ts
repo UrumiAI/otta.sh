@@ -69,8 +69,30 @@ export function buildProductDataElements(state: ProductDataWidgetState): Element
 
 	const commerce = state.commerce ?? null;
 	const hasSku = commerce?.sku !== null && commerce?.sku !== undefined;
+	const hasPrice = commerce?.price !== null && commerce?.price !== undefined;
 
-	const elements: Element[] = [
+	const elements: Element[] = [];
+
+	// Issue #82 (option 2): a lightweight "priced but not active" indicator.
+	// When the row is commerce-complete (sku + price set) yet `active=false`, the
+	// storefront PDP shows "Not currently available" with no admin signal — a
+	// narrow re-creation of #82 whenever activation is lost (e.g. a best-effort
+	// activate failed, or the host never carried the publish signal). Surface it
+	// so the merchant knows the remedy (publish / re-publish). Rendered as a
+	// disabled input because a sandboxed field widget only renders input-like
+	// elements (a static banner would show as "Unsupported element"); it carries
+	// no editable value and the route ignores its `action_id`.
+	if (hasSku && hasPrice && commerce?.active === false) {
+		elements.push({
+			type: "text_input",
+			action_id: "pricedInactiveNotice",
+			label: "⚠ Priced but not active — not yet purchasable",
+			placeholder: "Publish (or re-publish) this product to make it available on the storefront.",
+			disabled: true,
+		});
+	}
+
+	elements.push(
 		{
 			type: "text_input",
 			action_id: "sku",
@@ -169,7 +191,7 @@ export function buildProductDataElements(state: ProductDataWidgetState): Element
 					}
 				: {}),
 		},
-	];
+	);
 	return elements;
 }
 

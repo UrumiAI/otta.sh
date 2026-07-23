@@ -5,6 +5,7 @@ import {
 	type UpsertProductCommerceInput,
 } from "../product-commerce/commerce-client.js";
 import type { RouteHandler } from "../types.js";
+import { normalizeWatermark } from "../sync/normalize-watermark.js";
 
 /** The non-public route path the panel's Save action posts to (plan §5). */
 export const PRODUCT_COMMERCE_ROUTE = "product-commerce";
@@ -281,16 +282,6 @@ async function activateIfPublished(
 			err,
 		);
 	}
-}
-
-/** Normalize a CMS `updatedAt` (string or Date-serializable) to strict
- *  `Date.toISOString()` form, or undefined when unparseable — the store
- *  validates the watermark exactly as `Date.toISOString()` output (a raw
- *  lexicographic SQL comparison), mirroring `sync/hooks.ts`'s normalizer. */
-function normalizeWatermark(updatedAt: unknown): string | undefined {
-	if (typeof updatedAt !== "string" && typeof updatedAt !== "number") return undefined;
-	const parsed = new Date(updatedAt);
-	return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
 }
 
 function isSkuTaken(body: unknown): body is { error: "SKU_TAKEN"; sku: string } {
