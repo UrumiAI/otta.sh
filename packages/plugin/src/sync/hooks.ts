@@ -7,6 +7,7 @@ import type {
 	PluginContext,
 } from "../types.js";
 import { HttpCommerceClient } from "../product-commerce/http-commerce-client.js";
+import { parseCommerceFields } from "../product-commerce/parse-commerce-fields.js";
 import {
 	deriveDeleteIdempotencyKey,
 	derivePublishIdempotencyKey,
@@ -14,6 +15,26 @@ import {
 	deriveUnpublishIdempotencyKey,
 } from "./derive-idempotency-key.js";
 import { normalizeWatermark } from "./normalize-watermark.js";
+
+/** The content document's `json` field the "Product data" widget persists into
+ *  (bound via `widget: "urumi:product-data"`). em-dash stores a field-widget's
+ *  value under the content item's `data` bag keyed by the field slug, and the
+ *  hook record is `contentItemToRecord(item) = { ...item }`, so the commerce
+ *  bag lives at `content.data.commerce`. */
+const COMMERCE_FIELD = "commerce";
+
+/** Reads the widget's per-`action_id` commerce bag out of the saved content
+ *  record. Returns `undefined` when the product carries no commerce field yet
+ *  (create-then-price: nothing to derive). Defensive about the `data` overlay
+ *  shape — only an object bag is honored. */
+function readCommerceField(content: Record<string, unknown>): Record<string, unknown> | undefined {
+	const data = content["data"];
+	const bag =
+		typeof data === "object" && data !== null
+			? (data as Record<string, unknown>)[COMMERCE_FIELD]
+			: undefined;
+	return typeof bag === "object" && bag !== null ? (bag as Record<string, unknown>) : undefined;
+}
 
 /** The only EmDash collection this plugin syncs (plan §2). */
 export const PRODUCTS_COLLECTION = "products";
@@ -42,25 +63,50 @@ async function clientFor(ctx: PluginContext): Promise<HttpCommerceClient> {
 }
 
 /**
- * `content:afterSave` → upsert (plan §1 case 1 / §6 step 7).
+ * `content:afterSave` → derive `product_commerce` from the widget's `commerce`
+ * field JSON (issue #81 rework / #82 activation).
  *
- * This is a bare "ensure a row exists, keyed by the CMS id" sync — it does
- * NOT carry commercial fields (those arrive only via the panel's own save
- * route, `admin/product-commerce-route.ts`; a duplicated write path here
- * would let a stale/re-fired afterSave clobber a merchant's in-progress
- * pricing edit). Firing this hook twice with the same `content.updatedAt`
- * yields exactly one applied write (idempotency-key replay dedupe), and the
- * body also carries `contentUpdatedAt` so the SERVICE's ordering guard makes
- * a delayed/out-of-order delivery of an OLDER save a stale no-op (review S1
- * — out-of-order delivery converges, plan §4/Risk 3).
+ * The "Product data" field widget has no Save button (em-dash field widgets
+ * are `onChange`-only and reject a `button` element — see
+ * `admin/product-data-widget.ts`). The merchant edits inline inputs that
+ * persist into the content document's `commerce` JSON field, and the editor's
+ * NATIVE Save fires THIS hook. So afterSave is now the single write path that
+ * turns pricing into a `product_commerce` row (the old button-era
+ * `product-commerce-route` is retired).
  *
- * Fire-and-forget (plan §4): `afterSave` requires only `content:read` and
- * must never fail the CMS save. A network failure / non-2xx response is
- * logged, not thrown. NOTE the honest guarantee (review N2): there is no
- * reconcile cron yet (plan §6 step 9, deferred) — a failed sync is LOST
- * until the next human save of the same product re-fires this hook (the
- * idempotent upsert makes that later replay safe). Until the cron lands,
- * that next save is the only self-healing path.
+ * It reads `content.data.commerce`, validates it through the SHARED
+ * `parseCommerceFields` guard (the same rules the retired route applied), and:
+ *   - MONEY INTEGRITY (CLAUDE.md non-negotiable): any invalid field — notably a
+ *     FLOAT price (em-dash's `number_input` can yield a decimal) or a bad
+ *     currency — makes the whole upsert a logged no-op. A float NEVER reaches a
+ *     money field, and the CMS save still succeeds.
+ *   - MISSING SKU: with no sku there is no sellable product, so the upsert is
+ *     skipped — no partial row is minted (create-then-price).
+ *   - The upsert carries ONLY validated commercial fields + the ordering
+ *     watermark; it NEVER touches `active`/`deletedAt`. Stock rides as
+ *     `initialOnHand`, a create-if-absent seed the service refuses to apply
+ *     over an existing/decremented `on_hand` (no re-save clobber — proven by
+ *     `@urumi/domain`'s inventory-store contract).
+ *
+ * Firing twice with the same `content.updatedAt` yields exactly one applied
+ * write (idempotency-key replay dedupe); the `contentUpdatedAt` watermark lets
+ * the service reject a delayed/out-of-order OLDER save as a stale no-op
+ * (review S1).
+ *
+ * Activation (issue #82): when the saved product is CURRENTLY PUBLISHED, the
+ * just-derived row is activated in the same sync through the DEDICATED, guarded
+ * `activate` — never an `active` field on the upsert. Routing through
+ * `activate` preserves the invariant that a SOFT-DELETED row is never
+ * resurrected (the store no-ops the flip on a tombstone), and the shared
+ * publish idempotency key + watermark make it converge with the real
+ * `content:afterPublish` (same `updatedAt` ⇒ same key/watermark ⇒ one applied
+ * flip). Ordering: upsert FIRST, then activate.
+ *
+ * Fire-and-forget (plan §4): `afterSave` requires only `content:read` and must
+ * never fail the CMS save. A network failure / non-2xx is logged, not thrown.
+ * Honest guarantee (review N2): there is no reconcile cron yet — a failed sync
+ * is LOST until the next human save re-fires this hook (the idempotent upsert
+ * makes that replay safe).
  */
 export function createAfterSaveHandler(
 	allowedHosts: readonly string[] = ALLOWED_HOSTS,
@@ -70,37 +116,40 @@ export function createAfterSaveHandler(
 		const id = event.content["id"];
 		if (typeof id !== "string" || id.length === 0) return; // no CMS id yet — nothing to sync.
 
+		const bag = readCommerceField(event.content);
+		if (bag === undefined) return; // no commerce field yet — create-then-price, nothing to derive.
+
+		const { body, errors } = parseCommerceFields(bag);
+		// Money/shape integrity: a float price, bad currency, or any invalid
+		// field skips the WHOLE upsert (atomic — never a partial/float write) and
+		// logs, so the CMS save is never failed and no float reaches money.
+		if (Object.keys(errors).length > 0) {
+			console.warn(
+				`[urumi] content:afterSave: invalid commerce fields for product_id=${id}; skipping the product_commerce upsert (the CMS save still succeeds):`,
+				errors,
+			);
+			return;
+		}
+		// No sku ⇒ not sellable ⇒ do not mint a partial row.
+		if (body.sku === undefined) return;
+
 		const updatedAt = event.content["updatedAt"];
 		const key = deriveSaveIdempotencyKey(event.collection, id, updatedAt);
 		// The service validates the watermark STRICTLY as Date.toISOString()
-		// output (review F1 — it feeds a raw lexicographic SQL comparison), so
-		// normalize whatever date shape the CMS hands us through toISOString();
-		// an unparseable value omits the watermark (bare upsert, no ordering
-		// guard) rather than failing the whole sync on a 400.
+		// output (review F1 — a raw lexicographic SQL comparison), so normalize
+		// whatever date shape the CMS hands us; an unparseable value omits the
+		// watermark (no ordering guard) rather than failing the sync on a 400.
 		const watermark = normalizeWatermark(updatedAt);
 		try {
 			const client = await clientFor(ctx);
 			await client.upsertProductCommerce(
 				id,
-				// Ordering watermark only — no commercial fields (see above).
-				watermark !== undefined ? { contentUpdatedAt: watermark } : {},
+				// Validated commercial fields + the ordering watermark. NEVER
+				// `active`/`deletedAt` — activation is the guarded call below.
+				watermark !== undefined ? { ...body, contentUpdatedAt: watermark } : body,
 				key,
 			);
-			// Issue #82: activation is otherwise driven ONLY by
-			// `content:afterPublish`. When a product is published BEFORE its
-			// commerce row exists (the "publish first, price later" ordering),
-			// that publish hook already fired and no-op'd (unknown product_id),
-			// leaving a later-created row stranded at `active=false` with no path
-			// to active until a manual unpublish→republish. So when THIS save is
-			// of a CURRENTLY-PUBLISHED product, activate the row in the same sync
-			// — through the DEDICATED, guarded `activate` (NEVER a field on the
-			// bare upsert, which must never touch `active`/`deletedAt`). Routing
-			// through `activate` preserves the load-bearing invariant that a
-			// SOFT-DELETED row is never resurrected (the store no-ops the flip on
-			// a tombstone), and the shared publish idempotency key + watermark
-			// make it converge with the real `content:afterPublish` (same
-			// `updatedAt` ⇒ same key/watermark ⇒ one applied flip). Best-effort,
-			// like the rest of this fire-and-forget hook.
+			// Issue #82: activate an already-published product in the same save.
 			if (event.content["status"] === PUBLISHED_STATUS && watermark !== undefined) {
 				await client.activateProductCommerce(
 					id,

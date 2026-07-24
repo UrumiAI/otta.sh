@@ -18,17 +18,22 @@ afterEach(async () => {
 describe("workerd-on-Node sandbox harness (plan §6 step 1)", () => {
 	test("loads @urumi/plugin under workerd-on-Node and reaches a stub service only via ctx.http", async () => {
 		stub = await startStubCommerceServer();
-		stub.respondWith("GET", () => ({ status: 200, body: null }));
+		stub.respondWith("GET", () => ({ status: 200, body: { ok: true, active: false } }));
 
 		sandbox = await loadPluginInSandbox({
 			allowedHosts: [stub.host],
 			commerceServiceBaseUrl: stub.baseUrl,
 		});
 
-		// Any route that calls CommerceClient.get exercises ctx.http.fetch
-		// end-to-end through a REAL workerd process, not trusted in-process.
-		const outcome = await sandbox.invokeRoute("product-data/panel-state", { productId: "prod-1" });
-		expect(outcome).toMatchObject({ result: { elements: expect.any(Array) } });
+		// Any route that calls a CommerceClient GET exercises ctx.http.fetch
+		// end-to-end through a REAL workerd process, not trusted in-process. The
+		// entitlement-download route issues the GET uncaught (no renderGuard), so a
+		// blocked host propagates — see the next test.
+		const outcome = await sandbox.invokeRoute("entitlements/download", {
+			orderId: "o1",
+			sku: "SKU-1",
+		});
+		expect(outcome).toMatchObject({ result: { authorized: false } });
 		expect(stub.requests.some((r) => r.method === "GET")).toBe(true);
 	});
 
@@ -44,7 +49,10 @@ describe("workerd-on-Node sandbox harness (plan §6 step 1)", () => {
 			commerceServiceBaseUrl: stub.baseUrl,
 		});
 
-		const outcome = await sandbox.invokeRoute("product-data/panel-state", { productId: "prod-1" });
+		const outcome = await sandbox.invokeRoute("entitlements/download", {
+			orderId: "o1",
+			sku: "SKU-1",
+		});
 		expect("error" in outcome).toBe(true);
 		if ("error" in outcome) {
 			expect(outcome.error).toMatch(/not allowed to fetch/i);

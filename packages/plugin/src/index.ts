@@ -2,7 +2,6 @@
 // widget's pure element-builder, and the manifest constants the sandbox-
 // clean guard test asserts against.
 export { buildProductDataElements, productDataWidget } from "./admin/product-data-widget.js";
-export { PANEL_STATE_ROUTE } from "./admin/panel-state-route.js";
 // ── Phase 7: single `admin` dispatch route + Reports page + Settings form ────
 export { ADMIN_ROUTE, createAdminRouteHandler } from "./admin/admin-route.js";
 export {
@@ -80,8 +79,6 @@ export {
 	type CouponsPageInput,
 } from "./admin/coupons-page.js";
 export { formatMinorUnitsInput, parseMinorUnitsInput } from "./admin/money-input.js";
-export { PRODUCT_COMMERCE_ROUTE } from "./admin/product-commerce-route.js";
-export type { ProductCommerceRouteInput } from "./admin/product-commerce-route.js";
 export {
 	AdminRulesClient,
 	type AdminRulesClientOptions,
