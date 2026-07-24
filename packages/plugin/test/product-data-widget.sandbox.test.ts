@@ -1,21 +1,6 @@
-import { afterEach, describe, expect, test } from "vitest";
+import { describe, expect, test } from "vitest";
 import { buildProductDataElements, productDataWidget } from "../src/admin/product-data-widget.js";
 import { URUMI_PLUGIN_CAPABILITIES } from "../src/manifest.js";
-import {
-	startStubCommerceServer,
-	type StubCommerceServer,
-} from "./helpers/stub-commerce-server.js";
-import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
-
-let sandbox: SandboxHandle | undefined;
-let stub: StubCommerceServer | undefined;
-
-afterEach(async () => {
-	await sandbox?.close();
-	sandbox = undefined;
-	await stub?.close();
-	stub = undefined;
-});
 
 // The ONLY element types em-dash's `BlockKitFieldWidget` renders — anything
 // else (notably `button`) shows as "Unsupported widget element type"
@@ -94,46 +79,6 @@ describe('"Product data" field widget — inline inputs, no button (issue #81 re
 		// No live-state fetch / no state argument: two calls are structurally
 		// identical (values live in the field JSON the editor loaded, not here).
 		expect(buildProductDataElements()).toEqual(buildProductDataElements());
-	});
-
-	test("the panel-state diagnostic read returns the static elements + the derived row over ctx.http — under the sandbox", async () => {
-		stub = await startStubCommerceServer();
-		stub.respondWith("GET", (req) =>
-			req.url === "/products/prod-1/commerce"
-				? {
-						status: 200,
-						body: {
-							productId: "prod-1",
-							sku: "SKU-1",
-							price: { amount: 500, currency: "USD" },
-							taxClass: null,
-							weightGrams: null,
-							lengthMm: null,
-							widthMm: null,
-							heightMm: null,
-							productKind: "physical",
-							active: false,
-							deletedAt: null,
-							createdAt: "x",
-							updatedAt: "x",
-						},
-					}
-				: { status: 200, body: null },
-		);
-		sandbox = await loadPluginInSandbox({
-			allowedHosts: [stub.host],
-			commerceServiceBaseUrl: stub.baseUrl,
-		});
-
-		const withoutId = await sandbox.invokeRoute("product-data/panel-state", {});
-		expect(withoutId).toMatchObject({
-			result: { elements: expect.any(Array), commerce: null },
-		});
-
-		const withId = await sandbox.invokeRoute("product-data/panel-state", { productId: "prod-1" });
-		expect(withId).toMatchObject({
-			result: { elements: expect.any(Array), commerce: { productId: "prod-1", sku: "SKU-1" } },
-		});
 	});
 
 	test("sandbox-clean guard: the manifest declares EXACTLY content:read + network:request, no storage/db surface", () => {

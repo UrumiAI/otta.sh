@@ -1,5 +1,4 @@
 import { ADMIN_ROUTE, createAdminRouteHandler } from "./admin/admin-route.js";
-import { createPanelStateRouteHandler, PANEL_STATE_ROUTE } from "./admin/panel-state-route.js";
 // ── Phase 3 group E: cart routes (plan §7 step E1, shape per ADR-0003) ────
 import {
 	createCartCreateRouteHandler,
@@ -53,8 +52,8 @@ import type { SandboxedPlugin } from "./types.js";
  * `afterPublish`/`afterUnpublish` — the last two are the publish-gate
  * follow-up, activating on publish and deactivating on unpublish). Pricing is
  * derived by `content:afterSave` from the widget's `commerce` field JSON — the
- * old button-era `product-commerce` save route is retired (em-dash field
- * widgets are `onChange`-only), leaving `panel-state` as a diagnostic read.
+ * old button-era `product-commerce` save + `panel-state` render routes are
+ * retired (em-dash field widgets are `onChange`-only, so neither is reachable).
  * Phase 2 (ADR-0003): the two PUBLIC storefront routes — PDP and PLP are
  * plugin-owned routes (`page:fragments` is trusted-only and unavailable to
  * this sandboxed plugin); `public: true` is the em-dash route flag that
@@ -76,7 +75,6 @@ const plugin: SandboxedPlugin = {
 		// handler validates its own input at runtime (mirrors em-dash's own
 		// plugins, e.g. `packages/plugins/forms/src/index.ts`, which cast
 		// route handlers `as never` for the same contravariance reason).
-		[PANEL_STATE_ROUTE]: { handler: createPanelStateRouteHandler() as never, public: false },
 		[STOREFRONT_PRODUCT_ROUTE]: { handler: createPdpRouteHandler() as never, public: true },
 		[STOREFRONT_LIST_ROUTE]: { handler: createPlpRouteHandler() as never, public: true },
 		// ── Phase 3 group E: cart (public — proxies over ctx.http only) ────

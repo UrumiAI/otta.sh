@@ -38,8 +38,24 @@ by a version bump.
 - `product-commerce/parse-commerce-fields.ts`: new IO-free validator extracted
   verbatim from the retired route's `validate()`, shared by afterSave.
 - Retires the button-era `admin/product-commerce-route.ts` (the form-submit save
-  path) and its exports; `admin/panel-state-route.ts` is kept only as a
-  diagnostic read (em-dash never routes a field widget through it).
+  path) AND `admin/panel-state-route.ts` (the render route) — em-dash routes a
+  field widget through neither, so both are dead once the button is gone.
+
+WHERE THE MERCHANT SEES THE RESULT (honesty, like #82): the Product-data widget
+is a CONVENIENCE INPUT with no in-widget feedback — em-dash field widgets are
+`onChange`-only and expose no error channel back to the widget. So an invalid
+entry (e.g. a decimal price) fails CLOSED: it is skipped with a server log and
+simply does not appear as a priced/active product. The OUTCOME — priced &
+active, or not — is observed in the admin PRODUCTS LIST / product detail, not in
+the widget itself.
+
+INPUT vs DERIVED STATE: the content document's `commerce` JSON is merchant
+*input*; `product_commerce` is *derived state*, and the two can legitimately
+diverge. The widget's `onHand` sets a create-time seed only — live inventory is
+tracked separately thereafter, so the field can show the frozen seed while
+actual stock has moved. Activation (`active`) lives in `product_commerce`, never
+in the field JSON. Re-reading the widget is therefore not a source of truth for
+current commercial state.
 
 The plugin stays sandbox-clean (service only via `ctx.http` + `allowedHosts`,
 write-gate token unchanged) and never imports `@urumi/domain`.
