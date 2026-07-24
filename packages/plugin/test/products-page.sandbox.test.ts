@@ -6,6 +6,7 @@ import {
 	type StubCommerceServer,
 } from "./helpers/stub-commerce-server.js";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
+import { PRODUCTS_PAGE } from "../src/admin/products-page.js";
 
 // The admin Products console under the REAL workerd-on-Node sandbox (admin-UX
 // Increment 2, "product enumerate + product list"): page_load renders the
@@ -196,11 +197,19 @@ describe("admin Products console (workerd sandbox)", () => {
 		expect(keys).not.toContain("admin/products");
 	});
 
+	test("the console nav label reads 'Pricing & inventory' while its route stays /products", () => {
+		// The nav label is distinct from the CMS 'Products' content type; the
+		// route/URL is load-bearing (bookmarks + the page==="/products" gate) and
+		// must NOT change with the rename.
+		expect(PRODUCTS_PAGE.label).toBe("Pricing & inventory");
+		expect(PRODUCTS_PAGE.path).toBe("/products");
+	});
+
 	test("page_load /products renders the list and forwards the kv-sourced admin token", async () => {
 		await boot();
 		const outcome = await sandbox!.invokeRoute("admin", { type: "page_load", page: "/products" });
 		const blocks = blocksOf(outcome);
-		expect(blocks.some((b) => b.type === "header" && b.text === "Products")).toBe(true);
+		expect(blocks.some((b) => b.type === "header" && b.text === "Pricing & inventory")).toBe(true);
 		const table = blocks.find((b) => b.type === "table");
 		expect(table).toBeDefined();
 		expect(((table?.rows ?? []) as unknown[]).length).toBe(2);
@@ -347,7 +356,7 @@ describe("admin Products console (workerd sandbox)", () => {
 			value: {},
 		});
 		const blocks = blocksOf(outcome);
-		expect(blocks.some((b) => b.type === "header" && b.text === "Products")).toBe(true);
+		expect(blocks.some((b) => b.type === "header" && b.text === "Pricing & inventory")).toBe(true);
 		expect(blocks.some((b) => b.type === "table")).toBe(true);
 	});
 
