@@ -46,7 +46,7 @@ import {
  */
 export const PRODUCTS_PAGE: AdminPageConfig = {
 	path: "/products",
-	label: "Products",
+	label: "Pricing & inventory",
 	icon: "box",
 };
 
@@ -219,7 +219,7 @@ function listBlocks(
 	};
 
 	const blocks: Block[] = [
-		{ type: "header", text: "Products" },
+		{ type: "header", text: "Pricing & inventory" },
 		{
 			type: "context",
 			text: 'View-only console. Filter and open a product for its full read-only detail. Stock is shown on the detail view only (kept off this list to avoid a per-row inventory lookup). Money shown in the product\'s own currency. "Archived" is a separate view of products deleted (trashed or permanently removed) in the CMS — they never appear alongside live products, and there is no restore here (restoring the CMS document does not un-delete the commerce record).',
@@ -330,7 +330,7 @@ function productDetailLevel() {
 		notFound({ actions, id }) {
 			return [
 				{ type: "header", text: "Product not found" },
-				backButton(actions.back, "← Back to products"),
+				backButton(actions.back, "← Back to pricing & inventory"),
 				{
 					type: "banner",
 					variant: "error",
@@ -374,7 +374,7 @@ function detailBlocks(
 	];
 	const blocks: Block[] = [
 		{ type: "header", text: p.title ?? id },
-		backButton(actions.back, "← Back to products"),
+		backButton(actions.back, "← Back to pricing & inventory"),
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
 	blocks.push({ type: "fields", fields });
@@ -657,7 +657,7 @@ function dimensionsSummary(p: ProductDetailWire): string {
 function failClosed() {
 	return {
 		blocks: [
-			{ type: "header" as const, text: "Products" },
+			{ type: "header" as const, text: "Pricing & inventory" },
 			{
 				type: "banner" as const,
 				variant: "error" as const,
