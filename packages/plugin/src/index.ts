@@ -80,8 +80,6 @@ export {
 	type CouponsPageInput,
 } from "./admin/coupons-page.js";
 export { formatMinorUnitsInput, parseMinorUnitsInput } from "./admin/money-input.js";
-export { PRODUCT_COMMERCE_ROUTE } from "./admin/product-commerce-route.js";
-export type { ProductCommerceRouteInput } from "./admin/product-commerce-route.js";
 export {
 	AdminRulesClient,
 	type AdminRulesClientOptions,

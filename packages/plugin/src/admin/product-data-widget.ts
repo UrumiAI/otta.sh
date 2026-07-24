@@ -1,4 +1,4 @@
-import type { CommerceProductKind, ProductCommerce } from "../product-commerce/commerce-client.js";
+import type { CommerceProductKind } from "../product-commerce/commerce-client.js";
 import type { Element, FieldWidgetConfig } from "../types.js";
 
 const CURRENCY_OPTIONS = [
@@ -12,196 +12,118 @@ const PRODUCT_KIND_OPTIONS: Array<{ value: CommerceProductKind; label: string }>
 	{ value: "digital", label: "Digital" },
 ];
 
-export interface ProductDataWidgetState {
-	/** `event.isNew` / absence of `content.id` on the editor side (plan §5). */
-	hasProductId: boolean;
-	commerce?: ProductCommerce | null;
-	/**
-	 * Whether the CMS content being priced is CURRENTLY PUBLISHED (issue #82).
-	 * Baked into the Save button's `value` so the panel Save round-trips it back
-	 * to the `product-commerce` route (em-dash `ButtonElement.value` →
-	 * `BlockAction.value`), which then activates the just-priced row in the same
-	 * operation — no manual unpublish→republish. Undefined ⇒ the host did not
-	 * thread a publish signal ⇒ the button carries none ⇒ the route does not
-	 * activate (the row stays inactive until `content:afterPublish`).
-	 */
-	published?: boolean;
-	/** The content's `updatedAt` ordering watermark paired with `published`
-	 *  (issue #82) — carried alongside it in the Save button `value`. */
-	contentUpdatedAt?: string;
-}
-
 /**
- * Builds the "Product data" panel's Block Kit element tree (plan §5/§6 step
- * 8). Pure function of state — no React (DEVELOPMENT.md §5), no capability
- * use, so it is trivially testable both directly and via the sandbox's
- * `panel-state` route.
+ * Builds the "Product data" field-widget's Block Kit element tree (issue #81
+ * rework). Pure function, no state, no React (DEVELOPMENT.md §5).
  *
- * "Create then price", UX layer (plan §1 case 3): a brand-new unsaved
- * product (`!hasProductId`) renders every field disabled with a "save the
- * product first" notice and NO save action — no commercial write is
- * reachable from here at all (the server-side `MISSING_PRODUCT_ID` guard in
- * the route is the second, API-level layer).
+ * ── Why this is INLINE INPUTS with NO button (the crux of the rework) ──────
+ * em-dash renders a sandboxed field widget through `BlockKitFieldWidget`
+ * (`packages/admin/src/components/BlockKitFieldWidget.tsx`), which:
+ *   1. supports ONLY `text_input` / `number_input` / `toggle` / `select` /
+ *      `media_picker` — ANY other element type (notably `button`) renders as
+ *      "Unsupported widget element type", so the old button-bearing tree died
+ *      on the first unsupported element and Price/Currency/Stock never showed;
+ *   2. has ONLY an `onChange` contract (NO `onAction`/button round-trip): it
+ *      decomposes the field's stored JSON into per-`action_id` values and
+ *      recomposes on every change (`onChange({ ...obj, [action_id]: value })`),
+ *      persisting the whole object as the content document's `commerce` field.
+ * So there is nothing for a Save button to POST to, and no way to render one.
+ * Instead every commercial value is a supported inline input whose `action_id`
+ * is the key it lands under in the `commerce` JSON; the editor's NATIVE Save
+ * persists that field, and `content:afterSave` (sync/hooks.ts) derives
+ * `product_commerce` from it — activating the row in the same save when the
+ * product is published (issue #82), so pricing + saving a published product
+ * makes it purchasable in one action.
  *
- * The Stock field is create-only (plan §5/§8 Risk 4): once a sku already
- * exists it becomes a disabled/read-only display — further stock changes go
- * exclusively through Phase 3's reserve/commit/release/adjust, never a
- * blind overwrite here.
+ * ── Why the tree is STATIC (values are NOT read here) ──────────────────────
+ * em-dash renders the widget from the manifest's static `elements` and fills
+ * each input's value from the STORED `commerce` field JSON keyed by
+ * `action_id` — it ignores element `initial_value`/`disabled`. So there is no
+ * live-state fetch and nothing state-dependent to build: the current values
+ * come from the persisted field the editor already loaded. (The Stock field's
+ * create-only semantics can therefore NOT be enforced in the UI; they are
+ * enforced server-side — the service treats `initialOnHand` as a
+ * create-if-absent seed that never clobbers an existing/decremented `on_hand`,
+ * see `@urumi/domain` `upsertProductCommerce` + `InventoryStore.seedOnHand`.)
+ *
+ * Help/guidance is carried in labels + placeholders because a non-input block
+ * (header/section/banner) is unsupported by the field widget and would render
+ * as "Unsupported element". The old "priced but not active" indicator is
+ * dropped: saving a published product now activates it in the same operation,
+ * so the priced-but-inactive window it warned about largely no longer opens.
  */
-export function buildProductDataElements(state: ProductDataWidgetState): Element[] {
-	if (!state.hasProductId) {
-		return [
-			{
-				type: "text_input",
-				action_id: "sku",
-				label: "SKU",
-				placeholder: "Save the product first to add pricing",
-				disabled: true,
-			},
-			{
-				type: "button",
-				action_id: "save",
-				label: "Save the product first to add pricing",
-				disabled: true,
-			},
-		];
-	}
-
-	const commerce = state.commerce ?? null;
-	const hasSku = commerce?.sku !== null && commerce?.sku !== undefined;
-	const hasPrice = commerce?.price !== null && commerce?.price !== undefined;
-
-	const elements: Element[] = [];
-
-	// Issue #82 (option 2): a lightweight "priced but not active" indicator.
-	// When the row is commerce-complete (sku + price set) yet `active=false`, the
-	// storefront PDP shows "Not currently available" with no admin signal — a
-	// narrow re-creation of #82 whenever activation is lost (e.g. a best-effort
-	// activate failed, or the host never carried the publish signal). Surface it
-	// so the merchant knows the remedy (publish / re-publish). Rendered as a
-	// disabled input because a sandboxed field widget only renders input-like
-	// elements (a static banner would show as "Unsupported element"); it carries
-	// no editable value and the route ignores its `action_id`.
-	if (hasSku && hasPrice && commerce?.active === false) {
-		elements.push({
-			type: "text_input",
-			action_id: "pricedInactiveNotice",
-			label: "⚠ Priced but not active — not yet purchasable",
-			placeholder: "Publish (or re-publish) this product to make it available on the storefront.",
-			disabled: true,
-		});
-	}
-
-	elements.push(
+export function buildProductDataElements(): Element[] {
+	return [
 		{
 			type: "text_input",
 			action_id: "sku",
 			label: "SKU",
-			...(commerce?.sku !== null && commerce?.sku !== undefined
-				? { initial_value: commerce.sku }
-				: {}),
+			placeholder: "Stock-keeping unit — required to make the product sellable",
 		},
 		{
 			type: "number_input",
 			action_id: "price",
-			label: "Price (integer minor units)",
-			...(commerce?.price !== null && commerce?.price !== undefined
-				? { initial_value: commerce.price.amount }
-				: {}),
+			// Money is integer MINOR units (CLAUDE.md non-negotiable): a decimal
+			// entry is rejected at the afterSave derive boundary, never coerced.
+			label: "Price (integer minor units — e.g. 1999 = $19.99)",
 		},
 		{
 			type: "select",
 			action_id: "currency",
-			label: "Currency",
+			label: "Currency (ISO-4217)",
 			options: CURRENCY_OPTIONS,
-			...(commerce?.price !== null && commerce?.price !== undefined
-				? { initial_value: commerce.price.currency }
-				: {}),
 		},
 		{
 			type: "number_input",
 			action_id: "onHand",
-			label: hasSku ? "Stock (on hand) — managed via inventory once set" : "Stock (on hand)",
-			// Create-only: once a sku already exists this becomes read-only.
-			disabled: hasSku,
+			// Create-only server-side: sets the INITIAL stock when the row is first
+			// created; a re-save never overwrites an existing/decremented on_hand
+			// (inventory-managed thereafter via reserve/commit/release/adjust).
+			label: "Initial stock on hand (set once; managed via inventory after)",
 		},
 		{
 			type: "select",
 			action_id: "productKind",
 			label: "Product kind",
 			options: PRODUCT_KIND_OPTIONS,
-			initial_value: commerce?.productKind ?? "physical",
 		},
 		{
 			type: "text_input",
 			action_id: "taxClass",
 			label: "Tax class",
-			...(commerce?.taxClass !== null && commerce?.taxClass !== undefined
-				? { initial_value: commerce.taxClass }
-				: {}),
+			placeholder: "Optional tax class code",
 		},
 		{
 			type: "number_input",
 			action_id: "weightGrams",
 			label: "Weight (g)",
-			...(commerce?.weightGrams !== null && commerce?.weightGrams !== undefined
-				? { initial_value: commerce.weightGrams }
-				: {}),
 		},
 		{
 			type: "number_input",
 			action_id: "lengthMm",
 			label: "Length (mm)",
-			...(commerce?.lengthMm !== null && commerce?.lengthMm !== undefined
-				? { initial_value: commerce.lengthMm }
-				: {}),
 		},
 		{
 			type: "number_input",
 			action_id: "widthMm",
 			label: "Width (mm)",
-			...(commerce?.widthMm !== null && commerce?.widthMm !== undefined
-				? { initial_value: commerce.widthMm }
-				: {}),
 		},
 		{
 			type: "number_input",
 			action_id: "heightMm",
 			label: "Height (mm)",
-			...(commerce?.heightMm !== null && commerce?.heightMm !== undefined
-				? { initial_value: commerce.heightMm }
-				: {}),
 		},
-		{
-			type: "button",
-			action_id: "save",
-			label: "Save",
-			// Issue #82: carry the CURRENT publish state back to the product-commerce
-			// route so a "publish first, price later" product is activated on save
-			// (no republish). Only attached when the host threaded a publish signal;
-			// absent ⇒ the route does not activate.
-			...(state.published !== undefined
-				? {
-						value: {
-							contentPublished: state.published,
-							...(state.contentUpdatedAt !== undefined
-								? { contentUpdatedAt: state.contentUpdatedAt }
-								: {}),
-						},
-					}
-				: {}),
-		},
-	);
-	return elements;
+	];
 }
 
-/** The manifest-declared widget config — the default (disabled, "create
- *  then price") state, per `FieldWidgetConfig`'s static shape. The live,
- *  state-aware tree is served by the `panel-state` route
- *  (plan §8 Risk 5 — Block Kit action→route plumbing spike). */
+/** The manifest-declared widget config (em-dash `FieldWidgetConfig`). em-dash
+ *  renders THESE static `elements` for the sandboxed field widget and fills
+ *  their values from the stored `commerce` JSON — there is no live/state-aware
+ *  variant (see `buildProductDataElements`). Bound to the products collection's
+ *  `json` `commerce` field via `widget: "urumi:product-data"`. */
 export const productDataWidget: FieldWidgetConfig = {
 	name: "product-data",
 	label: "Product data",
 	fieldTypes: ["json"],
-	elements: buildProductDataElements({ hasProductId: false }),
+	elements: buildProductDataElements(),
 };

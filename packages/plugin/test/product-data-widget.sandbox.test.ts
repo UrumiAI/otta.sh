@@ -17,16 +17,46 @@ afterEach(async () => {
 	stub = undefined;
 });
 
-describe('"Product data" widget + save route (plan §6 step 8)', () => {
-	test("the widget declares Block Kit elements (no React) with the commercial field layout (plan §5)", () => {
-		expect(productDataWidget.name).toBe("product-data");
-		expect(Array.isArray(productDataWidget.elements)).toBe(true);
-		// No React entry — sandboxed widgets render from `elements`, never `entry`
-		// (the local `FieldWidgetConfig` type has no `entry` field at all).
-		expect("entry" in productDataWidget).toBe(false);
+// The ONLY element types em-dash's `BlockKitFieldWidget` renders — anything
+// else (notably `button`) shows as "Unsupported widget element type"
+// (`~/em-dash` packages/admin/src/components/BlockKitFieldWidget.tsx). The
+// whole rework exists because the old tree emitted a `button` here.
+const FIELD_WIDGET_SUPPORTED_TYPES = new Set([
+	"text_input",
+	"number_input",
+	"toggle",
+	"select",
+	"media_picker",
+]);
 
-		const enabled = buildProductDataElements({ hasProductId: true, commerce: null });
-		const actionIds = enabled.map((el) => el.action_id);
+describe('"Product data" field widget — inline inputs, no button (issue #81 rework)', () => {
+	test("the widget declares Block Kit elements (no React), all with an action_id", () => {
+		expect(productDataWidget.name).toBe("product-data");
+		expect(productDataWidget.fieldTypes).toContain("json");
+		expect(Array.isArray(productDataWidget.elements)).toBe(true);
+		// No React entry — sandboxed widgets render from `elements`, never `entry`.
+		expect("entry" in productDataWidget).toBe(false);
+		// em-dash filters out elements without an action_id (they can't map to a
+		// value) — every element must carry one.
+		for (const el of productDataWidget.elements) {
+			expect(typeof el.action_id).toBe("string");
+			expect(el.action_id.length).toBeGreaterThan(0);
+		}
+	});
+
+	test("EVERY element is a field-widget-SUPPORTED type — no `button`, no unsupported element (the crux)", () => {
+		const els = buildProductDataElements();
+		for (const el of els) {
+			expect(FIELD_WIDGET_SUPPORTED_TYPES.has(el.type)).toBe(true);
+		}
+		// Belt-and-braces: the failure mode this rework fixes is specifically a
+		// `button` in a field widget.
+		expect(els.some((el) => el.type === "button")).toBe(false);
+		expect(productDataWidget.elements.some((el) => el.type === "button")).toBe(false);
+	});
+
+	test("the tree carries the full commercial field layout keyed by action_id", () => {
+		const actionIds = buildProductDataElements().map((el) => el.action_id);
 		expect(actionIds).toEqual(
 			expect.arrayContaining([
 				"sku",
@@ -39,51 +69,34 @@ describe('"Product data" widget + save route (plan §6 step 8)', () => {
 				"lengthMm",
 				"widthMm",
 				"heightMm",
-				"save",
 			]),
 		);
 	});
 
-	test("new product (no id) renders every field disabled with a create-then-price notice, and offers no save action", () => {
-		const disabled = buildProductDataElements({ hasProductId: false });
-		for (const el of disabled) {
-			expect(el.disabled).toBe(true);
-		}
-		const save = disabled.find((el) => el.action_id === "save");
-		expect(save).toBeDefined();
-		expect(save?.disabled).toBe(true);
-		expect((save as { label: string }).label).toMatch(/save the product first/i);
+	test("price is a number_input labelled as integer MINOR units; currency + kind are selects with options", () => {
+		const els = buildProductDataElements();
+		const price = els.find((el) => el.action_id === "price");
+		expect(price?.type).toBe("number_input");
+		expect((price as { label?: string }).label).toMatch(/minor units/i);
+
+		const currency = els.find((el) => el.action_id === "currency");
+		expect(currency?.type).toBe("select");
+		expect((currency as { options?: unknown[] }).options?.length).toBeGreaterThan(0);
+
+		const kind = els.find((el) => el.action_id === "productKind");
+		expect(kind?.type).toBe("select");
+		expect((kind as { options?: Array<{ value: string }> }).options?.map((o) => o.value)).toEqual(
+			expect.arrayContaining(["physical", "digital"]),
+		);
 	});
 
-	test("once a sku exists, the Stock field becomes disabled (create-only — plan §5/§8 Risk 4)", () => {
-		const beforeSku = buildProductDataElements({ hasProductId: true, commerce: null });
-		const onHandBefore = beforeSku.find((el) => el.action_id === "onHand");
-		expect(onHandBefore?.disabled).toBeFalsy();
-
-		const afterSku = buildProductDataElements({
-			hasProductId: true,
-			commerce: {
-				productId: "prod-1",
-				sku: "SKU-1",
-				price: null,
-				taxClass: null,
-				weightGrams: null,
-				lengthMm: null,
-				widthMm: null,
-				heightMm: null,
-				productKind: "physical",
-				active: false,
-				deletedAt: null,
-				contentUpdatedAt: null,
-				createdAt: "x",
-				updatedAt: "x",
-			},
-		});
-		const onHandAfter = afterSku.find((el) => el.action_id === "onHand");
-		expect(onHandAfter?.disabled).toBe(true);
+	test("the widget tree is STATIC — em-dash fills values from the stored `commerce` JSON, so the builder is deterministic", () => {
+		// No live-state fetch / no state argument: two calls are structurally
+		// identical (values live in the field JSON the editor loaded, not here).
+		expect(buildProductDataElements()).toEqual(buildProductDataElements());
 	});
 
-	test("the panel-state route serves the disabled tree for a new product and the enabled tree once a row exists — under the sandbox", async () => {
+	test("the panel-state diagnostic read returns the static elements + the derived row over ctx.http — under the sandbox", async () => {
 		stub = await startStubCommerceServer();
 		stub.respondWith("GET", (req) =>
 			req.url === "/products/prod-1/commerce"
@@ -112,176 +125,14 @@ describe('"Product data" widget + save route (plan §6 step 8)', () => {
 			commerceServiceBaseUrl: stub.baseUrl,
 		});
 
-		const newProduct = await sandbox.invokeRoute("product-data/panel-state", {});
-		expect(newProduct).toMatchObject({
-			result: { elements: expect.arrayContaining([expect.objectContaining({ disabled: true })]) },
+		const withoutId = await sandbox.invokeRoute("product-data/panel-state", {});
+		expect(withoutId).toMatchObject({
+			result: { elements: expect.any(Array), commerce: null },
 		});
 
-		const existingProduct = await sandbox.invokeRoute("product-data/panel-state", {
-			productId: "prod-1",
-		});
-		if (!("result" in existingProduct)) throw new Error("expected a result");
-		const elements = (existingProduct.result as { elements: Array<{ action_id: string }> })
-			.elements;
-		expect(elements.some((el) => el.action_id === "save")).toBe(true);
-	});
-
-	test("panel save action posts to the product-commerce route and upserts via the service — under the sandbox", async () => {
-		stub = await startStubCommerceServer();
-		let putBody: unknown;
-		let putHeaders: Record<string, string | string[] | undefined> = {};
-		stub.respondWith("PUT", (req) => {
-			putBody = req.body;
-			putHeaders = req.headers;
-			return {
-				status: 200,
-				body: {
-					productId: "prod-2",
-					sku: "SKU-2",
-					price: { amount: 1000, currency: "USD" },
-					taxClass: null,
-					weightGrams: null,
-					lengthMm: null,
-					widthMm: null,
-					heightMm: null,
-					productKind: "physical",
-					active: false,
-					deletedAt: null,
-					createdAt: "x",
-					updatedAt: "x",
-				},
-			};
-		});
-		sandbox = await loadPluginInSandbox({
-			allowedHosts: [stub.host],
-			commerceServiceBaseUrl: stub.baseUrl,
-		});
-
-		// The posted payload is the ENTIRE captured Block Kit form state, keyed
-		// by action_id (plan §8 Risk 5) — no content:read re-read needed.
-		const outcome = await sandbox.invokeRoute("product-commerce", {
-			productId: "prod-2",
-			sku: "SKU-2",
-			price: 1000,
-			currency: "USD",
-			productKind: "physical",
-			onHand: 20,
-		});
-
-		expect(outcome).toMatchObject({
-			result: { ok: true, productCommerce: { productId: "prod-2" } },
-		});
-		expect(putBody).toEqual({
-			sku: "SKU-2",
-			price: { amount: 1000, currency: "USD" },
-			productKind: "physical",
-			initialOnHand: 20,
-		});
-		expect(putHeaders["idempotency-key"]).toBeTruthy();
-	});
-
-	test("a retransmitted identical panel submission derives the SAME idempotency key; a different edit derives a different one (S2)", async () => {
-		stub = await startStubCommerceServer();
-		stub.respondWith("PUT", () => ({
-			status: 200,
-			body: {
-				productId: "prod-s2",
-				sku: "SKU-S2",
-				price: { amount: 1000, currency: "USD" },
-				taxClass: null,
-				weightGrams: null,
-				lengthMm: null,
-				widthMm: null,
-				heightMm: null,
-				productKind: "physical",
-				active: false,
-				deletedAt: null,
-				contentUpdatedAt: null,
-				createdAt: "x",
-				updatedAt: "x",
-			},
-		}));
-		sandbox = await loadPluginInSandbox({
-			allowedHosts: [stub.host],
-			commerceServiceBaseUrl: stub.baseUrl,
-		});
-
-		const submission = { productId: "prod-s2", sku: "SKU-S2", price: 1000, currency: "USD" };
-		// A host retry / double-submit retransmits the SAME form_submit
-		// (em-dash's FormSubmit carries no event id — the key must be
-		// content-derived): both invocations must carry the SAME
-		// Idempotency-Key so the service's once-only guard covers the
-		// explicit-Save path too.
-		await sandbox.invokeRoute("product-commerce", submission);
-		await sandbox.invokeRoute("product-commerce", submission);
-		// A genuinely new edit (any field changed) is a new intended write.
-		await sandbox.invokeRoute("product-commerce", { ...submission, price: 2000 });
-
-		const keys = stub.requests
-			.filter((r) => r.method === "PUT")
-			.map((r) => r.headers["idempotency-key"]);
-		expect(keys).toHaveLength(3);
-		expect(keys[0]).toBe(keys[1]);
-		expect(keys[2]).not.toBe(keys[0]);
-	});
-
-	test("panel route returns structured field errors for invalid numerics/currency — not an opaque 500 (S6)", async () => {
-		stub = await startStubCommerceServer();
-		stub.respondWith("PUT", () => ({ status: 200, body: {} }));
-		sandbox = await loadPluginInSandbox({
-			allowedHosts: [stub.host],
-			commerceServiceBaseUrl: stub.baseUrl,
-		});
-
-		const outcome = await sandbox.invokeRoute("product-commerce", {
-			productId: "prod-s6",
-			sku: "",
-			price: 19.99, // float — must never reach a money field
-			currency: "usd", // not ISO-4217 upper-case
-			onHand: -5,
-			weightGrams: 1.5,
-			productKind: "subscription",
-		});
-
-		expect(outcome).toMatchObject({
-			result: {
-				ok: false,
-				error: "INVALID_FIELDS",
-				fields: {
-					sku: expect.stringContaining("non-empty"),
-					price: expect.stringContaining("integer"),
-					onHand: expect.stringContaining("non-negative integer"),
-					weightGrams: expect.stringContaining("non-negative integer"),
-					productKind: expect.stringContaining("physical or digital"),
-				},
-			},
-		});
-		// Nothing invalid ever reaches the service.
-		expect(stub.requests.filter((r) => r.method === "PUT")).toHaveLength(0);
-	});
-
-	test("a live-SKU conflict (service 409 SKU_TAKEN) surfaces as a structured per-field error in the panel — under the sandbox (F2)", async () => {
-		stub = await startStubCommerceServer();
-		stub.respondWith("PUT", () => ({
-			status: 409,
-			body: { ok: false, error: "SKU_TAKEN", sku: "SKU-DUP" },
-		}));
-		sandbox = await loadPluginInSandbox({
-			allowedHosts: [stub.host],
-			commerceServiceBaseUrl: stub.baseUrl,
-		});
-
-		const outcome = await sandbox.invokeRoute("product-commerce", {
-			productId: "prod-f2",
-			sku: "SKU-DUP",
-		});
-
-		expect(outcome).toEqual({
-			result: {
-				ok: false,
-				error: "SKU_TAKEN",
-				fields: { sku: 'SKU "SKU-DUP" is already used by another live product' },
-			},
+		const withId = await sandbox.invokeRoute("product-data/panel-state", { productId: "prod-1" });
+		expect(withId).toMatchObject({
+			result: { elements: expect.any(Array), commerce: { productId: "prod-1", sku: "SKU-1" } },
 		});
 	});
 
@@ -298,59 +149,4 @@ describe('"Product data" widget + save route (plan §6 step 8)', () => {
 		// anywhere in packages/plugin/src — is the `plugin-is-sandbox-clean`
 		// dependency-cruiser rule, wired into `pnpm lint` (.dependency-cruiser.cjs).
 	});
-
-	// -- issue #82: "priced but not active" indicator (option 2) --------------
-	test("a priced-but-INACTIVE row shows a disabled 'priced but not active' notice with the republish remedy (#82 option 2)", () => {
-		const els = buildProductDataElements({
-			hasProductId: true,
-			commerce: commerceRow({ active: false }),
-		});
-		const notice = els.find((el) => el.action_id === "pricedInactiveNotice");
-		expect(notice).toBeDefined();
-		expect((notice as { disabled?: boolean }).disabled).toBe(true);
-		expect((notice as { label: string }).label).toMatch(/priced but not active/i);
-		expect((notice as { placeholder?: string }).placeholder).toMatch(/publish/i);
-	});
-
-	test("an ACTIVE priced row shows NO notice (the storefront can sell it)", () => {
-		const els = buildProductDataElements({
-			hasProductId: true,
-			commerce: commerceRow({ active: true }),
-		});
-		expect(els.find((el) => el.action_id === "pricedInactiveNotice")).toBeUndefined();
-	});
-
-	test("an inactive but UNPRICED row shows NO notice (not yet sellable for a legitimate reason)", () => {
-		const els = buildProductDataElements({
-			hasProductId: true,
-			commerce: commerceRow({ active: false, sku: "SKU-1", price: null }),
-		});
-		expect(els.find((el) => el.action_id === "pricedInactiveNotice")).toBeUndefined();
-	});
 });
-
-/** The subset of the plugin's `ProductCommerce` the widget reads — imported
- *  structurally so the test row stays in lockstep with the real shape. */
-type ProductCommerceForWidget = NonNullable<
-	Parameters<typeof buildProductDataElements>[0]["commerce"]
->;
-
-function commerceRow(overrides: Partial<ProductCommerceForWidget> = {}): ProductCommerceForWidget {
-	return {
-		productId: "prod-1",
-		sku: "SKU-1",
-		price: { amount: 1500, currency: "USD" },
-		taxClass: null,
-		weightGrams: null,
-		lengthMm: null,
-		widthMm: null,
-		heightMm: null,
-		productKind: "physical",
-		active: true,
-		deletedAt: null,
-		contentUpdatedAt: null,
-		createdAt: "2026-07-10T00:00:00.000Z",
-		updatedAt: "2026-07-10T00:00:00.000Z",
-		...overrides,
-	};
-}

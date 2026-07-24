@@ -5,7 +5,6 @@ import { INTERNAL_TOKEN_KEY, createSettingsFormHandler } from "../src/admin/sett
 import { createAfterSaveHandler } from "../src/sync/hooks.js";
 import { createCartLineAddRouteHandler } from "../src/storefront/cart-routes.js";
 import { createAccountOrdersHandler } from "../src/storefront/account-routes.js";
-import { createProductCommerceRouteHandler } from "../src/admin/product-commerce-route.js";
 import { createOrdersPageHandler } from "../src/admin/orders-page.js";
 
 // ADR-0007 — every plugin client sources the write-gate token from write-only
@@ -86,7 +85,17 @@ describe("service token rides every construction site from write-only kv (ADR-00
 	test("sync afterSave upsert (PUT) carries X-Service-Token", async () => {
 		const { ctx, requests } = makeCtx({ [SERVICE_TOKEN_KEY]: SERVICE_TOKEN });
 		await createAfterSaveHandler()(
-			{ collection: "products", isNew: false, content: { id: "p1", updatedAt: "2026-07-12" } },
+			{
+				collection: "products",
+				isNew: false,
+				content: {
+					id: "p1",
+					updatedAt: "2026-07-12",
+					// The write only fires when the commerce field derives a valid,
+					// sellable row (issue #81 rework — afterSave is the sole write path).
+					data: { commerce: { sku: "S1", price: 1000, currency: "USD" } },
+				},
+			},
 			ctx,
 		);
 		const put = find(requests, "PUT", "/products/p1/commerce");
@@ -115,17 +124,6 @@ describe("service token rides every construction site from write-only kv (ADR-00
 		expect(get).toBeDefined();
 		expect(header(get?.init, "X-Service-Token")).toBe(SERVICE_TOKEN);
 		expect(header(get?.init, "authorization")).toBe("Bearer sess-123");
-	});
-
-	test("admin product-commerce upsert (PUT) carries X-Service-Token", async () => {
-		const { ctx, requests } = makeCtx({ [SERVICE_TOKEN_KEY]: SERVICE_TOKEN });
-		await createProductCommerceRouteHandler()(
-			{ input: { productId: "p9", sku: "S9" }, request: req },
-			ctx,
-		);
-		const put = find(requests, "PUT", "/products/p9/commerce");
-		expect(put).toBeDefined();
-		expect(header(put?.init, "X-Service-Token")).toBe(SERVICE_TOKEN);
 	});
 
 	test("Settings save-operational PUT carries BOTH X-Service-Token and X-Internal-Token", async () => {
