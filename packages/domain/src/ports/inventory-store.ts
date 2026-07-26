@@ -20,7 +20,16 @@ export interface InventoryStore {
 	// a benign no-op. A `commit` against a reservation that is neither
 	// `held`/`adopted` nor already `committed` (it was `released`/lost) throws the
 	// typed `ReservationCommitLostError` — settle turns that into the loud
-	// 0-row-commit anomaly (§5), never a silent no-op.
+	// 0-row-commit anomaly (§5), never a silent no-op. `commit`/`release` against
+	// an id that does not exist throw `ReservationNotFoundError`; an id that
+	// exists but is not committable stays `ReservationCommitLostError` (the loud
+	// anomaly). KNOWN ASYMMETRY: `adjust` shares the same choke point
+	// (`#selectById`/`#mustGet`) as `commit`/`release`, so it throws the same typed
+	// `ReservationNotFoundError` for an unknown id, but nothing at the HTTP
+	// boundary maps it — a cart `PATCH /carts/:id/lines/:lineId` against a
+	// vanished reservation still surfaces as a **500**. Deliberate and out of
+	// scope: the cart failure taxonomy (`CartFailure`) has no "reservation
+	// vanished" member, and adding one is a domain-model change with its own PR.
 	commit(reservationId: string): Promise<void>;
 	release(reservationId: string): Promise<void>;
 	// Additive (Phase 4 §5): the single guarded `held → adopted` flip that hands a
@@ -58,8 +67,9 @@ export interface InventoryStore {
 	// already-`committed` row is a benign success (absent from `lost`); a 0-row id
 	// that is `released`/`failed`/etc. is a LOST hold (in `lost`) — settle turns
 	// each into the loud `COMMIT_LOST` anomaly (§5). An UNKNOWN id matches singular
-	// `commit`, whose `#selectById` THROWS a bare Error for an absent row, so a
-	// truly-unknown id PROPAGATES (never folded into `lost`). Empty `reservationIds`
+	// `commit`, whose `#selectById` THROWS `ReservationNotFoundError` for an
+	// absent row, so a truly-unknown id PROPAGATES (never folded into `lost`).
+	// Empty `reservationIds`
 	// is a no-op (`{ lost: [] }`, no DB round trip). Membership only.
 	commitMany(reservationIds: string[]): Promise<CommitManyResult>;
 
@@ -237,6 +247,20 @@ export class ReservationCommitLostError extends Error {
 	constructor(reservationId: string, state: string) {
 		super(`cannot commit reservation ${reservationId}: it is ${state}, not held/adopted/committed`);
 		this.name = "ReservationCommitLostError";
+	}
+}
+
+/**
+ * Thrown by `commit`/`release` (and `adjust`, which shares the same choke
+ * point) when `reservationId` does not exist at all — never created, as
+ * distinct from `ReservationCommitLostError`'s "existed but is not
+ * committable". The HTTP boundary maps this to a 404; see the port docblock
+ * above `commit` for the known `adjust` asymmetry.
+ */
+export class ReservationNotFoundError extends Error {
+	constructor(reservationId: string) {
+		super(`unknown reservation: ${reservationId}`);
+		this.name = "ReservationNotFoundError";
 	}
 }
 

@@ -113,6 +113,7 @@ export {
 export {
 	AdjustReservationMismatchError,
 	ReservationCommitLostError,
+	ReservationNotFoundError,
 	ReservationNotHeldError,
 	StockMovementMismatchError,
 	type AdoptInput,

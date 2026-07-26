@@ -10,6 +10,7 @@ import {
 	type CommitManyResult,
 	type InventoryStore,
 	ReservationCommitLostError,
+	ReservationNotFoundError,
 	ReservationNotHeldError,
 	type ReserveResult,
 	type RestockResult,
@@ -266,8 +267,9 @@ export class InMemoryInventoryStore implements InventoryStore {
 	 * `commit` THROWS `ReservationCommitLostError` on a lost hold, so a bare loop
 	 * would short-circuit and diverge from the SQL batch — this MUST catch that
 	 * per id, push to `lost`, and CONTINUE. A benign already-`committed` hold is a
-	 * silent success (absent from `lost`). A truly-unknown id raises the bare
-	 * `#mustGet` Error, which PROPAGATES (matching the Kysely store's throw).
+	 * silent success (absent from `lost`). A truly-unknown id raises the typed
+	 * `#mustGet` `ReservationNotFoundError`, which PROPAGATES (matching the Kysely
+	 * store's throw).
 	 */
 	async commitMany(reservationIds: string[]): Promise<CommitManyResult> {
 		const lost: string[] = [];
@@ -279,7 +281,7 @@ export class InMemoryInventoryStore implements InventoryStore {
 					lost.push(reservationId);
 					continue;
 				}
-				throw err; // unknown-id bare Error propagates
+				throw err; // unknown-id ReservationNotFoundError propagates
 			}
 		}
 		return { lost };
@@ -463,7 +465,7 @@ export class InMemoryInventoryStore implements InventoryStore {
 	#mustGet(id: string): ReservationRow {
 		const row = this.#reservations.get(id);
 		if (row === undefined) {
-			throw new Error(`unknown reservation: ${id}`);
+			throw new ReservationNotFoundError(id);
 		}
 		return row;
 	}
