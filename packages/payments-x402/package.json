@@ -2,7 +2,16 @@
 	"name": "@urumi/payments-x402",
 	"version": "0.1.0",
 	"description": "x402 PaymentGateway adapter for Urumi — synchronous page-gate proof, facilitator-verified server-side (never trusting the plugin).",
+	"homepage": "https://github.com/UrumiAI/commerce#readme",
+	"bugs": {
+		"url": "https://github.com/UrumiAI/commerce/issues"
+	},
 	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/UrumiAI/commerce.git",
+		"directory": "packages/payments-x402"
+	},
 	"files": [
 		"dist"
 	],
