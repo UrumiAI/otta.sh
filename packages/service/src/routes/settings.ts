@@ -11,20 +11,35 @@ import { requireInternalToken } from "./internal-auth.js";
 
 export interface SettingsRoutesDeps {
 	settingsStore: SettingsStore;
-	/** Admin write guard (same mechanism as the other admin mutations); unset ⇒
-	 *  PUT answers 503 (disabled), never silently open. */
+	/** Admin guard for BOTH verbs — the read as much as the write (ADR-0010);
+	 *  unset ⇒ 503 (disabled), never silently open. */
 	internalToken?: string;
 }
 
 /**
  * Phase 7 settings endpoints (§6). `GET` reads the service-DB operational tier;
- * `PUT` is a privileged admin write (internal token, like every other admin
- * mutation) carrying an `Idempotency-Key`, zod-validated, invalid values → `400`
- * + structured error (never clamped). Secrets live ONLY in service env and are
- * never part of this surface — no secret-shaped field is read or returned here.
+ * `PUT` is a privileged admin write carrying an `Idempotency-Key`, zod-validated,
+ * invalid values → `400` + structured error (never clamped). Secrets live ONLY in
+ * service env and are never part of this surface — no secret-shaped field is read
+ * or returned here.
+ *
+ * BOTH verbs require the internal token (ADR-0010): the read half of a privileged
+ * write is admin surface too, and the app-level SERVICE_API_TOKEN write gate
+ * exempts GET/HEAD, so it does NOT cover the read. The authoritative guard is
+ * registered at the parent (`createApp`, `app.use("/settings")`); the blanket
+ * guard below is defense-in-depth for the sub-app on its own.
  */
 export function settingsRoutes(deps: SettingsRoutesDeps): Hono {
 	const app = new Hono();
+
+	// "*", not "/*": the only routes here are at "/" (the sub-app's root). "/*"
+	// DOES match the root on 4.12.x (measured), so this is forward-compatibility
+	// caution rather than a fix — "*" is unambiguous and cannot drift on a minor.
+	app.use("*", async (c, next) => {
+		const denied = requireInternalToken(c, deps.internalToken);
+		if (denied !== null) return denied;
+		await next();
+	});
 
 	app.get("/", async (c) => {
 		const settings = await getSettings(deps.settingsStore);
@@ -32,9 +47,6 @@ export function settingsRoutes(deps: SettingsRoutesDeps): Hono {
 	});
 
 	app.put("/", async (c) => {
-		const denied = requireInternalToken(c, deps.internalToken);
-		if (denied !== null) return denied;
-
 		const key = c.req.header("Idempotency-Key");
 		if (key === undefined || key.length === 0) {
 			return c.json({ ok: false, error: "Idempotency-Key header is required" }, 400);

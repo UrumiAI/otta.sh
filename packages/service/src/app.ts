@@ -19,8 +19,10 @@ import type {
 	TaxRulesStore,
 } from "@urumi/domain";
 import { Hono } from "hono";
+import type { MiddlewareHandler } from "hono";
 import { requireServiceToken } from "./auth.js";
 import { adminRoutes } from "./routes/admin.js";
+import { requireInternalToken } from "./routes/internal-auth.js";
 import { authRoutes } from "./routes/auth.js";
 import { reportsRoutes } from "./routes/reports.js";
 import { rulesAdminRoutes } from "./routes/rules-admin.js";
@@ -92,6 +94,39 @@ export function createApp(deps: AppDeps): Hono {
 		"*",
 		requireServiceToken(deps.serviceToken, [{ method: "POST", path: "/webhooks/stripe" }]),
 	);
+
+	// ADR-0010 — the AUTHORITATIVE admin/config guard. Passing the write gate
+	// above is NOT authorization: the gate exempts GET/HEAD (`auth.ts`) because it
+	// protects against unauthenticated WRITES by a machine caller, so a GET into
+	// any admin surface arrives with no credential at all unless a route checks
+	// one. Registering the check here, at the parent, BEFORE any `app.route(...)`,
+	// makes the whole `/admin/**`, `/reports/**` and `/settings` surface
+	// default-DENY: a route added later under those prefixes is closed even if its
+	// author forgets an inline guard.
+	//
+	// Parent-level and not inside a sub-app, deliberately. Hono merges a sub-app's
+	// middleware into the parent AT MOUNT TIME, so a blanket `app.use("/*")` in one
+	// sub-app only covers what is registered AFTER it — a SIBLING sub-app mounted
+	// at the same prefix earlier (`adminRoutes` and `rulesAdminRoutes` are both
+	// mounted at "/admin") is not covered. Sub-app and per-route guards stay as
+	// defense-in-depth; this one is the fail-safe (pinned by
+	// `test/admin-read-gate.test.ts`).
+	//
+	// A future route under these prefixes that needs looser auth must be mounted
+	// OUTSIDE them, never exempted here (ADR-0007 rejected exemption sprawl).
+	const adminGuard: MiddlewareHandler = async (c, next) => {
+		const denied = requireInternalToken(c, deps.internalToken);
+		if (denied !== null) return denied;
+		await next();
+	};
+	app.use("/admin/*", adminGuard);
+	app.use("/reports/*", adminGuard);
+	// Both forms on purpose: `/settings` is a leaf, and the exact-path
+	// registration must not depend on a Hono minor keeping "the wildcard also
+	// matches the bare prefix" (measured true on 4.12.x, pinned by the test).
+	app.use("/settings", adminGuard);
+	app.use("/settings/*", adminGuard);
+
 	app.get("/health", (c) => c.json({ ok: true }));
 	app.route("/inventory", inventoryRoutes(deps));
 	app.route(
@@ -186,9 +221,11 @@ export function createApp(deps: AppDeps): Hono {
 		}),
 	);
 	// Phase 7 (§6): read-only reports + operational settings. BOTH are admin
-	// surface — /reports/* reads expose merchant financial/operational data and
-	// PUT /settings is a privileged write, so both require the internal token
-	// (review J5).
+	// surface — /reports/* reads expose merchant financial/operational data, and
+	// /settings carries a privileged write AND the read half of it — so both
+	// require the internal token (review J5; the read half is ADR-0010). The
+	// `internalToken` threaded here now feeds each sub-app's defense-in-depth
+	// guard; the parent-level guard above is what actually closes the prefixes.
 	app.route(
 		"/reports",
 		reportsRoutes({

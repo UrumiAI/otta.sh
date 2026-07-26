@@ -34,7 +34,7 @@ import {
 } from "@urumi/store-postgres/pg";
 import type { Hono } from "hono";
 import { createApp } from "./app.js";
-import { resolveServiceConfig, type ServiceConfig } from "./config.js";
+import { openWriteGateWarning, resolveServiceConfig, type ServiceConfig } from "./config.js";
 import { ConsoleEmailSender, HttpEmailSender } from "./email/senders.js";
 import { wireX402Gateway } from "./x402-wiring.js";
 
@@ -174,14 +174,17 @@ export function createWorker(overrides: CreateWorkerOverrides = {}): UrumiWorker
 		}
 		if (!configMemo.ok) throw configMemo.error;
 		// Unset OR empty both leave the gate open (the middleware treats an
-		// empty token as disabled) — warn once per isolate for either.
-		const serviceToken = configMemo.value.serviceToken;
-		if ((serviceToken === undefined || serviceToken.length === 0) && !warnedOpenGate) {
-			warnedOpenGate = true;
-			console.warn(
-				"[service] SERVICE_API_TOKEN is unset — the write surface is OPEN. " +
-					"Run `wrangler secret put SERVICE_API_TOKEN` once the CMS-side plugin threads the same token.",
+		// empty token as disabled) — warn once per isolate for either. The
+		// gate-open condition + message live in the shared builder (config.ts).
+		if (!warnedOpenGate) {
+			const warning = openWriteGateWarning(
+				configMemo.value.serviceToken,
+				"Run `wrangler secret put SERVICE_API_TOKEN` once the CMS-side plugin threads the same token.",
 			);
+			if (warning !== undefined) {
+				warnedOpenGate = true;
+				console.warn(warning);
+			}
 		}
 		return configMemo.value;
 	}

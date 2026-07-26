@@ -9,6 +9,7 @@ import type {
 	SettingsFieldSpec,
 } from "../types.js";
 import { type OperationalSettingsWire, ReportingSettingsClient } from "./reporting-client.js";
+import { readAdminTokens } from "./scaffold/tokens.js";
 
 /**
  * The admin Settings form (plan §5.3 / §6 Step 7, extended by ADR-0007) — ONE
@@ -109,13 +110,18 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 	return async (routeCtx, ctx) => {
 		const input = routeCtx.input;
 		const action = typeof input.action_id === "string" ? input.action_id : "load";
-		// The privileged PUT /settings is gated by BOTH the admin token
-		// (X-Internal-Token) AND the write gate (X-Service-Token) when both service
-		// secrets are set — thread the write-gate token from write-only kv (ADR-0007).
-		const serviceToken = await serviceTokenFromKv(ctx);
+		// BOTH tokens, from the one place every guarded admin screen sources them:
+		//  - adminToken (X-Internal-Token) — `GET /settings` is admin surface too,
+		//    not just the PUT (ADR-0010), so the READ needs it as well. Sourcing
+		//    only the service token here is what left the Settings page unable to
+		//    read once the GET was gated.
+		//  - serviceToken (X-Service-Token, ADR-0007) — the machine write gate,
+		//    needed by the non-GET PUT when the service secret is set.
+		const { adminToken, serviceToken } = await readAdminTokens(ctx);
 		const client = new ReportingSettingsClient({
 			fetch: ctx.http.fetch,
 			baseUrl: COMMERCE_SERVICE_BASE_URL,
+			...(adminToken !== undefined ? { adminToken } : {}),
 			...(serviceToken !== undefined ? { serviceToken } : {}),
 		});
 
@@ -189,9 +195,9 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 				typeof input.idempotencyKey === "string" && input.idempotencyKey.length > 0
 					? input.idempotencyKey
 					: `settings-${Date.now()}`;
-			// The privileged PUT's token comes from write-only kv (em-dash's
-			// page_load/form_submit carries NO token), never from the interaction.
-			const adminToken = (await ctx.kv.get<string>(INTERNAL_TOKEN_KEY)) ?? undefined;
+			// The privileged PUT's token is the SAME write-only-kv admin token read
+			// above (em-dash's page_load/form_submit carries NO token) — one read,
+			// no chance of the read and the write disagreeing.
 			const result = await client.updateSettings(patch, { idempotencyKey: key, adminToken });
 			if (!result.ok) {
 				// Surface the service's validation error INLINE (never a generic
@@ -237,9 +243,12 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 	};
 }
 
-/** Render the full Settings page from kv + `GET /settings` (unguarded). Fails
- *  CLOSED on any service error with a GENERIC banner — never leaks a raw HTTP
- *  status/URL, and never renders the stored secret. */
+/** Render the full Settings page from kv + `GET /settings` — a GUARDED read
+ *  since ADR-0010, so `client` must already carry the admin token. Fails CLOSED
+ *  on any service error (including a 401/503 from that guard) with a GENERIC
+ *  banner — never leaks a raw HTTP status/URL, and never renders the stored
+ *  secret. The fail-closed render still shows BOTH token forms, so an admin
+ *  whose token is missing can still provision one (no bootstrap lockout). */
 async function renderPage(
 	ctx: PluginContext,
 	client: ReportingSettingsClient,

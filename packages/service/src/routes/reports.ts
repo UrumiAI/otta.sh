@@ -41,6 +41,9 @@ export function reportsRoutes(deps: ReportsDeps): Hono {
 	const app = new Hono();
 
 	// Admin guard on EVERY /reports/* read (merchant financial/operational data).
+	// Defense-in-depth: the AUTHORITATIVE guard is the parent-level
+	// `app.use("/reports/*")` in `createApp` (ADR-0010), which also covers any
+	// sibling sub-app mounted at this prefix — something this one cannot.
 	app.use("/*", async (c, next) => {
 		const denied = requireInternalToken(c, deps.internalToken);
 		if (denied !== null) return denied;

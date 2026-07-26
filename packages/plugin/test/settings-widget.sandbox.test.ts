@@ -188,6 +188,66 @@ describe("Settings admin form (workerd sandbox)", () => {
 		expect(String(banner?.text)).not.toMatch(/HTTP \d|\/settings|401/);
 	});
 
+	test("the page-load GET /settings carries the admin token (the read is guarded too, ADR-0010)", async () => {
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", (req) =>
+			req.headers["x-internal-token"] === "admin-token-xyz"
+				? {
+						status: 200,
+						body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } },
+					}
+				: { status: 401, body: { ok: false, error: "unauthorized" } },
+		);
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+
+		await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-token",
+			values: { internalToken: "admin-token-xyz" },
+		});
+		stub.requests.length = 0;
+
+		const loaded = await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" });
+
+		const get = stub.requests.find((r) => r.method === "GET");
+		expect(get?.url).toBe("/settings");
+		// Sourced from write-only kv, exactly like the PUT above — before ADR-0010
+		// the client was constructed with the SERVICE token only, so this header
+		// was absent and the guarded read would 401.
+		expect(get?.headers["x-internal-token"]).toBe("admin-token-xyz");
+		// It got through: the operational fields rendered, not the fail-closed banner.
+		expect(blocksOf(loaded).some((b) => b.type === "banner" && b.variant === "error")).toBe(false);
+	});
+
+	test("with NO admin token the guarded GET /settings fails CLOSED to a generic banner, and the token forms still render", async () => {
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", () => ({ status: 401, body: { ok: false, error: "unauthorized" } }));
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+
+		const blocks = blocksOf(
+			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
+		);
+		const banner = blocks.find((b) => b.type === "banner" && b.variant === "error");
+		expect(banner).toBeDefined();
+		// Never echo the raw status or URL (same discipline as the PUT failure path).
+		expect(String(banner?.text)).not.toMatch(/HTTP \d|\/settings|401/);
+		// No bootstrap lockout: both token forms are still on the page, so an admin
+		// with no token provisioned can still provision one.
+		const actionIds = blocks.flatMap((b) =>
+			Array.isArray(b.fields)
+				? (b.fields as Array<Record<string, unknown>>).map((f) => f.action_id)
+				: [],
+		);
+		expect(actionIds).toContain("internalToken");
+		expect(actionIds).toContain("serviceToken");
+	});
+
 	test("SECURITY: the settings form manifest declares only content:read + network:request (no storage/kv/db), and the schema has no secret field", () => {
 		expect(URUMI_PLUGIN_CAPABILITIES).toEqual(["content:read", "network:request"]);
 		for (const cap of URUMI_PLUGIN_CAPABILITIES) {
