@@ -111,6 +111,12 @@ export interface AdminRoutesDeps {
 export function adminRoutes(deps: AdminRoutesDeps): Hono {
 	const app = new Hono();
 
+	// Every handler below carries its own `requireInternalToken` call. Those stay
+	// as defense-in-depth, but they are no longer the fail-safe: the parent-level
+	// `app.use("/admin/*")` in `createApp` (ADR-0010) closes this whole prefix, so
+	// a route added here without an inline call is denied rather than silently
+	// public.
+
 	// -- Admin Orders console: view-only list + detail (internal-token guarded) --
 
 	app.get("/orders", async (c) => {

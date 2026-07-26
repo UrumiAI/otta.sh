@@ -54,17 +54,24 @@ export interface RulesAdminDeps {
  * requires the privileged internal token (same mechanism as the Phase-5 admin
  * transition and the `/reports/*` reads), because this is merchant config, not
  * public catalog data. The GET reads in particular expose coupon amounts, caps,
- * usage limits and live `usesCount`, so they must not be reachable ungated (the
+ * usage limits and live `usesCount`, so they must not be reachable ungated: the
  * app-level SERVICE_API_TOKEN write gate exempts GET/HEAD, so it does NOT cover
- * them — this guard does). Money on the wire is integer minor units, branded via
- * `cents()`/`currency()` at the boundary; rates are integer basis points.
+ * them. There are therefore NO inline `requireInternalToken` calls in this file —
+ * the parent-level guard in `createApp` is authoritative (ADR-0010) and the
+ * blanket guard below is its sub-app-local backstop; one guard, no drift. Money
+ * on the wire is integer minor units, branded via `cents()`/`currency()` at the
+ * boundary; rates are integer basis points.
  */
 export function rulesAdminRoutes(deps: RulesAdminDeps): Hono {
 	const app = new Hono();
 
-	// Admin guard on EVERY /admin (rules) route — reads included (merchant
-	// shipping/tax/coupon config). Mirrors the `/reports/*` blanket guard; keeps
-	// any future route protected by default rather than opt-in per handler.
+	// Defense-in-depth guard on EVERY route in this sub-app — reads included
+	// (merchant shipping/tax/coupon config). The AUTHORITATIVE guard is the
+	// parent-level `app.use("/admin/*")` in `createApp` (ADR-0010); this one keeps
+	// the sub-app closed if it is ever mounted somewhere that lacks it. It is NOT
+	// a substitute: Hono merges sub-app middleware into the parent at mount time,
+	// so this never covers `adminRoutes`, the sibling sub-app mounted at "/admin"
+	// before it.
 	app.use("/*", async (c, next) => {
 		const denied = requireInternalToken(c, deps.internalToken);
 		if (denied !== null) return denied;
@@ -199,9 +206,6 @@ export function rulesAdminRoutes(deps: RulesAdminDeps): Hono {
 	// collision with `GET /coupons/:code` below (a different shape) or with
 	// `POST /coupons/:couponId/*` writes.
 	app.get("/coupons", async (c) => {
-		const denied = requireInternalToken(c, deps.internalToken);
-		if (denied !== null) return denied;
-
 		const parsed = couponsListQuery.safeParse(c.req.query());
 		if (!parsed.success)
 			return c.json({ error: "invalid query", issues: parsed.error.issues }, 400);
@@ -253,11 +257,9 @@ export function rulesAdminRoutes(deps: RulesAdminDeps): Hono {
 
 	// -- Shipping UPDATE/DELETE (admin-UX Increment 3) --------------------------
 	// Every mutation is a NON-GET, so the global write gate (X-Service-Token,
-	// app.ts) covers it in addition to the per-route internal token below.
+	// app.ts) covers it in addition to the internal-token guard above.
 
 	app.put("/shipping/zones/:zoneId", async (c) => {
-		const denied = requireInternalToken(c, deps.internalToken);
-		if (denied !== null) return denied;
 		const params = zonePathParams.safeParse(c.req.param());
 		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
 		const parsed = shippingZoneUpdateBody.safeParse(await readJson(c));
@@ -274,8 +276,6 @@ export function rulesAdminRoutes(deps: RulesAdminDeps): Hono {
 	});
 
 	app.delete("/shipping/zones/:zoneId", async (c) => {
-		const denied = requireInternalToken(c, deps.internalToken);
-		if (denied !== null) return denied;
 		const params = zonePathParams.safeParse(c.req.param());
 		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
 		const res = await deps.shippingRules.deleteZone(params.data.zoneId);
@@ -285,8 +285,6 @@ export function rulesAdminRoutes(deps: RulesAdminDeps): Hono {
 	});
 
 	app.put("/shipping/methods/:methodId", async (c) => {
-		const denied = requireInternalToken(c, deps.internalToken);
-		if (denied !== null) return denied;
 		const params = methodPathParams.safeParse(c.req.param());
 		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
 		const parsed = shippingMethodUpdateBody.safeParse(await readJson(c));
@@ -300,8 +298,6 @@ export function rulesAdminRoutes(deps: RulesAdminDeps): Hono {
 	});
 
 	app.delete("/shipping/methods/:methodId", async (c) => {
-		const denied = requireInternalToken(c, deps.internalToken);
-		if (denied !== null) return denied;
 		const params = methodPathParams.safeParse(c.req.param());
 		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
 		const res = await deps.shippingRules.deleteMethod(params.data.methodId);
@@ -311,8 +307,6 @@ export function rulesAdminRoutes(deps: RulesAdminDeps): Hono {
 	});
 
 	app.put("/shipping/methods/:methodId/rates/:currency", async (c) => {
-		const denied = requireInternalToken(c, deps.internalToken);
-		if (denied !== null) return denied;
 		const params = methodCurrencyPathParams.safeParse(c.req.param());
 		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
 		const parsed = shippingRateUpdateBody.safeParse(await readJson(c));
@@ -335,8 +329,6 @@ export function rulesAdminRoutes(deps: RulesAdminDeps): Hono {
 	});
 
 	app.delete("/shipping/methods/:methodId/rates/:currency", async (c) => {
-		const denied = requireInternalToken(c, deps.internalToken);
-		if (denied !== null) return denied;
 		const params = methodCurrencyPathParams.safeParse(c.req.param());
 		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
 		const res = await deps.shippingRules.deleteRate(
@@ -354,8 +346,6 @@ export function rulesAdminRoutes(deps: RulesAdminDeps): Hono {
 	// slice 5) had no route. Both land together here.
 
 	app.put("/tax/classes/:classId", async (c) => {
-		const denied = requireInternalToken(c, deps.internalToken);
-		if (denied !== null) return denied;
 		const params = taxClassPathParams.safeParse(c.req.param());
 		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
 		const parsed = taxClassUpdateBody.safeParse(await readJson(c));
@@ -366,8 +356,6 @@ export function rulesAdminRoutes(deps: RulesAdminDeps): Hono {
 	});
 
 	app.delete("/tax/classes/:classId", async (c) => {
-		const denied = requireInternalToken(c, deps.internalToken);
-		if (denied !== null) return denied;
 		const params = taxClassPathParams.safeParse(c.req.param());
 		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
 		const res = await deleteTaxClass(
@@ -383,8 +371,6 @@ export function rulesAdminRoutes(deps: RulesAdminDeps): Hono {
 	});
 
 	app.put("/tax/rates/:rateId", async (c) => {
-		const denied = requireInternalToken(c, deps.internalToken);
-		if (denied !== null) return denied;
 		const params = rateIdPathParams.safeParse(c.req.param());
 		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
 		const parsed = taxRateUpdateBody.safeParse(await readJson(c));
@@ -402,8 +388,6 @@ export function rulesAdminRoutes(deps: RulesAdminDeps): Hono {
 	});
 
 	app.delete("/tax/rates/:rateId", async (c) => {
-		const denied = requireInternalToken(c, deps.internalToken);
-		if (denied !== null) return denied;
 		const params = rateIdPathParams.safeParse(c.req.param());
 		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
 		const res = await deps.taxRules.deleteRate(params.data.rateId);
@@ -414,8 +398,6 @@ export function rulesAdminRoutes(deps: RulesAdminDeps): Hono {
 	// -- Coupon UPDATE/DELETE ---------------------------------------------------
 
 	app.put("/coupons/:couponId", async (c) => {
-		const denied = requireInternalToken(c, deps.internalToken);
-		if (denied !== null) return denied;
 		const params = couponIdPathParams.safeParse(c.req.param());
 		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
 		const parsed = couponUpdateBody.safeParse(await readJson(c));
@@ -464,8 +446,6 @@ export function rulesAdminRoutes(deps: RulesAdminDeps): Hono {
 	});
 
 	app.delete("/coupons/:couponId", async (c) => {
-		const denied = requireInternalToken(c, deps.internalToken);
-		if (denied !== null) return denied;
 		const params = couponIdPathParams.safeParse(c.req.param());
 		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
 		const res = await deps.couponStore.delete(params.data.couponId);

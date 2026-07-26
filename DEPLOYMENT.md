@@ -408,8 +408,12 @@ note). In order of appearance in a deployment's life:
 
 - **`INTERNAL_API_TOKEN`** — the shared secret for the operational surface. Unset, those
   endpoints answer **503** (disabled — never silently open): `POST /internal/expire-holds`,
-  `POST /internal/expire-orders`, `POST /internal/dispatch-emails`, the `/admin/*` order
-  transition and rules CRUD, `/reports/*`, and `PUT /settings`. Callers send it as
+  `POST /internal/expire-orders`, `POST /internal/dispatch-emails`, and — **reads
+  included** (ADR-0010) — the entire `/admin/*`, `/reports/*` and `/settings` surface. That
+  means the `/admin/*` order transition and rules CRUD, the rules **GET** reads (shipping
+  zones/methods/rates, tax classes/rates, coupon lookup by code), and **both** verbs on
+  `/settings`. `SERVICE_API_TOKEN`'s write gate exempts GET/HEAD, so this token is the only
+  thing that closes those reads. Callers send it as
   `X-Internal-Token`: your §2.4 cron on Shape A, and the plugin's **admin console** — its
   reports/settings screens take the token as admin input and forward it on each request.
   The Worker cron path needs no token (it calls the domain directly, §6).
@@ -491,7 +495,7 @@ reads/writes past it is a database decision, not an app-tier one.
 | Storefront shows content-only catalog with a notice; service never logs the request | Worker→workers.dev subrequests stubbed 404 — the site must ship `global_fetch_strictly_public` (§3.5), or put a custom domain on the service (#32) |
 | Every SSR request hangs, nothing in logs | `global_fetch_strictly_public` + D1 `session` both on — pairing invariant violated (§3.5); turn `session` off |
 | Storefront calls all 401 (cart writes, and PDP/PLP + login) | `SERVICE_API_TOKEN` set on the service but `settings:serviceToken` not provisioned in plugin kv — set it via the Settings form (§4) |
-| `/internal/*`, `/reports/*`, `PUT /settings` answer 503 | `INTERNAL_API_TOKEN` unset — set it and send `X-Internal-Token` (§4) |
+| `/internal/*`, `/admin/*`, `/reports/*`, `/settings` answer 503 — **reads too**, e.g. `GET /admin/tax/classes`, `GET /settings`, and the plugin's Shipping/Tax/Coupons/Settings screens showing "unavailable" | `INTERNAL_API_TOKEN` unset — set it and send `X-Internal-Token` (§4). Since ADR-0010 the admin **read** surface is gated too, so a deployment that never set this now 503s where it previously answered 200 |
 | `/products` empty right after deploy | Healthy (§1) — sample content lands via the wizard checkbox, not first boot |
 | Stale reads after writes (Shape B) | Hyperdrive query caching left on — recreate the config with `--caching-disabled` (§3.1) |
 | `POST /webhooks/stripe` answers 503 | `STRIPE_WEBHOOK_SECRET` unset (§4) |

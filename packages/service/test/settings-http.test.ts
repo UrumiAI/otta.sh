@@ -25,6 +25,14 @@ describe.skipIf(PG === undefined)("settings HTTP contract", () => {
 		await server.stop();
 	});
 
+	/** `GET /settings` is admin surface (ADR-0010), so the read carries the
+	 *  internal token exactly like the PUT — the write gate's GET/HEAD exemption
+	 *  is not authorization. The unauthenticated cases live in the IO-free
+	 *  `admin-read-gate.test.ts`. */
+	function get(): Promise<Response> {
+		return fetch(`${server.baseUrl}/settings`, { headers: { "X-Internal-Token": token } });
+	}
+
 	function put(body: unknown, opts: { token?: string; key?: string } = {}): Promise<Response> {
 		const headers: Record<string, string> = { "content-type": "application/json" };
 		if (opts.token !== undefined) headers["X-Internal-Token"] = opts.token;
@@ -37,7 +45,7 @@ describe.skipIf(PG === undefined)("settings HTTP contract", () => {
 	}
 
 	test("GET /settings returns the operational defaults before any write", async () => {
-		const body = await json(await fetch(`${server.baseUrl}/settings`));
+		const body = await json(await get());
 		expect(body).toEqual({ ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } });
 	});
 
@@ -45,7 +53,7 @@ describe.skipIf(PG === undefined)("settings HTTP contract", () => {
 		const res = await put({ holdTtlMinutes: 45, lowStockThreshold: 20 }, { token, key: "k-1" });
 		expect(res.status).toBe(200);
 		expect((await json(res)).settings).toEqual({ holdTtlMinutes: 45, lowStockThreshold: 20 });
-		const read = await json(await fetch(`${server.baseUrl}/settings`));
+		const read = await json(await get());
 		expect(read.settings).toEqual({ holdTtlMinutes: 45, lowStockThreshold: 20 });
 	});
 
@@ -54,7 +62,7 @@ describe.skipIf(PG === undefined)("settings HTTP contract", () => {
 		await put({ holdTtlMinutes: 99 }, { token, key: "k-other" });
 		const replay = await json(await put({ holdTtlMinutes: 30 }, { token, key: "k-rep" }));
 		expect(replay.settings).toEqual(first.settings);
-		const read = await json(await fetch(`${server.baseUrl}/settings`));
+		const read = await json(await get());
 		expect((read.settings as Record<string, unknown>).holdTtlMinutes).toBe(99);
 	});
 
@@ -84,7 +92,7 @@ describe.skipIf(PG === undefined)("settings HTTP contract", () => {
 	test("SECURITY: no secret-shaped field is ever returned from GET /settings", async () => {
 		// Change settings so the row exists, then read it back.
 		await put({ holdTtlMinutes: 42, lowStockThreshold: 7 }, { token, key: "k-sec" });
-		const res = await fetch(`${server.baseUrl}/settings`);
+		const res = await get();
 		const raw = await res.text();
 		const body = JSON.parse(raw) as { settings: Record<string, unknown> };
 
