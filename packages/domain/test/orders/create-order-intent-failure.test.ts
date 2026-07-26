@@ -154,6 +154,41 @@ describe("createOrderFromCart — a live createIntent failure (PAYMENT_INTENT_FA
 		expect(h.couponStore.redemptionCount("cpn")).toBe(1);
 	});
 
+	test("a replay of an order that is NO LONGER pending never calls the live gateway — a Stripe outage cannot 502 a replay of a PAID order", async () => {
+		const cartId = await cart();
+		const first = await createOrderFromCart(h.createDeps, cmd(cartId));
+		expect(first.ok).toBe(true);
+		if (!first.ok) return;
+		expect(await h.orderStore.markPaid(first.order.id)).toBe(true);
+
+		const callsBefore = gw.calls;
+		gw.failWith = intentError(); // Stripe is down — it must not matter here.
+		const replay = await createOrderFromCart(h.createDeps, cmd(cartId));
+		expect(replay.ok, "the paid order is returned, not a 502").toBe(true);
+		if (!replay.ok) return;
+		expect(replay.order.id).toBe(first.order.id);
+		expect(replay.order.state).toBe("paid");
+		expect(gw.calls, "no intent is issued for a settled order").toBe(callsBefore);
+		// No buyer-facing next action: payment is done and no NEW intent was minted.
+		expect(replay.intent).toEqual({
+			gateway: "stripe",
+			intentId: "",
+			clientAction: { kind: "none" },
+		});
+	});
+
+	test("a replay of a still-PENDING order DOES re-issue the intent (the recovery path must keep working)", async () => {
+		const cartId = await cart();
+		const first = await createOrderFromCart(h.createDeps, cmd(cartId));
+		expect(first.ok).toBe(true);
+		const callsBefore = gw.calls;
+		const replay = await createOrderFromCart(h.createDeps, cmd(cartId));
+		expect(replay.ok).toBe(true);
+		if (!replay.ok) return;
+		expect(gw.calls).toBe(callsBefore + 1);
+		expect(replay.intent.clientAction.kind).toBe("stripe_client_secret");
+	});
+
 	test("a NON-PaymentIntentError throw from createIntent still propagates (bugs are not swallowed)", async () => {
 		const cartId = await cart();
 		gw.failWith = new TypeError("undefined is not a function");

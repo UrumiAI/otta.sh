@@ -113,6 +113,22 @@ export async function createOrderFromCart(
 	// expired). Re-issuing the payment intent is idempotent under the same key.
 	const already = await deps.orderStore.getByIdempotencyKey(command.idempotencyKey);
 	if (already !== null) {
+		if (already.state !== "pending") {
+			// The order has already left the checkout window — paid, failed, expired or
+			// cancelled. There is nothing left to begin paying for, so re-issuing an
+			// intent would be a pointless LIVE provider call whose outage could turn a
+			// replay of a PAID order into a 502. Return the order with an explicitly
+			// EMPTY handle: `clientAction: "none"` (no buyer-facing next action) and an
+			// empty `intentId` — this call minted no intent, and the original intent id
+			// is not on the order (it lives on `payments.provider_ref`; a caller that
+			// needs it reads the order's payments, never this field). The wire shape is
+			// unchanged (`serializeIntent` still emits gateway/intentId/clientAction).
+			return {
+				ok: true,
+				order: already,
+				intent: { gateway: gateway.id, intentId: "", clientAction: { kind: "none" } },
+			};
+		}
 		let intent: PaymentIntentHandle;
 		try {
 			intent = await gateway.createIntent({

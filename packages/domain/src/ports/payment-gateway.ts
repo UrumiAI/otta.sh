@@ -127,11 +127,14 @@ export interface PaymentIntentErrorInput {
  * shape mirrors the `ReservationCommitLostError` precedent: a typed throw the
  * use-case catches by class, never a stringly-matched message.
  *
- * `providerStatus` / `providerCode` are DIAGNOSTIC ONLY: the domain branches on
- * `retryable` alone, and the two provider fields exist to be LOGGED at the catch
- * site. **Adapter contract: no credential (a Bearer key, a signing secret) may
- * ever reach `message`, `cause`, or any enumerable field of this error** — it is
- * logged verbatim.
+ * ALL THREE fields are DIAGNOSTIC today: the domain branches on none of them —
+ * every `PaymentIntentError` maps to the same `PAYMENT_INTENT_FAILED`, and
+ * `retryable` / `providerStatus` / `providerCode` are LOGGED at the catch site so
+ * an operator can tell "Stripe was down" from "the card was declined".
+ * `retryable` is the field a future caller-driven retry would branch on; it is
+ * not load-bearing yet. **Adapter contract: no credential (a Bearer key, a
+ * signing secret) may ever reach `message`, `cause`, or any enumerable field of
+ * this error** — it is logged verbatim.
  */
 export class PaymentIntentError extends Error {
 	readonly gateway: PaymentMethod;
