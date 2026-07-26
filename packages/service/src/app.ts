@@ -109,8 +109,12 @@ export function createApp(deps: AppDeps): Hono {
 	const orderDeps = { ...deps, checkoutTtlMs: deps.checkoutTtlMs };
 	app.route("/", orderRoutes(orderDeps));
 	app.route("/webhooks", webhookRoutes(orderDeps));
-	// sessionStore + customerStore for the /check session scope (ADR-0008); both
-	// are required AppDeps fields, so the spread satisfies EntitlementRoutesDeps.
+	// sessionStore + customerStore, for the /check session scope (ADR-0011).
+	// `...orderDeps` already carries both (they're required AppDeps fields), so
+	// this is redundant today — but listed explicitly anyway, matching
+	// EntitlementRoutesDeps' own doc: a future reader wiring this route from a
+	// narrower deps object (e.g. `productCommerceRoutes`' hand-built subset
+	// style) must not be able to drop them silently.
 	app.route(
 		"/entitlements",
 		entitlementRoutes({
