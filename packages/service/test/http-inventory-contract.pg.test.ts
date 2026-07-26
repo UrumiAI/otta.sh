@@ -76,11 +76,22 @@ describe.skipIf(PG === undefined)("HTTP inventory contract [live server, Postgre
 		expect(await server.onHand("SKU-4")).toBe(3); // release returns the held stock
 	});
 
-	test("commit on an unknown reservation returns the structured 500 envelope, no internal/stack leak", async () => {
+	// PR B: an unknown reservationId is a typed ReservationNotFoundError, mapped
+	// to a 404 — distinct from ReservationCommitLostError's 500 (a reservation
+	// that existed but was lost; see the "non-held reservation" test below).
+	test("commit on an unknown reservation returns a structured 404, no internal/stack leak", async () => {
 		const res = await post("/inventory/commit", { reservationId: "does-not-exist" });
-		expect(res.status).toBe(500);
-		expect(res.body).toEqual({ ok: false, error: "internal_error" });
+		expect(res.status).toBe(404);
+		expect(res.body).toEqual({ ok: false, reason: "RESERVATION_NOT_FOUND" });
 		// The raw domain message ("unknown reservation: does-not-exist") must not leak.
+		expect(JSON.stringify(res.body)).not.toContain("does-not-exist");
+		expect(res.body).not.toHaveProperty("stack");
+	});
+
+	test("release on an unknown reservation returns a structured 404, no internal/stack leak", async () => {
+		const res = await post("/inventory/release", { reservationId: "does-not-exist" });
+		expect(res.status).toBe(404);
+		expect(res.body).toEqual({ ok: false, reason: "RESERVATION_NOT_FOUND" });
 		expect(JSON.stringify(res.body)).not.toContain("does-not-exist");
 		expect(res.body).not.toHaveProperty("stack");
 	});

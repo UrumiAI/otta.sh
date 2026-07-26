@@ -204,9 +204,13 @@ export function createApp(deps: AppDeps): Hono {
 	);
 
 	// Consistent error envelope for anything thrown past the routes (e.g. a
-	// domain error on commit/release of a non-`held`/unknown reservation, or a
-	// DB fault). No internal message or stack is leaked to the client; the real
-	// error is logged server-side.
+	// DB fault, or `ReservationCommitLostError` — commit/release of a
+	// reservation that existed but was lost). No internal message or stack is
+	// leaked to the client; the real error is logged server-side. NOTE: an
+	// UNKNOWN reservation on commit/release is mapped to a 404 at the route
+	// (`routes/inventory.ts`) before it ever reaches here — see
+	// `ReservationNotFoundError`'s port docblock for the one known asymmetry
+	// (`adjust`, reached via cart PATCH, still surfaces here as a 500).
 	app.onError((err, c) => {
 		console.error("[service] unhandled error:", err);
 		return c.json({ ok: false, error: "internal_error" }, 500);

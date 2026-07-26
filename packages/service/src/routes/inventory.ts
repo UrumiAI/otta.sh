@@ -1,4 +1,12 @@
-import { commit, idempotencyKey, type InventoryStore, release, reserve, sku } from "@urumi/domain";
+import {
+	commit,
+	idempotencyKey,
+	type InventoryStore,
+	release,
+	reserve,
+	ReservationNotFoundError,
+	sku,
+} from "@urumi/domain";
 import { Hono } from "hono";
 import { commitBody, releaseBody, reserveBody } from "../schemas.js";
 
@@ -10,7 +18,13 @@ export interface InventoryDeps {
  * Inventory routes — each a straight serialization of the port method:
  * validate → domain use-case → serialize the result to JSON. No
  * status-code-as-logic: `OUT_OF_STOCK` is a 200 body (the port has no
- * exception for it); 400 is only for schema/validation failure.
+ * exception for it); 400 is only for schema/validation failure. `commit` and
+ * `release` are the one exception: an unknown `reservationId` is a typed
+ * `ReservationNotFoundError` mapped to a 404 here, matching the repo's
+ * `{ok:false,reason:…}` 404 convention (`carts.ts`, `rules-admin.ts`).
+ * Everything else — most notably `ReservationCommitLostError`, the loud
+ * "reservation existed but was lost" anomaly — rethrows and keeps its 500 via
+ * `app.ts`'s catch-all `onError`.
  */
 export function inventoryRoutes(deps: InventoryDeps): Hono {
 	const app = new Hono();
@@ -38,7 +52,14 @@ export function inventoryRoutes(deps: InventoryDeps): Hono {
 		if (!parsed.success) {
 			return c.json({ error: "invalid request body", issues: parsed.error.issues }, 400);
 		}
-		await commit(deps.store, parsed.data.reservationId);
+		try {
+			await commit(deps.store, parsed.data.reservationId);
+		} catch (err) {
+			if (err instanceof ReservationNotFoundError) {
+				return c.json({ ok: false, reason: "RESERVATION_NOT_FOUND" }, 404);
+			}
+			throw err;
+		}
 		return c.json({ ok: true }, 200);
 	});
 
@@ -47,7 +68,14 @@ export function inventoryRoutes(deps: InventoryDeps): Hono {
 		if (!parsed.success) {
 			return c.json({ error: "invalid request body", issues: parsed.error.issues }, 400);
 		}
-		await release(deps.store, parsed.data.reservationId);
+		try {
+			await release(deps.store, parsed.data.reservationId);
+		} catch (err) {
+			if (err instanceof ReservationNotFoundError) {
+				return c.json({ ok: false, reason: "RESERVATION_NOT_FOUND" }, 404);
+			}
+			throw err;
+		}
 		return c.json({ ok: true }, 200);
 	});
 
