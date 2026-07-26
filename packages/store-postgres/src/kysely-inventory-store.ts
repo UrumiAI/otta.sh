@@ -10,6 +10,7 @@ import {
 	type IdempotencyKey,
 	type InventoryStore,
 	ReservationCommitLostError,
+	ReservationNotFoundError,
 	ReservationNotHeldError,
 	type ReserveResult,
 	type RestockResult,
@@ -301,8 +302,8 @@ export class KyselyInventoryStore implements InventoryStore {
 	 *  - a flipped row ⇒ benign success (absent from `lost`);
 	 *  - a 0-row id that is already `committed` ⇒ benign idempotent replay (dropped);
 	 *  - a 0-row id in any OTHER existing state (released/failed/…) ⇒ LOST;
-	 *  - a 0-row id with NO row (unknown) ⇒ THROW a bare Error, matching singular
-	 *    `commit`'s `#selectById` — never folded into `lost`.
+	 *  - a 0-row id with NO row (unknown) ⇒ THROW `ReservationNotFoundError`,
+	 *    matching singular `commit`'s `#selectById` — never folded into `lost`.
 	 * Empty ids short-circuit (no DB round trip).
 	 */
 	async commitMany(reservationIds: string[]): Promise<CommitManyResult> {
@@ -329,9 +330,10 @@ export class KyselyInventoryStore implements InventoryStore {
 		for (const id of missing) {
 			const state = stateById.get(id);
 			if (state === undefined) {
-				// Unknown id: match singular commit's #selectById, which throws a bare
-				// Error — a truly-unknown id PROPAGATES, never folded into lost.
-				throw new Error(`unknown reservation: ${id}`);
+				// Unknown id: match singular commit's #selectById, which throws the
+				// typed ReservationNotFoundError — a truly-unknown id PROPAGATES,
+				// never folded into lost.
+				throw new ReservationNotFoundError(id);
 			}
 			if (state === "committed") continue; // benign idempotent replay
 			lost.push(id);
@@ -763,7 +765,7 @@ export class KyselyInventoryStore implements InventoryStore {
 			.where("id", "=", id)
 			.executeTakeFirst();
 		if (row === undefined) {
-			throw new Error(`unknown reservation: ${id}`);
+			throw new ReservationNotFoundError(id);
 		}
 		return row;
 	}
