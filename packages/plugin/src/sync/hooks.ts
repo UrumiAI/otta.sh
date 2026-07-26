@@ -6,6 +6,7 @@ import type {
 	HookHandler,
 	PluginContext,
 } from "../types.js";
+import type { UpsertProductCommerceInput } from "../product-commerce/commerce-client.js";
 import { HttpCommerceClient } from "../product-commerce/http-commerce-client.js";
 import { parseCommerceFields } from "../product-commerce/parse-commerce-fields.js";
 import {
@@ -49,6 +50,81 @@ export const PRODUCTS_COLLECTION = "products";
  * it here.
  */
 const PUBLISHED_STATUS = "published";
+
+/**
+ * True when this save staged a PENDING DRAFT over content that is currently
+ * LIVE — i.e. the merchant's edit is waiting behind "Publish changes" and
+ * NOTHING live-affecting may be pushed for it yet (publish-atomicity, plan
+ * §2.2).
+ *
+ * EmDash models a pending draft as two nullable revision POINTERS, not a
+ * data column: `liveRevisionId` / `draftRevisionId`, both emitted as top-level
+ * fields on the hook record. Draft state is DERIVED, never stored — the admin's
+ * own `getDraftStatus` is `!liveRevisionId ? "unpublished" : (draftRevisionId
+ * && draftRevisionId !== liveRevisionId) ? "published_with_changes" :
+ * "published"`. Crucially the row's `status` column stays `"published"`
+ * throughout `published_with_changes`, which is exactly why a bare
+ * `status === "published"` check cannot see a pending draft.
+ *
+ *  - **Clause 1** is EmDash's own `published_with_changes`: both pointers are
+ *    present and they diverge.
+ *  - **Clause 2** covers rows that are live BY STATUS but carry no
+ *    live-revision pointer. `ContentRepository.create()` accepts `status`
+ *    verbatim and its INSERT column list contains no `live_revision_id`, so an
+ *    API / CLI / MCP / importer create-with-`status:"published"` yields exactly
+ *    that shape; a later save sets `draftRevisionId` while `liveRevisionId`
+ *    stays null, and clause 1 alone would let the price leak.
+ *
+ * Deliberately NOT `status` alone (identical in the clean and pending-draft
+ * states) and NOT `liveData` (hydration sets it whenever `draftRevisionId` is
+ * non-null, INCLUDING for a never-published draft, which must keep syncing).
+ * Pointers also degrade correctly: on a collection WITHOUT `"revisions"` a save
+ * writes the live columns directly and `draftRevisionId` is always null, so a
+ * save there IS the live change and syncs — one predicate, both site shapes.
+ * If the pointer fields are absent entirely (an older/different host) this is
+ * `false` and behavior is exactly what it was before publish atomicity.
+ *
+ * Exported so it can be unit-tested without the workerd sandbox.
+ */
+export function hasPendingDraft(content: Record<string, unknown>): boolean {
+	const draft = content["draftRevisionId"];
+	if (typeof draft !== "string" || draft.length === 0) return false; // no pending draft at all.
+	const live = content["liveRevisionId"];
+	if (typeof live === "string" && live.length > 0) return live !== draft; // clause 1.
+	return content["status"] === PUBLISHED_STATUS; // clause 2.
+}
+
+/** The outcome of deriving a `product_commerce` upsert body from a content
+ *  record's `commerce` bag: something to apply, nothing to apply, or a
+ *  boundary-validation rejection the caller logs. */
+type DerivedCommerce =
+	| { kind: "apply"; body: UpsertProductCommerceInput }
+	/** No `commerce` field yet (create-then-price), or no sku (not sellable —
+	 *  never mint a partial row). */
+	| { kind: "skip" }
+	| { kind: "invalid"; errors: Record<string, string> };
+
+/**
+ * The single derive: content record → validated `product_commerce` upsert body.
+ *
+ * Both `content:afterSave` (for content that is NOT live) and
+ * `content:afterPublish` (for content that is BECOMING live) go through here,
+ * so the money/shape guard, the create-then-price skip, and the no-sku skip are
+ * defined once. Anything added to the widget bag is therefore picked up by both
+ * hooks at once.
+ *
+ * MONEY INTEGRITY (CLAUDE.md non-negotiable): a float price, a bad currency, or
+ * any invalid field makes the WHOLE upsert a rejection — never a partial or
+ * coerced write. The caller decides what a rejection means for its hook.
+ */
+function deriveCommerce(content: Record<string, unknown>): DerivedCommerce {
+	const bag = readCommerceField(content);
+	if (bag === undefined) return { kind: "skip" };
+	const { body, errors } = parseCommerceFields(bag);
+	if (Object.keys(errors).length > 0) return { kind: "invalid", errors };
+	if (body.sku === undefined) return { kind: "skip" };
+	return { kind: "apply", body };
+}
 
 /** Async because it awaits the write-gate token from write-only kv (ADR-0007):
  *  every sync write (upsert/activate/deactivate/soft-delete) is a non-GET the
@@ -102,6 +178,24 @@ async function clientFor(ctx: PluginContext): Promise<HttpCommerceClient> {
  * `content:afterPublish` (same `updatedAt` ⇒ same key/watermark ⇒ one applied
  * flip). Ordering: upsert FIRST, then activate.
  *
+ * PUBLISH ATOMICITY (plan §2.1a / §2.5) — the load-bearing guard. When the save
+ * staged a PENDING DRAFT over content that is already LIVE (`hasPendingDraft`),
+ * this hook sends NOTHING: not the upsert, and not the activate. EmDash hands
+ * `afterSave` the hydrated DRAFT data on purpose ("Hydrate draft data BEFORE
+ * firing afterSave hooks so the hook sees the same effective data the response
+ * surfaces"), so pushing it would put the draft's price live under the old
+ * published content — the exact bug this guard closes. The activate is deferred
+ * with it because an activate is itself a live-affecting flip: on a
+ * pending-draft save of a deactivated row it would re-latch the product
+ * purchasable at the stale price with no publish. The commerce for that save
+ * lands at `content:afterPublish`, together with the content.
+ *
+ * Cost, stated plainly: a row stuck content-live-but-unpurchasable (an earlier
+ * `activate` lost in transit) no longer heals on the merchant's next save,
+ * because a save of live content now sends nothing. THE RECOVERY VERB IS
+ * PUBLISH — one click on "Publish changes" re-derives and re-activates. There
+ * is still no automatic repair (no reconcile cron).
+ *
  * Fire-and-forget (plan §4): `afterSave` requires only `content:read` and must
  * never fail the CMS save. A network failure / non-2xx is logged, not thrown.
  * Honest guarantee (review N2): there is no reconcile cron yet — a failed sync
@@ -116,22 +210,35 @@ export function createAfterSaveHandler(
 		const id = event.content["id"];
 		if (typeof id !== "string" || id.length === 0) return; // no CMS id yet — nothing to sync.
 
-		const bag = readCommerceField(event.content);
-		if (bag === undefined) return; // no commerce field yet — create-then-price, nothing to derive.
-
-		const { body, errors } = parseCommerceFields(bag);
-		// Money/shape integrity: a float price, bad currency, or any invalid
-		// field skips the WHOLE upsert (atomic — never a partial/float write) and
-		// logs, so the CMS save is never failed and no float reaches money.
-		if (Object.keys(errors).length > 0) {
-			console.warn(
-				`[urumi] content:afterSave: invalid commerce fields for product_id=${id}; skipping the product_commerce upsert (the CMS save still succeeds):`,
-				errors,
+		// PUBLISH ATOMICITY: the save staged a pending draft over LIVE content —
+		// send nothing that affects live state. Both the upsert and the activate
+		// move to `content:afterPublish`, so content and commerce change together.
+		// The log line is the only developer-visible answer to "I saved a new
+		// price and the storefront did not change"; the widget carries no
+		// merchant-facing copy for it yet (a deliberate follow-up — it would
+		// churn localized strings this change does not otherwise touch).
+		if (hasPendingDraft(event.content)) {
+			console.info(
+				`[urumi] content:afterSave: product_id=${id} has PENDING DRAFT changes over live content — commerce sync deferred to publish (no upsert, no activate). The saved values go live when the merchant clicks "Publish changes".`,
 			);
 			return;
 		}
-		// No sku ⇒ not sellable ⇒ do not mint a partial row.
-		if (body.sku === undefined) return;
+
+		const derived = deriveCommerce(event.content);
+		// Money/shape integrity: a float price, bad currency, or any invalid
+		// field skips the WHOLE upsert (atomic — never a partial/float write) and
+		// logs, so the CMS save is never failed and no float reaches money.
+		if (derived.kind === "invalid") {
+			console.warn(
+				`[urumi] content:afterSave: invalid commerce fields for product_id=${id}; skipping the product_commerce upsert (the CMS save still succeeds):`,
+				derived.errors,
+			);
+			return;
+		}
+		// No commerce field (create-then-price) or no sku (not sellable) ⇒ do not
+		// mint a partial row.
+		if (derived.kind === "skip") return;
+		const body = derived.body;
 
 		const updatedAt = event.content["updatedAt"];
 		const key = deriveSaveIdempotencyKey(event.collection, id, updatedAt);
@@ -198,13 +305,49 @@ export function createAfterDeleteHandler(): HookHandler<ContentDeleteEvent> {
  *
  * Mirrors `createAfterSaveHandler`'s shape (collection guard, missing-id
  * guard, fire-and-forget failure handling — same honest "no reconcile cron
- * yet" caveat) but calls `activateProductCommerce`, never `upsert`: `upsert`
- * deliberately never touches `active`/`deletedAt` (a stale/replayed
- * `content:afterSave` must never reactivate a soft-deleted row), so
- * activation is its own dedicated call — see the port doc / the service
- * route's doc. The service-side `activate` is itself the guard against
- * resurrecting a soft-deleted product; this hook does not duplicate that
- * check.
+ * yet" caveat). Activation stays its own dedicated call and is never an
+ * `active` field on the upsert: `upsert` deliberately never touches
+ * `active`/`deletedAt` (a stale/replayed sync must never reactivate a
+ * soft-deleted row) — see the port doc / the service route's doc. The
+ * service-side `activate` is itself the guard against resurrecting a
+ * soft-deleted product; this hook does not duplicate that check.
+ *
+ * PUBLISH ATOMICITY (plan §2.1b) — this hook now also DERIVES AND UPSERTS the
+ * commerce bag, because publish is the moment live content changes and
+ * `createAfterSaveHandler` defers a pending-draft save's commerce to here. At
+ * `afterPublish` `draftRevisionId` is null (publish clears it) so no draft
+ * hydration applies: `content.data` IS the newly-published data, and
+ * `content.updatedAt` is strictly newer than any preceding draft save because
+ * `publish()` bumps `updated_at` unconditionally. `afterSave` does NOT also
+ * fire on a publish (`handleContentPublish` dispatches `afterPublish` only), so
+ * there is no double-upsert. ORDERING: upsert FIRST, then activate — a row is
+ * never made live ahead of its price.
+ *
+ * FAILURE POSTURE — two classes, two rules (plan §2.8):
+ *
+ *  - **Validation failure** (float price, bad currency, missing sku) ⇒ the
+ *    content publishes, commerce is left unchanged, and the product STILL
+ *    activates. The content is valid and the merchant asked for it to be live;
+ *    refusing to activate would let a pricing typo silently unpublish a live
+ *    product. Activation is the CONTENT gate and is independent of commerce
+ *    validity — with no valid price the row simply is not purchasable
+ *    (`joinProduct`: `purchasable ⟺ present && active`). This differs from
+ *    `afterSave`, where a validation failure returns before the activate; that
+ *    ordering is incidental, this is the considered rule.
+ *  - **Transport failure** (non-2xx / network) ⇒ FAIL CLOSED: no activate.
+ *    Never make a row live whose commerce we could not write. Logged on its own
+ *    distinct line.
+ *
+ * Honest consequences of failing closed: on a publish-of-pending-changes the
+ * row is ALREADY active, so skipping the activate deactivates nothing — the
+ * content goes live with the STALE price (the safe direction: an old price, not
+ * a wrong new one), logged only. On a FIRST publish the row is inactive, so the
+ * product is content-live but unpurchasable until it is published again. Since
+ * `afterSave` no longer retries the flip for live content, the recovery verb in
+ * both cases is PUBLISH, not save. No automatic repair exists.
+ *
+ * Both classes stay fire-and-forget — this must never throw into the CMS
+ * publish path.
  */
 export function createAfterPublishHandler(
 	allowedHosts: readonly string[] = ALLOWED_HOSTS,
@@ -231,8 +374,41 @@ export function createAfterPublishHandler(
 			return;
 		}
 		const key = derivePublishIdempotencyKey(event.collection, id, updatedAt);
+		// Derive the commerce the publish makes live. A validation rejection is
+		// logged and the activate still runs (posture A); only a TRANSPORT failure
+		// on the upsert blocks it (posture B).
+		const derived = deriveCommerce(event.content);
+		if (derived.kind === "invalid") {
+			console.warn(
+				`[urumi] content:afterPublish: invalid commerce fields for product_id=${id}; the content still publishes and the product still activates, but product_commerce is left unchanged (not purchasable without a valid price):`,
+				derived.errors,
+			);
+		}
 		try {
-			await (await clientFor(ctx)).activateProductCommerce(id, key, watermark);
+			const client = await clientFor(ctx);
+			if (derived.kind === "apply") {
+				try {
+					await client.upsertProductCommerce(
+						id,
+						// Validated commercial fields + the PUBLISH watermark (the
+						// key is the save key-space keyed on the publish's bumped
+						// `updatedAt`, disjoint from the `:published:` activate key
+						// — see §2.9 on the single per-row idempotency_key column).
+						{ ...derived.body, contentUpdatedAt: watermark },
+						deriveSaveIdempotencyKey(event.collection, id, updatedAt),
+					);
+				} catch (err) {
+					// FAIL CLOSED — never flip a row live whose commerce we could
+					// not write. Distinct from the generic sync-failed line below so
+					// the skipped activation is visible in logs.
+					console.error(
+						`[urumi] content:afterPublish: commerce upsert FAILED for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}) — activation skipped (fail-closed). No reconcile cron exists yet — this sync is lost until the product is published again:`,
+						err,
+					);
+					return;
+				}
+			}
+			await client.activateProductCommerce(id, key, watermark);
 		} catch (err) {
 			console.error(
 				`[urumi] content:afterPublish sync failed for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}). No reconcile cron exists yet — this activation is lost until the product is saved/published again:`,

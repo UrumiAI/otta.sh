@@ -1031,6 +1031,64 @@ export function productCommerceStoreContract(
 			expect(panel.contentUpdatedAt).toBe("2026-07-10T02:00:00.000Z");
 		});
 
+		// -- The publish-atomicity blast radius, pinned where it actually lives --
+		// `updateCommerceFields` (the Pricing & inventory console's guarded edit)
+		// deliberately never writes `contentUpdatedAt`, so the NEXT CMS-sync
+		// upsert always carries a strictly newer watermark, passes the ordering
+		// gate, and re-applies the widget bag over the console's edit. Moving the
+		// commerce push from save to publish does not create this — it RE-TIMES
+		// it to publish, where it is rarer but more surprising. It is pinned in
+		// the STORE contract, not the plugin sandbox: a stub recorder has no
+		// store, so it cannot observe a reversion.
+		test("KNOWN GAP (F4): a watermarked upsert overwrites the shared fields of a prior updateCommerceFields edit — remove this case when #93 (F4) lands", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-f4-clobber");
+			await h.store.upsert(
+				{
+					productId: pid,
+					sku: sku("SKU-F4"),
+					price: money(cents(1000), currency("USD")),
+					contentUpdatedAt: "2026-07-26T10:00:00.000Z",
+				},
+				idempotencyKey("f4-sync-1"),
+			);
+			const seeded = await h.store.getByProductId(pid);
+
+			// The merchant reprices in the console and sets two console-ONLY
+			// fields the Product data widget never sends.
+			const edit = await h.store.updateCommerceFields(
+				{
+					productId: pid,
+					price: money(cents(5000), currency("USD")),
+					compareAtPrice: money(cents(8000), currency("USD")),
+					inventoryPolicy: "deny",
+				},
+				idempotencyKey("f4-console-edit"),
+				seeded!.updatedAt.toISOString(),
+			);
+			expect(edit.ok).toBe(true);
+
+			// Then ANY publish of that product — even one whose content change is
+			// unrelated — re-derives the widget bag with a newer watermark.
+			await h.store.upsert(
+				{
+					productId: pid,
+					sku: sku("SKU-F4"),
+					price: money(cents(9900), currency("USD")),
+					contentUpdatedAt: "2026-07-26T11:00:00.000Z",
+				},
+				idempotencyKey("f4-sync-2"),
+			);
+
+			const after = await h.store.getByProductId(pid);
+			// The gap: a field the widget bag also owns REVERTS to the bag's value.
+			expect(after?.price).toEqual({ amount: 9900, currency: "USD" });
+			// The blast radius, asserted rather than asserted-in-prose: the upsert
+			// is field-partial, so console-ONLY fields survive untouched.
+			expect(after?.compareAtPrice).toEqual({ amount: 8000, currency: "USD" });
+			expect(after?.inventoryPolicy).toBe("deny");
+		});
+
 		// Review S3 — soft-delete frees the SKU for reuse; live rows still contend.
 		test("a SKU freed by soft-delete can be assigned to a new product; two LIVE products still cannot share a SKU", async () => {
 			const h = await makeStore();

@@ -30,10 +30,16 @@ const PRODUCT_KIND_OPTIONS: Array<{ value: CommerceProductKind; label: string }>
  * So there is nothing for a Save button to POST to, and no way to render one.
  * Instead every commercial value is a supported inline input whose `action_id`
  * is the key it lands under in the `commerce` JSON; the editor's NATIVE Save
- * persists that field, and `content:afterSave` (sync/hooks.ts) derives
- * `product_commerce` from it — activating the row in the same save when the
- * product is published (issue #82), so pricing + saving a published product
- * makes it purchasable in one action.
+ * persists that field, and the sync hooks (sync/hooks.ts) derive
+ * `product_commerce` from it.
+ *
+ * WHEN those values go live depends on the content's state (publish atomicity,
+ * plan §2): for a product that is NOT yet live, `content:afterSave` derives and
+ * upserts immediately (and does not activate — nothing is published). For a
+ * product that IS live, the editor stages the edit as a pending draft, so the
+ * save pushes NOTHING and `content:afterPublish` derives, upserts and activates
+ * when the merchant clicks "Publish changes" — price and content change in the
+ * same operation, never one ahead of the other.
  *
  * ── Why the tree is STATIC (values are NOT read here) ──────────────────────
  * em-dash renders the widget from the manifest's static `elements` and fills
@@ -49,8 +55,11 @@ const PRODUCT_KIND_OPTIONS: Array<{ value: CommerceProductKind; label: string }>
  * Help/guidance is carried in labels + placeholders because a non-input block
  * (header/section/banner) is unsupported by the field widget and would render
  * as "Unsupported element". The old "priced but not active" indicator is
- * dropped: saving a published product now activates it in the same operation,
- * so the priced-but-inactive window it warned about largely no longer opens.
+ * dropped: pricing a product and publishing it activates the row in the same
+ * operation, so the priced-but-inactive window it warned about largely no
+ * longer opens. (Merchant-facing copy naming "Publish changes" as the moment
+ * pricing goes live is a deliberate follow-up — it would churn localized
+ * strings this change does not otherwise touch.)
  */
 export function buildProductDataElements(): Element[] {
 	return [
