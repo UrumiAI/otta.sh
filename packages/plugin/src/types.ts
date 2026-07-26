@@ -115,6 +115,18 @@ export type RouteEntry<TInput = unknown> =
 export type HookHandler<TEvent> = (event: TEvent, ctx: PluginContext) => Promise<unknown> | unknown;
 
 export interface SandboxedPluginHooks {
+	/**
+	 * Runs BEFORE the CMS write, and its RETURN VALUE replaces the payload
+	 * (em-dash honours the return in both trusted and sandboxed dispatch;
+	 * `undefined` means "save untouched"). Requires the `content:write`
+	 * capability to register — see `manifest.ts`.
+	 *
+	 * NOTE the event shape: on beforeSave `event.content` IS the submitted field
+	 * bag keyed by field slug (`body.data`) — no `id`, no `updatedAt`, no
+	 * `status`, and no wrapper object, unlike the afterSave record. See
+	 * `sync/before-save.ts`.
+	 */
+	"content:beforeSave"?: { handler: HookHandler<ContentHookEvent> };
 	"content:afterSave"?: { handler: HookHandler<ContentHookEvent> };
 	"content:afterDelete"?: { handler: HookHandler<ContentDeleteEvent> };
 	"content:afterPublish"?: { handler: HookHandler<ContentStateChangeEvent> };

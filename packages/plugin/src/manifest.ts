@@ -54,18 +54,36 @@ export async function serviceTokenFromKv(ctx: PluginContext): Promise<string | u
 }
 
 /**
- * Sandbox-clean guard (DEVELOPMENT.md §5, plan §5): EXACTLY these two
+ * Sandbox-clean guard (DEVELOPMENT.md §5, plan §5): EXACTLY these three
  * capabilities, nothing else.
  *  - `content:read` — the minimum capability `content:afterSave` /
  *    `content:afterDelete` require to register (em-dash
  *    `HOOK_REQUIRED_CAPABILITY`); the plugin never calls `ctx.content` (the
- *    hook event already carries what it needs) and never declares
- *    `content:write` — it never writes CMS content.
+ *    hook event already carries what it needs).
+ *  - `content:write` — ⚠ CAPABILITY TRAP, CI CANNOT CATCH ITS REMOVAL
+ *    (ADR-0012). This is the capability em-dash requires to register a
+ *    `content:beforeSave` hook (`plugins/hooks.ts:279-281`), and its
+ *    `registerPluginHook` SILENTLY SKIPS a hook whose capability is absent
+ *    (`:303-317`). Deleting it here does not fail any test in this repo — it
+ *    just switches off `src/plugin.ts`'s `"content:beforeSave"` entry in
+ *    production, and the silent-price-divergence P1 returns. Keep the two
+ *    sites in sync; the staging Playwright run is the only end-to-end proof.
+ *    The capability is BROADER than what we use: in trusted mode it makes the
+ *    host build hook-free, transactional read+write access to every
+ *    collection's content (`createContentAccessWithWrite`). We take it to buy
+ *    one narrow behaviour — rewriting our OWN field on the save payload. The
+ *    bound is compile-time: `PluginContext` (types.ts) declares exactly
+ *    `{http, kv}`, so any `ctx.content…` reference is a `pnpm typecheck`
+ *    error, and the handler early-returns on any non-`products` collection.
  *  - `network:request` — `ctx.http.fetch`, host-restricted via
  *    `allowedHosts`. No `network:request:unrestricted`.
  * No `storage`/`kv`/db capability — the plugin holds no commercial state.
  */
-export const URUMI_PLUGIN_CAPABILITIES = ["content:read", "network:request"] as const;
+export const URUMI_PLUGIN_CAPABILITIES = [
+	"content:read",
+	"content:write",
+	"network:request",
+] as const;
 
 /**
  * Compile-time override hook (site deploy, plan D4): a deploying site

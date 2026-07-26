@@ -61,8 +61,15 @@ describe("urumiPluginDescriptor", () => {
 		expect(descriptor.entrypoint).toBe("@urumi/plugin/plugin");
 	});
 
-	test("capabilities are EXACTLY the manifest's (content:read, network:request)", () => {
+	test("capabilities are EXACTLY the manifest's (content:read, content:write, network:request)", () => {
 		expect(descriptor.capabilities).toEqual([...URUMI_PLUGIN_CAPABILITIES]);
+		// Pinned literally too: the descriptor spreads the constant, so a silent
+		// widening plugin-side would otherwise sail through this site's config.
+		// `content:write` is what lets the trusted host REGISTER the
+		// `content:beforeSave` price guard at all — em-dash silently skips a hook
+		// whose required capability is absent (ADR-0012). Trusted registration
+		// passes capabilities on every boot, so this needs no reinstall/approval.
+		expect(descriptor.capabilities).toEqual(["content:read", "content:write", "network:request"]);
 	});
 
 	test("allowedHosts is exactly the service URL's hostname", () => {
@@ -96,7 +103,7 @@ describe("urumiPluginDescriptor", () => {
 	test("declares no storage collections (ctx.kv is always-available; the plugin declares no storage tables)", () => {
 		// Phase 7's settings form uses ctx.kv, which em-dash provides
 		// UNGATED (context.ts: "Always available") — no capability, no
-		// storage declaration. Capabilities therefore stay exactly the two
+		// storage declaration. Capabilities therefore stay exactly the three
 		// in the manifest (pinned above).
 		expect(descriptor.storage).toBeUndefined();
 	});

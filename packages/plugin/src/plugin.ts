@@ -33,6 +33,7 @@ import {
 // ── end Phase 5 account routes ─────────────────────────────────────────────
 import { createPdpRouteHandler, STOREFRONT_PRODUCT_ROUTE } from "./storefront/pdp-route.js";
 import { createPlpRouteHandler, STOREFRONT_LIST_ROUTE } from "./storefront/plp-route.js";
+import { createBeforeSaveHandler } from "./sync/before-save.js";
 import {
 	createAfterDeleteHandler,
 	createAfterPublishHandler,
@@ -65,6 +66,20 @@ import type { SandboxedPlugin } from "./types.js";
  */
 const plugin: SandboxedPlugin = {
 	hooks: {
+		// ⚠ CAPABILITY TRAP — CI CANNOT CATCH A REGRESSION HERE (ADR-0012).
+		// This hook only registers in production if `manifest.ts`'s
+		// `URUMI_PLUGIN_CAPABILITIES` still contains `"content:write"`:
+		// em-dash's `HookPipeline.registerPluginHook` maps
+		// `content:beforeSave → content:write` (`plugins/hooks.ts:279-281`) and
+		// SILENTLY SKIPS a hook whose capability is absent (`:303-317`).
+		// Urumi's own sandbox harness has no such gate, so deleting either this
+		// entry or that capability leaves every test in this repo GREEN while
+		// production stops validating prices and the P1 returns. The staging
+		// Playwright run is the only end-to-end proof — keep both sites in sync.
+		// No `errorPolicy`: "abort" is already the default and this handler never
+		// throws (it rejects by RETURN VALUE, the only form the sandboxed
+		// dispatcher honours).
+		"content:beforeSave": { handler: createBeforeSaveHandler() },
 		"content:afterSave": { handler: createAfterSaveHandler() },
 		"content:afterDelete": { handler: createAfterDeleteHandler() },
 		"content:afterPublish": { handler: createAfterPublishHandler() },

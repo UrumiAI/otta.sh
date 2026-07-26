@@ -188,8 +188,12 @@ describe("Settings admin form (workerd sandbox)", () => {
 		expect(String(banner?.text)).not.toMatch(/HTTP \d|\/settings|401/);
 	});
 
-	test("SECURITY: the settings form manifest declares only content:read + network:request (no storage/kv/db), and the schema has no secret field", () => {
-		expect(URUMI_PLUGIN_CAPABILITIES).toEqual(["content:read", "network:request"]);
+	test("SECURITY: the settings form manifest declares only content:read + content:write + network:request (no storage/kv/db), and the schema has no secret field", () => {
+		// `content:write` is what lets em-dash REGISTER the `content:beforeSave`
+		// price guard (ADR-0012); the Settings form itself uses only ctx.kv (ungated)
+		// + network:request. Full rationale + bounds live in the sandbox-clean guard
+		// in product-data-widget.sandbox.test.ts.
+		expect(URUMI_PLUGIN_CAPABILITIES).toEqual(["content:read", "content:write", "network:request"]);
 		for (const cap of URUMI_PLUGIN_CAPABILITIES) {
 			expect(cap.startsWith("storage")).toBe(false);
 			expect(cap.startsWith("db")).toBe(false);

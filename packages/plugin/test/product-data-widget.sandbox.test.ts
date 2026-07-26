@@ -58,11 +58,17 @@ describe('"Product data" field widget — inline inputs, no button (issue #81 re
 		);
 	});
 
-	test("price is a number_input labelled as integer MINOR units; currency + kind are selects with options", () => {
+	test("price is a number_input labelled as integer MINOR units, with an explicit whole-number hint; currency + kind are selects with options", () => {
 		const els = buildProductDataElements();
 		const price = els.find((el) => el.action_id === "price");
 		expect(price?.type).toBe("number_input");
-		expect((price as { label?: string }).label).toMatch(/minor units/i);
+		const priceLabel = (price as { label?: string }).label ?? "";
+		expect(priceLabel).toMatch(/minor units/i);
+		// em-dash's BlockKitFieldWidget drops any `min`/`step` an element declares,
+		// so the label is the only client-side affordance we have against the
+		// decimal-entry P1. `content:beforeSave` is the actual guard.
+		expect(priceLabel).toMatch(/whole number/i);
+		expect(priceLabel).toMatch(/no decimals/i);
 
 		const currency = els.find((el) => el.action_id === "currency");
 		expect(currency?.type).toBe("select");
@@ -81,10 +87,17 @@ describe('"Product data" field widget — inline inputs, no button (issue #81 re
 		expect(buildProductDataElements()).toEqual(buildProductDataElements());
 	});
 
-	test("sandbox-clean guard: the manifest declares EXACTLY content:read + network:request, no storage/db surface", () => {
-		expect(URUMI_PLUGIN_CAPABILITIES).toEqual(["content:read", "network:request"]);
+	test("sandbox-clean guard: the manifest declares EXACTLY content:read + content:write + network:request, no storage/db surface", () => {
+		// `content:write` is MANDATORY, not optional tidiness: em-dash's
+		// `HookPipeline.registerPluginHook` maps `content:beforeSave →
+		// content:write` and silently SKIPS a hook whose capability is absent, so
+		// without it the price-validation hook is dead code in production
+		// (ADR-0012). It is broader than what we use — in trusted mode it grants
+		// hook-free transactional write access to every collection — and is bounded
+		// compile-time by `PluginContext` having no `content` member, plus the
+		// handler's `collection !== "products"` early return.
+		expect(URUMI_PLUGIN_CAPABILITIES).toEqual(["content:read", "content:write", "network:request"]);
 		expect(URUMI_PLUGIN_CAPABILITIES).not.toContain("network:request:unrestricted");
-		expect(URUMI_PLUGIN_CAPABILITIES).not.toContain("content:write");
 		for (const cap of URUMI_PLUGIN_CAPABILITIES) {
 			expect(cap.startsWith("storage")).toBe(false);
 			expect(cap.startsWith("kv")).toBe(false);

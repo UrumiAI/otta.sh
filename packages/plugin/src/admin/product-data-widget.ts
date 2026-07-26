@@ -64,8 +64,12 @@ export function buildProductDataElements(): Element[] {
 			type: "number_input",
 			action_id: "price",
 			// Money is integer MINOR units (CLAUDE.md non-negotiable): a decimal
-			// entry is rejected at the afterSave derive boundary, never coerced.
-			label: "Price (integer minor units — e.g. 1999 = $19.99)",
+			// entry is rejected at the `content:beforeSave` boundary and the save
+			// is refused with a toast (sync/before-save.ts) — never coerced. The
+			// explicit "whole number, no decimals" hint is the cheap half of that
+			// fix: em-dash's BlockKitFieldWidget drops any `min`/`step` an element
+			// declares, so the label is the ONLY affordance available plugin-side.
+			label: "Price — whole number, no decimals (integer minor units, e.g. 1999 = $19.99)",
 		},
 		{
 			type: "select",

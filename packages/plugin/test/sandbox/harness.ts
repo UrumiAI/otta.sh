@@ -99,7 +99,7 @@ function manifestSource(options: SandboxOptions): string {
 	return [
 		'export const URUMI_PLUGIN_ID = "urumi";',
 		'export const URUMI_PLUGIN_VERSION = "0.1.0";',
-		'export const URUMI_PLUGIN_CAPABILITIES = ["content:read", "network:request"];',
+		'export const URUMI_PLUGIN_CAPABILITIES = ["content:read", "content:write", "network:request"];',
 		`export const COMMERCE_SERVICE_BASE_URL = ${JSON.stringify(options.commerceServiceBaseUrl)};`,
 		`export const ALLOWED_HOSTS = ${JSON.stringify(options.allowedHosts)};`,
 		'export const SERVICE_TOKEN_KEY = "settings:serviceToken";',

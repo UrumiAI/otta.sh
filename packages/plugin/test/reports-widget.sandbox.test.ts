@@ -136,8 +136,12 @@ describe("Reports admin page (workerd sandbox)", () => {
 		expect(stub.requests).toHaveLength(0);
 	});
 
-	test("Reports page manifest declares only content:read + network:request, no storage/kv/db capability", () => {
-		expect(URUMI_PLUGIN_CAPABILITIES).toEqual(["content:read", "network:request"]);
+	test("Reports page manifest declares only content:read + content:write + network:request, no storage/kv/db capability", () => {
+		// `content:write` is what lets em-dash REGISTER the `content:beforeSave`
+		// price guard (ADR-0012); the Reports page itself uses nothing but
+		// network:request. Full rationale + bounds live in the sandbox-clean guard
+		// in product-data-widget.sandbox.test.ts.
+		expect(URUMI_PLUGIN_CAPABILITIES).toEqual(["content:read", "content:write", "network:request"]);
 		expect(URUMI_PLUGIN_CAPABILITIES).not.toContain("network:request:unrestricted");
 		for (const cap of URUMI_PLUGIN_CAPABILITIES) {
 			expect(cap.startsWith("storage")).toBe(false);
