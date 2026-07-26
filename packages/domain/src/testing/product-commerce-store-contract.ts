@@ -1040,7 +1040,7 @@ export function productCommerceStoreContract(
 		// it to publish, where it is rarer but more surprising. It is pinned in
 		// the STORE contract, not the plugin sandbox: a stub recorder has no
 		// store, so it cannot observe a reversion.
-		test("KNOWN GAP (F4): a watermarked upsert overwrites the shared fields of a prior updateCommerceFields edit — remove this case when F4 lands", async () => {
+		test("KNOWN GAP (F4): a watermarked upsert overwrites the shared fields of a prior updateCommerceFields edit — remove this case when #93 (F4) lands", async () => {
 			const h = await makeStore();
 			const pid = productId("prod-f4-clobber");
 			await h.store.upsert(

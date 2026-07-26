@@ -213,7 +213,16 @@ export function createAfterSaveHandler(
 		// PUBLISH ATOMICITY: the save staged a pending draft over LIVE content —
 		// send nothing that affects live state. Both the upsert and the activate
 		// move to `content:afterPublish`, so content and commerce change together.
-		if (hasPendingDraft(event.content)) return;
+		// The log line is the only developer-visible answer to "I saved a new
+		// price and the storefront did not change"; the widget carries no
+		// merchant-facing copy for it yet (a deliberate follow-up — it would
+		// churn localized strings this change does not otherwise touch).
+		if (hasPendingDraft(event.content)) {
+			console.info(
+				`[urumi] content:afterSave: product_id=${id} has PENDING DRAFT changes over live content — commerce sync deferred to publish (no upsert, no activate). The saved values go live when the merchant clicks "Publish changes".`,
+			);
+			return;
+		}
 
 		const derived = deriveCommerce(event.content);
 		// Money/shape integrity: a float price, bad currency, or any invalid

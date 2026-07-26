@@ -1,15 +1,34 @@
 /**
  * Idempotency-key derivation for a content sync (plan §4 / §8 Risk 1).
  *
- * Resolution of Risk 1: `ContentHookEvent`/`ContentItem` exposes no stable
- * revision counter or hash to a plugin (verified against `~/em-dash` — the
- * raw DB row's `version` column is in `SYSTEM_COLUMNS` and stripped by
- * `rowToContentItem()` before reaching a plugin, trusted or sandboxed). The
- * only stable, monotonically-changing field a plugin actually receives is
- * `content.updatedAt` (bumped on every write). The key is therefore
- * `${collection}:${id}:${updatedAt}` — re-firing the SAME save (same
- * `updatedAt`) dedupes; a genuinely newer edit bumps `updatedAt` and
- * produces a fresh key that applies.
+ * Resolution of Risk 1: `content.updatedAt` is the field the key is built from,
+ * because EmDash bumps it on EVERY content write — `ContentRepository.update()`
+ * sets `updated_at: now` (and `version: version + 1`) unconditionally, with no
+ * "did any column actually change" gate. So the key is
+ * `${collection}:${id}:${updatedAt}`: re-DELIVERING the same hook event (the
+ * same `updatedAt`) dedupes against the store's per-row compare-on-write, while
+ * a genuinely newer write bumps `updatedAt` and produces a fresh key that
+ * applies.
+ *
+ * CORRECTION (publish atomicity, plan §1.3/§5 F2). An earlier version of this
+ * comment claimed `version` is "in `SYSTEM_COLUMNS` and stripped by
+ * `rowToContentItem()` before reaching a plugin". That is FALSE on the deployed
+ * `emdash@0.29.0`: `version` is stripped from the `data` bag but RE-EMITTED as a
+ * top-level field by `mapRow`, alongside `liveRevisionId`/`draftRevisionId`, and
+ * `contentItemToRecord = { ...item }` passes it through — a plugin does receive
+ * it. It is deliberately still not used here: on 0.29.0 `updatedAt` alone is
+ * already strictly monotonic per write, so `version` would add nothing. It
+ * becomes load-bearing only if Urumi ever upgrades to a build carrying the
+ * upstream `hasColumnWrites` gate (#2143), where successive no-op-column draft
+ * saves would share one `updatedAt` and collapse to a single applied upsert.
+ *
+ * DESPITE THE NAME, this is not the afterSave key-space only. Since publish
+ * atomicity, `content:afterPublish` also derives the commerce upsert and keys it
+ * HERE, on the publish's own bumped `updatedAt` — deliberately in this
+ * key-space rather than the `:published:` one, because the publish's upsert and
+ * its activate are two separate writes against a single per-row
+ * `idempotency_key` column and must not collide (see
+ * `derivePublishIdempotencyKey` and plan §2.9 / #94).
  */
 export function deriveSaveIdempotencyKey(
 	collection: string,
