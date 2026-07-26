@@ -3,12 +3,15 @@
 - Status: accepted
 - Date: 2026-07-12
 - Refines: the `SERVICE_API_TOKEN` write gate (introduced with the Worker entry, D9); relates to ADR-0006 (trusted in-process deployment) and #46/#47/#48 (kv-backed admin token provisioning)
+- **Refined by [ADR-0010](./0010-admin-read-surface-requires-internal-token.md)** — the GET/HEAD exemption below is a statement about *this gate*, not about who may read. The admin read surface (`/admin/**`, `/reports/**`, `/settings`) requires `X-Internal-Token`.
 
 ## Context
 
 The commerce service has a `SERVICE_API_TOKEN` write gate: when the secret is set, every
 non-GET/HEAD request must present it, else 401 (GET/HEAD stay open as the storefront read
-surface; the Stripe webhook is an exact method+path exemption with its own HMAC auth). As
+surface — *refined by ADR-0010: skipping this gate is not authorization; the admin reads
+carry their own `X-Internal-Token` guard*; the Stripe webhook is an exact method+path
+exemption with its own HMAC auth). As
 first written, the gate consumed **`Authorization: Bearer <serviceToken>`**.
 
 The Phase 5–7 rebase surfaced a collision: `Authorization: Bearer` is **also** the customer
@@ -43,6 +46,9 @@ would break the sandbox-clean contract, DEVELOPMENT.md §5) nor read anywhere at
    `AdminOrdersClient`) read it via the shared `serviceTokenFromKv(ctx)` helper and forward
    it as `X-Service-Token` — `HttpCommerceClient` on every request (uniform; GET is
    gate-exempt but the header is harmless), the two admin clients on their non-GET calls.
+   *Refined by ADR-0010: the admin clients must also send `X-Internal-Token` on their GETs,
+   because gate-exempt does not mean ungated — that is a different token and a different
+   guard.*
 
 ## Consequences
 
