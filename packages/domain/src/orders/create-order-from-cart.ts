@@ -320,7 +320,11 @@ export async function createOrderFromCart(
  * write-only: `PAYMENT_INTENT_FAILED` alone cannot tell an operator whether
  * Stripe was down (503) or the request was rejected (402 `card_declined`).
  * `console` is an ambient global, not an IO import — domain purity (no
- * pg/ctx/fetch) holds. A DURABLE anomaly (the `settle-order` COMMIT_LOST
+ * pg/ctx/fetch) holds. DEFERRED (separate from the durable-anomaly deferral
+ * below): the intended replacement is an INJECTED `Logger` port on
+ * `CreateOrderDeps`, mirroring how `Clock` displaces ambient `Date.now()`, so
+ * the domain states the diagnostic and the caller owns the sink. A DURABLE
+ * anomaly (the `settle-order` COMMIT_LOST
  * treatment) would need a `paymentEventStore` in `CreateOrderDeps`, which
  * checkout does not have today; adding one is a deliberate follow-up, not a
  * drive-by widening of this use-case's dependency surface.

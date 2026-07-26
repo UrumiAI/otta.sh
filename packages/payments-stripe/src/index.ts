@@ -246,6 +246,12 @@ export class StripePaymentGateway implements PaymentGateway {
 	 *  4. Only then `refunds.create`, passing `idempotencyKey` as Stripe's native
 	 *     `Idempotency-Key`. An errored create with UNKNOWN fate (network / timeout)
 	 *     surfaces as `UNVERIFIED` — re-check before retrying, never a clean failure.
+	 *
+	 * `input.amount` is passed to Stripe with the same hundredths-scale assumption
+	 * `createIntent` makes; its safety rests on the {@link STRIPE_UNSUPPORTED_CURRENCIES}
+	 * gate there — no live-paid order can exist in a denied currency, so no refund
+	 * can reach a zero-/three-decimal one. Removing that gate without an
+	 * exponent-aware money boundary would re-open the mis-scale hazard HERE too.
 	 */
 	async refund(input: RefundInput): Promise<RefundResult> {
 		if (this.#secretKey === undefined || this.#transport === undefined) {
