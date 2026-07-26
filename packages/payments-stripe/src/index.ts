@@ -2,6 +2,7 @@ import {
 	cents,
 	currency as toCurrency,
 	orderId as toOrderId,
+	PaymentIntentError,
 	type ClientAction,
 	type Clock,
 	type ConfirmationResult,
@@ -54,8 +55,10 @@ export interface StripePaymentGatewayOptions {
 }
 
 /**
- * The outbound Stripe transport the refund path drives (ADR-0008). Two calls, both
+ * The outbound Stripe transport the live paths drive (ADR-0008). Three calls, all
  * requiring the real `secretKey`:
+ *  - `createPaymentIntent` — `POST /v1/payment_intents`, the money-IN call
+ *    `createIntent` makes once a `secretKey` is configured.
  *  - `readRefundedAmount` — the mandatory refund-time PRE-FLIGHT: read the
  *    charge/PaymentIntent's already-refunded + captured amounts so the adapter can
  *    fail closed on divergence BEFORE issuing anything.
@@ -77,6 +80,21 @@ export interface StripeTransport {
 		idempotencyKey: string;
 		secretKey: string;
 	}): Promise<StripeCreateRefundResult>;
+	/**
+	 * Create the buyer's PaymentIntent. `amountCents` is integer minor units
+	 * (straight pass-through — no float math ever touches it), `currency` is
+	 * lowercased ISO-4217, and `orderId` travels as `metadata[order_id]`: THE
+	 * settlement key, which `normalizeEvent` reads back off the webhook.
+	 * `idempotencyKey` is our domain key, passed as Stripe's native
+	 * `Idempotency-Key` so a retry returns the SAME intent.
+	 */
+	createPaymentIntent(input: {
+		orderId: string;
+		amountCents: number;
+		currency: string;
+		idempotencyKey: string;
+		secretKey: string;
+	}): Promise<StripeCreatePaymentIntentResult>;
 }
 
 /** The provider's live refund view for the pre-flight (minor units). */
@@ -101,6 +119,18 @@ export type StripePreflightResult =
 export type StripeCreateRefundResult =
 	| { ok: true; refundId: string; amountCents: number; currency: string }
 	| { ok: false; class: "retryable" | "terminal" | "ambiguous" };
+
+/**
+ * A `createPaymentIntent` result. Only TWO failure classes — there is no
+ * `ambiguous` here: creating a PaymentIntent MOVES NO MONEY, and Stripe's native
+ * `Idempotency-Key` makes a same-key retry return the *same* intent, so an
+ * unknown-fate create is always safe to re-issue. `status` / `code` are carried
+ * for LOGS only (they become `PaymentIntentError.providerStatus/providerCode`);
+ * the secret key never appears in either.
+ */
+export type StripeCreatePaymentIntentResult =
+	| { ok: true; intentId: string; clientSecret: string }
+	| { ok: false; class: "retryable" | "terminal"; status?: number; code?: string };
 
 /**
  * Stripe `PaymentGateway` adapter (§5, step 4.6). `verifyConfirmation` is the
@@ -199,7 +229,47 @@ export class StripePaymentGateway implements PaymentGateway {
 		};
 	}
 
+	/**
+	 * Begin payment. With a `secretKey` configured this is a LIVE
+	 * `POST /v1/payment_intents` through the transport seam; without one it is the
+	 * unchanged OFFLINE deterministic handle (dev/test/e2e, byte-identical to what
+	 * every non-Stripe suite has always seen — the fake secret is NOT payable).
+	 *
+	 * A live failure throws the domain's gateway-agnostic {@link PaymentIntentError}
+	 * (`retryable` = network / 5xx / 429 / 409), which `createOrderFromCart` maps
+	 * to `PAYMENT_INTENT_FAILED`. The `secretKey` never reaches the error.
+	 *
+	 * Note (accepted, not engineered around): Stripe expires idempotency keys after
+	 * ~24 h, so a retry past that window mints a SECOND PaymentIntent for the same
+	 * order. Both carry the same `metadata[order_id]`; settlement dedupes on event
+	 * id and has amount-mismatch / reconciliation handling.
+	 */
 	async createIntent(input: CreateIntentInput): Promise<PaymentIntentHandle> {
+		if (this.#secretKey !== undefined && this.#transport !== undefined) {
+			const created = await this.#transport.createPaymentIntent({
+				orderId: input.orderId,
+				// Integer minor units, straight through — no float math, ever. (Stripe's
+				// three-decimal currencies (KWD/BHD) additionally require a multiple of
+				// 10; that is a merchant-configuration caveat, not a code path here.)
+				amountCents: input.amount,
+				currency: input.currency.toLowerCase(),
+				idempotencyKey: input.idempotencyKey,
+				secretKey: this.#secretKey,
+			});
+			if (!created.ok) {
+				throw new PaymentIntentError({
+					gateway: this.id,
+					retryable: created.class === "retryable",
+					...(created.status !== undefined ? { providerStatus: created.status } : {}),
+					...(created.code !== undefined ? { providerCode: created.code } : {}),
+				});
+			}
+			return {
+				gateway: this.id,
+				intentId: created.intentId,
+				clientAction: { kind: "stripe_client_secret", clientSecret: created.clientSecret },
+			};
+		}
 		const intentId = `pi_${input.orderId}`;
 		const clientAction: ClientAction = {
 			kind: "stripe_client_secret",
@@ -327,10 +397,18 @@ function safeEqualHex(a: string, b: string): boolean {
 
 const STRIPE_API_BASE = "https://api.stripe.com";
 
+/** Wall-clock bound on the live create-intent call — a hung Stripe must never
+ *  hang a Worker checkout. */
+export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+
 export interface StripeHttpTransportOptions {
 	fetch: typeof fetch;
 	/** Override the API base (tests point it at a recorder; defaults to Stripe). */
 	baseUrl?: string;
+	/** Per-request timeout for `createPaymentIntent`, via `AbortSignal.timeout`.
+	 *  Defaults to {@link DEFAULT_REQUEST_TIMEOUT_MS}. (Extending it to the two
+	 *  refund calls — today unbounded — is a tracked follow-up, not this change.) */
+	requestTimeoutMs?: number;
 }
 
 /**
@@ -352,8 +430,71 @@ export interface StripeHttpTransportOptions {
 export function createStripeHttpTransport(options: StripeHttpTransportOptions): StripeTransport {
 	const doFetch = options.fetch;
 	const base = (options.baseUrl ?? STRIPE_API_BASE).replace(/\/$/, "");
+	const timeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
 
 	return {
+		async createPaymentIntent({
+			orderId,
+			amountCents,
+			currency,
+			idempotencyKey,
+			secretKey,
+		}): Promise<StripeCreatePaymentIntentResult> {
+			const form = new URLSearchParams();
+			form.set("amount", String(amountCents));
+			form.set("currency", currency.toLowerCase());
+			// THE settlement key: `normalizeEvent` reads `data.object.metadata.order_id`
+			// back off the webhook to map the payment to the order.
+			form.set("metadata[order_id]", orderId);
+			form.set("automatic_payment_methods[enabled]", "true");
+			let res: Response;
+			try {
+				res = await doFetch(`${base}/v1/payment_intents`, {
+					method: "POST",
+					headers: {
+						...stripeAuthHeaders(secretKey),
+						"content-type": "application/x-www-form-urlencoded",
+						// Stripe's NATIVE idempotency: a same-key retry returns the SAME intent.
+						"idempotency-key": idempotencyKey,
+					},
+					body: form.toString(),
+					// A hung Stripe must never hang a Worker checkout.
+					signal: AbortSignal.timeout(timeoutMs),
+				});
+			} catch {
+				// Network error / abort-timeout. Unlike a refund create this is NOT
+				// ambiguous: no money moved, and the native key dedupes the retry.
+				return { ok: false, class: "retryable" };
+			}
+			if (!res.ok) {
+				// 5xx / 429 (throttled) / 409 (key still processing) are transient; every
+				// other 4xx is a definite rejection. The provider code is parsed
+				// best-effort for LOGS only — a non-JSON error body never throws here.
+				const cls =
+					res.status >= 500 || res.status === 429 || res.status === 409
+						? ("retryable" as const)
+						: ("terminal" as const);
+				const code = await stripeErrorCode(res);
+				return {
+					ok: false,
+					class: cls,
+					status: res.status,
+					...(code !== undefined ? { code } : {}),
+				};
+			}
+			let body: unknown;
+			try {
+				body = await res.json();
+			} catch {
+				// A 2xx we cannot read is TERMINAL: a same-key retry replays this exact
+				// (unusable) response, so retrying cannot help.
+				return { ok: false, class: "terminal", status: res.status };
+			}
+			const intent = createdIntentOf(body);
+			if (intent === null) return { ok: false, class: "terminal", status: res.status };
+			return { ok: true, ...intent };
+		},
+
 		async readRefundedAmount({ providerRef, secretKey }): Promise<StripePreflightResult> {
 			const isCharge = providerRef.startsWith("ch_");
 			const url = isCharge
@@ -458,6 +599,30 @@ function refundedViewOf(charge: unknown): StripeRefundedView | null {
 		amountCaptured: c.amount_captured,
 		currency: c.currency,
 	};
+}
+
+/** Parse a Stripe PaymentIntent into `{ intentId, clientSecret }`, or null when
+ *  either field is missing (a 2xx we cannot use). */
+function createdIntentOf(intent: unknown): { intentId: string; clientSecret: string } | null {
+	if (typeof intent !== "object" || intent === null) return null;
+	const i = intent as { id?: unknown; client_secret?: unknown };
+	if (typeof i.id !== "string" || typeof i.client_secret !== "string") return null;
+	return { intentId: i.id, clientSecret: i.client_secret };
+}
+
+/** Best-effort `error.code` off a Stripe error body, for LOGS. Never throws, and
+ *  never reads anything but the code (no echoed request params, no key). */
+async function stripeErrorCode(res: Response): Promise<string | undefined> {
+	try {
+		const body: unknown = await res.json();
+		if (typeof body !== "object" || body === null) return undefined;
+		const error = (body as { error?: unknown }).error;
+		if (typeof error !== "object" || error === null) return undefined;
+		const code = (error as { code?: unknown }).code;
+		return typeof code === "string" ? code : undefined;
+	} catch {
+		return undefined; // non-JSON error body — classify by status alone.
+	}
 }
 
 /** Parse a Stripe refund object into the created-refund result, or null. */
