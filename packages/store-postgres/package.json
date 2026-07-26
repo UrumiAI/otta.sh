@@ -2,14 +2,14 @@
 	"name": "@urumi/store-postgres",
 	"version": "0.1.0",
 	"description": "Kysely-backed store adapters for Urumi — dialect-parameterized over better-sqlite3 (local) and pg (CI/prod).",
-	"homepage": "https://github.com/UrumiAI/commerce#readme",
+	"homepage": "https://github.com/UrumiAI/otta.sh#readme",
 	"bugs": {
-		"url": "https://github.com/UrumiAI/commerce/issues"
+		"url": "https://github.com/UrumiAI/otta.sh/issues"
 	},
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/UrumiAI/commerce.git",
+		"url": "git+https://github.com/UrumiAI/otta.sh.git",
 		"directory": "packages/store-postgres"
 	},
 	"files": [

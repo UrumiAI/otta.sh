@@ -2,14 +2,14 @@
 	"name": "@urumi/domain",
 	"version": "0.1.0",
 	"description": "Urumi commerce domain — pure ports, use-cases, and branded types. No IO.",
-	"homepage": "https://github.com/UrumiAI/commerce#readme",
+	"homepage": "https://github.com/UrumiAI/otta.sh#readme",
 	"bugs": {
-		"url": "https://github.com/UrumiAI/commerce/issues"
+		"url": "https://github.com/UrumiAI/otta.sh/issues"
 	},
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/UrumiAI/commerce.git",
+		"url": "git+https://github.com/UrumiAI/otta.sh.git",
 		"directory": "packages/domain"
 	},
 	"files": [
