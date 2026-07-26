@@ -190,7 +190,7 @@ describe.skipIf(PG === undefined)("orders + webhook + entitlements HTTP contract
 		return { status: res.status, json: await json(res) };
 	}
 
-	test("POST /checkout/orders captures a shipping address; GET /orders/:id serializes the frozen snapshot", async () => {
+	test("POST /checkout/orders captures a shipping address; an AUTHENTICATED GET /orders/:id serializes the frozen snapshot", async () => {
 		const shippingAddress = {
 			name: "Ada Lovelace",
 			line1: "12 Analytical Way",
@@ -202,7 +202,13 @@ describe.skipIf(PG === undefined)("orders + webhook + entitlements HTTP contract
 		const { status, json: created } = await checkoutWithBody({ shippingAddress });
 		expect(status).toBe(201);
 		const orderId = (created["order"] as Record<string, unknown>)["id"] as string;
-		const read = await json(await fetch(`${server.baseUrl}/orders/${orderId}`));
+		// ADR-0010 §2 / PR D: the bare, unauthenticated GET is redacted — the
+		// ADR-0009 capture assertion moves to the internal-token-gated read.
+		const read = await json(
+			await fetch(`${server.baseUrl}/orders/${orderId}`, {
+				headers: { "X-Internal-Token": server.internalToken! },
+			}),
+		);
 		const order = read["order"] as Record<string, unknown>;
 		expect(order["shippingAddress"]).toEqual({
 			name: "Ada Lovelace",
@@ -215,6 +221,28 @@ describe.skipIf(PG === undefined)("orders + webhook + entitlements HTTP contract
 			email: "ada@example.com",
 			phone: null,
 		});
+	});
+
+	test("the UNAUTHENTICATED GET /orders/:id omits shippingAddress (and buyerRef/customerId) entirely (PR D)", async () => {
+		const shippingAddress = {
+			name: "Ada Lovelace",
+			line1: "12 Analytical Way",
+			city: "London",
+			postalCode: "EC1A 1BB",
+			country: "GB",
+			email: "ada@example.com",
+		};
+		const { status, json: created } = await checkoutWithBody({ shippingAddress });
+		expect(status).toBe(201);
+		const orderId = (created["order"] as Record<string, unknown>)["id"] as string;
+		const publicRead = await json(await fetch(`${server.baseUrl}/orders/${orderId}`));
+		const order = publicRead["order"] as Record<string, unknown>;
+		expect(order).not.toHaveProperty("shippingAddress");
+		expect(order).not.toHaveProperty("buyerRef");
+		expect(order).not.toHaveProperty("customerId");
+		// The guest-confirmation payload stays intact.
+		expect(order["id"]).toBe(orderId);
+		expect(order["state"]).toBe("pending");
 	});
 
 	test("POST /checkout/orders with no address yields a null ship-to (capture optional this slice)", async () => {
