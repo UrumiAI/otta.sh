@@ -53,6 +53,10 @@ export function entitlementRoutes(deps: OrderServiceDeps): Hono {
 		};
 		const res = await settleOrder(settleDeps, gateway, { kind: "page_gate", proof });
 		if (res.ok) {
+			// Deliberately the FULL `serializeOrder`, unlike the redacted
+			// `GET /orders/:orderId` (ADR-0010 §2 / PR D): this route already sits
+			// behind `requireInternalToken` above (a server-to-server POST), so it
+			// is not the unauthenticated capability-URL surface PR D locks down.
 			return c.json(
 				{ ok: true, order: res.order === null ? null : serializeOrder(res.order) },
 				200,

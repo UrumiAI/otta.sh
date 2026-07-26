@@ -28,6 +28,7 @@ import {
 	type ProductCommerceStore,
 } from "@urumi/domain";
 import { type Context, Hono } from "hono";
+import { tokenMatches } from "../auth.js";
 import { checkoutBody, orderPathParams, quoteBody } from "../schemas.js";
 import { requireInternalToken } from "./internal-auth.js";
 
@@ -193,12 +194,36 @@ export function orderRoutes(deps: OrderServiceDeps): Hono {
 		);
 	});
 
+	// Unauthenticated, capability-URL-only read (ADR-0010 §2 / PR D — guest
+	// "track my order" polling drives checkout; the order id alone is the only
+	// credential). A VALID `X-Internal-Token` unlocks the full admin-equivalent
+	// view (`serializeOrder`); anything else — absent, empty, or wrong —
+	// DEGRADES to the redacted `serializePublicOrder` view, never a 401/503:
+	// this route must keep working for a guest whether or not the internal
+	// token is even configured. That is why this checks `deps.internalToken`
+	// directly instead of calling `requireInternalToken` (which fails closed)
+	// and why the token is checked for presence before `tokenMatches` —
+	// `tokenMatches` takes a REQUIRED `expected: string`, so calling it with an
+	// unset/empty token would hash the empty string and (worse) invite a caller
+	// to "authenticate" with an empty `X-Internal-Token` against an unconfigured
+	// server. Mirrors the "empty token ⇒ treated as unset" rule at
+	// `auth.ts:52`. NOTE: `entitlements.ts`'s `/grant` also calls the full
+	// `serializeOrder` — that route sits behind `requireInternalToken` (a
+	// server-to-server POST), so it is unaffected by and intentionally
+	// untouched by this change.
 	app.get("/orders/:orderId", async (c) => {
 		const params = orderPathParams.safeParse(c.req.param());
 		if (!params.success) return c.json({ error: "invalid path parameter" }, 400);
 		const order = await deps.orderStore.getById(toOrderId(params.data.orderId));
 		if (order === null) return c.json({ ok: false, reason: "ORDER_NOT_FOUND" }, 404);
-		return c.json({ ok: true, order: serializeOrder(order) }, 200);
+		const authorized =
+			deps.internalToken !== undefined &&
+			deps.internalToken.length > 0 &&
+			tokenMatches(c.req.header("X-Internal-Token"), deps.internalToken);
+		return c.json(
+			{ ok: true, order: authorized ? serializeOrder(order) : serializePublicOrder(order) },
+			200,
+		);
 	});
 
 	app.post("/internal/expire-orders", async (c) => {
@@ -263,6 +288,75 @@ export function serializeOrder(order: Order): Record<string, unknown> {
 			quantity: l.quantity,
 			fulfillmentKind: l.fulfillmentKind,
 		})),
+	};
+}
+
+/**
+ * Public (unauthenticated, capability-URL) projection of an order — ADR-0010
+ * §2 / PR D. A **WHITELIST**, not a delete-list: every key is added here
+ * explicitly, so a future additive `Order` field is PRIVATE by default — the
+ * inverse of `serializeOrder`'s "additive — existing consumers ignore it"
+ * habit, which is exactly how `shippingAddress` became silently public under
+ * ADR-0009. If this is ever "simplified" into `{ ...serializeOrder(order),
+ * delete x }`, the next field added to `serializeOrder` leaks by default —
+ * don't.
+ *
+ * Omits `buyerRef`, `customerId`, `shippingAddress`, `reconciliationFlag`,
+ * `reconciliationResolution` ENTIRELY (never `null`): a client must not be
+ * able to distinguish "redacted" from "absent" and probe for the real shape.
+ * `fulfillment`/`cancellation` stay present but TRIMMED — the carrier/tracking
+ * info and the cancellation reason are a legitimate guest read, but
+ * `recordedBy`/`cancelledBy` (staff identity) and `recordedAt`/`detail` (an
+ * audit witness / free text) are not.
+ *
+ * A GUEST has no session, so `GET /me/orders/:orderId` is not a fallback for
+ * this read — until a dedicated order-confirmation page exists, an
+ * unauthenticated caller cannot see their own ship-to via this route. The
+ * full view remains behind a session (`GET /me/orders/:orderId`) or a valid
+ * `X-Internal-Token` (this same route, see below). The widening path, if the
+ * confirmation UX ever needs a shipping hint, is a DERIVED
+ * `shippingAddressSummary` (city + country + a masked postal code) —
+ * never reopen the raw `shippingAddress` snapshot on this route.
+ */
+export function serializePublicOrder(order: Order): Record<string, unknown> {
+	return {
+		id: order.id,
+		state: order.state,
+		currency: order.currency,
+		paymentMethod: order.paymentMethod,
+		holdExpiresAt: order.holdExpiresAt,
+		createdAt: order.createdAt,
+		totals: {
+			currency: order.totals.currency,
+			subtotalCents: order.totals.subtotal,
+			discountCents: order.totals.discount,
+			shippingCents: order.totals.shipping,
+			taxCents: order.totals.tax,
+			totalCents: order.totals.total,
+			appliedCouponCode: order.totals.appliedCouponCode,
+			shippingZoneId: shippingZoneIdOf(order.totals.shippingMethodSnapshot),
+		},
+		lines: order.lines.map((l) => ({
+			sku: l.sku,
+			title: l.title,
+			unitPriceCents: l.unitPrice,
+			currency: l.currency,
+			quantity: l.quantity,
+			fulfillmentKind: l.fulfillmentKind,
+		})),
+		fulfillment:
+			order.fulfillment === null
+				? null
+				: {
+						carrier: order.fulfillment.carrier,
+						trackingNumber: order.fulfillment.trackingNumber,
+						trackingUrl: order.fulfillment.trackingUrl,
+						shippedAt: order.fulfillment.shippedAt,
+					},
+		cancellation:
+			order.cancellation === null
+				? null
+				: { reason: order.cancellation.reason, cancelledAt: order.cancellation.cancelledAt },
 	};
 }
 
