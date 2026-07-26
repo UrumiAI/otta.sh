@@ -127,7 +127,7 @@ describe.skipIf(PG === undefined)("entitlement-gated download (workerd sandbox)"
 		const byOrder = await sandbox.invokeRoute("entitlements/download", { orderId, sku: "DIG-1" });
 		expect(byOrder).toEqual({ result: { authorized: true, sku: "DIG-1" } });
 
-		// Issue #33 / ADR-0008: a logged-in customer authorizes via their SESSION
+		// Issue #33 / ADR-0011: a logged-in customer authorizes via their SESSION
 		// (the service derives the email server-side) — the plugin never forwards
 		// a raw email. `BUYER_REF` is the checkout email, and the session for it
 		// hits the same entitlement row.
@@ -137,6 +137,56 @@ describe.skipIf(PG === undefined)("entitlement-gated download (workerd sandbox)"
 			sku: "DIG-1",
 		});
 		expect(bySession).toEqual({ result: { authorized: true, sku: "DIG-1" } });
+	});
+
+	// Precedence-bug coverage (review): when the theme supplies BOTH `orderId`
+	// and `sessionToken`, an unrelated/stale orderId must not shadow the
+	// logged-in customer's OWN entitlement — the route retries session-scoped on
+	// an inactive orderId result (see the comment in download-route.ts).
+	test("both orderId AND sessionToken present: a stale/unrelated orderId does not shadow the session's own entitlement", async () => {
+		const { live, sandbox } = await setup();
+		const { orderId, totalCents } = await createDigitalOrder(live);
+		await payOrder(live, orderId, totalCents);
+		const sessionToken = await loginSession(live, BUYER_REF);
+
+		// A second, unrelated order for the same buyer — NEVER paid, so it carries
+		// no entitlement of its own. A theme bug (or a stale query param from
+		// another tab) supplies this orderId alongside a perfectly valid session.
+		const { orderId: staleOrderId } = await createDigitalOrder(live);
+
+		const result = await sandbox.invokeRoute("entitlements/download", {
+			orderId: staleOrderId,
+			sessionToken,
+			sku: "DIG-1",
+		});
+		expect(result).toEqual({ result: { authorized: true, sku: "DIG-1" } });
+	});
+
+	test("both orderId AND sessionToken present: a valid orderId authorizes even with an unrelated stranger's session", async () => {
+		const { live, sandbox } = await setup();
+		const { orderId, totalCents } = await createDigitalOrder(live);
+		await payOrder(live, orderId, totalCents);
+		const strangerSession = await loginSession(live, "stranger@example.com");
+
+		const result = await sandbox.invokeRoute("entitlements/download", {
+			orderId,
+			sessionToken: strangerSession,
+			sku: "DIG-1",
+		});
+		expect(result).toEqual({ result: { authorized: true, sku: "DIG-1" } });
+	});
+
+	test("both orderId AND sessionToken present: neither scope entitled → NOT_ENTITLED, not UNAUTHENTICATED", async () => {
+		const { live, sandbox } = await setup();
+		const { orderId: staleOrderId } = await createDigitalOrder(live); // unpaid
+		const strangerSession = await loginSession(live, "stranger2@example.com");
+
+		const result = await sandbox.invokeRoute("entitlements/download", {
+			orderId: staleOrderId,
+			sessionToken: strangerSession,
+			sku: "DIG-1",
+		});
+		expect(result).toEqual({ result: { authorized: false, reason: "NOT_ENTITLED" } });
 	});
 
 	test("route input with a raw buyerRef is ignored — no orderId/session scope ⇒ INVALID_INPUT (the plugin never forwards emails)", async () => {

@@ -1,5 +1,6 @@
 import { COMMERCE_SERVICE_BASE_URL, serviceTokenFromKv } from "../manifest.js";
 import { HttpCommerceClient } from "../product-commerce/http-commerce-client.js";
+import { isNonEmptyString } from "../storefront/account-routes.js";
 import type { RouteHandler } from "../types.js";
 
 /** The PUBLIC route path a digital-download link posts to (plan §6). */
@@ -19,7 +20,7 @@ export type EntitlementDownloadResult =
 	| { authorized: false; reason: "NOT_ENTITLED" | "INVALID_INPUT" | "UNAUTHENTICATED" };
 
 /**
- * Entitlement-gated digital download (plan §6, step 4.9; ADR-0008). The plugin
+ * Entitlement-gated digital download (plan §6, step 4.9; ADR-0011). The plugin
  * route calls the service's entitlement **check** via `ctx.http` and authorizes
  * delivery only when an active entitlement exists — the file is never served
  * without one. Two scopes: the unguessable `orderId` (guest download link) or a
@@ -40,16 +41,12 @@ export type EntitlementDownloadResult =
 export function createEntitlementDownloadHandler(): RouteHandler<EntitlementDownloadInput> {
 	return async (routeCtx, ctx): Promise<EntitlementDownloadResult> => {
 		const { orderId, sessionToken, sku } = routeCtx.input;
-		if (typeof sku !== "string" || sku.length === 0) {
+		if (!isNonEmptyString(sku)) {
 			return { authorized: false, reason: "INVALID_INPUT" };
 		}
-		const scope: { orderId?: string } = {};
-		if (typeof orderId === "string" && orderId.length > 0) scope.orderId = orderId;
-		const opts: { sessionToken?: string } = {};
-		if (typeof sessionToken === "string" && sessionToken.length > 0) {
-			opts.sessionToken = sessionToken;
-		}
-		if (scope.orderId === undefined && opts.sessionToken === undefined) {
+		const scopedOrderId = isNonEmptyString(orderId) ? orderId : undefined;
+		const scopedSessionToken = isNonEmptyString(sessionToken) ? sessionToken : undefined;
+		if (scopedOrderId === undefined && scopedSessionToken === undefined) {
 			return { authorized: false, reason: "INVALID_INPUT" };
 		}
 
@@ -62,10 +59,32 @@ export function createEntitlementDownloadHandler(): RouteHandler<EntitlementDown
 			baseUrl: COMMERCE_SERVICE_BASE_URL,
 			...(serviceToken !== undefined ? { serviceToken } : {}),
 		});
-		const result = await client.checkEntitlement(scope, sku, opts);
-		if (!result.ok) return { authorized: false, reason: "UNAUTHENTICATED" };
-		return result.active
-			? { authorized: true, sku }
-			: { authorized: false, reason: "NOT_ENTITLED" };
+
+		// PRECEDENCE FIX (review): the service gives an `orderId` in the query
+		// priority over a session Bearer riding along in the SAME request (ADR-0011
+		// scope 2 before scope 3, by design — the orderId capability must keep
+		// working for a guest with no session at all). So a single combined request
+		// would false-negative NOT_ENTITLED for a logged-in customer whose
+		// theme-supplied `orderId` happens to be stale or unrelated (e.g. a leftover
+		// query param from another tab/order). Check the orderId scope first — it's
+		// the common guest-download-link case and needs no auth header — and ONLY
+		// when it comes back inactive AND a session is present, retry session-scoped.
+		// Never the reverse: a valid orderId bearer capability must never be
+		// shadowed by trying the session first.
+		if (scopedOrderId !== undefined) {
+			const byOrder = await client.checkEntitlement({ orderId: scopedOrderId }, sku);
+			if (!byOrder.ok) return { authorized: false, reason: "UNAUTHENTICATED" };
+			if (byOrder.active) return { authorized: true, sku };
+		}
+		if (scopedSessionToken !== undefined) {
+			const bySession = await client.checkEntitlement({}, sku, {
+				sessionToken: scopedSessionToken,
+			});
+			if (!bySession.ok) return { authorized: false, reason: "UNAUTHENTICATED" };
+			return bySession.active
+				? { authorized: true, sku }
+				: { authorized: false, reason: "NOT_ENTITLED" };
+		}
+		return { authorized: false, reason: "NOT_ENTITLED" };
 	};
 }
