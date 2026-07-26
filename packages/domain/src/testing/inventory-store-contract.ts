@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { idempotencyKey } from "../money/ids.js";
-import type { InventoryStore } from "../ports/inventory-store.js";
+import { type InventoryStore, ReservationNotFoundError } from "../ports/inventory-store.js";
 
 /** Order-insensitive membership compare: pg RETURNING order ≠ IN order ≠ fake. */
 const sorted = (xs: string[]): string[] => xs.toSorted();
@@ -140,6 +140,22 @@ export function inventoryStoreContract(
 			expect(await h.onHand("SKU-1")).toBe(3);
 			await h.store.release(b.reservationId);
 			expect(await h.onHand("SKU-1")).toBe(3);
+		});
+
+		// PR B (reservation 404): an id that was NEVER created — as distinct from
+		// one that existed and lost its hold (ReservationCommitLostError) — throws
+		// the typed ReservationNotFoundError, so the HTTP boundary can map it to a
+		// 404 instead of a bare 500.
+		test("commit(unknownId) rejects with ReservationNotFoundError", async () => {
+			const h = await makeStore();
+			await expect(h.store.commit("no-such-reservation")).rejects.toThrow(ReservationNotFoundError);
+		});
+
+		test("release(unknownId) rejects with ReservationNotFoundError", async () => {
+			const h = await makeStore();
+			await expect(h.store.release("no-such-reservation")).rejects.toThrow(
+				ReservationNotFoundError,
+			);
 		});
 
 		test("adjust up reserves the delta and decrements on_hand", async () => {
