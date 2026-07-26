@@ -1,4 +1,4 @@
-# 0008. `GET /entitlements/check` authenticates each scope (close the email existence oracle)
+# 0011. `GET /entitlements/check` authenticates each scope (close the email existence oracle)
 
 - Status: accepted
 - Date: 2026-07-14
@@ -71,10 +71,30 @@ lower-normalized email would false-negative against a mixed-case checkout ref. `
 therefore matches `buyerRef` **case-insensitively** (`lower(buyer_ref) = lower(?)`, mirroring
 `OrderStore.linkGuestOrders`), enforced through the shared contract suite so every adapter complies.
 Assumption stated: **`buyer_ref` carries email semantics — a case-distinct ref is the same
-principal**; for the non-email refs that could appear (hex wallet addresses / opaque x402 tokens)
-lowercasing is **injective**, so folding never conflates distinct principals. The SQLite `lower()`
-(ASCII-only) vs JS `toLowerCase` (full Unicode) divergence is the same one already accepted for
-`linkGuestOrders`; the contract fixture is ASCII-cased.
+principal**. Folding is **not** injective in general (`lower` is many-to-one by construction —
+e.g. `"A"` and `"a"` fold to the same key), so if a non-email `buyer_ref` (a hex wallet address,
+an opaque x402 token) ever collided with another principal's ref under case-folding alone, this
+check would conflate them. That risk is bounded, not eliminated, by *where* folding is allowed to
+apply: only the operator-gated scope (1, behind `X-Internal-Token`) and the server-derived
+session scope (3, `buyerRef` comes from `CustomerStore`, never client input) ever fold a
+`buyer_ref` for matching. Scope 2 (`orderId`) never touches `buyer_ref` at all. So a folding
+collision could only ever let an **authenticated operator** or a **customer's own verified
+session** match a differently-cased ref — never an unauthenticated caller, and never a caller
+supplying an arbitrary `buyerRef` of their choosing outside those two gated paths. The
+non-email-ref case is a latent correctness risk worth tracking, not a new oracle.
+
+The SQL `lower()` (both adapters) vs JS `String.prototype.toLowerCase()` (`kysely-entitlement-store.ts`
+computes `query.buyerRef.toLowerCase()` in JS, then compares against `lower(buyer_ref)` in SQL) are
+**not the same function**: SQLite's `lower()` is ASCII-only; Postgres's default (`C` collation)
+`lower()` is likewise not full-Unicode-aware; JS `toLowerCase()` is full Unicode, including
+locale-sensitive cases like Turkish dotted/dotless I (`İ`/`I` vs `i`/`ı`) that ASCII `lower()`
+does not fold the same way. Where the two diverge, the failure mode is **fail-closed**: the JS
+side folds a code point the SQL side does not (or vice versa), the two computed keys no longer
+match, and `check` returns `false` for what should be an active entitlement — a false negative
+(denied delivery to an entitled buyer), never a false positive (no unentitled buyer is ever
+granted access). This is the same divergence already accepted for `OrderStore.linkGuestOrders`;
+the contract fixture stays ASCII-cased because the adapters cannot be made to agree on
+non-ASCII folding without a shared collation, and fail-closed is the safe default.
 
 ## Consequences
 
@@ -91,23 +111,24 @@ lowercasing is **injective**, so folding never conflates distinct principals. Th
   confirm the wire shape end-to-end** — it ships covered only by the contract suite, not by a
   production caller. (Alternative considered: delete the scope until a consumer lands; rejected as
   a one-line re-add later, and support queries are a concrete near-term need.)
-- **Session-scope under-reporting gap (tracked).** Entitlements are keyed to the checkout email;
-  `linkGuestOrders` re-keys **orders** to `customerId` at login but never entitlement rows. So a
+- **Session-scope under-reporting gap (tracked: issue #89).** Entitlements are keyed to the checkout
+  email; `linkGuestOrders` re-keys **orders** to `customerId` at login but never entitlement rows. So a
   *logged-in* customer who checks out with a *different* delivery email gets an entitlement invisible
-  to their session forever — recoverable only via the `orderId` capability. Filed as a tracked
-  follow-up: *"[Domain] Re-key entitlements to customerId at login (linkGuestOrders parity)"*. Not an
-  open question — a known, bounded gap with a recovery path.
+  to their session forever — recoverable only via the `orderId` capability. Not an open question — a
+  known, bounded gap with a recovery path, tracked at
+  https://github.com/UrumiAI/commerce/issues/89.
 - **The orderId bearer-capability call is auditable.** Residual `orderId` exposure lands only in
   trusted/operator channels: GET query strings in server/proxy access logs, Stripe webhook metadata,
   the admin UI. The plugin invokes the download check as a **POSTed route input**, keeping the id out
   of browser history and `Referer`. This is what makes treating `orderId` as a bearer capability
   defensible.
-- **Parity constraint with `GET /orders/:id`.** That endpoint is *already* a full-order-content
-  `orderId` bearer capability (the checkout redirect poll) — and it is the **higher-value** half:
-  it serializes `buyerRef` (the email) to any order-id holder, leaking identity, not just a yes/no.
-  So the tracked follow-up above must not imply `/entitlements/check` is the primary residual oracle;
-  any future tightening of orderId-as-capability must cover **both endpoints together**, with
-  `/orders/:id` the priority.
+- **Parity constraint with `GET /orders/:id` (tracked: issue #90).** That endpoint is *already* a
+  full-order-content `orderId` bearer capability (the checkout redirect poll) — and it is the
+  **higher-value** half: it serializes `buyerRef` (the email) to any order-id holder, leaking
+  identity, not just a yes/no. So issue #89 above must not be read as implying `/entitlements/check`
+  is the primary residual oracle; any future tightening of orderId-as-capability must cover **both
+  endpoints together**, with `/orders/:id` the priority. Tracked at
+  https://github.com/UrumiAI/commerce/issues/90.
 
 ## Alternatives considered
 

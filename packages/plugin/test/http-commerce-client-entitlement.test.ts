@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { HttpCommerceClient } from "../src/product-commerce/http-commerce-client.js";
 
-// Issue #33 / ADR-0008 — stub-fetch proof of the client's entitlement-check wire
+// Issue #33 / ADR-0011 — stub-fetch proof of the client's entitlement-check wire
 // shape: the orderId scope carries NO auth header and NEVER a buyerRef param, the
 // session scope threads `authorization: Bearer`, and a 401 is normalized to a
 // typed UNAUTHENTICATED result (never a thrown CommerceClientError). Pure wire
@@ -41,7 +41,7 @@ function header(init: RequestInit | undefined, name: string): string | undefined
 	return undefined;
 }
 
-describe("HttpCommerceClient.checkEntitlement (ADR-0008)", () => {
+describe("HttpCommerceClient.checkEntitlement (ADR-0011)", () => {
 	test("orderId scope: no auth header, no buyerRef param, returns {ok,active}", async () => {
 		const { client, requests } = stubClient(200, true);
 		const result = await client.checkEntitlement({ orderId: "o1" }, "DIG-1");

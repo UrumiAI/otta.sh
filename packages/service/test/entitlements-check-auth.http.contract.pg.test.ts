@@ -6,7 +6,7 @@ import {
 	type TestServer,
 } from "./helpers/start-test-server.js";
 
-// Issue #33 (ADR-0008): GET /entitlements/check is no longer an unauthenticated
+// Issue #33 (ADR-0011): GET /entitlements/check is no longer an unauthenticated
 // existence oracle over email. Presence-based precedence, exercised at the wire
 // level against a LIVE Postgres-backed server:
 //   1. buyerRef present anywhere  ⇒ X-Internal-Token required (else 401; 503 if

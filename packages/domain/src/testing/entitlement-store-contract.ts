@@ -51,10 +51,12 @@ export function entitlementStoreContract(
 		// case-distinct ref is the SAME principal, so check folds case like
 		// OrderStore.linkGuestOrders — the session scope derives a lower-normalized
 		// Email from the session and must hit an entitlement granted from a
-		// mixed-case checkout buyer_ref. Non-email refs (hex wallet / opaque x402
-		// tokens) lower injectively, so folding stays safe. ASCII-cased fixture:
-		// SQLite lower() folds ASCII only vs JS toLowerCase full Unicode — the same
-		// accepted divergence as linkGuestOrders.
+		// mixed-case checkout buyer_ref. Folding is many-to-one, NOT injective —
+		// see ADR-0011's case-folding section for why a folding collision on a
+		// non-email ref is bounded to the operator/session scopes rather than
+		// eliminated. ASCII-cased fixture: SQLite lower() folds ASCII only vs JS
+		// toLowerCase full Unicode — the same accepted (fail-closed) divergence as
+		// linkGuestOrders.
 		test("check by buyerRef is case-insensitive (email semantics)", async () => {
 			const { store } = await makeHarness();
 			await store.grant(grantInput({ buyerRef: "Buyer@Example.COM" }));

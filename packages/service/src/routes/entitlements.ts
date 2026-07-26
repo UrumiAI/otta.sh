@@ -17,7 +17,7 @@ import { resolveCustomer } from "./session-auth.js";
 
 /**
  * `entitlementRoutes` needs the session + customer stores (session scope of the
- * `/check` oracle-close, ADR-0008) on top of `OrderServiceDeps`. Both are
+ * `/check` oracle-close, ADR-0011) on top of `OrderServiceDeps`. Both are
  * REQUIRED fields on `AppDeps`, satisfied by the spread at the app.ts mount site
  * (`entitlementRoutes({ ...orderDeps, sessionStore, customerStore })`) — a future
  * reader wiring this from a narrower deps object must pass them explicitly, like
@@ -35,7 +35,7 @@ export type EntitlementRoutesDeps = OrderServiceDeps & {
  *    {kind:"page_gate"})`, which verifies the proof server-side and grants the
  *    entitlement on success.
  *  - `GET /entitlements/check` — delivery authorization with PRESENCE-BASED scope
- *    precedence (issue #33 / ADR-0008), so it is no longer an unauthenticated
+ *    precedence (issue #33 / ADR-0011), so it is no longer an unauthenticated
  *    existence oracle over an email:
  *      1. `buyerRef` present anywhere ⇒ operator auth (`X-Internal-Token`; 503
  *         when unconfigured, never silently open) — admin/support tooling only.
@@ -89,7 +89,7 @@ export function entitlementRoutes(deps: EntitlementRoutesDeps): Hono {
 	});
 
 	// Presence-based scope precedence closes the former email existence oracle
-	// (issue #33 / ADR-0008). The precedence is keyed on what the request
+	// (issue #33 / ADR-0011). The precedence is keyed on what the request
 	// CONTAINS, never on which scope it best "fits": the store ANDs orderId +
 	// buyerRef, so a shape-based "orderId ⇒ open" rule that forwarded the whole
 	// query would leave a residual "does order X belong to email Y" oracle.

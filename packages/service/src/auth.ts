@@ -24,7 +24,7 @@ export function tokenMatches(provided: string | undefined, expected: string): bo
  * This blanket "GETs stay open" is the READ surface, not a promise that every
  * GET is anonymous: `GET /entitlements/check` enforces its OWN route-level auth
  * for the buyerRef scope (X-Internal-Token) so it is not an email existence
- * oracle — see routes/entitlements.ts and ADR-0008. A GET being past this gate
+ * oracle — see routes/entitlements.ts and ADR-0011. A GET being past this gate
  * means only that the service token does not apply; the route may still demand a
  * session or an internal token.
  *

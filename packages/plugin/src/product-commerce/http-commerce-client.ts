@@ -253,12 +253,12 @@ export class HttpCommerceClient implements CommerceClient {
 	// (A clearly-delimited additive block — Phase 2 adds `getCommerceBatch` to
 	// this same file in parallel.) These mirror the service's Phase-4 endpoints
 	// 1:1. Delivery authorization is a READ, but NOT anonymous (issue #33 /
-	// ADR-0008): the orderId scope is an unguessable bearer capability (no auth
+	// ADR-0011): the orderId scope is an unguessable bearer capability (no auth
 	// header), and the session scope threads the customer's Bearer so the service
 	// can derive the email server-side.
 
 	/**
-	 * Delivery authorization (§6/§7, ADR-0008), matching the service's
+	 * Delivery authorization (§6/§7, ADR-0011), matching the service's
 	 * presence-based scope precedence. Two scopes only:
 	 *  - `orderId` — the download link's unguessable order id; an open bearer
 	 *    capability, no auth header.
