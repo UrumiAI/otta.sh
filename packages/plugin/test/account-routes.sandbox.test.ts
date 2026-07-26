@@ -138,7 +138,15 @@ describe.skipIf(PG === undefined)("storefront account pages (workerd sandbox)", 
 
 	test("the account pages add no new capability beyond network:request/allowedHosts", () => {
 		// The §6 ADR's "service sends email directly" holds in practice: the plugin
-		// declares no email:send, no ctx.storage — exactly the two capabilities.
-		expect([...URUMI_PLUGIN_CAPABILITIES]).toEqual(["content:read", "network:request"]);
+		// declares no email:send, no ctx.storage — exactly these three capabilities.
+		// `content:write` is what lets em-dash REGISTER the `content:beforeSave`
+		// price guard (ADR-0012); the account routes themselves use nothing but
+		// network:request. Full rationale + bounds live in the sandbox-clean guard
+		// in product-data-widget.sandbox.test.ts.
+		expect([...URUMI_PLUGIN_CAPABILITIES]).toEqual([
+			"content:read",
+			"content:write",
+			"network:request",
+		]);
 	});
 });
