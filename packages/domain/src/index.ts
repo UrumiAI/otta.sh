@@ -216,17 +216,19 @@ export type {
 	PaymentEventStore,
 	RecordAnomalyInput,
 } from "./ports/payment-event-store.js";
-export type {
-	ClientAction,
-	ConfirmationResult,
-	CreateIntentInput,
-	PaymentGateway,
-	PaymentIntentHandle,
-	RawConfirmation,
-	RefundFailureReason,
-	RefundInput,
-	RefundResult,
-	X402Proof,
+export {
+	PaymentIntentError,
+	type ClientAction,
+	type ConfirmationResult,
+	type CreateIntentInput,
+	type PaymentGateway,
+	type PaymentIntentErrorInput,
+	type PaymentIntentHandle,
+	type RawConfirmation,
+	type RefundFailureReason,
+	type RefundInput,
+	type RefundResult,
+	type X402Proof,
 } from "./ports/payment-gateway.js";
 export type {
 	CancellationReason,

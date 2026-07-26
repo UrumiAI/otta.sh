@@ -19,6 +19,16 @@ export type CreateOrderFailure =
 	 *  enforcement is deferred until the storefront UI collects it (ADR-0009
 	 *  sequencing), so this slice ships capture-optional. */
 	| "INVALID_SHIPPING_ADDRESS"
+	/**
+	 * The gateway's `createIntent` failed (a live provider call refused or could
+	 * not be reached — a thrown `PaymentIntentError`). The `pending` order row
+	 * **stays**, deliberately: it carries `holdExpiresAt`, so `expireOrders`
+	 * sweeps it at TTL (releasing the reservations AND the coupon), while a
+	 * same-key retry short-circuits on the idempotency key and re-issues the
+	 * intent against the SAME order — which the provider's own idempotency key
+	 * dedupes. The service maps this to 502 (a bad upstream, not a bad request).
+	 */
+	| "PAYMENT_INTENT_FAILED"
 	// Phase 6 checkout-pipeline failures (shipping / tax / coupon):
 	| "SHIPPING_METHOD_NOT_FOUND"
 	| "SHIPPING_RATE_NOT_FOUND"

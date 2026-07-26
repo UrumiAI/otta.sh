@@ -14,10 +14,11 @@ import type { CouponStore } from "../ports/coupon-store.js";
 import type { IdGen } from "../ports/id-gen.js";
 import type { InventoryStore } from "../ports/inventory-store.js";
 import type { CreateOrderLineInput, OrderStore } from "../ports/order-store.js";
-import type {
-	CreateIntentInput,
-	PaymentGateway,
-	PaymentIntentHandle,
+import {
+	PaymentIntentError,
+	type CreateIntentInput,
+	type PaymentGateway,
+	type PaymentIntentHandle,
 } from "../ports/payment-gateway.js";
 import type { ProductCommerceStore } from "../ports/product-commerce-store.js";
 import type { ShippingRulesStore } from "../ports/shipping-rules-store.js";
@@ -112,12 +113,22 @@ export async function createOrderFromCart(
 	// expired). Re-issuing the payment intent is idempotent under the same key.
 	const already = await deps.orderStore.getByIdempotencyKey(command.idempotencyKey);
 	if (already !== null) {
-		const intent = await gateway.createIntent({
-			orderId: already.id,
-			amount: already.totals.total,
-			currency: already.totals.currency,
-			idempotencyKey: command.idempotencyKey,
-		});
+		let intent: PaymentIntentHandle;
+		try {
+			intent = await gateway.createIntent({
+				orderId: already.id,
+				amount: already.totals.total,
+				currency: already.totals.currency,
+				idempotencyKey: command.idempotencyKey,
+			});
+		} catch (err) {
+			// ONLY a typed intent failure is a clean checkout failure; every other
+			// throw is a bug and must keep propagating. The replayed order is
+			// untouched — nothing to release, nothing to roll back.
+			if (!(err instanceof PaymentIntentError)) throw err;
+			logIntentFailure(err, already.id);
+			return { ok: false, reason: "PAYMENT_INTENT_FAILED" };
+		}
 		return { ok: true, order: already, intent };
 	}
 
@@ -250,9 +261,15 @@ export async function createOrderFromCart(
 		redemptionId = redeemed.redemptionId;
 	}
 
-	// From here on, any failure after a fresh redemption must release the coupon
-	// (synchronous path, §5). A replay (redeemed.replayed) is harmless to release
-	// only if we actually fail — on the happy replay path nothing fails.
+	// From here on, a failure after a fresh redemption releases the coupon — but
+	// ONLY while no order row owns it yet. `orderMinted` is that ownership
+	// handoff, flipped by `finalizeOrder` the instant `orderStore.createFromCart`
+	// returns (symmetric with the `onFailure` callback below): once the order row
+	// exists it carries the DISCOUNTED total, so releasing the redemption would
+	// grant the discount without consuming a use. From that point the coupon is
+	// freed by exactly one of `expireOrders` (TTL sweep, via `releaseByOrder`) or
+	// an explicit eager release the use-case decides on (RESERVATION_LOST).
+	let orderMinted = false;
 	try {
 		return await finalizeOrder(deps, command, {
 			freshOrderId,
@@ -268,11 +285,38 @@ export async function createOrderFromCart(
 			onFailure: async () => {
 				if (redemptionId !== null) await deps.couponStore.release(redemptionId);
 			},
+			onOrderMinted: () => {
+				orderMinted = true;
+			},
 		});
 	} catch (err) {
-		if (redemptionId !== null) await deps.couponStore.release(redemptionId);
+		// Release ONLY when no order row was ever inserted (see `orderMinted`): a
+		// throw AFTER the insert leaves the redemption with the order that carries
+		// the discounted total, healed by the TTL sweep.
+		if (redemptionId !== null && !orderMinted) await deps.couponStore.release(redemptionId);
 		throw err;
 	}
+}
+
+/**
+ * Surface a mapped intent failure with its DIAGNOSTIC provider fields (status /
+ * code), so `PaymentIntentError.providerStatus` / `providerCode` are read, not
+ * write-only: `PAYMENT_INTENT_FAILED` alone cannot tell an operator whether
+ * Stripe was down (503) or the request was rejected (402 `card_declined`).
+ * `console` is an ambient global, not an IO import — domain purity (no
+ * pg/ctx/fetch) holds. A DURABLE anomaly (the `settle-order` COMMIT_LOST
+ * treatment) would need a `paymentEventStore` in `CreateOrderDeps`, which
+ * checkout does not have today; adding one is a deliberate follow-up, not a
+ * drive-by widening of this use-case's dependency surface.
+ */
+function logIntentFailure(err: PaymentIntentError, forOrder: OrderId): void {
+	console.error("[domain] createIntent failed → PAYMENT_INTENT_FAILED", {
+		orderId: forOrder,
+		gateway: err.gateway,
+		retryable: err.retryable,
+		providerStatus: err.providerStatus,
+		providerCode: err.providerCode,
+	});
 }
 
 interface FinalizeContext {
@@ -287,7 +331,16 @@ interface FinalizeContext {
 	/** The validated ship-to snapshot (ADR-0009), or null when none was captured. */
 	shippingAddress: OrderAddress | null;
 	gateway: PaymentGateway;
+	/** Release the coupon redemption NOW — the eager, use-case-decided release
+	 *  (RESERVATION_LOST, whose recovery is a new cart + a new key). */
 	onFailure: () => Promise<void>;
+	/**
+	 * Ownership handoff, symmetric with {@link FinalizeContext.onFailure}: called
+	 * exactly once, the instant the `pending` order row is durably inserted. From
+	 * that moment the ORDER owns the coupon redemption, so the caller's outer
+	 * catch must stop releasing it.
+	 */
+	onOrderMinted: () => void;
 }
 
 async function finalizeOrder(
@@ -329,6 +382,9 @@ async function finalizeOrder(
 			},
 		},
 	});
+	// The order row is now durable and carries the discounted total: it, not this
+	// call frame, owns the coupon redemption from here on.
+	ctx.onOrderMinted();
 
 	// 2. Adopt every physical line's reservation in ONE batched held → adopted flip
 	//    (PR B — checkout-write batching), collected from the persisted order lines
@@ -349,6 +405,11 @@ async function finalizeOrder(
 		// A lost hold after redemption: synchronously release the coupon (§5) before
 		// surfacing the failure. The pending order row stays and is healed by
 		// expireOrders; the coupon use is freed here.
+		//
+		// DELIBERATE ASYMMETRY with PAYMENT_INTENT_FAILED below: recovery from a
+		// lost hold is a NEW cart with a NEW key (this order can never be paid), so
+		// the use must be freed immediately; an intent failure recovers by REPLAYING
+		// the same key against this very order, which must keep its discount.
 		await ctx.onFailure();
 		return { ok: false, reason: "RESERVATION_LOST" };
 	}
@@ -363,8 +424,21 @@ async function finalizeOrder(
 		currency: order.totals.currency,
 		idempotencyKey: command.idempotencyKey,
 	};
-	const intent = await ctx.gateway.createIntent(intentInput);
-	return { ok: true, order, intent };
+	//    A live gateway can FAIL here (Stripe down / rejecting). Catch ONLY the
+	//    typed PaymentIntentError — any other throw is a bug and propagates. The
+	//    inserted `pending` order, its adopted reservations and its coupon
+	//    redemption all STAY: `expireOrders` sweeps them at TTL, and a same-key
+	//    retry returns this order and re-issues the intent (the provider's native
+	//    idempotency key makes that the SAME intent, never a duplicate charge).
+	//    `onFailure` is deliberately NOT called (see the asymmetry note above).
+	try {
+		const intent = await ctx.gateway.createIntent(intentInput);
+		return { ok: true, order, intent };
+	} catch (err) {
+		if (!(err instanceof PaymentIntentError)) throw err;
+		logIntentFailure(err, order.id);
+		return { ok: false, reason: "PAYMENT_INTENT_FAILED" };
+	}
 }
 
 // Branding at the use-case boundary (like inventory §0.2c): the cart line carries
