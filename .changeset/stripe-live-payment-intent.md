@@ -25,6 +25,15 @@ existing suite, staging and e2e keep running unchanged.
 - New `requestTimeoutMs` option (default 30 s, `AbortSignal.timeout`) so a hung
   Stripe cannot hang a Worker checkout. The `secretKey` never reaches an error
   message, `cause`, or any enumerable field.
+- **The live path is two-decimal currencies ONLY, and fails closed.** Our minor
+  units are hundredths everywhere while Stripe's `amount` is each currency's own
+  smallest unit, so a zero-decimal currency (JPY, KRW, …) would be charged 100×
+  and a three-decimal one (KWD, …) mis-scaled the other way. The new exported
+  `STRIPE_UNSUPPORTED_CURRENCIES` deny-list (Stripe's documented zero- and
+  three-decimal sets) is checked **before any network call**, throwing a terminal
+  `PaymentIntentError` with provider code `unsupported_currency` — so checkout
+  answers 502 instead of overcharging. The offline path is not gated (it moves no
+  money). Lifting the restriction needs an exponent-aware money boundary.
 
 **`@urumi/domain`**
 
@@ -38,6 +47,12 @@ existing suite, staging and e2e keep running unchanged.
   status/code at the mapping site. The `pending` order row is deliberately kept:
   `expireOrders` sweeps it at TTL (releasing reservations *and* the coupon), and a
   same-key retry re-issues the same intent against the same order.
+- The idempotent-replay short-circuit no longer calls `createIntent` when the
+  replayed order has left `pending` (paid / failed / expired / cancelled): now
+  that this is a live provider call, a gateway outage must not turn a replay of an
+  already-PAID order into a 502. Such a replay returns the order with an empty
+  handle — `intentId: ""`, `clientAction: { kind: "none" }` (no new intent was
+  minted and none is needed); the wire shape is unchanged.
 - **Fix:** `createOrderFromCart`'s outer catch released the coupon redemption for
   *any* throw after redeem, including throws after the order row was inserted — the
   order kept its discounted total while the use was handed back. An `orderMinted`

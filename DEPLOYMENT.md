@@ -430,6 +430,18 @@ note). In order of appearance in a deployment's life:
   *same* PaymentIntent, and `expire-orders` sweeps the order at the checkout TTL (releasing
   stock and any coupon use) if it never gets paid.
 
+> **Live Stripe is TWO-DECIMAL currencies only.** Urumi stores money as integer minor units
+> at hundredths scale everywhere, while Stripe expects `amount` in each currency's own
+> smallest unit. For **zero-decimal** currencies (JPY, KRW, CLP, VND, BIF, DJF, GNF, KMF,
+> MGA, PYG, RWF, UGX, VUV, XAF, XOF, XPF) that would charge the buyer **100×**, and for
+> **three-decimal** ones (BHD, JOD, KWD, OMR, TND) it is the mirror error — so the live
+> `createIntent` **refuses them before any network call**, answering 502
+> `PAYMENT_INTENT_FAILED` (provider code `unsupported_currency` in the service log). Do not
+> price a catalog in those currencies against a secret-key-configured deployment; the
+> offline (no-secret-key) path is unaffected. Lifting this needs an exponent-aware money
+> boundary, not an adapter tweak — the deny-list is `STRIPE_UNSUPPORTED_CURRENCIES` in
+> `packages/payments-stripe/src/index.ts`.
+
 > **x402 is fail-closed.** The only facilitator the service can currently wire is the
 > **offline TEST facilitator** — a shared-secret HMAC check, not real x402 verification:
 > any holder of `X402_FACILITATOR_SECRET` can forge a settling proof. Setting `X402_PAYTO`
