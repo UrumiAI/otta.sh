@@ -54,18 +54,21 @@ export interface HttpErrorEnvelope {
 export interface ReportingSettingsClientOptions {
 	fetch: HttpAccess["fetch"];
 	baseUrl: string;
-	/** Admin token forwarded as `X-Internal-Token` on the guarded `/reports/*`
-	 *  reads (review J5). Received here as a constructor option; the handlers
-	 *  source it from write-only `ctx.kv` (`settings:internalToken`). The client
-	 *  itself never persists it. (The privileged `PUT /settings` write takes its
-	 *  own `adminToken` per-call — see `updateSettings`.) */
+	/** Admin token forwarded as `X-Internal-Token` on EVERY guarded read this
+	 *  client makes — the `/reports/*` reads (review J5) AND `GET /settings`,
+	 *  which is admin surface too (ADR-0010). Received here as a constructor
+	 *  option; the handlers source it from write-only `ctx.kv`
+	 *  (`settings:internalToken`) via `readAdminTokens`. The client itself never
+	 *  persists it. (The privileged `PUT /settings` write takes its own
+	 *  `adminToken` per-call — see `updateSettings`.) */
 	adminToken?: string;
 	/** The machine write-gate token the service enforces as `X-Service-Token`
 	 *  (ADR-0007), sourced from write-only `ctx.kv` (`settings:serviceToken`).
 	 *  `PUT /settings` is a NON-GET, so the gate blocks it without this when the
-	 *  service secret is set — hence it is attached to the PUT (the `/reports/*`
-	 *  and `GET /settings` reads are gate-exempt, so they carry only the admin
-	 *  token). Undefined ⇒ no header ⇒ byte-identical to the pre-gate wire. */
+	 *  service secret is set — hence it is attached to the PUT. The `/reports/*`
+	 *  and `GET /settings` reads are exempt from THAT gate (it skips GET/HEAD), so
+	 *  they carry only the admin token — which, since ADR-0010, they genuinely
+	 *  need. Undefined ⇒ no header ⇒ byte-identical to the pre-gate wire. */
 	serviceToken?: string;
 }
 
