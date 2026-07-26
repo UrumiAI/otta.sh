@@ -11,19 +11,25 @@
  */
 import {
 	STOREFRONT_CART_LINE_ADD_ROUTE,
+	STOREFRONT_PRODUCT_ROUTE,
 	type CartLineMutationRouteResult,
 	type CartLineWire,
+	type PdpRouteResult,
 } from "@urumi/plugin";
 import type { APIRoute } from "astro";
+import { getEmDashEntry } from "emdash";
 import {
 	clearCartCookie,
 	ensureCartId,
 	failureToken,
+	PRODUCT_NOT_FOUND,
+	PRODUCT_UNAVAILABLE,
 	routeDispatcher,
 	seeOther,
 	SERVICE_UNAVAILABLE,
 } from "../../lib/cart-actions.js";
 import { rejectCrossOrigin } from "../../lib/origin-guard.js";
+import { toCmsProductContent, type ProductEntryData } from "../../lib/products.js";
 import {
 	dispatchUrumiRoute,
 	formPositiveInt,
@@ -67,6 +73,45 @@ export const POST: APIRoute = async (context) => {
 	}
 
 	const handler = routeDispatcher(context);
+
+	// Bogus SKU / garbage productId pre-check (item 3, fail fast — BEFORE
+	// `ensureCartId` mints a cart for a request that will be rejected): the
+	// service's SKU_MISMATCH check only fires when a `product_commerce` row
+	// exists for the submitted productId (documented issue #80 threat model,
+	// out of bounds to change here — routes/carts.ts:104-121); a garbage/
+	// nonexistent productId has nothing to reconcile against and is let
+	// through by design, deferred to checkout's PRODUCT_NOT_PRICED. The theme
+	// already owns a CMS-existence check via `getEmDashEntry` (the same
+	// slug-or-id lookup `[slug].astro` uses), so it runs here instead.
+	if (productId !== undefined) {
+		const { entry, error: entryError } = await getEmDashEntry("products", productId);
+		if (entryError) {
+			// A transient/DB issue is never mislabeled as "doesn't exist".
+			return seeOther(context, returnTo, SERVICE_UNAVAILABLE);
+		}
+		if (entry === null) {
+			return seeOther(context, returnTo, PRODUCT_NOT_FOUND);
+		}
+
+		// Entry exists — dispatch the SAME PDP route call `[slug].astro` makes
+		// to get a live, authoritative ProductViewModel (purchasable + sku),
+		// and reject BEFORE ever calling the add-line route if the submitted
+		// sku was forged onto a mismatched/inactive product.
+		const content = toCmsProductContent(entry.data as unknown as ProductEntryData);
+		const productResult = await dispatchUrumiRoute<PdpRouteResult>(
+			handler,
+			STOREFRONT_PRODUCT_ROUTE,
+			{ content },
+			context.url,
+		);
+		if (productResult === null || !productResult.ok) {
+			return seeOther(context, returnTo, SERVICE_UNAVAILABLE);
+		}
+		if (!productResult.product.purchasable || productResult.product.sku !== sku) {
+			return seeOther(context, returnTo, PRODUCT_UNAVAILABLE);
+		}
+	}
+
 	const cartId = await ensureCartId(context, handler);
 	if (cartId === undefined) {
 		return seeOther(context, returnTo, SERVICE_UNAVAILABLE);
