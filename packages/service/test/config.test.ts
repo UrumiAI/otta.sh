@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { parseHoldTtlMs, resolveServiceConfig } from "../src/config.js";
+import { openWriteGateWarning, parseHoldTtlMs, resolveServiceConfig } from "../src/config.js";
 
 // Pure env-parsing unit tests (no DB, no server) — the exact semantics the bin
 // entry (`index.ts`) has always had, now extracted so the Worker entry shares
@@ -43,5 +43,27 @@ describe("resolveServiceConfig", () => {
 		expect(() => resolveServiceConfig({ CART_HOLD_TTL_MS: "nope" })).toThrowError(
 			/CART_HOLD_TTL_MS/,
 		);
+	});
+});
+
+// #42 — the shared open-write-gate warning builder. The gate-open condition
+// (unset OR empty) mirrors `requireServiceToken` in src/auth.ts; both entries
+// call this with their own remedy string.
+describe("openWriteGateWarning", () => {
+	const remedy = "Do the thing.";
+
+	test("an UNSET token warns, names SERVICE_API_TOKEN, says OPEN, and ends with the remedy", () => {
+		const warning = openWriteGateWarning(undefined, remedy);
+		expect(warning).toContain("SERVICE_API_TOKEN");
+		expect(warning).toContain("OPEN");
+		expect(warning?.endsWith(remedy)).toBe(true);
+	});
+
+	test("an EMPTY token warns too (empty opens the gate, matching requireServiceToken)", () => {
+		expect(openWriteGateWarning("", remedy)).toContain("SERVICE_API_TOKEN");
+	});
+
+	test("a SET token never warns (returns undefined)", () => {
+		expect(openWriteGateWarning("svc-token", remedy)).toBeUndefined();
 	});
 });

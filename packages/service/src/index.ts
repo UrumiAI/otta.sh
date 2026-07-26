@@ -30,7 +30,7 @@ import {
 	uuidIdGen,
 } from "@urumi/store-postgres";
 import { createApp } from "./app.js";
-import { resolveServiceConfig } from "./config.js";
+import { openWriteGateWarning, resolveServiceConfig } from "./config.js";
 import { ConsoleEmailSender, HttpEmailSender } from "./email/senders.js";
 import { wireX402Gateway } from "./x402-wiring.js";
 
@@ -106,6 +106,14 @@ if (x402Gateway !== undefined) {
 // (INTERNAL_API_TOKEN — unset ⇒ 503, never silently open), and the write-gate
 // secret (SERVICE_API_TOKEN — unset ⇒ open, today's behavior).
 const { ttlMs, internalToken, serviceToken } = resolveServiceConfig(process.env);
+
+// Open-write-gate warning parity with the Worker entry (#42): boot runs once,
+// so this fires exactly once. Set token ⇒ no warning.
+const openGateWarning = openWriteGateWarning(
+	serviceToken,
+	"Set SERVICE_API_TOKEN in the service environment so the X-Service-Token write gate is enforced.",
+);
+if (openGateWarning !== undefined) console.warn(openGateWarning);
 
 const app = createApp({
 	store,
