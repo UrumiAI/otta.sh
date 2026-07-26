@@ -2,7 +2,16 @@
 	"name": "@urumi/plugin",
 	"version": "0.1.0",
 	"description": "Urumi EmDash plugin — sandbox-clean (workerd, Block Kit, ctx.http + allowedHosts only). No React, no DB/storage capability.",
+	"homepage": "https://github.com/UrumiAI/otta.sh#readme",
+	"bugs": {
+		"url": "https://github.com/UrumiAI/otta.sh/issues"
+	},
 	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/UrumiAI/otta.sh.git",
+		"directory": "packages/plugin"
+	},
 	"files": [
 		"dist"
 	],
