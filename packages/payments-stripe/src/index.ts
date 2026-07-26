@@ -19,6 +19,57 @@ import { createHmac, timingSafeEqual } from "node:crypto";
  *  Stripe's own recommended default. */
 export const DEFAULT_TOLERANCE_SECONDS = 300;
 
+/**
+ * Currencies the LIVE `createIntent` path REFUSES (fail closed), because this
+ * repo's money convention and Stripe's `amount` unit disagree for them.
+ *
+ * Urumi stores integer minor units at **hundredths scale everywhere** — see
+ * `packages/plugin/src/admin/money-input.ts`, which parses every merchant-entered
+ * price as `major × 100 + minor`. Stripe expects `amount` in the currency's OWN
+ * smallest unit: **zero-decimal** currencies (JPY, KRW, …) in WHOLE units, so
+ * passing our hundredths integer straight through would charge the buyer
+ * **100×**; **three-decimal** currencies (KWD, …) are the mirror hazard (Stripe
+ * wants thousandths, in multiples of 10). Both are client-reachable — `POST
+ * /carts` accepts any `/^[A-Z]{3}$/` code — and settle-time reconciliation
+ * compares the same inflated integer, so no anomaly would fire.
+ *
+ * A wrong charge is not a retryable condition, so the live path throws a TERMINAL
+ * `PaymentIntentError` (`providerCode: "unsupported_currency"`) BEFORE any
+ * network call. The OFFLINE path is deliberately NOT gated — it moves no money,
+ * and the contract suite must stay byte-identical.
+ *
+ * A DENY-list, not an exponent table, on purpose: it is the smallest change that
+ * cannot silently overcharge. A proper exponent-aware money boundary would
+ * replace it wholesale — a repo-wide decision (ADR), not an adapter detail.
+ *
+ * Contents: Stripe's documented zero-decimal set, then its three-decimal set.
+ */
+export const STRIPE_UNSUPPORTED_CURRENCIES: ReadonlySet<string> = new Set([
+	// Zero-decimal (Stripe wants whole units).
+	"BIF",
+	"CLP",
+	"DJF",
+	"GNF",
+	"JPY",
+	"KMF",
+	"KRW",
+	"MGA",
+	"PYG",
+	"RWF",
+	"UGX",
+	"VND",
+	"VUV",
+	"XAF",
+	"XOF",
+	"XPF",
+	// Three-decimal (Stripe wants thousandths, in multiples of 10).
+	"BHD",
+	"JOD",
+	"KWD",
+	"OMR",
+	"TND",
+]);
+
 export interface StripePaymentGatewayOptions {
 	/**
 	 * Stripe webhook signing secret (`whsec_…`). SERVICE-ENV ONLY (CLAUDE.md) —
@@ -239,6 +290,12 @@ export class StripePaymentGateway implements PaymentGateway {
 	 * (`retryable` = network / 5xx / 429 / 409), which `createOrderFromCart` maps
 	 * to `PAYMENT_INTENT_FAILED`. The `secretKey` never reaches the error.
 	 *
+	 * **The live path is exponent-2 ONLY.** Every currency in
+	 * {@link STRIPE_UNSUPPORTED_CURRENCIES} (Stripe's zero-decimal and
+	 * three-decimal sets) is rejected TERMINALLY before any network call, because
+	 * this repo's minor units are hundredths everywhere and passing them through
+	 * would over- or under-charge by 100×/10×. Offline is not gated.
+	 *
 	 * Note (accepted, not engineered around): Stripe expires idempotency keys after
 	 * ~24 h, so a retry past that window mints a SECOND PaymentIntent for the same
 	 * order. Both carry the same `metadata[order_id]`; settlement dedupes on event
@@ -246,11 +303,26 @@ export class StripePaymentGateway implements PaymentGateway {
 	 */
 	async createIntent(input: CreateIntentInput): Promise<PaymentIntentHandle> {
 		if (this.#secretKey !== undefined && this.#transport !== undefined) {
+			// FAIL CLOSED before the network: our minor units are hundredths, Stripe's
+			// `amount` is the currency's own smallest unit. For a zero-/three-decimal
+			// currency those disagree, and the pass-through below would charge the
+			// buyer 100× (or 1/10×). A wrong charge is never retryable.
+			if (STRIPE_UNSUPPORTED_CURRENCIES.has(input.currency)) {
+				throw new PaymentIntentError({
+					gateway: this.id,
+					retryable: false,
+					providerCode: "unsupported_currency",
+					message:
+						`live Stripe payments are supported only for two-decimal currencies; ` +
+						`"${input.currency}" is a zero-/three-decimal currency whose Stripe minor unit ` +
+						`does not match this service's hundredths convention (refusing to charge a ` +
+						`mis-scaled amount)`,
+				});
+			}
 			const created = await this.#transport.createPaymentIntent({
 				orderId: input.orderId,
-				// Integer minor units, straight through — no float math, ever. (Stripe's
-				// three-decimal currencies (KWD/BHD) additionally require a multiple of
-				// 10; that is a merchant-configuration caveat, not a code path here.)
+				// Integer minor units, straight through — no float math, ever. Sound only
+				// because every non-exponent-2 currency was rejected above.
 				amountCents: input.amount,
 				currency: input.currency.toLowerCase(),
 				idempotencyKey: input.idempotencyKey,

@@ -9,6 +9,7 @@ import {
 import { describe, expect, test } from "vitest";
 import {
 	createStripeHttpTransport,
+	STRIPE_UNSUPPORTED_CURRENCIES,
 	StripePaymentGateway,
 	type StripeCreatePaymentIntentResult,
 	type StripeCreateRefundResult,
@@ -79,6 +80,78 @@ describe("StripePaymentGateway.createIntent — the OFFLINE path is unchanged", 
 		const gw = new StripePaymentGateway({ webhookSecret: WEBHOOK, transport });
 		await gw.createIntent(intentInput());
 		expect(transport.intents).toHaveLength(0);
+	});
+
+	test("the offline path is NOT currency-gated — a zero-decimal currency still gets its handle (it moves no money)", async () => {
+		const gw = new StripePaymentGateway({ webhookSecret: WEBHOOK });
+		expect(await gw.createIntent(intentInput({ currency: currency("JPY") }))).toEqual({
+			gateway: "stripe",
+			intentId: "pi_ord-1",
+			clientAction: { kind: "stripe_client_secret", clientSecret: "pi_ord-1_secret_key-1" },
+		});
+	});
+});
+
+describe("StripePaymentGateway.createIntent — the LIVE path FAILS CLOSED on non-exponent-2 currencies", () => {
+	// The repo's money convention is integer minor units at hundredths scale
+	// EVERYWHERE (see packages/plugin/src/admin/money-input.ts). Stripe wants
+	// ZERO-decimal currencies (JPY, KRW, …) in WHOLE units, so passing our
+	// hundredths integer through would charge the buyer 100×; three-decimal
+	// currencies (KWD, …) are the mirror hazard. Reject before the network — a
+	// wrong charge is not a retryable condition.
+
+	test("a ZERO-decimal currency (JPY) throws a TERMINAL unsupported_currency error and never calls the transport", async () => {
+		const transport = new MockTransport();
+		const gw = new StripePaymentGateway({ webhookSecret: WEBHOOK, secretKey: SK, transport });
+		const err = (await gw
+			.createIntent(intentInput({ currency: currency("JPY"), amount: cents(1000) }))
+			.catch((e: unknown) => e)) as PaymentIntentError;
+		expect(err).toBeInstanceOf(PaymentIntentError);
+		expect(err.retryable).toBe(false);
+		expect(err.providerCode).toBe("unsupported_currency");
+		expect(err.providerStatus).toBeUndefined();
+		expect(transport.intents, "nothing was sent to Stripe").toHaveLength(0);
+	});
+
+	test("a THREE-decimal currency (KWD) is rejected the same way", async () => {
+		const transport = new MockTransport();
+		const gw = new StripePaymentGateway({ webhookSecret: WEBHOOK, secretKey: SK, transport });
+		const err = (await gw
+			.createIntent(intentInput({ currency: currency("KWD") }))
+			.catch((e: unknown) => e)) as PaymentIntentError;
+		expect(err).toBeInstanceOf(PaymentIntentError);
+		expect(err.retryable).toBe(false);
+		expect(err.providerCode).toBe("unsupported_currency");
+		expect(transport.intents).toHaveLength(0);
+	});
+
+	test("every currency on the deny-list is rejected; ordinary exponent-2 currencies still go live", async () => {
+		for (const denied of STRIPE_UNSUPPORTED_CURRENCIES) {
+			const transport = new MockTransport();
+			const gw = new StripePaymentGateway({ webhookSecret: WEBHOOK, secretKey: SK, transport });
+			await expect(
+				gw.createIntent(intentInput({ currency: currency(denied) })),
+			).rejects.toBeInstanceOf(PaymentIntentError);
+			expect(transport.intents).toHaveLength(0);
+		}
+		for (const allowed of ["USD", "EUR", "GBP", "CAD", "AUD", "INR"]) {
+			const transport = new MockTransport();
+			const gw = new StripePaymentGateway({ webhookSecret: WEBHOOK, secretKey: SK, transport });
+			await gw.createIntent(intentInput({ currency: currency(allowed) }));
+			expect(transport.intents[0]?.currency).toBe(allowed.toLowerCase());
+		}
+	});
+
+	test("the deny-list covers Stripe's documented zero-decimal AND three-decimal sets", () => {
+		for (const code of "BIF CLP DJF GNF JPY KMF KRW MGA PYG RWF UGX VND VUV XAF XOF XPF".split(
+			" ",
+		)) {
+			expect(STRIPE_UNSUPPORTED_CURRENCIES.has(code), code).toBe(true);
+		}
+		for (const code of "BHD JOD KWD OMR TND".split(" ")) {
+			expect(STRIPE_UNSUPPORTED_CURRENCIES.has(code), code).toBe(true);
+		}
+		expect(STRIPE_UNSUPPORTED_CURRENCIES.has("USD")).toBe(false);
 	});
 });
 
