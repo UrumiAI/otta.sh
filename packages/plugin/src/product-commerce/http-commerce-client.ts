@@ -252,27 +252,40 @@ export class HttpCommerceClient implements CommerceClient {
 	// -- Phase 4: checkout + entitlement seam ---------------------------------
 	// (A clearly-delimited additive block — Phase 2 adds `getCommerceBatch` to
 	// this same file in parallel.) These mirror the service's Phase-4 endpoints
-	// 1:1; delivery authorization for a digital download is a pure READ, so it
-	// carries no secret and needs no auth header.
+	// 1:1. Delivery authorization is a READ, but NOT anonymous (issue #33 /
+	// ADR-0011): the orderId scope is an unguessable bearer capability (no auth
+	// header), and the session scope threads the customer's Bearer so the service
+	// can derive the email server-side.
 
 	/**
-	 * Delivery authorization (§6/§7): true iff an active entitlement exists for
-	 * `{orderId|buyerRef} + sku`. The download route serves the file only when
-	 * this returns true.
+	 * Delivery authorization (§6/§7, ADR-0011), matching the service's
+	 * presence-based scope precedence. Two scopes only:
+	 *  - `orderId` — the download link's unguessable order id; an open bearer
+	 *    capability, no auth header.
+	 *  - session — a logged-in customer checks their OWN entitlements; the Bearer
+	 *    session token is threaded and the service derives the email server-side.
+	 * The plugin NEVER sends `buyerRef`: the raw-email scope is operator-only
+	 * (`X-Internal-Token`), a secret the sandbox does not and must not hold — so a
+	 * storefront path can never re-acquire the email existence oracle.
+	 * A 401 (invalid/expired session) normalizes to a typed `UNAUTHENTICATED`
+	 * (never a thrown error) — the download route turns it into a login redirect.
 	 */
 	async checkEntitlement(
-		scope: { orderId?: string; buyerRef?: string },
+		scope: { orderId?: string },
 		sku: string,
-	): Promise<boolean> {
+		opts: { sessionToken?: string } = {},
+	): Promise<AuthedResult<{ active: boolean }>> {
 		const params = new URLSearchParams({ sku });
 		if (scope.orderId !== undefined) params.set("orderId", scope.orderId);
-		if (scope.buyerRef !== undefined) params.set("buyerRef", scope.buyerRef);
+		const headers =
+			opts.sessionToken !== undefined ? this.#authHeaders(opts.sessionToken) : this.#baseHeaders();
 		const res = await this.#fetch(`${this.#baseUrl}/entitlements/check?${params.toString()}`, {
 			method: "GET",
-			headers: this.#baseHeaders(),
+			headers,
 		});
+		if (res.status === 401) return { ok: false, reason: "UNAUTHENTICATED" };
 		const body = await this.#json<{ ok: boolean; active?: boolean }>(res);
-		return body.active === true;
+		return { ok: true, active: body.active === true };
 	}
 
 	// -------------------------------------------------------------------------

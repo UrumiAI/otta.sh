@@ -82,7 +82,10 @@ async function createCommerceClient(ctx: PluginContext): Promise<HttpCommerceCli
 	});
 }
 
-function isNonEmptyString(value: unknown): value is string {
+/** Exported for reuse (e.g. `entitlements/download-route.ts`) rather than each
+ *  route re-inlining the same `typeof value === "string" && value.length > 0`
+ *  guard. `cart-routes.ts` keeps its own copy (pre-existing, out of scope here). */
+export function isNonEmptyString(value: unknown): value is string {
 	return typeof value === "string" && value.length > 0;
 }
 
