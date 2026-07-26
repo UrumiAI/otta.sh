@@ -665,6 +665,39 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(processing?.confirm).toBeUndefined(); // non-destructive: no confirm
 	});
 
+	test("transition buttons render as ONE single-element `actions` block per offered state — a direct regression pin for the React duplicate-key collision (every button shared action_id `orders:transition` in one block)", async () => {
+		await boot();
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "orders:open",
+			values: { orderId: "ord-1" },
+		});
+		const blocks = blocksOf(outcome);
+		const actionsBlocks = blocks.filter(
+			(b): b is { type: "actions"; elements: Array<Record<string, unknown>> } =>
+				b.type === "actions",
+		);
+		// ord-1 offers exactly 3 transitions (the fixture above the previous
+		// test) — the fix splits them into 3 separate single-element blocks,
+		// not one block with 3 elements (vendored ActionsBlockComponent keys
+		// each rendered child by `action_id ?? i`; N siblings sharing one
+		// action_id in ONE block collide).
+		const transitionBlocks = actionsBlocks.filter((b) =>
+			b.elements.some((e) => e["action_id"] === "orders:transition"),
+		);
+		expect(transitionBlocks).toHaveLength(3);
+		for (const block of transitionBlocks) {
+			expect(block.elements).toHaveLength(1);
+		}
+		// Within EVERY actions block (not just the transition ones), no two
+		// sibling elements share an action_id — the general no-collision
+		// invariant the bug violated.
+		for (const block of actionsBlocks) {
+			const actionIds = block.elements.map((e) => e["action_id"]);
+			expect(new Set(actionIds).size).toBe(actionIds.length);
+		}
+	});
+
 	test("transition block_action POSTs the transition with Idempotency-Key + token, then re-renders detail", async () => {
 		await boot();
 		stub!.requests.length = 0;

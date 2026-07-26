@@ -7,6 +7,14 @@ import {
 } from "./helpers/stub-commerce-server.js";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
 
+interface CommerceStubItem {
+	amount: number;
+	currency: string;
+	sku: string;
+	inStock: boolean;
+	active?: boolean;
+}
+
 /**
  * Phase 3 §7 step E1 — the plugin's storefront cart routes, exercised under
  * the REAL workerd sandbox against a stub `@urumi/service` (the same harness
@@ -47,6 +55,19 @@ let sandboxHandle: SandboxHandle;
 /** In-memory cart truth the stub mutates — reset per test. */
 let carts: Map<string, FakeCart>;
 let seq: number;
+/** Known commerce rows the `/catalog/commerce/batch` responder answers from
+ *  (empty by default — a test opts in via `setCommerceCatalog`, mirroring
+ *  the PDP/PLP sandbox tests' `respondFromCatalog` pattern). */
+let commerceCatalog: Record<string, CommerceStubItem>;
+/** Forces the `/catalog/commerce/batch` responder to fail (a 500, tripping
+ *  `HttpCommerceClient#json`'s throw) — simulates a pricing-lookup outage
+ *  without disturbing the cart-mutation responders sharing the same POST
+ *  handler slot. */
+let batchShouldFail: boolean;
+
+function setCommerceCatalog(known: Record<string, CommerceStubItem>): void {
+	commerceCatalog = known;
+}
 
 function matchLines(url: string): string | null {
 	const m = /^\/carts\/([^/]+)\/lines$/.exec(url);
@@ -66,6 +87,23 @@ function matchCart(url: string): string | null {
  *  on the request URL). Mirrors `routes/carts.ts`'s wire shapes 1:1. */
 function installFakeCartService(): void {
 	stubServer.respondWith("POST", (req: RecordedRequest) => {
+		if (req.url === "/catalog/commerce/batch") {
+			if (batchShouldFail) return { status: 500, body: { error: "boom" } };
+			const productIds = (req.body as { productIds?: string[] }).productIds ?? [];
+			const items = productIds
+				.filter((id) => id in commerceCatalog)
+				.map((id) => {
+					const item = commerceCatalog[id]!;
+					return {
+						productId: id,
+						sku: item.sku,
+						price: { amount: item.amount, currency: item.currency },
+						inStock: item.inStock,
+						active: item.active ?? true,
+					};
+				});
+			return { status: 200, body: { items } };
+		}
 		if (req.url === "/carts") {
 			const currency = (req.body as { currency?: string }).currency ?? "USD";
 			const cartId = `cart-${++seq}`;
@@ -146,6 +184,8 @@ beforeEach(() => {
 	stubServer.requests.length = 0;
 	carts = new Map();
 	seq = 0;
+	commerceCatalog = {};
+	batchShouldFail = false;
 	installFakeCartService();
 });
 
@@ -398,5 +438,148 @@ describe("storefront cart routes (workerd sandbox)", () => {
 		for (const req of stubServer.requests) {
 			expect(req.url.startsWith("/carts")).toBe(true);
 		}
+	});
+
+	describe("cart/read informational pricing join (plugin-side batch join)", () => {
+		test("2 priced lines: pricing.lines carries unitPrice/lineTotal, pricing.total sums them, and EXACTLY ONE /catalog/commerce/batch call is made", async () => {
+			const created = resultOf(await sandboxHandle.invokeRoute("storefront/cart/create", {}));
+			const cartId = created["cartId"] as string;
+			const lineA = resultOf(
+				await sandboxHandle.invokeRoute("storefront/cart/lines/add", {
+					cartId,
+					sku: "SKU-A",
+					productId: "prod-a",
+					qty: 2,
+					idempotencyKey: "k-price-a",
+				}),
+			);
+			const lineB = resultOf(
+				await sandboxHandle.invokeRoute("storefront/cart/lines/add", {
+					cartId,
+					sku: "SKU-B",
+					productId: "prod-b",
+					qty: 1,
+					idempotencyKey: "k-price-b",
+				}),
+			);
+			const lineIdA = (lineA["line"] as { lineId: string }).lineId;
+			const lineIdB = (lineB["line"] as { lineId: string }).lineId;
+			setCommerceCatalog({
+				"prod-a": { amount: 1000, currency: "USD", sku: "SKU-A", inStock: true },
+				"prod-b": { amount: 500, currency: "USD", sku: "SKU-B", inStock: true },
+			});
+			stubServer.requests.length = 0;
+
+			const result = resultOf(await sandboxHandle.invokeRoute("storefront/cart/read", { cartId }));
+			expect(result["ok"]).toBe(true);
+			const pricing = result["pricing"] as {
+				degraded: boolean;
+				lines: Array<{
+					lineId: string;
+					unitPrice: { amount: number; currency: string } | null;
+					lineTotal: { amount: number; currency: string } | null;
+				}>;
+				total: { amount: number; currency: string } | null;
+				allLinesPriced: boolean;
+			};
+			expect(pricing.degraded).toBe(false);
+			expect(pricing.allLinesPriced).toBe(true);
+			const priceA = pricing.lines.find((l) => l.lineId === lineIdA);
+			const priceB = pricing.lines.find((l) => l.lineId === lineIdB);
+			expect(priceA?.unitPrice).toMatchObject({ amount: 1000, currency: "USD" });
+			expect(priceA?.lineTotal).toMatchObject({ amount: 2000, currency: "USD" }); // qty 2
+			expect(priceB?.unitPrice).toMatchObject({ amount: 500, currency: "USD" });
+			expect(priceB?.lineTotal).toMatchObject({ amount: 500, currency: "USD" }); // qty 1
+			expect(pricing.total).toMatchObject({ amount: 2500, currency: "USD" });
+
+			// The N+1 guarantee, same proof style as PLP: one cart render, one
+			// batch call — not one per line.
+			const batchRequests = stubServer.requests.filter((r) => r.url === "/catalog/commerce/batch");
+			expect(batchRequests).toHaveLength(1);
+			expect((batchRequests[0]!.body as { productIds: string[] }).productIds.toSorted()).toEqual([
+				"prod-a",
+				"prod-b",
+			]);
+		});
+
+		test("an unsynced line (no commerce row) degrades to unpriced; pricing.total sums only the OTHER priced line (partial total)", async () => {
+			const created = resultOf(await sandboxHandle.invokeRoute("storefront/cart/create", {}));
+			const cartId = created["cartId"] as string;
+			const priced = resultOf(
+				await sandboxHandle.invokeRoute("storefront/cart/lines/add", {
+					cartId,
+					sku: "SKU-PRICED",
+					productId: "prod-priced",
+					qty: 1,
+					idempotencyKey: "k-unsynced-priced",
+				}),
+			);
+			const unsynced = resultOf(
+				await sandboxHandle.invokeRoute("storefront/cart/lines/add", {
+					cartId,
+					sku: "SKU-UNSYNCED",
+					productId: "prod-unsynced",
+					qty: 1,
+					idempotencyKey: "k-unsynced",
+				}),
+			);
+			const lineIdPriced = (priced["line"] as { lineId: string }).lineId;
+			const lineIdUnsynced = (unsynced["line"] as { lineId: string }).lineId;
+			// Only "prod-priced" is in the catalog — "prod-unsynced" is omitted,
+			// mirroring the batch endpoint's real "omit, never 404" contract.
+			setCommerceCatalog({
+				"prod-priced": { amount: 1200, currency: "USD", sku: "SKU-PRICED", inStock: true },
+			});
+
+			const result = resultOf(await sandboxHandle.invokeRoute("storefront/cart/read", { cartId }));
+			const pricing = result["pricing"] as {
+				lines: Array<{ lineId: string; unitPrice: unknown; lineTotal: unknown }>;
+				total: { amount: number; currency: string } | null;
+				allLinesPriced: boolean;
+			};
+			expect(pricing.allLinesPriced).toBe(false);
+			expect(pricing.lines.find((l) => l.lineId === lineIdUnsynced)?.unitPrice).toBeNull();
+			expect(pricing.lines.find((l) => l.lineId === lineIdPriced)?.unitPrice).not.toBeNull();
+			expect(pricing.total).toMatchObject({ amount: 1200, currency: "USD" });
+		});
+
+		test("a batch-lookup failure degrades pricing but the cart STILL renders (ok:true, cart data intact)", async () => {
+			const created = resultOf(await sandboxHandle.invokeRoute("storefront/cart/create", {}));
+			const cartId = created["cartId"] as string;
+			await sandboxHandle.invokeRoute("storefront/cart/lines/add", {
+				cartId,
+				sku: "SKU-X",
+				productId: "prod-x",
+				qty: 1,
+				idempotencyKey: "k-degraded",
+			});
+			batchShouldFail = true;
+
+			const result = resultOf(await sandboxHandle.invokeRoute("storefront/cart/read", { cartId }));
+			expect(result["ok"]).toBe(true);
+			expect((result["cart"] as CartWire).lines).toHaveLength(1);
+			const pricing = result["pricing"] as { degraded: boolean; total: unknown };
+			expect(pricing.degraded).toBe(true);
+			expect(pricing.total).toBeNull();
+		});
+
+		test("a cart of only legacy bare-add lines (no productId) makes NO batch call at all; pricing.total stays null", async () => {
+			const created = resultOf(await sandboxHandle.invokeRoute("storefront/cart/create", {}));
+			const cartId = created["cartId"] as string;
+			await sandboxHandle.invokeRoute("storefront/cart/lines/add", {
+				cartId,
+				sku: "SKU-BARE",
+				qty: 1,
+				idempotencyKey: "k-bare",
+			});
+			stubServer.requests.length = 0;
+
+			const result = resultOf(await sandboxHandle.invokeRoute("storefront/cart/read", { cartId }));
+			expect(result["ok"]).toBe(true);
+			const pricing = result["pricing"] as { total: unknown; allLinesPriced: boolean };
+			expect(pricing.total).toBeNull();
+			expect(pricing.allLinesPriced).toBe(false);
+			expect(stubServer.requests.some((r) => r.url === "/catalog/commerce/batch")).toBe(false);
+		});
 	});
 });

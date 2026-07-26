@@ -38,6 +38,7 @@
  * Phase 5's session-cookie design, which makes the same now-disproven
  * assumption) — a candidate follow-up ADR, not resolved here.
  */
+import type { CatalogProductCommerce } from "../catalog/commerce-view.js";
 import { COMMERCE_SERVICE_BASE_URL, serviceTokenFromKv } from "../manifest.js";
 import type {
 	CartFailureReason,
@@ -47,7 +48,9 @@ import type {
 } from "../product-commerce/commerce-client.js";
 import { HttpCommerceClient } from "../product-commerce/http-commerce-client.js";
 import type { PluginContext, RouteHandler } from "../types.js";
-import { renderGuard } from "./pdp-route.js";
+import { buildCartPricing, DEGRADED_CART_PRICING, type CartPricingWire } from "./cart-pricing.js";
+import { createCommerceLoader, renderGuard } from "./pdp-route.js";
+import { sanitizeLocale } from "./route-input.js";
 
 // ── Public route names ──────────────────────────────────────────────────
 export const STOREFRONT_CART_CREATE_ROUTE = "storefront/cart/create";
@@ -116,6 +119,9 @@ export interface CartCreateRouteInput {
 
 export interface CartReadRouteInput {
 	cartId?: unknown;
+	/** BCP-47 tag for the pricing join's money formatting; garbage falls back
+	 *  to `DEFAULT_LOCALE`, never fails the read (same contract as PDP/PLP). */
+	locale?: unknown;
 }
 
 export interface CartLineAddRouteInput {
@@ -152,7 +158,7 @@ export type CartCreateRouteResult =
 	| { ok: false; error: "RENDER_FAILED" };
 
 export type CartReadRouteResult =
-	| { ok: true; cart: CartWire }
+	| { ok: true; cart: CartWire; pricing: CartPricingWire }
 	| { ok: false; error: "INVALID_CART_ID" }
 	| { ok: false; reason: CartFailureReason }
 	| { ok: false; error: "RENDER_FAILED" };
@@ -217,6 +223,18 @@ export function createCartCreateRouteHandler(): RouteHandler<CartCreateRouteInpu
  * plugin-side batch join) to keep issue #80 scoped to the checkout-blocking
  * thread. `totalQty` remains the one total honestly computable from the wire as
  * returned today — no price is ever fabricated (CLAUDE.md).
+ *
+ * UPDATE (plugin-side batch join, closing the follow-up named above): after
+ * a successful read, the handler batch-loads the cart's distinct non-null
+ * `productId`s through the SAME request-scoped `CommerceBatchLoader` PDP/PLP
+ * use — one batch HTTP call per cart render, never N — and joins it via the
+ * pure `buildCartPricing` (`cart-pricing.ts`) into an ADDITIVE `pricing`
+ * sibling field. `CartWire` itself stays untouched (the snapshot-no-price
+ * invariant this doc already documents). The join is wrapped in its OWN
+ * try/catch, separate from `renderGuard`'s: a pricing-lookup failure (bad
+ * upstream data tripping `cents()`, a transport error, …) must degrade to
+ * `pricing.degraded: true` and still render the cart — hold/qty/remove all
+ * keep working — rather than flipping the whole read to `RENDER_FAILED`.
  */
 export function createCartReadRouteHandler(): RouteHandler<CartReadRouteInput> {
 	return (routeCtx, ctx): Promise<CartReadRouteResult> =>
@@ -227,7 +245,35 @@ export function createCartReadRouteHandler(): RouteHandler<CartReadRouteInput> {
 			const client = await createCommerceClient(ctx);
 			const result = await client.getCart(cartId);
 			if (!result.ok) return { ok: false as const, reason: result.reason };
-			return { ok: true as const, cart: result.cart };
+			const cart = result.cart;
+			const locale = sanitizeLocale(routeCtx.input.locale);
+
+			const productIds = [
+				...new Set(
+					cart.lines.map((line) => line.productId).filter((id): id is string => id !== null),
+				),
+			];
+
+			let pricing: CartPricingWire;
+			try {
+				// No batch call at all when there is nothing to look up (an empty
+				// cart, or a cart of only legacy bare-add lines) — same "zero
+				// inventory-only calls" discipline as PDP/PLP.
+				let commerceById = new Map<string, CatalogProductCommerce | null>();
+				if (productIds.length > 0) {
+					const loader = await createCommerceLoader(ctx);
+					commerceById = await loader.loadMany(productIds);
+				}
+				// buildCartPricing's cents() money-math can itself throw on
+				// malformed upstream data — kept INSIDE this try (not just
+				// loadMany) so that throw degrades pricing too, never RENDER_FAILED.
+				pricing = buildCartPricing(cart.lines, commerceById, cart.currency, locale);
+			} catch (err) {
+				console.error(`[urumi] ${STOREFRONT_CART_READ_ROUTE} pricing join failed:`, err);
+				pricing = DEGRADED_CART_PRICING;
+			}
+
+			return { ok: true as const, cart, pricing };
 		});
 }
 
