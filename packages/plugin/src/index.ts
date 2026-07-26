@@ -186,6 +186,11 @@ export {
 	type CartReadRouteInput,
 	type CartReadRouteResult,
 } from "./storefront/cart-routes.js";
+export {
+	type CartLinePricing,
+	type CartMoneyWire,
+	type CartPricingWire,
+} from "./storefront/cart-pricing.js";
 // ── end Phase 3 group E: cart ────────────────────────────────────────────────
 export {
 	deriveDeleteIdempotencyKey,

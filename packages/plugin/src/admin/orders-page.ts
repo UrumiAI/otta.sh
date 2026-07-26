@@ -383,7 +383,7 @@ function detailBlocks(
 				text: "To cancel this order, use the Cancel form above — it records a reason. There is deliberately no bare “Mark cancelled” button, so an order is never cancelled without a reason on file.",
 			});
 		}
-		blocks.push(transitionActions(o.id, offeredTransitions));
+		blocks.push(...transitionActions(o.id, offeredTransitions));
 	}
 	// -- Notes (append-only) ---------------------------------------------------
 	blocks.push({ type: "section", text: "Notes" });
@@ -657,8 +657,25 @@ function timelineDetail(e: TimelineEntryWire): string {
 	}
 }
 
-function transitionActions(orderId: string, allowed: string[]): ActionsBlock {
-	const elements: ButtonElement[] = allowed.map((toState) => {
+/**
+ * One single-element `actions` block PER offered state, not one block with
+ * N elements (item 5 — the duplicate React key `orders:transition` fix).
+ * Every "Mark <state>" button shares the literal `action_id: ACTION_TRANSITION`
+ * (differentiated only by `value.toState`) — vendored em-dash's
+ * `ActionsBlockComponent` keys each rendered child by `action_id ?? i`
+ * (packages/blocks/src/blocks/actions.tsx:14), so N buttons sharing one
+ * `action_id` inside ONE block collide. `action_id` stays unchanged
+ * (dispatch reads `toState`/`orderId` from `value`, never from `action_id`)
+ * — splitting into N blocks never collides at the top-level block-list key
+ * either (`block.block_id ?? i`, emdash renderer.tsx:78).
+ *
+ * KNOWN VISUAL TRADEOFF: these buttons used to render inline (one `actions`
+ * block, flex-wrap gap-2); split into separate blocks they stack vertically
+ * (each block sits in the page's outer flex-col gap-4) — acceptable for a
+ * same-screen admin console, flagged for the PR screenshot.
+ */
+function transitionActions(orderId: string, allowed: string[]): ActionsBlock[] {
+	return allowed.map((toState): ActionsBlock => {
 		const danger = DANGER_STATES.has(toState);
 		const button: ButtonElement = {
 			type: "button",
@@ -676,9 +693,8 @@ function transitionActions(orderId: string, allowed: string[]): ActionsBlock {
 				style: "danger",
 			};
 		}
-		return button;
+		return { type: "actions", elements: [button] };
 	});
-	return { type: "actions", elements };
 }
 
 // -- reconciliation surface (admin-UX Increment 1) ----------------------------
