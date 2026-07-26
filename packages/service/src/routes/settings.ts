@@ -32,8 +32,9 @@ export interface SettingsRoutesDeps {
 export function settingsRoutes(deps: SettingsRoutesDeps): Hono {
 	const app = new Hono();
 
-	// "*", not "/*": the only routes here are at "/" (the sub-app's root), which a
-	// prefix wildcard does not reliably match.
+	// "*", not "/*": the only routes here are at "/" (the sub-app's root). "/*"
+	// DOES match the root on 4.12.x (measured), so this is forward-compatibility
+	// caution rather than a fix — "*" is unambiguous and cannot drift on a minor.
 	app.use("*", async (c, next) => {
 		const denied = requireInternalToken(c, deps.internalToken);
 		if (denied !== null) return denied;

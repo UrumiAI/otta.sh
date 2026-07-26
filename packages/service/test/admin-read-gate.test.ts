@@ -33,10 +33,13 @@ import { createApp } from "../src/app.js";
 // live `usesCount`.
 //
 // The thing under test is the PARENT-level guard registered in `createApp`, not
-// the sub-app blanket guards: Hono scopes sub-app middleware to that sub-app's
-// OWN routes, so a sibling sub-app mounted at the same prefix (`adminRoutes` and
-// `rulesAdminRoutes` are both mounted at "/admin") is NOT covered by the other's
-// guard. Every test therefore drives the FULL app, never a bare sub-app.
+// the sub-app blanket guards. Hono merges a sub-app's middleware into the parent
+// AT MOUNT TIME, so that middleware covers only what is registered AFTER it: a
+// sibling sub-app mounted at the same prefix EARLIER runs ungated. `adminRoutes`
+// and `rulesAdminRoutes` are both mounted at "/admin", `adminRoutes` first, so a
+// blanket guard inside the latter never covers the former (pinned below by
+// "WHY the guard cannot live in a sub-app"). Every test therefore drives the
+// FULL app, never a bare sub-app.
 // IO-free: in-memory stores + `app.request()` (no server, no PG).
 
 function makeApp(
@@ -90,9 +93,16 @@ function makeApp(
 	if (options.probeAdminRoute === true) {
 		// A THIRD sub-app mounted at "/admin" with NO inline guard of its own —
 		// stands in for a future route added by someone who forgot the guard. The
-		// parent-level `app.use("/admin/*")` must still cover it. This is the case
-		// that FAILS under a sub-app-only blanket guard (Hono scopes sub-app
-		// middleware to that sub-app's own routes).
+		// parent-level `app.use("/admin/*")` must cover it.
+		//
+		// HONEST SCOPE: this is a FORWARD-LOOKING default-deny pin, not a
+		// discriminator against the sub-app-only design. Anything the test mounts
+		// necessarily lands AFTER `rulesAdminRoutes`, so its merged "/admin/*"
+		// guard would have covered this probe too — the sub-app-only design does
+		// NOT fail here. What it does fail is `/settings`, which has no such
+		// merged guard: the five `/settings` cases above are the discriminating
+		// ones. This pin's value is the future: it goes red if BOTH the parent
+		// guard and the sub-app guard are ever removed.
 		const probe = new Hono();
 		probe.get("/probe-unguarded", (c) => c.json({ ok: true, leaked: "secret-config" }, 200));
 		app.route("/admin", probe);
