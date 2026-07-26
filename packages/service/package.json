@@ -2,7 +2,16 @@
 	"name": "@urumi/service",
 	"version": "0.1.0",
 	"description": "Urumi commerce service — thin Hono REST API mirroring the domain ports 1:1.",
+	"homepage": "https://github.com/UrumiAI/otta.sh#readme",
+	"bugs": {
+		"url": "https://github.com/UrumiAI/otta.sh/issues"
+	},
 	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/UrumiAI/otta.sh.git",
+		"directory": "packages/service"
+	},
 	"files": [
 		"dist"
 	],

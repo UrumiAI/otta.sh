@@ -95,8 +95,31 @@ async function payOrder(live: LiveService, orderId: string, totalCents: number):
 	expect(res.status).toBe(200);
 }
 
+/** Full magic-link login against the LIVE service → the bearer session token,
+ *  exactly as the theme's first-party cookie layer would obtain it. */
+async function loginSession(live: LiveService, email: string): Promise<string> {
+	const reqRes = await fetch(`${live.baseUrl}/auth/login/request`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({ email }),
+	});
+	expect(reqRes.status).toBe(200);
+	const sends = live.emailSender.sends.filter((s) => s.template === "customer-login-link");
+	const last = sends[sends.length - 1]!;
+	const verifyRes = await fetch(`${live.baseUrl}/auth/login/verify`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({
+			challengeId: last.data["challengeId"],
+			token: last.data["token"],
+		}),
+	});
+	expect(verifyRes.status).toBe(200);
+	return ((await verifyRes.json()) as { sessionToken: string }).sessionToken;
+}
+
 describe.skipIf(PG === undefined)("entitlement-gated download (workerd sandbox)", () => {
-	test("a paid digital order's download is authorized — by orderId scope and by buyerRef scope", async () => {
+	test("a paid digital order's download is authorized — by orderId scope and by session scope", async () => {
 		const { live, sandbox } = await setup();
 		const { orderId, totalCents } = await createDigitalOrder(live);
 		await payOrder(live, orderId, totalCents);
@@ -104,13 +127,87 @@ describe.skipIf(PG === undefined)("entitlement-gated download (workerd sandbox)"
 		const byOrder = await sandbox.invokeRoute("entitlements/download", { orderId, sku: "DIG-1" });
 		expect(byOrder).toEqual({ result: { authorized: true, sku: "DIG-1" } });
 
-		// The pre-Phase-5 claim token (§6): the same entitlement row answers a
-		// buyerRef-scoped check, so a session/email link authorizes too.
+		// Issue #33 / ADR-0011: a logged-in customer authorizes via their SESSION
+		// (the service derives the email server-side) — the plugin never forwards
+		// a raw email. `BUYER_REF` is the checkout email, and the session for it
+		// hits the same entitlement row.
+		const sessionToken = await loginSession(live, BUYER_REF);
+		const bySession = await sandbox.invokeRoute("entitlements/download", {
+			sessionToken,
+			sku: "DIG-1",
+		});
+		expect(bySession).toEqual({ result: { authorized: true, sku: "DIG-1" } });
+	});
+
+	// Precedence-bug coverage (review): when the theme supplies BOTH `orderId`
+	// and `sessionToken`, an unrelated/stale orderId must not shadow the
+	// logged-in customer's OWN entitlement — the route retries session-scoped on
+	// an inactive orderId result (see the comment in download-route.ts).
+	test("both orderId AND sessionToken present: a stale/unrelated orderId does not shadow the session's own entitlement", async () => {
+		const { live, sandbox } = await setup();
+		const { orderId, totalCents } = await createDigitalOrder(live);
+		await payOrder(live, orderId, totalCents);
+		const sessionToken = await loginSession(live, BUYER_REF);
+
+		// A second, unrelated order for the same buyer — NEVER paid, so it carries
+		// no entitlement of its own. A theme bug (or a stale query param from
+		// another tab) supplies this orderId alongside a perfectly valid session.
+		const { orderId: staleOrderId } = await createDigitalOrder(live);
+
+		const result = await sandbox.invokeRoute("entitlements/download", {
+			orderId: staleOrderId,
+			sessionToken,
+			sku: "DIG-1",
+		});
+		expect(result).toEqual({ result: { authorized: true, sku: "DIG-1" } });
+	});
+
+	test("both orderId AND sessionToken present: a valid orderId authorizes even with an unrelated stranger's session", async () => {
+		const { live, sandbox } = await setup();
+		const { orderId, totalCents } = await createDigitalOrder(live);
+		await payOrder(live, orderId, totalCents);
+		const strangerSession = await loginSession(live, "stranger@example.com");
+
+		const result = await sandbox.invokeRoute("entitlements/download", {
+			orderId,
+			sessionToken: strangerSession,
+			sku: "DIG-1",
+		});
+		expect(result).toEqual({ result: { authorized: true, sku: "DIG-1" } });
+	});
+
+	test("both orderId AND sessionToken present: neither scope entitled → NOT_ENTITLED, not UNAUTHENTICATED", async () => {
+		const { live, sandbox } = await setup();
+		const { orderId: staleOrderId } = await createDigitalOrder(live); // unpaid
+		const strangerSession = await loginSession(live, "stranger2@example.com");
+
+		const result = await sandbox.invokeRoute("entitlements/download", {
+			orderId: staleOrderId,
+			sessionToken: strangerSession,
+			sku: "DIG-1",
+		});
+		expect(result).toEqual({ result: { authorized: false, reason: "NOT_ENTITLED" } });
+	});
+
+	test("route input with a raw buyerRef is ignored — no orderId/session scope ⇒ INVALID_INPUT (the plugin never forwards emails)", async () => {
+		const { live, sandbox } = await setup();
+		const { orderId, totalCents } = await createDigitalOrder(live);
+		await payOrder(live, orderId, totalCents);
+
 		const byBuyer = await sandbox.invokeRoute("entitlements/download", {
 			buyerRef: BUYER_REF,
 			sku: "DIG-1",
 		});
-		expect(byBuyer).toEqual({ result: { authorized: true, sku: "DIG-1" } });
+		expect(byBuyer).toEqual({ result: { authorized: false, reason: "INVALID_INPUT" } });
+	});
+
+	test("an invalid session (no orderId scope) is the typed UNAUTHENTICATED, not a throw", async () => {
+		const { sandbox } = await setup();
+		const bad = await sandbox.invokeRoute("entitlements/download", {
+			sessionToken: "not-a-real-session-token",
+			sku: "DIG-1",
+		});
+		expect(bad).toEqual({ result: { authorized: false, reason: "UNAUTHENTICATED" } });
 	});
 
 	test("an unpaid order (no entitlement row) is denied NOT_ENTITLED; a paid order's wrong sku is denied too", async () => {
@@ -128,7 +225,7 @@ describe.skipIf(PG === undefined)("entitlement-gated download (workerd sandbox)"
 		expect(wrongSku).toEqual({ result: { authorized: false, reason: "NOT_ENTITLED" } });
 	});
 
-	test("malformed input (no sku, or no orderId/buyerRef scope) is the typed INVALID_INPUT, not a throw", async () => {
+	test("malformed input (no sku, or no orderId/session scope) is the typed INVALID_INPUT, not a throw", async () => {
 		const { sandbox } = await setup();
 		const noSku = await sandbox.invokeRoute("entitlements/download", { orderId: "o-1" });
 		expect(noSku).toEqual({ result: { authorized: false, reason: "INVALID_INPUT" } });

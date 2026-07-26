@@ -24,6 +24,7 @@ import { getEmDashEntry } from "emdash";
 import { safeJsonLdSerialize } from "emdash/page";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Base from "../../layouts/Base.astro";
+import { cartErrorMessage } from "../../lib/error-messages.js";
 import { toCmsProductContent, type ProductEntryData } from "../../lib/products.js";
 import { dispatchUrumiRoute } from "../../lib/urumi-api.js";
 
@@ -71,7 +72,7 @@ const error = Astro.url.searchParams.get("error");
 						Live pricing and availability are temporarily unavailable — check back soon.
 					</p>
 				)}
-				{error !== null && <p class="notice">Could not add to cart: {error}</p>}
+				{error !== null && <p class="notice">{cartErrorMessage(error)}</p>}
 				{(product?.images?.[0] ?? content.images?.[0]) && (
 					<img src={product?.images?.[0] ?? content.images?.[0]} alt={content.title} />
 				)}

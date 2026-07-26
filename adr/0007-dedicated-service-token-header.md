@@ -46,6 +46,10 @@ would break the sandbox-clean contract, DEVELOPMENT.md §5) nor read anywhere at
 
 ## Consequences
 
+- **The GET/HEAD read exemption is a gate rule, not a per-route promise of anonymity.** A
+  route reached past this gate may still enforce its own auth — see **ADR-0011**, where
+  `GET /entitlements/check` requires `X-Internal-Token` for its buyerRef scope (and a customer
+  session for the sku-only scope) so it is not an email existence oracle.
 - **Bundle stays sandbox-clean.** No secret in the bundle, `wrangler.jsonc` `vars`, or git;
   the token lives only in em-dash's plugin-settings kv, read at runtime. `ctx.kv` is not
   capability-gated, so this adds **no new capability**.

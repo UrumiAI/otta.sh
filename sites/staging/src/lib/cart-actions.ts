@@ -24,6 +24,13 @@ import { dispatchUrumiRoute } from "./urumi-api.js";
  *  (`RENDER_FAILED`, `OUT_OF_STOCK`, ...). */
 export const SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE";
 
+/** `/cart/add`'s pre-check tokens (item 3 — bogus SKU/productId rejection):
+ *  a submitted `productId` that doesn't resolve to a live CMS entry, or one
+ *  whose live product disagrees with the submitted `sku` / isn't
+ *  purchasable. Rejected BEFORE the plugin's add-line route is ever called. */
+export const PRODUCT_NOT_FOUND = "PRODUCT_NOT_FOUND";
+export const PRODUCT_UNAVAILABLE = "PRODUCT_UNAVAILABLE";
+
 /** 303 See Other — the POST-redirect-GET turn. */
 export function seeOther(context: APIContext, path: string, error?: string): Response {
 	const url = new URL(path, context.url);

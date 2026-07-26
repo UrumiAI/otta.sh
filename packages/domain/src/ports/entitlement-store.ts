@@ -45,6 +45,9 @@ export interface EntitlementStore {
 	/** Grant-once (idempotent on `grantIdempotencyKey`); returns the (new or
 	 *  existing) entitlement. */
 	grant(input: GrantEntitlementInput): Promise<Entitlement>;
-	/** True iff an `active` entitlement matches the query (order/buyer + sku). */
+	/** True iff an `active` entitlement matches the query (order/buyer + sku).
+	 *  `buyerRef` matching is CASE-INSENSITIVE (email semantics — a case-distinct
+	 *  ref is the same principal), so a session-derived lower-normalized Email
+	 *  hits an entitlement granted from a mixed-case checkout ref. */
 	check(query: EntitlementQuery): Promise<boolean>;
 }
