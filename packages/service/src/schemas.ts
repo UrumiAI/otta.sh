@@ -1,10 +1,31 @@
 import { z } from "zod";
 
+// Wire-level qty caps (service-hardening plan §4). Two different numbers,
+// deliberately: `/inventory/reserve` is the raw inventory primitive (a
+// machine caller, behind the write gate when configured) and is aligned with
+// the admin `stockMovementBody` cap below; cart lines are the shopper-facing,
+// anonymous-internet-caller surface and get a much tighter bound. Both are
+// WIRE-ONLY (zod) — the domain enforces the positive-integer bound too
+// (defense-in-depth; `domain/src/inventory/use-cases.ts`) — this caps the
+// wire value and makes "how much may one request ask for" an explicit, tested
+// part of the contract instead of an accident of IEEE-754 (today `qty: 1e9` /
+// `Number.MAX_SAFE_INTEGER` is a "valid" request that only the store's
+// arithmetic rejects).
+//
+// IMPORTANT — this is NOT a rate limit and does not fix junk-`failed`-
+// reservation-row amplification: that is bound by request COUNT, not qty
+// magnitude (10,000 requests at qty:9,999 each mint as many failed rows as
+// one request at qty:1e9). See the follow-up issue for rate-limiting
+// `POST /inventory/reserve` and `POST /carts/:id/lines`:
+// https://github.com/UrumiAI/otta.sh/issues/91
+export const CART_LINE_MAX_QTY = 10_000;
+export const RESERVE_MAX_QTY = 1_000_000_000;
+
 // Zod request bodies mirroring the inventory port 1:1 (§0.6). `Idempotency-Key`
 // travels as a header, not in the body.
 export const reserveBody = z.object({
 	sku: z.string().min(1),
-	qty: z.number().int().positive(),
+	qty: z.number().int().positive().max(RESERVE_MAX_QTY),
 });
 
 export const commitBody = z.object({
@@ -26,7 +47,7 @@ export const createCartBody = z.object({
 
 export const addLineBody = z.object({
 	sku: z.string().min(1),
-	qty: z.number().int().positive(),
+	qty: z.number().int().positive().max(CART_LINE_MAX_QTY),
 	// Phase 4: the product this line references. Optional for backward-compat with
 	// bare Phase-3 adds; REQUIRED to later check out (an order needs a priced
 	// product). When present, the service resolves the fulfillment kind from
@@ -35,7 +56,7 @@ export const addLineBody = z.object({
 });
 
 export const patchLineBody = z.object({
-	qty: z.number().int().positive(),
+	qty: z.number().int().positive().max(CART_LINE_MAX_QTY),
 });
 
 // Path-parameter sanity (N3): ids are opaque tokens — non-empty, bounded, and
