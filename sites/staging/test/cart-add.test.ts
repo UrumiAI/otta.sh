@@ -10,6 +10,13 @@
  *
  * The legacy bare-add path (no productId at all) is intentionally
  * unaffected — there is no CMS lookup possible without a productId.
+ *
+ * Mock shapes below are NOT invented — they mirror what `getEmDashEntry`
+ * actually returns, reproduced against a real `astro dev` instance backed by
+ * the real `astro:content` live loader (browser-QA-reported gap: the
+ * original mocks used a clean `{entry: null, error: undefined}` for "not
+ * found," which the real dependency never produces). See `LiveEntryNotFoundError`
+ * below and add.ts's inline comment for the full trace.
  */
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { APIContext } from "astro";
@@ -21,6 +28,24 @@ import { STOREFRONT_CART_LINE_ADD_ROUTE, STOREFRONT_PRODUCT_ROUTE } from "@urumi
 import { POST } from "../src/pages/cart/add.js";
 
 const SITE = "http://localhost:4321";
+
+/**
+ * Mirrors astro's actual `LiveEntryNotFoundError` (astro/dist/content/loaders/errors.js
+ * — not exported by `emdash` or `astro:content`'s public surface, so
+ * reproduced by shape here): a genuinely nonexistent-but-well-formed id does
+ * NOT resolve to a clean `{entry: null}` — `getEmDashEntry`'s `resolveNormal`
+ * passes this straight through as `error`. Observed live (dev console,
+ * `getEmDashEntry("products", "product:does-not-exist-xyz")`):
+ *   { entry: null, error: LiveEntryNotFoundError, isPreview: false, cacheHint: {} }
+ * with `error instanceof Error === true`, `error.name === "LiveEntryNotFoundError"`,
+ * message `Entry _emdash → {"type":"products","id":"..."} was not found.`
+ */
+class LiveEntryNotFoundError extends Error {
+	constructor(collection: string, id: string) {
+		super(`Entry ${collection} → ${JSON.stringify({ type: "products", id })} was not found.`);
+		this.name = "LiveEntryNotFoundError";
+	}
+}
 
 interface HandlerCall {
 	route: string;
@@ -112,8 +137,11 @@ beforeEach(() => {
 });
 
 describe("POST /cart/add — productId pre-check (item 3)", () => {
-	test("a productId that resolves to NO CMS entry redirects with PRODUCT_NOT_FOUND, and the add-line route is never called", async () => {
-		getEmDashEntry.mockResolvedValue({ entry: null, error: undefined });
+	test("a productId that resolves to NO CMS entry redirects with PRODUCT_NOT_FOUND, and the add-line route is never called (real shape: entry:null PLUS a LiveEntryNotFoundError, not a clean null)", async () => {
+		getEmDashEntry.mockResolvedValue({
+			entry: null,
+			error: new LiveEntryNotFoundError("_emdash", "prod-does-not-exist"),
+		});
 		const { handler, calls } = makeHandler({});
 		const context = makeContext(
 			{ sku: "SKU-GARBAGE", productId: "prod-does-not-exist", idempotencyKey: "idem-1" },
@@ -125,6 +153,20 @@ describe("POST /cart/add — productId pre-check (item 3)", () => {
 		expect(response.status).toBe(303);
 		const location = response.headers.get("location")!;
 		expect(location).toContain("error=PRODUCT_NOT_FOUND");
+		expect(calls.some((c) => c.route === STOREFRONT_CART_LINE_ADD_ROUTE)).toBe(false);
+	});
+
+	test("a productId that resolves to a bare {entry:null} with no error at all ALSO redirects with PRODUCT_NOT_FOUND (defensive fallback matching EntryResult's documented, if presently unobserved, contract)", async () => {
+		getEmDashEntry.mockResolvedValue({ entry: null, error: undefined });
+		const { handler, calls } = makeHandler({});
+		const context = makeContext(
+			{ sku: "SKU-GARBAGE", productId: "prod-does-not-exist-2", idempotencyKey: "idem-1b" },
+			handler,
+		);
+
+		const response = await POST(context);
+
+		expect(response.headers.get("location")).toContain("error=PRODUCT_NOT_FOUND");
 		expect(calls.some((c) => c.route === STOREFRONT_CART_LINE_ADD_ROUTE)).toBe(false);
 	});
 
@@ -167,8 +209,14 @@ describe("POST /cart/add — productId pre-check (item 3)", () => {
 		expect(calls.some((c) => c.route === STOREFRONT_CART_LINE_ADD_ROUTE)).toBe(false);
 	});
 
-	test("the CMS lookup itself erroring (transient) redirects with SERVICE_UNAVAILABLE, NOT PRODUCT_NOT_FOUND", async () => {
-		getEmDashEntry.mockResolvedValue({ entry: null, error: { message: "db unavailable" } });
+	test("the CMS lookup itself erroring (transient) redirects with SERVICE_UNAVAILABLE, NOT PRODUCT_NOT_FOUND — a plain Error, distinct by .name from LiveEntryNotFoundError", async () => {
+		// Real shape: `resolveNormal`'s catch / `loadEntry`'s catch both do
+		// `new Error("Failed to load entry: ...")` — a plain Error whose
+		// `.name` is the default `"Error"`, never `"LiveEntryNotFoundError"`.
+		getEmDashEntry.mockResolvedValue({
+			entry: null,
+			error: new Error("Failed to load entry: D1_ERROR: database is locked"),
+		});
 		const { handler, calls } = makeHandler({});
 		const context = makeContext(
 			{ sku: "SKU-1", productId: "prod-1", idempotencyKey: "idem-4" },

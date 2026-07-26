@@ -85,7 +85,30 @@ export const POST: APIRoute = async (context) => {
 	// slug-or-id lookup `[slug].astro` uses), so it runs here instead.
 	if (productId !== undefined) {
 		const { entry, error: entryError } = await getEmDashEntry("products", productId);
-		if (entryError) {
+		// Reproduced live against a real dev instance (real astro:content live
+		// loader — our unit tests mock this dependency and originally missed
+		// this): a genuinely nonexistent-but-well-formed id does NOT come back
+		// as a clean `{entry: null}` with no error, despite `EntryResult.error`'s
+		// own JSDoc ("not set for not found, only for actual errors") — astro's
+		// `getLiveEntry` (content/runtime.js) wraps the loader's "no row"
+		// `undefined` return into `{error: new LiveEntryNotFoundError(collection,
+		// lookup)}`, and `getEmDashEntry`'s `resolveNormal` passes that straight
+		// through unfiltered. Observed shape (dev console, a nonexistent
+		// well-formed id): `entry === null`; `error instanceof Error === true`;
+		// `error.name === "LiveEntryNotFoundError"` (also
+		// `error.constructor.name`); message `Entry _emdash → {...} was not
+		// found.` A GENUINE transient/DB failure surfaces as a plain `Error`
+		// instead (`resolveNormal`'s catch / `loadEntry`'s catch both do
+		// `new Error(...)`, default `.name === "Error"`) — so `.name` is the
+		// reliable not-found-vs-transient discriminant, checked BEFORE the
+		// generic `entryError` branch below (which still catches every other
+		// error shape, including a bare `{entry: null}` with no error at all —
+		// the documented-but-presently-inaccurate-for-this-case contract —
+		// which also falls through to the `entry === null` → PRODUCT_NOT_FOUND
+		// check that follows).
+		const isNotFoundError =
+			entryError instanceof Error && entryError.name === "LiveEntryNotFoundError";
+		if (entryError !== undefined && !isNotFoundError) {
 			// A transient/DB issue is never mislabeled as "doesn't exist".
 			return seeOther(context, returnTo, SERVICE_UNAVAILABLE);
 		}
