@@ -306,6 +306,11 @@ function checkoutFailure(c: Context, reason: CreateOrderFailure): Response {
 			// Malformed input (a required ship-to field empty / over-length) — a 400,
 			// like the top-level zod parse failure, not a 409 conflict (ADR-0009).
 			return c.json(body, 400);
+		case "PAYMENT_INTENT_FAILED":
+			// The UPSTREAM gateway failed (down / rejecting), not the request — a 502,
+			// never a 409. The `pending` order row is intentionally kept: a same-key
+			// retry re-issues the SAME intent, and expireOrders sweeps it at TTL.
+			return c.json(body, 502);
 		case "CART_EMPTY":
 		case "CART_CHECKED_OUT":
 		case "RESERVATION_LOST":

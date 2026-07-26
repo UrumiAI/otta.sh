@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type {
+	StripeCreatePaymentIntentResult,
 	StripeCreateRefundResult,
 	StripePreflightResult,
 	StripeTransport,
@@ -29,6 +30,15 @@ class StubTransport implements StripeTransport {
 	}
 	async createRefund(input: { amountCents: number }): Promise<StripeCreateRefundResult> {
 		return { ok: true, refundId: "re_test", amountCents: input.amountCents, currency: "usd" };
+	}
+	/** These suites never checkout through this server — the seam's (now
+	 *  required) third method is stubbed to keep the transport type-complete. */
+	async createPaymentIntent(input: { orderId: string }): Promise<StripeCreatePaymentIntentResult> {
+		return {
+			ok: true,
+			intentId: `pi_${input.orderId}`,
+			clientSecret: `pi_${input.orderId}_secret_stub`,
+		};
 	}
 }
 

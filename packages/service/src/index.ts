@@ -6,7 +6,6 @@ import {
 	type PaymentGateway,
 	type PaymentMethod,
 } from "@urumi/domain";
-import { StripePaymentGateway } from "@urumi/payments-stripe";
 import {
 	KyselyAddressStore,
 	KyselyCartStore,
@@ -32,6 +31,7 @@ import {
 import { createApp } from "./app.js";
 import { resolveServiceConfig } from "./config.js";
 import { ConsoleEmailSender, HttpEmailSender } from "./email/senders.js";
+import { wireStripeGateway } from "./stripe-wiring.js";
 import { wireX402Gateway } from "./x402-wiring.js";
 
 // Bin entry (§0.6): wire the real pg-backed stores and serve on PORT.
@@ -85,12 +85,14 @@ const storefrontBaseUrl = process.env.STOREFRONT_BASE_URL;
 // Payment gateways (§5). Secrets are SERVICE-ENV ONLY (CLAUDE.md) — never in the
 // plugin / ctx.kv. A gateway is wired only when its secret is present.
 const gateways: Partial<Record<PaymentMethod, PaymentGateway>> = {};
-const stripeWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
-if (stripeWebhookSecret !== undefined && stripeWebhookSecret.length > 0) {
-	gateways.stripe = new StripePaymentGateway({
-		webhookSecret: stripeWebhookSecret,
-		secretKey: process.env.STRIPE_SECRET_KEY,
-	});
+// Stripe: STRIPE_WEBHOOK_SECRET enables the gateway; STRIPE_SECRET_KEY flips
+// createIntent to REAL PaymentIntents (and enables refunds). Webhook secret
+// without secret key ⇒ a loud boot warning about unpayable offline client
+// secrets — a warning, never a throw (staging/e2e run without it). See
+// src/stripe-wiring.ts.
+const stripeGateway = wireStripeGateway(process.env);
+if (stripeGateway !== undefined) {
+	gateways.stripe = stripeGateway;
 }
 // x402 (review G4): FAIL-CLOSED wiring. The only available facilitator is the
 // offline TEST one, so `wireX402Gateway` throws at startup when x402 env is
