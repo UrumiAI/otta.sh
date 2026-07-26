@@ -39,6 +39,8 @@ than rewriting history.
 - [0007. The machine write-gate token uses a dedicated `X-Service-Token` header](./0007-dedicated-service-token-header.md) — accepted, refines the `SERVICE_API_TOKEN` write gate
 - [0008. Order refunds are an append-only ledger + a gateway `refund` verb](./0008-order-refunds.md) — accepted, refines 0001/0002 (pluggable payments)
 - [0009. Checkout captures an immutable shipping-address snapshot on the order](./0009-checkout-address-capture.md) — accepted, refines 0001/0004
+- [0012. The plugin takes `content:write` to validate product input before the CMS save](./0012-plugin-content-write-for-save-validation.md) — accepted, refines 0006/0001
+  (0010 and 0011 are reserved by the in-flight service-hardening and entitlements lanes)
 
 ## Queued (to promote from draft-plans)
 
