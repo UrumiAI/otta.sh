@@ -131,12 +131,9 @@ export async function createOrderFromCart(
 		}
 		let intent: PaymentIntentHandle;
 		try {
-			intent = await gateway.createIntent({
-				orderId: already.id,
-				amount: already.totals.total,
-				currency: already.totals.currency,
-				idempotencyKey: command.idempotencyKey,
-			});
+			// Same builder as the fresh path below — the replay must describe the SAME
+			// goods, byte-for-byte, or the provider's same-key retry is rejected.
+			intent = await gateway.createIntent(intentInputFor(already, command.idempotencyKey));
 		} catch (err) {
 			// ONLY a typed intent failure is a clean checkout failure; every other
 			// throw is a bug and must keep propagating. The replayed order is
@@ -438,12 +435,7 @@ async function finalizeOrder(
 	await deps.cartStore.checkout(command.cartId);
 
 	// 4. Begin payment; hand the buyer-facing next-action back to the caller.
-	const intentInput: CreateIntentInput = {
-		orderId: order.id,
-		amount: order.totals.total,
-		currency: order.totals.currency,
-		idempotencyKey: command.idempotencyKey,
-	};
+	const intentInput = intentInputFor(order, command.idempotencyKey);
 	//    A live gateway can FAIL here (Stripe down / rejecting). Catch ONLY the
 	//    typed PaymentIntentError — any other throw is a bug and propagates. The
 	//    inserted `pending` order, its adopted reservations and its coupon
@@ -459,6 +451,50 @@ async function finalizeOrder(
 		logIntentFailure(err, order.id);
 		return { ok: false, reason: "PAYMENT_INTENT_FAILED" };
 	}
+}
+
+/**
+ * Build the gateway's `createIntent` input from a persisted order — the SINGLE
+ * source for **both** call sites (the fresh checkout and the I1 replay), so the
+ * two can never drift into "one describes the goods, the other doesn't".
+ *
+ * The line data is read off the ORDER, i.e. off `order_items`, which snapshotted
+ * `title` at purchase time (CLAUDE.md's snapshot invariant). Two consequences,
+ * both load-bearing:
+ *  - the payment says what the buyer actually bought, and a later product rename
+ *    never rewrites it;
+ *  - a same-key replay therefore produces the SAME structured data, which is what
+ *    lets a provider's native idempotency (Stripe's `Idempotency-Key`) accept the
+ *    replay instead of rejecting a drifted body.
+ *
+ * The domain hands over STRUCTURE only. Rendering it — joining, truncating,
+ * naming the field `description` — is the adapter's job (ports-and-adapters: the
+ * domain must not learn Stripe's string format).
+ */
+function intentInputFor(order: Order, key: IdempotencyKey): CreateIntentInput {
+	const address = order.shippingAddress;
+	return {
+		orderId: order.id,
+		amount: order.totals.total,
+		currency: order.totals.currency,
+		idempotencyKey: key,
+		lines: order.lines.map((line) => ({ title: line.title, quantity: line.quantity })),
+		// ADR-0009's frozen ship-to, narrowed to the postal fields: a provider's
+		// export rules want a destination, never the buyer's contact channels.
+		...(address === null
+			? {}
+			: {
+					shipTo: {
+						name: address.name,
+						line1: address.line1,
+						line2: address.line2,
+						city: address.city,
+						region: address.region,
+						postalCode: address.postalCode,
+						country: address.country,
+					},
+				}),
+	};
 }
 
 // Branding at the use-case boundary (like inventory §0.2c): the cart line carries

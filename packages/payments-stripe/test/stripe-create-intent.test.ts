@@ -61,6 +61,7 @@ function intentInput(overrides: Partial<CreateIntentInput> = {}): CreateIntentIn
 		amount: cents(2500),
 		currency: USD,
 		idempotencyKey: idempotencyKey("key-1"),
+		lines: [{ title: "Widget", quantity: 1 }],
 		...overrides,
 	};
 }

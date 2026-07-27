@@ -34,6 +34,7 @@ describe("wireStripeGateway (boot signal, never fail-closed)", () => {
 			amount: cents(1000),
 			currency: currency("USD"),
 			idempotencyKey: idempotencyKey("k-9"),
+			lines: [{ title: "Widget", quantity: 1 }],
 		});
 		expect(intent.intentId).toBe("pi_ord-9");
 	});

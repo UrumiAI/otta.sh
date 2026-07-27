@@ -101,11 +101,84 @@ export type RefundFailureReason =
 	| "TERMINAL"
 	| "UNVERIFIED";
 
+/**
+ * ONE purchased line, as STRUCTURE — never a pre-rendered provider sentence.
+ * The domain states WHAT was bought; how a given provider wants that expressed
+ * (Stripe's plain-string `description`, its length limit, joining, truncation)
+ * is ADAPTER knowledge and lives in the adapter. Keeping this structural is what
+ * lets one port serve Stripe's `description`, a future PayPal `item_list`, and
+ * x402 (which ignores it) without the domain learning any provider's format.
+ *
+ * `title` is the order line's **purchase-time snapshot** (`OrderLine.title`),
+ * never a live product read — so a later rename can never change what a same-key
+ * REPLAY sends, which is precisely what keeps a provider's idempotent replay
+ * byte-identical (Stripe rejects a same-key retry whose body drifted).
+ *
+ * Deliberately NO money here: prices would drag the repo's hundredths-scale
+ * minor-unit convention into a free-text field with no currency exponent
+ * attached — see `STRIPE_UNSUPPORTED_CURRENCIES`. Quantity + title is what a
+ * goods description needs.
+ */
+export interface CreateIntentLine {
+	/** The product title snapshotted onto the order line at purchase time. */
+	title: string;
+	/** How many of this line were bought (a positive integer). */
+	quantity: number;
+}
+
+/**
+ * The recipient a physical order ships to — the POSTAL fields of the order's
+ * frozen `OrderAddress` snapshot (ADR-0009) and nothing else.
+ *
+ * Exists because some jurisdictions require a ship-to on the payment itself:
+ * Stripe's India-export rules demand `description` **plus** `shipping.name` +
+ * `shipping.address` for an export of physical goods
+ * (<https://docs.stripe.com/india-exports>). Absent (`undefined`) whenever the
+ * order captured no address — a digital-only order, or one predating capture —
+ * which is honest absence, never a fabricated destination.
+ *
+ * **PII crosses the gateway boundary here.** The shape is deliberately narrower
+ * than `OrderAddress`: the buyer's `email` / `phone` are NOT included, because no
+ * provider needs them to satisfy an export rule. Adapters must keep every field
+ * out of logs and out of error messages (`PaymentIntentError` carries only
+ * gateway/retryable/status/code — never this).
+ */
+export interface CreateIntentShipTo {
+	name: string;
+	line1: string;
+	line2: string | null;
+	city: string;
+	/** State / province / region; `null` when the address captured none. */
+	region: string | null;
+	postalCode: string;
+	/** ISO-3166 country as captured (providers commonly want the 2-letter code). */
+	country: string;
+}
+
 export interface CreateIntentInput {
 	orderId: OrderId;
 	amount: Cents;
 	currency: Currency;
 	idempotencyKey: IdempotencyKey;
+	/**
+	 * The order's purchased lines — **required**, so no call site can mint a
+	 * payment that cannot say what it is for. That is not decorative: an
+	 * India-based Stripe account REFUSES every export PaymentIntent with no
+	 * `description` ("As per Indian regulations, export transactions require a
+	 * description"), which made card checkout impossible until this carried the
+	 * data. A required field means the compiler, not a live QA session, catches
+	 * the next call site that forgets.
+	 *
+	 * An adapter must still tolerate an empty array (defensively — a real order
+	 * always has ≥1 line) rather than emit an empty description.
+	 */
+	lines: readonly CreateIntentLine[];
+	/**
+	 * The order's frozen ship-to snapshot, when one was captured. OPTIONAL by
+	 * construction: digital orders have no destination, and inventing one would
+	 * be worse than omitting it.
+	 */
+	shipTo?: CreateIntentShipTo;
 }
 
 export interface PaymentIntentErrorInput {
