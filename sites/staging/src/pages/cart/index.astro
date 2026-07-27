@@ -20,6 +20,7 @@ import {
 } from "@urumi/plugin";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Base from "../../layouts/Base.astro";
+import { cartMoneyCell, isCartPricingDegraded } from "../../lib/cart-view.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
 import { dispatchUrumiRoute } from "../../lib/urumi-api.js";
 
@@ -43,6 +44,14 @@ const pricing = result !== null && result.ok ? result.pricing : null;
 const degraded =
 	cartId !== undefined && cart === null && !(result !== null && !result.ok && "reason" in result);
 
+/**
+ * ABSENT pricing counts as degraded, not as "no prices" (§5). `pricing?.degraded`
+ * on an undefined pricing is falsy, so a worker bundle predating the pricing
+ * join rendered a total outage as if every line were simply unpriced: no banner,
+ * every money cell an unexplained "—", the total row suppressed.
+ */
+const pricingDegraded = isCartPricingDegraded(pricing);
+
 const lines = cart?.lines ?? [];
 // One fresh key per rendered form (double-submit = replay, not duplicate).
 const lineForms = lines.map((line) => ({
@@ -59,7 +68,7 @@ const lineForms = lines.map((line) => ({
 	{degraded && (
 		<p class="notice">The cart service is temporarily unavailable — please try again shortly.</p>
 	)}
-	{pricing?.degraded && (
+	{cart !== null && pricingDegraded && (
 		<p class="notice">
 			Pricing is temporarily unavailable — quantities and holds are still accurate.
 		</p>
@@ -99,8 +108,8 @@ const lineForms = lines.map((line) => ({
 											<button type="submit">Update</button>
 										</form>
 									</td>
-									<td>{linePricing?.unitPrice?.formatted ?? "—"}</td>
-									<td>{linePricing?.lineTotal?.formatted ?? "—"}</td>
+									<td>{cartMoneyCell(linePricing?.unitPrice?.formatted, pricingDegraded)}</td>
+									<td>{cartMoneyCell(linePricing?.lineTotal?.formatted, pricingDegraded)}</td>
 									<td>{line.expiresAt ?? "—"}</td>
 									<td>
 										<form method="POST" action="/cart/remove">
@@ -126,6 +135,9 @@ const lineForms = lines.map((line) => ({
 				<p class="muted">
 					Prices shown are informational and may change — your final total is calculated at
 					checkout.
+				</p>
+				<p>
+					<a href="/checkout">Proceed to checkout</a>
 				</p>
 			</>
 		)
