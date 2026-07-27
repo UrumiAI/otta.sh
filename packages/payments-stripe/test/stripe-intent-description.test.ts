@@ -383,4 +383,47 @@ describe("createStripeHttpTransport.createPaymentIntent — description + shippi
 		expect(form.get("metadata[order_id]")).toBe("ord-7");
 		expect(form.get("automatic_payment_methods[enabled]")).toBe("true");
 	});
+
+	// Product titles are MERCHANT-controlled free text landing in a form-encoded
+	// body. `URLSearchParams.set` percent-encodes, so this is safe BY CONSTRUCTION
+	// — pinned so that a future switch to hand-built string concatenation, where
+	// `&`/`=` in a title WOULD smuggle a parameter, fails loudly instead of quietly.
+	test("a title carrying form-encoding metacharacters cannot smuggle a parameter", async () => {
+		let body = "";
+		await httpCall(
+			(b) => {
+				body = b;
+			},
+			{ description: "1 × Mug & Spoon = Set" },
+		);
+		const form = new URLSearchParams(body);
+		expect(form.get("description")).toBe("1 × Mug & Spoon = Set");
+		expect([...form.keys()].filter((k) => k === "description")).toHaveLength(1);
+		expect(form.get("amount")).toBe("2500");
+		expect(form.get(" Spoon ")).toBeNull();
+	});
+
+	// Deliberate design choice, pinned: dropping `shipping` on a malformed country
+	// would silently re-open the India-export compliance gap this field exists for.
+	// A legible Stripe 4xx beats a silent omission.
+	test("a malformed country is passed through, not dropped — Stripe rejects legibly", async () => {
+		let body = "";
+		await httpCall(
+			(b) => {
+				body = b;
+			},
+			{
+				shipping: {
+					name: "Jenny Rosen",
+					line1: "510 Townsend St",
+					city: "London",
+					postalCode: "E1 1AA",
+					country: "UNITED KINGDOM",
+				},
+			},
+		);
+		const form = new URLSearchParams(body);
+		expect(form.get("shipping[address][country]")).toBe("UNITED KINGDOM");
+		expect(form.get("shipping[name]")).toBe("Jenny Rosen");
+	});
 });
