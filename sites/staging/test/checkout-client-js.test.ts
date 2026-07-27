@@ -15,6 +15,11 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
 const PAGES_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src/pages");
+
+/** Strip comments from an interpolation expression: the no-echo rule is about what
+ *  the template RENDERS, so prose explaining why it doesn't leak is not a leak. */
+const stripComments = (expr: string): string =>
+	expr.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
 const PAY_PAGE = path.join(PAGES_DIR, "checkout/pay.astro");
 const ORDER_PAGE = path.join(PAGES_DIR, "orders/[orderId].astro");
 
@@ -153,8 +158,6 @@ describe("10c — Stripe's redirect parameters are read, never rendered", () => 
 		// Comments inside an expression block are stripped first — the rule is
 		// about what the template RENDERS, and prose explaining why it doesn't is
 		// not a leak.
-		const stripComments = (expr: string): string =>
-			expr.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
 		const interpolations = [...body.matchAll(/\{([^}]*)\}/g)].map((m) => stripComments(m[1] ?? ""));
 		const leaking = interpolations.filter((expr) =>
 			/client_?secret|payment_?intent|redirect_?status/i.test(expr),
