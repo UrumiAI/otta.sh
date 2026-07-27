@@ -23,11 +23,13 @@ export interface UpsertProductCommerceInput {
 	price?: CommerceMoney;
 	/** The product title an ORDER LINE SNAPSHOTS at purchase time (service
 	 *  schema: non-empty, ≤500 chars). Not a merchant-editable commerce field:
-	 *  it is always derived from the CMS content's own `title` column, so the
-	 *  storefront heading and the order line can never drift. A row whose title
-	 *  is NULL is UNPURCHASABLE — `createOrderFromCart` rejects it with
-	 *  `PRODUCT_NOT_PRICED` — so every sync upsert carries it; the store
-	 *  PRESERVES the stored title only when the field is omitted. */
+	 *  it is derived from the CMS CONTENT field `data.title` — em-dash's
+	 *  `ContentItem` has NO top-level `title`; see `sync/hooks.ts`'s
+	 *  `TITLE_FIELD` for the evidence — so the storefront heading and the order
+	 *  line can never drift. A row whose title is NULL is UNPURCHASABLE
+	 *  (`createOrderFromCart` rejects it with `PRODUCT_NOT_PRICED`). OMITTED —
+	 *  never sent as `""` — when the content has no usable title, which the store
+	 *  reads as "preserve whatever is already stored". */
 	title?: string;
 	taxClass?: string | null;
 	weightGrams?: number | null;
