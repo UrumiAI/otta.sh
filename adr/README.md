@@ -41,6 +41,7 @@ than rewriting history.
 - [0009. Checkout captures an immutable shipping-address snapshot on the order](./0009-checkout-address-capture.md) — accepted, refines 0001/0004
 - [0010. The admin read surface requires `X-Internal-Token`](./0010-admin-read-surface-requires-internal-token.md) — accepted, refines 0007
 - [0011. `GET /entitlements/check` authenticates each scope (close the email existence oracle)](./0011-entitlement-check-authentication.md) — accepted, refines 0001, builds on 0004/0007
+- [0012. The storefront checkout loads Stripe Elements in the buyer's browser](./0012-storefront-checkout-loads-stripe-elements-in-the-browser.md) — accepted, refines 0003, builds on 0006/0009/0010
 
 ## Queued (to promote from draft-plans)
 
