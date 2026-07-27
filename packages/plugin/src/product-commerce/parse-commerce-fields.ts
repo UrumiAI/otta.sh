@@ -7,18 +7,20 @@ import type { UpsertProductCommerceInput } from "./commerce-client.js";
  * keyed by each element's `action_id` and recomposes on change
  * (`packages/admin/src/components/BlockKitFieldWidget.tsx` —
  * `onChange({ ...obj, [actionId]: value })`), so the shape here is exactly the
- * widget's `action_id`s. Every value is `unknown`: a `number_input` yields a
+ * widget's `action_id`s — plus `title`, the one member that is NOT a widget
+ * field (see its own doc). Every value is `unknown`: a `number_input` yields a
  * raw JS number that CAN be a float (em-dash's `Number(e.target.value)`), which
  * is precisely why money integrity is enforced HERE, at the derive boundary.
- *
- * `title` is deliberately NOT a member. It is not a widget field (the widget has
- * no title input, by design) and it does not live in this bag at all — it is a
- * CONTENT field, read from `content.data.title`. See `parseProductTitle`.
  */
 export interface CommerceFieldBag {
 	sku?: unknown;
 	price?: unknown;
 	currency?: unknown;
+	/** NOT a widget `action_id` — the widget deliberately has no title input
+	 *  (a second place to type a product name would drift from the storefront
+	 *  heading). The caller injects the CMS content's own `title` column here,
+	 *  which is why it is validated in this shared guard alongside money. */
+	title?: unknown;
 	onHand?: unknown;
 	productKind?: unknown;
 	taxClass?: unknown;
@@ -32,50 +34,6 @@ export interface CommerceFieldBag {
  *  (`z.string().min(1).max(500)`) — the plugin declares no dependency on the
  *  service package, so the bound is restated here, not imported. */
 const TITLE_MAX_LENGTH = 500;
-
-/** The outcome of validating a product title: a value fit to send, or a
- *  human-readable reason it is not (which the caller LOGS — it never blocks the
- *  upsert; see `parseProductTitle`). */
-export type ParsedProductTitle = { title: string } | { problem: string };
-
-/**
- * Validate the product title an order line will snapshot.
- *
- * WHERE THE VALUE COMES FROM: `content.data.title`. em-dash's `ContentItem` has
- * NO top-level `title` — `mapRow()` copies every column that is not in
- * `SYSTEM_COLUMNS` into `data`, and `title` is an ordinary user-defined
- * collection field. The caller (`sync/hooks.ts`) owns that read; this function
- * owns the RULES, so the bound lives beside the money bound it mirrors.
- *
- * BEST-EFFORT BY DESIGN — the caller must never treat a `problem` as fatal. An
- * unusable title omits ONLY the title from the upsert; sku/price/stock still
- * sync. Vetoing the whole upsert would mean any collection whose title field is
- * absent or named something other than `title` silently loses ALL commerce sync
- * — a far worse failure than an untitled (and therefore unpurchasable) product.
- * Omitting is also safe against data loss: the store PRESERVES a stored title
- * when the field is absent from the body, so this can never blank a good one.
- *
- * Nor is the raw value ever sent as-is: `""` and an over-long string are both
- * 400s at the service, and a 400 is a TRANSPORT failure — which at
- * `content:afterPublish` fails closed and skips the activate. A content problem
- * must never masquerade as a transport problem.
- */
-export function parseProductTitle(value: unknown): ParsedProductTitle {
-	if (value === undefined || value === null) {
-		return { problem: "no `title` field on the content record (expected `data.title`)" };
-	}
-	if (typeof value !== "string") {
-		return { problem: `\`data.title\` is ${typeof value}, not a string` };
-	}
-	const title = value.trim();
-	if (title.length === 0) return { problem: "`data.title` is empty/whitespace" };
-	if (title.length > TITLE_MAX_LENGTH) {
-		return {
-			problem: `\`data.title\` is ${title.length} characters; the service accepts at most ${TITLE_MAX_LENGTH}`,
-		};
-	}
-	return { title };
-}
 
 export interface ParsedCommerceFields {
 	body: UpsertProductCommerceInput;
@@ -113,6 +71,28 @@ export function parseCommerceFields(input: CommerceFieldBag): ParsedCommerceFiel
 			errors["currency"] = "currency must be an ISO-4217 alpha code (e.g. USD)";
 		} else {
 			body.price = { amount: input.price, currency: input.currency };
+		}
+	}
+
+	// The order-line snapshot. A row with a NULL title is UNPURCHASABLE — the
+	// domain's `createOrderFromCart` rejects it with `PRODUCT_NOT_PRICED`, which
+	// reaches the buyer as a checkout failure — so an unusable title is a LOUD
+	// rejection here rather than a silent omission (which would leave the row
+	// NULL and the failure invisible until a buyer hit checkout) or a `""` sent
+	// on the wire (which the service 400s, turning a data problem into a
+	// TRANSPORT failure — at publish that fails closed and skips the activate).
+	// Trimmed, because the trimmed value is what an order line should carry.
+	// The upper bound mirrors the service's zod schema (`z.string().min(1).max(500)`)
+	// for the same reason: an over-long title would be a 400, i.e. a TRANSPORT
+	// failure, and the derive must only ever hand the service a body it accepts.
+	if (input.title !== undefined) {
+		const title = typeof input.title === "string" ? input.title.trim() : "";
+		if (title.length === 0) {
+			errors["title"] = "title must be a non-empty string (an order line snapshots it)";
+		} else if (title.length > TITLE_MAX_LENGTH) {
+			errors["title"] = `title must be at most ${TITLE_MAX_LENGTH} characters`;
+		} else {
+			body.title = title;
 		}
 	}
 

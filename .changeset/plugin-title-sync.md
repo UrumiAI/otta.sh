@@ -30,6 +30,23 @@ top of the product editor. Because it lives in the shared derive, both `content:
 - Omitting is also safe against data loss: the store preserves a stored title when the field is
   absent from the body, so a momentarily blank title can never blank a good one.
 
+**Known limitation — a failed title UPDATE keeps the old one, silently.** Preserve-on-omit protects
+a good title, but it also masks a rejected change: rename an already-synced product to something
+over 500 characters and the upsert omits the title, the store keeps the previous value, and the
+"Pricing & inventory" console still shows that old, valid-looking name — no `(untitled)`, no
+merchant-visible signal — while the storefront heading already renders the new one. That is the
+storefront/order-line drift this change exists to prevent, arriving through a failed update rather
+than a second input field. Narrow (it needs an already-titled product edited past the limit) and
+not a regression against today's behaviour, but it is the sharp edge of preserve-on-omit and is
+worth a test plus a merchant-visible signal in a follow-up.
+
+**Known limitation — an untitled product still looks purchasable.** `joinProduct` derives
+`purchasable` from `commerce !== null && commerce.active` and does not consider the title, while
+`createOrderFromCart` rejects a null title. So a priced, active, title-less product renders with a
+price and an Add to cart button and only fails at the last step of checkout. This predates the
+change — it applied to every product before it — but fixing the common case turns a uniform failure
+into a rare one, which is harder to reproduce. Gating `joinProduct` on the title is a follow-up.
+
 **Existing NULL-title products heal themselves — on the next save or publish, not automatically.**
 The upsert preserves a stored title only when the field is omitted, and it is sent whenever the
 content has one, so the next sync writes it. EmDash bumps `updatedAt` on every content write,
