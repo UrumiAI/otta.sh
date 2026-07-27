@@ -9,7 +9,6 @@ import {
 	type PaymentGateway,
 	type PaymentMethod,
 } from "@urumi/domain";
-import { StripePaymentGateway } from "@urumi/payments-stripe";
 import {
 	KyselyAddressStore,
 	KyselyCartStore,
@@ -36,6 +35,7 @@ import type { Hono } from "hono";
 import { createApp } from "./app.js";
 import { openWriteGateWarning, resolveServiceConfig, type ServiceConfig } from "./config.js";
 import { ConsoleEmailSender, HttpEmailSender } from "./email/senders.js";
+import { wireStripeGateway } from "./stripe-wiring.js";
 import { wireX402Gateway } from "./x402-wiring.js";
 
 /**
@@ -203,13 +203,13 @@ export function createWorker(overrides: CreateWorkerOverrides = {}): UrumiWorker
 		if (gatewaysMemo === undefined) {
 			try {
 				const gateways: Partial<Record<PaymentMethod, PaymentGateway>> = {};
-				const stripeWebhookSecret = env.STRIPE_WEBHOOK_SECRET;
-				if (stripeWebhookSecret !== undefined && stripeWebhookSecret.length > 0) {
-					gateways.stripe = new StripePaymentGateway({
-						webhookSecret: stripeWebhookSecret,
-						secretKey: env.STRIPE_SECRET_KEY,
-						clock,
-					});
+				// Stripe (src/stripe-wiring.ts, shared with the Node bin): the webhook
+				// secret enables the gateway, STRIPE_SECRET_KEY flips createIntent to
+				// REAL PaymentIntents. Missing secret key ⇒ a `wrangler tail`-visible
+				// warning about unpayable offline client secrets, never a throw.
+				const stripeGateway = wireStripeGateway(env, { clock });
+				if (stripeGateway !== undefined) {
+					gateways.stripe = stripeGateway;
 				}
 				const x402Gateway = wireX402Gateway(env);
 				if (x402Gateway !== undefined) {

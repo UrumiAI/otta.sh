@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import {
 	createStripeHttpTransport,
 	StripePaymentGateway,
+	type StripeCreatePaymentIntentResult,
 	type StripeCreateRefundResult,
 	type StripePreflightResult,
 	type StripeTransport,
@@ -40,6 +41,11 @@ class MockTransport implements StripeTransport {
 	}): Promise<StripePreflightResult> {
 		this.reads.push(input);
 		return this.preflight;
+	}
+	/** The refund suite never creates intents; the seam's third method is
+	 *  implemented only to satisfy the (now required) interface. */
+	async createPaymentIntent(): Promise<StripeCreatePaymentIntentResult> {
+		throw new Error("createPaymentIntent is not exercised by the refund suite");
 	}
 	async createRefund(input: {
 		providerRef: string;

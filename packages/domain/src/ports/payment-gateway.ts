@@ -21,7 +21,16 @@ export interface PaymentGateway {
 	 * refund API with), surfaced honestly rather than failing on first use.
 	 */
 	readonly refundable: boolean;
-	/** Begin payment for an order; returns the buyer-facing next action. */
+	/**
+	 * Begin payment for an order; returns the buyer-facing next action.
+	 *
+	 * A gateway that talks to a real provider (Stripe's `paymentIntents.create`)
+	 * signals a FAILED attempt by throwing {@link PaymentIntentError} — the one
+	 * failure this port models as a typed throw rather than a result union, so the
+	 * happy-path signature stays a plain handle for the three call sites that only
+	 * ever succeed. `createOrderFromCart` catches it BY TYPE and maps it to
+	 * `PAYMENT_INTENT_FAILED`; anything else propagates (bugs are never swallowed).
+	 */
 	createIntent(input: CreateIntentInput): Promise<PaymentIntentHandle>;
 	/**
 	 * Turn a RAW provider confirmation (webhook bytes+headers, or a page-gate
@@ -97,6 +106,57 @@ export interface CreateIntentInput {
 	amount: Cents;
 	currency: Currency;
 	idempotencyKey: IdempotencyKey;
+}
+
+export interface PaymentIntentErrorInput {
+	gateway: PaymentMethod;
+	/** True when re-issuing the SAME command with the SAME idempotency key is
+	 *  safe and could still succeed (network / 5xx / 429 / 409). */
+	retryable: boolean;
+	/** Provider HTTP status — LOGS ONLY, never branched on by the domain. */
+	providerStatus?: number;
+	/** Provider error code (e.g. Stripe `error.code`) — LOGS ONLY. */
+	providerCode?: string;
+	message?: string;
+}
+
+/**
+ * Thrown by {@link PaymentGateway.createIntent} when the provider refused or
+ * could not be reached — a gateway-AGNOSTIC, IO-free error so the domain can
+ * handle a live-provider failure without importing a Stripe (or x402) type. The
+ * shape mirrors the `ReservationCommitLostError` precedent: a typed throw the
+ * use-case catches by class, never a stringly-matched message.
+ *
+ * ALL THREE fields are DIAGNOSTIC today: the domain branches on none of them —
+ * every `PaymentIntentError` maps to the same `PAYMENT_INTENT_FAILED`, and
+ * `retryable` / `providerStatus` / `providerCode` are LOGGED at the catch site so
+ * an operator can tell "Stripe was down" from "the card was declined".
+ * `retryable` is the field a future caller-driven retry would branch on; it is
+ * not load-bearing yet. **Adapter contract: no credential (a Bearer key, a
+ * signing secret) may ever reach `message`, `cause`, or any enumerable field of
+ * this error** — it is logged verbatim.
+ */
+export class PaymentIntentError extends Error {
+	readonly gateway: PaymentMethod;
+	readonly retryable: boolean;
+	readonly providerStatus: number | undefined;
+	readonly providerCode: string | undefined;
+
+	constructor(input: PaymentIntentErrorInput) {
+		super(
+			input.message ??
+				`payment intent creation failed at gateway "${input.gateway}" (${
+					input.retryable ? "retryable" : "terminal"
+				}${input.providerStatus === undefined ? "" : `, status ${input.providerStatus}`}${
+					input.providerCode === undefined ? "" : `, code ${input.providerCode}`
+				})`,
+		);
+		this.name = "PaymentIntentError";
+		this.gateway = input.gateway;
+		this.retryable = input.retryable;
+		this.providerStatus = input.providerStatus;
+		this.providerCode = input.providerCode;
+	}
 }
 
 export interface PaymentIntentHandle {

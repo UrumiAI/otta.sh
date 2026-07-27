@@ -364,7 +364,7 @@ note). In order of appearance in a deployment's life:
 | `INTERNAL_API_TOKEN` | service | Shape A: yes (§2.4); Shape B: for the admin reports/settings UI | any time |
 | `SERVICE_API_TOKEN` | service + plugin kv | to close the write gate | in lockstep, **plugin kv first** (box below) |
 | `STRIPE_WEBHOOK_SECRET` | service | for Stripe payments | before enabling Stripe |
-| `STRIPE_SECRET_KEY` | service | optional | with the webhook secret |
+| `STRIPE_SECRET_KEY` | service | to take **real** payments (and to refund) | with the webhook secret |
 | `X402_PAYTO` + `X402_FACILITATOR_SECRET` | service | for x402 (non-production only today) | see fail-closed box |
 | `EMAIL_API_KEY` (with `EMAIL_API_URL` / `EMAIL_FROM` vars) | service | optional | when wiring real email |
 
@@ -421,8 +421,30 @@ note). In order of appearance in a deployment's life:
   `POST /webhooks/stripe` answers 503. The webhook URL is **public by design**: it is the
   single exemption from the `X-Service-Token` write gate, authenticated instead by
   `Stripe-Signature` HMAC over the raw body (Stripe cannot carry our token).
-  `STRIPE_SECRET_KEY` is
-  optional today — verification needs only the webhook secret.
+  **`STRIPE_SECRET_KEY` decides whether checkout can actually be paid.** With it,
+  `createIntent` performs a real `POST /v1/payment_intents` — the buyer gets a LIVE client
+  secret, `metadata[order_id]` carries the settlement key the webhook is matched on, and the
+  checkout `Idempotency-Key` travels as Stripe's native one — and refunds become available.
+  **Without it**, `createIntent` mints an OFFLINE deterministic handle (`pi_<orderId>` plus a
+  fake client secret that no Stripe.js/Elements can ever pay) and the service logs a loud
+  boot warning (`STRIPE_WEBHOOK_SECRET is set but STRIPE_SECRET_KEY is NOT …`). That stays a
+  warning, never a boot failure: staging and e2e run offline on purpose. A live-intent
+  failure (Stripe down or rejecting) answers **502 `PAYMENT_INTENT_FAILED`**; the `pending`
+  order row is kept deliberately — retrying with the same `Idempotency-Key` re-issues the
+  *same* PaymentIntent, and `expire-orders` sweeps the order at the checkout TTL (releasing
+  stock and any coupon use) if it never gets paid.
+
+> **Live Stripe is TWO-DECIMAL currencies only.** Urumi stores money as integer minor units
+> at hundredths scale everywhere, while Stripe expects `amount` in each currency's own
+> smallest unit. For **zero-decimal** currencies (JPY, KRW, CLP, VND, BIF, DJF, GNF, KMF,
+> MGA, PYG, RWF, UGX, VUV, XAF, XOF, XPF) that would charge the buyer **100×**, and for
+> **three-decimal** ones (BHD, JOD, KWD, OMR, TND) it is the mirror error — so the live
+> `createIntent` **refuses them before any network call**, answering 502
+> `PAYMENT_INTENT_FAILED` (provider code `unsupported_currency` in the service log). Do not
+> price a catalog in those currencies against a secret-key-configured deployment; the
+> offline (no-secret-key) path is unaffected. Lifting this needs an exponent-aware money
+> boundary, not an adapter tweak — the deny-list is `STRIPE_UNSUPPORTED_CURRENCIES` in
+> `packages/payments-stripe/src/index.ts`.
 
 > **x402 is fail-closed.** The only facilitator the service can currently wire is the
 > **offline TEST facilitator** — a shared-secret HMAC check, not real x402 verification:
@@ -455,7 +477,7 @@ Node bin and Worker read the **same names by design** — on Workers, plain vars
 | `INTERNAL_API_TOKEN` | both | unset ⇒ operational surface 503s | §4 |
 | `SERVICE_API_TOKEN` | both | unset ⇒ write surface **open** | §4 — provision on both sides (kv first) to close the gate |
 | `STRIPE_WEBHOOK_SECRET` | both | unset ⇒ webhook 503, gateway unwired | §4 |
-| `STRIPE_SECRET_KEY` | both | unset | §4 — optional |
+| `STRIPE_SECRET_KEY` | both | unset ⇒ **offline, unpayable** intents + no refunds (boot warns) | §4 — set it to create real PaymentIntents |
 | `X402_PAYTO` | both | unset ⇒ x402 not configured | x402 pay-to address |
 | `X402_FACILITATOR_SECRET` | both | unset ⇒ x402 not configured | test-facilitator HMAC secret (§4) |
 | `X402_ACCEPTS` | both | `eip155:8453` | comma-separated x402 accepted networks |

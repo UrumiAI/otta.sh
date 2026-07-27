@@ -35,8 +35,11 @@
 	//     calls the domain directly, needs none).
 	//   wrangler secret put STRIPE_WEBHOOK_SECRET    — enables the Stripe gateway +
 	//     POST /webhooks/stripe (503 until set).
-	//   wrangler secret put STRIPE_SECRET_KEY        — optional (createIntent is a
-	//     Phase-5 stub; verification only needs the webhook secret).
+	//   wrangler secret put STRIPE_SECRET_KEY        — REQUIRED to take real money:
+	//     with it, createIntent calls Stripe's live paymentIntents.create (and
+	//     refunds work); without it checkout hands buyers an OFFLINE, unpayable
+	//     client secret and boot logs a warning (visible in `wrangler tail`) —
+	//     dev/staging/e2e only, never a production deployment.
 	//   wrangler secret put EMAIL_API_KEY            — with vars EMAIL_API_URL /
 	//     EMAIL_FROM / STOREFRONT_BASE_URL (non-secret, may live in "vars"):
 	//     Phase-5 email transport; EMAIL_API_URL unset ⇒ ConsoleEmailSender
