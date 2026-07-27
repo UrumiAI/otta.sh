@@ -53,17 +53,34 @@ function commerceBag(overrides: Record<string, unknown> = {}): Record<string, un
 	};
 }
 
-/** A saved products content record carrying a `commerce` field bag under `data`
- *  (the shape `content:afterSave` receives — `contentItemToRecord(item)`). */
+/** The product title, which lives at `content.data.title` — NOT at the top
+ *  level. em-dash's `ContentItem` (`packages/core/src/database/repositories/
+ *  types.ts`) has no `title` member at all: `mapRow()` puts every column that is
+ *  not in `SYSTEM_COLUMNS` into `data`, and `title` is an ordinary user-defined
+ *  collection field (see `sites/staging/seed/seed.json`, which declares it on
+ *  `products`). `contentItemToRecord = { ...item }` passes that item through
+ *  verbatim, so a hook payload carries `data.title`, never `content.title`. */
+const TITLE = "Blue Mug";
+
+/** A saved products content record — the shape `content:afterSave` actually
+ *  receives (`contentItemToRecord(item)`). BOTH the title and the widget's
+ *  `commerce` bag live under `data`, side by side, exactly as em-dash stores
+ *  them. Pass `title: null` for a collection entry whose title column is
+ *  null/absent: `mapRow()` EXCLUDES null values from `data`, so that surfaces to
+ *  the plugin as a MISSING key, never an explicit `null`. */
 function productContent(
 	id: string,
 	bag: Record<string, unknown> | undefined,
 	extra: Record<string, unknown> = {},
+	title: string | null = TITLE,
 ): Record<string, unknown> {
+	const data: Record<string, unknown> = {};
+	if (title !== null) data["title"] = title;
+	if (bag !== undefined) data["commerce"] = bag;
 	return {
 		id,
 		updatedAt: WM,
-		...(bag !== undefined ? { data: { commerce: bag } } : {}),
+		...(Object.keys(data).length > 0 ? { data } : {}),
 		...extra,
 	};
 }
@@ -99,11 +116,13 @@ describe("sync hooks — afterSave derives product_commerce from the widget's co
 		expect(puts).toHaveLength(1);
 		expect(puts[0]?.url).toBe("/products/prod-1/commerce");
 		expect(puts[0]?.headers["idempotency-key"]).toBeTruthy();
-		// Derived: sku, integer-minor-units price + currency, kind, initial stock,
-		// and the ordering watermark. NEVER active/deletedAt.
+		// Derived: sku, integer-minor-units price + currency, the content's
+		// `data.title`, kind, initial stock, and the ordering watermark. NEVER
+		// active/deletedAt.
 		expect(putBody).toEqual({
 			sku: "SKU-1",
 			price: { amount: 1500, currency: "USD" },
+			title: TITLE,
 			productKind: "physical",
 			initialOnHand: 5,
 			contentUpdatedAt: WM,
@@ -230,6 +249,180 @@ describe("sync hooks — afterSave derives product_commerce from the widget's co
 			expect(b).not.toHaveProperty("onHand");
 			expect(b).not.toHaveProperty("setOnHand");
 		}
+	});
+
+	// -- TITLE SYNC: the order-line snapshot the plugin never sent -------------
+	// Confirmed live: a product created through the CMS was born with
+	// `product_commerce.title = NULL`, and `createOrderFromCart` rejects a null
+	// title with PRODUCT_NOT_PRICED — the product was PERMANENTLY UNPURCHASABLE
+	// and the buyer saw a checkout failure. The title is not a widget field and
+	// not a top-level hook field either: it is a user-defined collection field,
+	// so it arrives at `content.data.title` (see `productContent` above).
+	test("TITLE SYNC REGRESSION: the upsert carries data.title (a NULL title makes checkout fail with PRODUCT_NOT_PRICED)", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+		stubServer.respondWith("PUT", () => ({ status: 200, body: PRICED_ROW }));
+
+		await sandboxHandle.invokeHook("content:afterSave", {
+			content: productContent("prod-title", commerceBag()),
+			collection: "products",
+			isNew: true,
+		});
+
+		const puts = putRequests(stubServer);
+		expect(puts).toHaveLength(1);
+		expect(puts[0]?.body).toMatchObject({ title: TITLE });
+	});
+
+	test("data.title is the SINGLE source of truth — a hand-written commerce.title in the widget bag never overrides it (no storefront/order-line drift)", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+		stubServer.respondWith("PUT", () => ({ status: 200, body: PRICED_ROW }));
+
+		await sandboxHandle.invokeHook("content:afterSave", {
+			content: productContent(
+				"prod-override",
+				commerceBag({ title: "Sneaky Override" }),
+				{},
+				"  Blue Mug  ",
+			),
+			collection: "products",
+			isNew: false,
+		});
+
+		const body = putRequests(stubServer)[0]?.body as Record<string, unknown>;
+		// Trimmed, and taken from `data.title` — never the widget bag.
+		expect(body["title"]).toBe("Blue Mug");
+	});
+
+	// THE LOAD-BEARING GUARD (review): an unusable title must NEVER block the
+	// rest of the sync. Price/SKU/stock sync correctly today; if a title problem
+	// could veto the upsert, then any collection whose title field is missing or
+	// named something else would silently lose ALL commerce sync — a far worse
+	// regression than the unpurchasable-product bug this change fixes. So the
+	// title is BEST-EFFORT: omitted from the body and logged, never fatal. The
+	// store PRESERVES a previously-stored title when the field is omitted, so
+	// this can never erase a good title either.
+	test("an EMPTY / whitespace-only / ABSENT data.title never blocks the sync — price, sku and stock still upsert, only `title` is omitted", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+		stubServer.respondWith("PUT", () => ({ status: 200, body: PRICED_ROW }));
+
+		for (const [id, title] of [
+			["prod-empty-title", ""],
+			["prod-blank-title", "   \t "],
+			// `mapRow` drops null columns from `data`, so a null title column and a
+			// collection with no `title` field at all look identical here.
+			["prod-absent-title", null],
+		] as const) {
+			const outcome = await sandboxHandle.invokeHook("content:afterSave", {
+				content: productContent(id, commerceBag(), {}, title),
+				collection: "products",
+				isNew: false,
+			});
+			expect(outcome).toEqual({ result: null }); // never fails the CMS save.
+		}
+
+		// …and a collection that declares `title` as something other than a string
+		// (em-dash field types are the merchant's choice) is the same non-fatal case.
+		const numeric = productContent("prod-numeric-title", commerceBag(), {}, null);
+		(numeric["data"] as Record<string, unknown>)["title"] = 42;
+		await sandboxHandle.invokeHook("content:afterSave", {
+			content: numeric,
+			collection: "products",
+			isNew: false,
+		});
+
+		const puts = putRequests(stubServer);
+		expect(puts).toHaveLength(4);
+		for (const put of puts) {
+			const body = (put.body ?? {}) as Record<string, unknown>;
+			// The commercial fields still land…
+			expect(body).toMatchObject({ sku: "SKU-1", price: { amount: 1500, currency: "USD" } });
+			// …and no empty/blank title is sent (the service would 400 on `""`,
+			// turning a content problem into a TRANSPORT failure — which at publish
+			// fails closed and skips the activate).
+			expect(body).not.toHaveProperty("title");
+		}
+	});
+
+	test("a title longer than the service's 500-char limit is omitted, not sent — a data problem must never become a 400/transport failure", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+		stubServer.respondWith("PUT", () => ({ status: 200, body: PRICED_ROW }));
+
+		// Exactly at the limit still carries the title; one over omits it.
+		await sandboxHandle.invokeHook("content:afterSave", {
+			content: productContent("prod-title-500", commerceBag(), {}, "T".repeat(500)),
+			collection: "products",
+			isNew: false,
+		});
+		await sandboxHandle.invokeHook("content:afterSave", {
+			content: productContent("prod-title-501", commerceBag(), {}, "T".repeat(501)),
+			collection: "products",
+			isNew: false,
+		});
+
+		const puts = putRequests(stubServer);
+		expect(puts).toHaveLength(2); // both still sync their commercial fields.
+		expect(puts[0]?.body).toMatchObject({ title: "T".repeat(500) });
+		expect(puts[1]?.body).not.toHaveProperty("title");
+	});
+
+	test("PRICE-ONLY SAVE: a save that changes nothing but the price still syncs exactly as before (the title rides along, it never gates)", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+		stubServer.respondWith("PUT", () => ({ status: 200, body: PRICED_ROW }));
+
+		await sandboxHandle.invokeHook("content:afterSave", {
+			content: productContent("prod-reprice", commerceBag({ price: 2500 }), {
+				updatedAt: "2026-07-10T04:00:00.000Z",
+			}),
+			collection: "products",
+			isNew: false,
+		});
+
+		const puts = putRequests(stubServer);
+		expect(puts).toHaveLength(1);
+		expect(puts[0]?.body).toEqual({
+			sku: "SKU-1",
+			price: { amount: 2500, currency: "USD" },
+			title: TITLE,
+			productKind: "physical",
+			initialOnHand: 5,
+			contentUpdatedAt: "2026-07-10T04:00:00.000Z",
+		});
+	});
+
+	test("HEAL ON RE-SAVE: an existing NULL-title row gets its title on the merchant's next save (a fresh updatedAt ⇒ a fresh idempotency key ⇒ the upsert applies)", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+		stubServer.respondWith("PUT", () => ({ status: 200, body: PRICED_ROW }));
+
+		// The row already exists, created before title sync (title NULL at the
+		// service). em-dash bumps `updated_at` on EVERY content write, so the
+		// merchant's next save carries a strictly newer watermark…
+		await sandboxHandle.invokeHook("content:afterSave", {
+			content: productContent("prod-heal", commerceBag(), {
+				updatedAt: "2026-07-10T03:00:00.000Z",
+			}),
+			collection: "products",
+			isNew: false,
+		});
+
+		const puts = putRequests(stubServer);
+		expect(puts).toHaveLength(1);
+		// …carrying the title, so the store's DO UPDATE SET writes it (the upsert
+		// only PRESERVES title when the field is omitted).
+		expect(puts[0]?.body).toMatchObject({ title: TITLE });
+		expect(puts[0]?.headers["idempotency-key"]).toBe("products:prod-heal:2026-07-10T03:00:00.000Z");
+
+		// HONEST LIMIT: a REDELIVERY of the same save (same updatedAt) derives the
+		// same key and the store dedupes it — a redelivery does not heal. Only a
+		// real save/publish (which always bumps updatedAt) does.
+		await sandboxHandle.invokeHook("content:afterSave", {
+			content: productContent("prod-heal", commerceBag(), {
+				updatedAt: "2026-07-10T03:00:00.000Z",
+			}),
+			collection: "products",
+			isNew: false,
+		});
+		const keys = putRequests(stubServer).map((r) => r.headers["idempotency-key"]);
+		expect(new Set(keys).size).toBe(1);
 	});
 
 	// -- issue #82: afterSave activates an already-published product ------------
