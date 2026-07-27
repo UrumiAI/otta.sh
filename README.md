@@ -2,6 +2,11 @@
 
 A commerce layer for [EmDash](https://github.com/emdash-cms/emdash) — the WooCommerce-equivalent for Cloudflare's TypeScript CMS.
 
+![The Urumi storefront: a product listing with three sample products, each showing a title, description, and price](./docs/storefront.png)
+
+<sub>The reference storefront running locally, with prices and stock served by the commerce
+service — this is what the [quick start](#quick-start-local-2-minutes) below gives you.</sub>
+
 ## What this is
 
 Urumi turns an EmDash site into a store. It ships as two parts:
