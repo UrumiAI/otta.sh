@@ -96,6 +96,12 @@ export const POST: APIRoute = async (context) => {
 		// history, in the Referer of every subresource and in Cloudflare's access
 		// logs — the exact exposure ADR-0012 §6 argues against for the client
 		// secret. The buyer re-enters; the PII does not travel.
+		// COST, stated plainly: this check runs BEFORE readShippingAddress, so a
+		// mistyped email discards any typed shipping address too — not just the
+		// email. The alternative that would preserve both without a URL is
+		// re-rendering from the POST response instead of 303-ing, which was not
+		// taken because it breaks POST-redirect-GET (reload re-POSTs). Revisit if
+		// the re-entry cost shows up in real use.
 		return seeOther(context, "/checkout", INVALID_EMAIL);
 	}
 

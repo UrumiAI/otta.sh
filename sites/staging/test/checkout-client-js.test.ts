@@ -153,6 +153,12 @@ describe("10c — Stripe's redirect parameters are read, never rendered", () => 
 	);
 
 	test("the body interpolates no variable whose name suggests it holds one of those parameters", () => {
+		// SCOPE, honestly: this is a NAMING-CONVENTION pin, not a dataflow analysis.
+		// A frontmatter variable holding one of these params under an innocuous name
+		// (`const x = searchParams.get("payment_intent_client_secret")`, then `{x}`)
+		// defeats it. Today nothing does — only the boolean `returnedFromStripe`
+		// reaches the body — and that is what the frontmatter/body split above pins.
+		// Treat this as defence in depth against the obvious spelling, not a proof.
 		// The other half of the same rule: catch `{clientSecret}` / `{paymentIntent}`
 		// in the template even when the literal parameter name stays upstairs.
 		// Comments inside an expression block are stripped first — the rule is
