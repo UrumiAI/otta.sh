@@ -118,11 +118,20 @@ const deadEnd = state === "expired" || state === "cancelled";
 					</p>
 				)}
 
-				{order.state === "pending" && !returnedFromStripe && (
-					<p>
-						<a href="/checkout/pay">Complete payment</a>
-					</p>
-				)}
+				{
+					/* The way back to payment goes through /checkout, NOT straight to
+					   /checkout/pay: the stash was just deleted above, so the pay page
+					   has no client secret to mount. Re-submitting the review form
+					   replays `checkout:<cartId>` — the same order, and through
+					   Stripe's own idempotency the same PaymentIntent and the same
+					   client secret — which re-stashes it. The stable key is what
+					   makes resuming possible at all. */
+					order.state === "pending" && !returnedFromStripe && (
+						<p>
+							<a href="/checkout">Complete payment</a>
+						</p>
+					)
+				}
 
 				<h2>Items</h2>
 				<table>

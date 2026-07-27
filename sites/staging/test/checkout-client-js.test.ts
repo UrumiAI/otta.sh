@@ -150,7 +150,12 @@ describe("10c — Stripe's redirect parameters are read, never rendered", () => 
 	test("the body interpolates no variable whose name suggests it holds one of those parameters", () => {
 		// The other half of the same rule: catch `{clientSecret}` / `{paymentIntent}`
 		// in the template even when the literal parameter name stays upstairs.
-		const interpolations = [...body.matchAll(/\{([^}]*)\}/g)].map((m) => m[1] ?? "");
+		// Comments inside an expression block are stripped first — the rule is
+		// about what the template RENDERS, and prose explaining why it doesn't is
+		// not a leak.
+		const stripComments = (expr: string): string =>
+			expr.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+		const interpolations = [...body.matchAll(/\{([^}]*)\}/g)].map((m) => stripComments(m[1] ?? ""));
 		const leaking = interpolations.filter((expr) =>
 			/client_?secret|payment_?intent|redirect_?status/i.test(expr),
 		);
