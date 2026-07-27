@@ -1,4 +1,5 @@
 import type {
+	StripeCreatePaymentIntentInput,
 	StripeCreatePaymentIntentResult,
 	StripeCreateRefundResult,
 	StripePreflightResult,
@@ -21,13 +22,7 @@ class RecordingTransport implements StripeTransport {
 		intentId: "pi_live_http",
 		clientSecret: "pi_live_http_secret_abc",
 	};
-	readonly intents: Array<{
-		orderId: string;
-		amountCents: number;
-		currency: string;
-		idempotencyKey: string;
-		secretKey: string;
-	}> = [];
+	readonly intents: StripeCreatePaymentIntentInput[] = [];
 
 	async readRefundedAmount(): Promise<StripePreflightResult> {
 		return { ok: true, view: { amountRefunded: 0, amountCaptured: 0, currency: "usd" } };
@@ -35,13 +30,9 @@ class RecordingTransport implements StripeTransport {
 	async createRefund(): Promise<StripeCreateRefundResult> {
 		return { ok: true, refundId: "re_x", amountCents: 0, currency: "usd" };
 	}
-	async createPaymentIntent(input: {
-		orderId: string;
-		amountCents: number;
-		currency: string;
-		idempotencyKey: string;
-		secretKey: string;
-	}): Promise<StripeCreatePaymentIntentResult> {
+	async createPaymentIntent(
+		input: StripeCreatePaymentIntentInput,
+	): Promise<StripeCreatePaymentIntentResult> {
 		this.intents.push(input);
 		return this.result;
 	}
@@ -59,7 +50,11 @@ describe.skipIf(PG === undefined)("checkout → live Stripe createIntent (HTTP)"
 
 	async function checkout(
 		s: TestServer,
-		opts: { priceCents?: number; idempotencyKey?: string } = {},
+		opts: {
+			priceCents?: number;
+			idempotencyKey?: string;
+			shippingAddress?: Record<string, string>;
+		} = {},
 	): Promise<Response> {
 		const suffix = Math.random().toString(36).slice(2, 8);
 		const sku = `SKU-${suffix}`;
@@ -91,7 +86,12 @@ describe.skipIf(PG === undefined)("checkout → live Stripe createIntent (HTTP)"
 				"Content-Type": "application/json",
 				"Idempotency-Key": opts.idempotencyKey ?? `co-${cartId}`,
 			},
-			body: JSON.stringify({ cartId, paymentMethod: "stripe", buyerRef: "buyer@example.com" }),
+			body: JSON.stringify({
+				cartId,
+				paymentMethod: "stripe",
+				buyerRef: "buyer@example.com",
+				...(opts.shippingAddress !== undefined ? { shippingAddress: opts.shippingAddress } : {}),
+			}),
 		});
 	}
 
@@ -121,7 +121,42 @@ describe.skipIf(PG === undefined)("checkout → live Stripe createIntent (HTTP)"
 			currency: "usd",
 			idempotencyKey: "idem-live-1",
 			secretKey: "sk_test_http",
+			// The India-export description, rendered from the ORDER's snapshotted
+			// title — a card payment against an India-based account is refused
+			// without it. No ship-to was submitted ⇒ no `shipping` key at all.
+			description: "1 × Widget",
 		});
+	});
+
+	test("a submitted ship-to reaches Stripe as `shipping` (India requires it alongside the description for goods)", async () => {
+		const transport = new RecordingTransport();
+		server = await startTestServer({ stripeSecretKey: "sk_test_http", stripeTransport: transport });
+		const res = await checkout(server, {
+			idempotencyKey: "idem-live-ship",
+			shippingAddress: {
+				name: "Jenny Rosen",
+				line1: "510 Townsend St",
+				city: "San Francisco",
+				region: "CA",
+				postalCode: "94103",
+				country: "US",
+				email: "jenny@example.com",
+				phone: "+1-415-555-0100",
+			},
+		});
+		expect(res.status).toBe(201);
+		expect(transport.intents[0]?.shipping).toEqual({
+			name: "Jenny Rosen",
+			line1: "510 Townsend St",
+			city: "San Francisco",
+			state: "CA",
+			postalCode: "94103",
+			country: "US",
+		});
+		// PII minimization: the buyer's contact channels never cross the boundary.
+		const serialized = JSON.stringify(transport.intents[0]);
+		expect(serialized).not.toContain("jenny@example.com");
+		expect(serialized).not.toContain("555-0100");
 	});
 
 	test("a retryable intent failure ⇒ 502 PAYMENT_INTENT_FAILED, and the order is still pending", async () => {
@@ -144,6 +179,13 @@ describe.skipIf(PG === undefined)("checkout → live Stripe createIntent (HTTP)"
 			}),
 		});
 		expect(retry.status, "the I1 replay short-circuits on the key, not the cart").toBe(201);
+		// The I1 REPLAY re-issues the intent through the OTHER call site. Its body
+		// must be byte-identical to the first attempt's — Stripe rejects a same-key
+		// retry whose payload drifted — which holds because both sites render the
+		// order's purchase-time line SNAPSHOT.
+		expect(transport.intents).toHaveLength(2);
+		expect(transport.intents[1]?.description).toBe(transport.intents[0]?.description);
+		expect(transport.intents[1]?.description).toBe("1 × Widget");
 		const order = (await json(retry))["order"] as Record<string, unknown>;
 		const fetched = await json(await fetch(`${server.baseUrl}/orders/${String(order["id"])}`));
 		expect((fetched["order"] as Record<string, unknown>)["state"]).toBe("pending");
