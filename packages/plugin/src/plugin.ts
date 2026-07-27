@@ -13,6 +13,16 @@ import {
 	STOREFRONT_CART_READ_ROUTE,
 } from "./storefront/cart-routes.js";
 // ── end Phase 3 group E: cart routes ───────────────────────────────────────
+// ── Phase 4: checkout routes (storefront-checkout plan §1.2, ADR-0012) ─────
+import {
+	createCheckoutPlaceRouteHandler,
+	createCheckoutSummaryRouteHandler,
+	createOrderRouteHandler,
+	STOREFRONT_CHECKOUT_PLACE_ROUTE,
+	STOREFRONT_CHECKOUT_SUMMARY_ROUTE,
+	STOREFRONT_ORDER_ROUTE,
+} from "./storefront/checkout-routes.js";
+// ── end Phase 4 checkout routes ────────────────────────────────────────────
 import {
 	createEntitlementDownloadHandler,
 	ENTITLEMENT_DOWNLOAD_ROUTE,
@@ -96,6 +106,22 @@ const plugin: SandboxedPlugin = {
 			public: true,
 		},
 		// ── end Phase 3 group E: cart ───────────────────────────────────────
+		// ── Phase 4: checkout (public — proxies over ctx.http only) ─────────
+		// The summary composes cart read + ONE commerce batch + quote; place is
+		// the single POST /checkout/orders; order is the unauthenticated
+		// capability read the confirmation page polls. No new capability and NO
+		// allowedHosts change: Stripe's JS runs in the BUYER'S BROWSER, never
+		// through ctx.http (ADR-0012 decision 3, pinned by sandbox-clean-guard).
+		[STOREFRONT_CHECKOUT_SUMMARY_ROUTE]: {
+			handler: createCheckoutSummaryRouteHandler() as never,
+			public: true,
+		},
+		[STOREFRONT_CHECKOUT_PLACE_ROUTE]: {
+			handler: createCheckoutPlaceRouteHandler() as never,
+			public: true,
+		},
+		[STOREFRONT_ORDER_ROUTE]: { handler: createOrderRouteHandler() as never, public: true },
+		// ── end Phase 4 checkout ────────────────────────────────────────────
 		// Phase 4 (§6): PUBLIC download route — authorizes a digital delivery via
 		// the service's entitlement check over ctx.http. There is deliberately NO
 		// Stripe webhook proxy route (review G1): EmDash's handleSandboxedRoute

@@ -192,6 +192,50 @@ export {
 	type CartPricingWire,
 } from "./storefront/cart-pricing.js";
 // ── end Phase 3 group E: cart ────────────────────────────────────────────────
+// ── Phase 4: checkout (storefront-checkout plan §1.2, ADR-0012) ──────────────
+export {
+	createCheckoutPlaceRouteHandler,
+	createCheckoutSummaryRouteHandler,
+	createOrderRouteHandler,
+	STOREFRONT_CHECKOUT_PLACE_ROUTE,
+	STOREFRONT_CHECKOUT_SUMMARY_ROUTE,
+	STOREFRONT_ORDER_ROUTE,
+	type CheckoutPlaceRouteInput,
+	type CheckoutPlaceRouteResult,
+	type CheckoutSummaryRouteInput,
+	type CheckoutSummaryRouteResult,
+	type OrderRouteInput,
+	type OrderRouteResult,
+} from "./storefront/checkout-routes.js";
+export {
+	buildCheckoutLines,
+	buildCheckoutTotals,
+	buildOrderView,
+	checkoutIdempotencyKey,
+	isAlreadyPlaced,
+	NOT_APPLICABLE_LABEL,
+	NOT_CALCULATED_LABEL,
+	stripeClientSecret,
+	type CheckoutAmountView,
+	type CheckoutLineView,
+	type CheckoutTotalsView,
+	type OrderLineView,
+	type PublicOrderView,
+} from "./storefront/checkout-view-model.js";
+export {
+	type CheckoutFailureReason,
+	type CheckoutResult,
+	type ClientActionWire,
+	type PaymentIntentWire,
+	type PublicOrderResult,
+	type PublicOrderWire,
+	type QuoteBreakdownWire,
+	type QuoteFailureReason,
+	type QuoteRequestWire,
+	type QuoteResult,
+	type ShippingAddressWire,
+} from "./product-commerce/commerce-client.js";
+// ── end Phase 4 checkout ─────────────────────────────────────────────────────
 export {
 	deriveDeleteIdempotencyKey,
 	derivePublishIdempotencyKey,

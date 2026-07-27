@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
+import { ALLOWED_HOSTS, URUMI_PLUGIN_CAPABILITIES } from "../src/manifest.js";
 
 const SRC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src");
 
@@ -74,5 +75,41 @@ describe("sandbox-clean guard: no direct network egress in plugin src (S4)", () 
 		expect(fnStart).toBeGreaterThan(-1);
 		expect(callSite).toBeGreaterThan(fnStart);
 		expect(callSite).toBeLessThan(fnEnd);
+	});
+});
+
+/**
+ * B5 (storefront-checkout plan §3 / ADR-0012 decision 3) — the checkout feature
+ * makes the buyer's browser talk to Stripe, and the tempting-but-wrong
+ * follow-through is "we talk to Stripe now, so add `js.stripe.com` to
+ * `allowedHosts`".
+ *
+ * `allowedHosts` gates `ctx.http.fetch` — SERVER-SIDE PLUGIN EGRESS ONLY. The
+ * `<script src="https://js.stripe.com/v3/">` on `/checkout/pay` and the
+ * `stripe.confirmPayment()` call it makes both run in the buyer's browser,
+ * which never passes through the plugin. Adding the host would be useless AND a
+ * real widening of the gate ADR-0006 exists to keep at exactly one host — so
+ * `js.stripe.com`'s ABSENCE is asserted here, deliberately, rather than left as
+ * an unstated assumption a future edit can quietly violate.
+ */
+describe("sandbox-clean guard: the checkout feature widens NOTHING (ADR-0012)", () => {
+	test("capabilities are still exactly content:read + network:request", () => {
+		expect([...URUMI_PLUGIN_CAPABILITIES]).toEqual(["content:read", "network:request"]);
+	});
+
+	test("ALLOWED_HOSTS still holds exactly ONE host (the commerce service)", () => {
+		expect(ALLOWED_HOSTS).toHaveLength(1);
+	});
+
+	test("js.stripe.com is NOT in allowedHosts — browser→Stripe is not plugin egress", () => {
+		expect(ALLOWED_HOSTS).not.toContain("js.stripe.com");
+		expect(ALLOWED_HOSTS.some((host) => host.includes("stripe"))).toBe(false);
+	});
+
+	test("no plugin source references js.stripe.com — Stripe.js is loaded by the THEME page, never the plugin", () => {
+		const offenders = listSourceFiles(SRC_DIR).filter((file) =>
+			readFileSync(file, "utf8").includes("js.stripe.com"),
+		);
+		expect(offenders).toEqual([]);
 	});
 });
