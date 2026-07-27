@@ -15,6 +15,51 @@ Urumi turns an EmDash site into a store. It ships as two parts:
    money and stock truth: catalog, inventory, cart, checkout, orders, customers,
    payments, tax, shipping, discounts, entitlements, reporting, and webhooks.
 
+## Quick start (local, ~2 minutes)
+
+A full store on your laptop — no Cloudflare account, no deploy. The site's D1 content
+database and R2 media bucket are emulated locally by the Astro Cloudflare adapter; only
+the commerce Postgres is real.
+
+```bash
+pnpm install
+
+# 1. Commerce database — any Postgres works; a throwaway container is fastest.
+#    (Host port 55432, not 5432, so it can't collide with a local Postgres.)
+docker run -d --name urumi-pg \
+  -e POSTGRES_USER=urumi -e POSTGRES_PASSWORD=urumi -e POSTGRES_DB=urumi \
+  -p 127.0.0.1:55432:5432 postgres:16
+
+# 2. Commerce service — migrates itself forward on boot, then listens on :3000.
+PG_CONNECTION_STRING=postgres://urumi:urumi@127.0.0.1:55432/urumi \
+  pnpm dlx tsx@4 packages/service/src/index.ts
+```
+
+```bash
+# 3. Storefront + admin, in a second terminal.
+COMMERCE_SERVICE_URL=http://127.0.0.1:3000 pnpm --filter @urumi/site-staging dev
+```
+
+Check the service with `curl http://127.0.0.1:3000/health` → `{"ok":true}`. Then open the
+dev-only setup bypass, which claims the site and applies the full seed including three
+sample products:
+
+```
+http://localhost:4321/_emdash/api/setup/dev-bypass?redirect=/_emdash/admin
+```
+
+`/products` now renders the catalog, and add-to-cart takes a real inventory hold against
+Postgres. Price and stock a product from the admin's **Product data** panel and watch the
+service log the sync.
+
+Two things to know: the service is run through `tsx` rather than its built `dist` bin
+because the `@urumi/*` packages aren't published yet and their workspace export maps point
+at TypeScript sources ([#44](https://github.com/UrumiAI/otta.sh/issues/44)); and this
+storefront covers **catalog + cart only** — see [Status](#status).
+
+To deploy this for free on Cloudflare Workers, follow
+[`DEPLOYMENT.md`](./DEPLOYMENT.md) §3.
+
 ## Why two parts
 
 **The biggest blocker right now is a missing primitive: EmDash's plugin sandbox has no
@@ -84,10 +129,16 @@ writes in one process, so it verifies the SQL is correct, not that it's race-saf
 
 ## Status
 
-Feature-complete commerce layer (Phases 0–7 merged): catalog, inventory, cart,
-checkout, orders, customers with magic-link auth, Stripe + x402 payments, tax,
-shipping, discounts, entitlements, reporting, and settings — with a staging storefront
-deployed to Cloudflare Workers.
+The commerce **service** is feature-complete (Phases 0–7 merged): catalog, inventory,
+cart, checkout, orders, customers with magic-link auth, Stripe + x402 payments, tax,
+shipping, discounts, entitlements, reporting, and settings.
+
+The reference **storefront** (`sites/staging`) deliberately covers **catalog + cart
+only**. The checkout / payment / download pages
+([#27](https://github.com/UrumiAI/otta.sh/issues/27)) and the customer account pages are
+not built yet — so today you get a browsable catalog and carts with real inventory
+holds, but completing a purchase end-to-end means building those pages or driving the
+service API directly.
 
 ## License
 
