@@ -1,0 +1,163 @@
+---
+/**
+ * GET /checkout/pay — the ONE page on this site that ships client JavaScript,
+ * and the one third-party origin we permit (ADR-0012).
+ *
+ * Card data goes browser → Stripe and never touches our origin, which is what
+ * keeps the deployment at PCI SAQ-A. That is not a nice-to-have: a self-hosted
+ * card form would put PAN data on our servers and move every merchant running
+ * this theme to SAQ-D.
+ *
+ * This page makes NO commerce call. Everything it needs — the order id and the
+ * client secret — is in the first-party `urumi_checkout` cookie the place
+ * endpoint set one redirect ago. Re-deriving the secret would mean a GET that
+ * can create an order.
+ *
+ * The script reads its inputs from `data-` attributes rather than having them
+ * baked into JS source (no `define:vars`), so Astro's attribute escaping is the
+ * boundary and there is no string-assembly step to get wrong.
+ */
+import Base from "../../layouts/Base.astro";
+import { readCheckoutStash } from "../../lib/checkout-cookie.js";
+import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
+
+const stash = readCheckoutStash(Astro.cookies);
+// No stash (direct hit, expired cookie, cleared browser): there is nothing to
+// pay for here. Back to the review step, which will itself bounce to /cart if
+// the cart is gone.
+if (stash === null) return Astro.redirect("/checkout", 303);
+
+const orderUrl = new URL(`/orders/${encodeURIComponent(stash.orderId)}`, Astro.url).toString();
+const orderPath = `/orders/${encodeURIComponent(stash.orderId)}`;
+---
+
+<Base title="Payment">
+	<h1>Payment</h1>
+
+	{
+		STRIPE_PUBLISHABLE_KEY === undefined ? (
+			<p class="notice">
+				Card payment isn't set up on this store yet, so this order can't be paid. No charge has
+				been made. <a href={orderPath}>View your order</a>.
+			</p>
+		) : (
+			<>
+				<p class="muted">
+					Your card details are handled directly by our payment provider and never reach this
+					site.
+				</p>
+
+				<form id="payment-form">
+					<div
+						id="payment-element"
+						data-client-secret={stash.clientSecret}
+						data-publishable-key={STRIPE_PUBLISHABLE_KEY}
+						data-return-url={orderUrl}
+					/>
+					<p id="payment-error" class="notice" role="alert" hidden />
+					<button id="payment-submit" type="submit">
+						Pay now
+					</button>
+				</form>
+
+				<noscript>
+					<p class="notice">
+						Entering card details requires JavaScript, because your card number is handled
+						directly by our payment provider and never touches this site. Your order is reserved
+						for 15 minutes — enable JavaScript and reload, or{" "}
+						<a href={orderPath}>view your order</a>.
+					</p>
+				</noscript>
+
+				<script is:inline src="https://js.stripe.com/v3/"></script>
+				<script is:inline>
+					(function () {
+						var mount = document.getElementById("payment-element");
+						var form = document.getElementById("payment-form");
+						var errorBox = document.getElementById("payment-error");
+						var submit = document.getElementById("payment-submit");
+						if (!mount || !form || !errorBox || !submit) return;
+
+						function fail(message) {
+							errorBox.textContent = message;
+							errorBox.hidden = false;
+							submit.disabled = true;
+						}
+
+						if (typeof Stripe !== "function") {
+							fail(
+								"We couldn't load our payment provider. No charge has been made — please check your connection and reload.",
+							);
+							return;
+						}
+
+						var stripe = Stripe(mount.dataset.publishableKey);
+						var elements;
+						try {
+							// A service running WITHOUT a Stripe secret key mints an
+							// offline, unpayable client secret; Stripe.js rejects it
+							// here, synchronously. Say so plainly rather than leaving a
+							// blank frame or surfacing a raw provider string.
+							elements = stripe.elements({ clientSecret: mount.dataset.clientSecret });
+							elements.create("payment").mount("#payment-element");
+						} catch (err) {
+							fail(
+								"This store's payment provider is running in offline test mode; this order cannot be paid. No charge has been made.",
+							);
+							return;
+						}
+
+						form.addEventListener("submit", function (event) {
+							event.preventDefault();
+							errorBox.hidden = true;
+							submit.disabled = true;
+							stripe
+								.confirmPayment({
+									elements: elements,
+									confirmParams: { return_url: mount.dataset.returnUrl },
+								})
+								.then(function (result) {
+									// Only IMMEDIATE errors land here; a success redirects
+									// away to the return_url. Nothing on this page ever
+									// decides that an order is paid — the webhook does.
+									if (result && result.error) {
+										fail(
+											result.error.message ||
+												"That payment could not be completed. No charge has been made.",
+										);
+										submit.disabled = false;
+									}
+								})
+								.catch(function () {
+									fail("That payment could not be completed. No charge has been made.");
+									submit.disabled = false;
+								});
+						});
+					})();
+				</script>
+			</>
+		)
+	}
+
+	<p><a href={orderPath}>View your order</a></p>
+</Base>
+
+<style>
+	.muted {
+		color: #666;
+		font-size: 0.875rem;
+	}
+	.notice {
+		background: #fff7e0;
+		border: 1px solid #e6c200;
+		border-radius: 0.5rem;
+		padding: 0.75rem 1rem;
+	}
+	#payment-element {
+		margin: 1rem 0;
+		max-width: 32rem;
+	}
+	button {
+		padding: 0.5rem 1.25rem;
+	}
+</style>

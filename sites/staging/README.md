@@ -37,6 +37,31 @@ plugin bundle and the plugin descriptor's `allowedHosts` (the `ctx.http` egress 
 **Changing the service URL means rebuild + redeploy** — there is no runtime override. The
 full contract lives in [`DEPLOYMENT.md`](../../DEPLOYMENT.md) §1.
 
+## The STRIPE_PUBLIC_KEY build-time contract
+
+The checkout's Payment Element needs a Stripe **publishable** key, and it is baked the same
+way (`astro.config.ts` → a Vite `define`): shell env → `sites/staging/.env` → absent.
+**Changing it means rebuild + redeploy.** The variable is **`STRIPE_PUBLIC_KEY`** — the name
+matters, see below. It is not put in wrangler `vars` because the guard test forbids any
+`vars` key matching `/SECRET|KEY|TOKEN|PASSWORD/i`, and that guard is worth keeping.
+
+Three behaviours, deliberately distinct:
+
+| `STRIPE_PUBLIC_KEY` | What happens |
+|---|---|
+| a valid `pk_test_…` / `pk_live_…` | full checkout: review → pay → confirmation |
+| **unset** | `/checkout` renders review + totals, says "Card payment isn't set up on this store yet.", and creates **no order** (the endpoint refuses too, not just the button) |
+| set but malformed | **the build FAILS** |
+
+That last row is the point. An absent key and a *misspelt variable name* look identical at
+runtime — both degrade quietly while a valid key may sit unread — so a present-but-malformed
+value throws instead of degrading, and `test/checkout-config.test.ts` pins the variable's
+exact spelling as test data. See [ADR-0012](../../adr/0012-storefront-checkout-loads-stripe-elements-in-the-browser.md).
+
+**A build without the key tree-shakes the payment step away entirely** (the branch is
+constant-folded). That is correct, but it means any QA of the payment step must build *with*
+the key.
+
 ## Deploying
 
 The deploy runbook for this site lives in the root [`DEPLOYMENT.md`](../../DEPLOYMENT.md):
@@ -47,13 +72,16 @@ why `SERVICE_API_TOKEN` must stay unset for now — is §4.
 
 ## Notes
 
-- **Phase 4 storefront surface is a follow-up task:** the service now has
-  checkout/payments/orders/entitlements and the plugin gained a public
-  `entitlements/download` authorization route, but this site deliberately stays
-  catalog + cart. The checkout page, the x402 payment gate (designed to live at THIS
-  Astro page layer), and the digital-download delivery page (the plugin route
-  authorizes; the site serves the bytes / signed URL) are not built yet — a separate
-  site task. Note for that task: `entitlements/download` is a public existence oracle
+- **The checkout is built** (ADR-0012): `/checkout` (review + honest totals + contact and
+  ship-to), `POST /checkout/place`, `/checkout/pay` (the Payment Element — **the only
+  client JavaScript on this site**, and `js.stripe.com` the only third-party origin), and
+  `/orders/<orderId>` (the capability-URL confirmation page, which polls with a bounded
+  `<meta http-equiv="refresh">` and never claims "paid" on the strength of Stripe's
+  redirect — the webhook is the sole authority). `POST /checkout/new-cart` is the way out
+  of the dead-cart trap. `allowedHosts` is unchanged: browser→Stripe is not plugin egress.
+- **Still a follow-up:** the x402 payment gate (designed to live at THIS Astro page layer)
+  and the digital-download delivery page (the plugin route authorizes; the site serves the
+  bytes / signed URL). Note for that task: `entitlements/download` is a public existence oracle
   (it confirms whether an orderId/buyerRef/sku combination is entitled) — the delivery
   page must rate-limit and/or tokenize access to it rather than exposing raw probing.
 - **Phase 5 customer-account pages are also a follow-up** (same scope note — no theme

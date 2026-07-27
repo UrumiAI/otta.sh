@@ -33,6 +33,30 @@ const MESSAGES: Record<string, string> = {
 	// Item 3 — bogus SKU/productId rejection tokens (cart-actions.ts).
 	PRODUCT_NOT_FOUND: "That product couldn't be found — please refresh the page and try again.",
 	PRODUCT_UNAVAILABLE: "That product couldn't be found — please refresh the page and try again.",
+	// ── Checkout (storefront-checkout plan §1.7) ────────────────────────────
+	CART_EMPTY: "Your cart is empty — add something before checking out.",
+	// The 15-minute hold lapsed, or stock moved between the quote and the order.
+	// Not the buyer's fault, and not a dead end: the cart is still there.
+	RESERVATION_LOST:
+		"Your hold on one or more items expired before payment completed — please review your cart and try again.",
+	// Quoted from §1.7 rather than paraphrased, and shared by both reasons: from
+	// the buyer's side an unpriced product and a currency mismatch are the same
+	// fact — this cannot be bought right now.
+	PRODUCT_NOT_PRICED: "One of the items in your cart is no longer available for purchase.",
+	CURRENCY_MISMATCH: "One of the items in your cart is no longer available for purchase.",
+	// The UPSTREAM gateway failed (Stripe down/rejecting, or an unsupported
+	// currency — indistinguishable at the page, and the copy is true either
+	// way). "No charge was made" is the one fact the buyer needs. Deliberately
+	// does NOT tell them to start a new cart: the pending order is kept on
+	// purpose and expire-orders sweeps it at TTL.
+	PAYMENT_INTENT_FAILED:
+		"We couldn't start a payment for this order. No charge was made — please try again in a moment.",
+	INVALID_SHIPPING_ADDRESS:
+		"Please check the delivery address — some fields are missing or too long.",
+	INVALID_EMAIL: "That doesn't look like a valid email address — please check it and try again.",
+	ORDER_NOT_FOUND: "That order could not be found — please check the link you followed.",
+	// The store has not connected Stripe. Honest about WHOSE problem it is.
+	STRIPE_NOT_CONFIGURED: "Card payment isn't set up on this store yet.",
 };
 
 /** Never returns the raw token, `undefined`, or an empty string — an
