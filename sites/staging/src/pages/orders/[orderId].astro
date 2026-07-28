@@ -8,7 +8,9 @@
  * `paid` only through `settleOrder`'s guarded `pending → paid` flip, driven by
  * the `payment_intent.succeeded` webhook after an amount+currency equality
  * check. So this page re-reads the order from the service and renders THE
- * ORDER'S OWN STATE, always (ADR-0012 decision 5).
+ * ORDER'S OWN STATE, always (ADR-0012 decision 5). That is also why the state
+ * stamp is the FIRST thing on the page (docs/theme/TEMPERED.md §8): the state
+ * is the most important thing on it.
  *
  * The redirect parameters are read for exactly ONE purpose — choosing between
  * two `pending` copy variants — and are otherwise inert: never echoed into the
@@ -17,19 +19,26 @@
  * their names may appear in this frontmatter and NOWHERE in the template below.
  *
  * ── What the page does about the secret in its own URL ───────────────────
- * Stripe also appends `payment_intent_client_secret`, so it is already in
- * history and access logs by the time this renders (ADR-0012 decision 6 —
- * accepted, and not ours to change). The mitigations that ARE ours: the
- * `no-referrer` policy below, so it does not leak onward through subresource
- * Referers; and deleting the `urumi_checkout` stash on arrival, so a spent
- * secret does not linger in the browser for the rest of the hold. That deletion
- * is the entire justification for the cookie's `path=/`.
+ * Stripe also appends the intent's client secret, so it is already in history
+ * and access logs by the time this renders (ADR-0012 decision 6 — accepted, and
+ * not ours to change). The mitigations that ARE ours: the `no-referrer` policy
+ * below, so it does not leak onward through subresource Referers; and deleting
+ * the `urumi_checkout` stash on arrival, so a spent secret does not linger in
+ * the browser for the rest of the hold. That deletion is the entire
+ * justification for the cookie's `path=/`.
  *
  * Polling is `<meta http-equiv="refresh">`, bounded to 8 hops (~30 s), then a
- * manual link. No JS, no busy loop.
+ * manual link. No JS, no busy loop — the sweeping ribbon beside the count is
+ * CSS on a page that reloads itself.
  */
 import { STOREFRONT_ORDER_ROUTE, type OrderRouteResult } from "@urumi/plugin";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
+import HoldRibbon from "../../components/HoldRibbon.astro";
+import Ledger from "../../components/Ledger.astro";
+import Notice from "../../components/Notice.astro";
+import StateStamp from "../../components/StateStamp.astro";
+import StepTrack from "../../components/StepTrack.astro";
+import Sum from "../../components/Sum.astro";
 import Base from "../../layouts/Base.astro";
 import { clearCheckoutCookie } from "../../lib/checkout-cookie.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
@@ -68,23 +77,89 @@ const pollAttempt = Number.isFinite(poll) && poll > 0 ? poll : 0;
 const shouldPoll = isPending && pollAttempt < MAX_POLLS;
 const nextPollUrl = `/orders/${encodeURIComponent(orderId ?? "")}?p=${pollAttempt + 1}`;
 
-/** The order's own state → what we are willing to say. Copy lives here so the
- *  template stays a mapping and the honesty rules are readable in one place. */
-const COPY: Record<string, string> = {
-	paid: "Order confirmed. Thank you — we've received your payment.",
-	failed: "The payment did not go through. No charge was made.",
-	expired: "This order expired before payment completed, and the items were released.",
-	cancelled: "This order was cancelled.",
-	refunded: "This order has been refunded.",
+interface StateCopy {
+	/** The stamp's headline — the largest type on the page. */
+	headline: string;
+	/** What it means and what happens next. */
+	body: string | null;
+}
+
+/**
+ * The order's own state → what we are willing to say. Copy lives here so the
+ * template stays a mapping and the honesty rules are readable in one place.
+ *
+ * These are the page's OWN sentences, split at the boundary that was already in
+ * them — §10 says quote the copy that exists rather than rewriting it, and the
+ * stamp simply wants the first sentence larger than the second. The expired
+ * body is the one line taken from the mockup: it says the same thing the old
+ * sentence did and adds the fact a buyer looking at a lapsed order needs most.
+ */
+const COPY: Record<string, StateCopy> = {
+	paid: { headline: "Order confirmed.", body: "Thank you — we've received your payment." },
+	failed: { headline: "The payment did not go through.", body: "No charge was made." },
+	expired: {
+		headline: "This order expired.",
+		body: "Payment didn't complete in time, so the items went back on sale. Nothing was charged.",
+	},
+	cancelled: { headline: "This order was cancelled.", body: null },
+	refunded: { headline: "This order has been refunded.", body: null },
 };
-const pendingCopy = returnedFromStripe
-	? "Payment submitted. We're confirming it with our payment provider — this usually takes a few seconds. This page refreshes automatically."
-	: "This order is awaiting payment.";
-const statusLine = state === null ? null : isPending ? pendingCopy : (COPY[state] ?? `Order status: ${state}.`);
+
+const pendingCopy: StateCopy = returnedFromStripe
+	? {
+			headline: "Payment submitted.",
+			body: "We're confirming it with our payment provider — this usually takes a few seconds. This page refreshes automatically.",
+		}
+	: { headline: "This order is awaiting payment.", body: null };
+
+const stamp: StateCopy | null =
+	state === null
+		? null
+		: isPending
+			? pendingCopy
+			: (COPY[state] ?? { headline: `Order status: ${state}.`, body: null });
+
+/** "Total" while it is still a quote; "Paid" once the order settled (§7). A map
+ *  rather than a comparison so no other state can ever pick up the word. */
+const TOTAL_LABEL: Record<string, string> = { paid: "Paid" };
 
 /** A cart that is `checked_out` never returns to `active`, so an expired order
  *  leaves the buyer holding a cart that can produce no new one. Offer the door. */
 const deadEnd = state === "expired" || state === "cancelled";
+
+/* The way back to payment goes through /checkout, NOT straight to
+   /checkout/pay: the stash was just deleted above, so the pay page has no
+   client secret to mount. Re-submitting the review form replays
+   `checkout:<cartId>` — the same order, and through Stripe's own idempotency
+   the same PaymentIntent and the same client secret — which re-stashes it. The
+   stable key is what makes resuming possible at all. */
+const canResume = state === "pending" && !returnedFromStripe;
+const canCheckAgain = isPending && !shouldPoll;
+const hasActions = deadEnd || canResume || canCheckAgain || state === "failed";
+
+const ledgerRows =
+	order?.lines.map((line) => ({
+		sku: line.sku,
+		qty: line.qty,
+		money: line.lineTotal.formatted,
+	})) ?? [];
+
+const sumRows =
+	order === null
+		? []
+		: [
+				{ label: "Subtotal", amount: order.totals.subtotal },
+				{
+					label:
+						order.totals.appliedCouponCode !== null
+							? `Discount · ${order.totals.appliedCouponCode}`
+							: "Discount",
+					amount: order.totals.discount,
+					fallback: "No coupon applied",
+				},
+				{ label: "Shipping", amount: order.totals.shipping },
+				{ label: "Tax", amount: order.totals.tax },
+			];
 ---
 
 {/* The order names its own currency; a failed read names none (§7). */}
@@ -95,139 +170,225 @@ const deadEnd = state === "expired" || state === "cancelled";
 	<meta name="referrer" content="no-referrer" slot="head" />
 	{shouldPoll && <meta http-equiv="refresh" content={`4;url=${nextPollUrl}`} slot="head" />}
 
-	<h1>Order</h1>
+	{/* Wrapped rather than given a class: a page's scoped selector cannot reach a
+	    component's root (src/lib/rest-props.ts), so the spacing around one lives
+	    on an element the page owns. */}
+	<div class="steps"><StepTrack current="order" /></div>
 
 	{
-		order === null ? (
+		order === null || stamp === null ? (
 			<>
-				<p class="notice">
-					{result !== null && !result.ok && "reason" in result
-						? cartErrorMessage(result.reason)
-						: cartErrorMessage("SERVICE_UNAVAILABLE")}
-				</p>
-				<p>
+				<h1 class="title">Order</h1>
+				<div class="alert">
+					<Notice>
+						{result !== null && !result.ok && "reason" in result
+							? cartErrorMessage(result.reason)
+							: cartErrorMessage("SERVICE_UNAVAILABLE")}
+					</Notice>
+				</div>
+				<p class="back">
 					<a href="/products">Browse products</a>
 				</p>
 			</>
 		) : (
 			<>
-				<p class="status">{statusLine}</p>
-				<p class="muted">
-					Order reference <code>{order.id}</code> — keep this link to check its status.
-				</p>
+				<StateStamp
+					state={order.state}
+					headline={stamp.headline}
+					body={stamp.body}
+					reference={order.id}
+				>
+					{/* The hold ribbon again, running indeterminate: there is no
+					    duration to drain against, so the count carries the
+					    information and the sweep says only "still working". */}
+					{shouldPoll && (
+						<div class="poll">
+							<HoldRibbon variant="indeterminate" poll={pollAttempt + 1} pollMax={MAX_POLLS} />
+						</div>
+					)}
+				</StateStamp>
 
-				{isPending && !shouldPoll && (
-					<p>
-						<a href={nextPollUrl}>Check again</a>
-					</p>
+				<p class="keep">Keep this link to check its status.</p>
+
+				{hasActions && (
+					<div class="actions">
+						{canCheckAgain && (
+							<a class="btn btn-ghost" href={nextPollUrl}>
+								Check again
+							</a>
+						)}
+						{canResume && (
+							<a class="btn btn-ghost" href="/checkout">
+								Complete payment
+							</a>
+						)}
+						{state === "failed" && (
+							<a class="btn btn-ghost" href="/checkout">
+								Back to checkout
+							</a>
+						)}
+						{deadEnd && (
+							<form method="POST" action="/checkout/new-cart">
+								<button type="submit" class="btn btn-ghost">
+									Start a new cart
+								</button>
+							</form>
+						)}
+					</div>
 				)}
 
-				{
-					/* The way back to payment goes through /checkout, NOT straight to
-					   /checkout/pay: the stash was just deleted above, so the pay page
-					   has no client secret to mount. Re-submitting the review form
-					   replays `checkout:<cartId>` — the same order, and through
-					   Stripe's own idempotency the same PaymentIntent and the same
-					   client secret — which re-stashes it. The stable key is what
-					   makes resuming possible at all. */
-					order.state === "pending" && !returnedFromStripe && (
-						<p>
-							<a href="/checkout">Complete payment</a>
-						</p>
-					)
-				}
+				<div class="cols">
+					<section class="panel">
+						<div class="panel-head">
+							<span class="u-label head-label">Items</span>
+						</div>
+						<Ledger rows={ledgerRows} />
+						{order.fulfillment !== null && (
+							<p class="ship">
+								Shipped with {order.fulfillment.carrier} — tracking{" "}
+								<span class="u-mono">{order.fulfillment.trackingNumber}</span>
+							</p>
+						)}
+					</section>
 
-				<h2>Items</h2>
-				<table>
-					<thead>
-						<tr>
-							<th>Item</th>
-							<th>SKU</th>
-							<th>Qty</th>
-							<th>Unit price</th>
-							<th>Line total</th>
-						</tr>
-					</thead>
-					<tbody>
-						{order.lines.map((line) => (
-							<tr>
-								<td>{line.title}</td>
-								<td>{line.sku}</td>
-								<td>{line.qty}</td>
-								<td>{line.unitPrice.formatted}</td>
-								<td>{line.lineTotal.formatted}</td>
-							</tr>
-						))}
-					</tbody>
-				</table>
-
-				<h2>Totals</h2>
-				<dl class="totals">
-					<dt>Subtotal</dt>
-					<dd>{order.totals.subtotal.label}</dd>
-					<dt>Discount</dt>
-					<dd>{order.totals.discount.label}</dd>
-					<dt>Shipping</dt>
-					<dd>{order.totals.shipping.label}</dd>
-					<dt>Tax</dt>
-					<dd>{order.totals.tax.label}</dd>
-					<dt>Total</dt>
-					<dd>
-						<strong>{order.totals.total.label}</strong>
-					</dd>
-				</dl>
-
-				{order.fulfillment !== null && (
-					<p>
-						Shipped with {order.fulfillment.carrier} — tracking{" "}
-						<code>{order.fulfillment.trackingNumber}</code>
-					</p>
-				)}
-
-				{deadEnd && (
-					<form method="POST" action="/checkout/new-cart">
-						<button type="submit">Start a new cart</button>
-					</form>
-				)}
+					<section class="panel">
+						<div class="panel-head">
+							<span class="u-label head-label">Totals</span>
+						</div>
+						<Sum
+							rows={sumRows}
+							total={order.totals.total}
+							totalLabel={TOTAL_LABEL[order.state] ?? "Total"}
+							excludesUncalculated={order.totals.totalExcludesUncalculated}
+						/>
+					</section>
+				</div>
 			</>
 		)
 	}
 </Base>
 
 <style>
-	table {
-		border-collapse: collapse;
-		width: 100%;
+	.steps {
+		margin-bottom: 2rem;
 	}
-	th,
-	td {
-		text-align: left;
-		padding: 0.5rem;
+
+	.title {
+		font-family: var(--u-display);
+		font-variation-settings: "wdth" 78, "opsz" 48;
+		font-weight: 700;
+		font-size: clamp(1.75rem, 4vw, 2.25rem);
+		letter-spacing: -0.025em;
+		line-height: 1;
+		margin: 0 0 1.5rem;
+	}
+
+	.alert {
+		margin-bottom: 1.5rem;
+	}
+
+	/* The stamp is a flex column with `align-items: flex-start`, so a wrapper
+	   shrinks to its content — which would leave the sweeping track only as wide
+	   as "CHECKING 1 OF 8". §6 gives the ribbon a 22rem measure; this is what
+	   lets it have one. */
+	.poll {
+		width: 100%;
+		max-width: 22rem;
+		margin-top: 0.375rem;
+	}
+
+	.keep {
+		margin: 0.75rem 0 0;
+		font-size: 0.75rem;
+		color: var(--u-mute);
+	}
+
+	.actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.75rem;
+		margin-top: 1.5rem;
+	}
+	.actions form {
+		margin: 0;
+	}
+
+	/* §8: items and totals, side by side under the stamp. */
+	.cols {
+		display: grid;
+		grid-template-columns: 1.15fr 1fr;
+		gap: 3rem;
+		align-items: start;
+		margin-top: 2.5rem;
+	}
+
+	.panel {
+		display: flex;
+		flex-direction: column;
+		gap: 1.25rem;
+		min-width: 0;
+	}
+
+	.panel-head {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+		padding-bottom: 0.75rem;
 		border-bottom: var(--u-hair);
 	}
-	.status {
-		font-size: 1.125rem;
+	.head-label {
+		color: var(--u-ink);
 	}
-	.totals {
-		display: grid;
-		grid-template-columns: max-content 1fr;
-		gap: 0.25rem 1.5rem;
+
+	.ship {
 		margin: 0;
-	}
-	.totals dt {
-		font-weight: 600;
-	}
-	.totals dd {
-		margin: 0;
-	}
-	.muted {
+		font-size: 0.8125rem;
 		color: var(--u-mute);
-		font-size: 0.875rem;
 	}
-	.notice {
-		background: #fff7e0;
-		border: 1px solid #e6c200;
-		border-radius: 0.5rem;
-		padding: 0.75rem 1rem;
+	.ship .u-mono {
+		font-size: 0.75rem;
+		color: var(--u-ink);
+		overflow-wrap: anywhere;
+	}
+
+	/* Ghost only: nothing on this page is the primary action — the order is
+	   already placed, and these are ways out rather than ways on (§2). */
+	.btn {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.625rem;
+		background: transparent;
+		color: var(--u-ink);
+		border: var(--u-hair);
+		border-radius: var(--u-r);
+		padding: 0.75rem 1.25rem;
+		font-family: var(--u-body);
+		font-size: 0.875rem;
+		font-weight: 600;
+		text-decoration: none;
+		cursor: pointer;
+		box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0);
+		transition: box-shadow 120ms ease;
+	}
+	.btn:hover {
+		box-shadow: inset 0 -3px 0 var(--u-straw);
+	}
+
+	.back {
+		margin: 2rem 0 0;
+		font-size: 0.8125rem;
+	}
+	.back a {
+		color: var(--u-mute);
+	}
+	.back a:hover {
+		color: var(--u-ink);
+	}
+
+	@media (max-width: 54rem) {
+		.cols {
+			grid-template-columns: 1fr;
+			gap: 2.5rem;
+		}
 	}
 </style>

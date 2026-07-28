@@ -12,7 +12,12 @@
  *    non-renderable state 303s to /cart instead (checkoutEntryRedirect).
  *  - render the pipeline's synthetic zeros as "Free shipping" / "Tax: $0.00".
  *    Nothing is configured, so nothing was calculated, and the totals block
- *    says exactly that.
+ *    says exactly that. The rule is `Sum`'s, not this page's: the page hands
+ *    over the view model's `CheckoutAmountView`s untouched and never inspects a
+ *    label (docs/theme/TEMPERED.md §7).
+ *
+ * Shape (§8): step track, then two panels — the details form left (~1.15fr),
+ * the order ledger + totals right.
  */
 import {
 	CART_COOKIE_NAME,
@@ -20,6 +25,10 @@ import {
 	type CheckoutSummaryRouteResult,
 } from "@urumi/plugin";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
+import Ledger from "../../components/Ledger.astro";
+import Notice from "../../components/Notice.astro";
+import StepTrack from "../../components/StepTrack.astro";
+import Sum from "../../components/Sum.astro";
 import Base from "../../layouts/Base.astro";
 import { checkoutEntryRedirect } from "../../lib/checkout-redirect.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
@@ -57,207 +66,346 @@ const paymentConfigured = STRIPE_PUBLISHABLE_KEY !== undefined;
 
 /** The dead-cart trap's exit, offered only where it applies. */
 const checkedOut = error === "CART_CHECKED_OUT";
+
+/** SKU / qty / money — the same tape the home page opens with, itemised. The
+ *  money cell is `lineTotal.formatted` or the honest prose; never assembled. */
+const ledgerRows = lines.map((line) => ({
+	sku: line.sku,
+	qty: line.qty,
+	money: line.lineTotal?.formatted ?? "priced at checkout",
+}));
+
+/** The coupon code rides on the row's own label rather than a second line: it
+ *  IS the name of that discount, and the totals block has one slot per row. */
+const discountLabel =
+	totals.appliedCouponCode !== null ? `Discount · ${totals.appliedCouponCode}` : "Discount";
+
+/**
+ * Straight off the view model (§7). The only thing this page adds is the
+ * `fallback` for the discount row — the page knows WHY it is empty ("no coupon
+ * applied"), which is the one thing `Sum` cannot work out for itself.
+ */
+const sumRows = [
+	{ label: "Subtotal", amount: totals.subtotal },
+	{ label: discountLabel, amount: totals.discount, fallback: "No coupon applied" },
+	{ label: "Shipping", amount: totals.shipping },
+	{ label: "Tax", amount: totals.tax },
+];
 ---
 
 {/* The footer's currency comes from the totals this page already holds —
     the layout never invents one (§7). */}
 <Base title="Checkout" currency={totals.total.money?.currency ?? null}>
-	<h1>Checkout</h1>
+	{/* The components are wrapped rather than handed a class: a page's scoped
+	    selector deliberately cannot reach a component's root (see
+	    src/lib/rest-props.ts), so spacing AROUND one belongs to an element the
+	    page owns. */}
+	<div class="steps"><StepTrack current="details" /></div>
+	<h1 class="title">Checkout</h1>
 
-	{error !== null && <p class="notice">{cartErrorMessage(error)}</p>}
+	{error !== null && <div class="alert"><Notice>{cartErrorMessage(error)}</Notice></div>}
 
 	{
 		checkedOut && (
-			<form method="POST" action="/checkout/new-cart">
-				<button type="submit">Start a new cart</button>
+			<form method="POST" action="/checkout/new-cart" class="restart">
+				<button type="submit" class="btn btn-ghost">
+					Start a new cart
+				</button>
 			</form>
 		)
 	}
 
-	{
-		summary.hasUnpricedLines && (
-			<p class="notice">
-				Live prices for some items are temporarily unavailable — the totals below come from the
-				store and are what you will be charged.
-			</p>
-		)
-	}
+	<div class="cols">
+		<section class="panel">
+			<div class="panel-head">
+				<span class="u-label head-label">Your details</span>
+			</div>
 
-	<h2>Your order</h2>
-	<table>
-		<thead>
-			<tr>
-				<th>SKU</th>
-				<th>Qty</th>
-				<th>Unit price</th>
-				<th>Line total</th>
-			</tr>
-		</thead>
-		<tbody>
-			{
-				lines.map((line) => (
-					<tr>
-						<td>{line.sku}</td>
-						<td>{line.qty}</td>
-						<td>{line.unitPrice?.formatted ?? "priced at checkout"}</td>
-						<td>{line.lineTotal?.formatted ?? "priced at checkout"}</td>
-					</tr>
-				))
-			}
-		</tbody>
-	</table>
+			<form method="POST" action="/checkout/place" class="details">
+				{/* STABLE per cart (checkout:<cartId>), so a reload or a double-submit
+				    replays into the SAME order and the same PaymentIntent instead of
+				    minting a second order the CART_CHECKED_OUT fence would reject. */}
+				<input type="hidden" name="idempotencyKey" value={summary.idempotencyKey} />
 
-	<h2>Totals</h2>
-	<dl class="totals">
-		<dt>Subtotal</dt>
-		<dd>{totals.subtotal.label}</dd>
-		<dt>Discount</dt>
-		<dd>
-			{totals.discount.label}
-			{totals.appliedCouponCode === null && totals.discount.money === null && (
-				<span class="muted"> (no coupon applied)</span>
-			)}
-			{totals.appliedCouponCode !== null && <span class="muted"> ({totals.appliedCouponCode})</span>}
-		</dd>
-		<dt>Shipping</dt>
-		<dd>
-			{totals.shipping.label}
+				<label class="field">
+					<span class="u-label">
+						Email <span class="req">required</span>
+					</span>
+					<input type="email" name="email" required autocomplete="email" />
+					<span class="note">
+						We use this to send your order confirmation and to link the order to your account if
+						you sign in later.
+					</span>
+				</label>
+
+				<fieldset class="group">
+					<legend class="u-label head-label">Delivery address</legend>
+					<p class="note group-note">
+						Optional — fill it in completely, or leave it entirely blank.
+					</p>
+					<div class="fields">
+						<label class="field span2">
+							<span class="u-label">Full name</span>
+							<input type="text" name="name" autocomplete="name" />
+						</label>
+						<label class="field span2">
+							<span class="u-label">Address line 1</span>
+							<input type="text" name="line1" autocomplete="address-line1" />
+						</label>
+						<label class="field span2">
+							<span class="u-label">Address line 2</span>
+							<input type="text" name="line2" autocomplete="address-line2" />
+						</label>
+						<label class="field">
+							<span class="u-label">City</span>
+							<input type="text" name="city" autocomplete="address-level2" />
+						</label>
+						<label class="field">
+							<span class="u-label">Region / state</span>
+							<input type="text" name="region" autocomplete="address-level1" />
+						</label>
+						<label class="field">
+							<span class="u-label">Postal code</span>
+							<input type="text" name="postalCode" autocomplete="postal-code" />
+						</label>
+						<label class="field">
+							<span class="u-label">Country</span>
+							<input type="text" name="country" autocomplete="country-name" />
+						</label>
+						<label class="field span2">
+							<span class="u-label">Phone</span>
+							<input type="tel" name="phone" autocomplete="tel" />
+						</label>
+					</div>
+				</fieldset>
+
+				{
+					paymentConfigured ? (
+						<div>
+							<button type="submit" class="btn">
+								Continue to payment
+							</button>
+						</div>
+					) : (
+						<Notice lead="Card payment isn't set up on this store yet.">
+							This order can't be placed. Nothing has been charged and your cart is unchanged.
+						</Notice>
+					)
+				}
+			</form>
+		</section>
+
+		<section class="panel">
+			<div class="panel-head">
+				<span class="u-label head-label">Your order</span>
+			</div>
+
 			{
-				totals.shipping.money === null && (
-					<span class="muted"> — no delivery options are configured for this store</span>
+				summary.hasUnpricedLines && (
+					<Notice>
+						Live prices for some items are temporarily unavailable — the totals below come from
+						the store and are what you will be charged.
+					</Notice>
 				)
 			}
-		</dd>
-		<dt>Tax</dt>
-		<dd>{totals.tax.label}</dd>
-		<dt>Total</dt>
-		<dd><strong>{totals.total.label}</strong></dd>
-	</dl>
 
-	{
-		totals.totalExcludesUncalculated && (
-			<p class="muted">
-				This total does not include shipping or tax. This store has not configured either yet.
-			</p>
-		)
-	}
+			<Ledger rows={ledgerRows} />
+			<Sum
+				rows={sumRows}
+				total={totals.total}
+				excludesUncalculated={totals.totalExcludesUncalculated}
+			/>
+		</section>
+	</div>
 
-	<h2>Your details</h2>
-	<form method="POST" action="/checkout/place">
-		{/* STABLE per cart (checkout:<cartId>), so a reload or a double-submit
-		    replays into the SAME order and the same PaymentIntent instead of
-		    minting a second order the CART_CHECKED_OUT fence would reject. */}
-		<input type="hidden" name="idempotencyKey" value={summary.idempotencyKey} />
-
-		<p>
-			<label>
-				Email <span class="required">(required)</span>
-				<input type="email" name="email" required autocomplete="email" />
-			</label>
-			<span class="muted">
-				We use this to send your order confirmation and to link the order to your account if you
-				sign in later.
-			</span>
-		</p>
-
-		<fieldset>
-			<legend>Delivery address</legend>
-			<p class="muted">
-				Optional for now — fill it in completely, or leave it entirely blank.
-			</p>
-			<p>
-				<label>Full name <input type="text" name="name" autocomplete="name" /></label>
-			</p>
-			<p>
-				<label>Address line 1 <input type="text" name="line1" autocomplete="address-line1" /></label>
-			</p>
-			<p>
-				<label>Address line 2 <input type="text" name="line2" autocomplete="address-line2" /></label>
-			</p>
-			<p>
-				<label>City <input type="text" name="city" autocomplete="address-level2" /></label>
-			</p>
-			<p>
-				<label>Region / state <input type="text" name="region" autocomplete="address-level1" /></label>
-			</p>
-			<p>
-				<label>Postal code <input type="text" name="postalCode" autocomplete="postal-code" /></label>
-			</p>
-			<p>
-				<label>Country <input type="text" name="country" autocomplete="country-name" /></label>
-			</p>
-			<p>
-				<label>Phone <input type="tel" name="phone" autocomplete="tel" /></label>
-			</p>
-		</fieldset>
-
-		{
-			paymentConfigured ? (
-				<button type="submit">Continue to payment</button>
-			) : (
-				<p class="notice">
-					Card payment isn't set up on this store yet, so this order can't be placed. Nothing has
-					been charged and your cart is unchanged.
-				</p>
-			)
-		}
-	</form>
-
-	<p><a href="/cart">Back to cart</a></p>
+	<p class="back"><a href="/cart">Back to cart</a></p>
 </Base>
 
 <style>
-	table {
-		border-collapse: collapse;
-		width: 100%;
+	.steps {
+		margin-bottom: 1.75rem;
 	}
-	th,
-	td {
-		text-align: left;
-		padding: 0.5rem;
+
+	/* §3: the display face, narrow. One size down from the order stamp — this
+	   page's weight belongs on the panels, not the title. */
+	.title {
+		font-family: var(--u-display);
+		font-variation-settings: "wdth" 78, "opsz" 48;
+		font-weight: 700;
+		font-size: clamp(1.75rem, 4vw, 2.25rem);
+		letter-spacing: -0.025em;
+		line-height: 1;
+		margin: 0 0 1.5rem;
+		text-wrap: balance;
+	}
+
+	.alert,
+	.restart {
+		margin-bottom: 1.5rem;
+	}
+	.restart {
+		margin-top: -0.5rem;
+	}
+
+	/* §8: ~1.15fr / 1fr — the form carries more, so it gets more. */
+	.cols {
+		display: grid;
+		grid-template-columns: 1.15fr 1fr;
+		gap: 3rem;
+		align-items: start;
+	}
+
+	.panel {
+		display: flex;
+		flex-direction: column;
+		gap: 1.25rem;
+		/* Without this a long SKU in the ledger can widen its grid track and take
+		   the page with it (§11). */
+		min-width: 0;
+	}
+
+	.panel-head {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+		padding-bottom: 0.75rem;
 		border-bottom: var(--u-hair);
 	}
-	.totals {
-		display: grid;
-		grid-template-columns: max-content 1fr;
-		gap: 0.25rem 1.5rem;
-		margin: 0;
+	/* A section's own name reads at full contrast; a field's does not. */
+	.head-label {
+		color: var(--u-ink);
 	}
-	.totals dt {
-		font-weight: 600;
+
+	.details {
+		display: flex;
+		flex-direction: column;
+		gap: 1.25rem;
+		min-width: 0;
 	}
-	.totals dd {
-		margin: 0;
+
+	.field {
+		display: flex;
+		flex-direction: column;
+		gap: 0.375rem;
+		min-width: 0;
 	}
-	.muted {
-		color: var(--u-mute);
-		font-size: 0.875rem;
-	}
-	.required {
-		color: var(--u-straw);
-		font-weight: 400;
-		font-size: 0.875rem;
-	}
-	.notice {
-		background: #fff7e0;
-		border: 1px solid #e6c200;
-		border-radius: 0.5rem;
-		padding: 0.75rem 1rem;
-	}
-	fieldset {
-		border: var(--u-hair);
-		border-radius: 0.5rem;
-		padding: 0.5rem 1rem 1rem;
-	}
-	label {
-		display: block;
-	}
-	input[type="text"],
-	input[type="email"],
-	input[type="tel"] {
-		display: block;
+
+	.field input {
 		width: 100%;
-		max-width: 24rem;
-		padding: 0.35rem;
+		padding: 0.625rem 0.75rem;
+		border: var(--u-hair);
+		border-radius: var(--u-r);
+		background: var(--u-surface);
+		color: var(--u-ink);
+		font-family: var(--u-body);
+		font-size: 0.875rem;
+	}
+
+	.note {
+		margin: 0;
+		font-size: 0.75rem;
+		line-height: 1.5;
+		color: var(--u-mute);
+	}
+
+	/* "required" must not fuse into the uppercase mono label beside it, so it
+	   steps out of the label's recipe entirely — body face, sentence case, and
+	   straw as a fitting rather than a colour-coded badge (§2). */
+	.req {
+		font-family: var(--u-body);
+		font-size: 0.6875rem;
+		font-weight: 500;
+		letter-spacing: 0;
+		text-transform: none;
+		color: var(--u-straw);
+	}
+	.req::before {
+		content: "· ";
+		color: var(--u-edge);
+	}
+
+	/* A real <fieldset>/<legend> — the address block is one answer in eight
+	   boxes and a screen reader should hear it that way — with the browser's
+	   box removed so the theme's own hairline is the only divider (§2). */
+	.group {
+		border: none;
+		margin: 0;
+		padding: 0;
+		min-width: 0;
+	}
+	.group legend {
+		padding: 0;
+		color: var(--u-ink);
+	}
+	/* The address block gets the same head treatment as a panel: its own name,
+	   its own note, and the hairline that separates a section from its fields. */
+	.group-note {
+		padding: 0.25rem 0 0.75rem;
+		margin-bottom: 1rem;
+		border-bottom: var(--u-hair);
+	}
+
+	.fields {
+		display: grid;
+		grid-template-columns: repeat(2, 1fr);
+		gap: 0.875rem;
+	}
+	.span2 {
+		grid-column: 1 / -1;
+	}
+
+	/* §2: ink fill, straw only as the fitting that appears on hover. Straw is
+	   never a button background — that is what keeps the label at full
+	   contrast. */
+	.btn {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.625rem;
+		background: var(--u-ink);
+		color: var(--u-surface);
+		border: none;
+		border-radius: var(--u-r);
+		padding: 0.75rem 1.25rem;
+		font-family: var(--u-body);
+		font-size: 0.875rem;
+		font-weight: 600;
+		text-decoration: none;
+		cursor: pointer;
+		box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0);
+		transition: box-shadow 120ms ease;
+	}
+	.btn:hover {
+		box-shadow: inset 0 -3px 0 var(--u-straw);
+	}
+	.btn-ghost {
+		background: transparent;
+		color: var(--u-ink);
+		border: var(--u-hair);
+	}
+
+	.back {
+		margin: 2.5rem 0 0;
+		font-size: 0.8125rem;
+	}
+	.back a {
+		color: var(--u-mute);
+	}
+	.back a:hover {
+		color: var(--u-ink);
+	}
+
+	/* The two panels stop being two columns well before the phone: the address
+	   grid needs the width more than the layout needs the split. */
+	@media (max-width: 54rem) {
+		.cols {
+			grid-template-columns: 1fr;
+			gap: 2.5rem;
+		}
+	}
+
+	@media (max-width: 26rem) {
+		.fields {
+			grid-template-columns: 1fr;
+		}
 	}
 </style>
