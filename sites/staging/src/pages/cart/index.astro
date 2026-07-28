@@ -24,9 +24,10 @@
  *
  *  - MONEY comes from the pricing SIBLING (`buildCartPricing`'s live join) and
  *    is informational, which is what the foot line says out loud. Every cell
- *    goes through `lineMoneyText` below — `cartMoneyCell` (which of the three
- *    "no figure" cases is this?) and then `moneyCellText` (§7's rule that a
- *    cell either says something or says nothing at all — never a bare dash).
+ *    goes through `cart-view.ts`'s `lineMoneyText` — `cartMoneyCell` (which of
+ *    the three "no figure" cases is this?), this page's casing, then
+ *    `moneyCellText` (§7's rule that a cell either says something or says
+ *    nothing at all — never a bare dash).
  *  - The NAME comes from this theme's own CMS read, keyed on the line's
  *    `productId` — the same tier-① content this store owns (ADR-0003), not a
  *    new field on the wire. ONE batched query for the whole cart. Anything
@@ -52,13 +53,13 @@ import QtyField from "../../components/QtyField.astro";
 import Sum from "../../components/Sum.astro";
 import Base from "../../layouts/Base.astro";
 import {
-	cartMoneyCell,
 	isCartPricingDegraded,
-	PRICED_AT_CHECKOUT_LABEL,
+	lineMoneyText,
+	PRICED_AT_CHECKOUT_CELL,
 } from "../../lib/cart-view.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
 import { productImage, type ProductEntryData } from "../../lib/products.js";
-import { isUnpricedText, moneyCellText, type SumRow } from "../../lib/totals.js";
+import { isUnpricedText, type SumRow } from "../../lib/totals.js";
 import { dispatchUrumiRoute } from "../../lib/urumi-api.js";
 
 const cartId = Astro.cookies.get(CART_COOKIE_NAME)?.value;
@@ -111,8 +112,12 @@ const CART_CONTENT_ID_CAP = 50;
  * It was one `getEmDashEntry` per distinct product, fired in parallel — an
  * uncapped fan-out of D1 round-trips on a public route, and `getEmDashEntry`
  * is NOT request-cached, so nothing collapsed them. `getEmDashCollection` with
- * an array `where` value is a single `WHERE id IN (…)` and it IS request-cached
- * (`requestCached` in em-dash's query layer, plus the L2 `cachedQuery`).
+ * an array `where` value is a single `WHERE id IN (…)`, and it is
+ * `requestCached` — which is the whole win here, since it is what makes a
+ * second read of the same ids inside one render free. Do NOT count on the L2
+ * object cache for this call: its key includes the exact ORDERED id set, and on
+ * a per-shopper route that set is close to unique per request, so the entry is
+ * written far more often than it is read.
  *
  * One behavioural difference worth naming: a collection read is `status:
  * "published"` by default where an entry read is not, so a product unpublished
@@ -123,9 +128,17 @@ const CART_CONTENT_ID_CAP = 50;
  * A failure is a missing name, never a failed page: content is what this store
  * owns, and it must not take the cart down with it.
  */
-const productIds = [
+const allProductIds = [
 	...new Set(lines.map((line) => line.productId).filter((id): id is string => id !== null)),
-].slice(0, CART_CONTENT_ID_CAP);
+];
+const productIds = allProductIds.slice(0, CART_CONTENT_ID_CAP);
+if (allProductIds.length > productIds.length) {
+	// Silent truncation would render as "some lines just have no name", which is
+	// indistinguishable from unpublished content and from an outage.
+	console.warn(
+		`[site-staging] cart carries ${allProductIds.length} distinct products, over the ${CART_CONTENT_ID_CAP}-id query cap; the remainder render SKU-only.`,
+	);
+}
 
 const contentById = new Map<string, ProductEntryData>();
 if (productIds.length > 0) {
@@ -152,6 +165,25 @@ if (productIds.length > 0) {
 		 */
 		if (contentError !== undefined && contentError.name !== "LiveEntryNotFoundError") {
 			console.error("[site-staging] cart line content lookup failed:", contentError);
+		} else if (entries.length === 0) {
+			/**
+			 * `error` is not the only way this read fails, and it is not the
+			 * likeliest one. em-dash's collection loader CATCHES missing-table
+			 * and missing-column faults and returns a bare `{ entries: [] }` —
+			 * no `error` key at all, only a `console.warn` of its own for the
+			 * column case and nothing whatever for the table case. A `where`
+			 * clause is exactly what trips the column path, so the branch above
+			 * would never fire for the most probable failure of this query.
+			 *
+			 * Hence a warn keyed on the SHAPE of the answer: ids were asked for
+			 * and none came back. That is benignly true when every product in
+			 * the cart is genuinely unpublished, so this line says both — a log
+			 * line on a real, if unusual, state is a cheap price for not
+			 * swallowing a schema fault on a shopper-facing route.
+			 */
+			console.warn(
+				`[site-staging] cart line content lookup returned nothing for ${productIds.length} id(s): every one of them is unpublished, or the collection loader swallowed a missing-table/column fault.`,
+			);
 		}
 		for (const entry of entries) {
 			const data = entry.data as unknown as ProductEntryData;
@@ -168,40 +200,17 @@ if (productIds.length > 0) {
 }
 
 /**
- * The whole pricing lookup failed. §7 forbids the bare "—" `cart-view.ts`
- * returns for that case, so the cell says which failure it is; the banner above
- * carries the detail.
+ * `lineMoneyText` is the ONE path a money string takes to this page's screen —
+ * which of the three "no figure" cases is this (`cartMoneyCell`), this page's
+ * sentence casing, then §7's last gate (`moneyCellText`, which forbids anything
+ * that does not say something). It lives in `cart-view.ts` beside the cases it
+ * decides between, so the whole composition can be executed by a test rather
+ * than reassembled by one. Nothing renders money on this page beside it.
  */
-const PRICE_UNAVAILABLE = "Price unavailable";
-
-/**
- * The same fact as `cart-view.ts`'s `PRICED_AT_CHECKOUT_LABEL`, in this page's
- * voice. The shared constant is lower-case because it is also read inside a
- * sentence; here it is a cell of its own, sitting beside "At checkout" and
- * "Confirmed at checkout", and §10 is sentence case everywhere except the mono
- * eyebrow labels. Mapped at the point of use — the constant is shared, so its
- * casing is not this page's to change.
- */
-const PRICED_AT_CHECKOUT = "Priced at checkout";
-
-/**
- * The ONE path a money string takes to this page's screen: which of the three
- * "no figure" cases is this (`cartMoneyCell`), then §7's last gate
- * (`moneyCellText`, which forbids anything that does not say something), then
- * this page's casing. Nothing renders money beside this function.
- */
-function lineMoneyText(formatted: string | null | undefined): string {
-	const cell = cartMoneyCell(formatted, pricingDegraded);
-	return moneyCellText(
-		cell === PRICED_AT_CHECKOUT_LABEL ? PRICED_AT_CHECKOUT : cell,
-		PRICE_UNAVAILABLE,
-	);
-}
-
 const lineViews = lines.map((line, index) => {
 	const content = line.productId === null ? null : (contentById.get(line.productId) ?? null);
 	const linePricing = pricing?.lines.find((entry) => entry.lineId === line.lineId) ?? null;
-	const unitPrice = lineMoneyText(linePricing?.unitPrice?.formatted);
+	const unitPrice = lineMoneyText(linePricing?.unitPrice?.formatted, pricingDegraded);
 	return {
 		line,
 		index,
@@ -214,7 +223,7 @@ const lineViews = lines.map((line, index) => {
 		/** Keys the coil (§5). Any stable per-product string; the SKU is the
 		 *  last resort so a contentless line still draws its own art. */
 		artKey: content?.slug ?? line.productId ?? line.sku,
-		money: lineMoneyText(linePricing?.lineTotal?.formatted),
+		money: lineMoneyText(linePricing?.lineTotal?.formatted, pricingDegraded),
 		/** Only when it says something the line total does not: at qty 1 the two
 		 *  figures are the same number twice, and when the unit price is PROSE
 		 *  ("Priced at checkout") the line total is already saying it — "Priced
@@ -239,9 +248,16 @@ const lineViews = lines.map((line, index) => {
  * The clause is gone rather than fixed. Every line already carries a live
  * ribbon saying what its own hold is doing — that is the signature of the
  * theme and it is the truth as of this second. A second, staler copy of the
- * same fact one line above it is not worth keeping honest. (Where the mockup
- * and the rules disagree, TEMPERED.md's preamble gives the rules the last word,
- * and "don't say something the page will make false a minute later" is a rule.)
+ * same fact one line above it is not worth keeping honest.
+ *
+ * To be plain about what this is: a DELIBERATE DEVIATION from the mockup, not
+ * an application of a written rule — TEMPERED.md says nothing about stale
+ * copy, and the header it draws reads "3 items · 2 held". The mockup's frame is
+ * only self-consistent at quantity 1, where units, lines and holds are the same
+ * number; the moment a shopper raises a quantity the two halves count different
+ * things. Ratified by the director on that basis: where the drawing cannot be
+ * made true, appearance yields to correctness. Restoring the clause means
+ * re-deciding that, not just re-adding a span.
  */
 const itemCount = cart === null ? 0 : totalQty(cart);
 const summary =
@@ -261,7 +277,7 @@ const asProse = (label: string): CheckoutAmountView => ({ money: null, label });
 const cartTotal = pricing?.total ?? null;
 /** Nothing on this cart carries a figure — and the two reasons for that read
  *  differently to a shopper, so they are not collapsed into one sentence. */
-const NO_SUBTOTAL = pricingDegraded ? "Unavailable right now" : PRICED_AT_CHECKOUT;
+const NO_SUBTOTAL = pricingDegraded ? "Unavailable right now" : PRICED_AT_CHECKOUT_CELL;
 const NO_TOTAL = pricingDegraded ? "Unavailable right now" : "Confirmed at checkout";
 
 const sumRows: SumRow[] = [
@@ -331,65 +347,67 @@ const partialNote =
 			<div class="cart">
 				{/* A LIST, because it is one: the old table gave a screen reader
 				    "row 2 of 3" for free and the flat stack that replaced it gave
-				    nothing. `role="list"` is redundant markup that is not
-				    redundant in practice — WebKit drops list semantics from a
-				    list styled `list-style: none`, and this one is (same reason
-				    StepTrack carries it). */}
+				    nothing. Both roles are redundant markup that is not redundant
+				    in practice, and they answer two SEPARATE WebKit behaviours: it
+				    drops list semantics from a list styled `list-style: none`
+				    (this one is), and it drops ITEM semantics from an `<li>` whose
+				    `display` is not `list-item` (`.line` is `display: grid`).
+				    Either one alone announces a list of nothing. */}
 				<ul class="lines" role="list">
-				{lineViews.map((view) => (
-					<li class="line">
-						{/* Square at this size (§8: the cart is the 1/1 crop). */}
-						<MediaPanel
-							slug={view.artKey}
-							index={view.index}
-							image={view.image}
-							alt={view.title ?? ""}
-							ratio="1"
-						/>
-						<div class="line-main">
-							<div class="line-id">
-								{view.title !== null && <span class="line-name">{view.title}</span>}
-								<span class="u-mono line-sku">{view.line.sku}</span>
+					{lineViews.map((view) => (
+						<li class="line" role="listitem">
+							{/* Square at this size (§8: the cart is the 1/1 crop). */}
+							<MediaPanel
+								slug={view.artKey}
+								index={view.index}
+								image={view.image}
+								alt={view.title ?? ""}
+								ratio="1"
+							/>
+							<div class="line-main">
+								<div class="line-id">
+									{view.title !== null && <span class="line-name">{view.title}</span>}
+									<span class="u-mono line-sku">{view.line.sku}</span>
+								</div>
+								{/* The signature (§6). The component owns the countdown, the
+								    three states, the released line's next step and the no-JS
+								    absolute expiry — this page only hands it the line's own
+								    `expiresAt`, and a line that never took a reservation
+								    renders no ribbon at all. */}
+								<HoldRibbon expiresAt={view.line.expiresAt} />
 							</div>
-							{/* The signature (§6). The component owns the countdown, the
-							    three states, the released line's next step and the no-JS
-							    absolute expiry — this page only hands it the line's own
-							    `expiresAt`, and a line that never took a reservation
-							    renders no ribbon at all. */}
-							<HoldRibbon expiresAt={view.line.expiresAt} />
-						</div>
-						<div class="line-right">
-							<span class="line-money">
-								{isUnpricedText(view.money) ? (
-									<span class="u-mono unpriced">{view.money}</span>
-								) : (
-									<PriceTag formatted={view.money} />
-								)}
-								{view.each !== null && <span class="u-mono each">{view.each}</span>}
-							</span>
-							<form method="POST" action="/cart/update" class="line-actions">
-								<input type="hidden" name="lineId" value={view.line.lineId} />
-								<input type="hidden" name="idempotencyKey" value={view.updateKey} />
-								<QtyField
-									value={view.line.qty}
-									size="sm"
-									label={`Quantity, ${view.name}`}
-									hideLabel
-								/>
-								<button type="submit" class="link-btn">
-									Update<span class="u-sr-only"> {view.name}</span>
-								</button>
-							</form>
-							<form method="POST" action="/cart/remove">
-								<input type="hidden" name="lineId" value={view.line.lineId} />
-								<input type="hidden" name="idempotencyKey" value={view.removeKey} />
-								<button type="submit" class="link-btn">
-									Remove<span class="u-sr-only"> {view.name}</span>
-								</button>
-							</form>
-						</div>
-					</li>
-				))}
+							<div class="line-right">
+								<span class="line-money">
+									{isUnpricedText(view.money) ? (
+										<span class="u-mono unpriced">{view.money}</span>
+									) : (
+										<PriceTag formatted={view.money} />
+									)}
+									{view.each !== null && <span class="u-mono each">{view.each}</span>}
+								</span>
+								<form method="POST" action="/cart/update" class="line-actions">
+									<input type="hidden" name="lineId" value={view.line.lineId} />
+									<input type="hidden" name="idempotencyKey" value={view.updateKey} />
+									<QtyField
+										value={view.line.qty}
+										size="sm"
+										label={`Quantity, ${view.name}`}
+										hideLabel
+									/>
+									<button type="submit" class="link-btn">
+										Update<span class="u-sr-only"> {view.name}</span>
+									</button>
+								</form>
+								<form method="POST" action="/cart/remove">
+									<input type="hidden" name="lineId" value={view.line.lineId} />
+									<input type="hidden" name="idempotencyKey" value={view.removeKey} />
+									<button type="submit" class="link-btn">
+										Remove<span class="u-sr-only"> {view.name}</span>
+									</button>
+								</form>
+							</div>
+						</li>
+					))}
 				</ul>
 
 				<div class="totals">
