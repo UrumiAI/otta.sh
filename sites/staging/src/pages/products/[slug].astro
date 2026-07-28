@@ -5,6 +5,12 @@
  * the Product/Offer JSON-LD, and — for a purchasable product — the
  * add-to-cart form.
  *
+ * The "Tempered" shape (docs/theme/TEMPERED.md §8): media left at 4/5, and a
+ * right column that runs title → description → SPEC LEDGER → buy row → hold
+ * note. Everything a shopper needs to decide sits in that ledger — price,
+ * stock, sku — as label/value rows separated by hairlines, and the add-to-cart
+ * button is the only filled element on the page.
+ *
  * Idempotency: the form forwards the view model's `slots.addToCart`
  * idempotencyKey — minted FRESH by the plugin per rendered PDP (see
  * product-view-model.ts) — so a double-submit of the same rendered form
@@ -13,7 +19,7 @@
  *
  * Degraded state: with the commerce service unreachable the route returns
  * RENDER_FAILED and this page still renders the CMS content (no price, no
- * add-to-cart) with a friendly notice — 200, never a crash.
+ * add-to-cart) with a designed notice — 200, never a crash.
  */
 import {
 	STOREFRONT_PRODUCT_ROUTE,
@@ -23,6 +29,11 @@ import {
 import { getEmDashEntry } from "emdash";
 import { safeJsonLdSerialize } from "emdash/page";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
+import MediaPanel from "../../components/MediaPanel.astro";
+import Notice from "../../components/Notice.astro";
+import PriceTag from "../../components/PriceTag.astro";
+import QtyField from "../../components/QtyField.astro";
+import StockRule from "../../components/StockRule.astro";
 import Base from "../../layouts/Base.astro";
 import { cartErrorMessage } from "../../lib/error-messages.js";
 import { toCmsProductContent, type ProductEntryData } from "../../lib/products.js";
@@ -53,6 +64,14 @@ const jsonLd = result !== null && result.ok ? result.jsonLd : null;
 const addToCart = product?.slots.addToCart ?? null;
 const degraded = content !== null && product === null;
 const error = Astro.url.searchParams.get("error");
+
+/* The coil keys off the product's OWN identity, not the path the visitor
+   typed (em-dash resolves an entry by slug OR id), so the art on this page is
+   the same drawing the catalog card showed. */
+const art = content !== null ? (content.slug ?? content.id) : "";
+const image = product?.images?.[0] ?? content?.images?.[0] ?? null;
+const purchasable = product?.purchasable === true && product.price !== null;
+const inStock = product?.availability === "in_stock";
 ---
 
 {/* An unpriced or degraded product carries no currency, and the footer
@@ -64,53 +83,119 @@ const error = Astro.url.searchParams.get("error");
 >
 	{
 		content === null ? (
-			<>
-				<h1>Product not found</h1>
-				<p>
-					<a href="/products">Back to all products</a>
+			<div class="empty">
+				<h1 class="title empty-title">Product not found.</h1>
+				<p class="empty-copy">
+					Nothing here under that address — it may have sold out and been retired.
 				</p>
-			</>
+				<a class="btn btn-ghost" href="/products">
+					Back to all products
+				</a>
+			</div>
 		) : (
 			<>
-				<h1>{content.title}</h1>
-				{degraded && (
-					<p class="notice">
-						Live pricing and availability are temporarily unavailable — check back soon.
-					</p>
-				)}
-				{error !== null && <p class="notice">{cartErrorMessage(error)}</p>}
-				{(product?.images?.[0] ?? content.images?.[0]) && (
-					<img src={product?.images?.[0] ?? content.images?.[0]} alt={content.title} />
-				)}
-				{content.description && <p>{content.description}</p>}
+				<p class="crumb">
+					<a href="/products">← All products</a>
+				</p>
 
-				{product?.purchasable && product.price ? (
-					<>
-						<p class="price">{product.price.formatted}</p>
-						<p class:list={["availability", product.availability]}>
-							{product.availability === "in_stock" ? "In stock" : "Out of stock"}
-						</p>
-						{addToCart && product.availability === "in_stock" && (
-							<form method="POST" action="/cart/add">
-								<input type="hidden" name="sku" value={addToCart.sku} />
-								<input type="hidden" name="productId" value={addToCart.productId} />
-								<input type="hidden" name="idempotencyKey" value={addToCart.idempotencyKey} />
-								<input
-									type="hidden"
-									name="returnTo"
-									value={content.url ?? `/products/${slug}`}
-								/>
-								<label>
-									Quantity
-									<input type="number" name="qty" value="1" min="1" step="1" />
-								</label>
-								<button type="submit">Add to cart</button>
-							</form>
-						)}
-					</>
-				) : (
-					!degraded && <p class="price muted">Not currently available for purchase</p>
+				{/* The WRAPPER carries the spacing, not a class on the component —
+				    see the note on the media panel below. */}
+				{degraded && (
+					<div class="notice-slot">
+						<Notice lead="Prices and stock are unavailable right now.">
+							Check back in a moment — everything else on this page is up to date.
+						</Notice>
+					</div>
 				)}
+				{error !== null && (
+					<div class="notice-slot">
+						<Notice>{cartErrorMessage(error)}</Notice>
+					</div>
+				)}
+
+				<div class="pdp">
+					{/* The product art, or the image when there is one (§5). 4/5 here:
+					    the ratio is layout, so the page owns it.
+
+					    The WRAPPER is not decoration: a page cannot style a
+					    component's root element (Astro scopes each component's CSS
+					    to its own hash — see src/lib/rest-props.ts), so the phone
+					    width cap below has to sit on an element this page owns. */}
+					<div class="art">
+						<MediaPanel slug={art} image={image} alt={content.title} ratio="4 / 5" />
+					</div>
+
+					<div class="side">
+						<div>
+							<h1 class="title">{content.title}</h1>
+							{content.description && <p class="desc">{content.description}</p>}
+						</div>
+
+						{purchasable && product?.price ? (
+							<>
+								{/* The spec ledger: label left, fact right, one hairline
+								    between each — the whole decision in one block. */}
+								<div class="spec">
+									<div class="spec-row">
+										<span class="u-label">Price</span>
+										<PriceTag
+											formatted={product.price.formatted}
+											size="lg"
+											soldOut={!inStock}
+										/>
+									</div>
+									<div class="spec-row">
+										<span class="u-label">Stock</span>
+										<StockRule availability={product.availability} />
+									</div>
+									{product.sku !== null && (
+										<div class="spec-row">
+											<span class="u-label">SKU</span>
+											<span class="u-mono sku">{product.sku}</span>
+										</div>
+									)}
+								</div>
+
+								{addToCart && inStock && (
+									<div class="buy-block">
+										<form class="buy" method="POST" action="/cart/add">
+											<input type="hidden" name="sku" value={addToCart.sku} />
+											<input
+												type="hidden"
+												name="productId"
+												value={addToCart.productId}
+											/>
+											<input
+												type="hidden"
+												name="idempotencyKey"
+												value={addToCart.idempotencyKey}
+											/>
+											<input
+												type="hidden"
+												name="returnTo"
+												value={content.url ?? `/products/${slug}`}
+											/>
+											<QtyField name="qty" value={1} min={1} />
+											<button class="btn" type="submit">
+												Add to cart
+											</button>
+										</form>
+										{/* The hold is worth telling a shopper about (§10). The
+										    figure is the service's own TTL —
+										    `DEFAULT_HOLD_TTL_MS` in @urumi/domain is 15
+										    minutes, and an operator can raise it in the
+										    settings panel. */}
+										<p class="hold-note">
+											Adding this holds one in stock for 15 minutes.
+										</p>
+									</div>
+								)}
+							</>
+						) : (
+							!degraded && <p class="note">Not currently available for purchase</p>
+						)}
+					</div>
+				</div>
 			</>
 		)
 	}
@@ -125,38 +210,162 @@ const error = Astro.url.searchParams.get("error");
 </Base>
 
 <style>
-	img {
-		max-width: 24rem;
-		border-radius: 0.5rem;
+	/* §8: media left (~4/5), the decision on the right. */
+	.pdp {
+		display: grid;
+		grid-template-columns: 1.25fr 1fr;
+		gap: 3rem;
+		align-items: start;
 	}
-	.price {
-		font-size: 1.5rem;
-		font-weight: 700;
+
+	/* The mockup's 1.25fr column is drawn inside a ~700px frame; on a 72rem
+	   page the same ratio turns a 4/5 panel into a poster and pushes the buy
+	   row off the first screen. The cap keeps the panel the size the mockup
+	   draws it while the ratio still decides the split. */
+	.art {
+		max-width: 30rem;
 	}
-	.muted {
-		color: var(--u-mute);
-		font-size: 1rem;
-		font-weight: 400;
-	}
-	.availability.in_stock {
-		color: var(--u-ink);
-	}
-	.availability.out_of_stock {
-		color: var(--u-mute);
-	}
-	.notice {
-		background: #fff7e0;
-		border: 1px solid #e6c200;
-		border-radius: 0.5rem;
-		padding: 0.75rem 1rem;
-	}
-	form {
+
+	.side {
 		display: flex;
-		gap: 1rem;
-		align-items: end;
+		flex-direction: column;
+		gap: 1.5rem;
+		min-width: 0;
 	}
-	input[type="number"] {
-		width: 5rem;
-		display: block;
+
+	/* §3: the display face, narrow. */
+	.title {
+		font-family: var(--u-display);
+		font-variation-settings: "wdth" 78, "opsz" 48;
+		font-weight: 700;
+		font-size: clamp(1.75rem, 4vw, 2.5rem);
+		letter-spacing: -0.025em;
+		line-height: 1;
+		margin: 0;
+		text-wrap: balance;
+	}
+
+	.desc {
+		margin: 0.75rem 0 0;
+		max-width: 40ch;
+		color: var(--u-mute);
+	}
+
+	.crumb {
+		margin: 0 0 1.5rem;
+	}
+	.crumb a {
+		color: var(--u-mute);
+		font-size: 0.8125rem;
+		text-decoration: none;
+	}
+	.crumb a:hover {
+		color: var(--u-ink);
+		text-decoration: underline;
+		text-decoration-color: var(--u-straw);
+	}
+
+	/* The spec ledger — hairlines only, never a box (§2). */
+	.spec {
+		display: flex;
+		flex-direction: column;
+		border-top: var(--u-hair);
+	}
+	.spec-row {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 1.5rem;
+		padding-block: 0.625rem;
+		border-bottom: var(--u-hair);
+	}
+	.sku {
+		font-size: 0.75rem;
+	}
+
+	.buy-block {
+		display: flex;
+		flex-direction: column;
+		gap: 0.75rem;
+	}
+	.buy {
+		display: flex;
+		align-items: flex-end;
+		flex-wrap: wrap;
+		gap: 0.75rem;
+	}
+
+	.hold-note {
+		margin: 0;
+		color: var(--u-mute);
+		font-size: 0.75rem;
+	}
+
+	.note {
+		margin: 0;
+		color: var(--u-mute);
+		font-size: 0.8125rem;
+	}
+
+	.notice-slot {
+		margin-bottom: 1.5rem;
+	}
+
+	/* §8: an empty screen is an invitation to act, not an apology. */
+	.empty {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 1rem;
+		padding-block: 2rem;
+	}
+	.empty-title {
+		font-size: 1.75rem;
+	}
+	.empty-copy {
+		margin: 0;
+		max-width: 44ch;
+		color: var(--u-mute);
+	}
+
+	/* The theme's one button shape (mockup `.s-btn`): ink-filled, straw only as
+	   a fitting on hover — never a fill, so the label keeps full contrast (§2).
+	   Focus is the global ring in tokens.css and is deliberately not restyled. */
+	.btn {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.625rem;
+		background: var(--u-ink);
+		color: var(--u-surface);
+		border: none;
+		border-radius: var(--u-r);
+		padding: 0.75rem 1.25rem;
+		font-family: var(--u-body);
+		font-size: 0.875rem;
+		font-weight: 600;
+		text-decoration: none;
+		cursor: pointer;
+		box-shadow: inset 0 -2px 0 transparent;
+		transition: box-shadow 120ms ease;
+	}
+	.btn:hover {
+		box-shadow: inset 0 -3px 0 var(--u-straw);
+	}
+	.btn-ghost {
+		background: transparent;
+		color: var(--u-ink);
+		border: var(--u-hair);
+	}
+
+	@media (max-width: 52rem) {
+		.pdp {
+			grid-template-columns: 1fr;
+			gap: 2rem;
+		}
+		/* A full-width 4/5 panel eats a phone screen; cap it and let the buy
+		   row sit closer to the fold. */
+		.art {
+			max-width: 20rem;
+		}
 	}
 </style>
