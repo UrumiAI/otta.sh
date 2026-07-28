@@ -136,7 +136,11 @@ const CONFIGURED = [
 		<p class="u-label cap">no index — the tint falls back to the slug's own hash (a PDP, a cart line)</p>
 		<div class="coils">
 			{
-				["urumi-tee", "urumi-mug", "urumi-sticker-pack", "urumi-poster", "urumi-cap", "a"].map(
+				// "a" and "" are the degenerate ends of the hash: one code unit,
+				// and none at all (a product with no slug, keyed on an id that
+				// did not arrive). The coil has to look intentional at both, so
+				// both are on the page rather than described in a comment.
+				["urumi-tee", "urumi-mug", "urumi-sticker-pack", "urumi-poster", "urumi-cap", "a", ""].map(
 					(slug) => (
 						<div class="coil-cell">
 							<MediaPanel slug={slug} />

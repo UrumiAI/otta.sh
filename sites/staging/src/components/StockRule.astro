@@ -19,6 +19,7 @@
  */
 import type { AvailabilityToken } from "@urumi/plugin";
 import type { HTMLAttributes } from "astro/types";
+import { restProps } from "../lib/rest-props.js";
 
 interface Props extends HTMLAttributes<"span"> {
 	/** The view model's own token. `null` — not purchasable at all — renders
@@ -37,7 +38,7 @@ const text = label ?? (availability === "in_stock" ? "In stock" : "Sold out");
 
 {
 	availability !== null && (
-		<span class:list={["u-label", "stock", className]} data-state={state} {...rest}>
+		<span class:list={["u-label", "stock", className]} data-state={state} {...restProps(rest)}>
 			{text}
 		</span>
 	)

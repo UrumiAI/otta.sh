@@ -10,8 +10,30 @@
  *
  * Focus is the global rule in tokens.css — straw, 2px, offset 2px — and this
  * component deliberately does not restyle it.
+ *
+ * ── WHICH ELEMENT A PROP LANDS ON ───────────────────────────────────────────
+ * The root here is the `<label>`, so a plain `...rest` spread puts everything
+ * on the wrapper and leaves the `<input>` — the element that actually does the
+ * work — unreachable from outside. Five attributes are therefore ROUTED to the
+ * input instead:
+ *
+ *     id · max · disabled · form · aria-describedby
+ *
+ * They are the ones that are inert or wrong on a wrapper. `disabled` and `form`
+ * do nothing whatsoever on a `<label>`; `max` is not a label attribute;
+ * `aria-describedby` has to sit on the CONTROL for a screen reader to read the
+ * hint out with the field; and `id` names the field, which is the input — it is
+ * what a `for=`, a `getElementById` and an error message's `aria-describedby`
+ * are all reaching for.
+ *
+ * Everything else stays on the label, which is the box the page positions:
+ * `class`, `style`, `hidden`, `data-*`, and any layout hook.
+ *
+ * Increment 4's cart needs two of these: `form` (each row's input sits outside
+ * its own `<form>`) and `disabled` (a line mid-update).
  */
 import type { HTMLAttributes } from "astro/types";
+import { restProps } from "../lib/rest-props.js";
 
 interface Props extends HTMLAttributes<"label"> {
 	/** The form field name. The cart and PDP endpoints both read `qty`. */
@@ -25,6 +47,11 @@ interface Props extends HTMLAttributes<"label"> {
 	min?: number;
 	/** `sm` is the cart's inline row; `md` the PDP's buy row. */
 	size?: "sm" | "md";
+	/** ↓ Routed to the `<input>`, not the `<label>`. See the note above. */
+	max?: number;
+	disabled?: boolean;
+	/** The `<form>` this field belongs to, when it sits outside that form. */
+	form?: string;
 }
 
 const {
@@ -34,21 +61,34 @@ const {
 	hideLabel = false,
 	min = 1,
 	size = "md",
+	// Pulling these out of `rest` is what moves them off the label. `id` and
+	// `aria-describedby` are already on HTMLAttributes<"label">, so they are
+	// destructured rather than re-declared above.
+	id,
+	max,
+	disabled,
+	form,
+	"aria-describedby": describedBy,
 	class: className,
 	...rest
 } = Astro.props;
 ---
 
-<label class:list={["qty", `size-${size}`, className]} {...rest}>
+<label class:list={["qty", `size-${size}`, className]} {...restProps(rest)}>
 	<span class:list={["u-label", hideLabel && "u-sr-only"]}>{label}</span>
 	<input
 		class="u-mono"
 		type="number"
+		id={id}
 		name={name}
 		value={value}
 		min={min}
+		max={max}
 		step="1"
 		inputmode="numeric"
+		disabled={disabled}
+		form={form}
+		aria-describedby={describedBy}
 	/>
 </label>
 

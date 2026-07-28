@@ -12,6 +12,7 @@
  */
 import type { HTMLAttributes } from "astro/types";
 import { buildCoil, COIL_HEIGHT, COIL_WIDTH } from "../lib/coil.js";
+import { restProps } from "../lib/rest-props.js";
 
 interface Props extends HTMLAttributes<"span"> {
 	/** Keys the coil's GEOMETRY — any stable per-product string (slug, or the
@@ -36,9 +37,16 @@ interface Props extends HTMLAttributes<"span"> {
 	 *
 	 * A PROP rather than something the parent styles from outside, and that is
 	 * not a preference: Astro scopes a component's CSS to its OWN hash, so a
-	 * parent rule like `.card[cid-parent] .card-media[cid-parent]` cannot match
-	 * this element, which carries this component's hash instead. The first cut
-	 * of ProductCard did exactly that, and the dimming silently did nothing.
+	 * parent rule like `.card[cid-parent] .card-media[cid-parent]` must not
+	 * match this element, which carries this component's hash instead. The
+	 * first cut of ProductCard did exactly that, and the dimming silently did
+	 * nothing.
+	 *
+	 * "Must not", and not "cannot", because it only holds while this root
+	 * carries ONE hash. Astro hands a nested component its parent's scope key
+	 * as a prop, so spreading `...rest` raw would stamp that key back onto this
+	 * element and the parent's rule would match after all. `restProps` drops
+	 * it, which is what makes the sentence above true again.
 	 */
 	dimmed?: boolean;
 }
@@ -57,7 +65,7 @@ const {
 const coil = image === null ? buildCoil(slug, index) : null;
 ---
 
-<span class:list={["media", dimmed && "dimmed", className]} style={`--media-ratio: ${ratio}`} {...rest}>
+<span class:list={["media", dimmed && "dimmed", className]} style={`--media-ratio: ${ratio}`} {...restProps(rest)}>
 	{
 		coil === null ? (
 			<img src={image} alt={alt} loading="lazy" decoding="async" />

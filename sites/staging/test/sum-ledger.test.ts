@@ -12,7 +12,8 @@ import { NOT_APPLICABLE_LABEL, NOT_CALCULATED_LABEL, type CheckoutAmountView } f
 import { experimental_AstroContainer as AstroContainer } from "astro/container";
 import { beforeAll, describe, expect, test } from "vitest";
 import Ledger from "../src/components/Ledger.astro";
-import { NOT_APPLIED_LABEL } from "../src/lib/totals.js";
+import { UNAVAILABLE_LABEL } from "../src/lib/cart-view.js";
+import { NOT_APPLIED_LABEL, sumRowText } from "../src/lib/totals.js";
 import Sum from "../src/components/Sum.astro";
 
 let container: AstroContainer;
@@ -192,5 +193,79 @@ describe("Ledger — SKU, quantity, money", () => {
 		const html = await ledger({ rows: [] });
 		expect(html).toContain("ledger");
 		expect(html).not.toContain("line");
+	});
+});
+
+describe("Ledger — a bare em dash never reaches the money column either (§7)", () => {
+	const ledger = (props: Record<string, unknown>): Promise<string> =>
+		container.renderToString(Ledger, { props });
+
+	test("a row with NO fallback still never prints a lone em dash", async () => {
+		// The same regression as the totals block's discount row, one component
+		// over. `cart-view.ts` exports `UNAVAILABLE_LABEL = "—"` for a cart whose
+		// pricing lookup failed, so increment 4's wired cart hands this component
+		// exactly that string per row — and it used to print `row.money`
+		// verbatim.
+		const html = await ledger({
+			rows: [{ sku: "URUMI-TEE-01", qty: 1, money: UNAVAILABLE_LABEL }],
+		});
+		expect(html).not.toMatch(/>\s*—\s*</);
+		expect(html).toContain(NOT_APPLIED_LABEL);
+	});
+
+	test("it is the SAME substitution the totals block applies, not a second one", async () => {
+		// One rule in one place. A second implementation is a second thing to
+		// forget.
+		const html = await ledger({ rows: [{ sku: "X", qty: 1, money: UNAVAILABLE_LABEL }] });
+		expect(html).toContain(
+			sumRowText({ label: "Discount", amount: uncomputed(NOT_APPLICABLE_LABEL) }),
+		);
+	});
+
+	test("a page with something better to say says it instead", async () => {
+		const html = await ledger({
+			rows: [{ sku: "X", qty: 1, money: UNAVAILABLE_LABEL, fallback: "Unavailable right now" }],
+		});
+		expect(html).toContain("Unavailable right now");
+		expect(html).not.toMatch(/>\s*—\s*</);
+	});
+
+	test("a blank cell is prose too, not an empty column", async () => {
+		for (const cell of ["", "   ", "-", "–"]) {
+			const html = await ledger({ rows: [{ sku: "X", qty: 1, money: cell }] });
+			expect(html, `money: ${JSON.stringify(cell)}`).toContain(NOT_APPLIED_LABEL);
+		}
+	});
+
+	test("prose is SET as prose even when the caller forgot the flag", async () => {
+		// `unpriced` is optional, and an omitted optional prop is how the dash
+		// shipped in the first place — so the value decides. A money string
+		// carries a digit; nothing this theme prints as prose does.
+		const html = await ledger({ rows: [{ sku: "X", qty: 1, money: "priced at checkout" }] });
+		expect(html).toContain("unpriced");
+	});
+
+	test("and real money is never dimmed as prose by accident", async () => {
+		const html = await ledger({ rows: [{ sku: "X", qty: 1, money: "$25.00" }] });
+		expect(html).toContain("$25.00");
+		expect(html).not.toContain("unpriced");
+	});
+
+	test("the flag can still force prose onto a cell that carries a digit", async () => {
+		const html = await ledger({
+			rows: [{ sku: "X", qty: 1, money: "2 items to price", unpriced: true }],
+		});
+		expect(html).toContain("unpriced");
+	});
+
+	test("nowhere does a ledger say 'Free' or invent a zero", async () => {
+		const html = await ledger({
+			rows: [
+				{ sku: "X", qty: 1, money: UNAVAILABLE_LABEL },
+				{ sku: "Y", qty: 2, money: "priced at checkout" },
+			],
+		});
+		expect(html.toLowerCase()).not.toContain("free");
+		expect(html).not.toContain("0.00");
 	});
 });

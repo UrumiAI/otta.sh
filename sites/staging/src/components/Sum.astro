@@ -27,6 +27,7 @@ import type { CheckoutAmountView } from "@urumi/plugin";
 import type { HTMLAttributes } from "astro/types";
 import { isUncalculated, sumRowText, uncalculatedFootnote, type SumRow } from "../lib/totals.js";
 import PriceTag from "./PriceTag.astro";
+import { restProps } from "../lib/rest-props.js";
 
 interface Props extends HTMLAttributes<"div"> {
 	/** Subtotal, discount, shipping, tax — in the order they should read. */
@@ -55,7 +56,7 @@ const {
 const note = footnote !== undefined ? footnote : uncalculatedFootnote(rows, excludesUncalculated);
 ---
 
-<div class:list={["sum", className]} {...rest}>
+<div class:list={["sum", className]} {...restProps(rest)}>
 	{
 		rows.map((row) => (
 			<div class="row">

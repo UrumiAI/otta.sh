@@ -15,6 +15,7 @@
  * read aloud.
  */
 import type { HTMLAttributes } from "astro/types";
+import { restProps } from "../lib/rest-props.js";
 
 export const CHECKOUT_STEPS = [
 	{ id: "cart", label: "Cart" },
@@ -36,7 +37,7 @@ const currentIndex = CHECKOUT_STEPS.findIndex((step) => step.id === current);
 {/* `role="list"` is redundant markup that is not redundant in practice:
     WebKit drops list semantics from any list styled `list-style: none`, and
     this one is. Without it VoiceOver announces four loose spans. */}
-<ol class:list={["steps", className]} role="list" aria-label="Checkout progress" {...rest}>
+<ol class:list={["steps", className]} role="list" aria-label="Checkout progress" {...restProps(rest)}>
 	{
 		CHECKOUT_STEPS.map((step, index) => (
 			<li

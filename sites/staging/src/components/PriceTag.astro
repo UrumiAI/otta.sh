@@ -13,6 +13,7 @@
  * weight and the sold-out treatment are this component's business.
  */
 import type { HTMLAttributes } from "astro/types";
+import { restProps } from "../lib/rest-props.js";
 
 interface Props extends HTMLAttributes<"span"> {
 	/** Straight off the view model. Never built here. */
@@ -30,7 +31,7 @@ const { formatted, soldOut = false, size = "md", class: className, ...rest } = A
 <span
 	class:list={["u-mono", "price", `size-${size}`, className]}
 	data-sold-out={soldOut ? "" : undefined}
-	{...rest}
+	{...restProps(rest)}
 >
 	{formatted}
 </span>

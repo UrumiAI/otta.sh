@@ -12,9 +12,12 @@
  */
 import { NOT_APPLICABLE_LABEL, NOT_CALCULATED_LABEL, type CheckoutAmountView } from "@urumi/plugin";
 import { describe, expect, test } from "vitest";
+import { PRICED_AT_CHECKOUT_LABEL, UNAVAILABLE_LABEL } from "../src/lib/cart-view.js";
 import {
 	NOT_APPLIED_LABEL,
 	isUncalculated,
+	isUnpricedText,
+	moneyCellText,
 	sumRowText,
 	uncalculatedFootnote,
 } from "../src/lib/totals.js";
@@ -101,6 +104,97 @@ describe("sumRowText — what a row actually prints", () => {
 			expect(text).not.toBe("");
 			expect(text).not.toMatch(/^[^\d]*0[.,]00/);
 			expect(text.toLowerCase()).not.toContain("free");
+		}
+	});
+
+	test("a label that says NOTHING falls through to the honest default", () => {
+		// The final fallthrough used to be `row.fallback ?? row.amount.label`,
+		// which returns the label whatever it is. Keying only on the imported em
+		// dash guards ONE spelling of the mistake: an empty label, a label of
+		// spaces, and a label that is a different dash codepoint are all
+		// indistinguishable from an outage on screen, and all of them are one
+		// keystroke from the constant.
+		for (const label of ["", "  ", "–", "-", "—", "…"]) {
+			expect(
+				sumRowText({ label: "Shipping", amount: uncomputed(label) }),
+				`label: ${JSON.stringify(label)}`,
+			).toBe(NOT_APPLIED_LABEL);
+		}
+	});
+
+	test("a fallback that says nothing is not trusted either", () => {
+		for (const fallback of ["", "   ", "–"]) {
+			expect(
+				sumRowText({ label: "Discount", amount: uncomputed(NOT_APPLICABLE_LABEL), fallback }),
+				`fallback: ${JSON.stringify(fallback)}`,
+			).toBe(NOT_APPLIED_LABEL);
+		}
+	});
+
+	test("but a label that DOES say something is still printed verbatim", () => {
+		// The guard is about substance, not about length, and it must not start
+		// swallowing honest prose — in any script.
+		for (const label of ["Not calculated", "Ask at checkout", "非課税", "0"]) {
+			expect(sumRowText({ label: "Shipping", amount: uncomputed(label) })).toBe(label);
+		}
+	});
+});
+
+describe("moneyCellText — the same rule, for a line item's money cell (§7)", () => {
+	test("real money is printed verbatim", () => {
+		expect(moneyCellText("$25.00")).toBe("$25.00");
+		expect(moneyCellText("−$4.00")).toBe("−$4.00");
+	});
+
+	test("honest prose is printed verbatim too", () => {
+		expect(moneyCellText(PRICED_AT_CHECKOUT_LABEL)).toBe(PRICED_AT_CHECKOUT_LABEL);
+	});
+
+	test("the cart's own UNAVAILABLE_LABEL never reaches the screen as itself", () => {
+		// `cart-view.ts` returns a bare "—" when the pricing lookup failed, and
+		// §7 forbids exactly that: alone it is indistinguishable from an outage,
+		// from a free item, and from a line the store cannot price.
+		expect(UNAVAILABLE_LABEL).toBe("—");
+		expect(moneyCellText(UNAVAILABLE_LABEL)).toBe(NOT_APPLIED_LABEL);
+	});
+
+	test("blank and punctuation-only cells go the same way", () => {
+		for (const cell of ["", "   ", "-", "–", "—"]) {
+			expect(moneyCellText(cell), `cell: ${JSON.stringify(cell)}`).toBe(NOT_APPLIED_LABEL);
+		}
+	});
+
+	test("a page that knows WHY the cell is empty says so instead", () => {
+		expect(moneyCellText(UNAVAILABLE_LABEL, "Unavailable right now")).toBe("Unavailable right now");
+	});
+
+	test("a fallback NEVER overrides a cell that already says something", () => {
+		expect(moneyCellText("$25.00", "Unavailable right now")).toBe("$25.00");
+		expect(moneyCellText(PRICED_AT_CHECKOUT_LABEL, "Unavailable")).toBe(PRICED_AT_CHECKOUT_LABEL);
+	});
+
+	test("a fallback that says nothing is not trusted", () => {
+		expect(moneyCellText(UNAVAILABLE_LABEL, "—")).toBe(NOT_APPLIED_LABEL);
+		expect(moneyCellText("", "")).toBe(NOT_APPLIED_LABEL);
+	});
+
+	test("it agrees with sumRowText on the case the two share", () => {
+		expect(moneyCellText(NOT_APPLICABLE_LABEL)).toBe(
+			sumRowText({ label: "Discount", amount: uncomputed(NOT_APPLICABLE_LABEL) }),
+		);
+	});
+});
+
+describe("isUnpricedText — the value decides, not a flag the caller may forget", () => {
+	test("a formatted amount is a figure", () => {
+		for (const text of ["$25.00", "−$4.00", "0", "$0.00", "£1,234.50", "٤٠٫٠٠ US$"]) {
+			expect(isUnpricedText(text), `text: ${JSON.stringify(text)}`).toBe(false);
+		}
+	});
+
+	test("prose, a dash and a blank are not", () => {
+		for (const text of [PRICED_AT_CHECKOUT_LABEL, NOT_APPLIED_LABEL, "—", "", "   "]) {
+			expect(isUnpricedText(text), `text: ${JSON.stringify(text)}`).toBe(true);
 		}
 	});
 });

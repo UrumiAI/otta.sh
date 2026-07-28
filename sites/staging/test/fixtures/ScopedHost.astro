@@ -1,0 +1,54 @@
+---
+/**
+ * Every component, rendered INSIDE another component's template.
+ *
+ * That nesting is the whole point: Astro only hands a component its parent's
+ * scope key when it is used from another `.astro` file, so rendering the
+ * eleven straight from the Container API — which is what every other suite
+ * does — cannot see the stray `data-astro-cid-…="true"` attributes the spread
+ * used to emit. This host has a `<style>` block of its own, so it HAS a key to
+ * leak, and it uses all twelve spread sites (HoldRibbon has two variants).
+ *
+ * A fixture, not a page. Nothing routes here.
+ */
+import type { CheckoutAmountView } from "@urumi/plugin";
+import HoldRibbon from "../../src/components/HoldRibbon.astro";
+import Ledger from "../../src/components/Ledger.astro";
+import MediaPanel from "../../src/components/MediaPanel.astro";
+import Notice from "../../src/components/Notice.astro";
+import PriceTag from "../../src/components/PriceTag.astro";
+import ProductCard from "../../src/components/ProductCard.astro";
+import QtyField from "../../src/components/QtyField.astro";
+import StateStamp from "../../src/components/StateStamp.astro";
+import StepTrack from "../../src/components/StepTrack.astro";
+import StockRule from "../../src/components/StockRule.astro";
+import Sum from "../../src/components/Sum.astro";
+
+const money = (formatted: string): CheckoutAmountView => ({
+	money: { amount: 4000, currency: "USD", formatted },
+	label: formatted,
+});
+
+const expiresAt = new Date(Date.now() + 300_000).toISOString();
+---
+
+<div class="host">
+	<ProductCard href="#" slug="urumi-tee" title="Urumi Tee" price="$25.00" availability="in_stock" />
+	<MediaPanel slug="urumi-mug" />
+	<PriceTag formatted="$25.00" />
+	<StockRule availability="in_stock" />
+	<QtyField value={1} />
+	<Ledger rows={[{ sku: "URUMI-TEE-01", qty: 1, money: "$25.00" }]} />
+	<Sum rows={[{ label: "Subtotal", amount: money("$40.00") }]} total={money("$40.00")} />
+	<StepTrack current="cart" />
+	<StateStamp state="paid" level="h2" headline="Order confirmed." />
+	<HoldRibbon expiresAt={expiresAt} />
+	<HoldRibbon variant="indeterminate" poll={3} pollMax={8} />
+	<Notice lead="Prices are unavailable right now.">Everything below is up to date.</Notice>
+</div>
+
+<style>
+	.host {
+		display: block;
+	}
+</style>

@@ -101,6 +101,19 @@ describe("the styleguide route — the components must not ship with it", () => 
 	});
 });
 
+describe("the styleguide route — every branch it draws is reachable", () => {
+	test("the coil strip renders the empty slug its caption has a case for", () => {
+		// The strip captions a slug as "(empty)" when it is `""`, and the array
+		// carried no `""` — a ternary that could never take its own branch, and
+		// with it the degenerate end of the hash going unlooked-at. A styleguide
+		// that describes a state it does not draw is worse than one that omits
+		// it: the reviewer believes they have seen it.
+		const slugs = /\[([^\]]*)\]\.map\(/.exec(source)?.[1] ?? "";
+		expect(slugs, "the coil strip's slug array").toContain('""');
+		expect(source, "the caption branch it feeds").toContain('slug === "" ? "(empty)"');
+	});
+});
+
 describe("the styleguide route — housekeeping", () => {
 	test("makes no commerce call — a styleguide cannot rot against the service", () => {
 		expect(source).not.toContain("dispatchUrumiRoute");

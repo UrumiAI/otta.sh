@@ -18,6 +18,7 @@ import type { HTMLAttributes } from "astro/types";
 import MediaPanel from "./MediaPanel.astro";
 import PriceTag from "./PriceTag.astro";
 import StockRule from "./StockRule.astro";
+import { restProps } from "../lib/rest-props.js";
 
 interface Props extends HTMLAttributes<"a"> {
 	href: string;
@@ -68,7 +69,7 @@ const soldOut = availability === "out_of_stock";
 const Heading = level;
 ---
 
-<a class:list={["card", className]} href={href} data-sold-out={soldOut ? "" : undefined} {...rest}>
+<a class:list={["card", className]} href={href} data-sold-out={soldOut ? "" : undefined} {...restProps(rest)}>
 	{/* `dimmed` is a PROP, not a parent CSS rule: Astro scopes each
 	    component's styles to its own hash, so a descendant selector written
 	    here could never reach MediaPanel's root element. */}

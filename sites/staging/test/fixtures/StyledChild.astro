@@ -1,0 +1,23 @@
+---
+/**
+ * Half of the fixture pair for `component-css.test.ts`'s boundary guard. Not a
+ * theme component and never rendered by a page — it exists so the guard has
+ * something to catch.
+ *
+ * An ordinary child: its own scoped style, and a `class` it accepts from its
+ * parent, exactly like every component in `src/components/`.
+ */
+interface Props {
+	class?: string;
+}
+
+const { class: className } = Astro.props;
+---
+
+<span class:list={["media", className]}>art</span>
+
+<style>
+	.media {
+		display: block;
+	}
+</style>

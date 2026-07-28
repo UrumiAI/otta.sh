@@ -18,8 +18,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
-const SRC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src");
+const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
+const SRC_DIR = path.resolve(TEST_DIR, "../src");
 const COMPONENTS_DIR = path.join(SRC_DIR, "components");
+const FIXTURES_DIR = path.join(TEST_DIR, "fixtures");
 
 const files = readdirSync(COMPONENTS_DIR)
 	.filter((name) => name.endsWith(".astro"))
@@ -29,22 +31,26 @@ function source(name: string): string {
 	return readFileSync(path.join(COMPONENTS_DIR, name), "utf8");
 }
 
+/*
+ * The helpers below take a file's TEXT rather than its name. That is what lets
+ * the same implementations be aimed at `test/fixtures/`, which is what lets the
+ * boundary guard be checked against a file that actually breaks it — see the
+ * last describe block.
+ */
+
 /** Just the `<style>` blocks of a component. */
-function styles(name: string): string {
-	return [...source(name).matchAll(/<style>([\s\S]*?)<\/style>/g)]
-		.map((m) => m[1] ?? "")
-		.join("\n");
+function styles(text: string): string {
+	return [...text.matchAll(/<style>([\s\S]*?)<\/style>/g)].map((m) => m[1] ?? "").join("\n");
 }
 
 /** The declaration bodies only — comments stripped, so prose about a colour is
  *  not mistaken for a colour. */
-function declarations(name: string): string {
-	return styles(name).replace(/\/\*[\s\S]*?\*\//g, "");
+function declarations(text: string): string {
+	return styles(text).replace(/\/\*[\s\S]*?\*\//g, "");
 }
 
 /** The template — everything after the frontmatter fence, minus the styles. */
-function markup(name: string): string {
-	const text = source(name);
+function markup(text: string): string {
 	const body = text.slice(text.indexOf("\n---", 3) + 4);
 	return body.replace(/<style>[\s\S]*?<\/style>/g, "").replace(/<script>[\s\S]*?<\/script>/g, "");
 }
@@ -60,8 +66,8 @@ function classesIn(attribute: string): string[] {
 const CLASS_ATTRIBUTE = /class(?::list)?=("[^"]*"|\{[^}]*\})/g;
 
 /** Every literal class name this component writes into its own markup. */
-function classNames(name: string): string[] {
-	return [...markup(name).matchAll(CLASS_ATTRIBUTE)].flatMap(([, value = ""]) => classesIn(value));
+function classNames(text: string): string[] {
+	return [...markup(text).matchAll(CLASS_ATTRIBUTE)].flatMap(([, value = ""]) => classesIn(value));
 }
 
 /**
@@ -74,12 +80,12 @@ function classNames(name: string): string[] {
  * `<Heading class="headline">` renders a plain `<h1>` inside this component's
  * own template, correctly scoped.
  */
-function classesPassedToChildren(name: string): string[] {
-	const imported = [
-		...source(name).matchAll(/^import\s+(\w+)\s+from\s+["'][^"']+\.astro["']/gm),
-	].map((m) => m[1]);
+function classesPassedToChildren(text: string): string[] {
+	const imported = [...text.matchAll(/^import\s+(\w+)\s+from\s+["'][^"']+\.astro["']/gm)].map(
+		(m) => m[1],
+	);
 	if (imported.length === 0) return [];
-	const tags = markup(name).matchAll(/<([A-Z]\w*)\b([^>]*?)\/?>/g);
+	const tags = markup(text).matchAll(/<([A-Z]\w*)\b([^>]*?)\/?>/g);
 	return [...tags]
 		.filter(([, tag = ""]) => imported.includes(tag))
 		.flatMap(([, , attributes = ""]) =>
@@ -107,7 +113,7 @@ describe("the component set §4 asks for", () => {
 
 describe("every component reads the token layer and writes nothing of its own", () => {
 	test.each(files)("%s declares no raw colour", (name) => {
-		const css = declarations(name);
+		const css = declarations(source(name));
 		expect(css, "a hex literal").not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
 		expect(css, "an rgb()/hsl() literal").not.toMatch(/\b(rgb|rgba|hsl|hsla)\(/);
 		expect(css, "a named colour").not.toMatch(
@@ -116,7 +122,7 @@ describe("every component reads the token layer and writes nothing of its own", 
 	});
 
 	test.each(files)("%s sets type only through the face variables", (name) => {
-		for (const [, value = ""] of declarations(name).matchAll(/font-family:\s*([^;]+);/g)) {
+		for (const [, value = ""] of declarations(source(name)).matchAll(/font-family:\s*([^;]+);/g)) {
 			expect(value, `${name} declares its own font stack`).toMatch(
 				/var\(--u-(display|body|data)\)/,
 			);
@@ -127,34 +133,38 @@ describe("every component reads the token layer and writes nothing of its own", 
 		// `var(--u-r)` for corners; `1px` is the half-height rounding of a 2–3px
 		// BAR (the hold track, the stock rule, the state stamp) and `50%` is a
 		// dot — neither is a corner, and neither reads as a pill.
-		for (const [, value = ""] of declarations(name).matchAll(/border-radius:\s*([^;]+);/g)) {
+		for (const [, value = ""] of declarations(source(name)).matchAll(
+			/border-radius:\s*([^;]+);/g,
+		)) {
 			expect(value.trim(), `${name} invents a radius`).toMatch(/^(var\(--u-r\)|1px|50%)$/);
 		}
 	});
 
 	test.each(files)("%s draws dividers with the one hairline (§2)", (name) => {
-		for (const [, value = ""] of declarations(name).matchAll(/border[a-z-]*:\s*([^;]+);/g)) {
+		for (const [, value = ""] of declarations(source(name)).matchAll(
+			/border[a-z-]*:\s*([^;]+);/g,
+		)) {
 			if (!value.includes("solid")) continue;
 			expect(value, `${name} writes its own solid border`).toContain("var(--u-hair)");
 		}
 	});
 
 	test.each(files)("%s does not restyle focus — tokens.css owns the straw ring (§11)", (name) => {
-		expect(declarations(name)).not.toMatch(/:focus/);
-		expect(declarations(name)).not.toMatch(/outline\s*:/);
+		expect(declarations(source(name))).not.toMatch(/:focus/);
+		expect(declarations(source(name))).not.toMatch(/outline\s*:/);
 	});
 
 	test.each(files)("%s uses no !important", (name) => {
 		// The only legitimate use in this theme is tokens.css defending the
 		// reduced-motion override against later authors.
-		expect(declarations(name)).not.toContain("!important");
+		expect(declarations(source(name))).not.toContain("!important");
 	});
 
 	test.each(files)("%s takes the shared data-face recipes rather than repeating them", (name) => {
 		// §3's mono and uppercase-label tuples live once, in tokens.css, as
 		// `.u-mono` and `.u-label`. Repeated per component they drift — two of
 		// the first six copies had already picked up a different tracking.
-		const css = declarations(name);
+		const css = declarations(source(name));
 		expect(css, "re-declares the data face").not.toContain("var(--u-data)");
 		expect(css, "re-declares the data face's width axis").not.toContain('"wdth" 90');
 		expect(css, "re-declares the label's tracking").not.toContain("letter-spacing: 0.11em");
@@ -170,8 +180,8 @@ describe("component boundaries", () => {
 		// component's root — that element carries the CHILD's hash. The rule
 		// compiles, ships, and silently does nothing, which is how the sold-out
 		// dimming was dead on arrival. Cross-component state travels as a PROP.
-		const css = declarations(name);
-		for (const cls of classesPassedToChildren(name)) {
+		const css = declarations(source(name));
+		for (const cls of classesPassedToChildren(source(name))) {
 			expect(css, `${name} styles .${cls} on a child component`).not.toContain(`.${cls}`);
 		}
 	});
@@ -190,11 +200,52 @@ describe("component boundaries", () => {
 			owned.size,
 			"legacy-bridge.css declares no class at all — check the parse",
 		).toBeGreaterThan(0);
-		for (const cls of classNames(name)) {
+		for (const cls of classNames(source(name))) {
 			expect(owned.has(cls), `${name} uses .${cls}, which legacy-bridge.css also styles`).toBe(
 				false,
 			);
 		}
+	});
+});
+
+describe("the boundary guard is not vacuous", () => {
+	/*
+	 * `classesPassedToChildren` returns `[]` for all eleven components today —
+	 * which is the point of the rule, and also means the assertion inside that
+	 * loop never executes. A regex that quietly stopped matching (an import
+	 * written across two lines, a renamed default, a tag whose attributes wrap)
+	 * would disable the guard entirely and every test here would stay green.
+	 *
+	 * So it is pointed at a fixture that DOES break the rule.
+	 * `test/fixtures/StylesThroughChild.astro` passes `class="card-media"` into
+	 * an imported child and then writes `.card .card-media` — the exact shape
+	 * that shipped the dead sold-out dimming.
+	 */
+	const offender = readFileSync(path.join(FIXTURES_DIR, "StylesThroughChild.astro"), "utf8");
+
+	test("the fixture is still the shape the guard is looking for", () => {
+		expect(offender).toContain('import StyledChild from "./StyledChild.astro"');
+		expect(offender).toContain('<StyledChild class="card-media" />');
+	});
+
+	test("it names the class the parent handed to an imported child", () => {
+		expect(classesPassedToChildren(offender)).toContain("card-media");
+	});
+
+	test("and the rule fails on it, rather than passing an empty loop", () => {
+		const css = declarations(offender);
+		const passed = classesPassedToChildren(offender);
+		expect(passed.length).toBeGreaterThan(0);
+		expect(passed.some((cls) => css.includes(`.${cls}`))).toBe(true);
+	});
+
+	test("a capitalised tag that is NOT an imported component is not flagged", () => {
+		// `const Heading = level` renders a plain <h1> inside the component's own
+		// template, correctly scoped — StateStamp does exactly that and styles
+		// `.headline` legitimately. Over-matching would make the guard unusable
+		// rather than merely asleep.
+		expect(classesPassedToChildren(source("StateStamp.astro"))).not.toContain("headline");
+		expect(declarations(source("StateStamp.astro"))).toContain(".headline");
 	});
 });
 
@@ -209,10 +260,12 @@ describe("the motion budget (§2, §6, §11)", () => {
 	});
 
 	test("only the hold ribbon animates, and it declares both sides of the rule", () => {
-		const animated = files.filter((name) => /animation:|@keyframes|transition:/.test(styles(name)));
+		const animated = files.filter((name) =>
+			/animation:|@keyframes|transition:/.test(styles(source(name))),
+		);
 		expect(animated).toEqual(["HoldRibbon.astro"]);
 
-		const css = styles("HoldRibbon.astro");
+		const css = styles(source("HoldRibbon.astro"));
 		// The countdown is INFORMATION and is exempted by its wrapper…
 		expect(readFileSync(path.join(COMPONENTS_DIR, "HoldRibbon.astro"), "utf8")).toContain(
 			'data-motion="essential"',

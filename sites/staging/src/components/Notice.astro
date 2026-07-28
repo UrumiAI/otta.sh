@@ -23,6 +23,7 @@
  * shopper's side and is quoted, not rewritten (§10).
  */
 import type { HTMLAttributes } from "astro/types";
+import { restProps } from "../lib/rest-props.js";
 
 interface Props extends HTMLAttributes<"div"> {
 	/** The sentence that leads — what happened. Set in the body face, bold. */
@@ -33,7 +34,7 @@ const { lead, class: className, ...rest } = Astro.props;
 const hasLead = lead !== undefined && lead !== "";
 ---
 
-<div class:list={["u-notice", className]} {...rest}>
+<div class:list={["u-notice", className]} {...restProps(rest)}>
 	<span class="mark" aria-hidden="true"></span>
 	<p class="text">
 		{hasLead && <b>{lead}</b>}

@@ -1,0 +1,34 @@
+---
+/**
+ * The forbidden pattern, on purpose (docs/theme/TEMPERED.md § scoping).
+ *
+ * `component-css.test.ts` sweeps every component for "does this file style a
+ * class it handed to an imported child?", and today the answer is no for all
+ * eleven — so the assertion inside that loop never executes, and a regex that
+ * stopped matching would disable the whole guard in silence. This file is the
+ * positive case that keeps it honest: a parent that passes `class="card-media"`
+ * into an imported `.astro` child AND writes a descendant rule for it.
+ *
+ * It is a fixture, not a component. It lives under `test/` and no page imports
+ * it, so the pattern below never ships. It reproduces the exact bug the guard
+ * was written after: Astro compiles `.card .card-media` to
+ * `.card[data-astro-cid-X] .card-media[data-astro-cid-X]`, the child's root
+ * carries the CHILD's key, and the rule ships doing nothing at all.
+ */
+import StyledChild from "./StyledChild.astro";
+---
+
+<div class="card">
+	<StyledChild class="card-media" />
+</div>
+
+<style>
+	.card {
+		display: block;
+	}
+
+	/* The dead rule. Never matches — the child's root has its own scope key. */
+	.card .card-media {
+		opacity: 0.45;
+	}
+</style>

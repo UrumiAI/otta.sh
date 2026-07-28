@@ -52,17 +52,73 @@ export function isUncalculated(amount: CheckoutAmountView): boolean {
 }
 
 /**
+ * Does this string actually SAY anything — is there a letter or a digit in it?
+ *
+ * The dash rule §7 states is really a rule about substance: `""`, `"   "`,
+ * `"—"`, `"–"` and `"-"` are all indistinguishable from an outage on screen,
+ * and they are all one keystroke apart from each other, so keying on the em
+ * dash alone guards one of five spellings of the same mistake. Unicode
+ * properties rather than `[A-Za-z0-9]`: a store rendering "非課税" or "٤٠٫٠٠"
+ * is saying something.
+ */
+function saysSomething(text: string): boolean {
+	return /[\p{L}\p{N}]/u.test(text);
+}
+
+/** The last gate before a money cell reaches the screen. Anything that does not
+ *  say something becomes the honest default rather than a mark on a page. */
+function orNotApplied(text: string | undefined): string {
+	return text !== undefined && saysSomething(text) ? text : NOT_APPLIED_LABEL;
+}
+
+/**
  * The text a totals row prints — pre-formatted money, or honest prose.
  *
  * The `NOT_APPLICABLE_LABEL` branch is the §7 guarantee: the raw label is
  * never returned for it, with or without a `fallback`. The constant is
  * imported rather than string-matched against a literal, so if the plugin ever
  * changes what "not applicable" looks like this keeps working.
+ *
+ * Both uncalculated branches then pass through `orNotApplied`, which is the
+ * backstop for the case the constant cannot cover: a `fallback` that is itself
+ * blank, or a plugin label that is a different dash from the one we import.
  */
 export function sumRowText(row: SumRow): string {
 	if (!isUncalculated(row.amount)) return row.amount.label;
-	if (row.amount.label === NOT_APPLICABLE_LABEL) return row.fallback ?? NOT_APPLIED_LABEL;
-	return row.fallback ?? row.amount.label;
+	if (row.amount.label === NOT_APPLICABLE_LABEL) return orNotApplied(row.fallback);
+	return orNotApplied(row.fallback ?? row.amount.label);
+}
+
+/**
+ * The text a LINE-ITEM money cell prints (§7), for `Ledger`.
+ *
+ * A line item does not arrive as a `CheckoutAmountView` — the cart wire hands
+ * the page a plain string that is either `lineTotal.formatted` or prose
+ * (`cart-view.ts`'s "priced at checkout"). That leaves one gap the totals block
+ * does not have: `cart-view.ts` also exports `UNAVAILABLE_LABEL = "—"` for the
+ * degraded case, and a component that printed its input verbatim would put
+ * exactly the lone dash §7 forbids in the money column of every cart row.
+ *
+ * So the same substitution `sumRowText` applies to a totals row applies here: a
+ * cell that says nothing becomes the caller's own prose, or the honest default.
+ * Real money and real prose are printed untouched — a `fallback` never
+ * overrides a cell that already has something to say.
+ */
+export function moneyCellText(money: string, fallback?: string): string {
+	return saysSomething(money) ? money : orNotApplied(fallback);
+}
+
+/**
+ * Is this cell PROSE rather than a figure, judged by the value itself?
+ *
+ * `Ledger` sets prose smaller and muted so it cannot be misread as an amount,
+ * and it used to decide that from a boolean the caller passed in. A flag the
+ * caller forgets is how the dash shipped in the first place, so the value gets
+ * the deciding vote: a formatted money string always carries a digit, and
+ * nothing this theme prints as prose does.
+ */
+export function isUnpricedText(text: string): boolean {
+	return !/\p{N}/u.test(text);
 }
 
 /** Lower-cased names of the rows this store never configured. Deliberately

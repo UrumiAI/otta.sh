@@ -121,3 +121,55 @@ describe("QtyField — a quantity, in the data face", () => {
 		expect(await qty({})).not.toMatch(/outline/);
 	});
 });
+
+/** The `<input>` tag on its own. QtyField's root is the `<label>`, so "did this
+ *  attribute reach the field?" is a question about this substring. */
+const input = (html: string): string => /<input[^>]*>/.exec(html)?.[0] ?? "";
+
+/** The `<label>`'s own attributes — everything up to its first child. */
+const root = (html: string): string => html.slice(0, html.indexOf(">") + 1);
+
+describe("QtyField — which element a prop lands on", () => {
+	const qty = (props: Record<string, unknown>): Promise<string> =>
+		container.renderToString(QtyField, { props: { value: 1, ...props } });
+
+	test("form and disabled reach the INPUT — a label does nothing with either", async () => {
+		// Increment 4's cart needs both: each row's field sits outside its own
+		// <form>, and a line mid-update is disabled. Left on the wrapper they
+		// are inert, which is a bug with no symptom until someone tries to
+		// submit.
+		const html = await qty({ form: "line-42", disabled: true });
+		expect(input(html)).toContain('form="line-42"');
+		expect(input(html)).toMatch(/\sdisabled/);
+		expect(root(html)).not.toContain("form=");
+		expect(root(html)).not.toMatch(/\sdisabled/);
+	});
+
+	test("id, max and aria-describedby reach the input too", async () => {
+		const html = await qty({ id: "qty-tee", max: 99, "aria-describedby": "qty-hint" });
+		expect(input(html)).toContain('id="qty-tee"');
+		expect(input(html)).toContain('max="99"');
+		expect(input(html)).toContain('aria-describedby="qty-hint"');
+		expect(root(html)).not.toContain('id="qty-tee"');
+	});
+
+	test("everything else stays on the label, which is the box a page positions", async () => {
+		const html = await qty({ class: "cart-qty", "data-line": "42", hidden: true });
+		expect(root(html)).toContain("cart-qty");
+		expect(root(html)).toContain('data-line="42"');
+		expect(root(html)).toMatch(/\shidden/);
+		expect(input(html)).not.toContain("data-line");
+		expect(input(html)).not.toContain("cart-qty");
+	});
+
+	test("a routed attribute that was not passed does not render at all", async () => {
+		// An `undefined` prop must not become an empty attribute: a bare
+		// `disabled` would make every quantity field on the page unusable.
+		const html = await qty({});
+		expect(input(html)).not.toMatch(/\sdisabled/);
+		expect(input(html)).not.toContain("form=");
+		expect(input(html)).not.toContain("max=");
+		expect(input(html)).not.toContain("aria-describedby");
+		expect(input(html)).not.toContain("id=");
+	});
+});

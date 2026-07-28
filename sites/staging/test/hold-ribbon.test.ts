@@ -203,63 +203,65 @@ describe("HoldRibbon — the client script", () => {
 	);
 	const script = source.slice(source.indexOf("<script>"), source.indexOf("</script>"));
 
-	test("its three labels are byte-identical to the ones the server rendered", () => {
-		for (const label of Object.values(HOLD_LABELS)) {
-			expect(script, `the script and src/lib/hold.ts disagree about "${label}"`).toContain(
-				`"${label}"`,
-			);
-		}
-	});
-
-	test("it flips at the same boundary the server does", () => {
-		expect(script).toContain(`left <= ${HOLD_EXPIRING_SECONDS}`);
-		expect(script).toContain("left <= 0");
-	});
-
-	test("it stops once every hold on the page has lapsed", () => {
-		// A once-a-second timer that outlives everything it was counting keeps
-		// a tab awake for nothing.
-		expect(script).toContain("clearInterval(timer)");
-	});
-
-	test("it announces the STATE, never the tick", () => {
-		// A live region on the clock would announce six hundred times in a
-		// ten-minute hold. The transition is what a shopper needs told.
-		expect(script).toContain("state !== r.state");
-		expect(script).toMatch(/announce\.textContent = LABELS\[state\]/);
-	});
-
-	test("it clamps the fill rather than overflowing the track", () => {
-		expect(script).toContain("Math.min(100");
-		expect(script).toContain("Math.max(0");
-	});
-
-	test("it ticks once a second, from ONE interval shared by every ribbon", () => {
-		expect(script).toContain("setInterval(tick, 1000)");
-		expect(script.match(/setInterval/g) ?? []).toHaveLength(1);
-	});
-
-	test("it renders the first frame immediately, before waiting a second", () => {
-		// A bare top-level call, not only the one inside setInterval — otherwise
-		// the server's absolute-expiry text sits there for a second before the
-		// countdown appears.
-		expect(script).toMatch(/^\s*tick\(\);\s*$/m);
-	});
-
-	test("the timer exists before the first tick, which may need to clear it", () => {
-		// `tick()` calls `clearInterval(timer)` when everything has lapsed, so
-		// running it ahead of the assignment would throw on a page whose holds
-		// are all already released.
-		expect(script.indexOf("const timer = setInterval")).toBeLessThan(
-			script.search(/^\s*tick\(\);\s*$/m),
-		);
-	});
-
 	test("it is a bundled module script, not an inline one — one copy per page", () => {
+		// This is what lets it IMPORT the tick instead of restating it, which is
+		// the whole reason the assertions below can be about structure rather
+		// than about substrings.
 		expect(source).not.toContain("<script is:inline");
 	});
 
+	test("it takes the tick from the shared module rather than owning one", () => {
+		expect(script).toContain('from "../lib/hold-ribbon.js"');
+		expect(script).toContain("startHoldRibbons(");
+		// `hold-ribbon-tick.test.ts` drives that module against a fake clock:
+		// the five-minute jump, the once-per-transition announcement, and the
+		// interval dropping itself.
+	});
+
+	test("it restates none of the labels the server rendered", () => {
+		// The old script carried its own copy of the three, pinned to
+		// `src/lib/hold.ts` by this suite reading both. One definition is
+		// better than two that agree today, so the duplication is gone and this
+		// is the assertion that it stays gone.
+		for (const label of Object.values(HOLD_LABELS)) {
+			expect(script, `the script has re-declared "${label}"`).not.toContain(`"${label}"`);
+		}
+	});
+
+	test("it restates none of the arithmetic either — no boundary, no clock format", () => {
+		expect(script, "a duplicated expiring boundary").not.toContain(`${HOLD_EXPIRING_SECONDS}`);
+		expect(script, "a duplicated window default").not.toContain(`${HOLD_WINDOW_SECONDS}`);
+		expect(script, "a duplicated tick rate").not.toMatch(/setInterval/);
+		expect(script, "a duplicated mm:ss").not.toContain("padStart");
+	});
+
+	test("what is left is the DOM, and every slot the markup ships is written", () => {
+		// The script's remaining job is to find the elements and put a frame in
+		// them. Each of these selectors has a matching assertion above that the
+		// server actually renders it.
+		for (const hook of [
+			"[data-hold]",
+			"[data-hold-fill]",
+			"[data-hold-label]",
+			"[data-hold-clock]",
+			"[data-hold-note]",
+			"[data-hold-announce]",
+		]) {
+			expect(script, `the script never looks for ${hook}`).toContain(hook);
+		}
+		// `data-expires` / `data-window`, as the DOM spells them.
+		expect(script).toContain("dataset.expires");
+		expect(script).toContain("dataset.window");
+	});
+
 	test("it reveals the next-step line when a hold lapses under the shopper's eyes", () => {
-		expect(script).toContain('r.note.hidden = state !== "released"');
+		expect(script).toContain('note.hidden = frame.state !== "released"');
+	});
+
+	test("it writes the polite region only on a frame that announced", () => {
+		// The decision is the module's; the script must not second-guess it by
+		// writing the label on every frame.
+		expect(script).toContain("frame.announce !== null");
+		expect(script.match(/announce\.textContent/g) ?? []).toHaveLength(1);
 	});
 });

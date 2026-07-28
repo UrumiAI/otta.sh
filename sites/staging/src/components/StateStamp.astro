@@ -13,6 +13,7 @@
  * decision 5). This component only draws what it is handed.
  */
 import type { HTMLAttributes } from "astro/types";
+import { restProps } from "../lib/rest-props.js";
 
 interface Props extends HTMLAttributes<"div"> {
 	/** The order's state string, verbatim off the view model. */
@@ -63,7 +64,7 @@ const Heading = level;
 const rule = RULES[state];
 ---
 
-<div class:list={["stamp", className]} data-state={rule} {...rest}>
+<div class:list={["stamp", className]} data-state={rule} {...restProps(rest)}>
 	<span class="rule" aria-hidden="true"></span>
 	<Heading class="headline">{headline}</Heading>
 	{body !== null && body !== "" && <p class="body">{body}</p>}

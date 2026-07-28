@@ -31,6 +31,7 @@
  *     announcements in ten minutes, not six hundred.
  */
 import type { HTMLAttributes } from "astro/types";
+import { restProps } from "../lib/rest-props.js";
 import {
 	HOLD_RELEASED_NEXT_STEP,
 	HOLD_WINDOW_SECONDS,
@@ -94,7 +95,7 @@ const expiry = variant === "indeterminate" ? null : absoluteExpiry(expiresAt);
 
 {
 	variant === "indeterminate" ? (
-		<div class:list={["hold", "poll", className]} {...rest}>
+		<div class:list={["hold", "poll", className]} {...restProps(rest)}>
 			<div class="track">
 				<span class="sweep" />
 			</div>
@@ -113,7 +114,7 @@ const expiry = variant === "indeterminate" ? null : absoluteExpiry(expiresAt);
 				data-state={view.state}
 				data-expires={expiresAt}
 				data-window={windowSeconds}
-				{...rest}
+				{...restProps(rest)}
 			>
 				{/* The exemption tokens.css grants covers this element AND its
 				    subtree — the fill inside is what actually moves. */}
@@ -146,52 +147,45 @@ const expiry = variant === "indeterminate" ? null : absoluteExpiry(expiresAt);
 	 * on. Every ribbon on the page shares one interval, and that interval is
 	 * dropped once there is nothing left to count.
 	 *
-	 * These three labels are the one duplication of `src/lib/hold.ts` in the
-	 * codebase — an inline script cannot import the module — and
-	 * `hold-ribbon.test.ts` pins the two copies to each other.
+	 * This is a BUNDLED module script (never `is:inline`), so it imports the
+	 * tick rather than restating it. Every state label, the sixty-second
+	 * boundary and the `mm:ss` format therefore have exactly one definition,
+	 * shared with the server render — there is no second copy to drift, and
+	 * nothing here that a test has to grep a source file to pin.
+	 *
+	 * What is left in this file is the DOM, and only the DOM: find the ribbons,
+	 * write the frames. The deciding is `src/lib/hold-ribbon.ts`.
 	 */
-	const LABELS = { held: "Held for you", expiring: "Expiring", released: "Hold released" };
-	const pad = (value: number): string => String(value).padStart(2, "0");
+	import { type HoldFrame, startHoldRibbons } from "../lib/hold-ribbon.js";
+	import { HOLD_WINDOW_SECONDS } from "../lib/hold.js";
 
-	const ribbons = [...document.querySelectorAll<HTMLElement>("[data-hold]")].map((el) => ({
-		el,
-		expiry: Date.parse(el.dataset.expires ?? ""),
-		window: Number(el.dataset.window) || 600,
-		fill: el.querySelector<HTMLElement>("[data-hold-fill]"),
-		label: el.querySelector<HTMLElement>("[data-hold-label]"),
-		clock: el.querySelector<HTMLElement>("[data-hold-clock]"),
-		note: el.querySelector<HTMLElement>("[data-hold-note]"),
-		announce: el.querySelector<HTMLElement>("[data-hold-announce]"),
-		state: el.dataset.state ?? "",
-	}));
-
-	function tick(): void {
-		const now = Date.now();
-		let live = false;
-		for (const r of ribbons) {
-			if (Number.isNaN(r.expiry)) continue;
-			const left = Math.max(0, Math.floor((r.expiry - now) / 1000));
-			const state = left <= 0 ? "released" : left <= 60 ? "expiring" : "held";
-			if (left > 0) live = true;
-			r.el.dataset.state = state;
-			if (r.label) r.label.textContent = LABELS[state];
-			if (r.clock) r.clock.textContent = `${pad(Math.floor(left / 60))}:${pad(left % 60)}`;
-			if (r.fill)
-				r.fill.style.setProperty("--pct", `${Math.min(100, (left / r.window) * 100).toFixed(1)}%`);
-			if (r.note) r.note.hidden = state !== "released";
-			// Announced on the TRANSITION only. Writing this every tick would
-			// turn a polite region into a once-a-second interruption.
-			if (state !== r.state) {
-				if (r.announce) r.announce.textContent = LABELS[state];
-				r.state = state;
-			}
-		}
-		// Nothing left to count: every hold has lapsed, so stop.
-		if (!live) clearInterval(timer);
-	}
-
-	const timer = setInterval(tick, 1000);
-	tick();
+	startHoldRibbons(
+		[...document.querySelectorAll<HTMLElement>("[data-hold]")].map((el) => {
+			const fill = el.querySelector<HTMLElement>("[data-hold-fill]");
+			const label = el.querySelector<HTMLElement>("[data-hold-label]");
+			const clock = el.querySelector<HTMLElement>("[data-hold-clock]");
+			const note = el.querySelector<HTMLElement>("[data-hold-note]");
+			const announce = el.querySelector<HTMLElement>("[data-hold-announce]");
+			return {
+				expiry: Date.parse(el.dataset.expires ?? ""),
+				window: Number(el.dataset.window) || HOLD_WINDOW_SECONDS,
+				shownState: el.dataset.state ?? "",
+				render(frame: HoldFrame): void {
+					el.dataset.state = frame.state;
+					if (label) label.textContent = frame.label;
+					if (clock) clock.textContent = frame.clock;
+					if (fill) fill.style.setProperty("--pct", frame.fill);
+					// The next-step line is always in the markup; a hold that
+					// lapses under the shopper's eyes reveals it.
+					if (note) note.hidden = frame.state !== "released";
+					// Non-null only on a state CHANGE. Writing this every tick
+					// would turn a polite region into a once-a-second
+					// interruption.
+					if (frame.announce !== null && announce) announce.textContent = frame.announce;
+				},
+			};
+		}),
+	);
 </script>
 
 <style>
