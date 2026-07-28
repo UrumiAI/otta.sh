@@ -365,6 +365,13 @@ const orderPath = `/orders/${encodeURIComponent(stash.orderId)}`;
 								}
 							}
 							if (elements === null) {
+								// The give-up path, and it must leave nothing behind. The
+								// untuned retry only runs when there WAS an appearance to
+								// drop; with no appearance the first mount is the only one,
+								// so it can reach here having half-created an element and
+								// written into the node. Idempotent — the retry's own
+								// discard already ran on the other route.
+								discardMount();
 								fail(
 									"This store's payment provider is running in offline test mode; this order cannot be paid. No charge has been made.",
 								);

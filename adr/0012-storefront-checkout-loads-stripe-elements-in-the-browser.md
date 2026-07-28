@@ -105,7 +105,10 @@ names the order and its 15-minute hold — not a broken form.
   fence now walks each page's `.astro` imports **transitively** and fails on any browser code
   — `<script>` or a `client:*` directive — reaching a page that is specified to have none. The
   two permitted routes above are a **named allowlist** in that test, so widening the set stays
-  a decision someone has to write down rather than a diff nobody notices.
+  a decision someone has to write down rather than a diff nobody notices. The check is an
+  **equality**, not a subset: an entry whose page stopped importing the component would
+  otherwise rot open, pre-approving a pair nobody uses, so an unearned permission fails the
+  suite exactly like an unpermitted route does.
 
   **What did NOT change.** `js.stripe.com` remains the only third-party origin — the countdown
   is first-party code, bundled by Astro and served from our origin. `allowedHosts` is

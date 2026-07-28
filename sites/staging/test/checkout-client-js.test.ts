@@ -167,15 +167,15 @@ describe("10a — the client-JS fence (ADR-0012 decision 2)", () => {
 		// own source was spotless, so the file-level check above saw nothing.
 		// Browser code arrives through IMPORTS too, and this is that half.
 		//
-		// A SUBSET, not an equality: `cart/index.astro` is on the allowlist for
-		// the themed cart that arrives on its own branch, and this tree still
-		// carries the pre-theme page that imports nothing. Equality here would
-		// make this suite fail for a reason that is not a fault. The entry is
-		// exercised for real by the merged-tree suite below, which is where it
-		// would be caught if it ever stopped being needed.
-		for (const route of clientJsRoutes(PAGES_DIR)) {
-			expect(PERMITTED, `${route} is not on ADR-0012's allowlist`).toContain(route);
-		}
+		// EQUALITY, not a subset. A subset check only ever asks "is every route
+		// permitted?" and never "is every permission still earned?" — so an
+		// entry whose page stopped importing the component would rot open,
+		// pre-approving a pair nobody uses until something re-introduces it by
+		// accident. Both directions are faults, so both fail. (This was a
+		// subset while the themed cart was still on its own branch and this
+		// tree carried the pre-theme page importing nothing; that page has
+		// since merged, so the allowlist is now exactly the tree.)
+		expect(clientJsRoutes(PAGES_DIR)).toEqual(PERMITTED);
 	});
 
 	test("the scripted components are named, so growing one is a decision", () => {
