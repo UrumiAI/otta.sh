@@ -1,0 +1,72 @@
+/**
+ * The totals block's rules (docs/theme/TEMPERED.md §7).
+ *
+ * The plugin's `CheckoutAmountView` already carries the distinction the theme
+ * needs — `money: null` means "this store did not calculate it", `money`
+ * present means "this is a real figure, even if it is zero". So the theme never
+ * parses a string to decide how to render it, and there is exactly one way for
+ * "Not calculated" to become "$0.00": someone deleting this rule.
+ *
+ * The second job here is the footnote. §7 requires that when
+ * `totalExcludesUncalculated` is set, the line under the total says WHICH parts
+ * are missing — "this total may be incomplete" tells a shopper nothing.
+ */
+import { NOT_CALCULATED_LABEL, type CheckoutAmountView } from "@urumi/plugin";
+
+export interface SumRow {
+	/** The row's name — "Subtotal", "Shipping", "Tax". */
+	label: string;
+	/** Straight off the view model. The component renders `amount.label`; it
+	 *  never builds a money string (§7). */
+	amount: CheckoutAmountView;
+	/**
+	 * Prose to print INSTEAD of `amount.label` when nothing was computed.
+	 *
+	 * This exists for one label: the view model's `NOT_APPLICABLE_LABEL` is a
+	 * bare "—", and §7 forbids a bare em dash — on its own it is
+	 * indistinguishable from an outage, from a free item, and from a row this
+	 * store cannot price. The page that knows why the row is empty supplies the
+	 * sentence ("No coupon applied").
+	 */
+	fallback?: string;
+}
+
+/** Was this amount calculated at all? The view model says so; nothing here
+ *  inspects the string. */
+export function isUncalculated(amount: CheckoutAmountView): boolean {
+	return amount.money === null;
+}
+
+/** The text a totals row prints — pre-formatted money, or honest prose. */
+export function sumRowText(row: SumRow): string {
+	if (!isUncalculated(row.amount)) return row.amount.label;
+	return row.fallback ?? row.amount.label;
+}
+
+/** Lower-cased names of the rows this store never configured. Deliberately
+ *  keyed on `NOT_CALCULATED_LABEL` and not on "has no money": a discount that
+ *  simply does not apply to this order is not an unconfigured store. */
+function uncalculatedNames(rows: SumRow[]): string[] {
+	return rows
+		.filter((row) => isUncalculated(row.amount) && row.amount.label === NOT_CALCULATED_LABEL)
+		.map((row) => row.label.toLowerCase());
+}
+
+/**
+ * The line under the total, or `null` when the total is complete.
+ *
+ * `excludesUncalculated` is the view model's own `totalExcludesUncalculated`
+ * flag and has the last word — the theme reports what the pricing pipeline
+ * says, it does not re-derive it from the rows it happens to have been handed.
+ */
+export function uncalculatedFootnote(rows: SumRow[], excludesUncalculated: boolean): string | null {
+	if (!excludesUncalculated) return null;
+	const names = uncalculatedNames(rows);
+	if (names.length === 0) return null;
+	const list =
+		names.length === 1
+			? names[0]
+			: `${names.slice(0, -1).join(", ")} or ${names[names.length - 1] ?? ""}`;
+	const it = names.length === 1 ? "it" : "them";
+	return `This total doesn't include ${list} — this store hasn't set ${it} up yet.`;
+}

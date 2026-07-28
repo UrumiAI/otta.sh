@@ -1,0 +1,104 @@
+---
+/**
+ * Ledger — the order's line items (docs/theme/TEMPERED.md §4).
+ *
+ * The same inventory tape the home page opens with, itemised: SKU, quantity
+ * and money, all three in the data face so the columns align without being
+ * told to. It carries no product art and no controls — it is a statement of
+ * what is in the order, and it reads the same on the checkout review, on the
+ * confirmation page, and in an email if it ever ends up in one.
+ *
+ * Every money cell arrives PRE-FORMATTED (§7). A line the store cannot price
+ * says so in prose; it never shows a figure the store did not quote.
+ */
+export interface LedgerRow {
+	sku: string;
+	qty: number;
+	/** `lineTotal.formatted`, or the honest prose for a line with no live
+	 *  price ("priced at checkout"). Never assembled here. */
+	money: string;
+	/** true ⇒ `money` is prose, not a figure, and is set as prose. */
+	unpriced?: boolean;
+}
+
+interface Props {
+	rows: LedgerRow[];
+	class?: string;
+}
+
+const { rows, class: className } = Astro.props;
+---
+
+<div class:list={["ledger", className]}>
+	{
+		rows.map((row) => (
+			<div class="line">
+				<span class="sku">{row.sku}</span>
+				<span class="qty">
+					<span class="u-sr-only">Quantity </span>
+					{row.qty}
+				</span>
+				<span class:list={["money", row.unpriced === true && "unpriced"]}>{row.money}</span>
+			</div>
+		))
+	}
+</div>
+
+<style>
+	.ledger {
+		display: flex;
+		flex-direction: column;
+	}
+
+	/* §2: hairlines, no box. The first line takes a top rule so the block is
+	   bounded by the same device that separates it. */
+	.line {
+		display: grid;
+		grid-template-columns: 1fr 2rem auto;
+		gap: 0.875rem;
+		align-items: baseline;
+		padding: 0.625rem 0;
+		border-bottom: var(--u-hair);
+	}
+	.line:first-child {
+		border-top: var(--u-hair);
+	}
+
+	.sku,
+	.qty,
+	.money {
+		font-family: var(--u-data);
+		font-variation-settings: "wdth" 90;
+		letter-spacing: -0.045em;
+		font-variant-numeric: tabular-nums;
+	}
+
+	.sku {
+		font-size: 0.75rem;
+		/* A long SKU breaks rather than widening the panel (§11). */
+		overflow-wrap: anywhere;
+	}
+
+	.qty {
+		font-size: 0.75rem;
+		text-align: right;
+		color: var(--u-mute);
+	}
+
+	.money {
+		font-size: 0.8125rem;
+		font-weight: 500;
+		text-align: right;
+		white-space: nowrap;
+	}
+
+	/* Prose, not a figure — set smaller and muted so it cannot be misread as
+	   an amount (§7). */
+	.money.unpriced {
+		font-size: 0.6875rem;
+		font-weight: 400;
+		letter-spacing: -0.04em;
+		color: var(--u-mute);
+		white-space: normal;
+	}
+</style>

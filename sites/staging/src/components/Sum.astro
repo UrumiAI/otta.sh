@@ -1,0 +1,129 @@
+---
+/**
+ * Sum — the totals block, and the theme's most load-bearing rule
+ * (docs/theme/TEMPERED.md §7).
+ *
+ * "Not calculated" is not zero. A store with no shipping zone and no tax class
+ * gets synthetic zeros out of the quote pipeline, and rendering those as
+ * "$0.00" or "Free shipping" would be a promise the store never made. The
+ * plugin's view model already refuses to turn them into money — `money: null`
+ * plus an honest label — and this component is the half of that contract that
+ * shows on screen: a row with no money is set as MUTED MONO PROSE, in a
+ * different size and weight from every figure on the page, so it cannot be
+ * mistaken for an amount.
+ *
+ * It is structurally incapable of the failure it exists to prevent: it is
+ * handed `CheckoutAmountView`s and prints their `label`, so there is no amount
+ * and no currency in scope to build "$0.00" out of.
+ */
+import type { CheckoutAmountView } from "@urumi/plugin";
+import { isUncalculated, sumRowText, uncalculatedFootnote, type SumRow } from "../lib/totals.js";
+import PriceTag from "./PriceTag.astro";
+
+interface Props {
+	/** Subtotal, discount, shipping, tax — in the order they should read. */
+	rows: SumRow[];
+	total: CheckoutAmountView;
+	/** "Total" while it is still a quote; "Paid" once the order settled. */
+	totalLabel?: string;
+	/** The view model's `totals.totalExcludesUncalculated`. Drives the footnote
+	 *  that NAMES what the total is missing. */
+	excludesUncalculated?: boolean;
+	/** Overrides the derived footnote, for a page with something more specific
+	 *  to say. */
+	footnote?: string | null;
+	class?: string;
+}
+
+const {
+	rows,
+	total,
+	totalLabel = "Total",
+	excludesUncalculated = false,
+	footnote,
+	class: className,
+} = Astro.props;
+
+const note = footnote !== undefined ? footnote : uncalculatedFootnote(rows, excludesUncalculated);
+---
+
+<div class:list={["sum", className]}>
+	{
+		rows.map((row) => (
+			<div class="row">
+				<span class="label">{row.label}</span>
+				{isUncalculated(row.amount) ? (
+					<span class="uncalc">{sumRowText(row)}</span>
+				) : (
+					<PriceTag formatted={row.amount.label} size="sm" />
+				)}
+			</div>
+		))
+	}
+	<div class="row total">
+		<span class="label">{totalLabel}</span>
+		{
+			isUncalculated(total) ? (
+				<span class="uncalc">{total.label}</span>
+			) : (
+				<PriceTag formatted={total.label} size="lg" />
+			)
+		}
+	</div>
+	{note !== null && note !== undefined && note !== "" && <p class="foot">{note}</p>}
+</div>
+
+<style>
+	.sum {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+
+	.row {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 1.5rem;
+	}
+
+	/* §3's uppercase mono label. */
+	.label {
+		font-family: var(--u-data);
+		font-variation-settings: "wdth" 90;
+		font-size: 0.5625rem;
+		font-weight: 500;
+		letter-spacing: 0.11em;
+		text-transform: uppercase;
+		color: var(--u-mute);
+	}
+
+	/* PROSE, not a figure: mono so it sits in the money column, but lighter,
+	   smaller and muted so no one reads it as an amount. This is the whole of
+	   §7's "never $0.00, never a bare dash, never Free". */
+	.uncalc {
+		font-family: var(--u-data);
+		font-variation-settings: "wdth" 90;
+		font-size: 0.6875rem;
+		font-weight: 400;
+		letter-spacing: -0.04em;
+		color: var(--u-mute);
+		text-align: right;
+	}
+
+	.total {
+		padding-top: 0.75rem;
+		margin-top: 0.25rem;
+		border-top: var(--u-hair);
+	}
+	.total .label {
+		color: var(--u-ink);
+	}
+
+	.foot {
+		margin: 0.5rem 0 0;
+		font-size: 0.75rem;
+		line-height: 1.5;
+		color: var(--u-mute);
+	}
+</style>

@@ -1,0 +1,128 @@
+---
+/**
+ * ProductCard — one product in the catalog grid (docs/theme/TEMPERED.md §4).
+ *
+ * No card border, no shadow, no box: §2's "one hairline, never a box". The only
+ * rule on the card is the one above its foot, and the grid's air does the rest
+ * of the separating. The whole card is the link — the media, the title and the
+ * price are all the same target, because on a catalog page they are all the
+ * same intent.
+ *
+ * The FOOT is the fussy part: `margin-top: auto` pins it to the bottom of the
+ * card so a three-line description and a one-line description still put their
+ * price rules on the same baseline across a row. Without it the grid reads as
+ * ragged even though every card is the same height.
+ */
+import type { AvailabilityToken } from "@urumi/plugin";
+import MediaPanel from "./MediaPanel.astro";
+import PriceTag from "./PriceTag.astro";
+import StockRule from "./StockRule.astro";
+
+interface Props {
+	href: string;
+	title: string;
+	/** Keys the coil (§5) — the slug, or the id when there is no slug. */
+	slug: string;
+	description?: string | null;
+	image?: string | null;
+	/** Pre-formatted, off the view model's `price.formatted`. `null` when the
+	 *  product is not purchasable — the card then says so in prose rather than
+	 *  showing a figure the store never quoted (§7). */
+	price?: string | null;
+	availability?: AvailabilityToken | null;
+	/** The prose that replaces the price when there is none. */
+	priceNote?: string;
+}
+
+const {
+	href,
+	title,
+	slug,
+	description = null,
+	image = null,
+	price = null,
+	availability = null,
+	priceNote = "Not currently available for purchase",
+} = Astro.props;
+
+const soldOut = availability === "out_of_stock";
+---
+
+<a class="card" href={href} data-sold-out={soldOut ? "" : undefined}>
+	<MediaPanel slug={slug} image={image} class="card-media" />
+	<h2 class="card-title">{title}</h2>
+	{description !== null && description !== "" && <p class="card-desc">{description}</p>}
+	<span class="card-foot">
+		{
+			price === null ? (
+				<span class="card-note">{priceNote}</span>
+			) : (
+				<PriceTag formatted={price} soldOut={soldOut} />
+			)
+		}
+		<StockRule availability={availability} />
+	</span>
+</a>
+
+<style>
+	.card {
+		display: flex;
+		flex-direction: column;
+		gap: 0.875rem;
+		text-decoration: none;
+		color: inherit;
+		/* Fills its grid cell, which is what lets the foot's `margin-top: auto`
+		   align feet across the row. */
+		height: 100%;
+	}
+
+	/* §3: the display face, narrow. Titles carry the weight on this page —
+	   there is no other emphasis on a card. */
+	.card-title {
+		font-family: var(--u-display);
+		font-variation-settings: "wdth" 78, "opsz" 48;
+		font-weight: 700;
+		font-size: 1.375rem;
+		letter-spacing: -0.025em;
+		line-height: 1;
+		margin: 0;
+		text-wrap: balance;
+	}
+
+	.card-desc {
+		margin: 0;
+		font-size: 0.8125rem;
+		line-height: 1.5;
+		color: var(--u-mute);
+	}
+
+	/* The one rule on the card, and the reason the row reads as a shelf. */
+	.card-foot {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 1rem;
+		padding-top: 0.625rem;
+		border-top: var(--u-hair);
+		margin-top: auto;
+	}
+
+	.card-note {
+		font-size: 0.75rem;
+		color: var(--u-mute);
+	}
+
+	/* Straw is the fitting: it underlines, it never fills (§2). */
+	.card:hover .card-title {
+		text-decoration: underline;
+		text-decoration-color: var(--u-straw);
+		text-decoration-thickness: 2px;
+		text-underline-offset: 3px;
+	}
+
+	/* Sold out dims the art rather than stamping the card — the product is
+	   still worth looking at, it just cannot be bought today. */
+	.card[data-sold-out] .card-media {
+		opacity: 0.45;
+	}
+</style>

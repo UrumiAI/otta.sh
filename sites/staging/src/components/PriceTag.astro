@@ -1,0 +1,61 @@
+---
+/**
+ * PriceTag — a money figure (docs/theme/TEMPERED.md §3, §4, §7).
+ *
+ * §7's first rule, made structural: this component takes a PRE-FORMATTED
+ * string off the view model (`price.formatted`, `amount.label`) and prints it.
+ * It takes no amount, no currency, and no locale, so there is nothing here to
+ * assemble a money string out of even by accident — a number reaching a money
+ * field is a type error one layer down, and it cannot reach this one at all.
+ *
+ * Mono and tabular, per §3: money is set in the data face, and nothing else is.
+ */
+interface Props {
+	/** Straight off the view model. Never built here. */
+	formatted: string;
+	/** Struck through and muted — the price is still a fact, it is just not a
+	 *  thing you can buy right now. */
+	soldOut?: boolean;
+	/** Display weight. `lg` is the totals line and the PDP's price. */
+	size?: "sm" | "md" | "lg";
+	class?: string;
+}
+
+const { formatted, soldOut = false, size = "md", class: className } = Astro.props;
+---
+
+<span class:list={["price", `size-${size}`, className]} data-sold-out={soldOut ? "" : undefined}>
+	{formatted}
+</span>
+
+<style>
+	.price {
+		font-family: var(--u-data);
+		font-variation-settings: "wdth" 90;
+		letter-spacing: -0.045em;
+		font-variant-numeric: tabular-nums;
+		font-weight: 500;
+		color: var(--u-ink);
+		/* Figures must not re-wrap mid-number when a column narrows. */
+		white-space: nowrap;
+	}
+
+	.size-sm {
+		font-size: 0.8125rem;
+	}
+	.size-md {
+		font-size: 0.9375rem;
+	}
+	.size-lg {
+		font-size: 1.5rem;
+		font-weight: 600;
+	}
+
+	/* Not a colour change plus a strike — sold out is ONE signal, and it is the
+	   same mute the rest of the theme uses for "true, but not actionable". */
+	.price[data-sold-out] {
+		color: var(--u-mute);
+		text-decoration: line-through;
+		text-decoration-thickness: 1px;
+	}
+</style>

@@ -1,0 +1,75 @@
+---
+/**
+ * MediaPanel — where a product's picture goes (docs/theme/TEMPERED.md §4, §5).
+ *
+ * A neutral `--u-panel` ground carrying ONE generated coil, keyed to the
+ * product's slug so a fresh install with no photography still looks
+ * intentional and no two products repeat. When the product actually has an
+ * image, the image replaces the coil entirely — the panel is never a frame
+ * around a photo, it is the fallback FOR one.
+ *
+ * The coil is `aria-hidden`: it carries no information, it is generated art.
+ */
+import { buildCoil, COIL_HEIGHT, COIL_WIDTH } from "../lib/coil.js";
+
+interface Props {
+	/** Keys the coil — any stable per-product string (slug, or the id when a
+	 *  product has no slug). Same value in ⇒ same drawing, always. */
+	slug: string;
+	/** The product's image. Present ⇒ the coil is not drawn at all (§5). */
+	image?: string | null;
+	/** Alt text for that image. Empty by default: on a card the product title
+	 *  sits directly beneath, and repeating it is noise to a screen reader.
+	 *  A page where the image is the ONLY description of the product passes
+	 *  real text. */
+	alt?: string;
+	/** The panel's shape. The catalog runs 4/3, the PDP 4/5, a cart thumbnail
+	 *  1 — the ratio is layout, so the page owns it. */
+	ratio?: string;
+	class?: string;
+}
+
+const { slug, image = null, alt = "", ratio = "4 / 3", class: className } = Astro.props;
+const coil = image === null ? buildCoil(slug) : null;
+---
+
+<span class:list={["media", className]} style={`--media-ratio: ${ratio}`}>
+	{
+		coil === null ? (
+			<img src={image} alt={alt} loading="lazy" decoding="async" />
+		) : (
+			<svg
+				viewBox={`0 0 ${COIL_WIDTH} ${COIL_HEIGHT}`}
+				preserveAspectRatio="xMidYMid slice"
+				aria-hidden="true"
+				focusable="false"
+			>
+				<rect width={COIL_WIDTH} height={COIL_HEIGHT} fill="var(--u-panel)" />
+				<path d={coil.path} fill={`var(${coil.tint})`} opacity="var(--u-coil-a)" />
+			</svg>
+		)
+	}
+</span>
+
+<style>
+	/* §2: 2px radius, no border, no shadow. The panel's own ground is the only
+	   fill in the theme, and it means exactly one thing: "image goes here". */
+	.media {
+		display: block;
+		position: relative;
+		aspect-ratio: var(--media-ratio, 4 / 3);
+		border-radius: var(--u-r);
+		overflow: hidden;
+		background: var(--u-panel);
+	}
+
+	.media svg,
+	.media img {
+		display: block;
+		width: 100%;
+		height: 100%;
+		/* The coil slices; a photograph is cropped to the same box rather than
+		   letterboxed, so a row of cards keeps one baseline grid. */
+		object-fit: cover;
+	}
+</style>

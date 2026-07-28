@@ -1,0 +1,271 @@
+---
+/**
+ * HoldRibbon — the theme's signature (docs/theme/TEMPERED.md §6).
+ *
+ * A 2px track in `--u-edge`, a fill that drains left→right against the line's
+ * `expiresAt`, and the remaining time in mono beside it. Violet while the stock
+ * is yours, bronze under a minute, mute and dashed once it has gone back on
+ * sale — the tempering scale doing the job it exists for.
+ *
+ * Two things here are deliberate and easy to undo by accident:
+ *
+ *  1. THE COUNTDOWN TICKS UNDER `prefers-reduced-motion`. It is information the
+ *     shopper is acting on, not decoration. The animated fill therefore sits
+ *     inside a `data-motion="essential"` wrapper, which tokens.css's
+ *     reduced-motion rule exempts along with its whole subtree. The
+ *     INDETERMINATE sweep further down is the opposite case — that one IS
+ *     decorative, so it is not exempt and it collapses to a static fill.
+ *
+ *  2. THE NO-JS VALUE IS THE ABSOLUTE EXPIRY, NOT A FROZEN COUNTDOWN. A
+ *     server-rendered "08:32" is true for one second and then quietly lies, so
+ *     the markup ships the expiry instant and the script UPGRADES that slot to
+ *     the live clock on its first tick. A browser that never runs the script is
+ *     left holding something that stays true.
+ */
+import {
+	HOLD_RELEASED_NEXT_STEP,
+	HOLD_WINDOW_SECONDS,
+	absoluteExpiry,
+	holdView,
+} from "../lib/hold.js";
+
+type Props =
+	| {
+			variant?: "countdown";
+			/** The cart line's own `expiresAt`. `null` — no reservation was ever
+			 *  taken on this line — renders NOTHING: an absent hold and a lapsed
+			 *  one are different facts. */
+			expiresAt: string | null;
+			/** The store's hold TTL, for the fill's denominator. */
+			windowSeconds?: number;
+			/** What the shopper should do once it has lapsed (§6). */
+			nextStep?: string;
+			class?: string;
+	  }
+	| {
+			variant: "indeterminate";
+			/** "Checking 3 of 8" — the confirmation page's bounded poll. */
+			poll: number;
+			pollMax: number;
+			label?: string;
+			class?: string;
+	  };
+
+const props = Astro.props;
+
+const view =
+	props.variant === "indeterminate"
+		? null
+		: holdView(props.expiresAt, new Date(), props.windowSeconds ?? HOLD_WINDOW_SECONDS);
+const expiry = props.variant === "indeterminate" ? null : absoluteExpiry(props.expiresAt);
+---
+
+{
+	props.variant === "indeterminate" ? (
+		<div class:list={["hold", "poll", props.class]}>
+			<div class="track">
+				<span class="sweep" />
+			</div>
+			<div class="meta">
+				<span class="label">{props.label ?? "Checking"}</span>
+				<span class="clock">
+					{props.poll} of {props.pollMax}
+				</span>
+			</div>
+		</div>
+	) : (
+		view !== null && (
+			<div
+				class:list={["hold", props.class]}
+				data-hold
+				data-state={view.state}
+				data-expires={props.expiresAt}
+				data-window={props.windowSeconds ?? HOLD_WINDOW_SECONDS}
+			>
+				{/* The exemption tokens.css grants covers this element AND its
+				    subtree — the fill inside is what actually moves. */}
+				<div class="track" data-motion="essential">
+					<div class="fill" data-hold-fill style={`--pct: ${view.percent}%`} />
+				</div>
+				<div class="meta" role="timer">
+					<span class="label" data-hold-label>
+						{view.label}
+					</span>
+					{/* Replaced with the live mm:ss on the script's first tick. */}
+					<span class="clock" data-hold-clock>
+						{expiry}
+					</span>
+				</div>
+				<p class="note" data-hold-note hidden={view.state !== "released"}>
+					{props.nextStep ?? HOLD_RELEASED_NEXT_STEP}
+				</p>
+			</div>
+		)
+	)
+}
+
+<script>
+	/**
+	 * The countdown (§6). Information, so it runs under reduced motion too —
+	 * the media query suppresses decoration, not a timer a shopper is relying
+	 * on. Every ribbon on the page shares one interval.
+	 *
+	 * These three labels are the one duplication of `src/lib/hold.ts` in the
+	 * codebase — an inline script cannot import the module — and
+	 * `hold-ribbon.test.ts` pins the two copies to each other.
+	 */
+	const LABELS = { held: "Held for you", expiring: "Expiring", released: "Hold released" };
+	const pad = (value: number): string => String(value).padStart(2, "0");
+
+	const ribbons = [...document.querySelectorAll<HTMLElement>("[data-hold]")].map((el) => ({
+		el,
+		expiry: Date.parse(el.dataset.expires ?? ""),
+		window: Number(el.dataset.window) || 600,
+		fill: el.querySelector<HTMLElement>("[data-hold-fill]"),
+		label: el.querySelector<HTMLElement>("[data-hold-label]"),
+		clock: el.querySelector<HTMLElement>("[data-hold-clock]"),
+		note: el.querySelector<HTMLElement>("[data-hold-note]"),
+	}));
+
+	function tick(): void {
+		const now = Date.now();
+		for (const r of ribbons) {
+			if (Number.isNaN(r.expiry)) continue;
+			const left = Math.max(0, Math.floor((r.expiry - now) / 1000));
+			const state = left <= 0 ? "released" : left <= 60 ? "expiring" : "held";
+			r.el.dataset.state = state;
+			if (r.label) r.label.textContent = LABELS[state];
+			if (r.clock) r.clock.textContent = `${pad(Math.floor(left / 60))}:${pad(left % 60)}`;
+			if (r.fill) r.fill.style.setProperty("--pct", `${Math.min(100, (left / r.window) * 100)}%`);
+			if (r.note) r.note.hidden = state !== "released";
+		}
+	}
+
+	if (ribbons.length > 0) {
+		tick();
+		setInterval(tick, 1000);
+	}
+</script>
+
+<style>
+	.hold {
+		display: flex;
+		flex-direction: column;
+		gap: 0.375rem;
+	}
+
+	/* §2: 2px, the thickness of the wordmark's rule and the stock rule. The
+	   theme has one bar and it is always this one. */
+	.track {
+		height: 2px;
+		border-radius: 1px;
+		background: var(--u-edge);
+		overflow: hidden;
+	}
+
+	.fill {
+		height: 100%;
+		width: var(--pct, 100%);
+		background: var(--u-violet);
+		/* One second, linear, matching the tick — so the bar drains rather than
+		   stepping. Exempt from the reduced-motion clamp by the wrapper above. */
+		transition: width 1s linear;
+	}
+
+	.meta {
+		display: flex;
+		align-items: baseline;
+		gap: 0.5rem;
+	}
+
+	/* §3's uppercase mono label. */
+	.label {
+		font-family: var(--u-data);
+		font-variation-settings: "wdth" 90;
+		font-size: 0.5625rem;
+		font-weight: 500;
+		letter-spacing: 0.11em;
+		text-transform: uppercase;
+		color: var(--u-violet);
+	}
+
+	.clock {
+		font-family: var(--u-data);
+		font-variation-settings: "wdth" 90;
+		font-size: 0.6875rem;
+		font-weight: 500;
+		letter-spacing: -0.04em;
+		font-variant-numeric: tabular-nums;
+		color: var(--u-violet);
+		white-space: nowrap;
+	}
+
+	.note {
+		margin: 0;
+		font-size: 0.75rem;
+		color: var(--u-mute);
+	}
+
+	/* Under a minute the whole ribbon moves up the scale. */
+	.hold[data-state="expiring"] .fill {
+		background: var(--u-bronze);
+	}
+	.hold[data-state="expiring"] .label,
+	.hold[data-state="expiring"] .clock {
+		color: var(--u-bronze);
+	}
+
+	/* Released: the continuous line breaks and the colour drops out entirely.
+	   Same device as a sold-out stock rule and an expired order stamp. */
+	.hold[data-state="released"] .track {
+		background: repeating-linear-gradient(90deg, var(--u-edge) 0 4px, transparent 4px 8px);
+	}
+	.hold[data-state="released"] .fill {
+		display: none;
+	}
+	.hold[data-state="released"] .label,
+	.hold[data-state="released"] .clock {
+		color: var(--u-mute);
+	}
+
+	/* ── the indeterminate variant (§6) ─────────────────────────────────────
+	   The same ribbon on /orders/<id> while an order is pending: there is no
+	   duration to drain against, so a segment sweeps and the poll count carries
+	   the actual information. */
+	.poll {
+		max-width: 22rem;
+	}
+
+	.poll .track {
+		position: relative;
+	}
+
+	.sweep {
+		position: absolute;
+		inset: 0 auto 0 0;
+		width: 34%;
+		background: var(--u-violet);
+		animation: hold-sweep 1.6s ease-in-out infinite;
+	}
+
+	@keyframes hold-sweep {
+		from {
+			transform: translateX(-100%);
+		}
+		to {
+			transform: translateX(320%);
+		}
+	}
+
+	/* This sweep IS decorative — the count beside it is the information — so
+	   unlike the countdown it is NOT exempt, and it settles into a static
+	   filled track rather than freezing mid-stride at its first keyframe. */
+	@media (prefers-reduced-motion: reduce) {
+		.sweep {
+			animation: none;
+			transform: none;
+			width: 100%;
+			opacity: 0.4;
+		}
+	}
+</style>

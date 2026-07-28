@@ -1,0 +1,86 @@
+---
+/**
+ * QtyField — a quantity (docs/theme/TEMPERED.md §3, §4).
+ *
+ * Mono, because §3 says quantities are set in the data face along with money
+ * and SKUs, and nothing else is. The label is a real `<label>` wrapping the
+ * input rather than an `aria-label`, so it works for a pointer as well as a
+ * screen reader; `hideLabel` visually hides it (the cart's inline row has no
+ * room for one) without removing it from the accessibility tree.
+ *
+ * Focus is the global rule in tokens.css — straw, 2px, offset 2px — and this
+ * component deliberately does not restyle it.
+ */
+interface Props {
+	/** The form field name. The cart and PDP endpoints both read `qty`. */
+	name?: string;
+	value: number;
+	/** Names the field. Include the product when there is more than one on the
+	 *  page — "Quantity, Urumi Tee" — so the labels are distinguishable. */
+	label?: string;
+	/** Visually hides the label. It stays in the accessibility tree. */
+	hideLabel?: boolean;
+	min?: number;
+	/** `sm` is the cart's inline row; `md` the PDP's buy row. */
+	size?: "sm" | "md";
+	class?: string;
+}
+
+const {
+	name = "qty",
+	value,
+	label = "Qty",
+	hideLabel = false,
+	min = 1,
+	size = "md",
+	class: className,
+} = Astro.props;
+---
+
+<label class:list={["qty", `size-${size}`, className]}>
+	<span class:list={["label", hideLabel && "u-sr-only"]}>{label}</span>
+	<input type="number" name={name} value={value} min={min} step="1" inputmode="numeric" />
+</label>
+
+<style>
+	.qty {
+		display: flex;
+		flex-direction: column;
+		gap: 0.375rem;
+	}
+
+	/* §3's uppercase mono label. */
+	.label {
+		font-family: var(--u-data);
+		font-variation-settings: "wdth" 90;
+		font-size: 0.5625rem;
+		font-weight: 500;
+		letter-spacing: 0.11em;
+		text-transform: uppercase;
+		color: var(--u-mute);
+	}
+
+	.qty input {
+		border: var(--u-hair);
+		border-radius: var(--u-r);
+		background: var(--u-surface);
+		color: var(--u-ink);
+		font-family: var(--u-data);
+		font-variation-settings: "wdth" 90;
+		letter-spacing: -0.045em;
+		font-variant-numeric: tabular-nums;
+	}
+
+	.size-md input {
+		width: 4.5rem;
+		padding: 0.625rem 0.75rem;
+		font-size: 0.875rem;
+	}
+
+	.size-sm input {
+		width: 3.5rem;
+		padding: 0.375rem 0.5rem;
+		font-size: 0.75rem;
+		text-align: center;
+	}
+</style>
