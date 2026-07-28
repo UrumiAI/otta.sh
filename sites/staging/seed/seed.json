@@ -7,8 +7,8 @@
 		"author": "Urumi"
 	},
 	"settings": {
-		"title": "Urumi Store (staging)",
-		"tagline": "The Urumi staging storefront"
+		"title": "Urumi",
+		"tagline": "The Urumi reference storefront (staging)"
 	},
 	"collections": [
 		{

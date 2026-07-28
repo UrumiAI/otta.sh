@@ -75,6 +75,39 @@ describe("Base layout — the theme foundation", () => {
 		expect(footer).toMatch(/class="[^"]*mono/);
 	});
 
+	test("the currency is a PROP, and is omitted entirely when nothing supplies it", () => {
+		// §7: the layout never invents anything money-shaped, and it cannot know
+		// the store's currency on its own — a hardcoded "USD" is a lie on any
+		// store not priced in dollars.
+		expect(source).toMatch(/currency\?:\s*string \| null/);
+		const footer = markup.slice(markup.indexOf("<footer"));
+		expect(footer).toContain("currency !== null &&");
+		expect(footer, "a literal currency code in the footer").not.toMatch(/>\s*[A-Z]{3}\s*</);
+	});
+
+	test("the cart badge reads as a count to a screen reader, not as punctuation", () => {
+		// Left alone, "Cart (3)" is announced "Cart left-paren three right-paren".
+		expect(markup).toContain('aria-hidden="true"');
+		expect(markup).toContain("u-sr-only");
+		expect(source).toContain("countLabel");
+	});
+
+	test("a trailing slash on the CMS-authored cart URL does not silently cost the badge", () => {
+		// The nav URLs come from the CMS, so `/cart/` is a legal thing to find
+		// there. Exercise the predicate itself rather than pinning its shape.
+		const body = /function isCartLink\(url: string\): boolean \{([\s\S]*?)\n\}/.exec(source)?.[1];
+		expect(body, "isCartLink not found in Base.astro").toBeDefined();
+		const isCartLink = new Function("url", (body as string).replace(/: string/g, "")) as (
+			url: string,
+		) => boolean;
+		expect(isCartLink("/cart")).toBe(true);
+		expect(isCartLink("/cart/")).toBe(true);
+		expect(isCartLink("/cart?added=1")).toBe(true);
+		expect(isCartLink("/cart#lines")).toBe(true);
+		expect(isCartLink("/carts")).toBe(false);
+		expect(isCartLink("/")).toBe(false);
+	});
+
 	test("the dark palette is advertised to the UA so form controls follow it", () => {
 		expect(markup).toMatch(/<meta\s+name="color-scheme"\s+content="light dark"\s*\/?>/);
 	});
@@ -82,7 +115,14 @@ describe("Base layout — the theme foundation", () => {
 	test("the three faces are loaded through Astro's font API, never a CDN at runtime", () => {
 		// Astro exposes the font API's <Font> component from `astro:assets`.
 		expect(source).toContain('from "astro:assets"');
-		expect(source).toMatch(/<Font cssVariable="--u-face-(display|body|data)" preload \/>/);
+		for (const face of ["display", "body", "data"]) {
+			expect(source).toContain(`<Font cssVariable="--u-face-${face}"`);
+		}
+		// Only the faces that set real text above the fold are preloaded; the
+		// data face earns its preload back in increment 4 (money, countdowns).
+		expect(source).toContain('<Font cssVariable="--u-face-display" preload />');
+		expect(source).toContain('<Font cssVariable="--u-face-body" preload />');
+		expect(source).toContain('<Font cssVariable="--u-face-data" />');
 		expect(source).not.toContain("fonts.googleapis.com");
 		expect(source).not.toContain("fonts.gstatic.com");
 	});

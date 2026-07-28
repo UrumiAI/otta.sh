@@ -42,4 +42,19 @@ describe("Base layout favicon", () => {
 		// The placeholder mark was a rounded square with a disc punched in it.
 		expect(markup).not.toContain("<circle");
 	});
+
+	test("its colours are palette values, not drifted-from copies", () => {
+		// A favicon cannot read a custom property, so these literals are the one
+		// place in the theme a colour is written down twice. Nothing warns when
+		// the palette moves and the mark quietly stops matching it — hence this.
+		const tokens = readFileSync(
+			path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src/styles/tokens.css"),
+			"utf8",
+		).toLowerCase();
+		const hexes = [...source.matchAll(/%23([0-9a-fA-F]{6})/g)].map((m) => `#${m[1]}`.toLowerCase());
+		expect(hexes.length, "no colours found in the favicon data URI").toBeGreaterThan(0);
+		for (const hex of hexes) {
+			expect(tokens, `favicon colour ${hex} is not a palette value`).toContain(hex);
+		}
+	});
 });

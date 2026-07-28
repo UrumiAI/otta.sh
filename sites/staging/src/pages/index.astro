@@ -9,8 +9,8 @@ import Base from "../layouts/Base.astro";
 const settings = (await getSiteSettings()) as { title?: string; tagline?: string };
 ---
 
-<Base title={settings.title ?? "Urumi Store (staging)"} description={settings.tagline}>
-	<h1>{settings.title ?? "Urumi Store (staging)"}</h1>
+<Base title={settings.title ?? "Urumi"} description={settings.tagline}>
+	<h1>{settings.title ?? "Urumi"}</h1>
 	{settings.tagline && <p>{settings.tagline}</p>}
 	<p><a href="/products">Browse products</a></p>
 </Base>

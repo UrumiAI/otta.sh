@@ -15,6 +15,8 @@
 import { Font } from "astro:assets";
 import { getMenu, getSiteSettings } from "emdash";
 import "../styles/tokens.css";
+// TRANSITIONAL — goes away with the last page migration. See the file.
+import "../styles/legacy-bridge.css";
 
 interface Props {
 	title: string;
@@ -25,17 +27,31 @@ interface Props {
 	 * different facts and must not both render as `(0)`.
 	 */
 	cartCount?: number | null;
+	/**
+	 * The store's currency CODE, from a view model that already knows it
+	 * (§7: the layout never invents anything money-shaped, and it cannot know
+	 * the currency on its own). `null`/omitted renders no currency at all.
+	 */
+	currency?: string | null;
 }
 
-const { title, description, cartCount = null } = Astro.props;
+const { title, description, cartCount = null, currency = null } = Astro.props;
 const settings = (await getSiteSettings()) as { title?: string; tagline?: string };
-const siteTitle = settings.title ?? "Urumi Store (staging)";
+const siteTitle = settings.title ?? "Urumi";
 const fullTitle = title.includes(siteTitle) ? title : `${title} — ${siteTitle}`;
 const menu = await getMenu("primary");
 
-/** The nav entry the count belongs to, whatever the CMS labelled it. */
+/** The nav entry the count belongs to, whatever the CMS labelled it. A
+ *  CMS-authored trailing slash must not silently cost the badge. */
 function isCartLink(url: string): boolean {
-	return url === "/cart" || url.startsWith("/cart?") || url.startsWith("/cart#");
+	const path = url.split(/[?#]/)[0] ?? "";
+	return path.replace(/\/+$/, "") === "/cart";
+}
+
+/** The count is rendered as "(3)", which a screen reader announces as
+ *  "Cart bracket three bracket". This is what it says instead. */
+function countLabel(count: number): string {
+	return count === 1 ? "1 item" : `${count} items`;
 }
 ---
 
@@ -49,9 +65,14 @@ function isCartLink(url: string): boolean {
 		<meta name="color-scheme" content="light dark" />
 		<title>{fullTitle}</title>
 		{description && <meta name="description" content={description} />}
+		{/* Only the two faces that set real text above the fold are preloaded.
+		    The data face currently renders two short chrome strings, so
+		    preloading it competes with them for bandwidth for no gain; the
+		    preload comes back in increment 4, when money and the cart's hold
+		    countdown make it a first-paint face. */}
 		<Font cssVariable="--u-face-display" preload />
 		<Font cssVariable="--u-face-body" preload />
-		<Font cssVariable="--u-face-data" preload />
+		<Font cssVariable="--u-face-data" />
 		{/* Per-page <head> additions. Used by the confirmation page for its
 		    `referrer: no-referrer` policy and its bounded meta-refresh poll:
 		    both MUST be in <head> to take effect, and both belong to that page
@@ -67,7 +88,11 @@ function isCartLink(url: string): boolean {
 		/>
 	</head>
 	<body>
-		<a href="#main" class="skip-link">Skip to the main content</a>
+		{/* The shell wrapper is what aligns the skip link with the header
+		    content once it drops into flow on focus. */}
+		<div class="shell skip-shell">
+			<a href="#main" class="skip-link">Skip to the main content</a>
+		</div>
 		<header class="head">
 			<div class="shell head-row">
 				<a href="/" class="wordmark">{siteTitle}</a>
@@ -77,7 +102,10 @@ function isCartLink(url: string): boolean {
 							<a href={item.url}>
 								{item.label}
 								{isCartLink(item.url) && cartCount !== null && (
-									<span class="count mono"> ({cartCount})</span>
+									<Fragment>
+										<span class="count mono" aria-hidden="true"> ({cartCount})</span>
+										<span class="u-sr-only">, {countLabel(cartCount)}</span>
+									</Fragment>
 								)}
 							</a>
 						))
@@ -91,27 +119,40 @@ function isCartLink(url: string): boolean {
 		<footer class="foot">
 			<div class="shell foot-row">
 				<span>Urumi — content by EmDash, commerce by Urumi.</span>
-				<span class="mono">USD</span>
+				{currency !== null && <span class="mono">{currency}</span>}
 			</div>
 		</footer>
 	</body>
 </html>
 
 <style>
-	/* One measure for the whole store, so the header rule, the content and
-	   the footer rule all line up. */
+	/* One measure for the header content, the page content and the footer
+	   content, so all three share a left edge. The header and footer HAIRLINES
+	   are deliberately outside it and run full-bleed — the rule is the width of
+	   the window, the text is the width of the measure. */
 	.shell {
 		width: 100%;
 		max-width: 72rem;
 		margin: 0 auto;
 		padding-inline: clamp(1rem, 4vw, 2rem);
 	}
+	.skip-shell {
+		/* Collapses to nothing while the link is out of flow. */
+		height: 0;
+	}
 
+	/* Hidden until focused, then dropped INTO FLOW rather than floated over the
+	   header: overlaying it would cover the wordmark, which is exactly where a
+	   left-aligned skip link lands. Sitting in the shell also gives it the same
+	   left edge as everything else for free. */
 	.skip-link {
 		position: absolute;
-		left: 0.5rem;
-		top: 0.5rem;
-		z-index: 10;
+		width: 1px;
+		height: 1px;
+		margin: -1px;
+		overflow: hidden;
+		clip-path: inset(50%);
+		white-space: nowrap;
 		padding: 0.5rem 0.875rem;
 		background: var(--u-surface);
 		color: var(--u-ink);
@@ -120,14 +161,18 @@ function isCartLink(url: string): boolean {
 		font-size: 0.875rem;
 		font-weight: 500;
 		text-decoration: none;
-		/* Slid off the top until focused — transformed rather than
-		   `display: none`, which would take it out of the tab order and make
-		   the link useless to exactly the people it exists for. */
-		transform: translateY(-200%);
 	}
-	.skip-link:focus,
-	.skip-link:focus-visible {
-		transform: none;
+	.skip-link:focus {
+		position: static;
+		width: auto;
+		height: auto;
+		margin: 0.75rem 0;
+		overflow: visible;
+		clip-path: none;
+		display: inline-block;
+	}
+	.skip-shell:focus-within {
+		height: auto;
 	}
 
 	.head {
@@ -142,10 +187,12 @@ function isCartLink(url: string): boolean {
 	}
 
 	/* §3: the display face set narrow — the object the project is named
-	   after is a long thin ribbon. Straw is the fitting under it. */
+	   after is a long thin ribbon. Straw is the fitting under it.
+	   `wdth` 75 is Bricolage's axis minimum (and the low end of the range
+	   requested in astro.config.ts); anything lower is silently clamped. */
 	.wordmark {
 		font-family: var(--u-display);
-		font-variation-settings: "wdth" 74, "opsz" 24;
+		font-variation-settings: "wdth" 75, "opsz" 24;
 		font-weight: 800;
 		font-size: 1.25rem;
 		letter-spacing: 0.02em;
@@ -155,6 +202,11 @@ function isCartLink(url: string): boolean {
 		text-decoration: none;
 		padding-bottom: 2px;
 		border-bottom: 2px solid var(--u-straw);
+		/* The site title is CMS-owned and can be any length. Bound it so a
+		   long one wraps inside the header instead of widening the page. */
+		display: inline-block;
+		max-width: 100%;
+		overflow-wrap: anywhere;
 	}
 
 	.nav {

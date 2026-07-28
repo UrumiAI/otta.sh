@@ -81,6 +81,13 @@ export default defineConfig({
 	 * loudest move — drop these and `font-variation-settings: "wdth" …` becomes
 	 * a silent no-op that renders at default widths with no error anywhere.
 	 * `test/fonts-config.test.ts` pins them for that reason.
+	 *
+	 * CAVEAT: `experimental` here is UNIFONT's namespace (Astro's font API wraps
+	 * unifont's google provider), not Astro's — it can be renamed or moved under
+	 * a transitive PATCH bump, with no Astro major release to warn us.
+	 * fonts-config.test.ts is the tripwire and will be the first thing to fail;
+	 * the fix is to follow unifont's current option name, not to delete the
+	 * assertion.
 	 */
 	fonts: [
 		{
