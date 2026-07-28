@@ -1,0 +1,338 @@
+---
+/**
+ * The "Tempered" styleguide — every component in every state, on one page.
+ *
+ * DEV ONLY. The guard below is `import.meta.env.DEV`, which Vite folds to a
+ * constant at build time, so in any built worker this page is a 404 and the
+ * whole body below is dead code the bundler drops. `dev-route-guard.test.ts`
+ * pins that.
+ *
+ * ── Why this is committed rather than thrown away ────────────────────────
+ * The components land in increment 2 and are not wired into a page until
+ * increments 3–6, so without this route there is no way to look at them at
+ * all. It also renders the three states that are near-impossible to produce on
+ * a real page on demand: a hold crossing sixty seconds, a hold that has already
+ * lapsed, and an order in each of its four settlements. That is worth a route
+ * whose entire production behaviour is `return 404`.
+ *
+ * It is a STYLEGUIDE, not a fixture: it renders components with obviously fake
+ * data and makes no commerce call, so it cannot rot against the service.
+ */
+import HoldRibbon from "../../components/HoldRibbon.astro";
+import Ledger from "../../components/Ledger.astro";
+import MediaPanel from "../../components/MediaPanel.astro";
+import Notice from "../../components/Notice.astro";
+import PriceTag from "../../components/PriceTag.astro";
+import ProductCard from "../../components/ProductCard.astro";
+import QtyField from "../../components/QtyField.astro";
+import StateStamp from "../../components/StateStamp.astro";
+import StepTrack from "../../components/StepTrack.astro";
+import StockRule from "../../components/StockRule.astro";
+import Sum from "../../components/Sum.astro";
+import Base from "../../layouts/Base.astro";
+import type { CheckoutAmountView } from "@urumi/plugin";
+import { NOT_APPLICABLE_LABEL, NOT_CALCULATED_LABEL } from "@urumi/plugin";
+
+if (!import.meta.env.DEV) return new Response(null, { status: 404 });
+
+/** Relative to render time, so the hold ribbons are genuinely live. */
+const at = (seconds: number): string => new Date(Date.now() + seconds * 1000).toISOString();
+
+const money = (formatted: string): CheckoutAmountView => ({
+	money: { amount: 0, currency: "USD", formatted },
+	label: formatted,
+});
+const uncomputed = (label: string): CheckoutAmountView => ({ money: null, label });
+
+/** The totals every store gets before anyone configures shipping or tax. */
+const UNCONFIGURED = [
+	{ label: "Subtotal", amount: money("$40.00") },
+	{ label: "Discount", amount: uncomputed(NOT_APPLICABLE_LABEL), fallback: "No coupon applied" },
+	{ label: "Shipping", amount: uncomputed(NOT_CALCULATED_LABEL) },
+	{ label: "Tax", amount: uncomputed(NOT_CALCULATED_LABEL) },
+];
+
+/** A store that HAS configured both — every row is a real figure. */
+const CONFIGURED = [
+	{ label: "Subtotal", amount: money("$40.00") },
+	{ label: "Discount", amount: money("−$4.00") },
+	{ label: "Shipping", amount: money("$0.00") },
+	{ label: "Tax", amount: money("$3.20") },
+];
+---
+
+<Base title="Tempered styleguide" cartCount={3} currency="USD">
+	<h1 class="page-title">Tempered</h1>
+	<p class="lede">
+		Every component in every state. Dev only — this route is a 404 in a built worker.
+	</p>
+
+	<section id="cards">
+		<p class="eyebrow">ProductCard · MediaPanel · PriceTag · StockRule</p>
+		<div class="grid">
+			<ProductCard
+				href="#"
+				slug="urumi-tee"
+				title="Urumi Tee"
+				description="Heavyweight cotton, unreasonably soft, with the coil across the chest."
+				price="$25.00"
+				availability="in_stock"
+			/>
+			<ProductCard
+				href="#"
+				slug="urumi-mug"
+				title="Urumi Mug"
+				description="Holds one coffee. Survives the dishwasher and the commute."
+				price="$15.00"
+				availability="in_stock"
+			/>
+			<ProductCard
+				href="#"
+				slug="urumi-sticker-pack"
+				title="Urumi Sticker Pack"
+				description="Ten stickers."
+				price="$12.00"
+				availability="out_of_stock"
+			/>
+			<ProductCard href="#" slug="urumi-poster" title="Urumi Poster" price={null} />
+		</div>
+	</section>
+
+	<section id="coils">
+		<p class="eyebrow">MediaPanel · the coil is keyed to the slug (§5)</p>
+		<div class="coils">
+			{
+				["urumi-tee", "urumi-mug", "urumi-sticker-pack", "urumi-poster", "urumi-cap", "a"].map(
+					(slug) => (
+						<div class="coil-cell">
+							<MediaPanel slug={slug} />
+							<span class="cap">{slug === "" ? "(empty)" : slug}</span>
+						</div>
+					),
+				)
+			}
+		</div>
+		<div class="coils ratios">
+			<div class="coil-cell"><MediaPanel slug="urumi-mug" ratio="4 / 5" /><span class="cap">4 / 5</span></div>
+			<div class="coil-cell"><MediaPanel slug="urumi-mug" ratio="1" /><span class="cap">1 / 1</span></div>
+			<div class="coil-cell"><MediaPanel slug="urumi-mug" ratio="16 / 9" /><span class="cap">16 / 9</span></div>
+		</div>
+	</section>
+
+	<section id="prices">
+		<p class="eyebrow">PriceTag · StockRule · QtyField</p>
+		<div class="row">
+			<PriceTag formatted="$25.00" size="sm" />
+			<PriceTag formatted="$25.00" />
+			<PriceTag formatted="$25.00" size="lg" />
+			<PriceTag formatted="$12.00" soldOut />
+			<StockRule availability="in_stock" />
+			<StockRule availability="in_stock" label="3 left" />
+			<StockRule availability="out_of_stock" />
+		</div>
+		<div class="row row-fields">
+			<QtyField value={1} label="Quantity, Urumi Tee" />
+			<QtyField value={2} size="sm" label="Quantity, Urumi Mug" hideLabel />
+		</div>
+	</section>
+
+	<section id="holds">
+		<p class="eyebrow">HoldRibbon · the signature (§6)</p>
+		<div class="stack">
+			<div class="hold-cell"><span class="cap">held · 9 min</span><HoldRibbon expiresAt={at(540)} /></div>
+			<div class="hold-cell">
+				<span class="cap">held, crossing into expiring in ~8s</span>
+				<HoldRibbon expiresAt={at(68)} />
+			</div>
+			<div class="hold-cell"><span class="cap">expiring · under a minute</span><HoldRibbon expiresAt={at(41)} /></div>
+			<div class="hold-cell"><span class="cap">released</span><HoldRibbon expiresAt={at(-90)} /></div>
+			<div class="hold-cell">
+				<span class="cap">indeterminate · a pending order</span>
+				<HoldRibbon variant="indeterminate" poll={3} pollMax={8} />
+			</div>
+			<div class="hold-cell">
+				<span class="cap">no reservation on the line — renders nothing</span>
+				<HoldRibbon expiresAt={null} />
+			</div>
+		</div>
+	</section>
+
+	<section id="steps">
+		<p class="eyebrow">StepTrack</p>
+		<div class="stack">
+			{
+				(["cart", "details", "payment", "order"] as const).map((step) => (
+					<div class="hold-cell">
+						<span class="cap">{step}</span>
+						<StepTrack current={step} />
+					</div>
+				))
+			}
+		</div>
+	</section>
+
+	<section id="money">
+		<p class="eyebrow">Ledger · Sum — the money rules (§7)</p>
+		<div class="two-up">
+			<div>
+				<span class="cap">nothing configured — "Not calculated", never $0.00</span>
+				<Ledger
+					rows={[
+						{ sku: "URUMI-TEE-01", qty: 1, money: "$25.00" },
+						{ sku: "URUMI-MUG-01", qty: 1, money: "$15.00" },
+						{ sku: "URUMI-STK-01", qty: 2, money: "priced at checkout", unpriced: true },
+					]}
+				/>
+				<Sum rows={UNCONFIGURED} total={money("$40.00")} excludesUncalculated class="pad" />
+			</div>
+			<div>
+				<span class="cap">shipping and tax configured — every row is a figure</span>
+				<Ledger
+					rows={[
+						{ sku: "URUMI-TEE-01", qty: 1, money: "$25.00" },
+						{ sku: "URUMI-MUG-01", qty: 1, money: "$15.00" },
+					]}
+				/>
+				<Sum rows={CONFIGURED} total={money("$39.20")} totalLabel="Paid" class="pad" />
+			</div>
+		</div>
+	</section>
+
+	<section id="stamps">
+		<p class="eyebrow">StateStamp — the four settlements</p>
+		<div class="two-up">
+			<StateStamp
+				state="paid"
+				level="h2"
+				headline="Order confirmed."
+				body="Thank you — we've received your payment. A confirmation is on its way to your email."
+				reference="ord_01J8XQ4M7"
+			/>
+			<StateStamp
+				state="pending"
+				level="h2"
+				headline="Payment submitted."
+				body="We're confirming it with our payment provider — this usually takes a few seconds."
+			>
+				<HoldRibbon variant="indeterminate" poll={3} pollMax={8} />
+			</StateStamp>
+			<StateStamp
+				state="failed"
+				level="h2"
+				headline="The payment didn't go through."
+				body="No charge was made. Your cart is unchanged — you can try again whenever you're ready."
+			/>
+			<StateStamp
+				state="expired"
+				level="h2"
+				headline="This order expired."
+				body="Payment didn't complete in time, so the items went back on sale. Nothing was charged."
+			/>
+		</div>
+	</section>
+
+	<section id="notices">
+		<p class="eyebrow">Notice — degraded is a look, not a crash</p>
+		<div class="stack">
+			<Notice lead="Prices are unavailable right now.">
+				Everything below is up to date — check back in a moment to buy.
+			</Notice>
+			<Notice lead="Card payment isn't set up on this store yet.">
+				This order can't be placed, nothing has been charged, and your cart is unchanged.
+			</Notice>
+			<Notice>Totals are unavailable right now. Your quantities and your holds are still exact.</Notice>
+		</div>
+	</section>
+</Base>
+
+<style>
+	.page-title {
+		font-family: var(--u-display);
+		font-variation-settings: "wdth" 78, "opsz" 48;
+		font-weight: 800;
+		font-size: clamp(2.5rem, 8vw, 4rem);
+		letter-spacing: -0.025em;
+		line-height: 1;
+		margin: 0 0 0.5rem;
+	}
+
+	.lede {
+		margin: 0 0 3rem;
+		color: var(--u-mute);
+	}
+
+	section {
+		padding-block: 2rem;
+		border-top: var(--u-hair);
+	}
+
+	.eyebrow,
+	.cap {
+		display: block;
+		font-family: var(--u-data);
+		font-variation-settings: "wdth" 90;
+		font-size: 0.5625rem;
+		font-weight: 500;
+		letter-spacing: 0.11em;
+		text-transform: uppercase;
+		color: var(--u-mute);
+		margin: 0 0 1.25rem;
+	}
+
+	.cap {
+		margin-bottom: 0.5rem;
+		text-transform: none;
+		letter-spacing: 0.02em;
+	}
+
+	.grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr));
+		gap: 2rem 1.75rem;
+	}
+
+	.coils {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+		gap: 1.25rem;
+	}
+
+	.ratios {
+		margin-top: 1.5rem;
+	}
+
+	.coil-cell .cap {
+		margin: 0.5rem 0 0;
+	}
+
+	.row {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: baseline;
+		gap: 1.5rem;
+		margin-bottom: 1.5rem;
+	}
+
+	/* The hidden-label field is a bare input, so baseline alignment would sit it
+	   level with the OTHER field's label rather than its input. */
+	.row-fields {
+		align-items: flex-end;
+	}
+
+	.stack {
+		display: flex;
+		flex-direction: column;
+		gap: 2rem;
+		max-width: 32rem;
+	}
+
+	.two-up {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+		gap: 2.5rem;
+	}
+
+	.pad {
+		margin-top: 1rem;
+	}
+</style>
