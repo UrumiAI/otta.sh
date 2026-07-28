@@ -90,8 +90,9 @@ describe("holdFrame — recomputed from the absolute expiry, never decremented (
 	test("the fill is clamped to the track and rounded the way the markup is", () => {
 		// A hold longer than the window the page assumed must not draw a fill
 		// wider than its track.
-		expect(holdFrame(T0 + 1_200_000, HOLD_WINDOW_SECONDS, "", T0)?.fill).toBe("100.0%");
-		expect(holdFrame(T0 + 300_000, HOLD_WINDOW_SECONDS, "", T0)?.fill).toBe("50.0%");
+		const windowMs = HOLD_WINDOW_SECONDS * 1000;
+		expect(holdFrame(T0 + windowMs * 2, HOLD_WINDOW_SECONDS, "", T0)?.fill).toBe("100.0%");
+		expect(holdFrame(T0 + windowMs / 2, HOLD_WINDOW_SECONDS, "", T0)?.fill).toBe("50.0%");
 		expect(holdFrame(T0 + 299_000, HOLD_WINDOW_SECONDS, "", T0)?.fill).toMatch(/^\d+\.\d%$/);
 	});
 
