@@ -13,7 +13,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import cloudflare from "@astrojs/cloudflare";
 import react from "@astrojs/react";
-import { defineConfig } from "astro/config";
+import { defineConfig, fontProviders } from "astro/config";
 import emdash from "emdash/astro";
 import { parseDotEnv } from "./src/lib/dot-env.js";
 import { buildEmdashOptions, resolveServiceUrl } from "./src/emdash-options.js";
@@ -68,6 +68,52 @@ export default defineConfig({
 		layout: "constrained",
 		responsiveStyles: true,
 	},
+	/**
+	 * The theme's three faces (docs/theme/TEMPERED.md §3), SELF-HOSTED: Astro
+	 * downloads them at build time and serves them from this origin, so a
+	 * shopper's browser never talks to fonts.googleapis.com or fonts.gstatic.com
+	 * at runtime. `src/styles/tokens.css` reads the `--u-face-*` variables these
+	 * declare; `src/layouts/Base.astro` emits the <Font> tags.
+	 *
+	 * `options.experimental.variableAxis` is load-bearing, not a nicety. Google's
+	 * css2 endpoint only ships an axis you asked for, and the width contrast
+	 * between the narrow display face and the wide data face is the theme's
+	 * loudest move — drop these and `font-variation-settings: "wdth" …` becomes
+	 * a silent no-op that renders at default widths with no error anywhere.
+	 * `test/fonts-config.test.ts` pins them for that reason.
+	 */
+	fonts: [
+		{
+			provider: fontProviders.google(),
+			name: "Bricolage Grotesque",
+			cssVariable: "--u-face-display",
+			// Wordmark and titles sit at 700–800; 400 is the muted counter-voice.
+			weights: ["400 800"],
+			styles: ["normal"],
+			subsets: ["latin"],
+			display: "swap",
+			options: { experimental: { variableAxis: { opsz: [["12", "96"]], wdth: [["75", "100"]] } } },
+		},
+		{
+			provider: fontProviders.google(),
+			name: "Schibsted Grotesk",
+			cssVariable: "--u-face-body",
+			weights: ["400 700"],
+			styles: ["normal"],
+			subsets: ["latin"],
+			display: "swap",
+		},
+		{
+			provider: fontProviders.google(),
+			name: "Martian Mono",
+			cssVariable: "--u-face-data",
+			weights: ["300 700"],
+			styles: ["normal"],
+			subsets: ["latin"],
+			display: "swap",
+			options: { experimental: { variableAxis: { wdth: [["75", "112.5"]] } } },
+		},
+	],
 	integrations: [react(), emdash(buildEmdashOptions(serviceUrl))],
 	// CSRF: Astro's `security.checkOrigin` does NOT protect the /cart/*
 	// endpoints — the emdash integration force-injects `checkOrigin: false`

@@ -1,21 +1,42 @@
 ---
 /**
- * Thin base layout (ADR-0003: themes own the HTML; the plugin serves JSON
- * view models). Deliberately minimal — this is the staging storefront, not
- * a design system.
+ * Base layout — the "Tempered" chrome (docs/theme/TEMPERED.md §2–§3, §11).
+ *
+ * ADR-0003 is unchanged: the plugin serves JSON view models, this theme owns
+ * every byte of markup. Nothing here calls commerce — the cart count arrives
+ * as a PROP from the page that already read the cart, so the layout never puts
+ * the service on the critical path of a page that would otherwise make no
+ * commerce call at all.
+ *
+ * All colour and type comes from src/styles/tokens.css. The three faces are
+ * self-hosted through Astro's font API (see `fonts` in astro.config.ts) —
+ * downloaded at build time, served from this origin, no CDN at runtime.
  */
+import { Font } from "astro:assets";
 import { getMenu, getSiteSettings } from "emdash";
+import "../styles/tokens.css";
 
 interface Props {
 	title: string;
 	description?: string | null;
+	/**
+	 * Units in the cart, for the nav badge. `null`/omitted renders the nav
+	 * item bare — "no cart read on this page" and "an empty cart" are
+	 * different facts and must not both render as `(0)`.
+	 */
+	cartCount?: number | null;
 }
 
-const { title, description } = Astro.props;
+const { title, description, cartCount = null } = Astro.props;
 const settings = (await getSiteSettings()) as { title?: string; tagline?: string };
 const siteTitle = settings.title ?? "Urumi Store (staging)";
 const fullTitle = title.includes(siteTitle) ? title : `${title} — ${siteTitle}`;
 const menu = await getMenu("primary");
+
+/** The nav entry the count belongs to, whatever the CMS labelled it. */
+function isCartLink(url: string): boolean {
+	return url === "/cart" || url.startsWith("/cart?") || url.startsWith("/cart#");
+}
 ---
 
 <!doctype html>
@@ -23,59 +44,177 @@ const menu = await getMenu("primary");
 	<head>
 		<meta charset="UTF-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		{/* Both palettes are real (tokens.css), so tell the UA — otherwise
+		    scrollbars and native form controls stay light on a dark page. */}
+		<meta name="color-scheme" content="light dark" />
 		<title>{fullTitle}</title>
 		{description && <meta name="description" content={description} />}
+		<Font cssVariable="--u-face-display" preload />
+		<Font cssVariable="--u-face-body" preload />
+		<Font cssVariable="--u-face-data" preload />
 		{/* Per-page <head> additions. Used by the confirmation page for its
 		    `referrer: no-referrer` policy and its bounded meta-refresh poll:
 		    both MUST be in <head> to take effect, and both belong to that page
 		    rather than to every page, so they arrive through this slot. */}
 		<slot name="head" />
+		{/* The coil (§5): an Archimedean spiral swept as a ribbon, the same
+		    shape language the product art uses. Inline so there is no second
+		    request and no public/ asset to rot. */}
 		<link
 			rel="icon"
 			type="image/svg+xml"
-			href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23111'/%3E%3Ccircle cx='16' cy='16' r='9' fill='%23fff'/%3E%3C/svg%3E"
+			href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23131A20'/%3E%3Cpath d='M 17.4 15.6 L 18.0 16.2 L 18.2 17.1 L 18.0 18.1 L 17.2 19.1 L 15.9 19.7 L 14.3 19.7 L 12.8 18.9 L 11.6 17.5 L 11.2 15.6 L 11.6 13.5 L 13.1 11.7 L 15.3 10.6 L 18.0 10.5 L 20.7 11.6 L 22.7 13.7 L 23.7 16.7 L 23.3 19.9 L 21.3 22.8 L 18.2 24.8 L 14.3 25.3 L 10.3 24.1 L 7.1 21.4 L 5.3 17.4 L 5.4 12.9 L 7.6 8.7 L 11.5 5.6 L 16.6 4.4 L 22.0 5.3 L 26.6 8.4 L 29.6 13.3 L 25.0 14.3 L 23.1 11.0 L 20.0 8.9 L 16.4 8.2 L 12.9 8.9 L 10.1 11.0 L 8.5 13.9 L 8.4 17.1 L 9.6 20.0 L 11.9 22.0 L 14.7 22.9 L 17.6 22.6 L 20.0 21.2 L 21.5 19.0 L 21.9 16.6 L 21.2 14.3 L 19.6 12.7 L 17.6 11.8 L 15.5 11.9 L 13.7 12.7 L 12.6 14.1 L 12.2 15.8 L 12.6 17.3 L 13.5 18.4 L 14.7 18.9 L 15.9 18.9 L 16.9 18.4 L 17.4 17.7 L 17.6 16.9 L 17.3 16.3 L 16.8 15.9 Z' fill='%23E0AC3A'/%3E%3C/svg%3E"
 		/>
 	</head>
 	<body>
-		<header>
-			<nav>
-				<a href="/" class="site-title">{siteTitle}</a>
-				{menu?.items.map((item) => <a href={item.url}>{item.label}</a>)}
-			</nav>
+		<a href="#main" class="skip-link">Skip to the main content</a>
+		<header class="head">
+			<div class="shell head-row">
+				<a href="/" class="wordmark">{siteTitle}</a>
+				<nav class="nav" aria-label="Primary">
+					{
+						menu?.items.map((item) => (
+							<a href={item.url}>
+								{item.label}
+								{isCartLink(item.url) && cartCount !== null && (
+									<span class="count mono"> ({cartCount})</span>
+								)}
+							</a>
+						))
+					}
+				</nav>
+			</div>
 		</header>
-		<main>
+		<main id="main" class="shell">
 			<slot />
 		</main>
-		<footer>
-			<p>Urumi staging — content by EmDash, commerce by @urumi/service.</p>
+		<footer class="foot">
+			<div class="shell foot-row">
+				<span>Urumi — content by EmDash, commerce by Urumi.</span>
+				<span class="mono">USD</span>
+			</div>
 		</footer>
 	</body>
 </html>
 
 <style>
-	body {
-		font-family: system-ui, sans-serif;
-		max-width: 60rem;
+	/* One measure for the whole store, so the header rule, the content and
+	   the footer rule all line up. */
+	.shell {
+		width: 100%;
+		max-width: 72rem;
 		margin: 0 auto;
-		padding: 0 1rem;
-		line-height: 1.5;
+		padding-inline: clamp(1rem, 4vw, 2rem);
 	}
-	header nav {
-		display: flex;
-		gap: 1rem;
-		align-items: baseline;
-		padding: 1rem 0;
-		border-bottom: 1px solid #ddd;
-	}
-	.site-title {
-		font-weight: 700;
-		font-size: 1.25rem;
-	}
-	footer {
-		margin-top: 3rem;
-		padding: 1rem 0;
-		border-top: 1px solid #ddd;
-		color: #666;
+
+	.skip-link {
+		position: absolute;
+		left: 0.5rem;
+		top: 0.5rem;
+		z-index: 10;
+		padding: 0.5rem 0.875rem;
+		background: var(--u-surface);
+		color: var(--u-ink);
+		border: var(--u-hair);
+		border-radius: var(--u-r);
 		font-size: 0.875rem;
+		font-weight: 500;
+		text-decoration: none;
+		/* Slid off the top until focused — transformed rather than
+		   `display: none`, which would take it out of the tab order and make
+		   the link useless to exactly the people it exists for. */
+		transform: translateY(-200%);
+	}
+	.skip-link:focus,
+	.skip-link:focus-visible {
+		transform: none;
+	}
+
+	.head {
+		border-bottom: var(--u-hair);
+	}
+	.head-row {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 1.5rem;
+		padding-block: 1.25rem;
+	}
+
+	/* §3: the display face set narrow — the object the project is named
+	   after is a long thin ribbon. Straw is the fitting under it. */
+	.wordmark {
+		font-family: var(--u-display);
+		font-variation-settings: "wdth" 74, "opsz" 24;
+		font-weight: 800;
+		font-size: 1.25rem;
+		letter-spacing: 0.02em;
+		line-height: 1.1;
+		text-transform: uppercase;
+		color: var(--u-ink);
+		text-decoration: none;
+		padding-bottom: 2px;
+		border-bottom: 2px solid var(--u-straw);
+	}
+
+	.nav {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 1.5rem;
+		align-items: baseline;
+	}
+	.nav a {
+		color: var(--u-ink);
+		text-decoration: none;
+		font-size: 0.875rem;
+		font-weight: 500;
+		padding-bottom: 2px;
+		border-bottom: 2px solid transparent;
+	}
+	.nav a:hover {
+		border-bottom-color: var(--u-straw);
+	}
+
+	/* §3: money, quantities and counts are the only things set in mono. */
+	.mono {
+		font-family: var(--u-data);
+		font-variation-settings: "wdth" 90;
+		letter-spacing: -0.045em;
+		font-variant-numeric: tabular-nums;
+	}
+	.count {
+		font-size: 0.6875rem;
+		letter-spacing: -0.03em;
+		color: var(--u-mute);
+	}
+
+	main {
+		display: block;
+		padding-block: 2.5rem 4rem;
+	}
+
+	.foot {
+		border-top: var(--u-hair);
+	}
+	.foot-row {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 0.5rem 2rem;
+		padding-block: 1.5rem;
+		color: var(--u-mute);
+		font-size: 0.75rem;
+	}
+
+	@media (max-width: 30rem) {
+		.head-row {
+			flex-direction: column;
+			align-items: flex-start;
+			gap: 0.875rem;
+		}
+		.nav {
+			gap: 1.125rem;
+		}
 	}
 </style>
