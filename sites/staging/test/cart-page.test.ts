@@ -22,7 +22,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { CartPricingWire } from "@urumi/plugin";
+import { type CartPricingWire, type CartWire, totalQty } from "@urumi/plugin";
 import { describe, expect, test } from "vitest";
 import {
 	cartMoneyCell,
@@ -31,6 +31,7 @@ import {
 	UNAVAILABLE_LABEL,
 } from "../src/lib/cart-view.js";
 import { HOLD_RELEASED_NEXT_STEP } from "../src/lib/hold.js";
+import { isUnpricedText, moneyCellText } from "../src/lib/totals.js";
 
 const CART_PAGE = path.resolve(
 	path.dirname(fileURLToPath(import.meta.url)),
@@ -131,7 +132,12 @@ describe("the Tempered cart: lines, ribbons and an honest totals block", () => {
 	});
 
 	test("every line carries a hold ribbon wired to that line's own expiresAt (§6)", () => {
-		expect(markup).toContain("<HoldRibbon expiresAt={view.line.expiresAt} />");
+		// Attribute-order- and whitespace-insensitive: what is being pinned is
+		// that the ribbon gets THAT LINE's expiry (a page-wide constant, or the
+		// cart's first line, would be a lie on every other row), not the exact
+		// spelling of one JSX tag. The literal form this used to assert broke on
+		// a reformat and said nothing extra when it passed.
+		expect(markup).toMatch(/<HoldRibbon[^>]*\sexpiresAt=\{view\.line\.expiresAt\}/);
 		// The raw ISO instant used to be a table cell. The ribbon renders the
 		// countdown, and the no-JS fallback renders the absolute time — neither
 		// is a bare timestamp printed by this page.
@@ -148,16 +154,60 @@ describe("the Tempered cart: lines, ribbons and an honest totals block", () => {
 	});
 
 	test("line money goes through §7's gate, so no cell can print a bare dash", () => {
-		// `cartMoneyCell` answers WHICH failure this is; `moneyCellText` is the
-		// last gate before the screen and substitutes prose for anything that
-		// does not say something (cart-view's UNAVAILABLE_LABEL is a lone "—").
+		// EXECUTED, not grepped: the composition the page performs is run here,
+		// so this fails when the RULE breaks rather than when the call is
+		// spelled differently. `cartMoneyCell` answers which failure this is;
+		// `moneyCellText` is the last gate before the screen and substitutes
+		// prose for anything that does not say something — cart-view's
+		// degraded label is a lone "—", which is precisely what §7 forbids.
+		expect(moneyCellText(cartMoneyCell(undefined, true), "Price unavailable")).toBe(
+			"Price unavailable",
+		);
+		expect(moneyCellText(cartMoneyCell(null, true), "Price unavailable")).toBe("Price unavailable");
+		// Real money and real prose pass through untouched.
+		expect(moneyCellText(cartMoneyCell("$25.00", false), "Price unavailable")).toBe("$25.00");
+		expect(moneyCellText(cartMoneyCell(null, false), "Price unavailable")).toBe(
+			PRICED_AT_CHECKOUT_LABEL,
+		);
+
+		// And the page is wired to that composition rather than beside it.
 		expect(markup).toContain("view.money");
-		expect(source).toMatch(/moneyCellText\(\s*cartMoneyCell\(/);
+		expect(source).toMatch(/moneyCellText\(/);
+		expect(source).toMatch(/cartMoneyCell\(formatted, pricingDegraded\)/);
 		expect(source).toContain("PRICE_UNAVAILABLE");
 		// No element whose whole content is a dash. (Em dashes inside a
 		// SENTENCE are prose and are fine — the banners use them.)
 		expect(markup).not.toMatch(/>\s*[—–-]\s*</);
 		expect(markup).not.toMatch(/\?\?\s*"[—–-]"/);
+	});
+
+	test("the unit price beside the line total passes the same gate", () => {
+		// `unitPrice.formatted` was the one money string on the page taken raw
+		// off the wire — it reached the screen as "$25.00 each" without ever
+		// meeting §7's gate, so a blank or dashed unit price would have printed
+		// as "— each".
+		expect(source).toMatch(/const unitPrice = lineMoneyText\(linePricing\?\.unitPrice/);
+		expect(source).not.toMatch(/linePricing\?\.unitPrice\?\.formatted \?\? null/);
+	});
+
+	test('"each" is suppressed when the unit price is prose, not a figure', () => {
+		// A cell with no digit in it is prose (the same rule Ledger follows), and
+		// "Priced at checkout each" is not a sentence — the line total is already
+		// saying it.
+		expect(isUnpricedText(PRICED_AT_CHECKOUT_LABEL)).toBe(true);
+		expect(isUnpricedText("Price unavailable")).toBe(true);
+		expect(isUnpricedText("$25.00")).toBe(false);
+		expect(source).toMatch(/each:\s*line\.qty > 1 && !isUnpricedText\(unitPrice\)/);
+	});
+
+	test("the unpriced cell is sentence-cased HERE, not in the shared constant", () => {
+		// The shared label is lower-case because it is also read mid-sentence;
+		// on this page it is a cell of its own beside sentence-cased siblings
+		// (§10). The mapping is page-side, so nothing else that imports the
+		// constant is re-cased behind its back.
+		expect(PRICED_AT_CHECKOUT_LABEL).toBe("priced at checkout");
+		expect(source).toContain('const PRICED_AT_CHECKOUT = "Priced at checkout"');
+		expect(source).toMatch(/cell === PRICED_AT_CHECKOUT_LABEL \? PRICED_AT_CHECKOUT : cell/);
 	});
 
 	test("prose cells are set as prose, decided by the value and not by a flag", () => {
@@ -186,9 +236,48 @@ describe("the Tempered cart: lines, ribbons and an honest totals block", () => {
 		expect(source).toContain("Some items are priced at checkout");
 	});
 
-	test("the foot carries the primary action and the one promise the cart makes", () => {
+	test("the foot carries the primary action and the whole price disclosure", () => {
 		expect(markup).toContain("Check out");
-		expect(markup).toContain("Your total is confirmed at checkout.");
+		// BOTH halves. The restyle shortened the pre-theme disclosure ("prices
+		// shown are informational and may change") to "your total is confirmed
+		// at checkout" while newly rendering a live unit price beside a hold
+		// countdown — and a hold reserves STOCK, not a price. §7: don't imply
+		// otherwise.
+		expect(markup).toContain("your total is confirmed at checkout.");
+		expect(markup).toMatch(/[Pp]rices are live and may change/);
+	});
+
+	test("the header count is UNITS, and it makes no claim about holds", () => {
+		// It read "3 items · 2 held" and both halves could be wrong at once: the
+		// items were units, the held count was LINES (four units on three lines
+		// rendered "4 items · 3 held"), and the held clause was a render-time
+		// snapshot printed above ribbons that keep ticking — it said "2 held"
+		// over two ribbons reading "Hold released".
+		const cart: CartWire = {
+			cartId: "cart_1",
+			state: "active",
+			currency: "USD",
+			lines: [
+				{ lineId: "l1", sku: "A", productId: "p1", qty: 3, reservationId: null, expiresAt: null },
+				{ lineId: "l2", sku: "B", productId: "p2", qty: 1, reservationId: null, expiresAt: null },
+			],
+		};
+		expect(totalQty(cart)).toBe(4);
+		expect(source).toMatch(/itemCount === 1 \? "item" : "items"/);
+		// No held clause, and no render-time hold snapshot left to go stale.
+		expect(source).not.toContain("heldCount");
+		expect(source).not.toContain("holdView");
+		// Nothing interpolated into the header line counts holds.
+		expect(source).not.toMatch(/\$\{[^}]*held/i);
+	});
+
+	test("the lines are a LIST, which is what the table used to give for free", () => {
+		// A flat stack of divs announces nothing; the table it replaced gave a
+		// screen reader "row 2 of 3". `role="list"` is redundant markup that is
+		// not redundant in practice — WebKit drops list semantics from a list
+		// styled `list-style: none`, and this one is (StepTrack, same reason).
+		expect(markup).toMatch(/<ul[^>]*role="list"/);
+		expect(markup).toContain('<li class="line">');
 	});
 
 	test("both forms survived the restyle, each with its own fresh idempotency key", () => {
@@ -217,15 +306,62 @@ describe("the Tempered cart: lines, ribbons and an honest totals block", () => {
 		expect(source).toContain("cartErrorMessage(error)");
 	});
 
-	test("the empty cart still works, and a degraded read does not claim to be one", () => {
-		expect(markup).toContain("Your cart is empty.");
-		expect(markup).toContain('<a href="/products">Browse products</a>');
+	test("the empty cart is a designed surface, and a degraded read is not one", () => {
+		// §8: "empty and degraded states are designed surfaces, not
+		// afterthoughts". The mockup's own empty-cart frame — a display-face
+		// line, one sentence about what this store does for you, and a way out.
+		expect(markup).toContain("Nothing held yet.");
+		expect(markup).toContain(
+			"Your cart is empty. Pick something and we'll hold the stock while you decide.",
+		);
+		expect(markup).toMatch(/<a href="\/products"[^>]*class="btn btn-ghost"/);
+		// A cart we could not READ is not an empty cart.
 		expect(markup).toContain("!degraded");
 	});
 
+	test("the content read is ONE batched, request-cached query — not a fan-out", () => {
+		// `getEmDashEntry` per distinct productId was an uncapped parallel fan-out
+		// of D1 round-trips on a public route, and it is not request-cached. The
+		// array `where` value compiles to one `WHERE id IN (…)`, which is.
+		expect(source).toContain("getEmDashCollection(");
+		expect(source).not.toMatch(/getEmDashEntry\(/);
+		expect(source).toMatch(/where:\s*\{\s*id:\s*productIds\s*\}/);
+		// Bounded, and the bound is stated: `IN (?, ?, …)` binds one parameter
+		// per id and D1 caps those per statement.
+		expect(source).toContain("CART_CONTENT_ID_CAP");
+		expect(source).toMatch(/\.slice\(0, CART_CONTENT_ID_CAP\)/);
+		// Keyed on the CONTENT id (the cart line's productId), not entry.id,
+		// which is the slug-derived routing id and would miss every line.
+		expect(source).toContain("contentById.set(data.id, data)");
+	});
+
+	test("a failed content read is LOGGED, not swallowed into SKU-only lines", () => {
+		// `getEmDashCollection` does not throw for a CMS/DB fault — it returns
+		// `{ entries: [], error }` (see cart/add.ts's reproduced-live
+		// investigation of the same contract on the entry API). Destructuring
+		// only the data is how a D1 outage renders every line SKU-only with
+		// nothing in the log to say why.
+		expect(source).toMatch(/const \{ entries, error: contentError \}/);
+		expect(source).toMatch(/contentError !== undefined && contentError\.name !== /);
+		expect(source).toMatch(/console\.error\("\[site-staging\] cart line content lookup failed/);
+		// The catch stays as a backstop against the contract changing again.
+		expect(source).toMatch(/console\.error\("\[site-staging\] cart line content lookup threw/);
+	});
+
+	test("the image rule is the shared one, not a second copy of it", () => {
+		// `images.src ?? images.url` lived here AND in products.ts; a second copy
+		// is how one of them silently stops resolving when a third spelling of a
+		// media value turns up.
+		expect(source).toContain("productImage(content)");
+		expect(source).not.toContain("images?.src");
+	});
+
 	test("nothing sticks: <main> is a scroll container while legacy-bridge is in play", () => {
-		// `overflow-x: auto` on <main> forces overflow-y to auto too, so a
-		// sticky descendant sticks to <main> rather than to the viewport.
+		// Kept deliberately, though it pins an ABSENCE nothing currently wants to
+		// add: `overflow-x: auto` on <main> (legacy-bridge.css, transitional)
+		// forces overflow-y to auto too, so a sticky totals block would stick to
+		// <main> instead of the viewport and look broken in a way no unit test
+		// would otherwise catch. Delete this with legacy-bridge.css.
 		expect(source).not.toContain("position: sticky");
 	});
 

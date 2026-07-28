@@ -24,15 +24,15 @@
  *
  *  - MONEY comes from the pricing SIBLING (`buildCartPricing`'s live join) and
  *    is informational, which is what the foot line says out loud. Every cell
- *    goes through `cartMoneyCell` (which of the three "no figure" cases is
- *    this?) and then `moneyCellText` (§7's rule that a cell either says
- *    something or says nothing at all — never a bare dash).
+ *    goes through `lineMoneyText` below — `cartMoneyCell` (which of the three
+ *    "no figure" cases is this?) and then `moneyCellText` (§7's rule that a
+ *    cell either says something or says nothing at all — never a bare dash).
  *  - The NAME comes from this theme's own CMS read, keyed on the line's
- *    `productId` — the same tier-① query the PLP and PDP run (ADR-0003), not a
- *    new field on the wire. Deduped, so five of one thing is one lookup.
- *    Anything missing (a legacy line with no productId, an entry unpublished
- *    since it was added, a read that throws) leaves the SKU standing alone
- *    rather than inventing a name.
+ *    `productId` — the same tier-① content this store owns (ADR-0003), not a
+ *    new field on the wire. ONE batched query for the whole cart. Anything
+ *    missing (a legacy line with no productId, an entry unpublished since it
+ *    was added, a read that fails) leaves the SKU standing alone rather than
+ *    inventing a name: a SKU is a true thing about the line.
  */
 import {
 	CART_COOKIE_NAME,
@@ -43,7 +43,7 @@ import {
 	type CartWire,
 	type CheckoutAmountView,
 } from "@urumi/plugin";
-import { getEmDashEntry } from "emdash";
+import { getEmDashCollection } from "emdash";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import HoldRibbon from "../../components/HoldRibbon.astro";
 import MediaPanel from "../../components/MediaPanel.astro";
@@ -51,10 +51,13 @@ import PriceTag from "../../components/PriceTag.astro";
 import QtyField from "../../components/QtyField.astro";
 import Sum from "../../components/Sum.astro";
 import Base from "../../layouts/Base.astro";
-import { cartMoneyCell, isCartPricingDegraded } from "../../lib/cart-view.js";
+import {
+	cartMoneyCell,
+	isCartPricingDegraded,
+	PRICED_AT_CHECKOUT_LABEL,
+} from "../../lib/cart-view.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
-import { holdView } from "../../lib/hold.js";
-import type { ProductEntryData } from "../../lib/products.js";
+import { productImage, type ProductEntryData } from "../../lib/products.js";
 import { isUnpricedText, moneyCellText, type SumRow } from "../../lib/totals.js";
 import { dispatchUrumiRoute } from "../../lib/urumi-api.js";
 
@@ -89,24 +92,80 @@ const pricingDegraded = isCartPricingDegraded(pricing);
 const lines = cart?.lines ?? [];
 
 /**
- * The line's name and its art. One CMS read per DISTINCT product on the cart —
- * never one per line — and a failure is a missing name, never a failed page:
- * content is what this store owns, and it must not take the cart down with it.
+ * How many distinct products this page will ask for in ONE query.
+ *
+ * The array form of a `where` value compiles to a literal `WHERE id IN (?, ?,
+ * …)` with one bound parameter per id, and D1 allows roughly a hundred bound
+ * parameters per statement — em-dash's own SQL chunking is conservative at
+ * fifty for exactly that reason. So fifty is the ceiling, and a cart carrying
+ * more distinct products than that renders the overflow SKU-only rather than
+ * issuing a statement the database would reject outright. (No cart in this
+ * store comes close; the bound exists so the failure mode is a missing name
+ * instead of a 500 if one ever does.)
+ */
+const CART_CONTENT_ID_CAP = 50;
+
+/**
+ * The line's name and its art: ONE read for the whole cart.
+ *
+ * It was one `getEmDashEntry` per distinct product, fired in parallel — an
+ * uncapped fan-out of D1 round-trips on a public route, and `getEmDashEntry`
+ * is NOT request-cached, so nothing collapsed them. `getEmDashCollection` with
+ * an array `where` value is a single `WHERE id IN (…)` and it IS request-cached
+ * (`requestCached` in em-dash's query layer, plus the L2 `cachedQuery`).
+ *
+ * One behavioural difference worth naming: a collection read is `status:
+ * "published"` by default where an entry read is not, so a product unpublished
+ * since it was added to the cart now falls back to its SKU. That is the right
+ * answer on a shopper-facing page — this page must not name content the store
+ * has taken down — and it is already one of the fallback cases above.
+ *
+ * A failure is a missing name, never a failed page: content is what this store
+ * owns, and it must not take the cart down with it.
  */
 const productIds = [
 	...new Set(lines.map((line) => line.productId).filter((id): id is string => id !== null)),
-];
+].slice(0, CART_CONTENT_ID_CAP);
+
 const contentById = new Map<string, ProductEntryData>();
-await Promise.all(
-	productIds.map(async (id) => {
-		try {
-			const { entry } = await getEmDashEntry("products", id);
-			if (entry !== null) contentById.set(id, entry.data as unknown as ProductEntryData);
-		} catch (cause) {
-			console.error(`[site-staging] cart line content lookup failed for ${id}:`, cause);
+if (productIds.length > 0) {
+	try {
+		const { entries, error: contentError } = await getEmDashCollection("products", {
+			where: { id: productIds },
+			// Defensive second bound, the PLP's pattern: the `IN` list is already
+			// capped, and this caps what may come back through it.
+			limit: CART_CONTENT_ID_CAP,
+		});
+		/**
+		 * `getEmDashCollection` does NOT throw for a CMS/DB fault — it RETURNS
+		 * `{ entries: [], error }`. Destructuring only the data is how a D1
+		 * outage renders every line SKU-only with nothing in the log to say why
+		 * (see the reproduced-live investigation in `cart/add.ts`, which is the
+		 * same lesson learned against `getEmDashEntry`).
+		 *
+		 * The not-found guard is belt-and-braces rather than dead code. A
+		 * collection read HAS no "not found" — an id with no row is an absent
+		 * row, not an error — but `EntryResult.error`'s own JSDoc said exactly
+		 * that about the entry API and was wrong in practice (astro wraps the
+		 * loader's "no row" in a `LiveEntryNotFoundError`), so the discriminant
+		 * is stated rather than assumed.
+		 */
+		if (contentError !== undefined && contentError.name !== "LiveEntryNotFoundError") {
+			console.error("[site-staging] cart line content lookup failed:", contentError);
 		}
-	}),
-);
+		for (const entry of entries) {
+			const data = entry.data as unknown as ProductEntryData;
+			// Keyed on the CONTENT id — which is what a cart line's `productId`
+			// is, and the join key commerce uses. `entry.id` is the slug-derived
+			// routing id and would miss every line.
+			contentById.set(data.id, data);
+		}
+	} catch (cause) {
+		// Backstop only: the contract above is "returns an error, never throws",
+		// and a cart page is not the place to discover that it changed.
+		console.error("[site-staging] cart line content lookup threw:", cause);
+	}
+}
 
 /**
  * The whole pricing lookup failed. §7 forbids the bare "—" `cart-view.ts`
@@ -115,10 +174,34 @@ await Promise.all(
  */
 const PRICE_UNAVAILABLE = "Price unavailable";
 
+/**
+ * The same fact as `cart-view.ts`'s `PRICED_AT_CHECKOUT_LABEL`, in this page's
+ * voice. The shared constant is lower-case because it is also read inside a
+ * sentence; here it is a cell of its own, sitting beside "At checkout" and
+ * "Confirmed at checkout", and §10 is sentence case everywhere except the mono
+ * eyebrow labels. Mapped at the point of use — the constant is shared, so its
+ * casing is not this page's to change.
+ */
+const PRICED_AT_CHECKOUT = "Priced at checkout";
+
+/**
+ * The ONE path a money string takes to this page's screen: which of the three
+ * "no figure" cases is this (`cartMoneyCell`), then §7's last gate
+ * (`moneyCellText`, which forbids anything that does not say something), then
+ * this page's casing. Nothing renders money beside this function.
+ */
+function lineMoneyText(formatted: string | null | undefined): string {
+	const cell = cartMoneyCell(formatted, pricingDegraded);
+	return moneyCellText(
+		cell === PRICED_AT_CHECKOUT_LABEL ? PRICED_AT_CHECKOUT : cell,
+		PRICE_UNAVAILABLE,
+	);
+}
+
 const lineViews = lines.map((line, index) => {
 	const content = line.productId === null ? null : (contentById.get(line.productId) ?? null);
 	const linePricing = pricing?.lines.find((entry) => entry.lineId === line.lineId) ?? null;
-	const unitPrice = linePricing?.unitPrice?.formatted ?? null;
+	const unitPrice = lineMoneyText(linePricing?.unitPrice?.formatted);
 	return {
 		line,
 		index,
@@ -127,34 +210,44 @@ const lineViews = lines.map((line, index) => {
 		/** What a screen reader calls the line — never null, so every control on
 		 *  the row is distinguishable from the one on the row above it. */
 		name: content?.title ?? line.sku,
-		image: content?.images?.src ?? content?.images?.url ?? null,
+		image: content === null ? null : productImage(content),
 		/** Keys the coil (§5). Any stable per-product string; the SKU is the
 		 *  last resort so a contentless line still draws its own art. */
 		artKey: content?.slug ?? line.productId ?? line.sku,
-		money: moneyCellText(
-			cartMoneyCell(linePricing?.lineTotal?.formatted, pricingDegraded),
-			PRICE_UNAVAILABLE,
-		),
+		money: lineMoneyText(linePricing?.lineTotal?.formatted),
 		/** Only when it says something the line total does not: at qty 1 the two
-		 *  figures are the same number twice. */
-		each: unitPrice !== null && line.qty > 1 ? `${unitPrice} each` : null,
+		 *  figures are the same number twice, and when the unit price is PROSE
+		 *  ("Priced at checkout") the line total is already saying it — "Priced
+		 *  at checkout each" is not a sentence. */
+		each: line.qty > 1 && !isUnpricedText(unitPrice) ? `${unitPrice} each` : null,
 		// One fresh key per rendered form (double-submit = replay, not duplicate).
 		updateKey: crypto.randomUUID(),
 		removeKey: crypto.randomUUID(),
 	};
 });
 
-/** "3 items · 2 held" (§8). A snapshot at render — each ribbon keeps its own
- *  line honest from there, and the count never claims a lapsed hold. */
+/**
+ * "3 items" (§8) — UNITS, the same number the nav badge carries.
+ *
+ * The mockup's header reads "3 items · 2 held" and this page shipped that, and
+ * both halves of it were wrong at once. The item count sums units while the
+ * held count counted LINES, so four units on three lines rendered "4 items · 3
+ * held" with every unit held; and the held clause was a render-time snapshot
+ * printed above ribbons that keep ticking, so it still said "2 held" over two
+ * ribbons that had both gone to "Hold released".
+ *
+ * The clause is gone rather than fixed. Every line already carries a live
+ * ribbon saying what its own hold is doing — that is the signature of the
+ * theme and it is the truth as of this second. A second, staler copy of the
+ * same fact one line above it is not worth keeping honest. (Where the mockup
+ * and the rules disagree, TEMPERED.md's preamble gives the rules the last word,
+ * and "don't say something the page will make false a minute later" is a rule.)
+ */
 const itemCount = cart === null ? 0 : totalQty(cart);
-const heldCount = lines.filter((line) => {
-	const view = holdView(line.expiresAt);
-	return view !== null && view.state !== "released";
-}).length;
 const summary =
 	cart === null || lines.length === 0
 		? null
-		: `${itemCount} ${itemCount === 1 ? "item" : "items"}${heldCount > 0 ? ` · ${heldCount} held` : ""}`;
+		: `${itemCount} ${itemCount === 1 ? "item" : "items"}`;
 
 /**
  * The totals block (§7). The cart has ONE figure — the sum of the lines that
@@ -168,7 +261,7 @@ const asProse = (label: string): CheckoutAmountView => ({ money: null, label });
 const cartTotal = pricing?.total ?? null;
 /** Nothing on this cart carries a figure — and the two reasons for that read
  *  differently to a shopper, so they are not collapsed into one sentence. */
-const NO_SUBTOTAL = pricingDegraded ? "Unavailable right now" : "Priced at checkout";
+const NO_SUBTOTAL = pricingDegraded ? "Unavailable right now" : PRICED_AT_CHECKOUT;
 const NO_TOTAL = pricingDegraded ? "Unavailable right now" : "Confirmed at checkout";
 
 const sumRows: SumRow[] = [
@@ -218,15 +311,33 @@ const partialNote =
 
 	{
 		cart === null || lines.length === 0 ? (
+			/* §8: "an empty screen is an invitation to act". The mockup's own
+			   empty-cart frame — a display-face line, one sentence saying what
+			   this store does for you, and a way out. Suppressed when the read
+			   was DEGRADED: a cart we could not reach is not an empty cart, and
+			   the banner above is already saying so. */
 			!degraded && (
-				<p>
-					Your cart is empty. <a href="/products">Browse products</a>.
-				</p>
+				<div class="empty">
+					<h2 class="empty-title">Nothing held yet.</h2>
+					<p>
+						Your cart is empty. Pick something and we'll hold the stock while you decide.
+					</p>
+					<a href="/products" class="btn btn-ghost">
+						Browse products
+					</a>
+				</div>
 			)
 		) : (
 			<div class="cart">
+				{/* A LIST, because it is one: the old table gave a screen reader
+				    "row 2 of 3" for free and the flat stack that replaced it gave
+				    nothing. `role="list"` is redundant markup that is not
+				    redundant in practice — WebKit drops list semantics from a
+				    list styled `list-style: none`, and this one is (same reason
+				    StepTrack carries it). */}
+				<ul class="lines" role="list">
 				{lineViews.map((view) => (
-					<div class="line">
+					<li class="line">
 						{/* Square at this size (§8: the cart is the 1/1 crop). */}
 						<MediaPanel
 							slug={view.artKey}
@@ -277,8 +388,9 @@ const partialNote =
 								</button>
 							</form>
 						</div>
-					</div>
+					</li>
 				))}
+				</ul>
 
 				<div class="totals">
 					<Sum rows={sumRows} total={totalAmount} footnote={partialNote} />
@@ -288,7 +400,12 @@ const partialNote =
 					<a href="/checkout" class="btn">
 						Check out
 					</a>
-					<p>Your total is confirmed at checkout.</p>
+					{/* §7, and the reason it says both halves: the figures above are a
+					    LIVE join, not a snapshot the cart is holding, and the ribbon
+					    beside them reserves STOCK — a hold is not a price lock. Saying
+					    only "confirmed at checkout" beside a countdown invites exactly
+					    the reading the hold does not support. */}
+					<p>Prices are live and may change; your total is confirmed at checkout.</p>
 				</div>
 			</div>
 		)
@@ -321,6 +438,39 @@ const partialNote =
 	.cart {
 		display: flex;
 		flex-direction: column;
+	}
+
+	/* The list is structure for a screen reader and nothing for the eye: the
+	   markers and the indent go, the hairlines between the lines stay. */
+	.lines {
+		margin: 0;
+		padding: 0;
+		list-style: none;
+	}
+
+	/* §8's empty state: an invitation, not an apology. */
+	.empty {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 1rem;
+		padding: 3rem 0 4rem;
+	}
+	/* §3's display face, one step down from the page title — this is the line
+	   the shopper reads first on an otherwise bare page. */
+	.empty-title {
+		margin: 0;
+		font-family: var(--u-display);
+		font-variation-settings: "wdth" 78, "opsz" 32;
+		font-weight: 700;
+		font-size: 1.75rem;
+		letter-spacing: -0.025em;
+		line-height: 1;
+	}
+	.empty p {
+		margin: 0;
+		max-width: 44ch;
+		color: var(--u-mute);
 	}
 
 	/* §2: one hairline, never a box. The rules between lines are the only
@@ -467,6 +617,16 @@ const partialNote =
 	}
 	.btn:hover {
 		box-shadow: inset 0 -3px 0 var(--u-straw);
+	}
+
+	/* The empty state's way out is a SECOND-rank action — there is nothing on
+	   this page to be primary about — so it is the same button on the hairline
+	   instead of on ink. Full-contrast text either way (§2: straw is a fitting;
+	   it is never what a label sits on). */
+	.btn-ghost {
+		background: transparent;
+		color: var(--u-ink);
+		border: var(--u-hair);
 	}
 
 	/* §11: 390px with no horizontal page scroll. Three columns cannot hold a

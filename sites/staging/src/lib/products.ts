@@ -22,15 +22,28 @@ export function productPath(slug: string | null, id: string): string {
 	return `/products/${slug ?? id}`;
 }
 
+/**
+ * The entry's image, or `null` when it has none.
+ *
+ * TWO spellings, and both reach a page: em-dash's media value normalizes to
+ * `{ src }` locally and arrives as `{ url }` from an external source. The rule
+ * lives here rather than at each call site because the cart page had grown its
+ * own copy of it, and a second copy is how one of them silently stops
+ * resolving the day a third spelling appears.
+ */
+export function productImage(data: ProductEntryData): string | null {
+	return data.images?.src ?? data.images?.url ?? null;
+}
+
 export function toCmsProductContent(data: ProductEntryData): CmsProductContent {
-	const image = data.images?.src ?? data.images?.url;
+	const image = productImage(data);
 	return {
 		// The EmDash content id — THE join key (product_commerce.product_id).
 		id: data.id,
 		title: data.title,
 		...(data.slug !== null ? { slug: data.slug } : {}),
 		...(data.description !== undefined ? { description: data.description } : {}),
-		...(image !== undefined ? { images: [image] } : {}),
+		...(image !== null ? { images: [image] } : {}),
 		url: productPath(data.slug, data.id),
 	};
 }
