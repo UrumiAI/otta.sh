@@ -5,8 +5,9 @@
  * that a reviewer would have to read three files to verify:
  *
  *  - the animated fill sits inside a `data-motion="essential"` wrapper, which
- *    is what exempts the COUNTDOWN from tokens.css's reduced-motion clamp
- *    while leaving the decorative indeterminate sweep subject to it;
+ *    is what exempts the COUNTDOWN from tokens.css's reduced-motion clamp.
+ *    The decorative indeterminate sweep is a different component entirely
+ *    (`PollRibbon`, which ships no script) and is covered by its own suite;
  *  - the inline script's three state labels are byte-identical to the ones the
  *    server rendered from `src/lib/hold.ts`. The script cannot import the
  *    module, so the duplication is unavoidable — this is the thing that stops
@@ -165,35 +166,6 @@ describe("HoldRibbon — what a screen reader hears", () => {
 		// Empty on first render: the server-rendered state is already in the
 		// label beside it, so announcing it on load would be a duplicate.
 		expect(html).toMatch(/data-hold-announce[^>]*aria-live="polite"[^>]*>\s*<\/span>/);
-	});
-});
-
-describe("HoldRibbon — indeterminate, for a pending order (§6)", () => {
-	test("renders the poll count in mono: Checking 3 of 8", async () => {
-		const html = await render({ variant: "indeterminate", poll: 3, pollMax: 8 });
-		expect(html).toContain("Checking");
-		expect(html).toContain("3");
-		expect(html).toContain("8");
-		expect(html).toContain("sweep");
-	});
-
-	test("the label is overridable", async () => {
-		expect(
-			await render({ variant: "indeterminate", poll: 1, pollMax: 8, label: "Confirming" }),
-		).toContain("Confirming");
-	});
-
-	test("it is NOT exempt from reduced motion — the sweep is decoration", async () => {
-		// The count beside it is the information. Only the countdown, which a
-		// shopper is timing a decision against, gets the exemption.
-		const html = await render({ variant: "indeterminate", poll: 3, pollMax: 8 });
-		expect(html).not.toContain('data-motion="essential"');
-	});
-
-	test("carries no countdown machinery — there is no duration to drain", async () => {
-		const html = await render({ variant: "indeterminate", poll: 3, pollMax: 8 });
-		expect(html).not.toContain("data-hold-clock");
-		expect(html).not.toContain("data-expires");
 	});
 });
 

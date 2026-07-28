@@ -16,9 +16,19 @@
  * The script reads its inputs from `data-` attributes rather than having them
  * baked into JS source (no `define:vars`), so Astro's attribute escaping is the
  * boundary and there is no string-assembly step to get wrong.
+ *
+ * ── What the theme owns here (docs/theme/TEMPERED.md §8, §9) ──────────────
+ * The FRAME — a narrow single column, the trust line, the box the fields sit
+ * in — plus one `appearance` object. Stripe's fields render in a cross-origin
+ * iframe, so they are the one surface this theme cannot reach with its own CSS;
+ * the appearance object is how the tokens get across. Nothing else on this page
+ * changes: not the tokenization, not the confirm call, not the return url.
  */
+import Notice from "../../components/Notice.astro";
+import StepTrack from "../../components/StepTrack.astro";
 import Base from "../../layouts/Base.astro";
 import { readCheckoutStash } from "../../lib/checkout-cookie.js";
+import { cartErrorMessage } from "../../lib/error-messages.js";
 import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
 
 const stash = readCheckoutStash(Astro.cookies);
@@ -31,42 +41,63 @@ const orderUrl = new URL(`/orders/${encodeURIComponent(stash.orderId)}`, Astro.u
 const orderPath = `/orders/${encodeURIComponent(stash.orderId)}`;
 ---
 
+{/* No `currency`: this page reads no money — the stash carries an order id and a
+    client secret and nothing money-shaped.
+
+    DEVIATION FROM §7, user-gated and deliberate: §7 says "the pay button carries
+    the amount: `Pay $40.00`, not `Pay now`", and this button says "Pay now".
+    There is no amount on this page to put on it, and getting one means either
+    widening the stash at place-time or making a commerce read here — both in the
+    payment path, so both are the user's call, not this increment's. Deferred,
+    and recorded rather than quietly rationalised. */}
 <Base title="Payment">
-	<h1>Payment</h1>
+	{/* Wrapped rather than given a class: a page's scoped selector cannot reach a
+	    component's root (src/lib/rest-props.ts), so the spacing around one lives
+	    on an element the page owns. */}
+	<div class="steps"><StepTrack current="payment" /></div>
+	<h1 class="title">Payment</h1>
 
 	{
 		STRIPE_PUBLISHABLE_KEY === undefined ? (
-			<p class="notice">
-				Card payment isn't set up on this store yet, so this order can't be paid. No charge has
-				been made. <a href={orderPath}>View your order</a>.
-			</p>
+			/* The lead is QUOTED from error-messages.ts's STRIPE_NOT_CONFIGURED
+			   rather than restated here (§10). */
+			<Notice lead={cartErrorMessage("STRIPE_NOT_CONFIGURED")}>
+				This order can't be paid. No charge has been made. <a href={orderPath}>View your order</a>.
+			</Notice>
 		) : (
-			<>
-				<p class="muted">
-					Your card details are handled directly by our payment provider and never reach this
-					site.
+			<div class="pay">
+				{/* A sentence, not a badge (§10). The straw mark is the same fitting
+				    the wordmark and the focus ring use. */}
+				<p class="trust">
+					<span class="trust-mark" aria-hidden="true" />
+					<span>
+						Your card details are handled directly by our payment provider and never reach this
+						site.
+					</span>
 				</p>
 
 				<form id="payment-form">
-					<div
-						id="payment-element"
-						data-client-secret={stash.clientSecret}
-						data-publishable-key={STRIPE_PUBLISHABLE_KEY}
-						data-return-url={orderUrl}
-					/>
+					<div class="mount">
+						<div
+							id="payment-element"
+							data-client-secret={stash.clientSecret}
+							data-publishable-key={STRIPE_PUBLISHABLE_KEY}
+							data-return-url={orderUrl}
+						/>
+					</div>
 					<p id="payment-error" class="notice" role="alert" hidden />
-					<button id="payment-submit" type="submit">
+					<button id="payment-submit" type="submit" class="btn">
 						Pay now
 					</button>
 				</form>
 
 				<noscript>
-					<p class="notice">
+					<Notice>
 						Entering card details requires JavaScript, because your card number is handled
 						directly by our payment provider and never touches this site. Your order is reserved
 						for 15 minutes — enable JavaScript and reload, or{" "}
 						<a href={orderPath}>view your order</a>.
-					</p>
+					</Notice>
 				</noscript>
 
 				<script is:inline src="https://js.stripe.com/v3/"></script>
@@ -91,22 +122,268 @@ const orderPath = `/orders/${encodeURIComponent(stash.orderId)}`;
 							return;
 						}
 
-						var stripe = Stripe(mount.dataset.publishableKey);
-						var elements;
+						// Read once, into locals: the mount node is handed to Stripe
+						// below and its children are replaced, so nothing later depends
+						// on reading back through the DOM.
+						var clientSecret = mount.dataset.clientSecret;
+						var returnUrl = mount.dataset.returnUrl;
+
+						// ── the theme, handed across the iframe boundary (§9) ─────────
+						// Read back as COMPUTED values rather than written down here:
+						// `var(--u-ink)` means nothing inside Stripe's iframe, and
+						// reading the live value is also what makes the dark palette —
+						// and a future `data-theme` toggle — work with no second copy of
+						// the palette to drift.
+						var root = document.documentElement;
+						function token(name) {
+							return getComputedStyle(root).getPropertyValue(name).trim();
+						}
+
+						/**
+						 * WHY THE SELF-HOSTED FACES DO NOT CROSS.
+						 *
+						 * Stripe can load a custom font, but it fetches `fonts[].src`
+						 * from ITS OWN origin — the js.stripe.com iframe — which makes it
+						 * a cross-origin font fetch needing `Access-Control-Allow-Origin`
+						 * on `/_astro/fonts/*` (the built `_headers` sets cache-control
+						 * only), and needing our origin to be HTTPS, since that iframe is
+						 * and a browser blocks mixed content outright. An earlier cut
+						 * walked `document.styleSheets` to hand Stripe the build-hashed
+						 * family and its woff2 URL; measured, the font never loaded and
+						 * the labels rendered off the generic tail — the same result, for
+						 * ~50 lines of stylesheet walking on the payment page.
+						 *
+						 * So: NAMES ONLY. `fontFamily` carries the page's own resolved
+						 * stack (build-hashed family first, generic tail behind it), which
+						 * is exactly right if the fonts are ever served with CORS from
+						 * HTTPS, and degrades to the right generic today. If you re-add
+						 * the file handoff, prove it with a network trace from the STRIPE
+						 * FRAME — the rendering looks the same either way.
+						 */
+						/**
+						 * The data face, for the eyebrow labels — its NAME from the token
+						 * layer, never written down here (§2), and a monospace generic
+						 * behind it.
+						 *
+						 * Only the first family, and this is measured, not fastidious. The
+						 * token resolves to
+						 * `"Martian Mono-<hash>", "Martian Mono-<hash> fallback: Arial",
+						 * sans-serif` — Astro's build-hashed face, its metric-adjusted
+						 * local alias, and a generic Astro appends. Handing that over
+						 * whole puts the labels in Stripe's default SANS: neither named
+						 * face can load inside a cross-origin frame, a generic always
+						 * resolves, and the one sitting third in that list is `sans-serif`
+						 * (the alias's name also carries a colon, which a validator is
+						 * entitled to reject outright). Keeping the head and choosing the
+						 * tail is what makes the fallback land on a monospace — and leaves
+						 * the real face named, for the day these are served with CORS over
+						 * HTTPS and it can actually load.
+						 */
+						function monoStack() {
+							var named = token("--u-data").split(",")[0].trim();
+							return named ? named + ", ui-monospace, monospace" : "ui-monospace, monospace";
+						}
+
+						/**
+						 * The appearance, or `undefined` if it cannot be built honestly.
+						 *
+						 * Returning undefined rather than a half-built object is the
+						 * point: if the token layer did not load, every value here is the
+						 * empty string, `border: "1px solid "` is invalid, and Stripe
+						 * throws — which the mount below would otherwise report to the
+						 * buyer as "this store cannot take payment". A missing stylesheet
+						 * is not an unpayable order.
+						 */
+						function appearance() {
+							var ink = token("--u-ink");
+							var surface = token("--u-surface");
+							var edge = token("--u-edge");
+							var straw = token("--u-straw");
+							var mute = token("--u-mute");
+							var bronze = token("--u-bronze");
+							if (!ink || !surface || !edge || !straw || !mute || !bronze) return undefined;
+							var radius = token("--u-r") || "2px";
+							var hair = "1px solid " + edge;
+							// §11's ring is straw, 2px, at 2px offset. Stripe's rules do
+							// not accept `outline-offset`, so the gap is drawn instead: a
+							// 2px shadow in the surface colour, then 2px of straw behind
+							// it.
+							var ring = "0 0 0 2px " + surface + ", 0 0 0 4px " + straw;
+							var selected = "inset 0 -2px 0 " + straw;
+							return {
+								theme: "stripe",
+								variables: {
+									// INK, not straw. Stripe paints `colorPrimary` as a FILL
+									// (the selected tab, the spinner), and §2's rule is that
+									// straw is a fitting and never a ground under text —
+									// that is what keeps every label at full contrast.
+									// Straw still appears here, as the 2px underline and the
+									// focus ring below.
+									colorPrimary: ink,
+									colorBackground: surface,
+									colorText: ink,
+									colorTextSecondary: mute,
+									colorTextPlaceholder: mute,
+									colorDanger: bronze,
+									colorIcon: mute,
+									fontFamily: getComputedStyle(document.body).fontFamily,
+									fontSizeBase: "14px",
+									borderRadius: radius,
+									spacingUnit: "4px",
+								},
+								rules: {
+									// The uppercase mono eyebrow, same recipe as `.u-label`.
+									".Label": {
+										color: mute,
+										fontFamily: monoStack(),
+										fontSize: "9px",
+										fontWeight: "500",
+										letterSpacing: "0.11em",
+										textTransform: "uppercase",
+									},
+									".Input": {
+										backgroundColor: surface,
+										color: ink,
+										border: hair,
+										borderRadius: radius,
+										boxShadow: "none",
+										padding: "10px 12px",
+									},
+									".Input::placeholder": { color: mute },
+									".Input:focus": { border: hair, boxShadow: ring },
+									".Input--invalid": { border: "1px solid " + bronze, color: ink, boxShadow: "none" },
+									// Focus must not erase the error: the bronze border is
+									// the state, the ring is only where the caret is.
+									".Input--invalid:focus": {
+										border: "1px solid " + bronze,
+										color: ink,
+										boxShadow: ring,
+									},
+									".Tab": {
+										backgroundColor: surface,
+										border: hair,
+										borderRadius: radius,
+										boxShadow: "none",
+										color: mute,
+									},
+									".Tab:hover": { color: ink, boxShadow: selected },
+									".Tab:focus": { boxShadow: ring },
+									".Tab--selected": {
+										backgroundColor: surface,
+										border: hair,
+										color: ink,
+										boxShadow: selected,
+									},
+									// Same reason as the invalid input: which method is
+									// selected is state, the ring is only focus. Listed
+									// after both so it wins on order.
+									".Tab--selected:focus": { color: ink, boxShadow: selected + ", " + ring },
+									".TabIcon--selected": { color: ink },
+									".Error": { color: bronze, fontSize: "13px" },
+									".TermsText": { color: mute, fontSize: "12px" },
+								},
+							};
+						}
+
+						/** Never throws. Decoration may fail; the payment may not. */
+						function safeAppearance() {
+							try {
+								return appearance();
+							} catch (err) {
+								return undefined;
+							}
+						}
+
+						// Stripe.js validates the key SYNCHRONOUSLY and throws on a
+						// malformed one — a secret key pasted into the publishable slot is
+						// the realistic way that happens. Unguarded, the throw takes the
+						// rest of this function with it, including the submit binding, and
+						// "Pay now" becomes a native submit that navigates nowhere useful
+						// with nothing said.
+						var stripe;
 						try {
-							// A service running WITHOUT a Stripe secret key mints an
-							// offline, unpayable client secret; Stripe.js rejects it
-							// here, synchronously. Say so plainly rather than leaving a
-							// blank frame or surfacing a raw provider string.
-							elements = stripe.elements({ clientSecret: mount.dataset.clientSecret });
-							elements.create("payment").mount("#payment-element");
+							stripe = Stripe(mount.dataset.publishableKey);
 						} catch (err) {
-							fail(
-								"This store's payment provider is running in offline test mode; this order cannot be paid. No charge has been made.",
-							);
+							fail("We couldn't reach our payment provider. Refresh to try again.");
 							return;
 						}
 
+						/**
+						 * Mount the Payment Element, themed or not. Throws on a genuinely
+						 * unusable client secret — which is the only thing the buyer is
+						 * ever told about.
+						 *
+						 * The created element is kept so a failed attempt can be torn down.
+						 * `create()` can succeed and `mount()` still throw, which leaves a
+						 * live element bound to an Elements group nobody holds any more:
+						 * its iframe stays in the DOM with its listeners attached, and
+						 * clearing the node underneath it only detaches the frame.
+						 */
+						var pending = null;
+						function mountElements(options) {
+							var made = stripe.elements(options);
+							pending = made.create("payment");
+							pending.mount("#payment-element");
+							return made;
+						}
+
+						/** Undo a half-finished mount, so the retry starts from an empty node
+						 *  and nothing is left listening to a detached frame. */
+						function discardMount() {
+							if (pending !== null) {
+								try {
+									pending.destroy();
+								} catch (err) {
+									// Already gone, or never fully created. Either is fine.
+								}
+								pending = null;
+							}
+							mount.textContent = "";
+						}
+
+						var elements = null;
+						var themed = safeAppearance();
+						try {
+							var options = { clientSecret: clientSecret };
+							if (themed !== undefined) options.appearance = themed;
+							elements = mountElements(options);
+						} catch (err) {
+							// A THEMING failure must never declare the order unpayable, so
+							// the appearance is dropped and the untuned widget tried once
+							// before anything is said. Only if THAT fails is the secret
+							// itself the problem — a service running without a Stripe
+							// secret key mints an offline, unpayable one, and Stripe.js
+							// rejects it here, synchronously.
+							elements = null;
+							if (themed !== undefined) {
+								try {
+									discardMount();
+									elements = mountElements({ clientSecret: clientSecret });
+								} catch (retryErr) {
+									discardMount();
+									elements = null;
+								}
+							}
+							if (elements === null) {
+								// The give-up path, and it must leave nothing behind. The
+								// untuned retry only runs when there WAS an appearance to
+								// drop; with no appearance the first mount is the only one,
+								// so it can reach here having half-created an element and
+								// written into the node. Idempotent — the retry's own
+								// discard already ran on the other route.
+								discardMount();
+								fail(
+									"This store's payment provider is running in offline test mode; this order cannot be paid. No charge has been made.",
+								);
+								return;
+							}
+						}
+
+						// ── the money path is wired FIRST ─────────────────────────────
+						// Everything below this binding is decoration, and decoration
+						// that throws on an old browser must not be able to leave "Pay
+						// now" as a bare native submit that navigates with no payment and
+						// no error.
 						form.addEventListener("submit", function (event) {
 							event.preventDefault();
 							errorBox.hidden = true;
@@ -114,7 +391,7 @@ const orderPath = `/orders/${encodeURIComponent(stash.orderId)}`;
 							stripe
 								.confirmPayment({
 									elements: elements,
-									confirmParams: { return_url: mount.dataset.returnUrl },
+									confirmParams: { return_url: returnUrl },
 								})
 								.then(function (result) {
 									// Only IMMEDIATE errors land here; a success redirects
@@ -126,38 +403,181 @@ const orderPath = `/orders/${encodeURIComponent(stash.orderId)}`;
 												"That payment could not be completed. No charge has been made.",
 										);
 										submit.disabled = false;
+										// `retheme` stands down while the submit is disabled, so a
+										// palette that changed during the confirm was skipped.
+										// Re-enabling the button is the moment it can catch up.
+										retheme();
 									}
 								})
 								.catch(function () {
 									fail("That payment could not be completed. No charge has been made.");
 									submit.disabled = false;
+									retheme();
 								});
 						});
+
+						// ── decoration only, from here down ───────────────────────────
+						// Both palettes are real and either can change while this page is
+						// open: the OS preference flips, or a toggle stamps `data-theme`
+						// on <html>. Re-reading the tokens and pushing a fresh appearance
+						// is the whole of it.
+						function retheme() {
+							// Mid-confirm — a 3DS sheet may be open over these fields.
+							// Repainting them under the buyer at that moment is the one
+							// time a correct palette is the wrong thing to do.
+							if (submit.disabled) return;
+							var next = safeAppearance();
+							if (next === undefined) return;
+							try {
+								elements.update({ appearance: next });
+							} catch (err) {
+								// A palette that did not repaint is not worth a payment.
+							}
+						}
+						try {
+							var media = window.matchMedia("(prefers-color-scheme: dark)");
+							// Safari < 14 / iOS ≤ 13 give a MediaQueryList with no
+							// addEventListener. Feature-detected rather than assumed —
+							// the deprecated addListener is not worth reaching for when
+							// the only cost of skipping is that the widget keeps the
+							// palette it mounted with.
+							if (media && typeof media.addEventListener === "function") {
+								media.addEventListener("change", retheme);
+							}
+							if (window.MutationObserver) {
+								new MutationObserver(retheme).observe(root, {
+									attributes: true,
+									attributeFilter: ["data-theme"],
+								});
+							}
+						} catch (err) {
+							// No live re-theming on this browser. The mounted appearance
+							// stands, and the payment is untouched.
+						}
 					})();
 				</script>
-			</>
+			</div>
 		)
 	}
 
-	<p><a href={orderPath}>View your order</a></p>
+	<p class="back"><a href={orderPath}>View your order</a></p>
 </Base>
 
 <style>
-	.muted {
+	.steps {
+		margin-bottom: 1.75rem;
+	}
+
+	.title {
+		font-family: var(--u-display);
+		font-variation-settings: "wdth" 78, "opsz" 48;
+		font-weight: 700;
+		font-size: clamp(1.75rem, 4vw, 2.25rem);
+		letter-spacing: -0.025em;
+		line-height: 1;
+		margin: 0 0 1.5rem;
+		text-wrap: balance;
+	}
+
+	/* §8: a narrow single column. Nothing competes with the fields. */
+	.pay {
+		display: flex;
+		flex-direction: column;
+		gap: 1.25rem;
+		max-width: 30rem;
+	}
+
+	.trust {
+		display: flex;
+		gap: 0.625rem;
+		align-items: flex-start;
+		margin: 0;
+		font-size: 0.8125rem;
 		color: var(--u-mute);
-		font-size: 0.875rem;
+		max-width: 46ch;
 	}
+	/* Continuous, not the dashed bronze a Notice uses: this is a statement of
+	   fact, not a degraded state. */
+	.trust-mark {
+		flex: none;
+		width: 1.5rem;
+		height: 2px;
+		margin-top: 0.5rem;
+		background: var(--u-straw);
+	}
+
+	#payment-form {
+		display: flex;
+		flex-direction: column;
+		gap: 1.25rem;
+		align-items: flex-start;
+	}
+
+	/* The box Stripe's own fields sit in. The theme owns this hairline; the
+	   fields inside it are styled by the appearance object above and by nothing
+	   here — a scoped rule cannot cross into their iframe. */
+	.mount {
+		width: 100%;
+		border: var(--u-hair);
+		border-radius: var(--u-r);
+		padding: 1.125rem;
+		background: var(--u-surface);
+	}
+
+	/* Written by the script (`textContent`), so it stays a bare <p> and takes
+	   the Notice treatment in CSS instead: dashed bronze rules, no fill (§4).
+	   Using the component here would mean the script writing over its mark and
+	   its inner <p>.
+
+	   TODO(increment 6): the `color` line exists only to out-specify
+	   legacy-bridge.css's unscoped `.notice { color: #131a20 }`, which pins
+	   near-black for the pale panel the unmigrated pages still paint. When that
+	   file is deleted with the last page migration, this rule can be renamed off
+	   `.notice` and the `color` dropped. */
 	.notice {
-		background: #fff7e0;
-		border: 1px solid #e6c200;
-		border-radius: 0.5rem;
-		padding: 0.75rem 1rem;
+		width: 100%;
+		margin: 0;
+		padding: 0.875rem 0;
+		border-top: 1px dashed var(--u-bronze);
+		border-bottom: 1px dashed var(--u-bronze);
+		background: transparent;
+		color: var(--u-ink);
+		font-size: 0.8125rem;
+		line-height: 1.5;
 	}
-	#payment-element {
-		margin: 1rem 0;
-		max-width: 32rem;
+
+	.btn {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.625rem;
+		background: var(--u-ink);
+		color: var(--u-surface);
+		border: none;
+		border-radius: var(--u-r);
+		padding: 0.75rem 1.25rem;
+		font-family: var(--u-body);
+		font-size: 0.875rem;
+		font-weight: 600;
+		cursor: pointer;
+		box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0);
+		transition: box-shadow 120ms ease;
 	}
-	button {
-		padding: 0.5rem 1.25rem;
+	.btn:hover:not(:disabled) {
+		box-shadow: inset 0 -3px 0 var(--u-straw);
+	}
+	.btn:disabled {
+		opacity: 0.55;
+		cursor: default;
+	}
+
+	.back {
+		margin: 2.5rem 0 0;
+		font-size: 0.8125rem;
+	}
+	.back a {
+		color: var(--u-mute);
+	}
+	.back a:hover {
+		color: var(--u-ink);
 	}
 </style>

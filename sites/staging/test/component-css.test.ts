@@ -17,6 +17,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
+import { hasExecutableScript } from "./astro-source.js";
 
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
 const SRC_DIR = path.resolve(TEST_DIR, "../src");
@@ -93,12 +94,13 @@ function classesPassedToChildren(text: string): string[] {
 		);
 }
 
-describe("the component set §4 asks for", () => {
+describe("the component set the spec asks for (§4's table, plus §6's poll ribbon)", () => {
 	test.each([
 		"HoldRibbon.astro",
 		"Ledger.astro",
 		"MediaPanel.astro",
 		"Notice.astro",
+		"PollRibbon.astro",
 		"PriceTag.astro",
 		"ProductCard.astro",
 		"QtyField.astro",
@@ -253,28 +255,38 @@ describe("the motion budget (§2, §6, §11)", () => {
 	test("only the hold ribbon ships client JavaScript", () => {
 		// "One countdown, one hover" is the whole budget. A component growing a
 		// script is a decision, not a detail.
-		const withScripts = files.filter((name) =>
-			readFileSync(path.join(COMPONENTS_DIR, name), "utf8").includes("<script"),
-		);
+		//
+		// Judged on the TEMPLATE (`hasExecutableScript`, shared with the ADR-0012
+		// fence), not on the file: a component must be able to say in prose that
+		// it deliberately has no script without that sentence failing the test
+		// which guarantees it.
+		const withScripts = files.filter((name) => hasExecutableScript(source(name)));
 		expect(withScripts).toEqual(["HoldRibbon.astro"]);
 	});
 
-	test("only the hold ribbon animates, and it declares both sides of the rule", () => {
+	test("only the two ribbons animate, and each declares both sides of the rule", () => {
 		const animated = files.filter((name) =>
 			/animation:|@keyframes|transition:/.test(styles(source(name))),
 		);
-		expect(animated).toEqual(["HoldRibbon.astro"]);
+		expect(animated).toEqual(["HoldRibbon.astro", "PollRibbon.astro"]);
 
-		const css = styles(source("HoldRibbon.astro"));
-		// The countdown is INFORMATION and is exempted by its wrapper…
+		// The COUNTDOWN is information a shopper is timing a decision against, so
+		// it is exempted by its wrapper rather than by a media query.
 		expect(readFileSync(path.join(COMPONENTS_DIR, "HoldRibbon.astro"), "utf8")).toContain(
 			'data-motion="essential"',
 		);
-		// …while the indeterminate sweep is decoration and settles to a static
-		// filled track rather than freezing at its first keyframe.
+
+		// The indeterminate SWEEP is decoration — the count beside it is the
+		// information — so it takes the clamp, and settles into a static filled
+		// track rather than freezing at whichever keyframe it was on.
+		const css = styles(source("PollRibbon.astro"));
 		expect(css).toContain("@media (prefers-reduced-motion: reduce)");
 		const reduced = css.slice(css.indexOf("@media (prefers-reduced-motion: reduce)"));
 		expect(reduced).toContain("animation: none");
 		expect(reduced).toContain("opacity: 0.4");
+		// It must NOT claim the exemption the countdown has.
+		expect(readFileSync(path.join(COMPONENTS_DIR, "PollRibbon.astro"), "utf8")).not.toContain(
+			'data-motion="essential"',
+		);
 	});
 });

@@ -12,9 +12,11 @@
  *  1. THE COUNTDOWN TICKS UNDER `prefers-reduced-motion`. It is information the
  *     shopper is acting on, not decoration. The animated fill therefore sits
  *     inside a `data-motion="essential"` wrapper, which tokens.css's
- *     reduced-motion rule exempts along with its whole subtree. The
- *     INDETERMINATE sweep further down is the opposite case — that one IS
- *     decorative, so it is not exempt and it collapses to a static fill.
+ *     reduced-motion rule exempts along with its whole subtree. The confirmation
+ *     page's indeterminate sweep is the opposite case — decorative, so not
+ *     exempt — and it lives in `PollRibbon.astro`, which carries NO script for
+ *     exactly that reason: this component's bundled script would otherwise ship
+ *     to a page ADR-0012 keeps free of client JavaScript.
  *
  *  2. THE NO-JS VALUE IS THE ABSOLUTE EXPIRY, NOT A FROZEN COUNTDOWN. A
  *     server-rendered "08:32" is true for one second and then quietly lies, so
@@ -39,8 +41,7 @@ import {
 	holdView,
 } from "../lib/hold.js";
 
-interface CountdownProps {
-	variant?: "countdown";
+interface Props extends HTMLAttributes<"div"> {
 	/** The cart line's own `expiresAt`. `null` — no reservation was ever taken
 	 *  on this line — renders NOTHING: an absent hold and a lapsed one are
 	 *  different facts. */
@@ -51,92 +52,48 @@ interface CountdownProps {
 	nextStep?: string;
 }
 
-interface IndeterminateProps {
-	variant: "indeterminate";
-	/** "Checking 3 of 8" — the confirmation page's bounded poll. */
-	poll: number;
-	pollMax: number;
-	label?: string;
-}
-
-type Props = (CountdownProps | IndeterminateProps) & HTMLAttributes<"div">;
-
-/**
- * The union is for CALLERS — it is what makes `poll` required alongside
- * `variant: "indeterminate"` and rejected without it. Inside, one flattened
- * shape: intersecting the two members would collapse `variant` to `never`, and
- * a discriminated union cannot be destructured in one statement anyway.
- */
-type EitherVariant = HTMLAttributes<"div"> & {
-	variant?: "countdown" | "indeterminate";
-	expiresAt?: string | null;
-	windowSeconds?: number;
-	nextStep?: string;
-	poll?: number;
-	pollMax?: number;
-	label?: string;
-};
-
 const {
-	variant = "countdown",
 	expiresAt = null,
 	windowSeconds = HOLD_WINDOW_SECONDS,
 	nextStep = HOLD_RELEASED_NEXT_STEP,
-	poll = 0,
-	pollMax = 0,
-	label = "Checking",
 	class: className,
 	...rest
-}: EitherVariant = Astro.props;
+} = Astro.props;
 
-const view = variant === "indeterminate" ? null : holdView(expiresAt, new Date(), windowSeconds);
-const expiry = variant === "indeterminate" ? null : absoluteExpiry(expiresAt);
+const view = holdView(expiresAt, new Date(), windowSeconds);
+const expiry = absoluteExpiry(expiresAt);
 ---
 
 {
-	variant === "indeterminate" ? (
-		<div class:list={["hold", "poll", className]} {...restProps(rest)}>
-			<div class="track">
-				<span class="sweep" />
+	view !== null && (
+		<div
+			class:list={["hold", className]}
+			data-hold
+			data-state={view.state}
+			data-expires={expiresAt}
+			data-window={windowSeconds}
+			{...restProps(rest)}
+		>
+			{/* The exemption tokens.css grants covers this element AND its
+			    subtree — the fill inside is what actually moves. */}
+			<div class="track" data-motion="essential">
+				<div class="fill" data-hold-fill style={`--pct: ${view.percent.toFixed(1)}%`} />
 			</div>
-			<div class="meta">
-				<span class="u-label label">{label}</span>
-				<span class="u-mono clock">
-					{poll} of {pollMax}
+			<div class="meta" role="timer">
+				<span class="u-label label" data-hold-label>
+					{view.label}
+				</span>
+				{/* Replaced with the live mm:ss on the script's first tick. */}
+				<span class="u-mono clock" data-hold-clock>
+					{expiry}
 				</span>
 			</div>
+			{/* Written only when the STATE changes, never on a tick. */}
+			<span class="u-sr-only" data-hold-announce aria-live="polite" />
+			<p class="note" data-hold-note hidden={view.state !== "released"}>
+				{nextStep}
+			</p>
 		</div>
-	) : (
-		view !== null && (
-			<div
-				class:list={["hold", className]}
-				data-hold
-				data-state={view.state}
-				data-expires={expiresAt}
-				data-window={windowSeconds}
-				{...restProps(rest)}
-			>
-				{/* The exemption tokens.css grants covers this element AND its
-				    subtree — the fill inside is what actually moves. */}
-				<div class="track" data-motion="essential">
-					<div class="fill" data-hold-fill style={`--pct: ${view.percent.toFixed(1)}%`} />
-				</div>
-				<div class="meta" role="timer">
-					<span class="u-label label" data-hold-label>
-						{view.label}
-					</span>
-					{/* Replaced with the live mm:ss on the script's first tick. */}
-					<span class="u-mono clock" data-hold-clock>
-						{expiry}
-					</span>
-				</div>
-				{/* Written only when the STATE changes, never on a tick. */}
-				<span class="u-sr-only" data-hold-announce aria-live="polite" />
-				<p class="note" data-hold-note hidden={view.state !== "released"}>
-					{nextStep}
-				</p>
-			</div>
-		)
 	)
 }
 
@@ -263,48 +220,6 @@ const expiry = variant === "indeterminate" ? null : absoluteExpiry(expiresAt);
 		color: var(--u-mute);
 	}
 
-	/* ── the indeterminate variant (§6) ─────────────────────────────────────
-	   The same ribbon on /orders/<id> while an order is pending: there is no
-	   duration to drain against, so a segment sweeps and the poll count carries
-	   the actual information. */
-	.poll {
-		max-width: 22rem;
-	}
-
-	.poll .track {
-		position: relative;
-	}
-
-	.poll .clock {
-		min-width: 0;
-	}
-
-	.sweep {
-		position: absolute;
-		inset: 0 auto 0 0;
-		width: 34%;
-		background: var(--u-violet);
-		animation: hold-sweep 1.6s ease-in-out infinite;
-	}
-
-	@keyframes hold-sweep {
-		from {
-			transform: translateX(-100%);
-		}
-		to {
-			transform: translateX(320%);
-		}
-	}
-
-	/* This sweep IS decorative — the count beside it is the information — so
-	   unlike the countdown it is NOT exempt, and it settles into a static
-	   filled track rather than freezing mid-stride at its first keyframe. */
-	@media (prefers-reduced-motion: reduce) {
-		.sweep {
-			animation: none;
-			transform: none;
-			width: 100%;
-			opacity: 0.4;
-		}
-	}
+	/* The indeterminate sweep this file used to carry now lives in
+	   PollRibbon.astro — see the note at the top. */
 </style>

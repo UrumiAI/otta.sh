@@ -19,8 +19,18 @@
  * through the same substitution in `totals.ts`.
  *
  * The columns are laid out, not tabulated, so nothing but position says which
- * figure is which — a screen reader hears "URUMI-TEE-01 1 $25.00" and has to
- * guess. Both figures carry a visually-hidden name for that reason.
+ * cell is which — a screen reader hears "Urumi Tee URUMI-TEE-01 1 $25.00" and
+ * has to guess at three of the four. So every cell EXCEPT the title carries a
+ * visually-hidden name: the title is the one thing that names itself.
+ *
+ * `title` is OPTIONAL, and the split is deliberate. On `/checkout` the row is
+ * still a cart line — the wire carries no title, and the shopper picked those
+ * items a moment ago — so the SKU stands alone. On `/orders/<id>` the same
+ * block is a RECEIPT, and the title is the purchase-time snapshot the order
+ * froze (CLAUDE.md: "orders snapshot price + title at purchase time"); a
+ * receipt reading only `URUMI-TEE-01 1 $25.00` has lost the one thing a buyer
+ * opens it to check. So a row that HAS a title leads with it, in the body face,
+ * and drops the SKU beneath in mono as the reference you quote in an email.
  */
 import type { HTMLAttributes } from "astro/types";
 import { restProps } from "../lib/rest-props.js";
@@ -29,6 +39,9 @@ import { isUnpricedText, moneyCellText } from "../lib/totals.js";
 export interface LedgerRow {
 	sku: string;
 	qty: number;
+	/** The product's name at purchase time. Given ⇒ it leads and the SKU sits
+	 *  under it; omitted ⇒ the SKU stands alone (see the note above). */
+	title?: string;
 	/** `lineTotal.formatted`, or the honest prose for a line with no live
 	 *  price ("priced at checkout"). Never assembled here. */
 	money: string;
@@ -58,6 +71,8 @@ const cells = rows.map((row) => {
 	return {
 		sku: row.sku,
 		qty: row.qty,
+		/** Blank is the same as absent — a title has to say something to lead. */
+		title: row.title !== undefined && row.title !== "" ? row.title : null,
 		money,
 		unpriced: row.unpriced === true || isUnpricedText(money),
 	};
@@ -68,7 +83,16 @@ const cells = rows.map((row) => {
 	{
 		cells.map((cell) => (
 			<div class="line">
-				<span class="u-mono sku">{cell.sku}</span>
+				<span class="ident">
+					{cell.title !== null && <span class="title">{cell.title}</span>}
+					<span class="u-mono sku">
+						{/* Named only when something else already named the line. On a
+						    title-less row the SKU IS the name and a label would just
+						    double it. */}
+						{cell.title !== null && <span class="u-sr-only">Item code </span>}
+						{cell.sku}
+					</span>
+				</span>
 				<span class="u-mono qty">
 					<span class="u-sr-only">Quantity </span>
 					{cell.qty}
@@ -102,10 +126,32 @@ const cells = rows.map((row) => {
 		border-top: var(--u-hair);
 	}
 
+	/* One grid cell, one or two lines. `min-width: 0` so a long title or SKU
+	   wraps inside the column instead of widening it (§11). */
+	.ident {
+		display: flex;
+		flex-direction: column;
+		gap: 0.125rem;
+		min-width: 0;
+	}
+
+	/* The name leads, in the body face — it is prose, not data. */
+	.title {
+		font-size: 0.875rem;
+		font-weight: 500;
+		color: var(--u-ink);
+		overflow-wrap: anywhere;
+	}
+
 	.sku {
 		font-size: 0.75rem;
 		/* A long SKU breaks rather than widening the panel (§11). */
 		overflow-wrap: anywhere;
+	}
+
+	/* Demoted to a reference once something else names the line. */
+	.title + .sku {
+		color: var(--u-mute);
 	}
 
 	.qty {

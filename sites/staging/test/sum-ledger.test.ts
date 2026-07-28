@@ -196,6 +196,36 @@ describe("Ledger — SKU, quantity, money", () => {
 	});
 });
 
+describe("Ledger — the receipt names what was bought (title)", () => {
+	const ledger = (props: Record<string, unknown>): Promise<string> =>
+		container.renderToString(Ledger, { props });
+
+	test("a row WITH a title leads with it, and keeps the SKU as the reference", async () => {
+		// CLAUDE.md's "orders snapshot price + title at purchase time" is what
+		// makes a confirmation page a receipt rather than a list of part numbers.
+		const html = await ledger({
+			rows: [{ title: "Urumi Tee", sku: "URUMI-TEE-01", qty: 1, money: "$25.00" }],
+		});
+		expect(html).toContain("Urumi Tee");
+		expect(html).toContain("URUMI-TEE-01");
+		// The name comes first in the reading order, not just visually.
+		expect(html.indexOf("Urumi Tee")).toBeLessThan(html.indexOf("URUMI-TEE-01"));
+	});
+
+	test("a row WITHOUT one is unchanged — a cart line has no title to show", async () => {
+		const html = await ledger({ rows: [{ sku: "URUMI-TEE-01", qty: 1, money: "$25.00" }] });
+		expect(html).toContain("URUMI-TEE-01");
+		expect(html).not.toContain('class="title"');
+	});
+
+	test("a blank title is the same as none — it must not open an empty line", async () => {
+		const html = await ledger({
+			rows: [{ title: "", sku: "URUMI-TEE-01", qty: 1, money: "$25.00" }],
+		});
+		expect(html).not.toContain('class="title"');
+	});
+});
+
 describe("Ledger — a bare em dash never reaches the money column either (§7)", () => {
 	const ledger = (props: Record<string, unknown>): Promise<string> =>
 		container.renderToString(Ledger, { props });
