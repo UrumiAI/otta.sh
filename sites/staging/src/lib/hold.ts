@@ -12,10 +12,22 @@
  * and the no-JS answer.
  */
 
-/** The service's hold TTL. The ribbon needs a WINDOW to draw a fill against —
- *  the wire carries the expiry instant, not the length of the hold — so the
- *  theme assumes the service's ten minutes and clamps anything longer. */
-export const HOLD_WINDOW_SECONDS = 600;
+/** The service's hold TTL, in seconds — 15 minutes.
+ *
+ *  AUTHORITY: `DEFAULT_HOLD_TTL_MS` in `packages/domain/src/cart/use-cases.ts`
+ *  (`15 * 60 * 1000`), which the service applies unless a deployment overrides
+ *  it with `CART_HOLD_TTL_MS` (DEPLOYMENT.md §5 — default `900000`). Keep this
+ *  in step with whatever the store this theme is serving actually runs.
+ *
+ *  It is ONLY the fill's denominator. The ribbon needs a window to draw a
+ *  fraction against because the wire carries the expiry INSTANT, not the length
+ *  of the hold; the countdown, the state and the clock all come from
+ *  `expiresAt` and are unaffected by this number. Getting it wrong therefore
+ *  cannot mis-state the time left — it draws a bar at the wrong width (assuming
+ *  600 here made a fresh 15-minute hold render as already a third drained).
+ *  A store on a longer TTL is clamped, never overflowed; `holdView` takes an
+ *  explicit `windowSeconds` for that case. */
+export const HOLD_WINDOW_SECONDS = 900;
 
 /** Under a minute, the ribbon turns bronze and changes what it calls itself. */
 export const HOLD_EXPIRING_SECONDS = 60;
@@ -105,8 +117,8 @@ export function holdView(
  * which stays true. UTC is named explicitly: the server cannot know the
  * shopper's zone, and a bare "14:10" would be read as local time.
  *
- * SECONDS ARE INCLUDED, and that is not fussiness. A hold is ten minutes long,
- * so truncating to the minute discards up to 59 seconds of a 600-second
+ * SECONDS ARE INCLUDED, and that is not fussiness. A hold is fifteen minutes
+ * long, so truncating to the minute discards up to 59 seconds of a 900-second
  * window — for a shopper arriving with two minutes left that is a meaningful
  * slice of the time they have to decide in, and it rounds in the direction
  * that makes them think they have longer than they do.

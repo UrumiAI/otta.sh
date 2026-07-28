@@ -15,7 +15,7 @@
  *     comes back wrong from all three, and it comes back wrong in the
  *     shopper-hostile direction, showing time on a hold that has already gone.
  *  2. THE POLITE REGION IS WRITTEN ON A STATE CHANGE, NEVER ON A TICK. Three
- *     announcements in ten minutes; six hundred is an unusable page.
+ *     announcements in fifteen minutes; nine hundred is an unusable page.
  *  3. THE INTERVAL DROPS ITSELF once no ribbon has anything left to count.
  *
  * The component's `<script>` is a bundled module, not `is:inline`, so it

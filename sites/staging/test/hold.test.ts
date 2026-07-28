@@ -5,7 +5,7 @@
  * trust a number that moves. Everything about WHEN it changes colour, what it
  * is willing to say, and the value it leaves behind for a browser that never
  * runs the script lives here, in a pure module, so it can be tested at exact
- * boundaries instead of by waiting ten minutes in a browser.
+ * boundaries instead of by waiting fifteen minutes in a browser.
  */
 import { describe, expect, test } from "vitest";
 import {
@@ -81,7 +81,7 @@ describe("holdView — the fill", () => {
 		expect(holdView(inSeconds(HOLD_WINDOW_SECONDS * 3), NOW)?.percent).toBe(100);
 	});
 
-	test("the window is overridable, for a store whose hold TTL is not ten minutes", () => {
+	test("the window is overridable, for a store whose hold TTL is not the default", () => {
 		expect(holdView(inSeconds(60), NOW, 120)?.percent).toBe(50);
 	});
 });
@@ -125,8 +125,8 @@ describe("absoluteExpiry — the value a browser with no JavaScript is left hold
 		expect(absoluteExpiry("2026-07-28T14:10:00.000Z")).toBe("14:10:00 UTC");
 	});
 
-	test("carries SECONDS — a ten-minute hold cannot afford to round up a minute", () => {
-		// Truncating to the minute discards up to 59s of a 600s window, and it
+	test("carries SECONDS — a fifteen-minute hold cannot afford to round up a minute", () => {
+		// Truncating to the minute discards up to 59s of a 900s window, and it
 		// rounds in the direction that makes a shopper think they have longer.
 		expect(absoluteExpiry("2026-07-28T14:10:59.000Z")).toBe("14:10:59 UTC");
 		expect(absoluteExpiry("2026-07-28T14:10:01.000Z")).toBe("14:10:01 UTC");
