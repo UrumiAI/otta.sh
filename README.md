@@ -77,36 +77,22 @@ To deploy this for free on Cloudflare Workers, follow
 
 ## Why two parts
 
-**The biggest blocker right now is a missing primitive: EmDash's plugin sandbox has no
-atomic write / compare-and-set / transaction.** Plugins run with no direct DB access — all
-data crosses a capability-scoped RPC bridge as JSON copies — and `ctx.storage` is an
-unconditional upsert whose declared unique indexes are silently downgraded. So a safe
-inventory decrement (read-then-write across two bridge calls) always races under
-concurrency, and nothing in the plugin surface closes it. Until that primitive exists,
-correct commerce needs a transactional database off to the side. The commerce service
-holds it and performs the one atomic operation that matters:
+**EmDash's plugin sandbox has no atomic write, compare-and-set, or transaction.** Plugins
+get no direct database access — everything crosses a capability-scoped RPC bridge as JSON
+copies — and `ctx.storage` is an unconditional upsert whose declared unique indexes are
+silently downgraded. Any read-then-write spans two bridge calls and can interleave, so the
+sandbox can't express a guarded update, a uniqueness constraint, or a multi-document
+commit. Those are the ordinary building blocks of an order pipeline, so for now the
+transactional database sits off to the side, in the commerce service.
 
-```sql
-UPDATE inventory SET on_hand = on_hand - :q
- WHERE sku = :s AND on_hand >= :q
-RETURNING on_hand;   -- 0 rows = out of stock. No oversell, no lock.
-```
-
-**This is being fixed upstream, and the split is meant to collapse.**
-[emdash-cms/emdash#2169](https://github.com/emdash-cms/emdash/pull/2169) (ours, currently
-a draft) adds `ctx.storage.<collection>.updateIf(id, { where, set?, delta? })` — one
-guarded `UPDATE … RETURNING`, exactly the statement above, executed inside the sandbox.
-Once that lands, a plugin can decrement stock race-free without a companion database, and
-running commerce as a separate service becomes a deployment choice rather than a
-correctness requirement.
-
-We've already proven the endpoint: a `@urumi/store-emdash` adapter implements the domain's
-`InventoryStore` over the plugin storage API alone and passes the full contract suite —
-including the real-Postgres no-oversell race and idempotent replay — entirely in-process.
-That adapter also leans on two sibling primitives not yet proposed upstream: an atomic
-`insert` (unique-violation-classified) and `ctx.storage.batch([...])` for all-or-nothing
-multi-collection writes. So #2169 unblocks the invariant; folding the rest of the service
-(orders, payments, webhooks, reporting) into the plugin needs those two as well.
+The gap is closing. [emdash-cms/emdash#2169](https://github.com/emdash-cms/emdash/pull/2169)
+(ours, currently a draft) adds `ctx.storage.<collection>.updateIf(id, { where, set?,
+delta? })` — a guarded `UPDATE … RETURNING` run inside the sandbox. Two sibling primitives,
+not yet proposed upstream, cover the rest: an atomic `insert` that classifies unique
+violations, and `ctx.storage.batch([...])` for all-or-nothing multi-collection writes.
+With all three, a `@urumi/store-emdash` adapter already passes the domain's full
+`InventoryStore` contract in-process. Once orders, payments, webhooks, and reporting
+follow, the split becomes a deployment choice rather than a correctness requirement.
 
 ## Architecture (summary)
 
@@ -154,8 +140,8 @@ pnpm test         # vitest (better-sqlite3 by default)
 pnpm format       # oxfmt, tabs
 ```
 
-The **no-oversell concurrency test is Postgres-required** — better-sqlite3 serializes
-writes in one process, so it verifies the SQL is correct, not that it's race-safe. See
+The **concurrency tests are Postgres-required** — better-sqlite3 serializes writes in one
+process, so it verifies the SQL is correct, not that it's race-safe under contention. See
 `DEVELOPMENT.md` for the TDD / contract-first workflow and commerce invariants.
 
 ## Status
