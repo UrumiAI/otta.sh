@@ -222,6 +222,8 @@ export {
 	type ClientAction,
 	type ConfirmationResult,
 	type CreateIntentInput,
+	type CreateIntentLine,
+	type CreateIntentShipTo,
 	type PaymentGateway,
 	type PaymentIntentErrorInput,
 	type PaymentIntentHandle,

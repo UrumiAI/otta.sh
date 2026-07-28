@@ -11,6 +11,7 @@ import {
 	createStripeHttpTransport,
 	STRIPE_UNSUPPORTED_CURRENCIES,
 	StripePaymentGateway,
+	type StripeCreatePaymentIntentInput,
 	type StripeCreatePaymentIntentResult,
 	type StripeCreateRefundResult,
 	type StripePreflightResult,
@@ -29,13 +30,7 @@ class MockTransport implements StripeTransport {
 		intentId: "pi_live_1",
 		clientSecret: "pi_live_1_secret_stripe",
 	};
-	readonly intents: Array<{
-		orderId: string;
-		amountCents: number;
-		currency: string;
-		idempotencyKey: string;
-		secretKey: string;
-	}> = [];
+	readonly intents: StripeCreatePaymentIntentInput[] = [];
 
 	async readRefundedAmount(): Promise<StripePreflightResult> {
 		throw new Error("not used by the createIntent suite");
@@ -43,13 +38,9 @@ class MockTransport implements StripeTransport {
 	async createRefund(): Promise<StripeCreateRefundResult> {
 		throw new Error("not used by the createIntent suite");
 	}
-	async createPaymentIntent(input: {
-		orderId: string;
-		amountCents: number;
-		currency: string;
-		idempotencyKey: string;
-		secretKey: string;
-	}): Promise<StripeCreatePaymentIntentResult> {
+	async createPaymentIntent(
+		input: StripeCreatePaymentIntentInput,
+	): Promise<StripeCreatePaymentIntentResult> {
 		this.intents.push(input);
 		return this.result;
 	}
@@ -61,6 +52,7 @@ function intentInput(overrides: Partial<CreateIntentInput> = {}): CreateIntentIn
 		amount: cents(2500),
 		currency: USD,
 		idempotencyKey: idempotencyKey("key-1"),
+		lines: [{ title: "Widget", quantity: 1 }],
 		...overrides,
 	};
 }
@@ -167,6 +159,9 @@ describe("StripePaymentGateway.createIntent — the LIVE path (mock transport)",
 			currency: "usd",
 			idempotencyKey: "key-1",
 			secretKey: SK,
+			// The India-export description, rendered from the order's line snapshot
+			// (see stripe-intent-description.test.ts for the formatting contract).
+			description: "1 × Widget",
 		});
 	});
 
@@ -258,6 +253,7 @@ describe("createStripeHttpTransport.createPaymentIntent (stub fetch — NO netwo
 			currency: "USD",
 			idempotencyKey: "key-7",
 			secretKey: SK,
+			description: "1 × Widget",
 		});
 		expect(seenUrl).toBe("https://api.example/v1/payment_intents");
 		expect(seenMethod).toBe("POST");
@@ -282,6 +278,7 @@ describe("createStripeHttpTransport.createPaymentIntent (stub fetch — NO netwo
 			currency: "usd",
 			idempotencyKey: "key-7",
 			secretKey: SK,
+			description: "1 × Widget",
 		});
 		expect(headers?.get("idempotency-key")).toBe("key-7");
 		expect(headers?.get("authorization")).toBe(`Bearer ${SK}`);
@@ -300,6 +297,7 @@ describe("createStripeHttpTransport.createPaymentIntent (stub fetch — NO netwo
 				currency: "usd",
 				idempotencyKey: "key-7",
 				secretKey: SK,
+				description: "1 × Widget",
 			}),
 		).toEqual({ ok: true, intentId: "pi_3Nxyz", clientSecret: "pi_3Nxyz_secret_abc" });
 	});
@@ -318,6 +316,7 @@ describe("createStripeHttpTransport.createPaymentIntent (stub fetch — NO netwo
 				currency: "usd",
 				idempotencyKey: "key-7",
 				secretKey: SK,
+				description: "1 × Widget",
 			}),
 		).toMatchObject({ ok: false, class: "retryable" });
 	});
@@ -345,6 +344,7 @@ describe("createStripeHttpTransport.createPaymentIntent (stub fetch — NO netwo
 					currency: "usd",
 					idempotencyKey: "key-7",
 					secretKey: SK,
+					description: "1 × Widget",
 				}),
 			).toEqual({ ok: false, class: cls, status, code: "some_code" });
 		}
@@ -367,6 +367,7 @@ describe("createStripeHttpTransport.createPaymentIntent (stub fetch — NO netwo
 					currency: "usd",
 					idempotencyKey: "key-7",
 					secretKey: SK,
+					description: "1 × Widget",
 				}),
 			).toMatchObject({ ok: false, class: "terminal" });
 		}
@@ -384,6 +385,7 @@ describe("createStripeHttpTransport.createPaymentIntent (stub fetch — NO netwo
 				currency: "usd",
 				idempotencyKey: "key-7",
 				secretKey: SK,
+				description: "1 × Widget",
 			}),
 		).toEqual({ ok: false, class: "retryable", status: 502 });
 	});
@@ -406,6 +408,7 @@ describe("createStripeHttpTransport.createPaymentIntent (stub fetch — NO netwo
 				currency: "usd",
 				idempotencyKey: "key-7",
 				secretKey: SK,
+				description: "1 × Widget",
 			}),
 		).toMatchObject({ ok: false, class: "retryable" });
 	});

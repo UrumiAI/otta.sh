@@ -7,6 +7,8 @@ import {
 	type Clock,
 	type ConfirmationResult,
 	type CreateIntentInput,
+	type CreateIntentLine,
+	type CreateIntentShipTo,
 	type PaymentGateway,
 	type PaymentIntentHandle,
 	type RawConfirmation,
@@ -69,6 +71,102 @@ export const STRIPE_UNSUPPORTED_CURRENCIES: ReadonlySet<string> = new Set([
 	"OMR",
 	"TND",
 ]);
+
+/**
+ * Hard ceiling on the rendered `description`. Stripe's `description` is an
+ * arbitrary string capped at 1000 characters; exceeding it is a 4xx, i.e. a
+ * TERMINAL checkout failure, so the adapter clamps rather than hopes.
+ */
+export const STRIPE_DESCRIPTION_MAX_LENGTH = 1000;
+
+/** Per-title clamp before joining, so one pathological merchant title cannot eat
+ *  the whole budget and hide every other line. */
+export const STRIPE_DESCRIPTION_TITLE_MAX_LENGTH = 120;
+
+/** Collapse whitespace runs (merchant titles carry newlines/tabs) and clamp to
+ *  `max` CODE POINTS — `Array.from` iterates code points, so an astral-plane
+ *  title can never be cut into a lone surrogate the way `slice` would. */
+function clip(value: string, max: number): string {
+	const normalized = value.replace(/\s+/gu, " ").trim();
+	const points = Array.from(normalized);
+	if (points.length <= max) return normalized;
+	return `${points.slice(0, max - 1).join("")}…`;
+}
+
+/**
+ * Render the domain's structured line data into Stripe's plain-string
+ * `description`. **This is the whole adapter half of the India-export fix**: the
+ * domain says what was bought (`CreateIntentLine[]`), and only here does that
+ * become "how Stripe wants it expressed".
+ *
+ * The rules, all chosen to be DETERMINISTIC — a same-key retry must serialize a
+ * byte-identical body or Stripe's native idempotency rejects the replay:
+ *  - one part per line, `"<qty> × <title>"`, joined with `", "`;
+ *  - **line order is preserved, never sorted** — it is the order's own line
+ *    order (`order_items` reads are `ORDER BY id`, so the fresh call and the
+ *    replay see the same sequence);
+ *  - each title is whitespace-collapsed and clamped to
+ *    {@link STRIPE_DESCRIPTION_TITLE_MAX_LENGTH} code points;
+ *  - lines are then appended whole while the result — INCLUDING the `" + N more"`
+ *    remainder marker it would need if it stopped here — still fits
+ *    {@link STRIPE_DESCRIPTION_MAX_LENGTH}. Truncation therefore lands on a line
+ *    boundary and the output can never exceed the cap;
+ *  - a blank/absent set of titles falls back to `"Order <id>"` rather than an
+ *    EMPTY description, because an empty description is exactly the condition
+ *    that made this account unpayable.
+ *
+ * Pure and total: no clock, no locale, no `Intl`, no money — nothing that could
+ * make two identical calls differ.
+ */
+export function formatStripeIntentDescription(input: {
+	orderId: string;
+	lines: readonly CreateIntentLine[];
+}): string {
+	const parts: string[] = [];
+	for (const line of input.lines) {
+		const title = clip(line.title, STRIPE_DESCRIPTION_TITLE_MAX_LENGTH);
+		if (title.length === 0) continue; // a title-less line describes nothing
+		parts.push(`${line.quantity} × ${title}`);
+	}
+	if (parts.length === 0) return clip(`Order ${input.orderId}`, STRIPE_DESCRIPTION_MAX_LENGTH);
+
+	let out = "";
+	for (const [index, part] of parts.entries()) {
+		const candidate = out.length === 0 ? part : `${out}, ${part}`;
+		const remaining = parts.length - index - 1;
+		const marker = remaining > 0 ? ` + ${remaining} more` : "";
+		if (candidate.length + marker.length > STRIPE_DESCRIPTION_MAX_LENGTH) {
+			// Stop here. `out` was accepted on the previous iteration together with
+			// EXACTLY this marker's width, so `out + marker` is guaranteed to fit.
+			// (index === 0 cannot reach this branch: one part is at most
+			// TITLE_MAX + a short quantity prefix, far below the cap.)
+			return `${out} + ${parts.length - index} more`;
+		}
+		out = candidate;
+	}
+	return out;
+}
+
+/** Translate the port's provider-agnostic ship-to into Stripe's `shipping`
+ *  vocabulary. Optional fields are OMITTED (never sent as an empty string), and
+ *  the country is upper-cased because Stripe's India-export rules demand a valid
+ *  ISO-3166 alpha-2 code. A non-2-letter country is passed through as given
+ *  rather than dropped: Stripe then rejects it with a legible provider code,
+ *  which is honest, where silently dropping `shipping` would re-open the very
+ *  compliance failure this exists to fix. */
+function toStripeShipping(shipTo: CreateIntentShipTo | undefined): StripeShipping | undefined {
+	if (shipTo === undefined) return undefined;
+	const country = shipTo.country.trim();
+	return {
+		name: shipTo.name,
+		line1: shipTo.line1,
+		...(shipTo.line2 !== null ? { line2: shipTo.line2 } : {}),
+		city: shipTo.city,
+		...(shipTo.region !== null ? { state: shipTo.region } : {}),
+		postalCode: shipTo.postalCode,
+		country: country.length === 2 ? country.toUpperCase() : country,
+	};
+}
 
 export interface StripePaymentGatewayOptions {
 	/**
@@ -139,13 +237,48 @@ export interface StripeTransport {
 	 * `idempotencyKey` is our domain key, passed as Stripe's native
 	 * `Idempotency-Key` so a retry returns the SAME intent.
 	 */
-	createPaymentIntent(input: {
-		orderId: string;
-		amountCents: number;
-		currency: string;
-		idempotencyKey: string;
-		secretKey: string;
-	}): Promise<StripeCreatePaymentIntentResult>;
+	createPaymentIntent(
+		input: StripeCreatePaymentIntentInput,
+	): Promise<StripeCreatePaymentIntentResult>;
+}
+
+/**
+ * A recipient in STRIPE's own vocabulary — the adapter's translation of the
+ * port's provider-agnostic {@link CreateIntentShipTo}. Note `state` (Stripe's
+ * name) for the port's `region`, and optional fields OMITTED rather than sent as
+ * null: Stripe treats an explicit empty value as a value.
+ */
+export interface StripeShipping {
+	name: string;
+	line1: string;
+	line2?: string;
+	city: string;
+	/** Stripe's name for the port's `region`. */
+	state?: string;
+	postalCode: string;
+	/** ISO-3166 alpha-2, upper-cased (Stripe requires the 2-letter form). */
+	country: string;
+}
+
+/** The wire input for `POST /v1/payment_intents`. */
+export interface StripeCreatePaymentIntentInput {
+	orderId: string;
+	amountCents: number;
+	currency: string;
+	idempotencyKey: string;
+	secretKey: string;
+	/**
+	 * What the buyer is paying for, already rendered by the adapter
+	 * ({@link formatStripeIntentDescription}). **Mandatory for an India-based
+	 * account's export transactions** — without it Stripe's Payment Element
+	 * refuses to complete ("As per Indian regulations, export transactions
+	 * require a description"; <https://docs.stripe.com/india-exports>) — and
+	 * merely useful everywhere else (it is what the merchant sees on the payment).
+	 */
+	description: string;
+	/** The ship-to, when the order captured one. India requires it alongside the
+	 *  description for an export of physical GOODS; omitted otherwise. */
+	shipping?: StripeShipping;
 }
 
 /** The provider's live refund view for the pre-flight (minor units). */
@@ -296,6 +429,17 @@ export class StripePaymentGateway implements PaymentGateway {
 	 * (`retryable` = network / 5xx / 429 / 409), which `createOrderFromCart` maps
 	 * to `PAYMENT_INTENT_FAILED`. The `secretKey` never reaches the error.
 	 *
+	 * **Every live intent carries a `description`** rendered from the domain's
+	 * structured lines by {@link formatStripeIntentDescription}, plus `shipping`
+	 * when the order captured a ship-to. This is NOT cosmetic: an INDIA-based
+	 * Stripe account rejects export transactions without a description (the
+	 * Payment Element refuses to complete — "As per Indian regulations, export
+	 * transactions require a description"), and an export of physical GOODS also
+	 * needs `shipping.name` + `shipping.address`
+	 * (<https://docs.stripe.com/india-exports>). Neither depends on our code
+	 * shape, only on the ACCOUNT's country, so only live QA could ever have caught
+	 * it — which is why both are unconditional here rather than configurable.
+	 *
 	 * **The live path is exponent-2 ONLY.** Every currency in
 	 * {@link STRIPE_UNSUPPORTED_CURRENCIES} (Stripe's zero-decimal and
 	 * three-decimal sets) is rejected TERMINALLY before any network call, because
@@ -325,6 +469,7 @@ export class StripePaymentGateway implements PaymentGateway {
 						`mis-scaled amount)`,
 				});
 			}
+			const shipping = toStripeShipping(input.shipTo);
 			const created = await this.#transport.createPaymentIntent({
 				orderId: input.orderId,
 				// Integer minor units, straight through — no float math, ever. Sound only
@@ -333,6 +478,13 @@ export class StripePaymentGateway implements PaymentGateway {
 				currency: input.currency.toLowerCase(),
 				idempotencyKey: input.idempotencyKey,
 				secretKey: this.#secretKey,
+				// The India-export requirement (see the method doc): rendered HERE from
+				// the domain's structured lines, deterministically.
+				description: formatStripeIntentDescription({
+					orderId: input.orderId,
+					lines: input.lines,
+				}),
+				...(shipping !== undefined ? { shipping } : {}),
 			});
 			if (!created.ok) {
 				throw new PaymentIntentError({
@@ -517,7 +669,12 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 			currency,
 			idempotencyKey,
 			secretKey,
+			description,
+			shipping,
 		}): Promise<StripeCreatePaymentIntentResult> {
+			// Key insertion order is FIXED: `URLSearchParams` serializes in insertion
+			// order, so two identical inputs produce a byte-identical body — the
+			// precondition for Stripe accepting a same-key idempotent replay.
 			const form = new URLSearchParams();
 			form.set("amount", String(amountCents));
 			form.set("currency", currency.toLowerCase());
@@ -525,6 +682,17 @@ export function createStripeHttpTransport(options: StripeHttpTransportOptions): 
 			// back off the webhook to map the payment to the order.
 			form.set("metadata[order_id]", orderId);
 			form.set("automatic_payment_methods[enabled]", "true");
+			// Required for an India-based account's exports; harmless elsewhere.
+			form.set("description", description);
+			if (shipping !== undefined) {
+				form.set("shipping[name]", shipping.name);
+				form.set("shipping[address][line1]", shipping.line1);
+				if (shipping.line2 !== undefined) form.set("shipping[address][line2]", shipping.line2);
+				form.set("shipping[address][city]", shipping.city);
+				if (shipping.state !== undefined) form.set("shipping[address][state]", shipping.state);
+				form.set("shipping[address][postal_code]", shipping.postalCode);
+				form.set("shipping[address][country]", shipping.country);
+			}
 			let res: Response;
 			try {
 				res = await doFetch(`${base}/v1/payment_intents`, {

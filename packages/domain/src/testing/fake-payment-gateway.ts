@@ -40,6 +40,9 @@ export class FakePaymentGateway implements PaymentGateway {
 	/** Every `refund` call, in order — lets a contract assert a replay makes NO
 	 *  second gateway call (ADR-0008 idempotency). */
 	readonly refundCalls: RefundInput[] = [];
+	/** Every `createIntent` input, in order — lets a test assert WHAT the domain
+	 *  described (line titles/quantities, ship-to) without a real adapter. */
+	readonly intentCalls: CreateIntentInput[] = [];
 	/** Overrides the default success result when set (drives the error-taxonomy /
 	 *  fail-closed cases without a real transport). */
 	#refundResult: RefundResult | undefined;
@@ -71,6 +74,7 @@ export class FakePaymentGateway implements PaymentGateway {
 	}
 
 	async createIntent(input: CreateIntentInput): Promise<PaymentIntentHandle> {
+		this.intentCalls.push(input);
 		const clientAction: ClientAction =
 			this.id === "x402"
 				? { kind: "x402_challenge", accepts: ["eip155:8453"], price: input.amount, payTo: "0xTEST" }
