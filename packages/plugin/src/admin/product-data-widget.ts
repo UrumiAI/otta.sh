@@ -41,6 +41,14 @@ const PRODUCT_KIND_OPTIONS: Array<{ value: CommerceProductKind; label: string }>
  * when the merchant clicks "Publish changes" — price and content change in the
  * same operation, never one ahead of the other.
  *
+ * ── Why there is deliberately NO title input ───────────────────────────────
+ * The product title an order line snapshots is the collection's own Title
+ * FIELD, which the merchant edits at the top of this same editor — `sync/hooks.ts`
+ * reads it from the content record (`data.title`) on every upsert. A title input
+ * HERE would be a second place to type the product name, and the two would
+ * drift: the buyer would see one name on the PDP and a different one on the
+ * order/receipt. One field, one source of truth.
+ *
  * ── Why the tree is STATIC (values are NOT read here) ──────────────────────
  * em-dash renders the widget from the manifest's static `elements` and fills
  * each input's value from the STORED `commerce` field JSON keyed by

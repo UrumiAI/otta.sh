@@ -93,7 +93,9 @@ describe("service token rides every construction site from write-only kv (ADR-00
 					updatedAt: "2026-07-12",
 					// The write only fires when the commerce field derives a valid,
 					// sellable row (issue #81 rework — afterSave is the sole write path).
-					data: { commerce: { sku: "S1", price: 1000, currency: "USD" } },
+					// `title` sits in `data` beside `commerce`: em-dash's ContentItem has
+					// no top-level title — every non-system column lands in `data`.
+					data: { title: "Blue Mug", commerce: { sku: "S1", price: 1000, currency: "USD" } },
 				},
 			},
 			ctx,

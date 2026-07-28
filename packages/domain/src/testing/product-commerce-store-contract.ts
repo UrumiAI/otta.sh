@@ -122,6 +122,33 @@ export function productCommerceStoreContract(
 			expect(read).toEqual(updated);
 		});
 
+		test("upsert HEALS a NULL title: a row created without one gets it from any later upsert that carries it (a null title is why a product is unpurchasable)", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-title-heal");
+			// The shape every CMS-synced row had while the plugin never sent a
+			// title: priced, sku'd — and unorderable, because
+			// `createOrderFromCart` rejects a null title with PRODUCT_NOT_PRICED.
+			const before = await h.store.upsert(
+				{ productId: pid, sku: sku("SKU-HEAL"), price: money(cents(1500), currency("USD")) },
+				idempotencyKey("k1"),
+			);
+			expect(before.title).toBeNull();
+
+			// The merchant's next save/publish carries a fresh key and the title.
+			const healed = await h.store.upsert(
+				{
+					productId: pid,
+					sku: sku("SKU-HEAL"),
+					price: money(cents(1500), currency("USD")),
+					title: "Blue Mug",
+				},
+				idempotencyKey("k2"),
+			);
+
+			expect(healed.title).toBe("Blue Mug");
+			expect((await h.store.getByProductId(pid))?.title).toBe("Blue Mug");
+		});
+
 		test("upsert preserves fields omitted (undefined) from the input and clears fields explicitly set to null", async () => {
 			const h = await makeStore();
 			const pid = productId("prod-3");

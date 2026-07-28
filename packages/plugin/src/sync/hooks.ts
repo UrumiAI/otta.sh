@@ -8,7 +8,10 @@ import type {
 } from "../types.js";
 import type { UpsertProductCommerceInput } from "../product-commerce/commerce-client.js";
 import { HttpCommerceClient } from "../product-commerce/http-commerce-client.js";
-import { parseCommerceFields } from "../product-commerce/parse-commerce-fields.js";
+import {
+	parseCommerceFields,
+	parseProductTitle,
+} from "../product-commerce/parse-commerce-fields.js";
 import {
 	deriveDeleteIdempotencyKey,
 	derivePublishIdempotencyKey,
@@ -35,6 +38,40 @@ function readCommerceField(content: Record<string, unknown>): Record<string, unk
 			? (data as Record<string, unknown>)[COMMERCE_FIELD]
 			: undefined;
 	return typeof bag === "object" && bag !== null ? (bag as Record<string, unknown>) : undefined;
+}
+
+/**
+ * The content field carrying the product title — the value an ORDER LINE
+ * SNAPSHOTS at purchase time, without which the product is unpurchasable
+ * (`createOrderFromCart` rejects a null title with `PRODUCT_NOT_PRICED`).
+ *
+ * `data.title` IS A HARD ASSUMPTION, stated here so it is never a mystery. The
+ * title is NOT a top-level hook field: em-dash's `ContentItem`
+ * (`packages/core/src/database/repositories/types.ts`) has no `title` member at
+ * all. `mapRow()` copies every column NOT in `SYSTEM_COLUMNS` into `data`
+ * (`repositories/content.ts`), `title` is an ordinary user-defined collection
+ * field (`sites/staging/seed/seed.json` declares it `required` on `products`),
+ * and `contentItemToRecord = { ...item }` passes the item through verbatim — so
+ * a hook receives the title at `content.data.title`. em-dash's own code reads it
+ * that way (`query.ts`: "entries[0].data.title"; `seo/index.ts`: "title from
+ * `data.title`"), as does this repo's theme (`sites/staging/src/lib/products.ts`
+ * projects `data.title` into `CmsProductContent`).
+ *
+ * A collection that names its title field something else therefore syncs
+ * everything EXCEPT the title and logs a specific line saying so on every save —
+ * deliberately legible, and deliberately NOT fatal (see `parseProductTitle`).
+ */
+const TITLE_FIELD = "title";
+
+/** Reads the product title out of the saved content record's `data` bag — the
+ *  same defensive shape-check `readCommerceField` applies, for the same reason.
+ *  `undefined` when the field is absent; em-dash's `mapRow` EXCLUDES null
+ *  columns from `data`, so a null title arrives as an ABSENT key, never `null`. */
+function readContentTitle(content: Record<string, unknown>): unknown {
+	const data = content["data"];
+	return typeof data === "object" && data !== null
+		? (data as Record<string, unknown>)[TITLE_FIELD]
+		: undefined;
 }
 
 /** The only EmDash collection this plugin syncs (plan §2). */
@@ -98,7 +135,13 @@ export function hasPendingDraft(content: Record<string, unknown>): boolean {
  *  record's `commerce` bag: something to apply, nothing to apply, or a
  *  boundary-validation rejection the caller logs. */
 type DerivedCommerce =
-	| { kind: "apply"; body: UpsertProductCommerceInput }
+	| {
+			kind: "apply";
+			body: UpsertProductCommerceInput;
+			/** Why the body carries no `title`, when it doesn't — logged by the
+			 *  caller, NEVER fatal (see `parseProductTitle`). */
+			titleProblem?: string;
+	  }
 	/** No `commerce` field yet (create-then-price), or no sku (not sellable —
 	 *  never mint a partial row). */
 	| { kind: "skip" }
@@ -116,6 +159,14 @@ type DerivedCommerce =
  * MONEY INTEGRITY (CLAUDE.md non-negotiable): a float price, a bad currency, or
  * any invalid field makes the WHOLE upsert a rejection — never a partial or
  * coerced write. The caller decides what a rejection means for its hook.
+ *
+ * THE TITLE IS THE ONE FIELD THAT NEVER REJECTS. It comes from the CONTENT
+ * (`data.title`), not the widget bag, so a merchant cannot fix it from the panel
+ * the way they can fix a price; and a collection whose title field is absent or
+ * named differently would otherwise lose EVERY commerce sync, not just its
+ * title. So an unusable title omits only itself and surfaces as `titleProblem`
+ * for the caller to log — the row still gets its sku, price and stock, and the
+ * store preserves any title already stored.
  */
 function deriveCommerce(content: Record<string, unknown>): DerivedCommerce {
 	const bag = readCommerceField(content);
@@ -123,7 +174,13 @@ function deriveCommerce(content: Record<string, unknown>): DerivedCommerce {
 	const { body, errors } = parseCommerceFields(bag);
 	if (Object.keys(errors).length > 0) return { kind: "invalid", errors };
 	if (body.sku === undefined) return { kind: "skip" };
-	return { kind: "apply", body };
+	// TITLE: read from `content.data.title` — the CONTENT's own field, never a
+	// widget input and never a hand-written `commerce.title` (one source of
+	// truth, so the storefront heading and the order line's snapshot cannot
+	// drift). Done here, in the SHARED derive, so both hooks carry it.
+	const parsed = parseProductTitle(readContentTitle(content));
+	if ("title" in parsed) return { kind: "apply", body: { ...body, title: parsed.title } };
+	return { kind: "apply", body, titleProblem: parsed.problem };
 }
 
 /** Async because it awaits the write-gate token from write-only kv (ADR-0007):
@@ -158,6 +215,12 @@ async function clientFor(ctx: PluginContext): Promise<HttpCommerceClient> {
  *     money field, and the CMS save still succeeds.
  *   - MISSING SKU: with no sku there is no sellable product, so the upsert is
  *     skipped — no partial row is minted (create-then-price).
+ *   - TITLE: taken from the CONTENT field `data.title` (not the widget bag, and
+ *     not a top-level field — em-dash's `ContentItem` has none). Without it the
+ *     row's title stays NULL and `createOrderFromCart` rejects the buyer's
+ *     checkout with `PRODUCT_NOT_PRICED`. Unlike a float price this is NOT a
+ *     rejection: an unusable title omits only itself and logs, so the price and
+ *     stock still sync.
  *   - The upsert carries ONLY validated commercial fields + the ordering
  *     watermark; it NEVER touches `active`/`deletedAt`. Stock rides as
  *     `initialOnHand`, a create-if-absent seed the service refuses to apply
@@ -239,6 +302,14 @@ export function createAfterSaveHandler(
 		// mint a partial row.
 		if (derived.kind === "skip") return;
 		const body = derived.body;
+		// NOT fatal — everything else still syncs. Logged because a row with no
+		// title is not orderable (`PRODUCT_NOT_PRICED` at checkout), so this is the
+		// one line that explains an otherwise baffling checkout failure.
+		if (derived.titleProblem !== undefined) {
+			console.warn(
+				`[urumi] content:afterSave: product_id=${id} synced WITHOUT a title (${derived.titleProblem}). The product cannot be ordered until it has one — checkout rejects an untitled product with PRODUCT_NOT_PRICED. The title is read from the content field \`data.title\`.`,
+			);
+		}
 
 		const updatedAt = event.content["updatedAt"];
 		// `version` is load-bearing since emdash 0.30.0: a draft-only save is a
@@ -386,6 +457,13 @@ export function createAfterPublishHandler(
 			console.warn(
 				`[urumi] content:afterPublish: invalid commerce fields for product_id=${id}; the content still publishes and the product still activates, but product_commerce is left unchanged (not purchasable without a valid price):`,
 				derived.errors,
+			);
+		}
+		// NOT fatal (and NOT a reason to skip the activate): the publish proceeds,
+		// the row simply is not orderable until it has a title.
+		if (derived.kind === "apply" && derived.titleProblem !== undefined) {
+			console.warn(
+				`[urumi] content:afterPublish: product_id=${id} published WITHOUT a title (${derived.titleProblem}). The product cannot be ordered until it has one — checkout rejects an untitled product with PRODUCT_NOT_PRICED. The title is read from the content field \`data.title\`.`,
 			);
 		}
 		try {

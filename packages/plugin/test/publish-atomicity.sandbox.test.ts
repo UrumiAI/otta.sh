@@ -62,6 +62,15 @@ function bag(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 
 const OLD_BAG = bag({ price: 1000 });
 
+/** The product title, which lives at `content.data.title` alongside `commerce`
+ *  — NOT at the top level. em-dash's `ContentItem` has no `title` member;
+ *  `mapRow()` puts every non-`SYSTEM_COLUMNS` column into `data`, and `title` is
+ *  an ordinary user-defined collection field (`sites/staging/seed/seed.json`
+ *  declares it on `products`). It is the value an order line snapshots at
+ *  purchase time, and its absence is why a product is unpurchasable
+ *  (`PRODUCT_NOT_PRICED`). */
+const TITLE = "Blue Mug";
+
 /** A save that staged a PENDING DRAFT over live content: EmDash's
  *  `published_with_changes` (status stays "published"; the two revision
  *  pointers diverge), with `content.data` already hydrated FROM THE DRAFT by
@@ -73,8 +82,8 @@ function pendingDraft(id: string, commerce: Record<string, unknown>): Record<str
 		status: "published",
 		liveRevisionId: "rev-live",
 		draftRevisionId: "rev-draft",
-		data: { commerce },
-		liveData: { commerce: OLD_BAG },
+		data: { title: TITLE, commerce },
+		liveData: { title: TITLE, commerce: OLD_BAG },
 	};
 }
 
@@ -88,7 +97,7 @@ function importedLive(id: string, commerce: Record<string, unknown>): Record<str
 		status: "published",
 		liveRevisionId: null,
 		draftRevisionId: "rev-draft",
-		data: { commerce },
+		data: { title: TITLE, commerce },
 	};
 }
 
@@ -105,7 +114,7 @@ function publishedClean(
 		status: "published",
 		liveRevisionId: "rev-live",
 		draftRevisionId: null,
-		...(commerce !== undefined ? { data: { commerce } } : {}),
+		data: { title: TITLE, ...(commerce !== undefined ? { commerce } : {}) },
 	};
 }
 
@@ -174,6 +183,7 @@ describe("publish atomicity — live commerce changes only at publish (workerd s
 		expect(puts[0]?.body).toEqual({
 			sku: "SKU-1",
 			price: { amount: 9900, currency: "USD" },
+			title: TITLE,
 			productKind: "physical",
 			initialOnHand: 5,
 			contentUpdatedAt: T2,
@@ -213,7 +223,7 @@ describe("publish atomicity — live commerce changes only at publish (workerd s
 				status: "draft",
 				liveRevisionId: null,
 				draftRevisionId: "rev-1",
-				data: { commerce: bag() },
+				data: { title: TITLE, commerce: bag() },
 			},
 			collection: "products",
 			isNew: true,
@@ -249,7 +259,7 @@ describe("publish atomicity — live commerce changes only at publish (workerd s
 				status: "published",
 				liveRevisionId: "rev-same",
 				draftRevisionId: "rev-same",
-				data: { commerce: bag() },
+				data: { title: TITLE, commerce: bag() },
 			},
 			collection: "products",
 			isNew: false,
@@ -310,7 +320,7 @@ describe("publish atomicity — live commerce changes only at publish (workerd s
 				status: "draft",
 				liveRevisionId: null,
 				draftRevisionId: "rev-2",
-				data: { commerce: bag({ price: 2500 }) },
+				data: { title: TITLE, commerce: bag({ price: 2500 }) },
 			},
 			collection: "products",
 			isNew: false,
@@ -463,9 +473,47 @@ describe("publish atomicity — live commerce changes only at publish (workerd s
 		expect(puts[0]?.body).toMatchObject({ price: { amount: 9900, currency: "USD" } });
 		expect(activatePosts(stubServer, "qa-1")).toHaveLength(1);
 
-		// WHEN TITLE SYNC LANDS (plan §4.2): extend this same test with the title
-		// dimension — assert `title` is absent from every save-time request and
-		// present in the publish-time PUT. That assertion is the merchant's
-		// actual reported bug and belongs to whichever PR lands second.
+		// TITLE DIMENSION (the deferred half of this regression, now landed): no
+		// save-time request carried the title either — it rides the SAME deferred
+		// publish-time upsert, so the content and its order-line snapshot go live
+		// together.
+		expect(puts[0]?.body).toMatchObject({ title: TITLE });
+	});
+
+	test("T18 TITLE SYNC: the publish-time upsert carries data.title (the shared derive feeds BOTH hooks)", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+
+		await sandboxHandle.invokeHook("content:afterPublish", {
+			content: publishedClean("p18", bag(), T2),
+			collection: "products",
+		});
+
+		const put = putRequests(stubServer, "p18")[0];
+		// Without this the row is born `title = NULL` and `createOrderFromCart`
+		// rejects every checkout with PRODUCT_NOT_PRICED.
+		expect(put?.body).toMatchObject({ title: TITLE });
+	});
+
+	test("T19 an ABSENT data.title at publish still upserts the price and still activates — a title problem never blocks a publish", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+
+		const content = publishedClean("p19", bag(), T2);
+		delete (content["data"] as Record<string, unknown>)["title"];
+		const outcome = await sandboxHandle.invokeHook("content:afterPublish", {
+			content,
+			collection: "products",
+		});
+
+		// The title is best-effort: it is omitted from the body and logged, and
+		// everything else lands exactly as it does today. Vetoing the upsert here
+		// would mean a collection whose title field is missing or named something
+		// else loses its price sync entirely — a worse failure than an untitled,
+		// unpurchasable product.
+		const puts = putRequests(stubServer, "p19");
+		expect(puts).toHaveLength(1);
+		expect(puts[0]?.body).toMatchObject({ sku: "SKU-1", price: { amount: 1500, currency: "USD" } });
+		expect(puts[0]?.body).not.toHaveProperty("title");
+		expect(activatePosts(stubServer, "p19")).toHaveLength(1);
+		expect(outcome).toEqual({ result: null });
 	});
 });
