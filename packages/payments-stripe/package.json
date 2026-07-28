@@ -1,6 +1,6 @@
 {
 	"name": "@urumi/payments-stripe",
-	"version": "0.1.0",
+	"version": "0.0.1",
 	"description": "Stripe PaymentGateway adapter for Urumi — async-webhook confirmation with raw-body HMAC verification. Secrets are service-env only.",
 	"homepage": "https://github.com/UrumiAI/otta.sh#readme",
 	"bugs": {

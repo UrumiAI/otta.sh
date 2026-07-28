@@ -1,6 +1,10 @@
-# Urumi
+# Urumi — an open-source commerce layer for EmDash
 
-A commerce layer for [EmDash](https://github.com/emdash-cms/emdash) — the WooCommerce-equivalent for Cloudflare's TypeScript CMS.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+[![Version](https://img.shields.io/badge/version-0.0.1-orange.svg)](#status)
+
+Open source (MIT), version 0.0.1. The WooCommerce-equivalent for
+[EmDash](https://github.com/emdash-cms/emdash), Cloudflare's TypeScript CMS.
 
 ![The Urumi storefront: a product listing with three sample products, each showing a title, description, and price](./docs/storefront.png)
 
@@ -9,7 +13,7 @@ service — this is what the [quick start](#quick-start-local-2-minutes) below g
 
 ## What this is
 
-Urumi turns an EmDash site into a store. It ships as two parts:
+Urumi turns an EmDash site into a store. It ships as three parts:
 
 1. **Urumi plugin** — a sandbox-clean EmDash plugin: storefront routes, an on-screen
    "Product data" panel (Block Kit field widget), content-sync hooks, cart/checkout
@@ -19,6 +23,12 @@ Urumi turns an EmDash site into a store. It ships as two parts:
 2. **Urumi commerce service** — a standalone Node/Hono + Postgres service that owns all
    money and stock truth: catalog, inventory, cart, checkout, orders, customers,
    payments, tax, shipping, discounts, entitlements, reporting, and webhooks.
+3. **The reference site** (`sites/staging`) — a default EmDash site with the plugin already
+   registered, so there's something to actually run. It's the storefront in the screenshot
+   above and what the [quick start](#quick-start-local-2-minutes) boots: product listing
+   pages, cart, and the admin console. Treat it as the worked example to copy from when
+   wiring Urumi into your own site — it covers **catalog + cart only** today (see
+   [Status](#status)).
 
 ## Quick start (local, ~2 minutes)
 
@@ -82,6 +92,22 @@ UPDATE inventory SET on_hand = on_hand - :q
 RETURNING on_hand;   -- 0 rows = out of stock. No oversell, no lock.
 ```
 
+**This is being fixed upstream, and the split is meant to collapse.**
+[emdash-cms/emdash#2169](https://github.com/emdash-cms/emdash/pull/2169) (ours, currently
+a draft) adds `ctx.storage.<collection>.updateIf(id, { where, set?, delta? })` — one
+guarded `UPDATE … RETURNING`, exactly the statement above, executed inside the sandbox.
+Once that lands, a plugin can decrement stock race-free without a companion database, and
+running commerce as a separate service becomes a deployment choice rather than a
+correctness requirement.
+
+We've already proven the endpoint: a `@urumi/store-emdash` adapter implements the domain's
+`InventoryStore` over the plugin storage API alone and passes the full contract suite —
+including the real-Postgres no-oversell race and idempotent replay — entirely in-process.
+That adapter also leans on two sibling primitives not yet proposed upstream: an atomic
+`insert` (unique-violation-classified) and `ctx.storage.batch([...])` for all-or-nothing
+multi-collection writes. So #2169 unblocks the invariant; folding the rest of the service
+(orders, payments, webhooks, reporting) into the plugin needs those two as well.
+
 ## Architecture (summary)
 
 - **Product model = hybrid.** Content (title, description, images, SEO, taxonomies)
@@ -133,6 +159,9 @@ writes in one process, so it verifies the SQL is correct, not that it's race-saf
 `DEVELOPMENT.md` for the TDD / contract-first workflow and commerce invariants.
 
 ## Status
+
+**v0.0.1** — first open-source release. The `@urumi/*` packages are all at `0.0.1` and are
+not published to npm yet; consume them from the workspace.
 
 The commerce **service** is feature-complete (Phases 0–7 merged): catalog, inventory,
 cart, checkout, orders, customers with magic-link auth, Stripe + x402 payments, tax,
