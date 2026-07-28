@@ -89,23 +89,13 @@ describe("Base layout — the theme foundation", () => {
 		// Left alone, "Cart (3)" is announced "Cart left-paren three right-paren".
 		expect(markup).toContain('aria-hidden="true"');
 		expect(markup).toContain("u-sr-only");
-		expect(source).toContain("countLabel");
+		expect(source).toContain("cartCountLabel");
 	});
 
-	test("a trailing slash on the CMS-authored cart URL does not silently cost the badge", () => {
-		// The nav URLs come from the CMS, so `/cart/` is a legal thing to find
-		// there. Exercise the predicate itself rather than pinning its shape.
-		const body = /function isCartLink\(url: string\): boolean \{([\s\S]*?)\n\}/.exec(source)?.[1];
-		expect(body, "isCartLink not found in Base.astro").toBeDefined();
-		const isCartLink = new Function("url", (body as string).replace(/: string/g, "")) as (
-			url: string,
-		) => boolean;
-		expect(isCartLink("/cart")).toBe(true);
-		expect(isCartLink("/cart/")).toBe(true);
-		expect(isCartLink("/cart?added=1")).toBe(true);
-		expect(isCartLink("/cart#lines")).toBe(true);
-		expect(isCartLink("/carts")).toBe(false);
-		expect(isCartLink("/")).toBe(false);
+	test("the nav helpers come from src/lib/nav.ts, so they can be tested for real", () => {
+		// The behaviour itself is pinned in nav.test.ts. This only holds the
+		// layout to using that module rather than growing its own copy.
+		expect(source).toMatch(/import \{[^}]*isCartLink[^}]*\} from "\.\.\/lib\/nav\.js"/);
 	});
 
 	test("the dark palette is advertised to the UA so form controls follow it", () => {

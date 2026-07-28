@@ -43,10 +43,16 @@ describe("Base layout favicon", () => {
 		expect(markup).not.toContain("<circle");
 	});
 
-	test("its colours are palette values, not drifted-from copies", () => {
+	test("every hex it hardcodes is still drawn from tokens.css", () => {
 		// A favicon cannot read a custom property, so these literals are the one
-		// place in the theme a colour is written down twice. Nothing warns when
-		// the palette moves and the mark quietly stops matching it — hence this.
+		// place in the theme a colour is written down twice, and nothing warns
+		// when the palette moves out from under them.
+		//
+		// SCOPE: a drift alarm, not a design check. It says each hex still
+		// exists in the palette. It says NOTHING about the pairing being right —
+		// the mark could pick two tokens that are illegible together, or the
+		// dark-theme ink on the dark-theme ground, and this would still pass.
+		// Judging the mark is the screenshot's job.
 		const tokens = readFileSync(
 			path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src/styles/tokens.css"),
 			"utf8",
@@ -54,7 +60,7 @@ describe("Base layout favicon", () => {
 		const hexes = [...source.matchAll(/%23([0-9a-fA-F]{6})/g)].map((m) => `#${m[1]}`.toLowerCase());
 		expect(hexes.length, "no colours found in the favicon data URI").toBeGreaterThan(0);
 		for (const hex of hexes) {
-			expect(tokens, `favicon colour ${hex} is not a palette value`).toContain(hex);
+			expect(tokens, `favicon hex ${hex} is no longer in tokens.css`).toContain(hex);
 		}
 	});
 });

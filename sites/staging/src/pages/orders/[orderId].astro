@@ -87,7 +87,11 @@ const statusLine = state === null ? null : isPending ? pendingCopy : (COPY[state
 const deadEnd = state === "expired" || state === "cancelled";
 ---
 
-<Base title={order === null ? "Order" : `Order ${order.id}`}>
+{/* The order names its own currency; a failed read names none (§7). */}
+<Base
+	title={order === null ? "Order" : `Order ${order.id}`}
+	currency={order?.currency ?? null}
+>
 	<meta name="referrer" content="no-referrer" slot="head" />
 	{shouldPoll && <meta http-equiv="refresh" content={`4;url=${nextPollUrl}`} slot="head" />}
 

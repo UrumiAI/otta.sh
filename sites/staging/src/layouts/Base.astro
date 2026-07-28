@@ -14,6 +14,7 @@
  */
 import { Font } from "astro:assets";
 import { getMenu, getSiteSettings } from "emdash";
+import { cartCountLabel, isCartLink } from "../lib/nav.js";
 import "../styles/tokens.css";
 // TRANSITIONAL — goes away with the last page migration. See the file.
 import "../styles/legacy-bridge.css";
@@ -31,6 +32,12 @@ interface Props {
 	 * The store's currency CODE, from a view model that already knows it
 	 * (§7: the layout never invents anything money-shaped, and it cannot know
 	 * the currency on its own). `null`/omitted renders no currency at all.
+	 *
+	 * Absence is meaningful and is why this is not defaulted: the pages that
+	 * pass nothing — home, the catalog index, 404, and /checkout/pay, whose
+	 * cookie stash carries only an order id and a client secret — are the ones
+	 * that read no money. A page that shows a price shows the currency; a page
+	 * that shows none says nothing.
 	 */
 	currency?: string | null;
 }
@@ -40,19 +47,6 @@ const settings = (await getSiteSettings()) as { title?: string; tagline?: string
 const siteTitle = settings.title ?? "Urumi";
 const fullTitle = title.includes(siteTitle) ? title : `${title} — ${siteTitle}`;
 const menu = await getMenu("primary");
-
-/** The nav entry the count belongs to, whatever the CMS labelled it. A
- *  CMS-authored trailing slash must not silently cost the badge. */
-function isCartLink(url: string): boolean {
-	const path = url.split(/[?#]/)[0] ?? "";
-	return path.replace(/\/+$/, "") === "/cart";
-}
-
-/** The count is rendered as "(3)", which a screen reader announces as
- *  "Cart bracket three bracket". This is what it says instead. */
-function countLabel(count: number): string {
-	return count === 1 ? "1 item" : `${count} items`;
-}
 ---
 
 <!doctype html>
@@ -104,7 +98,7 @@ function countLabel(count: number): string {
 								{isCartLink(item.url) && cartCount !== null && (
 									<Fragment>
 										<span class="count mono" aria-hidden="true"> ({cartCount})</span>
-										<span class="u-sr-only">, {countLabel(cartCount)}</span>
+										<span class="u-sr-only">, {cartCountLabel(cartCount)}</span>
 									</Fragment>
 								)}
 							</a>

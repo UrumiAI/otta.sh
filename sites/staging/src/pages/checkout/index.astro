@@ -59,7 +59,9 @@ const paymentConfigured = STRIPE_PUBLISHABLE_KEY !== undefined;
 const checkedOut = error === "CART_CHECKED_OUT";
 ---
 
-<Base title="Checkout">
+{/* The footer's currency comes from the totals this page already holds —
+    the layout never invents one (§7). */}
+<Base title="Checkout" currency={totals.total.money?.currency ?? null}>
 	<h1>Checkout</h1>
 
 	{error !== null && <p class="notice">{cartErrorMessage(error)}</p>}

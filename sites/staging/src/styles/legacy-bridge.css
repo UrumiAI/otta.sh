@@ -34,6 +34,13 @@
  * not restyle the pages: the chrome stays put and only the wide block scrolls.
  * Increment 4 replaces the cart table with lines and increment 5 does the same
  * for checkout, at which point this can go with the rest of the file.
+ *
+ * Know what this costs while it is here: `overflow-x: auto` forces the
+ * computed `overflow-y` to `auto` as well, so <main> is a scroll container in
+ * BOTH axes.  Two consequences for anything built on top of it — a
+ * `position: sticky` descendant sticks to <main>, not the viewport (increment
+ * 4's totals bar has to account for that), and browsers may hand the
+ * scrollable region implicit keyboard focus, adding a tab stop.
  */
 main {
 	overflow-x: auto;

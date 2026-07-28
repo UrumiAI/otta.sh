@@ -200,6 +200,11 @@ summary:focus-visible,
 [tabindex]:focus-visible {
 	outline: 2px solid var(--u-straw);
 	outline-offset: 2px;
+	/* This sets the element's REAL geometry while focused, not just the ring's
+	   — which is fine only because the theme has exactly one radius ("2px
+	   everywhere", § structure), so nothing visibly changes shape on focus. A
+	   component that ever needs a different radius must override this in its
+	   own scope, or it will snap to 2px the moment it is focused. */
 	border-radius: var(--u-r);
 }
 
@@ -215,10 +220,19 @@ summary:focus-visible,
  * second argument to `:not()`.
  */
 @media (prefers-reduced-motion: reduce) {
-	/* On <html> rather than `*`: scroll-behavior is inherited, so the
-	   universal selector was 3 redundant declarations on every element. */
+	/* `scroll-behavior` does NOT inherit (CSSOM View: "Inherited: no") — it
+	   applies to scrolling BOXES, so the universal selector was not spreading
+	   one value down a tree, it was setting it on every element in the
+	   document to no effect. <html> is the box that scrolls the viewport, so
+	   that is where it belongs. Note `main` is a second scrolling box while
+	   legacy-bridge.css is in play; a `smooth` rule there would need the same
+	   override.
+	   `!important` is deliberate and is the legitimate use of it: a later
+	   author writing `html { scroll-behavior: smooth }` outside this media
+	   query would otherwise silently beat an accessibility override on
+	   specificity-then-order. */
 	html {
-		scroll-behavior: auto;
+		scroll-behavior: auto !important;
 	}
 
 	*:not([data-motion="essential"], [data-motion="essential"] *),
