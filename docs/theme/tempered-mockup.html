@@ -1,0 +1,1289 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wdth,wght@12..96,75..100,400..800&family=Schibsted+Grotesk:wght@400..700&family=Martian+Mono:wdth,wght@75..112.5,300..700&display=swap">
+</head>
+<body>
+<title>Urumi reference theme — Tempered</title>
+
+<style>
+/* Faces load from Google Fonts for this reference page. The real theme
+   self-hosts them through Astro's font API — no CDN at runtime. */
+
+/* ============================================================
+   THE THEME TOKENS — this block is the deliverable.
+   Everything below (doc chrome + mockups) reads from it.
+   ============================================================ */
+:root {
+	/* neutrals: steel-biased, not pure grey */
+	--u-ink:      #131A20;
+	--u-ground:   #F1F4F4;
+	--u-surface:  #FFFFFF;
+	--u-edge:     #D2DAD9;
+	--u-mute:     #5A6A70;
+	/* tempering scale — an ordered heat signal, used as state */
+	--u-straw:    #8A6412;  /* brass fitting: emphasis, focus, hover */
+	--u-violet:   #6B4C9E;  /* held: stock reserved for you */
+	--u-bronze:   #96541F;  /* expiring / degraded */
+
+	/* media panels stay neutral steel; only the coil carries a hue */
+	--u-panel: rgba(19, 26, 32, 0.05);
+	--u-tint-violet: #6B4C9E;
+	--u-tint-straw:  #8A6412;
+	--u-tint-blue:   #1F3D6B;
+	--u-coil-a: 0.5;
+
+	--u-r: 2px;                       /* a blade edge, not a pill */
+	--u-hair: 1px solid var(--u-edge); /* the ribbon: the only divider */
+
+	--u-display: "Bricolage Grotesque", ui-sans-serif, sans-serif;
+	--u-body: "Schibsted Grotesk", ui-sans-serif, system-ui, sans-serif;
+	--u-data: "Martian Mono", ui-monospace, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+	:root {
+		--u-ink:     #E7EDEC;
+		--u-ground:  #0F1418;
+		--u-surface: #171E22;
+		--u-edge:    #2B363B;
+		--u-mute:    #8FA0A6;
+		--u-straw:   #E0AC3A;
+		--u-violet:  #AE93DE;
+		--u-bronze:  #D68F4E;
+		--u-tint-violet: #AE93DE;
+		--u-tint-straw:  #E0AC3A;
+		--u-tint-blue:   #6E9BD8;
+		--u-tint-a: 0.10;
+	}
+}
+:root[data-theme="dark"] {
+	--u-ink:     #E7EDEC;
+	--u-ground:  #0F1418;
+	--u-surface: #171E22;
+	--u-edge:    #2B363B;
+	--u-mute:    #8FA0A6;
+	--u-straw:   #E0AC3A;
+	--u-violet:  #AE93DE;
+	--u-bronze:  #D68F4E;
+	--u-panel: rgba(231, 237, 236, 0.055);
+	--u-tint-violet: #AE93DE;
+	--u-tint-straw:  #E0AC3A;
+	--u-tint-blue:   #6E9BD8;
+	--u-coil-a: 0.5;
+}
+:root[data-theme="light"] {
+	--u-ink:     #131A20;
+	--u-ground:  #F1F4F4;
+	--u-surface: #FFFFFF;
+	--u-edge:    #D2DAD9;
+	--u-mute:    #5A6A70;
+	--u-straw:   #8A6412;
+	--u-violet:  #6B4C9E;
+	--u-bronze:  #96541F;
+	--u-panel: rgba(19, 26, 32, 0.05);
+	--u-tint-violet: #6B4C9E;
+	--u-tint-straw:  #8A6412;
+	--u-tint-blue:   #1F3D6B;
+	--u-coil-a: 0.5;
+}
+
+/* ============================================================
+   DOC CHROME  (prefix d-) — the pitch document around the mockups
+   ============================================================ */
+.d-page {
+	background: var(--u-ground);
+	color: var(--u-ink);
+	font-family: var(--u-body);
+	font-size: 0.9375rem;
+	line-height: 1.6;
+	-webkit-font-smoothing: antialiased;
+	padding: 0 1.25rem 6rem;
+}
+.d-wrap { max-width: 68rem; margin: 0 auto; }
+.d-display {
+	font-family: var(--u-display);
+	font-variation-settings: "wdth" 78, "opsz" 48;
+	font-weight: 800;
+	letter-spacing: -0.025em;
+	line-height: 0.95;
+	text-wrap: balance;
+	margin: 0;
+}
+.d-eyebrow {
+	font-family: var(--u-data);
+	font-variation-settings: "wdth" 90;
+	font-size: 0.625rem;
+	font-weight: 500;
+	letter-spacing: 0.1em;
+	text-transform: uppercase;
+	color: var(--u-mute);
+	margin: 0;
+}
+.d-masthead {
+	display: flex;
+	flex-direction: column;
+	gap: 1.25rem;
+	padding: 5rem 0 2.5rem;
+	border-bottom: var(--u-hair);
+}
+.d-masthead .d-display { font-size: clamp(3rem, 11vw, 6.5rem); }
+.d-masthead .d-display em {
+	font-style: normal;
+	display: block;
+	color: var(--u-mute);
+	font-variation-settings: "wdth" 78, "opsz" 48;
+	font-weight: 400;
+}
+.d-lede {
+	font-size: 1.125rem;
+	line-height: 1.5;
+	max-width: 34ch;
+	color: var(--u-ink);
+	margin: 0;
+}
+.d-masthead-grid {
+	display: grid;
+	grid-template-columns: 1fr;
+	gap: 1.5rem 3rem;
+}
+@media (min-width: 46rem) { .d-masthead-grid { grid-template-columns: 1.35fr 1fr; align-items: end; } }
+
+.d-section { padding: 4rem 0 0; }
+.d-section-head {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+	padding-bottom: 1.75rem;
+}
+.d-section-head h2 { font-size: clamp(1.6rem, 4vw, 2.25rem); }
+.d-section-head p { margin: 0; max-width: 62ch; color: var(--u-mute); }
+.d-note { margin: 0; max-width: 62ch; color: var(--u-mute); font-size: 0.875rem; }
+
+/* token tables */
+.d-swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr)); gap: 1px; background: var(--u-edge); border: var(--u-hair); }
+.d-swatch { background: var(--u-surface); padding: 0.875rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.d-chip { height: 3rem; border-radius: var(--u-r); }
+.d-swatch b { font-size: 0.8125rem; font-weight: 600; }
+.d-swatch code, .d-swatch span { font-family: var(--u-data); font-variation-settings: "wdth" 90; font-size: 0.625rem; letter-spacing: -0.02em; color: var(--u-mute); }
+.d-swatch span { line-height: 1.5; font-family: var(--u-body); font-size: 0.75rem; letter-spacing: 0; }
+
+.d-specimens { display: grid; gap: 1px; background: var(--u-edge); border: var(--u-hair); }
+.d-specimen { background: var(--u-surface); padding: 1.5rem; display: grid; gap: 0.75rem; grid-template-columns: 1fr; }
+@media (min-width: 46rem) { .d-specimen { grid-template-columns: 11rem 1fr; gap: 2rem; align-items: start; } }
+.d-specimen-meta { display: flex; flex-direction: column; gap: 0.25rem; }
+.d-specimen-meta b { font-size: 0.875rem; }
+.d-specimen-meta span { font-size: 0.75rem; color: var(--u-mute); line-height: 1.5; }
+.d-sample-display { font-family: var(--u-display); font-variation-settings: "wdth" 78, "opsz" 48; font-weight: 700; font-size: clamp(1.75rem, 5vw, 2.75rem); letter-spacing: -0.025em; line-height: 1; }
+.d-sample-body { font-size: 1rem; line-height: 1.55; max-width: 46ch; }
+.d-sample-data { font-family: var(--u-data); font-variation-settings: "wdth" 90; font-weight: 500; font-size: 1.125rem; letter-spacing: -0.045em; font-variant-numeric: tabular-nums; }
+
+.d-rules { display: grid; gap: 1px; background: var(--u-edge); border: var(--u-hair); grid-template-columns: 1fr; }
+@media (min-width: 40rem) { .d-rules { grid-template-columns: repeat(2, 1fr); } }
+@media (min-width: 60rem) { .d-rules { grid-template-columns: repeat(4, 1fr); } }
+.d-rule { background: var(--u-surface); padding: 1.125rem; display: flex; flex-direction: column; gap: 0.375rem; }
+.d-rule b { font-size: 0.8125rem; }
+.d-rule p { margin: 0; font-size: 0.8125rem; color: var(--u-mute); line-height: 1.5; }
+
+/* mockup frame */
+.d-frame { border: var(--u-hair); background: var(--u-surface); border-radius: var(--u-r); overflow: hidden; }
+.d-frame-bar {
+	display: flex; align-items: center; gap: 0.625rem;
+	padding: 0.5rem 0.75rem; border-bottom: var(--u-hair);
+	background: var(--u-ground);
+	font-family: var(--u-data); font-variation-settings: "wdth" 90;
+	font-size: 0.625rem; letter-spacing: -0.02em; color: var(--u-mute);
+}
+.d-frame-dots { display: flex; gap: 0.25rem; }
+.d-frame-dots i { width: 0.4375rem; height: 0.4375rem; border-radius: 50%; background: var(--u-edge); }
+.d-scroll { overflow-x: auto; }
+
+.d-caption { display: flex; flex-direction: column; gap: 0.25rem; padding: 0 0 1rem; }
+.d-caption b { font-family: var(--u-data); font-variation-settings: "wdth" 90; font-size: 0.625rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--u-mute); font-weight: 500; }
+.d-caption p { margin: 0; font-size: 0.875rem; color: var(--u-mute); max-width: 62ch; }
+.d-stack { display: flex; flex-direction: column; gap: 3.5rem; }
+
+.d-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 1px; background: var(--u-edge); border: var(--u-hair); }
+.d-list li { background: var(--u-surface); padding: 1rem 1.125rem; display: grid; gap: 0.25rem 1.5rem; grid-template-columns: 1fr; }
+@media (min-width: 46rem) { .d-list li { grid-template-columns: 18rem 1fr; align-items: baseline; } }
+.d-list code { font-family: var(--u-data); font-variation-settings: "wdth" 90; font-size: 0.75rem; letter-spacing: -0.03em; }
+.d-list p { margin: 0; font-size: 0.875rem; color: var(--u-mute); line-height: 1.5; }
+
+.d-page a:focus-visible, .d-page button:focus-visible { outline: 2px solid var(--u-straw); outline-offset: 2px; border-radius: var(--u-r); }
+
+/* ============================================================
+   THE STORE THEME  (prefix s-) — real component CSS
+   ============================================================ */
+.store {
+	background: var(--u-surface);
+	color: var(--u-ink);
+	font-family: var(--u-body);
+	font-size: 0.9375rem;
+	line-height: 1.6;
+	min-width: 44rem;
+}
+.store * { box-sizing: border-box; }
+.store-pad { padding: 0 2rem; }
+
+.s-head { display: flex; align-items: baseline; justify-content: space-between; gap: 2rem; padding: 1.25rem 2rem; border-bottom: var(--u-hair); }
+.s-wordmark {
+	font-family: var(--u-display);
+	font-variation-settings: "wdth" 74, "opsz" 24;
+	font-weight: 800; font-size: 1.25rem; letter-spacing: 0.02em;
+	text-transform: uppercase; color: var(--u-ink); text-decoration: none;
+	padding-bottom: 2px; border-bottom: 2px solid var(--u-straw);
+}
+.s-nav { display: flex; gap: 1.5rem; align-items: baseline; }
+.s-nav a { color: var(--u-ink); text-decoration: none; font-size: 0.875rem; font-weight: 500; padding-bottom: 2px; border-bottom: 2px solid transparent; }
+.s-nav a:hover { border-bottom-color: var(--u-straw); }
+.s-nav .s-count { font-family: var(--u-data); font-variation-settings: "wdth" 90; font-size: 0.6875rem; letter-spacing: -0.03em; color: var(--u-mute); }
+
+.s-mono { font-family: var(--u-data); font-variation-settings: "wdth" 90; letter-spacing: -0.045em; font-variant-numeric: tabular-nums; }
+.s-label { font-family: var(--u-data); font-variation-settings: "wdth" 90; font-size: 0.5625rem; font-weight: 500; letter-spacing: 0.11em; text-transform: uppercase; color: var(--u-mute); }
+.s-title { font-family: var(--u-display); font-variation-settings: "wdth" 78, "opsz" 48; font-weight: 700; letter-spacing: -0.025em; line-height: 1; margin: 0; text-wrap: balance; }
+
+/* hero: the catalog as inventory tape */
+.s-hero { display: grid; grid-template-columns: 1.15fr 1fr; gap: 3.5rem; padding: 4rem 2rem 3.5rem; align-items: start; }
+.s-hero-thesis { display: flex; flex-direction: column; gap: 1.5rem; }
+.s-hero-thesis .s-title { font-size: clamp(2.5rem, 6.5vw, 4.25rem); }
+.s-hero-thesis p { margin: 0; max-width: 32ch; color: var(--u-mute); font-size: 1rem; }
+.s-tape { display: flex; flex-direction: column; }
+.s-tape-row { display: grid; grid-template-columns: 1fr auto 4.5rem; gap: 1.25rem; align-items: baseline; padding: 0.95rem 0; border-bottom: var(--u-hair); }
+.s-tape-row:first-child { border-top: var(--u-hair); }
+.s-tape-head { padding-bottom: 0.5rem; border-bottom: none; }
+.s-tape-head span { color: var(--u-mute); }
+.s-tape-sku { font-size: 0.75rem; color: var(--u-ink); }
+.s-tape-price { font-size: 0.8125rem; font-weight: 500; }
+.s-tape-stock { font-size: 0.8125rem; text-align: right; }
+.s-tape-foot { padding-top: 0.75rem; color: var(--u-mute); font-size: 0.75rem; margin: 0; }
+
+.s-btn {
+	display: inline-flex; align-items: center; gap: 0.625rem;
+	background: var(--u-ink); color: var(--u-surface);
+	border: none; border-radius: var(--u-r);
+	padding: 0.75rem 1.25rem;
+	font-family: var(--u-body); font-size: 0.875rem; font-weight: 600;
+	text-decoration: none; cursor: pointer;
+	box-shadow: inset 0 -2px 0 rgba(0,0,0,0);
+	transition: box-shadow 120ms ease;
+}
+.s-btn:hover { box-shadow: inset 0 -3px 0 var(--u-straw); }
+.s-btn-ghost { background: transparent; color: var(--u-ink); border: var(--u-hair); }
+.s-btn-ghost:hover { box-shadow: inset 0 -3px 0 var(--u-straw); }
+.s-btn:focus-visible, .store a:focus-visible, .store button:focus-visible, .store input:focus-visible { outline: 2px solid var(--u-straw); outline-offset: 2px; }
+
+/* product grid — no card borders; the ribbon separates rows */
+.s-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2rem 1.75rem; padding: 2rem 2rem 3rem; }
+.s-card { display: flex; flex-direction: column; gap: 0.875rem; text-decoration: none; color: inherit; }
+.s-media { position: relative; aspect-ratio: 4 / 3; border-radius: var(--u-r); overflow: hidden; display: block; }
+.s-media svg { width: 100%; height: 100%; display: block; }
+.s-card .s-title { font-size: 1.375rem; }
+.s-card p { margin: 0; font-size: 0.8125rem; color: var(--u-mute); line-height: 1.5; }
+.s-card-foot { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; padding-top: 0.625rem; border-top: var(--u-hair); margin-top: auto; }
+.s-price { font-family: var(--u-data); font-variation-settings: "wdth" 90; letter-spacing: -0.045em; font-variant-numeric: tabular-nums; font-size: 0.9375rem; font-weight: 500; }
+.s-card:hover .s-title { text-decoration: underline; text-decoration-color: var(--u-straw); text-decoration-thickness: 2px; text-underline-offset: 3px; }
+
+.s-stock { font-family: var(--u-data); font-variation-settings: "wdth" 90; font-size: 0.5625rem; font-weight: 500; letter-spacing: 0.09em; text-transform: uppercase; display: inline-flex; align-items: center; gap: 0.375rem; }
+.s-stock::before { content: ""; width: 1.25rem; height: 2px; background: currentColor; border-radius: 1px; }
+.s-stock[data-state="in"] { color: var(--u-mute); }
+.s-stock[data-state="out"] { color: var(--u-mute); }
+.s-stock[data-state="out"]::before { background: repeating-linear-gradient(90deg, currentColor 0 3px, transparent 3px 6px); }
+.s-sold-out .s-media { opacity: 0.45; }
+.s-sold-out .s-price { color: var(--u-mute); text-decoration: line-through; text-decoration-thickness: 1px; }
+
+/* PDP */
+.s-pdp { display: grid; grid-template-columns: 1.25fr 1fr; gap: 3rem; padding: 2.5rem 2rem 3rem; align-items: start; }
+.s-pdp-side { display: flex; flex-direction: column; gap: 1.5rem; }
+.s-pdp .s-title { font-size: clamp(1.75rem, 4vw, 2.5rem); }
+.s-pdp-desc { margin: 0; color: var(--u-mute); font-size: 0.9375rem; max-width: 40ch; }
+.s-spec { display: flex; flex-direction: column; border-top: var(--u-hair); }
+.s-spec-row { display: flex; align-items: baseline; justify-content: space-between; gap: 1.5rem; padding: 0.625rem 0; border-bottom: var(--u-hair); }
+.s-spec-row .s-mono { font-size: 0.75rem; }
+.s-spec-row .s-price { font-size: 1.375rem; font-weight: 600; }
+.s-buy { display: flex; align-items: flex-end; gap: 0.75rem; }
+.s-qty { display: flex; flex-direction: column; gap: 0.375rem; }
+.s-qty input {
+	width: 4.5rem; padding: 0.625rem 0.75rem;
+	border: var(--u-hair); border-radius: var(--u-r);
+	background: var(--u-surface); color: var(--u-ink);
+	font-family: var(--u-data); font-variation-settings: "wdth" 90;
+	font-size: 0.875rem; letter-spacing: -0.045em; font-variant-numeric: tabular-nums;
+}
+.s-crumb { padding: 1.25rem 2rem 0; }
+.s-crumb a { color: var(--u-mute); font-size: 0.8125rem; text-decoration: none; }
+.s-crumb a:hover { color: var(--u-ink); text-decoration: underline; text-decoration-color: var(--u-straw); }
+
+/* notice: the ribbon breaks */
+.s-notice {
+	display: flex; gap: 0.875rem; align-items: flex-start;
+	margin: 1.5rem 2rem; padding: 0.875rem 1rem 0.875rem 0;
+	border-top: 1px dashed var(--u-bronze);
+	border-bottom: 1px dashed var(--u-bronze);
+	background: transparent;
+}
+.s-notice-mark { flex: none; width: 2.5rem; height: 2px; background: repeating-linear-gradient(90deg, var(--u-bronze) 0 4px, transparent 4px 8px); margin-top: 0.5rem; }
+.s-notice p { margin: 0; font-size: 0.8125rem; color: var(--u-ink); max-width: 58ch; }
+.s-notice b { font-weight: 600; }
+
+/* CART — the signature */
+.s-cart { padding: 2rem 2rem 3rem; display: flex; flex-direction: column; gap: 0; }
+.s-line { display: grid; grid-template-columns: 4.5rem 1fr auto; gap: 1.25rem; padding: 1.25rem 0; border-bottom: var(--u-hair); align-items: start; }
+.s-line:first-of-type { border-top: var(--u-hair); }
+.s-line-media { border-radius: var(--u-r); overflow: hidden; aspect-ratio: 1; }
+.s-line-media svg { width: 100%; height: 100%; display: block; }
+.s-line-main { display: flex; flex-direction: column; gap: 0.625rem; min-width: 0; }
+.s-line-name { font-family: var(--u-display); font-variation-settings: "wdth" 78, "opsz" 24; font-weight: 700; font-size: 1.0625rem; letter-spacing: -0.02em; }
+.s-line-sku { font-size: 0.625rem; color: var(--u-mute); }
+.s-line-right { display: flex; flex-direction: column; align-items: flex-end; gap: 0.5rem; }
+.s-line-right .s-price { font-size: 1rem; font-weight: 500; }
+.s-line-actions { display: flex; align-items: center; gap: 0.5rem; }
+.s-line-actions input { width: 3.5rem; padding: 0.375rem 0.5rem; border: var(--u-hair); border-radius: var(--u-r); background: var(--u-surface); color: var(--u-ink); font-family: var(--u-data); font-variation-settings: "wdth" 90; font-size: 0.75rem; letter-spacing: -0.045em; text-align: center; }
+.s-link-btn { background: none; border: none; padding: 0; font-family: var(--u-body); font-size: 0.75rem; color: var(--u-mute); cursor: pointer; text-decoration: underline; text-decoration-color: var(--u-edge); text-underline-offset: 2px; }
+.s-link-btn:hover { color: var(--u-ink); text-decoration-color: var(--u-straw); }
+
+/* the hold ribbon */
+.s-hold { display: flex; flex-direction: column; gap: 0.375rem; }
+.s-hold-track { height: 2px; border-radius: 1px; background: var(--u-edge); overflow: hidden; }
+.s-hold-fill { height: 100%; width: var(--pct, 100%); background: var(--u-violet); transform-origin: left; }
+.s-hold-meta { display: flex; align-items: baseline; gap: 0.5rem; }
+.s-hold-meta .s-label { color: var(--u-violet); }
+.s-hold-time { font-family: var(--u-data); font-variation-settings: "wdth" 90; font-size: 0.6875rem; font-weight: 500; letter-spacing: -0.04em; font-variant-numeric: tabular-nums; color: var(--u-violet); }
+.s-hold[data-state="expiring"] .s-hold-fill { background: var(--u-bronze); }
+.s-hold[data-state="expiring"] .s-label,
+.s-hold[data-state="expiring"] .s-hold-time { color: var(--u-bronze); }
+.s-hold[data-state="released"] .s-hold-track { background: repeating-linear-gradient(90deg, var(--u-edge) 0 4px, transparent 4px 8px); }
+.s-hold[data-state="released"] .s-hold-fill { display: none; }
+.s-hold[data-state="released"] .s-label,
+.s-hold[data-state="released"] .s-hold-time { color: var(--u-mute); }
+.s-hold-note { font-size: 0.75rem; color: var(--u-mute); margin: 0; }
+
+.s-totals { display: flex; flex-direction: column; gap: 0.5rem; align-self: flex-end; width: 100%; max-width: 20rem; padding-top: 1.25rem; }
+.s-total-row { display: flex; align-items: baseline; justify-content: space-between; gap: 1.5rem; }
+.s-total-row .s-price { font-size: 0.875rem; }
+.s-total-row.s-total-grand { padding-top: 0.625rem; border-top: var(--u-hair); }
+.s-total-row.s-total-grand .s-label { color: var(--u-ink); }
+.s-total-row.s-total-grand .s-price { font-size: 1.5rem; font-weight: 600; }
+.s-cart-foot { display: flex; flex-direction: column; gap: 0.875rem; align-items: flex-end; padding-top: 1.25rem; }
+.s-cart-foot p { margin: 0; font-size: 0.75rem; color: var(--u-mute); }
+
+.s-empty { padding: 4rem 2rem; display: flex; flex-direction: column; gap: 1rem; align-items: flex-start; }
+.s-empty .s-title { font-size: 1.75rem; }
+.s-empty p { margin: 0; color: var(--u-mute); max-width: 44ch; font-size: 0.9375rem; }
+
+.s-foot { display: flex; align-items: baseline; justify-content: space-between; gap: 2rem; padding: 1.5rem 2rem; border-top: var(--u-hair); color: var(--u-mute); font-size: 0.75rem; }
+
+/* ── CHECKOUT ────────────────────────────────────────────────────────────
+   Cart → Details → Payment → Order is a real sequence, so this is the one
+   place the theme numbers anything: the hairline becomes a track and the
+   steps sit on it. */
+.s-steps { display: flex; align-items: center; gap: 0; padding: 1.25rem 2rem 0; }
+.s-step { display: flex; align-items: center; gap: 0.5rem; flex: none; }
+.s-step-dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--u-edge); flex: none; }
+.s-step-label { font-family: var(--u-data); font-variation-settings: "wdth" 90; font-size: 0.5625rem; font-weight: 500; letter-spacing: 0.11em; text-transform: uppercase; color: var(--u-mute); }
+.s-step-track { flex: 1; height: 1px; background: var(--u-edge); margin: 0 0.75rem; }
+.s-step[data-state="done"] .s-step-dot { background: var(--u-ink); }
+.s-step[data-state="done"] .s-step-label { color: var(--u-mute); }
+.s-step[data-state="now"] .s-step-dot { background: var(--u-straw); box-shadow: 0 0 0 3px color-mix(in srgb, var(--u-straw) 22%, transparent); }
+.s-step[data-state="now"] .s-step-label { color: var(--u-ink); }
+
+.s-checkout { display: grid; grid-template-columns: 1.15fr 1fr; gap: 3rem; padding: 1.5rem 2rem 3rem; align-items: start; }
+.s-panel { display: flex; flex-direction: column; gap: 1.25rem; }
+.s-panel-head { display: flex; flex-direction: column; gap: 0.25rem; padding-bottom: 0.75rem; border-bottom: var(--u-hair); }
+.s-panel-head .s-label { color: var(--u-ink); }
+.s-panel-head p { margin: 0; font-size: 0.8125rem; color: var(--u-mute); }
+
+.s-field { display: flex; flex-direction: column; gap: 0.375rem; }
+.s-field > .s-label { color: var(--u-mute); }
+.s-field input {
+	width: 100%; padding: 0.625rem 0.75rem;
+	border: var(--u-hair); border-radius: var(--u-r);
+	background: var(--u-surface); color: var(--u-ink);
+	font-family: var(--u-body); font-size: 0.875rem;
+}
+.s-field input::placeholder { color: var(--u-mute); opacity: 0.7; }
+.s-field-note { margin: 0; font-size: 0.75rem; color: var(--u-mute); }
+/* "required" must not fuse into the uppercase label beside it */
+.s-field-req { color: var(--u-straw); text-transform: none; letter-spacing: 0; font-family: var(--u-body); font-size: 0.6875rem; font-weight: 500; }
+.s-field-req::before { content: "· "; color: var(--u-edge); }
+.s-fields { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.875rem; }
+.s-fields .s-span2 { grid-column: 1 / -1; }
+
+/* the order ledger — the same tape as the home page, totalled */
+.s-ledger { display: flex; flex-direction: column; }
+.s-ledger-line { display: grid; grid-template-columns: 1fr 2rem auto; gap: 0.875rem; align-items: baseline; padding: 0.625rem 0; border-bottom: var(--u-hair); }
+.s-ledger-line:first-child { border-top: var(--u-hair); }
+.s-ledger-line .s-mono { font-size: 0.75rem; }
+.s-ledger-line .s-price { font-size: 0.8125rem; text-align: right; }
+.s-ledger-qty { text-align: right; color: var(--u-mute); }
+.s-sum { display: flex; flex-direction: column; gap: 0.5rem; padding-top: 1rem; }
+.s-sum-row { display: flex; align-items: baseline; justify-content: space-between; gap: 1.5rem; }
+.s-sum-row .s-price { font-size: 0.8125rem; }
+/* "not calculated" is not zero — it never renders as $0.00 */
+.s-uncalc { font-family: var(--u-data); font-variation-settings: "wdth" 90; font-size: 0.6875rem; letter-spacing: -0.04em; color: var(--u-mute); }
+.s-sum-row.s-sum-total { padding-top: 0.75rem; margin-top: 0.25rem; border-top: var(--u-hair); }
+.s-sum-total .s-label { color: var(--u-ink); }
+.s-sum-total .s-price { font-size: 1.5rem; font-weight: 600; }
+.s-sum-foot { margin: 0.5rem 0 0; font-size: 0.75rem; color: var(--u-mute); line-height: 1.5; }
+
+/* pay step */
+.s-pay { display: flex; flex-direction: column; gap: 1.25rem; max-width: 30rem; padding: 1.5rem 2rem 3rem; }
+.s-stripe-mount {
+	border: var(--u-hair); border-radius: var(--u-r);
+	padding: 1.125rem; display: flex; flex-direction: column; gap: 0.875rem;
+	background: var(--u-surface);
+}
+.s-stripe-mount .s-label { color: var(--u-mute); }
+.s-stripe-row { height: 2.25rem; border: var(--u-hair); border-radius: var(--u-r); background: color-mix(in srgb, var(--u-ink) 3%, transparent); }
+.s-stripe-split { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+.s-trust { display: flex; gap: 0.625rem; align-items: flex-start; }
+.s-trust-mark { flex: none; width: 1.5rem; height: 2px; background: var(--u-straw); margin-top: 0.5rem; }
+.s-trust p { margin: 0; font-size: 0.8125rem; color: var(--u-mute); max-width: 46ch; }
+
+/* order state — the tempering scale doing its second job */
+.s-stamp { display: flex; flex-direction: column; gap: 0.625rem; padding: 2rem 2rem 0; }
+.s-stamp-rule { width: 4.5rem; height: 3px; border-radius: 1px; background: var(--u-mute); }
+.s-stamp .s-title { font-size: clamp(1.75rem, 4.5vw, 2.75rem); }
+.s-stamp p { margin: 0; color: var(--u-mute); font-size: 0.9375rem; max-width: 52ch; }
+.s-stamp-ref { display: flex; align-items: baseline; gap: 0.625rem; padding-top: 0.25rem; }
+.s-stamp-ref .s-mono { font-size: 0.75rem; color: var(--u-ink); }
+.s-stamp[data-state="paid"] .s-stamp-rule { background: var(--u-ink); }
+.s-stamp[data-state="pending"] .s-stamp-rule { background: var(--u-violet); }
+.s-stamp[data-state="failed"] .s-stamp-rule { background: var(--u-bronze); }
+.s-stamp[data-state="expired"] .s-stamp-rule { background: repeating-linear-gradient(90deg, var(--u-mute) 0 4px, transparent 4px 8px); }
+
+/* the pending poll: the hold ribbon again, indeterminate */
+.s-poll { display: flex; flex-direction: column; gap: 0.5rem; max-width: 22rem; margin-top: 0.375rem; }
+.s-poll-track { height: 2px; border-radius: 1px; background: var(--u-edge); overflow: hidden; position: relative; }
+.s-poll-track::after {
+	content: ""; position: absolute; inset: 0 auto 0 0; width: 34%;
+	background: var(--u-violet); animation: s-poll-sweep 1.6s ease-in-out infinite;
+}
+@keyframes s-poll-sweep { 0% { transform: translateX(-100%); } 100% { transform: translateX(320%); } }
+.s-poll-meta { display: flex; align-items: baseline; gap: 0.5rem; }
+.s-poll-meta .s-label, .s-poll-meta .s-mono { color: var(--u-violet); font-size: 0.6875rem; }
+@media (prefers-reduced-motion: reduce) {
+	.s-poll-track::after { animation: none; width: 100%; opacity: 0.4; }
+}
+
+.d-states { display: grid; gap: 1px; background: var(--u-edge); border: var(--u-hair); grid-template-columns: 1fr; }
+@media (min-width: 52rem) { .d-states { grid-template-columns: repeat(2, 1fr); } }
+.d-state { background: var(--u-surface); padding: 1.5rem; display: flex; flex-direction: column; gap: 1rem; }
+.d-state-head { display: flex; flex-direction: column; gap: 0.25rem; }
+.d-state-head b { font-size: 0.875rem; }
+.d-state-head span { font-size: 0.8125rem; color: var(--u-mute); line-height: 1.5; }
+
+@media (prefers-reduced-motion: reduce) {
+	.s-hold-fill, .s-btn { transition: none; }
+}
+</style>
+
+<div class="d-page">
+<div class="d-wrap">
+
+	<header class="d-masthead">
+		<p class="d-eyebrow">Urumi · reference storefront theme · direction v1</p>
+		<div class="d-masthead-grid">
+			<h1 class="d-display">Tempered<em>a reference storefront theme for Urumi</em></h1>
+				<p class="d-lede">
+					One design language for every surface a shopper touches — catalog, cart, checkout,
+					payment, order — built from the store's own materials: its stock, its money, and
+					the states it can be in.
+				</p>
+		</div>
+	</header>
+
+	<section class="d-section">
+		<div class="d-section-head">
+			<p class="d-eyebrow">Where it comes from</p>
+			<h2 class="d-display">Three decisions, and what each is answering.</h2>
+		</div>
+		<ul class="d-list">
+			<li>
+				<code>tempering colours as state</code>
+				<p>An urumi is a ribbon of spring steel. Heat it and it passes through straw, bronze,
+				violet, deep blue — an ordered scale. The store has an ordered scale too: available →
+				held → expiring → released. The palette is that scale, so colour carries stock state
+				instead of decorating it.</p>
+			</li>
+			<li>
+				<code>money is set in mono</code>
+				<p>Every price, quantity, SKU, stock count and countdown is set in a wide tabular
+				mono, and nothing else is. The repo's first rule is that money is integer minor units
+				— the type system says the same thing on screen. It also makes columns of figures line
+				up for free.</p>
+			</li>
+			<li>
+				<code>one hairline, never a box</code>
+				<p>A single 1px rule is the only divider in the theme — no card borders, no shadows,
+				2px radius at most. It's what kills the current "three grey boxes" look, and it gives
+				product images the neutral surround photography needs.</p>
+			</li>
+		</ul>
+	</section>
+
+	<section class="d-section">
+		<div class="d-section-head">
+			<p class="d-eyebrow">Colour</p>
+			<h2 class="d-display">Five neutrals, three signals.</h2>
+			<p>Neutrals are steel-biased rather than pure grey. The three signals are the only
+			saturated colour in the theme, and each one means exactly one thing. Hex values shown are
+			the light theme; every token is redefined for dark.</p>
+		</div>
+		<div class="d-swatches">
+			<div class="d-swatch"><div class="d-chip" style="background:var(--u-ink)"></div><b>ink</b><code>#131A20</code><span>Text, and every primary button fill.</span></div>
+			<div class="d-swatch"><div class="d-chip" style="background:var(--u-ground)"></div><b>ground</b><code>#F1F4F4</code><span>Page behind the store surface.</span></div>
+			<div class="d-swatch"><div class="d-chip" style="background:var(--u-surface);border:1px solid var(--u-edge)"></div><b>surface</b><code>#FFFFFF</code><span>Where products sit.</span></div>
+			<div class="d-swatch"><div class="d-chip" style="background:var(--u-edge)"></div><b>edge</b><code>#D2DAD9</code><span>The hairline. Nothing else.</span></div>
+			<div class="d-swatch"><div class="d-chip" style="background:var(--u-mute)"></div><b>mute</b><code>#5A6A70</code><span>Secondary text, sold-out.</span></div>
+			<div class="d-swatch"><div class="d-chip" style="background:var(--u-straw)"></div><b>straw</b><code>#8A6412</code><span>Brass fitting: focus rings, hover underlines, the wordmark rule.</span></div>
+			<div class="d-swatch"><div class="d-chip" style="background:var(--u-violet)"></div><b>violet</b><code>#6B4C9E</code><span>Stock held for you. The one colour shoppers learn.</span></div>
+			<div class="d-swatch"><div class="d-chip" style="background:var(--u-bronze)"></div><b>bronze</b><code>#96541F</code><span>Hold expiring, or prices unavailable.</span></div>
+		</div>
+		<p class="d-note" style="padding-top:1rem">Straw is a fitting, not a fill — it never becomes a
+		button background, which keeps every interactive element at full text contrast.</p>
+	</section>
+
+	<section class="d-section">
+		<div class="d-section-head">
+			<p class="d-eyebrow">Type</p>
+			<h2 class="d-display">A narrow blade, a plain voice, and a wide ledger.</h2>
+			<p>Three roles, three faces, no overlap. The display face is set narrow because the
+			object the project is named after is a long thin ribbon; the money face is set wide so
+			figures read as objects rather than as text. The contrast between them is the theme's
+			loudest move.</p>
+		</div>
+		<div class="d-specimens">
+			<div class="d-specimen">
+				<div class="d-specimen-meta"><b>Bricolage Grotesque</b><span>Display · wdth&nbsp;78 · 700–800 · tracking −0.025em. Wordmark, page titles, product names. Never below 17px.</span></div>
+				<div class="d-sample-display">Three things. That's the whole shop.</div>
+			</div>
+			<div class="d-specimen">
+				<div class="d-specimen-meta"><b>Schibsted Grotesk</b><span>Body · 400–600. Running text, navigation, buttons, labels.</span></div>
+				<div class="d-sample-body">Ten stickers, integer minor units, zero floats. Add one to your cart and we'll hold it for ten minutes while you make up your mind.</div>
+			</div>
+			<div class="d-specimen">
+				<div class="d-specimen-meta"><b>Martian Mono</b><span>Data · wdth&nbsp;90 · tabular figures · tracking −0.045em. Money, quantities, SKUs, stock, countdowns, and uppercase labels.</span></div>
+				<div class="d-sample-data">$25.00 &nbsp; $15.00 &nbsp; $12.00 &nbsp; URUMI-TEE-01 &nbsp; 08:42</div>
+			</div>
+		</div>
+	</section>
+
+	<section class="d-section">
+		<div class="d-section-head">
+			<p class="d-eyebrow">Structure</p>
+			<h2 class="d-display">Four rules that make the rest fall out.</h2>
+		</div>
+		<div class="d-rules">
+			<div class="d-rule"><b>Radius 2px, everywhere</b><p>One value. Enough to soften an image corner, not enough to read as a pill.</p></div>
+			<div class="d-rule"><b>No shadows, no fills for structure</b><p>Depth comes from air and the hairline. A tinted panel only ever means "image goes here".</p></div>
+			<div class="d-rule"><b>Asymmetric two-column</b><p>Hero and product pages run ~1.2fr / 1fr. Nothing is centred except the page itself.</p></div>
+			<div class="d-rule"><b>Motion: one countdown, one hover</b><p>The hold timer ticks because it's information. Hover slides a straw rule. That's the whole motion budget.</p></div>
+		</div>
+	</section>
+
+	<section class="d-section">
+		<div class="d-section-head">
+			<p class="d-eyebrow">The surfaces</p>
+			<h2 class="d-display">Applied to every page the store has.</h2>
+			<p>Real seed content throughout — the three products the quick start creates, at their
+			seeded prices. Toggle this page's theme to see the dark set.</p>
+		</div>
+
+		<div class="d-stack">
+
+			<div>
+				<div class="d-caption">
+					<b>Home · /</b>
+					<p>The hero is the inventory, not a slogan over a stock photo: the catalog as a live
+					tape of SKU, price and units on hand. A three-item shop has nothing to hide behind,
+					so it leads with the shelf.</p>
+				</div>
+				<div class="d-frame">
+					<div class="d-frame-bar"><span class="d-frame-dots"><i></i><i></i><i></i></span><span>localhost:4321/</span></div>
+					<div class="d-scroll">
+						<div class="store">
+							<div class="s-head">
+								<a href="#" class="s-wordmark">Urumi</a>
+								<nav class="s-nav">
+									<a href="#">Shop</a>
+									<a href="#">Cart <span class="s-count">(3)</span></a>
+								</nav>
+							</div>
+							<div class="s-hero">
+								<div class="s-hero-thesis">
+									<h1 class="s-title">Three things. That's the whole shop.</h1>
+									<p>A tee, a mug, and a sheet of stickers — made for people who build stores
+									for a living. What you see below is what's actually on the shelf.</p>
+									<div><a href="#" class="s-btn">Shop all three</a></div>
+								</div>
+								<div class="s-tape">
+									<div class="s-tape-row s-tape-head">
+										<span class="s-label">Item</span>
+										<span class="s-label">Price</span>
+										<span class="s-label" style="text-align:right">In stock</span>
+									</div>
+									<div class="s-tape-row">
+										<span class="s-mono s-tape-sku">URUMI-TEE-01</span>
+										<span class="s-mono s-tape-price">$25.00</span>
+										<span class="s-mono s-tape-stock">12</span>
+									</div>
+									<div class="s-tape-row">
+										<span class="s-mono s-tape-sku">URUMI-MUG-01</span>
+										<span class="s-mono s-tape-price">$15.00</span>
+										<span class="s-mono s-tape-stock">3</span>
+									</div>
+									<div class="s-tape-row">
+										<span class="s-mono s-tape-sku">URUMI-STK-01</span>
+										<span class="s-mono s-tape-price">$12.00</span>
+										<span class="s-mono s-tape-stock">40</span>
+									</div>
+									<p class="s-tape-foot">Stock updates as people buy.</p>
+								</div>
+							</div>
+							<div class="s-foot"><span>Urumi — content by EmDash, commerce by Urumi.</span><span class="s-mono">USD</span></div>
+						</div>
+					</div>
+				</div>
+			</div>
+
+			<div>
+				<div class="d-caption">
+					<b>Shop · /products</b>
+					<p>The seed ships no photography, so a fresh install has to look intentional
+					empty-handed: each product gets a tinted panel with one drawn ribbon, keyed to its
+					slug. Titles carry the weight; stock state is a short rule, not a coloured badge.</p>
+				</div>
+				<div class="d-frame">
+					<div class="d-frame-bar"><span class="d-frame-dots"><i></i><i></i><i></i></span><span>localhost:4321/products</span></div>
+					<div class="d-scroll">
+						<div class="store">
+							<div class="s-head">
+								<a href="#" class="s-wordmark">Urumi</a>
+								<nav class="s-nav"><a href="#">Shop</a><a href="#">Cart <span class="s-count">(3)</span></a></nav>
+							</div>
+							<div class="store-pad" style="padding-top:2.5rem">
+								<p class="s-label">3 items</p>
+								<h1 class="s-title" style="font-size:2.25rem;margin-top:0.5rem">Shop</h1>
+							</div>
+							<div class="s-grid">
+								<a href="#" class="s-card">
+									<span class="s-media" data-art="tee"></span>
+									<h2 class="s-title">Urumi Tee</h2>
+									<p>Heavyweight cotton, unreasonably soft, with the coil across the chest.</p>
+									<span class="s-card-foot"><span class="s-price">$25.00</span><span class="s-stock" data-state="in">12 in stock</span></span>
+								</a>
+								<a href="#" class="s-card">
+									<span class="s-media" data-art="mug"></span>
+									<h2 class="s-title">Urumi Mug</h2>
+									<p>Holds exactly one coffee. Survives the dishwasher, the commute, and most deploys.</p>
+									<span class="s-card-foot"><span class="s-price">$15.00</span><span class="s-stock" data-state="in">3 left</span></span>
+								</a>
+								<a href="#" class="s-card s-sold-out">
+									<span class="s-media" data-art="stk"></span>
+									<h2 class="s-title">Urumi Sticker Pack</h2>
+									<p>Ten stickers, integer minor units, zero floats.</p>
+									<span class="s-card-foot"><span class="s-price">$12.00</span><span class="s-stock" data-state="out">Sold out</span></span>
+								</a>
+							</div>
+							<div class="s-foot"><span>Urumi — content by EmDash, commerce by Urumi.</span><span class="s-mono">USD</span></div>
+						</div>
+					</div>
+				</div>
+			</div>
+
+			<div>
+				<div class="d-caption">
+					<b>Product · /products/urumi-mug</b>
+					<p>Everything a shopper needs to decide sits in one ledger block: price, SKU,
+					stock, currency. The add-to-cart row is the only filled element on the page.</p>
+				</div>
+				<div class="d-frame">
+					<div class="d-frame-bar"><span class="d-frame-dots"><i></i><i></i><i></i></span><span>localhost:4321/products/urumi-mug</span></div>
+					<div class="d-scroll">
+						<div class="store">
+							<div class="s-head">
+								<a href="#" class="s-wordmark">Urumi</a>
+								<nav class="s-nav"><a href="#">Shop</a><a href="#">Cart <span class="s-count">(3)</span></a></nav>
+							</div>
+							<div class="s-crumb"><a href="#">← All products</a></div>
+							<div class="s-pdp">
+								<span class="s-media" data-art="mug" style="aspect-ratio:4/5"></span>
+								<div class="s-pdp-side">
+									<div>
+										<h1 class="s-title">Urumi Mug</h1>
+										<p class="s-pdp-desc" style="margin-top:0.75rem">Holds exactly one coffee. Survives the dishwasher, the commute, and most deploys.</p>
+									</div>
+									<div class="s-spec">
+										<div class="s-spec-row"><span class="s-label">Price</span><span class="s-price">$15.00</span></div>
+										<div class="s-spec-row"><span class="s-label">Stock</span><span class="s-stock" data-state="in">3 left</span></div>
+										<div class="s-spec-row"><span class="s-label">SKU</span><span class="s-mono">URUMI-MUG-01</span></div>
+									</div>
+									<div class="s-buy">
+										<label class="s-qty"><span class="s-label">Qty</span><input type="number" value="1" min="1" aria-label="Quantity" /></label>
+										<button type="button" class="s-btn">Add to cart</button>
+									</div>
+									<p class="s-hold-note">Adding this holds one in stock for 10 minutes.</p>
+								</div>
+							</div>
+							<div class="s-foot"><span>Urumi — content by EmDash, commerce by Urumi.</span><span class="s-mono">USD</span></div>
+						</div>
+					</div>
+				</div>
+			</div>
+
+			<div>
+				<div class="d-caption">
+					<b>Cart · /cart — the signature</b>
+					<p>Every line carries a hold ribbon: a violet hairline that drains as the
+					reservation runs down, with the remaining time in mono beside it. Under a minute it
+					turns bronze; at zero it goes dashed and grey and says what to do next. The three
+					lines below are in the three states, and the timers are live.</p>
+				</div>
+				<div class="d-frame">
+					<div class="d-frame-bar"><span class="d-frame-dots"><i></i><i></i><i></i></span><span>localhost:4321/cart</span></div>
+					<div class="d-scroll">
+						<div class="store">
+							<div class="s-head">
+								<a href="#" class="s-wordmark">Urumi</a>
+								<nav class="s-nav"><a href="#">Shop</a><a href="#">Cart <span class="s-count">(3)</span></a></nav>
+							</div>
+							<div class="store-pad" style="padding-top:2.5rem">
+								<p class="s-label">3 items · 2 held</p>
+								<h1 class="s-title" style="font-size:2.25rem;margin-top:0.5rem">Cart</h1>
+							</div>
+							<div class="s-cart">
+								<div class="s-line">
+									<span class="s-line-media" data-art="tee"></span>
+									<div class="s-line-main">
+										<div>
+											<div class="s-line-name">Urumi Tee</div>
+											<div class="s-mono s-line-sku">URUMI-TEE-01</div>
+										</div>
+										<div class="s-hold" data-state="held" data-seconds="512">
+											<div class="s-hold-track"><div class="s-hold-fill" style="--pct:85%"></div></div>
+											<div class="s-hold-meta"><span class="s-label">Held for you</span><span class="s-hold-time">08:32</span></div>
+										</div>
+									</div>
+									<div class="s-line-right">
+										<span class="s-price">$25.00</span>
+										<span class="s-line-actions">
+											<input type="number" value="1" min="1" aria-label="Quantity, Urumi Tee" />
+											<button type="button" class="s-link-btn">Update</button>
+										</span>
+										<button type="button" class="s-link-btn">Remove</button>
+									</div>
+								</div>
+								<div class="s-line">
+									<span class="s-line-media" data-art="mug"></span>
+									<div class="s-line-main">
+										<div>
+											<div class="s-line-name">Urumi Mug</div>
+											<div class="s-mono s-line-sku">URUMI-MUG-01</div>
+										</div>
+										<div class="s-hold" data-state="expiring" data-seconds="47">
+											<div class="s-hold-track"><div class="s-hold-fill" style="--pct:8%"></div></div>
+											<div class="s-hold-meta"><span class="s-label">Expiring</span><span class="s-hold-time">00:47</span></div>
+										</div>
+									</div>
+									<div class="s-line-right">
+										<span class="s-price">$15.00</span>
+										<span class="s-line-actions">
+											<input type="number" value="1" min="1" aria-label="Quantity, Urumi Mug" />
+											<button type="button" class="s-link-btn">Update</button>
+										</span>
+										<button type="button" class="s-link-btn">Remove</button>
+									</div>
+								</div>
+								<div class="s-line">
+									<span class="s-line-media" data-art="stk"></span>
+									<div class="s-line-main">
+										<div>
+											<div class="s-line-name">Urumi Sticker Pack</div>
+											<div class="s-mono s-line-sku">URUMI-STK-01</div>
+										</div>
+										<div class="s-hold" data-state="released">
+											<div class="s-hold-track"><div class="s-hold-fill"></div></div>
+											<div class="s-hold-meta"><span class="s-label">Hold released</span><span class="s-hold-time">00:00</span></div>
+										</div>
+										<p class="s-hold-note">Stock went back on sale. Update the quantity to hold it again.</p>
+									</div>
+									<div class="s-line-right">
+										<span class="s-price">$12.00</span>
+										<span class="s-line-actions">
+											<input type="number" value="1" min="1" aria-label="Quantity, Urumi Sticker Pack" />
+											<button type="button" class="s-link-btn">Update</button>
+										</span>
+										<button type="button" class="s-link-btn">Remove</button>
+									</div>
+								</div>
+								<div class="s-totals">
+									<div class="s-total-row"><span class="s-label">Subtotal</span><span class="s-price">$52.00</span></div>
+									<div class="s-total-row"><span class="s-label">Shipping</span><span class="s-price">At checkout</span></div>
+									<div class="s-total-row s-total-grand"><span class="s-label">Total</span><span class="s-price">$52.00</span></div>
+								</div>
+								<div class="s-cart-foot">
+									<a href="#" class="s-btn">Check out</a>
+									<p>Your total is confirmed at checkout.</p>
+								</div>
+							</div>
+							<div class="s-foot"><span>Urumi — content by EmDash, commerce by Urumi.</span><span class="s-mono">USD</span></div>
+						</div>
+					</div>
+				</div>
+			</div>
+
+			<div>
+				<div class="d-caption">
+					<b>Checkout · /checkout</b>
+					<p>The review step. Details on the left, the order ledger on the right — the same
+					tape as the home page, totalled. Note what the totals block does <em>not</em> say:
+					shipping and tax aren't configured on this store, so they read "not calculated",
+					never "Free" and never "$0.00".</p>
+				</div>
+				<div class="d-frame">
+					<div class="d-frame-bar"><span class="d-frame-dots"><i></i><i></i><i></i></span><span>localhost:4321/checkout</span></div>
+					<div class="d-scroll">
+						<div class="store">
+							<div class="s-head">
+								<a href="#" class="s-wordmark">Urumi</a>
+								<nav class="s-nav"><a href="#">Shop</a><a href="#">Cart <span class="s-count">(2)</span></a></nav>
+							</div>
+							<div class="s-steps">
+								<span class="s-step" data-state="done"><span class="s-step-dot"></span><span class="s-step-label">Cart</span></span>
+								<span class="s-step-track"></span>
+								<span class="s-step" data-state="now"><span class="s-step-dot"></span><span class="s-step-label">Details</span></span>
+								<span class="s-step-track"></span>
+								<span class="s-step"><span class="s-step-dot"></span><span class="s-step-label">Payment</span></span>
+								<span class="s-step-track"></span>
+								<span class="s-step"><span class="s-step-dot"></span><span class="s-step-label">Order</span></span>
+							</div>
+							<div class="store-pad" style="padding-top:1.5rem">
+								<h1 class="s-title" style="font-size:2.25rem">Checkout</h1>
+							</div>
+							<div class="s-checkout">
+								<div class="s-panel">
+									<div class="s-panel-head">
+										<span class="s-label">Your details</span>
+									</div>
+									<div class="s-field">
+										<span class="s-label">Email <span class="s-field-req">required</span></span>
+										<input type="email" placeholder="you@example.com" aria-label="Email" />
+										<p class="s-field-note">We'll send your order confirmation here, and link
+										the order to your account if you sign in later.</p>
+									</div>
+									<div class="s-panel-head" style="margin-top:0.5rem">
+										<span class="s-label">Delivery address</span>
+										<p>Optional — fill it in completely, or leave it entirely blank.</p>
+									</div>
+									<div class="s-fields">
+										<div class="s-field s-span2"><span class="s-label">Full name</span><input type="text" aria-label="Full name" /></div>
+										<div class="s-field s-span2"><span class="s-label">Address line 1</span><input type="text" aria-label="Address line 1" /></div>
+										<div class="s-field s-span2"><span class="s-label">Address line 2</span><input type="text" aria-label="Address line 2" /></div>
+										<div class="s-field"><span class="s-label">City</span><input type="text" aria-label="City" /></div>
+										<div class="s-field"><span class="s-label">Region / state</span><input type="text" aria-label="Region or state" /></div>
+										<div class="s-field"><span class="s-label">Postal code</span><input type="text" aria-label="Postal code" /></div>
+										<div class="s-field"><span class="s-label">Country</span><input type="text" aria-label="Country" /></div>
+										<div class="s-field s-span2"><span class="s-label">Phone</span><input type="tel" aria-label="Phone" /></div>
+									</div>
+									<div><button type="button" class="s-btn">Continue to payment</button></div>
+								</div>
+								<div class="s-panel">
+									<div class="s-panel-head"><span class="s-label">Your order</span></div>
+									<div class="s-ledger">
+										<div class="s-ledger-line">
+											<span class="s-mono">URUMI-TEE-01</span>
+											<span class="s-mono s-ledger-qty">1</span>
+											<span class="s-price">$25.00</span>
+										</div>
+										<div class="s-ledger-line">
+											<span class="s-mono">URUMI-MUG-01</span>
+											<span class="s-mono s-ledger-qty">1</span>
+											<span class="s-price">$15.00</span>
+										</div>
+									</div>
+									<div class="s-sum">
+										<div class="s-sum-row"><span class="s-label">Subtotal</span><span class="s-price">$40.00</span></div>
+										<div class="s-sum-row"><span class="s-label">Discount</span><span class="s-uncalc">No coupon applied</span></div>
+										<div class="s-sum-row"><span class="s-label">Shipping</span><span class="s-uncalc">Not calculated</span></div>
+										<div class="s-sum-row"><span class="s-label">Tax</span><span class="s-uncalc">Not calculated</span></div>
+										<div class="s-sum-row s-sum-total"><span class="s-label">Total</span><span class="s-price">$40.00</span></div>
+										<p class="s-sum-foot">This total doesn't include shipping or tax — this
+										store hasn't set either up yet.</p>
+									</div>
+								</div>
+							</div>
+							<div class="s-foot"><span>Urumi — content by EmDash, commerce by Urumi.</span><span class="s-mono">USD</span></div>
+						</div>
+					</div>
+				</div>
+			</div>
+
+			<div>
+				<div class="d-caption">
+					<b>Payment · /checkout/pay</b>
+					<p>The only page on the site that ships JavaScript, and the only one with a
+					third-party origin. Stripe renders its own fields inside the panel, so the theme's
+					job is the frame around them and one quiet line about where card data goes — a
+					sentence, not a badge. The button carries the amount so nobody pays blind.</p>
+				</div>
+				<div class="d-frame">
+					<div class="d-frame-bar"><span class="d-frame-dots"><i></i><i></i><i></i></span><span>localhost:4321/checkout/pay</span></div>
+					<div class="d-scroll">
+						<div class="store">
+							<div class="s-head">
+								<a href="#" class="s-wordmark">Urumi</a>
+								<nav class="s-nav"><a href="#">Shop</a><a href="#">Cart <span class="s-count">(2)</span></a></nav>
+							</div>
+							<div class="s-steps">
+								<span class="s-step" data-state="done"><span class="s-step-dot"></span><span class="s-step-label">Cart</span></span>
+								<span class="s-step-track"></span>
+								<span class="s-step" data-state="done"><span class="s-step-dot"></span><span class="s-step-label">Details</span></span>
+								<span class="s-step-track"></span>
+								<span class="s-step" data-state="now"><span class="s-step-dot"></span><span class="s-step-label">Payment</span></span>
+								<span class="s-step-track"></span>
+								<span class="s-step"><span class="s-step-dot"></span><span class="s-step-label">Order</span></span>
+							</div>
+							<div class="store-pad" style="padding-top:1.5rem">
+								<h1 class="s-title" style="font-size:2.25rem">Payment</h1>
+							</div>
+							<div class="s-pay">
+								<div class="s-trust">
+									<span class="s-trust-mark"></span>
+									<p>Your card details go straight to our payment provider and never reach
+									this site.</p>
+								</div>
+								<div class="s-stripe-mount">
+									<span class="s-label">Card number</span>
+									<span class="s-stripe-row"></span>
+									<div class="s-stripe-split">
+										<span class="s-field"><span class="s-label">Expiry</span><span class="s-stripe-row"></span></span>
+										<span class="s-field"><span class="s-label">Security code</span><span class="s-stripe-row"></span></span>
+									</div>
+								</div>
+								<div><button type="button" class="s-btn">Pay $40.00</button></div>
+							</div>
+							<div class="s-foot"><span>Urumi — content by EmDash, commerce by Urumi.</span><span class="s-mono">USD</span></div>
+						</div>
+					</div>
+				</div>
+			</div>
+
+			<div>
+				<div class="d-caption">
+					<b>Order · /orders/&lt;id&gt;</b>
+					<p>The page renders the order's own state, never what Stripe's redirect claims —
+					so the state is the first thing on it. The rule above the headline is the tempering
+					scale doing its second job: violet while it's in progress, ink once it's settled,
+					bronze when it failed, dashed grey when it lapsed. Same grammar as the cart's hold.</p>
+				</div>
+				<div class="d-frame">
+					<div class="d-frame-bar"><span class="d-frame-dots"><i></i><i></i><i></i></span><span>localhost:4321/orders/ord_01J8XQ4M7</span></div>
+					<div class="d-scroll">
+						<div class="store">
+							<div class="s-head">
+								<a href="#" class="s-wordmark">Urumi</a>
+								<nav class="s-nav"><a href="#">Shop</a><a href="#">Cart <span class="s-count">(0)</span></a></nav>
+							</div>
+							<div class="s-steps">
+								<span class="s-step" data-state="done"><span class="s-step-dot"></span><span class="s-step-label">Cart</span></span>
+								<span class="s-step-track"></span>
+								<span class="s-step" data-state="done"><span class="s-step-dot"></span><span class="s-step-label">Details</span></span>
+								<span class="s-step-track"></span>
+								<span class="s-step" data-state="done"><span class="s-step-dot"></span><span class="s-step-label">Payment</span></span>
+								<span class="s-step-track"></span>
+								<span class="s-step" data-state="now"><span class="s-step-dot"></span><span class="s-step-label">Order</span></span>
+							</div>
+							<div class="s-stamp" data-state="paid">
+								<span class="s-stamp-rule"></span>
+								<h1 class="s-title">Order confirmed.</h1>
+								<p>Thank you — we've received your payment. A confirmation is on its way to
+								your email.</p>
+								<span class="s-stamp-ref"><span class="s-label">Reference</span><span class="s-mono">ord_01J8XQ4M7</span></span>
+							</div>
+							<div class="s-checkout" style="padding-top:2rem">
+								<div class="s-panel">
+									<div class="s-panel-head"><span class="s-label">Items</span></div>
+									<div class="s-ledger">
+										<div class="s-ledger-line"><span class="s-mono">URUMI-TEE-01</span><span class="s-mono s-ledger-qty">1</span><span class="s-price">$25.00</span></div>
+										<div class="s-ledger-line"><span class="s-mono">URUMI-MUG-01</span><span class="s-mono s-ledger-qty">1</span><span class="s-price">$15.00</span></div>
+									</div>
+								</div>
+								<div class="s-panel">
+									<div class="s-panel-head"><span class="s-label">Totals</span></div>
+									<div class="s-sum" style="padding-top:0">
+										<div class="s-sum-row"><span class="s-label">Subtotal</span><span class="s-price">$40.00</span></div>
+										<div class="s-sum-row"><span class="s-label">Discount</span><span class="s-uncalc">—</span></div>
+										<div class="s-sum-row"><span class="s-label">Shipping</span><span class="s-uncalc">Not calculated</span></div>
+										<div class="s-sum-row"><span class="s-label">Tax</span><span class="s-uncalc">Not calculated</span></div>
+										<div class="s-sum-row s-sum-total"><span class="s-label">Paid</span><span class="s-price">$40.00</span></div>
+									</div>
+								</div>
+							</div>
+							<div class="s-foot"><span>Urumi — content by EmDash, commerce by Urumi.</span><span class="s-mono">USD</span></div>
+						</div>
+					</div>
+				</div>
+			</div>
+
+		</div>
+	</section>
+
+	<section class="d-section">
+		<div class="d-section-head">
+			<p class="d-eyebrow">Order states</p>
+			<h2 class="d-display">Four more things an order can be.</h2>
+			<p>The confirmation page has six states and is deliberately careful about which it
+			claims. Each gets the same stamp with a different rule, so a shopper who has seen one has
+			read them all. The pending sweep is the hold ribbon again, running indeterminate.</p>
+		</div>
+		<div class="d-states">
+			<div class="d-state">
+				<div class="d-state-head"><b>Pending, just back from Stripe</b><span>The page polls itself for ~30s before offering a manual check. Nothing here claims the order is paid — only the webhook decides that.</span></div>
+				<div class="d-frame"><div class="store" style="min-width:0"><div class="s-stamp" data-state="pending" style="padding:1.5rem">
+					<span class="s-stamp-rule"></span>
+					<h2 class="s-title" style="font-size:1.5rem">Payment submitted.</h2>
+					<p>We're confirming it with our payment provider — this usually takes a few seconds.</p>
+					<div class="s-poll">
+						<div class="s-poll-track"></div>
+						<div class="s-poll-meta"><span class="s-label">Checking</span><span class="s-mono">3 of 8</span></div>
+					</div>
+				</div></div></div>
+			</div>
+			<div class="d-state">
+				<div class="d-state-head"><b>Failed</b><span>The one fact the buyer needs is that no money moved. It leads.</span></div>
+				<div class="d-frame"><div class="store" style="min-width:0"><div class="s-stamp" data-state="failed" style="padding:1.5rem">
+					<span class="s-stamp-rule"></span>
+					<h2 class="s-title" style="font-size:1.5rem">The payment didn't go through.</h2>
+					<p>No charge was made. Your cart is unchanged — you can try again whenever you're ready.</p>
+					<span class="s-stamp-ref"><a href="#" class="s-btn s-btn-ghost">Back to checkout</a></span>
+				</div></div></div>
+			</div>
+			<div class="d-state">
+				<div class="d-state-head"><b>Expired</b><span>The hold lapsed before payment landed. A dead end without the door out, so the door is on the page.</span></div>
+				<div class="d-frame"><div class="store" style="min-width:0"><div class="s-stamp" data-state="expired" style="padding:1.5rem">
+					<span class="s-stamp-rule"></span>
+					<h2 class="s-title" style="font-size:1.5rem">This order expired.</h2>
+					<p>Payment didn't complete in time, so the items went back on sale. Nothing was charged.</p>
+					<span class="s-stamp-ref"><a href="#" class="s-btn s-btn-ghost">Start a new cart</a></span>
+				</div></div></div>
+			</div>
+			<div class="d-state">
+				<div class="d-state-head"><b>Card payment not set up</b><span>Honest about whose problem it is. No payable-looking button is ever rendered over an order that can't be paid.</span></div>
+				<div class="d-frame"><div class="store" style="min-width:0">
+					<div class="s-notice">
+						<span class="s-notice-mark"></span>
+						<p><b>Card payment isn't set up on this store yet.</b> This order can't be placed,
+						nothing has been charged, and your cart is unchanged.</p>
+					</div>
+				</div></div>
+			</div>
+		</div>
+	</section>
+
+	<section class="d-section">
+		<div class="d-section-head">
+			<p class="d-eyebrow">The states nobody designs</p>
+			<h2 class="d-display">Degraded is a look, not a crash.</h2>
+			<p>The theme already renders 200 when the commerce service is unreachable — content
+			survives, money doesn't. That deserves a designed treatment: the continuous hairline
+			breaks into a dashed bronze one. Same device for every partial failure, so it reads the
+			same way every time.</p>
+		</div>
+		<div class="d-states">
+			<div class="d-state">
+				<div class="d-state-head"><b>Prices unavailable</b><span>The commerce service is unreachable. The catalog still renders.</span></div>
+				<div class="d-frame"><div class="store" style="min-width:0">
+					<div class="s-notice">
+						<span class="s-notice-mark"></span>
+						<p><b>Prices are unavailable right now.</b> Everything below is up to date — check back
+						in a moment to buy.</p>
+					</div>
+				</div></div>
+			</div>
+			<div class="d-state">
+				<div class="d-state-head"><b>Cart pricing degraded</b><span>Quantities and holds are still exact; only the money is missing.</span></div>
+				<div class="d-frame"><div class="store" style="min-width:0">
+					<div class="s-notice">
+						<span class="s-notice-mark"></span>
+						<p><b>Totals are unavailable right now.</b> Your quantities and your holds are still
+						exact — you'll see the full total at checkout.</p>
+					</div>
+				</div></div>
+			</div>
+			<div class="d-state">
+				<div class="d-state-head"><b>Empty cart</b><span>An empty screen is an invitation to act, not an apology.</span></div>
+				<div class="d-frame"><div class="store" style="min-width:0"><div class="s-empty">
+					<h2 class="s-title">Nothing held yet.</h2>
+					<p>Your cart is empty. Pick something and we'll hold the stock while you decide.</p>
+					<a href="#" class="s-btn s-btn-ghost">Shop all three</a>
+				</div></div></div>
+			</div>
+			<div class="d-state">
+				<div class="d-state-head"><b>Empty catalog</b><span>A fresh install before anything is priced. Tells you the next move.</span></div>
+				<div class="d-frame"><div class="store" style="min-width:0"><div class="s-empty">
+					<h2 class="s-title">No products yet.</h2>
+					<p>Create a product in the admin, price it in the Product data panel, and it appears
+					here with live stock.</p>
+					<a href="#" class="s-btn s-btn-ghost">Open the admin</a>
+				</div></div></div>
+			</div>
+		</div>
+	</section>
+
+	<section class="d-section">
+		<div class="d-section-head">
+			<p class="d-eyebrow">Applying it</p>
+			<h2 class="d-display">Where the code goes.</h2>
+			<p>The tokens live in one stylesheet the layout imports; every page keeps its scoped
+			<code>&lt;style&gt;</code> block but stops declaring its own colours and spacing. ADR-0003
+			holds — the plugin keeps serving view models, the theme keeps owning all markup.</p>
+		</div>
+		<ul class="d-list">
+			<li><code>src/styles/tokens.css</code><p>New. The token block at the top of this page, plus the reset and the three <code>@font-face</code> rules loaded through Astro's font API (self-hosted, no CDN).</p></li>
+			<li><code>src/layouts/Base.astro</code><p>Header, wordmark, nav with a live cart count, footer, skip link, and the dark-theme meta. Keeps the inline SVG favicon its test pins — redrawn as the ribbon mark.</p></li>
+			<li><code>src/components/</code><p>New: <code>ProductCard</code>, <code>PriceTag</code>, <code>StockRule</code>, <code>HoldRibbon</code>, <code>Notice</code>, <code>MediaPanel</code>, <code>QtyField</code>. Each one renders a view-model field and nothing more.</p></li>
+			<li><code>src/pages/index.astro</code><p>Gains the inventory tape. This is the one page that today makes no commerce call — the tape needs one, so it renders the thesis copy alone when the service is down.</p></li>
+			<li><code>src/pages/products/*.astro</code><p>Markup swapped for components. No change to the CMS read or the route dispatch.</p></li>
+			<li><code>src/pages/cart/index.astro</code><p>The table becomes lines with hold ribbons. <code>expiresAt</code> is already on the wire; the countdown is ~15 lines of client script with a no-JS fallback showing the absolute time.</p></li>
+			<li><code>src/pages/checkout/index.astro</code><p>Two panels and the step track. The totals block is the careful part: <code>shipping.label</code> and <code>tax.label</code> can mean "not calculated", and must never render as <code>$0.00</code> or "Free".</p></li>
+			<li><code>src/pages/checkout/pay.astro</code><p>Only the frame changes. Stripe's Payment Element gets an <code>appearance</code> object fed from the same tokens, so its fields match the theme instead of arriving as a default blue widget.</p></li>
+			<li><code>src/pages/orders/[orderId].astro</code><p>The state stamp replaces the status paragraph. The bounded meta-refresh poll stays exactly as it is — the sweep is CSS on a page that reloads itself, not new JavaScript.</p></li>
+			<li><code>src/lib/error-messages.ts</code><p>No change. The copy in it is already written from the shopper's side, and the mockups quote it verbatim.</p></li>
+		</ul>
+		<p class="d-note" style="padding-top:1.25rem">Two calls worth arguing with: this reads as
+		Urumi's own brand rather than a neutral starter, on the bet that a fork swaps eight tokens and
+		two faces; and it's light-first, because product photography needs a neutral surround and the
+		dark set is the same tokens inverted.</p>
+	</section>
+
+</div>
+</div>
+
+<script>
+(function () {
+	// Deterministic per-product art: one drawn ribbon on a tinted ground.
+	// Canvas-free and tiny — a single stroked curve per panel, keyed by slug.
+	const ART = {
+		tee: { tint: "--u-tint-violet", seed: 0 },
+		mug: { tint: "--u-tint-straw", seed: 1 },
+		stk: { tint: "--u-tint-blue", seed: 2 },
+	};
+	const NS = "http://www.w3.org/2000/svg";
+
+	// An Archimedean spiral swept as a ribbon that tapers to a point at the
+	// inner end — the blade coiled, which is how an urumi is worn. Computed
+	// rather than hand-drawn so a slug can key its own rotation and turn count.
+	function coilPath(seed) {
+		// Centre, turn count and rotation all key off the slug, so the coil
+		// crops differently per product instead of repeating like a logo.
+		const cx = 200 + [-52, 34, 68][seed % 3];
+		const cy = 160 + [22, -34, 30][seed % 3];
+		const turns = [2.3, 3.1, 2.7][seed % 3];
+		const tMax = turns * Math.PI * 2;
+		const rot = -0.5 + seed * 1.9;
+		const rOuter = [150, 128, 166][seed % 3];
+		const growth = (rOuter - 16) / tMax;
+		const N = 300;
+		const outer = [];
+		const inner = [];
+		for (let i = 0; i <= N; i++) {
+			const f = i / N;
+			const t = f * tMax;
+			const r = 16 + growth * t;
+			const w = 0.7 + 4.6 * f * f; // a point at the core, full width at the tip
+			const a = t + rot;
+			const cos = Math.cos(a);
+			const sin = Math.sin(a) * 0.94; // a shade elliptical, so it isn't a target
+			outer.push([cx + (r + w) * cos, cy + (r + w) * sin]);
+			inner.push([cx + (r - w) * cos, cy + (r - w) * sin]);
+		}
+		inner.reverse();
+		const pt = (p) => p[0].toFixed(1) + " " + p[1].toFixed(1);
+		return (
+			"M " + pt(outer[0]) +
+			outer.slice(1).map((p) => " L " + pt(p)).join("") +
+			" L " + pt(inner[0]) +
+			inner.slice(1).map((p) => " L " + pt(p)).join("") +
+			" Z"
+		);
+	}
+
+	function ribbon(key) {
+		const cfg = ART[key] || ART.tee;
+		const svg = document.createElementNS(NS, "svg");
+		svg.setAttribute("viewBox", "0 0 400 320");
+		svg.setAttribute("preserveAspectRatio", "xMidYMid slice");
+		svg.setAttribute("aria-hidden", "true");
+		const bg = document.createElementNS(NS, "rect");
+		bg.setAttribute("width", "400");
+		bg.setAttribute("height", "320");
+		bg.setAttribute("fill", "var(--u-panel)");
+		svg.appendChild(bg);
+		const p = document.createElementNS(NS, "path");
+		p.setAttribute("d", coilPath(cfg.seed));
+		p.setAttribute("fill", "var(" + cfg.tint + ")");
+		p.setAttribute("opacity", "var(--u-coil-a)");
+		svg.appendChild(p);
+		return svg;
+	}
+
+	document.querySelectorAll("[data-art]").forEach(function (el) {
+		el.appendChild(ribbon(el.getAttribute("data-art")));
+	});
+
+	// Hold ribbons: the countdown is information, so it ticks even under
+	// reduced-motion. Window is 10 minutes, matching the service's hold TTL.
+	const WINDOW = 600;
+	const holds = [];
+	document.querySelectorAll(".s-hold[data-seconds]").forEach(function (el) {
+		const start = parseInt(el.getAttribute("data-seconds"), 10);
+		holds.push({
+			el: el,
+			fill: el.querySelector(".s-hold-fill"),
+			time: el.querySelector(".s-hold-time"),
+			label: el.querySelector(".s-label"),
+			start: start,
+			left: start,
+			restIn: 0,
+		});
+	});
+
+	function pad(n) { return (n < 10 ? "0" : "") + n; }
+
+	function tick() {
+		holds.forEach(function (h) {
+			// Demo-only: rest on "released" for 6s, then rewind, so a reviewer
+			// sees all three states without waiting out a real 10-minute hold.
+			if (h.left <= 0) {
+				h.restIn -= 1;
+				if (h.restIn <= 0) h.left = h.start;
+			} else {
+				h.left -= 1;
+				if (h.left <= 0) h.restIn = 6;
+			}
+			const m = Math.floor(h.left / 60);
+			h.time.textContent = pad(m) + ":" + pad(h.left % 60);
+			if (h.left <= 0) {
+				h.el.setAttribute("data-state", "released");
+				h.label.textContent = "Hold released";
+			} else if (h.left <= 60) {
+				h.el.setAttribute("data-state", "expiring");
+				h.label.textContent = "Expiring";
+			} else {
+				h.el.setAttribute("data-state", "held");
+				h.label.textContent = "Held for you";
+			}
+			h.fill.style.setProperty("--pct", Math.max(0, Math.min(100, (h.left / WINDOW) * 100)) + "%");
+		});
+	}
+	tick();
+	setInterval(tick, 1000);
+})();
+</script>
+
+</body>
+</html>
