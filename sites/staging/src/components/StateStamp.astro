@@ -12,7 +12,9 @@
  * The order's OWN state decides this — never Stripe's redirect (ADR-0012
  * decision 5). This component only draws what it is handed.
  */
-interface Props {
+import type { HTMLAttributes } from "astro/types";
+
+interface Props extends HTMLAttributes<"div"> {
 	/** The order's state string, verbatim off the view model. */
 	state: string;
 	headline: string;
@@ -23,13 +25,14 @@ interface Props {
 	/**
 	 * The confirmation page's h1; a gallery or a summary card uses h2.
 	 *
-	 * NOT named `as`: Astro 7 reserves that prop name for polymorphic
-	 * components, and a component declaring it silently loses `Props`
-	 * type-checking at every call site — no error, no warning, just
-	 * `Record<string, any>`.
+	 * Named `level` rather than `as` to stay clear of Astro's polymorphic
+	 * convention — `as` is the prop name `Polymorphic<{ as: … }>` is built
+	 * around (astro/types), and a component that declares its own plain `as`
+	 * alongside a `Props` interface stops resolving that interface at call
+	 * sites: props degrade to `Record<string, any>` with no error and no
+	 * warning. Nothing special-cases it at runtime; the collision is enough.
 	 */
 	level?: "h1" | "h2";
-	class?: string;
 }
 
 /** The five appearances. Any state the service grows that is not in this map
@@ -52,6 +55,7 @@ const {
 	reference = null,
 	level = "h1",
 	class: className,
+	...rest
 } = Astro.props;
 /* Astro renders a capitalised identifier as a component, which is how the
    heading level becomes a prop. */
@@ -59,15 +63,15 @@ const Heading = level;
 const rule = RULES[state];
 ---
 
-<div class:list={["stamp", className]} data-state={rule}>
+<div class:list={["stamp", className]} data-state={rule} {...rest}>
 	<span class="rule" aria-hidden="true"></span>
 	<Heading class="headline">{headline}</Heading>
 	{body !== null && body !== "" && <p class="body">{body}</p>}
 	{
 		reference !== null && reference !== "" && (
 			<span class="ref">
-				<span class="ref-label">Reference</span>
-				<span class="ref-value">{reference}</span>
+				<span class="u-label">Reference</span>
+				<span class="u-mono ref-value">{reference}</span>
 			</span>
 		)
 	}
@@ -117,22 +121,8 @@ const rule = RULES[state];
 		padding-top: 0.25rem;
 	}
 
-	.ref-label {
-		font-family: var(--u-data);
-		font-variation-settings: "wdth" 90;
-		font-size: 0.5625rem;
-		font-weight: 500;
-		letter-spacing: 0.11em;
-		text-transform: uppercase;
-		color: var(--u-mute);
-	}
-
 	.ref-value {
-		font-family: var(--u-data);
-		font-variation-settings: "wdth" 90;
 		font-size: 0.75rem;
-		letter-spacing: -0.045em;
-		font-variant-numeric: tabular-nums;
 		color: var(--u-ink);
 		overflow-wrap: anywhere;
 	}

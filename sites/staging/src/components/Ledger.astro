@@ -10,7 +10,13 @@
  *
  * Every money cell arrives PRE-FORMATTED (§7). A line the store cannot price
  * says so in prose; it never shows a figure the store did not quote.
+ *
+ * The columns are laid out, not tabulated, so nothing but position says which
+ * figure is which — a screen reader hears "URUMI-TEE-01 1 $25.00" and has to
+ * guess. Both figures carry a visually-hidden name for that reason.
  */
+import type { HTMLAttributes } from "astro/types";
+
 export interface LedgerRow {
 	sku: string;
 	qty: number;
@@ -21,24 +27,26 @@ export interface LedgerRow {
 	unpriced?: boolean;
 }
 
-interface Props {
+interface Props extends HTMLAttributes<"div"> {
 	rows: LedgerRow[];
-	class?: string;
 }
 
-const { rows, class: className } = Astro.props;
+const { rows, class: className, ...rest } = Astro.props;
 ---
 
-<div class:list={["ledger", className]}>
+<div class:list={["ledger", className]} {...rest}>
 	{
 		rows.map((row) => (
 			<div class="line">
-				<span class="sku">{row.sku}</span>
-				<span class="qty">
+				<span class="u-mono sku">{row.sku}</span>
+				<span class="u-mono qty">
 					<span class="u-sr-only">Quantity </span>
 					{row.qty}
 				</span>
-				<span class:list={["money", row.unpriced === true && "unpriced"]}>{row.money}</span>
+				<span class:list={["u-mono", "money", row.unpriced === true && "unpriced"]}>
+					<span class="u-sr-only">Line total </span>
+					{row.money}
+				</span>
 			</div>
 		))
 	}
@@ -62,15 +70,6 @@ const { rows, class: className } = Astro.props;
 	}
 	.line:first-child {
 		border-top: var(--u-hair);
-	}
-
-	.sku,
-	.qty,
-	.money {
-		font-family: var(--u-data);
-		font-variation-settings: "wdth" 90;
-		letter-spacing: -0.045em;
-		font-variant-numeric: tabular-nums;
 	}
 
 	.sku {
@@ -97,7 +96,6 @@ const { rows, class: className } = Astro.props;
 	.money.unpriced {
 		font-size: 0.6875rem;
 		font-weight: 400;
-		letter-spacing: -0.04em;
 		color: var(--u-mute);
 		white-space: normal;
 	}

@@ -104,10 +104,16 @@ export function holdView(
  * lies, so with no JavaScript the ribbon shows the EXPIRY INSTANT instead,
  * which stays true. UTC is named explicitly: the server cannot know the
  * shopper's zone, and a bare "14:10" would be read as local time.
+ *
+ * SECONDS ARE INCLUDED, and that is not fussiness. A hold is ten minutes long,
+ * so truncating to the minute discards up to 59 seconds of a 600-second
+ * window — for a shopper arriving with two minutes left that is a meaningful
+ * slice of the time they have to decide in, and it rounds in the direction
+ * that makes them think they have longer than they do.
  */
 export function absoluteExpiry(expiresAt: string | null | undefined): string | null {
 	if (expiresAt === null || expiresAt === undefined || expiresAt === "") return null;
 	const expiry = Date.parse(expiresAt);
 	if (Number.isNaN(expiry)) return null;
-	return `${new Date(expiry).toISOString().slice(11, 16)} UTC`;
+	return `${new Date(expiry).toISOString().slice(11, 19)} UTC`;
 }

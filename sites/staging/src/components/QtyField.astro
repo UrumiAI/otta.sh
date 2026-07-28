@@ -11,7 +11,9 @@
  * Focus is the global rule in tokens.css — straw, 2px, offset 2px — and this
  * component deliberately does not restyle it.
  */
-interface Props {
+import type { HTMLAttributes } from "astro/types";
+
+interface Props extends HTMLAttributes<"label"> {
 	/** The form field name. The cart and PDP endpoints both read `qty`. */
 	name?: string;
 	value: number;
@@ -23,7 +25,6 @@ interface Props {
 	min?: number;
 	/** `sm` is the cart's inline row; `md` the PDP's buy row. */
 	size?: "sm" | "md";
-	class?: string;
 }
 
 const {
@@ -34,12 +35,21 @@ const {
 	min = 1,
 	size = "md",
 	class: className,
+	...rest
 } = Astro.props;
 ---
 
-<label class:list={["qty", `size-${size}`, className]}>
-	<span class:list={["label", hideLabel && "u-sr-only"]}>{label}</span>
-	<input type="number" name={name} value={value} min={min} step="1" inputmode="numeric" />
+<label class:list={["qty", `size-${size}`, className]} {...rest}>
+	<span class:list={["u-label", hideLabel && "u-sr-only"]}>{label}</span>
+	<input
+		class="u-mono"
+		type="number"
+		name={name}
+		value={value}
+		min={min}
+		step="1"
+		inputmode="numeric"
+	/>
 </label>
 
 <style>
@@ -49,26 +59,11 @@ const {
 		gap: 0.375rem;
 	}
 
-	/* §3's uppercase mono label. */
-	.label {
-		font-family: var(--u-data);
-		font-variation-settings: "wdth" 90;
-		font-size: 0.5625rem;
-		font-weight: 500;
-		letter-spacing: 0.11em;
-		text-transform: uppercase;
-		color: var(--u-mute);
-	}
-
 	.qty input {
 		border: var(--u-hair);
 		border-radius: var(--u-r);
 		background: var(--u-surface);
 		color: var(--u-ink);
-		font-family: var(--u-data);
-		font-variation-settings: "wdth" 90;
-		letter-spacing: -0.045em;
-		font-variant-numeric: tabular-nums;
 	}
 
 	.size-md input {

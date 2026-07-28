@@ -12,29 +12,38 @@
  * page and would read as more alarming than the situation usually is; and a
  * tinted panel already means one thing in this theme ("image goes here").
  *
+ * The root class is `u-notice`, not `notice`. `legacy-bridge.css` carries a
+ * GLOBAL `.notice { color: #131a20 }` — a deliberate literal that pins ink to
+ * the pale panel the unmigrated pages still paint — and an unscoped global
+ * beats nothing here, but it would land a hard-coded near-black on this
+ * component's text under the dark palette. Increments 3–6 delete that bridge;
+ * until they do, the two must not share a name.
+ *
  * Copy is the caller's: `src/lib/error-messages.ts` is already written from the
  * shopper's side and is quoted, not rewritten (§10).
  */
-interface Props {
+import type { HTMLAttributes } from "astro/types";
+
+interface Props extends HTMLAttributes<"div"> {
 	/** The sentence that leads — what happened. Set in the body face, bold. */
 	lead?: string;
-	class?: string;
 }
 
-const { lead, class: className } = Astro.props;
+const { lead, class: className, ...rest } = Astro.props;
+const hasLead = lead !== undefined && lead !== "";
 ---
 
-<div class:list={["notice", className]}>
+<div class:list={["u-notice", className]} {...rest}>
 	<span class="mark" aria-hidden="true"></span>
 	<p class="text">
-		{lead !== undefined && lead !== "" && <b>{lead}</b>}
-		{lead !== undefined && lead !== "" && " "}
+		{hasLead && <b>{lead}</b>}
+		{hasLead && " "}
 		<slot />
 	</p>
 </div>
 
 <style>
-	.notice {
+	.u-notice {
 		display: flex;
 		gap: 0.875rem;
 		align-items: flex-start;

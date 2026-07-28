@@ -14,15 +14,19 @@
  * ragged even though every card is the same height.
  */
 import type { AvailabilityToken } from "@urumi/plugin";
+import type { HTMLAttributes } from "astro/types";
 import MediaPanel from "./MediaPanel.astro";
 import PriceTag from "./PriceTag.astro";
 import StockRule from "./StockRule.astro";
 
-interface Props {
+interface Props extends HTMLAttributes<"a"> {
 	href: string;
 	title: string;
-	/** Keys the coil (§5) — the slug, or the id when there is no slug. */
+	/** Keys the coil's geometry (§5) — the slug, or the id when there is none. */
 	slug: string;
+	/** Position in the grid, which cycles the coil's tint so every three cards
+	 *  show all three. Omit off a list. */
+	index?: number;
 	description?: string | null;
 	image?: string | null;
 	/** Pre-formatted, off the view model's `price.formatted`. `null` when the
@@ -32,25 +36,44 @@ interface Props {
 	availability?: AvailabilityToken | null;
 	/** The prose that replaces the price when there is none. */
 	priceNote?: string;
+	/**
+	 * The card title's heading level.
+	 *
+	 * A card is not always the second level of its page: on a catalog page it
+	 * sits under an h1, but under a section that already has its own h2 a
+	 * hard-coded h2 skips no levels only by luck. The page knows; the card
+	 * does not.
+	 *
+	 * Named `level` and not `as` — see StateStamp for why.
+	 */
+	level?: "h2" | "h3";
 }
 
 const {
 	href,
 	title,
 	slug,
+	index,
 	description = null,
 	image = null,
 	price = null,
 	availability = null,
 	priceNote = "Not currently available for purchase",
+	level = "h2",
+	class: className,
+	...rest
 } = Astro.props;
 
 const soldOut = availability === "out_of_stock";
+const Heading = level;
 ---
 
-<a class="card" href={href} data-sold-out={soldOut ? "" : undefined}>
-	<MediaPanel slug={slug} image={image} class="card-media" />
-	<h2 class="card-title">{title}</h2>
+<a class:list={["card", className]} href={href} data-sold-out={soldOut ? "" : undefined} {...rest}>
+	{/* `dimmed` is a PROP, not a parent CSS rule: Astro scopes each
+	    component's styles to its own hash, so a descendant selector written
+	    here could never reach MediaPanel's root element. */}
+	<MediaPanel slug={slug} index={index} image={image} dimmed={soldOut} />
+	<Heading class="card-title">{title}</Heading>
 	{description !== null && description !== "" && <p class="card-desc">{description}</p>}
 	<span class="card-foot">
 		{
@@ -118,11 +141,5 @@ const soldOut = availability === "out_of_stock";
 		text-decoration-color: var(--u-straw);
 		text-decoration-thickness: 2px;
 		text-underline-offset: 3px;
-	}
-
-	/* Sold out dims the art rather than stamping the card — the product is
-	   still worth looking at, it just cannot be bought today. */
-	.card[data-sold-out] .card-media {
-		opacity: 0.45;
 	}
 </style>

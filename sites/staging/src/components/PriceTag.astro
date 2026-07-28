@@ -9,8 +9,12 @@
  * field is a type error one layer down, and it cannot reach this one at all.
  *
  * Mono and tabular, per §3: money is set in the data face, and nothing else is.
+ * The face itself is the global `.u-mono` recipe in tokens.css; only size,
+ * weight and the sold-out treatment are this component's business.
  */
-interface Props {
+import type { HTMLAttributes } from "astro/types";
+
+interface Props extends HTMLAttributes<"span"> {
 	/** Straight off the view model. Never built here. */
 	formatted: string;
 	/** Struck through and muted — the price is still a fact, it is just not a
@@ -18,22 +22,21 @@ interface Props {
 	soldOut?: boolean;
 	/** Display weight. `lg` is the totals line and the PDP's price. */
 	size?: "sm" | "md" | "lg";
-	class?: string;
 }
 
-const { formatted, soldOut = false, size = "md", class: className } = Astro.props;
+const { formatted, soldOut = false, size = "md", class: className, ...rest } = Astro.props;
 ---
 
-<span class:list={["price", `size-${size}`, className]} data-sold-out={soldOut ? "" : undefined}>
+<span
+	class:list={["u-mono", "price", `size-${size}`, className]}
+	data-sold-out={soldOut ? "" : undefined}
+	{...rest}
+>
 	{formatted}
 </span>
 
 <style>
 	.price {
-		font-family: var(--u-data);
-		font-variation-settings: "wdth" 90;
-		letter-spacing: -0.045em;
-		font-variant-numeric: tabular-nums;
 		font-weight: 500;
 		color: var(--u-ink);
 		/* Figures must not re-wrap mid-number when a column narrows. */

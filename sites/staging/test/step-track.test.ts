@@ -59,6 +59,21 @@ describe("StepTrack — the sequence is in the markup, not only in the styling",
 		expect(html).toContain('aria-label="Checkout progress"');
 	});
 
+	test("keeps its list semantics in WebKit, which drops them for list-style: none", async () => {
+		// Redundant markup that is not redundant in practice — without it
+		// VoiceOver announces four loose spans instead of a four-step list.
+		expect(await track("details")).toContain('role="list"');
+	});
+
+	test("a completed step SAYS so — ink versus grey does not survive being read aloud", async () => {
+		const html = await track("payment");
+		expect(html.match(/completed/g) ?? []).toHaveLength(2); // cart + details
+	});
+
+	test("the current and future steps do not claim completion", async () => {
+		expect((await track("cart")).match(/completed/g) ?? []).toHaveLength(0);
+	});
+
 	test("the current step carries aria-current, and only that one", async () => {
 		const html = await track("details");
 		expect(html.match(/aria-current="step"/g) ?? []).toHaveLength(1);

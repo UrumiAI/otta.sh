@@ -7,7 +7,7 @@
  * is yours, bronze under a minute, mute and dashed once it has gone back on
  * sale — the tempering scale doing the job it exists for.
  *
- * Two things here are deliberate and easy to undo by accident:
+ * Three things here are deliberate and easy to undo by accident:
  *
  *  1. THE COUNTDOWN TICKS UNDER `prefers-reduced-motion`. It is information the
  *     shopper is acting on, not decoration. The animated fill therefore sits
@@ -21,7 +21,16 @@
  *     the markup ships the expiry instant and the script UPGRADES that slot to
  *     the live clock on its first tick. A browser that never runs the script is
  *     left holding something that stays true.
+ *
+ *  3. THE CLOCK IS NOT A LIVE REGION, AND THE STATE CHANGE IS. `role="timer"`
+ *     is an aria-live="off" region by definition, which is exactly right: a
+ *     screen reader announcing "eight twenty-nine, eight twenty-eight, …" once
+ *     a second makes the page unusable. What a shopper does need told is that
+ *     the hold changed state, so a separate visually-hidden polite region gets
+ *     written ONLY on a held→expiring→released transition — three
+ *     announcements in ten minutes, not six hundred.
  */
+import type { HTMLAttributes } from "astro/types";
 import {
 	HOLD_RELEASED_NEXT_STEP,
 	HOLD_WINDOW_SECONDS,
@@ -29,75 +38,101 @@ import {
 	holdView,
 } from "../lib/hold.js";
 
-type Props =
-	| {
-			variant?: "countdown";
-			/** The cart line's own `expiresAt`. `null` — no reservation was ever
-			 *  taken on this line — renders NOTHING: an absent hold and a lapsed
-			 *  one are different facts. */
-			expiresAt: string | null;
-			/** The store's hold TTL, for the fill's denominator. */
-			windowSeconds?: number;
-			/** What the shopper should do once it has lapsed (§6). */
-			nextStep?: string;
-			class?: string;
-	  }
-	| {
-			variant: "indeterminate";
-			/** "Checking 3 of 8" — the confirmation page's bounded poll. */
-			poll: number;
-			pollMax: number;
-			label?: string;
-			class?: string;
-	  };
+interface CountdownProps {
+	variant?: "countdown";
+	/** The cart line's own `expiresAt`. `null` — no reservation was ever taken
+	 *  on this line — renders NOTHING: an absent hold and a lapsed one are
+	 *  different facts. */
+	expiresAt: string | null;
+	/** The store's hold TTL, for the fill's denominator. */
+	windowSeconds?: number;
+	/** What the shopper should do once it has lapsed (§6). */
+	nextStep?: string;
+}
 
-const props = Astro.props;
+interface IndeterminateProps {
+	variant: "indeterminate";
+	/** "Checking 3 of 8" — the confirmation page's bounded poll. */
+	poll: number;
+	pollMax: number;
+	label?: string;
+}
 
-const view =
-	props.variant === "indeterminate"
-		? null
-		: holdView(props.expiresAt, new Date(), props.windowSeconds ?? HOLD_WINDOW_SECONDS);
-const expiry = props.variant === "indeterminate" ? null : absoluteExpiry(props.expiresAt);
+type Props = (CountdownProps | IndeterminateProps) & HTMLAttributes<"div">;
+
+/**
+ * The union is for CALLERS — it is what makes `poll` required alongside
+ * `variant: "indeterminate"` and rejected without it. Inside, one flattened
+ * shape: intersecting the two members would collapse `variant` to `never`, and
+ * a discriminated union cannot be destructured in one statement anyway.
+ */
+type EitherVariant = HTMLAttributes<"div"> & {
+	variant?: "countdown" | "indeterminate";
+	expiresAt?: string | null;
+	windowSeconds?: number;
+	nextStep?: string;
+	poll?: number;
+	pollMax?: number;
+	label?: string;
+};
+
+const {
+	variant = "countdown",
+	expiresAt = null,
+	windowSeconds = HOLD_WINDOW_SECONDS,
+	nextStep = HOLD_RELEASED_NEXT_STEP,
+	poll = 0,
+	pollMax = 0,
+	label = "Checking",
+	class: className,
+	...rest
+}: EitherVariant = Astro.props;
+
+const view = variant === "indeterminate" ? null : holdView(expiresAt, new Date(), windowSeconds);
+const expiry = variant === "indeterminate" ? null : absoluteExpiry(expiresAt);
 ---
 
 {
-	props.variant === "indeterminate" ? (
-		<div class:list={["hold", "poll", props.class]}>
+	variant === "indeterminate" ? (
+		<div class:list={["hold", "poll", className]} {...rest}>
 			<div class="track">
 				<span class="sweep" />
 			</div>
 			<div class="meta">
-				<span class="label">{props.label ?? "Checking"}</span>
-				<span class="clock">
-					{props.poll} of {props.pollMax}
+				<span class="u-label label">{label}</span>
+				<span class="u-mono clock">
+					{poll} of {pollMax}
 				</span>
 			</div>
 		</div>
 	) : (
 		view !== null && (
 			<div
-				class:list={["hold", props.class]}
+				class:list={["hold", className]}
 				data-hold
 				data-state={view.state}
-				data-expires={props.expiresAt}
-				data-window={props.windowSeconds ?? HOLD_WINDOW_SECONDS}
+				data-expires={expiresAt}
+				data-window={windowSeconds}
+				{...rest}
 			>
 				{/* The exemption tokens.css grants covers this element AND its
 				    subtree — the fill inside is what actually moves. */}
 				<div class="track" data-motion="essential">
-					<div class="fill" data-hold-fill style={`--pct: ${view.percent}%`} />
+					<div class="fill" data-hold-fill style={`--pct: ${view.percent.toFixed(1)}%`} />
 				</div>
 				<div class="meta" role="timer">
-					<span class="label" data-hold-label>
+					<span class="u-label label" data-hold-label>
 						{view.label}
 					</span>
 					{/* Replaced with the live mm:ss on the script's first tick. */}
-					<span class="clock" data-hold-clock>
+					<span class="u-mono clock" data-hold-clock>
 						{expiry}
 					</span>
 				</div>
+				{/* Written only when the STATE changes, never on a tick. */}
+				<span class="u-sr-only" data-hold-announce aria-live="polite" />
 				<p class="note" data-hold-note hidden={view.state !== "released"}>
-					{props.nextStep ?? HOLD_RELEASED_NEXT_STEP}
+					{nextStep}
 				</p>
 			</div>
 		)
@@ -108,7 +143,8 @@ const expiry = props.variant === "indeterminate" ? null : absoluteExpiry(props.e
 	/**
 	 * The countdown (§6). Information, so it runs under reduced motion too —
 	 * the media query suppresses decoration, not a timer a shopper is relying
-	 * on. Every ribbon on the page shares one interval.
+	 * on. Every ribbon on the page shares one interval, and that interval is
+	 * dropped once there is nothing left to count.
 	 *
 	 * These three labels are the one duplication of `src/lib/hold.ts` in the
 	 * codebase — an inline script cannot import the module — and
@@ -125,26 +161,37 @@ const expiry = props.variant === "indeterminate" ? null : absoluteExpiry(props.e
 		label: el.querySelector<HTMLElement>("[data-hold-label]"),
 		clock: el.querySelector<HTMLElement>("[data-hold-clock]"),
 		note: el.querySelector<HTMLElement>("[data-hold-note]"),
+		announce: el.querySelector<HTMLElement>("[data-hold-announce]"),
+		state: el.dataset.state ?? "",
 	}));
 
 	function tick(): void {
 		const now = Date.now();
+		let live = false;
 		for (const r of ribbons) {
 			if (Number.isNaN(r.expiry)) continue;
 			const left = Math.max(0, Math.floor((r.expiry - now) / 1000));
 			const state = left <= 0 ? "released" : left <= 60 ? "expiring" : "held";
+			if (left > 0) live = true;
 			r.el.dataset.state = state;
 			if (r.label) r.label.textContent = LABELS[state];
 			if (r.clock) r.clock.textContent = `${pad(Math.floor(left / 60))}:${pad(left % 60)}`;
-			if (r.fill) r.fill.style.setProperty("--pct", `${Math.min(100, (left / r.window) * 100)}%`);
+			if (r.fill)
+				r.fill.style.setProperty("--pct", `${Math.min(100, (left / r.window) * 100).toFixed(1)}%`);
 			if (r.note) r.note.hidden = state !== "released";
+			// Announced on the TRANSITION only. Writing this every tick would
+			// turn a polite region into a once-a-second interruption.
+			if (state !== r.state) {
+				if (r.announce) r.announce.textContent = LABELS[state];
+				r.state = state;
+			}
 		}
+		// Nothing left to count: every hold has lapsed, so stop.
+		if (!live) clearInterval(timer);
 	}
 
-	if (ribbons.length > 0) {
-		tick();
-		setInterval(tick, 1000);
-	}
+	const timer = setInterval(tick, 1000);
+	tick();
 </script>
 
 <style>
@@ -178,26 +225,20 @@ const expiry = props.variant === "indeterminate" ? null : absoluteExpiry(props.e
 		gap: 0.5rem;
 	}
 
-	/* §3's uppercase mono label. */
 	.label {
-		font-family: var(--u-data);
-		font-variation-settings: "wdth" 90;
-		font-size: 0.5625rem;
-		font-weight: 500;
-		letter-spacing: 0.11em;
-		text-transform: uppercase;
 		color: var(--u-violet);
 	}
 
 	.clock {
-		font-family: var(--u-data);
-		font-variation-settings: "wdth" 90;
 		font-size: 0.6875rem;
 		font-weight: 500;
-		letter-spacing: -0.04em;
-		font-variant-numeric: tabular-nums;
 		color: var(--u-violet);
 		white-space: nowrap;
+		/* The server ships "14:10:32 UTC" and the script replaces it with
+		   "08:32", so the slot is reserved at the width of the LONGER of the
+		   two — 12 characters — and the box does not resize at all when the
+		   script runs. (11ch left it 1.3px short, which reflowed the row.) */
+		min-width: 12ch;
 	}
 
 	.note {
@@ -238,6 +279,10 @@ const expiry = props.variant === "indeterminate" ? null : absoluteExpiry(props.e
 
 	.poll .track {
 		position: relative;
+	}
+
+	.poll .clock {
+		min-width: 0;
 	}
 
 	.sweep {

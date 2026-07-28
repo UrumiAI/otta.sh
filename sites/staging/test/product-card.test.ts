@@ -51,6 +51,26 @@ describe("ProductCard — the shape of a card", () => {
 	});
 });
 
+describe("ProductCard — the heading level is the page's to choose", () => {
+	test("defaults to h2", async () => {
+		expect(await card({})).toMatch(/<h2[^>]*class="card-title"/);
+	});
+
+	test("drops to h3 under a section that already has an h2", async () => {
+		// A hard-coded h2 skips a level anywhere the card is not directly under
+		// the page's h1, and heading order is how a screen reader navigates.
+		expect(await card({ level: "h3" })).toMatch(/<h3[^>]*class="card-title"/);
+	});
+});
+
+describe("ProductCard — the coil's tint follows the grid position", () => {
+	test("the index reaches MediaPanel", async () => {
+		const tint = async (index: number): Promise<string | undefined> =>
+			/--coil-tint: var\((--u-tint-\w+)\)/.exec(await card({ index }))?.[1];
+		expect(new Set([await tint(0), await tint(1), await tint(2)]).size).toBe(3);
+	});
+});
+
 describe("ProductCard — money (§7)", () => {
 	test("prints the view model's formatted price verbatim", async () => {
 		expect(await card({ price: "$15.00", availability: "in_stock" })).toContain("$15.00");
@@ -73,6 +93,19 @@ describe("ProductCard — money (§7)", () => {
 		const html = await card({ price: "$12.00", availability: "out_of_stock" });
 		expect(html).toContain("$12.00");
 		expect(html).toContain("data-sold-out");
+	});
+
+	test("sold out DIMS THE ART, and does it through MediaPanel's own class", async () => {
+		// The regression this exists for: the dimming used to be a parent rule,
+		// `.card[cid-parent] .card-media[cid-parent]`, which can never match
+		// MediaPanel's root — that element carries MediaPanel's hash. The rule
+		// shipped and did nothing, and the sold-out coil rendered at full weight.
+		const html = await card({ price: "$12.00", availability: "out_of_stock" });
+		expect(html).toContain("dimmed");
+	});
+
+	test("an in-stock card dims nothing", async () => {
+		expect(await card({ price: "$12.00", availability: "in_stock" })).not.toContain("dimmed");
 	});
 
 	test("in stock does NOT mark the card sold out", async () => {

@@ -45,7 +45,30 @@ describe("Notice — degraded is a look, not a crash", () => {
 	test("has no filled background and no border box (§4)", async () => {
 		const html = await notice({ lead: "Something is off." }, "But this still works.");
 		expect(html).not.toMatch(/style="[^"]*background/);
-		expect(html).not.toContain("role=");
+	});
+
+	test("its root class does NOT collide with legacy-bridge's global `.notice`", async () => {
+		// `legacy-bridge.css` sets `.notice { color: #131a20 }` unscoped — a
+		// deliberate literal pinned to the pale panel the unmigrated pages
+		// still paint. Sharing the name would land a hard-coded near-black on
+		// this component's text under the dark palette.
+		const html = await notice({}, "x");
+		const classes = (/^<div class="([^"]*)"/.exec(html)?.[1] ?? "").split(/\s+/);
+		expect(classes).toContain("u-notice");
+		// A token-exact check: `\bnotice\b` matches inside "u-notice", because a
+		// hyphen is a word boundary.
+		expect(classes).not.toContain("notice");
+	});
+
+	test("a caller can make it an alert, or hide it until it has something to say", async () => {
+		// checkout/pay.astro needs exactly this in increment 5.
+		const html = await container.renderToString(Notice, {
+			props: { id: "payment-error", role: "alert", hidden: true },
+			slots: { default: "Something went wrong." },
+		});
+		expect(html).toContain('id="payment-error"');
+		expect(html).toContain('role="alert"');
+		expect(html).toMatch(/\shidden/);
 	});
 
 	test("quotes the store's own copy verbatim — it does not rewrite it", async () => {

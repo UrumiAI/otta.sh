@@ -122,11 +122,18 @@ describe("absoluteExpiry — the value a browser with no JavaScript is left hold
 		// The countdown goes stale the moment it is printed; this does not.
 		// UTC is stated explicitly because the server cannot know the shopper's
 		// zone, and an unlabelled "14:10" would be read as local.
-		expect(absoluteExpiry("2026-07-28T14:10:00.000Z")).toBe("14:10 UTC");
+		expect(absoluteExpiry("2026-07-28T14:10:00.000Z")).toBe("14:10:00 UTC");
 	});
 
-	test("pads to four digits so it sets in the same tabular slot as the clock", () => {
-		expect(absoluteExpiry("2026-07-28T04:05:00.000Z")).toBe("04:05 UTC");
+	test("carries SECONDS — a ten-minute hold cannot afford to round up a minute", () => {
+		// Truncating to the minute discards up to 59s of a 600s window, and it
+		// rounds in the direction that makes a shopper think they have longer.
+		expect(absoluteExpiry("2026-07-28T14:10:59.000Z")).toBe("14:10:59 UTC");
+		expect(absoluteExpiry("2026-07-28T14:10:01.000Z")).toBe("14:10:01 UTC");
+	});
+
+	test("pads every field, so it sets in a stable tabular slot", () => {
+		expect(absoluteExpiry("2026-07-28T04:05:06.000Z")).toBe("04:05:06 UTC");
 	});
 
 	test("an unparseable timestamp yields nothing rather than `Invalid Date`", () => {

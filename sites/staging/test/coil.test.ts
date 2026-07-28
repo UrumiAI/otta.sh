@@ -17,6 +17,7 @@ import {
 	buildCoil,
 	coilGeometry,
 	coilPath,
+	coilTint,
 } from "../src/lib/coil.js";
 
 const SLUGS = [
@@ -59,6 +60,52 @@ describe("buildCoil — determinism", () => {
 		const seen = new Set<string>();
 		for (let i = 0; i < 200; i++) seen.add(buildCoil(`product-${i}`).tint);
 		expect(seen.size).toBe(COIL_TINTS.length);
+	});
+});
+
+describe("coilTint — tint by POSITION, because a hash is lumpy over three products", () => {
+	test("cycles through all three, in order", () => {
+		expect([0, 1, 2, 3, 4, 5].map(coilTint)).toEqual([...COIL_TINTS, ...COIL_TINTS]);
+	});
+
+	test("a negative index still lands inside the palette", () => {
+		// `%` alone in JS returns a negative remainder and falls off the array.
+		expect(COIL_TINTS).toContain(coilTint(-1));
+		expect(COIL_TINTS).toContain(coilTint(-7));
+	});
+
+	test("any three CONSECUTIVE products show all three tints", () => {
+		// This is the whole point, and the thing the hash could not promise: the
+		// three-product seed drew no straw at all, and a nine-slug strip drew no
+		// violet. On a page that shows the catalog at once the eye compares the
+		// coils to each other, not to a distribution.
+		for (let start = 0; start < 12; start++) {
+			const window = [start, start + 1, start + 2].map(coilTint);
+			expect(new Set(window).size).toBe(COIL_TINTS.length);
+		}
+	});
+});
+
+describe("buildCoil — index cycles the tint, the slug keeps the shape", () => {
+	test("passing an index takes the tint off the position", () => {
+		for (const [index, tint] of COIL_TINTS.entries()) {
+			expect(buildCoil("urumi-mug", index).tint).toBe(tint);
+		}
+	});
+
+	test("the DRAWING is unchanged by position — a product does not reshape when something above it sells out", () => {
+		const byHash = buildCoil("urumi-mug");
+		for (let index = 0; index < 6; index++) {
+			expect(buildCoil("urumi-mug", index).path).toBe(byHash.path);
+		}
+	});
+
+	test("omitting the index falls back to the slug's own hash", () => {
+		expect(buildCoil("urumi-mug").tint).toBe(coilGeometry("urumi-mug").tint);
+	});
+
+	test("two products at the same position in different lists still differ in shape", () => {
+		expect(buildCoil("urumi-tee", 0).path).not.toBe(buildCoil("urumi-mug", 0).path);
 	});
 });
 

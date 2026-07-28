@@ -2,38 +2,67 @@
 /**
  * The "Tempered" styleguide — every component in every state, on one page.
  *
- * DEV ONLY. The guard below is `import.meta.env.DEV`, which Vite folds to a
- * constant at build time, so in any built worker this page is a 404 and the
- * whole body below is dead code the bundler drops. `dev-route-guard.test.ts`
- * pins that.
- *
  * ── Why this is committed rather than thrown away ────────────────────────
  * The components land in increment 2 and are not wired into a page until
  * increments 3–6, so without this route there is no way to look at them at
- * all. It also renders the three states that are near-impossible to produce on
- * a real page on demand: a hold crossing sixty seconds, a hold that has already
- * lapsed, and an order in each of its four settlements. That is worth a route
- * whose entire production behaviour is `return 404`.
+ * all. It also renders the states that are near-impossible to produce on a
+ * real page on demand: a hold crossing sixty seconds, a hold that has already
+ * lapsed, and an order in each of its four settlements.
  *
  * It is a STYLEGUIDE, not a fixture: it renders components with obviously fake
  * data and makes no commerce call, so it cannot rot against the service.
+ *
+ * ── DEV ONLY, and what that actually costs in a build ────────────────────
+ * `import.meta.env.DEV` is folded to a constant by Vite, so in a built worker
+ * this page's body becomes `return new Response(null, { status: 404 })` and
+ * nothing below the guard runs.
+ *
+ * Folding the BODY is not the same as dropping the page's dependencies, and
+ * the first cut of this file claimed it was. Static `import` statements are
+ * hoisted above the guard and stay in the module graph whatever the body does:
+ * they pulled a 25.9 kB server chunk of component code into the build, and
+ * Astro emitted the route's collected styles as a 10.3 kB `tempered.*.css`
+ * that no page ever linked. Both shipped. Neither was reachable.
+ *
+ * Hence the dynamic `import()` block below — it sits INSIDE the dead branch,
+ * so the whole component graph goes with it. Measured after the change: the
+ * route's server chunk is 952 bytes and contains only the 404, no
+ * `tempered.*.css` is emitted, and no component's markup or CSS appears
+ * anywhere in `dist/`. `dev-route-guard.test.ts` pins the shape that buys
+ * this; a static import here would silently put both chunks back.
  */
-import HoldRibbon from "../../components/HoldRibbon.astro";
-import Ledger from "../../components/Ledger.astro";
-import MediaPanel from "../../components/MediaPanel.astro";
-import Notice from "../../components/Notice.astro";
-import PriceTag from "../../components/PriceTag.astro";
-import ProductCard from "../../components/ProductCard.astro";
-import QtyField from "../../components/QtyField.astro";
-import StateStamp from "../../components/StateStamp.astro";
-import StepTrack from "../../components/StepTrack.astro";
-import StockRule from "../../components/StockRule.astro";
-import Sum from "../../components/Sum.astro";
 import Base from "../../layouts/Base.astro";
 import type { CheckoutAmountView } from "@urumi/plugin";
 import { NOT_APPLICABLE_LABEL, NOT_CALCULATED_LABEL } from "@urumi/plugin";
 
 if (!import.meta.env.DEV) return new Response(null, { status: 404 });
+
+const [
+	{ default: HoldRibbon },
+	{ default: Ledger },
+	{ default: MediaPanel },
+	{ default: Notice },
+	{ default: PriceTag },
+	{ default: ProductCard },
+	{ default: QtyField },
+	{ default: StateStamp },
+	{ default: StepTrack },
+	{ default: StockRule },
+	{ default: Sum },
+] = await Promise.all([
+	import("../../components/HoldRibbon.astro"),
+	import("../../components/Ledger.astro"),
+	import("../../components/MediaPanel.astro"),
+	import("../../components/Notice.astro"),
+	import("../../components/PriceTag.astro"),
+	import("../../components/ProductCard.astro"),
+	import("../../components/QtyField.astro"),
+	import("../../components/StateStamp.astro"),
+	import("../../components/StepTrack.astro"),
+	import("../../components/StockRule.astro"),
+	import("../../components/Sum.astro"),
+]);
+
 
 /** Relative to render time, so the hold ribbons are genuinely live. */
 const at = (seconds: number): string => new Date(Date.now() + seconds * 1000).toISOString();
@@ -68,9 +97,11 @@ const CONFIGURED = [
 	</p>
 
 	<section id="cards">
-		<p class="eyebrow">ProductCard · MediaPanel · PriceTag · StockRule</p>
+		<p class="u-label eyebrow">ProductCard · MediaPanel · PriceTag · StockRule</p>
+		<p class="u-label cap">tints cycle by grid position — every three cards show all three</p>
 		<div class="grid">
 			<ProductCard
+				index={0}
 				href="#"
 				slug="urumi-tee"
 				title="Urumi Tee"
@@ -79,6 +110,7 @@ const CONFIGURED = [
 				availability="in_stock"
 			/>
 			<ProductCard
+				index={1}
 				href="#"
 				slug="urumi-mug"
 				title="Urumi Mug"
@@ -87,6 +119,7 @@ const CONFIGURED = [
 				availability="in_stock"
 			/>
 			<ProductCard
+				index={2}
 				href="#"
 				slug="urumi-sticker-pack"
 				title="Urumi Sticker Pack"
@@ -94,33 +127,34 @@ const CONFIGURED = [
 				price="$12.00"
 				availability="out_of_stock"
 			/>
-			<ProductCard href="#" slug="urumi-poster" title="Urumi Poster" price={null} />
+			<ProductCard index={3} href="#" slug="urumi-poster" title="Urumi Poster" price={null} />
 		</div>
 	</section>
 
 	<section id="coils">
-		<p class="eyebrow">MediaPanel · the coil is keyed to the slug (§5)</p>
+		<p class="u-label eyebrow">MediaPanel · the coil is keyed to the slug (§5)</p>
+		<p class="u-label cap">no index — the tint falls back to the slug's own hash (a PDP, a cart line)</p>
 		<div class="coils">
 			{
 				["urumi-tee", "urumi-mug", "urumi-sticker-pack", "urumi-poster", "urumi-cap", "a"].map(
 					(slug) => (
 						<div class="coil-cell">
 							<MediaPanel slug={slug} />
-							<span class="cap">{slug === "" ? "(empty)" : slug}</span>
+							<span class="u-label cap">{slug === "" ? "(empty)" : slug}</span>
 						</div>
 					),
 				)
 			}
 		</div>
 		<div class="coils ratios">
-			<div class="coil-cell"><MediaPanel slug="urumi-mug" ratio="4 / 5" /><span class="cap">4 / 5</span></div>
-			<div class="coil-cell"><MediaPanel slug="urumi-mug" ratio="1" /><span class="cap">1 / 1</span></div>
-			<div class="coil-cell"><MediaPanel slug="urumi-mug" ratio="16 / 9" /><span class="cap">16 / 9</span></div>
+			<div class="coil-cell"><MediaPanel slug="urumi-mug" ratio="4 / 5" /><span class="u-label cap">4 / 5</span></div>
+			<div class="coil-cell"><MediaPanel slug="urumi-mug" ratio="1" /><span class="u-label cap">1 / 1</span></div>
+			<div class="coil-cell"><MediaPanel slug="urumi-mug" ratio="16 / 9" /><span class="u-label cap">16 / 9</span></div>
 		</div>
 	</section>
 
 	<section id="prices">
-		<p class="eyebrow">PriceTag · StockRule · QtyField</p>
+		<p class="u-label eyebrow">PriceTag · StockRule · QtyField</p>
 		<div class="row">
 			<PriceTag formatted="$25.00" size="sm" />
 			<PriceTag formatted="$25.00" />
@@ -137,33 +171,33 @@ const CONFIGURED = [
 	</section>
 
 	<section id="holds">
-		<p class="eyebrow">HoldRibbon · the signature (§6)</p>
+		<p class="u-label eyebrow">HoldRibbon · the signature (§6)</p>
 		<div class="stack">
-			<div class="hold-cell"><span class="cap">held · 9 min</span><HoldRibbon expiresAt={at(540)} /></div>
+			<div class="hold-cell"><span class="u-label cap">held · 9 min</span><HoldRibbon expiresAt={at(540)} /></div>
 			<div class="hold-cell">
-				<span class="cap">held, crossing into expiring in ~8s</span>
+				<span class="u-label cap">held, crossing into expiring in ~8s</span>
 				<HoldRibbon expiresAt={at(68)} />
 			</div>
-			<div class="hold-cell"><span class="cap">expiring · under a minute</span><HoldRibbon expiresAt={at(41)} /></div>
-			<div class="hold-cell"><span class="cap">released</span><HoldRibbon expiresAt={at(-90)} /></div>
+			<div class="hold-cell"><span class="u-label cap">expiring · under a minute</span><HoldRibbon expiresAt={at(41)} /></div>
+			<div class="hold-cell"><span class="u-label cap">released</span><HoldRibbon expiresAt={at(-90)} /></div>
 			<div class="hold-cell">
-				<span class="cap">indeterminate · a pending order</span>
+				<span class="u-label cap">indeterminate · a pending order</span>
 				<HoldRibbon variant="indeterminate" poll={3} pollMax={8} />
 			</div>
 			<div class="hold-cell">
-				<span class="cap">no reservation on the line — renders nothing</span>
+				<span class="u-label cap">no reservation on the line — renders nothing</span>
 				<HoldRibbon expiresAt={null} />
 			</div>
 		</div>
 	</section>
 
 	<section id="steps">
-		<p class="eyebrow">StepTrack</p>
+		<p class="u-label eyebrow">StepTrack</p>
 		<div class="stack">
 			{
 				(["cart", "details", "payment", "order"] as const).map((step) => (
 					<div class="hold-cell">
-						<span class="cap">{step}</span>
+						<span class="u-label cap">{step}</span>
 						<StepTrack current={step} />
 					</div>
 				))
@@ -172,10 +206,10 @@ const CONFIGURED = [
 	</section>
 
 	<section id="money">
-		<p class="eyebrow">Ledger · Sum — the money rules (§7)</p>
+		<p class="u-label eyebrow">Ledger · Sum — the money rules (§7)</p>
 		<div class="two-up">
 			<div>
-				<span class="cap">nothing configured — "Not calculated", never $0.00</span>
+				<span class="u-label cap">nothing configured — "Not calculated", never $0.00</span>
 				<Ledger
 					rows={[
 						{ sku: "URUMI-TEE-01", qty: 1, money: "$25.00" },
@@ -186,7 +220,7 @@ const CONFIGURED = [
 				<Sum rows={UNCONFIGURED} total={money("$40.00")} excludesUncalculated class="pad" />
 			</div>
 			<div>
-				<span class="cap">shipping and tax configured — every row is a figure</span>
+				<span class="u-label cap">shipping and tax configured — every row is a figure</span>
 				<Ledger
 					rows={[
 						{ sku: "URUMI-TEE-01", qty: 1, money: "$25.00" },
@@ -199,7 +233,7 @@ const CONFIGURED = [
 	</section>
 
 	<section id="stamps">
-		<p class="eyebrow">StateStamp — the four settlements</p>
+		<p class="u-label eyebrow">StateStamp — the four settlements</p>
 		<div class="two-up">
 			<StateStamp
 				state="paid"
@@ -232,7 +266,7 @@ const CONFIGURED = [
 	</section>
 
 	<section id="notices">
-		<p class="eyebrow">Notice — degraded is a look, not a crash</p>
+		<p class="u-label eyebrow">Notice — degraded is a look, not a crash</p>
 		<div class="stack">
 			<Notice lead="Prices are unavailable right now.">
 				Everything below is up to date — check back in a moment to buy.
@@ -269,13 +303,6 @@ const CONFIGURED = [
 	.eyebrow,
 	.cap {
 		display: block;
-		font-family: var(--u-data);
-		font-variation-settings: "wdth" 90;
-		font-size: 0.5625rem;
-		font-weight: 500;
-		letter-spacing: 0.11em;
-		text-transform: uppercase;
-		color: var(--u-mute);
 		margin: 0 0 1.25rem;
 	}
 

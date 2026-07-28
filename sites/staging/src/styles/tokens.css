@@ -188,6 +188,42 @@ video {
 	border: 0;
 }
 
+/**
+ * §3's two data-face recipes, written down ONCE.
+ *
+ * "Money is set in mono, and nothing else is" is a rule about a specific
+ * tuple — family, width axis, tracking, tabular figures — and every component
+ * that shows a price, a quantity, a SKU, a countdown or an uppercase eyebrow
+ * label needs the same one.  Repeated per component it drifts: the first cut
+ * of the component set shipped six copies, two of which had already picked up
+ * a different `letter-spacing` from the mockup.  They live here beside
+ * `.u-sr-only`, on the same `u-` precedent: global, unscoped, and safely
+ * overridden by any component's own scoped rule (a scoped selector carries the
+ * extra `[data-astro-cid-…]` attribute and wins on specificity).
+ *
+ * These carry the TYPE ONLY — no size on `.u-mono`, no colour beyond the
+ * label's `--u-mute`, no layout.  Size, weight and state colour are the
+ * component's business and stay in the component.
+ */
+.u-mono {
+	font-family: var(--u-data);
+	font-variation-settings: "wdth" 90;
+	letter-spacing: -0.045em;
+	/* Figures line up in a column for free — which is why the data face is set
+	   wide in the first place. */
+	font-variant-numeric: tabular-nums;
+}
+
+.u-label {
+	font-family: var(--u-data);
+	font-variation-settings: "wdth" 90;
+	font-size: 0.5625rem;
+	font-weight: 500;
+	letter-spacing: 0.11em;
+	text-transform: uppercase;
+	color: var(--u-mute);
+}
+
 /* §11: visible keyboard focus on EVERY interactive element — straw, 2px,
    offset 2px.  Deliberately not `:where()`: a page must not be able to lose
    the ring by accident. */

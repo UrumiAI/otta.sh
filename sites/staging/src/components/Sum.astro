@@ -12,15 +12,23 @@
  * different size and weight from every figure on the page, so it cannot be
  * mistaken for an amount.
  *
- * It is structurally incapable of the failure it exists to prevent: it is
- * handed `CheckoutAmountView`s and prints their `label`, so there is no amount
- * and no currency in scope to build "$0.00" out of.
+ * What that structure does and does not buy:
+ *
+ *  - It makes "$0.00" unreachable. The component is handed
+ *    `CheckoutAmountView`s and prints their `label`; there is no amount and no
+ *    currency in scope to build a money string out of.
+ *  - It does NOT by itself stop a bare "—" reaching the screen. The view
+ *    model's not-applicable label IS a bare em dash, and §7 forbids that too;
+ *    the guarantee lives in `sumRowText`, which never returns the raw label
+ *    for that case. Getting this wrong is exactly what shipped a lone dash on
+ *    the discount row of every ordinary order.
  */
 import type { CheckoutAmountView } from "@urumi/plugin";
+import type { HTMLAttributes } from "astro/types";
 import { isUncalculated, sumRowText, uncalculatedFootnote, type SumRow } from "../lib/totals.js";
 import PriceTag from "./PriceTag.astro";
 
-interface Props {
+interface Props extends HTMLAttributes<"div"> {
 	/** Subtotal, discount, shipping, tax — in the order they should read. */
 	rows: SumRow[];
 	total: CheckoutAmountView;
@@ -30,9 +38,8 @@ interface Props {
 	 *  that NAMES what the total is missing. */
 	excludesUncalculated?: boolean;
 	/** Overrides the derived footnote, for a page with something more specific
-	 *  to say. */
+	 *  to say. `null` suppresses it; omitted leaves the derivation alone. */
 	footnote?: string | null;
-	class?: string;
 }
 
 const {
@@ -42,18 +49,19 @@ const {
 	excludesUncalculated = false,
 	footnote,
 	class: className,
+	...rest
 } = Astro.props;
 
 const note = footnote !== undefined ? footnote : uncalculatedFootnote(rows, excludesUncalculated);
 ---
 
-<div class:list={["sum", className]}>
+<div class:list={["sum", className]} {...rest}>
 	{
 		rows.map((row) => (
 			<div class="row">
-				<span class="label">{row.label}</span>
+				<span class="u-label label">{row.label}</span>
 				{isUncalculated(row.amount) ? (
-					<span class="uncalc">{sumRowText(row)}</span>
+					<span class="u-mono uncalc">{sumRowText(row)}</span>
 				) : (
 					<PriceTag formatted={row.amount.label} size="sm" />
 				)}
@@ -61,10 +69,10 @@ const note = footnote !== undefined ? footnote : uncalculatedFootnote(rows, excl
 		))
 	}
 	<div class="row total">
-		<span class="label">{totalLabel}</span>
+		<span class="u-label label">{totalLabel}</span>
 		{
 			isUncalculated(total) ? (
-				<span class="uncalc">{total.label}</span>
+				<span class="u-mono uncalc">{sumRowText({ label: totalLabel, amount: total })}</span>
 			) : (
 				<PriceTag formatted={total.label} size="lg" />
 			)
@@ -87,26 +95,12 @@ const note = footnote !== undefined ? footnote : uncalculatedFootnote(rows, excl
 		gap: 1.5rem;
 	}
 
-	/* §3's uppercase mono label. */
-	.label {
-		font-family: var(--u-data);
-		font-variation-settings: "wdth" 90;
-		font-size: 0.5625rem;
-		font-weight: 500;
-		letter-spacing: 0.11em;
-		text-transform: uppercase;
-		color: var(--u-mute);
-	}
-
 	/* PROSE, not a figure: mono so it sits in the money column, but lighter,
-	   smaller and muted so no one reads it as an amount. This is the whole of
-	   §7's "never $0.00, never a bare dash, never Free". */
+	   smaller and muted so no one reads it as an amount. This is the visual
+	   half of §7's "never $0.00, never a bare dash, never Free". */
 	.uncalc {
-		font-family: var(--u-data);
-		font-variation-settings: "wdth" 90;
 		font-size: 0.6875rem;
 		font-weight: 400;
-		letter-spacing: -0.04em;
 		color: var(--u-mute);
 		text-align: right;
 	}

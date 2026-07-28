@@ -12,6 +12,7 @@ import { NOT_APPLICABLE_LABEL, NOT_CALCULATED_LABEL, type CheckoutAmountView } f
 import { experimental_AstroContainer as AstroContainer } from "astro/container";
 import { beforeAll, describe, expect, test } from "vitest";
 import Ledger from "../src/components/Ledger.astro";
+import { NOT_APPLIED_LABEL } from "../src/lib/totals.js";
 import Sum from "../src/components/Sum.astro";
 
 let container: AstroContainer;
@@ -28,7 +29,9 @@ const uncomputed = (label: string): CheckoutAmountView => ({ money: null, label 
 
 /** The text of every "this was not calculated" cell in a rendered block. */
 function uncalculatedCells(html: string): string[] {
-	return [...html.matchAll(/<span class="uncalc"[^>]*>([^<]*)<\/span>/g)].map((m) => m[1] ?? "");
+	return [...html.matchAll(/<span class="[^"]*\buncalc\b[^"]*"[^>]*>([^<]*)<\/span>/g)].map(
+		(m) => m[1] ?? "",
+	);
 }
 
 const sum = (props: Record<string, unknown>): Promise<string> =>
@@ -59,6 +62,21 @@ describe("Sum — 'Not calculated' is not zero (§7)", () => {
 
 	test("nowhere does it say 'Free'", async () => {
 		expect((await sum(UNCONFIGURED)).toLowerCase()).not.toContain("free");
+	});
+
+	test("a row with NO fallback still never prints a lone em dash", async () => {
+		// The regression. `fallback` is optional, and every test in this suite
+		// used to supply one — so the default path, which the discount row takes
+		// on every ordinary order, printed exactly the dash §7 forbids.
+		const html = await sum({
+			rows: [
+				{ label: "Subtotal", amount: money("$40.00") },
+				{ label: "Discount", amount: uncomputed(NOT_APPLICABLE_LABEL) },
+			],
+			total: money("$40.00"),
+		});
+		expect(html).not.toMatch(/>\s*—\s*</);
+		expect(html).toContain(NOT_APPLIED_LABEL);
 	});
 
 	test("no bare em dash stands in for an explanation", async () => {
@@ -152,6 +170,13 @@ describe("Ledger — SKU, quantity, money", () => {
 		const html = await ledger({ rows: [{ sku: "URUMI-TEE-01", qty: 3, money: "$75.00" }] });
 		expect(html).toContain("u-sr-only");
 		expect(html).toContain("Quantity");
+	});
+
+	test("both figures are named — position is all that distinguishes them visually", async () => {
+		const html = await ledger({ rows: [{ sku: "URUMI-TEE-01", qty: 3, money: "$75.00" }] });
+		expect(html).toContain("Quantity");
+		expect(html).toContain("Line total");
+		expect(html.match(/u-sr-only/g) ?? []).toHaveLength(2);
 	});
 
 	test("a line the store cannot price says so, and is set as prose", async () => {

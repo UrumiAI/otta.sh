@@ -11,7 +11,23 @@
  * `totalExcludesUncalculated` is set, the line under the total says WHICH parts
  * are missing — "this total may be incomplete" tells a shopper nothing.
  */
-import { NOT_CALCULATED_LABEL, type CheckoutAmountView } from "@urumi/plugin";
+import { NOT_APPLICABLE_LABEL, NOT_CALCULATED_LABEL, type CheckoutAmountView } from "@urumi/plugin";
+
+/**
+ * What a not-applicable row says when the page supplies nothing better.
+ *
+ * The view model's `NOT_APPLICABLE_LABEL` is a bare "—", and §7 forbids
+ * exactly that: on its own a dash is indistinguishable from an outage, from a
+ * free item, and from a row this store cannot price. The page usually knows
+ * why the row is empty and passes a `fallback` ("No coupon applied"); this is
+ * what prints when it does not.
+ *
+ * It is a DEFAULT rather than an optional improvement on purpose. The failure
+ * mode being guarded against is someone omitting an optional prop — which is
+ * how the discount row, the one that hits this path on every ordinary order,
+ * shipped a bare dash in the first place.
+ */
+export const NOT_APPLIED_LABEL = "Not applied";
 
 export interface SumRow {
 	/** The row's name — "Subtotal", "Shipping", "Tax". */
@@ -20,13 +36,11 @@ export interface SumRow {
 	 *  never builds a money string (§7). */
 	amount: CheckoutAmountView;
 	/**
-	 * Prose to print INSTEAD of `amount.label` when nothing was computed.
+	 * Prose to print INSTEAD of `amount.label` when nothing was computed, for a
+	 * page that knows WHY the row is empty ("No coupon applied").
 	 *
-	 * This exists for one label: the view model's `NOT_APPLICABLE_LABEL` is a
-	 * bare "—", and §7 forbids a bare em dash — on its own it is
-	 * indistinguishable from an outage, from a free item, and from a row this
-	 * store cannot price. The page that knows why the row is empty supplies the
-	 * sentence ("No coupon applied").
+	 * Optional, and safe to omit: a bare "—" can never reach the screen either
+	 * way — see `NOT_APPLIED_LABEL`.
 	 */
 	fallback?: string;
 }
@@ -37,9 +51,17 @@ export function isUncalculated(amount: CheckoutAmountView): boolean {
 	return amount.money === null;
 }
 
-/** The text a totals row prints — pre-formatted money, or honest prose. */
+/**
+ * The text a totals row prints — pre-formatted money, or honest prose.
+ *
+ * The `NOT_APPLICABLE_LABEL` branch is the §7 guarantee: the raw label is
+ * never returned for it, with or without a `fallback`. The constant is
+ * imported rather than string-matched against a literal, so if the plugin ever
+ * changes what "not applicable" looks like this keeps working.
+ */
 export function sumRowText(row: SumRow): string {
 	if (!isUncalculated(row.amount)) return row.amount.label;
+	if (row.amount.label === NOT_APPLICABLE_LABEL) return row.fallback ?? NOT_APPLIED_LABEL;
 	return row.fallback ?? row.amount.label;
 }
 
@@ -58,11 +80,21 @@ function uncalculatedNames(rows: SumRow[]): string[] {
  * `excludesUncalculated` is the view model's own `totalExcludesUncalculated`
  * flag and has the last word — the theme reports what the pricing pipeline
  * says, it does not re-derive it from the rows it happens to have been handed.
+ *
+ * Which leaves one hole worth closing: the flag can be set while none of the
+ * rows PASSED IN carries the not-calculated label — a page that renders a
+ * shortened totals block, or a pipeline that grows a component this theme does
+ * not list yet. Naming nothing would be right; saying nothing would not, since
+ * the flag means the total is incomplete and a shopper is about to act on it.
+ * So that case gets a footnote that admits the gap without inventing a name
+ * for it.
  */
 export function uncalculatedFootnote(rows: SumRow[], excludesUncalculated: boolean): string | null {
 	if (!excludesUncalculated) return null;
 	const names = uncalculatedNames(rows);
-	if (names.length === 0) return null;
+	if (names.length === 0) {
+		return "This total doesn't include everything yet — some amounts aren't calculated on this store.";
+	}
 	const list =
 		names.length === 1
 			? names[0]

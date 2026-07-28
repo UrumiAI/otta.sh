@@ -16,11 +16,14 @@ beforeAll(async () => {
 const render = (props: Record<string, unknown>): Promise<string> =>
 	container.renderToString(MediaPanel, { props });
 
+/** The coil's `d` attribute out of a rendered panel. */
+const coilPathOf = (html: string): string | undefined => /d="([^"]+)"/.exec(html)?.[1];
+
 describe("MediaPanel — the coil", () => {
 	test("draws a generated coil on the neutral panel when there is no image", async () => {
 		const html = await render({ slug: "urumi-mug" });
 		expect(html).toContain("<svg");
-		expect(html).toContain('fill="var(--u-panel)"');
+		expect(html).toContain('class="panel"');
 		expect(html).toMatch(/d="M [\d.\-\sLZ]+"/);
 	});
 
@@ -40,9 +43,18 @@ describe("MediaPanel — the coil", () => {
 
 	test("the tint is a token, never a raw colour", async () => {
 		const html = await render({ slug: "urumi-mug" });
-		expect(html).toMatch(/fill="var\(--u-tint-(violet|straw|blue)\)"/);
-		expect(html).toContain('opacity="var(--u-coil-a)"');
-		expect(html).not.toMatch(/fill="#[0-9a-f]/i);
+		expect(html).toMatch(/--coil-tint: var\(--u-tint-(violet|straw|blue)\)/);
+		expect(html).not.toMatch(/#[0-9a-f]{3,8}\b/i);
+	});
+
+	test("fill and opacity come from CSS, NOT from an SVG presentation attribute", async () => {
+		// `fill="var(--u-tint-straw)"` has a long history of not resolving in
+		// WebKit, and `fill` then falls back to its initial value — BLACK. The
+		// failure mode is every card on the page rendering as a black square.
+		const html = await render({ slug: "urumi-mug" });
+		expect(html).not.toMatch(/fill="var\(/);
+		expect(html).not.toMatch(/opacity="var\(/);
+		expect(html).toContain('class="coil"');
 	});
 
 	test("is flat: no animation, no script, no interactivity (§5)", async () => {
@@ -73,6 +85,54 @@ describe("MediaPanel — a real image replaces the coil entirely (§5)", () => {
 		const html = await render({ slug: "urumi-mug", image: "/media/mug.jpg" });
 		expect(html).toContain('loading="lazy"');
 		expect(html).toContain('decoding="async"');
+	});
+});
+
+describe("MediaPanel — the tint cycles by position (§5)", () => {
+	test("an index takes the tint off the position, so a short catalog shows all three", async () => {
+		const tints = await Promise.all(
+			[0, 1, 2].map(async (index) => {
+				const html = await render({ slug: `p-${index}`, index });
+				return /--coil-tint: var\((--u-tint-\w+)\)/.exec(html)?.[1];
+			}),
+		);
+		expect(new Set(tints).size).toBe(3);
+	});
+
+	test("the same product keeps its DRAWING wherever it lands in the list", async () => {
+		const first = coilPathOf(await render({ slug: "urumi-mug", index: 0 }));
+		const third = coilPathOf(await render({ slug: "urumi-mug", index: 2 }));
+		expect(first).toBe(third);
+	});
+
+	test("with no index the tint still comes from the slug — a PDP has no list", async () => {
+		expect(await render({ slug: "urumi-mug" })).toMatch(/--coil-tint: var\(--u-tint-\w+\)/);
+	});
+});
+
+describe("MediaPanel — dimming is a PROP, not a parent's CSS", () => {
+	test("dimmed marks the panel itself", async () => {
+		// A parent cannot reach this element with a scoped rule: it carries
+		// MediaPanel's hash, not the parent's.
+		expect(await render({ slug: "x", dimmed: true })).toContain("dimmed");
+	});
+
+	test("undimmed by default", async () => {
+		expect(await render({ slug: "x" })).not.toContain("dimmed");
+	});
+
+	test("a dimmed product with a photograph dims the photograph too", async () => {
+		const html = await render({ slug: "x", image: "/m.jpg", dimmed: true });
+		expect(html).toContain("dimmed");
+		expect(html).toContain("/m.jpg");
+	});
+});
+
+describe("MediaPanel — attributes pass through", () => {
+	test("a caller can attach an id or a data attribute to the root", async () => {
+		const html = await render({ slug: "x", id: "hero-media", "data-testid": "media" });
+		expect(html).toContain('id="hero-media"');
+		expect(html).toContain('data-testid="media"');
 	});
 });
 

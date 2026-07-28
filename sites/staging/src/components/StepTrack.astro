@@ -9,8 +9,13 @@
  * "straw is a fitting" rule.
  *
  * An ordered list rather than the mockup's row of spans: the sequence is the
- * meaning, and `aria-current="step"` is how a screen reader gets it.
+ * meaning, and `aria-current="step"` is how a screen reader gets it. The
+ * completed steps say so in words as well as in ink — colour and fill are the
+ * whole visual difference between done and not-yet, and neither survives being
+ * read aloud.
  */
+import type { HTMLAttributes } from "astro/types";
+
 export const CHECKOUT_STEPS = [
 	{ id: "cart", label: "Cart" },
 	{ id: "details", label: "Details" },
@@ -20,16 +25,18 @@ export const CHECKOUT_STEPS = [
 
 export type CheckoutStep = (typeof CHECKOUT_STEPS)[number]["id"];
 
-interface Props {
+interface Props extends HTMLAttributes<"ol"> {
 	current: CheckoutStep;
-	class?: string;
 }
 
-const { current, class: className } = Astro.props;
+const { current, class: className, ...rest } = Astro.props;
 const currentIndex = CHECKOUT_STEPS.findIndex((step) => step.id === current);
 ---
 
-<ol class:list={["steps", className]} aria-label="Checkout progress">
+{/* `role="list"` is redundant markup that is not redundant in practice:
+    WebKit drops list semantics from any list styled `list-style: none`, and
+    this one is. Without it VoiceOver announces four loose spans. */}
+<ol class:list={["steps", className]} role="list" aria-label="Checkout progress" {...rest}>
 	{
 		CHECKOUT_STEPS.map((step, index) => (
 			<li
@@ -37,7 +44,8 @@ const currentIndex = CHECKOUT_STEPS.findIndex((step) => step.id === current);
 				aria-current={index === currentIndex ? "step" : undefined}
 			>
 				<span class="dot" aria-hidden="true" />
-				<span class="label">{step.label}</span>
+				<span class="u-label label">{step.label}</span>
+				{index < currentIndex && <span class="u-sr-only">, completed</span>}
 			</li>
 		))
 	}
@@ -84,13 +92,6 @@ const currentIndex = CHECKOUT_STEPS.findIndex((step) => step.id === current);
 	}
 
 	.label {
-		font-family: var(--u-data);
-		font-variation-settings: "wdth" 90;
-		font-size: 0.5625rem;
-		font-weight: 500;
-		letter-spacing: 0.11em;
-		text-transform: uppercase;
-		color: var(--u-mute);
 		white-space: nowrap;
 	}
 

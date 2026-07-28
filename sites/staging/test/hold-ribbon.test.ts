@@ -19,7 +19,12 @@ import { fileURLToPath } from "node:url";
 import { experimental_AstroContainer as AstroContainer } from "astro/container";
 import { beforeAll, describe, expect, test } from "vitest";
 import HoldRibbon from "../src/components/HoldRibbon.astro";
-import { HOLD_LABELS, HOLD_RELEASED_NEXT_STEP } from "../src/lib/hold.js";
+import {
+	HOLD_EXPIRING_SECONDS,
+	HOLD_LABELS,
+	HOLD_RELEASED_NEXT_STEP,
+	HOLD_WINDOW_SECONDS,
+} from "../src/lib/hold.js";
 
 let container: AstroContainer;
 
@@ -56,8 +61,8 @@ describe("HoldRibbon — the three states", () => {
 		expect(fillPercent(html)).toBeLessThanOrEqual(100);
 	});
 
-	test("expiring: under a minute it changes what it calls itself", async () => {
-		const html = await render({ expiresAt: inSeconds(45) });
+	test("expiring: under the boundary it changes what it calls itself", async () => {
+		const html = await render({ expiresAt: inSeconds(HOLD_EXPIRING_SECONDS - 15) });
 		expect(html).toContain('data-state="expiring"');
 		expect(html).toContain(HOLD_LABELS.expiring);
 		expect(html).not.toContain(HOLD_LABELS.held);
@@ -112,21 +117,50 @@ describe("HoldRibbon — motion, and the reduced-motion contract (§6, §11)", (
 		expect(html).toContain('data-window="900"');
 	});
 
-	test("defaults the window to the service's ten-minute hold", async () => {
-		expect(await render({ expiresAt: inSeconds(300) })).toContain('data-window="600"');
+	test("defaults the window to the service's hold TTL", async () => {
+		expect(await render({ expiresAt: inSeconds(300) })).toContain(
+			`data-window="${HOLD_WINDOW_SECONDS}"`,
+		);
+	});
+
+	test("the fill is rounded, not a float with sixteen digits in the markup", async () => {
+		const raw = /--pct: ([\d.]+)%/.exec(await render({ expiresAt: inSeconds(299) }))?.[1] ?? "";
+		expect(raw).toMatch(/^\d+\.\d$/);
 	});
 });
 
 describe("HoldRibbon — the no-JavaScript value (§6)", () => {
 	test("the mono slot ships the ABSOLUTE expiry, not a countdown that goes stale", async () => {
-		const html = await render({ expiresAt: "2026-07-28T14:10:00.000Z" });
-		expect(html).toContain("14:10 UTC");
+		const html = await render({ expiresAt: "2026-07-28T14:10:32.000Z" });
+		expect(html).toContain("14:10:32 UTC");
 		// A frozen mm:ss would be a lie one second after it was printed.
 		expect(html).not.toMatch(/data-hold-clock[^>]*>\s*\d\d:\d\d\s*</);
 	});
 
 	test("the zone is named, because the server cannot know the shopper's", async () => {
-		expect(await render({ expiresAt: "2026-07-28T04:05:00.000Z" })).toContain("04:05 UTC");
+		expect(await render({ expiresAt: "2026-07-28T04:05:06.000Z" })).toContain("04:05:06 UTC");
+	});
+});
+
+describe("HoldRibbon — what a screen reader hears", () => {
+	test("the countdown is a timer, which is an aria-live=off region by definition", async () => {
+		const html = await render({ expiresAt: inSeconds(300) });
+		expect(html).toContain('role="timer"');
+	});
+
+	test("the CLOCK is never a live region — once a second is not an announcement", async () => {
+		const html = await render({ expiresAt: inSeconds(300) });
+		expect(html).not.toMatch(/data-hold-clock[^>]*aria-live/);
+	});
+
+	test("a separate polite region carries the state change, and starts empty", async () => {
+		const html = await render({ expiresAt: inSeconds(300) });
+		expect(html).toMatch(/aria-live="polite"/);
+		expect(html).toContain("data-hold-announce");
+		expect(html).toContain("u-sr-only");
+		// Empty on first render: the server-rendered state is already in the
+		// label beside it, so announcing it on load would be a duplicate.
+		expect(html).toMatch(/data-hold-announce[^>]*aria-live="polite"[^>]*>\s*<\/span>/);
 	});
 });
 
@@ -177,9 +211,22 @@ describe("HoldRibbon — the client script", () => {
 		}
 	});
 
-	test("it flips at the same sixty seconds the server does", () => {
-		expect(script).toMatch(/left <= 60/);
-		expect(script).toMatch(/left <= 0/);
+	test("it flips at the same boundary the server does", () => {
+		expect(script).toContain(`left <= ${HOLD_EXPIRING_SECONDS}`);
+		expect(script).toContain("left <= 0");
+	});
+
+	test("it stops once every hold on the page has lapsed", () => {
+		// A once-a-second timer that outlives everything it was counting keeps
+		// a tab awake for nothing.
+		expect(script).toContain("clearInterval(timer)");
+	});
+
+	test("it announces the STATE, never the tick", () => {
+		// A live region on the clock would announce six hundred times in a
+		// ten-minute hold. The transition is what a shopper needs told.
+		expect(script).toContain("state !== r.state");
+		expect(script).toMatch(/announce\.textContent = LABELS\[state\]/);
 	});
 
 	test("it clamps the fill rather than overflowing the track", () => {
@@ -193,7 +240,19 @@ describe("HoldRibbon — the client script", () => {
 	});
 
 	test("it renders the first frame immediately, before waiting a second", () => {
-		expect(script).toMatch(/tick\(\);\s*\n\s*setInterval/);
+		// A bare top-level call, not only the one inside setInterval — otherwise
+		// the server's absolute-expiry text sits there for a second before the
+		// countdown appears.
+		expect(script).toMatch(/^\s*tick\(\);\s*$/m);
+	});
+
+	test("the timer exists before the first tick, which may need to clear it", () => {
+		// `tick()` calls `clearInterval(timer)` when everything has lapsed, so
+		// running it ahead of the assignment would throw on a page whose holds
+		// are all already released.
+		expect(script.indexOf("const timer = setInterval")).toBeLessThan(
+			script.search(/^\s*tick\(\);\s*$/m),
+		);
 	});
 
 	test("it is a bundled module script, not an inline one — one copy per page", () => {

@@ -18,25 +18,73 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
-const COMPONENTS_DIR = path.resolve(
-	path.dirname(fileURLToPath(import.meta.url)),
-	"../src/components",
-);
+const SRC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src");
+const COMPONENTS_DIR = path.join(SRC_DIR, "components");
 
 const files = readdirSync(COMPONENTS_DIR)
 	.filter((name) => name.endsWith(".astro"))
 	.toSorted();
 
+function source(name: string): string {
+	return readFileSync(path.join(COMPONENTS_DIR, name), "utf8");
+}
+
 /** Just the `<style>` blocks of a component. */
 function styles(name: string): string {
-	const source = readFileSync(path.join(COMPONENTS_DIR, name), "utf8");
-	return [...source.matchAll(/<style>([\s\S]*?)<\/style>/g)].map((m) => m[1] ?? "").join("\n");
+	return [...source(name).matchAll(/<style>([\s\S]*?)<\/style>/g)]
+		.map((m) => m[1] ?? "")
+		.join("\n");
 }
 
 /** The declaration bodies only — comments stripped, so prose about a colour is
  *  not mistaken for a colour. */
 function declarations(name: string): string {
 	return styles(name).replace(/\/\*[\s\S]*?\*\//g, "");
+}
+
+/** The template — everything after the frontmatter fence, minus the styles. */
+function markup(name: string): string {
+	const text = source(name);
+	const body = text.slice(text.indexOf("\n---", 3) + 4);
+	return body.replace(/<style>[\s\S]*?<\/style>/g, "").replace(/<script>[\s\S]*?<\/script>/g, "");
+}
+
+/** The literal class names inside one `class=` / `class:list=` attribute. */
+function classesIn(attribute: string): string[] {
+	const quoted = attribute.startsWith('"')
+		? [attribute.slice(1, -1)]
+		: [...attribute.matchAll(/"([^"]*)"/g)].map((m) => m[1] ?? "");
+	return quoted.flatMap((literal) => literal.split(/\s+/).filter(Boolean));
+}
+
+const CLASS_ATTRIBUTE = /class(?::list)?=("[^"]*"|\{[^}]*\})/g;
+
+/** Every literal class name this component writes into its own markup. */
+function classNames(name: string): string[] {
+	return [...markup(name).matchAll(CLASS_ATTRIBUTE)].flatMap(([, value = ""]) => classesIn(value));
+}
+
+/**
+ * Class names this component hands to a CHILD COMPONENT rather than putting on
+ * an element of its own.
+ *
+ * "Child component" means an IMPORTED `.astro` file, which is the thing that
+ * gets its own scope hash. A capitalised tag is not enough on its own:
+ * `const Heading = level` is how a heading level becomes a prop, and
+ * `<Heading class="headline">` renders a plain `<h1>` inside this component's
+ * own template, correctly scoped.
+ */
+function classesPassedToChildren(name: string): string[] {
+	const imported = [
+		...source(name).matchAll(/^import\s+(\w+)\s+from\s+["'][^"']+\.astro["']/gm),
+	].map((m) => m[1]);
+	if (imported.length === 0) return [];
+	const tags = markup(name).matchAll(/<([A-Z]\w*)\b([^>]*?)\/?>/g);
+	return [...tags]
+		.filter(([, tag = ""]) => imported.includes(tag))
+		.flatMap(([, , attributes = ""]) =>
+			[...attributes.matchAll(CLASS_ATTRIBUTE)].flatMap(([, value = ""]) => classesIn(value)),
+		);
 }
 
 describe("the component set §4 asks for", () => {
@@ -100,6 +148,53 @@ describe("every component reads the token layer and writes nothing of its own", 
 		// The only legitimate use in this theme is tokens.css defending the
 		// reduced-motion override against later authors.
 		expect(declarations(name)).not.toContain("!important");
+	});
+
+	test.each(files)("%s takes the shared data-face recipes rather than repeating them", (name) => {
+		// §3's mono and uppercase-label tuples live once, in tokens.css, as
+		// `.u-mono` and `.u-label`. Repeated per component they drift — two of
+		// the first six copies had already picked up a different tracking.
+		const css = declarations(name);
+		expect(css, "re-declares the data face").not.toContain("var(--u-data)");
+		expect(css, "re-declares the data face's width axis").not.toContain('"wdth" 90');
+		expect(css, "re-declares the label's tracking").not.toContain("letter-spacing: 0.11em");
+		expect(css, "re-declares the mono tracking").not.toContain("letter-spacing: -0.045em");
+		expect(css, "re-declares tabular figures").not.toContain("font-variant-numeric");
+	});
+});
+
+describe("component boundaries", () => {
+	test.each(files)("%s does not style THROUGH a child component (§ scoping)", (name) => {
+		// Astro scopes each component's CSS to its own hash, so a rule like
+		// `.card[cid-parent] .card-media[cid-parent]` can never match a child
+		// component's root — that element carries the CHILD's hash. The rule
+		// compiles, ships, and silently does nothing, which is how the sold-out
+		// dimming was dead on arrival. Cross-component state travels as a PROP.
+		const css = declarations(name);
+		for (const cls of classesPassedToChildren(name)) {
+			expect(css, `${name} styles .${cls} on a child component`).not.toContain(`.${cls}`);
+		}
+	});
+
+	test.each(files)("%s claims no class name that a global stylesheet owns", (name) => {
+		// `legacy-bridge.css` is UNSCOPED and transitional. Its `.notice` rule
+		// pins a hard-coded near-black — correct for the pale panel the
+		// unmigrated pages still paint, wrong for anything else, and it wins
+		// over nothing at all in a component that shares the name.
+		const bridge = readFileSync(path.join(SRC_DIR, "styles/legacy-bridge.css"), "utf8").replace(
+			/\/\*[\s\S]*?\*\//g,
+			"",
+		);
+		const owned = new Set([...bridge.matchAll(/\.([\w-]+)\s*\{/g)].map((m) => m[1]));
+		expect(
+			owned.size,
+			"legacy-bridge.css declares no class at all — check the parse",
+		).toBeGreaterThan(0);
+		for (const cls of classNames(name)) {
+			expect(owned.has(cls), `${name} uses .${cls}, which legacy-bridge.css also styles`).toBe(
+				false,
+			);
+		}
 	});
 });
 

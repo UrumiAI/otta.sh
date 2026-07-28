@@ -12,7 +12,12 @@
  */
 import { NOT_APPLICABLE_LABEL, NOT_CALCULATED_LABEL, type CheckoutAmountView } from "@urumi/plugin";
 import { describe, expect, test } from "vitest";
-import { isUncalculated, sumRowText, uncalculatedFootnote } from "../src/lib/totals.js";
+import {
+	NOT_APPLIED_LABEL,
+	isUncalculated,
+	sumRowText,
+	uncalculatedFootnote,
+} from "../src/lib/totals.js";
 
 const money = (formatted: string): CheckoutAmountView => ({
 	money: { amount: 4000, currency: "USD", formatted },
@@ -42,6 +47,27 @@ describe("sumRowText — what a row actually prints", () => {
 	test("an uncomputed row prints its honest label", () => {
 		expect(sumRowText({ label: "Shipping", amount: uncomputed(NOT_CALCULATED_LABEL) })).toBe(
 			"Not calculated",
+		);
+	});
+
+	test("a bare em dash NEVER reaches the screen, even with no fallback supplied", () => {
+		// The regression this exists for. `fallback` is optional; the discount
+		// row hits this path on every ordinary order; and the earlier
+		// implementation returned `row.amount.label` when the prop was omitted,
+		// printing exactly the lone dash §7 forbids. Every test in the suite
+		// happened to supply a fallback, so none of them saw it.
+		const text = sumRowText({ label: "Discount", amount: uncomputed(NOT_APPLICABLE_LABEL) });
+		expect(text).not.toBe(NOT_APPLICABLE_LABEL);
+		expect(text).toBe(NOT_APPLIED_LABEL);
+		expect(text.trim().length).toBeGreaterThan(1);
+	});
+
+	test("the default is keyed on the plugin's CONSTANT, not on a hard-coded dash", () => {
+		// If the plugin ever changes what "not applicable" looks like, this has
+		// to keep working rather than silently start echoing the new label.
+		expect(NOT_APPLICABLE_LABEL).toBe("—");
+		expect(sumRowText({ label: "Discount", amount: uncomputed(NOT_APPLICABLE_LABEL) })).toBe(
+			NOT_APPLIED_LABEL,
 		);
 	});
 
@@ -104,10 +130,25 @@ describe("uncalculatedFootnote — the footnote NAMES what is missing", () => {
 		expect(note).not.toContain("tax");
 	});
 
-	test("a row that is merely not APPLICABLE is not called uncalculated", () => {
-		// "no coupon on this order" is not "this store never set discounts up".
-		const note = uncalculatedFootnote([subtotal, discount], true);
-		expect(note).toBeNull();
+	test("a row that is merely not APPLICABLE is never NAMED as uncalculated", () => {
+		// "no coupon on this order" is not "this store never set discounts up",
+		// so the footnote must not blame the discount row. It still admits the
+		// gap the flag reports — it just declines to invent a name for it.
+		const note = uncalculatedFootnote([subtotal, discount], true) ?? "";
+		expect(note).not.toContain("discount");
+		expect(note).toMatch(/doesn.t include/);
+	});
+
+	test("the flag with no named component still admits the gap", () => {
+		// `totalExcludesUncalculated` can be set while none of the rows PASSED IN
+		// carries the not-calculated label — a shortened totals block, or a
+		// pipeline component this theme does not list yet. Naming nothing is
+		// right; saying nothing is not, because a shopper is about to act on an
+		// incomplete total.
+		const note = uncalculatedFootnote([subtotal], true);
+		expect(note).not.toBeNull();
+		expect(note).toMatch(/doesn.t include/);
+		expect(note).not.toMatch(/undefined|null/);
 	});
 
 	test("no footnote when the total is complete", () => {

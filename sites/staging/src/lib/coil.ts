@@ -131,8 +131,38 @@ export function coilPath(geometry: CoilGeometry): string {
 	return `M ${outer.join(" L ")} L ${inner.join(" L ")} Z`;
 }
 
-/** The one call a component makes: slug → the drawing and its tint. */
-export function buildCoil(slug: string): Coil {
+/**
+ * Tint by POSITION rather than by hash.
+ *
+ * The hash gives an even spread over many products and a lumpy one over few,
+ * and few is the case that actually ships: the three-product seed draws no
+ * straw at all, and a nine-slug strip drew no violet. On a page that shows the
+ * whole catalog at once that reads as a bug rather than as variety, because
+ * the eye compares the coils to each other rather than to a distribution. So
+ * where a caller knows a product's position in the rendered list it passes it,
+ * and the tints cycle: every three products show all three.
+ *
+ * GEOMETRY still keys off the slug, deliberately — position is a property of
+ * one page's ordering, and a product must not change shape because something
+ * above it sold out.
+ */
+export function coilTint(index: number): CoilTint {
+	// `%` alone would fall off the front of the array for a negative index.
+	const wrapped = ((index % COIL_TINTS.length) + COIL_TINTS.length) % COIL_TINTS.length;
+	return COIL_TINTS[wrapped] ?? COIL_TINTS[0];
+}
+
+/**
+ * The one call a component makes: slug → the drawing and its tint.
+ *
+ * `index` is the product's position in the list being rendered. Omit it — on a
+ * PDP, on a cart line, anywhere there is no list — and the tint falls back to
+ * the slug's own hash, which is at least stable per product.
+ */
+export function buildCoil(slug: string, index?: number): Coil {
 	const geometry = coilGeometry(slug);
-	return { path: coilPath(geometry), tint: geometry.tint };
+	return {
+		path: coilPath(geometry),
+		tint: index === undefined ? geometry.tint : coilTint(index),
+	};
 }

@@ -10,20 +10,26 @@
  *
  * The availability token comes verbatim off the product view model
  * (`AvailabilityToken`), so the theme localizes and the plugin decides.
+ *
+ * DEVIATION from the mockup: `.s-stock` there tracks at 0.09em while `.s-label`
+ * tracks at 0.11em. §3 states one figure for uppercase mono labels — 0.11em —
+ * and this is one, so it takes the shared `.u-label` recipe. The mockup wins on
+ * appearance where the two disagree; a tracking value named in the spec is a
+ * rule, and one magic number fewer is worth the hair of difference.
  */
 import type { AvailabilityToken } from "@urumi/plugin";
+import type { HTMLAttributes } from "astro/types";
 
-interface Props {
+interface Props extends HTMLAttributes<"span"> {
 	/** The view model's own token. `null` — not purchasable at all — renders
 	 *  nothing: there is no stock fact to state. */
 	availability: AvailabilityToken | null;
 	/** Overrides the default wording, for a store that shows counts
 	 *  ("3 left"). The state still decides the rule. */
 	label?: string;
-	class?: string;
 }
 
-const { availability, label, class: className } = Astro.props;
+const { availability, label, class: className, ...rest } = Astro.props;
 
 const state = availability === "in_stock" ? "in" : "out";
 const text = label ?? (availability === "in_stock" ? "In stock" : "Sold out");
@@ -31,25 +37,17 @@ const text = label ?? (availability === "in_stock" ? "In stock" : "Sold out");
 
 {
 	availability !== null && (
-		<span class:list={["stock", className]} data-state={state}>
+		<span class:list={["u-label", "stock", className]} data-state={state} {...rest}>
 			{text}
 		</span>
 	)
 }
 
 <style>
-	/* §3: the uppercase mono label — 0.5625rem, 500, 0.11em, in mute. */
 	.stock {
 		display: inline-flex;
 		align-items: center;
 		gap: 0.375rem;
-		font-family: var(--u-data);
-		font-variation-settings: "wdth" 90;
-		font-size: 0.5625rem;
-		font-weight: 500;
-		letter-spacing: 0.09em;
-		text-transform: uppercase;
-		color: var(--u-mute);
 	}
 
 	/* The rule itself. `currentColor` so it can never drift from its label. */
