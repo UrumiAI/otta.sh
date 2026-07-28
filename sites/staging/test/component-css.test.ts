@@ -17,6 +17,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
+import { hasExecutableScript } from "./astro-source.js";
 
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
 const SRC_DIR = path.resolve(TEST_DIR, "../src");
@@ -93,7 +94,7 @@ function classesPassedToChildren(text: string): string[] {
 		);
 }
 
-describe("the component set §4 asks for", () => {
+describe("the component set the spec asks for (§4's table, plus §6's poll ribbon)", () => {
 	test.each([
 		"HoldRibbon.astro",
 		"Ledger.astro",
@@ -254,9 +255,12 @@ describe("the motion budget (§2, §6, §11)", () => {
 	test("only the hold ribbon ships client JavaScript", () => {
 		// "One countdown, one hover" is the whole budget. A component growing a
 		// script is a decision, not a detail.
-		const withScripts = files.filter((name) =>
-			readFileSync(path.join(COMPONENTS_DIR, name), "utf8").includes("<script"),
-		);
+		//
+		// Judged on the TEMPLATE (`hasExecutableScript`, shared with the ADR-0012
+		// fence), not on the file: a component must be able to say in prose that
+		// it deliberately has no script without that sentence failing the test
+		// which guarantees it.
+		const withScripts = files.filter((name) => hasExecutableScript(source(name)));
 		expect(withScripts).toEqual(["HoldRibbon.astro"]);
 	});
 

@@ -41,9 +41,15 @@ const orderUrl = new URL(`/orders/${encodeURIComponent(stash.orderId)}`, Astro.u
 const orderPath = `/orders/${encodeURIComponent(stash.orderId)}`;
 ---
 
-{/* No `currency`: this page reads no money. The stash carries an order id and a
-    client secret and nothing money-shaped, which is also why the button below
-    still says "Pay now" rather than "Pay $40.00" (§7). */}
+{/* No `currency`: this page reads no money — the stash carries an order id and a
+    client secret and nothing money-shaped.
+
+    DEVIATION FROM §7, user-gated and deliberate: §7 says "the pay button carries
+    the amount: `Pay $40.00`, not `Pay now`", and this button says "Pay now".
+    There is no amount on this page to put on it, and getting one means either
+    widening the stash at place-time or making a commerce read here — both in the
+    payment path, so both are the user's call, not this increment's. Deferred,
+    and recorded rather than quietly rationalised. */}
 <Base title="Payment">
 	{/* Wrapped rather than given a class: a page's scoped selector cannot reach a
 	    component's root (src/lib/rest-props.ts), so the spacing around one lives
@@ -154,7 +160,29 @@ const orderPath = `/orders/${encodeURIComponent(stash.orderId)}`;
 						 * the file handoff, prove it with a network trace from the STRIPE
 						 * FRAME — the rendering looks the same either way.
 						 */
-						var MONO_TAIL = "ui-monospace, SFMono-Regular, Menlo, monospace";
+						/**
+						 * The data face, for the eyebrow labels — its NAME from the token
+						 * layer, never written down here (§2), and a monospace generic
+						 * behind it.
+						 *
+						 * Only the first family, and this is measured, not fastidious. The
+						 * token resolves to
+						 * `"Martian Mono-<hash>", "Martian Mono-<hash> fallback: Arial",
+						 * sans-serif` — Astro's build-hashed face, its metric-adjusted
+						 * local alias, and a generic Astro appends. Handing that over
+						 * whole puts the labels in Stripe's default SANS: neither named
+						 * face can load inside a cross-origin frame, a generic always
+						 * resolves, and the one sitting third in that list is `sans-serif`
+						 * (the alias's name also carries a colon, which a validator is
+						 * entitled to reject outright). Keeping the head and choosing the
+						 * tail is what makes the fallback land on a monospace — and leaves
+						 * the real face named, for the day these are served with CORS over
+						 * HTTPS and it can actually load.
+						 */
+						function monoStack() {
+							var named = token("--u-data").split(",")[0].trim();
+							return named ? named + ", ui-monospace, monospace" : "ui-monospace, monospace";
+						}
 
 						/**
 						 * The appearance, or `undefined` if it cannot be built honestly.
@@ -207,7 +235,7 @@ const orderPath = `/orders/${encodeURIComponent(stash.orderId)}`;
 									// The uppercase mono eyebrow, same recipe as `.u-label`.
 									".Label": {
 										color: mute,
-										fontFamily: MONO_TAIL,
+										fontFamily: monoStack(),
 										fontSize: "9px",
 										fontWeight: "500",
 										letterSpacing: "0.11em",
@@ -266,15 +294,51 @@ const orderPath = `/orders/${encodeURIComponent(stash.orderId)}`;
 							}
 						}
 
-						var stripe = Stripe(mount.dataset.publishableKey);
+						// Stripe.js validates the key SYNCHRONOUSLY and throws on a
+						// malformed one — a secret key pasted into the publishable slot is
+						// the realistic way that happens. Unguarded, the throw takes the
+						// rest of this function with it, including the submit binding, and
+						// "Pay now" becomes a native submit that navigates nowhere useful
+						// with nothing said.
+						var stripe;
+						try {
+							stripe = Stripe(mount.dataset.publishableKey);
+						} catch (err) {
+							fail("We couldn't reach our payment provider. Refresh to try again.");
+							return;
+						}
 
-						/** Mount the Payment Element, themed or not. Throws on a genuinely
-						 *  unusable client secret — which is the only thing the buyer is
-						 *  ever told about. */
+						/**
+						 * Mount the Payment Element, themed or not. Throws on a genuinely
+						 * unusable client secret — which is the only thing the buyer is
+						 * ever told about.
+						 *
+						 * The created element is kept so a failed attempt can be torn down.
+						 * `create()` can succeed and `mount()` still throw, which leaves a
+						 * live element bound to an Elements group nobody holds any more:
+						 * its iframe stays in the DOM with its listeners attached, and
+						 * clearing the node underneath it only detaches the frame.
+						 */
+						var pending = null;
 						function mountElements(options) {
 							var made = stripe.elements(options);
-							made.create("payment").mount("#payment-element");
+							pending = made.create("payment");
+							pending.mount("#payment-element");
 							return made;
+						}
+
+						/** Undo a half-finished mount, so the retry starts from an empty node
+						 *  and nothing is left listening to a detached frame. */
+						function discardMount() {
+							if (pending !== null) {
+								try {
+									pending.destroy();
+								} catch (err) {
+									// Already gone, or never fully created. Either is fine.
+								}
+								pending = null;
+							}
+							mount.textContent = "";
 						}
 
 						var elements = null;
@@ -293,9 +357,10 @@ const orderPath = `/orders/${encodeURIComponent(stash.orderId)}`;
 							elements = null;
 							if (themed !== undefined) {
 								try {
-									mount.textContent = "";
+									discardMount();
 									elements = mountElements({ clientSecret: clientSecret });
 								} catch (retryErr) {
+									discardMount();
 									elements = null;
 								}
 							}
@@ -331,11 +396,16 @@ const orderPath = `/orders/${encodeURIComponent(stash.orderId)}`;
 												"That payment could not be completed. No charge has been made.",
 										);
 										submit.disabled = false;
+										// `retheme` stands down while the submit is disabled, so a
+										// palette that changed during the confirm was skipped.
+										// Re-enabling the button is the moment it can catch up.
+										retheme();
 									}
 								})
 								.catch(function () {
 									fail("That payment could not be completed. No charge has been made.");
 									submit.disabled = false;
+									retheme();
 								});
 						});
 

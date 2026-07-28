@@ -22,6 +22,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
+import { hasExecutableScript, splitAstro } from "./astro-source.js";
 
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src");
 const read = (relative: string): string => readFileSync(path.join(SRC, relative), "utf8");
@@ -100,18 +101,34 @@ describe("the /checkout form contract", () => {
 });
 
 describe("/checkout/pay — the money path is wired before the decoration", () => {
-	test("the submit binding precedes ALL theme-change wiring", () => {
+	/** The line the script draws between "this takes payment" and "this makes it
+	 *  look right". Everything below it is expendable; nothing below it may run
+	 *  first. */
+	const DECORATION_BANNER = "── decoration only, from here down ──";
+
+	test("EVERYTHING below the decoration banner follows the submit binding", () => {
+		// Anchored to the banner rather than to two API names on purpose: the
+		// hazard is not `matchMedia` specifically, it is any decorative call
+		// that can throw on an old browser before "Pay now" has a handler — at
+		// which point the button is a native submit that navigates away with no
+		// payment and no error. Naming the APIs pins today's two; naming the
+		// banner pins the rule.
+		const banner = PAY.indexOf(DECORATION_BANNER);
 		const submitBinding = PAY.indexOf('form.addEventListener("submit"');
-		const media = PAY.indexOf("window.matchMedia");
-		const observer = PAY.indexOf("new MutationObserver");
+		expect(
+			banner,
+			"the decoration banner is gone — restore it or restate the rule",
+		).toBeGreaterThan(-1);
 		expect(submitBinding).toBeGreaterThan(-1);
-		expect(media).toBeGreaterThan(-1);
-		expect(observer).toBeGreaterThan(-1);
-		// A throw in the retheme wiring must not be able to abort the IIFE
-		// before "Pay now" has a handler — that leaves a native submit that
-		// navigates away with no payment and no error.
-		expect(submitBinding).toBeLessThan(media);
-		expect(submitBinding).toBeLessThan(observer);
+		expect(submitBinding).toBeLessThan(banner);
+	});
+
+	test("and the theme-change wiring really is down there", () => {
+		// The banner is only worth anchoring to if the decoration is behind it.
+		const banner = PAY.indexOf(DECORATION_BANNER);
+		for (const call of ["window.matchMedia", "new MutationObserver", "function retheme()"]) {
+			expect(PAY.indexOf(call), `${call} is above the banner`).toBeGreaterThan(banner);
+		}
 	});
 
 	test("the retheme listeners are feature-detected AND wrapped", () => {
@@ -167,8 +184,12 @@ describe("/checkout/pay — the money path is wired before the decoration", () =
 });
 
 describe("/orders/<id> — the state is the page, and it ships no JavaScript", () => {
-	test("PollRibbon carries no script at all", () => {
-		expect(POLL_RIBBON).not.toContain("<script");
+	test("PollRibbon runs nothing in the browser", () => {
+		// Asserted on the TEMPLATE, so the component is free to explain in prose
+		// that it is the ribbon WITHOUT the script — which is its entire reason
+		// for existing, and which used to trip this very check.
+		expect(hasExecutableScript(POLL_RIBBON)).toBe(false);
+		expect(POLL_RIBBON).toContain("<script");
 	});
 
 	test("the confirmation page uses it, and not the scripted countdown", () => {
@@ -179,7 +200,7 @@ describe("/orders/<id> — the state is the page, and it ships no JavaScript", (
 	test("the step track is not drawn for an order that does not exist", () => {
 		// It claims Cart → Details → Payment are behind you. On a 404 or a 503
 		// that is a journey the visitor never made.
-		const body = ORDER.slice(ORDER.indexOf("\n---", 3) + 4);
+		const { body } = splitAstro(ORDER);
 		const notFoundBranch = body.slice(
 			body.indexOf("order === null || stamp === null ?"),
 			body.indexOf("Browse products"),

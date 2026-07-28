@@ -19,8 +19,9 @@
  * through the same substitution in `totals.ts`.
  *
  * The columns are laid out, not tabulated, so nothing but position says which
- * figure is which — a screen reader hears "URUMI-TEE-01 1 $25.00" and has to
- * guess. Both figures carry a visually-hidden name for that reason.
+ * cell is which — a screen reader hears "Urumi Tee URUMI-TEE-01 1 $25.00" and
+ * has to guess at three of the four. So every cell EXCEPT the title carries a
+ * visually-hidden name: the title is the one thing that names itself.
  *
  * `title` is OPTIONAL, and the split is deliberate. On `/checkout` the row is
  * still a cart line — the wire carries no title, and the shopper picked those
@@ -84,7 +85,13 @@ const cells = rows.map((row) => {
 			<div class="line">
 				<span class="ident">
 					{cell.title !== null && <span class="title">{cell.title}</span>}
-					<span class="u-mono sku">{cell.sku}</span>
+					<span class="u-mono sku">
+						{/* Named only when something else already named the line. On a
+						    title-less row the SKU IS the name and a label would just
+						    double it. */}
+						{cell.title !== null && <span class="u-sr-only">Item code </span>}
+						{cell.sku}
+					</span>
 				</span>
 				<span class="u-mono qty">
 					<span class="u-sr-only">Quantity </span>

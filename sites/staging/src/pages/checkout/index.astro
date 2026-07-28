@@ -413,7 +413,14 @@ const sumRows = [
 	}
 
 	/* The two panels stop being two columns well before the phone: the address
-	   grid needs the width more than the layout needs the split. */
+	   grid needs the width more than the layout needs the split.
+
+	   DELIBERATE, and it looks like an oversight: stacked, the details panel
+	   comes first, so "Continue to payment" sits ABOVE the order summary. That
+	   is the mockup's own stacking (details panel, then order panel), it keeps
+	   DOM order and focus order identical, and the summary a shopper is
+	   reviewing is the thing they scroll to last on the way back up. Reordering
+	   with `order:` would split the visual and tab sequences. */
 	@media (max-width: 54rem) {
 		.cols {
 			grid-template-columns: 1fr;

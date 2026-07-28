@@ -2,6 +2,8 @@
 
 - Status: accepted
 - Date: 2026-07-27
+- Amended: 2026-07-28 — decision 2's fence widened by exactly one component; see
+  "Amendment (2026-07-28)" under Decision.
 
 ## Context
 
@@ -76,6 +78,41 @@ under `src/pages/` contains an executable `<script>`
 journey degrades without JS, and it degrades to a linked, recoverable `<noscript>` state that
 names the order and its 15-minute hold — not a broken form.
 
+  ### Amendment (2026-07-28): the cart's hold countdown is the second, and last, exception
+
+  **What changed and why.** This ADR is dated 2026-07-27. `docs/theme/TEMPERED.md` — the
+  "Tempered" theme spec — **postdates it**, and its §6 makes the hold ribbon the storefront's
+  signature element with a requirement this decision did not anticipate: *"The countdown is
+  **information, so it ticks even under `prefers-reduced-motion`** — that media query
+  suppresses decorative motion, not a timer the shopper is relying on."* A ticking countdown
+  is client JavaScript. A server-rendered `08:32` is true for one second and then quietly
+  lies to a shopper who is deciding whether they have time to finish, which is worse than
+  either alternative. The `<noscript>` fallback renders the absolute expiry instead, so the
+  no-JS path still tells the truth — it just cannot count.
+
+  **The amended fence.** Client JS is permitted on:
+
+  1. `/checkout/pay` — Stripe Elements (decision 1);
+  2. `/cart` — and only through `HoldRibbon.astro`, whose ~15 lines drive the §6 countdown.
+
+  Nowhere else, and nothing else. Every other page and **every** mutation stays a
+  server-rendered `<form method="POST">` → 303.
+
+  **What the test now checks**, which is more than it did before. The original fence read each
+  page's own source for an executable `<script>`. That missed the way client JS actually
+  arrives in a component-based theme: `/orders/<id>` shipped `HoldRibbon`'s countdown module
+  for a while purely by importing the component, with its own source spotlessly clean. The
+  fence now walks each page's `.astro` imports **transitively** and fails on any browser code
+  — `<script>` or a `client:*` directive — reaching a page that is specified to have none. The
+  two permitted routes above are a **named allowlist** in that test, so widening the set stays
+  a decision someone has to write down rather than a diff nobody notices.
+
+  **What did NOT change.** `js.stripe.com` remains the only third-party origin — the countdown
+  is first-party code, bundled by Astro and served from our origin. `allowedHosts` is
+  untouched (decision 3). The confirmation page is back to **zero** client JS, which is why
+  `PollRibbon.astro` exists at all: it is the same ribbon running indeterminate, as pure CSS,
+  so the pending sweep costs the page nothing.
+
 **3. `allowedHosts` does not change, and must not.** `allowedHosts` gates `ctx.http.fetch` —
 *server-side plugin egress only* (`manifest.ts`, `urumi-plugin-descriptor.ts`). Stripe.js is
 fetched and called **by the buyer's browser**, which never passes through the plugin. Adding
@@ -148,8 +185,18 @@ plugin's storefront surface (ADR-0003). Neither `@urumi/service` nor `@urumi/dom
 **Harder**
 
 - "The storefront ships zero client JS" is no longer true, and the claim now needs the
-  qualifier "outside `/checkout/pay`". The fence is a test, not a convention, precisely
-  because the property is otherwise easy to erode one page at a time.
+  qualifier "outside `/checkout/pay` **and the cart's hold countdown**" (amended 2026-07-28).
+  The fence is a test, not a convention, precisely because the property is otherwise easy to
+  erode one page at a time — and the amendment is the proof: the second exception arrived from
+  a *design spec written after this record*, not from anyone deciding to relax the rule.
+  Two exceptions in two increments is the rate worth watching; a third should be a superseding
+  ADR rather than a third allowlist entry.
+- The fence's unit is now the **page plus its component closure**, not the page file. That is
+  strictly harder to satisfy and strictly more honest: a component's `<script>` ships wherever
+  the component renders, so a shared component is a shared client-JS decision. It is also why
+  a component may need to be split rather than parameterised — `PollRibbon` is `HoldRibbon`
+  minus the countdown, and exists only so the confirmation page can have the ribbon without
+  the module.
 - A third-party origin is now load-bearing for revenue: `js.stripe.com` being unreachable
   breaks card entry. The page catches Elements' own failure and says so honestly (including
   for the offline-mode fake client secret a service without `STRIPE_SECRET_KEY` mints), rather
