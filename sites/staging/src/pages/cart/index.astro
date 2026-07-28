@@ -53,10 +53,18 @@ import QtyField from "../../components/QtyField.astro";
 import Sum from "../../components/Sum.astro";
 import Base from "../../layouts/Base.astro";
 import {
+	CART_CHECKED_OUT_BODY,
+	CART_CHECKED_OUT_TITLE,
+	CART_NEW_CART_CONSEQUENCE,
+	CART_NO_ORDER_LINK,
+	CART_RESUME_PURPOSE,
 	isCartPricingDegraded,
+	isCartTerminal,
+	isKnownCartState,
 	lineMoneyText,
 	PRICED_AT_CHECKOUT_CELL,
 } from "../../lib/cart-view.js";
+import { readCheckoutStash } from "../../lib/checkout-cookie.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
 import { productImage, type ProductEntryData } from "../../lib/products.js";
 import { isUnpricedText, type SumRow } from "../../lib/totals.js";
@@ -91,6 +99,56 @@ const degraded =
 const pricingDegraded = isCartPricingDegraded(pricing);
 
 const lines = cart?.lines ?? [];
+
+/**
+ * Issue #110: this cart has produced an order and can never produce another.
+ *
+ * `state` has been on the wire object this page reads all along and was simply
+ * never looked at, so after a purchase `/cart` went on listing the items, their
+ * live prices, their hold ribbons and their quantity controls as though nothing
+ * had happened — which reads, right after paying, as "the purchase didn't
+ * take". The controls were the sharper half of it: every one of them fails with
+ * `CART_CHECKED_OUT`.
+ *
+ * NOTHING here deletes the `urumi_cart` cookie, and the obvious fix that does
+ * was rejected on exactly that ground: `/orders/<id>` offers a pending order a
+ * "Complete payment" link that routes through `/checkout`, and `/checkout`
+ * rebuilds its review form FROM this cookie. Deleting it strands a buyer
+ * holding an order that reserves stock they can no longer pay for. The cart is
+ * rendered honestly instead; the cookie is untouched.
+ *
+ * The predicate's narrowness, and why it is not the domain's `state !==
+ * "active"`, are argued in `cart-view.ts`. So is the thing this page must never
+ * imply: `checked_out` is set BEFORE the payment intent exists, so it is not a
+ * claim that the buyer paid.
+ */
+const terminal = isCartTerminal(cart?.state);
+
+if (cart !== null && !isKnownCartState(cart.state)) {
+	// GATED on there being a cart. `cart?.state` is `undefined` on every empty
+	// cart, every visit with no cookie and every degraded read — the most common
+	// state of this page — so an ungated warn would fire on almost every request
+	// and mean nothing by the time a real unknown state arrived.
+	console.warn(
+		`[site-staging] cart ${cart.cartId} carries an unrecognised state "${cart.state}"; it renders as a live cart, because a renderer that failed closed here would brick a working cart read-only.`,
+	);
+}
+
+/**
+ * The order this cart became — when the handoff stash still says so.
+ *
+ * ONLY the id is bound. `readCheckoutStash` also returns the Stripe client
+ * secret, and nothing on this page has any business holding it in a variable
+ * the template can reach (ADR-0012 decision 2; the same rule
+ * `checkout-client-js.test.ts` fences on the confirmation page).
+ *
+ * Frequently null, and that is a normal answer rather than a fault: the stash
+ * lives 15 minutes and `/orders/<id>` deletes it on arrival, so the buyer who
+ * completed checkout — the exact buyer this fix is for — usually has none by
+ * the time they click "Cart". The panel's case B is that path, not an error
+ * case.
+ */
+const placedOrderId = terminal ? (readCheckoutStash(Astro.cookies)?.orderId ?? null) : null;
 
 /**
  * How many distinct products this page will ask for in ONE query.
@@ -304,10 +362,16 @@ const partialNote =
     the layout makes no commerce call of its own, and it never invents either
     value. `null` when there is no cart to read, so the nav renders a bare
     "Cart" rather than a misleading "Cart (0)" and the footer names no
-    currency rather than guessing one. */}
+    currency rather than guessing one.
+
+    A CHECKED-OUT cart counts as nothing to the badge for the same reason: a
+    "Cart (3)" on every page after a purchase is the loudest version of the
+    complaint in issue #110, and those three units are the order's now. The
+    currency is NOT suppressed with it — the cart still has one, and the footer
+    naming it is still true. */}
 <Base
 	title="Cart"
-	cartCount={cart === null ? null : totalQty(cart)}
+	cartCount={cart === null || terminal ? null : totalQty(cart)}
 	currency={cart?.currency ?? null}
 >
 	<header class="cart-head">
@@ -319,7 +383,10 @@ const partialNote =
 	{degraded && (
 		<p class="notice">The cart service is temporarily unavailable — please try again shortly.</p>
 	)}
-	{cart !== null && pricingDegraded && (
+	{/* Not over the terminal panel: it shows neither prices nor holds, so
+	    "quantities and holds are still accurate" is a banner about a page that
+	    is not on screen. */}
+	{cart !== null && !terminal && pricingDegraded && (
 		<p class="notice">
 			Pricing is temporarily unavailable — quantities and holds are still accurate.
 		</p>
@@ -343,6 +410,66 @@ const partialNote =
 					</a>
 				</div>
 			)
+		) : terminal ? (
+			/* Issue #110's panel. A RECORD of what left, not a workspace: name
+			   and quantity per line and nothing else — no money (the figures were
+			   a live join and this cart can no longer be ordered at any price),
+			   no hold ribbon (the reservations were adopted by the order; a
+			   ticking "held for 12:04" over them is the same lie in a different
+			   font), and no update/remove forms (every one of them answers
+			   CART_CHECKED_OUT).
+
+			   The order of the arms is load-bearing: EMPTY wins over terminal, so
+			   a checked-out cart that somehow carries no lines still gets the
+			   invitation rather than a panel about nothing. */
+			<div class="terminal">
+				<h2 class="terminal-title">{CART_CHECKED_OUT_TITLE}</h2>
+				<p class="terminal-body">{CART_CHECKED_OUT_BODY}</p>
+
+				<ul class="terminal-lines" role="list">
+					{lineViews.map((view) => (
+						<li class="terminal-line" role="listitem">
+							<span class="terminal-name">{view.name}</span>
+							<span class="u-mono terminal-qty">Qty {view.line.qty}</span>
+						</li>
+					))}
+				</ul>
+
+				<div class="terminal-actions">
+					{/* CASE A — the handoff stash still names the order, so the panel
+					    can point straight at it. No /checkout link here: the order
+					    page is the better door (it knows the order's actual state)
+					    and it offers "Complete payment" itself when that applies. */}
+					{placedOrderId !== null && (
+						<a href={`/orders/${encodeURIComponent(placedOrderId)}`} class="btn">View your order</a>
+					)}
+
+					{/* CASE B — no stash, which is the ORDINARY case: it lives 15
+					    minutes and /orders/<id> deletes it on arrival. The link is
+					    the checkout itself, worded as a return rather than as a
+					    demand, with its purpose said out loud — a buyer who has
+					    already paid needs to be able to decide this is not for them,
+					    and "Check out" / "Complete payment" would tell them they
+					    still owe money. */}
+					{placedOrderId === null && (
+						<div class="terminal-resume">
+							<a href="/checkout" class="btn">Return to this checkout</a>
+							<p class="terminal-note">{CART_RESUME_PURPOSE}</p>
+							<p class="terminal-note">{CART_NO_ORDER_LINK}</p>
+						</div>
+					)}
+
+					{/* SECOND rank in both cases, and it says what it costs before
+					    it is clicked: /checkout/new-cart clears the checkout stash
+					    too, so a payment still in flight loses its client secret. */}
+					<div class="terminal-restart">
+						<form method="POST" action="/checkout/new-cart">
+							<button type="submit" class="btn btn-ghost">Start a new cart</button>
+						</form>
+						<p class="terminal-note">{CART_NEW_CART_CONSEQUENCE}</p>
+					</div>
+				</div>
+			</div>
 		) : (
 			<div class="cart">
 				{/* A LIST, because it is one: the old table gave a screen reader
@@ -488,6 +615,91 @@ const partialNote =
 	.empty p {
 		margin: 0;
 		max-width: 44ch;
+		color: var(--u-mute);
+	}
+
+	/* Issue #110's panel. Deliberately built out of the same parts as the empty
+	   state rather than out of new ones: a checked-out cart is a page with
+	   nothing left to do on it, and §8's answer to that is prose and a way out,
+	   not a second styling language. EVERY colour here is a token — the page's
+	   only literals are the transitional `?error=` panel's, and a test pins
+	   that list at exactly two. */
+	.terminal {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 1rem;
+		padding: 2rem 0 3rem;
+	}
+	/* §3's display face, one step down from the page title — the same rank the
+	   empty state's line takes, because it is the same kind of line. */
+	.terminal-title {
+		margin: 0;
+		font-family: var(--u-display);
+		font-variation-settings: "wdth" 78, "opsz" 32;
+		font-weight: 700;
+		font-size: 1.75rem;
+		letter-spacing: -0.025em;
+		line-height: 1;
+	}
+	.terminal-body {
+		margin: 0;
+		max-width: 44ch;
+		color: var(--u-mute);
+	}
+
+	/* The record. Hairlines only (§2) — this is a list of what left, and a box
+	   around it would give it more weight than the way forward below it. */
+	.terminal-lines {
+		width: 100%;
+		margin: 0.5rem 0 0;
+		padding: 0;
+		list-style: none;
+	}
+	.terminal-line {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 1rem;
+		padding: 0.75rem 0;
+		border-bottom: var(--u-hair);
+	}
+	.terminal-line:first-of-type {
+		border-top: var(--u-hair);
+	}
+	.terminal-name {
+		min-width: 0;
+		overflow-wrap: anywhere;
+	}
+	.terminal-qty {
+		flex: none;
+		font-size: 0.625rem;
+		color: var(--u-mute);
+	}
+
+	/* Primary first, and `align-items: flex-start` so the two ranks sit on one
+	   baseline however long each one's note wraps. Wrapping rather than
+	   collapsing at 390px: two stacked buttons is the phone layout. */
+	.terminal-actions {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: flex-start;
+		gap: 1.5rem;
+		padding-top: 0.5rem;
+	}
+	.terminal-resume,
+	.terminal-restart {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 0.5rem;
+	}
+	/* Beside its control, never under the fold: the consequence of "Start a new
+	   cart" has to be readable before it is clicked. */
+	.terminal-note {
+		margin: 0;
+		max-width: 34ch;
+		font-size: 0.75rem;
 		color: var(--u-mute);
 	}
 
