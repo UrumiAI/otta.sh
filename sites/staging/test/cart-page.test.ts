@@ -30,6 +30,7 @@ import {
 	CART_NEW_CART_CONSEQUENCE,
 	CART_NO_ORDER_LINK,
 	CART_RESUME_PURPOSE,
+	CART_TERMINAL_COPY,
 	cartMoneyCell,
 	isCartPricingDegraded,
 	isCartTerminal,
@@ -46,6 +47,10 @@ import { isUnpricedText } from "../src/lib/totals.js";
 const CART_PAGE = path.resolve(
 	path.dirname(fileURLToPath(import.meta.url)),
 	"../src/pages/cart/index.astro",
+);
+const CART_VIEW = path.resolve(
+	path.dirname(fileURLToPath(import.meta.url)),
+	"../src/lib/cart-view.ts",
 );
 
 /**
@@ -497,21 +502,28 @@ describe("a checked-out cart is rendered as terminal, and never as a paid one", 
 	/**
 	 * Words that would claim the buyer's money has changed hands.
 	 *
-	 * TWO deliberate narrowings, both load-bearing:
+	 * `completed?` catches the bare "complete" too, and that is deliberate even
+	 * though it costs a natural-sounding instruction ("…to complete it"):
+	 * "complete" is the ADJECTIVE in the claim position as readily as it is the
+	 * infinitive — "Payment complete", "Checkout complete", "Your order is
+	 * complete" — so a guard that let it through would let the claim through. A
+	 * phrasing with a synonym yields to a guard that has none.
 	 *
-	 *  - "completed" and not "complete". `CART_RESUME_PURPOSE` says "…return to
-	 *    this checkout to complete it", which is an INSTRUCTION to the buyer
-	 *    about a payment that has not happened — the opposite of the claim this
-	 *    regex hunts. The past participle is the claim form; the infinitive is
-	 *    not.
-	 *  - it runs over the COPY CONSTANTS and over `terminalMarkup`, never over
+	 * SCOPE, and it is one line because the next person editing copy needs it:
+	 *
+	 *  - it runs over `CART_TERMINAL_COPY` and over `terminalMarkup`, never over
 	 *    the whole `markup`. `\bconfirmed\b` collides head-on with the live
 	 *    arm's own honest copy ("Confirmed at checkout", "your total is
 	 *    confirmed at checkout"), so widening the scope would fail on text that
-	 *    is correct. Do not widen it.
+	 *    is correct. Do NOT widen it.
+	 *  - what it CANNOT catch: a claim made without any of these words ("your
+	 *    money is with us now"), a claim assembled at runtime, and a claim in an
+	 *    ARIA label or an alt text that never becomes a copy constant. It is a
+	 *    backstop against the obvious spelling of a bad edit, not a proof that
+	 *    the panel is honest — that part is still a human reading the sentences.
 	 */
 	const CLAIMS_PAYMENT =
-		/\b(paid|purchases?d?|completed|confirmed|successful|success|received|thank you)\b/i;
+		/\b(paid|purchases?d?|completed?|confirmed|successful|success|received|thank you)\b/i;
 
 	test("the slice anchors exist and are ordered — without this the rest pass vacuously", () => {
 		// An `indexOf` miss is -1, and `slice(-1, -1)` is the empty string, which
@@ -596,6 +608,38 @@ describe("a checked-out cart is rendered as terminal, and never as a paid one", 
 		expect(terminalMarkup).not.toContain("<Sum");
 	});
 
+	test("each line carries the SKU as well as the title, by the live arm's own rule", () => {
+		// `view.name` alone DROPS the sku the moment a product has a title, and
+		// this panel exists for the buyer who may not be able to open their
+		// order — the sku is what they match against the confirmation they were
+		// sent, and `/orders/<id>` renders a sku column. Title conditionally,
+		// sku always: `.line-id`'s rule, not a second one.
+		expect(terminalMarkup).toMatch(/\{view\.title !== null &&[\s\S]*?\{view\.title\}/);
+		expect(terminalMarkup).toMatch(/class="u-mono terminal-sku">\{view\.line\.sku\}/);
+		expect(terminalMarkup).toContain("{view.line.qty}");
+		// Still money-free and form-free — the two things the sku must not drag
+		// back in with it.
+		expect(terminalMarkup).not.toContain("view.money");
+		expect(terminalMarkup).not.toContain('<form method="POST" action="/cart');
+	});
+
+	test("every copy constant is a member of CART_TERMINAL_COPY, so the guard cannot be outgrown", () => {
+		// The by-construction half of the claims-payment test. Iterating an
+		// exported array only helps if new copy JOINS the array, so this reads
+		// `cart-view.ts` and insists that every exported `CART_…` string is in
+		// the literal. Adding a sixth sentence without listing it fails here.
+		const viewSource = readFileSync(CART_VIEW, "utf8");
+		const declared = [...viewSource.matchAll(/^export const (CART_[A-Z_]+)\b/gm)]
+			.map((m) => m[1] ?? "")
+			.filter((name) => name !== "CART_TERMINAL_COPY");
+		expect(declared.length).toBe(CART_TERMINAL_COPY.length);
+		const literal = /CART_TERMINAL_COPY[^=]*=\s*\[([\s\S]*?)\]/.exec(viewSource)?.[1] ?? "";
+		expect(literal.length).toBeGreaterThan(0);
+		for (const name of declared) {
+			expect(literal, `${name} is not listed in CART_TERMINAL_COPY`).toContain(name);
+		}
+	});
+
 	test("case A — the checkout stash names the order, so the panel links to it", () => {
 		expect(terminalMarkup).toMatch(
 			/placedOrderId !== null &&[\s\S]*\/orders\/\$\{encodeURIComponent\(placedOrderId\)\}/,
@@ -604,19 +648,30 @@ describe("a checked-out cart is rendered as terminal, and never as a paid one", 
 	});
 
 	test("case B — no stash, so the panel offers the checkout it cannot name", () => {
+		// STRUCTURAL, mirroring case A's: all three of case B's parts are pinned
+		// to the `placedOrderId === null` guard, not merely to the slice. Without
+		// this, hoisting them out of the conditional would render "This page
+		// can't name the order" directly beside a link that names it — in case A,
+		// with every assertion in this file still green.
+		//
 		// On the SLICE, never on `source`: an earlier test in this file already
 		// matches `href="/checkout"` against the whole source off the LIVE arm's
 		// "Check out" button, so asserting it there would pass without the panel
 		// existing.
-		expect(terminalMarkup).toContain('href="/checkout"');
+		expect(terminalMarkup).toMatch(
+			/placedOrderId === null &&[\s\S]*?href="\/checkout"[\s\S]*?\{CART_RESUME_PURPOSE\}[\s\S]*?\{CART_NO_ORDER_LINK\}/,
+		);
 		expect(terminalMarkup).toContain(">Return to this checkout<");
+		// …and all three sit inside the case-B group rather than trailing after
+		// the shared secondary, which the ordered regex alone cannot see.
+		expect(terminalMarkup.indexOf("{CART_NO_ORDER_LINK}")).toBeLessThan(
+			terminalMarkup.indexOf('class="terminal-restart"'),
+		);
 		// The copy arrives through the constants, so the markup carries the NAME
 		// and the words are asserted by executing the constant (below). Grepping
 		// the sentence here would pin nothing the wiring does not already say,
 		// and would go stale the moment the wording is revised in one place.
-		expect(terminalMarkup).toContain("{CART_RESUME_PURPOSE}");
-		expect(CART_RESUME_PURPOSE).toMatch(/didn't finish/);
-		expect(terminalMarkup).toContain("{CART_NO_ORDER_LINK}");
+		expect(CART_RESUME_PURPOSE).toMatch(/didn't go through/);
 		expect(CART_NO_ORDER_LINK).toMatch(/can't name the order/);
 		// The buyer who HAS paid must be able to self-select out of following it.
 		// "Check out" / "Complete payment" / "Continue to payment" all read as
@@ -650,13 +705,14 @@ describe("a checked-out cart is rendered as terminal, and never as a paid one", 
 		// the payment intent exists, so a pending, failed or expired order has an
 		// identically checked-out cart. "Thanks for your purchase" here would be
 		// a lie told to the one buyer least able to afford it.
-		for (const copy of [
-			CART_CHECKED_OUT_TITLE,
-			CART_CHECKED_OUT_BODY,
-			CART_NEW_CART_CONSEQUENCE,
-			CART_NO_ORDER_LINK,
-			CART_RESUME_PURPOSE,
-		]) {
+		//
+		// Iterating the EXPORTED list, not a hand-written one here: copy reaches
+		// the markup as `{CART_X}`, so a sixth constant's words never appear in
+		// the template and would evade the slice scan below as well as a list
+		// nobody remembered to extend. The membership check that follows is what
+		// closes that loop.
+		expect(CART_TERMINAL_COPY.length).toBeGreaterThan(0);
+		for (const copy of CART_TERMINAL_COPY) {
 			expect(copy, `copy claims payment: ${copy}`).not.toMatch(CLAIMS_PAYMENT);
 		}
 		// The second half, and it covers a different thing: the loop above is

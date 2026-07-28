@@ -119,11 +119,21 @@ export function isKnownCartState(state: string | undefined): boolean {
  * this file is: a test can import a constant and assert what it says. The one
  * that matters is that none of these claims the buyer paid — see
  * `isCartTerminal`'s note, and the test that runs the claim-words regex over
- * all five.
+ * `CART_TERMINAL_COPY` below.
  */
 export const CART_CHECKED_OUT_TITLE = "This cart has been checked out.";
+/**
+ * UNCONDITIONAL, so it may only promise what BOTH cases render.
+ *
+ * It used to end "…If you haven't finished paying, you can return to the
+ * checkout below", and that sentence was a lie in case A: the `/checkout` link
+ * exists only when the stash cannot name the order. A buyer inside the stash
+ * window read a promise and found no such control — the exact failure this
+ * whole change exists to stop. Case B says it beside the link instead
+ * (`CART_RESUME_PURPOSE`), where it is true and where it is actionable.
+ */
 export const CART_CHECKED_OUT_BODY =
-	"Its items are on an order now, so this cart can't be changed. If you haven't finished paying, you can return to the checkout below.";
+	"Its items are on an order now, so this cart can't be changed.";
 /** Said BESIDE the "Start a new cart" control, never after it: it clears an
  *  in-flight payment too, and a buyer must know that before they click. */
 export const CART_NEW_CART_CONSEQUENCE = "This clears the cart and any payment still in progress.";
@@ -133,10 +143,36 @@ export const CART_NEW_CART_CONSEQUENCE = "This clears the cart and any payment s
  *  guess. */
 export const CART_NO_ORDER_LINK =
 	"This page can't name the order. The confirmation page shown at the end of checkout is the link to keep.";
-/** The purpose clause on "Return to this checkout" — it exists so a buyer who
- *  HAS paid can self-select out of following it. */
+/**
+ * The purpose clause on "Return to this checkout" — it exists so a buyer who
+ * HAS paid can self-select out of following it.
+ *
+ * "…to complete it" was the first wording and it is not available: "complete"
+ * is the adjective in the natural claim position too ("Payment complete",
+ * "Checkout complete"), so the claim-words guard has to catch it, and copy that
+ * has a synonym must yield to a guard that does not.
+ */
 export const CART_RESUME_PURPOSE =
-	"If your payment didn't finish, return to this checkout to complete it.";
+	"If your payment didn't go through, return to this checkout to finish it.";
+
+/**
+ * Every sentence the terminal panel can put on a screen, in one list.
+ *
+ * The list exists so the "never claims the buyer paid" test can be exhaustive
+ * BY CONSTRUCTION rather than by someone remembering. Copy reaches the markup
+ * as `{CART_X}`, so its words never appear literally in the template — a sixth
+ * constant added later would slip past a scan of the markup AND past a
+ * hardcoded list in the test. A source-level check pins that every exported
+ * `CART_…` string in this file is a member here, so the only way to add copy is
+ * to add it to the guard as well.
+ */
+export const CART_TERMINAL_COPY: readonly string[] = [
+	CART_CHECKED_OUT_TITLE,
+	CART_CHECKED_OUT_BODY,
+	CART_NEW_CART_CONSEQUENCE,
+	CART_NO_ORDER_LINK,
+	CART_RESUME_PURPOSE,
+];
 
 export function cartMoneyCell(
 	formatted: string | null | undefined,

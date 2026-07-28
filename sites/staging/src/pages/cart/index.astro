@@ -147,6 +147,19 @@ if (cart !== null && !isKnownCartState(cart.state)) {
  * completed checkout — the exact buyer this fix is for — usually has none by
  * the time they click "Cart". The panel's case B is that path, not an error
  * case.
+ *
+ * ── the invariant, written down because nothing checks it ───────────────────
+ * That the stash names the order THIS cart produced. Nothing verifies the
+ * coupling — the stash carries no cart id — and it holds structurally instead:
+ * `checkout/place.ts` writes both cookies in the same response and
+ * `checkout/new-cart.ts` clears both together, so the pair moves as one. The
+ * stash is `httpOnly`, so script cannot forge one either.
+ *
+ * If it ever did slip, the blast radius is bounded and self-inflicted: the
+ * worst available value is the buyer's OWN earlier stash, i.e. a link to a
+ * capability URL they already hold. Not a disclosure — but it would be a WRONG
+ * link, which is why the coupling is stated here rather than re-derived by the
+ * next reader.
  */
 const placedOrderId = terminal ? (readCheckoutStash(Astro.cookies)?.orderId ?? null) : null;
 
@@ -264,6 +277,12 @@ if (productIds.length > 0) {
  * that does not say something). It lives in `cart-view.ts` beside the cases it
  * decides between, so the whole composition can be executed by a test rather
  * than reassembled by one. Nothing renders money on this page beside it.
+ *
+ * ONE binding serves both arms, deliberately: on the TERMINAL path the money
+ * composition and the two `crypto.randomUUID()` keys per line are computed and
+ * then never read. That is nothing next to the network call this page has
+ * already made, and a second, narrower view model would be a second place for
+ * the title-or-SKU fallback rule to drift.
  */
 const lineViews = lines.map((line, index) => {
 	const content = line.productId === null ? null : (contentById.get(line.productId) ?? null);
@@ -426,10 +445,18 @@ const partialNote =
 				<h2 class="terminal-title">{CART_CHECKED_OUT_TITLE}</h2>
 				<p class="terminal-body">{CART_CHECKED_OUT_BODY}</p>
 
+				{/* Title AND sku, by the live arm's own rule (`.line-id`): the title
+				    only when this store can name the line, the SKU always. A buyer
+				    who cannot reach their order — which is the whole reason case B
+				    exists — needs something to match against the confirmation they
+				    were sent, and `/orders/<id>` renders a SKU column. */}
 				<ul class="terminal-lines" role="list">
 					{lineViews.map((view) => (
 						<li class="terminal-line" role="listitem">
-							<span class="terminal-name">{view.name}</span>
+							<span class="terminal-id">
+								{view.title !== null && <span class="terminal-name">{view.title}</span>}
+								<span class="u-mono terminal-sku">{view.line.sku}</span>
+							</span>
 							<span class="u-mono terminal-qty">Qty {view.line.qty}</span>
 						</li>
 					))}
@@ -667,8 +694,20 @@ const partialNote =
 	.terminal-line:first-of-type {
 		border-top: var(--u-hair);
 	}
-	.terminal-name {
+	/* The line's identity, stacked: the same two-part shape `.line-id` gives the
+	   live arm, so a shopper reads the same thing in the same order on both. */
+	.terminal-id {
+		display: flex;
+		flex-direction: column;
+		gap: 0.125rem;
 		min-width: 0;
+	}
+	.terminal-name {
+		overflow-wrap: anywhere;
+	}
+	.terminal-sku {
+		font-size: 0.625rem;
+		color: var(--u-mute);
 		overflow-wrap: anywhere;
 	}
 	.terminal-qty {
