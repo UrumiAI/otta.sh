@@ -17,21 +17,34 @@ import { defineConfig } from "astro/config";
 import emdash from "emdash/astro";
 import { parseDotEnv } from "./src/lib/dot-env.js";
 import { buildEmdashOptions, resolveServiceUrl } from "./src/emdash-options.js";
+import { resolveStripePublishableKey, STRIPE_PUBLIC_KEY_VAR } from "./src/lib/stripe-config.js";
 
 /** Astro does NOT load .env into process.env for THIS module (verified —
  *  see src/lib/dot-env.ts), so fall back to sites/staging/.env explicitly:
  *  shell env wins, then .env, then the placeholder. */
-function readDotEnvServiceUrl(): string | undefined {
+function readDotEnv(name: string): string | undefined {
 	try {
-		return parseDotEnv(readFileSync(new URL(".env", import.meta.url), "utf8"))[
-			"COMMERCE_SERVICE_URL"
-		];
+		return parseDotEnv(readFileSync(new URL(".env", import.meta.url), "utf8"))[name];
 	} catch {
 		return undefined; // no .env — fine
 	}
 }
 
-const serviceUrl = resolveServiceUrl(process.env.COMMERCE_SERVICE_URL ?? readDotEnvServiceUrl());
+const serviceUrl = resolveServiceUrl(
+	process.env.COMMERCE_SERVICE_URL ?? readDotEnv("COMMERCE_SERVICE_URL"),
+);
+
+/**
+ * The Stripe publishable key (ADR-0012 decision 4), resolved the same way.
+ * Absent ⇒ `undefined` ⇒ the define below bakes `""` ⇒ `/checkout` renders
+ * review + totals but says "Card payment isn't set up on this store yet." and
+ * creates NO order. PRESENT but malformed ⇒ `resolveStripePublishableKey`
+ * THROWS here and fails the build, because a typo'd key is otherwise
+ * indistinguishable at runtime from having no key at all.
+ */
+const stripePublishableKey = resolveStripePublishableKey(
+	process.env[STRIPE_PUBLIC_KEY_VAR] ?? readDotEnv(STRIPE_PUBLIC_KEY_VAR),
+);
 
 /**
  * Real deploy identifiers live in the gitignored `wrangler.local.jsonc`
@@ -67,6 +80,11 @@ export default defineConfig({
 		// reads this compile-time global; falls back to its placeholder).
 		define: {
 			__URUMI_COMMERCE_SERVICE_URL__: JSON.stringify(serviceUrl),
+			// The Stripe publishable key for /checkout/pay's Payment Element
+			// (src/lib/stripe-config.ts). ALWAYS a string — an unconfigured store
+			// bakes "", which that module reads as undefined; baking `undefined`
+			// would leave the identifier undeclared in the worker bundle.
+			__URUMI_STRIPE_PUBLIC_KEY__: JSON.stringify(stripePublishableKey ?? ""),
 		},
 		ssr: {
 			// UNCONDITIONAL: if @urumi/plugin is ever externalized the define

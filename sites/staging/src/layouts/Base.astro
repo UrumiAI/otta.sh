@@ -25,6 +25,11 @@ const menu = await getMenu("primary");
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 		<title>{fullTitle}</title>
 		{description && <meta name="description" content={description} />}
+		{/* Per-page <head> additions. Used by the confirmation page for its
+		    `referrer: no-referrer` policy and its bounded meta-refresh poll:
+		    both MUST be in <head> to take effect, and both belong to that page
+		    rather than to every page, so they arrive through this slot. */}
+		<slot name="head" />
 		<link
 			rel="icon"
 			type="image/svg+xml"

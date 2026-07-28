@@ -1,0 +1,229 @@
+---
+/**
+ * GET /orders/<orderId> — the confirmation page, and Stripe's `return_url`.
+ *
+ * ── What this page may claim ─────────────────────────────────────────────
+ * Stripe appends `redirect_status=succeeded` to this URL. That is the BUYER'S
+ * BROWSER reporting what Stripe told it — not a settlement. An order becomes
+ * `paid` only through `settleOrder`'s guarded `pending → paid` flip, driven by
+ * the `payment_intent.succeeded` webhook after an amount+currency equality
+ * check. So this page re-reads the order from the service and renders THE
+ * ORDER'S OWN STATE, always (ADR-0012 decision 5).
+ *
+ * The redirect parameters are read for exactly ONE purpose — choosing between
+ * two `pending` copy variants — and are otherwise inert: never echoed into the
+ * markup, never forwarded, never used to decide that anything is paid. That
+ * "never echoed" rule is asserted structurally (checkout-client-js.test.ts):
+ * their names may appear in this frontmatter and NOWHERE in the template below.
+ *
+ * ── What the page does about the secret in its own URL ───────────────────
+ * Stripe also appends `payment_intent_client_secret`, so it is already in
+ * history and access logs by the time this renders (ADR-0012 decision 6 —
+ * accepted, and not ours to change). The mitigations that ARE ours: the
+ * `no-referrer` policy below, so it does not leak onward through subresource
+ * Referers; and deleting the `urumi_checkout` stash on arrival, so a spent
+ * secret does not linger in the browser for the rest of the hold. That deletion
+ * is the entire justification for the cookie's `path=/`.
+ *
+ * Polling is `<meta http-equiv="refresh">`, bounded to 8 hops (~30 s), then a
+ * manual link. No JS, no busy loop.
+ */
+import { STOREFRONT_ORDER_ROUTE, type OrderRouteResult } from "@urumi/plugin";
+import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
+import Base from "../../layouts/Base.astro";
+import { clearCheckoutCookie } from "../../lib/checkout-cookie.js";
+import { cartErrorMessage } from "../../lib/error-messages.js";
+import { dispatchUrumiRoute } from "../../lib/urumi-api.js";
+
+const { orderId } = Astro.params;
+
+// The stash has done its job the moment the buyer lands here — whether payment
+// succeeded, failed or was abandoned. Drop it either way.
+clearCheckoutCookie(Astro.cookies);
+
+const result =
+	orderId === undefined
+		? null
+		: await dispatchUrumiRoute<OrderRouteResult>(
+				getPublicPluginApiRouteHandler(Astro.locals),
+				STOREFRONT_ORDER_ROUTE,
+				{ orderId },
+				Astro.url,
+			);
+
+const order = result !== null && result.ok ? result.order : null;
+if (order === null) Astro.response.status = result !== null && !result.ok ? 404 : 503;
+
+/** Did the buyer arrive via Stripe's redirect? Read ONLY to pick the pending
+ *  copy — the value is never rendered, forwarded, or trusted. */
+const returnedFromStripe = Astro.url.searchParams.has("payment_intent");
+
+const state = order?.state ?? null;
+const isPending = state === "pending";
+
+/** Bounded meta-refresh poll: at most 8 hops (~30 s), then a manual link. */
+const MAX_POLLS = 8;
+const poll = Number.parseInt(Astro.url.searchParams.get("p") ?? "0", 10);
+const pollAttempt = Number.isFinite(poll) && poll > 0 ? poll : 0;
+const shouldPoll = isPending && pollAttempt < MAX_POLLS;
+const nextPollUrl = `/orders/${encodeURIComponent(orderId ?? "")}?p=${pollAttempt + 1}`;
+
+/** The order's own state → what we are willing to say. Copy lives here so the
+ *  template stays a mapping and the honesty rules are readable in one place. */
+const COPY: Record<string, string> = {
+	paid: "Order confirmed. Thank you — we've received your payment.",
+	failed: "The payment did not go through. No charge was made.",
+	expired: "This order expired before payment completed, and the items were released.",
+	cancelled: "This order was cancelled.",
+	refunded: "This order has been refunded.",
+};
+const pendingCopy = returnedFromStripe
+	? "Payment submitted. We're confirming it with our payment provider — this usually takes a few seconds. This page refreshes automatically."
+	: "This order is awaiting payment.";
+const statusLine = state === null ? null : isPending ? pendingCopy : (COPY[state] ?? `Order status: ${state}.`);
+
+/** A cart that is `checked_out` never returns to `active`, so an expired order
+ *  leaves the buyer holding a cart that can produce no new one. Offer the door. */
+const deadEnd = state === "expired" || state === "cancelled";
+---
+
+<Base title={order === null ? "Order" : `Order ${order.id}`}>
+	<meta name="referrer" content="no-referrer" slot="head" />
+	{shouldPoll && <meta http-equiv="refresh" content={`4;url=${nextPollUrl}`} slot="head" />}
+
+	<h1>Order</h1>
+
+	{
+		order === null ? (
+			<>
+				<p class="notice">
+					{result !== null && !result.ok && "reason" in result
+						? cartErrorMessage(result.reason)
+						: cartErrorMessage("SERVICE_UNAVAILABLE")}
+				</p>
+				<p>
+					<a href="/products">Browse products</a>
+				</p>
+			</>
+		) : (
+			<>
+				<p class="status">{statusLine}</p>
+				<p class="muted">
+					Order reference <code>{order.id}</code> — keep this link to check its status.
+				</p>
+
+				{isPending && !shouldPoll && (
+					<p>
+						<a href={nextPollUrl}>Check again</a>
+					</p>
+				)}
+
+				{
+					/* The way back to payment goes through /checkout, NOT straight to
+					   /checkout/pay: the stash was just deleted above, so the pay page
+					   has no client secret to mount. Re-submitting the review form
+					   replays `checkout:<cartId>` — the same order, and through
+					   Stripe's own idempotency the same PaymentIntent and the same
+					   client secret — which re-stashes it. The stable key is what
+					   makes resuming possible at all. */
+					order.state === "pending" && !returnedFromStripe && (
+						<p>
+							<a href="/checkout">Complete payment</a>
+						</p>
+					)
+				}
+
+				<h2>Items</h2>
+				<table>
+					<thead>
+						<tr>
+							<th>Item</th>
+							<th>SKU</th>
+							<th>Qty</th>
+							<th>Unit price</th>
+							<th>Line total</th>
+						</tr>
+					</thead>
+					<tbody>
+						{order.lines.map((line) => (
+							<tr>
+								<td>{line.title}</td>
+								<td>{line.sku}</td>
+								<td>{line.qty}</td>
+								<td>{line.unitPrice.formatted}</td>
+								<td>{line.lineTotal.formatted}</td>
+							</tr>
+						))}
+					</tbody>
+				</table>
+
+				<h2>Totals</h2>
+				<dl class="totals">
+					<dt>Subtotal</dt>
+					<dd>{order.totals.subtotal.label}</dd>
+					<dt>Discount</dt>
+					<dd>{order.totals.discount.label}</dd>
+					<dt>Shipping</dt>
+					<dd>{order.totals.shipping.label}</dd>
+					<dt>Tax</dt>
+					<dd>{order.totals.tax.label}</dd>
+					<dt>Total</dt>
+					<dd>
+						<strong>{order.totals.total.label}</strong>
+					</dd>
+				</dl>
+
+				{order.fulfillment !== null && (
+					<p>
+						Shipped with {order.fulfillment.carrier} — tracking{" "}
+						<code>{order.fulfillment.trackingNumber}</code>
+					</p>
+				)}
+
+				{deadEnd && (
+					<form method="POST" action="/checkout/new-cart">
+						<button type="submit">Start a new cart</button>
+					</form>
+				)}
+			</>
+		)
+	}
+</Base>
+
+<style>
+	table {
+		border-collapse: collapse;
+		width: 100%;
+	}
+	th,
+	td {
+		text-align: left;
+		padding: 0.5rem;
+		border-bottom: 1px solid #ddd;
+	}
+	.status {
+		font-size: 1.125rem;
+	}
+	.totals {
+		display: grid;
+		grid-template-columns: max-content 1fr;
+		gap: 0.25rem 1.5rem;
+		margin: 0;
+	}
+	.totals dt {
+		font-weight: 600;
+	}
+	.totals dd {
+		margin: 0;
+	}
+	.muted {
+		color: #666;
+		font-size: 0.875rem;
+	}
+	.notice {
+		background: #fff7e0;
+		border: 1px solid #e6c200;
+		border-radius: 0.5rem;
+		padding: 0.75rem 1rem;
+	}
+</style>

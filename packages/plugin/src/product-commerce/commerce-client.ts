@@ -162,7 +162,163 @@ export interface CommerceClient {
 	>;
 	listMyAddresses(sessionToken: string): Promise<AuthedResult<{ addresses: AddressWire[] }>>;
 	// ── end Phase 5 customer account ──────────────────────────────────────
+
+	// ── Phase 4: checkout (quote → order → public order read) ─────────────
+	// Wire mirrors @urumi/service's routes/orders.ts 1:1. Every typed failure
+	// rides the same `{ ok: false, reason }` envelope regardless of status
+	// (adapter rule #2 — 400/404/409/502 all carry one), so callers branch on
+	// the token and never on an HTTP code.
+	quoteCheckout(input: QuoteRequestWire): Promise<QuoteResult>;
+	/** The `idempotencyKey` is the CALLER's — forwarded verbatim as
+	 *  `Idempotency-Key`, never invented here (see `checkoutIdempotencyKey`:
+	 *  it must be stable per cart, or a reload mints a second order). */
+	createOrder(input: CheckoutRequestWire, idempotencyKey: string): Promise<CheckoutResult>;
+	/** The unauthenticated capability read (ADR-0010 §2). Sends NO
+	 *  `X-Internal-Token`: that header unlocks the full admin projection
+	 *  (`serializeOrder`, incl. `buyerRef`/`shippingAddress`) on a page a guest
+	 *  reads. The guest gets `serializePublicOrder`'s whitelist. */
+	getPublicOrder(orderId: string): Promise<PublicOrderResult>;
+	// ── end Phase 4 checkout ──────────────────────────────────────────────
 }
+
+// ── Phase 4: checkout wire types ───────────────────────────────────────────
+// Mirror @urumi/service's `quoteBody`/`checkoutBody` (schemas.ts) and its
+// quote/checkout/public-order serializations 1:1. Money is integer minor units
+// + an ISO-4217 string, never a float.
+
+export interface QuoteRequestWire {
+	cartId: string;
+	shippingZoneId?: string;
+	shippingMethodId?: string;
+	couponCode?: string;
+}
+
+export interface QuoteBreakdownWire {
+	currency: string;
+	subtotalCents: number;
+	discountCents: number;
+	shippingCents: number;
+	taxCents: number;
+	totalCents: number;
+	appliedCouponCode: string | null;
+}
+
+/** `@urumi/service`'s quote rejections: the cart pre-checks it runs before
+ *  `computeQuote` (`orders.ts`) plus `QuoteFailure`'s own union. */
+export type QuoteFailureReason =
+	| "CART_NOT_FOUND"
+	| "CART_EMPTY"
+	| "PRODUCT_NOT_PRICED"
+	| "CURRENCY_MISMATCH"
+	| "COUPON_NOT_FOUND"
+	| "SHIPPING_METHOD_NOT_FOUND"
+	| "SHIPPING_RATE_NOT_FOUND"
+	| "COUPON_NOT_ACTIVE"
+	| "COUPON_MIN_SUBTOTAL"
+	| "COUPON_EXHAUSTED"
+	| "COUPON_CURRENCY_MISMATCH";
+
+export type QuoteResult =
+	| { ok: true; breakdown: QuoteBreakdownWire }
+	| { ok: false; reason: QuoteFailureReason };
+
+/** ADR-0009's optional ship-to snapshot — bounds mirror `shippingAddressBody`. */
+export interface ShippingAddressWire {
+	name: string;
+	line1: string;
+	line2?: string;
+	city: string;
+	region?: string;
+	postalCode: string;
+	country: string;
+	email?: string;
+	phone?: string;
+}
+
+export interface CheckoutRequestWire {
+	cartId: string;
+	paymentMethod: "stripe" | "x402";
+	/** Email/session claim token (ADR-0004). Stored VERBATIM by the service —
+	 *  the site trims but never lowercases it. */
+	buyerRef: string;
+	shippingZoneId?: string;
+	shippingMethodId?: string;
+	couponCode?: string;
+	shippingAddress?: ShippingAddressWire;
+}
+
+/** The domain's `ClientAction` verbatim — passed through unmodified; the
+ *  plugin never inspects a client secret beyond handing it to the theme. */
+export type ClientActionWire =
+	| { kind: "stripe_client_secret"; clientSecret: string }
+	| { kind: "x402_challenge"; accepts: string[]; price: number; payTo: string }
+	| { kind: "none" };
+
+export interface PaymentIntentWire {
+	gateway: string;
+	intentId: string;
+	clientAction: ClientActionWire;
+}
+
+/** `serializePublicOrder`'s whitelist (`orders.ts`) — deliberately WITHOUT
+ *  `buyerRef`/`customerId`/`shippingAddress`/reconciliation fields, which the
+ *  service omits entirely (never as null) so a client cannot probe the shape. */
+export interface PublicOrderWire {
+	id: string;
+	state: string;
+	currency: string;
+	paymentMethod: string | null;
+	holdExpiresAt: string;
+	createdAt: string;
+	totals: QuoteBreakdownWire & { shippingZoneId: string | null };
+	lines: OrderLineWire[];
+	fulfillment: {
+		carrier: string;
+		trackingNumber: string;
+		trackingUrl: string | null;
+		shippedAt: string;
+	} | null;
+	cancellation: { reason: string; cancelledAt: string } | null;
+}
+
+/** `CreateOrderFailure` verbatim (`@urumi/domain`'s orders/errors.ts). */
+export type CheckoutFailureReason =
+	| "CART_NOT_FOUND"
+	| "CART_EMPTY"
+	| "CART_CHECKED_OUT"
+	| "RESERVATION_LOST"
+	| "PRODUCT_NOT_PRICED"
+	| "CURRENCY_MISMATCH"
+	| "INVALID_SHIPPING_ADDRESS"
+	| "PAYMENT_INTENT_FAILED"
+	| "SHIPPING_METHOD_NOT_FOUND"
+	| "SHIPPING_RATE_NOT_FOUND"
+	| "COUPON_NOT_FOUND"
+	| "COUPON_NOT_ACTIVE"
+	| "COUPON_MIN_SUBTOTAL"
+	| "COUPON_EXHAUSTED"
+	| "COUPON_MAX_PER_CUSTOMER"
+	| "COUPON_CURRENCY_MISMATCH";
+
+/**
+ * NOTE the asymmetry, deliberate and load-bearing: `POST /checkout/orders`
+ * answers with the FULL `serializeOrder` projection (it is a machine-to-machine
+ * write behind the service token), which is a SUPERSET of `PublicOrderWire` —
+ * it also carries `buyerRef`, `customerId` and the ship-to snapshot. Typing it
+ * as the public shape is what keeps those fields un-referenceable here: the
+ * checkout route projects only `id`/`state` out of this reply and NEVER
+ * forwards the body, so nothing private can reach a storefront page by
+ * accident. The guest-facing read (`getPublicOrder`) genuinely receives only
+ * the whitelist.
+ */
+export type CheckoutResult =
+	| { ok: true; order: PublicOrderWire; intent: PaymentIntentWire }
+	| { ok: false; reason: CheckoutFailureReason };
+
+export type PublicOrderResult =
+	| { ok: true; order: PublicOrderWire }
+	| { ok: false; reason: "ORDER_NOT_FOUND" };
+// ── end Phase 4 checkout wire types ────────────────────────────────────────
 
 // ── Phase 5: customer account wire types (plan §7) ─────────────────────────
 // Mirror @urumi/service's serializeOrder / serializeCustomer / serializeAddress

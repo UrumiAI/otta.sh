@@ -21,6 +21,17 @@
 			}
 		},
 		{
+			"files": ["sites/staging/src/lib/stripe-config.ts"],
+			"rules": {
+				"no-underscore-dangle": [
+					"error",
+					{
+						"allow": ["__URUMI_STRIPE_PUBLIC_KEY__"]
+					}
+				]
+			}
+		},
+		{
 			"files": ["packages/domain/src/**/*.ts"],
 			"rules": {
 				"no-restricted-imports": [

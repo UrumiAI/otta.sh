@@ -6,11 +6,21 @@ import {
 	type CartLineWire,
 	type CartResult,
 	type CartWire,
+	type CheckoutFailureReason,
+	type CheckoutRequestWire,
+	type CheckoutResult,
 	type CommerceClient,
 	type LoginVerifyResult,
 	type OrderSummaryWire,
+	type PaymentIntentWire,
 	type ProductCommerce,
 	type ProductCommerceBatchItem,
+	type PublicOrderResult,
+	type PublicOrderWire,
+	type QuoteBreakdownWire,
+	type QuoteFailureReason,
+	type QuoteRequestWire,
+	type QuoteResult,
 	type UpsertProductCommerceInput,
 } from "./commerce-client.js";
 
@@ -289,6 +299,75 @@ export class HttpCommerceClient implements CommerceClient {
 	}
 
 	// -------------------------------------------------------------------------
+
+	// ── Phase 4: checkout (storefront-checkout plan §1.2) ────────────────────
+	// 1:1 mirrors of `POST /checkout/quote`, `POST /checkout/orders` and
+	// `GET /orders/:orderId`. Typed failures ride a MIX of 400/404/409/502 at
+	// the wire; `#envelopeResult` normalizes every one of them to the same
+	// `{ ok: false, reason }` value (adapter rule #2 — no status-code-as-logic),
+	// so a 502 `PAYMENT_INTENT_FAILED` is a business outcome the checkout page
+	// can explain, never a thrown transport error. Only a body with no
+	// recognizable envelope at all (a zod parse reject, a 500) still throws.
+
+	/** `POST /checkout/quote` — a read, but a POST, so the write gate blocks it
+	 *  without `X-Service-Token`. Never redeems a coupon: safe to repeat. */
+	async quoteCheckout(input: QuoteRequestWire): Promise<QuoteResult> {
+		const res = await this.#fetch(`${this.#baseUrl}/checkout/quote`, {
+			method: "POST",
+			headers: this.#baseHeaders({ "content-type": "application/json" }),
+			body: JSON.stringify(input),
+		});
+		return this.#envelopeResult<{ breakdown: QuoteBreakdownWire }, QuoteFailureReason>(res);
+	}
+
+	/** `POST /checkout/orders` — mints the order, holds stock for the TTL and
+	 *  creates the payment intent. `idempotencyKey` is the CALLER's and is
+	 *  forwarded VERBATIM: a same-key replay returns the original order (and,
+	 *  via Stripe's own native idempotency, the same PaymentIntent), which is
+	 *  exactly what makes a reload of the pay step safe. */
+	async createOrder(input: CheckoutRequestWire, idempotencyKey: string): Promise<CheckoutResult> {
+		const res = await this.#fetch(`${this.#baseUrl}/checkout/orders`, {
+			method: "POST",
+			headers: this.#baseHeaders({
+				"content-type": "application/json",
+				"Idempotency-Key": idempotencyKey,
+			}),
+			body: JSON.stringify(input),
+		});
+		return this.#envelopeResult<
+			{ order: PublicOrderWire; intent: PaymentIntentWire },
+			CheckoutFailureReason
+		>(res);
+	}
+
+	/** `GET /orders/:orderId` — the unauthenticated capability read (ADR-0010
+	 *  §2). Deliberately sends NO `X-Internal-Token`: with one the service
+	 *  answers the full admin projection (`buyerRef`, ship-to, reconciliation),
+	 *  and this reply renders on a page any holder of the URL can open. The
+	 *  storefront must only ever see `serializePublicOrder`'s whitelist. */
+	async getPublicOrder(orderId: string): Promise<PublicOrderResult> {
+		const res = await this.#fetch(`${this.#baseUrl}/orders/${encodeURIComponent(orderId)}`, {
+			method: "GET",
+			headers: this.#baseHeaders(),
+		});
+		return this.#envelopeResult<{ order: PublicOrderWire }, "ORDER_NOT_FOUND">(res);
+	}
+
+	/** The cart-envelope normalization, generalized over its failure token —
+	 *  `#cartResult`'s shape, reused so checkout cannot drift from carts. */
+	async #envelopeResult<T extends Record<string, unknown>, R extends string>(
+		res: Response,
+	): Promise<({ ok: true } & T) | { ok: false; reason: R }> {
+		let body: unknown;
+		try {
+			body = await res.json();
+		} catch {
+			body = undefined;
+		}
+		if (isCartEnvelope(body)) return body as ({ ok: true } & T) | { ok: false; reason: R };
+		throw new CommerceClientError(res.status, body);
+	}
+	// ── end Phase 4 checkout ─────────────────────────────────────────────────
 
 	// ── Phase 5: storefront customer account (plan §7) ─────────────────────
 	// 1:1 mirrors of the service's /auth + /me routes. The bearer session token

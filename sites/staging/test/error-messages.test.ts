@@ -23,6 +23,17 @@ const KNOWN_TOKENS = [
 	"SERVICE_UNAVAILABLE",
 	"PRODUCT_NOT_FOUND",
 	"PRODUCT_UNAVAILABLE",
+	// Checkout (storefront-checkout plan §3 C7). Coupon/shipping-method tokens
+	// are deliberately absent: no such input is offered, so they are unreachable.
+	"CART_EMPTY",
+	"RESERVATION_LOST",
+	"PRODUCT_NOT_PRICED",
+	"CURRENCY_MISMATCH",
+	"PAYMENT_INTENT_FAILED",
+	"INVALID_SHIPPING_ADDRESS",
+	"INVALID_EMAIL",
+	"ORDER_NOT_FOUND",
+	"STRIPE_NOT_CONFIGURED",
 ];
 
 describe("cartErrorMessage", () => {
@@ -45,6 +56,36 @@ describe("cartErrorMessage", () => {
 
 	test("an empty-string token returns the generic fallback, not an empty string", () => {
 		expect(cartErrorMessage("")).not.toBe("");
+	});
+
+	test("PAYMENT_INTENT_FAILED says NO CHARGE WAS MADE — the one fact a buyer needs when a gateway call dies mid-checkout", () => {
+		// The pending order row is kept deliberately (expire-orders sweeps it at
+		// TTL), so the copy must NOT tell the buyer to make a new cart either.
+		const message = cartErrorMessage("PAYMENT_INTENT_FAILED");
+		expect(message).toMatch(/no charge was made/i);
+		expect(message).not.toMatch(/new cart/i);
+	});
+
+	test("PRODUCT_NOT_PRICED and CURRENCY_MISMATCH both say the item is no longer available for purchase (§1.7 copy, quoted not paraphrased)", () => {
+		const expected = "One of the items in your cart is no longer available for purchase.";
+		expect(cartErrorMessage("PRODUCT_NOT_PRICED")).toBe(expected);
+		expect(cartErrorMessage("CURRENCY_MISMATCH")).toBe(expected);
+	});
+
+	test("RESERVATION_LOST explains the expired hold and points at the cart, without blaming the buyer", () => {
+		expect(cartErrorMessage("RESERVATION_LOST")).toMatch(/expired/i);
+	});
+
+	test("INVALID_EMAIL is specific enough to act on", () => {
+		const message = cartErrorMessage("INVALID_EMAIL");
+		expect(message).toMatch(/email/i);
+		expect(message).not.toBe(cartErrorMessage("RENDER_FAILED"));
+	});
+
+	test("STRIPE_NOT_CONFIGURED is honest about the STORE, not the buyer", () => {
+		const message = cartErrorMessage("STRIPE_NOT_CONFIGURED");
+		expect(message).toMatch(/store/i);
+		expect(message).not.toMatch(/your (card|payment)/i);
 	});
 
 	test("OUT_OF_STOCK, HOLD_EXPIRED, CART_NOT_FOUND get DISTINCT, specific copy (not all collapsed to the generic fallback)", () => {

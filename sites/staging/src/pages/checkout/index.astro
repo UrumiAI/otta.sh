@@ -1,0 +1,261 @@
+---
+/**
+ * GET /checkout — the review step. Zero client JS (the whole page is a form
+ * POST); the only JS on this site lives one step later, on /checkout/pay.
+ *
+ * One dispatch does everything: `storefront/checkout/summary` returns both the
+ * line items (from the cart + commerce join) and the QUOTE's totals, which are
+ * authoritative — they are what `createOrderFromCart` will charge.
+ *
+ * Two things this page must never do:
+ *  - render a payable-looking button over a cart that cannot be ordered. Every
+ *    non-renderable state 303s to /cart instead (checkoutEntryRedirect).
+ *  - render the pipeline's synthetic zeros as "Free shipping" / "Tax: $0.00".
+ *    Nothing is configured, so nothing was calculated, and the totals block
+ *    says exactly that.
+ */
+import {
+	CART_COOKIE_NAME,
+	STOREFRONT_CHECKOUT_SUMMARY_ROUTE,
+	type CheckoutSummaryRouteResult,
+} from "@urumi/plugin";
+import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
+import Base from "../../layouts/Base.astro";
+import { checkoutEntryRedirect } from "../../lib/checkout-redirect.js";
+import { cartErrorMessage } from "../../lib/error-messages.js";
+import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
+import { dispatchUrumiRoute } from "../../lib/urumi-api.js";
+
+const cartId = Astro.cookies.get(CART_COOKIE_NAME)?.value;
+const error = Astro.url.searchParams.get("error");
+
+const result =
+	cartId !== undefined && cartId.length > 0
+		? await dispatchUrumiRoute<CheckoutSummaryRouteResult>(
+				getPublicPluginApiRouteHandler(Astro.locals),
+				STOREFRONT_CHECKOUT_SUMMARY_ROUTE,
+				{ cartId },
+				Astro.url,
+			)
+		: null;
+
+const redirect = checkoutEntryRedirect(cartId, result);
+if (redirect !== null) {
+	const target = new URL(redirect.path, Astro.url);
+	if (redirect.error !== undefined) target.searchParams.set("error", redirect.error);
+	return Astro.redirect(target.pathname + target.search, 303);
+}
+
+// `checkoutEntryRedirect` returning null means exactly this shape.
+const summary = result as Extract<CheckoutSummaryRouteResult, { ok: true }>;
+const { lines, totals } = summary;
+
+/** No key ⇒ no payment step, and NO order is created: creating one would hold
+ *  stock for a payment the buyer cannot make. (A key that is present but
+ *  malformed never reaches here — it fails the build; see stripe-config.ts.) */
+const paymentConfigured = STRIPE_PUBLISHABLE_KEY !== undefined;
+
+/** The dead-cart trap's exit, offered only where it applies. */
+const checkedOut = error === "CART_CHECKED_OUT";
+---
+
+<Base title="Checkout">
+	<h1>Checkout</h1>
+
+	{error !== null && <p class="notice">{cartErrorMessage(error)}</p>}
+
+	{
+		checkedOut && (
+			<form method="POST" action="/checkout/new-cart">
+				<button type="submit">Start a new cart</button>
+			</form>
+		)
+	}
+
+	{
+		summary.hasUnpricedLines && (
+			<p class="notice">
+				Live prices for some items are temporarily unavailable — the totals below come from the
+				store and are what you will be charged.
+			</p>
+		)
+	}
+
+	<h2>Your order</h2>
+	<table>
+		<thead>
+			<tr>
+				<th>SKU</th>
+				<th>Qty</th>
+				<th>Unit price</th>
+				<th>Line total</th>
+			</tr>
+		</thead>
+		<tbody>
+			{
+				lines.map((line) => (
+					<tr>
+						<td>{line.sku}</td>
+						<td>{line.qty}</td>
+						<td>{line.unitPrice?.formatted ?? "priced at checkout"}</td>
+						<td>{line.lineTotal?.formatted ?? "priced at checkout"}</td>
+					</tr>
+				))
+			}
+		</tbody>
+	</table>
+
+	<h2>Totals</h2>
+	<dl class="totals">
+		<dt>Subtotal</dt>
+		<dd>{totals.subtotal.label}</dd>
+		<dt>Discount</dt>
+		<dd>
+			{totals.discount.label}
+			{totals.appliedCouponCode === null && totals.discount.money === null && (
+				<span class="muted"> (no coupon applied)</span>
+			)}
+			{totals.appliedCouponCode !== null && <span class="muted"> ({totals.appliedCouponCode})</span>}
+		</dd>
+		<dt>Shipping</dt>
+		<dd>
+			{totals.shipping.label}
+			{
+				totals.shipping.money === null && (
+					<span class="muted"> — no delivery options are configured for this store</span>
+				)
+			}
+		</dd>
+		<dt>Tax</dt>
+		<dd>{totals.tax.label}</dd>
+		<dt>Total</dt>
+		<dd><strong>{totals.total.label}</strong></dd>
+	</dl>
+
+	{
+		totals.totalExcludesUncalculated && (
+			<p class="muted">
+				This total does not include shipping or tax. This store has not configured either yet.
+			</p>
+		)
+	}
+
+	<h2>Your details</h2>
+	<form method="POST" action="/checkout/place">
+		{/* STABLE per cart (checkout:<cartId>), so a reload or a double-submit
+		    replays into the SAME order and the same PaymentIntent instead of
+		    minting a second order the CART_CHECKED_OUT fence would reject. */}
+		<input type="hidden" name="idempotencyKey" value={summary.idempotencyKey} />
+
+		<p>
+			<label>
+				Email <span class="required">(required)</span>
+				<input type="email" name="email" required autocomplete="email" />
+			</label>
+			<span class="muted">
+				We use this to send your order confirmation and to link the order to your account if you
+				sign in later.
+			</span>
+		</p>
+
+		<fieldset>
+			<legend>Delivery address</legend>
+			<p class="muted">
+				Optional for now — fill it in completely, or leave it entirely blank.
+			</p>
+			<p>
+				<label>Full name <input type="text" name="name" autocomplete="name" /></label>
+			</p>
+			<p>
+				<label>Address line 1 <input type="text" name="line1" autocomplete="address-line1" /></label>
+			</p>
+			<p>
+				<label>Address line 2 <input type="text" name="line2" autocomplete="address-line2" /></label>
+			</p>
+			<p>
+				<label>City <input type="text" name="city" autocomplete="address-level2" /></label>
+			</p>
+			<p>
+				<label>Region / state <input type="text" name="region" autocomplete="address-level1" /></label>
+			</p>
+			<p>
+				<label>Postal code <input type="text" name="postalCode" autocomplete="postal-code" /></label>
+			</p>
+			<p>
+				<label>Country <input type="text" name="country" autocomplete="country-name" /></label>
+			</p>
+			<p>
+				<label>Phone <input type="tel" name="phone" autocomplete="tel" /></label>
+			</p>
+		</fieldset>
+
+		{
+			paymentConfigured ? (
+				<button type="submit">Continue to payment</button>
+			) : (
+				<p class="notice">
+					Card payment isn't set up on this store yet, so this order can't be placed. Nothing has
+					been charged and your cart is unchanged.
+				</p>
+			)
+		}
+	</form>
+
+	<p><a href="/cart">Back to cart</a></p>
+</Base>
+
+<style>
+	table {
+		border-collapse: collapse;
+		width: 100%;
+	}
+	th,
+	td {
+		text-align: left;
+		padding: 0.5rem;
+		border-bottom: 1px solid #ddd;
+	}
+	.totals {
+		display: grid;
+		grid-template-columns: max-content 1fr;
+		gap: 0.25rem 1.5rem;
+		margin: 0;
+	}
+	.totals dt {
+		font-weight: 600;
+	}
+	.totals dd {
+		margin: 0;
+	}
+	.muted {
+		color: #666;
+		font-size: 0.875rem;
+	}
+	.required {
+		color: #666;
+		font-weight: 400;
+		font-size: 0.875rem;
+	}
+	.notice {
+		background: #fff7e0;
+		border: 1px solid #e6c200;
+		border-radius: 0.5rem;
+		padding: 0.75rem 1rem;
+	}
+	fieldset {
+		border: 1px solid #ddd;
+		border-radius: 0.5rem;
+		padding: 0.5rem 1rem 1rem;
+	}
+	label {
+		display: block;
+	}
+	input[type="text"],
+	input[type="email"],
+	input[type="tel"] {
+		display: block;
+		width: 100%;
+		max-width: 24rem;
+		padding: 0.35rem;
+	}
+</style>
