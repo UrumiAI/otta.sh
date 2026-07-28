@@ -59,6 +59,7 @@ changed. Migrations are forward-only.
   | `@urumi/service` (REST API, HTTP serialization) | `[Service]` |
   | Store/client/payment **adapters** (postgres, sqlite, d1, stripe, x402) | `[Adapters]` |
   | The EmDash **plugin** (storefront, Block Kit panel, sync hooks) | `[Plugin]` |
+  | `sites/*` (the reference storefront site/theme) | `[Site]` |
   | Shared test/contract packages | `[Test]` |
   | CI / tooling / build | `[CI]` |
   | `adr/`, `*.md`, docs | `[Docs]` |
