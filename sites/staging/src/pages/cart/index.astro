@@ -61,7 +61,16 @@ const lineForms = lines.map((line) => ({
 }));
 ---
 
-<Base title="Cart">
+{/* The nav badge and the footer currency both reuse THIS page's cart read —
+    the layout makes no commerce call of its own, and it never invents either
+    value. `null` when there is no cart to read, so the nav renders a bare
+    "Cart" rather than a misleading "Cart (0)" and the footer names no
+    currency rather than guessing one. */}
+<Base
+	title="Cart"
+	cartCount={cart === null ? null : totalQty(cart)}
+	currency={cart?.currency ?? null}
+>
 	<h1>Cart</h1>
 
 	{error !== null && <p class="notice">{cartErrorMessage(error)}</p>}
@@ -153,7 +162,7 @@ const lineForms = lines.map((line) => ({
 	td {
 		text-align: left;
 		padding: 0.5rem;
-		border-bottom: 1px solid #ddd;
+		border-bottom: var(--u-hair);
 	}
 	form {
 		display: flex;
@@ -163,7 +172,7 @@ const lineForms = lines.map((line) => ({
 		width: 4.5rem;
 	}
 	.muted {
-		color: #666;
+		color: var(--u-mute);
 		font-size: 0.875rem;
 	}
 	.notice {

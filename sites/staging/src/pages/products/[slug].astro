@@ -55,7 +55,13 @@ const degraded = content !== null && product === null;
 const error = Astro.url.searchParams.get("error");
 ---
 
-<Base title={content?.title ?? "Product not found"} description={content?.description}>
+{/* An unpriced or degraded product carries no currency, and the footer
+    then names none rather than guessing (§7). */}
+<Base
+	title={content?.title ?? "Product not found"}
+	description={content?.description}
+	currency={product?.price?.currency ?? null}
+>
 	{
 		content === null ? (
 			<>
@@ -128,15 +134,15 @@ const error = Astro.url.searchParams.get("error");
 		font-weight: 700;
 	}
 	.muted {
-		color: #666;
+		color: var(--u-mute);
 		font-size: 1rem;
 		font-weight: 400;
 	}
 	.availability.in_stock {
-		color: #1a7f37;
+		color: var(--u-ink);
 	}
 	.availability.out_of_stock {
-		color: #b35900;
+		color: var(--u-mute);
 	}
 	.notice {
 		background: #fff7e0;

@@ -1,0 +1,245 @@
+/**
+ * "Tempered" — the theme's token layer.  Spec: docs/theme/TEMPERED.md §2–§3.
+ * Imported once, by src/layouts/Base.astro.  No page declares a raw colour or
+ * a font stack of its own.
+ *
+ * An urumi is a ribbon of spring steel.  Heat spring steel and it runs through
+ * straw → bronze → violet → deep blue — an ORDERED scale — and the store has
+ * ordered states too (available → held → expiring → released).  So the palette
+ * is that scale, and a hue means one thing everywhere: colour carries state
+ * instead of decorating.  Straw is a fitting, never a fill: it is the focus
+ * ring, the hover rule and the wordmark's underline, and it never becomes a
+ * button background, which is what keeps every interactive element at full
+ * text contrast.
+ *
+ * Increment 1 of the theme rollout ships THIS FILE plus the layout chrome.
+ * The pages still carry their pre-theme styles; increments 3–6 move them onto
+ * these tokens.  See the transitional block at the foot of this file.
+ */
+
+:root {
+	/* The UA renders scrollbars, form controls and the canvas from this. */
+	color-scheme: light dark;
+
+	/* neutrals: steel-biased, not pure grey */
+	--u-ink: #131a20;
+	--u-ground: #f1f4f4;
+	--u-surface: #ffffff;
+	--u-edge: #d2dad9;
+	--u-mute: #5a6a70;
+
+	/* tempering scale — an ordered heat signal, used as state */
+	--u-straw: #8a6412; /* brass fitting: emphasis, focus, hover */
+	--u-violet: #6b4c9e; /* held: stock reserved for you */
+	--u-bronze: #96541f; /* expiring / failed / degraded */
+
+	/* media panels stay neutral steel; only the coil carries a hue */
+	--u-panel: rgba(19, 26, 32, 0.05);
+	--u-tint-violet: #6b4c9e;
+	--u-tint-straw: #8a6412;
+	--u-tint-blue: #1f3d6b;
+	--u-coil-a: 0.5;
+
+	/* structure */
+	--u-r: 2px; /* a blade edge, not a pill — one value, everywhere */
+	--u-hair: 1px solid var(--u-edge); /* the only divider in the theme */
+
+	/**
+	 * The three faces.  `--u-face-*` is what Astro's font API defines (see
+	 * `fonts` in astro.config.ts and the <Font> tags in Base.astro): it
+	 * resolves to Astro's build-hashed family name PLUS its metric-adjusted
+	 * local fallback, which is what stops the swap from shifting layout.
+	 * Reading it through `var()` is therefore the only way to get the
+	 * self-hosted face; the plain family name is the var's fallback, and only
+	 * matters if a face is ever dropped from the config, in which case a
+	 * locally-installed copy is better than nothing.  Neither branch is a CDN
+	 * lookup.
+	 */
+	--u-display: var(--u-face-display, "Bricolage Grotesque"), ui-sans-serif, sans-serif;
+	--u-body: var(--u-face-body, "Schibsted Grotesk"), ui-sans-serif, system-ui, sans-serif;
+	--u-data: var(--u-face-data, "Martian Mono"), ui-monospace, monospace;
+}
+
+/**
+ * Dark is not a naive inversion — the accent lifts to carry on a dark ground
+ * (straw #8A6412 → #E0AC3A) while the neutrals stay steel-biased.
+ */
+@media (prefers-color-scheme: dark) {
+	:root {
+		color-scheme: dark;
+
+		--u-ink: #e7edec;
+		--u-ground: #0f1418;
+		--u-surface: #171e22;
+		--u-edge: #2b363b;
+		--u-mute: #8fa0a6;
+
+		--u-straw: #e0ac3a;
+		--u-violet: #ae93de;
+		--u-bronze: #d68f4e;
+
+		--u-panel: rgba(231, 237, 236, 0.055);
+		--u-tint-violet: #ae93de;
+		--u-tint-straw: #e0ac3a;
+		--u-tint-blue: #6e9bd8;
+	}
+}
+
+/**
+ * An explicit toggle must beat the OS preference in BOTH directions, so the
+ * dark set is repeated on the attribute and the light set is RESTORED on it.
+ * Order matters: the restore is authored after the media query above, which
+ * is what makes "force light" work on a dark-preference machine rather than
+ * silently doing nothing.
+ *
+ * TODO: nothing sets `data-theme` yet — today the site follows the OS
+ * preference and these two blocks are inert.  A theme switcher is not part of
+ * this increment; whoever adds one MUST stamp the attribute onto <html> from a
+ * blocking inline script in <head>, BEFORE first paint.  Setting it from a
+ * deferred/hydrated script flashes the OS palette first, which is worse than
+ * having no toggle at all.
+ */
+:root[data-theme="dark"] {
+	color-scheme: dark;
+
+	--u-ink: #e7edec;
+	--u-ground: #0f1418;
+	--u-surface: #171e22;
+	--u-edge: #2b363b;
+	--u-mute: #8fa0a6;
+
+	--u-straw: #e0ac3a;
+	--u-violet: #ae93de;
+	--u-bronze: #d68f4e;
+
+	--u-panel: rgba(231, 237, 236, 0.055);
+	--u-tint-violet: #ae93de;
+	--u-tint-straw: #e0ac3a;
+	--u-tint-blue: #6e9bd8;
+}
+
+:root[data-theme="light"] {
+	color-scheme: light;
+
+	--u-ink: #131a20;
+	--u-ground: #f1f4f4;
+	--u-surface: #ffffff;
+	--u-edge: #d2dad9;
+	--u-mute: #5a6a70;
+
+	--u-straw: #8a6412;
+	--u-violet: #6b4c9e;
+	--u-bronze: #96541f;
+
+	--u-panel: rgba(19, 26, 32, 0.05);
+	--u-tint-violet: #6b4c9e;
+	--u-tint-straw: #8a6412;
+	--u-tint-blue: #1f3d6b;
+}
+
+/* ── Base ──────────────────────────────────────────────────────────────── */
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+html {
+	-webkit-text-size-adjust: 100%;
+}
+
+body {
+	margin: 0;
+	background: var(--u-surface);
+	color: var(--u-ink);
+	font-family: var(--u-body);
+	font-size: 0.9375rem;
+	line-height: 1.6;
+	-webkit-font-smoothing: antialiased;
+	text-rendering: optimizeLegibility;
+}
+
+/* §11: responsive to 390px with NO horizontal page scroll. Wide content
+   scrolls inside its own container; media never pushes the page wider. */
+img,
+svg,
+video,
+canvas {
+	max-width: 100%;
+}
+
+img,
+video {
+	height: auto;
+}
+
+/* Text for screen readers only — for the cases where the visual form carries
+   meaning that the reading order does not (the nav's "(3)" cart badge). */
+.u-sr-only {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	margin: -1px;
+	padding: 0;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+	border: 0;
+}
+
+/* §11: visible keyboard focus on EVERY interactive element — straw, 2px,
+   offset 2px.  Deliberately not `:where()`: a page must not be able to lose
+   the ring by accident. */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+summary:focus-visible,
+[tabindex]:focus-visible {
+	outline: 2px solid var(--u-straw);
+	outline-offset: 2px;
+	/* This sets the element's REAL geometry while focused, not just the ring's
+	   — which is fine only because the theme has exactly one radius ("2px
+	   everywhere", § structure), so nothing visibly changes shape on focus. A
+	   component that ever needs a different radius must override this in its
+	   own scope, or it will snap to 2px the moment it is focused. */
+	border-radius: var(--u-r);
+}
+
+/**
+ * §11 / §6: decorative motion is suppressed under reduced motion — but the
+ * hold countdown is INFORMATION the shopper is relying on, so anything
+ * carrying `data-motion="essential"` is exempt.
+ *
+ * The exemption must cover the element's SUBTREE, not just the element: the
+ * §6 hold ribbon is a wrapper with an animated inner fill, and
+ * `*:not([data-motion="essential"])` still matches that inner fill — which
+ * would kill exactly the motion the opt-out exists to protect.  Hence the
+ * second argument to `:not()`.
+ */
+@media (prefers-reduced-motion: reduce) {
+	/* `scroll-behavior` does NOT inherit (CSSOM View: "Inherited: no") — it
+	   applies to scrolling BOXES, so the universal selector was not spreading
+	   one value down a tree, it was setting it on every element in the
+	   document to no effect. <html> is the box that scrolls the viewport, so
+	   that is where it belongs. Note `main` is a second scrolling box while
+	   legacy-bridge.css is in play; a `smooth` rule there would need the same
+	   override.
+	   `!important` is deliberate and is the legitimate use of it: a later
+	   author writing `html { scroll-behavior: smooth }` outside this media
+	   query would otherwise silently beat an accessibility override on
+	   specificity-then-order. */
+	html {
+		scroll-behavior: auto !important;
+	}
+
+	*:not([data-motion="essential"], [data-motion="essential"] *),
+	*:not([data-motion="essential"], [data-motion="essential"] *)::before,
+	*:not([data-motion="essential"], [data-motion="essential"] *)::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+	}
+}

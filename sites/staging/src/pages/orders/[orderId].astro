@@ -87,7 +87,11 @@ const statusLine = state === null ? null : isPending ? pendingCopy : (COPY[state
 const deadEnd = state === "expired" || state === "cancelled";
 ---
 
-<Base title={order === null ? "Order" : `Order ${order.id}`}>
+{/* The order names its own currency; a failed read names none (§7). */}
+<Base
+	title={order === null ? "Order" : `Order ${order.id}`}
+	currency={order?.currency ?? null}
+>
 	<meta name="referrer" content="no-referrer" slot="head" />
 	{shouldPoll && <meta http-equiv="refresh" content={`4;url=${nextPollUrl}`} slot="head" />}
 
@@ -199,7 +203,7 @@ const deadEnd = state === "expired" || state === "cancelled";
 	td {
 		text-align: left;
 		padding: 0.5rem;
-		border-bottom: 1px solid #ddd;
+		border-bottom: var(--u-hair);
 	}
 	.status {
 		font-size: 1.125rem;
@@ -217,7 +221,7 @@ const deadEnd = state === "expired" || state === "cancelled";
 		margin: 0;
 	}
 	.muted {
-		color: #666;
+		color: var(--u-mute);
 		font-size: 0.875rem;
 	}
 	.notice {
