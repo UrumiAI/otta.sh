@@ -99,6 +99,7 @@ describe("the component set §4 asks for", () => {
 		"Ledger.astro",
 		"MediaPanel.astro",
 		"Notice.astro",
+		"PollRibbon.astro",
 		"PriceTag.astro",
 		"ProductCard.astro",
 		"QtyField.astro",
@@ -259,22 +260,29 @@ describe("the motion budget (§2, §6, §11)", () => {
 		expect(withScripts).toEqual(["HoldRibbon.astro"]);
 	});
 
-	test("only the hold ribbon animates, and it declares both sides of the rule", () => {
+	test("only the two ribbons animate, and each declares both sides of the rule", () => {
 		const animated = files.filter((name) =>
 			/animation:|@keyframes|transition:/.test(styles(source(name))),
 		);
-		expect(animated).toEqual(["HoldRibbon.astro"]);
+		expect(animated).toEqual(["HoldRibbon.astro", "PollRibbon.astro"]);
 
-		const css = styles(source("HoldRibbon.astro"));
-		// The countdown is INFORMATION and is exempted by its wrapper…
+		// The COUNTDOWN is information a shopper is timing a decision against, so
+		// it is exempted by its wrapper rather than by a media query.
 		expect(readFileSync(path.join(COMPONENTS_DIR, "HoldRibbon.astro"), "utf8")).toContain(
 			'data-motion="essential"',
 		);
-		// …while the indeterminate sweep is decoration and settles to a static
-		// filled track rather than freezing at its first keyframe.
+
+		// The indeterminate SWEEP is decoration — the count beside it is the
+		// information — so it takes the clamp, and settles into a static filled
+		// track rather than freezing at whichever keyframe it was on.
+		const css = styles(source("PollRibbon.astro"));
 		expect(css).toContain("@media (prefers-reduced-motion: reduce)");
 		const reduced = css.slice(css.indexOf("@media (prefers-reduced-motion: reduce)"));
 		expect(reduced).toContain("animation: none");
 		expect(reduced).toContain("opacity: 0.4");
+		// It must NOT claim the exemption the countdown has.
+		expect(readFileSync(path.join(COMPONENTS_DIR, "PollRibbon.astro"), "utf8")).not.toContain(
+			'data-motion="essential"',
+		);
 	});
 });

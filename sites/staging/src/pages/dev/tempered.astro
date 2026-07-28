@@ -42,6 +42,7 @@ const [
 	{ default: Ledger },
 	{ default: MediaPanel },
 	{ default: Notice },
+	{ default: PollRibbon },
 	{ default: PriceTag },
 	{ default: ProductCard },
 	{ default: QtyField },
@@ -54,6 +55,7 @@ const [
 	import("../../components/Ledger.astro"),
 	import("../../components/MediaPanel.astro"),
 	import("../../components/Notice.astro"),
+	import("../../components/PollRibbon.astro"),
 	import("../../components/PriceTag.astro"),
 	import("../../components/ProductCard.astro"),
 	import("../../components/QtyField.astro"),
@@ -186,7 +188,7 @@ const CONFIGURED = [
 			<div class="hold-cell"><span class="u-label cap">released</span><HoldRibbon expiresAt={at(-90)} /></div>
 			<div class="hold-cell">
 				<span class="u-label cap">indeterminate · a pending order</span>
-				<HoldRibbon variant="indeterminate" poll={3} pollMax={8} />
+				<PollRibbon poll={3} pollMax={8} />
 			</div>
 			<div class="hold-cell">
 				<span class="u-label cap">no reservation on the line — renders nothing</span>
@@ -252,7 +254,7 @@ const CONFIGURED = [
 				headline="Payment submitted."
 				body="We're confirming it with our payment provider — this usually takes a few seconds."
 			>
-				<HoldRibbon variant="indeterminate" poll={3} pollMax={8} />
+				<PollRibbon poll={3} pollMax={8} />
 			</StateStamp>
 			<StateStamp
 				state="failed"

@@ -9,12 +9,14 @@
  * naive substring search — the rule that Stripe's redirect parameters never
  * reach the rendered markup.
  */
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
-const PAGES_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src/pages");
+const SRC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src");
+const PAGES_DIR = path.join(SRC_DIR, "pages");
+const COMPONENTS_DIR = path.join(SRC_DIR, "components");
 
 /** Strip comments from an interpolation expression: the no-echo rule is about what
  *  the template RENDERS, so prose explaining why it doesn't leak is not a leak. */
@@ -58,6 +60,32 @@ function hasExecutableScript(source: string): boolean {
 	return false;
 }
 
+/**
+ * The `.astro` components a file imports, resolved to absolute paths.
+ *
+ * One level is not enough: a page importing a component that imports a scripted
+ * one ships the script just the same, so this is walked transitively below.
+ */
+function componentImports(file: string): string[] {
+	const source = readFileSync(file, "utf8");
+	return [...source.matchAll(/^import\s+\w+\s+from\s+["']([^"']+\.astro)["'];?$/gm)]
+		.map((m) => path.resolve(path.dirname(file), m[1] ?? ""))
+		.filter((resolved) => existsSync(resolved));
+}
+
+/** Every `.astro` file this one pulls into the browser's bundle, transitively. */
+function componentClosure(entry: string): string[] {
+	const seen = new Set<string>();
+	const queue = componentImports(entry);
+	while (queue.length > 0) {
+		const next = queue.pop();
+		if (next === undefined || seen.has(next)) continue;
+		seen.add(next);
+		queue.push(...componentImports(next));
+	}
+	return [...seen];
+}
+
 describe("10a — the client-JS fence (ADR-0012 decision 2)", () => {
 	const source = readFileSync(PAY_PAGE, "utf8");
 
@@ -68,6 +96,36 @@ describe("10a — the client-JS fence (ADR-0012 decision 2)", () => {
 			.map((file) => path.relative(PAGES_DIR, file));
 		expect(offenders).toEqual([]);
 		expect(hasExecutableScript(source)).toBe(true);
+	});
+
+	test("…and no page IMPORTS one either — a component's script ships when it renders", () => {
+		// The first cut of increment 5 put the confirmation page's poll sweep on
+		// `HoldRibbon`, whose bundled countdown script Astro then emitted onto
+		// /orders/<id> — a page ADR-0012 specifies as carrying no client JS. The
+		// page's own source was clean, so the check above saw nothing. Scripts
+		// arrive through imports too, and this is that half of the fence.
+		const offenders = listPages(PAGES_DIR)
+			.filter((file) => file !== PAY_PAGE)
+			// The dev styleguide renders every component in every state and is
+			// 404'd outside dev (dev-route-guard.test.ts).
+			.filter((file) => path.relative(PAGES_DIR, file) !== path.join("dev", "tempered.astro"))
+			.flatMap((file) =>
+				componentClosure(file)
+					.filter((component) => hasExecutableScript(readFileSync(component, "utf8")))
+					.map((component) => `${path.relative(PAGES_DIR, file)} → ${path.basename(component)}`),
+			);
+		expect(offenders).toEqual([]);
+	});
+
+	test("the scripted components are named, so growing one is a decision", () => {
+		// `HoldRibbon` is the cart's countdown and the only component with a
+		// script. `PollRibbon` exists precisely so the confirmation page can have
+		// the same ribbon without it.
+		const scripted = readdirSync(COMPONENTS_DIR)
+			.filter((name) => name.endsWith(".astro"))
+			.filter((name) => hasExecutableScript(readFileSync(path.join(COMPONENTS_DIR, name), "utf8")))
+			.toSorted();
+		expect(scripted).toEqual(["HoldRibbon.astro"]);
 	});
 
 	test("it references EXACTLY ONE external script origin, and that origin is Stripe's", () => {

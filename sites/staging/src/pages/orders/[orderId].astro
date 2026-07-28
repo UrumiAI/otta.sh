@@ -27,15 +27,21 @@
  * the browser for the rest of the hold. That deletion is the entire
  * justification for the cookie's `path=/`.
  *
+ * ── Zero client JavaScript, and that is a rule (ADR-0012 decision 2) ─────
  * Polling is `<meta http-equiv="refresh">`, bounded to 8 hops (~30 s), then a
- * manual link. No JS, no busy loop — the sweeping ribbon beside the count is
- * CSS on a page that reloads itself.
+ * manual link: no JS, no busy loop. The sweeping ribbon beside the count is a
+ * CSS animation on a page that reloads itself, which is why it comes from
+ * `PollRibbon` and NOT from `HoldRibbon` — the latter ships a bundled script
+ * for its countdown, and Astro emits a component's script whenever that
+ * component renders, so importing it here would have put ~1 kB of client JS on
+ * a page specified to carry none. `checkout-client-js.test.ts` now scans
+ * component imports for exactly that.
  */
 import { STOREFRONT_ORDER_ROUTE, type OrderRouteResult } from "@urumi/plugin";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
-import HoldRibbon from "../../components/HoldRibbon.astro";
 import Ledger from "../../components/Ledger.astro";
 import Notice from "../../components/Notice.astro";
+import PollRibbon from "../../components/PollRibbon.astro";
 import StateStamp from "../../components/StateStamp.astro";
 import StepTrack from "../../components/StepTrack.astro";
 import Sum from "../../components/Sum.astro";
@@ -123,22 +129,36 @@ const stamp: StateCopy | null =
  *  rather than a comparison so no other state can ever pick up the word. */
 const TOTAL_LABEL: Record<string, string> = { paid: "Paid" };
 
-/** A cart that is `checked_out` never returns to `active`, so an expired order
- *  leaves the buyer holding a cart that can produce no new one. Offer the door. */
-const deadEnd = state === "expired" || state === "cancelled";
+/**
+ * The states with nowhere left to go, and therefore the states that get the
+ * door out.
+ *
+ * `failed` is in this set, which it was not before. The cart that produced the
+ * order is `checked_out` and never returns to `active`, so /checkout answers
+ * CART_CHECKED_OUT and 303s to /cart for ALL THREE of these — a "Back to
+ * checkout" link on a failed order walks the buyer into an error page and
+ * stops. `POST /checkout/new-cart` is the one control that actually moves them,
+ * and it is already built. The stamp still leads with "No charge was made", so
+ * the offer reads as "try again", not "pay again".
+ */
+const deadEnd = state === "expired" || state === "cancelled" || state === "failed";
 
-/* The way back to payment goes through /checkout, NOT straight to
-   /checkout/pay: the stash was just deleted above, so the pay page has no
-   client secret to mount. Re-submitting the review form replays
-   `checkout:<cartId>` — the same order, and through Stripe's own idempotency
-   the same PaymentIntent and the same client secret — which re-stashes it. The
-   stable key is what makes resuming possible at all. */
+/* Resuming a PENDING order is different, and still goes through /checkout
+   rather than straight to /checkout/pay: the stash was just deleted above, so
+   the pay page has no client secret to mount. Re-submitting the review form
+   replays `checkout:<cartId>` — the same order, and through Stripe's own
+   idempotency the same PaymentIntent and the same client secret — which
+   re-stashes it. The stable key is what makes resuming possible at all. */
 const canResume = state === "pending" && !returnedFromStripe;
 const canCheckAgain = isPending && !shouldPoll;
-const hasActions = deadEnd || canResume || canCheckAgain || state === "failed";
+const hasActions = deadEnd || canResume || canCheckAgain;
 
+/** The order's lines are a RECEIPT, so they carry the purchase-time title
+ *  snapshot as well as the SKU — unlike /checkout, where the cart wire has no
+ *  title to show. */
 const ledgerRows =
 	order?.lines.map((line) => ({
+		title: line.title,
 		sku: line.sku,
 		qty: line.qty,
 		money: line.lineTotal.formatted,
@@ -170,14 +190,13 @@ const sumRows =
 	<meta name="referrer" content="no-referrer" slot="head" />
 	{shouldPoll && <meta http-equiv="refresh" content={`4;url=${nextPollUrl}`} slot="head" />}
 
-	{/* Wrapped rather than given a class: a page's scoped selector cannot reach a
-	    component's root (src/lib/rest-props.ts), so the spacing around one lives
-	    on an element the page owns. */}
-	<div class="steps"><StepTrack current="order" /></div>
-
 	{
 		order === null || stamp === null ? (
 			<>
+				{/* NO step track here. It says Cart and Details and Payment are
+				    behind you, and for an order that does not exist — a mistyped
+				    link, someone else's reference, a service that is down — that
+				    is a journey the visitor never made. */}
 				<h1 class="title">Order</h1>
 				<div class="alert">
 					<Notice>
@@ -192,18 +211,24 @@ const sumRows =
 			</>
 		) : (
 			<>
+				{/* Wrapped rather than given a class: a page's scoped selector
+				    cannot reach a component's root (src/lib/rest-props.ts), so the
+				    spacing around one lives on an element the page owns. */}
+				<div class="steps"><StepTrack current="order" /></div>
+
 				<StateStamp
 					state={order.state}
 					headline={stamp.headline}
 					body={stamp.body}
 					reference={order.id}
 				>
-					{/* The hold ribbon again, running indeterminate: there is no
-					    duration to drain against, so the count carries the
-					    information and the sweep says only "still working". */}
+					{/* The hold ribbon's grammar, running indeterminate and
+					    SCRIPT-FREE: there is no duration to drain against, so the
+					    count carries the information and the sweep says only
+					    "still working". */}
 					{shouldPoll && (
 						<div class="poll">
-							<HoldRibbon variant="indeterminate" poll={pollAttempt + 1} pollMax={MAX_POLLS} />
+							<PollRibbon poll={pollAttempt + 1} pollMax={MAX_POLLS} />
 						</div>
 					)}
 				</StateStamp>
@@ -222,11 +247,6 @@ const sumRows =
 								Complete payment
 							</a>
 						)}
-						{state === "failed" && (
-							<a class="btn btn-ghost" href="/checkout">
-								Back to checkout
-							</a>
-						)}
 						{deadEnd && (
 							<form method="POST" action="/checkout/new-cart">
 								<button type="submit" class="btn btn-ghost">
@@ -240,7 +260,7 @@ const sumRows =
 				<div class="cols">
 					<section class="panel">
 						<div class="panel-head">
-							<span class="u-label head-label">Items</span>
+							<h2 class="u-label head-label">Items</h2>
 						</div>
 						<Ledger rows={ledgerRows} />
 						{order.fulfillment !== null && (
@@ -253,7 +273,7 @@ const sumRows =
 
 					<section class="panel">
 						<div class="panel-head">
-							<span class="u-label head-label">Totals</span>
+							<h2 class="u-label head-label">Totals</h2>
 						</div>
 						<Sum
 							rows={sumRows}
@@ -336,7 +356,12 @@ const sumRows =
 		padding-bottom: 0.75rem;
 		border-bottom: var(--u-hair);
 	}
+	/* A real <h2> wearing the eyebrow treatment — styling, not a demotion, so
+	   screen-reader heading navigation still works. `.u-label` (tokens.css)
+	   already beats the UA sheet on size and weight; the margin is all that is
+	   left to undo. */
 	.head-label {
+		margin: 0;
 		color: var(--u-ink);
 	}
 

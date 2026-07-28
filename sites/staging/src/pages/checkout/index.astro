@@ -118,7 +118,7 @@ const sumRows = [
 	<div class="cols">
 		<section class="panel">
 			<div class="panel-head">
-				<span class="u-label head-label">Your details</span>
+				<h2 class="u-label head-label">Your details</h2>
 			</div>
 
 			<form method="POST" action="/checkout/place" class="details">
@@ -127,16 +127,27 @@ const sumRows = [
 				    minting a second order the CART_CHECKED_OUT fence would reject. */}
 				<input type="hidden" name="idempotencyKey" value={summary.idempotencyKey} />
 
-				<label class="field">
-					<span class="u-label">
+				{/* The note is a SIBLING of the label, not inside it. Nested, its
+				    ~25 words join the field's ACCESSIBLE NAME and get read out in
+				    full every time the input takes focus; `aria-describedby` is how
+				    a hint attaches — announced after the name, and as a hint. */}
+				<div class="field">
+					<label class="u-label" for="email">
 						Email <span class="req">required</span>
-					</span>
-					<input type="email" name="email" required autocomplete="email" />
-					<span class="note">
+					</label>
+					<input
+						type="email"
+						id="email"
+						name="email"
+						required
+						autocomplete="email"
+						aria-describedby="email-note"
+					/>
+					<span class="note" id="email-note">
 						We use this to send your order confirmation and to link the order to your account if
 						you sign in later.
 					</span>
-				</label>
+				</div>
 
 				<fieldset class="group">
 					<legend class="u-label head-label">Delivery address</legend>
@@ -187,7 +198,9 @@ const sumRows = [
 							</button>
 						</div>
 					) : (
-						<Notice lead="Card payment isn't set up on this store yet.">
+						/* Lead QUOTED from error-messages.ts's STRIPE_NOT_CONFIGURED
+						   rather than restated here (§10). */
+						<Notice lead={cartErrorMessage("STRIPE_NOT_CONFIGURED")}>
 							This order can't be placed. Nothing has been charged and your cart is unchanged.
 						</Notice>
 					)
@@ -197,7 +210,7 @@ const sumRows = [
 
 		<section class="panel">
 			<div class="panel-head">
-				<span class="u-label head-label">Your order</span>
+				<h2 class="u-label head-label">Your order</h2>
 			</div>
 
 			{
@@ -271,8 +284,13 @@ const sumRows = [
 		padding-bottom: 0.75rem;
 		border-bottom: var(--u-hair);
 	}
-	/* A section's own name reads at full contrast; a field's does not. */
+	/* A section's own name reads at full contrast; a field's does not. These are
+	   real <h2>/<legend> elements — the eyebrow is a TREATMENT, not a demotion,
+	   so a screen reader still gets a heading to navigate by — which leaves only
+	   the UA margin to undo. `.u-label` (tokens.css) already beats the UA sheet
+	   on specificity for size and weight. */
 	.head-label {
+		margin: 0;
 		color: var(--u-ink);
 	}
 
