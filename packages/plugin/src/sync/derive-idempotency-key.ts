@@ -1,26 +1,46 @@
 /**
  * Idempotency-key derivation for a content sync (plan §4 / §8 Risk 1).
  *
- * Resolution of Risk 1: `content.updatedAt` is the field the key is built from,
- * because EmDash bumps it on EVERY content write — `ContentRepository.update()`
- * sets `updated_at: now` (and `version: version + 1`) unconditionally, with no
- * "did any column actually change" gate. So the key is
- * `${collection}:${id}:${updatedAt}`: re-DELIVERING the same hook event (the
- * same `updatedAt`) dedupes against the store's per-row compare-on-write, while
- * a genuinely newer write bumps `updatedAt` and produces a fresh key that
- * applies.
+ * The key is `${collection}:${id}:${updatedAt}:${version}`. Re-DELIVERING the
+ * same hook event replays the identical record — hence the identical key — and
+ * dedupes against the store's per-row compare-on-write, while a genuinely newer
+ * write produces a fresh key that applies.
  *
- * CORRECTION (publish atomicity, plan §1.3/§5 F2). An earlier version of this
- * comment claimed `version` is "in `SYSTEM_COLUMNS` and stripped by
- * `rowToContentItem()` before reaching a plugin". That is FALSE on the deployed
- * `emdash@0.29.0`: `version` is stripped from the `data` bag but RE-EMITTED as a
- * top-level field by `mapRow`, alongside `liveRevisionId`/`draftRevisionId`, and
- * `contentItemToRecord = { ...item }` passes it through — a plugin does receive
- * it. It is deliberately still not used here: on 0.29.0 `updatedAt` alone is
- * already strictly monotonic per write, so `version` would add nothing. It
- * becomes load-bearing only if Urumi ever upgrades to a build carrying the
- * upstream `hasColumnWrites` gate (#2143), where successive no-op-column draft
- * saves would share one `updatedAt` and collapse to a single applied upsert.
+ * WHY `version` IS IN THE KEY (the contingency arrived). This comment used to
+ * say `version` was "deliberately still not used here", because on
+ * `emdash@0.29.0` `ContentRepository.update()` stamped `updated_at: now`
+ * unconditionally, so `updatedAt` alone was already strictly monotonic per
+ * write. It named the exact condition that would change that: "a build carrying
+ * the upstream `hasColumnWrites` gate (#2143), where successive no-op-column
+ * draft saves would share one `updatedAt`".
+ *
+ * That build is `emdash@0.30.0` (commit `8d6b20b`, "Fixes #2143"). `update()`
+ * now stamps `updated_at` ONLY when the write touches a real column:
+ *
+ *     const hasColumnWrites = Object.keys(updates).length > 0;
+ *     if (hasColumnWrites) updates.updated_at = now;
+ *     updates.version = sql`version + 1`;          // still UNCONDITIONAL
+ *
+ * On a revision-supporting collection (`products` declares `revisions`) the
+ * editor's Save routes all data into draft storage and reaches `update()` with
+ * an empty column set, so `updatedAt` FREEZES across successive saves. Keying on
+ * `updatedAt` alone therefore made every price edit after the first collapse
+ * onto one key, and `upsert`'s guard 1 (`WHERE product_commerce.idempotency_key
+ * != :key`) silently dropped it — real money loss on the "price an unpublished
+ * product, then change the price" path.
+ *
+ * `version` restores the invariant `updatedAt` used to carry, and is the right
+ * component because it is (a) bumped unconditionally on every update, including
+ * the column-no-op draft save above; (b) present top-level on the hook record —
+ * `mapRow` emits it and `contentItemToRecord = { ...item }` passes it through,
+ * at both call sites; and (c) identical across a redelivery, because em-dash
+ * captures ONE `content` record per write and hands that same object to every
+ * hook consumer (`runAfterSaveHooks` / `runDeferredContentHook`) with no per-
+ * delivery DB re-read — so replay dedupe still holds.
+ *
+ * A host that does not emit `version` at all keeps the pre-change key BYTE-FOR-
+ * BYTE, so this degrades exactly like `hasPendingDraft` does for absent revision
+ * pointers: older/different hosts see no behavior change.
  *
  * DESPITE THE NAME, this is not the afterSave key-space only. Since publish
  * atomicity, `content:afterPublish` also derives the commerce upsert and keys it
@@ -34,8 +54,12 @@ export function deriveSaveIdempotencyKey(
 	collection: string,
 	id: string,
 	updatedAt: unknown,
+	version?: unknown,
 ): string {
-	return `${collection}:${id}:${String(updatedAt)}`;
+	const base = `${collection}:${id}:${String(updatedAt)}`;
+	// Absent `version` ⇒ the pre-change key, unchanged. Only a host that
+	// actually emits it opts into the extra component.
+	return version === undefined || version === null ? base : `${base}:${String(version)}`;
 }
 
 /**

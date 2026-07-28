@@ -241,7 +241,11 @@ export function createAfterSaveHandler(
 		const body = derived.body;
 
 		const updatedAt = event.content["updatedAt"];
-		const key = deriveSaveIdempotencyKey(event.collection, id, updatedAt);
+		// `version` is load-bearing since emdash 0.30.0: a draft-only save is a
+		// column no-op there, so `updatedAt` FREEZES and only `version` moves
+		// (see derive-idempotency-key.ts). Without it every price edit after the
+		// first collapses onto one key and the store's replay guard drops it.
+		const key = deriveSaveIdempotencyKey(event.collection, id, updatedAt, event.content["version"]);
 		// The service validates the watermark STRICTLY as Date.toISOString()
 		// output (review F1 — a raw lexicographic SQL comparison), so normalize
 		// whatever date shape the CMS hands us; an unparseable value omits the
@@ -392,10 +396,13 @@ export function createAfterPublishHandler(
 						id,
 						// Validated commercial fields + the PUBLISH watermark (the
 						// key is the save key-space keyed on the publish's bumped
-						// `updatedAt`, disjoint from the `:published:` activate key
-						// — see §2.9 on the single per-row idempotency_key column).
+						// `updatedAt` + `version`, disjoint from the `:published:`
+						// activate key — see §2.9 on the single per-row
+						// idempotency_key column). `publish()` does write columns, so
+						// `updatedAt` still moves here; `version` is carried for
+						// key-space consistency with the afterSave call site.
 						{ ...derived.body, contentUpdatedAt: watermark },
-						deriveSaveIdempotencyKey(event.collection, id, updatedAt),
+						deriveSaveIdempotencyKey(event.collection, id, updatedAt, event.content["version"]),
 					);
 				} catch (err) {
 					// FAIL CLOSED — never flip a row live whose commerce we could
