@@ -1,0 +1,85 @@
+---
+/**
+ * Notice — degraded, not crashed (docs/theme/TEMPERED.md §4, §8).
+ *
+ * The theme already renders 200 when the commerce service is unreachable:
+ * content survives, money does not. That deserves a designed treatment rather
+ * than a yellow box, so the device is the theme's own — the continuous hairline
+ * BREAKS into a dashed bronze one, top and bottom, with a dashed mark beside
+ * the text. Same grammar as a released hold and an expired order.
+ *
+ * Explicitly NO filled background. A filled panel would be the only fill on the
+ * page and would read as more alarming than the situation usually is; and a
+ * tinted panel already means one thing in this theme ("image goes here").
+ *
+ * The root class is `u-notice`, not `notice`. `legacy-bridge.css` carries a
+ * GLOBAL `.notice { color: #131a20 }` — a deliberate literal that pins ink to
+ * the pale panel the unmigrated pages still paint — and an unscoped global
+ * beats nothing here, but it would land a hard-coded near-black on this
+ * component's text under the dark palette. Increments 3–6 delete that bridge;
+ * until they do, the two must not share a name.
+ *
+ * Copy is the caller's: `src/lib/error-messages.ts` is already written from the
+ * shopper's side and is quoted, not rewritten (§10).
+ */
+import type { HTMLAttributes } from "astro/types";
+import { restProps } from "../lib/rest-props.js";
+
+interface Props extends HTMLAttributes<"div"> {
+	/** The sentence that leads — what happened. Set in the body face, bold. */
+	lead?: string;
+}
+
+const { lead, class: className, ...rest } = Astro.props;
+const hasLead = lead !== undefined && lead !== "";
+---
+
+<div class:list={["u-notice", className]} {...restProps(rest)}>
+	<span class="mark" aria-hidden="true"></span>
+	<p class="text">
+		{hasLead && <b>{lead}</b>}
+		{hasLead && " "}
+		<slot />
+	</p>
+</div>
+
+<style>
+	.u-notice {
+		display: flex;
+		gap: 0.875rem;
+		align-items: flex-start;
+		padding: 0.875rem 1rem 0.875rem 0;
+		border-top: 1px dashed var(--u-bronze);
+		border-bottom: 1px dashed var(--u-bronze);
+		background: transparent;
+	}
+
+	/* The broken rule, again. */
+	.mark {
+		flex: none;
+		width: 2.5rem;
+		height: 2px;
+		margin-top: 0.5rem;
+		background: repeating-linear-gradient(90deg, var(--u-bronze) 0 4px, transparent 4px 8px);
+	}
+
+	/* Full-contrast ink, not bronze: the message has to be READ. Bronze is the
+	   signal, the text is the information. */
+	.text {
+		margin: 0;
+		font-size: 0.8125rem;
+		line-height: 1.5;
+		color: var(--u-ink);
+		max-width: 58ch;
+	}
+
+	.text b {
+		font-weight: 600;
+	}
+
+	@media (max-width: 26rem) {
+		.mark {
+			width: 1.5rem;
+		}
+	}
+</style>

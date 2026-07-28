@@ -1,0 +1,310 @@
+---
+/**
+ * HoldRibbon — the theme's signature (docs/theme/TEMPERED.md §6).
+ *
+ * A 2px track in `--u-edge`, a fill that drains left→right against the line's
+ * `expiresAt`, and the remaining time in mono beside it. Violet while the stock
+ * is yours, bronze under a minute, mute and dashed once it has gone back on
+ * sale — the tempering scale doing the job it exists for.
+ *
+ * Three things here are deliberate and easy to undo by accident:
+ *
+ *  1. THE COUNTDOWN TICKS UNDER `prefers-reduced-motion`. It is information the
+ *     shopper is acting on, not decoration. The animated fill therefore sits
+ *     inside a `data-motion="essential"` wrapper, which tokens.css's
+ *     reduced-motion rule exempts along with its whole subtree. The
+ *     INDETERMINATE sweep further down is the opposite case — that one IS
+ *     decorative, so it is not exempt and it collapses to a static fill.
+ *
+ *  2. THE NO-JS VALUE IS THE ABSOLUTE EXPIRY, NOT A FROZEN COUNTDOWN. A
+ *     server-rendered "08:32" is true for one second and then quietly lies, so
+ *     the markup ships the expiry instant and the script UPGRADES that slot to
+ *     the live clock on its first tick. A browser that never runs the script is
+ *     left holding something that stays true.
+ *
+ *  3. THE CLOCK IS NOT A LIVE REGION, AND THE STATE CHANGE IS. `role="timer"`
+ *     is an aria-live="off" region by definition, which is exactly right: a
+ *     screen reader announcing "eight twenty-nine, eight twenty-eight, …" once
+ *     a second makes the page unusable. What a shopper does need told is that
+ *     the hold changed state, so a separate visually-hidden polite region gets
+ *     written ONLY on a held→expiring→released transition — three
+ *     announcements in ten minutes, not six hundred.
+ */
+import type { HTMLAttributes } from "astro/types";
+import { restProps } from "../lib/rest-props.js";
+import {
+	HOLD_RELEASED_NEXT_STEP,
+	HOLD_WINDOW_SECONDS,
+	absoluteExpiry,
+	holdView,
+} from "../lib/hold.js";
+
+interface CountdownProps {
+	variant?: "countdown";
+	/** The cart line's own `expiresAt`. `null` — no reservation was ever taken
+	 *  on this line — renders NOTHING: an absent hold and a lapsed one are
+	 *  different facts. */
+	expiresAt: string | null;
+	/** The store's hold TTL, for the fill's denominator. */
+	windowSeconds?: number;
+	/** What the shopper should do once it has lapsed (§6). */
+	nextStep?: string;
+}
+
+interface IndeterminateProps {
+	variant: "indeterminate";
+	/** "Checking 3 of 8" — the confirmation page's bounded poll. */
+	poll: number;
+	pollMax: number;
+	label?: string;
+}
+
+type Props = (CountdownProps | IndeterminateProps) & HTMLAttributes<"div">;
+
+/**
+ * The union is for CALLERS — it is what makes `poll` required alongside
+ * `variant: "indeterminate"` and rejected without it. Inside, one flattened
+ * shape: intersecting the two members would collapse `variant` to `never`, and
+ * a discriminated union cannot be destructured in one statement anyway.
+ */
+type EitherVariant = HTMLAttributes<"div"> & {
+	variant?: "countdown" | "indeterminate";
+	expiresAt?: string | null;
+	windowSeconds?: number;
+	nextStep?: string;
+	poll?: number;
+	pollMax?: number;
+	label?: string;
+};
+
+const {
+	variant = "countdown",
+	expiresAt = null,
+	windowSeconds = HOLD_WINDOW_SECONDS,
+	nextStep = HOLD_RELEASED_NEXT_STEP,
+	poll = 0,
+	pollMax = 0,
+	label = "Checking",
+	class: className,
+	...rest
+}: EitherVariant = Astro.props;
+
+const view = variant === "indeterminate" ? null : holdView(expiresAt, new Date(), windowSeconds);
+const expiry = variant === "indeterminate" ? null : absoluteExpiry(expiresAt);
+---
+
+{
+	variant === "indeterminate" ? (
+		<div class:list={["hold", "poll", className]} {...restProps(rest)}>
+			<div class="track">
+				<span class="sweep" />
+			</div>
+			<div class="meta">
+				<span class="u-label label">{label}</span>
+				<span class="u-mono clock">
+					{poll} of {pollMax}
+				</span>
+			</div>
+		</div>
+	) : (
+		view !== null && (
+			<div
+				class:list={["hold", className]}
+				data-hold
+				data-state={view.state}
+				data-expires={expiresAt}
+				data-window={windowSeconds}
+				{...restProps(rest)}
+			>
+				{/* The exemption tokens.css grants covers this element AND its
+				    subtree — the fill inside is what actually moves. */}
+				<div class="track" data-motion="essential">
+					<div class="fill" data-hold-fill style={`--pct: ${view.percent.toFixed(1)}%`} />
+				</div>
+				<div class="meta" role="timer">
+					<span class="u-label label" data-hold-label>
+						{view.label}
+					</span>
+					{/* Replaced with the live mm:ss on the script's first tick. */}
+					<span class="u-mono clock" data-hold-clock>
+						{expiry}
+					</span>
+				</div>
+				{/* Written only when the STATE changes, never on a tick. */}
+				<span class="u-sr-only" data-hold-announce aria-live="polite" />
+				<p class="note" data-hold-note hidden={view.state !== "released"}>
+					{nextStep}
+				</p>
+			</div>
+		)
+	)
+}
+
+<script>
+	/**
+	 * The countdown (§6). Information, so it runs under reduced motion too —
+	 * the media query suppresses decoration, not a timer a shopper is relying
+	 * on. Every ribbon on the page shares one interval, and that interval is
+	 * dropped once there is nothing left to count.
+	 *
+	 * This is a BUNDLED module script (never `is:inline`), so it imports the
+	 * tick rather than restating it. Every state label, the sixty-second
+	 * boundary and the `mm:ss` format therefore have exactly one definition,
+	 * shared with the server render — there is no second copy to drift, and
+	 * nothing here that a test has to grep a source file to pin.
+	 *
+	 * What is left in this file is the DOM, and only the DOM: find the ribbons,
+	 * write the frames. The deciding is `src/lib/hold-ribbon.ts`.
+	 */
+	import { type HoldFrame, startHoldRibbons } from "../lib/hold-ribbon.js";
+	import { HOLD_WINDOW_SECONDS } from "../lib/hold.js";
+
+	startHoldRibbons(
+		[...document.querySelectorAll<HTMLElement>("[data-hold]")].map((el) => {
+			const fill = el.querySelector<HTMLElement>("[data-hold-fill]");
+			const label = el.querySelector<HTMLElement>("[data-hold-label]");
+			const clock = el.querySelector<HTMLElement>("[data-hold-clock]");
+			const note = el.querySelector<HTMLElement>("[data-hold-note]");
+			const announce = el.querySelector<HTMLElement>("[data-hold-announce]");
+			return {
+				expiry: Date.parse(el.dataset.expires ?? ""),
+				window: Number(el.dataset.window) || HOLD_WINDOW_SECONDS,
+				shownState: el.dataset.state ?? "",
+				render(frame: HoldFrame): void {
+					el.dataset.state = frame.state;
+					if (label) label.textContent = frame.label;
+					if (clock) clock.textContent = frame.clock;
+					if (fill) fill.style.setProperty("--pct", frame.fill);
+					// The next-step line is always in the markup; a hold that
+					// lapses under the shopper's eyes reveals it.
+					if (note) note.hidden = frame.state !== "released";
+					// Non-null only on a state CHANGE. Writing this every tick
+					// would turn a polite region into a once-a-second
+					// interruption.
+					if (frame.announce !== null && announce) announce.textContent = frame.announce;
+				},
+			};
+		}),
+	);
+</script>
+
+<style>
+	.hold {
+		display: flex;
+		flex-direction: column;
+		gap: 0.375rem;
+	}
+
+	/* §2: 2px, the thickness of the wordmark's rule and the stock rule. The
+	   theme has one bar and it is always this one. */
+	.track {
+		height: 2px;
+		border-radius: 1px;
+		background: var(--u-edge);
+		overflow: hidden;
+	}
+
+	.fill {
+		height: 100%;
+		width: var(--pct, 100%);
+		background: var(--u-violet);
+		/* One second, linear, matching the tick — so the bar drains rather than
+		   stepping. Exempt from the reduced-motion clamp by the wrapper above. */
+		transition: width 1s linear;
+	}
+
+	.meta {
+		display: flex;
+		align-items: baseline;
+		gap: 0.5rem;
+	}
+
+	.label {
+		color: var(--u-violet);
+	}
+
+	.clock {
+		font-size: 0.6875rem;
+		font-weight: 500;
+		color: var(--u-violet);
+		white-space: nowrap;
+		/* The server ships "14:10:32 UTC" and the script replaces it with
+		   "08:32", so the slot is reserved at the width of the LONGER of the
+		   two — 12 characters — and the box does not resize at all when the
+		   script runs. (11ch left it 1.3px short, which reflowed the row.) */
+		min-width: 12ch;
+	}
+
+	.note {
+		margin: 0;
+		font-size: 0.75rem;
+		color: var(--u-mute);
+	}
+
+	/* Under a minute the whole ribbon moves up the scale. */
+	.hold[data-state="expiring"] .fill {
+		background: var(--u-bronze);
+	}
+	.hold[data-state="expiring"] .label,
+	.hold[data-state="expiring"] .clock {
+		color: var(--u-bronze);
+	}
+
+	/* Released: the continuous line breaks and the colour drops out entirely.
+	   Same device as a sold-out stock rule and an expired order stamp. */
+	.hold[data-state="released"] .track {
+		background: repeating-linear-gradient(90deg, var(--u-edge) 0 4px, transparent 4px 8px);
+	}
+	.hold[data-state="released"] .fill {
+		display: none;
+	}
+	.hold[data-state="released"] .label,
+	.hold[data-state="released"] .clock {
+		color: var(--u-mute);
+	}
+
+	/* ── the indeterminate variant (§6) ─────────────────────────────────────
+	   The same ribbon on /orders/<id> while an order is pending: there is no
+	   duration to drain against, so a segment sweeps and the poll count carries
+	   the actual information. */
+	.poll {
+		max-width: 22rem;
+	}
+
+	.poll .track {
+		position: relative;
+	}
+
+	.poll .clock {
+		min-width: 0;
+	}
+
+	.sweep {
+		position: absolute;
+		inset: 0 auto 0 0;
+		width: 34%;
+		background: var(--u-violet);
+		animation: hold-sweep 1.6s ease-in-out infinite;
+	}
+
+	@keyframes hold-sweep {
+		from {
+			transform: translateX(-100%);
+		}
+		to {
+			transform: translateX(320%);
+		}
+	}
+
+	/* This sweep IS decorative — the count beside it is the information — so
+	   unlike the countdown it is NOT exempt, and it settles into a static
+	   filled track rather than freezing mid-stride at its first keyframe. */
+	@media (prefers-reduced-motion: reduce) {
+		.sweep {
+			animation: none;
+			transform: none;
+			width: 100%;
+			opacity: 0.4;
+		}
+	}
+</style>

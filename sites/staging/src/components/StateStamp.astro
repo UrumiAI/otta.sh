@@ -1,0 +1,147 @@
+---
+/**
+ * StateStamp — what an order currently is (docs/theme/TEMPERED.md §4).
+ *
+ * A 4.5rem × 3px rule in the state's colour, then the headline. It is the first
+ * thing on the confirmation page because it is the most important thing on it,
+ * and it is the tempering scale doing its second job: violet while the order is
+ * in progress, ink once it has settled, bronze when it failed, dashed grey when
+ * it lapsed. Same grammar as the cart's hold ribbon, so a shopper who has read
+ * one has read both.
+ *
+ * The order's OWN state decides this — never Stripe's redirect (ADR-0012
+ * decision 5). This component only draws what it is handed.
+ */
+import type { HTMLAttributes } from "astro/types";
+import { restProps } from "../lib/rest-props.js";
+
+interface Props extends HTMLAttributes<"div"> {
+	/** The order's state string, verbatim off the view model. */
+	state: string;
+	headline: string;
+	/** What it means and what happens next. */
+	body?: string | null;
+	/** The order reference, set in mono. */
+	reference?: string | null;
+	/**
+	 * The confirmation page's h1; a gallery or a summary card uses h2.
+	 *
+	 * Named `level` rather than `as` to stay clear of Astro's polymorphic
+	 * convention — `as` is the prop name `Polymorphic<{ as: … }>` is built
+	 * around (astro/types), and a component that declares its own plain `as`
+	 * alongside a `Props` interface stops resolving that interface at call
+	 * sites: props degrade to `Record<string, any>` with no error and no
+	 * warning. Nothing special-cases it at runtime; the collision is enough.
+	 */
+	level?: "h1" | "h2";
+}
+
+/** The five appearances. Any state the service grows that is not in this map
+ *  gets the neutral rule and lets the headline carry the meaning — a new state
+ *  must never be silently coloured as "paid". */
+const RULES: Record<string, "paid" | "pending" | "failed" | "expired"> = {
+	paid: "paid",
+	pending: "pending",
+	failed: "failed",
+	expired: "expired",
+	// A cancelled order is a lapsed one from the shopper's side: nothing was
+	// charged and the items went back on sale.
+	cancelled: "expired",
+};
+
+const {
+	state,
+	headline,
+	body = null,
+	reference = null,
+	level = "h1",
+	class: className,
+	...rest
+} = Astro.props;
+/* Astro renders a capitalised identifier as a component, which is how the
+   heading level becomes a prop. */
+const Heading = level;
+const rule = RULES[state];
+---
+
+<div class:list={["stamp", className]} data-state={rule} {...restProps(rest)}>
+	<span class="rule" aria-hidden="true"></span>
+	<Heading class="headline">{headline}</Heading>
+	{body !== null && body !== "" && <p class="body">{body}</p>}
+	{
+		reference !== null && reference !== "" && (
+			<span class="ref">
+				<span class="u-label">Reference</span>
+				<span class="u-mono ref-value">{reference}</span>
+			</span>
+		)
+	}
+	<slot />
+</div>
+
+<style>
+	.stamp {
+		display: flex;
+		flex-direction: column;
+		gap: 0.625rem;
+		align-items: flex-start;
+	}
+
+	/* Neutral by default: an unrecognised state gets a rule that claims
+	   nothing. */
+	.rule {
+		width: 4.5rem;
+		height: 3px;
+		border-radius: 1px;
+		background: var(--u-mute);
+	}
+
+	/* §3: display face, narrow, and this is the largest type in the theme. */
+	.headline {
+		font-family: var(--u-display);
+		font-variation-settings: "wdth" 78, "opsz" 48;
+		font-weight: 700;
+		font-size: clamp(1.75rem, 4.5vw, 2.75rem);
+		letter-spacing: -0.025em;
+		line-height: 1;
+		margin: 0;
+		text-wrap: balance;
+	}
+
+	.body {
+		margin: 0;
+		font-size: 0.9375rem;
+		color: var(--u-mute);
+		max-width: 52ch;
+	}
+
+	.ref {
+		display: flex;
+		align-items: baseline;
+		gap: 0.625rem;
+		padding-top: 0.25rem;
+	}
+
+	.ref-value {
+		font-size: 0.75rem;
+		color: var(--u-ink);
+		overflow-wrap: anywhere;
+	}
+
+	/* Settled: ink, the same weight as the text around it. A paid order is not
+	   an event, it is a fact. */
+	.stamp[data-state="paid"] .rule {
+		background: var(--u-ink);
+	}
+	/* In progress — the same violet the cart's hold uses. */
+	.stamp[data-state="pending"] .rule {
+		background: var(--u-violet);
+	}
+	.stamp[data-state="failed"] .rule {
+		background: var(--u-bronze);
+	}
+	/* Lapsed: the line breaks, exactly as a released hold's track does. */
+	.stamp[data-state="expired"] .rule {
+		background: repeating-linear-gradient(90deg, var(--u-mute) 0 4px, transparent 4px 8px);
+	}
+</style>

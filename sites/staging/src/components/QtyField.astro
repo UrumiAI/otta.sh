@@ -1,0 +1,121 @@
+---
+/**
+ * QtyField — a quantity (docs/theme/TEMPERED.md §3, §4).
+ *
+ * Mono, because §3 says quantities are set in the data face along with money
+ * and SKUs, and nothing else is. The label is a real `<label>` wrapping the
+ * input rather than an `aria-label`, so it works for a pointer as well as a
+ * screen reader; `hideLabel` visually hides it (the cart's inline row has no
+ * room for one) without removing it from the accessibility tree.
+ *
+ * Focus is the global rule in tokens.css — straw, 2px, offset 2px — and this
+ * component deliberately does not restyle it.
+ *
+ * ── WHICH ELEMENT A PROP LANDS ON ───────────────────────────────────────────
+ * The root here is the `<label>`, so a plain `...rest` spread puts everything
+ * on the wrapper and leaves the `<input>` — the element that actually does the
+ * work — unreachable from outside. Five attributes are therefore ROUTED to the
+ * input instead:
+ *
+ *     id · max · disabled · form · aria-describedby
+ *
+ * They are the ones that are inert or wrong on a wrapper. `disabled` and `form`
+ * do nothing whatsoever on a `<label>`; `max` is not a label attribute;
+ * `aria-describedby` has to sit on the CONTROL for a screen reader to read the
+ * hint out with the field; and `id` names the field, which is the input — it is
+ * what a `for=`, a `getElementById` and an error message's `aria-describedby`
+ * are all reaching for.
+ *
+ * Everything else stays on the label, which is the box the page positions:
+ * `class`, `style`, `hidden`, `data-*`, and any layout hook.
+ *
+ * Increment 4's cart needs two of these: `form` (each row's input sits outside
+ * its own `<form>`) and `disabled` (a line mid-update).
+ */
+import type { HTMLAttributes } from "astro/types";
+import { restProps } from "../lib/rest-props.js";
+
+interface Props extends HTMLAttributes<"label"> {
+	/** The form field name. The cart and PDP endpoints both read `qty`. */
+	name?: string;
+	value: number;
+	/** Names the field. Include the product when there is more than one on the
+	 *  page — "Quantity, Urumi Tee" — so the labels are distinguishable. */
+	label?: string;
+	/** Visually hides the label. It stays in the accessibility tree. */
+	hideLabel?: boolean;
+	min?: number;
+	/** `sm` is the cart's inline row; `md` the PDP's buy row. */
+	size?: "sm" | "md";
+	/** ↓ Routed to the `<input>`, not the `<label>`. See the note above. */
+	max?: number;
+	disabled?: boolean;
+	/** The `<form>` this field belongs to, when it sits outside that form. */
+	form?: string;
+}
+
+const {
+	name = "qty",
+	value,
+	label = "Qty",
+	hideLabel = false,
+	min = 1,
+	size = "md",
+	// Pulling these out of `rest` is what moves them off the label. `id` and
+	// `aria-describedby` are already on HTMLAttributes<"label">, so they are
+	// destructured rather than re-declared above.
+	id,
+	max,
+	disabled,
+	form,
+	"aria-describedby": describedBy,
+	class: className,
+	...rest
+} = Astro.props;
+---
+
+<label class:list={["qty", `size-${size}`, className]} {...restProps(rest)}>
+	<span class:list={["u-label", hideLabel && "u-sr-only"]}>{label}</span>
+	<input
+		class="u-mono"
+		type="number"
+		id={id}
+		name={name}
+		value={value}
+		min={min}
+		max={max}
+		step="1"
+		inputmode="numeric"
+		disabled={disabled}
+		form={form}
+		aria-describedby={describedBy}
+	/>
+</label>
+
+<style>
+	.qty {
+		display: flex;
+		flex-direction: column;
+		gap: 0.375rem;
+	}
+
+	.qty input {
+		border: var(--u-hair);
+		border-radius: var(--u-r);
+		background: var(--u-surface);
+		color: var(--u-ink);
+	}
+
+	.size-md input {
+		width: 4.5rem;
+		padding: 0.625rem 0.75rem;
+		font-size: 0.875rem;
+	}
+
+	.size-sm input {
+		width: 3.5rem;
+		padding: 0.375rem 0.5rem;
+		font-size: 0.75rem;
+		text-align: center;
+	}
+</style>

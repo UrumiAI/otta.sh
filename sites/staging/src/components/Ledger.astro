@@ -1,0 +1,132 @@
+---
+/**
+ * Ledger — the order's line items (docs/theme/TEMPERED.md §4).
+ *
+ * The same inventory tape the home page opens with, itemised: SKU, quantity
+ * and money, all three in the data face so the columns align without being
+ * told to. It carries no product art and no controls — it is a statement of
+ * what is in the order, and it reads the same on the checkout review, on the
+ * confirmation page, and in an email if it ever ends up in one.
+ *
+ * Every money cell arrives PRE-FORMATTED (§7). A line the store cannot price
+ * says so in prose; it never shows a figure the store did not quote.
+ *
+ * What this component does NOT do is print `money` verbatim, and that is the
+ * §7 rule rather than a nicety. `cart-view.ts` exports `UNAVAILABLE_LABEL =
+ * "—"` for a cart whose pricing lookup failed, so the wired cart hands this
+ * component a bare em dash per row — the exact mark §7 forbids, and the exact
+ * one that shipped on the totals block's discount row. Both cells now run
+ * through the same substitution in `totals.ts`.
+ *
+ * The columns are laid out, not tabulated, so nothing but position says which
+ * figure is which — a screen reader hears "URUMI-TEE-01 1 $25.00" and has to
+ * guess. Both figures carry a visually-hidden name for that reason.
+ */
+import type { HTMLAttributes } from "astro/types";
+import { restProps } from "../lib/rest-props.js";
+import { isUnpricedText, moneyCellText } from "../lib/totals.js";
+
+export interface LedgerRow {
+	sku: string;
+	qty: number;
+	/** `lineTotal.formatted`, or the honest prose for a line with no live
+	 *  price ("priced at checkout"). Never assembled here. */
+	money: string;
+	/** Prose to print INSTEAD of `money` when `money` says nothing — a bare
+	 *  dash, a blank. Optional and safe to omit: the honest default prints
+	 *  either way, exactly as it does on a totals row. */
+	fallback?: string;
+	/**
+	 * Forces the prose treatment for a cell that carries a digit anyway
+	 * ("2 left to price").
+	 *
+	 * It cannot force the opposite. A cell with no digit in it is prose
+	 * whatever the flag says — an omitted flag is how the dash reached the
+	 * screen the first time, so the value has the deciding vote.
+	 */
+	unpriced?: boolean;
+}
+
+interface Props extends HTMLAttributes<"div"> {
+	rows: LedgerRow[];
+}
+
+const { rows, class: className, ...rest } = Astro.props;
+
+const cells = rows.map((row) => {
+	const money = moneyCellText(row.money, row.fallback);
+	return {
+		sku: row.sku,
+		qty: row.qty,
+		money,
+		unpriced: row.unpriced === true || isUnpricedText(money),
+	};
+});
+---
+
+<div class:list={["ledger", className]} {...restProps(rest)}>
+	{
+		cells.map((cell) => (
+			<div class="line">
+				<span class="u-mono sku">{cell.sku}</span>
+				<span class="u-mono qty">
+					<span class="u-sr-only">Quantity </span>
+					{cell.qty}
+				</span>
+				<span class:list={["u-mono", "money", cell.unpriced && "unpriced"]}>
+					<span class="u-sr-only">Line total </span>
+					{cell.money}
+				</span>
+			</div>
+		))
+	}
+</div>
+
+<style>
+	.ledger {
+		display: flex;
+		flex-direction: column;
+	}
+
+	/* §2: hairlines, no box. The first line takes a top rule so the block is
+	   bounded by the same device that separates it. */
+	.line {
+		display: grid;
+		grid-template-columns: 1fr 2rem auto;
+		gap: 0.875rem;
+		align-items: baseline;
+		padding: 0.625rem 0;
+		border-bottom: var(--u-hair);
+	}
+	.line:first-child {
+		border-top: var(--u-hair);
+	}
+
+	.sku {
+		font-size: 0.75rem;
+		/* A long SKU breaks rather than widening the panel (§11). */
+		overflow-wrap: anywhere;
+	}
+
+	.qty {
+		font-size: 0.75rem;
+		text-align: right;
+		color: var(--u-mute);
+	}
+
+	.money {
+		font-size: 0.8125rem;
+		font-weight: 500;
+		text-align: right;
+		white-space: nowrap;
+	}
+
+	/* Prose, not a figure — set smaller and muted so it cannot be misread as
+	   an amount (§7). */
+	.money.unpriced {
+		font-size: 0.6875rem;
+		font-weight: 400;
+		color: var(--u-mute);
+		white-space: normal;
+	}
+</style>

@@ -1,0 +1,122 @@
+---
+/**
+ * StepTrack — Cart → Details → Payment → Order (docs/theme/TEMPERED.md §4).
+ *
+ * Checkout is a real sequence, so this is the one place the theme numbers
+ * anything: the hairline becomes a track and the steps sit on it. Done is an
+ * ink dot; the current step is straw with a soft ring — the only place straw
+ * appears as a fill, and it is 8px across, which is why it does not break §2's
+ * "straw is a fitting" rule.
+ *
+ * An ordered list rather than the mockup's row of spans: the sequence is the
+ * meaning, and `aria-current="step"` is how a screen reader gets it. The
+ * completed steps say so in words as well as in ink — colour and fill are the
+ * whole visual difference between done and not-yet, and neither survives being
+ * read aloud.
+ */
+import type { HTMLAttributes } from "astro/types";
+import { restProps } from "../lib/rest-props.js";
+
+export const CHECKOUT_STEPS = [
+	{ id: "cart", label: "Cart" },
+	{ id: "details", label: "Details" },
+	{ id: "payment", label: "Payment" },
+	{ id: "order", label: "Order" },
+] as const;
+
+export type CheckoutStep = (typeof CHECKOUT_STEPS)[number]["id"];
+
+interface Props extends HTMLAttributes<"ol"> {
+	current: CheckoutStep;
+}
+
+const { current, class: className, ...rest } = Astro.props;
+const currentIndex = CHECKOUT_STEPS.findIndex((step) => step.id === current);
+---
+
+{/* `role="list"` is redundant markup that is not redundant in practice:
+    WebKit drops list semantics from any list styled `list-style: none`, and
+    this one is. Without it VoiceOver announces four loose spans. */}
+<ol class:list={["steps", className]} role="list" aria-label="Checkout progress" {...restProps(rest)}>
+	{
+		CHECKOUT_STEPS.map((step, index) => (
+			<li
+				data-state={index < currentIndex ? "done" : index === currentIndex ? "now" : undefined}
+				aria-current={index === currentIndex ? "step" : undefined}
+			>
+				<span class="dot" aria-hidden="true" />
+				<span class="u-label label">{step.label}</span>
+				{index < currentIndex && <span class="u-sr-only">, completed</span>}
+			</li>
+		))
+	}
+</ol>
+
+<style>
+	.steps {
+		display: flex;
+		align-items: center;
+		gap: 0;
+		list-style: none;
+		margin: 0;
+		padding: 0;
+	}
+
+	.steps li {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		flex: none;
+		min-width: 0;
+	}
+
+	/* The connector is the hairline, drawn between steps rather than under
+	   them — so every step after the first grows to take up the slack. */
+	.steps li + li {
+		flex: 1 1 auto;
+	}
+	.steps li + li::before {
+		content: "";
+		flex: 1;
+		min-width: 0.75rem;
+		height: 1px;
+		background: var(--u-edge);
+		margin: 0 0.75rem;
+	}
+
+	.dot {
+		flex: none;
+		width: 0.5rem;
+		height: 0.5rem;
+		border-radius: 50%;
+		background: var(--u-edge);
+	}
+
+	.label {
+		white-space: nowrap;
+	}
+
+	.steps li[data-state="done"] .dot {
+		background: var(--u-ink);
+	}
+
+	.steps li[data-state="now"] .dot {
+		background: var(--u-straw);
+		box-shadow: 0 0 0 3px color-mix(in srgb, var(--u-straw) 22%, transparent);
+	}
+	.steps li[data-state="now"] .label {
+		color: var(--u-ink);
+	}
+
+	/* At 390px the four labels plus their connectors stop fitting. The labels
+	   are the information, so the connectors give up their margin first. */
+	@media (max-width: 26rem) {
+		.steps li + li::before {
+			min-width: 0.25rem;
+			margin: 0 0.375rem;
+		}
+		.steps li {
+			gap: 0.3125rem;
+		}
+	}
+</style>
