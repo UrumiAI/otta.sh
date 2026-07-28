@@ -67,7 +67,12 @@ const TITLE = "Blue Mug";
  *  `commerce` bag live under `data`, side by side, exactly as em-dash stores
  *  them. Pass `title: null` for a collection entry whose title column is
  *  null/absent: `mapRow()` EXCLUDES null values from `data`, so that surfaces to
- *  the plugin as a MISSING key, never an explicit `null`. */
+ *  the plugin as a MISSING key, never an explicit `null`.
+ *
+ *  `version` is emitted top-level by em-dash's `mapRow` and passed through by
+ *  `contentItemToRecord = { ...item }`, so every hook sees it. It defaults to 1;
+ *  tests modelling successive saves must BUMP IT rather than move `updatedAt`
+ *  (0.31.1 freezes `updatedAt` on draft-only saves) — see `unpublishedDraft`. */
 function productContent(
 	id: string,
 	bag: Record<string, unknown> | undefined,
@@ -80,9 +85,37 @@ function productContent(
 	return {
 		id,
 		updatedAt: WM,
+		version: 1,
 		...(Object.keys(data).length > 0 ? { data } : {}),
 		...extra,
 	};
+}
+
+/**
+ * A save of an UNPUBLISHED product on a revision-supporting collection — the
+ * one shape whose commerce `content:afterSave` still pushes immediately
+ * (publish atomicity defers everything that is already live).
+ *
+ * `hasPendingDraft` is false here by clause 2: `draftRevisionId` is set but
+ * `liveRevisionId` is null and `status` is not `"published"`.
+ *
+ * CRITICAL — this models em-dash **0.31.1**, not 0.29.0: since `8d6b20b`
+ * ("draft-only saves no longer bump updated_at on published entries", #2143,
+ * shipped 0.30.0) a save that resolves to a column no-op leaves `updated_at`
+ * UNTOUCHED and bumps `version` only. So successive saves share one
+ * `updatedAt` and are distinguished ONLY by `version`.
+ */
+function unpublishedDraft(
+	id: string,
+	bag: Record<string, unknown>,
+	version: number,
+): Record<string, unknown> {
+	return productContent(id, bag, {
+		status: "draft",
+		liveRevisionId: null,
+		draftRevisionId: `rev-${version}`,
+		version,
+	});
 }
 
 async function setup(): Promise<{ stubServer: StubCommerceServer; sandboxHandle: SandboxHandle }> {
@@ -129,32 +162,92 @@ describe("sync hooks — afterSave derives product_commerce from the widget's co
 		});
 	});
 
-	test("replay with the SAME updatedAt derives the SAME idempotency key (upserts once); a newer edit derives a DIFFERENT key", async () => {
+	test("REDELIVERY of the same save event derives the SAME idempotency key (store dedupes); a genuinely NEWER save derives a DIFFERENT key", async () => {
 		const { stubServer, sandboxHandle } = await setup();
 		stubServer.respondWith("PUT", () => ({ status: 200, body: PRICED_ROW }));
 
+		// A redelivery is the IDENTICAL record replayed: em-dash captures one
+		// `content` object per write and hands that same object to every hook
+		// consumer (`runAfterSaveHooks`), with no DB re-read per delivery — so a
+		// retry carries the same `updatedAt` AND the same `version`.
+		const delivered = unpublishedDraft("prod-2", commerceBag(), 3);
 		await sandboxHandle.invokeHook("content:afterSave", {
-			content: productContent("prod-2", commerceBag()),
+			content: delivered,
 			collection: "products",
 			isNew: false,
 		});
 		await sandboxHandle.invokeHook("content:afterSave", {
-			content: productContent("prod-2", commerceBag()),
+			content: delivered,
 			collection: "products",
 			isNew: false,
 		});
+		// A genuinely newer save. `updatedAt` is deliberately held CONSTANT: on
+		// em-dash 0.31.1 a draft-only save is a column no-op and does not stamp
+		// `updated_at` (8d6b20b, #2143) — only `version` moves. The previous
+		// version of this test hand-mutated `updatedAt` here, which modelled
+		// 0.29.0 and hid the whole "frozen watermark" bug class.
 		await sandboxHandle.invokeHook("content:afterSave", {
-			content: productContent("prod-2", commerceBag({ price: 2000 }), {
-				updatedAt: "2026-07-10T01:00:00.000Z",
-			}),
+			content: unpublishedDraft("prod-2", commerceBag({ price: 2000 }), 4),
 			collection: "products",
 			isNew: false,
 		});
 
 		const keys = putRequests(stubServer).map((r) => r.headers["idempotency-key"]);
 		expect(keys).toHaveLength(3);
-		expect(keys[0]).toBe(keys[1]); // same updatedAt → same key → store dedupes.
-		expect(keys[2]).not.toBe(keys[0]); // newer updatedAt → fresh key → applies.
+		expect(keys[0]).toBe(keys[1]); // same delivery → same key → store dedupes.
+		expect(keys[2]).not.toBe(keys[0]); // newer version → fresh key → applies.
+	});
+
+	test("0.31.1 FROZEN updatedAt: two successive draft saves of an UNPUBLISHED product with a CHANGED price BOTH apply (emdash 8d6b20b / #2143)", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+		const putBodies: unknown[] = [];
+		stubServer.respondWith("PUT", (req) => {
+			putBodies.push(req.body);
+			return { status: 200, body: PRICED_ROW };
+		});
+
+		// Save #1 — price 1500. Save #2 — price 2000. On em-dash 0.31.1 BOTH
+		// carry the identical `updatedAt` (the draft save is a column no-op, so
+		// `updated_at` is never stamped); only `version` advances.
+		await sandboxHandle.invokeHook("content:afterSave", {
+			content: unpublishedDraft("prod-frozen", commerceBag({ price: 1500 }), 2),
+			collection: "products",
+			isNew: false,
+		});
+		await sandboxHandle.invokeHook("content:afterSave", {
+			content: unpublishedDraft("prod-frozen", commerceBag({ price: 2000 }), 3),
+			collection: "products",
+			isNew: false,
+		});
+
+		const puts = putRequests(stubServer);
+		expect(puts).toHaveLength(2);
+		// Both saves carried the SAME watermark — the freeze this test exists for.
+		expect(putBodies).toEqual([
+			{
+				sku: "SKU-1",
+				title: TITLE,
+				price: { amount: 1500, currency: "USD" },
+				productKind: "physical",
+				initialOnHand: 5,
+				contentUpdatedAt: WM,
+			},
+			{
+				sku: "SKU-1",
+				title: TITLE,
+				price: { amount: 2000, currency: "USD" },
+				productKind: "physical",
+				initialOnHand: 5,
+				contentUpdatedAt: WM,
+			},
+		]);
+		// THE ASSERTION THAT MATTERS: distinct keys. `upsert` no-ops the second
+		// write when the key repeats (`WHERE product_commerce.idempotency_key
+		// != :key`), so an identical key here means the merchant's 2000 price is
+		// SILENTLY DROPPED. Deriving from `updatedAt` alone does exactly that on
+		// em-dash >= 0.30.0.
+		const keys = puts.map((r) => r.headers["idempotency-key"]);
+		expect(keys[0]).not.toBe(keys[1]);
 	});
 
 	test("MONEY INTEGRITY: a FLOAT price is rejected — the whole upsert is skipped, the CMS save still succeeds (no float reaches money)", async () => {
@@ -409,7 +502,9 @@ describe("sync hooks — afterSave derives product_commerce from the widget's co
 		// …carrying the title, so the store's DO UPDATE SET writes it (the upsert
 		// only PRESERVES title when the field is omitted).
 		expect(puts[0]?.body).toMatchObject({ title: TITLE });
-		expect(puts[0]?.headers["idempotency-key"]).toBe("products:prod-heal:2026-07-10T03:00:00.000Z");
+		expect(puts[0]?.headers["idempotency-key"]).toBe(
+			"products:prod-heal:2026-07-10T03:00:00.000Z:1",
+		);
 
 		// HONEST LIMIT: a REDELIVERY of the same save (same updatedAt) derives the
 		// same key and the store dedupes it — a redelivery does not heal. Only a
