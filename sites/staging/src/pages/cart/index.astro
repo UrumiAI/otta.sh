@@ -1,27 +1,65 @@
 ---
 /**
- * Cart view — the theme shim side of ADR-0003's cart contract: this page
- * reads ITS OWN `urumi_cart` cookie and passes the id as plain route input
- * to the plugin's public `storefront/cart/read` (plugin routes are
- * cookie-blind by design in sandboxed mode; ADR-0006 records the trusted-
- * mode caveat). Line totals are quantity-only — the cart wire carries no
- * price (a cart line snapshots no price; that is an order invariant).
+ * Cart — "Tempered" increment 4 (docs/theme/TEMPERED.md §6, §7, §8).
+ *
+ * Lines, not a table: media, name + SKU + the hold ribbon, then the money and
+ * the controls on the right, with the totals block bottom-right. The ribbon is
+ * the theme's signature and it is the reason this page exists in the shape it
+ * does — every line carries one, wired to that line's own `expiresAt`.
+ *
+ * ── the shim contract (unchanged) ───────────────────────────────────────────
+ * The theme side of ADR-0003's cart contract: this page reads ITS OWN
+ * `urumi_cart` cookie and passes the id as plain route input to the plugin's
+ * public `storefront/cart/read` (plugin routes are cookie-blind by design in
+ * sandboxed mode; ADR-0006 records the trusted-mode caveat).
  *
  * Idempotency: each rendered update/remove form embeds a fresh
- * crypto.randomUUID() key, so a double-submit of the same form replays in
- * the service instead of double-applying. The endpoints never invent keys.
+ * crypto.randomUUID() key, so a double-submit of the same form replays in the
+ * service instead of double-applying. The endpoints never invent keys.
+ *
+ * ── what a cart line actually carries, and what this page may say ───────────
+ * `CartLineWire` is `lineId · sku · productId · qty · reservationId ·
+ * expiresAt`. No price (a cart line snapshots no price — that is an order
+ * invariant, §7) and no title (it snapshots no content either). So:
+ *
+ *  - MONEY comes from the pricing SIBLING (`buildCartPricing`'s live join) and
+ *    is informational, which is what the foot line says out loud. Every cell
+ *    goes through `cart-view.ts`'s `lineMoneyText` — `cartMoneyCell` (which of
+ *    the three "no figure" cases is this?), this page's casing, then
+ *    `moneyCellText` (§7's rule that a cell either says something or says
+ *    nothing at all — never a bare dash).
+ *  - The NAME comes from this theme's own CMS read, keyed on the line's
+ *    `productId` — the same tier-① content this store owns (ADR-0003), not a
+ *    new field on the wire. ONE batched query for the whole cart. Anything
+ *    missing (a legacy line with no productId, an entry unpublished since it
+ *    was added, a read that fails) leaves the SKU standing alone rather than
+ *    inventing a name: a SKU is a true thing about the line.
  */
 import {
 	CART_COOKIE_NAME,
 	STOREFRONT_CART_READ_ROUTE,
 	totalQty,
+	type CartMoneyWire,
 	type CartReadRouteResult,
 	type CartWire,
+	type CheckoutAmountView,
 } from "@urumi/plugin";
+import { getEmDashCollection } from "emdash";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
+import HoldRibbon from "../../components/HoldRibbon.astro";
+import MediaPanel from "../../components/MediaPanel.astro";
+import PriceTag from "../../components/PriceTag.astro";
+import QtyField from "../../components/QtyField.astro";
+import Sum from "../../components/Sum.astro";
 import Base from "../../layouts/Base.astro";
-import { cartMoneyCell, isCartPricingDegraded } from "../../lib/cart-view.js";
+import {
+	isCartPricingDegraded,
+	lineMoneyText,
+	PRICED_AT_CHECKOUT_CELL,
+} from "../../lib/cart-view.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
+import { productImage, type ProductEntryData } from "../../lib/products.js";
+import { isUnpricedText, type SumRow } from "../../lib/totals.js";
 import { dispatchUrumiRoute } from "../../lib/urumi-api.js";
 
 const cartId = Astro.cookies.get(CART_COOKIE_NAME)?.value;
@@ -53,12 +91,213 @@ const degraded =
 const pricingDegraded = isCartPricingDegraded(pricing);
 
 const lines = cart?.lines ?? [];
-// One fresh key per rendered form (double-submit = replay, not duplicate).
-const lineForms = lines.map((line) => ({
-	line,
-	updateKey: crypto.randomUUID(),
-	removeKey: crypto.randomUUID(),
-}));
+
+/**
+ * How many distinct products this page will ask for in ONE query.
+ *
+ * The array form of a `where` value compiles to a literal `WHERE id IN (?, ?,
+ * …)` with one bound parameter per id, and D1 allows roughly a hundred bound
+ * parameters per statement — em-dash's own SQL chunking is conservative at
+ * fifty for exactly that reason. So fifty is the ceiling, and a cart carrying
+ * more distinct products than that renders the overflow SKU-only rather than
+ * issuing a statement the database would reject outright. (No cart in this
+ * store comes close; the bound exists so the failure mode is a missing name
+ * instead of a 500 if one ever does.)
+ */
+const CART_CONTENT_ID_CAP = 50;
+
+/**
+ * The line's name and its art: ONE read for the whole cart.
+ *
+ * It was one `getEmDashEntry` per distinct product, fired in parallel — an
+ * uncapped fan-out of D1 round-trips on a public route, and `getEmDashEntry`
+ * is NOT request-cached, so nothing collapsed them. `getEmDashCollection` with
+ * an array `where` value is a single `WHERE id IN (…)`, and it is
+ * `requestCached` — which is the whole win here, since it is what makes a
+ * second read of the same ids inside one render free. Do NOT count on the L2
+ * object cache for this call: its key includes the exact ORDERED id set, and on
+ * a per-shopper route that set is close to unique per request, so the entry is
+ * written far more often than it is read.
+ *
+ * One behavioural difference worth naming: a collection read is `status:
+ * "published"` by default where an entry read is not, so a product unpublished
+ * since it was added to the cart now falls back to its SKU. That is the right
+ * answer on a shopper-facing page — this page must not name content the store
+ * has taken down — and it is already one of the fallback cases above.
+ *
+ * A failure is a missing name, never a failed page: content is what this store
+ * owns, and it must not take the cart down with it.
+ */
+const allProductIds = [
+	...new Set(lines.map((line) => line.productId).filter((id): id is string => id !== null)),
+];
+const productIds = allProductIds.slice(0, CART_CONTENT_ID_CAP);
+if (allProductIds.length > productIds.length) {
+	// Silent truncation would render as "some lines just have no name", which is
+	// indistinguishable from unpublished content and from an outage.
+	console.warn(
+		`[site-staging] cart carries ${allProductIds.length} distinct products, over the ${CART_CONTENT_ID_CAP}-id query cap; the remainder render SKU-only.`,
+	);
+}
+
+const contentById = new Map<string, ProductEntryData>();
+if (productIds.length > 0) {
+	try {
+		const { entries, error: contentError } = await getEmDashCollection("products", {
+			where: { id: productIds },
+			// Defensive second bound, the PLP's pattern: the `IN` list is already
+			// capped, and this caps what may come back through it.
+			limit: CART_CONTENT_ID_CAP,
+		});
+		/**
+		 * `getEmDashCollection` does NOT throw for a CMS/DB fault — it RETURNS
+		 * `{ entries: [], error }`. Destructuring only the data is how a D1
+		 * outage renders every line SKU-only with nothing in the log to say why
+		 * (see the reproduced-live investigation in `cart/add.ts`, which is the
+		 * same lesson learned against `getEmDashEntry`).
+		 *
+		 * The not-found guard is belt-and-braces rather than dead code. A
+		 * collection read HAS no "not found" — an id with no row is an absent
+		 * row, not an error — but `EntryResult.error`'s own JSDoc said exactly
+		 * that about the entry API and was wrong in practice (astro wraps the
+		 * loader's "no row" in a `LiveEntryNotFoundError`), so the discriminant
+		 * is stated rather than assumed.
+		 */
+		if (contentError !== undefined && contentError.name !== "LiveEntryNotFoundError") {
+			console.error("[site-staging] cart line content lookup failed:", contentError);
+		} else if (entries.length === 0) {
+			/**
+			 * `error` is not the only way this read fails, and it is not the
+			 * likeliest one. em-dash's collection loader CATCHES missing-table
+			 * and missing-column faults and returns a bare `{ entries: [] }` —
+			 * no `error` key at all, only a `console.warn` of its own for the
+			 * column case and nothing whatever for the table case. A `where`
+			 * clause is exactly what trips the column path, so the branch above
+			 * would never fire for the most probable failure of this query.
+			 *
+			 * Hence a warn keyed on the SHAPE of the answer: ids were asked for
+			 * and none came back. That is benignly true when every product in
+			 * the cart is genuinely unpublished, so this line says both — a log
+			 * line on a real, if unusual, state is a cheap price for not
+			 * swallowing a schema fault on a shopper-facing route.
+			 */
+			console.warn(
+				`[site-staging] cart line content lookup returned nothing for ${productIds.length} id(s): every one of them is unpublished, or the collection loader swallowed a missing-table/column fault.`,
+			);
+		}
+		for (const entry of entries) {
+			const data = entry.data as unknown as ProductEntryData;
+			// Keyed on the CONTENT id — which is what a cart line's `productId`
+			// is, and the join key commerce uses. `entry.id` is the slug-derived
+			// routing id and would miss every line.
+			contentById.set(data.id, data);
+		}
+	} catch (cause) {
+		// Backstop only: the contract above is "returns an error, never throws",
+		// and a cart page is not the place to discover that it changed.
+		console.error("[site-staging] cart line content lookup threw:", cause);
+	}
+}
+
+/**
+ * `lineMoneyText` is the ONE path a money string takes to this page's screen —
+ * which of the three "no figure" cases is this (`cartMoneyCell`), this page's
+ * sentence casing, then §7's last gate (`moneyCellText`, which forbids anything
+ * that does not say something). It lives in `cart-view.ts` beside the cases it
+ * decides between, so the whole composition can be executed by a test rather
+ * than reassembled by one. Nothing renders money on this page beside it.
+ */
+const lineViews = lines.map((line, index) => {
+	const content = line.productId === null ? null : (contentById.get(line.productId) ?? null);
+	const linePricing = pricing?.lines.find((entry) => entry.lineId === line.lineId) ?? null;
+	const unitPrice = lineMoneyText(linePricing?.unitPrice?.formatted, pricingDegraded);
+	return {
+		line,
+		index,
+		/** The display-face name, or null when this store cannot name the line. */
+		title: content?.title ?? null,
+		/** What a screen reader calls the line — never null, so every control on
+		 *  the row is distinguishable from the one on the row above it. */
+		name: content?.title ?? line.sku,
+		image: content === null ? null : productImage(content),
+		/** Keys the coil (§5). Any stable per-product string; the SKU is the
+		 *  last resort so a contentless line still draws its own art. */
+		artKey: content?.slug ?? line.productId ?? line.sku,
+		money: lineMoneyText(linePricing?.lineTotal?.formatted, pricingDegraded),
+		/** Only when it says something the line total does not: at qty 1 the two
+		 *  figures are the same number twice, and when the unit price is PROSE
+		 *  ("Priced at checkout") the line total is already saying it — "Priced
+		 *  at checkout each" is not a sentence. */
+		each: line.qty > 1 && !isUnpricedText(unitPrice) ? `${unitPrice} each` : null,
+		// One fresh key per rendered form (double-submit = replay, not duplicate).
+		updateKey: crypto.randomUUID(),
+		removeKey: crypto.randomUUID(),
+	};
+});
+
+/**
+ * "3 items" (§8) — UNITS, the same number the nav badge carries.
+ *
+ * The mockup's header reads "3 items · 2 held" and this page shipped that, and
+ * both halves of it were wrong at once. The item count sums units while the
+ * held count counted LINES, so four units on three lines rendered "4 items · 3
+ * held" with every unit held; and the held clause was a render-time snapshot
+ * printed above ribbons that keep ticking, so it still said "2 held" over two
+ * ribbons that had both gone to "Hold released".
+ *
+ * The clause is gone rather than fixed. Every line already carries a live
+ * ribbon saying what its own hold is doing — that is the signature of the
+ * theme and it is the truth as of this second. A second, staler copy of the
+ * same fact one line above it is not worth keeping honest.
+ *
+ * To be plain about what this is: a DELIBERATE DEVIATION from the mockup, not
+ * an application of a written rule — TEMPERED.md says nothing about stale
+ * copy, and the header it draws reads "3 items · 2 held". The mockup's frame is
+ * only self-consistent at quantity 1, where units, lines and holds are the same
+ * number; the moment a shopper raises a quantity the two halves count different
+ * things. Ratified by the director on that basis: where the drawing cannot be
+ * made true, appearance yields to correctness. Restoring the clause means
+ * re-deciding that, not just re-adding a span.
+ */
+const itemCount = cart === null ? 0 : totalQty(cart);
+const summary =
+	cart === null || lines.length === 0
+		? null
+		: `${itemCount} ${itemCount === 1 ? "item" : "items"}`;
+
+/**
+ * The totals block (§7). The cart has ONE figure — the sum of the lines that
+ * could be priced — so the rows say exactly that and nothing more: no invented
+ * shipping, no synthetic zero, no tax this store has not calculated. What is
+ * missing is named in prose, not marked with a dash.
+ */
+const asMoney = (wire: CartMoneyWire): CheckoutAmountView => ({ money: wire, label: wire.formatted });
+const asProse = (label: string): CheckoutAmountView => ({ money: null, label });
+
+const cartTotal = pricing?.total ?? null;
+/** Nothing on this cart carries a figure — and the two reasons for that read
+ *  differently to a shopper, so they are not collapsed into one sentence. */
+const NO_SUBTOTAL = pricingDegraded ? "Unavailable right now" : PRICED_AT_CHECKOUT_CELL;
+const NO_TOTAL = pricingDegraded ? "Unavailable right now" : "Confirmed at checkout";
+
+const sumRows: SumRow[] = [
+	{
+		label: "Subtotal",
+		amount: cartTotal === null ? asProse(NO_SUBTOTAL) : asMoney(cartTotal),
+		fallback: NO_SUBTOTAL,
+	},
+	// The cart cannot know a shipping figure — it is quoted one step later — and
+	// §7 forbids rendering that as "Free" or as "$0.00".
+	{ label: "Shipping", amount: asProse("At checkout"), fallback: "At checkout" },
+];
+const totalAmount = cartTotal === null ? asProse(NO_TOTAL) : asMoney(cartTotal);
+
+/** The old page's "(some items priced at checkout)", as §7's footnote: a
+ *  partial total is only honest when it says what it is short of. */
+const partialNote =
+	cartTotal !== null && pricing !== null && !pricing.allLinesPriced
+		? "Some items are priced at checkout, so this total isn't complete yet."
+		: null;
 ---
 
 {/* The nav badge and the footer currency both reuse THIS page's cart read —
@@ -71,7 +310,10 @@ const lineForms = lines.map((line) => ({
 	cartCount={cart === null ? null : totalQty(cart)}
 	currency={cart?.currency ?? null}
 >
-	<h1>Cart</h1>
+	<header class="cart-head">
+		{summary !== null && <p class="u-label summary">{summary}</p>}
+		<h1 class="title">Cart</h1>
+	</header>
 
 	{error !== null && <p class="notice">{cartErrorMessage(error)}</p>}
 	{degraded && (
@@ -85,96 +327,356 @@ const lineForms = lines.map((line) => ({
 
 	{
 		cart === null || lines.length === 0 ? (
+			/* §8: "an empty screen is an invitation to act". The mockup's own
+			   empty-cart frame — a display-face line, one sentence saying what
+			   this store does for you, and a way out. Suppressed when the read
+			   was DEGRADED: a cart we could not reach is not an empty cart, and
+			   the banner above is already saying so. */
 			!degraded && (
-				<p>
-					Your cart is empty. <a href="/products">Browse products</a>.
-				</p>
+				<div class="empty">
+					<h2 class="empty-title">Nothing held yet.</h2>
+					<p>
+						Your cart is empty. Pick something and we'll hold the stock while you decide.
+					</p>
+					<a href="/products" class="btn btn-ghost">
+						Browse products
+					</a>
+				</div>
 			)
 		) : (
-			<>
-				<table>
-					<thead>
-						<tr>
-							<th>SKU</th>
-							<th>Qty</th>
-							<th>Unit price</th>
-							<th>Line subtotal</th>
-							<th>Hold expires</th>
-							<th />
-						</tr>
-					</thead>
-					<tbody>
-						{lineForms.map(({ line, updateKey, removeKey }) => {
-							const linePricing = pricing?.lines.find((p) => p.lineId === line.lineId) ?? null;
-							return (
-								<tr>
-									<td>{line.sku}</td>
-									<td>
-										<form method="POST" action="/cart/update">
-											<input type="hidden" name="lineId" value={line.lineId} />
-											<input type="hidden" name="idempotencyKey" value={updateKey} />
-											<input type="number" name="qty" value={line.qty} min="1" step="1" />
-											<button type="submit">Update</button>
-										</form>
-									</td>
-									<td>{cartMoneyCell(linePricing?.unitPrice?.formatted, pricingDegraded)}</td>
-									<td>{cartMoneyCell(linePricing?.lineTotal?.formatted, pricingDegraded)}</td>
-									<td>{line.expiresAt ?? "—"}</td>
-									<td>
-										<form method="POST" action="/cart/remove">
-											<input type="hidden" name="lineId" value={line.lineId} />
-											<input type="hidden" name="idempotencyKey" value={removeKey} />
-											<button type="submit">Remove</button>
-										</form>
-									</td>
-								</tr>
-							);
-						})}
-					</tbody>
-				</table>
-				<p>
-					Total items: <strong>{totalQty(cart)}</strong> ({cart.currency})
-				</p>
-				{pricing?.total !== null && pricing?.total !== undefined && (
-					<p>
-						Total: <strong>{pricing.total.formatted}</strong>
-						{!pricing.allLinesPriced && " (some items priced at checkout)"}
-					</p>
-				)}
-				<p class="muted">
-					Prices shown are informational and may change — your final total is calculated at
-					checkout.
-				</p>
-				<p>
-					<a href="/checkout">Proceed to checkout</a>
-				</p>
-			</>
+			<div class="cart">
+				{/* A LIST, because it is one: the old table gave a screen reader
+				    "row 2 of 3" for free and the flat stack that replaced it gave
+				    nothing. Both roles are redundant markup that is not redundant
+				    in practice, and they answer two SEPARATE WebKit behaviours: it
+				    drops list semantics from a list styled `list-style: none`
+				    (this one is), and it drops ITEM semantics from an `<li>` whose
+				    `display` is not `list-item` (`.line` is `display: grid`).
+				    Either one alone announces a list of nothing. */}
+				<ul class="lines" role="list">
+					{lineViews.map((view) => (
+						<li class="line" role="listitem">
+							{/* Square at this size (§8: the cart is the 1/1 crop). */}
+							<MediaPanel
+								slug={view.artKey}
+								index={view.index}
+								image={view.image}
+								alt={view.title ?? ""}
+								ratio="1"
+							/>
+							<div class="line-main">
+								<div class="line-id">
+									{view.title !== null && <span class="line-name">{view.title}</span>}
+									<span class="u-mono line-sku">{view.line.sku}</span>
+								</div>
+								{/* The signature (§6). The component owns the countdown, the
+								    three states, the released line's next step and the no-JS
+								    absolute expiry — this page only hands it the line's own
+								    `expiresAt`, and a line that never took a reservation
+								    renders no ribbon at all. */}
+								<HoldRibbon expiresAt={view.line.expiresAt} />
+							</div>
+							<div class="line-right">
+								<span class="line-money">
+									{isUnpricedText(view.money) ? (
+										<span class="u-mono unpriced">{view.money}</span>
+									) : (
+										<PriceTag formatted={view.money} />
+									)}
+									{view.each !== null && <span class="u-mono each">{view.each}</span>}
+								</span>
+								<form method="POST" action="/cart/update" class="line-actions">
+									<input type="hidden" name="lineId" value={view.line.lineId} />
+									<input type="hidden" name="idempotencyKey" value={view.updateKey} />
+									<QtyField
+										value={view.line.qty}
+										size="sm"
+										label={`Quantity, ${view.name}`}
+										hideLabel
+									/>
+									<button type="submit" class="link-btn">
+										Update<span class="u-sr-only"> {view.name}</span>
+									</button>
+								</form>
+								<form method="POST" action="/cart/remove">
+									<input type="hidden" name="lineId" value={view.line.lineId} />
+									<input type="hidden" name="idempotencyKey" value={view.removeKey} />
+									<button type="submit" class="link-btn">
+										Remove<span class="u-sr-only"> {view.name}</span>
+									</button>
+								</form>
+							</div>
+						</li>
+					))}
+				</ul>
+
+				<div class="totals">
+					<Sum rows={sumRows} total={totalAmount} footnote={partialNote} />
+				</div>
+
+				<div class="cart-foot">
+					<a href="/checkout" class="btn">
+						Check out
+					</a>
+					{/* §7, and the reason it says both halves: the figures above are a
+					    LIVE join, not a snapshot the cart is holding, and the ribbon
+					    beside them reserves STOCK — a hold is not a price lock. Saying
+					    only "confirmed at checkout" beside a countdown invites exactly
+					    the reading the hold does not support. */}
+					<p>Prices are live and may change; your total is confirmed at checkout.</p>
+				</div>
+			</div>
 		)
 	}
 </Base>
 
 <style>
-	table {
-		border-collapse: collapse;
-		width: 100%;
+	/* §8's header block: the count in mono caps, then the title. */
+	.cart-head {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		margin-bottom: 2rem;
 	}
-	th,
-	td {
-		text-align: left;
-		padding: 0.5rem;
+	.summary {
+		margin: 0;
+	}
+
+	/* §3: the display face, set narrow. */
+	.title {
+		margin: 0;
+		font-family: var(--u-display);
+		font-variation-settings: "wdth" 78, "opsz" 48;
+		font-weight: 700;
+		font-size: clamp(2rem, 6vw, 2.25rem);
+		letter-spacing: -0.025em;
+		line-height: 1;
+	}
+
+	.cart {
+		display: flex;
+		flex-direction: column;
+	}
+
+	/* The list is structure for a screen reader and nothing for the eye: the
+	   markers and the indent go, the hairlines between the lines stay. */
+	.lines {
+		margin: 0;
+		padding: 0;
+		list-style: none;
+	}
+
+	/* §8's empty state: an invitation, not an apology. */
+	.empty {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 1rem;
+		padding: 3rem 0 4rem;
+	}
+	/* §3's display face, one step down from the page title — this is the line
+	   the shopper reads first on an otherwise bare page. */
+	.empty-title {
+		margin: 0;
+		font-family: var(--u-display);
+		font-variation-settings: "wdth" 78, "opsz" 32;
+		font-weight: 700;
+		font-size: 1.75rem;
+		letter-spacing: -0.025em;
+		line-height: 1;
+	}
+	.empty p {
+		margin: 0;
+		max-width: 44ch;
+		color: var(--u-mute);
+	}
+
+	/* §2: one hairline, never a box. The rules between lines are the only
+	   structure on the page. `minmax(0, 1fr)` rather than `1fr` so a long
+	   product name or SKU wraps instead of widening the column — a grid track's
+	   automatic minimum is min-content, which is what took the whole PAGE wide
+	   in the pre-theme table (§11, and see legacy-bridge.css). */
+	.line {
+		display: grid;
+		grid-template-columns: 4.5rem minmax(0, 1fr) auto;
+		gap: 1.25rem;
+		align-items: start;
+		padding: 1.25rem 0;
 		border-bottom: var(--u-hair);
 	}
-	form {
+	.line:first-of-type {
+		border-top: var(--u-hair);
+	}
+
+	/* The ribbon fills this column, so the column is what bounds it: past about
+	   this width a 2px rule stops reading as a ribbon and starts reading as a
+	   divider, which is the one thing §2 reserves the hairline for. */
+	.line-main {
 		display: flex;
+		flex-direction: column;
+		gap: 0.625rem;
+		min-width: 0;
+		max-width: 34rem;
+	}
+	.line-id {
+		display: flex;
+		flex-direction: column;
+		gap: 0.125rem;
+	}
+
+	/* §3: "never below 17px" — 1.0625rem is exactly that. */
+	.line-name {
+		font-family: var(--u-display);
+		font-variation-settings: "wdth" 78, "opsz" 24;
+		font-weight: 700;
+		font-size: 1.0625rem;
+		letter-spacing: -0.02em;
+		line-height: 1.2;
+		overflow-wrap: anywhere;
+	}
+	.line-sku {
+		font-size: 0.625rem;
+		color: var(--u-mute);
+		overflow-wrap: anywhere;
+	}
+
+	.line-right {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-end;
 		gap: 0.5rem;
 	}
-	input[type="number"] {
-		width: 4.5rem;
+	.line-money {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-end;
+		gap: 0.125rem;
 	}
-	.muted {
+
+	/* Prose, not a figure — muted and a size down, so "priced at checkout"
+	   cannot be read as an amount (§7). */
+	.unpriced {
+		font-size: 0.6875rem;
 		color: var(--u-mute);
-		font-size: 0.875rem;
+		text-align: right;
 	}
+	/* Secondary to the line total, which is the figure that matters here. */
+	.each {
+		font-size: 0.625rem;
+		color: var(--u-mute);
+	}
+
+	.line-actions {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+	}
+
+	/* A control that is a control, not a button-shaped thing: the cart has one
+	   primary action and it is at the foot. Focus is the global straw ring. */
+	.link-btn {
+		padding: 0;
+		border: none;
+		background: none;
+		font-family: var(--u-body);
+		font-size: 0.75rem;
+		color: var(--u-mute);
+		cursor: pointer;
+		text-decoration: underline;
+		text-decoration-color: var(--u-edge);
+		text-underline-offset: 2px;
+	}
+	.link-btn:hover {
+		color: var(--u-ink);
+		text-decoration-color: var(--u-straw);
+	}
+
+	/* Bottom-right (§8). A width on the WRAPPER, not on `Sum` — Astro scopes a
+	   page's CSS to the page's own hash, so a rule aimed at a component's root
+	   would compile, ship and silently do nothing (see lib/rest-props.ts). */
+	.totals {
+		width: 100%;
+		max-width: 20rem;
+		margin-left: auto;
+		padding-top: 1.25rem;
+	}
+
+	.cart-foot {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-end;
+		gap: 0.875rem;
+		padding-top: 1.25rem;
+	}
+	.cart-foot p {
+		margin: 0;
+		font-size: 0.75rem;
+		color: var(--u-mute);
+	}
+
+	/* §2: primary buttons are ink-filled; straw is a fitting, so it arrives on
+	   hover as a 3px rule along the inner bottom edge and never as a fill. */
+	.btn {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.625rem;
+		padding: 0.75rem 1.25rem;
+		border: none;
+		border-radius: var(--u-r);
+		background: var(--u-ink);
+		color: var(--u-surface);
+		font-family: var(--u-body);
+		font-size: 0.875rem;
+		font-weight: 600;
+		text-decoration: none;
+		cursor: pointer;
+		box-shadow: inset 0 -2px 0 transparent;
+		transition: box-shadow 120ms ease;
+	}
+	.btn:hover {
+		box-shadow: inset 0 -3px 0 var(--u-straw);
+	}
+
+	/* The empty state's way out is a SECOND-rank action — there is nothing on
+	   this page to be primary about — so it is the same button on the hairline
+	   instead of on ink. Full-contrast text either way (§2: straw is a fitting;
+	   it is never what a label sits on). */
+	.btn-ghost {
+		background: transparent;
+		color: var(--u-ink);
+		border: var(--u-hair);
+	}
+
+	/* §11: 390px with no horizontal page scroll. Three columns cannot hold a
+	   hold ribbon AND a qty row on a phone, so the controls drop under the line
+	   rather than squeezing the ribbon — the ribbon is the thing being read. */
+	@media (max-width: 34rem) {
+		.line {
+			grid-template-columns: 3.5rem minmax(0, 1fr);
+			gap: 1rem 1rem;
+		}
+		.line-right {
+			grid-column: 1 / -1;
+			flex-direction: row;
+			flex-wrap: wrap;
+			align-items: center;
+			justify-content: space-between;
+			gap: 0.75rem 1rem;
+		}
+		.line-money {
+			align-items: flex-start;
+		}
+		.unpriced {
+			text-align: left;
+		}
+		.totals {
+			max-width: none;
+		}
+	}
+
+	/* TRANSITIONAL — the `?error=` banner keeps the pre-theme panel until
+	   increment 6 restyles notices onto the `Notice` component. Its ink comes
+	   from legacy-bridge.css, which pins a literal against this pale ground. */
 	.notice {
 		background: #fff7e0;
 		border: 1px solid #e6c200;
