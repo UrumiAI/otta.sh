@@ -94,7 +94,13 @@ const soldOut = product?.availability === "out_of_stock";
 			<div class="empty">
 				<h1 class="title empty-title">Product not found.</h1>
 				<p class="empty-copy">
-					Nothing here under that address — it may have sold out and been retired.
+					{/* States the fact and stops. The page knows the address
+					    resolves to nothing; it does NOT know why, and "it may
+					    have sold out and been retired" invents a story about a
+					    product that may simply never have existed — or tells a
+					    shopper chasing a live link that the thing they came for
+					    is gone, on no evidence. */}
+					Nothing here under that address.
 				</p>
 				<a class="btn btn-ghost" href="/products">
 					Back to all products
@@ -198,11 +204,23 @@ const soldOut = product?.availability === "out_of_stock";
 												Add to cart
 											</button>
 										</form>
-										{/* The hold is worth telling a shopper about (§10). The
-										    figure is the service's own TTL —
+										{/* The hold is worth telling a shopper about, and §10
+										    keeps the duration visible because it is the
+										    useful part.
+
+										    The figure states the shipped DEFAULT:
 										    `DEFAULT_HOLD_TTL_MS` in @urumi/domain is 15
-										    minutes, and an operator can raise it in the
-										    settings panel. */}
+										    minutes, and the service's only override is the
+										    `CART_HOLD_TTL_MS` env var — the admin's
+										    `holdTtlMinutes` setting is persisted but not
+										    wired to anything (issue #127, which names this
+										    very line). So the number is true of every
+										    deployment that has not set that variable, and
+										    is kept for that reason rather than softened to
+										    "for a few minutes", which tells a shopper
+										    nothing they can plan around. When #127 lands,
+										    this copy has to read the effective TTL instead
+										    of hard-coding the default. */}
 										<p class="hold-note">
 											Adding this holds one in stock for 15 minutes.
 										</p>
@@ -211,15 +229,25 @@ const soldOut = product?.availability === "out_of_stock";
 
 								{/* A sold-out PDP is otherwise a dead end: a price, a
 								    ledger saying you cannot have it, and no way on.
-								    §8 — a failure explains what still works, so the
-								    page states the fact and hands back the door to
-								    the rest of the shop. */}
+								    §8 — a failure explains what still works.
+
+								    ONE element does that here, and it is the door.
+								    The fact is already stated twice above — the
+								    ledger's Stock row reads "Sold out" and PriceTag
+								    strikes the figure beside it — so a third
+								    sentence saying the same thing would be the
+								    theme repeating itself where the button should
+								    be. The wording follows the ledger's: this page
+								    says "Sold out", never "Out of stock", so the
+								    shopper is not left matching two phrasings to
+								    one fact. And it is not the crumb again — the
+								    crumb goes BACK, this offers the alternative,
+								    and it sits where the buy button would have. */}
 								{soldOut && (
 									<div class="buy-block">
-										<p class="note">Out of stock right now.</p>
 										<div>
 											<a class="btn btn-ghost" href="/products">
-												Back to all products
+												See what's in stock
 											</a>
 										</div>
 									</div>

@@ -21,6 +21,7 @@
 import { STOREFRONT_LIST_ROUTE, type PlpRouteResult, type ProductViewModel } from "@urumi/plugin";
 import { getEmDashCollection, getSiteSettings } from "emdash";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
+import PriceTag from "../components/PriceTag.astro";
 import Base from "../layouts/Base.astro";
 import { toCmsProductContent, type ProductEntryData } from "../lib/products.js";
 import {
@@ -31,19 +32,39 @@ import {
 	storeTitle,
 	tapeRows,
 	TAPE_FETCH_LIMIT,
+	type StoreSettings,
 } from "../lib/tape.js";
 import { dispatchUrumiRoute } from "../lib/urumi-api.js";
 
-const settings = (await getSiteSettings()) as { title?: string; tagline?: string };
+/**
+ * BOTH reads on this page are guarded, and the settings read needs it as much
+ * as the catalog one: `getSiteSettings` has no error channel — it awaits
+ * `getDb()` and the query behind it, and either can reject — so an unguarded
+ * `await` here is a 500 on the store's front door.
+ *
+ * The fallback is deliberately `{}` rather than a placeholder name:
+ * `storeThesis({})` already resolves to the theme's own, and duplicating that
+ * decision here is how the two drift apart.
+ */
+let settings: StoreSettings = {};
+try {
+	settings = (await getSiteSettings()) as StoreSettings;
+} catch (error) {
+	console.error("[site-staging] home settings read threw:", error);
+}
 
 /**
- * The catalog read is GUARDED, and that is the point of this block.
+ * The catalog read is GUARDED too, by both of its arms.
  *
  * The front page used to make no data call at all and could not fail; the tape
  * gave it one. `getEmDashCollection` reports a query failure in `error` rather
  * than throwing, but a missing binding throws outright — so both arms land in
- * the same place, and that place is the degraded branch, not a 500. A store
- * whose content store is down still greets a visitor with its own name.
+ * the same place, and that place is the degraded branch, not a 500.
+ *
+ * The claim this scopes to: THIS PAGE's frontmatter has no unguarded read, so a
+ * dead content store costs it the tape and the store's own name, not the
+ * response. The layout around it reads settings on its own account (see
+ * `Base.astro`) and is not this page's to guarantee.
  */
 let entries: readonly { data: unknown }[] | null = null;
 let hasMore: boolean | undefined;
@@ -105,32 +126,60 @@ const shopLabel = shopLinkLabel(count);
 		{
 			rows.length > 0 && (
 				<div class="tape">
-					<div class="row row-head">
-						<span class="u-label">Item</span>
-						<span class="u-label">Price</span>
-						{/* `Stock`, not `In stock`: the cells below hold the WORDS
-						    "In stock" and "Sold out", and a column headed with one
-						    of its own values reads as a claim about the column.
-						    Same label as the PDP's spec ledger. */}
-						{/* `stock-head`, not `stock`: the column heading is an
-						    eyebrow label and keeps `.u-label`'s size — it only
-						    borrows the data column's alignment. */}
-						<span class="u-label stock-head">Stock</span>
-					</div>
-					{rows.map((row) => (
-						<div class="row">
-							<span class="u-mono item">{row.item}</span>
-							{/* Struck and muted when sold out — the same one signal
-							    PriceTag gives a sold-out card, so the tape and the
-							    grid do not disagree about the same product. */}
-							<span class="u-mono price" data-sold-out={row.soldOut ? "" : undefined}>
-								{row.price}
+					{/* Three labelled columns of facts IS a table, and the theme
+					    draws it with hairlines rather than a `<table>` because the
+					    hero column has to reflow to one column on a phone. The
+					    roles put the structure back for a screen reader at zero
+					    visual cost. They live on an inner element, not on `.tape`:
+					    a `role="table"` may only contain rows, and the foot below
+					    is a caption-ish aside that is not one. */}
+					<div class="rows" role="table" aria-label="Items, prices and stock">
+						<div class="row row-head" role="row">
+							{/* `Stock`, not `In stock`: the cells below hold the WORDS
+							    "In stock" and "Sold out", and a column headed with one
+							    of its own values reads as a claim about the column.
+							    Same label as the PDP's spec ledger. */}
+							{/* `stock-head`, not `stock`: the column heading is an
+							    eyebrow label and keeps `.u-label`'s size — it only
+							    borrows the data column's alignment. */}
+							<span class="u-label" role="columnheader">
+								Item
 							</span>
-							<span class="u-mono stock" data-sold-out={row.soldOut ? "" : undefined}>
-								{row.stock}
+							<span class="u-label" role="columnheader">
+								Price
+							</span>
+							<span class="u-label stock-head" role="columnheader">
+								Stock
 							</span>
 						</div>
-					))}
+						{rows.map((row) => (
+							<div class="row" role="row">
+								<span class="u-mono item" role="cell">
+									{row.item}
+								</span>
+								{/* The component, not a copy of it: the tape and the
+								    catalog card must not disagree about the same
+								    product, and the hand-rolled span had already
+								    drifted: PriceTag pins `white-space: nowrap` so a
+								    figure cannot break across two lines when a
+								    column narrows, and the copy of it did not. The
+								    sold-out strike arrives with the component too. */}
+								<PriceTag
+									formatted={row.price}
+									size="sm"
+									soldOut={row.soldOut}
+									role="cell"
+								/>
+								<span
+									class="u-mono stock"
+									role="cell"
+									data-sold-out={row.soldOut ? "" : undefined}
+								>
+									{row.stock}
+								</span>
+							</div>
+						))}
+					</div>
 					<p class="tape-foot">Stock updates as people buy.</p>
 				</div>
 			)
@@ -184,6 +233,14 @@ const shopLabel = shopLinkLabel(count);
 		min-width: 0;
 	}
 
+	/* The `role="table"` element. Same stacking the rows had as direct children
+	   of `.tape` — the role needed a box of its own, not a different layout. */
+	.rows {
+		display: flex;
+		flex-direction: column;
+		min-width: 0;
+	}
+
 	.row {
 		display: grid;
 		/* `minmax(0, …)` so a long sku wraps inside its cell rather than
@@ -208,10 +265,10 @@ const shopLabel = shopLinkLabel(count);
 		overflow-wrap: anywhere;
 	}
 
-	.price {
-		font-size: 0.8125rem;
-		font-weight: 500;
-	}
+	/* No `.price` rule here: the price cell is `<PriceTag size="sm">`, and its
+	   size, weight and sold-out treatment are the component's. A page cannot
+	   reach a component's root anyway (Astro scopes each component's CSS to its
+	   own hash — see src/lib/rest-props.ts), so a rule here would be dead. */
 
 	/* Right-aligned and tabular, so the column reads as a column. */
 	.stock,
@@ -222,14 +279,9 @@ const shopLabel = shopLinkLabel(count);
 		font-size: 0.8125rem;
 	}
 
-	/* Sold out is ONE signal, and it is PriceTag's: the mute plus a 1px strike.
-	   The stock cell only mutes — striking the words "Sold out" would say the
-	   fact itself no longer holds. */
-	.price[data-sold-out] {
-		color: var(--u-mute);
-		text-decoration: line-through;
-		text-decoration-thickness: 1px;
-	}
+	/* Sold out is ONE signal, and PriceTag carries it: the mute plus a 1px
+	   strike. The stock cell only mutes — striking the words "Sold out" would
+	   say the fact itself no longer holds. */
 	.stock[data-sold-out] {
 		color: var(--u-mute);
 	}

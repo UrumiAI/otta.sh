@@ -11,10 +11,18 @@
  * else. Card position is passed as `index` so the coil tints cycle and every
  * three cards show all three (§5).
  *
- * Degraded state is a feature, not a crash: when the commerce service is
- * unreachable the route returns RENDER_FAILED (or dispatch yields null) and
- * this page still renders the CONTENT catalog with a designed notice —
- * content visibility never depends on commerce availability.
+ * Two degraded states, and they are NOT the same state.
+ *
+ * When COMMERCE is unreachable the route returns RENDER_FAILED (or dispatch
+ * yields null) and this page still renders the whole CONTENT catalog with a
+ * designed notice — content visibility never depends on commerce availability.
+ *
+ * When the CONTENT store is unreachable there is no catalog to render, and the
+ * page has to say so. `getEmDashCollection` reports that in `error` rather than
+ * throwing, so an outage arrives here looking exactly like an empty
+ * collection — and rendering the empty state would tell a shopper the shop is
+ * empty and hand them the admin link. That is the wrong fact and the wrong
+ * audience.
  */
 import {
 	PLP_PAGE_SIZE_CAP,
@@ -31,7 +39,19 @@ import { toCmsProductContent, type ProductEntryData } from "../../lib/products.j
 import { exactCount, itemCountLabel } from "../../lib/tape.js";
 import { dispatchUrumiRoute } from "../../lib/urumi-api.js";
 
-const { entries, hasMore } = await getEmDashCollection("products", { limit: PLP_PAGE_SIZE_CAP });
+const {
+	entries,
+	hasMore,
+	error: catalogError,
+} = await getEmDashCollection("products", { limit: PLP_PAGE_SIZE_CAP });
+
+/* An outage and an empty shop both arrive as zero entries, and only `error`
+   tells them apart. Read it, or the shop tells a shopper it sells nothing. */
+const catalogUnavailable = catalogError !== undefined;
+if (catalogUnavailable) {
+	console.error("[site-staging] shop catalog read failed:", catalogError);
+}
+
 // Defensive second bound: the route rejects pages over the cap outright.
 const items = entries
 	.slice(0, PLP_PAGE_SIZE_CAP)
@@ -91,7 +111,24 @@ const countLabel = itemCountLabel(count);
 	}
 
 	{
-		items.length === 0 ? (
+		catalogUnavailable ? (
+			/* NOT the empty state. "No products yet." plus the admin link is a
+			   message to the OPERATOR of a brand-new store, and an outage would
+			   put it in front of a shopper as a statement about the shop. §10:
+			   say what happened and what to do, no apology, no internals.
+			   The heading stays: the page is still the shop, it just has
+			   nothing to show yet. No count — there is nothing to count. */
+			<>
+				<div class="notice-slot">
+					<Notice lead="The catalog is unavailable right now.">
+						Try again in a moment.
+					</Notice>
+				</div>
+				<div class="head">
+					<h1 class="title">Shop</h1>
+				</div>
+			</>
+		) : items.length === 0 ? (
 			<div class="empty">
 				<h1 class="title empty-title">No products yet.</h1>
 				<p class="empty-copy">

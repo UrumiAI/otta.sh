@@ -20,7 +20,6 @@ import {
 	storeThesis,
 	storeTitle,
 	tapeRows,
-	TAPE_FETCH_LIMIT,
 	TAPE_ROWS,
 } from "../src/lib/tape.js";
 
@@ -118,8 +117,17 @@ describe("tapeRows — only what the store can actually sell", () => {
 		expect(tapeRows([model])[0]?.item).toBe("Product 9");
 	});
 
-	test("the fetch window leaves slack for unpriced products", () => {
-		expect(TAPE_FETCH_LIMIT).toBeGreaterThan(TAPE_ROWS);
+	test("an UNKNOWN availability token makes no claim either way", () => {
+		// The rule the `=== "out_of_stock"` test exists for. `AvailabilityToken`
+		// is the plugin's to extend; under the old `!== "in_stock"` test a
+		// `preorder` product would arrive struck through and labelled "Sold out",
+		// which is a fact about a sellable product that the store never quoted.
+		const model = { ...priced(1), availability: "preorder" } as unknown as ProductViewModel;
+		const row = tapeRows([model])[0];
+		expect(row?.soldOut).toBe(false);
+		expect(row?.stock).toBe("");
+		// The price is the store's own figure and is still printed, unstruck.
+		expect(row?.price).toBe("$11.00");
 	});
 });
 
@@ -130,17 +138,34 @@ describe("exactCount — a number only when the number is true", () => {
 		expect(exactCount(11, 12)).toBe(11);
 	});
 
-	test("a FULL window means `at least this many`, so no number is stated", () => {
+	test("a FULL window with no second opinion means `at least this many`", () => {
+		// `hasMore` absent — no limit was passed, or the loader did not answer —
+		// so the window could be the whole catalog or the first page of nine
+		// hundred. Absent is not `false`.
 		expect(exactCount(12, 12)).toBeNull();
 		expect(exactCount(48, 48)).toBeNull();
 	});
 
-	test("`hasMore` can only veto a count, never invent one", () => {
+	test("`hasMore: true` vetoes a count it cannot invent", () => {
 		expect(exactCount(3, 12, true)).toBeNull();
+		expect(exactCount(12, 12, true)).toBeNull();
 		expect(exactCount(3, 12, false)).toBe(3);
-		// A full window stays unknown even when the loader claims there is no
-		// more: the conservative combination costs a number, never the truth.
-		expect(exactCount(12, 12, false)).toBeNull();
+	});
+
+	test("a full window PLUS `hasMore: false` is a proof, and the count survives", () => {
+		// Not a guess: em-dash asks its loader for `limit + 1` rows precisely so
+		// it can answer `hasMore`, so `false` on a full window means the
+		// limit-plus-first row was not there. A catalog of exactly 48 is knowable
+		// and gets said — refusing would drop the figure for the one store size
+		// where it is provable.
+		expect(exactCount(12, 12, false)).toBe(12);
+		expect(exactCount(48, 48, false)).toBe(48);
+	});
+
+	test("an OVER-full window is still refused — that is a bug, not a count", () => {
+		// Nothing should hand back more rows than the limit. If something does,
+		// the page states no number rather than one it cannot account for.
+		expect(exactCount(49, 48, false)).toBeNull();
 	});
 });
 
@@ -184,6 +209,19 @@ describe("the store's own words — blank is not the same as set", () => {
 
 	test("a WHITESPACE tagline is empty too", () => {
 		expect(storeThesis({ title: "Urumi", tagline: "   \n\t " })).toBe("Urumi");
+	});
+
+	test("a ZERO-WIDTH tagline is empty too — `trim` alone does not catch it", () => {
+		// U+200B is a format character, not whitespace, so `"​".trim()` is
+		// still truthy. A field cleared by select-and-delete in a rich editor
+		// routinely keeps one behind, and it would otherwise be a "set" tagline
+		// rendering as an empty `<h1>` — the same bug through another door.
+		expect(storeThesis({ title: "Urumi", tagline: "​" })).toBe("Urumi");
+		expect(storeThesis({ title: "Urumi", tagline: " ​ ﻿ " })).toBe("Urumi");
+		expect(storeDescription({ tagline: "​" })).toBeUndefined();
+		expect(storeTitle({ title: "​", tagline: "A reference storefront" })).toBe(FALLBACK_THESIS);
+		// A real tagline keeps every character a shopper can see.
+		expect(storeThesis({ tagline: "Spring steel" })).toBe("Spring steel");
 	});
 
 	test("a blank title falls through as well, to the theme's own name", () => {

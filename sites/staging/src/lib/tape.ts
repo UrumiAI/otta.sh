@@ -29,8 +29,15 @@ export const TAPE_ROWS = 6;
  * Twice the rows, and no more. The home page is the site's most-hit page and
  * every product it fetches is a row joined against the commerce store, so
  * fetching the full page cap to render six rows costs eight joins nobody
- * reads. The ×2 slack is for unpriced products, which the tape drops: a store
- * where half the catalog has no price still fills the tape from one fetch.
+ * reads.
+ *
+ * The ×2 slack is for unpriced products, which the tape drops. It buys a
+ * MARGIN, not a guarantee: the window is the first twelve products in catalog
+ * order, so it fills the tape only where unpriced products are spread through
+ * the catalog. A store that published twelve products before pricing any of
+ * them has an all-unpriced window and gets a thesis-only hero — the same
+ * degraded state as an unreachable commerce service, and a fair one, since
+ * such a store has nothing to put in a price column anyway.
  *
  * The cost of the small fetch is that the home page can rarely state an exact
  * catalog count — see `exactCount`, which then makes it say no number at all.
@@ -49,7 +56,10 @@ export interface TapeRow {
 	price: string;
 	/** The availability TOKEN in words. The view model carries no count, so the
 	 *  tape states the fact it actually has rather than the mockup's "12 in
-	 *  stock" — §7's spirit: never render a figure the store did not quote. */
+	 *  stock" — §7's spirit: never render a figure the store did not quote.
+	 *
+	 *  Empty for any token the theme has no words for: an unrecognised state
+	 *  leaves the cell blank rather than guessing at one of the two it knows. */
 	stock: string;
 	/**
 	 * Drives the struck-and-muted price cell, the same signal `PriceTag` gives
@@ -76,18 +86,24 @@ export function tapeRows(
 	limit: number = TAPE_ROWS,
 ): TapeRow[] {
 	return (view ?? [])
-		.flatMap((product) =>
-			product.purchasable && product.price !== null
-				? [
-						{
-							item: product.sku ?? product.title,
-							price: product.price.formatted,
-							stock: product.availability === "in_stock" ? "In stock" : "Sold out",
-							soldOut: product.availability !== "in_stock",
-						},
-					]
-				: [],
-		)
+		.flatMap((product) => {
+			if (!product.purchasable || product.price === null) return [];
+			/* Keyed on the POSITIVE token, not `!== "in_stock"`. `AvailabilityToken`
+			   is the plugin's to extend, and under the negative test a third value
+			   — `preorder`, `backorder` — would arrive here already struck through
+			   and labelled "Sold out", stating a fact the store never quoted about a
+			   product it can still sell. Only the explicit token makes the claim;
+			   anything else gets the price plain and no stock word. */
+			const soldOut = product.availability === "out_of_stock";
+			return [
+				{
+					item: product.sku ?? product.title,
+					price: product.price.formatted,
+					stock: soldOut ? "Sold out" : product.availability === "in_stock" ? "In stock" : "",
+					soldOut,
+				},
+			];
+		})
 		.slice(0, Math.max(0, limit));
 }
 
@@ -97,16 +113,26 @@ export function tapeRows(
  * A page fetches a bounded window of the catalog, so the length of what came
  * back is a count of the WINDOW, not of the store. It is the store's count only
  * when the window did not fill: fewer rows than were asked for means there were
- * no more to give. A full window means "at least this many", and printing that
- * as "48 items" under a shop that has 900 is a lie the shopper cannot catch.
+ * no more to give. A full window otherwise means "at least this many", and
+ * printing that as "48 items" under a shop that has 900 is a lie the shopper
+ * cannot catch.
  *
- * `hasMore` (set by the loader whenever a limit was passed) can only VETO a
- * number here, never add one. It is a second opinion, and the conservative
- * combination means a wrong `hasMore` costs a number rather than the truth.
+ * A FULL window plus an explicit `hasMore: false` is the one case where the
+ * number survives, and it is not a guess — em-dash asks the loader for
+ * `limit + 1` rows precisely so it can answer `hasMore`, so `false` here means
+ * the limit-plus-first row was not there. A catalog of exactly 48 is then
+ * knowable, and refusing to say so would drop the count for the one store size
+ * where it is provable.
+ *
+ * `hasMore` is `undefined` when no limit was passed, and then a full window is
+ * unknowable again: absent is not `false`. Beyond that one proof it can only
+ * VETO a number, never invent one — a wrong `hasMore: true` costs a figure
+ * rather than the truth.
  */
 export function exactCount(fetched: number, limit: number, hasMore?: boolean): number | null {
 	if (hasMore === true) return null;
-	return fetched < limit ? fetched : null;
+	if (fetched < limit) return fetched;
+	return hasMore === false && fetched === limit ? fetched : null;
 }
 
 /** `n items`, singular at one. `null` in — an unknown count — `null` out, and
@@ -137,9 +163,15 @@ export interface StoreSettings {
 
 /** A setting the operator left blank is the same as one they never set. A
  *  `??` chain disagrees — `""` is not nullish — and an operator who clears the
- *  tagline field gets the biggest type on the site rendering nothing. */
+ *  tagline field gets the biggest type on the site rendering nothing.
+ *
+ *  Format characters go before the trim, not after: `trim` strips whitespace,
+ *  and a zero-width space (U+200B) is not whitespace. A field cleared by
+ *  selecting and deleting in a rich editor routinely keeps one behind, and it
+ *  would otherwise be a "set" tagline that renders as an empty `<h1>` — the
+ *  exact bug this function exists to prevent, arriving by another door. */
 function filled(value: string | undefined): string {
-	return (value ?? "").trim();
+	return (value ?? "").replace(/\p{Cf}/gu, "").trim();
 }
 
 /**
