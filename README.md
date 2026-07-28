@@ -1,6 +1,10 @@
-# Urumi
+# Urumi — an open-source commerce layer for EmDash
 
-A commerce layer for [EmDash](https://github.com/emdash-cms/emdash) — the WooCommerce-equivalent for Cloudflare's TypeScript CMS.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+[![Version](https://img.shields.io/badge/version-0.0.1-orange.svg)](https://github.com/UrumiAI/otta.sh/releases/tag/v0.0.1)
+
+Open source (MIT), version 0.0.1. The WooCommerce-equivalent for
+[EmDash](https://github.com/emdash-cms/emdash), Cloudflare's TypeScript CMS.
 
 ![The Urumi storefront: a product listing with three sample products, each showing a title, description, and price](./docs/storefront.png)
 
@@ -9,7 +13,7 @@ service — this is what the [quick start](#quick-start-local-2-minutes) below g
 
 ## What this is
 
-Urumi turns an EmDash site into a store. It ships as two parts:
+Urumi turns an EmDash site into a store. It ships as three parts:
 
 1. **Urumi plugin** — a sandbox-clean EmDash plugin: storefront routes, an on-screen
    "Product data" panel (Block Kit field widget), content-sync hooks, cart/checkout
@@ -19,6 +23,12 @@ Urumi turns an EmDash site into a store. It ships as two parts:
 2. **Urumi commerce service** — a standalone Node/Hono + Postgres service that owns all
    money and stock truth: catalog, inventory, cart, checkout, orders, customers,
    payments, tax, shipping, discounts, entitlements, reporting, and webhooks.
+3. **The reference site** (`sites/staging`) — a default EmDash site with the plugin already
+   registered, so there's something to actually run. It's the storefront in the screenshot
+   above and what the [quick start](#quick-start-local-2-minutes) boots: product listing
+   pages, cart, and the admin console. Treat it as the worked example to copy from when
+   wiring Urumi into your own site — it covers **catalog + cart only** today (see
+   [Status](#status)).
 
 ## Quick start (local, ~2 minutes)
 
@@ -67,20 +77,22 @@ To deploy this for free on Cloudflare Workers, follow
 
 ## Why two parts
 
-**The biggest blocker right now is a missing primitive: EmDash's plugin sandbox has no
-atomic write / compare-and-set / transaction.** Plugins run with no direct DB access — all
-data crosses a capability-scoped RPC bridge as JSON copies — and `ctx.storage` is an
-unconditional upsert whose declared unique indexes are silently downgraded. So a safe
-inventory decrement (read-then-write across two bridge calls) always races under
-concurrency, and nothing in the plugin surface closes it. Until that primitive exists,
-correct commerce needs a transactional database off to the side. The commerce service
-holds it and performs the one atomic operation that matters:
+**EmDash's plugin sandbox has no atomic write, compare-and-set, or transaction.** Plugins
+get no direct database access — everything crosses a capability-scoped RPC bridge as JSON
+copies — and `ctx.storage` is an unconditional upsert whose declared unique indexes are
+silently downgraded. Any read-then-write spans two bridge calls and can interleave, so the
+sandbox can't express a guarded update, a uniqueness constraint, or a multi-document
+commit. Those are the ordinary building blocks of an order pipeline, so for now the
+transactional database sits off to the side, in the commerce service.
 
-```sql
-UPDATE inventory SET on_hand = on_hand - :q
- WHERE sku = :s AND on_hand >= :q
-RETURNING on_hand;   -- 0 rows = out of stock. No oversell, no lock.
-```
+The gap is closing. [emdash-cms/emdash#2169](https://github.com/emdash-cms/emdash/pull/2169)
+(ours, currently a draft) adds `ctx.storage.<collection>.updateIf(id, { where, set?,
+delta? })` — a guarded `UPDATE … RETURNING` run inside the sandbox. Two sibling primitives,
+not yet proposed upstream, cover the rest: an atomic `insert` that classifies unique
+violations, and `ctx.storage.batch([...])` for all-or-nothing multi-collection writes.
+With all three, a `@urumi/store-emdash` adapter already passes the domain's full
+`InventoryStore` contract in-process. Once orders, payments, webhooks, and reporting
+follow, the split becomes a deployment choice rather than a correctness requirement.
 
 ## Architecture (summary)
 
@@ -128,11 +140,14 @@ pnpm test         # vitest (better-sqlite3 by default)
 pnpm format       # oxfmt, tabs
 ```
 
-The **no-oversell concurrency test is Postgres-required** — better-sqlite3 serializes
-writes in one process, so it verifies the SQL is correct, not that it's race-safe. See
+The **concurrency tests are Postgres-required** — better-sqlite3 serializes writes in one
+process, so it verifies the SQL is correct, not that it's race-safe under contention. See
 `DEVELOPMENT.md` for the TDD / contract-first workflow and commerce invariants.
 
 ## Status
+
+**v0.0.1** — first open-source release. The `@urumi/*` packages are all at `0.0.1` and are
+not published to npm yet; consume them from the workspace.
 
 The commerce **service** is feature-complete (Phases 0–7 merged): catalog, inventory,
 cart, checkout, orders, customers with magic-link auth, Stripe + x402 payments, tax,

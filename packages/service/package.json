@@ -1,6 +1,6 @@
 {
 	"name": "@urumi/service",
-	"version": "0.1.0",
+	"version": "0.0.1",
 	"description": "Urumi commerce service — thin Hono REST API mirroring the domain ports 1:1.",
 	"homepage": "https://github.com/UrumiAI/otta.sh#readme",
 	"bugs": {
