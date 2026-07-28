@@ -54,7 +54,9 @@ function markupOnly(html: string): string {
 
 describe("HoldRibbon — the three states", () => {
 	test("held: violet, the default, and the fill is nearly full", async () => {
-		const html = await render({ expiresAt: inSeconds(540) });
+		// Nine tenths of the window left, derived — a fill "nearly full" is a
+		// fraction of the TTL, not a fixed number of seconds.
+		const html = await render({ expiresAt: inSeconds(HOLD_WINDOW_SECONDS * 0.9) });
 		expect(html).toContain('data-state="held"');
 		expect(html).toContain(HOLD_LABELS.held);
 		expect(fillPercent(html)).toBeGreaterThan(85);
@@ -111,10 +113,12 @@ describe("HoldRibbon — motion, and the reduced-motion contract (§6, §11)", (
 	});
 
 	test("the countdown carries the data the client script needs to keep ticking", async () => {
-		const html = await render({ expiresAt: inSeconds(300), windowSeconds: 900 });
+		// A window that is NOT the default, so this pins the prop being emitted
+		// rather than agreeing with `HOLD_WINDOW_SECONDS` by coincidence.
+		const html = await render({ expiresAt: inSeconds(300), windowSeconds: 1200 });
 		expect(html).toContain("data-hold");
 		expect(html).toMatch(/data-expires="[^"]+"/);
-		expect(html).toContain('data-window="900"');
+		expect(html).toContain('data-window="1200"');
 	});
 
 	test("defaults the window to the service's hold TTL", async () => {
