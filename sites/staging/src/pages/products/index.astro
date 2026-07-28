@@ -28,9 +28,10 @@ import Notice from "../../components/Notice.astro";
 import ProductCard from "../../components/ProductCard.astro";
 import Base from "../../layouts/Base.astro";
 import { toCmsProductContent, type ProductEntryData } from "../../lib/products.js";
+import { exactCount, itemCountLabel } from "../../lib/tape.js";
 import { dispatchUrumiRoute } from "../../lib/urumi-api.js";
 
-const { entries } = await getEmDashCollection("products", { limit: PLP_PAGE_SIZE_CAP });
+const { entries, hasMore } = await getEmDashCollection("products", { limit: PLP_PAGE_SIZE_CAP });
 // Defensive second bound: the route rejects pages over the cap outright.
 const items = entries
 	.slice(0, PLP_PAGE_SIZE_CAP)
@@ -50,11 +51,27 @@ const cards =
 	view ??
 	items.map((content) => ({ ...content, purchasable: false, price: null, availability: null }));
 
+/**
+ * What a card says where its price would be.
+ *
+ * Left to its default a priceless card reads "Not currently available for
+ * purchase", which is TRUE of an unpriced product and FALSE here: under a
+ * banner promising the catalog is complete, every card would be quietly
+ * retiring the whole shop. Degraded means the page does not know the price, so
+ * that is what it says — the PDP already draws the same distinction.
+ */
+const priceNote = view === null ? "Price unavailable right now" : undefined;
+
 /* §7: the footer names the currency the page actually quoted, never a
    literal — and names none at all when nothing on the page carries a price. */
 const currency = view?.find((product) => product.price !== null)?.price?.currency ?? null;
 
-const count = items.length;
+/* The grid renders the window that came back; the EYEBROW may only state a
+   figure when that window is the whole catalog (see `exactCount`). A full
+   window means "at least 48", and "48 items" over a 900-product shop is a lie
+   the shopper has no way to catch. */
+const count = exactCount(entries.length, PLP_PAGE_SIZE_CAP, hasMore);
+const countLabel = itemCountLabel(count);
 ---
 
 <Base title="Shop" currency={currency}>
@@ -64,7 +81,7 @@ const count = items.length;
 		   component's CSS to its own hash — see src/lib/rest-props.ts), so a
 		   `class` handed to <Notice> lands on an element this page's selectors
 		   can never match. */
-		view === null && count > 0 && (
+		view === null && items.length > 0 && (
 			<div class="notice-slot">
 				<Notice lead="Prices and stock are unavailable right now.">
 					The catalog below is complete — check back in a moment for live figures.
@@ -74,12 +91,12 @@ const count = items.length;
 	}
 
 	{
-		count === 0 ? (
+		items.length === 0 ? (
 			<div class="empty">
 				<h1 class="title empty-title">No products yet.</h1>
 				<p class="empty-copy">
-					Create a product in the admin, price it in the Product data panel, and it appears
-					here with live stock.
+					Create a product in the admin, price it there, and it appears here with live
+					stock.
 				</p>
 				<a class="btn btn-ghost" href="/_emdash/admin">
 					Open the admin
@@ -88,7 +105,9 @@ const count = items.length;
 		) : (
 			<>
 				<div class="head">
-					<p class="u-label">{count === 1 ? "1 item" : `${count} items`}</p>
+					{/* No label when the count is not exact — the title alone, rather
+					    than a figure the page cannot stand behind. */}
+					{countLabel !== null && <p class="u-label">{countLabel}</p>}
 					<h1 class="title">Shop</h1>
 				</div>
 				<div class="grid">
@@ -105,6 +124,7 @@ const count = items.length;
 									? product.price.formatted
 									: null
 							}
+							priceNote={priceNote}
 							availability={product.availability}
 						/>
 					))}

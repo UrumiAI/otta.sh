@@ -15,6 +15,11 @@
  *     the ids the /cart/add endpoint needs. The theme restyled that form; it
  *     must not have quietly changed what it posts.
  *
+ * What is NOT here: the tape's rows, the catalog counts and the headline
+ * fallbacks. Those moved to `src/lib/tape.ts` and are covered BEHAVIOURALLY in
+ * `tape.test.ts` — a grep for `slice(0, TAPE_ROWS)` proved a line existed, not
+ * that a seventh product was dropped.
+ *
  * Rendered behaviour (layout, focus rings, the dark palette) is verified in a
  * workerd preview with screenshots, and is not what this file is for.
  */
@@ -23,12 +28,15 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
-const PAGES = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src/pages");
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const PAGES = path.resolve(HERE, "../src/pages");
 const read = (relative: string): string => readFileSync(path.join(PAGES, relative), "utf8");
 
 const HOME = read("index.astro");
 const PLP = read("products/index.astro");
 const PDP = read("products/[slug].astro");
+const TAPE = readFileSync(path.resolve(HERE, "../src/lib/tape.ts"), "utf8");
+const SEED = readFileSync(path.resolve(HERE, "../seed/seed.json"), "utf8");
 
 /** The pages increment 3 moved onto the token layer. Increments 4–6 add theirs. */
 const MIGRATED: ReadonlyArray<readonly [string, string]> = [
@@ -96,9 +104,17 @@ describe("§7 — no page assembles money", () => {
 		expect(source).not.toMatch(/toFixed\(|Intl\.NumberFormat/);
 	});
 
-	test("the home tape and the catalog cards both print `price.formatted`", () => {
-		expect(HOME).toContain("product.price.formatted");
+	test("the catalog cards and the tape builder both print `price.formatted`", () => {
 		expect(PLP).toContain("product.price.formatted");
+		// The home page's rows are built in src/lib/tape.ts, which is held to the
+		// same rule — it is the only other place in the theme that reads a price
+		// off a view model and puts it in a cell.
+		expect(TAPE).toContain("product.price.formatted");
+		expect(TAPE).not.toMatch(/toFixed\(|Intl\.NumberFormat/);
+		// Same exemption the page sweep uses: `$` only ever opens a template
+		// placeholder here (the item COUNTS), never a currency symbol.
+		expect(TAPE).not.toMatch(/\$(?!\{)/);
+		expect(TAPE).not.toMatch(/[€£¥]/);
 	});
 
 	test("the PDP hands PriceTag the formatted string, not an amount", () => {
@@ -119,22 +135,26 @@ describe("§8 — the home hero and its degraded rule", () => {
 		expect(HOME).not.toContain("Notice");
 	});
 
-	test("the tape's stock cell states the availability token, never a count", () => {
-		// The product view model carries `availability` (in_stock/out_of_stock)
-		// and NO numeric stock. The mockup's "12 in stock" is not derivable, so
-		// the tape says what it knows.
-		expect(HOME).toContain('product.availability === "in_stock" ? "In stock" : "Sold out"');
-		expect(HOME).not.toMatch(/\bonHand\b|\bstockCount\b|\bavailable\s*\+/);
-	});
-
 	test("the hero reads the same catalog the shop page reads", () => {
 		expect(HOME).toContain("STOREFRONT_LIST_ROUTE");
 		expect(HOME).toContain("dispatchUrumiRoute");
 	});
 
-	test("the tape is bounded, so a large catalog cannot push the shop link away", () => {
-		expect(HOME).toMatch(/TAPE_ROWS\s*=\s*\d+/);
-		expect(HOME).toContain("slice(0, TAPE_ROWS)");
+	test("a content-store failure lands in the SAME degraded branch, not a 500", () => {
+		// The front page used to make no data call at all and could not fail. The
+		// tape gave it one, and `getEmDashCollection` can both report an error and
+		// (with no binding) throw — so both arms are handled and neither reaches
+		// the visitor.
+		expect(HOME).toMatch(/try\s*\{[\s\S]*getEmDashCollection[\s\S]*\}\s*catch/);
+		expect(HOME).toContain("collection.error === undefined");
+	});
+
+	test("the hero fetches a hero-sized window, not the whole page cap", () => {
+		// This is the site's most-hit page and every product it fetches is a row
+		// joined against the commerce store. Six rows do not need forty-eight
+		// joins.
+		expect(HOME).toContain("TAPE_FETCH_LIMIT");
+		expect(HOME).not.toContain("PLP_PAGE_SIZE_CAP");
 	});
 });
 
@@ -150,6 +170,23 @@ describe("the catalog grid", () => {
 	test("the degraded catalog still renders every product, content-only", () => {
 		expect(PLP).toContain("purchasable: false");
 		expect(PLP).toContain("<Notice");
+	});
+
+	test("a degraded card says the price is UNKNOWN, not that the product is retired", () => {
+		// ProductCard's default note is "Not currently available for purchase",
+		// which is true of an unpriced product and false under a banner promising
+		// the catalog is complete. The degraded branch overrides it.
+		expect(PLP).toContain('"Price unavailable right now"');
+		expect(PLP).toMatch(/<ProductCard[\s\S]{0,400}priceNote=\{priceNote\}/);
+	});
+
+	test("the eyebrow states a count only when the count is exact", () => {
+		// The page renders a bounded window, so a full window means "at least 48"
+		// and never "48 items". `exactCount` owns the rule; the page must not
+		// print `items.length` behind its back.
+		expect(PLP).toContain("exactCount(entries.length, PLP_PAGE_SIZE_CAP, hasMore)");
+		expect(PLP).toMatch(/countLabel !== null && </);
+		expect(PLP).not.toMatch(/\$\{count\}\s*items/);
 	});
 
 	test("the empty catalog is a designed state with a next move", () => {
@@ -184,6 +221,18 @@ describe("the PDP's add-to-cart form is unchanged in behaviour", () => {
 		expect(PDP).toMatch(/addToCart && inStock &&/);
 	});
 
+	test("a sold-out PDP is not a dead end — it states the fact and offers a way on", () => {
+		expect(PDP).toContain("Out of stock right now.");
+		expect(PDP).toMatch(/soldOut && \([\s\S]{0,400}href="\/products"/);
+	});
+
+	test("sold out DIMS the art; degraded and unpriced do not", () => {
+		// `soldOut` is the explicit token, never `!inStock`: a degraded page does
+		// not know the stock, and dimming its art would state a fact it lacks.
+		expect(PDP).toContain('const soldOut = product?.availability === "out_of_stock"');
+		expect(PDP).toMatch(/<MediaPanel[\s\S]{0,200}dimmed=\{soldOut\}/);
+	});
+
 	test("the hold note states the service's real TTL", () => {
 		// @urumi/domain's DEFAULT_HOLD_TTL_MS is 15 minutes, and the mockup's
 		// "10 minutes" was a draft figure. §10 keeps the hold visible to the
@@ -198,16 +247,53 @@ describe("the PDP's add-to-cart form is unchanged in behaviour", () => {
 });
 
 describe("§10 — shopper-side copy", () => {
-	test.each(MIGRATED)("%s never markets the inventory guarantee", (_file, source) => {
-		expect(source.toLowerCase()).not.toContain("oversell");
-		expect(source.toLowerCase()).not.toContain("atomic");
-	});
+	/**
+	 * NOTE THE CLAIM, which is narrower than it looks.
+	 *
+	 * These sweep a page's own SOURCE, so they prove only that the theme does not
+	 * AUTHOR the boast. They say nothing about what a page renders: product
+	 * descriptions come from the content store, and the seeded ones currently put
+	 * "No oversell under concurrency." on the screen — see the expected failure
+	 * at the bottom of this block, which is where that fact is recorded.
+	 */
+	test.each(MIGRATED)(
+		"%s authors no marketing of the inventory guarantee in its own copy",
+		(_file, source) => {
+			expect(source.toLowerCase()).not.toContain("oversell");
+			expect(source.toLowerCase()).not.toContain("atomic");
+		},
+	);
 
-	test.each(MIGRATED)("%s names no internals to the shopper", (_file, source) => {
+	test.each(MIGRATED)("%s names no internals in the copy it authors", (_file, source) => {
 		// Prose only: the frontmatter legitimately talks about the commerce
 		// service and view models, and the comments explain them.
 		const body = source.slice(source.indexOf("\n---", 3) + 4).replace(/<style>[\s\S]*$/, "");
 		const prose = body.replace(/\{\s*\/\*[\s\S]*?\*\/\s*/g, "");
 		expect(prose).not.toMatch(/commerce service|view model|\bCMS\b/i);
+	});
+
+	/**
+	 * KNOWN, LIVE §10 VIOLATION — an expected failure, not a passing test.
+	 *
+	 * The pages above author none of this, but they render what the store holds,
+	 * and the seed puts the boast straight onto the catalog and the PDP: the mug
+	 * "Holds exactly one coffee, atomically. No oversell under concurrency.", the
+	 * tee narrating the CMS and the commerce service, the stickers advertising
+	 * integer minor units. §10 names `seed/seed.json` explicitly and assigns the
+	 * rewrite to the increment that owns the seed (increment 6); increment 3 owns
+	 * the templates and deliberately does not touch that file.
+	 *
+	 * `test.fails` makes that state legible rather than invisible: vitest counts
+	 * a failing body here as a PASS, so the suite stays green while the violation
+	 * stands, and the day the seed copy is fixed THIS test goes red — at which
+	 * point drop the `.fails` and it becomes the guard that keeps it fixed.
+	 */
+	test.fails("the seeded shopper copy carries no §10 boast (owned by increment 6)", () => {
+		const seed = SEED.toLowerCase();
+		expect(seed).not.toContain("oversell");
+		expect(seed).not.toContain("atomic");
+		expect(seed).not.toContain("commerce service");
+		expect(seed).not.toContain("integer minor units");
+		expect(seed).not.toMatch(/\bcms\b/);
 	});
 });

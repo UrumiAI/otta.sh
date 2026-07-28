@@ -7,97 +7,92 @@
  *
  * That tape is the one thing that changed here: this page used to make no
  * commerce call by construction, and now it makes the same one the catalog
- * page makes (CMS read here, plugin `storefront/list` route in-process). The
- * DEGRADED RULE keeps the old guarantee intact — with the commerce service
- * unreachable the tape is omitted entirely and the thesis column renders
- * alone. No error box: a shopper who has not asked for a price does not need
- * to be told the shop is having a moment, and the catalog page says so
- * properly the instant they click through.
+ * page makes (content read here, plugin `storefront/list` route in-process).
+ * The DEGRADED RULE keeps the old guarantee intact — when EITHER read fails
+ * the tape is omitted entirely and the thesis column renders alone. No error
+ * box: a shopper who has not asked for a price does not need to be told the
+ * shop is having a moment, and the catalog page says so properly the instant
+ * they click through.
+ *
+ * The rows, the counts and the headline fallbacks are `src/lib/tape.ts`, which
+ * is where their honesty rules are unit-tested. This page is the read and the
+ * layout.
  */
-import {
-	PLP_PAGE_SIZE_CAP,
-	STOREFRONT_LIST_ROUTE,
-	type PlpRouteResult,
-	type ProductViewModel,
-} from "@urumi/plugin";
+import { STOREFRONT_LIST_ROUTE, type PlpRouteResult, type ProductViewModel } from "@urumi/plugin";
 import { getEmDashCollection, getSiteSettings } from "emdash";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import Base from "../layouts/Base.astro";
 import { toCmsProductContent, type ProductEntryData } from "../lib/products.js";
+import {
+	exactCount,
+	shopLinkLabel,
+	storeDescription,
+	storeThesis,
+	storeTitle,
+	tapeRows,
+	TAPE_FETCH_LIMIT,
+} from "../lib/tape.js";
 import { dispatchUrumiRoute } from "../lib/urumi-api.js";
-
-/**
- * How many rows the hero shows. The tape is a HERO, not the catalog: three
- * products fill it exactly as the mockup draws it, and a store with forty
- * would otherwise push its own shop link off the screen. The link carries the
- * full count, so nothing is hidden — it is a shelf you can see the end of.
- */
-const TAPE_ROWS = 6;
 
 const settings = (await getSiteSettings()) as { title?: string; tagline?: string };
 
-const { entries } = await getEmDashCollection("products", { limit: PLP_PAGE_SIZE_CAP });
-const items = entries
-	.slice(0, PLP_PAGE_SIZE_CAP)
-	.map((entry) => toCmsProductContent(entry.data as unknown as ProductEntryData));
-
-const result = await dispatchUrumiRoute<PlpRouteResult>(
-	getPublicPluginApiRouteHandler(Astro.locals),
-	STOREFRONT_LIST_ROUTE,
-	{ items, query: { kind: "all" } },
-	Astro.url,
-);
-const view: ProductViewModel[] | null = result !== null && result.ok ? result.items : null;
-
-interface TapeRow {
-	/** The sku — the store's own name for the thing. A product with no
-	 *  commerce row never reaches this list, so the title fallback is a
-	 *  belt-and-braces for a priced product whose sku is somehow absent. */
-	item: string;
-	/** Pre-formatted, straight off the view model (§7). */
-	price: string;
-	stock: string;
+/**
+ * The catalog read is GUARDED, and that is the point of this block.
+ *
+ * The front page used to make no data call at all and could not fail; the tape
+ * gave it one. `getEmDashCollection` reports a query failure in `error` rather
+ * than throwing, but a missing binding throws outright — so both arms land in
+ * the same place, and that place is the degraded branch, not a 500. A store
+ * whose content store is down still greets a visitor with its own name.
+ */
+let entries: readonly { data: unknown }[] | null = null;
+let hasMore: boolean | undefined;
+try {
+	const collection = await getEmDashCollection("products", { limit: TAPE_FETCH_LIMIT });
+	if (collection.error === undefined) {
+		entries = collection.entries;
+		hasMore = collection.hasMore;
+	} else {
+		console.error("[site-staging] home catalog read failed:", collection.error);
+	}
+} catch (error) {
+	console.error("[site-staging] home catalog read threw:", error);
 }
 
-/**
- * Only a product the store can actually sell has a row: it is an INVENTORY
- * tape, and an unpriced product has no price cell to fill. §7 forbids
- * inventing one, and a dash in a money column is indistinguishable from free.
- *
- * `flatMap` rather than `filter` + `map` because a filter does not narrow
- * `price` for the mapping step that follows it.
- */
-const tape: TapeRow[] = (view ?? []).flatMap((product) =>
-	product.purchasable && product.price !== null
-		? [
-				{
-					item: product.sku ?? product.title,
-					price: product.price.formatted,
-					// Availability is a coarse TOKEN — the view model carries no
-					// count, so the tape states the fact it actually has (§7's
-					// spirit: never render a figure the store did not quote).
-					stock: product.availability === "in_stock" ? "In stock" : "Sold out",
-				},
-			]
-		: [],
+const items = (entries ?? []).map((entry) =>
+	toCmsProductContent(entry.data as unknown as ProductEntryData),
 );
-const rows = tape.slice(0, TAPE_ROWS);
+
+const result =
+	entries === null
+		? null
+		: await dispatchUrumiRoute<PlpRouteResult>(
+				getPublicPluginApiRouteHandler(Astro.locals),
+				STOREFRONT_LIST_ROUTE,
+				{ items, query: { kind: "all" } },
+				Astro.url,
+			);
+const view: ProductViewModel[] | null = result !== null && result.ok ? result.items : null;
+
+const rows = tapeRows(view);
 
 /* §7: the currency the page quoted, from the view model that knows it. */
 const currency = view?.find((product) => product.price !== null)?.price?.currency ?? null;
 
-/* The thesis is the store's own line where it has one — the wordmark above
-   already carries the name, so repeating it here would waste the page's
-   loudest type on a word the shopper just read. */
-const thesis = settings.tagline ?? settings.title ?? "Urumi";
+/* The page fetches a small window (see TAPE_FETCH_LIMIT), so it usually cannot
+   state the size of the catalog — and then it states none. A count that only
+   holds for small stores is a count that lies to exactly the stores that grow. */
+const count = entries === null ? null : exactCount(entries.length, TAPE_FETCH_LIMIT, hasMore);
+
+const thesis = storeThesis(settings);
 const lede =
 	rows.length > 0
 		? "Everything in the shop, with what it costs and what's on the shelf right now."
 		: "Everything in the shop, on one page.";
-const shopLabel = items.length > 1 ? `Shop all ${items.length} items` : "Shop";
+const shopLabel = shopLinkLabel(count);
 ---
 
-<Base title={settings.title ?? "Urumi"} description={settings.tagline} currency={currency}>
+<Base title={storeTitle(settings)} description={storeDescription(settings)} currency={currency}>
 	<div class="hero">
 		<div class="thesis">
 			<h1 class="title">{thesis}</h1>
@@ -113,16 +108,27 @@ const shopLabel = items.length > 1 ? `Shop all ${items.length} items` : "Shop";
 					<div class="row row-head">
 						<span class="u-label">Item</span>
 						<span class="u-label">Price</span>
+						{/* `Stock`, not `In stock`: the cells below hold the WORDS
+						    "In stock" and "Sold out", and a column headed with one
+						    of its own values reads as a claim about the column.
+						    Same label as the PDP's spec ledger. */}
 						{/* `stock-head`, not `stock`: the column heading is an
 						    eyebrow label and keeps `.u-label`'s size — it only
 						    borrows the data column's alignment. */}
-						<span class="u-label stock-head">In stock</span>
+						<span class="u-label stock-head">Stock</span>
 					</div>
 					{rows.map((row) => (
 						<div class="row">
 							<span class="u-mono item">{row.item}</span>
-							<span class="u-mono price">{row.price}</span>
-							<span class="u-mono stock">{row.stock}</span>
+							{/* Struck and muted when sold out — the same one signal
+							    PriceTag gives a sold-out card, so the tape and the
+							    grid do not disagree about the same product. */}
+							<span class="u-mono price" data-sold-out={row.soldOut ? "" : undefined}>
+								{row.price}
+							</span>
+							<span class="u-mono stock" data-sold-out={row.soldOut ? "" : undefined}>
+								{row.stock}
+							</span>
 						</div>
 					))}
 					<p class="tape-foot">Stock updates as people buy.</p>
@@ -214,6 +220,18 @@ const shopLabel = items.length > 1 ? `Shop all ${items.length} items` : "Shop";
 	}
 	.stock {
 		font-size: 0.8125rem;
+	}
+
+	/* Sold out is ONE signal, and it is PriceTag's: the mute plus a 1px strike.
+	   The stock cell only mutes — striking the words "Sold out" would say the
+	   fact itself no longer holds. */
+	.price[data-sold-out] {
+		color: var(--u-mute);
+		text-decoration: line-through;
+		text-decoration-thickness: 1px;
+	}
+	.stock[data-sold-out] {
+		color: var(--u-mute);
 	}
 
 	.tape-foot {

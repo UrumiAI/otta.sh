@@ -66,12 +66,20 @@ const degraded = content !== null && product === null;
 const error = Astro.url.searchParams.get("error");
 
 /* The coil keys off the product's OWN identity, not the path the visitor
-   typed (em-dash resolves an entry by slug OR id), so the art on this page is
-   the same drawing the catalog card showed. */
+   typed (em-dash resolves an entry by slug OR id), so the SHAPE on this page is
+   the one the catalog card drew. The TINT can differ, and that is by design:
+   a card cycles its tint by grid position so every three cards show all three,
+   and a PDP has no list to hold a position in, so it falls back to the slug's
+   own hash (see `buildCoil`). The geometry is the product's; the tint belongs
+   to the page. */
 const art = content !== null ? (content.slug ?? content.id) : "";
 const image = product?.images?.[0] ?? content?.images?.[0] ?? null;
 const purchasable = product?.purchasable === true && product.price !== null;
 const inStock = product?.availability === "in_stock";
+/* NOT `!inStock`: degraded and unpriced products are also not in stock, and
+   they are not sold out — the page does not know. Only the explicit token
+   dims the art and closes the buy path. */
+const soldOut = product?.availability === "out_of_stock";
 ---
 
 {/* An unpriced or degraded product carries no currency, and the footer
@@ -122,7 +130,17 @@ const inStock = product?.availability === "in_stock";
 					    to its own hash — see src/lib/rest-props.ts), so the phone
 					    width cap below has to sit on an element this page owns. */}
 					<div class="art">
-						<MediaPanel slug={art} image={image} alt={content.title} ratio="4 / 5" />
+						{/* `dimmed` is a PROP, not a rule this page writes: Astro
+						    scopes a component's CSS to its own hash, so a selector
+						    here could never reach MediaPanel's root (see the note
+						    on that prop). */}
+						<MediaPanel
+							slug={art}
+							image={image}
+							alt={content.title}
+							ratio="4 / 5"
+							dimmed={soldOut}
+						/>
 					</div>
 
 					<div class="side">
@@ -188,6 +206,22 @@ const inStock = product?.availability === "in_stock";
 										<p class="hold-note">
 											Adding this holds one in stock for 15 minutes.
 										</p>
+									</div>
+								)}
+
+								{/* A sold-out PDP is otherwise a dead end: a price, a
+								    ledger saying you cannot have it, and no way on.
+								    §8 — a failure explains what still works, so the
+								    page states the fact and hands back the door to
+								    the rest of the shop. */}
+								{soldOut && (
+									<div class="buy-block">
+										<p class="note">Out of stock right now.</p>
+										<div>
+											<a class="btn btn-ghost" href="/products">
+												Back to all products
+											</a>
+										</div>
 									</div>
 								)}
 							</>
