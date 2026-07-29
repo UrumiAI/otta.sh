@@ -70,7 +70,10 @@ describe.skipIf(PG === undefined)(
 			const result = await client.getCart(cartId);
 			expect(result).toMatchObject({
 				ok: true,
-				cart: { currency: "EUR", state: "active", lines: [] },
+				// `orderId: null` over the live wire (#132): a fresh cart names no
+				// order. (`getCart` also normalizes it, but here the service really
+				// does emit it.)
+				cart: { currency: "EUR", state: "active", orderId: null, lines: [] },
 			});
 		});
 

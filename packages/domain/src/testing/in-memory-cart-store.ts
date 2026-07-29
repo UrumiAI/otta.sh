@@ -1,5 +1,5 @@
 import type { Currency } from "../money/cents.js";
-import type { IdempotencyKey } from "../money/ids.js";
+import type { IdempotencyKey, OrderId } from "../money/ids.js";
 import {
 	type AdjustLineInput,
 	type Cart,
@@ -21,6 +21,8 @@ interface CartRow {
 	id: string;
 	currency: Currency;
 	state: CartState;
+	/** Stamped by `checkout` in the same assignment as `state` (issue #132). */
+	orderId: string | null;
 }
 
 interface LineRow {
@@ -94,7 +96,7 @@ export class InMemoryCartStore implements CartStore {
 
 	async create(currency: Currency): Promise<string> {
 		const id = this.#idGen.newId();
-		this.#carts.set(id, { id, currency, state: "active" });
+		this.#carts.set(id, { id, currency, state: "active", orderId: null });
 		return id;
 	}
 
@@ -106,7 +108,13 @@ export class InMemoryCartStore implements CartStore {
 			if (row.cartId === cartId) lines.push(this.#toLine(row));
 		}
 		lines.sort((a, b) => a.lineId.localeCompare(b.lineId));
-		return { cartId: cart.id, state: cart.state, currency: cart.currency, lines };
+		return {
+			cartId: cart.id,
+			state: cart.state,
+			orderId: cart.orderId,
+			currency: cart.currency,
+			lines,
+		};
 	}
 
 	async recordedMutation(key: IdempotencyKey): Promise<RecordedCartMutation | null> {
@@ -230,14 +238,21 @@ export class InMemoryCartStore implements CartStore {
 
 	/**
 	 * Secondary cart-state fence (Phase 4 §5): the guarded `active → checked_out`
-	 * flip. Idempotent — a cart already `checked_out` returns `false` (treated as
+	 * flip, which also stamps the order the cart handed off to (issue #132).
+	 * Idempotent — a cart already `checked_out` returns `false` (treated as
 	 * success for the same order). `checked_out` is terminal.
+	 *
+	 * The order id is assigned in the SAME two-field write as `state`, after the
+	 * early `return false`, mirroring the real store's one conditional UPDATE:
+	 * the `state !== "active"` check IS the CAS, so a losing second checkout
+	 * writes neither field and the stamp is write-once for free.
 	 */
-	async checkout(cartId: string): Promise<boolean> {
+	async checkout(cartId: string, orderId: OrderId): Promise<boolean> {
 		const cart = this.#carts.get(cartId);
 		if (cart === undefined) throw new Error(`unknown cart: ${cartId}`);
 		if (cart.state !== "active") return false;
 		cart.state = "checked_out";
+		cart.orderId = orderId;
 		return true;
 	}
 
