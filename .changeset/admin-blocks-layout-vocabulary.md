@@ -52,14 +52,17 @@ construction. Without it, a form nested in an accordion is index-0-forever and a
 `Clear filters` re-render leaves the fields showing the filter just cleared.
 
 `admin/scaffold/layout.ts` — `filterPanel(...)` collapses a filter form of 3+
-fields into a closed `accordion` whose label carries the active filter
-(`Filters · status: paid · last 30 days`, dot-separated and truncated to 60 chars),
-renders 1–2 fields inline, and throws above 4 fields rather than hiding a
-design-spec violation; its `blockId` is required and stable across an apply.
-`emptyState(...)` emits a real `empty` block. There is deliberately NO
-"filter fields in columns" helper: a form's fields always render `flex flex-col`
-and `columns` takes `Block[][]`, so laying one filter out horizontally would split
-its submit.
+fields into a closed `accordion` labelled `Filters` or `Filters (2 active)` (a
+COUNT only: a label is a control with a tight width budget), renders 1–2 fields
+inline, and throws rather than hiding a problem in two cases: above 4 filter
+fields, and when a PREFILLED form carries no prefill digest (the `Clear filters`
+staleness bug). Its `blockId` is required and stable across an apply.
+`filterSummary(parts)` composes the human-readable `status: paid · last 30 days`
+for the `section` beneath the panel — pass the same array to both so the count and
+the summary cannot disagree. `emptyState(...)` emits a real `empty` block. There is
+deliberately NO "filter fields in columns" helper: a form's fields always render
+`flex flex-col` and `columns` takes `Block[][]`, so laying one filter out
+horizontally would split its submit.
 
 `admin/scaffold/list-detail.ts` — the engine recovers carried context from
 `input.block_id` (`CustomActionApi.carried`, plus `readCarrier(input)` for a
@@ -68,4 +71,17 @@ third, lowest-precedence source after `value.__path` / `values.__path`, both
 unchanged. The path-carry injection recurses into layout containers via one
 exhaustive `childBlockLists` helper — so a future container block is a compile
 error rather than a silently re-broken guarantee — and stands down only for a
-carrier naming the EXACT current path.
+carrier naming the EXACT current path. `carried` holds the screen's OWN fields only
+(the reserved `__path`/`__v` are stripped); the drill level arrives as
+`carriedPath`.
+
+NO EXCEPTION ESCAPES THE HANDLER, which matters because the helpers above throw by
+design. Every path that runs screen code fails closed to a banner: a leaf's
+`render`/`notFound` join `load` inside the try (a level's `onError()`), a custom
+action gets the root list plus an explicit "Action outcome unknown — the action may
+already have been applied" banner (never a bare failure, since the side effect may
+have committed before the re-render failed), and a last-resort wrapper covers what
+no inner try can reach — `createClient`, `parseOpen`, `filterFromValues`, and a
+screen's own `onError()` throwing. Without this a throw became a non-2xx, which
+replaces the whole `BlockRenderer` tree with a raw status panel, unmounts every
+accordion and tab, and leaves an operator unable to tell whether a refund applied.

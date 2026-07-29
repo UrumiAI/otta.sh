@@ -1,5 +1,6 @@
 import type { CarrierBlockId, FormBlock } from "../../types.js";
 import { decodeJsonToken, encodeJsonText } from "./base64url.js";
+import { PATH_FIELD } from "./nav.js";
 
 /**
  * The admin console's HIDDEN-CONTEXT carrier.
@@ -91,6 +92,11 @@ export const PREFILL_FIELD = "__v";
  *  attribute and a React key, not a transport. */
 export const MAX_CARRIER_LENGTH = 4096;
 
+/** Keys the mechanism owns: the drill level (`__path`, read by the engine's nav)
+ *  and the prefill digest (`__v`, which only moves the React key). Stripped from
+ *  what a screen sees — see {@link carriedFields}. */
+const RESERVED_KEYS = new Set<string>([PATH_FIELD, PREFILL_FIELD]);
+
 /** A namespace is the spec's `<entity>:<verb-or-noun>` — ASCII, no whitespace, and
  *  it must not itself contain the payload marker. */
 const NAMESPACE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9:_-]*$/;
@@ -110,11 +116,19 @@ const PAYLOAD_PATTERN = /^[A-Za-z0-9_-]+$/;
  * in devtools and so two sibling forms with IDENTICAL context still get DIFFERENT
  * React keys.
  *
+ * **A NAMESPACE IS A LITERAL — NEVER INTERPOLATED RECORD DATA.** `` `shipping:zone:${zone.id}` ``
+ * is only safe if ids are known to match {@link NAMESPACE_PATTERN};
+ * `` `shipping:zone:${zone.name}` `` is a latent outage, because a zone named
+ * `"EU West"` throws. It is data-dependent, so fixtures pass and production does
+ * not. Put the distinguishing value in the CONTEXT (where any string is legal) and
+ * keep the namespace a constant describing the form's role.
+ *
  * Throws on a programming error — a malformed namespace, a prototype key name, a
  * non-string value, or a token over {@link MAX_CARRIER_LENGTH}. Those are author
- * mistakes, not operator input, and a screen's `render` runs inside the scaffold's
- * try/catch, so they surface as a fail-closed banner in that screen's own test
- * rather than as a silently truncated token.
+ * mistakes, not operator input. Every render path in
+ * `createListDetailHandler` contains a throw and fails closed to a banner (verified
+ * by its own suite), so the blast radius is one screen rendering an error state —
+ * never a raw non-2xx that unmounts the page.
  */
 export function encodeCarrier(namespace: string, context: CarriedContext): CarrierBlockId {
 	if (!NAMESPACE_PATTERN.test(namespace) || namespace.includes(CARRIER_MARKER)) {
@@ -171,6 +185,21 @@ export function decodeCarrier(token: unknown): CarriedContext | undefined {
 	return Object.fromEntries(entries) as CarriedContext;
 }
 
+/**
+ * A decoded record WITHOUT the reserved keys — the screen's own fields only.
+ *
+ * `__path` is the engine's (the drill level a submit belongs to) and `__v` is
+ * `carriedForm`'s prefill digest, which exists purely to move the React key. A
+ * screen that iterates its carried context should never have to know either
+ * exists, so `readCarrier`/`CustomActionApi.carried` return this rather than the
+ * raw record. The ENGINE still reads the raw record via {@link decodeCarrier}.
+ */
+export function carriedFields(context: CarriedContext): CarriedContext {
+	return Object.fromEntries(
+		Object.entries(context).filter(([key]) => !RESERVED_KEYS.has(key)),
+	) as CarriedContext;
+}
+
 /** The namespace a carrier token declares (everything before the last marker), or
  *  `undefined` when the token is not a carrier — so a screen's test can assert
  *  WHICH form fired, and the engine can tell two sibling forms apart. */
@@ -206,6 +235,14 @@ export function carriedForm(args: {
 	context?: CarriedContext;
 	form: FormBlock;
 }): FormBlock {
+	// A caller-supplied `__v` would be silently overwritten below. Clobbering in
+	// that direction is safe (the digest is ours) but it is still silent data loss,
+	// and the fix is to pick another key.
+	if (args.context !== undefined && PREFILL_FIELD in args.context) {
+		throw new Error(
+			`carriedForm: ${PREFILL_FIELD} is reserved for the prefill digest — rename that context key`,
+		);
+	}
 	return {
 		...args.form,
 		block_id: encodeCarrier(args.namespace, {

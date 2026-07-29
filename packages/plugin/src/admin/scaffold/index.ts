@@ -33,6 +33,7 @@
 export { NAV_VERBS, screenActions, type ScreenActions } from "./actions.js";
 export { failClosedResponse, noticeBanner, type FailClosedOptions, type Notice } from "./banner.js";
 export {
+	carriedFields,
 	carriedForm,
 	carrierNamespace,
 	CARRIER_MARKER,
@@ -42,7 +43,13 @@ export {
 	PREFILL_FIELD,
 	type CarriedContext,
 } from "./carrier.js";
-export { emptyState, filterPanel, filterPanelLabel, type FilterPanelOptions } from "./layout.js";
+export {
+	emptyState,
+	filterPanel,
+	filterPanelLabel,
+	filterSummary,
+	type FilterPanelOptions,
+} from "./layout.js";
 export {
 	createListDetailHandler,
 	customAction,

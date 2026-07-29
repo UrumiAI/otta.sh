@@ -281,7 +281,14 @@ export interface FieldWidgetConfig {
 // field names follow the authoritative wire types (em-dash `types.ts`), matching
 // Urumi's existing element types.
 
-declare const CARRIER_BRAND: unique symbol;
+/** The phantom brand distinguishing a carrier `block_id` from a plain React key.
+ *  NAMED FOR THE ERROR MESSAGE: tsc prints both the property name and the string
+ *  below when the rule is broken, so an author sees the rule rather than a bare
+ *  `Type '"carrier"' is not assignable to type 'undefined'`. */
+declare const CARRIER_ONLY_ON_FORM_OR_TABLE: unique symbol;
+
+/** What the compiler prints on a misplaced carrier. */
+type CarrierRule = "only form and table echo block_id back; a button carries context in value";
 
 /**
  * A `block_id` that is ONLY a React key — the safe default, and what every block
@@ -291,15 +298,23 @@ declare const CARRIER_BRAND: unique symbol;
  * NOT: putting a carrier token on a block that never echoes it back is a compile
  * error rather than an `api.carried` that is silently `undefined` at runtime.
  */
-export type PlainBlockId = string & { readonly [CARRIER_BRAND]?: undefined };
+export type PlainBlockId = string & {
+	readonly [CARRIER_ONLY_ON_FORM_OR_TABLE]?: undefined;
+};
 
 /**
  * A `block_id` carrying encoded hidden context (`admin/scaffold/carrier.ts`'s
  * `encodeCarrier`). Assignable ONLY to `FormBlock.block_id` and
  * `TableBlock.block_id`, because those are the only two blocks whose interactions
  * echo `block_id` back to the plugin.
+ *
+ * The brand is launderable (`as PlainBlockId` compiles) — it is a signpost, not a
+ * wall. If you find yourself writing that cast, the block you are labelling does
+ * not echo `block_id`, and the context has to go in `ButtonElement.value` instead.
  */
-export type CarrierBlockId = string & { readonly [CARRIER_BRAND]: "carrier" };
+export type CarrierBlockId = string & {
+	readonly [CARRIER_ONLY_ON_FORM_OR_TABLE]: CarrierRule;
+};
 
 /**
  * `BlockBase` (em-dash `packages/blocks/src/types.ts` `BlockBase`) — EVERY block

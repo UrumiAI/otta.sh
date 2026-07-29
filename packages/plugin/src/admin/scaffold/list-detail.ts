@@ -1,7 +1,7 @@
 import type { Block, BlockResponse, PluginContext, RouteHandler } from "../../types.js";
 import type { ScreenActions } from "./actions.js";
-import type { Notice } from "./banner.js";
-import { type CarriedContext, decodeCarrier } from "./carrier.js";
+import { failClosedResponse, noticeBanner, type Notice } from "./banner.js";
+import { carriedFields, type CarriedContext, decodeCarrier } from "./carrier.js";
 import {
 	decodeListCursor,
 	decodePath,
@@ -38,11 +38,12 @@ export interface ListDetailInput {
 	/** `block_action` payload (e.g. the table "Load more" `{cursor}`, or a
 	 *  transition button's `{orderId, toState}`). */
 	value?: unknown;
-	/** The originating block's `block_id`, echoed back by em-dash on a form
-	 *  submit (`form.tsx:57`) and on a table's sort/load-more `block_action`
-	 *  (`table.tsx:55,64`). Block Kit has no hidden field, so this is where a form
-	 *  carries context it must not show an operator — decoded via
-	 *  {@link readCarrier}. */
+	/** The originating block's `block_id`, echoed back by em-dash on a `form`
+	 *  submit and on a `table`'s sort/load-more `block_action` — those two blocks
+	 *  ONLY (`blocks/form.tsx`, `blocks/table.tsx` in the pinned 0.31.1; a button
+	 *  echoes nothing and carries context in `value` instead). Block Kit declares no
+	 *  hidden field, so this is where a form carries context it must not show an
+	 *  operator — decoded via {@link readCarrier}. */
 	block_id?: unknown;
 }
 
@@ -159,8 +160,18 @@ export interface CustomActionApi<Client> {
 	 *  carried something that is not a carrier token). This is what replaces the
 	 *  single-option "carrier" `select` fields: read `carried.orderId` instead of
 	 *  `input.values.orderId`. Every value is UNTRUSTED operator-round-tripped
-	 *  input — re-authorize it exactly as you would a select's value. */
+	 *  input — re-authorize it exactly as you would a select's value.
+	 *
+	 *  RESERVED KEYS ARE STRIPPED (`__path`, `__v`): this record holds only the
+	 *  screen's own fields, so `Object.entries(carried)` is safe to iterate. The
+	 *  drill path is on {@link CustomActionApi.carriedPath} instead. */
 	carried: CarriedContext | undefined;
+	/** The drill {@link NavPath} this interaction carried, from a button's
+	 *  `value.__path`, a form's `values.__path`, or the block's `block_id` carrier —
+	 *  same precedence the engine's own nav uses. `undefined` when nothing carried
+	 *  one (the depth-≤1 case); hand it to {@link CustomActionApi.showLeaf} or
+	 *  {@link CustomActionApi.showList} to re-render where the operator was. */
+	carriedPath: NavPath | undefined;
 	/** Re-render the leaf at `path` (its id is `path`'s last element), optionally
 	 *  with a notice banner. */
 	showLeaf(path: NavPath, notice?: Notice): Promise<BlockResponse>;
@@ -195,14 +206,54 @@ export interface ListDetailScreenConfig {
 	customActions?: Record<string, CustomActionFn<unknown>>;
 }
 
+/** The notice a custom action's failed re-render carries. A side effect may
+ *  ALREADY have applied when the failure happened, so this must never read as a
+ *  plain "it failed". */
+const ACTION_OUTCOME_UNKNOWN: Notice = {
+	variant: "error",
+	title: "Action outcome unknown",
+	description:
+		"The action may already have been applied, but this screen could not be rebuilt afterwards. Re-check the record before retrying.",
+};
+
 /**
  * Build the single `RouteHandler` for a list/detail screen. The returned
  * handler is what the admin-route dispatcher forwards `open`/`back`/`page`/
  * `apply-filter`/custom-action interactions (and the page-load default) to.
+ *
+ * NO EXCEPTION MAY ESCAPE THIS HANDLER. A throw becomes a non-2xx from the
+ * plugin route, and a non-2xx replaces the whole `BlockRenderer` tree with a raw
+ * status panel — unmounting every accordion and tab, and telling an operator
+ * nothing about whether their action applied. Each rendering path therefore fails
+ * closed to a banner of its own (a level's `onError()`, or the root list plus
+ * {@link ACTION_OUTCOME_UNKNOWN}), and this wrapper is the LAST-RESORT net behind
+ * all of them: it also covers the paths no inner try can reach — `createClient`,
+ * `parseOpen`, `filterFromValues`, and a screen's own `onError()` throwing.
  */
 export function createListDetailHandler(
 	config: ListDetailScreenConfig,
 ): RouteHandler<ListDetailInput> {
+	const dispatch = createDispatcher(config);
+	return async (routeCtx, ctx) => {
+		try {
+			return await dispatch(routeCtx, ctx);
+		} catch {
+			// Deliberately generic and screen-agnostic: at this point the screen's own
+			// fail-closed rendering is what failed, so nothing screen-specific can be
+			// trusted to build blocks. Never leaks the error (it could carry a URL or
+			// a status — see `failClosedResponse`).
+			return failClosedResponse({
+				header: "Unavailable",
+				title: "This screen could not be rendered",
+				description:
+					"Something went wrong building this view. Reload the page; if it persists, the record may need checking directly.",
+				toast: "Could not render this screen",
+			});
+		}
+	};
+}
+
+function createDispatcher(config: ListDetailScreenConfig): RouteHandler<ListDetailInput> {
 	const { actions, levels } = config;
 
 	return async (routeCtx, ctx) => {
@@ -262,14 +313,19 @@ export function createListDetailHandler(
 			const level = levels[path.length];
 			const id = path[path.length - 1];
 			if (level === undefined || level.kind !== "leaf" || id === undefined) return { blocks: [] };
-			let detail: unknown;
+			// `render` and `notFound` are INSIDE the try, not just `load`: they are
+			// screen code that builds blocks, and block builders throw (a rejected
+			// carrier namespace, a filter form over its field budget). An escaping
+			// throw becomes a non-2xx, which replaces the whole rendered tree with a
+			// raw status panel — the worst possible outcome right after a side effect
+			// applied, because the operator cannot tell whether it did.
 			try {
-				detail = await level.load(client, path, id);
+				const detail = await level.load(client, path, id);
+				if (detail === null) return { blocks: level.notFound({ actions, path, id }) };
+				return { blocks: await level.render({ client, actions, path, id, detail, notice }) };
 			} catch {
 				return level.onError();
 			}
-			if (detail === null) return { blocks: level.notFound({ actions, path, id }) };
-			return { blocks: await level.render({ client, actions, path, id, detail, notice }) };
 		};
 
 		/** Render whichever level `path` lands on — a leaf, a deeper list, or the
@@ -334,14 +390,29 @@ export function createListDetailHandler(
 		// -- custom (side-effecting) actions --------------------------------------
 		const custom = action === undefined ? undefined : config.customActions?.[action];
 		if (custom !== undefined) {
-			return (await custom({
-				input,
-				client,
-				carried: readCarrier(input),
-				showLeaf: (path, notice) => renderLeaf(path, notice),
-				showList: (path, notice) =>
-					path === undefined ? rootList(notice) : renderPath(path, notice),
-			})) as Awaited<ReturnType<RouteHandler<ListDetailInput>>>;
+			try {
+				return (await custom({
+					input,
+					client,
+					carried: readCarrier(input),
+					carriedPath: readNavPath(input),
+					showLeaf: (path, notice) => renderLeaf(path, notice),
+					showList: (path, notice) =>
+						path === undefined ? rootList(notice) : renderPath(path, notice),
+				})) as Awaited<ReturnType<RouteHandler<ListDetailInput>>>;
+			} catch {
+				// A custom action is the one place a SIDE EFFECT may already have
+				// applied, so this cannot be a silent fallback: the mutation might have
+				// committed and only the re-render failed. Show the root list (so the
+				// operator keeps a working screen) with a banner that says the outcome
+				// is unknown, rather than a raw status panel that says nothing and
+				// unmounts everything. The banner is PREPENDED here rather than passed
+				// as a notice because a list level is allowed to ignore `notice`.
+				return {
+					blocks: [noticeBanner(ACTION_OUTCOME_UNKNOWN), ...(await rootList()).blocks],
+					toast: { message: "Action outcome unknown — re-check the record", type: "error" },
+				};
+			}
 		}
 
 		// -- page load (or any other interaction routed here) ⇒ the root list ------
@@ -459,10 +530,16 @@ export function asRecord(value: unknown): Record<string, unknown> | undefined {
  * runs OUTSIDE a custom action, so it has no {@link CustomActionApi.carried} —
  * needs the same recovery, e.g. to read the id an open form carried.
  *
+ * RESERVED KEYS ARE STRIPPED: `__path` (the drill level, engine business — use
+ * {@link CustomActionApi.carriedPath}) and `__v` (`carriedForm`'s prefill digest,
+ * which exists only to change the React key). A screen therefore sees ONLY the
+ * fields it carried, and can iterate the record without special-casing ours.
+ *
  * Total: a missing, non-carrier or malformed `block_id` yields `undefined`.
  */
 export function readCarrier(input: ListDetailInput): CarriedContext | undefined {
-	return decodeCarrier(input.block_id);
+	const decoded = decodeCarrier(input.block_id);
+	return decoded === undefined ? undefined : carriedFields(decoded);
 }
 
 /** Recover the drill {@link NavPath} a control carried, in precedence order:
@@ -477,7 +554,9 @@ function readNavPath(input: ListDetailInput): NavPath | undefined {
 	if (typeof fromValue === "string") return decodePath(fromValue) ?? undefined;
 	const fromValues = input.values?.[PATH_FIELD];
 	if (typeof fromValues === "string") return decodePath(fromValues) ?? undefined;
-	const fromCarrier = readCarrier(input)?.[PATH_FIELD];
+	// The RAW record, not `readCarrier` — that strips the reserved keys for screens,
+	// and `__path` is precisely the reserved key the engine itself needs here.
+	const fromCarrier = decodeCarrier(input.block_id)?.[PATH_FIELD];
 	if (fromCarrier !== undefined) return decodePath(fromCarrier) ?? undefined;
 	return undefined;
 }

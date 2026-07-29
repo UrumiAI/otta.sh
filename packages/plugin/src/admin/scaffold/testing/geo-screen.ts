@@ -56,6 +56,12 @@ const CITIES: Record<string, GeoCity[]> = {
 };
 const LANDMARK: GeoLandmark = { id: "m1", name: "Tower" };
 
+/** Landmark ids whose leaf `render` / `notFound` deliberately throw, so the
+ *  engine's containment of BLOCK-BUILDING failures is exercised rather than
+ *  assumed (`load` failing was already covered). */
+const THROWING_LANDMARK_ID = "m-throw";
+const THROWING_MISSING_ID = "nope-throw";
+
 /** City-list filter: a simple name-prefix search — enough to prove filter
  *  values + the drill path BOTH survive a deep `apply-filter` round trip. */
 interface CityFilter {
@@ -85,7 +91,10 @@ export class FakeGeoClient {
 		return this.#pageOf(all, limit, cursor);
 	}
 	getLandmark(id: string): GeoLandmark | null {
-		return id === LANDMARK.id ? LANDMARK : null;
+		if (id === LANDMARK.id) return LANDMARK;
+		// Resolves so the leaf's `render` is REACHED and can throw (the containment
+		// probe); every other id is a genuine miss.
+		return id === THROWING_LANDMARK_ID ? { id, name: "Boom" } : null;
 	}
 }
 
@@ -94,6 +103,8 @@ export const GEO_ACTION_PING = GEO_ACTIONS.custom("ping");
 /** Reads its whole context out of the form's `block_id` — no visible field
  *  carries anything (the increment-2 carrier shape). */
 export const GEO_ACTION_TAG = GEO_ACTIONS.custom("tag");
+/** Throws from its own body: the probe for custom-action throw containment. */
+export const GEO_ACTION_BOOM = GEO_ACTIONS.custom("boom");
 
 /** Deep drills encode the FULL target path into the option value — the
  *  documented `parseOpen` pattern (the interaction is stateless). */
@@ -199,10 +210,20 @@ export function createGeoScreenHandler() {
 						// the accordion, or collapsing a deep filter would silently
 						// re-filter the root list.
 						filterPanel({
-							form: filterForm("Apply (collapsed)"),
+							// Through `carriedForm` because this form PREFILLS `q` — collapsed
+							// in an accordion it would otherwise be index-0-forever, so a
+							// cleared filter would leave the old value on screen. `filterPanel`
+							// enforces that rather than trusting the author (it throws), which
+							// is why the carrier here has no `__path`: the digest satisfies the
+							// prefill rule while the engine still injects the visible path
+							// field, as the accordion-recursion test asserts.
+							form: carriedForm({
+								namespace: "geo:city-filter-collapsed",
+								form: filterForm("Apply (collapsed)"),
+							}),
 							blockId: "geo:city-filters",
 							label: "Filters",
-							summary: [filter.q !== undefined && `name: ${filter.q}`],
+							activeFilters: [filter.q !== undefined && `name: ${filter.q}`],
 							inlineUpTo: 0,
 						}),
 						// A FOURTH and FIFTH, nested in the other two container kinds — the
@@ -251,6 +272,15 @@ export function createGeoScreenHandler() {
 			leafLevel<FakeGeoClient, GeoLandmark>({
 				load: (c, _path, id) => Promise.resolve(c.getLandmark(id)),
 				render: ({ actions, path, detail, notice }) => {
+					// A leaf `render` is BLOCK-BUILDING screen code, and block builders
+					// throw (a rejected carrier namespace, a filter form over its field
+					// budget). The engine must contain that: an escaping throw is a non-2xx,
+					// which replaces the whole tree with a raw status panel — worst of all
+					// right after a side effect applied, since the operator cannot then tell
+					// whether it did. `m-throw` is the probe for the render path.
+					if (detail.id === THROWING_LANDMARK_ID) {
+						throw new Error("geo fixture: leaf render blew up");
+					}
 					const blocks: Block[] = [
 						{ type: "header", text: `Landmark ${detail.id}` },
 						backButton(actions.back, "← Back to cities", path),
@@ -258,11 +288,15 @@ export function createGeoScreenHandler() {
 					if (notice !== undefined) blocks.push(noticeBanner(notice));
 					return blocks;
 				},
-				notFound: ({ actions, path, id }) => [
-					{ type: "header", text: "Not found" },
-					backButton(actions.back, "← Back", path),
-					{ type: "banner", variant: "error", title: "Not found", description: id },
-				],
+				notFound: ({ actions, path, id }) => {
+					// ...and so is `notFound` — same containment requirement.
+					if (id === THROWING_MISSING_ID) throw new Error("geo fixture: notFound blew up");
+					return [
+						{ type: "header", text: "Not found" },
+						backButton(actions.back, "← Back", path),
+						{ type: "banner", variant: "error", title: "Not found", description: id },
+					];
+				},
 				onError: () =>
 					failClosedResponse({ header: "Landmark", title: "down", description: "down" }),
 			}),
@@ -287,15 +321,28 @@ export function createGeoScreenHandler() {
 			// payload come out of the form's `block_id`, so the form shows the
 			// operator no plumbing field at all. A missing/hostile carrier degrades
 			// to the root list rather than throwing.
-			[GEO_ACTION_TAG]: customAction<FakeGeoClient>(({ carried, showLeaf, showList }) => {
-				const encoded = carried?.[PATH_FIELD];
-				const path = (encoded === undefined ? null : decodePath(encoded)) ?? [];
-				if (path.length === 0) return showList();
-				return showLeaf(path, {
-					variant: "default",
-					title: "Tagged",
-					description: carried?.label ?? "none",
-				});
+			[GEO_ACTION_TAG]: customAction<FakeGeoClient>(
+				({ carried, carriedPath, showLeaf, showList }) => {
+					// `carriedPath` is the sanctioned way to learn the drill level: the
+					// engine recovers it (from `value.__path`, `values.__path`, or the
+					// carrier) and STRIPS the reserved keys from `carried`, so a screen
+					// never reads `__path`/`__v` itself.
+					const path = carriedPath ?? [];
+					if (path.length === 0) return showList();
+					return showLeaf(path, {
+						variant: "default",
+						title: "Tagged",
+						// Proves the reserved keys are gone: only the screen's own fields
+						// are here, so this is what an operator-visible notice can echo.
+						description: `${carried?.label ?? "none"} (${Object.keys(carried ?? {}).join(",")})`,
+					});
+				},
+			),
+			// A custom action whose OWN BODY throws AFTER its side effect would have
+			// applied — the money-path shape (a refund commits, then rebuilding the
+			// detail throws). The engine must not let this become a non-2xx.
+			[GEO_ACTION_BOOM]: customAction<FakeGeoClient>(() => {
+				throw new Error("geo fixture: custom action blew up after its side effect");
 			}),
 		},
 	});

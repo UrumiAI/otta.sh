@@ -7,8 +7,10 @@ import {
 	emptyState,
 	encodeCarrier,
 	encodePath,
+	carriedFields,
 	filterPanel,
 	filterPanelLabel,
+	filterSummary,
 	MAX_CARRIER_LENGTH,
 	PATH_FIELD,
 	PREFILL_FIELD,
@@ -234,6 +236,29 @@ describe("carriedForm (context + a key that tracks prefilled values)", () => {
 		);
 	});
 
+	test("a caller-supplied `__v` is REJECTED rather than silently clobbered", () => {
+		expect(() =>
+			carriedForm({
+				namespace: "orders:filter",
+				context: { __v: "mine" },
+				form: prefilled("paid"),
+			}),
+		).toThrowError(/__v is reserved/);
+	});
+
+	test("carriedFields strips the reserved keys, so a screen can iterate its own context", () => {
+		const carried = carriedForm({
+			namespace: "geo:filter",
+			context: { [PATH_FIELD]: encodePath(["c1"]), zoneId: "us" },
+			form: prefilled("paid"),
+		});
+		const raw = decodeCarrier(carried.block_id);
+		// The raw record carries both reserved keys — engine business.
+		expect(Object.keys(raw ?? {}).toSorted()).toEqual(["__path", "__v", "zoneId"]);
+		// What a screen sees does not.
+		expect(carriedFields(raw ?? {})).toEqual({ zoneId: "us" });
+	});
+
 	test("context still round-trips alongside the digest", () => {
 		const carried = carriedForm({
 			namespace: "tax:rate-edit",
@@ -266,7 +291,9 @@ describe("filterPanel (a filter form that costs no screenful of scroll)", () => 
 		const one = formWith(1);
 		expect(filterPanel({ form: one, blockId: "x:filters" })).toBe(one);
 		const two = formWith(2);
-		expect(filterPanel({ form: two, blockId: "x:filters", summary: ["status: paid"] })).toBe(two);
+		expect(filterPanel({ form: two, blockId: "x:filters", activeFilters: ["status: paid"] })).toBe(
+			two,
+		);
 	});
 
 	test("a 3+ field filter collapses into a CLOSED accordion holding the form", () => {
@@ -283,38 +310,41 @@ describe("filterPanel (a filter form that costs no screenful of scroll)", () => 
 		expect("default_open" in panel).toBe(false);
 	});
 
-	test("the collapsed label carries the ACTIVE filter, dot-separated", () => {
+	test("the collapsed label is a COUNT, never the values (spec L-3)", () => {
 		const panel = filterPanel({
 			form: formWith(4),
 			blockId: "orders:filters",
-			summary: ["status: paid", "last 30 days"],
+			activeFilters: ["status: paid", "last 30 days"],
 		});
-		expect((panel as AccordionBlock).label).toBe("Filters · status: paid · last 30 days");
+		// A label is a control with a tight width budget: no values, no truncation,
+		// no ellipsis. The values live in the section beneath, via `filterSummary`.
+		expect((panel as AccordionBlock).label).toBe("Filters (2 active)");
 	});
 
-	test("summary composition drops falsy entries so call sites can inline conditionals", () => {
-		expect(filterPanelLabel("Filters", [])).toBe("Filters");
-		expect(filterPanelLabel("Filters", undefined)).toBe("Filters");
-		expect(filterPanelLabel("Filters", ["", undefined, null, false])).toBe("Filters");
-		expect(filterPanelLabel("Zone filter", [false, "zone: us", undefined, "ships: yes"])).toBe(
-			"Zone filter · zone: us · ships: yes",
-		);
+	test("filterPanelLabel counts only, and says nothing when nothing is active", () => {
+		expect(filterPanelLabel("Filters", 0)).toBe("Filters");
+		expect(filterPanelLabel("Filters", 1)).toBe("Filters (1 active)");
+		expect(filterPanelLabel("Rate filter", 3)).toBe("Rate filter (3 active)");
+		// Defensive: a negative count is treated as none rather than rendered.
+		expect(filterPanelLabel("Filters", -1)).toBe("Filters");
 	});
 
-	test("a long label is tail-truncated to 60 chars with an ellipsis (a filter row stays one line)", () => {
-		const label = filterPanelLabel("Filters", [
-			"search: a very long free-text query an operator actually typed",
-			"status: paid",
-		]);
-		// ≤ 60 rather than exactly 60: a truncation landing on a space is trimmed
-		// before the ellipsis, so it can come out a character shorter.
-		expect(label.length).toBeLessThanOrEqual(60);
-		expect(label.endsWith("…")).toBe(true);
-		expect(label.startsWith("Filters · search: a very long")).toBe(true);
-		// Exactly 60 is left alone.
-		const exact = filterPanelLabel("A".repeat(60));
-		expect(exact.length).toBe(60);
-		expect(exact.endsWith("…")).toBe(false);
+	test("the count comes from the SAME array as the summary, so they cannot disagree", () => {
+		const parts: ReadonlyArray<string | false | null | undefined> = [
+			false,
+			"zone: us",
+			undefined,
+			"",
+			"ships: yes",
+			null,
+		];
+		const panel = filterPanel({
+			form: formWith(3),
+			blockId: "tax:filters",
+			activeFilters: parts,
+		});
+		expect((panel as AccordionBlock).label).toBe("Filters (2 active)");
+		expect(filterSummary(parts)).toBe("zone: us · ships: yes");
 	});
 
 	test("label + inlineUpTo are honoured; blockId is required and is a React key only", () => {
@@ -325,12 +355,12 @@ describe("filterPanel (a filter form that costs no screenful of scroll)", () => 
 				form,
 				blockId: "tax:filters:std",
 				label: "Rate filter",
-				summary: ["zone: us"],
+				activeFilters: ["zone: us"],
 				inlineUpTo: 0,
 			}),
 		).toEqual({
 			type: "accordion",
-			label: "Rate filter · zone: us",
+			label: "Rate filter (1 active)",
 			blocks: [form],
 			block_id: "tax:filters:std",
 		});
@@ -340,6 +370,48 @@ describe("filterPanel (a filter form that costs no screenful of scroll)", () => 
 		expect(() => filterPanel({ form: formWith(5), blockId: "x:filters" })).toThrowError(
 			/5 filter fields exceeds the 4-field maximum/,
 		);
+	});
+
+	test("a PREFILLED form with no prefill digest THROWS — the `Clear filters` hole, closed mechanically", () => {
+		// Exactly the bug the digest exists to prevent: this form would be
+		// index-0-forever inside the accordion, so a re-render with cleared
+		// `initial_value`s would leave the old values on screen and the next submit
+		// would re-apply them. Recommending `carriedForm` in a doc comment did not
+		// prevent it; this does.
+		const stale: FormBlock = {
+			...formWith(3),
+			fields: [
+				{ type: "text_input", action_id: "status", label: "Status", initial_value: "paid" },
+				{ type: "text_input", action_id: "q", label: "Search" },
+				{ type: "text_input", action_id: "z", label: "Zone" },
+			],
+		};
+		expect(() => filterPanel({ form: stale, blockId: "x:filters" })).toThrowError(
+			/prefills values but carries no prefill digest/,
+		);
+		// Through `carriedForm` it is accepted.
+		expect(() =>
+			filterPanel({
+				form: carriedForm({ namespace: "orders:filter", form: stale }),
+				blockId: "x:filters",
+			}),
+		).not.toThrow();
+	});
+
+	test("the prefill check also covers `has_value` (a secret input's affordance) and the INLINE path", () => {
+		const secret: FormBlock = {
+			type: "form",
+			fields: [{ type: "secret_input", action_id: "token", label: "Token", has_value: true }],
+			submit: { label: "Save", action_id: "x:apply-filter" },
+		};
+		// One field ⇒ would render inline, but the staleness risk is identical.
+		expect(() => filterPanel({ form: secret, blockId: "x:filters" })).toThrowError(
+			/prefills values but carries no prefill digest/,
+		);
+	});
+
+	test("a form that prefills NOTHING needs no digest (the common empty-filter first render)", () => {
+		expect(() => filterPanel({ form: formWith(3), blockId: "x:filters" })).not.toThrow();
 	});
 
 	test("the form's own carrier is left alone — the accordion keeps its own plain key", () => {

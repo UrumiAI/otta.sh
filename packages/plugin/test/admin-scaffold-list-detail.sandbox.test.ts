@@ -310,6 +310,78 @@ describe("scaffold list/detail dispatch — N-level, workerd sandbox", () => {
 });
 
 /**
+ * CONTAINMENT. A throw escaping the route handler becomes a non-2xx, and a non-2xx
+ * replaces the whole `BlockRenderer` tree with a raw status panel — unmounting
+ * every accordion and tab and telling the operator NOTHING about whether their
+ * action applied. Block-building code throws by design here (a rejected carrier
+ * namespace, a filter form over its field budget, a prefilled form with no
+ * digest), so every path that runs screen code has to fail closed to a banner
+ * instead. These probe each path with a fixture that throws deliberately.
+ */
+describe("scaffold containment: no throw escapes the handler — workerd sandbox", () => {
+	test("a leaf `render` that throws fails closed to the level's onError banner", async () => {
+		const res = await invoke({
+			type: "form_submit",
+			action_id: "geo:open",
+			values: { target: encodePath(["c1", "m-throw"]) },
+		});
+		// `m-throw` RESOLVES (so `render` is reached) and its render throws. Before
+		// containment this escaped: `renderLeaf`'s try wrapped only `load`.
+		expect(headerText(res)).toBe("Landmark"); // the leaf's fail-closed header
+		const banner = blocksOf(res).find((b) => b.type === "banner");
+		expect(banner?.variant).toBe("error");
+		expect(banner?.title).toBe("down");
+	});
+
+	test("a leaf `notFound` that throws fails closed to the level's onError banner", async () => {
+		const res = await invoke({
+			type: "form_submit",
+			action_id: "geo:open",
+			values: { target: encodePath(["c1", "nope-throw"]) },
+		});
+		expect(headerText(res)).toBe("Landmark");
+		expect(blocksOf(res).find((b) => b.type === "banner")?.variant).toBe("error");
+	});
+
+	test("a custom action that throws keeps a working screen AND says the outcome is unknown", async () => {
+		const res = await invoke({ type: "block_action", action_id: "geo:boom", value: {} });
+		// A custom action is the one place a side effect may ALREADY have applied, so
+		// this must not read as a plain failure — nor as a silent success.
+		const banner = blocksOf(res).find((b) => b.type === "banner");
+		expect(banner?.variant).toBe("error");
+		expect(banner?.title).toBe("Action outcome unknown");
+		expect(String(banner?.description)).toMatch(/may already have been applied/);
+		expect(res.toast?.type).toBe("error");
+		// ...and the operator still has a usable screen, not a raw status panel.
+		expect(headerText(res)).toBe("Countries");
+		expect(firstTable(res)).toBeDefined();
+	});
+
+	test("every rendered response is a well-formed BlockResponse (never an error escape)", async () => {
+		// The sandbox harness surfaces a thrown route as `{error}` rather than
+		// `{result}`, so `invoke`'s own assertion is what proves nothing escaped —
+		// but assert the envelope explicitly too, for every probe at once.
+		for (const input of [
+			{
+				type: "form_submit",
+				action_id: "geo:open",
+				values: { target: encodePath(["c1", "m-throw"]) },
+			},
+			{
+				type: "form_submit",
+				action_id: "geo:open",
+				values: { target: encodePath(["c1", "nope-throw"]) },
+			},
+			{ type: "block_action", action_id: "geo:boom", value: {} },
+		]) {
+			const res = await invoke(input);
+			expect(Array.isArray(res.blocks)).toBe(true);
+			expect(res.blocks.length).toBeGreaterThan(0);
+		}
+	});
+});
+
+/**
  * The `block_id` CARRIER half (admin-UX density increment 2): context that must
  * survive a stateless submit rides in the form's `block_id` — which em-dash
  * echoes back (`blocks/form.tsx:57`, `blocks/table.tsx:55,64`) — instead of in a
@@ -334,7 +406,10 @@ describe("scaffold carrier: hidden context in `block_id` — workerd sandbox", (
 		expect(headerText(res)).toBe("Landmark m1");
 		const banner = blocksOf(res).find((b) => b.type === "banner");
 		expect(banner?.title).toBe("Tagged");
-		expect(banner?.description).toBe("high-water");
+		// The fixture echoes its carried value AND the keys it can see. `__path` (which
+		// it carried, and which the engine used to find this leaf) and `__v` are
+		// STRIPPED, so a screen iterating `carried` sees only its own fields.
+		expect(banner?.description).toBe("high-water (label)");
 	});
 
 	test("a custom action with a malformed/absent carrier fails closed, never throws", async () => {

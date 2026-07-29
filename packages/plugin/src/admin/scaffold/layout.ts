@@ -1,4 +1,5 @@
 import type { AccordionBlock, Element, EmptyBlock, FormBlock, PlainBlockId } from "../../types.js";
+import { decodeCarrier, PREFILL_FIELD } from "./carrier.js";
 
 /**
  * The two layout primitives the six admin screens share (admin-UX density
@@ -14,8 +15,8 @@ import type { AccordionBlock, Element, EmptyBlock, FormBlock, PlainBlockId } fro
  * filter's fields side by side would mean splitting ONE filter across several
  * `form` blocks — i.e. several independent submits, each losing the others'
  * unsubmitted edits. So the density win for filters is VERTICAL: collapse the whole
- * form and keep the active filter legible in the collapsed label
- * ({@link filterPanel}). `columns` remains available for composing WHOLE blocks
+ * form, keep a count of what is on in its label, and put the active values in the
+ * `section` beneath it ({@link filterPanel} + {@link filterSummary}). `columns` remains available for composing WHOLE blocks
  * side by side (see `ColumnsBlock`'s note on the renderer's 2-vs-3 grid), which
  * needs no shared helper.
  *
@@ -32,20 +33,18 @@ const DEFAULT_INLINE_UP_TO = 2;
  *  problem — collapsing them would hide the violation instead of surfacing it. */
 const MAX_FILTER_FIELDS = 4;
 
-/** The label a collapsed filter panel falls back to with no active filter. */
+/** The base label of a collapsed filter panel. */
 const DEFAULT_LABEL = "Filters";
 
-/** Separator between active-filter summaries in a collapsed label. */
+/** Separator between active-filter parts in a {@link filterSummary}. */
 const SUMMARY_SEPARATOR = " · ";
-
-/** Hard cap on a collapsed label; longer is tail-truncated with an ellipsis. A
- *  filter row has to stay one line, and orders filters on free text. */
-const MAX_LABEL_LENGTH = 60;
 
 export interface FilterPanelOptions {
 	/** The filter form, exactly as the screen builds it (its `submit.action_id` is
-	 *  the screen's `applyFilter`). Prefer building it through `carriedForm` so its
-	 *  own React key tracks its prefilled values. */
+	 *  the screen's `applyFilter`). Build it with `carriedForm` whenever it prefills
+	 *  anything — REQUIRED, not preferred: a prefilled form with no prefill digest
+	 *  throws here, because its React key could not otherwise change when the
+	 *  prefill does. */
 	form: FormBlock;
 	/**
 	 * The accordion's `block_id`. REQUIRED, and a React key ONLY — an accordion
@@ -61,17 +60,19 @@ export interface FilterPanelOptions {
 	/** Base label for the collapsed row. Default `"Filters"`. */
 	label?: string;
 	/**
-	 * Human-readable summaries of the CURRENTLY ACTIVE filters, in reading order,
-	 * appended to the label as `Filters · status: paid · last 30 days`. This is the
-	 * whole point of collapsing: a closed filter must still tell the operator what
-	 * they are looking at.
+	 * The CURRENTLY ACTIVE filter parts, in reading order — but ONLY THEIR COUNT
+	 * reaches the label, which is `Filters` or `Filters (2 active)` and nothing else.
+	 * The values themselves do NOT belong in an accordion label: it is a control, it
+	 * has a tight width budget, and free-text search would blow it. Put them in the
+	 * `section` beneath the panel, composed from the SAME array by
+	 * {@link filterSummary}, so the count and the summary can never disagree.
 	 *
 	 * Falsy entries are dropped, so a call site can inline its conditionals:
-	 * `summary: [form.status && \`status: ${form.status}\`, dateRangeLabel(form)]`.
-	 * Composition is left to the screen because six screens describe their filters
-	 * differently (a status, a date range, a zone id, a currency).
+	 * `activeFilters: [form.status && \`status: ${form.status}\`, dateRangeLabel(form)]`.
+	 * Composition of each part is left to the screen because six screens describe
+	 * their filters differently (a status, a date range, a zone id, a currency).
 	 */
-	summary?: ReadonlyArray<string | false | null | undefined>;
+	activeFilters?: ReadonlyArray<string | false | null | undefined>;
 	/** Render inline (no accordion) at or below this many fields. Default 2; pass
 	 *  `0` to always collapse. Counts the fields the SCREEN authored — the engine
 	 *  may inject one more (the drill-path carrier) after this runs. */
@@ -111,36 +112,82 @@ export function filterPanel(opts: FilterPanelOptions): FormBlock | AccordionBloc
 				`(submit ${opts.form.submit.action_id}) — reduce the filter set rather than collapsing it`,
 		);
 	}
+	// A PREFILLED form must carry a prefill digest, or its React key cannot change
+	// when the prefill does — and its inputs are uncontrolled, so the operator keeps
+	// seeing stale values. That is the `Clear filters` bug: the server re-renders
+	// empty `initial_value`s, nothing remounts, the fields still show the filter that
+	// was just cleared, and the next submit re-applies it. Nesting guarantees it
+	// (a form inside an accordion is index 0 of that accordion forever), so this is
+	// checked rather than merely recommended.
+	if (prefills(opts.form) && decodeCarrier(opts.form.block_id)?.[PREFILL_FIELD] === undefined) {
+		throw new Error(
+			`filterPanel: the form for ${opts.form.submit.action_id} prefills values but carries no prefill digest — ` +
+				`build it with carriedForm({namespace, context, form}) so its React key changes when the prefill does`,
+		);
+	}
 	const inlineUpTo = opts.inlineUpTo ?? DEFAULT_INLINE_UP_TO;
 	if (opts.form.fields.length <= inlineUpTo) return opts.form;
 	return {
 		type: "accordion",
-		label: filterPanelLabel(opts.label ?? DEFAULT_LABEL, opts.summary),
+		label: filterPanelLabel(opts.label ?? DEFAULT_LABEL, activeParts(opts.activeFilters).length),
 		blocks: [opts.form],
 		block_id: opts.blockId,
 	};
 }
 
 /**
- * The collapsed label: the base, plus the active-filter summary when there is one
- * (`Filters · status: paid · last 30 days`), tail-truncated with `…` at
- * {@link MAX_LABEL_LENGTH} characters so a filter row stays one line.
+ * The collapsed label: `Filters`, or `Filters (2 active)` when filters are on.
+ * COUNT ONLY — no values, no truncation, no ellipsis.
  *
- * Exported so a screen can put the same string somewhere else (a `context` line
- * under an inline filter, say) without re-deriving the format.
+ * The label is a control with a tight width budget, and a free-text search term
+ * would blow it; the values go in the `section` beneath the panel via
+ * {@link filterSummary}. Exported so a screen can render the same string elsewhere
+ * (an inline filter's `context` line) without re-deriving the format.
  */
-export function filterPanelLabel(
-	label: string,
-	summary?: ReadonlyArray<string | false | null | undefined>,
-): string {
-	const active = (summary ?? []).filter(
+export function filterPanelLabel(label: string, activeCount: number): string {
+	return activeCount <= 0 ? label : `${label} (${activeCount} active)`;
+}
+
+/**
+ * The human-readable summary of the active filters — `status: paid · last 30 days`
+ * — for the `section` that sits beneath a filter panel (alongside its
+ * `Clear filters` accessory). Falsy parts are dropped, and `undefined` comes back
+ * when nothing is active, so a screen can omit the section entirely rather than
+ * render an empty line:
+ *
+ * ```ts
+ * const parts = [form.status && `status: ${form.status}`, dateRangeLabel(form)];
+ * const summary = filterSummary(parts);
+ * const blocks = [filterPanel({ form, blockId: "orders:filters", activeFilters: parts })];
+ * if (summary !== undefined) blocks.push({ type: "section", text: summary, accessory: clearButton });
+ * ```
+ *
+ * Pass the SAME array to both, so the panel's count and this summary can never
+ * disagree.
+ */
+export function filterSummary(
+	parts: ReadonlyArray<string | false | null | undefined>,
+): string | undefined {
+	const active = activeParts(parts);
+	return active.length === 0 ? undefined : active.join(SUMMARY_SEPARATOR);
+}
+
+/** Whether the form prefills anything React would only pick up on a remount. */
+function prefills(form: FormBlock): boolean {
+	return form.fields.some(
+		(field) =>
+			("initial_value" in field && field.initial_value !== undefined) ||
+			("has_value" in field && field.has_value === true),
+	);
+}
+
+/** The non-empty string parts of an active-filter array. */
+function activeParts(
+	parts: ReadonlyArray<string | false | null | undefined> | undefined,
+): string[] {
+	return (parts ?? []).filter(
 		(part): part is string => typeof part === "string" && part.length > 0,
 	);
-	const full =
-		active.length === 0 ? label : label + SUMMARY_SEPARATOR + active.join(SUMMARY_SEPARATOR);
-	return full.length <= MAX_LABEL_LENGTH
-		? full
-		: `${full.slice(0, MAX_LABEL_LENGTH - 1).trimEnd()}…`;
 }
 
 /**
