@@ -281,9 +281,38 @@ video {
 
 /* The payment button is the only one that is ever disabled today (it stands
    down while a confirm is in flight), but the state belongs to the shape
-   rather than to that page. */
+   rather than to that page.
+
+   0.62, not 0.55, and the difference is measured rather than taste. `opacity`
+   makes the button a GROUP: the ink fill and the surface-coloured label are
+   composited together and the whole thing is then blended onto the page, so
+   the label stays pure white while the fill lightens under it — the ratio
+   falls entirely out of how light the fill gets. The label stays PURE white
+   only because the button sits on the same `--u-surface` its label is drawn
+   in: label token ≡ backdrop token, so that end of the blend has nowhere to
+   move and the fill carries the whole change. On another ground the invariant
+   breaks and the label dims with it — the same button on `--u-ground`
+   measures ≈5.06:1, which still passes, but the numbers below are the surface
+   case and do not transfer for free.
+
+   Those numbers are read off RENDERED pixels rather than calculated, because
+   Chromium's compositing rounds differently from the analytic composite and
+   lands a few hundredths away from it: at 0.55 on the LIGHT palette this is
+   white on ≈rgb(125,129,132) and measures ≈3.97:1, under AA's 4.5 for
+   14px/600; 0.62 puts it on ≈rgb(109,113,117) and measures ≈4.99:1. Dark was
+   never the problem (ink label on a lightening fill: ≈5.19:1 at 0.55, ≈6.20:1
+   at 0.62) and improves too, so one number serves both.
+
+   WCAG exempts inactive components from 1.4.3, so this was not a conformance
+   failure — but §11 asks for AA on text and the button is still text a buyer
+   reads while they wait for a confirm, so it is held to it. And the wait is
+   not always a wait: `pay.astro`'s `fail()` disables the button PERMANENTLY
+   on the no-Stripe, offline-secret and mount-give-up paths, so this is a
+   label a buyer can sit reading indefinitely, not only for the second a
+   confirm is in flight. Measured under workerd preview on /checkout/pay, both
+   palettes. */
 .u-btn:disabled {
-	opacity: 0.55;
+	opacity: 0.62;
 	cursor: default;
 }
 

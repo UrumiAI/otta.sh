@@ -6,7 +6,7 @@
 Open source (MIT), version 0.0.1. The WooCommerce-equivalent for
 [EmDash](https://github.com/emdash-cms/emdash), Cloudflare's TypeScript CMS.
 
-![The Urumi storefront: a product listing with three sample products, each showing a title, description, and price](./docs/storefront.png)
+![The Urumi storefront: a product listing with three sample products, each showing generated coil artwork, a title, a description, a price, and whether it is in stock — the first is sold out, its price struck through](./docs/storefront.png)
 
 <sub>The reference storefront running locally, with prices and stock served by the commerce
 service — this is what the [quick start](#quick-start-local-2-minutes) below gives you.</sub>

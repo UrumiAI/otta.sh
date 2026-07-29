@@ -880,8 +880,23 @@ const partialNote =
 	}
 
 	/* A control that is a control, not a button-shaped thing: the cart has one
-	   primary action and it is at the foot. Focus is the global straw ring. */
+	   primary action and it is at the foot. Focus is the global straw ring.
+
+	   §11's "tap targets": the LABEL is 12px, so the button's own box came out
+	   41×15px — two of them side by side on a phone, both under the 24px
+	   minimum a thumb needs. `min-height` grows the TARGET (and with it the
+	   focus ring, which should trace what is actually clickable) while
+	   `inline-flex` keeps the text on the same optical line it was on. What
+	   grows is the BUTTON, by 9px (15 → 24). The ROW barely notices: measured,
+	   the cart line is unchanged at 390px and 0.5px taller at 1280px.
+	   Padding was the obvious fix
+	   and is the wrong one here: `.line-right` wraps at 390px, and the negative
+	   margin that would give the space back can bring two wrapped rows' hit
+	   areas into overlap. Measured at 390px under workerd preview. */
 	.link-btn {
+		display: inline-flex;
+		align-items: center;
+		min-height: 1.5rem;
 		padding: 0;
 		border: none;
 		background: none;

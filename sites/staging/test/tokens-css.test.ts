@@ -162,4 +162,15 @@ describe("tokens.css — the quality floor it owns globally (§11)", () => {
 	test("decorative motion is suppressed under prefers-reduced-motion", () => {
 		expect(source).toContain("@media (prefers-reduced-motion: reduce)");
 	});
+
+	test("the disabled dim stops at 0.62 — the point where the label still clears AA", () => {
+		// `opacity` composites the button as a GROUP, so the white label rides
+		// down with the ink fill underneath it and the contrast ratio falls out
+		// of how light that fill gets. 0.55 took the disabled pay button's label
+		// to ≈3.97:1 on the LIGHT palette, under AA's 4.5 for 14px/600; 0.62
+		// reads ≈4.99:1. Nothing else in the sheet reads this number and no
+		// screenshot fails when it drifts, which is exactly the case
+		// component-css.test.ts pins PollRibbon's `opacity: 0.4` for.
+		expect(declared(blockBody(".u-btn:disabled {"), "opacity")).toBe("0.62");
+	});
 });
