@@ -21,6 +21,13 @@ const NAMES_A_CURRENCY: ReadonlyArray<readonly [string, string]> = [
 	["checkout/index.astro", "totals.total.money?.currency"],
 	["orders/[orderId].astro", "order?.currency"],
 	["products/[slug].astro", "product?.price?.currency"],
+	// /checkout/pay was in the "names nothing" list for as long as its cookie
+	// stash held only an order id and a client secret. The stash now also carries
+	// the order's total, so the button reads "Pay $40.00" (§7) — and a page that
+	// prints money names the currency it is in. The field is OPTIONAL-chained on
+	// purpose: a stash minted before the total shipped shows "Pay now" and names
+	// no currency, which is still the truth about what that page printed.
+	["checkout/pay.astro", "stash.total?.currency"],
 	// Increment 3 moved both catalog pages into this list. `products/index.astro`
 	// has always printed `price.formatted` on every card and named no currency,
 	// which was the split being wrong rather than the pages being exempt; and the
@@ -33,13 +40,7 @@ const NAMES_A_CURRENCY: ReadonlyArray<readonly [string, string]> = [
 ];
 
 /** Pages that read no money at all. Bare is correct, not a bug. */
-const NAMES_NOTHING: readonly string[] = [
-	"404.astro",
-	// /checkout/pay makes NO commerce call by design — its cookie stash holds an
-	// order id and a client secret, nothing money-shaped. It gains the currency
-	// when it gains the amount ("Pay $40.00", §7), not before.
-	"checkout/pay.astro",
-];
+const NAMES_NOTHING: readonly string[] = ["404.astro"];
 
 describe("footer currency", () => {
 	test.each(NAMES_A_CURRENCY)("%s passes its own %s", (file, field) => {

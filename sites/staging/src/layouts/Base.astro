@@ -34,10 +34,11 @@ interface Props {
 	 * the currency on its own). `null`/omitted renders no currency at all.
 	 *
 	 * Absence is meaningful and is why this is not defaulted: the pages that
-	 * pass nothing — home, the catalog index, 404, and /checkout/pay, whose
-	 * cookie stash carries only an order id and a client secret — are the ones
-	 * that read no money. A page that shows a price shows the currency; a page
-	 * that shows none says nothing.
+	 * pass nothing — home, the catalog index, 404 — are the ones that read no
+	 * money. A page that shows a price shows the currency; a page that shows
+	 * none says nothing. /checkout/pay passes whatever its cookie stash holds:
+	 * the code beside the place-time total when the stash carries one, and
+	 * nothing when it does not, because then the button names no amount either.
 	 */
 	currency?: string | null;
 }

@@ -1,7 +1,8 @@
 /**
  * POST /checkout/place — the order-creation shim (ADR-0003): validate the
  * form, dispatch the plugin's public `storefront/checkout/place`, stash the
- * client secret in a first-party cookie, 303 to the payment step.
+ * client secret and the order's total in a first-party cookie, 303 to the
+ * payment step.
  *
  * This is the step boundary the design turns on. The Payment Element cannot
  * mount without a client secret, and the client secret does not exist until the
@@ -19,7 +20,7 @@
 import { STOREFRONT_CHECKOUT_PLACE_ROUTE, type CheckoutPlaceRouteResult } from "@urumi/plugin";
 import type { APIRoute } from "astro";
 import { currentCartId, failureToken, routeDispatcher, seeOther } from "../../lib/cart-actions.js";
-import { setCheckoutCookie } from "../../lib/checkout-cookie.js";
+import { checkoutStashTotal, setCheckoutCookie } from "../../lib/checkout-cookie.js";
 import { isPlausibleEmail, normalizeBuyerRef } from "../../lib/email.js";
 import { rejectCrossOrigin } from "../../lib/origin-guard.js";
 import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
@@ -139,9 +140,19 @@ export const POST: APIRoute = async (context) => {
 		return seeOther(context, `/orders/${encodeURIComponent(result.orderId)}`);
 	}
 
+	// The total is PROJECTED through the stash's own validator, not spread. Two
+	// reasons, both about this being the payment path:
+	//  - the route's `total` also carries the minor-unit `amount`, and the cookie
+	//    deliberately holds no money NUMBER (see checkout-cookie.ts);
+	//  - the dispatcher hands back parsed JSON that `CheckoutPlaceRouteResult`
+	//    only ASSERTS the shape of. A reply without a total must cost the button
+	//    its amount, never 500 an order whose stock is already held and whose
+	//    intent already exists.
+	const total = checkoutStashTotal(result.total);
 	setCheckoutCookie(context.cookies, {
 		orderId: result.orderId,
 		clientSecret: result.clientAction.clientSecret,
+		...(total !== undefined ? { total } : {}),
 	});
 	return seeOther(context, "/checkout/pay");
 };

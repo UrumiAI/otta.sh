@@ -144,6 +144,23 @@ export function buildCheckoutLines(
 	});
 }
 
+/**
+ * The order's OWN total, as of the moment it was created — the figure the
+ * PaymentIntent was minted for.
+ *
+ * Deliberately a plain `CartMoneyWire` and not a `CheckoutAmountView`: the
+ * honest-zero rule above is about COMPONENTS the store never configured, and an
+ * order's total is never one of those. An order exists, so its total was
+ * computed, so there is no "Not calculated" case to represent.
+ *
+ * Formatted HERE rather than at the caller because this package owns the one
+ * sanctioned money→string boundary (`formatMoney`, branded inputs). The site
+ * has no formatter and no locale of its own; it prints what it is handed.
+ */
+export function buildOrderTotal(order: PublicOrderWire, locale: string): CartMoneyWire {
+	return money(order.totals.totalCents, currency(order.totals.currency), locale);
+}
+
 export interface OrderLineView {
 	sku: string;
 	title: string;

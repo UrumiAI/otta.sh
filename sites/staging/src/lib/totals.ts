@@ -108,6 +108,29 @@ export function moneyCellText(money: string, fallback?: string): string {
 	return saysSomething(money) ? money : orNotApplied(fallback);
 }
 
+/** What the pay button says when there is no amount to put on it. */
+export const PAY_FALLBACK_LABEL = "Pay now";
+
+/**
+ * The pay button's label (§7: "the pay button carries the amount: `Pay $40.00`,
+ * not `Pay now`").
+ *
+ * The amount comes from the checkout stash, captured when the order — and its
+ * PaymentIntent — were created, so the button states the figure that will
+ * actually be charged rather than one re-derived from a cart that is still live.
+ *
+ * `undefined` is a REAL case and not a defect: a stash minted before the total
+ * shipped is still valid for up to its 15-minute TTL, and the button must stay
+ * pressable. `saysSomething` guards the rest — an empty or dash-only string
+ * would put "Pay —" on the one control in this theme that moves money, which is
+ * worse than saying nothing at all.
+ */
+export function payButtonLabel(formatted: string | undefined): string {
+	return formatted !== undefined && saysSomething(formatted)
+		? `Pay ${formatted}`
+		: PAY_FALLBACK_LABEL;
+}
+
 /**
  * Is this cell PROSE rather than a figure, judged by the value itself?
  *

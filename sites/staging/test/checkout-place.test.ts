@@ -35,7 +35,9 @@ import {
 	clearCheckoutCookie,
 	readCheckoutStash,
 	setCheckoutCookie,
+	type CheckoutStash,
 } from "../src/lib/checkout-cookie.js";
+import { PAY_FALLBACK_LABEL, payButtonLabel } from "../src/lib/totals.js";
 import { POST as NEW_CART_POST } from "../src/pages/checkout/new-cart.js";
 import { POST as PLACE_POST } from "../src/pages/checkout/place.js";
 
@@ -75,12 +77,30 @@ interface CookieOp {
 	options?: Record<string, unknown>;
 }
 
+/** The exact cookie VALUE `setCheckoutCookie` writes for a given stash — the
+ *  serialization under test, not a re-encoding of it. */
+function written(stash: CheckoutStash): string {
+	let value = "";
+	setCheckoutCookie(
+		{
+			set: (_name, raw) => {
+				value = raw;
+			},
+		},
+		stash,
+	);
+	return value;
+}
+
 const PLACED = {
 	ok: true,
 	orderId: "order-1",
 	state: "pending",
 	alreadyPlaced: false,
 	clientAction: { kind: "stripe_client_secret", clientSecret: "pi_1_secret_abc" },
+	// The order's OWN total, formatted by the plugin at place-time (§7). The
+	// minor-unit `amount` rides on the route result and must NOT reach the cookie.
+	total: { amount: 4000, currency: "USD", formatted: "$40.00" },
 };
 
 function makeHandler(placeResult: unknown = PLACED): {
@@ -348,20 +368,53 @@ describe("6d — the urumi_checkout stash and its deletion", () => {
 		expect(CHECKOUT_COOKIE_MAX_AGE_SECONDS).toBe(900);
 	});
 
-	test("the stash round-trips the orderId and client secret", () => {
-		const ops: CookieOp[] = [];
-		setCheckoutCookie(
-			{
-				set: (name, value, options) => {
-					ops.push({ op: "set", name, value, options: { ...options } });
-				},
-			},
-			{ orderId: "order-1", clientSecret: "pi_1_secret_abc" },
-		);
-		const raw = ops[0]!.value!;
+	test("the stash carries the ORDER's total, taken from the place reply", async () => {
+		// From the reply that created the order — never re-quoted here and never
+		// re-read on the pay page: the cart is still live, the charge is not.
+		const { handler } = makeHandler();
+		const { context, cookieOps } = makeContext(VALID_FORM, handler);
+
+		await PLACE_POST(context);
+
+		const raw = cookieOps.find((op) => op.op === "set" && op.name === CHECKOUT_COOKIE_NAME)!.value!;
+		const stash = readCheckoutStash({ get: () => ({ value: raw }) });
+		expect(stash?.total).toEqual({ currency: "USD", formatted: "$40.00" });
+		// The button the buyer sees, end to end.
+		expect(payButtonLabel(stash?.total?.formatted)).toBe("Pay $40.00");
+		// PROJECTED, not spread: the minor-unit amount stays server-side.
+		expect(raw).not.toContain("amount");
+		expect(raw).not.toContain("4000");
+	});
+
+	test("a place reply with NO total still stashes a payable order", async () => {
+		// The result TYPE promises a total; the dispatcher only asserts that shape
+		// over parsed JSON. A missing one costs the button its amount — it must
+		// never 500 an order whose stock is held and whose intent already exists.
+		const { total: _dropped, ...noTotal } = PLACED;
+		const { handler } = makeHandler(noTotal);
+		const { context, cookieOps } = makeContext(VALID_FORM, handler);
+
+		const response = await PLACE_POST(context);
+
+		expect(response.status).toBe(303);
+		expect(response.headers.get("location")).toBe("/checkout/pay");
+		const raw = cookieOps.find((op) => op.op === "set" && op.name === CHECKOUT_COOKIE_NAME)!.value!;
+		const stash = readCheckoutStash({ get: () => ({ value: raw }) });
+		expect(stash?.clientSecret).toBe("pi_1_secret_abc");
+		expect(stash?.total).toBeUndefined();
+		expect(payButtonLabel(stash?.total?.formatted)).toBe(PAY_FALLBACK_LABEL);
+	});
+
+	test("the stash round-trips the orderId, the client secret and the total", () => {
+		const raw = written({
+			orderId: "order-1",
+			clientSecret: "pi_1_secret_abc",
+			total: { currency: "USD", formatted: "$40.00" },
+		});
 		expect(readCheckoutStash({ get: () => ({ value: raw }) })).toEqual({
 			orderId: "order-1",
 			clientSecret: "pi_1_secret_abc",
+			total: { currency: "USD", formatted: "$40.00" },
 		});
 	});
 
@@ -369,6 +422,145 @@ describe("6d — the urumi_checkout stash and its deletion", () => {
 		expect(readCheckoutStash({ get: () => undefined })).toBeNull();
 		expect(readCheckoutStash({ get: () => ({ value: "not json" }) })).toBeNull();
 		expect(readCheckoutStash({ get: () => ({ value: '{"orderId":"o"}' }) })).toBeNull();
+	});
+
+	/**
+	 * BACKWARD COMPATIBILITY — the widened stash meets cookies it did not write.
+	 *
+	 * A `urumi_checkout` cookie lives for 15 minutes, so a deploy that lands
+	 * mid-checkout hands this reader an OLD-SHAPE stash whose order is real, whose
+	 * client secret is live, and whose stock is held. Every case below must still
+	 * yield a payable stash; the total is a label, and a label is never worth a
+	 * payment.
+	 */
+	describe("the total is optional — an old or half-shaped stash still pays", () => {
+		const OLD_SHAPE = '{"orderId":"order-1","clientSecret":"pi_1_secret_abc"}';
+
+		test("a stash minted BEFORE the total shipped parses, with no total", () => {
+			const stash = readCheckoutStash({ get: () => ({ value: OLD_SHAPE }) });
+			expect(stash).toEqual({ orderId: "order-1", clientSecret: "pi_1_secret_abc" });
+			expect(stash?.total).toBeUndefined();
+			// …and that is exactly the case the button's fallback exists for.
+			expect(payButtonLabel(stash?.total?.formatted)).toBe(PAY_FALLBACK_LABEL);
+		});
+
+		test.each([
+			["a null total", '"total":null'],
+			["a string total", '"total":"$40.00"'],
+			["a total with no currency", '"total":{"formatted":"$40.00"}'],
+			["a total with no formatted string", '"total":{"currency":"USD"}'],
+			["a total with a blank currency", '"total":{"currency":"","formatted":"$40.00"}'],
+			["a total with a blank string", '"total":{"currency":"USD","formatted":""}'],
+			["a numeric formatted field", '"total":{"currency":"USD","formatted":4000}'],
+			["a numeric currency", '"total":{"currency":123,"formatted":"$40.00"}'],
+			// Not merely non-empty: the layout prints this as a currency chip, so it
+			// must be ISO-4217's alpha shape or nothing.
+			["a lowercase currency", '"total":{"currency":"usd","formatted":"$40.00"}'],
+			["a currency symbol", '"total":{"currency":"$","formatted":"$40.00"}'],
+			["an over-long currency", '"total":{"currency":"USDD","formatted":"$40.00"}'],
+		])("%s is DROPPED, not fatal — the order stays payable", (_name, fragment) => {
+			const raw = `{"orderId":"order-1","clientSecret":"pi_1_secret_abc",${fragment}}`;
+			const stash = readCheckoutStash({ get: () => ({ value: raw }) });
+			expect(stash).not.toBeNull();
+			expect(stash!.clientSecret).toBe("pi_1_secret_abc");
+			expect(stash!.total).toBeUndefined();
+		});
+
+		test("a NEW-shape stash yields the amount", () => {
+			const raw = written({
+				orderId: "order-1",
+				clientSecret: "pi_1_secret_abc",
+				total: { currency: "USD", formatted: "$40.00" },
+			});
+			const stash = readCheckoutStash({ get: () => ({ value: raw }) });
+			expect(payButtonLabel(stash?.total?.formatted)).toBe("Pay $40.00");
+			expect(stash?.total?.currency).toBe("USD");
+		});
+
+		test("writing without a total produces the OLD shape verbatim — no null key", () => {
+			// Forward compatibility in the other direction: a reader that predates
+			// this field must not meet `"total":null` where it expected nothing.
+			expect(written({ orderId: "order-1", clientSecret: "pi_1_secret_abc" })).toBe(OLD_SHAPE);
+		});
+	});
+
+	describe("what the cookie is allowed to carry", () => {
+		test("the stash holds NO money number — only a code and a display string", () => {
+			// The money rule, at the one place this site touches money at all:
+			// minor units never leave the plugin, so nothing here can divide by 100.
+			const raw = written({
+				orderId: "order-1",
+				clientSecret: "pi_1_secret_abc",
+				total: { currency: "USD", formatted: "$40.00" },
+			});
+			const parsed = JSON.parse(raw) as { total: Record<string, unknown> };
+			expect(Object.keys(parsed.total).toSorted()).toEqual(["currency", "formatted"]);
+			expect(raw).not.toContain("4000");
+		});
+
+		test.each([
+			["a euro amount", "EUR", "40,00 €"],
+			[
+				"an Arabic-script amount",
+				"SAR",
+				new Intl.NumberFormat("ar-SA", { style: "currency", currency: "SAR" }).format(40),
+			],
+		])("%s survives the real cookie encoding byte-exact", (_label, currency, formatted: string) => {
+			// The plugin formats for a locale, so the label is NOT ASCII in general
+			// — and it travels through a percent-encoding round trip (Astro's
+			// serializer encodes on write, the browser's parser decodes on read)
+			// before it reaches a payment button. A mangled figure on that button
+			// is worse than none, so this asserts the exact string, not its shape.
+			const raw = written({
+				orderId: "order-1",
+				clientSecret: "pi_1_secret_abc",
+				total: { currency, formatted },
+			});
+			const overTheWire = decodeURIComponent(encodeURIComponent(raw));
+			const stash = readCheckoutStash({ get: () => ({ value: overTheWire }) });
+			expect(stash?.total).toEqual({ currency, formatted });
+			expect(payButtonLabel(stash?.total?.formatted)).toBe(`Pay ${formatted}`);
+		});
+
+		test("the widened stash is still a SMALL cookie, measured as it goes on the wire", () => {
+			// Measured ENCODED, because that is what ships: Astro's cookie serializer
+			// percent-encodes the value by default, and JSON's braces, quotes, commas
+			// and colons all encode to three characters each. A realistic USD stash is
+			// 175 JSON characters but 237 encoded bytes — plus the name and attributes,
+			// ~305 bytes of `Set-Cookie` — and an `ar-SA` amount, whose formatted
+			// string is non-ASCII, reaches ~297 encoded. Counting `raw.length` would
+			// have understated every one of those by a third or more.
+			//
+			// The bound is deliberately loose against the 4096-byte browser limit and
+			// tight against growth: it is here to catch a future field that puts a
+			// line list or an address back into a cookie that rides EVERY request
+			// under `path=/`, not to police a formatted string's width.
+			const encodedLength = (stash: CheckoutStash): number =>
+				encodeURIComponent(written(stash)).length;
+			const REAL = {
+				orderId: "0195f0a1-2c3d-7e4f-8a9b-0c1d2e3f4a5b",
+				clientSecret: "pi_3Q1abcDEFghiJKLM1n2o3p4q_secret_R5stuVWXyz6AbCdEfGhIjKlM",
+			};
+
+			expect(
+				encodedLength({ ...REAL, total: { currency: "USD", formatted: "$40.00" } }),
+			).toBeLessThan(1024);
+			// The widest realistic label this can hold: a non-ASCII, right-to-left
+			// amount, where each character costs three encoded characters per UTF-8
+			// byte — six for Arabic script, and the bidi marks are not free either.
+			expect(
+				encodedLength({
+					...REAL,
+					total: {
+						currency: "SAR",
+						formatted: new Intl.NumberFormat("ar-SA", {
+							style: "currency",
+							currency: "SAR",
+						}).format(40),
+					},
+				}),
+			).toBeLessThan(1024);
+		});
 	});
 
 	test("clearCheckoutCookie deletes the SAME name at the SAME path the setter used", () => {
