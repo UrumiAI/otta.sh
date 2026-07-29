@@ -46,6 +46,8 @@ interface FakeLine {
 interface FakeCart {
 	cartId: string;
 	state: string;
+	/** Wire fidelity with `serializeCart` (#132); the stub never checks out. */
+	orderId: string | null;
 	currency: string;
 	lines: FakeLine[];
 }
@@ -107,7 +109,7 @@ function installFakeCartService(): void {
 		if (req.url === "/carts") {
 			const currency = (req.body as { currency?: string }).currency ?? "USD";
 			const cartId = `cart-${++seq}`;
-			carts.set(cartId, { cartId, state: "active", currency, lines: [] });
+			carts.set(cartId, { cartId, state: "active", orderId: null, currency, lines: [] });
 			return { status: 201, body: { cartId } };
 		}
 		const cartId = matchLines(req.url);

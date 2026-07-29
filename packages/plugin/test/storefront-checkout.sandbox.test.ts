@@ -144,7 +144,14 @@ function installFakeService(): void {
 				status: 200,
 				body: {
 					ok: true,
-					cart: { cartId: CART_ID, state: "active", currency: "USD", lines: cartLines },
+					cart: {
+						cartId: CART_ID,
+						state: "active",
+						// Wire fidelity with `serializeCart` (#132).
+						orderId: null,
+						currency: "USD",
+						lines: cartLines,
+					},
 				},
 			};
 		}
