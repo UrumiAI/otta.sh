@@ -11,11 +11,10 @@
  * The availability token comes verbatim off the product view model
  * (`AvailabilityToken`), so the theme localizes and the plugin decides.
  *
- * DEVIATION from the mockup: `.s-stock` there tracks at 0.09em while `.s-label`
- * tracks at 0.11em. §3 states one figure for uppercase mono labels — 0.11em —
- * and this is one, so it takes the shared `.u-label` recipe. The mockup wins on
- * appearance where the two disagree; a tracking value named in the spec is a
- * rule, and one magic number fewer is worth the hair of difference.
+ * The mockup used to track `.s-stock` at 0.09em while `.s-label` tracked at
+ * 0.11em. §3 states ONE figure for uppercase mono labels — 0.11em — and this is
+ * one, so it takes the shared `.u-label` recipe rather than carrying a magic
+ * number of its own; the mockup has since been synced to match.
  */
 import type { AvailabilityToken } from "@urumi/plugin";
 import type { HTMLAttributes } from "astro/types";

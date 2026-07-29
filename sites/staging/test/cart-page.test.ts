@@ -298,6 +298,7 @@ describe("the Tempered cart: lines, ribbons and an honest totals block", () => {
 		const cart: CartWire = {
 			cartId: "cart_1",
 			state: "active",
+			orderId: null,
 			currency: "USD",
 			lines: [
 				{ lineId: "l1", sku: "A", productId: "p1", qty: 3, reservationId: null, expiresAt: null },
@@ -564,12 +565,16 @@ describe("a checked-out cart is rendered as terminal, and never as a paid one", 
 		// HONEST SCOPE: this pins the `CartWire` TypeScript DECLARATION, not what
 		// the service emits. `serializeCart` dropping the field would compile
 		// perfectly and arrive here as `undefined` — which the narrow fence above
-		// then renders as a live cart. That is the failure mode this test does
-		// NOT cover, and the `console.warn` pinned below is the only thing that
-		// would say so out loud.
+		// then renders as a live cart. That is still the failure mode this test
+		// does not cover, but it is no longer uncovered anywhere: #136 is closed,
+		// and `packages/service/test/carts.http.contract.test.ts` now asserts
+		// `toHaveProperty("state")` where the field is PRODUCED. The
+		// `console.warn` pinned below is the runtime backstop, no longer the only
+		// thing that would say so out loud.
 		const cart: CartWire = {
 			cartId: "cart_1",
 			state: "checked_out",
+			orderId: null,
 			currency: "USD",
 			lines: [
 				{ lineId: "l1", sku: "A", productId: "p1", qty: 1, reservationId: null, expiresAt: null },

@@ -201,12 +201,17 @@ export function expireHoldsRoutes(deps: CartRoutesDeps): Hono {
 function serializeCart(cart: Cart): {
 	cartId: string;
 	state: string;
+	/** The order this cart handed off to (issue #132), or null while it is
+	 *  `active`. Not a payment signal, and a null does NOT prove no order exists
+	 *  for the cart — see `CartStore.checkout`. */
+	orderId: string | null;
 	currency: string;
 	lines: ReturnType<typeof serializeLine>[];
 } {
 	return {
 		cartId: cart.cartId,
 		state: cart.state,
+		orderId: cart.orderId,
 		currency: cart.currency,
 		lines: cart.lines.map(serializeLine),
 	};

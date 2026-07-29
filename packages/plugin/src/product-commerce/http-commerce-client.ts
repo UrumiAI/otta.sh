@@ -172,13 +172,57 @@ export class HttpCommerceClient implements CommerceClient {
 	}
 
 	/** `GET /carts/:cartId` — runs lazy-expiry server-side first; 404 ⇒ typed
-	 *  `CART_NOT_FOUND`, never a thrown error for that expected case. */
+	 *  `CART_NOT_FOUND`, never a thrown error for that expected case.
+	 *
+	 *  Also NORMALIZES `cart.orderId` to `null` (issue #132). See the comment on
+	 *  the coercion below for why the guard lives here and nowhere else. */
 	async getCart(cartId: string): Promise<CartResult<{ cart: CartWire }>> {
 		const res = await this.#fetch(`${this.#baseUrl}/carts/${encodeURIComponent(cartId)}`, {
 			method: "GET",
 			headers: this.#baseHeaders(),
 		});
-		return this.#cartResult<{ cart: CartWire }>(res);
+		const result = await this.#cartResult<{ cart: CartWire }>(res);
+		// Nothing on this path validates the cart body at runtime: `#cartResult`
+		// blind-casts once `isCartEnvelope` has confirmed only "an object with an
+		// `ok` key". A field the service stops emitting therefore arrives as
+		// `undefined`, fully type-checked.
+		//
+		// `state` fails SAFELY that way (`isCartTerminal(undefined)` is false).
+		// `orderId` fails UNSAFELY: `undefined !== null` is true, so a consumer
+		// renders `/orders/undefined` — a dead link offered as a primary action.
+		// `""` is just as bad (`/orders/`), hence the length check as well as the
+		// type check.
+		//
+		// It belongs HERE, in `getCart`: this is field-specific, and it sits at
+		// the wire boundary where version skew actually lands (a new bundle
+		// talking to an older deployed service). `HttpCommerceClient` is the sole
+		// `CommerceClient` implementation, so this one coercion also covers
+		// `cart-routes.ts`'s read route, `checkout-routes.ts`, and any consumer of
+		// the published `CommerceClient.getCart`.
+		//
+		// NOT in `#cartResult`: that is generic over `T` and shared with
+		// `addCartLine`/`adjustCartLine`/`removeCartLine`; special-casing a field
+		// name inside a generic envelope normalizer is the wrong layer. And NOT
+		// double-guarded downstream: `sites/staging` bundles `@urumi/plugin`
+		// (`noExternal`), so site+plugin ship as ONE deployable and the only skew
+		// boundary is (site+plugin) ⇄ service — a second guard would be redundant
+		// by construction and would drift.
+		//
+		// The coercion is TOTAL, and that includes `cart` itself: the thesis above
+		// is "this wire is unvalidated", and `isCartEnvelope` never checked for a
+		// `cart` key either. A success envelope arriving without one — or with a
+		// null or non-object one — is passed through EXACTLY as it was before this
+		// PR rather than becoming a new `TypeError` thrown from inside the client.
+		// Failing loud there would be defensible, but it would be an undocumented
+		// behaviour change for a direct `CommerceClient.getCart` consumer, and the
+		// guard costs one condition.
+		const cart: unknown = result.ok ? result.cart : undefined;
+		if (typeof cart === "object" && cart !== null) {
+			const wire = cart as CartWire;
+			const raw: unknown = wire.orderId;
+			wire.orderId = typeof raw === "string" && raw.length > 0 ? raw : null;
+		}
+		return result;
 	}
 
 	/** `POST /carts/:cartId/lines` — `Idempotency-Key` header (CLAUDE.md: every

@@ -1,5 +1,5 @@
 import type { Currency } from "../money/cents.js";
-import type { IdempotencyKey } from "../money/ids.js";
+import type { IdempotencyKey, OrderId } from "../money/ids.js";
 
 /**
  * The `CartStore` port (Phase 3 §6). Cart truth lives in the commerce service DB
@@ -58,15 +58,42 @@ export interface CartStore {
 	removeLine(cartId: string, lineId: string, key: IdempotencyKey): Promise<void>;
 	/**
 	 * Secondary cart-state fence (Phase 4 §5): the guarded flip
-	 * `UPDATE carts SET state='checked_out' WHERE id=:cartId AND state='active'
-	 * RETURNING id`. Order creation calls this once all lines are adopted, so a
-	 * post-checkout cart mutation is rejected `CART_CHECKED_OUT` before it can
-	 * reach an adopted reservation. `checked_out` is terminal — nothing flips a
-	 * cart back to `active` (reactivation would re-open the adopted-hold fence).
+	 * `UPDATE carts SET state='checked_out', order_id=:orderId
+	 * WHERE id=:cartId AND state='active' RETURNING id`. Order creation calls
+	 * this once all lines are adopted, so a post-checkout cart mutation is
+	 * rejected `CART_CHECKED_OUT` before it can reach an adopted reservation.
+	 * `checked_out` is terminal — nothing flips a cart back to `active`
+	 * (reactivation would re-open the adopted-hold fence).
+	 *
+	 * **One statement, two columns** — the state and the order id are set by the
+	 * same conditional UPDATE and are never observable apart. That also makes the
+	 * existing `state='active'` predicate the CAS that gives `order_id` its
+	 * write-once behavior for free: the second writer matches 0 rows, so there is
+	 * no separate constraint and no `WHERE order_id IS NULL`.
+	 *
 	 * Idempotent: a replay finds the cart already `checked_out` (0 rows) and
-	 * returns `false` (treated as success for the same order).
+	 * returns `false` (treated as success for the same order). `false` therefore
+	 * now means TWO things at once: the cart was already terminal, **and this
+	 * call did not record its order id**.
+	 *
+	 * **The converse does NOT hold**: `orderId === null` does not mean no order
+	 * exists for this cart. The stamp lives only in `finalizeOrder`, and the I1
+	 * idempotency short-circuit returns before it. A crash between
+	 * `orderStore.createFromCart` and this flip, or a `RESERVATION_LOST` abort,
+	 * leaves a real `pending` order behind a permanently `active`, NULL cart —
+	 * and every same-key replay thereafter returns at I1 without ever flipping.
+	 * The column answers "which order did this cart *successfully* hand off to",
+	 * never "does an order exist for this cart". `orders.cart_id` remains the
+	 * only complete answer to the latter and is not maintained here.
+	 *
+	 * `orderId` is BRANDED (unlike `Cart.orderId` below, and unlike
+	 * `InventoryStore.adoptMany`'s plain `orderId`, which takes the very same
+	 * `order.id` two statements earlier — the repo is genuinely mixed per port).
+	 * It is branded here because it is a **command input**: branding makes
+	 * passing a cart id, a line id, or any other bare string in this position a
+	 * type error, exactly as `OrderStore.getById(orderId: OrderId)` does.
 	 */
-	checkout(cartId: string): Promise<boolean>;
+	checkout(cartId: string, orderId: OrderId): Promise<boolean>;
 	/**
 	 * Held reservations whose hold has lapsed: `expires_at <= now`, or — for a
 	 * CART-ORIGINATED hold whose cart-line write never landed (crash window) —
@@ -144,6 +171,23 @@ export type ReservationLifecycle =
 export interface Cart {
 	cartId: string;
 	state: CartState;
+	/**
+	 * The order this cart successfully handed off to, stamped by `checkout` in
+	 * the same statement as `state` (issue #132); null on every `active` cart.
+	 *
+	 * PLAIN `string | null`, not branded — an aggregate's own id is branded, a
+	 * CROSS-AGGREGATE reference is not. This is the exact mirror of
+	 * `Order.cartId: string | null` sitting beside `Order.id: OrderId` in
+	 * `orders/model.ts`, and of the "branding at the use-case boundary" note in
+	 * `orders/create-order-from-cart.ts` ("the cart line carries a plain
+	 * `string | null` reservation id"). The branding happens where the id is
+	 * *minted* and where it is *commanded* (`checkout`'s parameter), not where a
+	 * neighbouring aggregate merely reports it.
+	 *
+	 * NOT a proof of payment, and NOT a complete answer to "does an order exist
+	 * for this cart" — see `CartStore.checkout`.
+	 */
+	orderId: string | null;
 	currency: Currency;
 	lines: CartLine[];
 }

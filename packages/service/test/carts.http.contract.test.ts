@@ -122,6 +122,26 @@ describe.skipIf(PG === undefined)("HTTP cart contract [live server, Postgres]", 
 		expect(typeof res.body.cartId).toBe("string");
 	});
 
+	// Issue #136 (and #132's wire half): `serializeCart` is where these fields are
+	// PRODUCED, and nothing downstream validates the cart body at runtime — the
+	// plugin's `#cartResult` blind-casts once `isCartEnvelope` has seen an `ok`
+	// key. So a silently dropped field compiles clean, arrives `undefined`, and
+	// `isCartTerminal(undefined)` reads a terminal cart as live (#110, again,
+	// with the whole suite green). Pin PRESENCE, not just the value: a bare
+	// `toBeNull()` passes on an absent key too.
+	test("GET /carts/:id emits BOTH `state` and `orderId` — presence is the assertion (#136/#132)", async () => {
+		const cartId = await newCart();
+		const get = await req("GET", `/carts/${cartId}`);
+		expect(get.status).toBe(200);
+		const cart = get.body.cart as Record<string, unknown>;
+		expect(cart).toHaveProperty("state");
+		expect(cart).toHaveProperty("orderId");
+		expect(cart.state).toBe("active");
+		// A cart that never checked out names no order. The non-null case lives in
+		// `checkout-intent.http.pg.test.ts`, where an order actually exists.
+		expect(cart.orderId).toBeNull();
+	});
+
 	test("add reserves stock and returns the line; GET reflects it", async () => {
 		await server.seed("SKU-A", 5);
 		const cartId = await newCart();

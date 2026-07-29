@@ -23,8 +23,9 @@
  *  fraction against because the wire carries the expiry INSTANT, not the length
  *  of the hold; the countdown, the state and the clock all come from
  *  `expiresAt` and are unaffected by this number. Getting it wrong therefore
- *  cannot mis-state the time left — it draws a bar at the wrong width (assuming
- *  600 here made a fresh 15-minute hold render as already a third drained).
+ *  cannot mis-state the time left — it draws a bar at the wrong width (600 here
+ *  clamped a 15-minute hold's bar at full for its first 300 seconds, then
+ *  drained it half again too fast).
  *  A store on a longer TTL is clamped, never overflowed; `holdView` takes an
  *  explicit `windowSeconds` for that case. */
 export const HOLD_WINDOW_SECONDS = 900;

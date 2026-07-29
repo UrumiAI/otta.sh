@@ -92,9 +92,19 @@ function ttl(deps: CreateOrderDeps): number {
  * stranded hold. Physical lines adopt their cart reservation via the guarded
  * `held → adopted` flip (moving it out of the Phase-3 sweep's scope); **digital
  * lines reserve nothing** (§6). All lines adopted ⇒ the cart flips `active →
- * checked_out` (secondary fence). Idempotent under `idempotencyKey`: a replay
- * returns the same order, re-snapshots nothing, re-adopts nothing (the guarded
- * flips see the reservations already `adopted` for this order).
+ * checked_out` **and records the order's id** (secondary fence + issue #132) —
+ * one statement, two columns, so a cart written THROUGH `checkout` (the
+ * column's single writer) is `active` iff it carries no order id. That is a
+ * writer-enforced invariant, not a structural one: no CHECK constraint backs
+ * it, and a raw partial UPDATE can still produce a `checked_out` cart with a
+ * NULL order id.
+ * That stamp lands BEFORE the payment intent, so it says "this cart became that
+ * order", never "that order was paid"; and because the idempotency
+ * short-circuit returns earlier, a NULL cart `orderId` never proves the absence
+ * of an order (`orders.cart_id` is the complete answer). Idempotent under
+ * `idempotencyKey`: a replay returns the same order, re-snapshots nothing,
+ * re-adopts nothing (the guarded flips see the reservations already `adopted`
+ * for this order).
  */
 export async function createOrderFromCart(
 	deps: CreateOrderDeps,
@@ -431,8 +441,21 @@ async function finalizeOrder(
 		return { ok: false, reason: "RESERVATION_LOST" };
 	}
 
-	// 3. Secondary fence: flip the cart out of `active` (idempotent on replay).
-	await deps.cartStore.checkout(command.cartId);
+	// 3. Secondary fence: flip the cart out of `active` (idempotent on replay),
+	//    STAMPING the order it handed off to in the same statement (issue #132) —
+	//    that is what lets `/cart` link a buyer to their purchase. `order.id` is
+	//    already branded, and it is the PERSISTED order's id, not the locally
+	//    minted `freshOrderId` candidate: when two same-key calls race past I1,
+	//    the loser's insert is deduped by `orders.idempotency_key` and its
+	//    `order.id` is the WINNER's — that is the id the cart must record.
+	//
+	//    A `false` return is deliberately silent (a replay legitimately loses the
+	//    flip). Note the stamp lands here, BEFORE `gateway.createIntent()` below,
+	//    so a stamped cart proves only "this cart became that order", never that
+	//    the order was paid. And because the I1 short-circuit returns long before
+	//    this line, a NULL `orderId` does NOT prove no order exists — see the
+	//    port's JSDoc; `orders.cart_id` is the complete answer.
+	await deps.cartStore.checkout(command.cartId, order.id);
 
 	// 4. Begin payment; hand the buyer-facing next-action back to the caller.
 	const intentInput = intentInputFor(order, command.idempotencyKey);

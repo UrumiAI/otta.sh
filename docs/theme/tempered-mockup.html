@@ -10,6 +10,20 @@
 <body>
 <title>Urumi reference theme — Tempered</title>
 
+<!-- SUPERSEDED FRAMES. This file is a frozen APPEARANCE reference. Where it
+     disagrees with the built theme on a RULE, TEMPERED.md wins — §4 (stock is
+     stated in words, never as a count the store did not quote) and §8. These
+     frames are deliberately NOT redrawn:
+
+       · card feet "12 in stock" and "3 left", and the PDP spec ledger's "3 left"
+       · the hero tape's bare stock figures — 12 / 3 / 40
+       · the hero tape head "In stock" — shipped as "Stock" (§8: a column headed
+         with one of its own cell values reads as a claim)
+       · the cart header "3 items · 2 held" (§8: the two halves count different
+         things, and the clause goes stale above ribbons that keep ticking)
+
+     Everything else here still holds. -->
+
 <style>
 /* Faces load from Google Fonts for this reference page. The real theme
    self-hosts them through Astro's font API — no CDN at runtime. */
@@ -287,7 +301,7 @@
 .s-price { font-family: var(--u-data); font-variation-settings: "wdth" 90; letter-spacing: -0.045em; font-variant-numeric: tabular-nums; font-size: 0.9375rem; font-weight: 500; }
 .s-card:hover .s-title { text-decoration: underline; text-decoration-color: var(--u-straw); text-decoration-thickness: 2px; text-underline-offset: 3px; }
 
-.s-stock { font-family: var(--u-data); font-variation-settings: "wdth" 90; font-size: 0.5625rem; font-weight: 500; letter-spacing: 0.09em; text-transform: uppercase; display: inline-flex; align-items: center; gap: 0.375rem; }
+.s-stock { font-family: var(--u-data); font-variation-settings: "wdth" 90; font-size: 0.5625rem; font-weight: 500; letter-spacing: 0.11em; text-transform: uppercase; display: inline-flex; align-items: center; gap: 0.375rem; }
 .s-stock::before { content: ""; width: 1.25rem; height: 2px; background: currentColor; border-radius: 1px; }
 .s-stock[data-state="in"] { color: var(--u-mute); }
 .s-stock[data-state="out"] { color: var(--u-mute); }
@@ -563,7 +577,7 @@
 			</div>
 			<div class="d-specimen">
 				<div class="d-specimen-meta"><b>Schibsted Grotesk</b><span>Body · 400–600. Running text, navigation, buttons, labels.</span></div>
-				<div class="d-sample-body">Ten stickers, integer minor units, zero floats. Add one to your cart and we'll hold it for ten minutes while you make up your mind.</div>
+				<div class="d-sample-body">Ten stickers, integer minor units, zero floats. Add one to your cart and we'll hold it for fifteen minutes while you make up your mind.</div>
 			</div>
 			<div class="d-specimen">
 				<div class="d-specimen-meta"><b>Martian Mono</b><span>Data · wdth&nbsp;90 · tabular figures · tracking −0.045em. Money, quantities, SKUs, stock, countdowns, and uppercase labels.</span></div>
@@ -726,7 +740,7 @@
 										<label class="s-qty"><span class="s-label">Qty</span><input type="number" value="1" min="1" aria-label="Quantity" /></label>
 										<button type="button" class="s-btn">Add to cart</button>
 									</div>
-									<p class="s-hold-note">Adding this holds one in stock for 10 minutes.</p>
+									<p class="s-hold-note">Adding this holds one in stock for 15 minutes.</p>
 								</div>
 							</div>
 							<div class="s-foot"><span>Urumi — content by EmDash, commerce by Urumi.</span><span class="s-mono">USD</span></div>
@@ -1236,7 +1250,8 @@
 	});
 
 	// Hold ribbons: the countdown is information, so it ticks even under
-	// reduced-motion. Window is 10 minutes, matching the service's hold TTL.
+	// reduced-motion. 600 here is a demo convenience, NOT the service's TTL:
+	// the store holds for 900s — see TEMPERED.md §6.
 	const WINDOW = 600;
 	const holds = [];
 	document.querySelectorAll(".s-hold[data-seconds]").forEach(function (el) {
@@ -1257,7 +1272,7 @@
 	function tick() {
 		holds.forEach(function (h) {
 			// Demo-only: rest on "released" for 6s, then rewind, so a reviewer
-			// sees all three states without waiting out a real 10-minute hold.
+			// sees all three states without waiting out a real fifteen-minute hold.
 			if (h.left <= 0) {
 				h.restIn -= 1;
 				if (h.restIn <= 0) h.left = h.start;
