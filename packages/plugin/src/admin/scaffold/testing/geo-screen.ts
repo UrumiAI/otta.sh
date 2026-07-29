@@ -1,7 +1,7 @@
 import type { Block, FormBlock, SandboxedPlugin } from "../../../types.js";
 import { screenActions } from "../actions.js";
 import { failClosedResponse, noticeBanner } from "../banner.js";
-import { encodeCarrier } from "../carrier.js";
+import { carriedForm, encodeCarrier } from "../carrier.js";
 import {
 	createListDetailHandler,
 	customAction,
@@ -169,51 +169,69 @@ export function createGeoScreenHandler() {
 				fetchPage: (c, path, filter, opts) =>
 					Promise.resolve(c.listCities(path[0] ?? "", filter, opts.limit, opts.cursor)),
 				render: ({ actions, path, filter, items, nextToken }) => {
-					const pathCarrier = encodeCarrier({ [PATH_FIELD]: encodePath(path) });
-					const qField = (): FormBlock["fields"] => [
-						{
-							type: "text_input",
-							action_id: "q",
-							label: "Name starts with",
-							...(filter.q !== undefined ? { initial_value: filter.q } : {}),
-						},
-					];
+					const carriedPath = { [PATH_FIELD]: encodePath(path) };
+					const filterForm = (label: string): FormBlock => ({
+						type: "form",
+						fields: [
+							{
+								type: "text_input",
+								action_id: "q",
+								label: "Name starts with",
+								...(filter.q !== undefined ? { initial_value: filter.q } : {}),
+							},
+						],
+						submit: { label, action_id: actions.applyFilter },
+					});
 					const blocks: Block[] = [
 						{ type: "header", text: `Cities of ${path[0] ?? "?"}` },
 						backButton(actions.back, "← Back to countries", path),
-						{
-							type: "form",
-							fields: qField(),
-							submit: { label: "Apply", action_id: actions.applyFilter },
-						},
+						filterForm("Apply"),
 						// A SECOND filter form that carries its drill path INVISIBLY in
 						// `block_id` — the engine must recognise the carry and skip
 						// injecting the visible "Scope" select into this one.
-						{
-							type: "form",
-							block_id: pathCarrier,
-							fields: qField(),
-							submit: { label: "Apply (carried)", action_id: actions.applyFilter },
-						},
+						carriedForm({
+							namespace: "geo:city-filter",
+							context: carriedPath,
+							form: filterForm("Apply (carried)"),
+						}),
 						// A THIRD filter form, COLLAPSED behind `filterPanel` and carrying
 						// nothing — the engine's path-carry guarantee has to reach inside
 						// the accordion, or collapsing a deep filter would silently
 						// re-filter the root list.
 						filterPanel({
-							form: {
-								type: "form",
-								fields: qField(),
-								submit: { label: "Apply (collapsed)", action_id: actions.applyFilter },
-							},
+							form: filterForm("Apply (collapsed)"),
+							blockId: "geo:city-filters",
 							label: "Filters",
 							summary: [filter.q !== undefined && `name: ${filter.q}`],
 							inlineUpTo: 0,
 						}),
+						// A FOURTH and FIFTH, nested in the other two container kinds — the
+						// traversal has to reach every one of them, not just `accordion`.
+						{
+							type: "columns",
+							columns: [[filterForm("Apply (column)")], [{ type: "context", text: "spacer" }]],
+						},
+						{
+							type: "tab",
+							panels: [
+								{
+									label: "Nested",
+									// Two deep: a tab panel holding an accordion holding the form.
+									blocks: [
+										{
+											type: "accordion",
+											label: "Deeper",
+											blocks: [filterForm("Apply (tab)")],
+										},
+									],
+								},
+							],
+						},
 						{
 							type: "table",
 							// A table's `block_id` is echoed back on its own block_actions
 							// (sort / load-more), so it states which level it belongs to.
-							block_id: pathCarrier,
+							block_id: encodeCarrier("geo:city-table", carriedPath),
 							columns: [{ key: "id", label: "id" }],
 							rows: items.map((x) => ({ id: x.id })),
 							page_action_id: actions.page,

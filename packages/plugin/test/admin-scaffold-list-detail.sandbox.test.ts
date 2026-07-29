@@ -65,6 +65,12 @@ function formWithSubmit(res: BlockResponse, actionId: string): Blk | undefined {
 		(b) => b.type === "form" && (b.submit as { action_id?: string })?.action_id === actionId,
 	);
 }
+/** The encoded drill path the engine injected into a rendered form as a visible
+ *  field, or undefined when it stood down (the form carried it invisibly). */
+function pathFieldOf(form: Blk | undefined): string | undefined {
+	const fields = (form?.fields ?? []) as Array<{ action_id?: string; initial_value?: string }>;
+	return fields.find((f) => f.action_id === "__path")?.initial_value;
+}
 /** Pull the encoded drill path out of a rendered view's back button. */
 function extractBackPath(res: BlockResponse): string[] {
 	for (const b of blocksOf(res)) {
@@ -317,7 +323,10 @@ describe("scaffold carrier: hidden context in `block_id` — workerd sandbox", (
 		const res = await invoke({
 			type: "form_submit",
 			action_id: "geo:tag",
-			block_id: encodeCarrier({ __path: encodePath(["c1", "m1"]), label: "high-water" }),
+			block_id: encodeCarrier("geo:tag-form", {
+				__path: encodePath(["c1", "m1"]),
+				label: "high-water",
+			}),
 			values: {},
 		});
 		// BOTH the target level and the payload came out of `block_id`: no visible
@@ -329,7 +338,7 @@ describe("scaffold carrier: hidden context in `block_id` — workerd sandbox", (
 	});
 
 	test("a custom action with a malformed/absent carrier fails closed, never throws", async () => {
-		for (const blockId of [undefined, "not-a-carrier", "u1.garbage", 42]) {
+		for (const blockId of [undefined, "not-a-carrier", "geo:tabs", "ns:x:u1.garbage", 42]) {
 			const res = await invoke({
 				type: "form_submit",
 				action_id: "geo:tag",
@@ -345,7 +354,7 @@ describe("scaffold carrier: hidden context in `block_id` — workerd sandbox", (
 		const res = await invoke({
 			type: "form_submit",
 			action_id: "geo:apply-filter",
-			block_id: encodeCarrier({ __path: encodePath(["c1"]) }),
+			block_id: encodeCarrier("geo:city-filter", { __path: encodePath(["c1"]) }),
 			values: { q: "T" },
 		});
 		expect(headerText(res)).toBe("Cities of c1"); // stayed on the deep level
@@ -357,7 +366,7 @@ describe("scaffold carrier: hidden context in `block_id` — workerd sandbox", (
 			type: "form_submit",
 			action_id: "geo:apply-filter",
 			// The carrier points at the root; the visible field points at c1.
-			block_id: encodeCarrier({ __path: encodePath([]) }),
+			block_id: encodeCarrier("geo:city-filter", { __path: encodePath([]) }),
 			values: { q: "T", __path: encodePath(["c1"]) },
 		});
 		expect(headerText(res)).toBe("Cities of c1");
@@ -373,9 +382,10 @@ describe("scaffold carrier: hidden context in `block_id` — workerd sandbox", (
 			(b) =>
 				b.type === "form" && (b.submit as { action_id?: string })?.action_id === "geo:apply-filter",
 		);
-		// Two filter forms at this level: the plain one (engine-injected visible
-		// carrier — asserted above) and the carrier-bearing one, which must render
-		// with NO visible path field at all.
+		// Two TOP-LEVEL filter forms at this level: the plain one (engine-injected
+		// visible carrier — asserted above) and the carrier-bearing one, which must
+		// render with NO visible path field at all. (Three more are nested inside the
+		// accordion / columns / tab containers, asserted below.)
 		expect(forms).toHaveLength(2);
 		const carried = forms.find((f) => typeof f.block_id === "string");
 		expect(carried).toBeDefined();
@@ -406,6 +416,67 @@ describe("scaffold carrier: hidden context in `block_id` — workerd sandbox", (
 			values: { q: "T", __path: injected?.initial_value },
 		});
 		expect(headerText(filtered)).toBe("Cities of c1");
+	});
+
+	test("the injection reaches a filter form nested in a `columns` column and in a `tab` panel (two deep)", async () => {
+		// The traversal exists so the guarantee cannot be silently broken by nesting;
+		// `accordion` alone proving it would leave two thirds of it unverified.
+		const cities = await invoke({
+			type: "form_submit",
+			action_id: "geo:open",
+			values: { target: encodePath(["c1"]) },
+		});
+		const columns = blocksOf(cities).find((b) => b.type === "columns");
+		const inColumn = ((columns?.columns as Blk[][] | undefined)?.[0] ?? []).find(
+			(b) => b.type === "form",
+		);
+		expect(pathFieldOf(inColumn)).toBe(encodePath(["c1"]));
+
+		// tab → accordion → form: nested two containers deep.
+		const tab = blocksOf(cities).find((b) => b.type === "tab");
+		const panelBlocks = ((tab?.panels as Array<{ blocks?: Blk[] }> | undefined)?.[0]?.blocks ??
+			[]) as Blk[];
+		const innerAccordion = panelBlocks.find((b) => b.type === "accordion");
+		const inTab = ((innerAccordion?.blocks ?? []) as Blk[]).find((b) => b.type === "form");
+		expect(pathFieldOf(inTab)).toBe(encodePath(["c1"]));
+
+		// A spacer block in the other column is untouched.
+		const spacer = ((columns?.columns as Blk[][] | undefined)?.[1] ?? [])[0];
+		expect(spacer).toEqual({ type: "context", text: "spacer" });
+	});
+
+	test("the stand-down requires the EXACT current path — a stale carried path gets the injection anyway", async () => {
+		// A hand-written carrier that captured the wrong path must not suppress the
+		// guarantee: the engine injects its own (correct) path, which wins by
+		// precedence, instead of silently filtering another level.
+		const cities = await invoke({
+			type: "form_submit",
+			action_id: "geo:open",
+			values: { target: encodePath(["c1"]) },
+		});
+		const forms = blocksOf(cities).filter(
+			(b) =>
+				b.type === "form" && (b.submit as { action_id?: string })?.action_id === "geo:apply-filter",
+		);
+		// The correctly-carried form is the one that renders WITHOUT the field.
+		const correct = forms.find((f) => typeof f.block_id === "string");
+		expect(pathFieldOf(correct)).toBeUndefined();
+
+		// Now simulate the copy-paste mistake directly against the engine: a submit
+		// whose carrier names a DIFFERENT level. The visible field is absent, so the
+		// carrier is all there is — and it is honoured (it is the only source), which
+		// is exactly why the RENDER-time stand-down must be exact: had the engine
+		// skipped injecting for the wrong path, the operator's submit would have gone
+		// to that wrong level with no way to correct it.
+		const wrong = await invoke({
+			type: "form_submit",
+			action_id: "geo:apply-filter",
+			block_id: encodeCarrier("geo:city-filter", { __path: encodePath(["c2"]) }),
+			values: { q: "T" },
+		});
+		expect(headerText(wrong)).toBe("Cities of c2");
+		// c2 has no cities, so the mistake is visible rather than silently plausible.
+		expect(firstTable(wrong)?.rows).toEqual([]);
 	});
 
 	test("a sortable-header click (page action, `{sort}` and NO cursor) stays on the carried level", async () => {

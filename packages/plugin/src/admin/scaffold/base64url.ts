@@ -1,6 +1,6 @@
 /**
  * Base64url codec for the scaffold's opaque control tokens (the drill
- * {@link ../nav.js NavPath}/keyset cursor and the {@link ../carrier.js carrier}).
+ * {@link ./nav.js NavPath}/keyset cursor and the {@link ./carrier.js carrier}).
  *
  * Extracted so the two token modules share ONE encoding: a nav token and a
  * carrier token both end up in operator-visible places (a button payload, a
@@ -29,7 +29,13 @@ export function fromBase64Url(token: string): Uint8Array {
 
 /** JSON → base64url. */
 export function encodeJsonToken(value: unknown): string {
-	return toBase64Url(new TextEncoder().encode(JSON.stringify(value)));
+	return encodeJsonText(JSON.stringify(value));
+}
+
+/** Already-serialized JSON → base64url, for a caller that controls the exact JSON
+ *  text (the carrier sorts its keys itself, and must not be re-stringified). */
+export function encodeJsonText(json: string): string {
+	return toBase64Url(new TextEncoder().encode(json));
 }
 
 /** base64url → JSON. Throws on malformed input (callers catch). */

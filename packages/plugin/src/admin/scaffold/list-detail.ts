@@ -6,6 +6,7 @@ import {
 	decodeListCursor,
 	decodePath,
 	encodeListCursor,
+	encodePath,
 	filterPathField,
 	PATH_FIELD,
 	type NavPath,
@@ -352,9 +353,10 @@ export function createListDetailHandler(
  * Inject the drill-path carrier ({@link filterPathField}) into every rendered
  * form whose submit fires this screen's `applyFilter`, skipping forms that
  * already carry the path — either as an explicit field or, preferably, INVISIBLY
- * in the form's `block_id` carrier (which is how a screen drops the visible
- * "Scope" dropdown: set `block_id: encodeCarrier({__path: encodePath(path)})`
- * and the injection stands down).
+ * in the form's `block_id` carrier — which is how a screen drops the visible
+ * "Scope" dropdown: build it with
+ * `carriedForm({namespace, context: {[PATH_FIELD]: encodePath(path)}, form})` and
+ * the injection stands down, but ONLY when the carried path is EXACTLY this level's.
  *
  * RECURSES INTO LAYOUT CONTAINERS (`columns` / `tab` / `accordion`): the whole
  * point of the guarantee is that a screen cannot silently break deep
@@ -364,27 +366,79 @@ export function createListDetailHandler(
  */
 function withFilterPathCarry(blocks: Block[], actions: ScreenActions, path: NavPath): Block[] {
 	const recurse = (inner: Block[]): Block[] => withFilterPathCarry(inner, actions, path);
+	const encoded = encodePath(path);
 	return blocks.map((block): Block => {
-		switch (block.type) {
-			case "form": {
-				if (block.submit.action_id !== actions.applyFilter) return block;
-				if (block.fields.some((f) => f.action_id === PATH_FIELD)) return block;
-				if (decodeCarrier(block.block_id)?.[PATH_FIELD] !== undefined) return block;
-				return { ...block, fields: [...block.fields, filterPathField(path)] };
-			}
-			case "columns":
-				return { ...block, columns: block.columns.map(recurse) };
-			case "accordion":
-				return { ...block, blocks: recurse(block.blocks) };
-			case "tab":
-				return {
-					...block,
-					panels: block.panels.map((panel) => ({ ...panel, blocks: recurse(panel.blocks) })),
-				};
-			default:
-				return block;
+		if (block.type === "form") {
+			if (block.submit.action_id !== actions.applyFilter) return block;
+			if (block.fields.some((f) => f.action_id === PATH_FIELD)) return block;
+			// Stand down ONLY for a carrier naming THIS EXACT path. A hand-written
+			// carrier that captured a stale or outer-scope path would otherwise
+			// suppress the injection AND filter the wrong level — the failure this
+			// guarantee exists to make impossible. Any other carried path is treated
+			// as absent, so the correct path is injected and wins by precedence.
+			if (decodeCarrier(block.block_id)?.[PATH_FIELD] === encoded) return block;
+			return { ...block, fields: [...block.fields, filterPathField(path)] };
 		}
+		const children = childBlockLists(block);
+		return children === undefined ? block : withChildBlockLists(block, children.map(recurse));
 	});
+}
+
+/**
+ * Every nested block list a container block holds, or `undefined` for a leaf
+ * block. EXHAUSTIVE over `Block` on purpose: the `never` assignment below is a
+ * compile error the moment a new block-bearing member joins the union, so a future
+ * container cannot silently reintroduce the bug this traversal fixes (an
+ * un-injected deep filter form re-filtering the root list).
+ *
+ * Paired with {@link withChildBlockLists}, which puts the mapped lists back in the
+ * same order.
+ */
+function childBlockLists(block: Block): Block[][] | undefined {
+	switch (block.type) {
+		case "columns":
+			return block.columns;
+		case "accordion":
+			return [block.blocks];
+		case "tab":
+			return block.panels.map((panel) => panel.blocks);
+		case "header":
+		case "section":
+		case "context":
+		case "divider":
+		case "stats":
+		case "table":
+		case "banner":
+		case "fields":
+		case "actions":
+		case "form":
+		case "empty":
+		case "image":
+		case "meter":
+			return undefined;
+		default: {
+			const exhaustive: never = block;
+			return exhaustive;
+		}
+	}
+}
+
+/** Rebuild `block` with `lists` in place of its nested block lists — the inverse of
+ *  {@link childBlockLists}, non-mutating, same order. */
+function withChildBlockLists(block: Block, lists: Block[][]): Block {
+	switch (block.type) {
+		case "columns":
+			return { ...block, columns: lists };
+		case "accordion":
+			return { ...block, blocks: lists[0] ?? [] };
+		case "tab":
+			return {
+				...block,
+				panels: block.panels.map((panel, i) => ({ ...panel, blocks: lists[i] ?? panel.blocks })),
+			};
+		default:
+			return block;
+	}
 }
 
 // -- shared payload parsing (exported: screens reuse the same coercions) -------

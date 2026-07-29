@@ -1,13 +1,17 @@
 import { describe, expect, test } from "vitest";
 import {
-	CARRIER_PREFIX,
+	carriedForm,
+	carrierNamespace,
+	CARRIER_MARKER,
 	decodeCarrier,
 	emptyState,
 	encodeCarrier,
 	encodePath,
 	filterPanel,
 	filterPanelLabel,
+	MAX_CARRIER_LENGTH,
 	PATH_FIELD,
+	PREFILL_FIELD,
 } from "../src/admin/scaffold/index.js";
 import type { AccordionBlock, FormBlock } from "../src/types.js";
 
@@ -20,19 +24,25 @@ import type { AccordionBlock, FormBlock } from "../src/types.js";
  * PURE unit tests — none of this touches `ctx`, so there is nothing to boot a
  * workerd sandbox for. The ENGINE half (recovering carried context and the drill
  * path from `block_id` inside a live dispatch) is exercised under the real
- * sandbox in `admin-scaffold-list-detail.sandbox.test.ts`.
+ * sandbox in `admin-scaffold-list-detail.sandbox.test.ts`, and the compile-time
+ * half (a carrier is not assignable to a non-echoing block) in
+ * `admin-scaffold-carrier.type-test.ts`.
  */
 
-describe("carrier token (form `block_id` hidden context)", () => {
-	test("round-trips an arbitrary flat string record", () => {
-		const context = { orderId: "ord-1", currency: "USD", nonce: "n-1" };
-		const token = encodeCarrier(context);
-		expect(token.startsWith(CARRIER_PREFIX)).toBe(true);
+describe("carrier token (form/table `block_id` hidden context)", () => {
+	test("round-trips an arbitrary flat string record under its namespace", () => {
+		// NOTE for anyone copying this: NO idempotency key or nonce is carried here,
+		// deliberately — see the prohibition in `carrier.ts`. Derive it server-side
+		// from the carried content plus the CAS watermark.
+		const context = { orderId: "ord-1", currency: "USD", amountCents: "1999" };
+		const token = encodeCarrier("orders:refund", context);
+		expect(token.startsWith(`orders:refund${CARRIER_MARKER}`)).toBe(true);
 		expect(decodeCarrier(token)).toEqual(context);
+		expect(carrierNamespace(token)).toBe("orders:refund");
 	});
 
 	test("round-trips an empty record, and values that would break a naive encoding", () => {
-		expect(decodeCarrier(encodeCarrier({}))).toEqual({});
+		expect(decodeCarrier(encodeCarrier("x:y", {}))).toEqual({});
 		const nasty = {
 			// A `block_id` is also a React key and rides in a JSON body: prove the
 			// encoding is opaque to whitespace, quotes, separators and non-ASCII.
@@ -41,15 +51,34 @@ describe("carrier token (form `block_id` hidden context)", () => {
 			c: "sep.arators/and+slashes=padding",
 			d: "unicode — ✓ 日本語",
 			e: "",
+			f: `looks:like:a${CARRIER_MARKER}nested token`,
 		};
-		expect(decodeCarrier(encodeCarrier(nasty))).toEqual(nasty);
+		expect(decodeCarrier(encodeCarrier("x:y", nasty))).toEqual(nasty);
 	});
 
-	test("is deterministic — the same record encodes to the same token", () => {
-		expect(encodeCarrier({ a: "1", b: "2" })).toBe(encodeCarrier({ a: "1", b: "2" }));
+	test("splits on the LAST marker, so a namespace may contain colons and a value may contain the marker", () => {
+		const token = encodeCarrier("shipping:zone:rate-edit", { note: `a${CARRIER_MARKER}b` });
+		expect(carrierNamespace(token)).toBe("shipping:zone:rate-edit");
+		expect(decodeCarrier(token)).toEqual({ note: `a${CARRIER_MARKER}b` });
+	});
+
+	test("is deterministic AND key-order independent (the key must change only when the context does)", () => {
+		expect(encodeCarrier("a:b", { a: "1", b: "2" })).toBe(encodeCarrier("a:b", { a: "1", b: "2" }));
+		// A screen building context with conditional spreads must not get a
+		// different token — that would remount the form and discard typing.
+		expect(encodeCarrier("a:b", { a: "1", b: "2" })).toBe(encodeCarrier("a:b", { b: "2", a: "1" }));
+		// And the token DOES change when a value changes.
+		expect(encodeCarrier("a:b", { a: "1", b: "2" })).not.toBe(
+			encodeCarrier("a:b", { a: "1", b: "3" }),
+		);
+		// ...or when the namespace does, which is what keeps two sibling forms with
+		// identical context from sharing a React key.
+		expect(encodeCarrier("a:b", { a: "1" })).not.toBe(encodeCarrier("a:c", { a: "1" }));
 	});
 
 	test("decode is TOTAL: malformed, absent and hostile input yield undefined, never a throw", () => {
+		const valid = encodeCarrier("orders:refund", { a: "1" });
+		const payload = valid.slice(valid.lastIndexOf(CARRIER_MARKER) + CARRIER_MARKER.length);
 		const hostile: unknown[] = [
 			undefined,
 			null,
@@ -60,48 +89,161 @@ describe("carrier token (form `block_id` hidden context)", () => {
 			[],
 			() => "nope",
 			// Not a carrier at all — a plain `block_id` a page set for React keying
-			// MUST NOT decode as context.
+			// MUST NOT decode as context, including a spec-shaped one.
 			"orders-filter",
-			// Right prefix, garbage payload.
-			`${CARRIER_PREFIX}!!!not-base64!!!`,
-			`${CARRIER_PREFIX}`,
-			// Valid base64url of things that are not a flat string record.
-			`${CARRIER_PREFIX}${encodeCarrier({ a: "1" }).slice(CARRIER_PREFIX.length).slice(1)}`,
+			"orders:tabs",
+			// Marker present but no namespace before it.
+			`${CARRIER_MARKER}${payload}`,
+			// Right marker, garbage payload.
+			`ns:x${CARRIER_MARKER}!!!not-base64!!!`,
+			`ns:x${CARRIER_MARKER}`,
+			// Truncated payload (bit-misaligned base64).
+			`ns:x${CARRIER_MARKER}${payload.slice(1)}`,
+			// Raw base64 alphabet that base64url excludes, plus whitespace.
+			`ns:x${CARRIER_MARKER}eyJhIjoiMSJ9==`,
+			`ns:x${CARRIER_MARKER}eyJhIjoi MSJ9`,
+			`ns:x${CARRIER_MARKER}\neyJhIjoiMSJ9`,
+			// Valid base64url whose bytes are not valid UTF-8 JSON.
+			`ns:x${CARRIER_MARKER}${b64("", "")}`,
+			`ns:x${CARRIER_MARKER}_____w`,
 			// Correct encoding, wrong shape (array / scalar / nested / non-string
 			// values), and both flavours of prototype-pollution attempt.
-			b64(CARRIER_PREFIX, JSON.stringify(["a", "b"])),
-			b64(CARRIER_PREFIX, JSON.stringify("a string")),
-			b64(CARRIER_PREFIX, JSON.stringify(null)),
-			b64(CARRIER_PREFIX, JSON.stringify(7)),
-			b64(CARRIER_PREFIX, JSON.stringify({ a: { nested: "1" } })),
-			b64(CARRIER_PREFIX, JSON.stringify({ a: 1 })),
-			b64(CARRIER_PREFIX, JSON.stringify({ a: null })),
-			b64(CARRIER_PREFIX, JSON.stringify({ a: ["1"] })),
-			b64(CARRIER_PREFIX, '{"__proto__":{"polluted":"yes"}}'),
-			b64(CARRIER_PREFIX, '{"__proto__":"polluted"}'),
-			b64(CARRIER_PREFIX, '{"a":"1","__proto__":"polluted"}'),
-			b64(CARRIER_PREFIX, "{not json"),
-			// A correctly-shaped payload WITHOUT the prefix.
+			`ns:x${CARRIER_MARKER}${b64("", JSON.stringify(["a", "b"]))}`,
+			`ns:x${CARRIER_MARKER}${b64("", JSON.stringify("a string"))}`,
+			`ns:x${CARRIER_MARKER}${b64("", JSON.stringify(null))}`,
+			`ns:x${CARRIER_MARKER}${b64("", JSON.stringify(7))}`,
+			`ns:x${CARRIER_MARKER}${b64("", JSON.stringify({ a: { nested: "1" } }))}`,
+			`ns:x${CARRIER_MARKER}${b64("", JSON.stringify({ a: 1 }))}`,
+			`ns:x${CARRIER_MARKER}${b64("", JSON.stringify({ a: null }))}`,
+			`ns:x${CARRIER_MARKER}${b64("", JSON.stringify({ a: ["1"] }))}`,
+			`ns:x${CARRIER_MARKER}${b64("", '{"__proto__":{"polluted":"yes"}}')}`,
+			`ns:x${CARRIER_MARKER}${b64("", '{"__proto__":"polluted"}')}`,
+			`ns:x${CARRIER_MARKER}${b64("", '{"a":"1","__proto__":"polluted"}')}`,
+			// Other `Object.prototype` names, which survive `fromEntries` as own
+			// properties and make the record hostile to ordinary use.
+			`ns:x${CARRIER_MARKER}${b64("", '{"constructor":"x"}')}`,
+			`ns:x${CARRIER_MARKER}${b64("", '{"toString":"x"}')}`,
+			`ns:x${CARRIER_MARKER}${b64("", "{not json")}`,
+			// Over the length bound (checked BEFORE any decoding work).
+			`ns:x${CARRIER_MARKER}${"A".repeat(MAX_CARRIER_LENGTH)}`,
+			// Deeply nested JSON: `JSON.parse` raises a RangeError, which must be a
+			// rejected token rather than a thrown route.
+			`ns:x${CARRIER_MARKER}${b64("", `${"[".repeat(200_000)}${"]".repeat(200_000)}`)}`,
+			// A correctly-shaped payload with no marker at all.
 			b64("", JSON.stringify({ a: "1" })),
 		];
 		for (const input of hostile) {
-			expect(() => decodeCarrier(input), `threw on ${String(input)}`).not.toThrow();
-			expect(decodeCarrier(input), `decoded ${String(input)}`).toBeUndefined();
+			expect(() => decodeCarrier(input), `threw on ${preview(input)}`).not.toThrow();
+			expect(decodeCarrier(input), `decoded ${preview(input)}`).toBeUndefined();
 		}
 		// Prototype pollution never reaches the returned object or `Object`.
 		expect(({} as Record<string, unknown>)["polluted"]).toBeUndefined();
 	});
 
 	test("a decoded context is a plain own-property record (no inherited keys)", () => {
-		const decoded = decodeCarrier(encodeCarrier({ a: "1" }));
+		const decoded = decodeCarrier(encodeCarrier("ns:x", { a: "1" }));
 		expect(decoded).toBeDefined();
 		expect(Object.keys(decoded ?? {})).toEqual(["a"]);
 		expect(Object.getPrototypeOf(decoded)).toBe(Object.prototype);
 	});
 
+	test("encode REJECTS author mistakes loudly (they are not operator input)", () => {
+		expect(() => encodeCarrier("", { a: "1" })).toThrowError(/invalid namespace/);
+		expect(() => encodeCarrier("has space", { a: "1" })).toThrowError(/invalid namespace/);
+		expect(() => encodeCarrier(`ns${CARRIER_MARKER}x`, { a: "1" })).toThrowError(
+			/invalid namespace/,
+		);
+		expect(() => encodeCarrier("ns:x", { toString: "x" })).toThrowError(/reserved key/);
+		expect(() => encodeCarrier("ns:x", { a: 1 } as unknown as Record<string, string>)).toThrowError(
+			/must be a string/,
+		);
+		expect(() => encodeCarrier("ns:x", { a: "A".repeat(MAX_CARRIER_LENGTH) })).toThrowError(
+			/exceeds 4096/,
+		);
+	});
+
 	test("carries the reserved drill-path key so a form needs no visible carrier field", () => {
-		const token = encodeCarrier({ [PATH_FIELD]: encodePath(["z1", "m2"]) });
+		const token = encodeCarrier("geo:filter", { [PATH_FIELD]: encodePath(["z1", "m2"]) });
 		expect(decodeCarrier(token)?.[PATH_FIELD]).toBe(encodePath(["z1", "m2"]));
+	});
+
+	test("carrierNamespace is total too", () => {
+		expect(carrierNamespace(undefined)).toBeUndefined();
+		expect(carrierNamespace("orders:tabs")).toBeUndefined();
+		expect(carrierNamespace(`${CARRIER_MARKER}payload`)).toBeUndefined();
+	});
+});
+
+/** A one-field filter form whose single field is prefilled with `value` (or not
+ *  prefilled at all) — the `Clear filters` before/after shape. */
+function prefilled(value: string | undefined): FormBlock {
+	return {
+		type: "form",
+		fields: [
+			{
+				type: "text_input",
+				action_id: "status",
+				label: "Status",
+				...(value !== undefined ? { initial_value: value } : {}),
+			},
+		],
+		submit: { label: "Apply filters", action_id: "orders:apply-filter" },
+	};
+}
+
+describe("carriedForm (context + a key that tracks prefilled values)", () => {
+	test("sets the form's block_id and leaves everything else identical", () => {
+		const form = prefilled("paid");
+		const carried = carriedForm({ namespace: "orders:filter", context: { a: "1" }, form });
+		expect(carried.fields).toBe(form.fields);
+		expect(carried.submit).toBe(form.submit);
+		expect(carrierNamespace(carried.block_id)).toBe("orders:filter");
+		expect(decodeCarrier(carried.block_id)?.["a"]).toBe("1");
+	});
+
+	test("the key CHANGES when a prefilled value changes — the `Clear filters` fix", () => {
+		const filtered = carriedForm({ namespace: "orders:filter", form: prefilled("paid") });
+		const cleared = carriedForm({ namespace: "orders:filter", form: prefilled(undefined) });
+		// Same context, same namespace, DIFFERENT prefill ⇒ different React key, so
+		// the uncontrolled inputs remount and show the cleared values. Without this
+		// the fields keep showing `paid` and the next submit re-applies it.
+		expect(cleared.block_id).not.toBe(filtered.block_id);
+		expect(decodeCarrier(cleared.block_id)?.[PREFILL_FIELD]).not.toBe(
+			decodeCarrier(filtered.block_id)?.[PREFILL_FIELD],
+		);
+	});
+
+	test("the key is STABLE when nothing changed (an unrelated re-render keeps the operator's typing)", () => {
+		expect(
+			carriedForm({ namespace: "orders:filter", context: { a: "1" }, form: prefilled("paid") })
+				.block_id,
+		).toBe(
+			carriedForm({ namespace: "orders:filter", context: { a: "1" }, form: prefilled("paid") })
+				.block_id,
+		);
+	});
+
+	test("the digest covers field identity and order, not just values", () => {
+		const base = prefilled("paid");
+		const renamed: FormBlock = {
+			...base,
+			fields: [{ type: "text_input", action_id: "state", label: "Status", initial_value: "paid" }],
+		};
+		expect(carriedForm({ namespace: "n:s", form: renamed }).block_id).not.toBe(
+			carriedForm({ namespace: "n:s", form: base }).block_id,
+		);
+	});
+
+	test("context still round-trips alongside the digest", () => {
+		const carried = carriedForm({
+			namespace: "tax:rate-edit",
+			context: { classId: "std", rateId: "r1", expectedRateBps: "725" },
+			form: prefilled("paid"),
+		});
+		const decoded = decodeCarrier(carried.block_id);
+		expect(decoded?.["classId"]).toBe("std");
+		expect(decoded?.["expectedRateBps"]).toBe("725");
+		expect(decoded?.[PREFILL_FIELD]).toBeDefined();
 	});
 });
 
@@ -122,64 +264,92 @@ function formWith(fieldCount: number): FormBlock {
 describe("filterPanel (a filter form that costs no screenful of scroll)", () => {
 	test("a small filter (≤ 2 fields) renders INLINE — the form itself, untouched", () => {
 		const one = formWith(1);
-		expect(filterPanel({ form: one })).toBe(one);
+		expect(filterPanel({ form: one, blockId: "x:filters" })).toBe(one);
 		const two = formWith(2);
-		expect(filterPanel({ form: two, summary: ["status: paid"] })).toBe(two);
+		expect(filterPanel({ form: two, blockId: "x:filters", summary: ["status: paid"] })).toBe(two);
 	});
 
 	test("a 3+ field filter collapses into a CLOSED accordion holding the form", () => {
 		const form = formWith(4);
-		const panel = filterPanel({ form });
-		expect(panel).toEqual({ type: "accordion", label: "Filters", blocks: [form] });
-		// Closed is the default and is expressed by OMITTING default_open (em-dash
-		// defaults it to false), so the payload stays minimal.
+		const panel = filterPanel({ form, blockId: "orders:filters" });
+		expect(panel).toEqual({
+			type: "accordion",
+			label: "Filters",
+			blocks: [form],
+			block_id: "orders:filters",
+		});
+		// Closed always, and expressed by OMITTING default_open: em-dash reads it
+		// once in a useState initialiser, so it cannot be used as state anyway.
 		expect("default_open" in panel).toBe(false);
 	});
 
-	test("the collapsed label carries the ACTIVE filter, so a closed panel still says what you are looking at", () => {
+	test("the collapsed label carries the ACTIVE filter, dot-separated", () => {
 		const panel = filterPanel({
 			form: formWith(4),
+			blockId: "orders:filters",
 			summary: ["status: paid", "last 30 days"],
 		});
-		expect((panel as AccordionBlock).label).toBe("Filters — status: paid, last 30 days");
+		expect((panel as AccordionBlock).label).toBe("Filters · status: paid · last 30 days");
 	});
 
 	test("summary composition drops falsy entries so call sites can inline conditionals", () => {
 		expect(filterPanelLabel("Filters", [])).toBe("Filters");
 		expect(filterPanelLabel("Filters", undefined)).toBe("Filters");
 		expect(filterPanelLabel("Filters", ["", undefined, null, false])).toBe("Filters");
-		expect(filterPanelLabel("Zone filter", [false, "zone: us", undefined, "shipping: yes"])).toBe(
-			"Zone filter — zone: us, shipping: yes",
+		expect(filterPanelLabel("Zone filter", [false, "zone: us", undefined, "ships: yes"])).toBe(
+			"Zone filter · zone: us · ships: yes",
 		);
 	});
 
-	test("label, inlineUpTo, defaultOpen and blockId are all honoured", () => {
+	test("a long label is tail-truncated to 60 chars with an ellipsis (a filter row stays one line)", () => {
+		const label = filterPanelLabel("Filters", [
+			"search: a very long free-text query an operator actually typed",
+			"status: paid",
+		]);
+		// ≤ 60 rather than exactly 60: a truncation landing on a space is trimmed
+		// before the ellipsis, so it can come out a character shorter.
+		expect(label.length).toBeLessThanOrEqual(60);
+		expect(label.endsWith("…")).toBe(true);
+		expect(label.startsWith("Filters · search: a very long")).toBe(true);
+		// Exactly 60 is left alone.
+		const exact = filterPanelLabel("A".repeat(60));
+		expect(exact.length).toBe(60);
+		expect(exact.endsWith("…")).toBe(false);
+	});
+
+	test("label + inlineUpTo are honoured; blockId is required and is a React key only", () => {
 		const form = formWith(1);
 		// inlineUpTo: 0 forces the accordion even for a single field.
-		const panel = filterPanel({
-			form,
-			label: "Rate filter",
-			summary: ["zone: us"],
-			inlineUpTo: 0,
-			defaultOpen: true,
-			blockId: "tax-rates-filter",
-		});
-		expect(panel).toEqual({
+		expect(
+			filterPanel({
+				form,
+				blockId: "tax:filters:std",
+				label: "Rate filter",
+				summary: ["zone: us"],
+				inlineUpTo: 0,
+			}),
+		).toEqual({
 			type: "accordion",
-			label: "Rate filter — zone: us",
+			label: "Rate filter · zone: us",
 			blocks: [form],
-			default_open: true,
-			block_id: "tax-rates-filter",
+			block_id: "tax:filters:std",
 		});
 	});
 
-	test("the form's own block_id (its carrier) is left alone — the accordion keeps its own", () => {
-		const form: FormBlock = {
-			...formWith(3),
-			block_id: encodeCarrier({ [PATH_FIELD]: encodePath(["z1"]) }),
-		};
-		const panel = filterPanel({ form, blockId: "outer" }) as AccordionBlock;
-		expect(panel.block_id).toBe("outer");
+	test("more than 4 filter fields THROWS rather than silently hiding a spec violation", () => {
+		expect(() => filterPanel({ form: formWith(5), blockId: "x:filters" })).toThrowError(
+			/5 filter fields exceeds the 4-field maximum/,
+		);
+	});
+
+	test("the form's own carrier is left alone — the accordion keeps its own plain key", () => {
+		const form = carriedForm({
+			namespace: "tax:filter",
+			context: { [PATH_FIELD]: encodePath(["z1"]) },
+			form: formWith(3),
+		});
+		const panel = filterPanel({ form, blockId: "tax:filters" }) as AccordionBlock;
+		expect(panel.block_id).toBe("tax:filters");
 		expect((panel.blocks[0] as FormBlock).block_id).toBe(form.block_id);
 	});
 });
@@ -198,7 +368,6 @@ describe("emptyState (a real `empty` block)", () => {
 			emptyState({
 				title: "No products",
 				description: "Publish one to see it here.",
-				commandLine: "pnpm seed",
 				size: "sm",
 				actions,
 				blockId: "products-empty",
@@ -207,7 +376,6 @@ describe("emptyState (a real `empty` block)", () => {
 			type: "empty",
 			title: "No products",
 			description: "Publish one to see it here.",
-			command_line: "pnpm seed",
 			size: "sm",
 			actions,
 			block_id: "products-empty",
@@ -226,4 +394,10 @@ function b64(prefix: string, json: string): string {
 	let bin = "";
 	for (const b of bytes) bin += String.fromCharCode(b);
 	return prefix + btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+/** A short, safe rendering of a hostile input for an assertion message. */
+function preview(input: unknown): string {
+	const text = typeof input === "string" ? input : String(input);
+	return text.length > 60 ? `${text.slice(0, 60)}… (${text.length} chars)` : text;
 }
