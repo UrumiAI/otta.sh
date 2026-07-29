@@ -223,6 +223,30 @@ describe("createOrderFromCart — a live createIntent failure (PAYMENT_INTENT_FA
 		expect(h.couponStore.redemptionCount("cpn")).toBe(1);
 	});
 
+	test("a cart whose checkout throws stays ACTIVE with a NULL order id — the flip is all-or-nothing (#132)", async () => {
+		const cartId = await cart();
+		// A zero-argument stub is still assignable to the 2-parameter signature
+		// (TS arity rules), which is exactly why this shape needs no ceremony.
+		h.cartStore.checkout = () => {
+			throw new Error("cart checkout exploded");
+		};
+		await expect(createOrderFromCart(h.createDeps, cmd(cartId))).rejects.toThrow(/exploded/);
+
+		// Assert the PAIR: state and order id move in ONE statement, so neither
+		// may land without the other. A real `pending` order nevertheless exists
+		// behind this still-`active`, NULL cart — the documented converse: a null
+		// `orderId` never proves the absence of an order.
+		const cartRow = await h.cartStore.get(cartId);
+		expect({ state: cartRow?.state, orderId: cartRow?.orderId }).toEqual({
+			state: "active",
+			orderId: null,
+		});
+		expect(
+			await h.orderStore.getByIdempotencyKey(idempotencyKey("k-intent")),
+			"a real pending order is stranded behind the NULL cart",
+		).not.toBeNull();
+	});
+
 	test("expireOrders sweeps the stranded pending order, releasing BOTH the reservation and the coupon", async () => {
 		await seedCoupon();
 		const cartId = await cart();

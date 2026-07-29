@@ -121,9 +121,27 @@ const coil = image === null ? buildCoil(slug, index) : null;
 		opacity: var(--u-coil-a);
 	}
 
-	/* Sold out dims the art rather than stamping the card — the product is
-	   still worth looking at, it just cannot be bought today. */
-	.dimmed {
+	/**
+	 * Sold out dims the ART rather than stamping the card — the product is
+	 * still worth looking at, it just cannot be bought today.
+	 *
+	 * The dim is on the coil and the photograph, NOT on the root: `opacity` on
+	 * `.media` composites the whole element, panel ground included, and
+	 * `--u-panel` is already a 5%-alpha wash — taken to 45% of that it
+	 * effectively disappears. At card size that reads as a slightly faint
+	 * drawing; at the PDP's 4/5 poster it reads as a missing panel, which is
+	 * the one thing this ground is not allowed to say (it means "image goes
+	 * here"). Dimming the marks and leaving the ground alone keeps the panel a
+	 * panel at every size the theme uses.
+	 *
+	 * The coil's own opacity is a token, so the dim MULTIPLIES it rather than
+	 * replacing it — writing `0.225` here would silently unpick `--u-coil-a`
+	 * the next time it moves.
+	 */
+	.dimmed .coil {
+		opacity: calc(var(--u-coil-a) * 0.45);
+	}
+	.dimmed img {
 		opacity: 0.45;
 	}
 </style>

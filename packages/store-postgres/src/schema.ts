@@ -33,6 +33,12 @@ export interface CartsTable {
 	id: string;
 	customer_id: string | null;
 	state: CartState;
+	// Issue #132: the order this cart handed off to, written by `checkout` in the
+	// SAME statement as `state` (nullable; omittable on insert so `create()`'s
+	// `insertInto("carts")` stays byte-for-byte). Mirrors
+	// `ReservationsTable.order_id` above — same column name, same table family,
+	// same reason for the `ColumnType` form.
+	order_id: ColumnType<string | null, string | null | undefined, string | null>;
 	currency: string;
 	created_at: string;
 	updated_at: string;

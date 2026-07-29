@@ -4,10 +4,10 @@
  * §6), for `/orders/<id>` while an order is pending.
  *
  * Its authority is §6 — "the same ribbon reappears on `/orders/<id>` while an
- * order is `pending`, running indeterminate … with the poll count in mono" —
- * and NOT the §4 component table, which still lists this as a variant of
- * `HoldRibbon`. Splitting it was forced by ADR-0012 (see below); the spec text
- * catches up in its own [Docs] change.
+ * order is `pending`, running indeterminate … with the poll count in mono".
+ * Splitting it out of `HoldRibbon` was forced by ADR-0012 (see below); §4's
+ * component table has since caught up and carries a `PollRibbon` row of its
+ * own, so the two read together rather than against each other.
  *
  * Same grammar as `HoldRibbon`: a 2px track in `--u-edge` and a violet mark,
  * so a shopper who has read the cart's hold has read this too. What differs is

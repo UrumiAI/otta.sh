@@ -8,7 +8,7 @@
 	},
 	"settings": {
 		"title": "Urumi",
-		"tagline": "The Urumi reference storefront (staging)"
+		"tagline": "Three things. That's the whole shop."
 	},
 	"collections": [
 		{
@@ -51,7 +51,7 @@
 			"label": "Primary Navigation",
 			"items": [
 				{ "type": "custom", "label": "Home", "url": "/" },
-				{ "type": "custom", "label": "Products", "url": "/products" },
+				{ "type": "custom", "label": "Shop", "url": "/products" },
 				{ "type": "custom", "label": "Cart", "url": "/cart" }
 			]
 		}
@@ -64,7 +64,7 @@
 				"status": "published",
 				"data": {
 					"title": "Urumi Tee",
-					"description": "A staging-catalog classic: the Urumi logo tee. Content lives in the CMS; price and stock arrive from the commerce service once this product is priced in the Product data panel."
+					"description": "Heavyweight cotton, unreasonably soft, with the coil across the chest."
 				}
 			},
 			{
@@ -73,7 +73,7 @@
 				"status": "published",
 				"data": {
 					"title": "Urumi Mug",
-					"description": "Holds exactly one coffee, atomically. No oversell under concurrency."
+					"description": "Holds exactly one coffee. Survives the dishwasher and the commute."
 				}
 			},
 			{
@@ -82,7 +82,7 @@
 				"status": "published",
 				"data": {
 					"title": "Urumi Sticker Pack",
-					"description": "Ten stickers, integer minor units, zero floats."
+					"description": "Ten die-cut vinyl stickers. Enough for the laptop, the water bottle, and one for whoever asks where you got them."
 				}
 			}
 		]

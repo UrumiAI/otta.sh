@@ -87,8 +87,8 @@ const payLabel = payButtonLabel(stash.total?.formatted);
 							data-return-url={orderUrl}
 						/>
 					</div>
-					<p id="payment-error" class="notice" role="alert" hidden />
-					<button id="payment-submit" type="submit" class="btn">
+					<p id="payment-error" class="pay-error" role="alert" hidden />
+					<button id="payment-submit" type="submit" class="u-btn">
 						{payLabel}
 					</button>
 				</form>
@@ -531,46 +531,24 @@ const payLabel = payButtonLabel(stash.total?.formatted);
 	   Using the component here would mean the script writing over its mark and
 	   its inner <p>.
 
-	   TODO(increment 6): the `color` line exists only to out-specify
-	   legacy-bridge.css's unscoped `.notice { color: #131a20 }`, which pins
-	   near-black for the pale panel the unmigrated pages still paint. When that
-	   file is deleted with the last page migration, this rule can be renamed off
-	   `.notice` and the `color` dropped. */
-	.notice {
+	   Renamed off `.notice` in increment 6, with the transitional global sheet
+	   that made the old name dangerous. The `color` line went with it: it was
+	   only ever there to out-specify that sheet's hard-coded near-black, and the
+	   body already sets `--u-ink`. */
+	.pay-error {
 		width: 100%;
 		margin: 0;
 		padding: 0.875rem 0;
 		border-top: 1px dashed var(--u-bronze);
 		border-bottom: 1px dashed var(--u-bronze);
 		background: transparent;
-		color: var(--u-ink);
 		font-size: 0.8125rem;
 		line-height: 1.5;
 	}
 
-	.btn {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.625rem;
-		background: var(--u-ink);
-		color: var(--u-surface);
-		border: none;
-		border-radius: var(--u-r);
-		padding: 0.75rem 1.25rem;
-		font-family: var(--u-body);
-		font-size: 0.875rem;
-		font-weight: 600;
-		cursor: pointer;
-		box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0);
-		transition: box-shadow 120ms ease;
-	}
-	.btn:hover:not(:disabled) {
-		box-shadow: inset 0 -3px 0 var(--u-straw);
-	}
-	.btn:disabled {
-		opacity: 0.55;
-		cursor: default;
-	}
+	/* The pay button is `.u-btn` (tokens.css) — including its disabled state,
+	   which this page is the only caller of and which the shared shape now
+	   carries. Nothing button-shaped is declared here. */
 
 	.back {
 		margin: 2.5rem 0 0;

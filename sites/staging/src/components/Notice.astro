@@ -12,12 +12,20 @@
  * page and would read as more alarming than the situation usually is; and a
  * tinted panel already means one thing in this theme ("image goes here").
  *
- * The root class is `u-notice`, not `notice`. `legacy-bridge.css` carries a
- * GLOBAL `.notice { color: #131a20 }` — a deliberate literal that pins ink to
- * the pale panel the unmigrated pages still paint — and an unscoped global
- * beats nothing here, but it would land a hard-coded near-black on this
- * component's text under the dark palette. Increments 3–6 delete that bridge;
- * until they do, the two must not share a name.
+ * The root class is `u-notice`, not `notice`, and the prefix is VESTIGIAL — it
+ * pre-dates the convention `u-` now carries, and it is left alone rather than
+ * renamed. The name was chosen to dodge the rollout's transitional sheet, which
+ * carried a GLOBAL `.notice { color: #131a20 }` — a literal pinning ink to the
+ * pale panel the unmigrated pages painted — that would otherwise have landed a
+ * hard-coded near-black on this text under the dark palette. Increment 6 deleted
+ * that sheet.
+ *
+ * It does NOT mean what `u-` means elsewhere. `.u-btn`, `.u-mono` and `.u-label`
+ * are globals in tokens.css that any page may write on any element; this class
+ * is Astro-SCOPED to this component, so a page writing `class="u-notice"` gets
+ * nothing at all. Renaming it is a bigger change than it looks (the class is
+ * pinned by `notice-qty.test.ts` and by the page sweep's "no legacy `.notice`"
+ * rule), so the fix is to say so here and keep `u-` meaning one thing.
  *
  * Copy is the caller's: `src/lib/error-messages.ts` is already written from the
  * shopper's side and is quoted, not rewritten (§10).

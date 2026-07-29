@@ -135,7 +135,7 @@ const countLabel = itemCountLabel(count);
 					Create a product in the admin, price it there, and it appears here with live
 					stock.
 				</p>
-				<a class="btn btn-ghost" href="/_emdash/admin">
+				<a class="u-btn u-btn-ghost" href="/_emdash/admin">
 					Open the admin
 				</a>
 			</div>
@@ -223,34 +223,9 @@ const countLabel = itemCountLabel(count);
 		color: var(--u-mute);
 	}
 
-	/* The theme's one button shape (mockup `.s-btn`): ink-filled, straw only as
-	   a fitting on hover — never a fill, so the label keeps full contrast (§2).
-	   Focus is the global ring in tokens.css and is deliberately not restyled. */
-	.btn {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.625rem;
-		background: var(--u-ink);
-		color: var(--u-surface);
-		border: none;
-		border-radius: var(--u-r);
-		padding: 0.75rem 1.25rem;
-		font-family: var(--u-body);
-		font-size: 0.875rem;
-		font-weight: 600;
-		text-decoration: none;
-		cursor: pointer;
-		box-shadow: inset 0 -2px 0 transparent;
-		transition: box-shadow 120ms ease;
-	}
-	.btn:hover {
-		box-shadow: inset 0 -3px 0 var(--u-straw);
-	}
-	.btn-ghost {
-		background: transparent;
-		color: var(--u-ink);
-		border: var(--u-hair);
-	}
+	/* "Open the admin" is `.u-btn .u-btn-ghost` (tokens.css) — §2's one button
+	   shape, and the ghost rank because it is a way out of an empty shop rather
+	   than the thing this page is for. */
 
 	@media (max-width: 60rem) {
 		.grid {

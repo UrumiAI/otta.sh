@@ -48,6 +48,8 @@ describe.skipIf(PG === undefined)("checkout → live Stripe createIntent (HTTP)"
 		await server.stop();
 	});
 
+	/** Seeds a product, builds a one-line cart and checks it out. Returns the
+	 *  raw response AND the cart id, so a test can read the cart back afterwards. */
 	async function checkout(
 		s: TestServer,
 		opts: {
@@ -55,7 +57,7 @@ describe.skipIf(PG === undefined)("checkout → live Stripe createIntent (HTTP)"
 			idempotencyKey?: string;
 			shippingAddress?: Record<string, string>;
 		} = {},
-	): Promise<Response> {
+	): Promise<{ res: Response; cartId: string }> {
 		const suffix = Math.random().toString(36).slice(2, 8);
 		const sku = `SKU-${suffix}`;
 		await s.seedProduct({
@@ -80,7 +82,7 @@ describe.skipIf(PG === undefined)("checkout → live Stripe createIntent (HTTP)"
 			body: JSON.stringify({ sku, qty: 1, productId: `p-${suffix}` }),
 		});
 		expect(addRes.status).toBe(200);
-		return fetch(`${s.baseUrl}/checkout/orders`, {
+		const res = await fetch(`${s.baseUrl}/checkout/orders`, {
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json",
@@ -93,12 +95,13 @@ describe.skipIf(PG === undefined)("checkout → live Stripe createIntent (HTTP)"
 				...(opts.shippingAddress !== undefined ? { shippingAddress: opts.shippingAddress } : {}),
 			}),
 		});
+		return { res, cartId };
 	}
 
 	test("a secretKey-configured server returns STRIPE's real intentId + clientSecret", async () => {
 		const transport = new RecordingTransport();
 		server = await startTestServer({ stripeSecretKey: "sk_test_http", stripeTransport: transport });
-		const res = await checkout(server);
+		const { res } = await checkout(server);
 		expect(res.status).toBe(201);
 		const body = await json(res);
 		expect(body["intent"]).toEqual({
@@ -111,7 +114,7 @@ describe.skipIf(PG === undefined)("checkout → live Stripe createIntent (HTTP)"
 	test("the transport receives metadata order_id = the created order id, the total in minor units, and the request's Idempotency-Key", async () => {
 		const transport = new RecordingTransport();
 		server = await startTestServer({ stripeSecretKey: "sk_test_http", stripeTransport: transport });
-		const res = await checkout(server, { priceCents: 1234, idempotencyKey: "idem-live-1" });
+		const { res } = await checkout(server, { priceCents: 1234, idempotencyKey: "idem-live-1" });
 		expect(res.status).toBe(201);
 		const order = (await json(res))["order"] as Record<string, unknown>;
 		expect(transport.intents).toHaveLength(1);
@@ -131,7 +134,7 @@ describe.skipIf(PG === undefined)("checkout → live Stripe createIntent (HTTP)"
 	test("a submitted ship-to reaches Stripe as `shipping` (India requires it alongside the description for goods)", async () => {
 		const transport = new RecordingTransport();
 		server = await startTestServer({ stripeSecretKey: "sk_test_http", stripeTransport: transport });
-		const res = await checkout(server, {
+		const { res } = await checkout(server, {
 			idempotencyKey: "idem-live-ship",
 			shippingAddress: {
 				name: "Jenny Rosen",
@@ -163,7 +166,7 @@ describe.skipIf(PG === undefined)("checkout → live Stripe createIntent (HTTP)"
 		const transport = new RecordingTransport();
 		transport.result = { ok: false, class: "retryable", status: 503 };
 		server = await startTestServer({ stripeSecretKey: "sk_test_http", stripeTransport: transport });
-		const res = await checkout(server, { idempotencyKey: "idem-live-fail" });
+		const { res } = await checkout(server, { idempotencyKey: "idem-live-fail" });
 		expect(res.status).toBe(502);
 		expect(await json(res)).toEqual({ ok: false, reason: "PAYMENT_INTENT_FAILED" });
 
@@ -191,9 +194,28 @@ describe.skipIf(PG === undefined)("checkout → live Stripe createIntent (HTTP)"
 		expect((fetched["order"] as Record<string, unknown>)["state"]).toBe("pending");
 	});
 
+	test("the checked-out cart names the order it became (#132)", async () => {
+		server = await startTestServer();
+		const { res, cartId } = await checkout(server);
+		expect(res.status).toBe(201);
+		const order = (await json(res))["order"] as Record<string, unknown>;
+
+		const read = await fetch(`${server.baseUrl}/carts/${cartId}`);
+		expect(read.status).toBe(200);
+		const cart = (await json(read))["cart"] as Record<string, unknown>;
+		// The pair, over the real wire: terminal AND stamped, from one statement.
+		expect({ state: cart["state"], orderId: cart["orderId"] }).toEqual({
+			state: "checked_out",
+			orderId: order["id"],
+		});
+		// The stamp precedes the payment intent, so it is emphatically NOT a
+		// payment signal: this order is still `pending`.
+		expect(order["state"]).toBe("pending");
+	});
+
 	test("the DEFAULT (no secretKey) server still returns the deterministic pi_<orderId> handle", async () => {
 		server = await startTestServer();
-		const res = await checkout(server);
+		const { res } = await checkout(server);
 		expect(res.status).toBe(201);
 		const body = await json(res);
 		const order = body["order"] as Record<string, unknown>;

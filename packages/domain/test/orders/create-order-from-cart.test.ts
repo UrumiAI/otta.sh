@@ -300,6 +300,74 @@ describe("createOrderFromCart", () => {
 		expect(h.inventory.reservationState(first.order.lines[0]!.reservationId!)).toBe("adopted");
 	});
 
+	// -- issue #132: the cart records the order it became -----------------------
+
+	async function widgetCart(): Promise<string> {
+		await h.seedPhysical({
+			productId: "p1",
+			sku: "SKU-1",
+			priceCents: 500,
+			title: "Widget",
+			onHand: 10,
+		});
+		return h.cartWith([{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" }]);
+	}
+
+	test("the cart records the CREATED order's id, in the same flip that makes it terminal", async () => {
+		const cartId = await widgetCart();
+		const res = await createOrderFromCart(h.createDeps, cmd(cartId));
+		expect(res.ok).toBe(true);
+		if (!res.ok) return;
+
+		// Asserted against `res.order.id` — the id of the order the store actually
+		// returned — not against the locally minted `freshOrderId` candidate. On
+		// this fresh path the two coincide (the insert wins with the candidate id),
+		// so this pins the INTENT: the cart must name the persisted order.
+		const cart = await h.cartStore.get(cartId);
+		expect({ state: cart?.state, orderId: cart?.orderId }).toEqual({
+			state: "checked_out",
+			orderId: res.order.id,
+		});
+	});
+
+	test("a SAME-KEY replay returns the same order and does not rewrite the cart's order id", async () => {
+		const cartId = await widgetCart();
+		const first = await createOrderFromCart(h.createDeps, cmd(cartId));
+		expect(first.ok).toBe(true);
+		if (!first.ok) return;
+
+		const replay = await createOrderFromCart(h.createDeps, cmd(cartId));
+		expect(replay.ok && replay.order.id).toBe(first.order.id);
+		// The replay short-circuits at I1, long before the flip; even if it did
+		// reach the flip, the `state='active'` CAS matches 0 rows.
+		expect((await h.cartStore.get(cartId))?.orderId).toBe(first.order.id);
+	});
+
+	test("a DISTINCT-key second checkout is rejected and leaves the first order's id on the cart", async () => {
+		const cartId = await widgetCart();
+		const first = await createOrderFromCart(h.createDeps, cmd(cartId, "k-tab-1"));
+		expect(first.ok).toBe(true);
+		if (!first.ok) return;
+
+		const second = await createOrderFromCart(h.createDeps, cmd(cartId, "k-tab-2"));
+		expect(second).toEqual({ ok: false, reason: "CART_CHECKED_OUT" });
+		expect((await h.cartStore.get(cartId))?.orderId).toBe(first.order.id);
+	});
+
+	test("an order id on the cart is NOT proof of payment — it is stamped while the order is still pending", async () => {
+		const cartId = await widgetCart();
+		const res = await createOrderFromCart(h.createDeps, cmd(cartId));
+		expect(res.ok).toBe(true);
+		if (!res.ok) return;
+
+		// `cartStore.checkout()` runs BEFORE `gateway.createIntent()`, so a
+		// pending — and later a failed or expired — order has a fully stamped
+		// cart. A future reader must never treat `orderId != null` as paid.
+		const persisted = await h.orderStore.getById(res.order.id);
+		expect(persisted?.state).toBe("pending");
+		expect((await h.cartStore.get(cartId))?.orderId).toBe(res.order.id);
+	});
+
 	// -- ADR-0009: checkout address capture ------------------------------------
 
 	async function seededCart(): Promise<string> {

@@ -105,8 +105,11 @@ export function isCartTerminal(state: string | undefined): boolean {
  *
  * The companion to `isCartTerminal`'s deliberate tolerance: the page renders an
  * unrecognised state as a live cart, and logs that it did. Without this, a
- * third state — or a `serializeCart` that quietly stopped emitting the field —
- * would arrive as a permanent, silent mis-render.
+ * third state would arrive as a permanent, silent mis-render. The other half of
+ * that worry — a `serializeCart` that quietly stopped emitting the field — is
+ * now pinned at the producer instead (#136): `carts.http.contract.test.ts`
+ * asserts the wire carries `state`, so a silent drop fails CI rather than
+ * reaching this log.
  */
 export function isKnownCartState(state: string | undefined): boolean {
 	return state === "active" || state === "checked_out";

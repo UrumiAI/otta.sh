@@ -1,9 +1,91 @@
 ---
+/**
+ * 404 — "the same empty-state language as the others" (docs/theme/TEMPERED.md
+ * §8). The last page on the site still wearing its pre-theme markup: an
+ * unstyled <h1> and two sentences of UA-default body text, on a page that a
+ * shopper reaches by following a link that went stale.
+ *
+ * It is built out of the same parts as the PDP's "Product not found." and the
+ * cart's "Nothing held yet.": a display-face line, one muted sentence, and a
+ * way out. §10 — no apology, and it states only what it knows. The address
+ * resolved to nothing; this page does NOT know why, so it does not speculate
+ * about products that sold out or pages that moved.
+ *
+ * No `cartCount` and no `currency`: this page makes no commerce call, and
+ * absence is meaningful in both props (see Base.astro) — a bare "Cart" is
+ * honest here, "Cart (0)" would not be.
+ */
 import Base from "../layouts/Base.astro";
 ---
 
-<Base title="Not Found">
-	<h1>Page not found</h1>
-	<p>The page you're looking for doesn't exist.</p>
-	<p><a href="/">Go home</a> or <a href="/products">browse products</a>.</p>
+<Base title="Page not found">
+	<div class="empty">
+		<h1 class="empty-title">Page not found.</h1>
+		{/* Both sentences state what THIS page knows, and it knows exactly one
+		    thing: the address resolved to nothing. "Everything else in the shop
+		    is where you left it" was the second sentence until a reviewer
+		    screenshotted it rendering, in good faith and falsely, over a store
+		    whose content tables were gone (issue #140) — this page makes no
+		    commerce and no content call, so any sentence about the state of the
+		    shop is invented. So is "the shop is still here". The second
+		    sentence therefore points AT the ways out rather than vouching for
+		    where they lead; if the shop is down too, its own page says so. */}
+		<p class="empty-copy">
+			Nothing here under that address. Try the shop, or start from the home page.
+		</p>
+		<div class="ways-out">
+			<a class="u-btn u-btn-ghost" href="/products">Browse the shop</a>
+			<a class="home" href="/">Go to the home page</a>
+		</div>
+	</div>
 </Base>
+
+<style>
+	/* §8's empty state, and the same block the PDP and the shop page use: an
+	   invitation to act, aligned left, with air above and below it rather than
+	   a box around it (§2). */
+	.empty {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 1rem;
+		padding-block: 2rem;
+	}
+
+	/* §3: the display face, narrow. One step down from a page title — this is
+	   the line the shopper reads first on an otherwise bare page. */
+	.empty-title {
+		margin: 0;
+		font-family: var(--u-display);
+		font-variation-settings: "wdth" 78, "opsz" 32;
+		font-weight: 700;
+		font-size: 1.75rem;
+		letter-spacing: -0.025em;
+		line-height: 1;
+		text-wrap: balance;
+	}
+
+	.empty-copy {
+		margin: 0;
+		max-width: 44ch;
+		color: var(--u-mute);
+	}
+
+	/* Two ranks, not two buttons: the shop is the offer, the home page is a
+	   link. `align-items: center` so the text link sits on the button's optical
+	   centre rather than on its baseline. */
+	.ways-out {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.75rem 1.5rem;
+		padding-top: 0.25rem;
+	}
+	.home {
+		font-size: 0.8125rem;
+		color: var(--u-mute);
+	}
+	.home:hover {
+		color: var(--u-ink);
+	}
+</style>
