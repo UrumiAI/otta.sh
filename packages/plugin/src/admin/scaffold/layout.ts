@@ -1,5 +1,5 @@
 import type { AccordionBlock, Element, EmptyBlock, FormBlock, PlainBlockId } from "../../types.js";
-import { decodeCarrier, PREFILL_FIELD } from "./carrier.js";
+import { decodeCarrier, prefillDigest, PREFILL_FIELD } from "./carrier.js";
 
 /**
  * The two layout primitives the six admin screens share (admin-UX density
@@ -16,8 +16,8 @@ import { decodeCarrier, PREFILL_FIELD } from "./carrier.js";
  * `form` blocks — i.e. several independent submits, each losing the others'
  * unsubmitted edits. So the density win for filters is VERTICAL: collapse the whole
  * form, keep a count of what is on in its label, and put the active values in the
- * `section` beneath it ({@link filterPanel} + {@link filterSummary}). `columns` remains available for composing WHOLE blocks
- * side by side (see `ColumnsBlock`'s note on the renderer's 2-vs-3 grid), which
+ * `section` beneath it ({@link filterPanel} + {@link filterSummary}). `columns`
+ * remains available for composing WHOLE blocks side by side (see `ColumnsBlock`'s note on the renderer's 2-vs-3 grid), which
  * needs no shared helper.
  *
  * IO-FREE: pure block construction.
@@ -41,10 +41,11 @@ const SUMMARY_SEPARATOR = " · ";
 
 export interface FilterPanelOptions {
 	/** The filter form, exactly as the screen builds it (its `submit.action_id` is
-	 *  the screen's `applyFilter`). Build it with `carriedForm` whenever it prefills
-	 *  anything — REQUIRED, not preferred: a prefilled form with no prefill digest
-	 *  throws here, because its React key could not otherwise change when the
-	 *  prefill does. */
+	 *  the screen's `applyFilter`). It MUST come from `carriedForm` — unconditionally,
+	 *  whether or not it prefills anything today — and `carriedForm` must be the LAST
+	 *  thing applied to it, or the digest it carries will not match. A form without a
+	 *  matching digest throws: its React key could not change when its prefilled
+	 *  values do, which strands cleared filters on screen. */
 	form: FormBlock;
 	/**
 	 * The accordion's `block_id`. REQUIRED, and a React key ONLY — an accordion
@@ -67,10 +68,22 @@ export interface FilterPanelOptions {
 	 * `section` beneath the panel, composed from the SAME array by
 	 * {@link filterSummary}, so the count and the summary can never disagree.
 	 *
-	 * Falsy entries are dropped, so a call site can inline its conditionals:
-	 * `activeFilters: [form.status && \`status: ${form.status}\`, dateRangeLabel(form)]`.
+	 * ONE PART PER AUTHORED FILTER FIELD, so the count matches what an operator sees
+	 * in the panel: a from/to date range is TWO fields and therefore two parts, not one
+	 * "last 30 days". Falsy entries are dropped, so a call site can inline its
+	 * conditionals:
+	 *
+	 * ```ts
+	 * activeFilters: [
+	 *   form.status && `status: ${form.status}`,
+	 *   form.from && `from: ${form.from}`,
+	 *   form.to && `to: ${form.to}`,
+	 *   form.search && `search: ${form.search}`,
+	 * ]
+	 * ```
+	 *
 	 * Composition of each part is left to the screen because six screens describe
-	 * their filters differently (a status, a date range, a zone id, a currency).
+	 * their filters differently (a status, a date bound, a zone id, a currency).
 	 */
 	activeFilters?: ReadonlyArray<string | false | null | undefined>;
 	/** Render inline (no accordion) at or below this many fields. Default 2; pass
@@ -81,8 +94,10 @@ export interface FilterPanelOptions {
 
 /**
  * A filter form that does not cost a screenful of scroll: one `form`, collapsed
- * into an `accordion` whose label carries the active filter, or rendered inline
- * when it is small enough to not be worth a click.
+ * into an `accordion` whose label reports HOW MANY filters are active
+ * (`Filters (2 active)` — a count, never the values), or rendered inline when it is
+ * small enough to not be worth a click. The values go in the `section` beneath,
+ * from {@link filterSummary}.
  *
  * Always renders CLOSED. `accordion.default_open` is read once in a `useState`
  * initialiser, so it can neither reopen a panel the operator closed nor be relied
@@ -102,8 +117,12 @@ export interface FilterPanelOptions {
  *    collapsed body is still rendered on every response: this saves scroll, not
  *    work.
  *
- * Throws above {@link MAX_FILTER_FIELDS} authored fields: that is a design-spec
- * violation, and collapsing it silently would hide it.
+ * THROWS in two cases, both of them screen bugs that must not render as something
+ * subtly wrong: above {@link MAX_FILTER_FIELDS} authored fields (a design-spec
+ * violation collapsing would hide), and when `form` does not carry a prefill digest
+ * matching itself (i.e. it did not come from `carriedForm`, or was edited after).
+ * Both are contained by `createListDetailHandler` and surface as that screen's
+ * fail-closed banner, with the cause in the worker log.
  */
 export function filterPanel(opts: FilterPanelOptions): FormBlock | AccordionBlock {
 	if (opts.form.fields.length > MAX_FILTER_FIELDS) {
@@ -112,17 +131,25 @@ export function filterPanel(opts: FilterPanelOptions): FormBlock | AccordionBloc
 				`(submit ${opts.form.submit.action_id}) — reduce the filter set rather than collapsing it`,
 		);
 	}
-	// A PREFILLED form must carry a prefill digest, or its React key cannot change
-	// when the prefill does — and its inputs are uncontrolled, so the operator keeps
-	// seeing stale values. That is the `Clear filters` bug: the server re-renders
-	// empty `initial_value`s, nothing remounts, the fields still show the filter that
-	// was just cleared, and the next submit re-applies it. Nesting guarantees it
-	// (a form inside an accordion is index 0 of that accordion forever), so this is
-	// checked rather than merely recommended.
-	if (prefills(opts.form) && decodeCarrier(opts.form.block_id)?.[PREFILL_FIELD] === undefined) {
+	// EVERY form here must come from `carriedForm`, whether or not it prefills
+	// anything today. A form whose React key cannot change when its prefilled values
+	// change strands those values on screen — Block Kit inputs are uncontrolled, so
+	// the `Clear filters` re-render leaves the cleared filter visible and the next
+	// submit re-applies it — and nesting guarantees the key is stable (a form inside
+	// an accordion is index 0 of that accordion forever). Requiring it
+	// UNCONDITIONALLY means the very first render test on every screen trips this,
+	// rather than only the tests that happen to render with a filter applied, and a
+	// filter form that gains a prefill later cannot quietly become wrong.
+	//
+	// The digest must also MATCH this form: a present-but-stale one (hand-rolled, or
+	// left over from before a field was added) is exactly the stale key it is meant
+	// to rule out, so presence alone is not enough.
+	const carriedDigest = decodeCarrier(opts.form.block_id)?.[PREFILL_FIELD];
+	if (carriedDigest !== prefillDigest(opts.form)) {
 		throw new Error(
-			`filterPanel: the form for ${opts.form.submit.action_id} prefills values but carries no prefill digest — ` +
-				`build it with carriedForm({namespace, context, form}) so its React key changes when the prefill does`,
+			`filterPanel: the form for ${opts.form.submit.action_id} ${
+				carriedDigest === undefined ? "carries no prefill digest" : "carries a STALE prefill digest"
+			} — build it with carriedForm({namespace, context, form}), last, so its React key tracks its prefilled values`,
 		);
 	}
 	const inlineUpTo = opts.inlineUpTo ?? DEFAULT_INLINE_UP_TO;
@@ -156,7 +183,12 @@ export function filterPanelLabel(label: string, activeCount: number): string {
  * render an empty line:
  *
  * ```ts
- * const parts = [form.status && `status: ${form.status}`, dateRangeLabel(form)];
+ * // One part per authored field — `from`/`to` are two fields, so two parts.
+ * const parts = [
+ *   form.status && `status: ${form.status}`,
+ *   form.from && `from: ${form.from}`,
+ *   form.to && `to: ${form.to}`,
+ * ];
  * const summary = filterSummary(parts);
  * const blocks = [filterPanel({ form, blockId: "orders:filters", activeFilters: parts })];
  * if (summary !== undefined) blocks.push({ type: "section", text: summary, accessory: clearButton });
@@ -170,15 +202,6 @@ export function filterSummary(
 ): string | undefined {
 	const active = activeParts(parts);
 	return active.length === 0 ? undefined : active.join(SUMMARY_SEPARATOR);
-}
-
-/** Whether the form prefills anything React would only pick up on a remount. */
-function prefills(form: FormBlock): boolean {
-	return form.fields.some(
-		(field) =>
-			("initial_value" in field && field.initial_value !== undefined) ||
-			("has_value" in field && field.has_value === true),
-	);
 }
 
 /** The non-empty string parts of an active-filter array. */

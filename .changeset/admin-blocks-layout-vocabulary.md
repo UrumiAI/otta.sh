@@ -55,8 +55,10 @@ construction. Without it, a form nested in an accordion is index-0-forever and a
 fields into a closed `accordion` labelled `Filters` or `Filters (2 active)` (a
 COUNT only: a label is a control with a tight width budget), renders 1–2 fields
 inline, and throws rather than hiding a problem in two cases: above 4 filter
-fields, and when a PREFILLED form carries no prefill digest (the `Clear filters`
-staleness bug). Its `blockId` is required and stable across an apply.
+fields, and when the form does not carry a prefill digest matching itself — i.e.
+every filter form must come from `carriedForm`, unconditionally, or its React key
+could not change when its prefilled values do (the `Clear filters` staleness bug).
+Its `blockId` is required and stable across an apply.
 `filterSummary(parts)` composes the human-readable `status: paid · last 30 days`
 for the `section` beneath the panel — pass the same array to both so the count and
 the summary cannot disagree. `emptyState(...)` emits a real `empty` block. There is
@@ -82,6 +84,11 @@ action gets the root list plus an explicit "Action outcome unknown — the actio
 already have been applied" banner (never a bare failure, since the side effect may
 have committed before the re-render failed), and a last-resort wrapper covers what
 no inner try can reach — `createClient`, `parseOpen`, `filterFromValues`, and a
-screen's own `onError()` throwing. Without this a throw became a non-2xx, which
-replaces the whole `BlockRenderer` tree with a raw status panel, unmounts every
-accordion and tab, and leaves an operator unable to tell whether a refund applied.
+screen's own `onError()` throwing — including the compound case where the fallback
+render throws too, which still reports the unknown outcome rather than a generic
+error. Without this a throw became a non-2xx, which replaces the whole
+`BlockRenderer` tree with a raw status panel, unmounts every accordion and tab, and
+leaves an operator unable to tell whether a refund applied. Every contained failure
+is logged (`console.error("[urumi] …", err)`), because the fail-closed banner is
+indistinguishable from an unreachable service and the log is the only place a
+screen bug's cause survives.

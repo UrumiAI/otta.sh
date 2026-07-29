@@ -237,11 +237,17 @@ export function createListDetailHandler(
 	return async (routeCtx, ctx) => {
 		try {
 			return await dispatch(routeCtx, ctx);
-		} catch {
-			// Deliberately generic and screen-agnostic: at this point the screen's own
-			// fail-closed rendering is what failed, so nothing screen-specific can be
-			// trusted to build blocks. Never leaks the error (it could carry a URL or
-			// a status — see `failClosedResponse`).
+		} catch (err) {
+			// LOG IT. Contained failures are indistinguishable from an unreachable
+			// service in the UI (both are an error banner), so without this a screen bug
+			// — say a carrier namespace interpolating a zone named "EU West" — reads to
+			// an operator AND to a developer tailing worker logs as an infrastructure
+			// outage, with the message, the stack and the offending value gone.
+			console.error("[urumi] admin list/detail dispatch failed:", err);
+			// The RESPONSE stays deliberately generic and screen-agnostic: at this point
+			// the screen's own fail-closed rendering is what failed, so nothing
+			// screen-specific can be trusted to build blocks, and the error must never
+			// reach the UI (it can carry a URL or a status — see `failClosedResponse`).
 			return failClosedResponse({
 				header: "Unavailable",
 				title: "This screen could not be rendered",
@@ -304,7 +310,11 @@ function createDispatcher(config: ListDetailScreenConfig): RouteHandler<ListDeta
 				return {
 					blocks: path.length === 0 ? blocks : withFilterPathCarry(blocks, actions, path),
 				};
-			} catch {
+			} catch (err) {
+				// This is where a SCREEN BUG lands (its `fetchPage` or its `render`), and
+				// the banner below cannot tell an operator apart from an unreachable
+				// service — so the detail has to reach the logs.
+				console.error("[urumi] admin list level failed:", err);
 				return level.onError();
 			}
 		};
@@ -323,7 +333,8 @@ function createDispatcher(config: ListDetailScreenConfig): RouteHandler<ListDeta
 				const detail = await level.load(client, path, id);
 				if (detail === null) return { blocks: level.notFound({ actions, path, id }) };
 				return { blocks: await level.render({ client, actions, path, id, detail, notice }) };
-			} catch {
+			} catch (err) {
+				console.error("[urumi] admin leaf level failed:", err);
 				return level.onError();
 			}
 		};
@@ -400,18 +411,32 @@ function createDispatcher(config: ListDetailScreenConfig): RouteHandler<ListDeta
 					showList: (path, notice) =>
 						path === undefined ? rootList(notice) : renderPath(path, notice),
 				})) as Awaited<ReturnType<RouteHandler<ListDetailInput>>>;
-			} catch {
+			} catch (err) {
 				// A custom action is the one place a SIDE EFFECT may already have
 				// applied, so this cannot be a silent fallback: the mutation might have
-				// committed and only the re-render failed. Show the root list (so the
-				// operator keeps a working screen) with a banner that says the outcome
-				// is unknown, rather than a raw status panel that says nothing and
-				// unmounts everything. The banner is PREPENDED here rather than passed
-				// as a notice because a list level is allowed to ignore `notice`.
-				return {
-					blocks: [noticeBanner(ACTION_OUTCOME_UNKNOWN), ...(await rootList()).blocks],
-					toast: { message: "Action outcome unknown — re-check the record", type: "error" },
+				// committed and only the re-render failed. Log it (the operator's banner
+				// says "unknown", and the logs are where the actual cause lives), then
+				// show the root list — so the operator keeps a working screen — with a
+				// banner saying the outcome is unknown, rather than a raw status panel
+				// that says nothing and unmounts everything. The banner is PREPENDED
+				// rather than passed as a notice because a list level may ignore `notice`.
+				console.error(`[urumi] admin custom action ${String(action)} failed:`, err);
+				const toast = {
+					message: "Action outcome unknown — re-check the record",
+					type: "error" as const,
 				};
+				// DOUBLE FAULT: if rebuilding the root list ALSO throws, the outer
+				// wrapper would answer with its generic copy, dropping the one thing the
+				// operator must know — that a mutation may have committed. So the warning
+				// is preserved on its own rather than delegated.
+				let fallbackBlocks: Block[];
+				try {
+					fallbackBlocks = (await rootList()).blocks;
+				} catch (fallbackErr) {
+					console.error("[urumi] admin custom action fallback render failed:", fallbackErr);
+					fallbackBlocks = [];
+				}
+				return { blocks: [noticeBanner(ACTION_OUTCOME_UNKNOWN), ...fallbackBlocks], toast };
 			}
 		}
 

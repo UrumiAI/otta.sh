@@ -253,8 +253,11 @@ export function carriedForm(args: {
 }
 
 /** A digest of everything the form prefills — field identity, order, and the
- *  values React would only pick up on a remount. */
-function prefillDigest(form: FormBlock): string {
+ *  values React would only pick up on a remount. Exported so `filterPanel` can
+ *  verify that a form's carried digest actually MATCHES the form it is attached to
+ *  (a present-but-wrong digest is a stale React key, which is the bug the digest
+ *  exists to prevent). */
+export function prefillDigest(form: FormBlock): string {
 	const material = form.fields.map((field) => [
 		field.type,
 		field.action_id,

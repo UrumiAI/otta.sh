@@ -176,6 +176,16 @@ describe("carrier token (form/table `block_id` hidden context)", () => {
 	});
 });
 
+/** A form holding one secret input, whose `has_value` affordance the renderer reads
+ *  once (`useState(!has_value)`) and never re-syncs. */
+function withSecret(hasValue: boolean): FormBlock {
+	return {
+		type: "form",
+		fields: [{ type: "secret_input", action_id: "token", label: "Token", has_value: hasValue }],
+		submit: { label: "Save", action_id: "x:apply-filter" },
+	};
+}
+
 /** A one-field filter form whose single field is prefilled with `value` (or not
  *  prefilled at all) — the `Clear filters` before/after shape. */
 function prefilled(value: string | undefined): FormBlock {
@@ -272,6 +282,13 @@ describe("carriedForm (context + a key that tracks prefilled values)", () => {
 	});
 });
 
+/** A filter form with `fieldCount` text fields, CARRIED — `filterPanel` requires
+ *  every form to come from `carriedForm`, so this is the shape a screen ships.
+ *  Use {@link formWith} for the raw, uncarried form. */
+function carriedFormWith(fieldCount: number): FormBlock {
+	return carriedForm({ namespace: "x:filter", form: formWith(fieldCount) });
+}
+
 /** A filter form with `fieldCount` text fields — the only thing `filterPanel`
  *  keys off is how many fields the screen authored. */
 function formWith(fieldCount: number): FormBlock {
@@ -288,16 +305,16 @@ function formWith(fieldCount: number): FormBlock {
 
 describe("filterPanel (a filter form that costs no screenful of scroll)", () => {
 	test("a small filter (≤ 2 fields) renders INLINE — the form itself, untouched", () => {
-		const one = formWith(1);
+		const one = carriedFormWith(1);
 		expect(filterPanel({ form: one, blockId: "x:filters" })).toBe(one);
-		const two = formWith(2);
+		const two = carriedFormWith(2);
 		expect(filterPanel({ form: two, blockId: "x:filters", activeFilters: ["status: paid"] })).toBe(
 			two,
 		);
 	});
 
 	test("a 3+ field filter collapses into a CLOSED accordion holding the form", () => {
-		const form = formWith(4);
+		const form = carriedFormWith(4);
 		const panel = filterPanel({ form, blockId: "orders:filters" });
 		expect(panel).toEqual({
 			type: "accordion",
@@ -312,9 +329,9 @@ describe("filterPanel (a filter form that costs no screenful of scroll)", () => 
 
 	test("the collapsed label is a COUNT, never the values (spec L-3)", () => {
 		const panel = filterPanel({
-			form: formWith(4),
+			form: carriedFormWith(4),
 			blockId: "orders:filters",
-			activeFilters: ["status: paid", "last 30 days"],
+			activeFilters: ["status: paid", "from: 2026-07-01"],
 		});
 		// A label is a control with a tight width budget: no values, no truncation,
 		// no ellipsis. The values live in the section beneath, via `filterSummary`.
@@ -339,7 +356,7 @@ describe("filterPanel (a filter form that costs no screenful of scroll)", () => 
 			null,
 		];
 		const panel = filterPanel({
-			form: formWith(3),
+			form: carriedFormWith(3),
 			blockId: "tax:filters",
 			activeFilters: parts,
 		});
@@ -348,7 +365,7 @@ describe("filterPanel (a filter form that costs no screenful of scroll)", () => 
 	});
 
 	test("label + inlineUpTo are honoured; blockId is required and is a React key only", () => {
-		const form = formWith(1);
+		const form = carriedFormWith(1);
 		// inlineUpTo: 0 forces the accordion even for a single field.
 		expect(
 			filterPanel({
@@ -367,18 +384,23 @@ describe("filterPanel (a filter form that costs no screenful of scroll)", () => 
 	});
 
 	test("more than 4 filter fields THROWS rather than silently hiding a spec violation", () => {
-		expect(() => filterPanel({ form: formWith(5), blockId: "x:filters" })).toThrowError(
+		expect(() => filterPanel({ form: carriedFormWith(5), blockId: "x:filters" })).toThrowError(
 			/5 filter fields exceeds the 4-field maximum/,
 		);
 	});
 
-	test("a PREFILLED form with no prefill digest THROWS — the `Clear filters` hole, closed mechanically", () => {
-		// Exactly the bug the digest exists to prevent: this form would be
-		// index-0-forever inside the accordion, so a re-render with cleared
-		// `initial_value`s would leave the old values on screen and the next submit
-		// would re-apply them. Recommending `carriedForm` in a doc comment did not
-		// prevent it; this does.
-		const stale: FormBlock = {
+	test("ANY form without a matching prefill digest THROWS — every filter form comes from carriedForm", () => {
+		// Unconditional on purpose. A form whose React key cannot move when its
+		// prefilled values change strands them on screen (`Clear filters` leaves the
+		// old value visible and the next submit re-applies it), and nesting makes the
+		// key permanent — a form inside an accordion is index 0 of that accordion
+		// forever. Requiring the digest even when nothing is prefilled TODAY means the
+		// first render test on every screen trips this, and a filter that gains a
+		// prefill later cannot quietly become wrong.
+		expect(() => filterPanel({ form: formWith(3), blockId: "x:filters" })).toThrowError(
+			/carries no prefill digest/,
+		);
+		const prefilledForm: FormBlock = {
 			...formWith(3),
 			fields: [
 				{ type: "text_input", action_id: "status", label: "Status", initial_value: "paid" },
@@ -386,32 +408,51 @@ describe("filterPanel (a filter form that costs no screenful of scroll)", () => 
 				{ type: "text_input", action_id: "z", label: "Zone" },
 			],
 		};
-		expect(() => filterPanel({ form: stale, blockId: "x:filters" })).toThrowError(
-			/prefills values but carries no prefill digest/,
+		expect(() => filterPanel({ form: prefilledForm, blockId: "x:filters" })).toThrowError(
+			/carries no prefill digest/,
 		);
-		// Through `carriedForm` it is accepted.
-		expect(() =>
-			filterPanel({
-				form: carriedForm({ namespace: "orders:filter", form: stale }),
-				blockId: "x:filters",
-			}),
-		).not.toThrow();
+		// Through `carriedForm`, both are accepted.
+		for (const form of [formWith(3), prefilledForm]) {
+			expect(() =>
+				filterPanel({
+					form: carriedForm({ namespace: "orders:filter", form }),
+					blockId: "x:filters",
+				}),
+			).not.toThrow();
+		}
 	});
 
-	test("the prefill check also covers `has_value` (a secret input's affordance) and the INLINE path", () => {
-		const secret: FormBlock = {
-			type: "form",
-			fields: [{ type: "secret_input", action_id: "token", label: "Token", has_value: true }],
-			submit: { label: "Save", action_id: "x:apply-filter" },
+	test("a STALE digest throws too — presence alone would let a hand-rolled token through", () => {
+		const form = carriedForm({
+			namespace: "orders:filter",
+			form: formWith(3),
+		});
+		// Editing the form AFTER carrying it leaves the digest describing the old
+		// fields, i.e. exactly the stale React key the digest exists to prevent.
+		const edited: FormBlock = {
+			...form,
+			fields: [{ type: "text_input", action_id: "status", label: "Status", initial_value: "paid" }],
 		};
-		// One field ⇒ would render inline, but the staleness risk is identical.
-		expect(() => filterPanel({ form: secret, blockId: "x:filters" })).toThrowError(
-			/prefills values but carries no prefill digest/,
+		expect(() => filterPanel({ form: edited, blockId: "x:filters" })).toThrowError(
+			/carries a STALE prefill digest/,
+		);
+		// And a hand-rolled token that merely CONTAINS the reserved key does not pass.
+		const faked: FormBlock = {
+			...formWith(3),
+			block_id: encodeCarrier("orders:filter", { [PREFILL_FIELD]: "1" }),
+		};
+		expect(() => filterPanel({ form: faked, blockId: "x:filters" })).toThrowError(
+			/carries a STALE prefill digest/,
 		);
 	});
 
-	test("a form that prefills NOTHING needs no digest (the common empty-filter first render)", () => {
-		expect(() => filterPanel({ form: formWith(3), blockId: "x:filters" })).not.toThrow();
+	test("the digest covers a secret input's `has_value`, which the renderer reads once and never re-syncs", () => {
+		// `SecretInputElementComponent` does `useState(!element.has_value)`, so a
+		// re-render that flips `has_value` without a key change shows an empty editable
+		// field where the masked "value is set" affordance belongs.
+		expect(carriedForm({ namespace: "n:s", form: withSecret(true) }).block_id).not.toBe(
+			carriedForm({ namespace: "n:s", form: withSecret(false) }).block_id,
+		);
 	});
 
 	test("the form's own carrier is left alone — the accordion keeps its own plain key", () => {
