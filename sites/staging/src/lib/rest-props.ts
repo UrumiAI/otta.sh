@@ -25,6 +25,47 @@
  * Astro never adds a parent's key to a child's root by itself — a child that
  * does not spread `...rest` renders with its own key and nothing else. The key
  * only ever arrives through the spread, so dropping it here is the whole job.
+ *
+ * ── THE `class` TRAP, which is the same rule seen from the other side ───────
+ *
+ * Every page and component in this theme points here, so the convention it
+ * implies is written down here too:
+ *
+ *   **A `class` handed to a component lands on an element the caller's own CSS
+ *   can never match.** Not "should not" — cannot.
+ *
+ * `<Notice class="alert" />` really does render `class="u-notice alert"`, so
+ * the attribute is there in the HTML and looks like it works. But the caller's
+ * `.alert { margin-bottom: 1.5rem }` compiles to
+ * `.alert[data-astro-cid-CALLER]`, and that root element carries
+ * `data-astro-cid-NOTICE` instead — the child's key, because `restProps` above
+ * strips the parent's. The rule ships, matches nothing, and the spacing simply
+ * does not appear. Nothing warns: Astro cannot know the selector was aimed at
+ * a child, and `oxlint` and `astro check` do not look at CSS at all.
+ *
+ * So there are exactly three ways to affect how a component looks from
+ * outside, and every one of them is used somewhere in `src/pages`:
+ *
+ *  1. **A wrapper element the caller owns.** `<div class="alert"><Notice
+ *     …/></div>`. This is the default answer and it is why the pages are full
+ *     of single-purpose wrappers with names like `.notice-slot`, `.steps`,
+ *     `.art` and `.totals`. They are not decoration — they are the only
+ *     element in reach. Reach for this for anything OUTSIDE the component:
+ *     margin, width, grid placement.
+ *  2. **A prop.** Anything about what the component IS rather than where it
+ *     sits: `MediaPanel`'s `dimmed`, `PriceTag`'s `soldOut`, `ratio`. The
+ *     first cut of `ProductCard` tried to dim from the parent's stylesheet and
+ *     the dimming was dead on arrival; `component-css.test.ts`'s "does not
+ *     style THROUGH a child component" guard exists because of it.
+ *  3. **A global class from `tokens.css`.** `.u-mono`, `.u-label`, `.u-btn`
+ *     are unscoped on purpose, so they work on any element anywhere — a
+ *     component's root included. That is the escape hatch, and it is
+ *     deliberately narrow: it carries the theme's shared vocabulary and
+ *     nothing situational.
+ *
+ * What NEVER works, and looks like it should: a page rule that reaches through
+ * a component (`.card .card-media`), and a `class` on a component root that
+ * the page then styles. Both compile, ship, and do nothing.
  */
 
 /** Astro's scoped-style attribute prefix (`scopedStyleStrategy: "attribute"`,

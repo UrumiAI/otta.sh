@@ -362,7 +362,7 @@ describe("the Tempered cart: lines, ribbons and an honest totals block", () => {
 		expect(markup).toContain(
 			"Your cart is empty. Pick something and we'll hold the stock while you decide.",
 		);
-		expect(markup).toMatch(/<a href="\/products"[^>]*class="btn btn-ghost"/);
+		expect(markup).toMatch(/<a href="\/products"[^>]*class="u-btn u-btn-ghost"/);
 		// A cart we could not READ is not an empty cart.
 		expect(markup).toContain("!degraded");
 	});
@@ -425,12 +425,14 @@ describe("the Tempered cart: lines, ribbons and an honest totals block", () => {
 		expect(source).not.toContain("images?.src");
 	});
 
-	test("nothing sticks: <main> is a scroll container while legacy-bridge is in play", () => {
-		// Kept deliberately, though it pins an ABSENCE nothing currently wants to
-		// add: `overflow-x: auto` on <main> (legacy-bridge.css, transitional)
-		// forces overflow-y to auto too, so a sticky totals block would stick to
-		// <main> instead of the viewport and look broken in a way no unit test
-		// would otherwise catch. Delete this with legacy-bridge.css.
+	test("no sticky totals block — the layout is grid tracks, not a pinned bar", () => {
+		// This existed because <main> carried a transitional `overflow-x: auto`
+		// through increments 1–5: that forces overflow-y to auto as well, so a
+		// sticky descendant sticks to <main> rather than to the viewport and looks
+		// broken in a way no unit test would catch. Increment 6 deleted the rule
+		// with the sheet it lived in, so the hazard is gone — but the design
+		// decision is not: §8 puts the totals bottom-right in the flow, and a
+		// sticky bar is a different page. Kept as a design pin, retitled.
 		expect(source).not.toContain("position: sticky");
 	});
 
@@ -445,14 +447,15 @@ describe("the Tempered cart: lines, ribbons and an honest totals block", () => {
 		}
 	});
 
-	test("declares no colour of its own beyond the transitional notice panel", () => {
+	test("declares no colour of its own at all", () => {
 		const styles = /<style>([\s\S]*)<\/style>/.exec(source)?.[1] ?? "";
 		const declarations = styles.replace(/\/\*[\s\S]*?\*\//g, "");
-		// The two literals are the pre-theme `?error=` panel, which increment 6
-		// replaces with the Notice component; legacy-bridge.css pins its ink to
-		// this exact pale ground.
+		// It used to declare exactly two: the pre-theme `?error=` panel's pale
+		// ground and its border, whose ink came from the transitional global
+		// sheet. Increment 6 moved all three of this page's banners onto the
+		// Notice component (§4) and deleted that sheet, so the count is zero.
 		const hexes = declarations.match(/#[\da-f]{3,8}\b/gi) ?? [];
-		expect(hexes.toSorted()).toEqual(["#e6c200", "#fff7e0"]);
+		expect(hexes).toEqual([]);
 	});
 });
 
@@ -696,13 +699,14 @@ describe("a checked-out cart is rendered as terminal, and never as a paid one", 
 		const newCart = terminalMarkup.indexOf('action="/checkout/new-cart"');
 		expect(terminalMarkup.indexOf(">View your order<")).toBeLessThan(newCart);
 		expect(terminalMarkup.indexOf(">Return to this checkout<")).toBeLessThan(newCart);
-		// The page's own rank idiom: `btn` is the ink-filled primary, `btn
-		// btn-ghost` the hairline second rank (the empty state's "Browse
+		// The rank idiom, now written in the SHARED shape (tokens.css `.u-btn`,
+		// promoted in increment 6): `u-btn` is the ink-filled primary, `u-btn
+		// u-btn-ghost` the hairline second rank (the empty state's "Browse
 		// products"). Pinned so CSS cannot promote the way out.
-		expect(terminalMarkup).toMatch(/class="btn">View your order</);
-		expect(terminalMarkup).toMatch(/class="btn">Return to this checkout</);
-		expect(terminalMarkup).toMatch(/class="btn btn-ghost">Start a new cart</);
-		expect(terminalMarkup).not.toMatch(/class="btn">Start a new cart</);
+		expect(terminalMarkup).toMatch(/class="u-btn">View your order</);
+		expect(terminalMarkup).toMatch(/class="u-btn">Return to this checkout</);
+		expect(terminalMarkup).toMatch(/class="u-btn u-btn-ghost">Start a new cart</);
+		expect(terminalMarkup).not.toMatch(/class="u-btn">Start a new cart</);
 	});
 
 	test("nothing in the panel claims the buyer paid", () => {

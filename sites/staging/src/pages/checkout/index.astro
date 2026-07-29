@@ -103,12 +103,12 @@ const sumRows = [
 	<div class="steps"><StepTrack current="details" /></div>
 	<h1 class="title">Checkout</h1>
 
-	{error !== null && <div class="alert"><Notice>{cartErrorMessage(error)}</Notice></div>}
+	{error !== null && <div class="notice-slot"><Notice>{cartErrorMessage(error)}</Notice></div>}
 
 	{
 		checkedOut && (
 			<form method="POST" action="/checkout/new-cart" class="restart">
-				<button type="submit" class="btn btn-ghost">
+				<button type="submit" class="u-btn u-btn-ghost">
 					Start a new cart
 				</button>
 			</form>
@@ -193,7 +193,7 @@ const sumRows = [
 				{
 					paymentConfigured ? (
 						<div>
-							<button type="submit" class="btn">
+							<button type="submit" class="u-btn">
 								Continue to payment
 							</button>
 						</div>
@@ -252,7 +252,9 @@ const sumRows = [
 		text-wrap: balance;
 	}
 
-	.alert,
+	/* `.notice-slot` is the name every other page gives this wrapper — the PDP,
+	   the PLP and the cart all use it — so it is what this one uses too. */
+	.notice-slot,
 	.restart {
 		margin-bottom: 1.5rem;
 	}
@@ -372,34 +374,11 @@ const sumRows = [
 		grid-column: 1 / -1;
 	}
 
-	/* §2: ink fill, straw only as the fitting that appears on hover. Straw is
-	   never a button background — that is what keeps the label at full
-	   contrast. */
-	.btn {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.625rem;
-		background: var(--u-ink);
-		color: var(--u-surface);
-		border: none;
-		border-radius: var(--u-r);
-		padding: 0.75rem 1.25rem;
-		font-family: var(--u-body);
-		font-size: 0.875rem;
-		font-weight: 600;
-		text-decoration: none;
-		cursor: pointer;
-		box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0);
-		transition: box-shadow 120ms ease;
-	}
-	.btn:hover {
-		box-shadow: inset 0 -3px 0 var(--u-straw);
-	}
-	.btn-ghost {
-		background: transparent;
-		color: var(--u-ink);
-		border: var(--u-hair);
-	}
+	/* "Continue to payment" is `.u-btn` and the dead-cart escape is
+	   `.u-btn .u-btn-ghost` (tokens.css) — §2's one shape, written down once.
+	   This page's copy of it had already drifted from the others' (it wrote the
+	   transparent inset as `rgba(0, 0, 0, 0)`, which is also the only raw colour
+	   left anywhere in the theme). */
 
 	.back {
 		margin: 2.5rem 0 0;

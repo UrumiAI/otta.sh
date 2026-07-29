@@ -66,11 +66,6 @@ function classesIn(attribute: string): string[] {
 
 const CLASS_ATTRIBUTE = /class(?::list)?=("[^"]*"|\{[^}]*\})/g;
 
-/** Every literal class name this component writes into its own markup. */
-function classNames(text: string): string[] {
-	return [...markup(text).matchAll(CLASS_ATTRIBUTE)].flatMap(([, value = ""]) => classesIn(value));
-}
-
 /**
  * Class names this component hands to a CHILD COMPONENT rather than putting on
  * an element of its own.
@@ -188,23 +183,36 @@ describe("component boundaries", () => {
 		}
 	});
 
-	test.each(files)("%s claims no class name that a global stylesheet owns", (name) => {
-		// `legacy-bridge.css` is UNSCOPED and transitional. Its `.notice` rule
-		// pins a hard-coded near-black — correct for the pale panel the
-		// unmigrated pages still paint, wrong for anything else, and it wins
-		// over nothing at all in a component that shares the name.
-		const bridge = readFileSync(path.join(SRC_DIR, "styles/legacy-bridge.css"), "utf8").replace(
+	test.each(files)("%s does not redefine a class the global sheet owns", (name) => {
+		/*
+		 * `tokens.css` is the site's ONE unscoped stylesheet (increment 6 deleted
+		 * the rollout's transitional second one, which is what this test used to
+		 * check against). Its `.u-` classes are meant to be USED anywhere,
+		 * component roots included — `.u-mono`, `.u-label`, `.u-btn` are the
+		 * theme's shared vocabulary and the only way a caller can reach past a
+		 * scope boundary at all (src/lib/rest-props.ts).
+		 *
+		 * What must not happen is a component REDEFINING one. A scoped
+		 * `.u-btn { … }` here beats the global on specificity and forks the shape
+		 * for that component only — the exact drift that put seven private copies
+		 * of the button in `src/pages` before it was promoted. Qualifying one from
+		 * the outside (`.ship .u-mono { font-size: … }`) is fine and stays
+		 * allowed; the pattern below only matches a bare global as a whole
+		 * selector.
+		 */
+		const tokens = readFileSync(path.join(SRC_DIR, "styles/tokens.css"), "utf8").replace(
 			/\/\*[\s\S]*?\*\//g,
 			"",
 		);
-		const owned = new Set([...bridge.matchAll(/\.([\w-]+)\s*\{/g)].map((m) => m[1]));
+		const owned = [...tokens.matchAll(/(?:^|[,{}])\s*(\.u-[\w-]+)[\s,:{]/gm)].map((m) => m[1]);
 		expect(
-			owned.size,
-			"legacy-bridge.css declares no class at all — check the parse",
+			new Set(owned).size,
+			"tokens.css declares no `.u-` class at all — check the parse",
 		).toBeGreaterThan(0);
-		for (const cls of classNames(source(name))) {
-			expect(owned.has(cls), `${name} uses .${cls}, which legacy-bridge.css also styles`).toBe(
-				false,
+		const css = declarations(source(name));
+		for (const cls of new Set(owned)) {
+			expect(css, `${name} redefines ${cls}, which tokens.css owns`).not.toMatch(
+				new RegExp(`(^|[,{}])\\s*\\${cls}[\\s,:{]`, "m"),
 			);
 		}
 	});

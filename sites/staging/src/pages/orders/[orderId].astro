@@ -238,18 +238,18 @@ const sumRows =
 				{hasActions && (
 					<div class="actions">
 						{canCheckAgain && (
-							<a class="btn btn-ghost" href={nextPollUrl}>
+							<a class="u-btn u-btn-ghost" href={nextPollUrl}>
 								Check again
 							</a>
 						)}
 						{canResume && (
-							<a class="btn btn-ghost" href="/checkout">
+							<a class="u-btn u-btn-ghost" href="/checkout">
 								Complete payment
 							</a>
 						)}
 						{deadEnd && (
 							<form method="POST" action="/checkout/new-cart">
-								<button type="submit" class="btn btn-ghost">
+								<button type="submit" class="u-btn u-btn-ghost">
 									Start a new cart
 								</button>
 							</form>
@@ -376,28 +376,12 @@ const sumRows =
 		overflow-wrap: anywhere;
 	}
 
-	/* Ghost only: nothing on this page is the primary action — the order is
-	   already placed, and these are ways out rather than ways on (§2). */
-	.btn {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.625rem;
-		background: transparent;
-		color: var(--u-ink);
-		border: var(--u-hair);
-		border-radius: var(--u-r);
-		padding: 0.75rem 1.25rem;
-		font-family: var(--u-body);
-		font-size: 0.875rem;
-		font-weight: 600;
-		text-decoration: none;
-		cursor: pointer;
-		box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0);
-		transition: box-shadow 120ms ease;
-	}
-	.btn:hover {
-		box-shadow: inset 0 -3px 0 var(--u-straw);
-	}
+	/* GHOST ONLY, and that is this page's decision rather than the shape's:
+	   nothing here is a primary action — the order is already placed, and every
+	   control is a way out rather than a way on (§2). This page used to say so
+	   by redefining `.btn` as a ghost, which meant `class="btn"` here and
+	   `class="btn"` on the PDP drew two different buttons. It now says it by
+	   writing `.u-btn .u-btn-ghost` on all three controls (tokens.css). */
 
 	.back {
 		margin: 2rem 0 0;

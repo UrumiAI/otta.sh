@@ -223,7 +223,12 @@ const CONFIGURED = [
 						{ sku: "URUMI-STK-01", qty: 2, money: "priced at checkout", unpriced: true },
 					]}
 				/>
-				<Sum rows={UNCONFIGURED} total={money("$40.00")} excludesUncalculated class="pad" />
+				{/* WRAPPED, not `<Sum class="pad">`. That is what this said before,
+				    and the margin never applied: a page's `.pad` compiles to
+				    `.pad[data-astro-cid-PAGE]` and Sum's root carries Sum's own key
+				    (src/lib/rest-props.ts). The styleguide is the last place that
+				    should be demonstrating the trap. */}
+				<div class="pad"><Sum rows={UNCONFIGURED} total={money("$40.00")} excludesUncalculated /></div>
 			</div>
 			<div>
 				<span class="u-label cap">shipping and tax configured — every row is a figure</span>
@@ -233,7 +238,7 @@ const CONFIGURED = [
 						{ sku: "URUMI-MUG-01", qty: 1, money: "$15.00" },
 					]}
 				/>
-				<Sum rows={CONFIGURED} total={money("$39.20")} totalLabel="Paid" class="pad" />
+				<div class="pad"><Sum rows={CONFIGURED} total={money("$39.20")} totalLabel="Paid" /></div>
 			</div>
 		</div>
 	</section>
@@ -268,6 +273,19 @@ const CONFIGURED = [
 				headline="This order expired."
 				body="Payment didn't complete in time, so the items went back on sale. Nothing was charged."
 			/>
+		</div>
+	</section>
+
+	<section id="buttons">
+		<p class="u-label eyebrow">.u-btn — §2's one button shape, and the only one</p>
+		<p class="u-label cap">
+			a global in tokens.css, not a component: a page cannot style a component's root, and every
+			one of these is a button in a form or a link the page positions
+		</p>
+		<div class="row">
+			<a href="#buttons" class="u-btn">Primary — a way on</a>
+			<a href="#buttons" class="u-btn u-btn-ghost">Ghost — a way out</a>
+			<button type="button" class="u-btn" disabled>Disabled — mid-confirm</button>
 		</div>
 	</section>
 

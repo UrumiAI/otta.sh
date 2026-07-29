@@ -130,8 +130,10 @@ describe("§2/§3 — the pages read the token layer and write no vocabulary of 
 	});
 
 	test.each(MIGRATED)("%s carries no legacy `.notice` panel", (_file, source) => {
-		// The pale panel `legacy-bridge.css` pins ink to. The theme's degraded
-		// surface is the Notice component (§4), which has no filled background.
+		// The pale yellow box the rollout's transitional sheet pinned ink to,
+		// deleted with that sheet in increment 6. The theme's degraded surface is
+		// the Notice component (§4), which has no filled background at all.
+		// `page-css.test.ts` sweeps this across every page rather than these three.
 		expect(source).not.toMatch(/class="notice"/);
 	});
 });
@@ -190,9 +192,10 @@ describe("§8 — the home hero and its degraded rule", () => {
 		// `getDb()` and the query behind it — so it needs the try/catch outright.
 		// An unguarded `await` on either is a 500 on the store's front door.
 		//
-		// NOT claimed: that the RESPONSE survives a dead content store. The
-		// layout reads settings on its own account (`Base.astro`) and is not this
-		// page's to guarantee — a separate fix, deliberately out of this scope.
+		// This used to carry a caveat — that the RESPONSE did not survive a dead
+		// content store, because the LAYOUT read settings on its own account and
+		// was not this page's to guarantee. Increment 6 guarded that read too, so
+		// the caveat is gone; `base-layout.test.ts` owns the layout's half.
 		const frontmatter = HOME.slice(0, HOME.indexOf("\n---", 3));
 		for (const [call, guard] of [
 			["getSiteSettings", /try\s*\{[^}]*getSiteSettings[^}]*\}\s*catch/],
@@ -396,10 +399,11 @@ describe("§10 — shopper-side copy", () => {
 	 * NOTE THE CLAIM, which is narrower than it looks.
 	 *
 	 * These sweep a page's own SOURCE, so they prove only that the theme does not
-	 * AUTHOR the boast. They say nothing about what a page renders: product
-	 * descriptions come from the content store, and the seeded ones currently put
-	 * "No oversell under concurrency." on the screen — see the expected failure
-	 * at the bottom of this block, which is where that fact is recorded.
+	 * AUTHOR the boast. They say nothing about what a page RENDERS: product
+	 * descriptions come from the content store, and what an operator types there
+	 * after seeding is theirs. The one store state this suite can hold to the
+	 * rule is the shipped seed, and the two tests at the foot of this block are
+	 * where that happens — both real assertions since increment 6.
 	 */
 	test.each(SHOPPER_COPY)(
 		"%s authors no marketing of the inventory guarantee in its own copy",
@@ -414,27 +418,104 @@ describe("§10 — shopper-side copy", () => {
 	});
 
 	/**
-	 * KNOWN, LIVE §10 VIOLATION — an expected failure, not a passing test.
+	 * FIXED, AND NOW GUARDED — this was a `test.fails` tripwire through
+	 * increments 3–5 and is a real assertion from increment 6.
 	 *
-	 * The pages above author none of this, but they render what the store holds,
-	 * and the seed puts the boast straight onto the catalog and the PDP: the mug
-	 * "Holds exactly one coffee, atomically. No oversell under concurrency.", the
-	 * tee narrating the CMS and the commerce service, the stickers advertising
-	 * integer minor units. §10 names `seed/seed.json` explicitly and assigns the
-	 * rewrite to the increment that owns the seed (increment 6); increment 3 owns
-	 * the templates and deliberately does not touch that file.
+	 * The pages author none of this, but they render what the store holds, and
+	 * the seed used to put the boast straight onto the catalog and the PDP: the
+	 * mug "Holds exactly one coffee, atomically. No oversell under concurrency.",
+	 * the tee narrating the CMS and the commerce service, the stickers
+	 * advertising integer minor units. §10 names `seed/seed.json` explicitly and
+	 * assigned the rewrite to the increment that owns the seed; increment 6 did
+	 * it, so the `.fails` is gone and the body stands as the guard that keeps it
+	 * done.
 	 *
-	 * `test.fails` makes that state legible rather than invisible: vitest counts
-	 * a failing body here as a PASS, so the suite stays green while the violation
-	 * stands, and the day the seed copy is fixed THIS test goes red — at which
-	 * point drop the `.fails` and it becomes the guard that keeps it fixed.
+	 * SCOPE, stated accurately rather than flatteringly. This sweeps the WHOLE
+	 * seed file rather than the shopper-visible strings, which costs nothing —
+	 * the seed is small and every string in it is shopper copy or an admin
+	 * label — and does mean a banned PHRASE is caught wherever it is
+	 * reintroduced, including a field nobody thought of. That is the only thing
+	 * it does. It is a ban LIST, so anything not on the list walks through:
+	 * `meta.description` in this very file says "CmsProductContent" and
+	 * "widget", and passes here, because `\bcms\b` does not match inside
+	 * `cmsproductcontent` and `widget` is not on this list. The list catches a
+	 * REGRESSION of the four boasts increment 6 removed; the test below is what
+	 * covers the shopper-facing fields properly.
+	 *
+	 * What neither covers: copy typed into the admin after seeding, which is the
+	 * operator's and not ours to police.
 	 */
-	test.fails("the seeded shopper copy carries no §10 boast (owned by increment 6)", () => {
+	test("the seeded shopper copy carries no §10 boast", () => {
 		const seed = SEED.toLowerCase();
 		expect(seed).not.toContain("oversell");
 		expect(seed).not.toContain("atomic");
 		expect(seed).not.toContain("commerce service");
 		expect(seed).not.toContain("integer minor units");
 		expect(seed).not.toMatch(/\bcms\b/);
+	});
+
+	/**
+	 * The other half of the seed rewrite, and the half a ban list cannot state:
+	 * the copy has to be shopper copy, not just copy with the banned words taken
+	 * out. One sweep for the writer's SIDE across every shopper-facing field,
+	 * then three pins, one per thing that was specifically wrong.
+	 */
+	test("the seed's shopper-facing copy is written from the shopper's side", () => {
+		const seed = JSON.parse(SEED) as {
+			settings: { tagline?: string };
+			menus: { items: { label: string; url: string }[] }[];
+			content: { products: { slug: string; data: { description?: string } }[] };
+		};
+
+		/**
+		 * Words that give away which side of the shop the writer is standing on.
+		 *
+		 * `deploys` earned its place: the mug shipped "Survives the dishwasher,
+		 * the commute, and most deploys" through increment 6's own rewrite —
+		 * none of the banned phrases, and still a joke only the operator is in
+		 * on, on a product page whose whole job is to describe a mug.
+		 *
+		 * The check runs over EVERY shopper-facing field in the seed, not just
+		 * the descriptions. The tagline is the home page's <h1> and its meta
+		 * description, and the menu labels are the site nav — all three are
+		 * read by more people than any one product page, and until now only the
+		 * descriptions were swept.
+		 */
+		const INTERNALS =
+			/commerce service|view model|\bCMS\b|widget|minor units|float|concurrency|\bdeploys?\b|\bdeployment\b/i;
+
+		const shopperFacing: ReadonlyArray<readonly [string, string]> = [
+			["settings.tagline", seed.settings.tagline ?? ""],
+			...seed.menus.flatMap((menu) =>
+				menu.items.map((item) => [`menu label "${item.label}"`, item.label] as const),
+			),
+			...seed.content.products.map(
+				(product) => [`${product.slug} description`, product.data.description ?? ""] as const,
+			),
+		];
+		for (const [where, text] of shopperFacing) {
+			expect(text, `${where} names internals`).not.toMatch(INTERNALS);
+		}
+
+		// The TAGLINE is the home page's <h1> (`storeThesis`), set in the biggest
+		// type on the site — so it has to be a thesis a shopper can read, not a
+		// note about which environment this is.
+		const tagline = seed.settings.tagline ?? "";
+		expect(tagline.length).toBeGreaterThan(0);
+		expect(tagline.toLowerCase()).not.toMatch(/staging|reference storefront|demo|test/);
+
+		// The MENU says where the link goes. "Products" is the collection's name
+		// in the admin; "Shop" is the place a shopper is going, and it is what
+		// the page it lands on calls itself (`<Base title="Shop">`).
+		const primary = seed.menus.find((menu) => menu.items.some((item) => item.url === "/products"));
+		expect(primary?.items.find((item) => item.url === "/products")?.label).toBe("Shop");
+
+		// And every product DESCRIPTION describes the product. The seed ships no
+		// photography (§5), so on a fresh install these three sentences are the
+		// only thing on the card that is about the thing being sold.
+		for (const product of seed.content.products) {
+			const description = product.data.description ?? "";
+			expect(description.length, `${product.slug} has no description`).toBeGreaterThan(0);
+		}
 	});
 });
