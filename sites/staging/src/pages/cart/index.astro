@@ -156,6 +156,19 @@ if (cart !== null && !isKnownCartState(cart.state)) {
  * identically. A non-null id licenses a link to `/orders/<id>` — which reads
  * the real order state and gates its own "Complete payment" on it — and never a
  * claim that the buyer paid.
+ *
+ * ── the `terminal ?` gate is load-bearing; do NOT simplify it away ───────────
+ * It reads as redundant beside a bare `cart?.orderId ?? null`, and it is not.
+ * "`active` ⟺ no order id" is enforced by `checkout` being the column's SINGLE
+ * WRITER, not structurally: migration `0021_cart_order_id.ts` deliberately adds
+ * no CHECK constraint, and says so in the place a future author would add one.
+ * Gating on `state` rather than on the id keeps this page correct under BOTH
+ * anomalies that permits — an `active` cart carrying a non-NULL id (reachable
+ * only by a raw partial UPDATE) still renders as the live cart it is, with no
+ * order link offered over its quantity fields; and a `checked_out` cart with a
+ * NULL id — which `cart-fence.dialects.test.ts` constructs on purpose, so the
+ * cart-state fence stays provably independent of this column — falls to the
+ * panel's case B.
  */
 const placedOrderId = terminal ? (cart?.orderId ?? null) : null;
 

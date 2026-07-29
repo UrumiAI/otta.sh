@@ -666,15 +666,30 @@ describe("a checked-out cart is rendered as terminal, and never as a paid one", 
 		// HONEST SCOPE, the same as the `state` test above: this pins the
 		// `CartWire` TypeScript DECLARATION — that `orderId` exists, is typed
 		// `string | null`, and is readable as the page reads it. It says nothing
-		// about runtime. The runtime guarantee is the plugin's:
-		// `HttpCommerceClient.getCart` coerces a missing / empty / non-string
-		// `orderId` to `null` before any consumer sees it, and that coercion is
-		// pinned in the plugin's own tests, where the wire boundary is.
+		// about runtime, and TWO different runtime failures need two different
+		// guarantees:
 		//
-		// So the DECLARATION half of this test is enforced by `pnpm typecheck`
-		// (`astro check`), not by vitest — dropping `orderId` from `CartWire`
-		// leaves this file green and the typecheck red. Verified by doing exactly
-		// that. The executed assertions below are vitest's share.
+		//  - a MALFORMED value (`undefined`, `""`, a non-string over a skewed
+		//    wire) is the plugin's: `HttpCommerceClient.getCart` coerces it to
+		//    `null` before any consumer sees it, pinned in the plugin's own
+		//    tests, at the wire boundary where the skew lands.
+		//  - the field DISAPPEARING is not, and the coercion cannot catch it —
+		//    it tolerates absence BY DESIGN (missing ⇒ `null`). A `serializeCart`
+		//    that silently stopped emitting `orderId` would drop every
+		//    checked-out cart to case B with this whole suite green: #110 again,
+		//    in muted form. What covers it is the same thing that covers `state`
+		//    three tests above — `packages/service/test/carts.http.contract.test.ts`
+		//    asserts `toHaveProperty("orderId")` where the field is PRODUCED, so
+		//    a silent drop fails CI instead of reaching a shopper.
+		//
+		// So the DECLARATION half of this test is enforced by the TYPE gates, not
+		// by vitest: dropping `orderId` from `CartWire` leaves this file green and
+		// reddens both of them — root `pnpm typecheck` (`tsc -b` over `packages/*`
+		// only; the root tsconfig is `files: []` plus package references and does
+		// not reach `sites/*`) because `http-commerce-client.ts` reads and assigns
+		// the field, and `sites/staging`'s own `astro check` — CI reaches it via
+		// `pnpm -r --if-present typecheck` — because of this fixture. Verified by
+		// doing exactly that. The executed assertions below are vitest's share.
 		const named: CartWire = {
 			cartId: "cart_1",
 			state: "checked_out",
