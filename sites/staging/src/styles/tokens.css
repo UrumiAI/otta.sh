@@ -12,9 +12,11 @@
  * button background, which is what keeps every interactive element at full
  * text contrast.
  *
- * Increment 1 of the theme rollout ships THIS FILE plus the layout chrome.
- * The pages still carry their pre-theme styles; increments 3–6 move them onto
- * these tokens.  See the transitional block at the foot of this file.
+ * Increment 1 of the theme rollout shipped THIS FILE plus the layout chrome,
+ * and increments 3–6 moved every page onto it.  The rollout's transitional
+ * sheet (`legacy-bridge.css`) is gone with increment 6; this is now the only
+ * unscoped stylesheet on the site, and the only place a colour, a face, a
+ * radius or the button shape is written down.
  */
 
 :root {
@@ -224,6 +226,71 @@ video {
 	color: var(--u-mute);
 }
 
+/**
+ * §2's ONE button shape, written down once (mockup `.s-btn` / `.s-btn-ghost`).
+ *
+ * Ink-filled, 2px radius, and straw arriving on hover as a 3px rule along the
+ * inner bottom edge — never as a fill, which is what keeps every label at full
+ * text contrast.  `.u-btn-ghost` is the second rank: the same shape on the
+ * hairline instead of on ink.
+ *
+ * It is here, global and unscoped, for the reason `.u-mono` is: seven pages had
+ * a private copy of these fourteen declarations, and they had already drifted —
+ * three wrote the transparent inset shadow as `rgba(0, 0, 0, 0)` and four as
+ * `transparent`, one page's hover was `:hover` where another's was
+ * `:hover:not(:disabled)`, and only the payment page had a disabled state at
+ * all.  A component would not have fixed it: a page cannot style a component's
+ * root (see src/lib/rest-props.ts), and every one of these buttons is a
+ * `<button>` inside a form or an `<a>` the page positions, so the page needs
+ * the element.  A class it can put ON that element is the shape that fits.
+ *
+ * Layout around a button stays the page's — margin, grid placement, whether it
+ * is in a flex row.  This carries only what the button IS.
+ *
+ * Focus is the straw ring below and is deliberately not restyled here.
+ */
+.u-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.625rem;
+	padding: 0.75rem 1.25rem;
+	border: none;
+	border-radius: var(--u-r);
+	background: var(--u-ink);
+	color: var(--u-surface);
+	font-family: var(--u-body);
+	font-size: 0.875rem;
+	font-weight: 600;
+	line-height: 1.2;
+	text-decoration: none;
+	cursor: pointer;
+	/* Declared transparent so the hover rule animates a WIDTH rather than
+	   appearing from nothing. Covered by the reduced-motion clamp at the foot
+	   of this file — the button is decoration, not the hold countdown. */
+	box-shadow: inset 0 -2px 0 transparent;
+	transition: box-shadow 120ms ease;
+}
+
+.u-btn:hover:not(:disabled) {
+	box-shadow: inset 0 -3px 0 var(--u-straw);
+}
+
+/* The payment button is the only one that is ever disabled today (it stands
+   down while a confirm is in flight), but the state belongs to the shape
+   rather than to that page. */
+.u-btn:disabled {
+	opacity: 0.55;
+	cursor: default;
+}
+
+/* Second rank — a way out rather than a way on. Full-contrast ink either way:
+   straw is a fitting, never what a label sits on (§2). */
+.u-btn-ghost {
+	background: transparent;
+	color: var(--u-ink);
+	border: var(--u-hair);
+}
+
 /* §11: visible keyboard focus on EVERY interactive element — straw, 2px,
    offset 2px.  Deliberately not `:where()`: a page must not be able to lose
    the ring by accident. */
@@ -260,9 +327,10 @@ summary:focus-visible,
 	   applies to scrolling BOXES, so the universal selector was not spreading
 	   one value down a tree, it was setting it on every element in the
 	   document to no effect. <html> is the box that scrolls the viewport, so
-	   that is where it belongs. Note `main` is a second scrolling box while
-	   legacy-bridge.css is in play; a `smooth` rule there would need the same
-	   override.
+	   that is where it belongs. There is exactly one scrolling box in the
+	   theme now that the transitional `main { overflow-x: auto }` is gone
+	   (§11 puts wide content in a container of its OWN); anything that adds a
+	   second one and sets `smooth` on it needs the same override.
 	   `!important` is deliberate and is the legitimate use of it: a later
 	   author writing `html { scroll-behavior: smooth }` outside this media
 	   query would otherwise silently beat an accessibility override on

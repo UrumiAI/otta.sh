@@ -130,8 +130,10 @@ describe("§2/§3 — the pages read the token layer and write no vocabulary of 
 	});
 
 	test.each(MIGRATED)("%s carries no legacy `.notice` panel", (_file, source) => {
-		// The pale panel `legacy-bridge.css` pins ink to. The theme's degraded
-		// surface is the Notice component (§4), which has no filled background.
+		// The pale yellow box the rollout's transitional sheet pinned ink to,
+		// deleted with that sheet in increment 6. The theme's degraded surface is
+		// the Notice component (§4), which has no filled background at all.
+		// `page-css.test.ts` sweeps this across every page rather than these three.
 		expect(source).not.toMatch(/class="notice"/);
 	});
 });
@@ -190,9 +192,10 @@ describe("§8 — the home hero and its degraded rule", () => {
 		// `getDb()` and the query behind it — so it needs the try/catch outright.
 		// An unguarded `await` on either is a 500 on the store's front door.
 		//
-		// NOT claimed: that the RESPONSE survives a dead content store. The
-		// layout reads settings on its own account (`Base.astro`) and is not this
-		// page's to guarantee — a separate fix, deliberately out of this scope.
+		// This used to carry a caveat — that the RESPONSE did not survive a dead
+		// content store, because the LAYOUT read settings on its own account and
+		// was not this page's to guarantee. Increment 6 guarded that read too, so
+		// the caveat is gone; `base-layout.test.ts` owns the layout's half.
 		const frontmatter = HOME.slice(0, HOME.indexOf("\n---", 3));
 		for (const [call, guard] of [
 			["getSiteSettings", /try\s*\{[^}]*getSiteSettings[^}]*\}\s*catch/],
@@ -414,27 +417,68 @@ describe("§10 — shopper-side copy", () => {
 	});
 
 	/**
-	 * KNOWN, LIVE §10 VIOLATION — an expected failure, not a passing test.
+	 * FIXED, AND NOW GUARDED — this was a `test.fails` tripwire through
+	 * increments 3–5 and is a real assertion from increment 6.
 	 *
-	 * The pages above author none of this, but they render what the store holds,
-	 * and the seed puts the boast straight onto the catalog and the PDP: the mug
-	 * "Holds exactly one coffee, atomically. No oversell under concurrency.", the
-	 * tee narrating the CMS and the commerce service, the stickers advertising
-	 * integer minor units. §10 names `seed/seed.json` explicitly and assigns the
-	 * rewrite to the increment that owns the seed (increment 6); increment 3 owns
-	 * the templates and deliberately does not touch that file.
+	 * The pages author none of this, but they render what the store holds, and
+	 * the seed used to put the boast straight onto the catalog and the PDP: the
+	 * mug "Holds exactly one coffee, atomically. No oversell under concurrency.",
+	 * the tee narrating the CMS and the commerce service, the stickers
+	 * advertising integer minor units. §10 names `seed/seed.json` explicitly and
+	 * assigned the rewrite to the increment that owns the seed; increment 6 did
+	 * it, so the `.fails` is gone and the body stands as the guard that keeps it
+	 * done.
 	 *
-	 * `test.fails` makes that state legible rather than invisible: vitest counts
-	 * a failing body here as a PASS, so the suite stays green while the violation
-	 * stands, and the day the seed copy is fixed THIS test goes red — at which
-	 * point drop the `.fails` and it becomes the guard that keeps it fixed.
+	 * SCOPE, because it is wider than it needs to be on purpose: this sweeps the
+	 * WHOLE seed file, not just the strings a shopper sees. The seed is small and
+	 * every string in it is either shopper copy or an admin label, so the strict
+	 * version costs nothing and catches a boast reintroduced in a field this test
+	 * has not thought of. What it does NOT cover: copy typed into the admin after
+	 * seeding, which is the operator's and not ours to police.
 	 */
-	test.fails("the seeded shopper copy carries no §10 boast (owned by increment 6)", () => {
+	test("the seeded shopper copy carries no §10 boast", () => {
 		const seed = SEED.toLowerCase();
 		expect(seed).not.toContain("oversell");
 		expect(seed).not.toContain("atomic");
 		expect(seed).not.toContain("commerce service");
 		expect(seed).not.toContain("integer minor units");
 		expect(seed).not.toMatch(/\bcms\b/);
+	});
+
+	/**
+	 * The other half of the seed rewrite, and the half a ban list cannot state:
+	 * the copy has to be shopper copy, not just copy with the banned words taken
+	 * out. Three pins, one per thing that was wrong.
+	 */
+	test("the seed's shopper-facing copy is written from the shopper's side", () => {
+		const seed = JSON.parse(SEED) as {
+			settings: { tagline?: string };
+			menus: { items: { label: string; url: string }[] }[];
+			content: { products: { slug: string; data: { description?: string } }[] };
+		};
+
+		// The TAGLINE is the home page's <h1> (`storeThesis`), set in the biggest
+		// type on the site — so it has to be a thesis a shopper can read, not a
+		// note about which environment this is.
+		const tagline = seed.settings.tagline ?? "";
+		expect(tagline.length).toBeGreaterThan(0);
+		expect(tagline.toLowerCase()).not.toMatch(/staging|reference storefront|demo|test/);
+
+		// The MENU says where the link goes. "Products" is the collection's name
+		// in the admin; "Shop" is the place a shopper is going, and it is what
+		// the page it lands on calls itself (`<Base title="Shop">`).
+		const primary = seed.menus.find((menu) => menu.items.some((item) => item.url === "/products"));
+		expect(primary?.items.find((item) => item.url === "/products")?.label).toBe("Shop");
+
+		// And every product DESCRIPTION describes the product. The seed ships no
+		// photography (§5), so on a fresh install these three sentences are the
+		// only thing on the card that is about the thing being sold.
+		for (const product of seed.content.products) {
+			const description = product.data.description ?? "";
+			expect(description.length, `${product.slug} has no description`).toBeGreaterThan(0);
+			expect(description, `${product.slug} names internals`).not.toMatch(
+				/commerce service|view model|\bCMS\b|widget|minor units|float|concurrency/i,
+			);
+		}
 	});
 });

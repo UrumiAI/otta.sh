@@ -14,10 +14,8 @@
  */
 import { Font } from "astro:assets";
 import { getMenu, getSiteSettings } from "emdash";
-import { cartCountLabel, isCartLink } from "../lib/nav.js";
+import { cartCountLabel, FALLBACK_MENU_ITEMS, isCartLink, type NavItem } from "../lib/nav.js";
 import "../styles/tokens.css";
-// TRANSITIONAL — goes away with the last page migration. See the file.
-import "../styles/legacy-bridge.css";
 
 interface Props {
 	title: string;
@@ -43,10 +41,52 @@ interface Props {
 }
 
 const { title, description, cartCount = null, currency = null } = Astro.props;
-const settings = (await getSiteSettings()) as { title?: string; tagline?: string };
+
+/**
+ * BOTH content reads here are guarded, and this was the last unguarded read on
+ * the site — the one remaining path from "the content store is unreachable" to
+ * a 500 on every page at once.
+ *
+ * Neither call has an error channel. `getSiteSettings()` and `getMenu()` both
+ * await `getDb()` and a query behind it, and both reject outright when that
+ * fails; there is no `{ error }` to inspect the way `getEmDashCollection` gives
+ * one. An unguarded `await` in a LAYOUT is the worst version of that, because
+ * every page renders through it: the home page and the shop page already guard
+ * their own reads and still went down with this one. Probed against a dead D1:
+ * unguarded, every route 500s; guarded, the store serves 200 with the fallback
+ * chrome below and each page's own degraded state inside it.
+ *
+ * The fallbacks are chosen to be TRUE rather than merely non-empty:
+ *
+ *  - the title falls back to "Urumi", which is what an absent `settings.title`
+ *    already did — a failed read and an unset setting land in the same place
+ *    rather than growing a second rule;
+ *  - the nav falls back to the routes THIS THEME defines (`FALLBACK_MENU_ITEMS`
+ *    in lib/nav.ts). They exist whatever the content store is doing, so a
+ *    shopper mid-visit keeps a way to the shop and to their cart instead of
+ *    being stranded on a page with a wordmark and nothing else.
+ *
+ * The fallback is used ONLY when the read THREW. A menu that comes back `null`
+ * is a store with no `primary` menu configured, which is a real answer and the
+ * operator's to change — substituting our own there would quietly override a
+ * deliberately empty nav.
+ */
+let settings: { title?: string; tagline?: string } = {};
+try {
+	settings = (await getSiteSettings()) as { title?: string; tagline?: string };
+} catch (error) {
+	console.error("[site-staging] layout settings read threw:", error);
+}
 const siteTitle = settings.title ?? "Urumi";
 const fullTitle = title.includes(siteTitle) ? title : `${title} — ${siteTitle}`;
-const menu = await getMenu("primary");
+
+let navItems: readonly NavItem[] = [];
+try {
+	navItems = (await getMenu("primary"))?.items ?? [];
+} catch (error) {
+	console.error("[site-staging] layout menu read threw:", error);
+	navItems = FALLBACK_MENU_ITEMS;
+}
 ---
 
 <!doctype html>
@@ -92,12 +132,12 @@ const menu = await getMenu("primary");
 				<a href="/" class="wordmark">{siteTitle}</a>
 				<nav class="nav" aria-label="Primary">
 					{
-						menu?.items.map((item) => (
+						navItems.map((item) => (
 							<a href={item.url}>
 								{item.label}
 								{isCartLink(item.url) && cartCount !== null && (
 									<Fragment>
-										<span class="count mono" aria-hidden="true"> ({cartCount})</span>
+										<span class="count u-mono" aria-hidden="true"> ({cartCount})</span>
 										<span class="u-sr-only">, {cartCountLabel(cartCount)}</span>
 									</Fragment>
 								)}
@@ -113,7 +153,7 @@ const menu = await getMenu("primary");
 		<footer class="foot">
 			<div class="shell foot-row">
 				<span>Urumi — content by EmDash, commerce by Urumi.</span>
-				{currency !== null && <span class="mono">{currency}</span>}
+				{currency !== null && <span class="u-mono">{currency}</span>}
 			</div>
 		</footer>
 	</body>
@@ -221,13 +261,12 @@ const menu = await getMenu("primary");
 		border-bottom-color: var(--u-straw);
 	}
 
-	/* §3: money, quantities and counts are the only things set in mono. */
-	.mono {
-		font-family: var(--u-data);
-		font-variation-settings: "wdth" 90;
-		letter-spacing: -0.045em;
-		font-variant-numeric: tabular-nums;
-	}
+	/* §3: money, quantities and counts are the only things set in mono — and
+	   the recipe for that is `.u-mono` in tokens.css, written down once. This
+	   block used to carry a private copy of it, which is exactly the drift that
+	   rule exists to stop. Only the SIZE and colour of the cart badge are the
+	   layout's business, and `.count` is scoped, so it out-specifies the global
+	   for the one declaration the two share. */
 	.count {
 		font-size: 0.6875rem;
 		letter-spacing: -0.03em;

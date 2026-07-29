@@ -47,11 +47,14 @@ describe("Notice — degraded is a look, not a crash", () => {
 		expect(html).not.toMatch(/style="[^"]*background/);
 	});
 
-	test("its root class does NOT collide with legacy-bridge's global `.notice`", async () => {
-		// `legacy-bridge.css` sets `.notice { color: #131a20 }` unscoped — a
-		// deliberate literal pinned to the pale panel the unmigrated pages
-		// still paint. Sharing the name would land a hard-coded near-black on
-		// this component's text under the dark palette.
+	test("its root class is `u-notice`, and never the bare `.notice`", async () => {
+		// It was named this to dodge the rollout's transitional global sheet,
+		// which set `.notice { color: #131a20 }` unscoped — a literal pinned to
+		// the pale panel the unmigrated pages painted, and a hard-coded near-black
+		// on this component's text under the dark palette. Increment 6 deleted
+		// that sheet, and the name is kept on its own merits: `u-` marks the
+		// classes this theme allows to be unscoped, and a bare `.notice` is
+		// exactly what a page or a future global would collide with again.
 		const html = await notice({}, "x");
 		const classes = (/^<div class="([^"]*)"/.exec(html)?.[1] ?? "").split(/\s+/);
 		expect(classes).toContain("u-notice");

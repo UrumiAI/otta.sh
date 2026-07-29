@@ -48,6 +48,7 @@ import { getEmDashCollection } from "emdash";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import HoldRibbon from "../../components/HoldRibbon.astro";
 import MediaPanel from "../../components/MediaPanel.astro";
+import Notice from "../../components/Notice.astro";
 import PriceTag from "../../components/PriceTag.astro";
 import QtyField from "../../components/QtyField.astro";
 import Sum from "../../components/Sum.astro";
@@ -398,17 +399,43 @@ const partialNote =
 		<h1 class="title">Cart</h1>
 	</header>
 
-	{error !== null && <p class="notice">{cartErrorMessage(error)}</p>}
+	{/* §4's degraded surface, on all three of this page's banners. They were the
+	    last pre-theme panels on the site — a pale yellow box whose ink came from
+	    the transitional global sheet increment 6 deletes.
+
+	    WRAPPED rather than handed a class: a page's scoped selector cannot reach
+	    a component's root, so spacing around one lives on an element this page
+	    owns (see src/lib/rest-props.ts). */}
+	{error !== null && (
+		<div class="notice-slot">
+			<Notice>{cartErrorMessage(error)}</Notice>
+		</div>
+	)}
 	{degraded && (
-		<p class="notice">The cart service is temporarily unavailable — please try again shortly.</p>
+		/* §10: the old copy named the internals ("the cart service is temporarily
+		   unavailable") and apologised. What a shopper needs instead is which of
+		   their things is affected and what is still true of it — a read that
+		   failed changed nothing, so the cart on the other side of it is intact. */
+		<div class="notice-slot">
+			<Notice lead="Your cart is unavailable right now.">
+				Nothing in it has changed — try again in a moment.
+			</Notice>
+		</div>
 	)}
 	{/* Not over the terminal panel: it shows neither prices nor holds, so
-	    "quantities and holds are still accurate" is a banner about a page that
+	    "quantities and holds are still exact" is a banner about a page that
 	    is not on screen. */}
 	{cart !== null && !terminal && pricingDegraded && (
-		<p class="notice">
-			Pricing is temporarily unavailable — quantities and holds are still accurate.
-		</p>
+		/* The mockup's own degraded-cart copy, minus its closing clause ("you'll
+		   see the full total at checkout"). That is a promise this page cannot
+		   keep: with the pricing join down, /checkout answers on the same service
+		   and 303s straight back here. The two facts that ARE true — the
+		   quantities and the holds — are what it says. */
+		<div class="notice-slot">
+			<Notice lead="Prices are unavailable right now.">
+				Your quantities and your holds are still exact.
+			</Notice>
+		</div>
 	)}
 
 	{
@@ -424,7 +451,7 @@ const partialNote =
 					<p>
 						Your cart is empty. Pick something and we'll hold the stock while you decide.
 					</p>
-					<a href="/products" class="btn btn-ghost">
+					<a href="/products" class="u-btn u-btn-ghost">
 						Browse products
 					</a>
 				</div>
@@ -468,7 +495,7 @@ const partialNote =
 					    page is the better door (it knows the order's actual state)
 					    and it offers "Complete payment" itself when that applies. */}
 					{placedOrderId !== null && (
-						<a href={`/orders/${encodeURIComponent(placedOrderId)}`} class="btn">View your order</a>
+						<a href={`/orders/${encodeURIComponent(placedOrderId)}`} class="u-btn">View your order</a>
 					)}
 
 					{/* CASE B — no stash, which is the ORDINARY case: it lives 15
@@ -480,7 +507,7 @@ const partialNote =
 					    still owe money. */}
 					{placedOrderId === null && (
 						<div class="terminal-resume">
-							<a href="/checkout" class="btn">Return to this checkout</a>
+							<a href="/checkout" class="u-btn">Return to this checkout</a>
 							<p class="terminal-note">{CART_RESUME_PURPOSE}</p>
 							<p class="terminal-note">{CART_NO_ORDER_LINK}</p>
 						</div>
@@ -491,7 +518,7 @@ const partialNote =
 					    too, so a payment still in flight loses its client secret. */}
 					<div class="terminal-restart">
 						<form method="POST" action="/checkout/new-cart">
-							<button type="submit" class="btn btn-ghost">Start a new cart</button>
+							<button type="submit" class="u-btn u-btn-ghost">Start a new cart</button>
 						</form>
 						<p class="terminal-note">{CART_NEW_CART_CONSEQUENCE}</p>
 					</div>
@@ -569,7 +596,7 @@ const partialNote =
 				</div>
 
 				<div class="cart-foot">
-					<a href="/checkout" class="btn">
+					<a href="/checkout" class="u-btn">
 						Check out
 					</a>
 					{/* §7, and the reason it says both halves: the figures above are a
@@ -648,9 +675,9 @@ const partialNote =
 	/* Issue #110's panel. Deliberately built out of the same parts as the empty
 	   state rather than out of new ones: a checked-out cart is a page with
 	   nothing left to do on it, and §8's answer to that is prose and a way out,
-	   not a second styling language. EVERY colour here is a token — the page's
-	   only literals are the transitional `?error=` panel's, and a test pins
-	   that list at exactly two. */
+	   not a second styling language. EVERY colour here is a token, and since
+	   increment 6 deleted the transitional `?error=` panel that is true of the
+	   whole page — a test pins that it declares no literal at all. */
 	.terminal {
 		display: flex;
 		flex-direction: column;
@@ -746,7 +773,9 @@ const partialNote =
 	   structure on the page. `minmax(0, 1fr)` rather than `1fr` so a long
 	   product name or SKU wraps instead of widening the column — a grid track's
 	   automatic minimum is min-content, which is what took the whole PAGE wide
-	   in the pre-theme table (§11, and see legacy-bridge.css). */
+	   in the pre-theme table (§11). That table is why <main> carried a
+	   transitional `overflow-x: auto` through increments 1–5; these lines are
+	   what let increment 6 delete it. */
 	.line {
 		display: grid;
 		grid-template-columns: 4.5rem minmax(0, 1fr) auto;
@@ -865,38 +894,18 @@ const partialNote =
 		color: var(--u-mute);
 	}
 
-	/* §2: primary buttons are ink-filled; straw is a fitting, so it arrives on
-	   hover as a 3px rule along the inner bottom edge and never as a fill. */
-	.btn {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.625rem;
-		padding: 0.75rem 1.25rem;
-		border: none;
-		border-radius: var(--u-r);
-		background: var(--u-ink);
-		color: var(--u-surface);
-		font-family: var(--u-body);
-		font-size: 0.875rem;
-		font-weight: 600;
-		text-decoration: none;
-		cursor: pointer;
-		box-shadow: inset 0 -2px 0 transparent;
-		transition: box-shadow 120ms ease;
-	}
-	.btn:hover {
-		box-shadow: inset 0 -3px 0 var(--u-straw);
+	/* The banners (§4). The component owns everything inside them; the page owns
+	   the air under them. */
+	.notice-slot {
+		margin-bottom: 1.5rem;
 	}
 
-	/* The empty state's way out is a SECOND-rank action — there is nothing on
-	   this page to be primary about — so it is the same button on the hairline
-	   instead of on ink. Full-contrast text either way (§2: straw is a fitting;
-	   it is never what a label sits on). */
-	.btn-ghost {
-		background: transparent;
-		color: var(--u-ink);
-		border: var(--u-hair);
-	}
+	/* No `.btn` rule here, and none on any other page: §2's one button shape is
+	   `.u-btn` / `.u-btn-ghost` in tokens.css, written down once. Seven pages
+	   carried a private copy of it and they had already drifted. The rank is
+	   still this page's decision — the checkout button is `.u-btn`, the empty
+	   state's way out and "Start a new cart" are `.u-btn .u-btn-ghost`, because
+	   there is nothing on those screens to be primary about. */
 
 	/* §11: 390px with no horizontal page scroll. Three columns cannot hold a
 	   hold ribbon AND a qty row on a phone, so the controls drop under the line
@@ -923,15 +932,5 @@ const partialNote =
 		.totals {
 			max-width: none;
 		}
-	}
-
-	/* TRANSITIONAL — the `?error=` banner keeps the pre-theme panel until
-	   increment 6 restyles notices onto the `Notice` component. Its ink comes
-	   from legacy-bridge.css, which pins a literal against this pale ground. */
-	.notice {
-		background: #fff7e0;
-		border: 1px solid #e6c200;
-		border-radius: 0.5rem;
-		padding: 0.75rem 1rem;
 	}
 </style>

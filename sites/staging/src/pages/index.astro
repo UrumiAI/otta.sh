@@ -119,7 +119,7 @@ const shopLabel = shopLinkLabel(count);
 			<h1 class="title">{thesis}</h1>
 			<p class="lede">{lede}</p>
 			<div>
-				<a class="btn" href="/products">{shopLabel}</a>
+				<a class="u-btn" href="/products">{shopLabel}</a>
 			</div>
 		</div>
 
@@ -293,29 +293,8 @@ const shopLabel = shopLinkLabel(count);
 		font-size: 0.75rem;
 	}
 
-	/* The theme's one button shape (mockup `.s-btn`): ink-filled, straw only as
-	   a fitting on hover — never a fill, so the label keeps full contrast (§2).
-	   Focus is the global ring in tokens.css and is deliberately not restyled. */
-	.btn {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.625rem;
-		background: var(--u-ink);
-		color: var(--u-surface);
-		border: none;
-		border-radius: var(--u-r);
-		padding: 0.75rem 1.25rem;
-		font-family: var(--u-body);
-		font-size: 0.875rem;
-		font-weight: 600;
-		text-decoration: none;
-		cursor: pointer;
-		box-shadow: inset 0 -2px 0 transparent;
-		transition: box-shadow 120ms ease;
-	}
-	.btn:hover {
-		box-shadow: inset 0 -3px 0 var(--u-straw);
-	}
+	/* The shop link is `.u-btn` (tokens.css) — §2's one button shape, written
+	   down once instead of copied into every page that has a button. */
 
 	@media (max-width: 52rem) {
 		.hero {

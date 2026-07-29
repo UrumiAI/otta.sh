@@ -17,9 +17,14 @@
  * replays in the service instead of duplicating, while a fresh page load
  * mints a new key. The /cart/add endpoint never invents a key.
  *
- * Degraded state: with the commerce service unreachable the route returns
- * RENDER_FAILED and this page still renders the CMS content (no price, no
- * add-to-cart) with a designed notice — 200, never a crash.
+ * TWO degraded states, and they are not the same state — the shop page's own
+ * distinction, drawn here per product:
+ *
+ *  - COMMERCE unreachable: the route returns RENDER_FAILED and this page still
+ *    renders the content (no price, no add-to-cart) with a designed notice —
+ *    200, never a crash. Content visibility never depends on commerce.
+ *  - CONTENT unreachable: there is nothing to render, and the page must not
+ *    say "Product not found." about it. See the read below.
  */
 import {
 	STOREFRONT_PRODUCT_ROUTE,
@@ -42,9 +47,55 @@ import { dispatchUrumiRoute } from "../../lib/urumi-api.js";
 const { slug } = Astro.params;
 if (slug === undefined) return Astro.redirect("/products");
 
-const { entry } = await getEmDashEntry("products", slug);
+/**
+ * "This product does not exist" and "the store cannot be read right now" are
+ * NOT the same page, and the read hands them over looking identical: a `null`
+ * entry either way. Only `error` tells them apart, and this page used to
+ * discard it — so a content-store outage answered every product URL with
+ * "Product not found." at 404, which tells a shopper following a live link that
+ * the thing they came for is gone, and tells a crawler to drop the catalog.
+ *
+ * The same distinction the shop page already draws (see the head of
+ * `products/index.astro`); this is the PDP's half of it.
+ *
+ * `LiveEntryNotFoundError` is excluded because it IS the not-found case: astro
+ * wraps a missing row in one and the loader surfaces it through `error`, which
+ * is why `EntryResult.error`'s own JSDoc ("not set for not found") cannot be
+ * taken at its word. The `try` is the third arm — a missing binding throws
+ * rather than reporting, exactly as it does for the collection read.
+ *
+ * ── WHAT THIS DOES NOT CATCH, measured rather than assumed ─────────────────
+ * A MISSING TABLE OR COLUMN. em-dash's loader catches those and returns a bare
+ * `{ entry: null }` — no `error` key, no throw, no log — so a store whose
+ * `ec_products` table is gone still renders "Product not found." at 404.
+ * Verified under a workerd preview against a database with the table renamed
+ * away: 404, and nothing in the log. The collection API has the same hole (see
+ * the shape-keyed warn in `cart/index.astro`, which is the workaround there),
+ * but a SINGLE-entry read has no equivalent signal to key on — "no row came
+ * back" is precisely what a genuine 404 looks like.
+ *
+ * So the scope is exact: this covers a reported query error and a thrown
+ * binding failure, which is the whole of what this page can see. Closing the
+ * missing-table hole needs a change in em-dash, not another branch here.
+ */
+let entry: Awaited<ReturnType<typeof getEmDashEntry>>["entry"] = null;
+let contentUnavailable = false;
+try {
+	const read = await getEmDashEntry("products", slug);
+	entry = read.entry;
+	if (read.error !== undefined && read.error.name !== "LiveEntryNotFoundError") {
+		contentUnavailable = true;
+		console.error("[site-staging] product content read failed:", read.error);
+	}
+} catch (cause) {
+	contentUnavailable = true;
+	console.error("[site-staging] product content read threw:", cause);
+}
+
 if (entry === null) {
-	Astro.response.status = 404;
+	// 503 for an outage, 404 for an address that resolves to nothing. The status
+	// is the machine-readable half of the same sentence the page renders.
+	Astro.response.status = contentUnavailable ? 503 : 404;
 }
 
 const content = entry !== null ? toCmsProductContent(entry.data as unknown as ProductEntryData) : null;
@@ -85,27 +136,49 @@ const soldOut = product?.availability === "out_of_stock";
 {/* An unpriced or degraded product carries no currency, and the footer
     then names none rather than guessing (§7). */}
 <Base
-	title={content?.title ?? "Product not found"}
+	title={content?.title ?? (contentUnavailable ? "Product unavailable" : "Product not found")}
 	description={content?.description}
 	currency={product?.price?.currency ?? null}
 >
 	{
 		content === null ? (
-			<div class="empty">
-				<h1 class="title empty-title">Product not found.</h1>
-				<p class="empty-copy">
-					{/* States the fact and stops. The page knows the address
-					    resolves to nothing; it does NOT know why, and "it may
-					    have sold out and been retired" invents a story about a
-					    product that may simply never have existed — or tells a
-					    shopper chasing a live link that the thing they came for
-					    is gone, on no evidence. */}
-					Nothing here under that address.
-				</p>
-				<a class="btn btn-ghost" href="/products">
-					Back to all products
-				</a>
-			</div>
+			contentUnavailable ? (
+				/* NOT the not-found state, for the reason the shop page gives:
+				   telling a shopper a product does not exist, when in fact the
+				   store could not be read, is the wrong fact. §10 — what happened
+				   and what to do, no apology, no internals. The crumb is still
+				   offered: the shop page renders its own designed banner if the
+				   outage is still on, so it is a real way forward rather than a
+				   second dead end. */
+				<>
+					<div class="notice-slot">
+						<Notice lead="This page is unavailable right now.">
+							Try again in a moment.
+						</Notice>
+					</div>
+					<div class="empty">
+						<a class="u-btn u-btn-ghost" href="/products">
+							Back to all products
+						</a>
+					</div>
+				</>
+			) : (
+				<div class="empty">
+					<h1 class="title empty-title">Product not found.</h1>
+					<p class="empty-copy">
+						{/* States the fact and stops. The page knows the address
+						    resolves to nothing; it does NOT know why, and "it may
+						    have sold out and been retired" invents a story about a
+						    product that may simply never have existed — or tells a
+						    shopper chasing a live link that the thing they came for
+						    is gone, on no evidence. */}
+						Nothing here under that address.
+					</p>
+					<a class="u-btn u-btn-ghost" href="/products">
+						Back to all products
+					</a>
+				</div>
+			)
 		) : (
 			<>
 				<p class="crumb">
@@ -200,7 +273,7 @@ const soldOut = product?.availability === "out_of_stock";
 												value={content.url ?? `/products/${slug}`}
 											/>
 											<QtyField name="qty" value={1} min={1} />
-											<button class="btn" type="submit">
+											<button class="u-btn" type="submit">
 												Add to cart
 											</button>
 										</form>
@@ -246,7 +319,7 @@ const soldOut = product?.availability === "out_of_stock";
 								{soldOut && (
 									<div class="buy-block">
 										<div>
-											<a class="btn btn-ghost" href="/products">
+											<a class="u-btn u-btn-ghost" href="/products">
 												See what's in stock
 											</a>
 										</div>
@@ -390,34 +463,10 @@ const soldOut = product?.availability === "out_of_stock";
 		color: var(--u-mute);
 	}
 
-	/* The theme's one button shape (mockup `.s-btn`): ink-filled, straw only as
-	   a fitting on hover — never a fill, so the label keeps full contrast (§2).
-	   Focus is the global ring in tokens.css and is deliberately not restyled. */
-	.btn {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.625rem;
-		background: var(--u-ink);
-		color: var(--u-surface);
-		border: none;
-		border-radius: var(--u-r);
-		padding: 0.75rem 1.25rem;
-		font-family: var(--u-body);
-		font-size: 0.875rem;
-		font-weight: 600;
-		text-decoration: none;
-		cursor: pointer;
-		box-shadow: inset 0 -2px 0 transparent;
-		transition: box-shadow 120ms ease;
-	}
-	.btn:hover {
-		box-shadow: inset 0 -3px 0 var(--u-straw);
-	}
-	.btn-ghost {
-		background: transparent;
-		color: var(--u-ink);
-		border: var(--u-hair);
-	}
+	/* Buttons are `.u-btn` / `.u-btn .u-btn-ghost` (tokens.css) — §2's one shape,
+	   written down once. The RANK is still this page's: add-to-cart is the only
+	   filled element on the PDP (§8), and the two ways out — "Back to all
+	   products" and the sold-out "See what's in stock" — are ghosts. */
 
 	@media (max-width: 52rem) {
 		.pdp {

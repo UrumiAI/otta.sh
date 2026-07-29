@@ -42,6 +42,56 @@ describe("Base layout — contract kept by the rebuild", () => {
 	});
 });
 
+/**
+ * The last unguarded content read on the site, and the worst one to leave: this
+ * layout renders EVERY page, so a rejected read here 500s the whole store at
+ * once — including the home page and the shop page, which guard their own reads
+ * and still went down with this one.
+ *
+ * Neither call has an error channel. `getSiteSettings()` and `getMenu()` both
+ * await `getDb()` and a query behind it and reject outright; there is no
+ * `{ error }` to inspect the way `getEmDashCollection` provides one. So the only
+ * available guard is `try`/`catch`, on both.
+ */
+describe("Base layout — a dead content store costs the chrome, not the response", () => {
+	const frontmatter = source.slice(0, source.indexOf("\n---", 3));
+
+	test.each([
+		["getSiteSettings", /try\s*\{[\s\S]*?getSiteSettings\(\)[\s\S]*?\}\s*catch/],
+		["getMenu", /try\s*\{[\s\S]*?getMenu\("primary"\)[\s\S]*?\}\s*catch/],
+	])("%s is read inside a try/catch", (call, guard) => {
+		expect(frontmatter, `${call} is awaited unguarded — that is a 500 on every page`).toMatch(
+			guard,
+		);
+	});
+
+	test("the title falls back exactly where an unset setting already falls back", () => {
+		// A failed read lands on `{}`, so it takes the SAME path an absent
+		// `settings.title` already takes rather than growing a second rule (and a
+		// second string) for the store's name.
+		expect(frontmatter).toMatch(/settings: \{ title\?: string; tagline\?: string \} = \{\}/);
+		expect(frontmatter).toContain('settings.title ?? "Urumi"');
+	});
+
+	test("the nav falls back to this theme's own routes, and ONLY on a thrown read", () => {
+		// The fallback lives in lib/nav.ts (pinned behaviourally in nav.test.ts).
+		// The routes it names are defined by this theme, so they resolve whatever
+		// the content store is doing — which is the whole justification for
+		// substituting them for an operator's menu.
+		expect(source).toContain("FALLBACK_MENU_ITEMS");
+		// The gate: a menu that comes back `null` is a store with no `primary`
+		// menu, which is a real answer and the operator's. Only the CATCH arm
+		// substitutes. `?? []` in the try arm is what keeps those two apart.
+		expect(frontmatter).toMatch(/navItems = \(await getMenu\("primary"\)\)\?\.items \?\? \[\]/);
+		expect(frontmatter).toMatch(/catch[\s\S]*?navItems = FALLBACK_MENU_ITEMS/);
+	});
+
+	test("both failures are logged — a silent fallback is an outage nobody sees", () => {
+		expect(frontmatter).toContain("[site-staging] layout settings read threw:");
+		expect(frontmatter).toContain("[site-staging] layout menu read threw:");
+	});
+});
+
 describe("Base layout — the theme foundation", () => {
 	test("imports the token sheet, and declares no raw colour of its own", () => {
 		expect(source).toMatch(/import ["'].*styles\/tokens\.css["']/);
