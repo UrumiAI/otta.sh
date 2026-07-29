@@ -21,8 +21,17 @@ import Base from "../layouts/Base.astro";
 <Base title="Page not found">
 	<div class="empty">
 		<h1 class="empty-title">Page not found.</h1>
+		{/* Both sentences state what THIS page knows, and it knows exactly one
+		    thing: the address resolved to nothing. "Everything else in the shop
+		    is where you left it" was the second sentence until a reviewer
+		    screenshotted it rendering, in good faith and falsely, over a store
+		    whose content tables were gone (issue #140) — this page makes no
+		    commerce and no content call, so any sentence about the state of the
+		    shop is invented. So is "the shop is still here". The second
+		    sentence therefore points AT the ways out rather than vouching for
+		    where they lead; if the shop is down too, its own page says so. */}
 		<p class="empty-copy">
-			Nothing here under that address. Everything else in the shop is where you left it.
+			Nothing here under that address. Try the shop, or start from the home page.
 		</p>
 		<div class="ways-out">
 			<a class="u-btn u-btn-ghost" href="/products">Browse the shop</a>

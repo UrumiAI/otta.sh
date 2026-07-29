@@ -399,10 +399,11 @@ describe("§10 — shopper-side copy", () => {
 	 * NOTE THE CLAIM, which is narrower than it looks.
 	 *
 	 * These sweep a page's own SOURCE, so they prove only that the theme does not
-	 * AUTHOR the boast. They say nothing about what a page renders: product
-	 * descriptions come from the content store, and the seeded ones currently put
-	 * "No oversell under concurrency." on the screen — see the expected failure
-	 * at the bottom of this block, which is where that fact is recorded.
+	 * AUTHOR the boast. They say nothing about what a page RENDERS: product
+	 * descriptions come from the content store, and what an operator types there
+	 * after seeding is theirs. The one store state this suite can hold to the
+	 * rule is the shipped seed, and the two tests at the foot of this block are
+	 * where that happens — both real assertions since increment 6.
 	 */
 	test.each(SHOPPER_COPY)(
 		"%s authors no marketing of the inventory guarantee in its own copy",
@@ -429,12 +430,20 @@ describe("§10 — shopper-side copy", () => {
 	 * it, so the `.fails` is gone and the body stands as the guard that keeps it
 	 * done.
 	 *
-	 * SCOPE, because it is wider than it needs to be on purpose: this sweeps the
-	 * WHOLE seed file, not just the strings a shopper sees. The seed is small and
-	 * every string in it is either shopper copy or an admin label, so the strict
-	 * version costs nothing and catches a boast reintroduced in a field this test
-	 * has not thought of. What it does NOT cover: copy typed into the admin after
-	 * seeding, which is the operator's and not ours to police.
+	 * SCOPE, stated accurately rather than flatteringly. This sweeps the WHOLE
+	 * seed file rather than the shopper-visible strings, which costs nothing —
+	 * the seed is small and every string in it is shopper copy or an admin
+	 * label — and does mean a banned PHRASE is caught wherever it is
+	 * reintroduced, including a field nobody thought of. That is the only thing
+	 * it does. It is a ban LIST, so anything not on the list walks through:
+	 * `meta.description` in this very file says "CmsProductContent" and
+	 * "widget", and passes here, because `\bcms\b` does not match inside
+	 * `cmsproductcontent` and `widget` is not on this list. The list catches a
+	 * REGRESSION of the four boasts increment 6 removed; the test below is what
+	 * covers the shopper-facing fields properly.
+	 *
+	 * What neither covers: copy typed into the admin after seeding, which is the
+	 * operator's and not ours to police.
 	 */
 	test("the seeded shopper copy carries no §10 boast", () => {
 		const seed = SEED.toLowerCase();
@@ -448,7 +457,8 @@ describe("§10 — shopper-side copy", () => {
 	/**
 	 * The other half of the seed rewrite, and the half a ban list cannot state:
 	 * the copy has to be shopper copy, not just copy with the banned words taken
-	 * out. Three pins, one per thing that was wrong.
+	 * out. One sweep for the writer's SIDE across every shopper-facing field,
+	 * then three pins, one per thing that was specifically wrong.
 	 */
 	test("the seed's shopper-facing copy is written from the shopper's side", () => {
 		const seed = JSON.parse(SEED) as {
@@ -456,6 +466,36 @@ describe("§10 — shopper-side copy", () => {
 			menus: { items: { label: string; url: string }[] }[];
 			content: { products: { slug: string; data: { description?: string } }[] };
 		};
+
+		/**
+		 * Words that give away which side of the shop the writer is standing on.
+		 *
+		 * `deploys` earned its place: the mug shipped "Survives the dishwasher,
+		 * the commute, and most deploys" through increment 6's own rewrite —
+		 * none of the banned phrases, and still a joke only the operator is in
+		 * on, on a product page whose whole job is to describe a mug.
+		 *
+		 * The check runs over EVERY shopper-facing field in the seed, not just
+		 * the descriptions. The tagline is the home page's <h1> and its meta
+		 * description, and the menu labels are the site nav — all three are
+		 * read by more people than any one product page, and until now only the
+		 * descriptions were swept.
+		 */
+		const INTERNALS =
+			/commerce service|view model|\bCMS\b|widget|minor units|float|concurrency|\bdeploys?\b|\bdeployment\b/i;
+
+		const shopperFacing: ReadonlyArray<readonly [string, string]> = [
+			["settings.tagline", seed.settings.tagline ?? ""],
+			...seed.menus.flatMap((menu) =>
+				menu.items.map((item) => [`menu label "${item.label}"`, item.label] as const),
+			),
+			...seed.content.products.map(
+				(product) => [`${product.slug} description`, product.data.description ?? ""] as const,
+			),
+		];
+		for (const [where, text] of shopperFacing) {
+			expect(text, `${where} names internals`).not.toMatch(INTERNALS);
+		}
 
 		// The TAGLINE is the home page's <h1> (`storeThesis`), set in the biggest
 		// type on the site — so it has to be a thesis a shopper can read, not a
@@ -476,9 +516,6 @@ describe("§10 — shopper-side copy", () => {
 		for (const product of seed.content.products) {
 			const description = product.data.description ?? "";
 			expect(description.length, `${product.slug} has no description`).toBeGreaterThan(0);
-			expect(description, `${product.slug} names internals`).not.toMatch(
-				/commerce service|view model|\bCMS\b|widget|minor units|float|concurrency/i,
-			);
 		}
 	});
 });

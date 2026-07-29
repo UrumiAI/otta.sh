@@ -61,22 +61,32 @@ if (slug === undefined) return Astro.redirect("/products");
  * `LiveEntryNotFoundError` is excluded because it IS the not-found case: astro
  * wraps a missing row in one and the loader surfaces it through `error`, which
  * is why `EntryResult.error`'s own JSDoc ("not set for not found") cannot be
- * taken at its word. The `try` is the third arm — a missing binding throws
- * rather than reporting, exactly as it does for the collection read.
+ * taken at its word.
+ *
+ * The `try` is the third arm, and NOT for the reason it would be natural to
+ * assume: a missing DB binding does not reach here as a throw. `getDb()` is
+ * called INSIDE the loader's own `try`, so "EmDash database not configured"
+ * comes back as a reported `{ error }` and is caught by the branch above. What
+ * the `try` covers is everything OUTSIDE that catch — `getEmDashEntry` does a
+ * dynamic `import("astro:content")` before the loader runs, wraps the read in
+ * `cachedQuery`, and hydrates the row afterwards. A fault in any of those
+ * throws, and an uncaught throw in page frontmatter is a 500 on a product URL.
  *
  * ── WHAT THIS DOES NOT CATCH, measured rather than assumed ─────────────────
  * A MISSING TABLE OR COLUMN. em-dash's loader catches those and returns a bare
- * `{ entry: null }` — no `error` key, no throw, no log — so a store whose
- * `ec_products` table is gone still renders "Product not found." at 404.
- * Verified under a workerd preview against a database with the table renamed
- * away: 404, and nothing in the log. The collection API has the same hole (see
- * the shape-keyed warn in `cart/index.astro`, which is the workaround there),
- * but a SINGLE-entry read has no equivalent signal to key on — "no row came
- * back" is precisely what a genuine 404 looks like.
+ * `{ entry: null }` — no `error` key, no throw, no log (`isMissingTableError`
+ * → bare `return`) — so a store whose `ec_products` table is gone still
+ * renders "Product not found." at 404. Verified under a workerd preview
+ * against a database with the table renamed away: 404, and nothing in the log.
+ * The collection API has the same hole (see the shape-keyed warn in
+ * `cart/index.astro`, which is the workaround there), but a SINGLE-entry read
+ * has no equivalent signal to key on — "no row came back" is precisely what a
+ * genuine 404 looks like. Filed as issue #140: closing it needs an
+ * em-dash-side signal, not another branch here.
  *
- * So the scope is exact: this covers a reported query error and a thrown
- * binding failure, which is the whole of what this page can see. Closing the
- * missing-table hole needs a change in em-dash, not another branch here.
+ * So the scope is exact: a reported error (query fault, misconfigured database,
+ * anything else the loader hands back) and a throw from the machinery around
+ * the loader. That is the whole of what this page can see.
  */
 let entry: Awaited<ReturnType<typeof getEmDashEntry>>["entry"] = null;
 let contentUnavailable = false;
@@ -96,6 +106,14 @@ if (entry === null) {
 	// 503 for an outage, 404 for an address that resolves to nothing. The status
 	// is the machine-readable half of the same sentence the page renders.
 	Astro.response.status = contentUnavailable ? 503 : 404;
+	if (contentUnavailable) {
+		// A crawler is the whole reason this split exists, and a bare 503 leaves
+		// it guessing: no header means back off by an unspecified amount, which
+		// in practice is where "drop the URL" starts. 60s is the smallest honest
+		// figure — this page cannot know how long the store will be down, so it
+		// says "ask again soon" rather than naming a recovery time it invented.
+		Astro.response.headers.set("Retry-After", "60");
+	}
 }
 
 const content = entry !== null ? toCmsProductContent(entry.data as unknown as ProductEntryData) : null;
@@ -149,19 +167,26 @@ const soldOut = product?.availability === "out_of_stock";
 				   and what to do, no apology, no internals. The crumb is still
 				   offered: the shop page renders its own designed banner if the
 				   outage is still on, so it is a real way forward rather than a
-				   second dead end. */
-				<>
-					<div class="notice-slot">
-						<Notice lead="This page is unavailable right now.">
-							Try again in a moment.
-						</Notice>
+				   second dead end.
+
+				   BUILT FROM THE SAME PARTS as the not-found sibling below and
+				   as 404.astro — display-face line, one muted sentence, a way
+				   out — because it is the same §8 state wearing a different
+				   fact. The heading is not decoration: this was the one state
+				   on the site whose <title> said something ("Product
+				   unavailable") that its body never did, so a shopper landing
+				   here read a stray banner and a link with nothing naming what
+				   had happened. The Notice carries the second sentence rather
+				   than repeating the first. */
+				<div class="empty">
+					<h1 class="title empty-title">This product is unavailable.</h1>
+					<div class="empty-notice">
+						<Notice>Try again in a moment.</Notice>
 					</div>
-					<div class="empty">
-						<a class="u-btn u-btn-ghost" href="/products">
-							Back to all products
-						</a>
-					</div>
-				</>
+					<a class="u-btn u-btn-ghost" href="/products">
+						Back to all products
+					</a>
+				</div>
 			) : (
 				<div class="empty">
 					<h1 class="title empty-title">Product not found.</h1>
@@ -461,6 +486,16 @@ const soldOut = product?.availability === "out_of_stock";
 		margin: 0;
 		max-width: 44ch;
 		color: var(--u-mute);
+	}
+
+	/* The 503's Notice sits INSIDE the empty block, so the block's own `gap`
+	   spaces it — `.notice-slot`'s banner margin would double up. `stretch`
+	   because the block aligns its children to the start, which would otherwise
+	   shrink-wrap the notice to its one short sentence; the cap is
+	   `.empty-copy`'s, so the two read on the same measure. */
+	.empty-notice {
+		align-self: stretch;
+		max-width: 44ch;
 	}
 
 	/* Buttons are `.u-btn` / `.u-btn .u-btn-ghost` (tokens.css) — §2's one shape,

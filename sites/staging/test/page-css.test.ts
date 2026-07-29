@@ -75,8 +75,16 @@ describe("every page reads the token layer and writes nothing of its own", () =>
 		const css = declarations(source(name));
 		expect(css, "a hex literal").not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
 		expect(css, "an rgb()/hsl() literal").not.toMatch(/\b(rgb|rgba|hsl|hsla|oklch)\(/);
+		// NOT anchored on `:` — that only saw `color: white` and walked straight
+		// past `border: 1px solid white` and `linear-gradient(white, …)`, which
+		// are the two places a literal actually turns up. A named colour is
+		// banned as a TOKEN wherever it appears in a declaration.
+		//
+		// The lookarounds are what keep `white-space: nowrap` and
+		// `--u-blue-ish` out of it: a colour name is a whole word here, and a
+		// hyphen on either side means it is part of a longer identifier.
 		expect(css, "a named colour").not.toMatch(
-			/:\s*(white|black|red|green|blue|grey|gray|orange|yellow|silver)\b/,
+			/(?<![\w-])(white|black|red|green|blue|grey|gray|orange|yellow|silver)(?![\w-])/,
 		);
 	});
 
@@ -121,7 +129,11 @@ describe("every page reads the token layer and writes nothing of its own", () =>
 		// behaviour rather than decoration and cannot live anywhere else. What no
 		// page may do is touch the RING, so that is what is pinned: any `outline`
 		// declaration at all, including `outline: none`.
-		expect(declarations(source(name))).not.toMatch(/outline\s*:/);
+		//
+		// The LONGHANDS count. `outline-style: none` and `outline-width: 0` each
+		// erase the ring on their own, and the shorthand-only form of this rule
+		// let both through — which a reviewer demonstrated rather than supposed.
+		expect(declarations(source(name))).not.toMatch(/outline[-a-z]*\s*:/);
 	});
 
 	test.each(FILES)("%s uses no !important", (name) => {
@@ -157,15 +169,27 @@ describe("the shared button shape is shared (§2)", () => {
 
 	test.each(FILES)("%s declares no button shape of its own", (name) => {
 		const css = declarations(source(name));
-		// Any rule whose selector is a bare `.btn`-ish class. `.link-btn` on the
-		// cart is deliberately NOT one — it is an underlined text control, and it
-		// is excluded by the word boundary rather than by name.
-		const rules = [...css.matchAll(/(?:^|[,{}])\s*(\.[\w-]*\bbtn\b[\w-]*)([^{]*)\{([^}]*)\}/g)];
-		for (const [, selector = "", , body = ""] of rules) {
+		// EVERY rule, then a look at the selector — not "every rule whose
+		// selector STARTS with a `.btn`-ish class", which is what this was. The
+		// anchor made `.card .btn { background: … }` and `.panel > .btn { … }`
+		// invisible to it, and a reviewer walked a fresh button shape past it
+		// that way. The selector is now searched rather than matched from its
+		// head, so where the class sits in it does not matter.
+		//
+		// `[^{}]` on both sides is what lets a flat regex read nested rules: a
+		// selector cannot contain a brace, so the engine slides past
+		// `@media (…) {` and matches the rules inside it.
+		//
+		// `.link-btn` on the cart is deliberately not one of these — it is an
+		// underlined text control, and it is excluded by the word boundary
+		// rather than by name.
+		const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)];
+		for (const [, selector = "", body = ""] of rules) {
+			if (!/\.[\w-]*\bbtn\b[\w-]*/.test(selector)) continue;
 			if (selector.includes("link-btn")) continue;
 			expect(
 				BUTTON_PROPERTIES.test(body),
-				`${name} re-declares the button shape in ${selector} — it belongs in tokens.css`,
+				`${name} re-declares the button shape in \`${selector.trim()}\` — it belongs in tokens.css`,
 			).toBe(false);
 		}
 	});
@@ -173,8 +197,23 @@ describe("the shared button shape is shared (§2)", () => {
 	test.each(FILES)("%s does not redefine a class the global sheet owns", (name) => {
 		// Same rule the component sweep applies: `.u-` classes may be USED
 		// anywhere — that is what they are for — but a scoped redefinition beats
-		// the global on specificity and forks the vocabulary. Qualifying one from
-		// outside (`.ship .u-mono { font-size: … }`) stays allowed.
+		// the global on specificity and forks the vocabulary.
+		//
+		// WHAT COUNTS AS A REDEFINITION is the head COMPOUND, not the head class.
+		// `.u-btn.compact`, `a.u-btn` and `.u-btn:hover` all select the same
+		// element the global rule does and all outrank it, and the old anchor
+		// (`.u-btn` followed by one of `[\s,:{]`) saw only the last of those —
+		// a chained class walked through. So the compound at the head of each
+		// complex selector is extracted whole and searched.
+		//
+		// Qualifying one from OUTSIDE (`.ship .u-mono { font-size: … }`) stays
+		// allowed: a combinator means the rule is reaching a descendant from a
+		// context it owns, which is how a page adjusts a shared class to its
+		// surroundings. That allowance is not free, and is worth naming rather
+		// than assuming: `.buy .u-btn { background: … }` forks the button's
+		// SHAPE just as thoroughly as redefining `.u-btn` would, it just does it
+		// in one place. The line drawn here is who the rule belongs to, not what
+		// it can reach — the properties are covered by the shape sweep above.
 		const tokens = readFileSync(path.join(SRC_DIR, "styles/tokens.css"), "utf8").replace(
 			/\/\*[\s\S]*?\*\//g,
 			"",
@@ -184,10 +223,16 @@ describe("the shared button shape is shared (§2)", () => {
 		);
 		expect(owned.size, "tokens.css declares no `.u-` class — check the parse").toBeGreaterThan(0);
 		const css = declarations(source(name));
+		const heads = [
+			...css.matchAll(
+				/(?:^|[,{}])\s*([a-zA-Z]*(?:\.[\w-]+|\[[^\]]*\]|:{1,2}[\w-]+(?:\([^)]*\))?)+)/g,
+			),
+		].map((m) => m[1] ?? "");
 		for (const cls of owned) {
-			expect(css, `${name} redefines ${cls}, which tokens.css owns`).not.toMatch(
-				new RegExp(`(^|[,{}])\\s*\\${cls}[\\s,:{]`, "m"),
-			);
+			const chained = new RegExp(`\\${cls}(?![\\w-])`);
+			for (const head of heads) {
+				expect(head, `${name} redefines ${cls}, which tokens.css owns`).not.toMatch(chained);
+			}
 		}
 	});
 });
@@ -200,8 +245,19 @@ describe("the motion budget, at page scope (§2, §6, §11)", () => {
 		// `@keyframes` at all. The one page-level transition left in the theme —
 		// the button's 120ms hover — is a single declaration in tokens.css, inside
 		// the reach of that file's own `prefers-reduced-motion` clamp.
+		//
+		// LONGHANDS included: `transition-property` plus `transition-duration`
+		// animates exactly as much as `transition:` does, and `animation-name`
+		// is the whole of an animation once a `@keyframes` exists. The
+		// shorthand-only form of this was walked past by a reviewer writing the
+		// longhands, which is the same evasion the focus rule allowed.
+		//
+		// Swept over `declarations()`, not `styles()`: over raw style text a
+		// COMMENT mentioning `transition:` — and there is one in this very
+		// theme — fails the test, which trains the next author to phrase the
+		// prose around the tripwire instead of the rule around the CSS.
 		const animated = FILES.filter((name) =>
-			/animation:|@keyframes|transition:/.test(styles(source(name))),
+			/animation[-a-z]*\s*:|transition[-a-z]*\s*:|@keyframes/.test(declarations(source(name))),
 		);
 		expect(animated).toEqual([]);
 	});

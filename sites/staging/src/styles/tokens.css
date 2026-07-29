@@ -261,7 +261,11 @@ video {
 	font-family: var(--u-body);
 	font-size: 0.875rem;
 	font-weight: 600;
-	line-height: 1.2;
+	/* NO `line-height` — the button inherits the body's 1.6, which is what the
+	   mockup's `.s-btn` does and what all seven page copies this replaced did.
+	   A 1.2 slipped in with the de-duplication and took ~5.6px off the height of
+	   every button on the site against what increments 1–5 shipped. The label is
+	   one line, so the leading is doing nothing here except setting the box. */
 	text-decoration: none;
 	cursor: pointer;
 	/* Declared transparent so the hover rule animates a WIDTH rather than
@@ -327,10 +331,12 @@ summary:focus-visible,
 	   applies to scrolling BOXES, so the universal selector was not spreading
 	   one value down a tree, it was setting it on every element in the
 	   document to no effect. <html> is the box that scrolls the viewport, so
-	   that is where it belongs. There is exactly one scrolling box in the
-	   theme now that the transitional `main { overflow-x: auto }` is gone
-	   (§11 puts wide content in a container of its OWN); anything that adds a
-	   second one and sets `smooth` on it needs the same override.
+	   that is where it belongs, and with the transitional
+	   `main { overflow-x: auto }` gone it is currently the theme's ONLY
+	   scrolling box — nothing on the site is wide any more. §11's standing rule
+	   for anything that becomes wide later is that it scrolls inside a
+	   container of its OWN rather than turning an ancestor into a scroller; if
+	   that container ever sets `smooth`, it needs the same override as this.
 	   `!important` is deliberate and is the legitimate use of it: a later
 	   author writing `html { scroll-behavior: smooth }` outside this media
 	   query would otherwise silently beat an accessibility override on

@@ -103,7 +103,7 @@ const sumRows = [
 	<div class="steps"><StepTrack current="details" /></div>
 	<h1 class="title">Checkout</h1>
 
-	{error !== null && <div class="alert"><Notice>{cartErrorMessage(error)}</Notice></div>}
+	{error !== null && <div class="notice-slot"><Notice>{cartErrorMessage(error)}</Notice></div>}
 
 	{
 		checkedOut && (
@@ -252,7 +252,9 @@ const sumRows = [
 		text-wrap: balance;
 	}
 
-	.alert,
+	/* `.notice-slot` is the name every other page gives this wrapper — the PDP,
+	   the PLP and the cart all use it — so it is what this one uses too. */
+	.notice-slot,
 	.restart {
 		margin-bottom: 1.5rem;
 	}

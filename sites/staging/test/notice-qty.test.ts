@@ -52,9 +52,13 @@ describe("Notice — degraded is a look, not a crash", () => {
 		// which set `.notice { color: #131a20 }` unscoped — a literal pinned to
 		// the pale panel the unmigrated pages painted, and a hard-coded near-black
 		// on this component's text under the dark palette. Increment 6 deleted
-		// that sheet, and the name is kept on its own merits: `u-` marks the
-		// classes this theme allows to be unscoped, and a bare `.notice` is
-		// exactly what a page or a future global would collide with again.
+		// that sheet, and the name is kept because renaming it would churn this
+		// pin and the page sweep's "no legacy `.notice`" rule for nothing.
+		//
+		// The prefix here is VESTIGIAL and is documented as such on the component:
+		// this class is Astro-scoped, so unlike `.u-btn` / `.u-mono` / `.u-label`
+		// a page cannot write it and get anything. `u-` means "global, safe
+		// anywhere" everywhere else, and it does not mean that here.
 		const html = await notice({}, "x");
 		const classes = (/^<div class="([^"]*)"/.exec(html)?.[1] ?? "").split(/\s+/);
 		expect(classes).toContain("u-notice");
