@@ -4,10 +4,25 @@
  * page of content goes to the plugin's public `storefront/list` route
  * in-process, and the returned view models are rendered to cards.
  *
- * Degraded state is a feature, not a crash: when the commerce service is
- * unreachable the route returns RENDER_FAILED (or dispatch yields null) and
- * this page still renders the CONTENT catalog with a friendly notice —
- * content visibility never depends on commerce availability.
+ * The "Tempered" shape (docs/theme/TEMPERED.md §8): a mono count, the title
+ * in the display face, then a 3-up grid of borderless cards. `ProductCard`
+ * owns everything inside a cell — the coil, the price, the stock rule and the
+ * sold-out treatment — so this page is a data mapping and a grid, and nothing
+ * else. Card position is passed as `index` so the coil tints cycle and every
+ * three cards show all three (§5).
+ *
+ * Two degraded states, and they are NOT the same state.
+ *
+ * When COMMERCE is unreachable the route returns RENDER_FAILED (or dispatch
+ * yields null) and this page still renders the whole CONTENT catalog with a
+ * designed notice — content visibility never depends on commerce availability.
+ *
+ * When the CONTENT store is unreachable there is no catalog to render, and the
+ * page has to say so. `getEmDashCollection` reports that in `error` rather than
+ * throwing, so an outage arrives here looking exactly like an empty
+ * collection — and rendering the empty state would tell a shopper the shop is
+ * empty and hand them the admin link. That is the wrong fact and the wrong
+ * audience.
  */
 import {
 	PLP_PAGE_SIZE_CAP,
@@ -17,11 +32,26 @@ import {
 } from "@urumi/plugin";
 import { getEmDashCollection } from "emdash";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
+import Notice from "../../components/Notice.astro";
+import ProductCard from "../../components/ProductCard.astro";
 import Base from "../../layouts/Base.astro";
 import { toCmsProductContent, type ProductEntryData } from "../../lib/products.js";
+import { exactCount, itemCountLabel } from "../../lib/tape.js";
 import { dispatchUrumiRoute } from "../../lib/urumi-api.js";
 
-const { entries } = await getEmDashCollection("products", { limit: PLP_PAGE_SIZE_CAP });
+const {
+	entries,
+	hasMore,
+	error: catalogError,
+} = await getEmDashCollection("products", { limit: PLP_PAGE_SIZE_CAP });
+
+/* An outage and an empty shop both arrive as zero entries, and only `error`
+   tells them apart. Read it, or the shop tells a shopper it sells nothing. */
+const catalogUnavailable = catalogError !== undefined;
+if (catalogUnavailable) {
+	console.error("[site-staging] shop catalog read failed:", catalogError);
+}
+
 // Defensive second bound: the route rejects pages over the cap outright.
 const items = entries
 	.slice(0, PLP_PAGE_SIZE_CAP)
@@ -34,85 +64,204 @@ const result = await dispatchUrumiRoute<PlpRouteResult>(
 	Astro.url,
 );
 const view: ProductViewModel[] | null = result !== null && result.ok ? result.items : null;
+
+/** With commerce unreachable the cards still render — content only, and every
+ *  commercial field explicitly absent so no card can show a figure. */
+const cards =
+	view ??
+	items.map((content) => ({ ...content, purchasable: false, price: null, availability: null }));
+
+/**
+ * What a card says where its price would be.
+ *
+ * Left to its default a priceless card reads "Not currently available for
+ * purchase", which is TRUE of an unpriced product and FALSE here: under a
+ * banner promising the catalog is complete, every card would be quietly
+ * retiring the whole shop. Degraded means the page does not know the price, so
+ * that is what it says — the PDP already draws the same distinction.
+ */
+const priceNote = view === null ? "Price unavailable right now" : undefined;
+
+/* §7: the footer names the currency the page actually quoted, never a
+   literal — and names none at all when nothing on the page carries a price. */
+const currency = view?.find((product) => product.price !== null)?.price?.currency ?? null;
+
+/* The grid renders the window that came back; the EYEBROW may only state a
+   figure when that window is the whole catalog (see `exactCount`). A full
+   window means "at least 48", and "48 items" over a 900-product shop is a lie
+   the shopper has no way to catch. */
+const count = exactCount(entries.length, PLP_PAGE_SIZE_CAP, hasMore);
+const countLabel = itemCountLabel(count);
 ---
 
-<Base title="Products">
-	<h1>Products</h1>
-
+<Base title="Shop" currency={currency}>
 	{
+		/* The WRAPPER carries the spacing, not a class on the component: a page
+		   cannot style a component's root element (Astro scopes each
+		   component's CSS to its own hash — see src/lib/rest-props.ts), so a
+		   `class` handed to <Notice> lands on an element this page's selectors
+		   can never match. */
 		view === null && items.length > 0 && (
-			<p class="notice">
-				Live pricing and availability are temporarily unavailable — the catalog below is
-				content-only for now.
-			</p>
+			<div class="notice-slot">
+				<Notice lead="Prices and stock are unavailable right now.">
+					The catalog below is complete — check back in a moment for live figures.
+				</Notice>
+			</div>
 		)
 	}
 
 	{
-		items.length === 0 ? (
-			<p>
-				No products yet. <a href="/_emdash/admin">Create one in the admin</a>.
-			</p>
+		catalogUnavailable ? (
+			/* NOT the empty state. "No products yet." plus the admin link is a
+			   message to the OPERATOR of a brand-new store, and an outage would
+			   put it in front of a shopper as a statement about the shop. §10:
+			   say what happened and what to do, no apology, no internals.
+			   The heading stays: the page is still the shop, it just has
+			   nothing to show yet. No count — there is nothing to count. */
+			<>
+				<div class="notice-slot">
+					<Notice lead="The catalog is unavailable right now.">
+						Try again in a moment.
+					</Notice>
+				</div>
+				<div class="head">
+					<h1 class="title">Shop</h1>
+				</div>
+			</>
+		) : items.length === 0 ? (
+			<div class="empty">
+				<h1 class="title empty-title">No products yet.</h1>
+				<p class="empty-copy">
+					Create a product in the admin, price it there, and it appears here with live
+					stock.
+				</p>
+				<a class="btn btn-ghost" href="/_emdash/admin">
+					Open the admin
+				</a>
+			</div>
 		) : (
-			<ul class="cards">
-				{(
-					view ??
-					items.map((content) => ({
-						...content,
-						purchasable: false,
-						price: null,
-						availability: null,
-					}))
-				).map((product) => (
-					<li>
-						<a href={product.url ?? `/products/${product.slug ?? product.id}`}>
-							{product.images?.[0] && <img src={product.images[0]} alt={product.title} />}
-							<h2>{product.title}</h2>
-						</a>
-						{product.description && <p>{product.description}</p>}
-						{product.purchasable && product.price ? (
-							<p class="price">
-								{product.price.formatted}
-								{product.availability === "out_of_stock" && <span> — out of stock</span>}
-							</p>
-						) : (
-							<p class="price muted">Not currently available for purchase</p>
-						)}
-					</li>
-				))}
-			</ul>
+			<>
+				<div class="head">
+					{/* No label when the count is not exact — the title alone, rather
+					    than a figure the page cannot stand behind. */}
+					{countLabel !== null && <p class="u-label">{countLabel}</p>}
+					<h1 class="title">Shop</h1>
+				</div>
+				<div class="grid">
+					{cards.map((product, index) => (
+						<ProductCard
+							index={index}
+							href={product.url ?? `/products/${product.slug ?? product.id}`}
+							slug={product.slug ?? product.id}
+							title={product.title}
+							description={product.description ?? null}
+							image={product.images?.[0] ?? null}
+							price={
+								product.purchasable && product.price !== null
+									? product.price.formatted
+									: null
+							}
+							priceNote={priceNote}
+							availability={product.availability}
+						/>
+					))}
+				</div>
+			</>
 		)
 	}
 </Base>
 
 <style>
-	.cards {
-		list-style: none;
-		padding: 0;
+	/* §3: the display face, narrow — the title carries this page. */
+	.title {
+		font-family: var(--u-display);
+		font-variation-settings: "wdth" 78, "opsz" 48;
+		font-weight: 700;
+		font-size: clamp(2rem, 5vw, 2.25rem);
+		letter-spacing: -0.025em;
+		line-height: 1;
+		margin: 0;
+		text-wrap: balance;
+	}
+
+	.head {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+		margin-bottom: 2rem;
+	}
+	.head p {
+		margin: 0;
+	}
+
+	/* Generous air, no card borders: the grid's gaps do the separating and the
+	   only rule on a card is the one above its foot (§2). */
+	.grid {
 		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
-		gap: 1.5rem;
+		grid-template-columns: repeat(3, 1fr);
+		gap: 2rem 1.75rem;
 	}
-	.cards li {
-		border: var(--u-hair);
-		border-radius: 0.5rem;
-		padding: 1rem;
+
+	.notice-slot {
+		margin-bottom: 2rem;
 	}
-	.cards img {
-		max-width: 100%;
-		border-radius: 0.25rem;
+
+	/* §8: an empty screen is an invitation to act, not an apology. */
+	.empty {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: 1rem;
+		padding-block: 2rem;
 	}
-	.price {
-		font-weight: 600;
+	.empty-title {
+		font-size: 1.75rem;
 	}
-	.muted {
+	.empty-copy {
+		margin: 0;
+		max-width: 44ch;
 		color: var(--u-mute);
-		font-weight: 400;
 	}
-	.notice {
-		background: #fff7e0;
-		border: 1px solid #e6c200;
-		border-radius: 0.5rem;
-		padding: 0.75rem 1rem;
+
+	/* The theme's one button shape (mockup `.s-btn`): ink-filled, straw only as
+	   a fitting on hover — never a fill, so the label keeps full contrast (§2).
+	   Focus is the global ring in tokens.css and is deliberately not restyled. */
+	.btn {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.625rem;
+		background: var(--u-ink);
+		color: var(--u-surface);
+		border: none;
+		border-radius: var(--u-r);
+		padding: 0.75rem 1.25rem;
+		font-family: var(--u-body);
+		font-size: 0.875rem;
+		font-weight: 600;
+		text-decoration: none;
+		cursor: pointer;
+		box-shadow: inset 0 -2px 0 transparent;
+		transition: box-shadow 120ms ease;
+	}
+	.btn:hover {
+		box-shadow: inset 0 -3px 0 var(--u-straw);
+	}
+	.btn-ghost {
+		background: transparent;
+		color: var(--u-ink);
+		border: var(--u-hair);
+	}
+
+	@media (max-width: 60rem) {
+		.grid {
+			grid-template-columns: repeat(2, 1fr);
+		}
+	}
+
+	@media (max-width: 34rem) {
+		.grid {
+			grid-template-columns: 1fr;
+			gap: 2.25rem;
+		}
 	}
 </style>

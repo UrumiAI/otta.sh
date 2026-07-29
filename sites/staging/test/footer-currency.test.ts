@@ -21,12 +21,19 @@ const NAMES_A_CURRENCY: ReadonlyArray<readonly [string, string]> = [
 	["checkout/index.astro", "totals.total.money?.currency"],
 	["orders/[orderId].astro", "order?.currency"],
 	["products/[slug].astro", "product?.price?.currency"],
+	// Increment 3 moved both catalog pages into this list. `products/index.astro`
+	// has always printed `price.formatted` on every card and named no currency,
+	// which was the split being wrong rather than the pages being exempt; and the
+	// home hero now carries the inventory tape, so it quotes prices too. Both read
+	// the currency off the FIRST PRICED view model on the page — the same figure
+	// those prices were formatted from — and both still name none when the
+	// commerce service is unreachable and no price rendered at all.
+	["index.astro", "product.price !== null)?.price?.currency"],
+	["products/index.astro", "product.price !== null)?.price?.currency"],
 ];
 
 /** Pages that read no money at all. Bare is correct, not a bug. */
 const NAMES_NOTHING: readonly string[] = [
-	"index.astro",
-	"products/index.astro",
 	"404.astro",
 	// /checkout/pay makes NO commerce call by design — its cookie stash holds an
 	// order id and a client secret, nothing money-shaped. It gains the currency

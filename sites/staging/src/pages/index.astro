@@ -1,16 +1,333 @@
 ---
 /**
- * Home — pure CMS chrome, no commerce call by construction: this page
- * renders 200 whether or not the commerce service is reachable.
+ * Home — the asymmetric hero of docs/theme/TEMPERED.md §8: thesis copy and the
+ * shop link on the left, the INVENTORY TAPE on the right. The hero is the
+ * inventory rather than a slogan over a stock photo — a small shop has nothing
+ * to hide behind, so it leads with the shelf.
+ *
+ * That tape is the one thing that changed here: this page used to make no
+ * commerce call by construction, and now it makes the same one the catalog
+ * page makes (content read here, plugin `storefront/list` route in-process).
+ * The DEGRADED RULE keeps the old guarantee intact — when EITHER read fails
+ * the tape is omitted entirely and the thesis column renders alone. No error
+ * box: a shopper who has not asked for a price does not need to be told the
+ * shop is having a moment, and the catalog page says so properly the instant
+ * they click through.
+ *
+ * The rows, the counts and the headline fallbacks are `src/lib/tape.ts`, which
+ * is where their honesty rules are unit-tested. This page is the read and the
+ * layout.
  */
-import { getSiteSettings } from "emdash";
+import { STOREFRONT_LIST_ROUTE, type PlpRouteResult, type ProductViewModel } from "@urumi/plugin";
+import { getEmDashCollection, getSiteSettings } from "emdash";
+import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
+import PriceTag from "../components/PriceTag.astro";
 import Base from "../layouts/Base.astro";
+import { toCmsProductContent, type ProductEntryData } from "../lib/products.js";
+import {
+	exactCount,
+	shopLinkLabel,
+	storeDescription,
+	storeThesis,
+	storeTitle,
+	tapeRows,
+	TAPE_FETCH_LIMIT,
+	type StoreSettings,
+} from "../lib/tape.js";
+import { dispatchUrumiRoute } from "../lib/urumi-api.js";
 
-const settings = (await getSiteSettings()) as { title?: string; tagline?: string };
+/**
+ * BOTH reads on this page are guarded, and the settings read needs it as much
+ * as the catalog one: `getSiteSettings` has no error channel — it awaits
+ * `getDb()` and the query behind it, and either can reject — so an unguarded
+ * `await` here is a 500 on the store's front door.
+ *
+ * The fallback is deliberately `{}` rather than a placeholder name:
+ * `storeThesis({})` already resolves to the theme's own, and duplicating that
+ * decision here is how the two drift apart.
+ */
+let settings: StoreSettings = {};
+try {
+	settings = (await getSiteSettings()) as StoreSettings;
+} catch (error) {
+	console.error("[site-staging] home settings read threw:", error);
+}
+
+/**
+ * The catalog read is GUARDED too, by both of its arms.
+ *
+ * The front page used to make no data call at all and could not fail; the tape
+ * gave it one. `getEmDashCollection` reports a query failure in `error` rather
+ * than throwing, but a missing binding throws outright — so both arms land in
+ * the same place, and that place is the degraded branch, not a 500.
+ *
+ * The claim this scopes to: THIS PAGE's frontmatter has no unguarded read, so a
+ * dead content store costs it the tape and the store's own name, not the
+ * response. The layout around it reads settings on its own account (see
+ * `Base.astro`) and is not this page's to guarantee.
+ */
+let entries: readonly { data: unknown }[] | null = null;
+let hasMore: boolean | undefined;
+try {
+	const collection = await getEmDashCollection("products", { limit: TAPE_FETCH_LIMIT });
+	if (collection.error === undefined) {
+		entries = collection.entries;
+		hasMore = collection.hasMore;
+	} else {
+		console.error("[site-staging] home catalog read failed:", collection.error);
+	}
+} catch (error) {
+	console.error("[site-staging] home catalog read threw:", error);
+}
+
+const items = (entries ?? []).map((entry) =>
+	toCmsProductContent(entry.data as unknown as ProductEntryData),
+);
+
+const result =
+	entries === null
+		? null
+		: await dispatchUrumiRoute<PlpRouteResult>(
+				getPublicPluginApiRouteHandler(Astro.locals),
+				STOREFRONT_LIST_ROUTE,
+				{ items, query: { kind: "all" } },
+				Astro.url,
+			);
+const view: ProductViewModel[] | null = result !== null && result.ok ? result.items : null;
+
+const rows = tapeRows(view);
+
+/* §7: the currency the page quoted, from the view model that knows it. */
+const currency = view?.find((product) => product.price !== null)?.price?.currency ?? null;
+
+/* The page fetches a small window (see TAPE_FETCH_LIMIT), so it usually cannot
+   state the size of the catalog — and then it states none. A count that only
+   holds for small stores is a count that lies to exactly the stores that grow. */
+const count = entries === null ? null : exactCount(entries.length, TAPE_FETCH_LIMIT, hasMore);
+
+const thesis = storeThesis(settings);
+const lede =
+	rows.length > 0
+		? "Everything in the shop, with what it costs and what's on the shelf right now."
+		: "Everything in the shop, on one page.";
+const shopLabel = shopLinkLabel(count);
 ---
 
-<Base title={settings.title ?? "Urumi"} description={settings.tagline}>
-	<h1>{settings.title ?? "Urumi"}</h1>
-	{settings.tagline && <p>{settings.tagline}</p>}
-	<p><a href="/products">Browse products</a></p>
+<Base title={storeTitle(settings)} description={storeDescription(settings)} currency={currency}>
+	<div class="hero">
+		<div class="thesis">
+			<h1 class="title">{thesis}</h1>
+			<p class="lede">{lede}</p>
+			<div>
+				<a class="btn" href="/products">{shopLabel}</a>
+			</div>
+		</div>
+
+		{
+			rows.length > 0 && (
+				<div class="tape">
+					{/* Three labelled columns of facts IS a table, and the theme
+					    draws it with hairlines rather than a `<table>` because the
+					    hero column has to reflow to one column on a phone. The
+					    roles put the structure back for a screen reader at zero
+					    visual cost. They live on an inner element, not on `.tape`:
+					    a `role="table"` may only contain rows, and the foot below
+					    is a caption-ish aside that is not one. */}
+					<div class="rows" role="table" aria-label="Items, prices and stock">
+						<div class="row row-head" role="row">
+							{/* `Stock`, not `In stock`: the cells below hold the WORDS
+							    "In stock" and "Sold out", and a column headed with one
+							    of its own values reads as a claim about the column.
+							    Same label as the PDP's spec ledger. */}
+							{/* `stock-head`, not `stock`: the column heading is an
+							    eyebrow label and keeps `.u-label`'s size — it only
+							    borrows the data column's alignment. */}
+							<span class="u-label" role="columnheader">
+								Item
+							</span>
+							<span class="u-label" role="columnheader">
+								Price
+							</span>
+							<span class="u-label stock-head" role="columnheader">
+								Stock
+							</span>
+						</div>
+						{rows.map((row) => (
+							<div class="row" role="row">
+								<span class="u-mono item" role="cell">
+									{row.item}
+								</span>
+								{/* The component, not a copy of it: the tape and the
+								    catalog card must not disagree about the same
+								    product, and the hand-rolled span had already
+								    drifted: PriceTag pins `white-space: nowrap` so a
+								    figure cannot break across two lines when a
+								    column narrows, and the copy of it did not. The
+								    sold-out strike arrives with the component too. */}
+								<PriceTag
+									formatted={row.price}
+									size="sm"
+									soldOut={row.soldOut}
+									role="cell"
+								/>
+								<span
+									class="u-mono stock"
+									role="cell"
+									data-sold-out={row.soldOut ? "" : undefined}
+								>
+									{row.stock}
+								</span>
+							</div>
+						))}
+					</div>
+					<p class="tape-foot">Stock updates as people buy.</p>
+				</div>
+			)
+		}
+	</div>
 </Base>
+
+<style>
+	/* §8: asymmetric, ~1.15fr / 1fr — the copy leads and the tape answers. */
+	.hero {
+		display: grid;
+		grid-template-columns: 1.15fr 1fr;
+		gap: 3.5rem;
+		align-items: start;
+		padding-block: 1.5rem 1rem;
+	}
+
+	.thesis {
+		display: flex;
+		flex-direction: column;
+		gap: 1.5rem;
+		/* Lets the column shrink inside the grid instead of setting the page's
+		   minimum width from a long CMS-authored line. */
+		min-width: 0;
+	}
+
+	/* §3: the display face set narrow, and the biggest type in the theme. */
+	.title {
+		font-family: var(--u-display);
+		font-variation-settings: "wdth" 78, "opsz" 48;
+		font-weight: 700;
+		font-size: clamp(2.25rem, 6.5vw, 4.25rem);
+		letter-spacing: -0.025em;
+		line-height: 1;
+		margin: 0;
+		text-wrap: balance;
+		overflow-wrap: break-word;
+	}
+
+	.lede {
+		margin: 0;
+		max-width: 32ch;
+		color: var(--u-mute);
+		font-size: 1rem;
+	}
+
+	/* The tape: hairline rows, three mono columns, no box (§2). */
+	.tape {
+		display: flex;
+		flex-direction: column;
+		min-width: 0;
+	}
+
+	/* The `role="table"` element. Same stacking the rows had as direct children
+	   of `.tape` — the role needed a box of its own, not a different layout. */
+	.rows {
+		display: flex;
+		flex-direction: column;
+		min-width: 0;
+	}
+
+	.row {
+		display: grid;
+		/* `minmax(0, …)` so a long sku wraps inside its cell rather than
+		   widening the row — §11's no-horizontal-scroll rule. */
+		grid-template-columns: minmax(0, 1fr) auto 5.5rem;
+		gap: 1.25rem;
+		align-items: baseline;
+		padding-block: 0.95rem;
+		border-bottom: var(--u-hair);
+	}
+	.row:first-child {
+		border-top: var(--u-hair);
+	}
+
+	.row-head {
+		padding-bottom: 0.5rem;
+		border-bottom: none;
+	}
+
+	.item {
+		font-size: 0.75rem;
+		overflow-wrap: anywhere;
+	}
+
+	/* No `.price` rule here: the price cell is `<PriceTag size="sm">`, and its
+	   size, weight and sold-out treatment are the component's. A page cannot
+	   reach a component's root anyway (Astro scopes each component's CSS to its
+	   own hash — see src/lib/rest-props.ts), so a rule here would be dead. */
+
+	/* Right-aligned and tabular, so the column reads as a column. */
+	.stock,
+	.stock-head {
+		text-align: right;
+	}
+	.stock {
+		font-size: 0.8125rem;
+	}
+
+	/* Sold out is ONE signal, and PriceTag carries it: the mute plus a 1px
+	   strike. The stock cell only mutes — striking the words "Sold out" would
+	   say the fact itself no longer holds. */
+	.stock[data-sold-out] {
+		color: var(--u-mute);
+	}
+
+	.tape-foot {
+		margin: 0;
+		padding-top: 0.75rem;
+		color: var(--u-mute);
+		font-size: 0.75rem;
+	}
+
+	/* The theme's one button shape (mockup `.s-btn`): ink-filled, straw only as
+	   a fitting on hover — never a fill, so the label keeps full contrast (§2).
+	   Focus is the global ring in tokens.css and is deliberately not restyled. */
+	.btn {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.625rem;
+		background: var(--u-ink);
+		color: var(--u-surface);
+		border: none;
+		border-radius: var(--u-r);
+		padding: 0.75rem 1.25rem;
+		font-family: var(--u-body);
+		font-size: 0.875rem;
+		font-weight: 600;
+		text-decoration: none;
+		cursor: pointer;
+		box-shadow: inset 0 -2px 0 transparent;
+		transition: box-shadow 120ms ease;
+	}
+	.btn:hover {
+		box-shadow: inset 0 -3px 0 var(--u-straw);
+	}
+
+	@media (max-width: 52rem) {
+		.hero {
+			grid-template-columns: 1fr;
+			gap: 2.5rem;
+		}
+	}
+
+	@media (max-width: 26rem) {
+		.row {
+			grid-template-columns: minmax(0, 1fr) auto 4.75rem;
+			gap: 0.75rem;
+		}
+	}
+</style>
