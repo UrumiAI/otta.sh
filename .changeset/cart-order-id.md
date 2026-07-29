@@ -45,6 +45,21 @@ consumer renders `/orders/undefined` as a primary action.
 No backfill: the project is unreleased, so there is no production data and
 every existing `checked_out` cart predates the writer.
 
+**Security consequence, accepted deliberately.** `GET /carts/:cartId` is
+unauthenticated (`app.ts`, `routes/carts.ts`), so emitting `orderId` there makes
+a cart id a *permanent* derivation path to an order id — and an order id is not
+merely a read token: `GET /entitlements/check` treats a bare `orderId` as an
+**open bearer capability** (ADR-0011 precedence rule 2), and
+`GET /orders/:orderId` is itself an unauthenticated capability URL. This is
+accepted because it grants no new principal: the cart id lives in an
+`httpOnly` + `secure` + `sameSite` cookie, so anyone who can call
+`GET /carts/:cartId` for a given cart is already the buyer or already holds the
+cart id, and both orders reads are redacted (`serializePublicOrder` omits
+`buyerRef`, `customerId` and `shippingAddress`), so no PII crosses. The
+practical change is one of DURATION, not of audience — the derivation no longer
+depends on a short-lived checkout stash. Any future widening of what an order
+id alone unlocks must re-examine this route.
+
 At `0.x`, changesets map a **minor** bump to a breaking change (there is no
 major to take yet — semver's `0.x` carve-out). The `minor` here IS the breaking
 bump, not a feature bump.

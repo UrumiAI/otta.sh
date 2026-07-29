@@ -207,9 +207,20 @@ export class HttpCommerceClient implements CommerceClient {
 		// (`noExternal`), so site+plugin ship as ONE deployable and the only skew
 		// boundary is (site+plugin) ⇄ service — a second guard would be redundant
 		// by construction and would drift.
-		if (result.ok) {
-			const raw: unknown = result.cart.orderId;
-			result.cart.orderId = typeof raw === "string" && raw.length > 0 ? raw : null;
+		//
+		// The coercion is TOTAL, and that includes `cart` itself: the thesis above
+		// is "this wire is unvalidated", and `isCartEnvelope` never checked for a
+		// `cart` key either. A success envelope arriving without one — or with a
+		// null or non-object one — is passed through EXACTLY as it was before this
+		// PR rather than becoming a new `TypeError` thrown from inside the client.
+		// Failing loud there would be defensible, but it would be an undocumented
+		// behaviour change for a direct `CommerceClient.getCart` consumer, and the
+		// guard costs one condition.
+		const cart: unknown = result.ok ? result.cart : undefined;
+		if (typeof cart === "object" && cart !== null) {
+			const wire = cart as CartWire;
+			const raw: unknown = wire.orderId;
+			wire.orderId = typeof raw === "string" && raw.length > 0 ? raw : null;
 		}
 		return result;
 	}

@@ -93,7 +93,11 @@ function ttl(deps: CreateOrderDeps): number {
  * `held → adopted` flip (moving it out of the Phase-3 sweep's scope); **digital
  * lines reserve nothing** (§6). All lines adopted ⇒ the cart flips `active →
  * checked_out` **and records the order's id** (secondary fence + issue #132) —
- * one statement, two columns, so a cart is `active` iff it carries no order id.
+ * one statement, two columns, so a cart written THROUGH `checkout` (the
+ * column's single writer) is `active` iff it carries no order id. That is a
+ * writer-enforced invariant, not a structural one: no CHECK constraint backs
+ * it, and a raw partial UPDATE can still produce a `checked_out` cart with a
+ * NULL order id.
  * That stamp lands BEFORE the payment intent, so it says "this cart became that
  * order", never "that order was paid"; and because the idempotency
  * short-circuit returns earlier, a NULL cart `orderId` never proves the absence

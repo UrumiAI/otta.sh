@@ -350,6 +350,15 @@ describe("storefront cart routes (workerd sandbox)", () => {
 		// from the price-free cart-line wire — the "live total" this route
 		// backs (see cart-routes.ts's read-handler doc).
 		expect(totalQty(cart)).toBe(5);
+		// The route passes `cart` through VERBATIM, so `orderId` (#132) has to
+		// survive the handler as well as the client. Nothing else asserted this:
+		// the client is pinned by `http-commerce-client-cart-order-id.test.ts`
+		// and the service by `carts.http.contract.test.ts`, leaving this handler
+		// the one unpinned link — and it is exactly the seam the storefront
+		// consumes. PRESENCE is the assertion, as it is service-side: `toBeNull()`
+		// alone would also pass on an absent key.
+		expect(cart).toHaveProperty("orderId");
+		expect(cart.orderId).toBeNull();
 	});
 
 	test("cart/read maps an unknown cart to the typed CART_NOT_FOUND reason (not a thrown error)", async () => {
