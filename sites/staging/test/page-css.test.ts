@@ -194,6 +194,26 @@ describe("the shared button shape is shared (§2)", () => {
 		}
 	});
 
+	test("the one exemption still pays its own way: `.link-btn` keeps a 24px target (§11)", () => {
+		// The exemption above lets the cart's `Update`/`Remove` out of the button
+		// shape, and out of the button's padding with it — which is why those two
+		// controls measured 41×15 and 47×15px, two adjacent targets on a phone
+		// both under WCAG 2.5.8's 24px minimum. `min-height` is what buys the
+		// height back, and it is pinned here rather than anywhere else so it sits
+		// beside the exemption that makes it necessary.
+		//
+		// `display` is pinned with it because the fix is the PAIR, not the one
+		// declaration: `min-height` sets the box, and `inline-flex` +
+		// `align-items: center` is what keeps the 12px label on the optical line
+		// it was already on as that box grows. Pinning the height alone would let
+		// a tidy-up drop the other half and move every cart row's text.
+		const css = declarations(source("pages/cart/index.astro"));
+		const [, rule = ""] = /\.link-btn\s*\{([^}]*)\}/.exec(css) ?? [];
+		expect(rule, "no `.link-btn` rule on the cart page").not.toBe("");
+		expect(rule, "the 24px tap-target floor").toMatch(/min-height:\s*1\.5rem/);
+		expect(rule, "what makes min-height apply").toMatch(/display:\s*inline-flex/);
+	});
+
 	test.each(FILES)("%s does not redefine a class the global sheet owns", (name) => {
 		// Same rule the component sweep applies: `.u-` classes may be USED
 		// anywhere — that is what they are for — but a scoped redefinition beats
