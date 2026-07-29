@@ -45,6 +45,10 @@ export interface CheckoutPlaceParsedInput {
 	buyerRef: string;
 	idempotencyKey: string;
 	shippingAddress?: ShippingAddressWire;
+	/** Display only — it formats the order total this route returns and reaches
+	 *  no upstream call. Sanitized like the other routes' (a malformed tag falls
+	 *  back rather than rejecting: a bad locale must not fail an order). */
+	locale: string;
 }
 
 export interface OrderRouteParsedInput {
@@ -81,6 +85,7 @@ export function parseCheckoutPlaceInput(input: {
 	buyerRef?: unknown;
 	idempotencyKey?: unknown;
 	shippingAddress?: unknown;
+	locale?: unknown;
 }): CheckoutPlaceParsedInput | null {
 	const cartId = nonEmptyString(input.cartId);
 	// Trimmed, but NOT otherwise rewritten — never lowercased (§1.5): the
@@ -93,7 +98,12 @@ export function parseCheckoutPlaceInput(input: {
 	const idempotencyKey = nonEmptyString(input.idempotencyKey);
 	if (cartId === null || buyerRef === null || idempotencyKey === null) return null;
 
-	const parsed: CheckoutPlaceParsedInput = { cartId, buyerRef, idempotencyKey };
+	const parsed: CheckoutPlaceParsedInput = {
+		cartId,
+		buyerRef,
+		idempotencyKey,
+		locale: sanitizeLocale(input.locale),
+	};
 
 	if (input.shippingAddress !== undefined) {
 		const address = parseShippingAddress(input.shippingAddress);

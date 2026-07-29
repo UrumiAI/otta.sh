@@ -34,7 +34,12 @@ import type {
 } from "../product-commerce/commerce-client.js";
 import { HttpCommerceClient } from "../product-commerce/http-commerce-client.js";
 import type { PluginContext, RouteHandler } from "../types.js";
-import { buildCartPricing, DEGRADED_CART_PRICING, type CartPricingWire } from "./cart-pricing.js";
+import {
+	buildCartPricing,
+	DEGRADED_CART_PRICING,
+	type CartMoneyWire,
+	type CartPricingWire,
+} from "./cart-pricing.js";
 import {
 	parseCheckoutPlaceInput,
 	parseCheckoutSummaryInput,
@@ -43,6 +48,7 @@ import {
 import {
 	buildCheckoutLines,
 	buildCheckoutTotals,
+	buildOrderTotal,
 	buildOrderView,
 	checkoutIdempotencyKey,
 	isAlreadyPlaced,
@@ -75,6 +81,10 @@ export interface CheckoutPlaceRouteInput {
 	 *  (`checkoutIdempotencyKey` is how the summary derives it). */
 	idempotencyKey?: unknown;
 	shippingAddress?: unknown;
+	/** For `total.formatted` only — the same `sanitizeLocale` default the other
+	 *  two routes take, so the amount on the pay button reads exactly like the
+	 *  total the buyer just approved on the review page. */
+	locale?: unknown;
 }
 
 export interface OrderRouteInput {
@@ -112,6 +122,22 @@ export type CheckoutPlaceRouteResult =
 			/** Passed through UNMODIFIED — the plugin does not parse a client
 			 *  secret, it hands it on. */
 			clientAction: ClientActionWire;
+			/**
+			 * The order's OWN total, from the reply that created it — the figure
+			 * the PaymentIntent was minted for, formatted here (§4.6's boundary).
+			 *
+			 * It is on THIS result and not re-read later because it is a snapshot,
+			 * not live data: the cart it came from stays mutable, and the pay step
+			 * must state the amount that will actually be charged.
+			 *
+			 * OPTIONAL, and the optionality is load-bearing: ABSENT when the reply's
+			 * totals could not be formatted. The order exists by then, its stock is
+			 * held and its client secret is in hand, so a totals block this package
+			 * cannot read (missing, a lowercase currency, a non-integer amount) must
+			 * cost the button its amount and nothing else — the label is never worth
+			 * the payment. A healthy reply always carries it, replays included.
+			 */
+			total?: CartMoneyWire;
 	  }
 	| { ok: false; error: "INVALID_INPUT" }
 	| { ok: false; reason: CheckoutFailureReason }
@@ -226,15 +252,31 @@ export function createCheckoutPlaceRouteHandler(): RouteHandler<CheckoutPlaceRou
 			);
 			if (!result.ok) return { ok: false as const, reason: result.reason };
 
+			// CONTAINED, deliberately. `buildOrderTotal` runs `cents()`/`currency()`,
+			// which THROW, over a reply this client has only envelope-checked — and
+			// we are past `createOrder`, so an escaping throw would hit `renderGuard`
+			// and return RENDER_FAILED for an order that already exists, whose stock
+			// is held, and whose client secret is in this very reply. The site would
+			// 303 back to /checkout and the idempotent replay would fail identically,
+			// forever. Formatting is a label; the payment is not.
+			let total: CartMoneyWire | undefined;
+			try {
+				total = buildOrderTotal(result.order, input.locale);
+			} catch (err) {
+				console.error(`[urumi] ${STOREFRONT_CHECKOUT_PLACE_ROUTE} total format failed:`, err);
+			}
+
 			// PROJECT, never forward: the create reply is the FULL serializeOrder
-			// (buyerRef, customerId, the ship-to snapshot). Only these four fields
-			// leave the plugin.
+			// (buyerRef, customerId, the ship-to snapshot). Only these fields
+			// leave the plugin — and `total` is derived from the reply's own
+			// `totals` block, never from the cart, which is still live.
 			return {
 				ok: true as const,
 				orderId: result.order.id,
 				state: result.order.state,
 				alreadyPlaced: isAlreadyPlaced(result.intent),
 				clientAction: result.intent.clientAction,
+				...(total !== undefined ? { total } : {}),
 			};
 		});
 }

@@ -378,6 +378,98 @@ describe("storefront/checkout/place (workerd sandbox)", () => {
 		expect(result["state"]).toBe("paid");
 	});
 
+	test("returns the ORDER's own total, formatted — the figure the pay button states", async () => {
+		// From `serializeOrder`'s totals block, i.e. what this order will actually
+		// charge, and formatted HERE because this package owns the one sanctioned
+		// money→string boundary. The site stashes it beside the client secret so
+		// the pay step can say "Pay $59.97" without a commerce read against a cart
+		// that is still live.
+		const result = resultOf(await sandboxHandle.invokeRoute("storefront/checkout/place", INPUT));
+		expect(result["total"]).toEqual({
+			amount: 5997,
+			currency: "USD",
+			formatted: "$59.97",
+		});
+	});
+
+	test("the total honours the requested locale, and falls back rather than failing", async () => {
+		const german = resultOf(
+			await sandboxHandle.invokeRoute("storefront/checkout/place", { ...INPUT, locale: "de-DE" }),
+		);
+		// Asserted on the SEPARATOR, not on the whole string: ICU spells the space
+		// before a trailing symbol with a non-breaking codepoint whose exact
+		// identity is an ICU-version detail, and pinning an invisible character is
+		// how a correct implementation fails this suite on a runtime upgrade.
+		const formatted = (german["total"] as Record<string, unknown>)["formatted"] as string;
+		expect(formatted).toContain("59,97");
+		expect(formatted).not.toBe("$59.97");
+		// A malformed tag is display input, not order input: it must not cost the
+		// buyer an order.
+		const junk = resultOf(
+			await sandboxHandle.invokeRoute("storefront/checkout/place", { ...INPUT, locale: "!!" }),
+		);
+		expect(junk["ok"]).toBe(true);
+		expect((junk["total"] as Record<string, unknown>)["formatted"]).toBe("$59.97");
+	});
+
+	test("a REPLAY still carries the total — an order always has one", async () => {
+		checkoutOverride = {
+			status: 201,
+			body: {
+				ok: true,
+				order: { ...ORDER, state: "paid" },
+				intent: { gateway: "stripe", intentId: "", clientAction: { kind: "none" } },
+			},
+		};
+		const result = resultOf(await sandboxHandle.invokeRoute("storefront/checkout/place", INPUT));
+		expect((result["total"] as Record<string, unknown>)["formatted"]).toBe("$59.97");
+	});
+
+	/**
+	 * THE ORDER OUTRANKS ITS LABEL.
+	 *
+	 * `buildOrderTotal` validates through `cents()`/`currency()`, which throw,
+	 * and it runs AFTER `createOrder` succeeded — the order exists, its stock is
+	 * held, its client secret is in the reply being formatted. A totals block
+	 * this package cannot read must therefore drop the amount off the button and
+	 * hand the payment on regardless; letting the throw reach `renderGuard`
+	 * would answer RENDER_FAILED, strand a live order, and do it again on every
+	 * idempotent replay (which returns the same stored order verbatim).
+	 */
+	describe("an unformattable total costs the button its amount, never the payment", () => {
+		function replyWithOrder(order: unknown): void {
+			checkoutOverride = { status: 201, body: { ok: true, order, intent: STRIPE_INTENT } };
+		}
+
+		test("a reply with NO totals block still places the order — total simply absent", async () => {
+			const { totals: _dropped, ...totalless } = ORDER;
+			replyWithOrder(totalless);
+			const result = resultOf(await sandboxHandle.invokeRoute("storefront/checkout/place", INPUT));
+			expect(result["ok"]).toBe(true);
+			expect(result).not.toHaveProperty("total");
+			expect(result["orderId"]).toBe("order-1");
+			expect(result["state"]).toBe("pending");
+			expect(result["clientAction"]).toEqual(STRIPE_INTENT.clientAction);
+		});
+
+		test.each([
+			// `currency()` demands /^[A-Z]{3}$/ — a lowercase code and a symbol both
+			// throw, and neither is worth an order.
+			["a lowercase currency", { ...BREAKDOWN, currency: "usd", shippingZoneId: null }],
+			["a symbol for a currency", { ...BREAKDOWN, currency: "US$", shippingZoneId: null }],
+			// `cents()` demands a non-negative safe integer.
+			["a fractional total", { ...BREAKDOWN, totalCents: 59.97, shippingZoneId: null }],
+			["a null total", { ...BREAKDOWN, totalCents: null, shippingZoneId: null }],
+		])("%s drops the total and keeps the order", async (_label, totals) => {
+			replyWithOrder({ ...ORDER, totals });
+			const result = resultOf(await sandboxHandle.invokeRoute("storefront/checkout/place", INPUT));
+			expect(result["ok"]).toBe(true);
+			expect(result).not.toHaveProperty("total");
+			expect(result["orderId"]).toBe("order-1");
+			expect(result["clientAction"]).toEqual(STRIPE_INTENT.clientAction);
+		});
+	});
+
 	test("a 502 becomes the typed PAYMENT_INTENT_FAILED, never RENDER_FAILED", async () => {
 		checkoutOverride = { status: 502, body: { ok: false, reason: "PAYMENT_INTENT_FAILED" } };
 		const result = resultOf(await sandboxHandle.invokeRoute("storefront/checkout/place", INPUT));

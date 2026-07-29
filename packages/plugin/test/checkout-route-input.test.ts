@@ -54,7 +54,29 @@ describe("parseCheckoutPlaceInput", () => {
 			cartId: "cart-1",
 			buyerRef: "Buyer@Example.com",
 			idempotencyKey: "checkout:cart-1",
+			locale: "en",
 		});
+	});
+
+	test("the locale is display-only — canonicalized when given, defaulted when not", () => {
+		// It formats the order total this route hands back (the pay button's
+		// amount) and reaches no upstream call.
+		const base = { cartId: "cart-1", buyerRef: "a@b.co", idempotencyKey: "k" };
+		expect(parseCheckoutPlaceInput({ ...base, locale: "en-GB" })?.locale).toBe("en-GB");
+		expect(parseCheckoutPlaceInput(base)?.locale).toBe("en");
+	});
+
+	test("a garbage locale degrades rather than failing the ORDER", () => {
+		// The asymmetry that matters: a bad cartId is a reject, a bad locale is a
+		// fallback. Nobody loses a purchase over a malformed language tag.
+		const parsed = parseCheckoutPlaceInput({
+			cartId: "cart-1",
+			buyerRef: "a@b.co",
+			idempotencyKey: "k",
+			locale: "!!!",
+		});
+		expect(parsed).not.toBeNull();
+		expect(parsed?.locale).toBe("en");
 	});
 
 	test("passes buyerRef through VERBATIM — never lowercased, never rewritten", () => {

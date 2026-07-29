@@ -14,15 +14,15 @@
  *     works — the last one silently mints a second order on every reload.
  *  2. THE ORDER OF THE PAY PAGE'S SCRIPT. Everything after the submit binding
  *     is decoration; anything decorative that runs BEFORE it can throw on an
- *     old browser and leave "Pay now" as a native submit that navigates with no
- *     payment and no error.
+ *     old browser and leave the pay button as a native submit that navigates
+ *     with no payment and no error.
  *  3. THE CONFIRMATION PAGE'S ZERO-JS PROPERTY, from the component side.
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
-import { hasExecutableScript, splitAstro } from "./astro-source.js";
+import { hasExecutableScript, splitAstro, templateOf } from "./astro-source.js";
 
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src");
 const read = (relative: string): string => readFileSync(path.join(SRC, relative), "utf8");
@@ -109,7 +109,7 @@ describe("/checkout/pay — the money path is wired before the decoration", () =
 	test("EVERYTHING below the decoration banner follows the submit binding", () => {
 		// Anchored to the banner rather than to two API names on purpose: the
 		// hazard is not `matchMedia` specifically, it is any decorative call
-		// that can throw on an old browser before "Pay now" has a handler — at
+		// that can throw on an old browser before the pay button has a handler — at
 		// which point the button is a native submit that navigates away with no
 		// payment and no error. Naming the APIs pins today's two; naming the
 		// banner pins the rule.
@@ -180,6 +180,56 @@ describe("/checkout/pay — the money path is wired before the decoration", () =
 		expect(PAY).not.toContain("CSSFontFaceRule");
 		expect(PAY).not.toContain("options.fonts");
 		expect(PAY).not.toContain("face-probe");
+	});
+});
+
+/**
+ * §7's pay button, and the pieces that have to line up for it to be honest.
+ *
+ * The page has no render harness (issue #40), so the split is the same one
+ * `checkout-place.test.ts` uses for the entry guard: the DECISION lives in a
+ * pure module and is unit-tested there (`totals.test.ts` — the amount, the
+ * "Pay now" fallback, the substance rule), and what is asserted here is that the
+ * page actually calls it and feeds it the right thing.
+ */
+describe("/checkout/pay — the button states the amount (§7)", () => {
+	/** The button element, comments already stripped by `templateOf`. */
+	const BUTTON = /<button id="payment-submit"[\s\S]*?<\/button>/.exec(templateOf(PAY))?.[0] ?? "";
+
+	test("the label is an expression, not a literal — and the literal is GONE", () => {
+		// "Pay now" was a disclosed §7 deviation while the pay page had no amount
+		// on it. It now has one, so the hardcoded label must not survive: a
+		// template that still printed it would look right and quietly ignore the
+		// stash.
+		expect(BUTTON, "the pay button is gone or was renamed").not.toBe("");
+		expect(BUTTON).toContain("{payLabel}");
+		expect(BUTTON).not.toContain("Pay now");
+	});
+
+	test("the label rule is IMPORTED, never re-implemented in the template", () => {
+		// A page that built `"Pay " + amount` itself would be this theme's first
+		// hand-assembled money string (§7 forbids exactly that) and would lose the
+		// empty/dash guard with it.
+		const { frontmatter, body } = splitAstro(PAY);
+		expect(frontmatter).toContain("payButtonLabel");
+		expect(frontmatter).toContain("lib/totals.js");
+		expect(body).not.toMatch(/["'`]Pay \$/);
+	});
+
+	test("the amount comes from the STASH, not from a commerce read on this page", () => {
+		// Which is the whole reason it is captured at place-time: the cart stays
+		// live and mutable, the charge does not. A dispatch here would also break
+		// the "this page makes no commerce call" property the design leans on.
+		const { frontmatter } = splitAstro(PAY);
+		expect(frontmatter).toContain("stash.total?.formatted");
+		expect(frontmatter).not.toContain("dispatchUrumiRoute");
+	});
+
+	test("the currency rides on the same optional chain as the amount", () => {
+		// So a pre-total stash names neither. Naming a currency under a "Pay now"
+		// button would be the footer claiming the page priced something it did not
+		// (§7) — `footer-currency.test.ts` owns the positive half of this rule.
+		expect(PAY).toMatch(/<Base[^>]*currency=\{stash\.total\?\.currency \?\? null\}/);
 	});
 });
 

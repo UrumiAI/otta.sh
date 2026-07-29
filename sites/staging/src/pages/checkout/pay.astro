@@ -8,10 +8,11 @@
  * card form would put PAN data on our servers and move every merchant running
  * this theme to SAQ-D.
  *
- * This page makes NO commerce call. Everything it needs — the order id and the
- * client secret — is in the first-party `urumi_checkout` cookie the place
- * endpoint set one redirect ago. Re-deriving the secret would mean a GET that
- * can create an order.
+ * This page makes NO commerce call. Everything it needs — the order id, the
+ * client secret and the order's total — is in the first-party `urumi_checkout`
+ * cookie the place endpoint set one redirect ago. Re-deriving the secret would
+ * mean a GET that can create an order, and re-deriving the TOTAL would quote a
+ * still-live cart rather than the amount the PaymentIntent was minted for.
  *
  * The script reads its inputs from `data-` attributes rather than having them
  * baked into JS source (no `define:vars`), so Astro's attribute escaping is the
@@ -30,6 +31,7 @@ import Base from "../../layouts/Base.astro";
 import { readCheckoutStash } from "../../lib/checkout-cookie.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
 import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
+import { payButtonLabel } from "../../lib/totals.js";
 
 const stash = readCheckoutStash(Astro.cookies);
 // No stash (direct hit, expired cookie, cleared browser): there is nothing to
@@ -39,18 +41,18 @@ if (stash === null) return Astro.redirect("/checkout", 303);
 
 const orderUrl = new URL(`/orders/${encodeURIComponent(stash.orderId)}`, Astro.url).toString();
 const orderPath = `/orders/${encodeURIComponent(stash.orderId)}`;
+
+/** "Pay $40.00" (§7) — or "Pay now" for a stash minted before the total shipped.
+ *  The page never assembles this string; the amount was formatted by the plugin
+ *  at place-time and the label rule lives in `totals.ts`. */
+const payLabel = payButtonLabel(stash.total?.formatted);
 ---
 
-{/* No `currency`: this page reads no money — the stash carries an order id and a
-    client secret and nothing money-shaped.
-
-    DEVIATION FROM §7, user-gated and deliberate: §7 says "the pay button carries
-    the amount: `Pay $40.00`, not `Pay now`", and this button says "Pay now".
-    There is no amount on this page to put on it, and getting one means either
-    widening the stash at place-time or making a commerce read here — both in the
-    payment path, so both are the user's call, not this increment's. Deferred,
-    and recorded rather than quietly rationalised. */}
-<Base title="Payment">
+{/* The currency is the stash's own, and it is here BECAUSE the button now shows
+    money — §7's rule is that a page naming a price names the currency it is in.
+    A pre-total stash carries neither: `null`, and the footer stays bare, which
+    is still the truth about what this page printed. */}
+<Base title="Payment" currency={stash.total?.currency ?? null}>
 	{/* Wrapped rather than given a class: a page's scoped selector cannot reach a
 	    component's root (src/lib/rest-props.ts), so the spacing around one lives
 	    on an element the page owns. */}
@@ -87,7 +89,7 @@ const orderPath = `/orders/${encodeURIComponent(stash.orderId)}`;
 					</div>
 					<p id="payment-error" class="pay-error" role="alert" hidden />
 					<button id="payment-submit" type="submit" class="u-btn">
-						Pay now
+						{payLabel}
 					</button>
 				</form>
 
@@ -298,8 +300,8 @@ const orderPath = `/orders/${encodeURIComponent(stash.orderId)}`;
 						// malformed one — a secret key pasted into the publishable slot is
 						// the realistic way that happens. Unguarded, the throw takes the
 						// rest of this function with it, including the submit binding, and
-						// "Pay now" becomes a native submit that navigates nowhere useful
-						// with nothing said.
+						// the pay button becomes a native submit that navigates nowhere
+						// useful with nothing said.
 						var stripe;
 						try {
 							stripe = Stripe(mount.dataset.publishableKey);

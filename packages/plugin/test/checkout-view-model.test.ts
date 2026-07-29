@@ -20,12 +20,13 @@ import type { CartPricingWire } from "../src/storefront/cart-pricing.js";
 import {
 	buildCheckoutLines,
 	buildCheckoutTotals,
+	buildOrderTotal,
 	checkoutIdempotencyKey,
 	isAlreadyPlaced,
 	NOT_APPLICABLE_LABEL,
 	NOT_CALCULATED_LABEL,
 } from "../src/storefront/checkout-view-model.js";
-import type { CartLineWire } from "../src/product-commerce/commerce-client.js";
+import type { CartLineWire, PublicOrderWire } from "../src/product-commerce/commerce-client.js";
 
 const LOCALE = "en-US";
 
@@ -236,5 +237,57 @@ describe("isAlreadyPlaced", () => {
 				clientAction: { kind: "stripe_client_secret", clientSecret: "pi_1_secret_x" },
 			}),
 		).toBe(false);
+	});
+});
+
+/**
+ * The order's own total — what `storefront/checkout/place` hands back so the
+ * site can stash it beside the client secret and the pay button can state the
+ * amount ("Pay $40.00", TEMPERED.md §7).
+ *
+ * The rule being pinned is that this is the ORDER's figure, formatted once, at
+ * the moment the PaymentIntent was minted. Nothing downstream re-derives it: a
+ * total re-quoted from the cart later could differ from what Stripe will take.
+ */
+describe("buildOrderTotal", () => {
+	const order = (totals: Partial<typeof BREAKDOWN>): PublicOrderWire =>
+		({
+			id: "order-1",
+			state: "pending",
+			currency: "USD",
+			paymentMethod: "stripe",
+			holdExpiresAt: "2099-01-01T00:00:00.000Z",
+			createdAt: "2026-07-27T00:00:00.000Z",
+			totals: { ...BREAKDOWN, ...totals, shippingZoneId: null },
+			lines: [],
+			fulfillment: null,
+			cancellation: null,
+		}) as PublicOrderWire;
+
+	test("is the order's totalCents, through the one money→string boundary", () => {
+		expect(buildOrderTotal(order({ totalCents: 4000 }), LOCALE)).toEqual({
+			amount: 4000,
+			currency: "USD",
+			formatted: "$40.00",
+		});
+	});
+
+	test("takes the currency off the TOTALS block, so amount and code cannot disagree", () => {
+		// `order.currency` is a second copy of the same fact. Reading the one that
+		// sits beside the number is what makes a mismatch unrepresentable rather
+		// than merely unlikely.
+		const mismatched = order({ currency: "JPY", totalCents: 4000 });
+		expect(buildOrderTotal(mismatched, LOCALE)).toEqual({
+			amount: 4000,
+			currency: "JPY",
+			// Zero-decimal, from ICU's own table — never a divide-by-100.
+			formatted: "¥4,000",
+		});
+	});
+
+	test("a genuinely free order is a figure, not an absence", () => {
+		// Deliberately NOT a CheckoutAmountView: the honest-zero rule is about
+		// components a store never configured, and an order's total is never one.
+		expect(buildOrderTotal(order({ totalCents: 0 }), LOCALE).formatted).toBe("$0.00");
 	});
 });

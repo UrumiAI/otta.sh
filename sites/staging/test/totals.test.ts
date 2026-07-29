@@ -15,9 +15,11 @@ import { describe, expect, test } from "vitest";
 import { PRICED_AT_CHECKOUT_LABEL, UNAVAILABLE_LABEL } from "../src/lib/cart-view.js";
 import {
 	NOT_APPLIED_LABEL,
+	PAY_FALLBACK_LABEL,
 	isUncalculated,
 	isUnpricedText,
 	moneyCellText,
+	payButtonLabel,
 	sumRowText,
 	uncalculatedFootnote,
 } from "../src/lib/totals.js";
@@ -39,6 +41,43 @@ describe("isUncalculated — figures and prose are told apart by the view model,
 	test("an uncomputed amount is prose", () => {
 		expect(isUncalculated(uncomputed(NOT_CALCULATED_LABEL))).toBe(true);
 		expect(isUncalculated(uncomputed(NOT_APPLICABLE_LABEL))).toBe(true);
+	});
+});
+
+describe("payButtonLabel — the pay button carries the amount (§7)", () => {
+	test("a real total becomes 'Pay $40.00', with the plugin's string untouched", () => {
+		expect(payButtonLabel("$40.00")).toBe("Pay $40.00");
+	});
+
+	test("the amount is printed VERBATIM — the theme never re-assembles money", () => {
+		// A non-USD, non-Latin, RTL or zero-decimal figure has to survive intact:
+		// it came out of Intl at place-time and nothing here is entitled to a
+		// second opinion about symbol placement or grouping.
+		expect(payButtonLabel("¥4,000")).toBe("Pay ¥4,000");
+		expect(payButtonLabel("40,00 €")).toBe("Pay 40,00 €");
+		expect(payButtonLabel("‏٤٠٫٠٠ ر.س.‏")).toBe("Pay ‏٤٠٫٠٠ ر.س.‏");
+	});
+
+	test("a genuinely free order still states its amount rather than falling back", () => {
+		// $0.00 is a figure, not an absence — the same rule the totals rows follow.
+		expect(payButtonLabel("$0.00")).toBe("Pay $0.00");
+	});
+
+	test("NO amount falls back to 'Pay now' — a pre-total stash must stay payable", () => {
+		// The backward-compatibility case, and the only reason the fallback still
+		// exists: a `urumi_checkout` cookie written before the total shipped is
+		// valid for the rest of its 15-minute TTL and its order is real.
+		expect(payButtonLabel(undefined)).toBe(PAY_FALLBACK_LABEL);
+		expect(PAY_FALLBACK_LABEL).toBe("Pay now");
+	});
+
+	test("a string that SAYS nothing falls back too — 'Pay —' is not a button", () => {
+		// Same substance rule as the totals cells: blank, whitespace and every
+		// spelling of a dash are indistinguishable from an outage, and this is the
+		// one control in the theme that moves money.
+		for (const empty of ["", "   ", "—", "–", "-"]) {
+			expect(payButtonLabel(empty), `${empty} reached the button`).toBe(PAY_FALLBACK_LABEL);
+		}
 	});
 });
 
