@@ -1,4 +1,5 @@
 import type { ActionsBlock, SelectFieldSpec } from "../../types.js";
+import { decodeJsonToken, encodeJsonToken } from "./base64url.js";
 
 /**
  * Navigation primitives for the admin list/detail scaffold.
@@ -40,12 +41,12 @@ export interface ListCursor<F = unknown> {
 }
 
 export function encodePath(path: NavPath): string {
-	return toBase64Url(new TextEncoder().encode(JSON.stringify(path)));
+	return encodeJsonToken(path);
 }
 
 export function decodePath(token: string): NavPath | null {
 	try {
-		const parsed = JSON.parse(new TextDecoder().decode(fromBase64Url(token))) as unknown;
+		const parsed = decodeJsonToken(token);
 		if (!Array.isArray(parsed)) return null;
 		if (!parsed.every((x): x is string => typeof x === "string")) return null;
 		return parsed;
@@ -55,12 +56,12 @@ export function decodePath(token: string): NavPath | null {
 }
 
 export function encodeListCursor<F>(cursor: ListCursor<F>): string {
-	return toBase64Url(new TextEncoder().encode(JSON.stringify(cursor)));
+	return encodeJsonToken(cursor);
 }
 
 export function decodeListCursor<F = unknown>(token: string): ListCursor<F> | null {
 	try {
-		const parsed = JSON.parse(new TextDecoder().decode(fromBase64Url(token))) as unknown;
+		const parsed = decodeJsonToken(token);
 		if (parsed === null || typeof parsed !== "object") return null;
 		const p = parsed as { c?: unknown; f?: unknown; p?: unknown };
 		if (typeof p.c !== "string") return null;
@@ -112,17 +113,4 @@ export function filterPathField(path: NavPath): SelectFieldSpec {
 		options: [{ value: encoded, label: "This level" }],
 		initial_value: encoded,
 	};
-}
-
-function toBase64Url(bytes: Uint8Array): string {
-	let bin = "";
-	for (const b of bytes) bin += String.fromCharCode(b);
-	return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-function fromBase64Url(token: string): Uint8Array {
-	const bin = atob(token.replace(/-/g, "+").replace(/_/g, "/"));
-	const out = new Uint8Array(bin.length);
-	for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-	return out;
 }

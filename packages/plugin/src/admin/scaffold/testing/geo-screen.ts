@@ -1,6 +1,7 @@
-import type { Block, SandboxedPlugin } from "../../../types.js";
+import type { Block, FormBlock, SandboxedPlugin } from "../../../types.js";
 import { screenActions } from "../actions.js";
 import { failClosedResponse, noticeBanner } from "../banner.js";
+import { carriedForm, encodeCarrier } from "../carrier.js";
 import {
 	createListDetailHandler,
 	customAction,
@@ -8,7 +9,8 @@ import {
 	listLevel,
 	readString,
 } from "../list-detail.js";
-import { backButton, decodePath, encodePath, type NavPath } from "../nav.js";
+import { filterPanel } from "../layout.js";
+import { backButton, decodePath, encodePath, PATH_FIELD, type NavPath } from "../nav.js";
 
 /**
  * A SYNTHETIC 3-level screen (countries → cities → landmark) built on the
@@ -54,6 +56,12 @@ const CITIES: Record<string, GeoCity[]> = {
 };
 const LANDMARK: GeoLandmark = { id: "m1", name: "Tower" };
 
+/** Landmark ids whose leaf `render` / `notFound` deliberately throw, so the
+ *  engine's containment of BLOCK-BUILDING failures is exercised rather than
+ *  assumed (`load` failing was already covered). */
+const THROWING_LANDMARK_ID = "m-throw";
+const THROWING_MISSING_ID = "nope-throw";
+
 /** City-list filter: a simple name-prefix search — enough to prove filter
  *  values + the drill path BOTH survive a deep `apply-filter` round trip. */
 interface CityFilter {
@@ -83,12 +91,20 @@ export class FakeGeoClient {
 		return this.#pageOf(all, limit, cursor);
 	}
 	getLandmark(id: string): GeoLandmark | null {
-		return id === LANDMARK.id ? LANDMARK : null;
+		if (id === LANDMARK.id) return LANDMARK;
+		// Resolves so the leaf's `render` is REACHED and can throw (the containment
+		// probe); every other id is a genuine miss.
+		return id === THROWING_LANDMARK_ID ? { id, name: "Boom" } : null;
 	}
 }
 
 export const GEO_ACTIONS = screenActions("geo");
 export const GEO_ACTION_PING = GEO_ACTIONS.custom("ping");
+/** Reads its whole context out of the form's `block_id` — no visible field
+ *  carries anything (the increment-2 carrier shape). */
+export const GEO_ACTION_TAG = GEO_ACTIONS.custom("tag");
+/** Throws from its own body: the probe for custom-action throw containment. */
+export const GEO_ACTION_BOOM = GEO_ACTIONS.custom("boom");
 
 /** Deep drills encode the FULL target path into the option value — the
  *  documented `parseOpen` pattern (the interaction is stateless). */
@@ -164,23 +180,79 @@ export function createGeoScreenHandler() {
 				fetchPage: (c, path, filter, opts) =>
 					Promise.resolve(c.listCities(path[0] ?? "", filter, opts.limit, opts.cursor)),
 				render: ({ actions, path, filter, items, nextToken }) => {
+					const carriedPath = { [PATH_FIELD]: encodePath(path) };
+					const filterForm = (label: string): FormBlock => ({
+						type: "form",
+						fields: [
+							{
+								type: "text_input",
+								action_id: "q",
+								label: "Name starts with",
+								...(filter.q !== undefined ? { initial_value: filter.q } : {}),
+							},
+						],
+						submit: { label, action_id: actions.applyFilter },
+					});
 					const blocks: Block[] = [
 						{ type: "header", text: `Cities of ${path[0] ?? "?"}` },
 						backButton(actions.back, "← Back to countries", path),
+						filterForm("Apply"),
+						// A SECOND filter form that carries its drill path INVISIBLY in
+						// `block_id` — the engine must recognise the carry and skip
+						// injecting the visible "Scope" select into this one.
+						carriedForm({
+							namespace: "geo:city-filter",
+							context: carriedPath,
+							form: filterForm("Apply (carried)"),
+						}),
+						// A THIRD filter form, COLLAPSED behind `filterPanel` and carrying
+						// nothing — the engine's path-carry guarantee has to reach inside
+						// the accordion, or collapsing a deep filter would silently
+						// re-filter the root list.
+						filterPanel({
+							// Through `carriedForm` because this form PREFILLS `q` — collapsed
+							// in an accordion it would otherwise be index-0-forever, so a
+							// cleared filter would leave the old value on screen. `filterPanel`
+							// enforces that rather than trusting the author (it throws), which
+							// is why the carrier here has no `__path`: the digest satisfies the
+							// prefill rule while the engine still injects the visible path
+							// field, as the accordion-recursion test asserts.
+							form: carriedForm({
+								namespace: "geo:city-filter-collapsed",
+								form: filterForm("Apply (collapsed)"),
+							}),
+							blockId: "geo:city-filters",
+							label: "Filters",
+							activeFilters: [filter.q !== undefined && `name: ${filter.q}`],
+							inlineUpTo: 0,
+						}),
+						// A FOURTH and FIFTH, nested in the other two container kinds — the
+						// traversal has to reach every one of them, not just `accordion`.
 						{
-							type: "form",
-							fields: [
+							type: "columns",
+							columns: [[filterForm("Apply (column)")], [{ type: "context", text: "spacer" }]],
+						},
+						{
+							type: "tab",
+							panels: [
 								{
-									type: "text_input",
-									action_id: "q",
-									label: "Name starts with",
-									...(filter.q !== undefined ? { initial_value: filter.q } : {}),
+									label: "Nested",
+									// Two deep: a tab panel holding an accordion holding the form.
+									blocks: [
+										{
+											type: "accordion",
+											label: "Deeper",
+											blocks: [filterForm("Apply (tab)")],
+										},
+									],
 								},
 							],
-							submit: { label: "Apply", action_id: actions.applyFilter },
 						},
 						{
 							type: "table",
+							// A table's `block_id` is echoed back on its own block_actions
+							// (sort / load-more), so it states which level it belongs to.
+							block_id: encodeCarrier("geo:city-table", carriedPath),
 							columns: [{ key: "id", label: "id" }],
 							rows: items.map((x) => ({ id: x.id })),
 							page_action_id: actions.page,
@@ -200,6 +272,15 @@ export function createGeoScreenHandler() {
 			leafLevel<FakeGeoClient, GeoLandmark>({
 				load: (c, _path, id) => Promise.resolve(c.getLandmark(id)),
 				render: ({ actions, path, detail, notice }) => {
+					// A leaf `render` is BLOCK-BUILDING screen code, and block builders
+					// throw (a rejected carrier namespace, a filter form over its field
+					// budget). The engine must contain that: an escaping throw is a non-2xx,
+					// which replaces the whole tree with a raw status panel — worst of all
+					// right after a side effect applied, since the operator cannot then tell
+					// whether it did. `m-throw` is the probe for the render path.
+					if (detail.id === THROWING_LANDMARK_ID) {
+						throw new Error("geo fixture: leaf render blew up");
+					}
 					const blocks: Block[] = [
 						{ type: "header", text: `Landmark ${detail.id}` },
 						backButton(actions.back, "← Back to cities", path),
@@ -207,11 +288,15 @@ export function createGeoScreenHandler() {
 					if (notice !== undefined) blocks.push(noticeBanner(notice));
 					return blocks;
 				},
-				notFound: ({ actions, path, id }) => [
-					{ type: "header", text: "Not found" },
-					backButton(actions.back, "← Back", path),
-					{ type: "banner", variant: "error", title: "Not found", description: id },
-				],
+				notFound: ({ actions, path, id }) => {
+					// ...and so is `notFound` — same containment requirement.
+					if (id === THROWING_MISSING_ID) throw new Error("geo fixture: notFound blew up");
+					return [
+						{ type: "header", text: "Not found" },
+						backButton(actions.back, "← Back", path),
+						{ type: "banner", variant: "error", title: "Not found", description: id },
+					];
+				},
 				onError: () =>
 					failClosedResponse({ header: "Landmark", title: "down", description: "down" }),
 			}),
@@ -231,6 +316,33 @@ export function createGeoScreenHandler() {
 					title: "Pinged",
 					description: "side effect ran",
 				});
+			}),
+			// The carrier counterpart of `ping`: BOTH the target level and the
+			// payload come out of the form's `block_id`, so the form shows the
+			// operator no plumbing field at all. A missing/hostile carrier degrades
+			// to the root list rather than throwing.
+			[GEO_ACTION_TAG]: customAction<FakeGeoClient>(
+				({ carried, carriedPath, showLeaf, showList }) => {
+					// `carriedPath` is the sanctioned way to learn the drill level: the
+					// engine recovers it (from `value.__path`, `values.__path`, or the
+					// carrier) and STRIPS the reserved keys from `carried`, so a screen
+					// never reads `__path`/`__v` itself.
+					const path = carriedPath ?? [];
+					if (path.length === 0) return showList();
+					return showLeaf(path, {
+						variant: "default",
+						title: "Tagged",
+						// Proves the reserved keys are gone: only the screen's own fields
+						// are here, so this is what an operator-visible notice can echo.
+						description: `${carried?.label ?? "none"} (${Object.keys(carried ?? {}).join(",")})`,
+					});
+				},
+			),
+			// A custom action whose OWN BODY throws AFTER its side effect would have
+			// applied — the money-path shape (a refund commits, then rebuilding the
+			// detail throws). The engine must not let this become a non-2xx.
+			[GEO_ACTION_BOOM]: customAction<FakeGeoClient>(() => {
+				throw new Error("geo fixture: custom action blew up after its side effect");
 			}),
 		},
 	});

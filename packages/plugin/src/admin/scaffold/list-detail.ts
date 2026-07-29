@@ -1,10 +1,12 @@
 import type { Block, BlockResponse, PluginContext, RouteHandler } from "../../types.js";
 import type { ScreenActions } from "./actions.js";
-import type { Notice } from "./banner.js";
+import { failClosedResponse, noticeBanner, type Notice } from "./banner.js";
+import { carriedFields, type CarriedContext, decodeCarrier } from "./carrier.js";
 import {
 	decodeListCursor,
 	decodePath,
 	encodeListCursor,
+	encodePath,
 	filterPathField,
 	PATH_FIELD,
 	type NavPath,
@@ -36,6 +38,13 @@ export interface ListDetailInput {
 	/** `block_action` payload (e.g. the table "Load more" `{cursor}`, or a
 	 *  transition button's `{orderId, toState}`). */
 	value?: unknown;
+	/** The originating block's `block_id`, echoed back by em-dash on a `form`
+	 *  submit and on a `table`'s sort/load-more `block_action` — those two blocks
+	 *  ONLY (`blocks/form.tsx`, `blocks/table.tsx` in the pinned 0.31.1; a button
+	 *  echoes nothing and carries context in `value` instead). Block Kit declares no
+	 *  hidden field, so this is where a form carries context it must not show an
+	 *  operator — decoded via {@link readCarrier}. */
+	block_id?: unknown;
 }
 
 // -- level definitions (public factories, strongly typed per screen) ----------
@@ -146,6 +155,23 @@ export function leafLevel<Client, Detail>(def: LeafLevelDef<Client, Detail>): Le
 export interface CustomActionApi<Client> {
 	input: ListDetailInput;
 	client: Client;
+	/** The hidden context the originating form carried in its `block_id` —
+	 *  decoded once per interaction, `undefined` when the block carried none (or
+	 *  carried something that is not a carrier token). This is what replaces the
+	 *  single-option "carrier" `select` fields: read `carried.orderId` instead of
+	 *  `input.values.orderId`. Every value is UNTRUSTED operator-round-tripped
+	 *  input — re-authorize it exactly as you would a select's value.
+	 *
+	 *  RESERVED KEYS ARE STRIPPED (`__path`, `__v`): this record holds only the
+	 *  screen's own fields, so `Object.entries(carried)` is safe to iterate. The
+	 *  drill path is on {@link CustomActionApi.carriedPath} instead. */
+	carried: CarriedContext | undefined;
+	/** The drill {@link NavPath} this interaction carried, from a button's
+	 *  `value.__path`, a form's `values.__path`, or the block's `block_id` carrier —
+	 *  same precedence the engine's own nav uses. `undefined` when nothing carried
+	 *  one (the depth-≤1 case); hand it to {@link CustomActionApi.showLeaf} or
+	 *  {@link CustomActionApi.showList} to re-render where the operator was. */
+	carriedPath: NavPath | undefined;
 	/** Re-render the leaf at `path` (its id is `path`'s last element), optionally
 	 *  with a notice banner. */
 	showLeaf(path: NavPath, notice?: Notice): Promise<BlockResponse>;
@@ -180,14 +206,60 @@ export interface ListDetailScreenConfig {
 	customActions?: Record<string, CustomActionFn<unknown>>;
 }
 
+/** The notice a custom action's failed re-render carries. A side effect may
+ *  ALREADY have applied when the failure happened, so this must never read as a
+ *  plain "it failed". */
+const ACTION_OUTCOME_UNKNOWN: Notice = {
+	variant: "error",
+	title: "Action outcome unknown",
+	description:
+		"The action may already have been applied, but this screen could not be rebuilt afterwards. Re-check the record before retrying.",
+};
+
 /**
  * Build the single `RouteHandler` for a list/detail screen. The returned
  * handler is what the admin-route dispatcher forwards `open`/`back`/`page`/
  * `apply-filter`/custom-action interactions (and the page-load default) to.
+ *
+ * NO EXCEPTION MAY ESCAPE THIS HANDLER. A throw becomes a non-2xx from the
+ * plugin route, and a non-2xx replaces the whole `BlockRenderer` tree with a raw
+ * status panel — unmounting every accordion and tab, and telling an operator
+ * nothing about whether their action applied. Each rendering path therefore fails
+ * closed to a banner of its own (a level's `onError()`, or the root list plus
+ * {@link ACTION_OUTCOME_UNKNOWN}), and this wrapper is the LAST-RESORT net behind
+ * all of them: it also covers the paths no inner try can reach — `createClient`,
+ * `parseOpen`, `filterFromValues`, and a screen's own `onError()` throwing.
  */
 export function createListDetailHandler(
 	config: ListDetailScreenConfig,
 ): RouteHandler<ListDetailInput> {
+	const dispatch = createDispatcher(config);
+	return async (routeCtx, ctx) => {
+		try {
+			return await dispatch(routeCtx, ctx);
+		} catch (err) {
+			// LOG IT. Contained failures are indistinguishable from an unreachable
+			// service in the UI (both are an error banner), so without this a screen bug
+			// — say a carrier namespace interpolating a zone named "EU West" — reads to
+			// an operator AND to a developer tailing worker logs as an infrastructure
+			// outage, with the message, the stack and the offending value gone.
+			console.error("[urumi] admin list/detail dispatch failed:", err);
+			// The RESPONSE stays deliberately generic and screen-agnostic: at this point
+			// the screen's own fail-closed rendering is what failed, so nothing
+			// screen-specific can be trusted to build blocks, and the error must never
+			// reach the UI (it can carry a URL or a status — see `failClosedResponse`).
+			return failClosedResponse({
+				header: "Unavailable",
+				title: "This screen could not be rendered",
+				description:
+					"Something went wrong building this view. Reload the page; if it persists, the record may need checking directly.",
+				toast: "Could not render this screen",
+			});
+		}
+	};
+}
+
+function createDispatcher(config: ListDetailScreenConfig): RouteHandler<ListDetailInput> {
 	const { actions, levels } = config;
 
 	return async (routeCtx, ctx) => {
@@ -238,7 +310,11 @@ export function createListDetailHandler(
 				return {
 					blocks: path.length === 0 ? blocks : withFilterPathCarry(blocks, actions, path),
 				};
-			} catch {
+			} catch (err) {
+				// This is where a SCREEN BUG lands (its `fetchPage` or its `render`), and
+				// the banner below cannot tell an operator apart from an unreachable
+				// service — so the detail has to reach the logs.
+				console.error("[urumi] admin list level failed:", err);
 				return level.onError();
 			}
 		};
@@ -247,14 +323,20 @@ export function createListDetailHandler(
 			const level = levels[path.length];
 			const id = path[path.length - 1];
 			if (level === undefined || level.kind !== "leaf" || id === undefined) return { blocks: [] };
-			let detail: unknown;
+			// `render` and `notFound` are INSIDE the try, not just `load`: they are
+			// screen code that builds blocks, and block builders throw (a rejected
+			// carrier namespace, a filter form over its field budget). An escaping
+			// throw becomes a non-2xx, which replaces the whole rendered tree with a
+			// raw status panel — the worst possible outcome right after a side effect
+			// applied, because the operator cannot tell whether it did.
 			try {
-				detail = await level.load(client, path, id);
-			} catch {
+				const detail = await level.load(client, path, id);
+				if (detail === null) return { blocks: level.notFound({ actions, path, id }) };
+				return { blocks: await level.render({ client, actions, path, id, detail, notice }) };
+			} catch (err) {
+				console.error("[urumi] admin leaf level failed:", err);
 				return level.onError();
 			}
-			if (detail === null) return { blocks: level.notFound({ actions, path, id }) };
-			return { blocks: await level.render({ client, actions, path, id, detail, notice }) };
 		};
 
 		/** Render whichever level `path` lands on — a leaf, a deeper list, or the
@@ -289,7 +371,22 @@ export function createListDetailHandler(
 		if (action === actions.page) {
 			const token = readString(asRecord(input.value)?.cursor);
 			const decoded = token === undefined ? null : decodeListCursor(token);
-			if (decoded === null) return rootList();
+			// No usable cursor ⇒ re-render whatever level the firing block said it
+			// belonged to (its `block_id` carrier), else the root list as before.
+			//
+			// DO NOT SET `sortable: true` ON A TABLE COLUMN UNTIL SORT IS SUPPORTED
+			// END TO END. em-dash fires this SAME action id for a sortable
+			// column-header click, with `value: {sort: {key, dir}}` and NO cursor
+			// (`blocks/table.tsx:44-58`). Nothing here (or in any list level, or in
+			// the service's list ports) reads `sort`, so such a click re-renders the
+			// level with its DEFAULT filter — silently dropping the operator's
+			// filter, and never sorting anything. The carrier below at least keeps
+			// the drill path when the table carries one; the dropped filter and the
+			// ignored sort remain, which is why the header must not be made
+			// clickable yet. Latent today: no page sets `sortable`. Fixing it needs a
+			// sort parameter threaded through `ListLevelDef.fetchPage` into the
+			// service list ports — out of scope for the layout vocabulary.
+			if (decoded === null) return renderPath(readNavPath(input) ?? []);
 			return renderList(decoded.p ?? [], decoded.f, decoded.c);
 		}
 
@@ -304,13 +401,43 @@ export function createListDetailHandler(
 		// -- custom (side-effecting) actions --------------------------------------
 		const custom = action === undefined ? undefined : config.customActions?.[action];
 		if (custom !== undefined) {
-			return (await custom({
-				input,
-				client,
-				showLeaf: (path, notice) => renderLeaf(path, notice),
-				showList: (path, notice) =>
-					path === undefined ? rootList(notice) : renderPath(path, notice),
-			})) as Awaited<ReturnType<RouteHandler<ListDetailInput>>>;
+			try {
+				return (await custom({
+					input,
+					client,
+					carried: readCarrier(input),
+					carriedPath: readNavPath(input),
+					showLeaf: (path, notice) => renderLeaf(path, notice),
+					showList: (path, notice) =>
+						path === undefined ? rootList(notice) : renderPath(path, notice),
+				})) as Awaited<ReturnType<RouteHandler<ListDetailInput>>>;
+			} catch (err) {
+				// A custom action is the one place a SIDE EFFECT may already have
+				// applied, so this cannot be a silent fallback: the mutation might have
+				// committed and only the re-render failed. Log it (the operator's banner
+				// says "unknown", and the logs are where the actual cause lives), then
+				// show the root list — so the operator keeps a working screen — with a
+				// banner saying the outcome is unknown, rather than a raw status panel
+				// that says nothing and unmounts everything. The banner is PREPENDED
+				// rather than passed as a notice because a list level may ignore `notice`.
+				console.error(`[urumi] admin custom action ${String(action)} failed:`, err);
+				const toast = {
+					message: "Action outcome unknown — re-check the record",
+					type: "error" as const,
+				};
+				// DOUBLE FAULT: if rebuilding the root list ALSO throws, the outer
+				// wrapper would answer with its generic copy, dropping the one thing the
+				// operator must know — that a mutation may have committed. So the warning
+				// is preserved on its own rather than delegated.
+				let fallbackBlocks: Block[];
+				try {
+					fallbackBlocks = (await rootList()).blocks;
+				} catch (fallbackErr) {
+					console.error("[urumi] admin custom action fallback render failed:", fallbackErr);
+					fallbackBlocks = [];
+				}
+				return { blocks: [noticeBanner(ACTION_OUTCOME_UNKNOWN), ...fallbackBlocks], toast };
+			}
 		}
 
 		// -- page load (or any other interaction routed here) ⇒ the root list ------
@@ -318,15 +445,96 @@ export function createListDetailHandler(
 	};
 }
 
-/** Inject the drill-path carrier ({@link filterPathField}) into every rendered
- *  form whose submit fires this screen's `applyFilter` — skipping forms that
- *  already carry one. Non-mutating: returns new block/field arrays. */
+/**
+ * Inject the drill-path carrier ({@link filterPathField}) into every rendered
+ * form whose submit fires this screen's `applyFilter`, skipping forms that
+ * already carry the path — either as an explicit field or, preferably, INVISIBLY
+ * in the form's `block_id` carrier — which is how a screen drops the visible
+ * "Scope" dropdown: build it with
+ * `carriedForm({namespace, context: {[PATH_FIELD]: encodePath(path)}, form})` and
+ * the injection stands down, but ONLY when the carried path is EXACTLY this level's.
+ *
+ * RECURSES INTO LAYOUT CONTAINERS (`columns` / `tab` / `accordion`): the whole
+ * point of the guarantee is that a screen cannot silently break deep
+ * apply-filter, and wrapping a filter form in a collapsed `accordion` (the
+ * density fix) would otherwise hide it from this pass. Non-mutating: returns new
+ * block/field/container arrays.
+ */
 function withFilterPathCarry(blocks: Block[], actions: ScreenActions, path: NavPath): Block[] {
-	return blocks.map((block) => {
-		if (block.type !== "form" || block.submit.action_id !== actions.applyFilter) return block;
-		if (block.fields.some((f) => f.action_id === PATH_FIELD)) return block;
-		return { ...block, fields: [...block.fields, filterPathField(path)] };
+	const recurse = (inner: Block[]): Block[] => withFilterPathCarry(inner, actions, path);
+	const encoded = encodePath(path);
+	return blocks.map((block): Block => {
+		if (block.type === "form") {
+			if (block.submit.action_id !== actions.applyFilter) return block;
+			if (block.fields.some((f) => f.action_id === PATH_FIELD)) return block;
+			// Stand down ONLY for a carrier naming THIS EXACT path. A hand-written
+			// carrier that captured a stale or outer-scope path would otherwise
+			// suppress the injection AND filter the wrong level — the failure this
+			// guarantee exists to make impossible. Any other carried path is treated
+			// as absent, so the correct path is injected and wins by precedence.
+			if (decodeCarrier(block.block_id)?.[PATH_FIELD] === encoded) return block;
+			return { ...block, fields: [...block.fields, filterPathField(path)] };
+		}
+		const children = childBlockLists(block);
+		return children === undefined ? block : withChildBlockLists(block, children.map(recurse));
 	});
+}
+
+/**
+ * Every nested block list a container block holds, or `undefined` for a leaf
+ * block. EXHAUSTIVE over `Block` on purpose: the `never` assignment below is a
+ * compile error the moment a new block-bearing member joins the union, so a future
+ * container cannot silently reintroduce the bug this traversal fixes (an
+ * un-injected deep filter form re-filtering the root list).
+ *
+ * Paired with {@link withChildBlockLists}, which puts the mapped lists back in the
+ * same order.
+ */
+function childBlockLists(block: Block): Block[][] | undefined {
+	switch (block.type) {
+		case "columns":
+			return block.columns;
+		case "accordion":
+			return [block.blocks];
+		case "tab":
+			return block.panels.map((panel) => panel.blocks);
+		case "header":
+		case "section":
+		case "context":
+		case "divider":
+		case "stats":
+		case "table":
+		case "banner":
+		case "fields":
+		case "actions":
+		case "form":
+		case "empty":
+		case "image":
+		case "meter":
+			return undefined;
+		default: {
+			const exhaustive: never = block;
+			return exhaustive;
+		}
+	}
+}
+
+/** Rebuild `block` with `lists` in place of its nested block lists — the inverse of
+ *  {@link childBlockLists}, non-mutating, same order. */
+function withChildBlockLists(block: Block, lists: Block[][]): Block {
+	switch (block.type) {
+		case "columns":
+			return { ...block, columns: lists };
+		case "accordion":
+			return { ...block, blocks: lists[0] ?? [] };
+		case "tab":
+			return {
+				...block,
+				panels: block.panels.map((panel, i) => ({ ...panel, blocks: lists[i] ?? panel.blocks })),
+			};
+		default:
+			return block;
+	}
 }
 
 // -- shared payload parsing (exported: screens reuse the same coercions) -------
@@ -341,13 +549,39 @@ export function asRecord(value: unknown): Record<string, unknown> | undefined {
 		: undefined;
 }
 
-/** Recover the drill {@link NavPath} a control carried — from a `block_action`'s
- *  `value.__path` or a `form_submit`'s `values.__path`. Absent ⇒ undefined (the
- *  caller defaults to the root), which is exactly the depth-≤2 case. */
+/**
+ * Recover the hidden context the originating block carried in its `block_id`
+ * (see {@link ./carrier.js}). Exported because a screen's `parseOpen` — which
+ * runs OUTSIDE a custom action, so it has no {@link CustomActionApi.carried} —
+ * needs the same recovery, e.g. to read the id an open form carried.
+ *
+ * RESERVED KEYS ARE STRIPPED: `__path` (the drill level, engine business — use
+ * {@link CustomActionApi.carriedPath}) and `__v` (`carriedForm`'s prefill digest,
+ * which exists only to change the React key). A screen therefore sees ONLY the
+ * fields it carried, and can iterate the record without special-casing ours.
+ *
+ * Total: a missing, non-carrier or malformed `block_id` yields `undefined`.
+ */
+export function readCarrier(input: ListDetailInput): CarriedContext | undefined {
+	const decoded = decodeCarrier(input.block_id);
+	return decoded === undefined ? undefined : carriedFields(decoded);
+}
+
+/** Recover the drill {@link NavPath} a control carried, in precedence order:
+ *  a `block_action`'s `value.__path`, a `form_submit`'s `values.__path`, then the
+ *  originating block's `block_id` carrier (`__path`). The first two are the
+ *  VISIBLE carriers (a back button's payload, the injected "Scope" field); the
+ *  third is the invisible one, which is how a form or a table states its drill
+ *  level without showing an operator a field. Absent ⇒ undefined (the caller
+ *  defaults to the root), which is exactly the depth-≤2 case. */
 function readNavPath(input: ListDetailInput): NavPath | undefined {
 	const fromValue = asRecord(input.value)?.[PATH_FIELD];
 	if (typeof fromValue === "string") return decodePath(fromValue) ?? undefined;
 	const fromValues = input.values?.[PATH_FIELD];
 	if (typeof fromValues === "string") return decodePath(fromValues) ?? undefined;
+	// The RAW record, not `readCarrier` — that strips the reserved keys for screens,
+	// and `__path` is precisely the reserved key the engine itself needs here.
+	const fromCarrier = decodeCarrier(input.block_id)?.[PATH_FIELD];
+	if (fromCarrier !== undefined) return decodePath(fromCarrier) ?? undefined;
 	return undefined;
 }
