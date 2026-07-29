@@ -83,6 +83,14 @@ export function isCartPricingDegraded(pricing: CartPricingWire | null | undefine
  * `ok`/`reason` envelope. Whatever the service ever emits arrives here
  * unchecked.
  *
+ * `CartWire.orderId` rides that same unchecked path, and it is the reason the
+ * plugin normalizes ONE field and not this one: `state` fails safely under a
+ * blind cast (`isCartTerminal(undefined)` is `false`, so the page draws the
+ * live cart it draws for every unknown state), whereas `orderId` fails
+ * UNSAFELY — `undefined !== null` is true, so `cart/index.astro` would offer
+ * `/orders/undefined` as the panel's only action. Hence the coercion in
+ * `HttpCommerceClient.getCart`, at the wire boundary, and none downstream.
+ *
  * So this answers for the ONE state that is genuinely terminal (`checked_out`
  * is one-way — `CartState` in `packages/domain/src/ports/cart-store.ts`, and
  * nothing flips it back), and anything else renders as the live cart it almost
@@ -130,9 +138,9 @@ export const CART_CHECKED_OUT_TITLE = "This cart has been checked out.";
  *
  * It used to end "…If you haven't finished paying, you can return to the
  * checkout below", and that sentence was a lie in case A: the `/checkout` link
- * exists only when the stash cannot name the order. A buyer inside the stash
- * window read a promise and found no such control — the exact failure this
- * whole change exists to stop. Case B says it beside the link instead
+ * exists only when the cart cannot name the order, and a named cart gets a link
+ * to `/orders/<id>` instead. A buyer whose cart named its order read a promise
+ * and found no such control. Case B says it beside the link instead
  * (`CART_RESUME_PURPOSE`), where it is true and where it is actionable.
  */
 export const CART_CHECKED_OUT_BODY =
@@ -140,10 +148,11 @@ export const CART_CHECKED_OUT_BODY =
 /** Said BESIDE the "Start a new cart" control, never after it: it clears an
  *  in-flight payment too, and a buyer must know that before they click. */
 export const CART_NEW_CART_CONSEQUENCE = "This clears the cart and any payment still in progress.";
-/** The honest version of "we lost your order link". The `urumi_checkout` stash
- *  lives 15 minutes and is deleted the moment the confirmation page loads, so
- *  this page frequently cannot name the order — and it must say so rather than
- *  guess. */
+/** The honest version of "we lost your order link", for the cart that carries
+ *  no `orderId`: one checked out before `carts.order_id` existed, or a wire
+ *  that stopped emitting the field. Uncommon since #132 — the cart names its
+ *  order now — but the panel must still say what it does not know rather than
+ *  guess, and this is the sentence that lets it. */
 export const CART_NO_ORDER_LINK =
 	"This page can't name the order. The confirmation page shown at the end of checkout is the link to keep.";
 /**

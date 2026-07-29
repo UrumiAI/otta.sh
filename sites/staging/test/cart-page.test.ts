@@ -648,19 +648,89 @@ describe("a checked-out cart is rendered as terminal, and never as a paid one", 
 		}
 	});
 
-	test("case A — the checkout stash names the order, so the panel links to it", () => {
+	test("the panel names the order from the CART, not from the stash", () => {
+		// The reported #110 scenario: `/orders/<id>` deletes the `urumi_checkout`
+		// stash on arrival AND is Stripe's `return_url`, so the buyer who just
+		// paid — the exact buyer the panel exists for — reached `/cart` with no
+		// stash and always got case B. The id is read off the cart row this page
+		// has already fetched instead, which cannot be consumed by another page.
+		expect(source).toContain("cart?.orderId");
+		// The stash is gone from this page entirely, not merely unused: it also
+		// carries the Stripe client secret, and a page that never calls the reader
+		// cannot bind it by accident. (`checkout/pay.astro` still uses it — that
+		// is the page the stash exists for.)
+		expect(source).not.toContain("readCheckoutStash");
+	});
+
+	test("the wire type really does carry the order id this page now reads", () => {
+		// HONEST SCOPE, the same as the `state` test above: this pins the
+		// `CartWire` TypeScript DECLARATION — that `orderId` exists, is typed
+		// `string | null`, and is readable as the page reads it. It says nothing
+		// about runtime, and TWO different runtime failures need two different
+		// guarantees:
+		//
+		//  - a MALFORMED value (`undefined`, `""`, a non-string over a skewed
+		//    wire) is the plugin's: `HttpCommerceClient.getCart` coerces it to
+		//    `null` before any consumer sees it, pinned in the plugin's own
+		//    tests, at the wire boundary where the skew lands.
+		//  - the field DISAPPEARING is not, and the coercion cannot catch it —
+		//    it tolerates absence BY DESIGN (missing ⇒ `null`). A `serializeCart`
+		//    that silently stopped emitting `orderId` would drop every
+		//    checked-out cart to case B with this whole suite green: #110 again,
+		//    in muted form. What covers it is the same thing that covers `state`
+		//    three tests above — `packages/service/test/carts.http.contract.test.ts`
+		//    asserts `toHaveProperty("orderId")` where the field is PRODUCED, so
+		//    a silent drop fails CI instead of reaching a shopper.
+		//
+		// So the DECLARATION half of this test is enforced by the TYPE gates, not
+		// by vitest: dropping `orderId` from `CartWire` leaves this file green and
+		// reddens both of them — root `pnpm typecheck` (`tsc -b` over `packages/*`
+		// only; the root tsconfig is `files: []` plus package references and does
+		// not reach `sites/*`) because `http-commerce-client.ts` reads and assigns
+		// the field, and `sites/staging`'s own `astro check` — CI reaches it via
+		// `pnpm -r --if-present typecheck` — because of this fixture. Verified by
+		// doing exactly that. The executed assertions below are vitest's share.
+		const named: CartWire = {
+			cartId: "cart_1",
+			state: "checked_out",
+			orderId: "order_1",
+			currency: "USD",
+			lines: [
+				{ lineId: "l1", sku: "A", productId: "p1", qty: 1, reservationId: null, expiresAt: null },
+			],
+		};
+		expect(named.orderId).toBe("order_1");
+		// The page's own expression, executed: `cart?.orderId ?? null` over the
+		// named cart, the unnamed one, and no cart at all (a degraded read, or no
+		// cookie). Held in one typed array rather than three consts because
+		// `astro check` narrows a `const x: CartWire | null = null` to `never`.
+		const unnamed: CartWire = { ...named, orderId: null };
+		const carts: (CartWire | null)[] = [named, unnamed, null];
+		expect(carts.map((cart) => cart?.orderId ?? null)).toEqual(["order_1", null, null]);
+		// And the field is not a payment signal: this cart is `checked_out` and
+		// named, which is exactly the state a pending or failed order leaves.
+		expect(isCartTerminal(named.state)).toBe(true);
+	});
+
+	test("case A — the cart names the order, so the panel links to it", () => {
 		expect(terminalMarkup).toMatch(
 			/placedOrderId !== null &&[\s\S]*\/orders\/\$\{encodeURIComponent\(placedOrderId\)\}/,
 		);
 		expect(terminalMarkup).toContain(">View your order<");
 	});
 
-	test("case B — no stash, so the panel offers the checkout it cannot name", () => {
+	test("case B — the cart names no order, so the panel offers the checkout it cannot name", () => {
 		// STRUCTURAL, mirroring case A's: all three of case B's parts are pinned
 		// to the `placedOrderId === null` guard, not merely to the slice. Without
 		// this, hoisting them out of the conditional would render "This page
 		// can't name the order" directly beside a link that names it — in case A,
 		// with every assertion in this file still green.
+		//
+		// The branch is now the UNCOMMON one — a checked-out cart carries its
+		// order id — and it must survive anyway: a cart checked out before
+		// `carts.order_id` existed, or a wire that stops carrying the field,
+		// leaves `placedOrderId` null, and without this arm the panel would offer
+		// no primary action at all.
 		//
 		// On the SLICE, never on `source`: an earlier test in this file already
 		// matches `href="/checkout"` against the whole source off the LIVE arm's
@@ -746,15 +816,18 @@ describe("a checked-out cart is rendered as terminal, and never as a paid one", 
 	test("the client secret never leaves the frontmatter — structurally, not by substring", () => {
 		expect(terminalMarkup).not.toContain("set:html");
 		expect(terminalMarkup).not.toContain("<script");
-		// Mirrors `checkout-client-js.test.ts`'s rule: the stash carries an order
-		// id AND a client secret, and only the id is ever bound. Nothing named
-		// like the secret may be interpolated into the template.
+		// Mirrors `checkout-client-js.test.ts`'s rule: nothing named like the
+		// secret may be interpolated into the template.
 		const interpolations = [...terminalMarkup.matchAll(/\{([^}]*)\}/g)].map((m) => m[1] ?? "");
 		expect(interpolations.filter((expr) => /client_?secret/i.test(expr))).toEqual([]);
-		// The stronger half: the page never lifts it into a variable at all, so
-		// there is no innocuously-named binding for the scan above to miss.
+		// The stronger half, and it is now true by CONSTRUCTION rather than by
+		// discipline. `readCheckoutStash` returns the order id AND the Stripe
+		// client secret, and this page used to call it and bind one of the two;
+		// the rule was "only the id is ever bound", which a future edit could
+		// break. The page reads the id off the cart now and never calls the
+		// reader at all, so there is no secret in scope to bind — pinned by "the
+		// panel names the order from the CART" above.
 		expect(source).not.toMatch(/client_?secret/i);
-		expect(source).toMatch(/readCheckoutStash\(Astro\.cookies\)\?\.orderId/);
 	});
 
 	test("the decision is taken once, in cart-view.ts, and never re-inlined here", () => {
