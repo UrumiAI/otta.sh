@@ -1,6 +1,7 @@
-import type { Block, SandboxedPlugin } from "../../../types.js";
+import type { Block, FormBlock, SandboxedPlugin } from "../../../types.js";
 import { screenActions } from "../actions.js";
 import { failClosedResponse, noticeBanner } from "../banner.js";
+import { encodeCarrier } from "../carrier.js";
 import {
 	createListDetailHandler,
 	customAction,
@@ -8,7 +9,8 @@ import {
 	listLevel,
 	readString,
 } from "../list-detail.js";
-import { backButton, decodePath, encodePath, type NavPath } from "../nav.js";
+import { filterPanel } from "../layout.js";
+import { backButton, decodePath, encodePath, PATH_FIELD, type NavPath } from "../nav.js";
 
 /**
  * A SYNTHETIC 3-level screen (countries → cities → landmark) built on the
@@ -89,6 +91,9 @@ export class FakeGeoClient {
 
 export const GEO_ACTIONS = screenActions("geo");
 export const GEO_ACTION_PING = GEO_ACTIONS.custom("ping");
+/** Reads its whole context out of the form's `block_id` — no visible field
+ *  carries anything (the increment-2 carrier shape). */
+export const GEO_ACTION_TAG = GEO_ACTIONS.custom("tag");
 
 /** Deep drills encode the FULL target path into the option value — the
  *  documented `parseOpen` pattern (the interaction is stateless). */
@@ -164,23 +169,51 @@ export function createGeoScreenHandler() {
 				fetchPage: (c, path, filter, opts) =>
 					Promise.resolve(c.listCities(path[0] ?? "", filter, opts.limit, opts.cursor)),
 				render: ({ actions, path, filter, items, nextToken }) => {
+					const pathCarrier = encodeCarrier({ [PATH_FIELD]: encodePath(path) });
+					const qField = (): FormBlock["fields"] => [
+						{
+							type: "text_input",
+							action_id: "q",
+							label: "Name starts with",
+							...(filter.q !== undefined ? { initial_value: filter.q } : {}),
+						},
+					];
 					const blocks: Block[] = [
 						{ type: "header", text: `Cities of ${path[0] ?? "?"}` },
 						backButton(actions.back, "← Back to countries", path),
 						{
 							type: "form",
-							fields: [
-								{
-									type: "text_input",
-									action_id: "q",
-									label: "Name starts with",
-									...(filter.q !== undefined ? { initial_value: filter.q } : {}),
-								},
-							],
+							fields: qField(),
 							submit: { label: "Apply", action_id: actions.applyFilter },
 						},
+						// A SECOND filter form that carries its drill path INVISIBLY in
+						// `block_id` — the engine must recognise the carry and skip
+						// injecting the visible "Scope" select into this one.
+						{
+							type: "form",
+							block_id: pathCarrier,
+							fields: qField(),
+							submit: { label: "Apply (carried)", action_id: actions.applyFilter },
+						},
+						// A THIRD filter form, COLLAPSED behind `filterPanel` and carrying
+						// nothing — the engine's path-carry guarantee has to reach inside
+						// the accordion, or collapsing a deep filter would silently
+						// re-filter the root list.
+						filterPanel({
+							form: {
+								type: "form",
+								fields: qField(),
+								submit: { label: "Apply (collapsed)", action_id: actions.applyFilter },
+							},
+							label: "Filters",
+							summary: [filter.q !== undefined && `name: ${filter.q}`],
+							inlineUpTo: 0,
+						}),
 						{
 							type: "table",
+							// A table's `block_id` is echoed back on its own block_actions
+							// (sort / load-more), so it states which level it belongs to.
+							block_id: pathCarrier,
 							columns: [{ key: "id", label: "id" }],
 							rows: items.map((x) => ({ id: x.id })),
 							page_action_id: actions.page,
@@ -230,6 +263,20 @@ export function createGeoScreenHandler() {
 					variant: "default",
 					title: "Pinged",
 					description: "side effect ran",
+				});
+			}),
+			// The carrier counterpart of `ping`: BOTH the target level and the
+			// payload come out of the form's `block_id`, so the form shows the
+			// operator no plumbing field at all. A missing/hostile carrier degrades
+			// to the root list rather than throwing.
+			[GEO_ACTION_TAG]: customAction<FakeGeoClient>(({ carried, showLeaf, showList }) => {
+				const encoded = carried?.[PATH_FIELD];
+				const path = (encoded === undefined ? null : decodePath(encoded)) ?? [];
+				if (path.length === 0) return showList();
+				return showLeaf(path, {
+					variant: "default",
+					title: "Tagged",
+					description: carried?.label ?? "none",
 				});
 			}),
 		},

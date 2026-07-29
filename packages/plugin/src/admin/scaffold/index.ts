@@ -15,6 +15,12 @@
  *     `filterPathField(...)` — drill-path & keyset-cursor plumbing that survives
  *     stateless interactions (the engine auto-injects the filter path carrier
  *     into deep-level filter forms, so the carry cannot be silently omitted).
+ *   - `encodeCarrier`/`decodeCarrier` + `readCarrier(input)` — hidden form
+ *     context in a block's `block_id`, replacing the single-option "carrier"
+ *     `select` fields that showed operators raw internal field names.
+ *   - `filterPanel(...)` / `emptyState(...)` — the shared layout vocabulary: a
+ *     filter form collapsed behind its own active-filter summary, and a real
+ *     `empty` block.
  *   - `readAdminTokens(ctx)` — admin + service token threading (one source).
  *   - `Notice`/`noticeBanner(...)`/`failClosedResponse(...)` — consistent
  *     banner + fail-closed rendering.
@@ -22,11 +28,14 @@
 
 export { NAV_VERBS, screenActions, type ScreenActions } from "./actions.js";
 export { failClosedResponse, noticeBanner, type FailClosedOptions, type Notice } from "./banner.js";
+export { CARRIER_PREFIX, decodeCarrier, encodeCarrier, type CarriedContext } from "./carrier.js";
+export { emptyState, filterPanel, filterPanelLabel, type FilterPanelOptions } from "./layout.js";
 export {
 	createListDetailHandler,
 	customAction,
 	leafLevel,
 	listLevel,
+	readCarrier,
 	readString,
 	asRecord,
 	type CustomActionApi,

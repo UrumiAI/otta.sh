@@ -148,13 +148,26 @@ export type FieldType =
 	| "slug"
 	| "repeater";
 
+/**
+ * NO `disabled` ON ANY ELEMENT — deliberately, and do not re-add it. em-dash
+ * 0.29.0's element types have no such field and none of its renderers read one
+ * (`packages/blocks/src/elements/*.tsx`, `render-element.tsx`), so a `disabled`
+ * element would render as a FULLY LIVE control that merely looks handled. It was
+ * declared on all four of these interfaces until this file's layout-vocabulary
+ * widening and was never set by any screen. To withhold an action, omit the
+ * element (or gate it behind a `confirm`); to show a read-only value, render it
+ * as `fields`/`context` text, not as an input.
+ *
+ * Inputs are also UNCONTROLLED (`defaultValue`), so `initial_value` is read once
+ * at mount — see `admin/scaffold/carrier.ts` on why a form's `block_id` has to
+ * change when its prefilled values do.
+ */
 export interface TextInputElement {
 	type: "text_input";
 	action_id: string;
 	label?: string;
 	placeholder?: string;
 	initial_value?: string;
-	disabled?: boolean;
 }
 
 export interface NumberInputElement {
@@ -162,7 +175,6 @@ export interface NumberInputElement {
 	action_id: string;
 	label?: string;
 	initial_value?: number;
-	disabled?: boolean;
 }
 
 export interface SelectOption {
@@ -176,7 +188,6 @@ export interface SelectElement {
 	label?: string;
 	options: SelectOption[];
 	initial_value?: string;
-	disabled?: boolean;
 }
 
 /** `ConfirmDialog` (em-dash `packages/blocks/src/types.ts:3-9`) — the modal a
@@ -204,7 +215,6 @@ export interface ButtonElement {
 	/** A confirm dialog raised before the action fires (em-dash
 	 *  `ButtonElement.confirm`) — required on destructive transitions. */
 	confirm?: ConfirmDialog;
-	disabled?: boolean;
 }
 
 /** Discriminated union — a deliberately narrow subset of em-dash's `Element`
@@ -222,23 +232,44 @@ export interface FieldWidgetConfig {
 }
 
 // -- page-level Block Kit blocks (em-dash `packages/blocks/src/types.ts`) -----
-// A deliberately narrow subset — only the blocks the Phase-7 Reports page and
-// Settings form actually render. Snake_case field names follow the authoritative
-// wire types (em-dash `types.ts`), matching Urumi's existing element types.
+// A narrow subset — the blocks the admin console actually renders. Snake_case
+// field names follow the authoritative wire types (em-dash `types.ts`), matching
+// Urumi's existing element types.
 
-export interface HeaderBlock {
+/**
+ * `BlockBase` (em-dash `packages/blocks/src/types.ts:247-249`) — EVERY block may
+ * carry an opaque `block_id`. It serves two purposes in the 0.29.0 renderer:
+ *
+ *  1. It is the React key of a top-level block (`renderer.tsx:78`,
+ *     `block.block_id ?? i`) — so two blocks rendered in the SAME block list
+ *     must never share one. Nested lists (a `columns` column, a `tab` panel, an
+ *     `accordion` body) are rendered by their own `BlockRenderer`, so keys only
+ *     have to be unique WITHIN one list.
+ *  2. It is echoed back to the plugin on interaction — `form.tsx:57` and
+ *     `table.tsx:55,64` both emit `block_id: block.block_id` on the
+ *     `form_submit` / `block_action` they fire. That is the ONLY way a Block Kit
+ *     form can carry hidden context (there is no hidden field type), which is
+ *     what `admin/scaffold/carrier.ts` encodes into it.
+ */
+export interface BlockBase {
+	/** Opaque per-block id: the renderer's React key AND the value echoed back
+	 *  on this block's interactions. See {@link BlockBase} for both uses. */
+	block_id?: string;
+}
+
+export interface HeaderBlock extends BlockBase {
 	type: "header";
 	text: string;
 }
-export interface SectionBlock {
+export interface SectionBlock extends BlockBase {
 	type: "section";
 	text: string;
 }
-export interface ContextBlock {
+export interface ContextBlock extends BlockBase {
 	type: "context";
 	text: string;
 }
-export interface DividerBlock {
+export interface DividerBlock extends BlockBase {
 	type: "divider";
 }
 export interface StatItem {
@@ -246,7 +277,7 @@ export interface StatItem {
 	value: string;
 	description?: string;
 }
-export interface StatsBlock {
+export interface StatsBlock extends BlockBase {
 	type: "stats";
 	items: StatItem[];
 }
@@ -257,8 +288,20 @@ export interface TableColumn {
 	 *  column; the authoritative union is
 	 *  `"text"|"badge"|"relative_time"|"number"|"code"`. */
 	format?: "text" | "number" | "badge" | "code" | "relative_time";
+	/** Makes the column header clickable (em-dash `TableColumn.sortable`,
+	 *  `packages/blocks/src/types.ts:190-195`).
+	 *
+	 *  READ THIS BEFORE ADOPTING IT. The renderer sorts NOTHING locally: a click
+	 *  fires the table's `page_action_id` with `value: {sort: {key, dir}}` and NO
+	 *  `cursor` (`table.tsx:44-58`), i.e. the same action id "Load more" uses.
+	 *  The scaffold's `page` branch keys off `value.cursor`, so a sort click
+	 *  currently re-renders a level rather than re-sorting it — the sort is a
+	 *  request the screen (and the service list port behind it) has to honour.
+	 *  Declaring `sortable` without that server-side support gives an operator a
+	 *  header that visibly does nothing. */
+	sortable?: boolean;
 }
-export interface TableBlock {
+export interface TableBlock extends BlockBase {
 	type: "table";
 	columns: TableColumn[];
 	rows: Array<Record<string, unknown>>;
@@ -285,7 +328,7 @@ export interface TableBlock {
  * render in production. FOLLOW-UP: migrate Reports/Settings banners to
  * title/description and drop the legacy `text` field.
  */
-export interface BannerBlock {
+export interface BannerBlock extends BlockBase {
 	type: "banner";
 	variant: "default" | "alert" | "error" | "info" | "success";
 	/** Legacy Urumi body (Reports/Settings). */
@@ -296,14 +339,14 @@ export interface BannerBlock {
 }
 /** `fields` (em-dash `packages/blocks/src/types.ts:266-269`) — a label/value
  *  grid, used by the Orders detail view for the order's scalar fields (MOD-8). */
-export interface FieldsBlock {
+export interface FieldsBlock extends BlockBase {
 	type: "fields";
 	fields: Array<{ label: string; value: string }>;
 }
 /** `actions` (em-dash `packages/blocks/src/types.ts:280-283`) — a row of
  *  interactive elements (buttons), used for the detail view's Back + transition
  *  buttons (MOD-8). */
-export interface ActionsBlock {
+export interface ActionsBlock extends BlockBase {
 	type: "actions";
 	elements: Element[];
 }
@@ -347,12 +390,99 @@ export interface SecretInputFieldSpec {
 	placeholder?: string;
 	has_value?: boolean;
 }
-export interface FormBlock {
+/**
+ * `form` (em-dash `packages/blocks/src/types.ts:244-251`). Fields ALWAYS render
+ * as a full-width vertical stack — `form.tsx` wraps them in `flex flex-col`, and
+ * 0.29.0's `FormField` union has no layout container — so a form's own fields
+ * cannot be laid out side by side. Put whole blocks side by side with
+ * {@link ColumnsBlock} instead (`admin/scaffold/layout.ts`'s `filterRow`).
+ *
+ * `block_id` (from {@link BlockBase}) is echoed back on submit (`form.tsx:57`),
+ * which is how a stateless form carries hidden context — see
+ * `admin/scaffold/carrier.ts`.
+ */
+export interface FormBlock extends BlockBase {
 	type: "form";
 	fields: Array<FormFieldSpec | SecretInputFieldSpec | SelectFieldSpec | DateFieldSpec>;
 	submit: { label: string; action_id: string };
 }
 
+/**
+ * `columns` (em-dash `packages/blocks/src/types.ts:308-311`) — the only
+ * horizontal layout primitive. RENDERER BEHAVIOUR (`blocks/columns.tsx`): the
+ * grid is `grid-cols-2` when there are EXACTLY two columns and `grid-cols-3`
+ * otherwise, so one column renders at a third of the width and four or more
+ * columns wrap onto further rows of three. Each column is rendered by its own
+ * nested `BlockRenderer`, so blocks nest arbitrarily and `block_id` keys only
+ * have to be unique within a column.
+ */
+export interface ColumnsBlock extends BlockBase {
+	type: "columns";
+	columns: Block[][];
+}
+
+/** One `tab` panel (em-dash `packages/blocks/src/types.ts:340-343`). */
+export interface TabPanel {
+	label: string;
+	blocks: Block[];
+}
+/** `tab` (em-dash `packages/blocks/src/types.ts:345-349`). Tab state is CLIENT
+ *  side only: switching panels re-renders locally and fires no interaction, so
+ *  every panel's blocks must be built on the same server render. `default_tab`
+ *  is a zero-based index into `panels`. */
+export interface TabBlock extends BlockBase {
+	type: "tab";
+	panels: TabPanel[];
+	default_tab?: number;
+}
+
+/** `empty` (em-dash `packages/blocks/src/types.ts:351-358`) — the "nothing here"
+ *  state as ONE block (icon + title + optional description/command line/actions)
+ *  instead of a section heading plus an empty table. `command_line` renders as a
+ *  copyable command; `actions` are rendered elements, not blocks. */
+export interface EmptyBlock extends BlockBase {
+	type: "empty";
+	title: string;
+	description?: string;
+	command_line?: string;
+	size?: "sm" | "base" | "lg";
+	actions?: Element[];
+}
+
+/** `accordion` (em-dash `packages/blocks/src/types.ts:360-365`) — a collapsible
+ *  body, closed unless `default_open`. Open/close is CLIENT side only (no
+ *  interaction fires), so the collapsed body is still built and sent on every
+ *  render; it saves scroll, not work. */
+export interface AccordionBlock extends BlockBase {
+	type: "accordion";
+	label: string;
+	blocks: Block[];
+	default_open?: boolean;
+}
+
+/** `meter` (em-dash `packages/blocks/src/types.ts:325-332`) — a labelled
+ *  progress bar over a plain `number` (`min`/`max` default to 0/100 in the
+ *  renderer). NEVER feed it a money amount: money is integer minor units
+ *  (`Cents`) and this block has no currency, so pass a count/ratio and use
+ *  `custom_value` for the human-readable readout. */
+export interface MeterBlock extends BlockBase {
+	type: "meter";
+	label: string;
+	value: number;
+	max?: number;
+	min?: number;
+	custom_value?: string;
+}
+
+/**
+ * The blocks Urumi renders. Still a subset of em-dash's 18-member union
+ * (`packages/blocks/src/types.ts:367-385`): `image`, `chart` and `code` are
+ * supported by the renderer but nothing in Urumi emits them yet.
+ *
+ * `ColumnsBlock`, `TabBlock` and `AccordionBlock` refer back to `Block`, so this
+ * union is RECURSIVE — a nested block is type-checked exactly like a top-level
+ * one, and any future member is automatically legal inside a layout container.
+ */
 export type Block =
 	| HeaderBlock
 	| SectionBlock
@@ -363,7 +493,12 @@ export type Block =
 	| BannerBlock
 	| FieldsBlock
 	| ActionsBlock
-	| FormBlock;
+	| FormBlock
+	| ColumnsBlock
+	| TabBlock
+	| EmptyBlock
+	| AccordionBlock
+	| MeterBlock;
 
 /** `BlockResponse` envelope (em-dash `types.ts:412-415`). */
 export interface BlockResponse {

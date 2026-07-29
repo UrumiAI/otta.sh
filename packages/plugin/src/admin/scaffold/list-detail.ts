@@ -1,6 +1,7 @@
 import type { Block, BlockResponse, PluginContext, RouteHandler } from "../../types.js";
 import type { ScreenActions } from "./actions.js";
 import type { Notice } from "./banner.js";
+import { type CarriedContext, decodeCarrier } from "./carrier.js";
 import {
 	decodeListCursor,
 	decodePath,
@@ -36,6 +37,12 @@ export interface ListDetailInput {
 	/** `block_action` payload (e.g. the table "Load more" `{cursor}`, or a
 	 *  transition button's `{orderId, toState}`). */
 	value?: unknown;
+	/** The originating block's `block_id`, echoed back by em-dash on a form
+	 *  submit (`form.tsx:57`) and on a table's sort/load-more `block_action`
+	 *  (`table.tsx:55,64`). Block Kit has no hidden field, so this is where a form
+	 *  carries context it must not show an operator — decoded via
+	 *  {@link readCarrier}. */
+	block_id?: unknown;
 }
 
 // -- level definitions (public factories, strongly typed per screen) ----------
@@ -146,6 +153,13 @@ export function leafLevel<Client, Detail>(def: LeafLevelDef<Client, Detail>): Le
 export interface CustomActionApi<Client> {
 	input: ListDetailInput;
 	client: Client;
+	/** The hidden context the originating form carried in its `block_id` —
+	 *  decoded once per interaction, `undefined` when the block carried none (or
+	 *  carried something that is not a carrier token). This is what replaces the
+	 *  single-option "carrier" `select` fields: read `carried.orderId` instead of
+	 *  `input.values.orderId`. Every value is UNTRUSTED operator-round-tripped
+	 *  input — re-authorize it exactly as you would a select's value. */
+	carried: CarriedContext | undefined;
 	/** Re-render the leaf at `path` (its id is `path`'s last element), optionally
 	 *  with a notice banner. */
 	showLeaf(path: NavPath, notice?: Notice): Promise<BlockResponse>;
@@ -289,7 +303,22 @@ export function createListDetailHandler(
 		if (action === actions.page) {
 			const token = readString(asRecord(input.value)?.cursor);
 			const decoded = token === undefined ? null : decodeListCursor(token);
-			if (decoded === null) return rootList();
+			// No usable cursor ⇒ re-render whatever level the firing block said it
+			// belonged to (its `block_id` carrier), else the root list as before.
+			//
+			// DO NOT SET `sortable: true` ON A TABLE COLUMN UNTIL SORT IS SUPPORTED
+			// END TO END. em-dash fires this SAME action id for a sortable
+			// column-header click, with `value: {sort: {key, dir}}` and NO cursor
+			// (`blocks/table.tsx:44-58`). Nothing here (or in any list level, or in
+			// the service's list ports) reads `sort`, so such a click re-renders the
+			// level with its DEFAULT filter — silently dropping the operator's
+			// filter, and never sorting anything. The carrier below at least keeps
+			// the drill path when the table carries one; the dropped filter and the
+			// ignored sort remain, which is why the header must not be made
+			// clickable yet. Latent today: no page sets `sortable`. Fixing it needs a
+			// sort parameter threaded through `ListLevelDef.fetchPage` into the
+			// service list ports — out of scope for the layout vocabulary.
+			if (decoded === null) return renderPath(readNavPath(input) ?? []);
 			return renderList(decoded.p ?? [], decoded.f, decoded.c);
 		}
 
@@ -307,6 +336,7 @@ export function createListDetailHandler(
 			return (await custom({
 				input,
 				client,
+				carried: readCarrier(input),
 				showLeaf: (path, notice) => renderLeaf(path, notice),
 				showList: (path, notice) =>
 					path === undefined ? rootList(notice) : renderPath(path, notice),
@@ -318,14 +348,42 @@ export function createListDetailHandler(
 	};
 }
 
-/** Inject the drill-path carrier ({@link filterPathField}) into every rendered
- *  form whose submit fires this screen's `applyFilter` — skipping forms that
- *  already carry one. Non-mutating: returns new block/field arrays. */
+/**
+ * Inject the drill-path carrier ({@link filterPathField}) into every rendered
+ * form whose submit fires this screen's `applyFilter`, skipping forms that
+ * already carry the path — either as an explicit field or, preferably, INVISIBLY
+ * in the form's `block_id` carrier (which is how a screen drops the visible
+ * "Scope" dropdown: set `block_id: encodeCarrier({__path: encodePath(path)})`
+ * and the injection stands down).
+ *
+ * RECURSES INTO LAYOUT CONTAINERS (`columns` / `tab` / `accordion`): the whole
+ * point of the guarantee is that a screen cannot silently break deep
+ * apply-filter, and wrapping a filter form in a collapsed `accordion` (the
+ * density fix) would otherwise hide it from this pass. Non-mutating: returns new
+ * block/field/container arrays.
+ */
 function withFilterPathCarry(blocks: Block[], actions: ScreenActions, path: NavPath): Block[] {
-	return blocks.map((block) => {
-		if (block.type !== "form" || block.submit.action_id !== actions.applyFilter) return block;
-		if (block.fields.some((f) => f.action_id === PATH_FIELD)) return block;
-		return { ...block, fields: [...block.fields, filterPathField(path)] };
+	const recurse = (inner: Block[]): Block[] => withFilterPathCarry(inner, actions, path);
+	return blocks.map((block): Block => {
+		switch (block.type) {
+			case "form": {
+				if (block.submit.action_id !== actions.applyFilter) return block;
+				if (block.fields.some((f) => f.action_id === PATH_FIELD)) return block;
+				if (decodeCarrier(block.block_id)?.[PATH_FIELD] !== undefined) return block;
+				return { ...block, fields: [...block.fields, filterPathField(path)] };
+			}
+			case "columns":
+				return { ...block, columns: block.columns.map(recurse) };
+			case "accordion":
+				return { ...block, blocks: recurse(block.blocks) };
+			case "tab":
+				return {
+					...block,
+					panels: block.panels.map((panel) => ({ ...panel, blocks: recurse(panel.blocks) })),
+				};
+			default:
+				return block;
+		}
 	});
 }
 
@@ -341,13 +399,31 @@ export function asRecord(value: unknown): Record<string, unknown> | undefined {
 		: undefined;
 }
 
-/** Recover the drill {@link NavPath} a control carried — from a `block_action`'s
- *  `value.__path` or a `form_submit`'s `values.__path`. Absent ⇒ undefined (the
- *  caller defaults to the root), which is exactly the depth-≤2 case. */
+/**
+ * Recover the hidden context the originating block carried in its `block_id`
+ * (see {@link ./carrier.js}). Exported because a screen's `parseOpen` — which
+ * runs OUTSIDE a custom action, so it has no {@link CustomActionApi.carried} —
+ * needs the same recovery, e.g. to read the id an open form carried.
+ *
+ * Total: a missing, non-carrier or malformed `block_id` yields `undefined`.
+ */
+export function readCarrier(input: ListDetailInput): CarriedContext | undefined {
+	return decodeCarrier(input.block_id);
+}
+
+/** Recover the drill {@link NavPath} a control carried, in precedence order:
+ *  a `block_action`'s `value.__path`, a `form_submit`'s `values.__path`, then the
+ *  originating block's `block_id` carrier (`__path`). The first two are the
+ *  VISIBLE carriers (a back button's payload, the injected "Scope" field); the
+ *  third is the invisible one, which is how a form or a table states its drill
+ *  level without showing an operator a field. Absent ⇒ undefined (the caller
+ *  defaults to the root), which is exactly the depth-≤2 case. */
 function readNavPath(input: ListDetailInput): NavPath | undefined {
 	const fromValue = asRecord(input.value)?.[PATH_FIELD];
 	if (typeof fromValue === "string") return decodePath(fromValue) ?? undefined;
 	const fromValues = input.values?.[PATH_FIELD];
 	if (typeof fromValues === "string") return decodePath(fromValues) ?? undefined;
+	const fromCarrier = readCarrier(input)?.[PATH_FIELD];
+	if (fromCarrier !== undefined) return decodePath(fromCarrier) ?? undefined;
 	return undefined;
 }
