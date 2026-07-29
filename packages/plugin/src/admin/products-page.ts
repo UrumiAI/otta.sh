@@ -1030,11 +1030,17 @@ function stockFailureNotice(
 					"This product has no SKU yet, so it has no stock to manage. Set a SKU on the edit form above first.",
 			};
 		case "no_inventory_row":
+			// SHOULD NEVER HAPPEN since PR 1a: a stock record is created the moment
+			// a product gets a SKU, on both write paths (this edit form and the
+			// integrator PUT) — including a SKU rename, since the seed follows the
+			// row's resulting sku. Kept as defence for the two cases still able to
+			// reach it: a product priced BEFORE 1a (there is no backfill), and a
+			// write that bypasses the use-case. Re-saving the SKU here fixes both.
 			return {
 				variant: "error",
 				title: "No stock record yet",
 				description:
-					"This product has a SKU but no inventory record was ever created for it, so there is nothing to add to or remove from. Initial stock is set when the product is first priced in the CMS.",
+					"This product has a SKU but no stock record, so there is nothing to add to or remove from. A stock record is normally created as soon as a SKU is set — re-save the SKU on the edit form above to create one.",
 			};
 		case "invalid":
 			return {

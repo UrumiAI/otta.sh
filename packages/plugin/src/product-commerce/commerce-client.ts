@@ -37,9 +37,13 @@ export interface UpsertProductCommerceInput {
 	widthMm?: number | null;
 	heightMm?: number | null;
 	productKind?: CommerceProductKind;
-	/** Initial stock — a create-if-absent seed attempted on any save that
-	 *  carries it (self-healing after a partial failure, review B1); never a
-	 *  restock path (plan §8 Risk 4). */
+	/** Initial stock — a create-if-absent seed, never a restock path (plan §8
+	 *  Risk 4). OPERATIONALLY: it lands ONLY on the save that first carries the
+	 *  product's sku. Since PR 1a a sku-bearing save always seeds a row
+	 *  (`initialOnHand ?? 0`), so a later save's figure hits `ON CONFLICT (sku)
+	 *  DO NOTHING` and is silently discarded — by design, so the seed can never
+	 *  clobber a live or already-decremented count. Stock after that first save
+	 *  is the restock endpoint's job. */
 	initialOnHand?: number;
 	/** Sync-ordering watermark (review S1): the CMS content's `updatedAt`,
 	 *  sent by `content:afterSave` syncs so the service rejects a

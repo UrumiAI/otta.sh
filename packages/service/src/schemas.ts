@@ -330,9 +330,14 @@ export const upsertProductCommerceBody = z.object({
 	widthMm: z.number().int().nullable().optional(),
 	heightMm: z.number().int().nullable().optional(),
 	productKind: z.enum(["physical", "digital"]).optional(),
-	// Initial stock (Phase 1 §8 Risk 4) — a create-if-absent seed attempted on
-	// any save that carries it (self-healing after a partial failure, review
-	// B1); never a restock path.
+	// Initial stock (Phase 1 §8 Risk 4) — a create-if-absent seed; never a
+	// restock path. OPERATIONALLY: it lands ONLY on the save that first carries
+	// the product's sku. Since PR 1a a sku-bearing save ALWAYS seeds a row
+	// (`initialOnHand ?? 0`), so by the time a later save supplies a figure the
+	// row already exists and `ON CONFLICT (sku) DO NOTHING` discards it —
+	// silently, and by design: the seed must never clobber a live or
+	// already-decremented count. Send it with the first sku-bearing save; add
+	// stock after that through `POST /admin/products/:id/restock`.
 	initialOnHand: z.number().int().nonnegative().optional(),
 	// Sync-ordering watermark (review S1): the CMS content's own updatedAt,
 	// carried by content:afterSave syncs; a strictly-older value is a stale
