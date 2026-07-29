@@ -4,6 +4,7 @@ import {
 	currency,
 	getCart,
 	idempotencyKey,
+	orderId as brandOrderId,
 	removeLine,
 	sku,
 	updateLine,
@@ -51,7 +52,11 @@ describe("cart-mutation fences (fake)", () => {
 		const cartId = await createCart(h.deps, USD);
 		const add = await addLine(h.deps, cartId, sku("SKU-1"), null, 2, idempotencyKey("k1"));
 		if (!add.ok) throw new Error("add must succeed");
-		await h.cartStore.checkout(cartId);
+		// The fence's subject is the cart's STATE, so the order id is a fabricated
+		// stand-in: with no FK on `carts.order_id`, this stamps an id that names no
+		// `orders` row. That is fine here — and it is why the contract's write-once
+		// case proves the column's MECHANICS, never referential truth.
+		await h.cartStore.checkout(cartId, brandOrderId("order-fence-1"));
 
 		const addAfter = await addLine(h.deps, cartId, sku("SKU-1"), null, 1, idempotencyKey("k2"));
 		const upAfter = await updateLine(h.deps, cartId, add.line.lineId, 3, idempotencyKey("k3"));

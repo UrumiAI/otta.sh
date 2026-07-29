@@ -11,6 +11,7 @@ import {
 	HoldExpiredError,
 	type IdempotencyKey,
 	type IdGen,
+	type OrderId,
 	type RecordedCartMutation,
 	type ReservationLifecycle,
 	type UpsertLineInput,
@@ -75,7 +76,7 @@ export class KyselyCartStore implements CartStore {
 	async get(cartId: string): Promise<Cart | null> {
 		const cart = await this.#db
 			.selectFrom("carts")
-			.select(["id", "state", "currency"])
+			.select(["id", "state", "order_id", "currency"])
 			.where("id", "=", cartId)
 			.executeTakeFirst();
 		if (cart === undefined) return null;
@@ -100,6 +101,7 @@ export class KyselyCartStore implements CartStore {
 		return {
 			cartId: cart.id,
 			state: cart.state,
+			orderId: cart.order_id,
 			currency: cart.currency as Currency,
 			lines: rows.map((r) => this.#toLine(r)),
 		};
@@ -268,13 +270,23 @@ export class KyselyCartStore implements CartStore {
 		});
 	}
 
-	async checkout(cartId: string): Promise<boolean> {
-		// Secondary cart-state fence (§5): guarded `active → checked_out`. Idempotent
+	async checkout(cartId: string, orderId: OrderId): Promise<boolean> {
+		// Secondary cart-state fence (§5): guarded `active → checked_out`, which
+		// also stamps the order the cart handed off to (issue #132). Idempotent
 		// — a replay finds the cart already `checked_out` (0 rows) → false (success
 		// for the same order). `checked_out` is terminal (nothing re-opens it).
+		//
+		// ONE statement sets BOTH columns, so state and order id are never
+		// observable apart — and the UNCHANGED `state = 'active'` predicate IS the
+		// CAS that makes the stamp write-once: a second checkout matches 0 rows and
+		// writes neither column. No extra `order_id IS NULL` guard, no constraint.
 		const flipped = await this.#db
 			.updateTable("carts")
-			.set({ state: "checked_out", updated_at: this.#clock.now().toISOString() })
+			.set({
+				state: "checked_out",
+				order_id: orderId,
+				updated_at: this.#clock.now().toISOString(),
+			})
 			.where("id", "=", cartId)
 			.where("state", "=", "active")
 			.returning("id")

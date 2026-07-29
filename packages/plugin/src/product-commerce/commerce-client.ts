@@ -390,6 +390,19 @@ export interface CartLineWire {
 export interface CartWire {
 	cartId: string;
 	state: string;
+	/**
+	 * The order this cart handed off to (issue #132); null while it is `active`.
+	 *
+	 * REQUIRED, never optional: an optional field would let TypeScript's own
+	 * narrowing bless a bare `!== null` on a value that can still arrive
+	 * `undefined` over a skewed wire. `HttpCommerceClient.getCart` NORMALIZES a
+	 * missing, empty or non-string value to `null` before any consumer sees it,
+	 * which is what makes this declaration honest at runtime too.
+	 *
+	 * Not a payment signal (it is stamped before the payment intent), and a null
+	 * does NOT prove that no order exists for the cart.
+	 */
+	orderId: string | null;
 	currency: string;
 	lines: CartLineWire[];
 }

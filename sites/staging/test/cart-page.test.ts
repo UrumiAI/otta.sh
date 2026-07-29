@@ -298,6 +298,7 @@ describe("the Tempered cart: lines, ribbons and an honest totals block", () => {
 		const cart: CartWire = {
 			cartId: "cart_1",
 			state: "active",
+			orderId: null,
 			currency: "USD",
 			lines: [
 				{ lineId: "l1", sku: "A", productId: "p1", qty: 3, reservationId: null, expiresAt: null },
@@ -567,6 +568,7 @@ describe("a checked-out cart is rendered as terminal, and never as a paid one", 
 		const cart: CartWire = {
 			cartId: "cart_1",
 			state: "checked_out",
+			orderId: null,
 			currency: "USD",
 			lines: [
 				{ lineId: "l1", sku: "A", productId: "p1", qty: 1, reservationId: null, expiresAt: null },
