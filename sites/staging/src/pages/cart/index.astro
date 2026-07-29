@@ -65,7 +65,6 @@ import {
 	lineMoneyText,
 	PRICED_AT_CHECKOUT_CELL,
 } from "../../lib/cart-view.js";
-import { readCheckoutStash } from "../../lib/checkout-cookie.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
 import { productImage, type ProductEntryData } from "../../lib/products.js";
 import { isUnpricedText, type SumRow } from "../../lib/totals.js";
@@ -136,33 +135,29 @@ if (cart !== null && !isKnownCartState(cart.state)) {
 }
 
 /**
- * The order this cart became — when the handoff stash still says so.
+ * The order this cart became — read off the cart row this page just fetched.
  *
- * ONLY the id is bound. `readCheckoutStash` also returns the Stripe client
- * secret, and nothing on this page has any business holding it in a variable
- * the template can reach (ADR-0012 decision 2; the same rule
- * `checkout-client-js.test.ts` fences on the confirmation page).
+ * `carts.order_id` is stamped inside the same guarded `UPDATE … WHERE
+ * state='active'` that flips the cart to `checked_out` (#132), so the id and
+ * the state can never be observed apart. It rides `CartWire.orderId`, and
+ * `HttpCommerceClient.getCart` normalizes a missing, empty or non-string value
+ * to `null` at the wire boundary — so no second guard here. Site and plugin
+ * ship as ONE worker (`noExternal: ["@urumi/plugin"]` in `astro.config.ts`);
+ * there is no skew between them for a local re-check to catch.
  *
- * Frequently null, and that is a normal answer rather than a fault: the stash
- * lives 15 minutes and `/orders/<id>` deletes it on arrival, so the buyer who
- * completed checkout — the exact buyer this fix is for — usually has none by
- * the time they click "Cart". The panel's case B is that path, not an error
- * case.
+ * It used to come from the `urumi_checkout` handoff stash, and that is why the
+ * panel's case B was the ordinary answer: `/orders/<id>` deletes the stash on
+ * arrival and is also Stripe's `return_url`, so the buyer who had just paid —
+ * the exact buyer this panel exists for — arrived at `/cart` with none. The
+ * cart cannot be consumed by another page.
  *
- * ── the invariant, written down because nothing checks it ───────────────────
- * That the stash names the order THIS cart produced. Nothing verifies the
- * coupling — the stash carries no cart id — and it holds structurally instead:
- * `checkout/place.ts` writes both cookies in the same response and
- * `checkout/new-cart.ts` clears both together, so the pair moves as one. The
- * stash is `httpOnly`, so script cannot forge one either.
- *
- * If it ever did slip, the blast radius is bounded and self-inflicted: the
- * worst available value is the buyer's OWN earlier stash, i.e. a link to a
- * capability URL they already hold. Not a disclosure — but it would be a WRONG
- * link, which is why the coupling is stated here rather than re-derived by the
- * next reader.
+ * Still NOT a payment signal: `cartStore.checkout()` runs before
+ * `gateway.createIntent()`, so a pending, failed or expired order stamps a cart
+ * identically. A non-null id licenses a link to `/orders/<id>` — which reads
+ * the real order state and gates its own "Complete payment" on it — and never a
+ * claim that the buyer paid.
  */
-const placedOrderId = terminal ? (readCheckoutStash(Astro.cookies)?.orderId ?? null) : null;
+const placedOrderId = terminal ? (cart?.orderId ?? null) : null;
 
 /**
  * How many distinct products this page will ask for in ONE query.
@@ -504,21 +499,26 @@ const partialNote =
 				</ul>
 
 				<div class="terminal-actions">
-					{/* CASE A — the handoff stash still names the order, so the panel
-					    can point straight at it. No /checkout link here: the order
-					    page is the better door (it knows the order's actual state)
-					    and it offers "Complete payment" itself when that applies. */}
+					{/* CASE A — the cart names the order it became, which is now the
+					    ordinary answer for any cart checked out through this service.
+					    No /checkout link here: the order page is the better door (it
+					    knows the order's actual state) and it offers "Complete
+					    payment" itself when that applies — which is also why a
+					    stamped-but-unpaid cart may land here safely. */}
 					{placedOrderId !== null && (
 						<a href={`/orders/${encodeURIComponent(placedOrderId)}`} class="u-btn">View your order</a>
 					)}
 
-					{/* CASE B — no stash, which is the ORDINARY case: it lives 15
-					    minutes and /orders/<id> deletes it on arrival. The link is
-					    the checkout itself, worded as a return rather than as a
-					    demand, with its purpose said out loud — a buyer who has
-					    already paid needs to be able to decide this is not for them,
-					    and "Check out" / "Complete payment" would tell them they
-					    still owe money. */}
+					{/* CASE B — the cart names no order. Uncommon now, and kept
+					    deliberately: a cart checked out before `carts.order_id`
+					    existed carries NULL forever, and so would a wire that stopped
+					    emitting the field. Without this arm those carts get a panel
+					    with no primary action at all, which is worse than the link
+					    below. The link is the checkout itself, worded as a return
+					    rather than a demand, with its purpose said out loud — a buyer
+					    who has already paid needs to be able to decide this is not
+					    for them, and "Check out" / "Complete payment" would tell them
+					    they still owe money. */}
 					{placedOrderId === null && (
 						<div class="terminal-resume">
 							<a href="/checkout" class="u-btn">Return to this checkout</a>
