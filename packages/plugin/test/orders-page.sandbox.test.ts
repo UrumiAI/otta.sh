@@ -1,5 +1,17 @@
 import { afterEach, describe, expect, test } from "vitest";
 import {
+	blocksOf,
+	buttons,
+	field,
+	contextTexts,
+	fieldEntries,
+	fieldIds,
+	findBlock,
+	findBlocks,
+	formFor,
+	tableRows,
+} from "./helpers/blocks.js";
+import {
 	startStubCommerceServer,
 	type StubCommerceServer,
 } from "./helpers/stub-commerce-server.js";
@@ -543,15 +555,6 @@ async function seedToken(sandbox: SandboxHandle, stub: StubCommerceServer, token
 	stub.requests.length = 0;
 }
 
-interface Blk extends Record<string, unknown> {
-	type: string;
-}
-function blocksOf(outcome: unknown): Blk[] {
-	if (!(typeof outcome === "object" && outcome !== null && "result" in outcome)) return [];
-	const result = (outcome as { result: { blocks?: Blk[] } }).result;
-	return result.blocks ?? [];
-}
-
 let sandbox: SandboxHandle | undefined;
 let stub: StubCommerceServer | undefined;
 afterEach(async () => {
@@ -577,8 +580,8 @@ describe("admin Orders console (workerd sandbox)", () => {
 		await boot();
 		const outcome = await sandbox!.invokeRoute("admin", { type: "page_load", page: "/orders" });
 		const blocks = blocksOf(outcome);
-		expect(blocks.some((b) => b.type === "header" && b.text === "Orders")).toBe(true);
-		const table = blocks.find((b) => b.type === "table");
+		expect(findBlocks(blocks, "header").some((b) => b.text === "Orders")).toBe(true);
+		const table = findBlock(blocks, "table");
 		expect(table).toBeDefined();
 		expect(((table?.rows ?? []) as unknown[]).length).toBe(2);
 		expect(table?.page_action_id).toBe("orders:page");
@@ -603,7 +606,7 @@ describe("admin Orders console (workerd sandbox)", () => {
 	test("Load more block_action re-lists with the service cursor", async () => {
 		await boot();
 		const page1 = await sandbox!.invokeRoute("admin", { type: "page_load", page: "/orders" });
-		const table = blocksOf(page1).find((b) => b.type === "table");
+		const table = findBlock(blocksOf(page1), "table");
 		const nextCursor = table?.next_cursor as string | undefined;
 		expect(typeof nextCursor).toBe("string"); // console-wrapped token
 		stub!.requests.length = 0;
@@ -628,8 +631,8 @@ describe("admin Orders console (workerd sandbox)", () => {
 			value: {},
 		});
 		const blocks = blocksOf(outcome);
-		expect(blocks.some((b) => b.type === "header" && b.text === "Orders")).toBe(true);
-		expect(blocks.some((b) => b.type === "table")).toBe(true);
+		expect(findBlocks(blocks, "header").some((b) => b.text === "Orders")).toBe(true);
+		expect(findBlocks(blocks, "table").length > 0).toBe(true);
 	});
 
 	test("open order → detail with line items + transition buttons matching allowedTransitions", async () => {
@@ -640,16 +643,13 @@ describe("admin Orders console (workerd sandbox)", () => {
 			values: { orderId: "ord-1" },
 		});
 		const blocks = blocksOf(outcome);
-		expect(blocks.some((b) => b.type === "header" && b.text === "Order ord-1")).toBe(true);
+		expect(findBlocks(blocks, "header").some((b) => b.text === "Order ord-1")).toBe(true);
 		// A back button exists (no dead-end).
-		const actions = blocks.filter((b) => b.type === "actions");
-		const allButtons = actions.flatMap((a) => (a.elements as Array<Record<string, unknown>>) ?? []);
+		const allButtons = buttons(blocks);
 		expect(allButtons.some((e) => e.action_id === "orders:back")).toBe(true);
 		// Line-items table present with the seeded line.
-		const tables = blocks.filter((b) => b.type === "table");
-		expect(tables.length).toBeGreaterThanOrEqual(1);
-		const itemRows = tables.flatMap((t) => (t.rows as Array<Record<string, unknown>>) ?? []);
-		expect(itemRows.some((r) => r.sku === "SKU-1")).toBe(true);
+		expect(findBlocks(blocks, "table").length).toBeGreaterThanOrEqual(1);
+		expect(tableRows(blocks).some((r) => r.sku === "SKU-1")).toBe(true);
 		// One transition button per allowedTransition EXCEPT the bare `cancelled` —
 		// steered to the Cancel form instead (this slice's steering, mirroring #63's
 		// fulfillment steering) — with confirm on the still-bare destructive one.
@@ -673,10 +673,10 @@ describe("admin Orders console (workerd sandbox)", () => {
 			values: { orderId: "ord-1" },
 		});
 		const blocks = blocksOf(outcome);
-		const actionsBlocks = blocks.filter(
-			(b): b is { type: "actions"; elements: Array<Record<string, unknown>> } =>
-				b.type === "actions",
-		);
+		const actionsBlocks = findBlocks(blocks, "actions").map((b) => ({
+			...b,
+			elements: (b.elements ?? []) as Array<Record<string, unknown>>,
+		}));
 		// ord-1 offers exactly 3 transitions (the fixture above the previous
 		// test) — the fix splits them into 3 separate single-element blocks,
 		// not one block with 3 elements (vendored ActionsBlockComponent keys
@@ -714,7 +714,7 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect((post!.body as { toState: string }).toState).toBe("processing");
 		// Re-renders the detail view (GET after the POST).
 		const blocks = blocksOf(outcome);
-		expect(blocks.some((b) => b.type === "header" && b.text === "Order ord-1")).toBe(true);
+		expect(findBlocks(blocks, "header").some((b) => b.text === "Order ord-1")).toBe(true);
 	});
 
 	test("a no-op transition (ok but transitioned:false) re-renders detail with a NON-error notice", async () => {
@@ -726,8 +726,8 @@ describe("admin Orders console (workerd sandbox)", () => {
 		});
 		const blocks = blocksOf(outcome);
 		// Still the detail view, plus a non-error "No change" banner (not variant:error).
-		expect(blocks.some((b) => b.type === "header" && b.text === "Order ord-1")).toBe(true);
-		const banner = blocks.find((b) => b.type === "banner");
+		expect(findBlocks(blocks, "header").some((b) => b.text === "Order ord-1")).toBe(true);
+		const banner = findBlock(blocks, "banner");
 		expect(banner).toBeDefined();
 		expect(banner?.variant).not.toBe("error");
 		expect(banner?.title).toBe("No change");
@@ -742,24 +742,18 @@ describe("admin Orders console (workerd sandbox)", () => {
 		});
 		const blocks = blocksOf(outcome);
 		// A "Notes" section header exists.
-		expect(blocks.some((b) => b.type === "section" && b.text === "Notes")).toBe(true);
+		expect(findBlocks(blocks, "section").some((b) => b.text === "Notes")).toBe(true);
 		// The seeded notes appear in a table (append order preserved from the wire).
-		const tables = blocks.filter((b) => b.type === "table");
-		const noteRows = tables.flatMap((t) => (t.rows as Array<Record<string, unknown>>) ?? []);
+		const noteRows = tableRows(blocks);
 		expect(noteRows.some((r) => r.body === "Customer asked to gift-wrap.")).toBe(true);
 		expect(noteRows.some((r) => r.body === "Called the customer back.")).toBe(true);
 		// An add-note form with author + body fields whose submit fires orders:add-note.
-		const forms = blocks.filter((b) => b.type === "form");
-		const addForm = forms.find(
-			(f) => (f.submit as { action_id?: string } | undefined)?.action_id === "orders:add-note",
-		);
+		const addForm = formFor(blocks, "orders:add-note");
 		expect(addForm).toBeDefined();
-		const fieldIds = ((addForm?.fields ?? []) as Array<{ action_id?: string }>).map(
-			(f) => f.action_id,
-		);
-		expect(fieldIds).toContain("author");
-		expect(fieldIds).toContain("body");
-		expect(fieldIds).toContain("orderId"); // carries the order id into the stateless submit
+		const ids = fieldIds(addForm);
+		expect(ids).toContain("author");
+		expect(ids).toContain("body");
+		expect(ids).toContain("orderId"); // carries the order id into the stateless submit
 	});
 
 	test("open order → detail shows the Timeline section merging state changes, a note, and fulfillment", async () => {
@@ -771,10 +765,9 @@ describe("admin Orders console (workerd sandbox)", () => {
 		});
 		const blocks = blocksOf(outcome);
 		// A "Timeline" section header exists.
-		expect(blocks.some((b) => b.type === "section" && b.text === "Timeline")).toBe(true);
+		expect(findBlocks(blocks, "section").some((b) => b.text === "Timeline")).toBe(true);
 		// The merged entries render as a table with when/what/who/detail columns.
-		const tables = blocks.filter((b) => b.type === "table");
-		const timelineTable = tables.find((t) =>
+		const timelineTable = findBlocks(blocks, "table").find((t) =>
 			((t.columns as Array<{ key?: string }>) ?? []).some((c) => c.key === "what"),
 		);
 		expect(timelineTable).toBeDefined();
@@ -798,9 +791,9 @@ describe("admin Orders console (workerd sandbox)", () => {
 			values: { orderId: "ord-proc" },
 		});
 		const blocks = blocksOf(outcome);
-		expect(blocks.some((b) => b.type === "section" && b.text === "Timeline")).toBe(true);
+		expect(findBlocks(blocks, "section").some((b) => b.text === "Timeline")).toBe(true);
 		// The degradation caption is present (state-change history predates the log).
-		const contexts = blocks.filter((b) => b.type === "context");
+		const contexts = findBlocks(blocks, "context");
 		expect(contexts.some((c) => /predate the audit log/i.test(String(c.text)))).toBe(true);
 	});
 
@@ -821,8 +814,8 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect((post!.body as { author: string; body: string }).body).toBe("Packed and shipped.");
 		// Re-renders the detail view (GET after the POST).
 		const blocks = blocksOf(outcome);
-		expect(blocks.some((b) => b.type === "header" && b.text === "Order ord-1")).toBe(true);
-		expect(blocks.some((b) => b.type === "section" && b.text === "Notes")).toBe(true);
+		expect(findBlocks(blocks, "header").some((b) => b.text === "Order ord-1")).toBe(true);
+		expect(findBlocks(blocks, "section").some((b) => b.text === "Notes")).toBe(true);
 	});
 
 	test("add-note with a blank body shows an inline error and makes NO POST", async () => {
@@ -837,8 +830,8 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
 		// Still the detail view, with an error notice.
 		const blocks = blocksOf(outcome);
-		expect(blocks.some((b) => b.type === "header" && b.text === "Order ord-1")).toBe(true);
-		const banner = blocks.find((b) => b.type === "banner" && b.variant === "error");
+		expect(findBlocks(blocks, "header").some((b) => b.text === "Order ord-1")).toBe(true);
+		const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
 		expect(banner?.title).toBe("Note not added");
 	});
 
@@ -850,32 +843,23 @@ describe("admin Orders console (workerd sandbox)", () => {
 			values: { orderId: "ord-flagged" },
 		});
 		const blocks = blocksOf(outcome);
-		expect(blocks.some((b) => b.type === "header" && b.text === "Order ord-flagged")).toBe(true);
+		expect(findBlocks(blocks, "header").some((b) => b.text === "Order ord-flagged")).toBe(true);
 		// The prominent alert banner naming what settle detected.
-		const alert = blocks.find((b) => b.type === "banner" && b.variant === "alert");
+		const alert = findBlocks(blocks, "banner").find((b) => b.variant === "alert");
 		expect(alert?.title).toBe("Needs reconciliation");
 		expect(String(alert?.description)).toContain("commit lost for reservation res-1");
 		// A resolve form carrying the order id + outcome/reason/resolvedBy fields.
-		const forms = blocks.filter((b) => b.type === "form");
-		const resolveForm = forms.find(
-			(f) =>
-				(f.submit as { action_id?: string } | undefined)?.action_id ===
-				"orders:resolve-reconciliation",
-		);
+		const resolveForm = formFor(blocks, "orders:resolve-reconciliation");
 		expect(resolveForm).toBeDefined();
-		const fieldIds = ((resolveForm?.fields ?? []) as Array<{ action_id?: string }>).map(
-			(f) => f.action_id,
-		);
-		expect(fieldIds).toContain("orderId");
-		expect(fieldIds).toContain("expectedFlag"); // the reviewed anomaly rides along
-		expect(fieldIds).toContain("outcome");
-		expect(fieldIds).toContain("reason");
-		expect(fieldIds).toContain("resolvedBy");
+		const ids = fieldIds(resolveForm);
+		expect(ids).toContain("orderId");
+		expect(ids).toContain("expectedFlag"); // the reviewed anomaly rides along
+		expect(ids).toContain("outcome");
+		expect(ids).toContain("reason");
+		expect(ids).toContain("resolvedBy");
 		// Blocker-2 copy: the outcome must read as a RECORD, never a money movement —
 		// the "refunded" option label and the form context both say so.
-		const outcomeField = ((resolveForm?.fields ?? []) as Array<Record<string, unknown>>).find(
-			(f) => f.action_id === "outcome",
-		);
+		const outcomeField = field(resolveForm, "outcome");
 		const refundedOption = ((outcomeField?.options ?? []) as Array<Record<string, unknown>>).find(
 			(opt) => opt.value === "refunded",
 		);
@@ -884,7 +868,7 @@ describe("admin Orders console (workerd sandbox)", () => {
 		// reads as a RECORD, never a money movement.
 		expect(String(refundedOption?.label)).toContain("records the disposition");
 		expect(String(refundedOption?.label)).toContain("Refunds");
-		const contexts = blocks.filter((b) => b.type === "context").map((b) => String(b.text));
+		const contexts = contextTexts(blocks);
 		expect(contexts.some((t) => t.includes("does NOT move money"))).toBe(true);
 		expect(contexts.some((t) => t.includes("issue it in the Refunds section"))).toBe(true);
 	});
@@ -897,32 +881,22 @@ describe("admin Orders console (workerd sandbox)", () => {
 			values: { orderId: "ord-resolved" },
 		});
 		const blocks = blocksOf(outcome);
-		expect(blocks.some((b) => b.type === "header" && b.text === "Order ord-resolved")).toBe(true);
+		expect(findBlocks(blocks, "header").some((b) => b.text === "Order ord-resolved")).toBe(true);
 		// The recorded disposition is shown in a "Reconciliation resolved" section.
-		expect(blocks.some((b) => b.type === "section" && b.text === "Reconciliation resolved")).toBe(
+		expect(findBlocks(blocks, "section").some((b) => b.text === "Reconciliation resolved")).toBe(
 			true,
 		);
-		const fieldValues = blocks
-			.filter((b) => b.type === "fields")
-			.flatMap((b) => (b.fields as Array<{ label?: string; value?: string }>) ?? [])
-			.map((f) => `${String(f.label)}=${String(f.value)}`);
+		const fieldValues = fieldEntries(blocks);
 		expect(fieldValues).toContain("Outcome=fulfilled");
 		expect(fieldValues).toContain("Resolved by=ops@shop.test");
 		// No resolve form on an already-resolved order, and no reconciliation alert
 		// banner (the order is still `paid` — legally cancellable — so it DOES carry
 		// the unrelated "Cancelling is permanent" alert from the cancellation
 		// section below; this assertion is scoped to reconciliation, not "any" alert).
-		const forms = blocks.filter((b) => b.type === "form");
+		expect(formFor(blocks, "orders:resolve-reconciliation")).toBeUndefined();
 		expect(
-			forms.some(
-				(f) =>
-					(f.submit as { action_id?: string } | undefined)?.action_id ===
-					"orders:resolve-reconciliation",
-			),
-		).toBe(false);
-		expect(
-			blocks.some(
-				(b) => b.type === "banner" && b.variant === "alert" && b.title === "Needs reconciliation",
+			findBlocks(blocks, "banner").some(
+				(b) => b.variant === "alert" && b.title === "Needs reconciliation",
 			),
 		).toBe(false);
 	});
@@ -960,7 +934,7 @@ describe("admin Orders console (workerd sandbox)", () => {
 		});
 		// Re-renders the detail view (GET after the POST).
 		const blocks = blocksOf(outcome);
-		expect(blocks.some((b) => b.type === "header" && b.text === "Order ord-flagged")).toBe(true);
+		expect(findBlocks(blocks, "header").some((b) => b.text === "Order ord-flagged")).toBe(true);
 	});
 
 	test("resolve with a STALE expectedFlag (409 conflict) surfaces the reload notice, nothing cleared", async () => {
@@ -982,8 +956,8 @@ describe("admin Orders console (workerd sandbox)", () => {
 		const blocks = blocksOf(outcome);
 		// Still the detail view (re-rendered with the LIVE flag), with the dedicated
 		// reload notice — not the generic token-check error.
-		expect(blocks.some((b) => b.type === "header" && b.text === "Order ord-flagged")).toBe(true);
-		const banner = blocks.find((b) => b.type === "banner" && b.variant === "error");
+		expect(findBlocks(blocks, "header").some((b) => b.text === "Order ord-flagged")).toBe(true);
+		const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
 		expect(banner?.title).toBe("The reconciliation state changed — reload");
 		expect(String(banner?.description)).toContain("Nothing was cleared");
 	});
@@ -998,8 +972,8 @@ describe("admin Orders console (workerd sandbox)", () => {
 		});
 		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
 		const blocks = blocksOf(outcome);
-		expect(blocks.some((b) => b.type === "header" && b.text === "Order ord-flagged")).toBe(true);
-		const banner = blocks.find((b) => b.type === "banner" && b.variant === "error");
+		expect(findBlocks(blocks, "header").some((b) => b.text === "Order ord-flagged")).toBe(true);
+		const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
 		expect(banner?.title).toBe("Not resolved");
 	});
 
@@ -1011,17 +985,11 @@ describe("admin Orders console (workerd sandbox)", () => {
 			values: { orderId: "ord-proc" },
 		});
 		const blocks = blocksOf(outcome);
-		expect(blocks.some((b) => b.type === "section" && b.text === "Fulfillment")).toBe(true);
-		const forms = blocks.filter((b) => b.type === "form");
-		const fulfilForm = forms.find(
-			(f) =>
-				(f.submit as { action_id?: string } | undefined)?.action_id === "orders:record-fulfillment",
-		);
+		expect(findBlocks(blocks, "section").some((b) => b.text === "Fulfillment")).toBe(true);
+		const fulfilForm = formFor(blocks, "orders:record-fulfillment");
 		expect(fulfilForm).toBeDefined();
-		const fieldIds = ((fulfilForm?.fields ?? []) as Array<{ action_id?: string }>).map(
-			(f) => f.action_id,
-		);
-		expect(fieldIds).toEqual([
+		const ids = fieldIds(fulfilForm);
+		expect(ids).toEqual([
 			"orderId",
 			"carrier",
 			"trackingNumber",
@@ -1030,7 +998,7 @@ describe("admin Orders console (workerd sandbox)", () => {
 			"recordedBy",
 		]);
 		// The copy is honest that recording ships the order + emails tracking.
-		const contexts = blocks.filter((b) => b.type === "context").map((b) => String(b.text));
+		const contexts = contextTexts(blocks);
 		expect(contexts.some((t) => t.includes("ships this order"))).toBe(true);
 	});
 
@@ -1045,10 +1013,7 @@ describe("admin Orders console (workerd sandbox)", () => {
 		// The service listed `shipped` as a legal target (the stub mirrors the state
 		// machine), but the UI must NOT render its one-click button: a tracking-less
 		// ship would send the buyer an empty shipped email.
-		const transitionButtons = blocks
-			.filter((b) => b.type === "actions")
-			.flatMap((b) => (b.elements as Array<Record<string, unknown>>) ?? [])
-			.filter((e) => e.action_id === "orders:transition");
+		const transitionButtons = buttons(blocks).filter((e) => e.action_id === "orders:transition");
 		const toStates = transitionButtons.map((e) => (e.value as { toState: string }).toState);
 		expect(toStates).not.toContain("shipped");
 		// `cancelled` is ALSO steered (this slice) to the Cancel form above; only
@@ -1056,17 +1021,10 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(toStates.toSorted()).toEqual(["refunded"]);
 		// The steering hints point at the Fulfillment form and the Cancel form,
 		// both present.
-		const contexts = blocks.filter((b) => b.type === "context").map((b) => String(b.text));
+		const contexts = contextTexts(blocks);
 		expect(contexts.some((t) => t.includes("use the Fulfillment form above"))).toBe(true);
 		expect(contexts.some((t) => t.includes("use the Cancel form above"))).toBe(true);
-		const forms = blocks.filter((b) => b.type === "form");
-		expect(
-			forms.some(
-				(f) =>
-					(f.submit as { action_id?: string } | undefined)?.action_id ===
-					"orders:record-fulfillment",
-			),
-		).toBe(true);
+		expect(formFor(blocks, "orders:record-fulfillment")).toBeDefined();
 	});
 
 	test("record-fulfillment with a non-http(s) tracking URL shows an inline error and makes NO POST", async () => {
@@ -1085,7 +1043,7 @@ describe("admin Orders console (workerd sandbox)", () => {
 		});
 		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
 		const blocks = blocksOf(outcome);
-		const banner = blocks.find((b) => b.type === "banner" && b.variant === "error");
+		const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
 		expect(banner?.title).toBe("Not shipped");
 		expect(String(banner?.description)).toContain("http://");
 	});
@@ -1098,22 +1056,12 @@ describe("admin Orders console (workerd sandbox)", () => {
 			values: { orderId: "ord-shipped" },
 		});
 		const blocks = blocksOf(outcome);
-		expect(blocks.some((b) => b.type === "section" && b.text === "Fulfillment")).toBe(true);
-		const fieldValues = blocks
-			.filter((b) => b.type === "fields")
-			.flatMap((b) => (b.fields as Array<{ label?: string; value?: string }>) ?? [])
-			.map((f) => `${String(f.label)}=${String(f.value)}`);
+		expect(findBlocks(blocks, "section").some((b) => b.text === "Fulfillment")).toBe(true);
+		const fieldValues = fieldEntries(blocks);
 		expect(fieldValues).toContain("Carrier=UPS");
 		expect(fieldValues).toContain("Tracking number=1Z-999");
 		// No record form on an already-fulfilled order.
-		const forms = blocks.filter((b) => b.type === "form");
-		expect(
-			forms.some(
-				(f) =>
-					(f.submit as { action_id?: string } | undefined)?.action_id ===
-					"orders:record-fulfillment",
-			),
-		).toBe(false);
+		expect(formFor(blocks, "orders:record-fulfillment")).toBeUndefined();
 	});
 
 	test("record-fulfillment form_submit POSTs tracking with Idempotency-Key + token, then re-renders detail", async () => {
@@ -1145,8 +1093,8 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(body.recordedBy).toBe("carol");
 		// Re-renders the detail view (GET after the POST) with a success notice.
 		const blocks = blocksOf(outcome);
-		expect(blocks.some((b) => b.type === "header" && b.text === "Order ord-proc")).toBe(true);
-		const banner = blocks.find((b) => b.type === "banner");
+		expect(findBlocks(blocks, "header").some((b) => b.text === "Order ord-proc")).toBe(true);
+		const banner = findBlock(blocks, "banner");
 		expect(banner?.title).toBe("Order shipped");
 	});
 
@@ -1160,7 +1108,7 @@ describe("admin Orders console (workerd sandbox)", () => {
 		});
 		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
 		const blocks = blocksOf(outcome);
-		const banner = blocks.find((b) => b.type === "banner" && b.variant === "error");
+		const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
 		expect(banner?.title).toBe("Not shipped");
 	});
 
@@ -1172,23 +1120,15 @@ describe("admin Orders console (workerd sandbox)", () => {
 			values: { orderId: "ord-1" },
 		});
 		const blocks = blocksOf(outcome);
-		expect(blocks.some((b) => b.type === "section" && b.text === "Cancellation")).toBe(true);
-		const alert = blocks.find((b) => b.type === "banner" && b.variant === "alert");
+		expect(findBlocks(blocks, "section").some((b) => b.text === "Cancellation")).toBe(true);
+		const alert = findBlocks(blocks, "banner").find((b) => b.variant === "alert");
 		expect(alert?.title).toBe("Cancelling is permanent");
-		const forms = blocks.filter((b) => b.type === "form");
-		const cancelForm = forms.find(
-			(f) => (f.submit as { action_id?: string } | undefined)?.action_id === "orders:cancel",
-		);
+		const cancelForm = formFor(blocks, "orders:cancel");
 		expect(cancelForm).toBeDefined();
-		const fieldIds = ((cancelForm?.fields ?? []) as Array<{ action_id?: string }>).map(
-			(f) => f.action_id,
-		);
-		expect(fieldIds).toEqual(["orderId", "reason", "detail", "cancelledBy"]);
+		const ids = fieldIds(cancelForm);
+		expect(ids).toEqual(["orderId", "reason", "detail", "cancelledBy"]);
 		// No bare "Mark cancelled" button anywhere in the actions.
-		const transitionButtons = blocks
-			.filter((b) => b.type === "actions")
-			.flatMap((b) => (b.elements as Array<Record<string, unknown>>) ?? [])
-			.filter((e) => e.action_id === "orders:transition");
+		const transitionButtons = buttons(blocks).filter((e) => e.action_id === "orders:transition");
 		expect(transitionButtons.map((e) => (e.value as { toState: string }).toState)).not.toContain(
 			"cancelled",
 		);
@@ -1217,8 +1157,8 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(body.detail).toBe("last unit sold on another channel");
 		expect(body.cancelledBy).toBe("carol");
 		const blocks = blocksOf(outcome);
-		expect(blocks.some((b) => b.type === "header" && b.text === "Order ord-proc")).toBe(true);
-		const banner = blocks.find((b) => b.type === "banner");
+		expect(findBlocks(blocks, "header").some((b) => b.text === "Order ord-proc")).toBe(true);
+		const banner = findBlock(blocks, "banner");
 		expect(banner?.title).toBe("Order cancelled");
 	});
 
@@ -1232,7 +1172,7 @@ describe("admin Orders console (workerd sandbox)", () => {
 		});
 		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
 		const blocks = blocksOf(outcome);
-		const banner = blocks.find((b) => b.type === "banner" && b.variant === "error");
+		const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
 		expect(banner?.title).toBe("Not cancelled");
 	});
 
@@ -1244,20 +1184,12 @@ describe("admin Orders console (workerd sandbox)", () => {
 			values: { orderId: "ord-cancelled" },
 		});
 		const blocks = blocksOf(outcome);
-		expect(blocks.some((b) => b.type === "section" && b.text === "Cancellation")).toBe(true);
-		const fieldValues = blocks
-			.filter((b) => b.type === "fields")
-			.flatMap((b) => (b.fields as Array<{ label?: string; value?: string }>) ?? [])
-			.map((f) => `${String(f.label)}=${String(f.value)}`);
+		expect(findBlocks(blocks, "section").some((b) => b.text === "Cancellation")).toBe(true);
+		const fieldValues = fieldEntries(blocks);
 		expect(fieldValues).toContain("Reason=out_of_stock");
 		expect(fieldValues).toContain("Detail=last unit sold on another channel");
 		expect(fieldValues).toContain("Cancelled by=ops@shop.test");
-		const forms = blocks.filter((b) => b.type === "form");
-		expect(
-			forms.some(
-				(f) => (f.submit as { action_id?: string } | undefined)?.action_id === "orders:cancel",
-			),
-		).toBe(false);
+		expect(formFor(blocks, "orders:cancel")).toBeUndefined();
 	});
 
 	test("open a CANCELLED order cancelled WITHOUT a recorded reason (bare transition) → honest note, no Cancel form", async () => {
@@ -1268,15 +1200,10 @@ describe("admin Orders console (workerd sandbox)", () => {
 			values: { orderId: "ord-cancelled-bare" },
 		});
 		const blocks = blocksOf(outcome);
-		expect(blocks.some((b) => b.type === "section" && b.text === "Cancellation")).toBe(true);
-		const contexts = blocks.filter((b) => b.type === "context").map((b) => String(b.text));
+		expect(findBlocks(blocks, "section").some((b) => b.text === "Cancellation")).toBe(true);
+		const contexts = contextTexts(blocks);
 		expect(contexts.some((t) => t.includes("no reason was recorded"))).toBe(true);
-		const forms = blocks.filter((b) => b.type === "form");
-		expect(
-			forms.some(
-				(f) => (f.submit as { action_id?: string } | undefined)?.action_id === "orders:cancel",
-			),
-		).toBe(false);
+		expect(formFor(blocks, "orders:cancel")).toBeUndefined();
 	});
 
 	test("open order → detail shows the Customer section: identity, address book (with ship-to disclaimer), sessions, other orders — token-free", async () => {
@@ -1287,25 +1214,20 @@ describe("admin Orders console (workerd sandbox)", () => {
 			values: { orderId: "ord-1" },
 		});
 		const blocks = blocksOf(outcome);
-		expect(blocks.some((b) => b.type === "section" && b.text === "Customer")).toBe(true);
+		expect(findBlocks(blocks, "section").some((b) => b.text === "Customer")).toBe(true);
 		// Identity fields: the resolved account email + the union order count.
-		const fieldValues = blocks
-			.filter((b) => b.type === "fields")
-			.flatMap((b) => (b.fields as Array<{ label?: string; value?: string }>) ?? [])
-			.map((f) => `${String(f.label)}=${String(f.value)}`);
+		const fieldValues = fieldEntries(blocks);
 		expect(fieldValues).toContain("Email=alice@example.com");
 		expect(fieldValues).toContain("Name=Alice Example");
 		expect(fieldValues).toContain("Account=cust-a");
 		expect(fieldValues).toContain("Total orders=3");
 		// The profile address book is labeled prefill/context only (ADR-0009) — the
 		// order's own ship-to is the authoritative destination, shown separately.
-		const contexts = blocks.filter((b) => b.type === "context").map((b) => String(b.text));
+		const contexts = contextTexts(blocks);
 		expect(contexts.some((t) => t.includes("prefill/context only"))).toBe(true);
 		expect(contexts.some((t) => t.includes("shown above under “Shipping address”"))).toBe(true);
 		// Address, session, and other-order rows all render.
-		const rows = blocks
-			.filter((b) => b.type === "table")
-			.flatMap((t) => (t.rows as Array<Record<string, unknown>>) ?? []);
+		const rows = tableRows(blocks);
 		expect(rows.some((r) => String(r.address ?? "").includes("1 Main St"))).toBe(true);
 		expect(rows.some((r) => r.createdAt === "2026-07-09T00:00:00.000Z")).toBe(true); // session
 		expect(rows.some((r) => r.id === "ord-2")).toBe(true); // other recent order
@@ -1322,11 +1244,8 @@ describe("admin Orders console (workerd sandbox)", () => {
 			values: { orderId: "ord-1" },
 		});
 		const blocks = blocksOf(outcome);
-		expect(blocks.some((b) => b.type === "section" && b.text === "Shipping address")).toBe(true);
-		const fieldValues = blocks
-			.filter((b) => b.type === "fields")
-			.flatMap((b) => (b.fields as Array<{ label?: string; value?: string }>) ?? [])
-			.map((f) => `${String(f.label)}=${String(f.value)}`);
+		expect(findBlocks(blocks, "section").some((b) => b.text === "Shipping address")).toBe(true);
+		const fieldValues = fieldEntries(blocks);
 		// The frozen address fields render, and the display-only country/zone pair
 		// sit side by side (no matching — just the two facts).
 		expect(fieldValues.some((v) => v.includes("500 Shipping Ln"))).toBe(true);
@@ -1342,8 +1261,8 @@ describe("admin Orders console (workerd sandbox)", () => {
 			values: { orderId: "ord-no-addr" },
 		});
 		const blocks = blocksOf(outcome);
-		expect(blocks.some((b) => b.type === "section" && b.text === "Shipping address")).toBe(true);
-		const contexts = blocks.filter((b) => b.type === "context").map((b) => String(b.text));
+		expect(findBlocks(blocks, "section").some((b) => b.text === "Shipping address")).toBe(true);
+		const contexts = contextTexts(blocks);
 		expect(contexts.some((t) => t.includes("No shipping address captured"))).toBe(true);
 	});
 
@@ -1355,16 +1274,12 @@ describe("admin Orders console (workerd sandbox)", () => {
 			values: { orderId: "ord-guest" },
 		});
 		const blocks = blocksOf(outcome);
-		expect(blocks.some((b) => b.type === "header" && b.text === "Order ord-guest")).toBe(true);
-		const fieldValues = blocks
-			.filter((b) => b.type === "fields")
-			.flatMap((b) => (b.fields as Array<{ label?: string; value?: string }>) ?? [])
-			.map((f) => `${String(f.label)}=${String(f.value)}`);
+		expect(findBlocks(blocks, "header").some((b) => b.text === "Order ord-guest")).toBe(true);
+		const fieldValues = fieldEntries(blocks);
 		expect(fieldValues).toContain("Account=Guest — no account");
 		expect(fieldValues).toContain("Total orders=1");
 		// The empty states explain themselves rather than looking like a bug.
-		const tables = blocks.filter((b) => b.type === "table");
-		const emptyTexts = tables.map((t) => String(t.empty_text ?? ""));
+		const emptyTexts = findBlocks(blocks, "table").map((t) => String(t.empty_text ?? ""));
 		expect(emptyTexts.some((t) => t.includes("guests have no address book"))).toBe(true);
 		expect(emptyTexts.some((t) => t.includes("guests never sign in"))).toBe(true);
 	});
@@ -1378,22 +1293,22 @@ describe("admin Orders console (workerd sandbox)", () => {
 		});
 		const blocks = blocksOf(outcome);
 		// The detail view survives: header, line items, and notes all present.
-		expect(blocks.some((b) => b.type === "header" && b.text === "Order ord-ctx-fail")).toBe(true);
-		expect(blocks.some((b) => b.type === "section" && b.text === "Line items")).toBe(true);
-		expect(blocks.some((b) => b.type === "section" && b.text === "Notes")).toBe(true);
+		expect(findBlocks(blocks, "header").some((b) => b.text === "Order ord-ctx-fail")).toBe(true);
+		expect(findBlocks(blocks, "section").some((b) => b.text === "Line items")).toBe(true);
+		expect(findBlocks(blocks, "section").some((b) => b.text === "Notes")).toBe(true);
 		// The Customer section is present with an EXPLICIT unavailable body —
 		// never silently omitted, never a fail-closed banner for the whole page.
-		expect(blocks.some((b) => b.type === "section" && b.text === "Customer")).toBe(true);
-		const contexts = blocks.filter((b) => b.type === "context").map((b) => String(b.text));
+		expect(findBlocks(blocks, "section").some((b) => b.text === "Customer")).toBe(true);
+		const contexts = contextTexts(blocks);
 		expect(contexts.some((t) => t.includes("Customer context unavailable"))).toBe(true);
-		expect(blocks.some((b) => b.type === "banner" && b.variant === "error")).toBe(false);
+		expect(findBlocks(blocks, "banner").some((b) => b.variant === "error")).toBe(false);
 	});
 
 	test("NO-TOKEN page_load /orders fails closed with a GENERIC banner (no raw HTTP status/URL)", async () => {
 		await boot(""); // do NOT seed a token → guarded list answers 401
 		const outcome = await sandbox!.invokeRoute("admin", { type: "page_load", page: "/orders" });
 		const blocks = blocksOf(outcome);
-		const banner = blocks.find((b) => b.type === "banner" && b.variant === "error");
+		const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
 		expect(banner).toBeDefined();
 		// em-dash-correct banner: renders a body (title + description), not the
 		// legacy `text` shape that renders empty in production.
@@ -1413,39 +1328,30 @@ describe("admin Orders console (workerd sandbox)", () => {
 			values: { orderId: "ord-1" },
 		});
 		const blocks = blocksOf(outcome);
-		expect(blocks.some((b) => b.type === "section" && b.text === "Refunds")).toBe(true);
+		expect(findBlocks(blocks, "section").some((b) => b.text === "Refunds")).toBe(true);
 		// The derived captured/refunded/remaining + "partially refunded" badge.
-		const fieldValues = blocks
-			.filter((b) => b.type === "fields")
-			.flatMap((b) => (b.fields as Array<{ label?: string; value?: string }>) ?? [])
-			.map((f) => `${String(f.label)}=${String(f.value)}`);
+		const fieldValues = fieldEntries(blocks);
 		expect(fieldValues.some((v) => v.startsWith("Remaining refundable="))).toBe(true);
 		expect(fieldValues.some((v) => v.startsWith("Status=Partially refunded"))).toBe(true);
 		// The existing refund row is listed.
-		const refundTable = blocks.find(
-			(b) =>
-				b.type === "table" && (b.columns as Array<{ key: string }>).some((c) => c.key === "ref"),
+		const refundTable = findBlocks(blocks, "table").find((t) =>
+			((t.columns as Array<{ key?: string }>) ?? []).some((c) => c.key === "ref"),
 		);
 		expect(refundTable).toBeDefined();
 		// The refund form — a REAL-refund label (refundable:true) + a money amount input.
-		const forms = blocks.filter((b) => b.type === "form");
-		const refundForm = forms.find(
-			(f) => (f.submit as { action_id?: string } | undefined)?.action_id === "orders:refund",
-		);
+		const refundForm = formFor(blocks, "orders:refund");
 		expect(refundForm).toBeDefined();
 		expect(String((refundForm?.submit as { label?: string } | undefined)?.label)).toContain(
 			"Issue refund",
 		);
-		const fieldIds = ((refundForm?.fields ?? []) as Array<{ action_id?: string }>).map(
-			(f) => f.action_id,
-		);
-		expect(fieldIds).toContain("orderId");
-		expect(fieldIds).toContain("currency");
-		expect(fieldIds).toContain("nonce"); // per-submission key ⇒ two deliberate refunds each apply
-		expect(fieldIds).toContain("amount");
-		expect(fieldIds).toContain("refundedBy");
+		const ids = fieldIds(refundForm);
+		expect(ids).toContain("orderId");
+		expect(ids).toContain("currency");
+		expect(ids).toContain("nonce"); // per-submission key ⇒ two deliberate refunds each apply
+		expect(ids).toContain("amount");
+		expect(ids).toContain("refundedBy");
 		// Capability copy is HONEST: money moves via Stripe.
-		const contexts = blocks.filter((b) => b.type === "context").map((b) => String(b.text));
+		const contexts = contextTexts(blocks);
 		expect(contexts.some((t) => t.includes("REAL refund through Stripe"))).toBe(true);
 	});
 
@@ -1457,15 +1363,12 @@ describe("admin Orders console (workerd sandbox)", () => {
 			values: { orderId: "ord-x402" },
 		});
 		const blocks = blocksOf(outcome);
-		const forms = blocks.filter((b) => b.type === "form");
-		const refundForm = forms.find(
-			(f) => (f.submit as { action_id?: string } | undefined)?.action_id === "orders:refund",
-		);
+		const refundForm = formFor(blocks, "orders:refund");
 		expect(refundForm).toBeDefined();
 		expect(String((refundForm?.submit as { label?: string } | undefined)?.label)).toBe(
 			"Record manual refund",
 		);
-		const contexts = blocks.filter((b) => b.type === "context").map((b) => String(b.text));
+		const contexts = contextTexts(blocks);
 		expect(contexts.some((t) => t.includes("on-chain (x402)") && t.includes("RECORD-ONLY"))).toBe(
 			true,
 		);
@@ -1499,8 +1402,8 @@ describe("admin Orders console (workerd sandbox)", () => {
 		});
 		const blocks = blocksOf(outcome);
 		// The full remaining (1000) was refunded ⇒ success notice + re-rendered detail.
-		expect(blocks.some((b) => b.type === "header" && b.text === "Order ord-1")).toBe(true);
-		const banner = blocks.find((b) => b.type === "banner" && b.variant === "default");
+		expect(findBlocks(blocks, "header").some((b) => b.text === "Order ord-1")).toBe(true);
+		const banner = findBlocks(blocks, "banner").find((b) => b.variant === "default");
 		expect(banner?.title).toBe("Refund complete");
 	});
 
@@ -1514,7 +1417,7 @@ describe("admin Orders console (workerd sandbox)", () => {
 		});
 		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
 		const blocks = blocksOf(outcome);
-		const banner = blocks.find((b) => b.type === "banner" && b.variant === "error");
+		const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
 		expect(banner?.title).toBe("Not refunded");
 	});
 
@@ -1534,7 +1437,7 @@ describe("admin Orders console (workerd sandbox)", () => {
 		});
 		expect(stub!.requests.some((r) => r.method === "POST")).toBe(true);
 		const blocks = blocksOf(outcome);
-		const banner = blocks.find((b) => b.type === "banner" && b.variant === "error");
+		const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
 		expect(banner?.title).toBe("Amount too high");
 		expect(String(banner?.description)).not.toMatch(/HTTP \d|\/admin\/|409/);
 	});
