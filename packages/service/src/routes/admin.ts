@@ -81,7 +81,10 @@ export interface AdminRoutesDeps {
 	// Admin Products console (admin-UX Increment 2) — view-only enumerate + detail.
 	productCommerce: ProductCommerceStore;
 	/** The detail leaf's single-sku stock read (`getOnHand`) — never used by the
-	 *  list, which must not N+1 into inventory per row (port doc). */
+	 *  list, which must not N+1 into inventory per row (port doc). Also the
+	 *  commerce EDIT's create-if-absent inventory seed (PR 1a): an edit that
+	 *  leaves the product with a sku must leave it with an inventory row, or the
+	 *  restock endpoint below 409s NO_INVENTORY_ROW forever. */
 	inventoryStore: InventoryStore;
 	/** Payment gateways keyed by method (ADR-0008) — the refund endpoint selects
 	 *  the order's gateway to issue (Stripe) or record-only (x402/no-secret). The
@@ -300,7 +303,7 @@ export function adminRoutes(deps: AdminRoutesDeps): Hono {
 
 		try {
 			const res = await updateProductCommerceFields(
-				deps.productCommerce,
+				{ productCommerce: deps.productCommerce, inventory: deps.inventoryStore },
 				{
 					productId: toProductId(params.data.productId),
 					...(body.sku !== undefined ? { sku: toSku(body.sku) } : {}),

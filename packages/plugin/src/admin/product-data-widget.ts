@@ -58,7 +58,12 @@ const PRODUCT_KIND_OPTIONS: Array<{ value: CommerceProductKind; label: string }>
  * create-only semantics can therefore NOT be enforced in the UI; they are
  * enforced server-side — the service treats `initialOnHand` as a
  * create-if-absent seed that never clobbers an existing/decremented `on_hand`,
- * see `@urumi/domain` `upsertProductCommerce` + `InventoryStore.seedOnHand`.)
+ * see `@urumi/domain` `upsertProductCommerce` + `InventoryStore.seedOnHand`.
+ * SINCE PR 1a THAT WINDOW IS NARROWER THAN THIS WIDGET IMPLIES: any save
+ * carrying a sku seeds a row at 0, so a Stock value typed on a LATER save is
+ * silently discarded while the widget keeps redisplaying it. Stock must be set
+ * on the same save that first sets the SKU; after that it is Pricing &
+ * inventory's Restock action. This widget is deleted by PR 1b.)
  *
  * Help/guidance is carried in labels + placeholders because a non-input block
  * (header/section/banner) is unsupported by the field widget and would render
@@ -93,10 +98,12 @@ export function buildProductDataElements(): Element[] {
 		{
 			type: "number_input",
 			action_id: "onHand",
-			// Create-only server-side: sets the INITIAL stock when the row is first
-			// created; a re-save never overwrites an existing/decremented on_hand
-			// (inventory-managed thereafter via reserve/commit/release/adjust).
-			label: "Initial stock on hand (set once; managed via inventory after)",
+			// Create-only server-side: sets the INITIAL stock, and ONLY on the save
+			// that first carries the SKU — since PR 1a a sku-bearing save always
+			// seeds a row, so a value typed on any later save is discarded (the
+			// widget still shows it; real stock does not move). Inventory-managed
+			// thereafter via reserve/commit/release/adjust and the Restock action.
+			label: "Initial stock on hand (set it with the SKU; use Restock after)",
 		},
 		{
 			type: "select",

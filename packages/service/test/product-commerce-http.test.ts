@@ -179,10 +179,10 @@ describe.skipIf(PG === undefined)("HTTP product-commerce contract [live server, 
 		expect(res.status).toBe(400);
 	});
 
-	test("a priced row stranded without an inventory row is healed by retrying the save with initialOnHand (B1, Postgres)", async () => {
-		// Simulate the stranded state review B1 flagged: the product upsert
-		// committed (sku durably set) but no inventory row ever landed — here
-		// by a first save that carried no stock figure.
+	test("a save carrying a sku but NO stock figure still creates the inventory row at 0 (PR 1a, Postgres)", async () => {
+		// PR 1a: the invariant is "a product with a sku has an inventory row",
+		// so this path can no longer mint a sku with nothing behind it — the
+		// stranded state this test used to construct is now unreachable here.
 		await put(
 			"prod-http-b1",
 			{ sku: "SKU-HB1", price: { amount: 300, currency: "USD" } },
@@ -190,19 +190,33 @@ describe.skipIf(PG === undefined)("HTTP product-commerce contract [live server, 
 		);
 		expect(await server.onHand("SKU-HB1")).toBe(0);
 
-		// The retried save (same idempotency key — the upsert replays as a
-		// no-op) carries the stock figure; the always-attempt, create-if-absent
-		// seed heals the missing inventory row.
+		// `onHand` reads a MISSING row as 0 too, so that assertion alone proves
+		// nothing. Restock never auto-creates a row, so a successful restock is
+		// the real proof the row exists — and this exact call was a 409
+		// NO_INVENTORY_ROW before 1a.
+		const restocked = await fetch(`${server.baseUrl}/admin/products/prod-http-b1/restock`, {
+			method: "POST",
+			headers: {
+				"content-type": "application/json",
+				"X-Internal-Token": server.internalToken as string,
+				"Idempotency-Key": "kb1-restock",
+			},
+			body: JSON.stringify({ qty: 4 }),
+		});
+		expect(restocked.status).toBe(200);
+		expect(await server.onHand("SKU-HB1")).toBe(4);
+
+		// And because the seed is create-if-absent, a LATER save's initialOnHand
+		// is silently discarded rather than clobbering the live count — in either
+		// direction. (Before 1a this same call healed a stranded row to 12.)
 		await put(
 			"prod-http-b1",
 			{ sku: "SKU-HB1", price: { amount: 300, currency: "USD" }, initialOnHand: 12 },
 			{ "Idempotency-Key": "kb1" },
 		);
-		expect(await server.onHand("SKU-HB1")).toBe(12);
-
-		// And a later save can still never clobber the live figure.
+		expect(await server.onHand("SKU-HB1")).toBe(4);
 		await put("prod-http-b1", { initialOnHand: 999 }, { "Idempotency-Key": "kb1-later" });
-		expect(await server.onHand("SKU-HB1")).toBe(12);
+		expect(await server.onHand("SKU-HB1")).toBe(4);
 	});
 
 	test("a stale sync PUT (older contentUpdatedAt) arriving after a newer one is a no-op over the wire (S1)", async () => {

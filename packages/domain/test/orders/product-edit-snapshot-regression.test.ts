@@ -54,7 +54,7 @@ describe("product edit never rewrites an existing order's line snapshot", () => 
 		const current = await h.productCommerce.getByProductId(pid);
 		expect(current).not.toBeNull();
 		const edit = await updateProductCommerceFields(
-			h.productCommerce,
+			{ productCommerce: h.productCommerce, inventory: h.inventory },
 			{ productId: pid, price: money(cents(9999), currency("USD")), title: "Renamed Product" },
 			idempotencyKey("edit-1"),
 			current!.updatedAt.toISOString(),

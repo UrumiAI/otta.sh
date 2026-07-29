@@ -128,6 +128,41 @@ describe.skipIf(PG === undefined)("admin restock / remove-stock HTTP contract", 
 		expect((await json(res)).reason).toBe("NO_INVENTORY_ROW");
 	});
 
+	test("setting the first SKU through the admin EDIT makes the product restockable (PR 1a, end to end)", async () => {
+		// The bug 1a fixes, over the wire: a bare CMS-created row is priced in the
+		// admin console, and the restock that used to 409 NO_INVENTORY_ROW forever
+		// now succeeds. Must be an HTTP test — the service wiring (the edit route
+		// passing its InventoryStore into the use-case) is half the fix.
+		await server.seedProductRow({
+			id: "prod-1a",
+			sku: null,
+			title: "Unpriced",
+			createdAt: "2026-07-10T01:00:00.000Z",
+		});
+		const detail = (await json(
+			await fetch(`${server.baseUrl}/admin/products/prod-1a`, {
+				headers: { "X-Internal-Token": token },
+			}),
+		)) as Record<string, unknown>;
+		const watermark = (detail.product as Record<string, unknown>).updatedAt as string;
+
+		const edit = await fetch(`${server.baseUrl}/admin/products/prod-1a`, {
+			method: "PATCH",
+			headers: { "Content-Type": "application/json", "X-Internal-Token": token },
+			body: JSON.stringify({
+				expectedUpdatedAt: watermark,
+				sku: "SKU-1a",
+				price: { amount: 1500, currency: "USD" },
+			}),
+		});
+		expect(edit.status).toBe(200);
+
+		const res = await post("prod-1a", "restock", { qty: 4 }, { idempotencyKey: "rk-1a" });
+		expect(res.status).toBe(200);
+		expect(await json(res)).toEqual({ ok: true, onHand: 4 });
+		expect(await server.onHand("SKU-1a")).toBe(4);
+	});
+
 	test("a product with no sku (create-then-price) is a 409 NO_SKU", async () => {
 		await server.seedProductRow({
 			id: "prod-noskued",
