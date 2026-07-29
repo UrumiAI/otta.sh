@@ -1,7 +1,8 @@
 # Plan — Admin UI density & layout cleanup
 
-Status: **ready to build** (2026-07-29, amended). Scope: the six Urumi admin screens under
-`packages/plugin/src/admin/`. Verified against a live local staging admin (Orders, order
+Status: **ready to build** (2026-07-29, amended twice). Scope: the **seven** Urumi admin screens
+under `packages/plugin/src/admin/` — Orders, Pricing & inventory, Coupons, Tax, Shipping, Reports
+and Settings (`admin-route.ts:83-101`). Earlier revisions said "six". Verified against a live local staging admin (Orders, order
 detail, Pricing & inventory) and against the em-dash Block Kit that staging actually runs.
 
 > **This plan sets scope; [`docs/admin/ADMIN-CONSOLE.md`](../docs/admin/ADMIN-CONSOLE.md) sets
@@ -80,7 +81,7 @@ Reports and Settings are covered by `*-widget.sandbox.test.ts`.)
 
 Widen `packages/plugin/src/types.ts` with the block types the renderer already supports:
 `ColumnsBlock`, `TabBlock`/`TabPanel`, `AccordionBlock`, `EmptyBlock`, `MeterBlock`, and
-`TableColumn.sortable`. Add scaffold helpers so the six pages share one layout language rather
+`TableColumn.sortable`. Add scaffold helpers so the seven pages share one layout language rather
 than each inventing it. No page behaviour change yet.
 
 ~~a `filterRow()` that lays a filter form's fields out via `columns`~~ — **WITHDRAWN.** A
@@ -95,8 +96,11 @@ Also in scope for this increment, added by the spec's review (§0.1 B–D): `Sec
 a `combobox` field spec, `multiline` on the text-input spec; the carrier codec's
 `encodeCarrier(namespace, context)` → `<entity>:<verb>:u1.<b64>` grammar; `filterPanel`'s
 `blockId` becoming **required**; splitting `filterPanelLabel` into a count-based label plus a
-`" · "`-joined `filterSummary`; and `carrierForForm()`, which folds a digest of a form's own
-prefilled values into its `block_id`.
+`" · "`-joined `filterSummary`; `filterPanel` **throwing** at 5+ fields and at a prefilled form
+whose token carries no digest; and `carriedForm({ namespace, context, form })`, which folds a digest
+of a form's own prefilled values into its `block_id` under the reserved key `__v` and hands the form
+back ready to emit. Also `readBoolean`, without which every `toggle` silently fails to persist
+(`readString` returns `undefined` for a boolean, `scaffold/list-detail.ts:334`).
 
 ### 2 — Kill the carrier dropdowns (the biggest single win)
 
@@ -145,7 +149,7 @@ account, no saved addresses, no sign-in history.").
 
 ### 4 — Consistent destructive-action language
 
-One rule across all six pages: destructive ⇒ `style: "danger"` **and** a `confirm` dialog.
+One rule across all seven pages: destructive ⇒ `style: "danger"` **and** a `confirm` dialog.
 Cancel-order, refund and remove-stock are currently forms, and `FormBlock` has no confirm — so
 restructure each per the spec's §8, which gives **three** shapes rather than one, chosen by what
 input the act needs: DA-2 (no input) · DA-2b (closed set or an already-known value — one danger
@@ -171,8 +175,13 @@ so the list stays scannable. Three constraints the original bullet missed:
 
 - The per-row accordion list is a **runtime branch**, not a replacement: it applies only when the
   fetched page is complete and ≤25 rows, because `table.next_cursor` + "Load more" is the only
-  paging affordance in the vocabulary. Both branches ship (spec L-9). Shipping's rates level is
-  exempt — it is a 0-or-1-row currency lookup (spec L-9a).
+  paging affordance in the vocabulary. Both branches ship (spec L-9), and the **zero-row** case
+  renders an `empty` block because the accordion branch has no table to carry `empty_text`
+  (spec L-9b). Shipping's rates level is exempt — it is a 0-or-1-row currency lookup (spec L-9a).
+- **Do not split the coupon edit form.** `updateCoupon` is a `PUT` and the service coerces absent ⇒
+  `null` (`rules-admin.ts:434-443`), so a split save would silently wipe `startsAt`, `expiresAt`,
+  `maxUses` and `maxUsesPerCustomer`. It stays one `condition`-gated form (spec F-5a, F-5c). The
+  sibling-form split is legal for **products only**, where the sparse PATCH is verified end to end.
 - The button-in-row `View rates` / `View methods` drill-in needs `value: {target: encodePath(...)}`
   carrying the **full** path, plus each screen's `parseOpen` reading `input.value?.target` — today
   it reads `input.values` only and the click bounces to the root list (spec §12.7).
