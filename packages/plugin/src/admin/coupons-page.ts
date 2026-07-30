@@ -476,7 +476,7 @@ function createCouponAccordion(renderState: CouponsRenderState | undefined): Blo
  * that a hidden branch's fields are empty).
  *
  * Five fields that used to live here — `Starts at`, `Expires at`,
- * `Minimum spend`, `Max total uses`, `Max uses per customer` — are GONE: all
+ * `Minimum spend`, `Max uses`, `Max uses per customer` — are GONE: all
  * five already have a home in the detail's edit form, a coupon created
  * without them is valid immediately/forever/unlimited/unrestricted (the
  * common case), and keeping them off this form is what holds it to 5 visible
@@ -754,7 +754,7 @@ function editCouponForm(detail: CouponSummaryWire): FormBlock {
 	editFields.push({
 		type: "text_input",
 		action_id: "maxUses",
-		label: "Max total uses (optional)",
+		label: "Max uses (optional)",
 		...(detail.maxUses !== null ? { initial_value: String(detail.maxUses) } : {}),
 	});
 	editFields.push({
@@ -784,7 +784,7 @@ function redemptionsPanel(detail: CouponSummaryWire): Block[] {
 	const blocks: Block[] = [
 		fields("coupons:uses", [
 			["Redemptions", String(detail.usesCount)],
-			["Max total uses", detail.maxUses === null ? "unlimited" : String(detail.maxUses)],
+			["Max uses", detail.maxUses === null ? "unlimited" : String(detail.maxUses)],
 			[
 				"Max per customer",
 				detail.maxUsesPerCustomer === null ? "unlimited" : String(detail.maxUsesPerCustomer),
@@ -985,7 +985,7 @@ function parseSharedFields(values: Record<string, unknown>): ParsedShared {
 	if (maxUses.ok === false) {
 		return {
 			ok: false,
-			message: "Max total uses must be a whole number of 1 or more, or blank for unlimited.",
+			message: "Max uses must be a whole number of 1 or more, or blank for unlimited.",
 		};
 	}
 	const maxUsesPerCustomer = parseCountInput(readString(values.maxUsesPerCustomer) ?? "");

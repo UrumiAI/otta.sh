@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { decodeCarrier, decodePath, encodePath } from "../src/admin/scaffold/index.js";
+import { assertBlockContract } from "./helpers/block-contract.js";
 import {
 	blocksOf,
 	buttons,
@@ -736,7 +737,7 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		expect(fields.get("Minimum spend")).toBe("$35.00");
 		expect(fields.get("Valid")).toBe("from 2026-07-01");
 		expect(fields.get("Redemptions")).toBe("0");
-		expect(fields.get("Max total uses")).toBe("unlimited");
+		expect(fields.get("Max uses")).toBe("unlimited");
 		// M-11a: the axis is named, never a bare "Remaining".
 		expect(fields.has("Remaining")).toBe(false);
 		expect(fields.get("Remaining redemptions")).toBe("unlimited");
@@ -1127,5 +1128,38 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		expect(fieldEntries(couponPanel)).toContain("Valid=from 2026-07-01");
 		const redemptionsPanel = panel(blocks, "Redemptions");
 		expect(fieldEntries(redemptionsPanel)).toContain("Redemptions=0");
+	});
+
+	// Every H-marked §13 anti-pattern this helper enforces (§15 V-3/V-3a) — one
+	// call on the list (unfiltered non-empty, filtered, and true-zero) and one
+	// per open record state, covering both coupon families and both the
+	// deletable and the redeemed (delete-withheld) shapes.
+	test("assertBlockContract holds on the list (populated, filtered, true-zero) and on every open record state (§15 V-3)", async () => {
+		const state = makeCouponsState();
+		await boot(state);
+		assertBlockContract(
+			blocksOf(await sandbox!.invokeRoute("admin", { type: "page_load", page: "/coupons" })),
+			{ screen: "coupons", level: "list" },
+		);
+		assertBlockContract(
+			blocksOf(
+				await sandbox!.invokeRoute("admin", {
+					type: "form_submit",
+					action_id: "coupons:apply-filter",
+					values: { search: "fiveoff" },
+				}),
+			),
+			{ screen: "coupons", level: "list" },
+		);
+		assertBlockContract(await openCoupon("FIVEOFF"), { screen: "coupons", level: "detail" }); // fixed_amount, deletable
+		assertBlockContract(await openCoupon("SUMMER25"), { screen: "coupons", level: "detail" }); // percentage, redeemed (delete withheld)
+
+		await sandbox!.close();
+		await stub!.close();
+		await boot({ coupons: [] });
+		assertBlockContract(
+			blocksOf(await sandbox!.invokeRoute("admin", { type: "page_load", page: "/coupons" })),
+			{ screen: "coupons", level: "list" },
+		); // true-zero, unfiltered — the `empty` branch
 	});
 });
