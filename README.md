@@ -87,35 +87,6 @@ storefront covers **catalog + cart only** — see [Status](#status).
 To deploy this for free on Cloudflare Workers, follow
 [`DEPLOYMENT.md`](./DEPLOYMENT.md) §3.
 
-## Upgrading
-
-**Removing the leftover "Commerce" field.** Urumi used to store pricing in the CMS
-content document, in a `commerce` JSON field edited by an on-screen "Product data" panel.
-It no longer does — pricing, stock and every other commercial field live in the commerce
-service and are edited in the admin's **Pricing & inventory** page.
-
-If your site was seeded before this release, the Products collection keeps an unused
-"Commerce" JSON field showing the old pricing data. It is ignored — pricing now lives in
-**Pricing & inventory**. Remove it with:
-
-```bash
-emdash schema remove-field products commerce
-```
-
-**This only applies to a site seeded before the release.** On a fresh install there is no
-such field and the command **fails** with `Field "commerce" not found` and a non-zero exit
-— it is not a no-op, so do not put it in an unconditional upgrade script. Check first with
-`emdash schema get products`.
-
-**The drop is irreversible.** It deletes the field record, re-syncs the search triggers
-and **drops the column and its data** in one transaction — the old sku/price bag is gone,
-not orphaned. Before running it, confirm in **Pricing & inventory** that each product
-carries the price and stock you expect; whatever is left in the old JSON cannot be
-recovered afterwards.
-
-The command works against a deployed site — the EmDash CLI talks HTTP, so pass
-`--url https://<your-host>` (or set `EMDASH_URL`) plus your admin token.
-
 ## Why two parts
 
 **EmDash's plugin sandbox has no atomic write, compare-and-set, or transaction.** Plugins
@@ -163,7 +134,7 @@ follow, the split becomes a deployment choice rather than a correctness requirem
 | `@urumi/store-postgres` | Kysely store adapters (better-sqlite3 local, `pg` CI/prod) + forward-only migrations. |
 | `@urumi/payments-stripe` | Stripe `PaymentGateway` adapter (async-webhook, raw-body HMAC). |
 | `@urumi/payments-x402` | x402 `PaymentGateway` adapter (synchronous page-gate, facilitator-verified). |
-| `@urumi/plugin` | The EmDash plugin: storefront, Block Kit product panel, admin, sync hooks. |
+| `@urumi/plugin` | The EmDash plugin: storefront routes, admin console, content-sync hooks. |
 | `sites/staging` | Staging storefront + admin — EmDash on Cloudflare Workers, plugin registered trusted. |
 
 Design decisions live in [`adr/`](./adr/); development practices in
