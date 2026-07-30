@@ -1,5 +1,6 @@
 import { plugin } from "@urumi/plugin";
 import { afterEach, describe, expect, test } from "vitest";
+import { blocksOf, findBlock, findBlocks, formFor } from "./helpers/blocks.js";
 import {
 	type RecordedRequest,
 	startStubCommerceServer,
@@ -182,15 +183,6 @@ async function seedToken(sandbox: SandboxHandle, stub: StubCommerceServer, token
 	stub.requests.length = 0;
 }
 
-interface Blk extends Record<string, unknown> {
-	type: string;
-}
-function blocksOf(outcome: unknown): Blk[] {
-	if (!(typeof outcome === "object" && outcome !== null && "result" in outcome)) return [];
-	const result = (outcome as { result: { blocks?: Blk[] } }).result;
-	return result.blocks ?? [];
-}
-
 let sandbox: SandboxHandle | undefined;
 let stub: StubCommerceServer | undefined;
 afterEach(async () => {
@@ -232,8 +224,8 @@ describe("admin Products console (workerd sandbox)", () => {
 		await boot();
 		const outcome = await sandbox!.invokeRoute("admin", { type: "page_load", page: "/products" });
 		const blocks = blocksOf(outcome);
-		expect(blocks.some((b) => b.type === "header" && b.text === "Pricing & inventory")).toBe(true);
-		const table = blocks.find((b) => b.type === "table");
+		expect(findBlocks(blocks, "header").some((b) => b.text === "Pricing & inventory")).toBe(true);
+		const table = findBlock(blocks, "table");
 		expect(table).toBeDefined();
 		expect(((table?.rows ?? []) as unknown[]).length).toBe(2);
 		expect(table?.page_action_id).toBe("products:page");
@@ -249,7 +241,7 @@ describe("admin Products console (workerd sandbox)", () => {
 		await boot(""); // do not seed a token
 		const outcome = await sandbox!.invokeRoute("admin", { type: "page_load", page: "/products" });
 		const blocks = blocksOf(outcome);
-		const banner = blocks.find((b) => b.type === "banner" && b.variant === "error");
+		const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
 		expect(banner).toBeDefined();
 		expect(String(banner?.description)).not.toMatch(/HTTP \d|\/admin\/products|401/);
 	});
@@ -276,7 +268,7 @@ describe("admin Products console (workerd sandbox)", () => {
 			values: { search: "unpriced" },
 		});
 		const blocks = blocksOf(outcome);
-		const rows = blocks.find((b) => b.type === "table")?.rows as Array<Record<string, unknown>>;
+		const rows = findBlock(blocks, "table")?.rows as Array<Record<string, unknown>>;
 		// PR 1b started activating products it previously skipped entirely. A bare
 		// "active" here would tell the merchant a product is on sale when the
 		// storefront cannot show it.
@@ -285,12 +277,8 @@ describe("admin Products console (workerd sandbox)", () => {
 		// The "Open product" picker shares `statusLabel` precisely so the two
 		// surfaces cannot disagree — assert it, or the shared helper's whole
 		// reason for existing goes unpinned.
-		const picker = blocks.find(
-			(b) =>
-				b.type === "form" &&
-				((b.fields ?? []) as Array<Record<string, unknown>>).some(
-					(f) => f.action_id === "productId",
-				),
+		const picker = findBlocks(blocks, "form").find((b) =>
+			((b.fields ?? []) as Array<Record<string, unknown>>).some((f) => f.action_id === "productId"),
 		);
 		expect(picker).toBeDefined();
 		const productIdField = (picker!.fields as Array<Record<string, unknown>>).find(
@@ -315,7 +303,7 @@ describe("admin Products console (workerd sandbox)", () => {
 		expect(listReq!.url).not.toContain("active=");
 		// The archived response's row shows the honest "deleted" status, never
 		// "inactive" (deletedAt outranks active in the status label).
-		const table = blocksOf(outcome).find((b) => b.type === "table");
+		const table = findBlock(blocksOf(outcome), "table");
 		const rows = (table?.rows ?? []) as Array<Record<string, unknown>>;
 		expect(rows.map((r) => r.status)).toEqual(["deleted"]);
 	});
@@ -329,17 +317,17 @@ describe("admin Products console (workerd sandbox)", () => {
 		});
 		const blocks = blocksOf(outcome);
 		// A tombstone banner explains the state.
-		const banner = blocks.find((b) => b.type === "banner");
+		const banner = findBlock(blocks, "banner");
 		expect(banner).toBeDefined();
 		expect(String(banner?.title)).toMatch(/deleted/i);
-		const fieldsBlocks = blocks.filter((b) => b.type === "fields");
+		const fieldsBlocks = findBlocks(blocks, "fields");
 		const allFields = fieldsBlocks.flatMap(
 			(b) => (b.fields as Array<{ label: string; value: string }>) ?? [],
 		);
 		const byLabel = new Map(allFields.map((f) => [f.label, f.value]));
 		expect(byLabel.get("Status")).toBe("deleted");
 		// Never an edit or stock-movement form for a tombstoned row.
-		const forms = blocks.filter((b) => b.type === "form");
+		const forms = findBlocks(blocks, "form");
 		const submitIds = forms.map((f) => (f.submit as { action_id?: string })?.action_id);
 		expect(submitIds).not.toContain("products:save");
 		expect(submitIds).not.toContain("products:restock");
@@ -349,7 +337,7 @@ describe("admin Products console (workerd sandbox)", () => {
 	test("Load more block_action re-lists with the service cursor", async () => {
 		await boot();
 		const page1 = await sandbox!.invokeRoute("admin", { type: "page_load", page: "/products" });
-		const table = blocksOf(page1).find((b) => b.type === "table");
+		const table = findBlock(blocksOf(page1), "table");
 		const nextCursor = table?.next_cursor as string | undefined;
 		expect(typeof nextCursor).toBe("string"); // console-wrapped token
 		stub!.requests.length = 0;
@@ -374,12 +362,12 @@ describe("admin Products console (workerd sandbox)", () => {
 			values: { productId: "prod-1" },
 		});
 		const blocks = blocksOf(outcome);
-		expect(blocks.some((b) => b.type === "header" && b.text === "Blue Widget")).toBe(true);
+		expect(findBlocks(blocks, "header").some((b) => b.text === "Blue Widget")).toBe(true);
 		// A back button exists (no dead-end).
-		const actions = blocks.filter((b) => b.type === "actions");
+		const actions = findBlocks(blocks, "actions");
 		const allButtons = actions.flatMap((a) => (a.elements as Array<Record<string, unknown>>) ?? []);
 		expect(allButtons.some((e) => e.action_id === "products:back")).toBe(true);
-		const fieldsBlocks = blocks.filter((b) => b.type === "fields");
+		const fieldsBlocks = findBlocks(blocks, "fields");
 		const allFields = fieldsBlocks.flatMap(
 			(b) => (b.fields as Array<{ label: string; value: string }>) ?? [],
 		);
@@ -403,8 +391,8 @@ describe("admin Products console (workerd sandbox)", () => {
 			values: { productId: "does-not-exist" },
 		});
 		const blocks = blocksOf(outcome);
-		expect(blocks.some((b) => b.type === "header" && b.text === "Product not found")).toBe(true);
-		const banner = blocks.find((b) => b.type === "banner");
+		expect(findBlocks(blocks, "header").some((b) => b.text === "Product not found")).toBe(true);
+		const banner = findBlock(blocks, "banner");
 		expect(banner?.variant).toBe("error");
 	});
 
@@ -416,8 +404,8 @@ describe("admin Products console (workerd sandbox)", () => {
 			value: {},
 		});
 		const blocks = blocksOf(outcome);
-		expect(blocks.some((b) => b.type === "header" && b.text === "Pricing & inventory")).toBe(true);
-		expect(blocks.some((b) => b.type === "table")).toBe(true);
+		expect(findBlocks(blocks, "header").some((b) => b.text === "Pricing & inventory")).toBe(true);
+		expect(findBlocks(blocks, "table").length > 0).toBe(true);
 	});
 
 	test("the product detail carries an edit form (products:save) with price prefilled as a decimal", async () => {
@@ -428,10 +416,7 @@ describe("admin Products console (workerd sandbox)", () => {
 			values: { productId: "prod-1" },
 		});
 		const blocks = blocksOf(outcome);
-		const form = blocks.find(
-			(b) =>
-				b.type === "form" && (b.submit as { action_id?: string })?.action_id === "products:save",
-		);
+		const form = formFor(blocks, "products:save");
 		expect(form).toBeDefined();
 		const fields = (form?.fields ?? []) as Array<Record<string, unknown>>;
 		const byId = new Map(fields.map((f) => [f.action_id, f]));
@@ -465,18 +450,18 @@ describe("admin Products console (workerd sandbox)", () => {
 		// Display survives: the header and the read-only fields row, whose label
 		// names the owner (F-2b) rather than reading as a plain editable-looking
 		// "Title".
-		expect(blocks.some((b) => b.type === "header" && b.text === "Blue Widget")).toBe(true);
-		const allFields = blocks
-			.filter((b) => b.type === "fields")
-			.flatMap((b) => (b.fields as Array<{ label: string; value: string }>) ?? []);
+		expect(findBlocks(blocks, "header").some((b) => b.text === "Blue Widget")).toBe(true);
+		const allFields = findBlocks(blocks, "fields").flatMap(
+			(b) => (b.fields as Array<{ label: string; value: string }>) ?? [],
+		);
 		expect(
 			allFields.some((f) => f.label === "Title (set in the CMS)" && f.value === "Blue Widget"),
 		).toBe(true);
 
 		// …and NO form anywhere on this screen offers a title input.
-		const everyFormField = blocks
-			.filter((b) => b.type === "form")
-			.flatMap((b) => (b.fields as Array<Record<string, unknown>>) ?? []);
+		const everyFormField = findBlocks(blocks, "form").flatMap(
+			(b) => (b.fields as Array<Record<string, unknown>>) ?? [],
+		);
 		expect(everyFormField.some((f) => f.action_id === "title")).toBe(false);
 	});
 
@@ -488,10 +473,7 @@ describe("admin Products console (workerd sandbox)", () => {
 			values: { productId: "prod-1" },
 		});
 		const blocks = blocksOf(outcome);
-		const form = blocks.find(
-			(b) =>
-				b.type === "form" && (b.submit as { action_id?: string })?.action_id === "products:save",
-		);
+		const form = formFor(blocks, "products:save");
 		const fields = (form?.fields ?? []) as Array<Record<string, unknown>>;
 		const byId = new Map(fields.map((f) => [f.action_id, f]));
 
@@ -543,10 +525,7 @@ describe("admin Products console (workerd sandbox)", () => {
 			values: { productId: "prod-1" },
 		});
 		const blocks = blocksOf(outcome);
-		const form = blocks.find(
-			(b) =>
-				b.type === "form" && (b.submit as { action_id?: string })?.action_id === "products:save",
-		);
+		const form = formFor(blocks, "products:save");
 		expect(form).toBeDefined(); // the leaf rendered despite the registry failure.
 		const fields = (form?.fields ?? []) as Array<Record<string, unknown>>;
 		const byId = new Map(fields.map((f) => [f.action_id, f]));
@@ -647,7 +626,7 @@ describe("admin Products edit / save (workerd sandbox)", () => {
 
 		// The leaf reloaded (a fresh GET) and shows a success notice.
 		const blocks = blocksOf(outcome);
-		const banner = blocks.find((b) => b.type === "banner");
+		const banner = findBlock(blocks, "banner");
 		expect(banner?.variant).toBe("default");
 		expect(String(banner?.title)).toContain("Saved");
 		expect(
@@ -667,7 +646,7 @@ describe("admin Products edit / save (workerd sandbox)", () => {
 			},
 		});
 		const blocks = blocksOf(outcome);
-		const banner = blocks.find((b) => b.type === "banner" && b.variant === "error");
+		const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
 		expect(banner).toBeDefined();
 		expect(String(banner?.title)).toMatch(/changed since you opened it/i);
 		// It re-rendered the FRESH detail (a reload GET happened).
@@ -689,7 +668,7 @@ describe("admin Products edit / save (workerd sandbox)", () => {
 			},
 		});
 		expect(stub!.requests.some((r) => r.method === "PATCH")).toBe(false);
-		const banner = blocksOf(outcome).find((b) => b.type === "banner" && b.variant === "error");
+		const banner = findBlocks(blocksOf(outcome), "banner").find((b) => b.variant === "error");
 		expect(banner).toBeDefined();
 	});
 });
@@ -747,7 +726,7 @@ describe("admin Products restock / remove-stock (workerd sandbox)", () => {
 			action_id: "products:open",
 			values: { productId: "prod-1" },
 		});
-		const forms = blocksOf(outcome).filter((b) => b.type === "form");
+		const forms = findBlocks(blocksOf(outcome), "form");
 		const restock = forms.find(
 			(f) => (f.submit as { action_id?: string })?.action_id === "products:restock",
 		);
@@ -782,7 +761,7 @@ describe("admin Products restock / remove-stock (workerd sandbox)", () => {
 		expect(post!.headers["x-service-token"]).toBe("svc-token-abc");
 		expect(typeof post!.headers["idempotency-key"]).toBe("string");
 		expect((post!.body as Record<string, unknown>).qty).toBe(8);
-		const banner = blocksOf(outcome).find((b) => b.type === "banner");
+		const banner = findBlock(blocksOf(outcome), "banner");
 		expect(banner?.variant).toBe("default");
 		expect(String(banner?.title)).toContain("Stock added");
 		// The leaf reloaded (a fresh GET) to show the new count.
@@ -798,7 +777,7 @@ describe("admin Products restock / remove-stock (workerd sandbox)", () => {
 			action_id: "products:remove-stock",
 			values: { productId: "prod-1", nonce: "nonce-2", qty: "999" },
 		});
-		const banner = blocksOf(outcome).find((b) => b.type === "banner" && b.variant === "error");
+		const banner = findBlocks(blocksOf(outcome), "banner").find((b) => b.variant === "error");
 		expect(banner).toBeDefined();
 		expect(String(banner?.title)).toMatch(/not enough stock/i);
 	});
@@ -811,7 +790,7 @@ describe("admin Products restock / remove-stock (workerd sandbox)", () => {
 			values: { productId: "prod-1", nonce: "nonce-3", qty: "-4" },
 		});
 		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
-		const banner = blocksOf(outcome).find((b) => b.type === "banner" && b.variant === "error");
+		const banner = findBlocks(blocksOf(outcome), "banner").find((b) => b.variant === "error");
 		expect(banner).toBeDefined();
 	});
 
@@ -862,7 +841,7 @@ describe("admin Products restock / remove-stock (workerd sandbox)", () => {
 		expect(posts[0]!.headers["idempotency-key"]).toBe(posts[1]!.headers["idempotency-key"]);
 		// The ledger applied the +8 ONCE (42 → 50), and the replay echoed it.
 		expect(onHand).toBe(50);
-		const banner = blocksOf(replay).find((b) => b.type === "banner");
+		const banner = findBlock(blocksOf(replay), "banner");
 		expect(String(banner?.description)).toContain("50");
 
 		// A FRESH render mints a new nonce ⇒ a different key ⇒ a second DELIBERATE
