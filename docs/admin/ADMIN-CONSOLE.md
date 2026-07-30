@@ -2,12 +2,16 @@
 
 Status: **normative** (2026-07-30, revision 4, plus two amendments. **(1)** DA-3a-ii is **replaced**
 and DA-3a-iii added, because the scaffold gained a render-state channel in `ce5eecb` and
-revision 4's DA-3a-ii said it had none. **(2)** D-5 and X-18 are scoped explicitly to the **emitted response** —
-a screenshot showing two open groups is not an X-18 finding — DA-2c's rationale is restated on
-emphasis grounds, the "~1100px" geometry it carried being wrong (`actions` is one horizontal row),
-and **F-5a-i** is new: F-5a's sibling-discard hazard may no longer be excused as "realistically one
-group is open", because open state is sticky, so a split form set must carry a `context` line saying
-so (X-45).) Applies to all **seven** admin screens under
+revision 4's DA-3a-ii said it had none. **(2)** Four rules kept their requirements and had their
+**stated reasons** corrected, each having confused the emitted response with what the operator sees:
+**D-5** and **X-18** are scoped explicitly to the emitted response — a screenshot showing two open
+groups is not an X-18 finding; **DA-2c** is restated on emphasis grounds, its "~1100px" geometry
+being wrong (`actions` is one horizontal row); **F-5a-i** is new, because F-5a's sibling-discard
+hazard may no longer be excused as "realistically one group is open" — open state is sticky, so a
+split form set must carry a `context` line saying so (X-45); and **DA-3**'s outermost-group rule
+keeps its wording but drops "the confirm is invisible", which was checkably false, for the real
+ground: a response must not depend on client state it did not set.) Applies to all **seven** admin
+screens under
 `packages/plugin/src/admin/` — Orders, Pricing & inventory, Coupons, Tax, Shipping, Reports and
 Settings, as registered at `admin-route.ts:83-101`. (Earlier revisions said "six"; the count was
 wrong and five parallel teams read this line.)
@@ -250,7 +254,7 @@ staleness: every one of the nineteen is live and indexed here.
 | # | Finding | Landed in |
 |---|---|---|
 | E-a | `combobox` renders the option **label**; only `select` renders the raw value. The "order picker reads a raw UUID" wart cited twice was never real. | R-17b, F-6a, F-6c, L-7, §14 item 3, §16 item 3 |
-| E-b | DA-3 state 2 nested inside another accordion is **unbuildable** — forcing only the inner group open hides the confirm behind a collapsed parent. | DA-3, §11.2 |
+| E-b | DA-3 state 2 nested inside another accordion puts the confirm button behind a parent the **response** leaves collapsed. **Restated:** the finding as filed said the confirm "is invisible"; on the happy path the parent is still expanded from the operator's own click (B-5), so it is visible — the defect is that visibility then depends on click history, and R-24 resets it. | DA-3, §11.2 |
 | E-c | A DA-3a refusal that re-renders without the staged payload silently opens a **different** group and discards what the operator typed. | DA-3a (new), §11.2 |
 | E-d | `-review` never bound-checked the amount, so `900.00` on a $50 order staged a red button and a confirm dialog that were both false. | DA-3c (new) |
 | E-e | The only red control on the Fulfilment panel was **"Mark refunded"** (moves no money) while the irreversible cancel was a quiet trigger. | D-6, DA-5 |
@@ -1191,10 +1195,28 @@ state 2 (confirm)   accordion "<Verb> …"  block_id <changed>           default
 
 **Which accordion is "the" accordion, when state 1 is nested.** A DA-3 collect form usually sits in a
 sub-group inside a larger one — `Refund a different amount` inside `Refunds`, `Cancel with a note`
-inside `Cancel order`. Revision 3's listing put the `:review` suffix on the **inner** group, and that
-is unbuildable: D-5 Rule 1 forces every other group `false`, so the confirm button renders inside an
-open child of a **collapsed parent** and is invisible; forcing both open breaks X-18 (§0.2 E-b). The
-resolution, and it is a rule because six screens will hit it:
+inside `Cancel order`. Revision 3's listing put the `:review` suffix on the **inner** group. **This
+rule is about the response putting the confirm button on screen by itself.** Suffix the inner group
+and D-5 Rule 1 forces the parent `default_open: false`, so whether the confirm is visible turns on
+client state the response did not set: the operator opened the parent to click "Review refund", the
+parent's `block_id` is unchanged, so it stays open (B-5, and D-5's "constrains the emitted response"
+paragraph — `accordion.tsx:14` reads `default_open` once, at mount, R-14a). So on the happy path the
+confirm **is** visible, and the reason revision 4 gave — "it is invisible" — is checkably false. The
+rule stands on the stronger ground:
+
+- **Visibility that depends on the operator's click history is not correctness.** The response
+  asserts `default_open: false` on the group the confirm is inside and gets a visible confirm
+  anyway, purely because of what the operator did earlier. Nothing in the response expresses the
+  condition it is relying on.
+- **It is not verifiable, at any V-4 tier.** A tier-1 assertion can check that a state-2 response
+  carries a forced-open group whose body holds the confirm; it cannot check "some earlier render
+  left the parent expanded". A rule whose correctness no test can express fails this document's bar.
+- **The platform discards open state on events the console plans for.** **R-24** unmounts the entire
+  block tree on any non-2xx and returns every group to its `default_open` — which is precisely why
+  E-6 requires every handler to return 200. Open state is not a guarantee this console owns.
+
+Forcing both groups open instead breaks X-18 (§0.2 E-b). The resolution, and it is a rule because
+six screens will hit it:
 
 > **The `:review` id and `default_open: true` go on the OUTERMOST group on the open path**, and its
 > body on a state-2 render is the staged form plus the confirm button **directly**. The inner
