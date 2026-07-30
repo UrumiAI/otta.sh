@@ -1,5 +1,15 @@
 import { afterEach, describe, expect, test } from "vitest";
 import {
+	blocksOf,
+	buttons,
+	findBlock,
+	findBlocks,
+	formFor,
+	tableRows,
+	type LooseBlock,
+	type LooseElement,
+} from "./helpers/blocks.js";
+import {
 	type RecordedRequest,
 	startStubCommerceServer,
 	type StubCommerceServer,
@@ -174,28 +184,21 @@ async function seedToken(sandbox: SandboxHandle, stub: StubCommerceServer, token
 	stub.requests.length = 0;
 }
 
-interface Blk extends Record<string, unknown> {
-	type: string;
-}
-function blocksOf(outcome: unknown): Blk[] {
-	if (!(typeof outcome === "object" && outcome !== null && "result" in outcome)) return [];
-	const result = (outcome as { result: { blocks?: Blk[] } }).result;
-	return result.blocks ?? [];
-}
-function tableRows(blocks: Blk[]): Array<Record<string, unknown>> {
-	const table = blocks.find((b) => b.type === "table");
-	return (table?.rows ?? []) as Array<Record<string, unknown>>;
-}
-function bannerOf(blocks: Blk[]) {
-	return blocks.find((b) => b.type === "banner") as
+// `blocksOf`/`tableRows` come from the shared recursive helpers (spec §15 V-1):
+// `BlockRenderer` recurses into `columns`/`tab`/`accordion` children (R-25), and a
+// flat `blocks.find(...)` silently returns nothing the moment this screen's content
+// moves into a container — passing while asserting nothing. `bannerOf`/`formFields`
+// are this suite's own thin wrappers over the shared `findBlock`/`formFor`, kept
+// local because no shared `bannerOf` exists yet (only `findBlocks`/`panel`/`group`
+// are the three every suite needs).
+function bannerOf(blocks: readonly LooseBlock[]) {
+	return findBlock(blocks, "banner") as
 		| { variant?: string; title?: string; description?: string }
 		| undefined;
 }
-function formFields(blocks: Blk[], submitActionId: string): Array<Record<string, unknown>> {
-	const form = blocks.find(
-		(b) => b.type === "form" && (b.submit as { action_id?: string })?.action_id === submitActionId,
-	);
-	return (form?.fields ?? []) as Array<Record<string, unknown>>;
+function formFields(blocks: readonly LooseBlock[], submitActionId: string): LooseElement[] {
+	const form = formFor(blocks, submitActionId);
+	return Array.isArray(form?.fields) ? (form.fields as LooseElement[]) : [];
 }
 
 let sandbox: SandboxHandle | undefined;
@@ -297,14 +300,11 @@ describe("admin Tax console — classes level (workerd sandbox)", () => {
 		const outcome = await sandbox!.invokeRoute("admin", { type: "page_load", page: "/tax" });
 		const blocks = blocksOf(outcome);
 		const allActionIds = new Set<string>();
-		for (const b of blocks) {
-			if (b.type === "form")
-				allActionIds.add((b.submit as { action_id?: string })?.action_id ?? "");
-			if (b.type === "actions") {
-				for (const el of (b.elements as Array<Record<string, unknown>>) ?? []) {
-					if (typeof el.action_id === "string") allActionIds.add(el.action_id);
-				}
-			}
+		for (const form of findBlocks(blocks, "form")) {
+			allActionIds.add((form.submit as { action_id?: string } | undefined)?.action_id ?? "");
+		}
+		for (const el of buttons(blocks)) {
+			if (typeof el.action_id === "string") allActionIds.add(el.action_id);
 		}
 		expect(allActionIds.has("tax:save-class")).toBe(true);
 		expect(allActionIds.has("tax:delete-class")).toBe(true);
@@ -411,9 +411,7 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 		const blocks = blocksOf(outcome);
 		expect(blocks.some((b) => b.type === "header" && b.text === "Tax rates — standard")).toBe(true);
 		// A back button exists (no dead-end).
-		const actions = blocks.filter((b) => b.type === "actions");
-		const allButtons = actions.flatMap((a) => (a.elements as Array<Record<string, unknown>>) ?? []);
-		expect(allButtons.some((e) => e.action_id === "tax:back")).toBe(true);
+		expect(buttons(blocks).some((e) => e.action_id === "tax:back")).toBe(true);
 
 		// Fanned out: a zones read, then one rates read per zone.
 		expect(stub!.requests.some((r) => r.url === "/admin/shipping/zones")).toBe(true);
@@ -472,7 +470,7 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 		});
 		const blocks = blocksOf(outcome);
 		expect(blocks.some((b) => b.type === "header" && b.text === "Tax rates — zero")).toBe(true);
-		const table = blocks.find((b) => b.type === "table");
+		const table = findBlock(blocks, "table");
 		expect(tableRows(blocks).length).toBe(0);
 		expect(String(table?.empty_text)).toMatch(/no tax rates/i);
 	});
@@ -632,16 +630,8 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 			action_id: "tax:open",
 			values: { classId: "standard" },
 		});
-		const backButtonValue = (() => {
-			for (const b of blocksOf(rates)) {
-				if (b.type !== "actions") continue;
-				const el = (b.elements as Array<Record<string, unknown>>).find(
-					(e) => e.action_id === "tax:back",
-				);
-				if (el !== undefined) return el.value as Record<string, string>;
-			}
-			return undefined;
-		})();
+		const backButtonValue = buttons(blocksOf(rates)).find((e) => e.action_id === "tax:back")
+			?.value as Record<string, string> | undefined;
 		expect(backButtonValue).toBeDefined();
 		const back = await sandbox!.invokeRoute("admin", {
 			type: "block_action",
