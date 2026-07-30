@@ -3,7 +3,7 @@
 "@otta-sh/service": minor
 ---
 
-Phase 1 — `@otta-sh/plugin`, the first Urumi EmDash plugin package: sandbox-clean
+Phase 1 — `@otta-sh/plugin`, the first Otta EmDash plugin package: sandbox-clean
 (workerd, Block Kit, no React), proven under a real `workerd` process, not
 trusted in-process.
 

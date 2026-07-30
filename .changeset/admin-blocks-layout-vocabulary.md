@@ -8,7 +8,7 @@ increment 2). Pure foundation: additive, no page file touched, no visual change
 yet. Verified against the pinned em-dash **0.31.1**.
 
 `packages/plugin/src/types.ts` — mirror the block types the renderer already
-supports but Urumi never declared: `ColumnsBlock`, `TabBlock`/`TabPanel`,
+supports but Otta never declared: `ColumnsBlock`, `TabBlock`/`TabPanel`,
 `AccordionBlock`, `EmptyBlock`, `MeterBlock`, `ImageBlock`,
 `SectionBlock.accessory`, `TableColumn.sortable`, `ToggleElement`,
 `ComboboxElement`, `text_input.multiline`, and `block_id` on every block. The
@@ -89,6 +89,6 @@ render throws too, which still reports the unknown outcome rather than a generic
 error. Without this a throw became a non-2xx, which replaces the whole
 `BlockRenderer` tree with a raw status panel, unmounts every accordion and tab, and
 leaves an operator unable to tell whether a refund applied. Every contained failure
-is logged (`console.error("[urumi] …", err)`), because the fail-closed banner is
+is logged (`console.error("[otta] …", err)`), because the fail-closed banner is
 indistinguishable from an unreachable service and the log is the only place a
 screen bug's cause survives.
