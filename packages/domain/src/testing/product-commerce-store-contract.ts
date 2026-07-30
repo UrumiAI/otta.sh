@@ -24,7 +24,15 @@ export interface ProductCommerceStoreHarness {
 function seedEditable(
 	h: ProductCommerceStoreHarness,
 	id: string,
-	overrides: Partial<{ sku: string; priceCents: number; currency: string; title: string }> = {},
+	overrides: Partial<{
+		sku: string;
+		priceCents: number;
+		currency: string;
+		title: string;
+		/** Seed a NON-NULL tax class where a case needs to prove a stored value
+		 *  SURVIVED rather than merely "is still null" — see the stale-CAS case. */
+		taxClass: string;
+	}> = {},
 ): Promise<ProductCommerce> {
 	return h.store.upsert(
 		{
@@ -32,6 +40,7 @@ function seedEditable(
 			sku: sku(overrides.sku ?? `SKU-${id}`),
 			price: money(cents(overrides.priceCents ?? 1000), currency(overrides.currency ?? "USD")),
 			title: overrides.title ?? `Product ${id}`,
+			...(overrides.taxClass !== undefined ? { taxClass: overrides.taxClass } : {}),
 			productKind: "physical",
 		},
 		idempotencyKey(`seed-${id}`),
@@ -239,6 +248,17 @@ export function productCommerceStoreContract(
 		});
 
 		// -- updateCommerceFields (guarded admin edit, admin-UX Increment 2) -----
+		//
+		// NOTE (ADR-0013): these cases deliberately use `taxClass` as their "field
+		// that changed". They used `title` until PR 1c, which removed `title` from
+		// `UpdateProductCommerceFieldsInput` — the CMS content sync's `upsert` is now
+		// its sole writer. `taxClass` is nullable, unencumbered by currency
+		// integrity, and owned by this port, so it is the natural stand-in.
+		//
+		// The values are REAL tax-class ids (`"standard"` / `"reduced"`), never
+		// throwaway strings like `"loser"`. `tax_class` is a free-text reference
+		// today, but if it ever gains registry validation these nine cases would all
+		// break at once; costs nothing to be forward-safe now.
 
 		test("updateCommerceFields applies a commerce edit when expectedUpdatedAt matches", async () => {
 			const h = await makeStore();
@@ -246,7 +266,7 @@ export function productCommerceStoreContract(
 			const seeded = await seedEditable(h, "prod-edit-1", { priceCents: 1000 });
 
 			const res = await h.store.updateCommerceFields(
-				{ productId: pid, price: money(cents(2599), currency("USD")), title: "Renamed" },
+				{ productId: pid, price: money(cents(2599), currency("USD")), taxClass: "reduced" },
 				idempotencyKey("edit-1"),
 				seeded.updatedAt.toISOString(),
 			);
@@ -254,7 +274,10 @@ export function productCommerceStoreContract(
 			expect(res.ok).toBe(true);
 			const row = await h.store.getByProductId(pid);
 			expect(row?.price).toEqual({ amount: 2599, currency: "USD" });
-			expect(row?.title).toBe("Renamed");
+			expect(row?.taxClass).toBe("reduced");
+			// The CMS-owned title is untouched by an admin edit (ADR-0013): this port
+			// has no channel to it at all, so the seed's title survives verbatim.
+			expect(row?.title).toBe("Product prod-edit-1");
 			// The last-applied replay key advanced to the edit's key.
 			expect(row?.idempotencyKey).toBe("edit-1");
 		});
@@ -284,7 +307,7 @@ export function productCommerceStoreContract(
 			const seeded = await seedEditable(h, "prod-edit-replay");
 
 			const first = await h.store.updateCommerceFields(
-				{ productId: pid, title: "Once" },
+				{ productId: pid, taxClass: "reduced" },
 				idempotencyKey("edit-1"),
 				seeded.updatedAt.toISOString(),
 			);
@@ -293,7 +316,7 @@ export function productCommerceStoreContract(
 			// A retry with the SAME key but a now-stale expectedUpdatedAt must still
 			// dedupe to ok — replay precedence over the CAS (a double-submit).
 			const replay = await h.store.updateCommerceFields(
-				{ productId: pid, title: "Once" },
+				{ productId: pid, taxClass: "reduced" },
 				idempotencyKey("edit-1"),
 				"2000-01-01T00:00:00.000Z",
 			);
@@ -303,10 +326,13 @@ export function productCommerceStoreContract(
 		test("updateCommerceFields returns stale (with the current row) when expectedUpdatedAt mismatches", async () => {
 			const h = await makeStore();
 			const pid = productId("prod-edit-stale");
-			await seedEditable(h, "prod-edit-stale");
+			// Seeded with a REAL stored tax class so the closing assertion proves the
+			// prior value SURVIVED, not merely that a null stayed null — the same
+			// strength as the HTTP twin, which asserts `sku` still equals a real value.
+			await seedEditable(h, "prod-edit-stale", { taxClass: "standard" });
 
 			const res = await h.store.updateCommerceFields(
-				{ productId: pid, title: "loser" },
+				{ productId: pid, taxClass: "reduced" },
 				idempotencyKey("edit-1"),
 				"2000-01-01T00:00:00.000Z", // an admin who loaded an older revision.
 			);
@@ -316,14 +342,14 @@ export function productCommerceStoreContract(
 			expect(res.reason).toBe("stale");
 			if (res.reason !== "stale") throw new Error("unreachable");
 			expect(res.current).toEqual(await h.store.getByProductId(pid));
-			// The losing write never landed.
-			expect((await h.store.getByProductId(pid))?.title).toBe("Product prod-edit-stale");
+			// The losing write never landed — the seeded value is still there.
+			expect((await h.store.getByProductId(pid))?.taxClass).toBe("standard");
 		});
 
 		test("updateCommerceFields returns not_found for an unknown product_id (never mints a row)", async () => {
 			const h = await makeStore();
 			const res = await h.store.updateCommerceFields(
-				{ productId: productId("nope"), title: "x" },
+				{ productId: productId("nope"), taxClass: "reduced" },
 				idempotencyKey("edit-1"),
 				"2026-07-10T00:00:00.000Z",
 			);
@@ -338,7 +364,7 @@ export function productCommerceStoreContract(
 			await h.store.softDelete(pid, idempotencyKey("del-1"));
 
 			const res = await h.store.updateCommerceFields(
-				{ productId: pid, title: "resurrect?" },
+				{ productId: pid, taxClass: "reduced" },
 				idempotencyKey("edit-1"),
 				seeded.updatedAt.toISOString(),
 			);
@@ -356,7 +382,7 @@ export function productCommerceStoreContract(
 			const seeded = await seedEditable(h, "prod-edit-replay-del");
 
 			const applied = await h.store.updateCommerceFields(
-				{ productId: pid, title: "Applied once" },
+				{ productId: pid, taxClass: "reduced" },
 				idempotencyKey("edit-1"),
 				seeded.updatedAt.toISOString(),
 			);
@@ -368,7 +394,7 @@ export function productCommerceStoreContract(
 			expect((await h.store.getByProductId(pid))?.idempotencyKey).toBe("edit-1");
 
 			const replay = await h.store.updateCommerceFields(
-				{ productId: pid, title: "Applied once" },
+				{ productId: pid, taxClass: "reduced" },
 				idempotencyKey("edit-1"),
 				seeded.updatedAt.toISOString(),
 			);
@@ -437,7 +463,7 @@ export function productCommerceStoreContract(
 			expect(active?.active).toBe(true);
 
 			const res = await h.store.updateCommerceFields(
-				{ productId: pid, title: "still active" },
+				{ productId: pid, taxClass: "reduced" },
 				idempotencyKey("edit-1"),
 				active!.updatedAt.toISOString(),
 			);

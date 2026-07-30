@@ -310,7 +310,8 @@ export function adminRoutes(deps: AdminRoutesDeps): Hono {
 					...(body.price !== undefined
 						? { price: toMoney(toCents(body.price.amount), toCurrency(body.price.currency)) }
 						: {}),
-					...(body.title !== undefined ? { title: body.title } : {}),
+					// No `title`: it is CMS-owned and the schema `.strict()`-rejects one
+					// (ADR-0013). The sync writes it via PUT /products/:id/commerce.
 					...(body.taxClass !== undefined ? { taxClass: body.taxClass } : {}),
 					...(body.compareAtPrice !== undefined
 						? {

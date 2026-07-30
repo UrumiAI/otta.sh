@@ -334,7 +334,8 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 			set.price_cents = input.price.amount;
 			set.price_currency = input.price.currency;
 		}
-		if (input.title !== undefined) set.title = input.title;
+		// No `title` branch: the edit input has no `title` field at all (ADR-0013 —
+		// the CMS content sync is its sole writer, through `upsert` above).
 		if (input.taxClass !== undefined) set.tax_class = input.taxClass;
 		if (input.compareAtPrice !== undefined) {
 			set.compare_at_cents = input.compareAtPrice === null ? null : input.compareAtPrice.amount;

@@ -254,7 +254,8 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 			...existing,
 			sku: input.sku !== undefined ? input.sku : existing.sku,
 			price: input.price !== undefined ? input.price : existing.price,
-			title: input.title !== undefined ? input.title : existing.title,
+			// `title` is ABSENT from the edit input by design — the CMS content sync
+			// is its sole writer (ADR-0013), so an edit always preserves it.
 			taxClass: input.taxClass !== undefined ? input.taxClass : existing.taxClass,
 			compareAtPrice:
 				input.compareAtPrice !== undefined ? input.compareAtPrice : existing.compareAtPrice,

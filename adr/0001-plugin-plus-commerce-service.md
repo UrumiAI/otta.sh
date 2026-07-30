@@ -77,3 +77,20 @@ cross-database read.
 
 Nothing else in this record changes: the two-part shape, the sandbox-clean plugin, the
 HTTP-only boundary and the atomic single-statement decrement all stand.
+
+## Extended 2026-07-30 — the title projection now has its own record
+
+The block above is left exactly as written on 2026-07-29; this one only adds a pointer it
+could not have carried, because the record it points at did not exist yet.
+
+The title projection it describes — `product_commerce.title`, a derived single-writer cache
+fed by the content sync — is now a decision in its own right:
+**[ADR-0013](./0013-product-title-is-cms-owned.md)**, landed by "one home per field" PR 1c
+together with the removal of the admin console's Title input. ADR-0013 carries what this
+block does not: why dropping the column was considered and rejected (a capability spike
+against real workerd and EmDash's real bridge), what would change that decision, and the
+costs accepted — including the one genuine regression, a collection whose title field is not
+named `title`.
+
+Read together: this record says commercial fields have one home; ADR-0013 says the same of
+the title, in the other direction.

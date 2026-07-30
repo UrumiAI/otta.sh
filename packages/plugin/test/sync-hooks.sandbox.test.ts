@@ -309,6 +309,15 @@ describe("sync hooks — afterSave keeps product_commerce alive and its title cu
 	});
 
 	// -- TITLE SYNC: the order-line snapshot, and now the ONLY synced field ----
+	// SINCE PR 1c THIS BLOCK IS LOAD-BEARING FOR ADR-0013. It is the positive
+	// statement of the decision: the content sync is the SOLE writer of
+	// `product_commerce.title`, so if these cases stop asserting that the PUT
+	// carries `data.title`, nothing writes the column at all and every order line
+	// is born untitled. (The stored-value half — the PUT actually landing a title
+	// in the row — is asserted against a live server + Postgres in
+	// `packages/service/test/admin-product-edit-http.test.ts`, alongside the
+	// negative case that the admin PATCH cannot.)
+	//
 	// Confirmed live: a product created through the CMS was born with
 	// `product_commerce.title = NULL`, and `createOrderFromCart` rejects a null
 	// title with PRODUCT_NOT_PRICED — the product was PERMANENTLY UNPURCHASABLE

@@ -314,6 +314,14 @@ export type ReleaseBody = z.infer<typeof releaseBody>;
 // ISO-4217 string — never a float (DEVELOPMENT.md §4). Every commercial
 // field is optional: "create then price" (plan §1 case 3) — a bare sync
 // upsert may carry only the product_id.
+//
+// DELIBERATELY NOT `.strict()`, and it deliberately KEEPS `title` — the
+// asymmetry with `editProductCommerceBody` below is intent, not an oversight
+// somebody should tidy up. This is the CMS content sync's own channel and the
+// ONE writer of `product_commerce.title` that ADR-0013 sanctions
+// (`adr/0013-product-title-is-cms-owned.md`); it is also a
+// forward-compatibility surface for integrators, so an unknown key here is
+// tolerated rather than rejected.
 export const upsertProductCommerceBody = z.object({
 	sku: z.string().min(1).optional(),
 	price: z
@@ -322,7 +330,10 @@ export const upsertProductCommerceBody = z.object({
 			currency: z.string().regex(/^[A-Z]{3}$/),
 		})
 		.optional(),
-	// Phase 4 §4: the title an order line snapshots at purchase time.
+	// Phase 4 §4: the title an order line snapshots at purchase time. THE SOLE
+	// WRITE CHANNEL for `product_commerce.title` (ADR-0013) — the CMS content
+	// sync posts it here on every save/publish. Absent from the admin PATCH
+	// below, on purpose.
 	title: z.string().min(1).max(500).nullable().optional(),
 	taxClass: z.string().nullable().optional(),
 	weightGrams: z.number().int().nullable().optional(),
@@ -384,50 +395,65 @@ export type LifecycleProductCommerceBody = z.infer<typeof lifecycleProductCommer
 // (the `updatedAt` the admin read on the detail; the store compare-and-sets on
 // it, so a concurrent edit surfaces as a 409 stale reload rather than a silent
 // clobber). Deliberately OMITS `active` (the CMS publish gate — edited by
-// publishing the document, not here), `contentUpdatedAt` / `initialOnHand`
-// (sync + create-time concerns), and `productId` (the path param). Money stays
-// an integer minor-units + ISO-4217 pair; `price.amount` is `.positive()` here
-// (a $0 edit is rejected — the domain's `price > 0` rule, mirrored so the
-// boundary 400s before the use-case throws).
-export const editProductCommerceBody = z.object({
-	expectedUpdatedAt: z
-		.string()
-		.regex(
-			/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/,
-			"expectedUpdatedAt must be a Date.toISOString()-format UTC timestamp",
-		),
-	sku: z.string().min(1).optional(),
-	price: z
-		.object({
-			amount: z.number().int().positive(),
-			currency: z.string().regex(/^[A-Z]{3}$/),
-		})
-		.optional(),
-	title: z.string().min(1).max(500).nullable().optional(),
-	taxClass: z.string().nullable().optional(),
-	// Increment 2 slice 5: compare-at / cost are money (integer minor units +
-	// ISO-4217), NON-NEGATIVE (unlike `price`, a $0 compare-at / cost is a
-	// meaningful "cleared to zero"), nullable to CLEAR. Currency integrity (share
-	// the product's price currency; no mixed-currency edit) is the domain +
-	// store's atomic concern, not re-checked here.
-	compareAtPrice: z
-		.object({ amount: z.number().int().nonnegative(), currency: z.string().regex(/^[A-Z]{3}$/) })
-		.nullable()
-		.optional(),
-	unitCost: z
-		.object({ amount: z.number().int().nonnegative(), currency: z.string().regex(/^[A-Z]{3}$/) })
-		.nullable()
-		.optional(),
-	weightGrams: z.number().int().nonnegative().nullable().optional(),
-	lengthMm: z.number().int().nonnegative().nullable().optional(),
-	widthMm: z.number().int().nonnegative().nullable().optional(),
-	heightMm: z.number().int().nonnegative().nullable().optional(),
-	productKind: z.enum(["physical", "digital"]).optional(),
-	// Out-of-stock policy — `"deny"` is the ONLY accepted value this slice (the
-	// wire enum is the boundary that keeps an `allow_backorder` from ever
-	// reaching the no-oversell reserve path; widening it is a future slice + ADR).
-	inventoryPolicy: z.enum(["deny"]).optional(),
-});
+// publishing the document, not here), `title` (CMS-owned; see `.strict()`
+// below), `contentUpdatedAt` / `initialOnHand` (sync + create-time concerns),
+// and `productId` (the path param). Money stays an integer minor-units +
+// ISO-4217 pair; `price.amount` is `.positive()` here (a $0 edit is rejected —
+// the domain's `price > 0` rule, mirrored so the boundary 400s before the
+// use-case throws).
+//
+// `.strict()` IS DELIBERATE — DO NOT REMOVE IT AS NOISE. Zod's default object
+// behaviour STRIPS an unknown key, so simply dropping `title` from this schema
+// would make a stale client's rename vanish silently behind a 200 — the failure
+// mode most likely to be misread as "it saved". Rejecting is the honest answer:
+// title is CMS-owned and `upsertProductCommerceBody` above is its one channel
+// (ADR-0013, `adr/0013-product-title-is-cms-owned.md`). Nothing fails when
+// `.strict()` is deleted; things merely start passing silently — which is why
+// the guard is pinned by a test that asserts the STORED title is unchanged, not
+// just the status code (`packages/service/test/admin-product-edit-http.test.ts`).
+// Known cost, accepted: an OLD plugin bundle that still sends `title` now 400s
+// on EVERY edit, not only title edits. Moot for `sites/staging`, where the
+// plugin and the site deploy from one build.
+export const editProductCommerceBody = z
+	.object({
+		expectedUpdatedAt: z
+			.string()
+			.regex(
+				/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/,
+				"expectedUpdatedAt must be a Date.toISOString()-format UTC timestamp",
+			),
+		sku: z.string().min(1).optional(),
+		price: z
+			.object({
+				amount: z.number().int().positive(),
+				currency: z.string().regex(/^[A-Z]{3}$/),
+			})
+			.optional(),
+		taxClass: z.string().nullable().optional(),
+		// Increment 2 slice 5: compare-at / cost are money (integer minor units +
+		// ISO-4217), NON-NEGATIVE (unlike `price`, a $0 compare-at / cost is a
+		// meaningful "cleared to zero"), nullable to CLEAR. Currency integrity (share
+		// the product's price currency; no mixed-currency edit) is the domain +
+		// store's atomic concern, not re-checked here.
+		compareAtPrice: z
+			.object({ amount: z.number().int().nonnegative(), currency: z.string().regex(/^[A-Z]{3}$/) })
+			.nullable()
+			.optional(),
+		unitCost: z
+			.object({ amount: z.number().int().nonnegative(), currency: z.string().regex(/^[A-Z]{3}$/) })
+			.nullable()
+			.optional(),
+		weightGrams: z.number().int().nonnegative().nullable().optional(),
+		lengthMm: z.number().int().nonnegative().nullable().optional(),
+		widthMm: z.number().int().nonnegative().nullable().optional(),
+		heightMm: z.number().int().nonnegative().nullable().optional(),
+		productKind: z.enum(["physical", "digital"]).optional(),
+		// Out-of-stock policy — `"deny"` is the ONLY accepted value this slice (the
+		// wire enum is the boundary that keeps an `allow_backorder` from ever
+		// reaching the no-oversell reserve path; widening it is a future slice + ADR).
+		inventoryPolicy: z.enum(["deny"]).optional(),
+	})
+	.strict();
 
 export type EditProductCommerceBody = z.infer<typeof editProductCommerceBody>;
 

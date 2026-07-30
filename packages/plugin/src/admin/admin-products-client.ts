@@ -89,15 +89,16 @@ export interface ProductsListResult {
 }
 
 /** The commerce-owned fields a product edit may change (mirrors the service's
- *  `editProductCommerceBody`). `expectedUpdatedAt` is the optimistic-concurrency
+ *  `editProductCommerceBody`, which is `.strict()` — an extra key here is a 400,
+ *  not a silent strip). `expectedUpdatedAt` is the optimistic-concurrency
  *  watermark the admin loaded; the service compare-and-sets on it. Money is an
  *  integer minor-units + ISO-4217 pair — never a float. NO `active` (the CMS
- *  publish gate is not edited here). */
+ *  publish gate is not edited here) and NO `title` (CMS-owned, written only by
+ *  the content sync — `adr/0013-product-title-is-cms-owned.md`). */
 export interface ProductEditWire {
 	expectedUpdatedAt: string;
 	sku?: string;
 	price?: { amount: number; currency: string };
-	title?: string | null;
 	taxClass?: string | null;
 	/** Increment 2 slice 5: compare-at / cost — money (integer minor units +
 	 *  ISO-4217), null to CLEAR. Must share the product's price currency (the
