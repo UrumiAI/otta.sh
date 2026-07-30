@@ -66,6 +66,9 @@ when that lands.
 from a never-published draft **self-corrects the next time it is published**. The one case that
 does not self-heal is a leaked price whose draft was subsequently **discarded** — discarding a
 draft fires no plugin hook, so that row keeps the leaked price until the product is published
-again. To correct such a product: fix the values in the product's **Product data panel, then
-publish the product** — not in the Pricing & inventory console, which the next publish would
-revert. Use the console for stock movements, which the publish-time write never touches.
+again. To correct such a product: fix its price in the admin's **Pricing & inventory** page. (An
+earlier draft of this note sent you to the CMS "Product data" panel instead, because at the time
+the next publish would have reverted a console edit. Both halves of that are gone: the panel is
+deleted and the CMS no longer stores commercial data, so the console is now the only place these
+fields are edited and a publish cannot overwrite them. See "one home per field" in this same
+release.)

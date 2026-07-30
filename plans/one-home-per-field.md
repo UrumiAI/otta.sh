@@ -597,10 +597,31 @@ alongside a reference to the long-retired `panel-state-route.ts`),
 here).
 
 **Deliberately NOT rewritten**, and say so in the PR body: `plans/phase-1-*.md:21,64,241,346,348,475`,
-`plans/phase-2-*.md:95`, `plans/phase-7-*.md:13`, `.changeset/plugin-title-sync.md:19`,
-`.changeset/publish-atomicity.md:32`. Those are **historical records** — phase plans that were
-executed, changesets that are release notes for shipped versions. Editing them to match a later
-refactor falsifies the record.
+`plans/phase-2-*.md:95`, `plans/phase-7-*.md:13`. Those are **historical records** — phase plans
+that were executed. Editing them to match a later refactor falsifies the record.
+
+> **Correction, applied during 1b's implementation.** The paragraph above originally also listed
+> `.changeset/plugin-title-sync.md:19` and `.changeset/publish-atomicity.md:32` as historical
+> records, on the reasoning that "changesets are release notes for shipped versions". **That
+> premise is false in this repository and was wrong when written.** No package here has a
+> `CHANGELOG.md`, every package is at `0.0.1`, and `.changeset/` holds 60+ **unconsumed**
+> changesets. They have not shipped: they will all be concatenated into the first CHANGELOG entry
+> this project ever emits, alongside 1b's own. Leaving them would make one release note say both
+> "the Product data panel now shows…" and "the panel is deleted", and — worse —
+> `publish-atomicity.md` hands a merchant a recovery verb pointing at a UI that will not exist in
+> the release it ships in. Nothing is falsified by fixing them, because nothing has shipped.
+>
+> **The rule for this repo:** an *unconsumed* changeset is pending release copy and must stay
+> true of the release it will ship in; a *consumed* one (once a `CHANGELOG.md` exists) is a
+> record and must not be edited. Phase plans in `plans/` are records either way.
+>
+> 1b therefore corrected all three affected changesets: `publish-atomicity.md`,
+> `seed-inventory-on-first-sku.md` (PR 1a's own, written days earlier — pending notes, not
+> history) and `plugin-title-sync.md`. The last was nearly left on the grounds that it records a
+> *decision* rather than an instruction, but the rule above lands on it squarely and exempting it
+> would make the rule's first application an exception to itself. The decision it records survives
+> 1b intact, so it needed only a phrase: "no title input in the Product data panel" became "no
+> second place to type a product name".
 
 **This file is one of them.** Once `plans/one-home-per-field.md` merges it becomes a historical
 record too: the plan as approved, including the options weighed and rejected. Later refactors
@@ -1136,10 +1157,27 @@ against the fallback would not cover it.
 **10.3 — Pushback: "four missed 'Product data' references" is right; twelve would be wrong.**
 Beyond the four named (`DEPLOYMENT.md:315`, `adr/0001:34`, `plugin.ts:73`, `index.ts:4`) there are
 eight more in `plans/phase-1-*.md`, `plans/phase-2-*.md`, `plans/phase-7-*.md` and two
-`.changeset/*.md`. **Those must not be edited** — phase plans record what was decided and
-executed; changesets are release notes for shipped versions; rewriting them to match a later
-refactor falsifies the record. ADR-0001 is the exception and gets a **dated amendment** rather
-than a silent deletion, because an ADR states the current architecture. Recorded in §4.8.
+`.changeset/*.md`. The **phase plans** must not be edited — they record what was decided and
+executed. ADR-0001 is the exception and gets a **dated amendment** rather than a silent deletion,
+because an ADR states the current architecture. Recorded in §4.8.
+
+> **Correction, applied during 1b's implementation.** The half of this note that extended the
+> same protection to `.changeset/*.md` — "changesets are release notes for shipped versions" — is
+> **wrong for this repo**. Nothing has shipped: no `CHANGELOG.md` exists, every package is
+> `0.0.1`, and all 60+ changesets are unconsumed and will land in one first release entry
+> together with 1b's. See the correction block in §4.8 for the rule that replaces it and for
+> which files 1b actually fixed. The phase-plan half of this pushback stands.
+
+**10.3a — And a third citation in this plan was wrong.** §4.7 says to "derive the three content
+ids from `seed/seed.json`" and names `product:urumi-tee` / `product:urumi-mug` /
+`product:urumi-stickers` at `seed/seed.json:62,71,80`. Those strings are in the file, but they are
+**not the stored ids**: em-dash's seed applier generates a ULID per entry and keeps the declared id
+only as a seed-local reference (`seedIdMap: seed id -> real entry id`,
+`~/em-dash/packages/core/src/seed/apply.ts:116,535,543,606`). Pricing against the declared id
+"succeeds" — the upsert mints a row for any id — and creates orphan rows no CMS product joins to,
+so the storefront reads "Not currently available for purchase" with no error anywhere. 1b's script
+resolves ids from the CMS content API instead, matched by the slugs the seed declares. Two review
+rounds verified the citation without checking its semantics; the walk caught it.
 
 **10.4 — Mild disagreement on sequencing.** The brief offers 1c first if cleaner. I recommend
 against it (§5.4): 1c's central claim — the CMS sync is title's sole writer — is only *true* once

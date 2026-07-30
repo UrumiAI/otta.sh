@@ -1,7 +1,17 @@
 // Public barrel of @urumi/plugin — the CommerceClient transport port, the
-// widget's pure element-builder, and the manifest constants the sandbox-
+// admin/storefront page handlers, and the manifest constants the sandbox-
 // clean guard test asserts against.
-export { buildProductDataElements, productDataWidget } from "./admin/product-data-widget.js";
+//
+// The plugin exports NO field widget. Commercial fields live only in
+// `product_commerce`, edited only from the admin's Pricing & inventory page
+// ("one home per field", PR 1b); the CMS owns content and projects the title
+// through the sync hooks. Re-adding a field widget here would recreate the
+// second writer that change removed.
+//
+// The `FieldWidgetConfig` TYPE is still exported below. That is deliberate and
+// is not a leftover: `types.ts` mirrors em-dash's Block Kit vocabulary in full
+// so the plugin need not depend on the `emdash` package at runtime, and the
+// type is part of that vocabulary. Nothing in this package constructs one.
 // ── Phase 7: single `admin` dispatch route + Reports page + Settings form ────
 export { ADMIN_ROUTE, createAdminRouteHandler } from "./admin/admin-route.js";
 export {

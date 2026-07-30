@@ -16,10 +16,9 @@ field** — the same value the storefront heading renders, which the merchant al
 top of the product editor. Because it lives in the shared derive, both `content:afterSave` and
 `content:afterPublish` carry it.
 
-- **There is deliberately no title input in the Product data panel.** A second place to type a
-  product name would drift from the content title, and a buyer would see one name on the product
-  page and a different one on the order. A hand-written `commerce.title` in the stored field JSON
-  is ignored; the content title always wins. It is trimmed before it is sent.
+- **There is deliberately no second place to type a product name.** A second one would drift from
+  the content title, and a buyer would see one name on the product page and a different one on
+  the order. The content title always wins, and it is trimmed before it is sent.
 - **A title problem never blocks the rest of the sync.** If a product has no usable title — blank,
   or a collection that names its title field something other than `title` — the upsert still
   carries SKU, price, kind and stock; only the title is omitted, with a specific warning logged

@@ -8,10 +8,7 @@ import type {
 } from "../types.js";
 import type { UpsertProductCommerceInput } from "../product-commerce/commerce-client.js";
 import { HttpCommerceClient } from "../product-commerce/http-commerce-client.js";
-import {
-	parseCommerceFields,
-	parseProductTitle,
-} from "../product-commerce/parse-commerce-fields.js";
+import { parseProductTitle } from "./parse-product-title.js";
 import {
 	deriveDeleteIdempotencyKey,
 	derivePublishIdempotencyKey,
@@ -20,25 +17,55 @@ import {
 } from "./derive-idempotency-key.js";
 import { normalizeWatermark } from "./normalize-watermark.js";
 
-/** The content document's `json` field the "Product data" widget persists into
- *  (bound via `widget: "urumi:product-data"`). em-dash stores a field-widget's
- *  value under the content item's `data` bag keyed by the field slug, and the
- *  hook record is `contentItemToRecord(item) = { ...item }`, so the commerce
- *  bag lives at `content.data.commerce`. */
-const COMMERCE_FIELD = "commerce";
-
-/** Reads the widget's per-`action_id` commerce bag out of the saved content
- *  record. Returns `undefined` when the product carries no commerce field yet
- *  (create-then-price: nothing to derive). Defensive about the `data` overlay
- *  shape — only an object bag is honored. */
-function readCommerceField(content: Record<string, unknown>): Record<string, unknown> | undefined {
-	const data = content["data"];
-	const bag =
-		typeof data === "object" && data !== null
-			? (data as Record<string, unknown>)[COMMERCE_FIELD]
-			: undefined;
-	return typeof bag === "object" && bag !== null ? (bag as Record<string, unknown>) : undefined;
-}
+/**
+ * ONE HOME PER FIELD (PR 1b) — what this module does, and no longer does.
+ *
+ * The CMS content document used to carry a `commerce` JSON bag (sku, price,
+ * currency, stock, kind, tax class, dimensions) written by an on-screen
+ * "Product data" Block Kit field widget, which these hooks validated and
+ * projected into `product_commerce`. That made the admin console a SECOND
+ * writer of the same columns, and the next CMS publish reverted every console
+ * edit it overlapped (pinned for months as the store contract's `KNOWN GAP
+ * (F4)` case).
+ *
+ * The bag, the widget and its validator are gone. Commercial fields now have
+ * exactly one home — `product_commerce`, edited only from the admin's Pricing
+ * & inventory page.
+ *
+ * WHAT THE SYNC STILL CARRIES: the product TITLE, and only the title. That is
+ * PERMANENT, not transitional. `createOrderFromCart` rejects a null-title line
+ * (`packages/domain/src/orders/create-order-from-cart.ts`), so the order
+ * pipeline needs a title snapshot source it can read without a cross-database
+ * join — which the architecture forbids. So `product_commerce.title` survives
+ * as a DERIVED, SINGLE-WRITER CACHE whose only writer is this file. The CMS
+ * `products` collection owns the value; this projects it.
+ *
+ * CONSEQUENCES, both real and both deliberate:
+ *
+ *  - **Every save of a products document now upserts.** There is no bag to be
+ *    absent and no sku to be missing, so the old "create-then-price" and
+ *    "no sku" skips are gone. A product saved with nothing but a title gets a
+ *    bare `product_commerce` row and therefore APPEARS in Pricing & inventory,
+ *    unpriced and ready to be priced — which is the point. It also means a
+ *    published, unpriced, sku-less product is now `active: true`, a state that
+ *    could not previously occur. It is not purchasable: `listCommerceByIds`
+ *    filters commerce-incomplete rows in SQL and `joinProduct` reports
+ *    `purchasable: false`. The admin's status column says so ("active (not
+ *    priced)").
+ *  - **A content-only save churns `product_commerce.updated_at`.** A
+ *    description edit or an image swap still mints a fresh idempotency key (see
+ *    `derive-idempotency-key.ts`), applies a no-change upsert, and invalidates
+ *    the `expectedUpdatedAt` carrier in an open Pricing & inventory form — a
+ *    spurious "This product changed since you opened it". Known regression,
+ *    tracked as issue #153. **Do NOT fix it by deriving the idempotency key
+ *    from the payload**: guard 1 (the replay guard) and guard 2 (the watermark
+ *    guard) are ANDed on the same `onConflict().doUpdateSet()`, and
+ *    `content_updated_at` sits INSIDE that SET block — so a same-key no-op
+ *    freezes the watermark, and a rename-and-rename-back under reordered
+ *    delivery would then leave the cache permanently wrong on the value
+ *    `order_items` snapshots. The correct seam is making `updated_at`
+ *    conditional on an owned column genuinely differing, in the adapter.
+ */
 
 /**
  * The content field carrying the product title — the value an ORDER LINE
@@ -63,8 +90,9 @@ function readCommerceField(content: Record<string, unknown>): Record<string, unk
  */
 const TITLE_FIELD = "title";
 
-/** Reads the product title out of the saved content record's `data` bag — the
- *  same defensive shape-check `readCommerceField` applies, for the same reason.
+/** Reads the product title out of the saved content record's `data` bag.
+ *  Defensive about the `data` overlay shape — a non-object `data` yields
+ *  `undefined` rather than throwing, because a hook must never fail a CMS save.
  *  `undefined` when the field is absent; em-dash's `mapRow` EXCLUDES null
  *  columns from `data`, so a null title arrives as an ABSENT key, never `null`. */
 function readContentTitle(content: Record<string, unknown>): unknown {
@@ -131,56 +159,60 @@ export function hasPendingDraft(content: Record<string, unknown>): boolean {
 	return content["status"] === PUBLISHED_STATUS; // clause 2.
 }
 
+/**
+ * The ONLY fields the CMS sync may put on the wire — the title, and (added by
+ * the callers) the ordering watermark.
+ *
+ * This is a `Pick`, not the full `UpsertProductCommerceInput`, and that is the
+ * structural half of the guard. The wide type declares `sku`, `price`,
+ * `initialOnHand`, `productKind`, `taxClass` and the dimensions; against it,
+ * re-adding a commercial field to this path would compile and be caught only by
+ * a test. Against this type it does not compile. Same enforcement ladder
+ * ADR-0013 argues for on the admin-edit side: the type first, the test second,
+ * the prose third.
+ */
+type SyncUpsertBody = Pick<UpsertProductCommerceInput, "title" | "contentUpdatedAt">;
+
 /** The outcome of deriving a `product_commerce` upsert body from a content
- *  record's `commerce` bag: something to apply, nothing to apply, or a
- *  boundary-validation rejection the caller logs. */
-type DerivedCommerce =
-	| {
-			kind: "apply";
-			body: UpsertProductCommerceInput;
-			/** Why the body carries no `title`, when it doesn't — logged by the
-			 *  caller, NEVER fatal (see `parseProductTitle`). */
-			titleProblem?: string;
-	  }
-	/** No `commerce` field yet (create-then-price), or no sku (not sellable —
-	 *  never mint a partial row). */
-	| { kind: "skip" }
-	| { kind: "invalid"; errors: Record<string, string> };
+ *  record. There is no "skip" and no "invalid" arm any more: the body carries
+ *  at most a title, so there is nothing left to reject and no reason to
+ *  withhold the row. `titleProblem` is the caller's log line, never fatal. */
+interface DerivedContent {
+	body: SyncUpsertBody;
+	/** Why the body carries no `title`, when it doesn't — logged by the
+	 *  caller, NEVER fatal (see `parseProductTitle`). */
+	titleProblem?: string;
+}
 
 /**
- * The single derive: content record → validated `product_commerce` upsert body.
+ * The single derive: content record → `product_commerce` upsert body.
  *
  * Both `content:afterSave` (for content that is NOT live) and
  * `content:afterPublish` (for content that is BECOMING live) go through here,
- * so the money/shape guard, the create-then-price skip, and the no-sku skip are
- * defined once. Anything added to the widget bag is therefore picked up by both
- * hooks at once.
+ * so the one projected field is defined once.
  *
- * MONEY INTEGRITY (CLAUDE.md non-negotiable): a float price, a bad currency, or
- * any invalid field makes the WHOLE upsert a rejection — never a partial or
- * coerced write. The caller decides what a rejection means for its hook.
+ * THE BODY IS TITLE-ONLY, AND IT ALWAYS APPLIES. No commercial field is read
+ * from content any more (PR 1b — see the module header), so:
  *
- * THE TITLE IS THE ONE FIELD THAT NEVER REJECTS. It comes from the CONTENT
- * (`data.title`), not the widget bag, so a merchant cannot fix it from the panel
- * the way they can fix a price; and a collection whose title field is absent or
- * named differently would otherwise lose EVERY commerce sync, not just its
- * title. So an unusable title omits only itself and surfaces as `titleProblem`
- * for the caller to log — the row still gets its sku, price and stock, and the
- * store preserves any title already stored.
+ *  - there is no money on this path at all, hence no float/currency rejection
+ *    to make. Money integrity now lives entirely where money is entered: the
+ *    service's `int()` zod bounds on the edit/upsert bodies, the admin form's
+ *    exact-integer minor-unit parsing, and the branded `Cents` type;
+ *  - there is no sku to be missing, so the old "never mint a partial row" skip
+ *    is gone. Minting the bare row IS the fix — it is what makes a CMS product
+ *    show up in Pricing & inventory waiting to be priced;
+ *  - an unusable title omits ONLY itself and surfaces as `titleProblem`. The
+ *    row is still upserted (which keeps the "every CMS product has a row"
+ *    invariant true for a collection with no `title` field at all), and the
+ *    store PRESERVES any title already stored when the field is absent.
  */
-function deriveCommerce(content: Record<string, unknown>): DerivedCommerce {
-	const bag = readCommerceField(content);
-	if (bag === undefined) return { kind: "skip" };
-	const { body, errors } = parseCommerceFields(bag);
-	if (Object.keys(errors).length > 0) return { kind: "invalid", errors };
-	if (body.sku === undefined) return { kind: "skip" };
-	// TITLE: read from `content.data.title` — the CONTENT's own field, never a
-	// widget input and never a hand-written `commerce.title` (one source of
-	// truth, so the storefront heading and the order line's snapshot cannot
-	// drift). Done here, in the SHARED derive, so both hooks carry it.
+function deriveContent(content: Record<string, unknown>): DerivedContent {
+	// TITLE: read from `content.data.title` — the CONTENT's own field. One
+	// source of truth, so the storefront heading and the order line's snapshot
+	// cannot drift. Done here, in the SHARED derive, so both hooks carry it.
 	const parsed = parseProductTitle(readContentTitle(content));
-	if ("title" in parsed) return { kind: "apply", body: { ...body, title: parsed.title } };
-	return { kind: "apply", body, titleProblem: parsed.problem };
+	if ("title" in parsed) return { body: { title: parsed.title } };
+	return { body: {}, titleProblem: parsed.problem };
 }
 
 /** Async because it awaits the write-gate token from write-only kv (ADR-0007):
@@ -196,41 +228,32 @@ async function clientFor(ctx: PluginContext): Promise<HttpCommerceClient> {
 }
 
 /**
- * `content:afterSave` → derive `product_commerce` from the widget's `commerce`
- * field JSON (issue #81 rework / #82 activation).
+ * `content:afterSave` → LIFECYCLE + TITLE. This hook is the CMS half of the
+ * product's life: it guarantees the `product_commerce` row EXISTS, keeps its
+ * title cache current, and activates it when the document is live. It carries
+ * no commercial data (PR 1b — see the module header).
  *
- * The "Product data" field widget has no Save button (em-dash field widgets
- * are `onChange`-only and reject a `button` element — see
- * `admin/product-data-widget.ts`). The merchant edits inline inputs that
- * persist into the content document's `commerce` JSON field, and the editor's
- * NATIVE Save fires THIS hook. So afterSave is now the single write path that
- * turns pricing into a `product_commerce` row (the old button-era
- * `product-commerce-route` is retired).
+ *   - THE ROW ALWAYS EXISTS. Every save of a products document upserts, even
+ *     one with nothing but a title. That is how a CMS product becomes visible
+ *     in Pricing & inventory, unpriced and ready to be priced. Before 1b a
+ *     product with no sku got NO row and was simply invisible there.
+ *   - TITLE: taken from the CONTENT field `data.title` (not a top-level field —
+ *     em-dash's `ContentItem` has none). Without it the row's title stays NULL
+ *     and `createOrderFromCart` rejects the buyer's checkout with
+ *     `PRODUCT_NOT_PRICED`. An unusable title is NOT a rejection: it omits only
+ *     itself and logs, and the row is still created.
+ *   - The upsert carries ONLY the title + the ordering watermark; it NEVER
+ *     touches `active`/`deletedAt`. Activation is the guarded call below. It
+ *     also never touches sku, price, stock, kind, tax class or dimensions —
+ *     those are Pricing & inventory's, and re-sending them here is exactly the
+ *     clobber 1b removed.
  *
- * It reads `content.data.commerce`, validates it through the SHARED
- * `parseCommerceFields` guard (the same rules the retired route applied), and:
- *   - MONEY INTEGRITY (CLAUDE.md non-negotiable): any invalid field — notably a
- *     FLOAT price (em-dash's `number_input` can yield a decimal) or a bad
- *     currency — makes the whole upsert a logged no-op. A float NEVER reaches a
- *     money field, and the CMS save still succeeds.
- *   - MISSING SKU: with no sku there is no sellable product, so the upsert is
- *     skipped — no partial row is minted (create-then-price).
- *   - TITLE: taken from the CONTENT field `data.title` (not the widget bag, and
- *     not a top-level field — em-dash's `ContentItem` has none). Without it the
- *     row's title stays NULL and `createOrderFromCart` rejects the buyer's
- *     checkout with `PRODUCT_NOT_PRICED`. Unlike a float price this is NOT a
- *     rejection: an unusable title omits only itself and logs, so the price and
- *     stock still sync.
- *   - The upsert carries ONLY validated commercial fields + the ordering
- *     watermark; it NEVER touches `active`/`deletedAt`. Stock rides as
- *     `initialOnHand`, a create-if-absent seed the service refuses to apply
- *     over an existing/decremented `on_hand` (no re-save clobber — proven by
- *     `@urumi/domain`'s inventory-store contract).
- *
- * Firing twice with the same `content.updatedAt` yields exactly one applied
- * write (idempotency-key replay dedupe); the `contentUpdatedAt` watermark lets
- * the service reject a delayed/out-of-order OLDER save as a stale no-op
- * (review S1).
+ * Firing twice with the same `content.updatedAt` AND `version` yields exactly
+ * one applied write (idempotency-key replay dedupe); the `contentUpdatedAt`
+ * watermark lets the service reject a delayed/out-of-order OLDER save as a
+ * stale no-op (review S1). The watermark stays load-bearing precisely BECAUSE
+ * the title still flows: an out-of-order delivery must not reinstate an older
+ * name on the value `order_items` snapshots.
  *
  * Activation (issue #82): when the saved product is CURRENTLY PUBLISHED, the
  * just-derived row is activated in the same sync through the DEDICATED, guarded
@@ -276,10 +299,10 @@ export function createAfterSaveHandler(
 		// PUBLISH ATOMICITY: the save staged a pending draft over LIVE content —
 		// send nothing that affects live state. Both the upsert and the activate
 		// move to `content:afterPublish`, so content and commerce change together.
-		// The log line is the only developer-visible answer to "I saved a new
-		// price and the storefront did not change"; the widget carries no
-		// merchant-facing copy for it yet (a deliberate follow-up — it would
-		// churn localized strings this change does not otherwise touch).
+		// The title is live-affecting too: it is what an order line snapshots and
+		// what the admin's product list shows, so a draft rename must not land
+		// under the still-published old content. The log line is the only
+		// developer-visible answer to "I saved and nothing changed".
 		if (hasPendingDraft(event.content)) {
 			console.info(
 				`[urumi] content:afterSave: product_id=${id} has PENDING DRAFT changes over live content — commerce sync deferred to publish (no upsert, no activate). The saved values go live when the merchant clicks "Publish changes".`,
@@ -287,24 +310,12 @@ export function createAfterSaveHandler(
 			return;
 		}
 
-		const derived = deriveCommerce(event.content);
-		// Money/shape integrity: a float price, bad currency, or any invalid
-		// field skips the WHOLE upsert (atomic — never a partial/float write) and
-		// logs, so the CMS save is never failed and no float reaches money.
-		if (derived.kind === "invalid") {
-			console.warn(
-				`[urumi] content:afterSave: invalid commerce fields for product_id=${id}; skipping the product_commerce upsert (the CMS save still succeeds):`,
-				derived.errors,
-			);
-			return;
-		}
-		// No commerce field (create-then-price) or no sku (not sellable) ⇒ do not
-		// mint a partial row.
-		if (derived.kind === "skip") return;
+		const derived = deriveContent(event.content);
 		const body = derived.body;
-		// NOT fatal — everything else still syncs. Logged because a row with no
-		// title is not orderable (`PRODUCT_NOT_PRICED` at checkout), so this is the
-		// one line that explains an otherwise baffling checkout failure.
+		// NOT fatal — the row is still created/refreshed. Logged because a row
+		// with no title is not orderable (`PRODUCT_NOT_PRICED` at checkout), so
+		// this is the one line that explains an otherwise baffling checkout
+		// failure.
 		if (derived.titleProblem !== undefined) {
 			console.warn(
 				`[urumi] content:afterSave: product_id=${id} synced WITHOUT a title (${derived.titleProblem}). The product cannot be ordered until it has one — checkout rejects an untitled product with PRODUCT_NOT_PRICED. The title is read from the content field \`data.title\`.`,
@@ -326,12 +337,21 @@ export function createAfterSaveHandler(
 			const client = await clientFor(ctx);
 			await client.upsertProductCommerce(
 				id,
-				// Validated commercial fields + the ordering watermark. NEVER
-				// `active`/`deletedAt` — activation is the guarded call below.
+				// The title (when usable) + the ordering watermark, and nothing
+				// else. NEVER `active`/`deletedAt` — activation is the guarded call
+				// below — and never a commercial field.
 				watermark !== undefined ? { ...body, contentUpdatedAt: watermark } : body,
 				key,
 			);
 			// Issue #82: activate an already-published product in the same save.
+			// SINCE 1b this reaches products it previously skipped: a published,
+			// unpriced, sku-less product now gets a row and is activated. It is not
+			// purchasable — `listCommerceByIds` filters commerce-incomplete rows in
+			// SQL, so no commerce data reaches the catalog wire for it and
+			// `joinProduct` reports `purchasable: false`. It is still LISTED on
+			// `/products` (that grid comes from CMS content), just with no price, no
+			// add-to-cart and a "not currently available" note. The admin status
+			// column distinguishes it ("active (not priced)").
 			if (event.content["status"] === PUBLISHED_STATUS && watermark !== undefined) {
 				await client.activateProductCommerce(
 					id,
@@ -387,42 +407,36 @@ export function createAfterDeleteHandler(): HookHandler<ContentDeleteEvent> {
  * service-side `activate` is itself the guard against resurrecting a
  * soft-deleted product; this hook does not duplicate that check.
  *
- * PUBLISH ATOMICITY (plan §2.1b) — this hook now also DERIVES AND UPSERTS the
- * commerce bag, because publish is the moment live content changes and
- * `createAfterSaveHandler` defers a pending-draft save's commerce to here. At
- * `afterPublish` `draftRevisionId` is null (publish clears it) so no draft
- * hydration applies: `content.data` IS the newly-published data, and
- * `content.updatedAt` is strictly newer than any preceding draft save because
- * `publish()` bumps `updated_at` unconditionally. `afterSave` does NOT also
- * fire on a publish (`handleContentPublish` dispatches `afterPublish` only), so
- * there is no double-upsert. ORDERING: upsert FIRST, then activate — a row is
- * never made live ahead of its price.
+ * PUBLISH ATOMICITY (plan §2.1b) — this hook also DERIVES AND UPSERTS, because
+ * publish is the moment live content changes and `createAfterSaveHandler`
+ * defers a pending-draft save to here. At `afterPublish` `draftRevisionId` is
+ * null (publish clears it) so no draft hydration applies: `content.data` IS the
+ * newly-published data, and `content.updatedAt` is strictly newer than any
+ * preceding draft save because `publish()` bumps `updated_at` unconditionally.
+ * `afterSave` does NOT also fire on a publish (`handleContentPublish`
+ * dispatches `afterPublish` only), so there is no double-upsert. ORDERING:
+ * upsert FIRST, then activate — the row must exist before the flip, since
+ * `activate` no-ops on an unknown id.
  *
- * FAILURE POSTURE — two classes, two rules (plan §2.8):
+ * FAILURE POSTURE — ONE class since PR 1b. The old plan §2.8 named two: a
+ * VALIDATION failure (float price, bad currency, missing sku) and a TRANSPORT
+ * failure. The validation class is gone with the commerce bag — the body is a
+ * title, and an unusable title omits itself rather than rejecting — so only
+ * this rule remains:
  *
- *  - **Validation failure** (float price, bad currency, missing sku) ⇒ the
- *    content publishes, commerce is left unchanged, and the product STILL
- *    activates. The content is valid and the merchant asked for it to be live;
- *    refusing to activate would let a pricing typo silently unpublish a live
- *    product. Activation is the CONTENT gate and is independent of commerce
- *    validity — with no valid price the row simply is not purchasable
- *    (`joinProduct`: `purchasable ⟺ present && active`). This differs from
- *    `afterSave`, where a validation failure returns before the activate; that
- *    ordering is incidental, this is the considered rule.
  *  - **Transport failure** (non-2xx / network) ⇒ FAIL CLOSED: no activate.
- *    Never make a row live whose commerce we could not write. Logged on its own
- *    distinct line.
+ *    Never make a row live whose commerce record we could not write. Logged on
+ *    its own distinct line.
  *
  * Honest consequences of failing closed: on a publish-of-pending-changes the
  * row is ALREADY active, so skipping the activate deactivates nothing — the
- * content goes live with the STALE price (the safe direction: an old price, not
- * a wrong new one), logged only. On a FIRST publish the row is inactive, so the
- * product is content-live but unpurchasable until it is published again. Since
- * `afterSave` no longer retries the flip for live content, the recovery verb in
- * both cases is PUBLISH, not save. No automatic repair exists.
+ * content goes live against the row as it stands, logged only. On a FIRST
+ * publish the row may not exist at all, so the product is content-live and
+ * listed but unbuyable — no commerce data joins to it — until it is published
+ * again. Since `afterSave` no longer retries the flip for live content, the
+ * recovery verb in both cases is PUBLISH, not save. No automatic repair exists.
  *
- * Both classes stay fire-and-forget — this must never throw into the CMS
- * publish path.
+ * Fire-and-forget throughout — this must never throw into the CMS publish path.
  */
 export function createAfterPublishHandler(
 	allowedHosts: readonly string[] = ALLOWED_HOSTS,
@@ -449,49 +463,43 @@ export function createAfterPublishHandler(
 			return;
 		}
 		const key = derivePublishIdempotencyKey(event.collection, id, updatedAt);
-		// Derive the commerce the publish makes live. A validation rejection is
-		// logged and the activate still runs (posture A); only a TRANSPORT failure
-		// on the upsert blocks it (posture B).
-		const derived = deriveCommerce(event.content);
-		if (derived.kind === "invalid") {
-			console.warn(
-				`[urumi] content:afterPublish: invalid commerce fields for product_id=${id}; the content still publishes and the product still activates, but product_commerce is left unchanged (not purchasable without a valid price):`,
-				derived.errors,
-			);
-		}
+		// The title the publish makes live. Always applied — there is no
+		// validation arm left to reject it (PR 1b); only a TRANSPORT failure on
+		// the upsert blocks the activate.
+		const derived = deriveContent(event.content);
 		// NOT fatal (and NOT a reason to skip the activate): the publish proceeds,
 		// the row simply is not orderable until it has a title.
-		if (derived.kind === "apply" && derived.titleProblem !== undefined) {
+		if (derived.titleProblem !== undefined) {
 			console.warn(
 				`[urumi] content:afterPublish: product_id=${id} published WITHOUT a title (${derived.titleProblem}). The product cannot be ordered until it has one — checkout rejects an untitled product with PRODUCT_NOT_PRICED. The title is read from the content field \`data.title\`.`,
 			);
 		}
 		try {
 			const client = await clientFor(ctx);
-			if (derived.kind === "apply") {
-				try {
-					await client.upsertProductCommerce(
-						id,
-						// Validated commercial fields + the PUBLISH watermark (the
-						// key is the save key-space keyed on the publish's bumped
-						// `updatedAt` + `version`, disjoint from the `:published:`
-						// activate key — see §2.9 on the single per-row
-						// idempotency_key column). `publish()` does write columns, so
-						// `updatedAt` still moves here; `version` is carried for
-						// key-space consistency with the afterSave call site.
-						{ ...derived.body, contentUpdatedAt: watermark },
-						deriveSaveIdempotencyKey(event.collection, id, updatedAt, event.content["version"]),
-					);
-				} catch (err) {
-					// FAIL CLOSED — never flip a row live whose commerce we could
-					// not write. Distinct from the generic sync-failed line below so
-					// the skipped activation is visible in logs.
-					console.error(
-						`[urumi] content:afterPublish: commerce upsert FAILED for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}) — activation skipped (fail-closed). No reconcile cron exists yet — this sync is lost until the product is published again:`,
-						err,
-					);
-					return;
-				}
+			try {
+				await client.upsertProductCommerce(
+					id,
+					// The title (when usable) + the PUBLISH watermark (the key is the
+					// save key-space keyed on the publish's bumped `updatedAt` +
+					// `version`, disjoint from the `:published:` activate key — see
+					// §2.9 on the single per-row idempotency_key column). `publish()`
+					// does write columns, so `updatedAt` still moves here; `version`
+					// is carried for key-space consistency with the afterSave call
+					// site. Unconditional since 1b: the upsert is also what
+					// GUARANTEES THE ROW EXISTS before the activate, which no-ops on
+					// an unknown id.
+					{ ...derived.body, contentUpdatedAt: watermark },
+					deriveSaveIdempotencyKey(event.collection, id, updatedAt, event.content["version"]),
+				);
+			} catch (err) {
+				// FAIL CLOSED — never flip a row live whose commerce we could
+				// not write. Distinct from the generic sync-failed line below so
+				// the skipped activation is visible in logs.
+				console.error(
+					`[urumi] content:afterPublish: commerce upsert FAILED for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}) — activation skipped (fail-closed). No reconcile cron exists yet — this sync is lost until the product is published again:`,
+					err,
+				);
+				return;
 			}
 			await client.activateProductCommerce(id, key, watermark);
 		} catch (err) {

@@ -83,8 +83,8 @@ in-process leniency.
 
 - **Dev and test against the workerd-on-Node sandbox**, not trusted in-process mode. If it
   only works trusted, it's broken.
-- **Block Kit widgets, not React** (React widgets are trusted-only). The "Product data"
-  panel is Block Kit `elements`.
+- **Block Kit widgets, not React** (React widgets are trusted-only). The admin console —
+  Pricing & inventory, Orders, Reports, Settings — is Block Kit `elements` throughout.
 - **Every capability is declared explicitly.** The plugin reaches the service _only_ via
   `ctx.http` + `allowedHosts` — nothing else. A test/CI check guards that the plugin has no
   other network or DB surface.

@@ -41,6 +41,23 @@ const SUMMARY_2 = {
 	createdAt: "2026-07-11T00:00:00.000Z",
 };
 
+/** The state PR 1b creates: the CMS sync mints a row for every products
+ *  document, so publishing one nobody ever priced yields `active: true` on a
+ *  row with no sku and no price. It is NOT sellable — the service's catalog
+ *  read filters commerce-incomplete rows — so the console must not call it a
+ *  plain "active". */
+const SUMMARY_UNPRICED = {
+	productId: "prod-unpriced",
+	sku: null,
+	title: "Freshly Created",
+	priceCents: null,
+	currency: null,
+	productKind: "physical",
+	active: true,
+	deletedAt: null,
+	createdAt: "2026-07-14T00:00:00.000Z",
+};
+
 const SUMMARY_DELETED = {
 	productId: "prod-deleted",
 	sku: "SKU-DEL",
@@ -116,6 +133,12 @@ function makeGetResponder() {
 		if (path === "/admin/products") {
 			if (query.includes("deleted=true")) {
 				return { status: 200, body: { ok: true, products: [SUMMARY_DELETED], nextCursor: null } };
+			}
+			if (query.includes("search=unpriced")) {
+				return {
+					status: 200,
+					body: { ok: true, products: [SUMMARY_1, SUMMARY_UNPRICED], nextCursor: null },
+				};
 			}
 			if (query.includes("cursor=")) {
 				return { status: 200, body: { ok: true, products: [SUMMARY_2], nextCursor: null } };
@@ -243,6 +266,38 @@ describe("admin Products console (workerd sandbox)", () => {
 		expect(listReq!.url).toContain("active=true");
 		expect(listReq!.url).toContain("productKind=physical");
 		expect(listReq!.url).toContain("search=widget");
+	});
+
+	test("§4.4: an ACTIVE but never-priced product reads 'active (not priced)', in the table AND the picker — a priced one still reads 'active'", async () => {
+		await boot();
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "products:apply-filter",
+			values: { search: "unpriced" },
+		});
+		const blocks = blocksOf(outcome);
+		const rows = blocks.find((b) => b.type === "table")?.rows as Array<Record<string, unknown>>;
+		// PR 1b started activating products it previously skipped entirely. A bare
+		// "active" here would tell the merchant a product is on sale when the
+		// storefront cannot show it.
+		expect(rows.map((r) => r.status)).toEqual(["active", "active (not priced)"]);
+
+		// The "Open product" picker shares `statusLabel` precisely so the two
+		// surfaces cannot disagree — assert it, or the shared helper's whole
+		// reason for existing goes unpinned.
+		const picker = blocks.find(
+			(b) =>
+				b.type === "form" &&
+				((b.fields ?? []) as Array<Record<string, unknown>>).some(
+					(f) => f.action_id === "productId",
+				),
+		);
+		expect(picker).toBeDefined();
+		const productIdField = (picker!.fields as Array<Record<string, unknown>>).find(
+			(f) => f.action_id === "productId",
+		);
+		const options = (productIdField!.options as Array<Record<string, unknown>>).map((o) => o.label);
+		expect(options).toEqual(["Blue Widget — active", "Freshly Created — active (not priced)"]);
 	});
 
 	// -- product lifecycle surfacing (admin-UX Increment 2) -----------------------

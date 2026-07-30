@@ -11,11 +11,10 @@
  *
  * Pure module (no IO) so the site-config test can pin every field.
  */
-import type { FieldWidgetConfig, PluginDescriptor } from "emdash";
+import type { PluginDescriptor } from "emdash";
 import {
 	COUPONS_PAGE,
 	ORDERS_PAGE,
-	productDataWidget,
 	PRODUCTS_PAGE,
 	REPORTS_PAGE,
 	SETTINGS_PAGE,
@@ -37,13 +36,13 @@ export function urumiPluginDescriptor(serviceUrl: string): PluginDescriptor {
 		capabilities: [...URUMI_PLUGIN_CAPABILITIES],
 		// The egress allowlist: only the commerce service's host.
 		allowedHosts: [new URL(serviceUrl).hostname],
-		// The Block Kit "Product data" panel on json fields. The plugin's
-		// local Block Kit types deliberately MIRROR em-dash's (types.ts:
-		// "does not depend on the emdash package at runtime") but are
-		// slightly looser on optional element labels, so the nominal cast is
-		// needed; the runtime shape is pinned by the plugin's own
-		// product-data-widget sandbox test.
-		fieldWidgets: [productDataWidget as unknown as FieldWidgetConfig],
+		// NO `fieldWidgets` — deliberate, and pinned by site-config.test.ts.
+		// Commercial fields have exactly one home, `product_commerce`, edited
+		// only from the admin's Pricing & inventory page ("one home per field",
+		// PR 1b). The old "Product data" Block Kit widget wrote the same columns
+		// into the CMS content document, making the content the second writer,
+		// and every publish reverted the console's edits. Re-declaring a field
+		// widget here would recreate that.
 		// Phase 7's admin pages — the plugin's exported `admin.pages` entries;
 		// without them here neither page appears in the admin nav. All are
 		// rendered by the single `admin` dispatch route (which em-dash resolves
