@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "vitest";
+import { ORDER_STATE_MACHINE } from "@urumi/domain";
 import { decodeCarrier, encodeCarrier } from "../src/admin/scaffold/carrier.js";
 import {
 	accessories,
@@ -373,30 +374,38 @@ const CUSTOMER_CONTEXT_GUEST = {
 };
 
 /**
- * The domain order state machine, copied verbatim from
- * `packages/domain/src/orders/state-machine.ts` — NOT imported, because a sandbox
- * fixture must state the wire shape it expects rather than re-derive it from the
- * code under test (a drift in the domain should fail this suite loudly, not follow
- * it silently).
+ * The order state machine the stub serves `allowedTransitions` from — THE DOMAIN'S
+ * OWN TABLE, imported, not restated.
+ *
+ * WHY IMPORTED. This fixture is standing in for the service, and the service's answer
+ * is literally `[...legalNextStates(order.state)]` off this map
+ * (`service/src/routes/admin.ts:185`), unnarrowed. So the map IS the wire shape; a
+ * second copy of it is not an independent statement of the contract, it is an
+ * unverified guess that happens to agree today.
+ *
+ * WHAT A COPY COSTS, MEASURED. The hand-written version this replaces offered
+ * `processing` FROM `shipped` — a transition `ORDER_STATE_MACHINE` forbids outright —
+ * while omitting the legal `delivered`. It passed for as long as it existed, because a
+ * copy is only ever checked against itself: the suite was asserting the plugin's
+ * behaviour on a wire shape the service cannot produce. A more careful copy has the
+ * same failure mode; only the import removes it. When the domain adds a row, this
+ * suite now renders it or fails, and either is information.
+ *
+ * IT DOES NOT BREAK SANDBOX PURITY. `packages/plugin/src/**` still imports
+ * `@urumi/domain` nowhere — that constraint is on the bundle. Test files run in Node
+ * with workspace resolution and the harness copies `src/` only, which is the same
+ * ground `money-parity.test.ts` stands on (`@urumi/domain` is a devDependency here).
+ * Nor is it circular: the code under test is `src/admin/orders-page.ts`, which has its
+ * own hand-maintained closed `ORDER_STATES` list (DA-6) and never reads this map.
  *
  * `shipped: ["delivered", "refunded"]` is the row that settles a real question:
- * `shipped → refunded` IS legal, and `service/src/routes/admin.ts` hands the row to
- * the console with no narrowing, so the console really can offer `Mark refunded` on
- * a shipped order. That is why a transition carries a watermark (DA-2a) — see the
- * test that asserts it against this fixture.
+ * `shipped → refunded` IS legal, so the console really can offer `Mark refunded` on a
+ * shipped order. That is why a transition carries a watermark (DA-2a) — see the test
+ * that asserts it against this fixture.
  */
-const ORDER_STATE_MACHINE: Record<string, string[]> = {
-	pending: ["paid", "failed", "expired", "cancelled"],
-	paid: ["processing", "completed", "cancelled", "refunded"],
-	processing: ["shipped", "cancelled", "refunded"],
-	shipped: ["delivered", "refunded"],
-	delivered: ["completed", "refunded"],
-	completed: ["refunded"],
-	failed: [],
-	expired: [],
-	cancelled: [],
-	refunded: [],
-};
+/** Widened to a string key: the stub looks up by the wire `state` string, including
+ *  `ord-unknown`'s deliberately off-list one (`noUncheckedIndexedAccess`). */
+const ALLOWED_BY_STATE: Record<string, readonly string[]> = ORDER_STATE_MACHINE;
 
 /** A GET responder for the guarded list + detail reads (200 only WITH the admin
  *  token, else 401 — mirroring the service guard). Distinguishes list vs detail
@@ -486,21 +495,18 @@ function makeGetResponder() {
 																? ORDER_UNKNOWN_STATE
 																: ORDER_1;
 			// State-appropriate transitions, DERIVED THE WAY THE REAL SERVICE DERIVES
-			// THEM: `service/src/routes/admin.ts` returns `[...legalNextStates(state)]`
-			// with no narrowing whatsoever, so the fixture is the domain's own table
-			// (`domain/src/orders/state-machine.ts`) copied verbatim rather than a set
-			// of plausible-looking guesses. That fidelity is load-bearing for two
-			// assertions below: a `processing` order's legal targets INCLUDE the bare
-			// `shipped`, which the PLUGIN must steer away from, and a `shipped` order's
-			// include `refunded`, which is why a transition needs a watermark (DA-2a).
-			// The previous hand-written version offered `processing` FROM `shipped`,
-			// which the domain forbids outright — i.e. it was testing a wire shape the
-			// service cannot produce.
+			// THEM: `service/src/routes/admin.ts:185` returns `[...legalNextStates(state)]`
+			// with no narrowing whatsoever, so this reads the SAME imported map (see
+			// ALLOWED_BY_STATE above) rather than a second copy of it. That fidelity is
+			// load-bearing for two assertions below: a `processing` order's legal targets
+			// INCLUDE the bare `shipped`, which the PLUGIN must steer away from, and a
+			// `shipped` order's include `refunded`, which is why a transition needs a
+			// watermark (DA-2a).
 			const allowedTransitions =
 				order.id === "ord-unknown"
 					? // A state outside the plugin's closed ORDER_STATES (DA-6).
 						["teleported", "completed"]
-					: (ORDER_STATE_MACHINE[order.state] ?? []);
+					: (ALLOWED_BY_STATE[order.state] ?? []);
 			return { status: 200, body: { ok: true, order, allowedTransitions } };
 		}
 		return { status: 404, body: { error: "unknown" } };
@@ -1405,10 +1411,11 @@ describe("admin Orders console (workerd sandbox)", () => {
 	test("DA-2a: a SHIPPED order really is offered `Mark refunded` — the terminal flip a stale view could otherwise reach, so the watermark is not theoretical", async () => {
 		await boot();
 		const blocks = await open("ord-shipped");
-		// THE WIRE SHAPE, not an inference. The stub's `allowedTransitions` is the
-		// domain's own table (see ORDER_STATE_MACHINE above), which the service returns
-		// through `[...legalNextStates(state)]` with no narrowing — so `shipped` really
-		// does offer `delivered` and `refunded`, and the plugin steers away from neither.
+		// THE WIRE SHAPE, not an inference. The stub's `allowedTransitions` comes from the
+		// domain's `ORDER_STATE_MACHINE` ITSELF (imported, not restated — see
+		// ALLOWED_BY_STATE), which the service returns through `[...legalNextStates(state)]`
+		// with no narrowing — so `shipped` really does offer `delivered` and `refunded`, and
+		// the plugin steers away from neither. Both figures below are the domain's.
 		expect(transitionStates(blocks).toSorted()).toEqual(["delivered", "refunded"]);
 		const refunded = buttonWith(blocks, "orders:transition-refunded");
 		expect(refunded).toBeDefined();
@@ -1820,6 +1827,97 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(field(retry, "cancelledBy")?.initial_value).toBe("carol");
 	});
 
+	test("DA-3a has NO `-review` exemption: a cancel review whose carrier has no watermark stages NOTHING, rather than re-stamping one the operator never saw", async () => {
+		await boot();
+		const blocks = await open("ord-1");
+		const noteForm = formFor(blocks, "orders:cancel-review");
+		const { state: _dropped, ...noWatermark } = decodeCarrier(noteForm?.block_id) ?? {};
+		expect(_dropped).toBe("paid");
+		stub!.requests.length = 0;
+		const after = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "orders:cancel-review",
+				values: { reason: "Out of stock", detail: "shelf empty", cancelledBy: "carol" },
+				block_id: encodeCarrier("orders:cancel-note", noWatermark),
+			}),
+		);
+		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
+		expect(findBlocks(after, "banner").find((b) => b.variant === "error")?.title).toBe(
+			"That action could not be read",
+		);
+		// NOTHING IS STAGED, and that is the whole point. This used to stage successfully:
+		// the guard read `observedState !== undefined && …`, so an absent watermark skipped
+		// DA-3a, and the confirm this step drew then carried a `state` RE-STAMPED from its
+		// own fresh read. The write's own check would then pass trivially against a state
+		// the operator never saw, leaving the form-render → review window unchecked while
+		// the payload claimed otherwise. `readWatermark`'s doc calls that rule absolute;
+		// this asserts the reference screen actually obeys it.
+		expect(group(after, "orders:ord-1:cancel:review")).toBeUndefined();
+		expect(buttonWith(after, "orders:cancel")).toBeUndefined();
+		// Still a DA-3a-i refusal — nothing was written, so the typing comes back.
+		expect(openGroupIds(after)).toEqual(["orders:ord-1:cancel:refused"]);
+		expect(group(after, "orders:ord-1:cancel-note")).toBeUndefined();
+		const retry = formFor(after, "orders:cancel-review");
+		expect(field(retry, "reason")?.initial_value).toBe("Out of stock");
+		expect(field(retry, "detail")?.initial_value).toBe("shelf empty");
+		expect(field(retry, "cancelledBy")?.initial_value).toBe("carol");
+	});
+
+	test("DA-2c: a render carrying render state QUIETS the transition row — no red `Mark refunded` above a form the banner is telling the operator to re-submit — and keeps every confirm", async () => {
+		await boot();
+		const idle = await open("ord-1");
+		// The baseline: on an idle render `Mark refunded` is the one danger transition
+		// (DA-5), and it stays that way. This change is scoped to render-state renders.
+		expect(buttonWith(idle, "orders:transition-refunded")?.style).toBe("danger");
+		expect(buttonWith(idle, "orders:transition-refunded")?.confirm).toBeDefined();
+
+		// A cancel REFUSAL. Suppressing the four DA-2b reason buttons and the confirm was
+		// right, and it left a terminal, irreversible `Mark refunded` as the loudest
+		// control on the panel — directly above the form the operator is being told to
+		// re-submit, and not what this render is about.
+		const refusal = await submitForm(idle, "orders:cancel-review", {
+			reason: "Out of stock",
+			detail: "shelf empty",
+			cancelledBy: "  ",
+		});
+		expect(openGroupIds(refusal)).toEqual(["orders:ord-1:cancel:refused"]);
+		const quiet = buttonWith(refusal, "orders:transition-refunded");
+		expect(quiet).toBeDefined();
+		expect(quiet?.style).toBeUndefined();
+		// THE GUARD IS THE DIALOG, NOT THE COLOUR (DA-2c, explicit) — so the confirm is
+		// untouched, still names the transition it guards, and still carries its own
+		// `style:"danger"`. The click costs exactly what it did before.
+		expect(quiet?.confirm).toBeDefined();
+		expect(confirmOf(quiet).style).toBe("danger");
+		expect(String(confirmOf(quiet).text)).toContain("does not move money");
+		// No transition button on this render is loud, and the watermark still rides along.
+		for (const st of ["processing", "completed", "refunded"]) {
+			expect(buttonWith(refusal, `orders:transition-${st}`)?.style, st).toBeUndefined();
+			expect(valueOf(buttonWith(refusal, `orders:transition-${st}`)).state).toBe("paid");
+		}
+
+		// And in DA-3 STATE 2 the same holds, where it matters just as much: the one loud
+		// control is the confirm the operator asked for, not a neighbour.
+		const staged = await submitForm(idle, "orders:cancel-review", {
+			reason: "Out of stock",
+			detail: "shelf empty",
+			cancelledBy: "carol",
+		});
+		expect(openGroupIds(staged)).toEqual(["orders:ord-1:cancel:review"]);
+		expect(buttonWith(staged, "orders:transition-refunded")?.style).toBeUndefined();
+		expect(buttonWith(staged, "orders:transition-refunded")?.confirm).toBeDefined();
+		expect(buttonWith(staged, "orders:cancel")?.style).toBe("danger");
+		// Exactly one danger control ON THE PANEL THE OPERATOR IS LOOKING AT — the act
+		// itself. Scoped to Fulfilment on purpose: Money's DA-2b full-remaining refund is
+		// still red and should be, because it is behind another tab and DA-2c is about what
+		// competes for emphasis on one screen (§0.2 E-f).
+		expect(buttons(panel(staged, "Fulfilment")).filter((b) => b.style === "danger")).toEqual([
+			buttonWith(staged, "orders:cancel"),
+		]);
+		expect(buttons(panel(refusal, "Fulfilment")).filter((b) => b.style === "danger")).toEqual([]);
+	});
+
 	test("an already-cancelled order shows the recorded reason read-only; one cancelled WITHOUT a reason says so honestly — neither offers a control", async () => {
 		await boot();
 		const withReason = await open("ord-cancelled");
@@ -2189,6 +2287,92 @@ describe("admin Orders console (workerd sandbox)", () => {
 			refundedBy: "carol",
 		});
 		expect(field(formFor(blank, "orders:refund-review"), "amount")?.initial_value).toBe("");
+	});
+
+	test("DA-3b: a `-review` whose CARRIER lost its watermark refuses as an unreadable payload — it never sends the operator back to an amount field that was already right", async () => {
+		await boot();
+		const blocks = await open("ord-1");
+		const form = formFor(blocks, "orders:refund-review");
+		const { refundedSoFar: _dropped, ...noWatermark } = decodeCarrier(form?.block_id) ?? {};
+		// The watermark is the ONLY thing missing: a payload edited in devtools, or a tab
+		// that rendered before the watermark existed. `5.00` is perfectly valid.
+		expect(_dropped).toBe("500");
+		stub!.requests.length = 0;
+		const after = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "orders:refund-review",
+				values: { amount: "5.00", reason: "damaged", refundedBy: "carol" },
+				block_id: encodeCarrier("orders:refund-partial", noWatermark),
+			}),
+		);
+		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
+		const banner = findBlocks(after, "banner").find((b) => b.variant === "error");
+		// DA-3b's copy, NOT the M-3 parse refusal. Folded together, this branch answered
+		// `5.00` with "Enter a valid refund amount greater than zero (e.g. 19.99)" over a
+		// field still reading `5.00` — naming a cause that is checkably not the cause and
+		// asking the operator to re-type the one thing they got right.
+		expect(banner?.title).toBe("That action could not be read");
+		expect(String(banner?.description)).toContain("Nothing was changed");
+		expect(String(banner?.description)).not.toMatch(/refund amount|19\.99/i);
+		// Still a DA-3a-i render: same group, forced open on the refusal key, flattened,
+		// every typed value back, no confirm.
+		expect(openGroupIds(after)).toEqual(["orders:ord-1:refunds:refused"]);
+		expect(group(after, "orders:ord-1:refund-partial")).toBeUndefined();
+		expect(buttonWith(after, "orders:refund")).toBeUndefined();
+		const retry = formFor(after, "orders:refund-review");
+		expect(field(retry, "amount")?.initial_value).toBe("5.00");
+		expect(field(retry, "reason")?.initial_value).toBe("damaged");
+		expect(field(retry, "refundedBy")?.initial_value).toBe("carol");
+	});
+
+	test("DA-3a-i: an unreadable CONFIRM payload puts back the amount it did parse — only a genuinely unparseable one comes back blank", async () => {
+		await boot();
+		await open("ord-1");
+		/** The confirm payload minus its watermark — three of the four disjuncts leave a
+		 *  perfectly good `amountCents` in hand, and blanking the field discards it. */
+		const refuse = async (amountCents: string): Promise<LooseBlock[]> => {
+			stub!.requests.length = 0;
+			return blocksOf(
+				await sandbox!.invokeRoute("admin", {
+					type: "block_action",
+					action_id: "orders:refund",
+					value: {
+						orderId: "ord-1",
+						amountCents,
+						// `refundedSoFarCents` DELIBERATELY ABSENT — this is what makes the
+						// payload unreadable, not the amount.
+						currency: "USD",
+						reason: "damaged",
+						refundedBy: "carol",
+					},
+				}),
+			);
+		};
+		const parsed = await refuse("1000");
+		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
+		expect(findBlocks(parsed, "banner").find((b) => b.variant === "error")?.title).toBe(
+			"That action could not be read",
+		);
+		// THE POINT: `1000` parsed, nothing was written, and the operator's $10.00 is in
+		// hand — so it goes back, formatted the way the field showed it. It used to come
+		// back EMPTY while `reason` survived one field below, on the reasoning that this
+		// branch has "no parsed amount by definition" — true of one of its four disjuncts.
+		const retry = formFor(parsed, "orders:refund-review");
+		expect(field(retry, "amount")?.initial_value).toBe("10.00");
+		expect(field(retry, "reason")?.initial_value).toBe("damaged");
+		expect(field(retry, "refundedBy")?.initial_value).toBe("carol");
+		expect(openGroupIds(parsed)).toEqual(["orders:ord-1:refunds:refused"]);
+		expect(buttonWith(parsed, "orders:refund")).toBeUndefined();
+		// And the other side of the conditional: nothing positive to put back ⇒ blank,
+		// never a fabricated `0.00`.
+		for (const bad of ["abc", "0", "-500"]) {
+			const blank = await refuse(bad);
+			expect(
+				field(formFor(blank, "orders:refund-review"), "amount")?.initial_value,
+				`prefill for ${bad}`,
+			).toBe("");
+		}
 	});
 
 	test("DA-3c/X-40: `-review` BOUND-CHECKS against the live ceiling, so a red `Refund $99.99` on a $10 order is never staged at all", async () => {

@@ -1116,7 +1116,10 @@ function fulfilmentPanel(
 	blocks.push(...shippingAddressBlocks(o));
 	const fulfilment = fulfilmentGroup(o, open);
 	if (fulfilment !== undefined) blocks.push(fulfilment);
-	blocks.push(...transitionBlocks(o, detail));
+	// `renderState !== undefined` is exactly "this render is mid-decision" — a DA-3
+	// state 2 or a DA-3a refusal — which is what quiets the transition row (DA-2c; see
+	// {@link transitionButton}).
+	blocks.push(...transitionBlocks(o, detail, renderState !== undefined));
 	blocks.push(...cancelBlocks(o, detail, open, renderState));
 	if (blocks.length === 0) {
 		// D-3: a panel with nothing to do renders ONE honest line — never a dropped
@@ -1420,7 +1423,7 @@ function offeredTransitions(o: OrderDetailWire, detail: OrderDetailResult): stri
  * fact they cannot act on — and is 30 characters longer than the version that
  * starts from their goal.
  */
-function transitionBlocks(o: OrderDetailWire, detail: OrderDetailResult): Block[] {
+function transitionBlocks(o: OrderDetailWire, detail: OrderDetailResult, quiet: boolean): Block[] {
 	const offered = offeredTransitions(o, detail);
 	const blocks: Block[] = [];
 	if (o.state === "processing" && detail.allowedTransitions.includes("shipped")) {
@@ -1441,7 +1444,7 @@ function transitionBlocks(o: OrderDetailWire, detail: OrderDetailResult): Block[
 	blocks.push({
 		type: "actions",
 		block_id: "orders:transitions",
-		elements: offered.map((toState) => transitionButton(o.id, toState, o.state)),
+		elements: offered.map((toState) => transitionButton(o.id, toState, o.state, quiet)),
 	});
 	return blocks;
 }
@@ -1462,8 +1465,29 @@ function transitionBlocks(o: OrderDetailWire, detail: OrderDetailResult): Block[
  * shipped order whose tracking was already emailed lands in `refunded`, a TERMINAL
  * state, on a decision made while looking at `paid`. Until this watermark existed,
  * status moves were the one destructive write here with no staleness check at all.
+ *
+ * `quiet` DROPS `style:"danger"` AND KEEPS THE `confirm` — DA-2c's licensed move
+ * ("the buttons go quiet and the dialog stays loud"), applied on the emphasis axis
+ * rather than the fan-out one. It is set on any render carrying render state, i.e. a
+ * DA-3 state 2 or a DA-3a refusal, and it fixes a real emphasis inversion: a cancel
+ * refusal correctly suppresses the four DA-2b reason buttons and the one confirm, so
+ * the loudest control left on the Fulfilment panel becomes a red `Mark refunded`,
+ * sitting directly above the form the banner is telling the operator to re-submit.
+ * `refunded` is TERMINAL — of every adjacent control it is the one a mis-click cannot
+ * undo — and it is not what this render is about. The same holds in state 2, where the
+ * one loud control should be the confirm the operator just asked for.
+ *
+ * NOTHING ELSE CHANGES. The `confirm` dialog and its own `style:"danger"` are
+ * untouched on every render, because DA-2c is explicit that the guard is the dialog
+ * and not the colour, and DA-1 is satisfied either way. So the click still costs a
+ * deliberate "Yes, mark refunded"; it just stops shouting over the banner.
  */
-function transitionButton(orderId: string, toState: string, observedState: string): ButtonElement {
+function transitionButton(
+	orderId: string,
+	toState: string,
+	observedState: string,
+	quiet: boolean,
+): ButtonElement {
 	const button: ButtonElement = {
 		// DERIVED from ORDER_STATES, so a rendered button always has a registered
 		// handler. The handler takes the target state from THIS ID, never from the
@@ -1478,7 +1502,9 @@ function transitionButton(orderId: string, toState: string, observedState: strin
 	// a different transition than the one it guards.
 	const confirm = DANGER_TRANSITIONS.get(toState);
 	if (confirm !== undefined) {
-		button.style = "danger";
+		// The dialog ALWAYS; the colour only when this render is not already about
+		// something else (DA-2c — see the header).
+		if (!quiet) button.style = "danger";
 		button.confirm = confirm;
 	}
 	return button;
@@ -1511,10 +1537,28 @@ const CANCEL_GROUP_LABEL = "Cancel order — permanent, releases held stock";
  *    DA-3 group for the case where the operator wants to add free text.
  *
  * ALL THREE KEYS ARE DISTINCT — `…:cancel`, `…:cancel:review`, `…:cancel:refused` —
- * because a `block_id` is the React key (R-13) and both force-opens need BOTH
- * halves of B-6. A refusal that reused `:review` would not remount when the
- * operator arrived at it FROM state 2, which is exactly the DA-3a path, and the
- * form would keep the values the confirm just failed with.
+ * and the reason is THE REFUSAL'S TWO ARRIVAL PATHS. A refusal is reachable from
+ * idle (submit the collect form with a blank `Cancelled by`) AND from state 2 (click
+ * the confirm after someone else moved the order), so B-6's remount half needs this
+ * `block_id` to differ from whichever of those two was on screen. Reuse either
+ * existing id and one arrival path leaves it UNCHANGED: no remount, so the mounted
+ * accordion never re-reads the `default_open: true` this response emits (B-5;
+ * `accordion.tsx` reads it once, at mount). Whether the operator then SEES the
+ * prefilled form is decided by their click history — they happened to leave it open,
+ * or R-24 unmounted the tree on some earlier non-2xx and returned it to
+ * `default_open: false`. A response whose own force-open clause does nothing, resting
+ * on client state it did not set, is the exact ground DA-3's outermost-group rule now
+ * stands on (§8, and D-5's "constrains the emitted response" paragraph), and it is
+ * not expressible as a V-4 tier-1 assertion. A third key differs from BOTH, so
+ * DA-3a-i's "forced open" is true OF THE RESPONSE on every arrival.
+ *
+ * WHAT THIS COMMENT USED TO SAY, AND WHY IT WAS BACKWARDS: that a refusal reusing
+ * `:review` "would keep the values the confirm just failed with". Measured on a
+ * state-2 → refusal arrival, the prefill digest is BYTE-IDENTICAL on both sides and
+ * the form remounts anyway, because its own carrier re-read moved (B-3a) — the
+ * group's id never governed the values. And retention is not a hazard to begin with:
+ * DA-3a-i's "values prefilled" clause is asking for precisely that. Do not restore
+ * that reasoning; the three keys stand on the arrival-path argument above.
  */
 function cancelBlocks(
 	o: OrderDetailWire,
@@ -1900,10 +1944,18 @@ function moneyPanel(
  * | **state 2** (`refund-staged`) | `…:refunds:review` | alert banner · the staged form · ONE danger confirm — **and nothing else** |
  * | **a refusal** (`refund-draft`) | `…:refunds:refused` | meter · ledger · capability line · alert banner · the prefilled form — **no confirm** |
  *
- * THREE KEYS, ALL DISTINCT, because `block_id` is the React key (R-13) and both
- * force-opens need BOTH halves of B-6. A refusal reusing `:review` would not remount
- * when the operator reached it FROM state 2 — which is precisely the DA-3a path — so
- * the form would keep showing the amount the confirm just failed with.
+ * THREE KEYS, ALL DISTINCT, and the reason is THE REFUSAL'S TWO ARRIVAL PATHS — see
+ * {@link cancelBlocks} for the same argument at length. A refusal is reachable from
+ * idle (a typo in the amount field) AND from state 2 (the confirm, after the ledger
+ * moved), so B-6's remount half needs this `block_id` to differ from whichever of
+ * those two was on screen. Reuse either existing id and one arrival leaves it
+ * unchanged, nothing remounts, and the `default_open: true` in this response is never
+ * read (B-5) — leaving the force-open to the operator's click history rather than to
+ * the response, which no tier-1 assertion can check.
+ *
+ * NOT because the values would go stale: measured, the prefill digest is identical
+ * across a state-2 → refusal arrival and the form remounts on its own carrier (B-3a).
+ * Keeping the operator's amount is what DA-3a-i asks for, not a defect.
  *
  * WHY STATE 2 SUPPRESSES THE METER AND THE LEDGER (§8's outermost-group rule and
  * §11.2, both explicit): the operator is mid-decision on one amount, and the group
@@ -2455,6 +2507,21 @@ const UNREADABLE: Notice = {
  *
  * `""` is folded into `undefined` deliberately: a whitespace-only or empty state is
  * not a state, and no comparison against it can be meaningful.
+ *
+ * THE RULE IS ABSOLUTE ON THIS SCREEN, and that is checkable. Every site holding a
+ * watermark answers an absent one with {@link UNREADABLE} and NO re-read: the ten
+ * transitions and {@link cancelReviewAction}/{@link cancelOrderAction} through this
+ * helper, and the two refund handlers through `parseCents` — the refund watermark is
+ * a MINOR-UNITS LEDGER TOTAL rather than a state name, so it cannot route through
+ * here, but `observedSoFar === null` is the same check and gets the same answer.
+ *
+ * They differ only in whether a DA-3a-i draft rides along, which is decided by whether
+ * the refused payload came from a form — all of them but the transitions, which have
+ * no form to prefill (see {@link transitionAction}).
+ *
+ * A `-review` is NOT an exception on the grounds that it writes nothing; see
+ * {@link cancelReviewAction}'s header for why re-stamping a fresh watermark onto the
+ * confirm it draws makes the tolerance worse than the refusal, not better.
  */
 function readWatermark(value: unknown): string | undefined {
 	const raw = readString(value)?.trim();
@@ -2716,6 +2783,29 @@ function recordFulfillmentAction() {
  * cannot succeed, with nothing saying why. So the movement is caught HERE, at the
  * step whose only purpose is letting them check.
  *
+ * AN ABSENT WATERMARK IS REFUSED HERE TOO, with no `-review` exemption —
+ * {@link readWatermark}'s doc states that rule absolutely and this handler is not
+ * outside it. Tolerating it (`observedState !== undefined && …`) looked safe, because
+ * the confirm this handler draws re-stamps `state` from its own fresh read and
+ * `cancelOrderAction` then checks against that. It is not safe, for two reasons:
+ *
+ *  1. **The re-stamp launders the window it skipped.** The operator chose a reason
+ *     while looking at some state; a fresh stamp asserts a state they never saw, and
+ *     the confirm's check then passes trivially. The window from that page rendering
+ *     to this submit goes unchecked while the payload claims otherwise — the X-38
+ *     hole one step removed. {@link refundReviewAction} names the identical move as
+ *     wrong for the refund path ("re-stamping it fresh … would assert a decision the
+ *     operator never made"); the same asymmetry cannot be a defect there and a
+ *     tolerance here.
+ *  2. **A `-review` has less standing to skip it, not more.** Its whole purpose is
+ *     catching movement before a confirm is drawn. With no watermark it has nothing
+ *     to compare, so the one step that exists to let an operator check silently
+ *     checks nothing.
+ *
+ * So every DA-3a site on this screen refuses an absent watermark identically, and a
+ * reviewer checks one boolean per site instead of judging each one. The cost is a
+ * reload on a payload that was hand-edited or came from a pre-watermark tab.
+ *
  * EVERY REFUSAL CARRIES A DRAFT (DA-3a-i): forced open, flattened, prefilled. This
  * handler was the fifth refusal site on the screen and the one no plan had listed.
  */
@@ -2738,6 +2828,12 @@ function cancelReviewAction() {
 			detail,
 			cancelledBy,
 		});
+		// DA-3a with NO `-review` EXEMPTION (see this function's header). Refused before
+		// the read, because no re-read can supply a watermark the operator never sent and
+		// the outcome cannot depend on what it would return.
+		if (observedState === undefined) {
+			return api.showLeaf([orderId], UNREADABLE, draft());
+		}
 		if (reason === undefined || cancelledBy.length === 0) {
 			return api.showLeaf(
 				[orderId],
@@ -2762,7 +2858,7 @@ function cancelReviewAction() {
 				draft(),
 			);
 		}
-		if (observedState !== undefined && live.order.state !== observedState) {
+		if (live.order.state !== observedState) {
 			return api.showLeaf(
 				[orderId],
 				{
@@ -2901,15 +2997,28 @@ function cancelOrderAction() {
 
 /**
  * DA-3 state 1 → 2 for a refund. NOTHING is written here — and yet this handler
- * runs THREE checks and one read, because `-review` renders the two statements the
+ * runs FIVE checks around one read, because `-review` renders the two statements the
  * whole shape exists to make true: the button label and the `confirm.text`.
  *
  * | Check | Rule | Refusal names |
  * |---|---|---|
+ * | the carrier decodes: watermark AND currency both present | DA-3b | the payload, NOT the amount |
  * | parses to a positive integer of minor units | M-3 | what was typed |
  * | required attribution present | DA-3c | the missing field |
  * | the ledger has not moved since the form rendered | DA-3a | both figures AND the cause |
  * | `amountCents <= remainingRefundableCents` **live** | DA-3c | the real ceiling |
+ *
+ * THE FIRST ROW IS ITS OWN BRANCH, and folding it into the second is a real defect —
+ * it was one until this revision. `refundedSoFar` and `currency` come off the
+ * CARRIER; `amount` comes off the operator's keyboard. Fold them together and a
+ * missing watermark answers `5.00` with *"Enter a valid refund amount greater than
+ * zero (e.g. 19.99)"* over a field reading `5.00` — the console naming a cause that
+ * is demonstrably not the cause and sending the operator to re-type the one thing
+ * that was already right. A missing watermark is an unreadable payload
+ * ({@link readWatermark}), so it gets {@link UNREADABLE}, exactly as
+ * {@link refundOrderAction} gives it. It is checked FIRST because a broken carrier
+ * is not fixable by re-typing: no amount the operator enters can make that payload
+ * decode, so no refusal that points at the amount field is honest.
  *
  * WHY IT RE-READS THE LEDGER, given the carrier already holds a watermark. Two
  * defects, one read:
@@ -2931,9 +3040,11 @@ function cancelOrderAction() {
  * both would fire.
  *
  * EVERY REFUSAL CARRIES A DRAFT WITH THE RAW AMOUNT STRING (DA-3a-i, DA-3a-iii
- * property 5). The first check refuses precisely when the amount did NOT parse, so
- * there is no `amountCents` on that path and `19,99` cannot be re-derived from cents:
- * `amountInput` is the only thing that can put it back on screen.
+ * property 5) — including the unreadable-payload one, where nothing was written and
+ * the operator's typing is still in hand. The parse check refuses precisely when the
+ * amount did NOT parse, so there is no `amountCents` on that path and `19,99` cannot
+ * be re-derived from cents: `amountInput` is the only thing that can put it back on
+ * screen.
  */
 function refundReviewAction() {
 	return customAction<AdminOrdersClient, OrdersRenderState>(async (api) => {
@@ -2952,10 +3063,17 @@ function refundReviewAction() {
 			reason,
 			refundedBy,
 		});
+		// DA-3b, BEFORE anything about the amount: these two come off the CARRIER, not
+		// the operator's keyboard, so their absence is an unreadable payload
+		// (`readWatermark`) and no refusal naming the amount field could be true. Blaming
+		// the amount here told the operator to fix a field that already held `5.00`.
+		if (observedSoFar === null || currency.length === 0) {
+			return api.showLeaf([orderId], UNREADABLE, draft());
+		}
 		// Money parsed to integer MINOR UNITS with exact integer string math (no
 		// float). `allowZero:false` — a refund of nothing is meaningless.
 		const amountCents = parseMinorUnitsInput(amountStr, { allowZero: false });
-		if (amountCents === null || observedSoFar === null || currency.length === 0) {
+		if (amountCents === null) {
 			return api.showLeaf(
 				[orderId],
 				{
@@ -3076,23 +3194,34 @@ function refundOrderAction() {
 			const currency = (readString(payload?.currency) ?? "").trim();
 			const reason = (readString(payload?.reason) ?? "").trim();
 			const refundedBy = (readString(payload?.refundedBy) ?? "").trim();
-			// The refusal prefill, in RAW STRING space. On the unreadable-payload branch
-			// below there is no parsed amount by definition, so this is the only channel
-			// that can put the operator's figure back; where it parsed, formatting it
-			// back is what the field showed them.
+			// The refusal prefill, in RAW STRING space — the only channel that can put the
+			// operator's figure back, since a `refund-draft` prefills `amountInput` and
+			// nothing else. Where the amount parsed, formatting it back is what the field
+			// showed them.
 			const draft = (amountInput: string): OrdersRenderState => ({
 				kind: "refund-draft",
 				amountInput,
 				reason,
 				refundedBy,
 			});
+			// DA-3b. FOUR DISJUNCTS, AND ONLY ONE OF THEM LACKS AN AMOUNT. A payload can
+			// carry a perfectly good `amountCents: "1000"` and still be unreadable because
+			// the WATERMARK or the CURRENCY is missing — and on that arrival the operator
+			// typed `10.00`, it parsed, nothing was written, and blanking the field
+			// discards a figure we are holding while `reason` survives beside it. So the
+			// prefill is conditional on the amount, not on the branch: `$10.00` goes back,
+			// and only a genuinely unparseable or non-positive amount yields `""`.
 			if (
 				amountCents === null ||
 				amountCents <= 0 ||
 				observedSoFar === null ||
 				currency.length === 0
 			) {
-				return showLeaf([orderId], UNREADABLE, draft(""));
+				return showLeaf(
+					[orderId],
+					UNREADABLE,
+					draft(amountCents !== null && amountCents > 0 ? formatMinorUnitsInput(amountCents) : ""),
+				);
 			}
 			// DA-3a: re-read, then compare against the watermark the operator SAW.
 			const live = await client.getRefunds(orderId).catch(() => null);
