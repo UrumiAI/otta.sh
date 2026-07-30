@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { ORDER_STATE_MACHINE } from "@urumi/domain";
 import { decodeCarrier, encodeCarrier } from "../src/admin/scaffold/carrier.js";
+import { assertBlockContract } from "./helpers/block-contract.js";
 import {
 	accessories,
 	blocksOf,
@@ -2726,9 +2727,25 @@ describe("admin Orders console (workerd sandbox)", () => {
 		}
 	});
 
-	test("the banned slogan appears in no rendered string on either level (X-20)", async () => {
+	// X-20 (the banned-slogan check) and every other H-marked §13 row this
+	// helper enforces now live in `assertBlockContract` (§15 V-3/V-3a) instead
+	// of a hand-rolled assertion here — this is the "wire it into the Orders
+	// suite" half of that PR: one call on the list, one per open record state.
+	test("assertBlockContract holds on the list and on every open record state (§15 V-3)", async () => {
 		await boot();
-		const rendered = JSON.stringify([await list(), await open("ord-1"), await open("ord-proc")]);
-		expect(rendered.toLowerCase()).not.toMatch(/oversell|oversold|overselling/);
+		assertBlockContract(await list(), { screen: "orders", level: "list" });
+		for (const id of [
+			"ord-1",
+			"ord-proc",
+			"ord-shipped",
+			"ord-flagged",
+			"ord-guest",
+			"ord-cancelled",
+			"ord-x402",
+			"ord-refunded",
+			"ord-uncaptured",
+		]) {
+			assertBlockContract(await open(id), { screen: "orders", level: "detail" });
+		}
 	});
 });
