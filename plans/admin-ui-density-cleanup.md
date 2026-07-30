@@ -1,6 +1,6 @@
 # Plan — Admin UI density & layout cleanup
 
-Status: **ready to build** (2026-07-29, amended twice). Scope: the **seven** Urumi admin screens
+Status: **ready to build** (2026-07-30, amended three times — most recently to match the spec's revision 4, after increment 3 shipped). Scope: the **seven** Urumi admin screens
 under `packages/plugin/src/admin/` — Orders, Pricing & inventory, Coupons, Tax, Shipping, Reports
 and Settings (`admin-route.ts:83-101`). Earlier revisions said "six". Verified against a live local staging admin (Orders, order
 detail, Pricing & inventory) and against the em-dash Block Kit that staging actually runs.
@@ -72,10 +72,20 @@ survive re-layout". That is true for **reordering** and **false for nesting**: e
 flat over the top-level array, while `BlockRenderer` recurses into `columns`/`tab`/`accordion`.
 The moment a screen moves into `tab > accordion`, those searches return `undefined`/`[]` and the
 suites pass while asserting nothing. Measured: Orders has **89** flat type searches and 17
-`section`-as-heading assertions across 1541 lines. So the foundation also ships recursive test
-helpers, and **Orders' suite is ported onto them in a separate no-behaviour-change commit before
-its layout changes** — see the spec's §15. (Also: there is no `reports-page.sandbox.test.ts`;
-Reports and Settings are covered by `*-widget.sandbox.test.ts`.)
+`section`-as-heading assertions across 1541 lines. So the programme ships recursive test helpers in
+`packages/plugin/test/helpers/blocks.ts`, and **each screen ports its own suite onto them as the first,
+behaviour-free commit of its own PR** — see the spec's §15 V-1a. (Also: there is no
+`reports-page.sandbox.test.ts`; Reports and Settings are covered by `*-widget.sandbox.test.ts`.)
+
+**Two corrections to the ownership this plan implied** (2026-07-30, after increment 3 shipped):
+
+1. The **helpers were not shipped by the foundation.** Increment 1 (PR #151) did not contain them;
+   increment 3 wrote them (`aa2bd97`). They exist and are delivered — do not re-author them.
+2. **`assertBlockContract` has no owner in this plan and does not exist**, so **30 mechanically-
+   decidable spec rules are enforced by nothing shared**, including the banned-phrase guard — which
+   matters because the only two live violations are on Pricing & inventory. It is assigned to the
+   **second per-screen increment to start**, as a **standalone PR**, and it **must land before the
+   third screen** (spec §15 V-3a).
 
 ### 1 — Shared layout vocabulary in the scaffold
 
@@ -123,7 +133,9 @@ Update the sandbox suites' carrier assertions to assert the `block_id` token ins
 ### 3 — Orders list + order detail
 
 Two sub-PRs: (a) port the orders suite onto the recursive helpers, no behaviour change;
-(b) the re-layout. Per the spec's §11:
+(b) the re-layout. Per the spec's §11. **Shipped as PR #161** (`aa2bd97` → `3c7f037`), which also
+authored `test/helpers/blocks.ts` and produced the errata now recorded in the spec's §0.2. That PR is
+**revised after** the spec's round-3 amendment lands, not before.
 
 - Collapse the filter form into a `filterPanel` accordion (**not** a `columns` row — withdrawn
   above), label carrying an active-filter count, values in a `section` below it with
@@ -135,7 +147,8 @@ Two sub-PRs: (a) port the orders suite onto the recursive helpers, no behaviour 
   irreversible, and currently sit open in the scroll path.
 - Render the totals ladder as a two-column `table` (spec M-4); `fields` is row-major, so no
   ordering of `fields` entries can make a five-line ladder read downward. Drop the
-  `physical`-style badge on single-valued columns.
+  `physical`-style badge on single-valued columns — **including the refunds ledger's `Kind`**, whose
+  value is the order's own gateway capability and is therefore constant down the table (spec T-5).
 
 ~~the list table gains `sortable` on Created/Total~~ — **WITHDRAWN.** A sort header fires
 `page_action_id` with `{sort}` and no cursor (`table.tsx:52-57`), so the click silently discards
@@ -166,10 +179,18 @@ per-state ids **derived from the `ORDER_STATES` constant**, with `customActions`
 same constant and any service-offered state outside it not rendered — otherwise
 `admin-route.ts:130` falls through to `{blocks: []}` and the console goes blank (spec DA-6).
 
-### 5 — The remaining four screens
+### 5 — The remaining six screens
 
 Apply increments 1–4's vocabulary to Pricing & inventory, Coupons, Tax and Shipping, each against
-its own block listing in the spec's §12 (§12.1–§12.4). Tax and Shipping render an edit form
+its own block listing in the spec's §12 (§12.1–§12.4) — **plus Reports and Settings** (see the
+paragraph at the end of this increment). Six screens, not four; the heading said "four" from the era
+when the programme miscounted the console at six screens.
+
+**Read the spec's front-matter rule N-1 and its §0.2 before starting any of the six.** N-1 settles
+what to do when a §12 listing contradicts a spec rule (the rule wins, and the listing is a defect you
+report); §0.2 is the errata list increment 3 produced by building against these listings for the first
+time. Three of its four substantive defects came from following a listing that contradicted a rule, so
+this is not a formality. Tax and Shipping render an edit form
 **plus** delete button inline for *every* row simultaneously — those become per-row `accordion`s
 so the list stays scannable. Three constraints the original bullet missed:
 
