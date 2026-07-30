@@ -61,10 +61,21 @@ function headerText(res: BlockResponse): unknown {
 function bannerOf(res: BlockResponse): Blk | undefined {
 	return blocksOf(res).find((b) => b.type === "banner");
 }
-/** The staged accordion the geo leaf renders ONLY when it was handed render
- *  state — found by `type`, so a changed block order cannot silently pass. */
-function stagedGroup(res: BlockResponse): Blk | undefined {
-	return blocksOf(res).find((b) => b.type === "accordion");
+/**
+ * The staged accordion the geo leaf renders ONLY when it was handed render state.
+ *
+ * Located by its `block_id` PREFIX and asserted UNIQUE — not by index, and not as
+ * "the first accordion": the fixture is shared and grows, and the day it renders a
+ * second accordion "the first one" would quietly start asserting against the wrong
+ * group while still passing. Returns undefined when there is none, which is what
+ * the no-render-state cases assert.
+ */
+function stagedGroup(res: BlockResponse, landmarkId = "m1"): Blk | undefined {
+	const groups = blocksOf(res).filter(
+		(b) => b.type === "accordion" && String(b.block_id).startsWith(`geo:${landmarkId}:note:`),
+	);
+	expect(groups.length, `expected at most one staged group, got ${groups.length}`).toBeLessThan(2);
+	return groups[0];
 }
 function groupBlocks(group: Blk | undefined): Blk[] {
 	return (group?.blocks ?? []) as Blk[];

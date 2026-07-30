@@ -58,9 +58,10 @@ export interface ListDetailInput {
 
 /** A keyset-paged list level. Generic in the screen's `Client`, filter-form
  *  shape `Filter`, row-summary type `Summary`, and the screen's `RenderState`
- *  (`never` — no channel — unless the level renders one; see
- *  {@link CustomActionApi}). */
-export interface ListLevelDef<Client, Filter, Summary, RenderState = never> {
+ *  (`unknown` — the level ignores the channel — unless it renders one; see
+ *  {@link LevelDef} for why a LEVEL's default is `unknown` while the
+ *  custom-action side's is `never`). */
+export interface ListLevelDef<Client, Filter, Summary, RenderState = unknown> {
 	/** Page size for the keyset read. */
 	limit: number;
 	/** Parse a filter-form `form_submit`'s `values` into this level's filter. */
@@ -79,8 +80,14 @@ export interface ListLevelDef<Client, Filter, Summary, RenderState = never> {
 	 *  {@link CustomActionApi.showList}'s notice param (a create/edit/delete
 	 *  outcome on a screen whose mutable target is a LIST, not a leaf) —
 	 *  undefined on a plain open/back/page/apply-filter render. A level that
-	 *  never fires a list-scoped custom action can ignore it. */
-	render(args: {
+	 *  never fires a list-scoped custom action can ignore it.
+	 *
+	 *  Declared as an arrow-typed PROPERTY, not a method — the one such member here
+	 *  — so `strictFunctionTypes` checks its parameter CONTRAVARIANTLY. See
+	 *  {@link LevelDef}: method syntax makes `RenderState` bivariant, which is
+	 *  exactly the hole that lets a level declare a WIDER state than the screen can
+	 *  ever send it. */
+	render: (args: {
 		actions: ScreenActions;
 		path: NavPath;
 		filter: Filter;
@@ -92,23 +99,27 @@ export interface ListLevelDef<Client, Filter, Summary, RenderState = never> {
 		 *  other render (open/back/page/apply-filter, and any custom action that
 		 *  passed none). See {@link CustomActionApi}'s `RenderState` note. */
 		renderState: RenderState | undefined;
-	}): Block[];
+	}) => Block[];
 	/** Fail-closed response when the page read cannot reach the service. */
 	onError(): BlockResponse;
 }
 
 /** A leaf detail level. Generic in the screen's `Client`, primary `Detail`, and
- *  the screen's `RenderState` (`never` — no channel — unless the level renders
- *  one; see {@link CustomActionApi}). */
-export interface LeafLevelDef<Client, Detail, RenderState = never> {
+ *  the screen's `RenderState` (`unknown` — the level ignores the channel — unless
+ *  it renders one; see {@link LevelDef} for why a LEVEL's default is `unknown`
+ *  while the custom-action side's is `never`). */
+export interface LeafLevelDef<Client, Detail, RenderState = unknown> {
 	/** Load the primary record. A throw fails closed; `null` renders `notFound`.
 	 *  (Named `load`, not the f-word, so the sandbox-clean grep guard never
 	 *  mistakes a method declaration for a bare network-egress call.) */
 	load(client: Client, path: NavPath, id: string): Promise<Detail | null>;
 	/** Render the detail blocks. Receives the `client` so a SECONDARY, best-effort
 	 *  read (e.g. order notes) can be done with its own try/catch — a secondary
-	 *  failure must degrade, never fail the whole detail. */
-	render(args: {
+	 *  failure must degrade, never fail the whole detail.
+	 *
+	 *  Arrow-typed PROPERTY rather than a method, for the contravariance
+	 *  {@link LevelDef} explains — the one such member here. */
+	render: (args: {
 		client: Client;
 		actions: ScreenActions;
 		path: NavPath;
@@ -121,7 +132,7 @@ export interface LeafLevelDef<Client, Detail, RenderState = never> {
 		 *  a DA-3 stage/refuse render learns WHICH group to open and WHAT to prefill;
 		 *  see {@link CustomActionApi}'s `RenderState` note. */
 		renderState: RenderState | undefined;
-	}): Promise<Block[]> | Block[];
+	}) => Promise<Block[]> | Block[];
 	/** Blocks for a missing record (id resolved to `null`).
 	 *
 	 *  Deliberately NOT given the render state (nor the notice, as before): the
@@ -144,13 +155,36 @@ export interface LeafLevelDef<Client, Detail, RenderState = never> {
  * Render state instead crosses from ONE closure (a custom action) to ANOTHER (a
  * level's `render`), which no local argument can cover — so it stays visible in
  * the type, and {@link createListDetailHandler} is where the two ends are checked
- * against each other. `never` (the default) means "this screen has no channel".
+ * against each other.
+ *
+ * TWO DELIBERATE ASYMMETRIES MAKE THAT CHECK REAL. Both were found by probing the
+ * first version of this channel, which had neither and did not actually hold:
+ *
+ *  1. `render` is an arrow-typed PROPERTY on both level interfaces, not a method.
+ *     TypeScript checks method parameters BIVARIANTLY, so with method syntax a
+ *     level could declare a state WIDER than the screen's — say
+ *     `{…, amountCents: number}` where the action only ever sends
+ *     `{…, amountInput: string}` — and `LevelDef<Wider>` would still be accepted
+ *     into a `LevelDef<Draft>[]`. The level then reads `renderState.amountCents`,
+ *     typed `number`, `undefined` at runtime, and `.toFixed()` throws — on the
+ *     money path, immediately after the refusal this channel exists to render.
+ *     A property is checked contravariantly under `strictFunctionTypes`, which
+ *     rejects exactly that and still accepts a level that ignores the channel.
+ *  2. A LEVEL's default is `unknown`; the CUSTOM-ACTION side's
+ *     ({@link CustomActionApi}, {@link CustomActionFn}, {@link customAction},
+ *     {@link ListDetailScreenConfig}) stays `never`. They point in opposite
+ *     directions on purpose: `unknown` is the widest thing a level can be handed,
+ *     so a level written before the channel existed (or one that simply ignores
+ *     it) drops into ANY screen's `levels`; `never` is the narrowest thing an
+ *     action can send, so a screen that declared no render state cannot pass one
+ *     at all — a stray third argument stays a compile error rather than becoming
+ *     `unknown`-shaped garbage arriving at a `render`.
  */
-export type LevelDef<RenderState = never> =
+export type LevelDef<RenderState = unknown> =
 	| ({ kind: "list" } & ListLevelDef<unknown, unknown, unknown, RenderState>)
 	| ({ kind: "leaf" } & LeafLevelDef<unknown, unknown, RenderState>);
 
-export function listLevel<Client, Filter, Summary, RenderState = never>(
+export function listLevel<Client, Filter, Summary, RenderState = unknown>(
 	def: ListLevelDef<Client, Filter, Summary, RenderState>,
 ): LevelDef<RenderState> {
 	// SAFETY (existential-type erasure): the engine stores levels type-erased
@@ -176,7 +210,7 @@ export function listLevel<Client, Filter, Summary, RenderState = never>(
 	};
 }
 
-export function leafLevel<Client, Detail, RenderState = never>(
+export function leafLevel<Client, Detail, RenderState = unknown>(
 	def: LeafLevelDef<Client, Detail, RenderState>,
 ): LevelDef<RenderState> {
 	// SAFETY: same existential-erasure argument as `listLevel` — `client` is
@@ -290,18 +324,27 @@ export function customAction<Client, RenderState = never>(
  * every screen written before the channel existed.
  *
  * A SCREEN WITH RENDER STATE SHOULD NAME IT EXPLICITLY —
- * `createListDetailHandler<OrdersRenderState>({…})` — rather than leaving it to
- * inference. This is the one place the levels and the custom actions meet, so an
- * explicit argument is what makes a mismatch between them an error HERE (where the
- * screen author can see both) instead of somewhere further in.
+ * `createListDetailHandler<OrdersRenderState>({…})`. This is the one place the
+ * levels and the custom actions meet, so naming it is what puts a mismatch between
+ * them HERE, where the screen author can see both ends. (The naming is a
+ * readability rule, not the safety mechanism: `LevelDef`'s two asymmetries are what
+ * make the mismatch an error at all.)
  */
 export interface ListDetailScreenConfig<RenderState = never> {
 	actions: ScreenActions;
 	/** Build the token-threaded `ctx.http` client for this screen. */
 	createClient(ctx: PluginContext): Promise<unknown> | unknown;
 	/** Levels indexed by drill depth (index 0 = root list). A level that ignores
-	 *  the render-state channel is written exactly as before. */
-	levels: LevelDef<RenderState>[];
+	 *  the render-state channel is written exactly as before.
+	 *
+	 *  `NoInfer` because this array must be CHECKED against the screen's render
+	 *  state, never a source of it. Levels default to `unknown` (see
+	 *  {@link LevelDef}), so without it a screen that leaves `RenderState` to
+	 *  inference would widen to `unknown` from its own levels — and `unknown` on the
+	 *  action side would then accept any third argument, silently undoing the
+	 *  "a screen with no channel cannot pass state" guarantee. Inference comes from
+	 *  `customActions` (the SENDING side) or from the explicit type argument. */
+	levels: LevelDef<NoInfer<RenderState>>[];
 	/** Resolve an `open` interaction to the FULL target path (ancestors + the
 	 *  selected id). The scaffold renders `levels[targetPath.length]` at it —
 	 *  a leaf or a deeper list. Undefined ⇒ fall back to the root list. */
