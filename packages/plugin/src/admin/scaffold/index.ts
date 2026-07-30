@@ -60,6 +60,7 @@ export {
 	customAction,
 	leafLevel,
 	listLevel,
+	readBoolean,
 	readCarrier,
 	readString,
 	asRecord,
