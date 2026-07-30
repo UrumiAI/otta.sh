@@ -27,12 +27,11 @@ the SKU.** Because the seed is create-if-absent and now runs as soon as a SKU ex
 `initialOnHand` sent on a *later* save is silently discarded — the record is already there at `0`.
 Previously that later save was the only way to heal a product whose stock record had gone missing.
 
-This is visible in the CMS **Product data** panel, not only to integrators. The panel's Stock
-input is independent of its SKU input, and its label invites "set the SKU and price now, enter
-stock on the next save" — under this release that later stock figure does not move real stock,
-while the panel keeps redisplaying the number the merchant typed. Set stock on the same save that
-first sets the SKU, or use **Restock** on Pricing & inventory, which now always has a record to
-add to. Nothing is lost, and the panel itself is removed in the next release.
+In practice this only affects the integrator `PUT /products/:id/commerce`: send `initialOnHand`
+with the first SKU-bearing call, or add stock afterwards with **Restock** on Pricing & inventory,
+which now always has a record to add to. Nothing is lost. (The CMS "Product data" panel also had a
+Stock input with this hazard, but it is deleted in the same release — see "one home per field" —
+so the only stock paths that ship are the integrator PUT and Restock.)
 
 The discard is deliberate: the seed must never overwrite a live or already-decremented count.
 

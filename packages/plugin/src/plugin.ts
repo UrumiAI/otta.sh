@@ -60,18 +60,22 @@ import type { SandboxedPlugin } from "./types.js";
  *
  * Phase 1: the four content-sync hooks (`afterSave`/`afterDelete`/
  * `afterPublish`/`afterUnpublish` — the last two are the publish-gate
- * follow-up, activating on publish and deactivating on unpublish). Pricing is
- * derived by `content:afterSave` from the widget's `commerce` field JSON — the
- * old button-era `product-commerce` save + `panel-state` render routes are
- * retired (em-dash field widgets are `onChange`-only, so neither is reachable).
+ * follow-up, activating on publish and deactivating on unpublish). Since "one
+ * home per field" (PR 1b) those hooks are LIFECYCLE + TITLE only: they keep a
+ * `product_commerce` row in existence for every CMS product, project the
+ * content's `data.title` into it, and drive activate/deactivate/soft-delete.
+ * Pricing, stock and every other commercial field are owned by
+ * `product_commerce` and edited from the admin's Pricing & inventory page.
  * Phase 2 (ADR-0003): the two PUBLIC storefront routes — PDP and PLP are
  * plugin-owned routes (`page:fragments` is trusted-only and unavailable to
  * this sandboxed plugin); `public: true` is the em-dash route flag that
- * skips auth/CSRF so the theme's public pages can invoke them. No
- * `admin.fieldWidgets`/manifest declarations live here — those are a
- * separate wire-manifest concern (`emdash-plugin.jsonc` in a real deploy);
- * `admin/product-data-widget.ts` is the shared source of truth both a
- * manifest generator and `panel-state-route.ts` read from.
+ * skips auth/CSRF so the theme's public pages can invoke them.
+ *
+ * This plugin declares NO field widget. It used to export a "Product data"
+ * Block Kit widget bound to a `commerce` json field on the products
+ * collection; that made the CMS content document a second writer of the
+ * commercial columns and every publish reverted the console's edits, so it was
+ * deleted in PR 1b along with its seed field and descriptor entry.
  */
 const plugin: SandboxedPlugin = {
 	hooks: {

@@ -312,7 +312,24 @@ paid plan:
    the passkey step's secure-context requirement (§1) is already met.
 3. **Smoke:** `/products` renders the sample catalog (or the friendly empty state); create
    and publish a product in the admin and watch the service log the sync upsert; price it
-   via the Product data panel; add-to-cart sets the `urumi_cart` cookie and creates a hold.
+   in the admin's **Pricing & inventory** page (the CMS holds no commercial data);
+   add-to-cart sets the `urumi_cart` cookie and creates a hold. The three sample products
+   are content-only until you price them — the seed fires no content hooks, so either
+   price them in Pricing & inventory or run `sites/staging/scripts/seed-demo-commerce.ts`
+   against the service. On a deployed site every one of these matters — in particular
+   `COMMERCE_SERVICE_URL`, whose default is `http://127.0.0.1:3000` and would point the
+   writes at localhost:
+
+   ```bash
+   SITE_URL=https://<your-site-worker>.workers.dev \
+   COMMERCE_SERVICE_URL=https://<your-service-worker>.workers.dev \
+   EMDASH_TOKEN=<an admin API token, to read the CMS> \
+   SERVICE_API_TOKEN=<only if the write gate is on> \
+     pnpm dlx tsx@4 sites/staging/scripts/seed-demo-commerce.ts
+   ```
+
+   The script is safe to re-run: it reads each product first and skips any that already
+   has a SKU, so it never overwrites a price set in Pricing & inventory.
 4. **`wrangler tail`** (from `sites/staging`) — first boot should be clean: migrations +
    schema seed, no errors.
 

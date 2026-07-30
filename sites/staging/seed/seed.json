@@ -3,7 +3,7 @@
 	"version": "1",
 	"meta": {
 		"name": "Urumi staging store",
-		"description": "Products collection matching CmsProductContent + a json field for the Urumi Product-data widget, with sample entries for an immediately browsable catalog.",
+		"description": "Products collection matching CmsProductContent — content fields only; pricing, stock and the other commercial fields are edited in the admin's Pricing & inventory page. Includes sample entries for an immediately browsable catalog.",
 		"author": "Urumi"
 	},
 	"settings": {
@@ -15,6 +15,7 @@
 			"slug": "products",
 			"label": "Products",
 			"labelSingular": "Product",
+			"description": "Product content — title, description and images. Pricing and stock are edited in Pricing & inventory.",
 			"urlPattern": "/products/{slug}",
 			"supports": ["drafts", "revisions", "search", "seo"],
 			"fields": [
@@ -35,12 +36,6 @@
 					"slug": "images",
 					"label": "Images",
 					"type": "image"
-				},
-				{
-					"slug": "commerce",
-					"label": "Commerce",
-					"type": "json",
-					"widget": "urumi:product-data"
 				}
 			]
 		}

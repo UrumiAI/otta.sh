@@ -24,7 +24,6 @@ import {
 	COMMERCE_SERVICE_BASE_URL,
 	COUPONS_PAGE,
 	ORDERS_PAGE,
-	productDataWidget,
 	PRODUCTS_PAGE,
 	REPORTS_PAGE,
 	SETTINGS_PAGE,
@@ -69,8 +68,15 @@ describe("urumiPluginDescriptor", () => {
 		expect(descriptor.allowedHosts).toEqual(["svc.example.com"]);
 	});
 
-	test("registers the Product-data Block Kit field widget", () => {
-		expect(descriptor.fieldWidgets).toEqual([productDataWidget]);
+	test("registers NO field widget — the CMS is not a commerce editor (PR 1b)", () => {
+		// The inverse of the assertion this replaced. The descriptor used to
+		// register a "Product data" Block Kit widget bound to the products
+		// collection's `commerce` json field, which made the content document a
+		// second writer of `product_commerce`'s columns; every publish reverted
+		// the admin console's edits. Commercial fields now have one home. A
+		// re-added widget fails here, and the seed's own guard
+		// (`seed.test.ts`) fails on the binding side.
+		expect(descriptor.fieldWidgets).toBeUndefined();
 	});
 
 	test("declares the plugin's admin pages (Reports + Settings + Orders + Products + Tax + Shipping + Coupons)", () => {

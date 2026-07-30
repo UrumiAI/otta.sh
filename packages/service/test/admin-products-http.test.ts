@@ -117,6 +117,41 @@ describe.skipIf(PG === undefined)("admin Products console HTTP contract", () => 
 		expect(body.nextCursor).toBeNull();
 	});
 
+	test("a CMS product that was never priced (no sku, no price) IS listed — PR 1b makes this row reachable", async () => {
+		await seed();
+		// Before "one home per field" this row could not exist: the CMS sync
+		// refused to mint a row without a sku, so a product created in the CMS and
+		// not yet priced was INVISIBLE in Pricing & inventory and there was no way
+		// to price it from the console. Now every CMS product has a row, and it
+		// must show up here — unpriced, waiting for a SKU and a price.
+		await server.seedProductRow({
+			id: "prod-unpriced",
+			sku: null,
+			title: "Freshly Created",
+			priceCents: null,
+			active: true,
+			createdAt: "2026-07-14T00:00:00.000Z",
+		});
+
+		const body = await json(await get("/products"));
+		const products = body.products as Array<Record<string, unknown>>;
+		const row = products.find((p) => p.productId === "prod-unpriced");
+		expect(row).toBeDefined();
+		expect(row).toMatchObject({
+			productId: "prod-unpriced",
+			sku: null,
+			title: "Freshly Created",
+			priceCents: null,
+			active: true,
+		});
+		// It is listed in the ADMIN console but is not sellable: the catalog read
+		// (`listCommerceByIds`) filters commerce-incomplete rows, which is what
+		// the admin's "active (not priced)" status label reports.
+		const detail = await json(await get("/products/prod-unpriced"));
+		expect(detail.ok).toBe(true);
+		expect(detail.product).toMatchObject({ sku: null, priceCents: null, active: true });
+	});
+
 	test("active + productKind + search filters compose", async () => {
 		await seed();
 		const activeOnly = await json(await get("/products?active=true"));

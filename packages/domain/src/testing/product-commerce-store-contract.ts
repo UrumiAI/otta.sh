@@ -1058,62 +1058,115 @@ export function productCommerceStoreContract(
 			expect(panel.contentUpdatedAt).toBe("2026-07-10T02:00:00.000Z");
 		});
 
-		// -- The publish-atomicity blast radius, pinned where it actually lives --
-		// `updateCommerceFields` (the Pricing & inventory console's guarded edit)
-		// deliberately never writes `contentUpdatedAt`, so the NEXT CMS-sync
-		// upsert always carries a strictly newer watermark, passes the ordering
-		// gate, and re-applies the widget bag over the console's edit. Moving the
-		// commerce push from save to publish does not create this — it RE-TIMES
-		// it to publish, where it is rarer but more surprising. It is pinned in
-		// the STORE contract, not the plugin sandbox: a stub recorder has no
-		// store, so it cannot observe a reversion.
-		test("KNOWN GAP (F4): a watermarked upsert overwrites the shared fields of a prior updateCommerceFields edit — remove this case when #93 (F4) lands", async () => {
+		// -- ONE HOME PER FIELD (#93 / F4), pinned where it actually lives -------
+		// This case REPLACES the long-standing `KNOWN GAP (F4)` case, which
+		// asserted the bug: a console reprice to 5000 reverting to the CMS
+		// widget's 9900 on the next publish. The CMS no longer stores commercial
+		// data (PR 1b), so the sync's upsert body is a title and a watermark, and
+		// the reversion is now structurally impossible.
+		//
+		// It stays in the STORE contract rather than the plugin sandbox for the
+		// same reason the gap case did: a stub recorder has no store, so it can
+		// observe a request but never a reversion. Both halves are asserted —
+		// commercial fields byte-identical (the fix) AND the title updated (the
+		// surviving channel, which is the whole point of keeping the column).
+		test("#93 (F4) FIXED: a title-only sync upsert with a NEWER watermark leaves every console-edited commercial field byte-identical, and updates the title", async () => {
 			const h = await makeStore();
-			const pid = productId("prod-f4-clobber");
+			const pid = productId("prod-f4-no-clobber");
 			await h.store.upsert(
 				{
 					productId: pid,
-					sku: sku("SKU-F4"),
-					price: money(cents(1000), currency("USD")),
+					title: "Mug",
 					contentUpdatedAt: "2026-07-26T10:00:00.000Z",
 				},
 				idempotencyKey("f4-sync-1"),
 			);
 			const seeded = await h.store.getByProductId(pid);
 
-			// The merchant reprices in the console and sets two console-ONLY
-			// fields the Product data widget never sends.
+			// The merchant sets the whole commercial surface in Pricing &
+			// inventory — the ONLY editor of these fields now.
 			const edit = await h.store.updateCommerceFields(
 				{
 					productId: pid,
+					sku: sku("SKU-F4"),
 					price: money(cents(5000), currency("USD")),
 					compareAtPrice: money(cents(8000), currency("USD")),
+					unitCost: money(cents(1200), currency("USD")),
 					inventoryPolicy: "deny",
+					taxClass: "reduced",
+					weightGrams: 350,
+					lengthMm: 120,
+					widthMm: 90,
+					heightMm: 95,
+					productKind: "physical",
 				},
 				idempotencyKey("f4-console-edit"),
 				seeded!.updatedAt.toISOString(),
 			);
 			expect(edit.ok).toBe(true);
+			const priced = await h.store.getByProductId(pid);
 
-			// Then ANY publish of that product — even one whose content change is
-			// unrelated — re-derives the widget bag with a newer watermark.
+			// Then a CMS save/publish of that product — the exact event that used
+			// to revert the reprice. It carries a strictly newer watermark and a
+			// renamed title, and nothing else.
 			await h.store.upsert(
 				{
 					productId: pid,
-					sku: sku("SKU-F4"),
-					price: money(cents(9900), currency("USD")),
+					title: "Cobalt Mug",
 					contentUpdatedAt: "2026-07-26T11:00:00.000Z",
 				},
 				idempotencyKey("f4-sync-2"),
 			);
 
 			const after = await h.store.getByProductId(pid);
-			// The gap: a field the widget bag also owns REVERTS to the bag's value.
-			expect(after?.price).toEqual({ amount: 9900, currency: "USD" });
-			// The blast radius, asserted rather than asserted-in-prose: the upsert
-			// is field-partial, so console-ONLY fields survive untouched.
+			// HALF ONE — the fix. Every commercial field survives the sync
+			// untouched, including the price that used to revert.
+			expect(after?.sku).toBe("SKU-F4");
+			expect(after?.price).toEqual({ amount: 5000, currency: "USD" });
 			expect(after?.compareAtPrice).toEqual({ amount: 8000, currency: "USD" });
+			expect(after?.unitCost).toEqual({ amount: 1200, currency: "USD" });
 			expect(after?.inventoryPolicy).toBe("deny");
+			expect(after?.taxClass).toBe("reduced");
+			expect(after?.weightGrams).toBe(350);
+			expect(after?.lengthMm).toBe(120);
+			expect(after?.widthMm).toBe(90);
+			expect(after?.heightMm).toBe(95);
+			expect(after?.productKind).toBe(priced?.productKind);
+			// HALF TWO — the surviving channel. The sync IS the title's writer, so
+			// the rename must land; the column exists to be an order line's
+			// snapshot source without a cross-database read.
+			expect(after?.title).toBe("Cobalt Mug");
+			// …and the ordering watermark advanced, which is what keeps a delayed
+			// out-of-order save from reinstating the old name.
+			expect(after?.contentUpdatedAt).toBe("2026-07-26T11:00:00.000Z");
+		});
+
+		// §4.4 — the state PR 1b creates. The CMS sync now upserts a row for
+		// EVERY products document, so publishing a product nobody ever priced
+		// activates a commerce-incomplete row. Benign for purchasability, but a
+		// real new state, so it is pinned: the row exists, it is active, and the
+		// catalog read still refuses to return it.
+		test("§4.4: a title-only row that is ACTIVE is still absent from listCommerceByIds (active ≠ purchasable)", async () => {
+			const h = await makeStore();
+			const pid = productId("prod-active-unpriced");
+			await h.store.upsert(
+				{ productId: pid, title: "Unpriced Mug", contentUpdatedAt: WM },
+				idempotencyKey("unpriced-sync"),
+			);
+			await h.store.activate(pid, idempotencyKey("unpriced-pub"), WM);
+
+			const row = await h.store.getByProductId(pid);
+			expect(row).not.toBeNull();
+			expect(row?.active).toBe(true);
+			expect(row?.sku).toBeNull();
+			expect(row?.price).toBeNull();
+
+			// The catalog read filters commerce-incomplete rows in SQL, so no
+			// commerce data comes back for this product and `joinProduct` reports
+			// `purchasable: false`. (The storefront still LISTS it — that grid is
+			// built from CMS content — but with no price and no add-to-cart.) The
+			// admin's status column says "active (not priced)" for exactly this row.
+			expect(await h.store.listCommerceByIds([pid])).toEqual([]);
 		});
 
 		// Review S3 — soft-delete frees the SKU for reuse; live rows still contend.
