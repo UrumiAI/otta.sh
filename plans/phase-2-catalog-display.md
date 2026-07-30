@@ -245,7 +245,7 @@ question in §4.1:
 
 - **Full-text search lives on the CMS content side** (EmDash FTS5, `site.search()`,
   title-weighted per `component-map.md` §2) — it is a tier-① capability the plugin
-  configures/enables, not something Urumi builds. The commerce service has no text index and
+  configures/enables, not something Otta builds. The commerce service has no text index and
   is never queried for search; it is only ever queried for **commercial data on a known set
   of ids** (the ids the CMS search already returned).
 - **Taxonomies** (categories/tags) are native EmDash taxonomy CRUD attached to the `products`

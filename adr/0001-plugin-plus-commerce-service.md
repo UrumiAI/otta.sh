@@ -5,7 +5,7 @@
 
 ## Context
 
-Urumi is a WooCommerce-equivalent commerce layer for EmDash. The obvious shape — "put
+Otta is a WooCommerce-equivalent commerce layer for EmDash. The obvious shape — "put
 everything in an EmDash plugin" — collides with how EmDash's plugin sandbox works
 (verified in source):
 
@@ -28,7 +28,7 @@ Options considered:
 
 ## Decision
 
-Ship Urumi as **two parts**:
+Ship Otta as **two parts**:
 
 1. A **sandbox-clean EmDash plugin** — storefront routes, content-sync hooks, the
    on-screen product-data field widget, cart/checkout orchestration, x402 entitlement
@@ -47,7 +47,7 @@ Ship Urumi as **two parts**:
 - **Portability:** the plugin stays sandbox-clean and works on Node (workerd sidecar) and
   Cloudflare (Dynamic Workers) alike; egress works in both sandboxes. It also sidesteps the
   EmDash constraint that sandboxed plugins are D1-only — commerce never touches EmDash's DB.
-- **Not a pure plugin.** Installing Urumi means running a companion service. Accepted
+- **Not a pure plugin.** Installing Otta means running a companion service. Accepted
   tradeoff; it is the price of correctness under the sandbox model.
 - **Boundary discipline:** the plugin↔service contract is HTTP only. No shared DB, no
   shared process. This is enforced by the sandbox, not just convention.

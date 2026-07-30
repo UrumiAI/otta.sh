@@ -1,6 +1,6 @@
 # Plan — Admin UI density & layout cleanup
 
-Status: **ready to build** (2026-07-30, amended three times — most recently to match the spec's revision 4, after increment 3 shipped). Scope: the **seven** Urumi admin screens
+Status: **ready to build** (2026-07-30, amended three times — most recently to match the spec's revision 4, after increment 3 shipped). Scope: the **seven** Otta admin screens
 under `packages/plugin/src/admin/` — Orders, Pricing & inventory, Coupons, Tax, Shipping, Reports
 and Settings (`admin-route.ts:83-101`). Earlier revisions said "six". Verified against a live local staging admin (Orders, order
 detail, Pricing & inventory) and against the em-dash Block Kit that staging actually runs.
@@ -246,7 +246,7 @@ rows only handle sort and load-more. That is the sole reason the "Open X" select
 on every list. Add an optional `row_action_id` to `TableBlock` in the em-dash fork
 (`/home/azureuser/emdash-fork`, branched from freshly-synced `main`), then delete the
 open-forms plugin-side. Route it upstream the same way as the conditional-writes PRs — set the
-commit author to `Vedanshu <vedanshu@urumi.ai>` and follow the PR template.
+commit author to `Vedanshu <vedanshu@otta.sh>` and follow the PR template.
 
 Until that lands, the open-select stays; increments 1–5 do not depend on it.
 

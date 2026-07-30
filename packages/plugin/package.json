@@ -42,11 +42,11 @@
 	},
 	"devDependencies": {
 		"@hono/node-server": "catalog:",
-		"@types/node": "catalog:",
 		"@otta-sh/domain": "workspace:*",
 		"@otta-sh/payments-stripe": "workspace:*",
 		"@otta-sh/service": "workspace:*",
 		"@otta-sh/store-postgres": "workspace:*",
+		"@types/node": "catalog:",
 		"tsdown": "catalog:",
 		"typescript": "catalog:",
 		"vitest": "catalog:",

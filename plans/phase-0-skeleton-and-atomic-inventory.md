@@ -529,9 +529,9 @@ Two jobs; the second depends on the first passing.
      enforced) → `pnpm -r build` → `pnpm test` (SQLite + fake contract suite; pg-required
      specs self-skip because `PG_CONNECTION_STRING` is unset).
 2. **`integration`** (`needs: unit`, Postgres service container):
-   - `services.postgres`: `postgres:16`, `POSTGRES_PASSWORD`, `POSTGRES_DB=urumi_test`,
+   - `services.postgres`: `postgres:16`, `POSTGRES_PASSWORD`, `POSTGRES_DB=otta_test`,
      `ports: 5432:5432`, health-check (`pg_isready`) so the job waits until ready.
-   - `env.PG_CONNECTION_STRING: postgres://postgres:postgres@localhost:5432/urumi_test`.
+   - `env.PG_CONNECTION_STRING: postgres://postgres:postgres@localhost:5432/otta_test`.
    - `pnpm install --frozen-lockfile` → `pnpm test:pg` — runs the **Postgres** contract
      dialect, the **no-oversell** acceptance test (0.5), and the **live-server HTTP contract**
      test (0.6). Because `PG_CONNECTION_STRING` is set, the `skipIf` guards flip on and these

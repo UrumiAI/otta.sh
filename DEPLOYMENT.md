@@ -1,6 +1,6 @@
-# Deploying Urumi
+# Deploying Otta
 
-How to stand up a working Urumi store from a fresh clone: the commerce service plus a
+How to stand up a working Otta store from a fresh clone: the commerce service plus a
 storefront site, in either of the two supported shapes. Architecture background lives in
 [`README.md`](./README.md); design decisions in [`adr/`](./adr/). This guide is
 self-contained — section references like "§4" point inside this file.
@@ -9,13 +9,13 @@ self-contained — section references like "§4" point inside this file.
 
 ## 0. What you are deploying
 
-Urumi is **two deployables and two databases**:
+Otta is **two deployables and two databases**:
 
 1. **The commerce service** (`@otta-sh/service`) — a Hono REST API that owns all money and
    stock truth. It ships two entries from one codebase: a Node bin (`dist/index.mjs`
    post-publish; run via tsx from a checkout today — see §2.2) and a Cloudflare Worker
    (`src/worker.ts`). It needs a **Postgres** database and migrates itself forward on boot.
-2. **The storefront site** (`sites/staging`) — an EmDash CMS site with the Urumi plugin
+2. **The storefront site** (`sites/staging`) — an EmDash CMS site with the Otta plugin
    registered trusted in-process. It needs a **content database of its own** (D1 on Workers),
    entirely separate from the commerce Postgres. `sites/staging` is the reference site: copy
    it for your own store rather than treating it as staging-only.
@@ -154,7 +154,7 @@ Three options, in increasing effort:
   (provision the `SERVICE_API_TOKEN` write gate per §4 first).
 - **Run an EmDash site on Node.** Follow EmDash's upstream Node deployment guide
   (`deployment/nodejs.mdx` in the [EmDash repo](https://github.com/emdash-cms/emdash)) and
-  apply the Urumi deltas from `sites/staging`: register the plugin trusted via a descriptor
+  apply the Otta deltas from `sites/staging`: register the plugin trusted via a descriptor
   (ADR-0006), bake `COMMERCE_SERVICE_URL` at build time, and port the theme pages + `/cart/*`
   cookie-shim endpoints. No Node-adapter site exists in this repo; this path is
   link-out-plus-deltas, not a tested recipe.
@@ -199,7 +199,7 @@ paid plan:
 2. **Create the Hyperdrive config with query caching disabled** (from `packages/service`):
 
    ```bash
-   wrangler hyperdrive create urumi-commerce-db \
+   wrangler hyperdrive create otta-commerce-db \
      --connection-string="postgres://USER:PASSWORD@YOUR-DB-HOST:5432/YOUR-DB-NAME" \
      --caching-disabled
    ```
@@ -211,7 +211,7 @@ paid plan:
 
 3. **Fill in the local config.** The tracked `packages/service/wrangler.jsonc` is a
    **template** with placeholder values. Copy it to `wrangler.local.jsonc` (gitignored) and
-   set your own Worker `name` (over the `my-urumi-commerce` placeholder) and your Hyperdrive
+   set your own Worker `name` (over the `my-otta-commerce` placeholder) and your Hyperdrive
    `id` (over the all-zero placeholder). The origin credentials live in the Hyperdrive
    config platform-side — there is no `PG_CONNECTION_STRING` secret on Workers.
 
@@ -226,7 +226,7 @@ paid plan:
    >
    > | Deployable | Correct deploy command | What the wrong form does |
    > |---|---|---|
-   > | service (`packages/service`) | `wrangler deploy --config wrangler.local.jsonc` | plain `wrangler deploy` — including the package's `pnpm deploy` script — reads the tracked **template** and deploys a Worker named `my-urumi-commerce` with the all-zero Hyperdrive id |
+   > | service (`packages/service`) | `wrangler deploy --config wrangler.local.jsonc` | plain `wrangler deploy` — including the package's `pnpm deploy` script — reads the tracked **template** and deploys a Worker named `my-otta-commerce` with the all-zero Hyperdrive id |
    > | site (`sites/staging`) | plain `wrangler deploy` (after the §3.2 build) | `wrangler deploy --config wrangler.local.jsonc` bypasses the `.wrangler/deploy` redirect to the adapter-generated config and tries to rebundle the raw worker source |
    >
    > The asymmetry covers **deploy only**. `wrangler secret put` always takes
@@ -261,7 +261,7 @@ paid plan:
    ```
 
 2. **Fill in the local config.** Copy `sites/staging/wrangler.jsonc` (also a template) to
-   `wrangler.local.jsonc` (gitignored) and set your Worker `name` (over `my-urumi-store`),
+   `wrangler.local.jsonc` (gitignored) and set your Worker `name` (over `my-otta-store`),
    D1 `database_name`/`database_id`, and R2 `bucket_name`. Leave the
    `global_fetch_strictly_public` compatibility flag alone — §3.5 explains it.
 
@@ -276,7 +276,7 @@ paid plan:
    The site's "never `--config`" rule (step 5) applies to **deploy only** — deploy must
    follow the build's `.wrangler/deploy` redirect. `wrangler secret put` never reads that
    redirect: without `--config` it defaults to the tracked template and targets a Worker
-   named `my-urumi-store` — a phantom; your real Worker would then first-boot without its
+   named `my-otta-store` — a phantom; your real Worker would then first-boot without its
    only required secret.
 
 4. **Build with the real service URL.** The Cloudflare adapter reads `wrangler.local.jsonc`
@@ -313,7 +313,7 @@ paid plan:
 3. **Smoke:** `/products` renders the sample catalog (or the friendly empty state); create
    and publish a product in the admin and watch the service log the sync upsert; price it
    in the admin's **Pricing & inventory** page (the CMS holds no commercial data);
-   add-to-cart sets the `urumi_cart` cookie and creates a hold. The three sample products
+   add-to-cart sets the `otta_cart` cookie and creates a hold. The three sample products
    are content-only until you price them — the seed fires no content hooks, so either
    price them in Pricing & inventory or run `sites/staging/scripts/seed-demo-commerce.ts`
    against the service. On a deployed site every one of these matters — in particular
@@ -451,7 +451,7 @@ note). In order of appearance in a deployment's life:
   *same* PaymentIntent, and `expire-orders` sweeps the order at the checkout TTL (releasing
   stock and any coupon use) if it never gets paid.
 
-> **Live Stripe is TWO-DECIMAL currencies only.** Urumi stores money as integer minor units
+> **Live Stripe is TWO-DECIMAL currencies only.** Otta stores money as integer minor units
 > at hundredths scale everywhere, while Stripe expects `amount` in each currency's own
 > smallest unit. For **zero-decimal** currencies (JPY, KRW, CLP, VND, BIF, DJF, GNF, KMF,
 > MGA, PYG, RWF, UGX, VUV, XAF, XOF, XPF) that would charge the buyer **100×**, and for
@@ -501,7 +501,7 @@ Node bin and Worker read the **same names by design** — on Workers, plain vars
 | `X402_ALLOW_TEST_FACILITATOR` | both | unset ⇒ x402 config **refuses to start** | must be `true` to arm the TEST facilitator — never in production (§4) |
 | `EMAIL_API_URL` | both | unset ⇒ console sender (log-only) | HTTP email API endpoint |
 | `EMAIL_API_KEY` | both | unset | email API key |
-| `EMAIL_FROM` | both | `no-reply@urumi.local` | From address |
+| `EMAIL_FROM` | both | `no-reply@otta.local` | From address |
 | `STOREFRONT_BASE_URL` | both | unset ⇒ magic-link emails carry raw credentials, no URL | absolute base URL for login links |
 | `COMMERCE_SERVICE_URL` | site, **build time** | placeholder ⇒ inert egress | baked into bundle + `allowedHosts` (§1) |
 | `EMDASH_ENCRYPTION_KEY` | site, secret | — | §4 |

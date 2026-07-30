@@ -1,8 +1,8 @@
-# Urumi — Development Practices
+# Otta — Development Practices
 
-_How we build Urumi. Read this before writing code._
+_How we build Otta. Read this before writing code._
 
-Urumi is a standalone repo (its own git history, its own pnpm workspace) that
+Otta is a standalone repo (its own git history, its own pnpm workspace) that
 **mirrors [EmDash]'s conventions** without inheriting its config. Where EmDash has a
 practice that fits a commerce service, we copy it. Where commerce needs more (money,
 concurrency, idempotency), we add rules EmDash doesn't have.
@@ -16,7 +16,7 @@ concurrency, idempotency), we add rules EmDash doesn't have.
 The order is always: **failing test → code → green → refactor.** A behavior without a
 reproducing test is not done, and a bug without a reproducing test is not fixed.
 
-Urumi's stronger rule: **the contract test suite is the spec.** For anything in
+Otta's stronger rule: **the contract test suite is the spec.** For anything in
 `@otta-sh/domain`, write the behavioral test against the **port interface** before writing
 any adapter. The adapter is "done" the day it turns that suite green — nothing else counts
 as done.

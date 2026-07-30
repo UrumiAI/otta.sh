@@ -1,6 +1,6 @@
 # Phase 7 — Reports / settings / polish
 
-_Implementation plan (no code). Principal-engineer sequencing for Phase 7 of Urumi._
+_Implementation plan (no code). Principal-engineer sequencing for Phase 7 of Otta._
 
 > Governing rule (DEVELOPMENT.md §1, CLAUDE.md): **failing test → code → green → refactor.**
 > For anything landing in `@otta-sh/domain`, the behavioral test is written against the **port**

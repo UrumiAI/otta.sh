@@ -10,7 +10,11 @@
  * rather than figures, and it writes the footnote that NAMES what the total is
  * missing.
  */
-import { NOT_APPLICABLE_LABEL, NOT_CALCULATED_LABEL, type CheckoutAmountView } from "@otta-sh/plugin";
+import {
+	NOT_APPLICABLE_LABEL,
+	NOT_CALCULATED_LABEL,
+	type CheckoutAmountView,
+} from "@otta-sh/plugin";
 import { describe, expect, test } from "vitest";
 import { PRICED_AT_CHECKOUT_LABEL, UNAVAILABLE_LABEL } from "../src/lib/cart-view.js";
 import {

@@ -6,7 +6,7 @@
 
 ## Context
 
-ADR-0001 splits Urumi into a sandbox-clean plugin and a separate commerce service
+ADR-0001 splits Otta into a sandbox-clean plugin and a separate commerce service
 because the EmDash plugin sandbox exposes **no atomic/CAS write, no DB-enforced unique
 constraint, no cross-call transaction, and no DDL** — verified against source
 (`ctx.storage` is a shared `_plugin_storage` JSON document store whose only write is an
@@ -33,7 +33,7 @@ Two things stay true regardless:
 
 ## Decision
 
-Build Urumi as a **host-agnostic commerce domain behind two ports**, so the transport
+Build Otta as a **host-agnostic commerce domain behind two ports**, so the transport
 (plugin↔authority) and the storage (domain↔database) are each swappable adapters. The
 plugin/service split becomes a **wiring choice per deployment, not a structural
 commitment.**

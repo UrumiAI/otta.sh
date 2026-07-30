@@ -1,6 +1,6 @@
 # Phase 1 — Product model + sync
 
-_Implementation plan (no code). Principal-engineer sequencing for Phase 1 of Urumi._
+_Implementation plan (no code). Principal-engineer sequencing for Phase 1 of Otta._
 
 > Governing rule (DEVELOPMENT.md §1, CLAUDE.md): **failing test → code → green → refactor.**
 > A step is done only when its named test is green. New service surface is contract-first:
@@ -17,7 +17,7 @@ Grounding facts verified against the EmDash clone (`~/em-dash`) are cited inline
 
 **Goal.** Wire the hybrid product model end-to-end: a native EmDash `products` collection
 owns content; the commerce service owns commercial data in a `product_commerce` row keyed by
-the CMS content `id`; the Urumi plugin (`@otta-sh/plugin`) keeps them in sync via content
+the CMS content `id`; the Otta plugin (`@otta-sh/plugin`) keeps them in sync via content
 lifecycle hooks and lets an editor set commercial fields from a Block Kit "Product data"
 panel. This is the first phase that introduces `@otta-sh/plugin`; it consumes the `CommerceClient`
 transport port (ADR-0002 §3) and a new `ProductCommerceStore` storage port added to Phase 0's
@@ -203,10 +203,10 @@ content:read`); it must **not** block or fail the CMS save. Design:
 
 ```
 definePlugin({
-  id: "urumi",
+  id: "otta",
   version,
   capabilities: ["content:read", "network:request"],   // nothing else
-  allowedHosts: [COMMERCE_SERVICE_HOST],                // e.g. "commerce.example.com" or "*.urumi.internal"
+  allowedHosts: [COMMERCE_SERVICE_HOST],                // e.g. "commerce.example.com" or "*.otta.internal"
   hooks: { "content:afterSave", "content:afterDelete", "content:afterPublish"?, "cron"? },
   routes: [{ path: "product-commerce", public: false, input: <zod> }],
   admin: { fieldWidgets: [ productDataWidget ] },

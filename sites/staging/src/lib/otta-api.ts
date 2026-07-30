@@ -20,14 +20,11 @@ export async function dispatchOttaRoute<TResult>(
 	baseUrl: URL,
 ): Promise<TResult | null> {
 	if (handler === undefined) return null;
-	const request = new Request(
-		new URL(`/_emdash/api/plugins/${OTTA_PLUGIN_ID}/${route}`, baseUrl),
-		{
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify(input),
-		},
-	);
+	const request = new Request(new URL(`/_emdash/api/plugins/${OTTA_PLUGIN_ID}/${route}`, baseUrl), {
+		method: "POST",
+		headers: { "Content-Type": "application/json" },
+		body: JSON.stringify(input),
+	});
 	try {
 		const response = await handler(OTTA_PLUGIN_ID, "POST", `/${route}`, request);
 		if (typeof response !== "object" || response === null) return null;

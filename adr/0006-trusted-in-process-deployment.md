@@ -6,7 +6,7 @@
 
 ## Context
 
-The staging storefront (`sites/staging`) deploys EmDash + the Urumi plugin to Cloudflare
+The staging storefront (`sites/staging`) deploys EmDash + the Otta plugin to Cloudflare
 Workers. EmDash's plugin sandbox on Workers runs each sandboxed plugin in an isolate via a
 Worker Loader binding — and Worker Loaders are the cost pivot that flips the account onto
 Workers Paid. For a single-tenant, first-party store there is no third-party code to

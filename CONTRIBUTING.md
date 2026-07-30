@@ -1,4 +1,4 @@
-# Contributing to Urumi
+# Contributing to Otta
 
 Thanks for your interest in contributing. This is a quick, practical guide to getting set
 up and sending a change. The **why** behind these rules lives in

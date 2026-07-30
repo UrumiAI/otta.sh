@@ -1,4 +1,4 @@
-# "Tempered" — the Urumi reference storefront theme
+# "Tempered" — the Otta reference storefront theme
 
 Design direction for `sites/staging`, approved 2026-07-28. This file is the **spec**;
 [`tempered-mockup.html`](./tempered-mockup.html) is the rendered reference — open it in a
@@ -12,7 +12,7 @@ markup. Nothing in here belongs in `@otta-sh/plugin`.
 
 ## 1. Why it looks like this
 
-An urumi is a ribbon of spring steel, worn coiled. Heat spring steel and it runs through
+An otta is a ribbon of spring steel, worn coiled. Heat spring steel and it runs through
 straw → bronze → violet → deep blue: an **ordered** scale. The store has ordered states too
 (available → held → expiring → released; pending → paid / failed / expired). The palette is
 that scale, so colour carries state instead of decorating.

@@ -153,7 +153,7 @@ two `pending` copy variants ("payment submitted, confirming…" vs "awaiting pay
 `pending`, it polls with a bounded `<meta http-equiv="refresh">` (8 refreshes, ≈30 s) and then
 offers a manual "Check again" link. No JS, no busy loop.
 
-**6. The client secret reaches a URL bar regardless, and we accept that.** The `urumi_checkout`
+**6. The client secret reaches a URL bar regardless, and we accept that.** The `otta_checkout`
 cookie (`httpOnly`, `secure`, `SameSite=Lax`, `path=/`, 15-minute `maxAge`) keeps the client
 secret out of *our* URLs on the site→`/checkout/pay` leg — the leg we control, and the one
 where a secret in a query string gets bookmarked and pasted into support tickets. **It does

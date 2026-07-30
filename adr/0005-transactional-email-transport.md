@@ -42,5 +42,5 @@ transactional-API provider's idempotency key (`HttpEmailSender` passes the outbo
 - The plugin declares **no** `email:send` capability — confirmed by the sandbox capability-surface
   check (only `content:read` + `network:request`).
 
-_Accepted 2026-07-11 — signed off by the maintainer (vedanshu@urumi.ai), implemented per the
+_Accepted 2026-07-11 — signed off by the maintainer (vedanshu@otta.sh), implemented per the
 Phase 5 plan §6 recommendation._

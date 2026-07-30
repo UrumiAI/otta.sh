@@ -47,5 +47,5 @@ the verifier. Sessions are opaque and DB-backed so revocation actually works.
   mechanism proving email ownership — revisit if the mechanism (this ADR) changes to one that
   doesn't (e.g. plain password).
 
-_Accepted 2026-07-11 — signed off by the maintainer (vedanshu@urumi.ai), implemented per the
+_Accepted 2026-07-11 — signed off by the maintainer (vedanshu@otta.sh), implemented per the
 Phase 5 plan §4 recommendation._

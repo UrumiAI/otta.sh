@@ -1,4 +1,4 @@
-# CLAUDE.md — Urumi
+# CLAUDE.md — Otta
 
 Operational guide for Claude working in this repo. The **why** lives in
 [`DEVELOPMENT.md`](./DEVELOPMENT.md) (development practices) and [`README.md`](./README.md)
@@ -87,7 +87,7 @@ Every task is verified end-to-end before the PR is handed over (default, not opt
 For parallel or agent-driven work, use one git worktree per task, branched from fresh
 `origin/main`:
 
-- **Worktree convention:** siblings named `../urumi-wt-<slug>`.
+- **Worktree convention:** siblings named `../otta-wt-<slug>`.
 - **Branch types & PR tags:** as above.
 - **Verification policy:** as above — the contract suite is the gate; never mark a task done
   while tests fail; **never push to `main`**, merging is user-gated.

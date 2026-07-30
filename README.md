@@ -1,4 +1,4 @@
-# Urumi — an open-source commerce layer for EmDash
+# Otta — an open-source commerce layer for EmDash
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Version](https://img.shields.io/badge/version-0.0.1-orange.svg)](https://github.com/UrumiAI/otta.sh/releases/tag/v0.0.1)
@@ -6,28 +6,28 @@
 Open source (MIT), version 0.0.1. The WooCommerce-equivalent for
 [EmDash](https://github.com/emdash-cms/emdash), Cloudflare's TypeScript CMS.
 
-![The Urumi storefront: a product listing with three sample products, each showing generated coil artwork, a title, a description, a price, and whether it is in stock — the first is sold out, its price struck through](./docs/storefront.png)
+![The Otta storefront: a product listing with three sample products, each showing generated coil artwork, a title, a description, a price, and whether it is in stock — the first is sold out, its price struck through](./docs/storefront.png)
 
 <sub>The reference storefront running locally, with prices and stock served by the commerce
 service — this is what the [quick start](#quick-start-local-2-minutes) below gives you.</sub>
 
 ## What this is
 
-Urumi turns an EmDash site into a store. It ships as three parts:
+Otta turns an EmDash site into a store. It ships as three parts:
 
-1. **Urumi plugin** — a sandbox-clean EmDash plugin: storefront routes, content-sync
+1. **Otta plugin** — a sandbox-clean EmDash plugin: storefront routes, content-sync
    hooks, cart/checkout orchestration, an admin console (pricing & inventory, orders,
    reports, settings), and x402 gating for digital goods. Talks to the commerce service
    over HTTP only (`network:request` + `allowedHosts`). The CMS owns content; every
    commercial field lives in the commerce service and is edited in the admin console.
-2. **Urumi commerce service** — a standalone Node/Hono + Postgres service that owns all
+2. **Otta commerce service** — a standalone Node/Hono + Postgres service that owns all
    money and stock truth: catalog, inventory, cart, checkout, orders, customers,
    payments, tax, shipping, discounts, entitlements, reporting, and webhooks.
 3. **The reference site** (`sites/staging`) — a default EmDash site with the plugin already
    registered, so there's something to actually run. It's the storefront in the screenshot
    above and what the [quick start](#quick-start-local-2-minutes) boots: product listing
    pages, cart, and the admin console. Treat it as the worked example to copy from when
-   wiring Urumi into your own site — it covers **catalog + cart only** today (see
+   wiring Otta into your own site — it covers **catalog + cart only** today (see
    [Status](#status)).
 
 ## Quick start (local, ~2 minutes)
@@ -41,12 +41,12 @@ pnpm install
 
 # 1. Commerce database — any Postgres works; a throwaway container is fastest.
 #    (Host port 55432, not 5432, so it can't collide with a local Postgres.)
-docker run -d --name urumi-pg \
-  -e POSTGRES_USER=urumi -e POSTGRES_PASSWORD=urumi -e POSTGRES_DB=urumi \
+docker run -d --name otta-pg \
+  -e POSTGRES_USER=otta -e POSTGRES_PASSWORD=otta -e POSTGRES_DB=otta \
   -p 127.0.0.1:55432:5432 postgres:16
 
 # 2. Commerce service — migrates itself forward on boot, then listens on :3000.
-PG_CONNECTION_STRING=postgres://urumi:urumi@127.0.0.1:55432/urumi \
+PG_CONNECTION_STRING=postgres://otta:otta@127.0.0.1:55432/otta \
   pnpm dlx tsx@4 packages/service/src/index.ts
 ```
 

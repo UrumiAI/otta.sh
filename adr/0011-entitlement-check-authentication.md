@@ -116,7 +116,7 @@ non-ASCII folding without a shared collation, and fail-closed is the safe defaul
   *logged-in* customer who checks out with a *different* delivery email gets an entitlement invisible
   to their session forever — recoverable only via the `orderId` capability. Not an open question — a
   known, bounded gap with a recovery path, tracked at
-  https://github.com/UrumiAI/commerce/issues/89.
+  https://github.com/UrumiAI/otta.sh/issues/89.
 - **The orderId bearer-capability call is auditable.** Residual `orderId` exposure lands only in
   trusted/operator channels: GET query strings in server/proxy access logs, Stripe webhook metadata,
   the admin UI. The plugin invokes the download check as a **POSTed route input**, keeping the id out
@@ -128,7 +128,7 @@ non-ASCII folding without a shared collation, and fail-closed is the safe defaul
   identity, not just a yes/no. So issue #89 above must not be read as implying `/entitlements/check`
   is the primary residual oracle; any future tightening of orderId-as-capability must cover **both
   endpoints together**, with `/orders/:id` the priority. Tracked at
-  https://github.com/UrumiAI/commerce/issues/90.
+  https://github.com/UrumiAI/otta.sh/issues/90.
 
 ## Alternatives considered
 

@@ -8,7 +8,11 @@
  * refuses to turn a synthetic zero into money; these tests hold the rendering
  * half of that contract.
  */
-import { NOT_APPLICABLE_LABEL, NOT_CALCULATED_LABEL, type CheckoutAmountView } from "@otta-sh/plugin";
+import {
+	NOT_APPLICABLE_LABEL,
+	NOT_CALCULATED_LABEL,
+	type CheckoutAmountView,
+} from "@otta-sh/plugin";
 import { experimental_AstroContainer as AstroContainer } from "astro/container";
 import { beforeAll, describe, expect, test } from "vitest";
 import Ledger from "../src/components/Ledger.astro";
