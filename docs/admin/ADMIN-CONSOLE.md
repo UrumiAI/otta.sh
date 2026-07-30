@@ -1,6 +1,6 @@
 # Urumi admin console — design spec
 
-Status: **normative** (2026-07-30, revision 4, plus two amendments. **(1)** DA-3a-ii is **replaced**
+Status: **normative** (2026-07-30, revision 4, plus three amendments. **(1)** DA-3a-ii is **replaced**
 and DA-3a-iii added, because the scaffold gained a render-state channel in `ce5eecb` and
 revision 4's DA-3a-ii said it had none. **(2)** Four rules kept their requirements and had their
 **stated reasons** corrected, each having confused the emitted response with what the operator sees:
@@ -10,7 +10,13 @@ being wrong (`actions` is one horizontal row); **F-5a-i** is new, because F-5a's
 hazard may no longer be excused as "realistically one group is open" — open state is sticky, so a
 split form set must carry a `context` line saying so (X-45); and **DA-3**'s outermost-group rule
 keeps its wording but drops "the confirm is invisible", which was checkably false, for the real
-ground: a response must not depend on client state it did not set.) Applies to all **seven** admin
+ground: a response must not depend on client state it did not set. **(3)** Three practices the
+reference screen's engineer added beyond their brief are promoted to rules — **DA-3a-iv** (an absent
+watermark refuses), **DA-3c-i** (a `-review` that renders a watermark-bearing confirm re-reads first)
+and **DA-3a-v**/**DA-3a-vi** (what a refusal body may and must contain) — and one **accepted
+limitation** is recorded as **B-8**: *you cannot close a group*, so two visibly-open groups after a
+refusal are permanent and must not be "fixed". §0.3 collects that limitation and two accepted trades;
+§15.2 is the eight-item list of what a following team predictably gets wrong.) Applies to all **seven** admin
 screens under
 `packages/plugin/src/admin/` — Orders, Pricing & inventory, Coupons, Tax, Shipping, Reports and
 Settings, as registered at `admin-route.ts:83-101`. (Earlier revisions said "six"; the count was
@@ -37,6 +43,13 @@ Everything below was verified three ways:
 So the fork checkout is a faithful read of what staging runs. **Citations in this document are to
 the fork source and the installed 0.31.1 dist; they are valid for 0.29.0 as well.** Do not send a
 team diffing against the 0.29.0 tag — the repo no longer uses it.
+
+**`orders-page.ts` line citations are to PR #161's COMMITTED state**, i.e. the tip commit of
+`feat/admin-orders-layout` (`git show <tip>:packages/plugin/src/admin/orders-page.ts`), **not** to a
+working tree. That branch is still in revision, so a checkout may be ahead of it by a few dozen lines
+and every number below will be off. Resolve a citation by the surrounding **identifier** — the function
+or constant named beside it — and treat the line number as a hint. Scaffold and renderer citations are
+to `origin/main` and to the pinned 0.31.1 respectively, both stable.
 
 **How to use this document.** Rules are numbered (`P-1`, `L-3`, `T-5`…). A reviewer cites the
 number and marks pass/fail against the diff. Every rule here is decidable by reading the diff or
@@ -247,7 +260,7 @@ is the index so nothing is buried. **Read your screen's rows before you start.**
 
 **#161's disclosures were written against revision 3, not this text.** So they quote rule wording,
 section counts and listing lines that revision 4 has since changed — `select`-vs-`combobox` throughout,
-X-11's "eight budgets" (now seven), §13's "23 of 33" (now 30 of 46), V-1's foundation ownership, and the
+X-11's "eight budgets" (now seven), §13's "23 of 33" (now 31 of 52), V-1's foundation ownership, and the
 §11.2 lines fixed below. Reading that PR against this document, the offsets are the **fix**, not
 staleness: every one of the nineteen is live and indexed here.
 
@@ -280,6 +293,72 @@ Two of the nineteen are recorded and **not** fixed here: an unclickable tracking
 *implementation* was a more reliable guide to the renderer than this document. Three of its four
 substantive defects came from a listing that contradicted a rule. Assume this document is still wrong
 somewhere; N-1 tells you what to do when you find it.
+
+### 0.3 Accepted limitations and trades — ruled on, not open
+
+Three things below look like defects on a screenshot or in a diff. All three have been ruled on and
+**none is to be "fixed"**. A PR that closes one of them is a change of direction and needs an ADR,
+not a commit.
+
+#### ⚠ 1. You cannot close a group. Two open groups after a refusal are permanent. — **B-8**
+
+This is the single most likely thing for a following team to get wrong, so it is stated here and
+again as a rule in §10.
+
+`AccordionBlock` carries `type`, `label`, `blocks` and `default_open` and **nothing else** (installed
+0.31.1 `validation-5vL6669b.d.ts:306-311`; fork `types.ts:360-365`), and `default_open` is read
+**once, in a `useState` initialiser** (`blocks/accordion.tsx:14` —
+`useState(block.default_open ?? false)`, already R-14a). There is no `open` field, no close signal
+and no imperative channel in this vocabulary. The **only** thing that makes a mounted accordion
+re-read `default_open` is a changed React key, i.e. a changed `block_id`
+(`renderer.tsx:78` — `key={block.block_id ?? i}`).
+
+Therefore: **`default_open: false` on a group the operator — or an earlier D-5 rank — has already
+opened is a no-op**, and a D-5 rank-2 rule that opens a group guarantees **two visibly-open groups
+after every refusal on that screen, permanently.**
+
+**The ruling: accept it.** Forcing the other groups shut means changing their `block_id`s, which
+remounts them and **discards the operator's unsubmitted input** in those groups — the exact hazard
+F-5a-i documents and `filterRow()` was withdrawn for (§0.1 A). The cure is worse than the condition.
+So there is **no rule requiring other groups be forced shut**, and B-8 forbids inventing one.
+
+Read it together with **X-18** and **D-5**, which constrain the **emitted response** only. Two groups
+open in a screenshot is B-5 working as documented. See **B-8** for the full rule and **R-14a, B-5,
+B-6, F-5a-i** for the mechanism.
+
+#### 2. `failClosed()` does not say "nothing was changed" — accepted
+
+E-7's rewrite made the fail-closed banner honest about **cause**. It is still silent about **effect**:
+it does not tell the operator whether the write applied. That is deliberate, and no wording fixes it.
+
+`onError` is one function per level and the engine calls it from **one** `catch`
+(`scaffold/list-detail.ts:495-498`) wrapping `load`, `render` *and* `notFound` (`:489-499`). It fires
+whenever a re-render fails, and re-renders come from **both** of these:
+
+- a **`-review` or refusal** re-render, where nothing was written and "nothing was changed" would be
+  true and reassuring;
+- the **post-write** re-render, where the write already applied and "nothing was changed" would be a
+  **false statement about money** — the worst possible thing to say right after a refund.
+
+`showLeaf` is the same call on both paths and carries no "did I write" bit, so **no single wording can
+carry both**, and E-7's own discipline forbids asserting something the copy cannot know. The resolution
+is a division of labour: the *notice* carries the effect ("Nothing was refunded", "Refund recorded")
+and the *fail-closed banner* carries only the symptom. Accepted; do not add an effect claim to E-7's
+blockquote.
+
+#### 3. A refusal's `notice` is dropped on the `notFound` path — accepted
+
+`renderLeaf` passes **no notice** to `notFound`: `scaffold/list-detail.ts:491` is
+`if (detail === null) return { blocks: level.notFound({ actions, path, id }) };`, and the interface
+documents the omission (`:136-142`). So if the record stops resolving between a refusal's action and
+its re-render, the refusal banner **vanishes** and the operator sees only Orders' `notFound` blocks —
+`header` "Order not found" plus an `error` banner reading `No order matches "<id>"`
+(`orders-page.ts:653-664`).
+
+**Not unsafe:** every refusal applies nothing before re-rendering, so there is no write whose outcome
+went unreported, and the vanished record *is* the outcome that matters. DA-3a-iii property 4 already
+documents dropping *renderState* on this path; it is amended below to say the **notice** is dropped
+too, so nobody reads the silence as a bug.
 
 ---
 
@@ -595,6 +674,13 @@ an operator can therefore see two groups expanded while the response underneath 
 **Check the emitted JSON, never the screen:** two expanded groups in a screenshot are B-5 working
 exactly as documented and are **not** evidence of a D-5 or X-18 violation.
 
+**And this is permanent on any screen with a Rule-2 rank, which is accepted — see B-8.** On Orders,
+rank 2 opens `fulfilment`, so *every* refusal on that screen leaves two groups visibly open, for the
+rest of the session. There is **no close signal in this vocabulary** (B-8: `AccordionBlock` has only
+`default_open`, read once at mount), and the only way to force a group shut is to change its
+`block_id`, which **remounts it and discards the operator's unsubmitted input** (F-5a-i). Do not do
+it, and do not add a rule asking for it.
+
 **A rank the algorithm opens must still render.** Rank 2 fires on a `paid` order, where tracking is
 not yet capturable — so `fulfilment` opens with no form in it. **The group still renders, and its body
 is one honest DA-7 line naming the operator's real next act:** *"Tracking is recorded once this order
@@ -840,6 +926,15 @@ trimmed to it:
 
 > `<Screen> could not be loaded. Check the service connection and the admin token in Settings; if
 > both look right, this is a fault in the console itself — not your data.`
+
+**It deliberately does not say "nothing was changed", and that is an accepted trade, not an omission
+to fix (§0.3 item 2).** The banner is honest about **cause** and silent about **effect**: `onError` is
+reached from one `catch` (`scaffold/list-detail.ts:495-498`) that fires on a `-review`/refusal
+re-render — where "nothing was changed" would be true — *and* on the post-write re-render, where it
+would be a false statement about money. `showLeaf` is the same call on both paths and carries no
+"did I write" bit, so **no single wording can carry both**. The effect belongs in the *notice*
+("Nothing was refunded" / "Refund recorded"); the fail-closed banner carries only the symptom. Do not
+add an effect claim to the blockquote above.
 
 (164 chars at `Orders`.) Title: `<Screen> are unavailable` / `<Screen> is unavailable`. The last clause
 is the load-bearing one — it is the only thing that stops a console bug from being reported as an
@@ -1087,8 +1182,8 @@ One rule, applied identically on all seven screens.
 
 > **DA-1.** An irreversible write is triggered **only** by a `button` carrying a `confirm` dialog with
 > `style:"danger"`. A `form` may collect its inputs; a form submit may never be the trigger. The
-> button itself is `style:"danger"` too — **except** under DA-2c's fan-out cap, which is the one place
-> the red moves from the button into the dialog.
+> button itself is `style:"danger"` too — **except** under DA-2c's fan-out cap and on a DA-3a-v refusal
+> render, the **two** places the red moves from the button into the dialog.
 
 This resolves R-10 (forms cannot confirm) and removes the current inversion where "Mark refunded"
 is red-with-confirm while "Cancel order (cannot be undone)" is a plain submit.
@@ -1147,7 +1242,8 @@ trip, no staleness window, no staged payload to decode.
 which is why revision 3 left it out; but a **rendered button ages** — an operator can sit on a detail
 page for ten minutes while someone else moves the order. So every DA-2b button's `value` carries the
 watermark the operator saw, and its handler runs DA-3a's re-read-and-compare before writing. The cost
-is one request; the alternative is one class of write with no staleness check at all.
+is one request; the alternative is one class of write with no staleness check at all. **An absent
+watermark refuses** — it is never a reason to skip the compare (DA-3a-iv).
 
 This is why revision 3's §11.2 transition listing (`value {orderId, toState}`) was a defect: it made
 **status moves the only destructive write on the console exempt from DA-3a** (§0.2 E-l). Transitions
@@ -1223,9 +1319,10 @@ six screens will hit it:
 > collect-group is **not rendered at all** in state 2. One changed id, one flag, confirm on screen.
 
 So `orders:<id>:refunds:review` (not `…:refunds:refund-partial:review`), and the state-2 body of
-`Refunds` is `banner` + staged form + confirm — the ledger, the meter and the full-remaining DA-2b
-button are all suppressed, because the operator is mid-decision on one amount and a second refund
-control beside it is a trap.
+`Refunds` is `banner` + staged form + confirm — the ledger, the meter, the capability line and the
+full-remaining DA-2b button are all suppressed, because the operator is mid-decision on one amount and
+a second refund control beside it is a trap. **A refusal is not the same case: it keeps the read blocks
+its copy points at (DA-3a-vi), and suppresses only the controls (DA-3a-v).**
 
 - **Both halves of the force-open are required** (R-14a, B-6): a changed `block_id` remounts the
   group, and the remount re-reads `default_open`, which is `false` for a destructive group unless
@@ -1266,7 +1363,44 @@ The refusal is a state-1 re-render per DA-3a's shape, with copy naming the real 
 (92 chars.) **DA-3c does not replace DA-3a** — `-review` bound-checks what it renders; the confirm
 handler re-reads and compares watermarks. Different failures, both required.
 
-**DA-3a — every confirm handler re-reads before writing. Mandatory, no exceptions.** The handler
+**DA-3c-i — any `-review` that renders a confirm carrying a watermark RE-READS FIRST, and refuses on a
+mismatch.** DA-3c's own title is "not only the confirm handler"; this is the general form of it and it
+binds on every screen.
+
+A `-review` writes nothing, so it is tempting to treat it as pure formatting. It is not: it renders a
+**button label and a `confirm.text` that are statements over a watermark** — *"Cancel this order as
+'out of stock'? This is permanent…"*, *"Refund $99.00 to …?"* — and the confirm it draws carries that
+watermark into `button.value` for the write to compare against. If the record moved between the form
+rendering and this submit, the write **will** refuse (DA-3a), so the `-review` has rendered a
+statement it already knows to be false, on the one step that exists to let an operator check exactly
+that. **Rendering a statement the write will refuse is the defect the staged step exists to prevent.**
+
+So the `-review` re-reads whatever the write will compare, and refuses per DA-3a-i when it differs —
+naming the movement and its cause, not merely the mismatch. Concretely on Orders:
+`cancelReviewAction` re-reads the order (`orders-page.ts:2752`) before staging;
+`refundReviewAction` re-reads the ledger (`:2981`) before staging, and its watermark comparison runs
+**before** the DA-3c bound check (`:2997` then `:3004`), so the ceiling the bound check judges against
+is one the operator has now been shown.
+
+**The cost is one request, and it is priced.** DA-3a-ii already establishes that a staged or refused
+round trip pays the level's whole read set rather than avoiding it (five requests on Orders); the
+`-review`'s own read is **one more on top of that**, not free and not hidden. Nothing may buy it back
+with a client-side stash or a carried record (DA-3a-iii property 3).
+
+**Where this does not bind:** a `-review` whose staged confirm carries **no** watermark has nothing to
+compare and needs no read. That is a shape, not an excuse — a destructive confirm without a watermark
+is an X-38 violation on its own.
+
+**Count your refusal sites before you start, and expect one you did not plan for.** Orders has
+**five** handlers that can produce a refusal — `refundReviewAction`, `refundOrderAction`,
+`cancelReviewAction`, `cancelOrderAction`, `transitionAction` — and the plan listed **four**. The
+missed one was a **`-review`**, because nobody thinks of the staging step as a refusal site: it writes
+nothing, so it reads like validation. **Every DA-3 flow has one**, and DA-3a-i binds on it exactly as
+it binds on that flow's confirm. Enumerate the handlers in your PR body and state which of them can
+refuse; a flow whose `-review` is not on that list has not been counted.
+
+**DA-3a — every confirm handler re-reads before writing. Mandatory, no exceptions.** An absent
+watermark is itself a refusal, not a reason to skip the comparison (DA-3a-iv). The handler
 takes the watermark out of the staged payload, **re-reads the record**, and compares:
 
 - **Match** ⇒ derive the key per F-2a and write.
@@ -1301,12 +1435,27 @@ D-5 Rule 1 covers this: a DA-3a refusal **is** a state-2-shaped response for ope
 group forced open, every other `false`, X-18 satisfied. Say so in the render path; do not let the
 refusal fall into Rule 2.
 
+**The one shape these four clauses do not fit, and it is not an exemption.** All four are about a
+**group with a collect form in it**. A DA-2b/DA-2a control that is a bare `actions` button — a status
+move — has no group to force open and no operator-typed input to prefill, so its refusal passes **no
+render state at all** and re-renders the level plainly, with the notice naming both figures and the
+live state visible in the identity strip. That is Orders' `transitionAction`
+(`orders-page.ts:2478-2483`, where the reasoning is recorded). Everything else still binds: it applies
+nothing, it returns 200, and its copy names the cause (DA-3a, E-7). A screen invoking this shape says
+so in its PR; a DA-3 flow may never invoke it, because a DA-3 flow always has a form.
+
 **"State-2-shaped" scopes to which group is open, and to nothing else.** It settles `default_open` and
 the `block_id`; it licenses **nothing** about the body. A refusal's body is **state 1** — its alert
 banner, the collect form, the `Review …` submit — and it carries **no confirm control**, because the
 payload a confirm would carry is the payload just refused. Re-offering it re-stages a stale amount
 (DA-3a) or the very figure the bound check rejected (DA-3c) — a red `Refund $900.00` on a $50 order,
 §0.2 E-d walking back in.
+
+**"No confirm control" is the narrow case; DA-3a-v is the rule.** The general form is *no control that
+would commit the class of act just refused*, and it is scoped to **the refused group, not the whole
+response** — with a second half about the unrelated danger controls left loud on that render. Read
+DA-3a-v before implementing this clause, and DA-3a-vi for what the body **keeps**: "state 1" leaves the
+group's own read blocks undecided and DA-3a-vi decides them.
 
 **DA-3a-ii — a staged or refused re-render costs the leaf's normal read set. Priced, not avoided.**
 `showLeaf`/`showList` carry render state (DA-3a-iii), so a `-review`, a DA-3c refusal and a DA-3a
@@ -1332,6 +1481,11 @@ five requests is the priced answer there, not a tuning target. The primary `load
 is not meant to be: it receives no render state, and it *is* the re-read DA-3a depends on. What is never
 the fix: a client-side stash, or a nonce (F-2a).
 
+**Two costs this paragraph does not cover, so do not read it as the whole bill.** A `-review` pays
+**one more request** for its own pre-render re-read (DA-3c-i) on top of the read set above — six on
+Orders, not five. And this paragraph prices the *skip* case only: a secondary read that **fails** on a
+refusal re-render is DA-3a-vi's second clause, not a tuning decision.
+
 **DA-3a-iii — the render-state channel: what it carries, and what it does not.** A custom action
 re-renders through `api.showLeaf(path, notice?, renderState?)` or
 `api.showList(path?, notice?, renderState?)` (`scaffold/list-detail.ts`, `CustomActionApi`). The third
@@ -1354,14 +1508,29 @@ once. Five properties, each binding:
 3. **State, never data.** Pass what to render, not what was read. A level reads its figures from
    `detail` (and its own secondary reads), never from `renderState` — see DA-3a-ii. The channel is
    opaque to the engine, so nothing *stops* a screen putting a loaded record in it; it is still wrong.
-4. **`notFound` and the failed-action fallback get none, deliberately.** A form prefilled for a record
-   that no longer resolves is a lie, and the fallback after a custom action throws must be the
-   simplest render that can still work. `open`, `back`, `page` and `apply-filter` get none either: a
-   staged view does not survive a "Load more", and must not.
+4. **`notFound` and the failed-action fallback get none, deliberately — and `notFound` loses the
+   NOTICE too.** A form prefilled for a record that no longer resolves is a lie, and the fallback
+   after a custom action throws must be the simplest render that can still work. `open`, `back`,
+   `page` and `apply-filter` get none either: a staged view does not survive a "Load more", and must
+   not. **State the notice half explicitly, because a refusal is where it shows:**
+   `scaffold/list-detail.ts:491` passes `notFound` neither the render state nor the notice
+   (`if (detail === null) return { blocks: level.notFound({ actions, path, id }) };`, documented at
+   `:136-142`), so a refusal whose record stops resolving loses its banner as well as its prefill —
+   the operator sees only "not found". Accepted, because nothing was written on any refusal path and
+   the vanished record is the outcome that matters (§0.3 item 3). Do not read the missing banner as a
+   bug, and do not route a notice into `notFound` to "fix" it.
 5. **Money in render state is minor units or verbatim operator text, and the member name says which.**
    `…Cents: number` is integer minor units (M-3); `…Input: string` is what the operator typed,
    unparsed. A refusal prefills from the `…Input` member, because `19,99` or `900.00` cannot be
    re-derived from cents — that is the whole reason the draft members exist.
+
+   **The operational tell, so `…Input` is not mistaken for defensive over-engineering:** the two
+   commonest refusals on a money field are a **decimal comma** (`19,99`) and **three fractional
+   digits** (`12.345`), and `parseMinorUnitsInput`'s pattern `/^(\d+)(?:\.(\d{1,2}))?$/`
+   (`admin/money-input.ts`) rejects both. On exactly those paths the parse returned `null`, so there
+   is **no `amountCents` in existence** to prefill from — the raw string is not a nicety, it is the
+   only channel that can put the operator's figure back on screen. A screen that carries only
+   `…Cents` blanks the field precisely when the operator most needs to see what they typed.
 
 The five ways a screen gets this wrong. Each is a diff a reviewer can rule on:
 
@@ -1372,6 +1541,125 @@ The five ways a screen gets this wrong. Each is a diff a reviewer can rule on:
 | A loaded record in the channel, to save a read | The figures the re-read just proved stale | DA-3a-ii: no union member holds a record the level's `load` or secondary reads return |
 | A formatted money string where minor units are expected, or `…Cents` where the operator typed `19,99` | A refusal that discards or mangles the amount | Property 5: every money-bearing member is `…Cents: number` or `…Input: string`, and the refusal prefills from `…Input` |
 | Reading `renderState` for something the *next* click needs | A staged payload that vanishes on confirm | Property 2: anything crossing an interaction is in `button.value` or the `block_id` carrier |
+
+**DA-3a-iv — AN ABSENT WATERMARK REFUSES. It is never a reason to skip the comparison.** X-38 counts
+"a confirm handler that writes without re-reading", and **a comparison you skip is a re-read you did
+not do**. So a `value.state.length > 0` / `if (watermark) { compare }` guard around the DA-3a check is
+the X-38 hole dressed as tolerance: it lets a stale payload, or one edited in devtools, write
+**unchecked** — which is the one class of write §8 exists to make impossible.
+
+There are exactly two ways a watermark can be absent from a control this document requires to carry
+one, and refusing is right for both: a `button.value` altered by the operator (B-1 — `value` is on the
+wire and untrusted), or a browser tab rendered before the watermark existed, which **is** the stale
+view DA-3a is for. Treat `""` and whitespace as absent: an empty state is not a state, and no
+comparison against it can mean anything.
+
+**Where it binds — state this precisely, because there is one deliberate exemption:**
+
+| | |
+|---|---|
+| **Binds** | **Every handler that writes.** No exemption for a closed-set DA-2b button, a status move (DA-2a), or a DA-3 state-2 confirm. |
+| **Binds** | **Every `-review` that carries the operator's watermark forward into the staged payload.** The staged confirm will be judged against that value, so a `-review` that stages an absent one has staged a confirm that cannot succeed. |
+| **May be exempt** | A `-review` that **re-stamps the watermark from its own fresh read** may tolerate an absent one — it is not carrying the operator's value forward, so there is nothing to compare and the confirm it stages is against current truth by construction. **It must say so at the call site**, in one comment naming the re-stamp. An unexplained `!== undefined &&` guard is indistinguishable from the X-38 hole and a reviewer must fail it. |
+
+Orders is the worked example of both halves: `transitionAction` refuses outright on an absent
+watermark before any read (`orders-page.ts:2490-2491`) and `cancelOrderAction` refuses before its
+re-read (`:2826-2828`), while `cancelReviewAction` tolerates absence (`:2765`) **because** it stages
+`state: live.order.state` from its own fresh `getOrder` (`:2752`, `:2776-2783`) — the exemption, and
+the one place a comment is owed.
+
+**And the refusal NAMES THE REAL CAUSE.** Folding an absent watermark into the parse-failure branch is
+a second defect on top of the first: it tells the operator to fix a field that is already correct.
+`refundReviewAction` currently does exactly this — `observedSoFar === null` shares a branch with an
+unparseable amount and the copy reads *"Enter a valid refund amount greater than zero (e.g. 19.99)"*
+(`orders-page.ts:2958-2969`) on a submission whose amount may be perfectly good; the confirm-side
+equivalent (`:3089-3096`) folds it into `UNREADABLE` ("That action could not be read") and, because the
+two causes share a branch, throws away a parsed amount it could have prefilled (`draft("")`). Both are
+E-7's rule one level down: **do not assert a cause you do not have.** A watermark-absence refusal gets
+its own branch, its own copy, and a prefill that keeps whatever did parse.
+
+**DA-3a-v — A REFUSAL BODY OFFERS NO CONTROL THAT WOULD COMMIT THE CLASS OF ACT JUST REFUSED. And the
+danger controls OUTSIDE that body go quiet.** This subsumes DA-3a-i's scoping note ("it carries
+no confirm control") and generalises it: the test is not "is this the same button", it is **"would
+clicking this commit an act of the kind this response just refused?"** If yes, it is absent from the
+refusal body.
+
+Do not implement this as a list of cases; the two on Orders are only instances, and both show that the
+re-offered control is *worse* than the one refused:
+
+- **Refund, DA-3c bound check.** The rejected figure was **too high**. The only other refund control in
+  the group is the DA-2b one-click **largest possible refund** — the one button a mis-keyed extra zero
+  must not be one click away from. Suppressed (`orders-page.ts:2123-2127`).
+- **Cancel, validation or movement.** The suppressed controls are the four DA-2b per-reason buttons.
+  Each cancels **immediately, recording no detail** — which is exactly what the operator was in the
+  middle of recording. Suppressed (`:1751-1756`).
+
+The refusal's copy names **one** route (the form directly beneath it), which is DA-7a's
+one-route-per-line discipline applied to a refusal.
+
+**Scope: the refused group, not the whole response.** This is the over-reading to avoid, and it fails
+in both directions. DA-3a-v **removes** the controls *of the refused class* from *the group the refusal
+re-renders*; it does not silence the screen. The rest of the panel — the identity strip, the other
+panels, an unrelated create form, a quiet `Mark paid` — renders exactly as it always does. **The two
+halves act on different things and do not conflict:** the first half **removes controls**, inside the
+refused group only; the second half **changes one property of buttons that stay** — their `style` —
+outside it. Nothing is removed outside the group, and nothing outside the group loses its `confirm`.
+
+**The second half, and it is the failure mode this rule creates if you stop at the first.** Silencing
+the related controls hands the alarm to whatever red is left. On the built Orders screen a **cancel**
+refusal suppresses four red reason buttons and leaves a red `Mark refunded` — a move into a
+**terminal** state (`domain/src/orders/state-machine.ts`: `refunded: []`), and bookkeeping whose own
+confirm text says it *does not move money* — as the loudest thing on the panel, **directly above** the
+very form the operator has just been told to re-submit: `fulfilmentPanel` pushes `transitionBlocks`
+and then `cancelBlocks` as adjacent siblings (`orders-page.ts:1119-1120`), and the refusal force-opens
+the group immediately below that button row. That is §8's opening inversion, rebuilt by a rule meant to
+remove it. So:
+
+> On a refusal render, **every `style:"danger"` button outside the refused group drops its `style`**
+> (default `secondary`). Its `confirm` is **untouched** and keeps `style:"danger"`. This is the
+> **DA-2c quiet-buttons move**, and DA-3a-v is the **second** of the two places in this document where
+> the red moves from the button into the dialog (DA-1, DA-5).
+
+**The test is positional, not a relatedness judgment**, and deliberately so: "is this button related to
+the refusal?" is the kind of question that makes a rule undecidable, and it is the wrong question
+anyway — an operator reading a refusal is not weighing relatedness, they are reading whatever is
+loudest. So the boundary is the refused group, which a reviewer can see in the JSON. Nothing becomes
+less safe: the guard is the dialog (DA-1, DA-2c), and every one of those buttons still has one.
+
+Emphasis is a **V-4 tier-3** claim (a screenshot), but the mechanism is tier 1: a reviewer counts
+`style:"danger"` buttons in a refusal response and expects **none outside** the forced-open group.
+
+**DA-3a-vi — A REFUSAL BODY IS STATE 1 *PLUS* WHATEVER READ CONTEXT ITS COPY POINTS AT — and its copy
+may not name a control or figure the same render can omit.** DA-3a-i says the body is "state 1", which
+settles the form and the submit and leaves the group's own read blocks undecided. Decide them here,
+because both Orders behaviours are correct and neither was stated, so six teams would pick at random.
+
+| Response | The group's read blocks (Orders: `meter` · ledger `table` · capability `context`) | Why |
+|---|---|---|
+| **state 2** | **suppressed** | The confirm carries the watermark the operator *originally saw*; a freshly-read figure beside it is a **second reading of the wrong number**. Already required by DA-3's outermost-group rule and §11.2. |
+| **a refusal** | **kept** | The refusal's copy names the **live** figure and points at it — *"$40.00 now remains refundable"*, *"is more than the $50.00 that remains refundable"*. Copy that names a figure the render omits is not an instruction. |
+
+The rule generalises to any screen: **keep exactly the read context the refusal's own copy refers to,
+suppress the rest.** Orders implements it in one place (`orders-page.ts:1930-1945` — the read blocks
+are pushed when `staged === undefined`, so a draft keeps them and state 2 does not) and the reasoning
+is at `:1908-1916`.
+
+**Second clause — a refusal's copy must not name a control or figure the render is allowed to omit.**
+Where a refused group's body depends on a **secondary** read, that read can fail on the refusal
+re-render, and E-1 correctly degrades a failed secondary read to a `context` line — which deletes the
+control the copy was pointing at. On Orders the whole Money panel collapses to one line when
+`getRefunds` fails (`orders-page.ts:1852-1861`, and `refundsGroup` is only reached at `:1889`), so a
+banner reading *"re-enter an amount below to try again"* would sit above **no form, no group and no
+figure**. D-3 and DA-3a-ii cover the *skip* case (a level branching its own secondary reads on
+`renderState`); they do not cover the *failure* case. So:
+
+- either the refusal's copy is written so it survives the degraded render (name the act, not the
+  control: *"nothing was refunded"* rather than *"re-enter an amount below"*), **or**
+- the degraded branch carries the refusal forward — its `context` line states that the submission was
+  not applied, so the operator is not left with a vanished banner and an unexplained panel.
+
+Pick one per screen and say which in the PR. What is **not** acceptable is copy that names a control on
+a render that can omit it.
 
 **DA-3b — a staged payload that fails to decode renders an `error` notice, never a silent
 redirect.** `orders-page.ts:1497` currently does `if (orderId === undefined) return showList()`,
@@ -1387,6 +1675,12 @@ say so in the copy, and never style it as danger).
 a separate manual operation an operator can forget.** `primary` is not used (the form renderer's
 own submit is the primary affordance). Everything else is default `secondary`. A red button without
 a `confirm`, or a `confirm` on an act outside that definition, is a review failure.
+
+**Two stated exceptions, and only two — both drop the button's colour and keep the dialog's.** DA-2c's
+fan-out cap (≥5 values in one `actions` block) and DA-3a-v's refusal render (every danger button outside
+the refused group). In both, `confirm{style:"danger"}` is untouched, so the biconditional above still
+holds where it matters: **an act outside DA-5's definition never gets a `confirm`**, and the guard was
+always the dialog. Do not read either exception as licence to invent a third.
 
 **Exactly one act qualifies under the second clause: remove stock.** Restocking is not an undo — it
 appends a second movement to the ledger, so an accidental removal of 40 units where 4 were meant
@@ -1682,6 +1976,64 @@ required (§0.1 D) precisely so the stable key cannot be skipped.
 Why the form is not stable: R-13a. Inside a container the form loses the incidental index-shift
 remount, so it needs its own change signal — see B-3a for the `Clear filters` failure this fixes.
 
+**B-7a — the prefill digest and the accordion key are TWO MECHANISMS WITH TWO JOBS. Neither
+substitutes for the other.** B-7 states this for the filter panel; it is general, and conflating the
+two is how a correct requirement acquires a false reason.
+
+| Mechanism | Its job | Its evidence |
+|---|---|---|
+| `carriedForm`'s `__v` digest (plus B-3's watermark) in the **form**'s `block_id` | remounts the **form**, so a changed `initial_value` is actually read | R-12 (mount-only controls), B-3, B-3a |
+| the **accordion**'s `block_id` | remounts the **group**, so `default_open` is re-read | R-14a (`accordion.tsx:14`), B-6 |
+
+The accordion key does not refresh a form's values *as its job* — it happens to, because remounting a
+container remounts its subtree (`renderer.tsx:78`). And the form key can never open a group, because
+`default_open` lives on the accordion. **So neither reason may be given for the other's requirement**,
+and a PR that justifies a changed accordion key by "otherwise the form keeps the old values" has stated
+a reason a reader can falsify.
+
+Concretely, in the reference screen: a refusal takes a **third** accordion key
+(`…:cancel:refused` / `…:refunds:refused`, `orders-page.ts:1584`, `:1986`), and the comments at
+`:1513-1517` and `:1903-1906` justify it as stopping the form from "showing the amount the confirm just
+failed with". That reason does not hold — on every state-2 → refusal path the **form's own**
+`block_id` already changes, either because its prefill changed (`__v`) or because its carried
+`refundedSoFar`, rebuilt from the fresh read (`:2232`, and the union's own note at `:315-319`), changed.
+The requirement is still right, on the ground the rest of §8 stands on: **the response must not depend
+on client open state it did not set.** Reusing `:review` for a refusal leaves the group's visible state
+resting on the operator's click history and on R-24 not having fired — the same defect DA-3's
+outermost-group rule was restated to remove.
+
+**B-8 — YOU CANNOT CLOSE A GROUP. Two visibly-open groups after a refusal are permanent, and that is
+accepted. Do not try to close one by changing its key.** Ruled on in §0.3 item 1; this is the
+normative form.
+
+**The mechanism, cited.** `AccordionBlock` is `{type, label, blocks, default_open?}` plus
+`BlockBase.block_id` and nothing else (installed 0.31.1 `validation-5vL6669b.d.ts:306-311`; fork
+`types.ts:360-365`). `default_open` is read **once, at mount** —
+`useState(block.default_open ?? false)` (`blocks/accordion.tsx:14`, R-14a) — and the open state is then
+local (`Collapsible.Root open={open} onOpenChange={setOpen}`, `:17`). There is **no close signal in
+this vocabulary**: no `open` field, no imperative channel, nothing the server can send. The only thing
+that makes a mounted accordion re-read `default_open` is a changed React key, i.e. a changed `block_id`
+(`renderer.tsx:78`).
+
+**Three consequences, each checkable:**
+
+1. **`default_open: false` on an already-open group is a no-op.** So a screen with a D-5 rank that
+   opens a group (Orders' rank 2, `fulfilment`) shows **two open groups after every refusal on that
+   screen, permanently** — the rank-opened one and the refusal's. This is B-5 working as documented.
+2. **X-18 and D-5 constrain the EMITTED RESPONSE.** At most one `default_open: true` per response;
+   two expanded groups on screen is not a finding at any tier (X-18's own row, D-5's "constrains the
+   emitted response" paragraph, V-4 tier 3's "nothing runs the other way").
+3. **An implementer must NOT attempt to close a group by changing its `block_id`.** It would work —
+   and it would **remount the group and discard the operator's unsubmitted input** in it, which is
+   F-5a-i's documented hazard and the reason `filterRow()` was withdrawn (§0.1 A). On a refusal render
+   this is at its worst: the operator has just been told to re-submit, and the cure destroys typed work
+   in every other group to tidy up an appearance no rule objects to. **The cure is worse than the
+   condition.**
+
+**There is therefore no rule requiring other groups be forced shut, and B-8 forbids adding one.** A
+`block_id` changes for the reasons B-3/B-3a/B-6/B-7 give — prefill changed, context changed, this
+response is force-opening the group — and for no other reason. "To close it" is not one of them.
+
 ---
 
 ## 11. Worked example — Orders
@@ -1877,6 +2229,12 @@ tab         block_id orders:<id>:tabs      default_tab 0      panels ALWAYS 4 (D
 │               value.toState (DA-6 item 4); `shipped` on a processing order and `cancelled`
 │               always withheld, each with one DA-7a line
 │               EVERY button carries the observed `state` — the watermark (DA-2a, DA-6 item 5)
+│               ON ANY REFUSAL RENDER these buttons DROP `style` (default secondary), their
+│                 `confirm` untouched — they are outside the refused group  (DA-3a-v, DA-5)
+│                 ← this block is the immediate sibling ABOVE the Cancel group, so on a cancel
+│                   refusal the red `Mark refunded` — a TERMINAL state, and bookkeeping that
+│                   moves no money — would otherwise be the loudest thing on the panel,
+│                   directly above the form the operator has just been told to re-submit.
 │               [ "Mark processing" → orders:transition-processing
 │                   value {orderId, toState, state} ]
 │               [ "Mark completed"  → orders:transition-completed
@@ -1922,6 +2280,13 @@ tab         block_id orders:<id>:tabs      default_tab 0      panels ALWAYS 4 (D
 │               state 2 puts `:review` + default_open on THIS group — orders:<id>:cancel:review
 │                 — and renders the staged form + confirm directly. The "Cancel with a note"
 │                 accordion is NOT rendered in state 2 (DA-3's outermost-group rule).
+│               A REFUSAL takes a THIRD key — orders:<id>:cancel:refused — + default_open,
+│                 the collect form flattened in and prefilled, NO confirm, and NO DA-2b
+│                 reason buttons: each of the four cancels immediately recording no detail,
+│                 which is the act the operator was mid-way through recording (DA-3a-v).
+│                 The third key is required because the RESPONSE must not depend on client
+│                 open state it did not set — not because the form would keep stale values,
+│                 which its own `carriedForm` key already prevents             (B-7a, B-6)
 │               (already cancelled ⇒ the whole group is `fields` of the recorded cancellation)
 │
 ├─ panel "Money"
@@ -1970,11 +2335,23 @@ tab         block_id orders:<id>:tabs      default_tab 0      panels ALWAYS 4 (D
 │               STATE 2 belongs to THIS group, not the child (DA-3's outermost-group rule):
 │                 block_id orders:<id>:refunds:review  +  default_open TRUE     (B-6)
 │                 body = banner + staged form + one danger confirm button, and nothing else
-│                 — the meter, the ledger and the full-remaining button are all suppressed
-│               A DA-3a OR DA-3c REFUSAL re-renders STATE 1 into THIS group: forced open,
-│                 the collect form FLATTENED into the group body, the submitted values
-│                 prefilled, and NO confirm button — a confirm here would re-offer the
+│                 — the meter, the ledger, the capability line AND the full-remaining button
+│                   are all suppressed                                        (DA-3a-vi)
+│               A DA-3a OR DA-3c REFUSAL re-renders STATE 1 into THIS group under a THIRD
+│                 key — orders:<id>:refunds:refused — forced open, the collect form
+│                 FLATTENED into the group body, the submitted values prefilled from the RAW
+│                 `…Input` string, and NO confirm button — a confirm here would re-offer the
 │                 payload just refused             (DA-3a-i, incl. its scoping note; X-39)
+│                 the DA-2b full-remaining button is ALSO suppressed: on a bound-check
+│                   refusal the rejected figure was too high, and the largest possible refund
+│                   is the one button an extra zero must not be one click from   (DA-3a-v)
+│                 the meter, the ledger and the capability line ARE KEPT — the refusal's copy
+│                   names the LIVE figure and points at them (contrast state 2, which
+│                   suppresses all three because its confirm carries a STALE watermark and a
+│                   fresh figure beside it is a second reading of the wrong number) (DA-3a-vi)
+│               IF `getRefunds` FAILS on the refusal re-render this whole panel degrades to
+│                 one context line (E-1) and the group is not rendered at all — so the
+│                 refusal copy must not be the only thing naming the next act  (DA-3a-vi)
 │
 └─ panel "History"
      table      block_id orders:timeline
@@ -2011,6 +2388,14 @@ read-table that repeated the timeline verbatim; two unconditional cap lines; two
 the operator what designers withheld; and four `Customer` rows that said "no account" on a guest. Six
 things are **added**: the transition watermark, `Region`, `Contact email`, the M-11 line, D-6a's two
 consequence labels, and DA-3c's bound check.
+
+**And what the third amendment adds to this listing** — all of it promoted from the reference screen's
+own build, none of it new design: the **third `block_id`** on each refused group (`…:cancel:refused`,
+`…:refunds:refused`) with its correct stated reason (B-7a); the transition row going **quiet** on a
+cancel refusal (DA-3a-v); the refunds refusal **keeping** the meter, ledger and capability line while
+state 2 suppresses them (DA-3a-vi); and the degraded-`getRefunds` caveat on a refusal render (DA-3a-vi's
+second clause). None of these changes a block's *type* or *order* — they constrain the refusal render
+only.
 
 ---
 
@@ -2153,6 +2538,14 @@ tab         block_id products:<id>:tabs   default_tab 0   panels ALWAYS 2
                          submit "Review removal" → products:remove-stock-review   (DA-3)
                    → state 2: accordion block_id +":review" AND default_open TRUE, same form
                      remounted + danger confirm, value {productId, qty, onHand}  (DA-3, DA-5)
+                   → a REFUSAL (bad parse, missing `onHand`, qty > live on hand) takes a
+                     THIRD key +":refused" AND default_open TRUE, the form flattened in and
+                     prefilled from the RAW typed string, and NO danger confirm — and the
+                     `Add stock` group above stays exactly as it is, being neither the refused
+                     group nor a control of the refused class
+                     (DA-3a-i, DA-3a-iv, DA-3a-v, DA-3a-vi, DA-3c-i, B-7a)
+                     ← `onHand` is the watermark here: absent ⇒ REFUSE, never skip the
+                       compare, and the refusal says so rather than blaming the qty field
      (sku === null ⇒ both groups omitted; one context line says why)             (D-7)
 ```
 
@@ -2543,7 +2936,7 @@ Assert a **depth-3 open fired from a button** (shipping zone → method → rate
 ## 13. Anti-patterns — a reviewer rejects these on sight
 
 **H** = mechanically enforced by `assertBlockContract` (§15); a rule without **H** is a human
-review catch. **30 of the 46 rows are H — and `assertBlockContract` does not exist yet** (V-3a): it is
+review catch. **31 of the 52 rows are H — and `assertBlockContract` does not exist yet** (V-3a): it is
 its own PR, and it **gates every screen after Orders** (§15.1 step 2). So if you are reading this while
 building a screen, the helper exists and you call it. Only Orders predates it, and only Orders encodes
 these rules as its own assertions.
@@ -2568,7 +2961,7 @@ these rules as its own assertions.
 | X-15 | H | Any `columns` or `chart` block. | §2 |
 | X-16 | H | A conditionally-present `tab` panel; `default_tab` other than 0; a panel count differing from D-2's table. | D-3, D-4 |
 | X-17 | H | A form without an explicit `block_id`; a context-carrying `block_id` with no `:u1.` segment; a prefilling form whose `block_id` did not come from `carriedForm`. | B-1, B-3, B-3a |
-| X-18 | H | More than one `default_open: true` **per rendered response**. **Counted on the emitted JSON only.** A screenshot showing two expanded groups is **not** an X-18 finding: client-side open state survives a re-render with an unchanged `block_id`, so a group opened by an earlier response stays open through a response carrying `default_open: false` (B-5). | D-5, B-5 |
+| X-18 | H | More than one `default_open: true` **per rendered response**. **Counted on the emitted JSON only.** A screenshot showing two expanded groups is **not** an X-18 finding: client-side open state survives a re-render with an unchanged `block_id`, so a group opened by an earlier response stays open through a response carrying `default_open: false` (B-5) — and on any screen with a D-5 Rule-2 rank this is **permanent and accepted** (B-8). | D-5, B-5, B-8 |
 | X-19 | | A bare-noun accordion label where a count or total is available *on the wire the level already reads* (D-6). | D-6 |
 | X-20 | H | The phrase "no oversell" / "oversold" / "overselling" in any **rendered string**. Code comments documenting the domain invariant are exempt and must not be changed. | voice |
 | X-21 | | Apologetic degraded copy, or a raw status code / URL / exception in the UI. | E-4 |
@@ -2588,14 +2981,20 @@ these rules as its own assertions.
 | X-35 | H | A destructive `accordion` whose label is a bare verb or noun (`Cancel order`, `Delete zone`, `Refund a different amount`) with no consequence clause. | D-6a |
 | X-36 | H | A D-6 label containing a degenerate ratio — `$0.00 of $0.00`, `0 of 0`, `0%` of nothing. | D-6b |
 | X-37 | H | **More than 4 `style:"danger"` buttons in one `actions` block**; or a DA-2c fan-out whose `confirm` lost its `style:"danger"` along with the button's. | DA-2c |
-| X-38 | H | A DA-2b/DA-3 `button.value` carrying no watermark, or a confirm handler that writes without re-reading. Countable on the payload; the re-read is asserted by the screen's own stale-watermark test. | DA-2a, DA-3a |
+| X-38 | H | A DA-2b/DA-3 `button.value` carrying no watermark, or a confirm handler that writes without re-reading. Countable on the payload; the re-read is asserted by the screen's own stale-watermark test. **A comparison skipped because the watermark was absent is this row, not an exemption from it** — see X-46. | DA-2a, DA-3a, DA-3a-iv |
 | X-39 | H | A DA-3a or DA-3c refusal that does not re-render **the same group**, forced open per B-6, with the submitted values prefilled and **flattened onto that group**. Assert the refused response's open-group id equals the staged group's, the form's `initial_value`s echo the submission, and the nested collect-group is absent from the response. | DA-3a-i |
-| X-40 | | A `-review` handler that validates only parseability — no bound check against the live ceiling. | DA-3c |
+| X-40 | | A `-review` handler that validates only parseability — no bound check against the live ceiling. (The missing **re-read** is X-47.) | DA-3c |
 | X-41 | H | A `context` or `banner` line containing `deliberately`, `there is no`, or `we do not`; a DA-7 line with no actionable verb. | DA-7a, E-4 |
 | X-42 | H | A fail-closed banner that names a single cause (`Could not reach the commerce service`) rather than E-7's normative copy. | E-7 |
 | X-43 | | A `Total` rendered on the same screen as a smaller `Captured`/`Settled`/`Allocated` with no M-11 line; or a bare `Remaining`/`Available`/`Left` label. | M-11, M-11a |
 | X-44 | | A T-8 cap `context` line emitted when the read was **not** truncated. | T-8a |
 | X-45 | | A split form set (F-5a) with **no** panel-level sibling-discard `context` line, or that line repeated inside each form's group instead of appearing once above them. Also: any PR that justifies the sibling-discard hazard by claiming the groups are collapsed — open state is sticky (B-5), which is why F-5a-i requires the line. | F-5a-i |
+| X-46 | | A watermark comparison **guarded on the watermark's presence** (`if (value.state) { compare }`, `value.state.length > 0`) — an absent watermark must refuse, not skip the check. Also: a watermark-absence refusal folded into the parse-failure branch, so the copy tells the operator to fix a field that is already correct. **Not H** — nothing in the emitted blocks shows it; the screen's own absent-watermark test (zero POSTs) is the gate, and the `-review` re-stamp exemption is a comment a reviewer reads at the call site. | DA-3a-iv, X-38 |
+| X-47 | | A `-review` that stages a confirm carrying the operator's watermark **without re-reading** what the write will compare. **Not H** — asserted by the screen's own test that a `-review` submit issues a read before it renders, and refuses when the record moved. | DA-3c-i |
+| X-48 | H | A refusal body carrying **any** control that would commit the class of act just refused — the confirm, a DA-2b one-click equivalent, a second form with the same submit. **Or** a refusal response carrying **any** `style:"danger"` button **outside** the refused group (they drop `style`; their `confirm` keeps `style:"danger"`). **Or** the over-reading in the other direction: a refusal that suppresses controls elsewhere on the screen. Countable on one response: no `style:"danger"` outside the forced-open group, no confirm-id button inside it, and every button that dropped its `style` still carrying its `confirm{style:"danger"}`. | DA-3a-v, DA-3a-i, DA-5 |
+| X-49 | | A refusal whose copy names a control or a figure the **same render** can omit — e.g. "re-enter an amount below" on a render whose group depends on a secondary read that may have degraded to a `context` line (E-1). Also: a refusal body that drops the read context its own copy points at, or keeps read context nothing points at. | DA-3a-vi, E-1 |
+| X-50 | | **Any attempt to close a group.** A changed `block_id` whose only purpose is to make an already-open accordion re-read `default_open: false` — it remounts the group and discards unsubmitted input (F-5a-i). Also: a PR, plan or review comment treating two visibly-open groups after a refusal as a defect. **Not H** — it is a cross-response tier-1 assertion (V-4 tier 1) plus a review catch, not a property of one response. | B-8, D-5, X-18 |
+| X-51 | | A sandbox fixture **hand-copying** a domain table (the order state machine, a closed enum, a legal-transition list) instead of importing it. A copied stub passes forever while testing a wire shape the service cannot produce. | V-3b |
 
 ---
 
@@ -2724,13 +3123,13 @@ reviewed. *Done in PR #161 (`aa2bd97` → `3c7f037`); V-1a generalises it to the
 `packages/plugin/test/helpers/`. The two extra arguments are not optional: **X-16** cannot be
 decided from the blocks alone (it must compare the panel set against D-2's per-screen table) and
 **X-27**'s second half cannot either (it must know whether this response is a leaf detail). It
-enforces every rule marked **H** in §13 (**30 of 46**), the **seven** authored prose budgets (not the
+enforces every rule marked **H** in §13 (**31 of 52**), the **seven** authored prose budgets (not the
 `fields`-value 40 — X-11a), and the banned phrase. Every page suite calls it once per rendered
 response. **A rule not in that helper is advisory** — it is a human review catch, and a PR that only
 runs the helper has not verified the non-**H** rules.
 
 **V-3a — V-3 DOES NOT EXIST YET, and it is NOT written by a screen. It is its own PR.** This is the
-programme's real gap: **30 H-marked rules are currently enforced by nothing shared.** Orders hand-rolled
+programme's real gap: **31 H-marked rules are currently enforced by nothing shared.** Orders hand-rolled
 equivalents as ordinary assertions, so the **banned-string guard is Orders-only** — and the two live
 X-20 violations are on **Products** (§12.1). Terms:
 
@@ -2738,11 +3137,11 @@ X-20 violations are on **Products** (§12.1). Terms:
 |---|---|
 | **Owner** | **Its own `[Plugin]` PR.** No per-screen PR may carry it. Shared test infrastructure bolted onto a layout diff is exactly the drive-by `CLAUDE.md` forbids, and — the general form of it — **no screen should write the thing that judges it.** |
 | **Sequencing** | **After** the Orders increment merges (it builds on `test/helpers/blocks.ts`, which Orders delivered) and **before any further per-screen increment starts.** See §15.1 — it is step 2, and it gates every lane below it. |
-| **Must hoist** | The X-20 banned-phrase guard (currently Orders-only), X-11's seven budgets, X-9's heuristic **with its count exclusion**, and every H row added in revision 4 (X-35..X-42). |
+| **Must hoist** | The X-20 banned-phrase guard (currently Orders-only), X-11's seven budgets, X-9's heuristic **with its count exclusion**, and every H row added in revision 4 (X-35..X-42) or by its third amendment (X-48). |
 | **Signature** | `assertBlockContract(blocks, { screen, level })` — as above, unchanged. |
 
 **Why the gate is hard and not a preference.** Step 3 of §15.1 is **four concurrent lanes**. If the
-helper landed after them, four screens would each hand-roll 30 checks and all four would need
+helper landed after them, four screens would each hand-roll 31 checks and all four would need
 retrofitting — the same duplication V-1a exists to stop, one level up and four times over. Sequencing it
 ahead also removes any "which screen is second?" question: the deadline is decidable without an ordering
 among the lanes.
@@ -2775,7 +3174,7 @@ Three things to read off this table:
   something real — both live X-20 violations are there (§12.1). Being judged by the helper is a
   different job from writing it.
 
-**V-3b — two wire-shape facts a suite gets wrong silently.** Both cost an afternoon and neither
+**V-3b — three wire-shape facts a suite gets wrong silently.** All three cost an afternoon and none
 fails loudly:
 
 - **Drive a form submit with `values` PLUS the form's own `block_id`.** Every identity now rides
@@ -2787,6 +3186,19 @@ fails loudly:
   screen's **fail-closed banner** — the same banner as an unreachable service. So when a screen
   fail-closes for no apparent reason, suspect your own composition order first and read the worker
   log. E-7's copy exists precisely because this failure looks like an outage.
+- **The fixture is part of the contract — IMPORT the domain's table, never copy it.** A hand-copied
+  stub passes forever while testing a wire shape the service **cannot produce**, which is the worst
+  kind of green. That is what happened here: the old Orders responder derived `allowedTransitions` from
+  a hand-written ternary returning `paid`'s row for every state it did not special-case
+  (`test/orders-page.sandbox.test.ts:378-383` as it stands on `origin/main`), so it offered
+  `processing` **from** `shipped` — which the domain forbids outright — and omitted the legal
+  `delivered`. The real service returns `[...legalNextStates(state)]` with no narrowing whatsoever
+  (`service/src/routes/admin.ts`), so the fixture must be `ORDER_STATE_MACHINE[order.state]` imported
+  from `domain/src/orders/state-machine.ts`. That fidelity is load-bearing, not tidiness: a
+  `processing` order's legal targets *include* the bare `shipped` the plugin must steer away from
+  (DA-6), and a `shipped` order's *include* `refunded` — a **terminal** state (`refunded: []`) — which
+  is the whole reason a transition carries a watermark (DA-2a). Neither assertion is expressible
+  against a guessed table. X-51 rejects the copy.
 
 **V-4 — three verification tiers. State which tier a claim rests on; do not blur them.**
 
@@ -2795,6 +3207,24 @@ fails loudly:
 | 1 — JSON-checkable | Budgets, vocabulary, §5/§6/§7/§9, and §10's invariants expressed as *"the token changed / did not change between these two responses"*. Includes: a DA-3 state-2 accordion carries **both** a changed `block_id` and `default_open: true`; the filter **accordion**'s `block_id` is identical across an apply *and* across `Clear filters`, while the filter **form**'s `block_id` differs after an apply **and** after `Clear filters`, whenever the prefilled values changed; a depth-3 open fired from a `button`; a service-offered transition outside `ORDER_STATES` renders no button; an L-9 level branches to accordions at 25 rows and to a table at 26. | the workerd-on-Node sandbox suite |
 | 2 — renderer behaviour | B-4, B-5, B-6, D-3, R-13a — claims about what React does with a key. One test each in the fork's `packages/blocks/tests/`, cited in the PR. | fork test suite |
 | 3 — density and appearance | P-1..P-4, F-6a's non-empty triggers (per-control, per its table), §16's residual flatness, DA-2c's fan-out **emphasis** (the button row's weight, not its height), D-6a's labels next to their buttons. **Screenshot only.** Nobody may claim these verified from a passing suite. **Nothing runs the other way:** a screenshot is not evidence for a tier-1 claim, and specifically not for X-18 (see its row — open state is sticky). | attached screenshot |
+
+### 15.2 The eight things a following team predictably gets wrong
+
+Every item below is a rule elsewhere in this document; this is the index, ordered by how expensive it
+is to get wrong, and each line is phrased so a reviewer can rule pass/fail. Read it before you start
+and again before you open your PR. Items 1 and 2 are where five of the six remaining screens will lose
+time.
+
+| # | The mistake | The rule | What a reviewer checks |
+|---|---|---|---|
+| **1** | Trying to **close a group** — or filing two open groups after a refusal as a defect. There is no close signal in this vocabulary; the only way to force one shut is a changed `block_id`, which **remounts it and discards unsubmitted input**. | **B-8** (§0.3 item 1), R-14a, D-5, X-18, F-5a-i | No `block_id` changes for the purpose of closing a group (X-50). Two expanded groups in a screenshot is **not** a finding. |
+| **2** | Reading "no confirm control" as **screen-wide** instead of scoped to the refused group — and its flip side, leaving a danger button **outside** that group as the loudest thing on a refusal render. | **DA-3a-v**, DA-1, DA-5 | In a refusal response: **no** `style:"danger"` outside the forced-open group, every such button keeps its `confirm{style:"danger"}`, none inside fires the flow's confirm id, and no read block or form elsewhere on the screen is suppressed (X-48). |
+| **3** | Guessing whether a refusal keeps the group's **read context** (meter, ledger, capability line). State 2 suppresses them; a refusal **keeps** them. Both are correct and only one was previously stated. | **DA-3a-vi** | State 2's body is banner + staged form + confirm and nothing else; the refusal's body carries exactly the read blocks its copy names (X-49). |
+| **4** | Conflating the **prefill digest** with the **accordion key**. `carriedForm`'s `__v` remounts the *form*; a changed accordion `block_id` remounts the *group* so `default_open` is re-read. Neither substitutes for the other, and neither may be given as the other's reason. | **B-7a**, B-3a, B-6 | No PR text justifies a changed accordion key by "the form would keep stale values", or a changed form key by "otherwise the group stays shut" (X-17, X-29). |
+| **5** | Under-counting **refusal sites**. Orders has five; the plan listed four. The missed one was a **`-review`**, because a step that writes nothing does not read like a refusal site. Every DA-3 flow has one. | **DA-3c-i**, DA-3a-i | The PR body enumerates the screen's refusal-producing handlers and includes every `-review`. |
+| **6** | Copy that names a **control the render can omit**. If a refused group depends on a secondary read and that read fails, E-1 degrades the body to a `context` line and "re-enter an amount below" sits above nothing. D-3 and DA-3a-ii cover the *skip* case, not the *failure* case. | **DA-3a-vi**, second clause | Either the refusal copy survives the degraded render, or the degraded branch carries the refusal forward — and the PR says which (X-49). |
+| **7** | Mistaking a draft's **`…Input` raw-string members** for defensive over-engineering. `19,99` and `12.345` are the two commonest refusals on a money field and neither survives a round trip through cents — on those paths there is no `…Cents` in existence to prefill from. | **DA-3a-iii property 5**, M-3 | Every money-bearing render-state member is `…Cents: number` or `…Input: string`, and the refusal prefills from `…Input`. |
+| **8** | **Hand-copying a domain table into a fixture.** The stub then passes forever while testing a wire shape the service cannot produce — which is how a forbidden transition and a missing legal one both went unnoticed. | **V-3b**, third bullet | The fixture imports the table (`ORDER_STATE_MACHINE`, an enum, a closed list) rather than restating it (X-51). |
 
 ---
 
