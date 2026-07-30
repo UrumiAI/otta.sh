@@ -7,7 +7,7 @@ import {
 	orderId as toOrderId,
 	type OrderNote,
 	type OrderNotesStore,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import type { Kysely, Selectable } from "kysely";
 import type { Database, OrderNotesTable } from "./schema.js";
 

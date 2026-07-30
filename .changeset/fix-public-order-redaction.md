@@ -1,5 +1,5 @@
 ---
-"@urumi/service": minor
+"@otta-sh/service": minor
 ---
 
 Redact PII on the unauthenticated `GET /orders/:orderId` read.

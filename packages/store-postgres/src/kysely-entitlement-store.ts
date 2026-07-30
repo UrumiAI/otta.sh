@@ -10,7 +10,7 @@ import {
 	type EntitlementStore,
 	type GrantEntitlementInput,
 	type IdGen,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import { type Kysely, sql } from "kysely";
 import type { Database, EntitlementsTable } from "./schema.js";
 

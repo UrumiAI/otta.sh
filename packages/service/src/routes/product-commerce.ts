@@ -14,7 +14,7 @@ import {
 	upsertProductCommerce,
 	type ProductCommerce,
 	type ProductCommerceDeps,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import { Hono } from "hono";
 import { lifecycleProductCommerceBody, upsertProductCommerceBody } from "../schemas.js";
 

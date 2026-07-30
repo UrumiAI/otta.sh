@@ -1,5 +1,5 @@
 ---
-"@urumi/plugin": patch
+"@otta-sh/plugin": patch
 ---
 
 Widen the admin Block Kit type surface and add the shared layout vocabulary the

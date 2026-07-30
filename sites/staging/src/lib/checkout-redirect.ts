@@ -15,7 +15,7 @@
  * case this guard exists for: a buyer landing on `/checkout` with no cart at
  * all, which is far more common than the place-time race.
  */
-import type { CheckoutSummaryRouteResult } from "@urumi/plugin";
+import type { CheckoutSummaryRouteResult } from "@otta-sh/plugin";
 import { SERVICE_UNAVAILABLE } from "./cart-actions.js";
 
 export interface CheckoutRedirect {

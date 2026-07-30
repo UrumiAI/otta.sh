@@ -4,12 +4,12 @@ import {
 	InMemoryOrderNotesStore,
 	InMemoryOrderStore,
 	orderTimelineContract,
-} from "@urumi/domain/testing";
+} from "@otta-sh/domain/testing";
 
 // The order timeline / audit spec (admin-UX Increment 1, timeline slice) run
 // against the in-memory fake first. The pg/sqlite dialect runs — incl. the
 // Postgres-required exactly-one-event-under-race cases — live in
-// @urumi/store-postgres.
+// @otta-sh/store-postgres.
 
 orderTimelineContract(
 	async () => {

@@ -9,7 +9,7 @@ import {
 	settleOrder,
 	sku as brandSku,
 	updateLine,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import { afterEach, describe, expect, test } from "vitest";
 import { PG_ENABLED } from "./describe-each-dialect.js";
 import {

@@ -1,5 +1,5 @@
 ---
-"@urumi/plugin": patch
+"@otta-sh/plugin": patch
 ---
 
 Add the `./plugin` export (the standard-format descriptor entrypoint —

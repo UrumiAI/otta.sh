@@ -8,7 +8,7 @@
  * must fail here, so the assertion is exact deep equality, not a subset
  * match.
  */
-import type { CartCookieDescriptor } from "@urumi/plugin";
+import type { CartCookieDescriptor } from "@otta-sh/plugin";
 import { describe, expect, test } from "vitest";
 import { applyCartCookie, type CookieJar } from "../src/lib/cart-cookie.js";
 

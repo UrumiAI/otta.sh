@@ -7,7 +7,7 @@ import {
 	productId as brandProductId,
 	updateProductCommerceFields,
 	upsertProductCommerce,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import { describe, expect, test } from "vitest";
 import { makeOrderHarness } from "./fake-harness.js";
 

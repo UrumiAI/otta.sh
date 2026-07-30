@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "vitest";
-import { ORDER_STATE_MACHINE } from "@urumi/domain";
+import { ORDER_STATE_MACHINE } from "@otta-sh/domain";
 import { decodeCarrier, encodeCarrier } from "../src/admin/scaffold/carrier.js";
 import { assertBlockContract } from "./helpers/block-contract.js";
 import {
@@ -393,9 +393,9 @@ const CUSTOMER_CONTEXT_GUEST = {
  * suite now renders it or fails, and either is information.
  *
  * IT DOES NOT BREAK SANDBOX PURITY. `packages/plugin/src/**` still imports
- * `@urumi/domain` nowhere — that constraint is on the bundle. Test files run in Node
+ * `@otta-sh/domain` nowhere — that constraint is on the bundle. Test files run in Node
  * with workspace resolution and the harness copies `src/` only, which is the same
- * ground `money-parity.test.ts` stands on (`@urumi/domain` is a devDependency here).
+ * ground `money-parity.test.ts` stands on (`@otta-sh/domain` is a devDependency here).
  * Nor is it circular: the code under test is `src/admin/orders-page.ts`, which has its
  * own hand-maintained closed `ORDER_STATES` list (DA-6) and never reads this map.
  *

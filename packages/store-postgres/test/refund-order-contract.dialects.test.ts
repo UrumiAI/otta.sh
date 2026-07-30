@@ -1,4 +1,4 @@
-import { refundOrderContract } from "@urumi/domain/testing";
+import { refundOrderContract } from "@otta-sh/domain/testing";
 import { afterEach, describe } from "vitest";
 import { PG_ENABLED } from "./describe-each-dialect.js";
 import {

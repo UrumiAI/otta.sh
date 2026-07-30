@@ -4,7 +4,7 @@ import {
 	type IdempotencyKey,
 	type OperationalSettings,
 	type SettingsStore,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import type { Kysely } from "kysely";
 import type { Database } from "./schema.js";
 

@@ -18,7 +18,7 @@ import {
 	InMemorySettingsStore,
 	InMemoryShippingRulesStore,
 	InMemoryTaxRulesStore,
-} from "@urumi/domain/testing";
+} from "@otta-sh/domain/testing";
 import { Hono } from "hono";
 import { describe, expect, test } from "vitest";
 import { createApp } from "../src/app.js";

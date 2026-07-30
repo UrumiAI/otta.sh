@@ -1,8 +1,8 @@
 ---
-"@urumi/domain": minor
-"@urumi/service": minor
-"@urumi/plugin": minor
-"@urumi/store-postgres": patch
+"@otta-sh/domain": minor
+"@otta-sh/service": minor
+"@otta-sh/plugin": minor
+"@otta-sh/store-postgres": patch
 ---
 
 **Breaking:** a product's title is now edited only in the CMS.
@@ -24,7 +24,7 @@ and rejected, and the reasoning is recorded in
 
 **Breaking API changes** (relevant if you integrate directly, not if you only use the console):
 
-- `UpdateProductCommerceFieldsInput` (`@urumi/domain`) no longer has a `title` field.
+- `UpdateProductCommerceFieldsInput` (`@otta-sh/domain`) no longer has a `title` field.
 - `PATCH /admin/products/:id` no longer accepts `title`. Its body schema is now **strict**: an
   unrecognised key is a `400` naming the field, rather than being silently dropped behind a
   `200`. Anything still sending `title` on that route will now fail on **every** edit, which is

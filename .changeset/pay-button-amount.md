@@ -1,5 +1,5 @@
 ---
-"@urumi/plugin": minor
+"@otta-sh/plugin": minor
 ---
 
 The checkout pay button states the amount — "Pay $40.00", not "Pay now"

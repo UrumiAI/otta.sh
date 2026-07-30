@@ -151,7 +151,7 @@ export class HttpCommerceClient implements CommerceClient {
 	// ── end Phase 2 catalog batch read ────────────────────────────────────
 
 	// ── Phase 3 group E: cart (plan §6 step 6) ────────────────────────────
-	// Straight 1:1 mirrors of `@urumi/service`'s `routes/carts.ts`. Typed
+	// Straight 1:1 mirrors of `@otta-sh/service`'s `routes/carts.ts`. Typed
 	// cart failures (`OUT_OF_STOCK`/`CART_NOT_FOUND`/…) ride a MIX of 200/
 	// 404/409 at the wire (adapter-architecture rule #2 — no status-code-
 	// as-logic); `#cartResult` normalizes all of them to the same
@@ -203,7 +203,7 @@ export class HttpCommerceClient implements CommerceClient {
 		// NOT in `#cartResult`: that is generic over `T` and shared with
 		// `addCartLine`/`adjustCartLine`/`removeCartLine`; special-casing a field
 		// name inside a generic envelope normalizer is the wrong layer. And NOT
-		// double-guarded downstream: `sites/staging` bundles `@urumi/plugin`
+		// double-guarded downstream: `sites/staging` bundles `@otta-sh/plugin`
 		// (`noExternal`), so site+plugin ship as ONE deployable and the only skew
 		// boundary is (site+plugin) ⇄ service — a second guard would be redundant
 		// by construction and would drift.
@@ -523,7 +523,7 @@ export class HttpCommerceClient implements CommerceClient {
 }
 
 /** True for both `{ok:true,...}` and `{ok:false,reason:<string>}` — the two
- *  shapes `@urumi/service`'s cart routes' `failure()`/success bodies take. */
+ *  shapes `@otta-sh/service`'s cart routes' `failure()`/success bodies take. */
 function isCartEnvelope(body: unknown): body is { ok: boolean; reason?: unknown } {
 	if (typeof body !== "object" || body === null || !("ok" in body)) return false;
 	const ok = (body as { ok: unknown }).ok;

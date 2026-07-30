@@ -43,7 +43,7 @@ import {
 	type CartReadRouteResult,
 	type CartWire,
 	type CheckoutAmountView,
-} from "@urumi/plugin";
+} from "@otta-sh/plugin";
 import { getEmDashCollection } from "emdash";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import HoldRibbon from "../../components/HoldRibbon.astro";
@@ -142,7 +142,7 @@ if (cart !== null && !isKnownCartState(cart.state)) {
  * the state can never be observed apart. It rides `CartWire.orderId`, and
  * `HttpCommerceClient.getCart` normalizes a missing, empty or non-string value
  * to `null` at the wire boundary — so no second guard here. Site and plugin
- * ship as ONE worker (`noExternal: ["@urumi/plugin"]` in `astro.config.ts`);
+ * ship as ONE worker (`noExternal: ["@otta-sh/plugin"]` in `astro.config.ts`);
  * there is no skew between them for a local re-check to catch.
  *
  * It used to come from the `urumi_checkout` handoff stash, and that is why the

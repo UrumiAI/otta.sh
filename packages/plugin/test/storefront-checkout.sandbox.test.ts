@@ -1,7 +1,7 @@
 /**
  * B4 (storefront-checkout plan §3) — the plugin's checkout routes under the
  * REAL workerd sandbox (DEVELOPMENT.md §5: if it only works trusted, it's
- * broken), against a stub `@urumi/service`.
+ * broken), against a stub `@otta-sh/service`.
  *
  * The sandbox bakes a single `allowedHost` (the stub), so the ONLY reachable
  * egress is the service: the recorded stub requests ARE the plugin's entire

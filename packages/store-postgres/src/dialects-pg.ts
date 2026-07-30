@@ -4,7 +4,7 @@ import type { Database } from "./schema.js";
 
 /**
  * Postgres dialect factories (§0.4) — split from the sqlite factory so a
- * bundler-targeted entry (`@urumi/store-postgres/pg`, used by the Cloudflare
+ * bundler-targeted entry (`@otta-sh/store-postgres/pg`, used by the Cloudflare
  * Worker) can reach pg/Kysely without dragging in the `better-sqlite3` native
  * addon, which workerd/esbuild cannot bundle.
  */

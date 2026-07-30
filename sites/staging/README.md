@@ -1,4 +1,4 @@
-# @urumi/site-staging
+# @otta-sh/site-staging
 
 The Urumi **staging storefront + admin**: an EmDash site on Cloudflare Workers backed by
 a D1 content database and an R2 media bucket, with the Urumi plugin registered **trusted
@@ -22,7 +22,7 @@ PG_CONNECTION_STRING=postgres://postgres:postgres@127.0.0.1:55432/urumi_test \
   pnpm dlx tsx@4 packages/service/src/index.ts
 
 # 2. Run the site against it:
-COMMERCE_SERVICE_URL=http://127.0.0.1:3000 pnpm --filter @urumi/site-staging dev
+COMMERCE_SERVICE_URL=http://127.0.0.1:3000 pnpm --filter @otta-sh/site-staging dev
 ```
 
 In `astro dev` the fastest path to a populated catalog is the dev-only bypass, which

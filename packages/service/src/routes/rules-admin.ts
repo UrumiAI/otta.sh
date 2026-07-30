@@ -9,7 +9,7 @@ import {
 	type ProductCommerceStore,
 	type ShippingRulesStore,
 	type TaxRulesStore,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import { Hono } from "hono";
 import { z } from "zod";
 import {
@@ -462,7 +462,7 @@ function nn(v: number | null | undefined): ReturnType<typeof cents> | null {
 	return v === null || v === undefined ? null : cents(v);
 }
 
-function serializeCoupon(coupon: import("@urumi/domain").CouponRecord): Record<string, unknown> {
+function serializeCoupon(coupon: import("@otta-sh/domain").CouponRecord): Record<string, unknown> {
 	return {
 		id: coupon.id,
 		code: coupon.code,

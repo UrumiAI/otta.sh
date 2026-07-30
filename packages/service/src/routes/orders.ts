@@ -26,7 +26,7 @@ import {
 	type TaxRulesStore,
 	type TotalsLineInput,
 	type ProductCommerceStore,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import { type Context, Hono } from "hono";
 import { tokenMatches } from "../auth.js";
 import { checkoutBody, orderPathParams, quoteBody } from "../schemas.js";

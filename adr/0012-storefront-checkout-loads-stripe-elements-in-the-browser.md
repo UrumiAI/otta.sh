@@ -173,7 +173,7 @@ not ours to change.
 
 **PR tagging.** This ships tagged `[Plugin]`, reading CLAUDE.md's "the EmDash plugin
 (storefront, …)" scope as covering `sites/staging` — the site is the theme-shim half of the
-plugin's storefront surface (ADR-0003). Neither `@urumi/service` nor `@urumi/domain` changes.
+plugin's storefront surface (ADR-0003). Neither `@otta-sh/service` nor `@otta-sh/domain` changes.
 
 ## Consequences
 
@@ -217,7 +217,7 @@ plugin's storefront surface (ADR-0003). Neither `@urumi/service` nor `@urumi/dom
 - An unsupported-currency failure is indistinguishable from a Stripe outage at the page:
   `providerCode: "unsupported_currency"` is log-only and never on the wire. The copy ("We
   couldn't start a payment for this order. No charge was made.") is true either way. A
-  pre-flight currency check would require the deny-list from `@urumi/payments-stripe`, i.e. a
+  pre-flight currency check would require the deny-list from `@otta-sh/payments-stripe`, i.e. a
   new plugin dependency — worth doing only if a non-two-decimal catalog is ever planned.
 - Stripe expires idempotency keys after ~24 h, so a retry past that window mints a second
   PaymentIntent. Both carry the same `metadata[order_id]` and settlement dedupes on event id.

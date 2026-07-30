@@ -11,7 +11,7 @@ self-contained — section references like "§4" point inside this file.
 
 Urumi is **two deployables and two databases**:
 
-1. **The commerce service** (`@urumi/service`) — a Hono REST API that owns all money and
+1. **The commerce service** (`@otta-sh/service`) — a Hono REST API that owns all money and
    stock truth. It ships two entries from one codebase: a Node bin (`dist/index.mjs`
    post-publish; run via tsx from a checkout today — see §2.2) and a Cloudflare Worker
    (`src/worker.ts`). It needs a **Postgres** database and migrates itself forward on boot.
@@ -100,7 +100,7 @@ conservatively; the database is the scaling arbiter (§6).
 
 ### 2.2 Run the service
 
-The `@urumi/*` packages are not published yet, and inside the workspace their export maps
+The `@otta-sh/*` packages are not published yet, and inside the workspace their export maps
 point at TypeScript sources — so from a checkout, run the Node entry with a TS-executing
 runner rather than the built `dist/index.mjs` (that file is the entry for a future
 published install; plain `node` cannot resolve its workspace imports today — issue #44;
@@ -286,7 +286,7 @@ paid plan:
 
    ```bash
    COMMERCE_SERVICE_URL=https://<your-service>.<your-subdomain>.workers.dev \
-     pnpm --filter @urumi/site-staging build
+     pnpm --filter @otta-sh/site-staging build
    ```
 
 5. **Deploy plain — never `--config` here** (from `sites/staging`):

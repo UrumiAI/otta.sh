@@ -1,5 +1,5 @@
-import { cents, currency as toCurrency, orderId as toOrderId } from "@urumi/domain";
-import { buildGatewayHarness, paymentGatewayContract } from "@urumi/domain/testing";
+import { cents, currency as toCurrency, orderId as toOrderId } from "@otta-sh/domain";
+import { buildGatewayHarness, paymentGatewayContract } from "@otta-sh/domain/testing";
 import { createTestFacilitator, signX402Proof, X402PaymentGateway } from "../src/index.js";
 
 const SECRET = "x402_facilitator_test_secret";

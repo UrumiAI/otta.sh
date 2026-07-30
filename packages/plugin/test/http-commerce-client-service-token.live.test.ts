@@ -7,7 +7,7 @@ const PG = process.env.PG_CONNECTION_STRING;
 
 /**
  * B9 (ADR-0007) — the write-gate wire contract against a LIVE Postgres-backed
- * `@urumi/service` booted WITH `SERVICE_API_TOKEN` set. A client carrying the
+ * `@otta-sh/service` booted WITH `SERVICE_API_TOKEN` set. A client carrying the
  * matching `serviceToken` clears the gate on a write; a client WITHOUT it is
  * 401'd at the gate — proving the header the client sends (`X-Service-Token`)
  * is exactly the header the service enforces (no wire drift from the port).

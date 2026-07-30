@@ -7,9 +7,9 @@ import type {
 	SettingsStoreHarness,
 	ShippingRulesStoreHarness,
 	TaxRulesStoreHarness,
-} from "@urumi/domain/testing";
-import { idempotencyKey } from "@urumi/domain";
-import { CountingIdGen, FixedClock } from "@urumi/domain/testing";
+} from "@otta-sh/domain/testing";
+import { idempotencyKey } from "@otta-sh/domain";
+import { CountingIdGen, FixedClock } from "@otta-sh/domain/testing";
 import type { Kysely } from "kysely";
 import {
 	KyselyCartStore,

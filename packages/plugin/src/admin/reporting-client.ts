@@ -5,7 +5,7 @@ import type { HttpAccess } from "../types.js";
  * surface (plan §4.4/§5.3). Same transport discipline as `HttpCommerceClient`
  * (no new primitive): the injected `ctx.http.fetch` is the ONLY egress, money is
  * integer minor units + ISO-4217 currency on the wire, and the wire types are
- * defined locally (never importing `@urumi/domain`, keeping the plugin
+ * defined locally (never importing `@otta-sh/domain`, keeping the plugin
  * sandbox-clean). `#fetch` is `#`-prefixed so the sandbox-clean grep guard sees
  * no bare fetch call.
  */

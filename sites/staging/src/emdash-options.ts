@@ -19,7 +19,7 @@ import { d1, r2 } from "@emdash-cms/cloudflare";
 import type { DatabaseDescriptor, PluginDescriptor, StorageDescriptor } from "emdash";
 import { urumiPluginDescriptor } from "./urumi-plugin-descriptor.js";
 
-/** Placeholder mirrors @urumi/plugin's manifest fallback — a build without
+/** Placeholder mirrors @otta-sh/plugin's manifest fallback — a build without
  *  COMMERCE_SERVICE_URL produces a deployable-but-inert commerce egress.
  *  Kept as a literal (importing the plugin's resolved constant would be
  *  circularly self-fulfilling); equality with the plugin's un-defined

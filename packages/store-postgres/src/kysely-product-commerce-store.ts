@@ -22,7 +22,7 @@ import {
 	type ProductSummary,
 	type UpdateProductCommerceFieldsInput,
 	type UpsertProductCommerceInput,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import {
 	type Expression,
 	expressionBuilder,

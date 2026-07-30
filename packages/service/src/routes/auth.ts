@@ -8,7 +8,7 @@ import {
 	type EmailSender,
 	type OrderStore,
 	type SessionStore,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import { Hono } from "hono";
 import { loginRequestBody, loginVerifyBody } from "../schemas.js";
 import { bearerToken } from "./session-auth.js";

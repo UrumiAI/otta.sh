@@ -77,7 +77,7 @@ export async function getProductCommerce(
  * Batch catalog read (Phase 2 §6) — a query, not a command (no idempotency
  * key). Straight pass-through: the semantics (missing ids omitted,
  * commerce-complete rows only, intra-store `inStock` join) are the PORT's
- * contract; this wrapper exists so `@urumi/service` composes use-cases, not
+ * contract; this wrapper exists so `@otta-sh/service` composes use-cases, not
  * store methods, like its siblings.
  */
 export async function listProductCommerceByIds(
@@ -93,7 +93,7 @@ export async function listProductCommerceByIds(
  * rules the branded types cannot express), then the store's optimistic
  * compare-and-set (`ProductCommerceStore.updateCommerceFields`) — the port doc
  * carries the guard semantics (replay dedupe, not_found, stale, currency
- * integrity). Exists so `@urumi/service` composes a use-case, not a store
+ * integrity). Exists so `@otta-sh/service` composes a use-case, not a store
  * method, like its siblings.
  *
  * Validation (throws `InvalidProductFieldError`, mapped to 400 upstream):
@@ -209,7 +209,7 @@ export async function softDeleteProductCommerce(
  * (unknown/soft-deleted/already-active rows are no-ops; a soft-deleted
  * product is never resurrected by a publish; a stale `contentUpdatedAt`
  * watermark arriving after a newer lifecycle event is a no-op so out-of-order
- * publish/unpublish delivery converges). Exists so `@urumi/service` composes
+ * publish/unpublish delivery converges). Exists so `@otta-sh/service` composes
  * use-cases, not store methods, like its siblings.
  */
 export async function activateProductCommerce(
@@ -228,7 +228,7 @@ export async function activateProductCommerce(
  * (unknown/soft-deleted/already-inactive rows are no-ops; deactivation flips
  * only the publish gate and never touches `deletedAt`; a stale
  * `contentUpdatedAt` watermark is a no-op so out-of-order delivery converges).
- * Exists so `@urumi/service` composes use-cases, not store methods, like its
+ * Exists so `@otta-sh/service` composes use-cases, not store methods, like its
  * siblings.
  */
 export async function deactivateProductCommerce(

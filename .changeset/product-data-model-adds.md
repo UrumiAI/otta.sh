@@ -1,8 +1,8 @@
 ---
-"@urumi/domain": minor
-"@urumi/store-postgres": minor
-"@urumi/service": minor
-"@urumi/plugin": minor
+"@otta-sh/domain": minor
+"@otta-sh/store-postgres": minor
+"@otta-sh/service": minor
+"@otta-sh/plugin": minor
 ---
 
 Add merchant-standard commercial fields to the product data model and the #67
@@ -10,7 +10,7 @@ edit form — compare-at price, unit cost, tax class (registry-referenced), and
 inventory policy (admin-UX Increment 2, slice 5). Data model + admin edit only;
 no storefront rendering, and NO change to reservation semantics.
 
-- `@urumi/domain`: `ProductCommerce` / `UpdateProductCommerceFieldsInput` gain
+- `@otta-sh/domain`: `ProductCommerce` / `UpdateProductCommerceFieldsInput` gain
   `compareAtPrice` (optional `Money`), `unitCost` (optional, admin-only `Money`),
   and `inventoryPolicy` (a `"deny"`-only union — see below). All three are
   EDIT-ONLY (set via `updateCommerceFields`, never the CMS-sync `upsert`, which
@@ -30,19 +30,19 @@ no storefront rendering, and NO change to reservation semantics.
   live-only, registry delete-in-use) plus two fast-follow pins: a soft-deleted row
   is always inactive, and keyset pagination works under the archive (`deleted`)
   view.
-- `@urumi/store-postgres`: forward-only migration `0017` adds
+- `@otta-sh/store-postgres`: forward-only migration `0017` adds
   `compare_at_cents`/`compare_at_currency`, `unit_cost_cents`/`unit_cost_currency`
   (nullable, `>= 0` CHECK), and `inventory_policy text NOT NULL DEFAULT 'deny'`,
   additively (no backfill). The Kysely store rows/edits carry the new fields and
   the extended currency guards, dialect-identical on better-sqlite3 and Postgres;
   `KyselyTaxRulesStore.deleteClass` and `countByTaxClass` implement the guards.
-- `@urumi/service`: `PATCH /admin/products/:id` accepts the new fields;
+- `@otta-sh/service`: `PATCH /admin/products/:id` accepts the new fields;
   `editProductCommerceBody` bounds compare-at/cost (non-negative money) and
   `inventoryPolicy` (`"deny"` enum). The internal-token admin detail serializes
   unit cost; the PUBLIC `GET /products/:id/commerce` (an un-gated, storefront-
   reachable GET) and the catalog view DELIBERATELY OMIT unit cost — admin-only
   margin data never reaches a buyer, pinned by a test.
-- `@urumi/plugin`: the product edit form surfaces the four fields via Block Kit —
+- `@otta-sh/plugin`: the product edit form surfaces the four fields via Block Kit —
   compare-at + unit cost as TEXT money inputs (integer-string parsed, never a
   float), a tax-class SELECT sourced from the live registry (`GET
   /admin/tax/classes`, static-seeded fallback, best-effort so a registry read

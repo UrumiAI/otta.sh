@@ -6,7 +6,7 @@
  * ── Honest zeros, the rule this module exists to enforce ──────────────────
  * `computeQuote` substitutes a synthetic ZERO-shipping method when no
  * `methodId` is passed, and skips the tax lookup entirely when no `zoneId` is
- * passed (`@urumi/domain`'s pricing/quote.ts). So a store with nothing
+ * passed (`@otta-sh/domain`'s pricing/quote.ts). So a store with nothing
  * configured — which is every store today — gets `shippingCents: 0` and
  * `taxCents: 0` on the wire, indistinguishable at the number from a genuine
  * free-shipping, zero-tax order.

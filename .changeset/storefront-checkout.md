@@ -1,5 +1,5 @@
 ---
-"@urumi/plugin": minor
+"@otta-sh/plugin": minor
 ---
 
 Storefront checkout — the plugin routes that close the buyer journey (ADR-0012). Additive:

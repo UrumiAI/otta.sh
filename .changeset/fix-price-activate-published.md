@@ -1,5 +1,5 @@
 ---
-"@urumi/plugin": patch
+"@otta-sh/plugin": patch
 ---
 
 Fix issue #82: pricing a product whose CMS content is ALREADY PUBLISHED left the

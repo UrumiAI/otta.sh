@@ -4,7 +4,7 @@ import {
 	FixedClock,
 	InMemoryOrderStore,
 	refundOrderContract,
-} from "@urumi/domain/testing";
+} from "@otta-sh/domain/testing";
 
 // The refunds spec (ADR-0008) against the in-memory OrderStore fake — the first
 // adapter to pass it, before sqlite + pg. Money movement, so this runs the full

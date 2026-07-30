@@ -2,7 +2,7 @@
  * Cart — PLUGIN-OWNED PUBLIC ROUTES (Phase 3 group E, plan §7 step E1, shape
  * per ADR-0003). The plugin holds no cart/stock state (plan §4 "Where cart
  * state lives"): every route here is a straight proxy over `ctx.http` to
- * `@urumi/service`'s `/carts` REST surface — validate input → `HttpCommerceClient`
+ * `@otta-sh/service`'s `/carts` REST surface — validate input → `HttpCommerceClient`
  * call → serialize the (already-typed) result. No cart truth is duplicated
  * or cached in the plugin.
  *

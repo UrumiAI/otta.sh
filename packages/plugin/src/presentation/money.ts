@@ -1,6 +1,6 @@
 /**
  * The plugin's OWN branded money types — a deliberate, documented mirror of
- * `@urumi/domain`'s `money/cents.ts` (same brands, same constructors, same
+ * `@otta-sh/domain`'s `money/cents.ts` (same brands, same constructors, same
  * float-literal rejection), NOT an import of it.
  *
  * Why not import: OUR OWN sandbox test harness (`test/sandbox/harness.ts`)

@@ -2,7 +2,7 @@ import {
 	couponStoreContract,
 	shippingRulesStoreContract,
 	taxRulesStoreContract,
-} from "@urumi/domain/testing";
+} from "@otta-sh/domain/testing";
 import { afterEach } from "vitest";
 import {
 	makePgCouponHarness,

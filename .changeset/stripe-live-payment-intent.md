@@ -1,7 +1,7 @@
 ---
-"@urumi/domain": minor
-"@urumi/payments-stripe": minor
-"@urumi/service": minor
+"@otta-sh/domain": minor
+"@otta-sh/payments-stripe": minor
+"@otta-sh/service": minor
 ---
 
 Live Stripe `paymentIntents.create` in `StripePaymentGateway.createIntent` when a
@@ -9,7 +9,7 @@ Live Stripe `paymentIntents.create` in `StripePaymentGateway.createIntent` when 
 `secretKey` the OFFLINE deterministic handle is byte-identical to before, so every
 existing suite, staging and e2e keep running unchanged.
 
-**`@urumi/payments-stripe`**
+**`@otta-sh/payments-stripe`**
 
 - `StripeTransport` gains a **required** `createPaymentIntent` method (with
   `StripeCreatePaymentIntentResult`). **This breaks any external `StripeTransport`
@@ -35,7 +35,7 @@ existing suite, staging and e2e keep running unchanged.
   answers 502 instead of overcharging. The offline path is not gated (it moves no
   money). Lifting the restriction needs an exponent-aware money boundary.
 
-**`@urumi/domain`**
+**`@otta-sh/domain`**
 
 - New exported `PaymentIntentError` (`gateway`, `retryable`, and log-only
   `providerStatus` / `providerCode`) — the typed throw `createIntent` uses to
@@ -60,7 +60,7 @@ existing suite, staging and e2e keep running unchanged.
   only while no order row owns the redemption. `RESERVATION_LOST` keeps its eager
   release (recovery there is a new cart + new key) — a deliberate asymmetry.
 
-**`@urumi/service`**
+**`@otta-sh/service`**
 
 - New `stripe-wiring.ts` (`wireStripeGateway`), used by both the Node bin and the
   Worker entry: `STRIPE_WEBHOOK_SECRET` without `STRIPE_SECRET_KEY` now means

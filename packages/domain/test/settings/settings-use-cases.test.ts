@@ -1,5 +1,5 @@
-import { getSettings, idempotencyKey, InvalidSettingsError, updateSettings } from "@urumi/domain";
-import { InMemorySettingsStore, settingsStoreContract } from "@urumi/domain/testing";
+import { getSettings, idempotencyKey, InvalidSettingsError, updateSettings } from "@otta-sh/domain";
+import { InMemorySettingsStore, settingsStoreContract } from "@otta-sh/domain/testing";
 import { describe, expect, test } from "vitest";
 
 // Contract suite against the fake (Step 2, fake-first).

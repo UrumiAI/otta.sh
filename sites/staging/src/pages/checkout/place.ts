@@ -17,7 +17,7 @@
  * same order and the same PaymentIntent instead of minting a second order the
  * `CART_CHECKED_OUT` fence would then reject.
  */
-import { STOREFRONT_CHECKOUT_PLACE_ROUTE, type CheckoutPlaceRouteResult } from "@urumi/plugin";
+import { STOREFRONT_CHECKOUT_PLACE_ROUTE, type CheckoutPlaceRouteResult } from "@otta-sh/plugin";
 import type { APIRoute } from "astro";
 import { currentCartId, failureToken, routeDispatcher, seeOther } from "../../lib/cart-actions.js";
 import { checkoutStashTotal, setCheckoutCookie } from "../../lib/checkout-cookie.js";

@@ -5,7 +5,7 @@ import {
 	expireHolds,
 	type PaymentGateway,
 	type PaymentMethod,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import {
 	KyselyAddressStore,
 	KyselyCartStore,
@@ -27,7 +27,7 @@ import {
 	makePostgresPool,
 	migrateToLatest,
 	uuidIdGen,
-} from "@urumi/store-postgres";
+} from "@otta-sh/store-postgres";
 import { createApp } from "./app.js";
 import { openWriteGateWarning, resolveServiceConfig } from "./config.js";
 import { ConsoleEmailSender, HttpEmailSender } from "./email/senders.js";
@@ -37,7 +37,7 @@ import { wireX402Gateway } from "./x402-wiring.js";
 // Bin entry (§0.6): wire the real pg-backed stores and serve on PORT.
 const connectionString = process.env.PG_CONNECTION_STRING;
 if (connectionString === undefined) {
-	throw new Error("PG_CONNECTION_STRING is required to start @urumi/service");
+	throw new Error("PG_CONNECTION_STRING is required to start @otta-sh/service");
 }
 
 const pool = makePostgresPool({ connectionString });
@@ -146,7 +146,7 @@ const app = createApp({
 });
 const port = Number(process.env.PORT ?? 3000);
 serve({ fetch: app.fetch, port });
-console.log(`@urumi/service listening on :${port}`);
+console.log(`@otta-sh/service listening on :${port}`);
 
 // Self-scheduled email outbox dispatcher + login-challenge prune (§5.8 +
 // review round H1) — the Node convenience wiring (a Worker deployment drives

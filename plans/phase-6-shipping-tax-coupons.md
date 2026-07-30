@@ -44,7 +44,7 @@ pipeline: subtotal → discount → shipping → tax → grand total.
 ### Property test design
 
 New package/dev-dependency: **`fast-check`**, added to the `catalog:` pins (not present
-before Phase 6 — flag in the changeset). Runs inside `@urumi/domain`'s vitest suite via
+before Phase 6 — flag in the changeset). Runs inside `@otta-sh/domain`'s vitest suite via
 `fc.assert(fc.property(...))`.
 
 **Generators (arbitraries):**
@@ -107,7 +107,7 @@ math itself is wrong from day one."
     (global), `maxUsesPerCustomer` (optional, only if a customer id is present — Phase 5
     dependency, degrade gracefully to global-only if absent).
   - **One coupon per order.** No stacking.
-- Rules engines are **pure functions in `@urumi/domain`** — config/data in, `Cents` totals
+- Rules engines are **pure functions in `@otta-sh/domain`** — config/data in, `Cents` totals
   out. IO (loading zones/rates/coupons) stays in stores, called by the checkout use-case
   *before* the pure engine runs.
 - Order snapshots the full totals breakdown immutably (extends Phase 4's snapshot
@@ -152,7 +152,7 @@ math itself is wrong from day one."
   use-case; it does not touch payment/webhook code, and adds **no new table or column** for
   totals.
 - Phase 5's customer id (optional) for `maxUsesPerCustomer` — soft dependency, not blocking.
-- `@urumi/service`'s "REST mirrors ports 1:1" rule and live-server HTTP contract test
+- `@otta-sh/service`'s "REST mirrors ports 1:1" rule and live-server HTTP contract test
   pattern.
 
 ### Provided to Phase 7 (reports/settings)
@@ -236,10 +236,10 @@ hoping rounding cancels out.
 - **Discount allocation** uses largest-remainder (§ above) rather than rounding, since it
   must hit an exact target sum, not just "round each share reasonably."
 
-### Pure-function shape in `@urumi/domain`
+### Pure-function shape in `@otta-sh/domain`
 
 ```ts
-// @urumi/domain/pricing — IO-free, no store imports
+// @otta-sh/domain/pricing — IO-free, no store imports
 interface TotalsInput {
   currency: Currency;
   lines: ReadonlyArray<{ unitPriceCents: Cents; qty: number; taxClassId: string }>;
@@ -350,7 +350,7 @@ succeed and `uses_count === M` — **Postgres-required**, same reasoning as inve
 
 ## 6. New service surface
 
-### Ports (in `@urumi/domain/ports`)
+### Ports (in `@otta-sh/domain/ports`)
 
 - `ShippingRulesStore` — `listZones`, `listMethods(zoneId)`, `getRate(methodId, currency)`.
 - `TaxRulesStore` — `getRate(taxClassId, zoneId)`.
@@ -535,7 +535,7 @@ service tasks verified end-to-end before merge):
 - [ ] Checkout integration test confirms the Phase 4 stub sum is fully replaced, and the
       order-immutability test (rate edits after order creation don't change `order_totals`)
       passes.
-- [ ] `@urumi/domain` still imports nothing with IO (`pnpm lint` boundary rule green) — the
+- [ ] `@otta-sh/domain` still imports nothing with IO (`pnpm lint` boundary rule green) — the
       three engines and `computeTotals` are pure.
 - [ ] `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm format` all clean.
 - [ ] Forward-only migrations added for `shipping_zones/methods/rates`, `tax_classes/rates`,

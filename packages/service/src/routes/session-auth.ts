@@ -1,4 +1,4 @@
-import type { CustomerId, SessionStore } from "@urumi/domain";
+import type { CustomerId, SessionStore } from "@otta-sh/domain";
 import type { Context } from "hono";
 
 /** Extract the `Authorization: Bearer <token>` value, or null. */

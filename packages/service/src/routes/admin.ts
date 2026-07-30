@@ -47,7 +47,7 @@ import {
 	money as toMoney,
 	cents as toCents,
 	currency as toCurrency,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import { Hono } from "hono";
 import { z } from "zod";
 import {

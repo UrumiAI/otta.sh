@@ -11,7 +11,7 @@ import {
 	reservationId as brandReservationId,
 	settleOrder,
 	sku as brandSku,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import { beforeEach, describe, expect, test } from "vitest";
 import { makeOrderHarness, type OrderHarness } from "./fake-harness.js";
 

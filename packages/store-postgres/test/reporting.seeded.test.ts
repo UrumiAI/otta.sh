@@ -11,7 +11,7 @@ import {
 	FIXTURE_ORDERS,
 	REPORTING_WINDOW,
 	type ReportingStoreHarness,
-} from "@urumi/domain/testing";
+} from "@otta-sh/domain/testing";
 import { afterEach, describe, expect, test } from "vitest";
 import {
 	makePgReportingHarness,

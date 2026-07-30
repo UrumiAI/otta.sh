@@ -10,7 +10,7 @@ import {
 	type StatusCount,
 	type TopProduct,
 	type TopProductsMetric,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import { type Kysely, type RawBuilder, sql } from "kysely";
 import type { Database } from "./schema.js";
 

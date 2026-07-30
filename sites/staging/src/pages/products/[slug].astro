@@ -30,7 +30,7 @@ import {
 	STOREFRONT_PRODUCT_ROUTE,
 	type PdpRouteResult,
 	type ProductViewModel,
-} from "@urumi/plugin";
+} from "@otta-sh/plugin";
 import { getEmDashEntry } from "emdash";
 import { safeJsonLdSerialize } from "emdash/page";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
@@ -307,7 +307,7 @@ const soldOut = product?.availability === "out_of_stock";
 										    useful part.
 
 										    The figure states the shipped DEFAULT:
-										    `DEFAULT_HOLD_TTL_MS` in @urumi/domain is 15
+										    `DEFAULT_HOLD_TTL_MS` in @otta-sh/domain is 15
 										    minutes, and the service's only override is the
 										    `CART_HOLD_TTL_MS` env var — the admin's
 										    `holdTtlMinutes` setting is persisted but not

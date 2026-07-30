@@ -16,7 +16,7 @@ import {
 	type RestockResult,
 	StockMovementMismatchError,
 	type StockRemovalResult,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import { type Kysely, sql } from "kysely";
 import type { Database, ReservationState } from "./schema.js";
 

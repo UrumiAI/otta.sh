@@ -72,7 +72,7 @@ import {
  * its existing inline `fields` + edit-or-create form shape.
  *
  * REGIONS, presented honestly: `ShippingZone.regions` is opaque config the
- * pricing engine never reads (`@urumi/domain`'s `ShippingRulesStore` doc:
+ * pricing engine never reads (`@otta-sh/domain`'s `ShippingRulesStore` doc:
  * "opaque config the engine never reads") — checkout/quote takes an explicit
  * `shippingZoneId`, not an address-to-zone match. That fact does not fit the
  * zones level's ≤140-char page context, so it lives as one `context` line

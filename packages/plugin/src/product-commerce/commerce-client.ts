@@ -5,7 +5,7 @@
  * only adapter this phase builds — `InProcessCommerceClient` is deferred
  * (ADR-0002 §6: no premature abstraction beyond a second real adapter).
  *
- * Wire types mirror `@urumi/service`'s `PUT/GET/DELETE /products/:id/commerce`
+ * Wire types mirror `@otta-sh/service`'s `PUT/GET/DELETE /products/:id/commerce`
  * 1:1 (money as an integer + ISO-4217 string, never a float).
  */
 
@@ -122,9 +122,9 @@ export interface CommerceClient {
 	getCommerceBatch(productIds: string[]): Promise<ProductCommerceBatchItem[]>;
 	// ── end Phase 2 catalog batch read ────────────────────────────────────
 
-	// ── Phase 3 group E: cart (plan §6, wire mirrors @urumi/service's ─────
+	// ── Phase 3 group E: cart (plan §6, wire mirrors @otta-sh/service's ─────
 	// `/carts` routes 1:1, hand-rolled like the wire types above — the
-	// plugin declares no runtime dependency on @urumi/domain/service). ────
+	// plugin declares no runtime dependency on @otta-sh/domain/service). ────
 	createCart(currency?: string): Promise<{ cartId: string }>;
 	getCart(cartId: string): Promise<CartResult<{ cart: CartWire }>>;
 	addCartLine(
@@ -151,7 +151,7 @@ export interface CommerceClient {
 	// ── end Phase 3 group E: cart ─────────────────────────────────────────
 
 	// ── Phase 5: storefront customer account (plan §7, wire mirrors ───────
-	// @urumi/service's /auth + /me routes 1:1; the bearer session token is
+	// @otta-sh/service's /auth + /me routes 1:1; the bearer session token is
 	// passed through from the plugin's first-party cookie layer, never held
 	// by the sandboxed plugin itself). ────────────────────────────────────
 	requestLoginLink(email: string): Promise<{ ok: true }>;
@@ -168,7 +168,7 @@ export interface CommerceClient {
 	// ── end Phase 5 customer account ──────────────────────────────────────
 
 	// ── Phase 4: checkout (quote → order → public order read) ─────────────
-	// Wire mirrors @urumi/service's routes/orders.ts 1:1. Every typed failure
+	// Wire mirrors @otta-sh/service's routes/orders.ts 1:1. Every typed failure
 	// rides the same `{ ok: false, reason }` envelope regardless of status
 	// (adapter rule #2 — 400/404/409/502 all carry one), so callers branch on
 	// the token and never on an HTTP code.
@@ -186,7 +186,7 @@ export interface CommerceClient {
 }
 
 // ── Phase 4: checkout wire types ───────────────────────────────────────────
-// Mirror @urumi/service's `quoteBody`/`checkoutBody` (schemas.ts) and its
+// Mirror @otta-sh/service's `quoteBody`/`checkoutBody` (schemas.ts) and its
 // quote/checkout/public-order serializations 1:1. Money is integer minor units
 // + an ISO-4217 string, never a float.
 
@@ -207,7 +207,7 @@ export interface QuoteBreakdownWire {
 	appliedCouponCode: string | null;
 }
 
-/** `@urumi/service`'s quote rejections: the cart pre-checks it runs before
+/** `@otta-sh/service`'s quote rejections: the cart pre-checks it runs before
  *  `computeQuote` (`orders.ts`) plus `QuoteFailure`'s own union. */
 export type QuoteFailureReason =
 	| "CART_NOT_FOUND"
@@ -285,7 +285,7 @@ export interface PublicOrderWire {
 	cancellation: { reason: string; cancelledAt: string } | null;
 }
 
-/** `CreateOrderFailure` verbatim (`@urumi/domain`'s orders/errors.ts). */
+/** `CreateOrderFailure` verbatim (`@otta-sh/domain`'s orders/errors.ts). */
 export type CheckoutFailureReason =
 	| "CART_NOT_FOUND"
 	| "CART_EMPTY"
@@ -325,7 +325,7 @@ export type PublicOrderResult =
 // ── end Phase 4 checkout wire types ────────────────────────────────────────
 
 // ── Phase 5: customer account wire types (plan §7) ─────────────────────────
-// Mirror @urumi/service's serializeOrder / serializeCustomer / serializeAddress
+// Mirror @otta-sh/service's serializeOrder / serializeCustomer / serializeAddress
 // 1:1. Money is integer minor units + ISO-4217 string, never a float.
 export interface OrderTotalsWire {
 	currency: string;
@@ -378,7 +378,7 @@ export type AuthedResult<T> = ({ ok: true } & T) | { ok: false; reason: "UNAUTHE
 // ── end Phase 5 customer account wire types ────────────────────────────────
 
 // ── Phase 3 group E: cart wire types (plan §6) ─────────────────────────────
-// Mirror `@urumi/service`'s `routes/carts.ts` serialization 1:1: NO price
+// Mirror `@otta-sh/service`'s `routes/carts.ts` serialization 1:1: NO price
 // field on a line (a cart line snapshots no price — domain `CartStore`'s own
 // documented invariant; the live price is read from `product_commerce`
 // elsewhere, at display/checkout, never stored on the line).
@@ -413,7 +413,7 @@ export interface CartWire {
 
 /**
  * Typed cart-mutation failures — SEMANTIC TOKENS, never English (matches
- * Phase 2's `AvailabilityToken` pattern): `@urumi/service`'s `CartFailure`
+ * Phase 2's `AvailabilityToken` pattern): `@otta-sh/service`'s `CartFailure`
  * union verbatim (adapter-architecture rule #2, "no status-code-as-logic" —
  * `OUT_OF_STOCK` rides a 200, `CART_NOT_FOUND`/`LINE_NOT_FOUND` a 404,
  * `CART_CHECKED_OUT`/`LINE_CHECKED_OUT`/`HOLD_EXPIRED` a 409 — the CLIENT

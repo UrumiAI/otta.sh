@@ -8,7 +8,7 @@ import {
 	STOREFRONT_CART_LINE_UPDATE_ROUTE,
 	type CartLineMutationRouteResult,
 	type CartLineWire,
-} from "@urumi/plugin";
+} from "@otta-sh/plugin";
 import type { APIRoute } from "astro";
 import {
 	clearCartCookie,

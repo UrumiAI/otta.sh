@@ -7,7 +7,7 @@ import {
 	idempotencyKey,
 	removeLine,
 	sku,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import { afterEach, describe, expect, test } from "vitest";
 import {
 	type CartDialectHarness,

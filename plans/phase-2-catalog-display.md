@@ -8,7 +8,7 @@ per `draft-plans/implementation-plan.md` Phases table, row 2._
 
 ## 1. Goal & headline test
 
-**Goal:** storefront PDP and PLP routes/fragments in `@urumi/plugin` that render a browsable
+**Goal:** storefront PDP and PLP routes/fragments in `@otta-sh/plugin` that render a browsable
 catalog by joining EmDash CMS content (title, description, images, SEO, taxonomies) with
 commerce-service commercial data (price, stock, currency) **in app code, at render time** —
 the two live in separate databases and are never joined in SQL. Taxonomy filtering, full-text
@@ -47,7 +47,7 @@ red→green steps that produce each one):
 
 ### In scope
 - PDP (single product) and PLP (listing: all-products, taxonomy-filtered, and search-result
-  variants share one rendering path) storefront rendering in `@urumi/plugin`.
+  variants share one rendering path) storefront rendering in `@otta-sh/plugin`.
 - The content+commerce join utility (pure, transport-agnostic) and its "not purchasable"
   fallback contract.
 - Batched commercial-data fetch: new domain port method + service REST endpoint + plugin
@@ -83,14 +83,14 @@ red→green steps that produce each one):
 ## 3. Dependencies
 
 ### What this phase requires from Phases 0–1 (must already be green)
-- `@urumi/domain`: `InventoryStore` port, branded `Cents`/`Currency`/`ProductId` types,
+- `@otta-sh/domain`: `InventoryStore` port, branded `Cents`/`Currency`/`ProductId` types,
   IO-free use-cases, the domain-purity lint rule.
-- `@urumi/store-postgres`: Kysely store passing the domain contract suite on SQLite +
+- `@otta-sh/store-postgres`: Kysely store passing the domain contract suite on SQLite +
   Postgres; a `product_commerce` table keyed by `product_id = CMS id` (Phase 1), and the
   Phase 0 `inventory` table (`sku`, `on_hand`).
-- `@urumi/service`: REST server that mirrors ports 1:1; live-server contract test harness
+- `@otta-sh/service`: REST server that mirrors ports 1:1; live-server contract test harness
   already exists (reused in §6/§7 for the new endpoint).
-- `@urumi/plugin`: plugin skeleton, `CommerceClient` port + `HttpCommerceClient` adapter
+- `@otta-sh/plugin`: plugin skeleton, `CommerceClient` port + `HttpCommerceClient` adapter
   (transport seam from ADR-0002), `content:afterSave`/`afterPublish`/`afterDelete` sync
   hooks keeping `product_commerce` current, the Block Kit "Product data" field widget, and
   the workerd-on-Node sandbox test harness (Phase 1's sandbox-clean proof).
@@ -149,7 +149,7 @@ spike's finding in the PR description; if the assumption breaks, open an ADR.
 ### 4.2 The join, precisely
 
 ```ts
-// @urumi/plugin — pure, no ctx, unit-testable outside the sandbox
+// @otta-sh/plugin — pure, no ctx, unit-testable outside the sandbox
 interface JoinedProduct {
 	content: CmsProductContent;         // title, description, images, seo, taxonomies
 	commerce: ProductCommerceView | null; // price (Cents), currency, sku, inStock
@@ -228,10 +228,10 @@ question in §4.1:
   never receives or handles a float.
 - A single presentation-layer function, `formatMoney(amount: Cents, currency: Currency,
   locale: string): string`, does the minor→major conversion and `Intl.NumberFormat` locale
-  formatting. It lives in `@urumi/plugin` (or a small shared, IO-free `@urumi/presentation`
+  formatting. It lives in `@otta-sh/plugin` (or a small shared, IO-free `@otta-sh/presentation`
   util if Phase 3's cart needs the identical function — decide by "does a second real
   consumer exist yet," per ADR-0002 rule 5; today only the plugin needs it, so start in
-  `@urumi/plugin`).
+  `@otta-sh/plugin`).
 - This function is the **only** place a money value is allowed to touch a `number`/string
   boundary; it takes branded types in, never a bare `number`. A type-level negative test
   (mirroring Phase 0's `Cents` type-test) asserts passing a bare `number` fails to compile.
@@ -272,7 +272,7 @@ Add a **query** method to the existing Phase 1 commerce-record store port (a rea
 command — no idempotency key needed, it mutates nothing):
 
 ```ts
-// @urumi/domain/ports (extends the Phase 1 ProductCommerceStore port)
+// @otta-sh/domain/ports (extends the Phase 1 ProductCommerceStore port)
 interface ProductCommerceStore {
 	// existing Phase 1 methods: upsert, getByProductId, softDelete, ...
 	listCommerceByIds(productIds: ProductId[]): Promise<ProductCommerceView[]>;
@@ -321,7 +321,7 @@ semantics that don't exist on the port" — the port's batch signature is exactl
 ### New `CommerceClient` transport method
 
 ```ts
-// @urumi/plugin — consumed by the join/loader, never calls fetch directly
+// @otta-sh/plugin — consumed by the join/loader, never calls fetch directly
 interface CommerceClient {
 	// existing Phase 1 methods ...
 	getCommerceBatch(productIds: ProductId[]): Promise<ProductCommerceView[]>;
@@ -460,7 +460,7 @@ wiring is written, so that wiring targets the right hook/route shape.
 | 4 | Should non-purchasable products be excluded from search/PLP entirely, or shown flagged (current recommendation, §4.5/§5)? | Ship "shown, flagged" for v1 (content stays discoverable/SEO-indexable); revisit with product input if it causes user confusion. |
 | 5 | JSON-LD `availability` is a coarse `inStock` boolean, not reservation-aware — could say "InStock" moments before a concurrent buyer takes the last unit. | Acceptable for v1: JSON-LD/PLP display is not the authority; Phase 3's `reserve` is. Document this explicitly in the JSON-LD builder's doc comment so it isn't mistaken for a stronger guarantee later. |
 | 6 | Batch endpoint id-count cap (100 suggested) and PLP page-size cap (24–50 suggested) are placeholders. | Pick page-size from a UX/perf pass, not architecture; keep the batch cap ≥ page-size cap with headroom (e.g. 2×) so a single page render never needs to split into multiple batch calls. |
-| 7 | `formatMoney`'s home package (`@urumi/plugin` vs. a new shared presentation package) may need to move once Phase 3's cart wants it too. | Start in `@urumi/plugin` per ADR-0002 rule 5 ("add an adapter/package only when a second real consumer exists"); extract when Phase 3 actually needs it, as a refactor with its own PR, not speculatively now. |
+| 7 | `formatMoney`'s home package (`@otta-sh/plugin` vs. a new shared presentation package) may need to move once Phase 3's cart wants it too. | Start in `@otta-sh/plugin` per ADR-0002 rule 5 ("add an adapter/package only when a second real consumer exists"); extract when Phase 3 actually needs it, as a refactor with its own PR, not speculatively now. |
 | 8 | Reviews/ratings and `aggregateRating` in JSON-LD are out of scope, but the JSON-LD builder shape should not preclude adding it later. | `buildProductJsonLd` takes a plain object; adding an optional `aggregateRating` field later is additive — no redesign needed, just confirm the builder doesn't hardcode the exact key set in a way that would break. |
 
 ---
@@ -486,10 +486,10 @@ wiring is written, so that wiring targets the right hook/route shape.
       calls" test (§7 step 10) are both green.
 - [ ] `formatMoney`'s negative type-test (bare `number` rejected) fails to compile as
       expected.
-- [ ] `@urumi/domain` still imports nothing with IO (boundary lint green) — this phase adds a
+- [ ] `@otta-sh/domain` still imports nothing with IO (boundary lint green) — this phase adds a
       read method to an existing port, not a new IO dependency.
 - [ ] `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm format` all clean; changeset added for
-      any published package touched (`@urumi/domain`, `@urumi/service`, `@urumi/plugin`).
+      any published package touched (`@otta-sh/domain`, `@otta-sh/service`, `@otta-sh/plugin`).
 - [ ] Storefront Playwright e2e / screenshot: **pending**, not part of this phase's gate —
       storefront e2e infra does not exist yet (`CLAUDE.md` §"Verification before merge" notes
       this as "once storefront e2e exists"). Flag explicitly in the PR that this is

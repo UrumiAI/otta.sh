@@ -15,7 +15,7 @@ import {
 	type RecordedCartMutation,
 	type ReservationLifecycle,
 	type UpsertLineInput,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import { type Kysely, sql, type Transaction } from "kysely";
 import type { CartMutationsTable, Database } from "./schema.js";
 

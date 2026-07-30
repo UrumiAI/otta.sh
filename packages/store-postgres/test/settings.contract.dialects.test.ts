@@ -1,4 +1,4 @@
-import { settingsStoreContract } from "@urumi/domain/testing";
+import { settingsStoreContract } from "@otta-sh/domain/testing";
 import { afterEach } from "vitest";
 import {
 	makePgSettingsHarness,

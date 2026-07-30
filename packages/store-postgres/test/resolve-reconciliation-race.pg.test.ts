@@ -1,5 +1,5 @@
-import { orderId as toOrderId, idempotencyKey } from "@urumi/domain";
-import { CountingIdGen, FixedClock } from "@urumi/domain/testing";
+import { orderId as toOrderId, idempotencyKey } from "@otta-sh/domain";
+import { CountingIdGen, FixedClock } from "@otta-sh/domain/testing";
 import type { Kysely } from "kysely";
 import { afterEach, describe, expect, test } from "vitest";
 import { KyselyOrderStore } from "../src/index.js";

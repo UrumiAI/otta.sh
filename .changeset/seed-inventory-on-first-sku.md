@@ -1,7 +1,7 @@
 ---
-"@urumi/domain": patch
-"@urumi/service": patch
-"@urumi/plugin": patch
+"@otta-sh/domain": patch
+"@otta-sh/service": patch
+"@otta-sh/plugin": patch
 ---
 
 Fix: a product priced in the admin console could never be stocked.

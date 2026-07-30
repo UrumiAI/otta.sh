@@ -1,5 +1,5 @@
-import type { Clock } from "@urumi/domain";
-import { StripePaymentGateway } from "@urumi/payments-stripe";
+import type { Clock } from "@otta-sh/domain";
+import { StripePaymentGateway } from "@otta-sh/payments-stripe";
 
 /** The Stripe slice of the service env (mirrors `X402Env`). */
 export interface StripeEnv {

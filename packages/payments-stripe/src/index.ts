@@ -14,7 +14,7 @@ import {
 	type RawConfirmation,
 	type RefundInput,
 	type RefundResult,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 /** Default replay-window tolerance for the signed `t` timestamp — 300s, matching

@@ -6,8 +6,8 @@ import {
 	productId,
 	reservationId,
 	sku,
-} from "@urumi/domain";
-import { CountingIdGen, FixedClock } from "@urumi/domain/testing";
+} from "@otta-sh/domain";
+import { CountingIdGen, FixedClock } from "@otta-sh/domain/testing";
 import type {
 	InsertQueryNode,
 	KyselyPlugin,

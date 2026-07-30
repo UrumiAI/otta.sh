@@ -1,10 +1,10 @@
 ---
-"@urumi/plugin": minor
+"@otta-sh/plugin": minor
 ---
 
 One home per field: the CMS no longer stores commercial data.
 
-**Breaking (public API):** `@urumi/plugin` no longer exports `buildProductDataElements` or
+**Breaking (public API):** `@otta-sh/plugin` no longer exports `buildProductDataElements` or
 `productDataWidget` — the "Product data" Block Kit field widget is deleted, so a site
 descriptor that registered it (`fieldWidgets: [productDataWidget]`) must drop that entry.
 

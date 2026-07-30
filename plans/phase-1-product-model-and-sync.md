@@ -17,9 +17,9 @@ Grounding facts verified against the EmDash clone (`~/em-dash`) are cited inline
 
 **Goal.** Wire the hybrid product model end-to-end: a native EmDash `products` collection
 owns content; the commerce service owns commercial data in a `product_commerce` row keyed by
-the CMS content `id`; the Urumi plugin (`@urumi/plugin`) keeps them in sync via content
+the CMS content `id`; the Urumi plugin (`@otta-sh/plugin`) keeps them in sync via content
 lifecycle hooks and lets an editor set commercial fields from a Block Kit "Product data"
-panel. This is the first phase that introduces `@urumi/plugin`; it consumes the `CommerceClient`
+panel. This is the first phase that introduces `@otta-sh/plugin`; it consumes the `CommerceClient`
 transport port (ADR-0002 §3) and a new `ProductCommerceStore` storage port added to Phase 0's
 domain.
 
@@ -55,7 +55,7 @@ domain.
 **In scope:**
 - EmDash `products` collection definition (content fields: title, slug, Portable Text
   description, gallery/media refs, SEO) — a CMS config artifact shipped with the plugin.
-- `@urumi/plugin` package bootstrap: `definePlugin` manifest, capabilities, `allowedHosts`.
+- `@otta-sh/plugin` package bootstrap: `definePlugin` manifest, capabilities, `allowedHosts`.
 - The `CommerceClient` transport port + `HttpCommerceClient` adapter (ADR-0002 §3) — the
   slice of methods this phase needs (`upsertProductCommerce`, `getProductCommerce`,
   `softDeleteProductCommerce`).
@@ -90,15 +90,15 @@ domain.
 ## 3. Dependencies
 
 **Depends on Phase 0 (exact parts):**
-- `@urumi/domain` — branded types (`Cents`, `Currency`, `Sku`, `ProductId`, `IdempotencyKey`),
+- `@otta-sh/domain` — branded types (`Cents`, `Currency`, `Sku`, `ProductId`, `IdempotencyKey`),
   the ports directory + port-first test convention, and the in-memory fake pattern
   (Phase 0 §0.2). Phase 1 **adds** `ProductCommerceStore` alongside `InventoryStore`.
-- `@urumi/store-postgres` — the Kysely dialect-parameterized store, forward-only migration
+- `@otta-sh/store-postgres` — the Kysely dialect-parameterized store, forward-only migration
   runner, and `describeEachDialect`-style contract wrapper (Phase 0 §0.4). Phase 1 adds a
   migration + a `ProductCommerceStore` implementation.
 - The shared **contract-suite pattern** (`inventoryStoreContract`, Phase 0 §0.3) — Phase 1
   mirrors it with `productCommerceStoreContract`.
-- `@urumi/service` — the Hono-style REST app, `Idempotency-Key` header → domain
+- `@otta-sh/service` — the Hono-style REST app, `Idempotency-Key` header → domain
   `IdempotencyKey`, zod validation, no-status-code-as-logic rule, live-server contract-test
   harness (Phase 0 §0.6). Phase 1 adds product-commerce endpoints.
 - The dependency-boundary lint rule (domain imports no IO) stays green.
@@ -269,7 +269,7 @@ under the package that owns the behavior.
 
 **Step 1 — workerd-on-Node sandbox harness (its own step; no product logic yet).**
 - Test: `packages/plugin/test/sandbox-harness.test.ts` →
-  `it("loads @urumi/plugin under workerd-on-Node and reaches a stub service only via ctx.http")`.
+  `it("loads @otta-sh/plugin under workerd-on-Node and reaches a stub service only via ctx.http")`.
 - Build a reusable harness that boots the plugin in the **workerd sidecar** (mirror
   `emdash: packages/workerd` `createSandboxRunner` + bridge-handler; the EmDash
   `plugin-integration.test.ts` pattern — real SQLite + migrations, exercise the bridge, not
@@ -285,7 +285,7 @@ under the package that owns the behavior.
   against an **in-memory fake `ProductCommerceStore`**. Plus a type-level test:
   `price` field rejects a raw `number` (branded `Cents`) — asserted to fail compilation.
 - Code: add `ProductCommerceStore` interface + `UpsertProductCommerceInput` (branded money)
-  to `@urumi/domain/ports`, a thin use-case (`upsertProductCommerce`, `getProductCommerce`,
+  to `@otta-sh/domain/ports`, a thin use-case (`upsertProductCommerce`, `getProductCommerce`,
   `softDelete`), and the in-memory fake in domain test-utils. Reject empty `product_id`
   (`MISSING_PRODUCT_ID`).
 - Green when: four cases pass on the fake; negative money type-test fails to compile.
@@ -300,7 +300,7 @@ under the package that owns the behavior.
   `sku`, and a **non-unique** `idempotency_key` column implementing per-row
   compare-on-write replay dedupe (§4 — explicitly not a global `UNIQUE`, unlike Phase 0's
   `reservations.idempotency_key`).
-- Implement `ProductCommerceStore` in `@urumi/store-postgres` (Kysely, dialect-agnostic).
+- Implement `ProductCommerceStore` in `@otta-sh/store-postgres` (Kysely, dialect-agnostic).
   Upsert = single conditional statement (`INSERT … ON CONFLICT (product_id) DO UPDATE`),
   keeping the single-statement portable shape (adapter-architecture §2). Soft-delete =
   conditional `UPDATE … SET deleted_at`.
@@ -322,7 +322,7 @@ under the package that owns the behavior.
 - Test: `packages/plugin/test/http-commerce-client.test.ts` runs the client-side contract
   suite against `HttpCommerceClient` over a live test server (DEVELOPMENT.md §3 — the wire must
   not drift from the port). Assert `Idempotency-Key` is sent and replay is a no-op.
-- Code: `HttpCommerceClient` in `@urumi/plugin` implementing `CommerceClient` via injected
+- Code: `HttpCommerceClient` in `@otta-sh/plugin` implementing `CommerceClient` via injected
   `ctx.http.fetch`.
 - Green when: transport contract green.
 
@@ -363,7 +363,7 @@ idempotent upsert makes it converge. Otherwise defer to Phase 2 and note it.
 
 ## 7. New service surface
 
-**New domain ports (`@urumi/domain`):**
+**New domain ports (`@otta-sh/domain`):**
 - `ProductCommerceStore { upsert(input, key), getByProductId(productId), softDelete(productId, key) }`
   — intent, not SQL; `upsert` contract = "insert-or-update by `product_id`, idempotent under
   `key`, reject empty `product_id`". `getByProductId` returns the row incl.
@@ -378,7 +378,7 @@ idempotent upsert makes it converge. Otherwise defer to Phase 2 and note it.
   absent initial stock write (§8 Risk 4). Called once by the commerce upsert use-case on
   first creation of a `product_commerce` row.
 
-**New REST endpoints (`@urumi/service`) — 1:1 with the port:**
+**New REST endpoints (`@otta-sh/service`) — 1:1 with the port:**
 - `PUT  /products/:id/commerce` → `ProductCommerceStore.upsert` (`Idempotency-Key` header);
   on first creation, also calls `InventoryStore.seedOnHand` (§8 Risk 4) — a single additional
   create-if-absent write, not a new endpoint.
@@ -476,7 +476,7 @@ commerce is not a race surface; the no-oversell invariant remains inventory-only
       route green.
 - [ ] **Sandbox-clean guard green:** manifest declares only `content:read` + `network:request`
       with `allowedHosts`; no storage/DB/other egress surface (CI check).
-- [ ] `@urumi/domain` still imports **nothing with IO** — dependency-boundary lint green.
+- [ ] `@otta-sh/domain` still imports **nothing with IO** — dependency-boundary lint green.
 - [ ] Money is integer minor units + currency everywhere; the branded-`Cents` negative
       type-test fails to compile as expected.
 - [ ] Migration is **forward-only**; `product_commerce` PK = CMS content id.
@@ -485,8 +485,8 @@ commerce is not a race surface; the no-oversell invariant remains inventory-only
       clobbers the current `on_hand` (§8 Risk 4).
 - [ ] `pnpm lint` clean · `pnpm typecheck` clean · `pnpm format` (oxfmt, tabs) applied ·
       `pnpm test` green (SQLite) and `test:pg` green in CI.
-- [ ] **Changeset added** (published packages changed: `@urumi/domain`, `@urumi/store-postgres`,
-      `@urumi/service`, `@urumi/plugin`).
+- [ ] **Changeset added** (published packages changed: `@otta-sh/domain`, `@otta-sh/store-postgres`,
+      `@otta-sh/service`, `@otta-sh/plugin`).
 - [ ] PR tags per CLAUDE.md area (`[Domain]` / `[Adapters]` / `[Service]` / `[Plugin]`);
       one PR = one thing; passing runs recorded in the PR. **Never push to `main`** — merge is
       user-gated.

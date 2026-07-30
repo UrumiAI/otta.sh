@@ -17,7 +17,7 @@ The order is always: **failing test → code → green → refactor.** A behavio
 reproducing test is not done, and a bug without a reproducing test is not fixed.
 
 Urumi's stronger rule: **the contract test suite is the spec.** For anything in
-`@urumi/domain`, write the behavioral test against the **port interface** before writing
+`@otta-sh/domain`, write the behavioral test against the **port interface** before writing
 any adapter. The adapter is "done" the day it turns that suite green — nothing else counts
 as done.
 
@@ -53,12 +53,12 @@ store port — no `SELECT … FOR UPDATE`, no interactive transactions (D1 has n
 
 ## 3. Ports-and-adapters purity is enforced, not trusted
 
-`@urumi/domain` depends on **nothing with IO**. A `pg`, `ctx`, or `fetch` import in the
+`@otta-sh/domain` depends on **nothing with IO**. A `pg`, `ctx`, or `fetch` import in the
 domain is a build-breaking bug, not a code-review nit.
 
 - Enforce the boundary with a dependency check (dependency-cruiser or an import-restriction
   lint rule) wired into `lint`, so the layering can't rot silently.
-- **HTTP mirrors the port 1:1.** The REST API in `@urumi/service` is a serialization of the
+- **HTTP mirrors the port 1:1.** The REST API in `@otta-sh/service` is a serialization of the
   domain use-cases — no endpoint has semantics the port lacks, no status-code-as-logic. The
   same client-side contract suite runs against `HttpCommerceClient` (over a live test
   server) so the wire format can't drift from the port.

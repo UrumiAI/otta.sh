@@ -1,7 +1,7 @@
 ---
-"@urumi/domain": minor
-"@urumi/store-postgres": minor
-"@urumi/service": minor
+"@otta-sh/domain": minor
+"@otta-sh/store-postgres": minor
+"@otta-sh/service": minor
 ---
 
 Phase 6 — shipping / tax / coupons. Replaces the Phase-4 checkout-totals stub
@@ -13,7 +13,7 @@ no-float-drift / sum-of-parts / determinism invariants across thousands of
 generated carts; it is added as a new dev-dependency pinned in the workspace
 `catalog:`.
 
-- `@urumi/domain`: new pure, IO-free pricing engines — `allocateCents`
+- `@otta-sh/domain`: new pure, IO-free pricing engines — `allocateCents`
   (largest-remainder discount apportionment, BigInt-exact so `Σ === total`
   always), `computeLineTax` (half-up per-line, integer bps), `computeCouponDiscount`
   (fixed-amount clamped at subtotal / percentage with cap, currency-checked),
@@ -25,7 +25,7 @@ generated carts; it is added as a new dev-dependency pinned in the workspace
   `createOrderFromCart` to compute the full breakdown, redeem a coupon atomically
   under the same idempotency key (releasing it synchronously if order creation
   then fails), and snapshot the whole breakdown immutably into `order_totals`.
-- `@urumi/store-postgres`: forward-only migration `0007_shipping_tax_coupons`
+- `@otta-sh/store-postgres`: forward-only migration `0007_shipping_tax_coupons`
   (shipping zones/methods/rates, tax classes/rates, coupons + coupon_redemptions)
   and the `KyselyShippingRulesStore` / `KyselyTaxRulesStore` / `KyselyCouponStore`
   adapters on better-sqlite3 + Postgres. Coupon redemption is a single guarded
@@ -35,7 +35,7 @@ generated carts; it is added as a new dev-dependency pinned in the workspace
   test proves exactly `M` of `N` concurrent redeems succeed at `maxUses = M`.
   `order_totals` gets no new migration: the phase only writes richer values into
   its existing columns.
-- `@urumi/service`: `POST /checkout/quote` (read-only totals preview, no
+- `@otta-sh/service`: `POST /checkout/quote` (read-only totals preview, no
   redemption), the admin CRUD surface for shipping/tax/coupon config, and the
   extension of `POST /checkout/orders` in place (accepts a shipping method +
   coupon code, redeems atomically, persists the breakdown) — never renamed

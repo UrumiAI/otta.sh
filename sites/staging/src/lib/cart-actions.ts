@@ -13,7 +13,7 @@ import {
 	CART_COOKIE_NAME,
 	STOREFRONT_CART_CREATE_ROUTE,
 	type CartCreateRouteResult,
-} from "@urumi/plugin";
+} from "@otta-sh/plugin";
 import type { APIContext } from "astro";
 import type { PublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";

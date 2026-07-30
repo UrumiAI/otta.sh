@@ -24,7 +24,7 @@ import type { APIContext } from "astro";
 const { getEmDashEntry } = vi.hoisted(() => ({ getEmDashEntry: vi.fn() }));
 vi.mock("emdash", () => ({ getEmDashEntry }));
 
-import { STOREFRONT_CART_LINE_ADD_ROUTE, STOREFRONT_PRODUCT_ROUTE } from "@urumi/plugin";
+import { STOREFRONT_CART_LINE_ADD_ROUTE, STOREFRONT_PRODUCT_ROUTE } from "@otta-sh/plugin";
 import { POST } from "../src/pages/cart/add.js";
 
 const SITE = "http://localhost:4321";

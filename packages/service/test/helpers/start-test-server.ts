@@ -8,16 +8,16 @@ import {
 	type PaymentMethod,
 	productId,
 	sku,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import {
 	FakeEmailSender,
 	FIXTURE_INVENTORY,
 	FIXTURE_ITEMS,
 	FIXTURE_ORDERS,
 	FixedClock,
-} from "@urumi/domain/testing";
-import { StripePaymentGateway, type StripeTransport } from "@urumi/payments-stripe";
-import { createTestFacilitator, X402PaymentGateway } from "@urumi/payments-x402";
+} from "@otta-sh/domain/testing";
+import { StripePaymentGateway, type StripeTransport } from "@otta-sh/payments-stripe";
+import { createTestFacilitator, X402PaymentGateway } from "@otta-sh/payments-x402";
 import {
 	KyselyAddressStore,
 	KyselyCartStore,
@@ -36,8 +36,8 @@ import {
 	KyselyShippingRulesStore,
 	KyselyTaxRulesStore,
 	uuidIdGen,
-} from "@urumi/store-postgres";
-import { createIsolatedPgSchema } from "@urumi/store-postgres/testing";
+} from "@otta-sh/store-postgres";
+import { createIsolatedPgSchema } from "@otta-sh/store-postgres/testing";
 import { createApp } from "../../src/app.js";
 
 /** Known test secrets so tests can sign valid Stripe webhooks / x402 proofs. */

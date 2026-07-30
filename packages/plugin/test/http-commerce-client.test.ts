@@ -7,10 +7,10 @@ const PG = process.env.PG_CONNECTION_STRING;
 /**
  * The client-side contract (plan §6 step 6 / DEVELOPMENT.md §3): the SAME
  * behavioral cases the domain/service suites already cover, run here
- * against `HttpCommerceClient` over a LIVE `@urumi/service` (Postgres-
+ * against `HttpCommerceClient` over a LIVE `@otta-sh/service` (Postgres-
  * backed) — proving the wire format has not drifted from the port.
  */
-describe.skipIf(PG === undefined)("HttpCommerceClient [live @urumi/service, Postgres]", () => {
+describe.skipIf(PG === undefined)("HttpCommerceClient [live @otta-sh/service, Postgres]", () => {
 	let service: LiveService;
 	let client: HttpCommerceClient;
 

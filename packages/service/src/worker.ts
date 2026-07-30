@@ -8,7 +8,7 @@ import {
 	expireOrders,
 	type PaymentGateway,
 	type PaymentMethod,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import {
 	KyselyAddressStore,
 	KyselyCartStore,
@@ -30,7 +30,7 @@ import {
 	makePostgresPool,
 	migrateToLatest,
 	uuidIdGen,
-} from "@urumi/store-postgres/pg";
+} from "@otta-sh/store-postgres/pg";
 import type { Hono } from "hono";
 import { createApp } from "./app.js";
 import { openWriteGateWarning, resolveServiceConfig, type ServiceConfig } from "./config.js";
@@ -40,7 +40,7 @@ import { wireX402Gateway } from "./x402-wiring.js";
 
 /**
  * Cloudflare Worker entry (plan D1–D5, D7). Imports ONLY the sqlite-free
- * `@urumi/store-postgres/pg` subpath so wrangler/esbuild never see the
+ * `@otta-sh/store-postgres/pg` subpath so wrangler/esbuild never see the
  * better-sqlite3 native addon.
  *
  * Structural env/runtime types instead of `@cloudflare/workers-types`: the

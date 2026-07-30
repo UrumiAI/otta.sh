@@ -11,7 +11,7 @@
  * Pure and IO-free: a page calls these at render time, a test calls them
  * without a CMS, a commerce service or a DOM.
  */
-import type { ProductViewModel } from "@urumi/plugin";
+import type { ProductViewModel } from "@otta-sh/plugin";
 
 /**
  * How many rows the hero tape shows.

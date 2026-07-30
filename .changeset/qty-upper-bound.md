@@ -1,5 +1,5 @@
 ---
-"@urumi/service": minor
+"@otta-sh/service": minor
 ---
 
 Wire-level upper bounds on the three unbounded `qty` sites (service-hardening plan §4):

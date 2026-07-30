@@ -1,4 +1,4 @@
-import { type SettleDeps, type SettleResult, settleOrder } from "@urumi/domain";
+import { type SettleDeps, type SettleResult, settleOrder } from "@otta-sh/domain";
 import { type Context, Hono } from "hono";
 import type { OrderServiceDeps } from "./orders.js";
 

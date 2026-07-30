@@ -1,5 +1,5 @@
 ---
-"@urumi/plugin": minor
+"@otta-sh/plugin": minor
 ---
 
 Fix the admin Reports/Settings pages 404 under EmDash's admin shell, and deliver

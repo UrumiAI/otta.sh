@@ -1,5 +1,5 @@
-import { idempotencyKey, orderId, reconcileCouponRedemptions } from "@urumi/domain";
-import { CountingIdGen, FixedClock } from "@urumi/domain/testing";
+import { idempotencyKey, orderId, reconcileCouponRedemptions } from "@otta-sh/domain";
+import { CountingIdGen, FixedClock } from "@otta-sh/domain/testing";
 import type { Kysely } from "kysely";
 import { afterEach, describe, expect, test } from "vitest";
 import {

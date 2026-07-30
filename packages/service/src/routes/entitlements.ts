@@ -8,7 +8,7 @@ import {
 	settleOrder,
 	sku as toSku,
 	type X402Proof,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import { Hono } from "hono";
 import { entitlementCheckQuery, x402ProofBody } from "../schemas.js";
 import { requireInternalToken } from "./internal-auth.js";

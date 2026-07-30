@@ -3,7 +3,7 @@
  * staging site. The descriptor builder and the emdash options are pure
  * modules precisely so this file can pin them:
  *  - the Urumi plugin descriptor is standard-format, entrypoint
- *    `@urumi/plugin/plugin`, capabilities EXACTLY the manifest's, and its
+ *    `@otta-sh/plugin/plugin`, capabilities EXACTLY the manifest's, and its
  *    allowedHosts is exactly the service URL's hostname (the egress gate
  *    that holds even in trusted mode — ADR-0006);
  *  - NO `sandboxed:` / `sandboxRunner:` keys (a LOADER-consuming sandbox
@@ -14,7 +14,7 @@
  *    integration force-disables it platform-wide and substitutes a CSRF
  *    layer covering only /_emdash/api/* routes, so the real cart-endpoint
  *    CSRF pin is origin-guard.test.ts (see ADR-0006);
- *  - `vite.ssr.noExternal` contains "@urumi/plugin" UNCONDITIONALLY: if the
+ *  - `vite.ssr.noExternal` contains "@otta-sh/plugin" UNCONDITIONALLY: if the
  *    plugin is externalized, the `__URUMI_COMMERCE_SERVICE_URL__` define
  *    silently never applies and every ctx.http call fails against
  *    allowedHosts at runtime.
@@ -31,7 +31,7 @@ import {
 	TAX_PAGE,
 	URUMI_PLUGIN_CAPABILITIES,
 	URUMI_PLUGIN_ID,
-} from "@urumi/plugin";
+} from "@otta-sh/plugin";
 import { describe, expect, test } from "vitest";
 import { buildEmdashOptions, COMMERCE_SERVICE_URL_PLACEHOLDER } from "../src/emdash-options.js";
 import { urumiPluginDescriptor } from "../src/urumi-plugin-descriptor.js";
@@ -54,10 +54,10 @@ describe("service-URL placeholder parity", () => {
 describe("urumiPluginDescriptor", () => {
 	const descriptor = urumiPluginDescriptor(SERVICE_URL);
 
-	test("is a standard-format descriptor for the @urumi/plugin default export", () => {
+	test("is a standard-format descriptor for the @otta-sh/plugin default export", () => {
 		expect(descriptor.id).toBe(URUMI_PLUGIN_ID);
 		expect(descriptor.format).toBe("standard");
-		expect(descriptor.entrypoint).toBe("@urumi/plugin/plugin");
+		expect(descriptor.entrypoint).toBe("@otta-sh/plugin/plugin");
 	});
 
 	test("capabilities are EXACTLY the manifest's (content:read, network:request)", () => {
@@ -168,7 +168,7 @@ describe("astro.config", () => {
 		expect(config.security?.checkOrigin).not.toBe(false);
 
 		const noExternal = config.vite?.ssr?.noExternal;
-		expect(Array.isArray(noExternal) ? noExternal : [noExternal]).toContain("@urumi/plugin");
+		expect(Array.isArray(noExternal) ? noExternal : [noExternal]).toContain("@otta-sh/plugin");
 
 		const define = config.vite?.define as Record<string, string>;
 		expect(JSON.parse(define["__URUMI_COMMERCE_SERVICE_URL__"] ?? "null")).toBe(SERVICE_URL);

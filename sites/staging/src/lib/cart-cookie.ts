@@ -7,7 +7,7 @@
  * A dropped attribute here is a security bug (session-hijackable or
  * plaintext-leaked cart cookie); the unit test asserts exact equality.
  */
-import type { CartCookieDescriptor } from "@urumi/plugin";
+import type { CartCookieDescriptor } from "@otta-sh/plugin";
 
 export interface CookieSetOptions {
 	httpOnly: boolean;

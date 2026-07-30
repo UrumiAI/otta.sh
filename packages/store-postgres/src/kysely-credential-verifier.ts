@@ -10,7 +10,7 @@ import {
 	type IdGen,
 	type IssueChallengeResult,
 	type VerifyChallengeResult,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import type { Kysely } from "kysely";
 import type { Database } from "./schema.js";
 

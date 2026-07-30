@@ -10,7 +10,7 @@
  * functions rather than against the pages that call them.
  */
 import { describe, expect, test } from "vitest";
-import type { ProductViewModel } from "@urumi/plugin";
+import type { ProductViewModel } from "@otta-sh/plugin";
 import {
 	exactCount,
 	FALLBACK_THESIS,

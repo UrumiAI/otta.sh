@@ -18,7 +18,7 @@ import {
 	removeLine,
 	sku,
 	updateLine,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import { type Context, Hono } from "hono";
 import { tokenMatches } from "../auth.js";
 import {

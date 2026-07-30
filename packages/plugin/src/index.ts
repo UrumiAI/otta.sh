@@ -1,4 +1,4 @@
-// Public barrel of @urumi/plugin — the CommerceClient transport port, the
+// Public barrel of @otta-sh/plugin — the CommerceClient transport port, the
 // admin/storefront page handlers, and the manifest constants the sandbox-
 // clean guard test asserts against.
 //

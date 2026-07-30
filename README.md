@@ -52,7 +52,7 @@ PG_CONNECTION_STRING=postgres://urumi:urumi@127.0.0.1:55432/urumi \
 
 ```bash
 # 3. Storefront + admin, in a second terminal.
-COMMERCE_SERVICE_URL=http://127.0.0.1:3000 pnpm --filter @urumi/site-staging dev
+COMMERCE_SERVICE_URL=http://127.0.0.1:3000 pnpm --filter @otta-sh/site-staging dev
 ```
 
 Check the service with `curl http://127.0.0.1:3000/health` → `{"ok":true}`. Then open the
@@ -80,7 +80,7 @@ a product of your own — that page is the only place commercial fields are edit
 owns the title, description and images.
 
 Two things to know: the service is run through `tsx` rather than its built `dist` bin
-because the `@urumi/*` packages aren't published yet and their workspace export maps point
+because the `@otta-sh/*` packages aren't published yet and their workspace export maps point
 at TypeScript sources ([#44](https://github.com/UrumiAI/otta.sh/issues/44)); and this
 storefront covers **catalog + cart only** — see [Status](#status).
 
@@ -102,7 +102,7 @@ The gap is closing. [emdash-cms/emdash#2169](https://github.com/emdash-cms/emdas
 delta? })` — a guarded `UPDATE … RETURNING` run inside the sandbox. Two sibling primitives,
 not yet proposed upstream, cover the rest: an atomic `insert` that classifies unique
 violations, and `ctx.storage.batch([...])` for all-or-nothing multi-collection writes.
-With all three, a `@urumi/store-emdash` adapter already passes the domain's full
+With all three, a `@otta-sh/store-emdash` adapter already passes the domain's full
 `InventoryStore` contract in-process. Once orders, payments, webhooks, and reporting
 follow, the split becomes a deployment choice rather than a correctness requirement.
 
@@ -113,9 +113,9 @@ follow, the split becomes a deployment choice rather than a correctness requirem
   tax, shipping) lives in the commerce service. Link key = the CMS content `id`.
 - **Separate databases.** Commerce Postgres is independent of the EmDash content DB
   (independent scaling; no cross-DB joins — joined in app code at render time).
-- **Ports and adapters.** `@urumi/domain` is pure (no IO); every store is a Kysely
+- **Ports and adapters.** `@otta-sh/domain` is pure (no IO); every store is a Kysely
   adapter dialect-parameterized over better-sqlite3 (dev) and Postgres (CI/prod). The
-  REST API in `@urumi/service` mirrors the domain ports 1:1, and the same client-side
+  REST API in `@otta-sh/service` mirrors the domain ports 1:1, and the same client-side
   contract suite runs over the wire so the HTTP format can't drift from the port.
 - **Pluggable payments.** Stripe (async webhook) and x402 (HTTP-402 at the page layer)
   behind one `PaymentGateway` interface.
@@ -129,12 +129,12 @@ follow, the split becomes a deployment choice rather than a correctness requirem
 
 | Package | What it is |
 |---|---|
-| `@urumi/domain` | Pure ports, use-cases, branded money types, contract-test suites. No IO. |
-| `@urumi/service` | Thin Hono REST API + Cloudflare Worker entry mirroring the domain ports. |
-| `@urumi/store-postgres` | Kysely store adapters (better-sqlite3 local, `pg` CI/prod) + forward-only migrations. |
-| `@urumi/payments-stripe` | Stripe `PaymentGateway` adapter (async-webhook, raw-body HMAC). |
-| `@urumi/payments-x402` | x402 `PaymentGateway` adapter (synchronous page-gate, facilitator-verified). |
-| `@urumi/plugin` | The EmDash plugin: storefront routes, admin console, content-sync hooks. |
+| `@otta-sh/domain` | Pure ports, use-cases, branded money types, contract-test suites. No IO. |
+| `@otta-sh/service` | Thin Hono REST API + Cloudflare Worker entry mirroring the domain ports. |
+| `@otta-sh/store-postgres` | Kysely store adapters (better-sqlite3 local, `pg` CI/prod) + forward-only migrations. |
+| `@otta-sh/payments-stripe` | Stripe `PaymentGateway` adapter (async-webhook, raw-body HMAC). |
+| `@otta-sh/payments-x402` | x402 `PaymentGateway` adapter (synchronous page-gate, facilitator-verified). |
+| `@otta-sh/plugin` | The EmDash plugin: storefront routes, admin console, content-sync hooks. |
 | `sites/staging` | Staging storefront + admin — EmDash on Cloudflare Workers, plugin registered trusted. |
 
 Design decisions live in [`adr/`](./adr/); development practices in
@@ -158,7 +158,7 @@ process, so it verifies the SQL is correct, not that it's race-safe under conten
 
 ## Status
 
-**v0.0.1** — first open-source release. The `@urumi/*` packages are all at `0.0.1` and are
+**v0.0.1** — first open-source release. The `@otta-sh/*` packages are all at `0.0.1` and are
 not published to npm yet; consume them from the workspace.
 
 The commerce **service** is feature-complete (Phases 0–7 merged): catalog, inventory,

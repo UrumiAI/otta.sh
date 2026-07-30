@@ -1,4 +1,4 @@
-import { buildGatewayHarness, paymentGatewayContract } from "@urumi/domain/testing";
+import { buildGatewayHarness, paymentGatewayContract } from "@otta-sh/domain/testing";
 import { signStripeWebhook, StripePaymentGateway } from "../src/index.js";
 
 const SECRET = "whsec_test_phase4";

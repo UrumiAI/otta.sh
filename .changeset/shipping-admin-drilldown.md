@@ -1,5 +1,5 @@
 ---
-"@urumi/plugin": minor
+"@otta-sh/plugin": minor
 ---
 
 Shipping admin drill-down UI (admin-UX Increment 3, slice 3): a new

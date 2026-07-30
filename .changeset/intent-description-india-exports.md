@@ -1,6 +1,6 @@
 ---
-"@urumi/domain": minor
-"@urumi/payments-stripe": minor
+"@otta-sh/domain": minor
+"@otta-sh/payments-stripe": minor
 ---
 
 Send Stripe a PaymentIntent `description` (and `shipping`) — **fixes a blocking

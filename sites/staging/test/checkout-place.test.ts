@@ -27,7 +27,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { APIContext } from "astro";
-import { STOREFRONT_CHECKOUT_PLACE_ROUTE, type CheckoutSummaryRouteResult } from "@urumi/plugin";
+import { STOREFRONT_CHECKOUT_PLACE_ROUTE, type CheckoutSummaryRouteResult } from "@otta-sh/plugin";
 import { checkoutEntryRedirect } from "../src/lib/checkout-redirect.js";
 import {
 	CHECKOUT_COOKIE_MAX_AGE_SECONDS,

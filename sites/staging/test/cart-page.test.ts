@@ -22,7 +22,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { type CartPricingWire, type CartWire, totalQty } from "@urumi/plugin";
+import { type CartPricingWire, type CartWire, totalQty } from "@otta-sh/plugin";
 import { describe, expect, test } from "vitest";
 import {
 	CART_CHECKED_OUT_BODY,

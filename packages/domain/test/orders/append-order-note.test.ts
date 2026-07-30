@@ -1,10 +1,10 @@
-import { appendOrderNote, idempotencyKey, listOrderNotes, orderId } from "@urumi/domain";
+import { appendOrderNote, idempotencyKey, listOrderNotes, orderId } from "@otta-sh/domain";
 import {
 	CountingIdGen,
 	FixedClock,
 	InMemoryOrderNotesStore,
 	InMemoryOrderStore,
-} from "@urumi/domain/testing";
+} from "@otta-sh/domain/testing";
 import { beforeEach, describe, expect, test } from "vitest";
 
 // The appendOrderNote use-case (admin-UX Increment 0): validation (non-empty

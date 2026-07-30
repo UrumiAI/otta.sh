@@ -1,5 +1,5 @@
 ---
-"@urumi/plugin": minor
+"@otta-sh/plugin": minor
 ---
 
 Coupon management admin UI (admin-UX Increment 3, slice 4): a new `/coupons`

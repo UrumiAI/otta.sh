@@ -5,7 +5,7 @@
  *
  * Everything here runs BEFORE any `ctx.http` egress: a garbage body must never
  * become an upstream round trip, and certainly never an order. Bounds mirror
- * `@urumi/service`'s own `checkoutBody` / `shippingAddressBody`
+ * `@otta-sh/service`'s own `checkoutBody` / `shippingAddressBody`
  * (`packages/service/src/schemas.ts`) so a request this layer accepts is one
  * the service will not reject on shape — the service re-validates regardless.
  *

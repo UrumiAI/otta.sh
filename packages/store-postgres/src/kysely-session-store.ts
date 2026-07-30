@@ -7,7 +7,7 @@ import {
 	type Session,
 	type SessionStore,
 	type SessionSummary,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import type { Kysely } from "kysely";
 import type { Database } from "./schema.js";
 

@@ -6,7 +6,7 @@ browser and compare against it as you build. Where the two disagree, the mockup 
 *appearance* and this file wins for *rules*.
 
 ADR-0003 is unchanged: the plugin serves JSON view models, the theme owns every byte of
-markup. Nothing in here belongs in `@urumi/plugin`.
+markup. Nothing in here belongs in `@otta-sh/plugin`.
 
 ---
 

@@ -54,13 +54,13 @@ Phase-0 §0.5):
 ## 2. Scope
 
 **In:**
-- `@urumi/domain` cart use-cases + a new `CartStore` port; a minimal **additive** extension to
+- `@otta-sh/domain` cart use-cases + a new `CartStore` port; a minimal **additive** extension to
   `InventoryStore` for reservation quantity adjustment.
-- `@urumi/store-postgres` cart tables (forward-only migration) + Kysely `CartStore` adapter +
+- `@otta-sh/store-postgres` cart tables (forward-only migration) + Kysely `CartStore` adapter +
   the inventory `adjust`/partial-release statements, dialect-parameterized (SQLite + pg).
-- `@urumi/service` cart REST endpoints (1:1 with the cart use-cases) + the hold-expiry sweep
+- `@otta-sh/service` cart REST endpoints (1:1 with the cart use-cases) + the hold-expiry sweep
   job wiring.
-- `@urumi/plugin` storefront cart routes + `HttpCommerceClient` cart methods + a Block Kit
+- `@otta-sh/plugin` storefront cart routes + `HttpCommerceClient` cart methods + a Block Kit
   add-to-cart page fragment, exercised under the workerd-on-Node sandbox.
 - Contract-suite extension: `cartStoreContract`, an inventory `adjust` contract, an HTTP cart
   contract, the no-oversell-through-cart Postgres test.
@@ -120,7 +120,7 @@ Recommend the commerce service DB, unambiguously:
   notes: `put` is an unconditional upsert, declared `uniqueIndexes` are silently downgraded) —
   so they cannot dedupe an add-to-cart or guard a reservation. Idempotency requires the
   service's unique constraint.
-- Money is integer minor units in a typed domain; that belongs in `@urumi/domain` + Postgres,
+- Money is integer minor units in a typed domain; that belongs in `@otta-sh/domain` + Postgres,
   not a JSON KV blob. `ctx.kv` stays reserved for **non-secret plugin settings** (component-map
   §2), nothing money- or stock-linked.
 - Cart is a tier-③ concern in every source doc (component-map §2 "Cart | ③", design-decisions
@@ -307,7 +307,7 @@ with the port's already-idempotent `release`.
   unconditional increment (always `ok`). Added to the inventory contract suite; leaves
   `reserve/commit/release` unchanged.
 
-The **cart use-cases** in `@urumi/domain` orchestrate `CartStore` + `InventoryStore` + `Clock`
+The **cart use-cases** in `@otta-sh/domain` orchestrate `CartStore` + `InventoryStore` + `Clock`
 + `IdGen`, IO-free. Partial-failure between "reserve succeeded" and "cart line written" is
 healed by idempotency (retry recovers) + TTL (a dangling reservation is reaped) — no
 cross-store interactive transaction (D1 can't). *(Adapter-internal option: the Postgres
@@ -362,7 +362,7 @@ store (real DBs) → HTTP → plugin (sandbox) → e2e concurrency.
   _"remove releases whole reservation"_.
 - B2 Define `CartStore` port + in-memory fake; write cart use-cases orchestrating
   `CartStore`+`InventoryStore`+`Clock`+`IdGen`; green. **Boundary lint must stay green** (no IO
-  import in `@urumi/domain`). Add a type-level assertion that a `number` can't reach a money
+  import in `@otta-sh/domain`). Add a type-level assertion that a `number` can't reach a money
   field.
 - B3 `packages/domain/test/cart/cart-store.contract.ts` — lift B1's expectations into the
   reusable `cartStoreContract`; the fake is the first adapter to pass it.
@@ -501,7 +501,7 @@ store (real DBs) → HTTP → plugin (sandbox) → e2e concurrency.
       in-process); egress is **only** `ctx.http` + `allowedHosts` (guarded by a test); the
       add-to-cart fragment is **Block Kit, not React**. Playwright screenshot attached if
       storefront e2e exists.
-- [ ] Domain purity: `@urumi/domain` cart use-cases import nothing with IO — **boundary lint
+- [ ] Domain purity: `@otta-sh/domain` cart use-cases import nothing with IO — **boundary lint
       green**.
 - [ ] Money is **integer minor units** everywhere; no float touches a line/cart total (type-level
       + property assertion).

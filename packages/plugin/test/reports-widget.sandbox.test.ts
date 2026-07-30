@@ -1,4 +1,4 @@
-import { URUMI_PLUGIN_CAPABILITIES } from "@urumi/plugin";
+import { URUMI_PLUGIN_CAPABILITIES } from "@otta-sh/plugin";
 import { afterEach, describe, expect, test } from "vitest";
 import { assertBlockContract } from "./helpers/block-contract.js";
 import {
@@ -18,7 +18,7 @@ import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
 // §4.1 report/settings skeleton, §12.5: the admin Reports Block Kit page,
 // proven under the REAL workerd-on-Node sandbox (not trusted in-process).
 // Data reaches the page ONLY via ctx.http → the stub standing in for
-// @urumi/service. em-dash renders the page by the single `admin` route with a
+// @otta-sh/service. em-dash renders the page by the single `admin` route with a
 // `{type:"page_load", page:"/reports"}` BlockInteraction — NO token in the
 // interaction; the admin token is sourced from write-only ctx.kv (seeded here
 // via the Settings `save-token` action).

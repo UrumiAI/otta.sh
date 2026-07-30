@@ -10,7 +10,7 @@
  * friendly degraded state (a stopped commerce service is an expected
  * staging condition, never a crash).
  */
-import { URUMI_PLUGIN_ID } from "@urumi/plugin";
+import { URUMI_PLUGIN_ID } from "@otta-sh/plugin";
 import type { PublicPluginApiRouteHandler } from "emdash/plugin-utils";
 
 export async function dispatchUrumiRoute<TResult>(

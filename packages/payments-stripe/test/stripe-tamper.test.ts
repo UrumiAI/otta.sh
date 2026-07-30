@@ -1,4 +1,4 @@
-import { orderId } from "@urumi/domain";
+import { orderId } from "@otta-sh/domain";
 import { describe, expect, test } from "vitest";
 import { signStripeWebhook, StripePaymentGateway } from "../src/index.js";
 

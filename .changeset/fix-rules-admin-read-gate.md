@@ -1,5 +1,5 @@
 ---
-"@urumi/service": minor
+"@otta-sh/service": minor
 ---
 
 Require the internal token on the whole admin **read** surface, not just the writes

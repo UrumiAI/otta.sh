@@ -1,6 +1,6 @@
 ---
-"@urumi/plugin": patch
-"@urumi/domain": patch
+"@otta-sh/plugin": patch
+"@otta-sh/domain": patch
 ---
 
 Fix: products created through the CMS were unpurchasable — the plugin never synced their title.
@@ -55,7 +55,7 @@ content sends nothing, by publish atomicity). A merely redelivered hook does not
 `updatedAt`, same key, deduped. There is no reconcile job, so a merchant with affected products
 must re-save or re-publish each one.
 
-`@urumi/domain`: test-only. `@urumi/domain/testing`'s `productCommerceStoreContract` gains one case
+`@otta-sh/domain`: test-only. `@otta-sh/domain/testing`'s `productCommerceStoreContract` gains one case
 pinning that store-side heal — a row upserted without a title takes the title from any later
 upsert that carries one — so the self-healing claim above is verified against every store adapter
 rather than asserted from reading SQL.

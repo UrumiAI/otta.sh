@@ -16,7 +16,7 @@ plan includes the full pnpm-workspace bootstrap. **Branch:** `feat/phase-0-atomi
 ## 1. Goal & headline test
 
 Stand up a running commerce service that can `reserve / commit / release` stock, wired
-`@urumi/domain` → `@urumi/store-postgres` (Kysely) → `@urumi/service` (REST), with **zero
+`@otta-sh/domain` → `@otta-sh/store-postgres` (Kysely) → `@otta-sh/service` (REST), with **zero
 EmDash surface**, and prove the one property the entire two-part architecture rests on:
 **no oversell under concurrency.** Money is modeled as branded integer minor units from day
 one, the domain imports nothing with IO (enforced by lint), every command is idempotent,
@@ -46,26 +46,26 @@ Test lives at `packages/store-postgres/test/no-oversell.pg.test.ts`, test name:
 - Full workspace bootstrap: `pnpm-workspace.yaml`, root `package.json`, `tsconfig.base.json`,
   oxlint + oxfmt configs, dependency-cruiser boundary rule wired into `pnpm lint`,
   changesets init, `.github/workflows/ci.yml` with a Postgres service container.
-- `@urumi/domain`: branded money/id types (with the negative type-level test); the port
+- `@otta-sh/domain`: branded money/id types (with the negative type-level test); the port
   interfaces (`InventoryStore`, `OrderStore`, `Clock`, `IdGen`) verbatim from
   adapter-architecture §2; inventory `reserve/commit/release` use-cases; an in-memory fake
   store; the reusable `inventoryStoreContract` suite.
-- `@urumi/store-postgres`: one Kysely store, dialect-parameterized over `better-sqlite3`
+- `@otta-sh/store-postgres`: one Kysely store, dialect-parameterized over `better-sqlite3`
   (local default) and `pg` (CI/prod); forward-only Phase-0 migration; the single-statement
   atomic reserve; idempotency via a `UNIQUE(idempotency_key)` constraint + replay semantics;
   the no-oversell concurrency test.
-- `@urumi/service`: a thin Hono HTTP server mirroring the inventory port 1:1
+- `@otta-sh/service`: a thin Hono HTTP server mirroring the inventory port 1:1
   (`POST /inventory/reserve|commit|release`), Zod-validated bodies, `Idempotency-Key`
   header → domain `IdempotencyKey`, no status-code-as-logic; the live-test-server HTTP
   contract test.
 
 ### Explicitly out of scope (do NOT build)
 
-- **`@urumi/store-emdash`** — write it only when EmDash ships CAS / unique constraints /
+- **`@otta-sh/store-emdash`** — write it only when EmDash ships CAS / unique constraints /
   plugin tables (adapter-architecture §6).
 - **`InProcessCommerceClient`** and the **`CommerceClient` transport port** — Phase 1+, and
   the in-process client only when a second real transport exists (adapter-architecture §6).
-- **`@urumi/plugin`** and any EmDash surface — Block Kit, sync hooks, storefront routes,
+- **`@otta-sh/plugin`** and any EmDash surface — Block Kit, sync hooks, storefront routes,
   `ctx.*` — all Phase 1+.
 - **Any commerce subsystem beyond inventory**: catalog/`product_commerce`, cart, checkout,
   orders (beyond a placeholder `OrderStore` interface), customers, payments, tax, shipping,
@@ -80,7 +80,7 @@ Test lives at `packages/store-postgres/test/no-oversell.pg.test.ts`, test name:
 
 - **This phase depends on nothing.** It is the critical path and the root of the DAG.
 - **What it provides downstream:**
-  - Phase 1 (product model + sync) — the workspace, toolchain, CI, the `@urumi/service`
+  - Phase 1 (product model + sync) — the workspace, toolchain, CI, the `@otta-sh/service`
     REST shell to add read/upsert endpoints to, and the port/contract pattern the plugin's
     `CommerceClient` will mirror.
   - Phase 3 (cart + inventory) — the `InventoryStore` port, the atomic reserve, and the
@@ -111,8 +111,8 @@ Target tree (only Phase-0 files; `packages/plugin`, `packages/store-emdash` are 
 ├─ .github/workflows/ci.yml                     unit job + postgres-integration job
 ├─ .gitignore                                  (exists)
 └─ packages/
-   ├─ domain/                                  @urumi/domain — pure, NO io
-   │  ├─ package.json                          name @urumi/domain, no pg/kysely/http deps
+   ├─ domain/                                  @otta-sh/domain — pure, NO io
+   │  ├─ package.json                          name @otta-sh/domain, no pg/kysely/http deps
    │  ├─ tsconfig.json                         extends ../../tsconfig.base.json
    │  ├─ tsdown.config.ts                      ESM + DTS
    │  ├─ src/
@@ -135,8 +135,8 @@ Target tree (only Phase-0 files; `packages/plugin`, `packages/store-emdash` are 
    │     ├─ money.test.ts                      runtime money constructor tests
    │     ├─ inventory-use-cases.test.ts        use-case behavior over the fake
    │     └─ inventory-store-contract.fake.test.ts   contract suite ⨯ fake
-   ├─ store-postgres/                          @urumi/store-postgres — Kysely, both dialects
-   │  ├─ package.json                          name @urumi/store-postgres; deps: kysely, pg, better-sqlite3
+   ├─ store-postgres/                          @otta-sh/store-postgres — Kysely, both dialects
+   │  ├─ package.json                          name @otta-sh/store-postgres; deps: kysely, pg, better-sqlite3
    │  ├─ tsconfig.json
    │  ├─ tsdown.config.ts
    │  ├─ src/
@@ -151,8 +151,8 @@ Target tree (only Phase-0 files; `packages/plugin`, `packages/store-emdash` are 
    │     ├─ describe-each-dialect.ts           harness: sqlite always; pg iff PG_CONNECTION_STRING
    │     ├─ inventory-store-contract.dialects.test.ts   contract ⨯ {sqlite, pg}
    │     └─ no-oversell.pg.test.ts             THE Phase-0 acceptance test (pg-required)
-   └─ service/                                 @urumi/service — REST mirrors ports 1:1
-      ├─ package.json                          name @urumi/service; deps: hono, zod, @hono/node-server
+   └─ service/                                 @otta-sh/service — REST mirrors ports 1:1
+      ├─ package.json                          name @otta-sh/service; deps: hono, zod, @hono/node-server
       ├─ tsconfig.json
       ├─ tsdown.config.ts
       ├─ src/
@@ -185,15 +185,15 @@ Target tree (only Phase-0 files; `packages/plugin`, `packages/store-emdash` are 
   `"composite": true`. Convention enforced by review + lint: **internal imports use `.js`
   extensions; type-only imports use `import type`.**
 - **`.oxlintrc.json`** — type-aware; enable the import-restriction rule that forbids
-  `@urumi/domain` sources from importing `pg`, `kysely`, `better-sqlite3`, `hono`,
+  `@otta-sh/domain` sources from importing `pg`, `kysely`, `better-sqlite3`, `hono`,
   `node:http`, `node:https`, or `fetch`. (Belt-and-suspenders with dependency-cruiser.)
 - **`.oxfmtrc.json`** — tabs (indent style = tab).
 - **`.dependency-cruiser.cjs`** — **forbidden** rule `domain-is-io-free`: any module under
   `^packages/domain/src` that depends on `pg|kysely|better-sqlite3|hono|node:http|
   node:https|node-fetch` **or** on any `^packages/(store-.*|service|plugin)` is an error.
   Wired into `pnpm lint` so the boundary cannot rot silently (DEVELOPMENT.md §3).
-- **`.changeset/config.json`** — default config; `@urumi/domain`, `@urumi/store-postgres`,
-  `@urumi/service` are publishable; changeset required before a PR that changes a published
+- **`.changeset/config.json`** — default config; `@otta-sh/domain`, `@otta-sh/store-postgres`,
+  `@otta-sh/service` are publishable; changeset required before a PR that changes a published
   package.
 - **`vitest.workspace.ts`** — three projects so each package's tests run with its own
   config; pg-required files use `describe.skipIf(!process.env.PG_CONNECTION_STRING)`.
@@ -607,9 +607,9 @@ migration file changed).
   N concurrent reserves at stock M (M < N) on independent connections yield exactly M `ok`,
   N − M `OUT_OF_STOCK`, final `on_hand == 0`.
 - [ ] **Service endpoints pass the live-server contract test** — the same behavioral cases
-  run over real HTTP against a live, Postgres-backed `@urumi/service`; wire mirrors the port
+  run over real HTTP against a live, Postgres-backed `@otta-sh/service`; wire mirrors the port
   1:1 (no status-code-as-logic; `Idempotency-Key` header → domain key).
-- [ ] **`@urumi/domain` imports nothing with IO** — `pnpm lint` (dependency-cruiser
+- [ ] **`@otta-sh/domain` imports nothing with IO** — `pnpm lint` (dependency-cruiser
   `domain-is-io-free` + oxlint import-restriction) is green; no `pg`/`kysely`/`ctx`/`fetch`
   in the domain.
 - [ ] **Branded money proven** — the negative type-level test fails to compile without the
@@ -630,7 +630,7 @@ migration file changed).
 - [ ] **Changeset added** for the published packages changed; migrations forward-only.
 - [ ] **CI green** — both `unit` and `integration` jobs pass; the Postgres run is recorded in
   the PR (DEVELOPMENT.md §1 / CLAUDE.md verification policy).
-- [ ] **No out-of-scope surface** — no `@urumi/plugin`, `@urumi/store-emdash`,
+- [ ] **No out-of-scope surface** — no `@otta-sh/plugin`, `@otta-sh/store-emdash`,
   `InProcessCommerceClient`, or EmDash `ctx.*` introduced.
 
 ---

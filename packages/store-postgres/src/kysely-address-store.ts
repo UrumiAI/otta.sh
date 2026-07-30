@@ -7,7 +7,7 @@ import type {
 	CustomerId,
 	IdGen,
 	UpdateAddressInput,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import type { Kysely, Selectable } from "kysely";
 import type { AddressesTable, Database } from "./schema.js";
 

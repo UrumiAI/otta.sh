@@ -54,9 +54,9 @@ The phase is done when these behavioral cases are green (exact cases; test names
 - Order **state machine** with success, failure, and expiry paths; expiry is a **real
   `orders`-table guarded transition** (`pending → expired`) that then releases the order's
   adopted reservations — not a reuse of the Phase-3 reservation sweep (§5).
-- New REST surface (`@urumi/service`), 1:1 with the new ports; a Stripe **webhook receiver**
+- New REST surface (`@otta-sh/service`), 1:1 with the new ports; a Stripe **webhook receiver**
   and an **entitlement check** endpoint.
-- Plugin (`@urumi/plugin`) wiring, sandbox-clean: a public webhook **proxy** route and the
+- Plugin (`@otta-sh/plugin`) wiring, sandbox-clean: a public webhook **proxy** route and the
   x402 **page-layer** gate + entitlement-verified digital download — `ctx.http` only.
 
 ### Out (explicitly deferred)
@@ -230,7 +230,7 @@ Phases 5, 6, and 7 align to it verbatim; downstream plans must not re-declare or
 
 ### The interface (verbatim proposal)
 ```ts
-// @urumi/domain/ports — pure types, NO pg / ctx / fetch
+// @otta-sh/domain/ports — pure types, NO pg / ctx / fetch
 export type PaymentMethod = "stripe" | "x402";
 
 export interface PaymentGateway {
@@ -510,7 +510,7 @@ front of it, and no digital line ever touches inventory.
 
 ## 7. New service surface
 
-### REST endpoints (`@urumi/service`, 1:1 with the ports — no status-code-as-logic)
+### REST endpoints (`@otta-sh/service`, 1:1 with the ports — no status-code-as-logic)
 - `POST /checkout/orders` — create order from cart. Body `{ cartId }`, `Idempotency-Key`
   header → `IdempotencyKey`. Returns the `Order` + `PaymentIntentHandle` (`createIntent`).
   **Canonical endpoint name** — Phase 6 *extends this exact route* (adds `shippingMethodId` +
@@ -704,7 +704,7 @@ Extends the Phase-0/3 concurrency guarantee across `commit`.
 - [ ] Plugin exercised under the **workerd-on-Node sandbox** (not trusted in-process); egress
       is `ctx.http` + `allowedHosts` only; **no secret** in the plugin; Playwright screenshot
       attached once storefront e2e exists.
-- [ ] `@urumi/domain` still imports **nothing with IO** (boundary dep-check green); money is
+- [ ] `@otta-sh/domain` still imports **nothing with IO** (boundary dep-check green); money is
       integer minor units throughout (type test intact).
 - [ ] Stripe secrets in **service env only**; migrations **forward-only**.
 - [ ] `pnpm lint` clean, `pnpm typecheck` clean, `pnpm format` applied, **changeset added**

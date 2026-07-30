@@ -1,4 +1,4 @@
-import { SETTINGS_SCHEMA, URUMI_PLUGIN_CAPABILITIES } from "@urumi/plugin";
+import { SETTINGS_SCHEMA, URUMI_PLUGIN_CAPABILITIES } from "@otta-sh/plugin";
 import { afterEach, describe, expect, test } from "vitest";
 import { assertBlockContract } from "./helpers/block-contract.js";
 import {

@@ -78,7 +78,7 @@ export function buildRefundSeed(store: OrderStore): RefundOrderHarness["seedPaid
  * split, idempotent replay, and the full-refund `→ refunded` flip. Run against
  * the in-memory fake first, then sqlite + pg. The MONEY-MOVEMENT gateway leg is a
  * `FakePaymentGateway`; the REAL Stripe transport (pre-flight + refunds.create) is
- * proven separately in `@urumi/payments-stripe`. Postgres additionally runs the
+ * proven separately in `@otta-sh/payments-stripe`. Postgres additionally runs the
  * concurrency races (a separate file — sqlite serializes writes, so it can't race).
  */
 export function refundOrderContract(

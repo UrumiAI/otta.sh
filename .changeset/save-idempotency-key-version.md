@@ -1,5 +1,5 @@
 ---
-"@urumi/plugin": patch
+"@otta-sh/plugin": patch
 ---
 
 Include the content record's `version` in the save idempotency key
@@ -42,4 +42,4 @@ Bundled with the `sites/staging` EmDash 0.29.0 -> 0.31.1 bump because it is a
 prerequisite of it: shipping that bump alone introduces the data loss above.
 The bump itself needed no changeset (`sites/staging` is private and no published
 package changed); this commit does, because it changes the published
-`@urumi/plugin`.
+`@otta-sh/plugin`.

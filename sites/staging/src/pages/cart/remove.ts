@@ -4,7 +4,7 @@
  * form — minted per rendered cart-page form — and is forwarded verbatim;
  * never invented here.
  */
-import { STOREFRONT_CART_LINE_REMOVE_ROUTE, type CartLineRemoveRouteResult } from "@urumi/plugin";
+import { STOREFRONT_CART_LINE_REMOVE_ROUTE, type CartLineRemoveRouteResult } from "@otta-sh/plugin";
 import type { APIRoute } from "astro";
 import {
 	clearCartCookie,

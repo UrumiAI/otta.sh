@@ -31,7 +31,7 @@ pnpm format       # oxfmt, tabs
 ## TDD, contract-first
 
 The order is always: **failing test → code → green → refactor.** For anything in
-`@urumi/domain`, write the behavioral test against the **port interface** before writing any
+`@otta-sh/domain`, write the behavioral test against the **port interface** before writing any
 adapter — the headline contract is *no oversell under concurrency*. See
 [`DEVELOPMENT.md` §1](./DEVELOPMENT.md#1-tdd-is-contract-first) for the full rule.
 
@@ -59,8 +59,8 @@ Pick the tag for the area your change touches:
 
 | Area changed | Tag |
 |---|---|
-| `@urumi/domain` (ports, use-cases, invariants) | `[Domain]` |
-| `@urumi/service` (REST API, HTTP serialization) | `[Service]` |
+| `@otta-sh/domain` (ports, use-cases, invariants) | `[Domain]` |
+| `@otta-sh/service` (REST API, HTTP serialization) | `[Service]` |
 | Store/client/payment **adapters** (postgres, sqlite, d1, stripe, x402) | `[Adapters]` |
 | The EmDash **plugin** (storefront, Block Kit panel, sync hooks) | `[Plugin]` |
 | Shared test/contract packages | `[Test]` |

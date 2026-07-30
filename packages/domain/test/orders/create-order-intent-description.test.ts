@@ -1,4 +1,4 @@
-import { createOrderFromCart, idempotencyKey } from "@urumi/domain";
+import { createOrderFromCart, idempotencyKey } from "@otta-sh/domain";
 import { beforeEach, describe, expect, test } from "vitest";
 import { makeOrderHarness, type OrderHarness } from "./fake-harness.js";
 

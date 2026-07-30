@@ -20,7 +20,7 @@ import {
 	type RedeemResult,
 	type UpdateCouponInput,
 	type UpdateCouponResult,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import type { Expression, ExpressionBuilder, Kysely, Selectable, SqlBool } from "kysely";
 import { expressionBuilder, sql } from "kysely";
 import type { CouponsTable, Database } from "./schema.js";

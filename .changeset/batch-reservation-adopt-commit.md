@@ -1,13 +1,13 @@
 ---
-"@urumi/domain": minor
-"@urumi/store-postgres": minor
+"@otta-sh/domain": minor
+"@otta-sh/store-postgres": minor
 ---
 
 Batch the per-line checkout ADOPT and settle COMMIT into single guarded UPDATE
 statements (PR B — checkout-write batching), preserving the reservation
 state-machine semantics and anomaly detection byte-for-byte.
 
-- **`@urumi/domain`**: adds two REQUIRED `InventoryStore` port methods,
+- **`@otta-sh/domain`**: adds two REQUIRED `InventoryStore` port methods,
   `adoptMany(input)` and `commitMany(reservationIds)`, alongside the singular
   `adopt`/`commit` (which remain — still used by inventory use-cases and the
   gateway harness). This is an **additive-but-technically-breaking** port change:
@@ -29,7 +29,7 @@ state-machine semantics and anomaly detection byte-for-byte.
   `commitMany` catches `ReservationCommitLostError` per id → `lost` and continues.
   The digital `entitlement.grant` loop and the release path are untouched.
 
-- **`@urumi/store-postgres`**: implements `adoptMany`/`commitMany` on
+- **`@otta-sh/store-postgres`**: implements `adoptMany`/`commitMany` on
   `KyselyInventoryStore` as the single guarded UPDATE + classification SELECT
   described above (empty-ids short-circuit; `IN (:ids)`, never `= ANY`).
 

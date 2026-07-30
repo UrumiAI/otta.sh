@@ -56,7 +56,7 @@ export function resolveStripePublishableKey(raw: string | undefined): string | u
 }
 
 /**
- * Compile-time override hook — the same `typeof` guard `@urumi/plugin`'s
+ * Compile-time override hook — the same `typeof` guard `@otta-sh/plugin`'s
  * manifest uses, so the identifier is safe wherever no bundler defines it
  * (vitest, `astro check`). The define always bakes a STRING; an absent key
  * bakes `""`, which resolves to unconfigured.

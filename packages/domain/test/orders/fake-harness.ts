@@ -12,7 +12,7 @@ import {
 	productId as brandProductId,
 	type SettleDeps,
 	sku as brandSku,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import {
 	CountingIdGen,
 	FakePaymentGateway,
@@ -26,7 +26,7 @@ import {
 	InMemoryProductCommerceStore,
 	InMemoryShippingRulesStore,
 	InMemoryTaxRulesStore,
-} from "@urumi/domain/testing";
+} from "@otta-sh/domain/testing";
 
 export const USD = currency("USD");
 

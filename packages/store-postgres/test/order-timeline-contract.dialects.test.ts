@@ -7,8 +7,8 @@ import {
 	reservationId,
 	sku,
 	type CreateOrderInput,
-} from "@urumi/domain";
-import { orderTimelineContract } from "@urumi/domain/testing";
+} from "@otta-sh/domain";
+import { orderTimelineContract } from "@otta-sh/domain/testing";
 import { describe, expect, test } from "vitest";
 import { PG_ENABLED } from "./describe-each-dialect.js";
 import {

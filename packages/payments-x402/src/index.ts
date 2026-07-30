@@ -8,7 +8,7 @@ import {
 	type RefundInput,
 	type RefundResult,
 	type X402Proof,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 /**

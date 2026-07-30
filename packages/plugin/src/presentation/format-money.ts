@@ -6,7 +6,7 @@
  * or raw `string` currency is a compile error (pinned by
  * `test/format-money.type-test.ts`, mirroring Phase 0's `Cents` test).
  *
- * Lives in `@urumi/plugin` (pre-approved decision 7): Phase 3's cart
+ * Lives in `@otta-sh/plugin` (pre-approved decision 7): Phase 3's cart
  * consumes THIS function for line totals — extract to a shared presentation
  * package only when a second real consumer package exists (ADR-0002 rule 5).
  * Formatting is explicitly NOT a domain concern; this sits downstream of the

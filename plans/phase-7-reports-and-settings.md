@@ -3,7 +3,7 @@
 _Implementation plan (no code). Principal-engineer sequencing for Phase 7 of Urumi._
 
 > Governing rule (DEVELOPMENT.md §1, CLAUDE.md): **failing test → code → green → refactor.**
-> For anything landing in `@urumi/domain`, the behavioral test is written against the **port**
+> For anything landing in `@otta-sh/domain`, the behavioral test is written against the **port**
 > before any adapter. Real databases only — SQLite locally, Postgres in CI, per-test schema
 > isolation. The plugin surface (the reporting widget + settings form) is proven under the
 > **workerd-on-Node sandbox**, Block Kit only, egress only via `ctx.http` + `allowedHosts`.
@@ -111,15 +111,15 @@ settings catalog:**
 ## 3. Dependencies
 
 **Reused from Phases 0–6:**
-- `@urumi/domain` — the ports directory + port-first contract-suite convention, the
+- `@otta-sh/domain` — the ports directory + port-first contract-suite convention, the
   in-memory-fake pattern, and the branded `Cents`/`Currency` types (Phase 0 §0.2–0.3).
   Reporting and settings **add** two new ports (`ReportingStore`, `SettingsStore`) alongside
   `InventoryStore`/`OrderStore`/`ProductCommerceStore`.
-- `@urumi/store-postgres` — the Kysely dialect-parameterized store, forward-only migrations,
+- `@otta-sh/store-postgres` — the Kysely dialect-parameterized store, forward-only migrations,
   and the `describeEachDialect`-style contract wrapper (Phase 0 §0.4, reused verbatim by
   Phase 1's `productCommerceStoreContract`). Phase 7 adds two migrations (`settings` table;
   confirm indices on `orders`/`order_items`/`inventory` — see §4) and two adapters.
-- `@urumi/service` — the Hono-style REST app, zod validation, `Idempotency-Key` header
+- `@otta-sh/service` — the Hono-style REST app, zod validation, `Idempotency-Key` header
   convention, no-status-code-as-logic rule, and the live-server HTTP-contract-test harness
   (Phase 0 §0.6, reused by Phase 1 §7). Phase 7 adds `/reports/*` and `/settings` endpoints.
 - **Orders / order_items / order_totals schema — per Phase 4's "Canonical order schema
@@ -139,7 +139,7 @@ settings catalog:**
 - **The cart hold-expiry cron (Phase 3)** — today reads a hardcoded `holdTtlMinutes`; this
   phase's `SettingsStore` becomes its source of truth, so the cron starts reading a value the
   merchant can change without a deploy.
-- `@urumi/plugin` — the Block Kit widget infra and workerd-on-Node sandbox test harness
+- `@otta-sh/plugin` — the Block Kit widget infra and workerd-on-Node sandbox test harness
   established in Phase 1 (`fieldWidget` pattern) — Phase 7 uses the sibling `admin.pages` /
   `admin.widgets` / `admin.settingsSchema` surfaces with the **same** sandbox harness, and the
   same `HttpCommerceClient`-via-`ctx.http` discipline (no new transport pattern).
@@ -152,7 +152,7 @@ settings catalog:**
 
 ### 4.1 Where reporting lives (the domain-purity decision)
 
-**Decision: reporting gets a real port, `ReportingStore`, in `@urumi/domain` — not a
+**Decision: reporting gets a real port, `ReportingStore`, in `@otta-sh/domain` — not a
 service-layer-only query module.** Justification against the domain-purity rule
 (CLAUDE.md non-negotiables, DEVELOPMENT.md §3):
 
@@ -163,7 +163,7 @@ service-layer-only query module.** Justification against the domain-purity rule
   headline test requires (SQLite + Postgres, same suite) — mirroring
   `inventoryStoreContract`/`productCommerceStoreContract` rather than inventing a bespoke
   service-only test story.
-- ADR-0002's whole bet is that `@urumi/domain` is the artifact that runs unchanged whether
+- ADR-0002's whole bet is that `@otta-sh/domain` is the artifact that runs unchanged whether
   wired to `store-postgres` today or an in-process `EmdashStore` later. A reporting query
   that only exists as service-layer SQL would be the one piece that doesn't survive that
   swap. A `ReportingStore` port keeps reporting inside the same bet.
@@ -171,7 +171,7 @@ service-layer-only query module.** Justification against the domain-purity rule
   case (`getRevenueReport`, etc.) that does nothing but call the port and shape the result.
   This is deliberately thin; it exists for consistency and dialect-parity testing, not
   because reporting needs business-rule orchestration.
-- **Rejected alternative:** a `ReportingQueries` class living directly in `@urumi/service`
+- **Rejected alternative:** a `ReportingQueries` class living directly in `@otta-sh/service`
   atop the existing Kysely instance, tested via `describeEachDialect` without going through
   a domain port. Simpler, less indirection — but it quietly special-cases reporting outside
   the pattern every other store follows, and forfeits the "same code runs in-process later"
@@ -308,7 +308,7 @@ numbers — no drift between what's "designed" and what's "seeded."
 
 ### 4.4 REST endpoints + admin widget consumption
 
-`@urumi/service` exposes one endpoint per report, 1:1 with the port (§6). The plugin's Reports
+`@otta-sh/service` exposes one endpoint per report, 1:1 with the port (§6). The plugin's Reports
 page (`admin.pages`) calls each endpoint over `ctx.http` via the existing `HttpCommerceClient`
 pattern (no new transport primitive), with a date-range control (default: trailing 30 days,
 UTC bucketing — see Risks §8.6) and renders each report as a Block Kit section/table. The
@@ -364,7 +364,7 @@ One form, two save paths, made visible in the UI rather than hidden:
   `PUT /settings` over `ctx.http`, and surface the service's validation error inline
   (never swallowed into a generic "save failed").
 
-Validation: zod schemas in `@urumi/service` for service-backed fields (`holdTtlMinutes`:
+Validation: zod schemas in `@otta-sh/service` for service-backed fields (`holdTtlMinutes`:
 positive integer, sane upper bound e.g. ≤ 10080 minutes/1 week; `lowStockThreshold`:
 non-negative integer); light plugin-side validation for the kv field (non-empty string,
 length cap) since there's no service round-trip to catch it. `admin.settingsSchema` declares
@@ -374,7 +374,7 @@ the field shapes so the host renders reasonable input widgets.
 
 ## 6. New service surface
 
-**New domain ports (`@urumi/domain`):**
+**New domain ports (`@otta-sh/domain`):**
 - `ReportingStore { revenueByPeriod(range, interval), ordersByStatus(range), topProducts(range, metric, limit), lowStock(threshold) }`
   — intent only (period ranges, group keys), no SQL; the port signature does not encode which
   DB tables back it, but per §4.2 the adapter's `revenueByPeriod`/`topProducts` implementations
@@ -395,7 +395,7 @@ the field shapes so the host renders reasonable input widgets.
   low-stock threshold from settings when the caller omits it; reject invalid `updateSettings`
   input before it reaches the store).
 
-**New REST endpoints (`@urumi/service`) — 1:1 with the ports:**
+**New REST endpoints (`@otta-sh/service`) — 1:1 with the ports:**
 - `GET /reports/revenue?from=&to=&interval=day|week|month` → `revenueByPeriod`.
 - `GET /reports/orders-by-status?from=&to=` → `ordersByStatus`.
 - `GET /reports/top-products?from=&to=&metric=revenue|quantity&limit=` → `topProducts`.
@@ -442,7 +442,7 @@ Each step: **named failing test first, then the minimum code to green.**
   - `it("updateSettings rejects holdTtlMinutes <= 0 before it reaches the store")`
   - `it("updateSettings rejects a non-integer lowStockThreshold")`
   - `it("updateSettings replayed with the same idempotencyKey does not double-apply")`
-- Code: add `ReportingStore`/`SettingsStore` interfaces + result types to `@urumi/domain/ports`,
+- Code: add `ReportingStore`/`SettingsStore` interfaces + result types to `@otta-sh/domain/ports`,
   the six/five thin use-cases above, and in-memory fakes in domain test-utils.
 - Green when: all cases pass against the fakes.
 
@@ -460,7 +460,7 @@ Each step: **named failing test first, then the minimum code to green.**
   index needed on `order_totals` — its PK, `order_id`, is already the join key).
 - Implement `ReportingStore` (the four SQL shapes in §4.2, with the `truncateToInterval`
   dialect-branch helper for the bucket expression) and `SettingsStore` (idempotent upsert on
-  the single settings row) in `@urumi/store-postgres`.
+  the single settings row) in `@otta-sh/store-postgres`.
 - Test: `packages/store-postgres/test/reporting.contract.test.ts` and
   `packages/store-postgres/test/settings.contract.test.ts` run the Step-2 suites via the
   `describeEachDialect` wrapper — SQLite always, Postgres when `PG_CONNECTION_STRING` is set /
@@ -587,7 +587,7 @@ it to admin pages is cheap.
       two-path settings save (kv direct vs. service over `ctx.http`).
 - [ ] **Sandbox-clean guard green:** both widgets' manifests declare only
       `network:request`(`allowedHosts`) + `kv` — no other capability, no DB/storage surface.
-- [ ] `@urumi/domain` still imports **nothing with IO** — dependency-boundary lint green
+- [ ] `@otta-sh/domain` still imports **nothing with IO** — dependency-boundary lint green
       (`ReportingStore`/`SettingsStore` are interfaces only; all SQL lives in
       `store-postgres`).
 - [ ] Money in every report stays integer minor units + explicit currency, on the wire and in
@@ -595,8 +595,8 @@ it to admin pages is cheap.
 - [ ] Migration is **forward-only**; indices from §4.2 present.
 - [ ] `pnpm lint` clean · `pnpm typecheck` clean · `pnpm format` (oxfmt, tabs) applied ·
       `pnpm test` green (SQLite) and `test:pg` green in CI.
-- [ ] **Changeset added** for each published package touched (`@urumi/domain`,
-      `@urumi/store-postgres`, `@urumi/service`, `@urumi/plugin`).
+- [ ] **Changeset added** for each published package touched (`@otta-sh/domain`,
+      `@otta-sh/store-postgres`, `@otta-sh/service`, `@otta-sh/plugin`).
 - [ ] PR tags per CLAUDE.md area (`[Domain]` / `[Adapters]` / `[Service]` / `[Plugin]`); scope
       discipline means this phase is likely **several PRs**, not one (ports+use-cases,
       adapters+migration, service endpoints, plugin widgets) — one PR = one thing; passing
