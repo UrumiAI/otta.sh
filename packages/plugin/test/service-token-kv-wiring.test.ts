@@ -162,7 +162,10 @@ describe("service token rides every construction site from write-only kv (ADR-00
 				// the operator-alterable `value.toState`.
 				input: {
 					action_id: "orders:transition-paid",
-					value: { orderId: "o1", toState: "paid" },
+					// `state` is the DA-2a watermark the button rendered with. It is not
+					// optional: with it absent the handler refuses instead of writing
+					// unchecked, so a token-wiring test has to send the real payload shape.
+					value: { orderId: "o1", toState: "paid", state: "paid" },
 				},
 				request: req,
 			},
@@ -196,7 +199,10 @@ describe("service token rides every construction site from write-only kv (ADR-00
 				// the operator-alterable `value.toState`.
 				input: {
 					action_id: "orders:transition-paid",
-					value: { orderId: "o1", toState: "paid" },
+					// `state` is the DA-2a watermark the button rendered with. It is not
+					// optional: with it absent the handler refuses instead of writing
+					// unchecked, so a token-wiring test has to send the real payload shape.
+					value: { orderId: "o1", toState: "paid", state: "paid" },
 				},
 				request: req,
 			},

@@ -72,8 +72,48 @@ Also: `formatTotal`'s catch branch renders `—` instead of raw minor units (a w
 number dressed as a formatted total, M-1) and the totals block says so when it
 happens; a negative amount formats with an explicit minus prefix rather than
 throwing through `cents()`; timestamps in `fields` are trimmed to seconds (M-6);
-the `Currency` column and the `Kind` badge are deleted (M-2, T-5); and no `Payment`
-value is repeated between the identity strip and the Money panel (P-3).
+the `Currency` column and the refunds ledger's constant `Kind` badge are deleted
+(M-2, T-5/X-4); and no `Payment` value is repeated between the identity strip and
+the Money panel (P-3).
+
+**Revision 1 — every refusal is now a render, not just a banner.** The scaffold's
+render-state channel (`showLeaf(path, notice?, renderState?)`) replaced this
+screen's private staged-re-render path, so a `-review`, a DA-3a stale-watermark
+refusal, a DA-3c bound-check failure and every validation refusal all re-render
+through the **level's own `render`** — one read-and-render implementation, and the
+figures an operator sees after a refusal always come from a fresh read
+(DA-3a-i/-ii/-iii). Each refusal re-renders **state 1 into the group it came
+from**: forced open on a `block_id` distinct from both idle and `:review` (B-6), the
+collect form **flattened** into the group body rather than left inside a collapsed
+child (X-39), the submitted values prefilled — the amount **verbatim**, since the
+commonest refusal is the one where it did not parse — and **no confirm control**,
+because the payload a confirm would carry is the payload just refused.
+
+Three writes gained the staleness check §8 exempts nothing from: **status moves now
+carry the observed state and re-read before writing** (DA-2a — `shipped → refunded`
+is legal, so the domain guard cannot catch a terminal flip decided on a `paid`
+view), and both `-review` handlers re-read as well, so state 2 can never draw a
+confirm the write would already refuse (DA-3c). `-review` also **bound-checks the
+amount against the live ceiling** (X-40) — an extra zero used to stage a red
+`Refund $900.00` on a $50 order, with a dialog saying the same, on the one step that
+exists to let an operator check exactly that. An absent watermark is treated as an
+unreadable payload rather than as licence to skip the comparison.
+
+Copy and layout follow-ups in the same pass: the DA-3a refusal restores its causal
+clause (*"someone else refunded this order since you started"*); the fail-closed
+banner stops claiming the service is unreachable when a console bug lands on the
+same path (E-7/X-42); both destructive group labels carry their consequence (D-6a);
+`Remaining` becomes `Remaining refundable` and a total that disagrees with its
+capture is reconciled in one line (M-11/M-11a), with the degenerate `$0.00 of $0.00`
+ratio replaced in the label rather than explained (D-6b); the two withheld-transition
+lines name the operator's alternative instead of narrating what designers withheld
+(DA-7a/X-41); cancellation buttons drop the `Other` reason (which promised a field
+it did not have) and their labels become the bare reason, leaving four buttons —
+inside DA-2c's cap; the note form's `select` carries **human labels as its option
+values**, so the pinned renderer's trigger no longer displays `customer_request`
+(F-6c); Notes becomes form-only, since its table repeated the timeline verbatim; a
+guest's Customer group is two entries rather than five denials of an account
+(§11.2); and the refunds count is a bare integer again (X-9's count exclusion).
 
 The sandbox suite was ported onto the spec's recursive block helpers in a separate
 no-behaviour-change commit first (§15 V-2), since a flat top-level search stops
@@ -81,3 +121,12 @@ asserting anything the moment content moves into `tab > accordion`. It now cover
 the filter panel **with a filter applied**, `Clear filters`, both zero states, D-5's
 computed open group, the DA-3 staging round trip, the DA-3a stale-watermark refusal,
 the F-2a replay, and DA-6's unknown-state guard.
+
+Revision 1 adds, among others: the DA-3c bound-check refusal and all four DA-3a-i
+clauses on each of the four refusal paths; a **positive** watermark assertion (two
+deliberate identical refunds derive **different** idempotency keys, so both apply —
+the property the whole no-nonce design rests on, and the one nothing asserted); a
+`shipped`-order assertion that `Mark refunded` really is offered, against a fixture
+whose `allowedTransitions` is the domain state machine copied verbatim; and a
+service-side assertion that `GET /admin/orders/:id` on a shipped order returns
+`["delivered", "refunded"]`, which is the wire shape the watermark exists for.

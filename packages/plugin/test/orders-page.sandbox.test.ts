@@ -233,6 +233,20 @@ const ORDER_CANCELLED_NO_REASON = {
 	cancellation: null,
 };
 
+// M-11 / D-6b: an order whose CAPTURE is smaller than its total. Both figures are
+// honest; together they are a contradiction the operator otherwise has to leave the
+// console to resolve, and the D-6 ratio degenerates to `$0.00 of $0.00`.
+const ORDER_UNCAPTURED = { ...ORDER_1, id: "ord-uncaptured" };
+const REFUNDS_UNCAPTURED = {
+	refunds: [],
+	currency: "USD",
+	capturedTotalCents: 0,
+	refundedTotalCents: 0,
+	ceilingCents: 0,
+	remainingCents: 0,
+	paymentMethod: "stripe",
+	refundable: false,
+};
 // ADR-0008: an x402-paid order — refunds are RECORD-ONLY (refundable:false).
 const ORDER_X402 = { ...ORDER_1, id: "ord-x402", paymentMethod: "x402" };
 // Nothing left to refund — DA-7 withholds the refund control entirely.
@@ -358,6 +372,32 @@ const CUSTOMER_CONTEXT_GUEST = {
 	recentOrders: [],
 };
 
+/**
+ * The domain order state machine, copied verbatim from
+ * `packages/domain/src/orders/state-machine.ts` — NOT imported, because a sandbox
+ * fixture must state the wire shape it expects rather than re-derive it from the
+ * code under test (a drift in the domain should fail this suite loudly, not follow
+ * it silently).
+ *
+ * `shipped: ["delivered", "refunded"]` is the row that settles a real question:
+ * `shipped → refunded` IS legal, and `service/src/routes/admin.ts` hands the row to
+ * the console with no narrowing, so the console really can offer `Mark refunded` on
+ * a shipped order. That is why a transition carries a watermark (DA-2a) — see the
+ * test that asserts it against this fixture.
+ */
+const ORDER_STATE_MACHINE: Record<string, string[]> = {
+	pending: ["paid", "failed", "expired", "cancelled"],
+	paid: ["processing", "completed", "cancelled", "refunded"],
+	processing: ["shipped", "cancelled", "refunded"],
+	shipped: ["delivered", "refunded"],
+	delivered: ["completed", "refunded"],
+	completed: ["refunded"],
+	failed: [],
+	expired: [],
+	cancelled: [],
+	refunded: [],
+};
+
 /** A GET responder for the guarded list + detail reads (200 only WITH the admin
  *  token, else 401 — mirroring the service guard). Distinguishes list vs detail
  *  by path, and page1 vs page2 by the `cursor=` query param. */
@@ -402,7 +442,9 @@ function makeGetResponder() {
 				? REFUNDS_X402
 				: path.includes("/ord-refunded")
 					? REFUNDS_FULL
-					: REFUNDS_DEFAULT;
+					: path.includes("/ord-uncaptured")
+						? REFUNDS_UNCAPTURED
+						: REFUNDS_DEFAULT;
 			return { status: 200, body: { ok: true, ...summary } };
 		}
 		// Customer context read — also BEFORE the detail branch.
@@ -416,46 +458,49 @@ function makeGetResponder() {
 			return { status: 200, body: { ok: true, context: CUSTOMER_CONTEXT_LINKED } };
 		}
 		if (path?.startsWith("/admin/orders/")) {
-			const order = path.includes("/ord-no-addr")
-				? ORDER_NO_ADDR
-				: path.includes("/ord-flagged")
-					? ORDER_FLAGGED
-					: path.includes("/ord-resolved")
-						? ORDER_RESOLVED
-						: path.includes("/ord-guest")
-							? ORDER_GUEST
-							: path.includes("/ord-ctx-fail")
-								? ORDER_CTX_FAIL
-								: path.includes("/ord-proc")
-									? ORDER_PROCESSING
-									: path.includes("/ord-shipped")
-										? ORDER_SHIPPED
-										: path.includes("/ord-cancelled-bare")
-											? ORDER_CANCELLED_NO_REASON
-											: path.includes("/ord-cancelled")
-												? ORDER_CANCELLED
-												: path.includes("/ord-x402")
-													? ORDER_X402
-													: path.includes("/ord-refunded")
-														? ORDER_FULLY_REFUNDED
-														: path.includes("/ord-unknown")
-															? ORDER_UNKNOWN_STATE
-															: ORDER_1;
-			// State-appropriate transitions, as the real service derives them from the
-			// domain state machine: a processing order's legal targets INCLUDE the bare
-			// `shipped` — the PLUGIN is what must steer it away (PR #63 review); a
-			// cancelled order (either fixture) is TERMINAL — no legal transitions.
+			const order = path.includes("/ord-uncaptured")
+				? ORDER_UNCAPTURED
+				: path.includes("/ord-no-addr")
+					? ORDER_NO_ADDR
+					: path.includes("/ord-flagged")
+						? ORDER_FLAGGED
+						: path.includes("/ord-resolved")
+							? ORDER_RESOLVED
+							: path.includes("/ord-guest")
+								? ORDER_GUEST
+								: path.includes("/ord-ctx-fail")
+									? ORDER_CTX_FAIL
+									: path.includes("/ord-proc")
+										? ORDER_PROCESSING
+										: path.includes("/ord-shipped")
+											? ORDER_SHIPPED
+											: path.includes("/ord-cancelled-bare")
+												? ORDER_CANCELLED_NO_REASON
+												: path.includes("/ord-cancelled")
+													? ORDER_CANCELLED
+													: path.includes("/ord-x402")
+														? ORDER_X402
+														: path.includes("/ord-refunded")
+															? ORDER_FULLY_REFUNDED
+															: path.includes("/ord-unknown")
+																? ORDER_UNKNOWN_STATE
+																: ORDER_1;
+			// State-appropriate transitions, DERIVED THE WAY THE REAL SERVICE DERIVES
+			// THEM: `service/src/routes/admin.ts` returns `[...legalNextStates(state)]`
+			// with no narrowing whatsoever, so the fixture is the domain's own table
+			// (`domain/src/orders/state-machine.ts`) copied verbatim rather than a set
+			// of plausible-looking guesses. That fidelity is load-bearing for two
+			// assertions below: a `processing` order's legal targets INCLUDE the bare
+			// `shipped`, which the PLUGIN must steer away from, and a `shipped` order's
+			// include `refunded`, which is why a transition needs a watermark (DA-2a).
+			// The previous hand-written version offered `processing` FROM `shipped`,
+			// which the domain forbids outright — i.e. it was testing a wire shape the
+			// service cannot produce.
 			const allowedTransitions =
 				order.id === "ord-unknown"
 					? // A state outside the plugin's closed ORDER_STATES (DA-6).
 						["teleported", "completed"]
-					: order.state === "cancelled"
-						? []
-						: order.state === "refunded"
-							? []
-							: order.state === "processing"
-								? ["shipped", "cancelled", "refunded"]
-								: ["processing", "completed", "cancelled", "refunded"];
+					: (ORDER_STATE_MACHINE[order.state] ?? []);
 			return { status: 200, body: { ok: true, order, allowedTransitions } };
 		}
 		return { status: 404, body: { error: "unknown" } };
@@ -940,6 +985,19 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(banner?.description).toBeDefined();
 		const text = `${String(banner?.title)} ${String(banner?.description)}`;
 		expect(text).not.toMatch(/HTTP \d|\/admin\/|401/);
+		// E-7 / X-42: this path swallows EVERYTHING — an unreachable service, this 401, a
+		// malformed response, and a bug in the console's own code (a `carriedForm` digest
+		// throw lands here). So it must not name a single cause: "Could not reach the
+		// commerce service" is false whenever a console defect is the cause, and its cost
+		// is that it tells the operator the network is down and sends whoever they page to
+		// the wrong team. The last clause is the load-bearing one.
+		expect(banner?.title).toBe("Orders are unavailable");
+		expect(banner?.description).toBe(
+			"Orders could not be loaded. Check the service connection and the admin token in Settings; if both look right, this is a fault in the console itself — not your data.",
+		);
+		expect(String(banner?.description)).toContain("a fault in the console itself");
+		expect(String(banner?.description).length).toBeLessThanOrEqual(240);
+		expect(text).not.toContain("Could not reach the commerce service");
 	});
 
 	// -- §11.2 the detail skeleton ---------------------------------------------
@@ -1069,10 +1127,19 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(customer?.default_open).toBe(false);
 		const body = groupBlocks(blocks, "orders:ord-1:customer");
 		const values = fieldEntries(body);
-		expect(values).toContain("Email=alice@example.com");
-		expect(values).toContain("Name=Alice Example");
-		expect(values).toContain("Account=cust-a");
-		expect(values).toContain("Orders placed=3");
+		// §11.2's SIX entries on an account, with the two labels that used to be
+		// indistinguishable now named: the ACCOUNT's address vs the order's contact
+		// address (which was the internal-sounding `Buyer reference`).
+		expect(values).toEqual([
+			"Account email=alice@example.com",
+			"Account=cust-a",
+			"Name=Alice Example",
+			"Orders placed=3",
+			"Contact email=alice@example.com",
+			"Email verified (UTC)=2026-07-09T00:00:00Z",
+		]);
+		expect(values.some((v) => v.startsWith("Email="))).toBe(false);
+		expect(values.some((v) => v.startsWith("Buyer reference="))).toBe(false);
 		// The three secondary collections are their own closed sub-groups, resolved
 		// by `block_id` because their labels carry live counts (D-6).
 		expect(group(blocks, "orders:ord-1:addresses")?.label).toBe("Saved addresses (1)");
@@ -1102,8 +1169,24 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(group(blocks, "orders:ord-guest:customer")?.label).toBe(
 			"Customer — alice@example.com (guest)",
 		);
-		expect(fieldEntries(blocks)).toContain("Account=Guest — no account");
-		expect(fieldEntries(blocks)).toContain("Orders placed=1");
+		// TWO entries, and only these (§11.2). The six-entry shape said "no account"
+		// five different ways over the D-7 line that already says it once, and its
+		// `Email — (no account)` row DENIED an address the group label, the identity
+		// strip and `Contact email` were all displaying at the same moment.
+		const customerFields = groupBlocks(blocks, "orders:ord-guest:customer");
+		expect(fieldEntries(customerFields)).toEqual([
+			"Contact email=alice@example.com",
+			"Orders placed=1",
+		]);
+		for (const denial of [
+			"Account=Guest — no account",
+			"Name=—",
+			"Account email=—",
+			"Email verified=not verified",
+			"Email=— (no account)",
+		]) {
+			expect(fieldEntries(customerFields)).not.toContain(denial);
+		}
 		expect(contextTexts(blocks)).toContain(
 			"Guest checkout — no account, no saved addresses, no sign-in history.",
 		);
@@ -1185,8 +1268,14 @@ describe("admin Orders console (workerd sandbox)", () => {
 		const blocks = await open("ord-proc");
 		expect(transitionStates(blocks)).toEqual(["refunded"]);
 		const contexts = contextTexts(panel(blocks, "Fulfilment"));
-		expect(contexts.some((t) => t.includes("no bare “Mark shipped”"))).toBe(true);
-		expect(contexts.some((t) => t.includes("no bare “Mark cancelled”"))).toBe(true);
+		// DA-7a: the line names the ALTERNATIVE and never narrates the design
+		// decision. Both used to open "There is deliberately no bare …".
+		expect(contexts).toContain(
+			"To ship this order, record the tracking under Fulfilment above — that emails it to the buyer.",
+		);
+		expect(contexts).toContain(
+			"To cancel this order, use Cancel order below — it records a reason on file.",
+		);
 		expect(formFor(blocks, "orders:record-fulfillment")).toBeDefined();
 	});
 
@@ -1277,6 +1366,15 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(refunded?.style).toBe("danger");
 		expect(refunded?.confirm).toBeDefined();
 		expect(buttonWith(blocks, "orders:transition-processing")?.confirm).toBeUndefined();
+		// DA-2a / DA-6 item 5: EVERY transition button carries the observed state —
+		// the watermark its handler re-reads against. X-38 is countable on the payload.
+		for (const st of ["processing", "completed", "refunded"]) {
+			expect(valueOf(buttonWith(blocks, `orders:transition-${st}`))).toEqual({
+				orderId: "ord-1",
+				toState: st,
+				state: "paid",
+			});
+		}
 	});
 
 	test("DA-6: a service-offered state OUTSIDE the plugin's closed ORDER_STATES renders NO button and no blank page", async () => {
@@ -1294,6 +1392,8 @@ describe("admin Orders console (workerd sandbox)", () => {
 		const blocks = await open("ord-1");
 		stub!.requests.length = 0;
 		const after = await click(buttonWith(blocks, "orders:transition-processing"));
+		// DA-3a: the re-read happens BEFORE the write, on a transition too.
+		expect(stub!.requests.some((r) => r.method === "GET")).toBe(true);
 		const post = stub!.requests.find((r) => r.method === "POST");
 		expect(post!.url).toBe("/admin/orders/ord-1/transition");
 		expect(post!.headers["idempotency-key"]).toBe("admin-transition:ord-1:processing");
@@ -1302,13 +1402,95 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(findBlocks(after, "header").some((b) => b.text === "Order ord-1")).toBe(true);
 	});
 
+	test("DA-2a: a SHIPPED order really is offered `Mark refunded` — the terminal flip a stale view could otherwise reach, so the watermark is not theoretical", async () => {
+		await boot();
+		const blocks = await open("ord-shipped");
+		// THE WIRE SHAPE, not an inference. The stub's `allowedTransitions` is the
+		// domain's own table (see ORDER_STATE_MACHINE above), which the service returns
+		// through `[...legalNextStates(state)]` with no narrowing — so `shipped` really
+		// does offer `delivered` and `refunded`, and the plugin steers away from neither.
+		expect(transitionStates(blocks).toSorted()).toEqual(["delivered", "refunded"]);
+		const refunded = buttonWith(blocks, "orders:transition-refunded");
+		expect(refunded).toBeDefined();
+		expect(refunded?.style).toBe("danger");
+		// `refunded` is TERMINAL (the same table gives it no outbound transitions), so
+		// this is a one-way flip on an order whose tracking has already been emailed.
+		expect(ORDER_STATE_MACHINE["refunded"]).toEqual([]);
+		// Which is exactly why the button carries the state the operator was LOOKING at:
+		// the domain guard cannot help, because `paid → refunded` and `shipped → refunded`
+		// are both legal, so a click decided on a `paid` view succeeds against a shipped
+		// order. The watermark is the only thing that catches it.
+		expect(valueOf(refunded).state).toBe("shipped");
+		expect(String(confirmOf(refunded).text)).toContain("does not move money");
+	});
+
+	test("DA-2a: a transition whose observed state no longer matches applies NOTHING and names both states", async () => {
+		await boot();
+		stub!.requests.length = 0;
+		const after = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "block_action",
+				action_id: "orders:transition-refunded",
+				// The scenario in full: the operator opened this order while it read
+				// `paid`, a colleague moved it to `shipped`, and only then did they
+				// confirm the dialog. `ord-1` is `paid` live, so the mismatch fires the
+				// other way round with the same shape.
+				value: { orderId: "ord-1", toState: "refunded", state: "shipped" },
+			}),
+		);
+		// The re-read happened; the write did NOT.
+		expect(stub!.requests.some((r) => r.method === "GET")).toBe(true);
+		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
+		const banner = findBlocks(after, "banner").find((b) => b.variant === "error");
+		expect(banner?.title).toBe("The order changed — nothing was applied");
+		expect(String(banner?.description)).toContain("shipped");
+		expect(String(banner?.description)).toContain("paid");
+		// A transition has no group and no operator-typed input, so DA-3a-i's four
+		// clauses have nothing to bind to: no group is forced open, and the live state
+		// the operator needs is in the identity strip.
+		expect(openGroupIds(after)).toEqual(["orders:ord-1:fulfilment"]);
+		expect(fieldEntries(after)).toContain("Status=paid");
+	});
+
+	test("DA-3a is not opt-out: a transition payload with the watermark STRIPPED refuses instead of writing unchecked", async () => {
+		await boot();
+		stub!.requests.length = 0;
+		// `button.value` is operator-alterable (B-1), so a `state.length > 0` guard around
+		// the comparison would let anyone with devtools — or any browser tab rendered
+		// before the watermark existed — write with no staleness check at all. A stale tab
+		// is precisely the case DA-3a is for, so refusing is the right answer for both.
+		const after = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "block_action",
+				action_id: "orders:transition-refunded",
+				value: { orderId: "ord-1", toState: "refunded" },
+			}),
+		);
+		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
+		const banner = findBlocks(after, "banner").find((b) => b.variant === "error");
+		expect(banner?.title).toBe("That action could not be read");
+		// The same holds for a cancel, whose watermark rides the same channel.
+		stub!.requests.length = 0;
+		const cancelled = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "block_action",
+				action_id: "orders:cancel-out_of_stock",
+				value: { orderId: "ord-1", reason: "out_of_stock" },
+			}),
+		);
+		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
+		expect(findBlocks(cancelled, "banner").find((b) => b.variant === "error")?.title).toBe(
+			"That action could not be read",
+		);
+	});
+
 	test("a no-op transition (ok but transitioned:false) re-renders the detail with a NON-error notice", async () => {
 		await boot();
 		const after = blocksOf(
 			await sandbox!.invokeRoute("admin", {
 				type: "block_action",
 				action_id: "orders:transition-paid", // already paid ⇒ transitioned:false
-				value: { orderId: "ord-1", toState: "paid" },
+				value: { orderId: "ord-1", toState: "paid", state: "paid" },
 			}),
 		);
 		expect(findBlocks(after, "header").some((b) => b.text === "Order ord-1")).toBe(true);
@@ -1429,18 +1611,34 @@ describe("admin Orders console (workerd sandbox)", () => {
 		await boot();
 		const blocks = await open("ord-1");
 		const cancel = group(panel(blocks, "Fulfilment"), "orders:ord-1:cancel");
-		expect(cancel?.label).toBe("Cancel order");
+		// D-6a / X-35: a destructive group's label carries its CONSEQUENCE, because a
+		// label cannot be red (R-5) and a bare verb makes the most dangerous control on
+		// the panel the quietest thing on it.
+		expect(cancel?.label).toBe("Cancel order — permanent, releases held stock");
+		expect(String(cancel?.label).length).toBeLessThanOrEqual(60);
 		expect(cancel?.default_open).toBe(false); // ALWAYS, for anything destructive
 		const reasonButtons = buttons([cancel!]).filter((e) =>
 			String(e.action_id).startsWith("orders:cancel-"),
 		);
+		// FOUR buttons, not five: `other` promised a detail field the button could not
+		// provide, so it lives only in the note form's select — which also keeps the
+		// fan-out inside DA-2c's cap, so each button stays `style:"danger"` (X-37).
 		expect(reasonButtons.map((e) => e.action_id)).toEqual([
 			"orders:cancel-customer_request",
 			"orders:cancel-fraud_suspected",
 			"orders:cancel-out_of_stock",
 			"orders:cancel-pricing_error",
-			"orders:cancel-other",
 		]);
+		// LABELS ARE THE BARE REASON — the group label and the confirm already say
+		// "cancel" twice, so a "Cancel — " prefix said it three times per button and
+		// pushed the only differing word to the right.
+		expect(reasonButtons.map((e) => e.label)).toEqual([
+			"Customer requested it",
+			"Fraud suspected",
+			"Out of stock",
+			"Pricing error",
+		]);
+		expect(reasonButtons.filter((e) => e.style === "danger")).toHaveLength(4);
 		for (const b of reasonButtons) {
 			expect(b.style).toBe("danger");
 			const confirm = confirmOf(b);
@@ -1493,6 +1691,14 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(banner?.title).toBe("The order changed — nothing was cancelled");
 		expect(String(banner?.description)).toContain("pending");
 		expect(String(banner?.description)).toContain("paid");
+		// The causal clause: the fact, not just the effect (E-4, §8).
+		expect(String(banner?.description)).toContain("someone else moved it");
+		// DA-3a-i: the refusal re-renders state 1 INTO THE CANCEL GROUP, forced open on
+		// a THIRD key, flattened, with no confirm — X-18 still holds at one open group.
+		expect(openGroupIds(after)).toEqual(["orders:ord-1:cancel:refused"]);
+		expect(group(after, "orders:ord-1:cancel-note")).toBeUndefined();
+		expect(buttonWith(after, "orders:cancel")).toBeUndefined();
+		expect(formFor(after, "orders:cancel-review")).toBeDefined();
 	});
 
 	test("DA-3: `Review cancellation` stages the free text — the group gets a CHANGED block_id AND default_open true, and one danger confirm appears (B-6, X-29)", async () => {
@@ -1502,12 +1708,16 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(group(blocks, "orders:ord-1:cancel-note")?.default_open).toBe(false);
 		stub!.requests.length = 0;
 		const staged = await submitForm(blocks, "orders:cancel-review", {
-			reason: "other",
+			// The select's option VALUE is the human label (R-17a: the trigger renders
+			// the raw value, so wire values would put `customer_request` on screen).
+			reason: "Other",
 			detail: "chargeback risk flagged",
 			cancelledBy: "carol",
 		});
-		// A `-review` writes NOTHING.
+		// A `-review` writes NOTHING — but it DOES re-read, so state 2 can never draw a
+		// confirm the write would already refuse (DA-3c: not only the confirm handler).
 		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
+		expect(stub!.requests.some((r) => r.method === "GET")).toBe(true);
 		// BOTH halves of the force-open. Only the id half and the whole thing snaps
 		// shut on the operator, hiding the confirm they just asked for.
 		expect(group(staged, "orders:ord-1:cancel")).toBeUndefined();
@@ -1517,7 +1727,7 @@ describe("admin Orders console (workerd sandbox)", () => {
 		// THE SAME FORM, remounted with the staged values — there is no "Change
 		// details" action and no `fields` echo of the payload.
 		const restaged = formFor([review!], "orders:cancel-review");
-		expect(field(restaged, "reason")?.initial_value).toBe("other");
+		expect(field(restaged, "reason")?.initial_value).toBe("Other");
 		expect(field(restaged, "detail")?.initial_value).toBe("chargeback risk flagged");
 		expect(field(restaged, "cancelledBy")?.initial_value).toBe("carol");
 		expect(restaged?.block_id).not.toBe(noteForm?.block_id); // prefill ⇒ new key (B-3a)
@@ -1532,8 +1742,12 @@ describe("admin Orders console (workerd sandbox)", () => {
 			state: "paid",
 		});
 		// The DA-2b reason buttons are gone in state 2 — one refund/cancel control
-		// at a time.
+		// at a time — and so is the nested collect group (flattened, DA-3's
+		// outermost-group rule).
 		expect(buttonWith(staged, "orders:cancel-out_of_stock")).toBeUndefined();
+		expect(group(staged, "orders:ord-1:cancel-note")).toBeUndefined();
+		// The confirm carries the WIRE reason, mapped back from the option label.
+		expect(valueOf(confirm).reason).toBe("other");
 
 		// Confirming writes, carrying the detail through.
 		const after = await click(confirm);
@@ -1550,14 +1764,60 @@ describe("admin Orders console (workerd sandbox)", () => {
 		const blocks = await open("ord-1");
 		stub!.requests.length = 0;
 		const after = await submitForm(blocks, "orders:cancel-review", {
-			reason: "customer_request",
+			reason: "Out of stock",
+			detail: "last one broke in transit",
 			cancelledBy: "  ",
 		});
 		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
 		expect(findBlocks(after, "banner").find((b) => b.variant === "error")?.title).toBe(
 			"Not cancelled",
 		);
+		// Nothing is STAGED — no state 2, no confirm.
 		expect(group(after, "orders:ord-1:cancel:review")).toBeUndefined();
+		expect(buttonWith(after, "orders:cancel")).toBeUndefined();
+		// But the refusal is still a DA-3a-i render: the cancel group is forced open on
+		// its refusal key, the collect group is FLATTENED away, and the reason and
+		// detail the operator did type are prefilled back.
+		expect(openGroupIds(after)).toEqual(["orders:ord-1:cancel:refused"]);
+		expect(group(after, "orders:ord-1:cancel-note")).toBeUndefined();
+		const retry = formFor(after, "orders:cancel-review");
+		expect(field(retry, "reason")?.initial_value).toBe("Out of stock");
+		expect(field(retry, "detail")?.initial_value).toBe("last one broke in transit");
+	});
+
+	test("DA-3c: `cancel-review` re-reads too, so state 2 never draws a confirm the write would already refuse", async () => {
+		await boot();
+		const blocks = await open("ord-1");
+		const noteForm = formFor(blocks, "orders:cancel-review");
+		// Re-submit the form with a carrier whose watermark is stale — the shape em-dash
+		// sends from a tab that rendered before someone else moved the order.
+		const carried = decodeCarrier(noteForm?.block_id) ?? {};
+		stub!.requests.length = 0;
+		const after = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "orders:cancel-review",
+				values: { reason: "Out of stock", detail: "shelf empty", cancelledBy: "carol" },
+				block_id: encodeCarrier("orders:cancel-note", { ...carried, state: "pending" }),
+			}),
+		);
+		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
+		// NOTHING is staged: no `:review` group and no confirm, because the confirm it
+		// would have drawn ("Cancel this order as 'out of stock'? This is permanent…")
+		// carries a watermark `cancelOrderAction` is about to reject anyway — leaving the
+		// operator a coherent current panel beside a button that cannot succeed.
+		expect(group(after, "orders:ord-1:cancel:review")).toBeUndefined();
+		expect(buttonWith(after, "orders:cancel")).toBeUndefined();
+		const banner = findBlocks(after, "banner").find((b) => b.variant === "error");
+		expect(banner?.title).toBe("The order changed — nothing was staged");
+		expect(String(banner?.description)).toContain("someone else moved it");
+		// DA-3a-i, all four clauses.
+		expect(openGroupIds(after)).toEqual(["orders:ord-1:cancel:refused"]);
+		expect(group(after, "orders:ord-1:cancel-note")).toBeUndefined();
+		const retry = formFor(after, "orders:cancel-review");
+		expect(field(retry, "reason")?.initial_value).toBe("Out of stock");
+		expect(field(retry, "detail")?.initial_value).toBe("shelf empty");
+		expect(field(retry, "cancelledBy")?.initial_value).toBe("carol");
 	});
 
 	test("an already-cancelled order shows the recorded reason read-only; one cancelled WITHOUT a reason says so honestly — neither offers a control", async () => {
@@ -1592,8 +1852,12 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(fieldEntries(money)).toEqual([
 			"Captured=$15.00",
 			"Refunded=$5.00",
-			"Remaining=$10.00",
-			"Refunds recorded=1 refund",
+			// M-11a: a bare `Remaining` beside `Captured` and `Refunded` could mean
+			// remaining to capture, to refund or to ship.
+			"Remaining refundable=$10.00",
+			// A BARE INTEGER: X-9's heuristic now excludes labels matching /recorded/,
+			// so the invented "1 refund" unit is no longer needed to satisfy it.
+			"Refunds recorded=1",
 		]);
 		// P-3: `Payment` is on the identity strip and is NOT repeated here.
 		expect(fieldEntries(money).some((v) => v.startsWith("Payment="))).toBe(false);
@@ -1606,7 +1870,12 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(meter?.max).toBe(1500);
 		expect(meter?.custom_value).toBe("$5.00 of $15.00");
 		const ledger = tableWithId(blocks, "orders:ord-1:refunds:table");
-		expect(columnLabels(ledger)).toEqual(["Amount", "Kind", "Provider ref", "By", "When"]);
+		// NO `Kind` COLUMN (T-5, X-4): `kind` is resolved once from the ORDER's own
+		// gateway, so it cannot vary down one order's ledger — a column of identical
+		// `manual` pills, which is a column of nothing.
+		expect(columnLabels(ledger)).toEqual(["Amount", "Provider ref", "By", "When"]);
+		expect(columnsOf(ledger).filter((c) => c.format === "badge")).toEqual([]);
+		expect(JSON.stringify(ledger)).not.toContain("gateway");
 		expect(contextTexts([refunds!]).some((t) => t.includes("REAL refund through Stripe"))).toBe(
 			true,
 		);
@@ -1640,7 +1909,9 @@ describe("admin Orders console (workerd sandbox)", () => {
 		await boot();
 		const blocks = await open("ord-1");
 		const partial = group(blocks, "orders:ord-1:refund-partial");
-		expect(partial?.label).toBe("Refund a different amount");
+		// D-6a / X-35: the consequence, not a bare noun. 46 chars.
+		expect(partial?.label).toBe("Refund a different amount — cannot be reversed");
+		expect(String(partial?.label).length).toBeLessThanOrEqual(60);
 		expect(partial?.default_open).toBe(false);
 		const form = formFor([partial!], "orders:refund-review");
 		expect(fieldIds(form)).toEqual(["amount", "reason", "refundedBy"]);
@@ -1665,8 +1936,11 @@ describe("admin Orders console (workerd sandbox)", () => {
 			reason: "damaged",
 			refundedBy: "carol",
 		});
-		// A `-review` writes NOTHING.
+		// A `-review` writes NOTHING — but it DOES re-read, both to bound-check against
+		// the LIVE ceiling (DA-3c) and so state 2 can never draw a confirm the write
+		// would already refuse (DA-3a at the review step).
 		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
+		expect(stub!.requests.some((r) => r.method === "GET")).toBe(true);
 		expect(group(staged, "orders:ord-1:refunds")).toBeUndefined();
 		const review = group(staged, "orders:ord-1:refunds:review");
 		expect(review?.default_open).toBe(true);
@@ -1689,8 +1963,20 @@ describe("admin Orders console (workerd sandbox)", () => {
 			refundedBy: "carol",
 		});
 		expect(group(staged, "orders:ord-1:refund-partial")).toBeUndefined();
-		// The ledger stays visible beside it — the confirm text tells them to check it.
-		expect(tableWithId(staged, "orders:ord-1:refunds:table")).toBeDefined();
+		// §8's outermost-group rule and §11.2, both explicit: the state-2 body is
+		// "banner + staged form + one danger confirm, AND NOTHING ELSE — the meter, the
+		// ledger and the full-remaining button are all suppressed". The reason is not
+		// tidiness: everything else the group draws is rebuilt from the FRESH read while
+		// the confirm alone carries the watermark the operator saw, so a visible ledger
+		// beside it is a second reading of the figure the button will NOT be judged
+		// against.
+		expect(tableWithId(staged, "orders:ord-1:refunds:table")).toBeUndefined();
+		expect(findBlock([review!], "meter")).toBeUndefined();
+		expect([review!].flatMap((g) => (g.blocks as LooseBlock[]).map((b) => b.type))).toEqual([
+			"banner",
+			"form",
+			"actions",
+		]);
 	});
 
 	test("F-2a: the refund key is `admin-refund:<order>:<amount>:<watermark>` — content plus the OBSERVED watermark, never a nonce", async () => {
@@ -1742,6 +2028,81 @@ describe("admin Orders console (workerd sandbox)", () => {
 		);
 	});
 
+	test("F-2a, THE POSITIVE CASE: two DELIBERATE identical refunds derive DIFFERENT keys, so both apply — this is what the watermark buys", async () => {
+		await boot();
+		// The property that makes the whole no-nonce design work, and the one nothing
+		// asserted: refund $10, let the ledger advance, re-open, refund $10 again — the
+		// two Idempotency-Keys must DIFFER, or the domain (which resolves a duplicate by
+		// KEY ALONE with no amount comparison) would swallow the second as a replay and
+		// render a success-shaped "Already refunded" for money that never moved.
+		//
+		// It holds today because the key's third component is read from the freshly
+		// loaded summary. This test is what catches a future refactor dropping the
+		// watermark render-side, where every other refund assertion stays green.
+		// A $30 capture, so there is genuinely room for two $10 refunds — with a $15
+		// ceiling the SECOND review is refused by DA-3c, correctly, and the property under
+		// test never gets exercised.
+		let refundedTotal = 0;
+		let remaining = 3000;
+		stub!.respondWith("GET", (req) => {
+			if (req.url.includes("/refunds")) {
+				return {
+					status: 200,
+					body: {
+						ok: true,
+						refunds: [],
+						currency: "USD",
+						capturedTotalCents: 3000,
+						refundedTotalCents: refundedTotal,
+						ceilingCents: 3000,
+						remainingCents: remaining,
+						paymentMethod: "stripe",
+						refundable: true,
+					},
+				};
+			}
+			return makeGetResponder()(req);
+		});
+		stub!.respondWith("POST", (req) => {
+			if (req.url.includes("/refund")) {
+				// The ledger ADVANCES, exactly as a real recorded refund would.
+				refundedTotal += 1000;
+				remaining -= 1000;
+				return {
+					status: 200,
+					body: { ok: true, recorded: true, duplicate: false, fullyRefunded: false },
+				};
+			}
+			return makePostResponder()(req);
+		});
+
+		const first = await submitForm(await open("ord-1"), "orders:refund-review", {
+			amount: "10.00",
+			refundedBy: "carol",
+		});
+		stub!.requests.length = 0;
+		await click(buttonWith(first, "orders:refund"));
+		const firstKey = stub!.requests.find((r) => r.method === "POST")!.headers["idempotency-key"];
+
+		// A SECOND, deliberate refund of the SAME amount, staged against the ledger as it
+		// now stands.
+		const second = await submitForm(await open("ord-1"), "orders:refund-review", {
+			amount: "10.00",
+			refundedBy: "carol",
+		});
+		stub!.requests.length = 0;
+		const after = await click(buttonWith(second, "orders:refund"));
+		const secondKey = stub!.requests.find((r) => r.method === "POST")!.headers["idempotency-key"];
+
+		expect(firstKey).toBe("admin-refund:ord-1:1000:0");
+		expect(secondKey).toBe("admin-refund:ord-1:1000:1000");
+		expect(secondKey).not.toBe(firstKey);
+		// And the second one is recorded, not swallowed as a duplicate.
+		expect(findBlocks(after, "banner").find((b) => b.variant === "default")?.title).toBe(
+			"Refund recorded",
+		);
+	});
+
 	test("DA-3a: a refund whose observed watermark no longer matches the ledger applies NOTHING and names both figures", async () => {
 		await boot();
 		stub!.requests.length = 0;
@@ -1766,18 +2127,48 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
 		const banner = findBlocks(after, "banner").find((b) => b.variant === "error");
 		expect(banner?.title).toBe("The refund ledger changed — nothing was refunded");
-		expect(String(banner?.description)).toContain("$15.00 was staged");
-		expect(String(banner?.description)).toContain("$10.00 now remains refundable");
+		// §8's normative copy, including THE CAUSAL CLAUSE. "The ledger changed" states
+		// an effect and leaves the operator to guess whether they hit a bug; the cause is
+		// what stops them retrying identically, and at 76 chars it was never
+		// length-driven.
+		expect(banner?.description).toBe(
+			"$15.00 was staged and was not recorded — someone else refunded this order since you started. $10.00 now remains refundable; re-enter an amount below to try again.",
+		);
 		expect(String(banner?.description).length).toBeLessThanOrEqual(240);
+
+		// DA-3a-i / X-39, all four clauses on one response: THE SAME GROUP, forced open
+		// on a key distinct from both idle and `:review`, the collect group FLATTENED
+		// away, the submitted amount prefilled — and NO confirm, because the payload a
+		// confirm would carry is the payload just refused.
+		expect(openGroupIds(after)).toEqual(["orders:ord-1:refunds:refused"]);
+		expect(group(after, "orders:ord-1:refunds")).toBeUndefined();
+		expect(group(after, "orders:ord-1:refunds:review")).toBeUndefined();
+		expect(group(after, "orders:ord-1:refund-partial")).toBeUndefined();
+		expect(buttonWith(after, "orders:refund")).toBeUndefined();
+		const retry = formFor(after, "orders:refund-review");
+		expect(field(retry, "amount")?.initial_value).toBe("15.00");
+		expect(field(retry, "refundedBy")?.initial_value).toBe("carol");
+		// And the form's carrier now holds the FRESH watermark, not the stale one — so
+		// the operator's next review stages against current truth by construction, and
+		// the draft render state deliberately carries no watermark of its own (B-3).
+		expect(decodeCarrier(retry?.block_id)).toMatchObject({ refundedSoFar: "500" });
+		// The ledger the banner points at IS on screen — a refusal is a state-1 body.
+		expect(tableWithId(after, "orders:ord-1:refunds:table")).toBeDefined();
 	});
 
 	test("refund review with a blank or zero amount stages nothing and makes NO POST", async () => {
 		await boot();
 		const blocks = await open("ord-1");
 		stub!.requests.length = 0;
-		for (const amount of ["  ", "0", "abc"]) {
+		// The MOST FREQUENT refusal on this screen is a typo in the amount field, and it
+		// is the one where nothing can be re-derived: `parseMinorUnitsInput` returned
+		// `null`, so there IS no `amountCents` and `19,99` cannot be reconstructed from
+		// cents. The draft therefore carries the raw string and the form prefills it
+		// VERBATIM (DA-3a-iii property 5).
+		for (const amount of ["0", "abc", "19,99", "12.345"]) {
 			const after = await submitForm(blocks, "orders:refund-review", {
 				amount,
+				reason: "damaged",
 				refundedBy: "carol",
 			});
 			expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
@@ -1785,18 +2176,75 @@ describe("admin Orders console (workerd sandbox)", () => {
 				"Not refunded",
 			);
 			expect(group(after, "orders:ord-1:refunds:review")).toBeUndefined();
+			expect(buttonWith(after, "orders:refund")).toBeUndefined();
+			expect(openGroupIds(after)).toEqual(["orders:ord-1:refunds:refused"]);
+			const retry = formFor(after, "orders:refund-review");
+			expect(field(retry, "amount")?.initial_value, `prefill for ${amount}`).toBe(amount);
+			expect(field(retry, "reason")?.initial_value).toBe("damaged");
+			expect(field(retry, "refundedBy")?.initial_value).toBe("carol");
 		}
+		// A blank amount refuses too, and there is nothing to put back for it.
+		const blank = await submitForm(blocks, "orders:refund-review", {
+			amount: "  ",
+			refundedBy: "carol",
+		});
+		expect(field(formFor(blank, "orders:refund-review"), "amount")?.initial_value).toBe("");
 	});
 
-	test("an over-refund (409 REFUND_EXCEEDS_TOTAL) surfaces the amount-too-high notice with nothing changed and no status leak", async () => {
+	test("DA-3c/X-40: `-review` BOUND-CHECKS against the live ceiling, so a red `Refund $99.99` on a $10 order is never staged at all", async () => {
 		await boot();
 		const blocks = await open("ord-1");
 		stub!.requests.length = 0;
-		const staged = await submitForm(blocks, "orders:refund-review", {
-			amount: "99.99", // 9999 > remaining 1000
+		// An extra zero is the likeliest typo on a money field. Without the bound check
+		// this staged a red `Refund $99.99` and a dialog reading "Refund $99.99 to …?" —
+		// BOTH FALSE at the exact moment they were shown, on the one step that exists to
+		// let an operator check exactly that.
+		const after = await submitForm(blocks, "orders:refund-review", {
+			amount: "99.99", // 9999 > the live remaining 1000
 			refundedBy: "carol",
 		});
-		const after = await click(buttonWith(staged, "orders:refund"));
+		// Nothing was written AND nothing was staged.
+		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
+		expect(group(after, "orders:ord-1:refunds:review")).toBeUndefined();
+		expect(buttonWith(after, "orders:refund")).toBeUndefined();
+		// The figure DOES still appear — in the refusal copy, and prefilled verbatim in
+		// the form so the operator can fix the extra zero. What must not exist is a
+		// CONTROL offering it: no button, no confirm dialog, anywhere in the response.
+		expect(buttons(after).some((b) => String(b.label).includes("$99.99"))).toBe(false);
+		expect(buttons(after).some((b) => JSON.stringify(confirmOf(b)).includes("$99.99"))).toBe(false);
+		// The refusal names THE REAL FIGURE, not just "too high" (DA-3c).
+		const banner = findBlocks(after, "banner").find((b) => b.variant === "error");
+		expect(banner?.title).toBe("Amount too high");
+		expect(banner?.description).toBe(
+			"$99.99 is more than the $10.00 that remains refundable on this order. Enter $10.00 or less.",
+		);
+		expect(String(banner?.description).length).toBeLessThanOrEqual(240);
+		// DA-3a-i: forced open, flattened, prefilled verbatim, no confirm.
+		expect(openGroupIds(after)).toEqual(["orders:ord-1:refunds:refused"]);
+		expect(group(after, "orders:ord-1:refund-partial")).toBeUndefined();
+		expect(field(formFor(after, "orders:refund-review"), "amount")?.initial_value).toBe("99.99");
+	});
+
+	test("the service's own 409 REFUND_EXCEEDS_TOTAL is still handled — the genuinely concurrent case DA-3c cannot catch", async () => {
+		await boot();
+		stub!.requests.length = 0;
+		// DA-3c bound-checks what `-review` RENDERS; it cannot see a capture that shrinks
+		// between the confirm rendering and the click. Drive the confirm directly with a
+		// payload whose watermark still matches, so the service is the one that refuses.
+		const after = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "block_action",
+				action_id: "orders:refund",
+				value: {
+					orderId: "ord-1",
+					amountCents: "9999",
+					refundedSoFarCents: "500", // matches the live ledger, so DA-3a passes
+					currency: "USD",
+					reason: "",
+					refundedBy: "carol",
+				},
+			}),
+		);
 		expect(stub!.requests.some((r) => r.method === "POST")).toBe(true);
 		const banner = findBlocks(after, "banner").find((b) => b.variant === "error");
 		expect(banner?.title).toBe("Amount too high");
@@ -1812,6 +2260,45 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(buttonWith(blocks, "orders:refund")).toBeUndefined();
 		expect(formFor(blocks, "orders:refund-review")).toBeUndefined();
 		expect(group(blocks, "orders:ord-refunded:refund-partial")).toBeUndefined();
+	});
+
+	test("M-11 + D-6b: a $15 order with NOTHING captured reconciles the two figures in copy and REPLACES the degenerate ratio in the label", async () => {
+		await boot();
+		const blocks = await open("ord-uncaptured");
+		const money = panel(blocks, "Money");
+		// The contradiction, both halves visible on one screen.
+		expect(fieldEntries(blocks)).toContain("Total=$15.00");
+		expect(fieldEntries(money)).toContain("Captured=$0.00");
+		// M-11 resolves it: which figure is the money that actually moved, and both
+		// amounts named. It states the arithmetic and the semantics and does NOT diagnose
+		// a cause — "authorised but not settled" is a claim about a provider this screen
+		// cannot verify (E-7).
+		expect(contextTexts(money)).toContain(
+			"Captured is the money that actually arrived; $0.00 of the $15.00 total has been captured so far.",
+		);
+		expect(contextTexts(money).every((t) => t.length <= 200)).toBe(true);
+		// D-6b / X-36: `Refunds — $0.00 of $0.00 refunded` tells an operator nothing and
+		// reads like a bug, so the label states the FACT instead of the arithmetic…
+		const refunds = group(money, "orders:ord-uncaptured:refunds");
+		expect(refunds?.label).toBe("Refunds — nothing captured, nothing to refund");
+		expect(String(refunds?.label)).not.toMatch(/\$0\.00 of \$0\.00/);
+		// …and the explanatory `context` line inside the group is then DROPPED, rather
+		// than sitting under a label that already says it.
+		expect(contextTexts([refunds!]).some((t) => t.includes("nothing to refund"))).toBe(false);
+		// M-8: no `meter` over a zero denominator — a full-width bar is not a ratio.
+		expect(findBlock([refunds!], "meter")).toBeUndefined();
+		// And no refund control at all (DA-7).
+		expect(buttonWith(blocks, "orders:refund")).toBeUndefined();
+		expect(formFor(blocks, "orders:refund-review")).toBeUndefined();
+	});
+
+	test("M-11's line is absent when captured EQUALS the total — the rule fires on disagreement, not unconditionally", async () => {
+		await boot();
+		expect(
+			contextTexts(panel(await open("ord-1"), "Money")).some((t) =>
+				t.includes("the money that actually arrived"),
+			),
+		).toBe(false);
 	});
 
 	test("an x402 order is RECORD-ONLY, and says so honestly in ≤200 chars (ADR-0008)", async () => {
@@ -1863,9 +2350,49 @@ describe("admin Orders console (workerd sandbox)", () => {
 		const notes = group(history, "orders:ord-1:notes");
 		expect(notes?.label).toBe("Notes (2)");
 		expect(notes?.default_open).toBe(false);
-		const noteRows = tableRows([notes!]);
-		expect(noteRows.some((r) => r.body === "Customer asked to gift-wrap.")).toBe(true);
-		expect(noteRows.some((r) => r.body === "Called the customer back.")).toBe(true);
+		// §11.2: the Notes group is FORM ONLY. Its read table repeated the timeline
+		// verbatim — a `note` entry's `Detail` column IS the note body, and the
+		// timeline's cap (50) is looser than the notes cap (20) was — so the table added
+		// a duplicate rendering, a second cap line, and nothing else.
+		expect(((notes?.blocks ?? []) as LooseBlock[]).map((b) => b.type)).toEqual(["form"]);
+		expect(tableWithId(blocks, "orders:ord-1:notes:table")).toBeUndefined();
+		// And the timeline is still the read path for both note bodies.
+		const details = tableRows([timeline!]).map((r) => String(r.detail));
+		expect(details).toContain("Called the customer back.");
+	});
+
+	test("T-8a: the timeline cap line is emitted ONLY when the read was actually truncated", async () => {
+		await boot();
+		// Four entries, cap 50 ⇒ nothing was withheld, so the sentence is not true news.
+		expect(
+			contextTexts(panel(await open("ord-1"), "History")).some((t) => t.includes("most recent")),
+		).toBe(false);
+
+		// 60 entries ⇒ rows really are missing, and the line says so.
+		stub!.respondWith("GET", (req) => {
+			if (req.url.includes("/timeline")) {
+				return {
+					status: 200,
+					body: {
+						ok: true,
+						timeline: {
+							orderId: "ord-1",
+							stateChangesAudited: true,
+							entries: Array.from({ length: 60 }, (_unused, i) => ({
+								kind: "created",
+								at: `2026-07-10T01:${String(i).padStart(2, "0")}:00.000Z`,
+							})),
+						},
+					},
+				};
+			}
+			return makeGetResponder()(req);
+		});
+		const truncated = panel(await open("ord-1"), "History");
+		expect(tableRows([tableWithId(truncated, "orders:timeline")!])).toHaveLength(50);
+		expect(contextTexts(truncated)).toContain(
+			"Showing the 50 most recent events; older activity is not listed.",
+		);
 	});
 
 	test("a historical order (stateChangesAudited:false) keeps its partial-timeline caption in ≤200 chars", async () => {
@@ -1948,6 +2475,70 @@ describe("admin Orders console (workerd sandbox)", () => {
 			// And the operator still has a usable screen.
 			expect(findBlocks(blocks, "header").length).toBeGreaterThan(0);
 			expect(String(banner?.description)).not.toMatch(/HTTP \d|\/admin\/|\d{3}$/);
+		}
+	});
+
+	test("X-41: no rendered `context` or `banner` narrates a design decision, on any record state (DA-7a, E-4)", async () => {
+		await boot();
+		for (const id of [
+			"ord-1",
+			"ord-proc",
+			"ord-shipped",
+			"ord-flagged",
+			"ord-guest",
+			"ord-cancelled",
+			"ord-x402",
+			"ord-refunded",
+			"ord-uncaptured",
+		]) {
+			const blocks = await open(id);
+			const prose = [
+				...contextTexts(blocks),
+				...findBlocks(blocks, "banner").flatMap((b) => [String(b.title), String(b.description)]),
+			];
+			for (const line of prose) {
+				// "deliberately" / "there is no" / "we do not" tell an operator what
+				// designers withheld — a fact they cannot act on — and the useful version
+				// is 30 characters SHORTER, so this is not a trade-off.
+				expect(line.toLowerCase(), `on ${id}`).not.toMatch(/deliberately|there is no|we do not/);
+				expect(line, `on ${id}`).not.toMatch(/point of no return/i);
+			}
+		}
+	});
+
+	test("F-6c: the one remaining `select` shows HUMAN LABELS, so no wire value like `customer_request` reaches the screen", async () => {
+		await boot();
+		const blocks = await open("ord-1");
+		const form = formFor(blocks, "orders:cancel-review");
+		const reason = field(form, "reason");
+		// The pinned renderer's trigger renders the raw option VALUE, not its label
+		// (R-17a), so with wire values here an operator read `customer_request` — directly
+		// beneath four buttons already showing the human labels. This was the last piece
+		// of visible plumbing on the screen.
+		const options = (reason?.options ?? []) as Array<{ value: string; label: string }>;
+		expect(options.map((o) => o.value)).toEqual([
+			"Customer requested it",
+			"Fraud suspected",
+			"Out of stock",
+			"Pricing error",
+			"Other",
+		]);
+		for (const o of options) expect(o.value).toBe(o.label);
+		// `Other` no longer promises a field: the Detail input is the next field down.
+		expect(fieldIds(form)).toEqual(["reason", "detail", "cancelledBy"]);
+		// And no wire value appears anywhere an operator can read.
+		const readable = [
+			...contextTexts(blocks),
+			...findBlocks(blocks, "form").flatMap((f) =>
+				((f.fields ?? []) as Array<Record<string, unknown>>).flatMap((fl) => [
+					String(fl.label),
+					...((fl.options ?? []) as Array<{ value: string }>).map((o) => String(o.value)),
+				]),
+			),
+			...buttons(blocks).map((b) => String(b.label)),
+		];
+		for (const text of readable) {
+			expect(text).not.toMatch(/customer_request|fraud_suspected|out_of_stock|pricing_error/);
 		}
 	});
 

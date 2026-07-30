@@ -5,8 +5,8 @@ import { formatMinorUnitsInput, parseMinorUnitsInput } from "./money-input.js";
 import type {
 	AdminPageConfig,
 	Block,
-	BlockResponse,
 	ButtonElement,
+	ConfirmDialog,
 	FieldsBlock,
 	FormBlock,
 	RouteHandler,
@@ -47,7 +47,6 @@ import {
 	readAdminTokens,
 	readString,
 	screenActions,
-	type CustomActionApi,
 	type ListDetailInput,
 	type NavPath,
 	type Notice,
@@ -67,11 +66,13 @@ import {
  * whose named groups are all `accordion`s, because `section` is not a heading and
  * there is no mid-level type weight in the renderer (R-5, P-2).
  *
- * FOUR THINGS THAT WILL BITE A SCREEN AUTHOR COPYING THIS FILE:
+ * FIVE THINGS THAT WILL BITE A SCREEN AUTHOR COPYING THIS FILE:
  *  1. NO VISIBLE PLUMBING. Every id/watermark a stateless submit needs rides
  *     invisibly in the form's `block_id` via {@link carriedForm} (F-2, B-3a), and
  *     every BUTTON carries its context in `value` because a button echoes no
- *     `block_id` (B-1). There is not one single-option `select` left (F-3).
+ *     `block_id` (B-1). There is not one single-option `select` left (F-3), and the
+ *     one `select` that remains carries HUMAN LABELS as its option values, because
+ *     the pinned renderer's trigger shows the raw value (R-17a, F-6c).
  *  2. NO NONCE, ANYWHERE. Every write derives its idempotency key from its own
  *     content plus the WATERMARK THE OPERATOR SAW — for a refund,
  *     `admin-refund:${orderId}:${amountCents}:${refundedSoFarCents}` (F-2a). That
@@ -86,10 +87,21 @@ import {
  *     full-remaining refund); a typed amount or free text stages then confirms
  *     (DA-3), and EVERY confirm re-reads the record and refuses on a watermark
  *     mismatch (DA-3a).
- *  4. A THROW IN HERE IS CONTAINED and renders this screen's `onError()` banner —
- *     the SAME banner as "the service is unreachable". So a `filterPanel` field
- *     over budget or a rejected carrier namespace looks like an outage. Suspect
- *     this file first; the cause is in the worker log.
+ *  4. EVERY REFUSAL RE-RENDERS STATE 1, FLATTENED, THROUGH THE SCAFFOLD'S
+ *     RENDER-STATE CHANNEL. There is no second read-and-render path in this file:
+ *     a `-review`, a DA-3a refusal and a DA-3c refusal all go back through
+ *     `showLeaf(path, notice?, renderState?)` and the LEVEL's own `render`, so the
+ *     figures an operator sees after a refusal always come from a fresh read
+ *     ({@link OrdersRenderState}, DA-3a-i/-ii/-iii). The one non-obvious constraint:
+ *     a refusal's group needs a `block_id` distinct from BOTH the idle key and the
+ *     `:review` key, and the collect form must be flattened INTO that group — leave
+ *     it in its nested `default_open: false` child and the operator's rejected
+ *     input is on the page and invisible.
+ *  5. A THROW IN HERE IS CONTAINED and renders this screen's `onError()` banner —
+ *     the SAME banner as "the service is unreachable", which is exactly why that
+ *     banner's copy must not claim the service is unreachable (E-7). So a
+ *     `filterPanel` field over budget or a rejected carrier namespace looks like an
+ *     outage. Suspect this file first; the cause is in the worker log.
  *
  * Built on the shared list/detail scaffold (`./scaffold`).
  */
@@ -162,26 +174,88 @@ const transitionVerb = (state: string): string => `transition-${state}`;
 /** `cancel-<reason>` — one DISTINCT verb per cancellation reason (R-13, DA-2b). */
 const cancelReasonVerb = (reason: string): string => `cancel-${reason}`;
 
-/** The transitions whose bare one-click is IRREVERSIBLE, so DA-5's danger style
- *  plus a confirm dialog. `cancelled` is not here because it is never offered as
- *  a bare transition at all — it is steered to the Cancel group, which records a
- *  reason (DA-7). */
-const DANGER_STATES: ReadonlySet<string> = new Set(["refunded"]);
+/**
+ * The transitions whose bare one-click is IRREVERSIBLE: DA-5's danger style plus a
+ * confirm dialog, WITH THE COPY KEYED OFF THE TARGET STATE.
+ *
+ * Keyed rather than written inline behind a set membership test: with a bare
+ * `DANGER_STATES` set, a second member would silently inherit `refunded`'s dialog
+ * and a `Mark voided` button would raise a confirm claiming to mark the order
+ * refunded. Correct today, wrong the moment the set grows — so the copy lives with
+ * the state it describes and there is no way to add one without the other.
+ *
+ * `cancelled` is absent because it is never offered as a bare transition at all —
+ * it is steered to the Cancel group, which records a reason (DA-7).
+ */
+const DANGER_TRANSITIONS: ReadonlyMap<string, ConfirmDialog> = new Map([
+	[
+		"refunded",
+		{
+			title: "Mark this order refunded?",
+			text: "Marks the order refunded for bookkeeping. It does not move money — record the money in Money → Refunds.",
+			confirm: "Yes, mark refunded",
+			deny: "Keep as is",
+			style: "danger",
+		} satisfies ConfirmDialog,
+	],
+]);
 
-/** The five structured cancellation reasons. Mirrors the domain
- *  `CancellationReason`; the service re-validates the wire value. DA-2b renders
- *  ONE danger button per entry, so this list is also the source of those ids. */
+/**
+ * The five structured cancellation reasons — the WIRE values the domain accepts
+ * (mirroring `CancellationReason`; the service re-validates), each with the human
+ * label an operator reads. This list is the source of the per-reason action ids.
+ *
+ * `other`'s label is the bare word: it used to read `Other (add detail below)`,
+ * which promised a field the DA-2b button could not provide (§11.2). Inside the
+ * DA-3 note form — the only path that records detail — the Detail field is
+ * directly below, so the parenthetical said nothing the form did not.
+ */
 const CANCELLATION_REASONS: readonly SelectOption[] = [
 	{ value: "customer_request", label: "Customer requested it" },
 	{ value: "fraud_suspected", label: "Fraud suspected" },
 	{ value: "out_of_stock", label: "Out of stock" },
 	{ value: "pricing_error", label: "Pricing error" },
-	{ value: "other", label: "Other (add detail below)" },
+	{ value: "other", label: "Other" },
 ];
+
+/**
+ * DA-2b's buttons: every reason EXCEPT `other`. A bare `Other` button records no
+ * detail and fires immediately, so it pointed an operator wanting to explain
+ * themselves at a group that may be collapsed; `other` lives in the note form's
+ * `select`, which is the only path that records detail (§11.2).
+ *
+ * Dropping it also takes the fan-out from five buttons to FOUR, which is inside
+ * DA-2c's cap — so the buttons keep `style:"danger"` rather than going quiet, and
+ * the check DA-2c asks for ("is the enum really that wide?") answers itself here.
+ */
+const CANCEL_BUTTON_REASONS: readonly SelectOption[] = CANCELLATION_REASONS.filter(
+	(r) => r.value !== "other",
+);
 
 const CANCEL_REASON_LABELS: ReadonlyMap<string, string> = new Map(
 	CANCELLATION_REASONS.map((r) => [r.value, r.label]),
 );
+
+/**
+ * The inverse map, and the reason it exists: the pinned renderer's `select`
+ * trigger renders the raw option VALUE, not its label (R-17a, F-6c). With
+ * `customer_request` as the option value, the one `select` left on this screen
+ * displayed a raw internal identifier — the single thing still undercutting this
+ * file's claim to have removed visible plumbing, and it did so directly beneath
+ * four DA-2b buttons already showing the human labels.
+ *
+ * So the note form's option **value IS the human label**, and a submit is mapped
+ * back through here to the wire value. The labels are unique by construction (they
+ * are authored above), and every mapped value is re-checked against
+ * {@link CANCEL_REASON_LABELS} before it reaches the service.
+ */
+const CANCEL_REASON_BY_LABEL: ReadonlyMap<string, string> = new Map(
+	CANCELLATION_REASONS.map((r) => [r.label, r.value]),
+);
+
+/** The note form's default reason, in the OPTION-VALUE space above (a label). */
+const DEFAULT_CANCEL_REASON_OPTION =
+	CANCEL_REASON_LABELS.get("customer_request") ?? "Customer requested it";
 
 /**
  * The action ids the admin-route dispatcher recognizes as belonging to the Orders
@@ -212,40 +286,88 @@ interface OrdersFilterForm {
 }
 
 /**
- * A DA-3 staged payload: what the operator typed in state 1, plus THE WATERMARK
- * THEY SAW, echoed back through the state-2 confirm button's `value` so the
- * handler can re-read and refuse on a mismatch (DA-3a).
+ * THIS SCREEN'S RENDER STATE (DA-3a-iii) — one discriminated union, named at
+ * {@link createOrdersPageHandler}'s `createListDetailHandler<OrdersRenderState>`,
+ * which is the one place the levels and the custom actions are checked against each
+ * other. It answers the question a `notice` cannot: a banner says WHAT HAPPENED,
+ * this says WHAT TO RENDER NOW — which group to open, which values to put back in
+ * a form.
  *
- * Every member is a string on the wire and money crosses as its integer
- * minor-unit string (B-2) — the same discipline as a carrier payload, so there is
- * one parsing rule on this screen rather than two.
+ * FOUR MEMBERS, TWO PER DESTRUCTIVE FLOW, and the pairing is the point:
+ *
+ *  - `*-staged` is DA-3 **state 2**: the operator's input has passed every check,
+ *    so it is carried in PARSED form together with THE WATERMARK THEY SAW, which
+ *    the state-2 confirm button echoes into `value` so the write can re-read and
+ *    refuse on a mismatch (DA-3a).
+ *  - `*-draft` is a **refusal** (DA-3a's stale watermark, DA-3c's failed bound
+ *    check, a validation failure, or an unreadable payload): state 1 re-rendered
+ *    into the same group, forced open, flattened, with the submitted values
+ *    prefilled and NO confirm control (DA-3a-i).
+ *
+ * TWO PROPERTIES OF THE DRAFT MEMBERS THAT ARE FORCED, NOT STYLISTIC:
+ *
+ *  1. **A DRAFT CARRIES RAW OPERATOR TEXT** (`amountInput`, `reasonInput`), never
+ *     minor units (DA-3a-iii property 5). `refundReviewAction` refuses precisely
+ *     when `parseMinorUnitsInput` returns `null` — the single most frequent refusal
+ *     on this screen, a typo in the amount field — so on that path there IS no
+ *     `amountCents` to re-derive a prefill from, and a rejected `19,99` cannot be
+ *     reconstructed from cents. The form prefills the string VERBATIM.
+ *  2. **A DRAFT CARRIES NO WATERMARK.** The re-rendered form rebuilds it from the
+ *     freshly-read summary ({@link refundPartialForm}), so the operator's next
+ *     review stages against current truth BY CONSTRUCTION rather than by anyone
+ *     remembering to re-stamp it — and B-3 independently requires a prefilling
+ *     form's change token to reflect the current record.
+ *
+ * It is within-request only (property 2): nothing is stored or echoed to the
+ * client, and whatever must survive the NEXT click still rides in `button.value`
+ * or the form's `block_id` carrier exactly as before.
  */
-type Staged =
+type OrdersRenderState =
 	| {
-			kind: "refund";
-			orderId: string;
+			kind: "refund-staged";
+			/** Integer minor units (M-3) — parsed, bound-checked and ≤ the live ceiling. */
 			amountCents: number;
-			/** The watermark: `refundedTotalCents` AS RENDERED. */
+			/** The watermark: `refundedTotalCents` AS THE OPERATOR SAW IT. */
 			refundedSoFarCents: number;
 			currency: string;
 			reason: string;
 			refundedBy: string;
 	  }
 	| {
-			kind: "cancel";
-			orderId: string;
+			kind: "refund-draft";
+			/** VERBATIM operator text, unparsed — see the note above. */
+			amountInput: string;
+			reason: string;
+			refundedBy: string;
+	  }
+	| {
+			kind: "cancel-staged";
+			/** The WIRE reason (`out_of_stock`), mapped back from the option label. */
 			reason: string;
 			detail: string;
 			cancelledBy: string;
-			/** The watermark: the order `state` AS RENDERED. */
+			/** The watermark: the order `state` AS THE OPERATOR SAW IT. */
 			state: string;
+	  }
+	| {
+			kind: "cancel-draft";
+			/** The submitted option value, which on this screen IS the human label
+			 *  (see {@link CANCEL_REASON_BY_LABEL}) — prefilled back verbatim when it
+			 *  is a known option, and dropped to the default when it is not, because
+			 *  X-23 forbids an `initial_value` absent from `options`. */
+			reasonInput: string;
+			detail: string;
+			cancelledBy: string;
 	  };
 
 /** The em-dash BlockInteraction envelope this page consumes. */
 export type OrdersPageInput = ListDetailInput;
 
 export function createOrdersPageHandler(): RouteHandler<OrdersPageInput> {
-	return createListDetailHandler({
+	// The render-state type is NAMED here rather than inferred (DA-3a-iii property
+	// 1): this call is the one place the levels and the custom actions meet, so
+	// naming it is what puts a mismatch between them where both ends are visible.
+	return createListDetailHandler<OrdersRenderState>({
 		actions: ORDERS_ACTIONS,
 		async createClient(ctx) {
 			const tokens = await readAdminTokens(ctx);
@@ -517,11 +639,16 @@ function openOrderForm(
 // -- level 1: the order detail (§11.2) ---------------------------------------
 
 function orderDetailLevel() {
-	return leafLevel<AdminOrdersClient, OrderDetailResult>({
+	// The leaf declares the WHOLE union and narrows on `kind` (DA-3a-iii property
+	// 1). It has to: `render` is an arrow-typed property, so `strictFunctionTypes`
+	// checks the render-state parameter CONTRAVARIANTLY, and a level declaring a
+	// narrower member than its screen can send is a compile error here rather than
+	// an `undefined` read on the money path after a refusal.
+	return leafLevel<AdminOrdersClient, OrderDetailResult, OrdersRenderState>({
 		load: (client, _path, id) => client.getOrder(id),
-		async render({ client, actions, path, id, detail, notice }) {
+		async render({ client, actions, path, id, detail, notice, renderState }) {
 			const surfaces = await loadDetailSurfaces(client, id);
-			return detailBlocks({ actions, path, detail, ...surfaces, notice, staged: undefined });
+			return detailBlocks({ actions, path, detail, ...surfaces, notice, renderState });
 		},
 		notFound({ actions, path, id }) {
 			return [
@@ -571,9 +698,10 @@ interface DetailArgs {
 	timeline: OrderTimelineWire | null;
 	refunds: RefundsSummaryWire | null;
 	notice: Notice | undefined;
-	/** Set only on a DA-3 state-2 render: the group holding it is the ONE group
-	 *  forced open, and D-5's ordinary precedence is not evaluated (D-5 Rule 1). */
-	staged: Staged | undefined;
+	/** Set on a DA-3 state-2 render AND on every refusal (DA-3a-i): the group it
+	 *  names is the ONE group forced open, and D-5's ordinary precedence is not
+	 *  evaluated at all (D-5 Rule 1). `undefined` on every other render. */
+	renderState: OrdersRenderState | undefined;
 }
 
 /**
@@ -583,9 +711,9 @@ interface DetailArgs {
  * sit where a tab can hide it.
  */
 function detailBlocks(args: DetailArgs): Block[] {
-	const { actions, path, detail, notice, staged } = args;
+	const { actions, path, detail, notice, renderState } = args;
 	const o = detail.order;
-	const open = openGroup(o, staged);
+	const open = openGroup(o, renderState);
 	const blocks: Block[] = [
 		// M-10: orders have no human handle, so the uuid stands — but it appears
 		// exactly once, here.
@@ -622,8 +750,8 @@ function detailBlocks(args: DetailArgs): Block[] {
 	);
 	const panels: TabPanel[] = [
 		{ label: "Order", blocks: orderPanel(actions, o, args.customer, open) },
-		{ label: "Fulfilment", blocks: fulfilmentPanel(actions, detail, open, staged) },
-		{ label: "Money", blocks: moneyPanel(actions, o, args.refunds, open, staged) },
+		{ label: "Fulfilment", blocks: fulfilmentPanel(actions, detail, open, renderState) },
+		{ label: "Money", blocks: moneyPanel(actions, o, args.refunds, open, renderState) },
 		{ label: "History", blocks: historyPanel(actions, o, args.notes, args.timeline, open) },
 	];
 	blocks.push({
@@ -641,21 +769,42 @@ function detailBlocks(args: DetailArgs): Block[] {
  * D-5, evaluated ONCE per rendered response: at most one group anywhere on the
  * screen is `default_open` (X-18), and WHICH one is computed rather than chosen.
  *
- * Rule 1 — a DA-3 state 2 overrides everything: that one group carries a changed
- * `block_id` AND `default_open: true` (B-6 — the changed key remounts the group,
- * and the remount re-reads the flag, which is `false` for anything destructive;
- * change only the id and the accordion SNAPS SHUT on the operator the moment they
- * click "Review refund", hiding the confirm button they asked for).
+ * RULE 1 — the staged-confirm-OR-REFUSAL override, keyed on
+ * **`renderState !== undefined`**. A DA-3 state 2, a DA-3a stale-watermark
+ * refusal, a DA-3c bound-check refusal and a validation refusal are all Rule-1
+ * responses: that one group carries a changed `block_id` AND `default_open: true`
+ * (B-6 — the changed key remounts the group and the remount re-reads the flag,
+ * which is `false` for anything destructive; change only the id and the accordion
+ * SNAPS SHUT on the operator the moment they click "Review refund"), and every
+ * other group on the screen is `false`. Rule 2 is not evaluated.
  *
- * Rule 2 — first match wins: `reconcile` if flagged and unresolved, else
+ * **THE REFUSAL CASE IS THE ONE THAT GETS MISSED**, and it is why this function
+ * takes render state rather than a narrower "staged" argument. A refusal that falls
+ * through to Rule 2 opens whatever the record state suggests — on this screen
+ * `fulfilment`, which is a DIFFERENT TAB PANEL — while the group whose banner reads
+ * "re-enter an amount below" stays shut with the operator's rejected input hidden
+ * inside it. The predicate is "this response carries render state", which is
+ * readable here, and not "this response came from `-review`", which is not.
+ *
+ * RULE 2 — first match wins: `reconcile` if flagged and unresolved, else
  * `fulfilment` on a `paid`/`processing` order, else nothing. Orders has NO named
  * primary edit group, so D-5 rank 3 does not apply here.
  */
 type OpenGroup = "reconcile" | "fulfilment" | "refunds" | "cancel" | undefined;
 
-function openGroup(o: OrderDetailWire, staged: Staged | undefined): OpenGroup {
-	if (staged?.kind === "refund") return "refunds";
-	if (staged?.kind === "cancel") return "cancel";
+function openGroup(o: OrderDetailWire, renderState: OrdersRenderState | undefined): OpenGroup {
+	// Rule 1. Exhaustive over the union rather than a truthiness test, so a fifth
+	// member cannot be added without deciding which group owns it.
+	if (renderState !== undefined) {
+		switch (renderState.kind) {
+			case "refund-staged":
+			case "refund-draft":
+				return "refunds";
+			case "cancel-staged":
+			case "cancel-draft":
+				return "cancel";
+		}
+	}
 	if (o.reconciliationFlag !== null) return "reconcile";
 	if (o.state === "paid" || o.state === "processing") return "fulfilment";
 	return undefined;
@@ -774,19 +923,7 @@ function customerGroup(
 	const identity = ctx.identity;
 	const handle = identity.email ?? identity.buyerRef;
 	const suffix = identity.linkage === "claimed" ? "" : ` (${identity.linkage})`;
-	const body: Block[] = [
-		fields(`orders:${o.id}:customer-fields`, [
-			["Email", identity.email ?? "— (no account)"],
-			["Account", accountSummary(identity)],
-			["Name", identity.displayName ?? "—"],
-			["Orders placed", String(ctx.orderCount)],
-			["Buyer reference", identity.buyerRef],
-			[
-				"Email verified (UTC)",
-				identity.emailVerifiedAt === null ? "not verified" : utc(identity.emailVerifiedAt),
-			],
-		]),
-	];
+	const body: Block[] = [customerFields(o.id, ctx)];
 	if (identity.linkage === "unclaimed") {
 		body.push({
 			type: "context",
@@ -906,6 +1043,46 @@ function customerGroup(
 	};
 }
 
+/**
+ * The Customer group's identity `fields` — SIX entries on an account, TWO on a
+ * guest (§11.2). D-1a: the 4-or-6 cap belongs to the identity strip outside the
+ * tabs, not to a panel's own `fields`, so six here is not a budget being spent.
+ *
+ * **NEVER RENDER A ROW WHOSE ONLY CONTENT IS A DENIAL.** On a guest the six-entry
+ * shape said "no account" five different ways — `Account email —`, `Name —`,
+ * `Account Guest — no account`, `Email verified not verified` — directly over the
+ * D-7 `context` line that already says it once, and its `Email — (no account)` row
+ * DENIED an address that the group label, the identity strip and `Buyer reference`
+ * were all displaying at the same time.
+ *
+ * TWO LABELS ALSO CHANGE, because the old pair could not be told apart: `Email` is
+ * the ACCOUNT's email and is now `Account email`; the order's own contact address —
+ * previously the internal-sounding `Buyer reference` — is `Contact email`. And
+ * `(UTC)` is dropped from `Email verified` when the value is `not verified`, since
+ * there is no timestamp for a suffix to describe (M-6 governs timestamps, not
+ * denials).
+ */
+function customerFields(orderId: string, ctx: CustomerContextWire): FieldsBlock {
+	const identity = ctx.identity;
+	const blockId = `orders:${orderId}:customer-fields`;
+	if (identity.linkage === "guest") {
+		return fields(blockId, [
+			["Contact email", identity.buyerRef],
+			["Orders placed", String(ctx.orderCount)],
+		]);
+	}
+	return fields(blockId, [
+		["Account email", identity.email ?? "—"],
+		["Account", accountSummary(identity)],
+		["Name", identity.displayName ?? "—"],
+		["Orders placed", String(ctx.orderCount)],
+		["Contact email", identity.buyerRef],
+		identity.emailVerifiedAt === null
+			? ["Email verified", "not verified"]
+			: ["Email verified (UTC)", utc(identity.emailVerifiedAt)],
+	]);
+}
+
 /** The honest account line: claimed / unclaimed / guest — a known account must
  *  never read as "Guest" just because THIS order predates its next sign-in. */
 function accountSummary(identity: CustomerContextWire["identity"]): string {
@@ -930,7 +1107,7 @@ function fulfilmentPanel(
 	actions: ScreenActions,
 	detail: OrderDetailResult,
 	open: OpenGroup,
-	staged: Staged | undefined,
+	renderState: OrdersRenderState | undefined,
 ): Block[] {
 	const o = detail.order;
 	const blocks: Block[] = [];
@@ -940,7 +1117,7 @@ function fulfilmentPanel(
 	const fulfilment = fulfilmentGroup(o, open);
 	if (fulfilment !== undefined) blocks.push(fulfilment);
 	blocks.push(...transitionBlocks(o, detail));
-	blocks.push(...cancelBlocks(o, detail, open, staged));
+	blocks.push(...cancelBlocks(o, detail, open, renderState));
 	if (blocks.length === 0) {
 		// D-3: a panel with nothing to do renders ONE honest line — never a dropped
 		// panel, which would strand `activeTab` past the end and render blank (R-14).
@@ -1231,77 +1408,119 @@ function offeredTransitions(o: OrderDetailWire, detail: OrderDetailResult): stri
 	});
 }
 
-/** ONE `actions` block with DISTINCT per-state ids (DA-6, R-13) — the old
- *  one-block-per-button split existed only because every button shared the
- *  literal id `orders:transition` and they collided as React keys. Withheld
- *  moves get one `context` line each and NO control (DA-7). */
+/**
+ * ONE `actions` block with DISTINCT per-state ids (DA-6, R-13) — the old
+ * one-block-per-button split existed only because every button shared the literal
+ * id `orders:transition` and they collided as React keys. Withheld moves get one
+ * `context` line each and NO control (DA-7).
+ *
+ * DA-7a governs the wording of those two lines: a withheld-action line names the
+ * ALTERNATIVE and never narrates the design decision. Both used to open *"There is
+ * deliberately no bare …"*, which tells an operator what designers withheld — a
+ * fact they cannot act on — and is 30 characters longer than the version that
+ * starts from their goal.
+ */
 function transitionBlocks(o: OrderDetailWire, detail: OrderDetailResult): Block[] {
 	const offered = offeredTransitions(o, detail);
 	const blocks: Block[] = [];
 	if (o.state === "processing" && detail.allowedTransitions.includes("shipped")) {
 		blocks.push({
 			type: "context",
-			text: "There is deliberately no bare “Mark shipped” — use Fulfilment above, which records the tracking and emails it to the buyer.",
+			// 93 chars: goal first, control last, one verb the operator can act on.
+			text: "To ship this order, record the tracking under Fulfilment above — that emails it to the buyer.",
 		});
 	}
 	if (detail.allowedTransitions.includes("cancelled")) {
 		blocks.push({
 			type: "context",
-			text: "There is deliberately no bare “Mark cancelled” — use Cancel order below, which records a reason on file.",
+			// 75 chars.
+			text: "To cancel this order, use Cancel order below — it records a reason on file.",
 		});
 	}
 	if (offered.length === 0) return blocks;
 	blocks.push({
 		type: "actions",
 		block_id: "orders:transitions",
-		elements: offered.map((toState) => transitionButton(o.id, toState)),
+		elements: offered.map((toState) => transitionButton(o.id, toState, o.state)),
 	});
 	return blocks;
 }
 
-function transitionButton(orderId: string, toState: string): ButtonElement {
+/**
+ * One transition button. `observedState` is THE WATERMARK — the state the operator
+ * was looking at when this button rendered — and carrying it is not optional
+ * (DA-2a, DA-6 item 5).
+ *
+ * WHY, CONCRETELY. `Mark refunded` renders `style:"danger"` + `confirm`, so it IS a
+ * destructive confirm under DA-1/DA-5, and §8 exempts nothing from DA-3a's re-read.
+ * A rendered button AGES: open a `paid` order, see `Mark refunded`, and while you
+ * read the dialog a colleague moves the order `paid → processing → shipped`. The
+ * domain state machine is no defence, because `shipped → refunded` is ALSO legal
+ * (`domain/src/orders/state-machine.ts`: `shipped: ["delivered", "refunded"]`, which
+ * `service/src/routes/admin.ts` hands to this console unnarrowed) — so the guarded
+ * flip matches from the live state as readily as from the observed one, and a
+ * shipped order whose tracking was already emailed lands in `refunded`, a TERMINAL
+ * state, on a decision made while looking at `paid`. Until this watermark existed,
+ * status moves were the one destructive write here with no staleness check at all.
+ */
+function transitionButton(orderId: string, toState: string, observedState: string): ButtonElement {
 	const button: ButtonElement = {
 		// DERIVED from ORDER_STATES, so a rendered button always has a registered
 		// handler. The handler takes the target state from THIS ID, never from the
 		// value below — `value.toState` is echoed for devtools legibility and is
-		// operator-alterable, so it is deliberately not trusted.
+		// operator-alterable, so it is deliberately not trusted (DA-6 item 4).
 		action_id: ORDERS_ACTIONS.custom(transitionVerb(toState)),
 		type: "button",
 		label: `Mark ${toState}`,
-		value: { orderId, toState },
+		value: { orderId, toState, state: observedState },
 	};
-	if (DANGER_STATES.has(toState)) {
+	// The dialog comes from the map keyed by TARGET STATE, so it can never describe
+	// a different transition than the one it guards.
+	const confirm = DANGER_TRANSITIONS.get(toState);
+	if (confirm !== undefined) {
 		button.style = "danger";
-		button.confirm = {
-			title: "Mark this order refunded?",
-			text: "Marks the order refunded for bookkeeping. It does not move money — record the money in Money → Refunds.",
-			confirm: "Yes, mark refunded",
-			deny: "Keep as is",
-			style: "danger",
-		};
+		button.confirm = confirm;
 	}
 	return button;
 }
 
 /**
- * The Cancel group. Four states, and the destructive one is DA-2b + DA-3:
+ * D-6a's label for the Cancel group: a destructive group is a bare trigger row of
+ * exactly the same weight as every other trigger (R-5) and a label CANNOT be red,
+ * so a label naming only the verb makes the most dangerous control on the panel the
+ * quietest thing on it. 45 chars, inside §1's 60-char budget (X-35).
+ *
+ * Worth knowing before writing a test: this quotes the control it names, so a DA-7
+ * line elsewhere reading "use Cancel order below" also matches `Cancel order` —
+ * resolve this group by `block_id`, never by label (§15 V-1).
+ */
+const CANCEL_GROUP_LABEL = "Cancel order — permanent, releases held stock";
+
+/**
+ * The Cancel group. Six render modes; the destructive ones are DA-2b + DA-3:
  *
  *  - already cancelled WITH a reason ⇒ the recorded cancellation, read-only;
  *  - cancelled WITHOUT one (the bare transition) ⇒ an honest line;
- *  - cancellable ⇒ one DANGER BUTTON PER REASON (DA-2b: a closed set needs no
+ *  - no longer cancellable ⇒ no control and one `context` line (DA-7);
+ *  - **state 2** (`cancel-staged`) ⇒ `:review` + `default_open` + the staged form
+ *    and ONE confirm button, nothing else;
+ *  - **a refusal** (`cancel-draft`) ⇒ a THIRD key + `default_open` + the collect
+ *    form FLATTENED in, prefilled, and NO confirm (DA-3a-i);
+ *  - otherwise ⇒ one DANGER BUTTON PER REASON (DA-2b: a closed set needs no
  *    staging, no staleness window and no staged payload to decode) plus a nested
- *    DA-3 group for the case where the operator wants to add free text;
- *  - anything else ⇒ no control and one `context` line (DA-7).
+ *    DA-3 group for the case where the operator wants to add free text.
  *
- * On a DA-3 state-2 render this group carries `:review` AND `default_open: true`
- * (B-6) and its body becomes the staged form plus ONE confirm button — see
- * {@link cancelReviewBody} for why the nested accordion is not used there.
+ * ALL THREE KEYS ARE DISTINCT — `…:cancel`, `…:cancel:review`, `…:cancel:refused` —
+ * because a `block_id` is the React key (R-13) and both force-opens need BOTH
+ * halves of B-6. A refusal that reused `:review` would not remount when the
+ * operator arrived at it FROM state 2, which is exactly the DA-3a path, and the
+ * form would keep the values the confirm just failed with.
  */
 function cancelBlocks(
 	o: OrderDetailWire,
 	detail: OrderDetailResult,
 	open: OpenGroup,
-	staged: Staged | undefined,
+	renderState: OrdersRenderState | undefined,
 ): Block[] {
 	const blockId = `orders:${o.id}:cancel`;
 	// Tolerate a wire response that omits the field (undefined) exactly like null.
@@ -1311,6 +1530,8 @@ function cancelBlocks(
 			{
 				type: "accordion",
 				block_id: blockId,
+				// A RECORD, not a trigger — D-6a's consequence clause would be describing
+				// an act that already happened, so the D-6 answer is the label.
 				label: fitLabel(`Cancelled — ${recorded.reason}`),
 				default_open: false,
 				blocks: [cancellationFields(o.id, recorded)],
@@ -1342,7 +1563,7 @@ function cancelBlocks(
 			},
 		];
 	}
-	if (staged?.kind === "cancel") {
+	if (renderState?.kind === "cancel-staged") {
 		return [
 			{
 				type: "accordion",
@@ -1350,9 +1571,20 @@ function cancelBlocks(
 				// and the remount re-reads `default_open` — which is `false` for a
 				// destructive group unless THIS render sets it true.
 				block_id: `${blockId}:review`,
-				label: "Cancel order",
+				label: CANCEL_GROUP_LABEL,
 				default_open: open === "cancel",
-				blocks: cancelReviewBody(o, staged),
+				blocks: cancelReviewBody(o, renderState),
+			},
+		];
+	}
+	if (renderState?.kind === "cancel-draft") {
+		return [
+			{
+				type: "accordion",
+				block_id: `${blockId}:refused`,
+				label: CANCEL_GROUP_LABEL,
+				default_open: open === "cancel",
+				blocks: cancelDraftBody(o, renderState),
 			},
 		];
 	}
@@ -1360,7 +1592,7 @@ function cancelBlocks(
 		{
 			type: "accordion",
 			block_id: blockId,
-			label: "Cancel order",
+			label: CANCEL_GROUP_LABEL,
 			default_open: false, // ALWAYS, for anything destructive (D-5)
 			blocks: [
 				{
@@ -1374,38 +1606,54 @@ function cancelBlocks(
 				{
 					type: "actions",
 					block_id: `orders:${o.id}:cancel-reasons`,
-					elements: CANCELLATION_REASONS.map((r) => cancelReasonButton(o, r)),
+					// FOUR buttons, not five: `other` has no button (see
+					// CANCEL_BUTTON_REASONS), which also keeps the fan-out inside DA-2c's
+					// cap so each stays `style:"danger"`.
+					elements: CANCEL_BUTTON_REASONS.map((r) => cancelReasonButton(o, r)),
 				},
 				{
 					type: "accordion",
 					block_id: `orders:${o.id}:cancel-note`,
 					label: "Cancel with a note",
 					default_open: false,
-					blocks: [
-						{
-							type: "banner",
-							variant: "alert",
-							// DA-3 state 1 requires this banner; §2 does not count banners
-							// inside an accordion, so it is free.
-							title: "Cancelling is permanent and cannot be undone",
-							description:
-								"Review what you typed on the next step — the confirm there is the point of no return.",
-						},
-						cancelNoteForm(o.id, o.state),
-					],
+					blocks: [CANCEL_NOTE_BANNER, cancelNoteForm(o.id, o.state)],
 				},
 			],
 		},
 	];
 }
 
+/**
+ * The nested DA-3 collect group's banner — required by DA-3 state 1, and free
+ * against §2's two-banner cap because §2 does not count banners inside an
+ * accordion.
+ *
+ * IT SAYS ONLY WHAT IS NEW. The parent group's banner sits ~190px above and
+ * already says "Cancelling is permanent"; a second near-identical warning teaches
+ * an operator to skim both, which costs more safety than it buys. And "the point of
+ * no return" is gone: it was the one purple phrase on an otherwise plain-spoken
+ * screen (E-4).
+ */
+const CANCEL_NOTE_BANNER: Block = {
+	type: "banner",
+	variant: "alert",
+	title: "Review what you typed on the next step",
+	description:
+		"The confirm on the next step is what records the cancellation — nothing is recorded until then.",
+};
+
 /** DA-2b: one danger button per legal value, the value in `button.value`, and the
- *  reason NAMED IN THE CONFIRM TEXT. No round trip, no staged payload. */
+ *  reason NAMED IN THE CONFIRM TEXT. No round trip, no staged payload.
+ *
+ *  The LABEL IS THE BARE REASON — `Out of stock`, not `Cancel — Out of stock`: the
+ *  group label and the confirm already say "cancel" twice, so the prefix repeated a
+ *  word three times per button and pushed the reason (the only thing that differs
+ *  between four adjacent red buttons) to the right (§11.2). */
 function cancelReasonButton(o: OrderDetailWire, reason: SelectOption): ButtonElement {
 	return {
 		type: "button",
 		action_id: ORDERS_ACTIONS.custom(cancelReasonVerb(reason.value)),
-		label: `Cancel — ${reason.label}`,
+		label: reason.label,
 		// A button's ONLY context channel (B-1). `state` is the watermark the
 		// handler re-reads against (DA-3a).
 		value: { orderId: o.id, reason: reason.value, state: o.state },
@@ -1429,14 +1677,16 @@ function cancelReasonButton(o: OrderDetailWire, reason: SelectOption): ButtonEle
  * `fields` echo of the payload — a second rendering of the same data, and a place
  * for the dialog and the payload to disagree.
  *
- * The nested "Cancel with a note" accordion is NOT reused here: nesting the
- * forced-open group one level deeper would leave it invisible behind a COLLAPSED
- * parent, and D-5 Rule 1 forbids opening the parent as well. See the PR's
- * disclosure — the spec's §11.2 listing is ambiguous on which accordion carries
- * the `:review` suffix, and this is the only reading in which the confirm button
- * is actually on screen.
+ * THE NESTED "Cancel with a note" ACCORDION IS NOT RENDERED HERE — the collect
+ * group is FLATTENED AWAY (DA-3's outermost-group rule). Nesting the forced-open
+ * group one level deeper leaves the confirm invisible behind a COLLAPSED parent,
+ * and D-5 Rule 1 forbids opening the parent as well; the spec was unbuildable as
+ * revision 3 wrote it, and revision 4 resolved it in this direction.
  */
-function cancelReviewBody(o: OrderDetailWire, staged: Staged & { kind: "cancel" }): Block[] {
+function cancelReviewBody(
+	o: OrderDetailWire,
+	staged: OrdersRenderState & { kind: "cancel-staged" },
+): Block[] {
 	const reasonLabel = CANCEL_REASON_LABELS.get(staged.reason) ?? staged.reason;
 	return [
 		{
@@ -1446,7 +1696,14 @@ function cancelReviewBody(o: OrderDetailWire, staged: Staged & { kind: "cancel" 
 			description:
 				"Confirm below to cancel this order, email the buyer and release the held stock. Edit the form and review again to change anything.",
 		},
-		cancelNoteForm(o.id, o.state, staged),
+		cancelNoteForm(o.id, o.state, {
+			// The prefill is in OPTION-VALUE space, which on this screen is the human
+			// label — so the staged WIRE reason is mapped forward here, exactly as the
+			// handler mapped the submission backward.
+			reasonOption: reasonLabel,
+			detail: staged.detail,
+			cancelledBy: staged.cancelledBy,
+		}),
 		{
 			type: "actions",
 			block_id: `orders:${o.id}:cancel-confirm`,
@@ -1477,14 +1734,64 @@ function cancelReviewBody(o: OrderDetailWire, staged: Staged & { kind: "cancel" 
 	];
 }
 
-/** THREE visible fields — the order id and the state watermark ride in the
- *  carrier. On a state-2 render the staged values are the `initial_value`s, and
- *  `carriedForm`'s prefill digest is what makes the remount actually pick them up
- *  (B-3a). */
+/**
+ * A REFUSAL on the cancel flow: DA-3a-i's state-1 re-render, into this group,
+ * forced open, FLATTENED, with the submitted values prefilled and NO CONFIRM.
+ *
+ * FOUR THINGS THIS BODY DOES NOT CONTAIN, each for a stated reason:
+ *
+ *  - **No confirm control.** DA-3a-i, scoping note: "state-2-shaped" settles
+ *    `default_open` and the `block_id` and licenses nothing about the body. The
+ *    payload a confirm would carry is the payload just refused.
+ *  - **No nested collect group.** That is the flatten clause. Force the outer group
+ *    open and leave the form in a `default_open: false` child and the operator's
+ *    rejected input is on the page and invisible — which passes an id check while
+ *    failing the "values prefilled" clause outright (X-39 asserts the nested
+ *    group's absence).
+ *  - **No DA-2b reason buttons.** Deliberate, and the same judgment state 2 makes:
+ *    the operator is mid-decision on ONE cancellation and four one-click red
+ *    buttons beside a banner reading "choose a reason and enter who is cancelling"
+ *    are a trap — every one of them cancels immediately, with no detail, which is
+ *    the exact thing this operator was trying to record. The refusal copy names one
+ *    route (the form below); DA-7a's discipline is one route per line.
+ *  - **No second "Cancelling is permanent" banner.** The refusal's own `error`
+ *    notice is already at the top of the screen; a third warning here is the
+ *    skim-training §11.2 removed the duplicate for.
+ */
+function cancelDraftBody(
+	o: OrderDetailWire,
+	draft: OrdersRenderState & { kind: "cancel-draft" },
+): Block[] {
+	return [
+		CANCEL_NOTE_BANNER,
+		cancelNoteForm(o.id, o.state, {
+			// X-23: an `initial_value` must be one of the options, so an unrecognized
+			// submission falls back to the default rather than prefilling a value the
+			// `select` cannot display.
+			reasonOption: CANCEL_REASON_BY_LABEL.has(draft.reasonInput)
+				? draft.reasonInput
+				: DEFAULT_CANCEL_REASON_OPTION,
+			detail: draft.detail,
+			cancelledBy: draft.cancelledBy,
+		}),
+	];
+}
+
+/**
+ * THREE visible fields — the order id and the state watermark ride in the carrier.
+ * On a state-2 or refusal render the submitted values are the `initial_value`s, and
+ * `carriedForm`'s prefill digest is what makes the remount actually pick them up
+ * (B-3a).
+ *
+ * `prefill.reasonOption` is in OPTION-VALUE space, which on this screen is the
+ * HUMAN LABEL — see {@link CANCEL_REASON_BY_LABEL} for why the `select` carries
+ * labels as values, and note that the caller is responsible for the X-23 guarantee
+ * that the value is one of the options.
+ */
 function cancelNoteForm(
 	orderId: string,
 	state: string,
-	staged?: Staged & { kind: "cancel" },
+	prefill?: { reasonOption: string; detail: string; cancelledBy: string },
 ): FormBlock {
 	return carriedForm({
 		namespace: "orders:cancel-note",
@@ -1496,16 +1803,19 @@ function cancelNoteForm(
 					type: "select",
 					action_id: "reason",
 					label: "Reason",
-					options: [...CANCELLATION_REASONS],
-					initial_value: staged?.reason ?? "customer_request",
+					// The option VALUE is the human label: the pinned renderer's trigger
+					// renders the raw value (R-17a), so wire values here would put
+					// `customer_request` on the screen (F-6c).
+					options: CANCELLATION_REASONS.map((r) => ({ value: r.label, label: r.label })),
+					initial_value: prefill?.reasonOption ?? DEFAULT_CANCEL_REASON_OPTION,
 				},
 				{
 					type: "text_input",
 					action_id: "detail",
 					label: "Detail (optional)",
 					placeholder: "e.g. chargeback risk flagged",
-					...(staged !== undefined && staged.detail.length > 0
-						? { initial_value: staged.detail }
+					...(prefill !== undefined && prefill.detail.length > 0
+						? { initial_value: prefill.detail }
 						: {}),
 				},
 				{
@@ -1513,7 +1823,7 @@ function cancelNoteForm(
 					action_id: "cancelledBy",
 					label: "Cancelled by",
 					placeholder: "your name",
-					...(staged !== undefined ? { initial_value: staged.cancelledBy } : {}),
+					...(prefill !== undefined ? { initial_value: prefill.cancelledBy } : {}),
 				},
 			],
 			submit: { label: "Review cancellation", action_id: ACTION_CANCEL_REVIEW },
@@ -1537,7 +1847,7 @@ function moneyPanel(
 	o: OrderDetailWire,
 	summary: RefundsSummaryWire | null,
 	open: OpenGroup,
-	staged: Staged | undefined,
+	renderState: OrdersRenderState | undefined,
 ): Block[] {
 	if (summary === null) {
 		return [
@@ -1550,49 +1860,94 @@ function moneyPanel(
 		];
 	}
 	const cur = summary.currency.length > 0 ? summary.currency : o.totals.currency;
-	return [
+	const blocks: Block[] = [
 		// `Payment` is already in the identity strip; do not repeat it (P-3).
 		fields("orders:money", [
 			["Captured", formatTotal(summary.capturedTotalCents, cur)],
 			["Refunded", formatTotal(summary.refundedTotalCents, cur)],
-			["Remaining", formatTotal(summary.remainingCents, cur)],
-			// The COUNT carries its unit, not because it is prettier but because a
-			// bare integer beside a label matching /refund/ is exactly what X-9's
-			// raw-minor-units heuristic rejects — see the PR's disclosure.
-			["Refunds recorded", refundCount(summary.refunds.length)],
+			// M-11a: a bare `Remaining` beside `Captured` and `Refunded` could mean
+			// remaining to capture, to refund or to ship. Naming the axis costs eleven
+			// characters and matches the `meter` and the DA-3a refusal's own wording.
+			["Remaining refundable", formatTotal(summary.remainingCents, cur)],
+			// A BARE INTEGER (X-9's heuristic excludes labels matching /recorded/, so
+			// the invented "1 refund" unit is no longer needed to get past it).
+			["Refunds recorded", String(summary.refunds.length)],
 		]),
-		refundsGroup(actions, o, summary, cur, open, staged),
 	];
+	// M-11: `Total $95.00` on the identity strip beside `Captured $0.00` here is a
+	// contradiction the operator otherwise has to leave the console to resolve.
+	// Required whenever the narrower figure differs from the total, not only at zero,
+	// and it states the arithmetic and the semantics WITHOUT diagnosing a cause (E-7
+	// — "authorised but not settled" is a claim about a provider this screen cannot
+	// verify).
+	if (summary.capturedTotalCents !== o.totals.totalCents) {
+		blocks.push({
+			type: "context",
+			text: `Captured is the money that actually arrived; ${formatTotal(summary.capturedTotalCents, cur)} of the ${formatTotal(o.totals.totalCents, o.totals.currency)} total has been captured so far.`,
+		});
+	}
+	blocks.push(refundsGroup(actions, o, summary, cur, open, renderState));
+	return blocks;
 }
 
+/**
+ * The Refunds group — three render modes, and which one is chosen by the render
+ * state, never by taste.
+ *
+ * | Mode | `block_id` | Body |
+ * |---|---|---|
+ * | idle | `…:refunds` | meter · ledger · capability line · DA-2b button · the nested DA-3 collect group |
+ * | **state 2** (`refund-staged`) | `…:refunds:review` | alert banner · the staged form · ONE danger confirm — **and nothing else** |
+ * | **a refusal** (`refund-draft`) | `…:refunds:refused` | meter · ledger · capability line · alert banner · the prefilled form — **no confirm** |
+ *
+ * THREE KEYS, ALL DISTINCT, because `block_id` is the React key (R-13) and both
+ * force-opens need BOTH halves of B-6. A refusal reusing `:review` would not remount
+ * when the operator reached it FROM state 2 — which is precisely the DA-3a path — so
+ * the form would keep showing the amount the confirm just failed with.
+ *
+ * WHY STATE 2 SUPPRESSES THE METER AND THE LEDGER (§8's outermost-group rule and
+ * §11.2, both explicit): the operator is mid-decision on one amount, and the group
+ * is showing them a FRESH ledger beside a confirm carrying the watermark they
+ * originally saw. Two readings of the ledger, one of which is not the one the button
+ * will be judged against, is worse than one.
+ *
+ * WHY A REFUSAL KEEPS THEM: a refusal is a state-1 body (DA-3a-i), and its whole
+ * message is "the ledger is not what you thought" — the copy says so and names the
+ * live figure, so the ledger it points at has to be on screen.
+ */
 function refundsGroup(
 	actions: ScreenActions,
 	o: OrderDetailWire,
 	summary: RefundsSummaryWire,
 	cur: string,
 	open: OpenGroup,
-	staged: Staged | undefined,
+	renderState: OrdersRenderState | undefined,
 ): Block {
 	const blockId = `orders:${o.id}:refunds`;
-	const reviewing = staged?.kind === "refund";
+	const staged = renderState?.kind === "refund-staged" ? renderState : undefined;
+	const draft = renderState?.kind === "refund-draft" ? renderState : undefined;
 	const body: Block[] = [];
-	// A REAL bounded ratio (§2). `custom_value` is MANDATORY because value/max are
-	// minor units and `meter` has no currency (M-8, R-20). Omitted at a zero
-	// ceiling, where the ratio would be undefined rather than merely empty.
-	if (summary.ceilingCents > 0) {
-		body.push({
-			type: "meter",
-			label: "Refunded",
-			value: summary.refundedTotalCents,
-			max: summary.ceilingCents,
-			custom_value: `${formatTotal(summary.refundedTotalCents, cur)} of ${formatTotal(summary.ceilingCents, cur)}`,
-		});
+	if (staged === undefined) {
+		// A REAL bounded ratio (§2). `custom_value` is MANDATORY because value/max are
+		// minor units and `meter` has no currency (M-8, R-20). Omitted at a zero
+		// ceiling, where the ratio would be undefined rather than merely empty.
+		if (summary.ceilingCents > 0) {
+			body.push({
+				type: "meter",
+				label: "Refunded",
+				value: summary.refundedTotalCents,
+				max: summary.ceilingCents,
+				custom_value: `${formatTotal(summary.refundedTotalCents, cur)} of ${formatTotal(summary.ceilingCents, cur)}`,
+			});
+		}
+		if (summary.refunds.length > 0) body.push(refundsTable(actions, o.id, summary.refunds, cur));
+		body.push({ type: "context", text: refundCapabilityText(summary) });
 	}
-	if (summary.refunds.length > 0) body.push(refundsTable(actions, o.id, summary.refunds, cur));
-	body.push({ type: "context", text: refundCapabilityText(summary) });
 
-	if (reviewing && staged.kind === "refund") {
+	if (staged !== undefined) {
 		body.push(...refundReviewBody(o, summary, cur, staged));
+	} else if (draft !== undefined) {
+		body.push(...refundDraftBody(o, cur, summary, draft));
 	} else if (summary.remainingCents > 0) {
 		// DA-2b: the majority path is the full remaining balance, so it is ONE
 		// danger button with the amount and the watermark in `value` — no round
@@ -1605,40 +1960,54 @@ function refundsGroup(
 		body.push({
 			type: "accordion",
 			block_id: `orders:${o.id}:refund-partial`,
-			label: "Refund a different amount",
+			// D-6a: a destructive group's label carries its CONSEQUENCE, because a
+			// label cannot be red (R-5) and a bare noun makes the dangerous control the
+			// quietest thing on the panel. 46 chars (X-35).
+			label: "Refund a different amount — cannot be reversed",
 			default_open: false, // ALWAYS, for anything destructive (D-5)
-			blocks: [
-				{
-					type: "banner",
-					variant: "alert",
-					title: "A recorded refund cannot be reversed here",
-					description:
-						"Review the amount on the next step. Refunds are additive: recording one twice records two refunds.",
-				},
-				refundPartialForm(o.id, cur, summary),
-			],
+			blocks: [REFUND_PARTIAL_BANNER, refundPartialForm(o.id, cur, summary)],
 		});
 	} else if (summary.refundedTotalCents > 0) {
 		// DA-7: no control at all, one line naming the reason.
 		body.push({ type: "context", text: "Fully refunded — nothing left to refund." });
-	} else {
-		body.push({
-			type: "context",
-			text: "Nothing has been captured on this order, so there is nothing to refund.",
-		});
 	}
+	// At a ZERO CEILING there is deliberately no line here: D-6b replaces the
+	// degenerate `$0.00 of $0.00` ratio in the LABEL with the fact itself, and the
+	// explanatory `context` line then restates what the label just said. The M-11
+	// line above is what tells the operator whether the money arrived.
 	return {
 		type: "accordion",
-		// B-6: on a DA-3 state 2 the id CHANGES and the flag is set — both halves.
-		block_id: reviewing ? `${blockId}:review` : blockId,
-		// D-6: the label carries the answer, so the group can be skipped unopened.
+		// B-6: on a state 2 OR a refusal the id CHANGES and the flag is set — both
+		// halves, and three distinct keys.
+		block_id:
+			staged !== undefined
+				? `${blockId}:review`
+				: draft !== undefined
+					? `${blockId}:refused`
+					: blockId,
+		// D-6: the label carries the answer, so the group can be skipped unopened —
+		// and D-6b replaces the ratio outright when its denominator is zero, because
+		// `$0.00 of $0.00 refunded` tells an operator nothing and reads like a bug.
 		label: fitLabel(
-			`Refunds — ${formatTotal(summary.refundedTotalCents, cur)} of ${formatTotal(summary.ceilingCents, cur)} refunded`,
+			summary.ceilingCents > 0
+				? `Refunds — ${formatTotal(summary.refundedTotalCents, cur)} of ${formatTotal(summary.ceilingCents, cur)} refunded`
+				: "Refunds — nothing captured, nothing to refund",
 		),
-		default_open: reviewing && open === "refunds",
+		default_open: open === "refunds",
 		blocks: body,
 	};
 }
+
+/** DA-3 state 1's required alert banner (§2 does not count banners inside an
+ *  accordion). Shared by the collect group and by the flattened refusal body, so
+ *  the two cannot drift. */
+const REFUND_PARTIAL_BANNER: Block = {
+	type: "banner",
+	variant: "alert",
+	title: "A recorded refund cannot be reversed here",
+	description:
+		"Review the amount on the next step. Refunds are additive: recording one twice records two refunds.",
+};
 
 /** DA-2b's full-remaining refund. `value` carries the amount AND
  *  `refundedSoFarCents` — the watermark the operator saw, which is both the
@@ -1674,15 +2043,17 @@ function refundFullButton(
 
 /**
  * DA-3 state 2 for a refund: the staged form remounted plus ONE danger confirm.
- * The DA-2b full-remaining button and the nested partial-amount accordion are
- * both omitted here — a second refund control beside a staged one is exactly the
- * ambiguity the confirm dialog exists to remove.
+ * The DA-2b full-remaining button, the nested partial-amount accordion, the meter
+ * and the ledger are ALL omitted (§8's outermost-group rule, §11.2) — a second
+ * refund control beside a staged one is exactly the ambiguity the confirm dialog
+ * exists to remove, and the suppression of the meter/ledger happens in
+ * {@link refundsGroup}, which owns the body.
  */
 function refundReviewBody(
 	o: OrderDetailWire,
 	summary: RefundsSummaryWire,
 	cur: string,
-	staged: Staged & { kind: "refund" },
+	staged: OrdersRenderState & { kind: "refund-staged" },
 ): Block[] {
 	const amount = formatTotal(staged.amountCents, cur);
 	return [
@@ -1692,7 +2063,11 @@ function refundReviewBody(
 			title: "A recorded refund cannot be reversed here",
 			description: `Confirm below to refund ${amount}. Edit the form and review again to change the amount.`,
 		},
-		refundPartialForm(o.id, cur, summary, staged),
+		refundPartialForm(o.id, cur, summary, {
+			amountInput: formatMinorUnitsInput(staged.amountCents),
+			reason: staged.reason,
+			refundedBy: staged.refundedBy,
+		}),
 		{
 			type: "actions",
 			block_id: `orders:${o.id}:refund-confirm`,
@@ -1722,6 +2097,42 @@ function refundReviewBody(
 			],
 		},
 	];
+}
+
+/**
+ * A REFUSAL on the refund flow: DA-3a-i's state-1 re-render, into this group,
+ * forced open, FLATTENED, with the submitted values prefilled and NO CONFIRM.
+ *
+ * THE AMOUNT IS PREFILLED VERBATIM from `amountInput`, never re-derived from
+ * minor units. The most frequent refusal on this screen is a typo in the amount
+ * field, and on that path `parseMinorUnitsInput` returned `null` — so there is no
+ * `amountCents` to format, and a rejected `19,99` cannot be reconstructed from
+ * cents (DA-3a-iii property 5).
+ *
+ * THREE THINGS THIS BODY DOES NOT CONTAIN:
+ *
+ *  - **No confirm control.** DA-3a-i's scoping note: "state-2-shaped" settles
+ *    `default_open` and the `block_id` and licenses nothing about the body. The
+ *    payload a confirm would carry is the payload just refused — re-offering it
+ *    re-stages a stale amount (DA-3a) or the very figure the bound check rejected
+ *    (DA-3c), a red `Refund $900.00` on a $50 order.
+ *  - **No nested collect group.** That is the flatten clause, and X-39 asserts the
+ *    nested group's absence: force the outer group open and leave the form in a
+ *    `default_open: false` child and the operator's rejected `19,99` is on the page
+ *    and invisible, which fails "values prefilled" while passing an id check.
+ *  - **No DA-2b full-remaining button.** Deliberate, and it is the same judgment
+ *    state 2 makes. On a DA-3c refusal the rejected figure was TOO HIGH and the only
+ *    other control on offer would be the largest possible refund — the one button a
+ *    mis-keyed extra zero must not be one click away from. The refusal copy names
+ *    one route ("re-enter an amount below"), which is the form directly beneath it.
+ */
+function refundDraftBody(
+	o: OrderDetailWire,
+	cur: string,
+	summary: RefundsSummaryWire,
+	draft: OrdersRenderState & { kind: "refund-draft" },
+): Block[] {
+	return [REFUND_PARTIAL_BANNER, refundPartialForm(o.id, cur, summary, draft)];
 }
 
 /**
@@ -1763,14 +2174,21 @@ function refundsTable(
 		block_id: `orders:${orderId}:refunds:table`,
 		columns: [
 			{ key: "amount", label: "Amount" },
-			{ key: "kind", label: "Kind", format: "badge" }, // lifecycle state (T-5)
+			// NO `Kind` COLUMN, and it is deleted rather than demoted to plain text.
+			// `kind` is `gateway.refundable ? "gateway" : "manual"` resolved ONCE from
+			// the ORDER's own payment method (`domain/src/orders/refund-order.ts`,
+			// `service/src/routes/admin.ts`), so it cannot vary down a single order's
+			// ledger — and this per-order ledger is the only table in the console that
+			// renders it. A column of identical `manual` pills is forbidden outright by
+			// T-5's near-constant clause (X-4), and a column of one repeated word is a
+			// column of nothing. Where the kind matters it is already in the group's
+			// capability `context` line, which says whether refunds here move money.
 			{ key: "ref", label: "Provider ref", format: "code" },
 			{ key: "by", label: "By" },
 			{ key: "when", label: "When", format: "relative_time" },
 		],
 		rows: refunds.map((r) => ({
 			amount: formatTotal(r.amountCents, r.currency.length > 0 ? r.currency : cur),
-			kind: r.kind,
 			ref: r.refundRef ?? "—",
 			by: r.refundedBy,
 			when: r.createdAt,
@@ -1787,12 +2205,24 @@ function refundsTable(
  * `select`: it is not relocated (F-2a). The amount is a TEXT input parsed to
  * integer minor units (M-3, F-6) — `number_input` would put a float on the money
  * path.
+ *
+ * `prefill.amountInput` IS A RAW STRING and is used verbatim, whether it came from a
+ * refusal (what the operator typed, possibly unparseable) or from state 2 (formatted
+ * back from the parsed cents by the caller). The form never re-derives it here, so
+ * there is exactly one place that decides what an operator sees in that field.
+ *
+ * THE CARRIED WATERMARK IS ALWAYS THE FRESHLY-READ ONE (`summary.refundedTotalCents`),
+ * on every render mode including a refusal. That is deliberate and it is why the
+ * draft render state carries no watermark: the operator's next `-review` stages
+ * against current truth by construction rather than by anyone remembering to
+ * re-stamp it, and B-3 independently requires a prefilling form's change token to
+ * reflect the CURRENT record.
  */
 function refundPartialForm(
 	orderId: string,
 	cur: string,
 	summary: RefundsSummaryWire,
-	staged?: Staged & { kind: "refund" },
+	prefill?: { amountInput: string; reason: string; refundedBy: string },
 ): FormBlock {
 	return carriedForm({
 		namespace: "orders:refund-partial",
@@ -1809,15 +2239,15 @@ function refundPartialForm(
 					action_id: "amount",
 					label: `Refund amount (${cur})`,
 					placeholder: "e.g. 19.99",
-					initial_value: formatMinorUnitsInput(staged?.amountCents ?? summary.remainingCents),
+					initial_value: prefill?.amountInput ?? formatMinorUnitsInput(summary.remainingCents),
 				},
 				{
 					type: "text_input",
 					action_id: "reason",
 					label: "Reason (optional)",
 					placeholder: "e.g. damaged in transit",
-					...(staged !== undefined && staged.reason.length > 0
-						? { initial_value: staged.reason }
+					...(prefill !== undefined && prefill.reason.length > 0
+						? { initial_value: prefill.reason }
 						: {}),
 				},
 				{
@@ -1825,7 +2255,7 @@ function refundPartialForm(
 					action_id: "refundedBy",
 					label: "Refunded by",
 					placeholder: "your name",
-					...(staged !== undefined ? { initial_value: staged.refundedBy } : {}),
+					...(prefill !== undefined ? { initial_value: prefill.refundedBy } : {}),
 				},
 			],
 			submit: { label: "Review refund", action_id: ACTION_REFUND_REVIEW },
@@ -1836,9 +2266,9 @@ function refundPartialForm(
 // -- panel "History" ---------------------------------------------------------
 
 /** T-8's cap: a leaf detail's table MUST NOT set `next_cursor` (a load-more click
- *  at leaf depth blanks the page), so the read is capped and the cap is stated. */
+ *  at leaf depth blanks the page), so the read is capped and — per T-8a — the cap is
+ *  stated ONLY when rows were actually withheld. */
 const TIMELINE_CAP = 50;
-const NOTES_CAP = 20;
 
 function historyPanel(
 	actions: ScreenActions,
@@ -1891,36 +2321,24 @@ function historyPanel(
 	return blocks;
 }
 
-function notesGroup(actions: ScreenActions, o: OrderDetailWire, notes: OrderNoteWire[]): Block {
-	const shown = notes.slice(-NOTES_CAP);
-	const body: Block[] = [];
-	if (shown.length > 0) {
-		body.push({
-			type: "table",
-			block_id: `orders:${o.id}:notes:table`,
-			columns: [
-				{ key: "createdAt", label: "When", format: "relative_time" },
-				{ key: "author", label: "Author" },
-				{ key: "body", label: "Note" },
-			],
-			rows: shown.map((n) => ({ createdAt: n.createdAt, author: n.author, body: n.body })),
-			page_action_id: actions.page, // never fires: no next_cursor (T-8), no sortable column
-			empty_text: "No notes yet.",
-		});
-		if (notes.length > shown.length) {
-			body.push({
-				type: "context",
-				text: `Showing the ${NOTES_CAP} most recent notes; older notes are not listed.`,
-			});
-		}
-	}
-	body.push(addNoteForm(o.id));
+/**
+ * The Notes group is FORM ONLY (§11.2) — the label carries the count, the group
+ * carries the form, and there is no read table.
+ *
+ * WHY THE TABLE IS GONE. The History timeline directly above already renders every
+ * note: a `note` entry's `Detail` column IS the note body, verbatim
+ * ({@link timelineDetail}), and the timeline's cap (50) is LOOSER than the notes cap
+ * (20) was — so the table added a duplicate rendering of the same text, a second
+ * cap `context` line, and nothing else. Deleting it also deletes the notes cap, which
+ * is why `NOTES_CAP` no longer exists.
+ */
+function notesGroup(_actions: ScreenActions, o: OrderDetailWire, notes: OrderNoteWire[]): Block {
 	return {
 		type: "accordion",
 		block_id: `orders:${o.id}:notes`,
 		label: `Notes (${notes.length})`, // D-6
 		default_open: false,
-		blocks: body,
+		blocks: [addNoteForm(o.id)],
 	};
 }
 
@@ -2025,36 +2443,90 @@ const UNREADABLE: Notice = {
 };
 
 /**
+ * A MISSING WATERMARK IS AN UNREADABLE PAYLOAD, NOT A REASON TO SKIP DA-3a.
+ *
+ * Every rendered destructive control on this screen carries the watermark the
+ * operator saw, so an absent one has exactly two sources, and refusing is right for
+ * both: a payload edited in devtools (`button.value` is operator-alterable — B-1),
+ * or a browser tab rendered before the watermark existed, which is precisely the
+ * stale view DA-3a is for. A `value.state.length > 0` guard around the comparison
+ * would let either write with no staleness check at all, which is the X-38 hole
+ * dressed as tolerance.
+ *
+ * `""` is folded into `undefined` deliberately: a whitespace-only or empty state is
+ * not a state, and no comparison against it can be meaningful.
+ */
+function readWatermark(value: unknown): string | undefined {
+	const raw = readString(value)?.trim();
+	return raw === undefined || raw.length === 0 ? undefined : raw;
+}
+
+/**
  * One handler per state, closed over the target from {@link ORDER_STATES} — so
  * the state a transition writes comes from the ACTION ID (which only exists
  * because it was derived from that list) and never from the operator-alterable
- * `value.toState` (DA-6).
+ * `value.toState` (DA-6 item 4).
+ *
+ * DA-2a / DA-3a, MANDATORY AND WITH NO EXEMPTION FOR STATUS MOVES: take the
+ * watermark out of `value`, RE-READ the order, and refuse on a mismatch. See
+ * {@link transitionButton} for the concrete race this closes — `shipped → refunded`
+ * is legal, so the domain's guarded flip is no defence against a decision made
+ * while looking at `paid`, and transitions are the write most likely to race
+ * because the state being moved FROM is the thing another operator is most likely
+ * to have changed.
+ *
+ * NO RENDER STATE IS PASSED ON THE REFUSAL, and that is not an omission. DA-3a-i's
+ * four clauses are all about a GROUP with a collect form in it; a transition is a
+ * bare `actions` block with no group, no form and no operator-typed input to
+ * preserve, so there is nothing to force open and nothing to prefill. The re-render
+ * shows the live state in the identity strip, which is the fact the operator needs.
  */
 function transitionAction(toState: string) {
-	return customAction<AdminOrdersClient>(async ({ input, client, showLeaf, showList }) => {
-		const orderId = readString(asRecord(input.value)?.orderId);
-		if (orderId === undefined) return showList(undefined, UNREADABLE);
-		const key = `admin-transition:${orderId}:${toState}`;
-		const result = await client.transitionOrder(orderId, toState, { idempotencyKey: key });
-		let notice: Notice | undefined;
-		if (!result.ok) {
-			notice = {
-				variant: "error",
-				title: "Status change failed",
-				description:
-					"That status change could not be applied — check the order state and the admin token in Settings.",
-			};
-		} else if (!result.transitioned) {
-			// The guarded flip matched 0 rows — already in that state, or a lost race.
-			// Not a failure: surface a non-error notice rather than a silent re-render.
-			notice = {
-				variant: "default",
-				title: "No change",
-				description: "The order is already in that state.",
-			};
-		}
-		return showLeaf([orderId], notice);
-	});
+	return customAction<AdminOrdersClient, OrdersRenderState>(
+		async ({ input, client, showLeaf, showList }) => {
+			const payload = asRecord(input.value);
+			const orderId = readString(payload?.orderId);
+			if (orderId === undefined) return showList(undefined, UNREADABLE);
+			const observedState = readWatermark(payload?.state);
+			if (observedState === undefined) return showLeaf([orderId], UNREADABLE);
+			const live = await client.getOrder(orderId).catch(() => null);
+			if (live === null) {
+				return showLeaf([orderId], {
+					variant: "error",
+					title: "Nothing was changed",
+					description:
+						"This order could not be re-checked before the status change, so nothing was applied. Reload and try again.",
+				});
+			}
+			if (live.order.state !== observedState) {
+				return showLeaf([orderId], {
+					variant: "error",
+					title: "The order changed — nothing was applied",
+					description: `It was ${observedState} when you started and is now ${live.order.state}. Check the order below before changing its status.`,
+				});
+			}
+			const key = `admin-transition:${orderId}:${toState}`;
+			const result = await client.transitionOrder(orderId, toState, { idempotencyKey: key });
+			let notice: Notice | undefined;
+			if (!result.ok) {
+				notice = {
+					variant: "error",
+					title: "Status change failed",
+					description:
+						"That status change could not be applied — check the order state and the admin token in Settings.",
+				};
+			} else if (!result.transitioned) {
+				// The guarded flip matched 0 rows — already in that state, or a lost race.
+				// Not a failure: surface a non-error notice rather than a silent re-render.
+				notice = {
+					variant: "default",
+					title: "No change",
+					description: "The order is already in that state.",
+				};
+			}
+			return showLeaf([orderId], notice);
+		},
+	);
 }
 
 function addNoteAction() {
@@ -2231,158 +2703,350 @@ function recordFulfillmentAction() {
 	});
 }
 
-/** DA-3 state 1 → 2 for a cancellation: validate, then re-render with the group
- *  forced open and the typed values staged. NOTHING is written here. */
+/**
+ * DA-3 state 1 → 2 for a cancellation: validate, RE-READ, then re-render with the
+ * group forced open and the typed values staged. NOTHING is written here.
+ *
+ * IT RE-READS BECAUSE `-review` RENDERS THE TWO STATEMENTS THE SHAPE EXISTS TO MAKE
+ * TRUE (DA-3c: "not only the confirm handler"). The confirm it draws says *"Cancel
+ * this order as 'out of stock'? This is permanent…"* over a payload carrying the
+ * watermark. If the order moved between the form rendering and this submit, that
+ * confirm is dead on arrival — `cancelOrderAction`'s own DA-3a check will refuse it
+ * — and the operator would be shown a coherent current panel beside a button that
+ * cannot succeed, with nothing saying why. So the movement is caught HERE, at the
+ * step whose only purpose is letting them check.
+ *
+ * EVERY REFUSAL CARRIES A DRAFT (DA-3a-i): forced open, flattened, prefilled. This
+ * handler was the fifth refusal site on the screen and the one no plan had listed.
+ */
 function cancelReviewAction() {
-	return customAction<AdminOrdersClient>(async (api) => {
+	return customAction<AdminOrdersClient, OrdersRenderState>(async (api) => {
 		const orderId = readString(api.carried?.orderId);
 		if (orderId === undefined) return api.showList(undefined, UNREADABLE);
-		const state = readString(api.carried?.state) ?? "";
+		const observedState = readWatermark(api.carried?.state);
 		const values = api.input.values ?? {};
-		const reason = readString(values.reason) ?? "";
+		// The `select` carries the HUMAN LABEL as its value (see
+		// CANCEL_REASON_BY_LABEL), so map back to the wire reason. Untrusted input:
+		// an unmapped value is refused, never forwarded.
+		const reasonInput = readString(values.reason) ?? "";
+		const reason = CANCEL_REASON_BY_LABEL.get(reasonInput);
 		const detail = (readString(values.detail) ?? "").trim();
 		const cancelledBy = (readString(values.cancelledBy) ?? "").trim();
-		if (!CANCEL_REASON_LABELS.has(reason) || cancelledBy.length === 0) {
-			return api.showLeaf([orderId], {
-				variant: "error",
-				title: "Not cancelled",
-				description: "Choose a reason and enter who is cancelling it. Nothing was changed.",
-			});
+		const draft = (): OrdersRenderState => ({
+			kind: "cancel-draft",
+			reasonInput,
+			detail,
+			cancelledBy,
+		});
+		if (reason === undefined || cancelledBy.length === 0) {
+			return api.showLeaf(
+				[orderId],
+				{
+					variant: "error",
+					title: "Not cancelled",
+					description: "Choose a reason and enter who is cancelling it. Nothing was changed.",
+				},
+				draft(),
+			);
 		}
-		return stagedResponse(api, orderId, {
-			kind: "cancel",
-			orderId,
+		const live = await api.client.getOrder(orderId).catch(() => null);
+		if (live === null) {
+			return api.showLeaf(
+				[orderId],
+				{
+					variant: "error",
+					title: "Could not check the order",
+					description:
+						"This order could not be re-read, so nothing was staged and nothing was changed. Reload and try again.",
+				},
+				draft(),
+			);
+		}
+		if (observedState !== undefined && live.order.state !== observedState) {
+			return api.showLeaf(
+				[orderId],
+				{
+					variant: "error",
+					title: "The order changed — nothing was staged",
+					description: `It was ${observedState} when you started and is now ${live.order.state} — someone else moved it since you opened this form. Check the order below, then review again.`,
+				},
+				draft(),
+			);
+		}
+		return api.showLeaf([orderId], undefined, {
+			kind: "cancel-staged",
 			reason,
 			detail,
 			cancelledBy,
-			state,
+			// The watermark FRESHLY CONFIRMED equal to the observed one, so the confirm
+			// this render draws is one the write can actually accept.
+			state: live.order.state,
 		});
 	});
 }
 
 /**
- * Shared by DA-2b's five per-reason buttons AND DA-3's state-2 confirm — one
+ * Shared by DA-2b's four per-reason buttons AND DA-3's state-2 confirm — one
  * handler, because both carry the same `{orderId, reason, state}` in
  * `button.value` (the DA-3 one adds `detail`).
  *
  * DA-3a, MANDATORY: re-read the order and refuse on a watermark mismatch. The
  * staged `state` is what the operator saw; if the order moved under them, apply
- * NOTHING and name both figures.
+ * NOTHING and name both states.
+ *
+ * EVERY REFUSAL HERE CARRIES A DRAFT (DA-3a-i), including the two that read like
+ * plumbing failures. Nothing was written on any of them and the operator's typed
+ * detail is in hand, so discarding it to tell them to try again makes the safe path
+ * the expensive one — and the next thing they reach for is a one-click reason
+ * button, which records no detail at all.
  */
 function cancelOrderAction() {
-	return customAction<AdminOrdersClient>(async ({ input, client, showLeaf, showList }) => {
-		const payload = asRecord(input.value);
-		const orderId = readString(payload?.orderId);
-		if (orderId === undefined) return showList(undefined, UNREADABLE);
-		const reason = readString(payload?.reason) ?? "";
-		const detail = (readString(payload?.detail) ?? "").trim();
-		const cancelledBy = (readString(payload?.cancelledBy) ?? "").trim();
-		const observedState = readString(payload?.state) ?? "";
-		// Every decoded value is UNTRUSTED operator-round-tripped input (B-1), so the
-		// closed set is re-checked here and not merely at render.
-		if (!CANCEL_REASON_LABELS.has(reason)) {
-			return showLeaf([orderId], UNREADABLE);
-		}
-		// DA-3a: re-read before writing.
-		const live = await client.getOrder(orderId).catch(() => null);
-		if (live === null) {
-			return showLeaf([orderId], {
-				variant: "error",
-				title: "Nothing was cancelled",
-				description:
-					"This order could not be re-checked before cancelling, so nothing was applied. Reload and try again.",
+	return customAction<AdminOrdersClient, OrdersRenderState>(
+		async ({ input, client, showLeaf, showList }) => {
+			const payload = asRecord(input.value);
+			const orderId = readString(payload?.orderId);
+			if (orderId === undefined) return showList(undefined, UNREADABLE);
+			const reason = readString(payload?.reason) ?? "";
+			const detail = (readString(payload?.detail) ?? "").trim();
+			const cancelledBy = (readString(payload?.cancelledBy) ?? "").trim();
+			const observedState = readWatermark(payload?.state);
+			// The draft prefill is in OPTION-VALUE space (the human label), and an
+			// unrecognized reason simply has no label to put back — the form falls to its
+			// default and the operator's detail and name survive, which is the part they
+			// typed.
+			const draft = (): OrdersRenderState => ({
+				kind: "cancel-draft",
+				reasonInput: CANCEL_REASON_LABELS.get(reason) ?? "",
+				detail,
+				cancelledBy,
 			});
-		}
-		if (observedState.length > 0 && live.order.state !== observedState) {
-			return showLeaf([orderId], {
-				variant: "error",
-				title: "The order changed — nothing was cancelled",
-				description: `It was ${observedState} when you started and is now ${live.order.state}. Check the order below before cancelling.`,
-			});
-		}
-		const key = `admin-cancel:${orderId}`;
-		const result = await client.cancelOrder(
-			orderId,
-			{
-				reason,
-				...(detail.length > 0 ? { detail } : {}),
-				cancelledBy: cancelledBy.length > 0 ? cancelledBy : "admin",
-			},
-			{ idempotencyKey: key },
-		);
-		let notice: Notice | undefined;
-		if (!result.ok) {
-			notice =
-				result.reason === "NOT_CANCELLABLE"
-					? {
-							variant: "error",
-							title: "Order can’t be cancelled right now",
-							description:
-								"This order can no longer be cancelled — it may have shipped, or been cancelled without a reason on file. Reload and check its status.",
-						}
-					: {
-							variant: "error",
-							title: "Not cancelled",
-							description:
-								"That cancellation could not be recorded — check the order and the admin token in Settings.",
-						};
-		} else if (!result.cancelled) {
-			notice = {
-				variant: "default",
-				title: "Already cancelled",
-				description: "This order was already cancelled; its recorded reason is shown above.",
-			};
-		} else {
-			notice = {
-				variant: "default",
-				title: "Order cancelled",
-				description: "The cancellation was recorded and the buyer has been emailed.",
-			};
-		}
-		return showLeaf([orderId], notice);
-	});
+			// Every decoded value is UNTRUSTED operator-round-tripped input (B-1), so the
+			// closed set and the watermark's PRESENCE are both re-checked here, not
+			// merely at render.
+			if (!CANCEL_REASON_LABELS.has(reason) || observedState === undefined) {
+				return showLeaf([orderId], UNREADABLE, draft());
+			}
+			// DA-3a: re-read before writing.
+			const live = await client.getOrder(orderId).catch(() => null);
+			if (live === null) {
+				return showLeaf(
+					[orderId],
+					{
+						variant: "error",
+						title: "Nothing was cancelled",
+						description:
+							"This order could not be re-checked before cancelling, so nothing was applied. Reload and try again.",
+					},
+					draft(),
+				);
+			}
+			if (live.order.state !== observedState) {
+				return showLeaf(
+					[orderId],
+					{
+						variant: "error",
+						title: "The order changed — nothing was cancelled",
+						description: `It was ${observedState} when you started and is now ${live.order.state} — someone else moved it since you started. Check the order below, then cancel again if you still want to.`,
+					},
+					draft(),
+				);
+			}
+			const key = `admin-cancel:${orderId}`;
+			const result = await client.cancelOrder(
+				orderId,
+				{
+					reason,
+					...(detail.length > 0 ? { detail } : {}),
+					cancelledBy: cancelledBy.length > 0 ? cancelledBy : "admin",
+				},
+				{ idempotencyKey: key },
+			);
+			// NO DRAFT ON THESE: the write was attempted. `NOT_CANCELLABLE` means the
+			// order cannot be cancelled AT ALL now, so a forced-open form prefilled for a
+			// retry would promise something that is no longer possible; the other branches
+			// are outcomes to read, not inputs to correct.
+			let notice: Notice | undefined;
+			if (!result.ok) {
+				notice =
+					result.reason === "NOT_CANCELLABLE"
+						? {
+								variant: "error",
+								title: "Order can’t be cancelled right now",
+								description:
+									"This order can no longer be cancelled — it may have shipped, or been cancelled without a reason on file. Reload and check its status.",
+							}
+						: {
+								variant: "error",
+								title: "Not cancelled",
+								description:
+									"That cancellation could not be recorded — check the order and the admin token in Settings.",
+							};
+			} else if (!result.cancelled) {
+				notice = {
+					variant: "default",
+					title: "Already cancelled",
+					description: "This order was already cancelled; its recorded reason is shown above.",
+				};
+			} else {
+				notice = {
+					variant: "default",
+					title: "Order cancelled",
+					description: "The cancellation was recorded and the buyer has been emailed.",
+				};
+			}
+			return showLeaf([orderId], notice);
+		},
+	);
 }
 
-/** DA-3 state 1 → 2 for a refund: parse the amount, then re-render with the
- *  Refunds group forced open and the amount staged. NOTHING is written here. */
+/**
+ * DA-3 state 1 → 2 for a refund. NOTHING is written here — and yet this handler
+ * runs THREE checks and one read, because `-review` renders the two statements the
+ * whole shape exists to make true: the button label and the `confirm.text`.
+ *
+ * | Check | Rule | Refusal names |
+ * |---|---|---|
+ * | parses to a positive integer of minor units | M-3 | what was typed |
+ * | required attribution present | DA-3c | the missing field |
+ * | the ledger has not moved since the form rendered | DA-3a | both figures AND the cause |
+ * | `amountCents <= remainingRefundableCents` **live** | DA-3c | the real ceiling |
+ *
+ * WHY IT RE-READS THE LEDGER, given the carrier already holds a watermark. Two
+ * defects, one read:
+ *
+ *  1. **DA-3c wants the LIVE ceiling.** The carrier holds `refundedSoFar`, not the
+ *     remaining balance, and even a carried remaining would be the figure the
+ *     operator SAW rather than the one the write will be judged against.
+ *  2. **State 2 must not render at all once the ledger has moved.** Everything else
+ *     state 2 draws — its label, its `meter`, the Money `fields`, the form's carrier
+ *     — is rebuilt from the FRESH read, while the confirm alone carries the
+ *     state-1 watermark (correctly: re-stamping it fresh while leaving `amountCents`
+ *     alone would assert a decision the operator never made). So a moved ledger
+ *     produces a coherent current panel beside a button that CANNOT succeed, with
+ *     nothing saying why. Refusing here is what removes that state from existence.
+ *
+ * THE ORDER MATTERS. The watermark comparison runs BEFORE the bound check, so the
+ * bound check is always against a ceiling the operator has now been shown — and the
+ * movement refusal, whose copy already names the new remaining balance, wins when
+ * both would fire.
+ *
+ * EVERY REFUSAL CARRIES A DRAFT WITH THE RAW AMOUNT STRING (DA-3a-i, DA-3a-iii
+ * property 5). The first check refuses precisely when the amount did NOT parse, so
+ * there is no `amountCents` on that path and `19,99` cannot be re-derived from cents:
+ * `amountInput` is the only thing that can put it back on screen.
+ */
 function refundReviewAction() {
-	return customAction<AdminOrdersClient>(async (api) => {
+	return customAction<AdminOrdersClient, OrdersRenderState>(async (api) => {
 		const orderId = readString(api.carried?.orderId);
 		if (orderId === undefined) return api.showList(undefined, UNREADABLE);
 		const currency = (readString(api.carried?.currency) ?? "").trim();
-		const refundedSoFarCents = parseCents(api.carried?.refundedSoFar);
+		const observedSoFar = parseCents(api.carried?.refundedSoFar);
 		const values = api.input.values ?? {};
 		const amountStr = (readString(values.amount) ?? "").trim();
 		const reason = (readString(values.reason) ?? "").trim();
 		const refundedBy = (readString(values.refundedBy) ?? "").trim();
+		// The operator's input, VERBATIM, ready for any refusal below.
+		const draft = (): OrdersRenderState => ({
+			kind: "refund-draft",
+			amountInput: amountStr,
+			reason,
+			refundedBy,
+		});
 		// Money parsed to integer MINOR UNITS with exact integer string math (no
 		// float). `allowZero:false` — a refund of nothing is meaningless.
 		const amountCents = parseMinorUnitsInput(amountStr, { allowZero: false });
-		if (amountCents === null || refundedSoFarCents === null || currency.length === 0) {
-			return api.showLeaf([orderId], {
-				variant: "error",
-				title: "Not refunded",
-				description:
-					"Enter a valid refund amount greater than zero (e.g. 19.99). Nothing was changed.",
-			});
+		if (amountCents === null || observedSoFar === null || currency.length === 0) {
+			return api.showLeaf(
+				[orderId],
+				{
+					variant: "error",
+					title: "Not refunded",
+					description:
+						"Enter a valid refund amount greater than zero (e.g. 19.99). Nothing was changed.",
+				},
+				draft(),
+			);
 		}
 		if (refundedBy.length === 0) {
-			return api.showLeaf([orderId], {
-				variant: "error",
-				title: "Not refunded",
-				description: "Enter who is issuing or recording this refund. Nothing was changed.",
-			});
+			return api.showLeaf(
+				[orderId],
+				{
+					variant: "error",
+					title: "Not refunded",
+					description: "Enter who is issuing or recording this refund. Nothing was changed.",
+				},
+				draft(),
+			);
 		}
-		return stagedResponse(api, orderId, {
-			kind: "refund",
-			orderId,
+		const live = await api.client.getRefunds(orderId).catch(() => null);
+		if (live === null) {
+			return api.showLeaf(
+				[orderId],
+				{
+					variant: "error",
+					title: "Could not check the refund ledger",
+					description:
+						"The refund ledger could not be re-read, so nothing was staged and nothing was changed. Reload and try again.",
+				},
+				draft(),
+			);
+		}
+		const liveCur = live.currency.length > 0 ? live.currency : currency;
+		// DA-3a at the REVIEW step: the ledger moved between the form rendering and
+		// this submit, so state 2 would draw a confirm the write will refuse.
+		if (live.refundedTotalCents !== observedSoFar) {
+			return api.showLeaf([orderId], staleLedgerNotice(amountCents, live, liveCur), draft());
+		}
+		// DA-3c: the bound check, against a ceiling just confirmed current. Without
+		// it, `900.00` on a $50 order stages a red `Refund $900.00` and a dialog reading
+		// "Refund $900.00 to …?" — both false at the exact moment they are shown, on the
+		// one step that exists to let an operator check exactly that.
+		if (amountCents > live.remainingCents) {
+			return api.showLeaf(
+				[orderId],
+				{
+					variant: "error",
+					title: "Amount too high",
+					description: `${formatTotal(amountCents, liveCur)} is more than the ${formatTotal(live.remainingCents, liveCur)} that remains refundable on this order. Enter ${formatTotal(live.remainingCents, liveCur)} or less.`,
+				},
+				draft(),
+			);
+		}
+		return api.showLeaf([orderId], undefined, {
+			kind: "refund-staged",
 			amountCents,
-			refundedSoFarCents,
+			refundedSoFarCents: observedSoFar,
 			currency,
 			reason,
 			refundedBy,
 		});
 	});
+}
+
+/**
+ * The DA-3a stale-watermark refusal, shared by the `-review` and the confirm
+ * handlers so the two cannot drift.
+ *
+ * THE CAUSAL CLAUSE IS NOT OPTIONAL. §8's normative example includes *"someone else
+ * refunded this order"*, and an earlier version of this copy dropped it. "The ledger
+ * changed" states an EFFECT and leaves the operator to guess whether they hit a bug;
+ * the causal clause is the fact, it is what stops them retrying identically, and at
+ * 76 characters it is nowhere near the 240 budget — so this was never length-driven.
+ * 162 chars at the worked figures.
+ */
+function staleLedgerNotice(
+	stagedAmountCents: number,
+	live: RefundsSummaryWire,
+	cur: string,
+): Notice {
+	return {
+		variant: "error",
+		title: "The refund ledger changed — nothing was refunded",
+		description: fit(
+			`${formatTotal(stagedAmountCents, cur)} was staged and was not recorded — someone else refunded this order since you started. ${formatTotal(live.remainingCents, cur)} now remains refundable; re-enter an amount below to try again.`,
+			BANNER_BUDGET,
+		),
+	};
 }
 
 /**
@@ -2402,124 +3066,106 @@ function refundReviewAction() {
  * amount comparison (issue #152).
  */
 function refundOrderAction() {
-	return customAction<AdminOrdersClient>(async ({ input, client, showLeaf, showList }) => {
-		const payload = asRecord(input.value);
-		const orderId = readString(payload?.orderId);
-		if (orderId === undefined) return showList(undefined, UNREADABLE);
-		const amountCents = parseCents(payload?.amountCents);
-		const observedSoFar = parseCents(payload?.refundedSoFarCents);
-		const currency = (readString(payload?.currency) ?? "").trim();
-		const reason = (readString(payload?.reason) ?? "").trim();
-		const refundedBy = (readString(payload?.refundedBy) ?? "").trim();
-		if (
-			amountCents === null ||
-			amountCents <= 0 ||
-			observedSoFar === null ||
-			currency.length === 0
-		) {
-			return showLeaf([orderId], UNREADABLE);
-		}
-		// DA-3a: re-read, then compare against the watermark the operator SAW.
-		const live = await client.getRefunds(orderId).catch(() => null);
-		if (live === null) {
-			return showLeaf([orderId], {
-				variant: "error",
-				title: "Nothing was refunded",
-				description:
-					"The refund ledger could not be re-checked, so nothing was applied. Reload and try again.",
+	return customAction<AdminOrdersClient, OrdersRenderState>(
+		async ({ input, client, showLeaf, showList }) => {
+			const payload = asRecord(input.value);
+			const orderId = readString(payload?.orderId);
+			if (orderId === undefined) return showList(undefined, UNREADABLE);
+			const amountCents = parseCents(payload?.amountCents);
+			const observedSoFar = parseCents(payload?.refundedSoFarCents);
+			const currency = (readString(payload?.currency) ?? "").trim();
+			const reason = (readString(payload?.reason) ?? "").trim();
+			const refundedBy = (readString(payload?.refundedBy) ?? "").trim();
+			// The refusal prefill, in RAW STRING space. On the unreadable-payload branch
+			// below there is no parsed amount by definition, so this is the only channel
+			// that can put the operator's figure back; where it parsed, formatting it
+			// back is what the field showed them.
+			const draft = (amountInput: string): OrdersRenderState => ({
+				kind: "refund-draft",
+				amountInput,
+				reason,
+				refundedBy,
 			});
-		}
-		const liveCur = live.currency.length > 0 ? live.currency : currency;
-		if (live.refundedTotalCents !== observedSoFar) {
-			return showLeaf([orderId], {
-				variant: "error",
-				title: "The refund ledger changed — nothing was refunded",
-				description: `${formatTotal(amountCents, liveCur)} was staged, but ${formatTotal(live.remainingCents, liveCur)} now remains refundable. Check the refund ledger below.`,
-			});
-		}
-		// The observed watermark is the third key component (F-2a) — NOT a nonce.
-		const key = `admin-refund:${orderId}:${amountCents}:${observedSoFar}`;
-		const result = await client.refundOrder(
-			orderId,
-			{
-				amountCents,
-				currency,
-				...(reason.length > 0 ? { reason } : {}),
-				refundedBy: refundedBy.length > 0 ? refundedBy : "admin",
-			},
-			{ idempotencyKey: key },
-		);
-		let notice: Notice;
-		if (!result.ok) {
-			notice = refundFailureNotice(result.reason);
-		} else if (result.duplicate) {
-			// A benign replay: the SAME amount against the SAME watermark, i.e. a
-			// double-click. A different amount would have produced a different key.
-			notice = {
-				variant: "default",
-				title: "Already refunded",
-				description:
-					"This refund was already recorded (a duplicate submission); the ledger above is unchanged.",
-			};
-		} else if (result.fullyRefunded) {
-			notice = {
-				variant: "default",
-				title: "Refund complete",
-				description:
-					"The refund was recorded and the order is now fully refunded — the buyer has been emailed.",
-			};
-		} else {
-			notice = {
-				variant: "default",
-				title: "Refund recorded",
-				description:
-					"The refund was recorded. The order stays in its current status; Money → Refunds shows what remains.",
-			};
-		}
-		return showLeaf([orderId], notice);
-	});
-}
-
-/**
- * Re-render the leaf with a DA-3 staged payload in place. The scaffold's
- * `showLeaf` cannot carry render state, so the leaf's reads are repeated here —
- * the alternative would be threading a staging channel through the shared engine
- * for one screen.
- *
- * A failure falls back to a plain state-1 render with an honest notice: nothing
- * was written on a `-review`, so this must NOT reach the engine's containment,
- * whose copy says a mutation may already have applied.
- */
-async function stagedResponse(
-	api: CustomActionApi<AdminOrdersClient>,
-	orderId: string,
-	staged: Staged,
-): Promise<BlockResponse> {
-	try {
-		const detail = await api.client.getOrder(orderId);
-		if (detail === null) return api.showLeaf([orderId]);
-		const surfaces = await loadDetailSurfaces(api.client, orderId);
-		return {
-			blocks: detailBlocks({
-				actions: ORDERS_ACTIONS,
-				path: [orderId],
-				detail,
-				...surfaces,
-				notice: undefined,
-				staged,
-			}),
-		};
-	} catch (err) {
-		// Contained failures are indistinguishable from an unreachable service in
-		// the UI, so the cause has to reach the log or a screen bug reads as an
-		// outage.
-		console.error("[urumi] orders: staged re-render failed:", err);
-		return api.showLeaf([orderId], {
-			variant: "error",
-			title: "Could not show that for review",
-			description: "Nothing was changed. Reload the order and try again.",
-		});
-	}
+			if (
+				amountCents === null ||
+				amountCents <= 0 ||
+				observedSoFar === null ||
+				currency.length === 0
+			) {
+				return showLeaf([orderId], UNREADABLE, draft(""));
+			}
+			// DA-3a: re-read, then compare against the watermark the operator SAW.
+			const live = await client.getRefunds(orderId).catch(() => null);
+			if (live === null) {
+				return showLeaf(
+					[orderId],
+					{
+						variant: "error",
+						title: "Nothing was refunded",
+						description:
+							"The refund ledger could not be re-checked, so nothing was applied. Reload and try again.",
+					},
+					draft(formatMinorUnitsInput(amountCents)),
+				);
+			}
+			const liveCur = live.currency.length > 0 ? live.currency : currency;
+			if (live.refundedTotalCents !== observedSoFar) {
+				// The genuinely CONCURRENT case: the ledger moved between the state-2
+				// render (or the DA-2b button's render) and this click. `refundReviewAction`
+				// catches movement one step earlier; both are required, and they catch
+				// different windows.
+				return showLeaf(
+					[orderId],
+					staleLedgerNotice(amountCents, live, liveCur),
+					draft(formatMinorUnitsInput(amountCents)),
+				);
+			}
+			// The observed watermark is the third key component (F-2a) — NOT a nonce.
+			const key = `admin-refund:${orderId}:${amountCents}:${observedSoFar}`;
+			const result = await client.refundOrder(
+				orderId,
+				{
+					amountCents,
+					currency,
+					...(reason.length > 0 ? { reason } : {}),
+					refundedBy: refundedBy.length > 0 ? refundedBy : "admin",
+				},
+				{ idempotencyKey: key },
+			);
+			// NO DRAFT ON THESE: the write was attempted, so every branch below is an
+			// outcome to read rather than an input to correct — and on `GATEWAY_UNVERIFIED`
+			// the outcome is unknown, where a form inviting a retry is the worst possible
+			// affordance.
+			let notice: Notice;
+			if (!result.ok) {
+				notice = refundFailureNotice(result.reason);
+			} else if (result.duplicate) {
+				// A benign replay: the SAME amount against the SAME watermark, i.e. a
+				// double-click. A different amount would have produced a different key.
+				notice = {
+					variant: "default",
+					title: "Already refunded",
+					description:
+						"This refund was already recorded (a duplicate submission); the ledger above is unchanged.",
+				};
+			} else if (result.fullyRefunded) {
+				notice = {
+					variant: "default",
+					title: "Refund complete",
+					description:
+						"The refund was recorded and the order is now fully refunded — the buyer has been emailed.",
+				};
+			} else {
+				notice = {
+					variant: "default",
+					title: "Refund recorded",
+					description:
+						"The refund was recorded. The order stays in its current status; Money → Refunds shows what remains.",
+				};
+			}
+			return showLeaf([orderId], notice);
+		},
+	);
 }
 
 /** GENERIC, em-dash-correct notices for a refund failure — keyed off the service's
@@ -2585,14 +3231,29 @@ function refundFailureNotice(reason: string | undefined): Notice {
  *  missing one, and raw minor units in a money field is the bug this kills. */
 const UNFORMATTABLE = "—";
 
-/** Fail CLOSED with a GENERIC, em-dash-correct banner — never leaks a raw HTTP
- *  status/URL (e.g. an auth 401 from a missing/expired admin token). */
+/**
+ * Fail CLOSED with a GENERIC, em-dash-correct banner — never leaks a raw HTTP
+ * status/URL (e.g. an auth 401 from a missing/expired admin token).
+ *
+ * E-7: IT MUST NOT ASSERT A CAUSE IT DOES NOT KNOW. This path swallows
+ * *everything* — an unreachable service, a 401, a malformed response, and A BUG IN
+ * THIS FILE (a `carriedForm` digest throw, a `filterPanel` field over budget, a
+ * rejected carrier namespace all land here). The old copy opened *"Could not reach
+ * the commerce service"*, which is simply false whenever a console defect is the
+ * cause, and the cost is not cosmetic: it tells the operator the network is down and
+ * sends whoever they page to the wrong team.
+ *
+ * So the copy names the SYMPTOM, lists the two things the operator can check, and
+ * then says the remaining possibility out loud. That last clause is the load-bearing
+ * one — it is the only thing that stops a console bug being reported as an outage —
+ * and it costs 62 characters. 164 chars total, ≤240 (X-42).
+ */
 function failClosed() {
 	return failClosedResponse({
 		header: "Orders",
 		title: "Orders are unavailable",
 		description:
-			"Could not reach the commerce service. Check the service connection and the admin token in Settings.",
+			"Orders could not be loaded. Check the service connection and the admin token in Settings; if both look right, this is a fault in the console itself — not your data.",
 		toast: "Could not load orders",
 	});
 }
@@ -2680,12 +3341,6 @@ function filterFromValues(values: Record<string, unknown>): OrdersFilterForm {
 	if (to !== undefined && to.length > 0) form.to = to;
 	if (search !== undefined && search.length > 0) form.search = search;
 	return form;
-}
-
-/** A refund count as a phrase rather than a bare integer (see the call site). */
-function refundCount(n: number): string {
-	if (n === 0) return "None";
-	return n === 1 ? "1 refund" : `${n} refunds`;
 }
 
 /** A one-line reconciliation summary for the identity strip. */

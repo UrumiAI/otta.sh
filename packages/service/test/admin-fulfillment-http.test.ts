@@ -95,6 +95,11 @@ describe.skipIf(PG === undefined)("admin record-fulfillment HTTP contract", () =
 		const ro = reloaded.order as Record<string, unknown>;
 		expect(ro.state).toBe("shipped");
 		expect((ro.fulfillment as Record<string, unknown>).trackingNumber).toBe("1Z-999");
+		// AND ASSERT IT, because the admin console's DA-2a watermark rests on this exact
+		// row: the route returns `[...legalNextStates(state)]` with NO narrowing, so a
+		// shipped order really is offered the TERMINAL `refunded` flip. Until this line
+		// existed the claim was grep-only, and the comment above asserted nothing.
+		expect(reloaded.allowedTransitions).toEqual(["delivered", "refunded"]);
 	});
 
 	test("trims the free-text fields + normalizes an absent tracking URL / ship time", async () => {
