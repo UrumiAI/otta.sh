@@ -3,9 +3,11 @@
 Status: **normative** (2026-07-30, revision 4, plus two amendments. **(1)** DA-3a-ii is **replaced**
 and DA-3a-iii added, because the scaffold gained a render-state channel in `ce5eecb` and
 revision 4's DA-3a-ii said it had none. **(2)** D-5 and X-18 are scoped explicitly to the **emitted response** —
-a screenshot showing two open groups is not an X-18 finding — and DA-2c's rationale is restated on
-emphasis grounds, the "~1100px" geometry it carried being wrong: `actions` is one horizontal row.)
-Applies to all **seven** admin screens under
+a screenshot showing two open groups is not an X-18 finding — DA-2c's rationale is restated on
+emphasis grounds, the "~1100px" geometry it carried being wrong (`actions` is one horizontal row),
+and **F-5a-i** is new: F-5a's sibling-discard hazard may no longer be excused as "realistically one
+group is open", because open state is sticky, so a split form set must carry a `context` line saying
+so (X-45).) Applies to all **seven** admin screens under
 `packages/plugin/src/admin/` — Orders, Pricing & inventory, Coupons, Tax, Shipping, Reports and
 Settings, as registered at `admin-route.ts:83-101`. (Earlier revisions said "six"; the count was
 wrong and five parallel teams read this line.)
@@ -241,7 +243,7 @@ is the index so nothing is buried. **Read your screen's rows before you start.**
 
 **#161's disclosures were written against revision 3, not this text.** So they quote rule wording,
 section counts and listing lines that revision 4 has since changed — `select`-vs-`combobox` throughout,
-X-11's "eight budgets" (now seven), §13's "23 of 33" (now 30 of 45), V-1's foundation ownership, and the
+X-11's "eight budgets" (now seven), §13's "23 of 33" (now 30 of 46), V-1's foundation ownership, and the
 §11.2 lines fixed below. Reading that PR against this document, the offsets are the **fix**, not
 staleness: every one of the nineteen is live and indexed here.
 
@@ -945,10 +947,35 @@ was replaced with the submitted values (last write wins)" (`coupons-page.ts:858`
 **The trade-off to accept where splitting *is* legal.** Saving form A reloads the record, which
 changes `updatedAt`, which changes forms B and C's carriers, which remounts them — **discarding any
 unsubmitted input in the siblings.** This is the same hazard `filterRow()` was withdrawn for
-(§0.1 A). It is acceptable here only because each split form sits in its own **collapsed** accordion
-(D-5), so realistically one is open at a time. State it in the PR; do not discover it in review.
+(§0.1 A). State it in the PR; do not discover it in review.
 
-The exact split per screen is enumerated in §12 — teams do not choose it.
+**F-5a-i — a split form set carries one `context` line naming the discard.** Revision 4 accepted the
+hazard on the grounds that each split form sits in its own **collapsed** accordion (D-5), "so
+realistically one is open at a time." **That reasoning does not hold and is withdrawn.** D-5
+constrains the emitted response, not the viewport: accordion open state is client-side and
+**sticky** across a re-render with an unchanged `block_id` (B-5, and D-5's "constrains the emitted
+response" paragraph), so a sibling the operator expanded earlier is **still expanded** when saving
+form A remounts it, and the `default_open: false` in the new response will not close it. The discard is
+reachable the first ordinary time an operator works in two sections — not in a corner case. It was
+also never checkable: an implementer cannot build "realistically" and a reviewer cannot rule
+pass/fail on it.
+
+So the operator is told instead. **One `context` line sits above the split groups**, at the panel
+level — one line for the whole set, never one per form. Normative, ≤200 — this blockquote is the
+spec:
+
+> `Each section saves on its own. Save the section you are editing before you open another — saving
+> one reloads the product and clears unsaved edits in the others.`
+
+Written to DA-7a's discipline — it starts from the operator's goal, ends at the act, and contains no
+"deliberately" / "there is no" / "we do not" (X-41 binds on every `context` line, not only
+withheld-action ones). It is **not** a DA-7 line: DA-7 covers a *withheld control*, and here every
+control renders. A screen whose split noun is not "product" substitutes its own noun; nothing else
+varies. X-45 rejects the missing line and the per-form repeat.
+
+The exact split per screen is enumerated in §12 — teams do not choose it. **Products' three-way edit
+split (§12.1) is the only instance today, and §12.1 is built last** — so F-5a-i is written here
+rather than left to be rediscovered.
 
 **F-5c — a full-replace form is exempt from F-5, up to 8 visible fields.** Where F-5a forbids
 splitting, the budget cannot be met by splitting and dropping a field is data loss, so the form is
@@ -2047,6 +2074,10 @@ tab         block_id products:<id>:tabs   default_tab 0   panels ALWAYS 2
 │       priced and unpriced branches, and only one renders) = 13 operator fields. F-2 deletes
 │       2 carriers and F-3 deletes `inventoryPolicy`, leaving 12 — and the split below covers
 │       exactly 12: 2 + 4 + 6.
+│    context    "Each section saves on its own. Save the section you are editing before you
+│               open another — saving one reloads the product and clears unsaved edits in the
+│               others."                                    (F-5a-i, verbatim; ONE line, here
+│               — above the three groups, never repeated inside them. X-45)
 │    accordion  block_id products:<id>:edit-identity   default_open per D-5 rank 3
 │               label "Identity"
 │               └─ context "Title and SKU are also shown in the CMS; editing here changes the
@@ -2490,7 +2521,7 @@ Assert a **depth-3 open fired from a button** (shipping zone → method → rate
 ## 13. Anti-patterns — a reviewer rejects these on sight
 
 **H** = mechanically enforced by `assertBlockContract` (§15); a rule without **H** is a human
-review catch. **30 of the 45 rows are H — and `assertBlockContract` does not exist yet** (V-3a): it is
+review catch. **30 of the 46 rows are H — and `assertBlockContract` does not exist yet** (V-3a): it is
 its own PR, and it **gates every screen after Orders** (§15.1 step 2). So if you are reading this while
 building a screen, the helper exists and you call it. Only Orders predates it, and only Orders encodes
 these rules as its own assertions.
@@ -2542,6 +2573,7 @@ these rules as its own assertions.
 | X-42 | H | A fail-closed banner that names a single cause (`Could not reach the commerce service`) rather than E-7's normative copy. | E-7 |
 | X-43 | | A `Total` rendered on the same screen as a smaller `Captured`/`Settled`/`Allocated` with no M-11 line; or a bare `Remaining`/`Available`/`Left` label. | M-11, M-11a |
 | X-44 | | A T-8 cap `context` line emitted when the read was **not** truncated. | T-8a |
+| X-45 | | A split form set (F-5a) with **no** panel-level sibling-discard `context` line, or that line repeated inside each form's group instead of appearing once above them. Also: any PR that justifies the sibling-discard hazard by claiming the groups are collapsed — open state is sticky (B-5), which is why F-5a-i requires the line. | F-5a-i |
 
 ---
 
@@ -2670,7 +2702,7 @@ reviewed. *Done in PR #161 (`aa2bd97` → `3c7f037`); V-1a generalises it to the
 `packages/plugin/test/helpers/`. The two extra arguments are not optional: **X-16** cannot be
 decided from the blocks alone (it must compare the panel set against D-2's per-screen table) and
 **X-27**'s second half cannot either (it must know whether this response is a leaf detail). It
-enforces every rule marked **H** in §13 (**30 of 45**), the **seven** authored prose budgets (not the
+enforces every rule marked **H** in §13 (**30 of 46**), the **seven** authored prose budgets (not the
 `fields`-value 40 — X-11a), and the banned phrase. Every page suite calls it once per rendered
 response. **A rule not in that helper is advisory** — it is a human review catch, and a PR that only
 runs the helper has not verified the non-**H** rules.
