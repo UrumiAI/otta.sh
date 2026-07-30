@@ -10,7 +10,12 @@
  *   - `createListDetailHandler({actions, createClient, levels, parseOpen,
  *     customActions})` + `listLevel(...)` / `leafLevel(...)` / `customAction(...)`
  *     — the N-level dispatch engine (open/back/page/apply-filter) driven by an
- *     array of levels indexed by drill depth.
+ *     array of levels indexed by drill depth. A custom action re-renders a level
+ *     through `showLeaf`/`showList`, which carry TWO channels back into that
+ *     level's `render`: a `Notice` banner (what happened) and the screen's own
+ *     opaque `renderState` (what to render now — which group to open, which values
+ *     to prefill, as DA-3/DA-3a needs). Render state is within-request only:
+ *     nothing is stored, so screens stay stateless.
  *   - `NavPath` + `encodeListCursor`/`decodeListCursor` + `backButton(...)` +
  *     `filterPathField(...)` — drill-path & keyset-cursor plumbing that survives
  *     stateless interactions (the engine auto-injects the filter path carrier
