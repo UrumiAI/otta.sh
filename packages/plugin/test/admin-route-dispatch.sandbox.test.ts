@@ -1,5 +1,6 @@
 import { plugin } from "@urumi/plugin";
 import { afterEach, describe, expect, test } from "vitest";
+import { blocksOf, field, findBlocks, formFor } from "./helpers/blocks.js";
 import {
 	startStubCommerceServer,
 	type StubCommerceServer,
@@ -101,19 +102,15 @@ describe("admin route dispatch (workerd sandbox)", () => {
 		await seedToken(sandbox, stub, "admin-token-xyz");
 
 		const outcome = await sandbox.invokeRoute("admin", { type: "page_load", page: "/reports" });
-		expect("result" in outcome).toBe(true);
-		if (!("result" in outcome)) return;
-		const blocks = (outcome.result as { blocks: Array<Record<string, unknown>> }).blocks;
-		const sections = blocks.filter((b) => b.type === "section").map((b) => b.text);
-		expect(sections).toEqual(
-			expect.arrayContaining([
-				"Revenue by day",
-				"Orders by status",
-				"Top products (by revenue)",
-				"Low stock",
-			]),
+		const blocks = blocksOf(outcome);
+		expect(blocks.length).toBeGreaterThan(0);
+		// §12.5: the four report groups are accordions, resolved by `block_id`
+		// (never by label — D-6 makes labels carry live figures).
+		const groupIds = findBlocks(blocks, "accordion").map((a) => a.block_id);
+		expect(groupIds).toEqual(
+			expect.arrayContaining(["reports:revenue", "reports:statuses", "reports:top", "reports:low"]),
 		);
-		expect(blocks.filter((b) => b.type === "table")).toHaveLength(4);
+		expect(findBlocks(blocks, "table")).toHaveLength(4);
 		// All four guarded reads carried the token from write-only kv.
 		expect(stub.requests.length).toBe(4);
 		for (const req of stub.requests) {
@@ -130,19 +127,16 @@ describe("admin route dispatch (workerd sandbox)", () => {
 		});
 
 		const outcome = await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" });
-		expect("result" in outcome).toBe(true);
-		if (!("result" in outcome)) return;
-		const blocks = (outcome.result as { blocks: Array<Record<string, unknown>> }).blocks;
-		const allFields = blocks
-			.filter((b) => b.type === "form")
-			.flatMap((b) => (b.fields as Array<Record<string, unknown>>) ?? []);
-		const byId = new Map(allFields.map((f) => [f.action_id, f]));
-		expect(byId.has("storeDisplayName")).toBe(true);
-		expect(byId.has("holdTtlMinutes")).toBe(true);
-		expect(byId.has("lowStockThreshold")).toBe(true);
+		const blocks = blocksOf(outcome);
+		expect(blocks.length).toBeGreaterThan(0);
+		// §12.6: the three groups are accordions now — resolve each field by its
+		// form's SUBMIT action_id (stable), not by a top-level flat scan.
+		expect(field(formFor(blocks, "save-display"), "storeDisplayName")).toBeDefined();
+		expect(field(formFor(blocks, "save-operational"), "holdTtlMinutes")).toBeDefined();
+		expect(field(formFor(blocks, "save-operational"), "lowStockThreshold")).toBeDefined();
 		// The masked secret field renders write-only: it exists, is a secret_input,
 		// and carries NO initial_value (the stored token is never echoed).
-		const secret = byId.get("internalToken");
+		const secret = field(formFor(blocks, "save-token"), "internalToken");
 		expect(secret?.type).toBe("secret_input");
 		expect(secret).not.toHaveProperty("initial_value");
 	});
@@ -157,12 +151,11 @@ describe("admin route dispatch (workerd sandbox)", () => {
 
 		// No seedToken → the guarded reads answer 401.
 		const outcome = await sandbox.invokeRoute("admin", { type: "page_load", page: "/reports" });
-		expect("result" in outcome).toBe(true);
-		if (!("result" in outcome)) return;
-		const blocks = (outcome.result as { blocks: Array<Record<string, unknown>> }).blocks;
-		const banner = blocks.find((b) => b.type === "banner" && b.variant === "error");
+		const blocks = blocksOf(outcome);
+		const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
 		expect(banner).toBeDefined();
-		expect(String(banner?.text)).not.toMatch(/HTTP \d|\/reports\/|401/);
+		const text = `${String(banner?.title ?? "")} ${String(banner?.description ?? "")}`;
+		expect(text).not.toMatch(/HTTP \d|\/reports\/|401/);
 	});
 
 	test("the old per-page keys no longer resolve (404 unknown route)", async () => {

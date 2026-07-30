@@ -429,11 +429,10 @@ export interface TableBlock extends CarrierBlockBase {
 	/** em-dash's authoritative `TableBlock` REQUIRES `page_action_id` (the
 	 *  block_action id its "Load more" fires) and allows an optional `next_cursor`
 	 *  (`packages/blocks/src/types.ts:271-278`). Kept OPTIONAL here (MOD-3
-	 *  backward-compat): the Phase-7 Reports tables — shipped in PR #46 — omit
-	 *  both, and widening must not break them. The Orders console ALWAYS supplies
-	 *  `page_action_id` (and `next_cursor` when a next page exists), which is what
-	 *  the production renderer requires. FOLLOW-UP: migrate the Reports tables to
-	 *  carry `page_action_id` and tighten this to required. */
+	 *  backward-compat) rather than tightened to required: every admin table on
+	 *  every screen sets it in practice (T-6/R-21) — including the Reports
+	 *  tables, which used to be the one holdout (§12.5's Bug B) — but narrowing
+	 *  the type is a separate, broader change than fixing that one screen. */
 	page_action_id?: string;
 	next_cursor?: string;
 	empty_text?: string;
