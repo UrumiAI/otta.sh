@@ -714,6 +714,21 @@ export function readString(value: unknown): string | undefined {
 	return typeof value === "string" ? value : undefined;
 }
 
+/**
+ * Read a `toggle` field's submitted value. `toggle` emits a REAL boolean
+ * (`elements/toggle.tsx`), not a string — {@link readString} is `typeof
+ * value === "string" ? value : undefined`, so every parser that read a toggle
+ * with `readString(values.x) === "true"` silently got `undefined !== "true"`,
+ * i.e. always `false`, on a field that appeared to save and never persisted
+ * (design spec F-6). A toggle is mount-only (R-12) and MUST declare an
+ * `initial_value` (F-6b/X-24) or it is simply absent from `values` — this
+ * function does not paper over that; it only fixes the type coercion once the
+ * field is present.
+ */
+export function readBoolean(value: unknown): boolean | undefined {
+	return typeof value === "boolean" ? value : undefined;
+}
+
 export function asRecord(value: unknown): Record<string, unknown> | undefined {
 	return value !== null && typeof value === "object"
 		? (value as Record<string, unknown>)
