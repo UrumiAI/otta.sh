@@ -63,35 +63,38 @@ describe.skipIf(PG === undefined)("admin product EDIT HTTP contract", () => {
 		return detail.updatedAt as string;
 	}
 
-	test("applies a price + title edit under a matching expectedUpdatedAt (200), never touching the publish gate", async () => {
+	test("applies a price edit under a matching expectedUpdatedAt (200), never touching the publish gate", async () => {
 		const watermark = await seedAndReadWatermark();
 		const res = await patch("prod-1", {
 			expectedUpdatedAt: watermark,
 			price: { amount: 2599, currency: "USD" },
-			title: "Renamed",
+			taxClass: "reduced",
 		});
 		expect(res.status).toBe(200);
 		expect((await json(res)).ok).toBe(true);
 
 		const after = (await json(await get("prod-1"))).product as Record<string, unknown>;
 		expect(after.priceCents).toBe(2599);
-		expect(after.title).toBe("Renamed");
+		expect(after.taxClass).toBe("reduced");
 		expect(after.active).toBe(true); // the CMS publish gate is untouched.
+		// The CMS-owned title rode through untouched — this edit has no channel to it.
+		expect(after.title).toBe("Original");
 	});
 
 	test("a concurrent edit is a 409 STALE_EDIT carrying the current watermark, never a clobber", async () => {
 		await seedAndReadWatermark();
 		const res = await patch("prod-1", {
 			expectedUpdatedAt: "1999-01-01T00:00:00.000Z",
-			title: "loser",
+			sku: "SKU-loser",
 		});
 		expect(res.status).toBe(409);
 		const body = await json(res);
 		expect(body.reason).toBe("STALE_EDIT");
 		expect(typeof body.currentUpdatedAt).toBe("string");
-		// The losing write never landed.
-		expect(((await json(await get("prod-1"))).product as Record<string, unknown>).title).toBe(
-			"Original",
+		// The losing write never landed — the lost-update guard keeps its teeth on a
+		// field the edit CAN write (title moved to the CMS sync, ADR-0013).
+		expect(((await json(await get("prod-1"))).product as Record<string, unknown>).sku).toBe(
+			"SKU-prod-1",
 		);
 	});
 
@@ -99,7 +102,7 @@ describe.skipIf(PG === undefined)("admin product EDIT HTTP contract", () => {
 		const watermark = await seedAndReadWatermark();
 		const first = await patch(
 			"prod-1",
-			{ expectedUpdatedAt: watermark, title: "Once" },
+			{ expectedUpdatedAt: watermark, taxClass: "reduced" },
 			{ idempotencyKey: "edit-key-1" },
 		);
 		expect(first.status).toBe(200);
@@ -107,10 +110,69 @@ describe.skipIf(PG === undefined)("admin product EDIT HTTP contract", () => {
 		// precedence over the CAS), rather than a spurious 409.
 		const replay = await patch(
 			"prod-1",
-			{ expectedUpdatedAt: watermark, title: "Once" },
+			{ expectedUpdatedAt: watermark, taxClass: "reduced" },
 			{ idempotencyKey: "edit-key-1" },
 		);
 		expect(replay.status).toBe(200);
+	});
+
+	// -- ADR-0013: title is CMS-owned, and the PATCH says so out loud -----------
+
+	test("REJECTS a PATCH carrying `title` (400 naming the field) and the stored title is UNCHANGED", async () => {
+		// Rung 3 of the ADR-0013 enforcement ladder. `editProductCommerceBody` is
+		// `.strict()` precisely so a stale client's title edit cannot vanish behind a
+		// 200: zod's default object behaviour STRIPS an unknown key, which is the
+		// failure mode most likely to be misread as "it saved".
+		//
+		// THE STORED-VALUE ASSERTION IS THE POINT. A status-only test passes just as
+		// well against a stripping schema and therefore proves nothing; only reading
+		// the title back distinguishes "rejected" from "silently dropped".
+		const watermark = await seedAndReadWatermark();
+		const res = await patch("prod-1", {
+			expectedUpdatedAt: watermark,
+			title: "Renamed from a stale client",
+		});
+		expect(res.status).toBe(400);
+		const body = await json(res);
+		expect(body.error).toBe("invalid request body");
+		// The rejection NAMES the offending field, so the client sees which key is
+		// unwelcome rather than an opaque "invalid body".
+		expect(JSON.stringify(body.issues)).toContain("title");
+
+		const after = (await json(await get("prod-1"))).product as Record<string, unknown>;
+		expect(after.title).toBe("Original");
+	});
+
+	test("a legal edit alongside an illegal `title` is rejected WHOLE — no partial application", async () => {
+		// The other half of `.strict()`: the price must not land while the title is
+		// quietly discarded, which is what a stripping schema would do.
+		const watermark = await seedAndReadWatermark();
+		const res = await patch("prod-1", {
+			expectedUpdatedAt: watermark,
+			price: { amount: 2599, currency: "USD" },
+			title: "Renamed from a stale client",
+		});
+		expect(res.status).toBe(400);
+
+		const after = (await json(await get("prod-1"))).product as Record<string, unknown>;
+		expect(after.priceCents).toBe(1000); // untouched
+		expect(after.title).toBe("Original"); // untouched
+	});
+
+	test("the CMS sync's own channel (PUT /products/:id/commerce) still writes the title", async () => {
+		// The positive statement of ADR-0013: removing the admin writer must not
+		// remove the ONE writer that remains. Without this the suite would be happy
+		// with a title nothing can ever set.
+		await seedAndReadWatermark();
+		const res = await fetch(`${server.baseUrl}/products/prod-1/commerce`, {
+			method: "PUT",
+			headers: { "Content-Type": "application/json", "Idempotency-Key": "sync-1" },
+			body: JSON.stringify({ title: "Renamed by the CMS" }),
+		});
+		expect(res.status).toBe(200);
+
+		const after = (await json(await get("prod-1"))).product as Record<string, unknown>;
+		expect(after.title).toBe("Renamed by the CMS");
 	});
 
 	test("rejects a silent currency switch (409 CURRENCY_MISMATCH)", async () => {
@@ -150,7 +212,7 @@ describe.skipIf(PG === undefined)("admin product EDIT HTTP contract", () => {
 	test("404s for an unknown product (an edit is not a create)", async () => {
 		const res = await patch("does-not-exist", {
 			expectedUpdatedAt: "2026-07-10T01:00:00.000Z",
-			title: "ghost",
+			taxClass: "reduced",
 		});
 		expect(res.status).toBe(404);
 		expect((await json(res)).reason).toBe("PRODUCT_NOT_FOUND");
@@ -159,7 +221,7 @@ describe.skipIf(PG === undefined)("admin product EDIT HTTP contract", () => {
 	test("guard: no admin token ⇒ 401", async () => {
 		const res = await patch(
 			"prod-1",
-			{ expectedUpdatedAt: "2026-07-10T01:00:00.000Z", title: "x" },
+			{ expectedUpdatedAt: "2026-07-10T01:00:00.000Z", taxClass: "reduced" },
 			{ token: null },
 		);
 		expect(res.status).toBe(401);
@@ -246,7 +308,10 @@ describe.skipIf(PG === undefined)("admin product EDIT HTTP contract", () => {
 					"Content-Type": "application/json",
 					"X-Internal-Token": gated.internalToken as string,
 				},
-				body: JSON.stringify({ expectedUpdatedAt: "2026-07-10T01:00:00.000Z", title: "x" }),
+				body: JSON.stringify({
+					expectedUpdatedAt: "2026-07-10T01:00:00.000Z",
+					taxClass: "reduced",
+				}),
 			});
 			// The app-level write gate rejects a non-GET without the service token.
 			expect([401, 403]).toContain(res.status);

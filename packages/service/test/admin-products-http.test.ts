@@ -267,7 +267,10 @@ describe.skipIf(PG === undefined)("admin Products console HTTP contract", () => 
 		const patchRes = await fetch(`${server.baseUrl}/admin/products/prod-deleted`, {
 			method: "PATCH",
 			headers: { "X-Internal-Token": token, "Content-Type": "application/json" },
-			body: JSON.stringify({ expectedUpdatedAt: "2026-07-13T00:00:00.000Z", title: "New title" }),
+			// `taxClass`, not `title` — the edit schema is `.strict()` and title is
+			// CMS-owned (ADR-0013), so a title here would be a 400 and this case
+			// would stop testing the tombstone guard it exists for.
+			body: JSON.stringify({ expectedUpdatedAt: "2026-07-13T00:00:00.000Z", taxClass: "reduced" }),
 		});
 		expect(patchRes.status).toBe(404);
 		expect((await json(patchRes)).reason).toBe("PRODUCT_NOT_FOUND");

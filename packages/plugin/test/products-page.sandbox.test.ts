@@ -388,6 +388,11 @@ describe("admin Products console (workerd sandbox)", () => {
 		expect(byLabel.get("SKU")).toBe("SKU-1");
 		expect(byLabel.get("Price")).toContain("19.99");
 		expect(byLabel.get("Status")).toBe("active");
+		// Title is DISPLAYED here (ADR-0013) even though it cannot be edited — the
+		// same shape Status has. Deleting the input must not delete the display, and
+		// the LABEL names the owner (spec rule F-2b) so the merchant reads why at the
+		// row rather than in the help paragraph.
+		expect(byLabel.get("Title (set in the CMS)")).toBe("Blue Widget");
 	});
 
 	test("open an unknown product → 'not found', never a hard error", async () => {
@@ -441,6 +446,38 @@ describe("admin Products console (workerd sandbox)", () => {
 		expect(byId.get("expectedUpdatedAt")?.initial_value).toBe("2026-07-12T01:00:00.000Z");
 		// The publish gate (active) is NOT an editable field on this page.
 		expect(byId.has("active")).toBe(false);
+		// Neither is `title` (ADR-0013): the CMS content sync is its sole writer, so
+		// a merchant edit here would be silently overwritten by the next save — the
+		// exact failure class `active` is excluded for. The read-only Title row on
+		// the detail (asserted above) is the whole of this page's title surface.
+		expect(byId.has("title")).toBe(false);
+	});
+
+	test("ADR-0013: the detail RENDERS the title (row + header) while offering no way to edit it", async () => {
+		await boot();
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "products:open",
+			values: { productId: "prod-1" },
+		});
+		const blocks = blocksOf(outcome);
+
+		// Display survives: the header and the read-only fields row, whose label
+		// names the owner (F-2b) rather than reading as a plain editable-looking
+		// "Title".
+		expect(blocks.some((b) => b.type === "header" && b.text === "Blue Widget")).toBe(true);
+		const allFields = blocks
+			.filter((b) => b.type === "fields")
+			.flatMap((b) => (b.fields as Array<{ label: string; value: string }>) ?? []);
+		expect(
+			allFields.some((f) => f.label === "Title (set in the CMS)" && f.value === "Blue Widget"),
+		).toBe(true);
+
+		// …and NO form anywhere on this screen offers a title input.
+		const everyFormField = blocks
+			.filter((b) => b.type === "form")
+			.flatMap((b) => (b.fields as Array<Record<string, unknown>>) ?? []);
+		expect(everyFormField.some((f) => f.action_id === "title")).toBe(false);
 	});
 
 	test("the edit form surfaces the data-model adds: compare-at, unit cost, tax-class registry select, deny-only policy", async () => {
@@ -582,12 +619,14 @@ describe("admin Products edit / save (workerd sandbox)", () => {
 			values: {
 				productId: "prod-1",
 				expectedUpdatedAt: "2026-07-12T01:00:00.000Z",
-				title: "Blue Widget XL",
 				sku: "SKU-1",
 				price: "24.50",
 				currency: "USD",
 				productKind: "physical",
 				taxClass: "standard",
+				// A stale/hostile client could still POST a title; the plugin must not
+				// forward it, and the service's `.strict()` schema would 400 it if it did.
+				title: "Blue Widget XL",
 			},
 		});
 
@@ -601,8 +640,10 @@ describe("admin Products edit / save (workerd sandbox)", () => {
 		// Money reached the wire as INTEGER minor units (24.50 → 2450), never a float.
 		expect(body.price).toEqual({ amount: 2450, currency: "USD" });
 		expect(body.expectedUpdatedAt).toBe("2026-07-12T01:00:00.000Z");
-		expect(body.title).toBe("Blue Widget XL");
 		expect("active" in body).toBe(false);
+		// ADR-0013: `title` never reaches the edit wire, even when a submitted form
+		// carries one. The CMS content sync is its only writer.
+		expect("title" in body).toBe(false);
 
 		// The leaf reloaded (a fresh GET) and shows a success notice.
 		const blocks = blocksOf(outcome);
@@ -622,7 +663,7 @@ describe("admin Products edit / save (workerd sandbox)", () => {
 			values: {
 				productId: "prod-1",
 				expectedUpdatedAt: "1999-01-01T00:00:00.000Z", // an admin who loaded a stale revision
-				title: "loser edit",
+				sku: "SKU-loser",
 			},
 		});
 		const blocks = blocksOf(outcome);

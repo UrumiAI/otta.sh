@@ -374,7 +374,20 @@ function detailBlocks(
 	taxClasses: TaxClassWire[],
 ): Block[] {
 	const fields: Array<{ label: string; value: string }> = [
-		{ label: "Title", value: p.title ?? "(untitled)" },
+		// READ-ONLY, exactly like Status below it, and for the same reason: the CMS
+		// owns the title and the content sync is the only writer of
+		// `product_commerce.title`, so a Title input here would be silently
+		// overwritten by the merchant's next CMS save. Rename the CMS document
+		// instead. DO NOT add a Title field to the edit form below — the port type
+		// `UpdateProductCommerceFieldsInput` has no `title`, so it will not compile,
+		// and the service PATCH schema is `.strict()`, so it would 400 anyway.
+		// Spec rule F-2b; reasoning: `adr/0013-product-title-is-cms-owned.md`.
+		//
+		// THE LABEL CARRIES THE OWNER (F-2b): the merchant looking for "why can't I
+		// edit this" is looking at the row, not at the help paragraph below — which
+		// is already over the ≤200-char context budget and cannot absorb another
+		// clause.
+		{ label: "Title (set in the CMS)", value: p.title ?? "(untitled)" },
 		{ label: "SKU", value: p.sku ?? "—" },
 		{ label: "Price", value: formatOptionalTotal(p.priceCents, p.currency) },
 		{
@@ -437,7 +450,7 @@ function detailBlocks(
 		// invariant are exempt and stay). It is still over the ≤200-char context
 		// budget (X-11) — splitting it into three sub-200 lines is the Pricing &
 		// inventory rebuild's job (spec §12.1), not this merge's.
-		text: 'This is the only place pricing, stock and the other commercial fields are edited — the CMS holds no commerce data. Status is the CMS publish state: publish or unpublish the document to change it. Titles and images are CMS-managed too. Stock starts at zero when a SKU is set here; add units with Restock below. Price, compare-at and unit cost all use the product\'s one currency — set the price first on a new product. Compare-at is the struck-through "was" price; a value at or below the price is allowed and saved as-is, so double-check it. Unit cost is admin-only margin data, never shown to buyers. Out-of-stock policy is Deny only for now: the store stops selling at zero stock; backorders are a future capability.',
+		text: 'This is the only place pricing, stock and the other commercial fields are edited — the CMS holds no commerce data. Status is the CMS publish state: publish or unpublish the document to change it. Title and images work the same way: rename the document in the CMS and the new title appears here on the next save. Stock starts at zero when a SKU is set here; add units with Restock below. Price, compare-at and unit cost all use the product\'s one currency — set the price first on a new product. Compare-at is the struck-through "was" price; a value at or below the price is allowed and saved as-is, so double-check it. Unit cost is admin-only margin data, never shown to buyers. Out-of-stock policy is Deny only for now: the store stops selling at zero stock; backorders are a future capability.',
 	});
 	blocks.push(editForm(actions, p, taxClasses));
 
@@ -575,12 +588,8 @@ function editForm(
 			options: [{ value: p.updatedAt, label: p.updatedAt }],
 			initial_value: p.updatedAt,
 		},
-		{
-			type: "text_input",
-			action_id: "title",
-			label: "Title",
-			...(p.title !== null ? { initial_value: p.title } : {}),
-		},
+		// NO Title input, deliberately — see the read-only Title row in
+		// `detailBlocks` and `adr/0013-product-title-is-cms-owned.md`.
 		{
 			type: "text_input",
 			action_id: "sku",
@@ -781,9 +790,9 @@ function buildEditWire(
 ): BuildEditResult {
 	const wire: ProductEditWire = { expectedUpdatedAt };
 
-	const title = readString(values.title)?.trim();
-	if (title !== undefined && title.length > 0) wire.title = title;
-
+	// `values.title` is NOT read: the form has no Title input, and the service's
+	// `.strict()` PATCH schema rejects one outright (ADR-0013). A stale bundle's
+	// stray value dies here rather than travelling to a 400.
 	const sku = readString(values.sku)?.trim();
 	if (sku !== undefined && sku.length > 0) wire.sku = sku;
 
@@ -886,7 +895,8 @@ function deriveEditIdempotencyKey(productId: string, wire: ProductEditWire): str
 		wire.expectedUpdatedAt,
 		wire.sku ?? null,
 		wire.price ?? null,
-		wire.title ?? null,
+		// No `title` component — the wire cannot carry one (ADR-0013). Removing it
+		// CHANGES the derived key, which is correct: it is a different payload.
 		wire.taxClass ?? null,
 		wire.compareAtPrice ?? null,
 		wire.unitCost ?? null,

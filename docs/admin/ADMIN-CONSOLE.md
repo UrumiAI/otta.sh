@@ -1,6 +1,6 @@
 # Urumi admin console — design spec
 
-Status: **normative** (2026-07-30, revision 4, plus three amendments. **(1)** DA-3a-ii is **replaced**
+Status: **normative** (2026-07-30, revision 4, plus four amendments. **(1)** DA-3a-ii is **replaced**
 and DA-3a-iii added, because the scaffold gained a render-state channel in `ce5eecb` and
 revision 4's DA-3a-ii said it had none. **(2)** Four rules kept their requirements and had their
 **stated reasons** corrected, each having confused the emitted response with what the operator sees:
@@ -16,7 +16,12 @@ watermark refuses), **DA-3c-i** (a `-review` that renders a watermark-bearing co
 and **DA-3a-v**/**DA-3a-vi** (what a refusal body may and must contain) — and one **accepted
 limitation** is recorded as **B-8**: *you cannot close a group*, so two visibly-open groups after a
 refusal are permanent and must not be "fixed". §0.3 collects that limitation and two accepted trades;
-§15.2 is the eight-item list of what a following team predictably gets wrong.) Applies to all **seven** admin
+§15.2 is the eight-item list of what a following team predictably gets wrong. **(4)** **F-2b** and
+**X-52** are new — *a field another system owns is displayed, never given an input, and its label
+names the owner* — because "one home per field" PR 1c made the product title CMS-owned
+([ADR-0013](../../adr/0013-product-title-is-cms-owned.md)); `active`/Status was always this shape
+and is folded in as F-2b's second instance. §12.1's Identity accordion, empty state and picker
+format are corrected to match.) Applies to all **seven** admin
 screens under
 `packages/plugin/src/admin/` — Orders, Pricing & inventory, Coupons, Tax, Shipping, Reports and
 Settings, as registered at `admin-route.ts:83-101`. (Earlier revisions said "six"; the count was
@@ -260,7 +265,7 @@ is the index so nothing is buried. **Read your screen's rows before you start.**
 
 **#161's disclosures were written against revision 3, not this text.** So they quote rule wording,
 section counts and listing lines that revision 4 has since changed — `select`-vs-`combobox` throughout,
-X-11's "eight budgets" (now seven), §13's "23 of 33" (now 31 of 52), V-1's foundation ownership, and the
+X-11's "eight budgets" (now seven), §13's "23 of 33" (now 32 of 53), V-1's foundation ownership, and the
 §11.2 lines fixed below. Reading that PR against this document, the offsets are the **fix**, not
 staleness: every one of the nineteen is live and indexed here.
 
@@ -1004,6 +1009,36 @@ at `products-page.ts:433-445,974-984` (restock / remove-stock). All are deleted,
 This also makes the document self-consistent: §2 already lists nonce fields under `form` →
 forbidden, and F-2 already says a key is never something a human can see, pick or alter — a
 render-time carried nonce satisfies neither half.
+
+**F-2b — a field ANOTHER system owns is displayed, never given an input.** F-2 forbids fields the
+operator must not *see*; this forbids inputs on values the operator must not *set*. Where a column
+in our database is a **derived cache** whose writer is elsewhere — today the CMS content sync — the
+screen renders it as a read-only `fields` row and offers no form field for it, however natural the
+grouping looks. An input there would appear to work and be silently reverted by the owning system's
+next write, which is the worst failure a console can ship: the operator sees a success banner and
+loses their edit.
+
+The two instances today, both on Pricing & inventory (§12.1), both owned by the CMS:
+
+| Value | Owner | How it is actually changed |
+|---|---|---|
+| `active` / **Status** | `content:afterPublish` / `content:afterUnpublish` | publish or unpublish the CMS document |
+| **Title** | `content:afterSave` / `content:afterPublish` | rename the CMS document |
+
+Two supporting requirements, because a rule nobody can see at the point of editing is not a guard:
+
+1. **Label the row with its owner**, not just its name — `Title (set in the CMS)`, not `Title`. The
+   parenthetical is where the merchant is already looking, and it is free; an explanation buried in
+   a `context` line is not (and on this screen that line is already over the §1 budget).
+2. **The port type must refuse it.** Whatever backs the screen, the write input should not *have*
+   the field, so re-adding a form control fails to compile rather than failing at runtime.
+   `UpdateProductCommerceFieldsInput` does this for both `active` and `title`.
+
+X-52 rejects both the input and the owner-less label.
+
+Reasoning for the Title instance, including why the cached column was kept rather than dropped:
+[ADR-0013](../../adr/0013-product-title-is-cms-owned.md). A new instance of this shape needs its
+own ADR — "who owns this field" is a decision, not a screen detail.
 
 **F-3 — no single-option `select`, anywhere.** A dropdown with one option is not a control; it is a
 leaked variable. Zero instances may remain after the carrier increment. Where the single option
@@ -2416,6 +2451,33 @@ Throughout, `cf{ns, ctx}` is shorthand for **`carriedForm({ namespace: ns, conte
 
 ### 12.1 Pricing & inventory (`products-page.ts`) — built last
 
+> **⚠ AMENDED 2026-07-30 by the "one home per field" work (PRs 1b/1c). Three items below were
+> written against a product model that no longer exists.** They are corrected in place and each
+> correction is marked `← AMENDED`; this note says why, so the listing does not read as drift.
+>
+> 1. **Title is not editable on this screen, and the `edit-identity` accordion is SKU-only.**
+>    Revision 4 prescribed a `Title · SKU` form with the context copy *"Title and SKU are also
+>    shown in the CMS; editing here changes the commerce record."* That is now wrong on both
+>    clauses. `product_commerce.title` is a **derived single-writer cache** whose only writer is
+>    the CMS content sync ([ADR-0013](../../adr/0013-product-title-is-cms-owned.md)), so an
+>    editable Title here would be silently overwritten by the merchant's next CMS save — the
+>    identical failure class the whole consolidation removes, and the reason `active`/Status has
+>    never had a form field either. The field list appears to have been inherited mechanically
+>    from the form as it stood, without asking who owns each field. **Title stays as a read-only
+>    `fields` row, relabelled `Title (set in the CMS)`** so the row itself says why, and the port
+>    type `UpdateProductCommerceFieldsInput` no longer has a `title` member, so a form field for
+>    it does not compile.
+>
+>    **The generalised rule is [F-2b](#7-forms), not this note.** It lives in the rules layer
+>    because it is not specific to this screen, and by the precedence rule above it beats this
+>    listing. Read F-2b first; this item only records what changed here.
+> 2. **The empty state's description is stale.** After PR 1b the CMS sync mints a
+>    `product_commerce` row on **every** save of a products document, priced or not — there is no
+>    "commerce-enabled document" any more.
+> 3. **The picker option format is stale, and is corrected rather than dropped** — it is what
+>    keeps the picker and the table agreeing, so it has to track `statusLabel`'s fourth value
+>    (`active (not priced)`, added by 1b) and the now-reachable null sku/price.
+>
 > **⚠ This screen carries the console's only live X-20 violations. Do not miss them.** Two *rendered*
 > strings use the banned slogan:
 >
@@ -2454,9 +2516,18 @@ table       block_id products:list
             page_action_id products:page ; next_cursor when present
             empty_text "No products match these filters."
 empty       (cond unfiltered zero) title "No products yet" ·
-            description "Products appear here once the CMS has a commerce-enabled document."
+            description "Products appear here as soon as a product document is saved in the
+            CMS — pricing them is the next step, not a precondition."       ← AMENDED
             (no actions — products originate in the CMS, E-2)
-form        (cond ≥1) combobox "Open product"  options "<sku> · <title> · $19.99 · active"
+form        (cond ≥1) combobox "Open product"
+            options "<title | id> — <status>"                               ← AMENDED
+            ← <status> is `statusLabel(p)` — the SAME helper the table's Status column and the
+              detail's Status row use, which is the whole point of the format: the three
+              surfaces cannot disagree. FOUR values since 1b: active / active (not priced) /
+              inactive / deleted. sku and price are DELIBERATELY not in the option label —
+              both are nullable on a freshly-synced row, so the pre-1b
+              "<sku> · <title> · $19.99 · active" shape rendered "— · … · — · active" for the
+              most common new product.
             initial_value "none"                          submit "Open product"
 
 ── DETAIL ── 2 panels (D-2a: a History panel would hold created/updated only)
@@ -2465,9 +2536,9 @@ actions     [← Back to products]
 banner      (cond) notice
 banner      (cond, tombstoned) variant "alert" · "This product was deleted in the CMS"
 fields      block_id products:identity        6 entries
-              Title  | SKU
-              Price  | Status
-              Stock on hand | Kind
+              Title (set in the CMS)  | SKU     ← F-2b: READ-ONLY, no form field anywhere on
+              Price                   | Status     this screen, and the LABEL names the owner.
+              Stock on hand           | Kind       Same shape as Status. ADR-0013.
 tab         block_id products:<id>:tabs   default_tab 0   panels ALWAYS 2
 
 ├─ panel "Product"
@@ -2477,21 +2548,28 @@ tab         block_id products:<id>:tabs   default_tab 0   panels ALWAYS 2
 │                 Weight (g) | Dimensions (mm, LxWxH)
 │                 Created (UTC) | Updated (UTC)          ← D-2a puts these here
 │    ── the edit form splits into THREE (F-5a — products IS a verified sparse PATCH) ──
-│       15 field entries (`products-page.ts:531-639`; `currency` is declared twice, in the
-│       priced and unpriced branches, and only one renders) = 13 operator fields. F-2 deletes
-│       2 carriers and F-3 deletes `inventoryPolicy`, leaving 12 — and the split below covers
-│       exactly 12: 2 + 4 + 6.
+│       14 rendered field entries (`products-page.ts`, the `detailBlocks` edit form; `currency`
+│       is declared twice, in the priced and unpriced branches, and only one renders). F-2
+│       deletes 2 carriers and F-3 deletes `inventoryPolicy`, leaving 11 — and the split below
+│       covers exactly 11: 1 + 4 + 6.
+│       ← AMENDED: was "15 … leaving 12 … 2 + 4 + 6". PR 1c removed the Title input, so the
+│         Identity group is one field, not two.
 │    context    "Each section saves on its own. Save the section you are editing before you
 │               open another — saving one reloads the product and clears unsaved edits in the
 │               others."                                    (F-5a-i, verbatim; ONE line, here
 │               — above the three groups, never repeated inside them. X-45)
 │    accordion  block_id products:<id>:edit-identity   default_open per D-5 rank 3
 │               label "Identity"
-│               └─ context "Title and SKU are also shown in the CMS; editing here changes the
-│                           commerce record."                                    (≤200)
+│               └─ context "SKU is the stock-keeping code the store sells against. The title is
+│                           set in the CMS."                                     (≤200)
 │                  form  cf{"products:identity", {productId, expectedUpdatedAt}}
-│                        Title · SKU                                    2 fields
+│                        SKU                                            1 field   ← AMENDED
 │                        submit "Save identity"
+│               ── Title DELETED from this form (ADR-0013: the CMS content sync is the sole
+│                  writer of `product_commerce.title`; an edit here would be silently
+│                  overwritten by the next save — the same reason `active` has no field).
+│                  A one-field accordion is deliberate: the group survives because SKU is
+│                  identity, not pricing, and F-5a splits by MEANING, not by count. ──
 │    accordion  block_id products:<id>:edit-price      default_open FALSE
 │               label "Price — $19.99 USD"                                       (D-6)
 │               └─ context "Price, compare-at and unit cost all use the product's one currency.
@@ -2555,6 +2633,17 @@ and panel names (P-2). Both `divider`s deleted (R-4). The 744-char edit `context
 ≤200-char lines. Both rendered "oversell" phrasings (`products-page.ts:409`, `:422`) are rewritten;
 the two **code comments** (`:462`, `:604`) are left alone — they document a real domain invariant
 (X-20).
+
+**Ownership — the rule behind the three corrections in the amendment note above is
+[F-2b](#7-forms), in the rules layer, not here.** This screen carries both of F-2b's instances
+(`active`/Status and Title), which is why the corrections landed on this listing; but the rule is
+general, it beats this listing under the precedence note, and the next screen with a CMS-owned
+field has to find it in §7. The one-line form: *a field another system owns is displayed, never
+given an input, and its label names the owner* (X-52).
+Reasoning for the Title instance: [ADR-0013](../../adr/0013-product-title-is-cms-owned.md).
+
+The line-number citations in this section predate PRs 1b/1c and have shifted — resolve them by
+symbol (`detailBlocks`, `editForm`, `statusLabel`), not by line.
 
 ### 12.2 Coupons (`coupons-page.ts`)
 
@@ -2936,7 +3025,7 @@ Assert a **depth-3 open fired from a button** (shipping zone → method → rate
 ## 13. Anti-patterns — a reviewer rejects these on sight
 
 **H** = mechanically enforced by `assertBlockContract` (§15); a rule without **H** is a human
-review catch. **31 of the 52 rows are H — and `assertBlockContract` does not exist yet** (V-3a): it is
+review catch. **32 of the 53 rows are H — and `assertBlockContract` does not exist yet** (V-3a): it is
 its own PR, and it **gates every screen after Orders** (§15.1 step 2). So if you are reading this while
 building a screen, the helper exists and you call it. Only Orders predates it, and only Orders encodes
 these rules as its own assertions.
@@ -2995,6 +3084,7 @@ these rules as its own assertions.
 | X-49 | | A refusal whose copy names a control or a figure the **same render** can omit — e.g. "re-enter an amount below" on a render whose group depends on a secondary read that may have degraded to a `context` line (E-1). Also: a refusal body that drops the read context its own copy points at, or keeps read context nothing points at. | DA-3a-vi, E-1 |
 | X-50 | | **Any attempt to close a group.** A changed `block_id` whose only purpose is to make an already-open accordion re-read `default_open: false` — it remounts the group and discards unsubmitted input (F-5a-i). Also: a PR, plan or review comment treating two visibly-open groups after a refusal as a defect. **Not H** — it is a cross-response tier-1 assertion (V-4 tier 1) plus a review catch, not a property of one response. | B-8, D-5, X-18 |
 | X-51 | | A sandbox fixture **hand-copying** a domain table (the order state machine, a closed enum, a legal-transition list) instead of importing it. A copied stub passes forever while testing a wire shape the service cannot produce. | V-3b |
+| X-52 | H | A form field for a value another system owns — today `active`/Status or Title on Pricing & inventory. **Or** the read-only row present with a label that omits the owner (`Title`, not `Title (set in the CMS)`). Countable on one response: no form field whose `action_id` is an owned key, and each owned key's `fields` label carrying its owner parenthetical. | F-2b |
 
 ---
 

@@ -149,10 +149,19 @@ export interface UpsertProductCommerceInput {
 	sku?: Sku;
 	price?: Money;
 	/**
-	 * Product title (Phase 4 §4): the commercial projection of the CMS content
-	 * title, and the source an order line snapshots at purchase time. Optional +
-	 * nullable like every other commercial field (undefined preserves, null
-	 * clears); "create then price" may land a row before a title exists.
+	 * Product title (Phase 4 §4) — a DERIVED CACHE of the CMS content title, and
+	 * the source an order line snapshots at purchase time.
+	 *
+	 * THIS IS THE ONLY CHANNEL THAT MAY WRITE IT. Title is owned by the CMS
+	 * `products` collection; `product_commerce.title` is a single-writer cache
+	 * maintained solely by the `content:afterSave` / `content:afterPublish` sync,
+	 * which reaches this input through `PUT /products/:id/commerce`. The guarded
+	 * admin edit (`UpdateProductCommerceFieldsInput`) deliberately has no `title`
+	 * field, so there is no second writer to diverge from.
+	 * Reasoning: `adr/0013-product-title-is-cms-owned.md`.
+	 *
+	 * Optional + nullable like every other commercial field (undefined preserves,
+	 * null clears); "create then price" may land a row before a title exists.
 	 */
 	title?: string | null;
 	taxClass?: string | null;
@@ -187,6 +196,16 @@ export interface UpsertProductCommerceInput {
  *    here would be silently overwritten by the next publish/unpublish sync, so
  *    `active` is NOT a domain-owned editable field — it is edited by publishing
  *    the CMS document, not on this page.
+ *  - `title` — CMS-OWNED, exactly like `active` and for exactly the same
+ *    reason. `product_commerce.title` is a derived single-writer cache fed by
+ *    the `content:afterSave` / `content:afterPublish` sync (see
+ *    `UpsertProductCommerceInput.title`, the one sanctioned channel). A
+ *    merchant edit here would be silently overwritten by the next CMS save, so
+ *    the title is edited by renaming the CMS document, not on this page; the
+ *    admin console shows it as a READ-ONLY row beside Status. The column is not
+ *    dropped because an order line must snapshot a title without a
+ *    cross-database read. Full reasoning, including why dropping the column was
+ *    considered and rejected: `adr/0013-product-title-is-cms-owned.md`.
  *  - `contentUpdatedAt` — a CMS-sync ordering watermark, never merchant intent.
  * Partial-update grain matches `upsert`: `undefined` PRESERVES the stored value,
  * an explicit `null` CLEARS a nullable field. `sku`/`price` cannot be cleared
@@ -197,7 +216,6 @@ export interface UpdateProductCommerceFieldsInput {
 	productId: ProductId;
 	sku?: Sku;
 	price?: Money;
-	title?: string | null;
 	taxClass?: string | null;
 	/**
 	 * Optional "compare-at" / was-price (product data-model adds, Increment 2
@@ -274,7 +292,12 @@ export interface ProductCommerce {
 	productId: ProductId;
 	sku: Sku | null;
 	price: Money | null;
-	/** Snapshot source for an order line's title (Phase 4 §4); null until set. */
+	/** DERIVED CACHE of the CMS content title, with a SINGLE writer — the
+	 *  `content:afterSave`/`content:afterPublish` sync, via `upsert` (Phase 4 §4;
+	 *  `adr/0013-product-title-is-cms-owned.md`). It exists so an order line can
+	 *  snapshot a title at purchase time without a cross-database read. Never
+	 *  merchant-editable, and eventually consistent: a failed sync leaves a stale
+	 *  value until the next save/publish. Null until the first sync carries one. */
 	title: string | null;
 	/** References a `TaxClass.id` (the `TaxRulesStore` registry); null ⇒ the
 	 *  checkout pipeline treats the line as `"standard"`. */

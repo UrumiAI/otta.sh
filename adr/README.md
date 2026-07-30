@@ -30,7 +30,7 @@ than rewriting history.
 
 ## Records
 
-- [0001. Plugin + separate commerce service](./0001-plugin-plus-commerce-service.md) — accepted, amended 2026-07-29 (the product-data field widget was removed)
+- [0001. Plugin + separate commerce service](./0001-plugin-plus-commerce-service.md) — accepted, amended 2026-07-29 (the product-data field widget was removed), extended 2026-07-30 (the title projection became ADR-0013)
 - [0002. Adapter-based split (boundary is a deployment choice)](./0002-adapter-based-split.md) — accepted, refines 0001
 - [0003. Storefront pages are plugin-owned public routes](./0003-storefront-plugin-routes.md) — accepted, refines 0001
 - [0004. Storefront customer auth is magic-link](./0004-customer-auth-mechanism.md) — accepted, refines 0001
@@ -42,6 +42,7 @@ than rewriting history.
 - [0010. The admin read surface requires `X-Internal-Token`](./0010-admin-read-surface-requires-internal-token.md) — accepted, refines 0007
 - [0011. `GET /entitlements/check` authenticates each scope (close the email existence oracle)](./0011-entitlement-check-authentication.md) — accepted, refines 0001, builds on 0004/0007
 - [0012. The storefront checkout loads Stripe Elements in the buyer's browser](./0012-storefront-checkout-loads-stripe-elements-in-the-browser.md) — accepted, refines 0003, builds on 0006/0009/0010
+- [0013. Product title is CMS-owned; `product_commerce.title` is a derived single-writer cache](./0013-product-title-is-cms-owned.md) — accepted, refines 0001/0002 (the hybrid product model); promotes the queued "one home per field" decision, and completes the 2026-07-29 amendment on ADR-0001 (commercial fields are edited only in the admin console)
 
 ## Queued (to promote from draft-plans)
 
@@ -51,8 +52,4 @@ Decisions already made that should each become an ADR:
 - Separate commerce database (no cross-DB joins)
 - Backend-agnostic atomic inventory via single-statement conditional UPDATE
 - Pluggable payments (Stripe + x402 in parallel)
-- One home per field: commercial fields are owned by `product_commerce` and edited only in
-  the admin console; `product_commerce.title` is a derived single-writer cache fed by the
-  CMS content sync (replaces the withdrawn "on-screen commercial editing via a Block Kit
-  field widget" item — see the 2026-07-29 amendment on ADR-0001)
 - Customer accounts owned by the commerce service (not EmDash `ctx.users`)
