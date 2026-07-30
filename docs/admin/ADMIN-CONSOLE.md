@@ -234,6 +234,12 @@ Revision 4 is the first revision written **after** a screen was built against th
 (Orders) reported nineteen findings; every one is folded into the rule it belongs to, and this table
 is the index so nothing is buried. **Read your screen's rows before you start.**
 
+**#161's disclosures were written against revision 3, not this text.** So they quote rule wording,
+section counts and listing lines that revision 4 has since changed — `select`-vs-`combobox` throughout,
+X-11's "eight budgets" (now seven), §13's "23 of 33" (now 30 of 45), V-1's foundation ownership, and the
+§11.2 lines fixed below. Reading that PR against this document, the offsets are the **fix**, not
+staleness: every one of the nineteen is live and indexed here.
+
 | # | Finding | Landed in |
 |---|---|---|
 | E-a | `combobox` renders the option **label**; only `select` renders the raw value. The "order picker reads a raw UUID" wart cited twice was never real. | R-17b, F-6a, F-6c, L-7, §14 item 3, §16 item 3 |
@@ -253,7 +259,7 @@ is the index so nothing is buried. **Read your screen's rows before you start.**
 | E-o | On a guest the Customer group says "no account" **five** ways, and `Email` denies an address three other elements display. | §11.2 |
 | E-p | The Notes table duplicates the timeline's `Detail` column verbatim. | §11.2 |
 | E-q | DA-7 lines narrated the designers' decision (*"There is deliberately no bare 'Mark shipped'"*) instead of naming the alternative. | DA-7 |
-| E-r | `V-1`'s `test/helpers/blocks.ts` was assigned to the foundation and never shipped; `V-3`'s `assertBlockContract` had **no owner** and does not exist. | §15 |
+| E-r | `V-1`'s `test/helpers/blocks.ts` was assigned to the foundation and never shipped; `V-3`'s `assertBlockContract` had **no owner** and does not exist. | §15, **§15.1** |
 | E-s | A `stagedResponse` re-render costs a **full leaf re-read** (5 requests on Orders), not one. | DA-3a |
 
 Two of the nineteen are recorded and **not** fixed here: an unclickable tracking URL (§14 item 5) and
@@ -2400,9 +2406,10 @@ Assert a **depth-3 open fired from a button** (shipping zone → method → rate
 ## 13. Anti-patterns — a reviewer rejects these on sight
 
 **H** = mechanically enforced by `assertBlockContract` (§15); a rule without **H** is a human
-review catch. **30 of the 45 rows are H — and `assertBlockContract` does not exist yet** (V-3a). Until
-it does, an **H** mark tells you the rule is *mechanically decidable*, not that anything is checking
-it; encode it in your screen's suite and say so in the PR.
+review catch. **30 of the 45 rows are H — and `assertBlockContract` does not exist yet** (V-3a): it is
+its own PR, and it **gates every screen after Orders** (§15.1 step 2). So if you are reading this while
+building a screen, the helper exists and you call it. Only Orders predates it, and only Orders encodes
+these rules as its own assertions.
 
 | # | H | Reject | Rule |
 |---|---|---|---|
@@ -2565,7 +2572,10 @@ So the rule is per-screen and it is a **sequencing** rule, not a cleanup wish:
 A flat search is safe *today* on a screen that is still flat, and returns `[]` silently the moment
 that screen is re-laid — which is the failure mode where the suite passes while asserting nothing.
 Porting after the re-layout means you never see the port pass against the old tree.
-`admin-scaffold-list-detail` is not a screen; it ports with whichever screen touches the scaffold first.
+
+**Your PR ports your suite and nobody else's — §15.1 step 3 is four PARALLEL lanes.** Do not plan on a
+predecessor's port having landed: you have no predecessor. `admin-scaffold-list-detail` is not a screen;
+it ports with whichever lane touches the scaffold first, and the other lanes must not assume it has.
 
 **V-2 — Orders' suite is rewritten onto these helpers BEFORE its layout changes**, as a separate
 **no-behaviour-change commit**, so the layout diff stays reviewable. 89 flat searches and 17
@@ -2581,18 +2591,51 @@ enforces every rule marked **H** in §13 (**30 of 45**), the **seven** authored 
 response. **A rule not in that helper is advisory** — it is a human review catch, and a PR that only
 runs the helper has not verified the non-**H** rules.
 
-**V-3a — V-3 HAS NO OWNER AND DOES NOT EXIST. This is the programme's real gap.** Assigning it is the
-one §15 item that is not paperwork: **30 H-marked rules are currently enforced by nothing shared.**
-Orders hand-rolled equivalents as ordinary assertions, so the **banned-string guard is Orders-only** —
-and the two live X-20 violations are on **Products** (§12.1). Terms:
+**V-3a — V-3 DOES NOT EXIST YET, and it is NOT written by a screen. It is its own PR.** This is the
+programme's real gap: **30 H-marked rules are currently enforced by nothing shared.** Orders hand-rolled
+equivalents as ordinary assertions, so the **banned-string guard is Orders-only** — and the two live
+X-20 violations are on **Products** (§12.1). Terms:
 
 | | |
 |---|---|
-| **Owner** | The **second** per-screen increment to start, as a standalone PR, not folded into a layout diff. |
-| **Deadline** | **Lands before the third screen.** Seven teams hand-rolling 30 checks is the same duplication V-1a exists to stop, one level up. |
+| **Owner** | **Its own `[Plugin]` PR.** No per-screen PR may carry it. Shared test infrastructure bolted onto a layout diff is exactly the drive-by `CLAUDE.md` forbids, and — the general form of it — **no screen should write the thing that judges it.** |
+| **Sequencing** | **After** the Orders increment merges (it builds on `test/helpers/blocks.ts`, which Orders delivered) and **before any further per-screen increment starts.** See §15.1 — it is step 2, and it gates every lane below it. |
 | **Must hoist** | The X-20 banned-phrase guard (currently Orders-only), X-11's seven budgets, X-9's heuristic **with its count exclusion**, and every H row added in revision 4 (X-35..X-42). |
 | **Signature** | `assertBlockContract(blocks, { screen, level })` — as above, unchanged. |
-| **Until it lands** | A screen encodes the H rules as its own assertions **and says so in the PR**, so V-3's author knows what to absorb. Do not claim an H rule verified because it "reads right". |
+
+**Why the gate is hard and not a preference.** Step 3 of §15.1 is **four concurrent lanes**. If the
+helper landed after them, four screens would each hand-roll 30 checks and all four would need
+retrofitting — the same duplication V-1a exists to stop, one level up and four times over. Sequencing it
+ahead also removes any "which screen is second?" question: the deadline is decidable without an ordering
+among the lanes.
+
+**Until it lands, only Orders is in flight**, and Orders already encodes the H rules as its own
+assertions and says so in its PR — which is what tells V-3's author what to absorb. Nothing else starts,
+so there is no second screen that needs an interim rule. Do not claim an **H** rule verified because it
+"reads right".
+
+### 15.1 Increment order — where your screen sits
+
+The order the programme is actually run in. It is **not** a suggestion; step 2 is a gate. (The plan's
+increment numbers map on as 3 · 3a · 5 · 5-last — see
+[`plans/admin-ui-density-cleanup.md`](../../plans/admin-ui-density-cleanup.md).)
+
+| Step | What | Concurrency |
+|---|---|---|
+| 1 | **Orders** — the reference screen (PR #161) | in revision |
+| 2 | **`assertBlockContract`** — its own `[Plugin]` PR (V-3a) | **gates everything below** |
+| 3 | **Coupons** · **Tax** · **Shipping** · **Reports + Settings** | **four PARALLEL lanes** |
+| 4 | **Pricing & inventory** (`products-page.ts`) | after the four lanes |
+
+Three things to read off this table:
+
+- **Step 3 is genuinely concurrent.** Four lanes, no ordering among them, no lane a predecessor of
+  another. If a rule here reads as though it assumes a serial order, it is a defect (N-1).
+- **Nothing in step 3 may start before step 2 merges.** That is the whole reason step 2 is a step and
+  not a chore folded into a screen.
+- **Products is last on purpose**, and it is where the helper's banned-phrase guard is first pointed at
+  something real — both live X-20 violations are there (§12.1). Being judged by the helper is a
+  different job from writing it.
 
 **V-3b — two wire-shape facts a suite gets wrong silently.** Both cost an afternoon and neither
 fails loudly:

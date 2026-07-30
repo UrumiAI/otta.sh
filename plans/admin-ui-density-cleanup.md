@@ -81,11 +81,29 @@ behaviour-free commit of its own PR** — see the spec's §15 V-1a. (Also: there
 
 1. The **helpers were not shipped by the foundation.** Increment 1 (PR #151) did not contain them;
    increment 3 wrote them (`aa2bd97`). They exist and are delivered — do not re-author them.
-2. **`assertBlockContract` has no owner in this plan and does not exist**, so **30 mechanically-
-   decidable spec rules are enforced by nothing shared**, including the banned-phrase guard — which
-   matters because the only two live violations are on Pricing & inventory. It is assigned to the
-   **second per-screen increment to start**, as a **standalone PR**, and it **must land before the
-   third screen** (spec §15 V-3a).
+2. **`assertBlockContract` does not exist**, so **30 mechanically-decidable spec rules are enforced by
+   nothing shared**, including the banned-phrase guard — which matters because the only two live
+   violations are on Pricing & inventory. It is **not written by a screen**: it lands as **its own
+   `[Plugin]` PR**, after increment 3 merges and **before any further per-screen increment starts**
+   (spec §15 V-3a, §15.1). No screen should write the thing that judges it, and shared test
+   infrastructure inside a layout diff is the drive-by `CLAUDE.md` forbids. It is **increment 3a**, a
+   new step between 3 and 5 — see the order below.
+
+**Increment order (authoritative; mirrored in the spec's §15.1).**
+
+| Step | Increment | Concurrency |
+|---|---|---|
+| 1–2 | Shared layout vocabulary · carrier mechanism (PR #151) | merged |
+| 3 | **Orders** — list + order detail (PR #161) | in revision |
+| **3a** | **`assertBlockContract`** — its own `[Plugin]` PR | **gates everything below** |
+| 4 | Consistent destructive-action language | folded into the screens that ship it |
+| 5 | **Coupons** · **Tax** · **Shipping** · **Reports + Settings** | **four PARALLEL lanes** |
+| 5 (last) | **Pricing & inventory** (`products-page.ts`) | after the four lanes |
+
+Increment 5 covers all six remaining screens and splits internally: **four genuinely concurrent lanes**
+— no lane is a predecessor of another, and none may assume another's suite port has landed — then
+**Pricing & inventory last**, by instruction and as the spec's §12.1 already says. Products is where
+3a's banned-phrase guard first meets something real: both live violations are there.
 
 ### 1 — Shared layout vocabulary in the scaffold
 
@@ -185,6 +203,10 @@ Apply increments 1–4's vocabulary to Pricing & inventory, Coupons, Tax and Shi
 its own block listing in the spec's §12 (§12.1–§12.4) — **plus Reports and Settings** (see the
 paragraph at the end of this increment). Six screens, not four; the heading said "four" from the era
 when the programme miscounted the console at six screens.
+
+**Do not start any lane before increment 3a (`assertBlockContract`) merges.** Then: **four parallel
+lanes** (Coupons · Tax · Shipping · Reports+Settings), no lane relying on another's suite port, and
+**Pricing & inventory last** (spec §12.1 — it is also the screen 3a's banned-phrase guard is pointed at).
 
 **Read the spec's front-matter rule N-1 and its §0.2 before starting any of the six.** N-1 settles
 what to do when a §12 listing contradicts a spec rule (the rule wins, and the listing is a defect you
