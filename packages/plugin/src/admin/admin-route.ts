@@ -17,7 +17,12 @@ import {
 	PRODUCTS_PAGE,
 	type ProductsPageInput,
 } from "./products-page.js";
-import { createReportsPageHandler, REPORTS_PAGE, type ReportsPageInput } from "./reports-page.js";
+import {
+	createReportsPageHandler,
+	REPORTS_ACTION_IDS,
+	REPORTS_PAGE,
+	type ReportsPageInput,
+} from "./reports-page.js";
 import {
 	createSettingsFormHandler,
 	SETTINGS_ACTION_IDS,
@@ -109,6 +114,9 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 		// the blocks-empty fallback below.
 		if (actionId !== undefined && SETTINGS_ACTION_IDS.has(actionId)) {
 			return settings(routeCtx as SandboxedRouteContext<SettingsFormInput>, ctx);
+		}
+		if (actionId !== undefined && REPORTS_ACTION_IDS.has(actionId)) {
+			return reports(routeCtx as SandboxedRouteContext<ReportsPageInput>, ctx);
 		}
 		if (actionId !== undefined && ORDERS_ACTION_IDS.has(actionId)) {
 			return orders(routeCtx as SandboxedRouteContext<OrdersPageInput>, ctx);

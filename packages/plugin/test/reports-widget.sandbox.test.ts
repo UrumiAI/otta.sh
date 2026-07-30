@@ -1,22 +1,27 @@
 import { URUMI_PLUGIN_CAPABILITIES } from "@urumi/plugin";
 import { afterEach, describe, expect, test } from "vitest";
-import { blocksOf, findBlocks } from "./helpers/blocks.js";
+import { assertBlockContract } from "./helpers/block-contract.js";
+import {
+	blocksOf,
+	findBlocks,
+	group,
+	groupBlocks,
+	openGroupIds,
+	tableWithId,
+} from "./helpers/blocks.js";
 import {
 	startStubCommerceServer,
 	type StubCommerceServer,
 } from "./helpers/stub-commerce-server.js";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
 
-// Phase 7 §6 Step 6: the admin Reports Block Kit page, proven under the REAL
-// workerd-on-Node sandbox (not trusted in-process). Data reaches the page ONLY
-// via ctx.http → the stub standing in for @urumi/service. em-dash renders the
-// page by the single `admin` route with a `{type:"page_load", page:"/reports"}`
-// BlockInteraction — NO token in the interaction; the admin token is sourced
-// from write-only ctx.kv (seeded here via the Settings `save-token` action).
-//
-// PORT (no behaviour change): flat `blocks.filter(b => b.type === X)` scans
-// replaced by the shared recursive helpers (spec §15, V-1/V-1a) ahead of the
-// layout change that moves this content into accordions — see the PR body.
+// §4.1 report/settings skeleton, §12.5: the admin Reports Block Kit page,
+// proven under the REAL workerd-on-Node sandbox (not trusted in-process).
+// Data reaches the page ONLY via ctx.http → the stub standing in for
+// @urumi/service. em-dash renders the page by the single `admin` route with a
+// `{type:"page_load", page:"/reports"}` BlockInteraction — NO token in the
+// interaction; the admin token is sourced from write-only ctx.kv (seeded here
+// via the Settings `save-token` action).
 
 const ADMIN_TOKEN = "admin-token-xyz";
 
@@ -74,7 +79,7 @@ afterEach(async () => {
 });
 
 describe("Reports admin page (workerd sandbox)", () => {
-	test("Reports page renders revenue, orders-by-status, top-products, and low-stock sections via ctx.http only", async () => {
+	test("Reports page renders revenue, orders-by-status, top-products, and low-stock groups via ctx.http only", async () => {
 		stub = await startStubCommerceServer();
 		stub.respondWith("GET", reportsResponder);
 		sandbox = await loadPluginInSandbox({
@@ -88,18 +93,23 @@ describe("Reports admin page (workerd sandbox)", () => {
 			page: "/reports",
 		});
 		const blocks = blocksOf(outcome);
-		const sections = findBlocks(blocks, "section").map((b) => b.text);
-		expect(sections).toEqual(
-			expect.arrayContaining([
-				"Revenue by day",
-				"Orders by status",
-				"Top products (by revenue)",
-				"Low stock",
-			]),
-		);
-		// Each report's data made it into a table.
+		assertBlockContract(blocks, { screen: "reports", level: "list" });
+
+		// §12.5: the four legacy `section` "headings" become accordion labels
+		// (P-2 — `section` is never a heading) — one accordion per report,
+		// resolved by `block_id`, never by label (D-6 makes labels dynamic).
+		expect(group(blocks, "reports:revenue")).toBeDefined();
+		expect(group(blocks, "reports:statuses")).toBeDefined();
+		expect(group(blocks, "reports:top")).toBeDefined();
+		expect(group(blocks, "reports:low")).toBeDefined();
+		// S-3: exactly one group is open, and it is "Revenue by day".
+		expect(openGroupIds(blocks)).toEqual(["reports:revenue"]);
+
+		// Each report's data made it into a table, one per group.
 		const tables = findBlocks(blocks, "table");
 		expect(tables).toHaveLength(4);
+		expect(tableWithId(blocks, "reports:revenue-table")).toBeDefined();
+
 		// All four report endpoints were hit over ctx.http.
 		const urls = (stub.requests ?? []).map((r) => r.url.split("?")[0]);
 		expect(urls).toEqual(
@@ -117,6 +127,33 @@ describe("Reports admin page (workerd sandbox)", () => {
 		}
 	});
 
+	test("Reports revenue table formats money (never raw minor units) and never a Currency column", async () => {
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", reportsResponder);
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+		await seedAdminToken(sandbox, stub);
+
+		const outcome = await sandbox.invokeRoute("admin", { type: "page_load", page: "/reports" });
+		const blocks = blocksOf(outcome);
+		assertBlockContract(blocks, { screen: "reports", level: "list" });
+
+		const revenueTable = tableWithId(blocks, "reports:revenue-table");
+		const columns = (revenueTable?.columns ?? []) as Array<Record<string, unknown>>;
+		expect(columns.map((c) => c.label)).not.toContain("Currency");
+		const rows = (revenueTable?.rows ?? []) as Array<Record<string, unknown>>;
+		expect(rows.map((r) => r.revenue)).toEqual(["$30.00", "$55.00"]);
+		// Bucket periods are date-only (M-6) — no millisecond timestamp.
+		expect(rows.map((r) => r.bucketStart)).toEqual(["2026-07-10", "2026-07-11"]);
+
+		// The `stats` block carries pre-formatted money too, with NO "integer
+		// minor units" description (M-1 — that description was the bug).
+		const stats = findBlocks(blocks, "stats")[0] as { items?: Array<Record<string, unknown>> };
+		expect(stats.items).toEqual([{ label: "Revenue (USD)", value: "$85.00" }]);
+	});
+
 	test("Reports page fails closed with an error block when ctx.http rejects, never throws", async () => {
 		stub = await startStubCommerceServer();
 		stub.respondWith("GET", reportsResponder);
@@ -127,14 +164,40 @@ describe("Reports admin page (workerd sandbox)", () => {
 		});
 
 		const outcome = await sandbox.invokeRoute("admin", { type: "page_load", page: "/reports" });
-		// Fails CLOSED: a rendered error block, NOT a thrown {error} envelope.
 		const blocks = blocksOf(outcome);
+		assertBlockContract(blocks, { screen: "reports", level: "list" });
 		const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
 		expect(banner).toBeDefined();
-		// The generic message never leaks a raw HTTP status/URL (Part 5).
-		expect(String(banner?.text)).not.toMatch(/HTTP \d|\/reports\//);
+		// E-7's normative copy: names the symptom, never a raw status/URL, and
+		// says a console bug is a live possibility (X-42) — not just "unreachable".
+		const text = `${String(banner?.title ?? "")} ${String(banner?.description ?? "")}`;
+		expect(text).not.toMatch(/HTTP \d|\/reports\//);
+		expect(text).toMatch(/fault in the console itself/);
 		// The allowlist blocked egress: no request ever reached the stub.
 		expect(stub.requests).toHaveLength(0);
+	});
+
+	test("a reports:page no-op action re-renders the page instead of falling through to a blank console", async () => {
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", reportsResponder);
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+		await seedAdminToken(sandbox, stub);
+
+		// §12.5: nothing can fire this today (no next_cursor, sortable
+		// forbidden), but the id must be REGISTERED in the same change as the
+		// tables that set it — this is the trap that arms itself later.
+		const outcome = await sandbox.invokeRoute("admin", {
+			type: "block_action",
+			action_id: "reports:page",
+			value: {},
+		});
+		const blocks = blocksOf(outcome);
+		assertBlockContract(blocks, { screen: "reports", level: "list" });
+		expect(blocks.length).toBeGreaterThan(0);
+		expect(groupBlocks(blocks, "reports:revenue").length).toBeGreaterThan(0);
 	});
 
 	test("Reports page manifest declares only content:read + network:request, no storage/kv/db capability", () => {
