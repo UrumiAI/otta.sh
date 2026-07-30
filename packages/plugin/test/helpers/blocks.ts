@@ -226,8 +226,34 @@ export function tableWithId(
 	return findBlocks(blocks, "table").find((t) => t.block_id === blockId);
 }
 
+/** A table's column descriptors, in order. */
+export function columnsOf(table: LooseBlock | undefined): LooseElement[] {
+	return Array.isArray(table?.columns) ? (table.columns as LooseElement[]) : [];
+}
+
 /** A table's column keys, in order (spec T-1/T-2 govern count and order). */
 export function columnKeys(table: LooseBlock | undefined): string[] {
-	const columns = Array.isArray(table?.columns) ? (table.columns as LooseElement[]) : [];
-	return columns.map((c) => String(c.key));
+	return columnsOf(table).map((c) => String(c.key));
+}
+
+/** A table's column LABELS, in order — what an operator actually reads. */
+export function columnLabels(table: LooseBlock | undefined): string[] {
+	return columnsOf(table).map((c) => String(c.label));
+}
+
+/** A button's `confirm` dialog, or an empty object — so an assertion on its copy
+ *  fails on the missing field rather than on an undefined deref (spec P-6: every
+ *  irreversible write passes one). */
+export function confirmOf(element: LooseElement | undefined): Record<string, unknown> {
+	const confirm = element?.confirm;
+	return typeof confirm === "object" && confirm !== null
+		? (confirm as Record<string, unknown>)
+		: {};
+}
+
+/** A button's carried `value` payload, or an empty object. A button's ONLY
+ *  context channel (spec B-1) — it echoes no `block_id`. */
+export function valueOf(element: LooseElement | undefined): Record<string, unknown> {
+	const value = element?.value;
+	return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
 }

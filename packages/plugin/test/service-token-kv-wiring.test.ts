@@ -157,7 +157,13 @@ describe("service token rides every construction site from write-only kv (ADR-00
 		});
 		await createOrdersPageHandler()(
 			{
-				input: { action_id: "orders:transition", value: { orderId: "o1", toState: "paid" } },
+				// DA-6: the transition ids are per-state and DERIVED from the plugin's
+				// closed `ORDER_STATES`, so the target comes from the id, never from
+				// the operator-alterable `value.toState`.
+				input: {
+					action_id: "orders:transition-paid",
+					value: { orderId: "o1", toState: "paid" },
+				},
 				request: req,
 			},
 			ctx,
@@ -185,7 +191,13 @@ describe("service token rides every construction site from write-only kv (ADR-00
 		const { ctx, requests } = makeCtx({ [INTERNAL_TOKEN_KEY]: INTERNAL_TOKEN });
 		await createOrdersPageHandler()(
 			{
-				input: { action_id: "orders:transition", value: { orderId: "o1", toState: "paid" } },
+				// DA-6: the transition ids are per-state and DERIVED from the plugin's
+				// closed `ORDER_STATES`, so the target comes from the id, never from
+				// the operator-alterable `value.toState`.
+				input: {
+					action_id: "orders:transition-paid",
+					value: { orderId: "o1", toState: "paid" },
+				},
 				request: req,
 			},
 			ctx,
