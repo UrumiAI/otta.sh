@@ -1,6 +1,15 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { decodePath, encodePath } from "../src/admin/scaffold/index.js";
 import {
+	blocksOf,
+	buttons,
+	findBlock,
+	formFor,
+	tableRows,
+	type LooseBlock,
+	type LooseElement,
+} from "./helpers/blocks.js";
+import {
 	type RecordedRequest,
 	startStubCommerceServer,
 	type StubCommerceServer,
@@ -224,37 +233,29 @@ async function seedToken(sandbox: SandboxHandle, stub: StubCommerceServer, token
 	stub.requests.length = 0;
 }
 
-interface Blk extends Record<string, unknown> {
-	type: string;
+// `blocksOf`/`tableRows`/`buttons`/`findBlock`/`formFor` come from
+// `./helpers/blocks.js` (design spec §15, V-1/V-1a): they RECURSE through
+// `columns.columns[]`, `tab.panels[].blocks` and `accordion.blocks`, mirroring
+// `BlockRenderer` exactly, so this suite keeps asserting on the block it named
+// once Commit 2 nests per-row content inside accordions. A flat
+// `blocks.find(b => b.type === "table")` search would instead start silently
+// returning `undefined`/`[]` the moment a row moves into a group — a suite
+// that passes while asserting nothing (spec R-25). The three thin wrappers
+// below exist only to keep every call site below unchanged; each delegates to
+// the shared, recursive implementation.
+function bannerOf(blocks: LooseBlock[]): LooseElement | undefined {
+	return findBlock(blocks, "banner");
 }
-function blocksOf(outcome: unknown): Blk[] {
-	if (!(typeof outcome === "object" && outcome !== null && "result" in outcome)) return [];
-	const result = (outcome as { result: { blocks?: Blk[] } }).result;
-	return result.blocks ?? [];
+function formFields(blocks: LooseBlock[], submitActionId: string): LooseElement[] {
+	const form = formFor(blocks, submitActionId);
+	return Array.isArray(form?.fields) ? (form.fields as LooseElement[]) : [];
 }
-function tableRows(blocks: Blk[]): Array<Record<string, unknown>> {
-	const table = blocks.find((b) => b.type === "table");
-	return (table?.rows ?? []) as Array<Record<string, unknown>>;
-}
-function bannerOf(blocks: Blk[]) {
-	return blocks.find((b) => b.type === "banner") as
-		| { variant?: string; title?: string; description?: string }
-		| undefined;
-}
-function formFields(blocks: Blk[], submitActionId: string): Array<Record<string, unknown>> {
-	const form = blocks.find(
-		(b) => b.type === "form" && (b.submit as { action_id?: string })?.action_id === submitActionId,
-	);
-	return (form?.fields ?? []) as Array<Record<string, unknown>>;
-}
-function actionButtons(blocks: Blk[]): Array<Record<string, unknown>> {
-	return blocks
-		.filter((b) => b.type === "actions")
-		.flatMap((b) => (b.elements as Array<Record<string, unknown>>) ?? []);
+function actionButtons(blocks: LooseBlock[]): LooseElement[] {
+	return buttons(blocks);
 }
 /** The open form's `target` select options — asserts they decode to a real
  *  {@link NavPath} rather than trusting a hand-encoded guess. */
-function openTargetOptions(blocks: Blk[]): Array<{ value: string; label: string }> {
+function openTargetOptions(blocks: LooseBlock[]): Array<{ value: string; label: string }> {
 	const fields = formFields(blocks, "shipping:open");
 	const targetField = fields.find((f) => f.action_id === "target");
 	return (targetField?.options as Array<{ value: string; label: string }> | undefined) ?? [];
