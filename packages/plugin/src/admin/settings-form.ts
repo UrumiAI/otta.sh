@@ -324,16 +324,30 @@ async function renderPage(
 	}
 }
 
+/** Non-money integer fields (minutes, thresholds) route through `text_input`
+ *  with ONE parsing discipline (F-6): digits only, no sign, no decimal point.
+ *  Accepts a raw `number` too — defensive only, since the real host's
+ *  `text_input` always submits a string; a value that fails the pattern is
+ *  OMITTED from the patch (never coerced to `NaN` or silently zeroed), so an
+ *  un-parseable submission leaves that field untouched rather than corrupting
+ *  it — the same "never zero an un-edited field" discipline as J6. */
+const DIGITS_ONLY = /^\d+$/;
+
+function parseDigitsField(raw: unknown): number | undefined {
+	const text =
+		typeof raw === "number" ? String(raw) : typeof raw === "string" ? raw.trim() : undefined;
+	if (text === undefined || !DIGITS_ONLY.test(text)) return undefined;
+	return Number(text);
+}
+
 function extractOperationalPatch(
 	values: Record<string, unknown>,
 ): Partial<OperationalSettingsWire> {
 	const patch: Partial<OperationalSettingsWire> = {};
-	if (values.holdTtlMinutes !== undefined && values.holdTtlMinutes !== null) {
-		patch.holdTtlMinutes = Number(values.holdTtlMinutes);
-	}
-	if (values.lowStockThreshold !== undefined && values.lowStockThreshold !== null) {
-		patch.lowStockThreshold = Number(values.lowStockThreshold);
-	}
+	const holdTtlMinutes = parseDigitsField(values.holdTtlMinutes);
+	if (holdTtlMinutes !== undefined) patch.holdTtlMinutes = holdTtlMinutes;
+	const lowStockThreshold = parseDigitsField(values.lowStockThreshold);
+	if (lowStockThreshold !== undefined) patch.lowStockThreshold = lowStockThreshold;
 	return patch;
 }
 
@@ -465,16 +479,16 @@ function checkoutGroup(settings: OperationalSettingsWire | undefined): Accordion
 							type: "form",
 							fields: [
 								{
-									type: "number_input",
+									type: "text_input",
 									action_id: "holdTtlMinutes",
 									label: SETTINGS_SCHEMA.holdTtlMinutes.label,
-									initial_value: settings.holdTtlMinutes,
+									initial_value: String(settings.holdTtlMinutes),
 								},
 								{
-									type: "number_input",
+									type: "text_input",
 									action_id: "lowStockThreshold",
 									label: SETTINGS_SCHEMA.lowStockThreshold.label,
-									initial_value: settings.lowStockThreshold,
+									initial_value: String(settings.lowStockThreshold),
 								},
 							],
 							submit: { label: "Save operational settings", action_id: "save-operational" },

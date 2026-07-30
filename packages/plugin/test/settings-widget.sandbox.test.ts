@@ -144,10 +144,12 @@ describe("Settings admin form (workerd sandbox)", () => {
 		});
 		stub.requests.length = 0;
 
+		// F-6: holdTtlMinutes/lowStockThreshold are `text_input` (not
+		// `number_input`), so the REAL wire shape is a digit-only string.
 		const outcome = await sandbox.invokeRoute("admin", {
 			type: "form_submit",
 			action_id: "save-operational",
-			values: { holdTtlMinutes: 45, lowStockThreshold: 20 },
+			values: { holdTtlMinutes: "45", lowStockThreshold: "20" },
 			idempotencyKey: "k-op-1",
 		});
 
@@ -165,6 +167,39 @@ describe("Settings admin form (workerd sandbox)", () => {
 		assertBlockContract(blocks, { screen: "settings", level: "list" });
 		expectAllFourFormsPresent(blocks);
 		expect((outcome as { result: { toast: { type: string } } }).result.toast.type).toBe("success");
+	});
+
+	test("F-6: holdTtlMinutes/lowStockThreshold are text_input, digit-parsed — a non-digit submission is OMITTED from the PUT, not sent as NaN/zero", async () => {
+		stub = await startStubCommerceServer();
+		stub.respondWith("PUT", () => ({
+			status: 200,
+			body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 20 } },
+		}));
+		stub.respondWith("GET", () => ({
+			status: 200,
+			body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } },
+		}));
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+
+		// Confirm the element type migrated (F-6): not number_input.
+		const loaded = await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" });
+		const opForm = formFor(blocksOf(loaded), "save-operational");
+		expect(field(opForm, "holdTtlMinutes")?.type).toBe("text_input");
+		expect(field(opForm, "lowStockThreshold")?.type).toBe("text_input");
+
+		// "abc" fails /^\d+$/ — omitted from the patch rather than coerced to
+		// NaN or 0; "20" is valid and passes through.
+		await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-operational",
+			values: { holdTtlMinutes: "abc", lowStockThreshold: "20" },
+			idempotencyKey: "k-digits",
+		});
+		const req = stub.requests.find((r) => r.method === "PUT");
+		expect(req?.body).toEqual({ lowStockThreshold: 20 });
 	});
 
 	test("a service-side validation error (400) surfaces inline and never zeroes an un-edited field", async () => {
@@ -191,7 +226,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 		const outcome = await sandbox.invokeRoute("admin", {
 			type: "form_submit",
 			action_id: "save-operational",
-			values: { holdTtlMinutes: 0 }, // only holdTtlMinutes edited (invalid)
+			values: { holdTtlMinutes: "0" }, // only holdTtlMinutes edited (invalid)
 			idempotencyKey: "k-bad",
 		});
 		// Not a thrown {error} — a rendered inline error banner carrying the
@@ -204,9 +239,11 @@ describe("Settings admin form (workerd sandbox)", () => {
 
 		// J6: the operational form re-renders the ATTEMPTED holdTtlMinutes (0) but
 		// the un-edited lowStockThreshold keeps its STORED value (5), not 0.
+		// Both are `text_input` (F-6), so the rendered `initial_value` is a
+		// digit-only STRING, not a number.
 		const opForm = formFor(blocks, "save-operational");
-		expect(field(opForm, "holdTtlMinutes")?.initial_value).toBe(0);
-		expect(field(opForm, "lowStockThreshold")?.initial_value).toBe(5);
+		expect(field(opForm, "holdTtlMinutes")?.initial_value).toBe("0");
+		expect(field(opForm, "lowStockThreshold")?.initial_value).toBe("5");
 		// Every other form on the screen survived too (S-5).
 		expectAllFourFormsPresent(blocks);
 	});
@@ -230,7 +267,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 		const outcome = await sandbox.invokeRoute("admin", {
 			type: "form_submit",
 			action_id: "save-operational",
-			values: { holdTtlMinutes: 45, lowStockThreshold: 20 },
+			values: { holdTtlMinutes: "45", lowStockThreshold: "20" },
 			idempotencyKey: "k-401",
 		});
 		const blocks = blocksOf(outcome);

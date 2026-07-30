@@ -200,6 +200,104 @@ describe("Reports admin page (workerd sandbox)", () => {
 		expect(groupBlocks(blocks, "reports:revenue").length).toBeGreaterThan(0);
 	});
 
+	test("multi-currency stats are ordered ALPHABETICALLY, never by revenue — and the wire-gap is disclosed to the operator", async () => {
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", (req) => {
+			if (req.url.startsWith("/reports/revenue")) {
+				return {
+					status: 200,
+					body: {
+						ok: true,
+						// USD earns far more than EUR — a revenue-sorted list would put
+						// USD first. Alphabetically ("EUR" < "USD") EUR comes first. The
+						// fix is proven by which order actually comes back.
+						buckets: [
+							{ bucketStart: "2026-07-10T00:00:00.000Z", currency: "USD", revenueCents: 90_000 },
+							{ bucketStart: "2026-07-10T00:00:00.000Z", currency: "EUR", revenueCents: 1_000 },
+						],
+					},
+				};
+			}
+			if (req.url.startsWith("/reports/orders-by-status")) {
+				return { status: 200, body: { ok: true, counts: [] } };
+			}
+			if (req.url.startsWith("/reports/top-products")) {
+				return {
+					status: 200,
+					body: {
+						ok: true,
+						products: [{ productId: "p1", titleSnapshot: "Widget", qtySold: 1, revenueCents: 500 }],
+					},
+				};
+			}
+			if (req.url.startsWith("/reports/low-stock")) {
+				return { status: 200, body: { ok: true, rows: [] } };
+			}
+			return { status: 404, body: { error: "unknown" } };
+		});
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+		await seedAdminToken(sandbox, stub);
+
+		const outcome = await sandbox.invokeRoute("admin", { type: "page_load", page: "/reports" });
+		const blocks = blocksOf(outcome);
+		assertBlockContract(blocks, { screen: "reports", level: "list" });
+
+		// BLOCKER FIX: selection AND order are alphabetical by currency code, not
+		// a comparison of revenue (or any other magnitude) across currencies.
+		const stats = findBlocks(blocks, "stats")[0] as { items?: Array<Record<string, unknown>> };
+		expect(stats.items).toEqual([
+			{ label: "Revenue (EUR)", value: "€10.00" },
+			{ label: "Revenue (USD)", value: "$900.00" },
+		]);
+
+		// DA-7: the wire gap (no per-currency order count) is disclosed to the
+		// OPERATOR, inside the always-open "Revenue by day" group — not only in
+		// the PR body — and ONLY when it actually applies (multi-currency).
+		const revenueGroupText = groupBlocks(blocks, "reports:revenue")
+			.filter((b) => b.type === "context")
+			.map((b) => b.text);
+		expect(revenueGroupText.some((t) => /no per-currency order count/.test(String(t)))).toBe(true);
+
+		// Top products' currency-less wire can't be safely formatted across more
+		// than one currency either — same "—" fallback as before, but now with
+		// its own explanatory line inside the "Top products" group.
+		const topTable = tableWithId(blocks, "reports:top-table");
+		const topRows = (topTable?.rows ?? []) as Array<Record<string, unknown>>;
+		expect(topRows.map((r) => r.revenue)).toEqual(["—"]);
+		const topGroupText = groupBlocks(blocks, "reports:top")
+			.filter((b) => b.type === "context")
+			.map((b) => b.text);
+		expect(topGroupText.some((t) => /more than one currency/.test(String(t)))).toBe(true);
+	});
+
+	test("single-currency reports carry NEITHER disclosure line (T-8a: a caveat that cannot apply is noise)", async () => {
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", reportsResponder);
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+		await seedAdminToken(sandbox, stub);
+
+		const outcome = await sandbox.invokeRoute("admin", { type: "page_load", page: "/reports" });
+		const blocks = blocksOf(outcome);
+		assertBlockContract(blocks, { screen: "reports", level: "list" });
+
+		expect(
+			groupBlocks(blocks, "reports:revenue").some(
+				(b) => b.type === "context" && /order count/.test(String(b.text)),
+			),
+		).toBe(false);
+		expect(
+			groupBlocks(blocks, "reports:top").some(
+				(b) => b.type === "context" && /more than one currency/.test(String(b.text)),
+			),
+		).toBe(false);
+	});
+
 	test("Reports page manifest declares only content:read + network:request, no storage/kv/db capability", () => {
 		expect(URUMI_PLUGIN_CAPABILITIES).toEqual(["content:read", "network:request"]);
 		expect(URUMI_PLUGIN_CAPABILITIES).not.toContain("network:request:unrestricted");

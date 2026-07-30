@@ -138,22 +138,35 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 	// §12.5's listing asks for these cards ranked "by the most orders" — but
 	// `RevenueBucketWire` carries only `revenueCents`, no per-currency order
 	// count, and `StatusCountWire.orderCount` is bucketed by ORDER STATUS, not
-	// by currency. Approximating an order-count rank from revenue would let a
-	// low-price, high-volume currency read as ranked below a high-price,
-	// low-volume one — inverted, while the card still claims to be "the three
-	// currencies with the most orders" (confidently wrong, and an operator
-	// cannot tell). Director ruling: this is scoped OUT, reported here as an
-	// N-1 spec defect. Ranking by revenue instead uses only data the wire
-	// actually carries — no invented semantic, and the single-currency case
-	// (every fixture, and every store today) is unaffected either way.
-	const byRevenueDesc = [...totalByCurrency.entries()].toSorted((a, b) => b[1] - a[1]);
+	// by currency. Director ruling: the ranking is scoped OUT — and that means
+	// no comparison across currencies at all, not a different comparison.
+	// Sorting by revenue instead of orders was tried and REJECTED on review:
+	// it still numerically compares incommensurable units (JPY minor units vs
+	// USD) to decide both selection and order, so it reinstates the exact
+	// defect (a low-price, high-volume currency can read as ranked below a
+	// high-price, low-volume one, confidently wrong, operator can't tell) with
+	// a different axis. Single-currency stores never trigger it, which is
+	// exactly why it looked fine in review. The fix: select AND order by a
+	// NON-COMPARATIVE, deterministic rule — alphabetical ISO currency code.
+	// This is reported as an N-1 spec defect (§12.5's listing), and the gap is
+	// also disclosed to the OPERATOR below, not only in the PR body (DA-7).
+	const byCurrencyCode = [...totalByCurrency.entries()].toSorted((a, b) =>
+		a[0].localeCompare(b[0]),
+	);
 	const items: StatItem[] =
-		byRevenueDesc.length === 0
+		byCurrencyCode.length === 0
 			? [{ label: "Revenue", value: "—", description: "No orders in range" }]
-			: byRevenueDesc.slice(0, MAX_STATS_ITEMS).map(([currencyCode, revenueCents]) => ({
+			: byCurrencyCode.slice(0, MAX_STATS_ITEMS).map(([currencyCode, revenueCents]) => ({
 					label: `Revenue (${currencyCode})`,
 					value: formatMoney(toCents(revenueCents), toCurrency(currencyCode), "en-US"),
 				}));
+	// DA-7: no control can fix this (there is nothing to click), so one honest
+	// line names the gap and the remedy — rendered, not just disclosed in a
+	// PR body. Conditioned on there actually BEING more than one currency
+	// (T-8a's discipline: a caveat that cannot apply is noise, not honesty).
+	const multiCurrency = byCurrencyCode.length > 1;
+	const rankingGapNote =
+		"Cards are ordered alphabetically by currency code, not by order volume — the wire carries no per-currency order count. Ranking by volume needs a service change.";
 
 	// Top products' wire (`TopProductWire`) carries `revenueCents` but NO
 	// currency field at all — a second, independent wire gap from the stats
@@ -163,7 +176,9 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 	// number is worse than a missing one (M-1), and inventing a currency here
 	// would be the same category of mistake the stats ranking was scoped out
 	// to avoid.
-	const singleCurrency = byRevenueDesc.length === 1 ? toCurrency(byRevenueDesc[0]![0]) : undefined;
+	const singleCurrency =
+		byCurrencyCode.length === 1 ? toCurrency(byCurrencyCode[0]![0]) : undefined;
+	const topRevenueSuppressed = singleCurrency === undefined && data.top.length > 0;
 	const topRows = data.top.map((t) => ({
 		titleSnapshot: t.titleSnapshot,
 		qtySold: t.qtySold,
@@ -202,11 +217,14 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 		block_id: "reports:revenue",
 		label: `Revenue by ${data.interval} (${data.revenue.length} bucket${data.revenue.length === 1 ? "" : "s"})`,
 		default_open: true, // S-3: the one open group on this screen
-		blocks: [revenueTable],
+		blocks: multiCurrency
+			? [{ type: "context", text: rankingGapNote }, revenueTable]
+			: [revenueTable],
 	};
 
 	const statusesTable: TableBlock = {
 		type: "table",
+		block_id: "reports:statuses-table",
 		columns: [
 			{ key: "status", label: "Status", format: "badge" },
 			{ key: "orderCount", label: "Orders", format: "number" },
@@ -225,6 +243,7 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 
 	const topTable: TableBlock = {
 		type: "table",
+		block_id: "reports:top-table",
 		columns: [
 			{ key: "titleSnapshot", label: "Product" },
 			{ key: "qtySold", label: "Qty", format: "number" },
@@ -239,11 +258,20 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 		block_id: "reports:top",
 		label: `Top products (${data.top.length})`,
 		default_open: false,
-		blocks: [topTable],
+		blocks: topRevenueSuppressed
+			? [
+					{
+						type: "context",
+						text: "Revenue is not shown per product because this range spans more than one currency and the wire carries no per-product currency — a service change is needed to attribute it correctly.",
+					},
+					topTable,
+				]
+			: [topTable],
 	};
 
 	const lowTable: TableBlock = {
 		type: "table",
+		block_id: "reports:low-table",
 		columns: [
 			{ key: "sku", label: "SKU", format: "code" },
 			{ key: "onHand", label: "On hand", format: "number" },
