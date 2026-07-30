@@ -210,6 +210,24 @@ export interface SelectOption {
 	label: string;
 }
 
+/**
+ * `FieldCondition` (em-dash `packages/blocks/src/types.ts` `FieldCondition`) —
+ * gates a `FormBlock` field's visibility against another field's LIVE value
+ * (`blocks/form.tsx`'s `evaluateCondition`, re-run on every render against the
+ * form's own `values` state). Verified present in the installed 0.31.1
+ * renderer and unchanged from 0.29.0 (R-23).
+ *
+ * ADDED HERE (not by the #151 foundation revision, whose §0.1 B table did not
+ * list it): the admin console spec's F-5b/R-23 already assume `condition`
+ * exists on `FormField`, and the Coupons create form (condition-gated on
+ * `type`) is its first consumer in this repo. `EmDash's own `FormField` is
+ * `(element union) & { condition?: FieldCondition }`; mirrored the same way on
+ * `FormBlock["fields"]` below rather than adding a per-field-spec property, so
+ * every field kind gets it in one place. */
+export type FieldCondition =
+	| { field: string; eq?: unknown; neq?: never }
+	| { field: string; neq?: unknown; eq?: never };
+
 export interface SelectElement {
 	type: "select";
 	action_id: string;
@@ -515,12 +533,23 @@ export interface SecretInputFieldSpec {
 export interface FormBlock extends CarrierBlockBase {
 	type: "form";
 	fields: Array<
-		| FormFieldSpec
-		| SecretInputFieldSpec
-		| SelectFieldSpec
-		| DateFieldSpec
-		| ToggleElement
-		| ComboboxElement
+		(
+			| FormFieldSpec
+			| SecretInputFieldSpec
+			| SelectFieldSpec
+			| DateFieldSpec
+			| ToggleElement
+			| ComboboxElement
+		) & {
+			/** Hide this field unless `condition` evaluates true against the
+			 *  form's own live `values` (R-23). Used to keep a polymorphic create
+			 *  form inside the visible-field budget (F-5b) — e.g. the coupon
+			 *  create form's `amount`/`currency` fields are `condition`-gated on
+			 *  `type === "fixed_amount"` and `ratePercent`/`cap` on
+			 *  `type === "percentage"`, so both branches ship in one stateless
+			 *  render and the operator's live selection decides which is drawn. */
+			condition?: FieldCondition;
+		}
 	>;
 	submit: { label: string; action_id: string };
 }

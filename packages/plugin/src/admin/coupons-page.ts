@@ -8,9 +8,11 @@ import type {
 	ButtonElement,
 	FieldsBlock,
 	FormBlock,
+	MeterBlock,
 	RouteHandler,
 	SelectOption,
 	TableBlock,
+	TabPanel,
 } from "../types.js";
 import {
 	AdminRulesClient,
@@ -26,83 +28,105 @@ import { formatBpsAsPercent, parsePercentToBps } from "./percent-input.js";
 import {
 	asRecord,
 	backButton,
+	carriedForm,
 	createListDetailHandler,
 	customAction,
 	decodePath,
+	emptyState,
 	encodePath,
 	failClosedResponse,
+	filterPanel,
+	filterSummary,
 	leafLevel,
 	listLevel,
 	noticeBanner,
+	PATH_FIELD,
 	readAdminTokens,
 	readString,
 	screenActions,
 	type CustomActionApi,
 	type ListDetailInput,
+	type NavPath,
 	type Notice,
 	type ScreenActions,
 } from "./scaffold/index.js";
 
 /**
- * The admin Coupons console page (admin-UX Increment 3, slice 4 — "coupon
- * management"): a 2-level scaffold screen — the keyset-paged coupons list
- * (search = case-insensitive EXACT code match, the list capability PR #74
- * added) drilling into a per-coupon detail/edit LEAF (the first rules screen
- * with a true leaf level — tax/shipping are list-into-list). Rendered by the
- * single `admin` dispatch route (`admin-route.ts`), built on the shared
- * list/detail scaffold and `AdminRulesClient`. Percentage math reuses the
- * shared `percent-input` exact-integer bps parser/formatter (extracted from
- * the Tax console at this second consumer); money reuses the shared
- * `money-input` helper (never a float, never `number_input`).
+ * The admin Coupons console — built against `docs/admin/ADMIN-CONSOLE.md`
+ * §12.2, pattern-matched on the reference screen (`orders-page.ts`, §11).
+ * A 2-level scaffold screen (list → leaf detail/edit) over `AdminRulesClient`.
  *
- * UNCHANGED-vs-CLEAR, presented honestly (the crux of this screen): coupon
- * UPDATE is the documented LWW exception (PR #71 / `CouponStore.update`) and
- * its wire is a FULL REPLACEMENT — the service coerces every omitted field to
- * null before the store call, so the wire genuinely cannot say "leave this
- * field alone". This screen therefore never pretends it can: the edit form
- * pre-fills EVERY editable field with the coupon's current value and always
- * submits ALL of them (explicit null for a blanked field, never relying on
- * omission). "Leave unchanged" = don't touch the pre-fill; "clear" = blank
- * the field — and the form's own copy says exactly that. The one axis with no
- * "unset" is the coupon's primary economic value (`amount` for fixed_amount,
- * `rate` for percentage — the domain throws on a fixed coupon without an
- * amount), so blanking it is a boundary error, not a null.
+ * THE SHAPE, in one paragraph. The list is `header` + one `context` + an
+ * optional notice `banner` + an INLINE one-field search (L-2: 1 field renders
+ * directly, no accordion) + the table — nothing else above the data (P-1).
+ * The detail is `header` + back + notice + the 6-entry identity strip, then
+ * TWO task-named panels — `Coupon` · `Redemptions` (D-2, D-2a: a would-be
+ * `History` panel would hold only Created, which lives in the identity strip
+ * instead) — whose one named group (`Edit`) is an `accordion`.
  *
- * IMMUTABLE identity/kind, presented honestly: `id`, `code`, `type` and (for
- * fixed_amount) `currency` are fixed at creation — `CouponEdit` cannot carry
- * them ("a merchant supersedes a live promotion with a NEW code, never
- * re-defines an issued one" — the port doc). They render as read-only detail
- * fields, never as editable inputs.
+ * WHY THIS SCREEN HAS NO RENDER-STATE CHANNEL FOR DA-3. Every destructive/
+ * risky write here is DA-2 (delete: no input, forbid-if-redeemed) or DA-4
+ * (create/save: plain forms, no confirm) — there is no free-text-or-typed-
+ * amount flow that would need DA-3's stage/confirm shape, so this screen
+ * carries none of Orders' refusal machinery. It DOES use the render-state
+ * channel once, for a NON-DA-3 purpose the spec also assigns it (B-6, E-2):
+ * forcing the "New coupon" group open from the empty state's own button
+ * without discarding the operator's typed input in any other group. See
+ * {@link CouponsRenderState}.
  *
- * DELETE is forbid-if-redeemed: one redemption blocks deletion forever (the
- * redemption audit trail must keep resolving to its coupon). The detail
- * withholds the delete button from a redeemed coupon and says why; the
- * server-side atomic guard remains the source of truth for the race where a
- * redemption lands after render — that 409 renders the same honest copy.
+ * THE F-5a TRAP THIS SCREEN IS BUILT TO AVOID. `updateCoupon` sends a PUT
+ * (`admin-rules-client.ts:493-496`) and the service coerces every omitted key
+ * to `null` unconditionally (`rules-admin.ts:434-443`) — there is no partial
+ * update on the wire. So the edit form is NEVER split into sibling forms
+ * (F-5a forbids it here: splitting would let an operator saving a "Discount"
+ * form silently wipe `startsAt`/`expiresAt`/`maxUses`/`maxUsesPerCustomer`).
+ * It stays ONE form, kept inside budget by `condition`-gating the type-
+ * specific economics fields (F-5b) and by F-5c's full-replace exemption
+ * (cap 8; this form is F-5c's one named instance — 6 fields for a
+ * `fixed_amount` coupon, 7 for `percentage`).
+ *
+ * B-3's CHANGE TOKEN, WITHOUT A SECOND HASH. `CouponSummaryWire` has no
+ * `updatedAt`, so the edit form's `block_id` needs SOME value that changes
+ * when the coupon's mutable fields do. Rather than hand-rolling a second
+ * digest, this screen relies on {@link carriedForm}'s OWN prefill digest
+ * (`__v`, B-3a) — it is already a hash of every field's `initial_value` in
+ * order, which for this form IS exactly the coupon's mutable economics/window/
+ * use-bound fields. B-3a's own text says this is not belt-and-braces; adding a
+ * second hand-rolled hash alongside it would be exactly that.
+ *
+ * L-7's PICKER IS A `combobox`, NEVER A `select`. The option value is an
+ * encoded drill path (opaque, not a human word) — a `select` would render
+ * that raw value in its trigger (R-17a, X-22); `combobox` renders the label
+ * (R-17b).
+ *
+ * `type`, `code` and `couponId` are IMMUTABLE identity/kind (F-2): none is a
+ * form field anywhere on this screen. They ride invisibly in a form's
+ * `block_id` carrier (edit) or a button's `value` (delete).
  */
 export const COUPONS_PAGE: AdminPageConfig = { path: "/coupons", label: "Coupons", icon: "tag" };
 
-/** This screen's namespaced action ids — the four scaffold nav verbs plus the
- *  coupon side-effecting verbs. */
+/** This screen's namespaced action ids. */
 const COUPON_ACTIONS: ScreenActions = screenActions("coupons");
 const ACTION_CREATE = COUPON_ACTIONS.custom("create");
 const ACTION_SAVE = COUPON_ACTIONS.custom("save");
 const ACTION_DELETE = COUPON_ACTIONS.custom("delete");
+/** Fired by the empty state's "New coupon" button (E-2) — forces the create
+ *  group open on the re-rendered list. Not a DA-3 verb; see the module doc. */
+const ACTION_NEW = COUPON_ACTIONS.custom("new");
 
 /**
  * The action ids the admin-route dispatcher recognizes as belonging to the
- * Coupons console. Every `block_action`/`form_submit` this page can emit is
- * namespaced `coupons:*` and listed here, so none falls through the
- * dispatcher to the `{blocks:[]}` dead-end.
+ * Coupons console (DA-6's discipline applied generally: an id that is not
+ * here is an id the dispatcher cannot mis-route to).
  */
 export const COUPONS_ACTION_IDS: ReadonlySet<string> = COUPON_ACTIONS.actionIds(
 	"create",
 	"save",
 	"delete",
+	"new",
 );
 
-/** The em-dash BlockInteraction envelope this page consumes (the scaffold's
- *  input shape — `type`/`action_id`/`values`/`value`). */
+/** The em-dash BlockInteraction envelope this page consumes. */
 export type CouponsPageInput = ListDetailInput;
 
 /** The list's filter form: `search` is the ONLY axis the service ships — a
@@ -111,11 +135,33 @@ interface CouponsFilterForm {
 	search?: string;
 }
 
+/** A `combobox`/`select` sentinel meaning "nothing selected". NEVER `""`
+ *  (F-6a) — the trigger renders the raw value and an empty one renders blank
+ *  (R-17a). */
+const NONE = "none";
+
+/**
+ * THIS SCREEN'S RENDER STATE (DA-3a-iii's channel, generalized beyond DA-3 —
+ * see the module doc for why Coupons has no staged/refusal flow at all).
+ * One member: the empty state's "New coupon" button re-renders the list with
+ * `renderState: {kind:"new-coupon"}`, and {@link createCouponAccordion} is the
+ * one place that reads it, changing the accordion's `block_id` AND setting
+ * `default_open: true` together (B-6 — either alone is wrong: the flag alone
+ * does nothing to an already-mounted accordion, and the id alone renders
+ * collapsed because the remount re-reads `default_open`, which defaults to
+ * `false`).
+ */
+type CouponsRenderState = { kind: "new-coupon" };
+
 /** Matches the service's default page size (`couponsListQuery` limit default). */
 const PAGE_LIMIT = 25;
 
+/** §1's prose budgets, as named constants so copy can be measured against
+ *  them rather than eyeballed. */
+const LABEL_BUDGET = 60;
+
 export function createCouponsPageHandler(): RouteHandler<CouponsPageInput> {
-	return createListDetailHandler({
+	return createListDetailHandler<CouponsRenderState>({
 		actions: COUPON_ACTIONS,
 		async createClient(ctx) {
 			const tokens = await readAdminTokens(ctx);
@@ -125,13 +171,17 @@ export function createCouponsPageHandler(): RouteHandler<CouponsPageInput> {
 				...tokens,
 			});
 		},
-		// The list's "Open coupon" form submits the encoded one-deep target path
+		// The "Open coupon" picker carries the ENCODED one-deep target path
 		// (`[code]`) in `values.target` — the code, not the id, because the only
-		// read that returns the FULL editable projection (incl. the window) is
-		// the exact-code list search (see `couponDetailLevel().load`).
+		// read that returns the full editable projection (incl. the validity
+		// window) is the exact-code list search (see `couponDetailLevel().load`).
 		parseOpen(input) {
 			const encoded = readString(input.values?.target);
-			const targetPath = encoded === undefined ? null : decodePath(encoded);
+			if (encoded === undefined || encoded === NONE) return undefined;
+			// `decodePath` returns `null` (not `undefined`) on a malformed token —
+			// e.g. a hand-edited devtools value — normalized to `undefined` here so
+			// it falls back to the root list rather than throwing.
+			const targetPath = decodePath(encoded);
 			return targetPath === null ? undefined : { targetPath };
 		},
 		levels: [couponsListLevel(), couponDetailLevel()],
@@ -139,6 +189,7 @@ export function createCouponsPageHandler(): RouteHandler<CouponsPageInput> {
 			[ACTION_CREATE]: createCouponAction(),
 			[ACTION_SAVE]: saveCouponAction(),
 			[ACTION_DELETE]: deleteCouponAction(),
+			[ACTION_NEW]: newCouponAction(),
 		},
 	});
 }
@@ -199,23 +250,10 @@ function formatCentsForDisplay(minorUnits: number, currencyCode: string | null):
 	}
 }
 
-/** A hidden single-option carrier (the scaffold's proven pattern, e.g.
- *  `tax-page.ts`'s `hiddenCarrier`) that threads one value through a
- *  stateless `form_submit`. */
-function hiddenCarrier(actionId: string, value: string): FormBlock["fields"][number] {
-	return {
-		type: "select",
-		action_id: actionId,
-		label: actionId,
-		options: [{ value, label: value }],
-		initial_value: value,
-	};
-}
-
 // -- level 0: the coupons list -------------------------------------------------
 
 function couponsListLevel() {
-	return listLevel<AdminRulesClient, CouponsFilterForm, CouponSummaryWire>({
+	return listLevel<AdminRulesClient, CouponsFilterForm, CouponSummaryWire, CouponsRenderState>({
 		limit: PAGE_LIMIT,
 		filterFromValues(values) {
 			const search = readString(values.search)?.trim();
@@ -228,8 +266,8 @@ function couponsListLevel() {
 			});
 			return { items: page.coupons, nextCursor: page.nextCursor };
 		},
-		render({ actions, filter, items, nextToken, notice }) {
-			return couponsBlocks(actions, filter, items, nextToken, notice);
+		render({ actions, path, filter, items, nextToken, notice, renderState }) {
+			return couponsBlocks(actions, path, filter, items, nextToken, notice, renderState);
 		},
 		onError: () => couponsFailClosed(),
 	});
@@ -239,167 +277,278 @@ function toClientFilter(form: CouponsFilterForm): CouponsListFilter {
 	return form.search !== undefined ? { search: form.search } : {};
 }
 
+/**
+ * §12.2's list skeleton, exactly: `header` · one `context` (≤140) · notice
+ * `banner` · the INLINE one-field search (L-2: at 1 field it renders directly,
+ * no accordion) · the active-filter `section` · THE DATA (table, or `empty` in
+ * its place) · the "Open coupon" drill-in · the "New coupon" create accordion.
+ * Nothing else may precede the table (P-1/L-1).
+ */
 function couponsBlocks(
 	actions: ScreenActions,
+	path: NavPath,
 	filter: CouponsFilterForm,
 	coupons: CouponSummaryWire[],
 	nextToken: string | undefined,
 	notice: Notice | undefined,
+	renderState: CouponsRenderState | undefined,
 ): Block[] {
-	const table: TableBlock = {
+	const blocks: Block[] = [
+		{ type: "header", text: "Coupons", block_id: "coupons:hdr" },
+		{
+			type: "context",
+			// 78 chars ≤ 140 (§1).
+			text: "Search a coupon and open it. Discounts apply to the cart subtotal at checkout.",
+		},
+	];
+	if (notice !== undefined) blocks.push(noticeBanner(notice));
+
+	// ONE part for the screen's one authored filter field (L-3).
+	const activeFilters = [filter.search !== undefined && `code: ${filter.search}`];
+	blocks.push(
+		filterPanel({
+			form: searchForm(actions, path, filter),
+			blockId: "coupons:filters",
+			activeFilters,
+			// 1 field ≤ the default inline threshold (2) — renders directly, no
+			// accordion (L-2).
+		}),
+	);
+	const summary = filterSummary(activeFilters);
+	if (summary !== undefined) {
+		blocks.push({
+			type: "section",
+			text: summary,
+			// The path rides in `value`, NOT `block_id` — a button echoes no
+			// `block_id` (L-6, B-1).
+			accessory: {
+				type: "button",
+				action_id: actions.applyFilter,
+				label: "Clear filters",
+				value: { [PATH_FIELD]: encodePath(path) },
+			},
+			block_id: "coupons:filter-summary",
+		});
+	}
+
+	const filtered = summary !== undefined;
+	if (coupons.length === 0 && !filtered) {
+		// E-2: the primary collection at its TRUE zero state. The table is
+		// OMITTED and `empty` renders in its place, with the create affordance in
+		// `empty.actions` — its handler re-renders THIS list with the create
+		// group forced open (B-6), which is why that group still has to exist
+		// below regardless of row count (L-8).
+		blocks.push(
+			emptyState({
+				title: "No coupons yet",
+				description: "Create one to start discounting carts.",
+				size: "base",
+				actions: [{ type: "button", action_id: ACTION_NEW, label: "New coupon", value: {} }],
+				blockId: "coupons:empty",
+			}),
+		);
+	} else {
+		blocks.push(couponsTable(coupons, nextToken));
+	}
+	if (coupons.length > 0) blocks.push(openCouponForm(actions, path, coupons));
+	blocks.push(createCouponAccordion(renderState));
+	return blocks;
+}
+
+function couponsTable(coupons: CouponSummaryWire[], nextToken: string | undefined): TableBlock {
+	return {
 		type: "table",
+		block_id: "coupons:list",
 		columns: [
-			{ key: "code", label: "Code", format: "code" },
-			{ key: "type", label: "Type", format: "badge" },
+			{ key: "code", label: "Code", format: "code" }, // identity first (T-2)
+			// `Type` column DELETED (T-5): `Discount` already reads `20% off` /
+			// `$5.00 off`, so a badge repeating `fixed_amount`/`percentage` would be
+			// a second, redundant lifecycle-shaped column.
 			{ key: "discount", label: "Discount" },
 			{ key: "window", label: "Valid" },
 			{ key: "uses", label: "Uses" },
 		],
 		rows: coupons.map((c) => ({
 			code: c.code,
-			type: c.type,
 			discount: couponDiscountSummary(c),
 			window: couponWindowSummary(c.startsAt, c.expiresAt),
 			uses: couponUsesSummary(c.usesCount, c.maxUses),
 		})),
-		page_action_id: actions.page,
+		page_action_id: COUPON_ACTIONS.page,
 		...(nextToken !== undefined ? { next_cursor: nextToken } : {}),
-		empty_text:
-			filter.search !== undefined
-				? "No coupon has that code. Search matches a code exactly (case-insensitive), never a substring."
-				: "No coupons yet — create one below.",
+		empty_text: "No coupon matches that code.",
 	};
-	const blocks: Block[] = [
-		{ type: "header", text: "Coupons" },
-		{
-			type: "context",
-			text: "A coupon discounts the cart subtotal at checkout — fixed_amount takes a set money amount off (in one currency), percentage takes an exact basis-point share (with an optional cap). Money is exact integer minor units, never floating point. A coupon's ID, code, type and currency are fixed at creation: to change those, retire the coupon and issue a new code. Uses counts redemptions — one redemption permanently blocks deletion (the audit trail is preserved).",
+}
+
+/**
+ * The one-field search (L-2 ⇒ inline, no accordion), built by `carriedForm`
+ * LAST so its digest matches — `filterPanel` recomputes it and throws on an
+ * absent or stale one (B-3a).
+ */
+function searchForm(actions: ScreenActions, path: NavPath, filter: CouponsFilterForm): FormBlock {
+	return carriedForm({
+		namespace: "coupons:filter",
+		context: { [PATH_FIELD]: encodePath(path) },
+		form: {
+			type: "form",
+			fields: [
+				{
+					type: "text_input",
+					action_id: "search",
+					label: "Code (exact match, case-insensitive)",
+					placeholder: "e.g. SUMMER25",
+					...(filter.search !== undefined ? { initial_value: filter.search } : {}),
+				},
+			],
+			submit: { label: "Search", action_id: actions.applyFilter },
 		},
-	];
-	if (notice !== undefined) blocks.push(noticeBanner(notice));
-	blocks.push(searchForm(filter));
-	blocks.push(table);
-	if (coupons.length > 0) blocks.push(openCouponForm(coupons));
-	blocks.push({ type: "divider" });
-	blocks.push(createCouponForm());
-	return blocks;
+	});
 }
 
-function searchForm(filter: CouponsFilterForm): FormBlock {
+/**
+ * The drill-in picker (L-7). ALWAYS a `combobox`, never a `select`: the option
+ * VALUE is an encoded drill path (opaque, not a readable word), and a `select`
+ * would render that raw value in its trigger (R-17a, X-22) — `combobox`
+ * renders the label instead (R-17b). Never prefills (R-12a), so `combobox` is
+ * safe at any row count.
+ */
+function openCouponForm(
+	actions: ScreenActions,
+	path: NavPath,
+	coupons: CouponSummaryWire[],
+): FormBlock {
+	return carriedForm({
+		namespace: "coupons:open",
+		context: { [PATH_FIELD]: encodePath(path) },
+		form: {
+			type: "form",
+			fields: [
+				{
+					type: "combobox",
+					action_id: "target",
+					label: "Open coupon",
+					placeholder: "Choose a coupon…",
+					options: [
+						{ value: NONE, label: "Choose a coupon…" },
+						...coupons.map((c) => ({
+							value: encodePath([c.code]),
+							label: `${c.code} · ${couponDiscountSummary(c)} · ${couponUsesSummary(c.usesCount, c.maxUses)}`,
+						})),
+					],
+					initial_value: NONE,
+				},
+			],
+			submit: { label: "View / edit", action_id: actions.open },
+		},
+	});
+}
+
+/**
+ * The create group (L-8): closed by default, forced open (B-6: changed
+ * `block_id` AND `default_open: true`) when `renderState` says the empty
+ * state's own button fired (E-2). Always rendered, regardless of row count,
+ * so there is a group for that button to force open.
+ */
+function createCouponAccordion(renderState: CouponsRenderState | undefined): Block {
+	const forceOpen = renderState?.kind === "new-coupon";
 	return {
-		type: "form",
-		fields: [
+		type: "accordion",
+		block_id: forceOpen ? "coupons:new:opened" : "coupons:new",
+		label: "New coupon",
+		default_open: forceOpen,
+		blocks: [
 			{
-				type: "text_input",
-				action_id: "search",
-				label: "Code (exact match, case-insensitive; blank = all coupons)",
-				placeholder: "e.g. SUMMER25",
-				...(filter.search !== undefined ? { initial_value: filter.search } : {}),
+				type: "context",
+				// 108 chars ≤ 200.
+				text: "ID, code, type and currency are fixed at creation — to change them, retire this coupon and issue a new code.",
 			},
+			createCouponForm(),
 		],
-		submit: { label: "Search", action_id: COUPON_ACTIONS.applyFilter },
 	};
 }
 
-function openCouponForm(coupons: CouponSummaryWire[]): FormBlock {
-	const options: SelectOption[] = coupons.map((c) => ({
-		value: encodePath([c.code]),
-		label: `${c.code} — ${couponDiscountSummary(c)}`,
-	}));
-	return {
-		type: "form",
-		fields: [{ type: "select", action_id: "target", label: "Open coupon", options }],
-		submit: { label: "View / edit", action_id: COUPON_ACTIONS.open },
-	};
-}
-
+/**
+ * The create form: 3 unconditional fields (id, code, type) + 2
+ * `condition`-gated economics fields per type (F-5b) = 5 VISIBLE at once. Both
+ * branches' fields are always PRESENT in the JSON (so the operator's live
+ * `type` selection can reveal/hide them with no round trip); the server-side
+ * parser still validates cross-type contamination explicitly (never trusts
+ * that a hidden branch's fields are empty).
+ *
+ * Five fields that used to live here — `Starts at`, `Expires at`,
+ * `Minimum spend`, `Max uses`, `Max uses per customer` — are GONE: all
+ * five already have a home in the detail's edit form, a coupon created
+ * without them is valid immediately/forever/unlimited/unrestricted (the
+ * common case), and keeping them off this form is what holds it to 5 visible
+ * instead of 8.
+ */
 function createCouponForm(): FormBlock {
 	const typeOptions: SelectOption[] = [
 		{ value: "fixed_amount", label: "Fixed amount off" },
 		{ value: "percentage", label: "Percentage off" },
 	];
-	return {
-		type: "form",
-		fields: [
-			{ type: "text_input", action_id: "id", label: "Coupon ID", placeholder: "e.g. summer25" },
-			{
-				type: "text_input",
-				action_id: "code",
-				label: "Code (what the buyer enters; immutable once created)",
-				placeholder: "e.g. SUMMER25",
-			},
-			{
-				type: "select",
-				action_id: "type",
-				label: "Type (immutable once created)",
-				options: typeOptions,
-				initial_value: "fixed_amount",
-			},
-			{
-				type: "text_input",
-				action_id: "amount",
-				label: "Amount off (fixed_amount only — e.g. 5.00)",
-				placeholder: "5.00",
-			},
-			{
-				type: "text_input",
-				action_id: "currency",
-				label: "Currency (fixed_amount only — ISO-4217, e.g. USD; immutable)",
-				placeholder: "USD",
-			},
-			{
-				type: "text_input",
-				action_id: "ratePercent",
-				label: "Rate (percentage only — %, up to 2 decimals, e.g. 7.25)",
-				placeholder: "7.25",
-			},
-			{
-				type: "text_input",
-				action_id: "cap",
-				label: "Discount cap (percentage only — blank = no cap)",
-				placeholder: "20.00",
-			},
-			{
-				type: "text_input",
-				action_id: "minSubtotal",
-				label: "Minimum spend (blank = none)",
-				placeholder: "35.00",
-			},
-			{
-				type: "text_input",
-				action_id: "startsAt",
-				label: "Starts at (ISO 8601 UTC; blank = immediately)",
-				placeholder: "2026-08-01T00:00:00Z",
-			},
-			{
-				type: "text_input",
-				action_id: "expiresAt",
-				label: "Expires at (ISO 8601 UTC; blank = never)",
-				placeholder: "2026-09-01T00:00:00Z",
-			},
-			{
-				type: "text_input",
-				action_id: "maxUses",
-				label: "Max total uses (blank = unlimited)",
-				placeholder: "100",
-			},
-			{
-				type: "text_input",
-				action_id: "maxUsesPerCustomer",
-				label: "Max uses per customer (blank = unlimited)",
-				placeholder: "1",
-			},
-		],
-		submit: { label: "Create coupon", action_id: ACTION_CREATE },
-	};
+	return carriedForm({
+		namespace: "coupons:create",
+		// No hidden context to carry — `id`/`code` are this form's own VISIBLE
+		// fields, unlike edit's immutable couponId/code/type. Still routed through
+		// `carriedForm` (empty context) rather than a hand-set block_id: the
+		// `type` field's fixed `initial_value` makes this a "prefilling" form by
+		// shape (B-3a's own test cannot distinguish a static default from a
+		// record-derived one), so it needs the same `__v` digest every other
+		// prefilling form carries.
+		form: {
+			type: "form",
+			fields: [
+				{ type: "text_input", action_id: "id", label: "Coupon ID", placeholder: "e.g. summer25" },
+				{ type: "text_input", action_id: "code", label: "Code", placeholder: "e.g. SUMMER25" },
+				{
+					type: "select",
+					action_id: "type",
+					label: "Type",
+					options: typeOptions,
+					initial_value: "fixed_amount", // required for `condition` to evaluate (R-12b)
+				},
+				{
+					type: "text_input",
+					action_id: "amount",
+					label: "Amount off",
+					placeholder: "5.00",
+					condition: { field: "type", eq: "fixed_amount" },
+				},
+				{
+					type: "text_input",
+					action_id: "currency",
+					label: "Currency (ISO-4217)",
+					placeholder: "USD",
+					condition: { field: "type", eq: "fixed_amount" },
+				},
+				{
+					type: "text_input",
+					action_id: "ratePercent",
+					label: "Rate (%)",
+					placeholder: "7.25",
+					condition: { field: "type", eq: "percentage" },
+				},
+				{
+					type: "text_input",
+					action_id: "cap",
+					label: "Discount cap (optional)",
+					placeholder: "20.00",
+					condition: { field: "type", eq: "percentage" },
+				},
+			],
+			submit: { label: "Create coupon", action_id: ACTION_CREATE },
+		},
+	});
 }
 
 function couponsFailClosed() {
 	return failClosedResponse({
 		header: "Coupons",
 		title: "Coupons are unavailable",
+		// E-7's normative blockquote, verbatim — never a single named cause (X-42).
 		description:
-			"Could not reach the commerce service. Check the service connection and the admin token in Settings.",
+			"Coupons could not be loaded. Check the service connection and the admin token in Settings; if both look right, this is a fault in the console itself — not your data.",
 		toast: "Could not load coupons",
 	});
 }
@@ -411,21 +560,20 @@ function couponDetailLevel() {
 		// The detail load is the exact-code LIST search, not `GET /coupons/:code`
 		// — deliberately: the point-lookup serialization omits `startsAt`/
 		// `expiresAt`, and a full-replace edit form that cannot pre-fill the
-		// window would silently CLEAR it on every save. The list projection is
-		// the one read that carries every editable field. `search` is an exact
+		// window would silently CLEAR it on every save. `search` is an exact
 		// case-insensitive match, so 0-or-1 rows is the norm; the exact-code
 		// find guards the theoretical case-variant collision.
 		async load(client, _path, code) {
 			const page = await client.listCoupons({ search: code }, { limit: 2 });
 			return page.coupons.find((c) => c.code === code) ?? page.coupons[0] ?? null;
 		},
-		render({ actions, id, detail, notice }) {
-			return detailBlocks(actions, id, detail, notice);
+		render({ actions, path, id, detail, notice }) {
+			return detailBlocks(actions, path, id, detail, notice);
 		},
-		notFound({ actions, id }) {
+		notFound({ actions, path, id }) {
 			return [
 				{ type: "header", text: "Coupon not found" },
-				backButton(actions.back, "← Back to coupons"),
+				backButton(actions.back, "← Back to coupons", path),
 				{
 					type: "banner",
 					variant: "error",
@@ -434,140 +582,251 @@ function couponDetailLevel() {
 				},
 			];
 		},
-		onError: () =>
-			failClosedResponse({
-				header: "Coupon",
-				title: "This coupon is unavailable",
-				description:
-					"Could not reach the commerce service. Check the service connection and the admin token in Settings.",
-				toast: "Could not load the coupon",
-			}),
+		onError: () => couponFailClosed(),
 	});
 }
 
+function couponFailClosed() {
+	return failClosedResponse({
+		header: "Coupon",
+		title: "This coupon is unavailable",
+		description:
+			"This coupon could not be loaded. Check the service connection and the admin token in Settings; if both look right, this is a fault in the console itself — not your data.",
+		toast: "Could not load the coupon",
+	});
+}
+
+/**
+ * §12.2's detail skeleton: `header` · back · notice · the 6-entry identity
+ * strip · TWO constant task-named panels — `Coupon` · `Redemptions` (D-2).
+ * Coupons have no reconcile/fulfilment concept, so D-5's rank-3 "named
+ * primary edit group" is the only rank that can ever fire — and it always
+ * does, because a loaded coupon (no soft-delete/tombstone concept) is always
+ * editable: the `Edit` group is `default_open: true` on every render.
+ */
 function detailBlocks(
 	actions: ScreenActions,
+	path: NavPath,
 	code: string,
 	detail: CouponSummaryWire,
 	notice: Notice | undefined,
 ): Block[] {
-	const fields: FieldsBlock = {
-		type: "fields",
-		fields: [
-			{ label: "ID", value: detail.id },
-			{ label: "Code", value: detail.code },
-			{ label: "Type", value: detail.type },
-			{ label: "Discount", value: couponDiscountSummary(detail) },
-			{ label: "Currency", value: detail.currency ?? "— (currency-agnostic)" },
-			{
-				label: "Minimum spend",
-				value:
-					detail.minSubtotalCents === null
-						? "— (none)"
-						: formatCentsForDisplay(detail.minSubtotalCents, detail.currency),
-			},
-			{ label: "Valid", value: couponWindowSummary(detail.startsAt, detail.expiresAt) },
-			{ label: "Uses", value: couponUsesSummary(detail.usesCount, detail.maxUses) },
-			{ label: "Created", value: detail.createdAt },
-		],
-	};
 	const blocks: Block[] = [
+		// M-10: the coupon's CODE is its human handle, so it is the header — the
+		// internal `id` never needs its own display row.
 		{ type: "header", text: `Coupon — ${code}` },
-		backButton(actions.back, "← Back to coupons", [code]),
+		backButton(actions.back, "← Back to coupons", path),
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
-	blocks.push(fields);
-	blocks.push({ type: "divider" });
+	blocks.push(
+		fields("coupons:identity", [
+			["Code", detail.code],
+			["Discount", couponDiscountSummary(detail)],
+			["Type", detail.type],
+			["Uses", couponUsesSummary(detail.usesCount, detail.maxUses)],
+			["Currency", detail.currency ?? "— (currency-agnostic)"],
+			["Created (UTC)", utc(detail.createdAt)],
+		]),
+	);
+	const panels: TabPanel[] = [
+		{ label: "Coupon", blocks: couponPanel(detail) },
+		{ label: "Redemptions", blocks: redemptionsPanel(detail) },
+	];
 	blocks.push({
-		type: "context",
-		text: "Saving REPLACES every field below — there is no partial update on the wire, so a blank optional field saves as UNSET (it does not mean \"leave unchanged\"). Fields are pre-filled with the coupon's current values: a field you don't touch is re-saved with its current value; a field you blank is cleared. Edits are last-write-wins (no concurrent-edit protection — the later save replaces the earlier). The redemption count is never editable, and orders already placed keep their snapshotted discount regardless of edits here. Lowering max uses to or below the current redemption count immediately exhausts the coupon.",
+		type: "tab",
+		block_id: `coupons:${detail.id}:tabs`, // STABLE (B-4)
+		default_tab: 0, // ALWAYS (D-4)
+		panels,
 	});
-	blocks.push(editCouponForm(detail));
-	blocks.push({ type: "divider" });
-	if (detail.usesCount === 0) {
-		blocks.push(deleteCouponActions(detail));
-	} else {
-		blocks.push({
-			type: "context",
-			text: `This coupon has been redeemed ${detail.usesCount} time(s) — deletion is blocked to preserve the redemption audit trail. To retire it, set its expiry to a past date (or lower max uses to its current redemption count).`,
-		});
-	}
 	return blocks;
 }
 
-/** The full-replace edit form. EVERY editable field is rendered pre-filled
- *  (see the module doc's unchanged-vs-clear note); only the ACTIVE type's
- *  economics fields appear — the other type's fields are inapplicable-null
- *  by construction (type is immutable) and are hard-nulled on save. */
-function editCouponForm(detail: CouponSummaryWire): FormBlock {
-	const fields: FormBlock["fields"] = [
-		hiddenCarrier("couponId", detail.id),
-		hiddenCarrier("code", detail.code),
-		hiddenCarrier("type", detail.type),
+// -- panel "Coupon" -------------------------------------------------------------
+
+function couponPanel(detail: CouponSummaryWire): Block[] {
+	return [
+		// D-2a: the would-be `History` panel holds only Created (already in the
+		// identity strip), so these two round out the first panel's own `fields`
+		// instead of getting a panel of their own.
+		fields("coupons:more", [
+			[
+				"Minimum spend",
+				detail.minSubtotalCents === null
+					? "— (none)"
+					: formatCentsForDisplay(detail.minSubtotalCents, detail.currency),
+			],
+			["Valid", couponWindowSummary(detail.startsAt, detail.expiresAt)],
+		]),
+		editGroup(detail),
 	];
+}
+
+/**
+ * The Edit group — ONE full-replace form (F-5c, cap 8; F-5a forbids splitting
+ * here — see the module doc). `condition`-gated on the coupon's immutable
+ * `type` is inert on THIS form (only one branch's fields are ever authored,
+ * because `type` cannot change post-creation and is not itself a form field
+ * here — it rides in the carrier), so no `condition` is attached; the server
+ * decides the branch once, the same way `createCouponForm`'s `condition`
+ * decides it reactively on create.
+ */
+function editGroup(detail: CouponSummaryWire): Block {
+	return {
+		type: "accordion",
+		block_id: `coupons:${detail.id}:edit`,
+		// D-6: the label carries the answer that makes opening it unnecessary.
+		label: fitLabel(
+			`Edit — ${couponDiscountSummary(detail)} · ${couponWindowSummary(detail.startsAt, detail.expiresAt)}`,
+		),
+		// D-5 rank 3: always true — a loaded coupon has no tombstone/terminal
+		// state, so it is always editable, and Coupons has no rank 1/2 group to
+		// lose the slot to.
+		default_open: true,
+		blocks: [
+			{
+				type: "context",
+				// 116 chars ≤ 200, trimmed from the former 613-char paragraph.
+				text: "Saving replaces every field below — this is a full replace, so a blank optional field saves as unset, not unchanged.",
+			},
+			editCouponForm(detail),
+		],
+	};
+}
+
+/**
+ * The full-replace edit form. EVERY editable field is pre-filled (unset ⇒
+ * blank); only the coupon's OWN type's economics fields are authored (the
+ * other type's are inapplicable-null by construction — `type` is immutable —
+ * and are hard-nulled on save, never relying on the wire's omit⇒null
+ * coercion). `couponId`/`code`/`type` ride invisibly in the carrier (F-2); B-3's
+ * change token is `carriedForm`'s own prefill digest (`__v`, B-3a) — a second,
+ * hand-rolled hash would be belt-and-braces B-3a already says not to add.
+ */
+function editCouponForm(detail: CouponSummaryWire): FormBlock {
+	const editFields: FormBlock["fields"] = [];
 	if (detail.type === "fixed_amount") {
-		fields.push({
+		editFields.push({
 			type: "text_input",
 			action_id: "amount",
-			label: `Amount off (${detail.currency ?? "?"} — required, cannot be cleared)`,
+			label: `Amount off (${detail.currency ?? "?"})`,
 			...(detail.amountCents !== null
 				? { initial_value: formatMinorUnitsInput(detail.amountCents) }
 				: {}),
 		});
 	} else {
-		fields.push({
+		editFields.push({
 			type: "text_input",
 			action_id: "ratePercent",
-			label: "Rate (%, up to 2 decimals — required, cannot be cleared)",
+			label: "Rate (%)",
 			...(detail.rateBps !== null ? { initial_value: formatBpsAsPercent(detail.rateBps) } : {}),
 		});
-		fields.push({
+		editFields.push({
 			type: "text_input",
 			action_id: "cap",
-			label: "Discount cap (blank = no cap)",
+			label: "Discount cap (optional)",
 			...(detail.capCents !== null
 				? { initial_value: formatMinorUnitsInput(detail.capCents) }
 				: {}),
 		});
 	}
-	fields.push({
+	editFields.push({
 		type: "text_input",
 		action_id: "minSubtotal",
-		label: "Minimum spend (blank = none)",
+		label: "Minimum spend (optional)",
 		...(detail.minSubtotalCents !== null
 			? { initial_value: formatMinorUnitsInput(detail.minSubtotalCents) }
 			: {}),
 	});
-	fields.push({
+	editFields.push({
 		type: "text_input",
 		action_id: "startsAt",
-		label: "Starts at (ISO 8601 UTC; blank = immediately)",
+		label: "Starts at (optional)",
+		placeholder: "2026-08-01T00:00:00Z",
 		...(detail.startsAt !== null ? { initial_value: detail.startsAt } : {}),
 	});
-	fields.push({
+	editFields.push({
 		type: "text_input",
 		action_id: "expiresAt",
-		label: "Expires at (ISO 8601 UTC; blank = never)",
+		label: "Expires at (optional)",
+		placeholder: "2026-09-01T00:00:00Z",
 		...(detail.expiresAt !== null ? { initial_value: detail.expiresAt } : {}),
 	});
-	fields.push({
+	editFields.push({
 		type: "text_input",
 		action_id: "maxUses",
-		label: "Max total uses (blank = unlimited)",
+		label: "Max uses (optional)",
 		...(detail.maxUses !== null ? { initial_value: String(detail.maxUses) } : {}),
 	});
-	fields.push({
+	editFields.push({
 		type: "text_input",
 		action_id: "maxUsesPerCustomer",
-		label: "Max uses per customer (blank = unlimited)",
+		label: "Max uses per customer (optional)",
 		...(detail.maxUsesPerCustomer !== null
 			? { initial_value: String(detail.maxUsesPerCustomer) }
 			: {}),
 	});
+	return carriedForm({
+		namespace: "coupons:edit",
+		context: { couponId: detail.id, code: detail.code, type: detail.type },
+		form: {
+			type: "form",
+			fields: editFields,
+			submit: { label: "Save coupon", action_id: ACTION_SAVE },
+		},
+	});
+}
+
+// -- panel "Redemptions" --------------------------------------------------------
+
+function redemptionsPanel(detail: CouponSummaryWire): Block[] {
+	const remaining =
+		detail.maxUses === null ? "unlimited" : String(Math.max(0, detail.maxUses - detail.usesCount));
+	const blocks: Block[] = [
+		fields("coupons:uses", [
+			["Redemptions", String(detail.usesCount)],
+			["Max uses", detail.maxUses === null ? "unlimited" : String(detail.maxUses)],
+			[
+				"Max per customer",
+				detail.maxUsesPerCustomer === null ? "unlimited" : String(detail.maxUsesPerCustomer),
+			],
+			// M-11a: "Remaining" alone is not a label — name the axis. The §12.2
+			// listing's bare "Remaining" conflicts with M-11a/X-43; the rule wins
+			// (N-1) and is reported as a listing defect in the PR.
+			["Remaining redemptions", remaining],
+		]),
+	];
+	if (detail.maxUses !== null) {
+		blocks.push(redemptionsMeter(detail));
+	}
+	blocks.push({
+		type: "context",
+		// 163 chars ≤ 200.
+		text: "Orders already placed keep their snapshotted discount regardless of edits here. Lowering max uses to at or below the current count exhausts the coupon immediately.",
+	});
+	// Delete lives HERE, beside the count that gates it (DA-2, forbid-if-redeemed).
+	if (detail.usesCount === 0) {
+		blocks.push(deleteCouponActions(detail));
+	} else {
+		blocks.push({
+			type: "context",
+			text: withheldDeleteContext(detail.usesCount),
+		});
+	}
+	return blocks;
+}
+
+/** A COUNT meter (redemptions-of-max-uses), so `custom_value` is optional per
+ *  M-8 (only mandatory when `value`/`max` are money) — included anyway for a
+ *  readable readout. Only rendered when `maxUses` is set: a `meter` over a
+ *  synthetic or absent max is forbidden (§2, M-8's zero-denominator note). */
+function redemptionsMeter(detail: CouponSummaryWire): MeterBlock {
+	const max = detail.maxUses ?? 0;
 	return {
-		type: "form",
-		fields,
-		submit: { label: `Save ${detail.code}`, action_id: ACTION_SAVE },
+		type: "meter",
+		label: "Redemptions",
+		value: detail.usesCount,
+		max,
+		custom_value: `${detail.usesCount} of ${max}`,
 	};
 }
 
@@ -575,18 +834,30 @@ function deleteCouponActions(detail: CouponSummaryWire): ActionsBlock {
 	const button: ButtonElement = {
 		type: "button",
 		action_id: ACTION_DELETE,
-		label: `Delete ${detail.code}`,
+		// The BUTTON stays a generic verb phrase; the code lives in the confirm
+		// title instead (M-7 — an id/handle never sits in a button/submit label).
+		label: "Delete coupon",
 		style: "danger",
 		value: { couponId: detail.id, code: detail.code },
 		confirm: {
-			title: `Delete coupon ${detail.code}?`,
-			text: "Only a coupon that has never been redeemed can be deleted — one redemption blocks deletion permanently to preserve the redemption audit trail. In-flight carts that quoted this code recompute without it on their next update; orders already placed keep their snapshotted discount. This cannot be undone.",
+			// fitLabel: a merchant-chosen code has no length cap on the wire, so
+			// the title is truncated the same way a data-derived accordion label
+			// is (§1's 60-char confirm.title budget, X-11).
+			title: fitLabel(`Delete ${detail.code}?`),
+			// 112 chars ≤ 200, trimmed from the former 301-char text.
+			text: "Only a never-redeemed coupon can be deleted. In-flight carts recompute without it; placed orders are unaffected.",
 			confirm: "Yes, delete",
 			deny: "Keep it",
 			style: "danger",
 		},
 	};
 	return { type: "actions", elements: [button] };
+}
+
+/** DA-7's normative blockquote, parametrized. No "deliberately"/"there is
+ *  no"/"we do not" (X-41); names the alternative (DA-7a). */
+function withheldDeleteContext(usesCount: number): string {
+	return `This coupon has been redeemed ${usesCount} time${usesCount === 1 ? "" : "s"} — deletion is blocked to keep the redemption audit trail. To retire it, set its expiry to a past date.`;
 }
 
 // -- form parsing (exact integer math; NO floats — CLAUDE.md) -------------------
@@ -604,9 +875,10 @@ type ParsedEconomics =
 /**
  * Parse the type-dependent economics fields. On CREATE both types' fields are
  * on the form (a stateless Block form cannot toggle fields on the type
- * select), so a value in the OTHER type's field is an explicit boundary error
- * — never silently dropped. On EDIT only the active type's fields are
- * rendered and `currency` is immutable (`mode: "edit"` skips it).
+ * select; `condition` is a CLIENT-side visibility hint only), so a value in
+ * the OTHER type's field is an explicit boundary error — never silently
+ * dropped. On EDIT only the active type's fields are rendered and `currency`
+ * is immutable (`mode: "edit"` skips it).
  */
 function parseEconomics(
 	type: "fixed_amount" | "percentage",
@@ -682,7 +954,10 @@ interface SharedFields {
 
 type ParsedShared = { ok: true; fields: SharedFields } | { ok: false; message: string };
 
-/** Parse the type-independent fields (blank = unset/null on every one). */
+/** Parse the type-independent fields (blank = unset/null on every one). Only
+ *  the EDIT form authors these — the create form omits them entirely, so a
+ *  freshly created coupon is valid immediately, forever, unlimited and
+ *  unrestricted (§12.2). */
 function parseSharedFields(values: Record<string, unknown>): ParsedShared {
 	const minSubtotalRaw = (readString(values.minSubtotal) ?? "").trim();
 	let minSubtotalCents: number | null = null;
@@ -710,7 +985,7 @@ function parseSharedFields(values: Record<string, unknown>): ParsedShared {
 	if (maxUses.ok === false) {
 		return {
 			ok: false,
-			message: "Max total uses must be a whole number of 1 or more, or blank for unlimited.",
+			message: "Max uses must be a whole number of 1 or more, or blank for unlimited.",
 		};
 	}
 	const maxUsesPerCustomer = parseCountInput(readString(values.maxUsesPerCustomer) ?? "");
@@ -778,8 +1053,8 @@ function createCouponAction() {
 		}
 		const econ = parseEconomics(type, values, "create");
 		if (!econ.ok) return err(econ.message);
-		const shared = parseSharedFields(values);
-		if (!shared.ok) return err(shared.message);
+		// The five shared axes have no field on this form (§12.2) — a freshly
+		// created coupon is valid immediately, forever, unlimited, unrestricted.
 		const result = await client.createCoupon({
 			id,
 			code,
@@ -788,7 +1063,11 @@ function createCouponAction() {
 			rateBps: econ.rateBps,
 			capCents: econ.capCents,
 			currency: econ.currency,
-			...shared.fields,
+			minSubtotalCents: null,
+			startsAt: null,
+			expiresAt: null,
+			maxUses: null,
+			maxUsesPerCustomer: null,
 		});
 		return showList(undefined, createCouponNotice(result, code));
 	});
@@ -812,17 +1091,21 @@ function createCouponNotice(result: RulesCreateResult<unknown>, code: string): N
 // -- custom action: save a coupon (LWW full replace) ----------------------------
 
 function saveCouponAction() {
-	return customAction<AdminRulesClient>(async ({ input, client, showLeaf, showList }) => {
+	return customAction<AdminRulesClient>(async ({ input, carried, client, showLeaf, showList }) => {
 		const values = input.values ?? {};
-		const couponId = readString(values.couponId);
-		const code = readString(values.code);
-		const type = readString(values.type);
+		const couponId = carried?.couponId;
+		const code = carried?.code;
+		const type = carried?.type;
 		if (
 			couponId === undefined ||
 			code === undefined ||
 			(type !== "fixed_amount" && type !== "percentage")
 		) {
-			return showList();
+			return showList(undefined, {
+				variant: "error",
+				title: "Coupon not saved",
+				description: "That action could not be read — nothing was changed. Reload and try again.",
+			});
 		}
 		const err = (description: string) =>
 			showLeaf([code], { variant: "error", title: "Coupon not saved", description });
@@ -920,4 +1203,44 @@ function deleteCouponOutcome(
 		description:
 			"The coupon could not be deleted — check the service connection and the admin token in Settings.",
 	});
+}
+
+// -- custom action: force the "New coupon" group open from the empty state -----
+
+/** E-2's empty-state button (B-6). Not a DA-3 verb — see the module doc for
+ *  why this screen's only render-state use is this one, non-destructive case. */
+function newCouponAction() {
+	return customAction<AdminRulesClient, CouponsRenderState>(async ({ showList }) => {
+		return showList(undefined, undefined, { kind: "new-coupon" });
+	});
+}
+
+// -- small shared helpers --------------------------------------------------------
+
+/** A `fields` block from label/value PAIRS, so an odd entry count is visible
+ *  at the call site — `fields` is a row-major `grid-cols-2` (R-3). */
+function fields(blockId: string, entries: ReadonlyArray<readonly [string, string]>): FieldsBlock {
+	return {
+		type: "fields",
+		block_id: blockId,
+		fields: entries.map(([label, value]) => ({ label, value })),
+	};
+}
+
+/** Trim a string to `max`, ellipsis included — for the one place a rendered
+ *  string's length depends on SERVICE DATA (the Edit accordion's label, which
+ *  carries the coupon's own discount/window summary and could otherwise blow
+ *  §1's 60-char accordion-label budget). */
+function fit(text: string, max: number): string {
+	return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+}
+
+function fitLabel(text: string): string {
+	return fit(text, LABEL_BUDGET);
+}
+
+/** An absolute UTC timestamp TRIMMED TO SECONDS (M-6): milliseconds are noise.
+ *  No timezone conversion, ever. */
+function utc(iso: string): string {
+	return iso.replace(/\.\d+(?=Z$)/, "");
 }
