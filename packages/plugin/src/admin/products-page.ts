@@ -7,7 +7,7 @@ import type {
 	FormBlock,
 	RouteHandler,
 	SelectOption,
-	TableBlock,
+	TabPanel,
 } from "../types.js";
 import {
 	AdminProductsClient,
@@ -21,28 +21,73 @@ import {
 } from "./admin-products-client.js";
 import { formatMinorUnitsInput, parseMinorUnitsInput } from "./money-input.js";
 import {
+	asRecord,
 	backButton,
+	carriedForm,
 	createListDetailHandler,
 	customAction,
+	emptyState,
+	encodePath,
+	failClosedResponse,
+	filterPanel,
+	filterSummary,
 	leafLevel,
 	listLevel,
 	noticeBanner,
+	PATH_FIELD,
 	readAdminTokens,
 	readString,
 	screenActions,
 	type ListDetailInput,
+	type NavPath,
 	type Notice,
 	type ScreenActions,
 } from "./scaffold/index.js";
 
 /**
- * The admin Products console page's `admin.pages` manifest entry (admin-UX
- * Increment 2, "product enumerate + product list"). View-only: browse
- * products, filter, and drill into one for the full read-only detail — no
- * editing, no restock (both later increments; see the port/route docs).
- * Rendered by the single `admin` dispatch route (see `admin-route.ts`).
- * Built on the shared list/detail scaffold (`./scaffold`), mirroring
- * `orders-page.ts` — the reference consumer this screen is proven against.
+ * The admin Pricing & inventory console (`docs/admin/ADMIN-CONSOLE.md` §12.1) —
+ * the last of the seven screens re-laid onto the shared list/detail scaffold,
+ * pattern-matched against the reference screen (`orders-page.ts`).
+ *
+ * FIVE THINGS THAT DIFFER FROM ORDERS, worth reading before touching this file:
+ *
+ *  1. TWO FIELDS ON THIS SCREEN ARE OWNED BY THE CMS (F-2b, X-52): `Title` and
+ *     `Status` (the `active` publish gate). Both render as READ-ONLY `fields`
+ *     rows whose LABEL names the owner (`Title (set in the CMS)`,
+ *     `Status (set in the CMS)`) and neither has a form field anywhere on this
+ *     screen — `ProductEditWire` has no `title`/`active` member, so re-adding
+ *     one fails to compile. See `adr/0013-product-title-is-cms-owned.md`.
+ *  2. THE EDIT FORM IS SPLIT INTO THREE SIBLING FORMS (F-5a), not one. This is
+ *     legal here — and ONLY here among the console's PUT/PATCH forms — because
+ *     `updateProduct` is a verified sparse PATCH at every layer: `buildEditWire`
+ *     assigns conditionally (a field absent from `values` is omitted from the
+ *     wire, never nulled), every `ProductEditWire` member is `.optional()`
+ *     (`service/src/schemas.ts`), the route spreads
+ *     `...(body.x !== undefined ? {x} : {})` (`service/src/routes/admin.ts`),
+ *     the use case threads the input straight through
+ *     (`domain/src/product-commerce/use-cases.ts`), and the store's
+ *     `updateCommerceFields` builds its `SET` clause the same way — a key
+ *     absent from `input` never enters `set`
+ *     (`store-postgres/src/kysely-product-commerce-store.ts`). Contrast the
+ *     Coupons screen, forbidden from this split because `updateCoupon` is a
+ *     PUT whose service handler coerces an absent key to `null`.
+ *  3. OPEN-GROUP STATE IS STICKY (F-5a-i, B-5, B-8). A sibling the operator
+ *     expanded is still expanded after saving a DIFFERENT sibling remounts it —
+ *     unsubmitted edits in the others are discarded more often than "one group
+ *     is realistically open" would suggest. One `context` line says so, once,
+ *     above the three groups (not per group).
+ *  4. ONLY `Remove stock` STAGES A CONFIRM (DA-3, DA-5's second exception).
+ *     Restocking is DA-4 (one-shot, reversible by nature); a removal is not an
+ *     undo of anything — it appends a second ledger entry — so it is the ONE
+ *     act on this screen with `style:"danger"` and a `confirm`. Its
+ *     idempotency key and its DA-3a re-read both use the observed `onHand` as
+ *     the watermark (F-2a), exactly like a refund's `refundedSoFarCents`.
+ *  5. NO NONCE, ANYWHERE (F-2a). The restock/removal keys are
+ *     `${productId}:${direction}:${onHandAtRender}:${qty}` — content plus the
+ *     watermark the operator saw — never a `crypto.randomUUID()` minted at
+ *     render time.
+ *
+ * Built on the shared list/detail scaffold (`./scaffold`).
  */
 export const PRODUCTS_PAGE: AdminPageConfig = {
 	path: "/products",
@@ -50,44 +95,53 @@ export const PRODUCTS_PAGE: AdminPageConfig = {
 	icon: "box",
 };
 
-/** This screen's namespaced action ids — the four scaffold nav verbs plus the
- *  `save` verb the detail leaf's edit form submits (admin-UX Increment 2 slice
- *  2: the standalone product edit surface). */
+/** This screen's namespaced action ids. */
 const PRODUCTS_ACTIONS: ScreenActions = screenActions("products");
-
-/** The detail leaf's edit-form submit (`products:save`). */
-const ACTION_SAVE = PRODUCTS_ACTIONS.custom("save");
-/** The detail leaf's stock-movement submits (admin-UX Increment 2 slice 3). */
+/** The three split edit-form submits (F-5a) — one per sibling group. */
+const ACTION_SAVE_IDENTITY = PRODUCTS_ACTIONS.custom("save-identity");
+const ACTION_SAVE_PRICE = PRODUCTS_ACTIONS.custom("save-price");
+const ACTION_SAVE_SHIPPING = PRODUCTS_ACTIONS.custom("save-shipping");
+/** Restock stays DA-4: one-shot, no staging. */
 const ACTION_RESTOCK = PRODUCTS_ACTIONS.custom("restock");
+/** DA-3 state 1 → state 2 for a stock removal (the screen's one destructive act). */
+const ACTION_REMOVE_REVIEW = PRODUCTS_ACTIONS.custom("remove-stock-review");
+/** The DA-3 state-2 confirm for a stock removal. */
 const ACTION_REMOVE = PRODUCTS_ACTIONS.custom("remove-stock");
 
-/**
- * The action ids the admin-route dispatcher recognizes as belonging to the
- * Products console (mirrors `ORDERS_ACTION_IDS`). Every `block_action`/
- * `form_submit` this page can emit is namespaced `products:*` and listed
- * here, so none falls through the dispatcher to the `{blocks:[]}` dead-end.
- * `products:page` is ALSO the table's `page_action_id`.
- */
 export const PRODUCTS_ACTION_IDS: ReadonlySet<string> = PRODUCTS_ACTIONS.actionIds(
-	"save",
+	"save-identity",
+	"save-price",
+	"save-shipping",
 	"restock",
+	"remove-stock-review",
 	"remove-stock",
 );
 
 const PAGE_LIMIT = 25;
 
+/** A `select`/`combobox` sentinel meaning "no constraint". NEVER `""` — the
+ *  pinned renderer treats an empty value as "no value" and draws a blank
+ *  trigger (R-17a), and the trigger renders the raw VALUE, so a sentinel has
+ *  to read acceptably as a word (F-6a, F-6c). */
+const ANY = "any";
+/** The same, for the "Open product" picker with nothing selected (L-7). */
+const NONE = "none";
+/** The tax-class select's "clear it" sentinel — never `""` (F-6a). */
+const NO_TAX_CLASS = "none";
+
+/** §1's accordion-label budget (X-11). */
+const LABEL_BUDGET = 60;
+
 /** The console's own filter form values, kept alongside the opaque service
- *  cursor so paging preserves the form (mirrors `OrdersFilterForm`).
- *  `active`/`productKind` are tri-state strings ("" ⇒ both) because a Block
- *  Kit `select` has no "unset" value distinct from its options.
+ *  cursor so paging preserves the form. `active`/`productKind` are tri-state
+ *  strings (`ANY` ⇒ no constraint) because a Block Kit `select` has no
+ *  "unset" value distinct from its options.
  *
- *  `archived` (product lifecycle surfacing, admin-UX Increment 2) is the
- *  archive-view toggle: unset ⇒ the ORIGINAL default (live products only,
- *  active + inactive both listed); `"true"` ⇒ ONLY soft-deleted rows. A
- *  soft-deleted row is always inactive (`softDelete` sets `active=false`), so
- *  combining `active` with `archived: "true"` is a contradiction that returns
- *  no rows — the filter form's own context copy calls this out rather than
- *  silently reconciling the two into one control. */
+ *  `archived` is the archive-view toggle: unset ⇒ the default (live products
+ *  only, active + inactive both listed); `"true"` ⇒ ONLY soft-deleted rows. A
+ *  soft-deleted row is always inactive, so the combined "Status" select
+ *  offers the two as ONE mutually-exclusive choice rather than two
+ *  independently-toggleable axes. */
 interface ProductsFilterForm {
 	active?: "true" | "false";
 	productKind?: "physical" | "digital";
@@ -95,12 +149,34 @@ interface ProductsFilterForm {
 	archived?: "true";
 }
 
-/** The em-dash BlockInteraction envelope this page consumes (the scaffold's
- *  input shape — `type`/`action_id`/`values`/`value`). */
+/**
+ * THIS SCREEN'S RENDER STATE (DA-3a-iii) — one discriminated union, named at
+ * {@link createProductsPageHandler}'s `createListDetailHandler<ProductsRenderState>`.
+ * Products has exactly one destructive, staged flow (removing stock), so this
+ * union has two members instead of Orders' four:
+ *
+ *  - `remove-staged` is DA-3 state 2: the typed quantity has passed every
+ *    check (parses, ≤ the live on-hand), so it carries the parsed qty AND the
+ *    watermark (the on-hand figure the re-read just confirmed) that the
+ *    state-2 confirm button echoes into `value` for the write to re-compare.
+ *  - `remove-draft` is a refusal (a bad parse, a missing watermark, or the
+ *    qty exceeding the live on-hand): state 1 re-rendered into the SAME
+ *    group, forced open, flattened, with the typed quantity prefilled and no
+ *    confirm control (DA-3a-i).
+ *
+ * `qtyInput` on the draft member is the operator's RAW TEXT, not a parsed
+ * number — DA-3a-iii property 5: the commonest refusal is an unparseable
+ * quantity, and on that path there is no integer to re-derive a prefill from.
+ */
+type ProductsRenderState =
+	| { kind: "remove-staged"; qty: number; onHand: number }
+	| { kind: "remove-draft"; qtyInput: string };
+
+/** The em-dash BlockInteraction envelope this page consumes. */
 export type ProductsPageInput = ListDetailInput;
 
 export function createProductsPageHandler(): RouteHandler<ProductsPageInput> {
-	return createListDetailHandler({
+	return createListDetailHandler<ProductsRenderState>({
 		actions: PRODUCTS_ACTIONS,
 		async createClient(ctx) {
 			const tokens = await readAdminTokens(ctx);
@@ -108,27 +184,37 @@ export function createProductsPageHandler(): RouteHandler<ProductsPageInput> {
 				fetch: ctx.http.fetch,
 				baseUrl: COMMERCE_SERVICE_BASE_URL,
 				...(tokens.adminToken !== undefined ? { adminToken: tokens.adminToken } : {}),
-				// The edit PATCH is a NON-GET the write gate blocks without this.
+				// The edit PATCH and the stock-movement POSTs are NON-GETs the write
+				// gate blocks without this.
 				...(tokens.serviceToken !== undefined ? { serviceToken: tokens.serviceToken } : {}),
 			});
 		},
-		// A list row's "Open product" form carries the product id in
-		// `values.productId`; the target is a single-level drill, so the path is
-		// just `[productId]`.
+		// The "Open product" picker carries the product id in `values.productId`;
+		// the target is a single-level drill, so the path is just `[productId]`.
+		// The L-7 "nothing selected" sentinel re-renders the list unchanged.
 		parseOpen(input) {
 			const productId = readString(input.values?.productId);
-			return productId === undefined ? undefined : { targetPath: [productId] };
+			if (productId === undefined || productId.length === 0 || productId === NONE) {
+				return undefined;
+			}
+			return { targetPath: [productId] };
 		},
 		levels: [productsListLevel(), productDetailLevel()],
-		customActions: {
-			[ACTION_SAVE]: saveAction(),
-			[ACTION_RESTOCK]: restockAction(),
-			[ACTION_REMOVE]: removeStockAction(),
-		},
+		customActions: (() => {
+			const save = saveAction();
+			return {
+				[ACTION_SAVE_IDENTITY]: save,
+				[ACTION_SAVE_PRICE]: save,
+				[ACTION_SAVE_SHIPPING]: save,
+				[ACTION_RESTOCK]: restockAction(),
+				[ACTION_REMOVE_REVIEW]: removeStockReviewAction(),
+				[ACTION_REMOVE]: removeStockAction(),
+			};
+		})(),
 	});
 }
 
-// -- level 0: the products list -----------------------------------------------
+// -- level 0: the products list (§12.1 list) ----------------------------------
 
 function productsListLevel() {
 	return listLevel<AdminProductsClient, ProductsFilterForm, ProductSummaryWire>({
@@ -141,33 +227,26 @@ function productsListLevel() {
 			});
 			return { items: page.products, nextCursor: page.nextCursor };
 		},
-		render({ actions, filter, items, nextToken }) {
-			return listBlocks(actions, filter, items, nextToken);
+		render({ actions, path, filter, items, nextToken, notice }) {
+			return listBlocks(actions, path, filter, items, nextToken, notice);
 		},
 		onError: () => failClosed(),
 	});
 }
 
 /**
- * The lifecycle status label a merchant reads (product lifecycle surfacing,
- * admin-UX Increment 2): a soft-deleted row shows "deleted", never "inactive" —
- * `deletedAt` outranks `active` (a tombstoned row is always inactive too, but
- * "deleted" is the honest, non-recoverable-from-here status a merchant needs to
- * see, not the publish-gate value underneath it). Shared by the list table, the
- * "Open product" picker, and the detail fields so the three surfaces can never
- * disagree.
+ * The lifecycle status label a merchant reads: a soft-deleted row shows
+ * "deleted", never "inactive" — `deletedAt` outranks `active` (a tombstoned
+ * row is always inactive too, but "deleted" is the honest, non-recoverable-
+ * from-here status a merchant needs to see). Shared by the list table, the
+ * "Open product" picker, and the detail fields so the three surfaces can
+ * never disagree.
  *
- * FOURTH VALUE, "active (not priced)" — added by "one home per field" (PR 1b),
- * which created the state. The CMS sync now upserts a row for EVERY products
- * document, so publishing a product that has never been priced sets
- * `active: true` on a row with no sku/price. A bare "active" there would be a
- * lie: the service's catalog read filters commerce-incomplete rows in SQL
- * (`sku`, `price_cents` and `price_currency` all non-null), so no commerce data
- * comes back for it and `joinProduct` reports `purchasable: false`. Precisely:
- * the product IS still listed on `/products` — the grid is built from CMS
- * content — but it renders with no price, no add-to-cart and a "not currently
- * available" note. Listed, not sellable. The label mirrors that exact filter,
- * which is why it needs sku + price + currency and not just `active`.
+ * FOUR VALUES: the CMS sync upserts a `product_commerce` row for EVERY
+ * products document ("one home per field" PR 1b), so publishing a product
+ * that has never been priced sets `active: true` on a row with no
+ * sku/price. A bare "active" there would be a lie — the service's catalog
+ * read filters commerce-incomplete rows — so this mirrors that exact filter.
  */
 function statusLabel(p: {
 	active: boolean;
@@ -178,13 +257,14 @@ function statusLabel(p: {
 }): string {
 	if (p.deletedAt !== null) return "deleted";
 	if (!p.active) return "inactive";
-	// Mirrors the service's commerce-complete predicate exactly.
 	const sellable = p.sku !== null && p.priceCents !== null && p.currency !== null;
 	return sellable ? "active" : "active (not priced)";
 }
 
-/** Human label for the out-of-stock policy (Increment 2 slice 5). Only `"deny"`
- *  exists this slice; any other stored value renders verbatim (forward-safe). */
+/** Human label for the out-of-stock policy (read-only display; the single-option
+ *  select that used to carry this is deleted per F-3 — see the context line in
+ *  `productPanel`). Only `"deny"` exists this slice; any other stored value
+ *  renders verbatim (forward-safe). */
 function inventoryPolicyLabel(policy: string): string {
 	return policy === "deny" ? "Deny (stop selling at zero stock)" : policy;
 }
@@ -198,12 +278,12 @@ function taxClassLabel(taxClass: string | null, taxClasses: TaxClassWire[]): str
 	return match !== undefined ? `${match.name} (${match.id})` : taxClass;
 }
 
-/** Build the tax-class select options: a "none" clear option, every registry
- *  entry, and — if the product currently references a class the registry read
- *  did not include — that id too, so an existing value is never silently
- *  dropped from the picker. */
+/** Build the tax-class select options: a "clear it" sentinel (never `""` —
+ *  F-6a), every registry entry, and — if the product currently references a
+ *  class the registry read did not include — that id too, so an existing
+ *  value is never silently dropped from the picker. */
 function taxClassOptions(current: string | null, taxClasses: TaxClassWire[]): SelectOption[] {
-	const options: SelectOption[] = [{ value: "", label: "— None (standard) —" }];
+	const options: SelectOption[] = [{ value: NO_TAX_CLASS, label: "— None (standard) —" }];
 	for (const c of taxClasses) options.push({ value: c.id, label: `${c.name} (${c.id})` });
 	if (current !== null && !taxClasses.some((c) => c.id === current)) {
 		options.push({ value: current, label: current });
@@ -211,121 +291,204 @@ function taxClassOptions(current: string | null, taxClasses: TaxClassWire[]): Se
 	return options;
 }
 
+/** §12.1's list block order, exactly: `header` · `context` · notice `banner` ·
+ *  the COLLAPSED filter panel · the active-filter `section` · THE DATA (or
+ *  `empty` in its place) · the "Open product" drill-in. Nothing else may
+ *  precede the table (P-1/L-1). */
 function listBlocks(
 	actions: ScreenActions,
+	path: NavPath,
 	form: ProductsFilterForm,
 	products: ProductSummaryWire[],
 	nextToken: string | undefined,
+	notice: Notice | undefined,
 ): Block[] {
-	const table: TableBlock = {
-		type: "table",
-		columns: [
-			{ key: "title", label: "Title" },
-			{ key: "sku", label: "SKU", format: "code" },
-			{ key: "price", label: "Price" },
-			{ key: "status", label: "Status", format: "badge" },
-			{ key: "kind", label: "Kind", format: "badge" },
-		],
-		rows: products.map((p) => ({
-			title: p.title ?? "(untitled)",
-			sku: p.sku ?? "—",
-			price: formatOptionalTotal(p.priceCents, p.currency),
-			status: statusLabel(p),
-			kind: p.productKind,
-		})),
-		page_action_id: actions.page,
-		...(nextToken !== undefined ? { next_cursor: nextToken } : {}),
-		empty_text:
-			form.archived === "true"
-				? "No archived (deleted) products match these filters."
-				: "No products match these filters.",
-	};
-
 	const blocks: Block[] = [
 		{ type: "header", text: "Pricing & inventory" },
 		{
 			type: "context",
-			text: 'View-only console. Filter and open a product for its full read-only detail. Stock is shown on the detail view only (kept off this list to avoid a per-row inventory lookup). Money shown in the product\'s own currency. "Archived" is a separate view of products deleted (trashed or permanently removed) in the CMS — they never appear alongside live products, and there is no restore here (restoring the CMS document does not un-delete the commerce record).',
+			// 91 chars ≤ 140 (§1). The "Archived" explanation moves into the filter
+			// accordion; the stock explanation moves into the Stock panel.
+			text: "Filter and open a product. Money in each product's own currency; stock is on the detail.",
 		},
-		filterForm(actions, form),
-		table,
 	];
-	if (products.length > 0) blocks.push(openProductForm(actions, products));
+	if (notice !== undefined) blocks.push(noticeBanner(notice));
+
+	// ONE PART PER AUTHORED FILTER FIELD (L-3): the combined Status select is
+	// one field (active/archived share it), so it contributes one part.
+	const statusValue = form.archived === "true" ? "archived" : form.active;
+	const activeFilters = [
+		statusValue !== undefined && `status: ${statusValue}`,
+		form.productKind !== undefined && `kind: ${form.productKind}`,
+		form.search !== undefined && `search: ${form.search}`,
+	];
+	blocks.push(
+		filterPanel({
+			form: filterForm(actions, path, form),
+			// STABLE across an apply AND across `Clear filters` (B-7).
+			blockId: "products:filters",
+			activeFilters,
+		}),
+	);
+	const summary = filterSummary(activeFilters);
+	if (summary !== undefined) {
+		blocks.push({
+			type: "section",
+			text: summary,
+			accessory: {
+				type: "button",
+				action_id: actions.applyFilter,
+				label: "Clear filters",
+				value: { [PATH_FIELD]: encodePath(path) },
+			},
+			block_id: "products:filter-summary",
+		});
+	}
+
+	const filtered = summary !== undefined;
+	if (products.length === 0 && !filtered) {
+		// E-2: the primary collection at its TRUE zero state. No `actions` —
+		// products originate in the CMS, not on this console.
+		blocks.push(
+			emptyState({
+				title: "No products yet",
+				description:
+					"Products appear here as soon as a product document is saved in the CMS — pricing them is the next step, not a precondition.",
+				size: "base",
+				blockId: "products:empty",
+			}),
+		);
+		return blocks;
+	}
+
+	blocks.push({
+		type: "table",
+		block_id: "products:list",
+		columns: [
+			{ key: "title", label: "Title" },
+			{ key: "sku", label: "SKU", format: "code" },
+			{ key: "status", label: "Status", format: "badge" }, // the ONE badge column (T-5)
+			// `Kind` column DELETED: near-constant across a live catalog, so its
+			// badge would be a column of identical pills (T-5, X-4). Kind is on
+			// the detail's identity strip.
+			{ key: "price", label: "Price" }, // money LAST, pre-formatted (T-2, M-1)
+		],
+		rows: products.map((p) => ({
+			title: p.title ?? "(untitled)",
+			sku: p.sku ?? "—",
+			status: statusLabel(p),
+			price: formatOptionalTotal(p.priceCents, p.currency),
+		})),
+		page_action_id: actions.page,
+		...(nextToken !== undefined ? { next_cursor: nextToken } : {}),
+		empty_text: "No products match these filters.",
+	});
+	if (products.length > 0) blocks.push(openProductForm(actions, path, products));
 	return blocks;
 }
 
-/** The combined "Status" select's wire value: the ORIGINAL `active` tri-state
- *  plus a 4th `"archived"` option — one control, mutually exclusive, so a
- *  merchant can never combine "Active" with "Archived" into a filter
- *  contradiction (a soft-deleted row is always inactive under the hood, but
- *  the picker never exposes that as two independently-toggleable axes). */
-function filterForm(actions: ScreenActions, form: ProductsFilterForm): FormBlock {
+/**
+ * The three-field filter (L-2 ⇒ an accordion, `filterPanel`'s default
+ * `inlineUpTo` of 2), built by {@link carriedForm} LAST so the digest it
+ * carries matches the form.
+ */
+function filterForm(actions: ScreenActions, path: NavPath, form: ProductsFilterForm): FormBlock {
 	const statusOptions: SelectOption[] = [
-		{ value: "", label: "All statuses (live)" },
+		{ value: ANY, label: "All statuses (live)" },
 		{ value: "true", label: "Active" },
 		{ value: "false", label: "Inactive" },
 		{ value: "archived", label: "Archived (deleted)" },
 	];
 	const kindOptions: SelectOption[] = [
-		{ value: "", label: "All kinds" },
+		{ value: ANY, label: "All kinds" },
 		{ value: "physical", label: "physical" },
 		{ value: "digital", label: "digital" },
 	];
-	const statusInitialValue = form.archived === "true" ? "archived" : (form.active ?? "");
-	return {
-		type: "form",
-		fields: [
-			{
-				type: "select",
-				action_id: "active",
-				label: "Status",
-				options: statusOptions,
-				initial_value: statusInitialValue,
-			},
-			{
-				type: "select",
-				action_id: "productKind",
-				label: "Kind",
-				options: kindOptions,
-				initial_value: form.productKind ?? "",
-			},
-			{
-				type: "text_input",
-				action_id: "search",
-				label: "Search (SKU exact, or title contains)",
-				...(form.search !== undefined ? { initial_value: form.search } : {}),
-			},
-		],
-		submit: { label: "Apply filters", action_id: actions.applyFilter },
-	};
+	const statusInitialValue = form.archived === "true" ? "archived" : (form.active ?? ANY);
+	return carriedForm({
+		namespace: "products:filter",
+		context: { [PATH_FIELD]: encodePath(path) },
+		form: {
+			type: "form",
+			fields: [
+				{
+					// NOTE: the wire action_id is "status", not "active" — the CMS-owned
+					// `active` publish gate (F-2b, X-52) is a DIFFERENT thing from this
+					// filter parameter, and sharing a name would make the mechanical
+					// owned-field guard unable to tell a filter control from a write.
+					type: "select",
+					action_id: "status",
+					label: "Status",
+					options: statusOptions,
+					initial_value: statusInitialValue,
+				},
+				{
+					type: "select",
+					action_id: "productKind",
+					label: "Kind",
+					options: kindOptions,
+					initial_value: form.productKind ?? ANY,
+				},
+				{
+					type: "text_input",
+					action_id: "search",
+					label: "Search (SKU exact, or title contains)",
+					...(form.search !== undefined ? { initial_value: form.search } : {}),
+				},
+			],
+			submit: { label: "Apply filters", action_id: actions.applyFilter },
+		},
+	});
 }
-
-function openProductForm(actions: ScreenActions, products: ProductSummaryWire[]): FormBlock {
-	return {
-		type: "form",
-		fields: [
-			{
-				type: "select",
-				action_id: "productId",
-				label: "Open product",
-				options: products.map((p) => ({
-					value: p.productId,
-					label: `${p.title ?? p.productId} — ${statusLabel(p)}`,
-				})),
-			},
-		],
-		submit: { label: "Open product", action_id: actions.open },
-	};
-}
-
-// -- level 1: the product detail ----------------------------------------------
 
 /**
- * A small static tax-class registry the edit-form select falls back to when the
- * live registry read is unavailable/empty (Increment 2 slice 5; the guardrail
- * permits a static-seeded registry read). Deliberately the near-universal
- * defaults; the live `GET /admin/tax/classes` set, when present, is the source
- * of truth and this only backstops it.
+ * The drill-in picker (L-7): a `combobox`, because a page holds up to 25 rows
+ * and this field never prefills (R-12a, F-6, X-30). The option VALUE is the
+ * product id; the LABEL never contains it (X-22, M-7) — it is the human
+ * handle plus `statusLabel`, the SAME helper the table's Status column and
+ * the detail's Status row use, so the three surfaces cannot disagree. `sku`
+ * and `price` are deliberately NOT in the option label: both are nullable on
+ * a freshly-synced row, so the pre-1b "<sku> · <title> · $19.99 · active"
+ * shape rendered "— · … · — · active" for the most common new product.
+ */
+function openProductForm(
+	actions: ScreenActions,
+	path: NavPath,
+	products: ProductSummaryWire[],
+): FormBlock {
+	return carriedForm({
+		namespace: "products:open",
+		context: { [PATH_FIELD]: encodePath(path) },
+		form: {
+			type: "form",
+			fields: [
+				{
+					type: "combobox",
+					action_id: "productId",
+					label: "Open product",
+					placeholder: "Choose a product…",
+					options: [
+						{ value: NONE, label: "Choose a product…" },
+						...products.map((p) => ({
+							value: p.productId,
+							label: `${p.title ?? p.productId} — ${statusLabel(p)}`,
+						})),
+					],
+					initial_value: NONE,
+				},
+			],
+			submit: { label: "Open product", action_id: actions.open },
+		},
+	});
+}
+
+// -- level 1: the product detail (§12.1 detail) -------------------------------
+
+/**
+ * A small static tax-class registry the edit-form select falls back to when
+ * the live registry read is unavailable/empty. Deliberately the near-
+ * universal defaults; the live `GET /admin/tax/classes` set, when present, is
+ * the source of truth and this only backstops it.
  */
 const DEFAULT_TAX_CLASSES: TaxClassWire[] = [
 	{ id: "standard", name: "Standard" },
@@ -335,12 +498,12 @@ const DEFAULT_TAX_CLASSES: TaxClassWire[] = [
 ];
 
 function productDetailLevel() {
-	return leafLevel<AdminProductsClient, ProductDetailWire>({
+	return leafLevel<AdminProductsClient, ProductDetailWire, ProductsRenderState>({
 		load: (client, _path, id) => client.getProduct(id),
-		async render({ client, actions, id, detail, notice }) {
-			// SECONDARY, best-effort read (the scaffold's documented pattern): the
-			// tax-class registry that sources the edit-form select. A failure/empty
-			// read degrades to the static defaults, never fails the whole detail.
+		async render({ client, actions, id, detail, notice, renderState }) {
+			// SECONDARY, best-effort read: the tax-class registry that sources the
+			// edit-form select. A failure/empty read degrades to the static
+			// defaults, never fails the whole detail (E-1).
 			let taxClasses: TaxClassWire[] = DEFAULT_TAX_CLASSES;
 			try {
 				const fetched = await client.getTaxClasses();
@@ -348,12 +511,12 @@ function productDetailLevel() {
 			} catch {
 				// keep the static fallback — a registry read must never break the detail.
 			}
-			return detailBlocks(actions, id, detail, notice, taxClasses);
+			return detailBlocks(actions, id, detail, notice, renderState, taxClasses);
 		},
-		notFound({ actions, id }) {
+		notFound({ actions, path, id }) {
 			return [
 				{ type: "header", text: "Product not found" },
-				backButton(actions.back, "← Back to pricing & inventory"),
+				backButton(actions.back, "← Back to pricing & inventory", path),
 				{
 					type: "banner",
 					variant: "error",
@@ -366,322 +529,545 @@ function productDetailLevel() {
 	});
 }
 
+/**
+ * D-5, evaluated ONCE per rendered response: at most one group is
+ * `default_open: true` (X-18), and which one is computed, never chosen.
+ *
+ * RULE 1 — the staged-confirm-or-refusal override, keyed on
+ * `renderState !== undefined`: BOTH members of {@link ProductsRenderState} name
+ * the "remove" group. Every other group is `false`.
+ *
+ * RULE 2 — otherwise: this screen's named primary edit group is `Identity`
+ * (D-5 rank 3), open whenever the record is editable — i.e. not tombstoned.
+ * Products has no reconciliation flag and no `paid`/`processing`-shaped
+ * fulfilment state, so ranks 1–2 never apply here.
+ */
+type OpenGroup = "identity" | "remove" | undefined;
+
+function openGroup(p: ProductDetailWire, renderState: ProductsRenderState | undefined): OpenGroup {
+	if (renderState !== undefined) return "remove";
+	if (p.deletedAt !== null) return undefined;
+	return "identity";
+}
+
+/** §4's detail skeleton: blocks 1–5 outside the tabs (header, back, up to two
+ *  banners, the identity strip), then the two constant panels (D-2:
+ *  `Product` · `Stock`). */
 function detailBlocks(
 	actions: ScreenActions,
 	id: string,
 	p: ProductDetailWire,
 	notice: Notice | undefined,
+	renderState: ProductsRenderState | undefined,
 	taxClasses: TaxClassWire[],
 ): Block[] {
-	const fields: Array<{ label: string; value: string }> = [
-		// READ-ONLY, exactly like Status below it, and for the same reason: the CMS
-		// owns the title and the content sync is the only writer of
-		// `product_commerce.title`, so a Title input here would be silently
-		// overwritten by the merchant's next CMS save. Rename the CMS document
-		// instead. DO NOT add a Title field to the edit form below — the port type
-		// `UpdateProductCommerceFieldsInput` has no `title`, so it will not compile,
-		// and the service PATCH schema is `.strict()`, so it would 400 anyway.
-		// Spec rule F-2b; reasoning: `adr/0013-product-title-is-cms-owned.md`.
-		//
-		// THE LABEL CARRIES THE OWNER (F-2b): the merchant looking for "why can't I
-		// edit this" is looking at the row, not at the help paragraph below — which
-		// is already over the ≤200-char context budget and cannot absorb another
-		// clause.
-		{ label: "Title (set in the CMS)", value: p.title ?? "(untitled)" },
-		{ label: "SKU", value: p.sku ?? "—" },
-		{ label: "Price", value: formatOptionalTotal(p.priceCents, p.currency) },
-		{
-			label: "Compare-at price",
-			value: formatOptionalTotal(p.compareAtCents, p.compareAtCurrency),
-		},
-		{
-			label: "Unit cost (admin only)",
-			value: formatOptionalTotal(p.unitCostCents, p.unitCostCurrency),
-		},
-		{ label: "Status", value: statusLabel(p) },
-		{ label: "Kind", value: p.productKind },
-		{ label: "Stock on hand", value: String(p.onHand) },
-		{ label: "Inventory policy", value: inventoryPolicyLabel(p.inventoryPolicy) },
-		{ label: "Tax class", value: taxClassLabel(p.taxClass, taxClasses) },
-		{ label: "Weight (g)", value: p.weightGrams === null ? "—" : String(p.weightGrams) },
-		{ label: "Dimensions (mm, LxWxH)", value: dimensionsSummary(p) },
-		{ label: "Created (UTC)", value: p.createdAt },
-		{ label: "Updated (UTC)", value: p.updatedAt },
-	];
+	const open = openGroup(p, renderState);
 	const blocks: Block[] = [
+		// M-10: the human handle (product title) stands in for the uuid when one
+		// exists.
 		{ type: "header", text: p.title ?? id },
 		backButton(actions.back, "← Back to pricing & inventory"),
 	];
+	// At most 2 banners at the top level (X-31): the notice and the tombstone
+	// alert.
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
-	blocks.push({ type: "fields", fields });
-
-	// -- Soft-deleted (product lifecycle surfacing, admin-UX Increment 2) -----
-	// A tombstoned row is READ-ONLY here: no edit form, no stock forms. Editing
-	// or restocking a deleted product is meaningless (the write routes 404 it
-	// anyway — see `admin.ts`'s GET-vs-write-routes doc), so the forms are never
-	// rendered rather than rendered-then-rejected. There is no restore action:
-	// the CMS-sync/lifecycle paths (`softDelete`/`activate`/`deactivate`) are
-	// the only writers of this state, and restoring the CMS document does NOT
-	// undo a soft delete (`upsert` never touches `deletedAt`/`active` — see the
-	// port doc) — a known, called-out gap, not something this read-only view can
-	// paper over.
 	if (p.deletedAt !== null) {
 		blocks.push({
 			type: "banner",
-			variant: "default",
-			title: "This product was deleted",
-			description: `Deleted (trashed or permanently removed) in the CMS on ${p.deletedAt}. It no longer appears in the storefront or the default product list, and it cannot be edited or restocked from here. It stays visible in the "Archived" filter for reference; existing orders that included it are unaffected — an order snapshots its price and title at purchase time.`,
+			variant: "alert",
+			title: "This product was deleted in the CMS",
+			description: `Deleted on ${utc(p.deletedAt)}. It cannot be edited or restocked from here; existing orders that included it are unaffected.`,
 		});
-		return blocks;
 	}
-
-	blocks.push({ type: "divider" });
+	// The identity strip: "what am I looking at, and is it healthy" without a
+	// click. 6 entries in 3 row-major PAIRS (R-3, §4). `Title` and `Status` are
+	// CMS-owned (F-2b, X-52) — read-only, and the LABEL names the owner.
+	blocks.push(
+		fields("products:identity", [
+			["Title (set in the CMS)", p.title ?? "(untitled)"],
+			["SKU", p.sku ?? "—"],
+			["Price", formatOptionalTotal(p.priceCents, p.currency)],
+			["Status (set in the CMS)", statusLabel(p)],
+			["Stock on hand", String(p.onHand)],
+			["Kind", p.productKind],
+		]),
+	);
+	const panels: TabPanel[] = [
+		{ label: "Product", blocks: productPanel(id, p, taxClasses, open) },
+		{ label: "Stock", blocks: stockPanel(id, p, open, renderState) },
+	];
 	blocks.push({
-		type: "header",
-		text: "Edit commerce fields",
+		type: "tab",
+		// STABLE (B-4): a volatile key would throw the operator back to panel 0
+		// after every action's re-render.
+		block_id: `products:${id}:tabs`,
+		default_tab: 0, // ALWAYS (D-4)
+		panels,
 	});
-	blocks.push({
-		type: "context",
-		// PR 1b rewrote this line: the CMS no longer holds commercial data, so this
-		// page is the sole editor of it, and setting a SKU here is what creates the
-		// product's stock record. Kept SHORTER than the copy it replaces, and the
-		// "no overselling" phrasing is gone (`docs/admin/ADMIN-CONSOLE.md` X-20
-		// bans it in a rendered string; the code comments that document the
-		// invariant are exempt and stay). It is still over the ≤200-char context
-		// budget (X-11) — splitting it into three sub-200 lines is the Pricing &
-		// inventory rebuild's job (spec §12.1), not this merge's.
-		text: 'This is the only place pricing, stock and the other commercial fields are edited — the CMS holds no commerce data. Status is the CMS publish state: publish or unpublish the document to change it. Title and images work the same way: rename the document in the CMS and the new title appears here on the next save. Stock starts at zero when a SKU is set here; add units with Restock below. Price, compare-at and unit cost all use the product\'s one currency — set the price first on a new product. Compare-at is the struck-through "was" price; a value at or below the price is allowed and saved as-is, so double-check it. Unit cost is admin-only margin data, never shown to buyers. Out-of-stock policy is Deny only for now: the store stops selling at zero stock; backorders are a future capability.',
-	});
-	blocks.push(editForm(actions, p, taxClasses));
-
-	// -- Stock management (admin-UX Increment 2 slice 3) ----------------------
-	// Only meaningful for a product with a sku AND an inventory row. A skuless
-	// "create then price" product has nothing to move stock against, so the forms
-	// are omitted (the service would 409 NO_SKU anyway).
-	if (p.sku !== null) {
-		blocks.push({ type: "divider" });
-		blocks.push({ type: "header", text: "Stock" });
-		blocks.push({
-			type: "context",
-			text: `Current available (on hand): ${p.onHand}. "On hand" is the count available to sell right now — every open cart hold has already been subtracted, so restocking adds to this number and it can never be oversold. Enter whole units only.`,
-		});
-		blocks.push(restockForm(actions, p));
-		blocks.push(removeStockForm(actions, p));
-	}
 	return blocks;
 }
 
-/**
- * The restock form (admin-UX Increment 2 slice 3): ADD units. A hidden
- * `productId` carrier threads the target through the stateless submit, and a
- * hidden `nonce` (a fresh `crypto.randomUUID()` per render) is the per-
- * submission idempotency seed — a true double-submit of THIS rendered form
- * resends the same nonce (dedupes to one add), while every fresh reload mints a
- * new nonce so two DELIBERATE restocks each apply. Qty is a TEXT input (never
- * `number_input`, which would hand back a JS float) parsed to a positive whole
- * number.
- */
-function restockForm(actions: ScreenActions, p: ProductDetailWire): FormBlock {
-	return {
-		type: "form",
-		fields: [
-			stockCarrier("productId", p.productId),
-			stockCarrier("nonce", crypto.randomUUID()),
-			{
-				type: "text_input",
-				action_id: "qty",
-				label: "Units to add",
-				placeholder: "e.g. 12",
-			},
-		],
-		submit: { label: "Add stock", action_id: actions.custom("restock") },
-	};
-}
+/** One line naming both what happened and what to do, for a tombstoned
+ *  product — shown in place of the edit/stock-movement forms, in EITHER
+ *  panel (DA-7). Editing and stock forms on a soft-deleted product are
+ *  omitted entirely (never rendered-then-rejected), which is already
+ *  correct; D-3 requires the panel itself keep rendering regardless. */
+const TOMBSTONE_CONTEXT =
+	"This product was deleted in the CMS — editing and stock moves are unavailable. Restore the document to re-enable them.";
 
-/**
- * The stock-removal form (admin-UX Increment 2 slice 3): REMOVE damaged/
- * shrinkage units — a DANGER path, so the copy is explicit. Same hidden
- * carriers + per-submission nonce as {@link restockForm}. The service applies a
- * GUARDED decrement, so removing more than is on hand is refused cleanly (never
- * a negative or an oversell), but the merchant is warned up front.
- */
-function removeStockForm(actions: ScreenActions, p: ProductDetailWire): FormBlock {
-	return {
-		type: "form",
-		fields: [
-			stockCarrier("productId", p.productId),
-			stockCarrier("nonce", crypto.randomUUID()),
-			{
-				type: "text_input",
-				action_id: "qty",
-				label: "Units to remove (damaged / shrinkage)",
-				placeholder: "e.g. 3",
-			},
-		],
-		submit: { label: "Remove stock", action_id: actions.custom("remove-stock") },
-	};
-}
+/** F-5a-i's normative sibling-discard line — ONE line, above the three split
+ *  groups, never repeated inside them (X-45). Written to DA-7a's discipline:
+ *  no "deliberately" / "there is no" / "we do not" (X-41). */
+const SPLIT_DISCARD_CONTEXT =
+	"Each section saves on its own. Save the section you are editing before you open another — saving one reloads the product and clears unsaved edits in the others.";
 
-/** A hidden single-option carrier (the scaffold's proven pattern) that threads
- *  one value through a stateless `form_submit`. */
-function stockCarrier(actionId: string, value: string): FormBlock["fields"][number] {
-	return {
-		type: "select",
-		action_id: actionId,
-		label: actionId,
-		options: [{ value, label: value }],
-		initial_value: value,
-	};
-}
+// -- panel "Product" -----------------------------------------------------------
 
-/**
- * The standalone product edit form (admin-UX Increment 2 slice 2). Only the
- * commerce-owned fields — NO `active` (the CMS publish gate). Two hidden
- * single-option carriers (the scaffold's `filterPathField` pattern) thread the
- * target id and the optimistic-concurrency watermark through the stateless
- * `form_submit`:
- *  - `productId` — the edit target.
- *  - `expectedUpdatedAt` — the `updatedAt` the admin loaded; the service
- *    compare-and-sets on it, so a concurrent edit is a stale reload, never a
- *    silent clobber.
- * Price is a TEXT input (never `number_input`): a Block Kit number widget hands
- * back a JS float, and money is integer minor units (CLAUDE.md) — the text is
- * parsed to minor units by exact integer string math. Currency is FIXED for an
- * already-priced product (a single-option carrier, so a price edit can never
- * silently switch it) and an editable input only for first-time pricing.
- */
-function editForm(
-	actions: ScreenActions,
+function productPanel(
+	id: string,
 	p: ProductDetailWire,
 	taxClasses: TaxClassWire[],
-): FormBlock {
-	const priced = p.priceCents !== null && p.currency !== null;
-	const currencyField: FormBlock["fields"][number] = priced
-		? {
-				// Fixed carrier: the loaded currency round-trips, never editable.
-				type: "select",
-				action_id: "currency",
-				label: `Currency (fixed: ${p.currency})`,
-				options: [{ value: p.currency ?? "", label: p.currency ?? "" }],
-				initial_value: p.currency ?? "",
-			}
-		: {
-				type: "text_input",
-				action_id: "currency",
-				label: "Currency (ISO-4217, e.g. USD) — set once when first pricing",
-				placeholder: "USD",
-			};
+	open: OpenGroup,
+): Block[] {
+	const blocks: Block[] = [
+		fields("products:more", [
+			["Compare-at", formatOptionalTotal(p.compareAtCents, p.compareAtCurrency)],
+			["Unit cost", formatOptionalTotal(p.unitCostCents, p.unitCostCurrency)],
+			["Tax class", taxClassLabel(p.taxClass, taxClasses)],
+			["Inventory policy", inventoryPolicyLabel(p.inventoryPolicy)],
+			["Weight (g)", p.weightGrams === null ? "—" : String(p.weightGrams)],
+			["Dimensions (mm, LxWxH)", dimensionsSummary(p)],
+			["Created (UTC)", utc(p.createdAt)],
+			["Updated (UTC)", utc(p.updatedAt)],
+		]),
+	];
+	if (p.deletedAt !== null) {
+		blocks.push({ type: "context", text: TOMBSTONE_CONTEXT });
+		return blocks;
+	}
+	blocks.push({ type: "context", text: SPLIT_DISCARD_CONTEXT });
+	blocks.push({
+		type: "accordion",
+		block_id: `products:${id}:edit-identity`,
+		label: "Identity",
+		default_open: open === "identity",
+		blocks: [
+			{
+				type: "context",
+				text: "SKU is the stock-keeping code the store sells against. The title is set in the CMS.",
+			},
+			identityForm(id, p),
+		],
+	});
+	blocks.push({
+		type: "accordion",
+		block_id: `products:${id}:edit-price`,
+		label: fitLabel(priceGroupLabel(p)),
+		default_open: false, // ALWAYS — not a D-5 rank (only Identity is)
+		blocks: [
+			{
+				type: "context",
+				text: "Price, compare-at and unit cost all use the product's one currency. A blank compare-at or unit cost clears it.",
+			},
+			priceForm(id, p),
+		],
+	});
+	blocks.push({
+		type: "accordion",
+		block_id: `products:${id}:edit-shipping`,
+		label: "Classification & shipping",
+		default_open: false, // ALWAYS
+		blocks: [
+			{
+				type: "context",
+				text: "Weight and dimensions feed shipping quotes; blank leaves them unchanged. A blank tax class clears it.",
+			},
+			shippingForm(id, p, taxClasses),
+		],
+	});
+	// Replaces the deleted single-option "When out of stock" select (F-3) AND
+	// the banned "no overselling" phrasing (X-20) with the mechanism sentence,
+	// which is the whole of what the operator needs. Out-of-stock policy stays
+	// DENY-ONLY this slice — no `allow_backorder` option exists anywhere in
+	// this form. The no-oversell invariant is non-negotiable, and backorders
+	// are a future capability that needs its own races and an ADR.
+	blocks.push({
+		type: "context",
+		text: "The store stops selling at zero stock; backorders are a future capability.",
+	});
+	return blocks;
+}
 
-	const fields: FormBlock["fields"] = [
-		// Hidden carriers (single-option selects — the scaffold's proven pattern).
-		{
-			type: "select",
-			action_id: "productId",
-			label: "Product",
-			options: [{ value: p.productId, label: p.productId }],
-			initial_value: p.productId,
+/** D-6: the Price group's label carries the answer, so it can be skipped
+ *  unopened. ≤60 chars (X-11), enforced by `fitLabel`. */
+function priceGroupLabel(p: ProductDetailWire): string {
+	if (p.priceCents === null || p.currency === null) return "Price — not priced yet";
+	return `Price — ${formatOptionalTotal(p.priceCents, p.currency)} ${p.currency}`;
+}
+
+/**
+ * The Identity group's form — SKU only (F-5a: the split is by MEANING, not
+ * just field count; a one-field accordion is deliberate because SKU is
+ * identity, not pricing). Title is NOT here: `product_commerce.title` is a
+ * CMS-owned derived cache (ADR-0013) and `ProductEditWire` has no `title`
+ * member, so a form field for it does not compile.
+ */
+function identityForm(id: string, p: ProductDetailWire): FormBlock {
+	return carriedForm({
+		namespace: "products:identity",
+		context: { productId: id, expectedUpdatedAt: p.updatedAt },
+		form: {
+			type: "form",
+			fields: [
+				{
+					type: "text_input",
+					action_id: "sku",
+					label: "SKU",
+					...(p.sku !== null ? { initial_value: p.sku } : {}),
+				},
+			],
+			submit: { label: "Save identity", action_id: ACTION_SAVE_IDENTITY },
 		},
-		{
-			type: "select",
-			action_id: "expectedUpdatedAt",
-			label: "Revision",
-			options: [{ value: p.updatedAt, label: p.updatedAt }],
-			initial_value: p.updatedAt,
-		},
-		// NO Title input, deliberately — see the read-only Title row in
-		// `detailBlocks` and `adr/0013-product-title-is-cms-owned.md`.
-		{
-			type: "text_input",
-			action_id: "sku",
-			label: "SKU",
-			...(p.sku !== null ? { initial_value: p.sku } : {}),
-		},
+	});
+}
+
+/**
+ * The Price group's form (F-5a): price, an optional currency, compare-at and
+ * unit cost — the four fields that must co-reside because they all read the
+ * product's one currency (`buildEditWire`'s currency-resolution logic depends
+ * on all three money fields agreeing).
+ *
+ * CURRENCY IS NEVER A FIXED SINGLE-OPTION SELECT (F-3 — that was one of the
+ * four `""`-valued-option/one-option violations on this screen). For an
+ * ALREADY-PRICED product the currency cannot change here, so it rides
+ * INVISIBLY in this form's own carrier instead of as a field at all; only a
+ * first-time pricing renders it as a real `text_input`.
+ */
+function priceForm(id: string, p: ProductDetailWire): FormBlock {
+	const priced = p.priceCents !== null && p.currency !== null;
+	const priceFields: FormBlock["fields"] = [
 		{
 			type: "text_input",
 			action_id: "price",
 			label: `Price (${p.currency ?? "set currency below"}, e.g. 19.99)`,
-			...(p.priceCents !== null ? { initial_value: formatPriceMinorUnits(p.priceCents) } : {}),
 			placeholder: "19.99",
+			...(p.priceCents !== null ? { initial_value: formatPriceMinorUnits(p.priceCents) } : {}),
 		},
-		currencyField,
+	];
+	if (!priced) {
+		priceFields.push({
+			type: "text_input",
+			action_id: "currency",
+			label: "Currency (ISO-4217, e.g. USD) — set once when first pricing",
+			placeholder: "USD",
+		});
+	}
+	priceFields.push(
 		{
 			type: "text_input",
 			action_id: "compareAt",
 			label: `Compare-at / was price (${p.currency ?? "same as price"}, e.g. 29.99) — blank to clear`,
+			placeholder: "29.99",
 			...(p.compareAtCents !== null
 				? { initial_value: formatPriceMinorUnits(p.compareAtCents) }
 				: {}),
-			placeholder: "29.99",
 		},
 		{
 			type: "text_input",
 			action_id: "unitCost",
 			label: `Unit cost — admin only, never shown to buyers (${p.currency ?? "same as price"}) — blank to clear`,
+			placeholder: "8.50",
 			...(p.unitCostCents !== null
 				? { initial_value: formatPriceMinorUnits(p.unitCostCents) }
 				: {}),
-			placeholder: "8.50",
 		},
-		{
-			type: "select",
-			action_id: "productKind",
-			label: "Kind",
-			options: [
-				{ value: "physical", label: "physical" },
-				{ value: "digital", label: "digital" },
+	);
+	return carriedForm({
+		namespace: "products:price",
+		context: {
+			productId: id,
+			expectedUpdatedAt: p.updatedAt,
+			// Priced: the fixed currency rides here, invisibly, never as a field.
+			...(priced ? { currency: p.currency ?? "" } : {}),
+		},
+		form: {
+			type: "form",
+			fields: priceFields,
+			submit: { label: "Save price", action_id: ACTION_SAVE_PRICE },
+		},
+	});
+}
+
+/** The Classification & shipping group's form (F-5a): exactly 6 fields — the
+ *  F-5 budget. `Kind` and `Tax class` are closed sets ≤8 options (F-6 ⇒
+ *  `select`); the four measurements are non-money integers (F-6 ⇒
+ *  `text_input`, `/^\d+$/`-parsed). */
+function shippingForm(id: string, p: ProductDetailWire, taxClasses: TaxClassWire[]): FormBlock {
+	return carriedForm({
+		namespace: "products:shipping",
+		context: { productId: id, expectedUpdatedAt: p.updatedAt },
+		form: {
+			type: "form",
+			fields: [
+				{
+					type: "select",
+					action_id: "productKind",
+					label: "Kind",
+					options: [
+						{ value: "physical", label: "physical" },
+						{ value: "digital", label: "digital" },
+					],
+					initial_value: p.productKind,
+				},
+				{
+					type: "select",
+					action_id: "taxClass",
+					label: "Tax class",
+					options: taxClassOptions(p.taxClass, taxClasses),
+					initial_value: p.taxClass ?? NO_TAX_CLASS,
+				},
+				{
+					type: "text_input",
+					action_id: "weightGrams",
+					label: "Weight (g)",
+					...(p.weightGrams !== null ? { initial_value: String(p.weightGrams) } : {}),
+				},
+				{
+					type: "text_input",
+					action_id: "lengthMm",
+					label: "Length (mm)",
+					...(p.lengthMm !== null ? { initial_value: String(p.lengthMm) } : {}),
+				},
+				{
+					type: "text_input",
+					action_id: "widthMm",
+					label: "Width (mm)",
+					...(p.widthMm !== null ? { initial_value: String(p.widthMm) } : {}),
+				},
+				{
+					type: "text_input",
+					action_id: "heightMm",
+					label: "Height (mm)",
+					...(p.heightMm !== null ? { initial_value: String(p.heightMm) } : {}),
+				},
 			],
-			initial_value: p.productKind,
+			submit: { label: "Save classification", action_id: ACTION_SAVE_SHIPPING },
 		},
-		{
-			type: "select",
-			action_id: "taxClass",
-			label: "Tax class",
-			options: taxClassOptions(p.taxClass, taxClasses),
-			initial_value: p.taxClass ?? "",
+	});
+}
+
+// -- panel "Stock" --------------------------------------------------------------
+
+function stockPanel(
+	id: string,
+	p: ProductDetailWire,
+	open: OpenGroup,
+	renderState: ProductsRenderState | undefined,
+): Block[] {
+	const blocks: Block[] = [
+		fields("products:stock", [
+			["On hand", String(p.onHand)],
+			["Inventory policy", inventoryPolicyLabel(p.inventoryPolicy)],
+		]),
+	];
+	if (p.deletedAt !== null) {
+		blocks.push({ type: "context", text: TOMBSTONE_CONTEXT });
+		return blocks;
+	}
+	blocks.push({
+		type: "context",
+		// X-20-safe rewrite: "on hand" and "the count available to sell right
+		// now" say the same thing the banned phrasing used to.
+		text: "On hand is what can be sold right now — open cart holds are already subtracted. Whole units only.",
+	});
+	if (p.sku === null) {
+		// D-7: a skuless "create then price" product has nothing to move stock
+		// against (the service would 409 NO_SKU anyway) — one line, no forms.
+		blocks.push({
+			type: "context",
+			text: "Stock movements need a SKU first — set one under Identity on the Product tab.",
+		});
+		return blocks;
+	}
+	blocks.push(restockGroup(id, p));
+	blocks.push(removeStockGroup(id, p, open, renderState));
+	return blocks;
+}
+
+/** Restock stays DA-4: a plain one-shot form, no confirm, no danger. */
+function restockGroup(id: string, p: ProductDetailWire): Block {
+	return {
+		type: "accordion",
+		block_id: `products:${id}:restock`,
+		label: "Add stock",
+		default_open: false,
+		blocks: [restockForm(id, p)],
+	};
+}
+
+/** `productId` and the `onHand` watermark ride invisibly in the carrier
+ *  (F-2). No nonce anywhere (F-2a): the idempotency key is derived from
+ *  `${productId}:restock:${onHandAtRender}:${qty}` — content plus the
+ *  watermark the operator saw, at write time (`stockMovementKey`). */
+function restockForm(id: string, p: ProductDetailWire): FormBlock {
+	return carriedForm({
+		namespace: "products:restock",
+		context: { productId: id, onHand: String(p.onHand) },
+		form: {
+			type: "form",
+			fields: [
+				{
+					type: "text_input",
+					action_id: "qty",
+					label: "Units to add",
+					placeholder: "e.g. 12",
+				},
+			],
+			submit: { label: "Add stock", action_id: ACTION_RESTOCK },
 		},
-		{
-			// Out-of-stock policy — DENY-ONLY this slice. The select shows a single
-			// option (no `allow_backorder`): the no-oversell invariant is
-			// non-negotiable, and backorders are a future capability that needs its
-			// own races + an ADR. Rendered as a select (not omitted) so the field is
-			// visible and future-extensible, with the context line below explaining
-			// the constraint.
-			type: "select",
-			action_id: "inventoryPolicy",
-			label: "When out of stock",
-			options: [{ value: "deny", label: "Deny — stop selling at zero stock" }],
-			initial_value: "deny",
+	});
+}
+
+/** DA-3 state 1's required alert banner + explanatory context, shared by the
+ *  idle body and the flattened refusal body (DA-3a-i) so the two cannot
+ *  drift — mirrors `orders-page.ts`'s `REFUND_PARTIAL_BANNER`. */
+const REMOVE_STOCK_BANNER: Block = {
+	type: "banner",
+	variant: "alert",
+	title: "Removing stock cannot be undone by restocking",
+	description: "This records a stock removal — the store treats it as a separate ledger entry.",
+};
+const REMOVE_STOCK_CONTEXT: Block = {
+	type: "context",
+	text: "Restocking appends a second movement — it does not correct this one. Check the number before confirming.",
+};
+
+/**
+ * The Remove-stock group — the screen's ONE destructive act (DA-5's second
+ * exception: a removal is reversible only by a separate, forgettable manual
+ * operation). Three render modes, chosen by render state, never by taste —
+ * mirrors `orders-page.ts`'s `refundsGroup`:
+ *
+ * | Mode | `block_id` | Body |
+ * |---|---|---|
+ * | idle | `…:remove` | alert banner · context · the collect form |
+ * | state 2 (`remove-staged`) | `…:remove:review` | its own banner · the staged form, remounted · ONE danger confirm |
+ * | a refusal (`remove-draft`) | `…:remove:refused` | the SAME banner + context · the prefilled form — no confirm |
+ *
+ * THREE DISTINCT KEYS, for the same reason as Orders' refund group: a
+ * refusal is reachable from BOTH idle (a typo in the qty field) and from
+ * state 2 (the confirm, after stock moved), so B-6's remount half needs this
+ * `block_id` to differ from whichever of those two was on screen — reusing
+ * either leaves the force-open resting on the operator's click history
+ * rather than on the response (B-7a).
+ *
+ * The `Add stock` group above is a SIBLING accordion with its own stable
+ * `block_id`, always `default_open: false` — it is neither the refused group
+ * nor a control of the refused class, so it renders unchanged on every mode.
+ */
+function removeStockGroup(
+	id: string,
+	p: ProductDetailWire,
+	open: OpenGroup,
+	renderState: ProductsRenderState | undefined,
+): Block {
+	const blockId = `products:${id}:remove`;
+	const staged = renderState?.kind === "remove-staged" ? renderState : undefined;
+	const draft = renderState?.kind === "remove-draft" ? renderState : undefined;
+	const body: Block[] =
+		staged !== undefined
+			? removeReviewBody(id, staged)
+			: draft !== undefined
+				? [REMOVE_STOCK_BANNER, REMOVE_STOCK_CONTEXT, removeStockForm(id, p.onHand, draft.qtyInput)]
+				: [REMOVE_STOCK_BANNER, REMOVE_STOCK_CONTEXT, removeStockForm(id, p.onHand)];
+	return {
+		type: "accordion",
+		block_id:
+			staged !== undefined
+				? `${blockId}:review`
+				: draft !== undefined
+					? `${blockId}:refused`
+					: blockId,
+		// D-6a: the label carries the CONSEQUENCE, not just the verb — X-35's
+		// bare-verb-label check, and the reason §12.1's own "Remove stock" listing
+		// line is a defect (reported in the PR body).
+		label: fitLabel("Remove stock — permanent, cannot be undone by restocking"),
+		default_open: open === "remove",
+		blocks: body,
+	};
+}
+
+/** `productId` and the `onHand` watermark ride invisibly in the carrier —
+ *  the SAME shape as `restockForm`. No nonce (F-2a). `prefillQty` is the
+ *  RAW operator string (DA-3a-iii property 5), used verbatim whether it came
+ *  from a refusal or from state 2 (formatted back from the parsed qty by the
+ *  caller). */
+function removeStockForm(id: string, onHand: number, prefillQty?: string): FormBlock {
+	return carriedForm({
+		namespace: "products:remove",
+		context: { productId: id, onHand: String(onHand) },
+		form: {
+			type: "form",
+			fields: [
+				{
+					type: "text_input",
+					action_id: "qty",
+					label: "Units to remove (damaged / shrinkage)",
+					placeholder: "e.g. 3",
+					...(prefillQty !== undefined ? { initial_value: prefillQty } : {}),
+				},
+			],
+			// The operator re-submits `-review` even from the remounted state-2
+			// form — there is no `-edit` id (DA-3).
+			submit: { label: "Review removal", action_id: ACTION_REMOVE_REVIEW },
 		},
+	});
+}
+
+/**
+ * DA-3 state 2 for a stock removal: the staged form remounted plus ONE danger
+ * confirm. The idle banner/context are replaced by this state's OWN copy
+ * (naming the concrete quantity), mirroring `refundReviewBody` — a second
+ * reading of the generic warning beside a confirm naming the specific act
+ * would be noise.
+ */
+function removeReviewBody(
+	id: string,
+	staged: ProductsRenderState & { kind: "remove-staged" },
+): Block[] {
+	const unit = staged.qty === 1 ? "unit" : "units";
+	return [
 		{
-			type: "text_input",
-			action_id: "weightGrams",
-			label: "Weight (g)",
-			...(p.weightGrams !== null ? { initial_value: String(p.weightGrams) } : {}),
+			type: "banner",
+			variant: "alert",
+			title: "Removing stock cannot be undone by restocking",
+			description: `Confirm below to remove ${staged.qty} ${unit}. Edit the form and review again to change the amount.`,
 		},
+		removeStockForm(id, staged.onHand, String(staged.qty)),
 		{
-			type: "text_input",
-			action_id: "lengthMm",
-			label: "Length (mm)",
-			...(p.lengthMm !== null ? { initial_value: String(p.lengthMm) } : {}),
-		},
-		{
-			type: "text_input",
-			action_id: "widthMm",
-			label: "Width (mm)",
-			...(p.widthMm !== null ? { initial_value: String(p.widthMm) } : {}),
-		},
-		{
-			type: "text_input",
-			action_id: "heightMm",
-			label: "Height (mm)",
-			...(p.heightMm !== null ? { initial_value: String(p.heightMm) } : {}),
+			type: "actions",
+			block_id: `products:${id}:remove-confirm`,
+			elements: [
+				{
+					type: "button",
+					action_id: ACTION_REMOVE,
+					label: `Remove ${staged.qty} ${unit}`,
+					// The watermark AS THE OPERATOR SAW IT (the on-hand the -review
+					// step just confirmed live) — the DA-3a re-read key AND the third
+					// component of the idempotency key (F-2a).
+					value: { productId: id, qty: String(staged.qty), onHand: String(staged.onHand) },
+					style: "danger",
+					confirm: {
+						title: fit(`Remove ${staged.qty} ${unit}?`, LABEL_BUDGET),
+						text: `Remove ${staged.qty} ${unit} from stock? This records a removal and cannot be undone by restocking.`,
+						confirm: `Yes, remove ${staged.qty}`,
+						deny: "Keep as is",
+						style: "danger",
+					},
+				},
+			],
 		},
 	];
-	return {
-		type: "form",
-		fields,
-		submit: { label: "Save changes", action_id: actions.custom("save") },
-	};
 }
 
 function dimensionsSummary(p: ProductDetailWire): string {
@@ -692,30 +1078,52 @@ function dimensionsSummary(p: ProductDetailWire): string {
 
 // -- shared --------------------------------------------------------------------
 
-/** Fail CLOSED with a GENERIC, em-dash-correct banner — never leaks a raw HTTP
- *  status/URL (e.g. an auth 401 from a missing/expired admin token). */
-function failClosed() {
+/** A `fields` block from label/value PAIRS, so an odd entry count is visible
+ *  at the call site — `fields` is row-major `grid-cols-2` (R-3). */
+function fields(
+	blockId: string,
+	entries: ReadonlyArray<readonly [string, string]>,
+): { type: "fields"; block_id: string; fields: Array<{ label: string; value: string }> } {
 	return {
-		blocks: [
-			{ type: "header" as const, text: "Pricing & inventory" },
-			{
-				type: "banner" as const,
-				variant: "error" as const,
-				title: "Products are unavailable",
-				description:
-					"Could not reach the commerce service. Check the service connection and the admin token in Settings.",
-			},
-		],
-		toast: { message: "Could not load products", type: "error" as const },
+		type: "fields",
+		block_id: blockId,
+		fields: entries.map(([label, value]) => ({ label, value })),
 	};
 }
 
-/** Translate the console's filter form into the client's list filter. */
+/** An `accordion.label` inside §1's 60-char budget (X-11). */
+function fit(text: string, max: number): string {
+	return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+}
+function fitLabel(text: string): string {
+	return fit(text, LABEL_BUDGET);
+}
+
+/** An absolute UTC timestamp TRIMMED TO SECONDS (M-6): milliseconds are
+ *  noise, and X-13 rejects them outright. No timezone conversion, ever. */
+function utc(iso: string): string {
+	return iso.replace(/\.\d+(?=Z$)/, "");
+}
+
+/** E-7's normative fail-closed banner — the copy names the symptom, lists the
+ *  two things the operator can check, then says the remaining possibility
+ *  out loud, so a console bug landing on this same path is never reported as
+ *  an outage. */
+function failClosed() {
+	return failClosedResponse({
+		header: "Pricing & inventory",
+		title: "Pricing & inventory is unavailable",
+		description:
+			"Pricing & inventory could not be loaded. Check the service connection and the admin token in Settings; if both look right, this is a fault in the console itself — not your data.",
+		toast: "Could not load pricing & inventory",
+	});
+}
+
 /** Translate the console's filter form into the client's list filter.
- *  `archived` (product lifecycle surfacing) wins over `active`: the two are
- *  mutually exclusive by construction (one combined "Status" select — see
- *  `filterForm`), but `deleted: true` is asserted alone regardless, so a
- *  hand-crafted `form_submit` can never smuggle both axes into one request. */
+ *  `archived` wins over `active`: the two are mutually exclusive by
+ *  construction (one combined "Status" select), but `deleted: true` is
+ *  asserted alone regardless, so a hand-crafted `form_submit` can never
+ *  smuggle both axes into one request. */
 function toClientFilter(form: ProductsFilterForm): ProductsListFilter {
 	const filter: ProductsListFilter = {};
 	if (form.archived === "true") {
@@ -730,14 +1138,15 @@ function toClientFilter(form: ProductsFilterForm): ProductsListFilter {
 
 function filterFromValues(values: Record<string, unknown>): ProductsFilterForm {
 	const form: ProductsFilterForm = {};
-	const active = readString(values.active);
+	const status = readString(values.status);
 	const productKind = readString(values.productKind);
 	const search = readString(values.search);
-	if (active === "archived") {
+	if (status === "archived") {
 		form.archived = "true";
-	} else if (active === "true" || active === "false") {
-		form.active = active;
+	} else if (status === "true" || status === "false") {
+		form.active = status;
 	}
+	// `status === ANY` (or absent) ⇒ no constraint — both fields stay unset.
 	if (productKind === "physical" || productKind === "digital") form.productKind = productKind;
 	if (search !== undefined && search.length > 0) form.search = search;
 	return form;
@@ -759,10 +1168,9 @@ function formatOptionalTotal(minorUnits: number | null, currencyCode: string | n
 // -- money input parsing (NO float arithmetic — CLAUDE.md) --------------------
 // The exact-integer-string parse/format pair lives in `./money-input.js`,
 // SHARED with the Shipping console; the one behavioral fork (whether zero is
-// a valid amount) is that module's explicit `allowZero` parameter. These two
-// thin wrappers pin the Products screens' choice — prices are strictly
-// positive (the domain's own `price > 0` invariant: a free product is
-// "unpriced", not priced at 0) — in one place instead of at every call site.
+// a valid amount) is that module's explicit `allowZero` parameter. Prices are
+// strictly positive (the domain's own `price > 0` invariant: a free product
+// is "unpriced", not priced at 0).
 
 /** Parse a merchant-entered decimal price into integer MINOR UNITS; null for
  *  any non-conforming or NON-POSITIVE input (never throws). Exported for its
@@ -777,28 +1185,35 @@ export function formatPriceMinorUnits(minorUnits: number): string {
 	return formatMinorUnitsInput(minorUnits);
 }
 
-// -- custom action: the guarded commerce edit ---------------------------------
+// -- custom action: the guarded commerce edit (split three ways, F-5a) -------
 
 type BuildEditResult = { ok: true; wire: ProductEditWire } | { ok: false; message: string };
 
-/** Assemble a validated {@link ProductEditWire} from the form's captured values.
- *  Boundary validation (mirrors the service's zod + the domain's `price > 0`):
- *  a bad price/currency/dimension is a per-field message, never an opaque save. */
+/**
+ * Assemble a validated {@link ProductEditWire} from ONE of the three split
+ * forms' captured `values` — whichever submitted, since a stateless
+ * `form_submit` only ever carries the ONE form's own fields (the other two
+ * forms' keys are simply absent from `values`, which `buildEditWire` already
+ * treats as "field not in the form ⇒ preserve"). So this single function
+ * serves all three submits; no per-form variant is needed.
+ *
+ * Boundary validation (mirrors the service's zod + the domain's `price > 0`):
+ * a bad price/currency/dimension is a per-field message, never an opaque
+ * save.
+ */
 function buildEditWire(
 	values: Record<string, unknown>,
 	expectedUpdatedAt: string,
 ): BuildEditResult {
 	const wire: ProductEditWire = { expectedUpdatedAt };
 
-	// `values.title` is NOT read: the form has no Title input, and the service's
-	// `.strict()` PATCH schema rejects one outright (ADR-0013). A stale bundle's
-	// stray value dies here rather than travelling to a 400.
 	const sku = readString(values.sku)?.trim();
 	if (sku !== undefined && sku.length > 0) wire.sku = sku;
 
-	// The row currency (shared by price / compare-at / cost). For an already-
-	// priced product this is the fixed carrier (= the product currency); for a
-	// first pricing it is the merchant-entered code. Parsed ONCE so all three
+	// The row currency (shared by price / compare-at / cost): the merchant-
+	// entered code on a first pricing, or the Price form's OWN fixed carrier
+	// for an already-priced product (merged into `values.currency` by the
+	// caller before this runs — see `saveAction`). Parsed ONCE so all three
 	// money fields agree by construction.
 	const currencyStr = readString(values.currency)?.trim().toUpperCase();
 	const currency =
@@ -820,9 +1235,7 @@ function buildEditWire(
 	}
 
 	// compare-at / unit cost: a BLANK entry clears the field (null); a value is
-	// parsed to minor units and MUST carry the row currency. They can only be set
-	// once the product has (or is being given) a currency — otherwise there is
-	// nothing to match. Both share the same `parseMoneyField` shape.
+	// parsed to minor units and MUST carry the row currency.
 	for (const [field, key] of [
 		["compareAt", "compareAtPrice"],
 		["unitCost", "unitCost"],
@@ -855,17 +1268,12 @@ function buildEditWire(
 	const productKind = readString(values.productKind);
 	if (productKind === "physical" || productKind === "digital") wire.productKind = productKind;
 
-	// inventoryPolicy: only "deny" is a legal value this slice (the select offers
-	// no other). Anything else is ignored (preserve) rather than sent.
-	const inventoryPolicy = readString(values.inventoryPolicy);
-	if (inventoryPolicy === "deny") wire.inventoryPolicy = "deny";
-
-	// taxClass (now a registry select): an explicit blank clears it (null); a
-	// non-blank value is the chosen `TaxClass.id`.
+	// taxClass: the sentinel `NO_TAX_CLASS` (or a blank) clears it (null); any
+	// other value is the chosen `TaxClass.id`.
 	const taxClass = readString(values.taxClass);
 	if (taxClass !== undefined) {
 		const trimmed = taxClass.trim();
-		wire.taxClass = trimmed.length > 0 ? trimmed : null;
+		wire.taxClass = trimmed.length === 0 || trimmed === NO_TAX_CLASS ? null : trimmed;
 	}
 
 	// weight/dims: blank ⇒ preserve (omit); present ⇒ a non-negative whole number.
@@ -884,23 +1292,19 @@ function buildEditWire(
 	return { ok: true, wire };
 }
 
-/** Stable content-derived idempotency key for an edit save (mirrors the panel
- *  route's `derivePanelIdempotencyKey`): a retry/double-submit of the SAME
- *  submission (same fields + watermark) dedupes to one applied write; any
- *  changed field derives a different key and applies. FNV-1a twice with
- *  independent seeds — dependency-free and sandbox-safe. */
+/** Stable content-derived idempotency key for an edit save (F-2a, `Edit /
+ *  save` row: "content hash of the submitted wire + `expectedUpdatedAt`").
+ *  FNV-1a twice with independent seeds — dependency-free and sandbox-safe. */
 function deriveEditIdempotencyKey(productId: string, wire: ProductEditWire): string {
 	const canonical = JSON.stringify([
 		productId,
 		wire.expectedUpdatedAt,
 		wire.sku ?? null,
 		wire.price ?? null,
-		// No `title` component — the wire cannot carry one (ADR-0013). Removing it
-		// CHANGES the derived key, which is correct: it is a different payload.
+		// No `title` component — the wire cannot carry one (ADR-0013).
 		wire.taxClass ?? null,
 		wire.compareAtPrice ?? null,
 		wire.unitCost ?? null,
-		wire.inventoryPolicy ?? null,
 		wire.weightGrams ?? null,
 		wire.lengthMm ?? null,
 		wire.widthMm ?? null,
@@ -919,42 +1323,73 @@ function fnv1a(input: string, seed: number): string {
 	return hash.toString(36);
 }
 
-/**
- * The detail leaf's Save handler (admin-UX Increment 2 slice 2). Validates the
- * form, PATCHes the commerce fields under the optimistic-concurrency watermark,
- * then RE-RENDERS the leaf (a fresh reload) with a per-outcome notice — a
- * concurrent-edit conflict shows the latest values with a "re-apply" banner
- * (never a silent clobber), a currency/SKU conflict a per-field warning.
- */
-function saveAction() {
-	return customAction<AdminProductsClient>(async ({ input, client, showLeaf, showList }) => {
-		const values = input.values ?? {};
-		const productId = readString(values.productId);
-		const expectedUpdatedAt = readString(values.expectedUpdatedAt);
-		if (productId === undefined || expectedUpdatedAt === undefined) return showList();
+/** The refusal/unreadable-payload notice shared by every custom action on
+ *  this screen whose carrier fails to decode (DA-3b): "nothing was changed",
+ *  never a silent redirect. */
+const UNREADABLE: Notice = {
+	variant: "error",
+	title: "Not changed",
+	description:
+		"That action could not be read — nothing was changed. Reload the product and try again.",
+};
 
-		const built = buildEditWire(values, expectedUpdatedAt);
-		if (!built.ok) {
-			return showLeaf([productId], {
-				variant: "error",
-				title: "Check the highlighted value",
-				description: built.message,
-			});
-		}
-
-		const key = deriveEditIdempotencyKey(productId, built.wire);
-		const result = await client.updateProduct(productId, built.wire, key);
-		// showLeaf RELOADS the fresh detail, so a stale save renders the latest row
-		// (the merchant re-applies against current values).
-		return showLeaf([productId], editNotice(result));
-	});
+/** A refusal draft carrying the operator's RAW typed quantity (DA-3a-iii
+ *  property 5) — shared by the confirm handler's refusal branches. */
+function removeDraftState(qtyInput: string): ProductsRenderState {
+	return { kind: "remove-draft", qtyInput };
 }
 
-// -- custom actions: merchant stock movements (Increment 2 slice 3) -----------
+/**
+ * The three split forms' Save handler (F-5a — one handler serves all three
+ * submits). Reads `productId`/`expectedUpdatedAt` off the FIRING FORM's own
+ * carrier (never a visible field, per F-2), validates, PATCHes under the
+ * optimistic-concurrency watermark, then RE-RENDERS the leaf (a fresh
+ * reload) with a per-outcome notice.
+ */
+function saveAction() {
+	return customAction<AdminProductsClient, ProductsRenderState>(
+		async ({ input, client, carried, showLeaf, showList }) => {
+			const productId = readString(carried?.productId);
+			const expectedUpdatedAt = readString(carried?.expectedUpdatedAt);
+			if (productId === undefined || expectedUpdatedAt === undefined) {
+				return showList(undefined, UNREADABLE);
+			}
+			const values = input.values ?? {};
+			// The Price group's currency rides in ITS OWN carrier when the product is
+			// already priced (never a visible field — F-3); merge it in here so
+			// `buildEditWire`'s single currency-resolution branch sees it exactly as
+			// it would a first-pricing's visible field.
+			const effectiveValues: Record<string, unknown> =
+				values.currency === undefined && readString(carried?.currency) !== undefined
+					? { ...values, currency: carried?.currency }
+					: values;
 
-/** Parse a merchant-entered stock quantity into a POSITIVE WHOLE number — a TEXT
- *  input (never `number_input`, which hands back a float). Null for any non-
- *  conforming or non-positive input; never throws. Exported for its own test. */
+			const built = buildEditWire(effectiveValues, expectedUpdatedAt);
+			if (!built.ok) {
+				return showLeaf([productId], {
+					variant: "error",
+					title: "Check the highlighted value",
+					description: built.message,
+				});
+			}
+
+			const key = deriveEditIdempotencyKey(productId, built.wire);
+			const result = await client.updateProduct(productId, built.wire, key);
+			// showLeaf RELOADS the fresh detail, so a stale save renders the latest
+			// row (the merchant re-applies against current values) — and the OTHER
+			// two split forms remount too (their carriers change with `updatedAt`),
+			// which is the sibling-discard hazard `SPLIT_DISCARD_CONTEXT` names.
+			return showLeaf([productId], editNotice(result));
+		},
+	);
+}
+
+// -- custom actions: merchant stock movements ---------------------------------
+
+/** Parse a merchant-entered stock quantity into a POSITIVE WHOLE number — a
+ *  TEXT input (never `number_input`, which hands back a float). Null for any
+ *  non-conforming or non-positive input; never throws. Exported for its own
+ *  test. */
 export function parseStockQty(input: string | undefined): number | null {
 	if (input === undefined) return null;
 	const trimmed = input.trim();
@@ -963,66 +1398,185 @@ export function parseStockQty(input: string | undefined): number | null {
 	return Number.isSafeInteger(n) && n > 0 ? n : null;
 }
 
+/** Read the `onHand` watermark out of an untrusted carried payload — a plain
+ *  non-negative integer string, or `null` for anything else (B-2: money and
+ *  count watermarks never cross as floats or negatives). */
+function parseOnHand(value: unknown): number | null {
+	const raw = readString(value);
+	if (raw === undefined || !/^\d+$/.test(raw)) return null;
+	const n = Number.parseInt(raw, 10);
+	return Number.isSafeInteger(n) ? n : null;
+}
+
+/** F-2a: `${productId}:${direction}:${onHandAtRender}:${qty}` — content plus
+ *  the watermark the operator saw. No nonce anywhere on this screen. */
+function stockMovementKey(
+	productId: string,
+	direction: "restock" | "removal",
+	onHand: number,
+	qty: number,
+): string {
+	return `${productId}:${direction}:${onHand}:${qty}`;
+}
+
 /**
- * The detail leaf's restock handler (admin-UX Increment 2 slice 3). Validates
- * the qty, POSTs the additive restock under a stable per-submission key (the
- * form's hidden `nonce`), then RE-RENDERS the leaf (a fresh reload showing the
- * new on-hand) with a per-outcome notice.
+ * The restock handler (DA-4 — one-shot, no staging, no confirm; restocking is
+ * not the destructive act on this screen). Reads `productId`/`onHand` off
+ * the form's own carrier, validates the qty, POSTs under the derived key,
+ * then RE-RENDERS the leaf with a per-outcome notice.
  */
 function restockAction() {
-	return customAction<AdminProductsClient>(async ({ input, client, showLeaf, showList }) => {
-		const values = input.values ?? {};
-		const productId = readString(values.productId);
-		if (productId === undefined) return showList();
-		const qty = parseStockQty(readString(values.qty));
+	return customAction<AdminProductsClient, ProductsRenderState>(async (api) => {
+		const productId = readString(api.carried?.productId);
+		if (productId === undefined) return api.showList(undefined, UNREADABLE);
+		const onHand = parseOnHand(api.carried?.onHand);
+		if (onHand === null) return api.showLeaf([productId], UNREADABLE);
+		const qty = parseStockQty(readString(api.input.values?.qty));
 		if (qty === null) {
-			return showLeaf([productId], {
+			return api.showLeaf([productId], {
 				variant: "error",
 				title: "Enter a whole number of units",
 				description: "Units to add must be a positive whole number, like 12.",
 			});
 		}
-		const key = stockMovementKey(productId, "restock", readString(values.nonce), qty);
-		const result = await client.restock(productId, qty, key);
-		return showLeaf([productId], restockNotice(result, qty));
+		const key = stockMovementKey(productId, "restock", onHand, qty);
+		const result = await api.client.restock(productId, qty, key);
+		return api.showLeaf([productId], restockNotice(result, qty));
+	});
+}
+
+/** A refusal on the stock-changed-since-render path — shared by the
+ *  `-review` handler and the confirm handler so the two cannot drift
+ *  (mirrors `orders-page.ts`'s `staleLedgerNotice`). */
+function stockChangedNotice(liveOnHand: number): Notice {
+	const unit = liveOnHand === 1 ? "unit is" : "units are";
+	return {
+		variant: "error",
+		title: "Stock changed — nothing was removed",
+		description: `Stock on hand changed since you started — ${liveOnHand} ${unit} on hand now. Re-enter the amount below to try again.`,
+	};
+}
+
+/**
+ * DA-3's `-review` step for a stock removal — stages, never writes. Runs the
+ * checks DA-3c requires (not just parseability): the qty parses to a
+ * positive whole number, the `onHand` watermark is present (DA-3a-iv — an
+ * absent watermark refuses, its own branch, never folded into the
+ * parse-failure copy), stock has not moved since the group was rendered
+ * (DA-3a, a fresh re-read), and the qty is ≤ the LIVE on-hand (DA-3c, against
+ * a ceiling this step just confirmed current).
+ */
+function removeStockReviewAction() {
+	return customAction<AdminProductsClient, ProductsRenderState>(async (api) => {
+		const productId = readString(api.carried?.productId);
+		if (productId === undefined) return api.showList(undefined, UNREADABLE);
+		const observedOnHand = parseOnHand(api.carried?.onHand);
+		const qtyInput = (readString(api.input.values?.qty) ?? "").trim();
+		const draft = (): ProductsRenderState => ({ kind: "remove-draft", qtyInput });
+
+		// DA-3a-iv: an absent watermark refuses — its own branch, never folded
+		// into the qty check, which could otherwise blame a field that already
+		// parsed fine.
+		if (observedOnHand === null) {
+			return api.showLeaf([productId], UNREADABLE, draft());
+		}
+		const qty = parseStockQty(qtyInput);
+		if (qty === null) {
+			return api.showLeaf(
+				[productId],
+				{
+					variant: "error",
+					title: "Not removed",
+					description:
+						"Enter a whole number of units greater than zero, like 3. Nothing was changed.",
+				},
+				draft(),
+			);
+		}
+		// DA-3c-i: re-read before rendering a button/confirm the write might
+		// refuse.
+		const live = await api.client.getProduct(productId).catch(() => null);
+		if (live === null) {
+			return api.showLeaf(
+				[productId],
+				{
+					variant: "error",
+					title: "Could not check the current stock",
+					description:
+						"Stock could not be re-read, so nothing was staged and nothing was changed. Reload and try again.",
+				},
+				draft(),
+			);
+		}
+		// DA-3a: has stock moved since this group was rendered?
+		if (live.onHand !== observedOnHand) {
+			return api.showLeaf([productId], stockChangedNotice(live.onHand), draft());
+		}
+		// DA-3c: the bound check, against a ceiling just confirmed current.
+		if (qty > live.onHand) {
+			const unit = live.onHand === 1 ? "unit" : "units";
+			return api.showLeaf(
+				[productId],
+				{
+					variant: "error",
+					title: "Not enough stock to remove",
+					description: `${qty} is more than the ${live.onHand} ${unit} on hand. Enter ${live.onHand} or less.`,
+				},
+				draft(),
+			);
+		}
+		return api.showLeaf([productId], undefined, {
+			kind: "remove-staged",
+			qty,
+			onHand: live.onHand,
+		});
 	});
 }
 
 /**
- * The detail leaf's stock-removal handler (admin-UX Increment 2 slice 3). Same
- * shape as {@link restockAction}; the guarded decrement means an over-removal
- * comes back as a clean `insufficient_stock` notice, never a silent negative.
+ * The stock-moving confirm — DA-3's state-2 write. Re-reads and refuses on a
+ * watermark mismatch (DA-3a) before deriving the key and writing (F-2a),
+ * exactly like `orders-page.ts`'s `refundOrderAction`. The service applies a
+ * GUARDED decrement, so removing more than is on hand is refused cleanly
+ * (never a negative or an oversell) — the live re-read above catches the
+ * common case before the write; this is the backstop.
  */
 function removeStockAction() {
-	return customAction<AdminProductsClient>(async ({ input, client, showLeaf, showList }) => {
-		const values = input.values ?? {};
-		const productId = readString(values.productId);
-		if (productId === undefined) return showList();
-		const qty = parseStockQty(readString(values.qty));
-		if (qty === null) {
-			return showLeaf([productId], {
-				variant: "error",
-				title: "Enter a whole number of units",
-				description: "Units to remove must be a positive whole number, like 3.",
-			});
-		}
-		const key = stockMovementKey(productId, "removal", readString(values.nonce), qty);
-		const result = await client.removeStock(productId, qty, key);
-		return showLeaf([productId], removeStockNotice(result, qty));
-	});
-}
-
-/** Build the stable per-submission idempotency key for a stock movement. The
- *  form's hidden `nonce` (a per-render `crypto.randomUUID()`) is the entropy: a
- *  double-submit of the SAME rendered form reuses it (dedupes), a fresh reload
- *  mints a new one. Falls back to the qty if a nonce is somehow absent. */
-function stockMovementKey(
-	productId: string,
-	direction: "restock" | "removal",
-	nonce: string | undefined,
-	qty: number,
-): string {
-	return `${productId}:${direction}:${nonce ?? String(qty)}`;
+	return customAction<AdminProductsClient, ProductsRenderState>(
+		async ({ input, client, showLeaf, showList }) => {
+			const payload = asRecord(input.value);
+			const productId = readString(payload?.productId);
+			if (productId === undefined) return showList(undefined, UNREADABLE);
+			const qty = parseStockQty(readString(payload?.qty));
+			const observedOnHand = parseOnHand(payload?.onHand);
+			if (qty === null || observedOnHand === null) {
+				return showLeaf([productId], UNREADABLE, removeDraftState(qty !== null ? String(qty) : ""));
+			}
+			const live = await client.getProduct(productId).catch(() => null);
+			if (live === null) {
+				return showLeaf(
+					[productId],
+					{
+						variant: "error",
+						title: "Nothing was removed",
+						description:
+							"Stock could not be re-checked, so nothing was applied. Reload and try again.",
+					},
+					removeDraftState(String(qty)),
+				);
+			}
+			if (live.onHand !== observedOnHand) {
+				return showLeaf(
+					[productId],
+					stockChangedNotice(live.onHand),
+					removeDraftState(String(qty)),
+				);
+			}
+			const key = stockMovementKey(productId, "removal", observedOnHand, qty);
+			const result = await client.removeStock(productId, qty, key);
+			return showLeaf([productId], removeStockNotice(result, qty));
+		},
+	);
 }
 
 /** Map a restock outcome to the notice banner shown above the reloaded detail. */
@@ -1050,7 +1604,7 @@ function removeStockNotice(result: StockRemovalResult, qty: number): Notice {
 		return {
 			variant: "error",
 			title: "Not enough stock to remove",
-			description: `Only ${result.onHand} unit${result.onHand === 1 ? "" : "s"} on hand — you cannot remove ${qty}. Stock is never driven below zero.`,
+			description: `Only ${result.onHand} unit${result.onHand === 1 ? "" : "s"} on hand — you cannot remove ${qty}.`,
 		};
 	}
 	return stockFailureNotice(result.reason);
@@ -1068,7 +1622,7 @@ function stockFailureNotice(
 				variant: "error",
 				title: "No SKU set",
 				description:
-					"This product has no SKU yet, so it has no stock to manage. Set a SKU on the edit form above first.",
+					"This product has no SKU yet, so it has no stock to manage. Set a SKU on Identity above first.",
 			};
 		case "no_inventory_row":
 			// SHOULD NEVER HAPPEN since PR 1a: a stock record is created the moment
@@ -1081,7 +1635,7 @@ function stockFailureNotice(
 				variant: "error",
 				title: "No stock record yet",
 				description:
-					"This product has a SKU but no stock record, so there is nothing to add to or remove from. A stock record is normally created as soon as a SKU is set — re-save the SKU on the edit form above to create one.",
+					"This product has a SKU but no stock record, so there is nothing to add to or remove from. Re-save the SKU on Identity above to create one.",
 			};
 		case "invalid":
 			return {
