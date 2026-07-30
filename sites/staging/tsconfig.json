@@ -8,6 +8,7 @@
 	"include": [
 		"src",
 		"test",
+		"scripts",
 		".astro/types.d.ts",
 		"emdash-env.d.ts",
 		"astro.config.ts",

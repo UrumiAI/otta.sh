@@ -148,16 +148,39 @@ function productsListLevel() {
 	});
 }
 
-/** The lifecycle status label a merchant reads (product lifecycle surfacing,
- *  admin-UX Increment 2): a soft-deleted row shows "deleted", never
- *  "inactive" — `deletedAt` outranks `active` (a tombstoned row is always
- *  inactive too, but "deleted" is the honest, non-recoverable-from-here
- *  status a merchant needs to see, not the publish-gate value underneath
- *  it). Shared by the list table, the "Open product" picker, and the detail
- *  fields so the three surfaces can never disagree. */
-function statusLabel(p: { active: boolean; deletedAt: string | null }): string {
+/**
+ * The lifecycle status label a merchant reads (product lifecycle surfacing,
+ * admin-UX Increment 2): a soft-deleted row shows "deleted", never "inactive" —
+ * `deletedAt` outranks `active` (a tombstoned row is always inactive too, but
+ * "deleted" is the honest, non-recoverable-from-here status a merchant needs to
+ * see, not the publish-gate value underneath it). Shared by the list table, the
+ * "Open product" picker, and the detail fields so the three surfaces can never
+ * disagree.
+ *
+ * FOURTH VALUE, "active (not priced)" — added by "one home per field" (PR 1b),
+ * which created the state. The CMS sync now upserts a row for EVERY products
+ * document, so publishing a product that has never been priced sets
+ * `active: true` on a row with no sku/price. A bare "active" there would be a
+ * lie: the service's catalog read filters commerce-incomplete rows in SQL
+ * (`sku`, `price_cents` and `price_currency` all non-null), so no commerce data
+ * comes back for it and `joinProduct` reports `purchasable: false`. Precisely:
+ * the product IS still listed on `/products` — the grid is built from CMS
+ * content — but it renders with no price, no add-to-cart and a "not currently
+ * available" note. Listed, not sellable. The label mirrors that exact filter,
+ * which is why it needs sku + price + currency and not just `active`.
+ */
+function statusLabel(p: {
+	active: boolean;
+	deletedAt: string | null;
+	sku: string | null;
+	priceCents: number | null;
+	currency: string | null;
+}): string {
 	if (p.deletedAt !== null) return "deleted";
-	return p.active ? "active" : "inactive";
+	if (!p.active) return "inactive";
+	// Mirrors the service's commerce-complete predicate exactly.
+	const sellable = p.sku !== null && p.priceCents !== null && p.currency !== null;
+	return sellable ? "active" : "active (not priced)";
 }
 
 /** Human label for the out-of-stock policy (Increment 2 slice 5). Only `"deny"`
@@ -406,7 +429,15 @@ function detailBlocks(
 	});
 	blocks.push({
 		type: "context",
-		text: 'Editing the commerce fields this store owns. The status (active/inactive) is the CMS publish state — publish or unpublish the document to change it, not here. Titles/images are also managed in the CMS. Money is shown in the product\'s own currency: price, compare-at, and unit cost must all use that one currency (set the price first on a new product). Compare-at is the struck-through "was" price; it is usually higher than the price, but a compare-at at or below the price is also allowed and saved as-is — double-check it is what you intend. Unit cost is admin-only margin data and is never shown to buyers. Out-of-stock policy is Deny only for now — the store stops selling at zero stock (no overselling); backorders are a future capability.',
+		// PR 1b rewrote this line: the CMS no longer holds commercial data, so this
+		// page is the sole editor of it, and setting a SKU here is what creates the
+		// product's stock record. Kept SHORTER than the copy it replaces, and the
+		// "no overselling" phrasing is gone (`docs/admin/ADMIN-CONSOLE.md` X-20
+		// bans it in a rendered string; the code comments that document the
+		// invariant are exempt and stay). It is still over the ≤200-char context
+		// budget (X-11) — splitting it into three sub-200 lines is the Pricing &
+		// inventory rebuild's job (spec §12.1), not this merge's.
+		text: 'This is the only place pricing, stock and the other commercial fields are edited — the CMS holds no commerce data. Status is the CMS publish state: publish or unpublish the document to change it. Titles and images are CMS-managed too. Stock starts at zero when a SKU is set here; add units with Restock below. Price, compare-at and unit cost all use the product\'s one currency — set the price first on a new product. Compare-at is the struck-through "was" price; a value at or below the price is allowed and saved as-is, so double-check it. Unit cost is admin-only margin data, never shown to buyers. Out-of-stock policy is Deny only for now: the store stops selling at zero stock; backorders are a future capability.',
 	});
 	blocks.push(editForm(actions, p, taxClasses));
 

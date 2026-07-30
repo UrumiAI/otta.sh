@@ -1,6 +1,8 @@
 # Urumi admin console — design spec
 
-Status: **normative** (2026-07-29, revision 3). Applies to all **seven** admin screens under
+Status: **normative** (2026-07-30, revision 4, plus one amendment — DA-3a-ii is **replaced** and
+DA-3a-iii added, because the scaffold gained a render-state channel in `ce5eecb` and revision 4's
+DA-3a-ii said it had none). Applies to all **seven** admin screens under
 `packages/plugin/src/admin/` — Orders, Pricing & inventory, Coupons, Tax, Shipping, Reports and
 Settings, as registered at `admin-route.ts:83-101`. (Earlier revisions said "six"; the count was
 wrong and five parallel teams read this line.)
@@ -32,18 +34,60 @@ number and marks pass/fail against the diff. Every rule here is decidable by rea
 by running the shared assertion helper (§15); no rule requires a judgment call. If one seems to,
 it is a defect — file it, don't improvise.
 
-**Precedence.** Where this document and
+---
+
+## ⚠ PRECEDENCE — the rule beats the listing. Read this before §11 or §12.
+
+This document has **two normative layers**: the **rule tables** (§5–§10, §13) and the **per-screen
+listings** (§11, §12). They are not always consistent, and this is the single rule that decides what
+to do when they are not:
+
+> **N-1.** Where a §11 or §12 per-screen listing conflicts with a §5–§10 rule or a §13
+> anti-pattern, **the rule wins**, and the listing is a **defect to be reported** in the
+> implementing PR — not silently followed, and not silently deviated from.
+
+**Why this is rule number one.** Revision 4 exists because the first screen built against revision 3
+shipped four substantive defects and **three of them came from following a §11.2 listing that
+contradicted a rule.** That is the correct instinct — a listing written *for your screen* is more
+specific than a general table — and it will happen again on the six screens that follow. N-1 does not
+ask you to spot the contradiction; it tells you what to do the moment you feel one.
+
+**In practice, three obligations:**
+
+| | |
+|---|---|
+| **Implementer** | Build the **rule**. Add a `### Listing defects` heading to your PR body naming the listing line, the rule it violates, and what you built. One line each. |
+| **Reviewer** | A diff that follows a listing against a rule is a **fail**, even when the listing says otherwise. So is a deviation that is correct but undisclosed. |
+| **This document** | Every defect reported this way is folded into the listing in the next revision. §0.2 is the current backlog. |
+
+N-1 is deliberately blunt about the alternative: an implementer who silently deviates is right once
+and leaves six teams to rediscover it, and an implementer who silently complies ships the bug. The
+only outcome that compounds is the reported one.
+
+**N-1 does not license taste.** It resolves *conflicts with a stated rule*, nothing else. A listing
+line you merely dislike is not a defect; build it. If no rule speaks to the conflict at all, that is
+a **gap** — build the listing, report the gap.
+
+---
+
+**Precedence — against the plan.** Where this document and
 [`plans/admin-ui-density-cleanup.md`](../../plans/admin-ui-density-cleanup.md) disagree on
 *visual structure*, this document wins. Where they disagree on *scope* (which increment ships
 what), the plan wins — **except** for the three plan items withdrawn in §0.1 A, which are
 withdrawn outright and have been struck from the plan in the same commit as this revision.
 
-**Two absolute voice rules.** (1) The phrase "no oversell" / "never oversold" / "no overselling"
+**Three absolute voice rules.** (1) The phrase "no oversell" / "never oversold" / "no overselling"
 must not appear in any admin **copy** — describe the mechanism ("the store stops selling at zero
 stock"), never the slogan. This governs rendered strings only; the same words inside a **code
 comment** documenting the domain invariant are correct and must not be "fixed" (§13, X-20).
+The two live violations are on Products — see the warning at the top of §12.1.
 (2) Degraded-state copy is honest, not apologetic: no "sorry", no "oops", no blame, no raw HTTP
-status or URL.
+status or URL. It also does not assert a cause it cannot know (E-7), and it never narrates a design
+decision to the operator (DA-7a).
+(3) **British spelling in rendered copy; American in code.** `Fulfilment` is the panel label and the
+word in every operator-facing string; `fulfillment` stays in the wire field, the client method and the
+action id (`orders:record-fulfillment`). Mixed **by design**, and the seam is exactly the render
+boundary — do not "unify" either side.
 
 ---
 
@@ -75,7 +119,8 @@ them.
 | R-15 | `validateBlocks` does **not** include `"tab"` in `BLOCK_TYPES` — all 17 others are there. Re-verified on the installed 0.31.1. | `validation-Dq-a7CXm.js:325-343` | Runtime is unaffected (`validateBlocks` is exported but invoked nowhere in the runtime or admin app), but any test or tool that validates reports `Unknown block type 'tab'`. Trivial fork fix (§14). |
 | R-16 | `stats` is a non-wrapping `flex` row of bordered cards; `empty` always uses a fixed Package icon; `code` renders a syntax-highlighted snippet. | `blocks/stats.tsx:34`, `blocks/empty.tsx:25`, `blocks/code.tsx` | `stats` max 4 items; `empty.command_line` is never appropriate here; `code` has no use on these screens. |
 | R-17 | `SelectElement` has **no `placeholder`**. Re-verified on the installed 0.31.1. | types `SelectElement` | Nothing can be shown in an unresolved trigger. Fork fix in §14 item 3. |
-| R-17a | **The `select` trigger renders the raw resolved *value*, never the option label — and renders empty when that value is `""`, `null` or absent.** `select.tsx:30-42` passes the options as **children** and passes no `items`, `placeholder` or `renderValue`. Kumo 2.6.0 wraps **Base UI** (`@base-ui/react ^1.5.0`; 1.6.0 installed), **not Radix**. With `items === undefined`, Base UI's `SelectValue` falls through to `resolveSelectedLabel(value, undefined, undefined)` → `stringifyAsLabel` → `serializeValue(value)`, i.e. the value string; and its `hasSelectedValue` selector treats `""` as "no value" exactly as it does `null`/`undefined`. | `elements/select.tsx:30-42`; `@base-ui/react/select/value/SelectValue.js:41-58`, `internals/resolveValueLabel.js` (`resolveSelectedLabel`), `select/store.js:20-32` | This is the **real** cause of every blank select — not an unresolvable `initial_value` and not the `""` option value; both earlier diagnoses were wrong. Kumo's own `Select` *does* accept `renderValue`/`placeholder`, so the fork can fix it (§14 item 3). Two consequences: F-6a's rules remove the blank, and F-6c — an option's **value is operator-visible**. |
+| R-17a | **The `select` trigger — and only `select` — renders the raw resolved *value*, never the option label, and renders empty when that value is `""`, `null` or absent.** `select.tsx:30-42` passes the options as **children** and passes no `items`, `placeholder` or `renderValue`. Kumo 2.6.0 wraps **Base UI** (`@base-ui/react ^1.5.0`; 1.6.0 installed), **not Radix**. With `items === undefined`, Base UI's `SelectValue` falls through to `resolveSelectedLabel(value, undefined, undefined)` → `stringifyAsLabel` → `serializeValue(value)`, i.e. the value string; and its `hasSelectedValue` selector treats `""` as "no value" exactly as it does `null`/`undefined`. | `elements/select.tsx:30-42`; `@base-ui/react/select/value/SelectValue.js:41-58`, `internals/resolveValueLabel.js` (`resolveSelectedLabel`), `select/store.js:20-32` | This is the **real** cause of every blank select — not an unresolvable `initial_value` and not the `""` option value; both earlier diagnoses were wrong. Kumo's own `Select` *does* accept `renderValue`/`placeholder`, so the fork can fix it (§14 item 3). Two consequences: F-6a's rules remove the blank, and F-6c — a `select`'s option **value is operator-visible**. Scope this to `select`: `combobox` behaves differently (R-17b), and `radio` renders each option's label as its own row caption. |
+| R-17b | **`combobox` renders the option LABEL, and it has a real `placeholder`.** `combobox.tsx:50-52` passes `items={element.options}` **and** a whole-option object as `value`, so Base UI resolves a label instead of falling through to `serializeValue`; `Combobox.TriggerInput` takes `element.placeholder ?? "Search..."`; and an `initial_value` that matches no option resolves to `null` (`:16-19`), which shows the placeholder rather than a blank 36px box. `ComboboxElement` declares `placeholder?: string` (`types.ts:82-89`); `SelectElement` does not (R-17). | `elements/combobox.tsx:16-19,50-52`; fork `types.ts:82-89` | **This is the correction that matters most in revision 4.** Revisions 1–3 said selects show the raw value and named "the order picker reads a raw UUID" as the worst instance. That wart **does not exist** — the picker is a `combobox` and reads `maya.iyer@example.com · $95.00 · processing`. Consequences: F-6c binds on `select`/`radio` only; a record picker whose option value is an opaque id **must** be a `combobox` (L-7); and §14 item 3 is worth less than claimed. |
 | R-18 | `banner.variant` is `"default" \| "alert" \| "error"` and is passed straight into Kumo. `banner` renders `{title, description}` only — a legacy `text` field is dropped. | types `BannerBlock`, `blocks/banner.tsx:7,21,24` | `"info"`/`"success"` are **phantoms**: Urumi's mirror allows them, the renderer forwards them unvalidated to Kumo. Constrain to the three real values (M-9). |
 | R-19 | `chart` **cannot format money.** `TimeseriesChartConfig` exposes only `style`/`series`/`x_axis_name`/`y_axis_name`/`height`/`gradient`; series data is `[number, number][]`; and for a `custom` chart `formatter` is stripped as a DANGEROUS_KEY. | types `TimeseriesChartConfig`, `blocks/chart.tsx:53,108-118` | A chart renders **raw minor units** on the axis and in tooltips. Plotting major units instead puts a display float on the money path. `chart` is therefore forbidden here (§2, §12.5). |
 | R-20 | `meter` takes a bare `number` with no currency, and renders `custom_value` verbatim when present. | types `MeterBlock`, `blocks/meter.tsx:7-13` | Money in `value`/`max` is unlabelled minor units. `custom_value` is **mandatory** whenever they are (M-8). |
@@ -106,14 +151,14 @@ Beyond what PR #151 adds (`ColumnsBlock`, `TabBlock`/`TabPanel`, `AccordionBlock
 `MeterBlock`, `BlockBase.block_id` on every block, `TableColumn.sortable`, and the deletion of
 `disabled` from all four element interfaces), this spec requires the following in
 `packages/plugin/src/types.ts`. Each is **owned by one increment** — no other increment widens
-these types, so five teams cannot invent five conflicting shapes.
+these types, so the six screen teams cannot invent six conflicting shapes.
 
 | Needed | Current gap | Used by | **Owner** |
 |---|---|---|---|
 | `SectionBlock.accessory?: Element` | `types.ts:233-236` has `type` + `text` only | L-6 `Clear filters`, §11.1 | **Foundation (#151 revision)** |
 | `combobox` element + field spec | absent from `Element` (`types.ts:186`) and from `FormBlock.fields` (`types.ts:352`) | L-7 drill-in picker, §11.1 | **Foundation (#151 revision)** |
 | `multiline?: boolean` on the text-input field spec | `FormFieldSpec` (`types.ts:310-316`) has no `multiline`; upstream `TextInputElement` does | §11.2 History "Note" | **Foundation (#151 revision)** |
-| `toggle` element + field spec | absent from both unions | F-6, §12.3 Tax (`Applies to shipping`) — **the only consumer**; §12.4 Shipping has none | **The Tax screen**, not "increment 5" — increment 5 is five parallel screens and is not an owner |
+| `toggle` element + field spec | absent from both unions | F-6, §12.3 Tax (`Applies to shipping`) — **the only consumer**; §12.4 Shipping has none | **The Tax screen**, not "increment 5" — increment 5 is **six** parallel screens (Pricing, Coupons, Tax, Shipping, Reports, Settings) and is not an owner |
 | `ImageBlock` in the `Block` union | `types.ts`' union ends at `FormBlock`; upstream has `image` | §2 image row, §12.1 product detail *if* a product image URL ever lands | **Deferred** — add with the first real consumer, not before |
 
 `chart` is **not** needed (R-19). `stats` already exists.
@@ -185,6 +230,48 @@ helper disagree on anything else, raise it rather than guessing.
 
 *Owner for all four: foundation (#151 revision).*
 
+### 0.2 Errata from the first implementation — what building Orders taught
+
+Revision 4 is the first revision written **after** a screen was built against this document. PR #161
+(Orders) reported nineteen findings; every one is folded into the rule it belongs to, and this table
+is the index so nothing is buried. **Read your screen's rows before you start.**
+
+**#161's disclosures were written against revision 3, not this text.** So they quote rule wording,
+section counts and listing lines that revision 4 has since changed — `select`-vs-`combobox` throughout,
+X-11's "eight budgets" (now seven), §13's "23 of 33" (now 30 of 45), V-1's foundation ownership, and the
+§11.2 lines fixed below. Reading that PR against this document, the offsets are the **fix**, not
+staleness: every one of the nineteen is live and indexed here.
+
+| # | Finding | Landed in |
+|---|---|---|
+| E-a | `combobox` renders the option **label**; only `select` renders the raw value. The "order picker reads a raw UUID" wart cited twice was never real. | R-17b, F-6a, F-6c, L-7, §14 item 3, §16 item 3 |
+| E-b | DA-3 state 2 nested inside another accordion is **unbuildable** — forcing only the inner group open hides the confirm behind a collapsed parent. | DA-3, §11.2 |
+| E-c | A DA-3a refusal that re-renders without the staged payload silently opens a **different** group and discards what the operator typed. | DA-3a (new), §11.2 |
+| E-d | `-review` never bound-checked the amount, so `900.00` on a $50 order staged a red button and a confirm dialog that were both false. | DA-3c (new) |
+| E-e | The only red control on the Fulfilment panel was **"Mark refunded"** (moves no money) while the irreversible cancel was a quiet trigger. | D-6, DA-5 |
+| E-f | Five full-width danger buttons is ~1100px of solid red on a panel whose likeliest next act is a small quiet "Mark paid". | DA-2c (new) |
+| E-g | The Money panel can show `Total $95.00` beside `Captured $0.00 · Remaining $0.00`, and the D-6 label degenerates to `$0.00 of $0.00 refunded`. | M-11 (new), D-6 |
+| E-h | A fail-closed banner asserted *"Could not reach the commerce service"* on a path a console bug also reaches — sending the operator's page to the wrong team. | E-1, E-3, E-7 (new) |
+| E-i | X-9's raw-minor-units heuristic rejects §11.2's own `Refunds recorded` count. | X-9 |
+| E-j | X-11's `fields`-value budget cannot be H-enforced on a data-derived value (a 45-char email fails through no authoring fault). | X-11, §1 |
+| E-k | `filterPanel` emits **no** `default_open` key; L-4's "always `false`" invited a `=== false` assertion that would fail. | L-4 |
+| E-l | §11.2's transition listing omitted the observed-state watermark, so transitions were the one write exempt from DA-3a. | DA-2b, DA-6, §11.2 |
+| E-m | §11.2 mandated a `Kind (badge)` column that **T-5's own third bullet forbids**, and T-5's whitelist entry for it was never valid anywhere it applies. | T-5, §11.2 |
+| E-n | §11.2's `Customer` (4) and `Shipping address` (8) `fields` listings drop `Buyer reference`, `Email verified`, `Email` and `Region`. | §11.2, §4 |
+| E-o | On a guest the Customer group says "no account" **five** ways, and `Email` denies an address three other elements display. | §11.2 |
+| E-p | The Notes table duplicates the timeline's `Detail` column verbatim. | §11.2 |
+| E-q | DA-7 lines narrated the designers' decision (*"There is deliberately no bare 'Mark shipped'"*) instead of naming the alternative. | DA-7 |
+| E-r | `V-1`'s `test/helpers/blocks.ts` was assigned to the foundation and never shipped; `V-3`'s `assertBlockContract` had **no owner** and does not exist. | §15, **§15.1** |
+| E-s | A staged or refused re-render costs a **full leaf re-read** (5 requests on Orders), not one — and #161's hand-rolled `stagedResponse` paid it **twice** on both of its fallback paths (`detail === null` and its `catch` each fall through to `showLeaf`), from a second render path the leaf's `notFound`/`onError` never saw. The scaffold now carries render state instead, so the level renders itself once. | DA-3a-ii, DA-3a-iii |
+
+Two of the nineteen are recorded and **not** fixed here: an unclickable tracking URL (§14 item 5) and
+`ComboboxList`'s spurious React duplicate-key warning (§14, tracked note).
+
+**The meta-finding, and it is the reason N-1 exists:** for the duration of PR #161 the
+*implementation* was a more reliable guide to the renderer than this document. Three of its four
+substantive defects came from a listing that contradicted a rule. Assume this document is still wrong
+somewhere; N-1 tells you what to do when you find it.
+
 ---
 
 ## 1. Principles
@@ -231,7 +318,7 @@ exceptions (§8).
 | Any other `context` | **200** | Longer explanation moves into the accordion it belongs to, or gets cut. |
 | `banner.description` | **240** | State the consequence and the next step. Nothing else. |
 | `accordion.label` | **60** | Name + the answer that makes opening it unnecessary (D-6). |
-| `fields` value | **40** | A style budget, not a truncation threshold — the renderer truncates on **pixel width** (~70–90 chars at `text-sm` in a half-width column), so 40 is chosen for scannability. Prose belongs in `context`. |
+| `fields` value | **40** *(human catch, not **H**)* | A style budget, not a truncation threshold — the renderer truncates on **pixel width** (~70–90 chars at `text-sm` in a half-width column), so 40 is chosen for scannability. Prose belongs in `context`. **This is the one budget a helper must not enforce** (X-11): a 45-char buyer email or a tracking URL busts it through no authoring fault, and truncating a tracking number or URL destroys the operator's ability to copy it. So the rule binds on what the **author writes** — split an address across fields, move prose to `context` — and never on what the **service returns**. A reviewer's question is "is this prose that belongs elsewhere?", not "is this over 40?". |
 | `confirm.title` | **60** | Names the act and the record. |
 | `confirm.text` | **200** | Exactly two sentences: one naming the concrete amount or record, one naming the consequence. |
 | `empty.description` | **200** | |
@@ -279,7 +366,7 @@ Every other `confirm.text` on every screen is already ≤200 (`tax-page.ts:248` 
 | `empty` | Once per screen, maximum: the primary collection at true zero state (E-2). | Sub-tables. Secondary collections. Setting `command_line`. |
 | `meter` | A **real** bounded ratio: refunded-of-refundable, redemptions-of-max-uses. `custom_value` mandatory when `value`/`max` are money (M-8). | A synthetic `max`. Money without `custom_value`. |
 | `stats` | Reports only, **max 4 items** (R-16). | Detail screens. Raw minor units (M-1). |
-| `columns` | **Nowhere.** Forbidden on all seven screens. | Everywhere. It appears in no skeleton and no worked example here; dead vocabulary in a consistency-first document means five teams invent five uses. The type stays for future screens. |
+| `columns` | **Nowhere.** Forbidden on all seven screens. | Everywhere. It appears in no skeleton and no worked example here; dead vocabulary in a consistency-first document means six teams invent six uses. The type stays for future screens. |
 | `chart` | **Nowhere.** It cannot format money (R-19). | Everywhere. |
 | `divider` | **Nowhere.** | Everywhere (R-4) — accordion boundaries already separate groups. |
 | `code` | **Nowhere.** | Everywhere. |
@@ -325,9 +412,14 @@ of the screen's authored filter fields whose submitted value differs from that f
 values, no truncation, no ellipsis. Values live in L-6's `section`, which has to exist anyway
 because `accordion.label` is a plain string and cannot hold a button.
 
-**L-4 — `default_open` is always `false`** for a filter block, including when a filter is active.
+**L-4 — `default_open` is never `true`** for a filter block, including when a filter is active.
 The label states *that* it is filtered; the `section` below states *how*; the operator who wants
-to change it clicks once. Because the accordion's `block_id` is stable across an apply (B-7), an
+to change it clicks once.
+
+**"Never `true`", not "always `false`".** `filterPanel` emits **no `default_open` key at all**
+(`layout.ts:157-162`), which is behaviourally identical — `accordion.tsx:14` is
+`useState(block.default_open ?? false)` — but an assertion written as `default_open === false` fails
+against the helper's own output. Assert `!== true`, or assert the helper was used. Because the accordion's `block_id` is stable across an apply (B-7), an
 operator who opened the panel stays open across the round trip — collapsed-by-default costs them
 nothing.
 
@@ -363,12 +455,16 @@ one field, submit label `Open <entity>`. Omit the whole block at 0 rows.
 
 - The field's **value** is the record id. Its **label never contains the id** — it is the human
   handle plus one or two disambiguators: `qa-ordc-2@example.com · $99.00 · paid`.
-- Element choice: `select` when the page can hold ≤8 rows; `combobox` above that, and only because
-  this field **never prefills** — a prefilling `combobox` diverges display from submit (R-12a). A
-  closed set that must prefill stays a `select`, however long.
+- **Element choice: always `combobox`, at any row count** — because the option value is an opaque
+  record id and a `select` would render that id in its trigger (R-17a), which F-6c forbids, while a
+  `combobox` renders the label (R-17b). Safe because a record picker **never prefills**, which is the
+  one thing a `combobox` must not do (R-12a). *Revisions 1–3 said `select` at ≤8 rows; that put
+  L-7 in direct conflict with F-6c on any short page, and it is withdrawn.*
 - The field declares `initial_value` pointing at a real option (F-6a). For a picker with nothing
   pre-selected that means a first option `{ value: "none", label: "Choose an <entity>…" }`, and the
-  handler treats `"none"` as "no selection" and re-renders the list unchanged.
+  handler treats `"none"` as "no selection" and re-renders the list unchanged. Do this **as well as**
+  setting `placeholder` — F-6a is one rule for all three control types, and a `combobox` whose
+  `initial_value` resolves to nothing is legible but still fails the shared assertion.
 
 **L-8 — creating.** A create form lives in an `accordion` labeled `New <entity>`,
 `default_open: false`, at the very bottom. Exception: at true zero state the create action is the
@@ -420,6 +516,13 @@ accordion around one row costs a click and saves nothing.
 am I looking at and is it healthy" without a click. A state that demands action (block 4) is
 **never** allowed inside a panel where a tab can hide it.
 
+**D-1a — the 4-or-6-entry cap governs the identity strip ONLY.** A `fields` block inside a panel or
+an accordion has no entry cap; it has an **even** entry count (R-3's row-major pairs) and each entry
+must be worth a row. The strip is capped because it is the thing an operator reads without a click,
+not because `fields` is expensive. Do not apply block 5's number to a panel's own `fields` — doing so
+silently drops data the §11/§12 mapping table promises to preserve, which is exactly what happened to
+`Customer` and `Shipping address` in revision 3 (§0.2 E-n).
+
 **D-2 — panel set: task-named, actions beside their data.** Panels are named after the
 **operator's task**, never after read-vs-write. There is no "Actions" panel on any screen: an
 "Actions" junk drawer separates the refund form from the totals it is computed against, and puts
@@ -451,9 +554,16 @@ urgency is communicated.
 inside a panel is an `accordion` (P-2 — there is no other heading available). `default_open` is
 decided by this two-rule algorithm, evaluated **once per rendered response**:
 
-**Rule 1 — staged-confirm override.** If this response is a DA-3 state 2, that one group carries a
-changed `block_id` **and** `default_open: true` (B-6), and **every other group on the screen is
-`default_open: false`**. Rule 2 is not evaluated.
+**Rule 1 — staged-confirm override.** If this response is a DA-3 state 2 **or a DA-3a / DA-3c
+refusal** (DA-3a-i), that one group carries a changed `block_id` **and** `default_open: true` (B-6),
+and **every other group on the screen is `default_open: false`**. Rule 2 is not evaluated.
+
+**The refusal case is the one that gets missed.** A refusal re-render that forgets it is a Rule-1
+response falls through to Rule 2 and opens whatever the record state suggests — on Orders, `fulfilment`
+on a *different tab panel* — while the group whose banner says "re-enter an amount below" stays shut
+(§0.2 E-c). Rule 1 is keyed on **"this response carries render state"** — a staged payload or a refusal,
+per DA-3a-iii — not on "this response came from `-review`". That is a predicate the render path can read
+(`renderState !== undefined`), not an inference about which action fired.
 
 **Rule 2 — otherwise, first match wins.** At most one group gets `default_open: true`:
 
@@ -468,6 +578,13 @@ Everything else is `default_open: false` — always, including every destructive
 group whose body is a table that may be empty. There is no taste in this rule and no per-screen
 variation: a reviewer computes the expected group from the record state and checks one boolean.
 
+**A rank the algorithm opens must still render.** Rank 2 fires on a `paid` order, where tracking is
+not yet capturable — so `fulfilment` opens with no form in it. **The group still renders, and its body
+is one honest DA-7 line naming the operator's real next act:** *"Tracking is recorded once this order
+is processing — use 'Mark processing' below first."* This is the pattern, not an exception: where a
+rank opens a group whose content does not exist yet, the answer is a line, never a dropped group
+(D-3's logic one level down) and never a silent fall-through to the next rank.
+
 D-5 governs **detail screens only.** On a registry level's row list every per-row accordion and
 the create accordion are `default_open: false` (L-9), so such a level has **zero** open groups.
 On a report/settings screen S-3 names the one open group. A list screen's filter block is always
@@ -477,6 +594,29 @@ On a report/settings screen S-3 names the one open group. A list screen's filter
 `Refunds — $0.00 of $99.00 refunded`, `Notes (0)`, `Saved addresses (2)`,
 `Customer — qa-ordc-2@example.com (guest)`. An operator must be able to skip the group from the
 label alone.
+
+**D-6a — D-6 binds on destructive groups too, and there it carries the CONSEQUENCE.** A destructive
+group is a bare trigger row of exactly the same weight as every other trigger (R-5), so a label that
+names only the verb makes the most dangerous control on the panel the quietest thing on it. Required:
+
+| Group | Label |
+|---|---|
+| Cancel | `Cancel order — permanent, releases held stock` |
+| Refund a partial amount | `Refund a different amount — cannot be reversed` |
+| Any delete (§12) | `Delete <thing> — permanent` |
+
+**Why this is a rule and not a nicety.** On the built Orders screen the loudest element on the
+Fulfilment panel was a red **`Mark refunded`** — bookkeeping whose own confirm text says it *does not
+move money* — while the genuinely irreversible cancel was a quiet blue trigger reading `Cancel order`
+(§0.2 E-e). §8's preamble names that exact inversion as the thing this document exists to remove;
+DA-1 fixes the button and D-6a fixes the label. Both halves are needed.
+
+**D-6b — a degenerate ratio is not an answer; replace it.** When the denominator of a D-6 ratio is
+zero, the label must state the fact instead of the arithmetic. `Refunds — $0.00 of $0.00 refunded`
+tells an operator nothing and reads like a bug; `Refunds — nothing captured, nothing to refund`
+(45 chars) is the answer. The explanatory `context` line inside the group is then **redundant and is
+dropped** — it must not restate what the label now says. Same shape for any count ratio:
+`Redemptions — none yet`, never `0 of 0 used`.
 
 A count or total is **"available"** only when it is already a field on the wire shape the level
 reads, or already in memory from a read the render performs anyway. It is **not** available if
@@ -573,8 +713,8 @@ string, a joined address, a summary sentence).
 | Everything else | *(none)* | |
 
 **T-5 — badge discipline.** A badge is reserved for **lifecycle state** — the value an operator
-scans a list *for*. Concretely: order status, product active/inactive/archived, refund kind,
-timeline event kind, shipping-method type. Everything else is plain text.
+scans a list *for*. Concretely: order status, product active/inactive/archived, timeline event kind,
+shipping-method type. Everything else is plain text.
 
 - At most **one** badge column per table.
 - Never badge: a property near-constant across rows (`kind: physical` — the column of identical
@@ -584,6 +724,18 @@ timeline event kind, shipping-method type. Everything else is plain text.
 - Because every badge renders identically (R-6), a column whose values never differ is pure
   decoration. If you cannot name two values an operator would want to tell apart at a glance, it is
   not a badge.
+
+**`refund kind` is struck from the whitelist, and the near-constant clause is why.** Revision 3
+listed it as a lifecycle badge while the third bullet above forbade it — a contradiction inside one
+rule, which §11.2 then mandated (§0.2 E-m). It resolves against the badge, decisively:
+`kind` is `gateway.refundable ? "gateway" : "manual"`
+(`domain/src/orders/refund-order.ts:211`), and the gateway is resolved once from the **order's own**
+`paymentMethod` (`service/src/routes/admin.ts:742`), so within any single order's ledger the value
+**cannot vary** — and the per-order ledger is the only table in the whole console that renders it. The
+whitelist entry was therefore never valid anywhere it applied. `Kind` is deleted from the refunds
+table, not demoted to plain text: a constant column of the word `manual` is a column of nothing. If a
+refund's kind ever needs stating, it belongs in the group's capability `context` line, which already
+explains whether refunds here move money.
 
 **T-6 — `page_action_id` is always set** — the authoritative type requires it (R-21) — even on a
 table that can never page. Keep the `// never fires: no next_cursor, no sortable column` comment
@@ -599,7 +751,13 @@ sub-tables sharing `page_action_id: orders:page`. A load-more click sends
 (`list-detail.ts:290-293`) or reaches `renderList` at a **leaf** depth where `listLevelAt` returns
 `undefined` and the response is `{blocks: []}` — a blank page
 (`list-detail.ts:198-201,209-210`). Both outcomes are unacceptable. Instead: **cap the read** and
-state the cap in one `context` line — `Showing the 20 most recent notes.`
+state the cap in one `context` line — `Showing the 20 most recent notes; older notes are not listed.`
+
+**T-8a — the cap line is emitted only when the read was actually truncated.** The cap is real either
+way; the *sentence* is only true news when rows were withheld. "Showing the 50 most recent events" on
+a 4-event order is noise on the one screen this document is trying to make quieter. Condition it on
+`fetched.length > shown.length`, and say that rows are missing — a bare "showing the 20 most recent"
+does not tell an operator whether there is a 21st.
 
 ---
 
@@ -613,7 +771,7 @@ state the cap in one `context` line — `Showing the 20 most recent notes.`
 | The screen's **primary** collection is empty *and unfiltered* | One `empty` block, `size: "base"` — the `table` is **omitted** and `empty` renders in its place. Once per screen, maximum (E-2). |
 | A **secondary** collection is empty and its container exists only to hold it | Render nothing; fold the fact into a parent `context` line (D-7). |
 | A **secondary** read failed | `context` line in place of the section's body. Never a banner, never fail the whole screen. |
-| The **primary** read failed | Fail closed via `failClosedResponse` — `header` + one `error` banner, nothing else. |
+| The **primary** read failed | Fail closed via `failClosedResponse` — `header` + one `error` banner, nothing else. Its copy obeys **E-7**. |
 
 **E-2 — `empty` is earned by a primary collection's true zero state, with or without a create
 action.** It is a large centered illustration; it is never used for a filtered-to-zero list (the
@@ -651,6 +809,26 @@ response, or a handler that throws, replaces the entire block tree with
   both together or a team will assume the host formats errors safely.
 - B-5's "an open group stays open across a round trip" holds **only for a failed submit that still
   returns 200**.
+
+**E-7 — a fail-closed banner must not assert a cause it does not know.** E-6 makes the fail-closed
+path swallow *everything* — an unreachable service, a 401, a malformed response, and **a bug in the
+console's own code**. A banner reading *"Could not reach the commerce service"* is therefore false
+whenever a console defect lands on the same path, and its cost is not cosmetic: it tells the operator
+the network is down and sends whoever they page to the wrong team. A `carriedForm` digest throw is
+exactly such a defect, and it surfaces here (§0.2 E-h).
+
+So the copy names the **symptom**, lists the two things the operator can check, and then says the
+remaining possibility out loud. Normative, ≤240 — **this blockquote is the spec** and the code is
+trimmed to it:
+
+> `<Screen> could not be loaded. Check the service connection and the admin token in Settings; if
+> both look right, this is a fault in the console itself — not your data.`
+
+(164 chars at `Orders`.) Title: `<Screen> are unavailable` / `<Screen> is unavailable`. The last clause
+is the load-bearing one — it is the only thing that stops a console bug from being reported as an
+outage, and it costs 62 characters. **Applies to every screen's fail-closed banner**, and to any
+`context` line standing in for a failed secondary read where the cause is equally unknown (E-3's
+"read failed" row already gets this right by naming only what failed).
 
 ---
 
@@ -783,9 +961,10 @@ evaluates against `undefined` (R-12b). Do **not** use `condition` to smuggle a h
 | Percent / basis points | `text_input` (`7.25`), parsed to bps | Same reason. |
 | Non-money integer (minutes, thresholds, quantities, dimensions) | `text_input`, parsed with `/^\d+$/` | One parsing discipline for every numeric field beats two. `number_input` is not *forbidden* here — it is simply unused, and the two current uses (Settings' TTL and threshold) migrate for consistency, not to fix a bug. |
 | Boolean | `toggle` | Replaces the current two-option `yes/no` selects. Emits a **real boolean**, and `readString` (`scaffold/list-detail.ts:334`) is `typeof value === "string" ? value : undefined` — so every current parser returns `undefined` for a toggle and the field **appears to save and never persists.** Add `readBoolean` to the scaffold and migrate the call sites in the same change. Subject to F-6b. |
-| Closed set, ≤8 options | `select` | |
-| Closed set, >8 options, **and the field never prefills** | `combobox` | Searchable. Only safe unprefilled (R-12a). |
-| Closed set, >8 options, **prefilling** | `select` | A long dropdown beats a control that shows one value and submits another. |
+| Closed set, ≤8 options, **every value readable as a word** | `select` | The trigger shows the **value**, not the label (R-17a) — so this row requires F-6c. |
+| **A record picker** — the option value is an opaque id (L-7) | `combobox`, **at any count** | A `select` would put the id in the trigger (R-17a), which F-6c forbids; a `combobox` renders the **label** (R-17b). A picker never prefills, so R-12a does not bite. |
+| Closed set, >8 options, **and the field never prefills** | `combobox` | Searchable, and it renders the label. Only safe unprefilled (R-12a). |
+| Closed set, >8 options, **prefilling** | `select` | A long dropdown beats a control that shows one value and submits another. Its values must still pass F-6c. |
 | Date | `date_input` | Yields `YYYY-MM-DD`; normalize server-side. |
 | Secret | `secret_input` with `has_value` | Never echo the stored value. |
 | Free text over one line | `text_input` with `multiline: true` | |
@@ -813,20 +992,35 @@ Exhaustive `""`-valued-option inventory over `packages/plugin/src`: `orders-page
 `products-page.ts:183, 241, 247, 521`. **Coupons, tax, shipping and settings contain none.** (The
 Pricing Status/Kind selects are `products-page.ts:256-268`.)
 
-**F-6a — verification.** Any increment touching a select attaches a screenshot showing the trigger
-is **non-empty**. It will **not** show the option's label — the pinned renderer cannot (R-17a) —
-so state in the PR what it does read: the Orders status filter reads `any`, coupons' type reads
-`fixed_amount` (`coupons-page.ts:332-336`), the tax-class select reads a bare class id
-(`products-page.ts:596-601`), and the order picker reads a raw UUID. A screenshot criterion asking
-for a "resolved label" is unsatisfiable and must not be written.
+**F-6a — verification.** Any increment touching a `select`, `radio` or `combobox` attaches a
+screenshot showing the trigger is **non-empty**, and states in the PR what it reads. What to expect
+differs by control, and revisions 1–3 got this wrong:
 
-**F-6c — an option's value is operator-visible, so it must read acceptably as text.** This follows
-from R-17a and is a **new constraint on M-7/X-22**: "the label never contains the id" is necessary
-but no longer sufficient, because the *value* is what the trigger shows. So sentinels are words
-(`any`, `none`), never `""` or `0`; and where a value can only be an opaque id, say so and prefer
-the row-action drill-in over a picker (§14 item 2). The worst instance today is the order picker,
-whose trigger reads a raw UUID **and** whose label is `${o.id} — ${o.state}` (an existing X-22
-violation) — adopting table row actions deletes the control outright rather than improving it.
+| Control | The trigger reads | Verified instances |
+|---|---|---|
+| `select` | the raw **value** (R-17a) | Orders status filter reads `any`; the cancellation reason reads `customer_request`; coupons' type reads `fixed_amount` (`coupons-page.ts:332-336`); the tax-class select reads a bare class id (`products-page.ts:596-601`) |
+| `combobox` | the option **label** (R-17b) | the Orders picker reads `Choose an order…` closed, and `maya.iyer@example.com · $95.00 · processing` selected |
+
+So a screenshot criterion asking for a "resolved label" is **unsatisfiable on a `select`** and must
+not be written — but it is exactly right on a `combobox`, and a `combobox` screenshot that shows an
+id is a **fail**. Revisions 1–3 named "the order picker reads a raw UUID" as the worst instance on
+these screens; **that wart never existed** — the picker is a `combobox`.
+
+**F-6c — a `select`'s or `radio`'s option value is operator-visible, so it must read acceptably as
+text.** This follows from R-17a and is a **new constraint on M-7/X-22**: on those two controls "the
+label never contains the id" is necessary but not sufficient, because the *value* is what the trigger
+shows. So sentinels are words (`any`, `none`), never `""` or `0`.
+
+**F-6c does not bind on `combobox`** (R-17b — it renders the label), and that is what makes L-7's
+"always `combobox` for a record picker" buildable. Where a value can only be an opaque id, the control
+is a `combobox` or it is not a dropdown at all: prefer the row-action drill-in when it lands (§14
+item 2).
+
+The worst *live* instance is now the cancellation-reason `select`, whose trigger reads
+`customer_request`. That is inside F-6c's tolerance — a word, readable, unambiguous — which is the
+whole point of the constraint. **Revisions 1–3 named the order picker's "raw UUID" here; it was never
+real** (§0.2 E-a). The genuine X-22 defect in the current code is the picker's *label*
+(`${o.id} — ${o.state}`), and that is fixed by L-7, not by a fork change.
 
 **F-6b — every `toggle` declares an explicit `initial_value`.** `toggle` is **mount-only** (R-12),
 so a team assuming it refreshes from the server after a write is wrong; and an untouched toggle
@@ -849,11 +1043,20 @@ paragraph is deleted, not relocated.
 
 One rule, applied identically on all seven screens.
 
-> **DA-1.** An irreversible write is triggered **only** by a `button` with `style:"danger"` and a
-> `confirm` dialog. A `form` may collect its inputs; a form submit may never be the trigger.
+> **DA-1.** An irreversible write is triggered **only** by a `button` carrying a `confirm` dialog with
+> `style:"danger"`. A `form` may collect its inputs; a form submit may never be the trigger. The
+> button itself is `style:"danger"` too — **except** under DA-2c's fan-out cap, which is the one place
+> the red moves from the button into the dialog.
 
 This resolves R-10 (forms cannot confirm) and removes the current inversion where "Mark refunded"
 is red-with-confirm while "Cancel order (cannot be undone)" is a plain submit.
+
+**The inversion has two halves and DA-1 only fixes one.** The built Orders screen satisfied DA-1
+exactly and *still* shipped the inversion, because the red lives on the `Mark refunded` **button**
+while the irreversible cancel is reached through an **accordion label** — and a label cannot be red
+(R-5). So DA-1 is paired with **D-6a**: a destructive group's label carries its consequence. A PR that
+passes DA-1 and leaves a bare `Cancel order` trigger next to a red bookkeeping button has not done
+this section (§0.2 E-e).
 
 Note R-22: a `button` *can* sit inside a `form`'s field list, and it renders — but it fires a bare
 `block_action` with only `element.value`, with no access to that form's typed `values` and no
@@ -881,16 +1084,53 @@ irreversible status moves.
 button per legal value, the value in `button.value`, and **name it in the confirm text**. No round
 trip, no staleness window, no staged payload to decode.
 
-- **Cancel order.** The reason is a `select` over a closed set (`orders-page.ts:644` — the
-  timeline's `cancellation` kinds). One danger button per reason:
-  *"Cancel this order as 'damaged in transit'? This is permanent — the order cannot be
-  un-cancelled, and stock is released back to available."*
+- **Cancel order.** The reason is a closed set (`orders-page.ts:644` — the timeline's `cancellation`
+  kinds). One danger button per reason, the reason **named in the confirm text**:
+  *"Cancel this order as 'out of stock'? This is permanent and releases the held stock."*
+  **Four buttons, not five:** `other` gets no button, because a bare `Other` button records no detail
+  and a label promising detail (`Other (add detail below)`) promises a field the button does not have
+  and points at a group that may be collapsed. `other` lives in the DA-3 note form's select, which is
+  the only path that records detail. Button labels are the **bare reason** — `Out of stock`, not
+  `Cancel — Out of stock`; the group label and the confirm already say "cancel" twice.
   Keep a DA-3 flow **only** when the operator typed optional free-text detail.
 - **Refund the full remaining balance.** The refund form already defaults to full remaining
   (`orders-page.ts:1167`), which is the majority path. Offer one danger button
   `Refund $99.00 (full remaining)` whose `value` carries
   `{orderId, amountCents, refundedSoFarCents}` — the amount **and the observed watermark**. Keep
   DA-3 only for a partial amount.
+- **A status move (DA-6)** carries `{orderId, toState, state}` — `state` being the order state the
+  operator saw. See DA-2a.
+
+**DA-2a — DA-2b carries a watermark and re-reads, exactly like DA-3.** DA-2b has no *staging* window,
+which is why revision 3 left it out; but a **rendered button ages** — an operator can sit on a detail
+page for ten minutes while someone else moves the order. So every DA-2b button's `value` carries the
+watermark the operator saw, and its handler runs DA-3a's re-read-and-compare before writing. The cost
+is one request; the alternative is one class of write with no staleness check at all.
+
+This is why revision 3's §11.2 transition listing (`value {orderId, toState}`) was a defect: it made
+**status moves the only destructive write on the console exempt from DA-3a** (§0.2 E-l). Transitions
+are also the write most likely to race, because the state an operator is moving *from* is the thing
+another operator is most likely to have changed.
+
+**DA-2c — fan-out cap: above 4 values, the buttons go quiet and the dialog stays loud.** One danger
+button per value is right at two or three. At five it is ~1100px of unbroken red across a panel whose
+likeliest next act is a small quiet `Mark paid`, and every button competes with every other for the
+alarm that should belong to the act (§0.2 E-f). So:
+
+| Values | Buttons | Dialog |
+|---|---|---|
+| ≤4 | `style:"danger"` | `confirm{ style:"danger" }` |
+| **≥5** | `style` **omitted** (default `secondary`) | `confirm{ style:"danger" }` — unchanged |
+
+The `confirm` is **never** optional and never loses its `style:"danger"` — the guard is the dialog,
+not the colour, and DA-1 is satisfied either way. Above 4 the group's own D-6a label
+(`Cancel order — permanent, releases held stock`) carries the warning the colour was carrying, which
+is a better place for it: one line of red-adjacent text instead of a wall.
+
+**Before invoking DA-2c, check the enum is really that wide.** Orders' five cancellation reasons drop
+to **four** once `Other` goes (§11.2 — `Other` promised a detail field the button could not provide),
+and four is inside the cap. A 9-value enum is a genuine DA-2c case; a 5-value enum is usually a
+listing that has not been pruned.
 
 **DA-3 — free text or a typed amount: stage, then confirm. Two action ids.**
 `<entity>:<verb>-review` and `<entity>:<verb>`. There is **no** `-edit` id.
@@ -904,6 +1144,22 @@ state 2 (confirm)   accordion "<Verb> …"  block_id <changed>           default
                       form   THE SAME FORM, remounted, staged values as initial_value
                       actions [ button{ style:"danger", value:<staged payload>, confirm } → <verb> ]
 ```
+
+**Which accordion is "the" accordion, when state 1 is nested.** A DA-3 collect form usually sits in a
+sub-group inside a larger one — `Refund a different amount` inside `Refunds`, `Cancel with a note`
+inside `Cancel order`. Revision 3's listing put the `:review` suffix on the **inner** group, and that
+is unbuildable: D-5 Rule 1 forces every other group `false`, so the confirm button renders inside an
+open child of a **collapsed parent** and is invisible; forcing both open breaks X-18 (§0.2 E-b). The
+resolution, and it is a rule because six screens will hit it:
+
+> **The `:review` id and `default_open: true` go on the OUTERMOST group on the open path**, and its
+> body on a state-2 render is the staged form plus the confirm button **directly**. The inner
+> collect-group is **not rendered at all** in state 2. One changed id, one flag, confirm on screen.
+
+So `orders:<id>:refunds:review` (not `…:refunds:refund-partial:review`), and the state-2 body of
+`Refunds` is `banner` + staged form + confirm — the ledger, the meter and the full-remaining DA-2b
+button are all suppressed, because the operator is mid-decision on one amount and a second refund
+control beside it is a trap.
 
 - **Both halves of the force-open are required** (R-14a, B-6): a changed `block_id` remounts the
   group, and the remount re-reads `default_open`, which is `false` for a destructive group unless
@@ -923,19 +1179,133 @@ state 2 (confirm)   accordion "<Verb> …"  block_id <changed>           default
 
 Used for: refund of a partial amount, cancel-with-free-text-detail, remove stock.
 
+**DA-3c — a `-review` handler bound-checks against the live record. Not only the confirm handler.**
+`-review` writes nothing, which is why revision 3 said nothing about it — but it *renders the two
+statements the whole shape exists to make true*: the button label and the `confirm.text`. So it
+validates every constraint the write will apply, not just parseability:
+
+| Check | Refusal names |
+|---|---|
+| parses to a positive integer of minor units | what was typed |
+| **≤ the live ceiling** (`amountCents <= remainingRefundableCents`; `qty <= onHand` for a stock removal) | **the real figure** |
+| required attribution present | the missing field |
+
+Without the second row, `900.00` on a $50 order stages a red **`Refund $900.00`** and a dialog reading
+*"Refund $900.00 to …?"* — both false at the moment they are shown, on the one step that exists to let
+an operator check exactly that (§0.2 E-d). An extra zero is the likeliest typo on a money field, and
+the ceiling is already in the carried context: this is a comparison, not a fetch.
+
+The refusal is a state-1 re-render per DA-3a's shape, with copy naming the real ceiling:
+*"$900.00 is more than the $50.00 that remains refundable on this order. Enter $50.00 or less."*
+(92 chars.) **DA-3c does not replace DA-3a** — `-review` bound-checks what it renders; the confirm
+handler re-reads and compares watermarks. Different failures, both required.
+
 **DA-3a — every confirm handler re-reads before writing. Mandatory, no exceptions.** The handler
 takes the watermark out of the staged payload, **re-reads the record**, and compares:
 
 - **Match** ⇒ derive the key per F-2a and write.
-- **Differ** ⇒ **apply nothing.** Re-render state 1 with an `error` notice naming **both** figures:
-  *"$99.00 was staged, but $0.00 remains refundable — someone else refunded this order. Check the
-  refund ledger below."*
+- **Differ** ⇒ **apply nothing**, and re-render per DA-3a-i below with an `error` notice naming
+  **both** figures **and the cause**:
+  *"$20.00 was staged and was not recorded — someone else refunded this order since you started.
+  $40.00 now remains refundable; re-enter an amount below to try again."* (162 chars ≤240.)
+
+**The causal clause is not optional.** "The ledger changed" states an effect and leaves the operator
+to guess whether they hit a bug; "someone else refunded this order since you started" is the fact, it
+is what stops them retrying identically, and at 76 characters it is nowhere near the 240 budget. E-4
+says say what is true — this is the case E-4 was written for.
 
 The bug this closes: refunds are additive with no CAS (`orders-page.ts:1523-1530`) and the form
 defaults to full remaining. Operator A stages $99.00; operator B refunds $99.00; operator A's
 dialog still says "Refund $99.00 to …" — a false statement — and posts it. F-2a's watermarked key
 prevents the *silent swallow*; DA-3a prevents *acting on a stale amount*. Both are required, and
 they compose: DA-3a rejects the stale submit before the key is ever derived.
+
+**DA-3a-i — every refusal re-renders STATE 1 OF THE SAME GROUP, forced open, with the submitted values
+prefilled.** Binds on **both** refusal kinds — DA-3a's stale watermark and DA-3c's failed bound check.
+All four clauses, or the refusal is worse than the race it caught:
+
+| Clause | Why |
+|---|---|
+| **the same group** | D-5's open-group algorithm has no idea a refusal happened. Re-render without render state and it falls through to rank 2, opening `fulfilment` — on Orders, a **different tab panel** — while the group the banner points at stays collapsed (§0.2 E-c). The render state the action passes is what tells the level a refusal happened (DA-3a-iii). |
+| **forced open** | B-6, both halves: a changed `block_id` **and** `default_open: true`. A banner reading *"re-enter an amount below"* above a closed accordion is not an instruction. |
+| **values prefilled** | The operator typed an amount, an optional reason and their name. Discarding all three to tell them to try again makes the safe path the expensive one, and the next thing they reach for is the DA-2b full-remaining button — which is not what they wanted. |
+| **flattened onto that group** | The forced-open group is the **outermost group on the open path** (B-6, DA-3's outermost-group rule), so the refusal's body renders the collect form **directly** in it and the inner collect-group is **not rendered at all** — exactly as state 2 is flattened. Force the outer group open and leave the form inside a nested `default_open: false` child and the operator's rejected input is on the page but invisible, which is the "values prefilled" clause failing while passing an id check. |
+
+D-5 Rule 1 covers this: a DA-3a refusal **is** a state-2-shaped response for open-group purposes — one
+group forced open, every other `false`, X-18 satisfied. Say so in the render path; do not let the
+refusal fall into Rule 2.
+
+**"State-2-shaped" scopes to which group is open, and to nothing else.** It settles `default_open` and
+the `block_id`; it licenses **nothing** about the body. A refusal's body is **state 1** — its alert
+banner, the collect form, the `Review …` submit — and it carries **no confirm control**, because the
+payload a confirm would carry is the payload just refused. Re-offering it re-stages a stale amount
+(DA-3a) or the very figure the bound check rejected (DA-3c) — a red `Refund $900.00` on a $50 order,
+§0.2 E-d walking back in.
+
+**DA-3a-ii — a staged or refused re-render costs the leaf's normal read set. Priced, not avoided.**
+`showLeaf`/`showList` carry render state (DA-3a-iii), so a `-review`, a DA-3c refusal and a DA-3a
+refusal all re-render **through the level's own `render`**: the reads are the level's, they happen
+once per response, and the screen writes **no second read-and-render path**. On Orders that is
+**five requests** — `getOrder` plus the four detail surfaces — per click, not the one the reference PR
+estimated. Nothing about the channel reduces that number; what it removes is a duplicate
+implementation of the read-and-render pair that drifts from the level's and re-reads a second time on
+its own fallback paths (§0.2 E-s).
+
+The channel deliberately carries **state, not data**: the engine still calls the level's `load`,
+because a refusal's whole point is that the action's copy of the record is stale by construction.
+
+So price it before you copy the pattern onto a read-heavy leaf: **count your surfaces first.** If the
+number is uncomfortable, the fix is a narrower re-read for the staged path — **a level may branch its
+own secondary reads on `renderState`** and skip a surface this render genuinely does not draw. Two
+limits on that, both checkable: **D-3 still binds**, so a panel whose surface you skipped must still
+render its honest line — a skip that blanks a panel is a defect, not an optimisation; and a refusal's
+copy must name the **live** ceiling (DA-3a, DA-3c), so whichever surface supplies that figure is never
+the one to skip. On Orders those two leave nothing safely skippable — every one of the four surfaces
+feeds a panel D-3 keeps rendering, and one of them carries the ceiling the refusal copy must name — so
+five requests is the priced answer there, not a tuning target. The primary `load` is not branchable and
+is not meant to be: it receives no render state, and it *is* the re-read DA-3a depends on. What is never
+the fix: a client-side stash, or a nonce (F-2a).
+
+**DA-3a-iii — the render-state channel: what it carries, and what it does not.** A custom action
+re-renders through `api.showLeaf(path, notice?, renderState?)` or
+`api.showList(path?, notice?, renderState?)` (`scaffold/list-detail.ts`, `CustomActionApi`). The third
+argument is **positional and optional**; it is the screen's own type; the target level's `render`
+receives it verbatim beside `notice`. A banner says **what happened**, render state says **what to
+render now** — which group to open, which values to put back in a form — and DA-3a-i needs both at
+once. Five properties, each binding:
+
+1. **One discriminated union per screen, named at the handler.**
+   `createListDetailHandler<OrdersRenderState>({…})`, members discriminated on `kind`. A level that
+   renders *any* member declares the **whole** union and narrows on `kind` — its `render` must accept
+   anything any of that screen's actions can send it. A screen that declares no render state cannot
+   pass one: a third argument is a compile error, not a value that quietly arrives somewhere and is
+   ignored.
+2. **Within-request only.** Nothing is stored, serialized or echoed to the client, and the *next*
+   interaction's `renderState` is `undefined` again. Whatever must survive the next click still rides
+   in `button.value` or the form's `block_id` carrier (§10, B-1, R-26) exactly as before — so a
+   stage/confirm flow uses both: render state to draw state 2, the confirm button's `value` to carry
+   the staged payload and its watermark into the write.
+3. **State, never data.** Pass what to render, not what was read. A level reads its figures from
+   `detail` (and its own secondary reads), never from `renderState` — see DA-3a-ii. The channel is
+   opaque to the engine, so nothing *stops* a screen putting a loaded record in it; it is still wrong.
+4. **`notFound` and the failed-action fallback get none, deliberately.** A form prefilled for a record
+   that no longer resolves is a lie, and the fallback after a custom action throws must be the
+   simplest render that can still work. `open`, `back`, `page` and `apply-filter` get none either: a
+   staged view does not survive a "Load more", and must not.
+5. **Money in render state is minor units or verbatim operator text, and the member name says which.**
+   `…Cents: number` is integer minor units (M-3); `…Input: string` is what the operator typed,
+   unparsed. A refusal prefills from the `…Input` member, because `19,99` or `900.00` cannot be
+   re-derived from cents — that is the whole reason the draft members exist.
+
+The five ways a screen gets this wrong. Each is a diff a reviewer can rule on:
+
+| Mistake | What the operator gets | Reviewer's check |
+|---|---|---|
+| Render state set, group `block_id` unchanged (or changed with no `default_open: true`) | A banner pointing at a **collapsed** group | B-6, both halves, on the **outermost group on the open path** only — X-29, X-39 |
+| Outer group forced open, collect form left in its nested `default_open: false` child | Rejected input on the page and invisible | DA-3a-i's **flattened** clause: the refusal body renders the form directly; the inner collect-group is absent |
+| A loaded record in the channel, to save a read | The figures the re-read just proved stale | DA-3a-ii: no union member holds a record the level's `load` or secondary reads return |
+| A formatted money string where minor units are expected, or `…Cents` where the operator typed `19,99` | A refusal that discards or mangles the amount | Property 5: every money-bearing member is `…Cents: number` or `…Input: string`, and the refusal prefills from `…Input` |
+| Reading `renderState` for something the *next* click needs | A staged payload that vanishes on confirm | Property 2: anything crossing an interaction is in `button.value` or the `block_id` carrier |
 
 **DA-3b — a staged payload that fails to decode renders an `error` notice, never a silent
 redirect.** `orders-page.ts:1497` currently does `if (orderId === undefined) return showList()`,
@@ -977,10 +1347,15 @@ to `{blocks: []}`. A service offering a state outside the plugin's closed `ORDER
    same constant — one source, no hand-listing.
 2. **Do not render** a service-offered transition that is not in that list.
 3. Assert it: a stub returning an unknown state must produce no button and no blank page.
+4. **Take the target from the action id, never from `value.toState`.** The id came from
+   `ORDER_STATES`; `value` is operator-alterable (B-1). Emit `toState` in `value` for devtools
+   legibility if you like, but do not read it.
+5. **Carry the observed `state` in `value` and re-read before writing** — DA-2a. A transition is a
+   destructive write and gets no exemption from DA-3a.
 
 The existing UI steering stays: on a `processing` order the bare `shipped` move is withheld (use
 Fulfilment, which records tracking), and `cancelled` is always withheld (use Cancel, which records
-a reason) — `orders-page.ts:367-372`.
+a reason) — `orders-page.ts:367-372`. Each withheld move gets a DA-7 line, written per DA-7a.
 
 **DA-7 — withheld actions: generalize the coupons pattern.** When a precondition knowably forbids
 an action, render **no control** plus one `context` line stating the reason and the alternative.
@@ -994,7 +1369,25 @@ The current string (`coupons-page.ts:492`) is 217 chars and says "3 time(s)":
 
 Applies to: coupon delete when redeemed; tax class / zone / method delete when referenced; edit and
 stock forms on a soft-deleted product (already correct — keep); refund action when nothing remains
-refundable; cancel when the order is in a terminal state.
+refundable; cancel when the order is in a terminal state; every transition DA-6 steers away from.
+
+**DA-7a — a withheld-action line names the ALTERNATIVE. It never narrates the design decision.**
+An operator does not care what the designers withheld; they care what to do instead. So the line
+starts from the goal and ends at the control, and these three constructions are banned outright:
+
+| Reject | Write |
+|---|---|
+| *"There is deliberately no bare 'Mark shipped' — use Fulfilment above, which records the tracking and emails it to the buyer."* | *"To ship this order, record the tracking under Fulfilment above — that emails it to the buyer."* (93) |
+| *"There is deliberately no bare 'Mark cancelled' — use Cancel order below, which records a reason on file."* | *"To cancel this order, use Cancel order below — it records a reason on file."* (75) |
+| *"Deletion is blocked."* (effect only, no route) | name the route, as the blockquote above does |
+
+Mechanically: **no "deliberately", no "there is no", no "we do not"** in a DA-7 line, and the line
+contains a verb the operator can act on. The banned constructions are also 30 characters longer than
+the useful version, so this is not a trade-off (§0.2 E-q).
+
+One consequence worth knowing before you write a test: a DA-7 line quotes the control it points at, so
+`getByText("Cancel order")` matches the **line**, not the accordion trigger. Match a trigger that
+*starts with* the label, or resolve by `block_id` (§15 V-1).
 
 ---
 
@@ -1065,6 +1458,10 @@ option's **value**, never its text).
 `value: 0, max: 9900, custom_value: "$0.00 of $99.00"`. A `meter` over a count
 (redemptions-of-max-uses) may omit it.
 
+**At `max == 0` the `meter` is omitted entirely** — a full-width bar over a zero denominator is not a
+ratio (§2 forbids a synthetic `max`, and this is the degenerate cousin). The fact goes in the group's
+D-6b label instead, which is where an operator reads it without opening anything.
+
 **M-9 — `banner.variant` is `default` | `alert` | `error`.** Nothing else. Urumi's mirror allows
 `"info"`/`"success"`, which the renderer forwards unvalidated into Kumo (R-18). Map intent: notice
 → `default`; needs-attention → `alert`; failure → `error`. There is no success variant; a
@@ -1073,6 +1470,31 @@ successful write is a `default` banner plus the response `toast`.
 **M-10 — a UUID is not a title.** A detail `header` uses the human handle when one exists (product
 title, coupon code, zone name). Orders have none, so `Order <uuid>` stands — but the uuid appears
 exactly once, in the header, and as a `code` field if needed for copying.
+
+**M-11 — two money figures that disagree must be reconciled in copy.** Wherever a screen renders a
+record's **total** and a **narrower** figure derived from it — captured, settled, redeemed, allocated —
+and the two can differ, one `context` line states which figure is the money that actually moved and
+names both amounts. Required **whenever the narrower figure ≠ the total**, not only at zero.
+
+The case that earned this: the Money panel renders `Captured $0.00 · Remaining $0.00` while the
+identity strip two blocks up renders `Total $95.00`, and nothing on the screen tells an operator
+whether $95 arrived (§0.2 E-g). Both figures are honest; together they are a contradiction the operator
+has to resolve by leaving the console. The line resolves it:
+*"Captured is the money that actually arrived; $0.00 of the $95.00 total has been captured so far."*
+(96 chars.)
+
+Two things this rule is not:
+
+- **Not a licence to guess a cause.** State the arithmetic and the semantics; do not diagnose *why*
+  (E-7). "Authorised but not settled" is a claim about a payment provider this screen cannot verify.
+- **Not a substitute for D-6b.** M-11 fixes the `fields` block; D-6b fixes the accordion label whose
+  ratio degenerates to `$0.00 of $0.00`. A panel needs both, and the D-6b label replaces the ratio
+  rather than sitting above an explanation of it.
+
+**M-11a — `Remaining` alone is not a label.** Name the axis: **`Remaining refundable`**. Beside
+`Captured` and `Refunded` a bare `Remaining` could mean remaining to capture, to refund, or to ship;
+it matches the `meter`'s semantics and the DA-3a refusal's own wording, and it costs eleven
+characters. Same discipline for `Available`, `Used`, `Left` on any screen.
 
 ---
 
@@ -1170,7 +1592,9 @@ which for a destructive group is `false` (D-5). Change only the id and the accor
 nothing happens, because the mounted group never re-reads it.
 
 Append a token to the semantic id — `orders:<id>:refunds:review` — and set the flag. Used by DA-3
-state 2, by a validation error inside a closed group, and by `empty.actions`' create button (E-2). A
+state 2, by a **DA-3a or DA-3c refusal** (DA-3a-i), by a validation error inside a closed group, and by
+`empty.actions`' create button (E-2). The token goes on the **outermost group on the open path**, never
+on a nested child — see DA-3. A
 group forced open this way is **exempt from D-5's** "always false for anything destructive": D-5
 Rule 1 is precisely that exemption.
 
@@ -1196,7 +1620,12 @@ remount, so it needs its own change signal — see B-3a for the `Clear filters` 
 
 ## 11. Worked example — Orders
 
-The reference implementation. The other five screens pattern-match against this.
+The reference implementation. The other six screens pattern-match against this.
+
+> **§11 and §12 are subordinate to §5–§10 and §13 — see N-1.** These listings are a shortcut, not a
+> second rulebook. Revision 3's version of §11.2 contradicted five rules and three of those
+> contradictions became defects in the built screen. If a line below conflicts with a rule, **build
+> the rule and report the line.** Revision 4 fixed every conflict found so far; assume there are more.
 
 ### 11.1 Orders list
 
@@ -1246,7 +1675,9 @@ empty       (cond: unfiltered AND zero rows — the table is OMITTED, E-2)
             (no actions — orders are not created in the admin)
 
 form        (cond: ≥1 row)  block_id "orders:open:u1.<b64>"
-            combobox  "Open order"                                             (>8 rows, F-6)
+            combobox  "Open order"        ← combobox at ANY row count: the value is an
+                                            opaque id, so a select would show it (L-7, R-17b)
+                      placeholder "Choose an order…"                           (R-17b)
                       options[0]  { value:"none", label:"Choose an order…" }
                       options[n]  { value:<uuid>,
                                     label:"qa-ordc-2@example.com · $99.00 · paid" }
@@ -1275,8 +1706,14 @@ silently.
 | Cancellation (`:974`) | **Fulfilment** panel, `Cancel order` group — *see the note below* |
 | Refunds (`:1067`) | **Money** panel |
 | Move status (`:373`) | **Fulfilment** panel, `actions` (DA-6) |
-| Notes (`:389`) | **History** panel |
+| Notes (`:389`) | **History** panel, `Notes` group — **form only**; the timeline's `Detail` column is the read path |
 | Timeline (`:570`) | **History** panel |
+
+**"Nothing is dropped silently" is a promise this table makes, and a `fields` listing below can
+break it.** Revision 3's `Customer` (4 entries) and `Shipping address` (8) listings did exactly that —
+they lost `Buyer reference`, `Email verified`, `Email` and `Region`, the last of which makes a US
+address unshippable (§0.2 E-n). The counts below are **6** and **10**. If a listing's entry count is
+smaller than the data the mapping table sends to that group, the listing is the defect (N-1).
 
 **Why cancellation sits in Fulfilment.** Cancelling and fulfilling are the two answers to one
 question — *does this order ship?* — so an operator deciding between them should not have to change
@@ -1316,7 +1753,19 @@ tab         block_id orders:<id>:tabs      default_tab 0      panels ALWAYS 4 (D
 │               page_action_id orders:page   // never fires
 │    accordion  block_id orders:<id>:customer    default_open FALSE
 │               label "Customer — qa-ordc-2@example.com (guest)"                (D-6)
-│               ├─ fields   Email | Account · Name | Orders placed
+│               ├─ fields   ON AN ACCOUNT — 6 entries (D-1a: the 6-entry cap is the identity
+│               │           strip's, NOT a panel's; these 6 are the mapping table's promise)
+│               │             Account email  | Account          ← "Account email", not "Email"
+│               │             Name           | Orders placed
+│               │             Contact email  | Email verified (UTC)
+│               │           ON A GUEST — 2 entries, and only these:             (D-7)
+│               │             Contact email  | Orders placed
+│               │           Never render a row whose only content is a denial. On a guest,
+│               │           `Account email —`, `Name —`, `Account Guest — no account` and
+│               │           `Email verified not verified` say "no account" four times over
+│               │           the D-7 line that already says it, while `Email` denies an
+│               │           address the label, the identity strip and `Contact email` all
+│               │           display. Drop `(UTC)` when the value is `not verified`.
 │               ├─ context  (guest, zero secondary data) "Guest checkout — no account, no
 │               │            saved addresses, no sign-in history."              (D-7)
 │               ├─ accordion "Saved addresses (2)"   default_open false → table  ← omit at 0
@@ -1335,8 +1784,13 @@ tab         block_id orders:<id>:tabs      default_tab 0      panels ALWAYS 4 (D
 │    accordion  block_id orders:<id>:ship         default_open FALSE
 │               label "Shipping address — US"     ← omitted entirely when absent, replaced by
 │                                                  one context line (E-1, D-7)
-│               └─ fields  Name | Country · Address line 1 | Address line 2 ·
-│                          City | Postal code · Chosen shipping zone | Phone
+│               └─ fields  10 entries — Region is REQUIRED (a US address with no state is
+│                          not shippable), and the 6-entry cap is the identity strip's (D-1a)
+│                            Name           | Country
+│                            Address line 1 | Address line 2
+│                            City           | Region
+│                            Postal code    | Chosen shipping zone
+│                            Email          | Phone
 │                  (Address is split across fields, never one 40-char value — §1 budget)
 │                  context "Captured at checkout and frozen on this order. The zone is the
 │                           buyer's priced choice; nothing cross-validates them."   (≤200)
@@ -1348,42 +1802,85 @@ tab         block_id orders:<id>:tabs      default_tab 0      panels ALWAYS 4 (D
 │                    Carrier · Tracking number · Tracking URL (optional) ·
 │                    Ship date (optional) · Recorded by                        5 fields ≤6
 │                    submit "Record fulfilment & ship"                         (DA-4)
+│                  ON `paid` — rank 2 opens this group before tracking is capturable, so it
+│                    renders ONE DA-7 line and no form (see D-5's note):
+│                    "Tracking is recorded once this order is processing — use 'Mark
+│                     processing' below first."                                (DA-7a)
 │    actions    block_id orders:transitions                                     (DA-6)
-│               ids derived from ORDER_STATES; `shipped` on a processing order and
-│               `cancelled` always withheld, each with one context line (DA-7)
-│               [ "Mark processing" → orders:transition-processing   value {orderId, toState} ]
-│               [ "Mark completed"  → orders:transition-completed    value {orderId, toState} ]
-│               [ "Mark refunded"   → orders:transition-refunded     value {orderId, toState}
+│               ids derived from ORDER_STATES; target read from the ACTION ID, never from
+│               value.toState (DA-6 item 4); `shipped` on a processing order and `cancelled`
+│               always withheld, each with one DA-7a line
+│               EVERY button carries the observed `state` — the watermark (DA-2a, DA-6 item 5)
+│               [ "Mark processing" → orders:transition-processing
+│                   value {orderId, toState, state} ]
+│               [ "Mark completed"  → orders:transition-completed
+│                   value {orderId, toState, state} ]
+│               [ "Mark refunded"   → orders:transition-refunded
+│                   value {orderId, toState, state}
 │                   style danger + confirm{ title "Mark this order refunded?",
 │                     text "Marks the order refunded for bookkeeping. It does not move money —
 │                           record the money in Money → Refunds.",
 │                     confirm "Yes, mark refunded", deny "Keep as is", style "danger" } ]
 │    accordion  block_id orders:<id>:cancel       default_open FALSE
-│               label "Cancel order"
+│               label "Cancel order — permanent, releases held stock"   45 chars (D-6a)
+│                     ← NOT a bare "Cancel order": this trigger is the most dangerous
+│                       control on the panel and a label cannot be red (R-5)
 │               └─ banner alert "Cancelling is permanent" (≤240)
 │                  context  "Pick the reason — cancelling is immediate."       (≤200)
 │                  actions  one danger button PER REASON                       (DA-2b)
-│                    [ "Cancel — damaged in transit" value {orderId, reason, state}
-│                        confirm{ text "Cancel this order as 'damaged in transit'? This is
-│                                 permanent and releases the held stock.",
-│                                 confirm "Yes, cancel the order", deny "Keep the order" } ]
-│                    [ … one per reason in the closed set … ]
+│                    4 reasons, so ≤4 ⇒ style danger on each                   (DA-2c)
+│                    LABELS ARE THE BARE REASON — no "Cancel — " prefix, no parenthetical:
+│                      [ "Customer requested it" ] [ "Fraud suspected" ]
+│                      [ "Out of stock" ]          [ "Pricing error" ]
+│                    NO "Other" button. "Cancel — Other (add detail below)" promised a field
+│                      it did not provide — it fired immediately, with no detail, pointing at
+│                      a group that may be collapsed. The note group below is the ONLY path
+│                      that records detail, and `other` is a reason inside its select.
+│                    [ "Out of stock"  value {orderId, reason, state}    ← state = watermark
+│                        confirm{ title "Cancel this order?",
+│                          text "Cancel this order as 'out of stock'? This is permanent and
+│                                releases the held stock.",
+│                          confirm "Yes, cancel the order", deny "Keep the order",
+│                          style "danger" } ]
 │                  accordion "Cancel with a note"  default_open FALSE          (DA-3)
-│                    ├─ banner alert "Cancelling is permanent and cannot be undone" (≤240)
-│                    │         ← DA-3 state 1 requires it; §2 does not count banners
-│                    │           inside an accordion, so it is free
-│                    └─ form  Reason (select) · Detail · Cancelled by
+│                    ├─ banner alert                                            (≤240)
+│                    │    title "Review what you typed on the next step"
+│                    │    description "The confirm on the next step is what records the
+│                    │                 cancellation — nothing is recorded until then."
+│                    │    ← says ONLY what is new. The parent banner 190px above already
+│                    │      says "Cancelling is permanent"; repeating it teaches the
+│                    │      operator to skim both. And no "the point of no return" — the
+│                    │      one purple phrase on an otherwise plain-spoken screen (E-4).
+│                    └─ form  Reason (select, includes `other`) · Detail · Cancelled by
 │                             submit "Review cancellation" → orders:cancel-review
+│               state 2 puts `:review` + default_open on THIS group — orders:<id>:cancel:review
+│                 — and renders the staged form + confirm directly. The "Cancel with a note"
+│                 accordion is NOT rendered in state 2 (DA-3's outermost-group rule).
 │               (already cancelled ⇒ the whole group is `fields` of the recorded cancellation)
 │
 ├─ panel "Money"
-│    fields     block_id orders:money      Captured | Refunded · Remaining | Refunds recorded
+│    fields     block_id orders:money
+│                 Captured            | Refunded
+│                 Remaining refundable| Refunds recorded     ← "Remaining" alone is ambiguous:
+│                                                              to capture, refund or ship? (M-11a)
 │               ← `Payment` is already in the identity strip; do not repeat it (P-3)
+│    context    (cond: captured != total)                                      (M-11)
+│               "Captured is the money that actually arrived; $0.00 of the $95.00 total has
+│                been captured so far."
+│               ← without it, `Total $95.00` two blocks up and `Captured $0.00` here read as
+│                 a contradiction the operator must leave the console to resolve
 │    accordion  block_id orders:<id>:refunds      default_open FALSE
-│               label "Refunds — $0.00 of $99.00 refunded"                     (D-6)
-│               ├─ meter  label "Refunded" value 0 max 9900
+│               label  ceiling > 0 ⇒ "Refunds — $0.00 of $99.00 refunded"       (D-6)
+│                      ceiling == 0 ⇒ "Refunds — nothing captured, nothing to refund"
+│                        ← the DEGENERATE ratio is replaced, not explained (D-6b), and the
+│                          "Nothing has been captured…" context line is then DROPPED
+│               ├─ meter  label "Refunded" value 0 max 9900   (omit entirely at max 0)
 │               │         custom_value "$0.00 of $99.00"     ← MANDATORY (M-8)
-│               ├─ table  (cond ≥1) Amount | Kind (badge) | Provider ref (code) | By | When
+│               ├─ table  (cond ≥1) Amount | Provider ref (code) | By | When
+│               │         NO `Kind` COLUMN. `kind` is the ORDER's gateway capability
+│               │         (refund-order.ts:211), so it is constant down this table — a
+│               │         column of identical `manual` pills, forbidden by T-5's third
+│               │         bullet, and "refund kind" is struck from T-5's whitelist.
 │               │         page_action_id orders:page // never fires · NO next_cursor (T-8)
 │               ├─ context capability line ≤200, honest about record-only vs real
 │               ├─ actions (cond: remaining > 0)                               (DA-2b)
@@ -1393,27 +1890,41 @@ tab         block_id orders:<id>:tabs      default_tab 0      panels ALWAYS 4 (D
 │               │          text "Refund $99.00 to qa-ordc-2@example.com? This records a refund
 │               │                made out of band — it does not move money.",
 │               │          confirm "Yes, refund $99.00", deny "Keep as is", style "danger" } ]
-│               ├─ accordion "Refund a different amount"  default_open FALSE   (DA-3)
+│               ├─ accordion "Refund a different amount — cannot be reversed"   (DA-3, D-6a)
+│               │      default_open FALSE                                    46 chars
 │               │    ├─ banner alert "A recorded refund cannot be reversed here" (≤240)
 │               │    │         ← DA-3 state 1 requires it (§2 does not count it)
 │               │    └─ form  cf{"orders:refund-partial", {orderId, refundedSoFar:"0"}}
 │               │             Refund amount (USD) · Reason (optional) · Refunded by
 │               │             submit "Review refund" → orders:refund-review
-│               │             → state 2: SAME form remounted, accordion block_id +":review"
-│               │               AND default_open TRUE + one danger confirm button (DA-3, B-6)
+│               │             the -review handler BOUND-CHECKS amountCents against the live
+│               │               remaining before it renders anything (DA-3c)
 │               └─ context (cond: remaining == 0) "Fully refunded — nothing left to refund."
-│                          ← and NO refund control at all                       (DA-7)
+│                          ← and NO refund control at all                      (DA-7, DA-7a)
+│               STATE 2 belongs to THIS group, not the child (DA-3's outermost-group rule):
+│                 block_id orders:<id>:refunds:review  +  default_open TRUE     (B-6)
+│                 body = banner + staged form + one danger confirm button, and nothing else
+│                 — the meter, the ledger and the full-remaining button are all suppressed
+│               A DA-3a OR DA-3c REFUSAL re-renders STATE 1 into THIS group: forced open,
+│                 the collect form FLATTENED into the group body, the submitted values
+│                 prefilled, and NO confirm button — a confirm here would re-offer the
+│                 payload just refused             (DA-3a-i, incl. its scoping note; X-39)
 │
 └─ panel "History"
      table      block_id orders:timeline
                 When (relative_time) | Event (badge) | Who | Detail
+                  ← `Detail` carries a note's full body for a `note` event, which is why
+                    the Notes group below is form-only
                 page_action_id orders:page // never fires · NO next_cursor (T-8)
                 empty_text "No timeline activity yet."
-     context    "Showing the 50 most recent events."                            (T-8 cap)
+     context    (cond: TRUNCATED only — T-8a)
+                "Showing the 50 most recent events; older activity is not listed."
      accordion  block_id orders:<id>:notes        default_open FALSE
-                label "Notes (0)"                                               (D-6)
-                └─ table (cond ≥1)  When | Author | Note
-                   context "Showing the 20 most recent notes."                  (T-8 cap)
+                label "Notes (2)"                                               (D-6)
+                └─ NO read table. The timeline's `Detail` column above already renders both
+                   note bodies verbatim, and its cap (50) is looser than the notes cap (20),
+                   so the table added a duplicate and a second cap line and nothing else.
+                   The label carries the count; the group carries the form.
                    form  cf{"orders:note", {orderId}}
                          Note (multiline) · Author    submit "Add note"         (DA-4)
 ```
@@ -1427,12 +1938,24 @@ paragraphs become ≤200-char lines inside the accordions they describe. Three `
 become one. Six carrier dropdowns and two nonce dropdowns disappear — the carriers into
 `block_id`s, the nonces deleted outright (F-2a). The totals ladder reads down, as a table.
 
+**And what revision 4 removes from the revision-3 listing** — every item a defect found by building
+it (N-1, §0.2): the refunds table's constant `Kind` badge; a fifth cancel-reason button that promised
+a field it did not have; a second `Cancelling is permanent` banner 190px below the first; the Notes
+read-table that repeated the timeline verbatim; two unconditional cap lines; two DA-7 lines that told
+the operator what designers withheld; and four `Customer` rows that said "no account" on a guest. Six
+things are **added**: the transition watermark, `Region`, `Contact email`, the M-11 line, D-6a's two
+consequence labels, and DA-3c's bound check.
+
 ---
 
 ## 12. Per-screen block listings
 
 Each screen gets the same artifact §11 gives Orders: an abbreviated block-order listing plus the
 deltas that are not obvious from it. Prose-only deltas are not startable, so there are none.
+
+> **N-1 applies to every listing below.** These were written before any screen was built and have
+> **not** had the scrutiny §11.2 has now had. Where one conflicts with §5–§10 or §13, build the rule
+> and report the line in your PR. Expect to find some: revision 3's §11.2 had five.
 
 Throughout, `cf{ns, ctx}` is shorthand for **`carriedForm({ namespace: ns, context: ctx, form })`**
 — the helper takes the whole `FormBlock` and returns it with `block_id` set, so a line reading
@@ -1441,6 +1964,20 @@ Throughout, `cf{ns, ctx}` is shorthand for **`carriedForm({ namespace: ns, conte
 `block_id`.**
 
 ### 12.1 Pricing & inventory (`products-page.ts`) — built last
+
+> **⚠ This screen carries the console's only live X-20 violations. Do not miss them.** Two *rendered*
+> strings use the banned slogan:
+>
+> | Line | String | |
+> |---|---|---|
+> | `products-page.ts:409` | *"…the store stops selling at zero stock **(no overselling)**; backorders are a future capability."* | inside the 744-char edit-form `context` §1 already splits |
+> | `products-page.ts:422` | *"…it can never be **oversold**. Enter whole units only."* | the stock-form `context` |
+>
+> Both are operator-facing copy and both must go — the mechanism sentence ("the store stops selling at
+> zero stock") is already there and is the whole of what the operator needs. **The code comments at
+> `:461-462` and `:604-606` documenting the domain invariant are exempt and MUST SURVIVE** (§13 X-20,
+> and the voice rule in the front matter). A PR that "fixes" those comments has broken the invariant's
+> only documentation; a PR that ships either rendered string fails X-20.
 
 ```
 ── LIST ──
@@ -1577,7 +2114,11 @@ empty       (cond unfiltered zero) title "No coupons yet" ·
             description "Create one to start discounting carts." ·
             actions [ button "New coupon" → coupons:new  ← re-renders with the create
                       accordion forced open (E-2, B-6) ]
-form        (cond ≥1) select "Open coupon" options "<code> · 20% off · 3 uses"
+form        (cond ≥1) combobox "Open coupon" options "<code> · 20% off · 3 uses"
+            ← combobox, NOT select: the option VALUE is the coupon id (distinct from
+              `code` — the create form authors both), and a select renders the value
+              (R-17a, X-22). Corrected in revision 4; revision 3 said `select`.
+            placeholder "Choose a coupon…"
             initial_value "none"                        submit "View / edit"
 accordion   block_id coupons:new    label "New coupon"    default_open false      (L-8)
             └─ context "ID, code, type and currency are fixed at creation — to change them,
@@ -1932,21 +2473,25 @@ Assert a **depth-3 open fired from a button** (shipping zone → method → rate
 ## 13. Anti-patterns — a reviewer rejects these on sight
 
 **H** = mechanically enforced by `assertBlockContract` (§15); a rule without **H** is a human
-review catch.
+review catch. **30 of the 45 rows are H — and `assertBlockContract` does not exist yet** (V-3a): it is
+its own PR, and it **gates every screen after Orders** (§15.1 step 2). So if you are reading this while
+building a screen, the helper exists and you call it. Only Orders predates it, and only Orders encodes
+these rules as its own assertions.
 
 | # | H | Reject | Rule |
 |---|---|---|---|
 | X-1 | H | A form field labeled with an internal name (`orderId`, `nonce`, `currency`, `expectedRateBps`, `Scope`, `Revision`, `Product`). | F-2, F-4 |
 | X-2 | H | Any `select` with one option. | F-3 |
 | X-3 | | A heading whose entire body is "No X" — heading + empty table for an empty collection. | P-3, D-7 |
-| X-4 | H | A column of identical badges (`physical`, `USD`, `yes`), or more than one badge column in a table. | T-5 |
+| X-4 | H | A column of identical badges (`physical`, `USD`, `yes`, `manual`), or more than one badge column in a table. A badge column whose values are constant *within one rendered response* is the case the helper can see; a column constant only *in practice* is a human catch. | T-5 |
 | X-5 | | A `disabled` field on any element (a compile error after the foundation), or a control rendered only to reject the click. | R-11, DA-7 |
 | X-6 | H | Any `divider`. | R-4, §2 |
 | X-7 | | An **expanded** filter form above the data, or any block above the primary data that P-1's whitelist does not list. | P-1, P-4, L-4 |
 | X-8 | | A destructive form submit with no confirm, or a red button on an act outside DA-5's definition. | DA-1, DA-5 |
-| X-9 | H | Money as raw minor units, or `number_input` / `format:"number"` on a money field or column. **Helper heuristic** (a helper cannot otherwise tell raw minor units from a legitimate integer): reject a cell or `fields` value matching `/^\d+$/` whose column/field label matches `/amount\|total\|price\|revenue\|cost\|subtotal\|discount\|refund/i`. Anything outside the heuristic is a human catch. | M-1, M-3, T-4 |
+| X-9 | H | Money as raw minor units, or `number_input` / `format:"number"` on a money field or column. **Helper heuristic** (a helper cannot otherwise tell raw minor units from a legitimate integer): reject a cell or `fields` value matching `/^\d+$/` whose label matches `/amount\|total\|price\|revenue\|cost\|subtotal\|discount\|refund/i` **and does NOT match the count exclusion `/count\|recorded\|quantity\|qty\|items/i`.** Anything outside the heuristic is a human catch. | M-1, M-3, T-4 |
 | X-10 | H | A money ladder in a `fields` block instead of a two-column `table`. | M-4 |
-| X-11 | H | Any string over its §1 budget — page-level `context` 140, any other `context` 200, `banner.description` 240, `accordion.label` 60, `fields` value 40, `confirm.title` 60, `confirm.text` 200, `empty.description` 200. All eight. | §1 |
+| X-11 | H | Any string over an **authored** §1 budget: page-level `context` 140, any other `context` 200, `banner.description` 240, `accordion.label` 60, `confirm.title` 60, `confirm.text` 200, `empty.description` 200. **Seven, not eight** — the `fields`-value 40 is explicitly **excluded** (X-11a). | §1 |
+| X-11a | | A `fields` value over 40 chars **that the author wrote** — prose that belongs in a `context` line, or an address crammed into one entry. **Human catch only, never H:** the value is usually service data, so a 45-char buyer email or a tracking URL busts the budget through no authoring fault, and truncating a tracking number or URL destroys the operator's ability to copy it. Emails, tracking numbers, URLs and free-text reasons are left intact. | §1 |
 | X-12 | | `header` used for a subsection beyond P-2's one-per-panel exception; `section` used as a heading or a receipt. | P-2 |
 | X-13 | H | Timestamps with milliseconds; any timezone conversion. | M-6 |
 | X-14 | H | `sortable: true` on any column. | T-3 |
@@ -1957,7 +2502,7 @@ review catch.
 | X-19 | | A bare-noun accordion label where a count or total is available *on the wire the level already reads* (D-6). | D-6 |
 | X-20 | H | The phrase "no oversell" / "oversold" / "overselling" in any **rendered string**. Code comments documenting the domain invariant are exempt and must not be changed. | voice |
 | X-21 | | Apologetic degraded copy, or a raw status code / URL / exception in the UI. | E-4 |
-| X-22 | H | An "Open X" picker whose options are bare UUIDs, whose option value is not the record id, or more than one per list. Necessary but **not sufficient** — the value is operator-visible (R-17a), so also apply F-6c. | L-7, M-7, F-6c |
+| X-22 | H | An "Open X" picker whose option **labels** contain the record id, whose option **value** is not the record id, more than one per list, or **that is a `select` rather than a `combobox`** — a `select` puts the id in the trigger (R-17a). | L-7, M-7, R-17b |
 | X-23 | H | A `select`/`radio`/`combobox` with no `initial_value`, an `initial_value` absent from `options`, or any option whose value is `""`. | F-6a |
 | X-24 | H | A `toggle` with no `initial_value`. | F-6b |
 | X-25 | H | A `meter` whose `value`/`max` are minor units and which has no `custom_value`. | M-8 |
@@ -1965,10 +2510,21 @@ review catch.
 | X-27 | H | A `table` with no `page_action_id`, or with `next_cursor` inside a leaf detail. | T-6, T-8 |
 | X-28 | H | An idempotency key or nonce anywhere in a form field, a carrier payload, or a `button.value`. | F-2a |
 | X-29 | H | A DA-3 state-2 accordion that changes its `block_id` without `default_open: true`, or sets the flag without changing the id. | B-6 |
-| X-30 | | A prefilling `combobox`, or a `combobox` used for a closed set of ≤8. | F-6, R-12a |
+| X-30 | | A prefilling `combobox`; or a `combobox` used for a closed set of ≤8 **whose values are already readable words** — a **record picker is a `combobox` at any count** and is never an X-30 (L-7). | F-6, R-12a, R-17b |
 | X-31 | H | More than 2 `banner`s at the top level of a screen (banners inside an accordion are not counted). | §2 |
 | X-32 | | A handler that can return non-2xx or let an exception escape. | E-6 |
 | X-33 | | A `condition` used to carry a field that is submitted but never drawn. | R-26, F-5b |
+| X-34 | | **The N-1 catch.** A diff that follows a §11/§12 listing line against a §5–§10 rule or a §13 anti-pattern; **or** a correct deviation from a listing that the PR body does not disclose. Both are fails; the first ships a bug, the second leaves six teams to rediscover it. | N-1 |
+| X-35 | H | A destructive `accordion` whose label is a bare verb or noun (`Cancel order`, `Delete zone`, `Refund a different amount`) with no consequence clause. | D-6a |
+| X-36 | H | A D-6 label containing a degenerate ratio — `$0.00 of $0.00`, `0 of 0`, `0%` of nothing. | D-6b |
+| X-37 | H | **More than 4 `style:"danger"` buttons in one `actions` block**; or a DA-2c fan-out whose `confirm` lost its `style:"danger"` along with the button's. | DA-2c |
+| X-38 | H | A DA-2b/DA-3 `button.value` carrying no watermark, or a confirm handler that writes without re-reading. Countable on the payload; the re-read is asserted by the screen's own stale-watermark test. | DA-2a, DA-3a |
+| X-39 | H | A DA-3a or DA-3c refusal that does not re-render **the same group**, forced open per B-6, with the submitted values prefilled and **flattened onto that group**. Assert the refused response's open-group id equals the staged group's, the form's `initial_value`s echo the submission, and the nested collect-group is absent from the response. | DA-3a-i |
+| X-40 | | A `-review` handler that validates only parseability — no bound check against the live ceiling. | DA-3c |
+| X-41 | H | A `context` or `banner` line containing `deliberately`, `there is no`, or `we do not`; a DA-7 line with no actionable verb. | DA-7a, E-4 |
+| X-42 | H | A fail-closed banner that names a single cause (`Could not reach the commerce service`) rather than E-7's normative copy. | E-7 |
+| X-43 | | A `Total` rendered on the same screen as a smaller `Captured`/`Settled`/`Allocated` with no M-11 line; or a bare `Remaining`/`Available`/`Left` label. | M-11, M-11a |
+| X-44 | | A T-8 cap `context` line emitted when the read was **not** truncated. | T-8a |
 
 ---
 
@@ -1991,17 +2547,33 @@ depends on any of them** — every rule above is satisfiable on 0.31.1 as pinned
    defects, and they need different fixes:** `placeholder` fixes only the *empty* trigger; the
    *wrong text* — the raw value instead of the label (R-17a) — needs `items`/`renderValue`. Kumo
    2.6.0's `Select` already accepts both props, so this is a small fork change and a **fork PR is
-   being raised separately**. Until it lands, F-6a removes every blank but the trigger still reads
-   the value, and F-6c constrains values so that is tolerable. The worst instance — the order
-   picker's raw UUID — is not improved by this item at all; it is deleted outright by item 2 (fork
-   PR #6, table row actions).
+   being raised separately**.
+
+   **Downgraded in revision 4.** Revisions 1–3 valued this item on the claim that the order picker's
+   trigger reads a raw UUID. It does not — the picker is a `combobox`, which already passes `items`
+   and already renders the label (R-17b), and it already has a `placeholder`. So this item's real
+   scope is `select` **only**, its worst live instance is the cancellation reason reading
+   `customer_request`, and F-6c makes that tolerable indefinitely. Still worth having — it would let
+   `select` carry ids and retire F-6c — but it blocks nothing and should not be sequenced ahead of
+   items 1 or 2.
 4. **`"tab"` in `validateBlocks`' `BLOCK_TYPES`** (R-15 — re-verified absent in 0.31.1). One-line
    fix; the type, builder and renderer already exist. Without it, any validation of these blocks
    reports `Unknown block type 'tab'` even though the page renders correctly.
+5. **A clickable link — `format:"link"` on a table column, or a `link` element.** A tracking URL is
+   the one value on these screens whose entire purpose is to be followed, and the vocabulary can only
+   render it as text the operator selects and copies. That is a **renderer limit, not an authoring
+   error**: do not "fix" it by shortening the URL (X-11a) or by dropping the field. Until this lands,
+   a tracking URL renders in full, in `fields`, and the group's label carries the tracking *number*.
 
-A fifth would be nice but is not needed: **`Badge` variants** driven by a per-column value map
+A sixth would be nice but is not needed: **`Badge` variants** driven by a per-column value map
 (R-6), which would let a status column encode severity instead of just chunking text. Until then,
 T-5's "one badge column, lifecycle state only" is the correct discipline.
+
+Two upstream nuisances are recorded here rather than tracked as items, because neither affects
+rendered output: `ComboboxList` emits a React duplicate-key warning even when every option value is
+unique (upstream, not ours — a candidate follow-up alongside the five above), and the EmDash admin
+does not honour Playwright's `fullPage` (the content region clips at the viewport, so screenshot with
+a **tall viewport** — 1440×1800/2200 — not `fullPage` alone).
 
 ---
 
@@ -2032,8 +2604,15 @@ nothing.
 every axis and the only screen using `section` blocks as headings — which is exactly why it is the
 reference screen and why V-2 exists.
 
-**V-1 — two shared helpers land with the foundation**, in
-`packages/plugin/test/helpers/blocks.ts`:
+**V-1 — the shared block-search helpers live in `packages/plugin/test/helpers/blocks.ts`.
+Owner: Orders — DELIVERED.** Revision 3 assigned this file to the foundation; PR #151 did not ship it
+and the Orders implementer wrote it instead (§0.2 E-r). It exists on `feat/admin-orders-layout`
+(commit `aa2bd97`) and exports rather more than the three below — `allBlocks`, `findBlock`,
+`panelLabels`, `groupBlocks`, `openGroupIds`, `formFor`, `fieldEntries`, `contextTexts`, `buttons`,
+`confirmOf`, `tableRows`, `columnLabels` and others. **Read it before writing your own** — six teams
+hand-rolling `blocksOf` is how the flat-search problem started.
+
+The three that every suite needs:
 
 - `findBlocks(blocks, type)` — recurses through `columns.columns[]`, `tab.panels[].blocks` and
   `accordion.blocks`, mirroring `renderer.tsx` exactly.
@@ -2044,23 +2623,99 @@ reference screen and why V-2 exists.
   so a label-keyed lookup would hard-code formatted money into every test and break on any figure
   change. `block_id` is stable and semantic by B-5, which is exactly what a test should key on.
 
-`blocksOf()` is currently duplicated in **six** suites (`admin-scaffold-list-detail`,
-`settings-widget`, `coupons-page`, `products-page`, `shipping-page`, `tax-page`); all six switch to
-`findBlocks`. **No page suite may search the top-level array** after the orders increment.
+**V-1a — each screen ports its OWN suite, as the first commit of its own PR.** `blocksOf()` is
+duplicated in **six** suites (`admin-scaffold-list-detail`, `settings-widget`, `coupons-page`,
+`products-page`, `shipping-page`, `tax-page`) and **all six are still unported.** Revision 3 said "all
+six switch"; Orders correctly ported only its own and flagged the rest (§0.2 E-r), because `CLAUDE.md`'s
+one-PR-one-thing beats V-1's literal wording and absorbing five foreign suites into a layout PR makes
+it unreviewable.
+
+So the rule is per-screen and it is a **sequencing** rule, not a cleanup wish:
+
+> Every screen's PR opens with a **behaviour-free commit** porting that screen's suite onto
+> `findBlocks`/`panel`/`group`. `git diff` over `packages/plugin/src` must be **empty** for that
+> commit, and the same test count must pass before and after.
+
+A flat search is safe *today* on a screen that is still flat, and returns `[]` silently the moment
+that screen is re-laid — which is the failure mode where the suite passes while asserting nothing.
+Porting after the re-layout means you never see the port pass against the old tree.
+
+**Your PR ports your suite and nobody else's — §15.1 step 3 is four PARALLEL lanes.** Do not plan on a
+predecessor's port having landed: you have no predecessor. `admin-scaffold-list-detail` is not a screen;
+it ports with whichever lane touches the scaffold first, and the other lanes must not assume it has.
 
 **V-2 — Orders' suite is rewritten onto these helpers BEFORE its layout changes**, as a separate
 **no-behaviour-change commit**, so the layout diff stays reviewable. 89 flat searches and 17
 section-heading assertions cannot be reworked in the same commit as a re-layout and still be
-reviewed.
+reviewed. *Done in PR #161 (`aa2bd97` → `3c7f037`); V-1a generalises it to the other six.*
 
 **V-3 — one shared `assertBlockContract(blocks, { screen, level })`** in
 `packages/plugin/test/helpers/`. The two extra arguments are not optional: **X-16** cannot be
 decided from the blocks alone (it must compare the panel set against D-2's per-screen table) and
 **X-27**'s second half cannot either (it must know whether this response is a leaf detail). It
-enforces
-every rule marked **H** in §13 (**23 of 33**), all eight prose budgets, and the banned phrase. Every
-page suite calls it once per rendered response. **A rule not in that helper is advisory** — it is a
-human review catch, and a PR that only runs the helper has not verified the non-**H** rules.
+enforces every rule marked **H** in §13 (**30 of 45**), the **seven** authored prose budgets (not the
+`fields`-value 40 — X-11a), and the banned phrase. Every page suite calls it once per rendered
+response. **A rule not in that helper is advisory** — it is a human review catch, and a PR that only
+runs the helper has not verified the non-**H** rules.
+
+**V-3a — V-3 DOES NOT EXIST YET, and it is NOT written by a screen. It is its own PR.** This is the
+programme's real gap: **30 H-marked rules are currently enforced by nothing shared.** Orders hand-rolled
+equivalents as ordinary assertions, so the **banned-string guard is Orders-only** — and the two live
+X-20 violations are on **Products** (§12.1). Terms:
+
+| | |
+|---|---|
+| **Owner** | **Its own `[Plugin]` PR.** No per-screen PR may carry it. Shared test infrastructure bolted onto a layout diff is exactly the drive-by `CLAUDE.md` forbids, and — the general form of it — **no screen should write the thing that judges it.** |
+| **Sequencing** | **After** the Orders increment merges (it builds on `test/helpers/blocks.ts`, which Orders delivered) and **before any further per-screen increment starts.** See §15.1 — it is step 2, and it gates every lane below it. |
+| **Must hoist** | The X-20 banned-phrase guard (currently Orders-only), X-11's seven budgets, X-9's heuristic **with its count exclusion**, and every H row added in revision 4 (X-35..X-42). |
+| **Signature** | `assertBlockContract(blocks, { screen, level })` — as above, unchanged. |
+
+**Why the gate is hard and not a preference.** Step 3 of §15.1 is **four concurrent lanes**. If the
+helper landed after them, four screens would each hand-roll 30 checks and all four would need
+retrofitting — the same duplication V-1a exists to stop, one level up and four times over. Sequencing it
+ahead also removes any "which screen is second?" question: the deadline is decidable without an ordering
+among the lanes.
+
+**Until it lands, only Orders is in flight**, and Orders already encodes the H rules as its own
+assertions and says so in its PR — which is what tells V-3's author what to absorb. Nothing else starts,
+so there is no second screen that needs an interim rule. Do not claim an **H** rule verified because it
+"reads right".
+
+### 15.1 Increment order — where your screen sits
+
+The order the programme is actually run in. It is **not** a suggestion; step 2 is a gate. (The plan's
+increment numbers map on as 3 · 3a · 5 · 5-last — see
+[`plans/admin-ui-density-cleanup.md`](../../plans/admin-ui-density-cleanup.md).)
+
+| Step | What | Concurrency |
+|---|---|---|
+| 1 | **Orders** — the reference screen (PR #161) | in revision |
+| 2 | **`assertBlockContract`** — its own `[Plugin]` PR (V-3a) | **gates everything below** |
+| 3 | **Coupons** · **Tax** · **Shipping** · **Reports + Settings** | **four PARALLEL lanes** |
+| 4 | **Pricing & inventory** (`products-page.ts`) | after the four lanes |
+
+Three things to read off this table:
+
+- **Step 3 is genuinely concurrent.** Four lanes, no ordering among them, no lane a predecessor of
+  another. If a rule here reads as though it assumes a serial order, it is a defect (N-1).
+- **Nothing in step 3 may start before step 2 merges.** That is the whole reason step 2 is a step and
+  not a chore folded into a screen.
+- **Products is last on purpose**, and it is where the helper's banned-phrase guard is first pointed at
+  something real — both live X-20 violations are there (§12.1). Being judged by the helper is a
+  different job from writing it.
+
+**V-3b — two wire-shape facts a suite gets wrong silently.** Both cost an afternoon and neither
+fails loudly:
+
+- **Drive a form submit with `values` PLUS the form's own `block_id`.** Every identity now rides
+  there (B-1), so a test that submits `values` alone exercises a wire shape the renderer never sends
+  — and the handler decodes `undefined` context and takes a DA-3b branch. `submitForm` in the shared
+  helper does this; use it.
+- **`carriedForm` is the LAST thing applied to a filter form.** `filterPanel` recomputes the prefill
+  digest and throws on an absent *or* stale one (§0.1 D item 1), and that throw surfaces as your
+  screen's **fail-closed banner** — the same banner as an unreachable service. So when a screen
+  fail-closes for no apparent reason, suspect your own composition order first and read the worker
+  log. E-7's copy exists precisely because this failure looks like an outage.
 
 **V-4 — three verification tiers. State which tier a claim rests on; do not blur them.**
 
@@ -2068,13 +2723,13 @@ human review catch, and a PR that only runs the helper has not verified the non-
 |---|---|---|
 | 1 — JSON-checkable | Budgets, vocabulary, §5/§6/§7/§9, and §10's invariants expressed as *"the token changed / did not change between these two responses"*. Includes: a DA-3 state-2 accordion carries **both** a changed `block_id` and `default_open: true`; the filter **accordion**'s `block_id` is identical across an apply *and* across `Clear filters`, while the filter **form**'s `block_id` differs after an apply **and** after `Clear filters`, whenever the prefilled values changed; a depth-3 open fired from a `button`; a service-offered transition outside `ORDER_STATES` renders no button; an L-9 level branches to accordions at 25 rows and to a table at 26. | the workerd-on-Node sandbox suite |
 | 2 — renderer behaviour | B-4, B-5, B-6, D-3, R-13a — claims about what React does with a key. One test each in the fork's `packages/blocks/tests/`, cited in the PR. | fork test suite |
-| 3 — density and appearance | P-1..P-4, F-6a's resolved select label, §16's residual flatness. **Screenshot only.** Nobody may claim these verified from a passing suite. | attached screenshot |
+| 3 — density and appearance | P-1..P-4, F-6a's non-empty triggers (per-control, per its table), §16's residual flatness, DA-2c's fan-out width, D-6a's labels next to their buttons. **Screenshot only.** Nobody may claim these verified from a passing suite. | attached screenshot |
 
 ---
 
 ## 16. What will still read flat after all of this
 
-Three things survive this overhaul. They are stated here so they do not surface as a surprise at
+Four things survive this overhaul. They are stated here so they do not surface as a surprise at
 screenshot review.
 
 1. **There is no mid-level typography.** Only `header` (`h2 text-xl font-bold`) and plain body text
@@ -2085,13 +2740,22 @@ screenshot review.
 2. **Tables have no alignment and no row click** (R-7). Money in the final column (T-2) is the only
    alignment lever, and every list needs a separate drill-in control (L-7, §12.7). Numbers will not
    form a right-aligned edge.
-3. **Selects show the option's raw *value*, not its label, and that does not change here.** F-6a
-   removes every **blank** trigger without a fork change — but it cannot make the trigger read the
-   label, because the pinned renderer never can (R-17a). So after this work the Orders status filter
-   reads `any`, coupons' type reads `fixed_amount`, the tax-class select reads a bare class id, and
-   the order picker reads a raw UUID. That is a real, visible wart; F-6c keeps it tolerable by
-   constraining values to words. The label case needs §14 item 3 (a fork PR is in flight) and the
-   UUID case is deleted by §14 item 2.
+3. **A `select` shows the option's raw *value*, not its label, and that does not change here.** F-6a
+   removes every **blank** trigger without a fork change — but it cannot make a `select` trigger read
+   the label, because the pinned renderer never can (R-17a). So after this work the Orders status
+   filter reads `any`, the cancellation reason reads `customer_request`, coupons' type reads
+   `fixed_amount`, and the tax-class select reads a bare class id. A real but small wart; F-6c keeps
+   it tolerable by constraining values to words, and §14 item 3 removes it.
 
-None of the three is a reason to delay: each per-screen increment is a strict improvement on what
-ships today, and all three are tracked.
+   **This item is smaller than revisions 1–3 claimed, and the correction matters.** They named "the
+   order picker reads a raw UUID" as the worst instance on these screens. **It does not** — the picker
+   is a `combobox`, which renders the option **label** and has a real placeholder (R-17b), so it reads
+   `Choose an order…` closed and `maya.iyer@example.com · $95.00 · processing` selected. That was
+   verified in a browser, not inferred. Nothing here reads as an id after L-7, and the residual
+   flatness is four readable lowercase words in four triggers.
+
+4. **A tracking URL is not clickable.** The vocabulary has no link (§14 item 5), so the operator
+   selects and copies. Do not shorten it to satisfy a budget — X-11a exists for exactly this value.
+
+None of the four is a reason to delay: each per-screen increment is a strict improvement on what
+ships today, and all four are tracked.

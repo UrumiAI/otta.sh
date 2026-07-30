@@ -30,7 +30,7 @@ than rewriting history.
 
 ## Records
 
-- [0001. Plugin + separate commerce service](./0001-plugin-plus-commerce-service.md) — accepted
+- [0001. Plugin + separate commerce service](./0001-plugin-plus-commerce-service.md) — accepted, amended 2026-07-29 (the product-data field widget was removed)
 - [0002. Adapter-based split (boundary is a deployment choice)](./0002-adapter-based-split.md) — accepted, refines 0001
 - [0003. Storefront pages are plugin-owned public routes](./0003-storefront-plugin-routes.md) — accepted, refines 0001
 - [0004. Storefront customer auth is magic-link](./0004-customer-auth-mechanism.md) — accepted, refines 0001
@@ -51,5 +51,8 @@ Decisions already made that should each become an ADR:
 - Separate commerce database (no cross-DB joins)
 - Backend-agnostic atomic inventory via single-statement conditional UPDATE
 - Pluggable payments (Stripe + x402 in parallel)
-- On-screen commercial editing via a Block Kit field widget
+- One home per field: commercial fields are owned by `product_commerce` and edited only in
+  the admin console; `product_commerce.title` is a derived single-writer cache fed by the
+  CMS content sync (replaces the withdrawn "on-screen commercial editing via a Block Kit
+  field widget" item — see the 2026-07-29 amendment on ADR-0001)
 - Customer accounts owned by the commerce service (not EmDash `ctx.users`)

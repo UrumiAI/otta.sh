@@ -23,7 +23,6 @@ export interface Product {
 		previewUrl?: string;
 		meta?: Record<string, unknown>;
 	};
-	commerce?: unknown;
 	createdAt: Date;
 	updatedAt: Date;
 	publishedAt: Date | null;

@@ -53,3 +53,27 @@ Ship Urumi as **two parts**:
   shared process. This is enforced by the sandbox, not just convention.
 - Supersedes considering a Durable Object; a DO may still be revisited only if a future
   requirement needs per-SKU coordination beyond what a single SQL statement provides.
+
+## Amended 2026-07-29 — the on-screen product-data field widget is gone
+
+The Decision above is unchanged in substance and is deliberately left as written. One
+item in its part 1 no longer describes the system: **"the on-screen product-data field
+widget"**.
+
+That widget wrote sku, price, currency, stock, kind, tax class and dimensions into a
+`commerce` JSON field on the CMS content document, which the sync hooks then projected
+into `product_commerce`. Because the admin console writes the same columns directly, the
+CMS content became a **second writer**, and any publish reverted whatever the console had
+edited — pinned for months as the store contract's `KNOWN GAP (F4)` case.
+
+The widget, its `commerce` seed field and its validator were removed in
+["one home per field"](../plans/one-home-per-field.md) PR 1b. Commercial fields now have
+exactly one home, `product_commerce`, edited only from the admin's **Pricing & inventory**
+page. The CMS owns content — title, description, images, slug — and the sync hooks became
+lifecycle-only apart from one permanent projection: `product_commerce.title`, a derived
+single-writer cache whose only writer is the content sync, kept because
+`createOrderFromCart` needs a title snapshot source and the architecture forbids a
+cross-database read.
+
+Nothing else in this record changes: the two-part shape, the sandbox-clean plugin, the
+HTTP-only boundary and the atomic single-statement decrement all stand.

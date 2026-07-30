@@ -15,11 +15,11 @@ service — this is what the [quick start](#quick-start-local-2-minutes) below g
 
 Urumi turns an EmDash site into a store. It ships as three parts:
 
-1. **Urumi plugin** — a sandbox-clean EmDash plugin: storefront routes, an on-screen
-   "Product data" panel (Block Kit field widget), content-sync hooks, cart/checkout
-   orchestration, an admin console (catalog, orders, reports, settings), and x402
-   gating for digital goods. Talks to the commerce service over HTTP only
-   (`network:request` + `allowedHosts`).
+1. **Urumi plugin** — a sandbox-clean EmDash plugin: storefront routes, content-sync
+   hooks, cart/checkout orchestration, an admin console (pricing & inventory, orders,
+   reports, settings), and x402 gating for digital goods. Talks to the commerce service
+   over HTTP only (`network:request` + `allowedHosts`). The CMS owns content; every
+   commercial field lives in the commerce service and is edited in the admin console.
 2. **Urumi commerce service** — a standalone Node/Hono + Postgres service that owns all
    money and stock truth: catalog, inventory, cart, checkout, orders, customers,
    payments, tax, shipping, discounts, entitlements, reporting, and webhooks.
@@ -63,9 +63,21 @@ sample products:
 http://localhost:4321/_emdash/api/setup/dev-bypass?redirect=/_emdash/admin
 ```
 
-`/products` now renders the catalog, and add-to-cart takes a real inventory hold against
-Postgres. Price and stock a product from the admin's **Product data** panel and watch the
-service log the sync.
+The seed creates the three sample products as CMS **content**. Their prices and stock live
+in the commerce service, which the seed does not touch, so give them some:
+
+```bash
+# 4. Price, stock and activate the demo products (third terminal, or reuse the first).
+#    It reads the products' real ids from the CMS (matching the seed's slugs),
+#    then prices and activates each one in the commerce service.
+SITE_URL=http://localhost:4321 COMMERCE_SERVICE_URL=http://127.0.0.1:3000 \
+  pnpm dlx tsx@4 sites/staging/scripts/seed-demo-commerce.ts
+```
+
+`/products` now renders a priced catalog and add-to-cart takes a real inventory hold
+against Postgres. Open **Pricing & inventory** in the admin to reprice, restock, or price
+a product of your own — that page is the only place commercial fields are edited; the CMS
+owns the title, description and images.
 
 Two things to know: the service is run through `tsx` rather than its built `dist` bin
 because the `@urumi/*` packages aren't published yet and their workspace export maps point
@@ -74,6 +86,35 @@ storefront covers **catalog + cart only** — see [Status](#status).
 
 To deploy this for free on Cloudflare Workers, follow
 [`DEPLOYMENT.md`](./DEPLOYMENT.md) §3.
+
+## Upgrading
+
+**Removing the leftover "Commerce" field.** Urumi used to store pricing in the CMS
+content document, in a `commerce` JSON field edited by an on-screen "Product data" panel.
+It no longer does — pricing, stock and every other commercial field live in the commerce
+service and are edited in the admin's **Pricing & inventory** page.
+
+If your site was seeded before this release, the Products collection keeps an unused
+"Commerce" JSON field showing the old pricing data. It is ignored — pricing now lives in
+**Pricing & inventory**. Remove it with:
+
+```bash
+emdash schema remove-field products commerce
+```
+
+**This only applies to a site seeded before the release.** On a fresh install there is no
+such field and the command **fails** with `Field "commerce" not found` and a non-zero exit
+— it is not a no-op, so do not put it in an unconditional upgrade script. Check first with
+`emdash schema get products`.
+
+**The drop is irreversible.** It deletes the field record, re-syncs the search triggers
+and **drops the column and its data** in one transaction — the old sku/price bag is gone,
+not orphaned. Before running it, confirm in **Pricing & inventory** that each product
+carries the price and stock you expect; whatever is left in the old JSON cannot be
+recovered afterwards.
+
+The command works against a deployed site — the EmDash CLI talks HTTP, so pass
+`--url https://<your-host>` (or set `EMDASH_URL`) plus your admin token.
 
 ## Why two parts
 

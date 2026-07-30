@@ -1,34 +1,37 @@
 /**
  * Seed guard (plan §3.3): the seed must declare the ONE collection the
  * plugin's sync hooks guard on (`PRODUCTS_COLLECTION = "products"`), with
- * the field set `CmsProductContent` reads (title/slug/description/images)
- * plus the `json` `commerce` field BOUND to the Product-data widget.
+ * the field set `CmsProductContent` reads (title/description/images) — and
+ * NOTHING commercial.
  *
- * Binding, not field type, is what mounts the widget (issue #81): em-dash's
- * `ContentEditor` mounts a plugin field widget ONLY when the field declares
- * `widget: "pluginId:widgetName"`. `FieldWidgetConfig.fieldTypes` is a
- * compatibility constraint, not the trigger — a `type:"json"` field with no
- * `widget` falls through to the default raw-JSON <textarea>. So the seed's
- * `commerce` field must carry `widget: "urumi:product-data"`.
+ * ONE HOME PER FIELD (PR 1b): the collection used to carry a `json` field
+ * called `commerce`, bound to a "Product data" Block Kit widget, holding sku /
+ * price / currency / stock / kind / tax class / dimensions. That made the CMS
+ * content document a SECOND writer of `product_commerce`'s columns, and every
+ * publish reverted whatever the admin console had edited. The field, the
+ * widget and its binding are gone; commercial fields are edited only in the
+ * admin's Pricing & inventory page. The "no commerce field" test below is the
+ * regression guard — re-adding one anywhere in this collection recreates the
+ * second writer.
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { productDataWidget, PRODUCTS_COLLECTION, URUMI_PLUGIN_ID } from "@urumi/plugin";
+import { PRODUCTS_COLLECTION } from "@urumi/plugin";
 import { describe, expect, test } from "vitest";
-
-type RegisteredFieldWidget = typeof productDataWidget;
 
 interface SeedField {
 	slug: string;
 	type: string;
 	required?: boolean;
-	/** Plugin field-widget binding: `"pluginId:widgetName"` (issue #81). */
+	/** Plugin field-widget binding: `"pluginId:widgetName"`. The products
+	 *  collection must declare NONE — the plugin registers no field widget. */
 	widget?: string;
 }
 
 interface SeedCollection {
 	slug: string;
+	description?: string;
 	fields: SeedField[];
 }
 
@@ -41,54 +44,8 @@ interface SeedFile {
 const seedPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../seed/seed.json");
 const seed = JSON.parse(readFileSync(seedPath, "utf8")) as SeedFile;
 
-/**
- * Approximate, CONSERVATIVE proxy for em-dash `ContentEditor.tsx`'s
- * field-widget decision (the `if (field.widget)` branch) — NOT a faithful
- * replica. Real em-dash mounts a plugin widget on: `field.widget` present +
- * parseable as `pluginId:widgetName` + the named plugin registered a widget
- * of that name (with non-empty `elements` for the sandboxed Block Kit path).
- * It does NOT check `fieldTypes` at mount time.
- *
- * This proxy adds one STRICTER gate real em-dash omits: the registered
- * widget's `fieldTypes` must admit the field's declared type. That extra
- * check is deliberate config sanity for THIS seed — it asserts the binding
- * points the `json` `commerce` field at a widget that declares it can edit
- * `json`, catching a mis-bound field (right widget name, incompatible type)
- * that em-dash would still try to mount. It only ever makes the proxy
- * REJECT more than em-dash, never accept more, so a passing "widget" result
- * here implies em-dash mounts too. Kept in lockstep with the plugin's real
- * registration surface (pinned separately by site-config.test's "registers
- * the Product-data Block Kit field widget").
- */
-function resolveFieldEditor(
-	field: SeedField,
-	registry: Record<string, readonly RegisteredFieldWidget[]>,
-): { kind: "widget"; widget: RegisteredFieldWidget } | { kind: "default"; fieldType: string } {
-	if (field.widget) {
-		const sep = field.widget.indexOf(":");
-		if (sep > 0) {
-			const pluginId = field.widget.slice(0, sep);
-			const widgetName = field.widget.slice(sep + 1);
-			const widget = registry[pluginId]?.find((w) => w.name === widgetName);
-			// Stricter-than-em-dash config-sanity gate (see docstring): the
-			// widget must declare it can edit this field's type.
-			if (widget && (widget.fieldTypes as readonly string[]).includes(field.type)) {
-				return { kind: "widget", widget };
-			}
-		}
-	}
-	return { kind: "default", fieldType: field.type };
-}
-
-// The plugin's registered field widgets, keyed by the owning plugin id —
-// mirrors what the trusted descriptor hands em-dash (fieldWidgets: [...]).
-const REGISTRY: Record<string, readonly RegisteredFieldWidget[]> = {
-	[URUMI_PLUGIN_ID]: [productDataWidget],
-};
-
 describe("seed/seed.json", () => {
 	const products = seed.collections?.find((c) => c.slug === PRODUCTS_COLLECTION);
-	const commerce = products?.fields.find((f) => f.slug === "commerce");
 
 	test("declares the products collection (the sync hooks' guard slug)", () => {
 		expect(seed.version).toBe("1");
@@ -105,33 +62,32 @@ describe("seed/seed.json", () => {
 		expect(bySlug.has("slug")).toBe(false);
 	});
 
-	test("commerce is a json field bound to the Product-data widget (issue #81)", () => {
-		expect(commerce?.type).toBe("json");
-		// The binding, not the type, mounts the panel. Pin the exact
-		// `pluginId:widgetName` string against the plugin's own constants so a
-		// rename on either side breaks this test.
-		expect(commerce?.widget).toBe(`${URUMI_PLUGIN_ID}:${productDataWidget.name}`);
-		// And the widget must admit `json` (its fieldTypes constraint).
-		expect(productDataWidget.fieldTypes).toContain("json");
+	test("the collection description signposts where pricing moved to", () => {
+		// After PR 1b the products editor shows title/description/images and
+		// nothing else, and a merchant who used to price here has no in-product
+		// pointer to where it went. This is the only signpost the seed format can
+		// carry — `SeedField` has no `description` key, only `SeedCollection` does
+		// — and em-dash surfaces it on Admin → Content Types, not in the editor.
+		// Weak, but better than a repo README a store operator never reads.
+		expect(products?.description).toMatch(/Pricing & inventory/);
 	});
 
-	test("editor mounts the Block Kit panel for commerce, NOT the default JSON textarea", () => {
-		expect(commerce).toBeDefined();
-		const resolved = resolveFieldEditor(commerce as SeedField, REGISTRY);
-		expect(resolved.kind).toBe("widget");
-		expect(resolved.kind === "widget" && resolved.widget.name).toBe("product-data");
+	test("declares NO commerce field — the CMS stores no commercial data (PR 1b)", () => {
+		const slugs = products?.fields.map((f) => f.slug) ?? [];
+		expect(slugs).not.toContain("commerce");
+		// Exactly the content field set, nothing else: a differently-named bag
+		// would be the same bug wearing a different hat.
+		expect(slugs).toEqual(["title", "description", "images"]);
 	});
 
-	test("resolver is load-bearing: an unbound json field falls back to the raw JSON editor", () => {
-		// Guards against a resolver/model that always returns the widget: the
-		// pre-#81 shape (json field, no `widget`) is exactly the bug and MUST
-		// resolve to the default editor.
-		const unbound: SeedField = { slug: "raw", type: "json" };
-		expect(resolveFieldEditor(unbound, REGISTRY)).toEqual({ kind: "default", fieldType: "json" });
-		// A binding to an unregistered widget name also falls through (em-dash's
-		// "widget declared but plugin/widget not found" path).
-		const dangling: SeedField = { slug: "x", type: "json", widget: `${URUMI_PLUGIN_ID}:nope` };
-		expect(resolveFieldEditor(dangling, REGISTRY).kind).toBe("default");
+	test("binds NO plugin field widget — the plugin registers none (PR 1b)", () => {
+		// The binding, not the field type, is what mounts a plugin widget in
+		// em-dash's `ContentEditor` (`if (field.widget)`). With no binding
+		// anywhere, no widget can mount, so the content editor cannot become a
+		// commerce editor again by accident.
+		for (const field of products?.fields ?? []) {
+			expect(field.widget).toBeUndefined();
+		}
 	});
 
 	test("sample entries (browsable catalog on first boot) are published products", () => {
@@ -140,6 +96,11 @@ describe("seed/seed.json", () => {
 		for (const entry of entries) {
 			expect(entry.slug.length).toBeGreaterThan(0);
 			expect(typeof entry.data["title"]).toBe("string");
+			// The demo entries carry CONTENT only. They get their commerce rows
+			// from `scripts/seed-demo-commerce.ts`, because em-dash's seed applier
+			// writes through `ContentRepository` directly and fires no content
+			// hooks — so nothing in this file can ever produce a priced product.
+			expect(entry.data).not.toHaveProperty("commerce");
 		}
 	});
 });
