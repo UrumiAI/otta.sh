@@ -1,8 +1,17 @@
 # Urumi admin console — design spec
 
-Status: **normative** (2026-07-30, revision 4, plus one amendment — DA-3a-ii is **replaced** and
-DA-3a-iii added, because the scaffold gained a render-state channel in `ce5eecb` and revision 4's
-DA-3a-ii said it had none). Applies to all **seven** admin screens under
+Status: **normative** (2026-07-30, revision 4, plus two amendments. **(1)** DA-3a-ii is **replaced**
+and DA-3a-iii added, because the scaffold gained a render-state channel in `ce5eecb` and
+revision 4's DA-3a-ii said it had none. **(2)** Four rules kept their requirements and had their
+**stated reasons** corrected, each having confused the emitted response with what the operator sees:
+**D-5** and **X-18** are scoped explicitly to the emitted response — a screenshot showing two open
+groups is not an X-18 finding; **DA-2c** is restated on emphasis grounds, its "~1100px" geometry
+being wrong (`actions` is one horizontal row); **F-5a-i** is new, because F-5a's sibling-discard
+hazard may no longer be excused as "realistically one group is open" — open state is sticky, so a
+split form set must carry a `context` line saying so (X-45); and **DA-3**'s outermost-group rule
+keeps its wording but drops "the confirm is invisible", which was checkably false, for the real
+ground: a response must not depend on client state it did not set.) Applies to all **seven** admin
+screens under
 `packages/plugin/src/admin/` — Orders, Pricing & inventory, Coupons, Tax, Shipping, Reports and
 Settings, as registered at `admin-route.ts:83-101`. (Earlier revisions said "six"; the count was
 wrong and five parallel teams read this line.)
@@ -238,18 +247,18 @@ is the index so nothing is buried. **Read your screen's rows before you start.**
 
 **#161's disclosures were written against revision 3, not this text.** So they quote rule wording,
 section counts and listing lines that revision 4 has since changed — `select`-vs-`combobox` throughout,
-X-11's "eight budgets" (now seven), §13's "23 of 33" (now 30 of 45), V-1's foundation ownership, and the
+X-11's "eight budgets" (now seven), §13's "23 of 33" (now 30 of 46), V-1's foundation ownership, and the
 §11.2 lines fixed below. Reading that PR against this document, the offsets are the **fix**, not
 staleness: every one of the nineteen is live and indexed here.
 
 | # | Finding | Landed in |
 |---|---|---|
 | E-a | `combobox` renders the option **label**; only `select` renders the raw value. The "order picker reads a raw UUID" wart cited twice was never real. | R-17b, F-6a, F-6c, L-7, §14 item 3, §16 item 3 |
-| E-b | DA-3 state 2 nested inside another accordion is **unbuildable** — forcing only the inner group open hides the confirm behind a collapsed parent. | DA-3, §11.2 |
+| E-b | DA-3 state 2 nested inside another accordion puts the confirm button behind a parent the **response** leaves collapsed. **Restated:** the finding as filed said the confirm "is invisible"; on the happy path the parent is still expanded from the operator's own click (B-5), so it is visible — the defect is that visibility then depends on click history, and R-24 resets it. | DA-3, §11.2 |
 | E-c | A DA-3a refusal that re-renders without the staged payload silently opens a **different** group and discards what the operator typed. | DA-3a (new), §11.2 |
 | E-d | `-review` never bound-checked the amount, so `900.00` on a $50 order staged a red button and a confirm dialog that were both false. | DA-3c (new) |
 | E-e | The only red control on the Fulfilment panel was **"Mark refunded"** (moves no money) while the irreversible cancel was a quiet trigger. | D-6, DA-5 |
-| E-f | Five full-width danger buttons is ~1100px of solid red on a panel whose likeliest next act is a small quiet "Mark paid". | DA-2c (new) |
+| E-f | A row of five danger buttons makes the reason enum the loudest thing on a panel whose likeliest next act is a small quiet "Mark paid". **Restated:** the finding as filed said "~1100px of solid red"; `actions` is a single wrapping row of intrinsically-sized buttons, so the cap is about emphasis, not height. | DA-2c (new) |
 | E-g | The Money panel can show `Total $95.00` beside `Captured $0.00 · Remaining $0.00`, and the D-6 label degenerates to `$0.00 of $0.00 refunded`. | M-11 (new), D-6 |
 | E-h | A fail-closed banner asserted *"Could not reach the commerce service"* on a path a console bug also reaches — sending the operator's page to the wrong team. | E-1, E-3, E-7 (new) |
 | E-i | X-9's raw-minor-units heuristic rejects §11.2's own `Refunds recorded` count. | X-9 |
@@ -577,6 +586,14 @@ per DA-3a-iii — not on "this response came from `-review`". That is a predicat
 Everything else is `default_open: false` — always, including every destructive group and every
 group whose body is a table that may be empty. There is no taste in this rule and no per-screen
 variation: a reviewer computes the expected group from the record state and checks one boolean.
+
+**D-5 constrains the emitted response, not the viewport.** The algorithm decides the booleans in
+*this* response — at most one `default_open: true` — and it cannot close a group an earlier render
+already opened: an unchanged `block_id` means no remount, so the mounted accordion never re-reads
+`default_open` (B-5, B-6; `accordion.tsx:14`, keyed on `block_id` at `renderer.tsx:78`), and
+an operator can therefore see two groups expanded while the response underneath is fully compliant.
+**Check the emitted JSON, never the screen:** two expanded groups in a screenshot are B-5 working
+exactly as documented and are **not** evidence of a D-5 or X-18 violation.
 
 **A rank the algorithm opens must still render.** Rank 2 fires on a `paid` order, where tracking is
 not yet capturable — so `fulfilment` opens with no form in it. **The group still renders, and its body
@@ -934,10 +951,35 @@ was replaced with the submitted values (last write wins)" (`coupons-page.ts:858`
 **The trade-off to accept where splitting *is* legal.** Saving form A reloads the record, which
 changes `updatedAt`, which changes forms B and C's carriers, which remounts them — **discarding any
 unsubmitted input in the siblings.** This is the same hazard `filterRow()` was withdrawn for
-(§0.1 A). It is acceptable here only because each split form sits in its own **collapsed** accordion
-(D-5), so realistically one is open at a time. State it in the PR; do not discover it in review.
+(§0.1 A). State it in the PR; do not discover it in review.
 
-The exact split per screen is enumerated in §12 — teams do not choose it.
+**F-5a-i — a split form set carries one `context` line naming the discard.** Revision 4 accepted the
+hazard on the grounds that each split form sits in its own **collapsed** accordion (D-5), "so
+realistically one is open at a time." **That reasoning does not hold and is withdrawn.** D-5
+constrains the emitted response, not the viewport: accordion open state is client-side and
+**sticky** across a re-render with an unchanged `block_id` (B-5, and D-5's "constrains the emitted
+response" paragraph), so a sibling the operator expanded earlier is **still expanded** when saving
+form A remounts it, and the `default_open: false` in the new response will not close it. The discard is
+reachable the first ordinary time an operator works in two sections — not in a corner case. It was
+also never checkable: an implementer cannot build "realistically" and a reviewer cannot rule
+pass/fail on it.
+
+So the operator is told instead. **One `context` line sits above the split groups**, at the panel
+level — one line for the whole set, never one per form. Normative, ≤200 — this blockquote is the
+spec:
+
+> `Each section saves on its own. Save the section you are editing before you open another — saving
+> one reloads the product and clears unsaved edits in the others.`
+
+Written to DA-7a's discipline — it starts from the operator's goal, ends at the act, and contains no
+"deliberately" / "there is no" / "we do not" (X-41 binds on every `context` line, not only
+withheld-action ones). It is **not** a DA-7 line: DA-7 covers a *withheld control*, and here every
+control renders. A screen whose split noun is not "product" substitutes its own noun; nothing else
+varies. X-45 rejects the missing line and the per-form repeat.
+
+The exact split per screen is enumerated in §12 — teams do not choose it. **Products' three-way edit
+split (§12.1) is the only instance today, and §12.1 is built last** — so F-5a-i is written here
+rather than left to be rediscovered.
 
 **F-5c — a full-replace form is exempt from F-5, up to 8 visible fields.** Where F-5a forbids
 splitting, the budget cannot be met by splitting and dropping a field is data loss, so the form is
@@ -1113,9 +1155,14 @@ are also the write most likely to race, because the state an operator is moving 
 another operator is most likely to have changed.
 
 **DA-2c — fan-out cap: above 4 values, the buttons go quiet and the dialog stays loud.** One danger
-button per value is right at two or three. At five it is ~1100px of unbroken red across a panel whose
-likeliest next act is a small quiet `Mark paid`, and every button competes with every other for the
-alarm that should belong to the act (§0.2 E-f). So:
+button per value is right at two or three. **This cap is about emphasis, not space** — `actions`
+lays its elements out in a **single horizontal flex row** with intrinsically-sized buttons
+(`actions.tsx:12`, `flex flex-wrap gap-2`), so five reason buttons are one wrapping row, not a
+vertical wall, and invoking DA-2c buys **no height back and no scroll**. What it buys is the
+emphasis: at five, a row of same-weight destructive controls becomes the loudest thing on a panel
+whose likeliest next act is a small quiet `Mark paid`, and every button competes with every other
+for the alarm that should belong to the act (§0.2 E-f) — the emphasis inversion §8 exists to remove.
+So:
 
 | Values | Buttons | Dialog |
 |---|---|---|
@@ -1125,7 +1172,8 @@ alarm that should belong to the act (§0.2 E-f). So:
 The `confirm` is **never** optional and never loses its `style:"danger"` — the guard is the dialog,
 not the colour, and DA-1 is satisfied either way. Above 4 the group's own D-6a label
 (`Cancel order — permanent, releases held stock`) carries the warning the colour was carrying, which
-is a better place for it: one line of red-adjacent text instead of a wall.
+is a better place for it: one line of red-adjacent text instead of a row of interchangeable red
+buttons.
 
 **Before invoking DA-2c, check the enum is really that wide.** Orders' five cancellation reasons drop
 to **four** once `Other` goes (§11.2 — `Other` promised a detail field the button could not provide),
@@ -1147,10 +1195,28 @@ state 2 (confirm)   accordion "<Verb> …"  block_id <changed>           default
 
 **Which accordion is "the" accordion, when state 1 is nested.** A DA-3 collect form usually sits in a
 sub-group inside a larger one — `Refund a different amount` inside `Refunds`, `Cancel with a note`
-inside `Cancel order`. Revision 3's listing put the `:review` suffix on the **inner** group, and that
-is unbuildable: D-5 Rule 1 forces every other group `false`, so the confirm button renders inside an
-open child of a **collapsed parent** and is invisible; forcing both open breaks X-18 (§0.2 E-b). The
-resolution, and it is a rule because six screens will hit it:
+inside `Cancel order`. Revision 3's listing put the `:review` suffix on the **inner** group. **This
+rule is about the response putting the confirm button on screen by itself.** Suffix the inner group
+and D-5 Rule 1 forces the parent `default_open: false`, so whether the confirm is visible turns on
+client state the response did not set: the operator opened the parent to click "Review refund", the
+parent's `block_id` is unchanged, so it stays open (B-5, and D-5's "constrains the emitted response"
+paragraph — `accordion.tsx:14` reads `default_open` once, at mount, R-14a). So on the happy path the
+confirm **is** visible, and the reason revision 4 gave — "it is invisible" — is checkably false. The
+rule stands on the stronger ground:
+
+- **Visibility that depends on the operator's click history is not correctness.** The response
+  asserts `default_open: false` on the group the confirm is inside and gets a visible confirm
+  anyway, purely because of what the operator did earlier. Nothing in the response expresses the
+  condition it is relying on.
+- **It is not verifiable, at any V-4 tier.** A tier-1 assertion can check that a state-2 response
+  carries a forced-open group whose body holds the confirm; it cannot check "some earlier render
+  left the parent expanded". A rule whose correctness no test can express fails this document's bar.
+- **The platform discards open state on events the console plans for.** **R-24** unmounts the entire
+  block tree on any non-2xx and returns every group to its `default_open` — which is precisely why
+  E-6 requires every handler to return 200. Open state is not a guarantee this console owns.
+
+Forcing both groups open instead breaks X-18 (§0.2 E-b). The resolution, and it is a rule because
+six screens will hit it:
 
 > **The `:review` id and `default_open: true` go on the OUTERMOST group on the open path**, and its
 > body on a state-2 render is the staged form plus the confirm button **directly**. The inner
@@ -2030,6 +2096,10 @@ tab         block_id products:<id>:tabs   default_tab 0   panels ALWAYS 2
 │       priced and unpriced branches, and only one renders) = 13 operator fields. F-2 deletes
 │       2 carriers and F-3 deletes `inventoryPolicy`, leaving 12 — and the split below covers
 │       exactly 12: 2 + 4 + 6.
+│    context    "Each section saves on its own. Save the section you are editing before you
+│               open another — saving one reloads the product and clears unsaved edits in the
+│               others."                                    (F-5a-i, verbatim; ONE line, here
+│               — above the three groups, never repeated inside them. X-45)
 │    accordion  block_id products:<id>:edit-identity   default_open per D-5 rank 3
 │               label "Identity"
 │               └─ context "Title and SKU are also shown in the CMS; editing here changes the
@@ -2473,7 +2543,7 @@ Assert a **depth-3 open fired from a button** (shipping zone → method → rate
 ## 13. Anti-patterns — a reviewer rejects these on sight
 
 **H** = mechanically enforced by `assertBlockContract` (§15); a rule without **H** is a human
-review catch. **30 of the 45 rows are H — and `assertBlockContract` does not exist yet** (V-3a): it is
+review catch. **30 of the 46 rows are H — and `assertBlockContract` does not exist yet** (V-3a): it is
 its own PR, and it **gates every screen after Orders** (§15.1 step 2). So if you are reading this while
 building a screen, the helper exists and you call it. Only Orders predates it, and only Orders encodes
 these rules as its own assertions.
@@ -2498,7 +2568,7 @@ these rules as its own assertions.
 | X-15 | H | Any `columns` or `chart` block. | §2 |
 | X-16 | H | A conditionally-present `tab` panel; `default_tab` other than 0; a panel count differing from D-2's table. | D-3, D-4 |
 | X-17 | H | A form without an explicit `block_id`; a context-carrying `block_id` with no `:u1.` segment; a prefilling form whose `block_id` did not come from `carriedForm`. | B-1, B-3, B-3a |
-| X-18 | H | More than one `default_open: true` **per rendered response**. | D-5 |
+| X-18 | H | More than one `default_open: true` **per rendered response**. **Counted on the emitted JSON only.** A screenshot showing two expanded groups is **not** an X-18 finding: client-side open state survives a re-render with an unchanged `block_id`, so a group opened by an earlier response stays open through a response carrying `default_open: false` (B-5). | D-5, B-5 |
 | X-19 | | A bare-noun accordion label where a count or total is available *on the wire the level already reads* (D-6). | D-6 |
 | X-20 | H | The phrase "no oversell" / "oversold" / "overselling" in any **rendered string**. Code comments documenting the domain invariant are exempt and must not be changed. | voice |
 | X-21 | | Apologetic degraded copy, or a raw status code / URL / exception in the UI. | E-4 |
@@ -2525,6 +2595,7 @@ these rules as its own assertions.
 | X-42 | H | A fail-closed banner that names a single cause (`Could not reach the commerce service`) rather than E-7's normative copy. | E-7 |
 | X-43 | | A `Total` rendered on the same screen as a smaller `Captured`/`Settled`/`Allocated` with no M-11 line; or a bare `Remaining`/`Available`/`Left` label. | M-11, M-11a |
 | X-44 | | A T-8 cap `context` line emitted when the read was **not** truncated. | T-8a |
+| X-45 | | A split form set (F-5a) with **no** panel-level sibling-discard `context` line, or that line repeated inside each form's group instead of appearing once above them. Also: any PR that justifies the sibling-discard hazard by claiming the groups are collapsed — open state is sticky (B-5), which is why F-5a-i requires the line. | F-5a-i |
 
 ---
 
@@ -2653,7 +2724,7 @@ reviewed. *Done in PR #161 (`aa2bd97` → `3c7f037`); V-1a generalises it to the
 `packages/plugin/test/helpers/`. The two extra arguments are not optional: **X-16** cannot be
 decided from the blocks alone (it must compare the panel set against D-2's per-screen table) and
 **X-27**'s second half cannot either (it must know whether this response is a leaf detail). It
-enforces every rule marked **H** in §13 (**30 of 45**), the **seven** authored prose budgets (not the
+enforces every rule marked **H** in §13 (**30 of 46**), the **seven** authored prose budgets (not the
 `fields`-value 40 — X-11a), and the banned phrase. Every page suite calls it once per rendered
 response. **A rule not in that helper is advisory** — it is a human review catch, and a PR that only
 runs the helper has not verified the non-**H** rules.
@@ -2723,7 +2794,7 @@ fails loudly:
 |---|---|---|
 | 1 — JSON-checkable | Budgets, vocabulary, §5/§6/§7/§9, and §10's invariants expressed as *"the token changed / did not change between these two responses"*. Includes: a DA-3 state-2 accordion carries **both** a changed `block_id` and `default_open: true`; the filter **accordion**'s `block_id` is identical across an apply *and* across `Clear filters`, while the filter **form**'s `block_id` differs after an apply **and** after `Clear filters`, whenever the prefilled values changed; a depth-3 open fired from a `button`; a service-offered transition outside `ORDER_STATES` renders no button; an L-9 level branches to accordions at 25 rows and to a table at 26. | the workerd-on-Node sandbox suite |
 | 2 — renderer behaviour | B-4, B-5, B-6, D-3, R-13a — claims about what React does with a key. One test each in the fork's `packages/blocks/tests/`, cited in the PR. | fork test suite |
-| 3 — density and appearance | P-1..P-4, F-6a's non-empty triggers (per-control, per its table), §16's residual flatness, DA-2c's fan-out width, D-6a's labels next to their buttons. **Screenshot only.** Nobody may claim these verified from a passing suite. | attached screenshot |
+| 3 — density and appearance | P-1..P-4, F-6a's non-empty triggers (per-control, per its table), §16's residual flatness, DA-2c's fan-out **emphasis** (the button row's weight, not its height), D-6a's labels next to their buttons. **Screenshot only.** Nobody may claim these verified from a passing suite. **Nothing runs the other way:** a screenshot is not evidence for a tier-1 claim, and specifically not for X-18 (see its row — open state is sticky). | attached screenshot |
 
 ---
 
