@@ -1235,6 +1235,13 @@ D-5 Rule 1 covers this: a DA-3a refusal **is** a state-2-shaped response for ope
 group forced open, every other `false`, X-18 satisfied. Say so in the render path; do not let the
 refusal fall into Rule 2.
 
+**"State-2-shaped" scopes to which group is open, and to nothing else.** It settles `default_open` and
+the `block_id`; it licenses **nothing** about the body. A refusal's body is **state 1** — its alert
+banner, the collect form, the `Review …` submit — and it carries **no confirm control**, because the
+payload a confirm would carry is the payload just refused. Re-offering it re-stages a stale amount
+(DA-3a) or the very figure the bound check rejected (DA-3c) — a red `Refund $900.00` on a $50 order,
+§0.2 E-d walking back in.
+
 **DA-3a-ii — a staged or refused re-render costs the leaf's normal read set. Priced, not avoided.**
 `showLeaf`/`showList` carry render state (DA-3a-iii), so a `-review`, a DA-3c refusal and a DA-3a
 refusal all re-render **through the level's own `render`**: the reads are the level's, they happen
@@ -1898,8 +1905,10 @@ tab         block_id orders:<id>:tabs      default_tab 0      panels ALWAYS 4 (D
 │                 block_id orders:<id>:refunds:review  +  default_open TRUE     (B-6)
 │                 body = banner + staged form + one danger confirm button, and nothing else
 │                 — the meter, the ledger and the full-remaining button are all suppressed
-│               A DA-3a REFUSAL re-renders exactly this state-2 shape, forced open, with the
-│                 operator's submitted values prefilled                        (DA-3a-i)
+│               A DA-3a OR DA-3c REFUSAL re-renders STATE 1 into THIS group: forced open,
+│                 the collect form FLATTENED into the group body, the submitted values
+│                 prefilled, and NO confirm button — a confirm here would re-offer the
+│                 payload just refused             (DA-3a-i, incl. its scoping note; X-39)
 │
 └─ panel "History"
      table      block_id orders:timeline
