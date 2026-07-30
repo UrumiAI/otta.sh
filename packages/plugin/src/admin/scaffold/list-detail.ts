@@ -24,6 +24,13 @@ import {
  * Kit body. Screen-specific side effects (a status transition, appending a
  * note) are registered as {@link customAction}s.
  *
+ * TWO CHANNELS RUN FROM A CUSTOM ACTION BACK INTO A LEVEL'S `render`: a
+ * {@link Notice} banner ("what happened"), and this screen's own
+ * `RenderState` ("what to render now" — which group to open, which values to
+ * prefill). Both are arguments to {@link CustomActionApi.showLeaf} /
+ * {@link CustomActionApi.showList}; see the `RenderState` note on
+ * {@link CustomActionApi} for why the second one exists and what it is not.
+ *
  * IO discipline: the ONLY egress is whatever the screen's `client` performs;
  * this module touches neither `fetch` nor `ctx.http` directly, so it never
  * appears among the sandbox-clean guard's offenders.
@@ -50,8 +57,10 @@ export interface ListDetailInput {
 // -- level definitions (public factories, strongly typed per screen) ----------
 
 /** A keyset-paged list level. Generic in the screen's `Client`, filter-form
- *  shape `Filter`, and row-summary type `Summary`. */
-export interface ListLevelDef<Client, Filter, Summary> {
+ *  shape `Filter`, row-summary type `Summary`, and the screen's `RenderState`
+ *  (`never` — no channel — unless the level renders one; see
+ *  {@link CustomActionApi}). */
+export interface ListLevelDef<Client, Filter, Summary, RenderState = never> {
 	/** Page size for the keyset read. */
 	limit: number;
 	/** Parse a filter-form `form_submit`'s `values` into this level's filter. */
@@ -78,13 +87,20 @@ export interface ListLevelDef<Client, Filter, Summary> {
 		items: Summary[];
 		nextToken: string | undefined;
 		notice: Notice | undefined;
+		/** This screen's render state, when a list-level {@link CustomActionFn}
+		 *  passed one to {@link CustomActionApi.showList} — `undefined` on every
+		 *  other render (open/back/page/apply-filter, and any custom action that
+		 *  passed none). See {@link CustomActionApi}'s `RenderState` note. */
+		renderState: RenderState | undefined;
 	}): Block[];
 	/** Fail-closed response when the page read cannot reach the service. */
 	onError(): BlockResponse;
 }
 
-/** A leaf detail level. Generic in the screen's `Client` and primary `Detail`. */
-export interface LeafLevelDef<Client, Detail> {
+/** A leaf detail level. Generic in the screen's `Client`, primary `Detail`, and
+ *  the screen's `RenderState` (`never` — no channel — unless the level renders
+ *  one; see {@link CustomActionApi}). */
+export interface LeafLevelDef<Client, Detail, RenderState = never> {
 	/** Load the primary record. A throw fails closed; `null` renders `notFound`.
 	 *  (Named `load`, not the f-word, so the sandbox-clean grep guard never
 	 *  mistakes a method declaration for a bare network-egress call.) */
@@ -99,22 +115,44 @@ export interface LeafLevelDef<Client, Detail> {
 		id: string;
 		detail: Detail;
 		notice: Notice | undefined;
+		/** This screen's render state, when the firing {@link CustomActionFn} passed
+		 *  one to {@link CustomActionApi.showLeaf} — `undefined` on every other
+		 *  render (open/back, and any custom action that passed none). This is where
+		 *  a DA-3 stage/refuse render learns WHICH group to open and WHAT to prefill;
+		 *  see {@link CustomActionApi}'s `RenderState` note. */
+		renderState: RenderState | undefined;
 	}): Promise<Block[]> | Block[];
-	/** Blocks for a missing record (id resolved to `null`). */
+	/** Blocks for a missing record (id resolved to `null`).
+	 *
+	 *  Deliberately NOT given the render state (nor the notice, as before): the
+	 *  record it was staged against no longer resolves, so a group forced open
+	 *  around a form prefilled with an amount for a vanished order is a lie. The
+	 *  missing record IS the outcome the operator needs. */
 	notFound(args: { actions: ScreenActions; path: NavPath; id: string }): Block[];
 	/** Fail-closed response when the primary read cannot reach the service. */
 	onError(): BlockResponse;
 }
 
-/** The engine-facing (type-erased) level shape. Screens never build this
- *  directly — {@link listLevel}/{@link leafLevel} produce it from typed defs. */
-export type LevelDef =
-	| ({ kind: "list" } & ListLevelDef<unknown, unknown, unknown>)
-	| ({ kind: "leaf" } & LeafLevelDef<unknown, unknown>);
+/**
+ * The engine-facing (type-erased) level shape. Screens never build this
+ * directly — {@link listLevel}/{@link leafLevel} produce it from typed defs.
+ *
+ * `RenderState` is the ONE type parameter that is NOT erased here, and that is
+ * the whole of the channel's type safety. Everything else (`Client`, `Filter`,
+ * `Summary`, `Detail`) is produced and consumed inside a single level, so the
+ * factories below can erase it and cast it back with a local soundness argument.
+ * Render state instead crosses from ONE closure (a custom action) to ANOTHER (a
+ * level's `render`), which no local argument can cover — so it stays visible in
+ * the type, and {@link createListDetailHandler} is where the two ends are checked
+ * against each other. `never` (the default) means "this screen has no channel".
+ */
+export type LevelDef<RenderState = never> =
+	| ({ kind: "list" } & ListLevelDef<unknown, unknown, unknown, RenderState>)
+	| ({ kind: "leaf" } & LeafLevelDef<unknown, unknown, RenderState>);
 
-export function listLevel<Client, Filter, Summary>(
-	def: ListLevelDef<Client, Filter, Summary>,
-): LevelDef {
+export function listLevel<Client, Filter, Summary, RenderState = never>(
+	def: ListLevelDef<Client, Filter, Summary, RenderState>,
+): LevelDef<RenderState> {
 	// SAFETY (existential-type erasure): the engine stores levels type-erased
 	// (`unknown`) because one `levels` array mixes levels of different Client/
 	// Filter/Summary types. The casts below are sound because this closure is the
@@ -123,6 +161,9 @@ export function listLevel<Client, Filter, Summary>(
 	// THIS level's `filterFromValues` produced (the engine never fabricates or
 	// cross-wires one level's filter into another), and `items` are always what
 	// THIS level's `fetchPage` returned. The typed `def` never sees a foreign value.
+	//
+	// `renderState` needs NO cast and gets none: that argument is exactly why it is
+	// left in `LevelDef`'s type instead of being erased alongside the rest.
 	return {
 		kind: "list",
 		limit: def.limit,
@@ -135,10 +176,13 @@ export function listLevel<Client, Filter, Summary>(
 	};
 }
 
-export function leafLevel<Client, Detail>(def: LeafLevelDef<Client, Detail>): LevelDef {
+export function leafLevel<Client, Detail, RenderState = never>(
+	def: LeafLevelDef<Client, Detail, RenderState>,
+): LevelDef<RenderState> {
 	// SAFETY: same existential-erasure argument as `listLevel` — `client` is
 	// always `config.createClient`'s value, and `detail` is always what THIS
 	// level's `load` returned, round-tripped through the engine unchanged.
+	// `renderState` is un-erased and therefore un-cast, as in `listLevel`.
 	return {
 		kind: "leaf",
 		load: (client, path, id) => def.load(client as Client, path, id),
@@ -151,8 +195,47 @@ export function leafLevel<Client, Detail>(def: LeafLevelDef<Client, Detail>): Le
 
 // -- custom (side-effecting) actions ------------------------------------------
 
-/** The re-render surface a custom action calls once its side effect is done. */
-export interface CustomActionApi<Client> {
+/**
+ * The re-render surface a custom action calls once its side effect is done.
+ *
+ * `RenderState` IS THE SCREEN'S OWN TYPE, and the scaffold never looks inside it.
+ * It answers the question a `notice` cannot: a banner says WHAT HAPPENED, render
+ * state says WHAT TO RENDER NOW — which group to open, which values to put back in
+ * a form. The spec's DA-3/DA-3a shape needs both at once: a refusal (the record
+ * moved under the operator, or they typed `19,99` in an amount field) must
+ * re-render **state 1** with the group open and the operator's input preserved,
+ * and a banner alone leaves the re-rendered level guessing at both.
+ *
+ * WHAT IT IS NOT — three properties it is worth being explicit about, because each
+ * is a plausible misreading that would break something the scaffold guarantees:
+ *
+ *  - **NOT STORAGE, and not a wire format.** The value is passed by reference to
+ *    the level's `render` inside the SAME response. Nothing is serialized, stored
+ *    or echoed to the client, and the next interaction's `renderState` is
+ *    `undefined` again. Every screen stays stateless: whatever must survive the
+ *    NEXT click still rides in `button.value` or in a form's `block_id` carrier
+ *    (see `./carrier.js`) exactly as before. A stage/confirm flow therefore uses
+ *    both — render state to show state 2, and the confirm button's `value` to carry
+ *    the staged payload and its watermark into the write.
+ *  - **NOT DATA.** Pass what to render, not what was read. The custom action's copy
+ *    of a record is pre-mutation or (on a DA-3a refusal) known-stale by
+ *    construction, so re-rendering from it would show the operator figures that are
+ *    already wrong — which is the failure the re-read exists to catch. The engine
+ *    still calls the level's own `load`, and the level still renders from what it
+ *    returns. (Nothing prevents a screen stuffing a loaded record in here, since
+ *    the value is opaque; it is a mistake, and the paragraph above is why.)
+ *  - **NOT TRUSTED, and never inspected.** The engine reads no property of it, so a
+ *    value whose own getters throw can only blow up in the screen's `render` —
+ *    already inside the leaf/list containment, which fails closed to that level's
+ *    `onError`. Do not defeat that by validating it here; there is nothing to
+ *    validate, and a check would be a new throw site outside a level's try.
+ *
+ * Type-safety: `RenderState` is the one parameter {@link LevelDef} does not erase,
+ * so a screen's levels and its custom actions are checked against each other at
+ * the {@link createListDetailHandler} call site. It defaults to `never`, so a
+ * screen that declares none cannot pass one by accident.
+ */
+export interface CustomActionApi<Client, RenderState = never> {
 	input: ListDetailInput;
 	client: Client;
 	/** The hidden context the originating form carried in its `block_id` —
@@ -173,37 +256,58 @@ export interface CustomActionApi<Client> {
 	 *  {@link CustomActionApi.showList} to re-render where the operator was. */
 	carriedPath: NavPath | undefined;
 	/** Re-render the leaf at `path` (its id is `path`'s last element), optionally
-	 *  with a notice banner. */
-	showLeaf(path: NavPath, notice?: Notice): Promise<BlockResponse>;
+	 *  with a notice banner, and optionally with this screen's `renderState` — which
+	 *  the level's `render` receives verbatim. The two compose, and the refusal case
+	 *  needs both: `showLeaf(path, REFUSED_NOTICE, {…what the operator typed…})`. */
+	showLeaf(path: NavPath, notice?: Notice, renderState?: RenderState): Promise<BlockResponse>;
 	/** Re-render the list at `path` (default: the root list), optionally with a
-	 *  notice banner — the list-level counterpart to `showLeaf`'s notice, for a
-	 *  custom action whose target level is a list (e.g. a create/edit/delete on
-	 *  a screen with no leaf level, such as a two-list-level registry drill-down). */
-	showList(path?: NavPath, notice?: Notice): Promise<BlockResponse>;
+	 *  notice banner and this screen's `renderState` — the list-level counterpart to
+	 *  `showLeaf`, for a custom action whose target level is a list (e.g. a
+	 *  create/edit/delete on a screen with no leaf level, such as a two-list-level
+	 *  registry drill-down). A `path` landing on a LEAF renders that leaf, state and
+	 *  all, exactly as `showLeaf` would. */
+	showList(path?: NavPath, notice?: Notice, renderState?: RenderState): Promise<BlockResponse>;
 }
 
-export type CustomActionFn<Client> = (api: CustomActionApi<Client>) => Promise<BlockResponse>;
+export type CustomActionFn<Client, RenderState = never> = (
+	api: CustomActionApi<Client, RenderState>,
+) => Promise<BlockResponse>;
 
-export function customAction<Client>(fn: CustomActionFn<Client>): CustomActionFn<unknown> {
+export function customAction<Client, RenderState = never>(
+	fn: CustomActionFn<Client, RenderState>,
+): CustomActionFn<unknown, RenderState> {
 	// SAFETY: same existential-erasure argument as `listLevel`/`leafLevel` —
-	// `api.client` is always the value `config.createClient` returned.
+	// `api.client` is always the value `config.createClient` returned. `RenderState`
+	// is NOT erased (see `LevelDef`), so nothing about the channel is cast here.
 	return (api) => fn({ ...api, client: api.client as Client });
 }
 
 // -- the screen + its handler -------------------------------------------------
 
-export interface ListDetailScreenConfig {
+/**
+ * A screen's configuration. `RenderState` is the screen's own render-state type
+ * (see {@link CustomActionApi}) and defaults to `never` — the no-channel case, and
+ * every screen written before the channel existed.
+ *
+ * A SCREEN WITH RENDER STATE SHOULD NAME IT EXPLICITLY —
+ * `createListDetailHandler<OrdersRenderState>({…})` — rather than leaving it to
+ * inference. This is the one place the levels and the custom actions meet, so an
+ * explicit argument is what makes a mismatch between them an error HERE (where the
+ * screen author can see both) instead of somewhere further in.
+ */
+export interface ListDetailScreenConfig<RenderState = never> {
 	actions: ScreenActions;
 	/** Build the token-threaded `ctx.http` client for this screen. */
 	createClient(ctx: PluginContext): Promise<unknown> | unknown;
-	/** Levels indexed by drill depth (index 0 = root list). */
-	levels: LevelDef[];
+	/** Levels indexed by drill depth (index 0 = root list). A level that ignores
+	 *  the render-state channel is written exactly as before. */
+	levels: LevelDef<RenderState>[];
 	/** Resolve an `open` interaction to the FULL target path (ancestors + the
 	 *  selected id). The scaffold renders `levels[targetPath.length]` at it —
 	 *  a leaf or a deeper list. Undefined ⇒ fall back to the root list. */
 	parseOpen(input: ListDetailInput): { targetPath: NavPath } | undefined;
 	/** Screen-specific side-effecting actions, keyed by full action id. */
-	customActions?: Record<string, CustomActionFn<unknown>>;
+	customActions?: Record<string, CustomActionFn<unknown, RenderState>>;
 }
 
 /** The notice a custom action's failed re-render carries. A side effect may
@@ -230,8 +334,8 @@ const ACTION_OUTCOME_UNKNOWN: Notice = {
  * all of them: it also covers the paths no inner try can reach — `createClient`,
  * `parseOpen`, `filterFromValues`, and a screen's own `onError()` throwing.
  */
-export function createListDetailHandler(
-	config: ListDetailScreenConfig,
+export function createListDetailHandler<RenderState = never>(
+	config: ListDetailScreenConfig<RenderState>,
 ): RouteHandler<ListDetailInput> {
 	const dispatch = createDispatcher(config);
 	return async (routeCtx, ctx) => {
@@ -259,7 +363,9 @@ export function createListDetailHandler(
 	};
 }
 
-function createDispatcher(config: ListDetailScreenConfig): RouteHandler<ListDetailInput> {
+function createDispatcher<RenderState>(
+	config: ListDetailScreenConfig<RenderState>,
+): RouteHandler<ListDetailInput> {
 	const { actions, levels } = config;
 
 	return async (routeCtx, ctx) => {
@@ -267,7 +373,7 @@ function createDispatcher(config: ListDetailScreenConfig): RouteHandler<ListDeta
 		const action = readString(input.action_id);
 		const client = await config.createClient(ctx);
 
-		const listLevelAt = (depth: number): (LevelDef & { kind: "list" }) | undefined => {
+		const listLevelAt = (depth: number): (LevelDef<RenderState> & { kind: "list" }) | undefined => {
 			const level = levels[depth];
 			return level !== undefined && level.kind === "list" ? level : undefined;
 		};
@@ -277,6 +383,7 @@ function createDispatcher(config: ListDetailScreenConfig): RouteHandler<ListDeta
 			filter: unknown,
 			cursor?: string,
 			notice?: Notice,
+			renderState?: RenderState,
 		): Promise<BlockResponse> => {
 			const level = listLevelAt(path.length);
 			if (level === undefined) return { blocks: [] };
@@ -300,6 +407,7 @@ function createDispatcher(config: ListDetailScreenConfig): RouteHandler<ListDeta
 					items: page.items,
 					nextToken,
 					notice,
+					renderState,
 				});
 				// GUARANTEE the deep-level filter carry (review round 2, item 1): at
 				// depth ≥ 1 an `apply-filter` submit MUST carry the drill path, or it
@@ -319,20 +427,28 @@ function createDispatcher(config: ListDetailScreenConfig): RouteHandler<ListDeta
 			}
 		};
 
-		const renderLeaf = async (path: NavPath, notice?: Notice): Promise<BlockResponse> => {
+		const renderLeaf = async (
+			path: NavPath,
+			notice?: Notice,
+			renderState?: RenderState,
+		): Promise<BlockResponse> => {
 			const level = levels[path.length];
 			const id = path[path.length - 1];
 			if (level === undefined || level.kind !== "leaf" || id === undefined) return { blocks: [] };
 			// `render` and `notFound` are INSIDE the try, not just `load`: they are
 			// screen code that builds blocks, and block builders throw (a rejected
-			// carrier namespace, a filter form over its field budget). An escaping
-			// throw becomes a non-2xx, which replaces the whole rendered tree with a
-			// raw status panel — the worst possible outcome right after a side effect
-			// applied, because the operator cannot tell whether it did.
+			// carrier namespace, a filter form over its field budget, a hostile
+			// `renderState` whose own getters throw — the engine never reads it, so a
+			// screen's `render` is the only place it can be touched). An escaping throw
+			// becomes a non-2xx, which replaces the whole rendered tree with a raw status
+			// panel — the worst possible outcome right after a side effect applied,
+			// because the operator cannot tell whether it did.
 			try {
 				const detail = await level.load(client, path, id);
 				if (detail === null) return { blocks: level.notFound({ actions, path, id }) };
-				return { blocks: await level.render({ client, actions, path, id, detail, notice }) };
+				return {
+					blocks: await level.render({ client, actions, path, id, detail, notice, renderState }),
+				};
 			} catch (err) {
 				console.error("[urumi] admin leaf level failed:", err);
 				return level.onError();
@@ -341,18 +457,22 @@ function createDispatcher(config: ListDetailScreenConfig): RouteHandler<ListDeta
 
 		/** Render whichever level `path` lands on — a leaf, a deeper list, or the
 		 *  root list (an empty path). Lists open with their default (empty) filter. */
-		const renderPath = async (path: NavPath, notice?: Notice): Promise<BlockResponse> => {
+		const renderPath = async (
+			path: NavPath,
+			notice?: Notice,
+			renderState?: RenderState,
+		): Promise<BlockResponse> => {
 			const level = levels[path.length];
 			if (level === undefined) return { blocks: [] };
-			if (level.kind === "leaf") return renderLeaf(path, notice);
-			return renderList(path, level.filterFromValues({}), undefined, notice);
+			if (level.kind === "leaf") return renderLeaf(path, notice, renderState);
+			return renderList(path, level.filterFromValues({}), undefined, notice, renderState);
 		};
 
-		const rootList = (notice?: Notice): Promise<BlockResponse> => {
+		const rootList = (notice?: Notice, renderState?: RenderState): Promise<BlockResponse> => {
 			const root = listLevelAt(0);
 			return root === undefined
 				? Promise.resolve({ blocks: [] })
-				: renderList([], root.filterFromValues({}), undefined, notice);
+				: renderList([], root.filterFromValues({}), undefined, notice, renderState);
 		};
 
 		// -- open: drill into the resolved target path ----------------------------
@@ -407,9 +527,14 @@ function createDispatcher(config: ListDetailScreenConfig): RouteHandler<ListDeta
 					client,
 					carried: readCarrier(input),
 					carriedPath: readNavPath(input),
-					showLeaf: (path, notice) => renderLeaf(path, notice),
-					showList: (path, notice) =>
-						path === undefined ? rootList(notice) : renderPath(path, notice),
+					// The render-state argument is forwarded UNTOUCHED and un-inspected: the
+					// engine has no business reading a screen's own value, and reading one
+					// here would put a new throw site outside every level's containment.
+					showLeaf: (path, notice, renderState) => renderLeaf(path, notice, renderState),
+					showList: (path, notice, renderState) =>
+						path === undefined
+							? rootList(notice, renderState)
+							: renderPath(path, notice, renderState),
 				})) as Awaited<ReturnType<RouteHandler<ListDetailInput>>>;
 			} catch (err) {
 				// A custom action is the one place a SIDE EFFECT may already have
@@ -420,6 +545,9 @@ function createDispatcher(config: ListDetailScreenConfig): RouteHandler<ListDeta
 				// banner saying the outcome is unknown, rather than a raw status panel
 				// that says nothing and unmounts everything. The banner is PREPENDED
 				// rather than passed as a notice because a list level may ignore `notice`.
+				// No render state is forwarded here either: the value in flight is a
+				// plausible cause of the throw, and this fallback's whole job is to be the
+				// simplest render that can still work.
 				console.error(`[urumi] admin custom action ${String(action)} failed:`, err);
 				const toast = {
 					message: "Action outcome unknown — re-check the record",
