@@ -1,6 +1,8 @@
 # Urumi admin console — design spec
 
-Status: **normative** (2026-07-30, revision 4). Applies to all **seven** admin screens under
+Status: **normative** (2026-07-30, revision 4, plus one amendment — DA-3a-ii is **replaced** and
+DA-3a-iii added, because the scaffold gained a render-state channel in `ce5eecb` and revision 4's
+DA-3a-ii said it had none). Applies to all **seven** admin screens under
 `packages/plugin/src/admin/` — Orders, Pricing & inventory, Coupons, Tax, Shipping, Reports and
 Settings, as registered at `admin-route.ts:83-101`. (Earlier revisions said "six"; the count was
 wrong and five parallel teams read this line.)
@@ -260,7 +262,7 @@ staleness: every one of the nineteen is live and indexed here.
 | E-p | The Notes table duplicates the timeline's `Detail` column verbatim. | §11.2 |
 | E-q | DA-7 lines narrated the designers' decision (*"There is deliberately no bare 'Mark shipped'"*) instead of naming the alternative. | DA-7 |
 | E-r | `V-1`'s `test/helpers/blocks.ts` was assigned to the foundation and never shipped; `V-3`'s `assertBlockContract` had **no owner** and does not exist. | §15, **§15.1** |
-| E-s | A `stagedResponse` re-render costs a **full leaf re-read** (5 requests on Orders), not one. | DA-3a |
+| E-s | A staged or refused re-render costs a **full leaf re-read** (5 requests on Orders), not one — and #161's hand-rolled `stagedResponse` paid it **twice** on both of its fallback paths (`detail === null` and its `catch` each fall through to `showLeaf`), from a second render path the leaf's `notFound`/`onError` never saw. The scaffold now carries render state instead, so the level renders itself once. | DA-3a-ii, DA-3a-iii |
 
 Two of the nineteen are recorded and **not** fixed here: an unclickable tracking URL (§14 item 5) and
 `ComboboxList`'s spurious React duplicate-key warning (§14, tracked note).
@@ -559,8 +561,9 @@ and **every other group on the screen is `default_open: false`**. Rule 2 is not 
 **The refusal case is the one that gets missed.** A refusal re-render that forgets it is a Rule-1
 response falls through to Rule 2 and opens whatever the record state suggests — on Orders, `fulfilment`
 on a *different tab panel* — while the group whose banner says "re-enter an amount below" stays shut
-(§0.2 E-c). Rule 1 is keyed on **"this response carries a staged payload"**, not on "this response came
-from `-review`".
+(§0.2 E-c). Rule 1 is keyed on **"this response carries render state"** — a staged payload or a refusal,
+per DA-3a-iii — not on "this response came from `-review`". That is a predicate the render path can read
+(`renderState !== undefined`), not an inference about which action fired.
 
 **Rule 2 — otherwise, first match wins.** At most one group gets `default_open: true`:
 
@@ -1219,28 +1222,90 @@ they compose: DA-3a rejects the stale submit before the key is ever derived.
 
 **DA-3a-i — every refusal re-renders STATE 1 OF THE SAME GROUP, forced open, with the submitted values
 prefilled.** Binds on **both** refusal kinds — DA-3a's stale watermark and DA-3c's failed bound check.
-All three clauses, or the refusal is worse than the race it caught:
+All four clauses, or the refusal is worse than the race it caught:
 
 | Clause | Why |
 |---|---|
-| **the same group** | D-5's open-group algorithm has no idea a refusal happened. Re-render without a staged payload and it falls through to rank 2, opening `fulfilment` — on Orders, a **different tab panel** — while the group the banner points at stays collapsed (§0.2 E-c). |
+| **the same group** | D-5's open-group algorithm has no idea a refusal happened. Re-render without render state and it falls through to rank 2, opening `fulfilment` — on Orders, a **different tab panel** — while the group the banner points at stays collapsed (§0.2 E-c). The render state the action passes is what tells the level a refusal happened (DA-3a-iii). |
 | **forced open** | B-6, both halves: a changed `block_id` **and** `default_open: true`. A banner reading *"re-enter an amount below"* above a closed accordion is not an instruction. |
 | **values prefilled** | The operator typed an amount, an optional reason and their name. Discarding all three to tell them to try again makes the safe path the expensive one, and the next thing they reach for is the DA-2b full-remaining button — which is not what they wanted. |
+| **flattened onto that group** | The forced-open group is the **outermost group on the open path** (B-6, DA-3's outermost-group rule), so the refusal's body renders the collect form **directly** in it and the inner collect-group is **not rendered at all** — exactly as state 2 is flattened. Force the outer group open and leave the form inside a nested `default_open: false` child and the operator's rejected input is on the page but invisible, which is the "values prefilled" clause failing while passing an id check. |
 
 D-5 Rule 1 covers this: a DA-3a refusal **is** a state-2-shaped response for open-group purposes — one
 group forced open, every other `false`, X-18 satisfied. Say so in the render path; do not let the
 refusal fall into Rule 2.
 
-**DA-3a-ii — re-rendering with a staged payload costs a full leaf re-read. Sanctioned, and priced.**
-The scaffold's `showLeaf` carries no render state, so any `-review`, DA-3c refusal or DA-3a refusal
-re-runs the leaf's whole read set to put a staged payload in front of the operator. On Orders that is
-**five requests** — `getOrder` plus the four detail surfaces — per click, not the one the reference PR
-estimated. This is **accepted**: threading a staging channel through the shared engine for one
-interaction is worse, and these clicks are rare and operator-initiated.
+**"State-2-shaped" scopes to which group is open, and to nothing else.** It settles `default_open` and
+the `block_id`; it licenses **nothing** about the body. A refusal's body is **state 1** — its alert
+banner, the collect form, the `Review …` submit — and it carries **no confirm control**, because the
+payload a confirm would carry is the payload just refused. Re-offering it re-stages a stale amount
+(DA-3a) or the very figure the bound check rejected (DA-3c) — a red `Refund $900.00` on a $50 order,
+§0.2 E-d walking back in.
 
-But price it before you copy the pattern. On a read-heavy leaf, count your surfaces first; if the
-number is uncomfortable, the fix is a narrower re-read for the staged path (re-read only the surfaces
-the staged group renders), **not** a client-side stash and not a nonce (F-2a).
+**DA-3a-ii — a staged or refused re-render costs the leaf's normal read set. Priced, not avoided.**
+`showLeaf`/`showList` carry render state (DA-3a-iii), so a `-review`, a DA-3c refusal and a DA-3a
+refusal all re-render **through the level's own `render`**: the reads are the level's, they happen
+once per response, and the screen writes **no second read-and-render path**. On Orders that is
+**five requests** — `getOrder` plus the four detail surfaces — per click, not the one the reference PR
+estimated. Nothing about the channel reduces that number; what it removes is a duplicate
+implementation of the read-and-render pair that drifts from the level's and re-reads a second time on
+its own fallback paths (§0.2 E-s).
+
+The channel deliberately carries **state, not data**: the engine still calls the level's `load`,
+because a refusal's whole point is that the action's copy of the record is stale by construction.
+
+So price it before you copy the pattern onto a read-heavy leaf: **count your surfaces first.** If the
+number is uncomfortable, the fix is a narrower re-read for the staged path — **a level may branch its
+own secondary reads on `renderState`** and skip a surface this render genuinely does not draw. Two
+limits on that, both checkable: **D-3 still binds**, so a panel whose surface you skipped must still
+render its honest line — a skip that blanks a panel is a defect, not an optimisation; and a refusal's
+copy must name the **live** ceiling (DA-3a, DA-3c), so whichever surface supplies that figure is never
+the one to skip. On Orders those two leave nothing safely skippable — every one of the four surfaces
+feeds a panel D-3 keeps rendering, and one of them carries the ceiling the refusal copy must name — so
+five requests is the priced answer there, not a tuning target. The primary `load` is not branchable and
+is not meant to be: it receives no render state, and it *is* the re-read DA-3a depends on. What is never
+the fix: a client-side stash, or a nonce (F-2a).
+
+**DA-3a-iii — the render-state channel: what it carries, and what it does not.** A custom action
+re-renders through `api.showLeaf(path, notice?, renderState?)` or
+`api.showList(path?, notice?, renderState?)` (`scaffold/list-detail.ts`, `CustomActionApi`). The third
+argument is **positional and optional**; it is the screen's own type; the target level's `render`
+receives it verbatim beside `notice`. A banner says **what happened**, render state says **what to
+render now** — which group to open, which values to put back in a form — and DA-3a-i needs both at
+once. Five properties, each binding:
+
+1. **One discriminated union per screen, named at the handler.**
+   `createListDetailHandler<OrdersRenderState>({…})`, members discriminated on `kind`. A level that
+   renders *any* member declares the **whole** union and narrows on `kind` — its `render` must accept
+   anything any of that screen's actions can send it. A screen that declares no render state cannot
+   pass one: a third argument is a compile error, not a value that quietly arrives somewhere and is
+   ignored.
+2. **Within-request only.** Nothing is stored, serialized or echoed to the client, and the *next*
+   interaction's `renderState` is `undefined` again. Whatever must survive the next click still rides
+   in `button.value` or the form's `block_id` carrier (§10, B-1, R-26) exactly as before — so a
+   stage/confirm flow uses both: render state to draw state 2, the confirm button's `value` to carry
+   the staged payload and its watermark into the write.
+3. **State, never data.** Pass what to render, not what was read. A level reads its figures from
+   `detail` (and its own secondary reads), never from `renderState` — see DA-3a-ii. The channel is
+   opaque to the engine, so nothing *stops* a screen putting a loaded record in it; it is still wrong.
+4. **`notFound` and the failed-action fallback get none, deliberately.** A form prefilled for a record
+   that no longer resolves is a lie, and the fallback after a custom action throws must be the
+   simplest render that can still work. `open`, `back`, `page` and `apply-filter` get none either: a
+   staged view does not survive a "Load more", and must not.
+5. **Money in render state is minor units or verbatim operator text, and the member name says which.**
+   `…Cents: number` is integer minor units (M-3); `…Input: string` is what the operator typed,
+   unparsed. A refusal prefills from the `…Input` member, because `19,99` or `900.00` cannot be
+   re-derived from cents — that is the whole reason the draft members exist.
+
+The five ways a screen gets this wrong. Each is a diff a reviewer can rule on:
+
+| Mistake | What the operator gets | Reviewer's check |
+|---|---|---|
+| Render state set, group `block_id` unchanged (or changed with no `default_open: true`) | A banner pointing at a **collapsed** group | B-6, both halves, on the **outermost group on the open path** only — X-29, X-39 |
+| Outer group forced open, collect form left in its nested `default_open: false` child | Rejected input on the page and invisible | DA-3a-i's **flattened** clause: the refusal body renders the form directly; the inner collect-group is absent |
+| A loaded record in the channel, to save a read | The figures the re-read just proved stale | DA-3a-ii: no union member holds a record the level's `load` or secondary reads return |
+| A formatted money string where minor units are expected, or `…Cents` where the operator typed `19,99` | A refusal that discards or mangles the amount | Property 5: every money-bearing member is `…Cents: number` or `…Input: string`, and the refusal prefills from `…Input` |
+| Reading `renderState` for something the *next* click needs | A staged payload that vanishes on confirm | Property 2: anything crossing an interaction is in `button.value` or the `block_id` carrier |
 
 **DA-3b — a staged payload that fails to decode renders an `error` notice, never a silent
 redirect.** `orders-page.ts:1497` currently does `if (orderId === undefined) return showList()`,
@@ -1840,8 +1905,10 @@ tab         block_id orders:<id>:tabs      default_tab 0      panels ALWAYS 4 (D
 │                 block_id orders:<id>:refunds:review  +  default_open TRUE     (B-6)
 │                 body = banner + staged form + one danger confirm button, and nothing else
 │                 — the meter, the ledger and the full-remaining button are all suppressed
-│               A DA-3a REFUSAL re-renders exactly this state-2 shape, forced open, with the
-│                 operator's submitted values prefilled                        (DA-3a-i)
+│               A DA-3a OR DA-3c REFUSAL re-renders STATE 1 into THIS group: forced open,
+│                 the collect form FLATTENED into the group body, the submitted values
+│                 prefilled, and NO confirm button — a confirm here would re-offer the
+│                 payload just refused             (DA-3a-i, incl. its scoping note; X-39)
 │
 └─ panel "History"
      table      block_id orders:timeline
@@ -2452,7 +2519,7 @@ these rules as its own assertions.
 | X-36 | H | A D-6 label containing a degenerate ratio — `$0.00 of $0.00`, `0 of 0`, `0%` of nothing. | D-6b |
 | X-37 | H | **More than 4 `style:"danger"` buttons in one `actions` block**; or a DA-2c fan-out whose `confirm` lost its `style:"danger"` along with the button's. | DA-2c |
 | X-38 | H | A DA-2b/DA-3 `button.value` carrying no watermark, or a confirm handler that writes without re-reading. Countable on the payload; the re-read is asserted by the screen's own stale-watermark test. | DA-2a, DA-3a |
-| X-39 | H | A DA-3a or DA-3c refusal that does not re-render **the same group**, forced open per B-6, with the submitted values prefilled. Assert the refused response's open-group id equals the staged group's and the form's `initial_value`s echo the submission. | DA-3a-i |
+| X-39 | H | A DA-3a or DA-3c refusal that does not re-render **the same group**, forced open per B-6, with the submitted values prefilled and **flattened onto that group**. Assert the refused response's open-group id equals the staged group's, the form's `initial_value`s echo the submission, and the nested collect-group is absent from the response. | DA-3a-i |
 | X-40 | | A `-review` handler that validates only parseability — no bound check against the live ceiling. | DA-3c |
 | X-41 | H | A `context` or `banner` line containing `deliberately`, `there is no`, or `we do not`; a DA-7 line with no actionable verb. | DA-7a, E-4 |
 | X-42 | H | A fail-closed banner that names a single cause (`Could not reach the commerce service`) rather than E-7's normative copy. | E-7 |
