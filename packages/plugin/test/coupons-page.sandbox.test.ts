@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { decodePath, encodePath } from "../src/admin/scaffold/index.js";
 import {
+	blocksOf,
+	buttons,
+	findBlock,
+	findBlocks,
+	formFor,
+	type LooseBlock,
+} from "./helpers/blocks.js";
+import {
 	type RecordedRequest,
 	startStubCommerceServer,
 	type StubCommerceServer,
@@ -197,16 +205,24 @@ async function seedToken(sandbox: SandboxHandle, stub: StubCommerceServer, token
 	stub.requests.length = 0;
 }
 
-interface Blk extends Record<string, unknown> {
-	type: string;
-}
-function blocksOf(outcome: unknown): Blk[] {
-	if (!(typeof outcome === "object" && outcome !== null && "result" in outcome)) return [];
-	const result = (outcome as { result: { blocks?: Blk[] } }).result;
-	return result.blocks ?? [];
-}
+// The block-search helpers below are PORTED onto the recursive traversal in
+// `test/helpers/blocks.ts` (spec V-1/V-1a, §15) — a screen-local ALIAS type
+// (`Blk`) and thin screen-specific wrappers over `findBlocks`/`findBlock`/
+// `formFor`/`buttons`, rather than flat `blocks.filter(b => b.type === ...)`
+// searches. `BlockRenderer` recurses into `columns`/`tab`/`accordion`
+// children (R-25); a flat search silently returns `[]`/`undefined` the moment
+// this screen's content moves into a container, which is exactly the layout
+// change this suite's OWN next commit makes. Porting first means every
+// assertion below keeps finding its block through that re-layout instead of
+// passing while asserting nothing (§15's "the failure mode where the suite
+// passes while asserting nothing").
+//
+// This commit is behaviour-free: it touches no `packages/plugin/src` file,
+// and the block tree today is still flat, so every helper below returns
+// EXACTLY what its flat predecessor did.
+type Blk = LooseBlock;
 function tableOf(blocks: Blk[]) {
-	return blocks.find((b) => b.type === "table") as
+	return findBlock(blocks, "table") as
 		| { rows?: Array<Record<string, unknown>>; next_cursor?: string; empty_text?: string }
 		| undefined;
 }
@@ -214,26 +230,22 @@ function tableRows(blocks: Blk[]): Array<Record<string, unknown>> {
 	return tableOf(blocks)?.rows ?? [];
 }
 function bannerOf(blocks: Blk[]) {
-	return blocks.find((b) => b.type === "banner") as
+	return findBlock(blocks, "banner") as
 		| { variant?: string; title?: string; description?: string }
 		| undefined;
 }
 function formFields(blocks: Blk[], submitActionId: string): Array<Record<string, unknown>> {
-	const form = blocks.find(
-		(b) => b.type === "form" && (b.submit as { action_id?: string })?.action_id === submitActionId,
-	);
+	const form = formFor(blocks, submitActionId);
 	return (form?.fields ?? []) as Array<Record<string, unknown>>;
 }
 function detailFields(blocks: Blk[]): Map<string, string> {
-	const fields = blocks.find((b) => b.type === "fields") as
+	const fields = findBlock(blocks, "fields") as
 		| { fields?: Array<{ label: string; value: string }> }
 		| undefined;
 	return new Map((fields?.fields ?? []).map((f) => [f.label, f.value]));
 }
 function actionButtons(blocks: Blk[]): Array<Record<string, unknown>> {
-	return blocks
-		.filter((b) => b.type === "actions")
-		.flatMap((b) => (b.elements as Array<Record<string, unknown>>) ?? []);
+	return buttons(blocks);
 }
 /** The open form's `target` select options — asserted to decode to a real
  *  NavPath rather than trusting a hand-encoded guess. */
@@ -243,7 +255,7 @@ function openTargetOptions(blocks: Blk[]): Array<{ value: string; label: string 
 	return (targetField?.options as Array<{ value: string; label: string }> | undefined) ?? [];
 }
 function headerTexts(blocks: Blk[]): string[] {
-	return blocks.filter((b) => b.type === "header").map((b) => String(b.text));
+	return findBlocks(blocks, "header").map((b) => String(b.text));
 }
 
 let sandbox: SandboxHandle | undefined;
