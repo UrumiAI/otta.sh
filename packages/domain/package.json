@@ -1,7 +1,7 @@
 {
-	"name": "@urumi/domain",
+	"name": "@otta-sh/domain",
 	"version": "0.0.1",
-	"description": "Urumi commerce domain — pure ports, use-cases, and branded types. No IO.",
+	"description": "Otta commerce domain — pure ports, use-cases, and branded types. No IO.",
 	"homepage": "https://github.com/UrumiAI/otta.sh#readme",
 	"bugs": {
 		"url": "https://github.com/UrumiAI/otta.sh/issues"

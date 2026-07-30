@@ -1,7 +1,7 @@
 {
-	"name": "@urumi/payments-x402",
+	"name": "@otta-sh/payments-x402",
 	"version": "0.0.1",
-	"description": "x402 PaymentGateway adapter for Urumi — synchronous page-gate proof, facilitator-verified server-side (never trusting the plugin).",
+	"description": "x402 PaymentGateway adapter for Otta — synchronous page-gate proof, facilitator-verified server-side (never trusting the plugin).",
 	"homepage": "https://github.com/UrumiAI/otta.sh#readme",
 	"bugs": {
 		"url": "https://github.com/UrumiAI/otta.sh/issues"
@@ -31,7 +31,7 @@
 		"build": "tsdown"
 	},
 	"dependencies": {
-		"@urumi/domain": "workspace:*"
+		"@otta-sh/domain": "workspace:*"
 	},
 	"devDependencies": {
 		"@types/node": "catalog:",
