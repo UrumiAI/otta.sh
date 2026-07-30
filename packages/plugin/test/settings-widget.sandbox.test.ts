@@ -1,5 +1,6 @@
 import { SETTINGS_SCHEMA, URUMI_PLUGIN_CAPABILITIES } from "@urumi/plugin";
 import { afterEach, describe, expect, test } from "vitest";
+import { blocksOf, findBlocks } from "./helpers/blocks.js";
 import {
 	startStubCommerceServer,
 	type StubCommerceServer,
@@ -10,6 +11,11 @@ import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
 // workerd-on-Node sandbox. ONE form, TWO save paths: kv (display name, no
 // ctx.http) and service (operational, PUT /settings over ctx.http). SECURITY:
 // no secret is read from or written to ctx.kv.
+//
+// PORT (no behaviour change): the local `blocksOf` and flat `.find`/`.flatMap`
+// type scans are replaced by the shared recursive helpers (spec §15,
+// V-1/V-1a) ahead of the layout change that moves this content into
+// accordions — see the PR body.
 
 let sandbox: SandboxHandle | undefined;
 let stub: StubCommerceServer | undefined;
@@ -19,14 +25,6 @@ afterEach(async () => {
 	await stub?.close();
 	stub = undefined;
 });
-
-function blocksOf(
-	outcome: { result: unknown } | { error: string },
-): Array<Record<string, unknown>> {
-	if (!("result" in outcome))
-		throw new Error(`expected a result, got error: ${JSON.stringify(outcome)}`);
-	return (outcome.result as { blocks: Array<Record<string, unknown>> }).blocks;
-}
 
 describe("Settings admin form (workerd sandbox)", () => {
 	test("storeDisplayName saves via ctx.kv without calling ctx.http, and persists across invocations", async () => {
@@ -55,9 +53,8 @@ describe("Settings admin form (workerd sandbox)", () => {
 		// It persisted in kv: a page load reflects it as the form's initial value
 		// (this load DOES call GET /settings for the operational fields).
 		const loaded = await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" });
-		const form = blocksOf(loaded).find(
+		const form = findBlocks(blocksOf(loaded), "form").find(
 			(b) =>
-				b.type === "form" &&
 				Array.isArray(b.fields) &&
 				(b.fields as Array<Record<string, unknown>>).some(
 					(f) => f.action_id === "storeDisplayName",
@@ -145,14 +142,14 @@ describe("Settings admin form (workerd sandbox)", () => {
 		// Not a thrown {error} — a rendered inline error banner carrying the
 		// service's actual message.
 		const blocks = blocksOf(outcome);
-		const banner = blocks.find((b) => b.type === "banner" && b.variant === "error");
+		const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
 		expect(banner).toBeDefined();
 		expect(String(banner?.text)).toContain("holdTtlMinutes must be a positive integer");
 
 		// J6: the operational form re-renders the ATTEMPTED holdTtlMinutes (0) but
 		// the un-edited lowStockThreshold keeps its STORED value (5), not 0.
-		const opForm = blocks.find(
-			(b) => b.type === "form" && Array.isArray(b.fields) && (b.fields as unknown[]).length === 2,
+		const opForm = findBlocks(blocks, "form").find(
+			(b) => Array.isArray(b.fields) && (b.fields as unknown[]).length === 2,
 		);
 		const fields = (opForm?.fields ?? []) as Array<Record<string, unknown>>;
 		const byId = new Map(fields.map((f) => [f.action_id, f.initial_value]));
@@ -182,7 +179,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 			values: { holdTtlMinutes: 45, lowStockThreshold: 20 },
 			idempotencyKey: "k-401",
 		});
-		const banner = blocksOf(outcome).find((b) => b.type === "banner" && b.variant === "error");
+		const banner = findBlocks(blocksOf(outcome), "banner").find((b) => b.variant === "error");
 		expect(banner).toBeDefined();
 		// Part 5: the auth/5xx/non-JSON fallback must not echo a raw status or URL.
 		expect(String(banner?.text)).not.toMatch(/HTTP \d|\/settings|401/);
@@ -219,7 +216,7 @@ describe("Settings admin form (workerd sandbox)", () => {
 		// was absent and the guarded read would 401.
 		expect(get?.headers["x-internal-token"]).toBe("admin-token-xyz");
 		// It got through: the operational fields rendered, not the fail-closed banner.
-		expect(blocksOf(loaded).some((b) => b.type === "banner" && b.variant === "error")).toBe(false);
+		expect(findBlocks(blocksOf(loaded), "banner").some((b) => b.variant === "error")).toBe(false);
 	});
 
 	test("with NO admin token the guarded GET /settings fails CLOSED to a generic banner, and the token forms still render", async () => {
@@ -233,13 +230,13 @@ describe("Settings admin form (workerd sandbox)", () => {
 		const blocks = blocksOf(
 			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
 		);
-		const banner = blocks.find((b) => b.type === "banner" && b.variant === "error");
+		const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
 		expect(banner).toBeDefined();
 		// Never echo the raw status or URL (same discipline as the PUT failure path).
 		expect(String(banner?.text)).not.toMatch(/HTTP \d|\/settings|401/);
 		// No bootstrap lockout: both token forms are still on the page, so an admin
 		// with no token provisioned can still provision one.
-		const actionIds = blocks.flatMap((b) =>
+		const actionIds = findBlocks(blocks, "form").flatMap((b) =>
 			Array.isArray(b.fields)
 				? (b.fields as Array<Record<string, unknown>>).map((f) => f.action_id)
 				: [],

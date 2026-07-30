@@ -1,5 +1,6 @@
 import { plugin } from "@urumi/plugin";
 import { afterEach, describe, expect, test } from "vitest";
+import { blocksOf, findBlocks } from "./helpers/blocks.js";
 import {
 	startStubCommerceServer,
 	type StubCommerceServer,
@@ -12,6 +13,10 @@ import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
 // Urumi previously registered `admin/reports`/`admin/settings` (which never
 // dispatch) → Reports/Settings 404'd. Proven here under the REAL
 // workerd-on-Node sandbox.
+//
+// PORT (no behaviour change): flat `blocks.filter/.find` type scans replaced
+// by the shared recursive helpers (spec §15, V-1/V-1a) ahead of the layout
+// change that moves Reports/Settings content into accordions.
 
 /** A GET responder for both the guarded /reports/* reads (200 only WITH the
  *  admin token, else 401 — mirroring the service's guard) and the unguarded
@@ -101,10 +106,8 @@ describe("admin route dispatch (workerd sandbox)", () => {
 		await seedToken(sandbox, stub, "admin-token-xyz");
 
 		const outcome = await sandbox.invokeRoute("admin", { type: "page_load", page: "/reports" });
-		expect("result" in outcome).toBe(true);
-		if (!("result" in outcome)) return;
-		const blocks = (outcome.result as { blocks: Array<Record<string, unknown>> }).blocks;
-		const sections = blocks.filter((b) => b.type === "section").map((b) => b.text);
+		const blocks = blocksOf(outcome);
+		const sections = findBlocks(blocks, "section").map((b) => b.text);
 		expect(sections).toEqual(
 			expect.arrayContaining([
 				"Revenue by day",
@@ -113,7 +116,7 @@ describe("admin route dispatch (workerd sandbox)", () => {
 				"Low stock",
 			]),
 		);
-		expect(blocks.filter((b) => b.type === "table")).toHaveLength(4);
+		expect(findBlocks(blocks, "table")).toHaveLength(4);
 		// All four guarded reads carried the token from write-only kv.
 		expect(stub.requests.length).toBe(4);
 		for (const req of stub.requests) {
@@ -130,12 +133,10 @@ describe("admin route dispatch (workerd sandbox)", () => {
 		});
 
 		const outcome = await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" });
-		expect("result" in outcome).toBe(true);
-		if (!("result" in outcome)) return;
-		const blocks = (outcome.result as { blocks: Array<Record<string, unknown>> }).blocks;
-		const allFields = blocks
-			.filter((b) => b.type === "form")
-			.flatMap((b) => (b.fields as Array<Record<string, unknown>>) ?? []);
+		const blocks = blocksOf(outcome);
+		const allFields = findBlocks(blocks, "form").flatMap(
+			(b) => (b.fields as Array<Record<string, unknown>>) ?? [],
+		);
 		const byId = new Map(allFields.map((f) => [f.action_id, f]));
 		expect(byId.has("storeDisplayName")).toBe(true);
 		expect(byId.has("holdTtlMinutes")).toBe(true);
@@ -157,10 +158,8 @@ describe("admin route dispatch (workerd sandbox)", () => {
 
 		// No seedToken → the guarded reads answer 401.
 		const outcome = await sandbox.invokeRoute("admin", { type: "page_load", page: "/reports" });
-		expect("result" in outcome).toBe(true);
-		if (!("result" in outcome)) return;
-		const blocks = (outcome.result as { blocks: Array<Record<string, unknown>> }).blocks;
-		const banner = blocks.find((b) => b.type === "banner" && b.variant === "error");
+		const blocks = blocksOf(outcome);
+		const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
 		expect(banner).toBeDefined();
 		expect(String(banner?.text)).not.toMatch(/HTTP \d|\/reports\/|401/);
 	});

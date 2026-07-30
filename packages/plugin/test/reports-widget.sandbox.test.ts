@@ -1,5 +1,6 @@
 import { URUMI_PLUGIN_CAPABILITIES } from "@urumi/plugin";
 import { afterEach, describe, expect, test } from "vitest";
+import { blocksOf, findBlocks } from "./helpers/blocks.js";
 import {
 	startStubCommerceServer,
 	type StubCommerceServer,
@@ -12,6 +13,10 @@ import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
 // page by the single `admin` route with a `{type:"page_load", page:"/reports"}`
 // BlockInteraction — NO token in the interaction; the admin token is sourced
 // from write-only ctx.kv (seeded here via the Settings `save-token` action).
+//
+// PORT (no behaviour change): flat `blocks.filter(b => b.type === X)` scans
+// replaced by the shared recursive helpers (spec §15, V-1/V-1a) ahead of the
+// layout change that moves this content into accordions — see the PR body.
 
 const ADMIN_TOKEN = "admin-token-xyz";
 
@@ -82,10 +87,8 @@ describe("Reports admin page (workerd sandbox)", () => {
 			type: "page_load",
 			page: "/reports",
 		});
-		expect("result" in outcome).toBe(true);
-		if (!("result" in outcome)) return;
-		const blocks = (outcome.result as { blocks: Array<Record<string, unknown>> }).blocks;
-		const sections = blocks.filter((b) => b.type === "section").map((b) => b.text);
+		const blocks = blocksOf(outcome);
+		const sections = findBlocks(blocks, "section").map((b) => b.text);
 		expect(sections).toEqual(
 			expect.arrayContaining([
 				"Revenue by day",
@@ -95,7 +98,7 @@ describe("Reports admin page (workerd sandbox)", () => {
 			]),
 		);
 		// Each report's data made it into a table.
-		const tables = blocks.filter((b) => b.type === "table");
+		const tables = findBlocks(blocks, "table");
 		expect(tables).toHaveLength(4);
 		// All four report endpoints were hit over ctx.http.
 		const urls = (stub.requests ?? []).map((r) => r.url.split("?")[0]);
@@ -125,10 +128,8 @@ describe("Reports admin page (workerd sandbox)", () => {
 
 		const outcome = await sandbox.invokeRoute("admin", { type: "page_load", page: "/reports" });
 		// Fails CLOSED: a rendered error block, NOT a thrown {error} envelope.
-		expect("result" in outcome).toBe(true);
-		if (!("result" in outcome)) return;
-		const blocks = (outcome.result as { blocks: Array<Record<string, unknown>> }).blocks;
-		const banner = blocks.find((b) => b.type === "banner" && b.variant === "error");
+		const blocks = blocksOf(outcome);
+		const banner = findBlocks(blocks, "banner").find((b) => b.variant === "error");
 		expect(banner).toBeDefined();
 		// The generic message never leaks a raw HTTP status/URL (Part 5).
 		expect(String(banner?.text)).not.toMatch(/HTTP \d|\/reports\//);
