@@ -75,7 +75,7 @@ import { PATH_FIELD } from "./nav.js";
 /** The flat, string-only context a form carries through a stateless submit. */
 export type CarriedContext = Readonly<Record<string, string>>;
 
-/** Payload marker inside a `block_id` (`u1` = urumi carrier, version 1). A token
+/** Payload marker inside a `block_id` (`u1` = otta carrier, version 1). A token
  *  is `<namespace>:u1.<base64url>`: the namespace keeps a carrier legible in
  *  devtools and distinct per form, and this marker is what makes a plain React key
  *  (`orders:tabs`) fail to decode as context. The version leaves room to change the

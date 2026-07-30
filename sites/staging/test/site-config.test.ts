@@ -2,7 +2,7 @@
  * Site-config tests (plan §3.1): the trusted-registration surface of the
  * staging site. The descriptor builder and the emdash options are pure
  * modules precisely so this file can pin them:
- *  - the Urumi plugin descriptor is standard-format, entrypoint
+ *  - the Otta plugin descriptor is standard-format, entrypoint
  *    `@otta-sh/plugin/plugin`, capabilities EXACTLY the manifest's, and its
  *    allowedHosts is exactly the service URL's hostname (the egress gate
  *    that holds even in trusted mode — ADR-0006);
@@ -15,7 +15,7 @@
  *    layer covering only /_emdash/api/* routes, so the real cart-endpoint
  *    CSRF pin is origin-guard.test.ts (see ADR-0006);
  *  - `vite.ssr.noExternal` contains "@otta-sh/plugin" UNCONDITIONALLY: if the
- *    plugin is externalized, the `__URUMI_COMMERCE_SERVICE_URL__` define
+ *    plugin is externalized, the `__OTTA_COMMERCE_SERVICE_URL__` define
  *    silently never applies and every ctx.http call fails against
  *    allowedHosts at runtime.
  */
@@ -29,12 +29,12 @@ import {
 	SETTINGS_PAGE,
 	SHIPPING_PAGE,
 	TAX_PAGE,
-	URUMI_PLUGIN_CAPABILITIES,
-	URUMI_PLUGIN_ID,
+	OTTA_PLUGIN_CAPABILITIES,
+	OTTA_PLUGIN_ID,
 } from "@otta-sh/plugin";
 import { describe, expect, test } from "vitest";
 import { buildEmdashOptions, COMMERCE_SERVICE_URL_PLACEHOLDER } from "../src/emdash-options.js";
-import { urumiPluginDescriptor } from "../src/urumi-plugin-descriptor.js";
+import { ottaPluginDescriptor } from "../src/otta-plugin-descriptor.js";
 
 // Pin the env BEFORE astro.config is (dynamically) imported so the config
 // module reads a deterministic service URL.
@@ -43,7 +43,7 @@ process.env["COMMERCE_SERVICE_URL"] = SERVICE_URL;
 
 describe("service-URL placeholder parity", () => {
 	test("the site placeholder equals the plugin manifest's un-defined fallback", () => {
-		// In this vitest run no __URUMI_COMMERCE_SERVICE_URL__ define exists,
+		// In this vitest run no __OTTA_COMMERCE_SERVICE_URL__ define exists,
 		// so the plugin constant IS its placeholder — the two literals must
 		// never diverge (a build without COMMERCE_SERVICE_URL must produce a
 		// consistent allowlist + client base URL).
@@ -51,17 +51,17 @@ describe("service-URL placeholder parity", () => {
 	});
 });
 
-describe("urumiPluginDescriptor", () => {
-	const descriptor = urumiPluginDescriptor(SERVICE_URL);
+describe("ottaPluginDescriptor", () => {
+	const descriptor = ottaPluginDescriptor(SERVICE_URL);
 
 	test("is a standard-format descriptor for the @otta-sh/plugin default export", () => {
-		expect(descriptor.id).toBe(URUMI_PLUGIN_ID);
+		expect(descriptor.id).toBe(OTTA_PLUGIN_ID);
 		expect(descriptor.format).toBe("standard");
 		expect(descriptor.entrypoint).toBe("@otta-sh/plugin/plugin");
 	});
 
 	test("capabilities are EXACTLY the manifest's (content:read, network:request)", () => {
-		expect(descriptor.capabilities).toEqual([...URUMI_PLUGIN_CAPABILITIES]);
+		expect(descriptor.capabilities).toEqual([...OTTA_PLUGIN_CAPABILITIES]);
 	});
 
 	test("allowedHosts is exactly the service URL's hostname", () => {
@@ -149,9 +149,9 @@ describe("buildEmdashOptions", () => {
 		});
 	});
 
-	test("registers exactly the Urumi plugin, trusted", () => {
+	test("registers exactly the Otta plugin, trusted", () => {
 		expect(options.plugins).toHaveLength(1);
-		expect(options.plugins?.[0]).toEqual(urumiPluginDescriptor(SERVICE_URL));
+		expect(options.plugins?.[0]).toEqual(ottaPluginDescriptor(SERVICE_URL));
 	});
 });
 
@@ -171,7 +171,7 @@ describe("astro.config", () => {
 		expect(Array.isArray(noExternal) ? noExternal : [noExternal]).toContain("@otta-sh/plugin");
 
 		const define = config.vite?.define as Record<string, string>;
-		expect(JSON.parse(define["__URUMI_COMMERCE_SERVICE_URL__"] ?? "null")).toBe(SERVICE_URL);
+		expect(JSON.parse(define["__OTTA_COMMERCE_SERVICE_URL__"] ?? "null")).toBe(SERVICE_URL);
 	});
 
 	test("the Stripe publishable key rides a SECOND build-time define (ADR-0012 decision 4)", async () => {
@@ -180,10 +180,10 @@ describe("astro.config", () => {
 		// STRIPE_PUBLIC_KEY matches on KEY. Keep the guard; bake the key.
 		const config = (await import("../astro.config.js")).default;
 		const define = config.vite?.define as Record<string, string>;
-		expect(Object.keys(define)).toContain("__URUMI_STRIPE_PUBLIC_KEY__");
+		expect(Object.keys(define)).toContain("__OTTA_STRIPE_PUBLIC_KEY__");
 		// Whatever this machine's env holds, the baked value is a STRING (an
 		// absent key bakes "", which the config module treats as unconfigured) —
 		// never `undefined`, which would leave the identifier undeclared.
-		expect(typeof JSON.parse(define["__URUMI_STRIPE_PUBLIC_KEY__"] ?? "null")).toBe("string");
+		expect(typeof JSON.parse(define["__OTTA_STRIPE_PUBLIC_KEY__"] ?? "null")).toBe("string");
 	});
 });

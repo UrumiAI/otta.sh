@@ -6,7 +6,7 @@
  * `page:fragments` is trusted-plugin-only (em-dash
  * `packages/core/src/page/fragments.ts:5` — "Sandboxed plugins are never
  * invoked"; the runtime's contribution pass calls sandboxed plugins for
- * `page:metadata` only, whose contribution kinds carry no HTML), and Urumi
+ * `page:metadata` only, whose contribution kinds carry no HTML), and Otta
  * must stay sandboxed (DEVELOPMENT.md §5). So the PDP is this public route:
  * the theme's thin Astro page at the clean path (`/products/[slug]`) runs
  * the tier-① CMS read, invokes this route with the content (in-process via
@@ -33,7 +33,7 @@ import { buildProductViewModel, type ProductViewModel } from "./product-view-mod
 import { parseCmsProductContent, sanitizeLocale } from "./route-input.js";
 
 /** Public route name — dispatched at
- *  `POST /_emdash/api/plugins/urumi/storefront/product`. */
+ *  `POST /_emdash/api/plugins/otta/storefront/product`. */
 export const STOREFRONT_PRODUCT_ROUTE = "storefront/product";
 
 export interface PdpRouteInput {
@@ -64,7 +64,7 @@ export async function renderGuard<T>(
 	try {
 		return await render();
 	} catch (err) {
-		console.error(`[urumi] ${route} render failed:`, err);
+		console.error(`[otta] ${route} render failed:`, err);
 		return { ok: false, error: "RENDER_FAILED" };
 	}
 }

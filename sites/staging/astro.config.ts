@@ -1,8 +1,8 @@
 /**
- * Urumi staging storefront + admin — EmDash on Cloudflare Workers.
+ * Otta staging storefront + admin — EmDash on Cloudflare Workers.
  *
  * Modeled on em-dash's `templates/starter-cloudflare/astro.config.mjs`
- * (no Access / Images / Stream / sandbox), plus the trusted Urumi plugin
+ * (no Access / Images / Stream / sandbox), plus the trusted Otta plugin
  * descriptor (ADR-0006) and the build-time commerce-service URL:
  *
  *   COMMERCE_SERVICE_URL=https://<service host> pnpm build
@@ -132,12 +132,12 @@ export default defineConfig({
 		// Bake the service URL into the @otta-sh/plugin bundle (manifest.ts
 		// reads this compile-time global; falls back to its placeholder).
 		define: {
-			__URUMI_COMMERCE_SERVICE_URL__: JSON.stringify(serviceUrl),
+			__OTTA_COMMERCE_SERVICE_URL__: JSON.stringify(serviceUrl),
 			// The Stripe publishable key for /checkout/pay's Payment Element
 			// (src/lib/stripe-config.ts). ALWAYS a string — an unconfigured store
 			// bakes "", which that module reads as undefined; baking `undefined`
 			// would leave the identifier undeclared in the worker bundle.
-			__URUMI_STRIPE_PUBLIC_KEY__: JSON.stringify(stripePublishableKey ?? ""),
+			__OTTA_STRIPE_PUBLIC_KEY__: JSON.stringify(stripePublishableKey ?? ""),
 		},
 		ssr: {
 			// UNCONDITIONAL: if @otta-sh/plugin is ever externalized the define

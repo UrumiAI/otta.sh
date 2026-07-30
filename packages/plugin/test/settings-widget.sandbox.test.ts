@@ -1,4 +1,4 @@
-import { SETTINGS_SCHEMA, URUMI_PLUGIN_CAPABILITIES } from "@otta-sh/plugin";
+import { SETTINGS_SCHEMA, OTTA_PLUGIN_CAPABILITIES } from "@otta-sh/plugin";
 import { afterEach, describe, expect, test } from "vitest";
 import { assertBlockContract } from "./helpers/block-contract.js";
 import {
@@ -349,8 +349,8 @@ describe("Settings admin form (workerd sandbox)", () => {
 	});
 
 	test("SECURITY: the settings form manifest declares only content:read + network:request (no storage/kv/db), and the schema has no secret field", () => {
-		expect(URUMI_PLUGIN_CAPABILITIES).toEqual(["content:read", "network:request"]);
-		for (const cap of URUMI_PLUGIN_CAPABILITIES) {
+		expect(OTTA_PLUGIN_CAPABILITIES).toEqual(["content:read", "network:request"]);
+		for (const cap of OTTA_PLUGIN_CAPABILITIES) {
 			expect(cap.startsWith("storage")).toBe(false);
 			expect(cap.startsWith("db")).toBe(false);
 		}

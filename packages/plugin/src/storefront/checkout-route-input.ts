@@ -1,7 +1,7 @@
 /**
  * Boundary validation for the PUBLIC checkout routes (route-input.ts's style —
  * hand-rolled, no schema library in the plugin, because the routes are
- * reachable by anything that can POST to `/_emdash/api/plugins/urumi/...`).
+ * reachable by anything that can POST to `/_emdash/api/plugins/otta/...`).
  *
  * Everything here runs BEFORE any `ctx.http` egress: a garbage body must never
  * become an upstream round trip, and certainly never an order. Bounds mirror

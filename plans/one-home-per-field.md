@@ -99,7 +99,7 @@ engineer sees a denormalised column beside an admin form conspicuously missing a
 (`packages/plugin/src/admin/product-data-widget.ts:72-134`) declares ten inline inputs whose
 `action_id`s key a JSON bag; bound to the products collection's `commerce` json field at
 `sites/staging/seed/seed.json:39-44`; registered at
-`sites/staging/src/urumi-plugin-descriptor.ts:46`; persisted by the editor's native Save to
+`sites/staging/src/otta-plugin-descriptor.ts:46`; persisted by the editor's native Save to
 `content.data.commerce`; validated at
 `packages/plugin/src/product-commerce/parse-commerce-fields.ts:100-160`; derived into an upsert at
 `packages/plugin/src/sync/hooks.ts:171-184`.
@@ -368,7 +368,7 @@ inventory policy.
 4. `packages/plugin/src/index.ts:4` — remove the
    `buildProductDataElements, productDataWidget` export, and fix the barrel header at `:1-3`,
    which advertises "the widget's pure element-builder".
-5. `sites/staging/src/urumi-plugin-descriptor.ts` — remove the import, the `fieldWidgets` property
+5. `sites/staging/src/otta-plugin-descriptor.ts` — remove the import, the `fieldWidgets` property
    (`:46`) and the comment at `:40-45`. Drop the `FieldWidgetConfig` import if now unused.
 6. `sites/staging/seed/seed.json` — delete the `commerce` field object (`:39-44`) and rewrite
    `meta.description` (`:6`), which advertises the widget.

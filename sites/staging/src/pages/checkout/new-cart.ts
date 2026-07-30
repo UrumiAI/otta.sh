@@ -8,7 +8,7 @@
  * `CART_CHECKED_OUT`. Bounded — the sweep resolves the underlying order — but
  * the buyer still needs a door. This is it.
  *
- * It clears **both** cookies. Clearing only `urumi_cart` would leave a spent
+ * It clears **both** cookies. Clearing only `otta_cart` would leave a spent
  * client secret sitting in the browser for the rest of the hold, pointing at an
  * order the buyer has just walked away from.
  *

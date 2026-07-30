@@ -61,7 +61,7 @@ export const STOREFRONT_CART_LINE_REMOVE_ROUTE = "storefront/cart/lines/remove";
 
 /** The cart-cookie name — a single constant so the plugin's descriptor and
  *  (documentation for) the theme shim's read side never drift. */
-export const CART_COOKIE_NAME = "urumi_cart";
+export const CART_COOKIE_NAME = "otta_cart";
 
 /** 30 days — not specified by the plan (only the hold TTL, 15 min, is); a
  *  reasonable default for how long an anonymous cart pointer survives. The
@@ -269,7 +269,7 @@ export function createCartReadRouteHandler(): RouteHandler<CartReadRouteInput> {
 				// loadMany) so that throw degrades pricing too, never RENDER_FAILED.
 				pricing = buildCartPricing(cart.lines, commerceById, cart.currency, locale);
 			} catch (err) {
-				console.error(`[urumi] ${STOREFRONT_CART_READ_ROUTE} pricing join failed:`, err);
+				console.error(`[otta] ${STOREFRONT_CART_READ_ROUTE} pricing join failed:`, err);
 				pricing = DEGRADED_CART_PRICING;
 			}
 

@@ -34,12 +34,12 @@ const expiresAt = new Date(Date.now() + 300_000).toISOString();
 ---
 
 <div class="host">
-	<ProductCard href="#" slug="urumi-tee" title="Urumi Tee" price="$25.00" availability="in_stock" />
-	<MediaPanel slug="urumi-mug" />
+	<ProductCard href="#" slug="otta-tee" title="Otta Tee" price="$25.00" availability="in_stock" />
+	<MediaPanel slug="otta-mug" />
 	<PriceTag formatted="$25.00" />
 	<StockRule availability="in_stock" />
 	<QtyField value={1} />
-	<Ledger rows={[{ sku: "URUMI-TEE-01", qty: 1, money: "$25.00" }]} />
+	<Ledger rows={[{ sku: "OTTA-TEE-01", qty: 1, money: "$25.00" }]} />
 	<Sum rows={[{ label: "Subtotal", amount: money("$40.00") }]} total={money("$40.00")} />
 	<StepTrack current="cart" />
 	<StateStamp state="paid" level="h2" headline="Order confirmed." />

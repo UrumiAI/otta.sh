@@ -77,7 +77,7 @@ const emailSender =
 		? new HttpEmailSender({
 				apiUrl: emailApiUrl,
 				apiKey: process.env.EMAIL_API_KEY,
-				from: process.env.EMAIL_FROM ?? "no-reply@urumi.local",
+				from: process.env.EMAIL_FROM ?? "no-reply@otta.local",
 			})
 		: new ConsoleEmailSender();
 const storefrontBaseUrl = process.env.STOREFRONT_BASE_URL;

@@ -1,19 +1,19 @@
 /**
- * In-process dispatch to the Urumi plugin's PUBLIC routes — the em-dash
+ * In-process dispatch to the Otta plugin's PUBLIC routes — the em-dash
  * forms-plugin pattern (ADR-0003): the theme page/endpoint invokes the
  * plugin route through `locals.emdash.handlePublicPluginApiRoute`; no HTTP
  * hop, but the same auth gate (public routes only) and the same JSON
  * envelope (`{ success, data | error }`) as the wire mount at
- * `/_emdash/api/plugins/urumi/<route>`.
+ * `/_emdash/api/plugins/otta/<route>`.
  *
  * Returns `null` on ANY dispatch/envelope failure — pages must render a
  * friendly degraded state (a stopped commerce service is an expected
  * staging condition, never a crash).
  */
-import { URUMI_PLUGIN_ID } from "@otta-sh/plugin";
+import { OTTA_PLUGIN_ID } from "@otta-sh/plugin";
 import type { PublicPluginApiRouteHandler } from "emdash/plugin-utils";
 
-export async function dispatchUrumiRoute<TResult>(
+export async function dispatchOttaRoute<TResult>(
 	handler: PublicPluginApiRouteHandler | undefined,
 	route: string,
 	input: unknown,
@@ -21,7 +21,7 @@ export async function dispatchUrumiRoute<TResult>(
 ): Promise<TResult | null> {
 	if (handler === undefined) return null;
 	const request = new Request(
-		new URL(`/_emdash/api/plugins/${URUMI_PLUGIN_ID}/${route}`, baseUrl),
+		new URL(`/_emdash/api/plugins/${OTTA_PLUGIN_ID}/${route}`, baseUrl),
 		{
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
@@ -29,13 +29,13 @@ export async function dispatchUrumiRoute<TResult>(
 		},
 	);
 	try {
-		const response = await handler(URUMI_PLUGIN_ID, "POST", `/${route}`, request);
+		const response = await handler(OTTA_PLUGIN_ID, "POST", `/${route}`, request);
 		if (typeof response !== "object" || response === null) return null;
 		const envelope = response as { success?: unknown; data?: unknown };
 		if (envelope.success !== true) return null;
 		return envelope.data as TResult;
 	} catch (error) {
-		console.error(`[site-staging] urumi route ${route} dispatch failed:`, error);
+		console.error(`[site-staging] otta route ${route} dispatch failed:`, error);
 		return null;
 	}
 }

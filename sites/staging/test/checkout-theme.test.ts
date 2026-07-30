@@ -222,7 +222,7 @@ describe("/checkout/pay — the button states the amount (§7)", () => {
 		// the "this page makes no commerce call" property the design leans on.
 		const { frontmatter } = splitAstro(PAY);
 		expect(frontmatter).toContain("stash.total?.formatted");
-		expect(frontmatter).not.toContain("dispatchUrumiRoute");
+		expect(frontmatter).not.toContain("dispatchOttaRoute");
 	});
 
 	test("the currency rides on the same optional chain as the amount", () => {
@@ -272,7 +272,7 @@ describe("/orders/<id> — the state is the page, and it ships no JavaScript", (
 
 	test("the receipt names what was bought, not only its SKU", () => {
 		// CLAUDE.md: orders snapshot price AND title at purchase time. A receipt
-		// reading `URUMI-TEE-01 1 $25.00` has lost the thing a buyer opens it to
+		// reading `OTTA-TEE-01 1 $25.00` has lost the thing a buyer opens it to
 		// check. /checkout stays SKU-only — a cart line has no title to show.
 		expect(ORDER).toMatch(/title: line\.title/);
 		expect(REVIEW).not.toMatch(/title: line\.title/);

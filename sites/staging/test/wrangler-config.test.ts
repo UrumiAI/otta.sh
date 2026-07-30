@@ -43,7 +43,7 @@ const config = parseJsonc(readFileSync(WRANGLER_PATH, "utf8"));
 
 describe("wrangler.jsonc", () => {
 	test("worker name is a non-empty string", () => {
-		// Template value ("my-urumi-store") — the real name lives in the
+		// Template value ("my-otta-store") — the real name lives in the
 		// gitignored wrangler.local.jsonc.
 		expect(typeof config["name"]).toBe("string");
 		expect((config["name"] as string).length).toBeGreaterThan(0);

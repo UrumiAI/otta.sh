@@ -26,7 +26,7 @@ export interface CheckoutRedirect {
 }
 
 /**
- * @param cartId the `urumi_cart` cookie's value, if any
+ * @param cartId the `otta_cart` cookie's value, if any
  * @param result the `storefront/checkout/summary` result — `null` when the
  *   dispatch itself failed (a stopped commerce service is an expected staging
  *   condition, never a crash)

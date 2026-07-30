@@ -208,7 +208,7 @@ describe("storefront cart routes (workerd sandbox)", () => {
 		// The cookie INTENT the plugin cannot itself enact (module doc): a
 		// descriptor the first-party theme applies on its own response.
 		expect(result["cookie"]).toMatchObject({
-			name: "urumi_cart",
+			name: "otta_cart",
 			value: result["cartId"],
 			httpOnly: true,
 			secure: true,

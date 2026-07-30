@@ -21,9 +21,9 @@ import {
 } from "../src/lib/coil.js";
 
 const SLUGS = [
-	"urumi-tee",
-	"urumi-mug",
-	"urumi-sticker-pack",
+	"otta-tee",
+	"otta-mug",
+	"otta-sticker-pack",
 	"a",
 	"",
 	"a-very-long-slug-with-many-segments-in-it",
@@ -47,7 +47,7 @@ describe("buildCoil — determinism", () => {
 	});
 
 	test("a one-character difference moves the drawing", () => {
-		expect(buildCoil("urumi-tee").path).not.toBe(buildCoil("urumi-teo").path);
+		expect(buildCoil("otta-tee").path).not.toBe(buildCoil("otta-teo").path);
 	});
 
 	test("the tint is one of the three tokens, never a raw colour", () => {
@@ -89,23 +89,23 @@ describe("coilTint — tint by POSITION, because a hash is lumpy over three prod
 describe("buildCoil — index cycles the tint, the slug keeps the shape", () => {
 	test("passing an index takes the tint off the position", () => {
 		for (const [index, tint] of COIL_TINTS.entries()) {
-			expect(buildCoil("urumi-mug", index).tint).toBe(tint);
+			expect(buildCoil("otta-mug", index).tint).toBe(tint);
 		}
 	});
 
 	test("the DRAWING is unchanged by position — a product does not reshape when something above it sells out", () => {
-		const byHash = buildCoil("urumi-mug");
+		const byHash = buildCoil("otta-mug");
 		for (let index = 0; index < 6; index++) {
-			expect(buildCoil("urumi-mug", index).path).toBe(byHash.path);
+			expect(buildCoil("otta-mug", index).path).toBe(byHash.path);
 		}
 	});
 
 	test("omitting the index falls back to the slug's own hash", () => {
-		expect(buildCoil("urumi-mug").tint).toBe(coilGeometry("urumi-mug").tint);
+		expect(buildCoil("otta-mug").tint).toBe(coilGeometry("otta-mug").tint);
 	});
 
 	test("two products at the same position in different lists still differ in shape", () => {
-		expect(buildCoil("urumi-tee", 0).path).not.toBe(buildCoil("urumi-mug", 0).path);
+		expect(buildCoil("otta-tee", 0).path).not.toBe(buildCoil("otta-mug", 0).path);
 	});
 });
 
@@ -137,7 +137,7 @@ describe("coilGeometry — keyed off the slug, and on the panel", () => {
 });
 
 describe("coilPath — a closed ribbon that tapers", () => {
-	const path = coilPath(coilGeometry("urumi-mug"));
+	const path = coilPath(coilGeometry("otta-mug"));
 
 	test("is one closed subpath: M … L … Z, and nothing else", () => {
 		expect(path.startsWith("M ")).toBe(true);
@@ -175,7 +175,7 @@ describe("coilPath — a closed ribbon that tapers", () => {
 	});
 
 	test("the drawing stays within a panel's worth of the centre", () => {
-		const { cx, cy, rOuter } = coilGeometry("urumi-mug");
+		const { cx, cy, rOuter } = coilGeometry("otta-mug");
 		for (const [x, y] of points(path)) {
 			expect(Math.hypot(x - cx, y - cy)).toBeLessThanOrEqual(rOuter + 8);
 		}

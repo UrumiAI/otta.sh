@@ -1,4 +1,4 @@
-import { URUMI_PLUGIN_CAPABILITIES } from "@otta-sh/plugin";
+import { OTTA_PLUGIN_CAPABILITIES } from "@otta-sh/plugin";
 import { afterEach, describe, expect, test } from "vitest";
 import { assertBlockContract } from "./helpers/block-contract.js";
 import {
@@ -299,9 +299,9 @@ describe("Reports admin page (workerd sandbox)", () => {
 	});
 
 	test("Reports page manifest declares only content:read + network:request, no storage/kv/db capability", () => {
-		expect(URUMI_PLUGIN_CAPABILITIES).toEqual(["content:read", "network:request"]);
-		expect(URUMI_PLUGIN_CAPABILITIES).not.toContain("network:request:unrestricted");
-		for (const cap of URUMI_PLUGIN_CAPABILITIES) {
+		expect(OTTA_PLUGIN_CAPABILITIES).toEqual(["content:read", "network:request"]);
+		expect(OTTA_PLUGIN_CAPABILITIES).not.toContain("network:request:unrestricted");
+		for (const cap of OTTA_PLUGIN_CAPABILITIES) {
 			expect(cap.startsWith("storage")).toBe(false);
 			expect(cap.startsWith("kv")).toBe(false);
 			expect(cap.startsWith("db")).toBe(false);

@@ -42,7 +42,7 @@ import StockRule from "../../components/StockRule.astro";
 import Base from "../../layouts/Base.astro";
 import { cartErrorMessage } from "../../lib/error-messages.js";
 import { toCmsProductContent, type ProductEntryData } from "../../lib/products.js";
-import { dispatchUrumiRoute } from "../../lib/urumi-api.js";
+import { dispatchOttaRoute } from "../../lib/otta-api.js";
 
 const { slug } = Astro.params;
 if (slug === undefined) return Astro.redirect("/products");
@@ -120,7 +120,7 @@ const content = entry !== null ? toCmsProductContent(entry.data as unknown as Pr
 
 const result =
 	content !== null
-		? await dispatchUrumiRoute<PdpRouteResult>(
+		? await dispatchOttaRoute<PdpRouteResult>(
 				getPublicPluginApiRouteHandler(Astro.locals),
 				STOREFRONT_PRODUCT_ROUTE,
 				{ content },

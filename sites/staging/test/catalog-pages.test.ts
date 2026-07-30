@@ -181,7 +181,7 @@ describe("§8 — the home hero and its degraded rule", () => {
 
 	test("the hero reads the same catalog the shop page reads", () => {
 		expect(HOME).toContain("STOREFRONT_LIST_ROUTE");
-		expect(HOME).toContain("dispatchUrumiRoute");
+		expect(HOME).toContain("dispatchOttaRoute");
 	});
 
 	test("NEITHER of the home page's own content reads can throw past it", () => {

@@ -158,23 +158,23 @@ describe("Ledger — SKU, quantity, money", () => {
 	test("renders one line per row, in the order given", async () => {
 		const html = await ledger({
 			rows: [
-				{ sku: "URUMI-TEE-01", qty: 1, money: "$25.00" },
-				{ sku: "URUMI-MUG-01", qty: 2, money: "$30.00" },
+				{ sku: "OTTA-TEE-01", qty: 1, money: "$25.00" },
+				{ sku: "OTTA-MUG-01", qty: 2, money: "$30.00" },
 			],
 		});
-		expect(html.indexOf("URUMI-TEE-01")).toBeLessThan(html.indexOf("URUMI-MUG-01"));
+		expect(html.indexOf("OTTA-TEE-01")).toBeLessThan(html.indexOf("OTTA-MUG-01"));
 		expect(html).toContain("$25.00");
 		expect(html).toContain("$30.00");
 	});
 
 	test("the quantity is announced as one — a bare figure is ambiguous", async () => {
-		const html = await ledger({ rows: [{ sku: "URUMI-TEE-01", qty: 3, money: "$75.00" }] });
+		const html = await ledger({ rows: [{ sku: "OTTA-TEE-01", qty: 3, money: "$75.00" }] });
 		expect(html).toContain("u-sr-only");
 		expect(html).toContain("Quantity");
 	});
 
 	test("both figures are named — position is all that distinguishes them visually", async () => {
-		const html = await ledger({ rows: [{ sku: "URUMI-TEE-01", qty: 3, money: "$75.00" }] });
+		const html = await ledger({ rows: [{ sku: "OTTA-TEE-01", qty: 3, money: "$75.00" }] });
 		expect(html).toContain("Quantity");
 		expect(html).toContain("Line total");
 		expect(html.match(/u-sr-only/g) ?? []).toHaveLength(2);
@@ -182,7 +182,7 @@ describe("Ledger — SKU, quantity, money", () => {
 
 	test("a line the store cannot price says so, and is set as prose", async () => {
 		const html = await ledger({
-			rows: [{ sku: "URUMI-TEE-01", qty: 1, money: "priced at checkout", unpriced: true }],
+			rows: [{ sku: "OTTA-TEE-01", qty: 1, money: "priced at checkout", unpriced: true }],
 		});
 		expect(html).toContain("priced at checkout");
 		expect(html).toContain("unpriced");
@@ -204,23 +204,23 @@ describe("Ledger — the receipt names what was bought (title)", () => {
 		// CLAUDE.md's "orders snapshot price + title at purchase time" is what
 		// makes a confirmation page a receipt rather than a list of part numbers.
 		const html = await ledger({
-			rows: [{ title: "Urumi Tee", sku: "URUMI-TEE-01", qty: 1, money: "$25.00" }],
+			rows: [{ title: "Otta Tee", sku: "OTTA-TEE-01", qty: 1, money: "$25.00" }],
 		});
-		expect(html).toContain("Urumi Tee");
-		expect(html).toContain("URUMI-TEE-01");
+		expect(html).toContain("Otta Tee");
+		expect(html).toContain("OTTA-TEE-01");
 		// The name comes first in the reading order, not just visually.
-		expect(html.indexOf("Urumi Tee")).toBeLessThan(html.indexOf("URUMI-TEE-01"));
+		expect(html.indexOf("Otta Tee")).toBeLessThan(html.indexOf("OTTA-TEE-01"));
 	});
 
 	test("a row WITHOUT one is unchanged — a cart line has no title to show", async () => {
-		const html = await ledger({ rows: [{ sku: "URUMI-TEE-01", qty: 1, money: "$25.00" }] });
-		expect(html).toContain("URUMI-TEE-01");
+		const html = await ledger({ rows: [{ sku: "OTTA-TEE-01", qty: 1, money: "$25.00" }] });
+		expect(html).toContain("OTTA-TEE-01");
 		expect(html).not.toContain('class="title"');
 	});
 
 	test("a blank title is the same as none — it must not open an empty line", async () => {
 		const html = await ledger({
-			rows: [{ title: "", sku: "URUMI-TEE-01", qty: 1, money: "$25.00" }],
+			rows: [{ title: "", sku: "OTTA-TEE-01", qty: 1, money: "$25.00" }],
 		});
 		expect(html).not.toContain('class="title"');
 	});
@@ -237,7 +237,7 @@ describe("Ledger — a bare em dash never reaches the money column either (§7)"
 		// exactly that string per row — and it used to print `row.money`
 		// verbatim.
 		const html = await ledger({
-			rows: [{ sku: "URUMI-TEE-01", qty: 1, money: UNAVAILABLE_LABEL }],
+			rows: [{ sku: "OTTA-TEE-01", qty: 1, money: UNAVAILABLE_LABEL }],
 		});
 		expect(html).not.toMatch(/>\s*—\s*</);
 		expect(html).toContain(NOT_APPLIED_LABEL);

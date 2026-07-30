@@ -61,13 +61,13 @@ function buildAddToCartSlot(sku: string, productId: string): AddToCartSlot {
 	const idempotencyKey = crypto.randomUUID();
 	const qtyInput: NumberInputElement = {
 		type: "number_input",
-		action_id: "urumi_add_to_cart_qty",
+		action_id: "otta_add_to_cart_qty",
 		label: "Quantity",
 		initial_value: 1,
 	};
 	const submitButton: ButtonElement = {
 		type: "button",
-		action_id: "urumi_add_to_cart_submit",
+		action_id: "otta_add_to_cart_submit",
 		label: "Add to cart",
 		value: { route: STOREFRONT_CART_LINE_ADD_ROUTE, sku, productId, idempotencyKey },
 	};

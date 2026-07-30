@@ -33,14 +33,14 @@ import Base from "../../layouts/Base.astro";
 import { checkoutEntryRedirect } from "../../lib/checkout-redirect.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
 import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
-import { dispatchUrumiRoute } from "../../lib/urumi-api.js";
+import { dispatchOttaRoute } from "../../lib/otta-api.js";
 
 const cartId = Astro.cookies.get(CART_COOKIE_NAME)?.value;
 const error = Astro.url.searchParams.get("error");
 
 const result =
 	cartId !== undefined && cartId.length > 0
-		? await dispatchUrumiRoute<CheckoutSummaryRouteResult>(
+		? await dispatchOttaRoute<CheckoutSummaryRouteResult>(
 				getPublicPluginApiRouteHandler(Astro.locals),
 				STOREFRONT_CHECKOUT_SUMMARY_ROUTE,
 				{ cartId },

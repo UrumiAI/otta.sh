@@ -21,14 +21,14 @@ beforeAll(async () => {
 
 const card = (props: Record<string, unknown>): Promise<string> =>
 	container.renderToString(ProductCard, {
-		props: { href: "/products/urumi-mug", title: "Urumi Mug", slug: "urumi-mug", ...props },
+		props: { href: "/products/otta-mug", title: "Otta Mug", slug: "otta-mug", ...props },
 	});
 
 describe("ProductCard — the shape of a card", () => {
 	test("the whole card is one link: media, title and price share a target", async () => {
 		const html = await card({});
-		expect(html).toMatch(/^<a [^>]*href="\/products\/urumi-mug"/);
-		expect(html).toContain("Urumi Mug");
+		expect(html).toMatch(/^<a [^>]*href="\/products\/otta-mug"/);
+		expect(html).toContain("Otta Mug");
 		expect(html).toContain("<svg");
 	});
 

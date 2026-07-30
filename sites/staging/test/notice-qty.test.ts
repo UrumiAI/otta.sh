@@ -103,13 +103,13 @@ describe("QtyField — a quantity, in the data face", () => {
 	});
 
 	test("names the field, and can name the product with it", async () => {
-		expect(await qty({ label: "Quantity, Urumi Tee" })).toContain("Quantity, Urumi Tee");
+		expect(await qty({ label: "Quantity, Otta Tee" })).toContain("Quantity, Otta Tee");
 	});
 
 	test("hiding the label hides it VISUALLY — it stays in the accessibility tree", async () => {
-		const html = await qty({ label: "Quantity, Urumi Tee", hideLabel: true });
+		const html = await qty({ label: "Quantity, Otta Tee", hideLabel: true });
 		expect(html).toContain("u-sr-only");
-		expect(html).toContain("Quantity, Urumi Tee");
+		expect(html).toContain("Quantity, Otta Tee");
 		// An `aria-label` on the input instead would work for a screen reader
 		// and do nothing at all for a pointer.
 		expect(html).not.toContain("aria-label");

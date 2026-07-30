@@ -467,7 +467,7 @@ describe("the Tempered cart: lines, ribbons and an honest totals block", () => {
  * never looked at. It is looked at now.
  *
  * ── what this change is NOT ────────────────────────────────────────────────
- * The issue's own suggested fix — delete `urumi_cart` at place-time — was
+ * The issue's own suggested fix — delete `otta_cart` at place-time — was
  * investigated and rejected, and NOTHING here deletes a cookie. `/orders/<id>`
  * offers a pending order a "Complete payment" link that routes through
  * `/checkout`, and `/checkout` rebuilds its review form FROM the cart cookie.
@@ -649,7 +649,7 @@ describe("a checked-out cart is rendered as terminal, and never as a paid one", 
 	});
 
 	test("the panel names the order from the CART, not from the stash", () => {
-		// The reported #110 scenario: `/orders/<id>` deletes the `urumi_checkout`
+		// The reported #110 scenario: `/orders/<id>` deletes the `otta_checkout`
 		// stash on arrival AND is Stripe's `return_url`, so the buyer who just
 		// paid — the exact buyer the panel exists for — reached `/cart` with no
 		// stash and always got case B. The id is read off the cart row this page

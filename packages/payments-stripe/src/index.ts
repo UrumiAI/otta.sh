@@ -25,7 +25,7 @@ export const DEFAULT_TOLERANCE_SECONDS = 300;
  * Currencies the LIVE `createIntent` path REFUSES (fail closed), because this
  * repo's money convention and Stripe's `amount` unit disagree for them.
  *
- * Urumi stores integer minor units at **hundredths scale everywhere** — see
+ * Otta stores integer minor units at **hundredths scale everywhere** — see
  * `packages/plugin/src/admin/money-input.ts`, which parses every merchant-entered
  * price as `major × 100 + minor`. Stripe expects `amount` in the currency's OWN
  * smallest unit: **zero-decimal** currencies (JPY, KRW, …) in WHOLE units, so

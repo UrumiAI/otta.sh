@@ -13,7 +13,7 @@ import { describe, expect, test } from "vitest";
 import { applyCartCookie, type CookieJar } from "../src/lib/cart-cookie.js";
 
 const descriptor: CartCookieDescriptor = {
-	name: "urumi_cart",
+	name: "otta_cart",
 	value: "cart-123",
 	httpOnly: true,
 	secure: true,
@@ -35,7 +35,7 @@ describe("applyCartCookie", () => {
 
 		expect(calls).toEqual([
 			{
-				name: "urumi_cart",
+				name: "otta_cart",
 				value: "cart-123",
 				// EXACT equality: an omitted attribute (e.g. a dropped
 				// httpOnly or secure) fails this assertion.

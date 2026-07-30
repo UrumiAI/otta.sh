@@ -92,7 +92,7 @@ export interface CreateWorkerOverrides {
 	clock?: Clock;
 }
 
-export interface UrumiWorker {
+export interface OttaWorker {
 	fetch(request: Request, env: WorkerEnv, ctx: WorkerExecutionContext): Promise<Response>;
 	scheduled(
 		controller: WorkerScheduledController,
@@ -154,7 +154,7 @@ function teardown(ctx: WorkerExecutionContext, db: Db | undefined, pool: PgPool 
  * disables pg's idle-reaper timer, which would otherwise fire during a later
  * request and perform cross-request I/O.
  */
-export function createWorker(overrides: CreateWorkerOverrides = {}): UrumiWorker {
+export function createWorker(overrides: CreateWorkerOverrides = {}): OttaWorker {
 	const makePool = overrides.makePool ?? makePostgresPool;
 	const migrate = overrides.migrate ?? ((db: Db) => migrateToLatest(db));
 	const clock: Clock = overrides.clock ?? { now: () => new Date() };
@@ -236,7 +236,7 @@ export function createWorker(overrides: CreateWorkerOverrides = {}): UrumiWorker
 				? new HttpEmailSender({
 						apiUrl: env.EMAIL_API_URL,
 						apiKey: env.EMAIL_API_KEY,
-						from: env.EMAIL_FROM ?? "no-reply@urumi.local",
+						from: env.EMAIL_FROM ?? "no-reply@otta.local",
 					})
 				: new ConsoleEmailSender();
 		return emailSenderMemo;

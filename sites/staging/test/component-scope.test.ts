@@ -99,9 +99,9 @@ describe("a parent's scope key never reaches a child component's root", () => {
 	});
 
 	test("and the components still render — the filter drops nothing else", () => {
-		expect(html).toContain("Urumi Tee");
+		expect(html).toContain("Otta Tee");
 		expect(html).toContain("$25.00");
-		expect(html).toContain("URUMI-TEE-01");
+		expect(html).toContain("OTTA-TEE-01");
 		expect(html).toContain("Order confirmed.");
 		expect(html).toContain("Prices are unavailable right now.");
 		expect(html).toContain("data-hold");

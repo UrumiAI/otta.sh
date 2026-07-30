@@ -41,6 +41,6 @@ admin surface is done:
    violation.
 3. **Staging descriptor nav** (`#72`/`#73` finding). Tax, Shipping, and
    Coupons all shipped working admin screens in prior slices but were never
-   added to `sites/staging/src/urumi-plugin-descriptor.ts`'s `adminPages` —
+   added to `sites/staging/src/otta-plugin-descriptor.ts`'s `adminPages` —
    each was fully wired yet unreachable from the admin nav. Added, pinned by
    `site-config.test.ts`.

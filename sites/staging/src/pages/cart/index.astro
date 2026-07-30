@@ -9,7 +9,7 @@
  *
  * ── the shim contract (unchanged) ───────────────────────────────────────────
  * The theme side of ADR-0003's cart contract: this page reads ITS OWN
- * `urumi_cart` cookie and passes the id as plain route input to the plugin's
+ * `otta_cart` cookie and passes the id as plain route input to the plugin's
  * public `storefront/cart/read` (plugin routes are cookie-blind by design in
  * sandboxed mode; ADR-0006 records the trusted-mode caveat).
  *
@@ -68,14 +68,14 @@ import {
 import { cartErrorMessage } from "../../lib/error-messages.js";
 import { productImage, type ProductEntryData } from "../../lib/products.js";
 import { isUnpricedText, type SumRow } from "../../lib/totals.js";
-import { dispatchUrumiRoute } from "../../lib/urumi-api.js";
+import { dispatchOttaRoute } from "../../lib/otta-api.js";
 
 const cartId = Astro.cookies.get(CART_COOKIE_NAME)?.value;
 const error = Astro.url.searchParams.get("error");
 
 const result =
 	cartId !== undefined && cartId.length > 0
-		? await dispatchUrumiRoute<CartReadRouteResult>(
+		? await dispatchOttaRoute<CartReadRouteResult>(
 				getPublicPluginApiRouteHandler(Astro.locals),
 				STOREFRONT_CART_READ_ROUTE,
 				{ cartId },
@@ -110,7 +110,7 @@ const lines = cart?.lines ?? [];
  * take". The controls were the sharper half of it: every one of them fails with
  * `CART_CHECKED_OUT`.
  *
- * NOTHING here deletes the `urumi_cart` cookie, and the obvious fix that does
+ * NOTHING here deletes the `otta_cart` cookie, and the obvious fix that does
  * was rejected on exactly that ground: `/orders/<id>` offers a pending order a
  * "Complete payment" link that routes through `/checkout`, and `/checkout`
  * rebuilds its review form FROM this cookie. Deleting it strands a buyer
@@ -145,7 +145,7 @@ if (cart !== null && !isKnownCartState(cart.state)) {
  * ship as ONE worker (`noExternal: ["@otta-sh/plugin"]` in `astro.config.ts`);
  * there is no skew between them for a local re-check to catch.
  *
- * It used to come from the `urumi_checkout` handoff stash, and that is why the
+ * It used to come from the `otta_checkout` handoff stash, and that is why the
  * panel's case B was the ordinary answer: `/orders/<id>` deletes the stash on
  * arrival and is also Stripe's `return_url`, so the buyer who had just paid —
  * the exact buyer this panel exists for — arrived at `/cart` with none. The

@@ -37,7 +37,7 @@ import ProductCard from "../../components/ProductCard.astro";
 import Base from "../../layouts/Base.astro";
 import { toCmsProductContent, type ProductEntryData } from "../../lib/products.js";
 import { exactCount, itemCountLabel } from "../../lib/tape.js";
-import { dispatchUrumiRoute } from "../../lib/urumi-api.js";
+import { dispatchOttaRoute } from "../../lib/otta-api.js";
 
 const {
 	entries,
@@ -57,7 +57,7 @@ const items = entries
 	.slice(0, PLP_PAGE_SIZE_CAP)
 	.map((entry) => toCmsProductContent(entry.data as unknown as ProductEntryData));
 
-const result = await dispatchUrumiRoute<PlpRouteResult>(
+const result = await dispatchOttaRoute<PlpRouteResult>(
 	getPublicPluginApiRouteHandler(Astro.locals),
 	STOREFRONT_LIST_ROUTE,
 	{ items, query: { kind: "all" } },

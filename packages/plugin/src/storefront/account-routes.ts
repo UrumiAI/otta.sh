@@ -41,7 +41,7 @@ export const ACCOUNT_ORDERS_PATH = "/account/orders";
 
 /** The session-cookie name — one constant so the descriptor and the theme
  *  shim's read side never drift. */
-export const SESSION_COOKIE_NAME = "urumi_session";
+export const SESSION_COOKIE_NAME = "otta_session";
 
 /** The session-cookie INTENT descriptor a login route returns for the theme
  *  shim to apply on its own response (see module doc). */

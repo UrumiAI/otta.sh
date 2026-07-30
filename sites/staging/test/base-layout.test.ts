@@ -70,7 +70,7 @@ describe("Base layout — a dead content store costs the chrome, not the respons
 		// `settings.title` already takes rather than growing a second rule (and a
 		// second string) for the store's name.
 		expect(frontmatter).toMatch(/settings: \{ title\?: string; tagline\?: string \} = \{\}/);
-		expect(frontmatter).toContain('settings.title ?? "Urumi"');
+		expect(frontmatter).toContain('settings.title ?? "Otta"');
 	});
 
 	test("the nav falls back to this theme's own routes, and ONLY on a thrown read", () => {
@@ -120,7 +120,7 @@ describe("Base layout — the theme foundation", () => {
 	});
 
 	test("the footer credits both halves and sets the currency in the data face", () => {
-		expect(markup).toContain("Urumi — content by EmDash, commerce by Urumi.");
+		expect(markup).toContain("Otta — content by EmDash, commerce by Otta.");
 		const footer = markup.slice(markup.indexOf("<footer"));
 		expect(footer).toMatch(/class="[^"]*mono/);
 	});

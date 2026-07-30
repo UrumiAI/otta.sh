@@ -31,11 +31,11 @@ import {
 import { rejectCrossOrigin } from "../../lib/origin-guard.js";
 import { toCmsProductContent, type ProductEntryData } from "../../lib/products.js";
 import {
-	dispatchUrumiRoute,
+	dispatchOttaRoute,
 	formPositiveInt,
 	formString,
 	safeReturnPath,
-} from "../../lib/urumi-api.js";
+} from "../../lib/otta-api.js";
 
 export const POST: APIRoute = async (context) => {
 	// CSRF first: emdash disables Astro's checkOrigin; the shim enforces
@@ -121,7 +121,7 @@ export const POST: APIRoute = async (context) => {
 		// and reject BEFORE ever calling the add-line route if the submitted
 		// sku was forged onto a mismatched/inactive product.
 		const content = toCmsProductContent(entry.data as unknown as ProductEntryData);
-		const productResult = await dispatchUrumiRoute<PdpRouteResult>(
+		const productResult = await dispatchOttaRoute<PdpRouteResult>(
 			handler,
 			STOREFRONT_PRODUCT_ROUTE,
 			{ content },
@@ -140,7 +140,7 @@ export const POST: APIRoute = async (context) => {
 		return seeOther(context, returnTo, SERVICE_UNAVAILABLE);
 	}
 
-	const result = await dispatchUrumiRoute<CartLineMutationRouteResult<{ line: CartLineWire }>>(
+	const result = await dispatchOttaRoute<CartLineMutationRouteResult<{ line: CartLineWire }>>(
 		handler,
 		STOREFRONT_CART_LINE_ADD_ROUTE,
 		{ cartId, sku, qty, idempotencyKey, ...(productId !== undefined ? { productId } : {}) },

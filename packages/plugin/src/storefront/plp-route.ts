@@ -29,7 +29,7 @@ import { buildProductViewModel, type ProductViewModel } from "./product-view-mod
 import { parseCmsProductContent, sanitizeLocale } from "./route-input.js";
 
 /** Public route name — dispatched at
- *  `POST /_emdash/api/plugins/urumi/storefront/list`. */
+ *  `POST /_emdash/api/plugins/otta/storefront/list`. */
 export const STOREFRONT_LIST_ROUTE = "storefront/list";
 
 /**

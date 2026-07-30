@@ -34,7 +34,7 @@ import {
 	TAPE_FETCH_LIMIT,
 	type StoreSettings,
 } from "../lib/tape.js";
-import { dispatchUrumiRoute } from "../lib/urumi-api.js";
+import { dispatchOttaRoute } from "../lib/otta-api.js";
 
 /**
  * BOTH reads on this page are guarded, and the settings read needs it as much
@@ -87,7 +87,7 @@ const items = (entries ?? []).map((entry) =>
 const result =
 	entries === null
 		? null
-		: await dispatchUrumiRoute<PlpRouteResult>(
+		: await dispatchOttaRoute<PlpRouteResult>(
 				getPublicPluginApiRouteHandler(Astro.locals),
 				STOREFRONT_LIST_ROUTE,
 				{ items, query: { kind: "all" } },

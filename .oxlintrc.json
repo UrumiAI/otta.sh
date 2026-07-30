@@ -15,7 +15,7 @@
 				"no-underscore-dangle": [
 					"error",
 					{
-						"allow": ["__URUMI_COMMERCE_SERVICE_URL__"]
+						"allow": ["__OTTA_COMMERCE_SERVICE_URL__"]
 					}
 				]
 			}
@@ -26,7 +26,7 @@
 				"no-underscore-dangle": [
 					"error",
 					{
-						"allow": ["__URUMI_STRIPE_PUBLIC_KEY__"]
+						"allow": ["__OTTA_STRIPE_PUBLIC_KEY__"]
 					}
 				]
 			}

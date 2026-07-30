@@ -4,7 +4,7 @@
 // `wrangler deploy --config wrangler.local.jsonc`.
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "my-urumi-commerce", // PLACEHOLDER - pick your own Worker name
+	"name": "my-otta-commerce", // PLACEHOLDER - pick your own Worker name
 	"main": "src/worker.ts",
 	// Any date >= 2024-09-23 (the pg-over-Hyperdrive floor); pinned recent.
 	"compatibility_date": "2026-07-01",

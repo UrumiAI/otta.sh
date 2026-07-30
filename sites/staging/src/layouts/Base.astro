@@ -59,7 +59,7 @@ const { title, description, cartCount = null, currency = null } = Astro.props;
  *
  * The fallbacks are chosen to be TRUE rather than merely non-empty:
  *
- *  - the title falls back to "Urumi", which is what an absent `settings.title`
+ *  - the title falls back to "Otta", which is what an absent `settings.title`
  *    already did — a failed read and an unset setting land in the same place
  *    rather than growing a second rule;
  *  - the nav falls back to the routes THIS THEME defines (`FALLBACK_MENU_ITEMS`
@@ -78,7 +78,7 @@ try {
 } catch (error) {
 	console.error("[site-staging] layout settings read threw:", error);
 }
-const siteTitle = settings.title ?? "Urumi";
+const siteTitle = settings.title ?? "Otta";
 const fullTitle = title.includes(siteTitle) ? title : `${title} — ${siteTitle}`;
 
 let navItems: readonly NavItem[] = [];
@@ -153,7 +153,7 @@ try {
 		</main>
 		<footer class="foot">
 			<div class="shell foot-row">
-				<span>Urumi — content by EmDash, commerce by Urumi.</span>
+				<span>Otta — content by EmDash, commerce by Otta.</span>
 				{currency !== null && <span class="u-mono">{currency}</span>}
 			</div>
 		</footer>

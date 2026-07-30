@@ -1,14 +1,14 @@
 /**
- * Minimal local mirror of the EmDash sandboxed-plugin surface Urumi depends
+ * Minimal local mirror of the EmDash sandboxed-plugin surface Otta depends
  * on (verified against `~/em-dash`: `packages/core/src/plugins/types.ts`,
  * `packages/core/src/plugin-types.ts`, `packages/blocks/src/types.ts`).
  *
- * Urumi is a standalone repo (DEVELOPMENT.md preamble — "mirrors EmDash's
+ * Otta is a standalone repo (DEVELOPMENT.md preamble — "mirrors EmDash's
  * conventions without inheriting its config") and does not depend on the
  * `emdash` package at runtime; a real sandboxed EmDash plugin would instead
  * write `import type { PluginContext, SandboxedPlugin } from "emdash/plugin"`
  * (a types-only import erased at build time). These types are a deliberately
- * narrow subset — only what Urumi's hooks/routes/widget actually touch.
+ * narrow subset — only what Otta's hooks/routes/widget actually touch.
  */
 
 // -- content lifecycle hooks -------------------------------------------------
@@ -76,7 +76,7 @@ export interface KvAccess {
 }
 
 /**
- * The context passed to every hook/route handler. Urumi's plugin declares
+ * The context passed to every hook/route handler. Otta's plugin declares
  * only `content:read` + `network:request` (manifest.ts) — so `http` is the
  * only capability-gated surface it ever receives. `kv` is available WITHOUT a
  * capability (verified above) and holds only non-secret display prefs. No
@@ -276,7 +276,7 @@ export interface ButtonElement {
 /** Discriminated union — a subset of em-dash's 12-member `Element`
  *  (`packages/blocks/src/types.ts`); `checkbox`, `radio`, `repeater`,
  *  `media_picker` and `secret_input` (which has its own field spec below) are
- *  supported by the renderer but nothing in Urumi emits them as elements. */
+ *  supported by the renderer but nothing in Otta emits them as elements. */
 export type Element =
 	| TextInputElement
 	| NumberInputElement
@@ -297,7 +297,7 @@ export interface FieldWidgetConfig {
 // -- page-level Block Kit blocks (em-dash `packages/blocks/src/types.ts`) -----
 // A narrow subset — the blocks the admin console actually renders. Snake_case
 // field names follow the authoritative wire types (em-dash `types.ts`), matching
-// Urumi's existing element types.
+// Otta's existing element types.
 
 /** The phantom brand distinguishing a carrier `block_id` from a plain React key.
  *  NAMED FOR THE ERROR MESSAGE: tsc prints both the property name and the string
@@ -440,7 +440,7 @@ export interface TableBlock extends CarrierBlockBase {
 /**
  * `banner` — WIDENED to a backward-compatible SUPERSET of em-dash's
  * authoritative `BannerBlock` (`packages/blocks/src/types.ts:318-323`:
- * `{variant?: "default"|"alert"|"error"; title?; description?}`) plus Urumi's
+ * `{variant?: "default"|"alert"|"error"; title?; description?}`) plus Otta's
  * legacy `{variant: "error"|"info"|"success"; text}` (MOD-3). The Reports/Settings
  * pages emit the legacy `{variant, text}` shape (unchanged, still typechecks);
  * the em-dash renderer shows NO body for those, so the Orders console emits the
@@ -451,7 +451,7 @@ export interface TableBlock extends CarrierBlockBase {
 export interface BannerBlock extends BlockBase {
 	type: "banner";
 	variant: "default" | "alert" | "error" | "info" | "success";
-	/** Legacy Urumi body (Reports/Settings). */
+	/** Legacy Otta body (Reports/Settings). */
 	text?: string;
 	/** em-dash-authoritative banner body. */
 	title?: string;
@@ -477,7 +477,7 @@ export interface FormFieldSpec {
 	initial_value?: string | number;
 	placeholder?: string;
 	/** Textarea. em-dash declares `multiline` on `text_input` ONLY; this spec
-	 *  covers both input kinds (a pre-existing Urumi convenience), so it is
+	 *  covers both input kinds (a pre-existing Otta convenience), so it is
 	 *  meaningless — and ignored by the renderer — on a `number_input`. */
 	multiline?: boolean;
 }
@@ -642,8 +642,8 @@ export interface MeterBlock extends BlockBase {
 }
 
 /**
- * The blocks Urumi renders. Still a subset of em-dash's 18-member union: `code`
- * is supported by the renderer but nothing in Urumi emits it, and `chart` is
+ * The blocks Otta renders. Still a subset of em-dash's 18-member union: `code`
+ * is supported by the renderer but nothing in Otta emits it, and `chart` is
  * DELIBERATELY excluded — `blocks/chart.tsx` formats its own values and has no
  * currency, so putting money on it would mean a display float on the money path
  * (money is integer minor units, always formatted through
@@ -687,7 +687,7 @@ export interface SettingsFieldSpec {
 	type: "string" | "number" | "boolean";
 	label: string;
 	description?: string;
-	/** Where this field is persisted — Urumi's tiering (§5.1) made explicit in
+	/** Where this field is persisted — Otta's tiering (§5.1) made explicit in
 	 *  the schema so the two save paths are visible, not hidden. */
 	tier: "kv" | "service";
 }

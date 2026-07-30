@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "vitest";
-import { URUMI_PLUGIN_CAPABILITIES } from "../src/manifest.js";
+import { OTTA_PLUGIN_CAPABILITIES } from "../src/manifest.js";
 import { type LiveService, startLiveService } from "./helpers/start-live-service.js";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
 
@@ -89,7 +89,7 @@ async function loginThroughSandbox(
 	const result = (verify as { result: { ok: boolean; cookie?: { name: string; value: string } } })
 		.result;
 	expect(result.ok).toBe(true);
-	expect(result.cookie?.name).toBe("urumi_session");
+	expect(result.cookie?.name).toBe("otta_session");
 	return result.cookie!.value;
 }
 
@@ -139,6 +139,6 @@ describe.skipIf(PG === undefined)("storefront account pages (workerd sandbox)", 
 	test("the account pages add no new capability beyond network:request/allowedHosts", () => {
 		// The §6 ADR's "service sends email directly" holds in practice: the plugin
 		// declares no email:send, no ctx.storage — exactly the two capabilities.
-		expect([...URUMI_PLUGIN_CAPABILITIES]).toEqual(["content:read", "network:request"]);
+		expect([...OTTA_PLUGIN_CAPABILITIES]).toEqual(["content:read", "network:request"]);
 	});
 });

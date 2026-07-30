@@ -117,7 +117,7 @@ names the order and its 15-minute hold — not a broken form.
   so the pending sweep costs the page nothing.
 
 **3. `allowedHosts` does not change, and must not.** `allowedHosts` gates `ctx.http.fetch` —
-*server-side plugin egress only* (`manifest.ts`, `urumi-plugin-descriptor.ts`). Stripe.js is
+*server-side plugin egress only* (`manifest.ts`, `otta-plugin-descriptor.ts`). Stripe.js is
 fetched and called **by the buyer's browser**, which never passes through the plugin. Adding
 `js.stripe.com` there would be both useless and a real widening of the gate ADR-0006 exists to
 keep at exactly one host. A test asserts `js.stripe.com`'s **absence** from `ALLOWED_HOSTS`,

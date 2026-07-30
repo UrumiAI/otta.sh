@@ -1,7 +1,7 @@
 /**
  * The workerd-loaded worker module (plan §6 step 1). This is the actual
  * artifact `test/sandbox/harness.ts` bundles and boots inside a real
- * `workerd` process — it is Urumi's own minimal mirror of em-dash's
+ * `workerd` process — it is Otta's own minimal mirror of em-dash's
  * `packages/workerd` bridge (`WorkerdSandboxRunner`/`createBridgeHandler`),
  * scoped to exactly what this plugin needs:
  *
@@ -15,9 +15,9 @@
  *  - no `content`/`media`/`users`/`email`/`storage` on `ctx` at all — this
  *    plugin never declares those capabilities (sandbox-clean guard).
  *
- * Urumi does not depend on `~/em-dash`'s internal `packages/workerd`
+ * Otta does not depend on `~/em-dash`'s internal `packages/workerd`
  * package (DEVELOPMENT.md preamble — standalone repo); this file plus
- * `test/sandbox/harness.ts` are Urumi's own from-scratch equivalent, proven
+ * `test/sandbox/harness.ts` are Otta's own from-scratch equivalent, proven
  * against a REAL `workerd` binary (the public `workerd` npm package), not a
  * simulation.
  */
@@ -44,13 +44,13 @@ function createHttpAccess(allowedHosts: readonly string[]): HttpAccess {
 		async fetch(url, init) {
 			if (allowedHosts.length === 0) {
 				throw new Error(
-					'Plugin "urumi" has no allowed hosts configured. Add hosts to allowedHosts to enable HTTP requests.',
+					'Plugin "otta" has no allowed hosts configured. Add hosts to allowedHosts to enable HTTP requests.',
 				);
 			}
 			const hostname = new URL(url).hostname;
 			if (!isHostAllowed(hostname, allowedHosts)) {
 				throw new Error(
-					`Plugin "urumi" is not allowed to fetch from host "${hostname}". Allowed hosts: ${allowedHosts.join(", ")}`,
+					`Plugin "otta" is not allowed to fetch from host "${hostname}". Allowed hosts: ${allowedHosts.join(", ")}`,
 				);
 			}
 			return globalThis.fetch(url, init);

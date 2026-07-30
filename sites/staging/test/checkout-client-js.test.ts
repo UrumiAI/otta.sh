@@ -138,7 +138,7 @@ const PERMITTED = PERMITTED_CLIENT_JS.map(
  * written inside the repo.
  */
 function scratchTree(files: Record<string, string>): string {
-	const root = mkdtempSync(path.join(tmpdir(), "urumi-fence-"));
+	const root = mkdtempSync(path.join(tmpdir(), "otta-fence-"));
 	cpSync(SRC_DIR, root, { recursive: true });
 	for (const [relative, contents] of Object.entries(files)) {
 		const target = path.join(root, relative);

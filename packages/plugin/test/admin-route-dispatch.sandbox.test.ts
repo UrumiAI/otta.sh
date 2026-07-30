@@ -10,7 +10,7 @@ import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
 // This change: em-dash's admin shell renders EVERY plugin admin page by
 // `POST /plugins/{id}/admin` and resolves the route by the literal key
 // "admin", dispatching on the BlockInteraction's `type` + `page`/`action_id`.
-// Urumi previously registered `admin/reports`/`admin/settings` (which never
+// Otta previously registered `admin/reports`/`admin/settings` (which never
 // dispatch) → Reports/Settings 404'd. Proven here under the REAL
 // workerd-on-Node sandbox.
 

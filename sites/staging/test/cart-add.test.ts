@@ -53,7 +53,7 @@ interface HandlerCall {
 }
 
 /** A configurable fake of `locals.emdash.handlePublicPluginApiRoute`
- *  (`dispatchUrumiRoute`'s in-process dispatch target) — routes by path,
+ *  (`dispatchOttaRoute`'s in-process dispatch target) — routes by path,
  *  records every call so a test can assert the add-line route was NEVER
  *  reached. */
 function makeHandler(opts: { productResult?: unknown; addLineResult?: unknown }): {
@@ -101,7 +101,7 @@ function makeContext(form: Record<string, string>, handler: unknown): APIContext
 		body: body.toString(),
 	});
 	const cookieStore = new Map<string, string>();
-	cookieStore.set("urumi_cart", "cart-existing");
+	cookieStore.set("otta_cart", "cart-existing");
 	return {
 		request,
 		url,

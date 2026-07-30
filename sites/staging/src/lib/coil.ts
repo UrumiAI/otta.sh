@@ -3,7 +3,7 @@
  * (docs/theme/TEMPERED.md §5).
  *
  * An Archimedean spiral swept as a ribbon that tapers to a point at its inner
- * end: the blade coiled, which is how an urumi is worn. It is GENERATED, never
+ * end: the blade coiled, which is how an otta is worn. It is GENERATED, never
  * hand-authored path data, because §5's requirement is that centre, turn count,
  * rotation and outer radius all key off the product slug — so each product
  * crops differently instead of repeating like a logo.

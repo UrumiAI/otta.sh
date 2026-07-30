@@ -23,7 +23,7 @@
  * and access logs by the time this renders (ADR-0012 decision 6 — accepted, and
  * not ours to change). The mitigations that ARE ours: the `no-referrer` policy
  * below, so it does not leak onward through subresource Referers; and deleting
- * the `urumi_checkout` stash on arrival, so a spent secret does not linger in
+ * the `otta_checkout` stash on arrival, so a spent secret does not linger in
  * the browser for the rest of the hold. That deletion is the entire
  * justification for the cookie's `path=/`.
  *
@@ -48,7 +48,7 @@ import Sum from "../../components/Sum.astro";
 import Base from "../../layouts/Base.astro";
 import { clearCheckoutCookie } from "../../lib/checkout-cookie.js";
 import { cartErrorMessage } from "../../lib/error-messages.js";
-import { dispatchUrumiRoute } from "../../lib/urumi-api.js";
+import { dispatchOttaRoute } from "../../lib/otta-api.js";
 
 const { orderId } = Astro.params;
 
@@ -59,7 +59,7 @@ clearCheckoutCookie(Astro.cookies);
 const result =
 	orderId === undefined
 		? null
-		: await dispatchUrumiRoute<OrderRouteResult>(
+		: await dispatchOttaRoute<OrderRouteResult>(
 				getPublicPluginApiRouteHandler(Astro.locals),
 				STOREFRONT_ORDER_ROUTE,
 				{ orderId },

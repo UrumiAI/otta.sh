@@ -1,7 +1,7 @@
 /**
  * Manifest compile-time override (site task D4): a deploying site injects
  * the real commerce-service URL into the plugin bundle via a Vite `define`
- * of `__URUMI_COMMERCE_SERVICE_URL__`; without the define (plain tsdown
+ * of `__OTTA_COMMERCE_SERVICE_URL__`; without the define (plain tsdown
  * build, sandbox harness, this vitest run) the placeholder must survive
  * unchanged. The resolution is a pure exported function so both branches
  * are unit-testable — no bundler in the loop.
@@ -13,7 +13,7 @@ import {
 	resolveCommerceServiceBaseUrl,
 } from "../src/manifest.js";
 
-const PLACEHOLDER = "https://commerce.urumi.internal";
+const PLACEHOLDER = "https://commerce.otta.internal";
 
 describe("manifest COMMERCE_SERVICE_BASE_URL resolution", () => {
 	test("falls back to the placeholder when the compile-time define is absent", () => {

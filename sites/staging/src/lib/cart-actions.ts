@@ -18,7 +18,7 @@ import type { APIContext } from "astro";
 import type { PublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import { applyCartCookie } from "./cart-cookie.js";
-import { dispatchUrumiRoute } from "./urumi-api.js";
+import { dispatchOttaRoute } from "./otta-api.js";
 
 /** Semantic error tokens this shim adds on top of the plugin's own
  *  (`RENDER_FAILED`, `OUT_OF_STOCK`, ...). */
@@ -63,7 +63,7 @@ export async function ensureCartId(
 	const existing = currentCartId(context);
 	if (existing !== undefined) return existing;
 
-	const created = await dispatchUrumiRoute<CartCreateRouteResult>(
+	const created = await dispatchOttaRoute<CartCreateRouteResult>(
 		handler,
 		STOREFRONT_CART_CREATE_ROUTE,
 		{},

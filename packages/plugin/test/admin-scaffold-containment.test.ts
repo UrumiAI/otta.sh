@@ -179,7 +179,7 @@ describe("containment: paths only the last-resort wrapper can catch", () => {
 		});
 		await run(handler, { type: "page_load" });
 		expect(logged).toHaveLength(1);
-		expect(String(logged[0]?.[0])).toContain("[urumi] admin list/detail dispatch failed:");
+		expect(String(logged[0]?.[0])).toContain("[otta] admin list/detail dispatch failed:");
 		expect(String((logged[0]?.[1] as Error | undefined)?.message)).toBe("kv read blew up");
 	});
 });

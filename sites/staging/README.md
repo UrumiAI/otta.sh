@@ -1,14 +1,14 @@
 # @otta-sh/site-staging
 
-The Urumi **staging storefront + admin**: an EmDash site on Cloudflare Workers backed by
-a D1 content database and an R2 media bucket, with the Urumi plugin registered **trusted
+The Otta **staging storefront + admin**: an EmDash site on Cloudflare Workers backed by
+a D1 content database and an R2 media bucket, with the Otta plugin registered **trusted
 in-process** — no plugin sandbox, no Worker Loaders, Workers **free** plan. See [ADR-0006](../../adr/0006-trusted-in-process-deployment.md) for why that is
 allowed and what stays forbidden.
 
 Pages are thin theme shims per [ADR-0003](../../adr/0003-storefront-plugin-routes.md): the
 CMS query runs in the page, the plugin's public routes return JSON view models in-process
 (`locals.emdash.handlePublicPluginApiRoute`), the page renders HTML. The `/cart/*` POST
-endpoints own the `urumi_cart` cookie (the plugin returns a cookie *descriptor*; the
+endpoints own the `otta_cart` cookie (the plugin returns a cookie *descriptor*; the
 endpoint applies it verbatim) and forward form-embedded idempotency keys — they never mint
 one at POST time, so a double-submit replays instead of duplicating.
 
@@ -18,7 +18,7 @@ one at POST time, so a double-submit replays instead of duplicating.
 # 1. Start the commerce service (repo root; point PG_CONNECTION_STRING at your
 #    own local test Postgres). tsx, not the built dist bin: the unpublished
 #    workspace exports point at TS sources (#44).
-PG_CONNECTION_STRING=postgres://postgres:postgres@127.0.0.1:55432/urumi_test \
+PG_CONNECTION_STRING=postgres://postgres:postgres@127.0.0.1:55432/otta_test \
   pnpm dlx tsx@4 packages/service/src/index.ts
 
 # 2. Run the site against it:

@@ -35,7 +35,7 @@ exactly as in the sandbox.
    nothing that could not also run sandboxed. ADR-0003's route-based storefront shape
    stays.
 3. The site registers the plugin via a hand-written descriptor
-   (`sites/staging/src/urumi-plugin-descriptor.ts`): `format: "standard"`, entrypoint
+   (`sites/staging/src/otta-plugin-descriptor.ts`): `format: "standard"`, entrypoint
    `@otta-sh/plugin/plugin`, capabilities exactly the manifest's
    (`content:read`, `network:request`), `allowedHosts` = the commerce service's hostname
    (baked at build time). No `sandboxed:`, no `sandboxRunner:`, no `worker_loaders`
