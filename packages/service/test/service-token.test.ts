@@ -54,6 +54,12 @@ function makeApp(options: { serviceToken?: string; internalToken?: string } = {}
 	});
 	const productCommerce = new InMemoryProductCommerceStore({
 		clock,
+		// NOTE: `InMemoryInventoryStore.onHand` returns 0 for an unseeded sku, so
+		// this wiring COLLAPSES null -> 0. Fine for the coarse `inStock` boolean
+		// these suites exercise; do NOT assert the products-list `onHand`
+		// projection through it (the list must distinguish "no inventory row"
+		// from "out of stock" — see the divergence note in
+		// `packages/domain/src/ports/inventory-store.ts`'s `getOnHand` doc).
 		inventoryOnHand: (s) => inventory.onHand(s),
 	});
 	const idGen = new CountingIdGen("id");

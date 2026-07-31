@@ -94,6 +94,13 @@ export interface ProductSummary {
 	 * out-of-stock claim, and rendering `0` as unknown hides one. The two are
 	 * pinned separately by the contract suite.
 	 *
+	 * ⚠ This DIVERGES, deliberately, from `InventoryStore.getOnHand`, which
+	 * returns a bare `number` and therefore collapses "no inventory row" to
+	 * `0`. That method serves the detail leaf, where the ONE product is
+	 * already known; this projection serves a list that must show the
+	 * difference. The divergence is documented on BOTH sides — do not
+	 * "harmonize" them by coercing `null → 0` here.
+	 *
 	 * Sourced by a single LEFT JOIN onto `inventory` in the same statement as
 	 * the page — the join miss IS the null. Measured cost of carrying it at
 	 * page size 25 over 5,000 products / 3,997 inventory rows on Postgres 16:
