@@ -8,9 +8,9 @@ branches yet.
 ## Reporting a vulnerability
 
 Please report suspected security vulnerabilities **privately** — do not open a public
-GitHub issue. Use GitHub's private vulnerability reporting on this repository:
+GitHub issue. Email **vedanshu@urumi.ai** with details and, if possible, steps to
+reproduce. You can also use GitHub's private vulnerability reporting on this repository:
 [**Report a vulnerability**](https://github.com/UrumiAI/otta.sh/security/advisories/new).
-Include details and, if possible, steps to reproduce.
 
 This is a solo-maintainer project, so response times are best-effort, not SLA'd:
 acknowledgement within a few business days is a reasonable expectation, not a commitment.
