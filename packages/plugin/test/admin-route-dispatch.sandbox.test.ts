@@ -111,8 +111,10 @@ describe("admin route dispatch (workerd sandbox)", () => {
 			expect.arrayContaining(["reports:revenue", "reports:statuses", "reports:top", "reports:low"]),
 		);
 		expect(findBlocks(blocks, "table")).toHaveLength(4);
-		// All four guarded reads carried the token from write-only kv.
-		expect(stub.requests.length).toBe(4);
+		// All FIVE guarded reads carried the token from write-only kv — the four
+		// `/reports/*` reads plus the `GET /settings` read whose `lowStockThreshold`
+		// the low-stock group label states.
+		expect(stub.requests.length).toBe(5);
 		for (const req of stub.requests) {
 			expect(req.headers["x-internal-token"]).toBe("admin-token-xyz");
 		}
@@ -186,7 +188,8 @@ describe("admin route dispatch (workerd sandbox)", () => {
 		// 1. Non-empty submit persists the token; a subsequent reports read forwards it.
 		await seedToken(sandbox, stub, "tok-1");
 		await sandbox.invokeRoute("admin", { type: "page_load", page: "/reports" });
-		expect(stub.requests.length).toBe(4);
+		// Four `/reports/*` reads + the `GET /settings` low-stock-threshold read.
+		expect(stub.requests.length).toBe(5);
 		for (const req of stub.requests) {
 			expect(req.headers["x-internal-token"]).toBe("tok-1");
 		}
@@ -200,7 +203,7 @@ describe("admin route dispatch (workerd sandbox)", () => {
 		});
 		stub.requests.length = 0;
 		await sandbox.invokeRoute("admin", { type: "page_load", page: "/reports" });
-		expect(stub.requests.length).toBe(4);
+		expect(stub.requests.length).toBe(5);
 		for (const req of stub.requests) {
 			expect(req.headers["x-internal-token"]).toBe("tok-1");
 		}

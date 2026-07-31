@@ -1,16 +1,18 @@
 import { COMMERCE_SERVICE_BASE_URL } from "../manifest.js";
 import { formatMoney } from "../presentation/format-money.js";
-import { cents as toCents, currency as toCurrency } from "../presentation/money.js";
+import { type Currency, cents as toCents, currency as toCurrency } from "../presentation/money.js";
 import type {
 	AccordionBlock,
 	AdminPageConfig,
+	BannerBlock,
 	Block,
 	BlockResponse,
+	FormBlock,
 	RouteHandler,
 	StatItem,
 	TableBlock,
 } from "../types.js";
-import { failClosedResponse } from "./scaffold/index.js";
+import { carriedForm, failClosedResponse } from "./scaffold/index.js";
 import { INTERNAL_TOKEN_KEY } from "./settings-form.js";
 import {
 	type LowStockWire,
@@ -22,18 +24,66 @@ import {
 } from "./reporting-client.js";
 
 /** The admin Reports page's `admin.pages` manifest entry (§4.1). The page
- *  renders numbers and tables — Block Kit ships no charting primitive that can
- *  format money (R-19, §2), so a graphical dashboard is a future trusted-React
- *  surface. Rendered by the single `admin` dispatch route (see
- *  `admin-route.ts`). */
+ *  renders numbers and tables, NOT a chart.
+ *
+ *  Block Kit does ship a charting primitive — `chart` is ECharts-backed and has
+ *  been dispatched by the renderer since ≤0.15.0 (an earlier version of this
+ *  comment claimed otherwise and was wrong). The reason it is unused here is
+ *  narrower and load-bearing: the renderer strips `formatter`, `rich`,
+ *  `graphic` and `axisPointer` as XSS vectors, so a series cannot carry a money
+ *  formatter — axis ticks and tooltips would print raw integer minor units
+ *  (9900, not $99.00), which is exactly the money-display rule this console is
+ *  built around. A continuous, formatted two-column table shows the same shape
+ *  and states every figure in its currency. A chart over a NON-money series is
+ *  a different question and is not ruled out by this.
+ *
+ *  Rendered by the single `admin` dispatch route (see `admin-route.ts`). */
 export const REPORTS_PAGE: AdminPageConfig = { path: "/reports", label: "Reports", icon: "chart" };
 
-/** Trailing 30 days (UTC), the plugin-side default (a UX nicety only — the
- *  service enforces the 400-day cap regardless, §4.4). */
+/** Trailing 30 days (UTC), the plugin-side default — SURFACED, never silent:
+ *  every KPI label says "last 30 days" and the subtitle states the two absolute
+ *  dates it resolved to. (A UX nicety only — the service enforces the 400-day
+ *  cap regardless, §4.4.) */
 const DEFAULT_RANGE_DAYS = 30;
+
+/** The service's own cap (§4.4). Checked here so a too-wide range renders THIS
+ *  page with a banner naming the limit, instead of three 400s collapsing into
+ *  the generic "Reports are unavailable" fail-closed screen — same outcome for
+ *  the operator either way (a 200 with a banner), but only one of them says
+ *  what to do next. */
+const MAX_RANGE_DAYS = 400;
 
 /** R-16 caps a `stats` block at 4 items. */
 const MAX_STATS_ITEMS = 4;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The order states the SERVICE counts as revenue (`REVENUE_COUNTING_STATES` in
+ * the domain's reporting port: payment confirmed and not reversed). Mirrored
+ * here — like every other wire fact this package uses — because the plugin
+ * never imports `@otta-sh/domain`.
+ *
+ * Used for ONE thing: the denominator of the average-order-value tile, so AOV
+ * divides revenue by the orders that actually produced it rather than by every
+ * order placed (which includes `failed`/`expired`/`cancelled`). If the service
+ * ever widens its allow-list, this list going stale would move AOV's
+ * denominator only — which is why the tile states its own denominator in its
+ * description instead of leaving the operator to infer it.
+ */
+const REVENUE_COUNTING_STATES: ReadonlySet<string> = new Set([
+	"paid",
+	"processing",
+	"shipped",
+	"delivered",
+	"completed",
+]);
+
+/** Day-first date rendering (`1 Jul 2026`), so a range reads as
+ *  `1 Jul – 31 Jul 2026` rather than `Jul 1 – Jul 31, 2026`. Localization comes
+ *  from Intl, never from hand-assembled month names (G6). */
+const DATE_LOCALE = "en-GB";
+const MONEY_LOCALE = "en-US";
 
 /**
  * The one page action every table on this screen sets (T-6/R-21: the
@@ -50,25 +100,172 @@ const MAX_STATS_ITEMS = 4;
  * this registration.
  */
 export const REPORTS_PAGE_ACTION_ID = "reports:page";
-export const REPORTS_ACTION_IDS: ReadonlySet<string> = new Set([REPORTS_PAGE_ACTION_ID]);
+
+/**
+ * The From/To period form's submit. It is a REAL action — unlike
+ * {@link REPORTS_PAGE_ACTION_ID} it fires on every period change — so the
+ * registration below is not a latent precaution: an unregistered id falls
+ * through the dispatcher to `{blocks: []}`, and the operator's period change
+ * would blank the console. Pinned by the sandbox suite, which fires this id and
+ * asserts the response still renders the page.
+ */
+export const REPORTS_RANGE_ACTION_ID = "reports:apply-range";
+
+export const REPORTS_ACTION_IDS: ReadonlySet<string> = new Set([
+	REPORTS_PAGE_ACTION_ID,
+	REPORTS_RANGE_ACTION_ID,
+]);
 
 export interface ReportsPageInput {
 	from?: unknown;
 	to?: unknown;
 	interval?: unknown;
+	/** A `form_submit` carries its fields here (em-dash's `BlockInteraction`),
+	 *  which is where the period form's `from`/`to` arrive. The top-level
+	 *  `from`/`to` above stay supported: they are the shape a `page_load` can
+	 *  carry. */
+	values?: unknown;
 }
 
-function resolveRange(input: ReportsPageInput): { from: string; to: string } {
-	if (typeof input.from === "string" && typeof input.to === "string") {
-		return { from: input.from, to: input.to };
-	}
+/**
+ * The period this render is answering for, resolved ONCE and threaded into
+ * every read, every KPI label and the subtitle — the whole point of the
+ * increment is that these three can never disagree.
+ *
+ * `from`/`to` are the ISO instants sent to the service; `fromDay`/`toDay` are
+ * the `YYYY-MM-DD` values the `date_input`s prefill with. `isDefault` is what
+ * lets a label say "last 30 days" (true, and useful) rather than repeating the
+ * absolute dates the subtitle already states. `problem` is set when the
+ * operator submitted something unusable — the range falls back to the default
+ * and the page renders the reason as a banner (never a 4xx: G5).
+ */
+interface ResolvedRange {
+	from: string;
+	to: string;
+	fromDay: string;
+	toDay: string;
+	isDefault: boolean;
+	problem?: string;
+}
+
+function defaultRange(problem?: string): ResolvedRange {
 	const to = new Date();
-	const from = new Date(to.getTime() - DEFAULT_RANGE_DAYS * 24 * 60 * 60 * 1000);
-	return { from: from.toISOString(), to: to.toISOString() };
+	const from = new Date(to.getTime() - DEFAULT_RANGE_DAYS * DAY_MS);
+	return {
+		from: from.toISOString(),
+		to: to.toISOString(),
+		fromDay: dayOf(from),
+		toDay: dayOf(to),
+		isDefault: true,
+		...(problem !== undefined ? { problem } : {}),
+	};
+}
+
+/** The `YYYY-MM-DD` (UTC) a moment falls on. */
+function dayOf(at: Date): string {
+	return at.toISOString().slice(0, 10);
+}
+
+const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * A submitted bound → an instant. A `date_input` yields `YYYY-MM-DD`, which is
+ * a DAY, not an instant: the `to` bound therefore resolves to the END of that
+ * day, because the service's window is inclusive and `2026-07-31T00:00:00Z`
+ * would silently drop every order placed on the last day the operator asked
+ * for. A full ISO string (the `page_load` shape) is taken as given.
+ */
+function parseBound(value: string, edge: "from" | "to"): Date | undefined {
+	const trimmed = value.trim();
+	if (trimmed.length === 0) return undefined;
+	const raw = DAY_PATTERN.test(trimmed)
+		? `${trimmed}${edge === "from" ? "T00:00:00.000Z" : "T23:59:59.999Z"}`
+		: trimmed;
+	const at = new Date(raw);
+	return Number.isNaN(at.getTime()) ? undefined : at;
+}
+
+/** A `from`/`to` pair from wherever this interaction carried it: a form submit's
+ *  `values`, else the route input itself. */
+function readBounds(input: ReportsPageInput): { from?: string; to?: string } {
+	const values =
+		typeof input.values === "object" && input.values !== null
+			? (input.values as Record<string, unknown>)
+			: {};
+	const from = values["from"] ?? input.from;
+	const to = values["to"] ?? input.to;
+	return {
+		...(typeof from === "string" ? { from } : {}),
+		...(typeof to === "string" ? { to } : {}),
+	};
+}
+
+/**
+ * Resolve the period, falling back to the trailing-30-day default with a stated
+ * reason on anything unusable. EVERY branch returns a range: this handler has no
+ * failure mode that is allowed to be a non-2xx (G5), and a period the operator
+ * cannot see is the defect this page is being fixed for — so a rejected range
+ * announces itself instead of silently answering a different question.
+ */
+function resolveRange(input: ReportsPageInput): ResolvedRange {
+	const bounds = readBounds(input);
+	const hasFrom = bounds.from !== undefined && bounds.from.trim().length > 0;
+	const hasTo = bounds.to !== undefined && bounds.to.trim().length > 0;
+	if (!hasFrom && !hasTo) return defaultRange();
+	if (!hasFrom || !hasTo) {
+		return defaultRange("Enter both a From and a To date to report on a custom period.");
+	}
+	const from = parseBound(bounds.from ?? "", "from");
+	const to = parseBound(bounds.to ?? "", "to");
+	if (from === undefined || to === undefined) {
+		return defaultRange("Enter both dates as a calendar date, then update the period.");
+	}
+	if (from.getTime() > to.getTime()) {
+		return defaultRange("The From date falls after the To date. Swap them, then update again.");
+	}
+	if (to.getTime() - from.getTime() > MAX_RANGE_DAYS * DAY_MS) {
+		return defaultRange(
+			`A reporting period covers up to ${MAX_RANGE_DAYS} days. Choose a shorter one.`,
+		);
+	}
+	return {
+		from: from.toISOString(),
+		to: to.toISOString(),
+		fromDay: dayOf(from),
+		toDay: dayOf(to),
+		isDefault: false,
+	};
 }
 
 function resolveInterval(input: ReportsPageInput): "day" | "week" | "month" {
 	return input.interval === "week" || input.interval === "month" ? input.interval : "day";
+}
+
+/** `1 Jul` / `1 Jul 2026` (UTC), through Intl so the console stays localizable
+ *  and RTL-safe (G6). */
+function formatDay(day: string, withYear: boolean): string {
+	const at = new Date(`${day}T00:00:00.000Z`);
+	return new Intl.DateTimeFormat(DATE_LOCALE, {
+		timeZone: "UTC",
+		day: "numeric",
+		month: "short",
+		...(withYear ? { year: "numeric" as const } : {}),
+	}).format(at);
+}
+
+/** The period in ABSOLUTE dates — `1 Jul – 31 Jul 2026`. The year is stated
+ *  once when both ends share it, twice when they do not. */
+function absolutePeriod(range: ResolvedRange): string {
+	const sameYear = range.fromDay.slice(0, 4) === range.toDay.slice(0, 4);
+	return `${formatDay(range.fromDay, !sameYear)} – ${formatDay(range.toDay, true)}`;
+}
+
+/** What a KPI label says the figure covers. The default range names itself
+ *  ("last 30 days" — shorter, and it tells the operator the period is the
+ *  default rather than something they chose); a chosen range states its dates,
+ *  because "last 30 days" would then be a lie. */
+function periodSuffix(range: ResolvedRange): string {
+	return range.isDefault ? `last ${DEFAULT_RANGE_DAYS} days` : absolutePeriod(range);
 }
 
 /**
@@ -77,9 +274,11 @@ function resolveInterval(input: ReportsPageInput): "day" | "week" | "month" {
  * `ctx.http` via `ReportingSettingsClient`. Fails CLOSED: any `ctx.http` error
  * (allowlist rejection or a non-2xx) renders the E-7 fail-closed banner rather
  * than throwing into the host. Also handles the (currently unreachable)
- * `reports:page` no-op action by re-rendering the page unchanged — this
- * function reads only `routeCtx.input`'s range/interval fields regardless of
- * whether the interaction was a `page_load` or a `block_action`.
+ * `reports:page` no-op action by re-rendering the page unchanged, and the
+ * period form's `reports:apply-range` submit by re-rendering it for the
+ * submitted period — this function reads its range from `routeCtx.input`
+ * (top-level, or a form submit's `values`) regardless of which of the three
+ * interaction types delivered it.
  */
 export function createReportsPageHandler(): RouteHandler<ReportsPageInput> {
 	return async (routeCtx, ctx) => {
@@ -98,13 +297,27 @@ export function createReportsPageHandler(): RouteHandler<ReportsPageInput> {
 			...(adminToken !== undefined ? { adminToken } : {}),
 		});
 		try {
-			const [revenue, statuses, top, low] = await Promise.all([
+			const [revenue, statuses, top, low, settings] = await Promise.all([
 				client.getRevenue(range, interval),
 				client.getOrdersByStatus(range),
 				client.getTopProducts(range, "revenue", 10),
 				client.getLowStock(),
+				// The low-stock THRESHOLD is a label, not a figure: a settings read
+				// that fails must not take the whole screen down with it, so this one
+				// read degrades to an unlabelled "Low stock (3)" instead of joining
+				// the fail-closed set above.
+				client.getSettings().catch(() => undefined),
 			]);
-			return buildReportsBlocks({ displayName, interval, revenue, statuses, top, low });
+			return buildReportsBlocks({
+				displayName,
+				interval,
+				range,
+				revenue,
+				statuses,
+				top,
+				low,
+				...(settings !== undefined ? { lowStockThreshold: settings.lowStockThreshold } : {}),
+			});
 		} catch {
 			// Fail CLOSED with E-7's normative copy — never leak the raw HTTP
 			// status/URL (e.g. an auth 401 from a missing/expired admin token), and
@@ -124,10 +337,15 @@ export function createReportsPageHandler(): RouteHandler<ReportsPageInput> {
 interface ReportsData {
 	displayName: string;
 	interval: "day" | "week" | "month";
+	/** The period every figure on this page covers. */
+	range: ResolvedRange;
 	revenue: RevenueBucketWire[];
 	statuses: StatusCountWire[];
 	top: TopProductWire[];
 	low: LowStockWire[];
+	/** From `GET /settings` — the threshold the low-stock rows were selected by,
+	 *  so its group label can state it. Absent when that read failed. */
+	lowStockThreshold?: number;
 }
 
 export function buildReportsBlocks(data: ReportsData): BlockResponse {
@@ -153,12 +371,17 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 	const byCurrencyCode = [...totalByCurrency.entries()].toSorted((a, b) =>
 		a[0].localeCompare(b[0]),
 	);
-	const items: StatItem[] =
+	const period = periodSuffix(data.range);
+	// EVERY tile states the period it covers. The subtitle states it too, in
+	// absolute dates — a KPI read out of the corner of an eye is the exact thing
+	// that used to be read as "all time" or "today", and a figure is only as
+	// good as the question it answers.
+	const revenueTiles: StatItem[] =
 		byCurrencyCode.length === 0
-			? [{ label: "Revenue", value: "—", description: "No orders in range" }]
-			: byCurrencyCode.slice(0, MAX_STATS_ITEMS).map(([currencyCode, revenueCents]) => ({
-					label: `Revenue (${currencyCode})`,
-					value: formatMoney(toCents(revenueCents), toCurrency(currencyCode), "en-US"),
+			? [{ label: `Revenue — ${period}`, value: "—", description: "No paid orders in this period" }]
+			: byCurrencyCode.map(([currencyCode, revenueCents]) => ({
+					label: `Revenue (${currencyCode}) — ${period}`,
+					value: formatMoney(toCents(revenueCents), toCurrency(currencyCode), MONEY_LOCALE),
 				}));
 	// DA-7: no control can fix this (there is nothing to click), so one honest
 	// line names the gap and the remedy — rendered, not just disclosed in a
@@ -178,6 +401,30 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 	// to avoid.
 	const singleCurrency =
 		byCurrencyCode.length === 1 ? toCurrency(byCurrencyCode[0]![0]) : undefined;
+
+	// The other three tiles (DESIGNER §6: one number in one bordered card, 1 of
+	// 4 slots used, ~700px of empty card beside it). Order is Revenue, Orders,
+	// AOV, Refunded and the list is TRUNCATED to R-16's four — so a
+	// single-currency store (the ordinary case) gets exactly those four, and a
+	// multi-currency one spends the slots on the revenue it cannot combine into
+	// one figure.
+	const orderCount = data.statuses.reduce((sum, s) => sum + s.orderCount, 0);
+	const paidOrderCount = data.statuses.reduce(
+		(sum, s) => (REVENUE_COUNTING_STATES.has(s.status) ? sum + s.orderCount : sum),
+		0,
+	);
+	const ordersTile: StatItem = {
+		label: `Orders — ${period}`,
+		value: String(orderCount),
+		description: "Every status, including cancelled and failed",
+	};
+	const aovTile = averageOrderValueTile(byCurrencyCode, singleCurrency, paidOrderCount, period);
+	const refundedTile = refundedTileFor(data.statuses, singleCurrency, period);
+	const items: StatItem[] = [...revenueTiles, ordersTile, aovTile, refundedTile].slice(
+		0,
+		MAX_STATS_ITEMS,
+	);
+
 	const topRevenueSuppressed = singleCurrency === undefined && data.top.length > 0;
 	const topRows = data.top.map((t) => ({
 		titleSnapshot: t.titleSnapshot,
@@ -185,7 +432,7 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 		revenue:
 			singleCurrency === undefined
 				? "—"
-				: formatMoney(toCents(t.revenueCents), singleCurrency, "en-US"),
+				: formatMoney(toCents(t.revenueCents), singleCurrency, MONEY_LOCALE),
 	}));
 
 	// Bucket boundaries are date-only bounds (M-6), and the wire's
@@ -196,9 +443,15 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 	// (M-2 forbids one) and without the per-currency accordion split the
 	// listing describes, whose ordering depends on the same order-count data
 	// the stats ranking above does not have.
-	const revenueRows = data.revenue.map((b) => ({
-		bucketStart: b.bucketStart.slice(0, 10),
-		revenue: formatMoney(toCents(b.revenueCents), toCurrency(b.currency), "en-US"),
+	//
+	// Days with no orders are EMITTED, at zero, so the series is continuous
+	// (DESIGNER §6): the wire returns only days that had revenue, which made a
+	// month of steady sales and a month with a three-week hole render as the
+	// same four rows. A zero row is data — it is the shape a table can show
+	// without a chart.
+	const revenueRows = revenueSeries(data).map(({ day, currencyCode, revenueCents }) => ({
+		bucketStart: day,
+		revenue: formatMoney(toCents(revenueCents), toCurrency(currencyCode), MONEY_LOCALE),
 	}));
 
 	const revenueTable: TableBlock = {
@@ -215,7 +468,10 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 	const revenueAccordion: AccordionBlock = {
 		type: "accordion",
 		block_id: "reports:revenue",
-		label: `Revenue by ${data.interval} (${data.revenue.length} bucket${data.revenue.length === 1 ? "" : "s"})`,
+		// No "(N buckets)": a bucket is this codebase's word for a GROUP BY, not
+		// the operator's word for anything, and with the series now continuous the
+		// count was only ever restating the length of the range.
+		label: `Revenue by ${data.interval}`,
 		default_open: true, // S-3: the one open group on this screen
 		blocks: multiCurrency
 			? [{ type: "context", text: rankingGapNote }, revenueTable]
@@ -283,7 +539,14 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 	const lowAccordion: AccordionBlock = {
 		type: "accordion",
 		block_id: "reports:low",
-		label: `Low stock (${data.low.length})`,
+		// The count alone ("Low stock (3)") never said low COMPARED TO WHAT, and
+		// the threshold lives in Settings, two screens away. `GET /settings`
+		// already returns it, so the label states it. Omitted — never guessed —
+		// when that read failed.
+		label:
+			data.lowStockThreshold === undefined
+				? `Low stock (${data.low.length})`
+				: `Low stock (${data.low.length}) — at or below ${data.lowStockThreshold}`,
 		default_open: false,
 		blocks: [lowTable],
 	};
@@ -292,8 +555,13 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 		{ type: "header", text: `${data.displayName} — Reports` },
 		{
 			type: "context",
-			text: "Revenue is net order totals on paid-and-later orders, bucketed by order time (UTC).",
+			// The period FIRST, in absolute dates: the screen used to state the
+			// definition of revenue and never the window it applied it to, so a
+			// figure covering 30 days read equally well as all-time or as today.
+			text: `${absolutePeriod(data.range)} (UTC) · Revenue is net order totals on paid-and-later orders, bucketed by order time.`,
 		},
+		...(data.range.problem !== undefined ? [rangeProblemBanner(data.range)] : []),
+		rangeForm(data.range),
 		{ type: "stats", items },
 		revenueAccordion,
 		statusesAccordion,
@@ -301,6 +569,196 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 		lowAccordion,
 	];
 	return { blocks };
+}
+
+/**
+ * The period control (P0-3: the page hardcoded a trailing 30 days, read
+ * `from`/`to` from its route input, and shipped no UI that could ever supply
+ * them). Two `date_input`s, prefilled with the period being rendered, whose
+ * submit re-enters this same handler through {@link REPORTS_RANGE_ACTION_ID}.
+ *
+ * `carriedForm` (never a hand-rolled `block_id`): Block Kit inputs are
+ * uncontrolled, so the fields pick up a new `initial_value` only when the form
+ * REMOUNTS — and the prefill digest in the token is what makes the key change
+ * whenever the rendered period does. Without it, a rejected range would fall
+ * back to the default while the fields still showed the rejected dates.
+ */
+function rangeForm(range: ResolvedRange): FormBlock {
+	return carriedForm({
+		namespace: "reports:range",
+		form: {
+			type: "form",
+			fields: [
+				{
+					type: "date_input",
+					action_id: "from",
+					label: "From (inclusive)",
+					initial_value: range.fromDay,
+				},
+				{
+					type: "date_input",
+					action_id: "to",
+					label: "To (inclusive)",
+					initial_value: range.toDay,
+				},
+			],
+			submit: { label: "Update period", action_id: REPORTS_RANGE_ACTION_ID },
+		},
+	});
+}
+
+/** An unusable range renders the page for the default period plus this — a 200
+ *  with a banner, never a 4xx (G5), and never a silent substitution. */
+function rangeProblemBanner(range: ResolvedRange): BannerBlock {
+	return {
+		type: "banner",
+		variant: "alert",
+		title: `Showing the last ${DEFAULT_RANGE_DAYS} days`,
+		description: range.problem ?? "",
+	};
+}
+
+/**
+ * Average order value — revenue ÷ the orders that produced it.
+ *
+ * Two ways this must NOT render: `$0.00` when there were no orders (a division
+ * with no answer is not zero, and "free" is not what happened), and a figure at
+ * all when the period spans several currencies (dividing a sum of USD and JPY
+ * minor units by a currency-less order count produces a number that means
+ * nothing). Both render "—" with the reason in the description.
+ */
+function averageOrderValueTile(
+	byCurrencyCode: ReadonlyArray<readonly [string, number]>,
+	singleCurrency: Currency | undefined,
+	paidOrderCount: number,
+	period: string,
+): StatItem {
+	const label = `AOV${singleCurrency === undefined ? "" : ` (${singleCurrency})`} — ${period}`;
+	if (singleCurrency === undefined) {
+		return {
+			label,
+			value: "—",
+			description:
+				byCurrencyCode.length === 0
+					? "Average order value — no paid orders in this period"
+					: "Average order value — orders in this period span several currencies",
+		};
+	}
+	if (paidOrderCount === 0) {
+		return { label, value: "—", description: "Average order value — no paid orders to average" };
+	}
+	const totalCents = byCurrencyCode[0]?.[1] ?? 0;
+	return {
+		label,
+		value: formatMoney(
+			toCents(Math.round(totalCents / paidOrderCount)),
+			singleCurrency,
+			MONEY_LOCALE,
+		),
+		description: `Average order value across ${paidOrderCount} paid ${paidOrderCount === 1 ? "order" : "orders"}`,
+	};
+}
+
+/**
+ * Refunded money for the period — a KNOWN GAP, rendered as one.
+ *
+ * The reporting wire carries no refunded amount: `/reports/revenue` EXCLUDES
+ * refunded orders from its allow-list rather than reporting them, and
+ * `/reports/orders-by-status` carries counts only. Two wrong answers were
+ * available and both are refused — summing nothing to `$0.00` (a partial refund
+ * leaves the order in its previous state, so even "no refunded orders" does not
+ * mean "no money went back"), and quietly relabelling the tile as a count so it
+ * looks full. So the tile states its currency, renders "—", and says what is
+ * known and what would fix it (DA-7 — the same disclosure the top-products
+ * revenue column already makes). Closing it is a service change: a
+ * `refundedCents` alongside `revenueCents` on the revenue wire.
+ */
+function refundedTileFor(
+	statuses: StatusCountWire[],
+	singleCurrency: Currency | undefined,
+	period: string,
+): StatItem {
+	const refundedOrders = statuses.find((s) => s.status === "refunded")?.orderCount ?? 0;
+	const known =
+		refundedOrders === 0
+			? "No fully refunded orders"
+			: `${refundedOrders} fully refunded ${refundedOrders === 1 ? "order" : "orders"}`;
+	return {
+		label: `Refunded${singleCurrency === undefined ? "" : ` (${singleCurrency})`} — ${period}`,
+		value: "—",
+		description: `${known}; the amount needs a service change`,
+	};
+}
+
+/** One row of the revenue table: a day, a currency, and that day's revenue in
+ *  it — zero included. */
+interface RevenuePoint {
+	day: string;
+	currencyCode: string;
+	revenueCents: number;
+}
+
+/**
+ * The revenue series with its gaps filled in: every day of the period, for
+ * every currency the period saw, in day-then-currency order.
+ *
+ * Only for `interval: "day"` — a week/month series would have to reproduce the
+ * adapter's own bucket-start arithmetic to know which weeks are missing, and
+ * inventing a bucket boundary that disagrees with the one the data was grouped
+ * by is worse than the gap. Those intervals pass the wire's buckets through
+ * unchanged. (Nothing in the UI selects an interval today; it arrives only as
+ * route input.)
+ */
+function revenueSeries(data: ReportsData): RevenuePoint[] {
+	const passthrough = (): RevenuePoint[] =>
+		data.revenue.map((b) => ({
+			day: b.bucketStart.slice(0, 10),
+			currencyCode: b.currency,
+			revenueCents: b.revenueCents,
+		}));
+	if (data.interval !== "day" || data.revenue.length === 0) return passthrough();
+
+	const byDayAndCurrency = new Map<string, number>();
+	const currencies = new Set<string>();
+	for (const b of data.revenue) {
+		const day = b.bucketStart.slice(0, 10);
+		currencies.add(b.currency);
+		const key = `${day}|${b.currency}`;
+		byDayAndCurrency.set(key, (byDayAndCurrency.get(key) ?? 0) + b.revenueCents);
+	}
+	const codes = [...currencies].toSorted((a, b) => a.localeCompare(b));
+	const days = daysBetween(data.range.fromDay, data.range.toDay);
+	// A range wider than the service's own cap cannot reach here (resolveRange
+	// falls back to the default first), so this is bounded — but a data day
+	// outside the requested window would still be dropped by a strict fill, so
+	// fall back rather than lose a row.
+	const daySet = new Set(days);
+	if (days.length === 0 || data.revenue.some((b) => !daySet.has(b.bucketStart.slice(0, 10)))) {
+		return passthrough();
+	}
+	const out: RevenuePoint[] = [];
+	for (const day of days) {
+		for (const currencyCode of codes) {
+			out.push({
+				day,
+				currencyCode,
+				revenueCents: byDayAndCurrency.get(`${day}|${currencyCode}`) ?? 0,
+			});
+		}
+	}
+	return out;
+}
+
+/** Every `YYYY-MM-DD` from `fromDay` to `toDay` inclusive (UTC). */
+function daysBetween(fromDay: string, toDay: string): string[] {
+	const start = Date.parse(`${fromDay}T00:00:00.000Z`);
+	const end = Date.parse(`${toDay}T00:00:00.000Z`);
+	if (Number.isNaN(start) || Number.isNaN(end) || end < start) return [];
+	const out: string[] = [];
+	for (let at = start; at <= end; at += DAY_MS) {
+		out.push(new Date(at).toISOString().slice(0, 10));
+	}
+	return out;
 }
 
 /** Re-export for the settings label helper — the reporting widget's title uses
