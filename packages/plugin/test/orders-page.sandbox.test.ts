@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { ORDER_STATE_MACHINE } from "@otta-sh/domain";
 import { decodeCarrier, encodeCarrier } from "../src/admin/scaffold/carrier.js";
-import { decodeListCursor, encodeListCursor } from "../src/admin/scaffold/nav.js";
+import {
+	decodeListCursor,
+	encodeListCursor,
+	encodePath,
+	PATH_FIELD,
+} from "../src/admin/scaffold/nav.js";
 import {
 	DATE_LOCALE,
 	dayOf,
@@ -26,6 +31,7 @@ import {
 	confirmOf,
 	buttons,
 	contextTexts,
+	emptyActions,
 	field,
 	fieldEntries,
 	fieldIds,
@@ -483,10 +489,12 @@ const ALLOWED_BY_STATE: Record<string, readonly string[]> = ORDER_STATE_MACHINE;
 /** A GET responder for the guarded list + detail reads (200 only WITH the admin
  *  token, else 401 — mirroring the service guard). Distinguishes list vs detail
  *  by path, and page1 vs page2 by the `cursor=` query param. */
-/** Per-test switch for the LIST read, so the two zero-row branches (E-2's `empty`
- *  block when unfiltered, `empty_text` when filtered) are both reachable — and,
- *  for D4, so is a page of two orders a human cannot tell apart (`twins`). */
-let listRows: "two" | "none" | "twins" = "two";
+/** Per-test switch for the LIST read, so all THREE zero-row branches are
+ *  reachable (INC-12: the unfiltered `empty` block, the filtered-to-zero `empty`
+ *  block with its `Clear filters`, and — `none-more` — the zero page that still
+ *  has a cursor behind it and must therefore keep `Load more` alive) — and, for
+ *  D4, so is a page of two orders a human cannot tell apart (`twins`). */
+let listRows: "two" | "none" | "none-more" | "two-then-none" | "twins" = "two";
 
 /**
  * Detail reads for the ids the LIST offers, so a test can walk from a picker
@@ -513,6 +521,22 @@ function makeGetResponder() {
 		if (path === "/admin/orders") {
 			if (listRows === "none") {
 				return { status: 200, body: { ok: true, orders: [], nextCursor: null } };
+			}
+			if (listRows === "none-more") {
+				// Zero rows on THIS page, another page behind it — the shape that must
+				// never render as "no orders" (INC-12 outcome 3).
+				return { status: 200, body: { ok: true, orders: [], nextCursor: "svc-cursor-1" } };
+			}
+			if (listRows === "two-then-none") {
+				// Page 1 has rows AND a cursor; the page it points at has nothing and no
+				// cursor — two look-ahead reads straddling a concurrent delete. Page 2
+				// must not claim the collection is empty (INC-12 outcome 2b).
+				return query.includes("cursor=")
+					? { status: 200, body: { ok: true, orders: [], nextCursor: null } }
+					: {
+							status: 200,
+							body: { ok: true, orders: [SUMMARY_1, SUMMARY_2], nextCursor: "svc-cursor-1" },
+						};
 			}
 			if (listRows === "twins") {
 				return {
@@ -1644,7 +1668,7 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(findBlocks(back, "section")).toEqual([]);
 	});
 
-	test("UNFILTERED zero rows renders one real `empty` block and OMITS the table (E-2); filtered-to-zero keeps the table's `empty_text`", async () => {
+	test("UNFILTERED zero rows renders one real `empty` block and OMITS the table (E-2); filtered-to-zero gets its OWN state, and the two do not read alike (INC-12)", async () => {
 		await boot();
 		listRows = "none";
 		const unfiltered = await list();
@@ -1654,7 +1678,8 @@ describe("admin Orders console (workerd sandbox)", () => {
 		// The table is REPLACED, not rendered empty.
 		expect(findBlocks(unfiltered, "table")).toEqual([]);
 		// E-2: no create action — orders are not created in the admin, and an empty
-		// `actions` array is omitted rather than emitted.
+		// `actions` array is omitted rather than emitted. Nothing to CLEAR either:
+		// the unfiltered state must not offer an undo for a filter nobody set.
 		expect(empty?.actions).toBeUndefined();
 		// The drill-in picker is omitted at 0 rows (L-7).
 		expect(formFor(unfiltered, "orders:open")).toBeUndefined();
@@ -1667,10 +1692,123 @@ describe("admin Orders console (workerd sandbox)", () => {
 				block_id: formFor(unfiltered, "orders:apply-filter")?.block_id,
 			}),
 		);
-		// A filtered-to-zero list is NOT an `empty` block: the operator's next act is
-		// changing the filter, which is right there.
-		expect(findBlocks(filtered, "empty")).toEqual([]);
-		expect(tableWithId(filtered, "orders:list")?.empty_text).toBe("No orders match these filters.");
+		assertBlockContract(filtered, { screen: "orders", level: "list" });
+		// INC-12: a filter narrowed to nothing is a DESIGNED state — heading, body
+		// copy, and the one act that undoes it — not a line of `empty_text` under a
+		// table that is not there.
+		const noMatch = findBlock(filtered, "empty");
+		expect(noMatch?.title).toBe("No orders match these filters");
+		expect(String(noMatch?.description).length).toBeLessThanOrEqual(200);
+		expect(findBlocks(filtered, "table")).toEqual([]);
+		// …and it does not accuse: it names the filter, never the operator, and it
+		// is a different sentence from the empty-store one.
+		expect(noMatch?.title).not.toBe(empty?.title);
+		expect(noMatch?.description).not.toBe(empty?.description);
+	});
+
+	test("INC-12: the zero-results state's `Clear filters` re-lists this level unfiltered, keeps the operator's place in the nav path, and empties the filter form with it", async () => {
+		await boot();
+		listRows = "none";
+		const filtered = await submitForm(await list(), "orders:apply-filter", { status: "paid" });
+		const clear = emptyActions(filtered).find((e) => e.label === "Clear filters");
+		expect(clear).toBeDefined();
+		// A BARE apply-filter IS the clear: no `values`, so the scaffold rebuilds the
+		// level's default filter. The drill path rides in `value` (a button echoes no
+		// `block_id`), which is what keeps the re-render on THIS level.
+		expect(clear?.action_id).toBe("orders:apply-filter");
+		expect((clear?.value as Record<string, unknown> | undefined)?.[PATH_FIELD]).toBe(
+			encodePath([] as string[]),
+		);
+
+		listRows = "two";
+		const cleared = await click(clear);
+		assertBlockContract(cleared, { screen: "orders", level: "list" });
+		// Back on the same LIST (not the root of something else, not a leaf), with
+		// rows, no summary section, and every filter field back at its all-values
+		// option — the cleared values are visible, not stranded (B-7).
+		expect(findBlocks(cleared, "header").map((b) => b.text)).toEqual(["Orders"]);
+		expect(tableRows(cleared).length).toBeGreaterThan(0);
+		expect(findBlocks(cleared, "section")).toEqual([]);
+		const form = formFor(cleared, "orders:apply-filter");
+		expect(field(form, "status")?.initial_value).toBe("any");
+		expect(field(form, "period")?.initial_value).toBe("Any time");
+	});
+
+	test("INC-12: the intro line carries the row count — whole-set when the page IS the set, page-scoped the moment paging is in play, and never `0`", async () => {
+		await boot();
+		listRows = "twins";
+		// 3 rows, no next cursor, first page ⇒ this IS the filtered set.
+		expect(String((await list())[1]?.text)).toMatch(/^3 orders · /);
+
+		listRows = "two";
+		// 2 rows AND a next cursor ⇒ the count is a claim about this page only. The
+		// service's list responses carry a page and a cursor and NO total, so a
+		// whole-set count here would be invented.
+		const page1 = await list();
+		const intro = String(page1[1]?.text);
+		expect(intro).toMatch(/^2 orders on this page · /);
+		expect(intro.length).toBeLessThanOrEqual(140); // X-11
+		// Page 2 is the LAST page but still not the whole set — it knows nothing
+		// about page 1 — so it stays page-scoped, and pluralizes for its one row.
+		const page2 = await click({
+			action_id: "orders:page",
+			value: { cursor: tableWithId(page1, "orders:list")?.next_cursor },
+		});
+		expect(String(page2[1]?.text)).toMatch(/^1 order on this page · /);
+
+		// Zero renders NO count at all — never `0 orders`. The zero state says it.
+		listRows = "none";
+		const none = await list();
+		expect(String(none[1]?.text)).toBe(String(page1[1]?.text).split(" · ").slice(1).join(" · "));
+		expect(none.some((b) => String(b.text ?? "").includes("0 order"))).toBe(false);
+	});
+
+	test("INC-12: a zero page that is NOT the first one never claims the collection is empty — the whole-store wording is gated on `firstPage`, exactly as the count is", async () => {
+		await boot();
+		listRows = "two-then-none";
+		const page1 = await list();
+		expect(tableRows(page1)).toHaveLength(2);
+		// Page 2: the cursor minted by page 1's look-ahead now points past the last
+		// row (a concurrent delete in between). Reachable in a live store.
+		const page2 = await click({
+			action_id: "orders:page",
+			value: { cursor: tableWithId(page1, "orders:list")?.next_cursor },
+		});
+		assertBlockContract(page2, { screen: "orders", level: "list" });
+		const empty = findBlock(page2, "empty");
+		expect(empty).toBeDefined();
+		// NOT "No orders yet" — page 1 had orders, so this render has no standing to
+		// speak for the collection. The wording is page-scoped instead.
+		expect(empty?.title).toBe("Nothing on this page");
+		expect(String(empty?.description)).not.toMatch(/buyers check out/);
+		expect(String(empty?.description).length).toBeLessThanOrEqual(200);
+		// Nothing was filtered, so there is nothing to clear and nothing is offered.
+		expect(empty?.actions).toBeUndefined();
+		expect(findBlocks(page2, "table")).toEqual([]);
+		// And the count line stays silent at zero, as everywhere else.
+		expect(String(page2[1]?.text)).not.toMatch(/\d+ order/);
+
+		// The first-page zero still gets the screen's own whole-collection copy —
+		// gating it did not delete it.
+		listRows = "none";
+		expect(findBlock(await list(), "empty")?.title).toBe("No orders yet");
+	});
+
+	test("INC-12: a zero page with ANOTHER PAGE BEHIND IT never claims the list is empty — no `empty` block, no `empty_text`, `Load more` still there", async () => {
+		await boot();
+		listRows = "none-more";
+		const blocks = await list();
+		assertBlockContract(blocks, { screen: "orders", level: "list" });
+		const table = tableWithId(blocks, "orders:list");
+		expect(tableRows(blocks)).toEqual([]);
+		expect(findBlocks(blocks, "empty")).toEqual([]);
+		// The pinned renderer collapses a zero-row table carrying `empty_text` to a
+		// bare <p> and takes the Load more button with it.
+		expect(table?.empty_text).toBeUndefined();
+		expect(table?.next_cursor).toBeDefined();
+		expect(
+			findBlocks(blocks, "context").some((c) => String(c.text).includes("Load more scans further")),
+		).toBe(true);
 	});
 
 	test("the drill-in picker is a combobox whose option VALUE is the full id and whose label LEADS with the short id (L-7, D4)", async () => {

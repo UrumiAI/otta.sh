@@ -11,6 +11,7 @@ import {
 	blocksOf,
 	buttons,
 	confirmOf,
+	emptyActions,
 	fieldEntries,
 	findBlock,
 	findBlocks,
@@ -117,6 +118,14 @@ function attachCouponsStub(stub: StubCommerceServer, state: ReturnType<typeof ma
 		const [path, query = ""] = req.url.split("?");
 		if (path === "/admin/coupons") {
 			const q = new URLSearchParams(query);
+			// A service whose filter narrows its own PAGE WINDOW rather than its
+			// query — the shape the products list already has for "Low stock only",
+			// and a legal one for any list port: a page of zero matches with more
+			// pages still behind it. Staged by a sentinel needle, because this stub's
+			// ordinary path filters BEFORE it slices and so can never produce it.
+			if (`${q.get("search") ?? ""}${q.get("cursor") ?? ""}`.toLowerCase().includes("narrowed")) {
+				return { status: 200, body: { ok: true, coupons: [], nextCursor: "0|NARROWED" } };
+			}
 			const cursor = q.get("cursor");
 			let search = q.get("search");
 			let offset = 0;
@@ -476,7 +485,7 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		);
 	});
 
-	test("a search with no match shows an honest empty state, never a fail-closed banner", async () => {
+	test("a search with no match shows an honest, designed empty state — heading, body copy and `Clear filters` — never a fail-closed banner (INC-12)", async () => {
 		const state = makeCouponsState();
 		await boot(state);
 		const outcome = await sandbox!.invokeRoute("admin", {
@@ -485,9 +494,96 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 			values: { search: "NOPE" },
 		});
 		const blocks = blocksOf(outcome);
+		assertBlockContract(blocks, { screen: "coupons", level: "list" });
 		expect(tableRows(blocks)).toHaveLength(0);
-		expect(String(tableOf(blocks)?.empty_text)).toMatch(/no coupon/i);
+		// The zero-row table is REPLACED, so there is no `empty_text` under a table
+		// nobody can see — the state itself carries the words.
+		expect(tableOf(blocks)).toBeUndefined();
+		const empty = findBlock(blocks, "empty");
+		expect(String(empty?.title)).toMatch(/no coupon matches/i);
+		expect(String(empty?.description).length).toBeLessThanOrEqual(200);
 		expect(bannerOf(blocks)).toBeUndefined();
+
+		// The undo, and nothing else: "New coupon" is already promoted above the
+		// table (INC-14), so this state offers exactly one act.
+		const actions = emptyActions(blocks);
+		expect(actions.map((a) => a.label)).toEqual(["Clear filters"]);
+		const cleared = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "block_action",
+				action_id: "coupons:apply-filter",
+				value: actions[0]?.value,
+			}),
+		);
+		assertBlockContract(cleared, { screen: "coupons", level: "list" });
+		// Back on the coupons LIST with every coupon, and the search box empty —
+		// the cleared value is visible, not stranded (B-7).
+		expect(headerTexts(cleared)).toContain("Coupons");
+		expect(tableRows(cleared).map((r) => r.code)).toEqual(["SUMMER25", "FIVEOFF"]);
+		expect(findBlocks(cleared, "section")).toEqual([]);
+		expect(
+			formFields(cleared, "coupons:apply-filter").find((f) => f.action_id === "search")
+				?.initial_value,
+		).toBeUndefined();
+	});
+
+	test("INC-12 outcome 3: a filtered page narrowed to zero WITH a page behind it keeps `Load more` alive — no `empty` block, no `empty_text`, and the note says the scan can continue", async () => {
+		const state = makeCouponsState();
+		await boot(state);
+		const blocks = await submitForm(
+			blocksOf(await sandbox!.invokeRoute("admin", { type: "page_load", page: "/coupons" })),
+			"coupons:apply-filter",
+			{ search: "NARROWED" },
+		);
+		assertBlockContract(blocks, { screen: "coupons", level: "list" });
+		expect(tableRows(blocks)).toHaveLength(0);
+		// The designed zero state would REPLACE the table, and `empty_text` would
+		// collapse it to a bare <p> — either one takes the operator's only way
+		// forward with it.
+		expect(findBlocks(blocks, "empty")).toEqual([]);
+		expect(tableOf(blocks)).toBeDefined();
+		expect(tableOf(blocks)?.empty_text).toBeUndefined();
+		expect(tableOf(blocks)?.next_cursor).toBeDefined();
+		expect(
+			findBlocks(blocks, "context").some((c) => String(c.text).includes("Load more scans further")),
+		).toBe(true);
+		// The undo is still one click away on the summary section — the state that
+		// suppressed the `empty` block did not take `Clear filters` with it.
+		expect(
+			(findBlocks(blocks, "section")[0]?.accessory as { label?: string } | undefined)?.label,
+		).toBe("Clear filters");
+		// And the scan really does continue: the cursor round-trips.
+		const page2 = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "block_action",
+				action_id: "coupons:page",
+				value: { cursor: tableOf(blocks)?.next_cursor },
+			}),
+		);
+		assertBlockContract(page2, { screen: "coupons", level: "list" });
+		expect(bannerOf(page2)).toBeUndefined();
+	});
+
+	test("INC-12: the intro line leads with the row count, pluralized, page-scoped only when paging is in play, and silent at zero", async () => {
+		const state = makeCouponsState();
+		await boot(state);
+		const blocks = blocksOf(
+			await sandbox!.invokeRoute("admin", { type: "page_load", page: "/coupons" }),
+		);
+		// 2 coupons, one page, no cursor ⇒ this IS the set.
+		const intro = String(blocks.find((b) => b.type === "context")?.text);
+		expect(intro).toMatch(/^2 coupons · /);
+		expect(intro.length).toBeLessThanOrEqual(140); // X-11
+
+		// One row pluralizes for itself.
+		const one = await submitForm(blocks, "coupons:apply-filter", { search: "fiveoff" });
+		expect(String(one.find((b) => b.type === "context")?.text)).toMatch(/^1 coupon · /);
+
+		// Zero states nothing — never `0 coupons`; the empty state says it in words.
+		const none = await submitForm(blocks, "coupons:apply-filter", { search: "NOPE" });
+		const zeroIntro = String(none.find((b) => b.type === "context")?.text);
+		expect(zeroIntro).not.toMatch(/\d+ coupon/);
+		expect(zeroIntro.startsWith("Search a coupon and open it.")).toBe(true);
 	});
 
 	test("KEYSET PAGING: a full page carries next_cursor; coupons:page loads the next page through the opaque cursor round-trip", async () => {

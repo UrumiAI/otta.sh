@@ -30,16 +30,18 @@ import {
 	asRecord,
 	backButton,
 	carriedForm,
+	clearFiltersButton,
 	createListDetailHandler,
 	customAction,
 	decodePath,
-	emptyState,
 	encodePath,
 	failClosedResponse,
 	filterPanel,
 	filterSummary,
 	leafLevel,
+	listIntroLine,
 	listLevel,
+	listResult,
 	noticeBanner,
 	PATH_FIELD,
 	readAdminTokens,
@@ -372,12 +374,17 @@ function couponsListLevel() {
 			});
 			return { items: page.coupons, nextCursor: page.nextCursor };
 		},
-		render({ actions, path, filter, items, nextToken, notice, renderState }) {
-			return couponsBlocks(actions, path, filter, items, nextToken, notice, renderState);
+		render({ actions, path, filter, items, nextToken, firstPage, notice, renderState }) {
+			return couponsBlocks(actions, path, filter, items, nextToken, firstPage, notice, renderState);
 		},
 		onError: () => couponsFailClosed(),
 	});
 }
+
+/** The standing half of the list's intro line — the row count goes in front of
+ *  it ({@link listIntroLine}). 78 chars; the longest count line this screen can
+ *  produce (`25 coupons on this page`) puts the whole line at 104 ≤ 140 (X-11). */
+const LIST_INTRO = "Search a coupon and open it. Discounts apply to the cart subtotal at checkout.";
 
 function toClientFilter(form: CouponsFilterForm): CouponsListFilter {
 	return form.search !== undefined ? { search: form.search } : {};
@@ -407,23 +414,46 @@ function couponsBlocks(
 	filter: CouponsFilterForm,
 	coupons: CouponSummaryWire[],
 	nextToken: string | undefined,
+	firstPage: boolean,
 	notice: Notice | undefined,
 	renderState: CouponsRenderState | undefined,
 ): Block[] {
 	if (renderState?.kind === "new-coupon") return newCouponScreen(renderState.draft, notice);
+	// ONE part for the screen's one authored filter field (L-3).
+	const activeFilters = [filter.search !== undefined && `code: ${filter.search}`];
+	const summary = filterSummary(activeFilters);
+	const result = listResult({
+		actions,
+		path,
+		count: coupons.length,
+		filtered: summary !== undefined,
+		firstPage,
+		nextToken,
+		noun: { one: "coupon", other: "coupons" },
+		empty: {
+			title: "No coupons yet",
+			description: "Create one to start discounting carts.",
+			blockId: "coupons:empty",
+			// E-2's way IN: the SAME verb and the SAME words as the promoted button
+			// above, because they are the same act and reach the same screen.
+			actions: [{ type: "button", action_id: ACTION_NEW, label: "New coupon", value: {} }],
+		},
+		noMatch: {
+			title: "No coupon matches that code",
+			// The way IN is already on screen (the promoted "New coupon" button sits
+			// above), so this state offers only the undo — one act per state.
+			description: "Nothing came back for that search. Clear it to go back to every coupon.",
+			blockId: "coupons:no-match",
+			emptyText: "No coupon matches that code.",
+		},
+	});
 	const blocks: Block[] = [
 		{ type: "header", text: "Coupons", block_id: "coupons:hdr" },
-		{
-			type: "context",
-			// 78 chars ≤ 140 (§1).
-			text: "Search a coupon and open it. Discounts apply to the cart subtotal at checkout.",
-		},
+		listIntroLine(result.countLine, LIST_INTRO),
 		createCouponButton(),
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
 
-	// ONE part for the screen's one authored filter field (L-3).
-	const activeFilters = [filter.search !== undefined && `code: ${filter.search}`];
 	blocks.push(
 		filterPanel({
 			form: searchForm(actions, path, filter),
@@ -433,40 +463,25 @@ function couponsBlocks(
 			// accordion (L-2).
 		}),
 	);
-	const summary = filterSummary(activeFilters);
 	if (summary !== undefined) {
 		blocks.push({
 			type: "section",
 			text: summary,
 			// The path rides in `value`, NOT `block_id` — a button echoes no
 			// `block_id` (L-6, B-1).
-			accessory: {
-				type: "button",
-				action_id: actions.applyFilter,
-				label: "Clear filters",
-				value: { [PATH_FIELD]: encodePath(path) },
-			},
+			accessory: clearFiltersButton(actions, path),
 			block_id: "coupons:filter-summary",
 		});
 	}
 
-	const filtered = summary !== undefined;
-	if (coupons.length === 0 && !filtered) {
-		// E-2: the primary collection at its TRUE zero state. The table is
-		// OMITTED and `empty` renders in its place, with the create affordance in
-		// `empty.actions` — the SAME verb and the SAME words as the button above,
-		// because they are the same act and now reach the same screen.
-		blocks.push(
-			emptyState({
-				title: "No coupons yet",
-				description: "Create one to start discounting carts.",
-				size: "base",
-				actions: [{ type: "button", action_id: ACTION_NEW, label: "New coupon", value: {} }],
-				blockId: "coupons:empty",
-			}),
-		);
+	// E-2: at zero the table is OMITTED and `empty` renders in its place. WHICH
+	// state this is — no coupons at all, or a search that matched none with its own
+	// undo attached — was decided once, in `listResult`.
+	if (result.emptyBlock !== undefined) {
+		blocks.push(result.emptyBlock);
 	} else {
-		blocks.push(couponsTable(coupons, nextToken));
+		blocks.push(couponsTable(coupons, nextToken, result.emptyText));
+		if (result.scanNote !== undefined) blocks.push(result.scanNote);
 	}
 	if (coupons.length > 0) blocks.push(openCouponForm(actions, path, coupons));
 	return blocks;
@@ -541,7 +556,11 @@ function newCouponScreen(draft: CouponDraft | undefined, notice: Notice | undefi
  * per-value control the renderer does not have, and belongs to the
  * console-wide badge policy rather than to this screen alone.
  */
-function couponsTable(coupons: CouponSummaryWire[], nextToken: string | undefined): TableBlock {
+function couponsTable(
+	coupons: CouponSummaryWire[],
+	nextToken: string | undefined,
+	emptyText: string | undefined,
+): TableBlock {
 	// ONE instant for the whole response, so no two rows of one table can be
 	// judged against different clocks (see `couponStatus`).
 	const now = new Date().toISOString();
@@ -569,7 +588,10 @@ function couponsTable(coupons: CouponSummaryWire[], nextToken: string | undefine
 		})),
 		page_action_id: COUPON_ACTIONS.page,
 		...(nextToken !== undefined ? { next_cursor: nextToken } : {}),
-		empty_text: "No coupon matches that code.",
+		// OMITTED when another page remains behind a zero-row one: the renderer
+		// short-circuits such a table to a bare `<p>` and takes `Load more` with it
+		// (see `listResult`, outcome 3).
+		...(emptyText !== undefined ? { empty_text: emptyText } : {}),
 	};
 }
 

@@ -35,11 +35,11 @@ import {
 	asRecord,
 	backButton,
 	carriedForm,
+	clearFiltersButton,
 	createListDetailHandler,
 	customAction,
 	dayOf,
 	DAY_MS,
-	emptyState,
 	encodePath,
 	endOfDay,
 	failClosedResponse,
@@ -48,7 +48,9 @@ import {
 	formatDate,
 	formatTimestamp,
 	leafLevel,
+	listIntroLine,
 	listLevel,
+	listResult,
 	noticeBanner,
 	PATH_FIELD,
 	readAdminTokens,
@@ -522,12 +524,19 @@ function ordersListLevel() {
 			});
 			return { items: page.orders, nextCursor: page.nextCursor };
 		},
-		render({ actions, path, filter, items, nextToken, notice }) {
-			return listBlocks(actions, path, filter, items, nextToken, notice);
+		render({ actions, path, filter, items, nextToken, firstPage, notice }) {
+			return listBlocks(actions, path, filter, items, nextToken, firstPage, notice);
 		},
 		onError: () => failClosed(),
 	});
 }
+
+/** The standing half of the list's intro line — the row count goes in front of it
+ *  ({@link listIntroLine}). 101 chars; the longest count line this screen can
+ *  produce (`25 orders on this page`) puts the whole line at 127 ≤ 140 (X-11).
+ *  "View-only" is gone: this console cancels, refunds, fulfils and annotates. */
+const LIST_INTRO =
+	"Filter, open an order, and move it through its status flow. Money in the order's currency; dates UTC.";
 
 /**
  * §11.1's block order, exactly: `header` · `context` · notice `banner` · the
@@ -541,23 +550,44 @@ function listBlocks(
 	form: OrdersFilterForm,
 	orders: OrderSummaryWire[],
 	nextToken: string | undefined,
+	firstPage: boolean,
 	notice: Notice | undefined,
 ): Block[] {
+	const activeFilters = activeFilterParts(form);
+	const summary = filterSummary(activeFilters);
+	// One derivation of "how many, and what if none" for the whole screen (INC-12),
+	// read here for the intro line and again below for the data slot.
+	const result = listResult({
+		actions,
+		path,
+		count: orders.length,
+		filtered: summary !== undefined,
+		firstPage,
+		nextToken,
+		noun: { one: "order", other: "orders" },
+		empty: {
+			title: "No orders yet",
+			description: "Orders appear here as buyers check out.",
+			blockId: "orders:empty",
+			// E-2: no way IN from here — orders are not created in the admin.
+		},
+		noMatch: {
+			title: "No orders match these filters",
+			description:
+				"Nothing came back for the filters you set. Clear them to go back to every order, or widen one and apply again.",
+			blockId: "orders:no-match",
+			emptyText: "No orders match these filters.",
+		},
+	});
 	const blocks: Block[] = [
 		{ type: "header", text: "Orders", block_id: "orders:hdr" },
-		{
-			type: "context",
-			// 101 chars ≤ 140 (§1). "View-only" is gone: this console cancels,
-			// refunds, fulfils and annotates orders.
-			text: "Filter, open an order, and move it through its status flow. Money in the order's currency; dates UTC.",
-		},
+		listIntroLine(result.countLine, LIST_INTRO),
 	];
 	// A list level may receive a notice from a custom action that could not name
 	// an order (DA-3b), so the banner has to reach here or the operator is bounced
 	// to the list with no explanation.
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
 
-	const activeFilters = activeFilterParts(form);
 	blocks.push(
 		filterPanel({
 			form: filterForm(actions, path, form),
@@ -568,7 +598,6 @@ function listBlocks(
 			activeFilters,
 		}),
 	);
-	const summary = filterSummary(activeFilters);
 	if (summary !== undefined) {
 		blocks.push({
 			type: "section",
@@ -578,29 +607,16 @@ function listBlocks(
 			// while appearing to work (L-6, B-1). A bare `apply-filter` carries no
 			// `values`, so the scaffold rebuilds the DEFAULT filter — which is the
 			// clear.
-			accessory: {
-				type: "button",
-				action_id: actions.applyFilter,
-				label: "Clear filters",
-				value: { [PATH_FIELD]: encodePath(path) },
-			},
+			accessory: clearFiltersButton(actions, path),
 			block_id: "orders:filter-summary",
 		});
 	}
 
-	const filtered = summary !== undefined;
-	if (orders.length === 0 && !filtered) {
-		// E-2: the primary collection at its TRUE zero state earns the one `empty`
-		// block on this screen, and the table is OMITTED rather than rendered with
-		// `empty_text`. No `actions` — orders are not created in the admin.
-		blocks.push(
-			emptyState({
-				title: "No orders yet",
-				description: "Orders appear here as buyers check out.",
-				size: "base",
-				blockId: "orders:empty",
-			}),
-		);
+	if (result.emptyBlock !== undefined) {
+		// E-2: at zero the table is OMITTED rather than rendered empty, and WHICH
+		// state this is — an empty store, or a filter narrowed to nothing with its
+		// own undo attached — was decided once, in `listResult`.
+		blocks.push(result.emptyBlock);
 		return blocks;
 	}
 
@@ -670,10 +686,12 @@ function listBlocks(
 		})),
 		page_action_id: actions.page,
 		...(nextToken !== undefined ? { next_cursor: nextToken } : {}),
-		// Filtered-to-zero only — the unfiltered zero state took the `empty` branch
-		// above, because an operator's next act here is CHANGING the filter (E-2).
-		empty_text: "No orders match these filters.",
+		// OMITTED when another page remains behind a zero-row one: the renderer
+		// short-circuits such a table to a bare `<p>` and takes `Load more` with it
+		// (see `listResult`, outcome 3).
+		...(result.emptyText !== undefined ? { empty_text: result.emptyText } : {}),
 	});
+	if (result.scanNote !== undefined) blocks.push(result.scanNote);
 	if (orders.length > 0) blocks.push(openOrderForm(actions, path, orders));
 	return blocks;
 }

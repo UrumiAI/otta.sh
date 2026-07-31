@@ -25,16 +25,18 @@ import {
 	asRecord,
 	backButton,
 	carriedForm,
+	clearFiltersButton,
 	createListDetailHandler,
 	customAction,
-	emptyState,
 	encodePath,
 	failClosedResponse,
 	filterPanel,
 	filterSummary,
 	formatTimestamp,
 	leafLevel,
+	listIntroLine,
 	listLevel,
+	listResult,
 	noticeBanner,
 	PATH_FIELD,
 	readAdminTokens,
@@ -303,7 +305,7 @@ function productsListLevel() {
 		limit: PAGE_LIMIT,
 		filterFromValues,
 		async fetchPage(client, _path, filter, opts) {
-			const form = filter.form;
+			const form = listForm(filter);
 			// The threshold read runs ALONGSIDE the page read and is secondary in
 			// both directions: it can never delay the list beyond its own latency,
 			// and it can never fail it (E-1) — `readLowStockThreshold` resolves to
@@ -346,12 +348,40 @@ function productsListLevel() {
 				nextCursor: page.nextCursor,
 			};
 		},
-		render({ actions, path, filter, items, nextToken, notice }) {
-			return listBlocks(actions, path, filter, items, nextToken, notice);
+		render({ actions, path, filter, items, nextToken, firstPage, notice }) {
+			return listBlocks(actions, path, filter, items, nextToken, firstPage, notice);
 		},
 		onError: () => failClosed(),
 	});
 }
+
+/**
+ * The operator's half of {@link ProductsListState}, read TOLERANTLY because it
+ * does not always arrive from `filterFromValues`: on a "Load more" the filter
+ * comes back out of the keyset cursor, which is JSON minted by a PREVIOUS
+ * deploy in every tab that was open across one. `ProductsListState` wrapped the
+ * form in `.form` when the stock column landed, so a cursor minted before that
+ * carries the BARE `ProductsFilterForm` as its `f` — and `filter.form.archived`
+ * on it is a `TypeError`, i.e. this screen's fail-closed banner in place of the
+ * page the operator asked for.
+ *
+ * A pre-deploy cursor SELF-HEALS instead: the bare shape IS the form, so the
+ * operator's filter survives the deploy rather than being silently dropped, and
+ * a genuinely unreadable `f` degrades to "no filter set" — every read below is
+ * optional. Never a throw, on either path (G5).
+ */
+function listForm(filter: ProductsListState): ProductsFilterForm {
+	const state = filter as Partial<ProductsListState> & ProductsFilterForm;
+	return state.form ?? state;
+}
+
+/** The standing half of the list's intro line — the row count goes in front of
+ *  it ({@link listIntroLine}). 97 chars; the longest count line this screen can
+ *  produce (`25 products on this page`) puts the whole line at 124 ≤ 140 (X-11).
+ *  The "Archived" explanation lives in the filter accordion; stock is a COLUMN,
+ *  so this line says what the count means instead of pointing at the detail. */
+const LIST_INTRO =
+	"Filter and open a product. Money in each product's own currency; On hand is what can be sold now.";
 
 /**
  * Read one list row's on-hand count off the wire, keeping THREE cases apart
@@ -515,25 +545,10 @@ function listBlocks(
 	filter: ProductsListState,
 	rows: ProductsListRow[],
 	nextToken: string | undefined,
+	firstPage: boolean,
 	notice: Notice | undefined,
 ): Block[] {
-	const form = filter.form;
-	const blocks: Block[] = [
-		{ type: "header", text: "Pricing & inventory" },
-		{
-			type: "context",
-			// 97 chars ≤ 140 (§1). The "Archived" explanation lives in the filter
-			// accordion; stock is now a COLUMN, so this line says what the count
-			// means instead of pointing at the detail.
-			text: "Filter and open a product. Money in each product's own currency; On hand is what can be sold now.",
-		},
-	];
-	if (notice !== undefined) blocks.push(noticeBanner(notice));
-	// Page context, not row data (see `ProductsListState`): a page narrowed to
-	// zero rows still has to be able to say what went wrong.
-	const degraded = stockBanner(filter.stock);
-	if (degraded !== undefined) blocks.push(degraded);
-
+	const form = listForm(filter);
 	// ONE PART PER AUTHORED FILTER FIELD (L-3): the combined Status select is
 	// one field (active/archived share it), so it contributes one part.
 	const statusValue = form.archived === "true" ? "archived" : form.active;
@@ -543,6 +558,53 @@ function listBlocks(
 		form.lowStock === "true" && "stock: low only",
 		form.search !== undefined && `search: ${form.search}`,
 	];
+	const summary = filterSummary(activeFilters);
+	// A "Low stock only" page reports on ITSELF, never on the catalog: the filter
+	// narrows the rows this page fetched (see `fetchPage`), so the sentence, the
+	// offer to keep looking, and the offer to stop are all page-scoped.
+	const narrowed = form.lowStock === "true";
+	const result = listResult({
+		actions,
+		path,
+		count: rows.length,
+		filtered: summary !== undefined,
+		firstPage,
+		nextToken,
+		noun: { one: "product", other: "products" },
+		empty: {
+			title: "No products yet",
+			description:
+				"Products appear here as soon as a product document is saved in the CMS — pricing them is the next step, not a precondition.",
+			blockId: "products:empty",
+			// E-2: no way IN from here — products originate in the CMS.
+		},
+		noMatch: narrowed
+			? {
+					title: "No low-stock products on this page",
+					description:
+						"Every product on this page is above the low-stock threshold. Clear the filters to see them all, or set the threshold on Settings.",
+					blockId: "products:no-match",
+					emptyText: "No low-stock products on this page.",
+					scanNote: "No low-stock products on this page — Load more scans further.",
+				}
+			: {
+					title: "No products match these filters",
+					description:
+						"Nothing came back for the filters you set. Clear them to go back to the whole catalog, or widen one and apply again.",
+					blockId: "products:no-match",
+					emptyText: "No products match these filters.",
+				},
+	});
+	const blocks: Block[] = [
+		{ type: "header", text: "Pricing & inventory" },
+		listIntroLine(result.countLine, LIST_INTRO),
+	];
+	if (notice !== undefined) blocks.push(noticeBanner(notice));
+	// Page context, not row data (see `ProductsListState`): a page narrowed to
+	// zero rows still has to be able to say what went wrong.
+	const degraded = stockBanner(filter.stock);
+	if (degraded !== undefined) blocks.push(degraded);
+
 	blocks.push(
 		filterPanel({
 			form: filterForm(actions, path, form),
@@ -551,45 +613,22 @@ function listBlocks(
 			activeFilters,
 		}),
 	);
-	const summary = filterSummary(activeFilters);
 	if (summary !== undefined) {
 		blocks.push({
 			type: "section",
 			text: summary,
-			accessory: {
-				type: "button",
-				action_id: actions.applyFilter,
-				label: "Clear filters",
-				value: { [PATH_FIELD]: encodePath(path) },
-			},
+			accessory: clearFiltersButton(actions, path),
 			block_id: "products:filter-summary",
 		});
 	}
 
-	const filtered = summary !== undefined;
-	if (rows.length === 0 && !filtered) {
-		// E-2: the primary collection at its TRUE zero state. No `actions` —
-		// products originate in the CMS, not on this console.
-		blocks.push(
-			emptyState({
-				title: "No products yet",
-				description:
-					"Products appear here as soon as a product document is saved in the CMS — pricing them is the next step, not a precondition.",
-				size: "base",
-				blockId: "products:empty",
-			}),
-		);
+	if (result.emptyBlock !== undefined) {
+		// E-2: at zero the table is OMITTED rather than rendered empty. WHICH state
+		// this is — a catalog with nothing in it, or a filter narrowed to nothing
+		// with its own undo attached — was decided once, in `listResult`.
+		blocks.push(result.emptyBlock);
 		return blocks;
 	}
-
-	// A "Low stock only" page reports on ITSELF, never on the catalog: the filter
-	// narrows the rows this page fetched, so both the sentence and the offer to
-	// keep looking are page-scoped.
-	const narrowed = form.lowStock === "true";
-	const emptyText = narrowed
-		? "No low-stock products on this page."
-		: "No products match these filters.";
-	const scanFurther = narrowed && rows.length === 0 && nextToken !== undefined;
 
 	blocks.push({
 		type: "table",
@@ -624,15 +663,11 @@ function listBlocks(
 		// and an `empty_text` there would dead-end the filter on a sentence that
 		// is also false ("No products match these filters" — the next page may).
 		// A headers-only table keeps `Load more` alive; the context line below
-		// says what to do with it.
-		...(scanFurther ? {} : { empty_text: emptyText }),
+		// says what to do with it. `listResult` owns that decision for every
+		// screen now — this is the case it was generalized from.
+		...(result.emptyText !== undefined ? { empty_text: result.emptyText } : {}),
 	});
-	if (scanFurther) {
-		blocks.push({
-			type: "context",
-			text: "No low-stock products on this page — Load more scans further.",
-		});
-	}
+	if (result.scanNote !== undefined) blocks.push(result.scanNote);
 	if (rows.length > 0) blocks.push(openProductForm(actions, path, rows));
 	return blocks;
 }

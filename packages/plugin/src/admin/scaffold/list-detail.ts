@@ -1,7 +1,19 @@
-import type { Block, BlockResponse, PluginContext, RouteHandler } from "../../types.js";
+import type {
+	Block,
+	BlockResponse,
+	ButtonElement,
+	ContextBlock,
+	Element,
+	EmptyBlock,
+	PlainBlockId,
+	PluginContext,
+	RouteHandler,
+} from "../../types.js";
 import type { ScreenActions } from "./actions.js";
 import { failClosedResponse, noticeBanner, type Notice } from "./banner.js";
 import { carriedFields, type CarriedContext, decodeCarrier } from "./carrier.js";
+import { DATE_LOCALE } from "./datetime.js";
+import { emptyState } from "./layout.js";
 import {
 	decodeListCursor,
 	decodePath,
@@ -93,6 +105,17 @@ export interface ListLevelDef<Client, Filter, Summary, RenderState = unknown> {
 		filter: Filter;
 		items: Summary[];
 		nextToken: string | undefined;
+		/** TRUE when this render is the FIRST page of its filter (the interaction
+		 *  carried no keyset cursor: a page load, an open/back, or an apply-filter).
+		 *  FALSE on every "Load more" page.
+		 *
+		 *  It exists for ONE reason and it is an honesty rule, not a convenience:
+		 *  the service's list responses carry a page and a cursor and NO total, so
+		 *  `items.length` is a whole-set count only when this is the first page AND
+		 *  `nextToken` is undefined. Everywhere else it counts THIS PAGE and must
+		 *  say so. {@link listResult} is where the two are combined; a level should
+		 *  hand this to that rather than reason about it again. */
+		firstPage: boolean;
 		notice: Notice | undefined;
 		/** This screen's render state, when a list-level {@link CustomActionFn}
 		 *  passed one to {@link CustomActionApi.showList} — `undefined` on every
@@ -435,6 +458,16 @@ function createDispatcher<RenderState>(
 					limit: level.limit,
 					...(cursor !== undefined ? { cursor } : {}),
 				});
+				// THE FILTER ENCODED HERE IS THE POST-FETCH ONE, and that is a real leg
+				// of the screen's page state, not just a round-trip of what the operator
+				// submitted: `fetchPage` receives the SAME object `render` and this line
+				// see, so anything it writes onto the filter (products' `filter.stock` —
+				// the threshold and degraded-read flags its synchronous `render` cannot
+				// go and read for itself) rides the next-page cursor too. Harmless while
+				// such a field is re-derived by the next `fetchPage`, and a stale value
+				// on screen the moment one is not — so page context written in
+				// `fetchPage` must be OVERWRITTEN there unconditionally, never merged
+				// into what the cursor brought back.
 				const nextToken =
 					page.nextCursor === null
 						? undefined
@@ -449,6 +482,7 @@ function createDispatcher<RenderState>(
 					filter,
 					items: page.items,
 					nextToken,
+					firstPage: cursor === undefined,
 					notice,
 					renderState,
 				});
@@ -706,6 +740,293 @@ function withChildBlockLists(block: Block, lists: Block[][]): Block {
 		default:
 			return block;
 	}
+}
+
+// -- how a list states its size and its zero states (INC-12) ------------------
+
+/**
+ * THE SHARED ANSWER TO "how many, and what if none" — built once here because a
+ * filtered-to-zero list is the most common empty state in a live store and every
+ * screen was answering it with a different half-measure: one line of `empty_text`,
+ * no count anywhere, and no way to undo the filter except reopening the panel and
+ * emptying each field by hand.
+ *
+ * WHAT THE WIRE ACTUALLY SUPPORTS, because the copy below is bounded by it. Every
+ * list port answers `{items, nextCursor}` — a page and a way to ask for the next
+ * one. THERE IS NO TOTAL, on any screen, and nothing here invents one. So the
+ * count this module renders is:
+ *
+ *  - the WHOLE (filtered) set — `17 orders` — when, and only when, the render is
+ *    the first page of its filter AND there is no next cursor. Both halves are
+ *    needed: page 1 of many counts a page, and page 3 of 3 knows nothing about
+ *    pages 1 and 2 (keyset paging carries no running offset, and the scaffold
+ *    deliberately does not accumulate one across stateless interactions);
+ *  - THIS PAGE otherwise — `25 orders on this page`, which is a smaller claim and
+ *    a true one.
+ *
+ * A whole-store total needs the service to return one (a `total` alongside
+ * `nextCursor` on the list ports); until it does, "17 orders" on a paged screen
+ * would be a number an operator would reconcile against and lose. That is a
+ * queued service increment, not something a renderer may fake.
+ *
+ * ZERO RENDERS NO COUNT AT ALL. `0 orders` is never emitted: at zero the state
+ * below already says it in words, and a count line repeating it is the "unknown
+ * rendered as 0" failure in a costume.
+ */
+
+/** A row noun in the two forms `Intl.PluralRules` picks between for the pinned
+ *  locale — `{one: "order", other: "orders"}`. A screen states its own noun
+ *  because only it knows what its rows are. */
+export interface RowNoun {
+	readonly one: string;
+	readonly other: string;
+}
+
+/** The pinned locale the count is pluralized in — deliberately the console's ONE
+ *  locale knob ({@link DATE_LOCALE}), so the day a real viewer locale is threaded
+ *  through, the count follows the dates instead of needing its own hunt. Same
+ *  narrow claim as the date dialect makes (G6): this is single-point
+ *  LOCALIZABILITY, not a localized console. */
+const COUNT_PLURALS = new Intl.PluralRules(DATE_LOCALE);
+
+/** The numeral's own formatter, so a locale that does not use ASCII digits gets
+ *  its own the day one is threaded — the same single-point argument the noun and
+ *  the dates make. Hoisted to module scope like the date dialect's three
+ *  formatters (`datetime.ts`): an `Intl` constructor is the expensive half, and
+ *  building one per rendered list would pay it on every interaction. */
+const COUNT_NUMERALS = new Intl.NumberFormat(DATE_LOCALE);
+
+/** The suffix that keeps a page-scoped count from reading as a whole-set one. */
+const PAGE_SCOPED_SUFFIX = "on this page";
+
+/** The label of the affordance INC-12 adds. MODULE-PRIVATE, and it stays that
+ *  way: the sharing that matters is {@link clearFiltersButton}, which carries the
+ *  label AND the bare-`apply-filter` payload AND the path carry together — a
+ *  screen that reached for the label alone would be re-deriving the other two.
+ *  `tax-page.ts` and `shipping-page.ts` still hand-roll the whole button; they
+ *  adopt the BUILDER when they are next touched, not this string. */
+const CLEAR_FILTERS_LABEL = "Clear filters";
+
+/** The trailing half of a "there is another page behind this one" note. */
+const SCAN_FURTHER = "Load more scans further.";
+
+/** The lead half of that note when NO filter is on — a page that came back empty
+ *  with a cursor still behind it is not an empty collection, so it must not
+ *  borrow the filtered wording (nor the `empty` block). */
+const NOTHING_ON_PAGE = "Nothing on this page.";
+
+/**
+ * The zero state for a page that is NOT the first one and has nothing behind it:
+ * the operator paged forward and the next page came back empty.
+ *
+ * IT GETS ITS OWN WORDING BECAUSE THE SCREEN'S DOES NOT APPLY. A screen's
+ * `empty` copy ("No orders yet", "No products yet") is a claim about the WHOLE
+ * COLLECTION, and on page 2+ the renderer has no standing to make one — page 1
+ * had rows. That is the same species of unearned claim the count line already
+ * refuses, and it is reachable in a live store: two look-ahead reads either side
+ * of a concurrent delete leave a cursor pointing past the last row.
+ *
+ * Deliberately offers NOTHING to click: no filter is on, so there is nothing to
+ * clear, and Block Kit has no "back to the first page" control to fabricate.
+ */
+const PAGE_ZERO: Omit<ZeroStateCopy, "blockId"> = {
+	title: "Nothing on this page",
+	description:
+		"This page came back empty. The list may have changed since the page before it was loaded — reload the screen to see it as it stands now.",
+};
+
+/**
+ * `17 orders` · `1 order` · `25 orders on this page`, or `undefined` at zero.
+ *
+ * `complete` is the caller's claim that this count covers the whole filtered set
+ * (see the module note above: `firstPage && nextToken === undefined`). Getting it
+ * wrong is the one way this function can lie, which is why {@link listResult}
+ * derives it rather than letting a screen assert it.
+ */
+export function rowCountLine(
+	count: number,
+	noun: RowNoun,
+	opts: { complete: boolean },
+): string | undefined {
+	if (count <= 0) return undefined;
+	const word = COUNT_PLURALS.select(count) === "one" ? noun.one : noun.other;
+	const n = COUNT_NUMERALS.format(count);
+	return opts.complete ? `${n} ${word}` : `${n} ${word} ${PAGE_SCOPED_SUFFIX}`;
+}
+
+/**
+ * The `Clear filters` control, wherever it appears.
+ *
+ * A BARE `apply-filter` IS THE CLEAR: it carries no `values`, so the scaffold
+ * rebuilds the level's DEFAULT filter (`filterFromValues({})`) and re-lists. The
+ * drill path rides in `value`, never in a `block_id` — a button echoes no
+ * `block_id` (L-6, B-1) — which is also what keeps the operator's place in the
+ * nav path: the dispatcher reads `value.__path` and re-lists THAT level, not the
+ * root.
+ *
+ * This is the sanctioned, EXPLICIT way to drop a filter. The `back` button drops
+ * one too (it re-renders the parent level with its default filter), but that is
+ * an implicit side effect of navigating and is not touched here.
+ */
+export function clearFiltersButton(actions: ScreenActions, path: NavPath): ButtonElement {
+	return {
+		type: "button",
+		action_id: actions.applyFilter,
+		label: CLEAR_FILTERS_LABEL,
+		value: { [PATH_FIELD]: encodePath(path) },
+	};
+}
+
+/** The wording of ONE zero state. Screens author every string: six screens
+ *  describe their rows differently, and a generic "No results" would be the
+ *  half-measure this replaces. */
+export interface ZeroStateCopy {
+	/** The heading — short, and never accusatory. */
+	title: string;
+	/** One or two sentences saying what is going on and what to do next
+	 *  (≤200 chars, X-11's `empty.description` budget). */
+	description: string;
+	/** The `empty` block's React key. */
+	blockId: PlainBlockId;
+}
+
+export interface ListResultOptions {
+	/** For the `Clear filters` button's target. */
+	actions: ScreenActions;
+	/** This level's drill path, so the clear re-lists HERE. */
+	path: NavPath;
+	/** Rows on the page about to be rendered. */
+	count: number;
+	/** Whether any filter is on — the same boolean the active-filter summary is
+	 *  derived from, so the count line, the summary and the zero state cannot
+	 *  disagree about it. */
+	filtered: boolean;
+	/** `render`'s own `firstPage`. */
+	firstPage: boolean;
+	/** `render`'s own `nextToken`. */
+	nextToken: string | undefined;
+	noun: RowNoun;
+	/** Zero rows and NO filter on: the collection itself is empty. Non-accusatory
+	 *  by construction — nothing has gone wrong — and it may offer the way IN
+	 *  (`actions`, e.g. Coupons' "New coupon") where such a way exists. */
+	empty: ZeroStateCopy & { actions?: readonly Element[] };
+	/** Zero rows WITH a filter on: the operator narrowed to nothing, so the way out
+	 *  is the filter. The `Clear filters` button is appended by this function — a
+	 *  screen never supplies it, so it can never be forgotten on one screen. */
+	noMatch: ZeroStateCopy & {
+		/** The table's `empty_text` for this filter — still needed, because a table
+		 *  WITH rows carries it against a later render. */
+		emptyText: string;
+		/** The "another page remains" note, when the screen has better words for it
+		 *  than the default `${emptyText} ${SCAN_FURTHER}`. */
+		scanNote?: string;
+	};
+}
+
+/**
+ * What a list level renders in place of (or alongside) its table. FIVE outcomes,
+ * and the third one is the one that is easy to get wrong:
+ *
+ *  1. **Rows.** `emptyBlock` undefined — the screen renders its table as usual,
+ *     with `emptyText` on it.
+ *  2. **Zero, unfiltered, FIRST page, no next page.** The collection is empty:
+ *     `emptyBlock` carries the screen's `empty` copy and REPLACES the table (E-2).
+ *  2b. **Zero, unfiltered, NOT the first page.** The same shape with
+ *     {@link PAGE_ZERO}'s page-scoped wording instead — the screen's copy is a
+ *     whole-collection claim this render has not earned.
+ *  3. **Zero with ANOTHER PAGE BEHIND IT.** No `empty` block and NO `emptyText`,
+ *     plus a `scanNote` — the pinned renderer short-circuits a zero-row table
+ *     that carries `empty_text` to a bare `<p>` (`blocks/table.tsx`) AND takes
+ *     the "Load more" button with it, so both would strand an operator mid-scan
+ *     on a page that is not the end of anything. A headers-only table keeps
+ *     `Load more` alive and the note says what to do with it. (Established by the
+ *     stock increment for the low-stock filter, which narrows the FETCHED PAGE;
+ *     generalized here so no screen has to rediscover it.)
+ *  4. **Zero, filtered, last page.** `emptyBlock` carries the screen's `noMatch`
+ *     copy plus the `Clear filters` button, and replaces the table.
+ */
+export interface ListResult {
+	/** `17 orders` for the intro line, or `undefined` at zero. */
+	countLine: string | undefined;
+	/** Render INSTEAD of the table when set. */
+	emptyBlock: EmptyBlock | undefined;
+	/** The table's `empty_text` — `undefined` means OMIT IT (outcome 3). */
+	emptyText: string | undefined;
+	/** A trailing `context` line, set only in outcome 3. */
+	scanNote: ContextBlock | undefined;
+}
+
+export function listResult(opts: ListResultOptions): ListResult {
+	const countLine = rowCountLine(opts.count, opts.noun, {
+		complete: opts.firstPage && opts.nextToken === undefined,
+	});
+	if (opts.count > 0) {
+		return {
+			countLine,
+			emptyBlock: undefined,
+			emptyText: opts.noMatch.emptyText,
+			scanNote: undefined,
+		};
+	}
+	if (opts.nextToken !== undefined) {
+		const lead = opts.filtered ? opts.noMatch.emptyText : NOTHING_ON_PAGE;
+		return {
+			countLine,
+			emptyBlock: undefined,
+			emptyText: undefined,
+			scanNote: {
+				type: "context",
+				text: opts.noMatch.scanNote ?? `${lead} ${SCAN_FURTHER}`,
+			},
+		};
+	}
+	// THE SCREEN'S `empty` COPY IS A WHOLE-COLLECTION CLAIM, so it is gated on
+	// `firstPage` exactly as the count line is. "No orders yet" on page 2 is the
+	// same unearned claim as "17 orders" would be there — and it is reachable in a
+	// live store, not only in theory: the look-ahead read that minted the cursor
+	// and the read that follows it straddle a concurrent delete, and the second
+	// comes back empty. Page 2+ therefore falls through to page-scoped wording.
+	//
+	// `noMatch` is NOT gated the same way, and the asymmetry is deliberate: it
+	// names the operator's OWN filter rather than the collection, and the undo it
+	// carries is the right next act on any page. A screen whose filter narrows the
+	// FETCHED PAGE says so in its own words (`products-page.ts`), which is where a
+	// page-scoped reading of a filtered miss belongs.
+	const copy = opts.filtered
+		? opts.noMatch
+		: opts.firstPage
+			? opts.empty
+			: { ...PAGE_ZERO, blockId: opts.empty.blockId };
+	// The three states differ in their ACTIONS as much as in their words: a
+	// narrowed-to-nothing list offers the undo, an empty collection offers the way
+	// in, and a page that ran off the end offers neither (an `empty` block with no
+	// actions is a valid state — `emptyState` omits the key rather than emitting
+	// `[]`).
+	const actions = opts.filtered
+		? [clearFiltersButton(opts.actions, opts.path)]
+		: opts.firstPage
+			? (opts.empty.actions ?? [])
+			: [];
+	return {
+		countLine,
+		emptyBlock: emptyState({
+			title: copy.title,
+			description: copy.description,
+			size: "base",
+			actions,
+			blockId: copy.blockId,
+		}),
+		emptyText: opts.noMatch.emptyText,
+		scanNote: undefined,
+	};
+}
+
+/** The list's intro `context` line with its row count in front —
+ *  `17 orders · Filter, open an order, …`. The count leads because it is the one
+ *  part of the line that changes, and the standing sentence is what an operator
+ *  stops reading after the first visit. */
+export function listIntroLine(countLine: string | undefined, intro: string): ContextBlock {
+	return { type: "context", text: countLine === undefined ? intro : `${countLine} · ${intro}` };
 }
 
 // -- shared payload parsing (exported: screens reuse the same coercions) -------
