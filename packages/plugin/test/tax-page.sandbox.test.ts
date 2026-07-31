@@ -456,6 +456,69 @@ describe("admin Tax console — classes level (workerd sandbox)", () => {
 		expect(formFor(created, "tax:create-class")).toBeUndefined();
 	});
 
+	// THE PROPERTY THE WHOLE DRAFT MECHANISM RESTS ON, asserted directly rather
+	// than left holding by construction. A prefilled create form is remounted by
+	// the renderer only when its `block_id` CHANGES, and that id is minted by
+	// `carriedForm`'s `__v` prefill digest (B-3a, `scaffold/carrier.ts`) — the
+	// ONE shared primitive behind every create form on all three of these
+	// screens, which is why pinning it here pins it for coupons and shipping
+	// too. If that digest ever stopped varying with the prefill, today's
+	// value-equality assertions would still pass while the operator's second
+	// refusal silently re-rendered the FIRST refusal's values.
+	test("INC-14/B-3a: the create form's block_id tracks the draft — it changes when the resubmitted values differ, and is stable when they do not", async () => {
+		const state = makeRulesState();
+		await boot(state);
+		const fresh = await openNewClassScreen();
+		const virginId = formFor(fresh, "tax:create-class")!.block_id as string;
+
+		const first = await submitForm(fresh, "tax:create-class", { id: "", name: "Reduced rate" });
+		const firstId = formFor(first, "tax:create-class")!.block_id as string;
+		const second = await submitForm(first, "tax:create-class", { id: "", name: "Zero rate" });
+		const secondId = formFor(second, "tax:create-class")!.block_id as string;
+		// DIFFERENT drafts ⇒ different id ⇒ the renderer remounts, so the second
+		// refusal actually shows the second set of values.
+		expect(secondId).not.toBe(firstId);
+		expect(formInitialValues(second, "tax:create-class")).toEqual({ name: "Zero rate" });
+		// And each refusal differs from the virgin form, which prefills nothing.
+		expect(firstId).not.toBe(virginId);
+
+		// IDENTICAL resubmit ⇒ the SAME id: nothing is remounted for a repeat of
+		// the same rejected input (B-3a is a change token, not a nonce).
+		const again = await submitForm(second, "tax:create-class", { id: "", name: "Zero rate" });
+		expect(formFor(again, "tax:create-class")!.block_id).toBe(secondId);
+	});
+
+	test("INC-14: a draft never outlives its create screen — after a success, and after abandoning via back, the next create opens virgin-blank", async () => {
+		const state = makeRulesState();
+		await boot(state);
+		const virginId = formFor(await openNewClassScreen(), "tax:create-class")!.block_id as string;
+
+		// (a) refuse → succeed → reopen: byte-identical to a first open.
+		const refused = await submitForm(await openNewClassScreen(), "tax:create-class", {
+			id: "",
+			name: "Reduced rate",
+		});
+		const created = await submitForm(refused, "tax:create-class", {
+			id: "reduced",
+			name: "Reduced",
+		});
+		expect(bannerOf(created)?.variant).toBe("default");
+		const afterSuccess = await openNewClassScreen();
+		expect(formInitialValues(afterSuccess, "tax:create-class")).toEqual({});
+		expect(formFor(afterSuccess, "tax:create-class")!.block_id).toBe(virginId);
+
+		// (b) refuse → abandon via the back control → reopen: same.
+		const refusedAgain = await submitForm(afterSuccess, "tax:create-class", {
+			id: "",
+			name: "Zero rate",
+		});
+		const back = buttons(refusedAgain).find((b) => b.action_id === "tax:cancel-new");
+		await clickButton("tax:cancel-new", back?.value);
+		const afterAbandon = await openNewClassScreen();
+		expect(formInitialValues(afterAbandon, "tax:create-class")).toEqual({});
+		expect(formFor(afterAbandon, "tax:create-class")!.block_id).toBe(virginId);
+	});
+
 	test("a class row offers a rename form, a View-rates drill-in, and a delete button — the id rides in the carrier, never a visible field (F-2/X-1)", async () => {
 		const state = makeRulesState();
 		await boot(state);

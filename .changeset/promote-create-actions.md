@@ -58,6 +58,17 @@ and a `toggle` is restated explicitly (X-24) rather than silently reverting to
 off. A create that SUCCEEDS drops the draft and returns to the list, which is
 what closes the loop.
 
+**The cost, stated: starting a create is a round trip that unmounts the
+level.** The button is a `block_action`, so clicking it replaces the whole
+response — and unsubmitted typing anywhere on that level (a half-edited row
+form, a filter field not yet applied) goes with it, because the blocks holding
+it are no longer rendered. That is the price of every drill-in on this console,
+now paid by an act that used to be a local accordion toggle; the spec asks for
+the button, and Otta cannot put one in EmDash's page chrome, so no version of
+this change avoids it. The refusal draft above is the mirror of the same fact —
+values that must survive a re-render are carried by the server, never by the
+client's mounted state.
+
 **Empty states say the same words as the button above them.** `Create a tax
 class` and `Add a tax rate` and `New method` were three namings of an act the
 promoted button now names once — one verb, one wording, one destination.
