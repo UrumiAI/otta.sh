@@ -208,6 +208,17 @@ const DETAIL_1_BASE = {
 	updatedAt: "2026-07-12T01:00:00.000Z",
 };
 
+/** A tax-class slug long enough to blow the 60-char accordion-label budget on
+ *  its own — the only way to exercise `valueLabel`'s truncation path, and the
+ *  case that proves the truncation costs the SLUG rather than the weight. */
+const DETAIL_LONG_TAX = {
+	...DETAIL_1_BASE,
+	productId: "prod-longtax",
+	taxClass: "eu-standard-vat-reduced-rate-books-and-periodicals",
+	weightGrams: 3200,
+	onHand: 4,
+};
+
 const DETAIL_UNPRICED = {
 	productId: "prod-unpriced",
 	sku: null,
@@ -436,6 +447,9 @@ function makeGetResponder(state: LiveState) {
 		}
 		if (path === "/admin/products/prod-unpriced") {
 			return { status: 200, body: { ok: true, product: DETAIL_UNPRICED } };
+		}
+		if (path === "/admin/products/prod-longtax") {
+			return { status: 200, body: { ok: true, product: DETAIL_LONG_TAX } };
 		}
 		if (path === "/admin/products/prod-stale") {
 			return { status: 200, body: { ok: true, product: DETAIL_STALE } };
@@ -1066,7 +1080,7 @@ describe("admin Products console — detail shell (workerd sandbox)", () => {
 		expect(tab?.default_tab ?? 0).toBe(0);
 	});
 
-	test("the identity strip has 6 entries, and BOTH CMS-owned rows name their owner (F-2b, X-52)", async () => {
+	test("the identity strip is FOUR entries — the four operational facts — and the CMS-owned Status row still names its owner (D-1a, F-2b, X-52)", async () => {
 		await boot();
 		const blocks = await openProduct(sandbox!, "prod-1");
 		const identityFields = findBlocks(blocks, "fields").find(
@@ -1078,13 +1092,92 @@ describe("admin Products console — detail shell (workerd sandbox)", () => {
 				f.value,
 			]),
 		);
-		expect(byLabel.size).toBe(6);
-		expect(byLabel.get("Title (set in the CMS)")).toBe("Blue Widget");
+		// §4 block 5 (ADMIN-CONSOLE.md:611) + D-1a (:619): the strip is 4 OR 6,
+		// row-major pairs. INC-15 dropped Title and Kind, so it is 4 — never 5.
+		expect(byLabel.size).toBe(4);
 		expect(byLabel.get("Status (set in the CMS)")).toBe("active");
 		expect(byLabel.get("SKU")).toBe("SKU-1");
 		expect(byLabel.get("Price")).toContain("19.99");
 		expect(byLabel.get("Stock on hand")).toBe("42");
-		expect(byLabel.get("Kind")).toBe("physical");
+
+		// INC-15: the title is the HEADER and nothing else. No strip row restates
+		// it — not under the old `Title (set in the CMS)` label, and not under a
+		// renamed one, which would be the same defect wearing a different label.
+		expect([...byLabel.keys()].some((k) => /title/i.test(k))).toBe(false);
+		expect([...byLabel.values()]).not.toContain("Blue Widget");
+		expect(findBlocks(blocks, "header").some((b) => b.text === "Blue Widget")).toBe(true);
+	});
+
+	test("D-1a: the strip obeys the 4-or-6 cap and EVERY fields block on the detail is even (the stricter reading of §2 + D-1a)", async () => {
+		await boot();
+		const blocks = await openProduct(sandbox!, "prod-1");
+		const byId = findBlocks(blocks, "fields");
+		// Self-proving coverage: NAME the blocks this sweep asserts over, so a
+		// `fields` block added outside it — or a sweep that silently shrank to
+		// nothing — fails here rather than passing vacuously.
+		expect(byId.map((f) => String(f.block_id))).toEqual([
+			"products:identity",
+			"products:more",
+			"products:stock",
+		]);
+		for (const f of byId) {
+			const count = ((f.fields ?? []) as unknown[]).length;
+			// D-1a (:619): "A `fields` block inside a panel or an accordion has no
+			// entry cap; it has an EVEN entry count (R-3's row-major pairs)."
+			expect(count % 2, `${String(f.block_id)} has ${count} entries — odd (R-3/§2)`).toBe(0);
+			// …and the CAP is the identity strip's alone (D-1a), 4 or 6.
+			if (f.block_id === "products:identity") expect([4, 6]).toContain(count);
+		}
+	});
+
+	test("INC-15: `Kind` MOVED off the strip rather than being deleted — the summary row and the shipping select both state it, and a TOMBSTONED product still shows it", async () => {
+		await boot();
+		const blocks = await openProduct(sandbox!, "prod-1");
+		const kind = field(formFor(blocks, "products:save-shipping"), "productKind");
+		expect(kind?.label).toBe("Kind");
+		expect(kind?.initial_value).toBe("physical");
+
+		const summary = new Map(
+			(
+				(findBlocks(blocks, "fields").find((f) => f.block_id === "products:more")?.fields ??
+					[]) as Array<{ label: string; value: string }>
+			).map((f) => [f.label, f.value]),
+		);
+		expect(summary.get("Kind")).toBe("physical");
+		// `Kind` took the slot a DUPLICATE held: `Inventory policy` was rendered
+		// verbatim here and in the Stock panel. It now has one home.
+		expect(summary.has("Inventory policy")).toBe(false);
+		const stock = new Map(
+			(
+				(findBlocks(blocks, "fields").find((f) => f.block_id === "products:stock")?.fields ??
+					[]) as Array<{ label: string; value: string }>
+			).map((f) => [f.label, f.value]),
+		);
+		expect(stock.has("Inventory policy")).toBe(true);
+
+		// The tombstone path is why the summary row matters: a deleted product
+		// renders NO edit accordions, so the shipping select — Kind's only other
+		// home — never mounts. Without the summary row its kind would appear
+		// nowhere on the screen.
+		const deleted = await openProduct(sandbox!, "prod-deleted");
+		expect(formFor(deleted, "products:save-shipping")).toBeUndefined();
+		const deletedSummary = new Map(
+			(
+				(findBlocks(deleted, "fields").find((f) => f.block_id === "products:more")?.fields ??
+					[]) as Array<{ label: string; value: string }>
+			).map((f) => [f.label, f.value]),
+		);
+		expect(deletedSummary.get("Kind")).toBe("physical");
+	});
+
+	test("G2 / ADR-0013: nothing replaced the deleted Title row with a Title INPUT — no form on this screen has a title field", async () => {
+		await boot();
+		const blocks = await openProduct(sandbox!, "prod-1");
+		const allFieldIds = findBlocks(blocks, "form").flatMap((f) =>
+			((f.fields ?? []) as Array<Record<string, unknown>>).map((x) => String(x.action_id)),
+		);
+		expect(allFieldIds.length).toBeGreaterThan(0);
+		expect(allFieldIds.some((id) => /title/i.test(id))).toBe(false);
 	});
 
 	test("the detail's stock readouts carry the SAME exception the list column does — `Low` at or below the threshold, `Out of stock` at zero, plain above it", async () => {
@@ -1292,6 +1385,59 @@ describe("admin Products console — split edit form (workerd sandbox)", () => {
 		expect(group(blocks, "products:prod-1:edit-price")?.default_open).not.toBe(true);
 		expect(group(blocks, "products:prod-1:edit-shipping")?.default_open).not.toBe(true);
 		expect(openGroupIds(blocks)).toEqual(["products:prod-1:edit-identity"]);
+	});
+
+	test("INC-15: all three edit-group labels carry their own values, each inside the 60-char budget (D-6, X-11)", async () => {
+		await bootEdit();
+		const blocks = await openProduct(sandbox!, "prod-1");
+		// prod-1: SKU-1 · $19.99 USD · tax class `standard` · 300 g.
+		const labels = new Map(
+			["edit-identity", "edit-price", "edit-shipping"].map((suffix) => [
+				suffix,
+				String(group(blocks, `products:prod-1:${suffix}`)?.label),
+			]),
+		);
+		expect(labels.get("edit-identity")).toBe("Identity — SKU-1");
+		expect(labels.get("edit-price")).toContain("19.99");
+		expect(labels.get("edit-shipping")).toBe("Classification & shipping — standard · 300 g");
+		for (const label of labels.values()) expect(label.length).toBeLessThanOrEqual(60);
+	});
+
+	test("INC-15: a value the group does not have is NAMED in its label, never rendered as an empty tail or a zero", async () => {
+		await bootEdit();
+		// prod-unpriced: no SKU, no price, no tax class, no weight.
+		const blocks = await openProduct(sandbox!, "prod-unpriced");
+		expect(String(group(blocks, "products:prod-unpriced:edit-identity")?.label)).toBe(
+			"Identity — no SKU",
+		);
+		expect(String(group(blocks, "products:prod-unpriced:edit-shipping")?.label)).toBe(
+			"Classification & shipping — no tax class · no weight",
+		);
+		// Already correct before INC-15 — pinned here so the three read as one rule.
+		expect(String(group(blocks, "products:prod-unpriced:edit-price")?.label)).toBe(
+			"Price — not priced yet",
+		);
+		for (const suffix of ["edit-identity", "edit-price", "edit-shipping"]) {
+			const label = String(group(blocks, `products:prod-unpriced:${suffix}`)?.label);
+			expect(label.length).toBeLessThanOrEqual(60);
+			expect(label).not.toMatch(/—\s*$/); // no empty tail
+			expect(label).not.toMatch(/\b0 g\b/); // an absent weight is not a zero weight
+		}
+	});
+
+	test("INC-15: an over-budget label truncates the VALUE that has the most to give, never the tail — the weight survives a 50-char tax-class slug (X-11)", async () => {
+		await bootEdit();
+		const blocks = await openProduct(sandbox!, "prod-longtax");
+		const label = String(group(blocks, "products:prod-longtax:edit-shipping")?.label);
+
+		// The truncation path really fired…
+		expect(label).toContain("…");
+		expect(label.length).toBe(60);
+		// …it cost the SLUG, which is still recognizable…
+		expect(label.startsWith("Classification & shipping — eu-standard-vat")).toBe(true);
+		// …and the LAST value — which plain right-truncation would have deleted
+		// outright, leaving a label that looks complete — is intact.
+		expect(label.endsWith("· 3200 g")).toBe(true);
 	});
 
 	test("Price is a select-free ≤4-field group; the fixed currency of an ALREADY-PRICED product rides invisibly in the carrier, never as a select (F-3)", async () => {

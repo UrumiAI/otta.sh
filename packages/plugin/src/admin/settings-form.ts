@@ -1,4 +1,4 @@
-import { COMMERCE_SERVICE_BASE_URL, SERVICE_TOKEN_KEY, serviceTokenFromKv } from "../manifest.js";
+import { COMMERCE_SERVICE_BASE_URL, SERVICE_TOKEN_KEY } from "../manifest.js";
 import type {
 	AccordionBlock,
 	AdminPageConfig,
@@ -10,7 +10,13 @@ import type {
 	SettingsFieldSpec,
 } from "../types.js";
 import { type OperationalSettingsWire, ReportingSettingsClient } from "./reporting-client.js";
-import { carriedForm, noticeBanner, readAdminTokens, type Notice } from "./scaffold/index.js";
+import {
+	type AdminTokens,
+	carriedForm,
+	noticeBanner,
+	readAdminTokens,
+	type Notice,
+} from "./scaffold/index.js";
 
 /**
  * The admin Settings screen (§4.1 report/settings skeleton;
@@ -86,6 +92,68 @@ async function readSaveGen(ctx: PluginContext, key: string): Promise<number> {
 	return (await ctx.kv.get<number>(key)) ?? 0;
 }
 
+/** Everything this screen renders that comes out of `ctx.kv` — read ONCE per
+ *  handler invocation (INC-15). */
+interface SettingsPageState {
+	displayName: string;
+	hasToken: boolean;
+	hasServiceToken: boolean;
+	tokenGen: number;
+	serviceTokenGen: number;
+}
+
+/**
+ * The kv half of a render, from the tokens the handler ALREADY read.
+ *
+ * INC-15 (review note on INC-09): a render used to issue 7 kv gets one after
+ * another, two of them re-reads of a token `readAdminTokens` had just fetched
+ * at the top of the handler — `settings:internalToken` for `hasToken` and
+ * `settings:serviceToken` for `hasServiceToken`. Both booleans are derivable
+ * from the tokens in hand, so those two are gone and the three that remain here
+ * run concurrently: 7 sequential gets → 5, of which these 3 are one round trip.
+ *
+ * `hasToken` keeps the OLD semantics exactly: `readAdminTokens` maps a missing
+ * key to `undefined` but passes an empty string through, so an empty stored
+ * token still counts as "not set" (`serviceTokenFromKv` already folds empty to
+ * `undefined` itself). SECURITY: the token VALUES stop here — only the two
+ * booleans reach a block (a title states the FACT that a token is set, never
+ * any part of the token; the whole-response no-echo pins cover this).
+ */
+async function readPageState(ctx: PluginContext, tokens: AdminTokens): Promise<SettingsPageState> {
+	const [displayName, tokenGen, serviceTokenGen] = await Promise.all([
+		ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY),
+		readSaveGen(ctx, INTERNAL_TOKEN_GEN_KEY),
+		readSaveGen(ctx, SERVICE_TOKEN_GEN_KEY),
+	]);
+	return {
+		displayName: displayName ?? "",
+		hasToken: (tokens.adminToken ?? "").length > 0,
+		hasServiceToken: tokens.serviceToken !== undefined,
+		tokenGen,
+		serviceTokenGen,
+	};
+}
+
+/** The receipt for a token submit, which is NOT unconditionally "saved": the
+ *  field is always blank on mount (INC-09) and a blank submit deliberately keeps
+ *  the stored token, so the honest receipt for that path says nothing was
+ *  entered. `which` is "Admin" or "Service" — the token's own name, so the
+ *  banner names the same thing its form's submit button does. */
+function tokenNotice(which: "Admin" | "Service", entered: boolean): Notice {
+	const token = `${which.toLowerCase()} token`;
+	return entered
+		? {
+				variant: "default",
+				title: `${which} token saved`,
+				description: `The ${token} was updated. It is stored write-only and never displayed.`,
+			}
+		: {
+				variant: "default",
+				title: `Nothing entered — ${token} unchanged`,
+				description: `The field was blank, so the stored ${token} was kept. Enter a value to replace it.`,
+			};
+}
+
 /** Bump a token's save generation. Call ONLY on an actual (non-empty) persist —
  *  never on a blank submit, which already leaves the field's stated content
  *  correct (still empty), so there is nothing to force a remount for. */
@@ -159,7 +227,12 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 		//    read once the GET was gated.
 		//  - serviceToken (X-Service-Token, ADR-0007) — the machine write gate,
 		//    needed by the non-GET PUT when the service secret is set.
-		const { adminToken, serviceToken } = await readAdminTokens(ctx);
+		// MUTABLE on purpose: a successful token save below updates the copy the
+		// re-render's collapsed "Service connection" title is computed from, so a
+		// first-ever save cannot report the token it just persisted as "not set".
+		// Re-reading kv would say the same thing at the cost of another get.
+		let tokens = await readAdminTokens(ctx);
+		const { adminToken, serviceToken } = tokens;
 		const client = new ReportingSettingsClient({
 			fetch: ctx.http.fetch,
 			baseUrl: COMMERCE_SERVICE_BASE_URL,
@@ -175,7 +248,7 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 				// BUG FIX: this branch used to return `[header, banner]` — two
 				// blocks, no form — so a merchant who typed a 201-char name was
 				// stranded with no field to correct it. Re-render the full page.
-				return renderPage(ctx, client, {
+				return renderPage(ctx, client, tokens, {
 					variant: "error",
 					title: "Display name not saved",
 					description: `Store display name must be 1–${DISPLAY_NAME_MAX} characters — it was not changed.`,
@@ -196,7 +269,7 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			// other two groups from without a live `GET /settings`, so the fresh
 			// read is the fix, not a regression to hide. The test was updated in
 			// the same change (see `settings-widget.sandbox.test.ts`).
-			const page = await renderPage(ctx, client, {
+			const page = await renderPage(ctx, client, tokens, {
 				variant: "default",
 				title: "Display name saved",
 				description: `Store display name saved: ${name}.`,
@@ -214,20 +287,28 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			// renders empty every time — INC-09 dropped the masked variant) never
 			// clobbers an existing token.
 			const raw = input.values?.internalToken;
-			if (typeof raw === "string" && raw !== "") {
+			const entered = typeof raw === "string" && raw !== "";
+			if (entered) {
 				await ctx.kv.set(INTERNAL_TOKEN_KEY, raw);
 				// Post-save clear (INC-09): bump the carrier `gen` so the re-rendered
 				// field remounts blank instead of continuing to show what was typed.
 				await bumpSaveGen(ctx, INTERNAL_TOKEN_GEN_KEY);
+				// INC-15: the re-render's "Service connection" title must report the
+				// token this branch just set, not the state kv held on entry.
+				tokens = { ...tokens, adminToken: raw };
 			}
-			const page = await renderPage(ctx, client, {
-				variant: "default",
-				title: "Admin token saved",
-				description: "The admin token was updated. It is stored write-only and never displayed.",
-			});
+			// INC-15: a blank submit persists NOTHING, so it must not claim it did.
+			// The old receipt said "Admin token saved" on every path — and now that
+			// the group's own label states whether a token is set, a blank submit on
+			// an unprovisioned store rendered "Admin token saved" directly above
+			// "Service connection — token not set". The receipt names the no-op.
+			const page = await renderPage(ctx, client, tokens, tokenNotice("Admin", entered));
 			return {
 				...page,
-				toast: { message: "Admin token saved", type: "success" },
+				toast: {
+					message: entered ? "Admin token saved" : "Admin token unchanged",
+					type: entered ? "success" : "info",
+				},
 			} satisfies BlockResponse;
 		}
 
@@ -237,20 +318,23 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			// non-empty submit so a blank submit (the plain field always renders
 			// empty) never clobbers an existing token. NEVER rendered back.
 			const raw = input.values?.serviceToken;
-			if (typeof raw === "string" && raw !== "") {
+			const entered = typeof raw === "string" && raw !== "";
+			if (entered) {
 				await ctx.kv.set(SERVICE_TOKEN_KEY, raw);
 				// Post-save clear (INC-09): bump the carrier `gen` so the re-rendered
 				// field remounts blank instead of continuing to show what was typed.
 				await bumpSaveGen(ctx, SERVICE_TOKEN_GEN_KEY);
+				// INC-15: same reason as the admin token above.
+				tokens = { ...tokens, serviceToken: raw };
 			}
-			const page = await renderPage(ctx, client, {
-				variant: "default",
-				title: "Service token saved",
-				description: "The service token was updated. It is stored write-only and never displayed.",
-			});
+			// INC-15: the same honest no-op receipt as the admin token above.
+			const page = await renderPage(ctx, client, tokens, tokenNotice("Service", entered));
 			return {
 				...page,
-				toast: { message: "Service token saved", type: "success" },
+				toast: {
+					message: entered ? "Service token saved" : "Service token unchanged",
+					type: entered ? "success" : "info",
+				},
 			} satisfies BlockResponse;
 		}
 
@@ -265,34 +349,36 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			// above (em-dash's page_load/form_submit carries NO token) — one read,
 			// no chance of the read and the write disagreeing.
 			const result = await client.updateSettings(patch, { idempotencyKey: key, adminToken });
-			const displayName = (await ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY)) ?? "";
-			const hasToken = ((await ctx.kv.get<string>(INTERNAL_TOKEN_KEY)) ?? "").length > 0;
-			const hasServiceToken = serviceToken !== undefined;
-			const tokenGen = await readSaveGen(ctx, INTERNAL_TOKEN_GEN_KEY);
-			const serviceTokenGen = await readSaveGen(ctx, SERVICE_TOKEN_GEN_KEY);
+			// This branch writes no token and no display name, so the state read at
+			// the top of the handler is still current (INC-15).
+			const state = await readPageState(ctx, tokens);
 			if (!result.ok) {
 				// Surface the service's validation error INLINE (never a generic
 				// "save failed" that hides the real reason). Re-render the ATTEMPTED
 				// value for edited fields over the STORED value for un-edited ones (J6)
 				// — never zero an un-edited field.
-				let stored: OperationalSettingsWire;
+				let stored: OperationalSettingsWire | undefined;
 				try {
 					stored = await client.getSettings();
 				} catch {
-					stored = { holdTtlMinutes: 0, lowStockThreshold: 0 };
+					stored = undefined;
 				}
 				const shown: OperationalSettingsWire = {
-					holdTtlMinutes: patch.holdTtlMinutes ?? stored.holdTtlMinutes,
-					lowStockThreshold: patch.lowStockThreshold ?? stored.lowStockThreshold,
+					holdTtlMinutes: patch.holdTtlMinutes ?? stored?.holdTtlMinutes ?? 0,
+					lowStockThreshold: patch.lowStockThreshold ?? stored?.lowStockThreshold ?? 0,
 				};
 				return {
 					blocks: buildSettingsBlocks({
-						displayName,
+						...state,
 						settings: shown,
-						hasToken,
-						hasServiceToken,
-						tokenGen,
-						serviceTokenGen,
+						// INC-15: the LABEL is the one place on this screen that reads as
+						// PERSISTED state — a closed group saying "45 min hold" claims the
+						// service holds 45. On a REJECTED save it does not: the form keeps
+						// the attempted value so the operator can correct it (J6), and the
+						// label keeps stating what is actually stored. When the stored
+						// re-read failed there is nothing to state, and the label says
+						// "not loaded" rather than inventing a zero.
+						persisted: stored,
 						notice: {
 							variant: "error",
 							title: "Settings not saved",
@@ -304,12 +390,11 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			}
 			return {
 				blocks: buildSettingsBlocks({
-					displayName,
+					...state,
 					settings: result.settings,
-					hasToken,
-					hasServiceToken,
-					tokenGen,
-					serviceTokenGen,
+					// An ACCEPTED save: what is shown and what is stored are the same
+					// thing, so the label states the values that just persisted.
+					persisted: result.settings,
 					notice: {
 						variant: "default",
 						title: "Settings saved",
@@ -321,7 +406,7 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 		}
 
 		// -- page load: render current values (kv + GET /settings) ------------------
-		return renderPage(ctx, client);
+		return renderPage(ctx, client, tokens);
 	};
 }
 
@@ -344,37 +429,18 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 async function renderPage(
 	ctx: PluginContext,
 	client: ReportingSettingsClient,
+	tokens: AdminTokens,
 	notice?: Notice,
 ): Promise<BlockResponse> {
-	const displayName = (await ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY)) ?? "";
-	const hasToken = ((await ctx.kv.get<string>(INTERNAL_TOKEN_KEY)) ?? "").length > 0;
-	const hasServiceToken = (await serviceTokenFromKv(ctx)) !== undefined;
-	const tokenGen = await readSaveGen(ctx, INTERNAL_TOKEN_GEN_KEY);
-	const serviceTokenGen = await readSaveGen(ctx, SERVICE_TOKEN_GEN_KEY);
+	const state = await readPageState(ctx, tokens);
 	try {
+		// Nothing was attempted on this path, so what the form shows and what the
+		// label states are the same read (see `persisted` in `buildSettingsBlocks`).
 		const settings = await client.getSettings();
-		return {
-			blocks: buildSettingsBlocks({
-				displayName,
-				settings,
-				hasToken,
-				hasServiceToken,
-				tokenGen,
-				serviceTokenGen,
-				notice,
-			}),
-		};
+		return { blocks: buildSettingsBlocks({ ...state, settings, persisted: settings, notice }) };
 	} catch {
 		return {
-			blocks: buildSettingsBlocks({
-				displayName,
-				settings: undefined,
-				hasToken,
-				hasServiceToken,
-				tokenGen,
-				serviceTokenGen,
-				notice,
-			}),
+			blocks: buildSettingsBlocks({ ...state, settings: undefined, persisted: undefined, notice }),
 		};
 	}
 }
@@ -409,17 +475,40 @@ function extractOperationalPatch(
 /**
  * §4.1 / §12.6 skeleton: header, page context, an optional notice banner, then
  * exactly three named groups — "Store", "Checkout & holds", "Service
- * connection" — each an `accordion`. S-3: exactly one is `default_open: true`
- * ("Store"), named explicitly, always — there is no per-record state to
- * derive it from on this screen. S-4: every prefilling form's `block_id`
- * comes from `carriedForm` so a saved value redisplays correctly (the forms
- * are mount-only `text_input` — INC-09 dropped the one `secret_input` this
- * screen used to render — and once inside an accordion each is that
- * container's own index-0 child forever — nothing else remounts them).
+ * connection" — each an `accordion`.
+ *
+ * INC-15 amends S-3 for THIS screen: all three groups now render
+ * `default_open: false`, and each group's LABEL carries its own current values
+ * ("Checkout & holds — 15 min hold · low stock at 5"), so a closed group still
+ * answers the question the operator opened the screen to ask. The screen used
+ * to open "Store" — the ONE cosmetic field on it — pushing the two groups that
+ * hold operational and connection state below an expanded form. With the values
+ * on the labels there is nothing to rank: S-3's "exactly one" was a way to pick
+ * a default, not a requirement that something be expanded, and the mechanical
+ * rule (X-18) is "AT MOST one `default_open: true` per response". Zero is legal
+ * and is what this screen now emits.
+ *
+ * This is the RENDER-TIME kind of closing, which §1.2 explicitly permits — no
+ * `block_id` is changed to force a group shut, so no operator input is ever
+ * discarded (that is the forbidden "programmatic accordion close").
+ *
+ * S-4: every prefilling form's `block_id` comes from `carriedForm` so a saved
+ * value redisplays correctly (the forms are mount-only `text_input` — INC-09
+ * dropped the one `secret_input` this screen used to render — and once inside
+ * an accordion each is that container's own index-0 child forever — nothing
+ * else remounts them).
  */
 function buildSettingsBlocks(args: {
 	displayName: string;
+	/** What the "Checkout & holds" FORM prefills from — on a rejected save this
+	 *  carries the ATTEMPTED values over the stored ones (J6), so the operator can
+	 *  correct what they typed. */
 	settings: OperationalSettingsWire | undefined;
+	/** What the "Checkout & holds" LABEL states: only values the service actually
+	 *  holds, `undefined` when that is unknown. A collapsed label reads as
+	 *  persisted state — it is the one thing on this screen that does — so it must
+	 *  never state a value that was rejected. */
+	persisted: OperationalSettingsWire | undefined;
 	hasToken: boolean;
 	hasServiceToken: boolean;
 	tokenGen: number;
@@ -434,16 +523,57 @@ function buildSettingsBlocks(args: {
 		},
 	];
 	if (args.notice !== undefined) blocks.push(noticeBanner(args.notice));
-	// args.hasToken / args.hasServiceToken are read but not consumed below —
-	// KEEP them: INC-15 needs exactly these two booleans for the "Service
-	// connection" accordion's collapsed title ("token set · service token not
-	// set"), so this is deliberate future plumbing, not dead code.
 	blocks.push(
 		storeGroup(args.displayName),
-		checkoutGroup(args.settings),
-		connectionGroup({ tokenGen: args.tokenGen, serviceTokenGen: args.serviceTokenGen }),
+		checkoutGroup(args.settings, args.persisted),
+		connectionGroup({
+			hasToken: args.hasToken,
+			hasServiceToken: args.hasServiceToken,
+			tokenGen: args.tokenGen,
+			serviceTokenGen: args.serviceTokenGen,
+		}),
 	);
 	return blocks;
+}
+
+/** §1's accordion-label budget (X-11). */
+const LABEL_BUDGET = 60;
+
+/** Separator between the values on a D-6 label. */
+const VALUE_SEPARATOR = " · ";
+
+function fitLabel(text: string): string {
+	return text.length <= LABEL_BUDGET ? text : `${text.slice(0, LABEL_BUDGET - 1)}…`;
+}
+
+/**
+ * A D-6 `<group> — <value> · <value>` label, kept inside the X-11 budget by
+ * shortening a VALUE rather than the tail. EVERY label on this screen goes
+ * through here, the constant ones included — a bypass is how one of them drifts
+ * over budget unnoticed.
+ *
+ * Right-truncation would eat the LAST value outright: a 200-character display
+ * name is the one operator-supplied value on this screen with no length bound
+ * of its own, and on a two-value label the tail is the value most worth
+ * keeping. So the truncation costs the LONGEST segment, and only by the
+ * overflow. (Same helper, same reasoning, as `products-page.ts`'s — this file
+ * keeps its own copy the way it keeps its own `fitLabel`, rather than growing
+ * the shared scaffold for a label rule two screens use differently.)
+ */
+function valueLabel(prefix: string, values: readonly string[]): string {
+	if (values.length === 0) return fitLabel(prefix);
+	const full = `${prefix} — ${values.join(VALUE_SEPARATOR)}`;
+	if (full.length <= LABEL_BUDGET) return full;
+	let longest = 0;
+	values.forEach((value, index) => {
+		if (value.length > (values[longest] ?? "").length) longest = index;
+	});
+	const room = (values[longest] ?? "").length - (full.length - LABEL_BUDGET) - 1;
+	if (room < 1) return fitLabel(full);
+	const shortened = values.map((value, index) =>
+		index === longest ? `${value.slice(0, room)}…` : value,
+	);
+	return `${prefix} — ${shortened.join(VALUE_SEPARATOR)}`;
 }
 
 /** The write-only admin-token form (INC-09: no masked variant). A plain
@@ -505,12 +635,50 @@ function serviceTokenForm(gen: number): FormBlock {
 	});
 }
 
+/** The Store group's label carries the name itself, so the one thing this group
+ *  holds is readable closed. An unset name says so — never a blank tail after
+ *  the dash, which would read as a rendering fault rather than as "not set". */
+function storeGroupLabel(displayName: string): string {
+	return valueLabel("Store", [displayName.length > 0 ? displayName : "no display name"]);
+}
+
+/** The PERSISTED operational values, closed: "Checkout & holds — 15 min hold ·
+ *  low stock at 5". When the secondary `GET /settings` read failed — or a
+ *  rejected save left nothing stored to state — there is no value to give, and
+ *  the label says exactly that rather than implying a zero (the group's own body
+ *  carries the full E-1 explanation). */
+function checkoutGroupLabel(persisted: OperationalSettingsWire | undefined): string {
+	if (persisted === undefined) return valueLabel("Checkout & holds", ["not loaded"]);
+	return valueLabel("Checkout & holds", [
+		`${persisted.holdTtlMinutes} min hold`,
+		`low stock at ${persisted.lowStockThreshold}`,
+	]);
+}
+
+/** Whether each token is set, closed — the provisioning question this group
+ *  exists to answer, and the reason the two booleans are threaded this far.
+ *
+ *  SECURITY: "token set" is a FACT ABOUT the credential, not any part of it.
+ *  Neither token value is in scope here — only booleans — so there is nothing
+ *  to echo, which is what keeps the whole-response no-echo pins green.
+ *
+ *  Deliberately "token set", not "admin token set": both-unset is the longest
+ *  render at 58 characters, and the extra word would push it past X-11's
+ *  60-char accordion-label budget. The group is already named "Service
+ *  connection" and the forms inside are labelled in full. */
+function connectionGroupLabel(hasToken: boolean, hasServiceToken: boolean): string {
+	return valueLabel("Service connection", [
+		hasToken ? "token set" : "token not set",
+		hasServiceToken ? "service token set" : "service token not set",
+	]);
+}
+
 function storeGroup(displayName: string): AccordionBlock {
 	return {
 		type: "accordion",
 		block_id: "settings:store",
-		label: "Store",
-		default_open: true, // S-3: the one open group on this screen, always
+		label: storeGroupLabel(displayName),
+		default_open: false, // INC-15: the label carries the value; see buildSettingsBlocks
 		blocks: [
 			carriedForm({
 				namespace: "settings:store",
@@ -531,7 +699,10 @@ function storeGroup(displayName: string): AccordionBlock {
 	};
 }
 
-function checkoutGroup(settings: OperationalSettingsWire | undefined): AccordionBlock {
+function checkoutGroup(
+	settings: OperationalSettingsWire | undefined,
+	persisted: OperationalSettingsWire | undefined,
+): AccordionBlock {
 	const body: Block[] =
 		settings === undefined
 			? [
@@ -572,17 +743,22 @@ function checkoutGroup(settings: OperationalSettingsWire | undefined): Accordion
 	return {
 		type: "accordion",
 		block_id: "settings:checkout",
-		label: "Checkout & holds",
+		label: checkoutGroupLabel(persisted),
 		default_open: false,
 		blocks: body,
 	};
 }
 
-function connectionGroup(args: { tokenGen: number; serviceTokenGen: number }): AccordionBlock {
+function connectionGroup(args: {
+	hasToken: boolean;
+	hasServiceToken: boolean;
+	tokenGen: number;
+	serviceTokenGen: number;
+}): AccordionBlock {
 	return {
 		type: "accordion",
 		block_id: "settings:connection",
-		label: "Service connection",
+		label: connectionGroupLabel(args.hasToken, args.hasServiceToken),
 		default_open: false,
 		blocks: [
 			{
