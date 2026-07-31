@@ -4,7 +4,7 @@
 	"type": "module",
 	"scripts": {
 		"lint": "oxlint && depcruise --config .dependency-cruiser.cjs packages",
-		"typecheck": "tsc -b",
+		"typecheck": "tsc -b && tsc -p tsconfig.e2e.json",
 		"test": "vitest run",
 		"test:pg": "vitest run",
 		"test:e2e": "playwright test",
@@ -15,7 +15,7 @@
 	},
 	"devDependencies": {
 		"@changesets/cli": "catalog:",
-		"@playwright/test": "^1.62.1",
+		"@playwright/test": "catalog:",
 		"@types/node": "catalog:",
 		"dependency-cruiser": "catalog:",
 		"oxfmt": "catalog:",

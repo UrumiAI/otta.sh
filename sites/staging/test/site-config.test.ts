@@ -187,6 +187,10 @@ describe("buildEmdashOptions", () => {
  */
 const OTTA_CONSOLE_PLUGIN_ID = "otta-console";
 
+/** The package ADR-0014 Decision 2 confines the React code to. BOTH of the
+ *  descriptor's module specifiers have to resolve into it — see below. */
+const OTTA_CONSOLE_PACKAGE = "@otta-sh/admin-react";
+
 /**
  * ADR-0014's hard pins on `otta-console`, as a function — so the gate itself is
  * testable, and so INC-19 cannot "satisfy" it by importing whatever the
@@ -202,6 +206,15 @@ const OTTA_CONSOLE_PLUGIN_ID = "otta-console";
  * throw and what makes full runtime access the declared contract. It fails this
  * gate. Same reasoning for `capabilities` and `allowedHosts`: `undefined` is
  * not `[]`, and "we asked for nothing" has to be written down.
+ *
+ * `entrypoint` and `adminEntry` are pinned to the console PACKAGE because the
+ * empty capability set is not, on its own, the boundary ADR-0014 describes.
+ * Decision 2 puts the React code in a separate package; a descriptor declaring
+ * `adminEntry: "@otta-sh/plugin/admin"` satisfies every other pin here while
+ * making `@otta-sh/plugin` the thing EmDash statically imports React from —
+ * the exact inversion Decision 1 refuses, arriving through the site config
+ * rather than through an import depcruise can see. Both ends are closed: this
+ * pin, and `plugin-is-sandbox-clean` now forbidding `@otta-sh/admin-react`.
  */
 function assertOttaConsoleContract(descriptor: unknown): void {
 	expect(descriptor).toBeTypeOf("object");
@@ -218,6 +231,20 @@ function assertOttaConsoleContract(descriptor: unknown): void {
 
 	expect(Object.hasOwn(d, "allowedHosts"), "`allowedHosts: []` must be declared").toBe(true);
 	expect(d["allowedHosts"]).toEqual([]);
+
+	// Both module specifiers must name the console package — exactly, or as a
+	// subpath export of it. `startsWith` alone would admit a lookalike package
+	// (`@otta-sh/admin-react-shim`), hence the boundary character.
+	for (const key of ["entrypoint", "adminEntry"] as const) {
+		expect(Object.hasOwn(d, key), `\`${key}\` must be declared`).toBe(true);
+		const specifier = d[key];
+		expect(specifier, `\`${key}\` must be a module specifier`).toBeTypeOf("string");
+		expect(
+			specifier === OTTA_CONSOLE_PACKAGE ||
+				String(specifier).startsWith(`${OTTA_CONSOLE_PACKAGE}/`),
+			`\`${key}\` must resolve into ${OTTA_CONSOLE_PACKAGE}, got ${String(specifier)}`,
+		).toBe(true);
+	}
 }
 
 describe("ottaConsoleDescriptor (ADR-0014's second descriptor)", () => {
@@ -310,6 +337,22 @@ describe("the otta-console gate rejects the near-miss shapes", () => {
 		["allowedHosts are non-empty", { ...compliant, allowedHosts: ["svc.example.com"] }],
 		["allowedHosts are omitted", withoutKey("allowedHosts")],
 		["the id is the Block Kit plugin's", { ...compliant, id: OTTA_PLUGIN_ID }],
+		// Reviewer A's mutation, pinned. Everything else about this descriptor is
+		// impeccable — native, zero capabilities, zero allowedHosts — and it still
+		// makes @otta-sh/plugin the module EmDash statically imports React from,
+		// which is ADR-0014 Decision 1 inverted via the site config.
+		[
+			"adminEntry points into @otta-sh/plugin",
+			{ ...compliant, adminEntry: "@otta-sh/plugin/admin" },
+		],
+		["entrypoint points into @otta-sh/plugin", { ...compliant, entrypoint: "@otta-sh/plugin" }],
+		["adminEntry is omitted", withoutKey("adminEntry")],
+		["entrypoint is omitted", withoutKey("entrypoint")],
+		// A lookalike package name must not slip past a prefix check.
+		[
+			"entrypoint names a lookalike package",
+			{ ...compliant, entrypoint: "@otta-sh/admin-react-shim" },
+		],
 	])("rejects a descriptor where %s", (_why, shape) => {
 		expect(() => assertOttaConsoleContract(shape)).toThrow();
 	});

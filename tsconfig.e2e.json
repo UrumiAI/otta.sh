@@ -1,0 +1,28 @@
+{
+	// The e2e surface — `playwright.config.ts` and `sites/staging/e2e/**`.
+	//
+	// It needs its own project because it falls between the two that exist:
+	// the root `tsconfig.json` references the six PACKAGES only, and
+	// `sites/staging/tsconfig.json` is not among them (the site is checked by
+	// `astro check`, which `pnpm typecheck` does not run). So this TypeScript
+	// shipped unchecked, and it was wrong — `playwright.config.ts` had a live
+	// TS2769 nobody could see. `pnpm typecheck` now runs `tsc -b` and then this.
+	//
+	// Not `composite`, and not a reference of the root project: a referenced
+	// project may not disable emit, and there is nothing here worth emitting.
+	// `sites/staging/tsconfig.json` also includes `e2e`, so `astro check` covers
+	// the same files with the site's own settings — deliberate belt and braces,
+	// not an accident.
+	"extends": "./tsconfig.base.json",
+	"compilerOptions": {
+		"noEmit": true,
+		"composite": false,
+		"declaration": false,
+		"declarationMap": false,
+		// The harness runs in Node under Playwright and uses DOM lib types via
+		// @playwright/test; `fetch`/`AbortSignal` come from the Node types.
+		"lib": ["ES2023", "DOM"],
+		"types": ["node"]
+	},
+	"include": ["playwright.config.ts", "sites/staging/e2e"]
+}

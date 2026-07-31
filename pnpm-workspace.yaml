@@ -32,6 +32,7 @@ catalog:
   "@changesets/cli": ^2.31.0
   "@types/node": ^22.15.0
   fast-check: ^3.23.2
+  "@playwright/test": ^1.62.1
 
 minimumReleaseAgeExclude:
   - hono@4.12.29

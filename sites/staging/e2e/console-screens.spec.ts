@@ -10,12 +10,21 @@
  * 18 workerd sandbox suites — until the increment that replaces them, screen by
  * screen (ADR-0014, reaffirming ADR-0006 Decision 1).
  *
- * Because it generates nothing yet, the two locators below are the one part of
- * this increment no run can have exercised. INC-19 loads the first real console
- * page and confirms (or corrects, in `harness.ts`) the admin URL prefix and the
- * sidebar link shape; nothing downstream depends on them until then.
+ * Because it generates nothing yet, the console URL prefix and the sidebar
+ * selector are the one part of this increment no run can have exercised. Both
+ * are DEFINED in `harness.ts` (`ADMIN_BASE_PATH` / `consoleScreenUrl` and
+ * `BLOCK_KIT_SIDEBAR_LINK`) and re-pinned as a literal in `harness.spec.ts`'s
+ * "console screens are addressed under the second descriptor id" test. INC-19
+ * loads the first real console page; if EmDash's admin router disagrees, those
+ * are the two files to edit — this one consumes them and needs no change.
  */
-import { MIGRATED_SCREENS, consoleScreenUrl, expect, test } from "./harness.js";
+import {
+	BLOCK_KIT_SIDEBAR_LINK,
+	MIGRATED_SCREENS,
+	consoleScreenUrl,
+	expect,
+	test,
+} from "./harness.js";
 
 for (const screen of MIGRATED_SCREENS) {
 	// `adminPage` carries the skip: it probes the site before signing in, so a
@@ -32,6 +41,7 @@ for (const screen of MIGRATED_SCREENS) {
 		// exist precisely so a React page cannot hide the six screens that stay
 		// on Block Kit (the `adminMode` granularity trap, ADR-0014 Decision 7);
 		// this is the assertion that would catch the two collapsing into one id.
-		await expect(adminPage.locator('a[href*="/plugins/otta/"]').first()).toBeVisible();
+		// The selector lives in harness.ts so it and the URL builder move together.
+		await expect(adminPage.locator(BLOCK_KIT_SIDEBAR_LINK).first()).toBeVisible();
 	});
 }

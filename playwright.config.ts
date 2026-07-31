@@ -18,7 +18,7 @@
  * bare checkout; `OTTA_E2E_REQUIRE_SITE=1` turns those skips into failures and
  * `OTTA_E2E_START_STACK=1` has Playwright boot DIRECTOR-SPEC §0.2's stack.
  */
-import { defineConfig } from "@playwright/test";
+import { defineConfig, type PlaywrightTestConfig } from "@playwright/test";
 import {
 	E2E_BASE_URL,
 	E2E_PG_CONNECTION_STRING,
@@ -27,16 +27,35 @@ import {
 	E2E_VIEWPORT,
 } from "./sites/staging/e2e/harness.js";
 
-/** DIRECTOR-SPEC §0.2, step 1 + step 2 — opt-in, because booting a
- *  database-backed service is not something a bare `pnpm test:e2e` should do.
- *  The database is the LOCAL test Postgres on **55432**. Port 5432 is an SSH
- *  tunnel to PRODUCTION (§0.3) and must appear nowhere in this repo's e2e
- *  surface; `harness.spec.ts` enforces that by grepping these two files. */
-const stack = [
+/** Playwright does not export `TestConfigWebServer`, so it is reached through
+ *  the config type. Without the annotation the two entries below infer a UNION
+ *  whose `env` members carry `?: undefined` optionals, which the index
+ *  signature `{ [k: string]: string }` rejects — a real TS2769 that went
+ *  unnoticed because nothing type-checked this file. */
+type WebServer = Extract<
+	NonNullable<PlaywrightTestConfig["webServer"]>,
+	readonly unknown[]
+>[number];
+
+/**
+ * DIRECTOR-SPEC §0.2, step 1 + step 2 — opt-in, because booting a
+ * database-backed service is not something a bare `pnpm test:e2e` should do.
+ * The database is the LOCAL test Postgres on **55432**. Port 5432 is an SSH
+ * tunnel to PRODUCTION (§0.3) and must appear nowhere in this repo's e2e
+ * surface; `harness.spec.ts` enforces that across every e2e file plus this one,
+ * and `assertLoopbackUrl` re-checks the resolved values at module load.
+ *
+ * `reuseExistingServer` is OFF under CI and on locally. Adopting whatever holds
+ * the port is convenient at a desk and wrong in an automated run: a sibling
+ * worktree's `astro dev --port 4500` was live on this box while INC-18 was
+ * written. `siteIsUp()` independently verifies the answering server belongs to
+ * this worktree, so a local reuse cannot silently grade the wrong tree either.
+ */
+const stack: WebServer[] = [
 	{
 		command: "pnpm dlx tsx@4 packages/service/src/index.ts",
 		url: `${E2E_SERVICE_URL}/health`,
-		reuseExistingServer: true,
+		reuseExistingServer: process.env["CI"] === undefined,
 		timeout: 120_000,
 		env: {
 			PORT: new URL(E2E_SERVICE_URL).port,
@@ -50,7 +69,7 @@ const stack = [
 		// so it has to be set on the dev process, not flipped at runtime.
 		command: `pnpm --filter @otta-sh/site-staging dev --port ${new URL(E2E_BASE_URL).port}`,
 		url: E2E_BASE_URL,
-		reuseExistingServer: true,
+		reuseExistingServer: process.env["CI"] === undefined,
 		timeout: 180_000,
 		env: { COMMERCE_SERVICE_URL: E2E_SERVICE_URL },
 	},

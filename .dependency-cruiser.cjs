@@ -33,11 +33,15 @@ module.exports = {
 				"— they run in Node, driving the sandbox from outside it. Complemented " +
 				"by the direct-fetch grep guard in " +
 				"packages/plugin/test/sandbox-clean-guard.test.ts (depcruise can't " +
-				"see ambient globals like workerd's own fetch).",
+				"see ambient globals like workerd's own fetch). It ALSO forbids " +
+				"@otta-sh/admin-react: without that, the console quarantine below is " +
+				"escapable in ONE HOP — packages/plugin importing packages/admin-react " +
+				"trips no rule, and react/emdash then reach the plugin transitively, " +
+				"which is precisely what ADR-0014 Decision 1 forbids.",
 			severity: "error",
 			from: { path: "^packages/plugin/src" },
 			to: {
-				path: "(node_modules/(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|node_modules/@otta-sh/domain(/|$)|^(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|^@otta-sh/domain(/|$)|^node:(fs|child_process|net|http|https|os|dgram|dns|tls|worker_threads|cluster|vm)(/|$)|^packages/(store-[^/]+|service|payments-[^/]+|domain)/)",
+				path: "(node_modules/(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|node_modules/@otta-sh/(domain|admin-react)(/|$)|^(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|^@otta-sh/(domain|admin-react)(/|$)|^node:(fs|child_process|net|http|https|os|dgram|dns|tls|worker_threads|cluster|vm)(/|$)|^packages/(store-[^/]+|service|payments-[^/]+|domain|admin-react)/)",
 			},
 		},
 		{

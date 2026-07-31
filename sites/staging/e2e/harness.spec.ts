@@ -7,15 +7,20 @@
  * Decision 1's sandbox suites — are asserted rather than described.
  */
 import { readFileSync, readdirSync } from "node:fs";
+import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	ADMIN_BASE_PATH,
+	BLOCK_KIT_SIDEBAR_LINK,
 	CONSOLE_PLUGIN_ID,
 	DEV_BYPASS_PATH,
+	E2E_BASE_URL,
 	E2E_PG_CONNECTION_STRING,
+	E2E_SERVICE_URL,
 	E2E_VIEWPORT,
 	MIGRATED_SCREENS,
 	NEVER_MIGRATED_PATHS,
+	assertLoopbackUrl,
 	consoleScreenUrl,
 	expect,
 	test,
@@ -23,6 +28,29 @@ import {
 
 const repoRoot = new URL("../../../", import.meta.url);
 const sandboxTestDir = new URL("packages/plugin/test/", repoRoot);
+const e2eDir = new URL("sites/staging/e2e/", repoRoot);
+
+/**
+ * Every file the e2e surface consists of, discovered rather than listed.
+ *
+ * An allowlist of filenames only guards the files that existed when it was
+ * written; INC-19 and INC-20 both add specs here, and neither should have to
+ * remember to enrol them. Globbing means a new file is guarded the moment it
+ * lands.
+ */
+function e2eSurfaceFiles(): Array<{ label: string; source: string }> {
+	const rootPath = fileURLToPath(repoRoot);
+	const paths = readdirSync(e2eDir, { recursive: true, withFileTypes: true })
+		.filter((entry) => entry.isFile() && /\.(ts|mts|cts|js|mjs|cjs)$/.test(entry.name))
+		// `parentPath` (not `name`) is what makes this correct once anyone adds a
+		// subdirectory: `name` is only the basename.
+		.map((entry) => join(entry.parentPath, entry.name));
+	paths.push(join(rootPath, "playwright.config.ts"));
+	return paths.map((path) => ({
+		label: relative(rootPath, path),
+		source: readFileSync(path, "utf8"),
+	}));
+}
 
 test.describe("harness configuration", () => {
 	test("the resolved viewport is 1440x2200 (§0.4)", () => {
@@ -43,9 +71,14 @@ test.describe("harness configuration", () => {
 		// register as a hit (hence the trailing digit boundary).
 		const prodPort = 5432;
 		const namesProdPort = new RegExp(`:${prodPort}(?!\\d)`);
-		for (const file of ["playwright.config.ts", "sites/staging/e2e/harness.ts"]) {
-			const source = readFileSync(fileURLToPath(new URL(file, repoRoot)), "utf8");
-			expect(source, `${file} names port ${prodPort}`).not.toMatch(namesProdPort);
+		const surface = e2eSurfaceFiles();
+		// Discovered, not listed — so the specs INC-19 and INC-20 add are covered
+		// the moment they land.
+		expect(surface.length, "the e2e surface came back empty — the glob is broken").toBeGreaterThan(
+			3,
+		);
+		for (const { label, source } of surface) {
+			expect(source, `${label} names port ${prodPort}`).not.toMatch(namesProdPort);
 		}
 		// harness.ts owns the one connection string the harness can hand to a
 		// boot command, so its DEFAULT is pinned to the local test container...
@@ -61,14 +94,44 @@ test.describe("harness configuration", () => {
 		);
 	});
 
+	test("every resolved e2e endpoint is loopback (§0.3 — no remote host, ever)", () => {
+		// The port guard above only covers Postgres. `COMMERCE_SERVICE_URL` and
+		// `OTTA_E2E_BASE_URL` are ordinary deployment variables that a shell used
+		// for deploying already exports; inherited, they would point the stack
+		// boot and the dev-bypass POST at real infrastructure. Same treatment.
+		for (const [label, url] of [
+			["OTTA_E2E_BASE_URL", E2E_BASE_URL],
+			["COMMERCE_SERVICE_URL", E2E_SERVICE_URL],
+			["PG_CONNECTION_STRING", E2E_PG_CONNECTION_STRING],
+		] as const) {
+			expect(() => assertLoopbackUrl(url, label), `${label} is not loopback`).not.toThrow();
+		}
+		// Negative control: the guard is not vacuous.
+		expect(() => assertLoopbackUrl("https://otta.example.com", "probe")).toThrow(/loopback/);
+		expect(() => assertLoopbackUrl("postgres://u:p@db.prod.internal:55432/otta", "probe")).toThrow(
+			/loopback/,
+		);
+	});
+
 	test("console screens are addressed under the second descriptor id, never under `otta`", () => {
 		// A React page served under id `otta` would flip that plugin's
 		// `adminMode` to "react" and make its other six Block Kit pages VANISH
 		// from the sidebar (ADR-0014 Decision 7). The url builder is the one
 		// place that could get this wrong for every screen at once.
+		//
+		// The literal below is deliberate duplication of `consoleScreenUrl`'s
+		// output — that is what makes it a pin rather than a restatement. It is
+		// the ONLY other place the URL shape is written down: the builder and
+		// the sidebar selector both live in harness.ts, so INC-19 changes the
+		// prefix in one place and re-pins it here.
 		expect(CONSOLE_PLUGIN_ID).toBe("otta-console");
 		expect(consoleScreenUrl("/orders")).toBe(`${ADMIN_BASE_PATH}/plugins/otta-console/orders`);
 		expect(consoleScreenUrl("/orders")).not.toContain("/plugins/otta/");
+
+		// The sidebar selector must not match the console's own links, or the
+		// "Block Kit screens are still there" assertion passes vacuously.
+		expect(BLOCK_KIT_SIDEBAR_LINK).toContain("/plugins/otta/");
+		expect(consoleScreenUrl("/orders")).not.toMatch(/\/plugins\/otta\//);
 	});
 
 	test("authentication is a dev-bypass URL", () => {
