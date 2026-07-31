@@ -33,6 +33,10 @@
  *   - `readAdminTokens(ctx)` — admin + service token threading (one source).
  *   - `Notice`/`noticeBanner(...)`/`failClosedResponse(...)` — consistent
  *     banner + fail-closed rendering.
+ *   - `shortIdsFor(...)` / `shortIdFixed(...)` — the UUID display rule (D4): an
+ *     opaque id renders as a git-style shortest-unique prefix, never in full in
+ *     a list row. Every screen showing a uuid uses these two, so the prefix an
+ *     operator learns on one surface means the same thing on the next.
  */
 
 export { NAV_VERBS, screenActions, type ScreenActions } from "./actions.js";
@@ -83,4 +87,5 @@ export {
 	type ListCursor,
 	type NavPath,
 } from "./nav.js";
+export { shortIdFixed, shortIdsFor, SHORT_ID_CONFIRM_LEN, SHORT_ID_MIN } from "./short-id.js";
 export { readAdminTokens, type AdminTokens } from "./tokens.js";

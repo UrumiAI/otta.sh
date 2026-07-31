@@ -47,6 +47,9 @@ import {
 	readAdminTokens,
 	readString,
 	screenActions,
+	SHORT_ID_CONFIRM_LEN,
+	shortIdFixed,
+	shortIdsFor,
 	type ListDetailInput,
 	type NavPath,
 	type Notice,
@@ -601,16 +604,30 @@ function filterForm(actions: ScreenActions, path: NavPath, form: OrdersFilterFor
  * prefills — a prefilling `combobox` shows one value and submits another
  * (R-12a, F-6, X-30).
  *
- * The option VALUE is the record id and the LABEL never contains it (X-22, M-7):
- * `alice@example.com · $15.00 · paid`. The trigger will read the raw uuid, which
- * §16 item 3 records as a real, tracked wart of the pinned renderer — it is
- * deleted outright by table row actions, not improved by a better label.
+ * The option VALUE is the record id, and the LABEL LEADS WITH A SHORT FORM OF
+ * IT (D4 / the UUID display rule): `#7e4c · alice@example.com · $15.00 · paid`.
+ * The three attributes after it are the human context; the token in front is
+ * the only thing that makes two options TELL APART, because a repeat customer's
+ * two orders at the same total in the same state are otherwise identical
+ * character for character — and the operator picks one of them to refund.
+ *
+ * The prefix is computed by {@link shortIdsFor} over `orders` — THE SAME ARRAY
+ * THE TABLE RENDERS, which is what makes "unique among the candidate set" and
+ * "unique among the rows on screen" the same claim. Passing a re-fetched or
+ * filtered copy would compute uniqueness against the wrong population; the
+ * suite pins the identity rather than trusting it.
+ *
+ * NO COPY BUTTON, deliberately: Block Kit `select`/`combobox` options are
+ * `{value, label}` and nothing else, so the accepted degradation is the prefix
+ * alone. The FULL id stays one drill away — the detail screen's header renders
+ * it verbatim, exactly once.
  */
 function openOrderForm(
 	actions: ScreenActions,
 	path: NavPath,
 	orders: OrderSummaryWire[],
 ): FormBlock {
+	const shortIds = shortIdsFor(orders.map((o) => o.id));
 	return carriedForm({
 		namespace: "orders:open",
 		context: { [PATH_FIELD]: encodePath(path) },
@@ -625,7 +642,10 @@ function openOrderForm(
 						{ value: NONE, label: "Choose an order…" },
 						...orders.map((o) => ({
 							value: o.id,
-							label: `${o.customerId ?? o.buyerRef} · ${formatTotal(o.totalCents, o.currency)} · ${o.state}`,
+							// `shortIdsFor` is TOTAL over the ids it was given, so the fallback
+							// is unreachable — it is here so a future caller narrowing the set
+							// gets a short id rather than `undefined` in the operator's face.
+							label: `#${shortIds.get(o.id) ?? shortIdFixed(o.id)} · ${o.customerId ?? o.buyerRef} · ${formatTotal(o.totalCents, o.currency)} · ${o.state}`,
 						})),
 					],
 					initial_value: NONE,
@@ -2085,7 +2105,7 @@ function refundFullButton(
 		style: "danger",
 		confirm: {
 			title: fit(`Refund ${amount}?`, LABEL_BUDGET),
-			text: refundConfirmText(amount, o.customerId ?? o.buyerRef, summary.refundable),
+			text: refundConfirmText(o.id, amount, o.customerId ?? o.buyerRef, summary.refundable),
 			confirm: `Yes, refund ${amount}`,
 			deny: "Keep as is",
 			style: "danger",
@@ -2140,7 +2160,7 @@ function refundReviewBody(
 					style: "danger",
 					confirm: {
 						title: fit(`Refund ${amount}?`, LABEL_BUDGET),
-						text: refundConfirmText(amount, o.customerId ?? o.buyerRef, summary.refundable),
+						text: refundConfirmText(o.id, amount, o.customerId ?? o.buyerRef, summary.refundable),
 						confirm: `Yes, refund ${amount}`,
 						deny: "Keep as is",
 						style: "danger",
@@ -2189,18 +2209,35 @@ function refundDraftBody(
 
 /**
  * `confirm.text` — exactly two sentences, ≤200 (§1): one naming the concrete
- * amount and recipient, one naming the consequence.
+ * ORDER, amount and recipient, one naming the consequence.
+ *
+ * THE ORDER COMES FIRST, and it is the reason this function takes an id at all
+ * (D4). Amount and recipient are the two attributes a repeat customer's orders
+ * SHARE, so a dialog naming only those is a dialog that cannot tell the operator
+ * which of two candidates the money is about to leave. `shortIdFixed` is used
+ * rather than {@link shortIdsFor} because a confirm renders against one record
+ * with no candidate set in hand; at 8 characters it is a visible superset of the
+ * 4-character prefix the operator just read in the picker.
  *
  * The recipient is dropped when a long buyer handle would push the string over
- * budget. Truncating a confirm dialog mid-sentence would be worse than a slightly
- * less specific one, and the budget is a hard rule (X-11).
+ * budget — the id and the amount are never the thing that goes. Truncating a
+ * confirm dialog mid-sentence would be worse than a slightly less specific one,
+ * and the budget is a hard rule (X-11).
  */
-function refundConfirmText(amount: string, recipient: string, refundable: boolean): string {
+function refundConfirmText(
+	orderId: string,
+	amount: string,
+	recipient: string,
+	refundable: boolean,
+): string {
 	const consequence = refundable
 		? "This sends the money back through Stripe and cannot be reversed."
 		: "This records a refund made out of band — it does not move money.";
-	const named = `Refund ${amount} to ${recipient}? ${consequence}`;
-	return named.length <= 200 ? named : `Refund ${amount} to this order's buyer? ${consequence}`;
+	const order = `Order #${shortIdFixed(orderId, SHORT_ID_CONFIRM_LEN)}`;
+	const named = `${order} — refund ${amount} to ${recipient}? ${consequence}`;
+	return named.length <= 200
+		? named
+		: `${order} — refund ${amount} to this order's buyer? ${consequence}`;
 }
 
 /** The honest per-gateway capability copy (ADR-0008), each ≤200 (§1): Stripe
