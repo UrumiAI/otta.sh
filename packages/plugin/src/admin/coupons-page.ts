@@ -427,8 +427,12 @@ function couponsBlocks(
 }
 
 /**
- * The list table: SIX columns — §2's cap, exactly — identity first and money
- * last (T-2).
+ * The list table: identity first and money last (T-2), in SIX columns — which
+ * EXCEEDS T-1's 5-column guidance for a list screen and sits exactly at its
+ * hard maximum of 6. A director-ratified exemption, not a reading of the rule:
+ * INC-07 mandates both `Status` and `Min spend` while `Code` / `Discount` /
+ * `Valid` keep their semantics, which is six. T-1's rule text is reconciled in
+ * a docs follow-up.
  *
  * `Status` ANSWERS THE QUESTION THE SCREEN EXISTS FOR. Without it the only
  * signal that `EXPIRED20` ended a month ago and `LAUNCH2026` has not started
