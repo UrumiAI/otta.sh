@@ -1112,7 +1112,14 @@ describe("admin Products console — detail shell (workerd sandbox)", () => {
 		await boot();
 		const blocks = await openProduct(sandbox!, "prod-1");
 		const byId = findBlocks(blocks, "fields");
-		expect(byId.length).toBeGreaterThan(0);
+		// Self-proving coverage: NAME the blocks this sweep asserts over, so a
+		// `fields` block added outside it — or a sweep that silently shrank to
+		// nothing — fails here rather than passing vacuously.
+		expect(byId.map((f) => String(f.block_id))).toEqual([
+			"products:identity",
+			"products:more",
+			"products:stock",
+		]);
 		for (const f of byId) {
 			const count = ((f.fields ?? []) as unknown[]).length;
 			// D-1a (:619): "A `fields` block inside a panel or an accordion has no
@@ -1123,12 +1130,44 @@ describe("admin Products console — detail shell (workerd sandbox)", () => {
 		}
 	});
 
-	test("INC-15: `Kind` MOVED to the Classification & shipping form rather than being deleted — the current value is still on the screen", async () => {
+	test("INC-15: `Kind` MOVED off the strip rather than being deleted — the summary row and the shipping select both state it, and a TOMBSTONED product still shows it", async () => {
 		await boot();
 		const blocks = await openProduct(sandbox!, "prod-1");
 		const kind = field(formFor(blocks, "products:save-shipping"), "productKind");
 		expect(kind?.label).toBe("Kind");
 		expect(kind?.initial_value).toBe("physical");
+
+		const summary = new Map(
+			(
+				(findBlocks(blocks, "fields").find((f) => f.block_id === "products:more")?.fields ??
+					[]) as Array<{ label: string; value: string }>
+			).map((f) => [f.label, f.value]),
+		);
+		expect(summary.get("Kind")).toBe("physical");
+		// `Kind` took the slot a DUPLICATE held: `Inventory policy` was rendered
+		// verbatim here and in the Stock panel. It now has one home.
+		expect(summary.has("Inventory policy")).toBe(false);
+		const stock = new Map(
+			(
+				(findBlocks(blocks, "fields").find((f) => f.block_id === "products:stock")?.fields ??
+					[]) as Array<{ label: string; value: string }>
+			).map((f) => [f.label, f.value]),
+		);
+		expect(stock.has("Inventory policy")).toBe(true);
+
+		// The tombstone path is why the summary row matters: a deleted product
+		// renders NO edit accordions, so the shipping select — Kind's only other
+		// home — never mounts. Without the summary row its kind would appear
+		// nowhere on the screen.
+		const deleted = await openProduct(sandbox!, "prod-deleted");
+		expect(formFor(deleted, "products:save-shipping")).toBeUndefined();
+		const deletedSummary = new Map(
+			(
+				(findBlocks(deleted, "fields").find((f) => f.block_id === "products:more")?.fields ??
+					[]) as Array<{ label: string; value: string }>
+			).map((f) => [f.label, f.value]),
+		);
+		expect(deletedSummary.get("Kind")).toBe("physical");
 	});
 
 	test("G2 / ADR-0013: nothing replaced the deleted Title row with a Title INPUT — no form on this screen has a title field", async () => {

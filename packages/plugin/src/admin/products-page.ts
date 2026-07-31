@@ -961,7 +961,15 @@ function productPanel(
 			["Compare-at", formatOptionalTotal(p.compareAtCents, p.compareAtCurrency)],
 			["Unit cost", formatOptionalTotal(p.unitCostCents, p.unitCostCurrency)],
 			["Tax class", taxClassLabel(p.taxClass, taxClasses)],
-			["Inventory policy", inventoryPolicyLabel(p.inventoryPolicy)],
+			// `Kind` lives here rather than in the identity strip (INC-15). It took
+			// the slot `Inventory policy` used to hold — that row was a verbatim
+			// duplicate of the Stock panel's own (`products:stock`), which is where
+			// an inventory policy belongs, and this panel is the one that survives a
+			// TOMBSTONE: the edit accordions below (including `shippingForm`'s `Kind`
+			// select) are skipped entirely for a deleted product, so without this row
+			// a tombstoned product would state its kind nowhere. Still 8 entries in 4
+			// row-major pairs (R-3) — a swap, not an addition.
+			["Kind", p.productKind],
 			["Weight (g)", p.weightGrams === null ? "—" : String(p.weightGrams)],
 			["Dimensions (mm, LxWxH)", dimensionsSummary(p)],
 			["Created (UTC)", utc(p.createdAt)],

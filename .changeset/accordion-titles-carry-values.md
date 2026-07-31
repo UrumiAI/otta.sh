@@ -39,11 +39,13 @@ density win the surface allows.
   through that one helper.
 - **The product identity strip is four entries, not six.** `SKU · Price · Status · Stock
   on hand` — the four operational facts, in two row-major pairs. `Title` restated the
-  page header verbatim one block below it; `Kind` moved to the Classification & shipping
-  form, which both states the current value and is where it is changed. Nothing replaced
-  the Title row with a Title input: `product_commerce.title` is a CMS-owned
-  single-writer cache (ADR-0013) and `ProductEditWire` has no `title` member, so one
-  would not compile.
+  page header verbatim one block below it; `Kind` moved down into the Product panel — its
+  summary row plus the Classification & shipping form, which is where it is changed. It
+  took the slot `Inventory policy` held in that summary, a verbatim duplicate of the
+  Stock panel's own row, so the policy now has one home and a deleted product (which
+  renders no edit forms at all) still states its kind. Nothing replaced the Title row
+  with a Title input: `product_commerce.title` is a CMS-owned single-writer cache
+  (ADR-0013) and `ProductEditWire` has no `title` member, so one would not compile.
 - **A blank token submit stops claiming it saved something.** The token fields render
   empty on every mount and a blank submit deliberately keeps the stored token, so the
   receipt now says `Nothing entered — admin token unchanged` instead of `Admin token
