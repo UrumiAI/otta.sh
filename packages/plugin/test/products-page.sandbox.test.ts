@@ -27,11 +27,17 @@ import { PRODUCTS_PAGE } from "../src/admin/products-page.js";
 
 // The admin Pricing & inventory console under the REAL workerd-on-Node sandbox
 // (design spec §12.1 — built last of the seven admin screens). Covers: the
-// list (filter accordion, badge-free-of-Kind table, combobox drill-in, empty
-// state), the two-panel detail (identity strip with CMS-owned rows, the
-// three-way split edit form, restock as a one-shot DA-4 form, and remove-stock
-// as the screen's one DA-3 stage/confirm/refuse flow), and that neither
-// banned "oversell" phrasing survives anywhere in a rendered response.
+// list (filter accordion, badge-free-of-Kind table, the `On hand` column and
+// its "Low stock only" filter, combobox drill-in, empty state), the two-panel
+// detail (identity strip with CMS-owned rows, the three-way split edit form,
+// restock as a one-shot DA-4 form, and remove-stock as the screen's one DA-3
+// stage/confirm/refuse flow), and that neither banned "oversell" phrasing
+// survives anywhere in a rendered response.
+//
+// THE LIST FIXTURES CARRY `onHand` (the admin products list projection), and
+// the three cases below are pinned SEPARATELY on purpose: a number is a known
+// count, `null` is "this sku has no inventory record", and a MISSING key is a
+// degraded read. Nothing may fold any two of them together.
 
 const SUMMARY_1 = {
 	productId: "prod-1",
@@ -42,6 +48,7 @@ const SUMMARY_1 = {
 	productKind: "physical",
 	active: true,
 	deletedAt: null,
+	onHand: 42, // comfortably above the threshold ⇒ a plain count, no badge
 	createdAt: "2026-07-12T00:00:00.000Z",
 };
 
@@ -54,6 +61,7 @@ const SUMMARY_2 = {
 	productKind: "digital",
 	active: false,
 	deletedAt: null,
+	onHand: 0, // a KNOWN zero — out of stock, never "unknown"
 	createdAt: "2026-07-11T00:00:00.000Z",
 };
 
@@ -61,7 +69,7 @@ const SUMMARY_2 = {
  *  document, so publishing one nobody ever priced yields `active: true` on a
  *  row with no sku and no price. It is NOT sellable — the service's catalog
  *  read filters commerce-incomplete rows — so the console must not call it a
- *  plain "active". */
+ *  plain "active". No sku ⇒ no inventory record ⇒ `onHand: null`. */
 const SUMMARY_UNPRICED = {
 	productId: "prod-unpriced",
 	sku: null,
@@ -71,6 +79,7 @@ const SUMMARY_UNPRICED = {
 	productKind: "physical",
 	active: true,
 	deletedAt: null,
+	onHand: null,
 	createdAt: "2026-07-14T00:00:00.000Z",
 };
 
@@ -83,7 +92,53 @@ const SUMMARY_DELETED = {
 	productKind: "physical",
 	active: false,
 	deletedAt: "2026-07-13T01:00:00.000Z",
+	onHand: 7,
 	createdAt: "2026-07-13T00:00:00.000Z",
+};
+
+/** At the threshold (5) without being at zero — the `Low` band. */
+const SUMMARY_LOW = {
+	productId: "prod-low",
+	sku: "SKU-LOW",
+	title: "Low Widget",
+	priceCents: 1500,
+	currency: "USD",
+	productKind: "physical",
+	active: true,
+	deletedAt: null,
+	onHand: 3,
+	createdAt: "2026-07-10T00:00:00.000Z",
+};
+
+/** A title carrying its OWN em-dash — the collision the picker label's `—`
+ *  separator used to produce (`Washed Linen Apron — Natural — active`). */
+const SUMMARY_EMDASH = {
+	productId: "prod-emdash",
+	sku: "APR-LIN-NAT",
+	title: "Washed Linen Apron — Natural",
+	priceCents: 8500,
+	currency: "USD",
+	productKind: "physical",
+	active: true,
+	deletedAt: null,
+	onHand: 0,
+	createdAt: "2026-07-09T00:00:00.000Z",
+};
+
+/** A row from a service that does not project stock at all — the `onHand` KEY
+ *  IS ABSENT, which is a degraded read and not a catalog fact. Typed loosely on
+ *  purpose: the wire interface declares the field, so this shape is reachable
+ *  only at runtime, which is exactly the case the renderer has to survive. */
+const SUMMARY_NO_STOCK: Record<string, unknown> = {
+	productId: "prod-nostock",
+	sku: "SKU-NOSTOCK",
+	title: "Stockless Widget",
+	priceCents: 1000,
+	currency: "USD",
+	productKind: "physical",
+	active: true,
+	deletedAt: null,
+	createdAt: "2026-07-08T00:00:00.000Z",
 };
 
 const DETAIL_1_BASE = {
@@ -192,10 +247,14 @@ const DETAIL_STALE = {
  *  crafting a carrier token. */
 interface LiveState {
 	onHand1: number;
+	/** What the guarded `GET /settings` answers with. `null` makes that read
+	 *  FAIL, which is the "threshold unknown" degradation — a secondary read
+	 *  that must cost the `Low` band and nothing else. */
+	lowStockThreshold: number | null;
 }
 
 function freshState(): LiveState {
-	return { onHand1: 42 };
+	return { onHand1: 42, lowStockThreshold: 5 };
 }
 
 /** A GET responder for the guarded list + detail reads (200 only WITH the
@@ -209,7 +268,28 @@ function makeGetResponder(state: LiveState) {
 			return { status: 401, body: { ok: false, error: "unauthorized" } };
 		}
 		const [path, query = ""] = req.url.split("?");
+		if (path === "/settings") {
+			if (state.lowStockThreshold === null) {
+				return { status: 503, body: { error: "settings unavailable" } };
+			}
+			return {
+				status: 200,
+				body: {
+					ok: true,
+					settings: { holdTtlMinutes: 15, lowStockThreshold: state.lowStockThreshold },
+				},
+			};
+		}
 		if (path === "/admin/products") {
+			// Page 2 of the stock matrix. Checked FIRST: a paged request carries the
+			// opaque cursor alone (the service cursor holds the filter), so it never
+			// repeats `search=`.
+			if (query.includes("cursor=svc-cursor-stock")) {
+				return {
+					status: 200,
+					body: { ok: true, products: [SUMMARY_1, SUMMARY_LOW], nextCursor: null },
+				};
+			}
 			if (query.includes("deleted=true")) {
 				return { status: 200, body: { ok: true, products: [SUMMARY_DELETED], nextCursor: null } };
 			}
@@ -218,6 +298,29 @@ function makeGetResponder(state: LiveState) {
 					status: 200,
 					body: { ok: true, products: [SUMMARY_1, SUMMARY_UNPRICED], nextCursor: null },
 				};
+			}
+			// The whole stock matrix in one page: above-threshold, a known zero, the
+			// `Low` band, and a row with no inventory record.
+			if (query.includes("search=stockmix")) {
+				return {
+					status: 200,
+					body: {
+						ok: true,
+						products: [SUMMARY_1, SUMMARY_2, SUMMARY_LOW, SUMMARY_UNPRICED],
+						nextCursor: "svc-cursor-stock",
+					},
+				};
+			}
+			if (query.includes("search=emdash")) {
+				return {
+					status: 200,
+					body: { ok: true, products: [SUMMARY_EMDASH, SUMMARY_UNPRICED], nextCursor: null },
+				};
+			}
+			// A service that projects no stock at all: the `onHand` key is absent
+			// from every row.
+			if (query.includes("search=nostock")) {
+				return { status: 200, body: { ok: true, products: [SUMMARY_NO_STOCK], nextCursor: null } };
 			}
 			if (query.includes("cursor=")) {
 				return { status: 200, body: { ok: true, products: [SUMMARY_2], nextCursor: null } };
@@ -282,6 +385,16 @@ async function seedBothTokens(sandbox: SandboxHandle, stub: StubCommerceServer) 
 		values: { serviceToken: "svc-token-abc" },
 	});
 	stub.requests.length = 0;
+}
+
+/** The list table's rows, or `[]` when this response rendered no table. */
+function rowsOf(blocks: LooseBlock[]): Array<Record<string, unknown>> {
+	return (findBlock(blocks, "table")?.rows ?? []) as Array<Record<string, unknown>>;
+}
+
+/** One column's cells, in row order, as the strings the renderer receives. */
+function cells(blocks: LooseBlock[], key: string): string[] {
+	return rowsOf(blocks).map((r) => String(r[key]));
 }
 
 /** Open the detail leaf and return its rendered blocks. */
@@ -349,11 +462,15 @@ describe("admin Products console — list (workerd sandbox)", () => {
 		expect(table).toBeDefined();
 		expect(((table?.rows ?? []) as unknown[]).length).toBe(2);
 		expect(table?.page_action_id).toBe("products:page");
+		// Kind DELETED (T-5, X-4); stock present; money LAST (T-2, M-1).
 		const columnKeys = ((table?.columns ?? []) as Array<{ key: string }>).map((c) => c.key);
-		expect(columnKeys).toEqual(["title", "sku", "status", "price"]); // Kind DELETED (T-5, X-4)
+		expect(columnKeys).toEqual(["title", "sku", "status", "onHand", "price"]);
+		const columns = (table?.columns ?? []) as Array<{ key: string; format?: string }>;
+		expect(columns.find((c) => c.key === "onHand")?.format).toBe("number");
+		expect(columns.at(-1)?.key).toBe("price");
 		const rows = table?.rows as Array<Record<string, unknown>>;
 		expect(rows[0]?.price).toContain("19.99");
-		expect(rows.every((r) => !("onHand" in r) && !("kind" in r))).toBe(true);
+		expect(rows.every((r) => !("kind" in r))).toBe(true);
 
 		const listReq = stub!.requests.find((r) => r.url.startsWith("/admin/products"));
 		expect(listReq?.headers["x-internal-token"]).toBe("admin-token-xyz");
@@ -421,11 +538,13 @@ describe("admin Products console — list (workerd sandbox)", () => {
 		expect(picker).toBeDefined();
 		const productIdField = field(picker, "productId");
 		expect(productIdField?.type).toBe("combobox");
+		// `<title> · <sku> · <status>`; a null sku drops its segment rather than
+		// rendering a dash.
 		const options = (productIdField!.options as Array<{ label: string }>).map((o) => o.label);
 		expect(options).toEqual([
 			"Choose a product…",
-			"Blue Widget — active",
-			"Freshly Created — active (not priced)",
+			"Blue Widget · SKU-1 · active",
+			"Freshly Created · active (not priced)",
 		]);
 	});
 
@@ -502,6 +621,226 @@ describe("admin Products console — list (workerd sandbox)", () => {
 	});
 });
 
+// -- the `On hand` column and its "Low stock only" filter ---------------------
+//
+// The screen named for inventory shows inventory: a count per row, the
+// EXCEPTIONS badged in the cell's own text (T-5 keeps `Status` as the table's
+// one badge column), and a filter that narrows the page to what needs
+// restocking. Everything here is decided against the store's `lowStockThreshold`
+// — a settings read, so every case below also pins what happens when that read,
+// or the stock read itself, comes back empty.
+
+describe("admin Products console — stock column + low-stock filter (workerd sandbox)", () => {
+	async function boot(state: LiveState = freshState()): Promise<LiveState> {
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", makeGetResponder(state));
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+		await seedToken(sandbox, stub, "admin-token-xyz");
+		return state;
+	}
+
+	/** Apply the filter form and return the re-rendered list. */
+	async function listWith(values: Record<string, unknown>): Promise<LooseBlock[]> {
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "products:apply-filter",
+			values,
+		});
+		const blocks = blocksOf(outcome);
+		assertBlockContract(blocks, { screen: "products", level: "list" });
+		return blocks;
+	}
+
+	test("every row carries its stock: a plain count above the threshold, `Low` at or below it, `Out of stock` at zero, and `—` where there is no inventory record", async () => {
+		await boot();
+		const blocks = await listWith({ search: "stockmix" });
+		expect(cells(blocks, "title")).toEqual([
+			"Blue Widget",
+			"Red Gadget",
+			"Low Widget",
+			"Freshly Created",
+		]);
+		expect(cells(blocks, "onHand")).toEqual(["42", "0 · Out of stock", "3 · Low", "—"]);
+	});
+
+	test("`null` (no inventory record) and `0` (a counted zero) never collapse into each other", async () => {
+		await boot();
+		const stock = cells(await listWith({ search: "stockmix" }), "onHand");
+		const zero = stock[1];
+		const noRecord = stock[3];
+		expect(zero).toContain("0");
+		expect(zero).toContain("Out of stock");
+		expect(noRecord).toBe("—");
+		expect(noRecord).not.toContain("0");
+		expect(zero).not.toBe(noRecord);
+	});
+
+	test("a count ABOVE the threshold is plain text — the badge is the exception, not the rule", async () => {
+		await boot();
+		const blocks = await listWith({ search: "stockmix" });
+		expect(cells(blocks, "onHand")[0]).toBe("42");
+		// One badge COLUMN on this table, and it is Status (T-5) — the stock
+		// exception rides in the cell text.
+		const badgeColumns = (
+			(findBlock(blocks, "table")?.columns ?? []) as Array<{
+				key: string;
+				format?: string;
+			}>
+		).filter((c) => c.format === "badge");
+		expect(badgeColumns.map((c) => c.key)).toEqual(["status"]);
+	});
+
+	test("'Low stock only' keeps the rows at or below the threshold — a row with no inventory record is not low — and sends NO stock parameter to the service", async () => {
+		await boot();
+		stub!.requests.length = 0;
+		const blocks = await listWith({ search: "stockmix", lowStock: true });
+		expect(cells(blocks, "title")).toEqual(["Red Gadget", "Low Widget"]);
+		expect(cells(blocks, "onHand")).toEqual(["0 · Out of stock", "3 · Low"]);
+
+		// The service list has no stock predicate: the page is fetched as before
+		// and narrowed here.
+		const listReq = stub!.requests.find((r) => r.url.startsWith("/admin/products"));
+		expect(listReq).toBeDefined();
+		expect(listReq!.url).toContain("search=stockmix");
+		expect(listReq!.url).not.toContain("lowStock");
+
+		// It reads as an active filter everywhere the others do.
+		expect(group(blocks, "products:filters")?.label).toBe("Filters (2 active)");
+		expect(String(findBlocks(blocks, "section")[0]?.text)).toBe(
+			"stock: low only · search: stockmix",
+		);
+	});
+
+	test("the toggle round-trips: an applied 'Low stock only' comes back ON, and clearing it lists everything again", async () => {
+		await boot();
+		const applied = await listWith({ search: "stockmix", lowStock: true });
+		expect(field(formFor(applied, "products:apply-filter"), "lowStock")?.initial_value).toBe(true);
+
+		const cleared = await listWith({ search: "stockmix", lowStock: false });
+		expect(field(formFor(cleared, "products:apply-filter"), "lowStock")?.initial_value).toBe(false);
+		expect(cells(cleared, "title").length).toBe(4);
+	});
+
+	test("the filter rides the list cursor: 'Load more' re-applies it to the next page and the toggle stays on", async () => {
+		await boot();
+		const page1 = await listWith({ search: "stockmix", lowStock: true });
+		const nextCursor = findBlock(page1, "table")?.next_cursor as string | undefined;
+		expect(typeof nextCursor).toBe("string");
+
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "block_action",
+			action_id: "products:page",
+			value: { cursor: nextCursor },
+		});
+		const page2 = blocksOf(outcome);
+		assertBlockContract(page2, { screen: "products", level: "list" });
+		// Page 2 holds a 42 and a 3; only the low one survives the carried filter.
+		expect(cells(page2, "title")).toEqual(["Low Widget"]);
+		expect(field(formFor(page2, "products:apply-filter"), "lowStock")?.initial_value).toBe(true);
+	});
+
+	test("the back button clears it exactly like every other filter on this screen — no special case for stock", async () => {
+		await boot();
+		const filtered = await listWith({ search: "stockmix", lowStock: true });
+		expect(cells(filtered, "title").length).toBe(2);
+
+		const detail = await openProduct(sandbox!, "prod-low");
+		const back = findBlocks(detail, "actions")
+			.flatMap((a) => (a.elements as Array<Record<string, unknown>>) ?? [])
+			.find((e) => e.action_id === "products:back");
+		expect(back).toBeDefined();
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "block_action",
+			action_id: "products:back",
+			value: valueOf(back!),
+		});
+		const list = blocksOf(outcome);
+		// A list level opens with its DEFAULT filter (the scaffold's rule for all
+		// four filters here), so the toggle comes back off and nothing is hidden.
+		expect(field(formFor(list, "products:apply-filter"), "lowStock")?.initial_value).toBe(false);
+		expect(findBlocks(list, "header").some((b) => b.text === "Pricing & inventory")).toBe(true);
+		expect(cells(list, "onHand")).toEqual(["42", "0 · Out of stock"]);
+	});
+
+	test("G5: a page whose rows carry no stock at all still answers 200 — every cell reads `—` and one alert banner says why", async () => {
+		await boot();
+		const blocks = await listWith({ search: "nostock" });
+		expect(cells(blocks, "onHand")).toEqual(["—"]);
+		expect(cells(blocks, "title")).toEqual(["Stockless Widget"]);
+		const banner = findBlocks(blocks, "banner").find((b) => b.variant === "alert");
+		expect(String(banner?.title)).toMatch(/stock/i);
+		// Degraded, not fail-closed: the rest of the row is intact, so the error
+		// variant (E-1/E-6) stays reserved for a real fail-close.
+		expect(findBlocks(blocks, "banner").some((b) => b.variant === "error")).toBe(false);
+		expect(findBlocks(blocks, "table").length).toBe(1);
+	});
+
+	test("with the threshold unreadable, `0` still reads Out of stock and nothing reads Low", async () => {
+		await boot({ onHand1: 42, lowStockThreshold: null });
+		const blocks = await listWith({ search: "stockmix" });
+		// The `Low` band is the only thing a missing threshold can cost.
+		expect(cells(blocks, "onHand")).toEqual(["42", "0 · Out of stock", "3", "—"]);
+		expect(JSON.stringify(blocks)).not.toContain("· Low");
+	});
+
+	test("asking for 'Low stock only' with no readable threshold lists everything and SAYS the filter was not applied", async () => {
+		await boot({ onHand1: 42, lowStockThreshold: null });
+		const blocks = await listWith({ search: "stockmix", lowStock: true });
+		expect(cells(blocks, "title").length).toBe(4);
+		const banner = findBlocks(blocks, "banner").find((b) => b.variant === "alert");
+		expect(String(banner?.title)).toContain("Low stock only");
+		expect(String(banner?.description)).toMatch(/threshold/i);
+	});
+
+	test("G2/ADR-0013: no form anywhere on the LIST writes Title or Status — the Status control is a filter parameter, not an edit", async () => {
+		await boot();
+		const blocks = await listWith({ search: "stockmix", lowStock: true });
+		const everyField = findBlocks(blocks, "form").flatMap(
+			(b) => (b.fields as Array<Record<string, unknown>>) ?? [],
+		);
+		expect(everyField.some((f) => f.action_id === "title")).toBe(false);
+		expect(everyField.some((f) => f.action_id === "active")).toBe(false);
+		// The one control that READS as Status belongs to the filter form, whose
+		// submit re-lists rather than writing anything.
+		const statusField = everyField.find((f) => f.action_id === "status");
+		expect(statusField).toBeDefined();
+		expect(fieldIds(formFor(blocks, "products:apply-filter"))).toEqual([
+			"status",
+			"productKind",
+			"lowStock",
+			"search",
+		]);
+	});
+
+	test("the picker label carries the SKU and separates with `·`, so a title holding its own em-dash no longer collides", async () => {
+		await boot();
+		const blocks = await listWith({ search: "emdash" });
+		const options = (
+			field(formFor(blocks, "products:open"), "productId")!.options as Array<{
+				label: string;
+				value: string;
+			}>
+		).slice(1);
+		expect(options.map((o) => o.label)).toEqual([
+			"Washed Linen Apron — Natural · APR-LIN-NAT · active",
+			"Freshly Created · active (not priced)",
+		]);
+		// The em-dash is INSIDE one field now: splitting on the separator yields
+		// title / sku / status, never four parts of which two are the title.
+		const parts = options[0]!.label.split(" · ");
+		expect(parts).toHaveLength(3);
+		expect(parts[0]).toBe("Washed Linen Apron — Natural");
+		expect(parts[1]).toBe("APR-LIN-NAT");
+		expect(parts[2]).toBe("active");
+		// The option VALUE stays the id, and no label leaks one (X-22, D4).
+		expect(options[0]!.value).toBe("prod-emdash");
+		expect(options.some((o) => o.label.includes(o.value))).toBe(false);
+	});
+});
+
 // -- the detail identity strip + tab panel set (§12.1 detail) -----------------
 
 describe("admin Products console — detail shell (workerd sandbox)", () => {
@@ -550,6 +889,47 @@ describe("admin Products console — detail shell (workerd sandbox)", () => {
 		expect(byLabel.get("Price")).toContain("19.99");
 		expect(byLabel.get("Stock on hand")).toBe("42");
 		expect(byLabel.get("Kind")).toBe("physical");
+	});
+
+	test("the detail's stock readouts carry the SAME exception the list column does — `Low` at or below the threshold, `Out of stock` at zero, plain above it", async () => {
+		const state = await boot();
+		const entriesFor = async (): Promise<Map<string, string>> => {
+			const blocks = await openProduct(sandbox!, "prod-1");
+			assertBlockContract(blocks, { screen: "products", level: "detail" });
+			const rows = findBlocks(blocks, "fields").flatMap(
+				(f) => (f.fields as Array<{ label: string; value: string }>) ?? [],
+			);
+			return new Map(rows.map((f) => [f.label, f.value]));
+		};
+
+		// 42 with a threshold of 5: a plain count, competing with nothing.
+		expect((await entriesFor()).get("Stock on hand")).toBe("42");
+
+		state.onHand1 = 3;
+		const low = await entriesFor();
+		expect(low.get("Stock on hand")).toBe("3 · Low");
+		// The Stock panel's own readout agrees with the identity strip.
+		expect(low.get("On hand")).toBe("3 · Low");
+
+		state.onHand1 = 0;
+		const out = await entriesFor();
+		expect(out.get("Stock on hand")).toBe("0 · Out of stock");
+		expect(out.get("On hand")).toBe("0 · Out of stock");
+	});
+
+	test("an unreadable threshold costs the detail its `Low` badge and nothing else", async () => {
+		const state = await boot();
+		state.lowStockThreshold = null;
+		state.onHand1 = 3;
+		const blocks = await openProduct(sandbox!, "prod-1");
+		const entries = new Map(
+			findBlocks(blocks, "fields")
+				.flatMap((f) => (f.fields as Array<{ label: string; value: string }>) ?? [])
+				.map((f) => [f.label, f.value]),
+		);
+		expect(entries.get("Stock on hand")).toBe("3");
+		expect(entries.get("Price")).toContain("19.99");
+		expect(findBlocks(blocks, "banner").some((b) => b.variant === "error")).toBe(false);
 	});
 
 	test("no form anywhere on the screen offers an 'active' or 'title' field (F-2b, X-52)", async () => {

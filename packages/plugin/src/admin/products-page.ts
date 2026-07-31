@@ -20,6 +20,7 @@ import {
 	type TaxClassWire,
 } from "./admin-products-client.js";
 import { formatMinorUnitsInput, parseMinorUnitsInput } from "./money-input.js";
+import { ReportingSettingsClient } from "./reporting-client.js";
 import {
 	asRecord,
 	backButton,
@@ -86,6 +87,12 @@ import {
  *     `${productId}:${direction}:${onHandAtRender}:${qty}` — content plus the
  *     watermark the operator saw — never a `crypto.randomUUID()` minted at
  *     render time.
+ *  6. IT IS THE ONE SCREEN THAT READS TWO SERVICE SURFACES. The list and the
+ *     detail both render stock, and what counts as LOW is the store's
+ *     `lowStockThreshold` — a settings value, not a product field. So
+ *     {@link ProductsScreenClient} pairs the products client with a
+ *     settings client, and every threshold read is SECONDARY (E-1): it
+ *     degrades the badge, never the page.
  *
  * Built on the shared list/detail scaffold (`./scaffold`).
  */
@@ -141,12 +148,18 @@ const LABEL_BUDGET = 60;
  *  only, active + inactive both listed); `"true"` ⇒ ONLY soft-deleted rows. A
  *  soft-deleted row is always inactive, so the combined "Status" select
  *  offers the two as ONE mutually-exclusive choice rather than two
- *  independently-toggleable axes. */
+ *  independently-toggleable axes.
+ *
+ *  `lowStock` is the "Low stock only" toggle: unset ⇒ every row; `"true"` ⇒
+ *  only rows whose on-hand count is at or below the store's threshold. Stored
+ *  as the same `"true"` string as `archived` because this object is JSON —
+ *  it rides in the list cursor (`f`) so the filter survives paging. */
 interface ProductsFilterForm {
 	active?: "true" | "false";
 	productKind?: "physical" | "digital";
 	search?: string;
 	archived?: "true";
+	lowStock?: "true";
 }
 
 /**
@@ -175,19 +188,41 @@ type ProductsRenderState =
 /** The em-dash BlockInteraction envelope this page consumes. */
 export type ProductsPageInput = ListDetailInput;
 
+/**
+ * The two service surfaces this screen reads (see the file header's point 6).
+ *
+ * `settings` is here for exactly ONE field — `lowStockThreshold`, the number
+ * that decides whether an on-hand count reads `Low` — which lives on the admin
+ * settings surface (ADR-0010's guarded `GET /settings`), not on any product.
+ * It is never written from this screen: the threshold is edited on Settings,
+ * and a form field for it here would be a second home for one value (G2).
+ */
+interface ProductsScreenClient {
+	products: AdminProductsClient;
+	settings: ReportingSettingsClient;
+}
+
 export function createProductsPageHandler(): RouteHandler<ProductsPageInput> {
 	return createListDetailHandler<ProductsRenderState>({
 		actions: PRODUCTS_ACTIONS,
-		async createClient(ctx) {
+		async createClient(ctx): Promise<ProductsScreenClient> {
 			const tokens = await readAdminTokens(ctx);
-			return new AdminProductsClient({
+			const transport = {
 				fetch: ctx.http.fetch,
 				baseUrl: COMMERCE_SERVICE_BASE_URL,
 				...(tokens.adminToken !== undefined ? { adminToken: tokens.adminToken } : {}),
-				// The edit PATCH and the stock-movement POSTs are NON-GETs the write
-				// gate blocks without this.
-				...(tokens.serviceToken !== undefined ? { serviceToken: tokens.serviceToken } : {}),
-			});
+			};
+			return {
+				products: new AdminProductsClient({
+					...transport,
+					// The edit PATCH and the stock-movement POSTs are NON-GETs the write
+					// gate blocks without this.
+					...(tokens.serviceToken !== undefined ? { serviceToken: tokens.serviceToken } : {}),
+				}),
+				// GET-only from this screen, so it carries the admin token alone — the
+				// write-gate token belongs on the surface that writes.
+				settings: new ReportingSettingsClient(transport),
+			};
 		},
 		// The "Open product" picker carries the product id in `values.productId`;
 		// the target is a single-level drill, so the path is just `[productId]`.
@@ -216,22 +251,165 @@ export function createProductsPageHandler(): RouteHandler<ProductsPageInput> {
 
 // -- level 0: the products list (§12.1 list) ----------------------------------
 
+/**
+ * What the LIST knows about stock, decided in `fetchPage` and handed to
+ * `render`. It has to be decided there because `ListLevelDef.render` is
+ * SYNCHRONOUS while the low-stock threshold is a service read — so the row a
+ * renderer receives is a product plus its already-resolved `On hand` cell,
+ * not a bare `ProductSummaryWire`.
+ */
+interface ProductsListRow {
+	product: ProductSummaryWire;
+	/** The pre-resolved `On hand` cell text — see {@link onHandCell}. */
+	onHand: string;
+	/** Page-wide stock context, the SAME object on every row of a page: a
+	 *  renderer reads it off any row it has, and an empty page has nothing to
+	 *  say about stock in the first place. */
+	stock: StockPageContext;
+}
+
+interface StockPageContext {
+	/** The store's low-stock threshold, or `null` when the settings read failed
+	 *  (which costs the `Low` band and nothing else). */
+	threshold: number | null;
+	/** The page came back carrying no stock figure on ANY row — a degraded read
+	 *  rather than a catalog fact. Every cell reads `—` and the list says so
+	 *  once, in a banner, inside a 200 (G5/E-1). */
+	unreadable: boolean;
+	/** "Low stock only" was asked for and could not be honoured (no threshold,
+	 *  or no stock to compare it against), so the page is UNFILTERED and says
+	 *  so — never silently the wrong set of rows. */
+	filterUnavailable: boolean;
+}
+
 function productsListLevel() {
-	return listLevel<AdminProductsClient, ProductsFilterForm, ProductSummaryWire>({
+	return listLevel<ProductsScreenClient, ProductsFilterForm, ProductsListRow>({
 		limit: PAGE_LIMIT,
 		filterFromValues,
 		async fetchPage(client, _path, form, opts) {
-			const page = await client.listProducts(toClientFilter(form), {
-				limit: opts.limit,
-				...(opts.cursor !== undefined ? { cursor: opts.cursor } : {}),
-			});
-			return { items: page.products, nextCursor: page.nextCursor };
+			// The threshold read runs ALONGSIDE the page read and is secondary in
+			// both directions: it can never delay the list beyond its own latency,
+			// and it can never fail it (E-1) — `readLowStockThreshold` resolves to
+			// null instead of throwing.
+			const [page, threshold] = await Promise.all([
+				client.products.listProducts(toClientFilter(form), {
+					limit: opts.limit,
+					...(opts.cursor !== undefined ? { cursor: opts.cursor } : {}),
+				}),
+				readLowStockThreshold(client.settings),
+			]);
+			const read = page.products.map((product) => ({ product, onHand: readOnHand(product) }));
+			const unreadable = read.length > 0 && read.every((r) => r.onHand === undefined);
+			const wantsLowStock = form.lowStock === "true";
+			const canFilter = threshold !== null && !unreadable;
+			const stock: StockPageContext = {
+				threshold,
+				unreadable,
+				filterUnavailable: wantsLowStock && !canFilter,
+			};
+			// "Low stock only" is applied to the fetched page, not to the query: the
+			// service's products list has no stock predicate, and the measurement
+			// behind that (INC-03) chose ONE unconditional join over a gated one
+			// precisely because the gated shape had to walk ~9x the rows. So the
+			// filter narrows what this page shows and `Load more` keeps scanning —
+			// a row with no inventory record is never "low", only unknown.
+			const visible =
+				wantsLowStock && canFilter && threshold !== null
+					? read.filter((r) => r.onHand !== undefined && r.onHand !== null && r.onHand <= threshold)
+					: read;
+			return {
+				items: visible.map((r) => ({
+					product: r.product,
+					onHand: onHandCell(r.onHand, threshold),
+					stock,
+				})),
+				nextCursor: page.nextCursor,
+			};
 		},
 		render({ actions, path, filter, items, nextToken, notice }) {
 			return listBlocks(actions, path, filter, items, nextToken, notice);
 		},
 		onError: () => failClosed(),
 	});
+}
+
+/**
+ * Read one list row's on-hand count off the wire, keeping THREE cases apart
+ * that must never be folded into each other:
+ *
+ *  - a number — a known count, `0` included ("out of stock" is a FACT);
+ *  - `null` — the sku carries no inventory record, so the count is unknown for
+ *    this row (and a row with no sku at all can have nothing else);
+ *  - `undefined` — the response carried no stock figure at all. `ProductSummaryWire`
+ *    types `onHand` as required, so this is reachable only at runtime (a service
+ *    older than the on-hand projection, or one whose stock read degraded), which
+ *    is why it is read as `unknown` here instead of trusted.
+ */
+function readOnHand(p: ProductSummaryWire): number | null | undefined {
+	const raw: unknown = (p as { onHand?: unknown }).onHand;
+	if (raw === null) return null;
+	return typeof raw === "number" && Number.isFinite(raw) ? raw : undefined;
+}
+
+/**
+ * The `On hand` cell — text, always, and never an empty string: the pinned
+ * renderer's `format:"number"` cell does `Number(value)` and prints the RAW
+ * string only when that is NaN (`blocks/table.tsx`), so `"—"` and
+ * `"0 · Out of stock"` survive verbatim, `"12"` renders as a number, and `""`
+ * or a missing key would render as `0` — a zero nobody counted.
+ *
+ * BADGE THE EXCEPTIONS AND ONLY THEM (T-5 keeps `Status` as the table's one
+ * badge COLUMN, so the exception rides in the cell's own text): `0` is out of
+ * stock, `1..threshold` is low, and anything above the threshold is a plain
+ * count that competes with nothing.
+ */
+function onHandCell(onHand: number | null | undefined, threshold: number | null): string {
+	if (onHand === undefined || onHand === null) return "—";
+	if (onHand <= 0) return `${onHand} · Out of stock`;
+	if (threshold !== null && onHand <= threshold) return `${onHand} · Low`;
+	return String(onHand);
+}
+
+/** The store's low-stock threshold, or null when it cannot be read. A refusal
+ *  here costs the `Low` band alone — a count still renders and `0` still reads
+ *  `Out of stock`, neither of which needs a threshold. */
+async function readLowStockThreshold(client: ReportingSettingsClient): Promise<number | null> {
+	try {
+		const { lowStockThreshold } = await client.getSettings();
+		return Number.isSafeInteger(lowStockThreshold) && lowStockThreshold >= 0
+			? lowStockThreshold
+			: null;
+	} catch {
+		// A settings read is never allowed to take the screen with it (E-1).
+		return null;
+	}
+}
+
+/** The ONE stock-degradation banner. Two cases share a single slot because
+ *  X-31 caps a response at two top-level banners and the notice may already
+ *  hold one. `alert`, never `error`: the list rendered, and E-1/E-6 keep the
+ *  error variant for a fail-close or a refusal. */
+function stockBanner(stock: StockPageContext | undefined): Block | undefined {
+	if (stock === undefined) return undefined;
+	if (stock.unreadable) {
+		return {
+			type: "banner",
+			variant: "alert",
+			title: "Stock levels are unavailable",
+			description:
+				"On hand reads — for every row here. Open a product to read its stock, and check the service connection and the admin token in Settings.",
+		};
+	}
+	if (stock.filterUnavailable) {
+		return {
+			type: "banner",
+			variant: "alert",
+			title: "Low stock only was not applied",
+			description:
+				"The store's low-stock threshold could not be read, so every product is listed. Set it under Checkout & holds on Settings, then apply the filter again.",
+		};
+	}
+	return undefined;
 }
 
 /**
@@ -299,7 +477,7 @@ function listBlocks(
 	actions: ScreenActions,
 	path: NavPath,
 	form: ProductsFilterForm,
-	products: ProductSummaryWire[],
+	rows: ProductsListRow[],
 	nextToken: string | undefined,
 	notice: Notice | undefined,
 ): Block[] {
@@ -307,12 +485,17 @@ function listBlocks(
 		{ type: "header", text: "Pricing & inventory" },
 		{
 			type: "context",
-			// 91 chars ≤ 140 (§1). The "Archived" explanation moves into the filter
-			// accordion; the stock explanation moves into the Stock panel.
-			text: "Filter and open a product. Money in each product's own currency; stock is on the detail.",
+			// 97 chars ≤ 140 (§1). The "Archived" explanation lives in the filter
+			// accordion; stock is now a COLUMN, so this line says what the count
+			// means instead of pointing at the detail.
+			text: "Filter and open a product. Money in each product's own currency; On hand is what can be sold now.",
 		},
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
+	// Page-wide and identical on every row, so any row answers for the page.
+	const stock = rows[0]?.stock;
+	const degraded = stockBanner(stock);
+	if (degraded !== undefined) blocks.push(degraded);
 
 	// ONE PART PER AUTHORED FILTER FIELD (L-3): the combined Status select is
 	// one field (active/archived share it), so it contributes one part.
@@ -320,6 +503,7 @@ function listBlocks(
 	const activeFilters = [
 		statusValue !== undefined && `status: ${statusValue}`,
 		form.productKind !== undefined && `kind: ${form.productKind}`,
+		form.lowStock === "true" && "stock: low only",
 		form.search !== undefined && `search: ${form.search}`,
 	];
 	blocks.push(
@@ -346,7 +530,7 @@ function listBlocks(
 	}
 
 	const filtered = summary !== undefined;
-	if (products.length === 0 && !filtered) {
+	if (rows.length === 0 && !filtered) {
 		// E-2: the primary collection at its TRUE zero state. No `actions` —
 		// products originate in the CMS, not on this console.
 		blocks.push(
@@ -371,26 +555,38 @@ function listBlocks(
 			// `Kind` column DELETED: near-constant across a live catalog, so its
 			// badge would be a column of identical pills (T-5, X-4). Kind is on
 			// the detail's identity strip.
+			//
+			// `On hand` is a COUNT, never money — `format: "number"` is right here
+			// and would be an X-9 violation one column along.
+			{ key: "onHand", label: "On hand", format: "number" },
 			{ key: "price", label: "Price" }, // money LAST, pre-formatted (T-2, M-1)
 		],
-		rows: products.map((p) => ({
-			title: p.title ?? "(untitled)",
-			sku: p.sku ?? "—",
-			status: statusLabel(p),
-			price: formatOptionalTotal(p.priceCents, p.currency),
+		rows: rows.map((r) => ({
+			title: r.product.title ?? "(untitled)",
+			sku: r.product.sku ?? "—",
+			status: statusLabel(r.product),
+			onHand: r.onHand,
+			price: formatOptionalTotal(r.product.priceCents, r.product.currency),
 		})),
 		page_action_id: actions.page,
 		...(nextToken !== undefined ? { next_cursor: nextToken } : {}),
 		empty_text: "No products match these filters.",
 	});
-	if (products.length > 0) blocks.push(openProductForm(actions, path, products));
+	if (rows.length > 0) blocks.push(openProductForm(actions, path, rows));
 	return blocks;
 }
 
 /**
- * The three-field filter (L-2 ⇒ an accordion, `filterPanel`'s default
+ * The four-field filter (L-2 ⇒ an accordion, `filterPanel`'s default
  * `inlineUpTo` of 2), built by {@link carriedForm} LAST so the digest it
  * carries matches the form.
+ *
+ * "Low stock only" is a `toggle`, not a fifth select: it is one boolean, and a
+ * select would cost a second full row on a panel the audit already calls too
+ * tall. It states WHERE the threshold lives rather than its value — the number
+ * is a service read, this render is synchronous, and a filter control that
+ * sometimes carries a number and sometimes does not is worse than one that
+ * never does.
  */
 function filterForm(actions: ScreenActions, path: NavPath, form: ProductsFilterForm): FormBlock {
 	const statusOptions: SelectOption[] = [
@@ -430,6 +626,14 @@ function filterForm(actions: ScreenActions, path: NavPath, form: ProductsFilterF
 					initial_value: form.productKind ?? ANY,
 				},
 				{
+					type: "toggle",
+					action_id: "lowStock",
+					label: "Low stock only",
+					description: "Products at or below the low-stock threshold set on Settings.",
+					// F-6b/X-24: REQUIRED — a toggle reads its value at mount only.
+					initial_value: form.lowStock === "true",
+				},
+				{
 					type: "text_input",
 					action_id: "search",
 					label: "Search (SKU exact, or title contains)",
@@ -444,17 +648,30 @@ function filterForm(actions: ScreenActions, path: NavPath, form: ProductsFilterF
 /**
  * The drill-in picker (L-7): a `combobox`, because a page holds up to 25 rows
  * and this field never prefills (R-12a, F-6, X-30). The option VALUE is the
- * product id; the LABEL never contains it (X-22, M-7) — it is the human
- * handle plus `statusLabel`, the SAME helper the table's Status column and
- * the detail's Status row use, so the three surfaces cannot disagree. `sku`
- * and `price` are deliberately NOT in the option label: both are nullable on
- * a freshly-synced row, so the pre-1b "<sku> · <title> · $19.99 · active"
- * shape rendered "— · … · — · active" for the most common new product.
+ * product id; the LABEL never contains it (X-22, M-7, D4) — it is
+ * `<title> · <sku> · <status>`, where `statusLabel` is the SAME helper the
+ * table's Status column and the detail's Status row use, so the three surfaces
+ * cannot disagree.
+ *
+ * WHAT THE SEPARATOR AND THE SKU FIX, both observed on the rendered screen:
+ *
+ *  - `·` REPLACES ` — `. A title is merchant prose and can hold an em-dash of
+ *    its own: `Washed Linen Apron — Natural — active` reads as three fields of
+ *    which two are the title, and nothing in the label says which. `·` is not
+ *    a character a product title spends.
+ *  - THE SKU IS IN THE LABEL. Low stock is reported by sku and this picker was
+ *    keyed by title alone, which left the sku→title mapping in the operator's
+ *    head. A null sku DROPS its segment instead of rendering a dash — a
+ *    freshly-synced row would otherwise read "… · — · active (not priced)",
+ *    noise on a control whose whole job is identification. `price` stays out:
+ *    it is already a column, and money in a picker label competes with the
+ *    handle. A null title reads `(untitled)`, the same as the table's Title
+ *    cell, and never the product id.
  */
 function openProductForm(
 	actions: ScreenActions,
 	path: NavPath,
-	products: ProductSummaryWire[],
+	rows: ProductsListRow[],
 ): FormBlock {
 	return carriedForm({
 		namespace: "products:open",
@@ -469,9 +686,11 @@ function openProductForm(
 					placeholder: "Choose a product…",
 					options: [
 						{ value: NONE, label: "Choose a product…" },
-						...products.map((p) => ({
+						...rows.map(({ product: p }) => ({
 							value: p.productId,
-							label: `${p.title ?? p.productId} — ${statusLabel(p)}`,
+							label: [p.title ?? "(untitled)", p.sku, statusLabel(p)]
+								.filter((part) => part !== null)
+								.join(" · "),
 						})),
 					],
 					initial_value: NONE,
@@ -497,21 +716,30 @@ const DEFAULT_TAX_CLASSES: TaxClassWire[] = [
 	{ id: "digital", name: "Digital goods" },
 ];
 
+/** The live tax-class registry, falling back to {@link DEFAULT_TAX_CLASSES} on
+ *  a failed or empty read — a registry read must never break the detail (E-1). */
+async function readTaxClasses(client: AdminProductsClient): Promise<TaxClassWire[]> {
+	try {
+		const fetched = await client.getTaxClasses();
+		return fetched.length > 0 ? fetched : DEFAULT_TAX_CLASSES;
+	} catch {
+		return DEFAULT_TAX_CLASSES;
+	}
+}
+
 function productDetailLevel() {
-	return leafLevel<AdminProductsClient, ProductDetailWire, ProductsRenderState>({
-		load: (client, _path, id) => client.getProduct(id),
+	return leafLevel<ProductsScreenClient, ProductDetailWire, ProductsRenderState>({
+		load: (client, _path, id) => client.products.getProduct(id),
 		async render({ client, actions, id, detail, notice, renderState }) {
-			// SECONDARY, best-effort read: the tax-class registry that sources the
-			// edit-form select. A failure/empty read degrades to the static
-			// defaults, never fails the whole detail (E-1).
-			let taxClasses: TaxClassWire[] = DEFAULT_TAX_CLASSES;
-			try {
-				const fetched = await client.getTaxClasses();
-				if (fetched.length > 0) taxClasses = fetched;
-			} catch {
-				// keep the static fallback — a registry read must never break the detail.
-			}
-			return detailBlocks(actions, id, detail, notice, renderState, taxClasses);
+			// TWO SECONDARY, best-effort reads, run together: the tax-class registry
+			// that sources the edit-form select, and the low-stock threshold that
+			// decides whether this product's count reads `Low`. Either one failing
+			// degrades its own control and nothing else — never the detail (E-1).
+			const [taxClasses, threshold] = await Promise.all([
+				readTaxClasses(client.products),
+				readLowStockThreshold(client.settings),
+			]);
+			return detailBlocks(actions, id, detail, notice, renderState, taxClasses, threshold);
 		},
 		notFound({ actions, path, id }) {
 			return [
@@ -560,6 +788,7 @@ function detailBlocks(
 	notice: Notice | undefined,
 	renderState: ProductsRenderState | undefined,
 	taxClasses: TaxClassWire[],
+	threshold: number | null,
 ): Block[] {
 	const open = openGroup(p, renderState);
 	const blocks: Block[] = [
@@ -588,13 +817,19 @@ function detailBlocks(
 			["SKU", p.sku ?? "—"],
 			["Price", formatOptionalTotal(p.priceCents, p.currency)],
 			["Status (set in the CMS)", statusLabel(p)],
-			["Stock on hand", String(p.onHand)],
+			// The most operationally urgent number on the page, carrying its own
+			// exception (`Out of stock` / `Low`) so it does not read at the same
+			// weight as `Kind: physical`. Same helper as the list's `On hand`
+			// column, so a product cannot be low in one place and plain in the
+			// other. The detail's count is a plain number — never null — so the
+			// helper's "—" branch is unreachable here.
+			["Stock on hand", onHandCell(p.onHand, threshold)],
 			["Kind", p.productKind],
 		]),
 	);
 	const panels: TabPanel[] = [
 		{ label: "Product", blocks: productPanel(id, p, taxClasses, open) },
-		{ label: "Stock", blocks: stockPanel(id, p, open, renderState) },
+		{ label: "Stock", blocks: stockPanel(id, p, open, renderState, threshold) },
 	];
 	blocks.push({
 		type: "tab",
@@ -863,10 +1098,13 @@ function stockPanel(
 	p: ProductDetailWire,
 	open: OpenGroup,
 	renderState: ProductsRenderState | undefined,
+	threshold: number | null,
 ): Block[] {
 	const blocks: Block[] = [
 		fields("products:stock", [
-			["On hand", String(p.onHand)],
+			// Badged exactly as the identity strip above and the list column
+			// before it — one helper, three surfaces (see `onHandCell`).
+			["On hand", onHandCell(p.onHand, threshold)],
 			["Inventory policy", inventoryPolicyLabel(p.inventoryPolicy)],
 		]),
 	];
@@ -1141,6 +1379,9 @@ function filterFromValues(values: Record<string, unknown>): ProductsFilterForm {
 	const status = readString(values.status);
 	const productKind = readString(values.productKind);
 	const search = readString(values.search);
+	// A `toggle` submits a REAL boolean, never a string (types.ts) — so this one
+	// field is read with a typeof check rather than `readString`.
+	if (values.lowStock === true) form.lowStock = "true";
 	if (status === "archived") {
 		form.archived = "true";
 	} else if (status === "true" || status === "false") {
@@ -1347,7 +1588,7 @@ function removeDraftState(qtyInput: string): ProductsRenderState {
  * reload) with a per-outcome notice.
  */
 function saveAction() {
-	return customAction<AdminProductsClient, ProductsRenderState>(
+	return customAction<ProductsScreenClient, ProductsRenderState>(
 		async ({ input, client, carried, showLeaf, showList }) => {
 			const productId = readString(carried?.productId);
 			const expectedUpdatedAt = readString(carried?.expectedUpdatedAt);
@@ -1374,7 +1615,7 @@ function saveAction() {
 			}
 
 			const key = deriveEditIdempotencyKey(productId, built.wire);
-			const result = await client.updateProduct(productId, built.wire, key);
+			const result = await client.products.updateProduct(productId, built.wire, key);
 			// showLeaf RELOADS the fresh detail, so a stale save renders the latest
 			// row (the merchant re-applies against current values) — and the OTHER
 			// two split forms remount too (their carriers change with `updatedAt`),
@@ -1426,7 +1667,7 @@ function stockMovementKey(
  * then RE-RENDERS the leaf with a per-outcome notice.
  */
 function restockAction() {
-	return customAction<AdminProductsClient, ProductsRenderState>(async (api) => {
+	return customAction<ProductsScreenClient, ProductsRenderState>(async (api) => {
 		const productId = readString(api.carried?.productId);
 		if (productId === undefined) return api.showList(undefined, UNREADABLE);
 		const onHand = parseOnHand(api.carried?.onHand);
@@ -1440,7 +1681,7 @@ function restockAction() {
 			});
 		}
 		const key = stockMovementKey(productId, "restock", onHand, qty);
-		const result = await api.client.restock(productId, qty, key);
+		const result = await api.client.products.restock(productId, qty, key);
 		return api.showLeaf([productId], restockNotice(result, qty));
 	});
 }
@@ -1467,7 +1708,7 @@ function stockChangedNotice(liveOnHand: number): Notice {
  * a ceiling this step just confirmed current).
  */
 function removeStockReviewAction() {
-	return customAction<AdminProductsClient, ProductsRenderState>(async (api) => {
+	return customAction<ProductsScreenClient, ProductsRenderState>(async (api) => {
 		const productId = readString(api.carried?.productId);
 		if (productId === undefined) return api.showList(undefined, UNREADABLE);
 		const observedOnHand = parseOnHand(api.carried?.onHand);
@@ -1495,7 +1736,7 @@ function removeStockReviewAction() {
 		}
 		// DA-3c-i: re-read before rendering a button/confirm the write might
 		// refuse.
-		const live = await api.client.getProduct(productId).catch(() => null);
+		const live = await api.client.products.getProduct(productId).catch(() => null);
 		if (live === null) {
 			return api.showLeaf(
 				[productId],
@@ -1542,7 +1783,7 @@ function removeStockReviewAction() {
  * common case before the write; this is the backstop.
  */
 function removeStockAction() {
-	return customAction<AdminProductsClient, ProductsRenderState>(
+	return customAction<ProductsScreenClient, ProductsRenderState>(
 		async ({ input, client, showLeaf, showList }) => {
 			const payload = asRecord(input.value);
 			const productId = readString(payload?.productId);
@@ -1552,7 +1793,7 @@ function removeStockAction() {
 			if (qty === null || observedOnHand === null) {
 				return showLeaf([productId], UNREADABLE, removeDraftState(qty !== null ? String(qty) : ""));
 			}
-			const live = await client.getProduct(productId).catch(() => null);
+			const live = await client.products.getProduct(productId).catch(() => null);
 			if (live === null) {
 				return showLeaf(
 					[productId],
@@ -1573,7 +1814,7 @@ function removeStockAction() {
 				);
 			}
 			const key = stockMovementKey(productId, "removal", observedOnHand, qty);
-			const result = await client.removeStock(productId, qty, key);
+			const result = await client.products.removeStock(productId, qty, key);
 			return showLeaf([productId], removeStockNotice(result, qty));
 		},
 	);
