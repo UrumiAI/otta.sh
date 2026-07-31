@@ -33,7 +33,11 @@ already carries the discount and the window.
 **The lifecycle is stated, and marked only when it is an exception.** The
 identity strip leads with a computed `Status` in the same vocabulary as the
 list column, from the same `couponStatus` — one definition, so a coupon cannot
-read `expired` on the leaf and `active` in the list. `scheduled` / `expired` /
+read `expired` on the leaf and `active` in the list. It takes the slot the old
+`Code` row held rather than growing the strip past D-1a's six: `Code`
+duplicated the header two blocks above it, which is M-10's own reasoning — the
+code IS this screen's human handle, which is why it is the header. `scheduled` /
+`expired` /
 `used up` each additionally raise one `alert` banner naming what checkout does
 with the code; `active` raises none. The list could not badge its exceptions
 because Block Kit's `format` is a property of the COLUMN, but a leaf holds
@@ -51,7 +55,22 @@ day the operator picked: a full day early, and a day earlier than this screen's
 own `Valid` reading claims. Same-day windows are now expressible. Re-submitting
 the day a bound already falls on is NOT treated as an edit: the stored instant
 survives byte for byte, sub-day time included, so an untouched save cannot move
-a bound the screen only ever displayed to day precision.
+a bound the screen only ever displayed to day precision. A submitted day that
+does not exist is REFUSED rather than rolled forward — `2027-02-30` parses
+happily and would otherwise be stored verbatim, then sort after every real day
+in February — and a date field arriving as a non-string is refused with a
+banner naming it, never read as a silent "unchanged".
+
+**Known, deliberate: legacy midnight expiries stay sticky.** A coupon written
+before this change holds a midnight expiry, which under the exclusive end bound
+still retires the code at the START of its stated day. Re-saving that coupon
+untouched will NOT quietly repair it — the preservation rule above sees the same
+day and keeps the same instant — so correcting a legacy bound takes a deliberate
+two-save dance: move the date off the day, save, move it back, save. Preserve
+over repair is the choice: an untouched save silently rewriting a stored instant
+is the exact class of surprise this leaf exists to remove, and a "repair" that
+fires precisely when the operator did nothing is indistinguishable from data
+loss on the day the heuristic is wrong.
 
 **The four bounds collapse without splitting the form.** Seven stacked
 full-bleed inputs, five of them empty on a typical coupon, was the console's
@@ -66,6 +85,14 @@ Nothing is hidden that the leaf does not already show as read-only text: the
 cap rides in `Discount`, the floor in `Minimum spend`, and both use bounds in
 the Redemptions panel.
 
+**Blanking one of them requires having opened the disclosure.** A blank
+arriving from a bound the operator never revealed cannot be an instruction —
+they could not see the field, let alone empty it — so it reads as "unchanged"
+too. Today that changes nothing, because the pinned renderer posts each hidden
+field's own `initial_value`; it closes the one remaining way property (3) below
+could be defeated, by a renderer that CLEARED hidden fields rather than dropping
+them, which the absent-key fallback alone would not catch.
+
 **A field that never reaches the submit keeps its current value.** Today a
 `condition`-hidden field's value does arrive — `blocks/form.tsx` seeds its
 state from every field's `initial_value` and posts that state whole, while its
@@ -78,6 +105,17 @@ the form also carries each current value in its `block_id`: an ABSENT key means
 "unchanged", while a PRESENT BLANK one stays the explicit unset the group's
 warning promises. Money crosses that carrier as its integer minor-unit string,
 never a decimal.
+
+Everything that comes back out of that carrier is treated as untrusted input,
+because a carrier round-trips through the operator's browser as a DOM
+attribute. Amounts and counts must be plain non-negative integers; the two
+window instants must survive `parse → toISOString` unchanged, which is a
+stricter test than "it parsed" for the same reason as above. Anything else
+reads as "no current value" rather than reaching the record. `curCap` is
+carried only for the type that renders a cap field: a `fixed_amount` coupon
+holding a stray `capCents` (reachable — the service validates each column, not
+the pair) would otherwise have had every save refused, naming a percentage-only
+field that is not on its screen, with no way out from the console.
 
 **The destructive-semantics warning outranks the labels it warns about.** It
 was a `context` line — the same weight as the field labels below it, quieter

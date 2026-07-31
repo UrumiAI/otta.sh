@@ -60,10 +60,12 @@ import {
  * THE SHAPE, in one paragraph. The list is `header` + one `context` + an
  * optional notice `banner` + an INLINE one-field search (L-2: 1 field renders
  * directly, no accordion) + the table — nothing else above the data (P-1).
- * The detail is `header` + back + notice + the 6-entry identity strip, then
- * TWO task-named panels — `Coupon` · `Redemptions` (D-2, D-2a: a would-be
+ * The detail is `header` + back + notice + a lifecycle `banner` on the
+ * exceptions only + the 6-entry identity strip (D-1a's cap; `Status` leads it
+ * and the redundant `Code` row is gone — the header already carries the code),
+ * then TWO task-named panels — `Coupon` · `Redemptions` (D-2, D-2a: a would-be
  * `History` panel would hold only Created, which lives in the identity strip
- * instead) — whose one named group (`Edit`) is an `accordion`.
+ * instead) — whose one named group (`Edit`) is a CLOSED `accordion`.
  *
  * WHY THIS SCREEN HAS NO RENDER-STATE CHANNEL FOR DA-3. Every destructive/
  * risky write here is DA-2 (delete: no input, forbid-if-redeemed) or DA-4
@@ -749,11 +751,14 @@ function detailBlocks(
 			// only signal was a date the operator had to compare to today. Computed
 			// at render by the SAME {@link couponStatus} the list column uses — one
 			// definition, so a coupon cannot read `expired` here and `active` there.
-			// SEVEN entries is an odd count in `fields`' row-major 2-column grid
-			// (see {@link fields}): deliberate — every other entry is identity the
-			// leaf is the only home for, and none is worth dropping to even it up.
+			//
+			// It takes the slot the old `Code` row held rather than growing the
+			// strip. `Code` duplicated the header two blocks above it — M-10 is the
+			// reason: the code IS this screen's human handle, which is why it is
+			// the header — and D-1a caps this strip at SIX entries (§12.2 pins the
+			// set). So the strip pays for its new first entry with its redundant
+			// one, and stays even in `fields`' row-major 2-column grid.
 			["Status", status],
-			["Code", detail.code],
 			["Discount", couponDiscountSummary(detail)],
 			["Type", detail.type],
 			["Uses", couponUsesSummary(detail.usesCount, detail.maxUses)],
@@ -1051,7 +1056,17 @@ function limitField(
  */
 function currentContext(detail: CouponSummaryWire): Record<string, string> {
 	return {
-		...(detail.capCents !== null ? { curCap: String(detail.capCents) } : {}),
+		// GATED ON TYPE, exactly as the `cap` FIELD is. A `fixed_amount` coupon
+		// has no cap field on this form, and nothing upstream stops it holding a
+		// stray `capCents` — the service validates each column, never the pair.
+		// Carrying one unconditionally would feed `parseEconomics` a cap the
+		// operator cannot see, and its cross-type check would then refuse EVERY
+		// save of that coupon while naming a field that is not on screen: an
+		// unescapable dead end where the previous code silently hard-nulled the
+		// stray value on the next save.
+		...(detail.type === "percentage" && detail.capCents !== null
+			? { curCap: String(detail.capCents) }
+			: {}),
 		...(detail.minSubtotalCents !== null
 			? { curMinSubtotal: String(detail.minSubtotalCents) }
 			: {}),
@@ -1062,6 +1077,26 @@ function currentContext(detail: CouponSummaryWire): Record<string, string> {
 		...(detail.startsAt !== null ? { curStartsAt: detail.startsAt } : {}),
 		...(detail.expiresAt !== null ? { curExpiresAt: detail.expiresAt } : {}),
 	};
+}
+
+/**
+ * A carried window instant, or `null` if it is not one.
+ *
+ * The money and count keys are already validated on the way back in, and these
+ * get the same treatment rather than being trusted for looking date-shaped: a
+ * carrier round-trips through the operator's browser (`carrier.ts`: "treat
+ * every decoded value as untrusted input"), the service only length-checks
+ * these columns, and the domain compares them LEXICOGRAPHICALLY — so a value
+ * that is merely parseable rather than canonical would sort wrong forever and
+ * silently mis-decide `validateCoupon`.
+ *
+ * The test is a ROUND TRIP, not a parse: `Date.parse` accepts `2026-02-30` and
+ * rolls it into March, so "it parsed" proves nothing about what would be
+ * stored. Only a string that survives `parse → toISOString` unchanged is the
+ * canonical ISO-UTC instant this field is allowed to hold.
+ */
+function carriedInstant(raw: string | undefined): string | null {
+	return raw !== undefined && isCanonicalInstant(raw) ? raw : null;
 }
 
 // -- panel "Redemptions" --------------------------------------------------------
@@ -1193,8 +1228,8 @@ function currentValues(carried: Readonly<Record<string, string>> | undefined): C
 		minSubtotal: carriedMoneyInput(carried?.curMinSubtotal),
 		maxUses: carriedCount(carried?.curMaxUses),
 		maxUsesPerCustomer: carriedCount(carried?.curMaxUsesPerCustomer),
-		startsAt: carried?.curStartsAt ?? null,
-		expiresAt: carried?.curExpiresAt ?? null,
+		startsAt: carriedInstant(carried?.curStartsAt),
+		expiresAt: carriedInstant(carried?.curExpiresAt),
 	};
 }
 
@@ -1220,10 +1255,33 @@ function carriedCount(raw: string | undefined): string {
  * group's banner promises. A field that never reached the submit at all falls
  * back to the value the form carried, so a collapsed disclosure cannot quietly
  * clear what it was hiding (property (3) of {@link editCouponForm}).
+ *
+ * `disclosed` narrows what counts as a deliberate blank. A blank arriving from
+ * a bound the operator never REVEALED cannot be an instruction — they could not
+ * see the field, let alone empty it — so it reads as "unchanged" too. Today
+ * this changes nothing: the pinned renderer posts each hidden field's own
+ * `initial_value`, which is blank only when the bound was already unset. It
+ * closes the remaining mutation of property (3): a renderer that dropped
+ * hidden fields would be caught by the absent-key branch, but one that cleared
+ * them to `""` would slip past it and null every collapsed bound.
  */
-function submittedOr(values: Record<string, unknown>, key: string, current: string): string {
+function submittedOr(
+	values: Record<string, unknown>,
+	key: string,
+	current: string,
+	disclosed = true,
+): string {
 	const raw = readString(values[key]);
-	return raw === undefined ? current : raw.trim();
+	if (raw === undefined) return current;
+	const trimmed = raw.trim();
+	return trimmed.length === 0 && !disclosed ? current : trimmed;
+}
+
+/** Whether the operator opened the disclosure holding the four bounds. A
+ *  `toggle` submits a real boolean, so this is an identity check, never a
+ *  truthiness one — `readString` would read it as absent. */
+function limitsDisclosed(values: Record<string, unknown>): boolean {
+	return values[LIMITS_TOGGLE] === true;
 }
 
 /**
@@ -1243,9 +1301,15 @@ function parseEconomics(
 	const amountRaw = (readString(values.amount) ?? "").trim();
 	const currencyRaw = (readString(values.currency) ?? "").trim().toUpperCase();
 	const rateRaw = (readString(values.ratePercent) ?? "").trim();
-	// `cap` is one of the four gated bounds on the EDIT form; on CREATE
-	// `current.cap` is `""`, so this reads exactly as the plain field read did.
-	const capRaw = submittedOr(values, "cap", current.cap);
+	// `cap` is one of the four bounds behind the EDIT form's disclosure. On
+	// CREATE it is an ordinary visible field and `current.cap` is `""`, so both
+	// branches collapse to the plain field read this used to be.
+	const capRaw = submittedOr(
+		values,
+		"cap",
+		current.cap,
+		mode === "create" || limitsDisclosed(values),
+	);
 
 	if (type === "fixed_amount") {
 		if (rateRaw.length > 0 || capRaw.length > 0) {
@@ -1317,7 +1381,10 @@ type ParsedShared = { ok: true; fields: SharedFields } | { ok: false; message: s
  *  created coupon is valid immediately, forever, unlimited and unrestricted
  *  (§12.2). */
 function parseSharedFields(values: Record<string, unknown>, current: CurrentValues): ParsedShared {
-	const minSubtotalRaw = submittedOr(values, "minSubtotal", current.minSubtotal);
+	// Three of the four gated bounds live here; the window fields above them are
+	// always visible, so only these read the disclosure.
+	const disclosed = limitsDisclosed(values);
+	const minSubtotalRaw = submittedOr(values, "minSubtotal", current.minSubtotal, disclosed);
 	let minSubtotalCents: number | null = null;
 	if (minSubtotalRaw.length > 0) {
 		minSubtotalCents = parseMinorUnitsInput(minSubtotalRaw, { allowZero: true });
@@ -1339,7 +1406,7 @@ function parseSharedFields(values: Record<string, unknown>, current: CurrentValu
 	if (startsAt.value !== null && expiresAt.value !== null && startsAt.value >= expiresAt.value) {
 		return { ok: false, message: "Expires at must be on or after starts at." };
 	}
-	const maxUses = parseCountInput(submittedOr(values, "maxUses", current.maxUses));
+	const maxUses = parseCountInput(submittedOr(values, "maxUses", current.maxUses, disclosed));
 	if (maxUses.ok === false) {
 		return {
 			ok: false,
@@ -1347,7 +1414,7 @@ function parseSharedFields(values: Record<string, unknown>, current: CurrentValu
 		};
 	}
 	const maxUsesPerCustomer = parseCountInput(
-		submittedOr(values, "maxUsesPerCustomer", current.maxUsesPerCustomer),
+		submittedOr(values, "maxUsesPerCustomer", current.maxUsesPerCustomer, disclosed),
 	);
 	if (maxUsesPerCustomer.ok === false) {
 		return {
@@ -1376,7 +1443,10 @@ const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
  * A window bound, from whatever the form submitted plus the instant it carried.
  * Four cases, in order:
  *
- *  - NEVER SUBMITTED ⇒ the carried instant, unchanged.
+ *  - NEVER SUBMITTED ⇒ the carried instant, unchanged. A key that IS present
+ *    but is not a string is a different thing entirely and is REFUSED: the
+ *    operator gets a banner naming the field, never a save that silently
+ *    reports success while quietly meaning "unchanged".
  *  - BLANK ⇒ `null`, no bound — the explicit unset.
  *  - THE DAY THE CARRIED INSTANT ALREADY FALLS ON ⇒ that instant, BYTE FOR
  *    BYTE. A `date_input` shows days, so re-submitting the day it was already
@@ -1389,6 +1459,17 @@ const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
  *    day the operator picked: a full day early, and a day earlier than this
  *    screen's own `Valid` reading claims.
  *
+ * PRESERVATION BEATS REPAIR, AND THAT HAS A COST WORTH NAMING. A record
+ * written before this change holds a midnight expiry, which under the exclusive
+ * end bound still retires the code at the start of its stated day. Re-saving
+ * the coupon untouched will NOT quietly repair it — the third case above sees
+ * the same day and keeps the same instant — so correcting a legacy bound takes
+ * a deliberate two-save dance: move the date off the day, save, move it back,
+ * save. That is the right trade: an untouched save silently rewriting a stored
+ * instant is exactly the class of surprise this leaf exists to remove, and a
+ * repair that only fires when the operator did nothing is indistinguishable
+ * from the data loss it would be if the heuristic were ever wrong.
+ *
  * A full ISO datetime still parses and is still NORMALIZED to ISO-8601 UTC:
  * the wire is untrusted, older records hold one, and `validateCoupon` compares
  * these strings LEXICOGRAPHICALLY, so a non-ISO shape would mis-order silently.
@@ -1400,18 +1481,36 @@ function resolveBound(
 	edge: "start" | "end",
 ): { ok: true; value: string | null } | { ok: false } {
 	const raw = readString(values[key]);
-	if (raw === undefined) return { ok: true, value: current };
+	if (raw === undefined) {
+		// Absent ⇒ unchanged. PRESENT-but-not-a-string ⇒ refuse: silently reading
+		// a `null`/number/array as "the operator changed nothing" would answer a
+		// question nobody asked, and on a full-replace form the operator has no
+		// way to tell that from a save that did what they meant.
+		return values[key] === undefined ? { ok: true, value: current } : { ok: false };
+	}
 	const trimmed = raw.trim();
 	if (trimmed.length === 0) return { ok: true, value: null };
 	if (current !== null && trimmed === current.slice(0, 10)) return { ok: true, value: current };
 	if (DAY_PATTERN.test(trimmed)) {
 		const at = `${trimmed}T${edge === "start" ? "00:00:00.000" : "23:59:59.999"}Z`;
-		// `2026-13-45` matches the shape and is still not a date.
-		return Number.isNaN(Date.parse(at)) ? { ok: false } : { ok: true, value: at };
+		// The shape is not the check. `2026-13-45` fails to parse at all, but
+		// `2026-02-30` PARSES — into 2 March — so a bare `Number.isNaN` guard
+		// would store a day that does not exist verbatim, and it would then sort
+		// after every real day in February. Only a string that survives
+		// `parse → toISOString` unchanged is a real, canonical instant.
+		return isCanonicalInstant(at) ? { ok: true, value: at } : { ok: false };
 	}
 	const t = Date.parse(trimmed);
 	if (Number.isNaN(t)) return { ok: false };
 	return { ok: true, value: new Date(t).toISOString() };
+}
+
+/** Whether `iso` survives `Date.parse` → `toISOString` unchanged — the only
+ *  test that distinguishes a real instant from a merely parseable one (see
+ *  {@link carriedInstant} and {@link resolveBound}). */
+function isCanonicalInstant(iso: string): boolean {
+	const t = Date.parse(iso);
+	return !Number.isNaN(t) && new Date(t).toISOString() === iso;
 }
 
 /** Parse a use-count bound. Blank ⇒ null (unlimited); else a whole number

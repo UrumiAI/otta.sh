@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { couponStatus, couponUsesSummary } from "../src/admin/coupons-page.js";
-import { decodeCarrier, decodePath, encodePath } from "../src/admin/scaffold/index.js";
+import {
+	decodeCarrier,
+	decodePath,
+	encodeCarrier,
+	encodePath,
+} from "../src/admin/scaffold/index.js";
 import { assertBlockContract } from "./helpers/block-contract.js";
 import {
 	blocksOf,
@@ -837,6 +842,35 @@ function makeWelcomeState(): { coupons: CouponRow[] } {
 	};
 }
 
+/**
+ * A `fixed_amount` coupon carrying a STRAY `capCents` — a cap belongs to the
+ * percentage family and this record has no business holding one, but nothing
+ * upstream stops it: the service validates each column and never the pair.
+ * Reachable through a direct API write, a partial migration, or a coupon whose
+ * type was corrected in the database.
+ *
+ * It is a fixture rather than a curiosity because the edit form renders no
+ * `cap` field for this type. Anything that fed the stray value back into the
+ * save would trip the cross-type check and refuse EVERY save of this coupon
+ * while naming a field the operator cannot see — a dead end with no console
+ * escape, on a coupon that saved fine before.
+ */
+function makeStrayCapState(): { coupons: CouponRow[] } {
+	return {
+		coupons: [
+			couponRow({
+				id: "c-stray",
+				code: "STRAY5",
+				type: "fixed_amount",
+				amountCents: 500,
+				rateBps: null,
+				capCents: 2000, // the stray — percentage-only, on a fixed_amount record
+				currency: "USD",
+			}),
+		],
+	};
+}
+
 /** The list table's rows keyed by `code` — the fixtures above are read by
  *  identity, never by row index. */
 async function statusRowsByCode(): Promise<Map<string, Record<string, unknown>>> {
@@ -1006,7 +1040,11 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		const fields = detailFields(blocks);
 		// M-10/F-2: no bare internal "id" row — the code is the human handle.
 		expect(fields.has("ID")).toBe(false);
-		expect(fields.get("Code")).toBe("FIVEOFF");
+		// ...and no `Code` ROW either: the header asserted above already reads
+		// `Coupon — FIVEOFF`. D-1a caps this strip at SIX entries, so the
+		// duplicate is what pays for the `Status` entry that now leads it.
+		expect(fields.has("Code")).toBe(false);
+		expect(fields.get("Status")).toBe("active");
 		expect(fields.get("Type")).toBe("fixed_amount");
 		expect(fields.get("Discount")).toBe("$5.00 off");
 		expect(fields.get("Uses")).toBe("0 uses");
@@ -1145,6 +1183,10 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		const blocks = await openCoupon("FIVEOFF");
 		const outcome = await submitForm(blocks, "coupons:save", {
 			...FIVEOFF_PREFILL,
+			// `minSubtotal` sits behind the disclosure, and blanking a bound the
+			// operator never opened is not an instruction — so a deliberate clear
+			// carries the toggle they had to flip to reach the field.
+			showLimits: true,
 			minSubtotal: "",
 			startsAt: "",
 		});
@@ -1218,6 +1260,9 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		const blocks = await openCoupon("SUMMER25");
 		const outcome = await submitForm(blocks, "coupons:save", {
 			...SUMMER25_PREFILL,
+			// Three of these four sit behind the disclosure — a deliberate clear
+			// carries the toggle the operator had to flip to reach them.
+			showLimits: true,
 			cap: "",
 			expiresAt: "",
 			maxUses: "",
@@ -1616,6 +1661,155 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		expect(bannerOf(sameDay)?.variant).toBe("default");
 	});
 
+	// -- carried context is untrusted input --------------------------------------
+
+	test("a fixed_amount coupon holding a STRAY cap still saves, and the save hard-nulls it — the carrier never carries a field the form does not render", async () => {
+		const state = makeStrayCapState();
+		await boot(state);
+		const blocks = await openCoupon("STRAY5");
+		// The cap has no field here — `cap` is percentage-only on this form...
+		const byId = new Map(formFields(blocks, "coupons:save").map((f) => [String(f.action_id), f]));
+		expect(byId.has("cap")).toBe(false);
+		// ...so it must not ride in the carrier either. Carrying it would feed the
+		// cross-type check a cap the operator cannot see, and EVERY save of this
+		// coupon would be refused naming a field that is not on screen — with no
+		// way out from the console.
+		const carried = decodeCarrier(formFor(blocks, "coupons:save")!.block_id as string);
+		expect(carried?.curCap).toBeUndefined();
+
+		const outcome = await submitForm(
+			blocks,
+			"coupons:save",
+			formInitialValues(blocks, "coupons:save"),
+		);
+		expect(bannerOf(outcome)?.variant).toBe("default");
+		const put = stub!.requests.find((r) => r.method === "PUT");
+		expect(put).toBeDefined();
+		// The stray value is hard-nulled, exactly as it was before the carrier
+		// existed: the inactive type's economics are inapplicable by construction.
+		expect(put!.body).toMatchObject({ amountCents: 500, rateBps: null, capCents: null });
+		expect(state.coupons.find((c) => c.id === "c-stray")?.capCents).toBeNull();
+	});
+
+	test("a TAMPERED carried instant is refused as a current value, not trusted into the record — `2026-02-30` parses, and would sort after every real February day", async () => {
+		const state = makeWelcomeState();
+		const before = { ...state.coupons[0]! };
+		await boot(state);
+		const blocks = await openCoupon("WELCOME10");
+		const form = formFor(blocks, "coupons:save")!;
+		const real = decodeCarrier(form.block_id as string)!;
+		// A carrier is a DOM attribute: an operator can rewrite it. Only a string
+		// that survives `parse → toISOString` unchanged is a real instant.
+		for (const bogus of ["2026-02-30T00:00:00.000Z", "not-a-date", "2026-09-01"]) {
+			const tampered = encodeCarrier("coupons:edit", {
+				couponId: real.couponId!,
+				code: real.code!,
+				type: real.type!,
+				curExpiresAt: bogus,
+			});
+			const outcome = blocksOf(
+				await sandbox!.invokeRoute("admin", {
+					type: "form_submit",
+					action_id: "coupons:save",
+					// The expiry field itself is NOT submitted, so the carried value is
+					// the only thing that could reach the record.
+					values: { ratePercent: "10.00", showLimits: false },
+					block_id: tampered,
+				}),
+			);
+			// Always a rendered outcome, never a throw (G5).
+			expect(bannerOf(outcome)).toBeDefined();
+			// The bogus instant never lands: an untrusted current reads as "no
+			// current value", so the absent field clears rather than storing junk.
+			expect(state.coupons.find((c) => c.id === "c-welcome")?.expiresAt).not.toBe(bogus);
+		}
+		expect(before.expiresAt).toBeDefined();
+	});
+
+	test("a submitted day that does not exist is REFUSED, not rolled forward — `2027-02-30` parses and would silently store as 2 March", async () => {
+		const state = makeWelcomeState();
+		const before = { ...state.coupons[0]! };
+		await boot(state);
+		const blocks = await openCoupon("WELCOME10");
+		// `startsAt` is cleared so the start-before-expiry check CANNOT fire: this
+		// must fail on the day being unreal, and on nothing else. (Pinned by
+		// asserting the message, not just the field name — the two refusals for
+		// this field read very differently.)
+		const outcome = await submitForm(blocks, "coupons:save", {
+			...formInitialValues(blocks, "coupons:save"),
+			startsAt: "",
+			expiresAt: "2027-02-30",
+		});
+		expect(stub!.requests.some((r) => r.method === "PUT")).toBe(false);
+		const banner = bannerOf(outcome);
+		expect(banner?.variant).toBe("error");
+		expect(String(banner?.description)).toContain("Expires at must be a date like");
+		expect(state.coupons.find((c) => c.id === "c-welcome")?.expiresAt).toBe(before.expiresAt);
+
+		// The same hole on the START edge, which resolves to a different instant.
+		const startOutcome = await submitForm(blocks, "coupons:save", {
+			...formInitialValues(blocks, "coupons:save"),
+			startsAt: "2027-04-31",
+			expiresAt: "",
+		});
+		expect(stub!.requests.some((r) => r.method === "PUT")).toBe(false);
+		expect(String(bannerOf(startOutcome)?.description)).toContain("Starts at must be a date like");
+	});
+
+	test("a date field submitted as a NON-STRING is refused with a banner, never read as a silent 'unchanged'", async () => {
+		const state = makeWelcomeState();
+		await boot(state);
+		const blocks = await openCoupon("WELCOME10");
+		const outcome = await submitForm(blocks, "coupons:save", {
+			...formInitialValues(blocks, "coupons:save"),
+			expiresAt: null,
+		});
+		expect(stub!.requests.some((r) => r.method === "PUT")).toBe(false);
+		expect(bannerOf(outcome)?.variant).toBe("error");
+		expect(String(bannerOf(outcome)?.description)).toContain("Expires at");
+	});
+
+	test("a BLANK arriving from a bound the operator never revealed is not a clear — it closes the 'renderer empties hidden fields' mutation", async () => {
+		const state = makeWelcomeState();
+		const before = { ...state.coupons[0]! };
+		await boot(state);
+		const blocks = await openCoupon("WELCOME10");
+		// A renderer that cleared `condition`-hidden fields to "" instead of
+		// dropping them would slip past the absent-key fallback. The disclosure
+		// flag is what tells the two apart: the operator never opened it, so no
+		// blank from behind it can be an instruction.
+		await submitForm(blocks, "coupons:save", {
+			ratePercent: "10.00",
+			startsAt: before.startsAt!.slice(0, 10),
+			expiresAt: before.expiresAt!.slice(0, 10),
+			showLimits: false,
+			cap: "",
+			minSubtotal: "",
+			maxUses: "",
+			maxUsesPerCustomer: "",
+		});
+		const after = state.coupons.find((c) => c.id === "c-welcome");
+		expect(after?.capCents).toBe(before.capCents);
+		expect(after?.minSubtotalCents).toBe(before.minSubtotalCents);
+		expect(after?.maxUses).toBe(before.maxUses);
+		expect(after?.maxUsesPerCustomer).toBe(before.maxUsesPerCustomer);
+	});
+
+	test("X-31 HEADROOM: an exception coupon whose save fails carries BOTH the notice and the lifecycle banner — exactly the top-level budget, not over it", async () => {
+		await boot(makeStatusCoupons());
+		const blocks = await openCoupon("EXPIRED20");
+		expect(topLevelBanners(blocks)).toHaveLength(1); // the lifecycle mark alone
+		// A refused save adds the notice beside it — the screen's worst case.
+		const outcome = await submitForm(blocks, "coupons:save", {
+			...formInitialValues(blocks, "coupons:save"),
+			ratePercent: "",
+		});
+		const banners = topLevelBanners(outcome);
+		expect(banners).toHaveLength(2);
+		expect(banners.map((b) => b.variant)).toEqual(["error", "alert"]);
+		assertBlockContract(outcome, { screen: "coupons", level: "detail" });
+	});
+
 	// -- P0-CLASS CHECK (PM §E3) ------------------------------------------------
 	// The failure this guards against: a form field that renders the coupon's
 	// CURRENT value as a `placeholder` (grey ghost text the browser submits as
@@ -1625,16 +1819,27 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 	// are written back as null.
 	test("P0 (PM §E3): on a coupon with EVERY optional value set, each one renders as a real `initial_value` — never as a placeholder standing in for a set value", async () => {
 		const state = makeWelcomeState();
+		const before = { ...state.coupons[0]! };
 		await boot(state);
 		const blocks = await openCoupon("WELCOME10");
 		const byId = new Map(formFields(blocks, "coupons:save").map((f) => [String(f.action_id), f]));
-		// Every field carrying one of this coupon's set values.
+		// THIS LOOP IS NOT REDUNDANT WITH THE ROUND-TRIP TEST BELOW. That one
+		// submits whatever the form prefilled and checks the record came back
+		// unchanged — which is structurally blind to the placeholder hazard: a
+		// value living in `placeholder` instead of `initial_value` is simply
+		// absent from what the renderer posts, and an absent key now reads as
+		// "unchanged" by design. The record would survive and the operator would
+		// still be looking at ghost text. Only naming each field's
+		// `initial_value` explicitly can catch it, so every set value gets a line
+		// here — the window bounds included, as the DAY strings they render as.
 		for (const [actionId, expected] of [
 			["ratePercent", "10.00"],
 			["cap", "20.00"],
 			["minSubtotal", "50.00"],
 			["maxUses", "500"],
 			["maxUsesPerCustomer", "2"],
+			["startsAt", before.startsAt!.slice(0, 10)],
+			["expiresAt", before.expiresAt!.slice(0, 10)],
 		] as const) {
 			const field = byId.get(actionId);
 			expect(field, `no field ${actionId}`).toBeDefined();
