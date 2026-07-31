@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { ORDER_STATE_MACHINE } from "@otta-sh/domain";
 import { decodeCarrier, encodeCarrier } from "../src/admin/scaffold/carrier.js";
+import {
+	SHORT_ID_CONFIRM_LEN,
+	SHORT_ID_MIN,
+	shortIdFixed,
+	shortIdsFor,
+} from "../src/admin/scaffold/short-id.js";
 import { assertBlockContract } from "./helpers/block-contract.js";
 import {
 	accessories,
@@ -107,8 +113,32 @@ const ORDER_RESOLVED = {
 	},
 };
 
+/**
+ * THE LIST FIXTURES ARE UUID-SHAPED ON PURPOSE (D4 / the UUID display rule).
+ *
+ * Every OTHER fixture in this file uses a readable synthetic id (`ord-1`,
+ * `ord-x402`) because the assertion around it is about a record STATE, and a
+ * name that says which state reads better in a failure message. The list is the
+ * exception: the picker's short-id rule is a claim about the shape of a real
+ * order id — 36 characters, no human structure, indistinguishable from its
+ * neighbours until several characters in — and `ord-1`/`ord-2` diverge at
+ * character 5 of 5, which makes "shortest UNIQUE prefix" vacuous (the prefix
+ * would BE the whole id, which is also what the M-7/X-22 contract check
+ * forbids in an option label). These four are what the service actually
+ * returns, so the tests below measure the real thing.
+ *
+ * `LIST_ID_1` / `LIST_ID_2` diverge at character 1 — the ordinary case, where
+ * the 4-character floor stands. `TWIN_ID_A` / `TWIN_ID_B` agree for 5 and force
+ * the extend path, and their summaries are otherwise IDENTICAL (same customer,
+ * same total, same state), which is the collision that motivated this rule.
+ */
+const LIST_ID_1 = "7e4ce728-1b3f-4a5e-9c21-0d5f6a7b8c90";
+const LIST_ID_2 = "b91d4a02-77c6-4e18-8f30-2a6b5c4d3e1f";
+const TWIN_ID_A = "3f8a1c05-4d2e-4f61-8a70-5b6c7d8e9f01";
+const TWIN_ID_B = "3f8a1d90-2e6b-4c37-9d84-1a2b3c4d5e6f";
+
 const SUMMARY_1 = {
-	id: "ord-1",
+	id: LIST_ID_1,
 	state: "paid",
 	currency: "USD",
 	buyerRef: "alice@example.com",
@@ -175,7 +205,7 @@ const TIMELINE_DEGRADED = {
 };
 
 const SUMMARY_2 = {
-	id: "ord-2",
+	id: LIST_ID_2,
 	state: "shipped",
 	currency: "USD",
 	buyerRef: "bob@example.com",
@@ -185,6 +215,15 @@ const SUMMARY_2 = {
 	totalCents: 2000,
 	reconciliationFlag: false,
 };
+
+/**
+ * D4's motivating case, in one fixture pair: one repeat customer, two orders,
+ * SAME total and SAME state. Everything the old picker label was built from is
+ * identical — only the id differs, and it differs late enough (character 6) to
+ * exercise the extend-on-collision path rather than the 4-character floor.
+ */
+const SUMMARY_TWIN_A = { ...SUMMARY_1, id: TWIN_ID_A };
+const SUMMARY_TWIN_B = { ...SUMMARY_1, id: TWIN_ID_B };
 
 // A guest order (no account) and an order whose customer-context read fails.
 const ORDER_GUEST = { ...ORDER_1, id: "ord-guest", customerId: null };
@@ -233,6 +272,20 @@ const ORDER_CANCELLED_NO_REASON = {
 	id: "ord-cancelled-bare",
 	state: "cancelled",
 	cancellation: null,
+};
+
+/**
+ * A guest order whose buyer handle is long enough to blow the confirm dialog's
+ * 200-character budget (§1/X-11) — the fixture that drives `refundConfirmText`'s
+ * recipient-dropping fallback, which D4 must survive without giving up the order
+ * id. 114 characters: the named form is `100 + recipient.length` at this amount,
+ * so anything past 100 takes the fallback.
+ */
+const ORDER_LONG_BUYER = {
+	...ORDER_1,
+	id: "ord-long-buyer",
+	customerId: null,
+	buyerRef: `${"long.handle.".repeat(8)}buyer@example.test`,
 };
 
 // M-11 / D-6b: an order whose CAPTURE is smaller than its total. Both figures are
@@ -412,8 +465,22 @@ const ALLOWED_BY_STATE: Record<string, readonly string[]> = ORDER_STATE_MACHINE;
  *  token, else 401 — mirroring the service guard). Distinguishes list vs detail
  *  by path, and page1 vs page2 by the `cursor=` query param. */
 /** Per-test switch for the LIST read, so the two zero-row branches (E-2's `empty`
- *  block when unfiltered, `empty_text` when filtered) are both reachable. */
-let listRows: "two" | "none" = "two";
+ *  block when unfiltered, `empty_text` when filtered) are both reachable — and,
+ *  for D4, so is a page of two orders a human cannot tell apart (`twins`). */
+let listRows: "two" | "none" | "twins" = "two";
+
+/**
+ * Detail reads for the ids the LIST offers, so a test can walk from a picker
+ * option to that order's own refund confirm and compare the two short ids. The
+ * record STATE is `ORDER_1`'s throughout — these fixtures exist to carry an id,
+ * and every state-specific assertion has its own `ord-*` fixture above.
+ */
+const LIST_DETAILS: Record<string, typeof ORDER_1> = {
+	[LIST_ID_1]: { ...ORDER_1, id: LIST_ID_1 },
+	[LIST_ID_2]: { ...ORDER_1, id: LIST_ID_2 },
+	[TWIN_ID_A]: { ...ORDER_1, id: TWIN_ID_A },
+	[TWIN_ID_B]: { ...ORDER_1, id: TWIN_ID_B },
+};
 
 function makeGetResponder() {
 	return (req: {
@@ -427,6 +494,12 @@ function makeGetResponder() {
 		if (path === "/admin/orders") {
 			if (listRows === "none") {
 				return { status: 200, body: { ok: true, orders: [], nextCursor: null } };
+			}
+			if (listRows === "twins") {
+				return {
+					status: 200,
+					body: { ok: true, orders: [SUMMARY_TWIN_A, SUMMARY_TWIN_B], nextCursor: null },
+				};
 			}
 			if (query.includes("cursor=")) {
 				// Page 2 (the cursor page): the remainder, no further pages.
@@ -468,33 +541,41 @@ function makeGetResponder() {
 			return { status: 200, body: { ok: true, context: CUSTOMER_CONTEXT_LINKED } };
 		}
 		if (path?.startsWith("/admin/orders/")) {
-			const order = path.includes("/ord-uncaptured")
-				? ORDER_UNCAPTURED
-				: path.includes("/ord-no-addr")
-					? ORDER_NO_ADDR
-					: path.includes("/ord-flagged")
-						? ORDER_FLAGGED
-						: path.includes("/ord-resolved")
-							? ORDER_RESOLVED
-							: path.includes("/ord-guest")
-								? ORDER_GUEST
-								: path.includes("/ord-ctx-fail")
-									? ORDER_CTX_FAIL
-									: path.includes("/ord-proc")
-										? ORDER_PROCESSING
-										: path.includes("/ord-shipped")
-											? ORDER_SHIPPED
-											: path.includes("/ord-cancelled-bare")
-												? ORDER_CANCELLED_NO_REASON
-												: path.includes("/ord-cancelled")
-													? ORDER_CANCELLED
-													: path.includes("/ord-x402")
-														? ORDER_X402
-														: path.includes("/ord-refunded")
-															? ORDER_FULLY_REFUNDED
-															: path.includes("/ord-unknown")
-																? ORDER_UNKNOWN_STATE
-																: ORDER_1;
+			// The uuid-keyed list fixtures first — they carry no `ord-` marker for the
+			// substring chain below to recognise.
+			const listed = Object.entries(LIST_DETAILS).find(([id]) => path.includes(`/${id}`));
+			const order =
+				listed !== undefined
+					? listed[1]
+					: path.includes("/ord-long-buyer")
+						? ORDER_LONG_BUYER
+						: path.includes("/ord-uncaptured")
+							? ORDER_UNCAPTURED
+							: path.includes("/ord-no-addr")
+								? ORDER_NO_ADDR
+								: path.includes("/ord-flagged")
+									? ORDER_FLAGGED
+									: path.includes("/ord-resolved")
+										? ORDER_RESOLVED
+										: path.includes("/ord-guest")
+											? ORDER_GUEST
+											: path.includes("/ord-ctx-fail")
+												? ORDER_CTX_FAIL
+												: path.includes("/ord-proc")
+													? ORDER_PROCESSING
+													: path.includes("/ord-shipped")
+														? ORDER_SHIPPED
+														: path.includes("/ord-cancelled-bare")
+															? ORDER_CANCELLED_NO_REASON
+															: path.includes("/ord-cancelled")
+																? ORDER_CANCELLED
+																: path.includes("/ord-x402")
+																	? ORDER_X402
+																	: path.includes("/ord-refunded")
+																		? ORDER_FULLY_REFUNDED
+																		: path.includes("/ord-unknown")
+																			? ORDER_UNKNOWN_STATE
+																			: ORDER_1;
 			// State-appropriate transitions, DERIVED THE WAY THE REAL SERVICE DERIVES
 			// THEM: `service/src/routes/admin.ts:185` returns `[...legalNextStates(state)]`
 			// with no narrowing whatsoever, so this reads the SAME imported map (see
@@ -674,6 +755,16 @@ function buttonWith(blocks: LooseBlock[], actionId: string): Record<string, unkn
 	return buttons(blocks).find((e) => e.action_id === actionId);
 }
 
+/** The L-7 drill-in picker's field, and its options as the concrete
+ *  `{value, label}` pairs D4's assertions read. */
+function pickerField(blocks: LooseBlock[]): Record<string, unknown> | undefined {
+	return field(formFor(blocks, "orders:open"), "orderId");
+}
+
+function pickerOptions(blocks: LooseBlock[]): Array<{ value: string; label: string }> {
+	return (pickerField(blocks)?.options ?? []) as Array<{ value: string; label: string }>;
+}
+
 /** The states the DA-6 transition block offers, read back out of its DERIVED
  *  per-state action ids (`orders:transition-<state>`). */
 function transitionStates(blocks: LooseBlock[]): string[] {
@@ -690,6 +781,71 @@ afterEach(async () => {
 	await stub?.close();
 	stub = undefined;
 	listRows = "two";
+});
+
+/**
+ * The D4 primitive, on its own, before the screen that renders it. Pure string
+ * work — no sandbox, because there is no IO to sandbox.
+ */
+describe("short ids (D4)", () => {
+	const UUIDS = [LIST_ID_1, LIST_ID_2, TWIN_ID_A, TWIN_ID_B];
+
+	test("floors at 4 characters and stops there when 4 already separates the set", () => {
+		expect(SHORT_ID_MIN).toBe(4);
+		const prefixes = shortIdsFor([LIST_ID_1, LIST_ID_2]);
+		expect([...prefixes.values()]).toEqual(["7e4c", "b91d"]);
+	});
+
+	test("extends ONLY for the ids that collide, one character at a time", () => {
+		const prefixes = shortIdsFor(UUIDS);
+		// The twins agree for five characters and need six; their neighbours are
+		// unaffected and stay at the floor.
+		expect(prefixes.get(TWIN_ID_A)).toBe("3f8a1c");
+		expect(prefixes.get(TWIN_ID_B)).toBe("3f8a1d");
+		expect(prefixes.get(LIST_ID_1)).toBe("7e4c");
+		expect(prefixes.get(LIST_ID_2)).toBe("b91d");
+	});
+
+	test("is TOTAL and UNIQUE over its input — every id has an entry, and no two distinct ids share a prefix", () => {
+		const ids = [...UUIDS, "3f8a1c05-4d2e-4f61-8a70-000000000000", "ab", "abc", "abcdef"];
+		const prefixes = shortIdsFor(ids);
+		for (const id of ids) {
+			expect(prefixes.get(id), `no prefix for ${id}`).toBeDefined();
+			expect(id.startsWith(prefixes.get(id)!)).toBe(true);
+		}
+		expect(new Set(prefixes.values()).size).toBe(new Set(ids).size);
+	});
+
+	test("is deterministic and order-independent — a re-render in another order cannot renumber the page", () => {
+		const forward = shortIdsFor(UUIDS);
+		const reversed = shortIdsFor(UUIDS.toReversed());
+		for (const id of UUIDS) expect(reversed.get(id)).toBe(forward.get(id));
+		expect(shortIdsFor(UUIDS)).toEqual(forward);
+	});
+
+	test("a duplicated id is one candidate, not a collision with itself", () => {
+		const prefixes = shortIdsFor([LIST_ID_1, LIST_ID_1, LIST_ID_2]);
+		expect(prefixes.size).toBe(2);
+		expect(prefixes.get(LIST_ID_1)).toBe("7e4c");
+	});
+
+	test("an explicit `min` moves the floor; ids shorter than it are returned whole", () => {
+		expect(shortIdsFor([LIST_ID_1, LIST_ID_2], 8).get(LIST_ID_1)).toBe("7e4ce728");
+		expect(shortIdsFor(["ab", "cd"], 4).get("ab")).toBe("ab");
+	});
+
+	test("shortIdFixed takes 8 by default and never pads a shorter id", () => {
+		expect(SHORT_ID_CONFIRM_LEN).toBe(8);
+		expect(shortIdFixed(LIST_ID_1)).toBe("7e4ce728");
+		expect(shortIdFixed(LIST_ID_1, 4)).toBe("7e4c");
+		expect(shortIdFixed("ord-1")).toBe("ord-1");
+	});
+
+	test("the fixed length is a superset of any computed prefix ≤ 8 — the property the confirm dialog leans on", () => {
+		for (const [id, prefix] of shortIdsFor(UUIDS)) {
+			expect(shortIdFixed(id).startsWith(prefix)).toBe(true);
+		}
+	});
 });
 
 describe("admin Orders console (workerd sandbox)", () => {
@@ -915,18 +1071,74 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(tableWithId(filtered, "orders:list")?.empty_text).toBe("No orders match these filters.");
 	});
 
-	test("the drill-in picker is a combobox whose option VALUE is the id and whose label never contains one (L-7, X-22)", async () => {
+	test("the drill-in picker is a combobox whose option VALUE is the full id and whose label LEADS with the short id (L-7, D4)", async () => {
 		await boot();
 		const blocks = await list();
-		const form = formFor(blocks, "orders:open");
-		const picker = field(form, "orderId");
+		const picker = pickerField(blocks);
 		expect(picker?.type).toBe("combobox"); // >8 rows per page, and it never prefills
 		expect(picker?.initial_value).toBe("none"); // F-6a: a real option, never blank
-		const options = (picker?.options ?? []) as Array<{ value: string; label: string }>;
+		const options = pickerOptions(blocks);
 		expect(options[0]).toEqual({ value: "none", label: "Choose an order…" });
-		const row = options.find((o) => o.value === "ord-1");
-		expect(row?.label).toBe("cust-a · $15.00 · paid");
-		expect(row?.label).not.toContain("ord-1");
+		const row = options.find((o) => o.value === LIST_ID_1);
+		// D4's shape, exactly: `#<prefix> · <customer> · <total> · <state>`, the id
+		// FIRST because it is the only token that discriminates.
+		expect(row?.label).toBe("#7e4c · cust-a · $15.00 · paid");
+		// The Block Kit degradation (§1.3): a prefix and nothing else — an option is
+		// `{value, label}`, so there is nowhere to hang a copy button. The full id is
+		// NOT here, and does not need to be: the detail header carries it verbatim.
+		expect(row?.label).not.toContain(LIST_ID_1);
+	});
+
+	test("D4: two orders identical in customer, total and state still get DISTINCT picker labels, and the prefix extends only as far as the collision demands", async () => {
+		await boot();
+		listRows = "twins";
+		const options = pickerOptions(await list()).filter((o) => o.value !== "none");
+		expect(options.map((o) => o.value)).toEqual([TWIN_ID_A, TWIN_ID_B]);
+		// Everything after the leading token is character-for-character identical —
+		// which is precisely the label the old picker rendered, twice.
+		const tails = options.map((o) => o.label.slice(o.label.indexOf(" · ")));
+		expect(tails[0]).toBe(tails[1]);
+		expect(tails[0]).toBe(" · cust-a · $15.00 · paid");
+		// So the leading token is the whole discriminator, and it is distinct.
+		expect(options[0]?.label).not.toBe(options[1]?.label);
+		// `3f8a1c…` / `3f8a1d…` agree for five characters, so the 4-character floor
+		// cannot separate them and the prefix extends to six — no further.
+		expect(options.map((o) => o.label.split(" · ")[0])).toEqual(["#3f8a1c", "#3f8a1d"]);
+	});
+
+	test("D4: the picker's candidate set IS the array the table renders — same ids, same order, and prefixes unique against exactly those rows", async () => {
+		await boot();
+		for (const mode of ["two", "twins"] as const) {
+			listRows = mode;
+			const blocks = await list();
+			const rowIds = tableRows([tableWithId(blocks, "orders:list")!]).map((r) => String(r.id));
+			const options = pickerOptions(blocks).filter((o) => o.value !== "none");
+			// If the picker were ever fed a re-fetched or filtered copy, these diverge.
+			expect(options.map((o) => o.value)).toEqual(rowIds);
+			// And the prefixes are the ones computed over THAT set: recomputing them
+			// here from the table's own ids must reproduce every label verbatim, so a
+			// picker that widened or narrowed its candidate set fails this line even
+			// when the option values still happen to match.
+			const expected = shortIdsFor(rowIds);
+			expect(options.map((o) => o.label.split(" · ")[0])).toEqual(
+				rowIds.map((id) => `#${expected.get(id)}`),
+			);
+		}
+	});
+
+	test("D4: for every order on a page the picker's prefix is a prefix of the refund confirm's — the operator can match `#7e4c` to `#7e4ce728` by eye", async () => {
+		await boot();
+		for (const mode of ["two", "twins"] as const) {
+			listRows = mode;
+			for (const option of pickerOptions(await list()).filter((o) => o.value !== "none")) {
+				const pickerPrefix = String(option.label.split(" · ")[0]).slice(1);
+				const detail = await open(option.value);
+				const text = String(confirmOf(buttonWith(detail, "orders:refund")).text);
+				const confirmPrefix = String(/#([0-9a-z-]+)/i.exec(text)?.[1]);
+				expect(confirmPrefix).toHaveLength(8);
+				expect(confirmPrefix.startsWith(pickerPrefix)).toBe(true);
+			}
+		}
 	});
 
 	test("picking the L-7 `none` sentinel re-renders the list unchanged rather than drilling nowhere", async () => {
@@ -1157,7 +1369,7 @@ describe("admin Orders console (workerd sandbox)", () => {
 				String(r.address ?? "").includes("1 Main St"),
 			),
 		).toBe(true);
-		expect(tableRows(groupBlocks(blocks, "orders:ord-1:other-orders"))[0]?.id).toBe("ord-2");
+		expect(tableRows(groupBlocks(blocks, "orders:ord-1:other-orders"))[0]?.id).toBe(LIST_ID_2);
 		// The profile book is still labelled context-only (ADR-0009), in ≤200 chars.
 		const disclaimer = contextTexts(groupBlocks(blocks, "orders:ord-1:addresses"));
 		expect(disclaimer.some((t) => t.includes("context only"))).toBe(true);
@@ -1995,13 +2207,47 @@ describe("admin Orders console (workerd sandbox)", () => {
 		});
 		const confirm = confirmOf(full);
 		expect(confirm.title).toBe("Refund $10.00?");
+		// D4: the ORDER comes first. Amount and recipient are the two attributes a
+		// repeat customer's orders share, so a dialog naming only those cannot say
+		// WHICH order the money is leaving.
 		expect(confirm.text).toBe(
-			"Refund $10.00 to cust-a? This sends the money back through Stripe and cannot be reversed.",
+			"Order #ord-1 — refund $10.00 to cust-a? This sends the money back through Stripe and cannot be reversed.",
 		);
 		expect(String(confirm.text).length).toBeLessThanOrEqual(200);
 		expect(confirm.confirm).toBe("Yes, refund $10.00");
 		// DA-1: no form submit can refund.
 		expect(formFor(blocks, "orders:refund")).toBeUndefined();
+	});
+
+	test("D4: the refund confirm names the order BEFORE the amount and the recipient, and keeps naming it on the recipient-dropping fallback — both inside 200 (X-11)", async () => {
+		await boot();
+		// The ordinary path: order, then amount, then recipient, in that order.
+		const named = String(confirmOf(buttonWith(await open(LIST_ID_1), "orders:refund")).text);
+		expect(named.startsWith(`Order #${shortIdFixed(LIST_ID_1)} — refund $10.00 to cust-a?`)).toBe(
+			true,
+		);
+		expect(named.indexOf("#7e4ce728")).toBeLessThan(named.indexOf("$10.00"));
+		expect(named.indexOf("$10.00")).toBeLessThan(named.indexOf("cust-a"));
+		expect(named.length).toBeLessThanOrEqual(200);
+		// A buyer handle long enough to blow the budget drops THE RECIPIENT — never
+		// the id and never the amount, and never by truncating mid-sentence.
+		const long = String(confirmOf(buttonWith(await open("ord-long-buyer"), "orders:refund")).text);
+		expect(long.length).toBeLessThanOrEqual(200);
+		expect(long).toBe(
+			"Order #ord-long — refund $10.00 to this order's buyer? This sends the money back through Stripe and cannot be reversed.",
+		);
+		expect(long).not.toContain(ORDER_LONG_BUYER.buyerRef);
+		// The OTHER call site: the DA-3 staged confirm, which must not drift from the
+		// DA-2b one — the same operator reads both.
+		const idle = await open("ord-1");
+		const staged = await submitForm(idle, "orders:refund-review", {
+			amount: "4.00",
+			reason: "damaged",
+			refundedBy: "carol",
+		});
+		expect(String(confirmOf(buttonWith(staged, "orders:refund")).text)).toBe(
+			"Order #ord-1 — refund $4.00 to cust-a? This sends the money back through Stripe and cannot be reversed.",
+		);
 	});
 
 	test("the DA-3 partial-refund form has THREE visible fields and carries the order id, currency and watermark — the `nonce` select is DELETED, not relocated (F-2a)", async () => {
