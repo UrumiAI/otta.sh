@@ -231,10 +231,81 @@ export function couponWindowSummary(startsAt: string | null, expiresAt: string |
 	return `${from} → ${until}`;
 }
 
-/** `usesCount / maxUses` — `usesCount` doubles as the cheap "has this been
- *  redeemed" indicator (deletion is blocked once it is nonzero). */
+/**
+ * Redemptions as words: `3 of 100` against a bound, `0 uses` without one.
+ * `usesCount` doubles as the cheap "has this been redeemed" indicator
+ * (deletion is blocked once it is nonzero).
+ *
+ * The former `0 / ∞` is gone. `∞` is a glyph, not a word: it does not
+ * localize, it is the only mathematical notation anywhere on these screens,
+ * and it says "unbounded" to a reader who already knows that is what it
+ * means. `N of M` is also how this screen's own Redemptions meter already
+ * reads (`custom_value`), and `<code> · 20% off · 3 uses` is §12.2's own
+ * picker vocabulary — so this brings the three renderings of one fact into
+ * one wording rather than inventing a fourth.
+ */
 export function couponUsesSummary(usesCount: number, maxUses: number | null): string {
-	return `${usesCount} / ${maxUses === null ? "∞" : maxUses}`;
+	if (maxUses !== null) return `${usesCount} of ${maxUses}`;
+	return `${usesCount} use${usesCount === 1 ? "" : "s"}`;
+}
+
+/** The four lifecycle words this screen speaks. COMPUTED at render from the
+ *  coupon's own window and use bound — never stored, never a form field
+ *  (G2/F-2b: a value the domain derives is displayed, never given an input,
+ *  because an input would be a second, disagreeing home for it). */
+export type CouponStatus = "active" | "scheduled" | "expired" | "used up";
+
+/**
+ * The coupon's lifecycle state, decided the way the DOMAIN decides it and in
+ * the domain's own order — window first (`[startsAt, expiresAt)`), then the
+ * use bound — mirroring `validateCoupon`
+ * (`packages/domain/src/pricing/validate-coupon.ts`, the `startsAt`/
+ * `expiresAt`/`maxUses` checks) check for check, including its LEXICOGRAPHIC
+ * comparison of ISO-UTC instants. Two consequences worth stating:
+ *
+ * - The end bound is EXCLUSIVE, so a coupon whose `expiresAt` is exactly
+ *   `now` is already `expired` — the same instant at which checkout starts
+ *   refusing it. A console that rounded that boundary the other way would tell
+ *   an operator a coupon is live while the storefront rejects it.
+ * - When two conditions hold at once the FIRST refusal wins: an exhausted
+ *   coupon that also expired reads `expired`, because that is the reason
+ *   checkout would give.
+ *
+ * `now` is a parameter, never the clock read from inside: the render path
+ * supplies one instant per response, so no two rows of one table can disagree
+ * about which side of a boundary the render happened on — and every boundary
+ * is testable without faking time.
+ */
+export function couponStatus(
+	c: Pick<CouponSummaryWire, "startsAt" | "expiresAt" | "maxUses" | "usesCount">,
+	now: string,
+): CouponStatus {
+	if (c.startsAt !== null && now < c.startsAt) return "scheduled";
+	if (c.expiresAt !== null && now >= c.expiresAt) return "expired";
+	if (c.maxUses !== null && c.usesCount >= c.maxUses) return "used up";
+	return "active";
+}
+
+/**
+ * The minimum cart subtotal a coupon needs, as the list renders it.
+ *
+ * An ABSENT minimum is `—`, never `$0.00` and never "Free": "this coupon has
+ * no floor" and "this coupon's floor is nothing" are different claims, and
+ * rendering the first as the second invents a number the record does not
+ * carry. A present one goes through `formatMoney` in the coupon's own currency
+ * (M-1), and the formatted string is where the currency is stated — which is
+ * M-2 ("stated once, not per row"): what that rule forbids is a `Currency`
+ * COLUMN, and a currency in the header would be the worse option here, since
+ * coupons genuinely mix currencies across rows and `Min spend (USD)` becomes a
+ * lie the first time a EUR coupon lands. A percentage coupon carries no
+ * currency at all, so its floor renders as the same plain exact decimal its
+ * cap already does — no invented symbol.
+ */
+function couponMinSpendSummary(
+	c: Pick<CouponSummaryWire, "minSubtotalCents" | "currency">,
+): string {
+	if (c.minSubtotalCents === null) return "—";
+	return formatCentsForDisplay(c.minSubtotalCents, c.currency);
 }
 
 /** Display-format minor units: symbol-bearing when the coupon carries a
@@ -355,24 +426,59 @@ function couponsBlocks(
 	return blocks;
 }
 
+/**
+ * The list table: SIX columns — §2's cap, exactly — identity first and money
+ * last (T-2).
+ *
+ * `Status` ANSWERS THE QUESTION THE SCREEN EXISTS FOR. Without it the only
+ * signal that `EXPIRED20` ended a month ago and `LAUNCH2026` has not started
+ * is the raw date text in `Valid`, which makes an operator do date arithmetic
+ * across every row of a screen whose whole purpose is "which discounts are
+ * live right now". It is computed here, per render, from the coupon's own
+ * fields — see {@link couponStatus}.
+ *
+ * `Status` IS PLAIN TEXT, NOT A BADGE, and that is a decision rather than an
+ * omission. The right rendering is "badge the exceptions, leave the happy path
+ * quiet" — an `expired` mark that pulls the eye, and nothing at all on the
+ * live rows. Block Kit cannot express it: `format` is a property of the
+ * COLUMN, not of a cell (the renderer's `formatCell` reads `col.format`), so a
+ * table badges every row of a column or none of them. Blanking the happy-path
+ * cell to fake the split is worse than either end — the renderer's `Badge`
+ * draws its pill from padding and a radius alone, so an empty cell in a badge
+ * column is a solid mark with no word in it, i.e. the loudest possible
+ * rendering of "nothing to report". So the choice is all rows badged or none,
+ * and none wins: a pill on every live coupon spends the screen's heaviest ink
+ * on its least informative value (exactly T-5's "never badge a property that
+ * is near-constant across rows"), while the WORD `expired` already retires the
+ * arithmetic this column was added to kill. Badging only the exceptions needs
+ * per-value control the renderer does not have, and belongs to the
+ * console-wide badge policy rather than to this screen alone.
+ */
 function couponsTable(coupons: CouponSummaryWire[], nextToken: string | undefined): TableBlock {
+	// ONE instant for the whole response, so no two rows of one table can be
+	// judged against different clocks (see `couponStatus`).
+	const now = new Date().toISOString();
 	return {
 		type: "table",
 		block_id: "coupons:list",
 		columns: [
 			{ key: "code", label: "Code", format: "code" }, // identity first (T-2)
+			{ key: "status", label: "Status" }, // computed, plain text — see above
 			// `Type` column DELETED (T-5): `Discount` already reads `20% off` /
 			// `$5.00 off`, so a badge repeating `fixed_amount`/`percentage` would be
 			// a second, redundant lifecycle-shaped column.
 			{ key: "discount", label: "Discount" },
 			{ key: "window", label: "Valid" },
 			{ key: "uses", label: "Uses" },
+			{ key: "minSpend", label: "Min spend" }, // money LAST, pre-formatted (T-2, M-1)
 		],
 		rows: coupons.map((c) => ({
 			code: c.code,
+			status: couponStatus(c, now),
 			discount: couponDiscountSummary(c),
 			window: couponWindowSummary(c.startsAt, c.expiresAt),
 			uses: couponUsesSummary(c.usesCount, c.maxUses),
+			minSpend: couponMinSpendSummary(c),
 		})),
 		page_action_id: COUPON_ACTIONS.page,
 		...(nextToken !== undefined ? { next_cursor: nextToken } : {}),
