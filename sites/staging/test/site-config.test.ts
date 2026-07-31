@@ -99,6 +99,21 @@ describe("ottaPluginDescriptor", () => {
 		]);
 	});
 
+	test("declares NO adminEntry and NO componentsEntry, and stays standard format (ADR-0014)", () => {
+		// ADR-0014 widens ADR-0006 Decision 2 by exactly one thing — React admin
+		// pages, on a SECOND descriptor, in a SEPARATE package. This descriptor
+		// is not it, and `format: "standard"` is what keeps EmDash's build-time
+		// throw aimed at it: a standard-format descriptor declaring `adminEntry`
+		// fails `astro build` outright ("Standard plugins use Block Kit for admin
+		// UI, not React components"). That throw is evaluated PER DESCRIPTOR, so
+		// the moment `otta-console` exists it says nothing whatever about `otta`
+		// — which is why these three facts are asserted here instead of being
+		// left to the build to notice.
+		expect(descriptor.format).toBe("standard");
+		expect(descriptor).not.toHaveProperty("adminEntry");
+		expect(descriptor).not.toHaveProperty("componentsEntry");
+	});
+
 	test("declares no storage collections (ctx.kv is always-available; the plugin declares no storage tables)", () => {
 		// Phase 7's settings form uses ctx.kv, which em-dash provides
 		// UNGATED (context.ts: "Always available") — no capability, no
@@ -149,41 +164,243 @@ describe("buildEmdashOptions", () => {
 		});
 	});
 
-	test("registers exactly the Otta plugin, trusted", () => {
-		expect(options.plugins).toHaveLength(1);
+	test("registers the Otta plugin FIRST, trusted, unchanged", () => {
+		// The `toHaveLength(1)` that used to live here moved into the
+		// otta-console block below, where the whole registered SET is pinned.
+		// It moved rather than being deleted: the 2026-07-31 spike registered a
+		// second descriptor and this was the one and only existing assertion
+		// that broke — the test doing its job. Length now has a home that says
+		// which second entry is allowed, instead of forbidding all of them.
 		expect(options.plugins?.[0]).toEqual(ottaPluginDescriptor(SERVICE_URL));
 	});
 });
 
+/**
+ * ADR-0014's second descriptor, pinned BEFORE any React ships.
+ *
+ * The ADR is explicit that prose enforced nothing here: `plugin-is-sandbox-
+ * clean` forbids DB/Node/HTTP-client imports but not `react`, and this file
+ * pinned `format` and `fieldWidgets` while asserting nothing about
+ * `adminEntry`. The real gates were EmDash's build-time throw and the 18
+ * sandbox suites, and neither covers a native descriptor. So the boundary is
+ * mechanised here first, and INC-19 lands a descriptor that has to satisfy it.
+ */
+const OTTA_CONSOLE_PLUGIN_ID = "otta-console";
+
+/** The package ADR-0014 Decision 2 confines the React code to. BOTH of the
+ *  descriptor's module specifiers have to resolve into it — see below. */
+const OTTA_CONSOLE_PACKAGE = "@otta-sh/admin-react";
+
+/**
+ * ADR-0014's hard pins on `otta-console`, as a function — so the gate itself is
+ * testable, and so INC-19 cannot "satisfy" it by importing whatever the
+ * implementation happens to export.
+ *
+ * `format` is asserted as a DECLARED OWN KEY, not merely as a value. EmDash
+ * defaults `format` to `"native"` when unset (`PluginDescriptor.format`,
+ * emdash 0.31.1), and the 2026-07-31 spike leaned on exactly that: its
+ * descriptor carried no `format` key and a comment reading "native is the
+ * default". That shape is indistinguishable from a descriptor that lost its
+ * format in a refactor, and it leaves the single most consequential property of
+ * the whole arrangement implicit — `native` is what lifts the `adminEntry`
+ * throw and what makes full runtime access the declared contract. It fails this
+ * gate. Same reasoning for `capabilities` and `allowedHosts`: `undefined` is
+ * not `[]`, and "we asked for nothing" has to be written down.
+ *
+ * `entrypoint` and `adminEntry` are pinned to the console PACKAGE because the
+ * empty capability set is not, on its own, the boundary ADR-0014 describes.
+ * Decision 2 puts the React code in a separate package; a descriptor declaring
+ * `adminEntry: "@otta-sh/plugin/admin"` satisfies every other pin here while
+ * making `@otta-sh/plugin` the thing EmDash statically imports React from —
+ * the exact inversion Decision 1 refuses, arriving through the site config
+ * rather than through an import depcruise can see. Both ends are closed: this
+ * pin, and `plugin-is-sandbox-clean` now forbidding `@otta-sh/admin-react`.
+ */
+function assertOttaConsoleContract(descriptor: unknown): void {
+	expect(descriptor).toBeTypeOf("object");
+	expect(descriptor).not.toBeNull();
+	const d = descriptor as Record<string, unknown>;
+
+	expect(d["id"]).toBe(OTTA_CONSOLE_PLUGIN_ID);
+
+	expect(Object.hasOwn(d, "format"), "`format` must be declared literally").toBe(true);
+	expect(d["format"]).toBe("native");
+
+	expect(Object.hasOwn(d, "capabilities"), "`capabilities: []` must be declared").toBe(true);
+	expect(d["capabilities"]).toEqual([]);
+
+	expect(Object.hasOwn(d, "allowedHosts"), "`allowedHosts: []` must be declared").toBe(true);
+	expect(d["allowedHosts"]).toEqual([]);
+
+	// Both module specifiers must name the console package — exactly, or as a
+	// subpath export of it. `startsWith` alone would admit a lookalike package
+	// (`@otta-sh/admin-react-shim`), hence the boundary character.
+	for (const key of ["entrypoint", "adminEntry"] as const) {
+		expect(Object.hasOwn(d, key), `\`${key}\` must be declared`).toBe(true);
+		const specifier = d[key];
+		expect(specifier, `\`${key}\` must be a module specifier`).toBeTypeOf("string");
+		expect(
+			specifier === OTTA_CONSOLE_PACKAGE ||
+				String(specifier).startsWith(`${OTTA_CONSOLE_PACKAGE}/`),
+			`\`${key}\` must resolve into ${OTTA_CONSOLE_PACKAGE}, got ${String(specifier)}`,
+		).toBe(true);
+	}
+}
+
+describe("ottaConsoleDescriptor (ADR-0014's second descriptor)", () => {
+	const options = buildEmdashOptions(SERVICE_URL);
+	const consoleEntries = options.plugins.filter((p) => p.id === OTTA_CONSOLE_PLUGIN_ID);
+
+	test("plugins[] is EXACTLY [otta] or [otta, otta-console] — never a third id", () => {
+		// ADR-0014's own reopening clause: "Any third-party plugin entering
+		// plugins[] — ADR-0006's original consequence stands unchanged: a
+		// multi-tenant or marketplace deployment must not inherit any of this."
+		// Both tuples are legal so INC-19 can land the descriptor without
+		// rewriting the gate; nothing else is.
+		expect([[OTTA_PLUGIN_ID], [OTTA_PLUGIN_ID, OTTA_CONSOLE_PLUGIN_ID]]).toContainEqual(
+			options.plugins.map((p) => p.id),
+		);
+	});
+
+	test("every descriptor after the first is an otta-console one and satisfies the contract", () => {
+		// The length tie is the vacuity guard: pre-INC-19 there is one plugin
+		// and zero console entries, and the loop below is a no-op — but it is a
+		// no-op that CANNOT be reached by registering a second descriptor under
+		// some other id, or by an id typo silently emptying the filter.
+		expect(consoleEntries).toHaveLength(options.plugins.length - 1);
+		for (const entry of consoleEntries) assertOttaConsoleContract(entry);
+	});
+
+	test("still declares no sandboxed / sandboxRunner keys with the console registered", () => {
+		// ADR-0014 Decision 4: registration is unchanged IN KIND. Both
+		// descriptors go in `plugins: []`; the Worker-Loader / Workers-Paid cost
+		// pivot ADR-0006 exists to avoid stays avoided.
+		expect(options).not.toHaveProperty("sandboxed");
+		expect(options).not.toHaveProperty("sandboxRunner");
+	});
+});
+
+describe("the otta-console gate rejects the near-miss shapes", () => {
+	// Negative controls. Without these the pins above are unverified until
+	// INC-19, which is precisely when a too-loose pin would be discovered too
+	// late to matter.
+
+	/** What INC-19 has to produce. */
+	const compliant = {
+		id: "otta-console",
+		version: "0.0.1",
+		entrypoint: "@otta-sh/admin-react",
+		format: "native",
+		adminEntry: "@otta-sh/admin-react/admin",
+		capabilities: [],
+		allowedHosts: [],
+	};
+
+	/**
+	 * The 2026-07-31 spike's descriptor, transcribed from
+	 * `packages/console-react/src/index.ts` in the spike worktree. Kept as a
+	 * fixture rather than paraphrased: it is verified-working code and therefore
+	 * the shape most likely to be copied wholesale into INC-19 — and it must not
+	 * pass, because it never declares `format`.
+	 */
+	const spikeShape = {
+		id: "otta-console",
+		version: "0.0.1",
+		entrypoint: "@otta-sh/console-react",
+		adminEntry: "@otta-sh/console-react/admin",
+		adminPages: [{ path: "/orders", label: "Orders (React)", icon: "list" }],
+		capabilities: [],
+		allowedHosts: [],
+		// NOTE: no `format` key — the spike's comment reads "native is the
+		// default". True, and not good enough.
+	};
+
+	const withoutKey = (key: string): Record<string, unknown> => {
+		const copy: Record<string, unknown> = { ...compliant };
+		delete copy[key];
+		return copy;
+	};
+
+	test("accepts the compliant shape (positive control)", () => {
+		expect(() => assertOttaConsoleContract(compliant)).not.toThrow();
+	});
+
+	test("REJECTS the spike's shape: `format` omitted, native inherited from the default", () => {
+		expect(() => assertOttaConsoleContract(spikeShape)).toThrow();
+	});
+
+	test.each([
+		["format is standard", { ...compliant, format: "standard" }],
+		["format is omitted", withoutKey("format")],
+		["capabilities are non-empty", { ...compliant, capabilities: ["network:request"] }],
+		["capabilities are omitted", withoutKey("capabilities")],
+		["allowedHosts are non-empty", { ...compliant, allowedHosts: ["svc.example.com"] }],
+		["allowedHosts are omitted", withoutKey("allowedHosts")],
+		["the id is the Block Kit plugin's", { ...compliant, id: OTTA_PLUGIN_ID }],
+		// Reviewer A's mutation, pinned. Everything else about this descriptor is
+		// impeccable — native, zero capabilities, zero allowedHosts — and it still
+		// makes @otta-sh/plugin the module EmDash statically imports React from,
+		// which is ADR-0014 Decision 1 inverted via the site config.
+		[
+			"adminEntry points into @otta-sh/plugin",
+			{ ...compliant, adminEntry: "@otta-sh/plugin/admin" },
+		],
+		["entrypoint points into @otta-sh/plugin", { ...compliant, entrypoint: "@otta-sh/plugin" }],
+		["adminEntry is omitted", withoutKey("adminEntry")],
+		["entrypoint is omitted", withoutKey("entrypoint")],
+		// A lookalike package name must not slip past a prefix check.
+		[
+			"entrypoint names a lookalike package",
+			{ ...compliant, entrypoint: "@otta-sh/admin-react-shim" },
+		],
+	])("rejects a descriptor where %s", (_why, shape) => {
+		expect(() => assertOttaConsoleContract(shape)).toThrow();
+	});
+});
+
 describe("astro.config", () => {
-	test("output:'server', checkOrigin not disabled, plugin never externalized, define applied", async () => {
-		const config = (await import("../astro.config.js")).default;
+	// Both tests here dynamically import astro.config.js, which pulls in the
+	// Cloudflare adapter and the EmDash integration: measured at 2-6.6s on a
+	// loaded machine, against vitest's 5000ms default. The generous timeout is
+	// for that import cost, not for anything the assertions do.
+	const CONFIG_IMPORT_TIMEOUT_MS = 30_000;
 
-		expect(config.output).toBe("server");
+	test(
+		"output:'server', checkOrigin not disabled, plugin never externalized, define applied",
+		async () => {
+			const config = (await import("../astro.config.js")).default;
 
-		// Our config must never explicitly disable checkOrigin. (The emdash
-		// integration disables it anyway and substitutes its own /_emdash-only
-		// CSRF layer — which is exactly why the /cart/* endpoints carry their
-		// own origin guard, pinned by origin-guard.test.ts.)
-		expect(config.security?.checkOrigin).not.toBe(false);
+			expect(config.output).toBe("server");
 
-		const noExternal = config.vite?.ssr?.noExternal;
-		expect(Array.isArray(noExternal) ? noExternal : [noExternal]).toContain("@otta-sh/plugin");
+			// Our config must never explicitly disable checkOrigin. (The emdash
+			// integration disables it anyway and substitutes its own /_emdash-only
+			// CSRF layer — which is exactly why the /cart/* endpoints carry their
+			// own origin guard, pinned by origin-guard.test.ts.)
+			expect(config.security?.checkOrigin).not.toBe(false);
 
-		const define = config.vite?.define as Record<string, string>;
-		expect(JSON.parse(define["__OTTA_COMMERCE_SERVICE_URL__"] ?? "null")).toBe(SERVICE_URL);
-	});
+			const noExternal = config.vite?.ssr?.noExternal;
+			expect(Array.isArray(noExternal) ? noExternal : [noExternal]).toContain("@otta-sh/plugin");
 
-	test("the Stripe publishable key rides a SECOND build-time define (ADR-0012 decision 4)", async () => {
-		// Baked, not read from wrangler `vars` at runtime: wrangler-config.test.ts
-		// forbids any vars key matching /SECRET|KEY|TOKEN|PASSWORD/i, and
-		// STRIPE_PUBLIC_KEY matches on KEY. Keep the guard; bake the key.
-		const config = (await import("../astro.config.js")).default;
-		const define = config.vite?.define as Record<string, string>;
-		expect(Object.keys(define)).toContain("__OTTA_STRIPE_PUBLIC_KEY__");
-		// Whatever this machine's env holds, the baked value is a STRING (an
-		// absent key bakes "", which the config module treats as unconfigured) —
-		// never `undefined`, which would leave the identifier undeclared.
-		expect(typeof JSON.parse(define["__OTTA_STRIPE_PUBLIC_KEY__"] ?? "null")).toBe("string");
-	});
+			const define = config.vite?.define as Record<string, string>;
+			expect(JSON.parse(define["__OTTA_COMMERCE_SERVICE_URL__"] ?? "null")).toBe(SERVICE_URL);
+		},
+		CONFIG_IMPORT_TIMEOUT_MS,
+	);
+
+	test(
+		"the Stripe publishable key rides a SECOND build-time define (ADR-0012 decision 4)",
+		async () => {
+			// Baked, not read from wrangler `vars` at runtime: wrangler-config.test.ts
+			// forbids any vars key matching /SECRET|KEY|TOKEN|PASSWORD/i, and
+			// STRIPE_PUBLIC_KEY matches on KEY. Keep the guard; bake the key.
+			const config = (await import("../astro.config.js")).default;
+			const define = config.vite?.define as Record<string, string>;
+			expect(Object.keys(define)).toContain("__OTTA_STRIPE_PUBLIC_KEY__");
+			// Whatever this machine's env holds, the baked value is a STRING (an
+			// absent key bakes "", which the config module treats as unconfigured) —
+			// never `undefined`, which would leave the identifier undeclared.
+			expect(typeof JSON.parse(define["__OTTA_STRIPE_PUBLIC_KEY__"] ?? "null")).toBe("string");
+		},
+		CONFIG_IMPORT_TIMEOUT_MS,
+	);
 });

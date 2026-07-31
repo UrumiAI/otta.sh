@@ -33,11 +33,43 @@ module.exports = {
 				"— they run in Node, driving the sandbox from outside it. Complemented " +
 				"by the direct-fetch grep guard in " +
 				"packages/plugin/test/sandbox-clean-guard.test.ts (depcruise can't " +
-				"see ambient globals like workerd's own fetch).",
+				"see ambient globals like workerd's own fetch). It ALSO forbids " +
+				"@otta-sh/admin-react: without that, the console quarantine below is " +
+				"escapable in ONE HOP — packages/plugin importing packages/admin-react " +
+				"trips no rule, and react/emdash then reach the plugin transitively, " +
+				"which is precisely what ADR-0014 Decision 1 forbids.",
 			severity: "error",
 			from: { path: "^packages/plugin/src" },
 			to: {
-				path: "(node_modules/(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|node_modules/@otta-sh/domain(/|$)|^(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|^@otta-sh/domain(/|$)|^node:(fs|child_process|net|http|https|os|dgram|dns|tls|worker_threads|cluster|vm)(/|$)|^packages/(store-[^/]+|service|payments-[^/]+|domain)/)",
+				path: "(node_modules/(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|node_modules/@otta-sh/(domain|admin-react)(/|$)|^(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|^@otta-sh/(domain|admin-react)(/|$)|^node:(fs|child_process|net|http|https|os|dgram|dns|tls|worker_threads|cluster|vm)(/|$)|^packages/(store-[^/]+|service|payments-[^/]+|domain|admin-react)/)",
+			},
+		},
+		{
+			name: "console-react-is-quarantined",
+			comment:
+				"React and EmDash are confined to the console package (ADR-0014 " +
+				"decisions 1-2). `react`/`react-dom`, `emdash` + `@emdash-cms/*`, and the " +
+				"two component libraries the 2026-07-31 spike proved OPTIONAL rather than " +
+				"required (`@cloudflare/kumo`, `@phosphor-icons/react`) may be imported " +
+				"only from packages/admin-react. Every other package — @otta-sh/plugin " +
+				"above all — keeps ZERO EmDash dependency, which is what makes a " +
+				"pinned-exact EmDash upgrade unable to break it by construction, and " +
+				"keeps packages/plugin/src/types.ts a hand-written mirror rather than a " +
+				"re-export. ADR-0014 records that NOTHING mechanically enforced this " +
+				"before: plugin-is-sandbox-clean forbids DB/Node/HTTP-client imports but " +
+				"NOT `react`, and the site-config test pinned `format` but said nothing " +
+				"about adminEntry. This rule is ADDITIVE — the rule above is unchanged " +
+				"and still binds the same package; violating either fails `pnpm lint`. " +
+				"sites/staging is deliberately out of scope (it is the EmDash HOST: it " +
+				"imports `emdash` types and renders React storefront components) and " +
+				"`pnpm lint` cruises `packages` only.",
+			severity: "error",
+			from: { path: "^packages/", pathNot: "^packages/admin-react/" },
+			to: {
+				// Same both-forms shape as the rules above: a resolved node_modules
+				// path (direct or pnpm-store) or a bare specifier left unresolved by
+				// pnpm's strict isolation.
+				path: "(node_modules/(react|react-dom|emdash|@emdash-cms/[^/]+|@cloudflare/kumo|@phosphor-icons/react)(/|$)|^(react|react-dom|emdash|@emdash-cms/[^/]+|@cloudflare/kumo|@phosphor-icons/react)(/|$))",
 			},
 		},
 	],
