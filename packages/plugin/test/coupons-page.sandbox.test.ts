@@ -261,6 +261,24 @@ function openTargetOptions(blocks: Blk[]): Array<{ value: string; label: string 
 function headerTexts(blocks: Blk[]): string[] {
 	return findBlocks(blocks, "header").map((b) => String(b.text));
 }
+/** Banners in the TOP-LEVEL array only. `findBlocks` recurses, and the edit
+ *  group now holds a banner of its own, so a recursive read cannot answer "is
+ *  this coupon marked?" — and §2's banner budget (X-31) counts only these. */
+function topLevelBanners(blocks: Blk[]): Array<Record<string, unknown>> {
+	return blocks.filter((b) => b.type === "banner");
+}
+function formSubmitId(form: Blk): string {
+	return String((form.submit as { action_id?: unknown } | undefined)?.action_id ?? "");
+}
+/** What `blocks/form.tsx` would post for an UNTOUCHED form: every field's
+ *  `initial_value`, and no key at all for a field without one. */
+function formInitialValues(blocks: Blk[], submitActionId: string): Record<string, unknown> {
+	const out: Record<string, unknown> = {};
+	for (const field of formFields(blocks, submitActionId)) {
+		if (field.initial_value !== undefined) out[String(field.action_id)] = field.initial_value;
+	}
+	return out;
+}
 
 let sandbox: SandboxHandle | undefined;
 let stub: StubCommerceServer | undefined;
@@ -328,29 +346,35 @@ async function click(button: Record<string, unknown> | undefined): Promise<Blk[]
 	);
 }
 
-/** The full edit-form value set for FIVEOFF exactly as its pre-fill renders
- *  it (the "untouched form" baseline of the unchanged-vs-clear tests).
- *  `couponId`/`code`/`type` are NOT here — they ride in the form's `block_id`
- *  carrier, not as visible fields (F-2). */
+/**
+ * What the RENDERER submits for FIVEOFF's untouched edit form — the "operator
+ * opened it and pressed Save" baseline of the unchanged-vs-clear tests.
+ *
+ * This is `blocks/form.tsx`'s `getInitialValues` verbatim: every field's
+ * `initial_value`, and NO KEY AT ALL for a field that has none. Filling the
+ * absent ones in with `""` would test a wire shape the renderer never sends,
+ * and would quietly convert "never submitted" into "explicitly cleared" —
+ * which are now different instructions.
+ *
+ * The window bounds are DAYS, not instants: they render as `date_input`
+ * elements. `couponId`/`code`/`type` are absent too — they ride in the form's
+ * `block_id` carrier, not as visible fields (F-2).
+ */
 const FIVEOFF_PREFILL = {
 	amount: "5.00",
+	startsAt: "2026-07-01",
+	showLimits: false,
 	minSubtotal: "35.00",
-	startsAt: "2026-07-01T00:00:00.000Z",
-	expiresAt: "",
-	maxUses: "",
-	maxUsesPerCustomer: "",
 };
 
-/** The full edit-form value set for SUMMER25 (percentage) exactly as its
- *  pre-fill renders it — the baseline for the percentage family's
+/** The same, for SUMMER25 (percentage) — the baseline for that family's
  *  unchanged/clear/changed round-trips (rateBps, capCents, maxUses,
  *  maxUsesPerCustomer, expiresAt). */
 const SUMMER25_PREFILL = {
 	ratePercent: "10.00",
+	expiresAt: "2026-09-01",
+	showLimits: false,
 	cap: "20.00",
-	minSubtotal: "",
-	startsAt: "",
-	expiresAt: "2026-09-01T00:00:00.000Z",
 	maxUses: "100",
 	maxUsesPerCustomer: "1",
 };
@@ -780,6 +804,39 @@ function makeStatusCoupons(): { coupons: CouponRow[] } {
 	};
 }
 
+/**
+ * A coupon with EVERY optional value set — the audit's `WELCOME10` (`PM §E3`):
+ * cap, minimum spend, BOTH window bounds and both use bounds at once. It exists
+ * to answer one question the two-coupon fixture above cannot, because every
+ * coupon there leaves something blank: on a record where NOTHING is unset, does
+ * the edit form render each current value as a real `initial_value` (safe), or
+ * as a grey `placeholder` the browser submits as `""` (a data-loss bug)?
+ *
+ * The window bounds are clock-relative like the status fixtures, which buys a
+ * second property for free: they carry a real sub-day TIME. A `date_input`
+ * shows only the day, so an untouched save that preserved the day but rewrote
+ * the time would still be a silent edit — and only an instant with a nonzero
+ * time can catch it.
+ */
+function makeWelcomeState(): { coupons: CouponRow[] } {
+	return {
+		coupons: [
+			couponRow({
+				id: "c-welcome",
+				code: "WELCOME10",
+				currency: null, // a percentage coupon is currency-agnostic
+				capCents: 2000, // cap 20.00 (PM §E3)
+				minSubtotalCents: 5000, // min spend 50.00
+				startsAt: ago(30 * DAY_MS),
+				expiresAt: ahead(30 * DAY_MS),
+				maxUses: 500, // max uses 500 (PM §E3)
+				maxUsesPerCustomer: 2,
+				usesCount: 7,
+			}),
+		],
+	};
+}
+
 /** The list table's rows keyed by `code` — the fixtures above are read by
  *  identity, never by row index. */
 async function statusRowsByCode(): Promise<Map<string, Record<string, unknown>>> {
@@ -981,17 +1038,47 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		expect(meter?.custom_value).toBe("3 of 100");
 	});
 
-	test("the Edit group is default_open TRUE on every render (D-5 rank 3 — a loaded coupon is always editable) and its label carries the discount + window (D-6)", async () => {
+	test("SAFE BY DEFAULT: the Edit group renders CLOSED, so a screen opened to READ presents no loaded full-replace editor — and its label still carries the discount + window (D-6)", async () => {
 		const state = makeCouponsState();
 		await boot(state);
 		const blocks = await openCoupon("FIVEOFF");
 		const editGroup = group(blocks, "coupons:c-five:edit");
 		expect(editGroup).toBeDefined();
-		expect(editGroup?.default_open).toBe(true);
+		// PM §E3b: an operator diagnosing a code was one stray Enter from
+		// rewriting its expiry, cap and use bounds.
+		expect(editGroup?.default_open).toBe(false);
+		// The reading the operator came for is on the page WITHOUT opening it:
+		// the group's own label (D-6) plus the Status field above it.
 		expect(String(editGroup?.label)).toContain("Edit —");
 		expect(String(editGroup?.label)).toContain("$5.00 off");
 		expect(String(editGroup?.label).length).toBeLessThanOrEqual(60); // X-11
-		expect(openGroupIds(blocks)).toEqual(["coupons:c-five:edit"]); // X-18
+		// NOTHING is force-opened on a plain detail render (X-18).
+		expect(openGroupIds(blocks)).toEqual([]);
+	});
+
+	test("the destructive full-replace warning outranks the field labels it warns about — a `banner`, not the `context` line it used to be", async () => {
+		const state = makeCouponsState();
+		await boot(state);
+		const blocks = await openCoupon("FIVEOFF");
+		const editGroup = group(blocks, "coupons:c-five:edit");
+		const body = (editGroup?.blocks ?? []) as Blk[];
+		const warning = body.find((b) => b.type === "banner");
+		expect(warning, "the full-replace warning must be a banner").toBeDefined();
+		expect(warning?.variant).toBe("alert"); // X-26: default|alert|error only
+		expect(String(warning?.title)).toContain("replaces every field");
+		expect(String(warning?.description)).toContain("saves as unset, not unchanged");
+		expect(String(warning?.description).length).toBeLessThanOrEqual(240); // X-11
+		// The old rendering was `context` — `text-sm text-kumo-subtle`, the same
+		// weight as the labels below it. No context line may still carry the
+		// warning's own claim.
+		for (const ctx of body.filter((b) => b.type === "context")) {
+			expect(String(ctx.text)).not.toContain("saves as unset");
+		}
+		// The end-of-day reading IS stated, and in the group the dates live in.
+		const dateNote = body.find(
+			(b) => b.type === "context" && String(b.text).includes("END of its expiry date"),
+		);
+		expect(dateNote, "the end-of-day reading must be stated").toBeDefined();
 	});
 
 	test("the edit form carries couponId/code/type INVISIBLY in its block_id (F-2) and pre-fills every editable field (unset ⇒ blank), so an untouched save cannot clear anything", async () => {
@@ -1013,7 +1100,11 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		expect(byId.get("amount")?.type).toBe("text_input"); // never number_input (float)
 		expect(byId.get("amount")?.initial_value).toBe("5.00");
 		expect(byId.get("minSubtotal")?.initial_value).toBe("35.00");
-		expect(byId.get("startsAt")?.initial_value).toBe("2026-07-01T00:00:00.000Z");
+		// The window is a DATE element pre-filled with the DAY its stored instant
+		// falls on — nobody hand-types an RFC 3339 timestamp with milliseconds.
+		expect(byId.get("startsAt")?.type).toBe("date_input");
+		expect(byId.get("startsAt")?.initial_value).toBe("2026-07-01");
+		expect(byId.get("expiresAt")?.type).toBe("date_input");
 		expect(byId.get("expiresAt")?.initial_value).toBeUndefined(); // unset ⇒ blank
 		expect(byId.get("maxUses")?.initial_value).toBeUndefined();
 		// a fixed_amount coupon renders NO percentage-only fields
@@ -1085,7 +1176,8 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		expect(byId.get("ratePercent")?.type).toBe("text_input"); // never number_input (float)
 		expect(byId.get("ratePercent")?.initial_value).toBe("10.00");
 		expect(byId.get("cap")?.initial_value).toBe("20.00");
-		expect(byId.get("expiresAt")?.initial_value).toBe("2026-09-01T00:00:00.000Z");
+		expect(byId.get("expiresAt")?.type).toBe("date_input");
+		expect(byId.get("expiresAt")?.initial_value).toBe("2026-09-01");
 		expect(byId.get("maxUses")?.initial_value).toBe("100");
 		expect(byId.get("maxUsesPerCustomer")?.initial_value).toBe("1");
 		expect(byId.get("minSubtotal")?.initial_value).toBeUndefined(); // unset ⇒ blank
@@ -1154,7 +1246,7 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		expect(bannerOf(outcome)?.variant).toBe("default");
 	});
 
-	test("CHANGED semantics (percentage): edited rate/cap/expiry/use bounds PUT exact integers (bps, minor units) with the expiry normalized to ISO UTC", async () => {
+	test("CHANGED semantics (percentage): edited rate/cap/expiry/use bounds PUT exact integers (bps, minor units), with a NEW expiry day resolved to the END of that day", async () => {
 		const state = makeCouponsState();
 		await boot(state);
 		const blocks = await openCoupon("SUMMER25");
@@ -1173,7 +1265,11 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 			capCents: 2500,
 			minSubtotalCents: null,
 			startsAt: null,
-			expiresAt: "2026-10-01T00:00:00.000Z", // normalized to ISO UTC
+			// END of the chosen day. The domain's window is `[startsAt, expiresAt)`
+			// — an exclusive end pinned to midnight would retire the code at the
+			// START of the day the operator picked, a full day early and a day
+			// earlier than the screen's own `Valid` reading claims.
+			expiresAt: "2026-10-01T23:59:59.999Z",
 			maxUses: 200,
 			maxUsesPerCustomer: 2,
 		});
@@ -1351,6 +1447,226 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		expect(fieldEntries(redemptionsPanel)).toContain("Redemptions=0");
 	});
 
+	// -- the leaf's own lifecycle reading ---------------------------------------
+
+	test("the leaf leads with a computed `Status` field, in the SAME vocabulary as the list column — one definition, so a coupon cannot read `expired` here and `active` there", async () => {
+		await boot(makeStatusCoupons());
+		for (const [code, expected] of [
+			["EXPIRED20", "expired"],
+			["LAUNCH2026", "scheduled"],
+			["MAXEDOUT", "used up"],
+			["SUMMER25", "active"],
+		] as const) {
+			const blocks = await openCoupon(code);
+			expect(detailFields(blocks).get("Status"), `${code}`).toBe(expected);
+		}
+	});
+
+	test("BADGE THE EXCEPTIONS on the leaf: each non-active state raises one `alert` banner naming what checkout does; a live coupon raises none", async () => {
+		await boot(makeStatusCoupons());
+		for (const code of ["EXPIRED20", "LAUNCH2026", "MAXEDOUT"] as const) {
+			const banners = topLevelBanners(await openCoupon(code));
+			expect(banners, `${code} must be marked`).toHaveLength(1);
+			expect(banners[0]?.variant).toBe("alert");
+			// The word is already in the strip above — the banner spends its
+			// emphasis on the CONSEQUENCE instead.
+			expect(String(banners[0]?.description)).toContain("Checkout refuses this code");
+			expect(String(banners[0]?.description).length).toBeLessThanOrEqual(240); // X-11
+		}
+		// The happy path stays completely quiet: a mark on every coupon would put
+		// the screen's loudest ink on its least informative state (T-5).
+		expect(topLevelBanners(await openCoupon("SUMMER25"))).toEqual([]);
+	});
+
+	test("Status is COMPUTED on the leaf, never a form field (G2 / ADR-0013) — no input on the detail claims a value the domain derives", async () => {
+		await boot(makeStatusCoupons());
+		const blocks = await openCoupon("EXPIRED20");
+		expect(detailFields(blocks).get("Status")).toBe("expired");
+		const everyField = findBlocks(blocks, "form").flatMap((f) =>
+			Array.isArray(f.fields) ? (f.fields as Array<Record<string, unknown>>) : [],
+		);
+		expect(everyField.length).toBeGreaterThan(0);
+		expect(everyField.some((f) => String(f.action_id) === "status")).toBe(false);
+		expect(everyField.some((f) => /status|expired|scheduled/i.test(String(f.label ?? "")))).toBe(
+			false,
+		);
+	});
+
+	// -- the collapsed bounds ----------------------------------------------------
+
+	test("the four rarely-touched bounds sit behind ONE closed disclosure inside the SAME form — never a second form, which a full-replace wire turns into a data-loss bug (F-5a)", async () => {
+		await boot(makeWelcomeState());
+		const blocks = await openCoupon("WELCOME10");
+		const fields = formFields(blocks, "coupons:save");
+		const byId = new Map(fields.map((f) => [String(f.action_id), f]));
+		// The disclosure itself: a real toggle, closed on every render.
+		expect(byId.get("showLimits")?.type).toBe("toggle");
+		expect(byId.get("showLimits")?.initial_value).toBe(false);
+		// The four bounds are gated on it...
+		for (const gated of ["cap", "minSubtotal", "maxUses", "maxUsesPerCustomer"]) {
+			expect(byId.get(gated)?.condition, gated).toEqual({ field: "showLimits", eq: true });
+		}
+		// ...and the discount + window are NOT — they are why the group is opened.
+		for (const ungated of ["ratePercent", "startsAt", "expiresAt"]) {
+			expect(byId.get(ungated)?.condition, ungated).toBeUndefined();
+		}
+		// ONE form still owns every editable field: splitting it is what would let
+		// a "Discount" save silently null the window and the use bounds.
+		expect(
+			findBlocks(blocks, "form").filter((f) => formSubmitId(f) === "coupons:save"),
+		).toHaveLength(1);
+		// Four inputs drawn at rest, down from seven (DESIGNER §3's worst
+		// proportion offender: seven stacked full-bleed inputs, five of them empty).
+		const drawnAtRest = fields.filter((f) => f.condition === undefined);
+		expect(drawnAtRest).toHaveLength(4);
+	});
+
+	test("nothing the disclosure hides is unreadable: every gated bound is already on the leaf as text, so collapsing the inputs hides no FACT", async () => {
+		await boot(makeWelcomeState());
+		const blocks = await openCoupon("WELCOME10");
+		const shown = detailFields(blocks);
+		expect(shown.get("Minimum spend")).toBe("50.00"); // currency-agnostic ⇒ plain decimal
+		expect(shown.get("Max uses")).toBe("500");
+		expect(shown.get("Max per customer")).toBe("2");
+		// The cap rides in the discount summary, on the leaf and in the group label.
+		expect(shown.get("Discount")).toBe("10.00% off (cap 20.00)");
+	});
+
+	test("SAFE BY DEFAULT: a bound that never reaches the submit at all keeps its current value — a collapsed disclosure cannot clear what it was hiding", async () => {
+		const state = makeWelcomeState();
+		const before = { ...state.coupons[0]! };
+		await boot(state);
+		const blocks = await openCoupon("WELCOME10");
+		// Exactly what a renderer that DROPPED `condition`-hidden fields would
+		// send. Today's pinned 0.31.1 submits them (`getInitialValues` reads every
+		// field's `initial_value`), but that is an interaction between two upstream
+		// implementation details — `carrier.ts` refuses to depend on it, and so
+		// does this form: the current values ride in its `block_id` too.
+		await submitForm(blocks, "coupons:save", {
+			ratePercent: "10.00",
+			startsAt: before.startsAt!.slice(0, 10),
+			expiresAt: before.expiresAt!.slice(0, 10),
+			showLimits: false,
+		});
+		const after = state.coupons.find((c) => c.id === "c-welcome");
+		expect(after?.capCents).toBe(before.capCents);
+		expect(after?.minSubtotalCents).toBe(before.minSubtotalCents);
+		expect(after?.maxUses).toBe(before.maxUses);
+		expect(after?.maxUsesPerCustomer).toBe(before.maxUsesPerCustomer);
+	});
+
+	test("...and BLANK still means unset: the fallback covers a field that never arrived, never one the operator deliberately emptied", async () => {
+		const state = makeWelcomeState();
+		const before = { ...state.coupons[0]! };
+		await boot(state);
+		const blocks = await openCoupon("WELCOME10");
+		await submitForm(blocks, "coupons:save", {
+			ratePercent: "10.00",
+			startsAt: before.startsAt!.slice(0, 10),
+			expiresAt: before.expiresAt!.slice(0, 10),
+			showLimits: true,
+			cap: "",
+			minSubtotal: "",
+			maxUses: "",
+			maxUsesPerCustomer: "",
+		});
+		const after = state.coupons.find((c) => c.id === "c-welcome");
+		expect(after?.capCents).toBeNull();
+		expect(after?.minSubtotalCents).toBeNull();
+		expect(after?.maxUses).toBeNull();
+		expect(after?.maxUsesPerCustomer).toBeNull();
+		expect(after?.rateBps).toBe(before.rateBps); // the one axis with no "unset"
+	});
+
+	test("re-submitting the DAY a bound already falls on is not an edit: the stored instant survives byte for byte, sub-day time included", async () => {
+		const state = makeWelcomeState();
+		const before = { ...state.coupons[0]! };
+		await boot(state);
+		// The fixture's instants carry a real time-of-day, which the `date_input`
+		// never shows — so a save that rewrote them to midnight would still be a
+		// silent edit of a value the operator never touched.
+		expect(before.expiresAt).not.toMatch(/T00:00:00\.000Z$/);
+		const blocks = await openCoupon("WELCOME10");
+		await submitForm(blocks, "coupons:save", { ...formInitialValues(blocks, "coupons:save") });
+		const after = state.coupons.find((c) => c.id === "c-welcome");
+		expect(after?.startsAt).toBe(before.startsAt);
+		expect(after?.expiresAt).toBe(before.expiresAt);
+	});
+
+	test("a CHANGED expiry day closes at the END of that day, so the domain's exclusive end bound does not retire the code a day early", async () => {
+		const state = makeWelcomeState();
+		await boot(state);
+		const blocks = await openCoupon("WELCOME10");
+		await submitForm(blocks, "coupons:save", {
+			...formInitialValues(blocks, "coupons:save"),
+			startsAt: "2026-08-01",
+			expiresAt: "2026-08-31",
+		});
+		const put = stub!.requests.find((r) => r.method === "PUT");
+		expect(put!.body).toMatchObject({
+			startsAt: "2026-08-01T00:00:00.000Z", // a start OPENS its day
+			expiresAt: "2026-08-31T23:59:59.999Z", // an expiry CLOSES its day
+		});
+		// A one-day coupon is now expressible: same day, start < expiry.
+		const sameDay = await submitForm(blocks, "coupons:save", {
+			...formInitialValues(blocks, "coupons:save"),
+			startsAt: "2026-08-01",
+			expiresAt: "2026-08-01",
+		});
+		expect(bannerOf(sameDay)?.variant).toBe("default");
+	});
+
+	// -- P0-CLASS CHECK (PM §E3) ------------------------------------------------
+	// The failure this guards against: a form field that renders the coupon's
+	// CURRENT value as a `placeholder` (grey ghost text the browser submits as
+	// "") instead of an `initial_value` (a real value the browser submits back).
+	// On a FULL-REPLACE wire that is silent data loss — the operator opens a
+	// coupon to read it, presses Save, and the values they could see on screen
+	// are written back as null.
+	test("P0 (PM §E3): on a coupon with EVERY optional value set, each one renders as a real `initial_value` — never as a placeholder standing in for a set value", async () => {
+		const state = makeWelcomeState();
+		await boot(state);
+		const blocks = await openCoupon("WELCOME10");
+		const byId = new Map(formFields(blocks, "coupons:save").map((f) => [String(f.action_id), f]));
+		// Every field carrying one of this coupon's set values.
+		for (const [actionId, expected] of [
+			["ratePercent", "10.00"],
+			["cap", "20.00"],
+			["minSubtotal", "50.00"],
+			["maxUses", "500"],
+			["maxUsesPerCustomer", "2"],
+		] as const) {
+			const field = byId.get(actionId);
+			expect(field, `no field ${actionId}`).toBeDefined();
+			expect(field?.initial_value, `${actionId} must carry its CURRENT value`).toBe(expected);
+		}
+		// A placeholder may only ever be a FORMAT EXAMPLE, never a set value
+		// wearing ghost text: no field's placeholder may equal its own value.
+		for (const field of byId.values()) {
+			if (field.placeholder === undefined) continue;
+			expect(String(field.placeholder)).not.toBe(String(field.initial_value ?? ""));
+		}
+	});
+
+	test("P0 (PM §E3): submitting the untouched pre-fill of an all-values-set coupon persists EVERY value unchanged — nothing is silently unset", async () => {
+		const state = makeWelcomeState();
+		const before = { ...state.coupons[0]! };
+		await boot(state);
+		const blocks = await openCoupon("WELCOME10");
+		// Exactly what the renderer submits for an untouched form: every field's
+		// `initial_value`, and nothing for a field that has none
+		// (`blocks/form.tsx`'s `getInitialValues`, verified in 0.31.1).
+		await submitForm(blocks, "coupons:save", formInitialValues(blocks, "coupons:save"));
+		const after = state.coupons.find((c) => c.id === "c-welcome");
+		expect(after?.rateBps).toBe(before.rateBps);
+		expect(after?.capCents).toBe(before.capCents);
+		expect(after?.minSubtotalCents).toBe(before.minSubtotalCents);
+		expect(after?.startsAt).toBe(before.startsAt);
+		expect(after?.expiresAt).toBe(before.expiresAt);
+		expect(after?.maxUses).toBe(before.maxUses);
+		expect(after?.maxUsesPerCustomer).toBe(before.maxUsesPerCustomer);
+	});
+
 	// Every H-marked §13 anti-pattern this helper enforces (§15 V-3/V-3a) — one
 	// call on the list (unfiltered non-empty, filtered, and true-zero) and one
 	// per open record state, covering both coupon families and both the
@@ -1374,6 +1690,20 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		);
 		assertBlockContract(await openCoupon("FIVEOFF"), { screen: "coupons", level: "detail" }); // fixed_amount, deletable
 		assertBlockContract(await openCoupon("SUMMER25"), { screen: "coupons", level: "detail" }); // percentage, redeemed (delete withheld)
+
+		await sandbox!.close();
+		await stub!.close();
+		// The lifecycle-marked shapes: an exception detail carries a SECOND
+		// top-level banner beside any notice, and the leaf whose optional values
+		// are all set draws every field the edit group has.
+		await boot(makeStatusCoupons());
+		for (const code of ["EXPIRED20", "LAUNCH2026", "MAXEDOUT"]) {
+			assertBlockContract(await openCoupon(code), { screen: "coupons", level: "detail" });
+		}
+		await sandbox!.close();
+		await stub!.close();
+		await boot(makeWelcomeState());
+		assertBlockContract(await openCoupon("WELCOME10"), { screen: "coupons", level: "detail" });
 
 		await sandbox!.close();
 		await stub!.close();
