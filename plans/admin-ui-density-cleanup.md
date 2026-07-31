@@ -246,7 +246,7 @@ rows only handle sort and load-more. That is the sole reason the "Open X" select
 on every list. Add an optional `row_action_id` to `TableBlock` in the em-dash fork
 (`/home/azureuser/emdash-fork`, branched from freshly-synced `main`), then delete the
 open-forms plugin-side. Route it upstream the same way as the conditional-writes PRs — set the
-commit author to `Vedanshu <vedanshu@otta.sh>` and follow the PR template.
+commit author to `Vedanshu <vedanshu@urumi.ai>` and follow the PR template.
 
 Until that lands, the open-select stays; increments 1–5 do not depend on it.
 

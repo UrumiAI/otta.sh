@@ -1097,7 +1097,7 @@ harness, which hand-builds `ctx` (`packages/plugin/src/sandbox-entry.ts:121-123`
 touches EmDash's capnp bridge. But CLAUDE.md and DEVELOPMENT.md §5 name the workerd sandbox as the
 **binding contract**, so if the analysis holds, a sandboxed deployment of this plugin would get no
 egress at all. **File it upstream; do not fold it into this scope.** Repo convention for an
-upstream contribution: author as `Vedanshu <vedanshu@otta.sh>` (not the machine's default git
+upstream contribution: author as `Vedanshu <vedanshu@urumi.ai>` (not the machine's default git
 identity), follow the upstream PR template, and note that a human must sign the CLA.
 
 ### 9.7 — Issues to file, with owner and timing

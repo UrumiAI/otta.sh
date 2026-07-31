@@ -3091,7 +3091,7 @@ these rules as its own assertions.
 ## 14. What a fork change would simplify (not required by this spec)
 
 Tracked follow-ups against `/home/azureuser/emdash-fork`, branched from freshly-synced `main`,
-commit author `Vedanshu <vedanshu@otta.sh>`, upstream PR template. **Nothing in this document
+commit author `Vedanshu <vedanshu@urumi.ai>`, upstream PR template. **Nothing in this document
 depends on any of them** — every rule above is satisfiable on 0.31.1 as pinned.
 
 1. **A mid-level heading — `header.level?: 2|3` or `section.style?: "heading"`.** The
