@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "vitest";
+import { couponStatus, couponUsesSummary } from "../src/admin/coupons-page.js";
 import { decodeCarrier, decodePath, encodePath } from "../src/admin/scaffold/index.js";
 import { assertBlockContract } from "./helpers/block-contract.js";
 import {
@@ -363,14 +364,18 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		expect(headerTexts(blocks)).toContain("Coupons");
 		const listReq = stub!.requests.find((r) => r.url.startsWith("/admin/coupons"));
 		expect(listReq?.headers["x-internal-token"]).toBe("admin-token-xyz");
-		const table = tableOf(blocks) as { columns?: Array<{ key: string }> } | undefined;
+		const table = tableOf(blocks) as
+			| { columns?: Array<{ key: string; label: string; format?: string }> }
+			| undefined;
 		// T-5: the Type badge column is deleted — Discount already reads
-		// "20% off" / "$5.00 off".
+		// "20% off" / "$5.00 off". T-2: identity FIRST, money LAST.
 		expect((table?.columns ?? []).map((c) => c.key)).toEqual([
 			"code",
+			"status",
 			"discount",
 			"window",
 			"uses",
+			"minSpend",
 		]);
 		const rows = tableRows(blocks);
 		expect(rows.map((r) => r.code)).toEqual(["SUMMER25", "FIVEOFF"]);
@@ -381,8 +386,19 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		expect(rows[1]?.discount).toBe("$5.00 off");
 		expect(rows[0]?.window).toBe("until 2026-09-01");
 		expect(rows[1]?.window).toBe("from 2026-07-01");
-		expect(rows[0]?.uses).toBe("3 / 100");
-		expect(rows[1]?.uses).toBe("0 / ∞");
+		// `N of M` against a bound, `N uses` without one — the `∞` glyph is gone
+		// (it does not localize, and the meter/picker already say it in words).
+		expect(rows[0]?.uses).toBe("3 of 100");
+		expect(rows[1]?.uses).toBe("0 uses");
+		// Money LAST (T-2) and pre-formatted (M-1): an ABSENT minimum is an em
+		// dash, never "$0.00" and never "Free" — no minimum ≠ a minimum of
+		// nothing — and the currency rides in the formatted string, so there is
+		// no Currency column and no currency repeated per row (M-2).
+		expect((table?.columns ?? []).at(-1)?.key).toBe("minSpend");
+		expect((table?.columns ?? []).at(-1)?.label).toBe("Min spend");
+		expect(rows[0]?.minSpend).toBe("—");
+		expect(rows[1]?.minSpend).toBe("$35.00");
+		expect((table?.columns ?? []).some((c) => c.label.includes("USD"))).toBe(false);
 	});
 
 	test("NO-TOKEN page_load /coupons fails closed with E-7's normative banner (no raw HTTP status/URL, no single named cause)", async () => {
@@ -700,6 +716,210 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 	});
 });
 
+// ---------------------------------------------------------------------------
+// The computed `Status` column and the `Min spend` money column.
+//
+// Status is DERIVED at render from the coupon's own window/use bound — the
+// record carries no such field and neither does any form on this screen (G2:
+// a value the domain owns is displayed, never given an input). These fixtures
+// therefore express their boundaries RELATIVE to the render clock: a
+// hard-coded `2026-09-01` fixture would quietly change its own expected status
+// the day that date passes, which is a time bomb, not a test.
+// ---------------------------------------------------------------------------
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+const ahead = (ms: number) => new Date(Date.now() + ms).toISOString();
+
+/** A coupon row with the incidental fields filled in — the status fixtures
+ *  differ only in their window / use bound, so everything else is noise.
+ *  `createdAt` is passed explicitly per row to pin the list's newest-first
+ *  ordering. */
+function couponRow(over: Partial<CouponRow> & { id: string; code: string }): CouponRow {
+	return {
+		type: "percentage",
+		amountCents: null,
+		rateBps: 1000,
+		capCents: null,
+		currency: "USD",
+		minSubtotalCents: null,
+		startsAt: null,
+		expiresAt: null,
+		maxUses: null,
+		maxUsesPerCustomer: null,
+		usesCount: 0,
+		createdAt: "2026-01-01T00:00:00.000Z",
+		...over,
+	};
+}
+
+/** The audit seed's three shapes (`EXPIRED20` ended, `LAUNCH2026` not yet
+ *  started, `SUMMER25` live) plus the three the seed does not carry: an
+ *  unbounded coupon, an exhausted one, and a currency-agnostic minimum. */
+function makeStatusCoupons(): { coupons: CouponRow[] } {
+	return {
+		coupons: [
+			couponRow({ id: "c-expired", code: "EXPIRED20", expiresAt: ago(30 * DAY_MS) }),
+			couponRow({ id: "c-launch", code: "LAUNCH2026", startsAt: ahead(14 * DAY_MS) }),
+			couponRow({ id: "c-summer", code: "SUMMER25", expiresAt: ahead(21 * DAY_MS) }),
+			couponRow({ id: "c-forever", code: "FOREVER" }), // no window at all
+			couponRow({ id: "c-maxed", code: "MAXEDOUT", maxUses: 25, usesCount: 25 }),
+			couponRow({ id: "c-welcome", code: "WELCOME10", maxUses: 500, usesCount: 1 }),
+			couponRow({
+				id: "c-save5",
+				code: "SAVE5",
+				type: "fixed_amount",
+				amountCents: 500,
+				rateBps: null,
+				minSubtotalCents: 3000,
+			}),
+			// A percentage coupon carries no currency, so its minimum has none
+			// either — it must render as a plain decimal, not an invented symbol.
+			couponRow({ id: "c-noccy", code: "NOCURRENCY", currency: null, minSubtotalCents: 3500 }),
+		],
+	};
+}
+
+/** The list table's rows keyed by `code` — the fixtures above are read by
+ *  identity, never by row index. */
+async function statusRowsByCode(): Promise<Map<string, Record<string, unknown>>> {
+	const blocks = blocksOf(
+		await sandbox!.invokeRoute("admin", { type: "page_load", page: "/coupons" }),
+	);
+	return new Map(tableRows(blocks).map((r) => [String(r.code), r]));
+}
+
+describe("admin Coupons console — computed Status + Min spend (workerd sandbox)", () => {
+	test("Status is COMPUTED per row from the window and the use bound: expired / scheduled / active / used up", async () => {
+		await boot(makeStatusCoupons());
+		const rows = await statusRowsByCode();
+		// The three the audit seeds, which today render identically to each
+		// other — the whole reason this column exists.
+		expect(rows.get("EXPIRED20")?.status).toBe("expired");
+		expect(rows.get("LAUNCH2026")?.status).toBe("scheduled");
+		expect(rows.get("SUMMER25")?.status).toBe("active");
+		// No expiry at all is ACTIVE — never "unknown", never blank.
+		expect(rows.get("FOREVER")?.status).toBe("active");
+		expect(rows.get("MAXEDOUT")?.status).toBe("used up");
+		expect(rows.get("WELCOME10")?.status).toBe("active"); // 1 of 500 — not exhausted
+	});
+
+	test("Status is never a form field anywhere on the list (G2) — no input, no filter, no create/edit field claims it", async () => {
+		await boot(makeStatusCoupons());
+		const blocks = blocksOf(
+			await sandbox!.invokeRoute("admin", { type: "page_load", page: "/coupons" }),
+		);
+		const everyField = findBlocks(blocks, "form").flatMap((f) =>
+			Array.isArray(f.fields) ? (f.fields as Array<Record<string, unknown>>) : [],
+		);
+		expect(everyField.length).toBeGreaterThan(0);
+		expect(everyField.some((f) => String(f.action_id) === "status")).toBe(false);
+		expect(everyField.some((f) => /status|expired|scheduled/i.test(String(f.label ?? "")))).toBe(
+			false,
+		);
+	});
+
+	test("Status renders as PLAIN TEXT: Block Kit's `format` is per COLUMN, so badging only the exceptions is unreachable and the happy path stays quiet (T-5/X-4)", async () => {
+		await boot(makeStatusCoupons());
+		const blocks = blocksOf(
+			await sandbox!.invokeRoute("admin", { type: "page_load", page: "/coupons" }),
+		);
+		const table = tableOf(blocks) as
+			| { columns?: Array<{ key: string; format?: string }> }
+			| undefined;
+		const status = (table?.columns ?? []).find((c) => c.key === "status");
+		expect(status).toBeDefined();
+		expect(status?.format).toBeUndefined();
+		// A badge column would put an identical pill on every live coupon: the
+		// renderer badges a whole column or none of it, and an emptied cell in a
+		// badge column still draws the pill, only wordless.
+		expect((table?.columns ?? []).some((c) => c.format === "badge")).toBe(false);
+	});
+
+	test("`Min spend` is money LAST, formatted, currency in the value and NOT repeated in the header; an absent minimum is `—`, never $0.00 or Free", async () => {
+		await boot(makeStatusCoupons());
+		const rows = await statusRowsByCode();
+		expect(rows.get("SAVE5")?.minSpend).toBe("$30.00");
+		// Absent ≠ zero: no minimum is an em dash.
+		expect(rows.get("FOREVER")?.minSpend).toBe("—");
+		expect(rows.get("SUMMER25")?.minSpend).toBe("—");
+		// Nothing renders an absent minimum as a ZERO or as a word: the only
+		// values on the column are "—" and real, formatted amounts.
+		for (const row of rows.values()) {
+			expect(String(row.minSpend)).not.toMatch(/^(free|unknown|none|null|\$?0(\.00)?)$/i);
+		}
+		// A currency-agnostic coupon's floor is an exact plain decimal — no
+		// invented symbol, and never dropped to `—` (which would claim there is
+		// no minimum when there is one).
+		expect(rows.get("NOCURRENCY")?.minSpend).toBe("35.00");
+	});
+
+	test("`Uses` reads `N of M` / `N uses` with no `∞` glyph anywhere in the rendered list", async () => {
+		await boot(makeStatusCoupons());
+		const rows = await statusRowsByCode();
+		expect(rows.get("WELCOME10")?.uses).toBe("1 of 500");
+		expect(rows.get("MAXEDOUT")?.uses).toBe("25 of 25");
+		expect(rows.get("FOREVER")?.uses).toBe("0 uses");
+		expect(couponUsesSummary(1, null)).toBe("1 use"); // singular agreement
+		const blocks = blocksOf(
+			await sandbox!.invokeRoute("admin", { type: "page_load", page: "/coupons" }),
+		);
+		expect(JSON.stringify(blocks)).not.toContain("∞");
+	});
+
+	test("assertBlockContract holds on the Status/Min spend list render (§15 V-3)", async () => {
+		await boot(makeStatusCoupons());
+		assertBlockContract(
+			blocksOf(await sandbox!.invokeRoute("admin", { type: "page_load", page: "/coupons" })),
+			{ screen: "coupons", level: "list" },
+		);
+	});
+});
+
+// The boundaries, against an EXPLICIT `now` — the one place the console's
+// answer must agree with `validateCoupon`'s to the instant, since an operator
+// reading `active` on a coupon checkout has already started refusing is worse
+// than no column at all.
+describe("couponStatus — boundaries and precedence (mirrors the domain's validateCoupon)", () => {
+	const NOW = "2026-07-31T12:00:00.000Z";
+	const at = (over: Partial<Parameters<typeof couponStatus>[0]>) =>
+		couponStatus({ startsAt: null, expiresAt: null, maxUses: null, usesCount: 0, ...over }, NOW);
+
+	test("the end bound is EXCLUSIVE: expiring exactly now is already expired, a millisecond later is still active", () => {
+		expect(at({ expiresAt: NOW })).toBe("expired");
+		expect(at({ expiresAt: "2026-07-31T12:00:00.001Z" })).toBe("active");
+	});
+
+	test("the start bound is INCLUSIVE: starting exactly now is active, a millisecond later is scheduled", () => {
+		expect(at({ startsAt: NOW })).toBe("active");
+		expect(at({ startsAt: "2026-07-31T12:00:00.001Z" })).toBe("scheduled");
+	});
+
+	test("an expiry earlier TODAY is expired — the comparison is the instant, not the calendar day", () => {
+		expect(at({ expiresAt: "2026-07-31T00:00:00.000Z" })).toBe("expired");
+		expect(at({ expiresAt: "2026-07-31T23:59:59.000Z" })).toBe("active");
+	});
+
+	test("no bounds at all is active, not unknown", () => {
+		expect(at({})).toBe("active");
+	});
+
+	test("the use bound only fires once it is REACHED (>= maxUses), and only inside the window", () => {
+		expect(at({ maxUses: 500, usesCount: 499 })).toBe("active");
+		expect(at({ maxUses: 500, usesCount: 500 })).toBe("used up");
+		expect(at({ maxUses: 500, usesCount: 501 })).toBe("used up");
+	});
+
+	test("when two conditions hold the FIRST refusal wins, in the domain's own check order", () => {
+		// Exhausted AND expired reads `expired`: that is the reason checkout gives.
+		expect(at({ expiresAt: "2026-07-30T12:00:00.000Z", maxUses: 1, usesCount: 1 })).toBe("expired");
+		// Exhausted AND not yet started reads `scheduled`, same reasoning.
+		expect(at({ startsAt: "2026-08-01T12:00:00.000Z", maxUses: 1, usesCount: 1 })).toBe(
+			"scheduled",
+		);
+	});
+});
+
 describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 	test("opening a coupon drills to its detail via the open form's OWN encoded target (a combobox, never a select — L-7/X-22), loading the FULL summary (incl. the window)", async () => {
 		const state = makeCouponsState();
@@ -713,7 +933,8 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 			(o) => decodePath(o.value)?.[0] === "FIVEOFF",
 		);
 		expect(option).toBeDefined();
-		expect(option!.label).toBe("FIVEOFF · $5.00 off · 0 / ∞");
+		// §12.2's own picker vocabulary: `<code> · 20% off · 3 uses`.
+		expect(option!.label).toBe("FIVEOFF · $5.00 off · 0 uses");
 		stub!.requests.length = 0;
 
 		const blocks = await openCoupon("FIVEOFF");
@@ -731,7 +952,7 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		expect(fields.get("Code")).toBe("FIVEOFF");
 		expect(fields.get("Type")).toBe("fixed_amount");
 		expect(fields.get("Discount")).toBe("$5.00 off");
-		expect(fields.get("Uses")).toBe("0 / ∞");
+		expect(fields.get("Uses")).toBe("0 uses");
 		expect(fields.get("Currency")).toBe("USD");
 		expect(fields.get("Created (UTC)")).toBe("2026-06-01T00:00:00Z"); // M-6: ms trimmed
 		expect(fields.get("Minimum spend")).toBe("$35.00");

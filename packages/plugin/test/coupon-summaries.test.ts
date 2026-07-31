@@ -103,11 +103,17 @@ describe("couponWindowSummary", () => {
 	});
 });
 
+// The `∞` glyph is gone from all three renderings of this fact (list column,
+// picker label, detail field): it does not localize, and `N of M` is already
+// how the Redemptions meter reads.
 describe("couponUsesSummary", () => {
 	test("bounded", () => {
-		expect(couponUsesSummary(3, 100)).toBe("3 / 100");
+		expect(couponUsesSummary(3, 100)).toBe("3 of 100");
 	});
 	test("unlimited", () => {
-		expect(couponUsesSummary(0, null)).toBe("0 / ∞");
+		expect(couponUsesSummary(0, null)).toBe("0 uses");
+	});
+	test("unlimited, singular", () => {
+		expect(couponUsesSummary(1, null)).toBe("1 use");
 	});
 });
