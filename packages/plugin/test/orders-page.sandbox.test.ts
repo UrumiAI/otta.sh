@@ -778,6 +778,22 @@ function pickerOptions(blocks: LooseBlock[]): Array<{ value: string; label: stri
 	return (pickerField(blocks)?.options ?? []) as Array<{ value: string; label: string }>;
 }
 
+/**
+ * "Did we land on THIS order's detail?", read off the identity strip rather
+ * than the H1.
+ *
+ * It used to be an H1 assertion, and D4 is why it no longer can be: the header
+ * is now `Order · <customer> · <date>`, which two orders of one repeat customer
+ * placed on one day share CHARACTER FOR CHARACTER — the exact collision §1.3
+ * exists to break. The strip's full `Order ID` is the one thing on the screen
+ * that names the record, so every "we are on the right order" check reads it,
+ * and each of these assertions got STRONGER in the move: `Order ord-ctx-fail`
+ * could only ever prove the header was rendered from some order.
+ */
+function onDetailOf(blocks: LooseBlock[], orderId: string): boolean {
+	return fieldEntries(blocks).includes(`Order ID=${orderId}`);
+}
+
 /** The states the DA-6 transition block offers, read back out of its DERIVED
  *  per-state action ids (`orders:transition-<state>`). */
 function transitionStates(blocks: LooseBlock[]): string[] {
@@ -967,7 +983,15 @@ describe("admin Orders console (workerd sandbox)", () => {
 			}
 		}
 		// No `Currency` column (M-2) — the formatted string carries it.
-		expect(columnLabels(table)).toEqual(["Order #", "Placed", "Status", "Customer", "Total"]);
+		//
+		// The order is D4's (PM §C.3): what a human SCANS leads, the opaque key
+		// does not, and money holds the final column because there is no column
+		// alignment of any kind (T-2/R-7) and the edge is the only thing that
+		// makes a money column read as one.
+		expect(columnLabels(table)).toEqual(["Placed", "Customer", "Status", "Order #", "Total"]);
+		// T-1: five columns on a list screen, the ceiling — the short id replaced
+		// the full uuid in place rather than being added alongside it.
+		expect(columnLabels(table)).toHaveLength(5);
 		const listReq = stub!.requests.find((r) => r.url.startsWith("/admin/orders"));
 		expect(listReq?.headers["x-internal-token"]).toBe("admin-token-xyz");
 	});
@@ -1108,7 +1132,8 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(row?.label).toBe("#7e4c · cust-a · $15.00 · paid");
 		// The Block Kit degradation (§1.3): a prefix and nothing else — an option is
 		// `{value, label}`, so there is nowhere to hang a copy button. The full id is
-		// NOT here, and does not need to be: the detail header carries it verbatim.
+		// NOT here, and does not need to be: the detail's identity strip carries it
+		// verbatim.
 		expect(row?.label).not.toContain(LIST_ID_1);
 	});
 
@@ -1132,27 +1157,120 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(options.map((o) => o.label.split(" · ")[0])).toEqual(["#3f8a1c", "#3f8a1d", "#b91d"]);
 	});
 
-	test("D4: the picker's candidate set IS the array the table renders — same ids, same order, and prefixes unique against exactly those rows", async () => {
+	test("D4: the picker's candidate set IS the array the table renders — the row's token and that row's option token are the same string, on both pages", async () => {
 		await boot();
 		for (const mode of ["two", "twins"] as const) {
 			listRows = mode;
 			const blocks = await list();
-			const rowIds = tableRows([tableWithId(blocks, "orders:list")!]).map((r) => String(r.id));
+			const rowTokens = tableRows([tableWithId(blocks, "orders:list")!]).map((r) =>
+				String(r.shortId),
+			);
 			// Everything below is an equality between two lists; on an empty page they
 			// are both `[]` and every assertion passes having compared nothing.
-			expect(rowIds.length).toBeGreaterThan(0);
+			expect(rowTokens.length).toBeGreaterThan(0);
 			const options = pickerOptions(blocks).filter((o) => o.value !== "none");
-			// If the picker were ever fed a re-fetched or filtered copy, these diverge.
-			expect(options.map((o) => o.value)).toEqual(rowIds);
-			// And the prefixes are the ones computed over THAT set: recomputing them
-			// here from the table's own ids must reproduce every label verbatim, so a
-			// picker that widened or narrowed its candidate set fails this line even
-			// when the option values still happen to match.
-			const expected = shortIdsFor(rowIds);
+			// The two surfaces are computed at two call sites over the same `orders`
+			// array. THIS is the line that makes that a fact rather than an intention:
+			// the token the operator reads off a row is character-for-character the
+			// token leading that row's option, so the walk from table to picker is an
+			// exact string match and not a positional guess.
 			expect(options.map((o) => o.label.split(" · ")[0])).toEqual(
-				rowIds.map((id) => `#${expected.get(id)}`),
+				rowTokens.map((token) => `#${token}`),
 			);
+			// And the population itself is right. The picker still carries FULL ids as
+			// option values — that is where the table's ids went — so recomputing the
+			// prefixes from the picker's own candidate set must reproduce the table's
+			// cells verbatim. A picker fed a re-fetched, filtered or reordered copy
+			// diverges here even when the leading tokens happen to line up.
+			const recomputed = shortIdsFor(options.map((o) => o.value));
+			expect(options.map((o) => recomputed.get(o.value))).toEqual(rowTokens);
 		}
+	});
+
+	test("D4/§1.3: the list row renders the SHORT id and the full uuid appears NOWHERE in the table — including on the page where two ids collide", async () => {
+		await boot();
+		for (const mode of ["two", "twins"] as const) {
+			listRows = mode;
+			const table = tableWithId(await list(), "orders:list");
+			// Not "no id column": the identity is still THERE and still a `code` chip
+			// (T-4) — it is the 32 characters of entropy after the prefix that are not.
+			expect(columnsOf(table).find((c) => c.label === "Order #")?.format).toBe("code");
+			const rendered = JSON.stringify(table);
+			for (const id of [LIST_ID_1, LIST_ID_2, TWIN_ID_A, TWIN_ID_B]) {
+				expect(rendered).not.toContain(id);
+			}
+			// The row cell is the bare token — the `#` is the column HEADER's job, so
+			// it is not paid for once per row.
+			const tokens = tableRows([table!]).map((r) => String(r.shortId));
+			for (const token of tokens) expect(token.startsWith("#")).toBe(false);
+			// Uniqueness is the whole point of a prefix: two rows an operator cannot
+			// tell apart is the defect this rule exists to prevent, and the `twins`
+			// page is two ids that agree for five characters.
+			expect(new Set(tokens).size).toBe(tokens.length);
+		}
+		// On the twins page the extension is paid for by the ids that need it: the
+		// colliding pair goes to six characters, their neighbour stays at the floor.
+		listRows = "twins";
+		expect(tableRows([tableWithId(await list(), "orders:list")!]).map((r) => r.shortId)).toEqual([
+			"3f8a1c",
+			"3f8a1d",
+			"b91d",
+		]);
+	});
+
+	test("D4/§1.3: NO table anywhere in the console renders a full uuid — the sweep is every table in every response, not just `orders:list`", async () => {
+		await boot();
+		// This test is deliberately scoped to TABLES rather than to whole
+		// responses, because the two are different claims. §1.3 bans the full id
+		// from a LIST ROW; it simultaneously REQUIRES the detail to render one in
+		// full, in the identity strip, or the id stops being obtainable anywhere.
+		// A response-wide sweep would forbid the thing the rule mandates.
+		//
+		// It is scoped to every table rather than to the primary one because the
+		// first version of this sweep named `orders:list` — and the Customer
+		// panel's "Other orders" table, one accordion below, went on rendering all
+		// 36 characters identity-first with nothing to catch it.
+		const uuids = [LIST_ID_1, LIST_ID_2, TWIN_ID_A, TWIN_ID_B];
+		const sweep = (blocks: LooseBlock[], where: string): void => {
+			const tables = findBlocks(blocks, "table");
+			expect(tables.length).toBeGreaterThan(0);
+			for (const table of tables) {
+				for (const uuid of uuids) {
+					expect(
+						JSON.stringify(table).includes(uuid),
+						`${where}: table "${String(table.block_id)}" renders the full uuid ${uuid}`,
+					).toBe(false);
+				}
+			}
+		};
+		for (const mode of ["two", "twins"] as const) {
+			listRows = mode;
+			sweep(await list(), `list (${mode})`);
+		}
+		listRows = "two";
+		// `ord-1` is the one that carries a populated `recentOrders`, so it is the
+		// order whose detail exercises the "Other orders" table; the rest are swept
+		// so a future table on any of these states inherits the rule for free.
+		for (const id of ["ord-1", "ord-guest", "ord-shipped", "ord-refunded", "ord-flagged"]) {
+			sweep(await open(id), `detail ${id}`);
+		}
+		// And the detail DOES still carry the full id — one summary field, which is
+		// §1.3's escape hatch and the reason the sweep above is table-scoped.
+		expect(fieldEntries(await open("ord-1"))).toContain("Order ID=ord-1");
+	});
+
+	test("T-2/M-1: money is the LAST column and every cell is formatted with its own currency — no Currency column, no raw minor units", async () => {
+		await boot();
+		const table = tableWithId(await list(), "orders:list");
+		const labels = columnLabels(table);
+		expect(labels[labels.length - 1]).toBe("Total");
+		// M-2: the currency rides in the formatted string, not in a column of its
+		// own and not in the header — orders carry their own currency each, so a
+		// currency stated once in a header would be a claim this page cannot make.
+		expect(labels).not.toContain("Currency");
+		for (const label of labels) expect(label).not.toMatch(/USD|EUR|\$/);
+		// SUMMARY_1 is 1500 minor units, SUMMARY_2 is 2000.
+		expect(tableRows([table!]).map((r) => r.total)).toEqual(["$15.00", "$20.00"]);
 	});
 
 	test("D4: for every order on a page the picker's prefix is a prefix of the refund confirm's — the operator can match `#7e4c` to `#7e4ce728` by eye", async () => {
@@ -1255,9 +1373,16 @@ describe("admin Orders console (workerd sandbox)", () => {
 		const blocks = await open("ord-1");
 		expect(blocks.map((b) => b.type)).toEqual(["header", "actions", "fields", "tab"]);
 		expect(findBlocks(blocks, "header").map((b) => b.text)).toEqual([
-			"Order ord-1", // M-10: the uuid appears exactly ONCE
+			// D4: the H1 names the order the way a human does — who placed it and
+			// when — instead of spending the page's largest type on a uuid.
+			"Order · cust-a · 10 Jul 2026",
 			"Line items", // the ONE header permitted inside a panel (P-2)
 		]);
+		// …and the id is not merely absent from the H1, it has MOVED (§1.3): a
+		// console that shows a prefix on every other surface needs exactly one
+		// place the whole id is still readable, or it stops being obtainable at
+		// all. That place is the identity strip, and it renders in FULL.
+		expect(fieldEntries(blocks)).toContain("Order ID=ord-1");
 		const tab = findBlock(blocks, "tab");
 		expect(tab?.block_id).toBe("orders:ord-1:tabs"); // stable (B-4)
 		expect(tab?.default_tab).toBe(0); // ALWAYS (D-4)
@@ -1267,12 +1392,15 @@ describe("admin Orders console (workerd sandbox)", () => {
 		// The identity strip: 6 entries in 3 row-major PAIRS, with Total on it.
 		const identity = findBlocks(blocks, "fields").find((f) => f.block_id === "orders:identity");
 		const labels = ((identity?.fields ?? []) as Array<{ label: string }>).map((f) => f.label);
+		// `Order ID` sits where `Customer` used to: the H1 took the customer, the
+		// strip took the id, and the count stayed at 6 so R-3's row-major PAIRS
+		// survive. An appended 7th entry would have left a widowed cell.
 		expect(labels).toEqual([
 			"Status",
 			"Total",
 			"Placed (UTC)",
 			"Payment",
-			"Customer",
+			"Order ID",
 			"Reconciliation",
 		]);
 		// M-6/X-13: an absolute UTC timestamp is trimmed to seconds.
@@ -1398,7 +1526,21 @@ describe("admin Orders console (workerd sandbox)", () => {
 				String(r.address ?? "").includes("1 Main St"),
 			),
 		).toBe(true);
-		expect(tableRows(groupBlocks(blocks, "orders:ord-1:other-orders"))[0]?.id).toBe(LIST_ID_2);
+		// D4/§1.3 binds this table too — it is a list row like any other. It shows
+		// the prefix of `LIST_ID_2`, computed over ITS OWN candidate set
+		// (`recentOrders`), and never the 36 characters it used to lead with.
+		const other = groupBlocks(blocks, "orders:ord-1:other-orders");
+		expect(tableRows(other)[0]?.shortId).toBe(shortIdsFor([LIST_ID_2]).get(LIST_ID_2));
+		expect(tableRows(other)[0]?.shortId).toBe("b91d");
+		expect(JSON.stringify(other)).not.toContain(LIST_ID_2);
+		// Same ordering principle as the primary list: identity out of the lead,
+		// money last (T-2). No `Customer` column — every row is this customer.
+		expect(columnLabels(findBlock(other, "table"))).toEqual([
+			"Placed",
+			"Status",
+			"Order #",
+			"Total",
+		]);
 		// The profile book is still labelled context-only (ADR-0009), in ≤200 chars.
 		const disclaimer = contextTexts(groupBlocks(blocks, "orders:ord-1:addresses"));
 		expect(disclaimer.some((t) => t.includes("context only"))).toBe(true);
@@ -1448,7 +1590,7 @@ describe("admin Orders console (workerd sandbox)", () => {
 		await boot();
 		const blocks = await open("ord-ctx-fail");
 		// The detail survives in full.
-		expect(findBlocks(blocks, "header").some((b) => b.text === "Order ord-ctx-fail")).toBe(true);
+		expect(onDetailOf(blocks, "ord-ctx-fail")).toBe(true);
 		expect(tableWithId(blocks, "orders:lines")).toBeDefined();
 		expect(group(blocks, "orders:ord-ctx-fail:notes")).toBeDefined();
 		// The group is present with an EXPLICIT unavailable body.
@@ -1632,7 +1774,7 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(transitionStates(blocks)).toEqual(["completed"]);
 		expect(JSON.stringify(blocks)).not.toContain("teleported");
 		// And the page is a real detail, not the `{blocks: []}` dead-end.
-		expect(findBlocks(blocks, "header").some((b) => b.text === "Order ord-unknown")).toBe(true);
+		expect(onDetailOf(blocks, "ord-unknown")).toBe(true);
 	});
 
 	test("a transition button POSTs with a content-derived Idempotency-Key and re-renders the detail", async () => {
@@ -1647,7 +1789,7 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(post!.headers["idempotency-key"]).toBe("admin-transition:ord-1:processing");
 		expect(post!.headers["x-internal-token"]).toBe("admin-token-xyz");
 		expect((post!.body as { toState: string }).toState).toBe("processing");
-		expect(findBlocks(after, "header").some((b) => b.text === "Order ord-1")).toBe(true);
+		expect(onDetailOf(after, "ord-1")).toBe(true);
 	});
 
 	test("DA-2a: a SHIPPED order really is offered `Mark refunded` — the terminal flip a stale view could otherwise reach, so the watermark is not theoretical", async () => {
@@ -1742,7 +1884,7 @@ describe("admin Orders console (workerd sandbox)", () => {
 				value: { orderId: "ord-1", toState: "paid", state: "paid" },
 			}),
 		);
-		expect(findBlocks(after, "header").some((b) => b.text === "Order ord-1")).toBe(true);
+		expect(onDetailOf(after, "ord-1")).toBe(true);
 		const banner = findBlock(after, "banner");
 		expect(banner?.variant).not.toBe("error");
 		expect(banner?.title).toBe("No change");
@@ -2899,7 +3041,7 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(post!.headers["idempotency-key"]).toBe("admin-note:ord-1:carol:Packed and shipped.");
 		expect(post!.headers["x-internal-token"]).toBe("admin-token-xyz");
 		expect((post!.body as { author: string; body: string }).author).toBe("carol");
-		expect(findBlocks(after, "header").some((b) => b.text === "Order ord-1")).toBe(true);
+		expect(onDetailOf(after, "ord-1")).toBe(true);
 		expect(group(after, "orders:ord-1:notes")).toBeDefined();
 	});
 
@@ -2909,7 +3051,7 @@ describe("admin Orders console (workerd sandbox)", () => {
 		stub!.requests.length = 0;
 		const after = await submitForm(blocks, "orders:add-note", { author: "carol", body: "   " });
 		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
-		expect(findBlocks(after, "header").some((b) => b.text === "Order ord-1")).toBe(true);
+		expect(onDetailOf(after, "ord-1")).toBe(true);
 		expect(findBlocks(after, "banner").find((b) => b.variant === "error")?.title).toBe(
 			"Note not added",
 		);

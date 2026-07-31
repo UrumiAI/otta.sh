@@ -688,7 +688,23 @@ function checkX20(blocks: readonly LooseBlock[]): string[] {
 // ---------------------------------------------------------------------------
 // X-22 (L-7, M-7, R-17a/b) — an "Open X" picker that is a select instead of
 // a combobox, more than one per response, or any select/combobox option
-// whose label leaks its own opaque-id value.
+// whose label leaks its own opaque-id value IN FULL.
+//
+// The last clause is narrower than it once read, and §1.3 (the UUID display
+// rule) is why: the console now REQUIRES the Orders picker to lead its label
+// with a short unique prefix of the very id it carries as a value, because two
+// orders of one repeat customer are otherwise identical character for
+// character. So "no id in a label" was never the rule worth enforcing — "no
+// WHOLE id in a label" is. What the check tests is unchanged (`includes` of the
+// entire value); only the sentence describing it has been brought back in line
+// with the screens.
+//
+// KNOWN EDGE, noted rather than resolved: `shortIdsFor` maps an id SHORTER than
+// its 4-character floor to itself, so such an id would BE its own prefix and
+// compliant code leading a label with it would trip this check. Nothing on any
+// screen is that short today (every opaque id here is a uuid), and the
+// fragility belongs to this helper rather than to the console — recording it
+// beats loosening the rule for a case that has never occurred.
 // ---------------------------------------------------------------------------
 
 function checkX22(blocks: readonly LooseBlock[]): string[] {
@@ -721,7 +737,7 @@ function checkX22(blocks: readonly LooseBlock[]): string[] {
 				const label = String(opt.label ?? "");
 				if (value.length >= 4 && looksLikeOpaqueId(value) && label.includes(value)) {
 					out.push(
-						`X-22: option label "${label}" (field "${String(f.label ?? f.action_id)}") contains its own id-like value "${value}" (M-7/X-22) — an id is the option's VALUE, never its text.`,
+						`X-22: option label "${label}" (field "${String(f.label ?? f.action_id)}") contains its own id-like value "${value}" IN FULL (M-7/X-22, §1.3) — a whole id is the option's VALUE, never its text. A §1.3 short prefix MAY lead the label (the Orders picker requires one); it is the id in full that must not appear.`,
 					);
 				}
 			}

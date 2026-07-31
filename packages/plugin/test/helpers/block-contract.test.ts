@@ -778,6 +778,41 @@ describe("assertBlockContract — X-22 (L-7, M-7, R-17a/b)", () => {
 		);
 	});
 
+	test("compliant: a label LEADING with a §1.3 short prefix of its own value", () => {
+		// The reconciled rule as a test rather than as a comment. The Orders picker
+		// is REQUIRED to lead its label with a short prefix of the id it carries as
+		// a value, so a prefix must PASS exactly where the whole id fails. Without
+		// this case the boundary is asserted only from the violating side, and
+		// tightening the `includes` back to a `startsWith` would silently outlaw
+		// the console's own picker.
+		passes(
+			[
+				HEADER,
+				{
+					type: "form",
+					block_id: carriedFormId("orders:open"),
+					fields: [
+						{
+							type: "combobox",
+							action_id: "orderId",
+							label: "Open order",
+							initial_value: "none",
+							options: [
+								{ value: "none", label: "Choose an order…" },
+								{
+									value: "7e4ce728-1b3f-4a5e-9c21-0d5f6a7b8c90",
+									label: "#7e4c · alice@example.com · $15.00 · paid",
+								},
+							],
+						},
+					],
+					submit: { label: "Open order", action_id: "orders:open" },
+				},
+			],
+			LIST,
+		);
+	});
+
 	test("violates: the picker is a select, not a combobox", () => {
 		throwsRule(
 			[

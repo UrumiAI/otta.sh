@@ -22,7 +22,7 @@ The picker label becomes `#7e4c · alice@example.com · $15.00 · paid`, compute
 and "unique among the rows on screen" are the same claim (pinned by a test rather
 than assumed). Block Kit options are `{value, label}` and nothing else, so the
 accepted degradation is the prefix alone with no copy button; the full id stays one
-drill away in the detail header. The refund confirm becomes
+drill away, as a summary field on the order detail. The refund confirm becomes
 `Order #7e4ce728 — refund $10.00 to alice@example.com? …`, with the order named
 first and kept on the recipient-dropping fallback that holds the 200-character
 budget. No wire, port or money-handling change.
