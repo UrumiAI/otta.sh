@@ -1,6 +1,10 @@
 import { describe, expect, test } from "vitest";
 import { encodeCarrier, PREFILL_FIELD } from "../../src/admin/scaffold/carrier.js";
-import { assertBlockContract, type BlockContractOptions } from "./block-contract.js";
+import {
+	assertBlockContract,
+	assertNoRawTimestamps,
+	type BlockContractOptions,
+} from "./block-contract.js";
 import type { LooseBlock } from "./blocks.js";
 
 /**
@@ -484,6 +488,11 @@ describe("assertBlockContract — X-11 (§1 prose budgets)", () => {
 });
 
 describe("assertBlockContract — X-13 (M-6)", () => {
+	// X-13 itself still passes a trimmed-to-seconds ISO string — its subject is
+	// PRECISION and ZONE, and it is the narrower of the two rules now.
+	// `assertNoRawTimestamps` (INC-13) is what rejects this value outright; the
+	// suite below is its own, and folding it into X-13 is the one-line follow-up
+	// tracked on `assertNoRawTimestamps`.
 	test("compliant: absolute UTC trimmed to seconds", () => {
 		passes(
 			[
@@ -530,6 +539,68 @@ describe("assertBlockContract — X-13 (M-6)", () => {
 			LIST,
 			"X-13",
 		);
+	});
+});
+
+/** One `fields` entry — the surface every INC-13 case below is stated on. */
+function rawField(label: string, value: string): LooseBlock {
+	return { type: "fields", fields: [{ label, value }] };
+}
+
+describe("assertNoRawTimestamps (INC-13)", () => {
+	test("compliant: the console's one timestamp format", () => {
+		expect(() =>
+			assertNoRawTimestamps([HEADER, rawField("Placed", "10 Jul 2026, 01:00 UTC")]),
+		).not.toThrow();
+	});
+
+	test("compliant: a date-only bound is not a timestamp", () => {
+		expect(() => assertNoRawTimestamps([HEADER, rawField("Starts", "2026-07-10")])).not.toThrow();
+	});
+
+	test("violates: a raw ISO instant in a fields value — even trimmed to seconds", () => {
+		expect(() =>
+			assertNoRawTimestamps([HEADER, rawField("Placed (UTC)", "2026-07-10T01:00:00Z")]),
+		).toThrow(/INC-13/);
+	});
+
+	test("violates: a raw ISO instant in a plain table cell", () => {
+		expect(() =>
+			assertNoRawTimestamps([
+				HEADER,
+				{
+					type: "table",
+					block_id: "orders:list",
+					page_action_id: "orders:page",
+					columns: [{ key: "createdAt", label: "Placed" }],
+					rows: [{ createdAt: "2026-07-10T01:00:00Z" }],
+				},
+			]),
+		).toThrow(/INC-13/);
+	});
+
+	test("violates: a raw ISO instant composed into a context line", () => {
+		expect(() =>
+			assertNoRawTimestamps([
+				HEADER,
+				{ type: "context", text: "Deleted on 2026-07-10T01:00:00Z." },
+			]),
+		).toThrow(/INC-13/);
+	});
+
+	test("exempt: a relative_time column carries the raw timestamp on purpose (T-4)", () => {
+		expect(() =>
+			assertNoRawTimestamps([
+				HEADER,
+				{
+					type: "table",
+					block_id: "orders:sessions",
+					page_action_id: "orders:page",
+					columns: [{ key: "createdAt", label: "Signed in", format: "relative_time" }],
+					rows: [{ createdAt: "2026-07-10T01:00:00.000Z" }],
+				},
+			]),
+		).not.toThrow();
 	});
 });
 

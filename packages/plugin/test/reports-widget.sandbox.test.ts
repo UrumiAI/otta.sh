@@ -1,6 +1,6 @@
 import { OTTA_PLUGIN_CAPABILITIES } from "@otta-sh/plugin";
 import { afterEach, describe, expect, test } from "vitest";
-import { assertBlockContract } from "./helpers/block-contract.js";
+import { assertBlockContract, assertNoRawTimestamps } from "./helpers/block-contract.js";
 import {
 	blocksOf,
 	columnLabels,
@@ -527,6 +527,34 @@ describe("Reports admin page (workerd sandbox)", () => {
 		assertBlockContract(submitted, { screen: "reports", level: "list" });
 		expect(String(group(submitted, "reports:revenue")?.label)).toBe("Revenue by week");
 		expect(revenueQuery(stub.requests).get("interval")).toBe("week");
+	});
+
+	test("INC-13: the absorbed formatter left this screen's rendering byte-identical, and it states no wire timestamp", async () => {
+		// Reports' `formatDay` and its three day helpers moved into
+		// `scaffold/datetime.ts`; every other assertion in this file is unchanged
+		// and green, which is what says the absorption preserved behaviour. This
+		// test adds the half those assertions do not cover: the screen renders no
+		// raw instant on any of its states.
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", reportsResponder);
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+		await seedAdminToken(sandbox, stub);
+
+		const asDefault = blocksOf(
+			await sandbox.invokeRoute("admin", { type: "page_load", page: "/reports" }),
+		);
+		assertNoRawTimestamps(asDefault);
+
+		const ranged = blocksOf(
+			await sandbox.invokeRoute("admin", { type: "page_load", page: "/reports", ...RANGE }),
+		);
+		assertNoRawTimestamps(ranged);
+		// Day-only bounds keep rendering as days — INC-13 governs INSTANTS, and a
+		// period the operator typed as a calendar date stays one.
+		expect(contextTexts(ranged)[0]).toMatch(/^10 Jul – 12 Jul 2026 \(UTC\)/);
 	});
 
 	test("the subtitle states the active period in absolute dates, and the From/To form prefills it", async () => {

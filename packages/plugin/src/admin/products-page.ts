@@ -32,6 +32,7 @@ import {
 	failClosedResponse,
 	filterPanel,
 	filterSummary,
+	formatTimestamp,
 	leafLevel,
 	listLevel,
 	noticeBanner,
@@ -875,7 +876,13 @@ function detailBlocks(
 			type: "banner",
 			variant: "alert",
 			title: "This product was deleted in the CMS",
-			description: `Deleted on ${utc(p.deletedAt)}. It cannot be edited or restocked from here; existing orders that included it are unaffected.`,
+			// The one place on this screen where a timestamp is composed into a
+			// SENTENCE rather than sitting beside its own label. `formatTimestamp`
+			// is locale-correct here, but the seam between the LTR-rendered value
+			// and the surrounding copy is not bidi-isolated — see the note in
+			// `scaffold/datetime.ts`; isolation is a console-wide follow-up, not a
+			// wrapper this one call site should invent.
+			description: `Deleted on ${formatTimestamp(p.deletedAt)}. It cannot be edited or restocked from here; existing orders that included it are unaffected.`,
 		});
 	}
 	// The identity strip: "what am I looking at, and is it healthy" without a
@@ -972,8 +979,10 @@ function productPanel(
 			["Kind", p.productKind],
 			["Weight (g)", p.weightGrams === null ? "—" : String(p.weightGrams)],
 			["Dimensions (mm, LxWxH)", dimensionsSummary(p)],
-			["Created (UTC)", utc(p.createdAt)],
-			["Updated (UTC)", utc(p.updatedAt)],
+			// The labels dropped their `(UTC)` suffix because the value states the
+			// zone itself now (INC-13). Still 8 entries, still 4 row-major pairs.
+			["Created", formatTimestamp(p.createdAt)],
+			["Updated", formatTimestamp(p.updatedAt)],
 		]),
 	];
 	if (p.deletedAt !== null) {
@@ -1501,12 +1510,6 @@ function valueLabel(prefix: string, values: readonly string[]): string {
 		index === longest ? `${value.slice(0, room)}…` : value,
 	);
 	return `${prefix} — ${shortened.join(VALUE_SEPARATOR)}`;
-}
-
-/** An absolute UTC timestamp TRIMMED TO SECONDS (M-6): milliseconds are
- *  noise, and X-13 rejects them outright. No timezone conversion, ever. */
-function utc(iso: string): string {
-	return iso.replace(/\.\d+(?=Z$)/, "");
 }
 
 /** E-7's normative fail-closed banner — the copy names the symptom, lists the

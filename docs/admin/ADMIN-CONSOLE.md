@@ -821,7 +821,7 @@ string, a joined address, a summary sentence).
 | Column kind | `format` | Notes |
 |---|---|---|
 | Record id, SKU, provider ref | `code` | Monospace chip; keeps UUIDs from reading as prose. |
-| Timestamp in a table | `relative_time` | "3 days ago". Absolute UTC belongs in `fields` (§9, M-6). |
+| Timestamp in a table | `relative_time` | "3 days ago" — for a column read as an AGE and stated on no other surface. A timestamp the detail screen ALSO shows renders absolute, in M-6's format, so the two agree (INC-13). |
 | Count, quantity | `number` | `num.toLocaleString()` — locale grouping (`table.tsx:26-29`). |
 | Money | *(none — plain text)* | Pre-formatted by `formatMoney` (M-1). **Never** `number`: `9900` would render as `9,900`, which is worse than raw because it looks like a formatted total. |
 | Lifecycle state | `badge` | Subject to T-5. |
@@ -1845,10 +1845,17 @@ claim of a "reported bug" here is withdrawn.
 and prices are what the buyer paid — later product edits never change them."* Nothing else on the
 screen re-litigates it.
 
-**M-6 — dates.** Tables use `format:"relative_time"`. `fields` use absolute UTC **trimmed to
-seconds** (`2026-07-26T09:14:37Z`) with the label suffixed `(UTC)`; milliseconds are noise and must
-be trimmed. Date-only bounds (filters, validity windows) render `YYYY-MM-DD`. No timezone
-conversion anywhere.
+**M-6 — dates.** ONE dialect, from `scaffold/datetime.ts`: an absolute instant renders
+`8 Jul 2026, 10:30 UTC` (`formatTimestamp`) — day-first and spelled-month so it cannot be misread
+the way `7/8/2026` can, minutes only, and the zone is part of the VALUE, so the label names the
+event (`Placed`) and carries no `(UTC)` suffix. **A raw wire timestamp never reaches an operator**
+(INC-13, enforced by `assertNoRawTimestamps`) — this supersedes the earlier rule that `fields` show
+ISO trimmed to seconds. **One screen is not yet there:** Coupons' detail still renders
+`Created (UTC)` as a raw instant and its suite is deliberately unwired from the assertion, because
+the file was held by another increment. Coupons converts in the badge increment, at which point the
+rule is enforced console-wide and folds into X-13; until then the enforcement excludes it. Tables use `relative_time` only where T-4 still allows it; a field the
+detail screen also shows is absolute on both. Date-only bounds (filters, validity windows) render
+`YYYY-MM-DD` and stay days. No timezone conversion anywhere: every rendering is UTC-pinned.
 
 **M-7 — IDs.** `format:"code"` in tables. In `fields`, the full id is the value of a labeled field
 (`Order ID`). An id never appears inside prose, inside a button or submit label (`Save std-us` →

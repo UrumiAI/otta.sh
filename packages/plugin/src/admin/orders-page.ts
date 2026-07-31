@@ -37,11 +37,16 @@ import {
 	carriedForm,
 	createListDetailHandler,
 	customAction,
+	dayOf,
+	DAY_MS,
 	emptyState,
 	encodePath,
+	endOfDay,
 	failClosedResponse,
 	filterPanel,
 	filterSummary,
+	formatDate,
+	formatTimestamp,
 	leafLevel,
 	listLevel,
 	noticeBanner,
@@ -52,6 +57,7 @@ import {
 	SHORT_ID_CONFIRM_LEN,
 	shortIdFixed,
 	shortIdsFor,
+	startOfDay,
 	type ListDetailInput,
 	type NavPath,
 	type Notice,
@@ -337,11 +343,6 @@ const PERIOD_LABELS: ReadonlyMap<PeriodKey, string> = new Map([
 const PERIOD_BY_LABEL: ReadonlyMap<string, PeriodKey> = new Map(
 	[...PERIOD_LABELS].map(([key, label]) => [label, key]),
 );
-
-const DAY_MS = 86_400_000;
-
-/** A bare `YYYY-MM-DD`, the shape a `date_input` submits. */
-const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 /** The console's own filter form values, kept alongside the opaque service cursor
  *  so paging preserves the form (MOD-9).
@@ -634,7 +635,21 @@ function listBlocks(
 		type: "table",
 		block_id: "orders:list",
 		columns: [
-			{ key: "createdAt", label: "Placed", format: "relative_time" },
+			// ABSOLUTE, NOT `relative_time` — the deferred half of the column
+			// restructure, and the one column on this screen where T-4's table
+			// default is wrong. `Placed` is the field this list is scanned by and it
+			// is restated one click away on the order detail; a list that said
+			// "3 weeks ago" against a detail that said an instant left the operator
+			// to work out that they were the same field. Absolute on both, in the
+			// same words, is what makes the two comparable — and it is what an
+			// operator reconciling against a payout statement or a refund window
+			// actually needs, which "3 weeks ago" never gives them.
+			//
+			// The other `relative_time` columns on this screen (`Signed in` on
+			// sessions, `When` on refunds and on the timeline) keep it: each is read
+			// for an AGE and each is stated on exactly one surface, so T-4's default
+			// still holds for them.
+			{ key: "createdAt", label: "Placed" },
 			{ key: "customer", label: "Customer" },
 			{ key: "state", label: "Status", format: "badge" }, // the ONE badge column (T-5)
 			// The `#` lives in the HEADER, so the cell is the bare token and the
@@ -648,7 +663,7 @@ function listBlocks(
 			// was given — and is here so a future caller narrowing the set renders
 			// a short id rather than `undefined` in the operator's face.
 			shortId: shortIds.get(o.id) ?? shortIdFixed(o.id),
-			createdAt: o.createdAt,
+			createdAt: formatTimestamp(o.createdAt),
 			state: o.state,
 			customer: o.customerId ?? o.buyerRef,
 			total: formatTotal(o.totalCents, o.currency),
@@ -929,7 +944,7 @@ function detailBlocks(args: DetailArgs): Block[] {
 		// surface has to render the whole thing or the full id stops being
 		// obtainable anywhere in the console. That surface is the strip, and it
 		// is still "exactly once" — just one block lower.
-		{ type: "header", text: `Order · ${o.customerId ?? o.buyerRef} · ${headerDate(o.createdAt)}` },
+		{ type: "header", text: `Order · ${o.customerId ?? o.buyerRef} · ${formatDate(o.createdAt)}` },
 		{ ...backButton(actions.back, "← Back to orders", path), block_id: "orders:nav" },
 	];
 	// At most 2 banners at this level (X-31): the notice and the reconciliation
@@ -963,7 +978,15 @@ function detailBlocks(args: DetailArgs): Block[] {
 		fields("orders:identity", [
 			["Status", o.state],
 			["Total", formatTotal(o.totals.totalCents, o.totals.currency)],
-			["Placed (UTC)", utc(o.createdAt)],
+			// The H1 above states this same instant as a DATE. It is the same
+			// rendering truncated, not a second one: `formatDate` and
+			// `formatTimestamp` share one set of date parts, so `10 Jul 2026` is a
+			// literal prefix of `10 Jul 2026, 01:00 UTC`. That is what INC-13
+			// collapsed — the screen used to say "placed" twice, once as a date and
+			// once as a raw ISO instant, and an operator had to know they were the
+			// same field. The label lost its `(UTC)` suffix because the value now
+			// carries the zone itself.
+			["Placed", formatTimestamp(o.createdAt)],
 			["Payment", o.paymentMethod ?? "—"],
 			["Order ID", o.id],
 			["Reconciliation", reconciliationSummary(o)],
@@ -1212,14 +1235,21 @@ function customerGroup(
 					type: "table",
 					block_id: `orders:${o.id}:sessions:table`,
 					columns: [
+						// `Signed in` KEEPS `relative_time`: a session's age is what this
+						// table is read for, and — unlike `Placed` — it is stated on no
+						// other surface, so it is not one of the fields INC-13 had to make
+						// agree between list and detail. The other two are absolute
+						// instants an operator compares against now, and they used to
+						// render as raw ISO with the zone pushed into the label; the value
+						// carries the zone now, so the labels dropped `(UTC)`.
 						{ key: "createdAt", label: "Signed in", format: "relative_time" },
-						{ key: "expiresAt", label: "Expires (UTC)" },
-						{ key: "revokedAt", label: "Revoked (UTC)" },
+						{ key: "expiresAt", label: "Expires" },
+						{ key: "revokedAt", label: "Revoked" },
 					],
 					rows: ctx.sessions.map((s) => ({
 						createdAt: s.createdAt,
-						expiresAt: utc(s.expiresAt), // M-6: milliseconds are noise (X-13)
-						revokedAt: s.revokedAt === null ? "—" : utc(s.revokedAt),
+						expiresAt: formatTimestamp(s.expiresAt),
+						revokedAt: s.revokedAt === null ? "—" : formatTimestamp(s.revokedAt),
 					})),
 					page_action_id: actions.page, // never fires: no next_cursor, no sortable column
 					empty_text: "No sessions.",
@@ -1252,8 +1282,13 @@ function customerGroup(
 					// to this table, and a prefix here is not promised to match the
 					// one the primary list computed for the same order against a
 					// different population.
+					// `Placed` is ABSOLUTE here for the same reason it is on the primary
+					// list: it is the SAME FIELD of the same record type, and the two
+					// tables sit one click apart. A `relative_time` here would have
+					// re-opened exactly the list/detail disagreement the primary list
+					// just closed.
 					columns: [
-						{ key: "createdAt", label: "Placed", format: "relative_time" },
+						{ key: "createdAt", label: "Placed" },
 						{ key: "state", label: "Status", format: "badge" },
 						{ key: "shortId", label: "Order #", format: "code" },
 						{ key: "total", label: "Total" }, // money LAST (T-2, M-1)
@@ -1263,7 +1298,7 @@ function customerGroup(
 						// was handed; it is here so a narrowed set renders a short id
 						// rather than `undefined` in the operator's face.
 						shortId: otherShortIds.get(r.id) ?? shortIdFixed(r.id),
-						createdAt: r.createdAt,
+						createdAt: formatTimestamp(r.createdAt),
 						state: r.state,
 						total: formatTotal(r.totalCents, r.currency),
 					})),
@@ -1318,7 +1353,7 @@ function customerFields(orderId: string, ctx: CustomerContextWire): FieldsBlock 
 		["Contact email", identity.buyerRef],
 		identity.emailVerifiedAt === null
 			? ["Email verified", "not verified"]
-			: ["Email verified (UTC)", utc(identity.emailVerifiedAt)],
+			: ["Email verified", formatTimestamp(identity.emailVerifiedAt)],
 	]);
 }
 
@@ -1405,7 +1440,7 @@ function reconcileGroup(o: OrderDetailWire, open: OpenGroup): Block | undefined 
 					["Outcome", r.outcome],
 					["Resolved by", r.resolvedBy],
 					["Reason", r.reason],
-					["Resolved (UTC)", utc(r.resolvedAt)],
+					["Resolved", formatTimestamp(r.resolvedAt)],
 				]),
 			],
 		};
@@ -1585,10 +1620,10 @@ function fulfilmentFields(orderId: string, f: OrderFulfillmentWire): FieldsBlock
 	return fields(`orders:${orderId}:fulfilment-fields`, [
 		["Carrier", f.carrier],
 		["Tracking number", f.trackingNumber],
-		["Shipped (UTC)", utc(f.shippedAt)],
+		["Shipped", formatTimestamp(f.shippedAt)],
 		["Recorded by", f.recordedBy],
 		["Tracking URL", f.trackingUrl ?? "—"],
-		["Recorded (UTC)", utc(f.recordedAt)],
+		["Recorded", formatTimestamp(f.recordedAt)],
 	]);
 }
 
@@ -2119,7 +2154,7 @@ function cancellationFields(orderId: string, c: OrderCancellationWire): FieldsBl
 		["Reason", c.reason],
 		["Detail", c.detail ?? "—"],
 		["Cancelled by", c.cancelledBy],
-		["Cancelled (UTC)", utc(c.cancelledAt)],
+		["Cancelled", formatTimestamp(c.cancelledAt)],
 	]);
 }
 
@@ -3667,48 +3702,6 @@ function fitLabel(text: string): string {
 	return fit(text, LABEL_BUDGET);
 }
 
-/** An absolute UTC timestamp TRIMMED TO SECONDS (M-6): milliseconds are noise,
- *  and X-13 rejects them outright. No timezone conversion, ever — a
- *  non-conforming value passes through unchanged rather than being mangled. */
-function utc(iso: string): string {
-	return iso.replace(/\.\d+(?=Z$)/, "");
-}
-
-/**
- * The detail H1's date — `8 Jul 2026`. DATE ONLY, and deliberately the smallest
- * thing that works: INC-13 introduces the shared absolute-timestamp formatter
- * for the console's other timestamps, and this is the one surface that needed a
- * human-readable date before that lands. It is the natural place for INC-13 to
- * absorb — TOGETHER WITH `reports-page.ts`'s `formatDay` (landed via the
- * Reports increment, PR #183), which is this function in all but name (same
- * Intl options, same UTC pinning, same `en-GB` chosen for
- * the same reason) and was written independently on another screen. Two
- * accidental copies is the argument for the shared formatter, not against it;
- * whoever hoists this must take both or the console keeps two dialects.
- *
- * UTC-pinned (M-6 — no timezone conversion anywhere in this console) and run
- * through `Intl`, which is the house rule: localization and RTL-safety come
- * from Intl, never from hand-assembled month names. The locale is `en-GB` for
- * its DAY-MONTH-YEAR shape rather than for its country — `8 Jul 2026` cannot be
- * misread the way a numeric `7/8/2026` can, which is why the spec writes the
- * format that way.
- *
- * A malformed date falls back to the ISO date part rather than throwing:
- * `Intl.format` raises on an invalid Date, and a header is not worth failing a
- * render over (the handler answers 200 on every path).
- */
-const HEADER_DATE = new Intl.DateTimeFormat("en-GB", {
-	day: "numeric",
-	month: "short",
-	year: "numeric",
-	timeZone: "UTC",
-});
-
-function headerDate(iso: string): string {
-	const at = new Date(iso);
-	return Number.isNaN(at.getTime()) ? iso.slice(0, 10) : HEADER_DATE.format(at);
-}
-
 /** Read integer minor units out of an untrusted carried/button payload. Rejects
  *  anything that is not a plain non-negative integer string — money never
  *  crosses this boundary as a float (B-2). */
@@ -3774,35 +3767,6 @@ function periodWindow(form: OrdersFilterForm, now: Date): { from?: string; to?: 
 		...(form.from !== undefined ? { from: startOfDay(form.from) } : {}),
 		...(form.to !== undefined ? { to: endOfDay(form.to) } : {}),
 	};
-}
-
-/**
- * THE THREE DAY HELPERS BELOW ARE A TWIN of `reports-page.ts:192-219`
- * (`dayOf`, `DAY_PATTERN`, `parseBound`), and the duplication is deliberate for
- * exactly as long as it takes the shared timestamp formatter to land: this
- * increment's job was to converge the two screens' SEMANTICS (whole days, both
- * ends inclusive), and reaching into a `scaffold/` module to also converge the
- * code would have widened it past its own file table. The timestamps increment
- * introduces that shared formatter for list/detail rendering — it is the
- * absorber for these three, and the reciprocal note sits over the Reports copy
- * so neither side can be changed alone without seeing the other.
- */
-
-/** The `YYYY-MM-DD` (UTC) a moment falls on. */
-function dayOf(at: Date): string {
-	return at.toISOString().slice(0, 10);
-}
-
-/** A submitted day → the first instant of it. A full datetime (which a
- *  `date_input` never submits, but a carrier could carry) passes through. */
-function startOfDay(value: string): string {
-	return DAY_PATTERN.test(value) ? `${value}T00:00:00.000Z` : value;
-}
-
-/** A submitted day → the LAST instant of it, which is what makes a `To` day part
- *  of the period the operator asked for. */
-function endOfDay(value: string): string {
-	return DAY_PATTERN.test(value) ? `${value}T23:59:59.999Z` : value;
 }
 
 /** The fulfillment form's `shippedAt` (NOT a filter bound — the filter's are
