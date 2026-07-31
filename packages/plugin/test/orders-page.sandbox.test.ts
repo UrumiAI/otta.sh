@@ -221,6 +221,15 @@ const SUMMARY_2 = {
  * SAME total and SAME state. Everything the old picker label was built from is
  * identical — only the id differs, and it differs late enough (character 6) to
  * exercise the extend-on-collision path rather than the 4-character floor.
+ *
+ * The `twins` page serves them ALONGSIDE `SUMMARY_2` rather than alone, for two
+ * reasons. The load-bearing one: a page of nothing but twins has one `Status`
+ * value in every row, and X-4 rejects a badge column that cannot chunk two
+ * values apart — so a twins-only page could never go through the §15 V-3 sweep,
+ * and the render state this increment introduces would be the one state nothing
+ * mechanically checked. The second: it makes the page assert both halves of
+ * "extends ONLY on collision" at once — the twins go to six characters while
+ * their uncolliding neighbour stays at the four-character floor.
  */
 const SUMMARY_TWIN_A = { ...SUMMARY_1, id: TWIN_ID_A };
 const SUMMARY_TWIN_B = { ...SUMMARY_1, id: TWIN_ID_B };
@@ -498,7 +507,11 @@ function makeGetResponder() {
 			if (listRows === "twins") {
 				return {
 					status: 200,
-					body: { ok: true, orders: [SUMMARY_TWIN_A, SUMMARY_TWIN_B], nextCursor: null },
+					body: {
+						ok: true,
+						orders: [SUMMARY_TWIN_A, SUMMARY_TWIN_B, SUMMARY_2],
+						nextCursor: null,
+					},
 				};
 			}
 			if (query.includes("cursor=")) {
@@ -834,6 +847,16 @@ describe("short ids (D4)", () => {
 		expect(shortIdsFor(["ab", "cd"], 4).get("ab")).toBe("ab");
 	});
 
+	test("`min` can only RAISE the floor — a caller cannot opt out of the 4-character minimum", () => {
+		// SHORT_ID_MIN is a rule about what an operator can recognise, not a
+		// default: at min 1 a page of orders renders `#7`, `#b`.
+		for (const min of [1, 2, 0, -3, 2.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+			expect(shortIdsFor([LIST_ID_1, LIST_ID_2], min).get(LIST_ID_1)).toBe("7e4c");
+		}
+		// Above the minimum a fractional floor truncates rather than rounding up.
+		expect(shortIdsFor([LIST_ID_1, LIST_ID_2], 8.9).get(LIST_ID_1)).toBe("7e4ce728");
+	});
+
 	test("shortIdFixed takes 8 by default and never pads a shorter id", () => {
 		expect(SHORT_ID_CONFIRM_LEN).toBe(8);
 		expect(shortIdFixed(LIST_ID_1)).toBe("7e4ce728");
@@ -1093,17 +1116,20 @@ describe("admin Orders console (workerd sandbox)", () => {
 		await boot();
 		listRows = "twins";
 		const options = pickerOptions(await list()).filter((o) => o.value !== "none");
-		expect(options.map((o) => o.value)).toEqual([TWIN_ID_A, TWIN_ID_B]);
+		expect(options.map((o) => o.value)).toEqual([TWIN_ID_A, TWIN_ID_B, LIST_ID_2]);
+		const twins = options.filter((o) => o.value === TWIN_ID_A || o.value === TWIN_ID_B);
 		// Everything after the leading token is character-for-character identical —
 		// which is precisely the label the old picker rendered, twice.
-		const tails = options.map((o) => o.label.slice(o.label.indexOf(" · ")));
+		const tails = twins.map((o) => o.label.slice(o.label.indexOf(" · ")));
 		expect(tails[0]).toBe(tails[1]);
 		expect(tails[0]).toBe(" · cust-a · $15.00 · paid");
 		// So the leading token is the whole discriminator, and it is distinct.
-		expect(options[0]?.label).not.toBe(options[1]?.label);
+		expect(twins[0]?.label).not.toBe(twins[1]?.label);
 		// `3f8a1c…` / `3f8a1d…` agree for five characters, so the 4-character floor
-		// cannot separate them and the prefix extends to six — no further.
-		expect(options.map((o) => o.label.split(" · ")[0])).toEqual(["#3f8a1c", "#3f8a1d"]);
+		// cannot separate them and the prefix extends to six — no further. Their
+		// neighbour collides with neither and stays at the floor: the extension is
+		// paid for by the ids that need it, not by the page.
+		expect(options.map((o) => o.label.split(" · ")[0])).toEqual(["#3f8a1c", "#3f8a1d", "#b91d"]);
 	});
 
 	test("D4: the picker's candidate set IS the array the table renders — same ids, same order, and prefixes unique against exactly those rows", async () => {
@@ -1112,6 +1138,9 @@ describe("admin Orders console (workerd sandbox)", () => {
 			listRows = mode;
 			const blocks = await list();
 			const rowIds = tableRows([tableWithId(blocks, "orders:list")!]).map((r) => String(r.id));
+			// Everything below is an equality between two lists; on an empty page they
+			// are both `[]` and every assertion passes having compared nothing.
+			expect(rowIds.length).toBeGreaterThan(0);
 			const options = pickerOptions(blocks).filter((o) => o.value !== "none");
 			// If the picker were ever fed a re-fetched or filtered copy, these diverge.
 			expect(options.map((o) => o.value)).toEqual(rowIds);
@@ -2990,7 +3019,18 @@ describe("admin Orders console (workerd sandbox)", () => {
 			"ord-x402",
 			"ord-refunded",
 			"ord-uncaptured",
+			// D4's two new render states, through the SAME gate as the rest — the
+			// twins page is where option labels are closest to colliding (X-22) and
+			// the long-buyer order is where the confirm dialog is closest to its
+			// 200-character budget (X-11), so neither may take the short-id change
+			// as licence to skip the sweep.
+			"ord-long-buyer",
 		]) {
+			assertBlockContract(await open(id), { screen: "orders", level: "detail" });
+		}
+		listRows = "twins";
+		assertBlockContract(await list(), { screen: "orders", level: "list" });
+		for (const id of [TWIN_ID_A, TWIN_ID_B]) {
 			assertBlockContract(await open(id), { screen: "orders", level: "detail" });
 		}
 	});

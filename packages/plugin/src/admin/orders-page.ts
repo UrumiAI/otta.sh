@@ -47,12 +47,14 @@ import {
 	readAdminTokens,
 	readString,
 	screenActions,
+	SHORT_ID_CONFIRM_LEN,
+	shortIdFixed,
+	shortIdsFor,
 	type ListDetailInput,
 	type NavPath,
 	type Notice,
 	type ScreenActions,
 } from "./scaffold/index.js";
-import { SHORT_ID_CONFIRM_LEN, shortIdFixed, shortIdsFor } from "./scaffold/short-id.js";
 
 /**
  * The admin Orders console — the REFERENCE screen for `docs/admin/ADMIN-CONSOLE.md`

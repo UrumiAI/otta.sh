@@ -18,8 +18,9 @@ filter's all-values option is the word `any`, not `""`: the pinned renderer trea
 an empty value as "no value" and draws a blank trigger, and the trigger shows the
 raw **value** rather than the option label (R-17a, F-6a/F-6c). At a true unfiltered
 zero state the table is replaced by one real `empty` block (E-2); filtered-to-zero
-keeps `empty_text`. The drill-in is a `combobox` whose option value is the id and
-whose label never contains one (`alice@example.com · $15.00 · paid`, L-7/X-22).
+keeps `empty_text`. The drill-in is a `combobox` whose option value is the full id
+and whose label leads with a short form of it (L-7; see the short-id entry in this
+release for the label's final shape).
 
 **The detail (§11.2).** Eleven top-level sections and thirteen `section`-as-heading
 labels become five blocks outside the tabs — header, back, ≤2 banners, a 6-entry

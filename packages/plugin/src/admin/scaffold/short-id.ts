@@ -50,9 +50,16 @@ export const SHORT_ID_CONFIRM_LEN = 8;
  * Shortest-unique prefixes for a candidate set: `min` characters, extended one
  * at a time for exactly the ids that collide at that length.
  *
+ * `min` RAISES THE FLOOR AND CANNOT LOWER IT. {@link SHORT_ID_MIN} is a rule
+ * about what an operator can recognise, not a default a caller may opt out of,
+ * so the argument is clamped: anything below it — including a fractional or
+ * non-finite value, which is truncated or discarded first — yields
+ * {@link SHORT_ID_MIN}. A caller that wants LONGER prefixes (say, matching the
+ * confirm dialog's 8) passes 8 and gets 8.
+ *
  * TOTAL — every id in `ids` has an entry, including duplicates (which map to
- * the same prefix, because they are the same record) and ids shorter than
- * `min` (which map to themselves). DETERMINISTIC — the result depends only on
+ * the same prefix, because they are the same record) and ids shorter than the
+ * floor (which map to themselves). DETERMINISTIC — the result depends only on
  * the SET of ids, never on their order, so re-rendering a page in a different
  * order cannot renumber it.
  */
@@ -60,7 +67,7 @@ export function shortIdsFor(
 	ids: readonly string[],
 	min: number = SHORT_ID_MIN,
 ): Map<string, string> {
-	const floor = Number.isInteger(min) && min > 0 ? min : SHORT_ID_MIN;
+	const floor = Number.isFinite(min) ? Math.max(SHORT_ID_MIN, Math.trunc(min)) : SHORT_ID_MIN;
 	// De-duplicate FIRST: an id is never its own collision, and a page that
 	// happens to list one record twice must not push every prefix to full length.
 	const candidates = [...new Set(ids)];
@@ -89,6 +96,12 @@ export function shortIdsFor(
  * A fixed-length prefix, for a surface rendering ONE record with no candidate
  * set to be unique against (the refund confirm). Ids shorter than `len` are
  * returned whole rather than padded — a short id is already unambiguous.
+ *
+ * `len` is NOT clamped to {@link SHORT_ID_MIN} the way `shortIdsFor`'s `min`
+ * is: a caller here is choosing how much of one id to show and a shorter cut is
+ * a legitimate choice, since no uniqueness is being claimed either way. It is
+ * only sanity-checked — a fractional, non-positive or non-finite `len` falls
+ * back to {@link SHORT_ID_CONFIRM_LEN} rather than producing an empty string.
  */
 export function shortIdFixed(id: string, len: number = SHORT_ID_CONFIRM_LEN): string {
 	const take = Number.isInteger(len) && len > 0 ? len : SHORT_ID_CONFIRM_LEN;
