@@ -2,6 +2,9 @@
 
 - Status: accepted
 - Date: 2026-07-11
+- Amended: 2026-07-31 — **Decision 2 only**, by
+  [ADR-0014](./0014-second-native-descriptor-for-react-admin.md); Decision 1 is reaffirmed
+  unchanged. See "Amended 2026-07-31" at the end of this record.
 - Refines: ADR-0001 (the plugin's runtime placement), ADR-0003 (the storefront/cart shim contract)
 
 ## Context
@@ -99,3 +102,25 @@ So the site's `/cart/*` POST endpoints enforce CSRF themselves:
   `allowedHosts`); changing it is a rebuild + redeploy, not a config flip.
 - A future multi-tenant / marketplace deployment must NOT inherit this: third-party
   plugins go back in `sandboxed: []` with a sandbox runner (and Workers Paid).
+
+## Amended 2026-07-31 — Decision 2's React clause, and only that clause
+
+Everything above is left exactly as written on 2026-07-11. This block only points at the
+record that amends one sentence of it.
+
+**[ADR-0014](./0014-second-native-descriptor-for-react-admin.md)** permits a SECOND EmDash
+descriptor — id `otta-console`, `format: "native"` — to render React admin pages from a
+separate package, alongside the unchanged standard-format `otta` descriptor, for the
+migrated screens only. It carries the evidence this record could not: a built-and-run
+two-descriptor spike, the measured Worker cost, and the costs accepted.
+
+Decision 3's hand-written descriptor list (`sites/staging/src/otta-plugin-descriptor.ts`) gains
+a second entry, `otta-console`; its constraints stand — no `sandboxed:`, no `sandboxRunner:` —
+and the existing `otta` descriptor's capabilities and `allowedHosts` are unchanged.
+
+**Decision 1 is untouched and expressly reaffirmed there.** The 18 workerd sandbox suites
+remain the contract gate; none is deleted, skipped or weakened, and Playwright is added for
+React screens as an *addition*, never a replacement. Decision 2 continues to bind
+`@otta-sh/plugin` in full — standard format, sandbox-clean, zero EmDash dependency — and its
+other prohibitions (no `page:fragments`, no `options`-configured native format, no direct
+DB/storage access, ADR-0003's route-based storefront) stand unamended.
