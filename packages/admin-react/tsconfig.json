@@ -13,7 +13,12 @@
 		"rootDir": ".",
 		// This is the ONE package in the workspace that renders in a browser.
 		"jsx": "react-jsx",
-		"lib": ["ES2023", "DOM", "DOM.Iterable"]
+		"lib": ["ES2023", "DOM", "DOM.Iterable"],
+		// Empty, overriding the base's `["node"]`: nothing here runs in Node.
+		// Ambient Node globals in scope would let `process.env`, `Buffer` or a
+		// `node:` import typecheck cleanly inside a module that ships to a
+		// browser — the failure would be at runtime, in the admin, not here.
+		"types": []
 	},
 	"include": ["src", "test", "tsdown.config.ts", "vitest.config.ts"]
 }

@@ -56,7 +56,7 @@ export const PROBE_INTERACTION = { type: "page_load", page: "/orders" } as const
 
 /** Outcome of the one call this page makes. Rendered verbatim, so a screenshot
  *  is evidence rather than a claim. */
-interface Probe {
+export interface Probe {
 	readonly ok: boolean;
 	readonly status: number;
 	readonly ms: number;
@@ -77,8 +77,14 @@ interface BlockWire {
  * mechanism: on Block Kit a non-2xx unmounts the whole block tree, and here an
  * uncaught rejection unmounts the component and leaves the operator a blank
  * pane. Failures are values, and they render.
+ *
+ * Exported so the failure paths can be driven directly. The interesting ones
+ * are not exotic: a 401 (session expired in another tab) and a 403 (the
+ * operator's role lost `plugins:manage`) are the two most likely things this
+ * page will ever see in production, and both must produce a panel that says so
+ * rather than an empty pane.
  */
-async function probeOttaAdminRoute(): Promise<Probe> {
+export async function probeOttaAdminRoute(): Promise<Probe> {
 	const started = performance.now();
 	try {
 		const response = await apiFetch(OTTA_ADMIN_ROUTE, {
@@ -132,7 +138,22 @@ function accentFor(probe: Probe | null): string {
 	return probe.ok ? OK_ACCENT : FAIL_ACCENT;
 }
 
-function describe(probe: Probe | null): string {
+/**
+ * The one line an operator actually reads.
+ *
+ * A 401 or a 403 must reach the screen as `HTTP 401` / `HTTP 403`, not as a
+ * blank panel: those are the realistic failures here (a session that expired in
+ * another tab, a role that lost `plugins:manage`), and the whole point of a
+ * status panel is that it distinguishes "nothing came back" from "something
+ * came back and it was a refusal".
+ *
+ * DEFERRED TO INC-20, deliberately: this states the status, it does not tell
+ * the operator what to DO about it. Remediation copy belongs with the plugin's
+ * `getErrorMessage` vocabulary so both surfaces say the same thing, and that is
+ * worth doing when a real screen rides this path rather than on a shell whose
+ * only job is to prove the path exists.
+ */
+export function describeProbe(probe: Probe | null): string {
 	if (probe === null) return "checking…";
 	if (probe.transportError !== undefined) return `no response — ${probe.transportError}`;
 	return `HTTP ${probe.status} in ${probe.ms} ms`;
@@ -144,6 +165,85 @@ function DefinitionRow({ term, children }: { term: string; children: React.React
 			<dt style={{ opacity: 0.7 }}>{term}</dt>
 			<dd style={{ margin: 0, fontVariantNumeric: "tabular-nums" }}>{children}</dd>
 		</>
+	);
+}
+
+/**
+ * The status panel, split out from the page so it can be rendered against a
+ * given `Probe` without a browser, a network or an effect.
+ *
+ * `aria-live="polite"` is on the panel and is load-bearing: the content arrives
+ * after mount, so a screen-reader user who is already on the page gets nothing
+ * at all unless the region announces itself.
+ */
+export function ProbePanel({
+	probe,
+	onRetry,
+}: {
+	probe: Probe | null;
+	onRetry?: () => void;
+}): React.ReactElement {
+	return (
+		<section
+			data-testid="otta-admin-route-probe"
+			aria-live="polite"
+			style={{
+				...panelStyle,
+				borderInlineStartWidth: 4,
+				borderInlineStartColor: accentFor(probe),
+			}}
+		>
+			<h2 style={{ fontSize: 15, fontWeight: 650, marginBlockEnd: 10 }}>Commerce data path</h2>
+			<dl
+				style={{
+					display: "grid",
+					gridTemplateColumns: "max-content 1fr",
+					gap: "6px 20px",
+					fontSize: 13,
+					margin: 0,
+				}}
+			>
+				<DefinitionRow term="Route">
+					<code>{OTTA_ADMIN_ROUTE}</code>
+				</DefinitionRow>
+				<DefinitionRow term="Result">
+					<span data-testid="probe-result">{describeProbe(probe)}</span>
+				</DefinitionRow>
+				{probe !== null && probe.envelopeKeys.length > 0 && (
+					<DefinitionRow term="Envelope">
+						<code>{probe.envelopeKeys.join(", ")}</code>
+					</DefinitionRow>
+				)}
+				{probe !== null && probe.blockTypes.length > 0 && (
+					<DefinitionRow term="Blocks">
+						{probe.blockTypes.length} — <code>{probe.blockTypes.join(", ")}</code>
+					</DefinitionRow>
+				)}
+			</dl>
+			<p style={{ fontSize: 12, opacity: 0.7, marginBlockStart: 10, marginBlockEnd: 0 }}>
+				The console holds no capabilities and no allowed hosts of its own. It reads commerce data by
+				calling the <code>otta</code> plugin's admin route with your session, exactly as the Block
+				Kit screens do.
+			</p>
+			<button
+				type="button"
+				data-testid="probe-retry"
+				onClick={onRetry}
+				disabled={probe === null}
+				style={{
+					marginBlockStart: 12,
+					padding: "5px 12px",
+					fontSize: 13,
+					border: HAIRLINE,
+					borderRadius: 6,
+					background: "transparent",
+					color: "inherit",
+					cursor: probe === null ? "progress" : "pointer",
+				}}
+			>
+				Check again
+			</button>
+		</section>
 	);
 }
 
@@ -178,66 +278,7 @@ export function ConsoleHomePage(): React.ReactElement {
 				are next door under <strong>Otta</strong> and are unchanged.
 			</p>
 
-			<section
-				data-testid="otta-admin-route-probe"
-				aria-live="polite"
-				style={{
-					...panelStyle,
-					borderInlineStartWidth: 4,
-					borderInlineStartColor: accentFor(probe),
-				}}
-			>
-				<h2 style={{ fontSize: 15, fontWeight: 650, marginBlockEnd: 10 }}>Commerce data path</h2>
-				<dl
-					style={{
-						display: "grid",
-						gridTemplateColumns: "max-content 1fr",
-						gap: "6px 20px",
-						fontSize: 13,
-						margin: 0,
-					}}
-				>
-					<DefinitionRow term="Route">
-						<code>{OTTA_ADMIN_ROUTE}</code>
-					</DefinitionRow>
-					<DefinitionRow term="Result">
-						<span data-testid="probe-result">{describe(probe)}</span>
-					</DefinitionRow>
-					{probe !== null && probe.envelopeKeys.length > 0 && (
-						<DefinitionRow term="Envelope">
-							<code>{probe.envelopeKeys.join(", ")}</code>
-						</DefinitionRow>
-					)}
-					{probe !== null && probe.blockTypes.length > 0 && (
-						<DefinitionRow term="Blocks">
-							{probe.blockTypes.length} — <code>{probe.blockTypes.join(", ")}</code>
-						</DefinitionRow>
-					)}
-				</dl>
-				<p style={{ fontSize: 12, opacity: 0.7, marginBlockStart: 10, marginBlockEnd: 0 }}>
-					The console holds no capabilities and no allowed hosts of its own. It reads commerce data
-					by calling the <code>otta</code> plugin's admin route with your session, exactly as the
-					Block Kit screens do.
-				</p>
-				<button
-					type="button"
-					data-testid="probe-retry"
-					onClick={() => setAttempt((n) => n + 1)}
-					disabled={probe === null}
-					style={{
-						marginBlockStart: 12,
-						padding: "5px 12px",
-						fontSize: 13,
-						border: HAIRLINE,
-						borderRadius: 6,
-						background: "transparent",
-						color: "inherit",
-						cursor: probe === null ? "progress" : "pointer",
-					}}
-				>
-					Check again
-				</button>
-			</section>
+			<ProbePanel probe={probe} onRetry={() => setAttempt((n) => n + 1)} />
 
 			<section style={panelStyle}>
 				<h2 style={{ fontSize: 15, fontWeight: 650, marginBlockEnd: 10 }}>What lives here</h2>

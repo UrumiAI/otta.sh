@@ -110,10 +110,23 @@ module.exports = {
 		enhancedResolveOptions: {
 			exportsFields: ["exports"],
 			conditionNames: ["import", "types", "default"],
-			// `.tsx` is here for packages/admin-react — the one package in the
-			// workspace that compiles JSX. Without it the console's `./admin`
-			// export resolves to nothing and the quarantine rules pass vacuously
-			// over the exact file they exist to police.
+			// `.tsx` is here for packages/admin-react, the one package in the
+			// workspace that compiles JSX. It is for GRAPH COMPLETENESS, and it
+			// is worth being precise about what it does NOT do, because the
+			// first version of this comment claimed the opposite and was wrong.
+			//
+			// It is NOT what enforces the quarantine. dependency-cruiser walks
+			// `.tsx` source regardless of this list, so `admin.tsx`'s own imports
+			// are cruised and `console-imports-no-workspace-package` fires on a
+			// planted `@otta-sh/plugin` import with or without the entry —
+			// verified both ways, not assumed.
+			//
+			// What it actually closes is one phantom unresolved edge:
+			// `test/console-plugin.test.ts`'s `../src/admin.js` (the repo's `.js`
+			// internal-import convention) resolving to `admin.tsx`. That edge
+			// lives in `test/`, which every rule here exempts, so nothing is
+			// gated on it — an unresolved dependency is simply noise in the graph
+			// that a future `no-orphans`-style rule would trip over.
 			extensions: [".ts", ".tsx", ".js"],
 		},
 	},

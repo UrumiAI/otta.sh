@@ -35,8 +35,12 @@ import {
 	OTTA_PLUGIN_CAPABILITIES,
 	OTTA_PLUGIN_ID,
 } from "@otta-sh/plugin";
-import { createPlugin as createConsolePlugin } from "@otta-sh/admin-react";
+import {
+	createPlugin as createConsolePlugin,
+	OTTA_CONSOLE_ADMIN_PAGES,
+} from "@otta-sh/admin-react";
 import { describe, expect, test } from "vitest";
+import { CONSOLE_SHELL, MIGRATED_SCREENS } from "../e2e/harness.js";
 import { buildEmdashOptions, COMMERCE_SERVICE_URL_PLACEHOLDER } from "../src/emdash-options.js";
 import { ottaConsoleDescriptor } from "../src/otta-console-descriptor.js";
 import { ottaPluginDescriptor } from "../src/otta-plugin-descriptor.js";
@@ -326,6 +330,67 @@ describe("ottaConsoleDescriptor (ADR-0014's second descriptor)", () => {
 		// pivot ADR-0006 exists to avoid stays avoided.
 		expect(options).not.toHaveProperty("sandboxed");
 		expect(options).not.toHaveProperty("sandboxRunner");
+	});
+});
+
+/**
+ * THE COVERAGE LINK — the console's page list and its Playwright gate, tied
+ * together mechanically.
+ *
+ * Without this, INC-19's two halves are only related by intent. The console
+ * declares its pages in `@otta-sh/admin-react`; the Playwright coverage gate
+ * reads `MIGRATED_SCREENS` (plus `CONSOLE_SHELL`) in `sites/staging/e2e/`.
+ * Nothing made adding to the first require adding to the second, so INC-20
+ * could ship an Orders page, generate NO smoke spec for it, and see every gate
+ * go green — the precise failure `console-screens.spec.ts` was written to make
+ * impossible, arriving through the one door it does not watch.
+ *
+ * It lives here rather than in the e2e surface because this file already
+ * imports both sides, and because `pnpm test` is the gate hardest to skip.
+ */
+function assertEveryConsolePageIsGated(pages: readonly { path: string }[]): void {
+	const gated = [CONSOLE_SHELL.path, ...MIGRATED_SCREENS.map((screen) => screen.path)];
+	for (const page of pages) {
+		expect(
+			gated,
+			`console page ${page.path} has NO Playwright gate — add it to MIGRATED_SCREENS in ` +
+				`sites/staging/e2e/harness.ts (which generates its smoke spec), or, if it is not a ` +
+				`migrated screen, give it its own spec the way CONSOLE_SHELL has one`,
+		).toContain(page.path);
+	}
+}
+
+describe("every page the console serves has a Playwright gate", () => {
+	test("the RUNTIME page list is fully gated", () => {
+		// `createPlugin().admin.pages` rather than the exported constant: that is
+		// the list the admin manifest reads and the sidebar renders from, so it is
+		// the list that can strand a real page.
+		assertEveryConsolePageIsGated(createConsolePlugin().admin?.pages ?? []);
+	});
+
+	test("the declared page list is fully gated too", () => {
+		assertEveryConsolePageIsGated(OTTA_CONSOLE_ADMIN_PAGES);
+	});
+
+	test("NEGATIVE CONTROL: an ungated page fails, and says which", () => {
+		// A SENTINEL path, not `/orders`. `/orders` is the real-world case — it is
+		// INC-20's target and the exact mistake this guard exists to catch — but
+		// using it as the fixture would mean that the moment INC-20 legitimately
+		// gates `/orders`, this control stops throwing and quietly passes for the
+		// wrong reason. Verified: with `/orders` planted in the page list AND in
+		// MIGRATED_SCREENS, the `/orders` version of this test failed. A control
+		// that the change it guards can defuse is not a control.
+		const ungated = { path: "/__never_a_real_screen__" };
+		expect(() => assertEveryConsolePageIsGated([...OTTA_CONSOLE_ADMIN_PAGES, ungated])).toThrow(
+			/__never_a_real_screen__/,
+		);
+	});
+
+	test("NEGATIVE CONTROL: the guard is not vacuous", () => {
+		// If the shipped page list were empty, every assertion above would pass
+		// over nothing and report green forever.
+		expect(OTTA_CONSOLE_ADMIN_PAGES.length).toBeGreaterThan(0);
+		expect(createConsolePlugin().admin?.pages ?? []).not.toHaveLength(0);
 	});
 });
 

@@ -22,6 +22,16 @@
  */
 import type { Page } from "@playwright/test";
 import {
+	COUPONS_PAGE,
+	ORDERS_PAGE,
+	PRODUCTS_PAGE,
+	REPORTS_PAGE,
+	SETTINGS_PAGE,
+	SHIPPING_PAGE,
+	TAX_PAGE,
+} from "@otta-sh/plugin";
+import {
+	ADMIN_BASE_PATH,
 	ADMIN_SHELL_TIMEOUT_MS,
 	BLOCK_KIT_SIDEBAR_LINK,
 	CONSOLE_SHELL,
@@ -40,6 +50,22 @@ import {
  *  is useful. §0.4's 1440x2200 viewport comes from the project config; nothing
  *  here passes `fullPage`, which truncates these pages. */
 const SHELL_SHOT = `${REPO_ROOT}/node_modules/.playwright-artifacts/console-shell-1440x2200.png`;
+
+/**
+ * The Block Kit screens that must survive the console's arrival — taken from
+ * `@otta-sh/plugin`'s own exports, which are the same constants
+ * `ottaPluginDescriptor` registers. `site-config.test.ts` pins the descriptor's
+ * `adminPages` to exactly this list, so the two cannot drift.
+ */
+const BLOCK_KIT_PAGES = [
+	REPORTS_PAGE,
+	SETTINGS_PAGE,
+	ORDERS_PAGE,
+	PRODUCTS_PAGE,
+	TAX_PAGE,
+	SHIPPING_PAGE,
+	COUPONS_PAGE,
+] as const;
 
 /**
  * Open the shell and wait for the admin SPA to hand it to React.
@@ -88,7 +114,27 @@ test.describe("the otta-console shell", () => {
 		// the only symptom is an empty nav group.
 		const blockKitLinks = adminPage.locator(BLOCK_KIT_SIDEBAR_LINK);
 		await expect(blockKitLinks.first()).toBeVisible();
-		expect(await blockKitLinks.count(), "the otta plugin lost sidebar entries").toBe(7);
+
+		// The expectation is DERIVED from the plugin's own exported page list, not
+		// the literal 7 this first read. A hard-coded count is a second place the
+		// screen inventory is written down, and the wrong one wins: an increment
+		// that legitimately adds a Block Kit page would fail here and the obvious
+		// fix — bump the number — is indistinguishable from the obvious fix for
+		// the bug this test exists to catch. Deriving it means the test tracks the
+		// plugin and only fires when the SIDEBAR disagrees with it.
+		expect(
+			await blockKitLinks.count(),
+			"the otta plugin's sidebar entries do not match its declared adminPages",
+		).toBe(BLOCK_KIT_PAGES.length);
+
+		// Named, not just counted — an equal-sized but different set is still the
+		// failure. (`href` carries `adminPages[].path` verbatim.)
+		for (const page of BLOCK_KIT_PAGES) {
+			await expect(
+				adminPage.locator(`a[href$="${ADMIN_BASE_PATH}/plugins/otta${page.path}"]`).first(),
+				`${page.label} is missing from the sidebar`,
+			).toBeVisible();
+		}
 
 		// ...and the console's own entry is there, under its own id.
 		await expect(

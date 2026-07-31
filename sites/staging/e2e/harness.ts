@@ -131,9 +131,12 @@ export const DEV_BYPASS_PATH =
 	process.env["OTTA_E2E_SEED_ON_AUTH"] === "1" ? DEV_BYPASS_SETUP_PATH : DEV_BYPASS_SIGNIN_PATH;
 
 /** ADR-0014's second descriptor id. The React screens live under it and under
- *  nothing else — a React page added under id `otta` would hide that plugin's
- *  six other Block Kit pages from the sidebar (the `adminMode` granularity
- *  trap, ADR-0014 Decision 7). */
+ *  nothing else — a React page added under id `otta` would hide ALL SEVEN of
+ *  that plugin's Block Kit pages from the sidebar (the `adminMode` granularity
+ *  trap, ADR-0014 Decision 7). Seven, not "the other six": once the plugin's
+ *  adminMode flips to "react", the sidebar keeps only pages that HAVE a React
+ *  component, and the seven Block Kit ones do not. (ADR-0014's prose says six;
+ *  correcting the ADR belongs to the docs increment, not to this file.) */
 export const CONSOLE_PLUGIN_ID = "otta-console";
 
 /** The Block Kit plugin that keeps its seven screens. */
@@ -186,7 +189,7 @@ export const ADMIN_SHELL_TIMEOUT_MS = 60_000;
 
 /** A sidebar link belonging to the Block Kit `otta` plugin. The trailing slash
  *  is load-bearing: without it this also matches `otta-console`, and the
- *  assertion it backs — that a React page has NOT hidden the six Block Kit
+ *  assertion it backs — that a React page has NOT hidden the seven Block Kit
  *  screens (ADR-0014 Decision 7) — would pass vacuously. */
 export const BLOCK_KIT_SIDEBAR_LINK = `a[href*="${ADMIN_BASE_PATH}/plugins/${OTTA_PLUGIN_ID}/"]`;
 
