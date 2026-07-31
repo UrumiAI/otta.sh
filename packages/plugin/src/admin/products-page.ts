@@ -252,20 +252,32 @@ export function createProductsPageHandler(): RouteHandler<ProductsPageInput> {
 // -- level 0: the products list (§12.1 list) ----------------------------------
 
 /**
- * What the LIST knows about stock, decided in `fetchPage` and handed to
- * `render`. It has to be decided there because `ListLevelDef.render` is
- * SYNCHRONOUS while the low-stock threshold is a service read — so the row a
- * renderer receives is a product plus its already-resolved `On hand` cell,
- * not a bare `ProductSummaryWire`.
+ * One rendered list row: the product plus its already-resolved `On hand` cell.
+ * The cell is decided in `fetchPage` because `ListLevelDef.render` is
+ * SYNCHRONOUS while the low-stock threshold is a service read.
  */
 interface ProductsListRow {
 	product: ProductSummaryWire;
 	/** The pre-resolved `On hand` cell text — see {@link onHandCell}. */
 	onHand: string;
-	/** Page-wide stock context, the SAME object on every row of a page: a
-	 *  renderer reads it off any row it has, and an empty page has nothing to
-	 *  say about stock in the first place. */
-	stock: StockPageContext;
+}
+
+/**
+ * THE LEVEL'S `Filter` — what `filterFromValues` builds, `fetchPage` reads, and
+ * `render` receives. Two halves with two different owners:
+ *
+ *  - `form` is the OPERATOR's filter, parsed from the submitted values and
+ *    round-tripped through the list cursor.
+ *  - `stock` is PAGE CONTEXT that `fetchPage` resolves on the way through and
+ *    hands forward. The scaffold passes `render` the SAME object it passed
+ *    `fetchPage` (`createListDetailHandler`'s `renderList`), which makes this
+ *    the one channel a synchronous `render` has for something the fetch
+ *    discovered — and, unlike the rows, one that survives a page narrowed to
+ *    ZERO rows, which is exactly when the degradation banner has to speak.
+ */
+interface ProductsListState {
+	form: ProductsFilterForm;
+	stock?: StockPageContext;
 }
 
 interface StockPageContext {
@@ -283,10 +295,11 @@ interface StockPageContext {
 }
 
 function productsListLevel() {
-	return listLevel<ProductsScreenClient, ProductsFilterForm, ProductsListRow>({
+	return listLevel<ProductsScreenClient, ProductsListState, ProductsListRow>({
 		limit: PAGE_LIMIT,
 		filterFromValues,
-		async fetchPage(client, _path, form, opts) {
+		async fetchPage(client, _path, filter, opts) {
+			const form = filter.form;
 			// The threshold read runs ALONGSIDE the page read and is secondary in
 			// both directions: it can never delay the list beyond its own latency,
 			// and it can never fail it (E-1) — `readLowStockThreshold` resolves to
@@ -299,10 +312,14 @@ function productsListLevel() {
 				readLowStockThreshold(client.settings),
 			]);
 			const read = page.products.map((product) => ({ product, onHand: readOnHand(product) }));
+			// ALL-OR-NOTHING on purpose: the service fills this column from ONE left
+			// join per page, so stock is present for every row or for none — a
+			// partial page means a catalog fact (some skus have no inventory row),
+			// not a degraded read, and must not raise the banner.
 			const unreadable = read.length > 0 && read.every((r) => r.onHand === undefined);
 			const wantsLowStock = form.lowStock === "true";
 			const canFilter = threshold !== null && !unreadable;
-			const stock: StockPageContext = {
+			filter.stock = {
 				threshold,
 				unreadable,
 				filterUnavailable: wantsLowStock && !canFilter,
@@ -321,7 +338,6 @@ function productsListLevel() {
 				items: visible.map((r) => ({
 					product: r.product,
 					onHand: onHandCell(r.onHand, threshold),
-					stock,
 				})),
 				nextCursor: page.nextCursor,
 			};
@@ -385,31 +401,47 @@ async function readLowStockThreshold(client: ReportingSettingsClient): Promise<n
 	}
 }
 
-/** The ONE stock-degradation banner. Two cases share a single slot because
- *  X-31 caps a response at two top-level banners and the notice may already
- *  hold one. `alert`, never `error`: the list rendered, and E-1/E-6 keep the
- *  error variant for a fail-close or a refusal. */
+/**
+ * The ONE stock-degradation banner. Every case shares a single slot because
+ * X-31 caps a response at two top-level banners and the notice may already
+ * hold one — so when two things are degraded at once the banner carries BOTH,
+ * rather than one silently outranking the other. `alert`, never `error`: the
+ * list rendered, and E-1/E-6 keep the error variant for a fail-close or a
+ * refusal.
+ *
+ * THREE FACTS, INDEPENDENTLY TRUE:
+ *  - stock came back unreadable (every cell is `—`);
+ *  - the threshold came back unreadable (nothing can read `Low`) — worth saying
+ *    even when nothing was filtered, because the missing band is otherwise
+ *    invisible: an under-stocked product just looks like an ordinary one;
+ *  - a "Low stock only" request could not be honoured (the page is unfiltered).
+ */
 function stockBanner(stock: StockPageContext | undefined): Block | undefined {
 	if (stock === undefined) return undefined;
+	const symptoms: string[] = [];
+	const remedies: string[] = [];
 	if (stock.unreadable) {
-		return {
-			type: "banner",
-			variant: "alert",
-			title: "Stock levels are unavailable",
-			description:
-				"On hand reads — for every row here. Open a product to read its stock, and check the service connection and the admin token in Settings.",
-		};
+		symptoms.push("Stock levels are unavailable");
+		remedies.push("On hand reads — for every row here; open a product to read its stock.");
+	}
+	if (stock.threshold === null) {
+		symptoms.push("low-stock highlighting is unavailable");
+		remedies.push(
+			"The store's low-stock threshold could not be read — set it under Checkout & holds on Settings.",
+		);
 	}
 	if (stock.filterUnavailable) {
-		return {
-			type: "banner",
-			variant: "alert",
-			title: "Low stock only was not applied",
-			description:
-				"The store's low-stock threshold could not be read, so every product is listed. Set it under Checkout & holds on Settings, then apply the filter again.",
-		};
+		symptoms.push("the Low stock only filter was not applied");
+		remedies.push("Every product on this page is listed.");
 	}
-	return undefined;
+	if (symptoms.length === 0) return undefined;
+	const joined = symptoms.join("; ");
+	return {
+		type: "banner",
+		variant: "alert",
+		title: `${joined.charAt(0).toUpperCase()}${joined.slice(1)}.`,
+		description: remedies.join(" "),
+	};
 }
 
 /**
@@ -476,11 +508,12 @@ function taxClassOptions(current: string | null, taxClasses: TaxClassWire[]): Se
 function listBlocks(
 	actions: ScreenActions,
 	path: NavPath,
-	form: ProductsFilterForm,
+	filter: ProductsListState,
 	rows: ProductsListRow[],
 	nextToken: string | undefined,
 	notice: Notice | undefined,
 ): Block[] {
+	const form = filter.form;
 	const blocks: Block[] = [
 		{ type: "header", text: "Pricing & inventory" },
 		{
@@ -492,9 +525,9 @@ function listBlocks(
 		},
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
-	// Page-wide and identical on every row, so any row answers for the page.
-	const stock = rows[0]?.stock;
-	const degraded = stockBanner(stock);
+	// Page context, not row data (see `ProductsListState`): a page narrowed to
+	// zero rows still has to be able to say what went wrong.
+	const degraded = stockBanner(filter.stock);
 	if (degraded !== undefined) blocks.push(degraded);
 
 	// ONE PART PER AUTHORED FILTER FIELD (L-3): the combined Status select is
@@ -545,6 +578,15 @@ function listBlocks(
 		return blocks;
 	}
 
+	// A "Low stock only" page reports on ITSELF, never on the catalog: the filter
+	// narrows the rows this page fetched, so both the sentence and the offer to
+	// keep looking are page-scoped.
+	const narrowed = form.lowStock === "true";
+	const emptyText = narrowed
+		? "No low-stock products on this page."
+		: "No products match these filters.";
+	const scanFurther = narrowed && rows.length === 0 && nextToken !== undefined;
+
 	blocks.push({
 		type: "table",
 		block_id: "products:list",
@@ -570,8 +612,23 @@ function listBlocks(
 		})),
 		page_action_id: actions.page,
 		...(nextToken !== undefined ? { next_cursor: nextToken } : {}),
-		empty_text: "No products match these filters.",
+		// EMPTY TEXT IS OMITTED WHEN THERE IS ANOTHER PAGE TO SCAN. The pinned
+		// renderer short-circuits a zero-row table that carries `empty_text` to a
+		// bare `<p>` (`blocks/table.tsx`) — and takes the "Load more" button with
+		// it. Since "Low stock only" narrows the FETCHED PAGE (see `fetchPage`),
+		// page 1 holding no low-stock rows is the ordinary case on a real catalog,
+		// and an `empty_text` there would dead-end the filter on a sentence that
+		// is also false ("No products match these filters" — the next page may).
+		// A headers-only table keeps `Load more` alive; the context line below
+		// says what to do with it.
+		...(scanFurther ? {} : { empty_text: emptyText }),
 	});
+	if (scanFurther) {
+		blocks.push({
+			type: "context",
+			text: "No low-stock products on this page — Load more scans further.",
+		});
+	}
 	if (rows.length > 0) blocks.push(openProductForm(actions, path, rows));
 	return blocks;
 }
@@ -629,7 +686,12 @@ function filterForm(actions: ScreenActions, path: NavPath, form: ProductsFilterF
 					type: "toggle",
 					action_id: "lowStock",
 					label: "Low stock only",
-					description: "Products at or below the low-stock threshold set on Settings.",
+					// PAGE-SCOPED WORDING, because the filter is page-scoped: it narrows
+					// the rows this page fetched (see `fetchPage`), so a description
+					// promising "every low-stock product" would be a claim the screen
+					// cannot keep.
+					description:
+						"Show only products at or below the low-stock threshold (applies per page; set the threshold on Settings).",
 					// F-6b/X-24: REQUIRED — a toggle reads its value at mount only.
 					initial_value: form.lowStock === "true",
 				},
@@ -663,7 +725,12 @@ function filterForm(actions: ScreenActions, path: NavPath, form: ProductsFilterF
  *    keyed by title alone, which left the sku→title mapping in the operator's
  *    head. A null sku DROPS its segment instead of rendering a dash — a
  *    freshly-synced row would otherwise read "… · — · active (not priced)",
- *    noise on a control whose whole job is identification. `price` stays out:
+ *    noise on a control whose whole job is identification. A title that spends
+ *    ` · ` ITSELF renders with more segments, and that is accepted rather than
+ *    normalized: the separator is a reading aid, identity travels in
+ *    `option.value` (the product id), and nothing parses a label back into
+ *    fields — rewriting merchant prose to keep a label parseable would trade a
+ *    real title for an imaginary contract. `price` stays out:
  *    it is already a column, and money in a picker label competes with the
  *    handle. A null title reads `(untitled)`, the same as the table's Title
  *    cell, and never the product id.
@@ -1108,6 +1175,16 @@ function stockPanel(
 			["Inventory policy", inventoryPolicyLabel(p.inventoryPolicy)],
 		]),
 	];
+	if (threshold === null) {
+		// Say the band is missing rather than quietly dropping it: an
+		// under-stocked product with no `Low` beside it reads as an ordinary one,
+		// and nothing else on the screen would give that away. Same fact the
+		// list's banner carries, in the register this panel already uses.
+		blocks.push({
+			type: "context",
+			text: "Low-stock highlighting is unavailable — the threshold could not be read. Set it under Checkout & holds on Settings.",
+		});
+	}
 	if (p.deletedAt !== null) {
 		blocks.push({ type: "context", text: TOMBSTONE_CONTEXT });
 		return blocks;
@@ -1374,7 +1451,14 @@ function toClientFilter(form: ProductsFilterForm): ProductsListFilter {
 	return filter;
 }
 
-function filterFromValues(values: Record<string, unknown>): ProductsFilterForm {
+/** Parse the submitted filter values into this level's {@link ProductsListState}.
+ *  Only the `form` half is ever parsed from operator input — `stock` is page
+ *  context `fetchPage` resolves later, and there is nothing here to read it from. */
+function filterFromValues(values: Record<string, unknown>): ProductsListState {
+	return { form: filterFormFromValues(values) };
+}
+
+function filterFormFromValues(values: Record<string, unknown>): ProductsFilterForm {
 	const form: ProductsFilterForm = {};
 	const status = readString(values.status);
 	const productKind = readString(values.productKind);

@@ -96,7 +96,7 @@ const SUMMARY_DELETED = {
 	createdAt: "2026-07-13T00:00:00.000Z",
 };
 
-/** At the threshold (5) without being at zero — the `Low` band. */
+/** INSIDE the `Low` band (3, against a threshold of 5) without being at zero. */
 const SUMMARY_LOW = {
 	productId: "prod-low",
 	sku: "SKU-LOW",
@@ -108,6 +108,50 @@ const SUMMARY_LOW = {
 	deletedAt: null,
 	onHand: 3,
 	createdAt: "2026-07-10T00:00:00.000Z",
+};
+
+/** EXACTLY AT the threshold (5): the band is inclusive, so this reads `Low`. */
+const SUMMARY_AT_THRESHOLD = {
+	productId: "prod-at-threshold",
+	sku: "SKU-AT",
+	title: "At Threshold Widget",
+	priceCents: 1600,
+	currency: "USD",
+	productKind: "physical",
+	active: true,
+	deletedAt: null,
+	onHand: 5,
+	createdAt: "2026-07-07T00:00:00.000Z",
+};
+
+/** ONE ABOVE the threshold (6): the first count that is NOT low. Inactive so
+ *  the two-row boundary page keeps its Status badge chunking two values (X-4). */
+const SUMMARY_ABOVE_THRESHOLD = {
+	productId: "prod-above-threshold",
+	sku: "SKU-ABOVE",
+	title: "Above Threshold Widget",
+	priceCents: 1700,
+	currency: "USD",
+	productKind: "physical",
+	active: false,
+	deletedAt: null,
+	onHand: 6,
+	createdAt: "2026-07-06T00:00:00.000Z",
+};
+
+/** A title that spends the picker's OWN separator. The label is a reading aid,
+ *  not a parse — identity travels in `option.value`. */
+const SUMMARY_SEPARATOR = {
+	productId: "prod-separator",
+	sku: "SEA-SALT",
+	title: "Sea · Salt Soap",
+	priceCents: 1200,
+	currency: "USD",
+	productKind: "physical",
+	active: true,
+	deletedAt: null,
+	onHand: 9,
+	createdAt: "2026-07-05T00:00:00.000Z",
 };
 
 /** A title carrying its OWN em-dash — the collision the picker label's `—`
@@ -290,6 +334,11 @@ function makeGetResponder(state: LiveState) {
 					body: { ok: true, products: [SUMMARY_1, SUMMARY_LOW], nextCursor: null },
 				};
 			}
+			// Page 2 of a catalog whose page 1 holds nothing low, and the LAST page
+			// (no cursor) — the two halves of a narrowed-to-zero page.
+			if (query.includes("cursor=svc-cursor-nolow")) {
+				return { status: 200, body: { ok: true, products: [SUMMARY_1], nextCursor: null } };
+			}
 			if (query.includes("deleted=true")) {
 				return { status: 200, body: { ok: true, products: [SUMMARY_DELETED], nextCursor: null } };
 			}
@@ -311,10 +360,32 @@ function makeGetResponder(state: LiveState) {
 					},
 				};
 			}
+			// Both sides of the inclusive band boundary, and nothing else.
+			if (query.includes("search=boundary")) {
+				return {
+					status: 200,
+					body: {
+						ok: true,
+						products: [SUMMARY_AT_THRESHOLD, SUMMARY_ABOVE_THRESHOLD],
+						nextCursor: null,
+					},
+				};
+			}
+			// A page with no low-stock row on it, and another page behind it.
+			if (query.includes("search=nolow")) {
+				return {
+					status: 200,
+					body: { ok: true, products: [SUMMARY_1], nextCursor: "svc-cursor-nolow" },
+				};
+			}
 			if (query.includes("search=emdash")) {
 				return {
 					status: 200,
-					body: { ok: true, products: [SUMMARY_EMDASH, SUMMARY_UNPRICED], nextCursor: null },
+					body: {
+						ok: true,
+						products: [SUMMARY_EMDASH, SUMMARY_SEPARATOR, SUMMARY_UNPRICED],
+						nextCursor: null,
+					},
 				};
 			}
 			// A service that projects no stock at all: the `onHand` key is absent
@@ -346,6 +417,21 @@ function makeGetResponder(state: LiveState) {
 			return {
 				status: 200,
 				body: { ok: true, product: { ...DETAIL_1_BASE, onHand: state.onHand1 } },
+			};
+		}
+		if (path === "/admin/products/prod-separator") {
+			return {
+				status: 200,
+				body: {
+					ok: true,
+					product: {
+						...DETAIL_1_BASE,
+						productId: "prod-separator",
+						sku: "SEA-SALT",
+						title: "Sea · Salt Soap",
+						onHand: 9,
+					},
+				},
 			};
 		}
 		if (path === "/admin/products/prod-unpriced") {
@@ -778,12 +864,40 @@ describe("admin Products console — stock column + low-stock filter (workerd sa
 		expect(findBlocks(blocks, "table").length).toBe(1);
 	});
 
-	test("with the threshold unreadable, `0` still reads Out of stock and nothing reads Low", async () => {
+	test("the band boundary is INCLUSIVE: a count equal to the threshold reads Low, one above it is plain", async () => {
+		await boot();
+		const blocks = await listWith({ search: "boundary" });
+		expect(cells(blocks, "onHand")).toEqual(["5 · Low", "6"]);
+		// And the filter agrees with the badge — one rule, not two.
+		expect(cells(await listWith({ search: "boundary", lowStock: true }), "title")).toEqual([
+			"At Threshold Widget",
+		]);
+	});
+
+	test("with the threshold unreadable, `0` still reads Out of stock, nothing reads Low, and the missing band is DECLARED rather than silent", async () => {
 		await boot({ onHand1: 42, lowStockThreshold: null });
 		const blocks = await listWith({ search: "stockmix" });
 		// The `Low` band is the only thing a missing threshold can cost.
 		expect(cells(blocks, "onHand")).toEqual(["42", "0 · Out of stock", "3", "—"]);
 		expect(JSON.stringify(blocks)).not.toContain("· Low");
+		// An under-stocked product with no badge looks like an ordinary one, so
+		// the screen has to say the highlighting is gone even though nothing was
+		// filtered.
+		const banner = findBlocks(blocks, "banner").find((b) => b.variant === "alert");
+		expect(String(banner?.title)).toMatch(/low-stock highlighting is unavailable/i);
+		expect(String(banner?.description)).toMatch(/threshold could not be read/i);
+	});
+
+	test("both degraded at once: ONE banner carries BOTH facts, never one silently outranking the other", async () => {
+		await boot({ onHand1: 42, lowStockThreshold: null });
+		const blocks = await listWith({ search: "nostock", lowStock: true });
+		const banners = findBlocks(blocks, "banner");
+		expect(banners.length).toBe(1);
+		const title = String(banners[0]?.title);
+		expect(title).toMatch(/stock levels are unavailable/i);
+		expect(title).toMatch(/low stock only filter was not applied/i);
+		// X-11's 240-char banner budget still holds with every fact present.
+		expect(String(banners[0]?.description).length).toBeLessThanOrEqual(240);
 	});
 
 	test("asking for 'Low stock only' with no readable threshold lists everything and SAYS the filter was not applied", async () => {
@@ -826,10 +940,11 @@ describe("admin Products console — stock column + low-stock filter (workerd sa
 		).slice(1);
 		expect(options.map((o) => o.label)).toEqual([
 			"Washed Linen Apron — Natural · APR-LIN-NAT · active",
+			"Sea · Salt Soap · SEA-SALT · active",
 			"Freshly Created · active (not priced)",
 		]);
-		// The em-dash is INSIDE one field now: splitting on the separator yields
-		// title / sku / status, never four parts of which two are the title.
+		// The em-dash no longer CREATES a segment: the title is one field, so the
+		// label reads title / sku / status.
 		const parts = options[0]!.label.split(" · ");
 		expect(parts).toHaveLength(3);
 		expect(parts[0]).toBe("Washed Linen Apron — Natural");
@@ -838,6 +953,87 @@ describe("admin Products console — stock column + low-stock filter (workerd sa
 		// The option VALUE stays the id, and no label leaks one (X-22, D4).
 		expect(options[0]!.value).toBe("prod-emdash");
 		expect(options.some((o) => o.label.includes(o.value))).toBe(false);
+	});
+
+	test("a title that spends the separator itself is rendered as-is — identity is the option VALUE, and opening it still lands on that product", async () => {
+		await boot();
+		const blocks = await listWith({ search: "emdash" });
+		const option = (
+			field(formFor(blocks, "products:open"), "productId")!.options as Array<{
+				label: string;
+				value: string;
+			}>
+		).find((o) => o.value === "prod-separator");
+		// Merchant prose is NOT rewritten to keep a label parseable: this label has
+		// four segments and that is fine, because nothing parses labels back into
+		// fields.
+		expect(option?.label).toBe("Sea · Salt Soap · SEA-SALT · active");
+		expect(option!.label.split(" · ")).toHaveLength(4);
+		expect(option!.label).toContain("SEA-SALT");
+		// What actually decides which product opens is the value — unaffected.
+		const detail = await openProduct(sandbox!, option!.value);
+		expect(findBlocks(detail, "header").some((b) => b.text === "Sea · Salt Soap")).toBe(true);
+	});
+
+	test("BLOCKER: a page narrowed to zero low-stock rows keeps 'Load more' alive and says the scan can continue", async () => {
+		await boot();
+		const blocks = await listWith({ search: "nolow", lowStock: true });
+		const table = findBlock(blocks, "table");
+		expect(table).toBeDefined();
+		expect(rowsOf(blocks)).toEqual([]);
+		// The pinned renderer collapses a zero-row table that carries empty_text to
+		// a <p>, which would take the Load more button — and the operator's only
+		// way forward — with it.
+		expect(table?.empty_text).toBeUndefined();
+		expect(table?.next_cursor).toBeDefined();
+		expect(
+			findBlocks(blocks, "context").some((c) =>
+				String(c.text).includes("No low-stock products on this page — Load more scans further."),
+			),
+		).toBe(true);
+
+		// And the scan actually continues: page 2 answers with its own rows.
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "block_action",
+			action_id: "products:page",
+			value: { cursor: table!.next_cursor },
+		});
+		const page2 = blocksOf(outcome);
+		assertBlockContract(page2, { screen: "products", level: "list" });
+		expect(findBlocks(page2, "table").length).toBe(1);
+	});
+
+	test("the LAST page narrowed to zero says so, page-scoped — no whole-catalog claim, no dangling Load more", async () => {
+		await boot();
+		const page1 = await listWith({ search: "nolow", lowStock: true });
+		const outcome = await sandbox!.invokeRoute("admin", {
+			type: "block_action",
+			action_id: "products:page",
+			value: { cursor: findBlock(page1, "table")!.next_cursor },
+		});
+		const lastPage = blocksOf(outcome);
+		const table = findBlock(lastPage, "table");
+		expect(rowsOf(lastPage)).toEqual([]);
+		expect(table?.next_cursor).toBeUndefined();
+		expect(table?.empty_text).toBe("No low-stock products on this page.");
+		expect(
+			findBlocks(lastPage, "context").some((c) =>
+				String(c.text).includes("Load more scans further"),
+			),
+		).toBe(false);
+	});
+
+	test("the wording never claims the whole catalog: the toggle says it applies per page, and an unfiltered miss keeps its own message", async () => {
+		await boot();
+		const filtered = await listWith({ search: "nolow", lowStock: true });
+		const toggle = field(formFor(filtered, "products:apply-filter"), "lowStock");
+		expect(String(toggle?.description)).toBe(
+			"Show only products at or below the low-stock threshold (applies per page; set the threshold on Settings).",
+		);
+		// Without the stock filter the ordinary filter message is still the right
+		// one — this is a filter miss, not a stock statement.
+		const unfiltered = await listWith({ search: "unpriced" });
+		expect(findBlock(unfiltered, "table")?.empty_text).toBe("No products match these filters.");
 	});
 });
 
@@ -917,7 +1113,7 @@ describe("admin Products console — detail shell (workerd sandbox)", () => {
 		expect(out.get("On hand")).toBe("0 · Out of stock");
 	});
 
-	test("an unreadable threshold costs the detail its `Low` badge and nothing else", async () => {
+	test("an unreadable threshold costs the detail its `Low` badge — and the detail SAYS so rather than quietly dropping the band", async () => {
 		const state = await boot();
 		state.lowStockThreshold = null;
 		state.onHand1 = 3;
@@ -930,6 +1126,15 @@ describe("admin Products console — detail shell (workerd sandbox)", () => {
 		expect(entries.get("Stock on hand")).toBe("3");
 		expect(entries.get("Price")).toContain("19.99");
 		expect(findBlocks(blocks, "banner").some((b) => b.variant === "error")).toBe(false);
+		// 3 with no badge is indistinguishable from a healthy count, so the Stock
+		// panel names the missing band and where to restore it.
+		const stockPanelContexts = panel(blocks, "Stock")
+			.filter((b) => b.type === "context")
+			.map((b) => String(b.text));
+		expect(stockPanelContexts.some((t) => /low-stock highlighting is unavailable/i.test(t))).toBe(
+			true,
+		);
+		expect(stockPanelContexts.some((t) => /threshold could not be read/i.test(t))).toBe(true);
 	});
 
 	test("no form anywhere on the screen offers an 'active' or 'title' field (F-2b, X-52)", async () => {
