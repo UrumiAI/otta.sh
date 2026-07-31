@@ -196,6 +196,42 @@ function currencyFromValues(values: Record<string, unknown>): RatesFilterForm {
 	};
 }
 
+/** ISO-4217's shape. Not a membership test — the service owns the real code
+ *  list; this only separates "a currency the store may not price in" from
+ *  "not a currency code at all". */
+const CURRENCY_CODE_SHAPE = /^[A-Z]{3}$/;
+
+/**
+ * The methods level's filter: the shared currency parse plus a validity flag.
+ * The flag exists because this level spends a READ PER ROW on the filter
+ * value: a typo would otherwise fire up to 25 requests that are all going to
+ * fail, and then paint the whole list "Price unavailable" — blaming the
+ * service for the operator's `usd ` fat-finger. Invalid ⇒ read nothing, price
+ * nothing, and say which of the two it is.
+ *
+ * Kept OFF the rates level on purpose: that level passes the operator's
+ * currency straight to a single read whose failure is already visible and
+ * already correctly attributed, and silently substituting a default there
+ * would turn a typo into a wrong answer rather than an error.
+ */
+interface MethodsFilterForm {
+	/** Trimmed and upper-cased; the default when the field was blank. */
+	currency: string;
+	/** `currency` is not a 3-letter ISO-4217 shape. */
+	invalid: boolean;
+}
+
+function methodsFilterFromValues(values: Record<string, unknown>): MethodsFilterForm {
+	const { currency } = currencyFromValues(values);
+	return { currency, invalid: !CURRENCY_CODE_SHAPE.test(currency) };
+}
+
+const BAD_CURRENCY_NOTICE: Notice = {
+	variant: "error",
+	title: "Prices not shown",
+	description: "Enter a 3-letter currency code like USD.",
+};
+
 /** L-7's "nothing selected yet" sentinel — never `""` (F-6a/X-23: a `select`/
  *  `combobox` option value must never be the empty string). */
 const NONE = "none";
@@ -505,14 +541,14 @@ function zonesFailClosed() {
 // -- level 1: a zone's shipping methods -----------------------------------------
 
 function methodsLevel() {
-	return listLevel<AdminRulesClient, RatesFilterForm, MethodRow, ShippingRenderState>({
+	return listLevel<AdminRulesClient, MethodsFilterForm, MethodRow, ShippingRenderState>({
 		limit: 200,
-		filterFromValues: currencyFromValues,
+		filterFromValues: methodsFilterFromValues,
 		async fetchPage(client, path, filter) {
 			const zoneId = path[0];
 			if (zoneId === undefined) return { items: [], nextCursor: null };
 			const methods = await client.listMethods(zoneId);
-			return { items: await pricedMethods(client, methods, filter.currency), nextCursor: null };
+			return { items: await pricedMethods(client, methods, filter), nextCursor: null };
 		},
 		render({ path, filter, items, nextToken, notice, renderState }) {
 			const zoneId = path[0] ?? "";
@@ -522,14 +558,24 @@ function methodsLevel() {
 	});
 }
 
-/** What this render could learn about a method's price in the filter currency.
- *  Three outcomes, kept apart on purpose: a real amount, a service that says
- *  there is none, and a lookup that did not answer. The last two must never
- *  collapse into each other, and neither may render as `0`/`Free`. */
+/**
+ * What this render could learn about a method's price in the filter currency.
+ * FOUR outcomes, kept apart on purpose — an amount, a service that says there
+ * is none, a lookup that did not answer, and a lookup never attempted. None of
+ * them may collapse into another, and none but the first may render as a
+ * number.
+ *
+ * `not-priced` is the one that looks redundant and is not. It marks "we did
+ * not ask", which is true of the table branch and of a rejected currency, and
+ * it exists so that a future change — service-side paging on this registry,
+ * say, letting a priced-looking row reach `render` un-priced — cannot print
+ * `Price unavailable` and blame the service for a read nobody made.
+ */
 type MethodPrice =
 	| { kind: "amount"; rate: ShippingRateWire }
 	| { kind: "none" }
-	| { kind: "unknown" };
+	| { kind: "unknown" }
+	| { kind: "not-priced" };
 
 /** A method ROW as this level renders it: the wire shape plus its price in the
  *  level's filter currency (see the module doc's price note for the bound). */
@@ -538,26 +584,40 @@ interface MethodRow extends ShippingMethodWire {
 }
 
 /**
- * Attach each method's price in `currency`. ONLY the L-9 accordion branch
- * renders a price, so only that branch pays for one: past 25 rows the level
- * falls back to the table, which has no price column, and this fires no rate
- * reads at all rather than up to `limit: 200` of them.
+ * Attach each method's price in the filter currency, or mark the row
+ * `not-priced` when no read is going to be made: past 25 rows (the table
+ * branch has no price column) or on a currency that is not a currency code at
+ * all. Either way the level costs ZERO rate reads rather than up to
+ * `limit: 200` of them.
+ *
+ * THE FAN-OUT IS PER RENDER OF THIS LEVEL, NOT PER DRILL-IN. `SandboxedPluginPage`
+ * replaces the whole block tree on every interaction, so the ≤25 reads recur on
+ * the drill-in, on every filter apply, and on every post-write `showList` —
+ * a create/save/delete round trip pays for them again. That is affordable at
+ * this bound and on this screen (a registry an operator configures once, not a
+ * storefront path), and it is the reason the bound is 25 and not `limit`.
+ *
+ * FOLLOW-UP, deliberately not built here: these reads carry no `AbortSignal`
+ * and no deadline, so a service that hangs rather than fails holds the render
+ * open for as long as `ctx.http` will wait. Containment today is per-row and
+ * on the ERROR path only. Wiring cancellation belongs with a timeout policy for
+ * every admin read, not with a label change.
  */
 async function pricedMethods(
 	client: AdminRulesClient,
 	methods: ShippingMethodWire[],
-	currency: string,
+	filter: MethodsFilterForm,
 ): Promise<MethodRow[]> {
 	// This level's `fetchPage` always returns `nextCursor: null` (the registry
 	// has no service-side paging), so the branch is decided by row count alone
 	// and can be asked here, before `render` asks it again for real.
-	if (!isRegistryAccordion(undefined, methods.length)) {
-		return methods.map((method) => ({ ...method, price: { kind: "unknown" } }));
+	if (filter.invalid || !isRegistryAccordion(undefined, methods.length)) {
+		return methods.map((method) => ({ ...method, price: { kind: "not-priced" } }));
 	}
 	return Promise.all(
 		methods.map(async (method) => ({
 			...method,
-			price: await methodPrice(client, method.id, currency),
+			price: await methodPrice(client, method.id, filter.currency),
 		})),
 	);
 }
@@ -580,9 +640,23 @@ async function methodPrice(
 	}
 }
 
-/** The leading token of a method's row label. Money goes through
- *  `formatMoney` (via `formatCentsForDisplay`); the two non-amounts are named
- *  honestly and never dressed up as a price. */
+/**
+ * The leading token of a method's row label. Money goes through `formatMoney`
+ * (via `formatCentsForDisplay`); the three non-amounts are named honestly and
+ * never dressed up as a price.
+ *
+ * `No rate set` IS CURRENCY-SCOPED, AND THE CONTEXT LINE IS WHERE IT SAYS SO
+ * ({@link methodsBlocks}). The read establishes only that this method has no
+ * rate IN THE FILTER CURRENCY; a store pricing solely in EUR, read under the
+ * USD default, would otherwise be told every method is unconfigured while its
+ * configuration is complete — the same false absence this module refuses to
+ * render as `Free`. Scoping it in the row instead ("No rate set for this
+ * currency") reads better in isolation and was tried first: it makes a
+ * realistic label 63 characters against X-11's 60-char accordion budget, and
+ * the budget is the older constraint. So the qualifier lives once in the
+ * context line, with the currency it qualifies — which is also where G1 wants
+ * the currency named, rather than as an ISO code per row.
+ */
 function methodPriceLabel(price: MethodPrice): string {
 	switch (price.kind) {
 		case "amount":
@@ -591,34 +665,47 @@ function methodPriceLabel(price: MethodPrice): string {
 			return "No rate set";
 		case "unknown":
 			return "Price unavailable";
+		case "not-priced":
+			return "Price not loaded";
 	}
+}
+
+/** The level's one context line. On the priced branch it carries the currency
+ *  AND what an unpriced row means in it — the whole of `No rate set`'s scope,
+ *  stated once (G1, X-11's 140-char page-context budget: 138). Off that branch
+ *  it claims no currency, because nothing was priced in one. */
+function methodsContextText(currency: string, pricesShown: boolean): string {
+	// The wire values stay `flat_rate`/`free_shipping` (see `methodTypeField`);
+	// only the operator-facing copy is human.
+	const types =
+		'"Flat rate" always charges its rate; "Free shipping" charges nothing above its threshold.';
+	return pricesShown
+		? `${types} Prices in ${currency} — "No rate set" means no ${currency} rate.`
+		: types;
 }
 
 function methodsBlocks(
 	zoneId: string,
-	filter: RatesFilterForm,
+	filter: MethodsFilterForm,
 	methods: MethodRow[],
 	nextToken: string | undefined,
 	notice: Notice | undefined,
 	renderState: ShippingRenderState | undefined,
 ): Block[] {
 	// The context line is where this level states its currency — ONCE, for the
-	// whole list (G1), never repeated as an ISO code per row. It only claims a
-	// currency on the branch that actually prices rows.
-	const pricesShown = isRegistryAccordion(nextToken, methods.length) && methods.length > 0;
+	// whole list (G1), never repeated as an ISO code per row. It claims a
+	// currency only when rows were actually priced in it.
+	const accordionBranch = isRegistryAccordion(nextToken, methods.length);
+	const pricesShown = accordionBranch && methods.length > 0 && !filter.invalid;
 	const blocks: Block[] = [
 		{ type: "header", text: `Shipping methods — ${zoneId}` },
 		backButton(SHIPPING_ACTIONS.back, "← Back to zones", [zoneId]),
-		{
-			type: "context",
-			// The wire values stay `flat_rate`/`free_shipping` (see
-			// `methodTypeField`); only the operator-facing copy is human.
-			text: pricesShown
-				? `"Flat rate" always charges its rate; "Free shipping" charges nothing above its threshold. Prices in ${filter.currency}.`
-				: '"Flat rate" always charges its rate; "Free shipping" charges nothing above its threshold.',
-		},
+		{ type: "context", text: methodsContextText(filter.currency, pricesShown) },
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
+	// G5: a rejected filter is a banner inside a 200, never a refused render —
+	// the method list is unaffected by it and stays on screen, editable.
+	if (filter.invalid) blocks.push(noticeBanner(BAD_CURRENCY_NOTICE));
 
 	const forceCreateOpen = renderState?.kind === "method-create-open";
 	if (methods.length === 0) {
@@ -647,10 +734,11 @@ function methodsBlocks(
 		return blocks;
 	}
 
-	if (isRegistryAccordion(nextToken, methods.length)) {
+	if (accordionBranch) {
 		// L-2: one filter field renders INLINE, no accordion. It is the price
 		// column's currency, so it ships with the priced branch and not with the
-		// table branch, which prices nothing.
+		// table branch, which prices nothing. It renders on a REJECTED currency
+		// too — that is the field the operator has to fix.
 		blocks.push(methodCurrencyForm(zoneId, filter));
 		for (const method of methods) blocks.push(methodAccordion(zoneId, method));
 	} else {
@@ -666,7 +754,7 @@ function methodsBlocks(
  *  deliberately, so the control an operator learns here is the control they
  *  meet there. Carries the depth-1 drill path INVISIBLY (L-6), so
  *  `apply-filter` re-lists THIS zone's methods and not the root. */
-function methodCurrencyForm(zoneId: string, filter: RatesFilterForm): FormBlock {
+function methodCurrencyForm(zoneId: string, filter: MethodsFilterForm): FormBlock {
 	return carriedForm({
 		namespace: "ship:method-currency",
 		context: { [PATH_FIELD]: encodePath([zoneId]) },

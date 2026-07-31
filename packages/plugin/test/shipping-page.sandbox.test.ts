@@ -6,6 +6,7 @@ import {
 	blocksOf,
 	buttons,
 	confirmOf,
+	contextTexts,
 	emptyActions,
 	field,
 	fieldEntries,
@@ -679,6 +680,95 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		expect(label).not.toMatch(/free|\$0|0\.00/i);
 	});
 
+	test("a method priced in ANOTHER currency reads as unset FOR THIS CURRENCY, not as unconfigured — and prices once the filter names its currency", async () => {
+		// THE FALSE-ABSENCE CASE. A store that prices solely in EUR, read under
+		// the USD default, must not report a fully configured method as having no
+		// rate at all — the same lie as rendering an unknown price as `Free`.
+		const state = makeShippingState();
+		state.methods.push({
+			id: "eu-express",
+			zoneId: "us",
+			name: "Express courier",
+			type: "flat_rate",
+		});
+		state.rates.push({
+			methodId: "eu-express",
+			currency: "EUR",
+			amountCents: 1200,
+			minSubtotalCents: null,
+		});
+		await boot(state);
+		const usd = await openUsMethods();
+		expect(group(usd, "ship:method:us:eu-express")?.label).toBe(
+			"No rate set — Express courier · eu-express · flat rate",
+		);
+		// The row carries no ISO code (G1) — the currency is named once, above,
+		// and THAT is where the row's claim is scoped: the operator reads "no USD
+		// rate", not "unconfigured". Row-level scoping was tried first and is 63
+		// chars against X-11's 60-char accordion budget.
+		expect(String(group(usd, "ship:method:us:eu-express")?.label)).not.toContain("USD");
+		expect(contextTexts(usd)).toContain(
+			'"Flat rate" always charges its rate; "Free shipping" charges nothing above its threshold. Prices in USD — "No rate set" means no USD rate.',
+		);
+
+		const filterForm = formFor(usd, "shipping:apply-filter");
+		const eur = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "shipping:apply-filter",
+				block_id: filterForm?.block_id,
+				values: { currency: "EUR" },
+			}),
+		);
+		expect(group(eur, "ship:method:us:eu-express")?.label).toBe(
+			"€12.00 — Express courier · eu-express · flat rate",
+		);
+		// …and the USD-only method flips the other way, by the same rule, with the
+		// context line's scope flipping with it.
+		expect(group(eur, "ship:method:us:standard")?.label).toBe(
+			"No rate set — Standard · standard · flat rate",
+		);
+		expect(contextTexts(eur).some((t) => t.endsWith('"No rate set" means no EUR rate.'))).toBe(
+			true,
+		);
+	});
+
+	test("a currency that is not a currency code is rejected BEFORE any read: banner in a 200, rows unpriced, nothing claimed", async () => {
+		const state = makeShippingState();
+		await boot(state);
+		const opened = await openUsMethods();
+		const filterForm = formFor(opened, "shipping:apply-filter");
+		stub!.requests.length = 0;
+
+		const blocks = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "shipping:apply-filter",
+				block_id: filterForm?.block_id,
+				values: { currency: "dollars" },
+			}),
+		);
+		// Not one doomed read — a typo must not cost 25 requests that all fail
+		// and then paint the list "Price unavailable", blaming the service.
+		expect(stub!.requests.filter((r) => /\/rates\?/.test(r.url))).toHaveLength(0);
+		const banner = bannerOf(blocks);
+		expect(banner?.variant).toBe("error");
+		expect(String(banner?.description)).toBe("Enter a 3-letter currency code like USD.");
+		// The list itself is unaffected and stays on screen, with the offending
+		// field still there to fix.
+		expect(group(blocks, "ship:method:us:standard")?.label).toBe(
+			"Price not loaded — Standard · standard · flat rate",
+		);
+		expect(field(formFor(blocks, "shipping:apply-filter"), "currency")?.initial_value).toBe(
+			"DOLLARS",
+		);
+		// Nothing priced ⇒ no currency claimed, and never the read-failure copy.
+		expect(findBlocks(blocks, "context").some((c) => /Prices in/.test(String(c.text)))).toBe(false);
+		expect(
+			findBlocks(blocks, "accordion").some((a) => /Price unavailable/.test(String(a.label))),
+		).toBe(false);
+	});
+
 	test("a FAILED price read degrades that row to 'Price unavailable' — the level still renders, and absence is never claimed", async () => {
 		const state = makeShippingState();
 		state.rateReadsFail = true;
@@ -705,9 +795,13 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 			"/admin/shipping/methods/standard/rates?currency=USD",
 		]);
 		// Currency named once, in the level's context line — never as an ISO code
-		// repeated per row.
+		// repeated per row — and inside X-11's 140-char page-context budget.
 		const contexts = findBlocks(blocks, "context").map((c) => String(c.text));
-		expect(contexts.some((t) => t.includes("Prices in USD."))).toBe(true);
+		const priced = contexts.find((t) => t.includes("Prices in USD"));
+		expect(priced).toBe(
+			'"Flat rate" always charges its rate; "Free shipping" charges nothing above its threshold. Prices in USD — "No rate set" means no USD rate.',
+		);
+		expect(String(priced).length).toBeLessThanOrEqual(140);
 		expect(String(group(blocks, "ship:method:us:standard")?.label)).not.toContain("USD");
 	});
 
@@ -748,7 +842,9 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 			"No rate set — No rates yet · bare · flat rate",
 		);
 		expect(
-			findBlocks(blocks, "context").some((c) => String(c.text).includes("Prices in EUR.")),
+			findBlocks(blocks, "context").some((c) =>
+				String(c.text).includes('Prices in EUR — "No rate set" means no EUR rate.'),
+			),
 		).toBe(true);
 	});
 
@@ -968,6 +1064,7 @@ describe("admin Shipping console — methods level, L-9 fallback branch (>25 row
 	test("at 25 methods the ACCORDION branch renders; at 26, TABLE + combobox drill-in (Type keeps its badge, T-5)", async () => {
 		const at25 = makeManyMethodsState(25);
 		await boot(at25);
+		stub!.requests.length = 0;
 		const level25 = await sandbox!.invokeRoute("admin", {
 			type: "form_submit",
 			action_id: "shipping:open",
@@ -980,6 +1077,11 @@ describe("admin Shipping console — methods level, L-9 fallback branch (>25 row
 				String(a.block_id).startsWith("ship:method:"),
 			),
 		).toHaveLength(25);
+		// THE CAP, ASSERTED AT THE CAP. 25 rows priced ⇒ exactly 25 rate reads,
+		// one per row and no more — this is the number the whole bound exists to
+		// hold, and asserting the branch alone would not catch a fan-out that
+		// grew to two reads a row.
+		expect(stub!.requests.filter((r) => /\/rates\?/.test(r.url))).toHaveLength(25);
 		await sandbox!.close();
 		await stub!.close();
 
