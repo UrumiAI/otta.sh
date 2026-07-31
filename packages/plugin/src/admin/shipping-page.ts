@@ -89,6 +89,35 @@ import {
  * module's PR body for the full disclosure. Delete stays unconditional (DA-2)
  * and the existing "in_use" conflict is reported by the post-attempt banner,
  * exactly as it already was before this layout pass.
+ *
+ * THE PRICE IS THE ONE EXCEPTION TO THAT, AND IT IS PAID FOR DELIBERATELY.
+ * A method's price is not on `ShippingMethodWire` either, and the service
+ * exposes no cross-method rates read — only `GET
+ * /admin/shipping/methods/:id/rates?currency=`, a 0-or-1-row lookup. So the
+ * methods list used to name a method and its type and never the number the
+ * operator came for: you could not see what express costs without drilling two
+ * levels down. Unlike a rate COUNT (which nothing can price against), the
+ * amount IS the screen's subject, so it is fetched — bounded and honestly:
+ *
+ *   - ONE `getRate` per method, in parallel, and ONLY on the L-9 accordion
+ *     branch, so the fan-out can never exceed 25 (past that the level renders
+ *     the table branch, which shows no price and fires no rate reads at all).
+ *   - Each lookup is SECONDARY and independently contained: a failed one
+ *     degrades that row to "Price unavailable" and never fails the level —
+ *     the method list is the primary read, and losing the rates surface must
+ *     not blank a screen whose other affordances still work.
+ *   - A missing rate renders "No rate set", NEVER "Free" and never a zero
+ *     amount. A free_shipping method with no rate row costs the buyer nothing
+ *     to see here, but it is also not configured, and the two must not look
+ *     alike.
+ *
+ * A rate is keyed by (methodId, currency), so a price cannot be read without
+ * naming a currency: the methods level therefore carries the SAME currency
+ * filter its rates level already had, defaulting to `DEFAULT_RATE_CURRENCY`,
+ * and states that currency ONCE in the level's context line rather than per
+ * row (G1). The two filters are independent — drilling in re-opens the rates
+ * level at its own default, as every level's filter already resets on a
+ * drill-in or a write (the engine re-lists with `filterFromValues({})`).
  */
 export const SHIPPING_PAGE: AdminPageConfig = {
 	path: "/shipping",
@@ -148,12 +177,60 @@ type ShippingRenderState = { kind: "zone-create-open" } | { kind: "method-create
 
 /** The rates level's filter: a currency narrow that ALWAYS has a value (no
  *  "unfiltered" state exists — see the module doc's rates-identity note).
- *  Defaults to `"USD"`. */
+ *  Defaults to `"USD"`. The methods level carries the same shape, for the same
+ *  reason: a rate is keyed by (methodId, currency), so neither level can name
+ *  a price without naming a currency. */
 interface RatesFilterForm {
 	currency: string;
 }
 
 const DEFAULT_RATE_CURRENCY = "USD";
+
+/** Read the currency filter off a submitted filter form — shared by the
+ *  methods and rates levels so the two can never disagree about what an empty
+ *  or whitespace value means (it means the default, never `""`). */
+function currencyFromValues(values: Record<string, unknown>): RatesFilterForm {
+	const currency = readString(values.currency)?.trim().toUpperCase();
+	return {
+		currency: currency !== undefined && currency.length > 0 ? currency : DEFAULT_RATE_CURRENCY,
+	};
+}
+
+/** ISO-4217's shape. Not a membership test — the service owns the real code
+ *  list; this only separates "a currency the store may not price in" from
+ *  "not a currency code at all". */
+const CURRENCY_CODE_SHAPE = /^[A-Z]{3}$/;
+
+/**
+ * The methods level's filter: the shared currency parse plus a validity flag.
+ * The flag exists because this level spends a READ PER ROW on the filter
+ * value: a typo would otherwise fire up to 25 requests that are all going to
+ * fail, and then paint the whole list "Price unavailable" — blaming the
+ * service for the operator's `usd ` fat-finger. Invalid ⇒ read nothing, price
+ * nothing, and say which of the two it is.
+ *
+ * Kept OFF the rates level on purpose: that level passes the operator's
+ * currency straight to a single read whose failure is already visible and
+ * already correctly attributed, and silently substituting a default there
+ * would turn a typo into a wrong answer rather than an error.
+ */
+interface MethodsFilterForm {
+	/** Trimmed and upper-cased; the default when the field was blank. */
+	currency: string;
+	/** `currency` is not a 3-letter ISO-4217 shape. */
+	invalid: boolean;
+}
+
+function methodsFilterFromValues(values: Record<string, unknown>): MethodsFilterForm {
+	const { currency } = currencyFromValues(values);
+	return { currency, invalid: !CURRENCY_CODE_SHAPE.test(currency) };
+}
+
+const BAD_CURRENCY_NOTICE: Notice = {
+	variant: "error",
+	title: "Prices not shown",
+	description: "Enter a 3-letter currency code like USD.",
+};
 
 /** L-7's "nothing selected yet" sentinel — never `""` (F-6a/X-23: a `select`/
  *  `combobox` option value must never be the empty string). */
@@ -464,44 +541,171 @@ function zonesFailClosed() {
 // -- level 1: a zone's shipping methods -----------------------------------------
 
 function methodsLevel() {
-	return listLevel<
-		AdminRulesClient,
-		Record<string, never>,
-		ShippingMethodWire,
-		ShippingRenderState
-	>({
+	return listLevel<AdminRulesClient, MethodsFilterForm, MethodRow, ShippingRenderState>({
 		limit: 200,
-		filterFromValues: () => ({}),
-		async fetchPage(client, path) {
+		filterFromValues: methodsFilterFromValues,
+		async fetchPage(client, path, filter) {
 			const zoneId = path[0];
 			if (zoneId === undefined) return { items: [], nextCursor: null };
 			const methods = await client.listMethods(zoneId);
-			return { items: methods, nextCursor: null };
+			return { items: await pricedMethods(client, methods, filter), nextCursor: null };
 		},
-		render({ path, items, nextToken, notice, renderState }) {
+		render({ path, filter, items, nextToken, notice, renderState }) {
 			const zoneId = path[0] ?? "";
-			return methodsBlocks(zoneId, items, nextToken, notice, renderState);
+			return methodsBlocks(zoneId, filter, items, nextToken, notice, renderState);
 		},
 		onError: () => methodsFailClosed(),
 	});
 }
 
+/**
+ * What this render could learn about a method's price in the filter currency.
+ * FOUR outcomes, kept apart on purpose — an amount, a service that says there
+ * is none, a lookup that did not answer, and a lookup never attempted. None of
+ * them may collapse into another, and none but the first may render as a
+ * number.
+ *
+ * `not-priced` is the one that looks redundant and is not. It marks "we did
+ * not ask", which is true of the table branch and of a rejected currency, and
+ * it exists so that a future change — service-side paging on this registry,
+ * say, letting a priced-looking row reach `render` un-priced — cannot print
+ * `Price unavailable` and blame the service for a read nobody made.
+ */
+type MethodPrice =
+	| { kind: "amount"; rate: ShippingRateWire }
+	| { kind: "none" }
+	| { kind: "unknown" }
+	| { kind: "not-priced" };
+
+/** A method ROW as this level renders it: the wire shape plus its price in the
+ *  level's filter currency (see the module doc's price note for the bound). */
+interface MethodRow extends ShippingMethodWire {
+	price: MethodPrice;
+}
+
+/**
+ * Attach each method's price in the filter currency, or mark the row
+ * `not-priced` when no read is going to be made: past 25 rows (the table
+ * branch has no price column) or on a currency that is not a currency code at
+ * all. Either way the level costs ZERO rate reads rather than up to
+ * `limit: 200` of them.
+ *
+ * THE FAN-OUT IS PER RENDER OF THIS LEVEL, NOT PER DRILL-IN. `SandboxedPluginPage`
+ * replaces the whole block tree on every interaction, so the ≤25 reads recur on
+ * the drill-in, on every filter apply, and on every post-write `showList` —
+ * a create/save/delete round trip pays for them again. That is affordable at
+ * this bound and on this screen (a registry an operator configures once, not a
+ * storefront path), and it is the reason the bound is 25 and not `limit`.
+ *
+ * FOLLOW-UP, deliberately not built here: these reads carry no `AbortSignal`
+ * and no deadline, so a service that hangs rather than fails holds the render
+ * open for as long as `ctx.http` will wait. Containment today is per-row and
+ * on the ERROR path only. Wiring cancellation belongs with a timeout policy for
+ * every admin read, not with a label change.
+ */
+async function pricedMethods(
+	client: AdminRulesClient,
+	methods: ShippingMethodWire[],
+	filter: MethodsFilterForm,
+): Promise<MethodRow[]> {
+	// This level's `fetchPage` always returns `nextCursor: null` (the registry
+	// has no service-side paging), so the branch is decided by row count alone
+	// and can be asked here, before `render` asks it again for real.
+	if (filter.invalid || !isRegistryAccordion(undefined, methods.length)) {
+		return methods.map((method) => ({ ...method, price: { kind: "not-priced" } }));
+	}
+	return Promise.all(
+		methods.map(async (method) => ({
+			...method,
+			price: await methodPrice(client, method.id, filter.currency),
+		})),
+	);
+}
+
+/** One method's price lookup, CONTAINED: this is a secondary read (the method
+ *  list is the primary one), so a failure degrades this row alone. `null` from
+ *  the client is the service's own "no rate in that currency" 404 — a fact,
+ *  reported as such; a throw is an absence of information, reported as such. */
+async function methodPrice(
+	client: AdminRulesClient,
+	methodId: string,
+	currency: string,
+): Promise<MethodPrice> {
+	try {
+		const rate = await client.getRate(methodId, currency);
+		return rate === null ? { kind: "none" } : { kind: "amount", rate };
+	} catch (err) {
+		console.error("[otta] admin shipping method price read failed:", err);
+		return { kind: "unknown" };
+	}
+}
+
+/**
+ * The leading token of a method's row label. Money goes through `formatMoney`
+ * (via `formatCentsForDisplay`); the three non-amounts are named honestly and
+ * never dressed up as a price.
+ *
+ * `No rate set` IS CURRENCY-SCOPED, AND THE CONTEXT LINE IS WHERE IT SAYS SO
+ * ({@link methodsBlocks}). The read establishes only that this method has no
+ * rate IN THE FILTER CURRENCY; a store pricing solely in EUR, read under the
+ * USD default, would otherwise be told every method is unconfigured while its
+ * configuration is complete — the same false absence this module refuses to
+ * render as `Free`. Scoping it in the row instead ("No rate set for this
+ * currency") reads better in isolation and was tried first: it makes a
+ * realistic label 63 characters against X-11's 60-char accordion budget, and
+ * the budget is the older constraint. So the qualifier lives once in the
+ * context line, with the currency it qualifies — which is also where G1 wants
+ * the currency named, rather than as an ISO code per row.
+ */
+function methodPriceLabel(price: MethodPrice): string {
+	switch (price.kind) {
+		case "amount":
+			return formatCentsForDisplay(price.rate.amountCents, price.rate.currency);
+		case "none":
+			return "No rate set";
+		case "unknown":
+			return "Price unavailable";
+		case "not-priced":
+			return "Price not loaded";
+	}
+}
+
+/** The level's one context line. On the priced branch it carries the currency
+ *  AND what an unpriced row means in it — the whole of `No rate set`'s scope,
+ *  stated once (G1, X-11's 140-char page-context budget: 138). Off that branch
+ *  it claims no currency, because nothing was priced in one. */
+function methodsContextText(currency: string, pricesShown: boolean): string {
+	// The wire values stay `flat_rate`/`free_shipping` (see `methodTypeField`);
+	// only the operator-facing copy is human.
+	const types =
+		'"Flat rate" always charges its rate; "Free shipping" charges nothing above its threshold.';
+	return pricesShown
+		? `${types} Prices in ${currency} — "No rate set" means no ${currency} rate.`
+		: types;
+}
+
 function methodsBlocks(
 	zoneId: string,
-	methods: ShippingMethodWire[],
+	filter: MethodsFilterForm,
+	methods: MethodRow[],
 	nextToken: string | undefined,
 	notice: Notice | undefined,
 	renderState: ShippingRenderState | undefined,
 ): Block[] {
+	// The context line is where this level states its currency — ONCE, for the
+	// whole list (G1), never repeated as an ISO code per row. It claims a
+	// currency only when rows were actually priced in it.
+	const accordionBranch = isRegistryAccordion(nextToken, methods.length);
+	const pricesShown = accordionBranch && methods.length > 0 && !filter.invalid;
 	const blocks: Block[] = [
 		{ type: "header", text: `Shipping methods — ${zoneId}` },
 		backButton(SHIPPING_ACTIONS.back, "← Back to zones", [zoneId]),
-		{
-			type: "context",
-			text: '"flat_rate" always charges its rate; "free_shipping" charges nothing above its threshold.',
-		},
+		{ type: "context", text: methodsContextText(filter.currency, pricesShown) },
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
+	// G5: a rejected filter is a banner inside a 200, never a refused render —
+	// the method list is unaffected by it and stays on screen, editable.
+	if (filter.invalid) blocks.push(noticeBanner(BAD_CURRENCY_NOTICE));
 
 	const forceCreateOpen = renderState?.kind === "method-create-open";
 	if (methods.length === 0) {
@@ -530,7 +734,12 @@ function methodsBlocks(
 		return blocks;
 	}
 
-	if (isRegistryAccordion(nextToken, methods.length)) {
+	if (accordionBranch) {
+		// L-2: one filter field renders INLINE, no accordion. It is the price
+		// column's currency, so it ships with the priced branch and not with the
+		// table branch, which prices nothing. It renders on a REJECTED currency
+		// too — that is the field the operator has to fix.
+		blocks.push(methodCurrencyForm(zoneId, filter));
 		for (const method of methods) blocks.push(methodAccordion(zoneId, method));
 	} else {
 		blocks.push(methodsFallbackTable(methods));
@@ -540,17 +749,58 @@ function methodsBlocks(
 	return blocks;
 }
 
-/** Renders the method `type` as a lowercase parenthetical in the accordion
- *  label (D-6) — never a bare code, and never the select's raw `select`
- *  value (that wart is confined to the `select` trigger itself, R-17a). */
+/** The currency the per-row price is read in. Same field, same submit verb and
+ *  same default as the rates level's own `currencyFilterForm` one level down —
+ *  deliberately, so the control an operator learns here is the control they
+ *  meet there. Carries the depth-1 drill path INVISIBLY (L-6), so
+ *  `apply-filter` re-lists THIS zone's methods and not the root. */
+function methodCurrencyForm(zoneId: string, filter: MethodsFilterForm): FormBlock {
+	return carriedForm({
+		namespace: "ship:method-currency",
+		context: { [PATH_FIELD]: encodePath([zoneId]) },
+		form: {
+			type: "form",
+			fields: [
+				{
+					type: "text_input",
+					action_id: "currency",
+					label: "Price currency (ISO-4217, e.g. USD)",
+					initial_value: filter.currency,
+				},
+			],
+			submit: { label: "Apply filters", action_id: SHIPPING_ACTIONS.applyFilter },
+		},
+	});
+}
+
+/** The human name for a method `type`, matching the create/edit select's
+ *  option labels verbatim. The WIRE VALUE is untouched — `flat_rate` /
+ *  `free_shipping` still go over `ctx.http` and still come back; only the copy
+ *  an operator reads is human. */
+function methodTypeName(type: string): string {
+	return type === "free_shipping" ? "Free shipping" : "Flat rate";
+}
+
+/** {@link methodTypeName} lowercased for mid-label use (D-6) — never a bare
+ *  code, and never the select's raw value (that wart is confined to the
+ *  `select` trigger itself, R-17a). */
 function methodTypeLabel(type: string): string {
 	return type === "free_shipping" ? "free shipping" : "flat rate";
 }
 
-function methodAccordion(zoneId: string, method: ShippingMethodWire): AccordionBlock {
+/**
+ * One method's per-row group (L-9). THE PRICE LEADS THE LABEL: it is the
+ * number the operator came for, and before this it was not on the screen at
+ * all — not in the row, not even inside the expanded row, only two levels down
+ * under the rates drill-in. Leading with it also starts every row's amount at
+ * the same left edge, so a zone's methods can be compared down the column
+ * (the slug, which varies in length, moves to second position — in FULL: a
+ * method id is a readable natural key, not an opaque uuid).
+ */
+function methodAccordion(zoneId: string, method: MethodRow): AccordionBlock {
 	return {
 		type: "accordion",
-		label: `${method.id} — ${method.name} (${methodTypeLabel(method.type)})`,
+		label: `${methodPriceLabel(method.price)} — ${method.name} · ${method.id} · ${methodTypeLabel(method.type)}`,
 		default_open: false,
 		block_id: `ship:method:${zoneId}:${method.id}`,
 		blocks: [
@@ -651,10 +901,11 @@ function methodsFallbackTable(methods: ShippingMethodWire[]): TableBlock {
 			{ key: "name", label: "Name" },
 			// `Type` keeps its badge (T-5's own exception): a two-value closed set
 			// (flat_rate/free_shipping) genuinely distinguished at a glance, and
-			// this level's only badge column.
+			// this level's only badge column. The badge reads the HUMAN name — the
+			// raw enum was the last operator-facing place this screen leaked one.
 			{ key: "type", label: "Type", format: "badge" },
 		],
-		rows: methods.map((m) => ({ id: m.id, name: m.name, type: m.type })),
+		rows: methods.map((m) => ({ id: m.id, name: m.name, type: methodTypeName(m.type) })),
 		page_action_id: SHIPPING_ACTIONS.page, // never fires: no paging at this level
 		empty_text: "No shipping methods yet for this zone.",
 	};
@@ -702,12 +953,7 @@ function methodsFailClosed() {
 function ratesLevel() {
 	return listLevel<AdminRulesClient, RatesFilterForm, ShippingRateWire>({
 		limit: 1, // a rate is keyed by (methodId, currency) — at most one row per filter
-		filterFromValues(values) {
-			const currency = readString(values.currency)?.trim().toUpperCase();
-			return {
-				currency: currency !== undefined && currency.length > 0 ? currency : DEFAULT_RATE_CURRENCY,
-			};
-		},
+		filterFromValues: currencyFromValues,
 		async fetchPage(client, path, filter) {
 			const methodId = path[1];
 			if (methodId === undefined) return { items: [], nextCursor: null };
