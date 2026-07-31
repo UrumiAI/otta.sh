@@ -304,6 +304,18 @@ async function boot(state: ReturnType<typeof makeCouponsState>, token = "admin-t
 	if (token.length > 0) await seedToken(sandbox, stub, token);
 }
 
+/** The list, freshly loaded. */
+async function loadList(): Promise<Blk[]> {
+	return blocksOf(await sandbox!.invokeRoute("admin", { type: "page_load", page: "/coupons" }));
+}
+
+/** Drill into the create screen the way an operator does — by CLICKING the
+ *  promoted "New coupon" button (INC-14), never by hand-firing its action. */
+async function openNewCouponScreen(from?: Blk[]): Promise<Blk[]> {
+	const list = from ?? (await loadList());
+	return click(buttons(list).find((b) => b.action_id === "coupons:new"));
+}
+
 /** Open a coupon's detail via its OWN encoded target — the same path an
  *  operator's combobox selection takes (never a hand-built shortcut). */
 async function openCoupon(code: string): Promise<Blk[]> {
@@ -521,8 +533,7 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 	test("the create form's type-specific fields carry `condition` (F-5b) — both branches present, gated on `type`", async () => {
 		const state = makeCouponsState();
 		await boot(state);
-		const outcome = await sandbox!.invokeRoute("admin", { type: "page_load", page: "/coupons" });
-		const fields = formFields(blocksOf(outcome), "coupons:create");
+		const fields = formFields(await openNewCouponScreen(), "coupons:create");
 		const byId = new Map(fields.map((f) => [f.action_id, f]));
 		expect(byId.get("amount")?.condition).toEqual({ field: "type", eq: "fixed_amount" });
 		expect(byId.get("currency")?.condition).toEqual({ field: "type", eq: "fixed_amount" });
@@ -720,28 +731,142 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		expect(state.coupons.filter((c) => c.code === "FIVEOFF")).toHaveLength(1);
 	});
 
-	test("the unfiltered TRUE-ZERO state shows `empty` (not the table), whose action forces the New coupon group open (E-2, B-6)", async () => {
+	test("the unfiltered TRUE-ZERO state shows `empty` (not the table), whose action opens the SAME create screen as the promoted button (E-2)", async () => {
 		const state = { coupons: [] as CouponRow[] };
 		await boot(state);
-		const list = await sandbox!.invokeRoute("admin", { type: "page_load", page: "/coupons" });
-		const blocks = blocksOf(list);
+		const blocks = await loadList();
 		expect(findBlock(blocks, "table")).toBeUndefined();
 		const empty = findBlock(blocks, "empty") as
 			| { title?: string; actions?: Array<Record<string, unknown>> }
 			| undefined;
 		expect(empty?.title).toMatch(/no coupons/i);
-		const newButton = (empty?.actions ?? []).find((a) => a.action_id === "coupons:new");
-		expect(newButton).toBeDefined();
-		// L-8: the create group already exists (collapsed) even at zero rows —
-		// there has to be a group for the button to force open.
-		expect(group(blocks, "coupons:new")?.default_open).not.toBe(true);
+		const emptyButton = (empty?.actions ?? []).find((a) => a.action_id === "coupons:new");
+		// One act, one verb, one wording — the empty state and the promoted
+		// button fire the same action id and say the same words.
+		expect(emptyButton?.label).toBe("New coupon");
+		// No create form anywhere on the list itself, at any row count (INC-14:
+		// L-8's bottom accordion is gone — the form lives on the drill-in).
+		expect(formFor(blocks, "coupons:create")).toBeUndefined();
 
-		const opened = await click(newButton);
-		// B-6: BOTH a changed block_id and default_open:true.
-		const openedGroup = findBlocks(opened, "accordion").find((a) => a.default_open === true);
-		expect(openedGroup).toBeDefined();
-		expect(openedGroup?.block_id).not.toBe("coupons:new");
-		expect(openGroupIds(opened)).toHaveLength(1); // X-18
+		const opened = await click(emptyButton);
+		expect(headerTexts(opened)).toEqual(["New coupon"]);
+		expect(formFor(opened, "coupons:create")).toBeDefined();
+	});
+
+	// -- INC-14: the create action is a button above the data ------------------
+
+	test("INC-14: `New coupon` is a primary BUTTON emitted directly under the intro line, above the table — and no create accordion survives below it", async () => {
+		const state = makeCouponsState();
+		await boot(state);
+		const blocks = await loadList();
+		// Block ORDER, at the top level: header · context · the create button ·
+		// … · table. The button is above the data; the form is not on this
+		// screen at all.
+		const types = blocks.map((b) => String(b.type));
+		expect(types.slice(0, 3)).toEqual(["header", "context", "actions"]);
+		expect(types.indexOf("actions")).toBeLessThan(types.indexOf("table"));
+		const createButton = buttons(blocks).find((b) => b.action_id === "coupons:new");
+		expect(createButton?.type).toBe("button");
+		expect(createButton?.label).toBe("New coupon");
+		expect(createButton?.style).toBe("primary");
+		// The old L-8 create group, in either of its two block_ids, is gone —
+		// as is any accordion labelled like a create affordance.
+		expect(group(blocks, "coupons:new")).toBeUndefined();
+		expect(group(blocks, "coupons:new:opened")).toBeUndefined();
+		expect(findBlocks(blocks, "accordion").map((a) => String(a.label))).not.toContain("New coupon");
+		expect(openGroupIds(blocks)).toHaveLength(0); // X-18
+	});
+
+	test("INC-14: the create screen is a drill-in — header, a back control that returns to the list, and the create form", async () => {
+		const state = makeCouponsState();
+		await boot(state);
+		const screen = await openNewCouponScreen();
+		expect(headerTexts(screen)).toEqual(["New coupon"]);
+		// The list is REPLACED, not pushed down: no table, no picker, no filter.
+		expect(findBlock(screen, "table")).toBeUndefined();
+		expect(formFor(screen, "coupons:open")).toBeUndefined();
+		expect(formFor(screen, "coupons:apply-filter")).toBeUndefined();
+		expect(formFor(screen, "coupons:create")).toBeDefined();
+		// Nothing is pre-typed on a fresh create (only `type`, R-12b).
+		expect(formInitialValues(screen, "coupons:create")).toEqual({ type: "fixed_amount" });
+
+		const back = buttons(screen).find((b) => b.action_id === "coupons:cancel-new");
+		expect(String(back?.label)).toMatch(/back to coupons/i);
+		const list = await click(back);
+		expect(headerTexts(list)).toEqual(["Coupons"]);
+		expect(tableRows(list).map((r) => r.code)).toEqual(["SUMMER25", "FIVEOFF"]);
+	});
+
+	// THE PROPERTY THIS INCREMENT MUST NOT LOSE. Before INC-14 a create refusal
+	// re-rendered the list and the operator's typed values survived only as
+	// unsubmitted state in a form that happened to keep its block_id — which the
+	// E-2 force-open path did NOT keep (`coupons:new:opened` → `coupons:new` is a
+	// remount, and a remount discards it). The drill-in makes the guarantee
+	// explicit and server-side: every refusal carries the submitted values back
+	// as `initial_value` (DA-3a-i), so it holds no matter what the client does
+	// with the tree.
+	test("INC-14/DA-3a-i: a REFUSED create re-renders the create screen with every typed value put back, verbatim", async () => {
+		const state = makeCouponsState();
+		await boot(state);
+		const screen = await openNewCouponScreen();
+		// A percentage coupon with an unparseable rate — the refusal is about ONE
+		// field, and the other five must not be retyped.
+		const typed = {
+			id: "summer26",
+			code: "SUMMER26",
+			type: "percentage",
+			amount: "",
+			currency: "",
+			ratePercent: "ten percent",
+			cap: "20.00",
+		};
+		const refused = await submitForm(screen, "coupons:create", typed);
+		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
+		expect(bannerOf(refused)?.variant).toBe("error");
+		// Still the create screen (not the list), and every value is back.
+		expect(headerTexts(refused)).toEqual(["New coupon"]);
+		expect(formInitialValues(refused, "coupons:create")).toEqual({
+			id: "summer26",
+			code: "SUMMER26",
+			type: "percentage", // the SELECT survives too, so `condition` still reveals the rate fields
+			ratePercent: "ten percent", // VERBATIM — never re-derived from a parse that failed
+			cap: "20.00",
+		});
+		// Fixing the one field and resubmitting creates the coupon.
+		const created = await submitForm(refused, "coupons:create", {
+			...typed,
+			ratePercent: "10",
+		});
+		expect(state.coupons.find((c) => c.code === "SUMMER26")?.rateBps).toBe(1000);
+		expect(bannerOf(created)?.variant).toBe("default");
+		// Success DROPS the draft and returns to the list.
+		expect(headerTexts(created)).toEqual(["Coupons"]);
+		expect(formFor(created, "coupons:create")).toBeUndefined();
+	});
+
+	test("INC-14/DA-3a-i: a SERVICE refusal (duplicate id/code) keeps the typed values too", async () => {
+		const state = makeCouponsState();
+		await boot(state);
+		const screen = await openNewCouponScreen();
+		const refused = await submitForm(screen, "coupons:create", {
+			id: "c-five",
+			code: "FIVEOFF",
+			type: "fixed_amount",
+			amount: "5.00",
+			currency: "USD",
+			ratePercent: "",
+			cap: "",
+		});
+		expect(bannerOf(refused)?.variant).toBe("error");
+		expect(headerTexts(refused)).toEqual(["New coupon"]);
+		expect(formInitialValues(refused, "coupons:create")).toEqual({
+			id: "c-five",
+			code: "FIVEOFF",
+			type: "fixed_amount",
+			amount: "5.00",
+			currency: "USD",
+		});
+		expect(state.coupons.filter((c) => c.code === "FIVEOFF")).toHaveLength(1);
 	});
 });
 
@@ -1891,6 +2016,20 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 					values: { search: "fiveoff" },
 				}),
 			),
+			{ screen: "coupons", level: "list" },
+		);
+		// INC-14's two new list-level renders: the create screen, and the create
+		// screen after a refusal (a banner plus a form full of prefilled values).
+		const createScreen = await openNewCouponScreen();
+		assertBlockContract(createScreen, { screen: "coupons", level: "list" });
+		assertBlockContract(
+			await submitForm(createScreen, "coupons:create", {
+				id: "",
+				code: "",
+				type: "percentage",
+				ratePercent: "nope",
+				cap: "1.00",
+			}),
 			{ screen: "coupons", level: "list" },
 		);
 		assertBlockContract(await openCoupon("FIVEOFF"), { screen: "coupons", level: "detail" }); // fixed_amount, deletable

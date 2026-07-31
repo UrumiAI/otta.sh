@@ -197,6 +197,22 @@ function bannerOf(blocks: readonly LooseBlock[]) {
 		| undefined;
 }
 
+/** What `blocks/form.tsx` would post for an UNTOUCHED form: every field's
+ *  `initial_value`, and no key at all for a field without one. This is how a
+ *  "the refusal put my typing back" claim is checked without asserting on the
+ *  renderer's own state. */
+function formInitialValues(
+	blocks: readonly LooseBlock[],
+	submitActionId: string,
+): Record<string, unknown> {
+	const form = formFor(blocks, submitActionId);
+	const out: Record<string, unknown> = {};
+	for (const f of (form?.fields ?? []) as Array<Record<string, unknown>>) {
+		if (f.initial_value !== undefined) out[String(f.action_id)] = f.initial_value;
+	}
+	return out;
+}
+
 let sandbox: SandboxHandle | undefined;
 let stub: StubCommerceServer | undefined;
 afterEach(async () => {
@@ -273,6 +289,29 @@ async function clickButton(actionId: string, value: unknown): Promise<LooseBlock
 	);
 }
 
+/** The promoted create button on a rendered level (INC-14), by action id — so
+ *  a test can only reach a create screen the way an operator does. */
+function createButton(blocks: readonly LooseBlock[], actionId: string) {
+	return buttons(blocks).find((b) => b.action_id === actionId);
+}
+
+/** Drill into the "New tax class" screen by clicking the promoted button. */
+async function openNewClassScreen(from?: LooseBlock[]): Promise<LooseBlock[]> {
+	const list = from ?? (await loadClasses());
+	const button = createButton(list, "tax:show-new-class");
+	expect(button, "no New tax class button").toBeDefined();
+	return clickButton("tax:show-new-class", button!.value);
+}
+
+/** Drill into a class's "New tax rate" screen by clicking its promoted
+ *  button — which is what carries the class path (L-6). */
+async function openNewRateScreen(classId: string): Promise<LooseBlock[]> {
+	const rates = await openClass(classId);
+	const button = createButton(rates, "tax:show-new-rate");
+	expect(button, "no New tax rate button").toBeDefined();
+	return clickButton("tax:show-new-rate", button!.value);
+}
+
 describe("admin Tax console — classes level (workerd sandbox)", () => {
 	test("page_load /tax renders the classes list as per-row accordions, forwarding the kv-sourced admin token", async () => {
 		const state = makeRulesState();
@@ -301,7 +340,7 @@ describe("admin Tax console — classes level (workerd sandbox)", () => {
 	test("create-class with blank fields is caught at the plugin boundary — no POST sent", async () => {
 		const state = makeRulesState();
 		await boot(state);
-		const blocks = await loadClasses();
+		const blocks = await openNewClassScreen();
 		const after = await submitForm(blocks, "tax:create-class", { id: "", name: "" });
 		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
 		expect(bannerOf(after)?.variant).toBe("error");
@@ -310,7 +349,7 @@ describe("admin Tax console — classes level (workerd sandbox)", () => {
 	test("create-class POSTs {id,name} with the admin token, then re-lists with a success notice", async () => {
 		const state = makeRulesState();
 		await boot(state);
-		const blocks = await loadClasses();
+		const blocks = await openNewClassScreen();
 		const after = await submitForm(blocks, "tax:create-class", {
 			id: "reduced",
 			name: "Reduced rate",
@@ -332,7 +371,7 @@ describe("admin Tax console — classes level (workerd sandbox)", () => {
 	test("creating a class with a duplicate id fails with a GENERIC error notice (no raw status)", async () => {
 		const state = makeRulesState();
 		await boot(state);
-		const blocks = await loadClasses();
+		const blocks = await openNewClassScreen();
 		const after = await submitForm(blocks, "tax:create-class", {
 			id: "standard",
 			name: "Standard again",
@@ -342,6 +381,79 @@ describe("admin Tax console — classes level (workerd sandbox)", () => {
 		expect(String(banner?.description)).not.toMatch(/HTTP \d|500/);
 		// Never applied — the list still shows exactly one "standard".
 		expect(state.classes.filter((c) => c.id === "standard")).toHaveLength(1);
+	});
+
+	// -- INC-14: the create action is a button above the data ------------------
+
+	test("INC-14: `New tax class` is a primary BUTTON directly under the intro line, above the rows — and no create accordion survives below them", async () => {
+		const state = makeRulesState();
+		await boot(state);
+		const blocks = await loadClasses();
+		expect(blocks.map((b) => String(b.type)).slice(0, 3)).toEqual(["header", "context", "actions"]);
+		const button = createButton(blocks, "tax:show-new-class");
+		expect(button?.type).toBe("button");
+		expect(button?.label).toBe("New tax class");
+		expect(button?.style).toBe("primary");
+		// The button is above the first data row (the per-row accordion branch).
+		const firstRow = blocks.findIndex((b) => String(b.block_id).startsWith("tax:class:"));
+		expect(blocks.findIndex((b) => b.type === "actions")).toBeLessThan(firstRow);
+		// L-8's bottom create group is gone, in either block_id, and no create
+		// form renders on the registry at all.
+		expect(group(blocks, "tax:new-class")).toBeUndefined();
+		expect(group(blocks, "tax:new-class:opened")).toBeUndefined();
+		expect(formFor(blocks, "tax:create-class")).toBeUndefined();
+		expect(openGroupIds(blocks)).toEqual([]); // X-18
+	});
+
+	test("INC-14: the New tax class screen is a drill-in — header, a back control that returns to the registry, and the form", async () => {
+		const state = makeRulesState();
+		await boot(state);
+		const screen = await openNewClassScreen();
+		expect(screen.some((b) => b.type === "header" && b.text === "New tax class")).toBe(true);
+		// The registry is REPLACED, not pushed down.
+		expect(
+			findBlocks(screen, "accordion").filter((a) => String(a.block_id).startsWith("tax:class:")),
+		).toHaveLength(0);
+		expect(formFor(screen, "tax:create-class")).toBeDefined();
+
+		const back = buttons(screen).find((b) => b.action_id === "tax:cancel-new");
+		expect(String(back?.label)).toMatch(/back to tax classes/i);
+		const list = await clickButton("tax:cancel-new", back?.value);
+		expect(list.some((b) => b.type === "header" && b.text === "Tax classes")).toBe(true);
+		expect(group(list, "tax:class:standard")).toBeDefined();
+	});
+
+	// THE PROPERTY THIS INCREMENT MUST NOT LOSE: a refusal never costs the
+	// operator their typing. Before INC-14 that held only as long as the client
+	// kept the create form mounted; now every refusal carries the submitted
+	// values back as `initial_value` (DA-3a-i), which is checkable here.
+	test("INC-14/DA-3a-i: a REFUSED class create re-renders the create screen with both typed values put back", async () => {
+		const state = makeRulesState();
+		await boot(state);
+		const screen = await openNewClassScreen();
+		// Blank id, real name — the refusal is about one field, and the other
+		// must not be retyped.
+		const refused = await submitForm(screen, "tax:create-class", { id: "", name: "Reduced rate" });
+		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
+		expect(bannerOf(refused)?.variant).toBe("error");
+		expect(refused.some((b) => b.type === "header" && b.text === "New tax class")).toBe(true);
+		expect(formInitialValues(refused, "tax:create-class")).toEqual({ name: "Reduced rate" });
+
+		// A SERVICE refusal keeps them too.
+		const dup = await submitForm(refused, "tax:create-class", {
+			id: "standard",
+			name: "Standard again",
+		});
+		expect(bannerOf(dup)?.variant).toBe("error");
+		expect(formInitialValues(dup, "tax:create-class")).toEqual({
+			id: "standard",
+			name: "Standard again",
+		});
+		// Success drops the draft and returns to the registry.
+		const created = await submitForm(dup, "tax:create-class", { id: "reduced", name: "Reduced" });
+		expect(bannerOf(created)?.variant).toBe("default");
+		expect(group(created, "tax:class:reduced")).toBeDefined();
+		expect(formFor(created, "tax:create-class")).toBeUndefined();
 	});
 
 	test("a class row offers a rename form, a View-rates drill-in, and a delete button — the id rides in the carrier, never a visible field (F-2/X-1)", async () => {
@@ -452,7 +564,7 @@ describe("admin Tax console — classes level (workerd sandbox)", () => {
 		expect(state.classes.some((c) => c.id === "reduced")).toBe(true);
 	});
 
-	test("zero classes shows the empty illustration with a create action, forced open by ACTION_SHOW_NEW_CLASS (E-2/B-6), and X-18 holds", async () => {
+	test("zero classes shows the empty illustration whose create action opens the SAME create screen as the promoted button (E-2)", async () => {
 		const state = makeRulesState();
 		state.classes = [];
 		await boot(state);
@@ -461,13 +573,14 @@ describe("admin Tax console — classes level (workerd sandbox)", () => {
 		expect(empty?.title).toBe("No tax classes yet");
 		const createBtn = (empty?.actions as Array<Record<string, unknown>> | undefined)?.[0];
 		expect(createBtn?.action_id).toBe("tax:show-new-class");
+		// One act, one wording — the empty state and the promoted button above it.
+		expect(createBtn?.label).toBe("New tax class");
 		expect(findBlock(blocks, "table")).toBeUndefined();
-		expect(group(blocks, "tax:new-class")?.default_open).toBe(false);
 
 		const after = await clickButton("tax:show-new-class", createBtn?.value);
-		const forced = group(after, "tax:new-class:opened");
-		expect(forced?.default_open).toBe(true);
-		expect(openGroupIds(after)).toEqual(["tax:new-class:opened"]); // X-18: at most one
+		expect(after.some((b) => b.type === "header" && b.text === "New tax class")).toBe(true);
+		expect(formFor(after, "tax:create-class")).toBeDefined();
+		expect(openGroupIds(after)).toEqual([]); // X-18
 	});
 
 	test("25 classes still render the per-row accordion branch (L-9)", async () => {
@@ -599,7 +712,7 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 		expect(findBlock(cleared, "section")).toBeUndefined();
 	});
 
-	test("a class with no rates yet (unfiltered) shows the empty illustration, forced open by ACTION_SHOW_NEW_RATE (E-2/B-6)", async () => {
+	test("a class with no rates yet (unfiltered) shows the empty illustration, whose action opens that class's create screen (E-2)", async () => {
 		const state = makeRulesState();
 		state.classes.push({ id: "zero", name: "Zero-rated" });
 		await boot(state);
@@ -609,12 +722,17 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 		expect(empty?.title).toBe("No tax rates yet");
 		const createBtn = (empty?.actions as Array<Record<string, unknown>> | undefined)?.[0];
 		expect(createBtn?.action_id).toBe("tax:show-new-rate");
+		expect(createBtn?.label).toBe("New tax rate"); // one act, one wording
 		expect(createBtn?.value).toMatchObject({ __path: encodePath(["zero"]) });
 
 		const after = await clickButton("tax:show-new-rate", createBtn?.value);
-		const forced = group(after, "tax:new-rate:zero:opened");
-		expect(forced?.default_open).toBe(true);
-		expect(openGroupIds(after)).toEqual(["tax:new-rate:zero:opened"]);
+		// The class the operator was in, not the root registry — the path rode
+		// in the button's own value (L-6).
+		expect(after.some((b) => b.type === "header" && b.text === "New tax rate — zero")).toBe(true);
+		expect(decodeCarrier(formFor(after, "tax:create-rate")!.block_id as string)).toMatchObject({
+			classId: "zero",
+		});
+		expect(openGroupIds(after)).toEqual([]); // X-18
 	});
 
 	test('filtering to a zone with no rates for this class shows a plain context line, never the empty illustration (E-1/E-2 "never for a filtered-to-zero list")', async () => {
@@ -630,7 +748,7 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 	test("create-rate POSTs the percent parsed to EXACT integer bps (real boolean toggle), then reloads the class's rates with a success notice", async () => {
 		const state = makeRulesState();
 		await boot(state);
-		const opened = await openClass("standard");
+		const opened = await openNewRateScreen("standard");
 		const after = await submitForm(opened, "tax:create-rate", {
 			id: "std-us-b",
 			zoneId: "us",
@@ -656,7 +774,7 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 	test("a malformed rate percent is caught at the plugin boundary — no POST is sent", async () => {
 		const state = makeRulesState();
 		await boot(state);
-		const opened = await openClass("standard");
+		const opened = await openNewRateScreen("standard");
 		const after = await submitForm(opened, "tax:create-rate", {
 			id: "bad",
 			zoneId: "us",
@@ -665,6 +783,104 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 		});
 		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
 		expect(bannerOf(after)?.variant).toBe("error");
+	});
+
+	// -- INC-14: the create action is a button above the data ------------------
+
+	test("INC-14: `New tax rate` is a primary BUTTON under the intro line, above the rows, carrying its class path — and no create accordion survives below them", async () => {
+		const state = makeRulesState();
+		await boot(state);
+		const blocks = await openClass("standard");
+		const types = blocks.map((b) => String(b.type));
+		// header · back · context · the create button (this level's intro line is
+		// the context under the back control).
+		expect(types.slice(0, 4)).toEqual(["header", "actions", "context", "actions"]);
+		const button = createButton(blocks, "tax:show-new-rate");
+		expect(button?.label).toBe("New tax rate");
+		expect(button?.style).toBe("primary");
+		// L-6: depth 1, so the path is not optional — without it the create
+		// screen would open at the root registry.
+		expect(button?.value).toMatchObject({ __path: encodePath(["standard"]) });
+		const firstRow = blocks.findIndex((b) => String(b.block_id).startsWith("tax:rate:"));
+		expect(blocks.findIndex((b, i) => b.type === "actions" && i > 0)).toBeLessThan(firstRow);
+		expect(group(blocks, "tax:new-rate:standard")).toBeUndefined();
+		expect(group(blocks, "tax:new-rate:standard:opened")).toBeUndefined();
+		expect(formFor(blocks, "tax:create-rate")).toBeUndefined();
+	});
+
+	test("INC-14: the New tax rate screen is a drill-in whose back control returns to THAT class's rates", async () => {
+		const state = makeRulesState();
+		await boot(state);
+		const screen = await openNewRateScreen("standard");
+		expect(screen.some((b) => b.type === "header" && b.text === "New tax rate — standard")).toBe(
+			true,
+		);
+		expect(
+			findBlocks(screen, "accordion").filter((a) => String(a.block_id).startsWith("tax:rate:")),
+		).toHaveLength(0);
+		const back = buttons(screen).find((b) => b.action_id === "tax:cancel-new");
+		expect(String(back?.label)).toMatch(/back to tax rates/i);
+		const rates = await clickButton("tax:cancel-new", back?.value);
+		// The class the operator came from, NOT the root registry.
+		expect(rates.some((b) => b.type === "header" && b.text === "Tax rates — standard")).toBe(true);
+		expect(group(rates, "tax:rate:std-us")).toBeDefined();
+	});
+
+	test("INC-14/DA-3a-i: a REFUSED rate create re-renders the create screen with the id, zone, percent and toggle put back", async () => {
+		const state = makeRulesState();
+		await boot(state);
+		const screen = await openNewRateScreen("standard");
+		const refused = await submitForm(screen, "tax:create-rate", {
+			id: "std-eu-b",
+			zoneId: "eu",
+			ratePercent: "7.255", // 3 decimals — refused at the plugin boundary
+			appliesToShipping: true,
+		});
+		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
+		expect(bannerOf(refused)?.variant).toBe("error");
+		expect(refused.some((b) => b.type === "header" && b.text === "New tax rate — standard")).toBe(
+			true,
+		);
+		expect(formInitialValues(refused, "tax:create-rate")).toEqual({
+			id: "std-eu-b",
+			zoneId: "eu", // the select survives — never silently reset to the first zone
+			ratePercent: "7.255", // VERBATIM: there are no bps to re-derive it from
+			appliesToShipping: true, // X-24: a toggle is mount-only, so it must be restated
+		});
+		// Fixing the one field and resubmitting creates the rate and returns.
+		const created = await submitForm(refused, "tax:create-rate", {
+			id: "std-eu-b",
+			zoneId: "eu",
+			ratePercent: "7.25",
+			appliesToShipping: true,
+		});
+		expect(state.rates.find((r) => r.id === "std-eu-b")?.rateBps).toBe(725);
+		expect(bannerOf(created)?.variant).toBe("default");
+		expect(formFor(created, "tax:create-rate")).toBeUndefined();
+	});
+
+	test("INC-14: a draft zone that no longer exists falls back rather than rendering a blank select trigger (X-23)", async () => {
+		const state = makeRulesState();
+		await boot(state);
+		const screen = await openNewRateScreen("standard");
+		const refused = await submitForm(screen, "tax:create-rate", {
+			id: "ghost",
+			zoneId: "atlantis", // never a real zone
+			ratePercent: "nope",
+			appliesToShipping: false,
+		});
+		const zoneField = field(formFor(refused, "tax:create-rate"), "zoneId");
+		const options = (zoneField?.options ?? []) as Array<{ value: string }>;
+		expect(options.some((o) => o.value === String(zoneField?.initial_value))).toBe(true);
+	});
+
+	test("INC-14: with no zones at all the create screen degrades to one honest line, never an empty select (F-6a)", async () => {
+		const state = makeRulesState();
+		state.zones = [];
+		await boot(state);
+		const screen = await openNewRateScreen("standard");
+		expect(formFor(screen, "tax:create-rate")).toBeUndefined();
+		expect(contextTexts(screen).some((t) => /create a shipping zone first/i.test(t))).toBe(true);
 	});
 
 	test("a rate row carries a per-row edit form (CAS) prefilled from the loaded rate — ids and watermark in the carrier, never a visible field (F-2/X-1)", async () => {
@@ -901,6 +1117,25 @@ describe("admin Tax console — assertBlockContract (§15 V-3)", () => {
 		assertBlockContract(filtered, { screen: "tax", level: "list" });
 		assertBlockContract(
 			await clickButton("tax:open", { target: encodePath(["standard", "std-us"]) }),
+			{ screen: "tax", level: "list" },
+		);
+		// INC-14's four new list-level renders: each create screen, and each
+		// after a refusal (a banner plus a form full of prefilled values).
+		const classScreen = await openNewClassScreen();
+		assertBlockContract(classScreen, { screen: "tax", level: "list" });
+		assertBlockContract(await submitForm(classScreen, "tax:create-class", { id: "", name: "x" }), {
+			screen: "tax",
+			level: "list",
+		});
+		const rateScreen = await openNewRateScreen("standard");
+		assertBlockContract(rateScreen, { screen: "tax", level: "list" });
+		assertBlockContract(
+			await submitForm(rateScreen, "tax:create-rate", {
+				id: "r",
+				zoneId: "us",
+				ratePercent: "nope",
+				appliesToShipping: true,
+			}),
 			{ screen: "tax", level: "list" },
 		);
 

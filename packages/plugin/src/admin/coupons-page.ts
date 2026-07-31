@@ -72,10 +72,18 @@ import {
  * (create/save: plain forms, no confirm) — there is no free-text-or-typed-
  * amount flow that would need DA-3's stage/confirm shape, so this screen
  * carries none of Orders' refusal machinery. It DOES use the render-state
- * channel once, for a NON-DA-3 purpose the spec also assigns it (B-6, E-2):
- * forcing the "New coupon" group open from the empty state's own button
- * without discarding the operator's typed input in any other group. See
- * {@link CouponsRenderState}.
+ * channel, for a NON-DA-3 purpose the spec also assigns it (E-2): saying that
+ * THIS render is the create screen rather than the list, and — on a refusal —
+ * carrying back what the operator typed into it. See {@link CouponsRenderState}.
+ *
+ * CREATING IS A DRILL-IN, NOT A GROUP AT THE BOTTOM (INC-14). "New coupon" is
+ * a `primary` BUTTON emitted directly under the intro line, above the data;
+ * clicking it renders the create screen in place of the list (header · back ·
+ * notice · context · form), the same button-drill-in idiom Tax and Shipping
+ * already use for "View rates" (§12.7). L-8's create `accordion` at the very
+ * bottom is GONE from this screen: it put the one action an empty console
+ * needs last, below the picker, rendered as a link the eye reads as another
+ * row affordance. Nothing about what a create SUBMITS changed.
  *
  * THE F-5a TRAP THIS SCREEN IS BUILT TO AVOID. `updateCoupon` sends a PUT
  * (`admin-rules-client.ts:493-496`) and the service coerces every omitted key
@@ -113,9 +121,13 @@ const COUPON_ACTIONS: ScreenActions = screenActions("coupons");
 const ACTION_CREATE = COUPON_ACTIONS.custom("create");
 const ACTION_SAVE = COUPON_ACTIONS.custom("save");
 const ACTION_DELETE = COUPON_ACTIONS.custom("delete");
-/** Fired by the empty state's "New coupon" button (E-2) — forces the create
- *  group open on the re-rendered list. Not a DA-3 verb; see the module doc. */
+/** Fired by the "New coupon" button — the promoted one above the table, and
+ *  the empty state's own (E-2). Both render the create screen. Not a DA-3
+ *  verb; see the module doc. */
 const ACTION_NEW = COUPON_ACTIONS.custom("new");
+/** The create screen's "← Back to coupons" — re-lists with NO render state,
+ *  which is what makes the create screen go away. */
+const ACTION_CANCEL_NEW = COUPON_ACTIONS.custom("cancel-new");
 
 /**
  * The action ids the admin-route dispatcher recognizes as belonging to the
@@ -127,6 +139,7 @@ export const COUPONS_ACTION_IDS: ReadonlySet<string> = COUPON_ACTIONS.actionIds(
 	"save",
 	"delete",
 	"new",
+	"cancel-new",
 );
 
 /** The em-dash BlockInteraction envelope this page consumes. */
@@ -146,15 +159,33 @@ const NONE = "none";
 /**
  * THIS SCREEN'S RENDER STATE (DA-3a-iii's channel, generalized beyond DA-3 —
  * see the module doc for why Coupons has no staged/refusal flow at all).
- * One member: the empty state's "New coupon" button re-renders the list with
- * `renderState: {kind:"new-coupon"}`, and {@link createCouponAccordion} is the
- * one place that reads it, changing the accordion's `block_id` AND setting
- * `default_open: true` together (B-6 — either alone is wrong: the flag alone
- * does nothing to an already-mounted accordion, and the id alone renders
- * collapsed because the remount re-reads `default_open`, which defaults to
- * `false`).
+ * One member, read in exactly one place ({@link couponsBlocks}): render the
+ * create screen instead of the list.
+ *
+ * `draft` IS WHY THE CHANNEL CARRIES MORE THAN A `kind`. A create refusal
+ * re-renders this screen, and DA-3a-i's rule for every refusal render is
+ * "state 1 again, with the submitted values prefilled" — so the operator who
+ * mistyped a rate does not retype the other six fields. It carries RAW
+ * OPERATOR TEXT, never parsed minor units (DA-3a-iii property 5): the most
+ * common refusal here IS an unparseable amount, and a rejected `19,99` cannot
+ * be reconstructed from cents that were never derived. Within-request only —
+ * nothing is stored, and it reaches the client only as `initial_value`.
  */
-type CouponsRenderState = { kind: "new-coupon" };
+type CouponsRenderState = { kind: "new-coupon"; draft?: CouponDraft };
+
+/** The create form's seven fields exactly as they were submitted — see
+ *  {@link CouponsRenderState}. `type` is a `select` value, so
+ *  {@link createCouponForm} still resolves it against its own options before
+ *  prefilling (X-23 forbids an `initial_value` absent from `options`). */
+interface CouponDraft {
+	id: string;
+	code: string;
+	type: string;
+	amount: string;
+	currency: string;
+	ratePercent: string;
+	cap: string;
+}
 
 /** Matches the service's default page size (`couponsListQuery` limit default). */
 const PAGE_LIMIT = 25;
@@ -193,6 +224,7 @@ export function createCouponsPageHandler(): RouteHandler<CouponsPageInput> {
 			[ACTION_SAVE]: saveCouponAction(),
 			[ACTION_DELETE]: deleteCouponAction(),
 			[ACTION_NEW]: newCouponAction(),
+			[ACTION_CANCEL_NEW]: cancelNewCouponAction(),
 		},
 	});
 }
@@ -352,11 +384,22 @@ function toClientFilter(form: CouponsFilterForm): CouponsListFilter {
 }
 
 /**
- * §12.2's list skeleton, exactly: `header` · one `context` (≤140) · notice
- * `banner` · the INLINE one-field search (L-2: at 1 field it renders directly,
- * no accordion) · the active-filter `section` · THE DATA (table, or `empty` in
- * its place) · the "Open coupon" drill-in · the "New coupon" create accordion.
- * Nothing else may precede the table (P-1/L-1).
+ * §12.2's list skeleton: `header` · one `context` (≤140) · the "New coupon"
+ * BUTTON (INC-14) · notice `banner` · the INLINE one-field search (L-2: at 1
+ * field it renders directly, no accordion) · the active-filter `section` ·
+ * THE DATA (table, or `empty` in its place) · the "Open coupon" drill-in.
+ *
+ * The create button is the one addition INC-14 makes to P-1/L-1's whitelist,
+ * and it is deliberately the whole addition: a BUTTON is one row tall and
+ * carries no input, so "data inside the first screenful" survives it, which
+ * the create FORM sitting up here would not. The form is a drill-in
+ * ({@link newCouponScreen}) precisely so that it never renders above the data.
+ *
+ * When the render state says the operator asked for that screen, this function
+ * returns it INSTEAD of the list — the level has already fetched a page by
+ * then and it is dropped, which is one wasted read on a deliberate click and
+ * buys the create screen the same fail-closed containment every other render
+ * on this level has.
  */
 function couponsBlocks(
 	actions: ScreenActions,
@@ -367,6 +410,7 @@ function couponsBlocks(
 	notice: Notice | undefined,
 	renderState: CouponsRenderState | undefined,
 ): Block[] {
+	if (renderState?.kind === "new-coupon") return newCouponScreen(renderState.draft, notice);
 	const blocks: Block[] = [
 		{ type: "header", text: "Coupons", block_id: "coupons:hdr" },
 		{
@@ -374,6 +418,7 @@ function couponsBlocks(
 			// 78 chars ≤ 140 (§1).
 			text: "Search a coupon and open it. Discounts apply to the cart subtotal at checkout.",
 		},
+		createCouponButton(),
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
 
@@ -409,9 +454,8 @@ function couponsBlocks(
 	if (coupons.length === 0 && !filtered) {
 		// E-2: the primary collection at its TRUE zero state. The table is
 		// OMITTED and `empty` renders in its place, with the create affordance in
-		// `empty.actions` — its handler re-renders THIS list with the create
-		// group forced open (B-6), which is why that group still has to exist
-		// below regardless of row count (L-8).
+		// `empty.actions` — the SAME verb and the SAME words as the button above,
+		// because they are the same act and now reach the same screen.
 		blocks.push(
 			emptyState({
 				title: "No coupons yet",
@@ -425,7 +469,43 @@ function couponsBlocks(
 		blocks.push(couponsTable(coupons, nextToken));
 	}
 	if (coupons.length > 0) blocks.push(openCouponForm(actions, path, coupons));
-	blocks.push(createCouponAccordion(renderState));
+	return blocks;
+}
+
+/** INC-14's promoted create affordance: `primary`, one row tall, directly
+ *  under the intro line. It carries no `value` — the create screen it opens
+ *  is the root list's own, so there is no path to carry (L-6 binds at depth
+ *  ≥ 1). */
+function createCouponButton(): ActionsBlock {
+	return {
+		type: "actions",
+		block_id: "coupons:create-action",
+		elements: [{ type: "button", action_id: ACTION_NEW, label: "New coupon", style: "primary" }],
+	};
+}
+
+/**
+ * The create screen (INC-14): what "New coupon" drills into. Shaped like every
+ * other non-list level on the console — `header` · back · notice · context ·
+ * the form — so the way out is where an operator already looks for it.
+ *
+ * The banner sits ABOVE the form on purpose: it is a refusal ("Coupon not
+ * created"), and it explains the values the form below has just put back.
+ */
+function newCouponScreen(draft: CouponDraft | undefined, notice: Notice | undefined): Block[] {
+	const blocks: Block[] = [
+		{ type: "header", text: "New coupon", block_id: "coupons:new:hdr" },
+		// No path: this screen belongs to the ROOT list, and the cancel verb
+		// re-lists the level the operator came from.
+		backButton(ACTION_CANCEL_NEW, "← Back to coupons"),
+	];
+	if (notice !== undefined) blocks.push(noticeBanner(notice));
+	blocks.push({
+		type: "context",
+		// 108 chars ≤ 140 (§1 — the page-level line on this screen).
+		text: "ID, code, type and currency are fixed at creation — to change them, retire this coupon and issue a new code.",
+	});
+	blocks.push(createCouponForm(draft));
 	return blocks;
 }
 
@@ -557,30 +637,6 @@ function openCouponForm(
 }
 
 /**
- * The create group (L-8): closed by default, forced open (B-6: changed
- * `block_id` AND `default_open: true`) when `renderState` says the empty
- * state's own button fired (E-2). Always rendered, regardless of row count,
- * so there is a group for that button to force open.
- */
-function createCouponAccordion(renderState: CouponsRenderState | undefined): Block {
-	const forceOpen = renderState?.kind === "new-coupon";
-	return {
-		type: "accordion",
-		block_id: forceOpen ? "coupons:new:opened" : "coupons:new",
-		label: "New coupon",
-		default_open: forceOpen,
-		blocks: [
-			{
-				type: "context",
-				// 108 chars ≤ 200.
-				text: "ID, code, type and currency are fixed at creation — to change them, retire this coupon and issue a new code.",
-			},
-			createCouponForm(),
-		],
-	};
-}
-
-/**
  * The create form: 3 unconditional fields (id, code, type) + 2
  * `condition`-gated economics fields per type (F-5b) = 5 VISIBLE at once. Both
  * branches' fields are always PRESENT in the JSON (so the operator's live
@@ -594,12 +650,21 @@ function createCouponAccordion(renderState: CouponsRenderState | undefined): Blo
  * without them is valid immediately/forever/unlimited/unrestricted (the
  * common case), and keeping them off this form is what holds it to 5 visible
  * instead of 8.
+ *
+ * `draft` IS THE REFUSAL PATH (DA-3a-i). Every value the operator submitted
+ * comes back as this field's `initial_value`, VERBATIM — including the ones
+ * the refusal was not about. `type` is resolved against the options first
+ * (X-23), which also decides which economics branch `condition` reveals, so a
+ * refused percentage coupon comes back as a percentage coupon.
  */
-function createCouponForm(): FormBlock {
+function createCouponForm(draft?: CouponDraft): FormBlock {
 	const typeOptions: SelectOption[] = [
 		{ value: "fixed_amount", label: "Fixed amount off" },
 		{ value: "percentage", label: "Percentage off" },
 	];
+	const type = typeOptions.some((o) => o.value === draft?.type)
+		? (draft?.type ?? "fixed_amount")
+		: "fixed_amount";
 	return carriedForm({
 		namespace: "coupons:create",
 		// No hidden context to carry — `id`/`code` are this form's own VISIBLE
@@ -612,14 +677,26 @@ function createCouponForm(): FormBlock {
 		form: {
 			type: "form",
 			fields: [
-				{ type: "text_input", action_id: "id", label: "Coupon ID", placeholder: "e.g. summer25" },
-				{ type: "text_input", action_id: "code", label: "Code", placeholder: "e.g. SUMMER25" },
+				{
+					type: "text_input",
+					action_id: "id",
+					label: "Coupon ID",
+					placeholder: "e.g. summer25",
+					...prefill(draft?.id),
+				},
+				{
+					type: "text_input",
+					action_id: "code",
+					label: "Code",
+					placeholder: "e.g. SUMMER25",
+					...prefill(draft?.code),
+				},
 				{
 					type: "select",
 					action_id: "type",
 					label: "Type",
 					options: typeOptions,
-					initial_value: "fixed_amount", // required for `condition` to evaluate (R-12b)
+					initial_value: type, // required for `condition` to evaluate (R-12b)
 				},
 				{
 					type: "text_input",
@@ -627,6 +704,7 @@ function createCouponForm(): FormBlock {
 					label: "Amount off",
 					placeholder: "5.00",
 					condition: { field: "type", eq: "fixed_amount" },
+					...prefill(draft?.amount),
 				},
 				{
 					type: "text_input",
@@ -634,6 +712,7 @@ function createCouponForm(): FormBlock {
 					label: "Currency (ISO-4217)",
 					placeholder: "USD",
 					condition: { field: "type", eq: "fixed_amount" },
+					...prefill(draft?.currency),
 				},
 				{
 					type: "text_input",
@@ -641,6 +720,7 @@ function createCouponForm(): FormBlock {
 					label: "Rate (%)",
 					placeholder: "7.25",
 					condition: { field: "type", eq: "percentage" },
+					...prefill(draft?.ratePercent),
 				},
 				{
 					type: "text_input",
@@ -648,11 +728,20 @@ function createCouponForm(): FormBlock {
 					label: "Discount cap (optional)",
 					placeholder: "20.00",
 					condition: { field: "type", eq: "percentage" },
+					...prefill(draft?.cap),
 				},
 			],
 			submit: { label: "Create coupon", action_id: ACTION_CREATE },
 		},
 	});
+}
+
+/** A text field's draft prefill, or nothing. An EMPTY draft value renders no
+ *  `initial_value` at all rather than `""`: that is what an untouched field
+ *  looks like to `blocks/form.tsx`, and it keeps the B-3a digest of a blank
+ *  form identical to the digest of a form nobody has submitted yet. */
+function prefill(value: string | undefined): { initial_value?: string } {
+	return value !== undefined && value.length > 0 ? { initial_value: value } : {};
 }
 
 function couponsFailClosed() {
@@ -1527,10 +1616,18 @@ function parseCountInput(raw: string): { ok: true; value: number | null } | { ok
 // -- custom action: create a coupon --------------------------------------------
 
 function createCouponAction() {
-	return customAction<AdminRulesClient>(async ({ input, client, showList }) => {
+	return customAction<AdminRulesClient, CouponsRenderState>(async ({ input, client, showList }) => {
 		const values = input.values ?? {};
+		// EVERY refusal below re-renders the create screen with this draft
+		// (DA-3a-i): the operator fixes the one field that was wrong instead of
+		// retyping seven. Raw text, exactly as submitted — see CouponsRenderState.
+		const draft = couponDraft(values);
 		const err = (description: string) =>
-			showList(undefined, { variant: "error", title: "Coupon not created", description });
+			showList(
+				undefined,
+				{ variant: "error", title: "Coupon not created", description },
+				{ kind: "new-coupon", draft },
+			);
 		const id = (readString(values.id) ?? "").trim();
 		const code = (readString(values.code) ?? "").trim();
 		const type = readString(values.type) ?? "";
@@ -1558,8 +1655,27 @@ function createCouponAction() {
 			maxUses: null,
 			maxUsesPerCustomer: null,
 		});
-		return showList(undefined, createCouponNotice(result, code));
+		// A SERVICE refusal keeps the draft too (a duplicate id is fixed by
+		// editing one field); success drops it, which is what returns the
+		// operator to the list.
+		return result.ok
+			? showList(undefined, createCouponNotice(result, code))
+			: showList(undefined, createCouponNotice(result, code), { kind: "new-coupon", draft });
 	});
+}
+
+/** The submitted create values, verbatim and untrimmed — the operator's own
+ *  text is what goes back into the form (DA-3a-iii property 5). */
+function couponDraft(values: Record<string, unknown>): CouponDraft {
+	return {
+		id: readString(values.id) ?? "",
+		code: readString(values.code) ?? "",
+		type: readString(values.type) ?? "",
+		amount: readString(values.amount) ?? "",
+		currency: readString(values.currency) ?? "",
+		ratePercent: readString(values.ratePercent) ?? "",
+		cap: readString(values.cap) ?? "",
+	};
 }
 
 function createCouponNotice(result: RulesCreateResult<unknown>, code: string): Notice {
@@ -1698,14 +1814,20 @@ function deleteCouponOutcome(
 	});
 }
 
-// -- custom action: force the "New coupon" group open from the empty state -----
+// -- custom actions: open and leave the create screen ---------------------------
 
-/** E-2's empty-state button (B-6). Not a DA-3 verb — see the module doc for
- *  why this screen's only render-state use is this one, non-destructive case. */
+/** INC-14's promoted button, and E-2's empty-state button — one verb, because
+ *  they are one act. No draft: nothing has been typed yet. */
 function newCouponAction() {
 	return customAction<AdminRulesClient, CouponsRenderState>(async ({ showList }) => {
 		return showList(undefined, undefined, { kind: "new-coupon" });
 	});
+}
+
+/** "← Back to coupons": the root list with NO render state. Whatever was typed
+ *  is dropped — deliberately, and only ever by this explicit click. */
+function cancelNewCouponAction() {
+	return customAction<AdminRulesClient, CouponsRenderState>(async ({ showList }) => showList());
 }
 
 // -- small shared helpers --------------------------------------------------------

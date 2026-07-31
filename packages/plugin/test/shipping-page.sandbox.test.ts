@@ -319,6 +319,57 @@ async function boot(state: ShippingState, token = "admin-token-xyz") {
 	if (token.length > 0) await seedToken(sandbox, stub, token);
 }
 
+/** The list, freshly loaded. */
+async function loadZones(): Promise<LooseBlock[]> {
+	return blocksOf(await sandbox!.invokeRoute("admin", { type: "page_load", page: "/shipping" }));
+}
+
+/** Click a button the way em-dash does: `action_id` + `value`, and NO
+ *  `block_id` — a button echoes none (B-1). */
+async function clickButton(actionId: string, value: unknown): Promise<LooseBlock[]> {
+	return blocksOf(
+		await sandbox!.invokeRoute("admin", { type: "block_action", action_id: actionId, value }),
+	);
+}
+
+/** The promoted create button on a rendered level (INC-14), by action id — so
+ *  a test can only reach a create screen the way an operator does. */
+function createButton(blocks: readonly LooseBlock[], actionId: string): LooseElement | undefined {
+	return buttons(blocks).find((b) => b.action_id === actionId);
+}
+
+/** Drill into the "New shipping zone" screen by clicking the promoted button. */
+async function openNewZoneScreen(from?: LooseBlock[]): Promise<LooseBlock[]> {
+	const list = from ?? (await loadZones());
+	const button = createButton(list, "shipping:open-create-zone");
+	expect(button, "no New shipping zone button").toBeDefined();
+	return clickButton("shipping:open-create-zone", valueOf(button));
+}
+
+/** Drill into a zone's "New shipping method" screen from its methods level —
+ *  the button is what carries the zone path (L-6). */
+async function openNewMethodScreen(methods: LooseBlock[]): Promise<LooseBlock[]> {
+	const button = createButton(methods, "shipping:open-create-method");
+	expect(button, "no New shipping method button").toBeDefined();
+	return clickButton("shipping:open-create-method", valueOf(button));
+}
+
+/** What `blocks/form.tsx` would post for an UNTOUCHED form: every field's
+ *  `initial_value`, and no key at all for a field without one — how a "the
+ *  refusal put my typing back" claim is checked without asserting on the
+ *  renderer's own state. */
+function formInitialValues(
+	blocks: readonly LooseBlock[],
+	submitActionId: string,
+): Record<string, unknown> {
+	const form = formFor(blocks, submitActionId);
+	const out: Record<string, unknown> = {};
+	for (const f of (form?.fields ?? []) as Array<Record<string, unknown>>) {
+		if (f.initial_value !== undefined) out[String(f.action_id)] = f.initial_value;
+	}
+	return out;
+}
+
 describe("admin Shipping console — zones level, accordion branch (workerd sandbox)", () => {
 	test("page_load /shipping renders one per-row accordion per zone, all collapsed (L-9)", async () => {
 		const state = makeShippingState();
@@ -539,22 +590,90 @@ describe("admin Shipping console — zones level, accordion branch (workerd sand
 		expect(state.zones.filter((z) => z.id === "us")).toHaveLength(1);
 	});
 
-	test("the 'New zone' create group is closed by default and carries an F-8 line about regions, not the page context", async () => {
+	test("the create screen carries the F-8 line about regions; the page context stays terse and says nothing about them", async () => {
 		const state = makeShippingState();
 		await boot(state);
-		const outcome = await sandbox!.invokeRoute("admin", { type: "page_load", page: "/shipping" });
-		const blocks = blocksOf(outcome);
-		const newZone = group(blocks, "ship:new-zone");
-		expect(newZone).toBeDefined();
-		expect(newZone?.default_open).not.toBe(true);
-		const bodyContexts = findBlocks(groupBlocks(blocks, "ship:new-zone"), "context").map((c) =>
-			String(c.text),
-		);
-		expect(bodyContexts.some((t) => /auto-match/i.test(t))).toBe(true);
+		const blocks = await loadZones();
 		// The page-level context stays terse (≤140) and says nothing about regions.
 		const pageContext = String(findBlocks(blocks, "context")[0]?.text);
 		expect(pageContext.length).toBeLessThanOrEqual(140);
 		expect(pageContext).not.toMatch(/auto-match/i);
+		// The F-8 line moved WITH the form it qualifies, onto the create screen.
+		const screen = await openNewZoneScreen(blocks);
+		expect(contextTexts(screen).some((t) => /auto-match/i.test(t))).toBe(true);
+	});
+
+	// -- INC-14: the create action is a button above the data ------------------
+
+	test("INC-14: `New shipping zone` is a primary BUTTON directly under the intro line, above the rows — and no create accordion survives below them", async () => {
+		const state = makeShippingState();
+		await boot(state);
+		const blocks = await loadZones();
+		expect(blocks.map((b) => String(b.type)).slice(0, 3)).toEqual(["header", "context", "actions"]);
+		const button = createButton(blocks, "shipping:open-create-zone");
+		expect(button?.type).toBe("button");
+		expect(button?.label).toBe("New shipping zone");
+		expect(button?.style).toBe("primary");
+		const firstRow = blocks.findIndex((b) => String(b.block_id).startsWith("ship:zone:"));
+		expect(blocks.findIndex((b) => b.type === "actions")).toBeLessThan(firstRow);
+		// L-8's bottom create group is gone, in either block_id, and no create
+		// form renders on the registry at all.
+		expect(group(blocks, "ship:new-zone")).toBeUndefined();
+		expect(group(blocks, "ship:new-zone:open")).toBeUndefined();
+		expect(formFor(blocks, "shipping:create-zone")).toBeUndefined();
+		expect(openGroupIds(blocks)).toHaveLength(0); // X-18
+	});
+
+	test("INC-14: the New shipping zone screen is a drill-in whose back control returns to the registry", async () => {
+		const state = makeShippingState();
+		await boot(state);
+		const screen = await openNewZoneScreen();
+		expect(screen.some((b) => b.type === "header" && b.text === "New shipping zone")).toBe(true);
+		expect(
+			findBlocks(screen, "accordion").filter((a) => String(a.block_id).startsWith("ship:zone:")),
+		).toHaveLength(0);
+		expect(fieldIds(formFor(screen, "shipping:create-zone"))).toEqual(["id", "name", "regions"]);
+
+		const back = buttons(screen).find((b) => b.action_id === "shipping:cancel-new");
+		expect(String(back?.label)).toMatch(/back to shipping zones/i);
+		const list = await clickButton("shipping:cancel-new", valueOf(back));
+		expect(list.some((b) => b.type === "header" && b.text === "Shipping zones")).toBe(true);
+		expect(group(list, "ship:zone:us")).toBeDefined();
+	});
+
+	// THE PROPERTY THIS INCREMENT MUST NOT LOSE: a refusal never costs the
+	// operator their typing. It used to rest on the client keeping the create
+	// form mounted; every refusal now carries the values back as
+	// `initial_value` (DA-3a-i), which is checkable from the emitted JSON.
+	test("INC-14/DA-3a-i: a REFUSED zone create re-renders the create screen with all three typed values put back", async () => {
+		const state = makeShippingState();
+		await boot(state);
+		const screen = await openNewZoneScreen();
+		const refused = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "shipping:create-zone",
+			block_id: formFor(screen, "shipping:create-zone")?.block_id,
+			values: { id: "", name: "Canada", regions: "CA, US" },
+		});
+		const blocks = blocksOf(refused);
+		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
+		expect(bannerOf(blocks)?.variant).toBe("error");
+		expect(blocks.some((b) => b.type === "header" && b.text === "New shipping zone")).toBe(true);
+		expect(formInitialValues(blocks, "shipping:create-zone")).toEqual({
+			name: "Canada",
+			regions: "CA, US", // VERBATIM — never the parsed region array
+		});
+
+		// Fixing the one field and resubmitting creates the zone and returns.
+		const created = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "shipping:create-zone",
+			block_id: formFor(blocks, "shipping:create-zone")?.block_id,
+			values: { id: "ca", name: "Canada", regions: "CA, US" },
+		});
+		expect(state.zones.find((z) => z.id === "ca")?.regions).toEqual(["CA", "US"]);
+		expect(bannerOf(blocksOf(created))?.variant).toBe("default");
+		expect(formFor(blocksOf(created), "shipping:create-zone")).toBeUndefined();
 	});
 });
 
@@ -573,20 +692,16 @@ describe("admin Shipping console — zones level, zero-row empty state (E-2/B-6)
 		expect(action?.action_id).toBe("shipping:open-create-zone");
 	});
 
-	test("clicking the empty state's create action re-renders with the 'New zone' group FORCED OPEN (B-6: changed block_id AND default_open:true)", async () => {
+	test("clicking the empty state's create action opens the SAME create screen as the promoted button (E-2)", async () => {
 		const state = { zones: [] as ZoneRow[], methods: [] as MethodRow[], rates: [] as RateRow[] };
 		await boot(state);
-		const opened = await sandbox!.invokeRoute("admin", { type: "page_load", page: "/shipping" });
-		const action = emptyActions(blocksOf(opened))[0];
-		const outcome = await sandbox!.invokeRoute("admin", {
-			type: "block_action",
-			action_id: "shipping:open-create-zone",
-			value: valueOf(action),
-		});
-		const blocks = blocksOf(outcome);
-		// X-18: at most one default_open:true in the emitted response.
-		expect(openGroupIds(blocks)).toEqual(["ship:new-zone:open"]);
-		expect(group(blocks, "ship:new-zone:open")?.label).toBe("New zone");
+		const action = emptyActions(await loadZones())[0];
+		// One act, one wording — the empty state and the promoted button above it.
+		expect(action?.label).toBe("New shipping zone");
+		const blocks = await clickButton("shipping:open-create-zone", valueOf(action));
+		expect(blocks.some((b) => b.type === "header" && b.text === "New shipping zone")).toBe(true);
+		expect(formFor(blocks, "shipping:create-zone")).toBeDefined();
+		expect(openGroupIds(blocks)).toHaveLength(0); // X-18
 	});
 });
 
@@ -862,7 +977,7 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 
 		// The SELECT still submits the enum the service expects — humanizing the
 		// copy must not touch the protocol.
-		const createForm = formFor(groupBlocks(blocks, "ship:new-method:us"), "shipping:create-method");
+		const createForm = formFor(await openNewMethodScreen(blocks), "shipping:create-method");
 		const typeOptions = field(createForm, "type")?.options as Array<{
 			value: string;
 			label: string;
@@ -886,7 +1001,7 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		expect(findBlock(blocks, "banner")).toBeUndefined();
 	});
 
-	test("the empty state's create action carries the zoneId in value.__path and force-opens 'New method' at the RIGHT zone", async () => {
+	test("the empty state's create action carries the zoneId in value.__path and opens the create screen at the RIGHT zone", async () => {
 		const state = makeShippingState();
 		await boot(state);
 		const opened = await sandbox!.invokeRoute("admin", {
@@ -896,17 +1011,18 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 		});
 		const action = emptyActions(blocksOf(opened))[0];
 		expect(action?.action_id).toBe("shipping:open-create-method");
+		expect(action?.label).toBe("New shipping method"); // one act, one wording
 		expect(decodePath(String(valueOf(action)["__path"]))).toEqual(["empty"]);
-		const outcome = await sandbox!.invokeRoute("admin", {
-			type: "block_action",
-			action_id: "shipping:open-create-method",
-			value: valueOf(action),
+		const blocks = await clickButton("shipping:open-create-method", valueOf(action));
+		// The zone the operator was in, not the root registry — the path rode in
+		// the button's own value (L-6).
+		expect(
+			blocks.some((b) => b.type === "header" && b.text === "New shipping method — empty"),
+		).toBe(true);
+		expect(carriedContext(formFor(blocks, "shipping:create-method")?.block_id)).toMatchObject({
+			zoneId: "empty",
 		});
-		const blocks = blocksOf(outcome);
-		expect(blocks.some((b) => b.type === "header" && b.text === "Shipping methods — empty")).toBe(
-			true,
-		);
-		expect(openGroupIds(blocks)).toEqual(["ship:new-method:empty:open"]);
+		expect(openGroupIds(blocks)).toHaveLength(0); // X-18
 	});
 
 	test("the row edit form carries zoneId+methodId invisibly; save-method PUTs the LWW edit and reloads with a 'saved' notice", async () => {
@@ -947,7 +1063,7 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 			values: { target: encodePath(["us"]) },
 		});
 		const createForm = formFor(
-			groupBlocks(blocksOf(opened), "ship:new-method:us"),
+			await openNewMethodScreen(blocksOf(opened)),
 			"shipping:create-method",
 		);
 		expect(fieldIds(createForm)).toEqual(["id", "name", "type"]);
@@ -978,7 +1094,7 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 			values: { target: encodePath(["us"]) },
 		});
 		const createForm = formFor(
-			groupBlocks(blocksOf(opened), "ship:new-method:us"),
+			await openNewMethodScreen(blocksOf(opened)),
 			"shipping:create-method",
 		);
 		const outcome = await sandbox!.invokeRoute("admin", {
@@ -988,7 +1104,65 @@ describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", 
 			values: { id: "bogus", name: "Bogus", type: "not-a-type" },
 		});
 		expect(stub!.requests.some((r) => r.method === "POST")).toBe(false);
-		expect(bannerOf(blocksOf(outcome))?.variant).toBe("error");
+		const refused = blocksOf(outcome);
+		expect(bannerOf(refused)?.variant).toBe("error");
+		// DA-3a-i: the refusal re-renders the create screen with the typed values
+		// put back — a bogus `type` falls back to a real option (X-23) rather
+		// than rendering a blank trigger, and the two text fields are verbatim.
+		expect(refused.some((b) => b.type === "header" && b.text === "New shipping method — us")).toBe(
+			true,
+		);
+		expect(formInitialValues(refused, "shipping:create-method")).toEqual({
+			id: "bogus",
+			name: "Bogus",
+			type: "flat_rate",
+		});
+	});
+
+	// -- INC-14: the create action is a button above the data ------------------
+
+	test("INC-14: `New shipping method` is a primary BUTTON under the intro line, above the rows, carrying its zone path", async () => {
+		const state = makeShippingState();
+		await boot(state);
+		const blocks = await openUsMethods();
+		// header · back · context · the create button (this level's intro line is
+		// the context under the back control).
+		expect(blocks.map((b) => String(b.type)).slice(0, 4)).toEqual([
+			"header",
+			"actions",
+			"context",
+			"actions",
+		]);
+		const button = createButton(blocks, "shipping:open-create-method");
+		expect(button?.label).toBe("New shipping method");
+		expect(button?.style).toBe("primary");
+		// L-6: depth 1, so the path is not optional.
+		expect(decodePath(String(valueOf(button)["__path"]))).toEqual(["us"]);
+		const firstRow = blocks.findIndex((b) => String(b.block_id).startsWith("ship:method:"));
+		expect(blocks.findIndex((b, i) => b.type === "actions" && i > 0)).toBeLessThan(firstRow);
+		expect(group(blocks, "ship:new-method:us")).toBeUndefined();
+		expect(group(blocks, "ship:new-method:us:open")).toBeUndefined();
+		expect(formFor(blocks, "shipping:create-method")).toBeUndefined();
+	});
+
+	test("INC-14: the New shipping method screen is a drill-in whose back control returns to THAT zone's methods", async () => {
+		const state = makeShippingState();
+		await boot(state);
+		const screen = await openNewMethodScreen(await openUsMethods());
+		expect(screen.some((b) => b.type === "header" && b.text === "New shipping method — us")).toBe(
+			true,
+		);
+		expect(
+			findBlocks(screen, "accordion").filter((a) => String(a.block_id).startsWith("ship:method:")),
+		).toHaveLength(0);
+		const back = buttons(screen).find((b) => b.action_id === "shipping:cancel-new");
+		expect(String(back?.label)).toMatch(/back to shipping methods/i);
+		const methods = await clickButton("shipping:cancel-new", valueOf(back));
+		// The zone the operator came from, NOT the root registry.
+		expect(methods.some((b) => b.type === "header" && b.text === "Shipping methods — us")).toBe(
+			true,
+		);
+		expect(group(methods, "ship:method:us:standard")).toBeDefined();
 	});
 
 	test("deleting a method is unconditional (DA-2) — a forbid-if-rates conflict is reported by the post-attempt banner", async () => {
@@ -1545,6 +1719,35 @@ describe("admin Shipping console — assertBlockContract (§15 V-3)", () => {
 			values: { target: encodePath(["empty"]) },
 		});
 		assertBlockContract(blocksOf(emptyMethodsList), { screen: "shipping", level: "list" });
+
+		// INC-14's four new list-level renders: each create screen, and each
+		// after a refusal (a banner plus a form full of prefilled values).
+		const zoneScreen = await openNewZoneScreen(blocksOf(zonesList));
+		assertBlockContract(zoneScreen, { screen: "shipping", level: "list" });
+		assertBlockContract(
+			blocksOf(
+				await sandbox!.invokeRoute("admin", {
+					type: "form_submit",
+					action_id: "shipping:create-zone",
+					block_id: formFor(zoneScreen, "shipping:create-zone")?.block_id,
+					values: { id: "", name: "Canada", regions: "CA" },
+				}),
+			),
+			{ screen: "shipping", level: "list" },
+		);
+		const methodScreen = await openNewMethodScreen(blocksOf(methodsList));
+		assertBlockContract(methodScreen, { screen: "shipping", level: "list" });
+		assertBlockContract(
+			blocksOf(
+				await sandbox!.invokeRoute("admin", {
+					type: "form_submit",
+					action_id: "shipping:create-method",
+					block_id: formFor(methodScreen, "shipping:create-method")?.block_id,
+					values: { id: "x", name: "", type: "flat_rate" },
+				}),
+			),
+			{ screen: "shipping", level: "list" },
+		);
 
 		const ratesWithRow = await sandbox!.invokeRoute("admin", {
 			type: "form_submit",
