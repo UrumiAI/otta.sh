@@ -5,6 +5,14 @@ _Written before any Phase 2 red tests, per the plan's "first task" instruction. 
 does the same for `page:fragments`. File paths below are relative to the EmDash repo root
 (`~/em-dash`), commit as checked out at spike time._
 
+> **Superseded (ADR-0006, accepted 2026-07-11).** The premise below — "Otta's plugin is, and
+> must remain, a sandboxed plugin" — no longer describes deployment: Otta registers trusted,
+> in-process as its one code path for dev and deploy, and the workerd-on-Node sandbox now
+> exists only as the plugin's test/CI contract gate. The **conclusion below still holds**, for
+> a different reason: ADR-0006 Decision 2 keeps `@otta-sh/plugin` to APIs that also work
+> sandboxed, `page:fragments` included, so PDP/PLP still cannot use `page:fragments` injection
+> and stay plugin-owned public routes regardless of registration mode.
+
 ## Question the plan left open
 
 Plan §4.1: does `page:fragments` let the plugin inject PDP/PLP price/availability + JSON-LD
@@ -14,9 +22,11 @@ into public pages" without checking who is allowed to register it.
 
 ## Verified finding: `page:fragments` is trusted-plugin-only — Otta cannot use it
 
-Otta's plugin is, and must remain, a **sandboxed** plugin
-(`CLAUDE.md`: "Dev/test against the workerd-on-Node sandbox, not trusted in-process mode").
-Source confirms sandboxed plugins are categorically excluded from `page:fragments`:
+Otta's plugin registers **trusted, in-process** as its one code path for dev and deploy
+(ADR-0006); the workerd-on-Node sandbox exists **only** as the plugin's test/CI contract gate,
+not as a deployment mode. ADR-0006 Decision 2 nonetheless keeps `@otta-sh/plugin` to APIs that
+also work sandboxed, `page:fragments` included — so the finding below still applies. Source
+confirms sandboxed plugins are categorically excluded from `page:fragments`:
 
 - `packages/core/src/plugins/types.ts:952` — the hook is commented
   `// ── page:fragments (trusted-only) ──────────────────────────────`.

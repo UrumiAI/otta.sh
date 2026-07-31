@@ -33,21 +33,26 @@ wrong and five parallel teams read this line.)
 read `node_modules` from a worktree off `origin/main` — several long-lived branches still carry a
 0.29.0 lockfile, and an earlier revision of this document was written against one of them.
 
-Everything below was verified three ways:
+Everything below was verified two ways, from two different sources:
 
-1. **The installed 0.31.1 types**, in a worktree off `origin/main`:
+1. **Types and the validator**, from the installed 0.31.1 package in `node_modules`:
    `node_modules/.pnpm/@emdash-cms+blocks@0.31.1_*/node_modules/@emdash-cms/blocks/dist/validation-5vL6669b.d.ts`
-   (authoritative types) and `validation-Dq-a7CXm.js` (the compiled validator).
-2. **Every renderer** in `/home/azureuser/emdash-fork/packages/blocks/src/`.
-3. **The 0.29.0 → 0.31.1 delta, which is nothing.** `diff -rq` over the two installed `dist/`
-   trees is **empty** (the content-hashed filenames are even identical), and in the fork both
-   `git diff @emdash-cms/blocks@0.29.0 HEAD -- packages/blocks/src` and
-   `git diff @emdash-cms/blocks@0.31.1 HEAD -- packages/blocks/src` are **empty**. The block
-   renderers did not change between the two tags.
+   (authoritative types) and `validation-Dq-a7CXm.js` (the compiled validator). The published
+   package's `files` field ships `dist` only — no `.tsx` sources — so this is as far as
+   `node_modules` alone can verify a claim.
+2. **Every renderer**, from the public upstream `emdash-cms/emdash` source tree at git tag
+   `@emdash-cms/blocks@0.31.1` (a clean checkout of `github.com/emdash-cms/emdash`, **not**
+   `/home/azureuser/emdash-fork` and not dist). This is the source the pinned dist compiles
+   from, so its line numbers are authoritative for the installed 0.31.1. Every `*.tsx:NN`
+   citation in this document traces here.
 
-So the fork checkout is a faithful read of what staging runs. **Citations in this document are to
-the fork source and the installed 0.31.1 dist; they are valid for 0.29.0 as well.** Do not send a
-team diffing against the 0.29.0 tag — the repo no longer uses it.
+**The 0.29.0 → 0.31.1 delta is nothing.** `diff -rq` over the two installed `dist/` trees is
+**empty** (the content-hashed filenames are even identical) — the block renderers did not change
+between the two tags, so a citation against either upstream tag is valid for both.
+
+Under D1, `/home/azureuser/emdash-fork` is out of scope for this console and
+`/home/azureuser/emdash` is 530 commits stale at 0.15.0 — **neither is a citation source.** Do
+not send a team diffing against the 0.29.0 tag — the repo no longer uses it.
 
 **`orders-page.ts` line citations are to PR #161's COMMITTED state**, i.e. the tip commit of
 `feat/admin-orders-layout` (`git show <tip>:packages/plugin/src/admin/orders-page.ts`), **not** to a
@@ -131,7 +136,7 @@ them.
 | R-4 | Every block sits in an outer `flex flex-col gap-4`; `divider` adds `my-4` on top. | `renderer.tsx:76`, `blocks/divider.tsx` | A divider costs ~48px of nothing. |
 | R-5 | Only two text weights exist: `header` = `h2 text-xl font-bold`; `section`/`context` = body text. | `blocks/header.tsx:4`, `blocks/section.tsx:13`, `blocks/context.tsx:4` | There is **no mid-level heading**. `section` used as a heading reads as body prose — the single biggest cause of the current flat look (§14 item 1, §16). |
 | R-6 | `table` `format:"badge"` renders a bare Kumo `<Badge>` with **no variant** — every badge looks identical regardless of value. | `blocks/table.tsx:23` | A badge adds zero information beyond its text. It only earns its ink by making a *state* column visually chunk. |
-| R-7 | `table` cells carry only `px-3 py-2`: **no alignment, no width control, and `<tr>` has no click/link handler** — rows handle only column sort and load-more. | `blocks/table.tsx:98-106` | Every list needs an explicit drill-in control, and "money in the last column" is the only alignment lever there is. Tracked fork follow-up (§14). |
+| R-7 | `table` cells carry only `px-3 py-2`: **no alignment, no width control, and `<tr>` has no click/link handler** — rows handle only column sort and load-more. | `blocks/table.tsx:98-106` | Every list needs an explicit drill-in control, and "money in the last column" is the only alignment lever there is. Unreachable on Block Kit; see §14 item 2. |
 | R-8 | A sortable header fires `page_action_id` with `value:{sort}` and **no `cursor`**; it does send `block_id`. | `blocks/table.tsx:52-57` | Pre-foundation this decodes to `null` and resets to the unfiltered root list. Post-foundation the `page` fallback is `renderPath(readNavPath(input) ?? [])`, so a sort click **keeps the drill path** and loses only the filter and the sort itself. Either way `sortable` stays forbidden (T-3). |
 | R-9 | `table` with 0 rows **and** `empty_text` renders one centered muted line — no header row, no table chrome. | `blocks/table.tsx:69-71` | `empty_text` is already cheap. It is the default empty treatment. |
 | R-10 | `form` has no `confirm`. Only `button` does. | types `ConfirmDialog`, `elements/button.tsx:48-66` | A destructive act must be triggered by a button (§8). |
@@ -143,11 +148,11 @@ them.
 | R-13a | A block nested inside `accordion`/`tab`/`columns` is keyed by its index **within that container's own `BlockRenderer` call**. | `blocks/accordion.tsx:20` → `renderer.tsx:78` | A sole child of an accordion is `block_id ?? 0` — index **0 forever**. The incidental remount a top-level block gets when a banner is prepended and shifts indices **does not happen inside a container**. This is why B-3a exists. |
 | R-14 | `tab` keeps `activeTab` in local state and renders `panels[activeTab]?.blocks ?? []`. | `blocks/tab.tsx:14,26` | If the panel count shrinks between renders while the tab block's key is stable, the operator sees a **blank panel**. The panel set must be constant (§4, D-3). |
 | R-14a | `accordion` reads `default_open` **once**, at mount: `useState(block.default_open ?? false)`. | `blocks/accordion.tsx:14` | A changed `block_id` remounts the group — and the remount **re-reads `default_open`**. Forcing a group open therefore needs **both** (§10, B-6). |
-| R-15 | `validateBlocks` does **not** include `"tab"` in `BLOCK_TYPES` — all 17 others are there. Re-verified on the installed 0.31.1. | `validation-Dq-a7CXm.js:325-343` | Runtime is unaffected (`validateBlocks` is exported but invoked nowhere in the runtime or admin app), but any test or tool that validates reports `Unknown block type 'tab'`. Trivial fork fix (§14). |
+| R-15 | `validateBlocks` does **not** include `"tab"` in `BLOCK_TYPES` — all 17 others are there. Re-verified on the installed 0.31.1. | `validation-Dq-a7CXm.js:325-343` | Runtime is unaffected (`validateBlocks` is exported but invoked nowhere in the runtime or admin app), but any test or tool that validates reports `Unknown block type 'tab'`. No upstream PR is filed under D1; see §14 item 4. |
 | R-16 | `stats` is a non-wrapping `flex` row of bordered cards; `empty` always uses a fixed Package icon; `code` renders a syntax-highlighted snippet. | `blocks/stats.tsx:34`, `blocks/empty.tsx:25`, `blocks/code.tsx` | `stats` max 4 items; `empty.command_line` is never appropriate here; `code` has no use on these screens. |
-| R-17 | `SelectElement` has **no `placeholder`**. Re-verified on the installed 0.31.1. | types `SelectElement` | Nothing can be shown in an unresolved trigger. Fork fix in §14 item 3. |
-| R-17a | **The `select` trigger — and only `select` — renders the raw resolved *value*, never the option label, and renders empty when that value is `""`, `null` or absent.** `select.tsx:30-42` passes the options as **children** and passes no `items`, `placeholder` or `renderValue`. Kumo 2.6.0 wraps **Base UI** (`@base-ui/react ^1.5.0`; 1.6.0 installed), **not Radix**. With `items === undefined`, Base UI's `SelectValue` falls through to `resolveSelectedLabel(value, undefined, undefined)` → `stringifyAsLabel` → `serializeValue(value)`, i.e. the value string; and its `hasSelectedValue` selector treats `""` as "no value" exactly as it does `null`/`undefined`. | `elements/select.tsx:30-42`; `@base-ui/react/select/value/SelectValue.js:41-58`, `internals/resolveValueLabel.js` (`resolveSelectedLabel`), `select/store.js:20-32` | This is the **real** cause of every blank select — not an unresolvable `initial_value` and not the `""` option value; both earlier diagnoses were wrong. Kumo's own `Select` *does* accept `renderValue`/`placeholder`, so the fork can fix it (§14 item 3). Two consequences: F-6a's rules remove the blank, and F-6c — a `select`'s option **value is operator-visible**. Scope this to `select`: `combobox` behaves differently (R-17b), and `radio` renders each option's label as its own row caption. |
-| R-17b | **`combobox` renders the option LABEL, and it has a real `placeholder`.** `combobox.tsx:50-52` passes `items={element.options}` **and** a whole-option object as `value`, so Base UI resolves a label instead of falling through to `serializeValue`; `Combobox.TriggerInput` takes `element.placeholder ?? "Search..."`; and an `initial_value` that matches no option resolves to `null` (`:16-19`), which shows the placeholder rather than a blank 36px box. `ComboboxElement` declares `placeholder?: string` (`types.ts:82-89`); `SelectElement` does not (R-17). | `elements/combobox.tsx:16-19,50-52`; fork `types.ts:82-89` | **This is the correction that matters most in revision 4.** Revisions 1–3 said selects show the raw value and named "the order picker reads a raw UUID" as the worst instance. That wart **does not exist** — the picker is a `combobox` and reads `maya.iyer@example.com · $95.00 · processing`. Consequences: F-6c binds on `select`/`radio` only; a record picker whose option value is an opaque id **must** be a `combobox` (L-7); and §14 item 3 is worth less than claimed. |
+| R-17 | `SelectElement` has **no `placeholder`**. Re-verified on the installed 0.31.1. | types `SelectElement` | Nothing can be shown in an unresolved trigger. No fork exists to fix it; see §14 item 3. |
+| R-17a | **The `select` trigger — and only `select` — renders the raw resolved *value*, never the option label, and renders empty when that value is `""`, `null` or absent.** `select.tsx:30-42` passes the options as **children** and passes no `items`, `placeholder` or `renderValue`. Kumo 2.6.0 wraps **Base UI** (`@base-ui/react ^1.5.0`; 1.6.0 installed), **not Radix**. With `items === undefined`, Base UI's `SelectValue` falls through to `resolveSelectedLabel(value, undefined, undefined)` → `stringifyAsLabel` → `serializeValue(value)`, i.e. the value string; and its `hasSelectedValue` selector treats `""` as "no value" exactly as it does `null`/`undefined`. | `elements/select.tsx:30-42`; `@base-ui/react/select/value/SelectValue.js:41-58`, `internals/resolveValueLabel.js` (`resolveSelectedLabel`), `select/store.js:20-32` | This is the **real** cause of every blank select — not an unresolvable `initial_value` and not the `""` option value; both earlier diagnoses were wrong. Kumo's own `Select` *does* accept `renderValue`/`placeholder`, but with no fork there is no path to change it (§14 item 3). Two consequences: F-6a's rules remove the blank, and F-6c — a `select`'s option **value is operator-visible**. Scope this to `select`: `combobox` behaves differently (R-17b), and `radio` renders each option's label as its own row caption. |
+| R-17b | **`combobox` renders the option LABEL, and it has a real `placeholder`.** `combobox.tsx:50-52` passes `items={element.options}` **and** a whole-option object as `value`, so Base UI resolves a label instead of falling through to `serializeValue`; `Combobox.TriggerInput` takes `element.placeholder ?? "Search..."`; and an `initial_value` that matches no option resolves to `null` (`:16-19`), which shows the placeholder rather than a blank 36px box. `ComboboxElement` declares `placeholder?: string` (`types.ts:82-89`); `SelectElement` does not (R-17). | `elements/combobox.tsx:16-19,50-52`; upstream `types.ts:82-89` | **This is the correction that matters most in revision 4.** Revisions 1–3 said selects show the raw value and named "the order picker reads a raw UUID" as the worst instance. That wart **does not exist** — the picker is a `combobox` and reads `maya.iyer@example.com · $95.00 · processing`. Consequences: F-6c binds on `select`/`radio` only; a record picker whose option value is an opaque id **must** be a `combobox` (L-7); and §14 item 3 is worth less than claimed. |
 | R-18 | `banner.variant` is `"default" \| "alert" \| "error"` and is passed straight into Kumo. `banner` renders `{title, description}` only — a legacy `text` field is dropped. | types `BannerBlock`, `blocks/banner.tsx:7,21,24` | `"info"`/`"success"` are **phantoms**: Otta's mirror allows them, the renderer forwards them unvalidated to Kumo. Constrain to the three real values (M-9). |
 | R-19 | `chart` **cannot format money.** `TimeseriesChartConfig` exposes only `style`/`series`/`x_axis_name`/`y_axis_name`/`height`/`gradient`; series data is `[number, number][]`; and for a `custom` chart `formatter` is stripped as a DANGEROUS_KEY. | types `TimeseriesChartConfig`, `blocks/chart.tsx:53,108-118` | A chart renders **raw minor units** on the axis and in tooltips. Plotting major units instead puts a display float on the money path. `chart` is therefore forbidden here (§2, §12.5). |
 | R-20 | `meter` takes a bare `number` with no currency, and renders `custom_value` verbatim when present. | types `MeterBlock`, `blocks/meter.tsx:7-13` | Money in `value`/`max` is unlabelled minor units. `custom_value` is **mandatory** whenever they are (M-8). |
@@ -311,7 +316,7 @@ This is the single most likely thing for a following team to get wrong, so it is
 again as a rule in §10.
 
 `AccordionBlock` carries `type`, `label`, `blocks` and `default_open` and **nothing else** (installed
-0.31.1 `validation-5vL6669b.d.ts:306-311`; fork `types.ts:360-365`), and `default_open` is read
+0.31.1 `validation-5vL6669b.d.ts:306-311`; upstream `types.ts:360-365`), and `default_open` is read
 **once, in a `useState` initialiser** (`blocks/accordion.tsx:14` —
 `useState(block.default_open ?? false)`, already R-14a). There is no `open` field, no close signal
 and no imperative channel in this vocabulary. The **only** thing that makes a mounted accordion
@@ -383,7 +388,8 @@ precede a screen's primary data block. Nothing else may be inserted, in any orde
 **P-2 — One `header` per screen; structure comes from `tab` and `accordion`.** `header` is the
 page title and appears exactly once, as the first block. Named groups are `accordion`s (inside a
 `tab` panel, or at top level). `section` is **never** a heading — it is one line of prose with an
-`accessory` control. *Single exception, until §14 item 1 lands:* **at most one** `header` may
+`accessory` control. *Single exception, absent a React migration (§14 item 1, indefinitely
+deferred):* **at most one** `header` may
 appear inside a `tab` panel, to name a group that must always be visible and cannot be an
 accordion (§11.2's line-item table + totals block). One per panel, never two.
 
@@ -543,8 +549,9 @@ by side. Clearing changes the **inner form's** key
 (B-3a) but **not** the accordion's (B-7) — see the note there, because getting this backwards is
 the one way to break `Clear filters`.
 
-**L-7 — drill-in.** Until table row clicks land (§14 item 2): one `form` directly below the table,
-one field, submit label `Open <entity>`. Omit the whole block at 0 rows.
+**L-7 — drill-in.** Table row clicks are unreachable on Block Kit (§14 item 2): one `form`
+directly below the table, one field, submit label `Open <entity>`. Omit the whole block at 0
+rows.
 
 - The field's **value** is the record id. Its **label never contains the id** — it is the human
   handle plus one or two disambiguators: `qa-ordc-2@example.com · $99.00 · paid`.
@@ -1185,8 +1192,8 @@ shows. So sentinels are words (`any`, `none`), never `""` or `0`.
 
 **F-6c does not bind on `combobox`** (R-17b — it renders the label), and that is what makes L-7's
 "always `combobox` for a record picker" buildable. Where a value can only be an opaque id, the control
-is a `combobox` or it is not a dropdown at all: prefer the row-action drill-in when it lands (§14
-item 2).
+is a `combobox` or it is not a dropdown at all: the row-action drill-in would be preferable, but
+it is unreachable on Block Kit (§14 item 2).
 
 The worst *live* instance is now the cancellation-reason `select`, whose trigger reads
 `customer_request`. That is inside F-6c's tolerance — a word, readable, unambiguous — which is the
@@ -2042,7 +2049,7 @@ accepted. Do not try to close one by changing its key.** Ruled on in §0.3 item 
 normative form.
 
 **The mechanism, cited.** `AccordionBlock` is `{type, label, blocks, default_open?}` plus
-`BlockBase.block_id` and nothing else (installed 0.31.1 `validation-5vL6669b.d.ts:306-311`; fork
+`BlockBase.block_id` and nothing else (installed 0.31.1 `validation-5vL6669b.d.ts:306-311`; upstream
 `types.ts:360-365`). `default_open` is read **once, at mount** —
 `useState(block.default_open ?? false)` (`blocks/accordion.tsx:14`, R-14a) — and the open state is then
 local (`Collapsible.Root open={open} onOpenChange={setOpen}`, `:17`). There is **no close signal in
@@ -3090,40 +3097,46 @@ these rules as its own assertions.
 
 ## 14. What a fork change would simplify (not required by this spec)
 
-Tracked follow-ups against `/home/azureuser/emdash-fork`, branched from freshly-synced `main`,
-commit author `Vedanshu <vedanshu@urumi.ai>`, upstream PR template. **Nothing in this document
-depends on any of them** — every rule above is satisfiable on 0.31.1 as pinned.
+**Fork work is not pursued.** Under D1, the EmDash fork is out of scope entirely: Otta runs
+stock `emdash@0.31.1` / `@emdash-cms/blocks@0.31.1` from public npm, pinned exact — no fork
+branches, no fork builds, no upstream PRs, no `patchedDependencies`. Block Kit is frozen. A
+capability it lacks is reachable **only** by migrating that screen to the React admin console
+(`format: "native"` + `adminEntry`), per ADR-0014 — see that file for current status. The five
+items below record what Block Kit cannot do and stays unable to do; none is being patched.
 
-1. **A mid-level heading — `header.level?: 2|3` or `section.style?: "heading"`.** The
-   **highest-leverage** change for this console. There are exactly two text weights (R-5), so a tab
-   panel becomes a stack of grey accordion triggers with no visual hierarchy between them. The
-   research in §0 names the missing mid-level heading as the single biggest cause of the flat look,
-   and P-2's "at most one `header` per panel" exception exists only because this is missing.
+1. **A mid-level heading — `header.level?: 2|3` or `section.style?: "heading"`.** There are
+   exactly two text weights (R-5), so a tab panel is a stack of grey accordion triggers with no
+   visual hierarchy between them. The research in §0 names the missing mid-level heading as the
+   single biggest cause of the flat look, and P-2's "at most one `header` per panel" exception
+   exists only because Block Kit has no substitute. Unreachable on Block Kit; only the React
+   console can add real heading levels.
 2. **`TableBlock.row_action_id`** (R-7). Would delete every "Open X" form (L-7) and every
    button-in-row drill-in (§12.7), and let registry levels stay real tables with drillable rows
-   instead of accordion lists — which would in turn retire L-9's dual-branch requirement.
-3. **Make `select` render its option *label*** — pass `items={element.options}` (or `renderValue`)
-   in the fork's `elements/select.tsx`, and add `placeholder` to `SelectElement`. **Two distinct
-   defects, and they need different fixes:** `placeholder` fixes only the *empty* trigger; the
-   *wrong text* — the raw value instead of the label (R-17a) — needs `items`/`renderValue`. Kumo
-   2.6.0's `Select` already accepts both props, so this is a small fork change and a **fork PR is
-   being raised separately**.
+   instead of accordion lists — which would in turn retire L-9's dual-branch requirement. Absent
+   from stock 0.31.1 and staying absent; the React console is the only path (also the subject of
+   the Orders/Pricing migration steps in the ADR-0014 tier).
+3. **`select` renders its option *value*, never its *label*** (R-17a), and `SelectElement` has
+   no `placeholder` either (R-17). Kumo 2.6.0's own `Select` already accepts `items`/
+   `renderValue` and `placeholder` — the gap is Block Kit's `elements/select.tsx`, not Kumo —
+   but with no fork there is no path to change it.
 
-   **Downgraded in revision 4.** Revisions 1–3 valued this item on the claim that the order picker's
-   trigger reads a raw UUID. It does not — the picker is a `combobox`, which already passes `items`
-   and already renders the label (R-17b), and it already has a `placeholder`. So this item's real
-   scope is `select` **only**, its worst live instance is the cancellation reason reading
-   `customer_request`, and F-6c makes that tolerable indefinitely. Still worth having — it would let
-   `select` carry ids and retire F-6c — but it blocks nothing and should not be sequenced ahead of
-   items 1 or 2.
-4. **`"tab"` in `validateBlocks`' `BLOCK_TYPES`** (R-15 — re-verified absent in 0.31.1). One-line
-   fix; the type, builder and renderer already exist. Without it, any validation of these blocks
-   reports `Unknown block type 'tab'` even though the page renders correctly.
-5. **A clickable link — `format:"link"` on a table column, or a `link` element.** A tracking URL is
-   the one value on these screens whose entire purpose is to be followed, and the vocabulary can only
-   render it as text the operator selects and copies. That is a **renderer limit, not an authoring
-   error**: do not "fix" it by shortening the URL (X-11a) or by dropping the field. Until this lands,
-   a tracking URL renders in full, in `fields`, and the group's label carries the tracking *number*.
+   **Downgraded in revision 4.** Revisions 1–3 valued this item on the claim that the order
+   picker's trigger reads a raw UUID. It does not — the picker is a `combobox`, which already
+   passes `items` and already renders the label (R-17b), and it already has a `placeholder`. So
+   this item's real scope is `select` **only**, its worst live instance is the cancellation
+   reason reading `customer_request`, and F-6c makes that tolerable indefinitely — the fix, if
+   ever taken, is a React field, not a patched `select.tsx`.
+4. **`"tab"` absent from `validateBlocks`' `BLOCK_TYPES`** (R-15 — re-verified absent in
+   0.31.1). The type, builder and renderer already exist; only the validator's allow-list is
+   missing it. Runtime is unaffected (`validateBlocks` is invoked nowhere in the runtime or
+   admin app), but any test or tool that validates these blocks reports `Unknown block type
+   'tab'`. No upstream PR is filed under D1; live with the validator gap.
+5. **A clickable link — `format:"link"` on a table column, or a `link` element.** A tracking
+   URL is the one value on these screens whose entire purpose is to be followed, and the
+   vocabulary can only render it as text the operator selects and copies. That is a **renderer
+   limit, not an authoring error**: do not "fix" it by shortening the URL (X-11a) or by dropping
+   the field. A tracking URL renders in full, in `fields`, and the group's label carries the
+   tracking *number* — permanently, absent a React migration.
 
 A sixth would be nice but is not needed: **`Badge` variants** driven by a per-column value map
 (R-6), which would let a status column encode severity instead of just chunking text. Until then,
@@ -3131,9 +3144,9 @@ T-5's "one badge column, lifecycle state only" is the correct discipline.
 
 Two upstream nuisances are recorded here rather than tracked as items, because neither affects
 rendered output: `ComboboxList` emits a React duplicate-key warning even when every option value is
-unique (upstream, not ours — a candidate follow-up alongside the five above), and the EmDash admin
-does not honour Playwright's `fullPage` (the content region clips at the viewport, so screenshot with
-a **tall viewport** — 1440×1800/2200 — not `fullPage` alone).
+unique (upstream, not filed under D1), and the EmDash admin does not honour Playwright's
+`fullPage` (the content region clips at the viewport, so screenshot with a **tall viewport** —
+1440×1800/2200 — not `fullPage` alone).
 
 ---
 
@@ -3295,7 +3308,7 @@ fails loudly:
 | Tier | What it covers | Gate |
 |---|---|---|
 | 1 — JSON-checkable | Budgets, vocabulary, §5/§6/§7/§9, and §10's invariants expressed as *"the token changed / did not change between these two responses"*. Includes: a DA-3 state-2 accordion carries **both** a changed `block_id` and `default_open: true`; the filter **accordion**'s `block_id` is identical across an apply *and* across `Clear filters`, while the filter **form**'s `block_id` differs after an apply **and** after `Clear filters`, whenever the prefilled values changed; a depth-3 open fired from a `button`; a service-offered transition outside `ORDER_STATES` renders no button; an L-9 level branches to accordions at 25 rows and to a table at 26. | the workerd-on-Node sandbox suite |
-| 2 — renderer behaviour | B-4, B-5, B-6, D-3, R-13a — claims about what React does with a key. One test each in the fork's `packages/blocks/tests/`, cited in the PR. | fork test suite |
+| 2 — renderer behaviour | B-4, B-5, B-6, D-3, R-13a — claims about what React does with a key. One test each in the upstream `emdash-cms/emdash` repo's `packages/blocks/tests/` (tag `@emdash-cms/blocks@0.31.1`), cited in the PR. | upstream test suite |
 | 3 — density and appearance | P-1..P-4, F-6a's non-empty triggers (per-control, per its table), §16's residual flatness, DA-2c's fan-out **emphasis** (the button row's weight, not its height), D-6a's labels next to their buttons. **Screenshot only.** Nobody may claim these verified from a passing suite. **Nothing runs the other way:** a screenshot is not evidence for a tier-1 claim, and specifically not for X-18 (see its row — open state is sticky). | attached screenshot |
 
 ### 15.2 The eight things a following team predictably gets wrong
@@ -3326,8 +3339,8 @@ screenshot review.
 1. **There is no mid-level typography.** Only `header` (`h2 text-xl font-bold`) and plain body text
    exist (R-5). A tab panel with four accordions is a stack of four grey trigger rows of identical
    weight; the labels carry all the hierarchy there is, which is exactly why D-6 makes them carry
-   the answer. Until §14 item 1 lands, **sub-structure reads as trigger rows** — a renderer limit,
-   not a layout failure.
+   the answer. Absent a migration to the React admin console — indefinitely deferred, §14 item
+   1 — **sub-structure reads as trigger rows**, a renderer limit, not a layout failure.
 2. **Tables have no alignment and no row click** (R-7). Money in the final column (T-2) is the only
    alignment lever, and every list needs a separate drill-in control (L-7, §12.7). Numbers will not
    form a right-aligned edge.
@@ -3336,7 +3349,8 @@ screenshot review.
    the label, because the pinned renderer never can (R-17a). So after this work the Orders status
    filter reads `any`, the cancellation reason reads `customer_request`, coupons' type reads
    `fixed_amount`, and the tax-class select reads a bare class id. A real but small wart; F-6c keeps
-   it tolerable by constraining values to words, and §14 item 3 removes it.
+   it tolerable by constraining values to words. Only a React migration (§14 item 3) would
+   remove it, and none is scheduled.
 
    **This item is smaller than revisions 1–3 claimed, and the correction matters.** They named "the
    order picker reads a raw UUID" as the worst instance on these screens. **It does not** — the picker
@@ -3349,4 +3363,5 @@ screenshot review.
    selects and copies. Do not shorten it to satisfy a budget — X-11a exists for exactly this value.
 
 None of the four is a reason to delay: each per-screen increment is a strict improvement on what
-ships today, and all four are tracked.
+ships today. None of the four has a scheduled fix — they are documented limits of Block Kit, not
+open follow-ups.

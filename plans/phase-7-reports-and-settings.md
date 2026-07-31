@@ -82,9 +82,10 @@ settings catalog:**
   any future storefront chrome).
 
 **Explicitly out of scope / deferred:**
-- **Dashboards / charts.** Block Kit ships text, section, and table-like elements, not a
-  charting primitive — the widget renders numbers and tables, not graphs. A graphical
-  dashboard is a future trusted-React admin surface, not this phase.
+- **Dashboards / charts.** Block Kit does ship a `chart` block (ECharts-backed), but
+  `chart.tsx` strips `formatter`/`rich`/`graphic`/`axisPointer` as XSS vectors, so it cannot
+  format currency and would render money as raw minor units (G1) — the widget renders numbers
+  and tables, not graphs, this phase. A graphical dashboard does not require React.
 - **Exports** (CSV/JSON download, scheduled/emailed reports) — no export endpoint this phase.
 - **Materialized/cached aggregates** — v1 computes on read; no rollup tables, no cron
   precomputation. Revisit if order volume makes on-read aggregation too slow (see Risks §8.3).
