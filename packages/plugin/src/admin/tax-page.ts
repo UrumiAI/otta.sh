@@ -309,9 +309,26 @@ function classRow(actions: ScreenActions, cls: TaxClassWire): AccordionBlock {
 		block_id: classGroupId(cls.id),
 		label: `${cls.id} — ${cls.name}`,
 		default_open: false,
+		// ORDER IS THE AFFORDANCE HERE, because there is no other. A `form` is
+		// always `flex flex-col` in the pinned renderer, so these can never sit in
+		// a horizontal row with the primary on the end — every control is a
+		// full-width stack item, and the only thing left to say "this one first" is
+		// which one is first. So: the COMMON path (opening the class's rates)
+		// leads, the rename it wraps follows, and the destructive delete goes LAST,
+		// pushed off the stack by the context line below.
+		//
+		// That line is the spacer. Block Kit has no spacer block, and `divider` is
+		// off the console's vocabulary — so the separation between "edit this" and
+		// "destroy this" has to be carried by a block that also earns its height.
+		// This one does: it states the refusal BEFORE the click, where the confirm
+		// dialog's own copy only appears after.
 		blocks: [
-			renameForm,
 			{ type: "actions", elements: [viewRatesButton] },
+			renameForm,
+			{
+				type: "context",
+				text: "Deleting is blocked while any product or tax rate still references this class.",
+			},
 			{ type: "actions", elements: [deleteButton] },
 		],
 	};
@@ -630,16 +647,29 @@ function rateDeleteActions(classId: string, row: TaxRateRow) {
 	return { type: "actions" as const, elements: [button] };
 }
 
-/** One rate's per-row group (L-9). D-6's label carries the answer — zone,
- *  percent, and whether it also taxes shipping — so an operator can skip the
- *  group entirely from the label alone. */
+/**
+ * One rate's per-row group (L-9). D-6's label carries the answer — zone,
+ * percent, and whether it also taxes shipping — so an operator can skip the
+ * group entirely from the label alone.
+ *
+ * THE RATE LEADS THE LABEL. It used to trail the slug (`std-eu — Europe ·
+ * 20.00% · …`), which starts every row's number at a different x — slug lengths
+ * differ — so 20.00% / 0.00% / 8.75% could not be compared down the column,
+ * which is the one comparison this level exists to support. Leading with the
+ * percent puts every rate within a few px of the same left edge. The slug keeps
+ * its place in the label IN FULL (a tax rate id is a readable natural key, not
+ * an opaque uuid — the short-id rule does not apply to it).
+ *
+ * A percent is NOT money: it is formatted by `formatBpsAsPercent` (exact
+ * integer basis points), never by `formatMoney`, and carries no currency.
+ */
 function rateRow(classId: string, row: TaxRateRow): AccordionBlock {
 	const percent = formatBpsAsPercent(row.rateBps);
 	const appliesLabel = row.appliesToShipping ? "also shipping" : "goods only";
 	return {
 		type: "accordion",
 		block_id: rateGroupId(row.id),
-		label: `${row.id} — ${row.zoneName ?? row.zoneId} · ${percent}% · ${appliesLabel}`,
+		label: `${percent}% — ${row.zoneName ?? row.zoneId} · ${row.id} · ${appliesLabel}`,
 		default_open: false,
 		blocks: [rateEditForm(classId, row), rateDeleteActions(classId, row)],
 	};
@@ -677,13 +707,15 @@ function ratesTable(
 
 /** L-7 drill-in to the rate-detail LEAF (the fallback's "editing moves to a
  *  detail level") — always a `combobox` (R-17a/R-17b), option value the FULL
- *  two-level target path, never a bare rate id. */
+ *  two-level target path, never a bare rate id. The option label leads with
+ *  the rate for the same reason the accordion label does: in a list of options
+ *  the number is what is being chosen between. */
 function openRateForm(classId: string, rows: TaxRateRow[]): FormBlock {
 	const options: SelectOption[] = [
 		{ value: "none", label: "Choose a tax rate…" },
 		...rows.map((r) => ({
 			value: encodePath([classId, r.id]),
-			label: `${r.zoneName ?? r.zoneId} · ${formatBpsAsPercent(r.rateBps)}%`,
+			label: `${formatBpsAsPercent(r.rateBps)}% · ${r.zoneName ?? r.zoneId}`,
 		})),
 	];
 	return carriedForm({

@@ -56,11 +56,22 @@ interface RateRow {
 	minSubtotalCents: number | null;
 }
 
+interface ShippingState {
+	zones: ZoneRow[];
+	methods: MethodRow[];
+	rates: RateRow[];
+	/** Make every rate READ answer 500. The methods level's per-row price is a
+	 *  SECONDARY read, so this must degrade the affected rows to "Price
+	 *  unavailable" and never fail the level (nor claim "No rate set", which is
+	 *  a fact this state cannot establish). */
+	rateReadsFail?: boolean;
+}
+
 /** A small stateful stub standing in for the shipping-admin HTTP surface —
  *  zones/methods/rates are mutated by POST/PUT/DELETE and read back by GET,
  *  so create→list, edit→reload, and delete→idempotent-replay all exercise
  *  real state transitions (not canned fixtures). */
-function makeShippingState() {
+function makeShippingState(): ShippingState {
 	const zones: ZoneRow[] = [
 		{ id: "us", name: "United States", regions: ["US"] },
 		{ id: "empty", name: "Empty zone", regions: null },
@@ -78,16 +89,16 @@ function makeShippingState() {
 /** L-9's branch boundary is asserted at exactly 25 and 26 rows — an all-zones
  *  state with no methods/rates, so the branch decision is isolated to row
  *  count alone. */
-function makeManyZonesState(count: number) {
+function makeManyZonesState(count: number): ShippingState {
 	const zones: ZoneRow[] = Array.from({ length: count }, (_, i) => ({
 		id: `z${i}`,
 		name: `Zone ${i}`,
 		regions: null,
 	}));
-	return { zones, methods: [] as MethodRow[], rates: [] as RateRow[] };
+	return { zones, methods: [], rates: [] };
 }
 
-function makeManyMethodsState(count: number) {
+function makeManyMethodsState(count: number): ShippingState {
 	const zones: ZoneRow[] = [{ id: "us", name: "United States", regions: null }];
 	// Alternate type so the `Type` badge column genuinely chunks two values
 	// apart (T-5/X-4) — a fixture where every row is the same value is not a
@@ -99,10 +110,10 @@ function makeManyMethodsState(count: number) {
 		name: `Method ${i}`,
 		type: i % 2 === 0 ? "flat_rate" : "free_shipping",
 	}));
-	return { zones, methods, rates: [] as RateRow[] };
+	return { zones, methods, rates: [] };
 }
 
-function attachShippingStub(stub: StubCommerceServer, state: ReturnType<typeof makeShippingState>) {
+function attachShippingStub(stub: StubCommerceServer, state: ShippingState) {
 	stub.respondWith("GET", (req: RecordedRequest) => {
 		if (req.headers["x-internal-token"] === undefined) {
 			return { status: 401, body: { ok: false, error: "unauthorized" } };
@@ -121,6 +132,9 @@ function attachShippingStub(stub: StubCommerceServer, state: ReturnType<typeof m
 		}
 		const rateMatch = /^\/admin\/shipping\/methods\/([^/]+)\/rates$/.exec(path ?? "");
 		if (rateMatch !== null) {
+			if (state.rateReadsFail === true) {
+				return { status: 500, body: { ok: false, error: "internal_error" } };
+			}
 			const methodId = decodeURIComponent(rateMatch[1] ?? "");
 			const currency = new URLSearchParams(query).get("currency");
 			if (currency === null) return { status: 400, body: { error: "currency query is required" } };
@@ -294,7 +308,7 @@ afterEach(async () => {
 	stub = undefined;
 });
 
-async function boot(state: ReturnType<typeof makeShippingState>, token = "admin-token-xyz") {
+async function boot(state: ShippingState, token = "admin-token-xyz") {
 	stub = await startStubCommerceServer();
 	attachShippingStub(stub, state);
 	sandbox = await loadPluginInSandbox({
@@ -624,26 +638,140 @@ describe("admin Shipping console — zones level, L-9 fallback branch (>25 rows)
 });
 
 describe("admin Shipping console — methods level, depth 1 (workerd sandbox)", () => {
-	test("opening a zone drills to its methods; each method's per-row accordion label names its type", async () => {
-		const state = makeShippingState();
-		await boot(state);
+	/** Open the `us` zone's methods the way the zones list does — the row's own
+	 *  "View methods" BUTTON, carrying the full target path (§12.7). */
+	async function openUsMethods(): Promise<LooseBlock[]> {
 		const zones = await sandbox!.invokeRoute("admin", { type: "page_load", page: "/shipping" });
 		const view = buttons(groupBlocks(blocksOf(zones), "ship:zone:us")).find(
 			(b) => b.action_id === "shipping:open",
 		);
-		const outcome = await sandbox!.invokeRoute("admin", {
-			type: "block_action",
-			action_id: "shipping:open",
-			value: valueOf(view),
-		});
-		const blocks = blocksOf(outcome);
+		return blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "block_action",
+				action_id: "shipping:open",
+				value: valueOf(view),
+			}),
+		);
+	}
+
+	test("opening a zone drills to its methods; each per-row accordion label LEADS WITH THE PRICE, then the name, the full slug id and the type", async () => {
+		const state = makeShippingState();
+		await boot(state);
+		const blocks = await openUsMethods();
 		expect(blocks.some((b) => b.type === "header" && b.text === "Shipping methods — us")).toBe(
 			true,
 		);
-		expect(group(blocks, "ship:method:us:standard")?.label).toBe("standard — Standard (flat rate)");
-		expect(group(blocks, "ship:method:us:bare")?.label).toBe("bare — No rates yet (flat rate)");
+		// The number the operator came for is FIRST, so every row's amount starts
+		// at the same left edge and the column can be compared vertically. The
+		// slug keeps its place IN FULL — a method id is a natural key, not a uuid.
+		expect(group(blocks, "ship:method:us:standard")?.label).toBe(
+			"$4.99 — Standard · standard · flat rate",
+		);
 		expect(buttons(blocks).some((e) => e.action_id === "shipping:back")).toBe(true);
 		expect(openGroupIds(blocks)).toHaveLength(0); // L-9: zero open groups
+	});
+
+	test("a method with no rate in the filter currency says so — never 'Free', never a zero amount", async () => {
+		const state = makeShippingState();
+		await boot(state);
+		const label = String(group(await openUsMethods(), "ship:method:us:bare")?.label);
+		expect(label).toBe("No rate set — No rates yet · bare · flat rate");
+		expect(label).not.toMatch(/free|\$0|0\.00/i);
+	});
+
+	test("a FAILED price read degrades that row to 'Price unavailable' — the level still renders, and absence is never claimed", async () => {
+		const state = makeShippingState();
+		state.rateReadsFail = true;
+		await boot(state);
+		const blocks = await openUsMethods();
+		// Secondary read: the methods list itself still rendered, no fail-closed banner.
+		expect(bannerOf(blocks)).toBeUndefined();
+		expect(group(blocks, "ship:method:us:standard")?.label).toBe(
+			"Price unavailable — Standard · standard · flat rate",
+		);
+		// "unavailable" is not "none": a read that did not answer must not be
+		// reported as a rate that does not exist.
+		expect(String(group(blocks, "ship:method:us:bare")?.label)).not.toMatch(/no rate set/i);
+	});
+
+	test("the price costs exactly ONE rate read per method, in the level's currency, and the currency is stated ONCE for the list (G1)", async () => {
+		const state = makeShippingState();
+		await boot(state);
+		stub!.requests.length = 0;
+		const blocks = await openUsMethods();
+		const rateReads = stub!.requests.filter((r) => /\/rates\?/.test(r.url)).map((r) => r.url);
+		expect(rateReads.toSorted()).toEqual([
+			"/admin/shipping/methods/bare/rates?currency=USD",
+			"/admin/shipping/methods/standard/rates?currency=USD",
+		]);
+		// Currency named once, in the level's context line — never as an ISO code
+		// repeated per row.
+		const contexts = findBlocks(blocks, "context").map((c) => String(c.text));
+		expect(contexts.some((t) => t.includes("Prices in USD."))).toBe(true);
+		expect(String(group(blocks, "ship:method:us:standard")?.label)).not.toContain("USD");
+	});
+
+	test("the price currency is a filter: applying EUR re-reads in EUR and re-prices every row", async () => {
+		const state = makeShippingState();
+		state.rates.push({
+			methodId: "standard",
+			currency: "EUR",
+			amountCents: 1200,
+			minSubtotalCents: null,
+		});
+		await boot(state);
+		const opened = await openUsMethods();
+		const filterForm = formFor(opened, "shipping:apply-filter");
+		expect(field(filterForm, "currency")?.initial_value).toBe("USD");
+		stub!.requests.length = 0;
+
+		const blocks = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "shipping:apply-filter",
+				block_id: filterForm?.block_id,
+				values: { currency: "eur" },
+			}),
+		);
+		// L-6: the depth-1 path survived the apply — this is still the `us`
+		// methods list, not the root zones list.
+		expect(blocks.some((b) => b.type === "header" && b.text === "Shipping methods — us")).toBe(
+			true,
+		);
+		const eurReads = stub!.requests.filter((r) => /\/rates\?/.test(r.url));
+		expect(eurReads.length).toBeGreaterThan(0);
+		expect(eurReads.every((r) => r.url.endsWith("currency=EUR"))).toBe(true);
+		expect(group(blocks, "ship:method:us:standard")?.label).toBe(
+			"€12.00 — Standard · standard · flat rate",
+		);
+		expect(group(blocks, "ship:method:us:bare")?.label).toBe(
+			"No rate set — No rates yet · bare · flat rate",
+		);
+		expect(
+			findBlocks(blocks, "context").some((c) => String(c.text).includes("Prices in EUR.")),
+		).toBe(true);
+	});
+
+	test("no operator-facing copy on this level names a raw enum — but the wire values are untouched", async () => {
+		const state = makeShippingState();
+		await boot(state);
+		const blocks = await openUsMethods();
+		const copy = [
+			...findBlocks(blocks, "context").map((c) => String(c.text)),
+			...findBlocks(blocks, "accordion").map((a) => String(a.label)),
+		].join(" | ");
+		expect(copy).not.toMatch(/flat_rate|free_shipping/);
+		expect(copy).toContain('"Flat rate" always charges its rate');
+		expect(copy).toContain('"Free shipping" charges nothing above its threshold');
+
+		// The SELECT still submits the enum the service expects — humanizing the
+		// copy must not touch the protocol.
+		const createForm = formFor(groupBlocks(blocks, "ship:new-method:us"), "shipping:create-method");
+		const typeOptions = field(createForm, "type")?.options as Array<{
+			value: string;
+			label: string;
+		}>;
+		expect(typeOptions.map((o) => o.value)).toEqual(["flat_rate", "free_shipping"]);
 	});
 
 	test("a zone with no methods yet shows the `empty` block, never a fail-closed banner", async () => {
@@ -857,6 +985,7 @@ describe("admin Shipping console — methods level, L-9 fallback branch (>25 row
 
 		const at26 = makeManyMethodsState(26);
 		await boot(at26);
+		stub!.requests.length = 0;
 		const level26 = await sandbox!.invokeRoute("admin", {
 			type: "form_submit",
 			action_id: "shipping:open",
@@ -875,6 +1004,18 @@ describe("admin Shipping console — methods level, L-9 fallback branch (>25 row
 			{ key: "type", label: "Type", format: "badge" },
 		]);
 		expect(tableRows(blocks26)).toHaveLength(26);
+		// The `Type` badge reads the human name; the wire value never appears.
+		expect(tableRows(blocks26).map((r) => String(r["type"]))).toContain("Free shipping");
+		expect(tableRows(blocks26).some((r) => /_/.test(String(r["type"])))).toBe(false);
+		// THE PRICE FAN-OUT IS BOUNDED BY THE ACCORDION BRANCH. Past 25 rows the
+		// table shows no price, so it must cost NO rate reads — never 26, never
+		// the level's `limit: 200`.
+		expect(stub!.requests.filter((r) => /\/rates\?/.test(r.url))).toHaveLength(0);
+		// …and with nothing priced, the context line claims no currency.
+		expect(findBlocks(blocks26, "context").some((c) => /Prices in/.test(String(c.text)))).toBe(
+			false,
+		);
+		expect(formFor(blocks26, "shipping:apply-filter")).toBeUndefined();
 	});
 });
 

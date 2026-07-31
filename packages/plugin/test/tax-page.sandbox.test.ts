@@ -12,6 +12,7 @@ import {
 	findBlocks,
 	formFor,
 	group,
+	groupBlocks,
 	openGroupIds,
 	type LooseBlock,
 } from "./helpers/blocks.js";
@@ -363,6 +364,28 @@ describe("admin Tax console — classes level (workerd sandbox)", () => {
 		expect((del?.value as { classId?: string } | undefined)?.classId).toBe("standard");
 	});
 
+	test("a class group orders its controls common-path-first and destructive-last, with a spacer between the edit and the delete", async () => {
+		const state = makeRulesState();
+		await boot(state);
+		const body = groupBlocks(await loadClasses(), "tax:class:standard");
+		// ORDER IS THE ONLY AFFORDANCE AVAILABLE. A `form` renders `flex flex-col`
+		// in the pinned renderer, so nothing here can sit in a horizontal row with
+		// the primary on the end; which control comes FIRST is the whole signal.
+		expect(body.map((b) => String(b.type))).toEqual(["actions", "form", "context", "actions"]);
+		expect(buttons([body[0]!])[0]?.action_id).toBe("tax:open"); // View rates leads
+		expect((body[1]?.submit as { action_id?: unknown } | undefined)?.action_id).toBe(
+			"tax:save-class",
+		);
+		// Block Kit has no spacer block and `divider` is off this console's
+		// vocabulary, so the separation is a context line that also earns its
+		// height — it states the refusal BEFORE the click, where the confirm
+		// dialog's copy only appears after.
+		expect(String(body[2]?.text)).toMatch(/blocked while any product or tax rate/i);
+		const last = buttons([body[3]!])[0];
+		expect(last?.action_id).toBe("tax:delete-class"); // destructive LAST
+		expect(last?.style).toBe("danger");
+	});
+
 	test("save-class PUTs the rename (reading the id from the carrier) and reloads the classes list with a 'saved' notice", async () => {
 		const state = makeRulesState();
 		await boot(state);
@@ -506,12 +529,29 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 		expect(stub!.requests.some((r) => r.url === "/admin/tax/rates?zoneId=us")).toBe(true);
 		expect(stub!.requests.some((r) => r.url === "/admin/tax/rates?zoneId=eu")).toBe(true);
 
+		// THE RATE LEADS THE LABEL. It used to trail a slug of varying length, so
+		// no two rows started their number at the same x and 7.25 / 20.00 could
+		// not be compared down the column — the one comparison this level exists
+		// for. The slug keeps its place IN FULL (a natural key, not a uuid).
 		expect(group(blocks, "tax:rate:std-us")?.label).toBe(
-			"std-us — United States · 7.25% · goods only",
+			"7.25% — United States · std-us · goods only",
 		);
 		expect(group(blocks, "tax:rate:std-eu")?.label).toBe(
-			"std-eu — Europe · 20.00% · also shipping",
+			"20.00% — Europe · std-eu · also shipping",
 		);
+	});
+
+	test("a rate label's leading token is a PERCENT, not money — no currency symbol or code anywhere in it", async () => {
+		const state = makeRulesState();
+		await boot(state);
+		const labels = findBlocks(await openClass("standard"), "accordion")
+			.filter((a) => String(a.block_id).startsWith("tax:rate:"))
+			.map((a) => String(a.label));
+		expect(labels).toHaveLength(2);
+		for (const label of labels) {
+			expect(label).toMatch(/^\d+\.\d{2}% — /);
+			expect(label).not.toMatch(/[$€£¥]|USD|EUR/);
+		}
 	});
 
 	test("the Zone filter is a non-blank select seeded from the zones read this level already performs (D-6, F-6a)", async () => {
@@ -689,7 +729,7 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 		// never the stale 725 the carrier was minted against, and never a blind
 		// clobber to 900 either.
 		expect(group(blocks, "tax:rate:std-us")?.label).toBe(
-			"std-us — United States · 9.00% · goods only",
+			"9.00% — United States · std-us · goods only",
 		);
 	});
 
@@ -780,7 +820,11 @@ describe("admin Tax console — rates level (workerd sandbox)", () => {
 		const picker = field(openForm, "target")!;
 		const options = picker.options as Array<{ value: string; label: string }>;
 		expect(options[0]).toEqual({ value: "none", label: "Choose a tax rate…" });
-		const target = options.find((o) => o.label.startsWith("United States"))!.value;
+		// The picker options lead with the rate too — it is what the operator is
+		// choosing between — and still never carry the id (M-7/X-22).
+		expect(options.slice(1).every((o) => /^\d+\.\d{2}% · /.test(o.label))).toBe(true);
+		expect(options.some((o) => o.label.includes("r5"))).toBe(false);
+		const target = options.find((o) => o.label.endsWith("United States"))!.value;
 		const after = await submitForm(blocks, "tax:open", { target });
 		expect(
 			after.some((b) => b.type === "header" && String(b.text).startsWith("Tax rate — r")),
