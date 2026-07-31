@@ -36,8 +36,14 @@ import { carriedForm, noticeBanner, readAdminTokens, type Notice } from "./scaff
  * SECURITY (§5): the display name is cosmetic. The admin token AND the service
  * token are shared secrets that live in em-dash's plugin-settings kv (bounded by
  * em-dash admin/DB security, the same trade-off webhook-notifier accepts). Both
- * are masked, treated write-only (only overwritten on a non-empty submit), and
- * have no read-back path into any block, toast, or error text. NOTE the service
+ * are treated write-only (only overwritten on a non-empty submit) and have no
+ * read-back path into any block, toast, or error text — but NEITHER is masked
+ * (INC-09, `EVIDENCE §4.3` / `DESIGNER §7` shot `18b`): the `secret_input`
+ * variant's reveal/copy chip computed to `opacity: 0` and, on hover, overlapped
+ * this screen's own field label, and a revealed SET token became visually
+ * identical to the unset field below it — a false affordance offering to
+ * reveal something this screen's own helper text says is never displayed. Both
+ * tokens now render as a plain, always-empty `text_input`. NOTE the service
  * token is MORE sensitive than the admin token — it unlocks the entire write
  * surface, not just `/admin` + `/internal`.
  *
@@ -62,6 +68,30 @@ export const STORE_DISPLAY_NAME_KEY = "settings:storeDisplayName";
 /** The kv key for the write-only admin token forwarded as `X-Internal-Token` to
  *  the guarded reporting reads + privileged settings PUT. NEVER rendered. */
 export const INTERNAL_TOKEN_KEY = "settings:internalToken";
+
+/** kv keys for each token's SAVE GENERATION (INC-09 post-save clear). Bumped by
+ *  {@link bumpSaveGen} on every successful (non-empty) submit and folded into
+ *  that token's own form via {@link tokenForm}/{@link serviceTokenForm}, so a
+ *  save changes the form's carrier `block_id` — otherwise the mount-only
+ *  `text_input` would keep showing whatever the operator just typed after a
+ *  "saved" re-render, since the field itself carries no `initial_value`/
+ *  `has_value` left to hang a digest off of (see `carrier.ts`'s
+ *  `prefillDigest`). Independent per token: saving one must not blank the
+ *  other's untouched field. */
+const INTERNAL_TOKEN_GEN_KEY = "settings:internalTokenGen";
+const SERVICE_TOKEN_GEN_KEY = "settings:serviceTokenGen";
+
+/** Current save generation for a token key, defaulting to 0 when never saved. */
+async function readSaveGen(ctx: PluginContext, key: string): Promise<number> {
+	return (await ctx.kv.get<number>(key)) ?? 0;
+}
+
+/** Bump a token's save generation. Call ONLY on an actual (non-empty) persist —
+ *  never on a blank submit, which already leaves the field's stated content
+ *  correct (still empty), so there is nothing to force a remount for. */
+async function bumpSaveGen(ctx: PluginContext, key: string): Promise<void> {
+	await ctx.kv.set(key, (await readSaveGen(ctx, key)) + 1);
+}
 
 /** The action ids the admin-route dispatcher recognizes as belonging to the
  *  Settings form (so a `block_action`/`form_submit` carrying one of these — and
@@ -180,11 +210,15 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 		// -- secret save path: admin token, WRITE-ONLY to ctx.kv --------------------
 		if (action === "save-token") {
 			// Mirror webhook-notifier (`plugin.ts:515`): persist ONLY when a
-			// non-empty value was submitted, so a blank submit (the masked field
-			// renders empty every time) never clobbers an existing token.
+			// non-empty value was submitted, so a blank submit (the plain field
+			// renders empty every time — INC-09 dropped the masked variant) never
+			// clobbers an existing token.
 			const raw = input.values?.internalToken;
 			if (typeof raw === "string" && raw !== "") {
 				await ctx.kv.set(INTERNAL_TOKEN_KEY, raw);
+				// Post-save clear (INC-09): bump the carrier `gen` so the re-rendered
+				// field remounts blank instead of continuing to show what was typed.
+				await bumpSaveGen(ctx, INTERNAL_TOKEN_GEN_KEY);
 			}
 			const page = await renderPage(ctx, client, {
 				variant: "default",
@@ -200,11 +234,14 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 		// -- secret save path: SERVICE token, WRITE-ONLY to ctx.kv ------------------
 		if (action === "save-service-token") {
 			// Same write-only discipline as the admin token: persist ONLY on a
-			// non-empty submit so a blank submit (the masked field always renders
+			// non-empty submit so a blank submit (the plain field always renders
 			// empty) never clobbers an existing token. NEVER rendered back.
 			const raw = input.values?.serviceToken;
 			if (typeof raw === "string" && raw !== "") {
 				await ctx.kv.set(SERVICE_TOKEN_KEY, raw);
+				// Post-save clear (INC-09): bump the carrier `gen` so the re-rendered
+				// field remounts blank instead of continuing to show what was typed.
+				await bumpSaveGen(ctx, SERVICE_TOKEN_GEN_KEY);
 			}
 			const page = await renderPage(ctx, client, {
 				variant: "default",
@@ -231,6 +268,8 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			const displayName = (await ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY)) ?? "";
 			const hasToken = ((await ctx.kv.get<string>(INTERNAL_TOKEN_KEY)) ?? "").length > 0;
 			const hasServiceToken = serviceToken !== undefined;
+			const tokenGen = await readSaveGen(ctx, INTERNAL_TOKEN_GEN_KEY);
+			const serviceTokenGen = await readSaveGen(ctx, SERVICE_TOKEN_GEN_KEY);
 			if (!result.ok) {
 				// Surface the service's validation error INLINE (never a generic
 				// "save failed" that hides the real reason). Re-render the ATTEMPTED
@@ -252,6 +291,8 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 						settings: shown,
 						hasToken,
 						hasServiceToken,
+						tokenGen,
+						serviceTokenGen,
 						notice: {
 							variant: "error",
 							title: "Settings not saved",
@@ -267,6 +308,8 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 					settings: result.settings,
 					hasToken,
 					hasServiceToken,
+					tokenGen,
+					serviceTokenGen,
 					notice: {
 						variant: "default",
 						title: "Settings saved",
@@ -306,10 +349,20 @@ async function renderPage(
 	const displayName = (await ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY)) ?? "";
 	const hasToken = ((await ctx.kv.get<string>(INTERNAL_TOKEN_KEY)) ?? "").length > 0;
 	const hasServiceToken = (await serviceTokenFromKv(ctx)) !== undefined;
+	const tokenGen = await readSaveGen(ctx, INTERNAL_TOKEN_GEN_KEY);
+	const serviceTokenGen = await readSaveGen(ctx, SERVICE_TOKEN_GEN_KEY);
 	try {
 		const settings = await client.getSettings();
 		return {
-			blocks: buildSettingsBlocks({ displayName, settings, hasToken, hasServiceToken, notice }),
+			blocks: buildSettingsBlocks({
+				displayName,
+				settings,
+				hasToken,
+				hasServiceToken,
+				tokenGen,
+				serviceTokenGen,
+				notice,
+			}),
 		};
 	} catch {
 		return {
@@ -318,6 +371,8 @@ async function renderPage(
 				settings: undefined,
 				hasToken,
 				hasServiceToken,
+				tokenGen,
+				serviceTokenGen,
 				notice,
 			}),
 		};
@@ -358,15 +413,17 @@ function extractOperationalPatch(
  * ("Store"), named explicitly, always — there is no per-record state to
  * derive it from on this screen. S-4: every prefilling form's `block_id`
  * comes from `carriedForm` so a saved value redisplays correctly (the forms
- * are mount-only `text_input`/`secret_input`, and once inside an accordion
- * each is that container's own index-0 child forever — nothing else remounts
- * them).
+ * are mount-only `text_input` — INC-09 dropped the one `secret_input` this
+ * screen used to render — and once inside an accordion each is that
+ * container's own index-0 child forever — nothing else remounts them).
  */
 function buildSettingsBlocks(args: {
 	displayName: string;
 	settings: OperationalSettingsWire | undefined;
 	hasToken: boolean;
 	hasServiceToken: boolean;
+	tokenGen: number;
+	serviceTokenGen: number;
 	notice?: Notice;
 }): Block[] {
 	const blocks: Block[] = [
@@ -377,28 +434,45 @@ function buildSettingsBlocks(args: {
 		},
 	];
 	if (args.notice !== undefined) blocks.push(noticeBanner(args.notice));
-	blocks.push(storeGroup(args.displayName), checkoutGroup(args.settings), connectionGroup(args));
+	// args.hasToken / args.hasServiceToken are read but not consumed below —
+	// KEEP them: INC-15 needs exactly these two booleans for the "Service
+	// connection" accordion's collapsed title ("token set · service token not
+	// set"), so this is deliberate future plumbing, not dead code.
+	blocks.push(
+		storeGroup(args.displayName),
+		checkoutGroup(args.settings),
+		connectionGroup({ tokenGen: args.tokenGen, serviceTokenGen: args.serviceTokenGen }),
+	);
 	return blocks;
 }
 
-/** The write-only admin-token form. The `secret_input` element carries NO
- *  `initial_value` (the stored token is never rendered); `has_value` signals a
- *  token is already set and the placeholder tells the admin a blank submit
- *  keeps it. Routed through `carriedForm` (S-4): `secret_input` is mount-only
- *  too, so a re-render after saving needs a changed `block_id` or it shows an
- *  empty editable field instead of the masked "current value set" affordance. */
-function tokenForm(hasToken: boolean): FormBlock {
+/** The write-only admin-token form (INC-09: no masked variant). A plain
+ *  `text_input` — no `secret_input`, no `has_value`, no reveal/copy control —
+ *  that carries NO `initial_value` (the stored token is never rendered), so
+ *  the field renders EMPTY on every FRESH mount, whether or not a token is
+ *  already set; the placeholder alone carries the "blank keeps current"
+ *  behaviour, which is unconditionally true (there is nothing to reveal
+ *  either way).
+ *
+ *  POST-SAVE CLEAR: because the field itself never varies, `carriedForm`'s
+ *  own prefill digest is now CONSTANT, so `gen` — this token's save
+ *  generation, bumped by {@link bumpSaveGen} on every successful non-empty
+ *  submit — rides in the carrier CONTEXT instead. That still changes the
+ *  form's `block_id` on a real save, forcing the mount-only field to remount
+ *  blank rather than keep showing what the operator just typed. Symmetric
+ *  with {@link serviceTokenForm}. */
+function tokenForm(gen: number): FormBlock {
 	return carriedForm({
 		namespace: "settings:admin-token",
+		context: { gen: String(gen) },
 		form: {
 			type: "form",
 			fields: [
 				{
-					type: "secret_input",
+					type: "text_input",
 					action_id: "internalToken",
 					label: "Admin token (X-Internal-Token)",
-					placeholder: hasToken ? "Leave blank to keep current token" : "Enter admin token",
-					has_value: hasToken,
+					placeholder: "Enter new admin token (blank keeps current)",
 				},
 			],
 			submit: { label: "Save admin token", action_id: "save-token" },
@@ -407,23 +481,23 @@ function tokenForm(hasToken: boolean): FormBlock {
 }
 
 /** The write-only SERVICE-token form (ADR-0007) — the machine write-gate token
- *  the service enforces as `X-Service-Token`. Same masked, write-only discipline
- *  as the admin token: no `initial_value`, `has_value` signals it is set, and a
- *  blank submit keeps the current token. NEVER rendered back. */
-function serviceTokenForm(hasServiceToken: boolean): FormBlock {
+ *  the service enforces as `X-Service-Token`. Same plain, write-only
+ *  discipline as {@link tokenForm} (INC-09), including the `gen`-carried
+ *  post-save clear: no masked variant, no `initial_value`, a blank submit
+ *  keeps the current token, and a successful save remounts the field blank.
+ *  NEVER rendered back. */
+function serviceTokenForm(gen: number): FormBlock {
 	return carriedForm({
 		namespace: "settings:service-token",
+		context: { gen: String(gen) },
 		form: {
 			type: "form",
 			fields: [
 				{
-					type: "secret_input",
+					type: "text_input",
 					action_id: "serviceToken",
 					label: "Service token (X-Service-Token)",
-					placeholder: hasServiceToken
-						? "Leave blank to keep current token"
-						: "Enter service token",
-					has_value: hasServiceToken,
+					placeholder: "Enter new service token (blank keeps current)",
 				},
 			],
 			submit: { label: "Save service token", action_id: "save-service-token" },
@@ -504,7 +578,7 @@ function checkoutGroup(settings: OperationalSettingsWire | undefined): Accordion
 	};
 }
 
-function connectionGroup(args: { hasToken: boolean; hasServiceToken: boolean }): AccordionBlock {
+function connectionGroup(args: { tokenGen: number; serviceTokenGen: number }): AccordionBlock {
 	return {
 		type: "accordion",
 		block_id: "settings:connection",
@@ -515,8 +589,8 @@ function connectionGroup(args: { hasToken: boolean; hasServiceToken: boolean }):
 				type: "context",
 				text: "Both tokens are stored write-only — a blank submit keeps the current one. Neither is ever displayed.",
 			},
-			tokenForm(args.hasToken),
-			serviceTokenForm(args.hasServiceToken),
+			tokenForm(args.tokenGen),
+			serviceTokenForm(args.serviceTokenGen),
 		],
 	};
 }

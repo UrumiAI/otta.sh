@@ -136,10 +136,11 @@ describe("admin route dispatch (workerd sandbox)", () => {
 		expect(field(formFor(blocks, "save-display"), "storeDisplayName")).toBeDefined();
 		expect(field(formFor(blocks, "save-operational"), "holdTtlMinutes")).toBeDefined();
 		expect(field(formFor(blocks, "save-operational"), "lowStockThreshold")).toBeDefined();
-		// The masked secret field renders write-only: it exists, is a secret_input,
-		// and carries NO initial_value (the stored token is never echoed).
+		// The token field renders write-only: it exists, is a plain text_input
+		// (INC-09 dropped the masked secret_input variant), and carries NO
+		// initial_value (the stored token is never echoed).
 		const secret = field(formFor(blocks, "save-token"), "internalToken");
-		expect(secret?.type).toBe("secret_input");
+		expect(secret?.type).toBe("text_input");
 		expect(secret).not.toHaveProperty("initial_value");
 	});
 
