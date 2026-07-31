@@ -4,6 +4,7 @@ import { cents as toCents, currency as toCurrency } from "../presentation/money.
 import type {
 	ActionsBlock,
 	AdminPageConfig,
+	BannerBlock,
 	Block,
 	ButtonElement,
 	FieldsBlock,
@@ -59,10 +60,12 @@ import {
  * THE SHAPE, in one paragraph. The list is `header` + one `context` + an
  * optional notice `banner` + an INLINE one-field search (L-2: 1 field renders
  * directly, no accordion) + the table — nothing else above the data (P-1).
- * The detail is `header` + back + notice + the 6-entry identity strip, then
- * TWO task-named panels — `Coupon` · `Redemptions` (D-2, D-2a: a would-be
+ * The detail is `header` + back + notice + a lifecycle `banner` on the
+ * exceptions only + the 6-entry identity strip (D-1a's cap; `Status` leads it
+ * and the redundant `Code` row is gone — the header already carries the code),
+ * then TWO task-named panels — `Coupon` · `Redemptions` (D-2, D-2a: a would-be
  * `History` panel would hold only Created, which lives in the identity strip
- * instead) — whose one named group (`Edit`) is an `accordion`.
+ * instead) — whose one named group (`Edit`) is a CLOSED `accordion`.
  *
  * WHY THIS SCREEN HAS NO RENDER-STATE CHANNEL FOR DA-3. Every destructive/
  * risky write here is DA-2 (delete: no input, forbid-if-redeemed) or DA-4
@@ -707,12 +710,20 @@ function couponFailClosed() {
 }
 
 /**
- * §12.2's detail skeleton: `header` · back · notice · the 6-entry identity
- * strip · TWO constant task-named panels — `Coupon` · `Redemptions` (D-2).
- * Coupons have no reconcile/fulfilment concept, so D-5's rank-3 "named
- * primary edit group" is the only rank that can ever fire — and it always
- * does, because a loaded coupon (no soft-delete/tombstone concept) is always
- * editable: the `Edit` group is `default_open: true` on every render.
+ * §12.2's detail skeleton: `header` · back · notice · the lifecycle banner (on
+ * the exceptions only) · the identity strip · TWO constant task-named panels —
+ * `Coupon` · `Redemptions` (D-2).
+ *
+ * THE EDIT GROUP IS CLOSED. Coupons have no reconcile/fulfilment concept, so
+ * D-5's rank-3 "named primary edit group" is the only rank that can fire here,
+ * and it used to fire on every render — a screen operators open to READ
+ * ("is this code live?") presented a loaded full-replace editor, one stray
+ * Enter from rewriting the coupon's expiry, cap and use bounds (`PM §E3b`).
+ * A rank that always fires is not a rank; the group now renders
+ * `default_open: false` (a render-time call, exactly as Orders' Filters ships,
+ * NOT a programmatic close), and the reading the operator came for is answered
+ * above it — by `Status`, by the exception banner, and by the group's own
+ * D-6 label.
  */
 function detailBlocks(
 	actions: ScreenActions,
@@ -721,6 +732,9 @@ function detailBlocks(
 	detail: CouponSummaryWire,
 	notice: Notice | undefined,
 ): Block[] {
+	// ONE instant for the whole response (see `couponStatus`), so the summary
+	// field and the banner below it cannot land on opposite sides of a boundary.
+	const status = couponStatus(detail, new Date().toISOString());
 	const blocks: Block[] = [
 		// M-10: the coupon's CODE is its human handle, so it is the header — the
 		// internal `id` never needs its own display row.
@@ -728,9 +742,23 @@ function detailBlocks(
 		backButton(actions.back, "← Back to coupons", path),
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
+	const exception = statusBanner(status);
+	if (exception !== undefined) blocks.push(exception);
 	blocks.push(
 		fields("coupons:identity", [
-			["Code", detail.code],
+			// FIRST, because it is the question the screen exists to answer (E3):
+			// `EXPIRED20` and a live `SUMMER25` were the same row shape, and the
+			// only signal was a date the operator had to compare to today. Computed
+			// at render by the SAME {@link couponStatus} the list column uses — one
+			// definition, so a coupon cannot read `expired` here and `active` there.
+			//
+			// It takes the slot the old `Code` row held rather than growing the
+			// strip. `Code` duplicated the header two blocks above it — M-10 is the
+			// reason: the code IS this screen's human handle, which is why it is
+			// the header — and D-1a caps this strip at SIX entries (§12.2 pins the
+			// set). So the strip pays for its new first entry with its redundant
+			// one, and stays even in `fields`' row-major 2-column grid.
+			["Status", status],
 			["Discount", couponDiscountSummary(detail)],
 			["Type", detail.type],
 			["Uses", couponUsesSummary(detail.usesCount, detail.maxUses)],
@@ -749,6 +777,39 @@ function detailBlocks(
 		panels,
 	});
 	return blocks;
+}
+
+/**
+ * BADGE THE EXCEPTIONS — at a surface that has no badge.
+ *
+ * `Status` is a `fields` entry, and `FieldsBlock` carries no `format`: Block
+ * Kit's only badge is a TABLE COLUMN's, which is why INC-07 could not badge
+ * the list's exceptions either. On the leaf there is exactly ONE coupon, so
+ * the split IS expressible — the emphasis lever is a `banner`, the only
+ * primitive here that outranks a field label (`context` and a `fields` label
+ * are both `text-sm text-kumo-subtle`).
+ *
+ * `active` deliberately gets NOTHING. A live coupon has nothing to report, and
+ * a mark on every coupon would spend the screen's loudest ink on its least
+ * informative state (T-5) — the same reasoning INC-07 applied to the column.
+ * Each exception names the CONSEQUENCE rather than restating the word already
+ * in the strip above: what checkout does with the code is what the operator
+ * opened this screen to learn (`PM §E3`).
+ */
+function statusBanner(status: CouponStatus): BannerBlock | undefined {
+	if (status === "active") return undefined;
+	const description =
+		status === "scheduled"
+			? "Checkout refuses this code until its start date."
+			: status === "expired"
+				? "Checkout refuses this code — its expiry date has passed."
+				: "Checkout refuses this code — it has reached its maximum number of uses.";
+	return {
+		type: "banner",
+		variant: "alert",
+		title: `This coupon is ${status}`,
+		description,
+	};
 }
 
 // -- panel "Coupon" -------------------------------------------------------------
@@ -784,31 +845,88 @@ function editGroup(detail: CouponSummaryWire): Block {
 	return {
 		type: "accordion",
 		block_id: `coupons:${detail.id}:edit`,
-		// D-6: the label carries the answer that makes opening it unnecessary.
+		// D-6: the label carries the answer that makes opening it unnecessary —
+		// which is what makes shipping this group CLOSED cost the reader nothing.
 		label: fitLabel(
 			`Edit — ${couponDiscountSummary(detail)} · ${couponWindowSummary(detail.startsAt, detail.expiresAt)}`,
 		),
-		// D-5 rank 3: always true — a loaded coupon has no tombstone/terminal
-		// state, so it is always editable, and Coupons has no rank 1/2 group to
-		// lose the slot to.
-		default_open: true,
+		// CLOSED — see {@link detailBlocks}. A render-time `default_open: false`,
+		// not a programmatic close: there is no open/close signal to read, and
+		// forcing a mounted group shut would mean changing its `block_id`, which
+		// remounts it and discards whatever the operator had typed.
+		default_open: false,
 		blocks: [
+			// HIGHER EMPHASIS THAN THE LABELS IT WARNS ABOUT. This was a `context`
+			// line — `text-sm text-kumo-subtle`, the same weight as the field
+			// labels below and quieter than their values — which is the wrong
+			// ranking for the one sentence that says a blank field DESTROYS a set
+			// value. A `banner` is the only primitive in this group that outranks
+			// them (icon + variant + title). It is nested inside the accordion, so
+			// it does not count against §2's top-level banner budget (X-31).
+			{
+				type: "banner",
+				variant: "alert",
+				title: "Saving replaces every field below",
+				// 118 chars ≤ 240 (X-11).
+				description:
+					"This is a full replace: a blank optional field saves as unset, not unchanged. Values shown are the current ones.",
+			},
 			{
 				type: "context",
-				// 116 chars ≤ 200, trimmed from the former 613-char paragraph.
-				text: "Saving replaces every field below — this is a full replace, so a blank optional field saves as unset, not unchanged.",
+				// 140 chars ≤ 200. The end-of-day reading is NOT cosmetic — the
+				// domain's window is `[startsAt, expiresAt)`, so a date that meant
+				// midnight would retire the code a whole day before its stated expiry.
+				text: "Dates are UTC. A coupon becomes valid at the start of its start date and stops at the END of its expiry date. Blank either one for no bound.",
 			},
 			editCouponForm(detail),
 		],
 	};
 }
 
+/** The disclosure gating the four rarely-touched bounds — a `toggle` inside the
+ *  form, NOT a second `accordion`: an accordion would need a second FORM, and
+ *  F-5a forbids splitting this one, because on a wire with no partial update
+ *  saving one half silently nulls the other. See {@link editCouponForm}. */
+const LIMITS_TOGGLE = "showLimits";
+
 /**
- * The full-replace edit form. EVERY editable field is pre-filled (unset ⇒
- * blank); only the coupon's OWN type's economics fields are authored (the
- * other type's are inapplicable-null by construction — `type` is immutable —
- * and are hard-nulled on save, never relying on the wire's omit⇒null
- * coercion). `couponId`/`code`/`type` ride invisibly in the carrier (F-2); B-3's
+ * The full-replace edit form. Three properties carry this screen's safety.
+ *
+ * (1) EVERY SET VALUE RIDES AS `initial_value`, NEVER AS A `placeholder`. A
+ * placeholder is grey ghost text the browser submits as `""`; on a wire with no
+ * partial update, a set value rendered as one is a silent unset of something
+ * the operator could SEE on screen when they pressed Save (`PM §E3` — the
+ * P0-class check this increment is gated on). A `placeholder` here may only be
+ * a FORMAT EXAMPLE on a field that is genuinely empty, and the window fields no
+ * longer need even that: a `date_input` IS its own format.
+ *
+ * (2) THE FOUR BOUNDS ARE COLLAPSED, AND THE FORM IS STILL ONE FORM. Seven
+ * full-bleed inputs stacked — five of them empty on a typical coupon — is the
+ * worst proportion offender in the console (`DESIGNER §3`), and the fix is to
+ * put the rarely-touched bounds behind a closed disclosure. It CANNOT be a
+ * second `accordion`, because an accordion holds blocks and a form's fields are
+ * not blocks: a second group would mean a second FORM, which F-5a forbids here
+ * for the same reason this whole increment exists (saving the "Discount" half
+ * would null the window and the use bounds). A `toggle` + `condition` gets the
+ * same collapsed shape inside ONE submit. Nothing is hidden by it that the leaf
+ * does not already show as read-only text: the cap rides in `Discount`, the
+ * floor in `Minimum spend`, and both use bounds in the Redemptions panel.
+ *
+ * (3) A FIELD THAT NEVER REACHED THE SUBMIT KEEPS ITS CURRENT VALUE. Today a
+ * `condition`-hidden field's value DOES arrive — `blocks/form.tsx` seeds its
+ * state from every field's `initial_value` and posts that state whole, while
+ * its render pass returns `null` for the hidden ones. But that is an
+ * interaction between two upstream implementation details, and `carrier.ts`
+ * REJECTS relying on it as a hidden-context channel precisely because a future
+ * release could legitimately change it. Depending on it for data PRESERVATION
+ * would leave every collapsed bound one upstream refactor away from the exact
+ * loss this increment retires. So the form ALSO carries each current value in
+ * its `block_id`, and the parsers treat an ABSENT key as "unchanged" while a
+ * PRESENT BLANK one stays the explicit unset the group's banner promises. The
+ * two answers differ only under a renderer that drops hidden fields — and there
+ * the carrier is the safe one.
+ *
+ * `couponId`/`code`/`type` ride invisibly in the same carrier (F-2); B-3's
  * change token is `carriedForm`'s own prefill digest (`__v`, B-3a) — a second,
  * hand-rolled hash would be belt-and-braces B-3a already says not to add.
  */
@@ -830,60 +948,155 @@ function editCouponForm(detail: CouponSummaryWire): FormBlock {
 			label: "Rate (%)",
 			...(detail.rateBps !== null ? { initial_value: formatBpsAsPercent(detail.rateBps) } : {}),
 		});
-		editFields.push({
-			type: "text_input",
-			action_id: "cap",
-			label: "Discount cap (optional)",
-			...(detail.capCents !== null
-				? { initial_value: formatMinorUnitsInput(detail.capCents) }
-				: {}),
-		});
 	}
+	// THE WINDOW, AS DATE ELEMENTS. `date_input` renders a native
+	// `<input type="date">` (verified in the pinned 0.31.1 renderer), so nobody
+	// hand-types `2026-08-01T00:00:00Z` — and nobody mistypes it into a silent
+	// parse failure either. It speaks DAYS, not instants; {@link resolveBound}
+	// decides which instant each edge of a day means.
+	editFields.push(dateField("startsAt", "Starts at (optional, UTC)", detail.startsAt));
+	editFields.push(dateField("expiresAt", "Expires at (optional, UTC)", detail.expiresAt));
+	// CLOSED on every render (the `false` is unconditional — the values it hides
+	// are all readable above it). A toggle's `description` is dropped by the
+	// renderer, so the label alone has to say what it reveals.
 	editFields.push({
-		type: "text_input",
-		action_id: "minSubtotal",
-		label: "Minimum spend (optional)",
-		...(detail.minSubtotalCents !== null
-			? { initial_value: formatMinorUnitsInput(detail.minSubtotalCents) }
-			: {}),
+		type: "toggle",
+		action_id: LIMITS_TOGGLE,
+		label: "Edit spend and use limits",
+		initial_value: false,
 	});
-	editFields.push({
-		type: "text_input",
-		action_id: "startsAt",
-		label: "Starts at (optional)",
-		placeholder: "2026-08-01T00:00:00Z",
-		...(detail.startsAt !== null ? { initial_value: detail.startsAt } : {}),
-	});
-	editFields.push({
-		type: "text_input",
-		action_id: "expiresAt",
-		label: "Expires at (optional)",
-		placeholder: "2026-09-01T00:00:00Z",
-		...(detail.expiresAt !== null ? { initial_value: detail.expiresAt } : {}),
-	});
-	editFields.push({
-		type: "text_input",
-		action_id: "maxUses",
-		label: "Max uses (optional)",
-		...(detail.maxUses !== null ? { initial_value: String(detail.maxUses) } : {}),
-	});
-	editFields.push({
-		type: "text_input",
-		action_id: "maxUsesPerCustomer",
-		label: "Max uses per customer (optional)",
-		...(detail.maxUsesPerCustomer !== null
-			? { initial_value: String(detail.maxUsesPerCustomer) }
-			: {}),
-	});
+	if (detail.type === "percentage") {
+		editFields.push(
+			limitField(
+				"cap",
+				"Discount cap (optional)",
+				detail.capCents === null ? undefined : formatMinorUnitsInput(detail.capCents),
+			),
+		);
+	}
+	editFields.push(
+		limitField(
+			"minSubtotal",
+			"Minimum spend (optional)",
+			detail.minSubtotalCents === null ? undefined : formatMinorUnitsInput(detail.minSubtotalCents),
+		),
+	);
+	editFields.push(
+		limitField(
+			"maxUses",
+			"Max uses (optional)",
+			detail.maxUses === null ? undefined : String(detail.maxUses),
+		),
+	);
+	editFields.push(
+		limitField(
+			"maxUsesPerCustomer",
+			"Max uses per customer (optional)",
+			detail.maxUsesPerCustomer === null ? undefined : String(detail.maxUsesPerCustomer),
+		),
+	);
 	return carriedForm({
 		namespace: "coupons:edit",
-		context: { couponId: detail.id, code: detail.code, type: detail.type },
+		context: {
+			couponId: detail.id,
+			code: detail.code,
+			type: detail.type,
+			...currentContext(detail),
+		},
 		form: {
 			type: "form",
 			fields: editFields,
 			submit: { label: "Save coupon", action_id: ACTION_SAVE },
 		},
 	});
+}
+
+/** A window bound as a `date_input`, pre-filled with the DAY its stored instant
+ *  falls on — the granularity this screen has always DISPLAYED the window at
+ *  (`couponWindowSummary` slices the same ten characters). */
+function dateField(
+	actionId: string,
+	label: string,
+	iso: string | null,
+): FormBlock["fields"][number] {
+	return {
+		type: "date_input",
+		action_id: actionId,
+		label,
+		...(iso !== null ? { initial_value: iso.slice(0, 10) } : {}),
+	};
+}
+
+/** One of the four bounds behind {@link LIMITS_TOGGLE} — money as its exact
+ *  decimal string (never a `number_input`, which hands back a float), counts as
+ *  plain integers, and `undefined` for a bound that is genuinely unset. */
+function limitField(
+	actionId: string,
+	label: string,
+	value: string | undefined,
+): FormBlock["fields"][number] {
+	return {
+		type: "text_input",
+		action_id: actionId,
+		label,
+		condition: { field: LIMITS_TOGGLE, eq: true },
+		...(value !== undefined ? { initial_value: value } : {}),
+	};
+}
+
+/**
+ * The coupon's CURRENT optional values, as the carrier's flat string record —
+ * the fallback behind property (3) of {@link editCouponForm}.
+ *
+ * Money crosses this boundary as its integer MINOR-UNIT string, which is
+ * `carrier.ts`'s own rule and not a local choice: a decimal here would be one
+ * more place a coupon's amount could pick up float drift. A null value is an
+ * ABSENT key rather than a magic empty string, so "no current value" and "a
+ * current value of nothing" stay different claims on the wire too.
+ */
+function currentContext(detail: CouponSummaryWire): Record<string, string> {
+	return {
+		// GATED ON TYPE, exactly as the `cap` FIELD is. A `fixed_amount` coupon
+		// has no cap field on this form, and nothing upstream stops it holding a
+		// stray `capCents` — the service validates each column, never the pair.
+		// Carrying one unconditionally would feed `parseEconomics` a cap the
+		// operator cannot see, and its cross-type check would then refuse EVERY
+		// save of that coupon while naming a field that is not on screen: an
+		// unescapable dead end where the previous code silently hard-nulled the
+		// stray value on the next save.
+		...(detail.type === "percentage" && detail.capCents !== null
+			? { curCap: String(detail.capCents) }
+			: {}),
+		...(detail.minSubtotalCents !== null
+			? { curMinSubtotal: String(detail.minSubtotalCents) }
+			: {}),
+		...(detail.maxUses !== null ? { curMaxUses: String(detail.maxUses) } : {}),
+		...(detail.maxUsesPerCustomer !== null
+			? { curMaxUsesPerCustomer: String(detail.maxUsesPerCustomer) }
+			: {}),
+		...(detail.startsAt !== null ? { curStartsAt: detail.startsAt } : {}),
+		...(detail.expiresAt !== null ? { curExpiresAt: detail.expiresAt } : {}),
+	};
+}
+
+/**
+ * A carried window instant, or `null` if it is not one.
+ *
+ * The money and count keys are already validated on the way back in, and these
+ * get the same treatment rather than being trusted for looking date-shaped: a
+ * carrier round-trips through the operator's browser (`carrier.ts`: "treat
+ * every decoded value as untrusted input"), the service only length-checks
+ * these columns, and the domain compares them LEXICOGRAPHICALLY — so a value
+ * that is merely parseable rather than canonical would sort wrong forever and
+ * silently mis-decide `validateCoupon`.
+ *
+ * The test is a ROUND TRIP, not a parse: `Date.parse` accepts `2026-02-30` and
+ * rolls it into March, so "it parsed" proves nothing about what would be
+ * stored. Only a string that survives `parse → toISOString` unchanged is the
+ * canonical ISO-UTC instant this field is allowed to hold.
+ */
+function carriedInstant(raw: string | undefined): string | null {
+	return raw !== undefined && isCanonicalInstant(raw) ? raw : null;
 }
 
 // -- panel "Redemptions" --------------------------------------------------------
@@ -983,6 +1196,95 @@ type ParsedEconomics =
 	| { ok: false; message: string };
 
 /**
+ * The coupon's current optional values, recovered from the form's own carrier
+ * — see property (3) of {@link editCouponForm}. Money and counts come back as
+ * the INPUT strings the fields would have submitted, so there is exactly one
+ * parsing path downstream; the window bounds come back as stored INSTANTS,
+ * because {@link resolveBound} preserves them byte for byte.
+ */
+interface CurrentValues {
+	cap: string;
+	minSubtotal: string;
+	maxUses: string;
+	maxUsesPerCustomer: string;
+	startsAt: string | null;
+	expiresAt: string | null;
+}
+
+/** No carried current at all — the CREATE form, which has none of these fields
+ *  and whose absent keys therefore mean "unset", exactly as before. */
+const NO_CURRENT: CurrentValues = {
+	cap: "",
+	minSubtotal: "",
+	maxUses: "",
+	maxUsesPerCustomer: "",
+	startsAt: null,
+	expiresAt: null,
+};
+
+function currentValues(carried: Readonly<Record<string, string>> | undefined): CurrentValues {
+	return {
+		cap: carriedMoneyInput(carried?.curCap),
+		minSubtotal: carriedMoneyInput(carried?.curMinSubtotal),
+		maxUses: carriedCount(carried?.curMaxUses),
+		maxUsesPerCustomer: carriedCount(carried?.curMaxUsesPerCustomer),
+		startsAt: carriedInstant(carried?.curStartsAt),
+		expiresAt: carriedInstant(carried?.curExpiresAt),
+	};
+}
+
+/** Carried MINOR UNITS → the decimal string the field renders. A carrier
+ *  round-trips through the operator's browser, so anything that is not a plain
+ *  non-negative integer reads as "no current value" rather than being trusted
+ *  into a money field. */
+function carriedMoneyInput(raw: string | undefined): string {
+	const count = carriedCount(raw);
+	return count === "" ? "" : formatMinorUnitsInput(Number.parseInt(count, 10));
+}
+
+/** Carried whole count, or `""` for absent/untrusted. */
+function carriedCount(raw: string | undefined): string {
+	if (raw === undefined || !/^\d+$/.test(raw)) return "";
+	const n = Number.parseInt(raw, 10);
+	return Number.isSafeInteger(n) ? String(n) : "";
+}
+
+/**
+ * The value a field contributes to this save. A field the operator SUBMITTED
+ * wins — blank included, because that blank is the explicit unset the edit
+ * group's banner promises. A field that never reached the submit at all falls
+ * back to the value the form carried, so a collapsed disclosure cannot quietly
+ * clear what it was hiding (property (3) of {@link editCouponForm}).
+ *
+ * `disclosed` narrows what counts as a deliberate blank. A blank arriving from
+ * a bound the operator never REVEALED cannot be an instruction — they could not
+ * see the field, let alone empty it — so it reads as "unchanged" too. Today
+ * this changes nothing: the pinned renderer posts each hidden field's own
+ * `initial_value`, which is blank only when the bound was already unset. It
+ * closes the remaining mutation of property (3): a renderer that dropped
+ * hidden fields would be caught by the absent-key branch, but one that cleared
+ * them to `""` would slip past it and null every collapsed bound.
+ */
+function submittedOr(
+	values: Record<string, unknown>,
+	key: string,
+	current: string,
+	disclosed = true,
+): string {
+	const raw = readString(values[key]);
+	if (raw === undefined) return current;
+	const trimmed = raw.trim();
+	return trimmed.length === 0 && !disclosed ? current : trimmed;
+}
+
+/** Whether the operator opened the disclosure holding the four bounds. A
+ *  `toggle` submits a real boolean, so this is an identity check, never a
+ *  truthiness one — `readString` would read it as absent. */
+function limitsDisclosed(values: Record<string, unknown>): boolean {
+	return values[LIMITS_TOGGLE] === true;
+}
+
+/**
  * Parse the type-dependent economics fields. On CREATE both types' fields are
  * on the form (a stateless Block form cannot toggle fields on the type
  * select; `condition` is a CLIENT-side visibility hint only), so a value in
@@ -994,11 +1296,20 @@ function parseEconomics(
 	type: "fixed_amount" | "percentage",
 	values: Record<string, unknown>,
 	mode: "create" | "edit",
+	current: CurrentValues,
 ): ParsedEconomics {
 	const amountRaw = (readString(values.amount) ?? "").trim();
 	const currencyRaw = (readString(values.currency) ?? "").trim().toUpperCase();
 	const rateRaw = (readString(values.ratePercent) ?? "").trim();
-	const capRaw = (readString(values.cap) ?? "").trim();
+	// `cap` is one of the four bounds behind the EDIT form's disclosure. On
+	// CREATE it is an ordinary visible field and `current.cap` is `""`, so both
+	// branches collapse to the plain field read this used to be.
+	const capRaw = submittedOr(
+		values,
+		"cap",
+		current.cap,
+		mode === "create" || limitsDisclosed(values),
+	);
 
 	if (type === "fixed_amount") {
 		if (rateRaw.length > 0 || capRaw.length > 0) {
@@ -1064,12 +1375,16 @@ interface SharedFields {
 
 type ParsedShared = { ok: true; fields: SharedFields } | { ok: false; message: string };
 
-/** Parse the type-independent fields (blank = unset/null on every one). Only
- *  the EDIT form authors these — the create form omits them entirely, so a
- *  freshly created coupon is valid immediately, forever, unlimited and
- *  unrestricted (§12.2). */
-function parseSharedFields(values: Record<string, unknown>): ParsedShared {
-	const minSubtotalRaw = (readString(values.minSubtotal) ?? "").trim();
+/** Parse the type-independent fields. Blank = unset/null on every one; ABSENT
+ *  = unchanged, from the carried current (see {@link submittedOr}). Only the
+ *  EDIT form authors these — the create form omits them entirely, so a freshly
+ *  created coupon is valid immediately, forever, unlimited and unrestricted
+ *  (§12.2). */
+function parseSharedFields(values: Record<string, unknown>, current: CurrentValues): ParsedShared {
+	// Three of the four gated bounds live here; the window fields above them are
+	// always visible, so only these read the disclosure.
+	const disclosed = limitsDisclosed(values);
+	const minSubtotalRaw = submittedOr(values, "minSubtotal", current.minSubtotal, disclosed);
 	let minSubtotalCents: number | null = null;
 	if (minSubtotalRaw.length > 0) {
 		minSubtotalCents = parseMinorUnitsInput(minSubtotalRaw, { allowZero: true });
@@ -1080,25 +1395,27 @@ function parseSharedFields(values: Record<string, unknown>): ParsedShared {
 			};
 		}
 	}
-	const startsAt = parseIsoInput(readString(values.startsAt) ?? "");
+	const startsAt = resolveBound(values, "startsAt", current.startsAt, "start");
 	if (startsAt.ok === false) {
-		return { ok: false, message: `Starts at ${ISO_HINT}` };
+		return { ok: false, message: `Starts at ${DATE_HINT}` };
 	}
-	const expiresAt = parseIsoInput(readString(values.expiresAt) ?? "");
+	const expiresAt = resolveBound(values, "expiresAt", current.expiresAt, "end");
 	if (expiresAt.ok === false) {
-		return { ok: false, message: `Expires at ${ISO_HINT}` };
+		return { ok: false, message: `Expires at ${DATE_HINT}` };
 	}
 	if (startsAt.value !== null && expiresAt.value !== null && startsAt.value >= expiresAt.value) {
-		return { ok: false, message: "Expires at must be after starts at." };
+		return { ok: false, message: "Expires at must be on or after starts at." };
 	}
-	const maxUses = parseCountInput(readString(values.maxUses) ?? "");
+	const maxUses = parseCountInput(submittedOr(values, "maxUses", current.maxUses, disclosed));
 	if (maxUses.ok === false) {
 		return {
 			ok: false,
 			message: "Max uses must be a whole number of 1 or more, or blank for unlimited.",
 		};
 	}
-	const maxUsesPerCustomer = parseCountInput(readString(values.maxUsesPerCustomer) ?? "");
+	const maxUsesPerCustomer = parseCountInput(
+		submittedOr(values, "maxUsesPerCustomer", current.maxUsesPerCustomer, disclosed),
+	);
 	if (maxUsesPerCustomer.ok === false) {
 		return {
 			ok: false,
@@ -1117,21 +1434,83 @@ function parseSharedFields(values: Record<string, unknown>): ParsedShared {
 	};
 }
 
-const ISO_HINT = "must be an ISO 8601 date or date-time like 2026-08-01 or 2026-08-01T00:00:00Z.";
+const DATE_HINT = "must be a date like 2026-08-01.";
+
+/** What a `date_input` submits: a DAY, not an instant. */
+const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
- * Parse a merchant-entered date bound. Blank ⇒ null (open bound). A parseable
- * value is NORMALIZED to full ISO-8601 UTC (`toISOString`) — load-bearing,
- * not cosmetic: the domain's `validateCoupon` compares the stored string
- * LEXICOGRAPHICALLY against an ISO-UTC `now`, so a non-ISO shape would
- * mis-order silently.
+ * A window bound, from whatever the form submitted plus the instant it carried.
+ * Four cases, in order:
+ *
+ *  - NEVER SUBMITTED ⇒ the carried instant, unchanged. A key that IS present
+ *    but is not a string is a different thing entirely and is REFUSED: the
+ *    operator gets a banner naming the field, never a save that silently
+ *    reports success while quietly meaning "unchanged".
+ *  - BLANK ⇒ `null`, no bound — the explicit unset.
+ *  - THE DAY THE CARRIED INSTANT ALREADY FALLS ON ⇒ that instant, BYTE FOR
+ *    BYTE. A `date_input` shows days, so re-submitting the day it was already
+ *    showing is not an edit, and an untouched save must never move a bound the
+ *    screen only ever displayed to day precision.
+ *  - ANY OTHER DAY ⇒ that day's own EDGE: a start OPENS at `00:00:00.000Z`, an
+ *    expiry CLOSES at `23:59:59.999Z`. Not cosmetic. The domain's window is
+ *    `[startsAt, expiresAt)` — the end bound is EXCLUSIVE (`validateCoupon`) —
+ *    so an expiry pinned to midnight would retire the code at the START of the
+ *    day the operator picked: a full day early, and a day earlier than this
+ *    screen's own `Valid` reading claims.
+ *
+ * PRESERVATION BEATS REPAIR, AND THAT HAS A COST WORTH NAMING. A record
+ * written before this change holds a midnight expiry, which under the exclusive
+ * end bound still retires the code at the start of its stated day. Re-saving
+ * the coupon untouched will NOT quietly repair it — the third case above sees
+ * the same day and keeps the same instant — so correcting a legacy bound takes
+ * a deliberate two-save dance: move the date off the day, save, move it back,
+ * save. That is the right trade: an untouched save silently rewriting a stored
+ * instant is exactly the class of surprise this leaf exists to remove, and a
+ * repair that only fires when the operator did nothing is indistinguishable
+ * from the data loss it would be if the heuristic were ever wrong.
+ *
+ * A full ISO datetime still parses and is still NORMALIZED to ISO-8601 UTC:
+ * the wire is untrusted, older records hold one, and `validateCoupon` compares
+ * these strings LEXICOGRAPHICALLY, so a non-ISO shape would mis-order silently.
  */
-function parseIsoInput(raw: string): { ok: true; value: string | null } | { ok: false } {
+function resolveBound(
+	values: Record<string, unknown>,
+	key: string,
+	current: string | null,
+	edge: "start" | "end",
+): { ok: true; value: string | null } | { ok: false } {
+	const raw = readString(values[key]);
+	if (raw === undefined) {
+		// Absent ⇒ unchanged. PRESENT-but-not-a-string ⇒ refuse: silently reading
+		// a `null`/number/array as "the operator changed nothing" would answer a
+		// question nobody asked, and on a full-replace form the operator has no
+		// way to tell that from a save that did what they meant.
+		return values[key] === undefined ? { ok: true, value: current } : { ok: false };
+	}
 	const trimmed = raw.trim();
 	if (trimmed.length === 0) return { ok: true, value: null };
+	if (current !== null && trimmed === current.slice(0, 10)) return { ok: true, value: current };
+	if (DAY_PATTERN.test(trimmed)) {
+		const at = `${trimmed}T${edge === "start" ? "00:00:00.000" : "23:59:59.999"}Z`;
+		// The shape is not the check. `2026-13-45` fails to parse at all, but
+		// `2026-02-30` PARSES — into 2 March — so a bare `Number.isNaN` guard
+		// would store a day that does not exist verbatim, and it would then sort
+		// after every real day in February. Only a string that survives
+		// `parse → toISOString` unchanged is a real, canonical instant.
+		return isCanonicalInstant(at) ? { ok: true, value: at } : { ok: false };
+	}
 	const t = Date.parse(trimmed);
 	if (Number.isNaN(t)) return { ok: false };
 	return { ok: true, value: new Date(t).toISOString() };
+}
+
+/** Whether `iso` survives `Date.parse` → `toISOString` unchanged — the only
+ *  test that distinguishes a real instant from a merely parseable one (see
+ *  {@link carriedInstant} and {@link resolveBound}). */
+function isCanonicalInstant(iso: string): boolean {
+	const t = Date.parse(iso);
+	return !Number.isNaN(t) && new Date(t).toISOString() === iso;
 }
 
 /** Parse a use-count bound. Blank ⇒ null (unlimited); else a whole number
@@ -1161,7 +1540,7 @@ function createCouponAction() {
 		if (type !== "fixed_amount" && type !== "percentage") {
 			return err("Choose a valid coupon type.");
 		}
-		const econ = parseEconomics(type, values, "create");
+		const econ = parseEconomics(type, values, "create", NO_CURRENT);
 		if (!econ.ok) return err(econ.message);
 		// The five shared axes have no field on this form (§12.2) — a freshly
 		// created coupon is valid immediately, forever, unlimited, unrestricted.
@@ -1219,9 +1598,13 @@ function saveCouponAction() {
 		}
 		const err = (description: string) =>
 			showLeaf([code], { variant: "error", title: "Coupon not saved", description });
-		const econ = parseEconomics(type, values, "edit");
+		// The coupon's current optional values, as the form itself carried them —
+		// the fallback that keeps a field which never reached this submit
+		// (a `condition`-hidden bound) at the value it was hiding.
+		const current = currentValues(carried);
+		const econ = parseEconomics(type, values, "edit", current);
 		if (!econ.ok) return err(econ.message);
-		const shared = parseSharedFields(values);
+		const shared = parseSharedFields(values, current);
 		if (!shared.ok) return err(shared.message);
 		// EVERY editable key, explicitly — the inactive type's economics as
 		// explicit nulls (they are inapplicable-null by construction; type is
