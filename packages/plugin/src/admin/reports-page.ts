@@ -12,7 +12,7 @@ import type {
 	StatItem,
 	TableBlock,
 } from "../types.js";
-import { carriedForm, failClosedResponse } from "./scaffold/index.js";
+import { carriedForm, decodeCarrier, failClosedResponse } from "./scaffold/index.js";
 import { INTERNAL_TOKEN_KEY } from "./settings-form.js";
 import {
 	type LowStockWire,
@@ -125,6 +125,10 @@ export interface ReportsPageInput {
 	 *  `from`/`to` above stay supported: they are the shape a `page_load` can
 	 *  carry. */
 	values?: unknown;
+	/** The originating form's `block_id`, echoed back on submit — the invisible
+	 *  channel the period form carries `interval` through (there is no visible
+	 *  field for it, and none is wanted). */
+	block_id?: unknown;
 }
 
 /**
@@ -148,16 +152,40 @@ interface ResolvedRange {
 	problem?: string;
 }
 
+/**
+ * The trailing-30-day default, built from WHOLE DAYS through the same
+ * {@link rangeFromDays} the form's own submit uses.
+ *
+ * It used to be instant-based (`now - 30d` → `now`), and every surface above it
+ * presents days: the subtitle said `1 Jul – 31 Jul 2026` while the query ran
+ * `…T17:54:33Z` to `…T17:54:33Z`, so re-submitting the untouched prefill —
+ * which resolves to whole days — returned DIFFERENT figures under an identical
+ * subtitle; the zero-fill drew a ~6-hour partial first day as a whole-day row
+ * that could read `$0.00`; and "last 30 days" spanned 31 day-rows. Whole days
+ * make the default and a hand-entered identical period the SAME query, and
+ * `DEFAULT_RANGE_DAYS` day-rows exactly (today counts as one of them).
+ */
 function defaultRange(problem?: string): ResolvedRange {
-	const to = new Date();
-	const from = new Date(to.getTime() - DEFAULT_RANGE_DAYS * DAY_MS);
+	const toDay = dayOf(new Date());
+	const fromDay = dayOf(
+		new Date(Date.parse(`${toDay}T00:00:00.000Z`) - (DEFAULT_RANGE_DAYS - 1) * DAY_MS),
+	);
 	return {
-		from: from.toISOString(),
-		to: to.toISOString(),
-		fromDay: dayOf(from),
-		toDay: dayOf(to),
+		...rangeFromDays(fromDay, toDay),
 		isDefault: true,
 		...(problem !== undefined ? { problem } : {}),
+	};
+}
+
+/** A day pair → the resolved instants, `from` at the start of its day and `to`
+ *  at the end of its. The ONE place a period becomes a query, so a default
+ *  period and a typed one can never resolve differently. */
+function rangeFromDays(fromDay: string, toDay: string): Omit<ResolvedRange, "isDefault"> {
+	return {
+		from: `${fromDay}T00:00:00.000Z`,
+		to: `${toDay}T23:59:59.999Z`,
+		fromDay,
+		toDay,
 	};
 }
 
@@ -228,17 +256,25 @@ function resolveRange(input: ReportsPageInput): ResolvedRange {
 			`A reporting period covers up to ${MAX_RANGE_DAYS} days. Choose a shorter one.`,
 		);
 	}
-	return {
-		from: from.toISOString(),
-		to: to.toISOString(),
-		fromDay: dayOf(from),
-		toDay: dayOf(to),
-		isDefault: false,
-	};
+	// Snapped to whole days, like the default: this screen has no surface that
+	// presents a time of day, so a period that carries one would be a window the
+	// operator can neither see nor reproduce.
+	return { ...rangeFromDays(dayOf(from), dayOf(to)), isDefault: false };
 }
 
+/**
+ * The bucket granularity, from the route input or — on a period submit, which
+ * carries no route input — from the form's own carrier.
+ *
+ * A `form_submit` replaces the whole interaction: without the carrier, changing
+ * the period on a weekly report silently dropped it back to daily, and nothing
+ * on screen said so. The form has no visible interval field (and wants none),
+ * so it rides in `block_id`, which is the one thing a form echoes back.
+ */
 function resolveInterval(input: ReportsPageInput): "day" | "week" | "month" {
-	return input.interval === "week" || input.interval === "month" ? input.interval : "day";
+	const carried = decodeCarrier(input.block_id)?.["interval"];
+	const raw = input.interval ?? carried;
+	return raw === "week" || raw === "month" ? raw : "day";
 }
 
 /** `1 Jul` / `1 Jul 2026` (UTC), through Intl so the console stays localizable
@@ -416,14 +452,21 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 	const ordersTile: StatItem = {
 		label: `Orders — ${period}`,
 		value: String(orderCount),
-		description: "Every status, including cancelled and failed",
+		// Names the paid subset, because Revenue ÷ Orders does NOT equal the AOV
+		// beside it: this count includes cancelled, failed and expired orders,
+		// which produce no revenue. Without the second number the two tiles read
+		// as an arithmetic error.
+		description: `Every status; ${paidOrderCount} paid`,
 	};
 	const aovTile = averageOrderValueTile(byCurrencyCode, singleCurrency, paidOrderCount, period);
 	const refundedTile = refundedTileFor(data.statuses, singleCurrency, period);
-	const items: StatItem[] = [...revenueTiles, ordersTile, aovTile, refundedTile].slice(
-		0,
-		MAX_STATS_ITEMS,
-	);
+	const allTiles: StatItem[] = [...revenueTiles, ordersTile, aovTile, refundedTile];
+	const items: StatItem[] = allTiles.slice(0, MAX_STATS_ITEMS);
+	// R-16's cap is four cards. A multi-currency window spends them on revenue it
+	// cannot combine into one figure, so the tiles that fall off the end are
+	// NAMED — a card that vanishes without a word is the same silence this
+	// increment exists to remove (DA-7).
+	const droppedTileNames = allTiles.slice(MAX_STATS_ITEMS).map((tile) => tileName(tile.label));
 
 	const topRevenueSuppressed = singleCurrency === undefined && data.top.length > 0;
 	const topRows = data.top.map((t) => ({
@@ -449,7 +492,8 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 	// month of steady sales and a month with a three-week hole render as the
 	// same four rows. A zero row is data — it is the shape a table can show
 	// without a chart.
-	const revenueRows = revenueSeries(data).map(({ day, currencyCode, revenueCents }) => ({
+	const series = revenueSeries(data);
+	const revenueRows = series.points.map(({ day, currencyCode, revenueCents }) => ({
 		bucketStart: day,
 		revenue: formatMoney(toCents(revenueCents), toCurrency(currencyCode), MONEY_LOCALE),
 	}));
@@ -473,9 +517,13 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 		// count was only ever restating the length of the range.
 		label: `Revenue by ${data.interval}`,
 		default_open: true, // S-3: the one open group on this screen
-		blocks: multiCurrency
-			? [{ type: "context", text: rankingGapNote }, revenueTable]
-			: [revenueTable],
+		blocks: [
+			...(multiCurrency ? [{ type: "context" as const, text: rankingGapNote }] : []),
+			// A sparse series is never left to look continuous: when the fill is
+			// declined the group says so, in one line, above the rows (DA-7).
+			...(series.filled ? [] : [{ type: "context" as const, text: SPARSE_SERIES_NOTE }]),
+			revenueTable,
+		],
 	};
 
 	const statusesTable: TableBlock = {
@@ -561,8 +609,16 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 			text: `${absolutePeriod(data.range)} (UTC) · Revenue is net order totals on paid-and-later orders, bucketed by order time.`,
 		},
 		...(data.range.problem !== undefined ? [rangeProblemBanner(data.range)] : []),
-		rangeForm(data.range),
+		rangeForm(data.range, data.interval),
 		{ type: "stats", items },
+		...(droppedTileNames.length > 0
+			? [
+					{
+						type: "context" as const,
+						text: `${listPhrase(droppedTileNames)} ${droppedTileNames.length === 1 ? "is" : "are"} not shown: the four cards are taken by one revenue card per currency.`,
+					},
+				]
+			: []),
 		revenueAccordion,
 		statusesAccordion,
 		topAccordion,
@@ -583,9 +639,12 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
  * whenever the rendered period does. Without it, a rejected range would fall
  * back to the default while the fields still showed the rejected dates.
  */
-function rangeForm(range: ResolvedRange): FormBlock {
+function rangeForm(range: ResolvedRange, interval: "day" | "week" | "month"): FormBlock {
 	return carriedForm({
 		namespace: "reports:range",
+		// The granularity the page is currently rendering, carried invisibly so a
+		// period change does not silently reset a weekly report to daily.
+		context: { interval },
 		form: {
 			type: "form",
 			fields: [
@@ -605,6 +664,19 @@ function rangeForm(range: ResolvedRange): FormBlock {
 			submit: { label: "Update period", action_id: REPORTS_RANGE_ACTION_ID },
 		},
 	});
+}
+
+/** A tile's name without its currency and period — `Refunded (USD) — last 30
+ *  days` → `Refunded` — for naming the cards that did not fit. */
+function tileName(label: string): string {
+	return (label.split("—")[0] ?? label).replace(/\s*\([^)]*\)\s*$/, "").trim();
+}
+
+/** `Orders, AOV and Refunded` — an English list. Kept here rather than in a
+ *  shared helper because this is its only caller. */
+function listPhrase(parts: readonly string[]): string {
+	if (parts.length <= 1) return parts[0] ?? "";
+	return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
 }
 
 /** An unusable range renders the page for the default period plus this — a 200
@@ -686,7 +758,7 @@ function refundedTileFor(
 	return {
 		label: `Refunded${singleCurrency === undefined ? "" : ` (${singleCurrency})`} — ${period}`,
 		value: "—",
-		description: `${known}; the amount needs a service change`,
+		description: `${known}; refunded amount not yet reported`,
 	};
 }
 
@@ -698,55 +770,81 @@ interface RevenuePoint {
 	revenueCents: number;
 }
 
+/** The rows, plus whether the gaps were actually filled — a sparse series must
+ *  never be presented as a continuous one. */
+interface RevenueSeries {
+	points: RevenuePoint[];
+	filled: boolean;
+}
+
 /**
- * The revenue series with its gaps filled in: every day of the period, for
- * every currency the period saw, in day-then-currency order.
- *
- * Only for `interval: "day"` — a week/month series would have to reproduce the
- * adapter's own bucket-start arithmetic to know which weeks are missing, and
- * inventing a bucket boundary that disagrees with the one the data was grouped
- * by is worse than the gap. Those intervals pass the wire's buckets through
- * unchanged. (Nothing in the UI selects an interval today; it arrives only as
- * route input.)
+ * The widest period whose day series is worth drawing row by row. A quarter of
+ * daily rows is already a long table; past that, the zero rows stop showing
+ * shape and start being the table. Beyond it the wire's own sparse series is
+ * rendered instead, with the omission stated.
  */
-function revenueSeries(data: ReportsData): RevenuePoint[] {
-	const passthrough = (): RevenuePoint[] =>
-		data.revenue.map((b) => ({
+const MAX_ZERO_FILL_DAYS = 92;
+
+/** Rendered under the group label whenever the fill was declined. Names the
+ *  omission, never the reasoning behind it. */
+const SPARSE_SERIES_NOTE = "Days with no revenue are omitted for this range.";
+
+/**
+ * The revenue series with its gaps filled in: every day of the period, in day
+ * order — but only when filling is both cheap and unambiguous.
+ *
+ * THREE CASES PASS THROUGH UNFILLED, each stated to the operator rather than
+ * silently drawn as continuous:
+ *  - `interval` week/month — filling would have to reproduce the adapter's own
+ *    bucket-start arithmetic to know which buckets are missing, and inventing a
+ *    boundary that disagrees with the one the data was grouped by is worse than
+ *    the gap. (Nothing in the UI selects an interval today.)
+ *  - a period longer than {@link MAX_ZERO_FILL_DAYS}.
+ *  - more than one currency in the window: a filled multi-currency series is a
+ *    day × currency cross product, so a quiet currency contributes a column of
+ *    `$0.00` rows that outnumber the real ones and read as activity that never
+ *    happened.
+ */
+function revenueSeries(data: ReportsData): RevenueSeries {
+	const passthrough = (filled: boolean): RevenueSeries => ({
+		points: data.revenue.map((b) => ({
 			day: b.bucketStart.slice(0, 10),
 			currencyCode: b.currency,
 			revenueCents: b.revenueCents,
-		}));
-	if (data.interval !== "day" || data.revenue.length === 0) return passthrough();
+		})),
+		filled,
+	});
+	// An empty window has no gaps to fill and no rows to mislead anyone: the
+	// table's own `empty_text` covers it, so it is "filled" as far as the
+	// disclosure is concerned.
+	if (data.revenue.length === 0) return passthrough(true);
+	if (data.interval !== "day") return passthrough(false);
 
-	const byDayAndCurrency = new Map<string, number>();
+	const byDay = new Map<string, number>();
 	const currencies = new Set<string>();
 	for (const b of data.revenue) {
-		const day = b.bucketStart.slice(0, 10);
 		currencies.add(b.currency);
-		const key = `${day}|${b.currency}`;
-		byDayAndCurrency.set(key, (byDayAndCurrency.get(key) ?? 0) + b.revenueCents);
+		const day = b.bucketStart.slice(0, 10);
+		byDay.set(day, (byDay.get(day) ?? 0) + b.revenueCents);
 	}
-	const codes = [...currencies].toSorted((a, b) => a.localeCompare(b));
+	const currencyCode = currencies.size === 1 ? [...currencies][0] : undefined;
+	if (currencyCode === undefined) return passthrough(false);
+
 	const days = daysBetween(data.range.fromDay, data.range.toDay);
-	// A range wider than the service's own cap cannot reach here (resolveRange
-	// falls back to the default first), so this is bounded — but a data day
-	// outside the requested window would still be dropped by a strict fill, so
-	// fall back rather than lose a row.
+	// A data day outside the requested window would be dropped by a strict fill,
+	// so fall back rather than lose a row.
 	const daySet = new Set(days);
-	if (days.length === 0 || data.revenue.some((b) => !daySet.has(b.bucketStart.slice(0, 10)))) {
-		return passthrough();
+	if (
+		days.length === 0 ||
+		days.length > MAX_ZERO_FILL_DAYS ||
+		data.revenue.some((b) => !daySet.has(b.bucketStart.slice(0, 10)))
+	) {
+		return passthrough(false);
 	}
-	const out: RevenuePoint[] = [];
-	for (const day of days) {
-		for (const currencyCode of codes) {
-			out.push({
-				day,
-				currencyCode,
-				revenueCents: byDayAndCurrency.get(`${day}|${currencyCode}`) ?? 0,
-			});
-		}
-	}
-	return out;
+	return {
+		points: days.map((day) => ({ day, currencyCode, revenueCents: byDay.get(day) ?? 0 })),
+		filled: true,
+	};
 }
 
 /** Every `YYYY-MM-DD` from `fromDay` to `toDay` inclusive (UTC). */

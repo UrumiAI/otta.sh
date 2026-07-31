@@ -87,6 +87,17 @@ function reportsResponder(req: { url: string }): { status: number; body: unknown
  *  inside it and 12 Jul is the zero day. */
 const RANGE = { from: "2026-07-10", to: "2026-07-12" } as const;
 
+/** The `YYYY-MM-DD` (UTC) `n` days before `day`. */
+function dayBefore(day: string, n: number): string {
+	return new Date(Date.parse(`${day}T00:00:00.000Z`) - n * 86_400_000).toISOString().slice(0, 10);
+}
+
+/** The query string of the first `/reports/revenue` request the stub recorded. */
+function revenueQuery(requests: ReadonlyArray<{ url: string }>): URLSearchParams {
+	const url = requests.map((r) => r.url).find((u) => u.startsWith("/reports/revenue")) ?? "";
+	return new URLSearchParams(url.split("?")[1] ?? "");
+}
+
 /** The stats block's items, in render order. */
 function statItems(blocks: readonly LooseBlock[]): Array<Record<string, unknown>> {
 	const stats = findBlocks(blocks, "stats")[0] as { items?: Array<Record<string, unknown>> };
@@ -212,6 +223,10 @@ describe("Reports admin page (workerd sandbox)", () => {
 		// Money is pre-formatted through formatMoney; the order count is a count.
 		expect(items[0]?.value).toBe("$85.00");
 		expect(items[1]?.value).toBe("3");
+		// Orders counts EVERY status, so Revenue ÷ Orders does not equal the AOV
+		// beside it — the tile names the paid subset so that reads as two
+		// different questions rather than as an arithmetic error.
+		expect(items[1]?.description).toBe("Every status; 3 paid");
 		// 8500 over the 3 `paid` orders the stub reports.
 		expect(items[2]?.value).toBe("$28.33");
 		expect(items[2]?.description).toBe("Average order value across 3 paid orders");
@@ -220,7 +235,7 @@ describe("Reports admin page (workerd sandbox)", () => {
 		// only). It renders as a stated gap — never as $0.00, and never quietly
 		// relabelled as the count so the tile looks full.
 		expect(items[3]?.value).toBe("—");
-		expect(String(items[3]?.description)).toMatch(/needs a service change/);
+		expect(String(items[3]?.description)).toMatch(/refunded amount not yet reported/);
 	});
 
 	test("AOV renders an em-dash, never $0.00, when there are no orders to average", async () => {
@@ -406,6 +421,107 @@ describe("Reports admin page (workerd sandbox)", () => {
 				(b) => b.type === "context" && /more than one currency/.test(String(b.text)),
 			),
 		).toBe(false);
+	});
+
+	test("the DEFAULT period is whole days: exact query bounds, 30 day-rows, and re-submitting the untouched prefill asks the identical question", async () => {
+		const today = new Date().toISOString().slice(0, 10);
+		const first = dayBefore(today, 29);
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", (req) =>
+			req.url.startsWith("/reports/revenue")
+				? {
+						status: 200,
+						// Dated TODAY, so this test is not a function of the day it runs on.
+						body: {
+							ok: true,
+							buckets: [
+								{ bucketStart: `${today}T00:00:00.000Z`, currency: "USD", revenueCents: 3000 },
+							],
+						},
+					}
+				: reportsResponder(req),
+		);
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+		await seedAdminToken(sandbox, stub);
+
+		const outcome = await sandbox.invokeRoute("admin", { type: "page_load", page: "/reports" });
+		const blocks = blocksOf(outcome);
+		assertBlockContract(blocks, { screen: "reports", level: "list" });
+
+		// The default used to be instant-based (`now - 30d` → `now`) while every
+		// surface above it presents whole days — so the subtitle said "1 Jul – 31
+		// Jul" while the query ran mid-afternoon to mid-afternoon, the first row
+		// was a partial day drawn as a whole one, and "last 30 days" spanned 31
+		// rows. Nothing pinned the bounds, which is why the gate stayed green.
+		const query = revenueQuery(stub.requests);
+		expect(query.get("from")).toBe(`${first}T00:00:00.000Z`);
+		expect(query.get("to")).toBe(`${today}T23:59:59.999Z`);
+		// "last 30 days" is exactly 30 day-rows, today included.
+		const rows = (tableWithId(blocks, "reports:revenue-table")?.rows ?? []) as Array<
+			Record<string, unknown>
+		>;
+		expect(rows).toHaveLength(30);
+		expect(rows[0]?.bucketStart).toBe(first);
+		expect(rows[29]?.bucketStart).toBe(today);
+
+		// The prefill IS the default period: submitting it untouched must ask the
+		// service the identical question, or the same screen would answer
+		// differently under an unchanged subtitle.
+		const form = formFor(blocks, "reports:apply-range");
+		stub.requests.length = 0;
+		const resubmitted = blocksOf(
+			await sandbox.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "reports:apply-range",
+				block_id: form?.block_id,
+				values: {
+					from: field(form, "from")?.initial_value,
+					to: field(form, "to")?.initial_value,
+				},
+			}),
+		);
+		const resubmittedQuery = revenueQuery(stub.requests);
+		expect(resubmittedQuery.get("from")).toBe(query.get("from"));
+		expect(resubmittedQuery.get("to")).toBe(query.get("to"));
+		expect(contextTexts(resubmitted)[0]).toBe(contextTexts(blocks)[0]);
+	});
+
+	test("a period submit keeps the bucket interval it was rendered with", async () => {
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", reportsResponder);
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+		await seedAdminToken(sandbox, stub);
+
+		const weekly = blocksOf(
+			await sandbox.invokeRoute("admin", {
+				type: "page_load",
+				page: "/reports",
+				interval: "week",
+			}),
+		);
+		expect(String(group(weekly, "reports:revenue")?.label)).toBe("Revenue by week");
+
+		// A form_submit replaces the whole interaction and carries no route input,
+		// so without the carrier a period change silently reset a weekly report to
+		// daily — with nothing on screen saying so.
+		stub.requests.length = 0;
+		const submitted = blocksOf(
+			await sandbox.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "reports:apply-range",
+				block_id: formFor(weekly, "reports:apply-range")?.block_id,
+				values: { from: "2026-07-10", to: "2026-07-12" },
+			}),
+		);
+		assertBlockContract(submitted, { screen: "reports", level: "list" });
+		expect(String(group(submitted, "reports:revenue")?.label)).toBe("Revenue by week");
+		expect(revenueQuery(stub.requests).get("interval")).toBe("week");
 	});
 
 	test("the subtitle states the active period in absolute dates, and the From/To form prefills it", async () => {
@@ -602,6 +718,103 @@ describe("Reports admin page (workerd sandbox)", () => {
 		// A continuous table is the answer here, not a chart: the renderer strips
 		// the formatter a money axis would need (§1.2).
 		expect(findBlocks(blocks, "chart")).toHaveLength(0);
+		// The fill happened, so the group makes no claim about omitted days.
+		expect(groupBlocks(blocks, "reports:revenue").map((b) => b.text)).not.toContain(
+			"Days with no revenue are omitted for this range.",
+		);
+	});
+
+	test("zero-fill stops at 92 days, and the group says so when the series is left sparse", async () => {
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", reportsResponder);
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+		await seedAdminToken(sandbox, stub);
+
+		const sparseNote = "Days with no revenue are omitted for this range.";
+		const render = async (from: string, to: string) => {
+			const blocks = blocksOf(
+				await sandbox!.invokeRoute("admin", { type: "page_load", page: "/reports", from, to }),
+			);
+			assertBlockContract(blocks, { screen: "reports", level: "list" });
+			return {
+				rows: (tableWithId(blocks, "reports:revenue-table")?.rows ?? []) as Array<
+					Record<string, unknown>
+				>,
+				notes: groupBlocks(blocks, "reports:revenue").map((b) => String(b.text)),
+			};
+		};
+
+		// 1 May – 31 Jul is exactly 92 days: still filled, still one row per day.
+		const at92 = await render("2026-05-01", "2026-07-31");
+		expect(at92.rows).toHaveLength(92);
+		expect(at92.notes).not.toContain(sparseNote);
+
+		// One day more and the zero rows would BE the table rather than show its
+		// shape — so the wire's own sparse series renders, and the omission is
+		// stated rather than left to look continuous.
+		const at93 = await render("2026-04-30", "2026-07-31");
+		expect(at93.rows.map((r) => r.bucketStart)).toEqual(["2026-07-10", "2026-07-11"]);
+		expect(at93.notes).toContain(sparseNote);
+	});
+
+	test("a multi-currency window is left sparse and states it, and the tiles that do not fit are named", async () => {
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", (req) =>
+			req.url.startsWith("/reports/revenue")
+				? {
+						status: 200,
+						body: {
+							ok: true,
+							buckets: [
+								{ bucketStart: "2026-07-10T00:00:00.000Z", currency: "USD", revenueCents: 3000 },
+								{ bucketStart: "2026-07-10T00:00:00.000Z", currency: "EUR", revenueCents: 1000 },
+							],
+						},
+					}
+				: reportsResponder(req),
+		);
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+		await seedAdminToken(sandbox, stub);
+
+		const blocks = blocksOf(
+			await sandbox.invokeRoute("admin", {
+				type: "page_load",
+				page: "/reports",
+				from: "2026-07-10",
+				to: "2026-07-12",
+			}),
+		);
+		assertBlockContract(blocks, { screen: "reports", level: "list" });
+
+		// Filling a multi-currency window is a day × currency cross product: a
+		// quiet currency would contribute more $0.00 rows than there are real
+		// ones, reading as activity that never happened. Sparse, and said.
+		const rows = (tableWithId(blocks, "reports:revenue-table")?.rows ?? []) as Array<
+			Record<string, unknown>
+		>;
+		expect(rows).toHaveLength(2);
+		expect(groupBlocks(blocks, "reports:revenue").map((b) => String(b.text))).toContain(
+			"Days with no revenue are omitted for this range.",
+		);
+
+		// Two revenue cards + Orders fill R-16's four, so Refunded falls off the
+		// end — and a card that vanishes without a word is the silence this
+		// increment exists to remove. Tile ORDER is unchanged.
+		expect(statItems(blocks).map((i) => String(i.label).split(" —")[0])).toEqual([
+			"Revenue (EUR)",
+			"Revenue (USD)",
+			"Orders",
+			"AOV",
+		]);
+		expect(contextTexts(blocks)).toContain(
+			"Refunded is not shown: the four cards are taken by one revenue card per currency.",
+		);
 	});
 
 	test("Reports page manifest declares only content:read + network:request, no storage/kv/db capability", () => {
