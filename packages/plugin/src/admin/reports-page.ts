@@ -12,7 +12,16 @@ import type {
 	StatItem,
 	TableBlock,
 } from "../types.js";
-import { carriedForm, decodeCarrier, failClosedResponse } from "./scaffold/index.js";
+import {
+	carriedForm,
+	dayOf,
+	DAY_MS,
+	decodeCarrier,
+	endOfDay,
+	failClosedResponse,
+	formatDay,
+	startOfDay,
+} from "./scaffold/index.js";
 import { INTERNAL_TOKEN_KEY } from "./settings-form.js";
 import {
 	type LowStockWire,
@@ -56,8 +65,6 @@ const MAX_RANGE_DAYS = 400;
 /** R-16 caps a `stats` block at 4 items. */
 const MAX_STATS_ITEMS = 4;
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-
 /**
  * The order states the SERVICE counts as revenue (`REVENUE_COUNTING_STATES` in
  * the domain's reporting port: payment confirmed and not reversed). Mirrored
@@ -79,10 +86,6 @@ const REVENUE_COUNTING_STATES: ReadonlySet<string> = new Set([
 	"completed",
 ]);
 
-/** Day-first date rendering (`1 Jul 2026`), so a range reads as
- *  `1 Jul – 31 Jul 2026` rather than `Jul 1 – Jul 31, 2026`. Localization comes
- *  from Intl, never from hand-assembled month names (G6). */
-const DATE_LOCALE = "en-GB";
 const MONEY_LOCALE = "en-US";
 
 /**
@@ -168,7 +171,7 @@ interface ResolvedRange {
 function defaultRange(problem?: string): ResolvedRange {
 	const toDay = dayOf(new Date());
 	const fromDay = dayOf(
-		new Date(Date.parse(`${toDay}T00:00:00.000Z`) - (DEFAULT_RANGE_DAYS - 1) * DAY_MS),
+		new Date(Date.parse(startOfDay(toDay)) - (DEFAULT_RANGE_DAYS - 1) * DAY_MS),
 	);
 	return {
 		...rangeFromDays(fromDay, toDay),
@@ -181,25 +184,8 @@ function defaultRange(problem?: string): ResolvedRange {
  *  at the end of its. The ONE place a period becomes a query, so a default
  *  period and a typed one can never resolve differently. */
 function rangeFromDays(fromDay: string, toDay: string): Omit<ResolvedRange, "isDefault"> {
-	return {
-		from: `${fromDay}T00:00:00.000Z`,
-		to: `${toDay}T23:59:59.999Z`,
-		fromDay,
-		toDay,
-	};
+	return { from: startOfDay(fromDay), to: endOfDay(toDay), fromDay, toDay };
 }
-
-/** The `YYYY-MM-DD` (UTC) a moment falls on.
- *
- *  TWIN: `orders-page.ts`'s `dayOf`/`startOfDay`/`endOfDay` say the same three
- *  things — the two screens now share ONE date-bounds convention (whole days,
- *  both ends inclusive) and each keeps a private copy. The shared timestamp
- *  formatter increment is where both should land. */
-function dayOf(at: Date): string {
-	return at.toISOString().slice(0, 10);
-}
-
-const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
  * A submitted bound → an instant. A `date_input` yields `YYYY-MM-DD`, which is
@@ -211,10 +197,7 @@ const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 function parseBound(value: string, edge: "from" | "to"): Date | undefined {
 	const trimmed = value.trim();
 	if (trimmed.length === 0) return undefined;
-	const raw = DAY_PATTERN.test(trimmed)
-		? `${trimmed}${edge === "from" ? "T00:00:00.000Z" : "T23:59:59.999Z"}`
-		: trimmed;
-	const at = new Date(raw);
+	const at = new Date(edge === "from" ? startOfDay(trimmed) : endOfDay(trimmed));
 	return Number.isNaN(at.getTime()) ? undefined : at;
 }
 
@@ -296,18 +279,6 @@ function resolveInterval(input: ReportsPageInput): "day" | "week" | "month" {
 	const carried = decodeCarrier(input.block_id)?.["interval"];
 	const raw = input.interval ?? carried;
 	return raw === "week" || raw === "month" ? raw : "day";
-}
-
-/** `1 Jul` / `1 Jul 2026` (UTC), through Intl so the console stays localizable
- *  and RTL-safe (G6). */
-function formatDay(day: string, withYear: boolean): string {
-	const at = new Date(`${day}T00:00:00.000Z`);
-	return new Intl.DateTimeFormat(DATE_LOCALE, {
-		timeZone: "UTC",
-		day: "numeric",
-		month: "short",
-		...(withYear ? { year: "numeric" as const } : {}),
-	}).format(at);
 }
 
 /** The period in ABSOLUTE dates — `1 Jul – 31 Jul 2026`. The year is stated

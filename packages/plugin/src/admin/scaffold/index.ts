@@ -37,10 +37,34 @@
  *     opaque id renders as a git-style shortest-unique prefix, never in full in
  *     a list row. Every screen showing a uuid uses these two, so the prefix an
  *     operator learns on one surface means the same thing on the next.
+ *   - `formatTimestamp(...)` / `formatDate(...)` / `formatDay(...)`, plus the
+ *     day-bounds helpers (`dayOf`, `startOfDay`, `endOfDay`) — the console's ONE
+ *     date dialect. Nothing renders a raw wire timestamp, and list and detail
+ *     state the same field in the same words.
  */
 
 export { NAV_VERBS, screenActions, type ScreenActions } from "./actions.js";
 export { failClosedResponse, noticeBanner, type FailClosedOptions, type Notice } from "./banner.js";
+// `DATE_LOCALE` is deliberately NOT re-exported: it is the module's own knob,
+// not a screen's, and a screen reaching for it would be building a second
+// formatter — the exact thing this module exists to stop. Import it from
+// `./datetime.js` directly if you are testing the dialect itself.
+//
+// `DAY_PATTERN` HAS NO CALLER TODAY — `startOfDay`/`endOfDay` closed over the
+// last two. It stays exported because "is this a bare calendar day?" is a
+// question the screens with date filters keep asking (Coupons still carries its
+// own copy, pending its conversion), and a third private regex is what this
+// module was created to prevent.
+export {
+	dayOf,
+	endOfDay,
+	formatDate,
+	formatDay,
+	formatTimestamp,
+	startOfDay,
+	DAY_MS,
+	DAY_PATTERN,
+} from "./datetime.js";
 export {
 	carriedFields,
 	carriedForm,

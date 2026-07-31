@@ -1,10 +1,11 @@
 import { plugin } from "@otta-sh/plugin";
 import { afterEach, describe, expect, test } from "vitest";
-import { assertBlockContract } from "./helpers/block-contract.js";
+import { assertBlockContract, assertNoRawTimestamps } from "./helpers/block-contract.js";
 import {
 	blocksOf,
 	confirmOf,
 	field,
+	fieldEntries,
 	fieldIds,
 	findBlock,
 	findBlocks,
@@ -547,6 +548,7 @@ describe("admin Products console — list (workerd sandbox)", () => {
 		const outcome = await sandbox!.invokeRoute("admin", { type: "page_load", page: "/products" });
 		const blocks = blocksOf(outcome);
 		assertBlockContract(blocks, { screen: "products", level: "list" });
+		assertNoRawTimestamps(blocks);
 
 		expect(findBlocks(blocks, "header").some((b) => b.text === "Pricing & inventory")).toBe(true);
 		const pageContext = blocks.find((b) => b.type === "context");
@@ -714,6 +716,7 @@ describe("admin Products console — list (workerd sandbox)", () => {
 		const outcome = await sandbox.invokeRoute("admin", { type: "page_load", page: "/products" });
 		const blocks = blocksOf(outcome);
 		assertBlockContract(blocks, { screen: "products", level: "list" });
+		assertNoRawTimestamps(blocks);
 		expect(findBlocks(blocks, "table").length).toBe(0);
 		const empty = findBlock(blocks, "empty");
 		expect(empty?.title).toBe("No products yet");
@@ -751,6 +754,7 @@ describe("admin Products console — stock column + low-stock filter (workerd sa
 		});
 		const blocks = blocksOf(outcome);
 		assertBlockContract(blocks, { screen: "products", level: "list" });
+		assertNoRawTimestamps(blocks);
 		return blocks;
 	}
 
@@ -837,6 +841,7 @@ describe("admin Products console — stock column + low-stock filter (workerd sa
 		});
 		const page2 = blocksOf(outcome);
 		assertBlockContract(page2, { screen: "products", level: "list" });
+		assertNoRawTimestamps(page2);
 		// Page 2 holds a 42 and a 3; only the low one survives the carried filter.
 		expect(cells(page2, "title")).toEqual(["Low Widget"]);
 		expect(field(formFor(page2, "products:apply-filter"), "lowStock")?.initial_value).toBe(true);
@@ -1014,6 +1019,7 @@ describe("admin Products console — stock column + low-stock filter (workerd sa
 		});
 		const page2 = blocksOf(outcome);
 		assertBlockContract(page2, { screen: "products", level: "list" });
+		assertNoRawTimestamps(page2);
 		expect(findBlocks(page2, "table").length).toBe(1);
 	});
 
@@ -1066,10 +1072,21 @@ describe("admin Products console — detail shell (workerd sandbox)", () => {
 		return state;
 	}
 
+	test("INC-13: `Created`/`Updated` render in the console's dialect, and the labels carry no `(UTC)` suffix", async () => {
+		await boot();
+		const entries = fieldEntries(await openProduct(sandbox!, "prod-1"));
+		// The zone moved OUT of the label and INTO the value, which is the whole
+		// point: the operator reads one string, not a label they have to apply.
+		expect(entries).toContain("Created=12 Jul 2026, 00:00 UTC");
+		expect(entries).toContain("Updated=12 Jul 2026, 01:00 UTC");
+		expect(entries.some((e) => e.includes("(UTC)="))).toBe(false);
+	});
+
 	test("open product → header is the title, back button present, panel set is EXACTLY [Product, Stock] at tab 0", async () => {
 		await boot();
 		const blocks = await openProduct(sandbox!, "prod-1");
 		assertBlockContract(blocks, { screen: "products", level: "detail" });
+		assertNoRawTimestamps(blocks);
 		expect(findBlocks(blocks, "header").some((b) => b.text === "Blue Widget")).toBe(true);
 		const allButtons = findBlocks(blocks, "actions").flatMap(
 			(a) => (a.elements as Array<Record<string, unknown>>) ?? [],
@@ -1185,6 +1202,7 @@ describe("admin Products console — detail shell (workerd sandbox)", () => {
 		const entriesFor = async (): Promise<Map<string, string>> => {
 			const blocks = await openProduct(sandbox!, "prod-1");
 			assertBlockContract(blocks, { screen: "products", level: "detail" });
+			assertNoRawTimestamps(blocks);
 			const rows = findBlocks(blocks, "fields").flatMap(
 				(f) => (f.fields as Array<{ label: string; value: string }>) ?? [],
 			);
@@ -1269,10 +1287,22 @@ describe("admin Products console — tombstoned product (workerd sandbox)", () =
 		await seedToken(sandbox, stub, "admin-token-xyz");
 	}
 
+	test("INC-13: the tombstone banner states its date in the console's dialect, not as a wire value", async () => {
+		await boot();
+		const blocks = await openProduct(sandbox!, "prod-deleted");
+		// The one place on this screen where a timestamp is composed into a
+		// SENTENCE. Locale-correct; the composition seam is NOT bidi-isolated, and
+		// `scaffold/datetime.ts` says so rather than the test implying otherwise.
+		expect(String(findBlock(blocks, "banner")?.description)).toContain(
+			"Deleted on 13 Jul 2026, 01:00 UTC.",
+		);
+	});
+
 	test("a soft-deleted product renders BOTH panels (D-3) — each with the tombstone line, no edit or stock forms", async () => {
 		await boot();
 		const blocks = await openProduct(sandbox!, "prod-deleted");
 		assertBlockContract(blocks, { screen: "products", level: "detail" });
+		assertNoRawTimestamps(blocks);
 
 		const banner = findBlock(blocks, "banner");
 		expect(banner).toBeDefined();
@@ -1322,6 +1352,7 @@ describe("admin Products console — SKU-less product (workerd sandbox)", () => 
 		await seedToken(sandbox, stub, "admin-token-xyz");
 		const blocks = await openProduct(sandbox, "prod-unpriced");
 		assertBlockContract(blocks, { screen: "products", level: "detail" });
+		assertNoRawTimestamps(blocks);
 
 		const stockPanelBlocks = panel(blocks, "Stock");
 		expect(findBlocks(stockPanelBlocks, "accordion").length).toBe(0);
@@ -1806,6 +1837,7 @@ describe("admin Products console — remove stock (DA-3/DA-5, workerd sandbox)",
 		});
 		const staged = blocksOf(outcome);
 		assertBlockContract(staged, { screen: "products", level: "detail" });
+		assertNoRawTimestamps(staged);
 
 		expect(group(staged, "products:prod-1:remove")).toBeUndefined(); // idle id gone
 		const reviewGroup = group(staged, "products:prod-1:remove:review");
@@ -1840,6 +1872,7 @@ describe("admin Products console — remove stock (DA-3/DA-5, workerd sandbox)",
 		});
 		const refused = blocksOf(outcome);
 		assertBlockContract(refused, { screen: "products", level: "detail" });
+		assertNoRawTimestamps(refused);
 
 		expect(group(refused, "products:prod-1:remove")).toBeUndefined();
 		expect(group(refused, "products:prod-1:remove:review")).toBeUndefined();
