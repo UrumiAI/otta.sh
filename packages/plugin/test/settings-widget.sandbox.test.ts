@@ -673,11 +673,163 @@ describe("Settings admin form (workerd sandbox)", () => {
 		);
 
 		// SECURITY PIN (the whole point of stating a BOOLEAN): "token set" is a
-		// fact ABOUT the credential. No part of either token value appears in the
-		// response that reports it as set — labels included.
-		const wholeResponse = JSON.stringify(reloaded);
-		expect(wholeResponse).not.toContain("qa-local-admin-token");
-		expect(wholeResponse).not.toContain("qa-local-service-token");
+		// fact ABOUT the credential. No part of either token value appears in any
+		// of these responses — labels included, and the SAVE responses included.
+		// The save responses matter most: they are the first ones to carry the
+		// changed label, they are the only ones whose handler had the plaintext in
+		// scope at render time, and the plain (unmasked) field is what put that
+		// plaintext one submit away from the response body.
+		for (const response of [savedAdmin, savedService, reloaded, named]) {
+			const wholeResponse = JSON.stringify(response);
+			expect(wholeResponse).not.toContain("qa-local-admin-token");
+			expect(wholeResponse).not.toContain("qa-local-service-token");
+		}
+	});
+
+	test("INC-15: the groups are still ALL closed on a response whose token form remounted — a churned form block_id does not open its group", async () => {
+		await bootWithSettings(15, 5);
+		const saved = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-token",
+				values: { internalToken: "qa-local-admin-token" },
+			}),
+		);
+		assertBlockContract(saved, { screen: "settings", level: "list" });
+		// INC-09's post-save clear changes the FORM's carrier block_id inside the
+		// group; the GROUP's own block_id and default_open must not follow it.
+		expect(openGroupIds(saved)).toEqual([]);
+		expect([...groupLabels(saved).keys()]).toEqual([
+			"settings:store",
+			"settings:checkout",
+			"settings:connection",
+		]);
+	});
+
+	test("INC-15: a BLANK token submit gets an honest receipt — it never says 'saved' beside a label that says 'not set' (A-F3)", async () => {
+		await bootWithSettings(15, 5);
+		const blank = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-token",
+			values: { internalToken: "" },
+		});
+		const blocks = blocksOf(blank);
+		assertBlockContract(blocks, { screen: "settings", level: "list" });
+
+		// Nothing was persisted, so the label still says the token is not set…
+		expect(groupLabels(blocks).get("settings:connection")).toBe(
+			"Service connection — token not set · service token not set",
+		);
+		// …and the receipt agrees with it instead of contradicting it.
+		const banner = findBlocks(blocks, "banner")[0];
+		expect(String(banner?.title)).toBe("Nothing entered — admin token unchanged");
+		expect(String(banner?.title)).not.toMatch(/saved/i);
+		expect(
+			(blank as { result: { toast?: { message?: string; type?: string } } }).result.toast,
+		).toEqual({ message: "Admin token unchanged", type: "info" });
+
+		// The blank path still keeps the STORED token (that is why it exists): save
+		// one, submit blank, and the label — and the receipt — say so.
+		await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-token",
+			values: { internalToken: "qa-local-admin-token" },
+		});
+		const afterBlank = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-token",
+			values: { internalToken: "" },
+		});
+		const afterBlankBlocks = blocksOf(afterBlank);
+		expect(groupLabels(afterBlankBlocks).get("settings:connection")).toBe(
+			"Service connection — token set · service token not set",
+		);
+		expect(String(findBlocks(afterBlankBlocks, "banner")[0]?.title)).toBe(
+			"Nothing entered — admin token unchanged",
+		);
+		expect(JSON.stringify(afterBlankBlocks)).not.toContain("qa-local-admin-token");
+	});
+
+	test("INC-15: a blank SERVICE token submit gets the same honest receipt", async () => {
+		await bootWithSettings(15, 5);
+		const blank = await sandbox!.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-service-token",
+			values: { serviceToken: "" },
+		});
+		const blocks = blocksOf(blank);
+		assertBlockContract(blocks, { screen: "settings", level: "list" });
+		expect(String(findBlocks(blocks, "banner")[0]?.title)).toBe(
+			"Nothing entered — service token unchanged",
+		);
+		expect(
+			(blank as { result: { toast?: { message?: string; type?: string } } }).result.toast,
+		).toEqual({ message: "Service token unchanged", type: "info" });
+	});
+
+	test("INC-15: a REJECTED save leaves the LABEL on the stored values while the FORM keeps the attempted ones (J6)", async () => {
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", () => ({
+			status: 200,
+			body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } },
+		}));
+		stub.respondWith("PUT", () => ({
+			status: 400,
+			body: { ok: false, error: "holdTtlMinutes must be between 1 and 1440" },
+		}));
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+
+		const rejected = blocksOf(
+			await sandbox.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-operational",
+				values: { holdTtlMinutes: "99999", lowStockThreshold: "5" },
+				idempotencyKey: "k-inc15-rejected",
+			}),
+		);
+		assertBlockContract(rejected, { screen: "settings", level: "list" });
+
+		// The LABEL is the one thing on this screen that reads as persisted state:
+		// 99999 was refused, so a collapsed group claiming "99999 min hold" would
+		// be reporting a value the service does not hold.
+		expect(groupLabels(rejected).get("settings:checkout")).toBe(
+			"Checkout & holds — 15 min hold · low stock at 5",
+		);
+		// The FORM still carries the attempted value, so it can be corrected (J6).
+		expect(field(formFor(rejected, "save-operational"), "holdTtlMinutes")?.initial_value).toBe(
+			"99999",
+		);
+		expect(findBlocks(rejected, "banner").some((b) => b.variant === "error")).toBe(true);
+	});
+
+	test("INC-15: the one operator-supplied value on this screen cannot blow the label budget — a 200-char display name truncates, inside 60 (X-11)", async () => {
+		await bootWithSettings(15, 5);
+		// `save-display` trims, so the fixture must not end in whitespace — the
+		// label assertion below is about truncation, not about trimming.
+		const longName = "Sea Salt & Cedar Supply Company of the Pacific Northwest"
+			.repeat(4)
+			.slice(0, 200)
+			.trimEnd();
+		const blocks = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-display",
+				values: { storeDisplayName: longName },
+			}),
+		);
+		assertBlockContract(blocks, { screen: "settings", level: "list" });
+
+		const label = String(groupLabels(blocks).get("settings:store"));
+		expect(label.length).toBe(60);
+		expect(label.startsWith("Store — Sea Salt & Cedar Supply")).toBe(true);
+		expect(label.endsWith("…")).toBe(true);
+		// The form still prefills the WHOLE name — only the label is shortened.
+		expect(field(formFor(blocks, "save-display"), "storeDisplayName")?.initial_value).toBe(
+			longName,
+		);
 	});
 
 	test("INC-15: a label change NEVER changes a group's block_id — the labels move, the accordions do not remount (§1.2)", async () => {

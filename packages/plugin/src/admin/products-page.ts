@@ -879,22 +879,32 @@ function detailBlocks(
 		});
 	}
 	// The identity strip: "what am I looking at, and is it healthy" without a
-	// click. `Status` is CMS-owned (F-2b, X-52) — read-only, and the LABEL names
-	// the owner.
+	// click. FOUR entries in 2 row-major PAIRS — §4's block 5 is "the identity
+	// strip — 4 or 6 entries, row-major pairs" (`docs/admin/ADMIN-CONSOLE.md:611`)
+	// and D-1a (`:619`) caps THIS block at 4 or 6 while requiring every nested
+	// `fields` to stay EVEN. `Status` is CMS-owned (F-2b, X-52) — read-only, and
+	// the LABEL names the owner.
 	//
-	// INC-15: the `Title (set in the CMS)` row is GONE. It repeated the H1
-	// immediately above it verbatim (the header IS `p.title`), so it spent a row
-	// of the densest block on the screen restating what the operator had just
-	// read. Its owner-naming job is not lost — `Status (set in the CMS)` still
-	// carries it, and the SKU form's own context line still says the title is set
-	// in the CMS. No Title INPUT replaces it: `product_commerce.title` is a
-	// CMS-owned single-writer cache (G2 / ADR-0013) and `ProductEditWire` has no
-	// `title` member, so one would not compile.
+	// INC-15 removed TWO rows from the six this used to carry, landing on 4
+	// rather than an illegal 5:
 	//
-	// That leaves 5 entries — ODD, and visible as such at this call site by
-	// design (R-3: `fields` is row-major `grid-cols-2`). The orphan lands on
-	// `Kind`, the least urgent entry of the five, which is the right cell to
-	// leave alone on the last row. Do NOT invent a sixth entry to even it up.
+	//  - `Title (set in the CMS)` repeated the H1 immediately above it verbatim
+	//    (the header IS `p.title`), spending a row of the densest block on the
+	//    screen restating what the operator had just read. Its owner-naming job
+	//    is not lost — `Status (set in the CMS)` still carries it, and the
+	//    Identity group's own context line still says the title is set in the
+	//    CMS. No Title INPUT replaces it: `product_commerce.title` is a CMS-owned
+	//    single-writer cache (G2 / ADR-0013) and `ProductEditWire` has no `title`
+	//    member, so one would not compile.
+	//  - `Kind` MOVED rather than went: it is already a labelled `select` in the
+	//    Classification & shipping form (`shippingForm`), which both states the
+	//    current value and is where it is changed. In the strip it read at the
+	//    same weight as `Stock on hand` — the one operationally urgent number
+	//    here — for a fact that changes about once in a product's life.
+	//
+	// What remains is the four operational facts: identity, money, sellability,
+	// stock. Do NOT re-add a fifth — 5 is an odd count (§2) and outside block 5's
+	// cap (D-1a).
 	blocks.push(
 		fields("products:identity", [
 			["SKU", p.sku ?? "—"],
@@ -902,12 +912,11 @@ function detailBlocks(
 			["Status (set in the CMS)", statusLabel(p)],
 			// The most operationally urgent number on the page, carrying its own
 			// exception (`Out of stock` / `Low`) so it does not read at the same
-			// weight as `Kind: physical`. Same helper as the list's `On hand`
+			// weight as the rest of the strip. Same helper as the list's `On hand`
 			// column, so a product cannot be low in one place and plain in the
 			// other. The detail's count is a plain number — never null — so the
 			// helper's "—" branch is unreachable here.
 			["Stock on hand", onHandCell(p.onHand, threshold)],
-			["Kind", p.productKind],
 		]),
 	);
 	const panels: TabPanel[] = [
@@ -967,7 +976,7 @@ function productPanel(
 	blocks.push({
 		type: "accordion",
 		block_id: `products:${id}:edit-identity`,
-		label: fitLabel(identityGroupLabel(p)),
+		label: identityGroupLabel(p), // already inside the budget (valueLabel)
 		default_open: open === "identity",
 		blocks: [
 			{
@@ -980,7 +989,7 @@ function productPanel(
 	blocks.push({
 		type: "accordion",
 		block_id: `products:${id}:edit-price`,
-		label: fitLabel(priceGroupLabel(p)),
+		label: priceGroupLabel(p), // already inside the budget (valueLabel)
 		default_open: false, // ALWAYS — not a D-5 rank (only Identity is)
 		blocks: [
 			{
@@ -993,7 +1002,7 @@ function productPanel(
 	blocks.push({
 		type: "accordion",
 		block_id: `products:${id}:edit-shipping`,
-		label: fitLabel(shippingGroupLabel(p)),
+		label: shippingGroupLabel(p), // already inside the budget (valueLabel)
 		default_open: false, // ALWAYS
 		blocks: [
 			{
@@ -1017,10 +1026,10 @@ function productPanel(
 }
 
 /** D-6: the Price group's label carries the answer, so it can be skipped
- *  unopened. ≤60 chars (X-11), enforced by `fitLabel`. */
+ *  unopened. ≤60 chars (X-11), enforced by `valueLabel`. */
 function priceGroupLabel(p: ProductDetailWire): string {
-	if (p.priceCents === null || p.currency === null) return "Price — not priced yet";
-	return `Price — ${formatOptionalTotal(p.priceCents, p.currency)} ${p.currency}`;
+	if (p.priceCents === null || p.currency === null) return valueLabel("Price", ["not priced yet"]);
+	return valueLabel("Price", [`${formatOptionalTotal(p.priceCents, p.currency)} ${p.currency}`]);
 }
 
 /** D-6, INC-15: the Identity group holds exactly one value — the SKU — so the
@@ -1029,7 +1038,7 @@ function priceGroupLabel(p: ProductDetailWire): string {
  *  real consequence (no stock movements — D-7, see the Stock panel), so it is
  *  NAMED rather than rendered as an empty tail. */
 function identityGroupLabel(p: ProductDetailWire): string {
-	return `Identity — ${p.sku ?? "no SKU"}`;
+	return valueLabel("Identity", [p.sku ?? "no SKU"]);
 }
 
 /** D-6, INC-15: the two values an operator opens `Classification & shipping`
@@ -1044,7 +1053,7 @@ function identityGroupLabel(p: ProductDetailWire): string {
 function shippingGroupLabel(p: ProductDetailWire): string {
 	const taxClass = p.taxClass ?? "no tax class";
 	const weight = p.weightGrams === null ? "no weight" : `${p.weightGrams} g`;
-	return `Classification & shipping — ${taxClass} · ${weight}`;
+	return valueLabel("Classification & shipping", [taxClass, weight]);
 }
 
 /**
@@ -1452,6 +1461,38 @@ function fit(text: string, max: number): string {
 }
 function fitLabel(text: string): string {
 	return fit(text, LABEL_BUDGET);
+}
+
+/** Separator between the values on a D-6 label. */
+const VALUE_SEPARATOR = " · ";
+
+/**
+ * A D-6 `<group> — <value> · <value>` label, kept inside the X-11 budget by
+ * shortening a VALUE rather than the tail.
+ *
+ * `fitLabel` truncates from the right, which on these labels eats the LAST
+ * value outright: a 40-character tax-class slug would silently delete `· 3200 g`
+ * and leave a label that looks complete. The whole point of INC-15 is that the
+ * label carries the values, so the truncation has to cost the value that has
+ * the most to give — the longest one — and only by the overflow, leaving every
+ * other segment (the tail included) intact. When even that is not enough
+ * (a prefix that alone exceeds the budget — no caller has one) it falls back to
+ * plain right-truncation, which is still inside the budget.
+ */
+function valueLabel(prefix: string, values: readonly string[]): string {
+	if (values.length === 0) return fitLabel(prefix);
+	const full = `${prefix} — ${values.join(VALUE_SEPARATOR)}`;
+	if (full.length <= LABEL_BUDGET) return full;
+	let longest = 0;
+	values.forEach((value, index) => {
+		if (value.length > (values[longest] ?? "").length) longest = index;
+	});
+	const room = (values[longest] ?? "").length - (full.length - LABEL_BUDGET) - 1;
+	if (room < 1) return fitLabel(full);
+	const shortened = values.map((value, index) =>
+		index === longest ? `${value.slice(0, room)}…` : value,
+	);
+	return `${prefix} — ${shortened.join(VALUE_SEPARATOR)}`;
 }
 
 /** An absolute UTC timestamp TRIMMED TO SECONDS (M-6): milliseconds are

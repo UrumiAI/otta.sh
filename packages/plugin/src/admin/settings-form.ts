@@ -134,6 +134,26 @@ async function readPageState(ctx: PluginContext, tokens: AdminTokens): Promise<S
 	};
 }
 
+/** The receipt for a token submit, which is NOT unconditionally "saved": the
+ *  field is always blank on mount (INC-09) and a blank submit deliberately keeps
+ *  the stored token, so the honest receipt for that path says nothing was
+ *  entered. `which` is "Admin" or "Service" — the token's own name, so the
+ *  banner names the same thing its form's submit button does. */
+function tokenNotice(which: "Admin" | "Service", entered: boolean): Notice {
+	const token = `${which.toLowerCase()} token`;
+	return entered
+		? {
+				variant: "default",
+				title: `${which} token saved`,
+				description: `The ${token} was updated. It is stored write-only and never displayed.`,
+			}
+		: {
+				variant: "default",
+				title: `Nothing entered — ${token} unchanged`,
+				description: `The field was blank, so the stored ${token} was kept. Enter a value to replace it.`,
+			};
+}
+
 /** Bump a token's save generation. Call ONLY on an actual (non-empty) persist —
  *  never on a blank submit, which already leaves the field's stated content
  *  correct (still empty), so there is nothing to force a remount for. */
@@ -267,7 +287,8 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			// renders empty every time — INC-09 dropped the masked variant) never
 			// clobbers an existing token.
 			const raw = input.values?.internalToken;
-			if (typeof raw === "string" && raw !== "") {
+			const entered = typeof raw === "string" && raw !== "";
+			if (entered) {
 				await ctx.kv.set(INTERNAL_TOKEN_KEY, raw);
 				// Post-save clear (INC-09): bump the carrier `gen` so the re-rendered
 				// field remounts blank instead of continuing to show what was typed.
@@ -276,14 +297,18 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 				// token this branch just set, not the state kv held on entry.
 				tokens = { ...tokens, adminToken: raw };
 			}
-			const page = await renderPage(ctx, client, tokens, {
-				variant: "default",
-				title: "Admin token saved",
-				description: "The admin token was updated. It is stored write-only and never displayed.",
-			});
+			// INC-15: a blank submit persists NOTHING, so it must not claim it did.
+			// The old receipt said "Admin token saved" on every path — and now that
+			// the group's own label states whether a token is set, a blank submit on
+			// an unprovisioned store rendered "Admin token saved" directly above
+			// "Service connection — token not set". The receipt names the no-op.
+			const page = await renderPage(ctx, client, tokens, tokenNotice("Admin", entered));
 			return {
 				...page,
-				toast: { message: "Admin token saved", type: "success" },
+				toast: {
+					message: entered ? "Admin token saved" : "Admin token unchanged",
+					type: entered ? "success" : "info",
+				},
 			} satisfies BlockResponse;
 		}
 
@@ -293,7 +318,8 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			// non-empty submit so a blank submit (the plain field always renders
 			// empty) never clobbers an existing token. NEVER rendered back.
 			const raw = input.values?.serviceToken;
-			if (typeof raw === "string" && raw !== "") {
+			const entered = typeof raw === "string" && raw !== "";
+			if (entered) {
 				await ctx.kv.set(SERVICE_TOKEN_KEY, raw);
 				// Post-save clear (INC-09): bump the carrier `gen` so the re-rendered
 				// field remounts blank instead of continuing to show what was typed.
@@ -301,14 +327,14 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 				// INC-15: same reason as the admin token above.
 				tokens = { ...tokens, serviceToken: raw };
 			}
-			const page = await renderPage(ctx, client, tokens, {
-				variant: "default",
-				title: "Service token saved",
-				description: "The service token was updated. It is stored write-only and never displayed.",
-			});
+			// INC-15: the same honest no-op receipt as the admin token above.
+			const page = await renderPage(ctx, client, tokens, tokenNotice("Service", entered));
 			return {
 				...page,
-				toast: { message: "Service token saved", type: "success" },
+				toast: {
+					message: entered ? "Service token saved" : "Service token unchanged",
+					type: entered ? "success" : "info",
+				},
 			} satisfies BlockResponse;
 		}
 
@@ -331,20 +357,28 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 				// "save failed" that hides the real reason). Re-render the ATTEMPTED
 				// value for edited fields over the STORED value for un-edited ones (J6)
 				// — never zero an un-edited field.
-				let stored: OperationalSettingsWire;
+				let stored: OperationalSettingsWire | undefined;
 				try {
 					stored = await client.getSettings();
 				} catch {
-					stored = { holdTtlMinutes: 0, lowStockThreshold: 0 };
+					stored = undefined;
 				}
 				const shown: OperationalSettingsWire = {
-					holdTtlMinutes: patch.holdTtlMinutes ?? stored.holdTtlMinutes,
-					lowStockThreshold: patch.lowStockThreshold ?? stored.lowStockThreshold,
+					holdTtlMinutes: patch.holdTtlMinutes ?? stored?.holdTtlMinutes ?? 0,
+					lowStockThreshold: patch.lowStockThreshold ?? stored?.lowStockThreshold ?? 0,
 				};
 				return {
 					blocks: buildSettingsBlocks({
 						...state,
 						settings: shown,
+						// INC-15: the LABEL is the one place on this screen that reads as
+						// PERSISTED state — a closed group saying "45 min hold" claims the
+						// service holds 45. On a REJECTED save it does not: the form keeps
+						// the attempted value so the operator can correct it (J6), and the
+						// label keeps stating what is actually stored. When the stored
+						// re-read failed there is nothing to state, and the label says
+						// "not loaded" rather than inventing a zero.
+						persisted: stored,
 						notice: {
 							variant: "error",
 							title: "Settings not saved",
@@ -358,6 +392,9 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 				blocks: buildSettingsBlocks({
 					...state,
 					settings: result.settings,
+					// An ACCEPTED save: what is shown and what is stored are the same
+					// thing, so the label states the values that just persisted.
+					persisted: result.settings,
 					notice: {
 						variant: "default",
 						title: "Settings saved",
@@ -397,10 +434,14 @@ async function renderPage(
 ): Promise<BlockResponse> {
 	const state = await readPageState(ctx, tokens);
 	try {
+		// Nothing was attempted on this path, so what the form shows and what the
+		// label states are the same read (see `persisted` in `buildSettingsBlocks`).
 		const settings = await client.getSettings();
-		return { blocks: buildSettingsBlocks({ ...state, settings, notice }) };
+		return { blocks: buildSettingsBlocks({ ...state, settings, persisted: settings, notice }) };
 	} catch {
-		return { blocks: buildSettingsBlocks({ ...state, settings: undefined, notice }) };
+		return {
+			blocks: buildSettingsBlocks({ ...state, settings: undefined, persisted: undefined, notice }),
+		};
 	}
 }
 
@@ -459,7 +500,15 @@ function extractOperationalPatch(
  */
 function buildSettingsBlocks(args: {
 	displayName: string;
+	/** What the "Checkout & holds" FORM prefills from — on a rejected save this
+	 *  carries the ATTEMPTED values over the stored ones (J6), so the operator can
+	 *  correct what they typed. */
 	settings: OperationalSettingsWire | undefined;
+	/** What the "Checkout & holds" LABEL states: only values the service actually
+	 *  holds, `undefined` when that is unknown. A collapsed label reads as
+	 *  persisted state — it is the one thing on this screen that does — so it must
+	 *  never state a value that was rejected. */
+	persisted: OperationalSettingsWire | undefined;
 	hasToken: boolean;
 	hasServiceToken: boolean;
 	tokenGen: number;
@@ -476,7 +525,7 @@ function buildSettingsBlocks(args: {
 	if (args.notice !== undefined) blocks.push(noticeBanner(args.notice));
 	blocks.push(
 		storeGroup(args.displayName),
-		checkoutGroup(args.settings),
+		checkoutGroup(args.settings, args.persisted),
 		connectionGroup({
 			hasToken: args.hasToken,
 			hasServiceToken: args.hasServiceToken,
@@ -487,13 +536,44 @@ function buildSettingsBlocks(args: {
 	return blocks;
 }
 
-/** §1's accordion-label budget (X-11), and the one truncation point for the
- *  three labels below — an operator-supplied display name is the only value on
- *  this screen with no length bound of its own. */
+/** §1's accordion-label budget (X-11). */
 const LABEL_BUDGET = 60;
+
+/** Separator between the values on a D-6 label. */
+const VALUE_SEPARATOR = " · ";
 
 function fitLabel(text: string): string {
 	return text.length <= LABEL_BUDGET ? text : `${text.slice(0, LABEL_BUDGET - 1)}…`;
+}
+
+/**
+ * A D-6 `<group> — <value> · <value>` label, kept inside the X-11 budget by
+ * shortening a VALUE rather than the tail. EVERY label on this screen goes
+ * through here, the constant ones included — a bypass is how one of them drifts
+ * over budget unnoticed.
+ *
+ * Right-truncation would eat the LAST value outright: a 200-character display
+ * name is the one operator-supplied value on this screen with no length bound
+ * of its own, and on a two-value label the tail is the value most worth
+ * keeping. So the truncation costs the LONGEST segment, and only by the
+ * overflow. (Same helper, same reasoning, as `products-page.ts`'s — this file
+ * keeps its own copy the way it keeps its own `fitLabel`, rather than growing
+ * the shared scaffold for a label rule two screens use differently.)
+ */
+function valueLabel(prefix: string, values: readonly string[]): string {
+	if (values.length === 0) return fitLabel(prefix);
+	const full = `${prefix} — ${values.join(VALUE_SEPARATOR)}`;
+	if (full.length <= LABEL_BUDGET) return full;
+	let longest = 0;
+	values.forEach((value, index) => {
+		if (value.length > (values[longest] ?? "").length) longest = index;
+	});
+	const room = (values[longest] ?? "").length - (full.length - LABEL_BUDGET) - 1;
+	if (room < 1) return fitLabel(full);
+	const shortened = values.map((value, index) =>
+		index === longest ? `${value.slice(0, room)}…` : value,
+	);
+	return `${prefix} — ${shortened.join(VALUE_SEPARATOR)}`;
 }
 
 /** The write-only admin-token form (INC-09: no masked variant). A plain
@@ -559,18 +639,20 @@ function serviceTokenForm(gen: number): FormBlock {
  *  holds is readable closed. An unset name says so — never a blank tail after
  *  the dash, which would read as a rendering fault rather than as "not set". */
 function storeGroupLabel(displayName: string): string {
-	return fitLabel(`Store — ${displayName.length > 0 ? displayName : "no display name"}`);
+	return valueLabel("Store", [displayName.length > 0 ? displayName : "no display name"]);
 }
 
-/** The operational values, closed: "Checkout & holds — 15 min hold · low stock
- *  at 5". When the secondary `GET /settings` read failed there is no value to
- *  state, and the label says exactly that rather than implying a zero (the
- *  group's own body carries the full E-1 explanation). */
-function checkoutGroupLabel(settings: OperationalSettingsWire | undefined): string {
-	if (settings === undefined) return "Checkout & holds — not loaded";
-	return fitLabel(
-		`Checkout & holds — ${settings.holdTtlMinutes} min hold · low stock at ${settings.lowStockThreshold}`,
-	);
+/** The PERSISTED operational values, closed: "Checkout & holds — 15 min hold ·
+ *  low stock at 5". When the secondary `GET /settings` read failed — or a
+ *  rejected save left nothing stored to state — there is no value to give, and
+ *  the label says exactly that rather than implying a zero (the group's own body
+ *  carries the full E-1 explanation). */
+function checkoutGroupLabel(persisted: OperationalSettingsWire | undefined): string {
+	if (persisted === undefined) return valueLabel("Checkout & holds", ["not loaded"]);
+	return valueLabel("Checkout & holds", [
+		`${persisted.holdTtlMinutes} min hold`,
+		`low stock at ${persisted.lowStockThreshold}`,
+	]);
 }
 
 /** Whether each token is set, closed — the provisioning question this group
@@ -585,9 +667,10 @@ function checkoutGroupLabel(settings: OperationalSettingsWire | undefined): stri
  *  60-char accordion-label budget. The group is already named "Service
  *  connection" and the forms inside are labelled in full. */
 function connectionGroupLabel(hasToken: boolean, hasServiceToken: boolean): string {
-	const admin = hasToken ? "token set" : "token not set";
-	const service = hasServiceToken ? "service token set" : "service token not set";
-	return fitLabel(`Service connection — ${admin} · ${service}`);
+	return valueLabel("Service connection", [
+		hasToken ? "token set" : "token not set",
+		hasServiceToken ? "service token set" : "service token not set",
+	]);
 }
 
 function storeGroup(displayName: string): AccordionBlock {
@@ -616,7 +699,10 @@ function storeGroup(displayName: string): AccordionBlock {
 	};
 }
 
-function checkoutGroup(settings: OperationalSettingsWire | undefined): AccordionBlock {
+function checkoutGroup(
+	settings: OperationalSettingsWire | undefined,
+	persisted: OperationalSettingsWire | undefined,
+): AccordionBlock {
 	const body: Block[] =
 		settings === undefined
 			? [
@@ -657,7 +743,7 @@ function checkoutGroup(settings: OperationalSettingsWire | undefined): Accordion
 	return {
 		type: "accordion",
 		block_id: "settings:checkout",
-		label: checkoutGroupLabel(settings),
+		label: checkoutGroupLabel(persisted),
 		default_open: false,
 		blocks: body,
 	};
