@@ -31,9 +31,9 @@ These are build-breaking, not code-review nits (see `DEVELOPMENT.md` for the ful
   existing order's line items.
 - **The plugin is sandbox-clean.** Dev/test against the workerd-on-Node sandbox; Block Kit
   widgets, not React — the discriminator is `format` (`format: "native"` may declare
-  `adminEntry`; `format: "standard"` throws at build time), and `@otta-sh/plugin` registers
-  `format: "standard"` and stays Block Kit; the plugin reaches the service **only** via
-  `ctx.http` + `allowedHosts`.
+  `adminEntry`; a `format: "standard"` descriptor that declares `adminEntry` throws at build
+  time), and `@otta-sh/plugin` registers `format: "standard"` and stays Block Kit; the plugin
+  reaches the service **only** via `ctx.http` + `allowedHosts`.
 
 ## Toolchain & the edit loop
 
