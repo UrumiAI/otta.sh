@@ -18,9 +18,11 @@ one at POST time, so a double-submit replays instead of duplicating.
 # 1. Start the commerce service (repo root; point PG_CONNECTION_STRING at your
 #    own local test Postgres). tsx, not the built dist bin: the unpublished
 #    workspace exports point at TS sources (#44).
-#    In the maintainer environment, the unprefixed default port is an SSH
-#    tunnel to production — use the "55" prefix below. The local test
-#    database is `otta` on 127.0.0.1:55432.
+#    Always use the test container on port 55432. Never point this
+#    project's tooling at the unprefixed default port: in the maintainer
+#    environment it is an SSH tunnel to the production database, and
+#    nothing in this repo ever needs it. The local test database is
+#    `otta` on 127.0.0.1:55432.
 PG_CONNECTION_STRING=postgres://postgres:postgres@127.0.0.1:55432/otta \
   pnpm dlx tsx@4 packages/service/src/index.ts
 
