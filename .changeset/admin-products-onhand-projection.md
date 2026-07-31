@@ -42,7 +42,7 @@ covering index cut buffers 28% without moving wall-clock at all.
 such: p50 2.915 → 4.858 ms (+67%), p95 6.89 → 7.48 ms. The planner picks a Hash
 Right Join whose build side is a **Seq Scan over `product_commerce`**, so this
 query's cost is linear in CATALOG size, not in the number of low-stock rows. At
-5,000 products that is 121 shared buffers and ~3.4 ms of execution, comfortably
+5,000 products that is 121 shared buffers and ~4.0 ms of execution, comfortably
 inside the report's budget. The partial unique index
 `product_commerce_live_sku_unique` remains available to the planner and should
 flip it to a nested-loop index lookup once the catalog grows enough for the seq
