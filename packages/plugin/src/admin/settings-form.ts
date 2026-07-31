@@ -36,8 +36,14 @@ import { carriedForm, noticeBanner, readAdminTokens, type Notice } from "./scaff
  * SECURITY (§5): the display name is cosmetic. The admin token AND the service
  * token are shared secrets that live in em-dash's plugin-settings kv (bounded by
  * em-dash admin/DB security, the same trade-off webhook-notifier accepts). Both
- * are masked, treated write-only (only overwritten on a non-empty submit), and
- * have no read-back path into any block, toast, or error text. NOTE the service
+ * are treated write-only (only overwritten on a non-empty submit) and have no
+ * read-back path into any block, toast, or error text — but NEITHER is masked
+ * (INC-09, `EVIDENCE §4.3` / `DESIGNER §7` shot `18b`): the `secret_input`
+ * variant's reveal/copy chip computed to `opacity: 0` and, on hover, overlapped
+ * this screen's own field label, and a revealed SET token became visually
+ * identical to the unset field below it — a false affordance offering to
+ * reveal something this screen's own helper text says is never displayed. Both
+ * tokens now render as a plain, always-empty `text_input`. NOTE the service
  * token is MORE sensitive than the admin token — it unlocks the entire write
  * surface, not just `/admin` + `/internal`.
  *
@@ -180,8 +186,9 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 		// -- secret save path: admin token, WRITE-ONLY to ctx.kv --------------------
 		if (action === "save-token") {
 			// Mirror webhook-notifier (`plugin.ts:515`): persist ONLY when a
-			// non-empty value was submitted, so a blank submit (the masked field
-			// renders empty every time) never clobbers an existing token.
+			// non-empty value was submitted, so a blank submit (the plain field
+			// renders empty every time — INC-09 dropped the masked variant) never
+			// clobbers an existing token.
 			const raw = input.values?.internalToken;
 			if (typeof raw === "string" && raw !== "") {
 				await ctx.kv.set(INTERNAL_TOKEN_KEY, raw);
@@ -200,7 +207,7 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 		// -- secret save path: SERVICE token, WRITE-ONLY to ctx.kv ------------------
 		if (action === "save-service-token") {
 			// Same write-only discipline as the admin token: persist ONLY on a
-			// non-empty submit so a blank submit (the masked field always renders
+			// non-empty submit so a blank submit (the plain field always renders
 			// empty) never clobbers an existing token. NEVER rendered back.
 			const raw = input.values?.serviceToken;
 			if (typeof raw === "string" && raw !== "") {
@@ -358,9 +365,9 @@ function extractOperationalPatch(
  * ("Store"), named explicitly, always — there is no per-record state to
  * derive it from on this screen. S-4: every prefilling form's `block_id`
  * comes from `carriedForm` so a saved value redisplays correctly (the forms
- * are mount-only `text_input`/`secret_input`, and once inside an accordion
- * each is that container's own index-0 child forever — nothing else remounts
- * them).
+ * are mount-only `text_input` — INC-09 dropped the one `secret_input` this
+ * screen used to render — and once inside an accordion each is that
+ * container's own index-0 child forever — nothing else remounts them).
  */
 function buildSettingsBlocks(args: {
 	displayName: string;
@@ -377,28 +384,31 @@ function buildSettingsBlocks(args: {
 		},
 	];
 	if (args.notice !== undefined) blocks.push(noticeBanner(args.notice));
-	blocks.push(storeGroup(args.displayName), checkoutGroup(args.settings), connectionGroup(args));
+	blocks.push(storeGroup(args.displayName), checkoutGroup(args.settings), connectionGroup());
 	return blocks;
 }
 
-/** The write-only admin-token form. The `secret_input` element carries NO
- *  `initial_value` (the stored token is never rendered); `has_value` signals a
- *  token is already set and the placeholder tells the admin a blank submit
- *  keeps it. Routed through `carriedForm` (S-4): `secret_input` is mount-only
- *  too, so a re-render after saving needs a changed `block_id` or it shows an
- *  empty editable field instead of the masked "current value set" affordance. */
-function tokenForm(hasToken: boolean): FormBlock {
+/** The write-only admin-token form (INC-09: no masked variant). A plain
+ *  `text_input` — no `secret_input`, no `has_value`, no reveal/copy control —
+ *  that carries NO `initial_value` (the stored token is never rendered), so
+ *  the field renders EMPTY every time regardless of whether a token is
+ *  already set; the placeholder alone carries the "blank keeps current"
+ *  behaviour, which is unconditionally true (there is nothing to reveal
+ *  either way). Symmetric with {@link serviceTokenForm}. Routed through
+ *  `carriedForm` (S-4) for the shared namespacing/digest discipline, though an
+ *  always-empty, always-identical field never actually needs a changed
+ *  `block_id` to redisplay correctly. */
+function tokenForm(): FormBlock {
 	return carriedForm({
 		namespace: "settings:admin-token",
 		form: {
 			type: "form",
 			fields: [
 				{
-					type: "secret_input",
+					type: "text_input",
 					action_id: "internalToken",
 					label: "Admin token (X-Internal-Token)",
-					placeholder: hasToken ? "Leave blank to keep current token" : "Enter admin token",
-					has_value: hasToken,
+					placeholder: "Enter new admin token (blank keeps current)",
 				},
 			],
 			submit: { label: "Save admin token", action_id: "save-token" },
@@ -407,23 +417,21 @@ function tokenForm(hasToken: boolean): FormBlock {
 }
 
 /** The write-only SERVICE-token form (ADR-0007) — the machine write-gate token
- *  the service enforces as `X-Service-Token`. Same masked, write-only discipline
- *  as the admin token: no `initial_value`, `has_value` signals it is set, and a
- *  blank submit keeps the current token. NEVER rendered back. */
-function serviceTokenForm(hasServiceToken: boolean): FormBlock {
+ *  the service enforces as `X-Service-Token`. Same plain, write-only
+ *  discipline as {@link tokenForm} (INC-09): no masked variant, no
+ *  `initial_value`, and a blank submit keeps the current token. NEVER
+ *  rendered back. */
+function serviceTokenForm(): FormBlock {
 	return carriedForm({
 		namespace: "settings:service-token",
 		form: {
 			type: "form",
 			fields: [
 				{
-					type: "secret_input",
+					type: "text_input",
 					action_id: "serviceToken",
 					label: "Service token (X-Service-Token)",
-					placeholder: hasServiceToken
-						? "Leave blank to keep current token"
-						: "Enter service token",
-					has_value: hasServiceToken,
+					placeholder: "Enter new service token (blank keeps current)",
 				},
 			],
 			submit: { label: "Save service token", action_id: "save-service-token" },
@@ -504,7 +512,7 @@ function checkoutGroup(settings: OperationalSettingsWire | undefined): Accordion
 	};
 }
 
-function connectionGroup(args: { hasToken: boolean; hasServiceToken: boolean }): AccordionBlock {
+function connectionGroup(): AccordionBlock {
 	return {
 		type: "accordion",
 		block_id: "settings:connection",
@@ -515,8 +523,8 @@ function connectionGroup(args: { hasToken: boolean; hasServiceToken: boolean }):
 				type: "context",
 				text: "Both tokens are stored write-only — a blank submit keeps the current one. Neither is ever displayed.",
 			},
-			tokenForm(args.hasToken),
-			serviceTokenForm(args.hasServiceToken),
+			tokenForm(),
+			serviceTokenForm(),
 		],
 	};
 }

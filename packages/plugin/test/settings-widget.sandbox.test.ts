@@ -365,4 +365,109 @@ describe("Settings admin form (workerd sandbox)", () => {
 			expect(schemaField.label.toLowerCase()).not.toMatch(/secret|password|api key|token/);
 		}
 	});
+
+	// INC-09 (EVIDENCE §4.3 / DESIGNER §7 shot `18b`): the Admin token field's
+	// `secret_input` reveal/copy chip computed to `opacity: 0` and, on hover,
+	// overlapped its own label; revealed, a SET token became visually identical
+	// to the unset field below it. Both tokens now render as a PLAIN, always-
+	// empty `text_input` — the same shape whether a token is already stored or
+	// not — and a blank submit still keeps whatever is currently stored.
+	test("INC-09: Admin token and Service token render as plain text_input — no secret_input, no has_value, no masked variant", async () => {
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", () => ({
+			status: 200,
+			body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } },
+		}));
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+
+		// Seed BOTH tokens first — a set token must render IDENTICALLY to an
+		// unset one under the plain variant (unlike the dropped masked variant,
+		// whose placeholder / `has_value` used to depend on this).
+		await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-token",
+			values: { internalToken: "qa-local-admin-token" },
+		});
+		await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-service-token",
+			values: { serviceToken: "qa-local-service-token" },
+		});
+
+		const loaded = await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" });
+		const blocks = blocksOf(loaded);
+		assertBlockContract(blocks, { screen: "settings", level: "list" });
+
+		const adminField = field(formFor(blocks, "save-token"), "internalToken");
+		const serviceField = field(formFor(blocks, "save-service-token"), "serviceToken");
+
+		// No masked variant on either field.
+		expect(adminField?.type).toBe("text_input");
+		expect(serviceField?.type).toBe("text_input");
+		expect(adminField).not.toHaveProperty("has_value");
+		expect(serviceField).not.toHaveProperty("has_value");
+		// Never rendered back — plain empty input even though both tokens are SET.
+		expect(adminField).not.toHaveProperty("initial_value");
+		expect(serviceField).not.toHaveProperty("initial_value");
+		// The two fields are now visually and behaviourally symmetric.
+		expect(adminField?.placeholder).toBe("Enter new admin token (blank keeps current)");
+		expect(serviceField?.placeholder).toBe("Enter new service token (blank keeps current)");
+	});
+
+	test("INC-09: a blank submit on either token form keeps the currently stored token (unchanged behaviour)", async () => {
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", () => ({
+			status: 200,
+			body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } },
+		}));
+		stub.respondWith("PUT", () => ({
+			status: 200,
+			body: { ok: true, settings: { holdTtlMinutes: 20, lowStockThreshold: 6 } },
+		}));
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+
+		// Seed both tokens.
+		await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-token",
+			values: { internalToken: "qa-local-admin-token" },
+		});
+		await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-service-token",
+			values: { serviceToken: "qa-local-service-token" },
+		});
+
+		// Blank submits on BOTH — exactly what a real host sends for a plain,
+		// always-empty field the operator left untouched.
+		await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-token",
+			values: { internalToken: "" },
+		});
+		await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-service-token",
+			values: { serviceToken: "" },
+		});
+		stub.requests.length = 0;
+
+		// The privileged PUT forwards BOTH tokens as headers — if either blank
+		// submit had clobbered its token, one of these would be missing/blank.
+		await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-operational",
+			values: { holdTtlMinutes: "20", lowStockThreshold: "6" },
+			idempotencyKey: "k-inc09-blank-keeps-current",
+		});
+		const put = stub.requests.find((r) => r.method === "PUT");
+		expect(put?.headers["x-internal-token"]).toBe("qa-local-admin-token");
+		expect(put?.headers["x-service-token"]).toBe("qa-local-service-token");
+	});
 });
