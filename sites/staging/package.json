@@ -15,6 +15,7 @@
 		"@astrojs/cloudflare": "^14.1.2",
 		"@astrojs/react": "^6.0.1",
 		"@emdash-cms/cloudflare": "0.31.1",
+		"@otta-sh/admin-react": "workspace:*",
 		"@otta-sh/plugin": "workspace:*",
 		"astro": "^7.0.7",
 		"emdash": "0.31.1",

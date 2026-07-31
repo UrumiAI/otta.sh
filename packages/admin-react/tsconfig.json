@@ -1,0 +1,19 @@
+{
+	// No `references`: this package deliberately depends on NO other workspace
+	// package. ADR-0014 Decision 3 gives the console exactly one data path —
+	// HTTP to `otta`'s existing authenticated admin routes — so importing
+	// @otta-sh/plugin (or the domain, service, store or payments packages)
+	// would be a second one. `.dependency-cruiser.cjs`'s
+	// `console-imports-no-workspace-package` rule enforces that; the absence of
+	// references here is the same fact stated in the build graph.
+	"extends": "../../tsconfig.base.json",
+	"compilerOptions": {
+		"outDir": "dist/tsc",
+		"emitDeclarationOnly": true,
+		"rootDir": ".",
+		// This is the ONE package in the workspace that renders in a browser.
+		"jsx": "react-jsx",
+		"lib": ["ES2023", "DOM", "DOM.Iterable"]
+	},
+	"include": ["src", "test", "tsdown.config.ts", "vitest.config.ts"]
+}

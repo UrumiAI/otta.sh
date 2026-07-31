@@ -13,6 +13,7 @@ import {
 	ADMIN_BASE_PATH,
 	BLOCK_KIT_SIDEBAR_LINK,
 	CONSOLE_PLUGIN_ID,
+	CONSOLE_SHELL,
 	DEV_BYPASS_PATH,
 	E2E_BASE_URL,
 	E2E_PG_CONNECTION_STRING,
@@ -111,6 +112,17 @@ test.describe("harness configuration", () => {
 		expect(() => assertLoopbackUrl("postgres://u:p@db.prod.internal:55432/otta", "probe")).toThrow(
 			/loopback/,
 		);
+		// And a value it cannot parse is a refusal, not a pass — with a message
+		// that says which variable and what shape, rather than `Invalid URL`.
+		// libpq's keyword form is the realistic way this happens: psql and most
+		// tooling accept `host=… port=… dbname=…`, so an inherited
+		// PG_CONNECTION_STRING can easily be in it.
+		// (The fixture names no port at all: this file is itself swept by the
+		// port guard above, and a realistic keyword-form string would carry the
+		// forbidden one.)
+		expect(() =>
+			assertLoopbackUrl("host=db.prod.internal dbname=otta", "PG_CONNECTION_STRING"),
+		).toThrow(/PG_CONNECTION_STRING must be a URL this guard can parse/);
 	});
 
 	test("console screens are addressed under the second descriptor id, never under `otta`", () => {
@@ -122,11 +134,21 @@ test.describe("harness configuration", () => {
 		// The literal below is deliberate duplication of `consoleScreenUrl`'s
 		// output — that is what makes it a pin rather than a restatement. It is
 		// the ONLY other place the URL shape is written down: the builder and
-		// the sidebar selector both live in harness.ts, so INC-19 changes the
-		// prefix in one place and re-pins it here.
+		// the sidebar selector both live in harness.ts, so a change to the prefix
+		// happens in one place and is re-pinned here.
+		//
+		// INC-18 derived this shape from reading EmDash; INC-19 loaded a real
+		// console page at it and it held — `@emdash-cms/admin@0.31.1` emits
+		// `to: /plugins/${pluginId}${page.path}` in the sidebar and routes
+		// `/plugins/$pluginId/$`. The `/orders` literal stays even though nothing
+		// serves it yet: it is INC-20's target, and this is the assertion that
+		// would catch the prefix moving out from under it first.
 		expect(CONSOLE_PLUGIN_ID).toBe("otta-console");
 		expect(consoleScreenUrl("/orders")).toBe(`${ADMIN_BASE_PATH}/plugins/otta-console/orders`);
 		expect(consoleScreenUrl("/orders")).not.toContain("/plugins/otta/");
+		expect(consoleScreenUrl(CONSOLE_SHELL.path)).toBe(
+			`${ADMIN_BASE_PATH}/plugins/otta-console/console`,
+		);
 
 		// The sidebar selector must not match the console's own links, or the
 		// "Block Kit screens are still there" assertion passes vacuously.
@@ -158,6 +180,17 @@ test.describe("the migrated-screen registry is the coverage gate", () => {
 				screen.path,
 			);
 		}
+	});
+
+	test("the INC-19 shell is described like a screen but is not registered as one", () => {
+		// The shell is a React page that never existed on Block Kit, so it is not
+		// a migration and does not belong in the registry — but it is still a
+		// React page needing a gate, which is why it exists as its own constant
+		// with its own spec file. The same well-formedness rules apply to it.
+		expect(CONSOLE_SHELL.path).toMatch(/^\//);
+		expect(CONSOLE_SHELL.increment).toMatch(/^INC-\d\d$/);
+		expect(NEVER_MIGRATED_PATHS).not.toContain(CONSOLE_SHELL.path);
+		expect(MIGRATED_SCREENS.map((screen) => screen.path)).not.toContain(CONSOLE_SHELL.path);
 	});
 });
 

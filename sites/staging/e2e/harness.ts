@@ -46,12 +46,32 @@ export const E2E_VIEWPORT = { width: 1440, height: 2200 } as const;
  */
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
 
+/** How the guard explains itself. One string, so the parse failure and the
+ *  remote-host failure read the same and point at the same section. */
+const LOOPBACK_RULE = "The e2e harness never talks to a remote host: see DIRECTOR-SPEC §0.2/§0.3.";
+
 export function assertLoopbackUrl(raw: string, label: string): string {
-	const host = new URL(raw).hostname;
+	let host: string;
+	try {
+		host = new URL(raw).hostname;
+	} catch {
+		// A `PG_CONNECTION_STRING` in libpq's KEYWORD form — `host=… port=… `
+		// `dbname=…`, which psql and most tooling accept — is not a URL, so
+		// `new URL()` throws a bare `TypeError: Invalid URL` naming neither the
+		// variable nor the value. That is the wrong failure for a guard whose
+		// whole job is to be legible at 2am: it reads like a harness bug rather
+		// than like "your shell has a connection string this run cannot check".
+		// Unparseable is also NOT a pass — an unverifiable endpoint gets the same
+		// answer as a remote one.
+		throw new Error(
+			`${label} must be a URL this guard can parse, got ${raw}. Connection strings in ` +
+				`libpq keyword form (\`host=… port=…\`) are not URLs — use the URI form, ` +
+				`e.g. postgres://postgres:postgres@127.0.0.1:55432/otta. ${LOOPBACK_RULE}`,
+		);
+	}
 	if (!LOOPBACK_HOSTS.has(host)) {
 		throw new Error(
-			`${label} must point at loopback for an e2e run, got ${host} (from ${raw}). ` +
-				`The e2e harness never talks to a remote host: see DIRECTOR-SPEC §0.2/§0.3.`,
+			`${label} must point at loopback for an e2e run, got ${host} (from ${raw}). ` + LOOPBACK_RULE,
 		);
 	}
 	return raw;
@@ -95,6 +115,14 @@ export const E2E_REQUIRES_SITE = process.env["OTTA_E2E_REQUIRE_SITE"] === "1";
  * script says exactly this, `scripts/seed-demo-commerce.ts:303-306`). The
  * harness therefore defaults to the sign-in-only route and keeps §0.2's
  * seeding variant one env var away, for a run that wants a freshly seeded site.
+ *
+ * INC-19 KEEPS THE DEFAULT, and can say why rather than guess: the console's
+ * one spec asserts that `otta`'s admin route ANSWERS, not what it answers with.
+ * That route returns 200 with a banner or an empty table when commerce data is
+ * absent (G5 — a non-2xx would unmount the block tree), so a signed-in session
+ * is the entire prerequisite and re-seeding would buy the run nothing for the
+ * cost of mutating the site on every spec. A screen migration (INC-20/21)
+ * asserting on ROWS is the case that will want `OTTA_E2E_SEED_ON_AUTH=1`.
  */
 export const DEV_BYPASS_SIGNIN_PATH = "/_emdash/api/auth/dev-bypass";
 /** §0.2 verbatim — signs in AND applies the full seed. */
@@ -114,12 +142,17 @@ export const OTTA_PLUGIN_ID = "otta";
 /**
  * EmDash mounts a plugin's admin pages under the admin root.
  *
- * UNVERIFIED UNTIL INC-19. No run can have exercised this prefix or the sidebar
- * selector below, because `MIGRATED_SCREENS` is empty and nothing loads a
- * console page yet. INC-19 is the first increment with a real page, and if
- * EmDash's admin router disagrees, it corrects BOTH constants HERE — they are
- * defined once on purpose, so `consoleScreenUrl`, `console-screens.spec.ts` and
- * the literal pin in `harness.spec.ts` cannot drift apart.
+ * VERIFIED BY INC-19, which was the first increment with a real console page.
+ * Both halves held as INC-18 guessed them, and both are now read off
+ * `@emdash-cms/admin@0.31.1` rather than inferred: the sidebar builder emits
+ * `to: \`/plugins/${pluginId}${page.path}\`` and the router registers
+ * `/plugins/$pluginId/$`, deriving the page path as `"/" + (_splat || "")`.
+ * `ADMIN_BASE_PATH` is the Astro route the SPA is served from
+ * (`/_emdash/admin/[...path]`).
+ *
+ * They stay defined once, here, so `consoleScreenUrl`, the specs, and the
+ * literal pin in `harness.spec.ts` cannot drift apart if a later EmDash changes
+ * the shape.
  */
 export const ADMIN_BASE_PATH = "/_emdash/admin";
 
@@ -127,6 +160,29 @@ export const ADMIN_BASE_PATH = "/_emdash/admin";
 export function consoleScreenUrl(path: string): string {
 	return `${ADMIN_BASE_PATH}/plugins/${CONSOLE_PLUGIN_ID}${path}`;
 }
+
+/**
+ * How long the admin SPA may take to hand a console page to React.
+ *
+ * MEASURED, not padded. Until the shell boots, every admin URL renders the
+ * literal string "Loading EmDash…" and no plugin page exists in the DOM at all,
+ * so a first assertion racing that boot fails with "element(s) not found" —
+ * which reads like a broken selector and is not one. Against an `astro dev`
+ * server on this box the boot lands between roughly 5 and 25 seconds per fresh
+ * browser context, so the default `expect` timeout of 10s fails
+ * NON-DETERMINISTICALLY: INC-19's specs passed and failed on the same code in
+ * consecutive runs.
+ *
+ * The cause is the thing ADR-0014 names as the real marginal cost of this
+ * amendment: `PluginRegistry.js` is 7.94 MB raw / 1.90 MB gzipped BEFORE any
+ * migration, and in dev Vite compiles and serves that graph on demand.
+ *
+ * This is a wait sized to a known-slow bundle, NOT a weakened assertion — the
+ * assertion is unchanged and still fails if the page never renders. Use it for
+ * the FIRST assertion after a full page load; everything after it is
+ * client-side routing and needs no extra headroom.
+ */
+export const ADMIN_SHELL_TIMEOUT_MS = 60_000;
 
 /** A sidebar link belonging to the Block Kit `otta` plugin. The trailing slash
  *  is load-bearing: without it this also matches `otta-console`, and the
@@ -155,11 +211,40 @@ export interface ConsoleScreen {
  * which `harness.spec.ts` makes visible by pinning this list against the
  * migration scope ADR-0014 Decision 6 fixes.
  *
- * EMPTY BY DESIGN at INC-18: nothing is migrated yet. INC-20 adds Orders,
- * INC-21 adds Pricing & inventory. Tax, Shipping and Settings stay Block Kit
- * permanently (ADR-0014 Decision 6) and must never appear here.
+ * STILL EMPTY AFTER INC-19, and that is the correct reading of it rather than
+ * an oversight. INC-19 ships the console SHELL — a landing page that never
+ * existed on Block Kit — so nothing has been migrated and every operator-facing
+ * screen is still the Block Kit one, unchanged and still covered by its sandbox
+ * suite. Putting the shell in here would make "migrated" mean "React", the
+ * registry stop being a statement about ADR-0014 Decision 6's scope, and the
+ * count stop answering "how many Block Kit screens have been replaced". The
+ * shell has its own gate instead: `CONSOLE_SHELL` below, and
+ * `console-shell.spec.ts`.
+ *
+ * INC-20 adds Orders, INC-21 adds Pricing & inventory. Tax, Shipping and
+ * Settings stay Block Kit permanently (ADR-0014 Decision 6) and must never
+ * appear here.
  */
 export const MIGRATED_SCREENS: readonly ConsoleScreen[] = [];
+
+/**
+ * The console shell — the one React page that exists before any migration.
+ *
+ * Kept OUT of `MIGRATED_SCREENS` (see above) but described in the same shape,
+ * so `console-shell.spec.ts` reads like the generated per-screen specs and so
+ * the shell's path is written down exactly once on the test side.
+ *
+ * `path` must equal `CONSOLE_HOME_PAGE.path` in `@otta-sh/admin-react`. The two
+ * are not imported from one another on purpose: this file is the e2e surface's
+ * own statement of what it expects to find, and a spec that imported the value
+ * it is checking would pass no matter what the console shipped.
+ */
+export const CONSOLE_SHELL: ConsoleScreen = {
+	name: "Console shell",
+	increment: "INC-19",
+	path: "/console",
+	heading: /Otta console/i,
+};
 
 /** Screens ADR-0014 Decision 6 forbids migrating — pinned so a future
  *  increment cannot quietly add one to the registry above. */
@@ -181,8 +266,17 @@ export const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url)).re
  * The probe is Vite's `/@fs/` route, which serves only paths inside the dev
  * server's own `fs.allow` roots. Asking a foreign server for OUR absolute path
  * gets 403; asking ours gets 200. Measured, both directions, against a real
- * foreign server. A non-dev (built/preview) server has no `/@fs/` at all, so an
- * inconclusive answer is treated as "not ours" only when it is a definite deny.
+ * foreign server.
+ *
+ * ONLY 2xx COUNTS AS OURS — including for a server that has no `/@fs/` route at
+ * all, such as a built/preview server, which answers 404. INC-18's comment
+ * claimed the softer rule ("treated as 'not ours' only when it is a definite
+ * deny"); the code has always been `return res.ok`, and the code is right. The
+ * failure this guard exists to prevent is grading the wrong tree and reporting
+ * green, so an answer the probe cannot positively attribute to this worktree
+ * must not be read as attribution. The cost of the strict reading is a skip
+ * (or, under `OTTA_E2E_REQUIRE_SITE=1`, a loud failure) when someone points the
+ * harness at a preview server — visible, and fixed by running `astro dev`.
  */
 async function serverIsThisWorktree(): Promise<boolean> {
 	try {
@@ -255,5 +349,35 @@ export const test = base.extend<{ adminPage: Page }>({
 		await use(page);
 	},
 });
+
+/**
+ * Close EmDash's first-login welcome dialog, if this run drew one.
+ *
+ * The dev-bypass account is created on first use, and EmDash greets a
+ * newly-created account with a modal ("Welcome to EmDash, Dev!") over a dimmed
+ * backdrop. It does not block assertions — the page behind it stays in the DOM
+ * and visible — but it does cover roughly half of a 1440x2200 screenshot, which
+ * makes the shot poor evidence for the thing it is taken to show.
+ *
+ * Conditional and non-waiting on purpose: the dialog appears once per account,
+ * so a run against an already-greeted site must not sit here burning a timeout.
+ *
+ * The wait is on the GREETING, not on the button. Clicking `Get Started` starts
+ * a request and relabels the button to "Loading…", so waiting for the button to
+ * disappear by name returns instantly — and the shot still catches the modal
+ * mid-dismissal, which is how the first version of this helper produced exactly
+ * the screenshot it was written to prevent.
+ */
+const WELCOME_GREETING = /Welcome to EmDash/i;
+
+export async function dismissWelcomeDialog(page: Page): Promise<void> {
+	const greeting = page.getByText(WELCOME_GREETING);
+	if ((await greeting.count()) === 0) return;
+	await page
+		.getByRole("button", { name: /get started/i })
+		.first()
+		.click();
+	await expect(greeting.first()).toBeHidden();
+}
 
 export { expect };

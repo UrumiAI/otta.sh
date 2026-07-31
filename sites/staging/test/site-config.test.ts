@@ -17,7 +17,10 @@
  *  - `vite.ssr.noExternal` contains "@otta-sh/plugin" UNCONDITIONALLY: if the
  *    plugin is externalized, the `__OTTA_COMMERCE_SERVICE_URL__` define
  *    silently never applies and every ctx.http call fails against
- *    allowedHosts at runtime.
+ *    allowedHosts at runtime. It also contains "@otta-sh/admin-react", whose
+ *    workspace exports are TS/TSX source;
+ *  - and, since INC-19, ADR-0014's SECOND descriptor `otta-console` — its own
+ *    block below.
  */
 import { readFileSync } from "node:fs";
 import {
@@ -32,8 +35,10 @@ import {
 	OTTA_PLUGIN_CAPABILITIES,
 	OTTA_PLUGIN_ID,
 } from "@otta-sh/plugin";
+import { createPlugin as createConsolePlugin } from "@otta-sh/admin-react";
 import { describe, expect, test } from "vitest";
 import { buildEmdashOptions, COMMERCE_SERVICE_URL_PLACEHOLDER } from "../src/emdash-options.js";
+import { ottaConsoleDescriptor } from "../src/otta-console-descriptor.js";
 import { ottaPluginDescriptor } from "../src/otta-plugin-descriptor.js";
 
 // Pin the env BEFORE astro.config is (dynamically) imported so the config
@@ -251,24 +256,68 @@ describe("ottaConsoleDescriptor (ADR-0014's second descriptor)", () => {
 	const options = buildEmdashOptions(SERVICE_URL);
 	const consoleEntries = options.plugins.filter((p) => p.id === OTTA_CONSOLE_PLUGIN_ID);
 
-	test("plugins[] is EXACTLY [otta] or [otta, otta-console] — never a third id", () => {
-		// ADR-0014's own reopening clause: "Any third-party plugin entering
-		// plugins[] — ADR-0006's original consequence stands unchanged: a
-		// multi-tenant or marketplace deployment must not inherit any of this."
-		// Both tuples are legal so INC-19 can land the descriptor without
-		// rewriting the gate; nothing else is.
-		expect([[OTTA_PLUGIN_ID], [OTTA_PLUGIN_ID, OTTA_CONSOLE_PLUGIN_ID]]).toContainEqual(
-			options.plugins.map((p) => p.id),
-		);
+	test("plugins[] is EXACTLY [otta, otta-console] — never a third id", () => {
+		// INC-18 wrote this as "either [otta] OR [otta, otta-console]" so the
+		// gate could land before the descriptor did. INC-19 landed the
+		// descriptor, so the one-entry arm is retired: a `plugins: []` that has
+		// lost the console is now a failure, not a legal earlier state. The
+		// third-id half is ADR-0014's own reopening clause — "Any third-party
+		// plugin entering plugins[] — ADR-0006's original consequence stands
+		// unchanged: a multi-tenant or marketplace deployment must not inherit
+		// any of this."
+		expect(options.plugins.map((p) => p.id)).toEqual([OTTA_PLUGIN_ID, OTTA_CONSOLE_PLUGIN_ID]);
 	});
 
-	test("every descriptor after the first is an otta-console one and satisfies the contract", () => {
-		// The length tie is the vacuity guard: pre-INC-19 there is one plugin
-		// and zero console entries, and the loop below is a no-op — but it is a
-		// no-op that CANNOT be reached by registering a second descriptor under
-		// some other id, or by an id typo silently emptying the filter.
+	test("the console is registered exactly once and satisfies the contract", () => {
+		// The length tie is the vacuity guard, and it still is one: it cannot be
+		// satisfied by registering a second descriptor under some other id, or by
+		// an id typo silently emptying the filter.
 		expect(consoleEntries).toHaveLength(options.plugins.length - 1);
+		expect(consoleEntries).toHaveLength(1);
 		for (const entry of consoleEntries) assertOttaConsoleContract(entry);
+	});
+
+	test("the registered entry is the descriptor builder's output, unmodified", () => {
+		// So the pins below (which read `ottaConsoleDescriptor()` directly) are
+		// pins on what is actually registered, not on a builder the site config
+		// stopped calling.
+		expect(consoleEntries[0]).toEqual(ottaConsoleDescriptor());
+	});
+
+	test("declares no hooks, no routes, no storage and no settings surface", () => {
+		// ADR-0014, "what would reopen this decision": "otta-console acquiring a
+		// capability, an allowedHost, a route, or a hook." The empty
+		// capabilities/allowedHosts arrays are pinned in the contract above; the
+		// remaining server-side surfaces are pinned here, on the descriptor,
+		// where adding one would be a one-line change.
+		const descriptor = ottaConsoleDescriptor();
+		expect(descriptor.storage).toBeUndefined();
+		expect(descriptor.settingsSchema).toBeUndefined();
+		expect(descriptor.fieldWidgets).toBeUndefined();
+		expect(descriptor.componentsEntry).toBeUndefined();
+		expect(descriptor.options).toBeUndefined();
+	});
+
+	test("the descriptor's adminPages cannot drift from what createPlugin() reports", () => {
+		// `descriptor.adminPages` is INERT for a native descriptor — the runtime
+		// manifest reads `plugin.admin.pages` off the ResolvedPlugin that
+		// `createPlugin()` returns, and only the standard-format branch of
+		// EmDash's virtual-module generator forwards the descriptor's copy. It is
+		// declared anyway (both descriptors describe their nav in the same
+		// place), so it needs this pin: a redundancy that can disagree with the
+		// thing that actually renders is worse than no redundancy at all.
+		expect(ottaConsoleDescriptor().adminPages).toEqual(createConsolePlugin().admin?.pages);
+	});
+
+	test("the console never claims a screen ADR-0014 keeps on Block Kit permanently", () => {
+		// Decision 6: Tax, Shipping and Settings never migrate. The Block Kit
+		// descriptor keeps all seven of its pages either way (pinned above), so
+		// the failure this catches is a console page shadowing one of them in the
+		// nav rather than replacing it.
+		const consolePaths = (ottaConsoleDescriptor().adminPages ?? []).map((page) => page.path);
+		expect(consolePaths).not.toContain(TAX_PAGE.path);
+		expect(consolePaths).not.toContain(SHIPPING_PAGE.path);
+		expect(consolePaths).not.toContain(SETTINGS_PAGE.path);
 	});
 
 	test("still declares no sandboxed / sandboxRunner keys with the console registered", () => {
@@ -379,7 +428,12 @@ describe("astro.config", () => {
 			expect(config.security?.checkOrigin).not.toBe(false);
 
 			const noExternal = config.vite?.ssr?.noExternal;
-			expect(Array.isArray(noExternal) ? noExternal : [noExternal]).toContain("@otta-sh/plugin");
+			const noExternalList = Array.isArray(noExternal) ? noExternal : [noExternal];
+			expect(noExternalList).toContain("@otta-sh/plugin");
+			// @otta-sh/admin-react for a different reason: its workspace exports
+			// point at TS/TSX source, so externalizing it hands raw TSX to the
+			// runtime. No define rides on it.
+			expect(noExternalList).toContain("@otta-sh/admin-react");
 
 			const define = config.vite?.define as Record<string, string>;
 			expect(JSON.parse(define["__OTTA_COMMERCE_SERVICE_URL__"] ?? "null")).toBe(SERVICE_URL);
