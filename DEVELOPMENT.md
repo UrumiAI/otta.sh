@@ -83,8 +83,12 @@ in-process leniency.
 
 - **Dev and test against the workerd-on-Node sandbox**, not trusted in-process mode. If it
   only works trusted, it's broken.
-- **Block Kit widgets, not React** (React widgets are trusted-only). The admin console —
-  Pricing & inventory, Orders, Reports, Settings — is Block Kit `elements` throughout.
+- **Block Kit widgets, not React.** The discriminator is the plugin's declared `format`, not
+  placement: `format: "native"` may declare `adminEntry` (a React admin surface); `format:
+  "standard"` throws at build time (`core/src/astro/integration/index.ts:334-351`).
+  `@otta-sh/plugin` registers `format: "standard"` (ADR-0006) and stays Block Kit — the admin
+  console — Pricing & inventory, Orders, Reports, Settings — is Block Kit `elements`
+  throughout.
 - **Every capability is declared explicitly.** The plugin reaches the service _only_ via
   `ctx.http` + `allowedHosts` — nothing else. A test/CI check guards that the plugin has no
   other network or DB surface.

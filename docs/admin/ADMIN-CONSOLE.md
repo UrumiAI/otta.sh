@@ -33,21 +33,23 @@ wrong and five parallel teams read this line.)
 read `node_modules` from a worktree off `origin/main` — several long-lived branches still carry a
 0.29.0 lockfile, and an earlier revision of this document was written against one of them.
 
-Everything below was verified three ways:
+Everything below was verified two ways:
 
 1. **The installed 0.31.1 types**, in a worktree off `origin/main`:
    `node_modules/.pnpm/@emdash-cms+blocks@0.31.1_*/node_modules/@emdash-cms/blocks/dist/validation-5vL6669b.d.ts`
    (authoritative types) and `validation-Dq-a7CXm.js` (the compiled validator).
-2. **Every renderer** in `/home/azureuser/emdash-fork/packages/blocks/src/`.
-3. **The 0.29.0 → 0.31.1 delta, which is nothing.** `diff -rq` over the two installed `dist/`
-   trees is **empty** (the content-hashed filenames are even identical), and in the fork both
-   `git diff @emdash-cms/blocks@0.29.0 HEAD -- packages/blocks/src` and
-   `git diff @emdash-cms/blocks@0.31.1 HEAD -- packages/blocks/src` are **empty**. The block
-   renderers did not change between the two tags.
+2. **Every renderer**, read from the same installed package's compiled `dist/` in
+   `node_modules/.pnpm/@emdash-cms+blocks@0.31.1_*/node_modules/@emdash-cms/blocks/dist/`.
 
-So the fork checkout is a faithful read of what staging runs. **Citations in this document are to
-the fork source and the installed 0.31.1 dist; they are valid for 0.29.0 as well.** Do not send a
-team diffing against the 0.29.0 tag — the repo no longer uses it.
+**The 0.29.0 → 0.31.1 delta is nothing.** `diff -rq` over the two installed `dist/` trees is
+**empty** (the content-hashed filenames are even identical) — the block renderers did not change
+between the two tags.
+
+**Citations in this document are to the pinned `@emdash-cms/blocks@0.31.1` package in
+`node_modules`; they are valid for 0.29.0 as well.** Do not send a team diffing against the
+0.29.0 tag — the repo no longer uses it. Under D1, `/home/azureuser/emdash-fork` is out of scope
+for this console and `/home/azureuser/emdash` is 530 commits stale at 0.15.0 — neither is a
+citation source.
 
 **`orders-page.ts` line citations are to PR #161's COMMITTED state**, i.e. the tip commit of
 `feat/admin-orders-layout` (`git show <tip>:packages/plugin/src/admin/orders-page.ts`), **not** to a
@@ -3090,40 +3092,47 @@ these rules as its own assertions.
 
 ## 14. What a fork change would simplify (not required by this spec)
 
-Tracked follow-ups against `/home/azureuser/emdash-fork`, branched from freshly-synced `main`,
-commit author `Vedanshu <vedanshu@urumi.ai>`, upstream PR template. **Nothing in this document
-depends on any of them** — every rule above is satisfiable on 0.31.1 as pinned.
+**Fork work is not pursued.** Under D1, the EmDash fork is out of scope entirely: Otta runs
+stock `emdash@0.31.1` / `@emdash-cms/blocks@0.31.1` from public npm, pinned exact — no fork
+branches, no fork builds, no upstream PRs, no `patchedDependencies`. Block Kit is frozen. A
+capability it lacks is reachable **only** by migrating that screen to the React admin console
+(`format: "native"` + `adminEntry`), which is gated on the still-pending amendment to
+ADR-0006's Decision 2 (INC-17) — **proposed, not yet accepted**. The five items below record
+what Block Kit cannot do and stays unable to do; none is being patched.
 
-1. **A mid-level heading — `header.level?: 2|3` or `section.style?: "heading"`.** The
-   **highest-leverage** change for this console. There are exactly two text weights (R-5), so a tab
-   panel becomes a stack of grey accordion triggers with no visual hierarchy between them. The
-   research in §0 names the missing mid-level heading as the single biggest cause of the flat look,
-   and P-2's "at most one `header` per panel" exception exists only because this is missing.
+1. **A mid-level heading — `header.level?: 2|3` or `section.style?: "heading"`.** There are
+   exactly two text weights (R-5), so a tab panel is a stack of grey accordion triggers with no
+   visual hierarchy between them. The research in §0 names the missing mid-level heading as the
+   single biggest cause of the flat look, and P-2's "at most one `header` per panel" exception
+   exists only because Block Kit has no substitute. Unreachable on Block Kit; only the React
+   console can add real heading levels.
 2. **`TableBlock.row_action_id`** (R-7). Would delete every "Open X" form (L-7) and every
    button-in-row drill-in (§12.7), and let registry levels stay real tables with drillable rows
-   instead of accordion lists — which would in turn retire L-9's dual-branch requirement.
-3. **Make `select` render its option *label*** — pass `items={element.options}` (or `renderValue`)
-   in the fork's `elements/select.tsx`, and add `placeholder` to `SelectElement`. **Two distinct
-   defects, and they need different fixes:** `placeholder` fixes only the *empty* trigger; the
-   *wrong text* — the raw value instead of the label (R-17a) — needs `items`/`renderValue`. Kumo
-   2.6.0's `Select` already accepts both props, so this is a small fork change and a **fork PR is
-   being raised separately**.
+   instead of accordion lists — which would in turn retire L-9's dual-branch requirement. Absent
+   from stock 0.31.1 and staying absent; the React console is the only path (also tracked at
+   INC-20/21).
+3. **`select` renders its option *value*, never its *label*** (R-17a), and `SelectElement` has
+   no `placeholder` either (R-17). Kumo 2.6.0's own `Select` already accepts `items`/
+   `renderValue` and `placeholder` — the gap is Block Kit's `elements/select.tsx`, not Kumo —
+   but with no fork there is no path to change it.
 
-   **Downgraded in revision 4.** Revisions 1–3 valued this item on the claim that the order picker's
-   trigger reads a raw UUID. It does not — the picker is a `combobox`, which already passes `items`
-   and already renders the label (R-17b), and it already has a `placeholder`. So this item's real
-   scope is `select` **only**, its worst live instance is the cancellation reason reading
-   `customer_request`, and F-6c makes that tolerable indefinitely. Still worth having — it would let
-   `select` carry ids and retire F-6c — but it blocks nothing and should not be sequenced ahead of
-   items 1 or 2.
-4. **`"tab"` in `validateBlocks`' `BLOCK_TYPES`** (R-15 — re-verified absent in 0.31.1). One-line
-   fix; the type, builder and renderer already exist. Without it, any validation of these blocks
-   reports `Unknown block type 'tab'` even though the page renders correctly.
-5. **A clickable link — `format:"link"` on a table column, or a `link` element.** A tracking URL is
-   the one value on these screens whose entire purpose is to be followed, and the vocabulary can only
-   render it as text the operator selects and copies. That is a **renderer limit, not an authoring
-   error**: do not "fix" it by shortening the URL (X-11a) or by dropping the field. Until this lands,
-   a tracking URL renders in full, in `fields`, and the group's label carries the tracking *number*.
+   **Downgraded in revision 4.** Revisions 1–3 valued this item on the claim that the order
+   picker's trigger reads a raw UUID. It does not — the picker is a `combobox`, which already
+   passes `items` and already renders the label (R-17b), and it already has a `placeholder`. So
+   this item's real scope is `select` **only**, its worst live instance is the cancellation
+   reason reading `customer_request`, and F-6c makes that tolerable indefinitely — the fix, if
+   ever taken, is a React field, not a patched `select.tsx`.
+4. **`"tab"` absent from `validateBlocks`' `BLOCK_TYPES`** (R-15 — re-verified absent in
+   0.31.1). The type, builder and renderer already exist; only the validator's allow-list is
+   missing it. Runtime is unaffected (`validateBlocks` is invoked nowhere in the runtime or
+   admin app), but any test or tool that validates these blocks reports `Unknown block type
+   'tab'`. No upstream PR is filed under D1; live with the validator gap.
+5. **A clickable link — `format:"link"` on a table column, or a `link` element.** A tracking
+   URL is the one value on these screens whose entire purpose is to be followed, and the
+   vocabulary can only render it as text the operator selects and copies. That is a **renderer
+   limit, not an authoring error**: do not "fix" it by shortening the URL (X-11a) or by dropping
+   the field. A tracking URL renders in full, in `fields`, and the group's label carries the
+   tracking *number* — permanently, absent a React migration.
 
 A sixth would be nice but is not needed: **`Badge` variants** driven by a per-column value map
 (R-6), which would let a status column encode severity instead of just chunking text. Until then,
@@ -3131,9 +3140,9 @@ T-5's "one badge column, lifecycle state only" is the correct discipline.
 
 Two upstream nuisances are recorded here rather than tracked as items, because neither affects
 rendered output: `ComboboxList` emits a React duplicate-key warning even when every option value is
-unique (upstream, not ours — a candidate follow-up alongside the five above), and the EmDash admin
-does not honour Playwright's `fullPage` (the content region clips at the viewport, so screenshot with
-a **tall viewport** — 1440×1800/2200 — not `fullPage` alone).
+unique (upstream, not filed under D1), and the EmDash admin does not honour Playwright's
+`fullPage` (the content region clips at the viewport, so screenshot with a **tall viewport** —
+1440×1800/2200 — not `fullPage` alone).
 
 ---
 

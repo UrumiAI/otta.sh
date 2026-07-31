@@ -30,7 +30,10 @@ These are build-breaking, not code-review nits (see `DEVELOPMENT.md` for the ful
 - **Orders snapshot price + title at purchase time.** Editing a product never rewrites an
   existing order's line items.
 - **The plugin is sandbox-clean.** Dev/test against the workerd-on-Node sandbox; Block Kit
-  widgets (not React); the plugin reaches the service **only** via `ctx.http` + `allowedHosts`.
+  widgets, not React — the discriminator is `format` (`format: "native"` may declare
+  `adminEntry`; `format: "standard"` throws at build time), and `@otta-sh/plugin` registers
+  `format: "standard"` and stays Block Kit; the plugin reaches the service **only** via
+  `ctx.http` + `allowedHosts`.
 
 ## Toolchain & the edit loop
 
@@ -90,4 +93,6 @@ For parallel or agent-driven work, use one git worktree per task, branched from 
 - **Worktree convention:** siblings named `../otta-wt-<slug>`.
 - **Branch types & PR tags:** as above.
 - **Verification policy:** as above — the contract suite is the gate; never mark a task done
-  while tests fail; **never push to `main`**, merging is user-gated.
+  while tests fail; never **force-push** `main`; **merge commits only** (squash and rebase
+  disabled repo-level); merge only on a fully green, verified PR with the run output recorded
+  in the PR body.
