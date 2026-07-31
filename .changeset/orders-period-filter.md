@@ -1,5 +1,5 @@
 ---
-"@otta-sh/plugin": patch
+"@otta-sh/plugin": minor
 ---
 
 Admin Orders: one `Period` select, and the console's single date-bounds
@@ -15,6 +15,23 @@ cutting fields; splitting the filter across a `columns` grid would split one
 submit into several that lose each other's unsubmitted edits, so it is not an
 option here. Leaving the custom shape is emptying both dates and applying, or
 `Clear filters`.
+
+**The ergonomic cost, plainly.** The spec's wording was that `Custom…` *reveals*
+the two date fields; the field ceiling is why they replace the select instead, and
+the operator pays for that in two places. Choosing `Custom…` drops the active
+window until days are typed and applied — the panel is briefly filtering by
+nothing where a preset would have been filtering by something. And going back
+from a custom range to a preset costs two round-trips (empty the days and apply,
+then choose the preset and apply) rather than one, because the select is not on
+screen while the dates are. Both are the ceiling's price for keeping the panel
+inside four authored fields; the alternative was a fifth field, which
+`filterPanel` refuses outright. `minor`, not `patch`: a saved query for the same
+`To` day now returns different results than it did before this change.
+
+A carrier that arrives with days but no recognised period — one minted before this
+change, or one whose `period` is forged or stale — renders as the custom shape
+with its days prefilled and summarised, rather than as an `Any time` panel that is
+quietly filtering by a window nothing on screen mentions.
 
 **Bounds convergence.** The two labels read `From (inclusive)` and
 `To (exclusive)`, which put interval notation in front of an operator and
@@ -44,3 +61,9 @@ page one never asked. Back-button behaviour is unchanged scaffold parity (a
 rather than left to be discovered.
 
 No wire, port, money or service change.
+
+For the record: the increment's "state the measured panel height before/after"
+acceptance is satisfied by the evidence pass, which measures the rendered panel in
+BOTH states (the three-field preset shape and the four-field custom one) — a field
+count is the thing this change controls, a rendered height is the thing it is
+claimed to buy, and only the second can be measured against a running console.

@@ -357,11 +357,27 @@ interface OrdersFilterForm {
 	search?: string;
 }
 
-/** The custom shape: the two date fields instead of the select. Asked in three
- *  places (the fields, their active-filter parts, the window) so they cannot
- *  disagree about which shape is on screen. */
+/**
+ * The custom shape: the two date fields instead of the select. Asked in three
+ * places (the fields, their active-filter parts, the window) so they cannot
+ * disagree about which shape is on screen.
+ *
+ * DAYS WITHOUT A RECOGNISED PERIOD ARE A CUSTOM RANGE, which is the same
+ * inference {@link periodFromValues} makes on a submit — deliberately, because
+ * the two must not answer differently about one filter. Two carriers arrive
+ * here shaped that way and both used to render as `Any time` while STILL
+ * filtering by their days: a cursor minted before this increment (`{status,
+ * from, to}` — every tab left open across the deploy), and a forged or stale
+ * `period` value carrying days. A window applied with no field, no prefill and
+ * no active-filter part is precisely the L-3 divergence the panel exists to
+ * prevent, so both degrade to the honest custom shape instead. A RECOGNISED
+ * preset with stray days is not custom: the preset wins, and
+ * {@link periodWindow} ignores the days for the same reason.
+ */
 function isCustomPeriod(form: OrdersFilterForm): boolean {
-	return form.period === "custom";
+	if (form.period === "custom") return true;
+	const hasDays = form.from !== undefined || form.to !== undefined;
+	return hasDays && !PERIOD_PRESETS.some((p) => p.key === form.period);
 }
 
 /**
@@ -3759,6 +3775,18 @@ function periodWindow(form: OrdersFilterForm, now: Date): { from?: string; to?: 
 		...(form.to !== undefined ? { to: endOfDay(form.to) } : {}),
 	};
 }
+
+/**
+ * THE THREE DAY HELPERS BELOW ARE A TWIN of `reports-page.ts:192-219`
+ * (`dayOf`, `DAY_PATTERN`, `parseBound`), and the duplication is deliberate for
+ * exactly as long as it takes the shared timestamp formatter to land: this
+ * increment's job was to converge the two screens' SEMANTICS (whole days, both
+ * ends inclusive), and reaching into a `scaffold/` module to also converge the
+ * code would have widened it past its own file table. The timestamps increment
+ * introduces that shared formatter for list/detail rendering — it is the
+ * absorber for these three, and the reciprocal note sits over the Reports copy
+ * so neither side can be changed alone without seeing the other.
+ */
 
 /** The `YYYY-MM-DD` (UTC) a moment falls on. */
 function dayOf(at: Date): string {

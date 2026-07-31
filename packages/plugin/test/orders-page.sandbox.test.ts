@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { ORDER_STATE_MACHINE } from "@otta-sh/domain";
 import { decodeCarrier, encodeCarrier } from "../src/admin/scaffold/carrier.js";
-import { decodeListCursor } from "../src/admin/scaffold/nav.js";
+import { decodeListCursor, encodeListCursor } from "../src/admin/scaffold/nav.js";
 import {
 	SHORT_ID_CONFIRM_LEN,
 	SHORT_ID_MIN,
@@ -1298,6 +1298,120 @@ describe("admin Orders console (workerd sandbox)", () => {
 		const reapplied = listQuery(stub!.requests);
 		expect(reapplied.get("from")).toBe(`${dayBefore(today, 6)}T00:00:00.000Z`);
 		expect(reapplied.get("to")).toBe(`${today}T23:59:59.999Z`);
+	});
+
+	test("a CUSTOM range survives Load more: the carrier holds the days, the restored panel is the four-field shape, and re-applying it asks the same window", async () => {
+		await boot();
+		const custom = await submitForm(await list(), "orders:apply-filter", {
+			status: "any",
+			period: "Custom…",
+			search: "",
+		});
+		const ranged = await submitForm(custom, "orders:apply-filter", {
+			status: "any",
+			from: "2026-07-10",
+			to: "2026-07-12",
+			search: "",
+		});
+		const token = tableWithId(ranged, "orders:list")?.next_cursor as string;
+		expect(decodeListCursor(token)?.f).toEqual({
+			period: "custom",
+			from: "2026-07-10",
+			to: "2026-07-12",
+		});
+
+		stub!.requests.length = 0;
+		const page2 = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "block_action",
+				action_id: "orders:page",
+				value: { cursor: token, sort: null },
+			}),
+		);
+		expect(listQuery(stub!.requests).get("cursor")).toBe("svc-cursor-1");
+		const form = formFor(page2, "orders:apply-filter");
+		expect(fieldIds(form)).toEqual(["status", "from", "to", "search"]);
+		expect(field(form, "from")?.initial_value).toBe("2026-07-10");
+		expect(field(form, "to")?.initial_value).toBe("2026-07-12");
+		expect(findBlock(page2, "section")?.text).toBe("from: 2026-07-10 · to: 2026-07-12");
+		await submitForm(page2, "orders:apply-filter", {
+			status: "any",
+			from: "2026-07-10",
+			to: "2026-07-12",
+			search: "",
+		});
+		const query = listQuery(stub!.requests);
+		expect(query.get("from")).toBe("2026-07-10T00:00:00.000Z");
+		expect(query.get("to")).toBe("2026-07-12T23:59:59.999Z");
+	});
+
+	test("a carrier carrying DAYS AND NO RECOGNISED PERIOD renders the custom shape — never an `Any time` panel that is quietly filtering (L-3)", async () => {
+		await boot();
+		// Two carriers arrive shaped this way: one minted BEFORE the Period select
+		// existed (every tab left open across the deploy), and one whose `period` is
+		// forged or stale. Both used to render `Any time`, with no date field, no
+		// prefill and no summary part, WHILE still filtering by their days.
+		for (const filter of [
+			{ status: "paid", from: "2026-07-10", to: "2026-07-12" },
+			{ status: "paid", period: "bogus", from: "2026-07-10", to: "2026-07-12" },
+		]) {
+			stub!.requests.length = 0;
+			const restored = blocksOf(
+				await sandbox!.invokeRoute("admin", {
+					type: "block_action",
+					action_id: "orders:page",
+					value: { cursor: encodeListCursor({ c: "svc-cursor-1", f: filter }), sort: null },
+				}),
+			);
+			const form = formFor(restored, "orders:apply-filter");
+			expect(fieldIds(form), JSON.stringify(filter)).toEqual(["status", "from", "to", "search"]);
+			expect(field(form, "from")?.initial_value).toBe("2026-07-10");
+			expect(field(form, "to")?.initial_value).toBe("2026-07-12");
+			expect(group(restored, "orders:filters")?.label).toBe("Filters (3 active)");
+			expect(findBlock(restored, "section")?.text).toBe(
+				"status: paid · from: 2026-07-10 · to: 2026-07-12",
+			);
+			// The window the panel now SHOWS is the window it asks for.
+			await submitForm(restored, "orders:apply-filter", {
+				status: "paid",
+				from: "2026-07-10",
+				to: "2026-07-12",
+				search: "",
+			});
+			const query = listQuery(stub!.requests);
+			expect(query.get("from")).toBe("2026-07-10T00:00:00.000Z");
+			expect(query.get("to")).toBe("2026-07-12T23:59:59.999Z");
+		}
+
+		// A RECOGNISED preset carrying stray days is NOT custom: the preset wins on
+		// both paths, so the days change neither the shape nor the window.
+		stub!.requests.length = 0;
+		const today = new Date().toISOString().slice(0, 10);
+		const preset = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "block_action",
+				action_id: "orders:page",
+				value: {
+					cursor: encodeListCursor({
+						c: "svc-cursor-1",
+						f: { period: "last7", from: "2026-07-10", to: "2026-07-12" },
+					}),
+					sort: null,
+				},
+			}),
+		);
+		expect(fieldIds(formFor(preset, "orders:apply-filter"))).toEqual([
+			"status",
+			"period",
+			"search",
+		]);
+		expect(findBlock(preset, "section")?.text).toBe("period: Last 7 days");
+		await submitForm(preset, "orders:apply-filter", {
+			status: "any",
+			period: "Last 7 days",
+			search: "",
+		});
+		expect(listQuery(stub!.requests).get("to")).toBe(`${today}T23:59:59.999Z`);
 	});
 
 	test("emptying both dates LEAVES the custom shape — the select returns at `Any time` and the window is dropped; `Clear filters` does it in one click", async () => {
