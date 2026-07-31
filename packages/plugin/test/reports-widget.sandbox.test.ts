@@ -3,6 +3,8 @@ import { afterEach, describe, expect, test } from "vitest";
 import { assertBlockContract } from "./helpers/block-contract.js";
 import {
 	blocksOf,
+	columnLabels,
+	columnsOf,
 	contextTexts,
 	field,
 	fieldIds,
@@ -69,7 +71,10 @@ function reportsResponder(req: { url: string }): { status: number; body: unknown
 		};
 	}
 	if (req.url.startsWith("/reports/low-stock")) {
-		return { status: 200, body: { ok: true, rows: [{ sku: "SKU-A", onHand: 0 }] } };
+		return {
+			status: 200,
+			body: { ok: true, rows: [{ sku: "SKU-A", onHand: 0, title: "Aluminum Water Bottle" }] },
+		};
 	}
 	// The low-stock THRESHOLD is a label, not a figure — the page reads it from
 	// the same settings endpoint the Settings screen writes.
@@ -713,6 +718,107 @@ describe("Reports admin page (workerd sandbox)", () => {
 		// and the four reports still render.
 		expect(String(group(blocks, "reports:low")?.label)).toBe("Low stock (1)");
 		expect(findBlocks(blocks, "table")).toHaveLength(4);
+	});
+
+	test("low-stock rows render Title, then SKU, then On hand — the SKU→title map operators used to keep in their head", async () => {
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", (req) => {
+			if (req.url.startsWith("/reports/low-stock")) {
+				return {
+					status: 200,
+					body: {
+						ok: true,
+						rows: [{ sku: "SKU-A", onHand: 0, title: "Aluminum Water Bottle" }],
+					},
+				};
+			}
+			return reportsResponder(req);
+		});
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+		await seedAdminToken(sandbox, stub);
+
+		const outcome = await sandbox.invokeRoute("admin", { type: "page_load", page: "/reports" });
+		const blocks = blocksOf(outcome);
+		assertBlockContract(blocks, { screen: "reports", level: "list" });
+
+		const table = tableWithId(blocks, "reports:low-table");
+		expect(columnLabels(table)).toEqual(["Title", "SKU", "On hand"]);
+		// X-4 (T-5): this report is every row at or below SOME threshold by
+		// construction, so a badge column here could legitimately render the
+		// identical value on every row of a real response — pin plain text so a
+		// future change can't silently reintroduce a badge column on it.
+		expect(columnsOf(table).filter((c) => c.format === "badge")).toEqual([]);
+		const rows = (table?.rows ?? []) as Array<Record<string, unknown>>;
+		expect(rows).toEqual([
+			{ title: "Aluminum Water Bottle", sku: "SKU-A", onHand: "0 / Out of stock" },
+		]);
+	});
+
+	test("a null title renders (untitled) and NEVER falls back to the SKU — they are different facts", async () => {
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", (req) => {
+			if (req.url.startsWith("/reports/low-stock")) {
+				return {
+					status: 200,
+					body: { ok: true, rows: [{ sku: "SKU-B", onHand: 3, title: null }] },
+				};
+			}
+			return reportsResponder(req);
+		});
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+		await seedAdminToken(sandbox, stub);
+
+		const outcome = await sandbox.invokeRoute("admin", { type: "page_load", page: "/reports" });
+		const blocks = blocksOf(outcome);
+		assertBlockContract(blocks, { screen: "reports", level: "list" });
+
+		const rows = (tableWithId(blocks, "reports:low-table")?.rows ?? []) as Array<
+			Record<string, unknown>
+		>;
+		expect(rows).toEqual([{ title: "(untitled)", sku: "SKU-B", onHand: "3 / Low" }]);
+		// A null title is a distinct fact from a missing SKU (the row already
+		// states the SKU in its own column) — the title cell never echoes it.
+		expect(rows[0]?.title).not.toBe("SKU-B");
+	});
+
+	test("On hand states Out of stock at 0 and Low for the 1..threshold band, per the stock-visibility rendering rule", async () => {
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", (req) => {
+			if (req.url.startsWith("/reports/low-stock")) {
+				return {
+					status: 200,
+					body: {
+						ok: true,
+						rows: [
+							{ sku: "SKU-A", onHand: 0, title: "Out-of-stock Item" },
+							{ sku: "SKU-B", onHand: 1, title: "Barely-low Item" },
+							{ sku: "SKU-C", onHand: 5, title: "Low Item" },
+						],
+					},
+				};
+			}
+			return reportsResponder(req);
+		});
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+		await seedAdminToken(sandbox, stub);
+
+		const outcome = await sandbox.invokeRoute("admin", { type: "page_load", page: "/reports" });
+		const blocks = blocksOf(outcome);
+		assertBlockContract(blocks, { screen: "reports", level: "list" });
+
+		const rows = (tableWithId(blocks, "reports:low-table")?.rows ?? []) as Array<
+			Record<string, unknown>
+		>;
+		expect(rows.map((r) => r.onHand)).toEqual(["0 / Out of stock", "1 / Low", "5 / Low"]);
 	});
 
 	test("the revenue series is continuous across a zero-revenue gap, and no chart block is emitted", async () => {

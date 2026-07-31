@@ -593,10 +593,18 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 		type: "table",
 		block_id: "reports:low-table",
 		columns: [
+			{ key: "title", label: "Title" },
 			{ key: "sku", label: "SKU", format: "code" },
-			{ key: "onHand", label: "On hand", format: "number" },
+			{ key: "onHand", label: "On hand" },
 		],
-		rows: data.low.map((r) => ({ ...r })),
+		rows: data.low.map((r) => ({
+			// CMS-owned, same as the products list (products-page.ts) — `null`
+			// means no live product claims the sku, which is a different fact
+			// from the sku itself, so it renders "(untitled)" and never the sku.
+			title: r.title ?? "(untitled)",
+			sku: r.sku,
+			onHand: lowStockOnHandLabel(r.onHand),
+		})),
 		page_action_id: REPORTS_PAGE_ACTION_ID, // never fires: no next_cursor, no sortable column
 		empty_text: "Nothing low on stock.",
 	};
@@ -641,6 +649,32 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 		lowAccordion,
 	];
 	return { blocks };
+}
+
+/**
+ * `0` reads as "Out of stock", the low band as "Low" — the exact wording
+ * from the stock-visibility increment's (INC-04) own verification note in
+ * the spec (`0 / Out of stock`, `1 / Low`), which is the vocabulary source
+ * here. NOT a mirror of `products-page.ts`'s `On hand` column: that
+ * increment hasn't merged as of this change, so there is no shipped column
+ * to copy from — when it lands, its column becomes this one's SIBLING (same
+ * vocabulary, independently derived), not the source.
+ *
+ * Deliberately plain text, not `format: "badge"`, even though the same
+ * words badge there: every row in this table already sits at or below SOME
+ * threshold — that is what selected it into `GET /reports/low-stock` — so a
+ * badge column here could legitimately render the identical value on every
+ * row (all-zero or all-low is a normal shape for this report). Block
+ * Kit's `format:"badge"` on a column whose value is constant within one
+ * rendered response is `ADMIN-CONSOLE.md`'s X-4 (T-5): "A column of
+ * identical badges … or more than one badge column in a table." Plain text
+ * carries the same two words without tripping it. The raw count stays in
+ * the cell alongside the word: a bare "Out of stock" would make an
+ * operator re-derive whether that means 0 or "some, but running low," and
+ * the count is the fact this column is named for.
+ */
+function lowStockOnHandLabel(onHand: number): string {
+	return onHand === 0 ? `${onHand} / Out of stock` : `${onHand} / Low`;
 }
 
 /**

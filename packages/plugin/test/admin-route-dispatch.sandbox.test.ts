@@ -59,7 +59,13 @@ function makeGetResponder() {
 				};
 			}
 			if (req.url.startsWith("/reports/low-stock")) {
-				return { status: 200, body: { ok: true, rows: [{ sku: "SKU-A", onHand: 0 }] } };
+				return {
+					status: 200,
+					body: {
+						ok: true,
+						rows: [{ sku: "SKU-A", onHand: 0, title: "Aluminum Water Bottle" }],
+					},
+				};
 			}
 		}
 		return { status: 404, body: { error: "unknown" } };
