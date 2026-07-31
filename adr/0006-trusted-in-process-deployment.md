@@ -114,6 +114,10 @@ separate package, alongside the unchanged standard-format `otta` descriptor, for
 migrated screens only. It carries the evidence this record could not: a built-and-run
 two-descriptor spike, the measured Worker cost, and the costs accepted.
 
+Decision 3's hand-written descriptor list (`sites/staging/src/otta-plugin-descriptor.ts`) gains
+a second entry, `otta-console`; its constraints stand — no `sandboxed:`, no `sandboxRunner:` —
+and the existing `otta` descriptor's capabilities and `allowedHosts` are unchanged.
+
 **Decision 1 is untouched and expressly reaffirmed there.** The 18 workerd sandbox suites
 remain the contract gate; none is deleted, skipped or weakened, and Playwright is added for
 React screens as an *addition*, never a replacement. Decision 2 continues to bind

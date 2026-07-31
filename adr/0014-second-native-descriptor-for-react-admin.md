@@ -71,12 +71,13 @@ A two-descriptor hybrid was built against the real staging config on 2026-07-31 
 prediction was checked rather than argued:
 
 - **The build works, and the negative control fires.** `astro build` succeeded with both
-  descriptors registered. Adding `adminEntry` to the standard-format `otta` descriptor threw
-  the documented error, which was then reverted — the gate is real, live at 0.31.1, and
-  evaluated per descriptor.
+  descriptors registered. `emdash@0.31.1`'s astro integration throws at build time for any
+  descriptor with `format: "standard"` that declares `adminEntry` — that check ships in the
+  installed package, on disk in `node_modules/emdash`, not just upstream source — so the gate
+  is real, live at 0.31.1, and evaluated per descriptor.
 - **The one unverified thing came back yes.** `POST /_emdash/api/plugins/otta/admin` →
-  **HTTP 200**, served to a page owned by `otta-console`; envelope `[success, data]`, 5 blocks,
-  18 rows of real order data. It works structurally, not incidentally: the route handler
+  **HTTP 200**, served to a page owned by `otta-console`; envelope `[success, data]`. It works
+  structurally, not incidentally: the route handler
   authorises on the session user's `plugins:manage` permission, the token scope, and the
   `X-EmDash-Request` CSRF header. **Nothing in the request identifies the calling plugin** —
   the dispatcher has no concept of one.
@@ -156,8 +157,10 @@ Stated separately so it cannot be read as collateral to the above:
 
 ### Preconditions before any React ships
 
-Because ADDENDUM §G is right that prose enforces nothing, the boundary above is pinned
-mechanically **before** the first React screen, not after:
+Because prose enforces nothing on its own — as established above, `plugin-is-sandbox-clean`
+forbids DB, Node and HTTP-client imports but not `react`, and `site-config.test.ts` asserted
+nothing about `adminEntry` or `componentsEntry` — the boundary above is pinned mechanically
+**before** the first React screen, not after:
 
 - `site-config.test.ts` pins **both** descriptors: `otta` remains `format: "standard"` with **no
   `adminEntry`** and **no `componentsEntry`**; `otta-console` is `id === "otta-console"`,
