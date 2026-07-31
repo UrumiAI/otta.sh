@@ -189,7 +189,12 @@ function rangeFromDays(fromDay: string, toDay: string): Omit<ResolvedRange, "isD
 	};
 }
 
-/** The `YYYY-MM-DD` (UTC) a moment falls on. */
+/** The `YYYY-MM-DD` (UTC) a moment falls on.
+ *
+ *  TWIN: `orders-page.ts`'s `dayOf`/`startOfDay`/`endOfDay` say the same three
+ *  things — the two screens now share ONE date-bounds convention (whole days,
+ *  both ends inclusive) and each keeps a private copy. The shared timestamp
+ *  formatter increment is where both should land. */
 function dayOf(at: Date): string {
 	return at.toISOString().slice(0, 10);
 }

@@ -7,9 +7,11 @@ import type {
 	Block,
 	ButtonElement,
 	ConfirmDialog,
+	DateFieldSpec,
 	FieldsBlock,
 	FormBlock,
 	RouteHandler,
+	SelectFieldSpec,
 	SelectOption,
 	TableBlock,
 	TabPanel,
@@ -279,13 +281,103 @@ export const ORDERS_ACTION_IDS: ReadonlySet<string> = ORDERS_ACTIONS.actionIds(
 	...CANCELLATION_REASONS.map((r) => cancelReasonVerb(r.value)),
 );
 
+/**
+ * THE PERIOD VOCABULARY — the console's one date control, in the two shapes it
+ * takes.
+ *
+ * A period used to be two `date_input`s that were always on screen, which cost
+ * the panel two of its four permitted fields to answer the question an operator
+ * asks nine times in ten ("this week"). It is now ONE `select` of relative
+ * presets, and the two date fields are the shape it takes when the operator
+ * picks `Custom…` — never alongside it. That is deliberate and it is the reason
+ * this increment exists: {@link filterPanel} refuses more than FOUR authored
+ * fields, so `status + period + from + to + search` is not a layout to weigh up,
+ * it is a throw that renders this screen's fail-closed banner. The two dates
+ * take the select's slot because they ARE the period the select would otherwise
+ * name — one concept, one slot, three fields in the common case and four in the
+ * rare one.
+ *
+ * Leaving the custom shape: empty both dates and apply (the select comes back at
+ * `Any time`), or use `Clear filters`. Both are pinned by the suite.
+ *
+ * WHY THE OPTION VALUE IS THE HUMAN LABEL: the pinned renderer's `select`
+ * trigger renders the raw option VALUE, never its label (R-17a, F-6c) — the same
+ * reason the note form's cancellation reasons carry labels as values. A submit
+ * maps back through {@link PERIOD_BY_LABEL} to the key stored in the filter, so
+ * the carrier and the wire keep a stable token while the operator reads English.
+ */
+type PeriodKey = "last7" | "last30" | "last90" | "custom";
+
+/** The relative presets, in render order. `days` is the WHOLE-DAY span the
+ *  preset covers, TODAY INCLUDED — "last 7 days" is 7 day-boundaries, not
+ *  `now - 168h`, so the label and the window it queries describe the same thing
+ *  (the divergence the Reports period was fixed for). */
+const PERIOD_PRESETS: ReadonlyArray<{ key: PeriodKey; label: string; days: number }> = [
+	{ key: "last7", label: "Last 7 days", days: 7 },
+	{ key: "last30", label: "Last 30 days", days: 30 },
+	{ key: "last90", label: "Last 90 days", days: 90 },
+];
+
+/** The all-values option — the period's {@link ANY}. A real word, never `""`
+ *  (F-6a, R-17a). */
+const PERIOD_ANY = "Any time";
+
+/** The option that swaps the select for the two date fields. */
+const PERIOD_CUSTOM = "Custom…";
+
+const PERIOD_LABELS: ReadonlyMap<PeriodKey, string> = new Map([
+	...PERIOD_PRESETS.map((p) => [p.key, p.label] as const),
+	["custom" as PeriodKey, PERIOD_CUSTOM] as const,
+]);
+
+/** The inverse — a submitted option value (a label) back to its key. `Any time`
+ *  is deliberately ABSENT: it maps to "no period", which is the filter's
+ *  default, and a default is stored as an omitted field (see
+ *  {@link filterFromValues}). */
+const PERIOD_BY_LABEL: ReadonlyMap<string, PeriodKey> = new Map(
+	[...PERIOD_LABELS].map(([key, label]) => [label, key]),
+);
+
+const DAY_MS = 86_400_000;
+
+/** A bare `YYYY-MM-DD`, the shape a `date_input` submits. */
+const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
 /** The console's own filter form values, kept alongside the opaque service cursor
- *  so paging preserves the form (MOD-9). */
+ *  so paging preserves the form (MOD-9).
+ *
+ *  `from`/`to` are DAYS (`YYYY-MM-DD`) and belong to `period: "custom"` alone —
+ *  every other period resolves its own window at render time from
+ *  {@link PERIOD_PRESETS}, so a relative period cannot go stale in a carrier. */
 interface OrdersFilterForm {
 	status?: string;
+	period?: PeriodKey;
 	from?: string;
 	to?: string;
 	search?: string;
+}
+
+/**
+ * The custom shape: the two date fields instead of the select. Asked in three
+ * places (the fields, their active-filter parts, the window) so they cannot
+ * disagree about which shape is on screen.
+ *
+ * DAYS WITHOUT A RECOGNISED PERIOD ARE A CUSTOM RANGE, which is the same
+ * inference {@link periodFromValues} makes on a submit — deliberately, because
+ * the two must not answer differently about one filter. Two carriers arrive
+ * here shaped that way and both used to render as `Any time` while STILL
+ * filtering by their days: a cursor minted before this increment (`{status,
+ * from, to}` — every tab left open across the deploy), and a forged or stale
+ * `period` value carrying days. A window applied with no field, no prefill and
+ * no active-filter part is precisely the L-3 divergence the panel exists to
+ * prevent, so both degrade to the honest custom shape instead. A RECOGNISED
+ * preset with stray days is not custom: the preset wins, and
+ * {@link periodWindow} ignores the days for the same reason.
+ */
+function isCustomPeriod(form: OrdersFilterForm): boolean {
+	if (form.period === "custom") return true;
+	const hasDays = form.from !== undefined || form.to !== undefined;
+	return hasDays && !PERIOD_PRESETS.some((p) => p.key === form.period);
 }
 
 /**
@@ -464,14 +556,7 @@ function listBlocks(
 	// to the list with no explanation.
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
 
-	// ONE PART PER AUTHORED FILTER FIELD (L-3): a from/to range is two fields and
-	// therefore two parts, or the `(N active)` count disagrees with the panel.
-	const activeFilters = [
-		form.status !== undefined && `status: ${form.status}`,
-		form.from !== undefined && `from: ${form.from}`,
-		form.to !== undefined && `to: ${form.to}`,
-		form.search !== undefined && `search: ${form.search}`,
-	];
+	const activeFilters = activeFilterParts(form);
 	blocks.push(
 		filterPanel({
 			form: filterForm(actions, path, form),
@@ -579,10 +664,39 @@ function listBlocks(
 }
 
 /**
- * The four-field filter (L-2 ⇒ an accordion), built by {@link carriedForm} LAST so
- * the digest it carries matches the form — `filterPanel` recomputes it and throws
- * on an absent or stale one, because a form whose React key cannot change when its
- * prefilled values do strands a cleared filter on screen (B-3a).
+ * ONE PART PER AUTHORED FILTER FIELD (L-3), which is why this is derived from the
+ * SAME {@link isCustomPeriod} the fields are: the `(N active)` count in the
+ * accordion label and the summary section beneath it both come from here, and a
+ * part for a field that is not on screen — or a field on screen with no part — is
+ * exactly the disagreement L-3 exists to rule out.
+ *
+ * A relative period contributes ONE part naming ITSELF (`period: Last 7 days`),
+ * never the two dates it resolves to. That is not brevity: the resolution happens
+ * at render time against UTC now, so a part quoting absolute dates would be a
+ * second, independently computed answer to "which period is this?" — and the two
+ * can differ across a midnight. The custom shape quotes its days, because there the
+ * days ARE what the operator typed.
+ */
+function activeFilterParts(form: OrdersFilterForm): Array<string | false> {
+	return [
+		form.status !== undefined && `status: ${form.status}`,
+		...(isCustomPeriod(form)
+			? [form.from !== undefined && `from: ${form.from}`, form.to !== undefined && `to: ${form.to}`]
+			: [form.period !== undefined && `period: ${PERIOD_LABELS.get(form.period) ?? PERIOD_ANY}`]),
+		form.search !== undefined && `search: ${form.search}`,
+	];
+}
+
+/**
+ * The filter (L-2 ⇒ an accordion), built by {@link carriedForm} LAST so the digest
+ * it carries matches the form — `filterPanel` recomputes it and throws on an absent
+ * or stale one, because a form whose React key cannot change when its prefilled
+ * values do strands a cleared filter on screen (B-3a).
+ *
+ * THREE FIELDS, four in the custom shape — see the period vocabulary above for why
+ * the two dates take the select's slot rather than sitting beside it. The shape
+ * change is also what remounts the form: the digest covers the fields, so switching
+ * to `Custom…` yields a new React key and the date inputs actually appear.
  *
  * Carrying `__path` invisibly is also what stands the engine's visible "Scope"
  * dropdown injection down (see `withFilterPathCarry`).
@@ -606,18 +720,7 @@ function filterForm(actions: ScreenActions, path: NavPath, form: OrdersFilterFor
 					],
 					initial_value: form.status ?? ANY,
 				},
-				{
-					type: "date_input",
-					action_id: "from",
-					label: "From (inclusive)",
-					...(form.from !== undefined ? { initial_value: form.from } : {}),
-				},
-				{
-					type: "date_input",
-					action_id: "to",
-					label: "To (exclusive)",
-					...(form.to !== undefined ? { initial_value: form.to } : {}),
-				},
+				...periodFields(form),
 				{
 					type: "text_input",
 					action_id: "search",
@@ -629,6 +732,53 @@ function filterForm(actions: ScreenActions, path: NavPath, form: OrdersFilterFor
 			submit: { label: "Apply filters", action_id: actions.applyFilter },
 		},
 	});
+}
+
+/**
+ * The period control: the `select`, or — under `Custom…` — the two date fields it
+ * is REPLACED BY (never joined by: five authored fields is a `filterPanel` throw,
+ * and the dates are the same one concept the select names).
+ *
+ * The labels are PLAIN — `From`, `To`. They used to read `From (inclusive)` and
+ * `To (exclusive)`: interval notation in front of an operator, and describing a
+ * `To` day that was NOT included, because a bare day was padded to midnight. So
+ * "to 12 Jul" answered with everything placed before 12 Jul began, and the day the
+ * operator named was the one day missing. The console now has ONE date-bounds
+ * semantics — whole days, both ends inclusive, the Reports screen's (see
+ * {@link periodWindow}).
+ */
+function periodFields(form: OrdersFilterForm): Array<SelectFieldSpec | DateFieldSpec> {
+	if (!isCustomPeriod(form)) {
+		return [
+			{
+				type: "select",
+				action_id: "period",
+				label: "Period",
+				// Option VALUE = the human label (R-17a, F-6c) — the trigger renders it
+				// raw, and `last7` on screen is the visible plumbing this file has spent
+				// its whole length removing.
+				options: [PERIOD_ANY, ...PERIOD_PRESETS.map((p) => p.label), PERIOD_CUSTOM].map(
+					(label) => ({ value: label, label }),
+				),
+				initial_value:
+					form.period === undefined ? PERIOD_ANY : (PERIOD_LABELS.get(form.period) ?? PERIOD_ANY),
+			},
+		];
+	}
+	return [
+		{
+			type: "date_input",
+			action_id: "from",
+			label: "From",
+			...(form.from !== undefined ? { initial_value: form.from } : {}),
+		},
+		{
+			type: "date_input",
+			action_id: "to",
+			label: "To",
+			...(form.to !== undefined ? { initial_value: form.to } : {}),
+		},
+	];
 }
 
 /**
@@ -3570,25 +3720,97 @@ function parseCents(value: unknown): number | null {
 }
 
 /** Translate the console's filter form into the client's list filter (single
- *  status → an OR set of one; bare dates normalized to full UTC datetimes so the
- *  service's `z.string().datetime()` accepts them). */
+ *  status → an OR set of one; the period → the instants {@link periodWindow}
+ *  resolves it to, which is the ONLY place this screen turns a period into a
+ *  query). */
 function toClientFilter(form: OrdersFilterForm): OrdersListFilter {
 	const filter: OrdersListFilter = {};
 	if (form.status !== undefined && form.status.length > 0) filter.states = [form.status];
-	const from = normalizeBound(form.from);
-	const to = normalizeBound(form.to);
+	const { from, to } = periodWindow(form, new Date());
 	if (from !== undefined) filter.from = from;
 	if (to !== undefined) filter.to = to;
 	if (form.search !== undefined && form.search.length > 0) filter.search = form.search;
 	return filter;
 }
 
-/** A `date_input` yields `YYYY-MM-DD`; the service wants a full ISO datetime.
- *  Pad a bare date to midnight UTC, pass a full datetime through unchanged. */
+/**
+ * A period → the instants the service is asked for. THE ONE PLACE, so a preset
+ * and a hand-typed identical period cannot resolve differently.
+ *
+ * INCLUSIVE WHOLE-DAY BOUNDS, the console's single date-bounds convention (the
+ * Reports screen's, which this converges on): `from` is the START of its day and
+ * `to` is the END of its, so a `To` of 12 Jul INCLUDES 12 Jul. The old padding
+ * sent midnight for both ends, which silently dropped every order placed on the
+ * last day the operator asked for — the reason `To` was labelled `(exclusive)`
+ * and the reason both labels are now plain.
+ *
+ * ONE RESIDUE WORTH KNOWING, and it is the port's, not this screen's: the orders
+ * window is HALF-OPEN `[from, to)` at the store (`OrderStore.listOrders`, MOD-7),
+ * deliberately unlike `ReportingStore`'s inclusive `BETWEEN`. Against `<`, an
+ * end-of-day `to` includes the whole `To` day except its final millisecond. The
+ * end-of-day instant is what the console standardised on and what Reports sends;
+ * the alternative — next-day midnight — would put a date the operator never chose
+ * on the wire, which is the interval notation this increment took OFF the screen.
+ *
+ * A RELATIVE PERIOD IS RESOLVED HERE, AT RENDER TIME, against UTC now — the only
+ * clock reading in the filter path. That is why nothing else derives dates from a
+ * preset: the active-filter part names the preset itself
+ * ({@link activeFilterParts}), so what the panel says and what the service was
+ * asked can never be two different computations of the same thing.
+ */
+function periodWindow(form: OrdersFilterForm, now: Date): { from?: string; to?: string } {
+	const preset = PERIOD_PRESETS.find((p) => p.key === form.period);
+	if (preset !== undefined) {
+		const toDay = dayOf(now);
+		// `days` counts WHOLE DAYS INCLUDING TODAY: "last 7 days" is today and the
+		// six before it, so the span back is `days - 1`.
+		const fromDay = dayOf(new Date(Date.parse(startOfDay(toDay)) - (preset.days - 1) * DAY_MS));
+		return { from: startOfDay(fromDay), to: endOfDay(toDay) };
+	}
+	// The custom shape — and the only shape carrying days. An unknown `period`
+	// from a hand-made carrier lands here too and, carrying no days, filters by no
+	// window at all rather than by a fabricated one.
+	return {
+		...(form.from !== undefined ? { from: startOfDay(form.from) } : {}),
+		...(form.to !== undefined ? { to: endOfDay(form.to) } : {}),
+	};
+}
+
+/**
+ * THE THREE DAY HELPERS BELOW ARE A TWIN of `reports-page.ts:192-219`
+ * (`dayOf`, `DAY_PATTERN`, `parseBound`), and the duplication is deliberate for
+ * exactly as long as it takes the shared timestamp formatter to land: this
+ * increment's job was to converge the two screens' SEMANTICS (whole days, both
+ * ends inclusive), and reaching into a `scaffold/` module to also converge the
+ * code would have widened it past its own file table. The timestamps increment
+ * introduces that shared formatter for list/detail rendering — it is the
+ * absorber for these three, and the reciprocal note sits over the Reports copy
+ * so neither side can be changed alone without seeing the other.
+ */
+
+/** The `YYYY-MM-DD` (UTC) a moment falls on. */
+function dayOf(at: Date): string {
+	return at.toISOString().slice(0, 10);
+}
+
+/** A submitted day → the first instant of it. A full datetime (which a
+ *  `date_input` never submits, but a carrier could carry) passes through. */
+function startOfDay(value: string): string {
+	return DAY_PATTERN.test(value) ? `${value}T00:00:00.000Z` : value;
+}
+
+/** A submitted day → the LAST instant of it, which is what makes a `To` day part
+ *  of the period the operator asked for. */
+function endOfDay(value: string): string {
+	return DAY_PATTERN.test(value) ? `${value}T23:59:59.999Z` : value;
+}
+
+/** The fulfillment form's `shippedAt` (NOT a filter bound — the filter's are
+ *  above): a `date_input` yields `YYYY-MM-DD` and the service wants a full ISO
+ *  datetime, and a day given as a shipping moment is the start of that day. */
 function normalizeBound(value: string | undefined): string | undefined {
 	if (value === undefined || value.length === 0) return undefined;
-	if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return `${value}T00:00:00.000Z`;
-	return value;
+	return startOfDay(value);
 }
 
 /**
@@ -3598,19 +3820,49 @@ function normalizeBound(value: string | undefined): string | undefined {
  *
  * The status sentinel is the word `any`, not `""` (F-6a): an empty option value
  * renders a BLANK trigger in the pinned renderer, and the trigger shows the raw
- * value rather than the label (R-17a).
+ * value rather than the label (R-17a). `Any time` is the period's equivalent, and
+ * is likewise stored as an omitted field.
  */
 function filterFromValues(values: Record<string, unknown>): OrdersFilterForm {
 	const form: OrdersFilterForm = {};
 	const status = readString(values.status);
+	const period = periodFromValues(values);
 	const from = readString(values.from);
 	const to = readString(values.to);
 	const search = readString(values.search);
 	if (status !== undefined && status.length > 0 && status !== ANY) form.status = status;
-	if (from !== undefined && from.length > 0) form.from = from;
-	if (to !== undefined && to.length > 0) form.to = to;
+	if (period !== undefined) form.period = period;
+	// Days belong to the custom shape ALONE: a preset resolves its own window at
+	// render time, so a stray date must never survive alongside one and quietly
+	// widen it.
+	if (period === "custom") {
+		if (from !== undefined && from.length > 0) form.from = from;
+		if (to !== undefined && to.length > 0) form.to = to;
+	}
 	if (search !== undefined && search.length > 0) form.search = search;
 	return form;
+}
+
+/**
+ * Which period a submit is asking for — read from the select when the select is
+ * the shape on screen, INFERRED from the dates when it is not.
+ *
+ * The inference is what makes the custom shape self-sustaining: it renders no
+ * `period` field, so its own submits carry only dates, and without this every
+ * re-apply of a custom range would fall back to `Any time` and drop the range the
+ * operator is looking at. It is also the way OUT: empty both dates, apply, and a
+ * submit with neither a period nor a day resolves to the default — the select
+ * comes back at `Any time`, and `Clear filters` does the same in one click.
+ *
+ * An unrecognised option value (a hand-made carrier, a renamed label in a stale
+ * client) maps to no period rather than to a guess.
+ */
+function periodFromValues(values: Record<string, unknown>): PeriodKey | undefined {
+	const submitted = readString(values.period);
+	if (submitted !== undefined && submitted.length > 0) return PERIOD_BY_LABEL.get(submitted);
+	const from = readString(values.from) ?? "";
+	const to = readString(values.to) ?? "";
+	return from.length > 0 || to.length > 0 ? "custom" : undefined;
 }
 
 /** A one-line reconciliation summary for the identity strip. */
