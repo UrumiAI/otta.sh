@@ -1,0 +1,24 @@
+{
+	// No `references`: this package deliberately depends on NO other workspace
+	// package. ADR-0014 Decision 3 gives the console exactly one data path —
+	// HTTP to `otta`'s existing authenticated admin routes — so importing
+	// @otta-sh/plugin (or the domain, service, store or payments packages)
+	// would be a second one. `.dependency-cruiser.cjs`'s
+	// `console-imports-no-workspace-package` rule enforces that; the absence of
+	// references here is the same fact stated in the build graph.
+	"extends": "../../tsconfig.base.json",
+	"compilerOptions": {
+		"outDir": "dist/tsc",
+		"emitDeclarationOnly": true,
+		"rootDir": ".",
+		// This is the ONE package in the workspace that renders in a browser.
+		"jsx": "react-jsx",
+		"lib": ["ES2023", "DOM", "DOM.Iterable"],
+		// Empty, overriding the base's `["node"]`: nothing here runs in Node.
+		// Ambient Node globals in scope would let `process.env`, `Buffer` or a
+		// `node:` import typecheck cleanly inside a module that ships to a
+		// browser — the failure would be at runtime, in the admin, not here.
+		"types": []
+	},
+	"include": ["src", "test", "tsdown.config.ts", "vitest.config.ts"]
+}

@@ -71,7 +71,29 @@ const stack: WebServer[] = [
 		url: E2E_BASE_URL,
 		reuseExistingServer: process.env["CI"] === undefined,
 		timeout: 180_000,
-		env: { COMMERCE_SERVICE_URL: E2E_SERVICE_URL },
+		env: {
+			COMMERCE_SERVICE_URL: E2E_SERVICE_URL,
+			// `astro@7`'s dev command DAEMONIZES ITSELF when it detects an agentic
+			// environment (via `am-i-vibing` — Claude Code, Cursor and friends): it
+			// spawns a background server and the foreground process exits, which
+			// Playwright correctly reports as "Process from config.webServer exited
+			// early" before aborting the run. Measured on INC-19, which was the
+			// first increment to use this block: `OTTA_E2E_START_STACK=1` had never
+			// worked from an agent session, and the abort left a dev server holding
+			// the port afterwards — the exact stray-server hazard `siteIsUp()`
+			// exists to catch. (Astro's lock is per PROJECT, so the leftover also
+			// blocks every later `astro dev` in the worktree, on any port.)
+			//
+			// The variable reads backwards and is worth stating plainly: it does
+			// NOT request background mode. `astro dev` computes
+			// `agentDetected = !process.env.ASTRO_DEV_BACKGROUND && isRunByAgent()`,
+			// so SETTING it to anything non-empty turns the auto-detection off, and
+			// with no `--background` flag the server then runs in the FOREGROUND,
+			// where Playwright can own its lifecycle. That is what this config
+			// wants in every environment, agent or not: a webServer Playwright
+			// cannot stop is a leaked process, not a convenience.
+			ASTRO_DEV_BACKGROUND: "1",
+		},
 	},
 ];
 

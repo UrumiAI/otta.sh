@@ -72,6 +72,36 @@ module.exports = {
 				path: "(node_modules/(react|react-dom|emdash|@emdash-cms/[^/]+|@cloudflare/kumo|@phosphor-icons/react)(/|$)|^(react|react-dom|emdash|@emdash-cms/[^/]+|@cloudflare/kumo|@phosphor-icons/react)(/|$))",
 			},
 		},
+		{
+			name: "console-imports-no-workspace-package",
+			comment:
+				"The OTHER half of the console quarantine, and the one the rules above " +
+				"do not cover. `plugin-is-sandbox-clean` forbids packages/plugin from " +
+				"importing @otta-sh/admin-react; nothing forbade the reverse, and the " +
+				"reverse is the direction that actually tempts an implementer — " +
+				"`formatMoney`, the wire types, the short-id helper all sit in " +
+				"@otta-sh/plugin and all look reusable. ADR-0014 Decision 3 gives " +
+				"otta-console EXACTLY ONE data path: HTTP to the existing " +
+				"authenticated `otta` admin routes, with the operator's own session. A " +
+				"static import would be a second one — compiled in, invisible to the " +
+				"empty capability set and to the empty allowedHosts that are this " +
+				"descriptor's only declared controls. It is also, for the server " +
+				"packages (domain/service/store/payments), Node and database code " +
+				"reached from a module that ships to a BROWSER. So: no workspace " +
+				"package, in either direction. The consequence is deliberate and has " +
+				"one known bill to pay — INC-20 owes the React tier a formatMoney, and " +
+				"G1 says it must come from SHARING the existing function (a new " +
+				"presentation package both sides import), never from writing a second " +
+				"one. Test code is exempt for the same reason it is exempt above: it " +
+				"runs in Node, outside the shipped surface.",
+			severity: "error",
+			from: { path: "^packages/admin-react/src" },
+			to: {
+				// Both forms, as above: resolved into node_modules (the workspace
+				// link) or left as a bare specifier by pnpm's strict isolation.
+				path: "(node_modules/@otta-sh/[^/]+(/|$)|^@otta-sh/[^/]+(/|$)|^packages/(?!admin-react/))",
+			},
+		},
 	],
 	options: {
 		doNotFollow: { path: "node_modules" },
@@ -80,7 +110,24 @@ module.exports = {
 		enhancedResolveOptions: {
 			exportsFields: ["exports"],
 			conditionNames: ["import", "types", "default"],
-			extensions: [".ts", ".js"],
+			// `.tsx` is here for packages/admin-react, the one package in the
+			// workspace that compiles JSX. It is for GRAPH COMPLETENESS, and it
+			// is worth being precise about what it does NOT do, because the
+			// first version of this comment claimed the opposite and was wrong.
+			//
+			// It is NOT what enforces the quarantine. dependency-cruiser walks
+			// `.tsx` source regardless of this list, so `admin.tsx`'s own imports
+			// are cruised and `console-imports-no-workspace-package` fires on a
+			// planted `@otta-sh/plugin` import with or without the entry —
+			// verified both ways, not assumed.
+			//
+			// What it actually closes is one phantom unresolved edge:
+			// `test/console-plugin.test.ts`'s `../src/admin.js` (the repo's `.js`
+			// internal-import convention) resolving to `admin.tsx`. That edge
+			// lives in `test/`, which every rule here exempts, so nothing is
+			// gated on it — an unresolved dependency is simply noise in the graph
+			// that a future `no-orphans`-style rule would trip over.
+			extensions: [".ts", ".tsx", ".js"],
 		},
 	},
 };

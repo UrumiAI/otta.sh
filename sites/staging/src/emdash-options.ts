@@ -14,9 +14,13 @@
  *    Worker-Loader sandbox is the Workers-Paid cost pivot this deployment
  *    avoids — and no cloudflareImages/Stream/Access (paid / not needed:
  *    default passkey+password auth with the first-boot setup wizard).
+ *  - The React console (`otta-console`) registered as a SECOND descriptor in
+ *    the SAME array (ADR-0014). Two entries, one kind of registration: still
+ *    `plugins: []`, still no sandbox runner.
  */
 import { d1, r2 } from "@emdash-cms/cloudflare";
 import type { DatabaseDescriptor, PluginDescriptor, StorageDescriptor } from "emdash";
+import { ottaConsoleDescriptor } from "./otta-console-descriptor.js";
 import { ottaPluginDescriptor } from "./otta-plugin-descriptor.js";
 
 /** Placeholder mirrors @otta-sh/plugin's manifest fallback — a build without
@@ -48,6 +52,15 @@ export function buildEmdashOptions(serviceUrl: string): StagingEmdashOptions {
 		// No `session` — see the pairing invariant in the module doc above.
 		database: d1({ binding: "DB" }),
 		storage: r2({ binding: "MEDIA" }),
-		plugins: [ottaPluginDescriptor(serviceUrl)],
+		// TWO descriptors, one array. `otta` is unchanged — standard format,
+		// seven Block Kit pages, its own capabilities and allowedHosts.
+		// `otta-console` is native and carries the React adminEntry. EmDash's
+		// build-time throw ("Standard plugins use Block Kit for admin UI, not
+		// React components") is evaluated PER DESCRIPTOR, which is what lets the
+		// two coexist; and the sidebar's `adminMode` is derived PER PLUGIN ID,
+		// which is why they must not be one descriptor (ADR-0014 Decision 7).
+		// ORDER IS LOAD-BEARING for the site-config test, which reads
+		// `plugins[0]` as the Block Kit descriptor.
+		plugins: [ottaPluginDescriptor(serviceUrl), ottaConsoleDescriptor()],
 	};
 }

@@ -6,6 +6,7 @@
 		{ "path": "packages/payments-stripe" },
 		{ "path": "packages/payments-x402" },
 		{ "path": "packages/service" },
-		{ "path": "packages/plugin" }
+		{ "path": "packages/plugin" },
+		{ "path": "packages/admin-react" }
 	]
 }

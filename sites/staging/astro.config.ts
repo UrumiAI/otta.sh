@@ -145,7 +145,11 @@ export default defineConfig({
 			// allowedHosts check at runtime. (It is also consumed as TS
 			// source via its workspace `"."`/`"./plugin"` exports, which
 			// requires bundling anyway.)
-			noExternal: ["@otta-sh/plugin"],
+			//
+			// @otta-sh/admin-react is here for the second reason only: its
+			// workspace `"."`/`"./admin"` exports point at TS/TSX SOURCE, so it
+			// cannot be externalized. It carries no build-time define.
+			noExternal: ["@otta-sh/plugin", "@otta-sh/admin-react"],
 		},
 	},
 	devToolbar: { enabled: false },
