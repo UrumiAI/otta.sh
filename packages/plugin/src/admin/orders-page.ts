@@ -518,18 +518,51 @@ function listBlocks(
 		return blocks;
 	}
 
+	// D4 / §1.3, and the reason this table was restructured: the screen used to
+	// LEAD with 36 characters of entropy. A uuid is not the thing an operator
+	// searched for — it is a key they carry to the next surface — so the lead
+	// goes to `Placed` and `Customer`, the two columns a human actually scans,
+	// and the id renders as a git-style shortest-unique PREFIX (PM §C.3,
+	// DESIGNER §1 item 1).
+	//
+	// WHY THE PREFIX IS NOT THE FINAL COLUMN, though the audit called it
+	// "trailing": T-2's money edge is load-bearing and the audit's own §1 item
+	// says why. Block Kit tables have no per-column alignment of ANY kind (R-7),
+	// so the last column is the only place a money column reads as a column of
+	// money rather than as ragged text. Money keeps the edge; the id takes the
+	// slot in front of it. Both halves of T-2's rule that can be satisfied here
+	// are — the id is out of the lead, the money is last — and the half that
+	// cannot ("identity first") is the one D4 exists to overturn.
+	//
+	// `shortIdsFor` runs over `orders`: THE SAME ARRAY `openOrderForm` below is
+	// built from. It is deterministic over the SET of ids, so the token in a row
+	// and the token in that row's picker option are the same string by
+	// construction rather than by coincidence — and the suite pins the identity
+	// instead of trusting it.
+	//
+	// NO COPY BUTTON and no full id anywhere in the row: a Block Kit table cell
+	// is a scalar with no per-cell affordance, which is §1.3's accepted
+	// degradation. The full id is one drill away, on the detail screen's
+	// identity strip, which is §1.3's "the full id remains obtainable".
+	const shortIds = shortIdsFor(orders.map((o) => o.id));
 	blocks.push({
 		type: "table",
 		block_id: "orders:list",
 		columns: [
-			{ key: "id", label: "Order #", format: "code" }, // identity first (T-2)
 			{ key: "createdAt", label: "Placed", format: "relative_time" },
-			{ key: "state", label: "Status", format: "badge" }, // the ONE badge column (T-5)
 			{ key: "customer", label: "Customer" },
+			{ key: "state", label: "Status", format: "badge" }, // the ONE badge column (T-5)
+			// The `#` lives in the HEADER, so the cell is the bare token and the
+			// column is as narrow as the token is. `format: "code"` keeps it from
+			// reading as prose (T-4).
+			{ key: "shortId", label: "Order #", format: "code" },
 			{ key: "total", label: "Total" }, // money LAST, pre-formatted (T-2, M-1)
 		],
 		rows: orders.map((o) => ({
-			id: o.id,
+			// The fallback is unreachable — `shortIdsFor` is TOTAL over the ids it
+			// was given — and is here so a future caller narrowing the set renders
+			// a short id rather than `undefined` in the operator's face.
+			shortId: shortIds.get(o.id) ?? shortIdFixed(o.id),
 			createdAt: o.createdAt,
 			state: o.state,
 			customer: o.customerId ?? o.buyerRef,
@@ -619,8 +652,8 @@ function filterForm(actions: ScreenActions, path: NavPath, form: OrdersFilterFor
  *
  * NO COPY BUTTON, deliberately: Block Kit `select`/`combobox` options are
  * `{value, label}` and nothing else, so the accepted degradation is the prefix
- * alone. The FULL id stays one drill away — the detail screen's header renders
- * it verbatim, exactly once.
+ * alone. The FULL id stays one drill away — the detail screen's identity strip
+ * renders it verbatim, exactly once.
  */
 function openOrderForm(
 	actions: ScreenActions,
@@ -735,9 +768,18 @@ function detailBlocks(args: DetailArgs): Block[] {
 	const o = detail.order;
 	const open = openGroup(o, renderState);
 	const blocks: Block[] = [
-		// M-10: orders have no human handle, so the uuid stands — but it appears
-		// exactly once, here.
-		{ type: "header", text: `Order ${o.id}` },
+		// D4 / DESIGNER §1 item 10: the largest type on this page used to be a
+		// uuid. M-10's "orders have no human handle" is true of the RECORD and
+		// false of the SCREEN — an operator arriving here knows the order by who
+		// placed it and when, so the H1 says that and the id is demoted to the
+		// identity strip below.
+		//
+		// The demotion is not a deletion, and §1.3 is the reason: every other
+		// surface (row, picker, refund confirm) shows a PREFIX, so exactly one
+		// surface has to render the whole thing or the full id stops being
+		// obtainable anywhere in the console. That surface is the strip, and it
+		// is still "exactly once" — just one block lower.
+		{ type: "header", text: `Order · ${o.customerId ?? o.buyerRef} · ${headerDate(o.createdAt)}` },
 		{ ...backButton(actions.back, "← Back to orders", path), block_id: "orders:nav" },
 	];
 	// At most 2 banners at this level (X-31): the notice and the reconciliation
@@ -758,13 +800,22 @@ function detailBlocks(args: DetailArgs): Block[] {
 	// The identity strip: "what am I looking at, and is it healthy" without a
 	// click. 6 entries in 3 row-major PAIRS (R-3, §4) — `Total` is here, so the
 	// Money panel does not repeat `Payment` (P-3).
+	//
+	// `Order ID` took `Customer`'s slot rather than being appended: the H1 above
+	// now carries the customer, and repeating it here would state one fact twice
+	// while pushing the strip to 7 entries — an odd count that breaks the
+	// row-major pairing R-3 is built on. So the H1 and the strip SWAPPED which
+	// of the two identifiers each owns; neither was lost, and the strip is still
+	// three clean pairs. This entry is §1.3's "the full id remains obtainable",
+	// and it renders in full ON PURPOSE — it is the one surface in the console
+	// that does.
 	blocks.push(
 		fields("orders:identity", [
 			["Status", o.state],
 			["Total", formatTotal(o.totals.totalCents, o.totals.currency)],
 			["Placed (UTC)", utc(o.createdAt)],
 			["Payment", o.paymentMethod ?? "—"],
-			["Customer", o.customerId ?? o.buyerRef],
+			["Order ID", o.id],
 			["Reconciliation", reconciliationSummary(o)],
 		]),
 	);
@@ -3453,6 +3504,36 @@ function fitLabel(text: string): string {
  *  non-conforming value passes through unchanged rather than being mangled. */
 function utc(iso: string): string {
 	return iso.replace(/\.\d+(?=Z$)/, "");
+}
+
+/**
+ * The detail H1's date — `8 Jul 2026`. DATE ONLY, and deliberately the smallest
+ * thing that works: INC-13 introduces the shared absolute-timestamp formatter
+ * for the console's other timestamps, and this is the one surface that needed a
+ * human-readable date before that lands. It is the natural place for INC-13 to
+ * absorb.
+ *
+ * UTC-pinned (M-6 — no timezone conversion anywhere in this console) and run
+ * through `Intl`, which is the house rule: localization and RTL-safety come
+ * from Intl, never from hand-assembled month names. The locale is `en-GB` for
+ * its DAY-MONTH-YEAR shape rather than for its country — `8 Jul 2026` cannot be
+ * misread the way a numeric `7/8/2026` can, which is why the spec writes the
+ * format that way.
+ *
+ * A malformed date falls back to the ISO date part rather than throwing:
+ * `Intl.format` raises on an invalid Date, and a header is not worth failing a
+ * render over (the handler answers 200 on every path).
+ */
+const HEADER_DATE = new Intl.DateTimeFormat("en-GB", {
+	day: "numeric",
+	month: "short",
+	year: "numeric",
+	timeZone: "UTC",
+});
+
+function headerDate(iso: string): string {
+	const at = new Date(iso);
+	return Number.isNaN(at.getTime()) ? iso.slice(0, 10) : HEADER_DATE.format(at);
 }
 
 /** Read integer minor units out of an untrusted carried/button payload. Rejects
