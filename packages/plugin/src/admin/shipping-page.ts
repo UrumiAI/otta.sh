@@ -42,6 +42,7 @@ import {
 	readString,
 	screenActions,
 	type ListDetailInput,
+	type NavPath,
 	type Notice,
 	type ScreenActions,
 } from "./scaffold/index.js";
@@ -75,8 +76,8 @@ import {
  * pricing engine never reads (`@otta-sh/domain`'s `ShippingRulesStore` doc:
  * "opaque config the engine never reads") — checkout/quote takes an explicit
  * `shippingZoneId`, not an address-to-zone match. That fact does not fit the
- * zones level's ≤140-char page context, so it lives as one `context` line
- * inside the "New zone" create group instead (F-8) — the one place an
+ * zones level's ≤140-char page context, so it lives as one `context` line on
+ * the "New shipping zone" create screen instead (F-8) — the one place an
  * operator is about to type into the field it explains.
  *
  * NO METHOD/RATE COUNT ON A ZONE OR METHOD LABEL (D-6): `ShippingZoneWire` is
@@ -139,6 +140,9 @@ const ACTION_OPEN_CREATE_METHOD = SHIPPING_ACTIONS.custom("open-create-method");
 const ACTION_CREATE_RATE = SHIPPING_ACTIONS.custom("create-rate");
 const ACTION_SAVE_RATE = SHIPPING_ACTIONS.custom("save-rate");
 const ACTION_DELETE_RATE = SHIPPING_ACTIONS.custom("delete-rate");
+/** Leave either create screen — re-lists the level the operator came from
+ *  (the path rides in the button's own `value`, L-6). */
+const ACTION_CANCEL_NEW = SHIPPING_ACTIONS.custom("cancel-new");
 
 /**
  * The action ids the admin-route dispatcher recognizes as belonging to the
@@ -158,6 +162,7 @@ export const SHIPPING_ACTION_IDS: ReadonlySet<string> = SHIPPING_ACTIONS.actionI
 	"create-rate",
 	"save-rate",
 	"delete-rate",
+	"cancel-new",
 );
 
 /** The em-dash BlockInteraction envelope this page consumes (the scaffold's
@@ -166,14 +171,39 @@ export type ShippingPageInput = ListDetailInput;
 
 /**
  * What a custom action asks the zones/methods levels to render NOW, beyond
- * the notice banner — spec E-2/B-6's "empty state's create action forces the
- * create group open". Nothing else on this screen needs the channel: every
- * other write is DA-4 (one-shot) or DA-2 (unconditional delete), and an
- * ordinary create-form validation error stays visible via B-5 (the operator
- * had to have the group open to submit into it, and its `block_id` does not
- * change on that path) without needing to force anything.
+ * the notice banner: WHICH CREATE SCREEN the operator asked for (INC-14's
+ * promoted button, or the empty state's own action — E-2), and, after a
+ * refusal, what they had typed into it. Nothing else on this screen needs the
+ * channel: every other write is DA-4 (one-shot) or DA-2 (unconditional
+ * delete), none of which stages a confirm.
+ *
+ * `draft` IS THE REFUSAL PATH (DA-3a-i). It used to be true that a create
+ * error "stays visible via B-5" — the operator had the group open, its
+ * `block_id` did not change, so the client kept what they had typed. That
+ * argument rested on the CLIENT keeping a form mounted; now the values come
+ * back from the server as `initial_value`, which holds whatever the client
+ * does with the tree. Raw operator text, never a parsed value (DA-3a-iii
+ * property 5). Within-request only.
  */
-type ShippingRenderState = { kind: "zone-create-open" } | { kind: "method-create-open" };
+type ShippingRenderState =
+	| { kind: "new-zone"; draft?: ZoneDraft }
+	| { kind: "new-method"; draft?: MethodDraft };
+
+/** The "New shipping zone" form's three fields, as submitted. */
+interface ZoneDraft {
+	id: string;
+	name: string;
+	regions: string;
+}
+
+/** The "New shipping method" form's three fields, as submitted. `type` is a
+ *  `select` value, so {@link createMethodForm} resolves it against its own
+ *  options before prefilling (X-23). */
+interface MethodDraft {
+	id: string;
+	name: string;
+	type: string;
+}
 
 /** The rates level's filter: a currency narrow that ALWAYS has a value (no
  *  "unfiltered" state exists — see the module doc's rates-identity note).
@@ -279,6 +309,7 @@ export function createShippingPageHandler(): RouteHandler<ShippingPageInput> {
 			[ACTION_CREATE_RATE]: createRateAction(),
 			[ACTION_SAVE_RATE]: saveRateAction(),
 			[ACTION_DELETE_RATE]: deleteRateAction(),
+			[ACTION_CANCEL_NEW]: cancelNewAction(),
 		},
 	});
 }
@@ -303,39 +334,43 @@ function zonesLevel() {
 	});
 }
 
+/**
+ * The zones registry. INC-14 puts "New shipping zone" at the TOP, as a button
+ * directly under the intro line — it used to be an `accordion` at the very
+ * bottom (L-8), the least prominent thing on the screen an empty store has to
+ * start from. A button is one row tall and holds no input, so P-1's "data
+ * inside the first screenful" survives the promotion; the FORM stays off this
+ * screen entirely by living on a drill-in ({@link newZoneScreen}), the same
+ * button-drill-in idiom the per-row "View methods" already uses (§12.7).
+ */
 function zonesBlocks(
 	zones: ShippingZoneWire[],
 	nextToken: string | undefined,
 	notice: Notice | undefined,
 	renderState: ShippingRenderState | undefined,
 ): Block[] {
+	if (renderState?.kind === "new-zone") return newZoneScreen(renderState.draft, notice);
 	const blocks: Block[] = [
 		{ type: "header", text: "Shipping zones" },
 		{
 			type: "context",
 			text: "A zone groups the shipping methods you offer for a set of destinations.",
 		},
+		createActionBlock("ship:create-zone-action", ACTION_OPEN_CREATE_ZONE, "New shipping zone"),
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
 
-	const forceCreateOpen = renderState?.kind === "zone-create-open";
 	if (zones.length === 0) {
-		// E-2/B-6: the empty state's OWN create action re-renders THIS SAME
-		// zero-row response with the create group forced open — so at zero rows
-		// AND a force-open request, the create group replaces the `empty` block
-		// rather than being shadowed by it (the whole point of clicking the
-		// empty state's action would otherwise be silently lost).
-		if (forceCreateOpen) {
-			blocks.push(newZoneAccordion(true));
-			return blocks;
-		}
 		blocks.push(
 			emptyState({
 				title: "No shipping zones yet",
 				description:
 					"Create a zone to start grouping the shipping methods you offer by destination.",
 				size: "base",
-				actions: [{ type: "button", action_id: ACTION_OPEN_CREATE_ZONE, label: "New zone" }],
+				// Same verb and same words as the button above: one act, named once.
+				actions: [
+					{ type: "button", action_id: ACTION_OPEN_CREATE_ZONE, label: "New shipping zone" },
+				],
 			}),
 		);
 		return blocks;
@@ -347,8 +382,34 @@ function zonesBlocks(
 		blocks.push(zonesFallbackTable(zones));
 		blocks.push(openZoneForm(zones));
 	}
-	blocks.push(newZoneAccordion(forceCreateOpen));
 	return blocks;
+}
+
+/** INC-14's promoted create affordance, shared by both registry levels:
+ *  `primary`, one row tall, directly under the intro line. `path` rides in the
+ *  button's own `value` (L-6 — a button echoes no `block_id`, B-1) so the
+ *  create screen knows which level it belongs to; omitted at the root. */
+function createActionBlock(
+	blockId: string,
+	actionId: string,
+	label: string,
+	path?: NavPath,
+): ActionsBlock {
+	return {
+		type: "actions",
+		block_id: blockId,
+		elements: [
+			{
+				type: "button",
+				action_id: actionId,
+				label,
+				style: "primary",
+				...(path !== undefined && path.length > 0
+					? { value: { [PATH_FIELD]: encodePath(path) } }
+					: {}),
+			},
+		],
+	};
 }
 
 /** One zone's per-row group (L-9): edit form, the "View methods" drill-in
@@ -437,44 +498,66 @@ function deleteZoneActions(zone: ShippingZoneWire): ActionsBlock {
 	return { type: "actions", elements: [button] };
 }
 
-/** L-8's create group. `forceOpen` is B-6's "empty.actions' create button"
- *  case (E-2): BOTH the `block_id` and `default_open` change together, or the
- *  group either never opens or opens with the wrong `default_open` re-read
- *  (R-14a). */
-function newZoneAccordion(forceOpen: boolean): AccordionBlock {
-	return {
-		type: "accordion",
-		label: "New zone",
-		default_open: forceOpen,
-		block_id: forceOpen ? "ship:new-zone:open" : "ship:new-zone",
-		blocks: [
-			{
-				type: "context",
-				text: "Regions are a reference list only — checkout does not yet auto-match a buyer's address to a zone.",
-			},
-			createZoneForm(),
-		],
-	};
+/** The "New shipping zone" create screen (INC-14) — `header` · back · notice ·
+ *  context · the form, the shape every other non-list level on this console
+ *  already has. The banner sits above the form because it explains the values
+ *  the form below has just put back. */
+function newZoneScreen(draft: ZoneDraft | undefined, notice: Notice | undefined): Block[] {
+	const blocks: Block[] = [
+		{ type: "header", text: "New shipping zone" },
+		// No path: this screen belongs to the ROOT registry.
+		backButton(ACTION_CANCEL_NEW, "← Back to shipping zones"),
+	];
+	if (notice !== undefined) blocks.push(noticeBanner(notice));
+	blocks.push({
+		type: "context",
+		text: "Regions are a reference list only — checkout does not yet auto-match a buyer's address to a zone.",
+	});
+	blocks.push(createZoneForm(draft));
+	return blocks;
 }
 
-function createZoneForm(): FormBlock {
+/** `draft` is the refusal path (DA-3a-i): what was submitted comes back as
+ *  `initial_value`, so a rejected duplicate id costs one edit and not three
+ *  retypes. */
+function createZoneForm(draft?: ZoneDraft): FormBlock {
 	return carriedForm({
 		namespace: "ship:zone-create",
 		form: {
 			type: "form",
 			fields: [
-				{ type: "text_input", action_id: "id", label: "Zone ID", placeholder: "e.g. us" },
-				{ type: "text_input", action_id: "name", label: "Name", placeholder: "e.g. United States" },
+				{
+					type: "text_input",
+					action_id: "id",
+					label: "Zone ID",
+					placeholder: "e.g. us",
+					...prefill(draft?.id),
+				},
+				{
+					type: "text_input",
+					action_id: "name",
+					label: "Name",
+					placeholder: "e.g. United States",
+					...prefill(draft?.name),
+				},
 				{
 					type: "text_input",
 					action_id: "regions",
 					label: "Regions (comma-separated, blank = none)",
 					placeholder: "e.g. US",
+					...prefill(draft?.regions),
 				},
 			],
 			submit: { label: "Create zone", action_id: ACTION_CREATE_ZONE },
 		},
 	});
+}
+
+/** A text field's draft prefill, or nothing. An EMPTY draft value renders no
+ *  `initial_value` at all rather than `""` — that is what an untouched field
+ *  looks like to `blocks/form.tsx`. */
+function prefill(value: string | undefined): { initial_value?: string } {
+	return value !== undefined && value.length > 0 ? { initial_value: value } : {};
 }
 
 /** L-9 fallback (>25 rows, or an incomplete page): table + L-7 drill-in.
@@ -697,35 +780,41 @@ function methodsBlocks(
 	// currency only when rows were actually priced in it.
 	const accordionBranch = isRegistryAccordion(nextToken, methods.length);
 	const pricesShown = accordionBranch && methods.length > 0 && !filter.invalid;
+	if (renderState?.kind === "new-method") {
+		return newMethodScreen(zoneId, renderState.draft, notice);
+	}
 	const blocks: Block[] = [
 		{ type: "header", text: `Shipping methods — ${zoneId}` },
 		backButton(SHIPPING_ACTIONS.back, "← Back to zones", [zoneId]),
 		{ type: "context", text: methodsContextText(filter.currency, pricesShown) },
+		// INC-14: the create action, promoted from an accordion at the very
+		// bottom to a button under the intro line. It carries the drill path
+		// (L-6) — this level is depth 1, so without it the create screen would
+		// open at the root registry.
+		createActionBlock(
+			`ship:create-method-action:${zoneId}`,
+			ACTION_OPEN_CREATE_METHOD,
+			"New shipping method",
+			[zoneId],
+		),
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
 	// G5: a rejected filter is a banner inside a 200, never a refused render —
 	// the method list is unaffected by it and stays on screen, editable.
 	if (filter.invalid) blocks.push(noticeBanner(BAD_CURRENCY_NOTICE));
 
-	const forceCreateOpen = renderState?.kind === "method-create-open";
 	if (methods.length === 0) {
-		// See the matching comment in `zonesBlocks` — force-open must win over
-		// the empty state on the SAME zero-row render, or clicking "New method"
-		// from the empty state has no visible effect.
-		if (forceCreateOpen) {
-			blocks.push(newMethodAccordion(zoneId, true));
-			return blocks;
-		}
 		blocks.push(
 			emptyState({
 				title: "No shipping methods yet",
 				description: "Add a method to start offering shipping for this zone.",
 				size: "base",
+				// Same verb and same words as the button above.
 				actions: [
 					{
 						type: "button",
 						action_id: ACTION_OPEN_CREATE_METHOD,
-						label: "New method",
+						label: "New shipping method",
 						value: { [PATH_FIELD]: encodePath([zoneId]) },
 					},
 				],
@@ -745,7 +834,6 @@ function methodsBlocks(
 		blocks.push(methodsFallbackTable(methods));
 		blocks.push(openMethodForm(zoneId, methods));
 	}
-	blocks.push(newMethodAccordion(zoneId, forceCreateOpen));
 	return blocks;
 }
 
@@ -862,31 +950,49 @@ function deleteMethodActions(zoneId: string, method: ShippingMethodWire): Action
 	return { type: "actions", elements: [button] };
 }
 
-function newMethodAccordion(zoneId: string, forceOpen: boolean): AccordionBlock {
-	return {
-		type: "accordion",
-		label: "New method",
-		default_open: forceOpen,
-		block_id: forceOpen ? `ship:new-method:${zoneId}:open` : `ship:new-method:${zoneId}`,
-		blocks: [createMethodForm(zoneId)],
-	};
+/** The "New shipping method" create screen (INC-14) — what the promoted button
+ *  and the empty state's own action both drill into. */
+function newMethodScreen(
+	zoneId: string,
+	draft: MethodDraft | undefined,
+	notice: Notice | undefined,
+): Block[] {
+	const blocks: Block[] = [
+		{ type: "header", text: `New shipping method — ${zoneId}` },
+		backButton(ACTION_CANCEL_NEW, "← Back to shipping methods", [zoneId]),
+	];
+	if (notice !== undefined) blocks.push(noticeBanner(notice));
+	blocks.push(createMethodForm(zoneId, draft));
+	return blocks;
 }
 
-function createMethodForm(zoneId: string): FormBlock {
+/** `draft` is the refusal path (DA-3a-i). `type` is resolved against the
+ *  select's own options first (X-23), so an unknown value falls back to the
+ *  default rather than rendering a blank trigger. */
+function createMethodForm(zoneId: string, draft?: MethodDraft): FormBlock {
+	const type =
+		draft?.type === "free_shipping" || draft?.type === "flat_rate" ? draft.type : "flat_rate";
 	return carriedForm({
 		namespace: "ship:method-create",
 		context: { zoneId },
 		form: {
 			type: "form",
 			fields: [
-				{ type: "text_input", action_id: "id", label: "Method ID", placeholder: "e.g. standard" },
+				{
+					type: "text_input",
+					action_id: "id",
+					label: "Method ID",
+					placeholder: "e.g. standard",
+					...prefill(draft?.id),
+				},
 				{
 					type: "text_input",
 					action_id: "name",
 					label: "Name",
 					placeholder: "e.g. Standard shipping",
+					...prefill(draft?.name),
 				},
-				methodTypeField("type", "flat_rate"),
+				methodTypeField("type", type),
 			],
 			submit: { label: "Add method", action_id: ACTION_CREATE_METHOD },
 		},
@@ -1161,21 +1267,40 @@ function ratesFailClosed() {
 // -- custom action: create a zone ------------------------------------------------
 
 function createZoneAction() {
-	return customAction<AdminRulesClient>(async ({ input, client, showList }) => {
-		const values = input.values ?? {};
-		const id = (readString(values.id) ?? "").trim();
-		const name = (readString(values.name) ?? "").trim();
-		if (id.length === 0 || name.length === 0) {
-			return showList(undefined, {
-				variant: "error",
-				title: "Zone not created",
-				description: "Enter both a zone ID and a name.",
-			});
-		}
-		const regions = parseRegionsInput(readString(values.regions) ?? "");
-		const result = await client.createZone({ id, name, regions });
-		return showList(undefined, createZoneNotice(result, id, name));
-	});
+	return customAction<AdminRulesClient, ShippingRenderState>(
+		async ({ input, client, showList }) => {
+			const values = input.values ?? {};
+			const id = (readString(values.id) ?? "").trim();
+			const name = (readString(values.name) ?? "").trim();
+			// EVERY refusal below re-renders the create screen with what was typed
+			// (DA-3a-i) — see ShippingRenderState.
+			const draft: ZoneDraft = {
+				id: readString(values.id) ?? "",
+				name: readString(values.name) ?? "",
+				regions: readString(values.regions) ?? "",
+			};
+			if (id.length === 0 || name.length === 0) {
+				return showList(
+					undefined,
+					{
+						variant: "error",
+						title: "Zone not created",
+						description: "Enter both a zone ID and a name.",
+					},
+					{ kind: "new-zone", draft },
+				);
+			}
+			const regions = parseRegionsInput(readString(values.regions) ?? "");
+			const result = await client.createZone({ id, name, regions });
+			const notice = createZoneNotice(result, id, name);
+			// A SERVICE refusal keeps the draft too (a duplicate id is one edit
+			// away); success drops it, which is what returns the operator to the
+			// registry.
+			return result.ok
+				? showList(undefined, notice)
+				: showList(undefined, notice, { kind: "new-zone", draft });
+		},
+	);
 }
 
 function createZoneNotice(
@@ -1275,38 +1400,65 @@ function deleteZoneNotice(result: RulesDeleteResult): Notice {
 	};
 }
 
-// -- custom action: force the "New zone" group open from the empty state (E-2) ----
+// -- custom actions: open and leave a create screen -------------------------------
 
+/** INC-14's promoted button, and E-2's empty-state button — one verb, because
+ *  they are one act. No draft: nothing has been typed yet. */
 function openCreateZoneAction() {
 	return customAction<AdminRulesClient, ShippingRenderState>(async ({ showList }) => {
-		return showList(undefined, undefined, { kind: "zone-create-open" });
+		return showList(undefined, undefined, { kind: "new-zone" });
 	});
+}
+
+/** "← Back to …" on either create screen: re-list the level the button's own
+ *  `value` names (the root registry when it carries none). Whatever was typed
+ *  is dropped, and only ever by this explicit click. */
+function cancelNewAction() {
+	return customAction<AdminRulesClient, ShippingRenderState>(async ({ carriedPath, showList }) =>
+		showList(carriedPath),
+	);
 }
 
 // -- custom action: create a method -----------------------------------------------
 
 function createMethodAction() {
-	return customAction<AdminRulesClient>(async ({ input, carried, client, showList }) => {
-		const zoneId = carried?.zoneId;
-		if (zoneId === undefined) return showList();
-		const values = input.values ?? {};
-		const id = (readString(values.id) ?? "").trim();
-		const name = (readString(values.name) ?? "").trim();
-		const type = readString(values.type) ?? "";
-		if (
-			id.length === 0 ||
-			name.length === 0 ||
-			(type !== "flat_rate" && type !== "free_shipping")
-		) {
-			return showList([zoneId], {
-				variant: "error",
-				title: "Method not created",
-				description: "Enter a method ID, a name, and a valid type.",
-			});
-		}
-		const result = await client.createMethod(zoneId, { id, name, type });
-		return showList([zoneId], createMethodNotice(result, id, name));
-	});
+	return customAction<AdminRulesClient, ShippingRenderState>(
+		async ({ input, carried, client, showList }) => {
+			const zoneId = carried?.zoneId;
+			if (zoneId === undefined) return showList();
+			const values = input.values ?? {};
+			const id = (readString(values.id) ?? "").trim();
+			const name = (readString(values.name) ?? "").trim();
+			const type = readString(values.type) ?? "";
+			// EVERY refusal below re-renders the create screen with what was typed
+			// (DA-3a-i) — see ShippingRenderState.
+			const draft: MethodDraft = {
+				id: readString(values.id) ?? "",
+				name: readString(values.name) ?? "",
+				type,
+			};
+			if (
+				id.length === 0 ||
+				name.length === 0 ||
+				(type !== "flat_rate" && type !== "free_shipping")
+			) {
+				return showList(
+					[zoneId],
+					{
+						variant: "error",
+						title: "Method not created",
+						description: "Enter a method ID, a name, and a valid type.",
+					},
+					{ kind: "new-method", draft },
+				);
+			}
+			const result = await client.createMethod(zoneId, { id, name, type });
+			const notice = createMethodNotice(result, id, name);
+			return result.ok
+				? showList([zoneId], notice)
+				: showList([zoneId], notice, { kind: "new-method", draft });
+		},
+	);
 }
 
 function createMethodNotice(
@@ -1408,11 +1560,14 @@ function deleteMethodNotice(result: RulesDeleteResult): Notice {
 	};
 }
 
-// -- custom action: force the "New method" group open from the empty state (E-2) --
+// -- custom action: open the "New shipping method" create screen ------------------
 
+/** INC-14's promoted button, and E-2's empty-state button. Both carry the zone
+ *  path in `value` (L-6): without it the create screen would open at the root
+ *  registry, which is the one failure this level's depth makes possible. */
 function openCreateMethodAction() {
 	return customAction<AdminRulesClient, ShippingRenderState>(async ({ carriedPath, showList }) => {
-		return showList(carriedPath, undefined, { kind: "method-create-open" });
+		return showList(carriedPath, undefined, { kind: "new-method" });
 	});
 }
 

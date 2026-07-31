@@ -1,6 +1,7 @@
 import { COMMERCE_SERVICE_BASE_URL } from "../manifest.js";
 import type {
 	AccordionBlock,
+	ActionsBlock,
 	AdminPageConfig,
 	Block,
 	ButtonElement,
@@ -44,6 +45,7 @@ import {
 	readString,
 	screenActions,
 	type ListDetailInput,
+	type NavPath,
 	type Notice,
 	type ScreenActions,
 } from "./scaffold/index.js";
@@ -80,9 +82,10 @@ import {
  */
 export const TAX_PAGE: AdminPageConfig = { path: "/tax", label: "Tax", icon: "percent" };
 
-/** This screen's namespaced action ids — the four scaffold nav verbs plus
- *  the class/rate side-effecting verbs and the two `empty.actions` "open the
- *  create group" verbs (E-2/B-6). */
+/** This screen's namespaced action ids — the four scaffold nav verbs plus the
+ *  class/rate side-effecting verbs, the two "open the create screen" verbs
+ *  (INC-14's promoted buttons and E-2's empty-state actions), and the one
+ *  verb that leaves a create screen. */
 const TAX_ACTIONS: ScreenActions = screenActions("tax");
 const ACTION_CREATE_CLASS = TAX_ACTIONS.custom("create-class");
 const ACTION_SAVE_CLASS = TAX_ACTIONS.custom("save-class");
@@ -92,6 +95,9 @@ const ACTION_CREATE_RATE = TAX_ACTIONS.custom("create-rate");
 const ACTION_SAVE_RATE = TAX_ACTIONS.custom("save-rate");
 const ACTION_DELETE_RATE = TAX_ACTIONS.custom("delete-rate");
 const ACTION_SHOW_NEW_RATE = TAX_ACTIONS.custom("show-new-rate");
+/** Leave either create screen — re-lists the level the operator came from
+ *  (the path rides in the button's own `value`, L-6). */
+const ACTION_CANCEL_NEW = TAX_ACTIONS.custom("cancel-new");
 
 /**
  * The action ids the admin-route dispatcher recognizes as belonging to the
@@ -108,6 +114,7 @@ export const TAX_ACTION_IDS: ReadonlySet<string> = TAX_ACTIONS.actionIds(
 	"save-rate",
 	"delete-rate",
 	"show-new-rate",
+	"cancel-new",
 );
 
 /** The em-dash BlockInteraction envelope this page consumes (the scaffold's
@@ -115,14 +122,37 @@ export const TAX_ACTION_IDS: ReadonlySet<string> = TAX_ACTIONS.actionIds(
 export type TaxPageInput = ListDetailInput;
 
 /**
- * What a custom action tells a level to render THIS response (design spec
- * §10 B-6 / DA-3a-iii's channel — "state, never data"): which create-group
- * accordion the operator just asked to open, from an `empty.actions` button
- * at true zero state (E-2). Nothing else on this screen needs the channel —
- * both registry levels are unconditional DA-2 deletes and LWW/CAS saves, none
- * of which stage a confirm.
+ * What a custom action tells a level to render THIS response (DA-3a-iii's
+ * channel — "state, never data"): WHICH CREATE SCREEN the operator asked for,
+ * and — after a refusal — what they had typed into it. Nothing else on this
+ * screen needs the channel: both registry levels are unconditional DA-2
+ * deletes and LWW/CAS saves, none of which stage a confirm.
+ *
+ * `draft` is raw operator text, never a parsed value (DA-3a-iii property 5):
+ * the commonest refusal on the rates level is an unparseable percent, and
+ * there are no basis points to re-derive a prefill from when the parse is
+ * exactly what failed. Within-request only; it reaches the client solely as a
+ * field's `initial_value`.
  */
-type TaxRenderState = { kind: "new-class-open" } | { kind: "new-rate-open" };
+type TaxRenderState =
+	| { kind: "new-class"; draft?: ClassDraft }
+	| { kind: "new-rate"; draft?: RateDraft };
+
+/** The "New tax class" form's two fields, as submitted. */
+interface ClassDraft {
+	id: string;
+	name: string;
+}
+
+/** The "New tax rate" form's four fields, as submitted. `zoneId` is a `select`
+ *  value, so {@link newRateForm} resolves it against the live zone list before
+ *  prefilling (X-23 forbids an `initial_value` absent from `options`). */
+interface RateDraft {
+	id: string;
+	zoneId: string;
+	ratePercent: string;
+	appliesToShipping: boolean;
+}
 
 /** A tax rate ROW as this screen renders it: the wire shape plus the zone's
  *  human name, resolved from the SAME `listZones()` read every render already
@@ -194,6 +224,7 @@ export function createTaxPageHandler(): RouteHandler<TaxPageInput> {
 			[ACTION_SAVE_RATE]: saveRateAction(),
 			[ACTION_DELETE_RATE]: deleteRateAction(),
 			[ACTION_SHOW_NEW_RATE]: showNewRateAction(),
+			[ACTION_CANCEL_NEW]: cancelNewAction(),
 		},
 	});
 }
@@ -220,6 +251,15 @@ function taxClassesLevel() {
 	});
 }
 
+/**
+ * The classes registry. INC-14 puts "New tax class" at the TOP, as a button,
+ * directly under the intro line — it used to be an `accordion` at the very
+ * bottom (L-8), i.e. the least prominent thing on a screen whose whole first
+ * task is creating one. A button is one row tall and holds no input, so P-1's
+ * "data inside the first screenful" survives the promotion; the FORM stays off
+ * this screen entirely by living on a drill-in ({@link newClassScreen}),
+ * mirroring the "View rates" button drill-in one row below it (§12.7).
+ */
 function classesBlocks(
 	actions: ScreenActions,
 	classes: TaxClassWire[],
@@ -227,17 +267,18 @@ function classesBlocks(
 	notice: Notice | undefined,
 	renderState: TaxRenderState | undefined,
 ): Block[] {
+	if (renderState?.kind === "new-class") return newClassScreen(renderState.draft, notice);
 	const blocks: Block[] = [
 		{ type: "header", text: "Tax classes" },
 		{
 			type: "context",
 			text: "A tax class is a rate group; products and rates reference one by id.",
 		},
+		createActionBlock("tax:create-class-action", ACTION_SHOW_NEW_CLASS, "New tax class"),
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
 	// No filter block: this level has no filter fields (L-2, count 0).
 
-	const forceNewClassOpen = renderState?.kind === "new-class-open";
 	const accordionBranch = nextToken === undefined && classes.length <= REGISTRY_ACCORDION_LIMIT;
 	if (accordionBranch) {
 		if (classes.length === 0) {
@@ -246,9 +287,8 @@ function classesBlocks(
 					title: "No tax classes yet",
 					description:
 						"A tax class groups tax rates that share the same treatment — products and rates reference one by id.",
-					actions: [
-						{ type: "button", action_id: ACTION_SHOW_NEW_CLASS, label: "Create a tax class" },
-					],
+					// Same verb, same words as the button above: one act, named once.
+					actions: [{ type: "button", action_id: ACTION_SHOW_NEW_CLASS, label: "New tax class" }],
 				}),
 			);
 		} else {
@@ -258,8 +298,34 @@ function classesBlocks(
 		blocks.push(classesTable(actions, classes, nextToken));
 		blocks.push(openClassForm(classes));
 	}
-	blocks.push(newClassAccordion(forceNewClassOpen));
 	return blocks;
+}
+
+/** INC-14's promoted create affordance, shared by both levels: `primary`, one
+ *  row tall, directly under the intro line. `path` rides in the button's own
+ *  `value` (L-6 — a button echoes no `block_id`, B-1) so the create screen it
+ *  opens knows which level it belongs to; omitted at the root. */
+function createActionBlock(
+	blockId: string,
+	actionId: string,
+	label: string,
+	path?: NavPath,
+): ActionsBlock {
+	return {
+		type: "actions",
+		block_id: blockId as PlainBlockId,
+		elements: [
+			{
+				type: "button",
+				action_id: actionId,
+				label,
+				style: "primary",
+				...(path !== undefined && path.length > 0
+					? { value: { [PATH_FIELD]: encodePath(path) } }
+					: {}),
+			},
+		],
+	};
 }
 
 function classGroupId(classId: string): PlainBlockId {
@@ -334,31 +400,56 @@ function classRow(actions: ScreenActions, cls: TaxClassWire): AccordionBlock {
 	};
 }
 
-const NEW_CLASS_FORM_ID = "tax:new-class-form" as PlainBlockId;
-
-function newClassForm(): FormBlock {
-	return {
-		type: "form",
-		block_id: NEW_CLASS_FORM_ID,
-		fields: [
-			{ type: "text_input", action_id: "id", label: "Class ID", placeholder: "e.g. reduced" },
-			{ type: "text_input", action_id: "name", label: "Name", placeholder: "e.g. Reduced rate" },
-		],
-		submit: { label: "Create tax class", action_id: ACTION_CREATE_CLASS },
-	};
+/** The "New tax class" create screen (INC-14) — `header` · back · notice ·
+ *  the form, the shape every other non-list level on this console already
+ *  has. The banner sits above the form because it explains the values the
+ *  form below has just put back. */
+function newClassScreen(draft: ClassDraft | undefined, notice: Notice | undefined): Block[] {
+	const blocks: Block[] = [
+		{ type: "header", text: "New tax class" },
+		// No path: this screen belongs to the ROOT registry.
+		backButton(ACTION_CANCEL_NEW, "← Back to tax classes"),
+	];
+	if (notice !== undefined) blocks.push(noticeBanner(notice));
+	blocks.push(newClassForm(draft));
+	return blocks;
 }
 
-/** The "New tax class" group (L-8). `forceOpen` is set only by the E-2
- *  create-from-empty-state flow (B-6: both the changed `block_id` AND
- *  `default_open: true`, never just one). */
-function newClassAccordion(forceOpen: boolean): AccordionBlock {
-	return {
-		type: "accordion",
-		block_id: (forceOpen ? "tax:new-class:opened" : "tax:new-class") as PlainBlockId,
-		label: "New tax class",
-		default_open: forceOpen,
-		blocks: [newClassForm()],
-	};
+/** `draft` is the refusal path (DA-3a-i): what was submitted comes back as
+ *  `initial_value`, so a rejected duplicate id costs one edit and not two
+ *  retypes. Routed through `carriedForm` because a prefilling form must carry
+ *  the B-3a digest that remounts it when the prefill changes (X-17). */
+function newClassForm(draft?: ClassDraft): FormBlock {
+	return carriedForm({
+		namespace: "tax:class-create",
+		form: {
+			type: "form",
+			fields: [
+				{
+					type: "text_input",
+					action_id: "id",
+					label: "Class ID",
+					placeholder: "e.g. reduced",
+					...prefill(draft?.id),
+				},
+				{
+					type: "text_input",
+					action_id: "name",
+					label: "Name",
+					placeholder: "e.g. Reduced rate",
+					...prefill(draft?.name),
+				},
+			],
+			submit: { label: "Create tax class", action_id: ACTION_CREATE_CLASS },
+		},
+	});
+}
+
+/** A text field's draft prefill, or nothing. An EMPTY draft value renders no
+ *  `initial_value` at all rather than `""` — that is what an untouched field
+ *  looks like to `blocks/form.tsx`. */
+function prefill(value: string | undefined): { initial_value?: string } {
+	return value !== undefined && value.length > 0 ? { initial_value: value } : {};
 }
 
 /** L-9 fallback (>25 classes, or a next page): the raw list plus an L-7
@@ -495,12 +586,26 @@ function ratesBlocks(
 	renderState: TaxRenderState | undefined,
 ): Block[] {
 	const path = [classId];
+	if (renderState?.kind === "new-rate") {
+		return newRateScreen(classId, filter, bundle.zones, renderState.draft, notice);
+	}
 	const blocks: Block[] = [
 		{ type: "header", text: `Tax rates — ${classId}` },
 		backButton(actions.back, "← Back to tax classes", path),
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
 	blocks.push({ type: "context", text: "Each rate applies to purchases shipping to one zone." });
+	// INC-14: the create action, promoted from an accordion at the very bottom
+	// to a button under the intro line. It carries the drill path (L-6) — this
+	// level is depth 1, so without it the create screen would open at the root.
+	blocks.push(
+		createActionBlock(
+			`tax:create-rate-action:${classId}`,
+			ACTION_SHOW_NEW_RATE,
+			"New tax rate",
+			path,
+		),
+	);
 
 	blocks.push(zoneFilterBlock(classId, filter, bundle.zones));
 	const activeParts = [filter.zoneId !== undefined && `zone: ${filter.zoneId}`];
@@ -518,7 +623,6 @@ function ratesBlocks(
 		});
 	}
 
-	const forceNewRateOpen = renderState?.kind === "new-rate-open";
 	const accordionBranch = nextToken === undefined && bundle.rows.length <= REGISTRY_ACCORDION_LIMIT;
 	if (accordionBranch) {
 		if (bundle.rows.length === 0) {
@@ -528,11 +632,12 @@ function ratesBlocks(
 					emptyState({
 						title: "No tax rates yet",
 						description: "Add a rate to start charging tax for purchases shipping to a zone.",
+						// Same verb and same words as the button above.
 						actions: [
 							{
 								type: "button",
 								action_id: ACTION_SHOW_NEW_RATE,
-								label: "Add a tax rate",
+								label: "New tax rate",
 								value: { [PATH_FIELD]: encodePath(path) },
 							},
 						],
@@ -543,7 +648,7 @@ function ratesBlocks(
 				// operator's next act is changing the filter, which is right above).
 				blocks.push({
 					type: "context",
-					text: `No tax rates for zone "${filter.zoneId}" yet — use the form below to add one.`,
+					text: `No tax rates for zone "${filter.zoneId}" yet — "New tax rate" above adds one.`,
 				});
 			}
 		} else {
@@ -553,7 +658,6 @@ function ratesBlocks(
 		blocks.push(ratesTable(actions, bundle.rows, nextToken));
 		blocks.push(openRateForm(classId, bundle.rows));
 	}
-	blocks.push(newRateAccordion(classId, filter, bundle.zones, forceNewRateOpen));
 	return blocks;
 }
 
@@ -737,43 +841,47 @@ function openRateForm(classId: string, rows: TaxRateRow[]): FormBlock {
 	});
 }
 
-/** The "New tax rate" group (L-8). Defaults the Zone select to the active
- *  filter (if any) or the store's first zone; when there are no zones at all
- *  the form cannot be built without an F-6a-violating empty select, so the
- *  body degrades to one honest line instead (DA-7-shaped: names the actual
- *  next step). `forceOpen` mirrors `newClassAccordion` — B-6, both halves. */
-function newRateAccordion(
+/** The "New tax rate" create screen (INC-14) — what the promoted button and
+ *  the empty state's own action both drill into. When the store has no zones
+ *  at all the form cannot be built without an F-6a-violating empty `select`,
+ *  so the screen degrades to one honest line naming the actual next step
+ *  (DA-7-shaped) instead of rendering a broken control. */
+function newRateScreen(
 	classId: string,
 	filter: RatesFilterForm,
 	zones: ShippingZoneWire[],
-	forceOpen: boolean,
-): AccordionBlock {
-	const body: Block[] =
+	draft: RateDraft | undefined,
+	notice: Notice | undefined,
+): Block[] {
+	const blocks: Block[] = [
+		{ type: "header", text: `New tax rate — ${classId}` },
+		backButton(ACTION_CANCEL_NEW, "← Back to tax rates", [classId]),
+	];
+	if (notice !== undefined) blocks.push(noticeBanner(notice));
+	blocks.push(
 		zones.length === 0
-			? [
-					{
-						type: "context",
-						text: "Create a shipping zone first — a tax rate applies to one zone.",
-					},
-				]
-			: [newRateForm(classId, filter, zones)];
-	return {
-		type: "accordion",
-		block_id: (forceOpen
-			? `tax:new-rate:${classId}:opened`
-			: `tax:new-rate:${classId}`) as PlainBlockId,
-		label: "New tax rate",
-		default_open: forceOpen,
-		blocks: body,
-	};
+			? {
+					type: "context",
+					text: "Create a shipping zone first — a tax rate applies to one zone.",
+				}
+			: newRateForm(classId, filter, zones, draft),
+	);
+	return blocks;
 }
 
+/** Defaults the Zone select to the refused draft's zone, else the active
+ *  filter, else the store's first zone — a `select`'s `initial_value` must
+ *  name a real option (X-23), so a draft zone that no longer exists falls
+ *  back rather than rendering a blank trigger. The percent comes back as RAW
+ *  TEXT (DA-3a-iii property 5): the refusal is usually the parse itself. */
 function newRateForm(
 	classId: string,
 	filter: RatesFilterForm,
 	zones: ShippingZoneWire[],
+	draft?: RateDraft,
 ): FormBlock {
-	const defaultZoneId = filter.zoneId ?? zones[0]?.id ?? "";
+	const draftZoneId = zones.some((z) => z.id === draft?.zoneId) ? draft?.zoneId : undefined;
+	const defaultZoneId = draftZoneId ?? filter.zoneId ?? zones[0]?.id ?? "";
 	const options: SelectOption[] = zones.map((z) => ({ value: z.id, label: z.name }));
 	return carriedForm({
 		namespace: "tax:rate-create",
@@ -781,7 +889,13 @@ function newRateForm(
 		form: {
 			type: "form",
 			fields: [
-				{ type: "text_input", action_id: "id", label: "Rate ID", placeholder: "e.g. std-us" },
+				{
+					type: "text_input",
+					action_id: "id",
+					label: "Rate ID",
+					placeholder: "e.g. std-us",
+					...prefill(draft?.id),
+				},
 				{
 					type: "select",
 					action_id: "zoneId",
@@ -794,12 +908,13 @@ function newRateForm(
 					action_id: "ratePercent",
 					label: "Rate (%, up to 2 decimals)",
 					placeholder: "e.g. 7.25",
+					...prefill(draft?.ratePercent),
 				},
 				{
 					type: "toggle",
 					action_id: "appliesToShipping",
 					label: "Applies to shipping",
-					initial_value: false,
+					initial_value: draft?.appliesToShipping ?? false,
 				},
 			],
 			submit: { label: "Add tax rate", action_id: ACTION_CREATE_RATE },
@@ -906,17 +1021,32 @@ function createClassAction() {
 		const values = input.values ?? {};
 		const id = (readString(values.id) ?? "").trim();
 		const name = (readString(values.name) ?? "").trim();
+		// EVERY refusal below re-renders the create screen with what was typed
+		// (DA-3a-i) — see TaxRenderState.
+		const draft: ClassDraft = {
+			id: readString(values.id) ?? "",
+			name: readString(values.name) ?? "",
+		};
 		// Local guard: blank id/name never leaves the plugin (the service rejects
 		// them too, but this gives immediate inline feedback without a round trip).
 		if (id.length === 0 || name.length === 0) {
-			return showList(undefined, {
-				variant: "error",
-				title: "Tax class not created",
-				description: "Enter both a class ID and a name.",
-			});
+			return showList(
+				undefined,
+				{
+					variant: "error",
+					title: "Tax class not created",
+					description: "Enter both a class ID and a name.",
+				},
+				{ kind: "new-class", draft },
+			);
 		}
 		const result = await client.createTaxClass({ id, name });
-		return showList(undefined, createClassNotice(result, id, name));
+		const notice = createClassNotice(result, id, name);
+		// A SERVICE refusal keeps the draft too (a duplicate id is one edit away);
+		// success drops it, which is what returns the operator to the registry.
+		return result.ok
+			? showList(undefined, notice)
+			: showList(undefined, notice, { kind: "new-class", draft });
 	});
 }
 
@@ -939,11 +1069,22 @@ function createClassNotice(
 	};
 }
 
-// -- custom action: show the "New tax class" group forced open (E-2) ---------
+// -- custom actions: open and leave a create screen ---------------------------
 
+/** INC-14's promoted button, and E-2's empty-state button — one verb, because
+ *  they are one act. No draft: nothing has been typed yet. */
 function showNewClassAction() {
 	return customAction<AdminRulesClient, TaxRenderState>(async ({ showList }) =>
-		showList(undefined, undefined, { kind: "new-class-open" }),
+		showList(undefined, undefined, { kind: "new-class" }),
+	);
+}
+
+/** "← Back to …" on either create screen: re-list the level the button's own
+ *  `value` names (the root registry when it carries none). Whatever was typed
+ *  is dropped, and only ever by this explicit click. */
+function cancelNewAction() {
+	return customAction<AdminRulesClient, TaxRenderState>(async ({ carriedPath, showList }) =>
+		showList(carriedPath),
 	);
 }
 
@@ -1046,22 +1187,28 @@ function createRateAction() {
 		const values = input.values ?? {};
 		const id = (readString(values.id) ?? "").trim();
 		const zoneId = (readString(values.zoneId) ?? "").trim();
+		const appliesToShipping = readBoolean(values.appliesToShipping) ?? false;
+		// EVERY refusal below re-renders the create screen with what was typed
+		// (DA-3a-i) — see TaxRenderState.
+		const draft: RateDraft = {
+			id: readString(values.id) ?? "",
+			zoneId,
+			ratePercent: readString(values.ratePercent) ?? "",
+			appliesToShipping,
+		};
+		const err = (description: string) =>
+			showList(
+				[classId],
+				{ variant: "error", title: "Tax rate not created", description },
+				{ kind: "new-rate", draft },
+			);
 		if (id.length === 0 || zoneId.length === 0) {
-			return showList([classId], {
-				variant: "error",
-				title: "Tax rate not created",
-				description: "Enter both a rate ID and a zone.",
-			});
+			return err("Enter both a rate ID and a zone.");
 		}
 		const bps = parsePercentToBps(readString(values.ratePercent) ?? "");
 		if (bps === null) {
-			return showList([classId], {
-				variant: "error",
-				title: "Tax rate not created",
-				description: "Rate must be a percent like 7.25 (0 to 1000, up to two decimal places).",
-			});
+			return err("Rate must be a percent like 7.25 (0 to 1000, up to two decimal places).");
 		}
-		const appliesToShipping = readBoolean(values.appliesToShipping) ?? false;
 		const result = await client.createTaxRate({
 			id,
 			taxClassId: classId,
@@ -1069,7 +1216,10 @@ function createRateAction() {
 			rateBps: bps,
 			appliesToShipping,
 		});
-		return showList([classId], createRateNotice(result, id));
+		const notice = createRateNotice(result, id);
+		return result.ok
+			? showList([classId], notice)
+			: showList([classId], notice, { kind: "new-rate", draft });
 	});
 }
 
@@ -1088,15 +1238,18 @@ function createRateNotice(result: RulesCreateResult<TaxRateWire>, id: string): N
 	};
 }
 
-// -- custom action: show the "New tax rate" group forced open (E-2) ----------
+// -- custom action: open the "New tax rate" create screen ---------------------
 
+/** INC-14's promoted button, and E-2's empty-state button. Both carry the
+ *  class path in `value` (L-6): without it the create screen would open at the
+ *  root registry, which is the one failure this level's depth makes possible. */
 function showNewRateAction() {
 	return customAction<AdminRulesClient, TaxRenderState>(async ({ input, showList }) => {
 		const payload = asRecord(input.value);
 		const encoded = readString(payload?.[PATH_FIELD]);
 		const path = encoded !== undefined ? decodePath(encoded) : null;
 		if (path === null || path.length === 0) return showList();
-		return showList(path, undefined, { kind: "new-rate-open" });
+		return showList(path, undefined, { kind: "new-rate" });
 	});
 }
 
