@@ -626,6 +626,53 @@ describe("Reports admin page (workerd sandbox)", () => {
 		expect(group(blocks, "reports:revenue")).toBeDefined();
 	});
 
+	test("the 400-day cap is judged on the SNAPPED period, so a range that exceeds it only once whole days apply still gets the banner", async () => {
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", reportsResponder);
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+		await seedAdminToken(sandbox, stub);
+
+		// 399 days apart as instants, 401 as whole days — so a cap checked on the
+		// RAW bounds waved it through, the service answered 400 to all three
+		// ranged reads, and the page collapsed into the generic fail-closed
+		// banner, which names a service connection or a console bug and never the
+		// cap the operator actually hit.
+		const blocks = blocksOf(
+			await sandbox.invokeRoute("admin", {
+				type: "page_load",
+				page: "/reports",
+				from: "2025-01-01T23:59:00.000Z",
+				to: "2026-02-05T00:01:00.000Z",
+			}),
+		);
+		assertBlockContract(blocks, { screen: "reports", level: "list" });
+
+		const banner = findBlocks(blocks, "banner").find((b) => b.variant === "alert");
+		expect(String(banner?.description)).toBe(
+			"A reporting period covers up to 400 days. Choose a shorter one.",
+		);
+		// The page still renders, for the default period — not the fail-closed shell.
+		expect(findBlocks(blocks, "table")).toHaveLength(4);
+		expect(statItems(blocks)[0]?.label).toBe("Revenue (USD) — last 30 days");
+		expect(findBlocks(blocks, "banner").some((b) => b.variant === "error")).toBe(false);
+
+		// The boundary itself has not moved: 400 whole days is still accepted.
+		stub.requests.length = 0;
+		const atCap = blocksOf(
+			await sandbox.invokeRoute("admin", {
+				type: "page_load",
+				page: "/reports",
+				from: "2026-01-01",
+				to: "2027-02-04",
+			}),
+		);
+		expect(findBlocks(atCap, "banner")).toHaveLength(0);
+		expect(revenueQuery(stub.requests).get("to")).toBe("2027-02-04T23:59:59.999Z");
+	});
+
 	test("the low-stock group states the threshold its rows were selected by", async () => {
 		stub = await startStubCommerceServer();
 		stub.respondWith("GET", reportsResponder);
@@ -720,7 +767,7 @@ describe("Reports admin page (workerd sandbox)", () => {
 		expect(findBlocks(blocks, "chart")).toHaveLength(0);
 		// The fill happened, so the group makes no claim about omitted days.
 		expect(groupBlocks(blocks, "reports:revenue").map((b) => b.text)).not.toContain(
-			"Days with no revenue are omitted for this range.",
+			"Periods with no revenue are omitted for this range.",
 		);
 	});
 
@@ -733,7 +780,7 @@ describe("Reports admin page (workerd sandbox)", () => {
 		});
 		await seedAdminToken(sandbox, stub);
 
-		const sparseNote = "Days with no revenue are omitted for this range.";
+		const sparseNote = "Periods with no revenue are omitted for this range.";
 		const render = async (from: string, to: string) => {
 			const blocks = blocksOf(
 				await sandbox!.invokeRoute("admin", { type: "page_load", page: "/reports", from, to }),
@@ -800,7 +847,7 @@ describe("Reports admin page (workerd sandbox)", () => {
 		>;
 		expect(rows).toHaveLength(2);
 		expect(groupBlocks(blocks, "reports:revenue").map((b) => String(b.text))).toContain(
-			"Days with no revenue are omitted for this range.",
+			"Periods with no revenue are omitted for this range.",
 		);
 
 		// Two revenue cards + Orders fill R-16's four, so Refunded falls off the

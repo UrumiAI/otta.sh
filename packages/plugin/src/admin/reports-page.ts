@@ -248,18 +248,34 @@ function resolveRange(input: ReportsPageInput): ResolvedRange {
 	if (from === undefined || to === undefined) {
 		return defaultRange("Enter both dates as a calendar date, then update the period.");
 	}
-	if (from.getTime() > to.getTime()) {
+	// Snap to whole days FIRST, then judge the snapped period — this screen has
+	// no surface that presents a time of day, so a period carrying one would be a
+	// window the operator can neither see nor reproduce, and every check has to
+	// run on the window actually queried.
+	const fromDay = dayOf(from);
+	const toDay = dayOf(to);
+	if (fromDay > toDay) {
 		return defaultRange("The From date falls after the To date. Swap them, then update again.");
 	}
-	if (to.getTime() - from.getTime() > MAX_RANGE_DAYS * DAY_MS) {
+	// Judged on the SNAPPED span, never the raw one: `2025-01-01T23:59Z` to
+	// `2026-02-05T00:01Z` is 399 raw days but 401 whole days, so a raw check
+	// waved it through, the service answered 400 to all three reads, and the page
+	// collapsed into the generic fail-closed banner — which names a service
+	// connection or a console bug, never the cap the operator actually hit.
+	if (dayCount(fromDay, toDay) > MAX_RANGE_DAYS) {
 		return defaultRange(
 			`A reporting period covers up to ${MAX_RANGE_DAYS} days. Choose a shorter one.`,
 		);
 	}
-	// Snapped to whole days, like the default: this screen has no surface that
-	// presents a time of day, so a period that carries one would be a window the
-	// operator can neither see nor reproduce.
-	return { ...rangeFromDays(dayOf(from), dayOf(to)), isDefault: false };
+	return { ...rangeFromDays(fromDay, toDay), isDefault: false };
+}
+
+/** Whole days from `fromDay` to `toDay` INCLUSIVE — the unit the service caps,
+ *  the table rows, and the labels all count in. */
+function dayCount(fromDay: string, toDay: string): number {
+	const start = Date.parse(`${fromDay}T00:00:00.000Z`);
+	const end = Date.parse(`${toDay}T00:00:00.000Z`);
+	return Math.round((end - start) / DAY_MS) + 1;
 }
 
 /**
@@ -786,8 +802,10 @@ interface RevenueSeries {
 const MAX_ZERO_FILL_DAYS = 92;
 
 /** Rendered under the group label whenever the fill was declined. Names the
- *  omission, never the reasoning behind it. */
-const SPARSE_SERIES_NOTE = "Days with no revenue are omitted for this range.";
+ *  omission, never the reasoning behind it. "Periods", not "Days": this group
+ *  also renders weekly and monthly buckets, and the table's own first column is
+ *  labelled `Period`. */
+const SPARSE_SERIES_NOTE = "Periods with no revenue are omitted for this range.";
 
 /**
  * The revenue series with its gaps filled in: every day of the period, in day
