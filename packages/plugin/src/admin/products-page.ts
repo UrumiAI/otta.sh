@@ -53,11 +53,14 @@ import {
  * FIVE THINGS THAT DIFFER FROM ORDERS, worth reading before touching this file:
  *
  *  1. TWO FIELDS ON THIS SCREEN ARE OWNED BY THE CMS (F-2b, X-52): `Title` and
- *     `Status` (the `active` publish gate). Both render as READ-ONLY `fields`
- *     rows whose LABEL names the owner (`Title (set in the CMS)`,
- *     `Status (set in the CMS)`) and neither has a form field anywhere on this
- *     screen — `ProductEditWire` has no `title`/`active` member, so re-adding
+ *     `Status` (the `active` publish gate). NEITHER has a form field anywhere on
+ *     this screen — `ProductEditWire` has no `title`/`active` member, so adding
  *     one fails to compile. See `adr/0013-product-title-is-cms-owned.md`.
+ *     `Status` renders as a READ-ONLY `fields` row whose LABEL names the owner
+ *     (`Status (set in the CMS)`). `Title` renders as the detail HEADER and
+ *     NOWHERE ELSE: INC-15 deleted the `Title (set in the CMS)` strip row that
+ *     restated that header verbatim one block below it. Its ownership is stated
+ *     by the Identity group's context line instead.
  *  2. THE EDIT FORM IS SPLIT INTO THREE SIBLING FORMS (F-5a), not one. This is
  *     legal here — and ONLY here among the console's PUT/PATCH forms — because
  *     `updateProduct` is a verified sparse PATCH at every layer: `buildEditWire`
@@ -876,11 +879,24 @@ function detailBlocks(
 		});
 	}
 	// The identity strip: "what am I looking at, and is it healthy" without a
-	// click. 6 entries in 3 row-major PAIRS (R-3, §4). `Title` and `Status` are
-	// CMS-owned (F-2b, X-52) — read-only, and the LABEL names the owner.
+	// click. `Status` is CMS-owned (F-2b, X-52) — read-only, and the LABEL names
+	// the owner.
+	//
+	// INC-15: the `Title (set in the CMS)` row is GONE. It repeated the H1
+	// immediately above it verbatim (the header IS `p.title`), so it spent a row
+	// of the densest block on the screen restating what the operator had just
+	// read. Its owner-naming job is not lost — `Status (set in the CMS)` still
+	// carries it, and the SKU form's own context line still says the title is set
+	// in the CMS. No Title INPUT replaces it: `product_commerce.title` is a
+	// CMS-owned single-writer cache (G2 / ADR-0013) and `ProductEditWire` has no
+	// `title` member, so one would not compile.
+	//
+	// That leaves 5 entries — ODD, and visible as such at this call site by
+	// design (R-3: `fields` is row-major `grid-cols-2`). The orphan lands on
+	// `Kind`, the least urgent entry of the five, which is the right cell to
+	// leave alone on the last row. Do NOT invent a sixth entry to even it up.
 	blocks.push(
 		fields("products:identity", [
-			["Title (set in the CMS)", p.title ?? "(untitled)"],
 			["SKU", p.sku ?? "—"],
 			["Price", formatOptionalTotal(p.priceCents, p.currency)],
 			["Status (set in the CMS)", statusLabel(p)],
@@ -951,7 +967,7 @@ function productPanel(
 	blocks.push({
 		type: "accordion",
 		block_id: `products:${id}:edit-identity`,
-		label: "Identity",
+		label: fitLabel(identityGroupLabel(p)),
 		default_open: open === "identity",
 		blocks: [
 			{
@@ -977,7 +993,7 @@ function productPanel(
 	blocks.push({
 		type: "accordion",
 		block_id: `products:${id}:edit-shipping`,
-		label: "Classification & shipping",
+		label: fitLabel(shippingGroupLabel(p)),
 		default_open: false, // ALWAYS
 		blocks: [
 			{
@@ -1005,6 +1021,30 @@ function productPanel(
 function priceGroupLabel(p: ProductDetailWire): string {
 	if (p.priceCents === null || p.currency === null) return "Price — not priced yet";
 	return `Price — ${formatOptionalTotal(p.priceCents, p.currency)} ${p.currency}`;
+}
+
+/** D-6, INC-15: the Identity group holds exactly one value — the SKU — so the
+ *  label states it and the group can be skipped unopened. A product created in
+ *  the CMS before anyone set a SKU has none yet; that is a real state with a
+ *  real consequence (no stock movements — D-7, see the Stock panel), so it is
+ *  NAMED rather than rendered as an empty tail. */
+function identityGroupLabel(p: ProductDetailWire): string {
+	return `Identity — ${p.sku ?? "no SKU"}`;
+}
+
+/** D-6, INC-15: the two values an operator opens `Classification & shipping`
+ *  to check — the tax class, and the weight quotes are computed from.
+ *
+ *  The tax class renders as its ID, not the `name (id)` pair the `Tax class`
+ *  summary row and the select use: these ids are readable natural-key slugs
+ *  (`standard`, `eu-standard-vat`), never uuids, so §1.3 leaves them in full —
+ *  and the full pair would consume the whole X-11 budget on its own, leaving no
+ *  room for the weight. Neither value is invented when absent: an unset one
+ *  says so. */
+function shippingGroupLabel(p: ProductDetailWire): string {
+	const taxClass = p.taxClass ?? "no tax class";
+	const weight = p.weightGrams === null ? "no weight" : `${p.weightGrams} g`;
+	return `Classification & shipping — ${taxClass} · ${weight}`;
 }
 
 /**

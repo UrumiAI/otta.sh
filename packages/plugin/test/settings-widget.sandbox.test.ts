@@ -23,6 +23,11 @@ import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
 // every save re-renders the WHOLE screen from a fresh read) and service
 // (operational + both tokens, over ctx.http). SECURITY: no secret is ever
 // rendered back into a block.
+//
+// INC-15: each group's LABEL now carries that group's current values, and all
+// three render closed. "Token set" is a boolean FACT about a credential, not
+// any part of it — the no-echo pins below cover the whole response, labels
+// included.
 
 let sandbox: SandboxHandle | undefined;
 let stub: StubCommerceServer | undefined;
@@ -41,6 +46,12 @@ function expectAllFourFormsPresent(blocks: readonly LooseBlock[]): void {
 	for (const actionId of ALL_SUBMIT_IDS) {
 		expect(formFor(blocks, actionId), `expected a form submitting "${actionId}"`).toBeDefined();
 	}
+}
+
+/** Each group's `label` by `block_id` — INC-15's subject: the label states what
+ *  the group holds, and the `block_id` is what must NOT move when it changes. */
+function groupLabels(blocks: readonly LooseBlock[]): Map<string, string> {
+	return new Map(findBlocks(blocks, "accordion").map((a) => [String(a.block_id), String(a.label)]));
 }
 
 describe("Settings admin form (workerd sandbox)", () => {
@@ -80,8 +91,10 @@ describe("Settings admin form (workerd sandbox)", () => {
 		// re-render.
 		expect(stub.requests.some((r) => r.method === "GET" && r.url === "/settings")).toBe(true);
 
-		// S-3: "Store" is the one open group, always.
-		expect(openGroupIds(blocks)).toEqual(["settings:store"]);
+		// INC-15 amends S-3 for this screen: NO group is default_open. The labels
+		// carry the values, so there is nothing to rank — and X-18's mechanical
+		// rule is "at most one", which zero satisfies.
+		expect(openGroupIds(blocks)).toEqual([]);
 
 		// It persisted in kv: a later page load reflects it as the form's
 		// initial value too.
@@ -545,5 +558,147 @@ describe("Settings admin form (workerd sandbox)", () => {
 		const put = stub.requests.find((r) => r.method === "PUT");
 		expect(put?.headers["x-internal-token"]).toBe("qa-local-admin-token");
 		expect(put?.headers["x-service-token"]).toBe("qa-local-service-token");
+	});
+
+	// -- INC-15: the labels carry the values, so every group can start closed ----
+
+	async function bootWithSettings(
+		holdTtlMinutes: number,
+		lowStockThreshold: number,
+	): Promise<void> {
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", () => ({
+			status: 200,
+			body: { ok: true, settings: { holdTtlMinutes, lowStockThreshold } },
+		}));
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+	}
+
+	test("INC-15: every group renders CLOSED and its label states its own values — nothing has to be opened to read this screen", async () => {
+		await bootWithSettings(15, 5);
+		const blocks = blocksOf(
+			await sandbox!.invokeRoute("admin", { type: "page_load", page: "/settings" }),
+		);
+		assertBlockContract(blocks, { screen: "settings", level: "list" });
+
+		const labels = groupLabels(blocks);
+		expect([...labels.keys()]).toEqual([
+			"settings:store",
+			"settings:checkout",
+			"settings:connection",
+		]);
+		expect(labels.get("settings:store")).toBe("Store — no display name");
+		expect(labels.get("settings:checkout")).toBe("Checkout & holds — 15 min hold · low stock at 5");
+		expect(labels.get("settings:connection")).toBe(
+			"Service connection — token not set · service token not set",
+		);
+		// X-11: mechanically enforced by assertBlockContract too, pinned here as
+		// the rule these three strings were composed against.
+		for (const label of labels.values()) expect(label.length).toBeLessThanOrEqual(60);
+
+		// All three closed — the render-time kind (§1.2), which is legal.
+		expect(openGroupIds(blocks)).toEqual([]);
+		expect(findBlocks(blocks, "accordion").every((a) => a.default_open === false)).toBe(true);
+	});
+
+	test("INC-15: a label states an unset or unreadable value as a FACT — never a blank tail, never a zero", async () => {
+		// The secondary GET fails: there are no operational values to state, and
+		// the label says so rather than implying `0 min hold · low stock at 0`.
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", () => ({ status: 503, body: { error: "unavailable" } }));
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+		const blocks = blocksOf(
+			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
+		);
+		assertBlockContract(blocks, { screen: "settings", level: "list" });
+
+		const labels = groupLabels(blocks);
+		expect(labels.get("settings:checkout")).toBe("Checkout & holds — not loaded");
+		for (const label of labels.values()) {
+			expect(label).not.toMatch(/—\s*$/);
+			expect(label).not.toMatch(/\b0 min hold\b|low stock at 0\b/);
+		}
+	});
+
+	test("INC-15: the labels track saves — a saved display name and a first-ever token save are stated on the SAME response that saved them", async () => {
+		await bootWithSettings(15, 5);
+
+		const named = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-display",
+				values: { storeDisplayName: "Acme Goods" },
+			}),
+		);
+		expect(groupLabels(named).get("settings:store")).toBe("Store — Acme Goods");
+
+		// The trap this pins: the handler reads both tokens ONCE, at the top, so a
+		// first-ever save would report the token it had just persisted as "not
+		// set" unless the save updates what the re-render is computed from.
+		const savedAdmin = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-token",
+				values: { internalToken: "qa-local-admin-token" },
+			}),
+		);
+		expect(groupLabels(savedAdmin).get("settings:connection")).toBe(
+			"Service connection — token set · service token not set",
+		);
+
+		const savedService = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-service-token",
+				values: { serviceToken: "qa-local-service-token" },
+			}),
+		);
+		expect(groupLabels(savedService).get("settings:connection")).toBe(
+			"Service connection — token set · service token set",
+		);
+
+		// …and a later page load agrees, so the label is reporting kv, not the
+		// interaction it was submitted with.
+		const reloaded = blocksOf(
+			await sandbox!.invokeRoute("admin", { type: "page_load", page: "/settings" }),
+		);
+		expect(groupLabels(reloaded).get("settings:connection")).toBe(
+			"Service connection — token set · service token set",
+		);
+
+		// SECURITY PIN (the whole point of stating a BOOLEAN): "token set" is a
+		// fact ABOUT the credential. No part of either token value appears in the
+		// response that reports it as set — labels included.
+		const wholeResponse = JSON.stringify(reloaded);
+		expect(wholeResponse).not.toContain("qa-local-admin-token");
+		expect(wholeResponse).not.toContain("qa-local-service-token");
+	});
+
+	test("INC-15: a label change NEVER changes a group's block_id — the labels move, the accordions do not remount (§1.2)", async () => {
+		await bootWithSettings(15, 5);
+		const before = blocksOf(
+			await sandbox!.invokeRoute("admin", { type: "page_load", page: "/settings" }),
+		);
+		const after = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-display",
+				values: { storeDisplayName: "Acme Goods" },
+			}),
+		);
+		// The label DID change…
+		expect(groupLabels(before).get("settings:store")).not.toBe(
+			groupLabels(after).get("settings:store"),
+		);
+		// …and every group's identity did NOT. Forcing a group shut by changing
+		// its block_id is the FORBIDDEN programmatic close (§1.2) — it would
+		// discard whatever the operator had typed into the other two groups.
+		expect([...groupLabels(after).keys()]).toEqual([...groupLabels(before).keys()]);
 	});
 });
