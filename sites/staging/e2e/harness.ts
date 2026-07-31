@@ -19,9 +19,23 @@
  * `pnpm test:e2e` is green on a bare checkout. Set `OTTA_E2E_REQUIRE_SITE=1`
  * (CI, or a run you actually want to trust) to turn those skips into failures.
  *
- * `pnpm test` (vitest) never sees this directory: `sites/staging/vitest.config.ts`
- * includes only `test/**\/*.test.ts`, and these files are `*.spec.ts` under
- * `e2e/`. The two runners do not overlap by construction.
+ * `pnpm test` (vitest) never RUNS anything in this directory:
+ * `sites/staging/vitest.config.ts` includes only `test/**\/*.test.ts`, and these
+ * files are `*.spec.ts` under `e2e/`. The two runners do not overlap by
+ * construction.
+ *
+ * That sentence was briefly untrue, which is worth recording because "by
+ * construction" was doing real work in it. INC-19 had `site-config.test.ts`
+ * import the migrated-screen registry from THIS file — never RUN by vitest, but
+ * very much LOADED by it — which dragged in `@playwright/test` (undeclared in
+ * `sites/staging`, resolving only by walking up to the root) and, worse, the
+ * module-load env guards below. `COMMERCE_SERVICE_URL` is the staging site's
+ * ordinary BUILD-time variable, so merely having it set to a real URL made the
+ * whole unit suite throw on an e2e loopback check it was never subject to.
+ *
+ * The registry now lives in `./registry.js` — no imports, no environment, no
+ * code at load — and this file re-exports it. Anything else the unit tier ever
+ * needs from here belongs there too.
  */
 import { fileURLToPath } from "node:url";
 import { expect, test as base, type Page, type TestInfo } from "@playwright/test";
@@ -193,65 +207,16 @@ export const ADMIN_SHELL_TIMEOUT_MS = 60_000;
  *  screens (ADR-0014 Decision 7) — would pass vacuously. */
 export const BLOCK_KIT_SIDEBAR_LINK = `a[href*="${ADMIN_BASE_PATH}/plugins/${OTTA_PLUGIN_ID}/"]`;
 
-/** One migrated React screen and the single fact its smoke spec asserts. */
-export interface ConsoleScreen {
-	/** Human name, used as the test title. */
-	readonly name: string;
-	/** The increment that migrated it — for the reader of a failing run. */
-	readonly increment: string;
-	/** `adminPages[].path` on the `otta-console` descriptor. */
-	readonly path: string;
-	/** Text the screen must render once loaded. */
-	readonly heading: RegExp;
-}
-
 /**
- * THE REGISTRY IS THE COVERAGE GATE.
+ * The migrated-screen registry lives in its own module and is RE-EXPORTED here.
  *
- * `console-screens.spec.ts` generates one smoke spec per entry, so a screen
- * cannot be migrated to React and left uncovered: adding the entry IS adding
- * the spec, and leaving the entry out means the screen has no gate at all —
- * which `harness.spec.ts` makes visible by pinning this list against the
- * migration scope ADR-0014 Decision 6 fixes.
- *
- * STILL EMPTY AFTER INC-19, and that is the correct reading of it rather than
- * an oversight. INC-19 ships the console SHELL — a landing page that never
- * existed on Block Kit — so nothing has been migrated and every operator-facing
- * screen is still the Block Kit one, unchanged and still covered by its sandbox
- * suite. Putting the shell in here would make "migrated" mean "React", the
- * registry stop being a statement about ADR-0014 Decision 6's scope, and the
- * count stop answering "how many Block Kit screens have been replaced". The
- * shell has its own gate instead: `CONSOLE_SHELL` below, and
- * `console-shell.spec.ts`.
- *
- * INC-20 adds Orders, INC-21 adds Pricing & inventory. Tax, Shipping and
- * Settings stay Block Kit permanently (ADR-0014 Decision 6) and must never
- * appear here.
+ * Playwright code reaches it through the harness, as it always did; the vitest
+ * side imports `./registry.js` directly and therefore never loads this file,
+ * its `@playwright/test` import, or the env guards below. See `registry.ts` for
+ * why that separation is load-bearing rather than tidy.
  */
-export const MIGRATED_SCREENS: readonly ConsoleScreen[] = [];
-
-/**
- * The console shell — the one React page that exists before any migration.
- *
- * Kept OUT of `MIGRATED_SCREENS` (see above) but described in the same shape,
- * so `console-shell.spec.ts` reads like the generated per-screen specs and so
- * the shell's path is written down exactly once on the test side.
- *
- * `path` must equal `CONSOLE_HOME_PAGE.path` in `@otta-sh/admin-react`. The two
- * are not imported from one another on purpose: this file is the e2e surface's
- * own statement of what it expects to find, and a spec that imported the value
- * it is checking would pass no matter what the console shipped.
- */
-export const CONSOLE_SHELL: ConsoleScreen = {
-	name: "Console shell",
-	increment: "INC-19",
-	path: "/console",
-	heading: /Otta console/i,
-};
-
-/** Screens ADR-0014 Decision 6 forbids migrating — pinned so a future
- *  increment cannot quietly add one to the registry above. */
-export const NEVER_MIGRATED_PATHS: readonly string[] = ["/tax", "/shipping", "/settings"];
+export type { ConsoleScreen } from "./registry.js";
+export { CONSOLE_SHELL, MIGRATED_SCREENS, NEVER_MIGRATED_PATHS } from "./registry.js";
 
 /** This worktree's root, absolute — the identity a served build is checked
  *  against. */

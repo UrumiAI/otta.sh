@@ -40,7 +40,13 @@ import {
 	OTTA_CONSOLE_ADMIN_PAGES,
 } from "@otta-sh/admin-react";
 import { describe, expect, test } from "vitest";
-import { CONSOLE_SHELL, MIGRATED_SCREENS } from "../e2e/harness.js";
+// `../e2e/registry.js`, NEVER `../e2e/harness.js`. The harness resolves and
+// loopback-guards COMMERCE_SERVICE_URL / PG_CONNECTION_STRING at MODULE LOAD
+// and imports `@playwright/test`. Importing it from here meant a set
+// COMMERCE_SERVICE_URL — the site's ordinary BUILD-time variable, per
+// sites/staging/README.md — threw before a single assertion and redded the
+// whole unit suite. The registry is plain data with no imports at all.
+import { CONSOLE_SHELL, MIGRATED_SCREENS } from "../e2e/registry.js";
 import { buildEmdashOptions, COMMERCE_SERVICE_URL_PLACEHOLDER } from "../src/emdash-options.js";
 import { ottaConsoleDescriptor } from "../src/otta-console-descriptor.js";
 import { ottaPluginDescriptor } from "../src/otta-plugin-descriptor.js";
@@ -354,7 +360,7 @@ function assertEveryConsolePageIsGated(pages: readonly { path: string }[]): void
 		expect(
 			gated,
 			`console page ${page.path} has NO Playwright gate — add it to MIGRATED_SCREENS in ` +
-				`sites/staging/e2e/harness.ts (which generates its smoke spec), or, if it is not a ` +
+				`sites/staging/e2e/registry.ts (which generates its smoke spec), or, if it is not a ` +
 				`migrated screen, give it its own spec the way CONSOLE_SHELL has one`,
 		).toContain(page.path);
 	}
@@ -380,10 +386,15 @@ describe("every page the console serves has a Playwright gate", () => {
 		// wrong reason. Verified: with `/orders` planted in the page list AND in
 		// MIGRATED_SCREENS, the `/orders` version of this test failed. A control
 		// that the change it guards can defuse is not a control.
+		//
+		// And the sentinel goes in ALONE, not spread onto the real page list. If
+		// the shipped list itself contains something ungated, a spread makes this
+		// control throw on THAT page instead — still red, but pointing at the
+		// wrong thing and asserting nothing about the sentinel. The control has
+		// to be independent of whatever the console currently ships; the
+		// tests above are what cover the real list.
 		const ungated = { path: "/__never_a_real_screen__" };
-		expect(() => assertEveryConsolePageIsGated([...OTTA_CONSOLE_ADMIN_PAGES, ungated])).toThrow(
-			/__never_a_real_screen__/,
-		);
+		expect(() => assertEveryConsolePageIsGated([ungated])).toThrow(/__never_a_real_screen__/);
 	});
 
 	test("NEGATIVE CONTROL: the guard is not vacuous", () => {
