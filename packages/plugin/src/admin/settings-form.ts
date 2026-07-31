@@ -69,6 +69,30 @@ export const STORE_DISPLAY_NAME_KEY = "settings:storeDisplayName";
  *  the guarded reporting reads + privileged settings PUT. NEVER rendered. */
 export const INTERNAL_TOKEN_KEY = "settings:internalToken";
 
+/** kv keys for each token's SAVE GENERATION (INC-09 post-save clear). Bumped by
+ *  {@link bumpSaveGen} on every successful (non-empty) submit and folded into
+ *  that token's own form via {@link tokenForm}/{@link serviceTokenForm}, so a
+ *  save changes the form's carrier `block_id` — otherwise the mount-only
+ *  `text_input` would keep showing whatever the operator just typed after a
+ *  "saved" re-render, since the field itself carries no `initial_value`/
+ *  `has_value` left to hang a digest off of (see `carrier.ts`'s
+ *  `prefillDigest`). Independent per token: saving one must not blank the
+ *  other's untouched field. */
+const INTERNAL_TOKEN_GEN_KEY = "settings:internalTokenGen";
+const SERVICE_TOKEN_GEN_KEY = "settings:serviceTokenGen";
+
+/** Current save generation for a token key, defaulting to 0 when never saved. */
+async function readSaveGen(ctx: PluginContext, key: string): Promise<number> {
+	return (await ctx.kv.get<number>(key)) ?? 0;
+}
+
+/** Bump a token's save generation. Call ONLY on an actual (non-empty) persist —
+ *  never on a blank submit, which already leaves the field's stated content
+ *  correct (still empty), so there is nothing to force a remount for. */
+async function bumpSaveGen(ctx: PluginContext, key: string): Promise<void> {
+	await ctx.kv.set(key, (await readSaveGen(ctx, key)) + 1);
+}
+
 /** The action ids the admin-route dispatcher recognizes as belonging to the
  *  Settings form (so a `block_action`/`form_submit` carrying one of these — and
  *  NO `page` — is routed here, not to Reports). */
@@ -192,6 +216,9 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			const raw = input.values?.internalToken;
 			if (typeof raw === "string" && raw !== "") {
 				await ctx.kv.set(INTERNAL_TOKEN_KEY, raw);
+				// Post-save clear (INC-09): bump the carrier `gen` so the re-rendered
+				// field remounts blank instead of continuing to show what was typed.
+				await bumpSaveGen(ctx, INTERNAL_TOKEN_GEN_KEY);
 			}
 			const page = await renderPage(ctx, client, {
 				variant: "default",
@@ -212,6 +239,9 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			const raw = input.values?.serviceToken;
 			if (typeof raw === "string" && raw !== "") {
 				await ctx.kv.set(SERVICE_TOKEN_KEY, raw);
+				// Post-save clear (INC-09): bump the carrier `gen` so the re-rendered
+				// field remounts blank instead of continuing to show what was typed.
+				await bumpSaveGen(ctx, SERVICE_TOKEN_GEN_KEY);
 			}
 			const page = await renderPage(ctx, client, {
 				variant: "default",
@@ -238,6 +268,8 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 			const displayName = (await ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY)) ?? "";
 			const hasToken = ((await ctx.kv.get<string>(INTERNAL_TOKEN_KEY)) ?? "").length > 0;
 			const hasServiceToken = serviceToken !== undefined;
+			const tokenGen = await readSaveGen(ctx, INTERNAL_TOKEN_GEN_KEY);
+			const serviceTokenGen = await readSaveGen(ctx, SERVICE_TOKEN_GEN_KEY);
 			if (!result.ok) {
 				// Surface the service's validation error INLINE (never a generic
 				// "save failed" that hides the real reason). Re-render the ATTEMPTED
@@ -259,6 +291,8 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 						settings: shown,
 						hasToken,
 						hasServiceToken,
+						tokenGen,
+						serviceTokenGen,
 						notice: {
 							variant: "error",
 							title: "Settings not saved",
@@ -274,6 +308,8 @@ export function createSettingsFormHandler(): RouteHandler<SettingsFormInput> {
 					settings: result.settings,
 					hasToken,
 					hasServiceToken,
+					tokenGen,
+					serviceTokenGen,
 					notice: {
 						variant: "default",
 						title: "Settings saved",
@@ -313,10 +349,20 @@ async function renderPage(
 	const displayName = (await ctx.kv.get<string>(STORE_DISPLAY_NAME_KEY)) ?? "";
 	const hasToken = ((await ctx.kv.get<string>(INTERNAL_TOKEN_KEY)) ?? "").length > 0;
 	const hasServiceToken = (await serviceTokenFromKv(ctx)) !== undefined;
+	const tokenGen = await readSaveGen(ctx, INTERNAL_TOKEN_GEN_KEY);
+	const serviceTokenGen = await readSaveGen(ctx, SERVICE_TOKEN_GEN_KEY);
 	try {
 		const settings = await client.getSettings();
 		return {
-			blocks: buildSettingsBlocks({ displayName, settings, hasToken, hasServiceToken, notice }),
+			blocks: buildSettingsBlocks({
+				displayName,
+				settings,
+				hasToken,
+				hasServiceToken,
+				tokenGen,
+				serviceTokenGen,
+				notice,
+			}),
 		};
 	} catch {
 		return {
@@ -325,6 +371,8 @@ async function renderPage(
 				settings: undefined,
 				hasToken,
 				hasServiceToken,
+				tokenGen,
+				serviceTokenGen,
 				notice,
 			}),
 		};
@@ -374,6 +422,8 @@ function buildSettingsBlocks(args: {
 	settings: OperationalSettingsWire | undefined;
 	hasToken: boolean;
 	hasServiceToken: boolean;
+	tokenGen: number;
+	serviceTokenGen: number;
 	notice?: Notice;
 }): Block[] {
 	const blocks: Block[] = [
@@ -384,23 +434,37 @@ function buildSettingsBlocks(args: {
 		},
 	];
 	if (args.notice !== undefined) blocks.push(noticeBanner(args.notice));
-	blocks.push(storeGroup(args.displayName), checkoutGroup(args.settings), connectionGroup());
+	// args.hasToken / args.hasServiceToken are read but not consumed below —
+	// KEEP them: INC-15 needs exactly these two booleans for the "Service
+	// connection" accordion's collapsed title ("token set · service token not
+	// set"), so this is deliberate future plumbing, not dead code.
+	blocks.push(
+		storeGroup(args.displayName),
+		checkoutGroup(args.settings),
+		connectionGroup({ tokenGen: args.tokenGen, serviceTokenGen: args.serviceTokenGen }),
+	);
 	return blocks;
 }
 
 /** The write-only admin-token form (INC-09: no masked variant). A plain
  *  `text_input` — no `secret_input`, no `has_value`, no reveal/copy control —
  *  that carries NO `initial_value` (the stored token is never rendered), so
- *  the field renders EMPTY every time regardless of whether a token is
+ *  the field renders EMPTY on every FRESH mount, whether or not a token is
  *  already set; the placeholder alone carries the "blank keeps current"
  *  behaviour, which is unconditionally true (there is nothing to reveal
- *  either way). Symmetric with {@link serviceTokenForm}. Routed through
- *  `carriedForm` (S-4) for the shared namespacing/digest discipline, though an
- *  always-empty, always-identical field never actually needs a changed
- *  `block_id` to redisplay correctly. */
-function tokenForm(): FormBlock {
+ *  either way).
+ *
+ *  POST-SAVE CLEAR: because the field itself never varies, `carriedForm`'s
+ *  own prefill digest is now CONSTANT, so `gen` — this token's save
+ *  generation, bumped by {@link bumpSaveGen} on every successful non-empty
+ *  submit — rides in the carrier CONTEXT instead. That still changes the
+ *  form's `block_id` on a real save, forcing the mount-only field to remount
+ *  blank rather than keep showing what the operator just typed. Symmetric
+ *  with {@link serviceTokenForm}. */
+function tokenForm(gen: number): FormBlock {
 	return carriedForm({
 		namespace: "settings:admin-token",
+		context: { gen: String(gen) },
 		form: {
 			type: "form",
 			fields: [
@@ -418,12 +482,14 @@ function tokenForm(): FormBlock {
 
 /** The write-only SERVICE-token form (ADR-0007) — the machine write-gate token
  *  the service enforces as `X-Service-Token`. Same plain, write-only
- *  discipline as {@link tokenForm} (INC-09): no masked variant, no
- *  `initial_value`, and a blank submit keeps the current token. NEVER
- *  rendered back. */
-function serviceTokenForm(): FormBlock {
+ *  discipline as {@link tokenForm} (INC-09), including the `gen`-carried
+ *  post-save clear: no masked variant, no `initial_value`, a blank submit
+ *  keeps the current token, and a successful save remounts the field blank.
+ *  NEVER rendered back. */
+function serviceTokenForm(gen: number): FormBlock {
 	return carriedForm({
 		namespace: "settings:service-token",
+		context: { gen: String(gen) },
 		form: {
 			type: "form",
 			fields: [
@@ -512,7 +578,7 @@ function checkoutGroup(settings: OperationalSettingsWire | undefined): Accordion
 	};
 }
 
-function connectionGroup(): AccordionBlock {
+function connectionGroup(args: { tokenGen: number; serviceTokenGen: number }): AccordionBlock {
 	return {
 		type: "accordion",
 		block_id: "settings:connection",
@@ -523,8 +589,8 @@ function connectionGroup(): AccordionBlock {
 				type: "context",
 				text: "Both tokens are stored write-only — a blank submit keeps the current one. Neither is ever displayed.",
 			},
-			tokenForm(),
-			serviceTokenForm(),
+			tokenForm(args.tokenGen),
+			serviceTokenForm(args.serviceTokenGen),
 		],
 	};
 }

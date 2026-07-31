@@ -415,6 +415,82 @@ describe("Settings admin form (workerd sandbox)", () => {
 		// The two fields are now visually and behaviourally symmetric.
 		expect(adminField?.placeholder).toBe("Enter new admin token (blank keeps current)");
 		expect(serviceField?.placeholder).toBe("Enter new service token (blank keeps current)");
+
+		// SECURITY PIN: the WHOLE rendered response — not just the two field
+		// objects above — must never contain either raw token value. Per-field
+		// property assertions can't catch a future echo through a banner or
+		// context line; a whole-response string search can.
+		const wholeResponse = JSON.stringify(blocks);
+		expect(wholeResponse).not.toContain("qa-local-admin-token");
+		expect(wholeResponse).not.toContain("qa-local-service-token");
+	});
+
+	test("INC-09 post-save clear: a successful token save remounts its form BLANK with a DIFFERENT block_id; the other field and blank submits are unaffected", async () => {
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", () => ({
+			status: 200,
+			body: { ok: true, settings: { holdTtlMinutes: 15, lowStockThreshold: 5 } },
+		}));
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+
+		const before = blocksOf(
+			await sandbox.invokeRoute("admin", { type: "page_load", page: "/settings" }),
+		);
+		assertBlockContract(before, { screen: "settings", level: "list" });
+		const adminBlockIdBefore = formFor(before, "save-token")?.block_id;
+		const serviceBlockIdBefore = formFor(before, "save-service-token")?.block_id;
+
+		// With `has_value`/`initial_value` gone from both fields, the form's own
+		// prefill digest is now CONSTANT — without the `gen`-carried fix below,
+		// the carrier `block_id` (the renderer's React key) would never change on
+		// a save, and a mount-only `text_input` would keep showing whatever the
+		// operator had just typed, even after a "saved" re-render.
+		const adminSaved = blocksOf(
+			await sandbox.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-token",
+				values: { internalToken: "qa-local-admin-token" },
+			}),
+		);
+		const adminFieldAfter = field(formFor(adminSaved, "save-token"), "internalToken");
+		const adminBlockIdAfterSave = formFor(adminSaved, "save-token")?.block_id;
+		// The re-rendered field carries no value — still a plain, empty
+		// text_input, nothing left lingering from what was typed.
+		expect(adminFieldAfter).not.toHaveProperty("initial_value");
+		// The KEY changed: a real host remounts the input on this response,
+		// discarding whatever DOM value the operator had just typed.
+		expect(adminBlockIdAfterSave).not.toBe(adminBlockIdBefore);
+		// Saving the ADMIN token must not remount the untouched SERVICE field.
+		expect(formFor(adminSaved, "save-service-token")?.block_id).toBe(serviceBlockIdBefore);
+
+		// Same pin, the other direction — and saving the service token must not
+		// re-remount the admin field a second time.
+		const serviceSaved = blocksOf(
+			await sandbox.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-service-token",
+				values: { serviceToken: "qa-local-service-token" },
+			}),
+		);
+		const serviceFieldAfter = field(formFor(serviceSaved, "save-service-token"), "serviceToken");
+		expect(serviceFieldAfter).not.toHaveProperty("initial_value");
+		expect(formFor(serviceSaved, "save-service-token")?.block_id).not.toBe(serviceBlockIdBefore);
+		expect(formFor(serviceSaved, "save-token")?.block_id).toBe(adminBlockIdAfterSave);
+
+		// blank-submit-keeps-current still holds UNCHANGED: a blank submit never
+		// bumps the generation, so the block_id does not move further (there is
+		// nothing to remount — the field was already blank).
+		const blankSubmitted = blocksOf(
+			await sandbox.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "save-token",
+				values: { internalToken: "" },
+			}),
+		);
+		expect(formFor(blankSubmitted, "save-token")?.block_id).toBe(adminBlockIdAfterSave);
 	});
 
 	test("INC-09: a blank submit on either token form keeps the currently stored token (unchanged behaviour)", async () => {
