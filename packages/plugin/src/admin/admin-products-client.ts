@@ -15,9 +15,10 @@ import type { HttpAccess } from "../types.js";
  * Increment 2). No product-CREATE method here (that stays in the CMS sync path).
  */
 
-/** A lightweight product row for the admin list — NEVER carries stock (the
- *  list must not N+1 into inventory per row; see `AdminProductsClient.
- *  getProduct`'s doc for the detail leaf's single-sku read). */
+/** A lightweight product row for the admin list. It DOES carry stock: the
+ *  service sources `onHand` from ONE LEFT JOIN per page, so the list still
+ *  never N+1s into inventory per row (see `AdminProductsClient.getProduct`'s
+ *  doc for the detail leaf's separate single-sku read). */
 export interface ProductSummaryWire {
 	productId: string;
 	sku: string | null;
@@ -26,6 +27,13 @@ export interface ProductSummaryWire {
 	currency: string | null;
 	productKind: string;
 	active: boolean;
+	/** Stock on hand — a COUNT, never money (no minor units, no currency).
+	 *
+	 *  `null` means the sku has NO inventory record (or the product has no sku
+	 *  at all): "unknown", which is NOT `0` ("out of stock"). A renderer must
+	 *  keep the two apart — a dash for `null`, a literal `0` for zero — and
+	 *  never fold either into the other. */
+	onHand: number | null;
 	/** Soft-delete tombstone (product lifecycle surfacing). Null on every row
 	 *  of a default (live) page; non-null only in the archive view
 	 *  (`ProductsListFilter.deleted: true`). */
@@ -33,8 +41,9 @@ export interface ProductSummaryWire {
 	createdAt: string;
 }
 
-/** The full admin Product detail (read-only) — includes the single-sku stock
- *  read (`onHand`) the detail leaf fetches, unlike the list projection. */
+/** The full admin Product detail (read-only) — carries the single-sku stock
+ *  read (`onHand`) the detail leaf fetches for the ONE product opened; the
+ *  list gets the same field from its per-page join instead. */
 export interface ProductDetailWire {
 	productId: string;
 	sku: string | null;

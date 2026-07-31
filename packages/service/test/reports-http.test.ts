@@ -89,6 +89,85 @@ describe.skipIf(PG === undefined)("reports HTTP contract", () => {
 		expect((override.rows as Array<Record<string, unknown>>).map((r) => r.sku)).toEqual(["SKU-A"]);
 	});
 
+	test("GET /reports/low-stock carries the LIVE product title; null when unknown and NEVER the sku", async () => {
+		// The shared fixture seeds inventory but no products, so titles start null.
+		const before = await json(await get("/low-stock"));
+		const rowsBefore = before.rows as Array<Record<string, unknown>>;
+		for (const r of rowsBefore) {
+			expect(Object.hasOwn(r, "title")).toBe(true);
+			expect(r.title).toBeNull();
+			// The one fallback that must never happen: the sku standing in as a name.
+			expect(r.title).not.toBe(r.sku);
+		}
+
+		await server.seedProductRow({
+			id: "p-live-a",
+			sku: "SKU-A",
+			title: "Alpha Widget",
+			priceCents: 100,
+			active: true,
+			createdAt: "2026-07-10T00:00:00.000Z",
+		});
+		// A product whose own title is null stays null — not the sku.
+		await server.seedProductRow({
+			id: "p-live-b",
+			sku: "SKU-B",
+			title: null,
+			priceCents: 100,
+			active: true,
+			createdAt: "2026-07-10T00:00:00.000Z",
+		});
+
+		const after = await json(await get("/low-stock"));
+		const rows = after.rows as Array<Record<string, unknown>>;
+		const bySku = new Map(rows.map((r) => [r.sku, r]));
+		expect(bySku.get("SKU-A")?.title).toBe("Alpha Widget");
+		expect(bySku.get("SKU-B")?.title).toBeNull();
+		expect(bySku.get("SKU-B")?.title).not.toBe("SKU-B");
+	});
+
+	test("GET /reports/low-stock: a soft-deleted product sharing a live sku neither duplicates the row nor titles it", async () => {
+		// Legal state: sku uniqueness on product_commerce is a PARTIAL index over
+		// live rows, so a tombstone may hold a sku a live row also holds. The join
+		// must see only the live row.
+		await server.seedProductRow({
+			id: "p-dead-c",
+			sku: "SKU-C",
+			title: "Gamma Sprocket (old)",
+			priceCents: 100,
+			active: true,
+			createdAt: "2026-07-09T00:00:00.000Z",
+			deletedAt: "2026-07-09T12:00:00.000Z",
+		});
+		await server.seedProductRow({
+			id: "p-live-c",
+			sku: "SKU-C",
+			title: "Gamma Sprocket",
+			priceCents: 100,
+			active: true,
+			createdAt: "2026-07-10T00:00:00.000Z",
+		});
+		// SKU-E gets ONLY a tombstone: the low-stock row still lists (inventory is
+		// the driving table) but a dead product cannot supply its title.
+		await server.seedProductRow({
+			id: "p-dead-e",
+			sku: "SKU-E",
+			title: "Epsilon Ghost",
+			priceCents: 100,
+			active: true,
+			createdAt: "2026-07-09T00:00:00.000Z",
+			deletedAt: "2026-07-09T12:00:00.000Z",
+		});
+
+		const rows = (await json(await get("/low-stock"))).rows as Array<Record<string, unknown>>;
+		expect(rows.filter((r) => r.sku === "SKU-C")).toHaveLength(1);
+		expect(rows.find((r) => r.sku === "SKU-C")?.title).toBe("Gamma Sprocket");
+		expect(rows.filter((r) => r.sku === "SKU-E")).toHaveLength(1);
+		expect(rows.find((r) => r.sku === "SKU-E")?.title).toBeNull();
+		// And the page as a whole did not grow: still one row per low-stock sku.
+		expect(rows.map((r) => r.sku)).toEqual(["SKU-A", "SKU-B", "SKU-C", "SKU-E"]);
+	});
+
 	test("GET /reports/revenue with a from/to range over 400 days returns 400 with a structured validation error", async () => {
 		const res = await get(`/revenue?from=2024-01-01T00:00:00.000Z&to=2026-01-01T00:00:00.000Z`);
 		expect(res.status).toBe(400);

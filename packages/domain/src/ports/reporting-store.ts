@@ -40,7 +40,17 @@ export interface ReportingStore {
 	 */
 	topProducts(range: DateRange, metric: TopProductsMetric, limit: number): Promise<TopProduct[]>;
 
-	/** SKUs with `on_hand <= threshold`, ascending by `on_hand` (then `sku`). */
+	/**
+	 * SKUs with `on_hand <= threshold`, ascending by `on_hand` (then `sku`).
+	 *
+	 * Each row carries the LIVE product's `title` via a single LEFT JOIN onto
+	 * `product_commerce`, whose ON clause MUST also require `deleted_at IS
+	 * NULL`. Sku uniqueness on that table is a PARTIAL unique index over live
+	 * rows only, so a soft-deleted product that once held the same sku would
+	 * otherwise DUPLICATE the low-stock row (and could win the title). With the
+	 * tombstone predicate the join is at most 1:1, and only a live product can
+	 * title a row.
+	 */
 	lowStock(threshold: number): Promise<LowStockRow[]>;
 }
 
@@ -80,6 +90,19 @@ export interface TopProduct {
 export interface LowStockRow {
 	sku: string;
 	onHand: number;
+	/**
+	 * The LIVE product's title for this sku, so a low-stock report is readable
+	 * without an operator carrying a sku→title map in their head.
+	 *
+	 * `null` when no live product claims the sku (never synced, soft-deleted,
+	 * or the product's own title is null) — and `null` is the ONLY fallback:
+	 * the sku must NEVER be substituted as a stand-in title. The sku is already
+	 * its own field on this row, so echoing it into `title` would make "the
+	 * product is called SKU-42" indistinguishable from "we don't know its
+	 * name", and a renderer's `(untitled)` affordance would silently never
+	 * fire.
+	 */
+	title: string | null;
 }
 
 /**

@@ -2,6 +2,7 @@ import type {
 	SeedInventoryRow,
 	SeedOrderItemRow,
 	SeedOrderRow,
+	SeedProductTitleRow,
 } from "./in-memory-reporting-store.js";
 
 /**
@@ -153,6 +154,29 @@ export const FIXTURE_INVENTORY: SeedInventoryRow[] = [
 	{ sku: "SKU-C", onHand: 5 },
 	{ sku: "SKU-D", onHand: 8 },
 	{ sku: "SKU-E", onHand: 5 },
+];
+
+/**
+ * `product_commerce` rows behind the low-stock SKUs, built so every branch of
+ * `lowStock`'s title join is exercised by the shared fixture:
+ *
+ *  - `SKU-A` — a plain live product: its title lands on the row.
+ *  - `SKU-B` — a live product whose OWN title is null: `title: null`.
+ *  - `SKU-C` — the TOMBSTONE-COLLISION case: one live row plus a soft-deleted
+ *    row holding the SAME sku (legal — live-sku uniqueness is a partial index,
+ *    so a soft delete releases the sku). The row must appear exactly ONCE and
+ *    carry the LIVE title, never the tombstone's.
+ *  - `SKU-E` — ONLY a tombstone claims it: the row still appears (inventory is
+ *    the driving table) with `title: null`, never the sku.
+ *  - `SKU-D` — above the threshold, so it never reaches a low-stock assertion.
+ */
+export const FIXTURE_PRODUCT_TITLES: SeedProductTitleRow[] = [
+	{ sku: "SKU-A", title: "Alpha Widget" },
+	{ sku: "SKU-B", title: null },
+	{ sku: "SKU-C", title: "Gamma Sprocket" },
+	{ sku: "SKU-C", title: "Gamma Sprocket (old)", deletedAt: "2026-07-01T00:00:00.000Z" },
+	{ sku: "SKU-D", title: "Delta Gizmo" },
+	{ sku: "SKU-E", title: "Epsilon Ghost", deletedAt: "2026-07-02T00:00:00.000Z" },
 ];
 
 /** Σ total_cents over ONLY the five revenue-counting states (hand-computed). */

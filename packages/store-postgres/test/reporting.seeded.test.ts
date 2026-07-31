@@ -76,12 +76,14 @@ function suite(make: () => Promise<ReportingStoreHarness>, dialect: string): voi
 				EXPECTED_TOP_BY_REVENUE.slice(0, 2),
 			);
 
-			// Low-stock straddles the threshold.
+			// Low-stock straddles the threshold. NO `product_commerce` rows were
+			// seeded here at all, so every title is null — which doubles as a pin
+			// that the title join is a LEFT join: an unmatched sku still lists.
 			expect(await store.lowStock(5)).toEqual([
-				{ sku: "SKU-A", onHand: 0 },
-				{ sku: "SKU-B", onHand: 3 },
-				{ sku: "SKU-C", onHand: 5 },
-				{ sku: "SKU-E", onHand: 5 },
+				{ sku: "SKU-A", onHand: 0, title: null },
+				{ sku: "SKU-B", onHand: 3, title: null },
+				{ sku: "SKU-C", onHand: 5, title: null },
+				{ sku: "SKU-E", onHand: 5, title: null },
 			]);
 		});
 

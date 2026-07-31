@@ -33,6 +33,17 @@ export interface SeedInventoryRow {
 	sku: string;
 	onHand: number;
 }
+/** A `product_commerce` row, only as much of it as `lowStock`'s title join
+ *  reads: the sku it claims, its title, and whether it is a tombstone. */
+export interface SeedProductTitleRow {
+	sku: string;
+	title: string | null;
+	/** Soft-delete tombstone. A tombstoned row must NEVER title a low-stock row
+	 *  nor duplicate it — the adapters' ON clause carries `deleted_at IS NULL`
+	 *  because live-sku uniqueness is only a PARTIAL index (migration 0002), so
+	 *  a live row and any number of tombstones can share one sku. */
+	deletedAt?: string | null;
+}
 
 const REVENUE_STATES: ReadonlySet<string> = new Set(REVENUE_COUNTING_STATES);
 
@@ -46,6 +57,7 @@ export class InMemoryReportingStore implements ReportingStore {
 	#orders: SeedOrderRow[] = [];
 	#items: SeedOrderItemRow[] = [];
 	#inventory: SeedInventoryRow[] = [];
+	#products: SeedProductTitleRow[] = [];
 
 	seedOrder(row: SeedOrderRow): void {
 		this.#orders.push(row);
@@ -55,6 +67,9 @@ export class InMemoryReportingStore implements ReportingStore {
 	}
 	seedInventory(row: SeedInventoryRow): void {
 		this.#inventory.push(row);
+	}
+	seedProduct(row: SeedProductTitleRow): void {
+		this.#products.push(row);
 	}
 
 	async revenueByPeriod(range: DateRange, interval: ReportInterval): Promise<PeriodBucket[]> {
@@ -136,13 +151,19 @@ export class InMemoryReportingStore implements ReportingStore {
 			}));
 	}
 
+	/** EXACT parity with `KyselyReportingStore.lowStock`, including the title
+	 *  join's tombstone predicate: only a LIVE product row can title a sku, so a
+	 *  soft-deleted row sharing the sku neither duplicates the row nor supplies
+	 *  its title. No live match ⇒ `title: null`, never the sku (port doc). */
 	async lowStock(threshold: number): Promise<LowStockRow[]> {
+		const liveTitle = (sku: string): string | null =>
+			this.#products.find((p) => p.sku === sku && (p.deletedAt ?? null) === null)?.title ?? null;
 		return this.#inventory
 			.filter((r) => r.onHand <= threshold)
 			.toSorted((a, b) =>
 				a.onHand === b.onHand ? a.sku.localeCompare(b.sku) : a.onHand - b.onHand,
 			)
-			.map((r) => ({ sku: r.sku, onHand: r.onHand }));
+			.map((r) => ({ sku: r.sku, onHand: r.onHand, title: liveTitle(r.sku) }));
 	}
 }
 

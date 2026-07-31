@@ -117,12 +117,30 @@ export interface InventoryStore {
 	// nothing). Exists so a SINGLE product's admin detail view can show its raw
 	// stock count without a store-side join (unlike `ProductCommerceStore.
 	// listCommerceByIds`, whose `inStock` is a coarse boolean scoped to
-	// commerce-complete rows only). A sku with NO inventory row reads as `0` —
-	// the SAME "no row ⇒ out of stock" semantics `listCommerceByIds`'s LEFT JOIN
-	// already establishes — never a throw, never null-as-logic. Deliberately NOT
-	// a batch/list method: the admin list screen must not N+1 into inventory per
-	// row (the list omits stock entirely, mirroring the port's `listCommerceByIds`
-	// doc); this is a single-row read for the ONE product a detail view opens.
+	// commerce-complete rows only).
+	//
+	// A sku with NO inventory row reads as `0` here — never a throw, never
+	// null-as-logic — the same "no row ⇒ out of stock" collapse
+	// `listCommerceByIds`'s coarse `inStock` boolean makes.
+	//
+	// ⚠ DELIBERATE DIVERGENCE from `ProductCommerceStore.listProducts`. That
+	// projection reports a missing inventory row as `onHand: null` —
+	// "unknown" — and treats `0` as the DIFFERENT fact "known sku, out of
+	// stock", because the list renders a per-row stock cell where inventing a
+	// zero would invent an out-of-stock claim for every never-synced product.
+	// This method cannot make that distinction: its return type is `number`,
+	// so `0` is overloaded and the two cases are indistinguishable to a
+	// caller. Do NOT "harmonize" the two by making the list coerce `null → 0`
+	// — that erases a fact the list is specifically there to show. Widening
+	// THIS signature to `number | null` is the direction that preserves
+	// information, and is a separate change with its own callers to audit.
+	//
+	// Deliberately NOT a batch/list method: it is a single-row read for the
+	// ONE product a detail view opens. The admin list no longer needs it — it
+	// carries `onHand` via a single LEFT JOIN inside `listProducts`'s own
+	// statement (one round trip per page, measured against an N+1 of these
+	// calls and 6x faster at page size 25), so per-row calls into this method
+	// from a list path remain the anti-pattern they always were.
 	getOnHand(sku: string): Promise<number>;
 
 	// Additive (admin-UX Increment 2, merchant restock): ADD `qty` units to an

@@ -28,6 +28,15 @@ export interface TopProductWire {
 export interface LowStockWire {
 	sku: string;
 	onHand: number;
+	/** The LIVE product's title for this sku.
+	 *
+	 *  `null` when no live product claims the sku (never synced, soft-deleted,
+	 *  or its own title is genuinely null) — and null is the ONLY fallback. The
+	 *  service never substitutes the sku, which is already its own field on
+	 *  this row; doing so would make "named SKU-42" and "name unknown"
+	 *  indistinguishable and stop a renderer's `(untitled)` affordance from
+	 *  ever firing. */
+	title: string | null;
 }
 export interface OperationalSettingsWire {
 	holdTtlMinutes: number;

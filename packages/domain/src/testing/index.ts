@@ -132,6 +132,7 @@ export {
 	type SeedInventoryRow,
 	type SeedOrderItemRow,
 	type SeedOrderRow,
+	type SeedProductTitleRow,
 } from "./in-memory-reporting-store.js";
 export { InMemorySettingsStore } from "./in-memory-settings-store.js";
 export {
@@ -155,5 +156,6 @@ export {
 	FIXTURE_INVENTORY,
 	FIXTURE_ITEMS,
 	FIXTURE_ORDERS,
+	FIXTURE_PRODUCT_TITLES,
 	REPORTING_WINDOW,
 } from "./reporting-fixture.js";

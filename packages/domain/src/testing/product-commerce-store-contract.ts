@@ -1549,6 +1549,103 @@ export function productCommerceStoreContract(
 			const { products } = await h.store.listProducts({}, { limit: 25 });
 			expect(products).toHaveLength(1);
 			expect(products[0]).toMatchObject({ sku: null, title: null, price: null });
+			// No sku ⇒ nothing to join against ⇒ unknown, not "out of stock".
+			expect(products[0]!.onHand).toBeNull();
+		});
+
+		// -- onHand on the list projection (INC-03) ---------------------------
+		// Carried by ONE LEFT JOIN per page, never an N+1. The three states are
+		// pinned separately because conflating them is the whole hazard:
+		// `null` = no inventory row ("unknown"), `0` = known and out of stock.
+
+		test("listProducts projects onHand from the stock join", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "prod-stocked", sku: "SKU-STOCKED" }));
+			await h.seedStock("SKU-STOCKED", 7);
+			const { products } = await h.store.listProducts({}, { limit: 25 });
+			expect(products[0]!.onHand).toBe(7);
+		});
+
+		test("listProducts: a product with NO inventory row projects onHand null — 'unknown', never 0", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "prod-nostock", sku: "SKU-NOSTOCK" }));
+			const { products } = await h.store.listProducts({}, { limit: 25 });
+			expect(products[0]!.onHand).toBeNull();
+			// The assertion that matters: `null` must not have collapsed to 0.
+			expect(products[0]!.onHand).not.toBe(0);
+		});
+
+		test("listProducts: a sku stocked at ZERO projects onHand 0 — 'out of stock', never null", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "prod-zero", sku: "SKU-ZERO" }));
+			await h.seedStock("SKU-ZERO", 0);
+			const { products } = await h.store.listProducts({}, { limit: 25 });
+			expect(products[0]!.onHand).toBe(0);
+			expect(products[0]!.onHand).not.toBeNull();
+		});
+
+		test("listProducts carries onHand for EVERY row of a page, mixing all three states", async () => {
+			const h = await makeStore();
+			await h.seedProduct(
+				productRow({ id: "p-a", sku: "SKU-A", createdAt: "2026-07-10T03:00:00.000Z" }),
+			);
+			await h.seedProduct(
+				productRow({ id: "p-b", sku: "SKU-B", createdAt: "2026-07-10T02:00:00.000Z" }),
+			);
+			await h.seedProduct(
+				productRow({
+					id: "p-c",
+					sku: null,
+					title: "No sku",
+					createdAt: "2026-07-10T01:00:00.000Z",
+				}),
+			);
+			await h.seedStock("SKU-A", 12);
+			await h.seedStock("SKU-B", 0);
+			const { products } = await h.store.listProducts({}, { limit: 25 });
+			expect(products.map((p) => [p.productId, p.onHand])).toEqual([
+				["p-a", 12],
+				["p-b", 0],
+				["p-c", null],
+			]);
+		});
+
+		test("listProducts: the stock join never multiplies, drops, or reorders a page", async () => {
+			const h = await makeStore();
+			// Interleave stocked and unstocked rows so a join that turned INNER
+			// would drop rows and one that fanned out would duplicate them.
+			for (let i = 0; i < 6; i++) {
+				await h.seedProduct(
+					productRow({
+						id: `p-${i}`,
+						sku: `SKU-${i}`,
+						createdAt: `2026-07-10T0${String(i)}:00:00.000Z`,
+					}),
+				);
+				if (i % 2 === 0) await h.seedStock(`SKU-${i}`, i);
+			}
+			const { products, nextCursor } = await h.store.listProducts({}, { limit: 4 });
+			expect(products.map((p) => p.productId)).toEqual(["p-5", "p-4", "p-3", "p-2"]);
+			expect(products.map((p) => p.onHand)).toEqual([null, 4, null, 2]);
+			// The keyset cursor still comes off the LAST returned row, unaffected.
+			expect(nextCursor).toEqual({
+				createdAt: "2026-07-10T02:00:00.000Z",
+				productId: "p-2",
+			});
+			const page2 = await h.store.listProducts({}, { limit: 4, cursor: nextCursor });
+			expect(page2.products.map((p) => p.productId)).toEqual(["p-1", "p-0"]);
+			expect(page2.products.map((p) => p.onHand)).toEqual([null, 0]);
+		});
+
+		test("listProducts: the archive view carries onHand too (a tombstone's sku may still hold stock)", async () => {
+			const h = await makeStore();
+			await h.seedProduct(
+				productRow({ id: "prod-dead", sku: "SKU-DEAD", deletedAt: "2026-07-11T00:00:00.000Z" }),
+			);
+			await h.seedStock("SKU-DEAD", 3);
+			const { products } = await h.store.listProducts({ deleted: true }, { limit: 25 });
+			expect(products).toHaveLength(1);
+			expect(products[0]!.onHand).toBe(3);
 		});
 
 		test("listProducts excludes soft-deleted rows by DEFAULT (filter.deleted omitted or false)", async () => {
