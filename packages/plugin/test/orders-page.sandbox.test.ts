@@ -1218,6 +1218,47 @@ describe("admin Orders console (workerd sandbox)", () => {
 		]);
 	});
 
+	test("D4/§1.3: NO table anywhere in the console renders a full uuid — the sweep is every table in every response, not just `orders:list`", async () => {
+		await boot();
+		// This test is deliberately scoped to TABLES rather than to whole
+		// responses, because the two are different claims. §1.3 bans the full id
+		// from a LIST ROW; it simultaneously REQUIRES the detail to render one in
+		// full, in the identity strip, or the id stops being obtainable anywhere.
+		// A response-wide sweep would forbid the thing the rule mandates.
+		//
+		// It is scoped to every table rather than to the primary one because the
+		// first version of this sweep named `orders:list` — and the Customer
+		// panel's "Other orders" table, one accordion below, went on rendering all
+		// 36 characters identity-first with nothing to catch it.
+		const uuids = [LIST_ID_1, LIST_ID_2, TWIN_ID_A, TWIN_ID_B];
+		const sweep = (blocks: LooseBlock[], where: string): void => {
+			const tables = findBlocks(blocks, "table");
+			expect(tables.length).toBeGreaterThan(0);
+			for (const table of tables) {
+				for (const uuid of uuids) {
+					expect(
+						JSON.stringify(table).includes(uuid),
+						`${where}: table "${String(table.block_id)}" renders the full uuid ${uuid}`,
+					).toBe(false);
+				}
+			}
+		};
+		for (const mode of ["two", "twins"] as const) {
+			listRows = mode;
+			sweep(await list(), `list (${mode})`);
+		}
+		listRows = "two";
+		// `ord-1` is the one that carries a populated `recentOrders`, so it is the
+		// order whose detail exercises the "Other orders" table; the rest are swept
+		// so a future table on any of these states inherits the rule for free.
+		for (const id of ["ord-1", "ord-guest", "ord-shipped", "ord-refunded", "ord-flagged"]) {
+			sweep(await open(id), `detail ${id}`);
+		}
+		// And the detail DOES still carry the full id — one summary field, which is
+		// §1.3's escape hatch and the reason the sweep above is table-scoped.
+		expect(fieldEntries(await open("ord-1"))).toContain("Order ID=ord-1");
+	});
+
 	test("T-2/M-1: money is the LAST column and every cell is formatted with its own currency — no Currency column, no raw minor units", async () => {
 		await boot();
 		const table = tableWithId(await list(), "orders:list");
@@ -1485,7 +1526,21 @@ describe("admin Orders console (workerd sandbox)", () => {
 				String(r.address ?? "").includes("1 Main St"),
 			),
 		).toBe(true);
-		expect(tableRows(groupBlocks(blocks, "orders:ord-1:other-orders"))[0]?.id).toBe(LIST_ID_2);
+		// D4/§1.3 binds this table too — it is a list row like any other. It shows
+		// the prefix of `LIST_ID_2`, computed over ITS OWN candidate set
+		// (`recentOrders`), and never the 36 characters it used to lead with.
+		const other = groupBlocks(blocks, "orders:ord-1:other-orders");
+		expect(tableRows(other)[0]?.shortId).toBe(shortIdsFor([LIST_ID_2]).get(LIST_ID_2));
+		expect(tableRows(other)[0]?.shortId).toBe("b91d");
+		expect(JSON.stringify(other)).not.toContain(LIST_ID_2);
+		// Same ordering principle as the primary list: identity out of the lead,
+		// money last (T-2). No `Customer` column — every row is this customer.
+		expect(columnLabels(findBlock(other, "table"))).toEqual([
+			"Placed",
+			"Status",
+			"Order #",
+			"Total",
+		]);
 		// The profile book is still labelled context-only (ADR-0009), in ≤200 chars.
 		const disclaimer = contextTexts(groupBlocks(blocks, "orders:ord-1:addresses"));
 		expect(disclaimer.some((t) => t.includes("context only"))).toBe(true);

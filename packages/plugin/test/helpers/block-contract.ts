@@ -698,6 +698,13 @@ function checkX20(blocks: readonly LooseBlock[]): string[] {
 // WHOLE id in a label" is. What the check tests is unchanged (`includes` of the
 // entire value); only the sentence describing it has been brought back in line
 // with the screens.
+//
+// KNOWN EDGE, noted rather than resolved: `shortIdsFor` maps an id SHORTER than
+// its 4-character floor to itself, so such an id would BE its own prefix and
+// compliant code leading a label with it would trip this check. Nothing on any
+// screen is that short today (every opaque id here is a uuid), and the
+// fragility belongs to this helper rather than to the console — recording it
+// beats loosening the rule for a case that has never occurred.
 // ---------------------------------------------------------------------------
 
 function checkX22(blocks: readonly LooseBlock[]): string[] {

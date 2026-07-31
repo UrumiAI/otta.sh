@@ -19,6 +19,12 @@ positional guess. The prefix extends only for ids that actually collide. Money
 stays in the final column: Block Kit tables have no column alignment of any kind,
 so the trailing edge is the only thing that makes a money column read as one.
 
+The Customer panel's "Other orders" table gets the same treatment. It is a list
+of rows like any other, and it sat one accordion below the header this change
+fixes while still leading with all 36 characters. Its prefixes are computed over
+its own rows — that is what "unique among the candidate set" means — so a prefix
+there is scoped to that table rather than promised to match the primary list's.
+
 The order detail's H1 was `Order <uuid>` — the largest type on the page spent on
 the least useful value. It becomes `Order · <customer> · <date>`, and the full id
 moves down into the identity strip, where it renders verbatim. That move is what

@@ -1078,6 +1078,7 @@ function customerGroup(
 		});
 	}
 	if (ctx.recentOrders.length > 0) {
+		const otherShortIds = shortIdsFor(ctx.recentOrders.map((r) => r.id));
 		body.push({
 			type: "accordion",
 			block_id: `orders:${o.id}:other-orders`,
@@ -1087,14 +1088,31 @@ function customerGroup(
 				{
 					type: "table",
 					block_id: `orders:${o.id}:other-orders:table`,
+					// D4/§1.3 binds EVERY list row, not just the primary list — this
+					// table sat one accordion below the H1 that demoted the uuid and
+					// was still rendering all 36 characters identity-first. Same
+					// treatment, same reasons: the id leaves the lead, money keeps the
+					// final column because there is no column alignment to lean on
+					// (T-2/R-7). There is no `Customer` column here — every row is the
+					// customer this panel is about.
+					//
+					// The prefixes are computed over `ctx.recentOrders`, THIS table's
+					// own candidate set, which is what §1.3 asks for: uniqueness is a
+					// claim about the rows on screen together. It is therefore scoped
+					// to this table, and a prefix here is not promised to match the
+					// one the primary list computed for the same order against a
+					// different population.
 					columns: [
-						{ key: "id", label: "Order #", format: "code" },
 						{ key: "createdAt", label: "Placed", format: "relative_time" },
 						{ key: "state", label: "Status", format: "badge" },
-						{ key: "total", label: "Total" },
+						{ key: "shortId", label: "Order #", format: "code" },
+						{ key: "total", label: "Total" }, // money LAST (T-2, M-1)
 					],
 					rows: ctx.recentOrders.map((r) => ({
-						id: r.id,
+						// Unreachable fallback — `shortIdsFor` is TOTAL over the ids it
+						// was handed; it is here so a narrowed set renders a short id
+						// rather than `undefined` in the operator's face.
+						shortId: otherShortIds.get(r.id) ?? shortIdFixed(r.id),
 						createdAt: r.createdAt,
 						state: r.state,
 						total: formatTotal(r.totalCents, r.currency),
@@ -3511,7 +3529,11 @@ function utc(iso: string): string {
  * thing that works: INC-13 introduces the shared absolute-timestamp formatter
  * for the console's other timestamps, and this is the one surface that needed a
  * human-readable date before that lands. It is the natural place for INC-13 to
- * absorb.
+ * absorb — TOGETHER WITH `reports-page.ts`'s `formatDay`, which is this function
+ * in all but name (same Intl options, same UTC pinning, same `en-GB` chosen for
+ * the same reason) and was written independently on another screen. Two
+ * accidental copies is the argument for the shared formatter, not against it;
+ * whoever hoists this must take both or the console keeps two dialects.
  *
  * UTC-pinned (M-6 — no timezone conversion anywhere in this console) and run
  * through `Intl`, which is the house rule: localization and RTL-safety come
