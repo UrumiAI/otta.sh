@@ -6,7 +6,7 @@ import {
 	reserve,
 	ReservationNotFoundError,
 	sku,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import { Hono } from "hono";
 import { commitBody, releaseBody, reserveBody } from "../schemas.js";
 

@@ -117,7 +117,7 @@ names the order and its 15-minute hold — not a broken form.
   so the pending sweep costs the page nothing.
 
 **3. `allowedHosts` does not change, and must not.** `allowedHosts` gates `ctx.http.fetch` —
-*server-side plugin egress only* (`manifest.ts`, `urumi-plugin-descriptor.ts`). Stripe.js is
+*server-side plugin egress only* (`manifest.ts`, `otta-plugin-descriptor.ts`). Stripe.js is
 fetched and called **by the buyer's browser**, which never passes through the plugin. Adding
 `js.stripe.com` there would be both useless and a real widening of the gate ADR-0006 exists to
 keep at exactly one host. A test asserts `js.stripe.com`'s **absence** from `ALLOWED_HOSTS`,
@@ -153,7 +153,7 @@ two `pending` copy variants ("payment submitted, confirming…" vs "awaiting pay
 `pending`, it polls with a bounded `<meta http-equiv="refresh">` (8 refreshes, ≈30 s) and then
 offers a manual "Check again" link. No JS, no busy loop.
 
-**6. The client secret reaches a URL bar regardless, and we accept that.** The `urumi_checkout`
+**6. The client secret reaches a URL bar regardless, and we accept that.** The `otta_checkout`
 cookie (`httpOnly`, `secure`, `SameSite=Lax`, `path=/`, 15-minute `maxAge`) keeps the client
 secret out of *our* URLs on the site→`/checkout/pay` leg — the leg we control, and the one
 where a secret in a query string gets bookmarked and pasted into support tickets. **It does
@@ -173,7 +173,7 @@ not ours to change.
 
 **PR tagging.** This ships tagged `[Plugin]`, reading CLAUDE.md's "the EmDash plugin
 (storefront, …)" scope as covering `sites/staging` — the site is the theme-shim half of the
-plugin's storefront surface (ADR-0003). Neither `@urumi/service` nor `@urumi/domain` changes.
+plugin's storefront surface (ADR-0003). Neither `@otta-sh/service` nor `@otta-sh/domain` changes.
 
 ## Consequences
 
@@ -217,7 +217,7 @@ plugin's storefront surface (ADR-0003). Neither `@urumi/service` nor `@urumi/dom
 - An unsupported-currency failure is indistinguishable from a Stripe outage at the page:
   `providerCode: "unsupported_currency"` is log-only and never on the wire. The copy ("We
   couldn't start a payment for this order. No charge was made.") is true either way. A
-  pre-flight currency check would require the deny-list from `@urumi/payments-stripe`, i.e. a
+  pre-flight currency check would require the deny-list from `@otta-sh/payments-stripe`, i.e. a
   new plugin dependency — worth doing only if a non-two-decimal catalog is ever planned.
 - Stripe expires idempotency keys after ~24 h, so a retry past that window mints a second
   PaymentIntent. Both carry the same `metadata[order_id]` and settlement dedupes on event id.

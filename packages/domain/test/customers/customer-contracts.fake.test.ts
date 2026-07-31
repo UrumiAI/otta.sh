@@ -9,7 +9,7 @@ import {
 	InMemoryCustomerStore,
 	InMemorySessionStore,
 	sessionContract,
-} from "@urumi/domain/testing";
+} from "@otta-sh/domain/testing";
 
 // Step 5.4: lift the customer/address/session/verifier ports into the shared
 // contract suites, run against their in-memory fakes first (Phase-0.3 precedent).

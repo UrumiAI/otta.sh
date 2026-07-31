@@ -1,4 +1,4 @@
-import { cents, currency, idempotencyKey, orderId, type RefundInput } from "@urumi/domain";
+import { cents, currency, idempotencyKey, orderId, type RefundInput } from "@otta-sh/domain";
 import { describe, expect, test } from "vitest";
 import {
 	createStripeHttpTransport,

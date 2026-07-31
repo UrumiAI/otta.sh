@@ -1,4 +1,4 @@
-/** Mirrors `@urumi/service`'s `upsertProductCommerceBody.title` bound
+/** Mirrors `@otta-sh/service`'s `upsertProductCommerceBody.title` bound
  *  (`z.string().min(1).max(500)`) — the plugin declares no dependency on the
  *  service package, so the bound is restated here, not imported. */
 const TITLE_MAX_LENGTH = 500;

@@ -9,8 +9,8 @@ import {
 	sku,
 	type CreateOrderInput,
 	type OrderStore,
-} from "@urumi/domain";
-import { CountingIdGen, FakeEmailSender, FixedClock } from "@urumi/domain/testing";
+} from "@otta-sh/domain";
+import { CountingIdGen, FakeEmailSender, FixedClock } from "@otta-sh/domain/testing";
 import type { Kysely } from "kysely";
 import { afterEach, describe, expect, test } from "vitest";
 import { KyselyOrderStore, makeSqliteDb, migrateToLatest } from "../src/index.js";

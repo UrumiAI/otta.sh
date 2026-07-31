@@ -18,7 +18,7 @@
  * is where their honesty rules are unit-tested. This page is the read and the
  * layout.
  */
-import { STOREFRONT_LIST_ROUTE, type PlpRouteResult, type ProductViewModel } from "@urumi/plugin";
+import { STOREFRONT_LIST_ROUTE, type PlpRouteResult, type ProductViewModel } from "@otta-sh/plugin";
 import { getEmDashCollection, getSiteSettings } from "emdash";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
 import PriceTag from "../components/PriceTag.astro";
@@ -34,7 +34,7 @@ import {
 	TAPE_FETCH_LIMIT,
 	type StoreSettings,
 } from "../lib/tape.js";
-import { dispatchUrumiRoute } from "../lib/urumi-api.js";
+import { dispatchOttaRoute } from "../lib/otta-api.js";
 
 /**
  * BOTH reads on this page are guarded, and the settings read needs it as much
@@ -87,7 +87,7 @@ const items = (entries ?? []).map((entry) =>
 const result =
 	entries === null
 		? null
-		: await dispatchUrumiRoute<PlpRouteResult>(
+		: await dispatchOttaRoute<PlpRouteResult>(
 				getPublicPluginApiRouteHandler(Astro.locals),
 				STOREFRONT_LIST_ROUTE,
 				{ items, query: { kind: "all" } },

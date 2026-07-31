@@ -10,13 +10,13 @@ import {
 	transitionOrder,
 	type CreateOrderInput,
 	type OrderState,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import {
 	CountingIdGen,
 	FakeEmailSender,
 	FixedClock,
 	InMemoryOrderStore,
-} from "@urumi/domain/testing";
+} from "@otta-sh/domain/testing";
 import { describe, expect, test } from "vitest";
 
 // Step 5.3: EmailSender port + FakeEmailSender + outbox-backed transition, all

@@ -6,7 +6,7 @@
 
 ## Context
 
-Urumi splits a product across two databases: the CMS `products` collection owns the content
+Otta splits a product across two databases: the CMS `products` collection owns the content
 (title, description, images, slug) and `product_commerce` owns the commercial fields (sku,
 price, stock, kind, tax class, dimensions, compare-at, unit cost, inventory policy). The two
 databases are separate by design and there are no cross-database joins.
@@ -40,7 +40,7 @@ Dropping it was scoped in an earlier revision of the plan: a plugin content-read
 was rejected on evidence from a capability spike run against **real workerd and EmDash's real
 plugin bridge**, not from reading docs.
 
-- **The blocker people expected did not apply.** Urumi deploys **trusted in-process**
+- **The blocker people expected did not apply.** Otta deploys **trusted in-process**
   (ADR-0006, `sites/staging/src/emdash-options.ts` declares no `sandboxed:` and no
   `sandboxRunner:`), and on that path `ctx.content` is available today under the canonical
   `content:read` the manifest already declares.

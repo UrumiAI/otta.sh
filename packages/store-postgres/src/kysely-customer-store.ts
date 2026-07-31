@@ -9,7 +9,7 @@ import {
 	type Email,
 	type IdGen,
 	type UpdateCustomerInput,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import type { Kysely, Selectable } from "kysely";
 import type { CustomersTable, Database } from "./schema.js";
 

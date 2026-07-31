@@ -4,7 +4,7 @@
  * validated page of content; this module owns that projection in one
  * place for PLP and PDP.
  */
-import type { CmsProductContent } from "@urumi/plugin";
+import type { CmsProductContent } from "@otta-sh/plugin";
 
 /** The `products` entry data shape (see emdash-env.d.ts + seed/seed.json). */
 export interface ProductEntryData {

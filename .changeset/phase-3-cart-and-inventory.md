@@ -1,12 +1,12 @@
 ---
-"@urumi/domain": minor
-"@urumi/store-postgres": minor
-"@urumi/service": minor
+"@otta-sh/domain": minor
+"@otta-sh/store-postgres": minor
+"@otta-sh/service": minor
 ---
 
 Phase 3 — cart + inventory (service-side; plugin/storefront deferred to Wave 3).
 
-- `@urumi/domain`: additive `InventoryStore.adjust(reservationId, newQty, key)`
+- `@otta-sh/domain`: additive `InventoryStore.adjust(reservationId, newQty, key)`
   (delta reserve / partial release) — **exactly-once, ledger-first**: the key is
   claimed before any movement, a stale replay returns the recorded result (ok or
   OUT_OF_STOCK) and moves nothing, and a hold that left `held` throws the typed
@@ -22,7 +22,7 @@ Phase 3 — cart + inventory (service-side; plugin/storefront deferred to Wave 3
   instead of resurrecting a line over dead stock, and a mis-keyed adjust replay
   against the wrong reservation is a typed rejection. Cart lines snapshot no
   price (an order invariant, Phase 4).
-- `@urumi/store-postgres`: forward-only migration `0003_cart` (`carts`,
+- `@otta-sh/store-postgres`: forward-only migration `0003_cart` (`carts`,
   `cart_lines` with `UNIQUE(cart_id, sku)` and nullable `reservation_id`/
   `expires_at`, the claim/complete `cart_mutations` idempotency ledger, the
   `inventory_adjustments` per-mutation claim ledger, and an ALTER adding
@@ -35,7 +35,7 @@ Phase 3 — cart + inventory (service-side; plugin/storefront deferred to Wave 3
   and same-key/different-key adjust races. `migrateToLatest` accepts
   `migrationTableSchema` so schema-isolated test databases don't collide on the
   Migrator's bookkeeping tables.
-- `@urumi/service`: cart REST endpoints (`POST /carts`, `GET /carts/:id`,
+- `@otta-sh/service`: cart REST endpoints (`POST /carts`, `GET /carts/:id`,
   `POST/PATCH/DELETE /carts/:id/lines[/:lineId]`) mirroring the use-cases 1:1
   with `Idempotency-Key` → domain key and `OUT_OF_STOCK` as a typed 200 body;
   the internal `POST /internal/expire-holds` sweep trigger guarded by an

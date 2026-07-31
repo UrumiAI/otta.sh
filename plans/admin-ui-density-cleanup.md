@@ -1,6 +1,6 @@
 # Plan — Admin UI density & layout cleanup
 
-Status: **ready to build** (2026-07-30, amended three times — most recently to match the spec's revision 4, after increment 3 shipped). Scope: the **seven** Urumi admin screens
+Status: **ready to build** (2026-07-30, amended three times — most recently to match the spec's revision 4, after increment 3 shipped). Scope: the **seven** Otta admin screens
 under `packages/plugin/src/admin/` — Orders, Pricing & inventory, Coupons, Tax, Shipping, Reports
 and Settings (`admin-route.ts:83-101`). Earlier revisions said "six". Verified against a live local staging admin (Orders, order
 detail, Pricing & inventory) and against the em-dash Block Kit that staging actually runs.

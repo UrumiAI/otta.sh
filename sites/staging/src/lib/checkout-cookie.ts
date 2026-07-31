@@ -1,5 +1,5 @@
 /**
- * The `urumi_checkout` stash — the site→`/checkout/pay` handoff.
+ * The `otta_checkout` stash — the site→`/checkout/pay` handoff.
  *
  * `POST /checkout/place` receives the order id, the Stripe client secret and
  * the order's total; `/checkout/pay` needs the first two to mount the Payment
@@ -29,7 +29,7 @@
  * justification at all.
  */
 
-export const CHECKOUT_COOKIE_NAME = "urumi_checkout";
+export const CHECKOUT_COOKIE_NAME = "otta_checkout";
 
 /** 15 minutes — the domain's `DEFAULT_CHECKOUT_TTL_MS`. The stash is useless
  *  the moment the hold it points at expires, so it dies with it. */

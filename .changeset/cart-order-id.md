@@ -1,8 +1,8 @@
 ---
-"@urumi/domain": minor
-"@urumi/store-postgres": minor
-"@urumi/service": minor
-"@urumi/plugin": minor
+"@otta-sh/domain": minor
+"@otta-sh/store-postgres": minor
+"@otta-sh/service": minor
+"@otta-sh/plugin": minor
 ---
 
 Give the cart the id of the order it became (issue #132).
@@ -65,7 +65,7 @@ major to take yet — semver's `0.x` carve-out). The `minor` here IS the breakin
 bump, not a feature bump.
 
 **BREAKING:** `CartStore.checkout` now takes a second, required argument —
-`checkout(cartId: string, orderId: OrderId)`. `Cart` (`@urumi/domain`) and
-`CartWire` (`@urumi/plugin`) both gain a required `orderId: string | null`
+`checkout(cartId: string, orderId: OrderId)`. `Cart` (`@otta-sh/domain`) and
+`CartWire` (`@otta-sh/plugin`) both gain a required `orderId: string | null`
 field, and `GET /carts/:cartId` now emits `orderId` on the cart body. Any
 out-of-tree `CartStore` implementation or `CartWire` literal must be updated.

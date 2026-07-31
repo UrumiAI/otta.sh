@@ -4,11 +4,11 @@ import {
 	FixedClock,
 	InMemoryOrderStore,
 	orderFulfillmentContract,
-} from "@urumi/domain/testing";
+} from "@otta-sh/domain/testing";
 
 // The order-fulfillment spec (admin-UX Increment 1) run against the in-memory
 // fake first. The pg/sqlite dialect runs — incl. the concurrent record + the
-// record-vs-cancel race — live in @urumi/store-postgres.
+// record-vs-cancel race — live in @otta-sh/store-postgres.
 
 orderFulfillmentContract(
 	async () => {

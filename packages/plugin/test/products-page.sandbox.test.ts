@@ -1,4 +1,4 @@
-import { plugin } from "@urumi/plugin";
+import { plugin } from "@otta-sh/plugin";
 import { afterEach, describe, expect, test } from "vitest";
 import { assertBlockContract } from "./helpers/block-contract.js";
 import {

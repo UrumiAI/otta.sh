@@ -1,5 +1,5 @@
 ---
-"@urumi/plugin": minor
+"@otta-sh/plugin": minor
 ---
 
 The checkout pay button states the amount — "Pay $40.00", not "Pay now"
@@ -28,7 +28,7 @@ created, rather than re-reading it on the payment page.
   loses its amount; the payment is never lost. Callers must treat `total` as possibly
   absent — a reply that predates a deploy, or a service that widens its serializer, is
   not a failed checkout.
-- **Site (`[Site]`).** The `urumi_checkout` stash widens from `{orderId, clientSecret}`
+- **Site (`[Site]`).** The `otta_checkout` stash widens from `{orderId, clientSecret}`
   to carry an optional `{currency, formatted}` total, captured at place-time. It is a
   snapshot on purpose — the cart it came from stays live and mutable, and the pay step
   must state the figure the PaymentIntent was actually minted for. The cookie holds

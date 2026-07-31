@@ -1,4 +1,4 @@
-import { reportingStoreContract } from "@urumi/domain/testing";
+import { reportingStoreContract } from "@otta-sh/domain/testing";
 import { afterEach } from "vitest";
 import {
 	makePgReportingHarness,

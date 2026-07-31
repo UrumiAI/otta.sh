@@ -3,8 +3,8 @@ import type {
 	CredentialVerifierHarness,
 	CustomerStoreHarness,
 	SessionHarness,
-} from "@urumi/domain/testing";
-import { CountingIdGen, FixedClock } from "@urumi/domain/testing";
+} from "@otta-sh/domain/testing";
+import { CountingIdGen, FixedClock } from "@otta-sh/domain/testing";
 import type { Kysely } from "kysely";
 import {
 	KyselyAddressStore,

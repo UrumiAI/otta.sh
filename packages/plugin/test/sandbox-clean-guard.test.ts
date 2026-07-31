@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
-import { ALLOWED_HOSTS, URUMI_PLUGIN_CAPABILITIES } from "../src/manifest.js";
+import { ALLOWED_HOSTS, OTTA_PLUGIN_CAPABILITIES } from "../src/manifest.js";
 
 const SRC_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src");
 
@@ -94,7 +94,7 @@ describe("sandbox-clean guard: no direct network egress in plugin src (S4)", () 
  */
 describe("sandbox-clean guard: the checkout feature widens NOTHING (ADR-0012)", () => {
 	test("capabilities are still exactly content:read + network:request", () => {
-		expect([...URUMI_PLUGIN_CAPABILITIES]).toEqual(["content:read", "network:request"]);
+		expect([...OTTA_PLUGIN_CAPABILITIES]).toEqual(["content:read", "network:request"]);
 	});
 
 	test("ALLOWED_HOSTS still holds exactly ONE host (the commerce service)", () => {

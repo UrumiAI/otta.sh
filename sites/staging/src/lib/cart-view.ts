@@ -16,7 +16,7 @@
  * This is the same rule the checkout's "Not calculated" totals follow: say
  * which of the three it is, or say nothing that looks like a number.
  */
-import type { CartPricingWire } from "@urumi/plugin";
+import type { CartPricingWire } from "@otta-sh/plugin";
 import { moneyCellText } from "./totals.js";
 
 /** The line is real and orderable-looking, but no live price could be joined

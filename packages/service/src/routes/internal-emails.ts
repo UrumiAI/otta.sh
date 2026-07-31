@@ -5,7 +5,7 @@ import {
 	type CustomerStore,
 	type EmailSender,
 	type OrderStore,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import { Hono } from "hono";
 import { requireInternalToken } from "./internal-auth.js";
 

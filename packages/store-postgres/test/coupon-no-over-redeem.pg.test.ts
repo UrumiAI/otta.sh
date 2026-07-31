@@ -1,4 +1,4 @@
-import { customerId, idempotencyKey, orderId } from "@urumi/domain";
+import { customerId, idempotencyKey, orderId } from "@otta-sh/domain";
 import type { Kysely } from "kysely";
 import { afterEach, describe, expect, test } from "vitest";
 import { KyselyCouponStore, uuidIdGen } from "../src/index.js";

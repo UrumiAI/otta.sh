@@ -35,18 +35,18 @@ const seedPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../
  *  the declared id only as a seed-local reference. Modelled faithfully here
  *  because assuming otherwise is the bug this fixture exists to prevent. */
 const CMS_ENTRIES: CmsProductEntry[] = [
-	{ id: "01KYR4KC5KMBYF0EDDTZBNKDX2", slug: "urumi-tee", title: "Urumi Tee" },
-	{ id: "01KYR4KC8GCRA5G8WXGK0K4MH6", slug: "urumi-mug", title: "Urumi Mug" },
-	{ id: "01KYR4KCB1459ZG70HBMX6HM1F", slug: "urumi-stickers", title: "Urumi Sticker Pack" },
+	{ id: "01KYR4KC5KMBYF0EDDTZBNKDX2", slug: "otta-tee", title: "Otta Tee" },
+	{ id: "01KYR4KC8GCRA5G8WXGK0K4MH6", slug: "otta-mug", title: "Otta Mug" },
+	{ id: "01KYR4KCB1459ZG70HBMX6HM1F", slug: "otta-stickers", title: "Otta Sticker Pack" },
 ];
 
 const CMS_PAGE: CmsProductPage = { entries: CMS_ENTRIES, unusable: [] };
 
 const TEE: DemoRow = {
 	id: "01KYR4KC5KMBYF0EDDTZBNKDX2",
-	slug: "urumi-tee",
-	title: "Urumi Tee",
-	sku: "URUMI-TEE",
+	slug: "otta-tee",
+	title: "Otta Tee",
+	sku: "OTTA-TEE",
 	price: { amount: 3200, currency: "USD" },
 	initialOnHand: 25,
 };
@@ -82,7 +82,7 @@ describe("seed-demo-commerce", () => {
 	});
 
 	test("ids and titles come from the CMS, never from seed.json's declared `id`", () => {
-		// `seed.json` says `product:urumi-tee`; the content database says a ULID.
+		// `seed.json` says `product:otta-tee`; the content database says a ULID.
 		// Addressing the commerce service with the seed id SUCCEEDS (the upsert
 		// mints a row for any id) and creates an orphan no CMS product joins to,
 		// so the storefront shows "Not currently available for purchase" with no
@@ -139,7 +139,7 @@ describe("seed-demo-commerce", () => {
 	});
 
 	// -- THE RE-RUN GUARD ------------------------------------------------------
-	// The failure this prevents: a merchant reprices `urumi-tee` to $50, someone
+	// The failure this prevents: a merchant reprices `otta-tee` to $50, someone
 	// re-runs the quickstart to add a fourth demo product, and the tee silently
 	// reverts to $32 with its sku and title reset. That is the F4 clobber class
 	// this release exists to eliminate, re-introduced through the script. The
@@ -151,14 +151,14 @@ describe("seed-demo-commerce", () => {
 	test("shouldPrice: prices a missing row and a bare sku-less row; NEVER a row that already has a sku", () => {
 		expect(shouldPrice(null)).toBe(true);
 		expect(shouldPrice({ sku: null, active: false })).toBe(true);
-		expect(shouldPrice({ sku: "URUMI-TEE", active: true })).toBe(false);
+		expect(shouldPrice({ sku: "OTTA-TEE", active: true })).toBe(false);
 		expect(shouldPrice({ sku: "MERCHANT-SKU", active: false })).toBe(false);
 	});
 
 	test("shouldActivate: only when the gate is not already open", () => {
 		expect(shouldActivate(null)).toBe(true);
 		expect(shouldActivate({ sku: null, active: false })).toBe(true);
-		expect(shouldActivate({ sku: "URUMI-TEE", active: true })).toBe(false);
+		expect(shouldActivate({ sku: "OTTA-TEE", active: true })).toBe(false);
 	});
 
 	test("FIRST RUN: reads, then prices, then activates — in that order", async () => {
@@ -179,10 +179,10 @@ describe("seed-demo-commerce", () => {
 	});
 
 	test("RE-RUN over a merchant-priced product WRITES NOTHING — the price the merchant set survives", async () => {
-		const { calls, fetchImpl } = stubService({ sku: "URUMI-TEE", active: true });
+		const { calls, fetchImpl } = stubService({ sku: "OTTA-TEE", active: true });
 		const outcome = await seedOneProduct(TEE, { serviceUrl: "http://svc", fetchImpl });
 
-		expect(outcome).toEqual({ kind: "skipped", reason: "already priced (sku URUMI-TEE)" });
+		expect(outcome).toEqual({ kind: "skipped", reason: "already priced (sku OTTA-TEE)" });
 		// The whole point: ONE call, and it is a read.
 		expect(calls).toHaveLength(1);
 		expect(calls[0]?.method).toBe("GET");
@@ -201,12 +201,12 @@ describe("seed-demo-commerce", () => {
 		// on a row a merchant priced and deliberately never published. So the
 		// contract is that it SAYS so, distinctly enough that the summary cannot
 		// report success.
-		const { calls, fetchImpl } = stubService({ sku: "URUMI-TEE", active: false });
+		const { calls, fetchImpl } = stubService({ sku: "OTTA-TEE", active: false });
 		const outcome = await seedOneProduct(TEE, { serviceUrl: "http://svc", fetchImpl });
 
 		expect(outcome).toEqual({
 			kind: "skipped-inactive",
-			reason: "already priced (sku URUMI-TEE) but NOT ACTIVE",
+			reason: "already priced (sku OTTA-TEE) but NOT ACTIVE",
 		});
 		// Still writes nothing — the merchant's values stay untouched.
 		expect(calls).toHaveLength(1);
@@ -304,12 +304,12 @@ describe("seed-demo-commerce", () => {
 
 	test("demoRows distinguishes 'returned but unusable' from 'not returned at all'", () => {
 		expect(() =>
-			demoRows(["urumi-tee"], {
+			demoRows(["otta-tee"], {
 				entries: [],
-				unusable: [{ slug: "urumi-tee", reason: "no `title` field" }],
+				unusable: [{ slug: "otta-tee", reason: "no `title` field" }],
 			}),
-		).toThrow(/cannot use.*urumi-tee.*no `title` field/s);
-		expect(() => demoRows(["urumi-tee"], { entries: [], unusable: [] })).toThrow(
+		).toThrow(/cannot use.*otta-tee.*no `title` field/s);
+		expect(() => demoRows(["otta-tee"], { entries: [], unusable: [] })).toThrow(
 			/returned no product/,
 		);
 	});
@@ -318,13 +318,13 @@ describe("seed-demo-commerce", () => {
 		const pages = [
 			{
 				data: {
-					items: [{ id: "a", slug: "urumi-tee", data: { title: "Urumi Tee" } }],
+					items: [{ id: "a", slug: "otta-tee", data: { title: "Otta Tee" } }],
 					nextCursor: "c1",
 				},
 			},
 			{
 				data: {
-					items: [{ id: "b", slug: "urumi-mug", data: { title: "Urumi Mug" } }],
+					items: [{ id: "b", slug: "otta-mug", data: { title: "Otta Mug" } }],
 					nextCursor: null,
 				},
 			},
@@ -337,7 +337,7 @@ describe("seed-demo-commerce", () => {
 		}) as unknown as typeof fetch;
 
 		const page = await fetchCmsProducts("http://site", {}, fetchImpl);
-		expect(page.entries.map((e) => e.slug)).toEqual(["urumi-tee", "urumi-mug"]);
+		expect(page.entries.map((e) => e.slug)).toEqual(["otta-tee", "otta-mug"]);
 		expect(urls[1]).toContain("cursor=c1");
 	});
 

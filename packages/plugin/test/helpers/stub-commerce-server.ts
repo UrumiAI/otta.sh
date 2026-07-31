@@ -19,7 +19,7 @@ export interface StubCommerceServer {
 	close(): Promise<void>;
 }
 
-/** A tiny hand-rolled HTTP stub standing in for `@urumi/service` (plan §6
+/** A tiny hand-rolled HTTP stub standing in for `@otta-sh/service` (plan §6
  *  step 1) — records every request it receives and replies per a
  *  test-configured responder. */
 export async function startStubCommerceServer(): Promise<StubCommerceServer> {

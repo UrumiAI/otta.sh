@@ -1,6 +1,6 @@
 # Architecture Decision Records
 
-This folder records the **actual architecture decisions** for Urumi — the ones we commit
+This folder records the **actual architecture decisions** for Otta — the ones we commit
 to. Unlike [`../draft-plans/`](../draft-plans/) (private, gitignored), ADRs are part of
 the public repo: they explain *why* the system is the way it is, for contributors and our
 future selves.

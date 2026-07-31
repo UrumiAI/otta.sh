@@ -12,7 +12,7 @@ import {
 	productId as brandProductId,
 	type SettleDeps,
 	sku as brandSku,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import {
 	buildRefundSeed,
 	CountingIdGen,
@@ -25,7 +25,7 @@ import {
 	type OrderTimelineHarness,
 	type OrderTransitionHarness,
 	type RefundOrderHarness,
-} from "@urumi/domain/testing";
+} from "@otta-sh/domain/testing";
 import type { Kysely } from "kysely";
 import {
 	KyselyCartStore,
@@ -223,7 +223,7 @@ function build(db: Kysely<Database>): OrderFlowHarness {
 		async sweepHeldHolds() {
 			// Drive the Phase-3 reservation sweep directly (held-scoped) to prove an
 			// adopted hold is invisible to it.
-			const { expireHolds } = await import("@urumi/domain");
+			const { expireHolds } = await import("@otta-sh/domain");
 			clock.advance(16 * 60 * 1000);
 			return expireHolds(cartDeps);
 		},

@@ -1,4 +1,4 @@
-import { createTestFacilitator, X402PaymentGateway } from "@urumi/payments-x402";
+import { createTestFacilitator, X402PaymentGateway } from "@otta-sh/payments-x402";
 
 /** The x402 slice of the service env (review G4). */
 export interface X402Env {

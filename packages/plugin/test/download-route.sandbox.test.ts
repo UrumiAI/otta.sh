@@ -1,4 +1,4 @@
-import { signStripeWebhook } from "@urumi/payments-stripe";
+import { signStripeWebhook } from "@otta-sh/payments-stripe";
 import { afterEach, describe, expect, test } from "vitest";
 import {
 	LIVE_STRIPE_WEBHOOK_SECRET,

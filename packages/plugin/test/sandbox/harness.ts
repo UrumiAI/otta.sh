@@ -1,5 +1,5 @@
 /**
- * Urumi's own workerd-on-Node sandbox test harness (plan §6 step 1).
+ * Otta's own workerd-on-Node sandbox test harness (plan §6 step 1).
  *
  * Boots the REAL `workerd` binary (the public `workerd` npm package — not a
  * simulation, not Node `vm`/`worker_threads`) as a child process, loads
@@ -97,9 +97,9 @@ function manifestSource(options: SandboxOptions): string {
 	// from here). Includes the ADR-0007 write-gate token key + fail-closed kv
 	// reader so the sandbox bundle resolves them exactly as production does.
 	return [
-		'export const URUMI_PLUGIN_ID = "urumi";',
-		'export const URUMI_PLUGIN_VERSION = "0.1.0";',
-		'export const URUMI_PLUGIN_CAPABILITIES = ["content:read", "network:request"];',
+		'export const OTTA_PLUGIN_ID = "otta";',
+		'export const OTTA_PLUGIN_VERSION = "0.1.0";',
+		'export const OTTA_PLUGIN_CAPABILITIES = ["content:read", "network:request"];',
 		`export const COMMERCE_SERVICE_BASE_URL = ${JSON.stringify(options.commerceServiceBaseUrl)};`,
 		`export const ALLOWED_HOSTS = ${JSON.stringify(options.allowedHosts)};`,
 		'export const SERVICE_TOKEN_KEY = "settings:serviceToken";',
@@ -144,7 +144,7 @@ function capnpConfig(port: number, bundlePathRelativeToWorkDir: string): string 
 }
 
 export async function loadPluginInSandbox(options: SandboxOptions): Promise<SandboxHandle> {
-	const workDir = await mkdtemp(path.join(tmpdir(), "urumi-plugin-sandbox-"));
+	const workDir = await mkdtemp(path.join(tmpdir(), "otta-plugin-sandbox-"));
 	const srcDir = path.join(workDir, "src");
 	await cp(PLUGIN_SRC, srcDir, { recursive: true });
 	await writeFile(path.join(srcDir, "manifest.ts"), manifestSource(options), "utf8");

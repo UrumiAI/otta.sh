@@ -6,8 +6,8 @@ import {
 	idempotencyKey,
 	sku,
 	updateLine,
-} from "@urumi/domain";
-import { FixedClock } from "@urumi/domain/testing";
+} from "@otta-sh/domain";
+import { FixedClock } from "@otta-sh/domain/testing";
 import type { Kysely } from "kysely";
 import { afterEach, describe, expect, test } from "vitest";
 import { KyselyCartStore, KyselyInventoryStore, uuidIdGen } from "../src/index.js";

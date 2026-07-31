@@ -25,8 +25,8 @@ hold:
   only `meta` / `property` / `link` / `jsonld` kinds
   (`packages/core/src/plugins/types.ts:933-941`) — no HTML kind, so it cannot render a
   price/stock/"not purchasable" body fragment.
-- Running Urumi as a **trusted** plugin to regain `page:fragments` is not an option:
-  sandbox-cleanliness is a Urumi non-negotiable (`CLAUDE.md`, `DEVELOPMENT.md` §5 — "if it
+- Running Otta as a **trusted** plugin to regain `page:fragments` is not an option:
+  sandbox-cleanliness is a Otta non-negotiable (`CLAUDE.md`, `DEVELOPMENT.md` §5 — "if it
   only works trusted, it's broken"). ADR-0001's whole shape depends on it.
 
 So the plugin must own the storefront surface through its **routes**. That raises a
@@ -64,9 +64,9 @@ by thin theme/template Astro pages at clean paths.** Concretely — option (b) o
 sub-question; option (a), serving full HTML at a clean path from the sandboxed plugin, is
 not supported by the platform:
 
-1. The Urumi plugin declares public storefront routes (manifest `routes` with
+1. The Otta plugin declares public storefront routes (manifest `routes` with
    `public: true`, the mechanism Phase 1 already uses for its admin routes), reachable at
-   `GET /_emdash/api/plugins/urumi/storefront/{product|list}` with parameters via query
+   `GET /_emdash/api/plugins/otta/storefront/{product|list}` with parameters via query
    string. Each handler performs the whole Phase-2 pipeline — CMS-content + commerce join,
    single batched commerce call, purchasability — and returns a **display-ready, localized
    JSON view model**: content fields, `purchasable`, formatted price string, availability,
@@ -105,7 +105,7 @@ pages; it is not the primary JSON-LD path for PDP/PLP.
 - **Phase 3 group E** targets the PDP view-model slot (above), and its cart routes were
   already planned as plugin routes — this ADR makes the storefront consistent with them.
 - **A theme shim becomes part of the install story.** Like the forms plugin, rendering
-  Urumi's storefront requires the site's Astro layer to include the (provided) PDP/PLP
+  Otta's storefront requires the site's Astro layer to include the (provided) PDP/PLP
   pages. Accepted tradeoff: it is the platform's own pattern, and it keeps HTML fully
   theme-customizable.
 - **Plugin route responses are `private, no-store` JSON envelopes.** Fine for v1 (matches

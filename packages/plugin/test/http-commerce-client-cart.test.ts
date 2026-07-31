@@ -6,12 +6,12 @@ const PG = process.env.PG_CONNECTION_STRING;
 
 /**
  * Phase 3 group E, item 2: `HttpCommerceClient`'s cart methods, wire-tested
- * against a LIVE `@urumi/service` (Postgres-backed) — proving the client's
+ * against a LIVE `@otta-sh/service` (Postgres-backed) — proving the client's
  * request/response shapes have not drifted from `routes/carts.ts` (mirrors
  * `http-commerce-client.test.ts`'s existing Phase 2 pattern).
  */
 describe.skipIf(PG === undefined)(
-	"HttpCommerceClient cart methods [live @urumi/service, Postgres]",
+	"HttpCommerceClient cart methods [live @otta-sh/service, Postgres]",
 	() => {
 		let service: LiveService;
 		let client: HttpCommerceClient;

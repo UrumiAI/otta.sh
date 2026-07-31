@@ -181,7 +181,7 @@ describe("§8 — the home hero and its degraded rule", () => {
 
 	test("the hero reads the same catalog the shop page reads", () => {
 		expect(HOME).toContain("STOREFRONT_LIST_ROUTE");
-		expect(HOME).toContain("dispatchUrumiRoute");
+		expect(HOME).toContain("dispatchOttaRoute");
 	});
 
 	test("NEITHER of the home page's own content reads can throw past it", () => {
@@ -372,7 +372,7 @@ describe("the PDP's add-to-cart form is unchanged in behaviour", () => {
 	});
 
 	test("the hold note states the service's DEFAULT TTL, and says so", () => {
-		// @urumi/domain's DEFAULT_HOLD_TTL_MS is 15 minutes, and the mockup's
+		// @otta-sh/domain's DEFAULT_HOLD_TTL_MS is 15 minutes, and the mockup's
 		// "10 minutes" was a draft figure. §10 keeps the hold visible to the
 		// shopper — the duration is the useful part — so the number has to be
 		// the true one.

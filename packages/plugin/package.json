@@ -1,7 +1,7 @@
 {
-	"name": "@urumi/plugin",
+	"name": "@otta-sh/plugin",
 	"version": "0.0.1",
-	"description": "Urumi EmDash plugin — sandbox-clean (workerd, Block Kit, ctx.http + allowedHosts only). No React, no DB/storage capability.",
+	"description": "Otta EmDash plugin — sandbox-clean (workerd, Block Kit, ctx.http + allowedHosts only). No React, no DB/storage capability.",
 	"homepage": "https://github.com/UrumiAI/otta.sh#readme",
 	"bugs": {
 		"url": "https://github.com/UrumiAI/otta.sh/issues"
@@ -42,11 +42,11 @@
 	},
 	"devDependencies": {
 		"@hono/node-server": "catalog:",
+		"@otta-sh/domain": "workspace:*",
+		"@otta-sh/payments-stripe": "workspace:*",
+		"@otta-sh/service": "workspace:*",
+		"@otta-sh/store-postgres": "workspace:*",
 		"@types/node": "catalog:",
-		"@urumi/domain": "workspace:*",
-		"@urumi/payments-stripe": "workspace:*",
-		"@urumi/service": "workspace:*",
-		"@urumi/store-postgres": "workspace:*",
 		"tsdown": "catalog:",
 		"typescript": "catalog:",
 		"vitest": "catalog:",

@@ -1,5 +1,5 @@
-import { idempotencyKey } from "@urumi/domain";
-import { CountingIdGen, FixedClock, InMemoryInventoryStore } from "@urumi/domain/testing";
+import { idempotencyKey } from "@otta-sh/domain";
+import { CountingIdGen, FixedClock, InMemoryInventoryStore } from "@otta-sh/domain/testing";
 import { describe, expect, test } from "vitest";
 
 function makeStore(onHand: number): InMemoryInventoryStore {

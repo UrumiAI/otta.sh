@@ -21,28 +21,28 @@ const coilPathOf = (html: string): string | undefined => /d="([^"]+)"/.exec(html
 
 describe("MediaPanel — the coil", () => {
 	test("draws a generated coil on the neutral panel when there is no image", async () => {
-		const html = await render({ slug: "urumi-mug" });
+		const html = await render({ slug: "otta-mug" });
 		expect(html).toContain("<svg");
 		expect(html).toContain('class="panel"');
 		expect(html).toMatch(/d="M [\d.\-\sLZ]+"/);
 	});
 
 	test("the coil is aria-hidden — it carries no information (§5)", async () => {
-		const html = await render({ slug: "urumi-mug" });
+		const html = await render({ slug: "otta-mug" });
 		expect(html).toContain('aria-hidden="true"');
 		expect(html).toContain('focusable="false"');
 	});
 
 	test("is keyed to the slug: the same product always draws the same coil", async () => {
-		expect(await render({ slug: "urumi-tee" })).toBe(await render({ slug: "urumi-tee" }));
+		expect(await render({ slug: "otta-tee" })).toBe(await render({ slug: "otta-tee" }));
 	});
 
 	test("different products draw different coils, so it never repeats like a logo", async () => {
-		expect(await render({ slug: "urumi-tee" })).not.toBe(await render({ slug: "urumi-mug" }));
+		expect(await render({ slug: "otta-tee" })).not.toBe(await render({ slug: "otta-mug" }));
 	});
 
 	test("the tint is a token, never a raw colour", async () => {
-		const html = await render({ slug: "urumi-mug" });
+		const html = await render({ slug: "otta-mug" });
 		expect(html).toMatch(/--coil-tint: var\(--u-tint-(violet|straw|blue)\)/);
 		expect(html).not.toMatch(/#[0-9a-f]{3,8}\b/i);
 	});
@@ -51,14 +51,14 @@ describe("MediaPanel — the coil", () => {
 		// `fill="var(--u-tint-straw)"` has a long history of not resolving in
 		// WebKit, and `fill` then falls back to its initial value — BLACK. The
 		// failure mode is every card on the page rendering as a black square.
-		const html = await render({ slug: "urumi-mug" });
+		const html = await render({ slug: "otta-mug" });
 		expect(html).not.toMatch(/fill="var\(/);
 		expect(html).not.toMatch(/opacity="var\(/);
 		expect(html).toContain('class="coil"');
 	});
 
 	test("is flat: no animation, no script, no interactivity (§5)", async () => {
-		const html = await render({ slug: "urumi-mug" });
+		const html = await render({ slug: "otta-mug" });
 		expect(html).not.toContain("<animate");
 		expect(html).not.toContain("<script");
 	});
@@ -66,7 +66,7 @@ describe("MediaPanel — the coil", () => {
 
 describe("MediaPanel — a real image replaces the coil entirely (§5)", () => {
 	test("renders the image and draws no coil at all", async () => {
-		const html = await render({ slug: "urumi-mug", image: "/media/mug.jpg", alt: "A mug" });
+		const html = await render({ slug: "otta-mug", image: "/media/mug.jpg", alt: "A mug" });
 		expect(html).toContain('src="/media/mug.jpg"');
 		expect(html).toContain('alt="A mug"');
 		expect(html).not.toContain("<svg");
@@ -74,7 +74,7 @@ describe("MediaPanel — a real image replaces the coil entirely (§5)", () => {
 	});
 
 	test("alt defaults to empty — on a card the title beneath already says it", async () => {
-		const html = await render({ slug: "urumi-mug", image: "/media/mug.jpg" });
+		const html = await render({ slug: "otta-mug", image: "/media/mug.jpg" });
 		// Astro serializes an empty string attribute bare; `alt` and `alt=""`
 		// are the same thing to a screen reader, and both are "decorative".
 		expect(html).toMatch(/\salt(=""|[\s>])/);
@@ -82,7 +82,7 @@ describe("MediaPanel — a real image replaces the coil entirely (§5)", () => {
 	});
 
 	test("the image is lazy and async-decoded, so a grid of them does not block", async () => {
-		const html = await render({ slug: "urumi-mug", image: "/media/mug.jpg" });
+		const html = await render({ slug: "otta-mug", image: "/media/mug.jpg" });
 		expect(html).toContain('loading="lazy"');
 		expect(html).toContain('decoding="async"');
 	});
@@ -100,13 +100,13 @@ describe("MediaPanel — the tint cycles by position (§5)", () => {
 	});
 
 	test("the same product keeps its DRAWING wherever it lands in the list", async () => {
-		const first = coilPathOf(await render({ slug: "urumi-mug", index: 0 }));
-		const third = coilPathOf(await render({ slug: "urumi-mug", index: 2 }));
+		const first = coilPathOf(await render({ slug: "otta-mug", index: 0 }));
+		const third = coilPathOf(await render({ slug: "otta-mug", index: 2 }));
 		expect(first).toBe(third);
 	});
 
 	test("with no index the tint still comes from the slug — a PDP has no list", async () => {
-		expect(await render({ slug: "urumi-mug" })).toMatch(/--coil-tint: var\(--u-tint-\w+\)/);
+		expect(await render({ slug: "otta-mug" })).toMatch(/--coil-tint: var\(--u-tint-\w+\)/);
 	});
 });
 

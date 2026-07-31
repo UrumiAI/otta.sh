@@ -32,8 +32,8 @@
  * this; a static import here would silently put both chunks back.
  */
 import Base from "../../layouts/Base.astro";
-import type { CheckoutAmountView } from "@urumi/plugin";
-import { NOT_APPLICABLE_LABEL, NOT_CALCULATED_LABEL } from "@urumi/plugin";
+import type { CheckoutAmountView } from "@otta-sh/plugin";
+import { NOT_APPLICABLE_LABEL, NOT_CALCULATED_LABEL } from "@otta-sh/plugin";
 
 if (!import.meta.env.DEV) return new Response(null, { status: 404 });
 
@@ -105,8 +105,8 @@ const CONFIGURED = [
 			<ProductCard
 				index={0}
 				href="#"
-				slug="urumi-tee"
-				title="Urumi Tee"
+				slug="otta-tee"
+				title="Otta Tee"
 				description="Heavyweight cotton, unreasonably soft, with the coil across the chest."
 				price="$25.00"
 				availability="in_stock"
@@ -114,8 +114,8 @@ const CONFIGURED = [
 			<ProductCard
 				index={1}
 				href="#"
-				slug="urumi-mug"
-				title="Urumi Mug"
+				slug="otta-mug"
+				title="Otta Mug"
 				description="Holds one coffee. Survives the dishwasher and the commute."
 				price="$15.00"
 				availability="in_stock"
@@ -123,13 +123,13 @@ const CONFIGURED = [
 			<ProductCard
 				index={2}
 				href="#"
-				slug="urumi-sticker-pack"
-				title="Urumi Sticker Pack"
+				slug="otta-sticker-pack"
+				title="Otta Sticker Pack"
 				description="Ten stickers."
 				price="$12.00"
 				availability="out_of_stock"
 			/>
-			<ProductCard index={3} href="#" slug="urumi-poster" title="Urumi Poster" price={null} />
+			<ProductCard index={3} href="#" slug="otta-poster" title="Otta Poster" price={null} />
 		</div>
 	</section>
 
@@ -142,7 +142,7 @@ const CONFIGURED = [
 				// and none at all (a product with no slug, keyed on an id that
 				// did not arrive). The coil has to look intentional at both, so
 				// both are on the page rather than described in a comment.
-				["urumi-tee", "urumi-mug", "urumi-sticker-pack", "urumi-poster", "urumi-cap", "a", ""].map(
+				["otta-tee", "otta-mug", "otta-sticker-pack", "otta-poster", "otta-cap", "a", ""].map(
 					(slug) => (
 						<div class="coil-cell">
 							<MediaPanel slug={slug} />
@@ -153,9 +153,9 @@ const CONFIGURED = [
 			}
 		</div>
 		<div class="coils ratios">
-			<div class="coil-cell"><MediaPanel slug="urumi-mug" ratio="4 / 5" /><span class="u-label cap">4 / 5</span></div>
-			<div class="coil-cell"><MediaPanel slug="urumi-mug" ratio="1" /><span class="u-label cap">1 / 1</span></div>
-			<div class="coil-cell"><MediaPanel slug="urumi-mug" ratio="16 / 9" /><span class="u-label cap">16 / 9</span></div>
+			<div class="coil-cell"><MediaPanel slug="otta-mug" ratio="4 / 5" /><span class="u-label cap">4 / 5</span></div>
+			<div class="coil-cell"><MediaPanel slug="otta-mug" ratio="1" /><span class="u-label cap">1 / 1</span></div>
+			<div class="coil-cell"><MediaPanel slug="otta-mug" ratio="16 / 9" /><span class="u-label cap">16 / 9</span></div>
 		</div>
 	</section>
 
@@ -171,8 +171,8 @@ const CONFIGURED = [
 			<StockRule availability="out_of_stock" />
 		</div>
 		<div class="row row-fields">
-			<QtyField value={1} label="Quantity, Urumi Tee" />
-			<QtyField value={2} size="sm" label="Quantity, Urumi Mug" hideLabel />
+			<QtyField value={1} label="Quantity, Otta Tee" />
+			<QtyField value={2} size="sm" label="Quantity, Otta Mug" hideLabel />
 		</div>
 	</section>
 
@@ -218,9 +218,9 @@ const CONFIGURED = [
 				<span class="u-label cap">nothing configured — "Not calculated", never $0.00</span>
 				<Ledger
 					rows={[
-						{ sku: "URUMI-TEE-01", qty: 1, money: "$25.00" },
-						{ sku: "URUMI-MUG-01", qty: 1, money: "$15.00" },
-						{ sku: "URUMI-STK-01", qty: 2, money: "priced at checkout", unpriced: true },
+						{ sku: "OTTA-TEE-01", qty: 1, money: "$25.00" },
+						{ sku: "OTTA-MUG-01", qty: 1, money: "$15.00" },
+						{ sku: "OTTA-STK-01", qty: 2, money: "priced at checkout", unpriced: true },
 					]}
 				/>
 				{/* WRAPPED, not `<Sum class="pad">`. That is what this said before,
@@ -234,8 +234,8 @@ const CONFIGURED = [
 				<span class="u-label cap">shipping and tax configured — every row is a figure</span>
 				<Ledger
 					rows={[
-						{ sku: "URUMI-TEE-01", qty: 1, money: "$25.00" },
-						{ sku: "URUMI-MUG-01", qty: 1, money: "$15.00" },
+						{ sku: "OTTA-TEE-01", qty: 1, money: "$25.00" },
+						{ sku: "OTTA-MUG-01", qty: 1, money: "$15.00" },
 					]}
 				/>
 				<div class="pad"><Sum rows={CONFIGURED} total={money("$39.20")} totalLabel="Paid" /></div>

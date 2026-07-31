@@ -2,7 +2,7 @@ import {
 	FixedClock,
 	InMemoryProductCommerceStore,
 	productCommerceStoreContract,
-} from "@urumi/domain/testing";
+} from "@otta-sh/domain/testing";
 
 // Phase 1 step 3: the reusable behavioral spec runs against its first
 // adapter — the IO-free fake — proving the suite is real and the port shape

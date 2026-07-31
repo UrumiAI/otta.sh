@@ -6,7 +6,7 @@
 
 ## Context
 
-The staging storefront (`sites/staging`) deploys EmDash + the Urumi plugin to Cloudflare
+The staging storefront (`sites/staging`) deploys EmDash + the Otta plugin to Cloudflare
 Workers. EmDash's plugin sandbox on Workers runs each sandboxed plugin in an isolate via a
 Worker Loader binding — and Worker Loaders are the cost pivot that flips the account onto
 Workers Paid. For a single-tenant, first-party store there is no third-party code to
@@ -30,13 +30,13 @@ exactly as in the sandbox.
    own, running only our own plugin), **iff the plugin keeps passing the full workerd
    sandbox suite.** The sandbox tests are the contract gate; a change that only works
    trusted is still broken and must not merge.
-2. **Trusted-only APIs remain forbidden** in `@urumi/plugin`: no React admin components, no
+2. **Trusted-only APIs remain forbidden** in `@otta-sh/plugin`: no React admin components, no
    `page:fragments`, no `options`-configured native format, no direct DB/storage access —
    nothing that could not also run sandboxed. ADR-0003's route-based storefront shape
    stays.
 3. The site registers the plugin via a hand-written descriptor
-   (`sites/staging/src/urumi-plugin-descriptor.ts`): `format: "standard"`, entrypoint
-   `@urumi/plugin/plugin`, capabilities exactly the manifest's
+   (`sites/staging/src/otta-plugin-descriptor.ts`): `format: "standard"`, entrypoint
+   `@otta-sh/plugin/plugin`, capabilities exactly the manifest's
    (`content:read`, `network:request`), `allowedHosts` = the commerce service's hostname
    (baked at build time). No `sandboxed:`, no `sandboxRunner:`, no `worker_loaders`
    binding.

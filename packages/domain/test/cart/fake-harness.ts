@@ -1,11 +1,11 @@
-import type { CartDeps } from "@urumi/domain";
+import type { CartDeps } from "@otta-sh/domain";
 import {
 	type CartStoreHarness,
 	CountingIdGen,
 	FixedClock,
 	InMemoryCartStore,
 	InMemoryInventoryStore,
-} from "@urumi/domain/testing";
+} from "@otta-sh/domain/testing";
 
 export interface FakeCartHarness extends CartStoreHarness {
 	inventory: InMemoryInventoryStore;

@@ -197,7 +197,7 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 				}
 				pricing = buildCartPricing(cart.lines, commerceById, cart.currency, input.locale);
 			} catch (err) {
-				console.error(`[urumi] ${STOREFRONT_CHECKOUT_SUMMARY_ROUTE} pricing join failed:`, err);
+				console.error(`[otta] ${STOREFRONT_CHECKOUT_SUMMARY_ROUTE} pricing join failed:`, err);
 				pricing = DEGRADED_CART_PRICING;
 			}
 
@@ -263,7 +263,7 @@ export function createCheckoutPlaceRouteHandler(): RouteHandler<CheckoutPlaceRou
 			try {
 				total = buildOrderTotal(result.order, input.locale);
 			} catch (err) {
-				console.error(`[urumi] ${STOREFRONT_CHECKOUT_PLACE_ROUTE} total format failed:`, err);
+				console.error(`[otta] ${STOREFRONT_CHECKOUT_PLACE_ROUTE} total format failed:`, err);
 			}
 
 			// PROJECT, never forward: the create reply is the FULL serializeOrder

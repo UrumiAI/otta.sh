@@ -1,4 +1,4 @@
-import { cents, currency, idempotencyKey, orderId } from "@urumi/domain";
+import { cents, currency, idempotencyKey, orderId } from "@otta-sh/domain";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { wireStripeGateway } from "../src/stripe-wiring.js";
 

@@ -4,7 +4,7 @@
  * form — minted per rendered cart-page form — and is forwarded verbatim;
  * never invented here.
  */
-import { STOREFRONT_CART_LINE_REMOVE_ROUTE, type CartLineRemoveRouteResult } from "@urumi/plugin";
+import { STOREFRONT_CART_LINE_REMOVE_ROUTE, type CartLineRemoveRouteResult } from "@otta-sh/plugin";
 import type { APIRoute } from "astro";
 import {
 	clearCartCookie,
@@ -14,7 +14,7 @@ import {
 	seeOther,
 } from "../../lib/cart-actions.js";
 import { rejectCrossOrigin } from "../../lib/origin-guard.js";
-import { dispatchUrumiRoute, formString } from "../../lib/urumi-api.js";
+import { dispatchOttaRoute, formString } from "../../lib/otta-api.js";
 
 export const POST: APIRoute = async (context) => {
 	// CSRF first: emdash disables Astro's checkOrigin; the shim enforces
@@ -33,7 +33,7 @@ export const POST: APIRoute = async (context) => {
 	const cartId = currentCartId(context);
 	if (cartId === undefined) return seeOther(context, "/cart");
 
-	const result = await dispatchUrumiRoute<CartLineRemoveRouteResult>(
+	const result = await dispatchOttaRoute<CartLineRemoveRouteResult>(
 		routeDispatcher(context),
 		STOREFRONT_CART_LINE_REMOVE_ROUTE,
 		{ cartId, lineId, idempotencyKey },

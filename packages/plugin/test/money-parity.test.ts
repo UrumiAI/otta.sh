@@ -1,11 +1,11 @@
 import { describe, expect, test } from "vitest";
-import { cents as domainCents, currency as domainCurrency } from "@urumi/domain";
+import { cents as domainCents, currency as domainCurrency } from "@otta-sh/domain";
 import { cents as pluginCents, currency as pluginCurrency } from "../src/presentation/money.js";
 
 /**
  * Drift guard for the money-brand MIRROR (review B3, both reviewers):
  * `plugin/src/presentation/money.ts` deliberately re-declares
- * `@urumi/domain`'s `cents()`/`currency()` instead of importing them (see
+ * `@otta-sh/domain`'s `cents()`/`currency()` instead of importing them (see
  * that file's header for why). This test imports BOTH — test files run in
  * Node with workspace resolution and are never bundled by the sandbox
  * harness (it copies `src/` only) — and pins that the two implementations

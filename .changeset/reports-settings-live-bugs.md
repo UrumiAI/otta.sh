@@ -1,5 +1,5 @@
 ---
-"@urumi/plugin": patch
+"@otta-sh/plugin": patch
 ---
 
 Fix two live bugs on the admin Reports/Settings pages.

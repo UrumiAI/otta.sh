@@ -1,5 +1,5 @@
 ---
-"@urumi/plugin": patch
+"@otta-sh/plugin": patch
 ---
 
 Give the admin list/detail scaffold a RENDER-STATE channel, so a custom action can

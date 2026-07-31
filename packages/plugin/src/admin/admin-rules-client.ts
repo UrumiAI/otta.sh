@@ -6,7 +6,7 @@ import type { HttpAccess } from "../types.js";
  * Increment 3). Same transport discipline as `AdminOrdersClient` /
  * `AdminProductsClient` (no new primitive): the injected `ctx.http.fetch` is the
  * ONLY egress, money is integer minor units + ISO-4217 currency on the wire, and
- * the wire types are defined LOCALLY — this module NEVER imports `@urumi/domain`,
+ * the wire types are defined LOCALLY — this module NEVER imports `@otta-sh/domain`,
  * keeping the plugin sandbox-clean (enforced by the dependency-cruiser rule,
  * MOD-4). `#fetch` is `#`-prefixed so the sandbox-clean grep guard sees no bare
  * fetch call.
@@ -18,7 +18,7 @@ import type { HttpAccess } from "../types.js";
  * reads are gate-exempt GETs and carry only the admin token.
  */
 
-// -- Wire types (local; never `@urumi/domain`) --------------------------------
+// -- Wire types (local; never `@otta-sh/domain`) --------------------------------
 
 export interface ShippingZoneWire {
 	id: string;

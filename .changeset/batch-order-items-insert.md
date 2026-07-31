@@ -1,5 +1,5 @@
 ---
-"@urumi/store-postgres": patch
+"@otta-sh/store-postgres": patch
 ---
 
 `KyselyOrderStore.createFromCart` now writes `order_items` in one multi-row INSERT

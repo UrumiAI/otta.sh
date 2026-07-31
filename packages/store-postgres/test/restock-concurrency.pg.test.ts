@@ -1,5 +1,5 @@
-import { idempotencyKey } from "@urumi/domain";
-import { FixedClock } from "@urumi/domain/testing";
+import { idempotencyKey } from "@otta-sh/domain";
+import { FixedClock } from "@otta-sh/domain/testing";
 import type { Kysely } from "kysely";
 import { afterEach, describe, expect, test } from "vitest";
 import { KyselyInventoryStore, uuidIdGen } from "../src/index.js";

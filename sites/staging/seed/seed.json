@@ -2,12 +2,12 @@
 	"$schema": "https://emdashcms.com/seed.schema.json",
 	"version": "1",
 	"meta": {
-		"name": "Urumi staging store",
+		"name": "Otta staging store",
 		"description": "Products collection matching CmsProductContent — content fields only; pricing, stock and the other commercial fields are edited in the admin's Pricing & inventory page. Includes sample entries for an immediately browsable catalog.",
-		"author": "Urumi"
+		"author": "Otta"
 	},
 	"settings": {
-		"title": "Urumi",
+		"title": "Otta",
 		"tagline": "Three things. That's the whole shop."
 	},
 	"collections": [
@@ -54,29 +54,29 @@
 	"content": {
 		"products": [
 			{
-				"id": "product:urumi-tee",
-				"slug": "urumi-tee",
+				"id": "product:otta-tee",
+				"slug": "otta-tee",
 				"status": "published",
 				"data": {
-					"title": "Urumi Tee",
+					"title": "Otta Tee",
 					"description": "Heavyweight cotton, unreasonably soft, with the coil across the chest."
 				}
 			},
 			{
-				"id": "product:urumi-mug",
-				"slug": "urumi-mug",
+				"id": "product:otta-mug",
+				"slug": "otta-mug",
 				"status": "published",
 				"data": {
-					"title": "Urumi Mug",
+					"title": "Otta Mug",
 					"description": "Holds exactly one coffee. Survives the dishwasher and the commute."
 				}
 			},
 			{
-				"id": "product:urumi-stickers",
-				"slug": "urumi-stickers",
+				"id": "product:otta-stickers",
+				"slug": "otta-stickers",
 				"status": "published",
 				"data": {
-					"title": "Urumi Sticker Pack",
+					"title": "Otta Sticker Pack",
 					"description": "Ten die-cut vinyl stickers. Enough for the laptop, the water bottle, and one for whoever asks where you got them."
 				}
 			}

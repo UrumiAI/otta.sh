@@ -10,8 +10,8 @@ import {
 	transitionOrder,
 	type CreateOrderInput,
 	type OrderState,
-} from "@urumi/domain";
-import { CountingIdGen, FixedClock, InMemoryOrderStore } from "@urumi/domain/testing";
+} from "@otta-sh/domain";
+import { CountingIdGen, FixedClock, InMemoryOrderStore } from "@otta-sh/domain/testing";
 import { describe, expect, test } from "vitest";
 
 // Step 5.1: OrderState machine + OrderStore.transition/listForCustomer against

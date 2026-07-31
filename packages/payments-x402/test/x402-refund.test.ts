@@ -1,4 +1,4 @@
-import { cents, currency, idempotencyKey, orderId } from "@urumi/domain";
+import { cents, currency, idempotencyKey, orderId } from "@otta-sh/domain";
 import { describe, expect, test } from "vitest";
 import { createTestFacilitator, X402PaymentGateway } from "../src/index.js";
 

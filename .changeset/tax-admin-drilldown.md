@@ -1,5 +1,5 @@
 ---
-"@urumi/plugin": minor
+"@otta-sh/plugin": minor
 ---
 
 Tax admin drill-down UI (admin-UX Increment 3, slice 2): a new `/tax` admin
@@ -23,7 +23,7 @@ Deleting a rate carries danger copy noting in-flight carts recompute while
 existing orders' snapshotted totals are untouched.
 
 **Scope note**: renaming or deleting a tax CLASS is intentionally NOT
-offered. `deleteTaxClass`'s in-use guard exists in `@urumi/domain`
+offered. `deleteTaxClass`'s in-use guard exists in `@otta-sh/domain`
 (contract-tested) but was never wired to a service HTTP route, and there is
 no domain port method for renaming a class at all — both are real
 domain/service work for a future slice, not something a UI-only slice should

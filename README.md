@@ -1,4 +1,4 @@
-# Urumi — an open-source commerce layer for EmDash
+# Otta — an open-source commerce layer for EmDash
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![Version](https://img.shields.io/badge/version-0.0.1-orange.svg)](https://github.com/UrumiAI/otta.sh/releases/tag/v0.0.1)
@@ -6,28 +6,28 @@
 Open source (MIT), version 0.0.1. The WooCommerce-equivalent for
 [EmDash](https://github.com/emdash-cms/emdash), Cloudflare's TypeScript CMS.
 
-![The Urumi storefront: a product listing with three sample products, each showing generated coil artwork, a title, a description, a price, and whether it is in stock — the first is sold out, its price struck through](./docs/storefront.png)
+![The Otta storefront: a product listing with three sample products, each showing generated coil artwork, a title, a description, a price, and whether it is in stock — the first is sold out, its price struck through](./docs/storefront.png)
 
 <sub>The reference storefront running locally, with prices and stock served by the commerce
 service — this is what the [quick start](#quick-start-local-2-minutes) below gives you.</sub>
 
 ## What this is
 
-Urumi turns an EmDash site into a store. It ships as three parts:
+Otta turns an EmDash site into a store. It ships as three parts:
 
-1. **Urumi plugin** — a sandbox-clean EmDash plugin: storefront routes, content-sync
+1. **Otta plugin** — a sandbox-clean EmDash plugin: storefront routes, content-sync
    hooks, cart/checkout orchestration, an admin console (pricing & inventory, orders,
    reports, settings), and x402 gating for digital goods. Talks to the commerce service
    over HTTP only (`network:request` + `allowedHosts`). The CMS owns content; every
    commercial field lives in the commerce service and is edited in the admin console.
-2. **Urumi commerce service** — a standalone Node/Hono + Postgres service that owns all
+2. **Otta commerce service** — a standalone Node/Hono + Postgres service that owns all
    money and stock truth: catalog, inventory, cart, checkout, orders, customers,
    payments, tax, shipping, discounts, entitlements, reporting, and webhooks.
 3. **The reference site** (`sites/staging`) — a default EmDash site with the plugin already
    registered, so there's something to actually run. It's the storefront in the screenshot
    above and what the [quick start](#quick-start-local-2-minutes) boots: product listing
    pages, cart, and the admin console. Treat it as the worked example to copy from when
-   wiring Urumi into your own site — it covers **catalog + cart only** today (see
+   wiring Otta into your own site — it covers **catalog + cart only** today (see
    [Status](#status)).
 
 ## Quick start (local, ~2 minutes)
@@ -41,18 +41,18 @@ pnpm install
 
 # 1. Commerce database — any Postgres works; a throwaway container is fastest.
 #    (Host port 55432, not 5432, so it can't collide with a local Postgres.)
-docker run -d --name urumi-pg \
-  -e POSTGRES_USER=urumi -e POSTGRES_PASSWORD=urumi -e POSTGRES_DB=urumi \
+docker run -d --name otta-pg \
+  -e POSTGRES_USER=otta -e POSTGRES_PASSWORD=otta -e POSTGRES_DB=otta \
   -p 127.0.0.1:55432:5432 postgres:16
 
 # 2. Commerce service — migrates itself forward on boot, then listens on :3000.
-PG_CONNECTION_STRING=postgres://urumi:urumi@127.0.0.1:55432/urumi \
+PG_CONNECTION_STRING=postgres://otta:otta@127.0.0.1:55432/otta \
   pnpm dlx tsx@4 packages/service/src/index.ts
 ```
 
 ```bash
 # 3. Storefront + admin, in a second terminal.
-COMMERCE_SERVICE_URL=http://127.0.0.1:3000 pnpm --filter @urumi/site-staging dev
+COMMERCE_SERVICE_URL=http://127.0.0.1:3000 pnpm --filter @otta-sh/site-staging dev
 ```
 
 Check the service with `curl http://127.0.0.1:3000/health` → `{"ok":true}`. Then open the
@@ -80,7 +80,7 @@ a product of your own — that page is the only place commercial fields are edit
 owns the title, description and images.
 
 Two things to know: the service is run through `tsx` rather than its built `dist` bin
-because the `@urumi/*` packages aren't published yet and their workspace export maps point
+because the `@otta-sh/*` packages aren't published yet and their workspace export maps point
 at TypeScript sources ([#44](https://github.com/UrumiAI/otta.sh/issues/44)); and this
 storefront covers **catalog + cart only** — see [Status](#status).
 
@@ -102,7 +102,7 @@ The gap is closing. [emdash-cms/emdash#2169](https://github.com/emdash-cms/emdas
 delta? })` — a guarded `UPDATE … RETURNING` run inside the sandbox. Two sibling primitives,
 not yet proposed upstream, cover the rest: an atomic `insert` that classifies unique
 violations, and `ctx.storage.batch([...])` for all-or-nothing multi-collection writes.
-With all three, a `@urumi/store-emdash` adapter already passes the domain's full
+With all three, a `@otta-sh/store-emdash` adapter already passes the domain's full
 `InventoryStore` contract in-process. Once orders, payments, webhooks, and reporting
 follow, the split becomes a deployment choice rather than a correctness requirement.
 
@@ -113,9 +113,9 @@ follow, the split becomes a deployment choice rather than a correctness requirem
   tax, shipping) lives in the commerce service. Link key = the CMS content `id`.
 - **Separate databases.** Commerce Postgres is independent of the EmDash content DB
   (independent scaling; no cross-DB joins — joined in app code at render time).
-- **Ports and adapters.** `@urumi/domain` is pure (no IO); every store is a Kysely
+- **Ports and adapters.** `@otta-sh/domain` is pure (no IO); every store is a Kysely
   adapter dialect-parameterized over better-sqlite3 (dev) and Postgres (CI/prod). The
-  REST API in `@urumi/service` mirrors the domain ports 1:1, and the same client-side
+  REST API in `@otta-sh/service` mirrors the domain ports 1:1, and the same client-side
   contract suite runs over the wire so the HTTP format can't drift from the port.
 - **Pluggable payments.** Stripe (async webhook) and x402 (HTTP-402 at the page layer)
   behind one `PaymentGateway` interface.
@@ -129,12 +129,12 @@ follow, the split becomes a deployment choice rather than a correctness requirem
 
 | Package | What it is |
 |---|---|
-| `@urumi/domain` | Pure ports, use-cases, branded money types, contract-test suites. No IO. |
-| `@urumi/service` | Thin Hono REST API + Cloudflare Worker entry mirroring the domain ports. |
-| `@urumi/store-postgres` | Kysely store adapters (better-sqlite3 local, `pg` CI/prod) + forward-only migrations. |
-| `@urumi/payments-stripe` | Stripe `PaymentGateway` adapter (async-webhook, raw-body HMAC). |
-| `@urumi/payments-x402` | x402 `PaymentGateway` adapter (synchronous page-gate, facilitator-verified). |
-| `@urumi/plugin` | The EmDash plugin: storefront routes, admin console, content-sync hooks. |
+| `@otta-sh/domain` | Pure ports, use-cases, branded money types, contract-test suites. No IO. |
+| `@otta-sh/service` | Thin Hono REST API + Cloudflare Worker entry mirroring the domain ports. |
+| `@otta-sh/store-postgres` | Kysely store adapters (better-sqlite3 local, `pg` CI/prod) + forward-only migrations. |
+| `@otta-sh/payments-stripe` | Stripe `PaymentGateway` adapter (async-webhook, raw-body HMAC). |
+| `@otta-sh/payments-x402` | x402 `PaymentGateway` adapter (synchronous page-gate, facilitator-verified). |
+| `@otta-sh/plugin` | The EmDash plugin: storefront routes, admin console, content-sync hooks. |
 | `sites/staging` | Staging storefront + admin — EmDash on Cloudflare Workers, plugin registered trusted. |
 
 Design decisions live in [`adr/`](./adr/); development practices in
@@ -158,7 +158,7 @@ process, so it verifies the SQL is correct, not that it's race-safe under conten
 
 ## Status
 
-**v0.0.1** — first open-source release. The `@urumi/*` packages are all at `0.0.1` and are
+**v0.0.1** — first open-source release. The `@otta-sh/*` packages are all at `0.0.1` and are
 not published to npm yet; consume them from the workspace.
 
 The commerce **service** is feature-complete (Phases 0–7 merged): catalog, inventory,

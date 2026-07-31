@@ -1,6 +1,6 @@
 ---
-"@urumi/service": minor
-"@urumi/plugin": minor
+"@otta-sh/service": minor
+"@otta-sh/plugin": minor
 ---
 
 Move the machine write-gate token to a dedicated `X-Service-Token` header (ADR-0007),

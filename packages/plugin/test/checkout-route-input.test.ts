@@ -1,7 +1,7 @@
 /**
  * A3 (storefront-checkout plan §3) — boundary validation for the PUBLIC
  * checkout routes' input. These routes are reachable by anything that can POST
- * to `/_emdash/api/plugins/urumi/...`, so the shape is hand-validated here
+ * to `/_emdash/api/plugins/otta/...`, so the shape is hand-validated here
  * (route-input.ts style, no schema library in the plugin) and a malformed
  * request is rejected BEFORE any `ctx.http` egress — a garbage body must never
  * become an upstream round trip, let alone an order.

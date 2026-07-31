@@ -1,13 +1,13 @@
 ---
-"@urumi/domain": minor
-"@urumi/store-postgres": minor
-"@urumi/service": minor
-"@urumi/plugin": minor
+"@otta-sh/domain": minor
+"@otta-sh/store-postgres": minor
+"@otta-sh/service": minor
+"@otta-sh/plugin": minor
 ---
 
 Phase 2 — catalog display (batch commerce read + storefront PDP/PLP).
 
-- `@urumi/domain`: additive `listCommerceByIds(productIds)` query on the
+- `@otta-sh/domain`: additive `listCommerceByIds(productIds)` query on the
   existing `ProductCommerceStore` port returning `ProductCommerceView`
   (`productId`, `sku`, branded `price`, coarse `inStock`, and the `active`
   publish flag) — missing / soft-deleted / commerce-incomplete ids are
@@ -21,18 +21,18 @@ Phase 2 — catalog display (batch commerce read + storefront PDP/PLP).
   store's inventory join) and pinned by five new
   `productCommerceStoreContract` cases; harnesses grow `seedStock` and
   `activate`.
-- `@urumi/store-postgres`: `KyselyProductCommerceStore.listCommerceByIds` as
+- `@otta-sh/store-postgres`: `KyselyProductCommerceStore.listCommerceByIds` as
   ONE statement — `product_commerce LEFT JOIN inventory` with the
   commerce-complete guards inline, identical on sqlite + pg. The §6
   "inStock is one intra-service statement, never a second inventory round
   trip" invariant is enforced by a query-count test (a Kysely plugin counts
   root statement executions: exactly 1 per batch, 0 for an empty batch).
-- `@urumi/service`: `POST /catalog/commerce/batch` (own route file), a 1:1
+- `@otta-sh/service`: `POST /catalog/commerce/batch` (own route file), a 1:1
   serialization of the port: Zod-validated `{ productIds }` capped at 100
   (a request-size guard ≥2× the PLP page cap, not pagination — 400 over
   cap), `{ items }` response with money as integer + ISO-4217 string.
   Live-server contract test on Postgres.
-- `@urumi/plugin`: the catalog-display stack, all behavior proven under the
+- `@otta-sh/plugin`: the catalog-display stack, all behavior proven under the
   REAL workerd sandbox. `getCommerceBatch` on `CommerceClient`/
   `HttpCommerceClient` (over `ctx.http` + `allowedHosts` only); a
   request-scoped DataLoader-style `CommerceBatchLoader` (same-tick lookups

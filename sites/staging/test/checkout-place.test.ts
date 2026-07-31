@@ -27,7 +27,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import type { APIContext } from "astro";
-import { STOREFRONT_CHECKOUT_PLACE_ROUTE, type CheckoutSummaryRouteResult } from "@urumi/plugin";
+import { STOREFRONT_CHECKOUT_PLACE_ROUTE, type CheckoutSummaryRouteResult } from "@otta-sh/plugin";
 import { checkoutEntryRedirect } from "../src/lib/checkout-redirect.js";
 import {
 	CHECKOUT_COOKIE_MAX_AGE_SECONDS,
@@ -137,7 +137,7 @@ function makeContext(
 
 	const cookieStore = new Map<string, string>();
 	const cartCookie = "cartCookie" in opts ? opts.cartCookie : "cart-existing";
-	if (cartCookie !== undefined) cookieStore.set("urumi_cart", cartCookie);
+	if (cartCookie !== undefined) cookieStore.set("otta_cart", cartCookie);
 	const cookieOps: CookieOp[] = [];
 
 	const context = {
@@ -207,7 +207,7 @@ describe("6a — CSRF: rejectCrossOrigin is the FIRST statement", () => {
 });
 
 describe("6a — /checkout/new-cart clears BOTH cookies", () => {
-	test("the same-origin POST deletes urumi_cart AND urumi_checkout, then 303s to /products", async () => {
+	test("the same-origin POST deletes otta_cart AND otta_checkout, then 303s to /products", async () => {
 		const { handler } = makeHandler();
 		const { context, cookieOps } = makeContext({}, handler, { url: "/checkout/new-cart" });
 
@@ -218,7 +218,7 @@ describe("6a — /checkout/new-cart clears BOTH cookies", () => {
 		// BOTH — the narrower "clears the cart cookie" reading strands a spent
 		// client secret in the browser for the rest of the hold TTL.
 		const deleted = cookieOps.filter((op) => op.op === "delete").map((op) => op.name);
-		expect(deleted).toContain("urumi_cart");
+		expect(deleted).toContain("otta_cart");
 		expect(deleted).toContain(CHECKOUT_COOKIE_NAME);
 	});
 });
@@ -344,8 +344,8 @@ describe("6c — no cart cookie", () => {
 	});
 });
 
-describe("6d — the urumi_checkout stash and its deletion", () => {
-	test("a successful place sets urumi_checkout with the EXACT attribute set and 303s to /checkout/pay", async () => {
+describe("6d — the otta_checkout stash and its deletion", () => {
+	test("a successful place sets otta_checkout with the EXACT attribute set and 303s to /checkout/pay", async () => {
 		const { handler } = makeHandler();
 		const { context, cookieOps } = makeContext(VALID_FORM, handler);
 
@@ -427,7 +427,7 @@ describe("6d — the urumi_checkout stash and its deletion", () => {
 	/**
 	 * BACKWARD COMPATIBILITY — the widened stash meets cookies it did not write.
 	 *
-	 * A `urumi_checkout` cookie lives for 15 minutes, so a deploy that lands
+	 * A `otta_checkout` cookie lives for 15 minutes, so a deploy that lands
 	 * mid-checkout hands this reader an OLD-SHAPE stash whose order is real, whose
 	 * client secret is live, and whose stock is held. Every case below must still
 	 * yield a payable stash; the total is a label, and a label is never worth a

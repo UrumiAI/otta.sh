@@ -4,12 +4,12 @@ import {
 	FixedClock,
 	InMemoryOrderStore,
 	orderCancellationContract,
-} from "@urumi/domain/testing";
+} from "@otta-sh/domain/testing";
 
 // The order-cancellation spec (admin-UX Increment 1, "cancel with reason") run
 // against the in-memory fake first. The pg/sqlite dialect runs — incl. the
 // concurrent-cancel and cancel-vs-recordFulfillment races — live in
-// @urumi/store-postgres.
+// @otta-sh/store-postgres.
 
 orderCancellationContract(
 	async () => {

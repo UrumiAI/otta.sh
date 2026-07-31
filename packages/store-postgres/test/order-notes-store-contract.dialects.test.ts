@@ -1,5 +1,5 @@
-import { idempotencyKey, orderId } from "@urumi/domain";
-import { orderNotesStoreContract } from "@urumi/domain/testing";
+import { idempotencyKey, orderId } from "@otta-sh/domain";
+import { orderNotesStoreContract } from "@otta-sh/domain/testing";
 import { afterEach, describe, expect, test } from "vitest";
 import { PG_ENABLED } from "./describe-each-dialect.js";
 import {

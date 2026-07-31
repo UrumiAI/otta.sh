@@ -10,7 +10,7 @@
 
 ## Context
 
-An order in Urumi today has **no idea where it shipped**. The reality on disk:
+An order in Otta today has **no idea where it shipped**. The reality on disk:
 
 - **Checkout captures no address.** `CreateOrderCommand` carries `buyerRef`, `paymentMethod`,
   `shippingZoneId`, `shippingMethodId`, `couponCode`, `customerId` — and **no address**
@@ -44,7 +44,7 @@ An order in Urumi today has **no idea where it shipped**. The reality on disk:
   stored as immutable order meta.
 
 Both industry models put the ship-to's **home on the order, snapshotted**, with the profile book as
-prefill. Urumi today has *only* the profile book and *no* order snapshot — precisely backwards. This
+prefill. Otta today has *only* the profile book and *no* order snapshot — precisely backwards. This
 ADR flips it to the Shopify model, deliberately narrower (one address, no billing split).
 
 ## Decision

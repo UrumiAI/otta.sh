@@ -4,7 +4,7 @@ import type {
 	StripeCreateRefundResult,
 	StripePreflightResult,
 	StripeTransport,
-} from "@urumi/payments-stripe";
+} from "@otta-sh/payments-stripe";
 import { startTestServer, type TestServer } from "./helpers/start-test-server.js";
 
 // Admin refund HTTP contract (ADR-0008): wire ⇄ port fidelity for the refund

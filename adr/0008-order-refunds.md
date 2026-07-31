@@ -60,9 +60,9 @@ The reality on disk:
   negative line items, and a per-refund choice of **manual refund** (record only) vs **automatic
   refund** (call the gateway API). The merchant decides, per refund, whether money actually moves.
 
-Shopify's line-level + restock richness is *more* than v1 needs and collides head-on with Urumi's
+Shopify's line-level + restock richness is *more* than v1 needs and collides head-on with Otta's
 frozen-snapshot, single-terminal-`refunded`-state design. Woo's **manual-vs-gateway** split, by
-contrast, maps almost exactly onto Urumi's **Stripe (gateway) vs x402 (manual-only)** asymmetry —
+contrast, maps almost exactly onto Otta's **Stripe (gateway) vs x402 (manual-only)** asymmetry —
 that is the model we adopt, kept at order/amount granularity rather than line granularity.
 
 ## Decision

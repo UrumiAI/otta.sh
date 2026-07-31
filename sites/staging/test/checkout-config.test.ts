@@ -8,7 +8,7 @@
  * store yet.", nothing throws, and no test fails. An earlier draft of the plan
  * named this variable `STRIPE_PUBLISHABLE_KEY`; implemented literally it would
  * have shipped that message to every buyer while a valid `pk_test_…` sat
- * unread in `~/.urumi-deploy.env`. So the variable NAME is pinned as test
+ * unread in `~/.otta-deploy.env`. So the variable NAME is pinned as test
  * data, the config module is pinned to read that spelling and no other, and a
  * present-but-malformed value THROWS at build (mirroring `resolveServiceUrl`'s
  * "throw early rather than bake garbage") — leaving quiet degradation as the
@@ -52,7 +52,7 @@ describe("8a — resolveStripePublishableKey", () => {
 
 describe("8b — the loud-failure guards", () => {
 	test("the variable name is EXACTLY the provisioned one: STRIPE_PUBLIC_KEY", () => {
-		// Pinned as DATA. `~/.urumi-deploy.env` carries STRIPE_PUBLIC_KEY;
+		// Pinned as DATA. `~/.otta-deploy.env` carries STRIPE_PUBLIC_KEY;
 		// STRIPE_PUBLISHABLE_KEY appears nowhere in our provisioning.
 		expect(STRIPE_PUBLIC_KEY_VAR).toBe("STRIPE_PUBLIC_KEY");
 	});

@@ -1,8 +1,8 @@
-// Sqlite-free entry (`@urumi/store-postgres/pg`) for bundler targets — the
+// Sqlite-free entry (`@otta-sh/store-postgres/pg`) for bundler targets — the
 // Cloudflare Worker imports ONLY from here so esbuild/wrangler never see the
 // `better-sqlite3` native addon (unbundleable; tree-shaking cannot safely drop
 // a CJS import). Everything re-exported below transitively touches only
-// `@urumi/domain`, `kysely`, and `pg`.
+// `@otta-sh/domain`, `kysely`, and `pg`.
 export { makePostgresDb, makePostgresPool } from "./dialects-pg.js";
 export { uuidIdGen } from "./id-gen.js";
 export {

@@ -4,7 +4,7 @@ import type {
 	StripeCreateRefundResult,
 	StripePreflightResult,
 	StripeTransport,
-} from "@urumi/payments-stripe";
+} from "@otta-sh/payments-stripe";
 import { afterEach, describe, expect, test } from "vitest";
 import { startTestServer, type TestServer } from "./helpers/start-test-server.js";
 

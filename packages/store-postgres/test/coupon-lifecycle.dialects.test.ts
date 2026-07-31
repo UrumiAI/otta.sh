@@ -5,7 +5,7 @@ import {
 	expireOrders,
 	idempotencyKey,
 	settleOrder,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import { afterEach, describe, expect, test } from "vitest";
 import {
 	makePgOrderFlow,

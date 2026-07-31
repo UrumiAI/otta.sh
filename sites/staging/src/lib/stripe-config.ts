@@ -56,17 +56,17 @@ export function resolveStripePublishableKey(raw: string | undefined): string | u
 }
 
 /**
- * Compile-time override hook — the same `typeof` guard `@urumi/plugin`'s
+ * Compile-time override hook — the same `typeof` guard `@otta-sh/plugin`'s
  * manifest uses, so the identifier is safe wherever no bundler defines it
  * (vitest, `astro check`). The define always bakes a STRING; an absent key
  * bakes `""`, which resolves to unconfigured.
  */
-declare const __URUMI_STRIPE_PUBLIC_KEY__: string | undefined;
+declare const __OTTA_STRIPE_PUBLIC_KEY__: string | undefined;
 
 /** The key this build was compiled with, or `undefined` when the store has not
  *  connected Stripe. Pages branch on this: no key ⇒ render review + totals and
  *  say so, and create NO order. */
 export const STRIPE_PUBLISHABLE_KEY: string | undefined =
-	typeof __URUMI_STRIPE_PUBLIC_KEY__ === "string" && __URUMI_STRIPE_PUBLIC_KEY__.length > 0
-		? __URUMI_STRIPE_PUBLIC_KEY__
+	typeof __OTTA_STRIPE_PUBLIC_KEY__ === "string" && __OTTA_STRIPE_PUBLIC_KEY__.length > 0
+		? __OTTA_STRIPE_PUBLIC_KEY__
 		: undefined;

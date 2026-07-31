@@ -7,8 +7,8 @@ import {
 	PaymentIntentError,
 	type CreateIntentInput,
 	type PaymentIntentHandle,
-} from "@urumi/domain";
-import { FakePaymentGateway } from "@urumi/domain/testing";
+} from "@otta-sh/domain";
+import { FakePaymentGateway } from "@otta-sh/domain/testing";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { makeOrderHarness, type OrderHarness } from "./fake-harness.js";
 

@@ -9,8 +9,8 @@ import {
 	productId as brandProductId,
 	type ProductCommerceStore,
 	sku as brandSku,
-} from "@urumi/domain";
-import { CountingIdGen, FixedClock, InMemoryAddressStore } from "@urumi/domain/testing";
+} from "@otta-sh/domain";
+import { CountingIdGen, FixedClock, InMemoryAddressStore } from "@otta-sh/domain/testing";
 import { beforeEach, describe, expect, test } from "vitest";
 import { makeOrderHarness, type OrderHarness } from "./fake-harness.js";
 
@@ -153,7 +153,7 @@ describe("createOrderFromCart", () => {
 		// expireOrders heals it once the TTL passes: the pending order expires and
 		// its adopted hold is released.
 		h.clock.advance(16 * 60 * 1000);
-		const { expireOrders } = await import("@urumi/domain");
+		const { expireOrders } = await import("@otta-sh/domain");
 		const expired = await expireOrders(h.expireDeps);
 		expect(expired).toBe(1);
 		expect(h.inventory.reservationState(first)).toBe("released");

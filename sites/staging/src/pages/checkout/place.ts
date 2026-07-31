@@ -17,14 +17,14 @@
  * same order and the same PaymentIntent instead of minting a second order the
  * `CART_CHECKED_OUT` fence would then reject.
  */
-import { STOREFRONT_CHECKOUT_PLACE_ROUTE, type CheckoutPlaceRouteResult } from "@urumi/plugin";
+import { STOREFRONT_CHECKOUT_PLACE_ROUTE, type CheckoutPlaceRouteResult } from "@otta-sh/plugin";
 import type { APIRoute } from "astro";
 import { currentCartId, failureToken, routeDispatcher, seeOther } from "../../lib/cart-actions.js";
 import { checkoutStashTotal, setCheckoutCookie } from "../../lib/checkout-cookie.js";
 import { isPlausibleEmail, normalizeBuyerRef } from "../../lib/email.js";
 import { rejectCrossOrigin } from "../../lib/origin-guard.js";
 import { STRIPE_PUBLISHABLE_KEY } from "../../lib/stripe-config.js";
-import { dispatchUrumiRoute, formString } from "../../lib/urumi-api.js";
+import { dispatchOttaRoute, formString } from "../../lib/otta-api.js";
 
 /** The site's own token for a form-level email reject — never reaches the
  *  service, which would happily accept the value (`schemas.ts` has no regex). */
@@ -115,7 +115,7 @@ export const POST: APIRoute = async (context) => {
 	const shipping = readShippingAddress(form);
 	if (!shipping.ok) return seeOther(context, "/checkout", shipping.error);
 
-	const result = await dispatchUrumiRoute<CheckoutPlaceRouteResult>(
+	const result = await dispatchOttaRoute<CheckoutPlaceRouteResult>(
 		routeDispatcher(context),
 		STOREFRONT_CHECKOUT_PLACE_ROUTE,
 		{

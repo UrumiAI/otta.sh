@@ -81,7 +81,7 @@ Split into the concrete behavioral cases the suite must encode:
 
 **Reused from Phases 0–4:**
 
-- `@urumi/domain` money/id branded types, `IdempotencyKey`, `Clock`, `IdGen` (adapter-architecture §1).
+- `@otta-sh/domain` money/id branded types, `IdempotencyKey`, `Clock`, `IdGen` (adapter-architecture §1).
 - The contract-suite harness (`describeEachDialect`-style wrapper) and its
   Postgres-required tagging convention (Phase 0.4/0.5) — every new store port reuses it
   verbatim.
@@ -91,7 +91,7 @@ Split into the concrete behavioral cases the suite must encode:
   `orders.state` (not `status`), `orders` carries **no money columns** (totals live only in
   `order_totals`, `*_cents`), and `orders.customer_id` was already added — nullable,
   forward-only — by Phase 4; Phase 5 populates it but does not re-add or rename it.
-- `@urumi/service`'s live-test-server HTTP contract-test pattern (Phase 0.6) — new
+- `@otta-sh/service`'s live-test-server HTTP contract-test pattern (Phase 0.6) — new
   endpoints get the same treatment.
 - The plugin's `CommerceClient`/`HttpCommerceClient` seam (ADR-0002 §"Transport seam") —
   account pages are new storefront routes on the existing plugin, no new plugin
@@ -444,7 +444,7 @@ ports expressing intent, not mechanism).
 >
 > **Reasoning:**
 > - **Wrong-direction dependency.** Most email triggers in this phase originate
->   service-side: a Stripe webhook hitting `@urumi/service` directly, or an admin REST
+>   service-side: a Stripe webhook hitting `@otta-sh/service` directly, or an admin REST
 >   call to the service. Neither passes through the plugin's request lifecycle. Routing
 >   the send through `email:send` would require the **service to call back into the
 >   plugin** to trigger a send — inverting the plugin→service direction ADR-0002 fixed the
@@ -601,7 +601,7 @@ after, "done" = the named test is green.
   against its fake (Phase-0.3 precedent: fake proves the port shape before any DB).
 - **✅ Green when:** all four contract suites pass against their fakes.
 
-### 5.5 — `@urumi/store-postgres`: migrations + adapters for all four new stores
+### 5.5 — `@otta-sh/store-postgres`: migrations + adapters for all four new stores
 
 - Forward-only migrations: `customers`, `addresses`, `customer_sessions`,
   `login_challenges`, `order_emails_outbox` (`UNIQUE(order_id, to_state)`). `orders.
@@ -621,7 +621,7 @@ after, "done" = the named test is green.
 - **✅ Green when:** all four contract suites, plus the rollback-atomicity test, are green
   on SQLite and Postgres.
 
-### 5.6 — `@urumi/service`: REST endpoints + live-server contract tests
+### 5.6 — `@otta-sh/service`: REST endpoints + live-server contract tests
 
 - Wire the endpoints in §7's table.
 - **Extend, don't duplicate:** Phase 4's existing webhook handlers (`pending→paid`/
@@ -767,7 +767,7 @@ spec; plugin tasks: sandbox-required):
 - [ ] No new `orders`/`order_items`/`order_totals` column is introduced by Phase 5 that
       conflicts with Phase 4's canonical schema (§4 of the Phase 4 plan); `orders.
       customer_id` is populated, not re-added.
-- [ ] `@urumi/domain` still imports nothing with IO — boundary lint green (`pnpm lint`
+- [ ] `@otta-sh/domain` still imports nothing with IO — boundary lint green (`pnpm lint`
       dependency-cruiser check), including the four new ports.
 - [ ] Plugin account pages (5.9) pass their sandbox tests under **workerd-on-Node**, not
       trusted in-process mode; capability-surface check confirms no new capability beyond
@@ -776,8 +776,8 @@ spec; plugin tasks: sandbox-required):
       or explicitly left `proposed` with the decision-maker's sign-off noted in the PR —
       not silently assumed.
 - [ ] `pnpm typecheck`, `pnpm lint`, `pnpm format` clean; changeset added for every
-      published package touched (`@urumi/domain`, `@urumi/store-postgres`,
-      `@urumi/service`, `@urumi/plugin`).
+      published package touched (`@otta-sh/domain`, `@otta-sh/store-postgres`,
+      `@otta-sh/service`, `@otta-sh/plugin`).
 - [ ] Migrations are forward-only; no existing Phase 0–4 migration edited.
 - [ ] No `ctx.users` import or dependency anywhere in the new customer/session/auth code
       (headline case 2) — worth a literal grep-based CI check given how easy it'd be to

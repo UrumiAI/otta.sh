@@ -13,8 +13,8 @@ import {
 	type SettleDeps,
 	settleOrder,
 	sku as brandSku,
-} from "@urumi/domain";
-import { FakePaymentGateway, FixedClock } from "@urumi/domain/testing";
+} from "@otta-sh/domain";
+import { FakePaymentGateway, FixedClock } from "@otta-sh/domain/testing";
 import type { Kysely } from "kysely";
 import { afterEach, describe, expect, test } from "vitest";
 import {

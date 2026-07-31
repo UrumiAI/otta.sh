@@ -1,10 +1,10 @@
 ---
-"@urumi/domain": minor
-"@urumi/payments-stripe": minor
-"@urumi/payments-x402": minor
-"@urumi/store-postgres": minor
-"@urumi/service": minor
-"@urumi/plugin": minor
+"@otta-sh/domain": minor
+"@otta-sh/payments-stripe": minor
+"@otta-sh/payments-x402": minor
+"@otta-sh/store-postgres": minor
+"@otta-sh/service": minor
+"@otta-sh/plugin": minor
 ---
 
 Order refunds (ADR-0008) — money movement made honest, in the smallest shape that

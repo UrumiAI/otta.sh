@@ -24,7 +24,7 @@ import type { APIContext } from "astro";
 const { getEmDashEntry } = vi.hoisted(() => ({ getEmDashEntry: vi.fn() }));
 vi.mock("emdash", () => ({ getEmDashEntry }));
 
-import { STOREFRONT_CART_LINE_ADD_ROUTE, STOREFRONT_PRODUCT_ROUTE } from "@urumi/plugin";
+import { STOREFRONT_CART_LINE_ADD_ROUTE, STOREFRONT_PRODUCT_ROUTE } from "@otta-sh/plugin";
 import { POST } from "../src/pages/cart/add.js";
 
 const SITE = "http://localhost:4321";
@@ -53,7 +53,7 @@ interface HandlerCall {
 }
 
 /** A configurable fake of `locals.emdash.handlePublicPluginApiRoute`
- *  (`dispatchUrumiRoute`'s in-process dispatch target) — routes by path,
+ *  (`dispatchOttaRoute`'s in-process dispatch target) — routes by path,
  *  records every call so a test can assert the add-line route was NEVER
  *  reached. */
 function makeHandler(opts: { productResult?: unknown; addLineResult?: unknown }): {
@@ -101,7 +101,7 @@ function makeContext(form: Record<string, string>, handler: unknown): APIContext
 		body: body.toString(),
 	});
 	const cookieStore = new Map<string, string>();
-	cookieStore.set("urumi_cart", "cart-existing");
+	cookieStore.set("otta_cart", "cart-existing");
 	return {
 		request,
 		url,

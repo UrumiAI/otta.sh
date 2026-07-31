@@ -1,4 +1,4 @@
-import { makePostgresDb, makePostgresPool, migrateToLatest } from "@urumi/store-postgres/pg";
+import { makePostgresDb, makePostgresPool, migrateToLatest } from "@otta-sh/store-postgres/pg";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { createWorker, type WorkerEnv } from "../src/worker.js";
 

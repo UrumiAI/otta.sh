@@ -11,7 +11,7 @@
  * Pure and IO-free: a page calls these at render time, a test calls them
  * without a CMS, a commerce service or a DOM.
  */
-import type { ProductViewModel } from "@urumi/plugin";
+import type { ProductViewModel } from "@otta-sh/plugin";
 
 /**
  * How many rows the hero tape shows.
@@ -45,7 +45,7 @@ export const TAPE_ROWS = 6;
 export const TAPE_FETCH_LIMIT = TAPE_ROWS * 2;
 
 /** The name a store falls back to when it has neither tagline nor title. */
-export const FALLBACK_THESIS = "Urumi";
+export const FALLBACK_THESIS = "Otta";
 
 export interface TapeRow {
 	/** The sku — the store's own name for the thing. A product with no

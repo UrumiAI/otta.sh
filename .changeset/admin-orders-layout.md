@@ -1,5 +1,5 @@
 ---
-"@urumi/plugin": patch
+"@otta-sh/plugin": patch
 ---
 
 Re-lay the admin Orders console onto the design spec's §11 — the REFERENCE screen

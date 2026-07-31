@@ -1,4 +1,4 @@
-# CLAUDE.md — Urumi
+# CLAUDE.md — Otta
 
 Operational guide for Claude working in this repo. The **why** lives in
 [`DEVELOPMENT.md`](./DEVELOPMENT.md) (development practices) and [`README.md`](./README.md)
@@ -17,11 +17,11 @@ conventions, and the guardrails that must not be crossed.
 These are build-breaking, not code-review nits (see `DEVELOPMENT.md` for the full rules):
 
 - **TDD, contract-first.** Failing test → code → green → refactor. For anything in
-  `@urumi/domain`, the behavioral test is written against the **port interface** before any
+  `@otta-sh/domain`, the behavioral test is written against the **port interface** before any
   adapter. The headline contract is **no oversell under concurrency**.
 - **Money is integer minor units, never floats.** A `number` reaching a money field is a type
   error. Branded types (e.g. `Cents`) carry an explicit currency.
-- **Ports-and-adapters purity.** `@urumi/domain` imports nothing with IO — no `pg`, `ctx`, or
+- **Ports-and-adapters purity.** `@otta-sh/domain` imports nothing with IO — no `pg`, `ctx`, or
   `fetch`. The boundary is enforced by a dependency check wired into `lint`.
 - **Real databases, never mocks.** SQLite (better-sqlite3) is the fast local default; Postgres
   runs in CI. The **concurrency / no-oversell test is Postgres-required** (SQLite can't race).
@@ -55,8 +55,8 @@ changed. Migrations are forward-only.
 
   | Area changed | Tag |
   |---|---|
-  | `@urumi/domain` (ports, use-cases, invariants) | `[Domain]` |
-  | `@urumi/service` (REST API, HTTP serialization) | `[Service]` |
+  | `@otta-sh/domain` (ports, use-cases, invariants) | `[Domain]` |
+  | `@otta-sh/service` (REST API, HTTP serialization) | `[Service]` |
   | Store/client/payment **adapters** (postgres, sqlite, d1, stripe, x402) | `[Adapters]` |
   | The EmDash **plugin** (storefront, Block Kit panel, sync hooks) | `[Plugin]` |
   | `sites/*` (the reference storefront site/theme) | `[Site]` |
@@ -87,7 +87,7 @@ Every task is verified end-to-end before the PR is handed over (default, not opt
 For parallel or agent-driven work, use one git worktree per task, branched from fresh
 `origin/main`:
 
-- **Worktree convention:** siblings named `../urumi-wt-<slug>`.
+- **Worktree convention:** siblings named `../otta-wt-<slug>`.
 - **Branch types & PR tags:** as above.
 - **Verification policy:** as above — the contract suite is the gate; never mark a task done
   while tests fail; **never push to `main`**, merging is user-gated.

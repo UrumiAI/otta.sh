@@ -11,7 +11,11 @@
  * `totalExcludesUncalculated` is set, the line under the total says WHICH parts
  * are missing — "this total may be incomplete" tells a shopper nothing.
  */
-import { NOT_APPLICABLE_LABEL, NOT_CALCULATED_LABEL, type CheckoutAmountView } from "@urumi/plugin";
+import {
+	NOT_APPLICABLE_LABEL,
+	NOT_CALCULATED_LABEL,
+	type CheckoutAmountView,
+} from "@otta-sh/plugin";
 
 /**
  * What a not-applicable row says when the page supplies nothing better.

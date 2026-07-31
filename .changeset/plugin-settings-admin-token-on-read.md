@@ -1,5 +1,5 @@
 ---
-"@urumi/plugin": patch
+"@otta-sh/plugin": patch
 ---
 
 Settings page: send the admin token on the `GET /settings` read, not only on the write.

@@ -10,7 +10,7 @@ import type {
 	UpdateTaxClassResult,
 	UpdateTaxRateInput,
 	UpdateTaxRateResult,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import type { Kysely, Selectable } from "kysely";
 import type { Database, TaxRatesTable } from "./schema.js";
 

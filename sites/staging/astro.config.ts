@@ -1,8 +1,8 @@
 /**
- * Urumi staging storefront + admin — EmDash on Cloudflare Workers.
+ * Otta staging storefront + admin — EmDash on Cloudflare Workers.
  *
  * Modeled on em-dash's `templates/starter-cloudflare/astro.config.mjs`
- * (no Access / Images / Stream / sandbox), plus the trusted Urumi plugin
+ * (no Access / Images / Stream / sandbox), plus the trusted Otta plugin
  * descriptor (ADR-0006) and the build-time commerce-service URL:
  *
  *   COMMERCE_SERVICE_URL=https://<service host> pnpm build
@@ -129,23 +129,23 @@ export default defineConfig({
 	// ADR-0006). We still never set checkOrigin:false ourselves (pinned by
 	// the site-config test) so nothing regresses if emdash stops overriding.
 	vite: {
-		// Bake the service URL into the @urumi/plugin bundle (manifest.ts
+		// Bake the service URL into the @otta-sh/plugin bundle (manifest.ts
 		// reads this compile-time global; falls back to its placeholder).
 		define: {
-			__URUMI_COMMERCE_SERVICE_URL__: JSON.stringify(serviceUrl),
+			__OTTA_COMMERCE_SERVICE_URL__: JSON.stringify(serviceUrl),
 			// The Stripe publishable key for /checkout/pay's Payment Element
 			// (src/lib/stripe-config.ts). ALWAYS a string — an unconfigured store
 			// bakes "", which that module reads as undefined; baking `undefined`
 			// would leave the identifier undeclared in the worker bundle.
-			__URUMI_STRIPE_PUBLIC_KEY__: JSON.stringify(stripePublishableKey ?? ""),
+			__OTTA_STRIPE_PUBLIC_KEY__: JSON.stringify(stripePublishableKey ?? ""),
 		},
 		ssr: {
-			// UNCONDITIONAL: if @urumi/plugin is ever externalized the define
+			// UNCONDITIONAL: if @otta-sh/plugin is ever externalized the define
 			// above silently never applies and every ctx.http call fails the
 			// allowedHosts check at runtime. (It is also consumed as TS
 			// source via its workspace `"."`/`"./plugin"` exports, which
 			// requires bundling anyway.)
-			noExternal: ["@urumi/plugin"],
+			noExternal: ["@otta-sh/plugin"],
 		},
 	},
 	devToolbar: { enabled: false },

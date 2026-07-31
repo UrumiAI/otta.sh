@@ -1,4 +1,4 @@
-import { productCommerceStoreContract } from "@urumi/domain/testing";
+import { productCommerceStoreContract } from "@otta-sh/domain/testing";
 import { afterEach, describe } from "vitest";
 import {
 	makePgProductCommerceHarness,

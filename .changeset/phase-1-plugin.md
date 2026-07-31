@@ -1,18 +1,18 @@
 ---
-"@urumi/plugin": minor
-"@urumi/service": minor
+"@otta-sh/plugin": minor
+"@otta-sh/service": minor
 ---
 
-Phase 1 — `@urumi/plugin`, the first Urumi EmDash plugin package: sandbox-clean
+Phase 1 — `@otta-sh/plugin`, the first Otta EmDash plugin package: sandbox-clean
 (workerd, Block Kit, no React), proven under a real `workerd` process, not
 trusted in-process.
 
 - `CommerceClient` transport port (ADR-0002 §3) + `HttpCommerceClient`, the
   only adapter this phase builds — a straight 1:1 mirror of
-  `@urumi/service`'s `PUT`/`GET`/`DELETE /products/:id/commerce` (money as
+  `@otta-sh/service`'s `PUT`/`GET`/`DELETE /products/:id/commerce` (money as
   integer + ISO-4217 string, `Idempotency-Key` header, structured
   `CommerceClientError` on any non-2xx response). Proven against the real,
-  Postgres-backed `@urumi/service` over a live test server
+  Postgres-backed `@otta-sh/service` over a live test server
   (`http-commerce-client.test.ts`) — the wire has not drifted from the port.
 - A from-scratch workerd-on-Node sandbox test harness
   (`test/sandbox/harness.ts`): boots the real public `workerd` binary as a
@@ -46,7 +46,7 @@ trusted in-process.
   `plugin-is-sandbox-clean` dependency-cruiser rule (`.dependency-cruiser.cjs`,
   wired into `pnpm lint`) forbidding any DB/storage/filesystem import in
   `packages/plugin/src`.
-- `@urumi/service` additively exports `./app` (`createApp`) — new public
+- `@otta-sh/service` additively exports `./app` (`createApp`) — new public
   export surface, hence the minor bump — so the plugin's own tests can boot
   a live, Postgres-backed instance without duplicating route-mounting logic.
 - Review round 1: the panel Save route derives a STABLE content-derived

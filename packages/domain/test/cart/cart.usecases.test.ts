@@ -1,5 +1,5 @@
-import { addLine, createCart, removeLine, updateLine } from "@urumi/domain";
-import { currency, idempotencyKey, sku } from "@urumi/domain";
+import { addLine, createCart, removeLine, updateLine } from "@otta-sh/domain";
+import { currency, idempotencyKey, sku } from "@otta-sh/domain";
 import { describe, expect, test } from "vitest";
 import { makeFakeCartHarness } from "./fake-harness.js";
 

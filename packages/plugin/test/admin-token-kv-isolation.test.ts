@@ -2,7 +2,7 @@ import {
 	createReportsPageHandler,
 	createSettingsFormHandler,
 	type PluginContext,
-} from "@urumi/plugin";
+} from "@otta-sh/plugin";
 import { describe, expect, test } from "vitest";
 
 // Review round J7 (adapted for the kv-backed token, this change) — the admin

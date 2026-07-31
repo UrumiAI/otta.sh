@@ -1,6 +1,6 @@
 ---
-"@urumi/plugin": minor
-"@urumi/domain": patch
+"@otta-sh/plugin": minor
+"@otta-sh/domain": patch
 ---
 
 Publish atomicity: a published product's price now changes when you publish, not when you save.
@@ -25,7 +25,7 @@ derived and pushed at publish, in the same operation that makes the content live
 - Products that are **not** live are unaffected: a never-published draft still syncs on every save
   (its row must exist for the Pricing & inventory console to list it), and a collection without
   draft revisions still syncs on save, because there a save *is* the live change.
-- `@urumi/domain`: test-only. `@urumi/domain/testing`'s `productCommerceStoreContract` gains one
+- `@otta-sh/domain`: test-only. `@otta-sh/domain/testing`'s `productCommerceStoreContract` gains one
   characterization case pinning the known gap below (and, just as importantly, pinning its limits).
 
 **Merchant-facing behavior you should know about.** Price, SKU, product kind, tax class and

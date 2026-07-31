@@ -1,4 +1,4 @@
-import { inventoryStoreContract } from "@urumi/domain/testing";
+import { inventoryStoreContract } from "@otta-sh/domain/testing";
 import { afterEach, describe } from "vitest";
 import {
 	makePgHarness,

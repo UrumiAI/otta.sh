@@ -5,7 +5,7 @@ import {
 	money,
 	productId as toProductId,
 	sku as toSku,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import {
 	CountingIdGen,
 	FakeEmailSender,
@@ -26,8 +26,8 @@ import {
 	InMemorySettingsStore,
 	InMemoryShippingRulesStore,
 	InMemoryTaxRulesStore,
-} from "@urumi/domain/testing";
-import { StripePaymentGateway } from "@urumi/payments-stripe";
+} from "@otta-sh/domain/testing";
+import { StripePaymentGateway } from "@otta-sh/payments-stripe";
 import type { Hono } from "hono";
 import { beforeEach, describe, expect, test } from "vitest";
 import { createApp } from "../src/app.js";

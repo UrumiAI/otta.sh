@@ -3,7 +3,7 @@ import {
 	entitlementStoreContract,
 	FixedClock,
 	InMemoryEntitlementStore,
-} from "@urumi/domain/testing";
+} from "@otta-sh/domain/testing";
 
 entitlementStoreContract(
 	() => {

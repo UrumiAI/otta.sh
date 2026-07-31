@@ -1,4 +1,4 @@
-// Barrel of @urumi/store-postgres — the Kysely inventory store, dialect
+// Barrel of @otta-sh/store-postgres — the Kysely inventory store, dialect
 // factories, and the forward-only migrations (§0.4/§0.5).
 export { makePostgresDb, makePostgresPool, makeSqliteDb } from "./dialects.js";
 export { uuidIdGen } from "./id-gen.js";

@@ -390,7 +390,7 @@ export function createListDetailHandler<RenderState = never>(
 			// — say a carrier namespace interpolating a zone named "EU West" — reads to
 			// an operator AND to a developer tailing worker logs as an infrastructure
 			// outage, with the message, the stack and the offending value gone.
-			console.error("[urumi] admin list/detail dispatch failed:", err);
+			console.error("[otta] admin list/detail dispatch failed:", err);
 			// The RESPONSE stays deliberately generic and screen-agnostic: at this point
 			// the screen's own fail-closed rendering is what failed, so nothing
 			// screen-specific can be trusted to build blocks, and the error must never
@@ -465,7 +465,7 @@ function createDispatcher<RenderState>(
 				// This is where a SCREEN BUG lands (its `fetchPage` or its `render`), and
 				// the banner below cannot tell an operator apart from an unreachable
 				// service — so the detail has to reach the logs.
-				console.error("[urumi] admin list level failed:", err);
+				console.error("[otta] admin list level failed:", err);
 				return level.onError();
 			}
 		};
@@ -493,7 +493,7 @@ function createDispatcher<RenderState>(
 					blocks: await level.render({ client, actions, path, id, detail, notice, renderState }),
 				};
 			} catch (err) {
-				console.error("[urumi] admin leaf level failed:", err);
+				console.error("[otta] admin leaf level failed:", err);
 				return level.onError();
 			}
 		};
@@ -591,7 +591,7 @@ function createDispatcher<RenderState>(
 				// No render state is forwarded here either: the value in flight is a
 				// plausible cause of the throw, and this fallback's whole job is to be the
 				// simplest render that can still work.
-				console.error(`[urumi] admin custom action ${String(action)} failed:`, err);
+				console.error(`[otta] admin custom action ${String(action)} failed:`, err);
 				const toast = {
 					message: "Action outcome unknown — re-check the record",
 					type: "error" as const,
@@ -604,7 +604,7 @@ function createDispatcher<RenderState>(
 				try {
 					fallbackBlocks = (await rootList()).blocks;
 				} catch (fallbackErr) {
-					console.error("[urumi] admin custom action fallback render failed:", fallbackErr);
+					console.error("[otta] admin custom action fallback render failed:", fallbackErr);
 					fallbackBlocks = [];
 				}
 				return { blocks: [noticeBanner(ACTION_OUTCOME_UNKNOWN), ...fallbackBlocks], toast };

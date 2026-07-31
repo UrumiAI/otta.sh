@@ -2,20 +2,22 @@
 
 ## Supported versions
 
-Urumi is pre-1.0. Only `main` / the latest published version is supported; there are no LTS
+Otta is pre-1.0. Only `main` / the latest published version is supported; there are no LTS
 branches yet.
 
 ## Reporting a vulnerability
 
 Please report suspected security vulnerabilities **privately** — do not open a public
-GitHub issue. Email **vedanshu@urumi.ai** with details and, if possible, steps to reproduce.
+GitHub issue. Email **vedanshu@urumi.ai** with details and, if possible, steps to
+reproduce. You can also use GitHub's private vulnerability reporting on this repository:
+[**Report a vulnerability**](https://github.com/UrumiAI/otta.sh/security/advisories/new).
 
 This is a solo-maintainer project, so response times are best-effort, not SLA'd:
 acknowledgement within a few business days is a reasonable expectation, not a commitment.
 
 ## Scope
 
-Because Urumi is a commerce/money system, correctness bugs that break its core invariants
+Because Otta is a commerce/money system, correctness bugs that break its core invariants
 are in scope even if they don't look like a classic vulnerability — for example, a race that
 lets a buyer oversell stock, double-charge, or otherwise defeat idempotency. See
 [`DEVELOPMENT.md` §4](./DEVELOPMENT.md#4-commerce-invariants-rules-emdash-doesnt-need) for

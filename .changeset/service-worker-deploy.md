@@ -1,13 +1,13 @@
 ---
-"@urumi/service": minor
-"@urumi/store-postgres": minor
+"@otta-sh/service": minor
+"@otta-sh/store-postgres": minor
 ---
 
-Cloudflare Worker deploy entry for `@urumi/service`, plus the sqlite-free
-`@urumi/store-postgres/pg` subpath it bundles from. Additive — the Node entry
+Cloudflare Worker deploy entry for `@otta-sh/service`, plus the sqlite-free
+`@otta-sh/store-postgres/pg` subpath it bundles from. Additive — the Node entry
 and every existing consumer are behavior-identical.
 
-- **`@urumi/service/worker`** (`src/worker.ts`): `createWorker(overrides?)`
+- **`@otta-sh/service/worker`** (`src/worker.ts`): `createWorker(overrides?)`
   factory returning `{ fetch, scheduled }`, with `export default
   createWorker()` for wrangler. Per-event pg Pool/Kysely/stores/app
   (`{ max: 5, idleTimeoutMillis: 0 }`, destroyed via `ctx.waitUntil` in a
@@ -68,7 +68,7 @@ and every existing consumer are behavior-identical.
   Hyperdrive binding `HYPERDRIVE` (no `PG_CONNECTION_STRING` secret on
   Workers), cron `*/15 * * * *` (janitor only — hold expiry stays
   lazy-on-read).
-- **`@urumi/store-postgres/pg`**: sqlite-free subpath re-exporting the pg
+- **`@otta-sh/store-postgres/pg`**: sqlite-free subpath re-exporting the pg
   dialect factories, all six Kysely stores (incl. the Phase 4
   order/entitlement/payment-event stores), `migrateToLatest`, `uuidIdGen`
   (now in `src/id-gen.ts`), and the schema types — nothing that touches the

@@ -30,7 +30,7 @@ import {
 	STOREFRONT_PRODUCT_ROUTE,
 	type PdpRouteResult,
 	type ProductViewModel,
-} from "@urumi/plugin";
+} from "@otta-sh/plugin";
 import { getEmDashEntry } from "emdash";
 import { safeJsonLdSerialize } from "emdash/page";
 import { getPublicPluginApiRouteHandler } from "emdash/plugin-utils";
@@ -42,7 +42,7 @@ import StockRule from "../../components/StockRule.astro";
 import Base from "../../layouts/Base.astro";
 import { cartErrorMessage } from "../../lib/error-messages.js";
 import { toCmsProductContent, type ProductEntryData } from "../../lib/products.js";
-import { dispatchUrumiRoute } from "../../lib/urumi-api.js";
+import { dispatchOttaRoute } from "../../lib/otta-api.js";
 
 const { slug } = Astro.params;
 if (slug === undefined) return Astro.redirect("/products");
@@ -120,7 +120,7 @@ const content = entry !== null ? toCmsProductContent(entry.data as unknown as Pr
 
 const result =
 	content !== null
-		? await dispatchUrumiRoute<PdpRouteResult>(
+		? await dispatchOttaRoute<PdpRouteResult>(
 				getPublicPluginApiRouteHandler(Astro.locals),
 				STOREFRONT_PRODUCT_ROUTE,
 				{ content },
@@ -307,7 +307,7 @@ const soldOut = product?.availability === "out_of_stock";
 										    useful part.
 
 										    The figure states the shipped DEFAULT:
-										    `DEFAULT_HOLD_TTL_MS` in @urumi/domain is 15
+										    `DEFAULT_HOLD_TTL_MS` in @otta-sh/domain is 15
 										    minutes, and the service's only override is the
 										    `CART_HOLD_TTL_MS` env var — the admin's
 										    `holdTtlMinutes` setting is persisted but not

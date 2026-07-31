@@ -1,8 +1,8 @@
 ---
-"@urumi/domain": minor
-"@urumi/store-postgres": minor
-"@urumi/service": minor
-"@urumi/plugin": minor
+"@otta-sh/domain": minor
+"@otta-sh/store-postgres": minor
+"@otta-sh/service": minor
+"@otta-sh/plugin": minor
 ---
 
 Cancel an order WITH a structured reason (detail optional), and make the cancelled-

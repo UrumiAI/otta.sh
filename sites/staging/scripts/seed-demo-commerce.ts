@@ -39,7 +39,7 @@
  * `id` is not the stored id.** em-dash's seed applier generates a ULID for every
  * entry and keeps the declared id only as a seed-local reference
  * (`seedIdMap: seed id -> real entry id`, `packages/core/src/seed/apply.ts`), so
- * `product:urumi-tee` never exists in the content database. Addressing the
+ * `product:otta-tee` never exists in the content database. Addressing the
  * commerce service with it "succeeds" — `PUT …/commerce` mints a row for any id
  * — and creates three ORPHAN rows no CMS product will ever join to, leaving the
  * storefront showing "Not currently available for purchase" with no error
@@ -94,10 +94,10 @@ export interface DemoRow extends DemoPricing {
  * the seed fails loudly instead of quietly shipping an unbuyable product.
  */
 export const DEMO_PRICING: Record<string, DemoPricing> = {
-	"urumi-tee": { sku: "URUMI-TEE", price: { amount: 3200, currency: "USD" }, initialOnHand: 25 },
-	"urumi-mug": { sku: "URUMI-MUG", price: { amount: 1800, currency: "USD" }, initialOnHand: 40 },
-	"urumi-stickers": {
-		sku: "URUMI-STICKERS",
+	"otta-tee": { sku: "OTTA-TEE", price: { amount: 3200, currency: "USD" }, initialOnHand: 25 },
+	"otta-mug": { sku: "OTTA-MUG", price: { amount: 1800, currency: "USD" }, initialOnHand: 40 },
+	"otta-stickers": {
+		sku: "OTTA-STICKERS",
 		price: { amount: 600, currency: "USD" },
 		initialOnHand: 100,
 	},
@@ -190,7 +190,7 @@ export function priceBody(row: DemoRow): Record<string, unknown> {
  * cannot help either: this body deliberately carries no `contentUpdatedAt`.
  *
  * Unguarded, that is the F4 clobber class this release exists to eliminate,
- * re-introduced by the quickstart script — a merchant reprices `urumi-tee` to
+ * re-introduced by the quickstart script — a merchant reprices `otta-tee` to
  * $50, someone re-runs the script to add a fourth demo product, and the tee
  * silently reverts to $32 with its sku and title reset. `shouldPrice` is the
  * actual guard.
@@ -297,7 +297,7 @@ function trimUrl(value: string): string {
 async function cmsAuthHeaders(siteUrl: string): Promise<Record<string, string>> {
 	const token = process.env["EMDASH_TOKEN"];
 	if (token !== undefined && token.length > 0) {
-		console.info("[urumi] reading the CMS with EMDASH_TOKEN");
+		console.info("[otta] reading the CMS with EMDASH_TOKEN");
 		return { Authorization: `Bearer ${token}` };
 	}
 	// DEV-ONLY fallback: `/_emdash/api/auth/dev-bypass`, which signs in as the dev
@@ -316,7 +316,7 @@ async function cmsAuthHeaders(siteUrl: string): Promise<Record<string, string>> 
 			`no EMDASH_TOKEN set and the dev auth bypass at ${siteUrl} returned no session cookie (HTTP ${res.status}${res.status === 403 ? " — that route is development-only" : ""}). On a deployed site, create an API token in the admin and set EMDASH_TOKEN.`,
 		);
 	}
-	console.info("[urumi] reading the CMS via the dev auth bypass (no EMDASH_TOKEN set)");
+	console.info("[otta] reading the CMS via the dev auth bypass (no EMDASH_TOKEN set)");
 	return { Cookie: cookies.join("; ") };
 }
 
@@ -504,7 +504,7 @@ async function main(): Promise<void> {
 	const slugs = seededProductSlugs(seedPath);
 	const page = await fetchCmsProducts(siteUrl, await cmsAuthHeaders(siteUrl));
 	const rows = demoRows(slugs, page);
-	console.info(`[urumi] ${rows.length} demo product(s) against ${serviceUrl}`);
+	console.info(`[otta] ${rows.length} demo product(s) against ${serviceUrl}`);
 
 	let priced = 0;
 	let skipped = 0;
@@ -516,18 +516,18 @@ async function main(): Promise<void> {
 			stranded.push(row.slug);
 			// `warn`, not `info` — this one needs a human.
 			console.warn(
-				`[urumi]   ${where} — SKIPPED, ${outcome.reason}. It will NOT appear in the storefront. This script does not activate a product it did not price (that would publish a product you may have deliberately left unpublished). Publish it in the CMS, or activate it from Pricing & inventory.`,
+				`[otta]   ${where} — SKIPPED, ${outcome.reason}. It will NOT appear in the storefront. This script does not activate a product it did not price (that would publish a product you may have deliberately left unpublished). Publish it in the CMS, or activate it from Pricing & inventory.`,
 			);
 			continue;
 		}
 		if (outcome.kind === "skipped") {
 			skipped++;
-			console.info(`[urumi]   ${where} — SKIPPED, ${outcome.reason}; left untouched`);
+			console.info(`[otta]   ${where} — SKIPPED, ${outcome.reason}; left untouched`);
 			continue;
 		}
 		priced++;
 		console.info(
-			`[urumi]   ${where} — ${row.sku}, ${row.price.amount} ${row.price.currency} minor units, ${row.initialOnHand} on hand${outcome.activated ? ", activated" : " (already active)"}`,
+			`[otta]   ${where} — ${row.sku}, ${row.price.amount} ${row.price.currency} minor units, ${row.initialOnHand} on hand${outcome.activated ? ", activated" : " (already active)"}`,
 		);
 	}
 
@@ -536,14 +536,14 @@ async function main(): Promise<void> {
 	// exactly what the old "left as-is" wording papered over.
 	if (stranded.length > 0) {
 		console.warn(
-			`[urumi] done — ${priced} priced, ${skipped} left as-is, and ${stranded.length} PRICED BUT NOT ACTIVE and therefore not on sale: ${stranded.join(", ")}. See the lines above.`,
+			`[otta] done — ${priced} priced, ${skipped} left as-is, and ${stranded.length} PRICED BUT NOT ACTIVE and therefore not on sale: ${stranded.join(", ")}. See the lines above.`,
 		);
 		return;
 	}
 	console.info(
 		skipped === 0
-			? `[urumi] done — ${priced} demo product(s) priced, stocked and buyable.`
-			: `[urumi] done — ${priced} priced, ${skipped} left as-is (already priced and active; this script never overwrites a price you set).`,
+			? `[otta] done — ${priced} demo product(s) priced, stocked and buyable.`
+			: `[otta] done — ${priced} priced, ${skipped} left as-is (already priced and active; this script never overwrites a price you set).`,
 	);
 }
 
@@ -553,7 +553,7 @@ async function main(): Promise<void> {
 // the whole script into a silent no-op.
 if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
 	main().catch((err: unknown) => {
-		console.error("[urumi] seed-demo-commerce failed:", err);
+		console.error("[otta] seed-demo-commerce failed:", err);
 		process.exitCode = 1;
 	});
 }

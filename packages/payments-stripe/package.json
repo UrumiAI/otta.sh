@@ -1,7 +1,7 @@
 {
-	"name": "@urumi/payments-stripe",
+	"name": "@otta-sh/payments-stripe",
 	"version": "0.0.1",
-	"description": "Stripe PaymentGateway adapter for Urumi — async-webhook confirmation with raw-body HMAC verification. Secrets are service-env only.",
+	"description": "Stripe PaymentGateway adapter for Otta — async-webhook confirmation with raw-body HMAC verification. Secrets are service-env only.",
 	"homepage": "https://github.com/UrumiAI/otta.sh#readme",
 	"bugs": {
 		"url": "https://github.com/UrumiAI/otta.sh/issues"
@@ -31,7 +31,7 @@
 		"build": "tsdown"
 	},
 	"dependencies": {
-		"@urumi/domain": "workspace:*"
+		"@otta-sh/domain": "workspace:*"
 	},
 	"devDependencies": {
 		"@types/node": "catalog:",

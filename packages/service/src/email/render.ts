@@ -1,4 +1,4 @@
-import type { EmailTemplate } from "@urumi/domain";
+import type { EmailTemplate } from "@otta-sh/domain";
 
 export interface RenderedEmail {
 	subject: string;

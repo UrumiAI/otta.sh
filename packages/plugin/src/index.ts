@@ -1,4 +1,4 @@
-// Public barrel of @urumi/plugin — the CommerceClient transport port, the
+// Public barrel of @otta-sh/plugin — the CommerceClient transport port, the
 // admin/storefront page handlers, and the manifest constants the sandbox-
 // clean guard test asserts against.
 //
@@ -119,9 +119,9 @@ export {
 	COMMERCE_SERVICE_BASE_URL,
 	SERVICE_TOKEN_KEY,
 	serviceTokenFromKv,
-	URUMI_PLUGIN_CAPABILITIES,
-	URUMI_PLUGIN_ID,
-	URUMI_PLUGIN_VERSION,
+	OTTA_PLUGIN_CAPABILITIES,
+	OTTA_PLUGIN_ID,
+	OTTA_PLUGIN_VERSION,
 } from "./manifest.js";
 export {
 	CommerceClientError,

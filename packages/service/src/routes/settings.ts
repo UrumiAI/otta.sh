@@ -4,7 +4,7 @@ import {
 	InvalidSettingsError,
 	type SettingsStore,
 	updateSettings,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import { Hono } from "hono";
 import { settingsBody } from "../schemas.js";
 import { requireInternalToken } from "./internal-auth.js";

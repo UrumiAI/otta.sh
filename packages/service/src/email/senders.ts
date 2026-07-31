@@ -1,4 +1,4 @@
-import type { EmailSender, SendEmailInput } from "@urumi/domain";
+import type { EmailSender, SendEmailInput } from "@otta-sh/domain";
 import { renderEmail } from "./render.js";
 
 /**
@@ -6,7 +6,7 @@ import { renderEmail } from "./render.js";
  * directly (the §6 draft ADR — not EmDash's `email:send`), so these live here,
  * service-side. Both render via `renderEmail`; the transport differs.
  *
- * `FakeEmailSender` (in `@urumi/domain/testing`) remains the CI gate for the
+ * `FakeEmailSender` (in `@otta-sh/domain/testing`) remains the CI gate for the
  * outbox contract (exactly-once enqueue + claim, at-least-once delivery —
  * effectively-once only once a provider's `Idempotency-Key` dedupes it); these
  * are the real transports a deployment picks.

@@ -3,7 +3,7 @@ import {
 	FixedClock,
 	InMemoryOrderNotesStore,
 	orderNotesStoreContract,
-} from "@urumi/domain/testing";
+} from "@otta-sh/domain/testing";
 
 // orderNotesStoreContract against the in-memory fake — the first adapter, proving
 // the suite is real and the OrderNotesStore port shape is right before any DB

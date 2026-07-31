@@ -1,8 +1,8 @@
 ---
-"@urumi/domain": minor
-"@urumi/store-postgres": minor
-"@urumi/service": minor
-"@urumi/plugin": minor
+"@otta-sh/domain": minor
+"@otta-sh/store-postgres": minor
+"@otta-sh/service": minor
+"@otta-sh/plugin": minor
 ---
 
 Surface the customer behind an order on the admin order detail (admin-UX Increment 1,

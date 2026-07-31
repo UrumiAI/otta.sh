@@ -1,5 +1,5 @@
 ---
-"@urumi/plugin": patch
+"@otta-sh/plugin": patch
 ---
 
 Extract a reusable admin list/detail scaffold from the Orders console (admin-UX

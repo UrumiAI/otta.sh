@@ -1,7 +1,7 @@
 {
-	"name": "@urumi/store-postgres",
+	"name": "@otta-sh/store-postgres",
 	"version": "0.0.1",
-	"description": "Kysely-backed store adapters for Urumi — dialect-parameterized over better-sqlite3 (local) and pg (CI/prod).",
+	"description": "Kysely-backed store adapters for Otta — dialect-parameterized over better-sqlite3 (local) and pg (CI/prod).",
 	"homepage": "https://github.com/UrumiAI/otta.sh#readme",
 	"bugs": {
 		"url": "https://github.com/UrumiAI/otta.sh/issues"
@@ -41,7 +41,7 @@
 		"build": "tsdown"
 	},
 	"dependencies": {
-		"@urumi/domain": "workspace:*",
+		"@otta-sh/domain": "workspace:*",
 		"better-sqlite3": "catalog:",
 		"kysely": "catalog:",
 		"pg": "catalog:"

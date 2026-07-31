@@ -6,7 +6,7 @@ import {
 	type CustomerStore,
 	type OrderStore,
 	type SessionStore,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import { type Context, Hono } from "hono";
 import {
 	addressPathParams,

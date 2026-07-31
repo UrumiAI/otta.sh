@@ -1,8 +1,8 @@
 ---
-"@urumi/domain": minor
-"@urumi/store-postgres": minor
-"@urumi/service": minor
-"@urumi/plugin": minor
+"@otta-sh/domain": minor
+"@otta-sh/store-postgres": minor
+"@otta-sh/service": minor
+"@otta-sh/plugin": minor
 ---
 
 Increment 3 closeout slice — three small, independently-motivated fixes the
@@ -41,6 +41,6 @@ admin surface is done:
    violation.
 3. **Staging descriptor nav** (`#72`/`#73` finding). Tax, Shipping, and
    Coupons all shipped working admin screens in prior slices but were never
-   added to `sites/staging/src/urumi-plugin-descriptor.ts`'s `adminPages` —
+   added to `sites/staging/src/otta-plugin-descriptor.ts`'s `adminPages` —
    each was fully wired yet unreachable from the admin nav. Added, pinned by
    `site-config.test.ts`.

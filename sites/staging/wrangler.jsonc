@@ -1,4 +1,4 @@
-// Urumi storefront Worker — TEMPLATE (plan D5). This tracked file carries
+// Otta storefront Worker — TEMPLATE (plan D5). This tracked file carries
 // PLACEHOLDER resource values: copy it to `wrangler.local.jsonc` (gitignored)
 // — or edit this file in place — and fill in YOUR Worker name, D1 database
 // name/id, and R2 bucket (see the root DEPLOYMENT.md §3.2 runbook).
@@ -11,7 +11,7 @@
 // Structure mirrors em-dash's templates/starter-cloudflare/wrangler.jsonc
 // MINUS `worker_loaders`: the LOADER binding is consumed only by the plugin
 // sandbox runner and flips the account onto Workers Paid; this deployment
-// runs the Urumi plugin trusted in-process instead (ADR-0006).
+// runs the Otta plugin trusted in-process instead (ADR-0006).
 //
 // Secrets are NEVER committed here. Post-merge:
 //   npx emdash secrets generate && wrangler secret put EMDASH_ENCRYPTION_KEY
@@ -19,7 +19,7 @@
 	"$schema": "node_modules/wrangler/config-schema.json",
 	// PLACEHOLDER — your Worker name (pick one that cannot collide with any
 	// existing Worker on your account).
-	"name": "my-urumi-store",
+	"name": "my-otta-store",
 	"main": "./src/worker.ts",
 	"compatibility_date": "2026-02-24",
 	// `global_fetch_strictly_public` is REQUIRED here (deploy-verified):

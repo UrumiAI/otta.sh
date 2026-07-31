@@ -1,5 +1,5 @@
 ---
-"@urumi/plugin": patch
+"@otta-sh/plugin": patch
 ---
 
 Rework the admin "Product data" pricing widget from a broken button-bearing
@@ -58,4 +58,4 @@ in the field JSON. Re-reading the widget is therefore not a source of truth for
 current commercial state.
 
 The plugin stays sandbox-clean (service only via `ctx.http` + `allowedHosts`,
-write-gate token unchanged) and never imports `@urumi/domain`.
+write-gate token unchanged) and never imports `@otta-sh/domain`.

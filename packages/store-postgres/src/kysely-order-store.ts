@@ -48,7 +48,7 @@ import {
 	type RefundStatus,
 	type ResolveReconciliationInput,
 	type ResolveReconciliationStoreResult,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import {
 	type Expression,
 	expressionBuilder,

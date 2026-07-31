@@ -6,7 +6,7 @@
 
 ## Context
 
-ADR-0001 splits Urumi into a sandbox-clean plugin and a separate commerce service
+ADR-0001 splits Otta into a sandbox-clean plugin and a separate commerce service
 because the EmDash plugin sandbox exposes **no atomic/CAS write, no DB-enforced unique
 constraint, no cross-call transaction, and no DDL** — verified against source
 (`ctx.storage` is a shared `_plugin_storage` JSON document store whose only write is an
@@ -33,12 +33,12 @@ Two things stay true regardless:
 
 ## Decision
 
-Build Urumi as a **host-agnostic commerce domain behind two ports**, so the transport
+Build Otta as a **host-agnostic commerce domain behind two ports**, so the transport
 (plugin↔authority) and the storage (domain↔database) are each swappable adapters. The
 plugin/service split becomes a **wiring choice per deployment, not a structural
 commitment.**
 
-1. **Domain package (`@urumi/domain`)** — pure TypeScript commerce logic (inventory
+1. **Domain package (`@otta-sh/domain`)** — pure TypeScript commerce logic (inventory
    reserve/commit/release, cart, checkout, orders, pricing, entitlements). **Zero IO
    dependencies:** no `pg`, no `ctx`, no HTTP framework. Depends only on port interfaces.
    This is the artifact that runs in the service today and inside the plugin tomorrow,
@@ -59,7 +59,7 @@ commitment.**
 3. **Transport seam** — storefront routes and the Block Kit widget depend on a
    `CommerceClient` interface, **never on `fetch`**. Adapters:
    - `HttpCommerceClient` — today (calls the service over `ctx.http` + `allowedHosts`).
-   - `InProcessCommerceClient` — future (imports `@urumi/domain` directly).
+   - `InProcessCommerceClient` — future (imports `@otta-sh/domain` directly).
 
    The service's REST API is a **1:1 serialization of the port** and grows no semantics the
    port lacks, so the in-process swap is "call the method instead of POSTing to it."
@@ -73,7 +73,7 @@ commitment.**
    runs against **every** store adapter. A new adapter is "done" when it passes the
    existing suite. Mirrors EmDash's `describeEachDialect` ethos.
 
-**We ship ADR-0001's two-part design now:** `@urumi/service` (Node/Worker + Postgres)
+**We ship ADR-0001's two-part design now:** `@otta-sh/service` (Node/Worker + Postgres)
 wired with `PostgresStore`, and the plugin wired with `HttpCommerceClient`. The seams are
 present from day one so the future merge is an adapter, not a migration.
 

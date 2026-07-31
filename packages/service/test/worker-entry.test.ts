@@ -1,4 +1,4 @@
-import type { makePostgresPool } from "@urumi/store-postgres/pg";
+import type { makePostgresPool } from "@otta-sh/store-postgres/pg";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { createWorker, type WorkerEnv } from "../src/worker.js";
 

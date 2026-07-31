@@ -1,4 +1,4 @@
-import { cancelOrder, currency, idempotencyKey, refundOrder, cents } from "@urumi/domain";
+import { cancelOrder, currency, idempotencyKey, refundOrder, cents } from "@otta-sh/domain";
 import type {
 	ClientAction,
 	ConfirmationResult,
@@ -8,8 +8,8 @@ import type {
 	RawConfirmation,
 	RefundInput,
 	RefundResult,
-} from "@urumi/domain";
-import { FakePaymentGateway } from "@urumi/domain/testing";
+} from "@otta-sh/domain";
+import { FakePaymentGateway } from "@otta-sh/domain/testing";
 import { afterEach, describe, expect, test } from "vitest";
 import { makePgRefundOrderStore, teardownOrderFlow } from "./order-harness.js";
 

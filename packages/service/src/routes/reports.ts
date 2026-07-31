@@ -7,7 +7,7 @@ import {
 	type ReportingStore,
 	ReportRangeTooWideError,
 	type SettingsStore,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import {

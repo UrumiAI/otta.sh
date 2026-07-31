@@ -12,9 +12,9 @@ fragments into EmDash-native content pages, or must PDP/PLP become plugin-owned 
 `emdash-platform-notes.md` had only recorded "`page:fragments` injects script/style/JSON-LD
 into public pages" without checking who is allowed to register it.
 
-## Verified finding: `page:fragments` is trusted-plugin-only — Urumi cannot use it
+## Verified finding: `page:fragments` is trusted-plugin-only — Otta cannot use it
 
-Urumi's plugin is, and must remain, a **sandboxed** plugin
+Otta's plugin is, and must remain, a **sandboxed** plugin
 (`CLAUDE.md`: "Dev/test against the workerd-on-Node sandbox, not trusted in-process mode").
 Source confirms sandboxed plugins are categorically excluded from `page:fragments`:
 

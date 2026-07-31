@@ -15,7 +15,7 @@
  * case this guard exists for: a buyer landing on `/checkout` with no cart at
  * all, which is far more common than the place-time race.
  */
-import type { CheckoutSummaryRouteResult } from "@urumi/plugin";
+import type { CheckoutSummaryRouteResult } from "@otta-sh/plugin";
 import { SERVICE_UNAVAILABLE } from "./cart-actions.js";
 
 export interface CheckoutRedirect {
@@ -26,7 +26,7 @@ export interface CheckoutRedirect {
 }
 
 /**
- * @param cartId the `urumi_cart` cookie's value, if any
+ * @param cartId the `otta_cart` cookie's value, if any
  * @param result the `storefront/checkout/summary` result — `null` when the
  *   dispatch itself failed (a stopped commerce service is an expected staging
  *   condition, never a crash)

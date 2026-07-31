@@ -11,8 +11,8 @@ import {
 	currency,
 	type CreateOrderInput,
 	type OrderId,
-} from "@urumi/domain";
-import { orderFulfillmentContract, type OrderTransitionHarness } from "@urumi/domain/testing";
+} from "@otta-sh/domain";
+import { orderFulfillmentContract, type OrderTransitionHarness } from "@otta-sh/domain/testing";
 import { afterEach, describe, expect, test } from "vitest";
 import { PG_ENABLED } from "./describe-each-dialect.js";
 import {

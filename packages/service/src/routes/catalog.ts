@@ -3,7 +3,7 @@ import {
 	productId,
 	type ProductCommerceStore,
 	type ProductCommerceView,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import { Hono } from "hono";
 import { commerceBatchBody } from "../schemas.js";
 

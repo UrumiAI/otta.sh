@@ -16,7 +16,7 @@ afterEach(async () => {
 });
 
 describe("workerd-on-Node sandbox harness (plan §6 step 1)", () => {
-	test("loads @urumi/plugin under workerd-on-Node and reaches a stub service only via ctx.http", async () => {
+	test("loads @otta-sh/plugin under workerd-on-Node and reaches a stub service only via ctx.http", async () => {
 		stub = await startStubCommerceServer();
 		stub.respondWith("GET", () => ({ status: 200, body: { ok: true, active: false } }));
 

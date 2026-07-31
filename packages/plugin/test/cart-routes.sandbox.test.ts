@@ -17,9 +17,9 @@ interface CommerceStubItem {
 
 /**
  * Phase 3 §7 step E1 — the plugin's storefront cart routes, exercised under
- * the REAL workerd sandbox against a stub `@urumi/service` (the same harness
+ * the REAL workerd sandbox against a stub `@otta-sh/service` (the same harness
  * the PDP/PLP sandbox tests use). Every cart route is a pure proxy over
- * `ctx.http` to `@urumi/service`'s `/carts` REST surface (cart-routes.ts):
+ * `ctx.http` to `@otta-sh/service`'s `/carts` REST surface (cart-routes.ts):
  * the sandbox bakes a single `allowedHost` (the stub), so the ONLY reachable
  * egress is the service — any other network/DB surface is structurally
  * unreachable, and the recorded stub requests ARE the plugin's full egress.
@@ -84,7 +84,7 @@ function matchCart(url: string): string | null {
 	return m ? decodeURIComponent(m[1]!) : null;
 }
 
-/** Install a faithful-enough fake of `@urumi/service`'s `/carts` routes
+/** Install a faithful-enough fake of `@otta-sh/service`'s `/carts` routes
  *  across all four verbs (the stub keys responders by method; each branches
  *  on the request URL). Mirrors `routes/carts.ts`'s wire shapes 1:1. */
 function installFakeCartService(): void {
@@ -208,7 +208,7 @@ describe("storefront cart routes (workerd sandbox)", () => {
 		// The cookie INTENT the plugin cannot itself enact (module doc): a
 		// descriptor the first-party theme applies on its own response.
 		expect(result["cookie"]).toMatchObject({
-			name: "urumi_cart",
+			name: "otta_cart",
 			value: result["cartId"],
 			httpOnly: true,
 			secure: true,

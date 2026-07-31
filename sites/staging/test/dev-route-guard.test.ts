@@ -116,7 +116,7 @@ describe("the styleguide route — every branch it draws is reachable", () => {
 
 describe("the styleguide route — housekeeping", () => {
 	test("makes no commerce call — a styleguide cannot rot against the service", () => {
-		expect(source).not.toContain("dispatchUrumiRoute");
+		expect(source).not.toContain("dispatchOttaRoute");
 		expect(source).not.toContain("getPublicPluginApiRouteHandler");
 	});
 

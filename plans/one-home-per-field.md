@@ -1,6 +1,6 @@
 # Plan — "one home per field"
 
-Branch: `refactor/commerce-bag-single-home` (worktree `/home/azureuser/urumi-wt-commerce-bag`,
+Branch: `refactor/commerce-bag-single-home` (worktree `/home/azureuser/otta-wt-commerce-bag`,
 branched from `origin/main` @ `1413ca9`).
 Status: **plan only** — no source edits in this worktree.
 Revision 3. Revision 1 was reviewed by two principal engineers (both REQUEST CHANGES on the
@@ -42,7 +42,7 @@ surface, a `lineTitles` checkout wire, a cross-store search rework, and a forwar
 `DROP COLUMN`. **All of that is rejected and out of scope.** The reason is a capability gap,
 established empirically by a spike against real workerd and the real EmDash bridge:
 
-- **The capability blocker people expected did not apply.** Urumi does not deploy sandboxed — it
+- **The capability blocker people expected did not apply.** Otta does not deploy sandboxed — it
   registers **trusted in-process** per ADR-0006 (`sites/staging/src/emdash-options.ts:12-16`,
   which deliberately declares no `sandboxed:` and no `sandboxRunner:`), and on that path
   `ctx.content` is available today with the canonical `content:read` the manifest already
@@ -99,7 +99,7 @@ engineer sees a denormalised column beside an admin form conspicuously missing a
 (`packages/plugin/src/admin/product-data-widget.ts:72-134`) declares ten inline inputs whose
 `action_id`s key a JSON bag; bound to the products collection's `commerce` json field at
 `sites/staging/seed/seed.json:39-44`; registered at
-`sites/staging/src/urumi-plugin-descriptor.ts:46`; persisted by the editor's native Save to
+`sites/staging/src/otta-plugin-descriptor.ts:46`; persisted by the editor's native Save to
 `content.data.commerce`; validated at
 `packages/plugin/src/product-commerce/parse-commerce-fields.ts:100-160`; derived into an upsert at
 `packages/plugin/src/sync/hooks.ts:171-184`.
@@ -368,7 +368,7 @@ inventory policy.
 4. `packages/plugin/src/index.ts:4` — remove the
    `buildProductDataElements, productDataWidget` export, and fix the barrel header at `:1-3`,
    which advertises "the widget's pure element-builder".
-5. `sites/staging/src/urumi-plugin-descriptor.ts` — remove the import, the `fieldWidgets` property
+5. `sites/staging/src/otta-plugin-descriptor.ts` — remove the import, the `fieldWidgets` property
    (`:46`) and the comment at `:40-45`. Drop the `FieldWidgetConfig` import if now unused.
 6. `sites/staging/seed/seed.json` — delete the `commerce` field object (`:39-44`) and rewrite
    `meta.description` (`:6`), which advertises the widget.
@@ -568,8 +568,8 @@ followed the deployment guide will have set it.
 **Write it as a script under `sites/staging/`, not as curls in the README**, and **derive the
 three content ids from `seed/seed.json`** rather than hard-coding them. Hard-coded ids drift
 silently and reproduce the empty page this section exists to prevent; reading them from the seed
-makes drift fail loudly. (The current ids are `product:urumi-tee`, `product:urumi-mug`,
-`product:urumi-stickers` — `seed/seed.json:62,71,80` — but the script should not know that.)
+makes drift fail loudly. (The current ids are `product:otta-tee`, `product:otta-mug`,
+`product:otta-stickers` — `seed/seed.json:62,71,80` — but the script should not know that.)
 
 That restores the quickstart to "boot, seed, browse, **buy**", and it exercises the integrator
 path we are keeping alive, which is a bonus.
@@ -845,7 +845,7 @@ row, then `POST /products/:id/restock` succeeds. Must be an HTTP test — the wi
   `sandbox-clean-guard.test.ts` and `site-config.test.ts:64`. **No coverage loss.**
 - `sites/staging/test/seed.test.ts:108,118,125` — the widget binding, the editor mount, and
   "an unbound json field falls back to the default editor". Note that `:125` tests an *EmDash*
-  behaviour Urumi no longer relies on — **but it is exactly what a stale field will now do on an
+  behaviour Otta no longer relies on — **but it is exactly what a stale field will now do on an
   existing site (§4.6)**, so quote it in the upgrade note even as the test goes.
 - `sites/staging/test/site-config.test.ts:72` — replaced by the inverse (the descriptor declares
   **no** field widgets), so a reintroduction is caught. **No coverage loss.**
@@ -964,8 +964,8 @@ row, then `POST /products/:id/restock` succeeds. Must be an HTTP test — the wi
 
 ## 8. Verification
 
-Local Postgres: **`postgres://postgres:postgres@127.0.0.1:55432/urumi_test`** (container
-`urumi-pg-test`, confirmed listening; documented at `sites/staging/README.md:21`).
+Local Postgres: **`postgres://postgres:postgres@127.0.0.1:55432/otta_test`** (container
+`otta-pg-test`, confirmed listening; documented at `sites/staging/README.md:21`).
 **Port 5432 tunnels to a production Azure database and must never appear in any command, test,
 migration or script.** `vitest.config.ts:16` serialises test files whenever
 `PG_CONNECTION_STRING` is set — the no-oversell race alone opens ~54 connections.
@@ -973,9 +973,9 @@ migration or script.** `vitest.config.ts:16` serialises test files whenever
 **Baseline, recorded in the first PR:**
 
 ```bash
-cd /home/azureuser/urumi-wt-commerce-bag
+cd /home/azureuser/otta-wt-commerce-bag
 pnpm install && pnpm lint && pnpm typecheck && pnpm test
-PG_CONNECTION_STRING=postgres://postgres:postgres@127.0.0.1:55432/urumi_test pnpm test
+PG_CONNECTION_STRING=postgres://postgres:postgres@127.0.0.1:55432/otta_test pnpm test
 ```
 
 **Every merge:**
@@ -983,13 +983,13 @@ PG_CONNECTION_STRING=postgres://postgres:postgres@127.0.0.1:55432/urumi_test pnp
 ```bash
 pnpm lint            # oxlint + the domain-purity dependency-cruiser check
 pnpm typecheck && pnpm format && pnpm test
-PG_CONNECTION_STRING=postgres://postgres:postgres@127.0.0.1:55432/urumi_test pnpm test
+PG_CONNECTION_STRING=postgres://postgres:postgres@127.0.0.1:55432/otta_test pnpm test
 ```
 
 **1a additionally:**
 
 ```bash
-PG_CONNECTION_STRING=postgres://postgres:postgres@127.0.0.1:55432/urumi_test \
+PG_CONNECTION_STRING=postgres://postgres:postgres@127.0.0.1:55432/otta_test \
   pnpm vitest run packages/domain/test/product-commerce-use-cases.test.ts \
                   packages/service/test/admin-restock-http.test.ts \
                   packages/store-postgres/test/no-oversell.pg.test.ts \
@@ -999,7 +999,7 @@ PG_CONNECTION_STRING=postgres://postgres:postgres@127.0.0.1:55432/urumi_test \
 **1b additionally:**
 
 ```bash
-PG_CONNECTION_STRING=postgres://postgres:postgres@127.0.0.1:55432/urumi_test \
+PG_CONNECTION_STRING=postgres://postgres:postgres@127.0.0.1:55432/otta_test \
   pnpm vitest run packages/domain/test/product-commerce-store-contract.fake.test.ts \
                   packages/store-postgres/test/product-commerce-store-contract.dialects.test.ts
 pnpm vitest run packages/plugin/test/sync-hooks.sandbox.test.ts \
@@ -1040,7 +1040,7 @@ asserting it would fail.
 **1c additionally:**
 
 ```bash
-PG_CONNECTION_STRING=postgres://postgres:postgres@127.0.0.1:55432/urumi_test \
+PG_CONNECTION_STRING=postgres://postgres:postgres@127.0.0.1:55432/otta_test \
   pnpm vitest run packages/domain/test/orders/product-edit-snapshot-regression.test.ts \
                   packages/service/test/admin-product-edit-http.test.ts \
                   packages/domain/test/product-commerce-store-contract.fake.test.ts \
@@ -1091,8 +1091,8 @@ the **deprecated** capability spellings — `:246` gates `http/fetch` on `networ
 (`packages/plugin-types/src/index.ts:107-162` → `packages/core/src/plugins/adapt-sandbox-entry.ts:262`
 → `packages/workerd/src/sandbox/runner.ts:627`), and EmDash's own comment at
 `packages/core/src/plugins/context.ts:1093-1095` states deprecated names never appear downstream.
-**This does not affect Urumi's shipping deployment**, which registers trusted in-process
-(ADR-0006, `sites/staging/src/emdash-options.ts:12-16`), and it does not affect Urumi's own test
+**This does not affect Otta's shipping deployment**, which registers trusted in-process
+(ADR-0006, `sites/staging/src/emdash-options.ts:12-16`), and it does not affect Otta's own test
 harness, which hand-builds `ctx` (`packages/plugin/src/sandbox-entry.ts:121-123`) and never
 touches EmDash's capnp bridge. But CLAUDE.md and DEVELOPMENT.md §5 name the workerd sandbox as the
 **binding contract**, so if the analysis holds, a sandboxed deployment of this plugin would get no
@@ -1169,8 +1169,8 @@ because an ADR states the current architecture. Recorded in §4.8.
 > which files 1b actually fixed. The phase-plan half of this pushback stands.
 
 **10.3a — And a third citation in this plan was wrong.** §4.7 says to "derive the three content
-ids from `seed/seed.json`" and names `product:urumi-tee` / `product:urumi-mug` /
-`product:urumi-stickers` at `seed/seed.json:62,71,80`. Those strings are in the file, but they are
+ids from `seed/seed.json`" and names `product:otta-tee` / `product:otta-mug` /
+`product:otta-stickers` at `seed/seed.json:62,71,80`. Those strings are in the file, but they are
 **not the stored ids**: em-dash's seed applier generates a ULID per entry and keeps the declared id
 only as a seed-local reference (`seedIdMap: seed id -> real entry id`,
 `~/em-dash/packages/core/src/seed/apply.ts:116,535,543,606`). Pricing against the declared id

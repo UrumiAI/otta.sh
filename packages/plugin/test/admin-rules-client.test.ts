@@ -7,12 +7,12 @@ const PG = process.env.PG_CONNECTION_STRING;
 /**
  * The client-side contract for the rules admin surface (admin-UX Increment 3):
  * the SAME create/read/update/delete cases the domain + service suites cover,
- * run against `AdminRulesClient` over a LIVE `@urumi/service` (Postgres-backed)
+ * run against `AdminRulesClient` over a LIVE `@otta-sh/service` (Postgres-backed)
  * — proving the wire format has not drifted from the ports and the discriminated
  * results map every 200/404/409 correctly. Both tokens are threaded so the write
  * gate + admin gate are exercised end-to-end.
  */
-describe.skipIf(PG === undefined)("AdminRulesClient [live @urumi/service, Postgres]", () => {
+describe.skipIf(PG === undefined)("AdminRulesClient [live @otta-sh/service, Postgres]", () => {
 	let service: LiveService;
 	let client: AdminRulesClient;
 

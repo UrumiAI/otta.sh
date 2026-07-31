@@ -1,4 +1,4 @@
-import { sessionContract } from "@urumi/domain/testing";
+import { sessionContract } from "@otta-sh/domain/testing";
 import { afterEach, describe } from "vitest";
 import { PG_ENABLED } from "./describe-each-dialect.js";
 import {

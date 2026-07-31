@@ -1,14 +1,14 @@
 ---
-"@urumi/plugin": minor
+"@otta-sh/plugin": minor
 ---
 
-Phase 3 (Wave 3) — storefront cart: the `@urumi/plugin` half the service-side
+Phase 3 (Wave 3) — storefront cart: the `@otta-sh/plugin` half the service-side
 Phase 3 changeset deferred.
 
 - Adds five plugin-owned **public** storefront cart routes (workerd
   sandbox-clean, per ADR-0003) — `storefront/cart/create`, `.../cart/read`, and
   `.../cart/lines/{add,update,remove}` — each a pure proxy over `ctx.http` to
-  `@urumi/service`'s `/carts` REST surface. The plugin holds no cart or stock
+  `@otta-sh/service`'s `/carts` REST surface. The plugin holds no cart or stock
   state: input is hand-validated (the routes are public), forwarded with the
   caller's `Idempotency-Key`, and the already-typed result is returned verbatim.
   Typed cart outcomes (`OUT_OF_STOCK`, `CART_NOT_FOUND`, `LINE_NOT_FOUND`, …)
@@ -17,7 +17,7 @@ Phase 3 changeset deferred.
   end-to-end under the real workerd binary against a stub service.
 - Adds `HttpCommerceClient` cart methods (`createCart`, `getCart`, `addCartLine`,
   `adjustCartLine`, `removeCartLine`) — 1:1 mirrors of `routes/carts.ts`,
-  wire-tested against a live Postgres-backed `@urumi/service`.
+  wire-tested against a live Postgres-backed `@otta-sh/service`.
 - Fills the Phase 2 add-to-cart extension seam on the product view model: a
   purchasable product now carries a **Block Kit** add-to-cart affordance (a
   quantity stepper + submit button, not React), gated on the same `purchasable`

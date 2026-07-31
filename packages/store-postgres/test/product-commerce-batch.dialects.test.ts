@@ -1,5 +1,5 @@
-import { cents, currency, idempotencyKey, money, productId, sku } from "@urumi/domain";
-import { FixedClock } from "@urumi/domain/testing";
+import { cents, currency, idempotencyKey, money, productId, sku } from "@otta-sh/domain";
+import { FixedClock } from "@otta-sh/domain/testing";
 import type {
 	KyselyPlugin,
 	PluginTransformQueryArgs,

@@ -15,7 +15,7 @@
 				"no-underscore-dangle": [
 					"error",
 					{
-						"allow": ["__URUMI_COMMERCE_SERVICE_URL__"]
+						"allow": ["__OTTA_COMMERCE_SERVICE_URL__"]
 					}
 				]
 			}
@@ -26,7 +26,7 @@
 				"no-underscore-dangle": [
 					"error",
 					{
-						"allow": ["__URUMI_STRIPE_PUBLIC_KEY__"]
+						"allow": ["__OTTA_STRIPE_PUBLIC_KEY__"]
 					}
 				]
 			}
@@ -38,16 +38,16 @@
 					"error",
 					{
 						"paths": [
-							{ "name": "pg", "message": "@urumi/domain is IO-free (DEVELOPMENT.md §3)" },
-							{ "name": "kysely", "message": "@urumi/domain is IO-free (DEVELOPMENT.md §3)" },
+							{ "name": "pg", "message": "@otta-sh/domain is IO-free (DEVELOPMENT.md §3)" },
+							{ "name": "kysely", "message": "@otta-sh/domain is IO-free (DEVELOPMENT.md §3)" },
 							{
 								"name": "better-sqlite3",
-								"message": "@urumi/domain is IO-free (DEVELOPMENT.md §3)"
+								"message": "@otta-sh/domain is IO-free (DEVELOPMENT.md §3)"
 							},
-							{ "name": "hono", "message": "@urumi/domain is IO-free (DEVELOPMENT.md §3)" },
-							{ "name": "node:http", "message": "@urumi/domain is IO-free (DEVELOPMENT.md §3)" },
-							{ "name": "node:https", "message": "@urumi/domain is IO-free (DEVELOPMENT.md §3)" },
-							{ "name": "node-fetch", "message": "@urumi/domain is IO-free (DEVELOPMENT.md §3)" }
+							{ "name": "hono", "message": "@otta-sh/domain is IO-free (DEVELOPMENT.md §3)" },
+							{ "name": "node:http", "message": "@otta-sh/domain is IO-free (DEVELOPMENT.md §3)" },
+							{ "name": "node:https", "message": "@otta-sh/domain is IO-free (DEVELOPMENT.md §3)" },
+							{ "name": "node-fetch", "message": "@otta-sh/domain is IO-free (DEVELOPMENT.md §3)" }
 						]
 					}
 				]

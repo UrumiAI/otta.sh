@@ -6,7 +6,7 @@ import type { HttpAccess } from "../types.js";
  * transport discipline as `AdminOrdersClient` (no new primitive): the injected
  * `ctx.http.fetch` is the ONLY egress, money is integer minor units + ISO-4217
  * currency on the wire, and the wire types are defined LOCALLY — this module
- * NEVER imports `@urumi/domain`, keeping the plugin sandbox-clean (enforced by
+ * NEVER imports `@otta-sh/domain`, keeping the plugin sandbox-clean (enforced by
  * the dependency-cruiser rule, MOD-4). `#fetch` is `#`-prefixed so the
  * sandbox-clean grep guard sees no bare fetch call.
  *

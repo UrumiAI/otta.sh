@@ -17,7 +17,7 @@ import type {
 	SettingsStore,
 	ShippingRulesStore,
 	TaxRulesStore,
-} from "@urumi/domain";
+} from "@otta-sh/domain";
 import { Hono } from "hono";
 import type { MiddlewareHandler } from "hono";
 import { requireServiceToken } from "./auth.js";

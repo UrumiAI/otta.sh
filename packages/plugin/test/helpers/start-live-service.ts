@@ -1,7 +1,7 @@
 import { serve } from "@hono/node-server";
-import { FakeEmailSender, FixedClock } from "@urumi/domain/testing";
-import { StripePaymentGateway } from "@urumi/payments-stripe";
-import { createApp } from "@urumi/service/app";
+import { FakeEmailSender, FixedClock } from "@otta-sh/domain/testing";
+import { StripePaymentGateway } from "@otta-sh/payments-stripe";
+import { createApp } from "@otta-sh/service/app";
 import {
 	KyselyAddressStore,
 	KyselyCartStore,
@@ -20,8 +20,8 @@ import {
 	KyselyShippingRulesStore,
 	KyselyTaxRulesStore,
 	uuidIdGen,
-} from "@urumi/store-postgres";
-import { createIsolatedPgSchema } from "@urumi/store-postgres/testing";
+} from "@otta-sh/store-postgres";
+import { createIsolatedPgSchema } from "@otta-sh/store-postgres/testing";
 
 /** The Stripe webhook signing secret the live test service verifies against. */
 export const LIVE_STRIPE_WEBHOOK_SECRET = "whsec_plugin_live_test";
@@ -52,7 +52,7 @@ export interface StartLiveServiceOptions {
 }
 
 /**
- * Boots the REAL `@urumi/service` (`createApp`) on an ephemeral port,
+ * Boots the REAL `@otta-sh/service` (`createApp`) on an ephemeral port,
  * Postgres-backed in an isolated schema — mirrors
  * `packages/service/test/helpers/start-test-server.ts` (Phase 0 §0.6), used
  * here so `HttpCommerceClient` (plan §6 step 6) is proven against the real

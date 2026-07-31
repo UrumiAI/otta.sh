@@ -1,7 +1,7 @@
 {
-	"name": "@urumi/service",
+	"name": "@otta-sh/service",
 	"version": "0.0.1",
-	"description": "Urumi commerce service — thin Hono REST API mirroring the domain ports 1:1.",
+	"description": "Otta commerce service — thin Hono REST API mirroring the domain ports 1:1.",
 	"homepage": "https://github.com/UrumiAI/otta.sh#readme",
 	"bugs": {
 		"url": "https://github.com/UrumiAI/otta.sh/issues"
@@ -44,10 +44,10 @@
 	},
 	"dependencies": {
 		"@hono/node-server": "catalog:",
-		"@urumi/domain": "workspace:*",
-		"@urumi/payments-stripe": "workspace:*",
-		"@urumi/payments-x402": "workspace:*",
-		"@urumi/store-postgres": "workspace:*",
+		"@otta-sh/domain": "workspace:*",
+		"@otta-sh/payments-stripe": "workspace:*",
+		"@otta-sh/payments-x402": "workspace:*",
+		"@otta-sh/store-postgres": "workspace:*",
 		"hono": "catalog:",
 		"zod": "catalog:"
 	},

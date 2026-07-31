@@ -1,4 +1,4 @@
-import { cents, resolveShippingRate, type ShippingMethodSnapshot } from "@urumi/domain";
+import { cents, resolveShippingRate, type ShippingMethodSnapshot } from "@otta-sh/domain";
 import { describe, expect, test } from "vitest";
 
 const flat: ShippingMethodSnapshot = {

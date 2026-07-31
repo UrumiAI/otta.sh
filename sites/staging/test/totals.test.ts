@@ -10,7 +10,11 @@
  * rather than figures, and it writes the footnote that NAMES what the total is
  * missing.
  */
-import { NOT_APPLICABLE_LABEL, NOT_CALCULATED_LABEL, type CheckoutAmountView } from "@urumi/plugin";
+import {
+	NOT_APPLICABLE_LABEL,
+	NOT_CALCULATED_LABEL,
+	type CheckoutAmountView,
+} from "@otta-sh/plugin";
 import { describe, expect, test } from "vitest";
 import { PRICED_AT_CHECKOUT_LABEL, UNAVAILABLE_LABEL } from "../src/lib/cart-view.js";
 import {
@@ -65,7 +69,7 @@ describe("payButtonLabel — the pay button carries the amount (§7)", () => {
 
 	test("NO amount falls back to 'Pay now' — a pre-total stash must stay payable", () => {
 		// The backward-compatibility case, and the only reason the fallback still
-		// exists: a `urumi_checkout` cookie written before the total shipped is
+		// exists: a `otta_checkout` cookie written before the total shipped is
 		// valid for the rest of its 15-minute TTL and its order is real.
 		expect(payButtonLabel(undefined)).toBe(PAY_FALLBACK_LABEL);
 		expect(PAY_FALLBACK_LABEL).toBe("Pay now");

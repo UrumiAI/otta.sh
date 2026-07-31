@@ -305,7 +305,7 @@ export function createAfterSaveHandler(
 		// developer-visible answer to "I saved and nothing changed".
 		if (hasPendingDraft(event.content)) {
 			console.info(
-				`[urumi] content:afterSave: product_id=${id} has PENDING DRAFT changes over live content — commerce sync deferred to publish (no upsert, no activate). The saved values go live when the merchant clicks "Publish changes".`,
+				`[otta] content:afterSave: product_id=${id} has PENDING DRAFT changes over live content — commerce sync deferred to publish (no upsert, no activate). The saved values go live when the merchant clicks "Publish changes".`,
 			);
 			return;
 		}
@@ -318,7 +318,7 @@ export function createAfterSaveHandler(
 		// failure.
 		if (derived.titleProblem !== undefined) {
 			console.warn(
-				`[urumi] content:afterSave: product_id=${id} synced WITHOUT a title (${derived.titleProblem}). The product cannot be ordered until it has one — checkout rejects an untitled product with PRODUCT_NOT_PRICED. The title is read from the content field \`data.title\`.`,
+				`[otta] content:afterSave: product_id=${id} synced WITHOUT a title (${derived.titleProblem}). The product cannot be ordered until it has one — checkout rejects an untitled product with PRODUCT_NOT_PRICED. The title is read from the content field \`data.title\`.`,
 			);
 		}
 
@@ -361,7 +361,7 @@ export function createAfterSaveHandler(
 			}
 		} catch (err) {
 			console.error(
-				`[urumi] content:afterSave sync failed for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}). No reconcile cron exists yet — this sync is lost until the product is saved again:`,
+				`[otta] content:afterSave sync failed for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}). No reconcile cron exists yet — this sync is lost until the product is saved again:`,
 				err,
 			);
 		}
@@ -381,7 +381,7 @@ export function createAfterDeleteHandler(): HookHandler<ContentDeleteEvent> {
 		try {
 			await (await clientFor(ctx)).softDeleteProductCommerce(event.id, key);
 		} catch (err) {
-			console.error(`[urumi] content:afterDelete sync failed for product_id=${event.id}:`, err);
+			console.error(`[otta] content:afterDelete sync failed for product_id=${event.id}:`, err);
 		}
 	};
 }
@@ -458,7 +458,7 @@ export function createAfterPublishHandler(
 		const watermark = normalizeWatermark(updatedAt);
 		if (watermark === undefined) {
 			console.error(
-				`[urumi] content:afterPublish for product_id=${id} carried no parseable updatedAt watermark — activation skipped (lost until the product is published again).`,
+				`[otta] content:afterPublish for product_id=${id} carried no parseable updatedAt watermark — activation skipped (lost until the product is published again).`,
 			);
 			return;
 		}
@@ -471,7 +471,7 @@ export function createAfterPublishHandler(
 		// the row simply is not orderable until it has a title.
 		if (derived.titleProblem !== undefined) {
 			console.warn(
-				`[urumi] content:afterPublish: product_id=${id} published WITHOUT a title (${derived.titleProblem}). The product cannot be ordered until it has one — checkout rejects an untitled product with PRODUCT_NOT_PRICED. The title is read from the content field \`data.title\`.`,
+				`[otta] content:afterPublish: product_id=${id} published WITHOUT a title (${derived.titleProblem}). The product cannot be ordered until it has one — checkout rejects an untitled product with PRODUCT_NOT_PRICED. The title is read from the content field \`data.title\`.`,
 			);
 		}
 		try {
@@ -496,7 +496,7 @@ export function createAfterPublishHandler(
 				// not write. Distinct from the generic sync-failed line below so
 				// the skipped activation is visible in logs.
 				console.error(
-					`[urumi] content:afterPublish: commerce upsert FAILED for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}) — activation skipped (fail-closed). No reconcile cron exists yet — this sync is lost until the product is published again:`,
+					`[otta] content:afterPublish: commerce upsert FAILED for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}) — activation skipped (fail-closed). No reconcile cron exists yet — this sync is lost until the product is published again:`,
 					err,
 				);
 				return;
@@ -504,7 +504,7 @@ export function createAfterPublishHandler(
 			await client.activateProductCommerce(id, key, watermark);
 		} catch (err) {
 			console.error(
-				`[urumi] content:afterPublish sync failed for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}). No reconcile cron exists yet — this activation is lost until the product is saved/published again:`,
+				`[otta] content:afterPublish sync failed for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}). No reconcile cron exists yet — this activation is lost until the product is saved/published again:`,
 				err,
 			);
 		}
@@ -550,7 +550,7 @@ export function createAfterUnpublishHandler(
 		const watermark = normalizeWatermark(updatedAt);
 		if (watermark === undefined) {
 			console.error(
-				`[urumi] content:afterUnpublish for product_id=${id} carried no parseable updatedAt watermark — deactivation skipped (lost until the product is unpublished again).`,
+				`[otta] content:afterUnpublish for product_id=${id} carried no parseable updatedAt watermark — deactivation skipped (lost until the product is unpublished again).`,
 			);
 			return;
 		}
@@ -559,7 +559,7 @@ export function createAfterUnpublishHandler(
 			await (await clientFor(ctx)).deactivateProductCommerce(id, key, watermark);
 		} catch (err) {
 			console.error(
-				`[urumi] content:afterUnpublish sync failed for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}). No reconcile cron exists yet — this deactivation is lost until the product is saved/unpublished again:`,
+				`[otta] content:afterUnpublish sync failed for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}). No reconcile cron exists yet — this deactivation is lost until the product is saved/unpublished again:`,
 				err,
 			);
 		}

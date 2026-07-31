@@ -1,6 +1,6 @@
 /**
  * A1 (storefront-checkout plan §3) — the three checkout methods on
- * `HttpCommerceClient`, as a straight 1:1 mirror of `@urumi/service`'s
+ * `HttpCommerceClient`, as a straight 1:1 mirror of `@otta-sh/service`'s
  * `POST /checkout/quote`, `POST /checkout/orders` and `GET /orders/:orderId`.
  *
  * The load-bearing properties, none of which are visible from the happy path:
