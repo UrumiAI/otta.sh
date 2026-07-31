@@ -70,13 +70,11 @@ export interface ProductListPage {
 
 /**
  * A lightweight product row for the admin list — a PROJECTION, not the full
- * `ProductCommerce`: only what the console table needs, so the list is one
- * statement and never N+1s into `inventory` per row (stock is deliberately
- * OMITTED here — see `ProductCommerceStore.listProducts`'s doc; the detail
- * leaf reads it via `InventoryStore.getOnHand` for the ONE product opened).
- * Money stays branded `Money` (never a bare number), nullable exactly like
- * the stored row (a "create then price" product may have neither sku nor
- * price yet).
+ * `ProductCommerce`: only what the console table needs, so the list stays ONE
+ * statement (a single LEFT JOIN for stock — never an N+1 per row; see
+ * `ProductCommerceStore.listProducts`'s doc). Money stays branded `Money`
+ * (never a bare number), nullable exactly like the stored row (a "create then
+ * price" product may have neither sku nor price yet).
  */
 export interface ProductSummary {
 	productId: ProductId;
@@ -85,6 +83,26 @@ export interface ProductSummary {
 	price: Money | null;
 	productKind: ProductKind;
 	active: boolean;
+	/**
+	 * Stock on hand for this row's sku — a COUNT, never money (no `Cents`
+	 * brand, no currency; it must never reach a money field).
+	 *
+	 * `null` means "unknown": there is NO `inventory` row for this sku (or the
+	 * product has no sku at all — a "create then price" row). That is a
+	 * DIFFERENT fact from `0`, which means a known sku that is out of stock.
+	 * Callers must never conflate the two: rendering `null` as `0` invents an
+	 * out-of-stock claim, and rendering `0` as unknown hides one. The two are
+	 * pinned separately by the contract suite.
+	 *
+	 * Sourced by a single LEFT JOIN onto `inventory` in the same statement as
+	 * the page — the join miss IS the null. Measured cost of carrying it at
+	 * page size 25 over 5,000 products / 3,997 inventory rows on Postgres 16:
+	 * p50 0.43 → 0.58 ms, p95 0.61 → 0.91 ms (an N+1 of per-row `getOnHand`
+	 * reads was 2.60 ms p50 parallel / 6.36 ms sequential — 6× and 15× the
+	 * baseline, which is why the join is the shape). No new index: the join's
+	 * inner side is already `inventory`'s primary key.
+	 */
+	onHand: number | null;
 	/**
 	 * The soft-delete tombstone timestamp (admin-UX Increment 2, "product
 	 * lifecycle surfacing"), ISO-8601 text like `createdAt` (never a `Date` —
@@ -562,10 +580,16 @@ export interface ProductCommerceStore {
 	/**
 	 * Admin Products console list (view-only; admin-UX Increment 2 — the missing
 	 * enumerate primitive). Returns a keyset-paginated page of lightweight
-	 * `ProductSummary` PROJECTIONS (never the full `ProductCommerce`, and never
-	 * joined with `inventory` — the list must not N+1 into stock per row; a
-	 * per-row stock signal is deferred to the detail leaf's single-sku
-	 * `InventoryStore.getOnHand` read). Excludes soft-deleted rows
+	 * `ProductSummary` PROJECTIONS (never the full `ProductCommerce`).
+	 *
+	 * STOCK: each row carries `onHand` via a single LEFT JOIN onto `inventory`
+	 * in the SAME statement — one round trip per page, never an N+1 of per-row
+	 * `InventoryStore.getOnHand` reads. The join is unconditional (not gated on
+	 * a filter) and needs no new index; the LEFT half is load-bearing, because
+	 * a sku with no inventory row must yield `onHand: null` ("unknown"), which
+	 * is NOT the same fact as `0` ("out of stock"). `inventory.sku` is that
+	 * table's primary key, so the join can never multiply a page's rows.
+	 * Excludes soft-deleted rows
 	 * (`deleted_at IS NULL`) by DEFAULT — mirrors `listCommerceByIds`'s
 	 * tombstone discipline — UNLESS `filter.deleted: true` requests the archive
 	 * view (`deleted_at IS NOT NULL` instead), the "product lifecycle

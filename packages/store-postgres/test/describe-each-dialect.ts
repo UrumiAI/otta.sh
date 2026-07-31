@@ -374,8 +374,44 @@ function buildReportingHarness(
 				.onConflict((oc) => oc.column("sku").doUpdateSet({ on_hand: row.onHand }))
 				.execute();
 		},
+		// A real `product_commerce` row behind a sku, for `lowStock`'s title
+		// join. `product_id` comes from a counter, NOT the sku, precisely so the
+		// contract can seed a live row and a tombstone sharing ONE sku — legal,
+		// because live-sku uniqueness is a PARTIAL index (`WHERE deleted_at IS
+		// NULL`), and exactly the case the join's tombstone predicate survives.
+		async seedProduct(row) {
+			const id = `seed-prod-${String(productSeedSeq++)}`;
+			await db
+				.insertInto("product_commerce")
+				.values({
+					product_id: id,
+					sku: row.sku,
+					price_cents: null,
+					price_currency: null,
+					title: row.title,
+					tax_class: null,
+					inventory_policy: "deny",
+					weight_grams: null,
+					length_mm: null,
+					width_mm: null,
+					height_mm: null,
+					product_kind: "physical",
+					active: 1,
+					deleted_at: row.deletedAt ?? null,
+					idempotency_key: id,
+					content_updated_at: null,
+					active_updated_at: null,
+					created_at: "2026-07-10T00:00:00.000Z",
+					updated_at: "2026-07-10T00:00:00.000Z",
+				})
+				.execute();
+		},
 	};
 }
+
+/** Monotonic `product_id` source for `buildReportingHarness.seedProduct` — the
+ *  sku cannot serve as the id, since several rows may legally share one sku. */
+let productSeedSeq = 0;
 
 export async function makeSqliteReportingHarness(): Promise<ReportingStoreHarness> {
 	return buildReportingHarness(await makeSqliteDbMigrated(), "sqlite");

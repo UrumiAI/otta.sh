@@ -117,6 +117,66 @@ describe.skipIf(PG === undefined)("admin Products console HTTP contract", () => 
 		expect(body.nextCursor).toBeNull();
 	});
 
+	// -- onHand on the list wire -----------------------------------------------
+	// The service sources it from ONE LEFT JOIN per page. `null` ("no inventory
+	// record" — unknown) and `0` ("out of stock") are DIFFERENT facts and must
+	// stay distinguishable all the way to the client.
+
+	test("GET /admin/products carries onHand on every row: a count when stocked, 0 when empty, null when there is no inventory record", async () => {
+		await seed();
+		await server.seed("SKU-3", 12); // stocked
+		await server.seed("SKU-2", 0); // known sku, genuinely out of stock
+		// SKU-1 and SKU-EBOOK are deliberately left with NO inventory row.
+
+		const body = await json(await get("/products"));
+		const products = body.products as Array<Record<string, unknown>>;
+		const bySku = new Map(products.map((p) => [p.sku, p]));
+
+		expect(bySku.get("SKU-3")?.onHand).toBe(12);
+		// Out of stock — a real zero, which must NOT arrive as null.
+		expect(bySku.get("SKU-2")?.onHand).toBe(0);
+		expect(bySku.get("SKU-2")?.onHand).not.toBeNull();
+		// Unknown — no inventory row at all, which must NOT arrive as 0.
+		expect(bySku.get("SKU-1")?.onHand).toBeNull();
+		expect(bySku.get("SKU-1")?.onHand).not.toBe(0);
+		expect(bySku.get("SKU-EBOOK")?.onHand).toBeNull();
+
+		// Present on EVERY row (never "sometimes on the wire"), and never money —
+		// no cents/currency companion field appears beside it.
+		for (const p of products) expect(Object.hasOwn(p, "onHand")).toBe(true);
+		expect(Object.keys(products[0]!)).not.toContain("onHandCents");
+	});
+
+	test("GET /admin/products: the stock join never duplicates or drops a row, and paging is unaffected", async () => {
+		await seed();
+		await server.seed("SKU-3", 4);
+		await server.seed("SKU-1", 0);
+		const page1 = await json(await get("/products?limit=2"));
+		const p1 = page1.products as Array<Record<string, unknown>>;
+		expect(p1.map((p) => p.productId)).toEqual(["prod-3", "prod-ebook"]);
+		expect(p1.map((p) => p.onHand)).toEqual([4, null]);
+		expect(page1.nextCursor).not.toBeNull();
+
+		const page2 = await json(await get(`/products?cursor=${String(page1.nextCursor)}`));
+		const p2 = page2.products as Array<Record<string, unknown>>;
+		expect(p2.map((p) => p.productId)).toEqual(["prod-2", "prod-1"]);
+		expect(p2.map((p) => p.onHand)).toEqual([null, 0]);
+	});
+
+	test("GET /admin/products: a product with no sku reports onHand null (nothing to join against)", async () => {
+		await server.seedProductRow({
+			id: "prod-skuless",
+			sku: null,
+			title: "No SKU Yet",
+			priceCents: null,
+			active: true,
+			createdAt: "2026-07-14T00:00:00.000Z",
+		});
+		const body = await json(await get("/products"));
+		const products = body.products as Array<Record<string, unknown>>;
+		expect(products.find((p) => p.productId === "prod-skuless")?.onHand).toBeNull();
+	});
+
 	test("a CMS product that was never priced (no sku, no price) IS listed — PR 1b makes this row reachable", async () => {
 		await seed();
 		// Before "one home per field" this row could not exist: the CMS sync

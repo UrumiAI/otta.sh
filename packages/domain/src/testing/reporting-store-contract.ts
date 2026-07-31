@@ -11,6 +11,7 @@ import {
 	FIXTURE_INVENTORY,
 	FIXTURE_ITEMS,
 	FIXTURE_ORDERS,
+	FIXTURE_PRODUCT_TITLES,
 	REPORTING_WINDOW,
 } from "./reporting-fixture.js";
 
@@ -33,6 +34,11 @@ export interface ReportingStoreHarness {
 		quantity: number;
 	}): Promise<void>;
 	seedInventory(row: { sku: string; onHand: number }): Promise<void>;
+	/** Seed a `product_commerce` row behind a sku, for `lowStock`'s title join.
+	 *  Several rows MAY share one sku as long as at most one is live — that is
+	 *  exactly what the partial unique index permits, and the case the join's
+	 *  `deleted_at IS NULL` predicate exists to survive. */
+	seedProduct(row: { sku: string; title: string | null; deletedAt?: string | null }): Promise<void>;
 }
 
 export interface ReportingStoreContractOptions {
@@ -50,6 +56,7 @@ export function reportingStoreContract(
 			for (const o of FIXTURE_ORDERS) await h.seedOrder(o);
 			for (const it of FIXTURE_ITEMS) await h.seedOrderItem(it);
 			for (const inv of FIXTURE_INVENTORY) await h.seedInventory(inv);
+			for (const p of FIXTURE_PRODUCT_TITLES) await h.seedProduct(p);
 			return h;
 		}
 
@@ -181,16 +188,49 @@ export function reportingStoreContract(
 		test("lowStock returns SKUs at or below threshold, ascending by on_hand", async () => {
 			const { store } = await seeded();
 			expect(await store.lowStock(5)).toEqual([
-				{ sku: "SKU-A", onHand: 0 },
-				{ sku: "SKU-B", onHand: 3 },
-				{ sku: "SKU-C", onHand: 5 },
-				{ sku: "SKU-E", onHand: 5 },
+				{ sku: "SKU-A", onHand: 0, title: "Alpha Widget" },
+				{ sku: "SKU-B", onHand: 3, title: null },
+				{ sku: "SKU-C", onHand: 5, title: "Gamma Sprocket" },
+				{ sku: "SKU-E", onHand: 5, title: null },
 			]);
 			expect(await store.lowStock(3)).toEqual([
-				{ sku: "SKU-A", onHand: 0 },
-				{ sku: "SKU-B", onHand: 3 },
+				{ sku: "SKU-A", onHand: 0, title: "Alpha Widget" },
+				{ sku: "SKU-B", onHand: 3, title: null },
 			]);
-			expect(await store.lowStock(0)).toEqual([{ sku: "SKU-A", onHand: 0 }]);
+			expect(await store.lowStock(0)).toEqual([{ sku: "SKU-A", onHand: 0, title: "Alpha Widget" }]);
+		});
+
+		test("lowStock carries the LIVE product title; a null product title stays null and is NEVER the sku", async () => {
+			const { store } = await seeded();
+			const rows = await store.lowStock(5);
+			const bySku = new Map(rows.map((r) => [r.sku, r]));
+			expect(bySku.get("SKU-A")?.title).toBe("Alpha Widget");
+			// The product exists and is live, but its own title is null. The sku
+			// must never be substituted — a renderer's `(untitled)` affordance
+			// depends on telling these apart.
+			expect(bySku.get("SKU-B")?.title).toBeNull();
+			expect(bySku.get("SKU-B")?.title).not.toBe("SKU-B");
+		});
+
+		test("lowStock: a soft-deleted product sharing a live sku neither duplicates the row nor titles it", async () => {
+			const { store } = await seeded();
+			const rows = await store.lowStock(5);
+			// SKU-C is claimed by one LIVE row and one tombstone (legal — live-sku
+			// uniqueness is a PARTIAL index, so a soft delete frees the sku). The
+			// join must be 1:1 against the live row only.
+			expect(rows.filter((r) => r.sku === "SKU-C")).toHaveLength(1);
+			expect(rows.find((r) => r.sku === "SKU-C")?.title).toBe("Gamma Sprocket");
+			// SKU-E is claimed ONLY by a tombstone: the low-stock row still lists
+			// (inventory is the driving table) but a dead product cannot title it.
+			expect(rows.filter((r) => r.sku === "SKU-E")).toHaveLength(1);
+			expect(rows.find((r) => r.sku === "SKU-E")?.title).toBeNull();
+		});
+
+		test("lowStock: a sku with no product row at all reports title null, never the sku", async () => {
+			const h = await seeded();
+			await h.seedInventory({ sku: "SKU-ORPHAN", onHand: 1 });
+			const row = (await h.store.lowStock(5)).find((r) => r.sku === "SKU-ORPHAN");
+			expect(row).toEqual({ sku: "SKU-ORPHAN", onHand: 1, title: null });
 		});
 
 		test("revenueByPeriod on an empty window returns no buckets", async () => {

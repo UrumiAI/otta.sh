@@ -51,13 +51,18 @@ function containsCaseInsensitive(haystack: string, needle: string): boolean {
 export interface InMemoryProductCommerceStoreOptions {
 	clock: Clock;
 	/**
-	 * Phase 2 (`listCommerceByIds`): the fake's stand-in for the real store's
-	 * intra-service `inventory` join — a plain lookup the harness seeds
-	 * (`InMemoryInventoryStore.onHand` satisfies it structurally). Defaults
-	 * to "no inventory row" (0) so `inStock` is coarsely false, mirroring a
-	 * LEFT JOIN miss.
+	 * The fake's stand-in for the real store's `inventory` LEFT JOIN — a plain
+	 * lookup the harness seeds, feeding BOTH `listCommerceByIds`'s coarse
+	 * `inStock` (Phase 2) and `listProducts`'s `onHand` projection.
+	 *
+	 * Returns `null` for "no inventory row", exactly like the SQL join miss it
+	 * models — NOT `0`, which means a known sku that is out of stock. A lookup
+	 * that collapses the two (e.g. `InMemoryInventoryStore.onHand`, which
+	 * returns 0 for an unseeded sku) would make the fake disagree with every
+	 * real adapter on the `onHand: null` case the contract pins. Defaults to
+	 * "no inventory row" (`null`), so `inStock` stays coarsely false.
 	 */
-	inventoryOnHand?: (sku: string) => number;
+	inventoryOnHand?: (sku: string) => number | null;
 }
 
 /**
@@ -93,11 +98,11 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 	 * first transition always wins.
 	 */
 	#activeWatermark = new Map<string, string>();
-	#inventoryOnHand: (sku: string) => number;
+	#inventoryOnHand: (sku: string) => number | null;
 
 	constructor(options: InMemoryProductCommerceStoreOptions) {
 		this.#clock = options.clock;
-		this.#inventoryOnHand = options.inventoryOnHand ?? (() => 0);
+		this.#inventoryOnHand = options.inventoryOnHand ?? (() => null);
 	}
 
 	async upsert(input: UpsertProductCommerceInput, key: IdempotencyKey): Promise<ProductCommerce> {
@@ -313,7 +318,8 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 				productId: row.productId,
 				sku: row.sku,
 				price: row.price,
-				inStock: this.#inventoryOnHand(row.sku) > 0,
+				// A join miss (`null`) is coarsely "not in stock", exactly like 0.
+				inStock: (this.#inventoryOnHand(row.sku) ?? 0) > 0,
 				active: row.active,
 			});
 		}
@@ -468,6 +474,10 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 			price: row.price,
 			productKind: row.productKind,
 			active: row.active,
+			// Mirrors the adapters' LEFT JOIN: a row with NO sku can never match
+			// an inventory row, so it lands on the same `null` ("unknown") the
+			// lookup returns for an unseeded sku. Never 0.
+			onHand: row.sku === null ? null : this.#inventoryOnHand(row.sku),
 			deletedAt: row.deletedAt === null ? null : row.deletedAt.toISOString(),
 			createdAt: row.createdAt.toISOString(),
 		};

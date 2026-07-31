@@ -13,6 +13,7 @@ import {
 	FIXTURE_INVENTORY,
 	FIXTURE_ITEMS,
 	FIXTURE_ORDERS,
+	FIXTURE_PRODUCT_TITLES,
 	InMemoryReportingStore,
 	InMemorySettingsStore,
 	REPORTING_WINDOW,
@@ -24,6 +25,7 @@ function seededStore(): InMemoryReportingStore {
 	for (const o of FIXTURE_ORDERS) store.seedOrder(o);
 	for (const it of FIXTURE_ITEMS) store.seedOrderItem(it);
 	for (const inv of FIXTURE_INVENTORY) store.seedInventory(inv);
+	for (const p of FIXTURE_PRODUCT_TITLES) store.seedProduct(p);
 	return store;
 }
 
@@ -84,9 +86,11 @@ describe("reporting use-cases (over the in-memory fake)", () => {
 	test("getLowStockReport returns SKUs at or below threshold, ascending by on_hand", async () => {
 		const settings = new InMemorySettingsStore();
 		const rows = await getLowStockReport({ reportingStore: store, settingsStore: settings }, 3);
+		// The title travels through the use-case untouched — including SKU-B's
+		// genuinely-null title, which must never be back-filled with the sku.
 		expect(rows).toEqual([
-			{ sku: "SKU-A", onHand: 0 },
-			{ sku: "SKU-B", onHand: 3 },
+			{ sku: "SKU-A", onHand: 0, title: "Alpha Widget" },
+			{ sku: "SKU-B", onHand: 3, title: null },
 		]);
 	});
 
@@ -98,7 +102,7 @@ describe("reporting use-cases (over the in-memory fake)", () => {
 		);
 		const rows = await getLowStockReport({ reportingStore: store, settingsStore: settings });
 		// threshold defaults to 0 → only SKU-A(0).
-		expect(rows).toEqual([{ sku: "SKU-A", onHand: 0 }]);
+		expect(rows).toEqual([{ sku: "SKU-A", onHand: 0, title: "Alpha Widget" }]);
 	});
 
 	test("getRevenueReport/getOrdersByStatusReport/getTopProductsReport reject a from/to range wider than 400 days", async () => {

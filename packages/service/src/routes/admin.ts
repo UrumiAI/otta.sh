@@ -191,9 +191,11 @@ export function adminRoutes(deps: AdminRoutesDeps): Hono {
 	// -- Admin Products console: view-only list + detail (admin-UX Increment 2) --
 	// Mirrors the Orders console's shape 1:1 (internal-token guarded reads, the
 	// same opaque-cursor-carries-filter-and-limit encoding, MOD-1 fail-closed
-	// decode). The list NEVER joins inventory (no N+1 into stock per row — port
-	// doc); the detail leaf reads the ONE product's stock via a single
-	// `InventoryStore.getOnHand` call.
+	// decode). The list carries per-row stock via the store's SINGLE LEFT JOIN —
+	// one statement per page, never an N+1 into stock per row (port doc) — where
+	// `onHand: null` means "no inventory row" (unknown), NOT zero. The detail
+	// leaf still reads the ONE opened product's stock via `InventoryStore.
+	// getOnHand`.
 
 	app.get("/products", async (c) => {
 		const denied = requireInternalToken(c, deps.internalToken);
@@ -959,8 +961,9 @@ function serializeNote(note: OrderNote): Record<string, unknown> {
 /** Wire shape of an admin Products-list row (view-only projection; admin-UX
  *  Increment 2). Money stays an integer minor unit + an ISO-4217 currency
  *  string, null exactly like the stored row (a "create then price" product
- *  may have neither sku nor price yet). NEVER carries stock — see the port
- *  doc; the list must not N+1 into inventory per row. */
+ *  may have neither sku nor price yet). Carries `onHand` from the store's
+ *  single LEFT JOIN — a COUNT, never money (no cents, no currency), and never
+ *  an N+1 per row (port doc). */
 function serializeProductSummary(summary: ProductSummary): Record<string, unknown> {
 	return {
 		productId: summary.productId,
@@ -970,6 +973,10 @@ function serializeProductSummary(summary: ProductSummary): Record<string, unknow
 		currency: summary.price?.currency ?? null,
 		productKind: summary.productKind,
 		active: summary.active,
+		// Passed through UNCOERCED: `null` ("no inventory row" — unknown) must
+		// reach the client AS null, distinct from `0` ("out of stock"). A `?? 0`
+		// here would invent an out-of-stock claim for every unsynced product.
+		onHand: summary.onHand,
 		deletedAt: summary.deletedAt,
 		createdAt: summary.createdAt,
 	};

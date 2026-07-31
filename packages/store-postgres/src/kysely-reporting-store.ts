@@ -145,15 +145,36 @@ export class KyselyReportingStore implements ReportingStore {
 		}));
 	}
 
+	/**
+	 * Low stock (port doc), with the LIVE product's title joined on.
+	 *
+	 * The `deleted_at IS NULL` half of the ON clause is LOAD-BEARING, not
+	 * defensive noise: `product_commerce` enforces sku uniqueness with a
+	 * PARTIAL unique index over live rows only (migration 0002), precisely so a
+	 * soft-deleted product releases its sku for reuse. Join on sku alone and a
+	 * tombstone sharing a live sku duplicates the low-stock row and can win the
+	 * title; with the predicate the join is at most 1:1 and only a live product
+	 * titles a row. A sku with no live product yields `title: null` — the sku
+	 * is NEVER substituted (port doc). Identical DDL-free SQL on both dialects.
+	 */
 	async lowStock(threshold: number): Promise<LowStockRow[]> {
 		const rows = await this.#db
 			.selectFrom("inventory")
-			.select(["sku", "on_hand"])
-			.where("on_hand", "<=", threshold)
-			.orderBy("on_hand", "asc")
-			.orderBy("sku", "asc")
+			.leftJoin("product_commerce", (join) =>
+				join
+					.onRef("product_commerce.sku", "=", "inventory.sku")
+					.on("product_commerce.deleted_at", "is", null),
+			)
+			.select([
+				"inventory.sku as sku",
+				"inventory.on_hand as on_hand",
+				"product_commerce.title as title",
+			])
+			.where("inventory.on_hand", "<=", threshold)
+			.orderBy("inventory.on_hand", "asc")
+			.orderBy("inventory.sku", "asc")
 			.execute();
-		return rows.map((r) => ({ sku: r.sku, onHand: r.on_hand }));
+		return rows.map((r) => ({ sku: r.sku, onHand: r.on_hand, title: r.title }));
 	}
 
 	/**
