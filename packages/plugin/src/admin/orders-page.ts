@@ -3529,8 +3529,9 @@ function utc(iso: string): string {
  * thing that works: INC-13 introduces the shared absolute-timestamp formatter
  * for the console's other timestamps, and this is the one surface that needed a
  * human-readable date before that lands. It is the natural place for INC-13 to
- * absorb — TOGETHER WITH `reports-page.ts`'s `formatDay`, which is this function
- * in all but name (same Intl options, same UTC pinning, same `en-GB` chosen for
+ * absorb — TOGETHER WITH `reports-page.ts`'s `formatDay` (landed via the
+ * Reports increment, PR #183), which is this function in all but name (same
+ * Intl options, same UTC pinning, same `en-GB` chosen for
  * the same reason) and was written independently on another screen. Two
  * accidental copies is the argument for the shared formatter, not against it;
  * whoever hoists this must take both or the console keeps two dialects.
