@@ -4,6 +4,7 @@ import { assertBlockContract, assertNoRawTimestamps } from "./helpers/block-cont
 import {
 	blocksOf,
 	confirmOf,
+	emptyActions,
 	field,
 	fieldEntries,
 	fieldIds,
@@ -24,6 +25,7 @@ import {
 	type StubCommerceServer,
 } from "./helpers/stub-commerce-server.js";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
+import { encodeListCursor } from "../src/admin/scaffold/nav.js";
 import { PRODUCTS_PAGE } from "../src/admin/products-page.js";
 
 // The admin Pricing & inventory console under the REAL workerd-on-Node sandbox
@@ -383,6 +385,10 @@ function makeGetResponder(state: LiveState) {
 					},
 				};
 			}
+			// A filter that matches nothing at all, on the only page there is.
+			if (query.includes("search=nomatch")) {
+				return { status: 200, body: { ok: true, products: [], nextCursor: null } };
+			}
 			// A page with no low-stock row on it, and another page behind it.
 			if (query.includes("search=nolow")) {
 				return {
@@ -530,6 +536,17 @@ describe("admin Products console — list (workerd sandbox)", () => {
 		});
 		if (token.length > 0) await seedToken(sandbox, stub, token);
 		return state;
+	}
+
+	/** Apply the filter form and return the re-rendered list. */
+	async function listFiltered(values: Record<string, unknown>): Promise<LooseBlock[]> {
+		return blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "form_submit",
+				action_id: "products:apply-filter",
+				values,
+			}),
+		);
 	}
 
 	test("the plugin registers /products in its admin.pages-worthy page config", () => {
@@ -721,6 +738,80 @@ describe("admin Products console — list (workerd sandbox)", () => {
 		const empty = findBlock(blocks, "empty");
 		expect(empty?.title).toBe("No products yet");
 		expect(empty?.actions === undefined || (empty.actions as unknown[]).length === 0).toBe(true);
+		// INC-12: an empty CATALOG offers no undo — there is no filter to clear, and
+		// offering one would blame the operator for a store with nothing in it.
+		expect(emptyActions(blocks)).toEqual([]);
+	});
+
+	test("INC-12: the intro line leads with the row count, page-scoped whenever paging is in play, and states nothing at zero", async () => {
+		await boot();
+		const page1 = blocksOf(
+			await sandbox!.invokeRoute("admin", { type: "page_load", page: "/products" }),
+		);
+		// 2 rows AND a next cursor: the service's list responses carry no total, so
+		// this count is a claim about THIS PAGE and says so.
+		const intro = String(page1.find((b) => b.type === "context")?.text);
+		expect(intro).toMatch(/^2 products on this page · /);
+		expect(intro.length).toBeLessThanOrEqual(140); // X-11
+
+		// A filter whose whole result fits on one page IS the set — no qualifier.
+		const whole = await listFiltered({ search: "unpriced" });
+		expect(String(whole.find((b) => b.type === "context")?.text)).toMatch(/^2 products · /);
+
+		// Zero states nothing — never `0 products`.
+		const none = await listFiltered({ search: "nomatch" });
+		const zeroIntro = String(none.find((b) => b.type === "context")?.text);
+		expect(zeroIntro).not.toMatch(/\d+ product/);
+		expect(zeroIntro.startsWith("Filter and open a product.")).toBe(true);
+	});
+
+	test("INC-12: a filter that matches nothing gets its own state — heading, body, and a `Clear filters` that re-lists the whole catalog", async () => {
+		await boot();
+		const narrowed = await listFiltered({ search: "nomatch" });
+		expect(findBlocks(narrowed, "table")).toEqual([]);
+		const empty = findBlock(narrowed, "empty");
+		expect(empty?.title).toBe("No products match these filters");
+		expect(String(empty?.description).length).toBeLessThanOrEqual(200);
+		const clear = emptyActions(narrowed).find((a) => a.label === "Clear filters");
+		expect(clear?.action_id).toBe("products:apply-filter");
+
+		const cleared = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "block_action",
+				action_id: "products:apply-filter",
+				value: clear?.value,
+			}),
+		);
+		assertBlockContract(cleared, { screen: "products", level: "list" });
+		// The catalog is back, the summary section is gone with the filter it
+		// summarized, and the operator is still on the products LIST.
+		expect(findBlocks(cleared, "header").some((b) => b.text === "Pricing & inventory")).toBe(true);
+		expect(((findBlock(cleared, "table")?.rows ?? []) as unknown[]).length).toBe(2);
+		expect(findBlocks(cleared, "section")).toEqual([]);
+		expect(
+			field(formFor(cleared, "products:apply-filter"), "search")?.initial_value,
+		).toBeUndefined();
+	});
+
+	test("G5: a cursor minted BEFORE the filter grew its page-context wrapper self-heals — the operator's filter survives, and nothing throws", async () => {
+		await boot();
+		// The pre-deploy shape: `f` is the BARE filter form, from before the stock
+		// column wrapped it in `{form, stock}`. Every tab left open across that
+		// deploy sends one of these on its next "Load more".
+		const legacy = encodeListCursor({ c: "svc-cursor-1", f: { search: "stockmix" } });
+		const blocks = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "block_action",
+				action_id: "products:page",
+				value: { cursor: legacy },
+			}),
+		);
+		assertBlockContract(blocks, { screen: "products", level: "list" });
+		// Not the fail-closed banner a `TypeError` inside `render` would produce…
+		expect(findBlocks(blocks, "banner").filter((b) => b.variant === "error")).toEqual([]);
+		expect(((findBlock(blocks, "table")?.rows ?? []) as unknown[]).length).toBeGreaterThan(0);
+		// …and the filter is still ON, rather than silently dropped on the deploy.
+		expect(String(findBlocks(blocks, "section")[0]?.text)).toBe("search: stockmix");
 	});
 });
 
@@ -1011,7 +1102,9 @@ describe("admin Products console — stock column + low-stock filter (workerd sa
 			),
 		).toBe(true);
 
-		// And the scan actually continues: page 2 answers with its own rows.
+		// And the scan actually continues: page 2 answers, and — being the LAST page,
+		// still narrowed to zero — it stops offering a scan that cannot go further
+		// and offers the undo instead (INC-12).
 		const outcome = await sandbox!.invokeRoute("admin", {
 			type: "block_action",
 			action_id: "products:page",
@@ -1020,10 +1113,11 @@ describe("admin Products console — stock column + low-stock filter (workerd sa
 		const page2 = blocksOf(outcome);
 		assertBlockContract(page2, { screen: "products", level: "list" });
 		assertNoRawTimestamps(page2);
-		expect(findBlocks(page2, "table").length).toBe(1);
+		expect(findBlocks(page2, "table")).toEqual([]);
+		expect(findBlock(page2, "empty")?.title).toBe("No low-stock products on this page");
 	});
 
-	test("the LAST page narrowed to zero says so, page-scoped — no whole-catalog claim, no dangling Load more", async () => {
+	test("the LAST page narrowed to zero says so PAGE-SCOPED — no whole-catalog claim, no dangling Load more, and the way out is `Clear filters` (INC-12)", async () => {
 		await boot();
 		const page1 = await listWith({ search: "nolow", lowStock: true });
 		const outcome = await sandbox!.invokeRoute("admin", {
@@ -1032,15 +1126,23 @@ describe("admin Products console — stock column + low-stock filter (workerd sa
 			value: { cursor: findBlock(page1, "table")!.next_cursor },
 		});
 		const lastPage = blocksOf(outcome);
-		const table = findBlock(lastPage, "table");
+		assertBlockContract(lastPage, { screen: "products", level: "list" });
 		expect(rowsOf(lastPage)).toEqual([]);
-		expect(table?.next_cursor).toBeUndefined();
-		expect(table?.empty_text).toBe("No low-stock products on this page.");
+		// The zero-row table is REPLACED by the designed state, so there is no
+		// dangling Load more and no `empty_text` under a table nobody can see.
+		expect(findBlocks(lastPage, "table")).toEqual([]);
+		const empty = findBlock(lastPage, "empty");
+		// PAGE-SCOPED wording survives the change — the low-stock filter narrows the
+		// fetched page, so neither the heading nor the body may speak for the catalog.
+		expect(empty?.title).toBe("No low-stock products on this page");
+		expect(String(empty?.description)).toContain("on this page");
+		expect(String(empty?.description).length).toBeLessThanOrEqual(200);
 		expect(
 			findBlocks(lastPage, "context").some((c) =>
 				String(c.text).includes("Load more scans further"),
 			),
 		).toBe(false);
+		expect(emptyActions(lastPage).map((a) => a.label)).toEqual(["Clear filters"]);
 	});
 
 	test("the wording never claims the whole catalog: the toggle says it applies per page, and an unfiltered miss keeps its own message", async () => {

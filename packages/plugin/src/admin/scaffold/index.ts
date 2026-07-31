@@ -30,6 +30,15 @@
  *   - `filterPanel(...)` / `emptyState(...)` — the shared layout vocabulary: a
  *     filter form collapsed behind its own active-filter summary, and a real
  *     `empty` block.
+ *   - `listResult(...)` / `listIntroLine(...)` / `rowCountLine(...)` /
+ *     `clearFiltersButton(...)` — how a list states its SIZE and its two zero
+ *     states (INC-12): an honest, page-scoped-or-whole-set row count in the intro
+ *     line, a designed zero-results state that offers `Clear filters`, and the
+ *     separate, non-accusatory state for a collection that is simply empty.
+ *     Written once so the screens configure the wording and nothing else.
+ *     `tax-page.ts` / `shipping-page.ts` still hand-roll their own `Clear
+ *     filters` button and are the next-touch consolidation onto
+ *     `clearFiltersButton`.
  *   - `readAdminTokens(ctx)` — admin + service token threading (one source).
  *   - `Notice`/`noticeBanner(...)`/`failClosedResponse(...)` — consistent
  *     banner + fail-closed rendering.
@@ -84,13 +93,17 @@ export {
 	type FilterPanelOptions,
 } from "./layout.js";
 export {
+	clearFiltersButton,
 	createListDetailHandler,
 	customAction,
 	leafLevel,
+	listIntroLine,
 	listLevel,
+	listResult,
 	readBoolean,
 	readCarrier,
 	readString,
+	rowCountLine,
 	asRecord,
 	type CustomActionApi,
 	type CustomActionFn,
@@ -99,6 +112,10 @@ export {
 	type ListDetailInput,
 	type ListDetailScreenConfig,
 	type ListLevelDef,
+	type ListResult,
+	type ListResultOptions,
+	type RowNoun,
+	type ZeroStateCopy,
 } from "./list-detail.js";
 export {
 	backButton,
