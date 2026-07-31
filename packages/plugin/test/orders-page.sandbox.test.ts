@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { ORDER_STATE_MACHINE } from "@otta-sh/domain";
 import { decodeCarrier, encodeCarrier } from "../src/admin/scaffold/carrier.js";
+import { decodeListCursor } from "../src/admin/scaffold/nav.js";
 import {
 	SHORT_ID_CONFIRM_LEN,
 	SHORT_ID_MIN,
@@ -794,6 +795,25 @@ function onDetailOf(blocks: LooseBlock[], orderId: string): boolean {
 	return fieldEntries(blocks).includes(`Order ID=${orderId}`);
 }
 
+/** The `YYYY-MM-DD` (UTC) `n` days before `day` — how a relative period's
+ *  expected bounds are computed here, so these tests are not a function of the
+ *  day they run on (the shape the Reports default-range test uses). */
+function dayBefore(day: string, n: number): string {
+	return new Date(Date.parse(`${day}T00:00:00.000Z`) - n * 86_400_000).toISOString().slice(0, 10);
+}
+
+/** The query the console actually sent for the LAST orders list read. */
+function listQuery(requests: ReadonlyArray<{ url: string }>): URLSearchParams {
+	const url = requests.filter((r) => r.url.startsWith("/admin/orders?")).at(-1)?.url ?? "";
+	return new URLSearchParams(url.split("?")[1] ?? "");
+}
+
+/** The filter panel's period `select` options, in render order. */
+function periodOptions(blocks: LooseBlock[]): Array<{ value: string; label: string }> {
+	const period = field(formFor(blocks, "orders:apply-filter"), "period");
+	return (period?.options ?? []) as Array<{ value: string; label: string }>;
+}
+
 /** The states the DA-6 transition block offers, read back out of its DERIVED
  *  per-state action ids (`orders:transition-<state>`). */
 function transitionStates(blocks: LooseBlock[]): string[] {
@@ -960,7 +980,7 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(blocks.map((b) => b.type)).toEqual([
 			"header",
 			"context",
-			"accordion", // the filter panel — collapsed (L-2: 4 fields)
+			"accordion", // the filter panel — collapsed (L-2: 3 fields)
 			"table", // THE DATA
 			"form", // the drill-in picker (L-7), which sits BELOW it (P-4)
 		]);
@@ -1006,7 +1026,10 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(findBlocks(blocks, "section")).toEqual([]);
 		expect(accessories(blocks)).toEqual([]);
 		const form = formFor(blocks, "orders:apply-filter");
-		expect(fieldIds(form)).toEqual(["status", "from", "to", "search"]);
+		// THREE fields, down from four: the two date inputs became one `Period`
+		// select (INC-11). Height on this panel is recovered by CUTTING FIELDS —
+		// never by gridding them, which would split one filter across submits.
+		expect(fieldIds(form)).toEqual(["status", "period", "search"]);
 		const status = field(form, "status");
 		expect(status?.initial_value).toBe("any");
 		const values = ((status?.options ?? []) as Array<{ value: string }>).map((o) => o.value);
@@ -1087,6 +1110,259 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(clearedFormId).not.toBe(formFor(filtered, "orders:apply-filter")?.block_id);
 		expect(clearedFormId).toBe(unfilteredFormId);
 		expect(field(formFor(cleared, "orders:apply-filter"), "status")?.initial_value).toBe("any");
+	});
+
+	// -- INC-11: one Period select ----------------------------------------------
+
+	test("the Period select offers the five options as HUMAN values, and no date field is on screen until one is asked for (R-17a, F-6a)", async () => {
+		await boot();
+		const blocks = await list();
+		const options = periodOptions(blocks);
+		expect(options.map((o) => o.value)).toEqual([
+			"Any time",
+			"Last 7 days",
+			"Last 30 days",
+			"Last 90 days",
+			"Custom…",
+		]);
+		// The pinned renderer's trigger shows the raw VALUE, so the value IS the
+		// label — `last7` on screen would be exactly the visible plumbing this file
+		// removed everywhere else (R-17a, F-6c).
+		for (const o of options) expect(o.value).toBe(o.label);
+		expect(options.map((o) => o.value)).not.toContain(""); // F-6a: never a blank trigger
+		const form = formFor(blocks, "orders:apply-filter");
+		expect(field(form, "period")?.initial_value).toBe("Any time");
+		expect(field(form, "from")).toBeUndefined();
+		expect(field(form, "to")).toBeUndefined();
+		// Interval notation is gone from the operator's view — from the labels AND
+		// from the option values, which are labels here.
+		for (const f of (form?.fields ?? []) as Array<Record<string, unknown>>) {
+			expect(String(f.label)).not.toMatch(/inclusive|exclusive/i);
+		}
+		// An unfiltered list asks for NO window: `Any time` is the absence of one,
+		// not a very wide one.
+		expect(listQuery(stub!.requests).has("from")).toBe(false);
+		expect(listQuery(stub!.requests).has("to")).toBe(false);
+	});
+
+	test("`Custom…` REPLACES the select with exactly two plainly-labelled date fields — four fields, the panel's ceiling, never five; no preset reveals them", async () => {
+		await boot();
+		const custom = await submitForm(await list(), "orders:apply-filter", {
+			status: "any",
+			period: "Custom…",
+			search: "",
+		});
+		assertBlockContract(custom, { screen: "orders", level: "list" });
+		const form = formFor(custom, "orders:apply-filter");
+		// The filter panel is a form of QUERY fields and nothing else — no value a
+		// record owns is editable here.
+		expect(fieldIds(form)).toEqual(["status", "from", "to", "search"]);
+		// `filterPanel` THROWS above four authored fields (a design-spec violation it
+		// refuses to hide), which is why the dates take the select's slot rather than
+		// standing beside it: status + period + from + to + search is five.
+		expect(fieldIds(form).length).toBeLessThanOrEqual(4);
+		expect(field(form, "period")).toBeUndefined();
+		expect(field(form, "from")?.type).toBe("date_input");
+		expect(field(form, "to")?.type).toBe("date_input");
+		expect(field(form, "from")?.label).toBe("From");
+		expect(field(form, "to")?.label).toBe("To");
+		// Still collapsed, still one form (L-2/L-4) — the shape changed, not the panel.
+		expect(group(custom, "orders:filters")?.default_open).not.toBe(true);
+		// Picking `Custom…` alone filters NOTHING: no window on the wire until days
+		// are given, and nothing claims otherwise.
+		expect(group(custom, "orders:filters")?.label).toBe("Filters");
+		expect(listQuery(stub!.requests).has("from")).toBe(false);
+
+		// …and nothing else reveals the dates: every preset keeps the select.
+		for (const option of ["Any time", "Last 7 days", "Last 30 days", "Last 90 days"]) {
+			const blocks = await submitForm(await list(), "orders:apply-filter", {
+				status: "any",
+				period: option,
+				search: "",
+			});
+			expect(fieldIds(formFor(blocks, "orders:apply-filter"))).toEqual([
+				"status",
+				"period",
+				"search",
+			]);
+		}
+	});
+
+	test("a custom period is INCLUSIVE at both ends: the To day is queried to its LAST instant, not padded to the midnight that dropped it", async () => {
+		await boot();
+		const custom = await submitForm(await list(), "orders:apply-filter", {
+			status: "any",
+			period: "Custom…",
+			search: "",
+		});
+		const applied = await submitForm(custom, "orders:apply-filter", {
+			status: "any",
+			from: "2026-07-10",
+			to: "2026-07-12",
+			search: "",
+		});
+		const query = listQuery(stub!.requests);
+		expect(query.get("from")).toBe("2026-07-10T00:00:00.000Z");
+		// The console now has ONE date-bounds semantics, the Reports screen's: whole
+		// days, both ends inclusive. `T00:00:00Z` here asked for orders placed before
+		// 12 Jul began — so the day the operator named was the one day missing, which
+		// is what `To (exclusive)` was labelling rather than fixing.
+		expect(query.get("to")).toBe("2026-07-12T23:59:59.999Z");
+		// The panel quotes the DAYS the operator typed, and prefills days back.
+		expect(group(applied, "orders:filters")?.label).toBe("Filters (2 active)");
+		expect(findBlock(applied, "section")?.text).toBe("from: 2026-07-10 · to: 2026-07-12");
+		const form = formFor(applied, "orders:apply-filter");
+		expect(field(form, "from")?.initial_value).toBe("2026-07-10");
+		expect(field(form, "to")?.initial_value).toBe("2026-07-12");
+	});
+
+	test("a relative period resolves against UTC now at RENDER time, and the panel names the PRESET — never a second, independently computed copy of the dates", async () => {
+		await boot();
+		const today = new Date().toISOString().slice(0, 10);
+		const blocks = await submitForm(await list(), "orders:apply-filter", {
+			status: "any",
+			period: "Last 7 days",
+			search: "",
+		});
+		const query = listQuery(stub!.requests);
+		// 7 WHOLE DAYS, today included — today and the six before it, not `now-168h`.
+		expect(query.get("from")).toBe(`${dayBefore(today, 6)}T00:00:00.000Z`);
+		expect(query.get("to")).toBe(`${today}T23:59:59.999Z`);
+		// The active-filter part names the preset. A part quoting the resolved dates
+		// would be a SECOND computation of the same period and the two can differ
+		// across a midnight — the divergence the Reports period was fixed for.
+		expect(group(blocks, "orders:filters")?.label).toBe("Filters (1 active)");
+		expect(findBlock(blocks, "section")?.text).toBe("period: Last 7 days");
+		expect(String(findBlock(blocks, "section")?.text)).not.toContain(today);
+		expect(field(formFor(blocks, "orders:apply-filter"), "period")?.initial_value).toBe(
+			"Last 7 days",
+		);
+
+		for (const [option, days] of [
+			["Last 30 days", 30],
+			["Last 90 days", 90],
+		] as const) {
+			await submitForm(await list(), "orders:apply-filter", {
+				status: "any",
+				period: option,
+				search: "",
+			});
+			const presetQuery = listQuery(stub!.requests);
+			expect(presetQuery.get("from")).toBe(`${dayBefore(today, days - 1)}T00:00:00.000Z`);
+			expect(presetQuery.get("to")).toBe(`${today}T23:59:59.999Z`);
+		}
+	});
+
+	test("the period survives Load more: the cursor carries the PRESET (not the instants it resolved to) and the next page asks the same window", async () => {
+		await boot();
+		const today = new Date().toISOString().slice(0, 10);
+		const filtered = await submitForm(await list(), "orders:apply-filter", {
+			status: "paid",
+			period: "Last 7 days",
+			search: "",
+		});
+		const token = tableWithId(filtered, "orders:list")?.next_cursor as string;
+		const carried = decodeListCursor(token);
+		// A relative period is stored RELATIVE. Freezing its instants into the token
+		// would make page 2 answer a question page 1 never asked once the token
+		// outlived the day it was minted on.
+		expect(carried?.f).toEqual({ status: "paid", period: "last7" });
+
+		stub!.requests.length = 0;
+		const nextPage = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "block_action",
+				action_id: "orders:page",
+				value: { cursor: token, sort: null },
+			}),
+		);
+		// The GET sends the SERVICE cursor alone — that token already embeds the
+		// window, and re-sending a freshly resolved one alongside it is how the two
+		// come to disagree.
+		const paged = listQuery(stub!.requests);
+		expect(paged.get("cursor")).toBe("svc-cursor-1");
+		expect(paged.has("from")).toBe(false);
+		// What the OPERATOR must still see on page 2 is the period they chose, which
+		// is what the console's own token restores.
+		expect(field(formFor(nextPage, "orders:apply-filter"), "period")?.initial_value).toBe(
+			"Last 7 days",
+		);
+		expect(field(formFor(nextPage, "orders:apply-filter"), "status")?.initial_value).toBe("paid");
+		expect(findBlock(nextPage, "section")?.text).toBe("status: paid · period: Last 7 days");
+		// And re-applying that restored panel asks the same window as page 1.
+		await submitForm(nextPage, "orders:apply-filter", {
+			status: "paid",
+			period: "Last 7 days",
+			search: "",
+		});
+		const reapplied = listQuery(stub!.requests);
+		expect(reapplied.get("from")).toBe(`${dayBefore(today, 6)}T00:00:00.000Z`);
+		expect(reapplied.get("to")).toBe(`${today}T23:59:59.999Z`);
+	});
+
+	test("emptying both dates LEAVES the custom shape — the select returns at `Any time` and the window is dropped; `Clear filters` does it in one click", async () => {
+		await boot();
+		const custom = await submitForm(await list(), "orders:apply-filter", {
+			status: "paid",
+			period: "Custom…",
+			search: "",
+		});
+		const ranged = await submitForm(custom, "orders:apply-filter", {
+			status: "paid",
+			from: "2026-07-10",
+			to: "2026-07-12",
+			search: "",
+		});
+		// The custom shape sustains ITSELF: its submits carry dates and no `period`
+		// field, and the range must not fall back to `Any time` on every re-apply.
+		expect(fieldIds(formFor(ranged, "orders:apply-filter"))).toEqual([
+			"status",
+			"from",
+			"to",
+			"search",
+		]);
+
+		const emptied = await submitForm(ranged, "orders:apply-filter", {
+			status: "paid",
+			from: "",
+			to: "",
+			search: "",
+		});
+		const form = formFor(emptied, "orders:apply-filter");
+		expect(fieldIds(form)).toEqual(["status", "period", "search"]);
+		expect(field(form, "period")?.initial_value).toBe("Any time");
+		expect(field(form, "status")?.initial_value).toBe("paid"); // the rest survives
+		expect(findBlock(emptied, "section")?.text).toBe("status: paid");
+		expect(listQuery(stub!.requests).has("to")).toBe(false);
+
+		const cleared = await click(findBlock(ranged, "section")?.accessory as Record<string, unknown>);
+		expect(fieldIds(formFor(cleared, "orders:apply-filter"))).toEqual([
+			"status",
+			"period",
+			"search",
+		]);
+		expect(field(formFor(cleared, "orders:apply-filter"), "period")?.initial_value).toBe(
+			"Any time",
+		);
+	});
+
+	test("BACK from a detail resets the period to its default — scaffold parity, pinned as a decision rather than left as a surprise", async () => {
+		await boot();
+		const filtered = await submitForm(await list(), "orders:apply-filter", {
+			status: "any",
+			period: "Last 30 days",
+			search: "",
+		});
+		expect(field(formFor(filtered, "orders:apply-filter"), "period")?.initial_value).toBe(
+			"Last 30 days",
+		);
+		const detail = await open("ord-1");
+		const back = await click(buttonWith(detail, "orders:back"));
+		// The scaffold re-lists with the level's DEFAULT filter on `back` — every
+		// filter on this screen has always behaved this way, and the period is not
+		// special-cased into an exception to it.
+		expect(field(formFor(back, "orders:apply-filter"), "period")?.initial_value).toBe("Any time");
+		expect(findBlocks(back, "section")).toEqual([]);
 	});
 
 	test("UNFILTERED zero rows renders one real `empty` block and OMITS the table (E-2); filtered-to-zero keeps the table's `empty_text`", async () => {
