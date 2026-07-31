@@ -53,9 +53,12 @@ cosmetic — the domain's window is `[startsAt, expiresAt)` with an EXCLUSIVE
 end, so an expiry pinned to midnight would retire the code at the START of the
 day the operator picked: a full day early, and a day earlier than this screen's
 own `Valid` reading claims. Same-day windows are now expressible. Re-submitting
-the day a bound already falls on is NOT treated as an edit: the stored instant
-survives byte for byte, sub-day time included, so an untouched save cannot move
-a bound the screen only ever displayed to day precision. A submitted day that
+the day a bound already falls on is NOT treated as an edit: an untouched save
+preserves canonically-stored bounds byte for byte, sub-day time included, so
+it cannot move a bound the screen only ever displayed to day precision. Legacy
+non-canonical bounds — writable via the service, which only length-checks —
+re-anchor to the displayed day's edge on first save instead: widening, to
+match the display. A submitted day that
 does not exist is REFUSED rather than rolled forward — `2027-02-30` parses
 happily and would otherwise be stored verbatim, then sort after every real day
 in February — and a date field arriving as a non-string is refused with a
@@ -86,9 +89,11 @@ cap rides in `Discount`, the floor in `Minimum spend`, and both use bounds in
 the Redemptions panel.
 
 **Blanking one of them requires having opened the disclosure.** A blank
-arriving from a bound the operator never revealed cannot be an instruction —
-they could not see the field, let alone empty it — so it reads as "unchanged"
-too. Today that changes nothing, because the pinned renderer posts each hidden
+arriving while the disclosure is collapsed at submit cannot be an
+instruction — the check is the toggle's state at submit, not whether the
+operator ever revealed the field, so a deliberate clear that is then
+re-collapsed also reads as "unchanged" too. Today that changes nothing,
+because the pinned renderer posts each hidden
 field's own `initial_value`; it closes the one remaining way property (3) below
 could be defeated, by a renderer that CLEARED hidden fields rather than dropping
 them, which the absent-key fallback alone would not catch.
