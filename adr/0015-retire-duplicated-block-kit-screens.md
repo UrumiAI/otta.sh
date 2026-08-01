@@ -1,15 +1,19 @@
-# 0015. The duplicated Block Kit Orders and Pricing & inventory screens are retired
+# 0015. The duplicated Block Kit Orders and Pricing & inventory screens are to be retired, once their write paths move off them
 
-- Status: accepted
+- Status: accepted — the retirement is **authorised and not yet landed**; the screens are still
+  in the tree until the increments below merge.
 - Date: 2026-08-01
 - Supersedes: **one clause of [ADR-0014](./0014-second-native-descriptor-for-react-admin.md)** —
   "The Block Kit screens stay in the tree and stay green until a migration increment replaces
-  each one" — **as to Orders and Pricing & inventory only**. ADR-0014 is otherwise unchanged,
-  including Decision 6 (Tax, Shipping and Settings stay Block Kit permanently; Reports and
-  Coupons stay unruled).
+  each one" — **as to Orders and Pricing & inventory only**. That clause is the third bullet of
+  ADR-0014's "ADR-0006 Decision 1 is REAFFIRMED, not weakened" section, which is why superseding
+  it obliges this record to reaffirm ADR-0006 Decision 1 in its turn (see below) rather than
+  leaving the reaffirmation to be inferred. ADR-0014 is otherwise unchanged, including Decision 6
+  (Tax, Shipping and Settings stay Block Kit permanently; Reports and Coupons stay unruled).
 - Relates to: [ADR-0006](./0006-trusted-in-process-deployment.md) — **Decision 1 is reaffirmed
   again here**, not weakened; [ADR-0013](./0013-product-title-is-cms-owned.md) (the read-only
-  Title rule binds the surviving Pricing & inventory screen exactly as it bound the retired one)
+  Title rule binds the surviving Pricing & inventory screen exactly as it binds the one being
+  retired)
 
 ## Context
 
@@ -37,9 +41,12 @@ rendered output**:
   "the write path is that handler, so there is exactly one of it", as the route's own comment
   puts it.
 - Every console write is forwarded through `forwardConsoleAct` (`console-transport.ts`) as a
-  **synthesized Block Kit interaction**: the `block_action` a button would have fired on Orders,
-  or, on Pricing & inventory, the `form_submit` a form would have fired, carrier minted from the
-  payload.
+  **synthesized Block Kit interaction**, shaped per action rather than per screen: an action the
+  Block Kit screen renders as a form is forwarded as the `form_submit` that form would have
+  fired, carrier minted from the payload; every other action is forwarded as the `block_action`
+  a button would have fired. Orders is entirely the latter; Pricing & inventory is four form
+  saves plus one button, `products:remove-stock`, forwarded as a `block_action` like any Orders
+  write.
 - The outcome is then **scraped back out of the returned block tree**. `firstNotice(blocks)`
   reads the operator-facing banner off the render, and `blocks.length === 0` is interpreted as
   "nothing applied" — because an empty tree is the Block Kit dispatcher's fall-through, and the
@@ -52,10 +59,19 @@ Its cost is only visible now. **The Block Kit renderer for these two screens is 
 the React screens that replaced them**, and the console's signal that a write did nothing is the
 *absence of rendering*.
 
+The rationale above explains the choice but does not prevent a repeat, so the process gap gets
+named too: **a deliberately temporary, load-bearing bridge was built with no recorded expiry.**
+Neither migration increment said when the forwarding would come out or what would have to be true
+first, and a bridge with no stated end date becomes the arrangement it was meant to precede. The
+lesson is to record the retirement condition when the coupling is introduced — not a release
+later, in a record like this one.
+
 **Reads are already independent.** The console's list and detail paths call the admin clients
-directly and borrow only pure helpers (filter translation, the parallel secondary-surface load,
-the offered-transition computation, the page limit and the period vocabulary). Only the **write**
-path is entangled.
+directly and borrow only **Block-Kit-free** helpers: filter translation, the parallel
+secondary-surface load, the offered-transition computation, the page limit and the period
+vocabulary. Block-Kit-free is not side-effect-free — the secondary-surface load issues four
+parallel admin-client calls — and the claim being made is the narrower one: none of these helpers
+renders or reads a block tree. Only the **write** path is entangled.
 
 So retiring these two screens is **a rewrite of the write path, not a deletion of two files**.
 That is why it is an ADR and a multi-increment effort rather than a chore, and why anyone reading
@@ -83,7 +99,7 @@ hide, and a green happy path is not evidence of it.**
 
 ## Decision
 
-**The Block Kit Orders and Pricing & inventory screens are removed from the tree — page modules,
+**The Block Kit Orders and Pricing & inventory screens are to be removed from the tree — page modules,
 descriptor entries, dispatcher branches and sandbox suites — after, and only after, their write
 paths are re-implemented as structured, block-free actions the React console calls directly.**
 
@@ -103,7 +119,17 @@ Concretely:
    not a port. Dropping one of them is not authorised by this record and would need its own.
 4. **Order is a precondition, not a preference.** A screen may not be deleted before the write
    path is off it. Each increment extracts, proves, then deletes.
-5. **The behavioural coverage moves; only the rendering coverage dies.** The two suites total
+5. **The read path's helpers leave the doomed modules before the modules do.** The console's read
+   path borrows a *class* of Block-Kit-free helpers from the two page modules being deleted:
+   filter translation and filter-form reading, the secondary-surface load, transition
+   computation, list narrowing, threshold and tax-class reading, and the shared page-limit,
+   period, cancellation-reason and reconciliation-outcome vocabularies. "The read path is
+   untouched" is therefore true of behaviour and false of the build — deleting a module deletes
+   its exports. **Each increment relocates every such helper its screen's console still imports
+   into a module that survives, as a move with no behavioural change, before the deletion** — not
+   as part of it. The rule is deliberately the class and not a list of symbols: an enumeration
+   written here would rot as the code moves, and the compiler names the members on the day.
+6. **The behavioural coverage moves; only the rendering coverage dies.** The two suites total
    over six thousand lines, most of which assert Block Kit *rendering* and cannot outlive the
    renderer. Everything asserting **behaviour** — above all the three refusals — moves onto the
    new path, and each increment states which assertions were dropped as render-only and why. A
@@ -115,13 +141,15 @@ Concretely:
   Nothing here weakens it and nothing here reopens them.
 - **Reports and Coupons stay Block Kit and remain unruled.** ADR-0014 Decision 6 leaves them to be
   re-evaluated after the Pricing & inventory migration; **this record does not make that ruling**
-  and must not be cited as having made it. This ADR retires exactly two screens. It is not a
-  decision to retire Block Kit.
+  and must not be cited as having made it. This ADR authorises the retirement of exactly two
+  screens. It is not a decision to retire Block Kit.
 - **`packages/plugin/src/admin/scaffold/` stays.** Five screens call `createListDetailHandler`
   today; three — Tax, Shipping and Coupons — still do afterwards. The scaffold is not a
-  compatibility shim for the retired screens; it is the shared shape of the screens that remain.
-- **The console's read path is untouched.** It was never coupled to Block Kit, and this effort
-  does not restructure it to look as if it was.
+  compatibility shim for the screens being retired; it is the shared shape of the screens that
+  remain.
+- **The console's read path is untouched behaviourally.** It was never coupled to Block Kit, and
+  this effort does not restructure it to look as if it was. Its helpers change module (Decision
+  5); what they do does not change.
 
 ### ADR-0006 Decision 1 is reaffirmed, again
 
