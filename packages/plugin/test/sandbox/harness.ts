@@ -77,6 +77,61 @@ async function findFreePort(): Promise<number> {
 	});
 }
 
+/**
+ * True when a boot failure has the bind-race signature: `findFreePort()`
+ * checks a port is free, then hands it to workerd's own bind a moment
+ * later — under parallel suite load another process can grab it in
+ * between (INC-25). Node reports this as `EADDRINUSE`; workerd's own
+ * stderr (surfaced via the "workerd exited early ..." error text) says
+ * `bind(...): Address already in use`. Anything else is a real defect
+ * and must not be retried.
+ */
+function isPortBindRace(err: unknown): boolean {
+	const message = err instanceof Error ? err.message : String(err);
+	return /EADDRINUSE/i.test(message) || /address already in use/i.test(message);
+}
+
+export interface BootRetryOptions {
+	/** Overridable for tests; defaults to the real `findFreePort`. */
+	allocatePort?: () => Promise<number>;
+	/** Bounded — a real defect must fail loudly, not retry forever. */
+	maxAttempts?: number;
+	/** Tiny pause between attempts; 0 in tests. */
+	backoffMs?: number;
+}
+
+/**
+ * Boots workerd with bounded retry on the port-bind race (INC-25): on an
+ * EADDRINUSE-shaped failure, allocate a FRESH port and retry (≤3 attempts
+ * by default, tiny backoff). Any other boot failure — a real compile error,
+ * a genuine crash — is rethrown immediately on the first attempt; it is
+ * never retried, so this never masks an actual defect.
+ */
+export async function bootWithPortRetry<T>(
+	boot: (port: number) => Promise<T>,
+	{ allocatePort = findFreePort, maxAttempts = 3, backoffMs = 50 }: BootRetryOptions = {},
+): Promise<T> {
+	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+		const port = await allocatePort();
+		try {
+			return await boot(port);
+		} catch (err) {
+			if (!isPortBindRace(err) || attempt === maxAttempts) {
+				if (attempt > 1 && err instanceof Error) {
+					throw new Error(
+						`workerd port-bind race persisted after ${attempt} attempts: ${err.message}`,
+						{ cause: err },
+					);
+				}
+				throw err;
+			}
+			await new Promise((resolve) => setTimeout(resolve, backoffMs));
+		}
+	}
+	// Unreachable: the loop always returns or throws on its final iteration.
+	throw new Error("bootWithPortRetry: exhausted attempts without a result");
+}
+
 async function waitUntilReady(baseUrl: string, deadlineMs: number): Promise<void> {
 	const start = Date.now();
 	let lastErr: unknown;
@@ -162,29 +217,36 @@ export async function loadPluginInSandbox(options: SandboxOptions): Promise<Sand
 	// tsdown emits a single entry flat into outDir under the entry's basename.
 	const bundlePath = path.join(distDir, `${path.basename(entryRel, ".ts")}.mjs`);
 	const configPath = path.join(workDir, "config.capnp");
-	const port = await findFreePort();
-	await writeFile(configPath, capnpConfig(port, path.relative(workDir, bundlePath)), "utf8");
 
-	const child: ChildProcessByStdio<null, Readable, Readable> = spawn(
-		WORKERD_BIN,
-		["serve", "-I", CAPNP_IMPORT_ROOT, configPath],
-		{ cwd: workDir, stdio: ["ignore", "pipe", "pipe"] },
-	);
-	let stderr = "";
-	child.stderr.on("data", (chunk: Buffer) => {
-		stderr += chunk.toString();
-	});
-	const exitPromise = new Promise<never>((_resolve, reject) => {
-		child.on("exit", (code) => {
-			if (code !== null && code !== 0) {
-				reject(new Error(`workerd exited early with code ${code}:\n${stderr}`));
-			}
+	// findFreePort() and workerd's own bind are two separate steps (see
+	// bootWithPortRetry above) — wrap the whole spawn-and-wait sequence so a
+	// lost bind race gets a fresh port on retry, not the same doomed one.
+	const { child, baseUrl } = await bootWithPortRetry(async (port) => {
+		await writeFile(configPath, capnpConfig(port, path.relative(workDir, bundlePath)), "utf8");
+
+		const bootChild: ChildProcessByStdio<null, Readable, Readable> = spawn(
+			WORKERD_BIN,
+			["serve", "-I", CAPNP_IMPORT_ROOT, configPath],
+			{ cwd: workDir, stdio: ["ignore", "pipe", "pipe"] },
+		);
+		let stderr = "";
+		bootChild.stderr.on("data", (chunk: Buffer) => {
+			stderr += chunk.toString();
 		});
-	});
+		const exitPromise = new Promise<never>((_resolve, reject) => {
+			bootChild.on("exit", (code) => {
+				if (code !== null && code !== 0) {
+					reject(new Error(`workerd exited early with code ${code}:\n${stderr}`));
+				}
+			});
+		});
 
-	const baseUrl = `http://127.0.0.1:${port}`;
-	await Promise.race([waitUntilReady(baseUrl, 10_000), exitPromise]).catch((err) => {
-		throw err instanceof Error ? new Error(`${err.message}\nstderr:\n${stderr}`) : err;
+		const candidateBaseUrl = `http://127.0.0.1:${port}`;
+		await Promise.race([waitUntilReady(candidateBaseUrl, 10_000), exitPromise]).catch((err) => {
+			throw err instanceof Error ? new Error(`${err.message}\nstderr:\n${stderr}`) : err;
+		});
+
+		return { child: bootChild, baseUrl: candidateBaseUrl };
 	});
 
 	async function invoke(
