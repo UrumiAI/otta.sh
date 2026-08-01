@@ -81,14 +81,15 @@ async function findFreePort(): Promise<number> {
  * True when a boot failure has the bind-race signature: `findFreePort()`
  * checks a port is free, then hands it to workerd's own bind a moment
  * later — under parallel suite load another process can grab it in
- * between (INC-25). Node reports this as `EADDRINUSE`; workerd's own
- * stderr (surfaced via the "workerd exited early ..." error text) says
- * `bind(...): Address already in use`. Anything else is a real defect
- * and must not be retried.
+ * between (INC-25). workerd's own stderr (surfaced via the "workerd exited
+ * early ..." error text) says `bind(...): Address already in use` — and
+ * Node's native `EADDRINUSE` listen errors ("listen EADDRINUSE: address
+ * already in use ...") already contain that same phrase, so one check
+ * covers both. Anything else is a real defect and must not be retried.
  */
 function isPortBindRace(err: unknown): boolean {
 	const message = err instanceof Error ? err.message : String(err);
-	return /EADDRINUSE/i.test(message) || /address already in use/i.test(message);
+	return /address already in use/i.test(message);
 }
 
 export interface BootRetryOptions {
@@ -116,8 +117,13 @@ export async function bootWithPortRetry<T>(
 		try {
 			return await boot(port);
 		} catch (err) {
-			if (!isPortBindRace(err) || attempt === maxAttempts) {
-				if (attempt > 1 && err instanceof Error) {
+			const isRace = isPortBindRace(err);
+			if (!isRace || attempt === maxAttempts) {
+				// Only label this as a persisted race when it actually IS one —
+				// an unrelated failure on a later attempt (e.g. attempt 1 lost the
+				// bind race, attempt 2 hit a real compile error) must surface
+				// unwrapped, not be misattributed to the race.
+				if (isRace && attempt > 1 && err instanceof Error) {
 					throw new Error(
 						`workerd port-bind race persisted after ${attempt} attempts: ${err.message}`,
 						{ cause: err },
@@ -234,7 +240,11 @@ export async function loadPluginInSandbox(options: SandboxOptions): Promise<Sand
 			stderr += chunk.toString();
 		});
 		const exitPromise = new Promise<never>((_resolve, reject) => {
-			bootChild.on("exit", (code) => {
+			// "close", not "exit" — Node only guarantees the stdio streams have
+			// fully drained by "close"; building the rejection off "exit" risked
+			// racing a not-yet-flushed stderr chunk (empirically fine, but
+			// unguaranteed by Node's own semantics).
+			bootChild.on("close", (code) => {
 				if (code !== null && code !== 0) {
 					reject(new Error(`workerd exited early with code ${code}:\n${stderr}`));
 				}
@@ -242,9 +252,16 @@ export async function loadPluginInSandbox(options: SandboxOptions): Promise<Sand
 		});
 
 		const candidateBaseUrl = `http://127.0.0.1:${port}`;
-		await Promise.race([waitUntilReady(candidateBaseUrl, 10_000), exitPromise]).catch((err) => {
+		try {
+			await Promise.race([waitUntilReady(candidateBaseUrl, 10_000), exitPromise]);
+		} catch (err) {
+			// bootWithPortRetry retries up to 3x now — a failed OR timed-out
+			// attempt (e.g. a slow boot that never becomes ready) must never
+			// leave a live workerd behind holding the port; kill defensively
+			// (a no-op if the bind-race case already exited on its own).
+			bootChild.kill();
 			throw err instanceof Error ? new Error(`${err.message}\nstderr:\n${stderr}`) : err;
-		});
+		}
 
 		return { child: bootChild, baseUrl: candidateBaseUrl };
 	});
