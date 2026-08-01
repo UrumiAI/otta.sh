@@ -36,6 +36,7 @@ import {
 	formatTimestamp,
 	orderStateCell,
 	parseMinorUnitsInput,
+	reconciliationAlertSentence,
 	reconciliationSummary,
 	refundCapabilityText,
 	refundConfirmText,
@@ -290,7 +291,14 @@ export function OrderDetail({
 				<Notice
 					variant="alert"
 					title="Needs reconciliation"
-					description={`Settlement flagged this order: ${order.reconciliationFlag}. Resolve it under Fulfilment — recording a resolution moves no money and does not change the order.`}
+					// SHARED, and the trim is the reason it has to be. The sentence
+					// quotes a flag the SERVICE produced, so its length is service data
+					// — the one banner on this screen that can blow §1's 240-char
+					// budget through no fault of the copy. `reconciliationAlertSentence`
+					// applies `fitBanner` inside itself precisely so neither surface can
+					// render the untrimmed version; a hand-copied template here had the
+					// same words and none of the budget.
+					description={reconciliationAlertSentence(order.reconciliationFlag)}
 					testId="detail-reconciliation"
 				/>
 			)}

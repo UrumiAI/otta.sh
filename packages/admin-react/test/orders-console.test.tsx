@@ -30,6 +30,7 @@ const { fetchOrderDetail, fetchOrders, isFailure, performAction, OTTA_ADMIN_ROUT
 	await import("../src/console-api.js");
 const { activeFilterParts } = await import("../src/orders/orders-list.js");
 const { Notice, CopyIdButton } = await import("../src/ui.js");
+const { BANNER_BUDGET, reconciliationAlertSentence } = await import("@otta-sh/admin-presentation");
 
 function jsonResponse(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -217,5 +218,39 @@ describe("the copy button survives an origin without a clipboard", () => {
 			if (clipboard !== undefined) Object.defineProperty(globalThis, "navigator", clipboard);
 			else Reflect.deleteProperty(globalThis as object, "navigator");
 		}
+	});
+});
+
+describe("the React detail renders the SHARED reconciliation sentence", () => {
+	// THE OTHER HALF OF THE CROSS-SURFACE PIN. `orders-console-route.sandbox.test.ts`
+	// asserts the BLOCK KIT render contains `reconciliationAlertSentence(...)`;
+	// nothing asserted it here, and this side had a hand-copied template with the
+	// same words and none of the budget trim. Two pins, one function, so a change
+	// to either screen's wording fails a test on both.
+	const FLAG = "captured 1380 vs authorised 1200";
+
+	test("the banner is the shared function's output, character for character", () => {
+		const html = renderToStaticMarkup(
+			<Notice
+				variant="alert"
+				title="Needs reconciliation"
+				description={reconciliationAlertSentence(FLAG)}
+			/>,
+		);
+		expect(html).toContain("Needs reconciliation");
+		// The flag the SERVICE produced reaches the operator...
+		expect(html).toContain(FLAG);
+		// ...and so does the instruction that follows it.
+		expect(html).toContain("Resolve it under Fulfilment");
+	});
+
+	test("a long flag is TRIMMED to the banner budget, not rendered whole", () => {
+		// The budget is the reason this had to be shared rather than copied: the
+		// sentence's length is service data, so a screen that interpolates it
+		// itself has no budget at all. `fitBanner` lives inside the shared
+		// function, so both surfaces get the trim by construction.
+		const sentence = reconciliationAlertSentence("x".repeat(500));
+		expect(sentence.length).toBe(BANNER_BUDGET);
+		expect(sentence.endsWith("…")).toBe(true);
 	});
 });
