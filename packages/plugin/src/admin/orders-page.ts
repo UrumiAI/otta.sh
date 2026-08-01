@@ -1,13 +1,36 @@
 import { COMMERCE_SERVICE_BASE_URL } from "../manifest.js";
 import {
 	BANNER_BUDGET,
+	CANCEL_BANNER,
+	CANCEL_CONFIRM,
+	CANCEL_GROUP_LABEL,
+	CANCEL_PICK_REASON,
+	CUSTOMER_CONTEXT_UNAVAILABLE,
+	FULLY_REFUNDED_NOTE,
+	MARK_REFUNDED_CONFIRM,
 	ORDERS_EMPTY,
 	ORDERS_LIST_INTRO,
 	ORDERS_NOUN,
 	ORDERS_NO_MATCH,
+	ORDER_LINES_EMPTY,
+	ORDER_LINES_SNAPSHOT_NOTE,
 	ORDER_STATE_SET,
 	ORDER_STATES,
+	REFUNDS_GROUP_EMPTY_LABEL,
+	REFUNDS_UNAVAILABLE,
+	REFUND_ADDITIVE_NOTE,
+	REFUND_AMOUNT_INVALID,
+	REFUND_BY_REQUIRED,
+	REFUND_PARTIAL_BANNER_TITLE,
+	REFUND_PARTIAL_GROUP_LABEL,
+	REFUND_REVIEW_STEP_PREFIX,
+	REFUND_TOO_HIGH_TITLE,
+	RESOLVE_RECONCILIATION_NOTE,
+	SHIPPING_ADDRESS_ABSENT,
+	TIMELINE_EMPTY,
+	TIMELINE_UNAVAILABLE,
 	UNFORMATTABLE,
+	cancelConfirmText,
 	formatAmount as formatTotal,
 	formatMinorUnitsInput,
 	orderStateCell,
@@ -17,6 +40,8 @@ import {
 	reconciliationSummary,
 	refundCapabilityText,
 	refundConfirmText,
+	refundTooHighText,
+	refundsGroupLabel,
 } from "@otta-sh/admin-presentation";
 import type {
 	AdminPageConfig,
@@ -209,10 +234,7 @@ const DANGER_TRANSITIONS: ReadonlyMap<string, ConfirmDialog> = new Map([
 	[
 		"refunded",
 		{
-			title: "Mark this order refunded?",
-			text: "Marks the order refunded for bookkeeping. It does not move money — record the money in Money → Refunds.",
-			confirm: "Yes, mark refunded",
-			deny: "Keep as is",
+			...MARK_REFUNDED_CONFIRM,
 			style: "danger",
 		} satisfies ConfirmDialog,
 	],
@@ -1142,12 +1164,12 @@ function orderPanel(
 				lineTotal: formatTotal(l.unitPriceCents * l.quantity, l.currency),
 			})),
 			page_action_id: actions.page, // never fires: no next_cursor (T-8), no sortable column
-			empty_text: "No line items.",
+			empty_text: ORDER_LINES_EMPTY,
 		},
 		{
 			type: "context",
 			// M-5, stated ONCE on the screen.
-			text: "Titles and prices are what the buyer paid — later product edits never change them.",
+			text: ORDER_LINES_SNAPSHOT_NOTE,
 		},
 		{
 			// M-4: a money ladder is a TWO-COLUMN TABLE, never `fields`. `fields` is
@@ -1202,7 +1224,7 @@ function customerGroup(
 					type: "context",
 					// E-3: a FAILED read names what failed, what is unaffected, and the one
 					// next step — and never reads like a successful empty.
-					text: "Customer context unavailable — it could not be loaded right now. The order itself is unaffected; reload, and check the admin token in Settings if this persists.",
+					text: CUSTOMER_CONTEXT_UNAVAILABLE,
 				},
 			],
 		};
@@ -1469,7 +1491,7 @@ function reconcileGroup(o: OrderDetailWire, open: OpenGroup): Block | undefined 
 					type: "context",
 					// DA-4: this records a decision and moves no money — say so, and never
 					// style it as danger.
-					text: "Recording a resolution logs your decision only — it moves no money and does not change the order. Refund in Money if the buyer is owed one.",
+					text: RESOLVE_RECONCILIATION_NOTE,
 				},
 				resolveForm(o.id, o.reconciliationFlag),
 			],
@@ -1560,7 +1582,7 @@ function shippingAddressBlocks(o: OrderDetailWire): Block[] {
 		return [
 			{
 				type: "context",
-				text: "No shipping address captured — this order predates capture, or is digital-only. The profile book under Order is context only, never where this order shipped.",
+				text: SHIPPING_ADDRESS_ABSENT,
 			},
 		];
 	}
@@ -1841,7 +1863,7 @@ function transitionButton(
  * line elsewhere reading "use Cancel order below" also matches `Cancel order` —
  * resolve this group by `block_id`, never by label (§15 V-1).
  */
-const CANCEL_GROUP_LABEL = "Cancel order — permanent, releases held stock";
+// `CANCEL_GROUP_LABEL` is shared with the React detail (`orders-copy.ts`).
 
 /**
  * The Cancel group. Six render modes; the destructive ones are DA-2b + DA-3:
@@ -1963,11 +1985,10 @@ function cancelBlocks(
 				{
 					type: "banner",
 					variant: "alert",
-					title: "Cancelling is permanent",
-					description:
-						"Cancelling moves this order to “cancelled”, emails the buyer and releases the held stock. It cannot be undone.",
+					title: CANCEL_BANNER.title,
+					description: CANCEL_BANNER.description,
 				},
-				{ type: "context", text: "Pick the reason — cancelling is immediate." },
+				{ type: "context", text: CANCEL_PICK_REASON },
 				{
 					type: "actions",
 					block_id: `orders:${o.id}:cancel-reasons`,
@@ -2024,10 +2045,8 @@ function cancelReasonButton(o: OrderDetailWire, reason: SelectOption): ButtonEle
 		value: { orderId: o.id, reason: reason.value, state: o.state },
 		style: "danger",
 		confirm: {
-			title: "Cancel this order?",
-			text: `Cancel this order as “${reason.label}”? This is permanent — the order cannot be un-cancelled, and the held stock is released.`,
-			confirm: "Yes, cancel the order",
-			deny: "Keep the order",
+			...CANCEL_CONFIRM,
+			text: cancelConfirmText(reason.label),
 			style: "danger",
 		},
 	};
@@ -2087,10 +2106,8 @@ function cancelReviewBody(
 					},
 					style: "danger",
 					confirm: {
-						title: "Cancel this order?",
-						text: `Cancel this order as “${reasonLabel}”? This is permanent — the order cannot be un-cancelled, and the held stock is released.`,
-						confirm: "Yes, cancel the order",
-						deny: "Keep the order",
+						...CANCEL_CONFIRM,
+						text: cancelConfirmText(reasonLabel),
 						style: "danger",
 					},
 				},
@@ -2220,7 +2237,7 @@ function moneyPanel(
 				type: "context",
 				// E-1: a secondary read failed ⇒ a `context` line in place of the body,
 				// never a banner and never a failed screen.
-				text: "Refunds are unavailable right now — the refunds service could not be reached. The order itself is unaffected; reload to try again.",
+				text: REFUNDS_UNAVAILABLE,
 			},
 		];
 	}
@@ -2339,13 +2356,13 @@ function refundsGroup(
 			// D-6a: a destructive group's label carries its CONSEQUENCE, because a
 			// label cannot be red (R-5) and a bare noun makes the dangerous control the
 			// quietest thing on the panel. 46 chars (X-35).
-			label: "Refund a different amount — cannot be reversed",
+			label: REFUND_PARTIAL_GROUP_LABEL,
 			default_open: false, // ALWAYS, for anything destructive (D-5)
 			blocks: [REFUND_PARTIAL_BANNER, refundPartialForm(o.id, cur, summary)],
 		});
 	} else if (summary.refundedTotalCents > 0) {
 		// DA-7: no control at all, one line naming the reason.
-		body.push({ type: "context", text: "Fully refunded — nothing left to refund." });
+		body.push({ type: "context", text: FULLY_REFUNDED_NOTE });
 	}
 	// At a ZERO CEILING there is deliberately no line here: D-6b replaces the
 	// degenerate `$0.00 of $0.00` ratio in the LABEL with the fact itself, and the
@@ -2366,8 +2383,11 @@ function refundsGroup(
 		// `$0.00 of $0.00 refunded` tells an operator nothing and reads like a bug.
 		label: fitLabel(
 			summary.ceilingCents > 0
-				? `Refunds — ${formatTotal(summary.refundedTotalCents, cur)} of ${formatTotal(summary.ceilingCents, cur)} refunded`
-				: "Refunds — nothing captured, nothing to refund",
+				? refundsGroupLabel(
+						formatTotal(summary.refundedTotalCents, cur),
+						formatTotal(summary.ceilingCents, cur),
+					)
+				: REFUNDS_GROUP_EMPTY_LABEL,
 		),
 		default_open: open === "refunds",
 		blocks: body,
@@ -2380,9 +2400,11 @@ function refundsGroup(
 const REFUND_PARTIAL_BANNER: Block = {
 	type: "banner",
 	variant: "alert",
-	title: "A recorded refund cannot be reversed here",
-	description:
-		"Review the amount on the next step. Refunds are additive: recording one twice records two refunds.",
+	title: REFUND_PARTIAL_BANNER_TITLE,
+	// THE STEP REFERENCE IS THIS SURFACE'S ALONE. `REFUND_ADDITIVE_NOTE` is the
+	// half both screens must say; only this one has a staged review step to
+	// point at, so only this one names it. See `orders-copy.ts`.
+	description: `${REFUND_REVIEW_STEP_PREFIX} ${REFUND_ADDITIVE_NOTE}`,
 };
 
 /** DA-2b's full-remaining refund. `value` carries the amount AND
@@ -2630,7 +2652,7 @@ function historyPanel(
 		blocks.push({
 			type: "context",
 			// E-3: names what failed, what is unaffected, and the one next step.
-			text: "Timeline unavailable — it could not be loaded right now. The order itself is unaffected; reload, and check the admin token in Settings if this persists.",
+			text: TIMELINE_UNAVAILABLE,
 		});
 	} else {
 		const shown = timeline.entries.slice(-TIMELINE_CAP);
@@ -2656,7 +2678,7 @@ function historyPanel(
 				detail: timelineDetail(e),
 			})),
 			page_action_id: actions.page, // never fires: no next_cursor (T-8), no sortable column
-			empty_text: "No timeline activity yet.",
+			empty_text: TIMELINE_EMPTY,
 		});
 		blocks.push({
 			type: "context",
@@ -3384,8 +3406,7 @@ function refundReviewAction() {
 				{
 					variant: "error",
 					title: "Not refunded",
-					description:
-						"Enter a valid refund amount greater than zero (e.g. 19.99). Nothing was changed.",
+					description: REFUND_AMOUNT_INVALID,
 				},
 				draft(),
 			);
@@ -3396,7 +3417,7 @@ function refundReviewAction() {
 				{
 					variant: "error",
 					title: "Not refunded",
-					description: "Enter who is issuing or recording this refund. Nothing was changed.",
+					description: REFUND_BY_REQUIRED,
 				},
 				draft(),
 			);
@@ -3429,8 +3450,11 @@ function refundReviewAction() {
 				[orderId],
 				{
 					variant: "error",
-					title: "Amount too high",
-					description: `${formatTotal(amountCents, liveCur)} is more than the ${formatTotal(live.remainingCents, liveCur)} that remains refundable on this order. Enter ${formatTotal(live.remainingCents, liveCur)} or less.`,
+					title: REFUND_TOO_HIGH_TITLE,
+					description: refundTooHighText(
+						formatTotal(amountCents, liveCur),
+						formatTotal(live.remainingCents, liveCur),
+					),
 				},
 				draft(),
 			);

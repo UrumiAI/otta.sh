@@ -243,6 +243,105 @@ export interface ActPayload {
 	} | null;
 }
 
+// ── wire shapes: Pricing & inventory (INC-21) ────────────────────────────────
+
+/** One list row. A structural subset of the plugin's `ProductSummaryWire`, and
+ *  `onHand` is the RAW COUNT rather than a rendered cell — G1's reasoning
+ *  applied to a number that is not money: a Block Kit row carries `"3 · Low"`,
+ *  a decision already made, and a React tier fed that string could neither
+ *  re-band it nor tell `0` from "no inventory record". `onHandCell` is called
+ *  HERE, from the shared package, so both surfaces band the same count the same
+ *  way. */
+export interface ProductSummary {
+	readonly productId: string;
+	readonly sku: string | null;
+	readonly title: string | null;
+	readonly priceCents: number | null;
+	readonly currency: string | null;
+	readonly productKind: string;
+	readonly active: boolean;
+	/** `null` ⇒ the sku carries no inventory record. NEVER conflated with 0. */
+	readonly onHand: number | null;
+	readonly deletedAt: string | null;
+	readonly createdAt: string;
+}
+
+export interface ProductRecord {
+	readonly productId: string;
+	readonly sku: string | null;
+	readonly title: string | null;
+	readonly priceCents: number | null;
+	readonly currency: string | null;
+	readonly taxClass: string | null;
+	readonly compareAtCents: number | null;
+	readonly compareAtCurrency: string | null;
+	readonly unitCostCents: number | null;
+	readonly unitCostCurrency: string | null;
+	readonly inventoryPolicy: string;
+	readonly weightGrams: number | null;
+	readonly lengthMm: number | null;
+	readonly widthMm: number | null;
+	readonly heightMm: number | null;
+	readonly productKind: string;
+	readonly active: boolean;
+	readonly deletedAt: string | null;
+	readonly onHand: number | null;
+	readonly createdAt: string;
+	readonly updatedAt: string;
+}
+
+export interface TaxClass {
+	readonly id: string;
+	readonly name: string;
+}
+
+export interface ProductsVocabulary {
+	/** The combined Status select's options — `active`/`archived` as ONE
+	 *  mutually-exclusive choice, because a soft-deleted row is always
+	 *  inactive. */
+	readonly statuses: readonly LabelledOption[];
+	readonly kinds: readonly LabelledOption[];
+	/** The all-values sentinel both selects use. Never `""`. */
+	readonly any: string;
+	readonly pageLimit: number;
+}
+
+/** Page context a row cannot carry: what counts as `Low`, and whether the read
+ *  degraded. It survives a page narrowed to ZERO rows, which is exactly when
+ *  the degradation banner has to speak. */
+export interface StockContext {
+	readonly threshold: number | null;
+	readonly unreadable: boolean;
+	readonly filterUnavailable: boolean;
+}
+
+export interface ProductsFilter {
+	readonly status?: string;
+	readonly productKind?: string;
+	readonly lowStock?: boolean;
+	readonly search?: string;
+}
+
+export interface ProductsListPayload {
+	readonly ok: true;
+	readonly products: readonly ProductSummary[];
+	readonly nextCursor: string | null;
+	/** Absent when the service reports none AND when "Low stock only" narrowed
+	 *  this page after the count was taken — see the plugin's
+	 *  `applyLowStockNarrowing`. Both land on the page-scoped count. */
+	readonly total?: number;
+	readonly stock: StockContext;
+	readonly vocabulary: ProductsVocabulary;
+}
+
+export interface ProductDetailPayload {
+	readonly ok: true;
+	readonly product: ProductRecord;
+	readonly taxClasses: readonly TaxClass[];
+	readonly threshold: number | null;
+	readonly vocabulary: ProductsVocabulary;
+}
+
 /** What every component in this package renders on a refusal. `ok: false` is the
  *  discriminant, and it is the SAME shape whether the refusal came from the
  *  transport, from EmDash's authorization layer or from the plugin — a screen
@@ -276,7 +375,7 @@ export function isFailure<T extends { ok: true }>(result: Result<T>): result is 
  * below is the remediation — what to DO — appended to it rather than replacing
  * it. Never both silent and never a guess.
  */
-async function readFailure(response: Response): Promise<Failure> {
+async function readFailure(response: Response, subject: string): Promise<Failure> {
 	const remediation =
 		response.status === 401
 			? "Your session is no longer valid — it may have expired or been signed out in another tab. Reload this page to sign in again."
@@ -288,10 +387,19 @@ async function readFailure(response: Response): Promise<Failure> {
 	const served = await getErrorMessage(response, "");
 	return {
 		ok: false,
-		title: `Orders are unavailable (HTTP ${String(response.status)})`,
+		// THE SUBJECT IS THE CALLER'S, and it is not decoration: a console with two
+		// migrated screens can refuse on either, and "Orders are unavailable" on
+		// the Pricing & inventory screen sends an operator to look at the wrong
+		// thing. It names the SCREEN rather than the request, because the screen
+		// is what the operator is looking at.
+		title: `${subject} (HTTP ${String(response.status)})`,
 		description: served.length > 0 ? `${served} ${remediation}` : remediation,
 	};
 }
+
+/** The two migrated screens' failure subjects. */
+const ORDERS_UNAVAILABLE = "Orders are unavailable";
+const PRODUCTS_UNAVAILABLE = "Pricing & inventory is unavailable";
 
 /** A request that never produced a response at all. Distinguished from a
  *  refusal on purpose: "nothing came back" and "something came back and it was
@@ -307,7 +415,7 @@ function transportFailure(error: unknown): Failure {
 	};
 }
 
-async function post<T extends { ok: true }>(body: unknown): Promise<Result<T>> {
+async function post<T extends { ok: true }>(body: unknown, subject: string): Promise<Result<T>> {
 	let response: Response;
 	try {
 		response = await apiFetch(OTTA_ADMIN_ROUTE, {
@@ -318,7 +426,7 @@ async function post<T extends { ok: true }>(body: unknown): Promise<Result<T>> {
 	} catch (error) {
 		return transportFailure(error);
 	}
-	if (!response.ok) return readFailure(response);
+	if (!response.ok) return readFailure(response, subject);
 	let envelope: unknown;
 	try {
 		envelope = await response.json();
@@ -339,16 +447,44 @@ async function post<T extends { ok: true }>(body: unknown): Promise<Result<T>> {
 }
 
 export function fetchOrders(filter: OrdersFilter, cursor?: string): Promise<Result<ListPayload>> {
-	return post<ListPayload>({
-		type: READ,
-		resource: "orders.list",
-		filter,
-		...(cursor !== undefined ? { cursor } : {}),
-	});
+	return post<ListPayload>(
+		{
+			type: READ,
+			resource: "orders.list",
+			filter,
+			...(cursor !== undefined ? { cursor } : {}),
+		},
+		ORDERS_UNAVAILABLE,
+	);
 }
 
 export function fetchOrderDetail(orderId: string): Promise<Result<DetailPayload>> {
-	return post<DetailPayload>({ type: READ, resource: "orders.detail", orderId });
+	return post<DetailPayload>(
+		{ type: READ, resource: "orders.detail", orderId },
+		ORDERS_UNAVAILABLE,
+	);
+}
+
+export function fetchProducts(
+	filter: ProductsFilter,
+	cursor?: string,
+): Promise<Result<ProductsListPayload>> {
+	return post<ProductsListPayload>(
+		{
+			type: READ,
+			resource: "products.list",
+			filter,
+			...(cursor !== undefined ? { cursor } : {}),
+		},
+		PRODUCTS_UNAVAILABLE,
+	);
+}
+
+export function fetchProductDetail(productId: string): Promise<Result<ProductDetailPayload>> {
+	return post<ProductDetailPayload>(
+		{ type: READ, resource: "products.detail", productId },
+		PRODUCTS_UNAVAILABLE,
+	);
 }
 
 /**
@@ -363,6 +499,11 @@ export function fetchOrderDetail(orderId: string): Promise<Result<DetailPayload>
 export function performAction(
 	actionId: string,
 	value: Record<string, string>,
+	subject: string = ORDERS_UNAVAILABLE,
 ): Promise<Result<ActPayload>> {
-	return post<ActPayload>({ type: ACT, action_id: actionId, value });
+	return post<ActPayload>({ type: ACT, action_id: actionId, value }, subject);
 }
+
+/** The subject a Pricing & inventory write's transport refusal names. Exported
+ *  so the screen states it once rather than at every call site. */
+export const PRODUCTS_ACT_SUBJECT = PRODUCTS_UNAVAILABLE;

@@ -46,6 +46,19 @@
  *    artefact, and the module doc there says so: two Orders screens render the
  *    same records side by side for the length of INC-20/21, which makes their
  *    strings a cross-surface contract rather than a screen's private business.
+ *  - **Product status and stock** (`product-status.ts`, `stock-input.ts`) —
+ *    INC-21. `statusLabel` and `onHandCell` were already shared across three
+ *    Block Kit surfaces so a product could not read `low` in one place and
+ *    plain in another; the React screen is a fourth. `parseStockQty` follows
+ *    the money parser for the same reason it did: the React screen checks a
+ *    quantity before opening a confirm dialog, and the Block Kit screen checks
+ *    the same string server-side.
+ *  - **The Pricing & inventory screen's authored copy** (`products-copy.ts`) —
+ *    the same migration artefact as `orders-copy.ts`, one screen along,
+ *    including the shared composition of the stock-degradation banner and the
+ *    remove-stock confirm.
+ *  - **Copy budgets and trimmers** (`copy.ts`) — §1's banner and label budgets
+ *    and the `fit` they are applied with, which both screens' copy needs.
  *
  * WHAT IS NOT IN IT. Anything with IO, anything React, anything EmDash, and any
  * wire type. Both consumers are hostile environments for a dependency: the
@@ -67,6 +80,7 @@ export {
 	UNFORMATTABLE,
 	formatAmount,
 	formatMoney,
+	formatOptionalAmount,
 	majorUnits,
 } from "./format-money.js";
 export { cents, currency, type Cents, type Currency } from "./money.js";
@@ -107,11 +121,93 @@ export {
 } from "./list-outcome.js";
 export {
 	BANNER_BUDGET,
+	LABEL_BUDGET,
+	VALUE_SEPARATOR,
+	fit,
+	fitBanner,
+	fitLabel,
+	unitWord,
+	valueLabel,
+} from "./copy.js";
+export {
+	CANCEL_BANNER,
+	CANCEL_CONFIRM,
+	CANCEL_GROUP_LABEL,
+	CANCEL_PICK_REASON,
+	CUSTOMER_CONTEXT_UNAVAILABLE,
+	FULLY_REFUNDED_NOTE,
+	MARK_REFUNDED_CONFIRM,
 	ORDERS_EMPTY,
 	ORDERS_LIST_INTRO,
 	ORDERS_NO_MATCH,
 	ORDERS_NOUN,
-	fit,
-	fitBanner,
+	ORDER_LINES_EMPTY,
+	ORDER_LINES_SNAPSHOT_NOTE,
+	REFUNDS_GROUP_EMPTY_LABEL,
+	REFUNDS_UNAVAILABLE,
+	REFUND_ADDITIVE_NOTE,
+	REFUND_AMOUNT_INVALID,
+	REFUND_BY_REQUIRED,
+	REFUND_PARTIAL_BANNER_TITLE,
+	REFUND_PARTIAL_GROUP_LABEL,
+	REFUND_REVIEW_STEP_PREFIX,
+	REFUND_TOO_HIGH_TITLE,
+	RESOLVE_RECONCILIATION_NOTE,
+	SHIPPING_ADDRESS_ABSENT,
+	TIMELINE_EMPTY,
+	TIMELINE_UNAVAILABLE,
+	cancelConfirmText,
 	reconciliationAlertSentence,
+	refundTooHighText,
+	refundsGroupLabel,
 } from "./orders-copy.js";
+export {
+	LOW_STOCK_SUFFIX,
+	ON_HAND_UNKNOWN,
+	OUT_OF_STOCK_SUFFIX,
+	inventoryPolicyLabel,
+	onHandCell,
+	statusLabel,
+	type ProductLifecycle,
+} from "./product-status.js";
+export { parseOnHandWatermark, parseStockQty } from "./stock-input.js";
+export {
+	ADD_STOCK_FIELD_LABEL,
+	ADD_STOCK_INVALID_QTY,
+	ADD_STOCK_LABEL,
+	BACKORDERS_CONTEXT,
+	IDENTITY_FORM_CONTEXT,
+	LOW_STOCK_BAND_UNAVAILABLE_CONTEXT,
+	LOW_STOCK_FILTER_DESCRIPTION,
+	LOW_STOCK_FILTER_LABEL,
+	NO_INVENTORY_RECORD_CONTEXT,
+	NO_SKU_CONTEXT,
+	PRICE_FORM_CONTEXT,
+	PRODUCTS_EMPTY,
+	PRODUCTS_LIST_INTRO,
+	PRODUCTS_LOW_STOCK_NO_MATCH,
+	PRODUCTS_NOUN,
+	PRODUCTS_NO_MATCH,
+	REMOVE_STOCK_BANNER,
+	REMOVE_STOCK_CONTEXT,
+	REMOVE_STOCK_FIELD_LABEL,
+	REMOVE_STOCK_GROUP_LABEL,
+	REMOVE_STOCK_INVALID_QTY,
+	SHIPPING_FORM_CONTEXT,
+	SPLIT_DISCARD_CONTEXT,
+	STATUS_FIELD_LABEL,
+	STOCK_ON_HAND_CONTEXT,
+	TOMBSTONE_BANNER_TITLE,
+	TOMBSTONE_CONTEXT,
+	NO_TAX_CLASS,
+	dimensionsSummary,
+	identityGroupLabel,
+	priceGroupLabel,
+	removeStockConfirm,
+	shippingGroupLabel,
+	stockDegradation,
+	taxClassLabel,
+	taxClassOptions,
+	type StockDegradation,
+	type TaxClassRef,
+} from "./products-copy.js";

@@ -28,8 +28,38 @@
  * because every validation the review step performed is performed again — server
  * side, against live truth — by the write handler itself. That is what makes the
  * shorter path safe rather than merely faster.
+ *
+ * EVERY AUTHORED STRING ON THIS SCREEN IS SHARED (INC-21). The first cut copied
+ * roughly a dozen of them by hand from `orders-page.ts` and recorded a rider
+ * saying so; closing it found FOUR places the two surfaces had already drifted
+ * in the weeks between — typographic quotes, a shortened reconciliation note
+ * that dropped its next step, an over-refund refusal that stated the fact but
+ * not the instruction, and an additive-refunds warning whose "next step" clause
+ * is true only on the surface that has one. `@otta-sh/admin-presentation`'s
+ * `orders-copy.ts` records each. Nothing here authors copy any more; a string
+ * that has to change changes once.
  */
 import {
+	CANCEL_BANNER,
+	CANCEL_CONFIRM,
+	CANCEL_GROUP_LABEL,
+	CANCEL_PICK_REASON,
+	CUSTOMER_CONTEXT_UNAVAILABLE,
+	FULLY_REFUNDED_NOTE,
+	MARK_REFUNDED_CONFIRM,
+	ORDER_LINES_EMPTY,
+	ORDER_LINES_SNAPSHOT_NOTE,
+	REFUNDS_GROUP_EMPTY_LABEL,
+	REFUNDS_UNAVAILABLE,
+	REFUND_ADDITIVE_NOTE,
+	REFUND_AMOUNT_INVALID,
+	REFUND_BY_REQUIRED,
+	REFUND_PARTIAL_GROUP_LABEL,
+	RESOLVE_RECONCILIATION_NOTE,
+	SHIPPING_ADDRESS_ABSENT,
+	TIMELINE_EMPTY,
+	TIMELINE_UNAVAILABLE,
+	cancelConfirmText,
 	formatAmount,
 	formatDate,
 	formatMinorUnitsInput,
@@ -40,6 +70,8 @@ import {
 	reconciliationSummary,
 	refundCapabilityText,
 	refundConfirmText,
+	refundTooHighText,
+	refundsGroupLabel,
 } from "@otta-sh/admin-presentation";
 import * as React from "react";
 import {
@@ -390,10 +422,10 @@ export function OrderDetail({
 							))}
 						</Table>
 						{order.lines.length === 0 && (
-							<p style={{ fontSize: 13, opacity: 0.75 }}>No line items.</p>
+							<p style={{ fontSize: 13, opacity: 0.75 }}>{ORDER_LINES_EMPTY}</p>
 						)}
 						<p style={{ fontSize: 12, opacity: 0.7, marginBlockStart: 10 }}>
-							Titles and prices are what the buyer paid — later product edits never change them.
+							{ORDER_LINES_SNAPSHOT_NOTE}
 						</p>
 
 						<div style={{ marginBlockStart: 16, maxInlineSize: 360 }}>
@@ -411,7 +443,7 @@ export function OrderDetail({
 
 						<div style={{ marginBlockStart: 16 }}>
 							{detail.customer === null ? (
-								<Unavailable text="Customer context unavailable — it could not be loaded right now. The order itself is unaffected; reload, and check the admin token in Settings if this persists." />
+								<Unavailable text={CUSTOMER_CONTEXT_UNAVAILABLE} />
 							) : (
 								<Group
 									testId="detail-customer"
@@ -445,7 +477,7 @@ export function OrderDetail({
 						{order.reconciliationFlag !== null && (
 							<Group testId="detail-resolve" label="Resolve reconciliation" defaultOpen>
 								<p style={{ fontSize: 12, opacity: 0.75, marginBlockStart: 0 }}>
-									Recording a resolution moves no money and does not change the order.
+									{RESOLVE_RECONCILIATION_NOTE}
 								</p>
 								<ResolveForm
 									outcomes={detail.vocabulary.reconciliationOutcomes}
@@ -469,7 +501,7 @@ export function OrderDetail({
 						)}
 
 						{order.shippingAddress === null ? (
-							<Unavailable text="No shipping address captured — this order predates capture, or is digital-only. The profile book under Order is context only, never where this order shipped." />
+							<Unavailable text={SHIPPING_ADDRESS_ABSENT} />
 						) : (
 							<Group
 								testId="detail-shipping"
@@ -553,10 +585,10 @@ export function OrderDetail({
 												setPending({
 													actionId: `orders:transition-${toState}`,
 													value,
-													title: "Mark this order refunded?",
-													text: "Marks the order refunded for bookkeeping. It does not move money — record the money in Money → Refunds.",
-													confirmLabel: "Yes, mark refunded",
-													denyLabel: "Keep as is",
+													title: MARK_REFUNDED_CONFIRM.title,
+													text: MARK_REFUNDED_CONFIRM.text,
+													confirmLabel: MARK_REFUNDED_CONFIRM.confirm,
+													denyLabel: MARK_REFUNDED_CONFIRM.deny,
 												});
 											}}
 										/>
@@ -565,15 +597,13 @@ export function OrderDetail({
 							</section>
 						)}
 
-						<Group testId="detail-cancel" label="Cancel order — permanent, releases held stock">
+						<Group testId="detail-cancel" label={CANCEL_GROUP_LABEL}>
 							<Notice
 								variant="alert"
-								title="Cancelling is permanent"
-								description={`Cancelling moves this order to "cancelled", emails the buyer and releases the held stock. It cannot be undone.`}
+								title={CANCEL_BANNER.title}
+								description={CANCEL_BANNER.description}
 							/>
-							<p style={{ fontSize: 12, opacity: 0.75 }}>
-								Pick the reason — cancelling is immediate.
-							</p>
+							<p style={{ fontSize: 12, opacity: 0.75 }}>{CANCEL_PICK_REASON}</p>
 							<div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBlockEnd: 12 }}>
 								{detail.vocabulary.cancellationReasons
 									.filter((reason) => reason.value !== "other")
@@ -588,10 +618,10 @@ export function OrderDetail({
 												setPending({
 													actionId: `orders:cancel-${reason.value}`,
 													value: { orderId: order.id, reason: reason.value, state: order.state },
-													title: "Cancel this order?",
-													text: `Cancel this order as "${reason.label}"? This is permanent — the order cannot be un-cancelled, and the held stock is released.`,
-													confirmLabel: "Yes, cancel the order",
-													denyLabel: "Keep the order",
+													title: CANCEL_CONFIRM.title,
+													text: cancelConfirmText(reason.label),
+													confirmLabel: CANCEL_CONFIRM.confirm,
+													denyLabel: CANCEL_CONFIRM.deny,
 												});
 											}}
 										/>
@@ -653,10 +683,10 @@ export function OrderDetail({
 														cancelledBy,
 														state: order.state,
 													},
-													title: "Cancel this order?",
-													text: `Cancel this order as "${label}"? This is permanent — the order cannot be un-cancelled, and the held stock is released.`,
-													confirmLabel: "Yes, cancel the order",
-													denyLabel: "Keep the order",
+													title: CANCEL_CONFIRM.title,
+													text: cancelConfirmText(label),
+													confirmLabel: CANCEL_CONFIRM.confirm,
+													denyLabel: CANCEL_CONFIRM.deny,
 												});
 											}}
 										/>
@@ -669,7 +699,7 @@ export function OrderDetail({
 
 				{tab === 2 &&
 					(refunds === null ? (
-						<Unavailable text="Refunds are unavailable right now — the refunds service could not be reached. The order itself is unaffected; reload to try again." />
+						<Unavailable text={REFUNDS_UNAVAILABLE} />
 					) : (
 						<>
 							<section style={panelStyle}>
@@ -689,8 +719,11 @@ export function OrderDetail({
 								defaultOpen
 								label={
 									refunds.ceilingCents === 0
-										? "Refunds — nothing captured, nothing to refund"
-										: `Refunds — ${formatAmount(refunds.refundedTotalCents, cur)} of ${formatAmount(refunds.ceilingCents, cur)} refunded`
+										? REFUNDS_GROUP_EMPTY_LABEL
+										: refundsGroupLabel(
+												formatAmount(refunds.refundedTotalCents, cur),
+												formatAmount(refunds.ceilingCents, cur),
+											)
 								}
 							>
 								<p style={{ fontSize: 12, opacity: 0.8 }} data-testid="refund-capability">
@@ -721,9 +754,7 @@ export function OrderDetail({
 								)}
 
 								{refunds.remainingCents <= 0 ? (
-									<p style={{ fontSize: 13, marginBlockStart: 12 }}>
-										Fully refunded — nothing left to refund.
-									</p>
+									<p style={{ fontSize: 13, marginBlockStart: 12 }}>{FULLY_REFUNDED_NOTE}</p>
 								) : (
 									<div
 										style={{ marginBlockStart: 12, display: "grid", gap: 12, maxInlineSize: 420 }}
@@ -737,10 +768,7 @@ export function OrderDetail({
 												onClick={() => askRefund(refunds.remainingCents)}
 											/>
 										</div>
-										<Group
-											testId="refund-partial"
-											label="Refund a different amount — cannot be reversed"
-										>
+										<Group testId="refund-partial" label={REFUND_PARTIAL_GROUP_LABEL}>
 											<div style={{ display: "grid", gap: 10 }}>
 												<Field label={`Refund amount (${cur})`}>
 													<input
@@ -799,20 +827,19 @@ export function OrderDetail({
 																allowZero: false,
 															});
 															if (parsed === null) {
-																setAmountError(
-																	"Enter a valid refund amount greater than zero (e.g. 19.99). Nothing was changed.",
-																);
+																setAmountError(REFUND_AMOUNT_INVALID);
 																return;
 															}
 															if (refundedBy.trim().length === 0) {
-																setAmountError(
-																	"Enter who is issuing or recording this refund. Nothing was changed.",
-																);
+																setAmountError(REFUND_BY_REQUIRED);
 																return;
 															}
 															if (parsed > refunds.remainingCents) {
 																setAmountError(
-																	`Amount too high — ${formatAmount(refunds.remainingCents, cur)} remains refundable on this order. Nothing was changed.`,
+																	refundTooHighText(
+																		formatAmount(parsed, cur),
+																		formatAmount(refunds.remainingCents, cur),
+																	),
 																);
 																return;
 															}
@@ -822,8 +849,7 @@ export function OrderDetail({
 													/>
 												</div>
 												<p style={{ fontSize: 12, opacity: 0.7, margin: 0 }}>
-													Refunds are additive: recording one twice records two refunds. The
-													remaining refundable amount is{" "}
+													{REFUND_ADDITIVE_NOTE} The remaining refundable amount is{" "}
 													{formatMinorUnitsInput(refunds.remainingCents)}.
 												</p>
 											</div>
@@ -837,7 +863,7 @@ export function OrderDetail({
 				{tab === 3 && (
 					<>
 						{detail.timeline === null ? (
-							<Unavailable text="Timeline unavailable — it could not be loaded right now. The order itself is unaffected; reload, and check the admin token in Settings if this persists." />
+							<Unavailable text={TIMELINE_UNAVAILABLE} />
 						) : (
 							<Table
 								testId="detail-timeline"
@@ -855,7 +881,7 @@ export function OrderDetail({
 							</Table>
 						)}
 						{detail.timeline !== null && detail.timeline.entries.length === 0 && (
-							<p style={{ fontSize: 13, opacity: 0.75 }}>No timeline activity yet.</p>
+							<p style={{ fontSize: 13, opacity: 0.75 }}>{TIMELINE_EMPTY}</p>
 						)}
 
 						<div style={{ marginBlockStart: 16 }}>

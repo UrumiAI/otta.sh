@@ -102,3 +102,34 @@ export function formatAmount(minorUnits: number, currencyCode: string): string {
 		return UNFORMATTABLE;
 	}
 }
+
+/**
+ * {@link formatAmount} for a money field that is legitimately UNSET.
+ *
+ * WHY THIS ONE *DOES* TAKE NULLS, when the note above argues at length that
+ * `formatAmount` must not. The distinction is whether absence is a DISPLAY
+ * STATE or a bug: an order total is always a number, so a nullable one there is
+ * an upstream fault that should fail `tsc`. A product's price, compare-at and
+ * unit cost are `null` in the ordinary course — a document synced from the CMS
+ * before anyone priced it, a product with no was-price — and that is a fact to
+ * render, not a fault to hide. Both halves are checked because a price without
+ * a currency is not a price.
+ *
+ * ABSENT IS NOT ZERO: an unpriced product reads `—`, never `$0.00`. That is the
+ * same rule the `On hand` cell keeps for counts and `rowCountLine` keeps for
+ * row totals.
+ *
+ * IT REPLACED A SECOND RENDERER (INC-21). `products-page.ts` carried its own
+ * `formatOptionalTotal`, whose Intl-failure branch fell back to
+ * `` `${CUR} ${minorUnits}` `` — raw minor units in a money field, which is
+ * precisely what G1 exists to forbid and what {@link UNFORMATTABLE}'s own note
+ * calls "a wrong number dressed as a formatted total". Sharing this function
+ * deletes that branch rather than copying it into the React tier.
+ */
+export function formatOptionalAmount(
+	minorUnits: number | null,
+	currencyCode: string | null,
+): string {
+	if (minorUnits === null || currencyCode === null) return UNFORMATTABLE;
+	return formatAmount(minorUnits, currencyCode);
+}

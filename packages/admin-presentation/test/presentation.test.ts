@@ -23,32 +23,54 @@
  */
 import { describe, expect, test } from "vitest";
 import {
+	CANCEL_BANNER,
 	DATE_LOCALE,
+	LABEL_BUDGET,
+	MARK_REFUNDED_CONFIRM,
 	NOTHING_ON_PAGE,
+	NO_TAX_CLASS,
 	ORDERS_EMPTY,
 	ORDERS_NOUN,
 	ORDERS_NO_MATCH,
 	ORDER_STATES,
 	PAGE_ZERO,
+	REFUND_ADDITIVE_NOTE,
+	REFUND_REVIEW_STEP_PREFIX,
+	RESOLVE_RECONCILIATION_NOTE,
 	SCAN_FURTHER,
 	SHORT_ID_CONFIRM_LEN,
 	SHORT_ID_MIN,
 	TERMINAL_ORDER_STATES,
+	cancelConfirmText,
 	cents,
 	currency,
 	dayOf,
+	dimensionsSummary,
 	endOfDay,
 	formatDate,
 	formatDay,
 	formatMoney,
+	formatOptionalAmount,
 	formatTimestamp,
+	identityGroupLabel,
 	listOutcome,
 	majorUnits,
+	onHandCell,
 	orderStateCell,
+	parseOnHandWatermark,
+	parseStockQty,
+	priceGroupLabel,
+	refundTooHighText,
+	removeStockConfirm,
 	rowCountLine,
+	shippingGroupLabel,
 	shortIdFixed,
 	shortIdsFor,
 	startOfDay,
+	statusLabel,
+	stockDegradation,
+	taxClassLabel,
+	taxClassOptions,
 } from "../src/index.js";
 
 const USD = currency("USD");
@@ -467,5 +489,273 @@ describe("INC-23's exact count, shared by both surfaces", () => {
 			noMatch: ORDERS_NO_MATCH,
 		});
 		expect(outcome.countLine).toBe("4 orders on this page");
+	});
+});
+
+// ── INC-21: the Pricing & inventory vocabulary ───────────────────────────────
+
+describe("the On hand cell keeps three cases apart that must never be folded", () => {
+	test("a known count is a plain number above the threshold", () => {
+		expect(onHandCell(42, 5)).toBe("42");
+	});
+
+	test("ZERO is a fact, and says so", () => {
+		// The one that has to be right: `0` is "out of stock", not "unknown", and
+		// the word is what stops it reading as a missing value.
+		expect(onHandCell(0, 5)).toBe("0 · Out of stock");
+	});
+
+	test("at or below the threshold is Low, above it is not", () => {
+		expect(onHandCell(5, 5)).toBe("5 · Low");
+		expect(onHandCell(6, 5)).toBe("6");
+	});
+
+	test("no inventory record and no stock figure BOTH read as unknown, never as zero", () => {
+		// `null` is "this sku has no inventory record"; `undefined` is "the
+		// response carried no stock figure at all". Neither is a count, and a `0`
+		// here would be a zero nobody took.
+		expect(onHandCell(null, 5)).toBe("—");
+		expect(onHandCell(undefined, 5)).toBe("—");
+		expect(onHandCell(null, null)).toBe("—");
+	});
+
+	test("a MISSING threshold costs the Low band and nothing else", () => {
+		expect(onHandCell(3, null)).toBe("3");
+		expect(onHandCell(0, null)).toBe("0 · Out of stock");
+	});
+});
+
+describe("statusLabel mirrors the service's own sellability filter", () => {
+	const base = { active: true, deletedAt: null, sku: "S", priceCents: 1, currency: "USD" };
+
+	test("deleted OUTRANKS inactive", () => {
+		// A tombstoned row is always inactive too, but "deleted" is the honest,
+		// non-recoverable-from-here status a merchant needs to see.
+		expect(statusLabel({ ...base, active: false, deletedAt: "2026-07-01T00:00:00.000Z" })).toBe(
+			"deleted",
+		);
+		expect(statusLabel({ ...base, active: true, deletedAt: "2026-07-01T00:00:00.000Z" })).toBe(
+			"deleted",
+		);
+	});
+
+	test("a published row with no commerce fields is NOT a plain active", () => {
+		// The CMS sync mints a row for every products document, so publishing one
+		// nobody priced sets `active: true` on a row the catalog read filters out.
+		expect(statusLabel({ ...base, sku: null })).toBe("active (not priced)");
+		expect(statusLabel({ ...base, priceCents: null })).toBe("active (not priced)");
+		expect(statusLabel({ ...base, currency: null })).toBe("active (not priced)");
+	});
+
+	test("a sellable row is one quiet word", () => {
+		expect(statusLabel(base)).toBe("active");
+		expect(statusLabel({ ...base, active: false })).toBe("inactive");
+	});
+});
+
+describe("the stock quantity parser refuses everything that is not whole units", () => {
+	test("accepts a positive whole number", () => {
+		expect(parseStockQty("12")).toBe(12);
+		expect(parseStockQty(" 3 ")).toBe(3);
+	});
+
+	test("refuses zero, decimals, signs and prose", () => {
+		// A movement of nothing is not a movement, and `3.0` reaching a count is
+		// the float this console keeps off every numeric path.
+		for (const input of ["0", "3.0", "-3", "+3", "1e3", "3 units", "", "abc"]) {
+			expect(parseStockQty(input), input).toBeNull();
+		}
+		expect(parseStockQty(undefined)).toBeNull();
+	});
+
+	test("the WATERMARK parser accepts zero, and that difference is load-bearing", () => {
+		// Zero is a legal watermark (a product genuinely at zero stock) and an
+		// illegal quantity. Folding the two would either hide the stock forms for
+		// an out-of-stock product or accept a movement of nothing.
+		expect(parseOnHandWatermark("0")).toBe(0);
+		expect(parseStockQty("0")).toBeNull();
+		expect(parseOnHandWatermark("-1")).toBeNull();
+	});
+});
+
+describe("the stock-degradation banner carries every true fact, not the first one", () => {
+	test("nothing degraded renders no banner at all", () => {
+		expect(
+			stockDegradation({ unreadable: false, thresholdUnreadable: false, filterUnavailable: false }),
+		).toBeUndefined();
+	});
+
+	test("two degradations at once produce ONE banner naming both", () => {
+		// X-31 caps a response at two top-level banners and the notice may already
+		// hold one, so a second degradation cannot have its own slot — and must not
+		// be silently outranked either.
+		const banner = stockDegradation({
+			unreadable: true,
+			thresholdUnreadable: true,
+			filterUnavailable: false,
+		});
+		expect(banner?.title).toBe(
+			"Stock levels are unavailable; low-stock highlighting is unavailable.",
+		);
+		expect(banner?.description).toContain("open a product to read its stock");
+		expect(banner?.description).toContain("Checkout & holds on Settings");
+	});
+
+	test("a filter that could not be applied says the page is UNFILTERED", () => {
+		// Never silently the wrong set of rows.
+		const banner = stockDegradation({
+			unreadable: false,
+			thresholdUnreadable: false,
+			filterUnavailable: true,
+		});
+		expect(banner?.title).toBe("The Low stock only filter was not applied.");
+		expect(banner?.description).toBe("Every product on this page is listed.");
+	});
+});
+
+describe("the remove-stock confirm is composed once for both surfaces", () => {
+	test("it names the concrete quantity, and agrees with itself about the unit", () => {
+		const one = removeStockConfirm(1);
+		expect(one.title).toBe("Remove 1 unit?");
+		expect(one.text).toContain("Remove 1 unit from stock?");
+		expect(one.confirm).toBe("Yes, remove 1");
+
+		const many = removeStockConfirm(3);
+		expect(many.title).toBe("Remove 3 units?");
+		expect(many.text).toContain("Remove 3 units from stock?");
+	});
+
+	test("it says the consequence, not just the verb", () => {
+		expect(removeStockConfirm(3).text).toContain("cannot be undone by restocking");
+		expect(removeStockConfirm(3).deny).toBe("Keep as is");
+	});
+
+	test("the title stays inside the label budget however large the quantity", () => {
+		expect(removeStockConfirm(999_999_999).title.length).toBeLessThanOrEqual(LABEL_BUDGET);
+	});
+});
+
+describe("the D-6 group labels carry their answer, and shorten the LONGEST value", () => {
+	test("an unset value is NAMED rather than left as an empty tail", () => {
+		expect(identityGroupLabel(null)).toBe("Identity — no SKU");
+		expect(priceGroupLabel(null, null)).toBe("Price — not priced yet");
+		expect(shippingGroupLabel(null, null)).toBe(
+			"Classification & shipping — no tax class · no weight",
+		);
+	});
+
+	test("a priced product's label states the money and the currency", () => {
+		expect(priceGroupLabel(1999, "USD")).toBe("Price — $19.99 USD");
+	});
+
+	test("an over-long value costs ITSELF, never the tail", () => {
+		// `fitLabel` would eat `· 320 g` outright and leave a label that looks
+		// complete. The whole point of a D-6 label is that it carries the values.
+		const label = shippingGroupLabel("a-very-long-tax-class-slug-indeed-yes-really", 320);
+		expect(label.length).toBeLessThanOrEqual(LABEL_BUDGET);
+		expect(label.endsWith("· 320 g")).toBe(true);
+		expect(label).toContain("…");
+	});
+});
+
+describe("optional money is absent, never zero", () => {
+	test("either half missing renders the em dash", () => {
+		expect(formatOptionalAmount(null, "USD")).toBe("—");
+		expect(formatOptionalAmount(1999, null)).toBe("—");
+		expect(formatOptionalAmount(null, null)).toBe("—");
+	});
+
+	test("a real pair formats through the ONE money boundary", () => {
+		expect(formatOptionalAmount(1999, "USD")).toBe("$19.99");
+		// ZERO IS A PRICE, and renders as one — the distinction the `null` above
+		// exists to keep.
+		expect(formatOptionalAmount(0, "USD")).toBe("$0.00");
+	});
+
+	test("a currency Intl rejects renders the em dash, NEVER raw minor units", () => {
+		// The branch this replaced printed `${CUR} ${minorUnits}` — a wrong number
+		// dressed as a formatted total, which is exactly what G1 forbids.
+		expect(formatOptionalAmount(1999, "not-a-currency")).toBe("—");
+	});
+});
+
+describe("the tax-class vocabulary never drops a value the product already has", () => {
+	const classes = [
+		{ id: "standard", name: "Standard" },
+		{ id: "reduced", name: "Reduced" },
+	];
+
+	test("a known class reads as `name (id)`", () => {
+		expect(taxClassLabel("standard", classes)).toBe("Standard (standard)");
+	});
+
+	test("an unknown class reads as its id rather than vanishing", () => {
+		expect(taxClassLabel("eu-standard-vat", classes)).toBe("eu-standard-vat");
+	});
+
+	test("unset reads as the em dash (the checkout treats it as standard)", () => {
+		expect(taxClassLabel(null, classes)).toBe("—");
+	});
+
+	test("the select offers a clear-it sentinel that is never the empty string", () => {
+		const options = taxClassOptions(null, classes);
+		expect(options[0]?.value).toBe(NO_TAX_CLASS);
+		expect(options[0]?.value).not.toBe("");
+	});
+
+	test("a current value the registry does not list is APPENDED, not silently dropped", () => {
+		const options = taxClassOptions("eu-standard-vat", classes);
+		expect(options.map((o) => o.value)).toContain("eu-standard-vat");
+		// ...and it is not duplicated when the registry does list it.
+		expect(taxClassOptions("standard", classes).filter((o) => o.value === "standard")).toHaveLength(
+			1,
+		);
+	});
+});
+
+describe("dimensions show which axis is missing", () => {
+	test("nothing measured is the em dash", () => {
+		expect(dimensionsSummary(null, null, null)).toBe("—");
+	});
+
+	test("a partial measurement keeps the figures somebody DID record", () => {
+		// A single dash here would hide two real numbers.
+		expect(dimensionsSummary(120, null, 40)).toBe("120 x ? x 40");
+		expect(dimensionsSummary(120, 80, 40)).toBe("120 x 80 x 40");
+	});
+});
+
+describe("the Orders detail copy is shared, and says what the Block Kit screen says", () => {
+	test("the cancel confirm names the reason and the consequence", () => {
+		// Typographic quotes on BOTH surfaces now: the React tier's hand-copy had
+		// straight ones, which is the drift this module exists to make impossible.
+		expect(cancelConfirmText("Out of stock")).toBe(
+			"Cancel this order as “Out of stock”? This is permanent — the order cannot be un-cancelled, and the held stock is released.",
+		);
+		expect(CANCEL_BANNER.description).toContain("“cancelled”");
+	});
+
+	test("the over-refund refusal names what to enter INSTEAD", () => {
+		// The React tier's hand-copy stated the fact and dropped the instruction.
+		expect(refundTooHighText("$900.00", "$50.00")).toBe(
+			"$900.00 is more than the $50.00 that remains refundable on this order. Enter $50.00 or less.",
+		);
+	});
+
+	test("the reconciliation note keeps its next step", () => {
+		expect(RESOLVE_RECONCILIATION_NOTE).toContain("moves no money");
+		expect(RESOLVE_RECONCILIATION_NOTE).toContain("Refund in Money if the buyer is owed one");
+	});
+
+	test("the additive-refunds warning is shared and the STEP REFERENCE is not", () => {
+		// Only the Block Kit screen has a staged review step to point at, so only
+		// it prefixes the step reference. Sharing the whole sentence would have put
+		// a step reference on a screen that has no such step.
+		expect(REFUND_ADDITIVE_NOTE).not.toContain("next step");
+		expect(REFUND_REVIEW_STEP_PREFIX).toContain("next step");
+	});
+
+	test("the mark-refunded confirm separates the ledger from the money", () => {
+		expect(MARK_REFUNDED_CONFIRM.text).toContain("does not move money");
 	});
 });

@@ -5,11 +5,13 @@ import {
 	createCouponsPageHandler,
 	type CouponsPageInput,
 } from "./coupons-page.js";
+import { CONSOLE_INTERACTIONS } from "./console-transport.js";
+import { createOrdersConsoleHandler, type OrdersConsoleInput } from "./orders-console-route.js";
 import {
-	CONSOLE_INTERACTIONS,
-	createOrdersConsoleHandler,
-	type OrdersConsoleInput,
-} from "./orders-console-route.js";
+	PRODUCTS_CONSOLE_RESOURCE_PREFIX,
+	createProductsConsoleHandler,
+	type ProductsConsoleInput,
+} from "./products-console-route.js";
 import {
 	createOrdersPageHandler,
 	ORDERS_ACTION_IDS,
@@ -19,6 +21,7 @@ import {
 import {
 	createProductsPageHandler,
 	PRODUCTS_ACTION_IDS,
+	PRODUCTS_CONSOLE_ACTION_IDS,
 	PRODUCTS_PAGE,
 	type ProductsPageInput,
 } from "./products-page.js";
@@ -62,6 +65,10 @@ interface AdminInteractionInput {
 	type?: unknown;
 	page?: unknown;
 	action_id?: unknown;
+	/** The React console's read target (`orders.list`, `products.detail`, …).
+	 *  Never present on an EmDash interaction — the two vocabularies are
+	 *  disjoint. */
+	resource?: unknown;
 }
 
 /**
@@ -82,6 +89,7 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 	const shipping = createShippingPageHandler();
 	const coupons = createCouponsPageHandler();
 	const ordersConsole = createOrdersConsoleHandler();
+	const productsConsole = createProductsConsoleHandler();
 
 	return async (routeCtx, ctx) => {
 		const input = routeCtx.input;
@@ -89,16 +97,29 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 		const page = typeof input.page === "string" ? input.page : undefined;
 		const actionId = typeof input.action_id === "string" ? input.action_id : undefined;
 
-		// 0. THE REACT CONSOLE (INC-20), gated FIRST and on its own interaction
-		// types. `otta-console` holds no routes of its own (ADR-0014 Decision 3),
-		// so its Orders screen reaches commerce through THIS route, with the
+		// 0. THE REACT CONSOLE (INC-20, INC-21), gated FIRST and on its own
+		// interaction types. `otta-console` holds no routes of its own (ADR-0014
+		// Decision 3), so its screens reach commerce through THIS route, with the
 		// operator's session and the same CSRF header the admin shell sends — the
-		// only data path the amendment grants it. The types are disjoint from
+		// only data path the amendment grants them. The types are disjoint from
 		// EmDash's (`page_load` / `block_action` / `form_submit`), which is what
-		// guarantees the branch below is untouched: the Block Kit Orders screen
-		// keeps rendering exactly as it did, as ADR-0014 requires until the
+		// guarantees the branches below are untouched: both Block Kit screens keep
+		// rendering exactly as they did, as ADR-0014 requires until each
 		// replacement is proven.
+		//
+		// WHICH console screen: a READ names its `resource`, and an ACT names an
+		// action id that is already namespaced by screen. Orders is the fallthrough
+		// rather than a third test, so an unrecognised read still reaches a handler
+		// and comes back as that handler's refusal copy — never as this
+		// dispatcher's `{blocks: []}`, which a console cannot render at all.
 		if (type !== undefined && CONSOLE_INTERACTIONS.has(type)) {
+			const resource = typeof input.resource === "string" ? input.resource : undefined;
+			const forProducts =
+				resource?.startsWith(PRODUCTS_CONSOLE_RESOURCE_PREFIX) === true ||
+				(actionId !== undefined && PRODUCTS_CONSOLE_ACTION_IDS.has(actionId));
+			if (forProducts) {
+				return productsConsole(routeCtx as SandboxedRouteContext<ProductsConsoleInput>, ctx);
+			}
 			return ordersConsole(routeCtx as SandboxedRouteContext<OrdersConsoleInput>, ctx);
 		}
 
