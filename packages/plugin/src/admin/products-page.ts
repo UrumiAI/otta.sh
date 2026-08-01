@@ -28,10 +28,12 @@ import {
 	PRODUCTS_UNAVAILABLE_DESCRIPTION,
 	PRODUCTS_UNAVAILABLE_TITLE,
 	PRODUCT_COLUMN_LABELS,
+	PRODUCT_DELETED_SINCE_LOADED,
 	PRODUCT_FIELD_LABELS,
 	PRODUCT_FILTER_LABELS,
 	PRODUCT_KIND_LABELS,
 	PRODUCT_MEASUREMENT_LABELS,
+	PRODUCT_NOT_FOUND_TITLE,
 	PRODUCT_TAB_LABELS,
 	REMOVE_STOCK_BANNER,
 	REMOVE_STOCK_CONTEXT,
@@ -969,12 +971,12 @@ function productDetailLevel() {
 		},
 		notFound({ actions, path, id }) {
 			return [
-				{ type: "header", text: "Product not found" },
+				{ type: "header", text: PRODUCT_NOT_FOUND_TITLE },
 				backButton(actions.back, PRODUCTS_BACK_LABEL, path),
 				{
 					type: "banner",
 					variant: "error",
-					title: "Product not found",
+					title: PRODUCT_NOT_FOUND_TITLE,
 					description: `No product matches "${id}".`,
 				},
 			];
@@ -2120,8 +2122,8 @@ function stockFailureNotice(
 		case "not_found":
 			return {
 				variant: "error",
-				title: "Product not found",
-				description: "This product no longer exists — it may have been deleted in the CMS.",
+				title: PRODUCT_NOT_FOUND_TITLE,
+				description: PRODUCT_DELETED_SINCE_LOADED,
 			};
 		default:
 			return {
@@ -2171,8 +2173,8 @@ function editNotice(result: Awaited<ReturnType<AdminProductsClient["updateProduc
 		case "not_found":
 			return {
 				variant: "error",
-				title: "Product not found",
-				description: "This product no longer exists — it may have been deleted in the CMS.",
+				title: PRODUCT_NOT_FOUND_TITLE,
+				description: PRODUCT_DELETED_SINCE_LOADED,
 			};
 		default:
 			return {

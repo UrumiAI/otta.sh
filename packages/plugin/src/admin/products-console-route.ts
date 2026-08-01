@@ -55,6 +55,7 @@ import {
 import {
 	PRODUCTS_UNAVAILABLE_DESCRIPTION,
 	PRODUCTS_UNAVAILABLE_TITLE,
+	PRODUCT_NOT_FOUND_TITLE,
 } from "@otta-sh/admin-presentation";
 import {
 	CONSOLE_ACT_INTERACTION,
@@ -176,7 +177,7 @@ const UNAVAILABLE: ConsoleFailure = {
 
 const NOT_FOUND: ConsoleFailure = {
 	ok: false,
-	title: "Product not found",
+	title: PRODUCT_NOT_FOUND_TITLE,
 	description:
 		"No product matches that id. It may have been deleted in the CMS since the list was loaded.",
 };

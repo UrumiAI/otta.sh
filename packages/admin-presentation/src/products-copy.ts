@@ -426,6 +426,24 @@ export const PRODUCTS_UNAVAILABLE_TITLE = "Pricing & inventory is unavailable";
 export const PRODUCTS_UNAVAILABLE_DESCRIPTION =
 	"Pricing & inventory could not be loaded. Check the service connection and the admin token in Settings; if both look right, this is a fault in the console itself — not your data.";
 
+/**
+ * "This product is gone", in the five places a screen can discover it.
+ *
+ * ONE TITLE, THREE CAUSES. An operator can meet this by opening a stale link
+ * (the Block Kit drill-in's `notFound`, the console's detail read) or by saving
+ * or moving stock on a product the CMS deleted underneath them (two write
+ * outcomes). The CAUSE differs, so the description does; what must not differ
+ * is the two words that tell them which record vanished — five spellings of
+ * one fact is five things to search for when someone reports it.
+ */
+export const PRODUCT_NOT_FOUND_TITLE = "Product not found";
+
+/** The description for the WRITE paths, where the product existed when the
+ *  screen rendered and does not now. Names the CMS because that is the only
+ *  place it can have been deleted from — this console has no delete. */
+export const PRODUCT_DELETED_SINCE_LOADED =
+	"This product no longer exists — it may have been deleted in the CMS.";
+
 /** The identity strip and the two `fields` blocks, in render order. */
 export const PRODUCT_FIELD_LABELS = {
 	sku: "SKU",

@@ -1709,7 +1709,12 @@ function recordFulfillmentForm(orderId: string, state: string): FormBlock {
 		form: {
 			type: "form",
 			fields: [
-				{ type: "text_input", action_id: "carrier", label: "Carrier", placeholder: "e.g. UPS" },
+				{
+					type: "text_input",
+					action_id: "carrier",
+					label: FULFILMENT_LABELS.carrier,
+					placeholder: "e.g. UPS",
+				},
 				{
 					type: "text_input",
 					action_id: "trackingNumber",
@@ -1722,7 +1727,7 @@ function recordFulfillmentForm(orderId: string, state: string): FormBlock {
 					label: FULFILMENT_LABELS.trackingUrl,
 					placeholder: "https://…",
 				},
-				{ type: "date_input", action_id: "shippedAt", label: "Ship date (optional, UTC)" },
+				{ type: "date_input", action_id: "shippedAt", label: FULFILMENT_LABELS.shippedAt },
 				{
 					type: "text_input",
 					action_id: "recordedBy",
@@ -3639,7 +3644,11 @@ function refundFailureNotice(reason: string | undefined): Notice {
 		case "REFUND_EXCEEDS_CAPTURED":
 			return {
 				variant: "error",
-				title: "Amount too high",
+				// The SAME title the client-side ceiling check raises — this is the
+				// service saying no to the amount that check let through, and an
+				// operator reading two titles for one refusal has to work out whether
+				// they hit two different limits.
+				title: REFUND_TOO_HIGH_TITLE,
 				description:
 					"That is more than the remaining refundable amount for this order. Reload to see the current remaining total.",
 			};
