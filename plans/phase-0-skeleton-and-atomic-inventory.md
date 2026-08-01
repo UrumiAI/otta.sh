@@ -529,9 +529,12 @@ Two jobs; the second depends on the first passing.
      enforced) → `pnpm -r build` → `pnpm test` (SQLite + fake contract suite; pg-required
      specs self-skip because `PG_CONNECTION_STRING` is unset).
 2. **`integration`** (`needs: unit`, Postgres service container):
-   - `services.postgres`: `postgres:16`, `POSTGRES_PASSWORD`, `POSTGRES_DB=otta_test`,
-     `ports: 5432:5432`, health-check (`pg_isready`) so the job waits until ready.
-   - `env.PG_CONNECTION_STRING: postgres://postgres:postgres@localhost:5432/otta_test`.
+   - `services.postgres`: `postgres:16`, `POSTGRES_PASSWORD`, `POSTGRES_DB=otta_test`, a host
+     port mapped onto the container's Postgres port, health-check (`pg_isready`) so the job
+     waits until ready.
+   - `env.PG_CONNECTION_STRING`: the workflow's own service-container URL, set in
+     `.github/workflows/ci.yml` beside the service that backs it. It is scoped to the CI
+     runner and **must not be copied into a local shell** — see the note below.
    - `pnpm install --frozen-lockfile` → `pnpm test:pg` — runs the **Postgres** contract
      dialect, the **no-oversell** acceptance test (0.5), and the **live-server HTTP contract**
      test (0.6). Because `PG_CONNECTION_STRING` is set, the `skipIf` guards flip on and these
@@ -544,6 +547,21 @@ fake) and prints skips; the pg suites only execute where the connection string e
 the SQL, Postgres verifies the race. **Merge gate:** both jobs green + changeset present when
 a published package changed. Migrations forward-only (a lint/check can assert no shipped
 migration file changed).
+
+**Running the pg suites locally — use the throwaway test container, on port 55432.** The repo
+documents one shape for this and it is the only one to copy
+([`README.md`](../README.md), [`sites/staging/README.md`](../sites/staging/README.md)):
+
+```bash
+PG_CONNECTION_STRING=postgres://postgres:postgres@127.0.0.1:55432/otta_test pnpm test:pg
+```
+
+The port is prefixed deliberately, so a throwaway test container cannot collide with — or be
+mistaken for — whatever is already listening on the machine's default Postgres port. **Never point
+this project's tooling at that default port:** these suites create and drop schemas, nothing in
+this repo needs a database that is not the disposable one, and "it happened to be running" is not
+a reason to write to it. The CI job's connection string above lives in the workflow file, next to
+the ephemeral container it addresses, and is not a value to reuse anywhere else.
 
 ---
 

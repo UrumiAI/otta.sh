@@ -35,6 +35,55 @@ applies the full seed including the 3 sample products:
 `/_emdash/api/setup/dev-bypass?redirect=/_emdash/admin`. What first boot does and does
 not seed in a real deployment is covered in [`DEPLOYMENT.md`](../../DEPLOYMENT.md) §1.
 
+### Step 3 — set the admin token, or every admin screen fails closed
+
+**This is not optional, and skipping it looks like an outage rather than a missing step.**
+Three separate QA passes lost time to it.
+
+The commerce service gates its whole operational surface — `/internal/*`, `/admin/*`,
+`/reports/*`, `/settings` — behind `X-Internal-Token` ([ADR-0010](../../adr/0010-admin-read-surface-requires-internal-token.md)).
+Two independent things have to line up, and **neither has a default**:
+
+1. **The service** must boot with `INTERNAL_API_TOKEN` set. Unset, the gate answers **503** to
+   every request including reads — never silently open
+   (`packages/service/src/routes/internal-auth.ts`). So step 1's command becomes:
+
+   ```bash
+   INTERNAL_API_TOKEN=dev-admin-token \
+   PG_CONNECTION_STRING=postgres://postgres:postgres@127.0.0.1:55432/otta \
+     pnpm dlx tsx@4 packages/service/src/index.ts
+   ```
+
+2. **The plugin** must hold the *same* value. It is not an env var on the site — it is a
+   plugin setting the operator saves through the admin: **Otta → Settings →
+   "Service connection" → "Admin token (X-Internal-Token)" → Save admin token**. The field is
+   always empty by design and a blank submit keeps the current token, so a *set* token shows up
+   as the group's own label reading `Service connection — token set …`, never as a value in the
+   box.
+
+**What you see when it is missing.** Every admin screen renders its fail-closed banner —
+*"<Screen> could not be loaded. Check the service connection and the admin token in Settings; if
+both look right, this is a fault in the console itself — not your data."* The copy is
+deliberately written not to blame the network, precisely because this configuration gap and a
+genuine outage are indistinguishable from inside the plugin. If every screen fails at once and
+the storefront is fine, suspect this step first.
+
+Note that plugin settings are namespaced by **plugin id**, so a token saved under one id is not
+visible to another. The Block Kit screens and the React console both read `otta`'s.
+
+### Running the stack from a non-interactive shell (agents, CI sandboxes)
+
+`astro dev` is a long-running foreground process: started in the usual way it holds the
+terminal and never returns. In an automated or agent-driven environment, start it **detached**
+and wait until it reports its URL before driving it — a request issued before the server is
+listening fails in a way that looks like an application error.
+
+Both of the environment variables above are read by the process that starts, not per request:
+`COMMERCE_SERVICE_URL` is resolved in `astro.config.ts` (see the section below) and
+`STRIPE_PUBLIC_KEY` is baked as a Vite `define`. **Changing either means restarting the dev
+server** — there is no runtime override, in dev any more than in production. Setting them in a
+later shell has no effect on a server that is already up.
+
 ## The COMMERCE_SERVICE_URL build-time contract
 
 `COMMERCE_SERVICE_URL` is read **at build time** in `astro.config.ts` and baked into the

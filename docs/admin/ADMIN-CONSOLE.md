@@ -27,6 +27,22 @@ screens under
 Settings, as registered at `admin-route.ts:83-101`. (Earlier revisions said "six"; the count was
 wrong and five parallel teams read this line.)
 
+**Fifth amendment — the 2026-08-01 docs sweep.** Twenty-four increments have now been built against
+this document, and this pass reconciles it with what they shipped. Nothing here is new design: every
+edit states what the code does and cites it. **Six rules were deliberately overridden during the
+build and now record the ruling AND its reason, not just the new state** — **T-1a** (Coupons ships
+six list columns), **D-6c** (the shipping methods level fans out one rate read per row, bounded at
+25), **T-5** (no status column is a badge; one badge column survives console-wide), **T-2a**
+(identity-first yields where the identity is an opaque id), **L-8** (create is a `primary` button
+above the data with its form on a drill-in screen, not a bottom accordion), and **S-3** (Settings
+opens zero groups; the cap binds, the floor is gone). Four further corrections retire claims that
+had become false: `assertBlockContract` **exists** (§13, V-3a); the two live X-20 violations on
+Pricing & inventory are **fixed** (§12.1); §15's tier-2 gate no longer asks for a test in a repo
+this project cannot write to; and §14's heading no longer offers a fork as the route its own body
+rules out. **Two screens — Orders and Pricing & inventory — now render from
+`@otta-sh/admin-react`** (ADR-0014); their Block Kit twins stay in the tree, and where a listing
+below describes both, it says so.
+
 ## Verification basis — read this before citing a renderer fact
 
 `origin/main` pins **emdash 0.31.1** exact (`sites/staging/package.json`). Resolve versions and
@@ -381,7 +397,7 @@ precede a screen's primary data block. Nothing else may be inserted, in any orde
 
 | Skeleton | Primary data block | Blocks permitted above it, in this order |
 |---|---|---|
-| List (§3) | the primary `table`, or the `empty` that replaces it | `header` · ≤1 `context` · ≤1 notice `banner` · the filter block (a **collapsed** `accordion`, or an inline `form` at ≤2 fields per L-2) · ≤1 active-filter `section` |
+| List (§3) | the primary `table`, or the `empty` that replaces it | `header` · ≤1 `context` · ≤1 create `actions` block (L-8) · ≤1 notice `banner` · the filter block (a **collapsed** `accordion`, or an inline `form` at ≤2 fields per L-2) · ≤1 active-filter `section` |
 | Detail (§4) | the identity `fields` strip | `header` · the back `actions` block · ≤2 `banner`s |
 | Report/settings (§4.1) | the first `accordion` | `header` · ≤1 `context` · ≤1 `banner` · `stats` (reports only) |
 
@@ -401,6 +417,14 @@ heading *and* table *and* explanatory line. It gets one `context` line, or a `ta
 the filter block only in its **collapsed** form, one row tall, with its one-line summary. Every
 other control — expanded filters, create forms, edit forms, destructive actions, drill-in
 pickers — sits **below** the data it acts on.
+
+**The one thing P-4 lets above the data is a create BUTTON, never a create form (INC-14).** The
+distinction is what makes the promotion legal: an `actions` block holding one `primary` button is
+one row tall and collects no input, so "data inside the first screenful" survives it; the create
+**form** would not, and it does not sit here — it lives on a drill-in create screen (L-8). Shipped
+on all five create surfaces: `coupons-page.ts:532-538`, `tax-page.ts:277` and `:602`,
+`shipping-page.ts:359` and `:794-799`, all through the same one-button helper
+(`tax-page.ts:308-329`, `shipping-page.ts:392-413`).
 
 **P-5 — No internal vocabulary reaches the screen.** No `action_id`s, camelCase field names,
 idempotency keys, CAS watermarks, cursor tokens, or drill-path carriers are ever rendered as a
@@ -480,17 +504,37 @@ false — never rendered empty.
 
 ```
 1  header          <Screen name>
-2  context         (cond) ≤140 chars. Omit when the table is self-evident.
-3  banner          (cond) notice from the last action, or a degraded-read warning
-4  accordion|form  the filter                                        [L-2..L-5]
-5  section         (cond) active-filter summary + `Clear filters` accessory   [L-6]
-6  table           THE DATA — or `empty` in its place                 [§5, E-2]
-7  form            (cond) "Open <entity>" drill-in — omit at 0 rows   [L-7]
-8  accordion       (cond) "New <entity>" — the create form, closed    [L-8]
+2  context         (cond) the row count, then the standing line   ≤140  [L-1a]
+3  actions         (cond) ONE primary "New <entity>" button — omit where
+                   the entity is not created in the admin          [L-8]
+4  banner          (cond) notice from the last action, or a degraded-read warning
+5  accordion|form  the filter                                        [L-2..L-5]
+6  section         (cond) active-filter summary + `Clear filters` accessory   [L-6]
+7  table           THE DATA — or `empty` in its place                 [§5, E-2]
+8  form            (cond) "Open <entity>" drill-in — omit at 0 rows   [L-7]
 ```
 
-**L-1.** Nothing else appears above block 6 (P-1). In particular: no create form, no per-row edit
-form, no `divider`, no second `context`, no expanded filter.
+**Block 3 sits above the notice banner, not below it**, because it is part of the standing page
+furniture rather than a response to the last action — `coupons-page.ts:488-492`, `tax-page.ts:271-279`,
+`shipping-page.ts:353-361`.
+
+**L-1.** Nothing else appears above block 7 (P-1). In particular: no create **form**, no per-row edit
+form, no `divider`, no second `context`, no expanded filter. The create **button** of block 3 is the
+whole of what INC-14 added to this whitelist, and the reasoning is P-4's.
+
+**L-1a — the row count leads the standing `context` line; it is not a block of its own.** The count
+and the sentence share one `context` — `listIntroLine(countLine, intro)` emits
+`` `${countLine} · ${intro}` `` (`scaffold/list-detail.ts:1016-1022`), e.g.
+`17 orders · Filter, open an order, and move it through its status flow. Money in the order's
+currency; dates UTC.` A second block would cost a row and break P-1's one-`context` cap. Two
+properties are load-bearing and are shipped in the shared helper
+(`admin-presentation/src/list-outcome.ts:119-140`):
+
+- **Zero rows render no count at all** (`:127`) — "17 orders" directly above "No orders yet" is the
+  screen contradicting itself in two adjacent blocks.
+- **A count that is only this page's says so**: `17 orders` when the page is complete or a service
+  total is available, `17 orders on this page` otherwise (`:137-139`). The suffix is the whole
+  reason a count is safe to render at all.
 
 **L-2 — filter shape.** One `form`, one submit, ≤4 fields. Fields cannot be columnised (R-1). The
 count is the number of fields the **screen** authors — the engine may inject the drill-path
@@ -566,9 +610,37 @@ rows.
   setting `placeholder` — F-6a is one rule for all three control types, and a `combobox` whose
   `initial_value` resolves to nothing is legible but still fails the shared assertion.
 
-**L-8 — creating.** A create form lives in an `accordion` labeled `New <entity>`,
-`default_open: false`, at the very bottom. Exception: at true zero state the create action is the
-`empty` block's action instead (§6, E-2).
+**L-8 — creating: a `primary` button at the top, a create SCREEN behind it.** *(Rewritten by
+INC-14, which overturned this rule's earlier "create form in a bottom accordion". The reason is
+recorded below rather than only the new state.)*
+
+```
+actions  block_id <entity>:create-action
+         [ button{ action_id: <entity>:new, label: "New <entity>", style: "primary",
+                   value: { __path: encodePath(path) }   ← omitted at depth 0 } ]
+```
+
+- **Placement is block 3** — directly under the standing `context` line, above the notice banner
+  and above the data.
+- **The form is not on this screen.** The button drills into a create screen shaped like every
+  other non-list level — `header` · back button · notice · `context` · the form — so the way out
+  is where an operator already looks for it (`coupons-page.ts:548-563`, `tax-page.ts` `newClassScreen`
+  / `newRateScreen`, `shipping-page.ts` `createZoneScreen` / `createMethodScreen`).
+- **`style: "primary"`**, which is the one exception DA-5 now carries.
+- **The path rides in `button.value`, never `block_id`** (B-1), and is omitted at depth 0 because
+  there is nothing to carry (`coupons-page.ts:528-531`).
+
+**Why it moved, and it is a ruling rather than a preference.** The bottom accordion put the create
+action at the least prominent point of a screen whose first task, on an empty or near-empty
+registry, is creating one — `tax-page.ts:255-261` states it at the call site. Two objections were
+weighed and answered: P-1 (a button is one row tall and collects no input, so the first screenful
+still leads with data — P-4), and duplication with E-2's empty state (the `empty` block's action
+carries the **same** `action_id` and the **same** label and reaches the **same** screen, so it is
+one act named once — `tax-page.ts:290-292`, `coupons-page.ts:475-477`).
+
+**Where there is no create control at all**, the block is omitted rather than rendered inert:
+Orders (`orders-page.ts:610`) and Pricing & inventory (`products-page.ts:715-716`) — both entities
+originate elsewhere.
 
 **L-9 — registry screens (Tax, Shipping): the per-row accordion list is a runtime branch.** A
 level renders as a per-row accordion list (§12.3) **only** when both hold for the fetched page:
@@ -579,15 +651,15 @@ level renders as a per-row accordion list (§12.3) **only** when both hold for t
 Otherwise it renders `table` + drill-in (blocks 6–7) and moves editing to a detail level. **Both
 branches ship**, and the sandbox suite asserts the branch at 25 rows and at 26.
 
-**Every per-row accordion and the create accordion are `default_open: false`** — a level with 25
-rows must not open one of them, and D-5's precedence does not apply here (it governs detail
-screens). A registry level therefore renders with zero open groups.
+**Every per-row accordion is `default_open: false`** — a level with 25 rows must not open one of
+them, and D-5's precedence does not apply here (it governs detail screens). A registry level
+therefore renders with zero open groups. (There is no create accordion left to say this of: L-8's
+create control is a button above the data and its form is on another screen.)
 
 **L-9b — zero rows.** The accordion branch has no `table` to carry `empty_text`, so emptiness must
-be stated explicitly or the level renders header + context + create accordion and never says it is
+be stated explicitly or the level renders header + context + create button and never says it is
 empty. **At zero rows an L-9 level omits the row list and renders the `empty` block per E-2, with
-its create action in `empty.actions`.** And **every L-9 fallback table sets `empty_text`** (T-7) —
-§12.4 currently sets none anywhere.
+its create action in `empty.actions`.** And **every L-9 fallback table sets `empty_text`** (T-7).
 
 Why both: `table.next_cursor` + "Load more" (`table.tsx:109-119`) is the **only** paging affordance
 in the whole vocabulary. Delete the table and row 26 becomes unreachable. Registry levels
@@ -671,12 +743,19 @@ per DA-3a-iii — not on "this response came from `-review`". That is a predicat
 |---|---|---|
 | 1 | `reconcile` | the record is flagged for reconciliation and unresolved |
 | 2 | `fulfilment` | order state ∈ {`paid`, `processing`} |
-| 3 | the screen's **named primary edit group** — Orders: *none* · Products: `Identity` · Coupons: `Discount`. §11/§12 name it; a screen with several edit groups does **not** get to pick. | the record is editable (not tombstoned, not terminal) |
+| 3 | the screen's **named primary edit group** — Orders: *none* · Pricing & inventory: `Identity` (`products-page.ts:1150`) · Coupons: ***none*** ← AMENDED, was `Discount` | the record is editable (not tombstoned, not terminal) |
 | 4 | — | nothing is open |
 
 Everything else is `default_open: false` — always, including every destructive group and every
 group whose body is a table that may be empty. There is no taste in this rule and no per-screen
 variation: a reviewer computes the expected group from the record state and checks one boolean.
+
+**A screen may name NO rank-3 group, and Coupons does.** Rank 3 is a slot, not a quota: a screen
+whose edit group's **label already carries the answer** (D-6 — `Edit — 20% off · 10 Jul 2026 –
+31 Dec 2026`) buys the reader nothing by opening it, and pays a full form's height for it. Coupons
+therefore renders **zero** open groups on its detail (`coupons-page.ts:1016-1020`). The rank-3
+condition is unchanged where a screen does name one; what is not permitted is a screen naming one
+**here** and shipping a different boolean.
 
 **D-5 constrains the emitted response, not the viewport.** The algorithm decides the booleans in
 *this* response — at most one `default_open: true` — and it cannot close a group an earlier render
@@ -749,6 +828,26 @@ fetching it means a per-row request. Concretely:
 
 X-19 rejects a bare-noun label only where the count *is* available by this definition.
 
+**D-6c — ONE ratified exception to "never fan out per-row reads": the shipping METHODS level
+(INC-16).** Recorded as a ruling, with its reason and its bound, because the rule above forbids it
+in general and a following team must be able to tell an exception from a violation.
+
+Each method row's label leads with its **price**, which is not on `ShippingMethodWire` — it is a
+`getRate(methodId, currency)` per row. Shipped at `shipping-page.ts:689-706` (`pricedMethods`) and
+`:712-724` (`methodPrice`).
+
+| | |
+|---|---|
+| **Why it was allowed** | The price is the number the operator came to this level for, and the level exists to answer "what does each method cost?". A bare `standard — Standard shipping` sends every operator into a drill-in to read one figure. The zone-count case above has no such claim: a method count is navigational, not the answer. |
+| **What bounds it** | **`Promise.all` over at most 25 rows**, because the fan-out runs **only on the L-9 accordion branch** — past 25 the level renders the table branch, which shows no price and fires **no** rate reads at all (`shipping-page.ts:103-113`, and `isRegistryAccordion` at `:271-273`). The bound is structural, not a constant a team can raise. |
+| **How it degrades** | Per row, never per level: a failed read logs and renders that one label as `Price unavailable`; an absent rate reads `No rate set`; the table branch reads `Price not loaded` (`methodPriceLabel`, `shipping-page.ts:743-753`). One slow zone never fails the screen. |
+| **What is priced and NOT bought back** | The reads recur **per render of the level** — on the drill-in, on every filter apply, and on every post-write re-list — and they carry no `AbortSignal` and no deadline. Both are recorded as follow-ups at the call site (`shipping-page.ts:676-687`), not as unknowns. |
+
+**This exception does not generalise.** It licenses a per-row read only where (a) the fetched value
+*is* the answer the level exists to give, (b) a structural branch caps the fan-out, and (c) a single
+row's failure degrades that row alone. A zone's method count meets none of the three, which is why
+the bullet above still stands unchanged.
+
 **D-7 — zero-count groups collapse to words.** An accordion whose only content would be an empty
 table is not rendered; the fact moves into one `context` line at the parent level, merged with its
 siblings where they share a cause: "Guest checkout — no account, no saved addresses, no sign-in
@@ -772,32 +871,56 @@ no per-record identity. They get their own skeleton.
 **S-1.** No `tab`, no filter block, no drill-in, no `empty`. §3 and §4 do not apply.
 **S-2.** Every group is an `accordion`; the `header` appears once (P-2), and the panel-header
 exception does not apply here because there are no panels.
-**S-3.** Exactly one accordion is `default_open: true`, named explicitly per screen (§12.5, §12.6)
-— D-5's precedence table does not apply, because there is no record state to derive it from.
+**S-3.** **At most** one accordion is `default_open: true`, named explicitly per screen (§12.5,
+§12.6) — D-5's precedence table does not apply, because there is no record state to derive it from.
+*(Was "exactly one". INC-15 made Settings open **zero**, so the cap is what binds and the floor is
+gone.)*
+
+| Screen | Open group | Cite |
+|---|---|---|
+| Reports (§12.5) | `reports:revenue` — the one open group | `reports-page.ts:552-559` |
+| Settings (§12.6) | **none** — all three groups render `default_open: false` | `settings-form.ts:676-681`, `:743-748`, `:758-763` |
+
+**Why Settings opens nothing, stated as a ruling.** Every group's **label** now carries its own
+current values — `Store — <name>`, `Checkout & holds — 15 min hold · low stock at 5`,
+`Service connection — token not set · service token not set` — so the screen answers "what is this
+set to?" with **zero** clicks rather than one group's worth (D-6's discipline, applied to a
+settings screen). An opened group answers one question and buries the other two; three labels answer
+three. Label builders: `settings-form.ts:641-674`; the reasoning is at `:480-489`. Zero open groups
+is legal under X-18, which caps `default_open: true` at one per response and sets no floor.
+
+**A label that cannot state its value says so, and does not imply a zero.** When the secondary
+`GET /settings` read failed there is nothing persisted to name, so the label reads
+`Checkout & holds — not loaded` rather than a fabricated `0 min hold` (`settings-form.ts:645-656`).
+This is E-3's successful-empty / failed-read distinction, one level up, in an accordion label.
 **S-4.** Every form on these screens obeys the change-token rule (B-3, B-3a): its `block_id` comes
 from `carriedForm(...)`, so a save re-renders with fresh prefill. This applies to **all four**
 Settings forms and is the only reason a saved value redisplays correctly.
 **S-5.** A save re-renders the **whole** screen, never a fragment. Every save and every validation
-branch returns the full `renderPage(...)` output plus a notice (§12.6). Three current branches
-violate this, and the receipt is **terminal** — `SandboxedPluginPage.tsx:46` is an unconditional
-`setBlocks(data.blocks)` and its `page_load` effect is keyed on `[sendInteraction, page]`, so
-nothing re-fetches and the operator must navigate away to recover:
+branch returns the full screen plus a notice. **Shipped on all four saves** — `save-display`'s
+success and its invalid-name branch both return `renderPage(...)`
+(`settings-form.ts:244-282`), as do the two token saves (`:305`, `:331`); `save-operational` builds
+the same three-accordion output through `buildSettingsBlocks` directly, because it already holds a
+fresher settings wire than a second `GET` would return (`:370-405`).
 
-| Branch | Returns | Consequence |
-|---|---|---|
-| `save-display` success (`settings-form.ts:149-155`) | `[header, section]` | all four forms vanish; the page is a dead receipt |
-| `save-display` invalid name (`:132-144`) | `[header, banner]` | a merchant who types a 201-char name is stranded **with no field to correct it** |
-| the other three saves | full `renderPage` | correct — only `save-display` is broken |
+**Why the rule is stated this hard.** The fragment receipt was **terminal**, not merely ugly:
+`SandboxedPluginPage.tsx:46` is an unconditional `setBlocks(data.blocks)` and its `page_load` effect
+is keyed on `[sendInteraction, page]`, so nothing re-fetches and the operator had to navigate away
+to recover. Two branches did it — a success that returned `[header, section]`, dropping the other
+three forms; and an invalid-name refusal that returned `[header, banner]`, stranding a merchant who
+typed a 201-character name **with no field to correct it**. Both are fixed and both are commented at
+the call site, so the shape does not come back.
 
-**S-5a — this retires a documented invariant, so retire it deliberately.** `renderPage`
-(`:252-279`) calls `client.getSettings()` over `ctx.http`, while `:146-147` documents that the
-display-name path "provably never touches ctx.http" and
-`settings-widget.sandbox.test.ts:48` asserts `stub.requests` is empty. Either (a) re-render without
-a fresh GET, keeping the invariant, or (b) drop the invariant and update **both** the comment and
-that assertion in the same change. Pick one in the PR; do not leave the comment claiming something
-the code stopped doing. Note the existing suite (`:44-53`) drives the broken path and asserts only
-that *some* block contains the name — it is **green over the bug**, so the fix needs a new
-assertion that the forms are still present.
+**S-5a — retiring an invariant is a deliberate act, and this one was retired.** `renderPage` calls
+`client.getSettings()` over `ctx.http`, while the display-name path used to document that it
+"provably never touches `ctx.http`", with a suite asserting `stub.requests` was empty. The choice
+was (a) re-render without a fresh GET and keep the invariant, or (b) drop it and update **both** the
+comment and the assertion in the same change. **(b) was taken**, for a stated reason — there is no
+operational-settings value in scope on that path to re-render the other two groups from — and the
+comment and the sandbox assertion moved with it. The rule this leaves behind is general: **do not
+leave a comment claiming something the code stopped doing**, and when a suite is *green over* a bug
+(the old one asserted only that *some* block contained the name), the fix ships a new assertion that
+the forms are still present.
 
 ---
 
@@ -806,9 +929,43 @@ assertion that the forms are still present.
 **T-1 — column ceiling.** 5 on a list screen, 6 on a detail sub-table. Hard maximum 6. There is no
 alignment or width control; wider tables scroll horizontally and stop being scannable.
 
+**T-1a — one ratified exemption: the Coupons list ships SIX columns (INC-07).** Recorded as a
+ruling, not as a reading of the rule — the 5-column guidance for a list screen is what the screen
+exceeds, and it lands exactly on T-1's hard maximum of 6, which is not exceeded. Shipped at
+`coupons-page.ts:606-636`: `Code · Status · Discount · Valid · Uses · Min spend`.
+
+**The reason, because a following team must be able to tell an exemption from a violation.** The
+increment added two columns to a four-column table and neither is derivable from another cell:
+
+- **`Status`** is the question the screen exists to answer. Computed per render from the coupon's
+  own fields (`couponStatus`, `coupons-page.ts:335-343` → `active` / `scheduled` / `expired` /
+  `used up`). Without it the only signal that one code ended last month and another has not started
+  is the raw date text in `Valid`, i.e. date arithmetic on every row of a screen whose whole purpose
+  is "which discounts are live right now".
+- **`Min spend`** is the one condition that makes a live coupon not apply, and it is absent from
+  every other cell.
+
+**The scope of the exemption is exactly this table.** T-1's 5-column guidance is unchanged for every
+other list screen — Orders and Pricing & inventory both ship 5 — and a second candidate is a signal
+that a column is restating a neighbour, not that the ceiling is wrong.
+
 **T-2 — column order.** Identity first (the thing you searched for), then the columns you scan,
 **money last**. There is no right-alignment or column alignment of any kind (R-7), so putting money
 in the final column is the only way to get a readable money edge.
+
+**T-2a — "identity first" yields where the identity is an OPAQUE id (INC-06).** Money-last is the
+half of T-2 that is load-bearing and it never yields; identity-first is the half that does, on
+exactly the screens whose identity column is a token rather than a name. Orders ships
+`Placed · Customer · Status · Order # · Total` (`orders-page.ts:685-713`), with the same order on
+the customer's other-orders sub-table (`:1358-1367`) and on the React list
+(`admin-react/src/orders/orders-list.tsx:394`). A short order id leads nothing — an operator scans
+this list by date and by buyer, and the id is what they carry *away* from it. So the id takes the
+slot in front of the money rather than the lead, and the reasoning is recorded at the call site
+(`orders-page.ts:662-669`).
+
+Where the identity column *is* a name, T-2 stands unchanged: Pricing & inventory leads with `Title`
+(`admin-presentation/src/products-copy.ts:465-471`) and Coupons with `Code`
+(`coupons-page.ts:606-636`).
 
 **T-3 — `sortable` is forbidden** until the scaffold's `page` action handles `value.sort` and
 `ListLevelDef.fetchPage` threads an ordering parameter into the service list ports. Today a sort
@@ -830,7 +987,9 @@ string, a joined address, a summary sentence).
 
 **T-5 — badge discipline: badge the exceptions, and a status column cannot.** *(Rewritten by
 INC-10, which overturned this rule's earlier "lifecycle state ⇒ badge" whitelist. The §11/§12
-wireframes still draw the old badges and are corrected in the docs increment.)*
+wireframes that still drew the old badges were corrected in the docs sweep; **one** `format:"badge"`
+remains in the whole console — `shipping-page.ts:1012`, the method `Type` column, and it renders the
+mapped human name rather than the raw enum.)*
 
 The right rendering for a status column is "mark the exception, leave the happy path quiet", and
 **Block Kit cannot express it**: `format` is a property of the COLUMN, not of a cell
@@ -847,7 +1006,14 @@ solid mark with no word in it. So:
   (`0 · Out of stock`) and Orders extends (`cancelled · closed`). What the mark says must be a fact
   the console can stand behind and must come from ONE constant per vocabulary, never one per screen;
   a value not in that set renders bare, so a new state never acquires the loudest rendering by
-  default.
+  default. **The two shipped vocabularies live in the shared presentation package**, which is what
+  makes "one constant" true across the Block Kit and React surfaces at once:
+  `orderStateCell` over `TERMINAL_ORDER_STATES` = `{failed, expired, cancelled, refunded}`
+  (`admin-presentation/src/order-status.ts:63-68,115-117`), and `onHandCell` / `statusLabel`
+  (`admin-presentation/src/product-status.ts:34,37,62-97` — `Out of stock`, `Low`, and the four
+  product status words including `active (not priced)`). Coupons needs no added mark, because every
+  value its `Status` column renders except `active` already **is** the exception spelled out —
+  `scheduled`, `expired`, `used up` (`coupons-page.ts:595-604`).
 - **`format:"badge"` survives only for a closed, small set in which no value is the happy path** —
   today exactly one column, the L-9 shipping-method `Type` (2 values, both meaningful, an operator
   distinguishes them at a glance). At most **one** such column per table.
@@ -912,11 +1078,27 @@ action.** It is a large centered illustration; it is never used for a filtered-t
 operator's next act is *changing the filter*, and the filter is right there — use `empty_text`:
 "No orders match these filters.").
 
-- **With** a create action on the screen: the action goes in `empty.actions` as a `button` whose
-  handler re-renders the list with the create group forced open (B-6: changed `block_id` **and**
-  `default_open: true`). Title + description + one button.
-- **Without** one (Orders — orders are not created in the admin; Products — they originate in the
-  CMS): title + description only. `empty.actions` is omitted, not an empty array.
+- **With** a create action on the screen: the action goes in `empty.actions` as a `button` carrying
+  the **same `action_id` and the same label** as L-8's promoted button above, so both reach the same
+  create screen — one act, named once (`tax-page.ts:290-292`, `coupons-page.ts:475-477`). Title +
+  description + one button. *(Was: "re-renders the list with the create group forced open (B-6)".
+  That group no longer exists — INC-14 replaced it with a create screen, so there is nothing to
+  force open and B-6 does not apply here.)*
+- **Without** one (Orders — orders are not created in the admin, `orders-page.ts:610`; Pricing &
+  inventory — products originate in the CMS, `products-page.ts:715-716`): title + description only.
+  `empty.actions` is omitted, not an empty array.
+
+**A filtered-to-zero list is a third state, and INC-12 gave it its own copy.** The shared outcome
+helper renders a distinct `empty` block for "the filter matched nothing" — its `noMatch` copy plus a
+`Clear filters` button the **helper appends**, so no screen can forget it
+(`scaffold/list-detail.ts:899-902`, outcome 4 at `:931-932`; screen copy at
+`coupons-page.ts:479-485`). Its one action is the **undo**, not the create: the way in is already on
+screen above (L-8). E-2's ban stands where it was aimed — the large `empty` must not be the
+*create* affordance for a filtered list — and there are two further outcomes the helper decides so
+that a screen cannot: a zero page that is **not** the first gets page-scoped wording rather than a
+whole-collection claim, and a zero page with **another page behind it** gets no `empty` block and no
+`empty_text` at all, because the pinned renderer short-circuits such a table to a bare `<p>` and
+takes `Load more` with it (`list-detail.ts:918-930`).
 
 **E-3 — preserve the successful-empty / failed-read distinction.** These two must never share
 phrasing; the existing pages get this right and it must survive re-layout.
@@ -1053,12 +1235,24 @@ The two instances today, both on Pricing & inventory (§12.1), both owned by the
 
 Two supporting requirements, because a rule nobody can see at the point of editing is not a guard:
 
-1. **Label the row with its owner**, not just its name — `Title (set in the CMS)`, not `Title`. The
-   parenthetical is where the merchant is already looking, and it is free; an explanation buried in
-   a `context` line is not (and on this screen that line is already over the §1 budget).
+1. **Where the value has a row, label the row with its owner**, not just its name —
+   `Status (set in the CMS)`, not `Status`. The parenthetical is where the merchant is already
+   looking, and it is free; an explanation buried in a `context` line is not (and on this screen
+   that line is already over the §1 budget). Shipped as one shared constant so both surfaces say
+   it identically: `STATUS_FIELD_LABEL` (`admin-presentation/src/products-copy.ts:180-184`).
+
+   **An owned value that IS the record's own handle needs no row and therefore no parenthetical.**
+   Title is that case: it is the detail `header` (M-10), and INC-15 deleted the `fields` row that
+   restated the H1 verbatim one block below it
+   (`admin-react/src/products/product-detail.tsx:275-276`). A deleted row cannot carry an input, so
+   F-2b is satisfied more strongly here than by a labelled one — this is a **stronger** compliance
+   with the rule, not an exemption from it. Requirement 2 is what still guards it.
 2. **The port type must refuse it.** Whatever backs the screen, the write input should not *have*
    the field, so re-adding a form control fails to compile rather than failing at runtime.
-   `UpdateProductCommerceFieldsInput` does this for both `active` and `title`.
+   `UpdateProductCommerceFieldsInput` (`domain/src/product-commerce/use-cases.ts`) does this for
+   both `active` and `title`, and the plugin's own edit wire `ProductEditWire`
+   (`admin-products-client.ts:122-142`) repeats it at the screen's own boundary — so a form control
+   fails to compile on either side of the wire, on both surfaces.
 
 X-52 rejects both the input and the owner-less label.
 
@@ -1137,13 +1331,29 @@ The exact split per screen is enumerated in §12 — teams do not choose it. **P
 split (§12.1) is the only instance today, and §12.1 is built last** — so F-5a-i is written here
 rather than left to be rediscovered.
 
-**F-5c — a full-replace form is exempt from F-5, up to 8 visible fields.** Where F-5a forbids
+**F-5c — a full-replace form is exempt from F-5, up to 8 fields.** Counted the way F-5 counts —
+**authored**, i.e. before any `condition` is evaluated. Where F-5a forbids
 splitting, the budget cannot be met by splitting and dropping a field is data loss, so the form is
-allowed to exceed 6. Cap 8. **Exactly one instance: the coupon edit form**, which is 6 visible
-fields for a `fixed_amount` coupon and **7** for a `percentage` one (`amount` **or**
-`ratePercent` + `cap`, plus `minSubtotal`, `startsAt`, `expiresAt`, `maxUses`,
-`maxUsesPerCustomer` — `coupons-page.ts:502-572`). No other form may invoke F-5c; a second
-candidate is a signal that the update path should become a sparse PATCH.
+allowed to exceed 6. Cap 8. **Exactly one instance: the coupon edit form**, which authors **7**
+fields for a `fixed_amount` coupon and **8** for a `percentage` one — at the cap, not under it
+(`coupons-page.ts:1096-1175`; the extra field on `percentage` is `Discount cap`). No other form may
+invoke F-5c; a second candidate is a signal that the update path should become a sparse PATCH.
+
+**F-5c licenses the AUTHORED count; it does not license eight full-bleed inputs on screen.** The
+two are different problems and the coupon form solves the second separately, with **F-5b's
+`condition` inside the same submit**: one `toggle` — `Edit spend and use limits`,
+`initial_value: false` — gates the four rarely-touched bounds, so the form opens at **four** visible
+fields either way (the economics field, the two window dates, the toggle). Seven full-bleed inputs
+stacked, five of them empty on a typical coupon, was the worst proportion offender in the console;
+this is what fixed it.
+
+**It could not have been a second accordion**, and that is worth knowing before someone proposes
+one: an accordion holds *blocks*, and a form's fields are not blocks, so a second group means a
+second **form** — which F-5a forbids here, because on a full-replace `PUT` saving one half nulls
+the other (`coupons-page.ts:1049-1052,1066-1077`). A `toggle` + `condition` buys the same collapsed
+shape inside one submit. **Reach for this pairing before widening a budget:** it hides nothing the
+leaf does not already state as read-only text — the cap rides in `Discount`, the floor in
+`Minimum spend`, and both use bounds in the Redemptions panel.
 
 **F-5b — a create form may exceed 6 authored fields only if `condition` keeps ≤6 visible at once.**
 A create needs every required field in one submit and cannot be split. Use `condition` (R-23) to
@@ -1164,7 +1374,7 @@ evaluates against `undefined` (R-12b). Do **not** use `condition` to smuggle a h
 | Closed set, >8 options, **and the field never prefills** | `combobox` | Searchable, and it renders the label. Only safe unprefilled (R-12a). |
 | Closed set, >8 options, **prefilling** | `select` | A long dropdown beats a control that shows one value and submits another. Its values must still pass F-6c. |
 | Date | `date_input` | Yields `YYYY-MM-DD`; normalize server-side. |
-| Secret | `secret_input` with `has_value` | Never echo the stored value. |
+| Secret | **`text_input`, always empty**, with the contract in the **placeholder** (`blank keeps current`) | Never echo the stored value — which no variant does, so masking hides only the operator's own keystrokes. `secret_input` has **no live use** in the console after INC-09; whether a secret is *set* is a fact about the credential and belongs in the group's D-6 **label**, not in the field. A `secret_input` is not forbidden; it must earn its masking against a real shoulder-surfing threat, and echoing-the-stored-value is not one. |
 | Free text over one line | `text_input` with `multiline: true` | |
 
 **F-6a — a `select`, `radio` or `combobox` must never render blank.** `SelectElement` has no
@@ -1733,9 +1943,17 @@ restock, save/rename, create, resolve reconciliation (it records a decision and 
 say so in the copy, and never style it as danger).
 
 **DA-5 — button colour means exactly one thing.** `danger` ⇔ **irreversible, or reversible only by
-a separate manual operation an operator can forget.** `primary` is not used (the form renderer's
-own submit is the primary affordance). Everything else is default `secondary`. A red button without
-a `confirm`, or a `confirm` on an act outside that definition, is a review failure.
+a separate manual operation an operator can forget.** Everything else is default `secondary`. A red
+button without a `confirm`, or a `confirm` on an act outside that definition, is a review failure.
+
+**`primary` has exactly one use, and it is enumerable (INC-14).** *(Was "`primary` is not used".)*
+It marks **L-8's create button**, and nothing else, on the five surfaces that have one:
+`coupons-page.ts:536`, `tax-page.ts:322` and `shipping-page.ts:406` (the two shared helpers, one
+call each per level). The rule survives the addition because the colour still means exactly one
+thing on each screen: `primary` is *the act this screen is for and no form's submit expresses* —
+a create whose form lives on another screen entirely, so there is no submit button competing with
+it. A second `primary` anywhere is a review failure, and a `primary` on a form submit is one too:
+the form renderer's own submit is that form's primary affordance and takes no `style`.
 
 **Two stated exceptions, and only two — both drop the button's colour and keep the dialog's.** DA-2c's
 fan-out cap (≥5 values in one `actions` block) and DA-3a-v's refusal render (every danger button outside
@@ -1864,7 +2082,9 @@ claim of a "reported bug" here is withdrawn.
 and prices are what the buyer paid — later product edits never change them."* Nothing else on the
 screen re-litigates it.
 
-**M-6 — dates.** ONE dialect, from `scaffold/datetime.ts`: an absolute instant renders
+**M-6 — dates.** ONE dialect, from **`@otta-sh/admin-presentation`'s `datetime.ts`** — the module
+moved into the shared package when Orders went React, so both surfaces render the same words;
+`scaffold/datetime.ts` is now a re-export shim and not the implementation. An absolute instant renders
 `8 Jul 2026, 10:30 UTC` (`formatTimestamp`) — day-first and spelled-month so it cannot be misread
 the way `7/8/2026` can, minutes only, and the zone is part of the VALUE, so the label names the
 event (`Placed`) and carries no `(UTC)` suffix. **A raw wire timestamp never reaches an operator**
@@ -1873,11 +2093,29 @@ rule that `fields` show ISO trimmed to seconds. Tables use `relative_time` only 
 allows it; a field the detail screen also shows is absolute on both. Date-only bounds stay DAYS —
 a `date_input` submits and prefills `YYYY-MM-DD`, and a day a merchant set never acquires an
 invented time. A bound stated as a VALUE renders in the dialect, through `formatDate`: a coupon's
-validity window reads `10 Jul 2026 – 1 Aug 2026`. **Two surfaces keep `YYYY-MM-DD` on purpose** —
-the Orders filter summary's parts (`from: 2026-07-10`), which echo back what the operator typed
-into a field they can reopen and edit, and Reports' `Period` column, whose cells are the bucket
-KEYS its rows are aligned by rather than dates being read. No timezone conversion anywhere: every
-rendering is UTC-pinned.
+validity window reads `10 Jul 2026 – 1 Aug 2026` (`couponWindowSummary`, `coupons-page.ts:281-288`).
+
+**Three date-only renderings, and the third is a RANGE HEADING rather than a value — do not unify
+them.** All three are day-precision and all three are UTC-pinned; they differ in what the reader is
+doing with the day.
+
+| Rendering | Helper | Reads | Where |
+|---|---|---|---|
+| a single day as a value | `formatDate` | `10 Jul 2026` | a coupon's `Valid`, any date-only field |
+| a **range heading** — the year stated once, at the end | `formatDay(day, withYear)` | `1 Jul – 31 Jul 2026`; `28 Dec 2025 – 3 Jan 2026` when the two days straddle a year | Reports' period subtitle (`reports-page.ts:285-290`, rendered at `:660-668`) |
+| a machine day the operator typed or aligns rows by | *(none — verbatim)* | `2026-07-10` | see below |
+
+`formatDay` is not a fourth dialect: it is `formatDate` with the year made conditional
+(`admin-presentation/src/datetime.ts:181-185`), and it exists because a heading that reads
+`1 Jul 2026 – 31 Jul 2026` states the year twice in eleven words. **The suppression is
+conditional on the two days sharing a year**, computed per render — a cross-year range keeps both.
+
+**Two surfaces keep `YYYY-MM-DD` on purpose** — the Orders filter summary's custom-period parts
+(`from: 2026-07-10`, `orders-page.ts:753-755`), which echo back what the operator typed into a field
+they can reopen and edit; and Reports' `Period` **column**, whose cells are the bucket KEYS its rows
+are aligned by rather than dates being read (`reports-page.ts:1036-1040`, `bucketStart.slice(0, 10)`).
+A **relative** period contributes no date at all — it names itself, `period: Last 7 days`
+(`orders-page.ts:743`). No timezone conversion anywhere: every rendering is UTC-pinned.
 
 **M-7 — IDs.** `format:"code"` in tables. In `fields`, the full id is the value of a labeled field
 (`Order ID`). An id never appears inside prose, inside a button or submit label (`Save std-us` →
@@ -2122,8 +2360,10 @@ The reference implementation. The other six screens pattern-match against this.
 header      block_id orders:hdr
             "Orders"
 
-context     "Filter, open an order, and move it through its status flow. Money in the order's
-             currency; dates UTC."                                           (101 chars ≤140)
+context     "<count> · Filter, open an order, and move it through its status flow. Money in
+             the order's currency; dates UTC."                     (L-1a; ≤140 with the count)
+            ← the count LEADS and is dropped entirely at zero rows; `17 orders` when the page
+              is complete or a service total exists, `17 orders on this page` otherwise
 
 banner      (cond) notice from the last action  {variant: default|alert|error, title, description}
 
@@ -2136,23 +2376,44 @@ accordion   block_id orders:filters                 STABLE across apply AND clea
                                                       processing, shipped, delivered, completed,
                                                       cancelled, refunded}
                                             initial_value  form.status ?? "any"      (F-6a)
-                 date_input  "From (inclusive)"
-                 date_input  "To (exclusive)"
+                 select      "Period"       options: {"Any time", "Last 7 days", "Last 30 days",
+                                                      "Last 90 days", "Custom…"}
+                             ← ONE period control, not two date fields (INC-11). The option
+                               VALUE **is** the human label, because a `select` trigger renders
+                               the value raw (R-17a, F-6c) — `last7` on screen would be the
+                               visible plumbing this screen exists to remove.
+                 date_input  "From" · "To"   ← ONLY under "Custom…", REPLACING the Period select,
+                             never joined to it: five authored fields is a `filterPanel` throw
+                             (L-2), and the dates are the same one concept the select names.
+                             Labels are PLAIN — the old "From (inclusive)" / "To (exclusive)"
+                             put interval notation in front of an operator AND described a `To`
+                             day that was excluded. ONE date-bounds semantics console-wide now:
+                             whole days, both ends inclusive.
                  text_input  "Search order ID or buyer email"
                  submit      "Apply filters"          → orders:apply-filter
-                                                      4 fields → accordion (L-2)
+                                                      ≤4 fields → accordion (L-2)
 
 section     (cond, any filter non-default)
-            text       filterSummary(["status: paid", "from 2026-07-01"])
-                       → "status: paid · from 2026-07-01"                      (L-6)
+            text       filterSummary(["status: paid", "period: Last 7 days"])
+                       → "status: paid · period: Last 7 days"                  (L-6)
+                       ← a RELATIVE period contributes one part naming ITSELF; only
+                         "Custom…" contributes `from: 2026-07-01` / `to: …`      (M-6)
             accessory  button "Clear filters" → orders:apply-filter
                        value { __path: encodePath(path) }                      (B-1)
 
 table       block_id orders:list                                        (only when ≥1 row)
-            columns    Order #   (code)          ← identity first
-                       Placed    (relative_time)
-                       Status    (badge)         ← the one badge column (T-5)
+            columns    Placed    (text)          ← ABSOLUTE, not relative_time (M-6, T-4):
+                                                   the detail restates this same field, and
+                                                   "3 weeks ago" against an instant one click
+                                                   away left the operator to work out they
+                                                   were the same field
                        Customer  (text)
+                       Status    (text)          ← PLAIN TEXT, not a badge (T-5, X-4); the
+                                                   exception rides in the cell's own words,
+                                                   `cancelled · closed`
+                       Order #   (code)          ← the `#` lives in the HEADER, so the cell is
+                                                   the bare short token; identity yields the
+                                                   lead here (T-2a)
                        Total     (text)          ← money last, pre-formatted (T-2, M-1)
             page_action_id orders:page ; next_cursor when present
             empty_text  "No orders match these filters."          ← filtered-to-zero only
@@ -2169,14 +2430,38 @@ form        (cond: ≥1 row)  block_id "orders:open:u1.<b64>"
                       placeholder "Choose an order…"                           (R-17b)
                       options[0]  { value:"none", label:"Choose an order…" }
                       options[n]  { value:<uuid>,
-                                    label:"qa-ordc-2@example.com · $99.00 · paid" }
+                                    label:"#7e4c · alice@example.com · $15.00 · paid" }
+                      ← the label LEADS WITH A SHORT FORM OF THE ID (INC-01). The three
+                        human attributes after it do not make two options tell apart: a
+                        repeat customer's two orders at the same total in the same state
+                        are otherwise identical character for character, and the operator
+                        picks one of them to refund. The token is computed over THE SAME
+                        ARRAY the table renders, so "unique among the candidates" and
+                        "unique among the rows on screen" are one claim.
+                      ← NOT an X-22 violation: that row forbids the RECORD ID in a label,
+                        and a short disambiguating token is not the id. The full id stays
+                        one drill away, rendered verbatim exactly once, in the identity
+                        strip.                                                 (M-7, X-22)
+                      ← the state is BARE here, not `orderStateCell(...)`: this label is a
+                        ` · `-joined 4-tuple and a marked state would make it a 5-tuple
+                        neither an operator nor the suite can segment. The ROW carries the
+                        marked value.                                          (T-5)
                       initial_value "none"                                     (F-6a, L-7)
             submit    "Open order"  → orders:open
 ```
 
-Chrome above the first data row: `header` + one 101-char `context` + a one-row accordion (+ the
-summary `section` when filtered). No `sortable` (T-3). No `Currency` column (M-2). No create form
-(orders are not created here). No `columns` (§2).
+Chrome above the first data row: `header` + one `context` carrying the row count and the standing
+line (L-1a) + a one-row accordion (+ the summary `section` when filtered). No `sortable` (T-3). No
+`Currency` column (M-2). No create control at all — orders are not created here, so L-8's block is
+omitted rather than rendered inert. No `columns` (§2).
+
+**Both surfaces render this listing.** Orders migrated to the React console (ADR-0014), and the
+migration was deliberately not a redesign: the same five columns in the same order, the same status
+words, the same absolute `Placed`, the same count line and the same Period filter, out of the same
+shared copy-and-formatting package — `admin-react/src/orders/orders-list.tsx:394` against
+`orders-page.ts:685-713`. Where this listing and that pair disagree, the listing is the defect
+(N-1). The one thing React adds is a per-row **copy** control on the id, which Block Kit cannot
+express at all (§14 item 2).
 
 ### 11.2 Order detail — four task-named panels
 
@@ -2224,8 +2509,16 @@ banner      (cond, reconciliation flagged — OUTSIDE the tabs, D-1)
 
 fields      block_id orders:identity          6 entries, row-major pairs (R-3)
               Status            | Total
-              Placed (UTC)      | Payment
-              Customer          | Reconciliation
+              Placed            | Payment
+              Order ID          | Reconciliation
+            ← `Placed` carries NO `(UTC)` suffix: the zone is part of the VALUE
+              (`8 Jul 2026, 10:30 UTC`), so the label names the event      (M-6, INC-13)
+            ← `Status` uses the SAME WORDS the list row used — `orderStateCell`, so an
+              order never reads `refunded` here against `refunded · closed` one click
+              behind it                                              (T-5, INC-10)
+            ← `Order ID` holds the FULL uuid, and this is the one surface in the console
+              that renders it in full — the list row and the picker both carry the short
+              token instead                                          (M-7, M-10)
 
 tab         block_id orders:<id>:tabs      default_tab 0      panels ALWAYS 4 (D-3)
 
@@ -2246,7 +2539,8 @@ tab         block_id orders:<id>:tabs      default_tab 0      panels ALWAYS 4 (D
 │               │           strip's, NOT a panel's; these 6 are the mapping table's promise)
 │               │             Account email  | Account          ← "Account email", not "Email"
 │               │             Name           | Orders placed
-│               │             Contact email  | Email verified (UTC)
+│               │             Contact email  | Email verified   ← no `(UTC)` suffix: the
+│               │                                                 VALUE carries the zone
 │               │           ON A GUEST — 2 entries, and only these:             (D-7)
 │               │             Contact email  | Orders placed
 │               │           Never render a row whose only content is a denial. On a guest,
@@ -2254,13 +2548,18 @@ tab         block_id orders:<id>:tabs      default_tab 0      panels ALWAYS 4 (D
 │               │           `Email verified not verified` say "no account" four times over
 │               │           the D-7 line that already says it, while `Email` denies an
 │               │           address the label, the identity strip and `Contact email` all
-│               │           display. Drop `(UTC)` when the value is `not verified`.
+│               │           display. `Email verified` reads `not verified` when there is
+│               │           no timestamp — M-6 governs timestamps, not denials.
 │               ├─ context  (guest, zero secondary data) "Guest checkout — no account, no
 │               │            saved addresses, no sign-in history."              (D-7)
 │               ├─ accordion "Saved addresses (2)"   default_open false → table  ← omit at 0
 │               ├─ accordion "Sign-in sessions (3)"  default_open false → table  ← omit at 0
 │               └─ accordion "Other orders (4)"      default_open false → table  ← omit at 0
-│                  (columns: Order # code | Placed relative_time | Status badge | Total)
+│                  (columns: Placed | Status | Order # code | Total — the primary list's
+│                   own order and its own renderings, T-2a; Status is PLAIN TEXT, and
+│                   binds harder here than on the list: every row is ONE customer's
+│                   history, so a repeat buyer whose orders all read `paid` is this
+│                   table's ORDINARY shape, not its edge case)              (T-5, X-4)
 │
 ├─ panel "Fulfilment"
 │    accordion  block_id orders:<id>:reconcile   default_open per D-5 rank 1
@@ -2285,7 +2584,8 @@ tab         block_id orders:<id>:tabs      default_tab 0      panels ALWAYS 4 (D
 │                           buyer's priced choice; nothing cross-validates them."   (≤200)
 │    accordion  block_id orders:<id>:fulfilment   default_open per D-5 rank 2
 │               label "Fulfilment" | "Fulfilment — UPS 1Z999AA10123456784"      (D-6)
-│               └─ recorded: fields   Carrier | Tracking number · Shipped (UTC) | Recorded by
+│               └─ recorded: fields   Carrier | Tracking number · Shipped | Recorded by
+│                                     ← `Shipped` carries no `(UTC)` suffix (M-6)
 │                  to record: context (≤200) + form
 │                    cf{"orders:fulfil", {orderId, state}}
 │                    Carrier · Tracking number · Tracking URL (optional) ·
@@ -2426,7 +2726,15 @@ tab         block_id orders:<id>:tabs      default_tab 0      panels ALWAYS 4 (D
 │
 └─ panel "History"
      table      block_id orders:timeline
-                When (relative_time) | Event (badge) | Who | Detail
+                When (relative_time) | Event (text) | Who | Detail
+                  ← `Event` is PLAIN TEXT: it was the console's clearest case of a badge
+                    that cannot chunk — an order with three notes and no audited state
+                    changes renders `Note added` in every row (X-4) — and the pill was
+                    wrapped around prose (`Reconciliation resolved`) rather than a state
+                    word. What the entries needed marking as is what the cell now says in
+                    words.                                              (T-5, INC-10)
+                  ← `When` KEEPS `relative_time`: it is read as an AGE and is stated on no
+                    other surface, so T-4's table default still holds  (M-6)
                   ← `Detail` carries a note's full body for a `note` event, which is why
                     the Notes group below is form-only
                 page_action_id orders:page // never fires · NO next_cursor (T-8)
@@ -2499,10 +2807,16 @@ Throughout, `cf{ns, ctx}` is shorthand for **`carriedForm({ namespace: ns, conte
 >    editable Title here would be silently overwritten by the merchant's next CMS save — the
 >    identical failure class the whole consolidation removes, and the reason `active`/Status has
 >    never had a form field either. The field list appears to have been inherited mechanically
->    from the form as it stood, without asking who owns each field. **Title stays as a read-only
->    `fields` row, relabelled `Title (set in the CMS)`** so the row itself says why, and the port
->    type `UpdateProductCommerceFieldsInput` no longer has a `title` member, so a form field for
->    it does not compile.
+>    from the form as it stood, without asking who owns each field. The port type
+>    `UpdateProductCommerceFieldsInput` no longer has a `title` member, so a form field for it
+>    does not compile.
+>
+>    **Further corrected 2026-08-01 (INC-15):** this item read "Title stays as a read-only
+>    `fields` row, relabelled `Title (set in the CMS)`". **There is no Title row at all now** —
+>    the detail `header` is the title, and the row that restated it verbatim one block below was
+>    deleted. Nothing about F-2b is weakened: a deleted row cannot grow an input, and the port
+>    type above is what still guards it. `Status (set in the CMS)` keeps its parenthetical,
+>    because it does have a row.
 >
 >    **The generalised rule is [F-2b](#7-forms), not this note.** It lives in the rules layer
 >    because it is not specific to this screen, and by the precedence rule above it beats this
@@ -2514,40 +2828,56 @@ Throughout, `cf{ns, ctx}` is shorthand for **`carriedForm({ namespace: ns, conte
 >    keeps the picker and the table agreeing, so it has to track `statusLabel`'s fourth value
 >    (`active (not priced)`, added by 1b) and the now-reachable null sku/price.
 >
-> **⚠ This screen carries the console's only live X-20 violations. Do not miss them.** Two *rendered*
-> strings use the banned slogan:
+> **✔ X-20 RESOLVED on this screen (2026-08-01).** This listing used to warn that Pricing &
+> inventory carried the console's only two live X-20 violations — rendered strings reading
+> *"(no overselling)"* and *"it can never be oversold"*. **Both are gone.** A grep over the shipped
+> product surfaces for `oversell|overselling|oversold` now matches **code comments only**. The
+> rendered replacement is one shared constant, `BACKORDERS_CONTEXT`
+> (`admin-presentation/src/products-copy.ts:221-222`): *"The store stops selling at zero stock;
+> backorders are a future capability."* — the mechanism, never the slogan.
 >
-> | Line | String | |
-> |---|---|---|
-> | `products-page.ts:409` | *"…the store stops selling at zero stock **(no overselling)**; backorders are a future capability."* | inside the 744-char edit-form `context` §1 already splits |
-> | `products-page.ts:422` | *"…it can never be **oversold**. Enter whole units only."* | the stock-form `context` |
->
-> Both are operator-facing copy and both must go — the mechanism sentence ("the store stops selling at
-> zero stock") is already there and is the whole of what the operator needs. **The code comments at
-> `:461-462` and `:604-606` documenting the domain invariant are exempt and MUST SURVIVE** (§13 X-20,
-> and the voice rule in the front matter). A PR that "fixes" those comments has broken the invariant's
-> only documentation; a PR that ships either rendered string fails X-20.
+> **The code comments documenting the domain invariant are exempt and MUST SURVIVE** (§13 X-20, and
+> the voice rule in the front matter). A PR that "fixes" those comments has broken the invariant's
+> only documentation. X-20 itself is unchanged and still binds every screen; what changed is that it
+> has no live violation to point at.
 
 ```
 ── LIST ──
 header      "Pricing & inventory"
-context     "Filter and open a product. Money in each product's own currency; stock is on
-             the detail."                                                       (≤140)
+context     "<count> · Filter and open a product. Money in each product's own currency;
+             On hand is what can be sold now."                        (L-1a; ≤140)
 banner      (cond) notice
 accordion   block_id products:filters      label "Filters" | "Filters (2 active)"
-            default_open false                                    3 fields → accordion (L-2)
+            default_open false                                    4 fields → accordion (L-2)
             └─ form  cf{"products:filter", {__path:""}}
                      select "Status"  options {any, true, false, archived}
                                       labels: All statuses (live) / Active / Inactive /
                                               Archived (deleted)     ← "" → "any" (F-6a)
-                     select "Kind"    options {any, physical, digital}   ← "" → "any"
+                     select "Kind"    options {any, physical, digital}
+                                      labels: All kinds / physical / digital  ← "" → "any"
                      text_input "Search (SKU exact, or title contains)"
+                     toggle "Low stock only"      initial_value REQUIRED       (F-6b, X-24)
+                            ← INC-04. It narrows the FETCHED PAGE, not the query — so the
+                              field carries a `description` saying exactly that ("applies
+                              per page; set the threshold on Settings"), and a page it
+                              narrows to zero takes the SCAN-FURTHER note rather than an
+                              empty state: the collection is not empty, this page is
+                              (`list-detail.ts:923-930`, outcome 3 — established by this
+                              very filter and generalized so no screen rediscovers it)
+                            ← `toggle` on Block Kit, `<input type="checkbox">` on React:
+                              two element vocabularies, ONE label and ONE description, both
+                              from the shared copy package
                      submit "Apply filters"
 section     (cond) filterSummary(...) + accessory button "Clear filters"
                    value { __path: encodePath([]) }                    ← depth 0
 table       block_id products:list
-            Title | SKU (code) | Status (badge) | Price
-            ← `Kind` column DELETED: near-constant, so its badge is a column of identical
+            Title | SKU (code) | Status (text) | On hand (text) | Price
+            ← `Status` is PLAIN TEXT, not a badge: one filter click ("Active") makes every
+              row carry the same value (T-5, X-4). The exceptions ride in the cell's own
+              words — `inactive`, `deleted`, `active (not priced)`
+            ← `On hand` is TEXT, not `format:"number"`, because it carries the exception
+              mark: `0 · Out of stock`, `3 · Low`                      (T-5, INC-04)
+            ← `Kind` column DELETED: near-constant, so its badge was a column of identical
               pills (T-5, X-4); kind is on the detail
             page_action_id products:page ; next_cursor when present
             empty_text "No products match these filters."
@@ -2556,33 +2886,52 @@ empty       (cond unfiltered zero) title "No products yet" ·
             CMS — pricing them is the next step, not a precondition."       ← AMENDED
             (no actions — products originate in the CMS, E-2)
 form        (cond ≥1) combobox "Open product"
-            options "<title | id> — <status>"                               ← AMENDED
-            ← <status> is `statusLabel(p)` — the SAME helper the table's Status column and the
-              detail's Status row use, which is the whole point of the format: the three
-              surfaces cannot disagree. FOUR values since 1b: active / active (not priced) /
-              inactive / deleted. sku and price are DELIBERATELY not in the option label —
-              both are nullable on a freshly-synced row, so the pre-1b
-              "<sku> · <title> · $19.99 · active" shape rendered "— · … · — · active" for the
-              most common new product.
+            options "<title> · <sku> · <status>"      ← Block Kit ONLY; see the note below
+            ← a null SKU segment is DROPPED rather than rendered `—`, and a null title reads
+              `(untitled)`, so a freshly-synced row reads "(untitled) · active (not priced)"
+              rather than "— · … · — · active"
+            ← <status> is `statusLabel(p)` — the SAME shared helper the table's Status column
+              and the detail's Status row use, which is the whole point of the format: the
+              three surfaces cannot disagree. FOUR values: active / active (not priced) /
+              inactive / deleted
             initial_value "none"                          submit "Open product"
+            ── THE REACT SURFACE HAS NO PICKER. `Open product` exists only because a Block
+               Kit table row cannot be clicked (§14 item 2, L-7); the React list makes the
+               Title cell a link, so the picker would be a second control for one act. L-7
+               binds on Block Kit lists — it is a workaround for R-7, not a requirement. ──
 
 ── DETAIL ── 2 panels (D-2a: a History panel would hold created/updated only)
 header      <product title, or the id when untitled>                            (M-10)
 actions     [← Back to products]
 banner      (cond) notice
 banner      (cond, tombstoned) variant "alert" · "This product was deleted in the CMS"
-fields      block_id products:identity        6 entries
-              Title (set in the CMS)  | SKU     ← F-2b: READ-ONLY, no form field anywhere on
-              Price                   | Status     this screen, and the LABEL names the owner.
-              Stock on hand           | Kind       Same shape as Status. ADR-0013.
+fields      block_id products:identity        4 entries                    ← AMENDED (INC-15)
+              SKU                     | Price
+              Status (set in the CMS) | Stock on hand
+            ← NO `Title` ROW. The `header` above IS the title, and INC-15 deleted the row
+              that restated it verbatim one block below. F-2b is satisfied more strongly by
+              a deleted row than by a labelled one — there is nothing to grow an input on —
+              and requirement 2 (the port type has no `title`) is what still guards it.
+            ← `Status` keeps its owner parenthetical, because it DOES have a row and its
+              value is not stated anywhere else on the screen  (F-2b, X-52, ADR-0013)
+            ← `Kind` MOVED to the Product panel's own `fields` (below), taking the slot
+              `Inventory policy` held — that row was a verbatim duplicate of the Stock
+              panel's. Kind has to live on the panel that survives a TOMBSTONE, because the
+              edit accordions (including the `Kind` select) are skipped entirely for a
+              deleted product, and without it a tombstoned product would state its kind
+              nowhere.                                                       (INC-15)
 tab         block_id products:<id>:tabs   default_tab 0   panels ALWAYS 2
 
 ├─ panel "Product"
-│    fields     block_id products:more        8 entries
+│    fields     block_id products:more        8 entries                  ← AMENDED (INC-15)
 │                 Compare-at | Unit cost
-│                 Tax class  | Inventory policy
-│                 Weight (g) | Dimensions (mm, LxWxH)
-│                 Created (UTC) | Updated (UTC)          ← D-2a puts these here
+│                 Tax class  | Kind          ← `Kind` took `Inventory policy`'s slot: that
+│                 Weight (g) | Dimensions (mm, LxWxH)      row duplicated the Stock panel's
+│                 Created    | Updated       own verbatim. Still 8, in 4 pairs — a swap,
+│                                            not an addition.
+│               ← the two timestamps dropped their `(UTC)` suffixes: the VALUE states the
+│                 zone (`8 Jul 2026, 10:30 UTC`)                       (M-6, INC-13)
+│               ← D-2a puts Created/Updated here rather than in a History panel
 │    ── the edit form splits into THREE (F-5a — products IS a verified sparse PATCH) ──
 │       14 rendered field entries (`products-page.ts`, the `detailBlocks` edit form; `currency`
 │       is declared twice, in the priced and unpriced branches, and only one renders). F-2
@@ -2686,93 +3035,150 @@ symbol (`detailBlocks`, `editForm`, `statusLabel`), not by line.
 ```
 ── LIST ──
 header      "Coupons"
-context     "Search a coupon and open it. Discounts apply to the cart subtotal at checkout."
-                                                                                 (≤140)
+context     "<count> · Search a coupon and open it. Discounts apply to the cart subtotal
+             at checkout."                                            (L-1a; ≤140)
+actions     block_id coupons:create-action                                       (L-8)
+            [ button "New coupon" style primary → coupons:new ]
+            ← ABOVE the data and above the notice banner; carries NO value (depth 0 has
+              no path to carry). The FORM is on the create screen it opens, never here.
 banner      (cond) notice
 form        cf{"coupons:filter", {__path:""}}                1 field → INLINE (L-2)
             text_input "Code (exact match, case-insensitive)"   submit "Search"
 section     (cond) filterSummary(["code: SUMMER25"]) + accessory button "Clear filters"
                    value { __path: encodePath([]) }                    ← depth 0
 table       block_id coupons:list
-            Code (code) | Discount | Valid | Uses
+            Code (code) | Status (text) | Discount | Valid | Uses | Min spend
+            ← SIX columns — T-1a's one ratified exemption, at T-1's hard maximum
+            ← `Status` is COMPUTED per render from the coupon's own fields:
+              active / scheduled / expired / used up. Plain text, never a badge — a pill
+              on every live coupon spends the heaviest ink on the least informative value,
+              and every value except `active` already IS the exception spelled out, so this
+              column needs no added mark                              (T-5, X-4)
             ← `Type` column DELETED: `Discount` already reads `20% off` / `$5.00 off` (T-5)
             page_action_id coupons:page ; next_cursor when present
             empty_text "No coupon matches that code."
 empty       (cond unfiltered zero) title "No coupons yet" ·
             description "Create one to start discounting carts." ·
-            actions [ button "New coupon" → coupons:new  ← re-renders with the create
-                      accordion forced open (E-2, B-6) ]
+            actions [ button "New coupon" → coupons:new ]
+            ← the SAME action id and the SAME words as the promoted button above: one act,
+              named once, reaching the same create screen                (E-2, L-8)
+empty       (cond FILTERED to zero) title "No coupon matches that code" ·
+            description "Nothing came back for that search. Clear it to go back to every
+                         coupon." · the `Clear filters` button, appended by the helper
+            ← one act per state: the way IN is already on screen above, so this state
+              offers only the UNDO                                       (E-2, INC-12)
 form        (cond ≥1) combobox "Open coupon" options "<code> · 20% off · 3 uses"
             ← combobox, NOT select: the option VALUE is the coupon id (distinct from
               `code` — the create form authors both), and a select renders the value
               (R-17a, X-22). Corrected in revision 4; revision 3 said `select`.
             placeholder "Choose a coupon…"
             initial_value "none"                        submit "View / edit"
-accordion   block_id coupons:new    label "New coupon"    default_open false      (L-8)
-            └─ context "ID, code, type and currency are fixed at creation — to change them,
-                        retire this coupon and issue a new code."                 (≤200)
-               form  block_id coupons:create        3 unconditional + 2 gated = 5 VISIBLE
-                     Coupon ID · Code · Type (select: fixed_amount | percentage)
-                     + condition-gated (F-5b):
-                       Amount off · Currency        condition {field:"type", eq:"fixed_amount"}
-                       Rate (%) · Discount cap      condition {field:"type", eq:"percentage"}
-                     `type` declares initial_value "fixed_amount"  ← required (F-5b, R-12b)
-                     submit "Create coupon"
-               ── FIVE fields leave the create form (it is 12 today,
-                  `coupons-page.ts:324-391`): `Starts at`, `Expires at`, `Minimum spend`,
-                  `Max total uses`, `Max uses per customer`. All five are editable and all
-                  five already have a home in the detail's one edit form below. A coupon
-                  created without them is valid immediately, forever, unlimited and
-                  unrestricted — the common case — and dropping them is what keeps the create
-                  form at 5 visible instead of 8. `Minimum spend` in particular must NOT
-                  appear in both forms. ──
+
+── THE CREATE SCREEN ── what "New coupon" drills into                             (L-8)
+header      "New coupon"        block_id coupons:new:hdr
+actions     [← Back to coupons]   ← the cancel verb re-lists the level came from; no path
+banner      (cond) a refusal notice — ABOVE the form, because it explains the values the
+                   form below has just put back
+context     "ID, code, type and currency are fixed at creation — to change them,
+             retire this coupon and issue a new code."                            (≤140)
+form        block_id coupons:create        3 unconditional + 2 gated = 5 VISIBLE
+            Coupon ID · Code · Type (select: fixed_amount | percentage)
+            + condition-gated (F-5b):
+              Amount off · Currency        condition {field:"type", eq:"fixed_amount"}
+              Rate (%) · Discount cap      condition {field:"type", eq:"percentage"}
+            `type` declares initial_value "fixed_amount"  ← required (F-5b, R-12b)
+            submit "Create coupon"
+── FIVE fields stay OFF the create form: `Starts at`, `Expires at`, `Minimum spend`,
+   `Max total uses`, `Max uses per customer`. All five are editable and all five have a
+   home in the detail's one edit form below. A coupon created without them is valid
+   immediately, forever, unlimited and unrestricted — the common case — and dropping them
+   is what keeps the create form at 5 visible instead of 8. `Minimum spend` in particular
+   must NOT appear in both forms. ──
 
 ── DETAIL ── 2 panels (D-2a)
 header      "Coupon — SUMMER25"                                                  (M-10)
 actions     [← Back to coupons]
 banner      (cond) notice
 fields      block_id coupons:identity      6 entries
-              Code     | Discount
+              Status   | Discount
               Type     | Uses
-              Currency | Created (UTC)      ← D-2a puts Created here
+              Currency | Created            ← D-2a puts Created here
+            ← the first entry is `Status`, not `Code`: the `header` above already reads
+              "Coupon — SUMMER25", so a `Code` row would restate the H1 verbatim one block
+              below it — the same duplication INC-15 removed from Products' Title. The row
+              carries the computed status the list column shows instead    (P-3, M-10)
+            ← `Created` carries no `(UTC)` suffix: the VALUE states the zone   (M-6)
+            ← `Currency` reads "— (currency-agnostic)" when the coupon has none, never a
+              bare dash: an absent currency is a FACT about a percentage coupon, not a
+              missing value                                                    (E-3)
 tab         block_id coupons:<id>:tabs   default_tab 0   panels ALWAYS 2
 
 ├─ panel "Coupon"
 │    fields     block_id coupons:more    Minimum spend | Valid
 │               ← read-back of the two fields whose form value is easiest to mis-read; the
 │                 form below is the only place they are edited
-│    accordion  block_id coupons:<id>:edit   default_open per D-5 rank 3
-│               label "Edit — 20% off, cap $10.00, until 2026-12-31"             (D-6)
+│    accordion  block_id coupons:<id>:edit   default_open FALSE            ← AMENDED
+│               label "Edit — 20% off · 10 Jul 2026 – 31 Dec 2026"               (D-6)
+│               ← the window renders in M-6's dialect, never `2026-12-31`
+│               ← CLOSED, not "per D-5 rank 3". The label carries the answer (D-6), which
+│                 is what makes shipping it closed cost the reader nothing; and this is a
+│                 render-time `default_open: false`, never a programmatic close — forcing a
+│                 mounted group shut means changing its `block_id`, which remounts it and
+│                 discards whatever the operator had typed          (B-8, X-50, F-5a-i)
 │               └─ context "Saving replaces EVERY field below — this is a full replace, so a
 │                           blank optional field saves as unset, not unchanged."  (≤200,
 │                           trimmed from 613)
+│                  context "Dates are UTC. A coupon becomes valid at the start of its start
+│                           date and stops at the END of its expiry date. Blank either one
+│                           for no bound."                                        (≤200)
+│                  ← the domain window is `[startsAt, expiresAt)`, so a date read as
+│                    midnight would retire the code a whole day before its stated expiry.
+│                    Same whole-day, both-ends-inclusive semantics as the Orders filter
+│                    and Reports                                                  (M-6)
 │                  ── ONE form. NOT split — F-5a forbids it: `updateCoupon` is a PUT and the
 │                     service coerces absent ⇒ null (`rules-admin.ts:434-443`), so a split
 │                     "Discount" save would silently wipe startsAt / expiresAt / maxUses /
-│                     maxUsesPerCustomer. Field count is met by `condition` (F-5b) plus F-5c's
-│                     full-replace exemption. ──
+│                     maxUsesPerCustomer. It is F-5c's ONE instance, now AT the cap: 7
+│                     authored fields for fixed_amount, 8 for percentage. The limits toggle
+│                     (F-5b) is what keeps only FOUR of them on screen at once — a separate
+│                     problem from the authored budget, solved separately.  ← AMENDED ──
 │                  form  cf{"coupons:edit", {couponId, token:<hash of mutable fields>}}
 │                        ← B-3: CouponWire has NO updatedAt, so the token is a stable hash
-│                        condition-gated on the coupon's IMMUTABLE `type`, so the server emits
-│                        only the applicable branch and `condition` is belt-and-braces:
-│                          fixed_amount →  Amount off                        1 field
-│                          percentage   →  Rate (%) · Discount cap           2 fields
-│                        then, always:
-│                          Minimum spend (optional) · Starts at (optional) ·
-│                          Expires at (optional) · Max total uses (optional) ·
-│                          Max uses per customer (optional)                  5 fields
-│                        ⇒ 6 visible for fixed_amount, 7 for percentage — over F-5's 6, and
-│                          legal only under F-5c, which this form is the sole instance of
+│                        the ECONOMICS branch is chosen by the coupon's IMMUTABLE `type`,
+│                        so the server emits only the applicable field:
+│                          fixed_amount →  Amount off (<currency>)            1 field
+│                          percentage   →  Rate (%)                           1 field
+│                        then, always visible:
+│                          Starts at (optional, UTC) · Expires at (optional, UTC)  2 fields
+│                          Edit spend and use limits          (toggle)            1 field
+│                        then, GATED on that toggle (F-5b, R-23 — condition {eq:true}):
+│                          Discount cap (optional)   ← percentage only
+│                          Minimum spend (optional) · Max uses (optional) ·
+│                          Max uses per customer (optional)
+│                        ⇒ 7 AUTHORED for fixed_amount, 8 for percentage — F-5c's one
+│                          instance, at its cap — and FOUR VISIBLE on open, either type
+│                                                                        ← AMENDED
+│                        ← the toggle is a DISCLOSURE control, not a coupon field: it
+│                          reveals the four bounds an operator rarely touches. It declares
+│                          `initial_value: false`, which F-6b/X-24 require and which R-12b
+│                          makes load-bearing — an untouched toggle with no initial value is
+│                          absent from `values` entirely
 │                        submit "Save coupon"
 │                  ── every editable field on `coupons-page.ts:502-572` has a home here:
 │                     amount, ratePercent, cap, minSubtotal, startsAt, expiresAt, maxUses,
 │                     maxUsesPerCustomer. None is orphaned. ──
 │
 └─ panel "Redemptions"
-     fields     block_id coupons:uses     Redemptions | Max total uses ·
-                                          Max per customer | Remaining
+     fields     block_id coupons:uses     Redemptions | Max uses ·
+                                          Max per customer | Remaining redemptions
+                ← "Remaining redemptions", never a bare "Remaining": beside a count and two
+                  caps, "remaining" could mean remaining uses, remaining per customer, or
+                  remaining days                                              (M-11a)
+                ← an unset bound reads "unlimited", not "—": no cap is a FACT about the
+                  coupon, not a missing value                                    (E-3)
      meter      (cond maxUses set) label "Redemptions" value 3 max 100
-                ← a COUNT, so custom_value optional (M-8)
+                ← a COUNT, so custom_value optional (M-8); OMITTED ENTIRELY when there is
+                  no bound — a full-width bar over no denominator is not a ratio  (M-8)
      context    "Orders already placed keep their snapshotted discount regardless of edits
                  here. Lowering max uses to at or below the current count exhausts the
                  coupon immediately."                                             (≤200)
@@ -2789,7 +3195,14 @@ tab         block_id coupons:<id>:tabs   default_tab 0   panels ALWAYS 2
 
 Deltas: the page `context` drops 457 → ≤140. The `divider` before the create form is deleted (R-4).
 The `Type` badge column goes (T-5). The withheld-delete copy is trimmed 217 → the DA-7 blockquote,
-and the delete `confirm.text` 301 → ≤200.
+parametrized and correctly pluralised (`1 time` / `3 times`, `coupons-page.ts:1348-1350`), and the
+delete `confirm.text` 301 → ≤200.
+
+**This screen was the odd one out when it shipped; it is the rule now.** Its `Status` column was the
+first place the console reasoned all the way through "badge the exceptions, leave the happy path
+quiet" and concluded Block Kit cannot express it (`coupons-page.ts:580-604`). INC-10 took that
+reasoning console-wide — Orders, Pricing & inventory and Reports all demoted their status badges to
+plain text — and T-5 is its generalisation. One badge column survives anywhere: Shipping's `Type`.
 
 ### 12.3 Tax (`tax-page.ts`) — the per-row inline form fix
 
@@ -2800,21 +3213,35 @@ N × (48px + ~5 field rows). Both levels are lists; neither has a detail screen.
 ── LEVEL 0: tax classes ──                        L-9 branch: nextCursor null && ≤25 rows
 header      "Tax classes"
 context     "A tax class is a rate group; products and rates reference one by id."  (≤140)
+actions     block_id tax:create-class-action                                       (L-8)
+            [ button "New tax class" style primary → the create SCREEN ]
 banner      (cond) notice
             ── NO filter block: this level has no filter fields (L-2, count 0) ──
 ── the row list (no table at this level; the labels are the columns) ──
 accordion   block_id "tax:class:u1.<b64 {classId}>"     default_open false
             label "standard — Standard rate"        ← no count: TaxClassWire is {id,name},
                                                      a rate count is not on the wire (D-6)
-            ├─ form     cf{"tax:class-save", {classId, name}}
-            │           Name                        submit "Save name"            (DA-4)
             ├─ actions  [ button "View rates" → tax:open
             │             value { target: encodePath([classId]) } ]               (§12.7)
+            ├─ form     cf{"tax:class-save", {classId, name}}
+            │           Name                        submit "Save name"            (DA-4)
             └─ actions  (cond not referenced) [ "Delete class" danger + confirm,
                           value {classId} ]                                       (DA-2)
                         (cond referenced) context — the DA-7 line naming the references
-accordion   block_id tax:new-class   label "New tax class"   default_open false    (L-8)
-            └─ form  Class ID · Name        submit "Create tax class"
+            ── ORDER IS THE AFFORDANCE HERE, because there is no other (INC-16). A `form` is
+               always `flex flex-col` in the pinned renderer (R-1), so these can never sit in
+               a horizontal row with the primary on the end — every control is a full-width
+               stack item, and the only thing left to say "this one first" is WHICH ONE IS
+               FIRST. So the COMMON path (open the class's rates) leads, the rename it wraps
+               follows, and the destructive delete goes LAST.
+               The DA-7 `context` line between the form and the delete is the SPACER: Block
+               Kit has no spacer block and `divider` is off the vocabulary (R-4, §2), so the
+               separation between "edit this" and "destroy this" is carried by a block that
+               also earns its height — it states the refusal BEFORE the click, where the
+               confirm dialog's own copy only appears after. ──
+── the create SCREEN (what the button opens) ──
+header      "New tax class"   ·   actions [← Back]   ·   banner (cond) refusal
+form        Class ID · Name        submit "Create tax class"
 ── L-9 fallback branch (>25 rows or a next page) ──
 table       block_id tax:classes   Class ID (code) | Name
             page_action_id tax:page ; next_cursor when present
@@ -2825,6 +3252,9 @@ table       block_id tax:classes   Class ID (code) | Name
 header      "Tax rates — standard"
 actions     [← Back to tax classes]   value { __path: encodePath([]) }
 context     "Each rate applies to purchases shipping to one zone."                (≤140)
+actions     block_id tax:create-rate-action                                       (L-8)
+            [ button "New tax rate" style primary → the create SCREEN
+              value { __path: encodePath([classId]) } ]   ← depth 1, the path is REQUIRED
 banner      (cond) notice
 form        cf{"tax:rate-filter", {__path:encodePath([classId])}}
             1 field → INLINE, no accordion (L-2)
@@ -2836,17 +3266,28 @@ section     (cond) filterSummary(["zone: us"]) + accessory button "Clear filters
                    value { __path: encodePath([classId]) }             ← depth 1, REQUIRED
 ── the row list (L-9) ──
 accordion   block_id "tax:rate:u1.<b64 {rateId}>"      default_open false
-            label "std-us — United States · 7.25% · goods only"                   (D-6)
+            label "7.25% — United States · std-us · goods only"        ← AMENDED (D-6)
+            ← THE RATE LEADS THE LABEL (INC-16). It used to trail the slug
+              (`std-us — United States · 7.25% · goods only`), which starts every row's
+              number at a different x — the id is the one part whose width varies most, so
+              the column of figures an operator is actually scanning was ragged. Leading
+              with the percent puts every rate within a few px of the same left edge. Same
+              move as Shipping's method price (§12.4).
+            ← `goods only` / `also shipping`, never the raw `appliesToShipping` boolean
+              and never a raw enum                                       (P-5, F-6c)
+            ← the zone NAME with `?? zoneId` fallback, from the ONE `listZones()` this
+              level performs per render — one extra read, not N              (D-6)
             ├─ form     cf{"tax:rate-save", {rateId, rateBps:"725",
             │                                  appliesToShipping:"false"}}  ← B-3 token
             │           Rate (%) · Applies to shipping (toggle, initial_value REQUIRED F-6b)
             │           submit "Save rate"                                        (DA-4)
             └─ actions  [ "Delete rate" danger + confirm, value {rateId} ]        (DA-2)
-accordion   block_id tax:new-rate  label "New tax rate"  default_open false        (L-8)
-            └─ form  Rate ID · Zone (select) · Rate (%) ·
-                     Applies to shipping (toggle)        submit "Add tax rate"
-── L-9 fallback: table  Rate ID (code) | Zone | Rate | Applies to shipping (plain text,
-   NOT a badge — T-5, X-4) + drill-in ──
+── the create SCREEN (what "New tax rate" opens) ──
+header      "New tax rate"   ·   actions [← Back]   ·   banner (cond) refusal
+form        Rate ID · Zone (select) · Rate (%) ·
+            Applies to shipping (toggle)        submit "Add tax rate"
+── L-9 fallback: table  Rate ID (code) | Zone | Rate | Applies to shipping (`yes` / `—`,
+   plain text, NOT a badge — T-5, X-4) + drill-in ──
 ```
 
 Notes: `limit: 500` at `tax-page.ts:271` and `limit: 200` at `:147` both exceed L-9's bound, so
@@ -2862,28 +3303,43 @@ Same per-row-accordion transformation as §12.3 at levels 0 and 1; level 2 is **
 ```
 ── LEVEL 0: zones ──                                                  (L-9 branch, limit 200)
 header      "Shipping zones"
-context     "A zone groups the methods you offer for a set of destinations."       (≤140)
+context     "A zone groups the shipping methods you offer for a set of destinations." (≤140)
+actions     [ button "New shipping zone" style primary → the create SCREEN ]       (L-8)
 banner      (cond) notice        ── no filter (0 fields) ──
 accordion   block_id "ship:zone:u1.<b64 {zoneId}>"
             label "us — United States"     ← NOT "· 3 methods": ShippingZoneWire is
                                              {id,name,regions}; the count would cost up to
                                              200 extra reads per render (D-6). Filed, not
-                                             fanned out.
+                                             fanned out. This level does NOT fan out; the
+                                             methods level below does, under D-6c.
             ├─ form     cf{"ship:zone-save", {zoneId, name, regions}}
             │           Name · Regions (comma-separated)   submit "Save zone"     (DA-4)
             ├─ actions  [ "View methods" → shipping:open
             │             value { target: encodePath([zoneId]) } ]                (§12.7)
             └─ actions  (cond no methods) [ "Delete zone" danger + confirm ]      (DA-2)
                         (cond has methods) context — DA-7 line
-accordion   "New zone"  default_open false → form Zone ID · Name · Regions        (L-8)
+── the create SCREEN ──  header "New shipping zone" · [← Back] ·
+   form Zone ID · Name · Regions
 
 ── LEVEL 1: a zone's methods ──                                       (L-9 branch, limit 200)
 header      "Shipping methods — us"
 actions     [← Back to shipping zones]        ── no filter (0 fields) ──
 context     "flat_rate always charges its rate; free_shipping charges nothing above its
              threshold."                                                          (≤140)
+actions     [ button "New shipping method" style primary → the create SCREEN
+              value { __path: encodePath([zoneId]) } ]        ← depth 1           (L-8)
 accordion   block_id "ship:method:u1.<b64 {methodId}>"
-            label "standard — Standard (flat rate)"                               (D-6)
+            label "$4.99 — Standard shipping · standard · flat rate"   ← AMENDED  (D-6)
+            ← THE PRICE LEADS THE LABEL (INC-16): it is the number the operator came to
+              this level for, and leading with it starts every row's amount at the same
+              left edge. Same move as the tax rate (§12.3).
+            ← the price is a PER-ROW `getRate`, which D-6 forbids in general and D-6c
+              ratifies here: `Promise.all` over at most 25 rows, because the fan-out runs
+              ONLY on this L-9 accordion branch. Read D-6c before copying it.
+            ← degrades PER ROW, never per level: "No rate set" (no rate for the currency),
+              "Price unavailable" (that row's read failed), "Price not loaded" (the table
+              branch, which fires no rate reads at all)                    (E-1, E-3)
+            ← `flat rate` / `free shipping`, never the raw wire enum        (P-5, F-6c)
             ├─ form     cf{"ship:method-save", {methodId, name, type}}
             │           Name · Type (select: flat_rate | free_shipping)
             │           submit "Save method"                                      (DA-4)
@@ -2892,9 +3348,13 @@ accordion   block_id "ship:method:u1.<b64 {methodId}>"
             │                                                        never a bare id (§12.7)
             └─ actions  (cond no rates) [ "Delete method" danger + confirm ]      (DA-2)
                         (cond has rates) context — DA-7 line
-accordion   "Add method"  default_open false → form Method ID · Name · Type       (L-8)
-── L-9 fallback table: Method ID (code) | Name | Type ← `Type` keeps its badge: a 2-value
-   closed set an operator distinguishes at a glance, and it is the level's only badge (T-5) ──
+── the create SCREEN ──  header "New shipping method" · [← Back] ·
+   form Method ID · Name · Type
+── L-9 fallback table: Method ID (code) | Name | Type ← `Type` KEEPS ITS BADGE — a 2-value
+   closed set an operator distinguishes at a glance, and the ONLY `format:"badge"` left in
+   the whole console (T-5's own exception). The badge renders the HUMAN name (`Flat rate` /
+   `Free shipping`): the raw enum was the last operator-facing place this screen leaked
+   one, and a badge is the loudest possible frame to leak it in (P-5) ──
 
 ── LEVEL 2: a method's rates ── EXEMPT from L-9 (L-9a: `limit: 1`, a (methodId, currency)
    lookup returning 0 or 1 row). Keeps its inline form.
@@ -2930,21 +3390,50 @@ T-5).
 
 ```
 header      "<Store> — Reports"
-context     "Revenue is net order totals on paid-and-later orders, bucketed by order time
-             (UTC)."                                                    (≤140, from 191)
+context     "1 Jul – 31 Jul 2026 (UTC) · Revenue is net order totals on paid-and-later
+             orders, bucketed by order time."                    ← AMENDED (INC-02, ≤140)
+            ← THE PERIOD LEADS, in absolute dates. The screen used to state the definition
+              of revenue and never the window it applied it to, so a figure covering 30
+              days read equally well as all-time or as today.
+            ← the range renders in M-6's RANGE-HEADING form, via `formatDay`: the year is
+              stated once, at the end (`1 Jul – 31 Jul 2026`), and both years when the
+              range straddles one (`28 Dec 2025 – 3 Jan 2026`). This is the third of M-6's
+              three date-only renderings and it is NOT `formatDate` — see M-6's table.
 banner      (cond) the fail-closed error banner, variant "error"                  (E-1)
-stats       max 4 items (R-16). Cards are the three currencies with the most **orders**, in
-            descending order count; a fourth card "Other currencies (N)" carries value "—" and a
-            description naming them, **because amounts in different currencies are never summed.**
-            label "Revenue (USD)" · value formatMoney(cents, "USD", "en-US") · NO description
-            ← ranking by revenue is NOT implementable: it would compare JPY minor units against
-              USD minor units, and an aggregate "Other" card has no single currency to pass to
-              formatMoney(amount, currencyCode, locale). Rank by order count instead.
-            ← the `description: "integer minor units"` line is DELETED (M-1)
+banner      (cond) a range problem — what was asked for vs what is being shown
+form        the range form (INC-02): the period the four tiles and every group below
+            report on. Its own bounds are whole days, both ends inclusive — the console's
+            ONE date-bounds semantics, which the Orders Period filter also uses  (M-6)
+stats       max 4 items (R-16). ALL FOUR ARE FILLED in the ordinary single-currency case
+            (INC-02 — the screen used to ship blank cards):                ← AMENDED
+              "Revenue (USD) — last 30 days"     value formatMoney(cents, "USD", "en-US")
+              "Orders — last 30 days"            value the count
+              "AOV (USD) — last 30 days"         value formatMoney(...)
+              "Refunded (USD) — last 30 days"    value formatMoney(...)
+            ← EVERY LABEL CARRIES THE PERIOD, because a tile is the one thing on this
+              screen read without scrolling to the line that states it. It reads
+              "last 30 days" on the default range and the absolute
+              "1 Jul – 31 Jul 2026" otherwise                                (M-6)
+            ← NO description on any tile; the `description: "integer minor units"` line is
+              DELETED (M-1)
+            ← MULTI-CURRENCY: one Revenue card PER currency, ranked by ORDER COUNT — not
+              by revenue, which would compare JPY minor units against USD minor units, and
+              amounts in different currencies are NEVER summed (M-2). Extra revenue cards
+              push Orders/AOV/Refunded off the four-card cap, and the tiles that lost their
+              slot are NAMED in one `context` line below rather than vanishing silently
+            ← a REFUND-ONLY currency gets NO revenue card: a currency that appears only
+              because money came back is not one the store earned in, and a phantom
+              `€0.00` card would push the Refunded card off in exactly the case it exists
+              to report. Its figure is stated in its own currency, in one line
             (zero currencies ⇒ one card, label "Revenue", value "—",
              description "No orders in range")
-accordion   block_id reports:revenue    label "Revenue by day (30 buckets)"
+accordion   block_id reports:revenue    label "Revenue by day"           ← AMENDED
+            ← NO "(N buckets)": a bucket is this codebase's word for a GROUP BY, not the
+              operator's word for anything, and with the series now continuous the count
+              only restated the length of the range                        (X-19, D-6)
             default_open TRUE            ← the one open group (S-3)
+            └─ context (cond: the series was NOT filled) — a sparse series is never left
+                       to look continuous; the group says so, in one line, above the rows
             └─ table  block_id reports:revenue-table
                       Period (text) | Revenue (text, formatMoney)             2 columns
                       ← `Currency` badge column DELETED (T-5, M-2); when the range spans
@@ -2956,14 +3445,33 @@ accordion   block_id reports:revenue    label "Revenue by day (30 buckets)"
                       page_action_id reports:page   // never fires
                       empty_text "No revenue in range."
 accordion   block_id reports:statuses   label "Orders by status (6)"   default_open false
-            └─ table  Status (badge) | Orders (number)   page_action_id reports:page
+            └─ table  Status (text) | Orders (number)   page_action_id reports:page
                       empty_text "No orders in range."
+                      ← Status is PLAIN TEXT (INC-10) and the reason differs from every
+                        other screen's: this table's values DO chunk — it is one row per
+                        status — so X-4 was never going to fire on it. The badge went for
+                        the OTHER half of T-5: every row got the identical pill, so the
+                        report's whole point (which of these numbers is the one to worry
+                        about?) rendered `paid` and `failed` at exactly the same weight.
+                        The cell says the exception in words instead: `cancelled · closed`
 accordion   block_id reports:top        label "Top products (10)"      default_open false
-            └─ table  Product | Qty (number) | Revenue (formatMoney)
+            └─ context (cond: the range spans several currencies) — revenue is not shown
+                       per product, because the wire carries no per-product currency and
+                       summing across currencies is not a thing (M-2)
+               table  Product | Qty (number) | Revenue (formatMoney)
                       page_action_id reports:page   empty_text "No sales in range."
 accordion   block_id reports:low        label "Low stock (3)"          default_open false
-            └─ table  SKU (code) | On hand (number)   page_action_id reports:page
+            label     "Low stock (3) — at or below 5"   ← when the threshold is known (D-6)
+            └─ table  Title | SKU (code) | On hand (text)      ← AMENDED (INC-03, INC-05)
+                      page_action_id reports:page
                       empty_text "Nothing low on stock."
+                      ← `Title` LEADS: a SKU is what the operator types, not what they
+                        recognise, and a low-stock list read only as codes was the one
+                        report nobody could act on without a second screen. A missing
+                        title reads `(untitled)`, never blank              (T-2, M-10)
+                      ← `On hand` is TEXT, not `format:"number"`, because it carries the
+                        exception mark — `0 · Out of stock`, `3 · Low` — from the SAME
+                        shared helper Pricing & inventory uses          (T-5, T-4)
 ```
 
 **Why no chart.** `chart` cannot format money (R-19): a timeseries renders raw minor units on the
@@ -3000,11 +3508,20 @@ header      "Settings"
 context     "Display name is cosmetic; the rest is operational and lives in the service."
                                                                                   (≤140)
 banner      (cond) notice, or the fail-closed error banner (variant "error")
-accordion   block_id settings:store          label "Store"        default_open TRUE  (S-3)
+── ALL THREE GROUPS RENDER `default_open: false` (INC-15). ZERO open groups is legal:
+   S-3 caps at one per response and sets no floor. Each LABEL carries its own current
+   values instead, which is why closing them costs the reader nothing.  ← AMENDED (D-6)
+accordion   block_id settings:store
+            label "Store — <display name>"  |  "Store — no display name"
+            default_open FALSE                                            ← AMENDED
             └─ form  cf{"settings:store", {displayName}}                         ← S-4
                      text_input  "Store display name"   initial_value <kv value>
                      submit "Save display name"          → save-display
-accordion   block_id settings:checkout       label "Checkout & holds"  default_open false
+accordion   block_id settings:checkout
+            label "Checkout & holds — 15 min hold · low stock at 5"
+                  |  "Checkout & holds — not loaded"   ← when the secondary GET failed:
+                     the label says so rather than implying a zero (E-3, D-6b)
+            default_open FALSE
             └─ context "These persist in the commerce service and affect live checkout."
                                                                                   (≤200)
                form  cf{"settings:ops", {holdTtl, lowStock}}                     ← S-4
@@ -3014,30 +3531,56 @@ accordion   block_id settings:checkout       label "Checkout & holds"  default_o
                        text_input with one `/^\d+$/` parse. They are NOT money, so
                        `number_input` was not a violation — this is consistency, not a fix.
                      submit "Save operational settings"       → save-operational
-accordion   block_id settings:connection     label "Service connection"  default_open false
+accordion   block_id settings:connection
+            label "Service connection — token set · service token not set"
+            ← the PROVISIONING question this group exists to answer. "token set" is a fact
+              ABOUT the credential, never any part of it: only booleans reach the label
+            default_open FALSE
             └─ context "Both tokens are stored write-only — a blank submit keeps the current
                         one. Neither is ever displayed."                          (≤200)
-               form  cf{"settings:admin-token", {hasValue:"true"}}
-                     secret_input "Admin token (X-Internal-Token)"  has_value <bool>
-                     placeholder "Leave blank to keep current token"
+               form  cf{"settings:admin-token", {gen:"<save generation>"}}       ← AMENDED
+                     text_input "Admin token (X-Internal-Token)"
+                     placeholder "Enter new admin token (blank keeps current)"
+                     ← PLAIN `text_input`, always empty. NO `secret_input`, NO `has_value`,
+                       NO `initial_value`                              ← AMENDED (INC-09)
                      submit "Save admin token"                → save-token
-               form  cf{"settings:service-token", {hasValue:"true"}}
-                     secret_input "Service token (X-Service-Token)"  has_value <bool>
+               form  cf{"settings:service-token", {gen:"<save generation>"}}
+                     text_input "Service token (X-Service-Token)"
+                     placeholder "Enter new service token (blank keeps current)"
                      submit "Save service token"              → save-service-token
                context (cond) "Admin token saved." / "Service token saved."
                        ← never the value (F-6)
 ```
 
-Two defects this fixes beyond layout:
+**Why the masked variant went, and why the carrier had to grow a `gen` (INC-09).** Both are one
+change and neither works without the other.
 
-1. **The display-name save currently destroys the page.** `settings-form.ts:150-155` returns
-   `[header, section]` — two blocks — so after saving the display name the operator's Settings page
-   becomes a receipt and the other three forms vanish. Every save path returns the full
-   `renderPage(...)` plus a `default` banner and the existing `toast` (S-5). The `section` receipts
-   at `:152` and `:267` are deleted (P-2: a `section` is not a heading and not a receipt).
+- **`secret_input` bought nothing here and cost clarity.** The field is *always* empty — the stored
+  token is never echoed under any variant — so masking dots an operator's own keystrokes while
+  displaying nothing that needed protecting. The **placeholder** carries the whole contract in
+  words: `blank keeps current`. What the group could not previously say — *is a token set at all?* —
+  is now in its **label**, from booleans alone.
+- **A plain, always-empty `text_input` cannot self-clear after a save.** It is mount-only (R-12) and,
+  inside an accordion, it is its container's index-0 child forever (R-13a), so nothing remounts it
+  and the operator's typed token stays on screen after a successful save. The fix is B-3's change
+  token with no record field to derive it from: a per-token **save generation** counter, bumped on
+  every successful non-empty submit and carried in the `carriedForm` context, so the `block_id`
+  changes and the field remounts empty (`settings-form.ts:87-88,160-162,295,326,587-593`).
+- **This is B-7a's distinction in miniature**: the digest/context change remounts the **form**, and
+  it is the *form* that must clear. No accordion key moves, and none should — X-50.
+
+Two defects this fixed beyond layout, both now shipped:
+
+1. **The display-name save used to destroy the page**, returning `[header, section]` — two blocks —
+   so after saving, the operator's Settings page became a receipt and the other three forms
+   vanished, terminally (S-5). Every save path now returns the full screen plus a `default` banner
+   and the `toast`. The `section` receipts are deleted (P-2: a `section` is not a heading and not a
+   receipt).
 2. **All four forms need a carrier change token** (S-4, B-3, B-3a). Without it a saved value does
-   not redisplay: the forms are mount-only `text_input`/`secret_input` (R-12), and once collapsed
-   into an accordion each is its container's index-0 child (R-13a), so nothing remounts them.
+   not redisplay: the forms are mount-only `text_input` (R-12), and once collapsed into an accordion
+   each is its container's index-0 child (R-13a), so nothing remounts them. The two token forms have
+   no record field to derive a token from, so they carry a **save generation** counter instead — see
+   the note above.
 
 The fail-closed branch keeps rendering **both** token forms (no bootstrap lockout) and gains the
 `error` banner in the `{variant, title, description}` shape (M-9).
@@ -3061,10 +3604,19 @@ Assert a **depth-3 open fired from a button** (shipping zone → method → rate
 ## 13. Anti-patterns — a reviewer rejects these on sight
 
 **H** = mechanically enforced by `assertBlockContract` (§15); a rule without **H** is a human
-review catch. **32 of the 53 rows are H — and `assertBlockContract` does not exist yet** (V-3a): it is
-its own PR, and it **gates every screen after Orders** (§15.1 step 2). So if you are reading this while
-building a screen, the helper exists and you call it. Only Orders predates it, and only Orders encodes
-these rules as its own assertions.
+review catch. **32 of the 53 rows are H, and `assertBlockContract` SHIPPED** —
+`packages/plugin/test/helpers/block-contract.ts`, called once per rendered response by every screen
+suite. You call it; you do not hand-roll it.
+
+**Three caveats it states about itself, and they matter more than the count.** (1) Some **H** rows
+are **not** implemented, on purpose, each with a `NOT IMPLEMENTED` comment naming why — an honest
+"cannot be decided without guessing" beats a heuristic that false-positives across six screens
+(the X-9 / X-11a failure modes §0.2 E-i and E-j already record). (2) X-29, X-39 and the payload
+half of X-38 are inherently **cross-response** claims and stay the calling screen's own
+before/after test — a single-`blocks` signature has no earlier response to compare against.
+(3) There is **no per-rule opt-out**: every implemented check runs on every call, so a screen
+cannot suppress the one rule it fails today. A row the helper does not implement is a human review
+catch, exactly as every non-**H** row is — named, not silently dropped.
 
 | # | H | Reject | Rule |
 |---|---|---|---|
@@ -3074,8 +3626,8 @@ these rules as its own assertions.
 | X-4 | H | A column of identical badges (`physical`, `USD`, `yes`, `manual`), or more than one badge column in a table. A badge column whose values are constant *within one rendered response* is the case the helper can see; a column constant only *in practice* is a human catch. | T-5 |
 | X-5 | | A `disabled` field on any element (a compile error after the foundation), or a control rendered only to reject the click. | R-11, DA-7 |
 | X-6 | H | Any `divider`. | R-4, §2 |
-| X-7 | | An **expanded** filter form above the data, or any block above the primary data that P-1's whitelist does not list. | P-1, P-4, L-4 |
-| X-8 | | A destructive form submit with no confirm, or a red button on an act outside DA-5's definition. | DA-1, DA-5 |
+| X-7 | | An **expanded** filter form above the data, or any block above the primary data that P-1's whitelist does not list. A create **form** above the data is this row; the one-button create `actions` block is on the whitelist (L-8). | P-1, P-4, L-4, L-8 |
+| X-8 | | A destructive form submit with no confirm, or a red button on an act outside DA-5's definition. **Or** a second `style:"primary"` on one screen, or a `primary` on a form's submit — `primary` marks L-8's create button and nothing else. | DA-1, DA-5, L-8 |
 | X-9 | H | Money as raw minor units, or `number_input` / `format:"number"` on a money field or column. **Helper heuristic** (a helper cannot otherwise tell raw minor units from a legitimate integer): reject a cell or `fields` value matching `/^\d+$/` whose label matches `/amount\|total\|price\|revenue\|cost\|subtotal\|discount\|refund/i` **and does NOT match the count exclusion `/count\|recorded\|quantity\|qty\|items/i`.** Anything outside the heuristic is a human catch. | M-1, M-3, T-4 |
 | X-10 | H | A money ladder in a `fields` block instead of a two-column `table`. | M-4 |
 | X-11 | H | Any string over an **authored** §1 budget: page-level `context` 140, any other `context` 200, `banner.description` 240, `accordion.label` 60, `confirm.title` 60, `confirm.text` 200, `empty.description` 200. **Seven, not eight** — the `fields`-value 40 is explicitly **excluded** (X-11a). | §1 |
@@ -3120,11 +3672,16 @@ these rules as its own assertions.
 | X-49 | | A refusal whose copy names a control or a figure the **same render** can omit — e.g. "re-enter an amount below" on a render whose group depends on a secondary read that may have degraded to a `context` line (E-1). Also: a refusal body that drops the read context its own copy points at, or keeps read context nothing points at. | DA-3a-vi, E-1 |
 | X-50 | | **Any attempt to close a group.** A changed `block_id` whose only purpose is to make an already-open accordion re-read `default_open: false` — it remounts the group and discards unsubmitted input (F-5a-i). Also: a PR, plan or review comment treating two visibly-open groups after a refusal as a defect. **Not H** — it is a cross-response tier-1 assertion (V-4 tier 1) plus a review catch, not a property of one response. | B-8, D-5, X-18 |
 | X-51 | | A sandbox fixture **hand-copying** a domain table (the order state machine, a closed enum, a legal-transition list) instead of importing it. A copied stub passes forever while testing a wire shape the service cannot produce. | V-3b |
-| X-52 | H | A form field for a value another system owns — today `active`/Status or Title on Pricing & inventory. **Or** the read-only row present with a label that omits the owner (`Title`, not `Title (set in the CMS)`). Countable on one response: no form field whose `action_id` is an owned key, and each owned key's `fields` label carrying its owner parenthetical. | F-2b |
+| X-52 | H | A form field for a value another system owns — today `active`/Status or Title on Pricing & inventory. **Or** an owned value given a read-only row whose label omits the owner (`Status`, not `Status (set in the CMS)`). Countable on one response: no form field whose `action_id` is an owned key, and every owned key **that has a row** carrying its owner parenthetical in that row's label. **Title has no row** — it is the detail `header` (F-2b requirement 1, second half) — so a Title row appearing at all is this row, parenthetical or not. | F-2b |
 
 ---
 
-## 14. What a fork change would simplify (not required by this spec)
+## 14. What Block Kit cannot do — and what the React console does about it
+
+*(Heading corrected in the docs sweep. It read "What a fork change would simplify (not required by
+this spec)", which described a route the body has ruled out since the D1 decision: there is no fork
+and these are not fork items. The item numbering below is load-bearing — this document cites
+"§14 item N" in a dozen places — and is unchanged.)*
 
 **Fork work is not pursued.** Under D1, the EmDash fork is out of scope entirely: Otta runs
 stock `emdash@0.31.1` / `@emdash-cms/blocks@0.31.1` from public npm, pinned exact — no fork
@@ -3132,6 +3689,12 @@ branches, no fork builds, no upstream PRs, no `patchedDependencies`. Block Kit i
 capability it lacks is reachable **only** by migrating that screen to the React admin console
 (`format: "native"` + `adminEntry`), per ADR-0014 — see that file for current status. The five
 items below record what Block Kit cannot do and stays unable to do; none is being patched.
+
+**Two screens have now taken that route: Orders and Pricing & inventory** (ADR-0014 Decision 6, both
+shipped). So items 1, 2 and 5 below are **still true of Block Kit and still true of the five screens
+that stay on it** — Coupons, Tax, Shipping, Reports, Settings — and are retired only on the two React
+screens. Read every "unreachable" below as *unreachable on Block Kit*, which is what it always meant;
+ADR-0014 forbids migrating Tax, Shipping and Settings, so for those three it is permanent.
 
 1. **A mid-level heading — `header.level?: 2|3` or `section.style?: "heading"`.** There are
    exactly two text weights (R-5), so a tab panel is a stack of grey accordion triggers with no
@@ -3262,28 +3825,28 @@ enforces every rule marked **H** in §13 (**31 of 52**), the **seven** authored 
 response. **A rule not in that helper is advisory** — it is a human review catch, and a PR that only
 runs the helper has not verified the non-**H** rules.
 
-**V-3a — V-3 DOES NOT EXIST YET, and it is NOT written by a screen. It is its own PR.** This is the
-programme's real gap: **31 H-marked rules are currently enforced by nothing shared.** Orders hand-rolled
-equivalents as ordinary assertions, so the **banned-string guard is Orders-only** — and the two live
-X-20 violations are on **Products** (§12.1). Terms:
+**V-3a — V-3 SHIPPED, in its own PR, and no screen wrote it.** It lives at
+`packages/plugin/test/helpers/block-contract.ts` (with its own suite beside it,
+`block-contract.test.ts`) and **every** screen suite calls it — Orders, Products, Coupons, Tax,
+Shipping, Reports and Settings. The terms it shipped under, which stand for any successor:
 
 | | |
 |---|---|
 | **Owner** | **Its own `[Plugin]` PR.** No per-screen PR may carry it. Shared test infrastructure bolted onto a layout diff is exactly the drive-by `CLAUDE.md` forbids, and — the general form of it — **no screen should write the thing that judges it.** |
-| **Sequencing** | **After** the Orders increment merges (it builds on `test/helpers/blocks.ts`, which Orders delivered) and **before any further per-screen increment starts.** See §15.1 — it is step 2, and it gates every lane below it. |
-| **Must hoist** | The X-20 banned-phrase guard (currently Orders-only), X-11's seven budgets, X-9's heuristic **with its count exclusion**, and every H row added in revision 4 (X-35..X-42) or by its third amendment (X-48). |
+| **Sequencing** | **After** the Orders increment merged (it builds on `test/helpers/blocks.ts`, which Orders delivered) and **before** any further per-screen increment started. |
+| **Hoisted** | The X-20 banned-phrase guard (which had been Orders-only), X-11's seven budgets, X-9's heuristic **with its count exclusion**, and the H rows added in revision 4 (X-35..X-42) and by its third amendment (X-48). |
 | **Signature** | `assertBlockContract(blocks, { screen, level })` — as above, unchanged. |
 
-**Why the gate is hard and not a preference.** Step 3 of §15.1 is **four concurrent lanes**. If the
-helper landed after them, four screens would each hand-roll 31 checks and all four would need
-retrofitting — the same duplication V-1a exists to stop, one level up and four times over. Sequencing it
-ahead also removes any "which screen is second?" question: the deadline is decidable without an ordering
-among the lanes.
+**Why the gate was hard and not a preference.** §15.1 step 3 is **four concurrent lanes**. Had the
+helper landed after them, four screens would each have hand-rolled ~31 checks and all four would have
+needed retrofitting — the same duplication V-1a exists to stop, one level up and four times over.
 
-**Until it lands, only Orders is in flight**, and Orders already encodes the H rules as its own
-assertions and says so in its PR — which is what tells V-3's author what to absorb. Nothing else starts,
-so there is no second screen that needs an interim rule. Do not claim an **H** rule verified because it
-"reads right".
+**What is still a human catch, and this is the part that outlives the shipping news.** The helper
+declines several **H** rows rather than guessing at them, each marked `NOT IMPLEMENTED` with its
+reason at the point of declining; and X-29, X-39 and X-38's payload half are cross-response claims a
+single-`blocks` signature cannot see, so they remain the calling screen's own before/after test.
+**Do not claim an H rule verified because the helper ran** — check that the helper implements the
+row you are claiming. And do not claim one verified because it "reads right".
 
 ### 15.1 Increment order — where your screen sits
 
@@ -3304,9 +3867,15 @@ Three things to read off this table:
   another. If a rule here reads as though it assumes a serial order, it is a defect (N-1).
 - **Nothing in step 3 may start before step 2 merges.** That is the whole reason step 2 is a step and
   not a chore folded into a screen.
-- **Products is last on purpose**, and it is where the helper's banned-phrase guard is first pointed at
-  something real — both live X-20 violations are there (§12.1). Being judged by the helper is a
-  different job from writing it.
+- **Products is last on purpose**, and it is where the helper's banned-phrase guard was first pointed
+  at something real — the two live X-20 violations were there. **Both are now fixed** (§12.1), so the
+  guard has no live violation to point at on any screen; it is a regression gate from here. Being
+  judged by the helper is a different job from writing it.
+
+**All four steps have merged.** This table is the record of the order the programme was run in, not a
+plan with work left in it. Two screens have since moved off Block Kit entirely (ADR-0014, §14): Orders
+and Pricing & inventory render from `@otta-sh/admin-react` and are gated by Playwright as well as by
+the sandbox suite, while their Block Kit twins stay in the tree and stay green.
 
 **V-3b — three wire-shape facts a suite gets wrong silently.** All three cost an afternoon and none
 fails loudly:
@@ -3339,7 +3908,7 @@ fails loudly:
 | Tier | What it covers | Gate |
 |---|---|---|
 | 1 — JSON-checkable | Budgets, vocabulary, §5/§6/§7/§9, and §10's invariants expressed as *"the token changed / did not change between these two responses"*. Includes: a DA-3 state-2 accordion carries **both** a changed `block_id` and `default_open: true`; the filter **accordion**'s `block_id` is identical across an apply *and* across `Clear filters`, while the filter **form**'s `block_id` differs after an apply **and** after `Clear filters`, whenever the prefilled values changed; a depth-3 open fired from a `button`; a service-offered transition outside `ORDER_STATES` renders no button; an L-9 level branches to accordions at 25 rows and to a table at 26. | the workerd-on-Node sandbox suite |
-| 2 — renderer behaviour | B-4, B-5, B-6, D-3, R-13a — claims about what React does with a key. One test each in the upstream `emdash-cms/emdash` repo's `packages/blocks/tests/` (tag `@emdash-cms/blocks@0.31.1`), cited in the PR. | upstream test suite |
+| 2 — renderer behaviour | B-4, B-5, B-6, D-3, R-13a — claims about what the renderer does with a key. **You cannot write a test for these.** Under D1 there are no upstream PRs and no fork, so there is no repo to add a renderer test to, and the sandbox suite renders blocks without a DOM. A tier-2 claim is therefore discharged **by citation plus its tier-1 shadow**: cite the pinned 0.31.1 renderer line that establishes the behaviour (§0's "verification basis"), and assert in the sandbox suite the *emitted* property the behaviour depends on — that the `block_id` changed, or did not, between two responses. Never claim tier 2 verified from a passing suite alone; the suite proves the token, the citation proves what the token causes. | pinned-renderer citation + the tier-1 token assertion |
 | 3 — density and appearance | P-1..P-4, F-6a's non-empty triggers (per-control, per its table), §16's residual flatness, DA-2c's fan-out **emphasis** (the button row's weight, not its height), D-6a's labels next to their buttons. **Screenshot only.** Nobody may claim these verified from a passing suite. **Nothing runs the other way:** a screenshot is not evidence for a tier-1 claim, and specifically not for X-18 (see its row — open state is sticky). | attached screenshot |
 
 ### 15.2 The eight things a following team predictably gets wrong
