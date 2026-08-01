@@ -57,8 +57,8 @@ Everything below was verified two ways, from two different sources:
    package's `files` field ships `dist` only — no `.tsx` sources — so this is as far as
    `node_modules` alone can verify a claim.
 2. **Every renderer**, from the public upstream `emdash-cms/emdash` source tree at git tag
-   `@emdash-cms/blocks@0.31.1` (a clean checkout of `github.com/emdash-cms/emdash`, **not**
-   `/home/azureuser/emdash-fork` and not dist). This is the source the pinned dist compiles
+   `@emdash-cms/blocks@0.31.1` (a clean checkout of `github.com/emdash-cms/emdash` at that tag —
+   **not** a fork checkout, and not dist). This is the source the pinned dist compiles
    from, so its line numbers are authoritative for the installed 0.31.1. Every `*.tsx:NN`
    citation in this document traces here.
 
@@ -66,9 +66,10 @@ Everything below was verified two ways, from two different sources:
 **empty** (the content-hashed filenames are even identical) — the block renderers did not change
 between the two tags, so a citation against either upstream tag is valid for both.
 
-Under D1, `/home/azureuser/emdash-fork` is out of scope for this console and
-`/home/azureuser/emdash` is 530 commits stale at 0.15.0 — **neither is a citation source.** Do
-not send a team diffing against the 0.29.0 tag — the repo no longer uses it.
+Under D1 a **local fork checkout is out of scope for this console**, and any local clone left at an
+older tag (0.15.0 is ~530 commits behind) is stale — **neither is a citation source.** Cite the
+public upstream tree at the pinned tag, as item 2 above specifies. Do not send a team diffing
+against the 0.29.0 tag — the repo no longer uses it.
 
 **`orders-page.ts` line citations are to PR #161's COMMITTED state**, i.e. the tip commit of
 `feat/admin-orders-layout` (`git show <tip>:packages/plugin/src/admin/orders-page.ts`), **not** to a
@@ -1332,7 +1333,11 @@ split (§12.1) is the only instance today, and §12.1 is built last** — so F-5
 rather than left to be rediscovered.
 
 **F-5c — a full-replace form is exempt from F-5, up to 8 fields.** Counted the way F-5 counts —
-**authored**, i.e. before any `condition` is evaluated. Where F-5a forbids
+**authored**, i.e. before any `condition` is evaluated. *(Was "up to 8 **visible** fields", and its
+instance was cited as "6 visible for `fixed_amount`, 7 for `percentage`". Corrected on two counts:
+the basis is authored, which is what F-5's own sentence says and what makes the exemption decidable
+without rendering; and the shipped figures are 7 and 8, at the cap rather than under it.)* Where
+F-5a forbids
 splitting, the budget cannot be met by splitting and dropping a field is data loss, so the form is
 allowed to exceed 6. Cap 8. **Exactly one instance: the coupon edit form**, which authors **7**
 fields for a `fixed_amount` coupon and **8** for a `percentage` one — at the cap, not under it
@@ -3164,7 +3169,7 @@ tab         block_id coupons:<id>:tabs   default_tab 0   panels ALWAYS 2
 │                          makes load-bearing — an untouched toggle with no initial value is
 │                          absent from `values` entirely
 │                        submit "Save coupon"
-│                  ── every editable field on `coupons-page.ts:502-572` has a home here:
+│                  ── every editable field on `coupons-page.ts:1096-1175` has a home here:
 │                     amount, ratePercent, cap, minSubtotal, startsAt, expiresAt, maxUses,
 │                     maxUsesPerCustomer. None is orphaned. ──
 │
@@ -3252,7 +3257,9 @@ table       block_id tax:classes   Class ID (code) | Name
 header      "Tax rates — standard"
 actions     [← Back to tax classes]   value { __path: encodePath([]) }
 context     "Each rate applies to purchases shipping to one zone."                (≤140)
-actions     block_id tax:create-rate-action                                       (L-8)
+actions     block_id "tax:create-rate-action:<classId>"       ← per-LEVEL, not per-screen:
+            this level exists once PER CLASS, so an unsuffixed id would repeat across
+            sibling renders of different classes                        (B-2b)   (L-8)
             [ button "New tax rate" style primary → the create SCREEN
               value { __path: encodePath([classId]) } ]   ← depth 1, the path is REQUIRED
 banner      (cond) notice
@@ -3324,9 +3331,18 @@ accordion   block_id "ship:zone:u1.<b64 {zoneId}>"
 ── LEVEL 1: a zone's methods ──                                       (L-9 branch, limit 200)
 header      "Shipping methods — us"
 actions     [← Back to shipping zones]        ── no filter (0 fields) ──
-context     "flat_rate always charges its rate; free_shipping charges nothing above its
-             threshold."                                                          (≤140)
-actions     [ button "New shipping method" style primary → the create SCREEN
+context     '"Flat rate" always charges its rate; "Free shipping" charges nothing above
+             its threshold.'                                          ← AMENDED (≤140)
+            + ON THE PRICED BRANCH ONLY, appended:
+              ' Prices in USD — "No rate set" means no USD rate.'                (138)
+            ← HUMANIZED AND QUOTED. The wire values stay `flat_rate` / `free_shipping`;
+              only the operator-facing copy is human, and the quotes tie each name to
+              the words the row labels above render                    (P-5, F-6c)
+            ← the currency clause is SCOPED, not unconditional: it claims a currency
+              only on the branch that priced in one, and it carries the whole meaning
+              of `No rate set` — stated ONCE here rather than per row       (D-6c)
+actions     block_id "ship:create-method-action:<zoneId>"     ← per-LEVEL, not per-screen
+            [ button "New shipping method" style primary → the create SCREEN
               value { __path: encodePath([zoneId]) } ]        ← depth 1           (L-8)
 accordion   block_id "ship:method:u1.<b64 {methodId}>"
             label "$4.99 — Standard shipping · standard · flat rate"   ← AMENDED  (D-6)
@@ -3820,7 +3836,7 @@ reviewed. *Done in PR #161 (`aa2bd97` → `3c7f037`); V-1a generalises it to the
 `packages/plugin/test/helpers/`. The two extra arguments are not optional: **X-16** cannot be
 decided from the blocks alone (it must compare the panel set against D-2's per-screen table) and
 **X-27**'s second half cannot either (it must know whether this response is a leaf detail). It
-enforces every rule marked **H** in §13 (**31 of 52**), the **seven** authored prose budgets (not the
+enforces every rule marked **H** in §13 (**32 of 53**), the **seven** authored prose budgets (not the
 `fields`-value 40 — X-11a), and the banned phrase. Every page suite calls it once per rendered
 response. **A rule not in that helper is advisory** — it is a human review catch, and a PR that only
 runs the helper has not verified the non-**H** rules.
@@ -3908,7 +3924,7 @@ fails loudly:
 | Tier | What it covers | Gate |
 |---|---|---|
 | 1 — JSON-checkable | Budgets, vocabulary, §5/§6/§7/§9, and §10's invariants expressed as *"the token changed / did not change between these two responses"*. Includes: a DA-3 state-2 accordion carries **both** a changed `block_id` and `default_open: true`; the filter **accordion**'s `block_id` is identical across an apply *and* across `Clear filters`, while the filter **form**'s `block_id` differs after an apply **and** after `Clear filters`, whenever the prefilled values changed; a depth-3 open fired from a `button`; a service-offered transition outside `ORDER_STATES` renders no button; an L-9 level branches to accordions at 25 rows and to a table at 26. | the workerd-on-Node sandbox suite |
-| 2 — renderer behaviour | B-4, B-5, B-6, D-3, R-13a — claims about what the renderer does with a key. **You cannot write a test for these.** Under D1 there are no upstream PRs and no fork, so there is no repo to add a renderer test to, and the sandbox suite renders blocks without a DOM. A tier-2 claim is therefore discharged **by citation plus its tier-1 shadow**: cite the pinned 0.31.1 renderer line that establishes the behaviour (§0's "verification basis"), and assert in the sandbox suite the *emitted* property the behaviour depends on — that the `block_id` changed, or did not, between two responses. Never claim tier 2 verified from a passing suite alone; the suite proves the token, the citation proves what the token causes. | pinned-renderer citation + the tier-1 token assertion |
+| 2 — renderer behaviour | B-4, B-5, B-6, D-3, R-13a — claims about what the renderer does with a key. *(Was: "One test each in the upstream `emdash-cms/emdash` repo's `packages/blocks/tests/`, cited in the PR", gated on "upstream test suite". Withdrawn — under D1 there are no upstream PRs and no fork, so that gate names a repo this project cannot write to, and a tier-2 claim had no reachable evidence at all.)* **You cannot write a test for these.** Under D1 there are no upstream PRs and no fork, so there is no repo to add a renderer test to, and the sandbox suite renders blocks without a DOM. A tier-2 claim is therefore discharged **by citation plus its tier-1 shadow**: cite the pinned 0.31.1 renderer line that establishes the behaviour (§0's "verification basis"), and assert in the sandbox suite the *emitted* property the behaviour depends on — that the `block_id` changed, or did not, between two responses. Never claim tier 2 verified from a passing suite alone; the suite proves the token, the citation proves what the token causes. | pinned-renderer citation + the tier-1 token assertion |
 | 3 — density and appearance | P-1..P-4, F-6a's non-empty triggers (per-control, per its table), §16's residual flatness, DA-2c's fan-out **emphasis** (the button row's weight, not its height), D-6a's labels next to their buttons. **Screenshot only.** Nobody may claim these verified from a passing suite. **Nothing runs the other way:** a screenshot is not evidence for a tier-1 claim, and specifically not for X-18 (see its row — open state is sticky). | attached screenshot |
 
 ### 15.2 The eight things a following team predictably gets wrong
@@ -3965,3 +3981,21 @@ screenshot review.
 None of the four is a reason to delay: each per-screen increment is a strict improvement on what
 ships today. None of the four has a scheduled fix — they are documented limits of Block Kit, not
 open follow-ups.
+
+### Known copy residuals — open follow-ups, unlike the four above
+
+Two shipped strings drifted behind the increments that moved what they describe. Both are copy or
+comment, neither is a behaviour defect, and both were found by the 2026-08-01 docs sweep — which is
+docs-only, so they are recorded here rather than fixed there. **Unlike items 1–4, these are meant to
+be closed.**
+
+1. **`shipping-page.ts:575` — an empty state that points the wrong way.** The zones fallback table's
+   `empty_text` reads *"No shipping zones yet — create one below."* INC-14 moved that create control
+   **above** the data (L-8), so the direction is now wrong. The fix is the word, not the layout:
+   name the control (`use "New shipping zone" above`) rather than a position, which is what stops
+   this class of drift recurring the next time something moves.
+2. **`coupons-page.ts:999` — a docblock that stops one clause short.** It frames the edit form as
+   "ONE full-replace form (F-5c, cap 8)", which is correct on the authored count, but does not
+   mention the `showLimits` toggle that keeps only four of those fields visible at once. A reader
+   reaching for the F-5c precedent gets the exemption without the technique that made it liveable
+   (F-5c's own second half, §12.2).

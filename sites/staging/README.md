@@ -61,12 +61,20 @@ Two independent things have to line up, and **neither has a default**:
    as the group's own label reading `Service connection — token set …`, never as a value in the
    box.
 
-**What you see when it is missing.** Every admin screen renders its fail-closed banner —
-*"<Screen> could not be loaded. Check the service connection and the admin token in Settings; if
-both look right, this is a fault in the console itself — not your data."* The copy is
+**What you see when it is missing.** Every admin screen **except Settings** renders its fail-closed
+banner — *"&lt;Screen&gt; could not be loaded. Check the service connection and the admin token in
+Settings; if both look right, this is a fault in the console itself — not your data."* The copy is
 deliberately written not to blame the network, precisely because this configuration gap and a
 genuine outage are indistinguishable from inside the plugin. If every screen fails at once and
 the storefront is fine, suspect this step first.
+
+**Settings is the exception BY DESIGN, and the exception is the remedy path.** Its two token forms
+need no service read to render, so Settings keeps working when nothing else does — otherwise the one
+screen that can fix the problem would be locked behind the problem (a bootstrap lockout). Only its
+operational-settings group degrades, to a single line: *"Operational settings could not be loaded
+right now. Store display name and connection tokens are unaffected — check the service connection
+and the admin token below."* Both token forms render underneath it, ready to take the value. So when
+every screen is failing at once, **go to Settings** — it will be there.
 
 Note that plugin settings are namespaced by **plugin id**, so a token saved under one id is not
 visible to another. The Block Kit screens and the React console both read `otta`'s.
