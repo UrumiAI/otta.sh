@@ -375,6 +375,27 @@ export async function skipWithoutProducts(testInfo: TestInfo, rowCount: number):
 
 /**
  * Skip (or, under `OTTA_E2E_REQUIRE_SITE=1`, fail) when no product on the page
+ * has a SKU.
+ *
+ * ITS OWN MESSAGE, and the first cut of the SKU spec borrowed
+ * {@link skipWithoutProducts}'s — which was wrong in the way these helpers keep
+ * being wrong: the stack had products, so "the stack has no products" sent the
+ * reader to the seed, where nothing was broken. A catalog of "created but never
+ * priced" rows is a REAL state (the CMS sync mints a `product_commerce` row for
+ * every products document), and the fix is to price one, not to seed more.
+ */
+export async function skipWithoutSku(testInfo: TestInfo): Promise<void> {
+	const how =
+		"the stack has products but none on the first page has a SKU, so there is " +
+		"no natural key to render or copy. Every row is a 'created but never " +
+		"priced' product — price one (DIRECTOR-SPEC §0.2's seed does) and it gains " +
+		"a SKU.";
+	if (E2E_REQUIRES_SITE) throw new Error(`OTTA_E2E_REQUIRE_SITE=1 and ${how}`);
+	testInfo.skip(true, how);
+}
+
+/**
+ * Skip (or, under `OTTA_E2E_REQUIRE_SITE=1`, fail) when no product on the page
  * has an inventory record to move stock against.
  *
  * A DIFFERENT CAUSE AND A DIFFERENT FIX AGAIN. A product with no SKU, or with a

@@ -14,6 +14,22 @@
  * uses them. Only the file they live in moved.
  */
 
+/**
+ * What an ABSENT value renders as, anywhere on either surface.
+ *
+ * ONE GLYPH, ONE DEFINITION, THREE NAMED HOMES. `UNFORMATTABLE` (money) and
+ * `ON_HAND_UNKNOWN` (stock) both derive from this, because they mean different
+ * things and must be able to diverge — a console that decided money should read
+ * `not priced` while stock kept the dash would change one constant, not hunt
+ * for a character. Everything else that is simply unset (a SKU nobody has
+ * assigned, a weight nobody measured) uses this directly rather than borrowing
+ * one of the two, which is what INC-21's review caught: three cells were
+ * rendering "no stock figure" for a value that had nothing to do with stock.
+ *
+ * ABSENT IS NEVER ZERO. That rule is the reason all three exist.
+ */
+export const ABSENT = "—";
+
 /** §1's banner prose budget. */
 export const BANNER_BUDGET = 240;
 

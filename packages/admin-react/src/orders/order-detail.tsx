@@ -45,8 +45,10 @@ import {
 	CANCEL_GROUP_LABEL,
 	CANCEL_PICK_REASON,
 	CUSTOMER_CONTEXT_UNAVAILABLE,
+	FULFILMENT_LABELS,
 	FULLY_REFUNDED_NOTE,
 	MARK_REFUNDED_CONFIRM,
+	ORDERS_BACK_LABEL,
 	ORDER_LINES_EMPTY,
 	ORDER_LINES_SNAPSHOT_NOTE,
 	REFUNDS_GROUP_EMPTY_LABEL,
@@ -70,7 +72,7 @@ import {
 	reconciliationSummary,
 	refundCapabilityText,
 	refundConfirmText,
-	refundTooHighText,
+	refundTooHighInline,
 	refundsGroupLabel,
 } from "@otta-sh/admin-presentation";
 import * as React from "react";
@@ -242,7 +244,7 @@ export function OrderDetail({
 	if (failure !== null) {
 		return (
 			<div>
-				<Button label="← Back to orders" onClick={onBack} testId="orders-back" />
+				<Button label={ORDERS_BACK_LABEL} onClick={onBack} testId="orders-back" />
 				<div style={{ marginBlockStart: 16 }}>
 					<Notice
 						variant="error"
@@ -307,7 +309,7 @@ export function OrderDetail({
 				Order · {recipient} · {formatDate(order.createdAt)}
 			</h1>
 			<div style={{ marginBlockEnd: 16 }}>
-				<Button label="← Back to orders" onClick={onBack} testId="orders-back" />
+				<Button label={ORDERS_BACK_LABEL} onClick={onBack} testId="orders-back" />
 			</div>
 
 			{notice !== null && (
@@ -541,7 +543,7 @@ export function OrderDetail({
 						)}
 
 						{order.fulfillment === null && order.state === "processing" && (
-							<Group testId="detail-record-fulfilment" label="Record fulfilment & ship" defaultOpen>
+							<Group testId="detail-record-fulfilment" label={FULFILMENT_LABELS.submit} defaultOpen>
 								<FulfilmentForm
 									busy={busy}
 									onSubmit={(values) => {
@@ -836,7 +838,7 @@ export function OrderDetail({
 															}
 															if (parsed > refunds.remainingCents) {
 																setAmountError(
-																	refundTooHighText(
+																	refundTooHighInline(
 																		formatAmount(parsed, cur),
 																		formatAmount(refunds.remainingCents, cur),
 																	),
@@ -1019,7 +1021,7 @@ function FulfilmentForm({
 	const [recordedBy, setRecordedBy] = React.useState("");
 	return (
 		<div style={{ display: "grid", gap: 10, maxInlineSize: 460 }}>
-			<Field label="Carrier">
+			<Field label={FULFILMENT_LABELS.carrier}>
 				<input
 					className="otta-focusable"
 					data-testid="fulfil-carrier"
@@ -1029,7 +1031,7 @@ function FulfilmentForm({
 					onChange={(event) => setCarrier(event.target.value)}
 				/>
 			</Field>
-			<Field label="Tracking number">
+			<Field label={FULFILMENT_LABELS.trackingNumber}>
 				<input
 					className="otta-focusable"
 					data-testid="fulfil-tracking"
@@ -1038,7 +1040,7 @@ function FulfilmentForm({
 					onChange={(event) => setTrackingNumber(event.target.value)}
 				/>
 			</Field>
-			<Field label="Tracking URL (optional)">
+			<Field label={FULFILMENT_LABELS.trackingUrl}>
 				<input
 					className="otta-focusable"
 					data-testid="fulfil-url"
@@ -1048,7 +1050,7 @@ function FulfilmentForm({
 					onChange={(event) => setTrackingUrl(event.target.value)}
 				/>
 			</Field>
-			<Field label="Ship date (optional, UTC)">
+			<Field label={FULFILMENT_LABELS.shippedAt}>
 				<input
 					type="date"
 					className="otta-focusable"
@@ -1058,7 +1060,7 @@ function FulfilmentForm({
 					onChange={(event) => setShippedAt(event.target.value)}
 				/>
 			</Field>
-			<Field label="Recorded by">
+			<Field label={FULFILMENT_LABELS.recordedBy}>
 				<input
 					className="otta-focusable"
 					data-testid="fulfil-by"
@@ -1071,7 +1073,7 @@ function FulfilmentForm({
 			<div>
 				<Button
 					testId="fulfil-submit"
-					label="Record fulfilment & ship"
+					label={FULFILMENT_LABELS.submit}
 					disabled={busy}
 					onClick={() => onSubmit({ carrier, trackingNumber, trackingUrl, shippedAt, recordedBy })}
 				/>

@@ -49,6 +49,7 @@ import {
 	endOfDay,
 	formatDate,
 	formatDay,
+	formatAmount,
 	formatMoney,
 	formatOptionalAmount,
 	formatTimestamp,
@@ -506,8 +507,17 @@ describe("the On hand cell keeps three cases apart that must never be folded", (
 	});
 
 	test("at or below the threshold is Low, above it is not", () => {
+		// THE BOUNDARY IS `<=`. A `<` mutation changes exactly one row's answer —
+		// the product sitting on the reorder point, which is the one the threshold
+		// was set for — and leaves every other case green.
+		expect(onHandCell(4, 5)).toBe("4 · Low");
 		expect(onHandCell(5, 5)).toBe("5 · Low");
 		expect(onHandCell(6, 5)).toBe("6");
+	});
+
+	test("a threshold of ZERO makes nothing low, and zero still reads out of stock", () => {
+		expect(onHandCell(0, 0)).toBe("0 · Out of stock");
+		expect(onHandCell(1, 0)).toBe("1");
 	});
 
 	test("no inventory record and no stock figure BOTH read as unknown, never as zero", () => {
@@ -670,6 +680,17 @@ describe("optional money is absent, never zero", () => {
 		// ZERO IS A PRICE, and renders as one — the distinction the `null` above
 		// exists to keep.
 		expect(formatOptionalAmount(0, "USD")).toBe("$0.00");
+	});
+
+	test("a NEGATIVE amount is rendered as one, and never as its absolute value", () => {
+		// `cents()` is branded non-negative and throws below zero, so the sign is
+		// re-applied by hand — which means it can be dropped by hand. A refund
+		// ledger that renders −$5.00 as $5.00 reads as money arriving.
+		// U+2212 MINUS SIGN, not a hyphen: it is what `Intl` would use and what
+		// lines up in a tabular-numeral column.
+		expect(formatAmount(-500, "USD")).toBe("−$5.00");
+		expect(formatOptionalAmount(-500, "USD")).toBe("−$5.00");
+		expect(formatAmount(-500, "USD").startsWith("\u2212")).toBe(true);
 	});
 
 	test("a currency Intl rejects renders the em dash, NEVER raw minor units", () => {

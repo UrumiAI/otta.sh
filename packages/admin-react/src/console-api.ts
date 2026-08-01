@@ -26,6 +26,7 @@
  * increment; {@link readFailure} is where it lands, built on EmDash's own
  * `getErrorMessage` so the server's message is what the operator reads.
  */
+import { PRODUCTS_UNAVAILABLE_TITLE } from "@otta-sh/admin-presentation";
 import { apiFetch, getErrorMessage } from "emdash/plugin-utils";
 
 /** The Block Kit plugin's single admin dispatch route — `otta`, not
@@ -397,9 +398,11 @@ async function readFailure(response: Response, subject: string): Promise<Failure
 	};
 }
 
-/** The two migrated screens' failure subjects. */
+/** The two migrated screens' failure subjects. The products one is the SHARED
+ *  constant both the Block Kit screen's `failClosed()` and the plugin's console
+ *  branch already use — three spellings of one sentence was two too many. */
 const ORDERS_UNAVAILABLE = "Orders are unavailable";
-const PRODUCTS_UNAVAILABLE = "Pricing & inventory is unavailable";
+const PRODUCTS_UNAVAILABLE = PRODUCTS_UNAVAILABLE_TITLE;
 
 /** A request that never produced a response at all. Distinguished from a
  *  refusal on purpose: "nothing came back" and "something came back and it was

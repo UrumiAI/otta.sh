@@ -42,6 +42,19 @@
  * Each is the kind of gap that is invisible until an operator reads both
  * screens, which is exactly what this migration asks them to do.
  *
+ * WHAT IS STILL HAND-COPIED, NAMED RATHER THAN LEFT TO BE FOUND. Every piece
+ * of PROSE both Orders screens render is here, plus the labels INC-21's review
+ * named individually (the fulfilment form, the list search, the back control).
+ * Roughly sixty short FIELD LABELS and TABLE HEADERS on the detail — `Subtotal`,
+ * `Postal code`, `Line total`, `Refunded by`, the four tab names — are still
+ * written twice. They are mechanical and they should move, by the same argument
+ * `products-copy.ts` makes for its own field vocabulary; they are not moved
+ * HERE because INC-21 is the Pricing & inventory migration and a sixty-string
+ * sweep of a different screen is its own change with its own diff to read. It
+ * is recorded in that increment's commit body as a follow-up rather than left
+ * as an unmarked gap: the risk is a label drifting on one surface, which is
+ * exactly what this module exists to prevent.
+ *
  * WHEN THE BLOCK KIT SCREEN IS RETIRED, this module goes back to
  * `@otta-sh/admin-react` and stops being shared. It is a migration artefact and
  * should be read as one.
@@ -226,6 +239,22 @@ export function refundTooHighText(amount: string, remaining: string): string {
 /** The title above {@link refundTooHighText}. */
 export const REFUND_TOO_HIGH_TITLE = "Amount too high";
 
+/**
+ * The same refusal as ONE line, for a surface that shows an inline error rather
+ * than a titled banner.
+ *
+ * ITS TWO SIBLINGS SET THE PATTERN and it had drifted off them (INC-21 review):
+ * {@link REFUND_AMOUNT_INVALID} and {@link REFUND_BY_REQUIRED} both name the
+ * problem and both end "Nothing was changed." — the clause that answers the
+ * question an operator actually has after a refused refund. The React tier's
+ * over-ceiling message stated neither, so of the three refusals on one form,
+ * two reassured and one did not. Composed here so the inline and banner
+ * renderings cannot say different things about the same ceiling.
+ */
+export function refundTooHighInline(amount: string, remaining: string): string {
+	return `${REFUND_TOO_HIGH_TITLE} — ${refundTooHighText(amount, remaining)} Nothing was changed.`;
+}
+
 // ── the detail: group labels ─────────────────────────────────────────────────
 //
 // D-6: a group's label carries its ANSWER, and D-6a says a destructive group's
@@ -250,3 +279,28 @@ export const REFUNDS_GROUP_EMPTY_LABEL = "Refunds — nothing captured, nothing 
 export function refundsGroupLabel(refunded: string, ceiling: string): string {
 	return `Refunds — ${refunded} of ${ceiling} refunded`;
 }
+
+// ── the detail's fulfilment form, and the list's search ─────────────────────
+//
+// A's review found these hand-copied on both surfaces. They are labels rather
+// than prose, and the reasoning `products-copy.ts` records applies here too:
+// two Orders screens in one sidebar make "same field, same words" a contract.
+
+/** The back control, on the detail and on its failure state. */
+export const ORDERS_BACK_LABEL = "← Back to orders";
+
+/** The list's free-text filter. It names BOTH things it searches, because an
+ *  operator who thinks it is id-only will not paste an email into it. */
+export const ORDERS_SEARCH_LABEL = "Search order ID or buyer email";
+
+/** The fulfilment form. `Ship date (optional, UTC)` states the zone in the
+ *  LABEL because the control is a bare `<input type="date">` that shows none —
+ *  the one field on this screen whose value cannot carry its own timezone. */
+export const FULFILMENT_LABELS = {
+	carrier: "Carrier",
+	trackingNumber: "Tracking number",
+	trackingUrl: "Tracking URL (optional)",
+	shippedAt: "Ship date (optional, UTC)",
+	recordedBy: "Recorded by",
+	submit: "Record fulfilment & ship",
+} as const;

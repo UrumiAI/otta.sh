@@ -49,20 +49,36 @@ import {
 	LOW_STOCK_BAND_UNAVAILABLE_CONTEXT,
 	NO_INVENTORY_RECORD_CONTEXT,
 	NO_SKU_CONTEXT,
+	ABSENT,
+	ADD_STOCK_PLACEHOLDER,
+	COMPARE_AT_PLACEHOLDER,
+	CURRENCY_FIELD_LABEL,
+	CURRENCY_PLACEHOLDER,
 	NO_TAX_CLASS,
-	ON_HAND_UNKNOWN,
 	PRICE_FORM_CONTEXT,
+	PRICE_PLACEHOLDER,
+	PRODUCTS_BACK_LABEL,
+	PRODUCT_FIELD_LABELS,
+	PRODUCT_KIND_LABELS,
+	PRODUCT_MEASUREMENT_LABELS,
+	PRODUCT_TAB_LABELS,
 	REMOVE_STOCK_BANNER,
 	REMOVE_STOCK_CONTEXT,
 	REMOVE_STOCK_FIELD_LABEL,
 	REMOVE_STOCK_GROUP_LABEL,
 	REMOVE_STOCK_INVALID_QTY,
+	REMOVE_STOCK_PLACEHOLDER,
+	SAVE_IDENTITY_LABEL,
+	SAVE_PRICE_LABEL,
+	SAVE_SHIPPING_LABEL,
 	SHIPPING_FORM_CONTEXT,
 	SPLIT_DISCARD_CONTEXT,
 	STATUS_FIELD_LABEL,
 	STOCK_ON_HAND_CONTEXT,
 	TOMBSTONE_BANNER_TITLE,
 	TOMBSTONE_CONTEXT,
+	UNIT_COST_PLACEHOLDER,
+	compareAtFieldLabel,
 	dimensionsSummary,
 	formatMinorUnitsInput,
 	formatOptionalAmount,
@@ -71,12 +87,14 @@ import {
 	inventoryPolicyLabel,
 	onHandCell,
 	parseStockQty,
+	priceFieldLabel,
 	priceGroupLabel,
 	removeStockConfirm,
 	shippingGroupLabel,
 	statusLabel,
 	taxClassLabel,
 	taxClassOptions,
+	unitCostFieldLabel,
 } from "@otta-sh/admin-presentation";
 import * as React from "react";
 import {
@@ -101,7 +119,7 @@ import {
 } from "../ui.js";
 import { UNTITLED } from "./products-list.js";
 
-const TAB_LABELS = ["Product", "Stock"] as const;
+const TAB_LABELS = PRODUCT_TAB_LABELS;
 
 /** A pending confirm: what the operator is about to do, and the sentence they
  *  must read first. ONE piece of state, so two dialogs can never be open at once
@@ -196,7 +214,7 @@ export function ProductDetail({
 	if (failure !== null) {
 		return (
 			<div>
-				<Button label="← Back to pricing & inventory" onClick={onBack} testId="products-back" />
+				<Button label={PRODUCTS_BACK_LABEL} onClick={onBack} testId="products-back" />
 				<div style={{ marginBlockStart: 16 }}>
 					<Notice
 						variant="error"
@@ -228,7 +246,7 @@ export function ProductDetail({
 				{p.title ?? p.productId}
 			</h1>
 			<div style={{ marginBlockEnd: 16 }}>
-				<Button label="← Back to pricing & inventory" onClick={onBack} testId="products-back" />
+				<Button label={PRODUCTS_BACK_LABEL} onClick={onBack} testId="products-back" />
 			</div>
 
 			{notice !== null && (
@@ -262,9 +280,9 @@ export function ProductDetail({
 					testId="detail-identity"
 					entries={[
 						[
-							"SKU",
+							PRODUCT_FIELD_LABELS.sku,
 							p.sku === null ? (
-								ON_HAND_UNKNOWN
+								ABSENT
 							) : (
 								<span key="sku" style={{ display: "inline-flex", alignItems: "center" }}>
 									<code data-testid="detail-sku">{p.sku}</code>
@@ -272,9 +290,9 @@ export function ProductDetail({
 								</span>
 							),
 						],
-						["Price", formatOptionalAmount(p.priceCents, p.currency)],
+						[PRODUCT_FIELD_LABELS.price, formatOptionalAmount(p.priceCents, p.currency)],
 						[STATUS_FIELD_LABEL, statusLabel(p)],
-						["Stock on hand", onHandCell(p.onHand, threshold)],
+						[PRODUCT_FIELD_LABELS.stockOnHand, onHandCell(p.onHand, threshold)],
 					]}
 				/>
 			</section>
@@ -407,14 +425,20 @@ function ProductPanel({
 				<Fields
 					testId="detail-more"
 					entries={[
-						["Compare-at", formatOptionalAmount(p.compareAtCents, p.compareAtCurrency)],
-						["Unit cost", formatOptionalAmount(p.unitCostCents, p.unitCostCurrency)],
-						["Tax class", taxClassLabel(p.taxClass, taxClasses)],
-						["Kind", p.productKind],
-						["Weight (g)", p.weightGrams === null ? ON_HAND_UNKNOWN : String(p.weightGrams)],
-						["Dimensions (mm, LxWxH)", dimensionsSummary(p.lengthMm, p.widthMm, p.heightMm)],
-						["Created", formatTimestamp(p.createdAt)],
-						["Updated", formatTimestamp(p.updatedAt)],
+						[
+							PRODUCT_FIELD_LABELS.compareAt,
+							formatOptionalAmount(p.compareAtCents, p.compareAtCurrency),
+						],
+						[
+							PRODUCT_FIELD_LABELS.unitCost,
+							formatOptionalAmount(p.unitCostCents, p.unitCostCurrency),
+						],
+						[PRODUCT_FIELD_LABELS.taxClass, taxClassLabel(p.taxClass, taxClasses)],
+						[PRODUCT_FIELD_LABELS.kind, p.productKind],
+						[PRODUCT_FIELD_LABELS.weight, p.weightGrams === null ? ABSENT : String(p.weightGrams)],
+						[PRODUCT_FIELD_LABELS.dimensions, dimensionsSummary(p.lengthMm, p.widthMm, p.heightMm)],
+						[PRODUCT_FIELD_LABELS.created, formatTimestamp(p.createdAt)],
+						[PRODUCT_FIELD_LABELS.updated, formatTimestamp(p.updatedAt)],
 					]}
 				/>
 			</section>
@@ -505,7 +529,7 @@ function IdentityForm({
 	const [sku, setSku] = React.useState(p.sku ?? "");
 	return (
 		<div style={{ display: "grid", gap: 10, maxInlineSize: 420 }}>
-			<Field label="SKU">
+			<Field label={PRODUCT_FIELD_LABELS.sku}>
 				<input
 					className="otta-focusable"
 					data-testid="edit-sku"
@@ -516,7 +540,7 @@ function IdentityForm({
 			</Field>
 			<div>
 				<Button
-					label="Save identity"
+					label={SAVE_IDENTITY_LABEL}
 					testId="save-identity"
 					disabled={busy}
 					onClick={() => onSubmit({ sku })}
@@ -558,55 +582,51 @@ function PriceForm({
 	const [unitCost, setUnitCost] = React.useState(moneyInput(p.unitCostCents));
 	return (
 		<div style={{ display: "grid", gap: 10, maxInlineSize: 460 }}>
-			<Field label={`Price (${p.currency ?? "set currency below"}, e.g. 19.99)`}>
+			<Field label={priceFieldLabel(p.currency)}>
 				<input
 					className="otta-focusable"
 					data-testid="edit-price"
 					style={inputStyle}
-					placeholder="19.99"
+					placeholder={PRICE_PLACEHOLDER}
 					value={price}
 					onChange={(event) => setPrice(event.target.value)}
 				/>
 			</Field>
 			{!priced && (
-				<Field label="Currency (ISO-4217, e.g. USD) — set once when first pricing">
+				<Field label={CURRENCY_FIELD_LABEL}>
 					<input
 						className="otta-focusable"
 						data-testid="edit-currency"
 						style={inputStyle}
-						placeholder="USD"
+						placeholder={CURRENCY_PLACEHOLDER}
 						value={currency}
 						onChange={(event) => setCurrency(event.target.value)}
 					/>
 				</Field>
 			)}
-			<Field
-				label={`Compare-at / was price (${p.currency ?? "same as price"}, e.g. 29.99) — blank to clear`}
-			>
+			<Field label={compareAtFieldLabel(p.currency)}>
 				<input
 					className="otta-focusable"
 					data-testid="edit-compare-at"
 					style={inputStyle}
-					placeholder="29.99"
+					placeholder={COMPARE_AT_PLACEHOLDER}
 					value={compareAt}
 					onChange={(event) => setCompareAt(event.target.value)}
 				/>
 			</Field>
-			<Field
-				label={`Unit cost — admin only, never shown to buyers (${p.currency ?? "same as price"}) — blank to clear`}
-			>
+			<Field label={unitCostFieldLabel(p.currency)}>
 				<input
 					className="otta-focusable"
 					data-testid="edit-unit-cost"
 					style={inputStyle}
-					placeholder="8.50"
+					placeholder={UNIT_COST_PLACEHOLDER}
 					value={unitCost}
 					onChange={(event) => setUnitCost(event.target.value)}
 				/>
 			</Field>
 			<div>
 				<Button
-					label="Save price"
+					label={SAVE_PRICE_LABEL}
 					testId="save-price"
 					disabled={busy}
 					onClick={() => onSubmit({ price, currency, compareAt, unitCost })}
@@ -639,7 +659,7 @@ function ShippingForm({
 	const [heightMm, setHeightMm] = React.useState(numberInput(p.heightMm));
 	return (
 		<div style={{ display: "grid", gap: 10, maxInlineSize: 460 }}>
-			<Field label="Kind">
+			<Field label={PRODUCT_FIELD_LABELS.kind}>
 				<select
 					className="otta-focusable"
 					data-testid="edit-kind"
@@ -647,11 +667,11 @@ function ShippingForm({
 					value={productKind}
 					onChange={(event) => setProductKind(event.target.value)}
 				>
-					<option value="physical">physical</option>
-					<option value="digital">digital</option>
+					<option value="physical">{PRODUCT_KIND_LABELS.physical}</option>
+					<option value="digital">{PRODUCT_KIND_LABELS.digital}</option>
 				</select>
 			</Field>
-			<Field label="Tax class">
+			<Field label={PRODUCT_FIELD_LABELS.taxClass}>
 				<select
 					className="otta-focusable"
 					data-testid="edit-tax-class"
@@ -668,10 +688,10 @@ function ShippingForm({
 			</Field>
 			{(
 				[
-					["Weight (g)", "edit-weight", weightGrams, setWeightGrams],
-					["Length (mm)", "edit-length", lengthMm, setLengthMm],
-					["Width (mm)", "edit-width", widthMm, setWidthMm],
-					["Height (mm)", "edit-height", heightMm, setHeightMm],
+					[PRODUCT_MEASUREMENT_LABELS.weightGrams, "edit-weight", weightGrams, setWeightGrams],
+					[PRODUCT_MEASUREMENT_LABELS.lengthMm, "edit-length", lengthMm, setLengthMm],
+					[PRODUCT_MEASUREMENT_LABELS.widthMm, "edit-width", widthMm, setWidthMm],
+					[PRODUCT_MEASUREMENT_LABELS.heightMm, "edit-height", heightMm, setHeightMm],
 				] as const
 			).map(([label, testId, value, set]) => (
 				<Field key={testId} label={label}>
@@ -686,7 +706,7 @@ function ShippingForm({
 			))}
 			<div>
 				<Button
-					label="Save classification"
+					label={SAVE_SHIPPING_LABEL}
 					testId="save-shipping"
 					disabled={busy}
 					onClick={() =>
@@ -729,8 +749,8 @@ function StockPanel({
 				<Fields
 					testId="detail-stock"
 					entries={[
-						["On hand", onHandCell(p.onHand, threshold)],
-						["Inventory policy", inventoryPolicyLabel(p.inventoryPolicy)],
+						[PRODUCT_FIELD_LABELS.onHand, onHandCell(p.onHand, threshold)],
+						[PRODUCT_FIELD_LABELS.inventoryPolicy, inventoryPolicyLabel(p.inventoryPolicy)],
 					]}
 				/>
 			</section>
@@ -767,7 +787,7 @@ function StockPanel({
 							<Group testId="stock-add" label={ADD_STOCK_LABEL}>
 								<QuantityForm
 									fieldLabel={ADD_STOCK_FIELD_LABEL}
-									placeholder="e.g. 12"
+									placeholder={ADD_STOCK_PLACEHOLDER}
 									submitLabel={ADD_STOCK_LABEL}
 									testIdPrefix="restock"
 									invalid={ADD_STOCK_INVALID_QTY}
@@ -786,7 +806,7 @@ function StockPanel({
 								<p style={{ fontSize: 12, opacity: 0.75 }}>{REMOVE_STOCK_CONTEXT}</p>
 								<QuantityForm
 									fieldLabel={REMOVE_STOCK_FIELD_LABEL}
-									placeholder="e.g. 3"
+									placeholder={REMOVE_STOCK_PLACEHOLDER}
 									submitLabel="Remove stock"
 									testIdPrefix="remove"
 									invalid={REMOVE_STOCK_INVALID_QTY}

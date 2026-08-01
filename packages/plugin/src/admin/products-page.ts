@@ -1,8 +1,14 @@
 import {
+	ABSENT,
 	ADD_STOCK_FIELD_LABEL,
 	ADD_STOCK_INVALID_QTY,
 	ADD_STOCK_LABEL,
+	ADD_STOCK_PLACEHOLDER,
+	APPLY_FILTERS_LABEL,
 	BACKORDERS_CONTEXT,
+	COMPARE_AT_PLACEHOLDER,
+	CURRENCY_FIELD_LABEL,
+	CURRENCY_PLACEHOLDER,
 	IDENTITY_FORM_CONTEXT,
 	LOW_STOCK_BAND_UNAVAILABLE_CONTEXT,
 	LOW_STOCK_FILTER_DESCRIPTION,
@@ -11,29 +17,49 @@ import {
 	NO_SKU_CONTEXT,
 	NO_TAX_CLASS,
 	PRICE_FORM_CONTEXT,
+	PRICE_PLACEHOLDER,
+	PRODUCTS_BACK_LABEL,
 	PRODUCTS_EMPTY,
 	PRODUCTS_LIST_INTRO,
 	PRODUCTS_LOW_STOCK_NO_MATCH,
 	PRODUCTS_NOUN,
 	PRODUCTS_NO_MATCH,
+	PRODUCTS_SCREEN_TITLE,
+	PRODUCTS_UNAVAILABLE_DESCRIPTION,
+	PRODUCTS_UNAVAILABLE_TITLE,
+	PRODUCT_COLUMN_LABELS,
+	PRODUCT_FIELD_LABELS,
+	PRODUCT_FILTER_LABELS,
+	PRODUCT_KIND_LABELS,
+	PRODUCT_MEASUREMENT_LABELS,
+	PRODUCT_TAB_LABELS,
 	REMOVE_STOCK_BANNER,
 	REMOVE_STOCK_CONTEXT,
 	REMOVE_STOCK_FIELD_LABEL,
 	REMOVE_STOCK_GROUP_LABEL,
 	REMOVE_STOCK_INVALID_QTY,
+	REMOVE_STOCK_PLACEHOLDER,
+	SAVE_IDENTITY_LABEL,
+	SAVE_PRICE_LABEL,
+	SAVE_SHIPPING_LABEL,
 	SHIPPING_FORM_CONTEXT,
 	SPLIT_DISCARD_CONTEXT,
 	STATUS_FIELD_LABEL,
 	STOCK_ON_HAND_CONTEXT,
 	TOMBSTONE_BANNER_TITLE,
+	UNIT_COST_PLACEHOLDER,
+	UNTITLED,
 	TOMBSTONE_CONTEXT,
+	compareAtFieldLabel,
 	dimensionsSummary as dimensionsCell,
 	fitLabel,
 	formatOptionalAmount,
 	identityGroupLabel,
 	inventoryPolicyLabel,
 	onHandCell,
+	priceFieldLabel,
 	priceGroupLabel,
+	productFilterParts,
 	parseOnHandWatermark,
 	parseStockQty as parseStockQtyShared,
 	removeStockConfirm,
@@ -42,6 +68,7 @@ import {
 	stockDegradation,
 	taxClassLabel,
 	taxClassOptions,
+	unitCostFieldLabel,
 	unitWord,
 } from "@otta-sh/admin-presentation";
 import { COMMERCE_SERVICE_BASE_URL } from "../manifest.js";
@@ -287,8 +314,8 @@ export const PRODUCTS_STATUS_OPTIONS: readonly SelectOption[] = [
 
 export const PRODUCTS_KIND_OPTIONS: readonly SelectOption[] = [
 	{ value: ANY, label: "All kinds" },
-	{ value: "physical", label: "physical" },
-	{ value: "digital", label: "digital" },
+	{ value: "physical", label: PRODUCT_KIND_LABELS.physical },
+	{ value: "digital", label: PRODUCT_KIND_LABELS.digital },
 ];
 
 /** The same, for the "Open product" picker with nothing selected (L-7). */
@@ -658,12 +685,15 @@ function listBlocks(
 	// ONE PART PER AUTHORED FILTER FIELD (L-3): the combined Status select is
 	// one field (active/archived share it), so it contributes one part.
 	const statusValue = form.archived === "true" ? "archived" : form.active;
-	const activeFilters = [
-		statusValue !== undefined && `status: ${statusValue}`,
-		form.productKind !== undefined && `kind: ${form.productKind}`,
-		form.lowStock === "true" && "stock: low only",
-		form.search !== undefined && `search: ${form.search}`,
-	];
+	// The FLATTENING is this surface's (it stores `active`/`archived` on two
+	// keys); the WORDING is the shared one, so the React panel counts the same
+	// parts and spells them the same way.
+	const activeFilters = productFilterParts({
+		status: statusValue,
+		kind: form.productKind,
+		lowStock: form.lowStock === "true",
+		search: form.search,
+	});
 	const summary = filterSummary(activeFilters);
 	// A "Low stock only" page reports on ITSELF, never on the catalog: the filter
 	// narrows the rows this page fetched (see `fetchPage`), so the sentence, the
@@ -688,7 +718,7 @@ function listBlocks(
 			: { ...PRODUCTS_NO_MATCH, blockId: "products:no-match" },
 	});
 	const blocks: Block[] = [
-		{ type: "header", text: "Pricing & inventory" },
+		{ type: "header", text: PRODUCTS_SCREEN_TITLE },
 		listIntroLine(result.countLine, PRODUCTS_LIST_INTRO),
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
@@ -726,8 +756,8 @@ function listBlocks(
 		type: "table",
 		block_id: "products:list",
 		columns: [
-			{ key: "title", label: "Title" },
-			{ key: "sku", label: "SKU", format: "code" },
+			{ key: "title", label: PRODUCT_COLUMN_LABELS.title },
+			{ key: "sku", label: PRODUCT_COLUMN_LABELS.sku, format: "code" },
 			// PLAIN TEXT, not `format:"badge"` (INC-10). `Kind` was deleted from
 			// this table for being near-constant across a live catalog — and
 			// `Status` is the SAME COLUMN one filter along: a catalog is almost all
@@ -737,19 +767,19 @@ function listBlocks(
 			// `active` is one quiet word and every exception is longer and says why
 			// (`inactive`, `deleted`, `active (not priced)`) — which is the same
 			// convention the `On hand` cell ships (`0 · Out of stock`).
-			{ key: "status", label: "Status" },
+			{ key: "status", label: PRODUCT_COLUMN_LABELS.status },
 			// `Kind` column DELETED: near-constant across a live catalog, so its
 			// badge would be a column of identical pills (T-5, X-4). Kind is on
 			// the detail's identity strip.
 			//
 			// `On hand` is a COUNT, never money — `format: "number"` is right here
 			// and would be an X-9 violation one column along.
-			{ key: "onHand", label: "On hand", format: "number" },
-			{ key: "price", label: "Price" }, // money LAST, pre-formatted (T-2, M-1)
+			{ key: "onHand", label: PRODUCT_COLUMN_LABELS.onHand, format: "number" },
+			{ key: "price", label: PRODUCT_COLUMN_LABELS.price }, // money LAST, pre-formatted (T-2, M-1)
 		],
 		rows: rows.map((r) => ({
-			title: r.product.title ?? "(untitled)",
-			sku: r.product.sku ?? "—",
+			title: r.product.title ?? UNTITLED,
+			sku: r.product.sku ?? ABSENT,
 			status: statusLabel(r.product),
 			onHand: r.onHand,
 			price: formatOptionalTotal(r.product.priceCents, r.product.currency),
@@ -802,14 +832,14 @@ function filterForm(actions: ScreenActions, path: NavPath, form: ProductsFilterF
 					// owned-field guard unable to tell a filter control from a write.
 					type: "select",
 					action_id: "status",
-					label: "Status",
+					label: PRODUCT_FILTER_LABELS.status,
 					options: statusOptions,
 					initial_value: statusInitialValue,
 				},
 				{
 					type: "select",
 					action_id: "productKind",
-					label: "Kind",
+					label: PRODUCT_FILTER_LABELS.kind,
 					options: kindOptions,
 					initial_value: form.productKind ?? ANY,
 				},
@@ -827,11 +857,11 @@ function filterForm(actions: ScreenActions, path: NavPath, form: ProductsFilterF
 				{
 					type: "text_input",
 					action_id: "search",
-					label: "Search (SKU exact, or title contains)",
+					label: PRODUCT_FILTER_LABELS.search,
 					...(form.search !== undefined ? { initial_value: form.search } : {}),
 				},
 			],
-			submit: { label: "Apply filters", action_id: actions.applyFilter },
+			submit: { label: APPLY_FILTERS_LABEL, action_id: actions.applyFilter },
 		},
 	});
 }
@@ -884,7 +914,7 @@ function openProductForm(
 						{ value: NONE, label: "Choose a product…" },
 						...rows.map(({ product: p }) => ({
 							value: p.productId,
-							label: [p.title ?? "(untitled)", p.sku, statusLabel(p)]
+							label: [p.title ?? UNTITLED, p.sku, statusLabel(p)]
 								.filter((part) => part !== null)
 								.join(" · "),
 						})),
@@ -940,7 +970,7 @@ function productDetailLevel() {
 		notFound({ actions, path, id }) {
 			return [
 				{ type: "header", text: "Product not found" },
-				backButton(actions.back, "← Back to pricing & inventory", path),
+				backButton(actions.back, PRODUCTS_BACK_LABEL, path),
 				{
 					type: "banner",
 					variant: "error",
@@ -991,7 +1021,7 @@ function detailBlocks(
 		// M-10: the human handle (product title) stands in for the uuid when one
 		// exists.
 		{ type: "header", text: p.title ?? id },
-		backButton(actions.back, "← Back to pricing & inventory"),
+		backButton(actions.back, PRODUCTS_BACK_LABEL),
 	];
 	// At most 2 banners at the top level (X-31): the notice and the tombstone
 	// alert.
@@ -1039,8 +1069,8 @@ function detailBlocks(
 	// cap (D-1a).
 	blocks.push(
 		fields("products:identity", [
-			["SKU", p.sku ?? "—"],
-			["Price", formatOptionalTotal(p.priceCents, p.currency)],
+			[PRODUCT_FIELD_LABELS.sku, p.sku ?? ABSENT],
+			[PRODUCT_FIELD_LABELS.price, formatOptionalTotal(p.priceCents, p.currency)],
 			[STATUS_FIELD_LABEL, statusLabel(p)],
 			// The most operationally urgent number on the page, carrying its own
 			// exception (`Out of stock` / `Low`) so it does not read at the same
@@ -1051,12 +1081,12 @@ function detailBlocks(
 			// "—" branch is now REACHED on this screen (no inventory record, or no
 			// sku to have one), which is the point: the two facts were previously
 			// both rendered as a zero nobody counted.
-			["Stock on hand", onHandCell(p.onHand, threshold)],
+			[PRODUCT_FIELD_LABELS.stockOnHand, onHandCell(p.onHand, threshold)],
 		]),
 	);
 	const panels: TabPanel[] = [
-		{ label: "Product", blocks: productPanel(id, p, taxClasses, open) },
-		{ label: "Stock", blocks: stockPanel(id, p, open, renderState, threshold) },
+		{ label: PRODUCT_TAB_LABELS[0], blocks: productPanel(id, p, taxClasses, open) },
+		{ label: PRODUCT_TAB_LABELS[1], blocks: stockPanel(id, p, open, renderState, threshold) },
 	];
 	blocks.push({
 		type: "tab",
@@ -1086,9 +1116,9 @@ function productPanel(
 ): Block[] {
 	const blocks: Block[] = [
 		fields("products:more", [
-			["Compare-at", formatOptionalTotal(p.compareAtCents, p.compareAtCurrency)],
-			["Unit cost", formatOptionalTotal(p.unitCostCents, p.unitCostCurrency)],
-			["Tax class", taxClassLabel(p.taxClass, taxClasses)],
+			[PRODUCT_FIELD_LABELS.compareAt, formatOptionalTotal(p.compareAtCents, p.compareAtCurrency)],
+			[PRODUCT_FIELD_LABELS.unitCost, formatOptionalTotal(p.unitCostCents, p.unitCostCurrency)],
+			[PRODUCT_FIELD_LABELS.taxClass, taxClassLabel(p.taxClass, taxClasses)],
 			// `Kind` lives here rather than in the identity strip (INC-15). It took
 			// the slot `Inventory policy` used to hold — that row was a verbatim
 			// duplicate of the Stock panel's own (`products:stock`), which is where
@@ -1097,13 +1127,13 @@ function productPanel(
 			// select) are skipped entirely for a deleted product, so without this row
 			// a tombstoned product would state its kind nowhere. Still 8 entries in 4
 			// row-major pairs (R-3) — a swap, not an addition.
-			["Kind", p.productKind],
-			["Weight (g)", p.weightGrams === null ? "—" : String(p.weightGrams)],
-			["Dimensions (mm, LxWxH)", dimensionsCell(p.lengthMm, p.widthMm, p.heightMm)],
+			[PRODUCT_FIELD_LABELS.kind, p.productKind],
+			[PRODUCT_FIELD_LABELS.weight, p.weightGrams === null ? ABSENT : String(p.weightGrams)],
+			[PRODUCT_FIELD_LABELS.dimensions, dimensionsCell(p.lengthMm, p.widthMm, p.heightMm)],
 			// The labels dropped their `(UTC)` suffix because the value states the
 			// zone itself now (INC-13). Still 8 entries, still 4 row-major pairs.
-			["Created", formatTimestamp(p.createdAt)],
-			["Updated", formatTimestamp(p.updatedAt)],
+			[PRODUCT_FIELD_LABELS.created, formatTimestamp(p.createdAt)],
+			[PRODUCT_FIELD_LABELS.updated, formatTimestamp(p.updatedAt)],
 		]),
 	];
 	if (p.deletedAt !== null) {
@@ -1159,11 +1189,11 @@ function identityForm(id: string, p: ProductDetailWire): FormBlock {
 				{
 					type: "text_input",
 					action_id: "sku",
-					label: "SKU",
+					label: PRODUCT_FIELD_LABELS.sku,
 					...(p.sku !== null ? { initial_value: p.sku } : {}),
 				},
 			],
-			submit: { label: "Save identity", action_id: ACTION_SAVE_IDENTITY },
+			submit: { label: SAVE_IDENTITY_LABEL, action_id: ACTION_SAVE_IDENTITY },
 		},
 	});
 }
@@ -1186,8 +1216,8 @@ function priceForm(id: string, p: ProductDetailWire): FormBlock {
 		{
 			type: "text_input",
 			action_id: "price",
-			label: `Price (${p.currency ?? "set currency below"}, e.g. 19.99)`,
-			placeholder: "19.99",
+			label: priceFieldLabel(p.currency),
+			placeholder: PRICE_PLACEHOLDER,
 			...(p.priceCents !== null ? { initial_value: formatPriceMinorUnits(p.priceCents) } : {}),
 		},
 	];
@@ -1195,16 +1225,16 @@ function priceForm(id: string, p: ProductDetailWire): FormBlock {
 		priceFields.push({
 			type: "text_input",
 			action_id: "currency",
-			label: "Currency (ISO-4217, e.g. USD) — set once when first pricing",
-			placeholder: "USD",
+			label: CURRENCY_FIELD_LABEL,
+			placeholder: CURRENCY_PLACEHOLDER,
 		});
 	}
 	priceFields.push(
 		{
 			type: "text_input",
 			action_id: "compareAt",
-			label: `Compare-at / was price (${p.currency ?? "same as price"}, e.g. 29.99) — blank to clear`,
-			placeholder: "29.99",
+			label: compareAtFieldLabel(p.currency),
+			placeholder: COMPARE_AT_PLACEHOLDER,
 			...(p.compareAtCents !== null
 				? { initial_value: formatPriceMinorUnits(p.compareAtCents) }
 				: {}),
@@ -1212,8 +1242,8 @@ function priceForm(id: string, p: ProductDetailWire): FormBlock {
 		{
 			type: "text_input",
 			action_id: "unitCost",
-			label: `Unit cost — admin only, never shown to buyers (${p.currency ?? "same as price"}) — blank to clear`,
-			placeholder: "8.50",
+			label: unitCostFieldLabel(p.currency),
+			placeholder: UNIT_COST_PLACEHOLDER,
 			...(p.unitCostCents !== null
 				? { initial_value: formatPriceMinorUnits(p.unitCostCents) }
 				: {}),
@@ -1230,7 +1260,7 @@ function priceForm(id: string, p: ProductDetailWire): FormBlock {
 		form: {
 			type: "form",
 			fields: priceFields,
-			submit: { label: "Save price", action_id: ACTION_SAVE_PRICE },
+			submit: { label: SAVE_PRICE_LABEL, action_id: ACTION_SAVE_PRICE },
 		},
 	});
 }
@@ -1249,46 +1279,46 @@ function shippingForm(id: string, p: ProductDetailWire, taxClasses: TaxClassWire
 				{
 					type: "select",
 					action_id: "productKind",
-					label: "Kind",
+					label: PRODUCT_FIELD_LABELS.kind,
 					options: [
-						{ value: "physical", label: "physical" },
-						{ value: "digital", label: "digital" },
+						{ value: "physical", label: PRODUCT_KIND_LABELS.physical },
+						{ value: "digital", label: PRODUCT_KIND_LABELS.digital },
 					],
 					initial_value: p.productKind,
 				},
 				{
 					type: "select",
 					action_id: "taxClass",
-					label: "Tax class",
+					label: PRODUCT_FIELD_LABELS.taxClass,
 					options: taxClassOptions(p.taxClass, taxClasses),
 					initial_value: p.taxClass ?? NO_TAX_CLASS,
 				},
 				{
 					type: "text_input",
 					action_id: "weightGrams",
-					label: "Weight (g)",
+					label: PRODUCT_MEASUREMENT_LABELS.weightGrams,
 					...(p.weightGrams !== null ? { initial_value: String(p.weightGrams) } : {}),
 				},
 				{
 					type: "text_input",
 					action_id: "lengthMm",
-					label: "Length (mm)",
+					label: PRODUCT_MEASUREMENT_LABELS.lengthMm,
 					...(p.lengthMm !== null ? { initial_value: String(p.lengthMm) } : {}),
 				},
 				{
 					type: "text_input",
 					action_id: "widthMm",
-					label: "Width (mm)",
+					label: PRODUCT_MEASUREMENT_LABELS.widthMm,
 					...(p.widthMm !== null ? { initial_value: String(p.widthMm) } : {}),
 				},
 				{
 					type: "text_input",
 					action_id: "heightMm",
-					label: "Height (mm)",
+					label: PRODUCT_MEASUREMENT_LABELS.heightMm,
 					...(p.heightMm !== null ? { initial_value: String(p.heightMm) } : {}),
 				},
 			],
-			submit: { label: "Save classification", action_id: ACTION_SAVE_SHIPPING },
+			submit: { label: SAVE_SHIPPING_LABEL, action_id: ACTION_SAVE_SHIPPING },
 		},
 	});
 }
@@ -1306,8 +1336,8 @@ function stockPanel(
 		fields("products:stock", [
 			// Badged exactly as the identity strip above and the list column
 			// before it — one helper, three surfaces (see `onHandCell`).
-			["On hand", onHandCell(p.onHand, threshold)],
-			["Inventory policy", inventoryPolicyLabel(p.inventoryPolicy)],
+			[PRODUCT_FIELD_LABELS.onHand, onHandCell(p.onHand, threshold)],
+			[PRODUCT_FIELD_LABELS.inventoryPolicy, inventoryPolicyLabel(p.inventoryPolicy)],
 		]),
 	];
 	if (threshold === null) {
@@ -1373,7 +1403,7 @@ function restockForm(id: string, onHand: number): FormBlock {
 					type: "text_input",
 					action_id: "qty",
 					label: ADD_STOCK_FIELD_LABEL,
-					placeholder: "e.g. 12",
+					placeholder: ADD_STOCK_PLACEHOLDER,
 				},
 			],
 			submit: { label: ADD_STOCK_LABEL, action_id: ACTION_RESTOCK },
@@ -1468,7 +1498,7 @@ function removeStockForm(id: string, onHand: number, prefillQty?: string): FormB
 					type: "text_input",
 					action_id: "qty",
 					label: REMOVE_STOCK_FIELD_LABEL,
-					placeholder: "e.g. 3",
+					placeholder: REMOVE_STOCK_PLACEHOLDER,
 					...(prefillQty !== undefined ? { initial_value: prefillQty } : {}),
 				},
 			],
@@ -1544,10 +1574,9 @@ function fields(
  *  an outage. */
 function failClosed() {
 	return failClosedResponse({
-		header: "Pricing & inventory",
-		title: "Pricing & inventory is unavailable",
-		description:
-			"Pricing & inventory could not be loaded. Check the service connection and the admin token in Settings; if both look right, this is a fault in the console itself — not your data.",
+		header: PRODUCTS_SCREEN_TITLE,
+		title: PRODUCTS_UNAVAILABLE_TITLE,
+		description: PRODUCTS_UNAVAILABLE_DESCRIPTION,
 		toast: "Could not load pricing & inventory",
 	});
 }

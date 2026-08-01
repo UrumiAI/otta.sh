@@ -57,6 +57,13 @@ export const NOTHING_ON_PAGE = "Nothing on this page.";
 /** The label of the clear-filters affordance, on both surfaces. */
 export const CLEAR_FILTERS_LABEL = "Clear filters";
 
+/** Its two neighbours on every list screen. They live here rather than in a
+ *  screen's copy module because they are the LIST's vocabulary, not any one
+ *  screen's — six screens render all three, and having one of the three shared
+ *  was the inconsistency INC-21's review found rather than a boundary. */
+export const APPLY_FILTERS_LABEL = "Apply filters";
+export const LOAD_MORE_LABEL = "Load more";
+
 /**
  * `17 orders` · `1 order` · `25 orders on this page`, or `undefined` at zero.
  *

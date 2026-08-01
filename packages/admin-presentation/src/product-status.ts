@@ -23,10 +23,11 @@
  * IO-FREE — string work only, safe inside the workerd sandbox (G7) and in a
  * browser.
  */
+import { ABSENT } from "./copy.js";
 
 /** The `On hand` cell for a row with no readable count. Also what the detail's
  *  `Stock on hand` shows when the sku carries no inventory record. */
-export const ON_HAND_UNKNOWN = "—";
+export const ON_HAND_UNKNOWN = ABSENT;
 
 /** The suffix a zero count carries. `0` is a FACT, not a missing value, and the
  *  word is what keeps it from reading as one. */

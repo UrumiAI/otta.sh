@@ -12,14 +12,36 @@
  * of shipping them together, must not have to work out whether two different
  * sentences describe the same state.
  *
- * WHAT IS *NOT* HERE, deliberately: every outcome banner a WRITE produces
- * ("Stock added", "SKU already in use", "This product changed since you opened
- * it", …). Those stay in `products-page.ts`, because the React screen does not
- * author them — it forwards the click to the Block Kit handler and renders the
- * notice that handler returned (ADR-0014's "no second implementation of a path
- * that moves stock"). Copy that only one surface can produce is not a
- * cross-surface contract, and moving it here would suggest the React tier
- * decides something about a stock movement. It decides nothing.
+ * WHAT IS *NOT* HERE, AND WHY — the list is short on purpose, because after
+ * INC-21's review the default is that a rendered string belongs here.
+ *
+ *  1. **Every outcome banner a WRITE produces** ("Stock added", "SKU already in
+ *     use", "This product changed since you opened it", …). Those stay in
+ *     `products-page.ts`, because the React screen does not author them — it
+ *     forwards the click to the Block Kit handler and renders the notice that
+ *     handler returned (ADR-0014's "no second implementation of a path that
+ *     moves stock"). Copy only one surface can PRODUCE is not a cross-surface
+ *     contract, and moving it here would suggest the React tier decides
+ *     something about a stock movement. It decides nothing.
+ *  2. **Strings only one surface has a place for.** The Block Kit screen's
+ *     `Open product` picker label and its `Review removal` submit describe
+ *     controls the React screen deleted (the picker) or collapsed (the staged
+ *     review step); the React screen's `Loading product…` / `Loading products…`
+ *     describe a state Block Kit cannot be in, since it re-renders the whole
+ *     block tree per interaction. Sharing a string for a control the other
+ *     surface does not have would assert a parity that does not exist.
+ *  3. **Generic console chrome** — `Apply filters`, `Load more`, `Clear
+ *     filters`. These are not this SCREEN's vocabulary; `Clear filters` already
+ *     lives in `list-outcome.ts` with the ladder that offers it, and the other
+ *     two belong beside it in whichever increment gives the console a shared
+ *     list-chrome module. Duplicated across six screens today, so pulling two of
+ *     them here would make this file the accidental home of a console-wide
+ *     concern.
+ *  4. **Wire values that happen to read as words** — `physical`, `digital`,
+ *     `archived`, `any`. Those travel as DATA from the plugin
+ *     (`PRODUCTS_STATUS_OPTIONS`, `PRODUCTS_KIND_OPTIONS`), which is the
+ *     stronger guarantee: the console cannot offer an option the screen it is
+ *     migrating from does not have, because it holds no copy of the list.
  *
  * WHEN THE BLOCK KIT SCREEN IS RETIRED, this module goes back to
  * `@otta-sh/admin-react` and stops being shared.
@@ -370,4 +392,162 @@ export function dimensionsSummary(
 ): string {
 	if (lengthMm === null && widthMm === null && heightMm === null) return UNFORMATTABLE;
 	return [lengthMm, widthMm, heightMm].map((d) => (d === null ? "?" : String(d))).join(" x ");
+}
+
+// ── the fields an operator reads and fills ───────────────────────────────────
+//
+// WHY LABELS AND PLACEHOLDERS ARE HERE TOO (INC-21 review). The first cut
+// shared the PROSE and left the labels hand-copied, on the reasoning that a
+// label is structure rather than copy. Two screens rendering the same product
+// side by side make that distinction meaningless: `Weight (g)` and `Weight (g)`
+// are the same promise about the same column of the same table, and the moment
+// one becomes `Weight (grams)` an operator comparing them has to work out
+// whether they are looking at one field or two. The reviewers found ~20 of
+// these already duplicated by hand; they are mechanical, so they are shared.
+
+/** What a product with no title reads as — in the list table, in the Block Kit
+ *  picker label, and nowhere near the product id, which is an opaque uuid §1.3
+ *  keeps off a list row. The parenthesis and the lower case are deliberate: it
+ *  has to be unmistakably a placeholder rather than a product somebody named. */
+export const UNTITLED = "(untitled)";
+
+/** The screen's own name — its H1 on React, its `header` block on Block Kit. */
+export const PRODUCTS_SCREEN_TITLE = "Pricing & inventory";
+
+/** The back control, on both surfaces and on both of each surface's paths (the
+ *  detail and the not-found/failure state) — four hand-copies before this. */
+export const PRODUCTS_BACK_LABEL = "← Back to pricing & inventory";
+
+/** E-7's fail-closed banner. THREE copies before this: the Block Kit screen's
+ *  `failClosed()`, the console route's own, and the React transport's HTTP
+ *  refusal title. An operator paging someone must read one sentence, not three
+ *  spellings of it. */
+export const PRODUCTS_UNAVAILABLE_TITLE = "Pricing & inventory is unavailable";
+export const PRODUCTS_UNAVAILABLE_DESCRIPTION =
+	"Pricing & inventory could not be loaded. Check the service connection and the admin token in Settings; if both look right, this is a fault in the console itself — not your data.";
+
+/** The identity strip and the two `fields` blocks, in render order. */
+export const PRODUCT_FIELD_LABELS = {
+	sku: "SKU",
+	price: "Price",
+	stockOnHand: "Stock on hand",
+	compareAt: "Compare-at",
+	unitCost: "Unit cost",
+	taxClass: "Tax class",
+	kind: "Kind",
+	weight: "Weight (g)",
+	dimensions: "Dimensions (mm, LxWxH)",
+	created: "Created",
+	updated: "Updated",
+	onHand: "On hand",
+	inventoryPolicy: "Inventory policy",
+} as const;
+
+/** The list table's columns, in render order. Money LAST (T-2). */
+export const PRODUCT_COLUMN_LABELS = {
+	title: "Title",
+	sku: "SKU",
+	status: "Status",
+	onHand: "On hand",
+	price: "Price",
+} as const;
+
+/** The list filter's three labelled controls (the fourth, `Low stock only`, has
+ *  its own constants above because its DESCRIPTION carries the page-scoped
+ *  promise). */
+export const PRODUCT_FILTER_LABELS = {
+	status: "Status",
+	kind: "Kind",
+	search: "Search (SKU exact, or title contains)",
+} as const;
+
+/** The detail's two constant panels (D-2). */
+export const PRODUCT_TAB_LABELS = ["Product", "Stock"] as const;
+
+/** The three split saves (F-5a). Each names its own SECTION, because the whole
+ *  point of the split is that an operator knows which one they just saved. */
+export const SAVE_IDENTITY_LABEL = "Save identity";
+export const SAVE_PRICE_LABEL = "Save price";
+export const SAVE_SHIPPING_LABEL = "Save classification";
+
+/** The four measurement fields. Non-money integers, `/^\d+$/`-parsed on the
+ *  other side; blank leaves them unchanged. */
+export const PRODUCT_MEASUREMENT_LABELS = {
+	weightGrams: "Weight (g)",
+	lengthMm: "Length (mm)",
+	widthMm: "Width (mm)",
+	heightMm: "Height (mm)",
+} as const;
+
+/** The two `productKind` options. Lower-case on purpose: they are the WIRE
+ *  values, and a `Physical` that submits `physical` is a label an operator
+ *  cannot check against anything. */
+export const PRODUCT_KIND_LABELS = { physical: "physical", digital: "digital" } as const;
+
+/** Every money field's example amount. Placeholders, never initial values — an
+ *  initial value here would be a price nobody set. */
+export const PRICE_PLACEHOLDER = "19.99";
+export const COMPARE_AT_PLACEHOLDER = "29.99";
+export const UNIT_COST_PLACEHOLDER = "8.50";
+export const CURRENCY_PLACEHOLDER = "USD";
+export const ADD_STOCK_PLACEHOLDER = "e.g. 12";
+export const REMOVE_STOCK_PLACEHOLDER = "e.g. 3";
+
+/**
+ * The price form's four labels, each composed from the product's ONE currency.
+ *
+ * THE CURRENCY IS IN THE LABEL AND NOT IN THE VALUE, which is the whole shape
+ * of this form: `formatMinorUnitsInput` deliberately renders no symbol, so the
+ * field holds `19.99` and the label says what 19.99 means. A product that has
+ * never been priced has no currency to name, so each label says where the
+ * currency is coming from instead of leaving a gap.
+ */
+export function priceFieldLabel(currencyCode: string | null): string {
+	return `Price (${currencyCode ?? "set currency below"}, e.g. ${PRICE_PLACEHOLDER})`;
+}
+
+/** Rendered ONLY on a first pricing — for an already-priced product the
+ *  currency cannot change here, so it is submitted invisibly and no control is
+ *  offered (F-3: never a fixed single-option select). */
+export const CURRENCY_FIELD_LABEL = "Currency (ISO-4217, e.g. USD) — set once when first pricing";
+
+export function compareAtFieldLabel(currencyCode: string | null): string {
+	return `Compare-at / was price (${currencyCode ?? "same as price"}, e.g. ${COMPARE_AT_PLACEHOLDER}) — blank to clear`;
+}
+
+/** "admin only, never shown to buyers" is load-bearing: unit cost is the one
+ *  number on this screen a merchant would be alarmed to see on a product page. */
+export function unitCostFieldLabel(currencyCode: string | null): string {
+	return `Unit cost — admin only, never shown to buyers (${currencyCode ?? "same as price"}) — blank to clear`;
+}
+
+/**
+ * The active-filter summary's parts — the strings the panel counts as
+ * `(N active)` and lists beneath itself.
+ *
+ * ONE PART PER AUTHORED FIELD (L-3), and the combined Status select is ONE
+ * field: `active` and `archived` share a control because a soft-deleted row is
+ * always inactive, so they contribute one string between them. The caller
+ * flattens its own filter shape into `status` first — the Block Kit form stores
+ * the two axes separately and the React form stores one token — which is
+ * exactly why the FLATTENING stays per-surface and the WORDING does not.
+ *
+ * The values are the raw tokens (`true` / `false` / `archived`), not prettied:
+ * the summary sits directly beneath the control that produced them, and a
+ * summary that renamed them would be unmatchable against it.
+ */
+export function productFilterParts(filter: {
+	readonly status?: string | undefined;
+	readonly kind?: string | undefined;
+	readonly lowStock?: boolean | undefined;
+	readonly search?: string | undefined;
+}): string[] {
+	const parts: string[] = [];
+	if (filter.status !== undefined) parts.push(`status: ${filter.status}`);
+	if (filter.kind !== undefined) parts.push(`kind: ${filter.kind}`);
+	if (filter.lowStock === true) parts.push("stock: low only");
+	if (filter.search !== undefined && filter.search.length > 0) {
+		parts.push(`search: ${filter.search}`);
+	}
+	return parts;
 }

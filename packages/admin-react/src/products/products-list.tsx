@@ -48,18 +48,25 @@
  *    different set of rows than the ones on screen.
  */
 import {
+	ABSENT,
+	APPLY_FILTERS_LABEL,
 	CLEAR_FILTERS_LABEL,
+	LOAD_MORE_LABEL,
 	LOW_STOCK_FILTER_DESCRIPTION,
 	LOW_STOCK_FILTER_LABEL,
-	ON_HAND_UNKNOWN,
 	PRODUCTS_EMPTY,
 	PRODUCTS_LIST_INTRO,
 	PRODUCTS_LOW_STOCK_NO_MATCH,
 	PRODUCTS_NOUN,
 	PRODUCTS_NO_MATCH,
-	formatAmount,
+	PRODUCTS_SCREEN_TITLE,
+	PRODUCT_COLUMN_LABELS,
+	PRODUCT_FILTER_LABELS,
+	UNTITLED,
+	formatOptionalAmount,
 	listOutcome,
 	onHandCell,
+	productFilterParts,
 	statusLabel,
 	stockDegradation,
 } from "@otta-sh/admin-presentation";
@@ -85,9 +92,9 @@ import {
 	panelStyle,
 } from "../ui.js";
 
-/** What a product with no title reads as — the SAME fallback the Block Kit
- *  table and picker use, and never the product id. */
-export const UNTITLED = "(untitled)";
+/** Re-exported so this screen's own modules and its tests name the shared
+ *  fallback once, without importing the presentation package for one string. */
+export { UNTITLED };
 
 /**
  * One string per authored filter that is not at its default — the same parts
@@ -100,15 +107,18 @@ export const UNTITLED = "(untitled)";
  * prettier rendering here would be a deviation the acceptance forbids.
  */
 export function activeFilterParts(filter: ProductsFilter, any: string): string[] {
-	const parts: string[] = [];
-	if (filter.status !== undefined && filter.status !== any) parts.push(`status: ${filter.status}`);
-	if (filter.productKind !== undefined && filter.productKind !== any) {
-		parts.push(`kind: ${filter.productKind}`);
-	}
-	if (filter.lowStock === true) parts.push("stock: low only");
-	if (filter.search !== undefined && filter.search.length > 0)
-		parts.push(`search: ${filter.search}`);
-	return parts;
+	// The SENTINEL-STRIPPING is this surface's — it stores one token per select
+	// and `any` means "no constraint" — and the WORDING is the shared one, so
+	// this panel and the Block Kit panel count the same parts and spell them the
+	// same way.
+	const notAny = (value: string | undefined): string | undefined =>
+		value !== undefined && value !== any && value.length > 0 ? value : undefined;
+	return productFilterParts({
+		status: notAny(filter.status),
+		kind: notAny(filter.productKind),
+		...(filter.lowStock === true ? { lowStock: true } : {}),
+		...(filter.search !== undefined ? { search: filter.search } : {}),
+	});
 }
 
 /** Trim a submitted form down to the fields that are NOT at their default —
@@ -227,7 +237,7 @@ export function ProductsList({
 
 	return (
 		<div>
-			<h1 style={{ fontSize: 24, fontWeight: 700, marginBlockEnd: 4 }}>Pricing &amp; inventory</h1>
+			<h1 style={{ fontSize: 24, fontWeight: 700, marginBlockEnd: 4 }}>{PRODUCTS_SCREEN_TITLE}</h1>
 			<p style={{ fontSize: 13, opacity: 0.75, marginBlockEnd: 16 }} data-testid="products-intro">
 				{outcome.countLine === undefined
 					? PRODUCTS_LIST_INTRO
@@ -264,7 +274,7 @@ export function ProductsList({
 						alignItems: "end",
 					}}
 				>
-					<Field label="Status">
+					<Field label={PRODUCT_FILTER_LABELS.status}>
 						<select
 							className="otta-focusable"
 							data-testid="filter-status"
@@ -280,7 +290,7 @@ export function ProductsList({
 						</select>
 					</Field>
 
-					<Field label="Kind">
+					<Field label={PRODUCT_FILTER_LABELS.kind}>
 						<select
 							className="otta-focusable"
 							data-testid="filter-kind"
@@ -296,7 +306,7 @@ export function ProductsList({
 						</select>
 					</Field>
 
-					<Field label="Search (SKU exact, or title contains)">
+					<Field label={PRODUCT_FILTER_LABELS.search}>
 						<input
 							type="search"
 							className="otta-focusable"
@@ -341,7 +351,7 @@ export function ProductsList({
 
 				<div style={{ marginBlockStart: 12 }}>
 					<Button
-						label="Apply filters"
+						label={APPLY_FILTERS_LABEL}
 						testId="apply-filters"
 						onClick={() => apply(normalize(draft, any))}
 					/>
@@ -413,7 +423,13 @@ export function ProductsList({
 				<Table
 					testId="products-table"
 					caption="Products"
-					headers={["Title", "SKU", "Status", "On hand", "Price"]}
+					headers={[
+						PRODUCT_COLUMN_LABELS.title,
+						PRODUCT_COLUMN_LABELS.sku,
+						PRODUCT_COLUMN_LABELS.status,
+						PRODUCT_COLUMN_LABELS.onHand,
+						PRODUCT_COLUMN_LABELS.price,
+					]}
 				>
 					{products.map((product) => (
 						<tr key={product.productId} className="otta-row" data-testid="products-row">
@@ -456,7 +472,7 @@ export function ProductsList({
 								  apply here.
 								*/}
 								{product.sku === null ? (
-									ON_HAND_UNKNOWN
+									ABSENT
 								) : (
 									<>
 										<code data-testid="product-sku">{product.sku}</code>
@@ -470,14 +486,14 @@ export function ProductsList({
 							</td>
 							<td className="otta-td otta-num">
 								{/*
-								  G1: the row carries integer minor units and `formatAmount`
-								  renders them. `null` on either half is a product that has never
-								  been priced — an em dash, never `$0.00`, which is a price
-								  nobody set.
+								  G1: the row carries integer minor units and the SHARED
+								  `formatOptionalAmount` renders them — the same function the Block
+								  Kit cell calls, rather than this file's own opinion about what a
+								  half-null pair means. `null` on either half is a product that has
+								  never been priced, and it reads as an em dash, never `$0.00`,
+								  which is a price nobody set.
 								*/}
-								{product.priceCents === null || product.currency === null
-									? ON_HAND_UNKNOWN
-									: formatAmount(product.priceCents, product.currency)}
+								{formatOptionalAmount(product.priceCents, product.currency)}
 							</td>
 						</tr>
 					))}
@@ -494,7 +510,7 @@ export function ProductsList({
 						style={buttonStyle}
 						onClick={() => setCursor(page.nextCursor ?? undefined)}
 					>
-						{busy ? "Loading…" : "Load more"}
+						{busy ? "Loading…" : LOAD_MORE_LABEL}
 					</button>
 				</div>
 			)}

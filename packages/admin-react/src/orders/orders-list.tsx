@@ -33,11 +33,14 @@
  *    does today.
  */
 import {
+	APPLY_FILTERS_LABEL,
 	CLEAR_FILTERS_LABEL,
+	LOAD_MORE_LABEL,
 	ORDERS_EMPTY,
 	ORDERS_LIST_INTRO,
 	ORDERS_NOUN,
 	ORDERS_NO_MATCH,
+	ORDERS_SEARCH_LABEL,
 	formatAmount,
 	formatTimestamp,
 	listOutcome,
@@ -301,7 +304,7 @@ export function OrdersList({ onOpen }: { onOpen: (orderId: string) => void }): R
 						</Field>
 					)}
 
-					<Field label="Search order ID or buyer email">
+					<Field label={ORDERS_SEARCH_LABEL}>
 						<input
 							type="search"
 							className="otta-focusable"
@@ -314,7 +317,7 @@ export function OrdersList({ onOpen }: { onOpen: (orderId: string) => void }): R
 				</div>
 				<div style={{ marginBlockStart: 12 }}>
 					<Button
-						label="Apply filters"
+						label={APPLY_FILTERS_LABEL}
 						testId="apply-filters"
 						onClick={() => apply(normalize(draft, statusAny))}
 					/>
@@ -450,7 +453,7 @@ export function OrdersList({ onOpen }: { onOpen: (orderId: string) => void }): R
 						style={buttonStyle}
 						onClick={() => setCursor(page.nextCursor ?? undefined)}
 					>
-						{busy ? "Loading…" : "Load more"}
+						{busy ? "Loading…" : LOAD_MORE_LABEL}
 					</button>
 				</div>
 			)}

@@ -280,6 +280,51 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		expect(result["nextCursor"]).toBe("cur-2");
 	});
 
+	test("a product AT the threshold is low — the boundary is `<=`, on both surfaces", async () => {
+		// THE MUTATION THIS EXISTS TO KILL. `onHand <= threshold` → `<` changes one
+		// row's answer and nothing else's, so every other assertion in this file
+		// stays green while the screen quietly stops warning about the product that
+		// is exactly at the reorder point — the one the threshold was set for.
+		//
+		// It is asserted at BOTH tiers, because the boundary is enforced twice: the
+		// PAGE narrowing decides whether the row survives "Low stock only", and the
+		// CELL decides whether it reads `Low`. A mutation to either alone would
+		// otherwise be invisible.
+		service.respondWith(
+			"GET",
+			responder({
+				[LIST_ROUTE]: () => ({
+					status: 200,
+					body: {
+						products: [
+							summary({ productId: "at", onHand: 5 }), // exactly at
+							summary({ productId: "below", onHand: 4 }),
+							summary({ productId: "above", onHand: 6 }),
+						],
+						nextCursor: null,
+					},
+				}),
+				[SETTINGS_ROUTE]: () => settingsBody(5),
+			}),
+		);
+		const result = await invoke({
+			type: READ,
+			resource: "products.list",
+			filter: { lowStock: true },
+		});
+		expect(
+			(result["products"] as Array<Record<string, unknown>>).map((p) => p["productId"]),
+		).toEqual(["at", "below"]);
+
+		// ...and the cell agrees with the filter that let the row through.
+		expect(onHandCell(5, 5)).toBe("5 · Low");
+		expect(onHandCell(6, 5)).toBe("6");
+		// A threshold of ZERO is its own boundary: `0` is out of stock, and nothing
+		// above it can be low.
+		expect(onHandCell(0, 0)).toBe("0 · Out of stock");
+		expect(onHandCell(1, 0)).toBe("1");
+	});
+
 	test("a low-stock request that CANNOT be honoured leaves the page unfiltered and says so", async () => {
 		// No threshold ⇒ nothing to compare against. The page is UNFILTERED and the
 		// screen must say so rather than silently showing the wrong set of rows —

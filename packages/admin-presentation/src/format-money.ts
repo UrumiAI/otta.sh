@@ -23,6 +23,7 @@
  * supported by Node 20+ and workerd's V8). Localization and RTL-safety come
  * from Intl itself, never hand-assembled symbol+number strings.
  */
+import { ABSENT } from "./copy.js";
 import { cents, currency, type Cents, type Currency } from "./money.js";
 
 export function formatMoney(amount: Cents, currencyCode: Currency, locale: string): string {
@@ -58,7 +59,7 @@ function toMajorUnitsString(amount: number, digits: number): Intl.StringNumericL
 /** What an unformattable or absent amount renders as (M-1). A wrong number is
  *  worse than a missing one, and raw minor units in a money field is the bug
  *  this kills — ABSENT IS NOT ZERO, so this is never `$0.00`. */
-export const UNFORMATTABLE = "—";
+export const UNFORMATTABLE = ABSENT;
 
 /** The display locale both admin surfaces render money in. Pinned, like
  *  `DATE_LOCALE`, and for the same reason: it is the single point a

@@ -1,17 +1,21 @@
 import { COMMERCE_SERVICE_BASE_URL } from "../manifest.js";
 import {
+	APPLY_FILTERS_LABEL,
 	BANNER_BUDGET,
 	CANCEL_BANNER,
 	CANCEL_CONFIRM,
 	CANCEL_GROUP_LABEL,
 	CANCEL_PICK_REASON,
 	CUSTOMER_CONTEXT_UNAVAILABLE,
+	FULFILMENT_LABELS,
 	FULLY_REFUNDED_NOTE,
 	MARK_REFUNDED_CONFIRM,
+	ORDERS_BACK_LABEL,
 	ORDERS_EMPTY,
 	ORDERS_LIST_INTRO,
 	ORDERS_NOUN,
 	ORDERS_NO_MATCH,
+	ORDERS_SEARCH_LABEL,
 	ORDER_LINES_EMPTY,
 	ORDER_LINES_SNAPSHOT_NOTE,
 	ORDER_STATE_SET,
@@ -790,12 +794,12 @@ function filterForm(actions: ScreenActions, path: NavPath, form: OrdersFilterFor
 				{
 					type: "text_input",
 					action_id: "search",
-					label: "Search order ID or buyer email",
+					label: ORDERS_SEARCH_LABEL,
 					...(form.search !== undefined ? { initial_value: form.search } : {}),
 				},
 			],
 			// A verb phrase naming the RESULT (L-5, F-7).
-			submit: { label: "Apply filters", action_id: actions.applyFilter },
+			submit: { label: APPLY_FILTERS_LABEL, action_id: actions.applyFilter },
 		},
 	});
 }
@@ -928,7 +932,7 @@ function orderDetailLevel() {
 		notFound({ actions, path, id }) {
 			return [
 				{ type: "header", text: "Order not found" },
-				backButton(actions.back, "← Back to orders", path),
+				backButton(actions.back, ORDERS_BACK_LABEL, path),
 				{
 					type: "banner",
 					variant: "error",
@@ -1002,7 +1006,7 @@ function detailBlocks(args: DetailArgs): Block[] {
 		// obtainable anywhere in the console. That surface is the strip, and it
 		// is still "exactly once" — just one block lower.
 		{ type: "header", text: `Order · ${o.customerId ?? o.buyerRef} · ${formatDate(o.createdAt)}` },
-		{ ...backButton(actions.back, "← Back to orders", path), block_id: "orders:nav" },
+		{ ...backButton(actions.back, ORDERS_BACK_LABEL, path), block_id: "orders:nav" },
 	];
 	// At most 2 banners at this level (X-31): the notice and the reconciliation
 	// alert. Every other banner on this screen lives inside an accordion, which
@@ -1709,24 +1713,24 @@ function recordFulfillmentForm(orderId: string, state: string): FormBlock {
 				{
 					type: "text_input",
 					action_id: "trackingNumber",
-					label: "Tracking number",
+					label: FULFILMENT_LABELS.trackingNumber,
 					placeholder: "e.g. 1Z999AA10123456784",
 				},
 				{
 					type: "text_input",
 					action_id: "trackingUrl",
-					label: "Tracking URL (optional)",
+					label: FULFILMENT_LABELS.trackingUrl,
 					placeholder: "https://…",
 				},
 				{ type: "date_input", action_id: "shippedAt", label: "Ship date (optional, UTC)" },
 				{
 					type: "text_input",
 					action_id: "recordedBy",
-					label: "Recorded by",
+					label: FULFILMENT_LABELS.recordedBy,
 					placeholder: "your name",
 				},
 			],
-			submit: { label: "Record fulfilment & ship", action_id: ACTION_RECORD_FULFILLMENT },
+			submit: { label: FULFILMENT_LABELS.submit, action_id: ACTION_RECORD_FULFILLMENT },
 		},
 	});
 }
@@ -2458,7 +2462,7 @@ function refundReviewBody(
 		{
 			type: "banner",
 			variant: "alert",
-			title: "A recorded refund cannot be reversed here",
+			title: REFUND_PARTIAL_BANNER_TITLE,
 			description: `Confirm below to refund ${amount}. Edit the form and review again to change the amount.`,
 		},
 		refundPartialForm(o.id, cur, summary, {

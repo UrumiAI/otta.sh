@@ -37,6 +37,7 @@ import {
 	dismissWelcomeDialog,
 	expect,
 	skipWithoutProducts,
+	skipWithoutSku,
 	skipWithoutStockableProduct,
 	test,
 } from "./harness.js";
@@ -137,8 +138,9 @@ test.describe("the migrated Pricing & inventory console", () => {
 		const skus = adminPage.getByTestId("product-sku");
 		if ((await skus.count()) === 0) {
 			// Every product on this page is a "created but never priced" row. That is
-			// a real state, not a failure — but it cannot exercise this assertion.
-			await skipWithoutProducts(info, 0);
+			// a real state, not a failure — and it is NOT "no products", which is why
+			// it gets its own message and its own fix.
+			await skipWithoutSku(info);
 			return;
 		}
 		const sku = ((await skus.first().textContent()) ?? "").trim();
@@ -301,7 +303,13 @@ test.describe("the migrated Pricing & inventory console", () => {
 			labels.push(label);
 		}
 		expect(labels.length, "the detail rendered no editable fields at all").toBeGreaterThan(0);
-		for (const label of labels) {
+		for (const [index, label] of labels.entries()) {
+			// EVERY LABEL IS NON-EMPTY FIRST. Without this the loop is vacuous per
+			// row rather than in total: a control whose `<label>` this walk failed to
+			// find yields `""`, which satisfies both `not.toMatch` assertions below
+			// and reports a pass for a field nobody looked at. The count check above
+			// does not catch it — a screen of unlabelled inputs would sail through.
+			expect(label, `editable field #${String(index)} has no label to check`).not.toBe("");
 			expect(label, `an editable field is labelled ${label}`).not.toMatch(/^Title/i);
 			expect(label, `an editable field is labelled ${label}`).not.toMatch(/^Status/i);
 		}

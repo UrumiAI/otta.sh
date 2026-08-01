@@ -53,6 +53,10 @@ import {
 	type TaxClassWire,
 } from "./admin-products-client.js";
 import {
+	PRODUCTS_UNAVAILABLE_DESCRIPTION,
+	PRODUCTS_UNAVAILABLE_TITLE,
+} from "@otta-sh/admin-presentation";
+import {
 	CONSOLE_ACT_INTERACTION,
 	UNREADABLE_REQUEST,
 	forwardConsoleAct,
@@ -166,9 +170,8 @@ export interface ProductsConsoleDetailPayload {
  *  pages to the wrong team. */
 const UNAVAILABLE: ConsoleFailure = {
 	ok: false,
-	title: "Pricing & inventory is unavailable",
-	description:
-		"Pricing & inventory could not be loaded. Check the service connection and the admin token in Settings; if both look right, this is a fault in the console itself — not your data.",
+	title: PRODUCTS_UNAVAILABLE_TITLE,
+	description: PRODUCTS_UNAVAILABLE_DESCRIPTION,
 };
 
 const NOT_FOUND: ConsoleFailure = {
