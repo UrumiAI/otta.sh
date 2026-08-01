@@ -20,6 +20,15 @@
  * this tier and replaces none of it.
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import {
+	CLEAR_FILTERS_LABEL,
+	NOTHING_ON_PAGE,
+	ORDERS_EMPTY,
+	ORDERS_LIST_INTRO,
+	ORDERS_NO_MATCH,
+	SCAN_FURTHER,
+	reconciliationAlertSentence,
+} from "@otta-sh/admin-presentation";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
 import {
 	startStubCommerceServer,
@@ -388,6 +397,118 @@ describe("the console's read/write branch on the otta admin route", () => {
 			value: { orderId: ORDER_ID, toState: "processing", state: "paid" },
 		});
 		expect(result["notice"]).toBeNull();
+	});
+
+	test("an UNKNOWN action id is a refusal, not a quiet success", async () => {
+		// The Block Kit dispatcher answers an unrecognised id with `{blocks: []}` —
+		// its house-style fall-through — which on this branch is indistinguishable
+		// from "the write succeeded and had nothing to say". Reachable from a stale
+		// tab after a deploy that renamed an action, and it would have rendered a
+		// refund that never happened as a silent success.
+		const result = await invoke({
+			type: ACT,
+			action_id: "orders:no-such-action",
+			value: { orderId: ORDER_ID },
+		});
+		expect(result["ok"]).toBe(false);
+		expect(result["title"]).toBe("Nothing was changed");
+		expect(String(result["description"])).toContain("Nothing was applied");
+	});
+
+	test("a REGISTERED id that renders nothing is also a refusal", async () => {
+		// The service is unreachable for every read, so the Block Kit action bails
+		// to a shape with no blocks. "Nothing came back" is not "nothing to say".
+		service.respondWith("GET", () => ({ status: 500, body: {} }));
+		const result = await invoke({
+			type: ACT,
+			action_id: "orders:add-note",
+			value: { orderId: ORDER_ID, author: "ops", body: "hello" },
+		});
+		// Either a real refusal notice from the handler, or this branch's own —
+		// never `{ok: true, notice: null}`, which would claim the note was saved.
+		const quietSuccess = result["ok"] === true && result["notice"] === null;
+		expect(quietSuccess, "a failed write reported as a quiet success").toBe(false);
+	});
+
+	test("BOTH SCREENS SAY THE SAME WORDS — the Block Kit render reads the shared copy", async () => {
+		// THE CROSS-SURFACE PIN (INC-20 review). The React Orders screen imports
+		// these constants; this asserts the BLOCK KIT screen renders them. Change
+		// either side's wording without changing the constant and this fails —
+		// which is the property the shared module exists to give, and the one a
+		// pair of hand-copied strings could never have.
+		service.respondWith(
+			"GET",
+			responder({
+				"/admin/orders": () => ({ status: 200, body: { orders: [], nextCursor: null } }),
+			}),
+		);
+		const result = await invoke({ type: "page_load", page: "/orders" });
+		const blocks = result["blocks"] as Array<Record<string, unknown>>;
+		const text = JSON.stringify(blocks);
+
+		expect(text).toContain(ORDERS_LIST_INTRO);
+		// Zero rows, unfiltered, first page, no cursor → outcome 2, the screen's
+		// own `empty` copy and no `Clear filters`.
+		expect(text).toContain(ORDERS_EMPTY.title);
+		expect(text).toContain(ORDERS_EMPTY.description);
+		expect(text).not.toContain(CLEAR_FILTERS_LABEL);
+	});
+
+	test("...and the same words for a filter that matches nothing", async () => {
+		service.respondWith(
+			"GET",
+			responder({
+				"/admin/orders": () => ({ status: 200, body: { orders: [], nextCursor: null } }),
+			}),
+		);
+		const result = await invoke({
+			type: "form_submit",
+			action_id: "orders:apply-filter",
+			values: { status: "paid" },
+		});
+		const text = JSON.stringify(result["blocks"]);
+		expect(text).toContain(ORDERS_NO_MATCH.title);
+		expect(text).toContain(ORDERS_NO_MATCH.description);
+		expect(text).toContain(CLEAR_FILTERS_LABEL);
+	});
+
+	test("...and the same scan note when a page remains behind a zero-row one", async () => {
+		// Outcome 3 on the Block Kit side: no `empty` block at all, a `context`
+		// line instead, so `Load more` survives. The React screen renders the same
+		// sentence for the same reason.
+		service.respondWith(
+			"GET",
+			responder({
+				"/admin/orders": () => ({ status: 200, body: { orders: [], nextCursor: "cur-2" } }),
+			}),
+		);
+		const result = await invoke({ type: "page_load", page: "/orders" });
+		const blocks = result["blocks"] as Array<Record<string, unknown>>;
+		const text = JSON.stringify(blocks);
+		expect(text).toContain(`${NOTHING_ON_PAGE} ${SCAN_FURTHER}`);
+		expect(blocks.some((block) => block["type"] === "empty")).toBe(false);
+	});
+
+	test("...and the same reconciliation sentence on the detail", async () => {
+		const flagged = { ...orderDetail(ORDER_ID), reconciliationFlag: "amount mismatch" };
+		service.respondWith(
+			"GET",
+			responder({
+				[`/admin/orders/${ORDER_ID}`]: () => ({
+					status: 200,
+					body: { order: flagged, allowedTransitions: [] },
+				}),
+				[`/admin/orders/${ORDER_ID}/notes`]: () => ({ status: 200, body: { notes: [] } }),
+			}),
+		);
+		const result = await invoke({
+			type: "form_submit",
+			action_id: "orders:open",
+			values: { orderId: ORDER_ID },
+		});
+		expect(JSON.stringify(result["blocks"])).toContain(
+			reconciliationAlertSentence("amount mismatch"),
+		);
 	});
 
 	test("the BLOCK KIT screen is untouched by any of this", async () => {

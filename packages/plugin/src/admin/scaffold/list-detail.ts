@@ -12,7 +12,12 @@ import type {
 import type { ScreenActions } from "./actions.js";
 import { failClosedResponse, noticeBanner, type Notice } from "./banner.js";
 import { carriedFields, type CarriedContext, decodeCarrier } from "./carrier.js";
-import { DATE_LOCALE } from "./datetime.js";
+import {
+	CLEAR_FILTERS_LABEL,
+	listOutcome,
+	type RowNoun,
+	type ZeroStateCopy as SharedZeroStateCopy,
+} from "@otta-sh/admin-presentation";
 import { emptyState } from "./layout.js";
 import {
 	decodeListCursor,
@@ -774,85 +779,33 @@ function withChildBlockLists(block: Block, lists: Block[][]): Block {
  * rendered as 0" failure in a costume.
  */
 
-/** A row noun in the two forms `Intl.PluralRules` picks between for the pinned
- *  locale — `{one: "order", other: "orders"}`. A screen states its own noun
- *  because only it knows what its rows are. */
-export interface RowNoun {
-	readonly one: string;
-	readonly other: string;
-}
-
-/** The pinned locale the count is pluralized in — deliberately the console's ONE
- *  locale knob ({@link DATE_LOCALE}), so the day a real viewer locale is threaded
- *  through, the count follows the dates instead of needing its own hunt. Same
- *  narrow claim as the date dialect makes (G6): this is single-point
- *  LOCALIZABILITY, not a localized console. */
-const COUNT_PLURALS = new Intl.PluralRules(DATE_LOCALE);
-
-/** The numeral's own formatter, so a locale that does not use ASCII digits gets
- *  its own the day one is threaded — the same single-point argument the noun and
- *  the dates make. Hoisted to module scope like the date dialect's three
- *  formatters (`datetime.ts`): an `Intl` constructor is the expensive half, and
- *  building one per rendered list would pay it on every interaction. */
-const COUNT_NUMERALS = new Intl.NumberFormat(DATE_LOCALE);
-
-/** The suffix that keeps a page-scoped count from reading as a whole-set one. */
-const PAGE_SCOPED_SUFFIX = "on this page";
-
-/** The label of the affordance INC-12 adds. MODULE-PRIVATE, and it stays that
- *  way: the sharing that matters is {@link clearFiltersButton}, which carries the
- *  label AND the bare-`apply-filter` payload AND the path carry together — a
- *  screen that reached for the label alone would be re-deriving the other two.
- *  `tax-page.ts` and `shipping-page.ts` still hand-roll the whole button; they
- *  adopt the BUILDER when they are next touched, not this string. */
-const CLEAR_FILTERS_LABEL = "Clear filters";
-
-/** The trailing half of a "there is another page behind this one" note. */
-const SCAN_FURTHER = "Load more scans further.";
-
-/** The lead half of that note when NO filter is on — a page that came back empty
- *  with a cursor still behind it is not an empty collection, so it must not
- *  borrow the filtered wording (nor the `empty` block). */
-const NOTHING_ON_PAGE = "Nothing on this page.";
-
 /**
- * The zero state for a page that is NOT the first one and has nothing behind it:
- * the operator paged forward and the next page came back empty.
+ * THE COUNT LINE, THE ZERO-STATE LADDER AND THEIR WORDS ALL MOVED (INC-20
+ * review) into `@otta-sh/admin-presentation`, and this module now ADAPTS the
+ * decision into Block Kit blocks rather than making it.
  *
- * IT GETS ITS OWN WORDING BECAUSE THE SCREEN'S DOES NOT APPLY. A screen's
- * `empty` copy ("No orders yet", "No products yet") is a claim about the WHOLE
- * COLLECTION, and on page 2+ the renderer has no standing to make one — page 1
- * had rows. That is the same species of unearned claim the count line already
- * refuses, and it is reachable in a live store: two look-ahead reads either side
- * of a concurrent delete leave a cursor pointing past the last row.
+ * WHY. INC-20 gave the console a React Orders list, and its first cut
+ * reimplemented a two-branch version of the five outcomes below — so a page-2
+ * miss claimed "No orders yet" (a whole-collection claim that render has not
+ * earned) and a zero-row page with a cursor still behind it hid `Load more`
+ * behind an empty state. Neither is a React bug; both are what happens when a
+ * decision argued this carefully is written twice. The DECISION is now shared
+ * and each surface keeps only its own rendering — a `Clear filters` button
+ * carrying a nav path here, an `onClick` there.
  *
- * Deliberately offers NOTHING to click: no filter is on, so there is nothing to
- * clear, and Block Kit has no "back to the first page" control to fabricate.
+ * `rowCountLine`, `RowNoun` and `PAGE_SCOPED_SUFFIX` are re-exported so the six
+ * screens and the suites that import them from `scaffold/index.js` are
+ * unaffected.
  */
-const PAGE_ZERO: Omit<ZeroStateCopy, "blockId"> = {
-	title: "Nothing on this page",
-	description:
-		"This page came back empty. The list may have changed since the page before it was loaded — reload the screen to see it as it stands now.",
-};
-
-/**
- * `17 orders` · `1 order` · `25 orders on this page`, or `undefined` at zero.
- *
- * `complete` is the caller's claim that this count covers the whole filtered set
- * (see the module note above: `firstPage && nextToken === undefined`). Getting it
- * wrong is the one way this function can lie, which is why {@link listResult}
- * derives it rather than letting a screen assert it.
- */
-export function rowCountLine(
-	count: number,
-	noun: RowNoun,
-	opts: { complete: boolean },
-): string | undefined {
-	if (count <= 0) return undefined;
-	const word = COUNT_PLURALS.select(count) === "one" ? noun.one : noun.other;
-	const n = COUNT_NUMERALS.format(count);
-	return opts.complete ? `${n} ${word}` : `${n} ${word} ${PAGE_SCOPED_SUFFIX}`;
-}
+export {
+	CLEAR_FILTERS_LABEL,
+	NOTHING_ON_PAGE,
+	PAGE_SCOPED_SUFFIX,
+	PAGE_ZERO,
+	SCAN_FURTHER,
+	rowCountLine,
+} from "@otta-sh/admin-presentation";
+export type { RowNoun } from "@otta-sh/admin-presentation";
 
 /**
  * The `Clear filters` control, wherever it appears.
@@ -877,15 +830,14 @@ export function clearFiltersButton(actions: ScreenActions, path: NavPath): Butto
 	};
 }
 
-/** The wording of ONE zero state. Screens author every string: six screens
- *  describe their rows differently, and a generic "No results" would be the
- *  half-measure this replaces. */
-export interface ZeroStateCopy {
-	/** The heading — short, and never accusatory. */
-	title: string;
-	/** One or two sentences saying what is going on and what to do next
-	 *  (≤200 chars, X-11's `empty.description` budget). */
-	description: string;
+/** The wording of ONE zero state PLUS the Block Kit key it renders under.
+ *  The WORDS are `@otta-sh/admin-presentation`'s `ZeroStateCopy` — shared,
+ *  because the React tier renders the same states from the same decision — and
+ *  `blockId` is the half only this surface has (a React key on an `empty`
+ *  block). Screens still author every string: six screens describe their rows
+ *  differently, and a generic "No results" would be the half-measure this
+ *  replaces. */
+export interface ZeroStateCopy extends SharedZeroStateCopy {
 	/** The `empty` block's React key. */
 	blockId: PlainBlockId;
 }
@@ -957,66 +909,63 @@ export interface ListResult {
 }
 
 export function listResult(opts: ListResultOptions): ListResult {
-	const countLine = rowCountLine(opts.count, opts.noun, {
-		complete: opts.firstPage && opts.nextToken === undefined,
+	// THE DECISION IS NOT MADE HERE ANY MORE — `listOutcome` makes it, and the
+	// React Orders list makes the same call with the same inputs. What is left
+	// here is the half that is genuinely Block Kit's: an `empty` block with a
+	// `block_id`, a `context` block, and a `Clear filters` button that has to
+	// carry the nav path so the clear re-lists THIS level rather than the root.
+	const outcome = listOutcome({
+		count: opts.count,
+		filtered: opts.filtered,
+		firstPage: opts.firstPage,
+		hasNext: opts.nextToken !== undefined,
+		noun: opts.noun,
+		empty: opts.empty,
+		noMatch: opts.noMatch,
 	});
-	if (opts.count > 0) {
+	if (outcome.kind === "rows") {
 		return {
-			countLine,
+			countLine: outcome.countLine,
 			emptyBlock: undefined,
-			emptyText: opts.noMatch.emptyText,
+			emptyText: outcome.emptyText,
 			scanNote: undefined,
 		};
 	}
-	if (opts.nextToken !== undefined) {
-		const lead = opts.filtered ? opts.noMatch.emptyText : NOTHING_ON_PAGE;
+	if (outcome.kind === "scan") {
 		return {
-			countLine,
+			countLine: undefined,
 			emptyBlock: undefined,
 			emptyText: undefined,
-			scanNote: {
-				type: "context",
-				text: opts.noMatch.scanNote ?? `${lead} ${SCAN_FURTHER}`,
-			},
+			scanNote: { type: "context", text: outcome.scanNote },
 		};
 	}
-	// THE SCREEN'S `empty` COPY IS A WHOLE-COLLECTION CLAIM, so it is gated on
-	// `firstPage` exactly as the count line is. "No orders yet" on page 2 is the
-	// same unearned claim as "17 orders" would be there — and it is reachable in a
-	// live store, not only in theory: the look-ahead read that minted the cursor
-	// and the read that follows it straddle a concurrent delete, and the second
-	// comes back empty. Page 2+ therefore falls through to page-scoped wording.
-	//
-	// `noMatch` is NOT gated the same way, and the asymmetry is deliberate: it
-	// names the operator's OWN filter rather than the collection, and the undo it
-	// carries is the right next act on any page. A screen whose filter narrows the
-	// FETCHED PAGE says so in its own words (`products-page.ts`), which is where a
-	// page-scoped reading of a filtered miss belongs.
-	const copy = opts.filtered
-		? opts.noMatch
-		: opts.firstPage
-			? opts.empty
-			: { ...PAGE_ZERO, blockId: opts.empty.blockId };
-	// The three states differ in their ACTIONS as much as in their words: a
-	// narrowed-to-nothing list offers the undo, an empty collection offers the way
-	// in, and a page that ran off the end offers neither (an `empty` block with no
-	// actions is a valid state — `emptyState` omits the key rather than emitting
-	// `[]`).
-	const actions = opts.filtered
-		? [clearFiltersButton(opts.actions, opts.path)]
-		: opts.firstPage
-			? (opts.empty.actions ?? [])
-			: [];
+	// The three zero states differ in their ACTIONS as much as in their words: a
+	// narrowed-to-nothing list offers the undo, an empty collection offers the
+	// way in, and a page that ran off the end offers neither (an `empty` block
+	// with no actions is a valid state — `emptyState` omits the key rather than
+	// emitting `[]`). `offer` is the shared decision; the CONTROLS are this
+	// surface's own.
+	const actions =
+		outcome.offer === "clear-filters"
+			? [clearFiltersButton(opts.actions, opts.path)]
+			: outcome.offer === "way-in"
+				? (opts.empty.actions ?? [])
+				: [];
+	// The `block_id` follows the copy that is actually rendered: `noMatch`'s when
+	// the operator filtered, and `empty`'s otherwise — including for the
+	// page-scoped wording, which has no key of its own and borrows it so a
+	// remount does not depend on which page the operator ran off the end of.
+	const blockId = outcome.offer === "clear-filters" ? opts.noMatch.blockId : opts.empty.blockId;
 	return {
-		countLine,
+		countLine: undefined,
 		emptyBlock: emptyState({
-			title: copy.title,
-			description: copy.description,
+			title: outcome.title,
+			description: outcome.description,
 			size: "base",
 			actions,
-			blockId: copy.blockId,
+			blockId,
 		}),
-		emptyText: opts.noMatch.emptyText,
+		emptyText: outcome.emptyText,
 		scanNote: undefined,
 	};
 }

@@ -34,5 +34,13 @@
  * never links DOMAIN code and reaches commerce truth only over `ctx.http`; a
  * dependency-free package of `Intl` and string functions is not that, and the
  * `plugin-is-sandbox-clean` rule still forbids `@otta-sh/domain` by name.
+ *
+ * ONE IDIOM, STATED ONCE (INC-20 review). A module in `src/` that needs a
+ * shared primitive imports `@otta-sh/admin-presentation` DIRECTLY. This file
+ * and its four siblings are compatibility re-exports for the ~30 modules that
+ * already imported these paths and that this increment had no reason to touch
+ * — they are not a second sanctioned way in. A module being edited for any
+ * other reason should take the package import and drop the shim path; when the
+ * last caller has, these files go.
  */
 export { cents, currency, type Cents, type Currency } from "@otta-sh/admin-presentation";

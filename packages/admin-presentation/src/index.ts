@@ -39,6 +39,13 @@
  *    disagree.
  *  - **Order status** (`order-status.ts`) — the `cancelled · closed` vocabulary
  *    and the state-machine-derived exception set it is computed from.
+ *  - **The list outcome ladder** (`list-outcome.ts`) — five outcomes, of which
+ *    "zero rows but another page behind them" is the one both surfaces got
+ *    wrong independently. The DECISION is shared; the rendering is not.
+ *  - **The Orders screen's authored copy** (`orders-copy.ts`) — a migration
+ *    artefact, and the module doc there says so: two Orders screens render the
+ *    same records side by side for the length of INC-20/21, which makes their
+ *    strings a cross-surface contract rather than a screen's private business.
  *
  * WHAT IS NOT IN IT. Anything with IO, anything React, anything EmDash, and any
  * wire type. Both consumers are hostile environments for a dependency: the
@@ -84,3 +91,27 @@ export {
 	type OrderState,
 } from "./order-status.js";
 export { refundCapabilityText, refundConfirmText } from "./order-refund-copy.js";
+export {
+	CLEAR_FILTERS_LABEL,
+	NOTHING_ON_PAGE,
+	PAGE_SCOPED_SUFFIX,
+	PAGE_ZERO,
+	SCAN_FURTHER,
+	listOutcome,
+	rowCountLine,
+	type ListOutcome,
+	type ListOutcomeOptions,
+	type RowNoun,
+	type ZeroStateCopy,
+	type ZeroStateOffer,
+} from "./list-outcome.js";
+export {
+	BANNER_BUDGET,
+	ORDERS_EMPTY,
+	ORDERS_LIST_INTRO,
+	ORDERS_NO_MATCH,
+	ORDERS_NOUN,
+	fit,
+	fitBanner,
+	reconciliationAlertSentence,
+} from "./orders-copy.js";

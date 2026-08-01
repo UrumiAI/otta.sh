@@ -1,15 +1,23 @@
 import { COMMERCE_SERVICE_BASE_URL } from "../manifest.js";
 import {
+	BANNER_BUDGET,
+	ORDERS_EMPTY,
+	ORDERS_LIST_INTRO,
+	ORDERS_NOUN,
+	ORDERS_NO_MATCH,
 	ORDER_STATE_SET,
 	ORDER_STATES,
 	UNFORMATTABLE,
 	formatAmount as formatTotal,
+	formatMinorUnitsInput,
 	orderStateCell,
+	fit,
+	parseMinorUnitsInput,
+	reconciliationAlertSentence,
 	reconciliationSummary,
 	refundCapabilityText,
 	refundConfirmText,
 } from "@otta-sh/admin-presentation";
-import { formatMinorUnitsInput, parseMinorUnitsInput } from "./money-input.js";
 import type {
 	AdminPageConfig,
 	Block,
@@ -170,13 +178,14 @@ const ANY = "any";
 /** The same, for a picker with nothing selected yet (L-7). */
 const NONE = "none";
 
-/** §1's prose budgets, as constants so the copy below can be measured against
- *  them rather than eyeballed. Enforced mechanically for the two strings whose
- *  length depends on SERVICE DATA (an accordion label carrying a tracking number,
- *  a banner quoting a settlement anomaly) — everything else is authored literal
- *  text that is in budget by inspection. */
+/** §1's accordion-label budget. The BANNER budget lives in
+ *  `@otta-sh/admin-presentation` with `fit`, because the React tier renders the
+ *  same banner and must trim it identically (INC-20 review). Enforced
+ *  mechanically for the two strings whose length depends on SERVICE DATA (an
+ *  accordion label carrying a tracking number, a banner quoting a settlement
+ *  anomaly) — everything else is authored literal text that is in budget by
+ *  inspection. */
 const LABEL_BUDGET = 60;
-const BANNER_BUDGET = 240;
 
 /** `transition-<state>` — one DISTINCT verb per state (R-13), derived. */
 const transitionVerb = (state: string): string => `transition-${state}`;
@@ -527,12 +536,10 @@ function ordersListLevel() {
 	});
 }
 
-/** The standing half of the list's intro line — the row count goes in front of it
- *  ({@link listIntroLine}). 101 chars; the longest count line this screen can
- *  produce (`25 orders on this page`) puts the whole line at 127 ≤ 140 (X-11).
- *  "View-only" is gone: this console cancels, refunds, fulfils and annotates. */
-const LIST_INTRO =
-	"Filter, open an order, and move it through its status flow. Money in the order's currency; dates UTC.";
+/** The standing half of the list's intro line — the row count goes in front of
+ *  it ({@link listIntroLine}). SHARED with the React Orders screen, which
+ *  renders the same sentence above the same rows (INC-20 review). */
+const LIST_INTRO = ORDERS_LIST_INTRO;
 
 /**
  * §11.1's block order, exactly: `header` · `context` · notice `banner` · the
@@ -560,20 +567,13 @@ function listBlocks(
 		filtered: summary !== undefined,
 		firstPage,
 		nextToken,
-		noun: { one: "order", other: "orders" },
-		empty: {
-			title: "No orders yet",
-			description: "Orders appear here as buyers check out.",
-			blockId: "orders:empty",
-			// E-2: no way IN from here — orders are not created in the admin.
-		},
-		noMatch: {
-			title: "No orders match these filters",
-			description:
-				"Nothing came back for the filters you set. Clear them to go back to every order, or widen one and apply again.",
-			blockId: "orders:no-match",
-			emptyText: "No orders match these filters.",
-		},
+		noun: ORDERS_NOUN,
+		// The WORDS are shared with the React Orders screen and the block ids are
+		// not — a `block_id` is a Block Kit React key and means nothing on the
+		// other surface (INC-20 review). E-2: no way IN from `empty` — orders are
+		// not created in the admin.
+		empty: { ...ORDERS_EMPTY, blockId: "orders:empty" },
+		noMatch: { ...ORDERS_NO_MATCH, blockId: "orders:no-match" },
 	});
 	const blocks: Block[] = [
 		{ type: "header", text: "Orders", block_id: "orders:hdr" },
@@ -981,10 +981,10 @@ function detailBlocks(args: DetailArgs): Block[] {
 			type: "banner",
 			variant: "alert",
 			title: "Needs reconciliation",
-			description: fit(
-				`Settlement flagged this order: ${o.reconciliationFlag}. Resolve it under Fulfilment — recording a resolution moves no money and does not change the order.`,
-				BANNER_BUDGET,
-			),
+			// Shared, and trimmed inside the shared helper: the sentence names a
+			// flag the SERVICE produced, so its length is service data and neither
+			// surface may render the untrimmed version (INC-20 review).
+			description: reconciliationAlertSentence(o.reconciliationFlag),
 		});
 	}
 	// The identity strip: "what am I looking at, and is it healthy" without a
@@ -3687,14 +3687,6 @@ function fields(blockId: string, entries: ReadonlyArray<readonly [string, string
 		block_id: blockId,
 		fields: entries.map(([label, value]) => ({ label, value })),
 	};
-}
-
-/** Trim a string to `max`, ellipsis included — for the two places a rendered
- *  string's length depends on SERVICE DATA (an accordion label carrying a
- *  tracking number, a banner quoting a settlement anomaly) and could otherwise
- *  blow a §1 budget through no fault of the copy. */
-function fit(text: string, max: number): string {
-	return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }
 
 /** An `accordion.label` inside §1's 60-char budget (X-11). */

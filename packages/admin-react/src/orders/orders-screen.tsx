@@ -35,19 +35,57 @@ function readSelectedOrder(): string | null {
 	return value !== null && value.length > 0 ? value : null;
 }
 
-function pushSelectedOrder(orderId: string | null): void {
+function pushSelectedOrder(orderId: string): void {
 	if (typeof window === "undefined") return;
 	const url = new URL(window.location.href);
-	if (orderId === null) url.searchParams.delete(ORDER_PARAM);
-	else url.searchParams.set(ORDER_PARAM, orderId);
+	url.searchParams.set(ORDER_PARAM, orderId);
 	window.history.pushState({ ottaOrder: orderId }, "", url);
+}
+
+/**
+ * `← Back to orders` POPS the history entry the drill-in pushed. It does not
+ * push a third one.
+ *
+ * The module doc above promises "a browser Back goes back", and pushing on the
+ * way out would make that false in the most annoying way available: list →
+ * detail → list would be three entries, so the browser's own Back would return
+ * the operator to the DETAIL they just left, and a second press to the list
+ * again. Two controls that both say "back" and disagree about where that is.
+ *
+ * `history.back()` is asynchronous and lands in the `popstate` listener, which
+ * is what actually clears the selection — so the URL and the rendered state
+ * change together, from one source, rather than from two writers that can
+ * drift.
+ *
+ * THE GUARD: only pop when this component pushed the entry it would be popping.
+ * An operator who arrived on `?order=…` directly — a pasted link, a reload, a
+ * bookmark — has no pushed entry behind them, and `history.back()` would take
+ * them out of the admin entirely. That case replaces the URL instead, which
+ * clears the parameter without touching the stack.
+ */
+function popSelectedOrder(pushed: boolean): void {
+	if (typeof window === "undefined") return;
+	if (pushed) {
+		window.history.back();
+		return;
+	}
+	const url = new URL(window.location.href);
+	url.searchParams.delete(ORDER_PARAM);
+	window.history.replaceState({ ottaOrder: null }, "", url);
 }
 
 export function OrdersScreen(): React.ReactElement {
 	const [selected, setSelected] = React.useState<string | null>(() => readSelectedOrder());
+	/** Did THIS component push the entry currently on top? See
+	 *  {@link popSelectedOrder} — an operator who arrived on `?order=…` directly
+	 *  has nothing of ours to pop. */
+	const pushed = React.useRef(false);
 
 	React.useEffect(() => {
-		const onPop = () => setSelected(readSelectedOrder());
+		const onPop = () => {
+			pushed.current = false;
+			setSelected(readSelectedOrder());
+		};
 		window.addEventListener("popstate", onPop);
 		return () => window.removeEventListener("popstate", onPop);
 	}, []);
@@ -59,6 +97,7 @@ export function OrdersScreen(): React.ReactElement {
 				<OrdersList
 					onOpen={(orderId) => {
 						pushSelectedOrder(orderId);
+						pushed.current = true;
 						setSelected(orderId);
 					}}
 				/>
@@ -66,8 +105,12 @@ export function OrdersScreen(): React.ReactElement {
 				<OrderDetail
 					orderId={selected}
 					onBack={() => {
-						pushSelectedOrder(null);
-						setSelected(null);
+						const wasPushed = pushed.current;
+						popSelectedOrder(wasPushed);
+						pushed.current = false;
+						// A pop is asynchronous and `popstate` will clear the selection;
+						// a REPLACE fires no event, so that path clears it here.
+						if (!wasPushed) setSelected(null);
 					}}
 				/>
 			)}

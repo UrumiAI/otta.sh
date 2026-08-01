@@ -14,5 +14,13 @@
  * `packages/plugin/src/admin/money-input.js` stays as this re-export because it
  * is the path `orders-page.ts` and `products-page.ts` already import, and
  * `@otta-sh/plugin`'s public `index.ts` re-exports both functions from it.
+ *
+ * ONE IDIOM, STATED ONCE (INC-20 review). A module in `src/` that needs a
+ * shared primitive imports `@otta-sh/admin-presentation` DIRECTLY. This file
+ * and its four siblings are compatibility re-exports for the ~30 modules that
+ * already imported these paths and that this increment had no reason to touch
+ * — they are not a second sanctioned way in. A module being edited for any
+ * other reason should take the package import and drop the shim path; when the
+ * last caller has, these files go.
  */
 export { formatMinorUnitsInput, parseMinorUnitsInput } from "@otta-sh/admin-presentation";

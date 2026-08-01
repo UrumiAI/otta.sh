@@ -30,6 +30,7 @@ import {
 	dismissWelcomeDialog,
 	expect,
 	skipWithoutOrders,
+	skipWithoutRefundableOrder,
 	test,
 } from "./harness.js";
 
@@ -90,6 +91,13 @@ test.describe("the migrated Orders console", () => {
 	test("the row shows a SHORT prefix and the copy button copies the FULL id", async ({
 		adminPage,
 	}, info) => {
+		// Reading the clipboard back needs the permission explicitly; writing does
+		// not. Granted per-context rather than in the project config so only the
+		// one spec that reads is granted anything. (127.0.0.1 is a
+		// potentially-trustworthy origin in Chromium, so `navigator.clipboard`
+		// exists here — the guard in `CopyIdButton` is for the plain-HTTP staging
+		// box on a real hostname, where it does not.)
+		await adminPage.context().grantPermissions(["clipboard-read", "clipboard-write"]);
 		await openOrders(adminPage);
 		const links = adminPage.getByTestId("order-link");
 		await skipWithoutOrders(info, await links.count());
@@ -113,7 +121,15 @@ test.describe("the migrated Orders console", () => {
 		await expect(copy).toHaveAttribute("data-full-id", orderId);
 		await expect(copy).toHaveAttribute("aria-label", `Copy full order id ${orderId}`);
 		await copy.click();
-		await expect(copy).not.toHaveText("Copy");
+
+		// ASSERT THE ACHIEVED STATE, not merely a changed one. The first cut used
+		// `not.toHaveText("Copy")`, which passes on the FAILURE path too — the
+		// button reads `Press ⌘C` there — so a clipboard that never worked would
+		// have gone green. Read the clipboard back when the browser grants it, and
+		// otherwise require the explicit success label.
+		await expect(copy).toHaveText("Copied");
+		const written = await adminPage.evaluate(() => navigator.clipboard.readText());
+		expect(written, "the clipboard does not hold the FULL order id").toBe(orderId);
 	});
 
 	test("the Period filter round-trips and can be cleared", async ({ adminPage }) => {
@@ -213,7 +229,10 @@ test.describe("the migrated Orders console", () => {
 			break;
 		}
 		if (!found) {
-			await skipWithoutOrders(info, 0);
+			// NOT "no orders" — there were orders, and the reason this spec could
+			// not run is a different one with a different fix. See
+			// `skipWithoutRefundableOrder`.
+			await skipWithoutRefundableOrder(info);
 		}
 	});
 
@@ -229,10 +248,25 @@ test.describe("the migrated Orders console", () => {
 		});
 
 		// A11y: every interactive element takes a visible ring on keyboard
-		// arrival. The shot is the DoD's evidence for it; `:focus-visible` (not
-		// `:focus`) is why a Tab produces one and a click does not.
-		await adminPage.keyboard.press("Tab");
-		await adminPage.keyboard.press("Tab");
+		// arrival. `:focus-visible` (not `:focus`) is why a keyboard arrival
+		// produces one and a click does not.
+		//
+		// FOCUS A CONSOLE CONTROL, NOT WHATEVER TWO TABS REACH. The first cut
+		// pressed Tab twice from page load, which lands in the ADMIN SHELL's own
+		// chrome — so the shot proved EmDash has a focus ring and said nothing
+		// about this screen. The ring is put on a control this increment owns, and
+		// asserted before it is photographed, so a missing one fails the spec
+		// rather than producing a screenshot nobody looks at closely.
+		const focusTarget = (await adminPage.getByTestId("order-link").count())
+			? adminPage.getByTestId("order-link").first()
+			: adminPage.getByTestId("orders-filters").locator("summary").first();
+		await focusTarget.focus();
+		await expect(focusTarget).toBeFocused();
+		// Chromium only paints `:focus-visible` for a focus it attributes to the
+		// keyboard; a programmatic `.focus()` counts, but a preceding mouse
+		// interaction can suppress it — assert the ring is actually rendered.
+		const ringed = await focusTarget.evaluate((element) => element.matches(":focus-visible"));
+		expect(ringed, "the focused console control has no :focus-visible ring").toBe(true);
 		const focusShot = `${SHOT_DIR}/orders-console-focus-1440x2200.png`;
 		await adminPage.screenshot({ path: focusShot });
 		await testInfo.attach("orders-console-focus-1440x2200", {

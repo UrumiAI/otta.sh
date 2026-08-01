@@ -25,6 +25,7 @@
 	"devDependencies": {
 		"@astrojs/check": "^0.9.9",
 		"@cloudflare/workers-types": "^5.20260708.1",
+		"@otta-sh/payments-stripe": "workspace:*",
 		"@types/react": "^19.2.14",
 		"@types/react-dom": "^19.2.3",
 		"typescript": "catalog:",

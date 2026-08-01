@@ -28,7 +28,7 @@ vi.mock("emdash/plugin-utils", async (importOriginal) => {
 
 const { fetchOrderDetail, fetchOrders, isFailure, performAction, OTTA_ADMIN_ROUTE } =
 	await import("../src/console-api.js");
-const { activeFilterParts, countLine } = await import("../src/orders/orders-list.js");
+const { activeFilterParts } = await import("../src/orders/orders-list.js");
 const { Notice, CopyIdButton } = await import("../src/ui.js");
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -40,27 +40,6 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 beforeEach(() => {
 	apiFetch.mockReset();
-});
-
-describe("the count line says only what it can prove", () => {
-	test("page 1 with no next cursor IS the whole filtered set", () => {
-		// There is no total-count API, so this is the only case that may state a
-		// total — and it is the case the Block Kit screen states one in.
-		expect(countLine(17, true, false)).toBe("17 orders");
-	});
-
-	test("anything else is page-scoped, and says so", () => {
-		expect(countLine(25, true, true)).toBe("25 orders on this page");
-		expect(countLine(9, false, false)).toBe("9 orders on this page");
-	});
-
-	test("one order is singular", () => {
-		expect(countLine(1, true, false)).toBe("1 order");
-	});
-
-	test("zero says nothing — the empty state below it is already saying it", () => {
-		expect(countLine(0, true, false)).toBeUndefined();
-	});
 });
 
 describe("the active-filter summary counts what is not at its default", () => {
@@ -213,5 +192,30 @@ describe("presentation primitives that carry an accessibility promise", () => {
 		// And the FULL id is what it holds — §1.3's React tier in one attribute.
 		expect(html).toContain(`data-full-id="${id}"`);
 		expect(html).toContain("otta-focusable");
+	});
+});
+
+describe("the copy button survives an origin without a clipboard", () => {
+	test("a missing `navigator.clipboard` renders the fallback instead of throwing", () => {
+		// ON A NON-SECURE ORIGIN `navigator.clipboard` IS UNDEFINED — the plain-HTTP
+		// staging box an operator is most likely to be on. The first cut called
+		// `.writeText()` on it unconditionally, so the failure was a SYNCHRONOUS
+		// TypeError: no promise existed, `.catch()` never ran, the error escaped,
+		// and the label stayed `Copy` — the button silently doing nothing, which is
+		// the worst of the three outcomes on a screen where the copied value goes
+		// into a refund.
+		const clipboard = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+		Object.defineProperty(globalThis, "navigator", {
+			value: {},
+			configurable: true,
+		});
+		try {
+			const html = renderToStaticMarkup(<CopyIdButton id="7e4ce728-0000" />);
+			// It renders at all — the throw would have taken the whole row with it.
+			expect(html).toContain('data-full-id="7e4ce728-0000"');
+		} finally {
+			if (clipboard !== undefined) Object.defineProperty(globalThis, "navigator", clipboard);
+			else Reflect.deleteProperty(globalThis as object, "navigator");
+		}
 	});
 });

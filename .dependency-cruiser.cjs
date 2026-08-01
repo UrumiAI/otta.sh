@@ -73,6 +73,35 @@ module.exports = {
 			},
 		},
 		{
+			name: "admin-presentation-is-dependency-free",
+			comment:
+				"@otta-sh/admin-presentation may import NOTHING but its own relative " +
+				"modules. It is the ONE package imported by BOTH a module bundled " +
+				"into workerd (@otta-sh/plugin, from a bare scratch copy of src/ " +
+				"with no workspace node_modules) AND a module that ships to a " +
+				"browser (@otta-sh/admin-react). Nothing else in this workspace is " +
+				"safe in both, and neither host would fail at lint or at typecheck: " +
+				"a `node:fs` here typechecks, cruises clean under every OTHER rule, " +
+				"and fails inside the isolate at runtime; a `pg` here would be a " +
+				"database driver in an admin page's JS bundle. Both were PLANTED " +
+				"during the INC-20 review and both passed, which is why this rule " +
+				"exists as a rule rather than as a sentence in the package's own " +
+				"doc comment. The allow-list is deliberately empty — not `only node: " +
+				"builtins`, not `only type imports` — because the package's whole " +
+				"value is that it has no host requirements at all. Test code is " +
+				"exempt, as it is for every rule here: it runs in Node, outside the " +
+				"shipped surface. `packages/admin-presentation/test/` reads its own " +
+				"sources with node:fs to assert this same property from the inside, " +
+				"and that file is not the shipped surface.",
+			severity: "error",
+			from: { path: "^packages/admin-presentation/src" },
+			to: {
+				// Everything that is not a relative specifier inside this package:
+				// any node: builtin, any bare package name, any other workspace path.
+				pathNot: "^packages/admin-presentation/src",
+			},
+		},
+		{
 			name: "console-imports-no-workspace-package",
 			comment:
 				"The OTHER half of the console quarantine, and the one the rules above " +

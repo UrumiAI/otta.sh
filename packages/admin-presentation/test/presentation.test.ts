@@ -24,7 +24,13 @@
 import { describe, expect, test } from "vitest";
 import {
 	DATE_LOCALE,
+	NOTHING_ON_PAGE,
+	ORDERS_EMPTY,
+	ORDERS_NOUN,
+	ORDERS_NO_MATCH,
 	ORDER_STATES,
+	PAGE_ZERO,
+	SCAN_FURTHER,
 	SHORT_ID_CONFIRM_LEN,
 	SHORT_ID_MIN,
 	TERMINAL_ORDER_STATES,
@@ -36,8 +42,10 @@ import {
 	formatDay,
 	formatMoney,
 	formatTimestamp,
+	listOutcome,
 	majorUnits,
 	orderStateCell,
+	rowCountLine,
 	shortIdFixed,
 	shortIdsFor,
 	startOfDay,
@@ -254,5 +262,138 @@ describe("the order-status vocabulary", () => {
 	test("every declared state renders, and only the four are marked", () => {
 		const marked = ORDER_STATES.filter((state) => orderStateCell(state) !== state);
 		expect(marked.toSorted()).toEqual(["cancelled", "expired", "failed", "refunded"]);
+	});
+});
+
+describe("the list outcome ladder — FIVE outcomes, and both surfaces read them here", () => {
+	const noun = ORDERS_NOUN;
+	const empty = ORDERS_EMPTY;
+	const noMatch = ORDERS_NO_MATCH;
+	const base = { noun, empty, noMatch } as const;
+
+	test("1. rows: the table renders, and page 1 with no next page states a TOTAL", () => {
+		const outcome = listOutcome({
+			...base,
+			count: 17,
+			filtered: false,
+			firstPage: true,
+			hasNext: false,
+		});
+		expect(outcome.kind).toBe("rows");
+		expect(outcome.countLine).toBe("17 orders");
+	});
+
+	test("1b. rows on a later page, or with a page behind them, are PAGE-SCOPED", () => {
+		// There is no total-count API, so any other shape can only say how many
+		// are on this page. Claiming a total there is the one way the count lies.
+		expect(
+			listOutcome({ ...base, count: 25, filtered: false, firstPage: true, hasNext: true })
+				.countLine,
+		).toBe("25 orders on this page");
+		expect(
+			listOutcome({ ...base, count: 9, filtered: false, firstPage: false, hasNext: false })
+				.countLine,
+		).toBe("9 orders on this page");
+	});
+
+	test("2. zero, unfiltered, FIRST page: the collection is empty and offers the way in", () => {
+		const outcome = listOutcome({
+			...base,
+			count: 0,
+			filtered: false,
+			firstPage: true,
+			hasNext: false,
+		});
+		expect(outcome.kind).toBe("empty");
+		if (outcome.kind !== "empty") return;
+		expect(outcome.title).toBe("No orders yet");
+		expect(outcome.offer).toBe("way-in");
+		expect(outcome.countLine).toBeUndefined();
+	});
+
+	test("2b. zero, unfiltered, NOT the first page: page-scoped wording, nothing to click", () => {
+		// THE REGRESSION THE REVIEW CAUGHT. "No orders yet" here is a claim about
+		// the WHOLE COLLECTION that this render has not earned — page 1 had rows —
+		// and it is reachable in a live store, not only in theory.
+		const outcome = listOutcome({
+			...base,
+			count: 0,
+			filtered: false,
+			firstPage: false,
+			hasNext: false,
+		});
+		expect(outcome.kind).toBe("empty");
+		if (outcome.kind !== "empty") return;
+		expect(outcome.title).toBe(PAGE_ZERO.title);
+		expect(outcome.title).not.toBe(empty.title);
+		expect(outcome.offer).toBe("none");
+	});
+
+	test("3. zero WITH a page behind it: NO empty state, a scan note instead", () => {
+		// THE OTHER REGRESSION. An empty state here sits on top of `Load more` and
+		// strands the operator mid-scan on a page that is not the end of anything.
+		const outcome = listOutcome({
+			...base,
+			count: 0,
+			filtered: false,
+			firstPage: true,
+			hasNext: true,
+		});
+		expect(outcome.kind).toBe("scan");
+		if (outcome.kind !== "scan") return;
+		expect(outcome.scanNote).toBe(`${NOTHING_ON_PAGE} ${SCAN_FURTHER}`);
+	});
+
+	test("3b. zero, FILTERED, with a page behind it leads with the filter's own words", () => {
+		const outcome = listOutcome({
+			...base,
+			count: 0,
+			filtered: true,
+			firstPage: true,
+			hasNext: true,
+		});
+		expect(outcome.kind).toBe("scan");
+		if (outcome.kind !== "scan") return;
+		expect(outcome.scanNote).toBe(`${noMatch.emptyText} ${SCAN_FURTHER}`);
+		expect(outcome.scanNote).not.toContain(NOTHING_ON_PAGE);
+	});
+
+	test("4. zero, filtered, last page: the operator's own filter, plus the undo", () => {
+		const outcome = listOutcome({
+			...base,
+			count: 0,
+			filtered: true,
+			firstPage: true,
+			hasNext: false,
+		});
+		expect(outcome.kind).toBe("empty");
+		if (outcome.kind !== "empty") return;
+		expect(outcome.title).toBe("No orders match these filters");
+		expect(outcome.offer).toBe("clear-filters");
+	});
+
+	test("4b. a filtered miss is NOT page-gated — the undo is right on any page", () => {
+		// The asymmetry with `empty` is deliberate: `noMatch` names the operator's
+		// OWN filter rather than the collection, so it earns its words anywhere.
+		const outcome = listOutcome({
+			...base,
+			count: 0,
+			filtered: true,
+			firstPage: false,
+			hasNext: false,
+		});
+		expect(outcome.kind).toBe("empty");
+		if (outcome.kind !== "empty") return;
+		expect(outcome.title).toBe(noMatch.title);
+		expect(outcome.offer).toBe("clear-filters");
+	});
+
+	test("the count is pluralized and formatted by Intl, never by String() and an s", () => {
+		expect(rowCountLine(1, noun, { complete: true })).toBe("1 order");
+		expect(rowCountLine(2, noun, { complete: true })).toBe("2 orders");
+		// A thousands separator is the visible proof that `Intl.NumberFormat` is in
+		// the path — `String(1234)` cannot produce it, and that was the first cut.
+		expect(rowCountLine(1234, noun, { complete: true })).toBe("1,234 orders");
+		expect(rowCountLine(0, noun, { complete: true })).toBeUndefined();
 	});
 });

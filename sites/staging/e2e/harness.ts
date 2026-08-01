@@ -126,7 +126,7 @@ export const E2E_REQUIRES_SITE = process.env["OTTA_E2E_REQUIRE_SITE"] === "1";
  * Dev-only sign-in. §0.2 reaches for `/_emdash/api/setup/dev-bypass`, which
  * ALSO runs `applySeed(..., includeContent: true)` — re-seeding the site on
  * every spec is a side effect a read should not have (the repo's own seed
- * script says exactly this, `scripts/seed-demo-commerce.ts:303-306`). The
+ * script says exactly this, `sites/staging/scripts/seed-demo-commerce.ts`, which refuses to re-seed a site that is fine). The
  * harness therefore defaults to the sign-in-only route and keeps §0.2's
  * seeding variant one env var away, for a run that wants a freshly seeded site.
  *
@@ -140,7 +140,7 @@ export const E2E_REQUIRES_SITE = process.env["OTTA_E2E_REQUIRE_SITE"] === "1";
  * INC-20 IS THE CASE THAT COMMENT ANTICIPATED, and the default STILL DOES NOT
  * MOVE. The migrated Orders screen does assert on ROWS, but seeding on every
  * sign-in would re-seed once per spec — the side effect the repo's own seed
- * script warns about (`scripts/seed-demo-commerce.ts:303-306`) — to serve a
+ * script warns about (`sites/staging/scripts/seed-demo-commerce.ts`, which refuses to re-seed a site that is fine) — to serve a
  * handful of them. The row-dependent specs call {@link skipWithoutOrders}
  * instead: they state what they need, skip loudly when a run has no orders, and
  * FAIL under `OTTA_E2E_REQUIRE_SITE=1`, so a gate run cannot report green
@@ -350,6 +350,29 @@ export async function skipWithoutOrders(testInfo: TestInfo, rowCount: number): P
 	const how =
 		"the stack has no orders, so this spec cannot exercise a row. Seed it " +
 		"(DIRECTOR-SPEC §0.2) or set OTTA_E2E_SEED_ON_AUTH=1 for this run.";
+	if (E2E_REQUIRES_SITE) throw new Error(`OTTA_E2E_REQUIRE_SITE=1 and ${how}`);
+	testInfo.skip(true, how);
+}
+
+/**
+ * Skip (or, under `OTTA_E2E_REQUIRE_SITE=1`, fail) when no order on the stack
+ * has anything left to refund.
+ *
+ * ITS OWN MESSAGE, NOT {@link skipWithoutOrders}'S, and the distinction is the
+ * whole value of it. "No orders" and "orders, but none refundable" have
+ * different causes and different fixes, and the first INC-20 gate run reported
+ * the second as the first — which sent the reader to the seed, where nothing
+ * was wrong. A local stack runs Stripe in offline mode, so it captures nothing
+ * and every order's `remainingCents` is 0; the fix is a capture pass, not more
+ * seeding.
+ */
+export async function skipWithoutRefundableOrder(testInfo: TestInfo): Promise<void> {
+	const how =
+		"the stack has orders but none with money left to refund. A local service " +
+		"runs Stripe in offline mode (STRIPE_WEBHOOK_SECRET set, STRIPE_SECRET_KEY " +
+		"unset), which captures nothing — so no refund control renders on EITHER " +
+		"Orders screen. Run `sites/staging/scripts/capture-e2e-payments.ts` against " +
+		"the stack after seeding it.";
 	if (E2E_REQUIRES_SITE) throw new Error(`OTTA_E2E_REQUIRE_SITE=1 and ${how}`);
 	testInfo.skip(true, how);
 }

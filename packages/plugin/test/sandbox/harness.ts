@@ -223,11 +223,21 @@ function capnpConfig(port: number, bundlePathRelativeToWorkDir: string): string 
  *
  * WHY THIS IS NOT A WEAKENING. What the bare copy pins is that the SHIPPED
  * BUNDLE IS SELF-CONTAINED. Materialising the package here makes the specifier
- * resolvable, and because the scratch tree has no `package.json` declaring
- * externals, tsdown INLINES it into the single `.mjs` workerd loads — so the
- * bundle stays exactly as self-contained as before, and the suites still prove
- * it by running. The alternative (leaving it external) is the case that would
- * fail, loudly, on the first sandbox suite.
+ * resolvable, and `noExternal` at the `build()` call makes tsdown INLINE it
+ * into the single `.mjs` workerd loads — so the bundle stays exactly as
+ * self-contained as before, and the suites still prove it by running.
+ *
+ * THE INLINING IS DECLARED, NOT INHERITED, and the first cut of this comment
+ * got that wrong. It claimed the scratch tree "has no package.json declaring
+ * externals, so tsdown inlines it" — but tsdown resolves its externals from the
+ * package.json nearest the CWD, not the entry, and the CWD is the process's.
+ * From the repo root (`pnpm test`) that is a manifest with no `dependencies`
+ * and the inlining happened by accident; from
+ * `pnpm --filter @otta-sh/plugin exec vitest` it is THIS package's manifest,
+ * where `@otta-sh/admin-presentation` is a real dependency, so tsdown left it
+ * external and all 98 workerd tests failed to boot. Measured, both ways. The
+ * `noExternal` below states the requirement instead of inheriting it, so the
+ * suites pass from any working directory.
  *
  * ONLY `src/` IS COPIED, never the package's own `node_modules` (symlinks into
  * the pnpm store for tsdown/vitest/typescript, none of which belong in a worker
@@ -269,6 +279,14 @@ export async function loadPluginInSandbox(options: SandboxOptions): Promise<Sand
 		format: ["esm"],
 		dts: false,
 		logLevel: "silent",
+		// EVERY workspace package the plugin imports is INLINED, always, from any
+		// working directory. See `materializePresentationPackage` — tsdown reads
+		// externals from the package.json nearest the CWD, so without this the
+		// bundle is self-contained under `pnpm test` and broken under
+		// `pnpm --filter @otta-sh/plugin exec vitest`. The pattern is the SCOPE
+		// rather than the one package, because a second shared package would
+		// otherwise reintroduce exactly this failure and only in one invocation.
+		noExternal: [/^@otta-sh\//],
 	});
 
 	// tsdown emits a single entry flat into outDir under the entry's basename.

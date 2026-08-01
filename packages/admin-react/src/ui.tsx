@@ -144,6 +144,15 @@ export function Button({
  * permission-gated and origin-gated and can simply say no, and a silent failure
  * there is the worst of the three outcomes.
  *
+ * THE FALLBACK HAS TO BE REACHABLE, and in the first cut it was not. On a
+ * non-secure origin `navigator.clipboard` is UNDEFINED, so `.writeText(...)`
+ * throws a synchronous `TypeError` before a promise exists — `.catch()` never
+ * runs, the failure escapes as an unhandled error, and the label stays `Copy`.
+ * That is precisely the plain-HTTP staging box an operator is most likely to be
+ * on. The API's presence is therefore checked before it is called, and the
+ * whole call sits in a `try` so a synchronous throw from any other cause lands
+ * in the same visible state.
+ *
  * `aria-label` names the id rather than saying "copy", because a screen reader
  * moving through a column of these otherwise hears "copy, copy, copy".
  */
@@ -165,10 +174,19 @@ export function CopyIdButton({ id, testId }: { id: string; testId?: string }): R
 			aria-label={`Copy full order id ${id}`}
 			title={id}
 			onClick={() => {
-				void navigator.clipboard
-					.writeText(id)
-					.then(() => setState("done"))
-					.catch(() => setState("failed"));
+				try {
+					const clipboard: Clipboard | undefined = navigator.clipboard;
+					if (clipboard === undefined) {
+						setState("failed");
+						return;
+					}
+					void clipboard
+						.writeText(id)
+						.then(() => setState("done"))
+						.catch(() => setState("failed"));
+				} catch {
+					setState("failed");
+				}
 			}}
 			style={{
 				...buttonStyle,

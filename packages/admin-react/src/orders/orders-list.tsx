@@ -33,8 +33,14 @@
  *    does today.
  */
 import {
+	CLEAR_FILTERS_LABEL,
+	ORDERS_EMPTY,
+	ORDERS_LIST_INTRO,
+	ORDERS_NOUN,
+	ORDERS_NO_MATCH,
 	formatAmount,
 	formatTimestamp,
+	listOutcome,
 	orderStateCell,
 	shortIdFixed,
 	shortIdsFor,
@@ -60,37 +66,29 @@ import {
 	panelStyle,
 } from "../ui.js";
 
-/** Verbatim from the Block Kit screen — the standing half of the intro line,
- *  with the row count in front of it. */
-const LIST_INTRO =
-	"Filter, open an order, and move it through its status flow. Money in the order's currency; dates UTC.";
-
-const EMPTY_COLLECTION = {
-	title: "No orders yet",
-	description: "Orders appear here as buyers check out.",
-} as const;
-
-const EMPTY_FILTERED = {
-	title: "No orders match these filters",
-	description:
-		"Nothing came back for the filters you set. Clear them to go back to every order, or widen one and apply again.",
-} as const;
-
 /**
- * The count line, and it says only what it can prove.
+ * THE FIVE-OUTCOME LADDER IS NOT REIMPLEMENTED HERE (INC-20 review).
  *
- * There is no total-count API. A page-1 result with no next cursor IS the whole
- * filtered set, so it can say `17 orders`; anything else can only say how many
- * are on this page. Zero says nothing at all, because the empty state below it
- * is already saying it. Same three cases, same words, as the Block Kit screen.
+ * The first cut of this file had two branches — "no rows and a filter is on" and
+ * "no rows" — and hard-coded the Block Kit screen's copy beside them. That is
+ * three defects in one shape, and a reviewer found all three:
+ *
+ *  1. A page-2 miss claimed **"No orders yet"**, a whole-collection claim this
+ *     render has not earned. Page 1 had rows.
+ *  2. Zero rows with a cursor still behind them rendered an empty state, which
+ *     sat on top of `Load more` and **stranded the operator mid-scan** on a page
+ *     that is not the end of anything. The Block Kit tier hit the same wall
+ *     through a different mechanism (its renderer short-circuits a zero-row
+ *     table carrying `empty_text` and takes the button with it) and answered it
+ *     with the scan note this now renders.
+ *  3. The count line used `String(count)` and an `s`, making it the one rendered
+ *     value in this console a threaded locale would not reach.
+ *
+ * All three are what happens when a decision argued this carefully is written
+ * twice. `listOutcome` and the copy constants come from
+ * `@otta-sh/admin-presentation`; both surfaces make the SAME call with the same
+ * inputs and differ only in how they draw the answer.
  */
-export function countLine(count: number, firstPage: boolean, hasNext: boolean): string | undefined {
-	if (count === 0) return undefined;
-	const noun = count === 1 ? "order" : "orders";
-	return firstPage && !hasNext
-		? `${String(count)} ${noun}`
-		: `${String(count)} ${noun} on this page`;
-}
 
 /** One string per authored filter that is not at its default — the same parts
  *  the Block Kit panel counts as `(N active)` and summarises beneath itself. */
@@ -174,18 +172,29 @@ export function OrdersList({ onOpen }: { onOpen: (orderId: string) => void }): R
 	const periodLabel =
 		vocabulary?.periods.find((p) => p.key === applied.period)?.label ?? "Any time";
 	const parts = activeFilterParts(applied, periodLabel);
-	const count = countLine(orders.length, page?.firstPage ?? true, page?.nextCursor != null);
 	const filtered = parts.length > 0;
+	const hasNext = page?.nextCursor != null;
 
-	/**
-	 * The money column's header states the currency ONCE when every row on the
-	 * page shares one (G1), and falls back to a bare `Total` when they do not.
-	 * A mixed-currency page cannot state a currency in the header without lying,
-	 * and `formatAmount` carries the symbol in every cell either way — so the
-	 * header is additional information when it can be, and silent when it cannot.
-	 */
-	const currencies = new Set(orders.map((o) => o.currency));
-	const totalHeader = currencies.size === 1 ? `Total (${[...currencies][0] as string})` : "Total";
+	// THE SHARED DECISION. Same function, same inputs, as the Block Kit screen's
+	// `listResult` — so the count line, the wording, and which state renders at
+	// all cannot disagree between the two Orders screens.
+	//
+	// THE MONEY HEADER IS A BARE `Total`, and the first cut's `Total (USD)` was
+	// wrong twice over. It is a deviation from the screen being migrated, which
+	// the acceptance forbids in as many words ("any deviation is a separate
+	// PR"); and it cannot be right anyway on a list that may mix currencies,
+	// where the header would state one and the rows below it would carry others.
+	// `formatAmount` puts the currency in every cell, which is where a
+	// heterogeneous column has to carry it.
+	const outcome = listOutcome({
+		count: orders.length,
+		filtered,
+		firstPage: page?.firstPage ?? true,
+		hasNext,
+		noun: ORDERS_NOUN,
+		empty: ORDERS_EMPTY,
+		noMatch: ORDERS_NO_MATCH,
+	});
 
 	const apply = (next: OrdersFilter) => {
 		setApplied(next);
@@ -198,7 +207,9 @@ export function OrdersList({ onOpen }: { onOpen: (orderId: string) => void }): R
 		<div>
 			<h1 style={{ fontSize: 24, fontWeight: 700, marginBlockEnd: 4 }}>Orders</h1>
 			<p style={{ fontSize: 13, opacity: 0.75, marginBlockEnd: 16 }} data-testid="orders-intro">
-				{count === undefined ? LIST_INTRO : `${count} · ${LIST_INTRO}`}
+				{outcome.countLine === undefined
+					? ORDERS_LIST_INTRO
+					: `${outcome.countLine} · ${ORDERS_LIST_INTRO}`}
 			</p>
 
 			{failure !== null && (
@@ -313,7 +324,7 @@ export function OrdersList({ onOpen }: { onOpen: (orderId: string) => void }): R
 					}}
 				>
 					<span style={{ fontSize: 13 }}>{parts.join(" · ")}</span>
-					<Button label="Clear filters" testId="clear-filters" onClick={() => apply({})} />
+					<Button label={CLEAR_FILTERS_LABEL} testId="clear-filters" onClick={() => apply({})} />
 				</section>
 			)}
 
@@ -323,20 +334,51 @@ export function OrdersList({ onOpen }: { onOpen: (orderId: string) => void }): R
 				</p>
 			)}
 
-			{page !== null && orders.length === 0 && failure === null && (
+			{/*
+			  OUTCOMES 2 / 2b / 4 — the empty state REPLACES the table. Which words
+			  and which offer are the shared decision's, not this file's: `way-in`
+			  is an empty collection on page 1, `clear-filters` is a filter narrowed
+			  to nothing, and `none` is a page that ran off the end — page-scoped
+			  wording with nothing to click, because there is no filter to clear and
+			  no "back to the first page" control to fabricate.
+			*/}
+			{page !== null && outcome.kind === "empty" && failure === null && (
 				<EmptyState
-					testId={filtered ? "orders-no-match" : "orders-empty"}
-					title={filtered ? EMPTY_FILTERED.title : EMPTY_COLLECTION.title}
-					description={filtered ? EMPTY_FILTERED.description : EMPTY_COLLECTION.description}
-					{...(filtered ? { action: { label: "Clear filters", onClick: () => apply({}) } } : {})}
+					testId={
+						outcome.offer === "clear-filters"
+							? "orders-no-match"
+							: outcome.offer === "way-in"
+								? "orders-empty"
+								: "orders-page-zero"
+					}
+					title={outcome.title}
+					description={outcome.description}
+					{...(outcome.offer === "clear-filters"
+						? { action: { label: CLEAR_FILTERS_LABEL, onClick: () => apply({}) } }
+						: {})}
 				/>
 			)}
 
-			{orders.length > 0 && (
+			{/*
+			  OUTCOME 3 — zero rows with another page BEHIND them. NO empty state:
+			  one would sit on top of `Load more` and strand the operator mid-scan
+			  on a page that is not the end of anything. The note says what to do
+			  with the button that is still there, and the button still is.
+			*/}
+			{page !== null && outcome.kind === "scan" && failure === null && (
+				<p
+					data-testid="orders-scan-note"
+					style={{ fontSize: 13, opacity: 0.8, marginBlockEnd: 12 }}
+				>
+					{outcome.scanNote}
+				</p>
+			)}
+
+			{outcome.kind === "rows" && (
 				<Table
 					testId="orders-table"
 					caption="Orders"
-					headers={["Placed", "Customer", "Status", "Order #", totalHeader]}
+					headers={["Placed", "Customer", "Status", "Order #", "Total"]}
 				>
 					{orders.map((order) => {
 						const prefix = shortIds.get(order.id) ?? shortIdFixed(order.id);
@@ -361,6 +403,15 @@ export function OrdersList({ onOpen }: { onOpen: (orderId: string) => void }): R
 										data-testid="order-link"
 										data-order-id={order.id}
 										onClick={(event) => {
+											// A MODIFIED CLICK IS THE BROWSER'S, NOT OURS. Ctrl/Cmd/shift
+											// click and middle-click are how order ops opens three orders
+											// in three tabs, and `preventDefault()` on all of them turns
+											// the one genuinely linkable thing on this screen back into a
+											// button. The `href` is real, so letting these through costs
+											// nothing and gains the affordance.
+											if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+												return;
+											}
 											event.preventDefault();
 											onOpen(order.id);
 										}}

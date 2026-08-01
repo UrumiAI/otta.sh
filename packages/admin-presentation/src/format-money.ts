@@ -81,16 +81,18 @@ export const MONEY_LOCALE = "en-US";
  *  - An amount `Intl` cannot format renders {@link UNFORMATTABLE}, never
  *    `${CUR} ${minorUnits}`. The old fallback printed RAW MINOR UNITS in the one
  *    place it was least visible — a wrong number dressed as a formatted total.
- *  - `null`/`undefined` is ABSENT and renders {@link UNFORMATTABLE} too. A
- *    missing amount is not a zero amount, and a screen that renders `$0.00` for
- *    "we do not know" has told the operator something false about money.
+ *
+ * IT DOES NOT ACCEPT `null | undefined`, and that is a deliberate narrowing
+ * (INC-20 review). The first cut took nullable money and dashed it, which reads
+ * like defensive generosity and is the opposite: it moves "we have no amount"
+ * from a COMPILE error to a dash on a money column, silently, at the one
+ * boundary G1 exists to keep honest. No consumer needs it — every call site on
+ * both surfaces holds a real `number` and a real currency by the time it gets
+ * here, and a nullable one is a bug upstream that should fail `tsc` rather than
+ * render. Absence that is genuinely a display state (a refund with no recorded
+ * `createdAt`) is the CALLER's `??` and is visible where it happens.
  */
-export function formatAmount(
-	minorUnits: number | null | undefined,
-	currencyCode: string | null | undefined,
-): string {
-	if (minorUnits === null || minorUnits === undefined) return UNFORMATTABLE;
-	if (currencyCode === null || currencyCode === undefined) return UNFORMATTABLE;
+export function formatAmount(minorUnits: number, currencyCode: string): string {
 	try {
 		const code = currency(currencyCode);
 		return minorUnits < 0

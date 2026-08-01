@@ -16,5 +16,13 @@
  * minor→major conversion is integer string arithmetic and the exact decimal
  * string goes to `Intl.NumberFormat.format`), and localization plus RTL-safety
  * come from Intl rather than hand-assembled symbol+number strings.
+ *
+ * ONE IDIOM, STATED ONCE (INC-20 review). A module in `src/` that needs a
+ * shared primitive imports `@otta-sh/admin-presentation` DIRECTLY. This file
+ * and its four siblings are compatibility re-exports for the ~30 modules that
+ * already imported these paths and that this increment had no reason to touch
+ * — they are not a second sanctioned way in. A module being edited for any
+ * other reason should take the package import and drop the shim path; when the
+ * last caller has, these files go.
  */
 export { formatMoney, majorUnits } from "@otta-sh/admin-presentation";

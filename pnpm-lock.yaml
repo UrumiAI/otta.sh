@@ -339,6 +339,9 @@ importers:
       '@cloudflare/workers-types':
         specifier: ^5.20260708.1
         version: 5.20260710.1
+      '@otta-sh/payments-stripe':
+        specifier: workspace:*
+        version: link:../../packages/payments-stripe
       '@types/react':
         specifier: ^19.2.14
         version: 19.2.17

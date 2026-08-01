@@ -63,6 +63,7 @@ import {
 	PERIOD_CUSTOM,
 	PERIOD_PRESETS,
 	RECONCILIATION_OUTCOMES,
+	ORDERS_ACTION_IDS,
 	createOrdersPageHandler,
 	loadDetailSurfaces,
 	offeredTransitions,
@@ -196,6 +197,25 @@ const UNREADABLE_REQUEST: ConsoleFailure = {
 	title: "That request could not be read",
 	description:
 		"The console asked for something this screen does not serve. Reload the page; if it happens again, this is a fault in the console itself.",
+};
+
+/** An action id the Block Kit screen does not register. Reachable from a stale
+ *  tab after a deploy that renamed one, and from a console bug — never from a
+ *  button this release rendered. */
+const UNKNOWN_ACTION: ConsoleFailure = {
+	ok: false,
+	title: "Nothing was changed",
+	description:
+		"This console asked for an action this screen does not offer. Nothing was applied. Reload the page; if it happens again, this is a fault in the console itself.",
+};
+
+/** A registered action that produced no screen at all — so it produced no
+ *  outcome either, and must not be reported as a quiet success. */
+const NOTHING_APPLIED: ConsoleFailure = {
+	ok: false,
+	title: "Nothing was changed",
+	description:
+		"That action did not complete and nothing was applied. Reload the order and try again; if it happens again, this is a fault in the console itself.",
 };
 
 const NOT_FOUND: ConsoleFailure = {
@@ -347,12 +367,24 @@ async function consoleAct(
 ): Promise<ConsoleActPayload | ConsoleFailure> {
 	const actionId = readString(input.action_id);
 	if (actionId === undefined) return UNREADABLE_REQUEST;
+	// GATE ON THE REGISTERED SET, and it is not belt-and-braces. The Block Kit
+	// dispatcher answers an id it does not recognise with `{blocks: []}` — the
+	// house-style fall-through — which on THIS branch is indistinguishable from
+	// "the write succeeded and had nothing to say". So a typo'd or stale action
+	// id would have rendered as a silent success on a refund button. The set is
+	// the same `ORDERS_ACTION_IDS` the dispatcher routes on, so the two cannot
+	// disagree about what exists.
+	if (!ORDERS_ACTION_IDS.has(actionId)) return UNKNOWN_ACTION;
 	const result = await orders(
 		{ input: { type: "block_action", action_id: actionId, value: input.value }, request },
 		ctx,
 	);
 	const envelope = asRecord(result);
 	const blocks = Array.isArray(envelope?.["blocks"]) ? (envelope["blocks"] as Block[]) : [];
+	// A registered id that STILL came back with no blocks did not render a
+	// screen, so it did not do what it was asked either. `{ok: true, notice:
+	// null}` here would report a refund that never happened as a quiet success.
+	if (blocks.length === 0) return NOTHING_APPLIED;
 	return { ok: true, notice: firstNotice(blocks) };
 }
 
