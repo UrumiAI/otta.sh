@@ -1,0 +1,20 @@
+{
+	// No `references`, and none is possible: this package is the BOTTOM of the
+	// presentation graph. It is imported by `@otta-sh/plugin` (which is
+	// sandbox-clean and bundled into workerd) AND by `@otta-sh/admin-react`
+	// (which ships to a browser), so anything it depended on would have to be
+	// safe in both — and nothing in this workspace is. It depends on nothing.
+	"extends": "../../tsconfig.base.json",
+	"compilerOptions": {
+		"outDir": "dist/tsc",
+		"emitDeclarationOnly": true,
+		"rootDir": ".",
+		// Empty, overriding the base's `["node"]`, for the same reason
+		// `@otta-sh/admin-react` does it: half of this package's consumers run
+		// in a browser and the other half inside workerd. Ambient Node globals
+		// in scope would let `process.env` or a `node:` import typecheck cleanly
+		// in a module that has neither at runtime.
+		"types": []
+	},
+	"include": ["src", "test", "tsdown.config.ts", "vitest.config.ts"]
+}

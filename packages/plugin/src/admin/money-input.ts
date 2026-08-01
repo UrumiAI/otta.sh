@@ -1,54 +1,18 @@
 /**
- * Shared money TEXT-input parsing/formatting for admin screens (NO float
- * arithmetic — CLAUDE.md). The ONE implementation behind the Products
- * console's price/compare-at/cost fields and the Shipping console's rate
- * amount/threshold fields (extracted from `products-page.ts` when the
- * Shipping console needed a second, near-identical copy).
+ * The money INPUT boundary — an operator's typed amount → integer minor units —
+ * RE-EXPORTED from `@otta-sh/admin-presentation` since INC-20.
  *
- * Parse a merchant-entered decimal amount into integer MINOR UNITS with
- * EXACT integer string math — never `parseFloat(...)*100` (which yields
- * 1998.9999… for "19.99"). A Block Kit `number_input` hands back a JS float,
- * so money is a TEXT input parsed here instead. Hundredths scale (two
- * fractional digits — the near-universal case; zero-decimal currencies like
- * JPY are out of scope, consistent with the codebase's minor-units
- * convention).
+ * It moved for the same reason `formatAmount` did, running the other way. The
+ * React Orders console has a partial-refund field, and the moment an operator
+ * types `19.99` into it two things must happen in the BROWSER: the string
+ * becomes 1999 minor units to put in the action payload, and it becomes
+ * `$19.99` to put in the confirm dialog the operator reads before the money
+ * moves. A second parser for that — with its own opinion about `19,99`, about
+ * `19.999`, about a leading `+`, about whether zero is allowed — is the last
+ * place in this console where drift is acceptable.
  *
- * The ONE behavioral fork between consumers is whether ZERO is a valid
- * amount, so it is an explicit parameter rather than a second copy:
- *   - product prices: `allowZero: false` — the domain's own `price > 0`
- *     invariant (a free product is not a price of 0, it is "unpriced").
- *   - shipping rates: `allowZero: true` — a $0 flat rate, or a free-shipping
- *     method's below-threshold fallback, are both legitimate (the service's
- *     `shippingRateBody`/`shippingRateUpdateBody` schemas use
- *     `nonnegative()`, not `positive()`).
+ * `packages/plugin/src/admin/money-input.js` stays as this re-export because it
+ * is the path `orders-page.ts` and `products-page.ts` already import, and
+ * `@otta-sh/plugin`'s public `index.ts` re-exports both functions from it.
  */
-
-/** Returns integer minor units, or null for any non-conforming or
- *  out-of-range input (the caller surfaces a per-field message); never
- *  throws. */
-export function parseMinorUnitsInput(input: string, opts: { allowZero: boolean }): number | null {
-	const m = /^(\d+)(?:\.(\d{1,2}))?$/.exec(input.trim());
-	if (m === null) return null;
-	const major = Number.parseInt(m[1] ?? "", 10);
-	// Pad fractional digits to hundredths: ""→"00", "9"→"90", "99"→"99".
-	const minor = Number.parseInt((m[2] ?? "").padEnd(2, "0"), 10);
-	if (!Number.isSafeInteger(major)) return null;
-	// major×100 + minor: all integer operands, exact for safe integers.
-	const units = major * 100 + minor;
-	if (!Number.isSafeInteger(units)) return null;
-	return units > 0 || (units === 0 && opts.allowZero) ? units : null;
-}
-
-/**
- * Format integer minor units back to a hundredths decimal string for a text
- * input's initial value — pure integer math (no float division on money).
- * WITHOUT a currency symbol — mirrors `formatMoney` being the one
- * symbol-bearing display boundary.
- */
-export function formatMinorUnitsInput(minorUnits: number): string {
-	const abs = Math.abs(minorUnits);
-	const frac = abs % 100;
-	const major = (abs - frac) / 100; // (abs - frac) is a multiple of 100 ⇒ exact.
-	const fracStr = frac < 10 ? `0${frac}` : String(frac);
-	return `${minorUnits < 0 ? "-" : ""}${major}.${fracStr}`;
-}
+export { formatMinorUnitsInput, parseMinorUnitsInput } from "@otta-sh/admin-presentation";

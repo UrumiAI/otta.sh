@@ -7,6 +7,7 @@
 	},
 	"include": ["src", "test", "tsdown.config.ts", "vitest.config.ts"],
 	"references": [
+		{ "path": "../admin-presentation" },
 		{ "path": "../domain" },
 		{ "path": "../service" },
 		{ "path": "../store-postgres" },

@@ -54,10 +54,10 @@ export const OTTA_CONSOLE_ADMIN_ENTRY = `${OTTA_CONSOLE_PACKAGE}/admin`;
 /**
  * The console's landing page.
  *
- * INC-19 ships the SHELL, not a migrated screen: Orders arrives in INC-20 at
- * `/orders` and Pricing & inventory in INC-21 at `/products`, each replacing a
- * Block Kit screen that stays in the tree and stays green until it does. Tax,
- * Shipping and Settings never migrate (ADR-0014 Decision 6).
+ * INC-20 added Orders at `/orders` beside it; Pricing & inventory arrives in
+ * INC-21 at `/products`. Each replaces a Block Kit screen that stays in the tree
+ * and stays green until the replacement is proven. Tax, Shipping and Settings
+ * never migrate (ADR-0014 Decision 6).
  *
  * The path is explicit rather than `"/"`. The admin router builds a page path
  * from a splat (`"/" + (_splat || "")`), so `"/"` is reachable, but it makes
@@ -72,13 +72,41 @@ export const CONSOLE_HOME_PAGE = {
 } as const satisfies PluginAdminPage;
 
 /**
+ * The migrated Orders screen (INC-20) — the console's first real screen and the
+ * effort's flagship migration.
+ *
+ * THE PATH MATCHES THE BLOCK KIT SCREEN'S ON PURPOSE. Both descriptors declare
+ * `/orders`; they do not collide, because a page's URL is
+ * `/plugins/<pluginId>/<path>` and the ids differ
+ * (`…/plugins/otta/orders` versus `…/plugins/otta-console/orders`). Keeping the
+ * paths identical is what lets an operator compare the two screens by swapping
+ * one segment, which is exactly what ADR-0014 asks for while both render: the
+ * Block Kit screen stays in the tree and stays green until the replacement is
+ * proven.
+ *
+ * The label says which surface this is. Two sidebar entries reading `Orders`
+ * with nothing to tell them apart would be the worst possible outcome of the
+ * two-descriptor arrangement — the operator's first question on seeing this
+ * console is "which of these is the new one", and the label answers it without
+ * being clicked.
+ */
+export const ORDERS_PAGE = {
+	path: "/orders",
+	label: "Orders (new)",
+	icon: "receipt",
+} as const satisfies PluginAdminPage;
+
+/**
  * Every page the console declares.
  *
  * A path listed here MUST have a component under the same key in `./admin`'s
  * `pages` export, or the sidebar silently drops the entry (the resolver quoted
  * in the module doc). `test/console-plugin.test.ts` pins the two together.
  */
-export const OTTA_CONSOLE_ADMIN_PAGES: readonly PluginAdminPage[] = [CONSOLE_HOME_PAGE];
+export const OTTA_CONSOLE_ADMIN_PAGES: readonly PluginAdminPage[] = [
+	CONSOLE_HOME_PAGE,
+	ORDERS_PAGE,
+];
 
 /**
  * The native entrypoint. EmDash's generated plugins module does

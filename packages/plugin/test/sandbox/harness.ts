@@ -27,6 +27,9 @@ import { build } from "tsdown";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = path.resolve(HERE, "../..");
 const PLUGIN_SRC = path.join(PLUGIN_ROOT, "src");
+/** The one workspace package `src/` imports at runtime (INC-20) — see
+ *  {@link materializePresentationPackage}. */
+const PRESENTATION_SRC = path.resolve(PLUGIN_ROOT, "..", "admin-presentation", "src");
 /** `-I` search root for the capnp `/workerd/workerd.capnp` builtin import —
  *  resolves via this package's own `node_modules/workerd` (a direct
  *  devDependency). */
@@ -204,11 +207,59 @@ function capnpConfig(port: number, bundlePathRelativeToWorkDir: string): string 
 	].join("\n");
 }
 
+/**
+ * Put `@otta-sh/admin-presentation` where the scratch copy of `src/` can resolve
+ * it — the one workspace package the plugin imports at runtime (INC-20).
+ *
+ * WHY ANYTHING IS NEEDED. The copy lives under the OS temp directory, so Node's
+ * resolution walks the scratch directory's own `node_modules`, then
+ * `/tmp/node_modules`, then `/node_modules`, and finds nothing: a bare
+ * `@otta-sh/admin-presentation`
+ * specifier would be left external by the bundler and workerd would fail to load
+ * a module that imports a package it has no way to fetch. That is exactly the
+ * constraint `presentation/money.ts` has documented since Phase 2, and it is why
+ * INC-20's shared package could not simply be added as an ordinary dependency
+ * and left there.
+ *
+ * WHY THIS IS NOT A WEAKENING. What the bare copy pins is that the SHIPPED
+ * BUNDLE IS SELF-CONTAINED. Materialising the package here makes the specifier
+ * resolvable, and because the scratch tree has no `package.json` declaring
+ * externals, tsdown INLINES it into the single `.mjs` workerd loads — so the
+ * bundle stays exactly as self-contained as before, and the suites still prove
+ * it by running. The alternative (leaving it external) is the case that would
+ * fail, loudly, on the first sandbox suite.
+ *
+ * ONLY `src/` IS COPIED, never the package's own `node_modules` (symlinks into
+ * the pnpm store for tsdown/vitest/typescript, none of which belong in a worker
+ * bundle's resolution graph), and the generated manifest points `exports` at the
+ * TypeScript source — the same dev-time `exports` the real package.json
+ * declares, so this resolves the identical files a `pnpm test` run does.
+ */
+async function materializePresentationPackage(workDir: string): Promise<void> {
+	const packageDir = path.join(workDir, "node_modules", "@otta-sh", "admin-presentation");
+	await cp(PRESENTATION_SRC, path.join(packageDir, "src"), { recursive: true });
+	await writeFile(
+		path.join(packageDir, "package.json"),
+		JSON.stringify(
+			{
+				name: "@otta-sh/admin-presentation",
+				version: "0.0.0-sandbox",
+				type: "module",
+				exports: { ".": "./src/index.ts" },
+			},
+			null,
+			2,
+		),
+		"utf8",
+	);
+}
+
 export async function loadPluginInSandbox(options: SandboxOptions): Promise<SandboxHandle> {
 	const workDir = await mkdtemp(path.join(tmpdir(), "otta-plugin-sandbox-"));
 	const srcDir = path.join(workDir, "src");
 	await cp(PLUGIN_SRC, srcDir, { recursive: true });
 	await writeFile(path.join(srcDir, "manifest.ts"), manifestSource(options), "utf8");
+	await materializePresentationPackage(workDir);
 
 	const entryRel = options.entry ?? "sandbox-entry.ts";
 	const distDir = path.join(workDir, "dist");

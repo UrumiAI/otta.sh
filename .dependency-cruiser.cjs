@@ -93,13 +93,27 @@ module.exports = {
 				"G1 says it must come from SHARING the existing function (a new " +
 				"presentation package both sides import), never from writing a second " +
 				"one. Test code is exempt for the same reason it is exempt above: it " +
-				"runs in Node, outside the shipped surface.",
+				"runs in Node, outside the shipped surface. INC-20 PAID that bill, " +
+				"and paying it is the one carve-out below: " +
+				"@otta-sh/admin-presentation holds formatMoney and its brands, the " +
+				"console's single date dialect, the short-id rule and the " +
+				"order-status vocabulary — everything the two admin surfaces must " +
+				"agree on when rendering the same record. It is NOT a second data " +
+				"path: zero dependencies, zero IO, zero wire types, zero react, zero " +
+				"emdash, pure Intl and string work, which is what makes it safe both " +
+				"in a browser and inside workerd (@otta-sh/plugin imports it too, so " +
+				"the plugin's own suites prove the two surfaces cannot drift). Every " +
+				"OTHER workspace package stays forbidden, in either direction.",
 			severity: "error",
 			from: { path: "^packages/admin-react/src" },
 			to: {
 				// Both forms, as above: resolved into node_modules (the workspace
-				// link) or left as a bare specifier by pnpm's strict isolation.
-				path: "(node_modules/@otta-sh/[^/]+(/|$)|^@otta-sh/[^/]+(/|$)|^packages/(?!admin-react/))",
+				// link) or left as a bare specifier by pnpm's strict isolation. The
+				// lookaheads carve out admin-presentation in each spelling a cruise
+				// can produce. A lookalike such as `@otta-sh/admin-presentation-shim`
+				// is still caught, because the lookahead requires the name to END
+				// there — at a `/` or at the end of the specifier.
+				path: "(node_modules/@otta-sh/(?!admin-presentation(/|$))[^/]+(/|$)|^@otta-sh/(?!admin-presentation(/|$))[^/]+(/|$)|^packages/(?!admin-react/|admin-presentation/))",
 			},
 		},
 	],

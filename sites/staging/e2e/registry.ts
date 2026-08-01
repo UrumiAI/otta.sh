@@ -49,21 +49,40 @@ export interface ConsoleScreen {
  * the spec. `site-config.test.ts` closes the other half — a console page that
  * appears in neither this list nor `CONSOLE_SHELL` fails the unit suite.
  *
- * STILL EMPTY AFTER INC-19, and that is the correct reading of it rather than
- * an oversight. INC-19 ships the console SHELL — a landing page that never
- * existed on Block Kit — so nothing has been migrated and every operator-facing
- * screen is still the Block Kit one, unchanged and still covered by its sandbox
- * suite. Putting the shell in here would make "migrated" mean "React", the
- * registry stop being a statement about ADR-0014 Decision 6's scope, and the
- * count stop answering "how many Block Kit screens have been replaced". The
- * shell has its own gate instead: `CONSOLE_SHELL` below, and
- * `console-shell.spec.ts`.
+ * IT WAS EMPTY AFTER INC-19, and that was the correct reading of it rather than
+ * an oversight. INC-19 shipped the console SHELL — a landing page that never
+ * existed on Block Kit — so nothing had been migrated. Putting the shell in here
+ * would have made "migrated" mean "React", the registry stop being a statement
+ * about ADR-0014 Decision 6's scope, and the count stop answering "how many
+ * Block Kit screens have been replaced". The shell has its own gate instead:
+ * `CONSOLE_SHELL` below, and `console-shell.spec.ts`.
  *
- * INC-20 adds Orders, INC-21 adds Pricing & inventory. Tax, Shipping and
- * Settings stay Block Kit permanently (ADR-0014 Decision 6) and must never
- * appear here.
+ * INC-20 ADDS ORDERS, AND IT IS THE FIRST REAL ENTRY. The count now answers its
+ * question honestly: one of the seven Block Kit screens has a React replacement.
+ * The Block Kit original stays in the tree, stays in the sidebar and stays
+ * covered by `orders-page.sandbox.test.ts` — ADR-0014 Decision 1 is reaffirmed,
+ * not spent, and both screens render until the user rules on removing one.
+ *
+ * INC-21 adds Pricing & inventory. Tax, Shipping and Settings stay Block Kit
+ * permanently (ADR-0014 Decision 6) and must never appear here.
  */
-export const MIGRATED_SCREENS: readonly ConsoleScreen[] = [];
+export const MIGRATED_SCREENS: readonly ConsoleScreen[] = [
+	{
+		name: "Orders",
+		increment: "INC-20",
+		// The SAME path the Block Kit screen declares. They do not collide: a
+		// page's URL carries its plugin id (`/plugins/otta/orders` versus
+		// `/plugins/otta-console/orders`), and keeping the paths identical is what
+		// lets the two be compared by swapping one segment while both render.
+		path: "/orders",
+		// The H1, not the sidebar label. `Orders (new)` is what the nav entry
+		// says — deliberately, so two entries reading `Orders` are told apart
+		// without a click — but the heading an operator lands on is the screen's
+		// own, and matching the sidebar here would let a spec pass on a page that
+		// never rendered.
+		heading: /^Orders$/,
+	},
+];
 
 /**
  * The console shell — the one React page that exists before any migration.

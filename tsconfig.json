@@ -2,6 +2,7 @@
 	"files": [],
 	"references": [
 		{ "path": "packages/domain" },
+		{ "path": "packages/admin-presentation" },
 		{ "path": "packages/store-postgres" },
 		{ "path": "packages/payments-stripe" },
 		{ "path": "packages/payments-x402" },
