@@ -47,15 +47,17 @@ export interface ConsoleScreen {
  * `console-screens.spec.ts` generates one smoke spec per entry, so a screen
  * cannot be migrated to React and left uncovered: adding the entry IS adding
  * the spec. `site-config.test.ts` closes the other half — a console page that
- * appears in neither this list nor `CONSOLE_SHELL` fails the unit suite.
+ * does not appear in this list fails the unit suite.
  *
  * IT WAS EMPTY AFTER INC-19, and that was the correct reading of it rather than
- * an oversight. INC-19 shipped the console SHELL — a landing page that never
- * existed on Block Kit — so nothing had been migrated. Putting the shell in here
- * would have made "migrated" mean "React", the registry stop being a statement
- * about ADR-0014 Decision 6's scope, and the count stop answering "how many
- * Block Kit screens have been replaced". The shell has its own gate instead:
- * `CONSOLE_SHELL` below, and `console-shell.spec.ts`.
+ * an oversight. INC-19 shipped a console SHELL — a landing page that never
+ * existed on Block Kit — so nothing had been migrated, and putting the shell in
+ * here would have made "migrated" mean "React", the registry stop being a
+ * statement about ADR-0014 Decision 6's scope, and the count stop answering
+ * "how many Block Kit screens have been replaced". That shell has since been
+ * removed (ADR-0015): it managed no data, so the list below is now the console's
+ * WHOLE page inventory as well as its migration count, and the two questions
+ * happen to have the same answer rather than having been merged.
  *
  * INC-20 ADDS ORDERS, AND IT IS THE FIRST REAL ENTRY. The count now answers its
  * question honestly: one of the seven Block Kit screens has a React replacement.
@@ -98,25 +100,6 @@ export const MIGRATED_SCREENS: readonly ConsoleScreen[] = [
 		heading: /^Pricing & inventory$/,
 	},
 ];
-
-/**
- * The console shell — the one React page that exists before any migration.
- *
- * Kept OUT of `MIGRATED_SCREENS` (see above) but described in the same shape,
- * so `console-shell.spec.ts` reads like the generated per-screen specs and so
- * the shell's path is written down exactly once on the test side.
- *
- * `path` must equal `CONSOLE_HOME_PAGE.path` in `@otta-sh/admin-react`. The two
- * are not imported from one another on purpose: this file is the test surface's
- * own statement of what it expects to find, and a spec that imported the value
- * it is checking would pass no matter what the console shipped.
- */
-export const CONSOLE_SHELL: ConsoleScreen = {
-	name: "Console shell",
-	increment: "INC-19",
-	path: "/console",
-	heading: /Otta console/i,
-};
 
 /** Screens ADR-0014 Decision 6 forbids migrating — pinned so a future
  *  increment cannot quietly add one to the registry above. */

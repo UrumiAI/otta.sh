@@ -226,7 +226,7 @@ export const BLOCK_KIT_SIDEBAR_LINK = `a[href*="${ADMIN_BASE_PATH}/plugins/${OTT
  * why that separation is load-bearing rather than tidy.
  */
 export type { ConsoleScreen } from "./registry.js";
-export { CONSOLE_SHELL, MIGRATED_SCREENS, NEVER_MIGRATED_PATHS } from "./registry.js";
+export { MIGRATED_SCREENS, NEVER_MIGRATED_PATHS } from "./registry.js";
 
 /** This worktree's root, absolute — the identity a served build is checked
  *  against. */

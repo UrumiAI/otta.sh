@@ -123,6 +123,39 @@ describe("a refusal reaches the screen as a sentence, never as a blank pane", ()
 		const result = await fetchOrders({});
 		expect(isFailure(result)).toBe(true);
 	});
+
+	test("a non-JSON error body still yields the status and the remediation", async () => {
+		// A proxy or gateway in front of the admin answers HTML, not the plugin's
+		// envelope. `readFailure` runs `getErrorMessage` over that body; it must
+		// fall back rather than throw, and the operator must still get both halves
+		// — which status refused, and what to do about it.
+		apiFetch.mockResolvedValue(new Response("<html>gateway error</html>", { status: 502 }));
+		const result = await fetchOrders({});
+		expect(isFailure(result)).toBe(true);
+		if (!isFailure(result)) return;
+		expect(result.title).toContain("HTTP 502");
+		expect(result.description).toMatch(/Reload to try again/i);
+		// The raw markup is never what the operator reads.
+		expect(result.description).not.toContain("<html>");
+	});
+
+	test("a 200 whose body is not JSON is a transport failure, not a crash", async () => {
+		// `post()` only reaches `response.json()` once the status is ok, so this
+		// branch is unreachable from the refusal paths above: a truncated or
+		// re-written 200 lands here, and an unhandled parse error would take the
+		// screen down instead of stating anything.
+		apiFetch.mockResolvedValue(
+			new Response("not json at all", {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			}),
+		);
+		const result = await fetchOrders({});
+		expect(isFailure(result)).toBe(true);
+		if (!isFailure(result)) return;
+		expect(result.title).toMatch(/could not be reached/i);
+		expect(result.title).not.toContain("HTTP");
+	});
 });
 
 describe("the one data path (ADR-0014 Decision 3)", () => {

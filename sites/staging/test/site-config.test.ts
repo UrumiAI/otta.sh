@@ -46,7 +46,7 @@ import { describe, expect, test } from "vitest";
 // COMMERCE_SERVICE_URL — the site's ordinary BUILD-time variable, per
 // sites/staging/README.md — threw before a single assertion and redded the
 // whole unit suite. The registry is plain data with no imports at all.
-import { CONSOLE_SHELL, MIGRATED_SCREENS } from "../e2e/registry.js";
+import { MIGRATED_SCREENS } from "../e2e/registry.js";
 import { buildEmdashOptions, COMMERCE_SERVICE_URL_PLACEHOLDER } from "../src/emdash-options.js";
 import { ottaConsoleDescriptor } from "../src/otta-console-descriptor.js";
 import { ottaPluginDescriptor } from "../src/otta-plugin-descriptor.js";
@@ -343,25 +343,32 @@ describe("ottaConsoleDescriptor (ADR-0014's second descriptor)", () => {
  * THE COVERAGE LINK — the console's page list and its Playwright gate, tied
  * together mechanically.
  *
- * Without this, INC-19's two halves are only related by intent. The console
+ * Without this, the console's two halves are only related by intent. The console
  * declares its pages in `@otta-sh/admin-react`; the Playwright coverage gate
- * reads `MIGRATED_SCREENS` (plus `CONSOLE_SHELL`) in `sites/staging/e2e/`.
- * Nothing made adding to the first require adding to the second, so INC-20
- * could ship an Orders page, generate NO smoke spec for it, and see every gate
- * go green — the precise failure `console-screens.spec.ts` was written to make
- * impossible, arriving through the one door it does not watch.
+ * reads `MIGRATED_SCREENS` in `sites/staging/e2e/`. Nothing made adding to the
+ * first require adding to the second, so INC-20 could ship an Orders page,
+ * generate NO smoke spec for it, and see every gate go green — the precise
+ * failure `console-screens.spec.ts` was written to make impossible, arriving
+ * through the one door it does not watch.
+ *
+ * THE ESCAPE HATCH IS GONE, and that is a tightening. The gated set used to be
+ * `MIGRATED_SCREENS` PLUS the console shell, because the shell was a React page
+ * that replaced no Block Kit screen and so did not belong in a registry counting
+ * migrations. ADR-0015 removed that page, and with it the only page this check
+ * had to admit by name. Every page the console serves is now a migrated screen,
+ * so the registry alone is the gate and a new console page has exactly one way
+ * to pass: be registered, and therefore get a generated smoke spec.
  *
  * It lives here rather than in the e2e surface because this file already
  * imports both sides, and because `pnpm test` is the gate hardest to skip.
  */
 function assertEveryConsolePageIsGated(pages: readonly { path: string }[]): void {
-	const gated = [CONSOLE_SHELL.path, ...MIGRATED_SCREENS.map((screen) => screen.path)];
+	const gated = MIGRATED_SCREENS.map((screen) => screen.path);
 	for (const page of pages) {
 		expect(
 			gated,
 			`console page ${page.path} has NO Playwright gate — add it to MIGRATED_SCREENS in ` +
-				`sites/staging/e2e/registry.ts (which generates its smoke spec), or, if it is not a ` +
-				`migrated screen, give it its own spec the way CONSOLE_SHELL has one`,
+				`sites/staging/e2e/registry.ts, which is what generates its smoke spec`,
 		).toContain(page.path);
 	}
 }

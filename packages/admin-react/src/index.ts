@@ -52,27 +52,6 @@ export const OTTA_CONSOLE_ENTRYPOINT = OTTA_CONSOLE_PACKAGE;
 export const OTTA_CONSOLE_ADMIN_ENTRY = `${OTTA_CONSOLE_PACKAGE}/admin`;
 
 /**
- * The console's landing page.
- *
- * INC-20 added Orders at `/orders` beside it and INC-21 added Pricing &
- * inventory at `/products`. Each replaces a Block Kit screen that stays in the
- * tree and stays green until the replacement is proven. Tax, Shipping and
- * Settings never migrate (ADR-0014 Decision 6), so both idioms are permanently
- * present in this admin.
- *
- * The path is explicit rather than `"/"`. The admin router builds a page path
- * from a splat (`"/" + (_splat || "")`), so `"/"` is reachable, but it makes
- * the console's nav entry the only one in the sidebar whose href ends in a bare
- * slash — a shape Astro's trailing-slash handling has an opinion about and this
- * increment has no reason to test.
- */
-export const CONSOLE_HOME_PAGE = {
-	path: "/console",
-	label: "Console",
-	icon: "browsers",
-} as const satisfies PluginAdminPage;
-
-/**
  * The migrated Orders screen (INC-20) — the console's first real screen and the
  * effort's flagship migration.
  *
@@ -123,11 +102,7 @@ export const PRODUCTS_PAGE = {
  * `sites/staging/test/site-config.test.ts` pins every entry to a Playwright
  * gate.
  */
-export const OTTA_CONSOLE_ADMIN_PAGES: readonly PluginAdminPage[] = [
-	CONSOLE_HOME_PAGE,
-	ORDERS_PAGE,
-	PRODUCTS_PAGE,
-];
+export const OTTA_CONSOLE_ADMIN_PAGES: readonly PluginAdminPage[] = [ORDERS_PAGE, PRODUCTS_PAGE];
 
 /**
  * The native entrypoint. EmDash's generated plugins module does
