@@ -14,9 +14,10 @@
  *     `X-EmDash-Request` CSRF header, and NOTHING in the request identifies the
  *     calling plugin.
  *
- * WHAT IT IS NOT. No screen is migrated here. Orders arrives in INC-20 and
- * Pricing & inventory in INC-21; until then every operator-facing screen is the
- * Block Kit one, unchanged and still covered by its sandbox suite.
+ * WHAT ALSO LIVES HERE NOW. INC-20 migrated Orders (`./orders/`), which is the
+ * console's first real screen; Pricing & inventory follows in INC-21. Both Block
+ * Kit originals stay in the tree and stay green until each replacement is
+ * proven (ADR-0014 Decision 1, reaffirmed).
  *
  * NO COMPONENT LIBRARY. `@cloudflare/kumo` and `@phosphor-icons/react` were
  * measured UNRESOLVABLE and unnecessary on the spike; `@emdash-cms/plugin-forms`
@@ -26,16 +27,18 @@
  * ones that survive the admin's dark theme, so no fixed foreground or
  * background colours.
  *
- * NO MONEY ON THIS PAGE. G1 says money is integer minor units rendered through
- * `formatMoney`, and this package cannot import `@otta-sh/plugin` (ADR-0014
- * Decision 3 / the depcruise quarantine). The shell therefore renders no
- * monetary value at all; INC-20 is the increment that has to answer where the
- * React tier's `formatMoney` comes from, and it must answer it by sharing the
- * function, never by writing a second one.
+ * NO MONEY ON THIS PAGE — the SHELL, that is. G1 says money is integer minor
+ * units rendered through `formatMoney`, and this package cannot import
+ * `@otta-sh/plugin` (ADR-0014 Decision 3 / the depcruise quarantine). INC-20
+ * answered where the React tier's `formatMoney` comes from the way that comment
+ * required: by SHARING the function. It lives in `@otta-sh/admin-presentation`,
+ * a dependency-free package both admin surfaces import, and the Orders screen
+ * calls it. There is still no second money renderer anywhere in this repo.
  */
 import { apiFetch } from "emdash/plugin-utils";
 import type { PluginAdminExports } from "emdash";
 import * as React from "react";
+import { OrdersScreen } from "./orders/orders-screen.js";
 
 /**
  * The Block Kit plugin's single admin dispatch route.
@@ -302,4 +305,5 @@ export function ConsoleHomePage(): React.ReactElement {
  */
 export const pages = {
 	"/console": ConsoleHomePage,
+	"/orders": OrdersScreen,
 } as unknown as PluginAdminExports["pages"];

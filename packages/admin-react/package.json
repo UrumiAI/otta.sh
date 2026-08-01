@@ -35,6 +35,9 @@
 	"scripts": {
 		"build": "tsdown"
 	},
+	"dependencies": {
+		"@otta-sh/admin-presentation": "workspace:*"
+	},
 	"devDependencies": {
 		"@types/react": "^19.2.14",
 		"@types/react-dom": "^19.2.3",

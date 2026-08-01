@@ -93,7 +93,23 @@ importers:
         specifier: 'catalog:'
         version: 4.1.10(@types/node@22.20.1)(vite@8.1.4(@types/node@22.20.1)(esbuild@0.28.1)(yaml@2.9.0))
 
+  packages/admin-presentation:
+    devDependencies:
+      tsdown:
+        specifier: 'catalog:'
+        version: 0.22.4(typescript@5.9.3)
+      typescript:
+        specifier: 'catalog:'
+        version: 5.9.3
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.10(@types/node@26.1.1)(vite@8.1.4(@types/node@26.1.1)(esbuild@0.28.1)(yaml@2.9.0))
+
   packages/admin-react:
+    dependencies:
+      '@otta-sh/admin-presentation':
+        specifier: workspace:*
+        version: link:../admin-presentation
     devDependencies:
       '@types/react':
         specifier: ^19.2.14
@@ -177,6 +193,10 @@ importers:
         version: 4.1.10(@types/node@22.20.1)(vite@8.1.4(@types/node@22.20.1)(esbuild@0.28.1)(yaml@2.9.0))
 
   packages/plugin:
+    dependencies:
+      '@otta-sh/admin-presentation':
+        specifier: workspace:*
+        version: link:../admin-presentation
     devDependencies:
       '@hono/node-server':
         specifier: 'catalog:'
@@ -319,6 +339,9 @@ importers:
       '@cloudflare/workers-types':
         specifier: ^5.20260708.1
         version: 5.20260710.1
+      '@otta-sh/payments-stripe':
+        specifier: workspace:*
+        version: link:../../packages/payments-stripe
       '@types/react':
         specifier: ^19.2.14
         version: 19.2.17

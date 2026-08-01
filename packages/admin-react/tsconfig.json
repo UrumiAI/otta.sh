@@ -1,11 +1,16 @@
 {
-	// No `references`: this package deliberately depends on NO other workspace
-	// package. ADR-0014 Decision 3 gives the console exactly one data path —
-	// HTTP to `otta`'s existing authenticated admin routes — so importing
-	// @otta-sh/plugin (or the domain, service, store or payments packages)
-	// would be a second one. `.dependency-cruiser.cjs`'s
-	// `console-imports-no-workspace-package` rule enforces that; the absence of
-	// references here is the same fact stated in the build graph.
+	// EXACTLY ONE reference, and the rule that permits it is narrower than it
+	// looks. ADR-0014 Decision 3 gives the console exactly one DATA path — HTTP
+	// to `otta`'s existing authenticated admin routes — so importing
+	// @otta-sh/plugin (or the domain, service, store or payments packages) would
+	// be a second one, compiled in and invisible to the empty capability set.
+	// `@otta-sh/admin-presentation` is not a data path: it holds no IO, no wire
+	// types and no dependencies, only the money renderer, the date dialect, the
+	// short-id rule and the status vocabulary that BOTH admin surfaces must
+	// agree on. INC-20 extracted it precisely so the console could satisfy G1
+	// without a second `formatMoney`; `console-imports-no-workspace-package`
+	// allows this one package and still forbids every other, and this reference
+	// is that same fact stated in the build graph.
 	"extends": "../../tsconfig.base.json",
 	"compilerOptions": {
 		"outDir": "dist/tsc",
@@ -20,5 +25,6 @@
 		// browser — the failure would be at runtime, in the admin, not here.
 		"types": []
 	},
-	"include": ["src", "test", "tsdown.config.ts", "vitest.config.ts"]
+	"include": ["src", "test", "tsdown.config.ts", "vitest.config.ts"],
+	"references": [{ "path": "../admin-presentation" }]
 }

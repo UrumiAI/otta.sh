@@ -1,7 +1,23 @@
 import { COMMERCE_SERVICE_BASE_URL } from "../manifest.js";
-import { formatMoney } from "../presentation/format-money.js";
-import { cents as toCents, currency as toCurrency } from "../presentation/money.js";
-import { formatMinorUnitsInput, parseMinorUnitsInput } from "./money-input.js";
+import {
+	BANNER_BUDGET,
+	ORDERS_EMPTY,
+	ORDERS_LIST_INTRO,
+	ORDERS_NOUN,
+	ORDERS_NO_MATCH,
+	ORDER_STATE_SET,
+	ORDER_STATES,
+	UNFORMATTABLE,
+	formatAmount as formatTotal,
+	formatMinorUnitsInput,
+	orderStateCell,
+	fit,
+	parseMinorUnitsInput,
+	reconciliationAlertSentence,
+	reconciliationSummary,
+	refundCapabilityText,
+	refundConfirmText,
+} from "@otta-sh/admin-presentation";
 import type {
 	AdminPageConfig,
 	Block,
@@ -56,7 +72,6 @@ import {
 	readAdminTokens,
 	readString,
 	screenActions,
-	SHORT_ID_CONFIRM_LEN,
 	shortIdFixed,
 	shortIdsFor,
 	startOfDay,
@@ -120,6 +135,22 @@ import {
  */
 export const ORDERS_PAGE: AdminPageConfig = { path: "/orders", label: "Orders", icon: "receipt" };
 
+/**
+ * THE ORDER-STATE VOCABULARY MOVED, and this re-export is what keeps every
+ * caller and every suite pointing at `orders-page.js` for it (INC-20).
+ *
+ * `ORDER_STATES`, `TERMINAL_ORDER_STATES` and `orderStateCell` now live in
+ * `@otta-sh/admin-presentation` because the React Orders console renders the
+ * same four surfaces this screen does — list row, other-orders table, identity
+ * strip, timeline — and cannot import `@otta-sh/plugin` to get the words. Two
+ * copies of "which states are closed" is the disagreement INC-10 wrote the
+ * vocabulary to prevent, one migration away from happening between two screens
+ * instead of within one. Nothing about the rendering changed: the exception set
+ * is still the four states the domain's `ORDER_STATE_MACHINE` gives no outbound
+ * transition, and `completed` is still not one of them.
+ */
+export { orderStateCell };
+
 /** This screen's namespaced action ids. */
 const ORDERS_ACTIONS: ScreenActions = screenActions("orders");
 const ACTION_ADD_NOTE = ORDERS_ACTIONS.custom("add-note");
@@ -137,7 +168,7 @@ const ACTION_REFUND_REVIEW = ORDERS_ACTIONS.custom("refund-review");
  *  they are siblings in DIFFERENT `actions` blocks, so one id is fine. */
 const ACTION_REFUND = ORDERS_ACTIONS.custom("refund");
 
-const PAGE_LIMIT = 25;
+export const PAGE_LIMIT = 25;
 
 /** A `select`/`combobox` sentinel meaning "no constraint". NEVER `""`: the pinned
  *  renderer treats an empty value as "no value" and draws a BLANK trigger
@@ -147,101 +178,14 @@ const ANY = "any";
 /** The same, for a picker with nothing selected yet (L-7). */
 const NONE = "none";
 
-/** §1's prose budgets, as constants so the copy below can be measured against
- *  them rather than eyeballed. Enforced mechanically for the two strings whose
- *  length depends on SERVICE DATA (an accordion label carrying a tracking number,
- *  a banner quoting a settlement anomaly) — everything else is authored literal
- *  text that is in budget by inspection. */
+/** §1's accordion-label budget. The BANNER budget lives in
+ *  `@otta-sh/admin-presentation` with `fit`, because the React tier renders the
+ *  same banner and must trim it identically (INC-20 review). Enforced
+ *  mechanically for the two strings whose length depends on SERVICE DATA (an
+ *  accordion label carrying a tracking number, a banner quoting a settlement
+ *  anomaly) — everything else is authored literal text that is in budget by
+ *  inspection. */
 const LABEL_BUDGET = 60;
-const BANNER_BUDGET = 240;
-
-/**
- * The ten order states, and the ONE source the per-state transition ids and the
- * dispatcher's registration are both derived from (DA-6).
- *
- * WHY THIS MATTERS: `ORDERS_ACTION_IDS` is fixed at module load, `admin-route.ts`
- * dispatches on set membership, and an unmatched id falls through to
- * `{blocks: []}` — a BLANK console. Offered transitions come from the SERVICE
- * (`detail.allowedTransitions`), so a service offering a state this plugin has
- * never heard of would render a button that blanks the page. Hence: the ids come
- * from this list, `customActions` comes from this list, and
- * {@link offeredTransitions} DROPS anything outside it.
- */
-const ORDER_STATES = [
-	"pending",
-	"paid",
-	"failed",
-	"expired",
-	"processing",
-	"shipped",
-	"delivered",
-	"completed",
-	"cancelled",
-	"refunded",
-] as const;
-
-const ORDER_STATE_SET: ReadonlySet<string> = new Set(ORDER_STATES);
-
-/**
- * THE ORDER-STATE EXCEPTIONS — the four states `ORDER_STATE_MACHINE`
- * (`domain/src/orders/state-machine.ts`) gives NO legal outbound transition:
- * `failed: [] · expired: [] · cancelled: [] · refunded: []`. This is not an
- * editorial pick of "the bad ones"; it is that table read out loud, which is
- * also why `completed` is NOT here — a completed order can still be refunded,
- * so it is not a dead end.
- *
- * The plugin cannot IMPORT the machine (`@otta-sh/domain` is a devDependency —
- * the published plugin has no runtime dependency on it), so the set is restated
- * here, once, against the citation above. New states are absent from it by
- * default, which is the safe direction: an unrecognised state renders as a bare
- * word rather than silently acquiring the loudest rendering on the screen.
- */
-const TERMINAL_ORDER_STATES: ReadonlySet<string> = new Set([
-	"failed",
-	"expired",
-	"cancelled",
-	"refunded",
-]);
-
-/**
- * EVERY SURFACE THAT RENDERS AN ORDER STATE AS A VALUE READS THROUGH THIS
- * (INC-10): the list row, the customer's other-orders table, the identity strip
- * and the timeline's `Status → …`. Four surfaces, one vocabulary, so a state
- * cannot say one thing on the list and another one click away.
- *
- * ONE SURFACE IS DELIBERATELY EXCLUDED, AND IT SITS ON THE SAME RESPONSE AS THE
- * FIRST: the drill-in picker's option label ({@link openOrderForm}). That label
- * is a ` · `-joined 4-tuple, so a marked state would silently make it a
- * 5-tuple — the exact ambiguity `products-page.ts` avoids by keeping
- * `active (not priced)` in parentheses rather than spelling it with a middot. A
- * picker option is a CHOOSER, not a rendering of the record: the row directly
- * above it carries the marked value. The suite pins that segment BARE so the
- * exclusion cannot be "fixed" into ambiguity.
- *
- * BADGE THE EXCEPTIONS, PLAIN-TEXT THE HAPPY PATH — done in WORDS, because the
- * renderer cannot do it in ink. `format` is a property of the COLUMN, not of a
- * cell (`blocks/table.tsx`'s `formatCell` reads `col.format`), so a table
- * badges every row of a column or none of them; and blanking the happy-path
- * cell to fake the split is worse than either end, because `Badge` draws its
- * pill from padding and a radius alone — an empty cell in a badge column is a
- * solid mark with no word in it. Column-level badging is not merely a
- * compromise either, it is a defect waiting for an operator: filter this list
- * to `paid` and every row carries the same value, which is exactly the column
- * X-4 (T-5) rejects as decoration. So no status column in this console is a
- * badge column, and the emphasis moves into the cell's own text — the
- * convention `On hand` already ships (`0 · Out of stock`).
- *
- * WHAT THE EXCEPTION SAYS. Not a restatement of the word already in the cell,
- * and not a claim the console cannot stand behind (`refunded` is a bookkeeping
- * disposition here — it "does not move money" — so a cell reading
- * `refunded · money returned` would be false). It says the one thing the state
- * machine guarantees: the order is CLOSED, no further status change is possible
- * from it. Two facts in a cell of one word is also the visual weight a badge
- * was reaching for: in a column of bare words, the long cells are the marks.
- */
-export function orderStateCell(state: string): string {
-	return TERMINAL_ORDER_STATES.has(state) ? `${state} · closed` : state;
-}
 
 /** `transition-<state>` — one DISTINCT verb per state (R-13), derived. */
 const transitionVerb = (state: string): string => `transition-${state}`;
@@ -284,7 +228,7 @@ const DANGER_TRANSITIONS: ReadonlyMap<string, ConfirmDialog> = new Map([
  * DA-3 note form — the only path that records detail — the Detail field is
  * directly below, so the parenthetical said nothing the form did not.
  */
-const CANCELLATION_REASONS: readonly SelectOption[] = [
+export const CANCELLATION_REASONS: readonly SelectOption[] = [
 	{ value: "customer_request", label: "Customer requested it" },
 	{ value: "fraud_suspected", label: "Fraud suspected" },
 	{ value: "out_of_stock", label: "Out of stock" },
@@ -375,13 +319,13 @@ export const ORDERS_ACTION_IDS: ReadonlySet<string> = ORDERS_ACTIONS.actionIds(
  * maps back through {@link PERIOD_BY_LABEL} to the key stored in the filter, so
  * the carrier and the wire keep a stable token while the operator reads English.
  */
-type PeriodKey = "last7" | "last30" | "last90" | "custom";
+export type PeriodKey = "last7" | "last30" | "last90" | "custom";
 
 /** The relative presets, in render order. `days` is the WHOLE-DAY span the
  *  preset covers, TODAY INCLUDED — "last 7 days" is 7 day-boundaries, not
  *  `now - 168h`, so the label and the window it queries describe the same thing
  *  (the divergence the Reports period was fixed for). */
-const PERIOD_PRESETS: ReadonlyArray<{ key: PeriodKey; label: string; days: number }> = [
+export const PERIOD_PRESETS: ReadonlyArray<{ key: PeriodKey; label: string; days: number }> = [
 	{ key: "last7", label: "Last 7 days", days: 7 },
 	{ key: "last30", label: "Last 30 days", days: 30 },
 	{ key: "last90", label: "Last 90 days", days: 90 },
@@ -389,10 +333,10 @@ const PERIOD_PRESETS: ReadonlyArray<{ key: PeriodKey; label: string; days: numbe
 
 /** The all-values option — the period's {@link ANY}. A real word, never `""`
  *  (F-6a, R-17a). */
-const PERIOD_ANY = "Any time";
+export const PERIOD_ANY = "Any time";
 
 /** The option that swaps the select for the two date fields. */
-const PERIOD_CUSTOM = "Custom…";
+export const PERIOD_CUSTOM = "Custom…";
 
 const PERIOD_LABELS: ReadonlyMap<PeriodKey, string> = new Map([
 	...PERIOD_PRESETS.map((p) => [p.key, p.label] as const),
@@ -413,7 +357,7 @@ const PERIOD_BY_LABEL: ReadonlyMap<string, PeriodKey> = new Map(
  *  `from`/`to` are DAYS (`YYYY-MM-DD`) and belong to `period: "custom"` alone —
  *  every other period resolves its own window at render time from
  *  {@link PERIOD_PRESETS}, so a relative period cannot go stale in a carrier. */
-interface OrdersFilterForm {
+export interface OrdersFilterForm {
 	status?: string;
 	period?: PeriodKey;
 	from?: string;
@@ -599,12 +543,10 @@ function ordersListLevel() {
 	});
 }
 
-/** The standing half of the list's intro line — the row count goes in front of it
- *  ({@link listIntroLine}). 101 chars; the longest count line this screen can
- *  produce (`25 orders on this page`) puts the whole line at 127 ≤ 140 (X-11).
- *  "View-only" is gone: this console cancels, refunds, fulfils and annotates. */
-const LIST_INTRO =
-	"Filter, open an order, and move it through its status flow. Money in the order's currency; dates UTC.";
+/** The standing half of the list's intro line — the row count goes in front of
+ *  it ({@link listIntroLine}). SHARED with the React Orders screen, which
+ *  renders the same sentence above the same rows (INC-20 review). */
+const LIST_INTRO = ORDERS_LIST_INTRO;
 
 /**
  * §11.1's block order, exactly: `header` · `context` · notice `banner` · the
@@ -633,21 +575,15 @@ function listBlocks(
 		filtered: summary !== undefined,
 		firstPage,
 		nextToken,
+		// INC-23's exact count, threaded through to the shared `rowCountLine`.
 		...(total !== undefined ? { total } : {}),
-		noun: { one: "order", other: "orders" },
-		empty: {
-			title: "No orders yet",
-			description: "Orders appear here as buyers check out.",
-			blockId: "orders:empty",
-			// E-2: no way IN from here — orders are not created in the admin.
-		},
-		noMatch: {
-			title: "No orders match these filters",
-			description:
-				"Nothing came back for the filters you set. Clear them to go back to every order, or widen one and apply again.",
-			blockId: "orders:no-match",
-			emptyText: "No orders match these filters.",
-		},
+		noun: ORDERS_NOUN,
+		// The WORDS are shared with the React Orders screen and the block ids are
+		// not — a `block_id` is a Block Kit React key and means nothing on the
+		// other surface (INC-20 review). E-2: no way IN from `empty` — orders are
+		// not created in the admin.
+		empty: { ...ORDERS_EMPTY, blockId: "orders:empty" },
+		noMatch: { ...ORDERS_NO_MATCH, blockId: "orders:no-match" },
 	});
 	const blocks: Block[] = [
 		{ type: "header", text: "Orders", block_id: "orders:hdr" },
@@ -988,7 +924,7 @@ function orderDetailLevel() {
  * failing must degrade to a `context` line in its own group and never blank the
  * detail or fail the screen closed (E-1). Fetched in parallel.
  */
-async function loadDetailSurfaces(
+export async function loadDetailSurfaces(
 	client: AdminOrdersClient,
 	id: string,
 ): Promise<{
@@ -1055,10 +991,10 @@ function detailBlocks(args: DetailArgs): Block[] {
 			type: "banner",
 			variant: "alert",
 			title: "Needs reconciliation",
-			description: fit(
-				`Settlement flagged this order: ${o.reconciliationFlag}. Resolve it under Fulfilment — recording a resolution moves no money and does not change the order.`,
-				BANNER_BUDGET,
-			),
+			// Shared, and trimmed inside the shared helper: the sentence names a
+			// flag the SERVICE produced, so its length is service data and neither
+			// surface may render the untrimmed version (INC-20 review).
+			description: reconciliationAlertSentence(o.reconciliationFlag),
 		});
 	}
 	// The identity strip: "what am I looking at, and is it healthy" without a
@@ -1093,7 +1029,10 @@ function detailBlocks(args: DetailArgs): Block[] {
 			["Placed", formatTimestamp(o.createdAt)],
 			["Payment", o.paymentMethod ?? "—"],
 			["Order ID", o.id],
-			["Reconciliation", reconciliationSummary(o)],
+			[
+				"Reconciliation",
+				reconciliationSummary(o.reconciliationFlag, o.reconciliationResolution?.outcome ?? null),
+			],
 		]),
 	);
 	const panels: TabPanel[] = [
@@ -1558,7 +1497,7 @@ function reconcileGroup(o: OrderDetailWire, open: OpenGroup): Block | undefined 
 
 /** The three admin dispositions. The labels spell out that a disposition is a
  *  RECORD, not an action — "refunded" must never read as "this issues a refund". */
-const RECONCILIATION_OUTCOMES: readonly SelectOption[] = [
+export const RECONCILIATION_OUTCOMES: readonly SelectOption[] = [
 	{
 		value: "refunded",
 		label: "refunded (records the disposition — issue the refund in Refunds below)",
@@ -1778,7 +1717,7 @@ function recordFulfillmentForm(orderId: string, state: string): FormBlock {
  * `admin-route.ts` falls through an unknown one to `{blocks: []}`, so rendering a
  * button for a state this plugin never registered would BLANK THE CONSOLE.
  */
-function offeredTransitions(o: OrderDetailWire, detail: OrderDetailResult): string[] {
+export function offeredTransitions(o: OrderDetailWire, detail: OrderDetailResult): string[] {
 	return detail.allowedTransitions.filter((t) => {
 		if (!ORDER_STATE_SET.has(t)) return false;
 		// A bare `shipped` would ship without tracking and email the buyer an empty
@@ -2375,7 +2314,10 @@ function refundsGroup(
 			});
 		}
 		if (summary.refunds.length > 0) body.push(refundsTable(actions, o.id, summary.refunds, cur));
-		body.push({ type: "context", text: refundCapabilityText(summary) });
+		body.push({
+			type: "context",
+			text: refundCapabilityText(summary.refundable, summary.paymentMethod),
+		});
 	}
 
 	if (staged !== undefined) {
@@ -2567,51 +2509,6 @@ function refundDraftBody(
 	draft: OrdersRenderState & { kind: "refund-draft" },
 ): Block[] {
 	return [REFUND_PARTIAL_BANNER, refundPartialForm(o.id, cur, summary, draft)];
-}
-
-/**
- * `confirm.text` — exactly two sentences, ≤200 (§1): one naming the concrete
- * ORDER, amount and recipient, one naming the consequence.
- *
- * THE ORDER COMES FIRST, and it is the reason this function takes an id at all
- * (D4). Amount and recipient are the two attributes a repeat customer's orders
- * SHARE, so a dialog naming only those is a dialog that cannot tell the operator
- * which of two candidates the money is about to leave. `shortIdFixed` is used
- * rather than {@link shortIdsFor} because a confirm renders against one record
- * with no candidate set in hand; at 8 characters it is a visible superset of the
- * 4-character prefix the operator just read in the picker.
- *
- * The recipient is dropped when a long buyer handle would push the string over
- * budget — the id and the amount are never the thing that goes. Truncating a
- * confirm dialog mid-sentence would be worse than a slightly less specific one,
- * and the budget is a hard rule (X-11).
- */
-function refundConfirmText(
-	orderId: string,
-	amount: string,
-	recipient: string,
-	refundable: boolean,
-): string {
-	const consequence = refundable
-		? "This sends the money back through Stripe and cannot be reversed."
-		: "This records a refund made out of band — it does not move money.";
-	const order = `Order #${shortIdFixed(orderId, SHORT_ID_CONFIRM_LEN)}`;
-	const named = `${order} — refund ${amount} to ${recipient}? ${consequence}`;
-	return named.length <= 200
-		? named
-		: `${order} — refund ${amount} to this order's buyer? ${consequence}`;
-}
-
-/** The honest per-gateway capability copy (ADR-0008), each ≤200 (§1): Stripe
- *  moves money; x402 / no-secret is record-only, and says why. */
-function refundCapabilityText(s: RefundsSummaryWire): string {
-	if (s.refundable) {
-		return `Paid via ${s.paymentMethod ?? "the payment provider"} — refunding here issues a REAL refund through Stripe and money moves back to the buyer.`;
-	}
-	if (s.paymentMethod === "x402") {
-		return "Paid on-chain (x402), which cannot be reversed and has no signing wallet — refunds here are RECORD-ONLY. Send the return yourself, then record it here.";
-	}
-	return "Automatic refunds are unavailable for this order — refunds here are RECORD-ONLY. Issue it through your payment provider, then record it here.";
 }
 
 function refundsTable(
@@ -3764,10 +3661,6 @@ function refundFailureNotice(reason: string | undefined): Notice {
 
 // -- shared -------------------------------------------------------------------
 
-/** What an unformattable amount renders as (M-1): a wrong number is worse than a
- *  missing one, and raw minor units in a money field is the bug this kills. */
-const UNFORMATTABLE = "—";
-
 /**
  * Fail CLOSED with a GENERIC, em-dash-correct banner — never leaks a raw HTTP
  * status/URL (e.g. an auth 401 from a missing/expired admin token).
@@ -3806,14 +3699,6 @@ function fields(blockId: string, entries: ReadonlyArray<readonly [string, string
 	};
 }
 
-/** Trim a string to `max`, ellipsis included — for the two places a rendered
- *  string's length depends on SERVICE DATA (an accordion label carrying a
- *  tracking number, a banner quoting a settlement anomaly) and could otherwise
- *  blow a §1 budget through no fault of the copy. */
-function fit(text: string, max: number): string {
-	return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
-}
-
 /** An `accordion.label` inside §1's 60-char budget (X-11). */
 function fitLabel(text: string): string {
 	return fit(text, LABEL_BUDGET);
@@ -3833,7 +3718,7 @@ function parseCents(value: unknown): number | null {
  *  status → an OR set of one; the period → the instants {@link periodWindow}
  *  resolves it to, which is the ONLY place this screen turns a period into a
  *  query). */
-function toClientFilter(form: OrdersFilterForm): OrdersListFilter {
+export function toClientFilter(form: OrdersFilterForm): OrdersListFilter {
 	const filter: OrdersListFilter = {};
 	if (form.status !== undefined && form.status.length > 0) filter.states = [form.status];
 	const { from, to } = periodWindow(form, new Date());
@@ -3944,35 +3829,4 @@ function periodFromValues(values: Record<string, unknown>): PeriodKey | undefine
 	const from = readString(values.from) ?? "";
 	const to = readString(values.to) ?? "";
 	return from.length > 0 || to.length > 0 ? "custom" : undefined;
-}
-
-/** A one-line reconciliation summary for the identity strip. */
-function reconciliationSummary(o: OrderDetailWire): string {
-	if (o.reconciliationFlag !== null) return "⚠ Needs reconciliation";
-	if (o.reconciliationResolution !== null) {
-		return `Resolved (${o.reconciliationResolution.outcome})`;
-	}
-	return "None";
-}
-
-/**
- * Format an order-currency amount for display (M-1: money is ALWAYS formatted).
- *
- * Two deliberate behaviours:
- *  - A negative amount formats as its absolute value with an explicit minus
- *    prefix, because `cents()` is branded NON-NEGATIVE and throws below zero.
- *  - An amount `Intl` cannot format renders {@link UNFORMATTABLE}, never
- *    `${CUR} ${minorUnits}`. The old fallback printed RAW MINOR UNITS in the one
- *    place it was least visible — a wrong number dressed as a formatted total.
- *    The totals ladder says so in a `context` line when it happens.
- */
-function formatTotal(minorUnits: number, currencyCode: string): string {
-	try {
-		const currency = toCurrency(currencyCode);
-		return minorUnits < 0
-			? `−${formatMoney(toCents(Math.abs(minorUnits)), currency, "en-US")}`
-			: formatMoney(toCents(minorUnits), currency, "en-US");
-	} catch {
-		return UNFORMATTABLE;
-	}
 }

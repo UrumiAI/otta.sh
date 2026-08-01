@@ -40,6 +40,9 @@
 	"scripts": {
 		"build": "tsdown"
 	},
+	"dependencies": {
+		"@otta-sh/admin-presentation": "workspace:*"
+	},
 	"devDependencies": {
 		"@hono/node-server": "catalog:",
 		"@otta-sh/domain": "workspace:*",

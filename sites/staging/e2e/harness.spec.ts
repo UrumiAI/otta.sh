@@ -140,9 +140,12 @@ test.describe("harness configuration", () => {
 		// INC-18 derived this shape from reading EmDash; INC-19 loaded a real
 		// console page at it and it held — `@emdash-cms/admin@0.31.1` emits
 		// `to: /plugins/${pluginId}${page.path}` in the sidebar and routes
-		// `/plugins/$pluginId/$`. The `/orders` literal stays even though nothing
-		// serves it yet: it is INC-20's target, and this is the assertion that
-		// would catch the prefix moving out from under it first.
+		// `/plugins/$pluginId/$`. INC-20 then MIGRATED `/orders`, so the literal
+		// below is no longer a placeholder for a future target: it is the live
+		// address of the console's Orders screen, and the second assertion — that
+		// it is NOT under `/plugins/otta/` — is now load-bearing rather than
+		// hypothetical, because a Block Kit screen with the same path is serving
+		// at that other id at the same time.
 		expect(CONSOLE_PLUGIN_ID).toBe("otta-console");
 		expect(consoleScreenUrl("/orders")).toBe(`${ADMIN_BASE_PATH}/plugins/otta-console/orders`);
 		expect(consoleScreenUrl("/orders")).not.toContain("/plugins/otta/");
@@ -213,8 +216,58 @@ test.describe("this gate is ADDITIVE — ADR-0006 Decision 1 is untouched", () =
 		"download-route.sandbox.test.ts": ["describe.skipIf"],
 	};
 
-	test("all 18 suites are present", () => {
-		expect(sandboxFiles).toHaveLength(18);
+	/**
+	 * THE 18, BY NAME — ADR-0006 Decision 1's contract gate as it stood when
+	 * ADR-0014 reaffirmed it.
+	 *
+	 * NAMED RATHER THAN COUNTED, and the change is a strengthening. A
+	 * `toHaveLength(18)` fails identically for the thing it exists to catch (a
+	 * suite deleted) and for a thing that is fine (a suite added) — and the
+	 * obvious fix for the second, bumping the number, is indistinguishable from
+	 * the obvious fix for the first. That is a control a future increment can
+	 * defuse by accident. A named list cannot be satisfied by deleting one file
+	 * and adding another, which is precisely the swap "18 files exist" would
+	 * wave through.
+	 *
+	 * INC-20 is the increment that made this concrete: it ADDS
+	 * `orders-console-route.sandbox.test.ts`, because the React console's data
+	 * path is a new branch on the plugin's admin route and "a change that only
+	 * works trusted is still broken" applies to it exactly as to the other
+	 * eighteen. Adding to the gate is always allowed. Removing from it reopens
+	 * the ADR.
+	 */
+	const ADR_0006_SUITES: readonly string[] = [
+		"account-routes.sandbox.test.ts",
+		"admin-route-dispatch.sandbox.test.ts",
+		"admin-scaffold-list-detail.sandbox.test.ts",
+		"admin-scaffold-render-state.sandbox.test.ts",
+		"cart-routes.sandbox.test.ts",
+		"coupons-page.sandbox.test.ts",
+		"download-route.sandbox.test.ts",
+		"orders-page.sandbox.test.ts",
+		"products-page.sandbox.test.ts",
+		"publish-atomicity.sandbox.test.ts",
+		"reports-widget.sandbox.test.ts",
+		"settings-widget.sandbox.test.ts",
+		"shipping-page.sandbox.test.ts",
+		"storefront-checkout.sandbox.test.ts",
+		"storefront-pdp.sandbox.test.ts",
+		"storefront-plp.sandbox.test.ts",
+		"sync-hooks.sandbox.test.ts",
+		"tax-page.sandbox.test.ts",
+	];
+
+	test("all 18 ADR-0006 suites are present, by name", () => {
+		expect(ADR_0006_SUITES).toHaveLength(18);
+		for (const name of ADR_0006_SUITES) {
+			expect(sandboxFiles, `${name} was removed from the contract gate`).toContain(name);
+		}
+	});
+
+	test("the gate only ever GROWS", () => {
+		// Every file the glob finds is checked for weakening below, added ones
+		// included — so a new suite joins the gate rather than sitting beside it.
+		expect(sandboxFiles.length).toBeGreaterThanOrEqual(ADR_0006_SUITES.length);
 	});
 
 	test("none is skipped, todo'd or `.only`d beyond the documented Postgres gate", () => {

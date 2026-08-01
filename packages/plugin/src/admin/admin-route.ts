@@ -6,6 +6,11 @@ import {
 	type CouponsPageInput,
 } from "./coupons-page.js";
 import {
+	CONSOLE_INTERACTIONS,
+	createOrdersConsoleHandler,
+	type OrdersConsoleInput,
+} from "./orders-console-route.js";
+import {
 	createOrdersPageHandler,
 	ORDERS_ACTION_IDS,
 	ORDERS_PAGE,
@@ -76,12 +81,26 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 	const tax = createTaxPageHandler();
 	const shipping = createShippingPageHandler();
 	const coupons = createCouponsPageHandler();
+	const ordersConsole = createOrdersConsoleHandler();
 
 	return async (routeCtx, ctx) => {
 		const input = routeCtx.input;
 		const type = typeof input.type === "string" ? input.type : undefined;
 		const page = typeof input.page === "string" ? input.page : undefined;
 		const actionId = typeof input.action_id === "string" ? input.action_id : undefined;
+
+		// 0. THE REACT CONSOLE (INC-20), gated FIRST and on its own interaction
+		// types. `otta-console` holds no routes of its own (ADR-0014 Decision 3),
+		// so its Orders screen reaches commerce through THIS route, with the
+		// operator's session and the same CSRF header the admin shell sends — the
+		// only data path the amendment grants it. The types are disjoint from
+		// EmDash's (`page_load` / `block_action` / `form_submit`), which is what
+		// guarantees the branch below is untouched: the Block Kit Orders screen
+		// keeps rendering exactly as it did, as ADR-0014 requires until the
+		// replacement is proven.
+		if (type !== undefined && CONSOLE_INTERACTIONS.has(type)) {
+			return ordersConsole(routeCtx as SandboxedRouteContext<OrdersConsoleInput>, ctx);
+		}
 
 		// 1–4. GATE page branches on `type === "page_load"` (em-dash's reference
 		// returns blocks-empty for a block_action that happens to carry a page).

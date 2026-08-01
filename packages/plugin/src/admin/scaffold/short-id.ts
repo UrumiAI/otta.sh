@@ -1,109 +1,35 @@
 /**
- * Git-style short ids for the admin console (the UUID display rule, D4).
+ * Git-style short ids for the admin console (the UUID display rule, D4),
+ * RE-EXPORTED from `@otta-sh/admin-presentation` since INC-20.
  *
- * WHY. An order id is a uuid: 36 characters of noise that an operator cannot
- * hold in their head and cannot compare between two surfaces. Rendering it in
- * full in a list row buys nothing, and rendering NOTHING costs money — two
- * orders of one repeat customer with the same total and the same status produce
- * character-for-character identical picker options, and the refund confirm names
- * amount + buyer, precisely the attributes both candidates share. The answer is
- * the one git settled on: the SHORTEST PREFIX that is unique among the candidate
- * set, floored at {@link SHORT_ID_MIN} so it stays recognisable, extending one
- * character at a time only when two candidates actually collide.
+ * WHY THIS ONE HAD TO MOVE, specifically. §1.3's guarantee is a relationship
+ * BETWEEN surfaces: the prefix an operator reads in a list row must be a
+ * `startsWith` prefix of the one the confirm dialog names, so `#7e4c` and
+ * `#7e4ce728` are visibly the same order. INC-20 adds a React Orders screen
+ * beside the Block Kit one, and the two render the same page of orders — a
+ * second implementation of "shortest unique prefix, floored at 4" could give a
+ * different answer for the same set and there would be no test able to catch
+ * it, because the two packages cannot import each other. One implementation
+ * cannot disagree with itself.
  *
- * TWO FUNCTIONS, BECAUSE THERE ARE TWO SITUATIONS.
+ * The React tier also delivers the half of the rule Block Kit could not: a copy
+ * button on the row that copies the FULL id. That is an affordance, not a
+ * different prefix — it reads the same `shortIdsFor` map.
  *
- *  - {@link shortIdsFor} — the caller HAS the candidate set (a rendered page of
- *    rows, the options of one picker). It can compute a true shortest-unique
- *    prefix, and it must be given the WHOLE set it will render: a prefix
- *    computed over a filtered or re-fetched subset is unique against the wrong
- *    population and can collide on screen.
- *  - {@link shortIdFixed} — the caller has ONE id and no set (a confirm dialog
- *    renders against a single record). No uniqueness claim is possible, so it
- *    takes a fixed {@link SHORT_ID_CONFIRM_LEN} characters.
+ * This file stays as a re-export so `scaffold/short-id.js` keeps working for
+ * `orders-page.ts` and `scaffold/index.ts`.
  *
- * HOW THE TWO LINE UP, which is the load-bearing property. The fixed length is
- * deliberately LONGER than the floor, so for any id whose computed prefix is
- * ≤ {@link SHORT_ID_CONFIRM_LEN} the fixed prefix is a strict superset of it:
- * the operator reads `#7e4c` in the picker and `#7e4ce728` in the confirm, and
- * can see at a glance that the second starts with the first. That holds unless a
- * page contains two ids agreeing on their first 8 characters — a collision a
- * 128-bit id makes vanishingly unlikely, and one this module cannot repair from
- * a confirm dialog that was never handed the other candidate.
- *
- * NOT FOR NATURAL KEYS. Tax classes, shipping zones and coupons are keyed by
- * readable slugs (`eu-standard-vat`, `SUMMER25`). Those are the operator's own
- * words and render in full; this module is for ids nobody chose.
- *
- * IO-FREE and allocation-cheap: pure string slicing, safe inside the sandbox.
+ * ONE IDIOM, STATED ONCE (INC-20 review). A module in `src/` that needs a
+ * shared primitive imports `@otta-sh/admin-presentation` DIRECTLY. This file
+ * and its four siblings are compatibility re-exports for the ~30 modules that
+ * already imported these paths and that this increment had no reason to touch
+ * — they are not a second sanctioned way in. A module being edited for any
+ * other reason should take the package import and drop the shim path; when the
+ * last caller has, these files go.
  */
-
-/** The floor for a computed prefix — short enough to scan, long enough to
- *  recognise, and the point below which two ids collide on almost every page. */
-export const SHORT_ID_MIN = 4;
-
-/** The fixed length used where no candidate set is in hand (the refund
- *  confirm). Longer than {@link SHORT_ID_MIN} on purpose — see the header. */
-export const SHORT_ID_CONFIRM_LEN = 8;
-
-/**
- * Shortest-unique prefixes for a candidate set: `min` characters, extended one
- * at a time for exactly the ids that collide at that length.
- *
- * `min` RAISES THE FLOOR AND CANNOT LOWER IT. {@link SHORT_ID_MIN} is a rule
- * about what an operator can recognise, not a default a caller may opt out of,
- * so the argument is clamped: anything below it — including a fractional or
- * non-finite value, which is truncated or discarded first — yields
- * {@link SHORT_ID_MIN}. A caller that wants LONGER prefixes (say, matching the
- * confirm dialog's 8) passes 8 and gets 8.
- *
- * TOTAL — every id in `ids` has an entry, including duplicates (which map to
- * the same prefix, because they are the same record) and ids shorter than the
- * floor (which map to themselves). DETERMINISTIC — the result depends only on
- * the SET of ids, never on their order, so re-rendering a page in a different
- * order cannot renumber it.
- */
-export function shortIdsFor(
-	ids: readonly string[],
-	min: number = SHORT_ID_MIN,
-): Map<string, string> {
-	const floor = Number.isFinite(min) ? Math.max(SHORT_ID_MIN, Math.trunc(min)) : SHORT_ID_MIN;
-	// De-duplicate FIRST: an id is never its own collision, and a page that
-	// happens to list one record twice must not push every prefix to full length.
-	const candidates = [...new Set(ids)];
-	const longest = candidates.reduce((n, id) => Math.max(n, id.length), 0);
-	const prefixes = new Map<string, string>();
-	for (const id of candidates) {
-		// The fallback, reached only when EVERY id is shorter than the floor — in
-		// which case this IS `id.slice(0, floor)`. Within the loop a unique length
-		// always exists: two ids that never diverge are equal, and equal ids were
-		// removed above, so the worst case is one id being a proper prefix of
-		// another, which the character after it separates.
-		let prefix = id;
-		for (let len = floor; len <= longest; len++) {
-			const candidate = id.slice(0, len);
-			if (candidates.every((other) => other === id || other.slice(0, len) !== candidate)) {
-				prefix = candidate;
-				break;
-			}
-		}
-		prefixes.set(id, prefix);
-	}
-	return prefixes;
-}
-
-/**
- * A fixed-length prefix, for a surface rendering ONE record with no candidate
- * set to be unique against (the refund confirm). Ids shorter than `len` are
- * returned whole rather than padded — a short id is already unambiguous.
- *
- * `len` is NOT clamped to {@link SHORT_ID_MIN} the way `shortIdsFor`'s `min`
- * is: a caller here is choosing how much of one id to show and a shorter cut is
- * a legitimate choice, since no uniqueness is being claimed either way. It is
- * only sanity-checked — a fractional, non-positive or non-finite `len` falls
- * back to {@link SHORT_ID_CONFIRM_LEN} rather than producing an empty string.
- */
-export function shortIdFixed(id: string, len: number = SHORT_ID_CONFIRM_LEN): string {
-	const take = Number.isInteger(len) && len > 0 ? len : SHORT_ID_CONFIRM_LEN;
-	return id.slice(0, take);
-}
+export {
+	SHORT_ID_CONFIRM_LEN,
+	SHORT_ID_MIN,
+	shortIdFixed,
+	shortIdsFor,
+} from "@otta-sh/admin-presentation";
