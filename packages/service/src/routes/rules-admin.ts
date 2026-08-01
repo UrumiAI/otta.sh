@@ -238,11 +238,17 @@ export function rulesAdminRoutes(deps: RulesAdminDeps): Hono {
 			limit = q.limit;
 		}
 
-		const result = await deps.couponStore.listCoupons(filter, { cursor: cursorPos, limit });
+		// The page and its EXACT count, under one filter, in parallel (INC-23) —
+		// the same shape as the Orders/Products lists in `admin.ts`; `total` counts
+		// the whole filtered set, never this page.
+		const [result, total] = await Promise.all([
+			deps.couponStore.listCoupons(filter, { cursor: cursorPos, limit }),
+			deps.couponStore.countCoupons(filter),
+		]);
 		const nextCursor =
 			result.nextCursor === null ? null : encodeCouponCursor(result.nextCursor, filter, limit);
 		return c.json(
-			{ ok: true, coupons: result.coupons.map(serializeCouponSummary), nextCursor },
+			{ ok: true, coupons: result.coupons.map(serializeCouponSummary), nextCursor, total },
 			200,
 		);
 	});

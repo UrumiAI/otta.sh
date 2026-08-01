@@ -130,6 +130,28 @@ describe.skipIf(PG === undefined)("admin Coupons console HTTP contract", () => {
 		expect([...p1, ...p2].map((c) => c.id)).toEqual(["cpn-3", "cpn-2", "cpn-1"]);
 	});
 
+	// -- total: the exact size of the filtered set (INC-23) --------------------
+
+	test("GET /admin/coupons carries `total` — the whole FILTERED set, identical on every page, and 0 (present) when nothing matches", async () => {
+		await seed();
+		const page1 = await json(await get("/coupons?limit=2"));
+		// 3 coupons behind a 2-row page.
+		expect(page1.total).toBe(3);
+		expect((page1.coupons as unknown[]).length).toBe(2);
+		const page2 = await json(
+			await get(`/coupons?cursor=${encodeURIComponent(page1.nextCursor as string)}`),
+		);
+		expect(page2.total).toBe(3);
+		// The count is taken under the LIST's own predicate — the same EXACT-match
+		// search, never a substring.
+		expect((await json(await get("/coupons?search=save5"))).total).toBe(1);
+		const none = await json(await get("/coupons?search=save"));
+		expect(none.coupons).toEqual([]);
+		// Zero is REPORTED, not omitted (the key's presence is the capability).
+		expect(none.total).toBe(0);
+		expect(Object.hasOwn(none, "total")).toBe(true);
+	});
+
 	test("guard: no token ⇒ 401", async () => {
 		expect((await get("/coupons", {})).status).toBe(401);
 	});

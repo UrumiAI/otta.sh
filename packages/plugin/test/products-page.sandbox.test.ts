@@ -243,7 +243,10 @@ const DETAIL_UNPRICED = {
 	productKind: "physical",
 	active: true,
 	deletedAt: null,
-	onHand: 0,
+	// No sku ⇒ nothing to look up ⇒ `null`, the SAME answer this product's row
+	// gives in the list (INC-23). It used to be `0` here and `null` there — one
+	// product, two answers, one click apart.
+	onHand: null,
 	createdAt: "2026-07-14T00:00:00.000Z",
 	updatedAt: "2026-07-14T00:00:00.000Z",
 };
@@ -306,7 +309,9 @@ const DETAIL_STALE = {
  *  stock changing between two reads (a concurrent removal) without hand-
  *  crafting a carrier token. */
 interface LiveState {
-	onHand1: number;
+	/** `null` is the service saying this sku has NO inventory record (INC-23) —
+	 *  a different fact from `0`, and one the detail must render as such. */
+	onHand1: number | null;
 	/** What the guarded `GET /settings` answers with. `null` makes that read
 	 *  FAIL, which is the "threshold unknown" degradation — a secondary read
 	 *  that must cost the `Low` band and nothing else. */
@@ -365,7 +370,10 @@ function makeGetResponder(state: LiveState) {
 				};
 			}
 			// The whole stock matrix in one page: above-threshold, a known zero, the
-			// `Low` band, and a row with no inventory record.
+			// `Low` band, and a row with no inventory record. Carries the CURRENT
+			// service's `total` (INC-23) — 4 rows on this page out of 9 in the set —
+			// which the low-stock filter must then decline to caption its own
+			// narrowed rows with.
 			if (query.includes("search=stockmix")) {
 				return {
 					status: 200,
@@ -373,6 +381,7 @@ function makeGetResponder(state: LiveState) {
 						ok: true,
 						products: [SUMMARY_1, SUMMARY_2, SUMMARY_LOW, SUMMARY_UNPRICED],
 						nextCursor: "svc-cursor-stock",
+						total: 9,
 					},
 				};
 			}
@@ -748,8 +757,8 @@ describe("admin Products console — list (workerd sandbox)", () => {
 		const page1 = blocksOf(
 			await sandbox!.invokeRoute("admin", { type: "page_load", page: "/products" }),
 		);
-		// 2 rows AND a next cursor: the service's list responses carry no total, so
-		// this count is a claim about THIS PAGE and says so.
+		// 2 rows AND a next cursor: THIS stub answers without a `total` (a service
+		// older than INC-23), so the count is a claim about THIS PAGE and says so.
 		const intro = String(page1.find((b) => b.type === "context")?.text);
 		expect(intro).toMatch(/^2 products on this page · /);
 		expect(intro.length).toBeLessThanOrEqual(140); // X-11
@@ -763,6 +772,23 @@ describe("admin Products console — list (workerd sandbox)", () => {
 		const zeroIntro = String(none.find((b) => b.type === "context")?.text);
 		expect(zeroIntro).not.toMatch(/\d+ product/);
 		expect(zeroIntro.startsWith("Filter and open a product.")).toBe(true);
+	});
+
+	test("INC-23: a reported `total` captions the set exactly — but NOT while 'Low stock only' narrows the fetched page", async () => {
+		await boot();
+		// The service reports 9 products behind this filter; the page shows 4.
+		const wide = await listFiltered({ search: "stockmix" });
+		const wideIntro = String(wide.find((b) => b.type === "context")?.text);
+		expect(wideIntro).toMatch(/^9 products · /);
+		expect(wideIntro).not.toContain("on this page");
+
+		// Now narrow the SAME page client-side. The service's 9 counted the
+		// unnarrowed set, so captioning these 2 rows with it would describe a set
+		// the operator is not looking at — the count goes back to page-scoped.
+		const low = await listFiltered({ search: "stockmix", lowStock: true });
+		const lowIntro = String(low.find((b) => b.type === "context")?.text);
+		expect(lowIntro).not.toMatch(/9 products/);
+		expect(lowIntro).toMatch(/^2 products on this page · /);
 	});
 
 	test("INC-12: a filter that matches nothing gets its own state — heading, body, and a `Clear filters` that re-lists the whole catalog", async () => {
@@ -1323,6 +1349,32 @@ describe("admin Products console — detail shell (workerd sandbox)", () => {
 		const out = await entriesFor();
 		expect(out.get("Stock on hand")).toBe("0 · Out of stock");
 		expect(out.get("On hand")).toBe("0 · Out of stock");
+
+		// INC-23: `null` — no inventory record — is a THIRD answer, and the detail
+		// now gives the same one the list column gives. Before this it rendered
+		// `0 · Out of stock`, an out-of-stock claim for a product nobody had ever
+		// counted.
+		state.onHand1 = null;
+		const unknown = await entriesFor();
+		expect(unknown.get("Stock on hand")).toBe("—");
+		expect(unknown.get("On hand")).toBe("—");
+	});
+
+	test("a sku with NO inventory record omits both stock-movement groups and says why — never a form whose only outcome is a refusal", async () => {
+		const state = await boot();
+		state.onHand1 = null;
+		const blocks = await openProduct(sandbox!, "prod-1");
+		assertBlockContract(blocks, { screen: "products", level: "detail" });
+		const stockPanelBlocks = panel(blocks, "Stock");
+		// Both `restock` and `removeStock` 409 UNKNOWN_SKU against a sku with no
+		// row (neither creates one), and their idempotency keys are derived from an
+		// on-hand watermark that does not exist — so the forms are not rendered.
+		expect(findBlocks(stockPanelBlocks, "accordion").length).toBe(0);
+		expect(
+			findBlocks(stockPanelBlocks, "context").some((c) =>
+				/no inventory record yet/i.test(String(c.text)),
+			),
+		).toBe(true);
 	});
 
 	test("an unreadable threshold costs the detail its `Low` badge — and the detail SAYS so rather than quietly dropping the band", async () => {

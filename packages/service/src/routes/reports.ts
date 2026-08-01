@@ -122,8 +122,23 @@ export function reportsRoutes(deps: ReportsDeps): Hono {
 	return app;
 }
 
+/**
+ * One revenue bucket on the wire. `refundedCents` sits ALONGSIDE `revenueCents`
+ * — never subtracted from it — in the same integer minor units and the same
+ * `currency`, because the two answer different questions and netting them would
+ * make a refunded sale indistinguishable from one that never happened.
+ *
+ * The key is emitted UNCONDITIONALLY, zero included: `0` is the fact "nothing
+ * came back in this bucket", and a client tells that apart from "this service
+ * predates the field" by the key's presence, never by its value.
+ */
 function serializeBucket(b: PeriodBucket): Record<string, unknown> {
-	return { bucketStart: b.bucketStart, currency: b.currency, revenueCents: b.revenueCents };
+	return {
+		bucketStart: b.bucketStart,
+		currency: b.currency,
+		revenueCents: b.revenueCents,
+		refundedCents: b.refundedCents,
+	};
 }
 
 function invalidQuery(c: Context, issues: unknown): Response {

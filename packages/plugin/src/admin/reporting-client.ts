@@ -14,6 +14,24 @@ export interface RevenueBucketWire {
 	bucketStart: string;
 	currency: string;
 	revenueCents: number;
+	/**
+	 * Money refunded on the orders in this bucket — integer minor units in the
+	 * bucket's own `currency`, stated ALONGSIDE `revenueCents` and never netted
+	 * into it.
+	 *
+	 * OPTIONAL ON THIS TYPE, AND ONLY FOR ONE REASON: a service older than the
+	 * field omits the key. The current service emits it unconditionally, zero
+	 * included — so `0` means "nothing came back", which is a FACT worth
+	 * rendering as `$0.00`, and only the key's ABSENCE means "this service does
+	 * not report refunds". A renderer must branch on presence, never on
+	 * truthiness, and `?? 0` here would turn an unreportable period into a
+	 * confident claim that nothing was refunded.
+	 *
+	 * Counts FINALIZED refunds (money that actually moved) against orders PLACED
+	 * in the period — the same cohort `orders-by-status` counts, so the amount
+	 * and the refunded-order count on one tile always describe the same set.
+	 */
+	refundedCents?: number;
 }
 export interface StatusCountWire {
 	status: string;

@@ -601,6 +601,7 @@ function recordingInventory(inner: InMemoryInventoryStore): RecordingInventory {
 		commitMany: (ids) => inner.commitMany(ids),
 		releaseAdopted: (id, o) => inner.releaseAdopted(id, o),
 		getOnHand: (s) => inner.getOnHand(s),
+		findOnHand: (s) => inner.findOnHand(s),
 		restock: (s, q, k) => inner.restock(s, q, k),
 		removeStock: (s, q, k) => inner.removeStock(s, q, k),
 		seedOnHand: async (s, q) => {

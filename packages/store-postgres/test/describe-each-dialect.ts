@@ -374,6 +374,30 @@ function buildReportingHarness(
 				.onConflict((oc) => oc.column("sku").doUpdateSet({ on_hand: row.onHand }))
 				.execute();
 		},
+		// A real `refunds` ledger row. Its `created_at` is deliberately set to a
+		// date OUTSIDE every contract window: the bucket must come from the ORDER's
+		// `created_at`, so a report that accidentally grouped on the refund's own
+		// timestamp would return nothing here instead of quietly agreeing.
+		async seedRefund(row) {
+			const id = `seed-refund-${String(refundSeedSeq++)}`;
+			await db
+				.insertInto("refunds")
+				.values({
+					id,
+					order_id: row.orderId,
+					amount_cents: row.amountCents,
+					currency: row.currency,
+					kind: "manual",
+					gateway: "stripe",
+					refund_ref: null,
+					reason: null,
+					refunded_by: "seed",
+					idempotency_key: id,
+					status: row.status ?? "recorded",
+					created_at: "2030-01-01T00:00:00.000Z",
+				})
+				.execute();
+		},
 		// A real `product_commerce` row behind a sku, for `lowStock`'s title
 		// join. `product_id` comes from a counter, NOT the sku, precisely so the
 		// contract can seed a live row and a tombstone sharing ONE sku — legal,
@@ -412,6 +436,10 @@ function buildReportingHarness(
 /** Monotonic `product_id` source for `buildReportingHarness.seedProduct` — the
  *  sku cannot serve as the id, since several rows may legally share one sku. */
 let productSeedSeq = 0;
+
+/** Monotonic id/idempotency-key source for `buildReportingHarness.seedRefund` —
+ *  `refunds.idempotency_key` is UNIQUE, and one order may carry several rows. */
+let refundSeedSeq = 0;
 
 export async function makeSqliteReportingHarness(): Promise<ReportingStoreHarness> {
 	return buildReportingHarness(await makeSqliteDbMigrated(), "sqlite");

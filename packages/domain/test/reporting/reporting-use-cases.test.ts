@@ -14,6 +14,7 @@ import {
 	FIXTURE_ITEMS,
 	FIXTURE_ORDERS,
 	FIXTURE_PRODUCT_TITLES,
+	FIXTURE_REFUNDS,
 	InMemoryReportingStore,
 	InMemorySettingsStore,
 	REPORTING_WINDOW,
@@ -26,6 +27,7 @@ function seededStore(): InMemoryReportingStore {
 	for (const it of FIXTURE_ITEMS) store.seedOrderItem(it);
 	for (const inv of FIXTURE_INVENTORY) store.seedInventory(inv);
 	for (const p of FIXTURE_PRODUCT_TITLES) store.seedProduct(p);
+	for (const r of FIXTURE_REFUNDS) store.seedRefund(r);
 	return store;
 }
 

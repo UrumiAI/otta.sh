@@ -129,6 +129,16 @@ export interface OrdersListResult {
 	orders: OrderSummaryWire[];
 	/** Opaque keyset cursor for the next page, or null on the last page. */
 	nextCursor: string | null;
+	/**
+	 * Exact number of orders matching the ACTIVE FILTER — the whole set, not
+	 * this page (INC-23).
+	 *
+	 * OPTIONAL for one reason only: a service older than the field omits it, and
+	 * a renderer must then fall back to the page-scoped count it always had
+	 * ("25 orders on this page"). Never defaulted to `0` — that would caption a
+	 * page of rows with a count of none.
+	 */
+	total?: number;
 }
 
 export interface OrderDetailResult {
@@ -376,10 +386,17 @@ export class AdminOrdersClient {
 			if (filter.search !== undefined && filter.search.length > 0) q.set("search", filter.search);
 		}
 		if (opts.limit !== undefined) q.set("limit", String(opts.limit));
-		const body = await this.#getJson<{ orders?: OrderSummaryWire[]; nextCursor?: string | null }>(
-			`/admin/orders?${q.toString()}`,
-		);
-		return { orders: body.orders ?? [], nextCursor: body.nextCursor ?? null };
+		const body = await this.#getJson<{
+			orders?: OrderSummaryWire[];
+			nextCursor?: string | null;
+			total?: unknown;
+		}>(`/admin/orders?${q.toString()}`);
+		return {
+			orders: body.orders ?? [],
+			nextCursor: body.nextCursor ?? null,
+			// ABSENT STAYS ABSENT (never `?? 0`) — see `OrdersListResult.total`.
+			...(typeof body.total === "number" ? { total: body.total } : {}),
+		};
 	}
 
 	/** GET one order + its allowed transitions. A 404 resolves to `null` (the

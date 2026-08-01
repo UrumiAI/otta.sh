@@ -583,10 +583,17 @@ function ordersListLevel() {
 				limit: opts.limit,
 				...(opts.cursor !== undefined ? { cursor: opts.cursor } : {}),
 			});
-			return { items: page.orders, nextCursor: page.nextCursor };
+			// This screen shows exactly the rows the service returned, so the
+			// service's own count of the filtered set describes them (INC-23).
+			// Absent on a service older than the field ⇒ the page-scoped count.
+			return {
+				items: page.orders,
+				nextCursor: page.nextCursor,
+				...(page.total !== undefined ? { total: page.total } : {}),
+			};
 		},
-		render({ actions, path, filter, items, nextToken, firstPage, notice }) {
-			return listBlocks(actions, path, filter, items, nextToken, firstPage, notice);
+		render({ actions, path, filter, items, nextToken, firstPage, total, notice }) {
+			return listBlocks(actions, path, filter, items, nextToken, firstPage, total, notice);
 		},
 		onError: () => failClosed(),
 	});
@@ -612,6 +619,7 @@ function listBlocks(
 	orders: OrderSummaryWire[],
 	nextToken: string | undefined,
 	firstPage: boolean,
+	total: number | undefined,
 	notice: Notice | undefined,
 ): Block[] {
 	const activeFilters = activeFilterParts(form);
@@ -625,6 +633,7 @@ function listBlocks(
 		filtered: summary !== undefined,
 		firstPage,
 		nextToken,
+		...(total !== undefined ? { total } : {}),
 		noun: { one: "order", other: "orders" },
 		empty: {
 			title: "No orders yet",

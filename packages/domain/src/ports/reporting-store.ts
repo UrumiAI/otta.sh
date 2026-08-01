@@ -21,6 +21,15 @@ export interface ReportingStore {
 	 * `orders` on `order_id`) for orders whose `state` is in the revenue-counting
 	 * allow-list (`REVENUE_COUNTING_STATES`), bucketed on `orders.created_at`.
 	 * Ordered by `bucketStart`, then `currency`, for deterministic output.
+	 *
+	 * Each bucket ALSO carries `refundedCents` — money that came back on the
+	 * orders in it (see {@link PeriodBucket.refundedCents}). The two figures are
+	 * a UNION, not a join: a bucket exists when it has revenue **or** refunds, so
+	 * a period whose only activity was a full refund is a row with
+	 * `revenueCents: 0` rather than no row at all. That is the whole point of
+	 * carrying the second figure — a fully refunded order is EXCLUDED from the
+	 * revenue allow-list, so before this it left no trace in this report and the
+	 * money was reportable nowhere.
 	 */
 	revenueByPeriod(range: DateRange, interval: ReportInterval): Promise<PeriodBucket[]>;
 
@@ -71,6 +80,42 @@ export interface PeriodBucket {
 	bucketStart: string;
 	currency: Currency;
 	revenueCents: Cents;
+	/**
+	 * Money REFUNDED against the orders in this bucket — integer minor units in
+	 * the same `currency`, and a figure in its own right, never subtracted from
+	 * `revenueCents` (the two answer different questions and a merchant needs
+	 * both; netting them here would make a refunded sale indistinguishable from
+	 * a sale that never happened).
+	 *
+	 * `0` IS A FACT — "nothing came back in this bucket" — and is emitted as
+	 * such. The field is never absent from a bucket; a consumer that must tell
+	 * "no refunds" from "this service is too old to report refunds" does it by
+	 * the presence of the KEY on the wire, not by a zero.
+	 *
+	 * THREE DEFINITIONS THAT ARE EASY TO GET WRONG, all deliberate:
+	 *
+	 *  - **Bucketed by the ORDER's `created_at`, like the revenue beside it** —
+	 *    never by the refund's own timestamp. The row therefore reads "orders
+	 *    placed in this period took X and gave Y back", which is the only
+	 *    reading under which the two figures in one row are comparable, and it
+	 *    is the same cohort `ordersByStatus` counts. A cash-flow view (refunds
+	 *    ISSUED in the period, whatever they were issued against) is a genuinely
+	 *    different report and would need its own endpoint, not this column.
+	 *  - **NO state allow-list on the refunded half.** Revenue counts only
+	 *    `REVENUE_COUNTING_STATES`; a fully refunded order is `refunded` and
+	 *    therefore excluded from that sum. Applying the same allow-list here
+	 *    would drop exactly the refunds that matter most and reinstate the gap
+	 *    this field closes. Every order in the window contributes its refunds.
+	 *  - **FINALIZED refunds only** (`status: 'recorded'` — the
+	 *    `sumFinalizedRefunds` set, the same rows the order's refunded badge and
+	 *    the `→ refunded` flip are based on). `reserved`/`unverified` rows hold
+	 *    ceiling capacity while the gateway leg is unconfirmed or its fate is
+	 *    unknown; reporting them as money that came back would state an
+	 *    in-flight attempt as a completed fact. `voided` rows released their
+	 *    capacity and never moved money. The ACTIVE (non-`voided`) sum is a
+	 *    CEILING-arbitration concept, not a reporting one — do not reuse it here.
+	 */
+	refundedCents: Cents;
 }
 
 export interface StatusCount {

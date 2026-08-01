@@ -344,6 +344,44 @@ export function inventoryStoreContract(
 			expect(await h.store.getOnHand("SKU-GET-2")).toBe(3);
 		});
 
+		// -- findOnHand (INC-23: the detail read that keeps "unknown" apart) ----
+
+		test("findOnHand returns the current on_hand for a seeded sku", async () => {
+			const h = await makeStore();
+			await h.seed("SKU-FIND-1", 12);
+			expect(await h.store.findOnHand("SKU-FIND-1")).toBe(12);
+		});
+
+		test("findOnHand distinguishes a MISSING inventory row (null) from a row at zero (0)", async () => {
+			const h = await makeStore();
+			await h.seed("SKU-FIND-ZERO", 0);
+			// The whole reason this method exists: `getOnHand` answers `0` to both
+			// of these, which is what made one product read `—` in the admin list
+			// and `0` on its own detail page.
+			expect(await h.store.findOnHand("SKU-FIND-ZERO")).toBe(0);
+			expect(await h.store.findOnHand("SKU-FIND-NEVER-SEEDED")).toBeNull();
+			// …and `getOnHand` keeps its shipped collapse, untouched.
+			expect(await h.store.getOnHand("SKU-FIND-ZERO")).toBe(0);
+			expect(await h.store.getOnHand("SKU-FIND-NEVER-SEEDED")).toBe(0);
+		});
+
+		test("findOnHand reflects a decrement already applied by reserve", async () => {
+			const h = await makeStore();
+			await h.seed("SKU-FIND-2", 5);
+			const result = await h.store.reserve("SKU-FIND-2", 2, idempotencyKey("k-find-2"));
+			expect(result.ok).toBe(true);
+			expect(await h.store.findOnHand("SKU-FIND-2")).toBe(3);
+		});
+
+		test("findOnHand reads a row driven to zero by reserve as 0, never as unknown", async () => {
+			const h = await makeStore();
+			await h.seed("SKU-FIND-3", 2);
+			expect((await h.store.reserve("SKU-FIND-3", 2, idempotencyKey("k-find-3"))).ok).toBe(true);
+			// Selling out empties the COUNT, never the row — an out-of-stock product
+			// must not start reading as "stock unknown".
+			expect(await h.store.findOnHand("SKU-FIND-3")).toBe(0);
+		});
+
 		// -- restock / removeStock (admin-UX Increment 2: merchant restock) -----
 
 		test("restock adds units to an existing sku and returns the new on_hand", async () => {

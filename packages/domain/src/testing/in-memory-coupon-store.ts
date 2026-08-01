@@ -276,6 +276,15 @@ export class InMemoryCouponStore implements CouponStore {
 		return { coupons: rows.map((row) => toSummary(row)), nextCursor };
 	}
 
+	/** Count under the SAME `#matchesFilter` predicate `listCoupons` pages with
+	 *  (MOD-5) — one predicate, so a count and the list it captions can never
+	 *  disagree. No cursor: a count covers the whole filtered set, not a page. */
+	async countCoupons(filter: CouponListFilter): Promise<number> {
+		let count = 0;
+		for (const row of this.#coupons.values()) if (this.#matchesFilter(row, filter)) count++;
+		return count;
+	}
+
 	// -- test surface ---------------------------------------------------------
 
 	/** Current uses_count for a coupon (contract assertions). */

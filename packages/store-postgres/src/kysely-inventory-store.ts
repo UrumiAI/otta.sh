@@ -372,6 +372,19 @@ export class KyselyInventoryStore implements InventoryStore {
 		return row?.on_hand ?? 0;
 	}
 
+	/** Additive (INC-23, admin product detail): the SAME single-row primary-key
+	 *  lookup as `getOnHand`, differing ONLY in what a miss means — `null` ("no
+	 *  inventory row", unknown) instead of `0` ("known sku, out of stock"), which
+	 *  is the same distinction `listProducts`'s LEFT JOIN makes for the list. */
+	async findOnHand(sku: string): Promise<number | null> {
+		const row = await this.#db
+			.selectFrom("inventory")
+			.select("on_hand")
+			.where("sku", "=", sku)
+			.executeTakeFirst();
+		return row?.on_hand ?? null;
+	}
+
 	/**
 	 * Merchant restock (admin-UX Increment 2): ADD `qty` to an existing sku's
 	 * on-hand. A single UNCONDITIONAL `on_hand + qty` — commutative with every

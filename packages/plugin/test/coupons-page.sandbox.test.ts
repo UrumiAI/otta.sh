@@ -144,7 +144,10 @@ function attachCouponsStub(stub: StubCommerceServer, state: ReturnType<typeof ma
 			}
 			const page = rows.slice(offset, offset + limit);
 			const nextCursor = offset + limit < rows.length ? `${offset + limit}|${search ?? ""}` : null;
-			return { status: 200, body: { ok: true, coupons: page, nextCursor } };
+			// `total` is the count of the whole FILTERED set (INC-23) — computed
+			// before the slice, exactly as the service's COUNT(*) is taken under the
+			// list's own predicate rather than over its page.
+			return { status: 200, body: { ok: true, coupons: page, nextCursor, total: rows.length } };
 		}
 		return { status: 404, body: { error: "unknown" } };
 	});
@@ -584,6 +587,49 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		const zeroIntro = String(none.find((b) => b.type === "context")?.text);
 		expect(zeroIntro).not.toMatch(/\d+ coupon/);
 		expect(zeroIntro.startsWith("Search a coupon and open it.")).toBe(true);
+	});
+
+	test("INC-23: with 30 coupons behind a 25-row page, the count states the SET on both pages — never the page", async () => {
+		const state = makeCouponsState();
+		for (let i = 0; i < 30; i++) {
+			state.coupons.push({
+				id: `t-bulk-${String(i).padStart(2, "0")}`,
+				code: `TBULK${String(i).padStart(2, "0")}`,
+				type: "fixed_amount",
+				amountCents: 100 + i,
+				rateBps: null,
+				capCents: null,
+				currency: "USD",
+				minSubtotalCents: null,
+				startsAt: null,
+				expiresAt: null,
+				maxUses: null,
+				maxUsesPerCustomer: null,
+				usesCount: 0,
+				createdAt: `2026-06-${String((i % 28) + 1).padStart(2, "0")}T00:00:00.000Z`,
+			});
+		}
+		await boot(state);
+		const page1 = blocksOf(
+			await sandbox!.invokeRoute("admin", { type: "page_load", page: "/coupons" }),
+		);
+		const intro1 = String(page1.find((b) => b.type === "context")?.text);
+		// 32 rows in the set, 25 on the page: the count says 32, and without the
+		// page-scoped suffix, which would now be an understatement.
+		expect(intro1).toMatch(/^32 coupons · /);
+		expect(intro1).not.toContain("on this page");
+		expect(intro1.length).toBeLessThanOrEqual(140); // X-11
+		const page2 = blocksOf(
+			await sandbox!.invokeRoute("admin", {
+				type: "block_action",
+				action_id: "coupons:page",
+				value: { cursor: tableOf(page1)?.next_cursor },
+			}),
+		);
+		assertBlockContract(page2, { screen: "coupons", level: "list" });
+		// Page 2 holds the remaining 7 rows and still captions the same 32 — the
+		// claim keyset paging alone could never support.
+		expect(String(page2.find((b) => b.type === "context")?.text)).toMatch(/^32 coupons · /);
 	});
 
 	test("KEYSET PAGING: a full page carries next_cursor; coupons:page loads the next page through the opaque cursor round-trip", async () => {
