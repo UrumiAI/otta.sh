@@ -434,8 +434,8 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 		// fixed_amount money via the shared symbol-bearing formatter.
 		expect(rows[0]?.discount).toBe("10.00% off (cap 20.00)");
 		expect(rows[1]?.discount).toBe("$5.00 off");
-		expect(rows[0]?.window).toBe("until 2026-09-01");
-		expect(rows[1]?.window).toBe("from 2026-07-01");
+		expect(rows[0]?.window).toBe("until 1 Sept 2026");
+		expect(rows[1]?.window).toBe("from 1 Jul 2026");
 		// `N of M` against a bound, `N uses` without one — the `∞` glyph is gone
 		// (it does not localize, and the meter/picker already say it in words).
 		expect(rows[0]?.uses).toBe("3 of 100");
@@ -980,6 +980,9 @@ describe("admin Coupons console — list level (workerd sandbox)", () => {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
 const ahead = (ms: number) => new Date(Date.now() + ms).toISOString();
+/** The DAY an offset from the render clock falls on — what a `date_input`
+ *  submits, expressed relative for the same reason the fixtures above are. */
+const dayAhead = (ms: number) => ahead(ms).slice(0, 10);
 
 /** A coupon row with the incidental fields filled in — the status fixtures
  *  differ only in their window / use bound, so everything else is noise.
@@ -1270,9 +1273,11 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		expect(fields.get("Discount")).toBe("$5.00 off");
 		expect(fields.get("Uses")).toBe("0 uses");
 		expect(fields.get("Currency")).toBe("USD");
-		expect(fields.get("Created (UTC)")).toBe("2026-06-01T00:00:00Z"); // M-6: ms trimmed
+		// M-6, console-wide since INC-10: the last raw wire instant in the console
+		// is gone, and the label dropped `(UTC)` because the VALUE carries the zone.
+		expect(fields.get("Created")).toBe("1 Jun 2026, 00:00 UTC");
 		expect(fields.get("Minimum spend")).toBe("$35.00");
-		expect(fields.get("Valid")).toBe("from 2026-07-01");
+		expect(fields.get("Valid")).toBe("from 1 Jul 2026");
 		expect(fields.get("Redemptions")).toBe("0");
 		expect(fields.get("Max uses")).toBe("unlimited");
 		// M-11a: the axis is named, never a bare "Remaining".
@@ -1708,7 +1713,7 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		const blocks = await openCoupon("FIVEOFF");
 		const couponPanel = panel(blocks, "Coupon");
 		expect(fieldEntries(couponPanel)).toContain("Minimum spend=$35.00");
-		expect(fieldEntries(couponPanel)).toContain("Valid=from 2026-07-01");
+		expect(fieldEntries(couponPanel)).toContain("Valid=from 1 Jul 2026");
 		const redemptionsPanel = panel(blocks, "Redemptions");
 		expect(fieldEntries(redemptionsPanel)).toContain("Redemptions=0");
 	});
@@ -1863,21 +1868,31 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		const state = makeWelcomeState();
 		await boot(state);
 		const blocks = await openCoupon("WELCOME10");
+		// THE SUBMITTED DAYS ARE RELATIVE TO THE RENDER CLOCK, for the same reason
+		// the fixtures above are: `makeWelcomeState` expires at `ahead(30 days)`,
+		// and a hard-coded day eventually IS that day — at which point
+		// `resolveBound` correctly reads "unchanged, keep the stored instant" and
+		// this test, whose whole subject is a CHANGE, no longer describes one. It
+		// FAILS LOUDLY when that happens rather than passing vacuously: it fired
+		// on 2026-08-01, when `2026-08-31` became now + 30 days, and took the
+		// suite red on `main`. A 90/120-day offset cannot collide with ±30.
+		const newStart = dayAhead(90 * DAY_MS);
+		const newExpiry = dayAhead(120 * DAY_MS);
 		await submitForm(blocks, "coupons:save", {
 			...formInitialValues(blocks, "coupons:save"),
-			startsAt: "2026-08-01",
-			expiresAt: "2026-08-31",
+			startsAt: newStart,
+			expiresAt: newExpiry,
 		});
 		const put = stub!.requests.find((r) => r.method === "PUT");
 		expect(put!.body).toMatchObject({
-			startsAt: "2026-08-01T00:00:00.000Z", // a start OPENS its day
-			expiresAt: "2026-08-31T23:59:59.999Z", // an expiry CLOSES its day
+			startsAt: `${newStart}T00:00:00.000Z`, // a start OPENS its day
+			expiresAt: `${newExpiry}T23:59:59.999Z`, // an expiry CLOSES its day
 		});
 		// A one-day coupon is now expressible: same day, start < expiry.
 		const sameDay = await submitForm(blocks, "coupons:save", {
 			...formInitialValues(blocks, "coupons:save"),
-			startsAt: "2026-08-01",
-			expiresAt: "2026-08-01",
+			startsAt: newStart,
+			expiresAt: newStart,
 		});
 		expect(bannerOf(sameDay)?.variant).toBe("default");
 	});
@@ -2128,6 +2143,10 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 			}),
 			{ screen: "coupons", level: "list" },
 		);
+		// These detail sweeps now carry INC-13's rule too: X-13 absorbed the
+		// standalone `assertNoRawTimestamps` in INC-10, and this screen — the one
+		// that used to render `Created (UTC)` as a raw instant, and the reason the
+		// rule shipped as a separate export at all — is the last one wired in.
 		assertBlockContract(await openCoupon("FIVEOFF"), { screen: "coupons", level: "detail" }); // fixed_amount, deletable
 		assertBlockContract(await openCoupon("SUMMER25"), { screen: "coupons", level: "detail" }); // percentage, redeemed (delete withheld)
 

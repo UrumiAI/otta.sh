@@ -408,10 +408,10 @@ function readOnHand(p: ProductSummaryWire): number | null | undefined {
  * `"0 · Out of stock"` survive verbatim, `"12"` renders as a number, and `""`
  * or a missing key would render as `0` — a zero nobody counted.
  *
- * BADGE THE EXCEPTIONS AND ONLY THEM (T-5 keeps `Status` as the table's one
- * badge COLUMN, so the exception rides in the cell's own text): `0` is out of
- * stock, `1..threshold` is low, and anything above the threshold is a plain
- * count that competes with nothing.
+ * BADGE THE EXCEPTIONS AND ONLY THEM, in the cell's own text — the convention
+ * INC-10 then took console-wide when it retired the last status badges: `0` is
+ * out of stock, `1..threshold` is low, and anything above the threshold is a
+ * plain count that competes with nothing.
  */
 function onHandCell(onHand: number | null | undefined, threshold: number | null): string {
 	if (onHand === undefined || onHand === null) return "—";
@@ -636,7 +636,16 @@ function listBlocks(
 		columns: [
 			{ key: "title", label: "Title" },
 			{ key: "sku", label: "SKU", format: "code" },
-			{ key: "status", label: "Status", format: "badge" }, // the ONE badge column (T-5)
+			// PLAIN TEXT, not `format:"badge"` (INC-10). `Kind` was deleted from
+			// this table for being near-constant across a live catalog — and
+			// `Status` is the SAME COLUMN one filter along: a catalog is almost all
+			// `active`, and the "Active" filter directly above makes an all-`active`
+			// page the ordinary result, which is the column of identical pills X-4
+			// (T-5) rejects. `statusLabel` already badges the exceptions in words —
+			// `active` is one quiet word and every exception is longer and says why
+			// (`inactive`, `deleted`, `active (not priced)`) — which is the same
+			// convention the `On hand` cell ships (`0 · Out of stock`).
+			{ key: "status", label: "Status" },
 			// `Kind` column DELETED: near-constant across a live catalog, so its
 			// badge would be a column of identical pills (T-5, X-4). Kind is on
 			// the detail's identity strip.

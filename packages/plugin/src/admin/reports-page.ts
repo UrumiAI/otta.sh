@@ -22,6 +22,7 @@ import {
 	formatDay,
 	startOfDay,
 } from "./scaffold/index.js";
+import { orderStateCell } from "./orders-page.js";
 import { INTERNAL_TOKEN_KEY } from "./settings-form.js";
 import {
 	type LowStockWire,
@@ -522,10 +523,20 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 		type: "table",
 		block_id: "reports:statuses-table",
 		columns: [
-			{ key: "status", label: "Status", format: "badge" },
+			// PLAIN TEXT (INC-10). This table's values DO chunk — it is one row per
+			// status — so X-4 was never going to fire on it; the badge went for the
+			// other half of the rule. Every row got the identical pill, so the
+			// report's whole point (which of these numbers is the one to worry
+			// about?) was rendered as `paid` and `failed` carrying exactly the same
+			// weight. The exception says so in words instead.
+			{ key: "status", label: "Status" },
 			{ key: "orderCount", label: "Orders", format: "number" },
 		],
-		rows: data.statuses.map((s) => ({ ...s })),
+		// Through the Orders screen's own renderer, never a second listing of the
+		// order vocabulary: Reports states the same field the list states, so a
+		// state that reads `cancelled · closed` on one screen cannot read
+		// `cancelled` on the other.
+		rows: data.statuses.map((s) => ({ ...s, status: orderStateCell(s.status) })),
 		page_action_id: REPORTS_PAGE_ACTION_ID, // never fires: no next_cursor, no sortable column
 		empty_text: "No orders in range.",
 	};
@@ -628,29 +639,25 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 }
 
 /**
- * `0` reads as "Out of stock", the low band as "Low" — the exact wording
- * from the stock-visibility increment's (INC-04) own verification note in
- * the spec (`0 / Out of stock`, `1 / Low`), which is the vocabulary source
- * here. NOT a mirror of `products-page.ts`'s `On hand` column: that
- * increment hasn't merged as of this change, so there is no shipped column
- * to copy from — when it lands, its column becomes this one's SIBLING (same
- * vocabulary, independently derived), not the source.
+ * `0` reads as "Out of stock", the low band as "Low" — the vocabulary of the
+ * stock-visibility increment (INC-04), which the products list now ships as
+ * `onHandCell`. THE SEPARATOR IS THAT COLUMN'S: this shipped `0 / Out of stock`
+ * while the file was written against an unmerged sibling, and the sibling
+ * landed with `0 · Out of stock`. One fact rendered two ways one screen apart
+ * is the disagreement INC-10 is closing everywhere else in this pass, so it is
+ * closed here too — toward the shipped spelling, not away from it.
  *
- * Deliberately plain text, not `format: "badge"`, even though the same
- * words badge there: every row in this table already sits at or below SOME
- * threshold — that is what selected it into `GET /reports/low-stock` — so a
- * badge column here could legitimately render the identical value on every
- * row (all-zero or all-low is a normal shape for this report). Block
- * Kit's `format:"badge"` on a column whose value is constant within one
- * rendered response is `ADMIN-CONSOLE.md`'s X-4 (T-5): "A column of
- * identical badges … or more than one badge column in a table." Plain text
- * carries the same two words without tripping it. The raw count stays in
- * the cell alongside the word: a bare "Out of stock" would make an
- * operator re-derive whether that means 0 or "some, but running low," and
- * the count is the fact this column is named for.
+ * Deliberately plain text, not `format: "badge"`: every row in this table
+ * already sits at or below SOME threshold — that is what selected it into
+ * `GET /reports/low-stock` — so a badge column here could legitimately render
+ * the identical value on every row (all-zero or all-low is a normal shape for
+ * this report), which is X-4 (T-5). Plain text carries the same two words
+ * without tripping it. The raw count stays in the cell alongside the word: a
+ * bare "Out of stock" would make an operator re-derive whether that means 0 or
+ * "some, but running low," and the count is the fact this column is named for.
  */
 function lowStockOnHandLabel(onHand: number): string {
-	return onHand === 0 ? `${onHand} / Out of stock` : `${onHand} / Low`;
+	return onHand === 0 ? `${onHand} · Out of stock` : `${onHand} · Low`;
 }
 
 /**

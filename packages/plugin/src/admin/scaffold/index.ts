@@ -59,11 +59,11 @@ export { failClosedResponse, noticeBanner, type FailClosedOptions, type Notice }
 // formatter — the exact thing this module exists to stop. Import it from
 // `./datetime.js` directly if you are testing the dialect itself.
 //
-// `DAY_PATTERN` HAS NO CALLER TODAY — `startOfDay`/`endOfDay` closed over the
-// last two. It stays exported because "is this a bare calendar day?" is a
-// question the screens with date filters keep asking (Coupons still carries its
-// own copy, pending its conversion), and a third private regex is what this
-// module was created to prevent.
+// `DAY_PATTERN` IS EXPORTED FOR THE SCREENS THAT ASK "is this a bare calendar
+// day?" outside `startOfDay`/`endOfDay`, which closed over the other two
+// callers. Coupons is that screen: its `resolveBound` reads the regex directly
+// (INC-10 deleted the private third copy it used to carry), which is exactly
+// the drift this module exists to prevent.
 export {
 	dayOf,
 	endOfDay,
