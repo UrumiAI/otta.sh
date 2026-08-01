@@ -231,3 +231,24 @@ nothing about `adminEntry` or `componentsEntry` — the boundary above is pinned
 - Any third-party plugin entering `plugins: []` — ADR-0006's original consequence stands
   unchanged: a multi-tenant or marketplace deployment must not inherit any of this.
 - A proposal to migrate Tax, Shipping or Settings, which this record forbids.
+
+## Correction 2026-08-01 — Decision 7's page count was off by one
+
+The Decision above is unchanged in substance and is deliberately left as written. One **number**
+in Decision 7 is wrong, and it is corrected here rather than edited in place, because it is the
+count the whole two-descriptor argument turns on.
+
+Decision 7 reads: *"a single React page added under id `otta` would make **the other six Block Kit
+pages vanish from the sidebar**"*. **It is seven, not six.** The `otta` descriptor declares
+**seven** admin pages — Reports, Settings, Orders, Products, Tax, Shipping, Coupons
+(`sites/staging/src/otta-plugin-descriptor.ts:61-69`) — and the spike in Context above says so
+twice ("all seven pages", "all seven Block Kit pages still returned real blocks"). A React page
+**added** under `otta` is an eighth entry; the seven that already exist are the ones lacking a
+React component, so all seven vanish. "Six" would be right only if one of the existing pages were
+*converted*, which is not what the sentence describes.
+
+**Nothing else moves.** The decision is strengthened rather than weakened — the cost of the
+single-descriptor alternative is one page higher than recorded — and no other clause depends on
+the figure. Every other count in this record is correct as written, including
+[`docs/admin/ADMIN-CONSOLE.md`](../docs/admin/ADMIN-CONSOLE.md)'s "seven admin screens", which had
+the same off-by-one in its own earlier revisions and was fixed there first.

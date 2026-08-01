@@ -43,7 +43,7 @@ than rewriting history.
 - [0011. `GET /entitlements/check` authenticates each scope (close the email existence oracle)](./0011-entitlement-check-authentication.md) — accepted, refines 0001, builds on 0004/0007
 - [0012. The storefront checkout loads Stripe Elements in the buyer's browser](./0012-storefront-checkout-loads-stripe-elements-in-the-browser.md) — accepted, refines 0003, builds on 0006/0009/0010
 - [0013. Product title is CMS-owned; `product_commerce.title` is a derived single-writer cache](./0013-product-title-is-cms-owned.md) — accepted, refines 0001/0002 (the hybrid product model); promotes the queued "one home per field" decision, and completes the 2026-07-29 amendment on ADR-0001 (commercial fields are edited only in the admin console)
-- [0014. A second descriptor `otta-console` (native format) may serve React admin screens](./0014-second-native-descriptor-for-react-admin.md) — accepted, amends ADR-0006 **Decision 2 only** (React admin pages on a separate descriptor + separate package); ADR-0006 Decision 1 — the 18 workerd sandbox suites as the contract gate — is reaffirmed unchanged
+- [0014. A second descriptor `otta-console` (native format) may serve React admin screens](./0014-second-native-descriptor-for-react-admin.md) — accepted, amends ADR-0006 **Decision 2 only** (React admin pages on a separate descriptor + separate package); ADR-0006 Decision 1 — the 18 workerd sandbox suites as the contract gate — is reaffirmed unchanged; corrected 2026-08-01 (Decision 7's page count: seven Block Kit pages, not six)
 
 ## Queued (to promote from draft-plans)
 
