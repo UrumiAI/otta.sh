@@ -1,6 +1,6 @@
 import { plugin } from "@otta-sh/plugin";
 import { afterEach, describe, expect, test } from "vitest";
-import { assertBlockContract, assertNoRawTimestamps } from "./helpers/block-contract.js";
+import { assertBlockContract } from "./helpers/block-contract.js";
 import {
 	blocksOf,
 	confirmOf,
@@ -128,7 +128,9 @@ const SUMMARY_AT_THRESHOLD = {
 };
 
 /** ONE ABOVE the threshold (6): the first count that is NOT low. Inactive so
- *  the two-row boundary page keeps its Status badge chunking two values (X-4). */
+ *  the two-row boundary page renders two DIFFERENT statuses — the column is
+ *  plain text since INC-10, but a page whose every row says the same word is
+ *  still the shape a status column has to be read on. */
 const SUMMARY_ABOVE_THRESHOLD = {
 	productId: "prod-above-threshold",
 	sku: "SKU-ABOVE",
@@ -565,7 +567,6 @@ describe("admin Products console — list (workerd sandbox)", () => {
 		const outcome = await sandbox!.invokeRoute("admin", { type: "page_load", page: "/products" });
 		const blocks = blocksOf(outcome);
 		assertBlockContract(blocks, { screen: "products", level: "list" });
-		assertNoRawTimestamps(blocks);
 
 		expect(findBlocks(blocks, "header").some((b) => b.text === "Pricing & inventory")).toBe(true);
 		const pageContext = blocks.find((b) => b.type === "context");
@@ -733,7 +734,6 @@ describe("admin Products console — list (workerd sandbox)", () => {
 		const outcome = await sandbox.invokeRoute("admin", { type: "page_load", page: "/products" });
 		const blocks = blocksOf(outcome);
 		assertBlockContract(blocks, { screen: "products", level: "list" });
-		assertNoRawTimestamps(blocks);
 		expect(findBlocks(blocks, "table").length).toBe(0);
 		const empty = findBlock(blocks, "empty");
 		expect(empty?.title).toBe("No products yet");
@@ -845,7 +845,6 @@ describe("admin Products console — stock column + low-stock filter (workerd sa
 		});
 		const blocks = blocksOf(outcome);
 		assertBlockContract(blocks, { screen: "products", level: "list" });
-		assertNoRawTimestamps(blocks);
 		return blocks;
 	}
 
@@ -873,19 +872,23 @@ describe("admin Products console — stock column + low-stock filter (workerd sa
 		expect(zero).not.toBe(noRecord);
 	});
 
-	test("a count ABOVE the threshold is plain text — the badge is the exception, not the rule", async () => {
+	test("a count ABOVE the threshold is plain text — the exception is the mark, not the rule", async () => {
 		await boot();
 		const blocks = await listWith({ search: "stockmix" });
 		expect(cells(blocks, "onHand")[0]).toBe("42");
-		// One badge COLUMN on this table, and it is Status (T-5) — the stock
-		// exception rides in the cell text.
+		// NO badge column on this table at all (INC-10). `Status` held the last
+		// one, and it was the same near-constant column `Kind` was deleted for:
+		// a live catalog is almost all `active`, and the Status filter above makes
+		// an all-`active` page the ordinary result — the column of identical pills
+		// X-4 rejects. Every exception this table marks, in stock and in status
+		// alike, is marked in the cell's own words.
 		const badgeColumns = (
 			(findBlock(blocks, "table")?.columns ?? []) as Array<{
 				key: string;
 				format?: string;
 			}>
 		).filter((c) => c.format === "badge");
-		expect(badgeColumns.map((c) => c.key)).toEqual(["status"]);
+		expect(badgeColumns.map((c) => c.key)).toEqual([]);
 	});
 
 	test("'Low stock only' keeps the rows at or below the threshold — a row with no inventory record is not low — and sends NO stock parameter to the service", async () => {
@@ -932,7 +935,6 @@ describe("admin Products console — stock column + low-stock filter (workerd sa
 		});
 		const page2 = blocksOf(outcome);
 		assertBlockContract(page2, { screen: "products", level: "list" });
-		assertNoRawTimestamps(page2);
 		// Page 2 holds a 42 and a 3; only the low one survives the carried filter.
 		expect(cells(page2, "title")).toEqual(["Low Widget"]);
 		expect(field(formFor(page2, "products:apply-filter"), "lowStock")?.initial_value).toBe(true);
@@ -1112,7 +1114,6 @@ describe("admin Products console — stock column + low-stock filter (workerd sa
 		});
 		const page2 = blocksOf(outcome);
 		assertBlockContract(page2, { screen: "products", level: "list" });
-		assertNoRawTimestamps(page2);
 		expect(findBlocks(page2, "table")).toEqual([]);
 		expect(findBlock(page2, "empty")?.title).toBe("No low-stock products on this page");
 	});
@@ -1188,7 +1189,6 @@ describe("admin Products console — detail shell (workerd sandbox)", () => {
 		await boot();
 		const blocks = await openProduct(sandbox!, "prod-1");
 		assertBlockContract(blocks, { screen: "products", level: "detail" });
-		assertNoRawTimestamps(blocks);
 		expect(findBlocks(blocks, "header").some((b) => b.text === "Blue Widget")).toBe(true);
 		const allButtons = findBlocks(blocks, "actions").flatMap(
 			(a) => (a.elements as Array<Record<string, unknown>>) ?? [],
@@ -1304,7 +1304,6 @@ describe("admin Products console — detail shell (workerd sandbox)", () => {
 		const entriesFor = async (): Promise<Map<string, string>> => {
 			const blocks = await openProduct(sandbox!, "prod-1");
 			assertBlockContract(blocks, { screen: "products", level: "detail" });
-			assertNoRawTimestamps(blocks);
 			const rows = findBlocks(blocks, "fields").flatMap(
 				(f) => (f.fields as Array<{ label: string; value: string }>) ?? [],
 			);
@@ -1404,7 +1403,6 @@ describe("admin Products console — tombstoned product (workerd sandbox)", () =
 		await boot();
 		const blocks = await openProduct(sandbox!, "prod-deleted");
 		assertBlockContract(blocks, { screen: "products", level: "detail" });
-		assertNoRawTimestamps(blocks);
 
 		const banner = findBlock(blocks, "banner");
 		expect(banner).toBeDefined();
@@ -1454,7 +1452,6 @@ describe("admin Products console — SKU-less product (workerd sandbox)", () => 
 		await seedToken(sandbox, stub, "admin-token-xyz");
 		const blocks = await openProduct(sandbox, "prod-unpriced");
 		assertBlockContract(blocks, { screen: "products", level: "detail" });
-		assertNoRawTimestamps(blocks);
 
 		const stockPanelBlocks = panel(blocks, "Stock");
 		expect(findBlocks(stockPanelBlocks, "accordion").length).toBe(0);
@@ -1939,7 +1936,6 @@ describe("admin Products console — remove stock (DA-3/DA-5, workerd sandbox)",
 		});
 		const staged = blocksOf(outcome);
 		assertBlockContract(staged, { screen: "products", level: "detail" });
-		assertNoRawTimestamps(staged);
 
 		expect(group(staged, "products:prod-1:remove")).toBeUndefined(); // idle id gone
 		const reviewGroup = group(staged, "products:prod-1:remove:review");
@@ -1974,7 +1970,6 @@ describe("admin Products console — remove stock (DA-3/DA-5, workerd sandbox)",
 		});
 		const refused = blocksOf(outcome);
 		assertBlockContract(refused, { screen: "products", level: "detail" });
-		assertNoRawTimestamps(refused);
 
 		expect(group(refused, "products:prod-1:remove")).toBeUndefined();
 		expect(group(refused, "products:prod-1:remove:review")).toBeUndefined();

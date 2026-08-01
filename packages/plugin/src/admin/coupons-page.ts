@@ -33,11 +33,14 @@ import {
 	clearFiltersButton,
 	createListDetailHandler,
 	customAction,
+	DAY_PATTERN,
 	decodePath,
 	encodePath,
 	failClosedResponse,
 	filterPanel,
 	filterSummary,
+	formatDate,
+	formatTimestamp,
 	leafLevel,
 	listIntroLine,
 	listLevel,
@@ -256,16 +259,32 @@ export function couponDiscountSummary(
 	return c.type;
 }
 
-/** The validity window as the merchant reads it — the UTC date part of the
- *  stored ISO bound (no timezone math), `[startsAt, expiresAt)` per the
- *  domain's `validateCoupon`. */
+/**
+ * The validity window as the merchant reads it, `[startsAt, expiresAt)` per the
+ * domain's `validateCoupon` — WHOLE DAYS, and now in the console's own date
+ * dialect (M-6): `10 Jul 2026 – 1 Aug 2026`, never the wire's `2026-07-10 →
+ * 2026-08-01`.
+ *
+ * WHY THE DAYS SURVIVE THE CONVERSION. `formatDate` renders the DATE HALF of
+ * `formatTimestamp` — the same parts, so `10 Jul 2026` is a literal prefix of
+ * the `10 Jul 2026, 01:00 UTC` the identity strip shows — which is exactly the
+ * granularity this window has always been read at. No time of day is invented
+ * for a bound the merchant sets as a day, and the `date_input`s that EDIT these
+ * bounds still submit and prefill `YYYY-MM-DD` (see {@link dateField}): the
+ * dialect is a display rule, never a form value.
+ *
+ * THE SEPARATOR IS AN EN DASH, not `→`. An arrow reads as a transition
+ * (`Status → refunded` on the Orders timeline is one); a validity window is a
+ * RANGE, which is what a dash spells, and it matches the `1 Jul – 31 Jul 2026`
+ * the Reports period line already renders.
+ */
 export function couponWindowSummary(startsAt: string | null, expiresAt: string | null): string {
-	const from = startsAt === null ? null : startsAt.slice(0, 10);
-	const until = expiresAt === null ? null : expiresAt.slice(0, 10);
+	const from = startsAt === null ? null : formatDate(startsAt);
+	const until = expiresAt === null ? null : formatDate(expiresAt);
 	if (from === null && until === null) return "always";
 	if (from === null) return `until ${until}`;
 	if (until === null) return `from ${from}`;
-	return `${from} → ${until}`;
+	return `${from} – ${until}`;
 }
 
 /**
@@ -552,9 +571,18 @@ function newCouponScreen(draft: CouponDraft | undefined, notice: Notice | undefi
  * and none wins: a pill on every live coupon spends the screen's heaviest ink
  * on its least informative value (exactly T-5's "never badge a property that
  * is near-constant across rows"), while the WORD `expired` already retires the
- * arithmetic this column was added to kill. Badging only the exceptions needs
- * per-value control the renderer does not have, and belongs to the
- * console-wide badge policy rather than to this screen alone.
+ * arithmetic this column was added to kill.
+ *
+ * THIS SCREEN WAS THE ODD ONE OUT WHEN IT SHIPPED; IT IS THE RULE NOW. INC-10
+ * took the reasoning above console-wide — Orders, Products and Reports all
+ * demoted their status badges to plain text — so the last remaining badge
+ * column in the console is Shipping's `Type`, a two-value closed set with no
+ * happy path to be near-constant about. What was left open here ("badging only
+ * the exceptions belongs to the console-wide policy") is settled: the exception
+ * is marked in the CELL'S OWN WORDS. This column needs no extra word for it,
+ * because every value it renders except `active` already IS the exception
+ * spelled out — `expired`, `scheduled`, `used up` — and the leaf's own
+ * `statusBanner` states the consequence in full.
  */
 function couponsTable(
 	coupons: CouponSummaryWire[],
@@ -874,7 +902,12 @@ function detailBlocks(
 			["Type", detail.type],
 			["Uses", couponUsesSummary(detail.usesCount, detail.maxUses)],
 			["Currency", detail.currency ?? "— (currency-agnostic)"],
-			["Created (UTC)", utc(detail.createdAt)],
+			// THE LAST RAW WIRE TIMESTAMP IN THE CONSOLE, and the reason INC-13's
+			// rule had to ship as a separate assertion with this screen unwired
+			// from it. It reads `1 Jun 2026, 00:00 UTC` now, like every other
+			// instant on every other screen, and the label drops the `(UTC)`
+			// suffix because the value carries the zone itself (M-6).
+			["Created", formatTimestamp(detail.createdAt)],
 		]),
 	);
 	const panels: TabPanel[] = [
@@ -1123,8 +1156,11 @@ function editCouponForm(detail: CouponSummaryWire): FormBlock {
 }
 
 /** A window bound as a `date_input`, pre-filled with the DAY its stored instant
- *  falls on — the granularity this screen has always DISPLAYED the window at
- *  (`couponWindowSummary` slices the same ten characters). */
+ *  falls on — the granularity this screen DISPLAYS the window at
+ *  ({@link couponWindowSummary} renders the same day, in the console's dialect).
+ *  A FORM VALUE stays `YYYY-MM-DD`: that is what a `date_input` submits and what
+ *  it can prefill, and M-6's dialect governs what is displayed, not what is
+ *  typed. */
 function dateField(
 	actionId: string,
 	label: string,
@@ -1547,9 +1583,6 @@ function parseSharedFields(values: Record<string, unknown>, current: CurrentValu
 
 const DATE_HINT = "must be a date like 2026-08-01.";
 
-/** What a `date_input` submits: a DAY, not an instant. */
-const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
-
 /**
  * A window bound, from whatever the form submitted plus the instant it carried.
  * Four cases, in order:
@@ -1874,10 +1907,4 @@ function fit(text: string, max: number): string {
 
 function fitLabel(text: string): string {
 	return fit(text, LABEL_BUDGET);
-}
-
-/** An absolute UTC timestamp TRIMMED TO SECONDS (M-6): milliseconds are noise.
- *  No timezone conversion, ever. */
-function utc(iso: string): string {
-	return iso.replace(/\.\d+(?=Z$)/, "");
 }

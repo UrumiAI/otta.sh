@@ -182,6 +182,58 @@ const ORDER_STATES = [
 
 const ORDER_STATE_SET: ReadonlySet<string> = new Set(ORDER_STATES);
 
+/**
+ * THE ORDER-STATE EXCEPTIONS — the four states `ORDER_STATE_MACHINE`
+ * (`domain/src/orders/state-machine.ts`) gives NO legal outbound transition:
+ * `failed: [] · expired: [] · cancelled: [] · refunded: []`. This is not an
+ * editorial pick of "the bad ones"; it is that table read out loud, which is
+ * also why `completed` is NOT here — a completed order can still be refunded,
+ * so it is not a dead end.
+ *
+ * The plugin cannot IMPORT the machine (`@otta-sh/domain` is a devDependency —
+ * the published plugin has no runtime dependency on it), so the set is restated
+ * here, once, against the citation above. New states are absent from it by
+ * default, which is the safe direction: an unrecognised state renders as a bare
+ * word rather than silently acquiring the loudest rendering on the screen.
+ */
+const TERMINAL_ORDER_STATES: ReadonlySet<string> = new Set([
+	"failed",
+	"expired",
+	"cancelled",
+	"refunded",
+]);
+
+/**
+ * THE ONE PLACE AN ORDER STATE BECOMES A RENDERED VALUE (INC-10). List row,
+ * the customer's other-orders table, the identity strip and the timeline's
+ * `Status → …` all read through this, so the four surfaces cannot drift into
+ * four vocabularies for one field.
+ *
+ * BADGE THE EXCEPTIONS, PLAIN-TEXT THE HAPPY PATH — done in WORDS, because the
+ * renderer cannot do it in ink. `format` is a property of the COLUMN, not of a
+ * cell (`blocks/table.tsx`'s `formatCell` reads `col.format`), so a table
+ * badges every row of a column or none of them; and blanking the happy-path
+ * cell to fake the split is worse than either end, because `Badge` draws its
+ * pill from padding and a radius alone — an empty cell in a badge column is a
+ * solid mark with no word in it. Column-level badging is not merely a
+ * compromise either, it is a defect waiting for an operator: filter this list
+ * to `paid` and every row carries the same value, which is exactly the column
+ * X-4 (T-5) rejects as decoration. So no status column in this console is a
+ * badge column, and the emphasis moves into the cell's own text — the
+ * convention `On hand` already ships (`0 · Out of stock`).
+ *
+ * WHAT THE EXCEPTION SAYS. Not a restatement of the word already in the cell,
+ * and not a claim the console cannot stand behind (`refunded` is a bookkeeping
+ * disposition here — it "does not move money" — so a cell reading
+ * `refunded · money returned` would be false). It says the one thing the state
+ * machine guarantees: the order is CLOSED, no further status change is possible
+ * from it. Two facts in a cell of one word is also the visual weight a badge
+ * was reaching for: in a column of bare words, the long cells are the marks.
+ */
+export function orderStateCell(state: string): string {
+	return TERMINAL_ORDER_STATES.has(state) ? `${state} · closed` : state;
+}
+
 /** `transition-<state>` — one DISTINCT verb per state (R-13), derived. */
 const transitionVerb = (state: string): string => `transition-${state}`;
 /** `cancel-<reason>` — one DISTINCT verb per cancellation reason (R-13, DA-2b). */
@@ -667,7 +719,12 @@ function listBlocks(
 			// still holds for them.
 			{ key: "createdAt", label: "Placed" },
 			{ key: "customer", label: "Customer" },
-			{ key: "state", label: "Status", format: "badge" }, // the ONE badge column (T-5)
+			// PLAIN TEXT, not `format:"badge"` (INC-10). A badge here spends the
+			// heaviest ink on `paid` — the value this column carries on almost every
+			// row — and, the moment the Status filter above is used, it renders a
+			// column of identical pills, which is the decoration X-4 (T-5) rejects.
+			// The exception rides in the cell's own words: see `orderStateCell`.
+			{ key: "state", label: "Status" },
 			// The `#` lives in the HEADER, so the cell is the bare token and the
 			// column is as narrow as the token is. `format: "code"` keeps it from
 			// reading as prose (T-4).
@@ -680,7 +737,7 @@ function listBlocks(
 			// a short id rather than `undefined` in the operator's face.
 			shortId: shortIds.get(o.id) ?? shortIdFixed(o.id),
 			createdAt: formatTimestamp(o.createdAt),
-			state: o.state,
+			state: orderStateCell(o.state),
 			customer: o.customerId ?? o.buyerRef,
 			total: formatTotal(o.totalCents, o.currency),
 		})),
@@ -994,7 +1051,12 @@ function detailBlocks(args: DetailArgs): Block[] {
 	// that does.
 	blocks.push(
 		fields("orders:identity", [
-			["Status", o.state],
+			// THE SAME WORDS THE LIST ROW USED (INC-10). `fields` carries no
+			// `format`, so this surface never had a badge to lose — but it would
+			// have been the one place an order read `refunded` while the row one
+			// click behind it read `refunded · closed`, which is the list/detail
+			// disagreement INC-13 spent a whole increment closing for `Placed`.
+			["Status", orderStateCell(o.state)],
 			["Total", formatTotal(o.totals.totalCents, o.totals.currency)],
 			// The H1 above states this same instant as a DATE. It is the same
 			// rendering truncated, not a second one: `formatDate` and
@@ -1307,7 +1369,11 @@ function customerGroup(
 					// just closed.
 					columns: [
 						{ key: "createdAt", label: "Placed" },
-						{ key: "state", label: "Status", format: "badge" },
+						// Plain text for the same reasons as the primary list, plus one
+						// that binds harder here: every row is ONE customer's history,
+						// so a repeat buyer whose orders all read `paid` is this
+						// table's ORDINARY shape, not its edge case (X-4).
+						{ key: "state", label: "Status" },
 						{ key: "shortId", label: "Order #", format: "code" },
 						{ key: "total", label: "Total" }, // money LAST (T-2, M-1)
 					],
@@ -1317,7 +1383,7 @@ function customerGroup(
 						// rather than `undefined` in the operator's face.
 						shortId: otherShortIds.get(r.id) ?? shortIdFixed(r.id),
 						createdAt: formatTimestamp(r.createdAt),
-						state: r.state,
+						state: orderStateCell(r.state),
 						total: formatTotal(r.totalCents, r.currency),
 					})),
 					page_action_id: actions.page, // never fires: no next_cursor, no sortable column
@@ -2652,7 +2718,13 @@ function historyPanel(
 			block_id: "orders:timeline",
 			columns: [
 				{ key: "at", label: "When", format: "relative_time" }, // M-6
-				{ key: "what", label: "Event", format: "badge" }, // event kind (T-5)
+				// PLAIN TEXT (INC-10). This column was the console's clearest case of
+				// a badge that cannot chunk: an order with three notes and no audited
+				// state changes renders `Note added` in every row (X-4), and the
+				// pill was wrapped around prose (`Reconciliation resolved`) rather
+				// than a state word. What the entries needed marking as is what
+				// `timelineWhat` now says in words.
+				{ key: "what", label: "Event" },
 				{ key: "who", label: "Who" },
 				{ key: "detail", label: "Detail" },
 			],
@@ -2741,7 +2813,10 @@ function timelineWhat(e: TimelineEntryWire): string {
 		case "created":
 			return "Order created";
 		case "state_change":
-			return `Status → ${e.toState ?? "?"}`;
+			// Through the one state renderer (INC-10), so a transition INTO a dead
+			// end reads `Status → cancelled · closed` — the same words the row and
+			// the identity strip use for that state.
+			return `Status → ${orderStateCell(e.toState ?? "?")}`;
 		case "note":
 			return "Note added";
 		case "fulfillment":

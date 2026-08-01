@@ -435,7 +435,7 @@ function checkX11(blocks: readonly LooseBlock[]): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// X-13 (M-6) — millisecond timestamps, or any non-UTC offset.
+// X-13 (M-6) — a wire timestamp on any operator-facing surface.
 // ---------------------------------------------------------------------------
 
 const MS_TIMESTAMP_RE = /T\d{2}:\d{2}:\d{2}\.\d+/;
@@ -447,9 +447,8 @@ const ISO_TIMESTAMP_RE = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
 /**
  * Walk every literal-text surface of a rendered response — `fields` values,
  * non-`relative_time` table cells, `context` lines — handing each to `scan`
- * with the label that names it. The traversal both X-13 and
- * {@link assertNoRawTimestamps} run on, so a surface added to one is checked by
- * the other by construction.
+ * with the label that names it. One traversal, so a surface added to it is
+ * checked by every timestamp rule at once.
  */
 function scanRenderedText(
 	blocks: readonly LooseBlock[],
@@ -481,57 +480,47 @@ function scanRenderedText(
 	for (const text of contextTexts(blocks)) scan("context", text);
 }
 
+/**
+ * NO RAW WIRE TIMESTAMP REACHES AN OPERATOR (M-6, INC-13). Every rendered
+ * instant goes through `scaffold/datetime.js` and reads `8 Jul 2026, 10:30
+ * UTC`; a literal `2026-07-08T10:30:35Z` on any surface is a defect, not a
+ * formatting preference.
+ *
+ * THE ISO RULE SUBSUMES THE OTHER TWO and is checked first — a value carrying
+ * milliseconds or a `+05:00` offset is an ISO timestamp too, so a single
+ * violation is reported once, in the strongest terms available. The
+ * millisecond and offset messages are kept for the one shape that fails them
+ * without matching `ISO_TIMESTAMP_RE`: a value whose date and time were split
+ * or partly formatted, which is worth naming precisely rather than lumping in.
+ *
+ * IT SHIPPED AS A SEPARATE EXPORT, AND NO LONGER NEEDS TO. This file is
+ * ALL-OR-NOTHING PER CALL (see the header), so folding the rule in while one
+ * screen still failed it would have meant either failing that screen or
+ * smuggling in the per-rule opt-out this file exists without. Coupons' detail
+ * was that screen — it rendered `Created (UTC)` as a raw instant, and INC-13
+ * could not touch the file because another increment held it. INC-10 converted
+ * it, so the standalone `assertNoRawTimestamps` is folded in here and deleted:
+ * every screen now gets the rule from the one `assertBlockContract` call it
+ * already makes, and no screen can be wired out of it.
+ */
 function checkX13(blocks: readonly LooseBlock[]): string[] {
 	const out: string[] = [];
 	scanRenderedText(blocks, (label, value) => {
-		if (MS_TIMESTAMP_RE.test(value)) {
+		if (ISO_TIMESTAMP_RE.test(value)) {
 			out.push(
-				`X-13: "${label}" = "${value}" carries millisecond precision (M-6) — trim to seconds.`,
+				`X-13: "${label}" = "${value}" renders a raw wire timestamp (M-6) — format it through \`scaffold/datetime.js\` (\`formatTimestamp\` → "8 Jul 2026, 10:30 UTC").`,
+			);
+		} else if (MS_TIMESTAMP_RE.test(value)) {
+			out.push(
+				`X-13: "${label}" = "${value}" carries millisecond precision (M-6) — render it through \`scaffold/datetime.js\`.`,
 			);
 		} else if (OFFSET_TZ_RE.test(value)) {
 			out.push(
-				`X-13: "${label}" = "${value}" carries a non-UTC offset (M-6) — no timezone conversion anywhere; render absolute UTC.`,
+				`X-13: "${label}" = "${value}" carries a non-UTC offset (M-6) — no timezone conversion anywhere; render absolute UTC through \`scaffold/datetime.js\`.`,
 			);
 		}
 	});
 	return out;
-}
-
-/**
- * INC-13 — NO RAW WIRE TIMESTAMP REACHES AN OPERATOR. Every rendered instant
- * goes through `scaffold/datetime.js` and reads `8 Jul 2026, 10:30 UTC`; a
- * literal `2026-07-08T10:30:35Z` on any surface is a defect, not a formatting
- * preference. This subsumes X-13 — a trimmed-to-seconds UTC ISO string passes
- * X-13 and fails here — and is the strictly stronger successor to it.
- *
- * WHY THIS IS A SEPARATE EXPORT RATHER THAN A RULE INSIDE
- * `assertBlockContract`, which is where it belongs and where it should end up.
- * This file is deliberately ALL-OR-NOTHING PER CALL (see the header): no screen
- * may suppress the one rule it fails today. Adding this to the X-13 set would
- * therefore have to fail `coupons-page.ts`, whose detail still renders
- * `Created (UTC) = <raw ISO>` and which INC-13 could not touch — another
- * increment held that file. Rather than smuggle a per-screen opt-out into a
- * helper whose whole point is that it has none, the rule ships as its own
- * assertion, wired into the screens that are compliant.
- *
- * THE FOLLOW-UP IS ONE LINE. When Coupons' detail is converted, fold this into
- * `checkX13` (it already shares that check's traversal) and delete this export;
- * every screen then gets it from the single `assertBlockContract` call it
- * already makes.
- */
-export function assertNoRawTimestamps(blocks: readonly LooseBlock[]): void {
-	const violations: string[] = [];
-	scanRenderedText(blocks, (label, value) => {
-		if (!ISO_TIMESTAMP_RE.test(value)) return;
-		violations.push(
-			`INC-13: "${label}" = "${value}" renders a raw wire timestamp — format it through \`scaffold/datetime.js\` (\`formatTimestamp\` → "8 Jul 2026, 10:30 UTC").`,
-		);
-	});
-	if (violations.length > 0) {
-		throw new Error(
-			`Rendered response renders ${violations.length} raw timestamp(s):\n  - ${violations.join("\n  - ")}`,
-		);
-	}
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 import { OTTA_PLUGIN_CAPABILITIES } from "@otta-sh/plugin";
 import { afterEach, describe, expect, test } from "vitest";
-import { assertBlockContract, assertNoRawTimestamps } from "./helpers/block-contract.js";
+import { assertBlockContract } from "./helpers/block-contract.js";
 import {
 	blocksOf,
 	columnLabels,
@@ -546,12 +546,12 @@ describe("Reports admin page (workerd sandbox)", () => {
 		const asDefault = blocksOf(
 			await sandbox.invokeRoute("admin", { type: "page_load", page: "/reports" }),
 		);
-		assertNoRawTimestamps(asDefault);
+		assertBlockContract(asDefault, { screen: "reports", level: "list" });
 
 		const ranged = blocksOf(
 			await sandbox.invokeRoute("admin", { type: "page_load", page: "/reports", ...RANGE }),
 		);
-		assertNoRawTimestamps(ranged);
+		assertBlockContract(ranged, { screen: "reports", level: "list" });
 		// Day-only bounds keep rendering as days — INC-13 governs INSTANTS, and a
 		// period the operator typed as a calendar date stays one.
 		expect(contextTexts(ranged)[0]).toMatch(/^10 Jul – 12 Jul 2026 \(UTC\)/);
@@ -781,7 +781,55 @@ describe("Reports admin page (workerd sandbox)", () => {
 		expect(columnsOf(table).filter((c) => c.format === "badge")).toEqual([]);
 		const rows = (table?.rows ?? []) as Array<Record<string, unknown>>;
 		expect(rows).toEqual([
-			{ title: "Aluminum Water Bottle", sku: "SKU-A", onHand: "0 / Out of stock" },
+			{ title: "Aluminum Water Bottle", sku: "SKU-A", onHand: "0 · Out of stock" },
+		]);
+	});
+
+	test("INC-10: Orders by status is plain text, and it speaks the Orders screen's words", async () => {
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", (req) => {
+			if (req.url.startsWith("/reports/orders-by-status")) {
+				return {
+					status: 200,
+					body: {
+						ok: true,
+						counts: [
+							{ status: "paid", orderCount: 12 },
+							{ status: "shipped", orderCount: 4 },
+							{ status: "failed", orderCount: 2 },
+							{ status: "refunded", orderCount: 1 },
+						],
+					},
+				};
+			}
+			return reportsResponder(req);
+		});
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+		await seedAdminToken(sandbox, stub);
+
+		const outcome = await sandbox.invokeRoute("admin", { type: "page_load", page: "/reports" });
+		const blocks = blocksOf(outcome);
+		assertBlockContract(blocks, { screen: "reports", level: "list" });
+
+		const table = tableWithId(blocks, "reports:statuses-table");
+		// X-4 was never this column's problem — one row per status, so its values
+		// chunk by construction. The badge went for the other half of T-5: every
+		// row got the identical pill, which rendered `failed` and `paid` at
+		// exactly the same weight on the one screen whose question is "which of
+		// these numbers should worry me?".
+		expect(columnsOf(table).filter((c) => c.format === "badge")).toEqual([]);
+		// The words are the Orders screen's own (`orderStateCell`), not a second
+		// vocabulary for the same field: the dead ends mark themselves, the rest
+		// stay bare.
+		const rows = (table?.rows ?? []) as Array<Record<string, unknown>>;
+		expect(rows.map((r) => r.status)).toEqual([
+			"paid",
+			"shipped",
+			"failed · closed",
+			"refunded · closed",
 		]);
 	});
 
@@ -809,7 +857,7 @@ describe("Reports admin page (workerd sandbox)", () => {
 		const rows = (tableWithId(blocks, "reports:low-table")?.rows ?? []) as Array<
 			Record<string, unknown>
 		>;
-		expect(rows).toEqual([{ title: "(untitled)", sku: "SKU-B", onHand: "3 / Low" }]);
+		expect(rows).toEqual([{ title: "(untitled)", sku: "SKU-B", onHand: "3 · Low" }]);
 		// A null title is a distinct fact from a missing SKU (the row already
 		// states the SKU in its own column) — the title cell never echoes it.
 		expect(rows[0]?.title).not.toBe("SKU-B");
@@ -846,7 +894,11 @@ describe("Reports admin page (workerd sandbox)", () => {
 		const rows = (tableWithId(blocks, "reports:low-table")?.rows ?? []) as Array<
 			Record<string, unknown>
 		>;
-		expect(rows.map((r) => r.onHand)).toEqual(["0 / Out of stock", "1 / Low", "5 / Low"]);
+		// THE SEPARATOR IS THE PRODUCTS LIST'S (INC-10): this screen shipped
+		// `0 / Out of stock` against an unmerged sibling that then landed with
+		// `0 · Out of stock`, and one fact spelled two ways one screen apart is
+		// exactly what this pass exists to close.
+		expect(rows.map((r) => r.onHand)).toEqual(["0 · Out of stock", "1 · Low", "5 · Low"]);
 	});
 
 	test("the revenue series is continuous across a zero-revenue gap, and no chart block is emitted", async () => {

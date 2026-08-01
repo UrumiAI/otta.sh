@@ -22,7 +22,8 @@ import {
 	shortIdFixed,
 	shortIdsFor,
 } from "../src/admin/scaffold/short-id.js";
-import { assertBlockContract, assertNoRawTimestamps } from "./helpers/block-contract.js";
+import { orderStateCell } from "../src/admin/orders-page.js";
+import { assertBlockContract } from "./helpers/block-contract.js";
 import {
 	accessories,
 	blocksOf,
@@ -209,6 +210,31 @@ const TIMELINE_ORD_1 = {
 			trackingUrl: "https://track/1Z-999",
 			shippedAt: "2026-07-11T09:00:00.000Z",
 			recordedBy: "ops@shop.test",
+		},
+	],
+};
+
+/** The cancelled order's own timeline: the two transitions that took it there,
+ *  the second of which lands in a DEAD-END state — the entry INC-10's
+ *  `Status → …` rendering is pinned on. */
+const TIMELINE_CANCELLED = {
+	orderId: "ord-cancelled",
+	stateChangesAudited: true,
+	entries: [
+		{ kind: "created", at: "2026-07-10T01:00:00.000Z" },
+		{
+			kind: "state_change",
+			at: "2026-07-10T01:10:00.000Z",
+			fromState: "pending",
+			toState: "paid",
+			actor: null,
+		},
+		{
+			kind: "state_change",
+			at: "2026-07-11T09:00:01.000Z",
+			fromState: "paid",
+			toState: "cancelled",
+			actor: "ops@shop.test",
 		},
 	],
 };
@@ -563,7 +589,11 @@ function makeGetResponder() {
 		}
 		// Order timeline read — also BEFORE the detail branch.
 		if (path?.endsWith("/timeline")) {
-			const timeline = path.includes("/ord-proc") ? TIMELINE_DEGRADED : TIMELINE_ORD_1;
+			const timeline = path.includes("/ord-proc")
+				? TIMELINE_DEGRADED
+				: path.includes("/ord-cancelled")
+					? TIMELINE_CANCELLED
+					: TIMELINE_ORD_1;
 			return { status: 200, body: { ok: true, timeline } };
 		}
 		// Order refunds read (ADR-0008) — also BEFORE the detail branch.
@@ -3844,19 +3874,70 @@ describe("admin Orders console (workerd sandbox)", () => {
 		}
 	});
 
+	// -- INC-10: badge the exceptions, plain-text the happy path ---------------
+
+	test("INC-10: no badge column survives on this screen, and only the dead-end states mark themselves", async () => {
+		await boot();
+		// THE EXCEPTION SET IS THE DOMAIN'S, not a taste call. `orderStateCell`
+		// marks exactly the states `ORDER_STATE_MACHINE` leaves with no outbound
+		// transition, and asserting it against the IMPORTED map is what keeps the
+		// plugin's restatement of that set honest: a new terminal state upstream
+		// surfaces here as a failure instead of as a state the console quietly
+		// renders like the happy path.
+		for (const [state, next] of Object.entries(ORDER_STATE_MACHINE)) {
+			expect(orderStateCell(state), state).toBe(next.length === 0 ? `${state} · closed` : state);
+		}
+		// `completed` is the case that shows this is the machine's set and not a
+		// list of "bad" words: it is an ending, but a completed order can still be
+		// refunded, so it is not a dead end and it renders bare.
+		expect(orderStateCell("completed")).toBe("completed");
+		// A state this plugin has never heard of renders as ITSELF — the safe
+		// direction: an unknown value never acquires the loudest rendering.
+		expect(orderStateCell("quarantined")).toBe("quarantined");
+
+		const blocks = await list();
+		const listTable = tableWithId(blocks, "orders:list");
+		// `Status` carries no `format` at all — a badge here is one filter click
+		// away from a column of identical pills (X-4), and it spent the heaviest
+		// ink on `paid`, the value nearly every row carries.
+		expect(columnsOf(listTable!).find((c) => c.key === "state")?.format).toBeUndefined();
+		for (const t of findBlocks(blocks, "table")) {
+			expect(columnsOf(t).filter((c) => c.format === "badge")).toEqual([]);
+		}
+		// The happy path says one quiet word.
+		expect(tableRows([listTable!]).map((r) => r.state)).toEqual(["paid", "shipped"]);
+
+		// A dead-end order says the SAME words on every surface it appears on:
+		// the identity strip, and the timeline entry that put it there.
+		const cancelled = await open("ord-cancelled");
+		const identity = findBlocks(cancelled, "fields").find((f) => f.block_id === "orders:identity");
+		const strip = new Map(
+			((identity?.fields ?? []) as Array<{ label: string; value: string }>).map((f) => [
+				f.label,
+				f.value,
+			]),
+		);
+		expect(strip.get("Status")).toBe("cancelled · closed");
+		const timeline = tableWithId(panel(cancelled, "History"), "orders:timeline");
+		const whats = tableRows([timeline!]).map((r) => r.what);
+		expect(whats).toContain("Status → paid"); // a step ON the way stays bare
+		expect(whats).toContain("Status → cancelled · closed"); // the step that ends it
+		for (const t of findBlocks(cancelled, "table")) {
+			expect(columnsOf(t).filter((c) => c.format === "badge")).toEqual([]);
+		}
+	});
+
 	// X-20 (the banned-slogan check) and every other H-marked §13 row this
 	// helper enforces now live in `assertBlockContract` (§15 V-3/V-3a) instead
 	// of a hand-rolled assertion here — this is the "wire it into the Orders
 	// suite" half of that PR: one call on the list, one per open record state.
-	// INC-13 rides the SAME sweep rather than getting its own narrower one: "no
-	// raw wire timestamp reaches an operator" is a claim about every rendered
-	// response, and the states below are the ones this screen can be in. It is a
-	// separate call only because `assertBlockContract` is all-or-nothing per call
-	// and Coupons cannot pass this rule yet — see `assertNoRawTimestamps`.
+	// "No raw wire timestamp reaches an operator" rides this same sweep. It was a
+	// second, narrower call for as long as Coupons still failed it and
+	// `assertBlockContract` stayed all-or-nothing; INC-10 converted that screen
+	// and folded the rule into X-13, so the one call below now carries it.
 	test("assertBlockContract holds on the list and on every open record state (§15 V-3)", async () => {
 		await boot();
 		assertBlockContract(await list(), { screen: "orders", level: "list" });
-		assertNoRawTimestamps(await list());
 		for (const id of [
 			"ord-1",
 			"ord-proc",
@@ -3876,15 +3957,12 @@ describe("admin Orders console (workerd sandbox)", () => {
 		]) {
 			const detail = await open(id);
 			assertBlockContract(detail, { screen: "orders", level: "detail" });
-			assertNoRawTimestamps(detail);
 		}
 		listRows = "twins";
 		assertBlockContract(await list(), { screen: "orders", level: "list" });
-		assertNoRawTimestamps(await list());
 		for (const id of [TWIN_ID_A, TWIN_ID_B]) {
 			const detail = await open(id);
 			assertBlockContract(detail, { screen: "orders", level: "detail" });
-			assertNoRawTimestamps(detail);
 		}
 	});
 });

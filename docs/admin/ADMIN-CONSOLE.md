@@ -1849,13 +1849,13 @@ screen re-litigates it.
 `8 Jul 2026, 10:30 UTC` (`formatTimestamp`) — day-first and spelled-month so it cannot be misread
 the way `7/8/2026` can, minutes only, and the zone is part of the VALUE, so the label names the
 event (`Placed`) and carries no `(UTC)` suffix. **A raw wire timestamp never reaches an operator**
-(INC-13, enforced by `assertNoRawTimestamps`) — this supersedes the earlier rule that `fields` show
-ISO trimmed to seconds. **One screen is not yet there:** Coupons' detail still renders
-`Created (UTC)` as a raw instant and its suite is deliberately unwired from the assertion, because
-the file was held by another increment. Coupons converts in the badge increment, at which point the
-rule is enforced console-wide and folds into X-13; until then the enforcement excludes it. Tables use `relative_time` only where T-4 still allows it; a field the
-detail screen also shows is absolute on both. Date-only bounds (filters, validity windows) render
-`YYYY-MM-DD` and stay days. No timezone conversion anywhere: every rendering is UTC-pinned.
+(INC-13, enforced console-wide by X-13 inside `assertBlockContract`) — this supersedes the earlier
+rule that `fields` show ISO trimmed to seconds. Tables use `relative_time` only where T-4 still
+allows it; a field the detail screen also shows is absolute on both. Date-only bounds stay DAYS —
+a `date_input` submits and prefills `YYYY-MM-DD`, and a day a merchant set never acquires an
+invented time — but a day DISPLAYED renders in the dialect too, through `formatDate`
+(`10 Jul 2026`; a validity window reads `10 Jul 2026 – 1 Aug 2026`). No timezone conversion
+anywhere: every rendering is UTC-pinned.
 
 **M-7 — IDs.** `format:"code"` in tables. In `fields`, the full id is the value of a labeled field
 (`Order ID`). An id never appears inside prose, inside a button or submit label (`Save std-us` →
@@ -3059,7 +3059,7 @@ these rules as its own assertions.
 | X-11 | H | Any string over an **authored** §1 budget: page-level `context` 140, any other `context` 200, `banner.description` 240, `accordion.label` 60, `confirm.title` 60, `confirm.text` 200, `empty.description` 200. **Seven, not eight** — the `fields`-value 40 is explicitly **excluded** (X-11a). | §1 |
 | X-11a | | A `fields` value over 40 chars **that the author wrote** — prose that belongs in a `context` line, or an address crammed into one entry. **Human catch only, never H:** the value is usually service data, so a 45-char buyer email or a tracking URL busts the budget through no authoring fault, and truncating a tracking number or URL destroys the operator's ability to copy it. Emails, tracking numbers, URLs and free-text reasons are left intact. | §1 |
 | X-12 | | `header` used for a subsection beyond P-2's one-per-panel exception; `section` used as a heading or a receipt. | P-2 |
-| X-13 | H | Timestamps with milliseconds; any timezone conversion. | M-6 |
+| X-13 | H | A raw wire timestamp on any operator-facing surface — an ISO instant of any precision, milliseconds, or a non-UTC offset. Every instant renders through `scaffold/datetime.ts`. | M-6 |
 | X-14 | H | `sortable: true` on any column. | T-3 |
 | X-15 | H | Any `columns` or `chart` block. | §2 |
 | X-16 | H | A conditionally-present `tab` panel; `default_tab` other than 0; a panel count differing from D-2's table. | D-3, D-4 |
