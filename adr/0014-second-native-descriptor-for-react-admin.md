@@ -2,6 +2,11 @@
 
 - Status: accepted
 - Date: 2026-07-31
+- Partially superseded: 2026-08-01 — **the "Block Kit screens stay in the tree and stay green"
+  clause only** (the third bullet of "ADR-0006 Decision 1 is REAFFIRMED, not weakened" below),
+  and only as to the **Orders** and **Pricing & inventory** screens, by
+  [ADR-0015](./0015-retire-duplicated-block-kit-screens.md). Every other clause of this record
+  stands, Decision 6 included.
 - Amends: **ADR-0006 Decision 2 only** — the trusted-only-API fence, insofar as it forbids
   React admin components. ADR-0006 **Decision 1 is reaffirmed unchanged**: the workerd
   sandbox suite remains the contract gate for `@otta-sh/plugin`.
