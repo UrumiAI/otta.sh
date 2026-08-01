@@ -475,5 +475,33 @@ export function couponStoreContract(
 			expect(res.coupons.map((c) => c.id)).toEqual(["p2", "p1"]);
 			expect(res.nextCursor).toBeNull();
 		});
+
+		// -- countCoupons (INC-23: the exact count the admin list captions with) --
+
+		test("countCoupons counts the whole filtered set, independently of any page size", async () => {
+			const h = await makeStore();
+			for (const id of ["c1", "c2", "c3"]) {
+				await h.seedCoupon(couponRow({ id, code: `CODE-${id}` }));
+			}
+			// The point of the count: a 2-row page says nothing about the set behind
+			// it, and keyset paging carries no running offset to derive one from.
+			const page = await h.store.listCoupons({}, { limit: 2 });
+			expect(page.coupons).toHaveLength(2);
+			expect(await h.store.countCoupons({})).toBe(3);
+		});
+
+		test("countCoupons applies the same EXACT-match search predicate as listCoupons", async () => {
+			const h = await makeStore();
+			await h.seedCoupon(couponRow({ id: "a", code: "SAVE5" }));
+			await h.seedCoupon(couponRow({ id: "b", code: "SAVE50" }));
+			expect(await h.store.countCoupons({ search: "save5" })).toBe(1);
+			// A substring must no more match the count than it matches the list.
+			expect(await h.store.countCoupons({ search: "save" })).toBe(0);
+		});
+
+		test("countCoupons on an empty store is 0", async () => {
+			const h = await makeStore();
+			expect(await h.store.countCoupons({})).toBe(0);
+		});
 	});
 }

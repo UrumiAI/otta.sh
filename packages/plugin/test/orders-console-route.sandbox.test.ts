@@ -160,6 +160,40 @@ describe("the console's read/write branch on the otta admin route", () => {
 		expect(JSON.stringify(result)).not.toContain("$19.99");
 	});
 
+	test("the service's exact `total` is FORWARDED to the React list (INC-23 parity)", async () => {
+		// THE PARITY GAP THIS MERGE CLOSES. INC-23 gave the Block Kit list an exact
+		// count; without this the React list beside it would have kept saying
+		// "25 orders on this page" while the Block Kit screen one sidebar entry
+		// away said "137 orders" — on the most-read line of the most-read screen.
+		service.respondWith(
+			"GET",
+			responder({
+				"/admin/orders": () => ({
+					status: 200,
+					body: { orders: [orderSummary(ORDER_ID)], nextCursor: "cur-2", total: 137 },
+				}),
+			}),
+		);
+		const result = await invoke({ type: READ, resource: "orders.list" });
+		expect(result["total"]).toBe(137);
+	});
+
+	test("a service that does not report a total does not get one invented", async () => {
+		// ABSENT STAYS ABSENT — never `?? 0`, which would caption a page of rows
+		// with a count of none.
+		service.respondWith(
+			"GET",
+			responder({
+				"/admin/orders": () => ({
+					status: 200,
+					body: { orders: [orderSummary(ORDER_ID)], nextCursor: null },
+				}),
+			}),
+		);
+		const result = await invoke({ type: READ, resource: "orders.list" });
+		expect(result).not.toHaveProperty("total");
+	});
+
 	test("the filter vocabulary is the Block Kit screen's own", async () => {
 		service.respondWith(
 			"GET",

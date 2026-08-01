@@ -391,10 +391,27 @@ function couponsListLevel() {
 				limit: opts.limit,
 				...(opts.cursor !== undefined ? { cursor: opts.cursor } : {}),
 			});
-			return { items: page.coupons, nextCursor: page.nextCursor };
+			// This screen shows exactly the rows the service returned, so the
+			// service's own count of the filtered set describes them (INC-23).
+			// Absent on a service older than the field ⇒ the page-scoped count.
+			return {
+				items: page.coupons,
+				nextCursor: page.nextCursor,
+				...(page.total !== undefined ? { total: page.total } : {}),
+			};
 		},
-		render({ actions, path, filter, items, nextToken, firstPage, notice, renderState }) {
-			return couponsBlocks(actions, path, filter, items, nextToken, firstPage, notice, renderState);
+		render({ actions, path, filter, items, nextToken, firstPage, total, notice, renderState }) {
+			return couponsBlocks(
+				actions,
+				path,
+				filter,
+				items,
+				nextToken,
+				firstPage,
+				total,
+				notice,
+				renderState,
+			);
 		},
 		onError: () => couponsFailClosed(),
 	});
@@ -434,6 +451,7 @@ function couponsBlocks(
 	coupons: CouponSummaryWire[],
 	nextToken: string | undefined,
 	firstPage: boolean,
+	total: number | undefined,
 	notice: Notice | undefined,
 	renderState: CouponsRenderState | undefined,
 ): Block[] {
@@ -448,6 +466,7 @@ function couponsBlocks(
 		filtered: summary !== undefined,
 		firstPage,
 		nextToken,
+		...(total !== undefined ? { total } : {}),
 		noun: { one: "coupon", other: "coupons" },
 		empty: {
 			title: "No coupons yet",

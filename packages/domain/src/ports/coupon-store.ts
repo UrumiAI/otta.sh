@@ -120,6 +120,16 @@ export interface CouponStore {
 	 * `productKind`) — deliberately minimal, not "filterable where cheap".
 	 */
 	listCoupons(filter: CouponListFilter, page: CouponListPage): Promise<CouponListResult>;
+
+	/**
+	 * Count the coupons matching a filter (INC-23: the admin list's exact
+	 * "N coupons" caption). Shares the EXACT predicate with `listCoupons` — the
+	 * same case-insensitive EXACT-match `search` semantics — so a count can
+	 * never disagree with the list it captions (one predicate builder in every
+	 * adapter; mirrors `OrderStore.countOrders` / `ProductCommerceStore
+	 * .countProducts` 1:1). No ordering, no cursor: a count is one scalar.
+	 */
+	countCoupons(filter: CouponListFilter): Promise<number>;
 }
 
 /**

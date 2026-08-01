@@ -108,6 +108,16 @@ export interface CouponsListResult {
 	coupons: CouponSummaryWire[];
 	/** Opaque keyset cursor for the next page, or null on the last page. */
 	nextCursor: string | null;
+	/**
+	 * Exact number of coupons matching the ACTIVE FILTER — the whole set, not
+	 * this page (INC-23).
+	 *
+	 * OPTIONAL for one reason only: a service older than the field omits it, and
+	 * a renderer must then fall back to the page-scoped count it always had
+	 * ("25 coupons on this page"). Never defaulted to `0` — that would caption a
+	 * page of rows with a count of none.
+	 */
+	total?: number;
 }
 
 // -- Discriminated results ----------------------------------------------------
@@ -471,8 +481,14 @@ export class AdminRulesClient {
 		const body = await this.#getJson<{
 			coupons?: CouponSummaryWire[];
 			nextCursor?: string | null;
+			total?: unknown;
 		}>(`/admin/coupons?${q.toString()}`);
-		return { coupons: body.coupons ?? [], nextCursor: body.nextCursor ?? null };
+		return {
+			coupons: body.coupons ?? [],
+			nextCursor: body.nextCursor ?? null,
+			// ABSENT STAYS ABSENT (never `?? 0`) — see `CouponsListResult.total`.
+			...(typeof body.total === "number" ? { total: body.total } : {}),
+		};
 	}
 
 	async getCoupon(code: string): Promise<CouponWire | null> {

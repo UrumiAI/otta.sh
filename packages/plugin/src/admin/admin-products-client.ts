@@ -74,7 +74,15 @@ export interface ProductDetailWire {
 	 *  existed) is still `getProduct` returning `null`; a deleted row is a 200
 	 *  with this field set. */
 	deletedAt: string | null;
-	onHand: number;
+	/** Stock on hand for this product's sku — a COUNT, never money.
+	 *
+	 *  SAME SEMANTICS AS THE LIST's `ProductSummaryWire.onHand` (INC-23): `null`
+	 *  means the sku has NO inventory record (or the product has no sku at all)
+	 *  — "unknown" — and `0` means a known sku that is out of stock. This used to
+	 *  be a bare `number` with both cases collapsed to `0`, so one product read
+	 *  `—` in the list and `0` on its own detail page. A renderer keeps the two
+	 *  apart with the same helper the list column uses. */
+	onHand: number | null;
 	createdAt: string;
 	updatedAt: string;
 }
@@ -95,6 +103,16 @@ export interface ProductsListResult {
 	products: ProductSummaryWire[];
 	/** Opaque keyset cursor for the next page, or null on the last page. */
 	nextCursor: string | null;
+	/**
+	 * Exact number of products matching the ACTIVE FILTER — the whole set, not
+	 * this page (INC-23).
+	 *
+	 * OPTIONAL for one reason only: a service older than the field omits it, and
+	 * a renderer must then fall back to the page-scoped count it always had
+	 * ("25 products on this page"). Never defaulted to `0` — that would caption
+	 * a page of rows with a count of none.
+	 */
+	total?: number;
 }
 
 /** The commerce-owned fields a product edit may change (mirrors the service's
@@ -333,8 +351,19 @@ export class AdminProductsClient {
 		const body = await this.#getJson<{
 			products?: ProductSummaryWire[];
 			nextCursor?: string | null;
+			total?: unknown;
 		}>(`/admin/products?${q.toString()}`);
-		return { products: body.products ?? [], nextCursor: body.nextCursor ?? null };
+		return {
+			products: body.products ?? [],
+			nextCursor: body.nextCursor ?? null,
+			// ABSENT STAYS ABSENT (never `?? 0`): a service that predates `total`
+			// leaves the renderer on the page-scoped count it always had, and a zero
+			// would caption a page of rows as an empty set. The renderer applies the
+			// remaining sanity check (`rowCountLine`), the same split as `onHand`:
+			// the transport passes the wire through, the consumer decides what a
+			// value it cannot use means.
+			...(typeof body.total === "number" ? { total: body.total } : {}),
+		};
 	}
 
 	/** GET one product's full detail (incl. stock). A 404 resolves to `null`

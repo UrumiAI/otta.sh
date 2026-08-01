@@ -151,6 +151,15 @@ export interface ConsoleListPayload {
 	readonly ok: true;
 	readonly orders: readonly OrderSummaryWire[];
 	readonly nextCursor: string | null;
+	/**
+	 * The service's EXACT count of the filtered set (INC-23), forwarded so the
+	 * React list states the same figure the Block Kit list states.
+	 *
+	 * ABSENT STAYS ABSENT — never defaulted to `0`, which would caption a page
+	 * of rows with a count of none. A service older than the field omits it and
+	 * both surfaces fall back to the page-scoped count they always had.
+	 */
+	readonly total?: number;
 	readonly vocabulary: ConsoleVocabulary;
 }
 
@@ -320,6 +329,7 @@ async function consoleList(
 		ok: true,
 		orders: page.orders,
 		nextCursor: page.nextCursor,
+		...(page.total !== undefined ? { total: page.total } : {}),
 		vocabulary: CONSOLE_VOCABULARY,
 	};
 }

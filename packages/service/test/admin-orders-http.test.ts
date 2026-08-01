@@ -143,6 +143,37 @@ describe.skipIf(PG === undefined)("admin Orders console HTTP contract", () => {
 		expect([...p1, ...p2].map((o) => o.id)).toEqual(["ord-3", "ord-2", "ord-1"]);
 	});
 
+	// -- total: the exact size of the filtered set (INC-23) --------------------
+
+	test("GET /admin/orders carries `total` — the whole FILTERED set, identical on every page", async () => {
+		await seed();
+		const page1 = await json(await get("/orders?states=paid&limit=2"));
+		// 3 paid orders behind a 2-row page: the count is of the SET, not the page,
+		// which is precisely what a keyset cursor cannot tell a console on its own.
+		expect(page1.total).toBe(3);
+		expect((page1.orders as unknown[]).length).toBe(2);
+		const page2 = await json(
+			await get(`/orders?cursor=${encodeURIComponent(page1.nextCursor as string)}`),
+		);
+		// Page 2 carries the SAME total — the filter rode the cursor, and so did
+		// the predicate the count is taken under.
+		expect(page2.total).toBe(3);
+	});
+
+	test("GET /admin/orders `total` counts under the SAME filter as the rows, and is 0 (present) when nothing matches", async () => {
+		await seed();
+		const unfiltered = await json(await get("/orders"));
+		expect(unfiltered.total).toBe(4); // every seeded order, cancelled included
+		const cancelled = await json(await get("/orders?states=cancelled"));
+		expect(cancelled.total).toBe(1);
+		const none = await json(await get("/orders?search=nobody@example.com"));
+		expect(none.orders).toEqual([]);
+		// Zero is REPORTED, not omitted: the key's presence is what tells a client
+		// "this service counts", and its absence is what means "it cannot".
+		expect(none.total).toBe(0);
+		expect(Object.hasOwn(none, "total")).toBe(true);
+	});
+
 	test("GET /admin/orders/:id returns the full order + createdAt/customerId + allowedTransitions", async () => {
 		await seed();
 		const body = await json(await get("/orders/ord-1"));

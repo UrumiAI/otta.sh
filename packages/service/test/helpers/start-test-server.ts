@@ -14,6 +14,7 @@ import {
 	FIXTURE_INVENTORY,
 	FIXTURE_ITEMS,
 	FIXTURE_ORDERS,
+	FIXTURE_REFUNDS,
 	FixedClock,
 } from "@otta-sh/domain/testing";
 import { StripePaymentGateway, type StripeTransport } from "@otta-sh/payments-stripe";
@@ -315,6 +316,31 @@ export async function startTestServer(options: TestServerOptions = {}): Promise<
 					.insertInto("inventory")
 					.values({ sku: inv.sku, on_hand: inv.onHand })
 					.onConflict((oc) => oc.column("sku").doUpdateSet({ on_hand: inv.onHand }))
+					.execute();
+			}
+			// The refunds ledger behind those same orders (INC-23), so the WIRE test
+			// exercises `refundedCents` against the same hand-computed figures the
+			// store contract pins. `created_at` sits deliberately outside the
+			// reporting window: the bucket comes from the ORDER's timestamp.
+			let refundSeq = 0;
+			for (const r of FIXTURE_REFUNDS) {
+				const id = `seed-refund-${String(refundSeq++)}`;
+				await db
+					.insertInto("refunds")
+					.values({
+						id,
+						order_id: r.orderId,
+						amount_cents: r.amountCents,
+						currency: r.currency,
+						kind: "manual",
+						gateway: "stripe",
+						refund_ref: null,
+						reason: null,
+						refunded_by: "seed",
+						idempotency_key: id,
+						status: r.status ?? "recorded",
+						created_at: "2030-01-01T00:00:00.000Z",
+					})
 					.execute();
 			}
 		},

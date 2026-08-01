@@ -143,6 +143,33 @@ export interface InventoryStore {
 	// from a list path remain the anti-pattern they always were.
 	getOnHand(sku: string): Promise<number>;
 
+	// Additive (INC-23, admin product detail): the SAME single-row read as
+	// `getOnHand` with the one distinction that method's return type cannot
+	// carry — a sku with NO inventory row reads `null` ("unknown"), and `0`
+	// means a known sku that is out of stock.
+	//
+	// WHY A SECOND METHOD RATHER THAN A WIDENED `getOnHand`. The warning above
+	// says widening is "the direction that preserves information, and is a
+	// separate change with its own callers to audit". That audit was done and
+	// came back: `getOnHand`'s `0`-for-missing is PINNED by the contract suite
+	// ("mirrors the LEFT JOIN miss") and relied on by tests that assert a
+	// concrete count; changing it would rewrite a shipped contract statement to
+	// close a rendering defect. So the information is added ALONGSIDE it, and
+	// `getOnHand` stays byte-for-byte what it was.
+	//
+	// This is what the admin DETAIL leaf reads. It exists because the same
+	// product read `—` in the products list (which sources `onHand` from
+	// `listProducts`'s LEFT JOIN and reports a miss as `null`) and `0` on its own
+	// detail page — one fact, two answers, one click apart. A detail view is the
+	// screen with the MOST context, so it is the last place that should be the
+	// one guessing.
+	//
+	// Still deliberately NOT a batch/list method, for the same reason as
+	// `getOnHand`: a list carries stock through its own join (port doc), and
+	// per-row calls into either of these from a list path remain the anti-pattern
+	// they always were.
+	findOnHand(sku: string): Promise<number | null>;
+
 	// Additive (admin-UX Increment 2, merchant restock): ADD `qty` units to an
 	// existing sku's on-hand — the merchant's "we received more stock" path.
 	// Distinct from `seedOnHand` (create-if-absent, natural key = sku, no delta)

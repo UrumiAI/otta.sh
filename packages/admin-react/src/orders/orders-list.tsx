@@ -124,6 +124,8 @@ function normalize(draft: OrdersFilter, statusAny: string): OrdersFilter {
 interface LoadedPage {
 	readonly orders: readonly OrderSummary[];
 	readonly nextCursor: string | null;
+	/** INC-23's exact filtered-set count, when the service reports one. */
+	readonly total: number | undefined;
 	readonly vocabulary: Vocabulary;
 	readonly firstPage: boolean;
 }
@@ -153,6 +155,7 @@ export function OrdersList({ onOpen }: { onOpen: (orderId: string) => void }): R
 			setPage({
 				orders: result.orders,
 				nextCursor: result.nextCursor,
+				total: result.total,
 				vocabulary: result.vocabulary,
 				firstPage: cursor === undefined,
 			});
@@ -194,6 +197,13 @@ export function OrdersList({ onOpen }: { onOpen: (orderId: string) => void }): R
 		noun: ORDERS_NOUN,
 		empty: ORDERS_EMPTY,
 		noMatch: ORDERS_NO_MATCH,
+		// INC-23. The React list states the SAME exact figure the Block Kit list
+		// states, because both hand it to the same `rowCountLine`. Threading it
+		// here is the whole of what "honour total on the React side" costs, and
+		// it is that cheap only because the count logic was already shared — had
+		// it stayed on the Block Kit side, this screen would have gone on saying
+		// "25 orders on this page" next to a sidebar entry saying "137 orders".
+		...(page?.total !== undefined ? { total: page.total } : {}),
 	});
 
 	const apply = (next: OrdersFilter) => {

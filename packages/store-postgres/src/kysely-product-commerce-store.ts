@@ -605,6 +605,39 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 		return { products, nextCursor };
 	}
 
+	/**
+	 * Count under the SAME predicate as `listProducts` (port doc) — including
+	 * the tombstone axis, whose default (live rows only) is applied on the
+	 * QUERY rather than inside `productFilterConditions`, so it is restated here
+	 * exactly as the list states it.
+	 *
+	 * NO LEFT JOIN onto `inventory`: the list joins to fill a per-row stock
+	 * column, and a count has no columns. Dropping it also keeps the count a
+	 * single-table scan on the index the list already uses.
+	 *
+	 * MEASURED (pg 16, 5,000 products / 3,997 inventory rows, 60 runs), against
+	 * the page read it accompanies — the route issues the two CONCURRENTLY:
+	 *   unfiltered   count p50 1.26 ms / p95 2.27 ms · page(25) p50 39.3 ms
+	 *   active+kind+search  count p50 4.27 ms / p95 5.86 ms · page(25) p50 26.9 ms
+	 * The count is 3–16% of the read it rides along with and never its critical
+	 * path, so it is NOT gated behind a flag or a first-page-only rule. The
+	 * filtered figure is dominated by the same `lower(title) LIKE '%…%'` scan the
+	 * LIST already pays for the identical predicate — a functional/trigram index
+	 * would speed BOTH up and belongs to search, not to counting. No index was
+	 * added for this method. (`countOrders` p50 1.00 ms and `countCoupons` p50
+	 * 0.80 ms at the same row count, against 1.14 / 0.60 ms page reads.)
+	 */
+	async countProducts(filter: ProductListFilter): Promise<number> {
+		let q = this.#db
+			.selectFrom("product_commerce")
+			.select(sql<number>`count(*)`.as("n"))
+			.where("product_commerce.deleted_at", filter.deleted === true ? "is not" : "is", null);
+		const conds = productFilterConditions(filter);
+		if (conds.length > 0) q = q.where((eb) => eb.and(conds));
+		const row = await q.executeTakeFirstOrThrow();
+		return Number(row.n);
+	}
+
 	/** Count LIVE products referencing a tax class (port doc) — the product half
 	 *  of the `deleteTaxClass` delete-in-use guard. One aggregate `SELECT
 	 *  COUNT(*)`; excludes soft-deleted rows (a tombstone's tax reference is

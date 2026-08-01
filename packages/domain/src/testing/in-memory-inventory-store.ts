@@ -307,6 +307,14 @@ export class InMemoryInventoryStore implements InventoryStore {
 		return this.#onHand.get(sku) ?? 0;
 	}
 
+	/** Additive (INC-23): the same single-row read with ROW PRESENCE preserved —
+	 *  `null` when no inventory row exists for the sku, which is a different fact
+	 *  from a `0` count. `Map.get` returning `undefined` IS the missing row, so
+	 *  the fake needs no second structure to tell the two apart. */
+	async findOnHand(sku: string): Promise<number | null> {
+		return this.#onHand.get(sku) ?? null;
+	}
+
 	/**
 	 * Merchant restock (admin-UX Increment 2): ADD `qty` to an existing sku's
 	 * on-hand. Ledger-first exactly-once (mirrors `adjust`): a replayed key

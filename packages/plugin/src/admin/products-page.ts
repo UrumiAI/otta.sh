@@ -340,16 +340,24 @@ function productsListLevel() {
 				wantsLowStock && canFilter && threshold !== null
 					? read.filter((r) => r.onHand !== undefined && r.onHand !== null && r.onHand <= threshold)
 					: read;
+			// The service's `total` counts the set its OWN filters selected — and
+			// "Low stock only" is not one of them: it narrows the fetched page here
+			// (see the note above). While it is on, the total does not describe the
+			// rows on screen, so it is WITHHELD and the count falls back to the
+			// page-scoped wording this screen already uses for that mode. Absent on
+			// a service older than the field, which lands in the same place.
+			const totalDescribesTheseRows = !(wantsLowStock && canFilter);
 			return {
 				items: visible.map((r) => ({
 					product: r.product,
 					onHand: onHandCell(r.onHand, threshold),
 				})),
 				nextCursor: page.nextCursor,
+				...(totalDescribesTheseRows && page.total !== undefined ? { total: page.total } : {}),
 			};
 		},
-		render({ actions, path, filter, items, nextToken, firstPage, notice }) {
-			return listBlocks(actions, path, filter, items, nextToken, firstPage, notice);
+		render({ actions, path, filter, items, nextToken, firstPage, total, notice }) {
+			return listBlocks(actions, path, filter, items, nextToken, firstPage, total, notice);
 		},
 		onError: () => failClosed(),
 	});
@@ -546,6 +554,7 @@ function listBlocks(
 	rows: ProductsListRow[],
 	nextToken: string | undefined,
 	firstPage: boolean,
+	total: number | undefined,
 	notice: Notice | undefined,
 ): Block[] {
 	const form = listForm(filter);
@@ -570,6 +579,10 @@ function listBlocks(
 		filtered: summary !== undefined,
 		firstPage,
 		nextToken,
+		// `fetchPage` withholds the service's `total` while the low-stock narrowing
+		// is on (it counted the UNNARROWED set), so this is simply whatever came
+		// through — the decision is made once, where the narrowing happens.
+		...(total !== undefined ? { total } : {}),
 		noun: { one: "product", other: "products" },
 		empty: {
 			title: "No products yet",
@@ -965,8 +978,11 @@ function detailBlocks(
 			// exception (`Out of stock` / `Low`) so it does not read at the same
 			// weight as the rest of the strip. Same helper as the list's `On hand`
 			// column, so a product cannot be low in one place and plain in the
-			// other. The detail's count is a plain number — never null — so the
-			// helper's "—" branch is unreachable here.
+			// other — and, since INC-23 widened the detail wire to `number | null`,
+			// so it cannot read `—` in the list and `0` here either. The helper's
+			// "—" branch is now REACHED on this screen (no inventory record, or no
+			// sku to have one), which is the point: the two facts were previously
+			// both rendered as a zero nobody counted.
 			["Stock on hand", onHandCell(p.onHand, threshold)],
 		]),
 	);
@@ -1314,19 +1330,36 @@ function stockPanel(
 		});
 		return blocks;
 	}
-	blocks.push(restockGroup(id, p));
-	blocks.push(removeStockGroup(id, p, open, renderState));
+	const onHand = p.onHand;
+	if (onHand === null) {
+		// The sku exists but carries NO inventory record, which the wire now says
+		// out loud instead of calling it zero (INC-23). Both movements would 409
+		// UNKNOWN_SKU against the service — neither `restock` nor `removeStock`
+		// creates the row — so rendering their forms would only ever produce a
+		// refusal, and their idempotency keys are derived from an on-hand watermark
+		// that does not exist. One line naming the state and the way out.
+		blocks.push({
+			type: "context",
+			text: "This SKU has no inventory record yet. Saving any section on the Product tab creates one, and stock can be added here after that.",
+		});
+		return blocks;
+	}
+	blocks.push(restockGroup(id, onHand));
+	blocks.push(removeStockGroup(id, onHand, open, renderState));
 	return blocks;
 }
 
-/** Restock stays DA-4: a plain one-shot form, no confirm, no danger. */
-function restockGroup(id: string, p: ProductDetailWire): Block {
+/** Restock stays DA-4: a plain one-shot form, no confirm, no danger. Takes the
+ *  on-hand COUNT rather than the whole product: the group only renders for a
+ *  product that HAS an inventory record, so the watermark below is a number by
+ *  construction and never the string `"null"` (see `stockPanel`). */
+function restockGroup(id: string, onHand: number): Block {
 	return {
 		type: "accordion",
 		block_id: `products:${id}:restock`,
 		label: "Add stock",
 		default_open: false,
-		blocks: [restockForm(id, p)],
+		blocks: [restockForm(id, onHand)],
 	};
 }
 
@@ -1334,10 +1367,10 @@ function restockGroup(id: string, p: ProductDetailWire): Block {
  *  (F-2). No nonce anywhere (F-2a): the idempotency key is derived from
  *  `${productId}:restock:${onHandAtRender}:${qty}` — content plus the
  *  watermark the operator saw, at write time (`stockMovementKey`). */
-function restockForm(id: string, p: ProductDetailWire): FormBlock {
+function restockForm(id: string, onHand: number): FormBlock {
 	return carriedForm({
 		namespace: "products:restock",
-		context: { productId: id, onHand: String(p.onHand) },
+		context: { productId: id, onHand: String(onHand) },
 		form: {
 			type: "form",
 			fields: [
@@ -1392,7 +1425,7 @@ const REMOVE_STOCK_CONTEXT: Block = {
  */
 function removeStockGroup(
 	id: string,
-	p: ProductDetailWire,
+	onHand: number,
 	open: OpenGroup,
 	renderState: ProductsRenderState | undefined,
 ): Block {
@@ -1403,8 +1436,8 @@ function removeStockGroup(
 		staged !== undefined
 			? removeReviewBody(id, staged)
 			: draft !== undefined
-				? [REMOVE_STOCK_BANNER, REMOVE_STOCK_CONTEXT, removeStockForm(id, p.onHand, draft.qtyInput)]
-				: [REMOVE_STOCK_BANNER, REMOVE_STOCK_CONTEXT, removeStockForm(id, p.onHand)];
+				? [REMOVE_STOCK_BANNER, REMOVE_STOCK_CONTEXT, removeStockForm(id, onHand, draft.qtyInput)]
+				: [REMOVE_STOCK_BANNER, REMOVE_STOCK_CONTEXT, removeStockForm(id, onHand)];
 	return {
 		type: "accordion",
 		block_id:
@@ -1908,8 +1941,22 @@ function restockAction() {
 
 /** A refusal on the stock-changed-since-render path — shared by the
  *  `-review` handler and the confirm handler so the two cannot drift
- *  (mirrors `orders-page.ts`'s `staleLedgerNotice`). */
-function stockChangedNotice(liveOnHand: number): Notice {
+ *  (mirrors `orders-page.ts`'s `staleLedgerNotice`).
+ *
+ *  `null` is its own sentence, never a count: the re-read came back with NO
+ *  inventory record for the sku (INC-23 — the wire says that now instead of
+ *  calling it zero), and "0 units are on hand now" would be a count nobody
+ *  took. Reachable only by the row disappearing between the render and the
+ *  submit, since the forms are not rendered without one at all. */
+function stockChangedNotice(liveOnHand: number | null): Notice {
+	if (liveOnHand === null) {
+		return {
+			variant: "error",
+			title: "Stock changed — nothing was removed",
+			description:
+				"This SKU no longer has an inventory record, so there is no count to remove from. Reload the product to see it as it stands now.",
+		};
+	}
 	const unit = liveOnHand === 1 ? "unit is" : "units are";
 	return {
 		variant: "error",
@@ -1969,19 +2016,24 @@ function removeStockReviewAction() {
 				draft(),
 			);
 		}
-		// DA-3a: has stock moved since this group was rendered?
-		if (live.onHand !== observedOnHand) {
-			return api.showLeaf([productId], stockChangedNotice(live.onHand), draft());
+		// DA-3a: has stock moved since this group was rendered? A `null` re-read
+		// (the inventory record itself is gone) takes the SAME branch and is not
+		// folded into a count — `observedOnHand` is always a number, so the
+		// inequality alone would already refuse; the explicit test is what narrows
+		// the type for the bound check below and what gives the case its own words.
+		const liveOnHand = live.onHand;
+		if (liveOnHand === null || liveOnHand !== observedOnHand) {
+			return api.showLeaf([productId], stockChangedNotice(liveOnHand), draft());
 		}
 		// DA-3c: the bound check, against a ceiling just confirmed current.
-		if (qty > live.onHand) {
-			const unit = live.onHand === 1 ? "unit" : "units";
+		if (qty > liveOnHand) {
+			const unit = liveOnHand === 1 ? "unit" : "units";
 			return api.showLeaf(
 				[productId],
 				{
 					variant: "error",
 					title: "Not enough stock to remove",
-					description: `${qty} is more than the ${live.onHand} ${unit} on hand. Enter ${live.onHand} or less.`,
+					description: `${qty} is more than the ${liveOnHand} ${unit} on hand. Enter ${liveOnHand} or less.`,
 				},
 				draft(),
 			);
@@ -1989,7 +2041,7 @@ function removeStockReviewAction() {
 		return api.showLeaf([productId], undefined, {
 			kind: "remove-staged",
 			qty,
-			onHand: live.onHand,
+			onHand: liveOnHand,
 		});
 	});
 }
@@ -2026,7 +2078,9 @@ function removeStockAction() {
 					removeDraftState(String(qty)),
 				);
 			}
-			if (live.onHand !== observedOnHand) {
+			// Same shape as the `-review` step above, including the `null` case:
+			// the record can be gone by the time the confirm arrives.
+			if (live.onHand === null || live.onHand !== observedOnHand) {
 				return showLeaf(
 					[productId],
 					stockChangedNotice(live.onHand),

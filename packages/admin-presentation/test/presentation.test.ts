@@ -397,3 +397,75 @@ describe("the list outcome ladder — FIVE outcomes, and both surfaces read them
 		expect(rowCountLine(0, noun, { complete: true })).toBeUndefined();
 	});
 });
+
+describe("INC-23's exact count, shared by both surfaces", () => {
+	const noun = ORDERS_NOUN;
+
+	test("a `total` states the WHOLE SET on any page, with no page-scoped suffix", () => {
+		// The point of the field: page 3 of 3 knows nothing about pages 1 and 2 by
+		// itself, but a COUNT(*) under the same predicate does.
+		expect(rowCountLine(25, noun, { complete: false, total: 137 })).toBe("137 orders");
+		expect(rowCountLine(25, noun, { complete: true, total: 137 })).toBe("137 orders");
+	});
+
+	test("no `total` falls back to exactly the behaviour that shipped before it", () => {
+		expect(rowCountLine(17, noun, { complete: true })).toBe("17 orders");
+		expect(rowCountLine(25, noun, { complete: false })).toBe("25 orders on this page");
+	});
+
+	test("a `total` that disagrees with itself is REFUSED, not rendered", () => {
+		// Validated rather than trusted: the page-scoped claim is one this render
+		// can back up on its own, so it is the safe direction.
+		for (const bad of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+			expect(rowCountLine(25, noun, { complete: false, total: bad })).toBe(
+				"25 orders on this page",
+			);
+		}
+		// Below the page count would UNDERSTATE rows the operator can see.
+		expect(rowCountLine(25, noun, { complete: false, total: 3 })).toBe("25 orders on this page");
+		// ...but ABOVE it is the ordinary concurrent-insert case and is honoured.
+		expect(rowCountLine(25, noun, { complete: false, total: 26 })).toBe("26 orders");
+	});
+
+	test("zero rows render NO count, whatever the total claims", () => {
+		// "137 orders" immediately above "No orders yet" is the screen
+		// contradicting itself in two adjacent blocks.
+		expect(rowCountLine(0, noun, { complete: true, total: 137 })).toBeUndefined();
+		expect(rowCountLine(0, noun, { complete: false, total: 0 })).toBeUndefined();
+	});
+
+	test("the LADDER threads it, so both surfaces get it from one call", () => {
+		// This is the reconciliation in one assertion: INC-23 put the total logic
+		// in `list-detail.ts` (Block Kit only) and INC-20 moved the count line
+		// here. Threading it through `listOutcome` is what stops the React list
+		// saying "25 orders on this page" beside a Block Kit screen saying "137".
+		const outcome = listOutcome({
+			count: 25,
+			filtered: false,
+			firstPage: false,
+			hasNext: true,
+			total: 137,
+			noun,
+			empty: ORDERS_EMPTY,
+			noMatch: ORDERS_NO_MATCH,
+		});
+		expect(outcome.kind).toBe("rows");
+		expect(outcome.countLine).toBe("137 orders");
+	});
+
+	test("a level that narrowed the fetched page WITHHOLDS the total, and is believed", () => {
+		// Products' "Low stock only" narrows client-side, so the service's count
+		// describes a different set than the rows on screen. Omitting it is the
+		// contract; the ladder must then say the smaller, true thing.
+		const outcome = listOutcome({
+			count: 4,
+			filtered: true,
+			firstPage: true,
+			hasNext: true,
+			noun,
+			empty: ORDERS_EMPTY,
+			noMatch: ORDERS_NO_MATCH,
+		});
+		expect(outcome.countLine).toBe("4 orders on this page");
+	});
+});

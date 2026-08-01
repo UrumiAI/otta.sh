@@ -3,6 +3,7 @@ import type {
 	SeedOrderItemRow,
 	SeedOrderRow,
 	SeedProductTitleRow,
+	SeedRefundRow,
 } from "./in-memory-reporting-store.js";
 
 /**
@@ -148,6 +149,34 @@ export const FIXTURE_ITEMS: SeedOrderItemRow[] = [
 	{ orderId: "o8", productId: "p1", title: "Widget", unitPriceCents: 500, quantity: 50 },
 ];
 
+/**
+ * The `refunds` ledger behind the same 14 orders, built so every rule
+ * `PeriodBucket.refundedCents` states is decided by this one fixture:
+ *
+ *  - `o1` (paid, USD, 07-10) — a PARTIAL refund. The order stays in the revenue
+ *    allow-list, so its bucket carries the full `1000` of revenue AND `250`
+ *    refunded: the two figures are reported side by side, never netted.
+ *  - `o4` (paid, EUR, 07-10) — TWO refunds on one order, proving they aggregate
+ *    into a single bucket figure rather than the last one winning.
+ *  - `o10` (REFUNDED, USD, 07-12) — a full refund on an order the revenue
+ *    allow-list EXCLUDES. This is the case the whole field exists for: apply the
+ *    allow-list to the refunded half and this `6666` vanishes from every report.
+ *  - `o5` `voided` / `o6` `reserved` / `o9` `unverified` — the three
+ *    non-finalized lifecycle states, none of which is money that came back. Both
+ *    07-11 buckets must read `refundedCents: 0` despite carrying three rows
+ *    between them, which is what tells a `recorded`-only sum apart from the
+ *    ceiling's ACTIVE (non-`voided`) sum.
+ */
+export const FIXTURE_REFUNDS: SeedRefundRow[] = [
+	{ orderId: "o1", amountCents: 250, currency: "USD" }, // partial, defaults to 'recorded'
+	{ orderId: "o4", amountCents: 100, currency: "EUR", status: "recorded" },
+	{ orderId: "o4", amountCents: 200, currency: "EUR", status: "recorded" },
+	{ orderId: "o10", amountCents: 6666, currency: "USD", status: "recorded" },
+	{ orderId: "o5", amountCents: 999, currency: "USD", status: "voided" },
+	{ orderId: "o6", amountCents: 500, currency: "EUR", status: "reserved" },
+	{ orderId: "o9", amountCents: 111, currency: "USD", status: "unverified" },
+];
+
 export const FIXTURE_INVENTORY: SeedInventoryRow[] = [
 	{ sku: "SKU-A", onHand: 0 },
 	{ sku: "SKU-B", onHand: 3 },
@@ -187,14 +216,58 @@ export const EXPECTED_SUM_ALL = 59_385;
  *  differ from the allow-list sum (still counts pending/failed/expired). */
 export const EXPECTED_SUM_EXCLUDING_CANCELLED_REFUNDED = 44_942;
 
+/** Σ FINALIZED (`recorded`) refunds over the window, both currencies
+ *  (hand-computed): 250 + 100 + 200 + 6666. */
+export const EXPECTED_TOTAL_REFUNDED = 7216;
+/** What a `recorded`-only sum must NOT equal: the CEILING's ACTIVE set
+ *  (everything but `voided`), which also counts the `reserved` 500 and the
+ *  `unverified` 111 — capacity arbitration, not money that came back. */
+export const EXPECTED_ACTIVE_REFUND_SUM = 7827;
+/** What it must NOT equal either: the refunded half wrongly filtered through the
+ *  REVENUE allow-list, which drops `o10`'s full refund — the exact hole this
+ *  field was added to close. */
+export const EXPECTED_REFUNDS_UNDER_REVENUE_ALLOW_LIST = 550;
+
 /** revenueByPeriod(day) expected buckets, ordered by bucketStart then currency. */
 export const EXPECTED_REVENUE_BY_DAY = [
-	{ bucketStart: "2026-07-10T00:00:00.000Z", currency: "EUR", revenueCents: 3000 },
-	{ bucketStart: "2026-07-10T00:00:00.000Z", currency: "USD", revenueCents: 3000 },
-	{ bucketStart: "2026-07-11T00:00:00.000Z", currency: "EUR", revenueCents: 2500 },
-	{ bucketStart: "2026-07-11T00:00:00.000Z", currency: "USD", revenueCents: 5500 },
-	{ bucketStart: "2026-07-12T00:00:00.000Z", currency: "EUR", revenueCents: 3500 },
-	{ bucketStart: "2026-07-12T00:00:00.000Z", currency: "USD", revenueCents: 3000 },
+	{
+		bucketStart: "2026-07-10T00:00:00.000Z",
+		currency: "EUR",
+		revenueCents: 3000,
+		refundedCents: 300, // o4's two recorded rows, aggregated
+	},
+	{
+		bucketStart: "2026-07-10T00:00:00.000Z",
+		currency: "USD",
+		revenueCents: 3000,
+		refundedCents: 250, // o1 partial — revenue is NOT netted down by it
+	},
+	{
+		bucketStart: "2026-07-11T00:00:00.000Z",
+		currency: "EUR",
+		revenueCents: 2500,
+		refundedCents: 0, // o6's `reserved` 500 is not money that came back
+	},
+	{
+		bucketStart: "2026-07-11T00:00:00.000Z",
+		currency: "USD",
+		revenueCents: 5500,
+		refundedCents: 0, // o5 `voided` 999 + o9 `unverified` 111, neither counted
+	},
+	{
+		bucketStart: "2026-07-12T00:00:00.000Z",
+		currency: "EUR",
+		revenueCents: 3500,
+		refundedCents: 0,
+	},
+	{
+		bucketStart: "2026-07-12T00:00:00.000Z",
+		currency: "USD",
+		revenueCents: 3000,
+		// o10 is `refunded` — EXCLUDED from revenue, so this 6666 is the whole
+		// reason the bucket carries a second figure at all.
+		refundedCents: 6666,
+	},
 ];
 
 /** ordersByStatus expected counts, ordered by status. */

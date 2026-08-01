@@ -133,6 +133,7 @@ export {
 	type SeedOrderItemRow,
 	type SeedOrderRow,
 	type SeedProductTitleRow,
+	type SeedRefundRow,
 } from "./in-memory-reporting-store.js";
 export { InMemorySettingsStore } from "./in-memory-settings-store.js";
 export {
@@ -146,16 +147,20 @@ export {
 	type SettingsStoreContractOptions,
 } from "./settings-store-contract.js";
 export {
+	EXPECTED_ACTIVE_REFUND_SUM,
 	EXPECTED_ORDERS_BY_STATUS,
+	EXPECTED_REFUNDS_UNDER_REVENUE_ALLOW_LIST,
 	EXPECTED_REVENUE_BY_DAY,
 	EXPECTED_SUM_ALL,
 	EXPECTED_SUM_EXCLUDING_CANCELLED_REFUNDED,
 	EXPECTED_TOP_BY_QUANTITY,
 	EXPECTED_TOP_BY_REVENUE,
+	EXPECTED_TOTAL_REFUNDED,
 	EXPECTED_TOTAL_REVENUE,
 	FIXTURE_INVENTORY,
 	FIXTURE_ITEMS,
 	FIXTURE_ORDERS,
 	FIXTURE_PRODUCT_TITLES,
+	FIXTURE_REFUNDS,
 	REPORTING_WINDOW,
 } from "./reporting-fixture.js";

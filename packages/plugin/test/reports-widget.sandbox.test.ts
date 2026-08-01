@@ -51,9 +51,23 @@ function reportsResponder(req: { url: string }): { status: number; body: unknown
 			status: 200,
 			body: {
 				ok: true,
+				// The CURRENT service wire: every bucket carries `refundedCents`, zero
+				// included (INC-23). 07-10 had 250 come back, 07-11 nothing — the two
+				// cases the tile must render differently from each other and from an
+				// absent key (see the legacy-wire test below).
 				buckets: [
-					{ bucketStart: "2026-07-10T00:00:00.000Z", currency: "USD", revenueCents: 3000 },
-					{ bucketStart: "2026-07-11T00:00:00.000Z", currency: "USD", revenueCents: 5500 },
+					{
+						bucketStart: "2026-07-10T00:00:00.000Z",
+						currency: "USD",
+						revenueCents: 3000,
+						refundedCents: 250,
+					},
+					{
+						bucketStart: "2026-07-11T00:00:00.000Z",
+						currency: "USD",
+						revenueCents: 5500,
+						refundedCents: 0,
+					},
 				],
 			},
 		};
@@ -235,12 +249,234 @@ describe("Reports admin page (workerd sandbox)", () => {
 		// 8500 over the 3 `paid` orders the stub reports.
 		expect(items[2]?.value).toBe("$28.33");
 		expect(items[2]?.description).toBe("Average order value across 3 paid orders");
-		// The refunded AMOUNT is absent from the reporting wire (the revenue
-		// allow-list excludes refunded orders and orders-by-status carries counts
-		// only). It renders as a stated gap — never as $0.00, and never quietly
-		// relabelled as the count so the tile looks full.
+		// The refunded AMOUNT is a real figure now that the revenue wire carries
+		// `refundedCents` (INC-23): 250 on 07-10 + 0 on 07-11, formatted through
+		// formatMoney like every other money value on this screen. The description
+		// names the cohort, and reconciles the amount with the count beside it —
+		// this stub reports no `refunded` ORDER at all, yet money still came back,
+		// which is exactly what a partial refund looks like.
+		expect(items[3]?.value).toBe("$2.50");
+		expect(items[3]?.description).toBe(
+			"On orders placed in this period; no order refunded in full. A later refund changes this figure; refunds in progress are excluded.",
+		);
+	});
+
+	test("Refunded renders $0.00 — not an em-dash — when the wire reports zero refunds", async () => {
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", (req) => {
+			if (req.url.startsWith("/reports/revenue")) {
+				return {
+					status: 200,
+					body: {
+						ok: true,
+						buckets: [
+							{
+								bucketStart: "2026-07-10T00:00:00.000Z",
+								currency: "USD",
+								revenueCents: 3000,
+								refundedCents: 0,
+							},
+						],
+					},
+				};
+			}
+			return reportsResponder(req);
+		});
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+		await seedAdminToken(sandbox, stub);
+
+		const outcome = await sandbox.invokeRoute("admin", { type: "page_load", page: "/reports" });
+		const items = statItems(blocksOf(outcome));
+		// A period in which nothing was refunded is a FACT, and a merchant is
+		// entitled to read it as one. The em-dash is reserved for questions with no
+		// answer — it must never stand in for a zero the service actually reported.
+		expect(items[3]?.value).toBe("$0.00");
+	});
+
+	test("Refunded falls back to the stated gap against a service whose buckets carry no refundedCents key", async () => {
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", (req) => {
+			if (req.url.startsWith("/reports/revenue")) {
+				return {
+					status: 200,
+					body: {
+						ok: true,
+						// A service older than the field: the KEY is absent, which is a
+						// different fact from a zero and must not be read as one.
+						buckets: [
+							{ bucketStart: "2026-07-10T00:00:00.000Z", currency: "USD", revenueCents: 3000 },
+						],
+					},
+				};
+			}
+			if (req.url.startsWith("/reports/orders-by-status")) {
+				return {
+					status: 200,
+					body: { ok: true, counts: [{ status: "paid", orderCount: 3 }] },
+				};
+			}
+			return reportsResponder(req);
+		});
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+		await seedAdminToken(sandbox, stub);
+
+		const outcome = await sandbox.invokeRoute("admin", { type: "page_load", page: "/reports" });
+		const items = statItems(blocksOf(outcome));
 		expect(items[3]?.value).toBe("—");
 		expect(String(items[3]?.description)).toMatch(/refunded amount not yet reported/);
+	});
+
+	test("a REFUND-ONLY currency never becomes a phantom revenue card — the USD store keeps its four cards, its AOV, its per-product revenue and its zero-fill", async () => {
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", (req) => {
+			if (req.url.startsWith("/reports/revenue")) {
+				return {
+					status: 200,
+					body: {
+						ok: true,
+						// A USD store that took one EUR order and refunded it in full.
+						// The EUR order is `refunded`, so the allow-list gives it NO
+						// revenue — the bucket exists only because money came back, and
+						// reading it as a currency the store trades in would flip this
+						// whole screen into multi-currency mode off one refund.
+						buckets: [
+							{
+								bucketStart: "2026-07-10T00:00:00.000Z",
+								currency: "USD",
+								revenueCents: 3000,
+								refundedCents: 250,
+							},
+							{
+								bucketStart: "2026-07-11T00:00:00.000Z",
+								currency: "USD",
+								revenueCents: 5500,
+								refundedCents: 0,
+							},
+							{
+								bucketStart: "2026-07-11T00:00:00.000Z",
+								currency: "EUR",
+								revenueCents: 0,
+								refundedCents: 4500,
+							},
+						],
+					},
+				};
+			}
+			return reportsResponder(req);
+		});
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+		await seedAdminToken(sandbox, stub);
+
+		const outcome = await sandbox.invokeRoute("admin", {
+			type: "page_load",
+			page: "/reports",
+			...RANGE,
+		});
+		const blocks = blocksOf(outcome);
+		assertBlockContract(blocks, { screen: "reports", level: "list" });
+		const items = statItems(blocks);
+
+		// ONE revenue card, in the currency the store actually earns in — no
+		// `€0.00` phantom, and therefore no second card eating R-16's cap.
+		expect(items.map((i) => i.label)).toEqual([
+			"Revenue (USD) — 10 Jul – 12 Jul 2026",
+			"Orders — 10 Jul – 12 Jul 2026",
+			"AOV (USD) — 10 Jul – 12 Jul 2026",
+			"Refunded (USD) — 10 Jul – 12 Jul 2026",
+		]);
+		// THE REFUNDED CARD SURVIVES — the card this whole increment exists for is
+		// exactly the one the phantom used to truncate off the end.
+		expect(items[3]?.value).toBe("$2.50");
+		// AOV still computes (it dashes out on a genuinely multi-currency window).
+		expect(items[2]?.value).not.toBe("—");
+		// Per-product revenue is still attributed rather than suppressed.
+		expect(
+			blocksOf(outcome).some((b) => String(b.text ?? "").includes("spans more than one currency")),
+		).toBe(false);
+		// The zero-fill survives: three continuous day rows, 12 Jul at $0.00 —
+		// a multi-currency window would have declined to fill and said so.
+		const rows = (tableWithId(blocks, "reports:revenue-table")?.rows ?? []) as Array<
+			Record<string, unknown>
+		>;
+		expect(rows.map((r) => r.bucketStart)).toEqual(["2026-07-10", "2026-07-11", "2026-07-12"]);
+		expect(rows.map((r) => r.revenue)).toEqual(["$30.00", "$55.00", "$0.00"]);
+		// And the EUR money is NOT swallowed: it is stated, in its own currency,
+		// beside the cards that cannot hold it.
+		const notes = blocks.filter((b) => b.type === "context").map((b) => String(b.text));
+		expect(notes.some((t) => t.includes("Also refunded: €45.00"))).toBe(true);
+	});
+
+	test("an all-refunds window states the figure on the card rather than dashing out", async () => {
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", (req) => {
+			if (req.url.startsWith("/reports/revenue")) {
+				return {
+					status: 200,
+					body: {
+						ok: true,
+						// Nothing earned, one order refunded: there IS a currency here,
+						// so the card states its figure instead of pleading ignorance.
+						buckets: [
+							{
+								bucketStart: "2026-07-10T00:00:00.000Z",
+								currency: "EUR",
+								revenueCents: 0,
+								refundedCents: 4500,
+							},
+						],
+					},
+				};
+			}
+			return reportsResponder(req);
+		});
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+		await seedAdminToken(sandbox, stub);
+
+		const outcome = await sandbox.invokeRoute("admin", { type: "page_load", page: "/reports" });
+		const blocks = blocksOf(outcome);
+		const items = statItems(blocks);
+		// No revenue card claims a figure…
+		expect(items[0]?.value).toBe("—");
+		// …but the refund is money that genuinely moved, in a currency the page
+		// can name, so it renders — and is not doubled into a second note.
+		const refunded = items.find((i) => String(i.label).startsWith("Refunded"));
+		expect(refunded?.value).toBe("€45.00");
+		expect(
+			blocks
+				.filter((b) => b.type === "context")
+				.some((b) => String(b.text).includes("Also refunded")),
+		).toBe(false);
+	});
+
+	test("the Refunded card discloses BOTH of its caveats: the figure is retro-mutable, and in-progress refunds are excluded", async () => {
+		stub = await startStubCommerceServer();
+		stub.respondWith("GET", reportsResponder);
+		sandbox = await loadPluginInSandbox({
+			allowedHosts: [stub.host],
+			commerceServiceBaseUrl: stub.baseUrl,
+		});
+		await seedAdminToken(sandbox, stub);
+
+		const outcome = await sandbox.invokeRoute("admin", { type: "page_load", page: "/reports" });
+		const description = String(statItems(blocksOf(outcome))[3]?.description);
+		// (a) A July order refunded in September moves July's figure — a closed
+		// period re-run later does not have to match what it read at the time.
+		expect(description).toMatch(/later refund changes this figure/i);
+		// (b) `reserved`/`unverified` ledger rows are excluded, so a store sitting
+		// on an ambiguous refund reads LOWER here than its order screens suggest.
+		expect(description).toMatch(/refunds in progress are excluded/i);
 	});
 
 	test("AOV renders an em-dash, never $0.00, when there are no orders to average", async () => {

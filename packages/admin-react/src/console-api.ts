@@ -216,6 +216,10 @@ export interface ListPayload {
 	readonly ok: true;
 	readonly orders: readonly OrderSummary[];
 	readonly nextCursor: string | null;
+	/** The service's exact count of the filtered set (INC-23). Optional because
+	 *  a service older than the field omits it, and `formatAmount`'s rule
+	 *  applies to counts too: absent is not zero. */
+	readonly total?: number;
 	readonly vocabulary: Vocabulary;
 }
 

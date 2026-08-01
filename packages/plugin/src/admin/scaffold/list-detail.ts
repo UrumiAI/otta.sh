@@ -90,7 +90,22 @@ export interface ListLevelDef<Client, Filter, Summary, RenderState = unknown> {
 		parentPath: NavPath,
 		filter: Filter,
 		opts: { cursor?: string; limit: number },
-	): Promise<{ items: Summary[]; nextCursor: string | null }>;
+	): Promise<{
+		items: Summary[];
+		nextCursor: string | null;
+		/**
+		 * The EXACT size of the filtered set this page came from, when the service
+		 * reports one (INC-23). Passed straight through to `render` and on to
+		 * {@link listResult}, which is the only thing that reads it.
+		 *
+		 * OMIT IT rather than guessing. A level that narrows the FETCHED PAGE
+		 * client-side (products' "Low stock only") MUST omit it while that
+		 * narrowing is on: the service counted the unnarrowed set, so passing it
+		 * would caption the rows on screen with a number that does not describe
+		 * them — the same class of lie the page-scoped wording exists to avoid.
+		 */
+		total?: number;
+	}>;
 	/** Render the list blocks. `nextToken` is the scaffold-wrapped keyset cursor
 	 *  (undefined on the last page) to hand the table's `next_cursor`. `notice`
 	 *  is set when a list-level {@link CustomActionFn} re-renders this level via
@@ -121,6 +136,12 @@ export interface ListLevelDef<Client, Filter, Summary, RenderState = unknown> {
 		 *  say so. {@link listResult} is where the two are combined; a level should
 		 *  hand this to that rather than reason about it again. */
 		firstPage: boolean;
+		/** Whatever this level's own `fetchPage` returned as `total` — the exact
+		 *  size of the filtered set, or `undefined` when the service does not
+		 *  report one (or the level declined to pass it on). Hand it to
+		 *  {@link listResult}; it is the one input that lets the count line state
+		 *  the SET rather than the page. */
+		total: number | undefined;
 		notice: Notice | undefined;
 		/** This screen's render state, when a list-level {@link CustomActionFn}
 		 *  passed one to {@link CustomActionApi.showList} — `undefined` on every
@@ -488,6 +509,7 @@ function createDispatcher<RenderState>(
 					items: page.items,
 					nextToken,
 					firstPage: cursor === undefined,
+					total: page.total,
 					notice,
 					renderState,
 				});
@@ -756,27 +778,35 @@ function withChildBlockLists(block: Block, lists: Block[][]): Block {
  * no count anywhere, and no way to undo the filter except reopening the panel and
  * emptying each field by hand.
  *
- * WHAT THE WIRE ACTUALLY SUPPORTS, because the copy below is bounded by it. Every
- * list port answers `{items, nextCursor}` — a page and a way to ask for the next
- * one. THERE IS NO TOTAL, on any screen, and nothing here invents one. So the
- * count this module renders is:
+ * WHAT THE WIRE SUPPORTS, because the copy below is bounded by it. The three
+ * admin list endpoints answer `{items, nextCursor, total}` — a page, a way to
+ * ask for the next one, and (since INC-23) the exact size of the filtered set.
+ * `total` is what the earlier version of this note called "a queued service
+ * increment"; the queue moved. So the count this module renders is:
  *
- *  - the WHOLE (filtered) set — `17 orders` — when, and only when, the render is
- *    the first page of its filter AND there is no next cursor. Both halves are
- *    needed: page 1 of many counts a page, and page 3 of 3 knows nothing about
- *    pages 1 and 2 (keyset paging carries no running offset, and the scaffold
- *    deliberately does not accumulate one across stateless interactions);
- *  - THIS PAGE otherwise — `25 orders on this page`, which is a smaller claim and
- *    a true one.
+ *  - the WHOLE (filtered) set — `17 orders` — whenever a `total` is present,
+ *    on ANY page. It is a COUNT(*) under the same predicate as the page, so it
+ *    is exact on page 3 of 3 as much as on page 1;
+ *  - the WHOLE (filtered) set from the PAGE ITSELF — same wording — when there
+ *    is no `total` but the render is the first page of its filter AND there is
+ *    no next cursor. Both halves are needed for that inference: page 1 of many
+ *    counts a page, and page 3 of 3 knows nothing about pages 1 and 2 (keyset
+ *    paging carries no running offset, and the scaffold deliberately does not
+ *    accumulate one across stateless interactions);
+ *  - THIS PAGE otherwise — `25 orders on this page`, which is a smaller claim
+ *    and a true one. That is now the fallback for a service older than `total`,
+ *    and for a level that deliberately withholds one because it narrowed the
+ *    fetched page itself (see `ListLevelDef.fetchPage`'s `total`).
  *
- * A whole-store total needs the service to return one (a `total` alongside
- * `nextCursor` on the list ports); until it does, "17 orders" on a paged screen
- * would be a number an operator would reconcile against and lose. That is a
- * queued service increment, not something a renderer may fake.
+ * NOTHING HERE INVENTS A TOTAL. A count that says the set is bigger than the
+ * page must have been told so by the service; a renderer that guessed one would
+ * produce exactly the number an operator reconciles against and loses.
  *
- * ZERO RENDERS NO COUNT AT ALL. `0 orders` is never emitted: at zero the state
- * below already says it in words, and a count line repeating it is the "unknown
- * rendered as 0" failure in a costume.
+ * ZERO RENDERS NO COUNT AT ALL — zero ROWS, whatever the `total` says, and a
+ * `total` of zero. `0 orders` is never emitted: at zero the state below already
+ * says it in words, and a count line repeating it is the "unknown rendered as 0"
+ * failure in a costume. A `total` above an empty page is the same self-
+ * contradiction from the other direction, and is suppressed with it.
  */
 
 /**
@@ -857,6 +887,10 @@ export interface ListResultOptions {
 	firstPage: boolean;
 	/** `render`'s own `nextToken`. */
 	nextToken: string | undefined;
+	/** `render`'s own `total` — the exact size of the filtered set when the
+	 *  service reports one. Absent ⇒ the count falls back to describing the page
+	 *  (see the module note above). */
+	total?: number;
 	noun: RowNoun;
 	/** Zero rows and NO filter on: the collection itself is empty. Non-accusatory
 	 *  by construction — nothing has gone wrong — and it may offer the way IN
@@ -914,6 +948,14 @@ export function listResult(opts: ListResultOptions): ListResult {
 	// here is the half that is genuinely Block Kit's: an `empty` block with a
 	// `block_id`, a `context` block, and a `Clear filters` button that has to
 	// carry the nav path so the clear re-lists THIS level rather than the root.
+	//
+	// `total` (INC-23) is threaded straight through, and that is the whole of
+	// the reconciliation between the two increments: the exact-count logic lives
+	// with the count line, the count line lives in the shared package, so BOTH
+	// surfaces state an exact whole-set figure the moment the service reports
+	// one. Had it stayed here, the React list would have kept saying
+	// "25 orders on this page" against a Block Kit screen one sidebar entry away
+	// saying "137 orders" — a parity gap opening on the day INC-23 merged.
 	const outcome = listOutcome({
 		count: opts.count,
 		filtered: opts.filtered,
@@ -922,6 +964,7 @@ export function listResult(opts: ListResultOptions): ListResult {
 		noun: opts.noun,
 		empty: opts.empty,
 		noMatch: opts.noMatch,
+		...(opts.total !== undefined ? { total: opts.total } : {}),
 	});
 	if (outcome.kind === "rows") {
 		return {

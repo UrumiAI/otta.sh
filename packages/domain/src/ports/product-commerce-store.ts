@@ -624,6 +624,25 @@ export interface ProductCommerceStore {
 	listProducts(filter: ProductListFilter, page: ProductListPage): Promise<ProductListResult>;
 
 	/**
+	 * Count the products matching a filter (INC-23: the admin list's exact
+	 * "N products" caption). Shares the EXACT predicate with `listProducts` —
+	 * same `active`/`deleted`/`productKind`/`search` semantics, including the
+	 * tombstone default — so a count can never disagree with the list it
+	 * captions (one predicate builder in every adapter; mirrors
+	 * `OrderStore.countOrders` 1:1).
+	 *
+	 * A SEPARATE method rather than a `total` on `ListResult`, deliberately: the
+	 * count is a second statement, and folding it into the page read would
+	 * charge every caller of `listProducts` for a `COUNT(*)` whether or not it
+	 * renders one. The keyset page and the count are independent questions and
+	 * stay independently callable.
+	 *
+	 * NO JOIN and no ordering — `listProducts`'s stock LEFT JOIN exists to fill
+	 * a column, and a count has no columns.
+	 */
+	countProducts(filter: ProductListFilter): Promise<number>;
+
+	/**
 	 * Count LIVE (non-soft-deleted) products whose `tax_class` references this
 	 * `taxClassId` (product data-model adds, Increment 2 slice 5). A query, not a
 	 * command — no idempotency key, mutates nothing.

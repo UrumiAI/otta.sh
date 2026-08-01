@@ -60,25 +60,76 @@ export const CLEAR_FILTERS_LABEL = "Clear filters";
 /**
  * `17 orders` · `1 order` · `25 orders on this page`, or `undefined` at zero.
  *
- * `complete` is the caller's claim that this count covers the whole filtered set
- * (`firstPage && no next cursor`). Getting it wrong is the one way this function
- * can lie, which is why {@link listOutcome} derives it rather than letting a
- * screen assert it.
+ * WHAT THE WIRE SUPPORTS, because the copy here is bounded by it. The three
+ * admin list endpoints answer `{items, nextCursor, total}` — a page, a way to
+ * ask for the next one, and (since INC-23) the exact size of the filtered set.
+ * So the count this function renders is:
  *
- * `Intl.PluralRules` and `Intl.NumberFormat`, not `String(count)` and an `s`.
- * The React tier's first cut used both, which quietly made the count the one
- * rendered value in this console that a threaded locale would NOT reach — the
- * exact single-point-localizability property this package exists to hold.
+ *  - the WHOLE (filtered) set — `17 orders` — whenever a `total` is present, on
+ *    ANY page. It is a COUNT(*) under the same predicate as the page, so it is
+ *    exact on page 3 of 3 as much as on page 1;
+ *  - the WHOLE (filtered) set from the PAGE ITSELF — same wording — when there
+ *    is no `total` but `complete` says the render is the first page of its
+ *    filter AND there is no next cursor. Both halves are needed for that
+ *    inference: page 1 of many counts a page, and page 3 of 3 knows nothing
+ *    about pages 1 and 2 (keyset paging carries no running offset);
+ *  - THIS PAGE otherwise — `25 orders on this page`, a smaller claim and a true
+ *    one. That is the fallback for a service older than `total`, and for a
+ *    level that deliberately WITHHOLDS one because it narrowed the fetched page
+ *    itself (products' "Low stock only" — the service counted the unnarrowed
+ *    set, so passing it would caption the rows on screen with a number that
+ *    does not describe them).
+ *
+ * `total` IS VALIDATED HERE RATHER THAN TRUSTED: a non-integer, negative, or
+ * below-the-page count is a service disagreeing with itself, and the
+ * page-scoped fallback — a claim this render can back up on its own — is the
+ * safe direction. `total < count` is impossible for a count and a page taken
+ * under one predicate, but they are two statements, so a concurrent
+ * insert/delete between them is the ordinary case; only the direction that
+ * would UNDERSTATE the rows an operator can see is refused.
+ *
+ * NOTHING HERE INVENTS A TOTAL. A count that says the set is bigger than the
+ * page must have been told so by the service; a renderer that guessed one would
+ * produce exactly the number an operator reconciles against and loses.
+ *
+ * ZERO RENDERS NO COUNT AT ALL — zero ROWS, whatever the `total` says, and a
+ * `total` of zero. `0 orders` is never emitted: at zero the zero state already
+ * says it in words, and a count line repeating it is the "unknown rendered as
+ * 0" failure in a costume. A `total` above an empty page is the same
+ * self-contradiction from the other direction, and is suppressed with it.
+ *
+ * WHY IT LIVES IN THIS PACKAGE AND NOT IN `list-detail.ts`, where INC-23 wrote
+ * it: because there are two list tiers now. The exact-count logic sitting on
+ * the Block Kit side would have left the React Orders list saying
+ * "25 orders on this page" while the Block Kit screen one sidebar entry away
+ * said "137 orders" — a parity gap opening on the day INC-23 merged, on the
+ * most-read line of the most-read screen. One implementation, both surfaces.
+ *
+ * `Intl.PluralRules` and `Intl.NumberFormat`, not `String(count)` and an `s` —
+ * the count is the one rendered value a threaded locale must reach along with
+ * everything else this package holds.
  */
 export function rowCountLine(
 	count: number,
 	noun: RowNoun,
-	opts: { complete: boolean },
+	opts: { complete: boolean; total?: number },
 ): string | undefined {
+	// ZERO ROWS RENDER NO COUNT — `total` present or not. The alternative,
+	// "17 orders" sitting immediately above "No orders yet" or "Nothing on this
+	// page", is the screen contradicting itself in two adjacent blocks.
 	if (count <= 0) return undefined;
-	const word = COUNT_PLURALS.select(count) === "one" ? noun.one : noun.other;
-	const n = COUNT_NUMERALS.format(count);
-	return opts.complete ? `${n} ${word}` : `${n} ${word} ${PAGE_SCOPED_SUFFIX}`;
+	const usable =
+		opts.total !== undefined &&
+		Number.isSafeInteger(opts.total) &&
+		opts.total >= 0 &&
+		opts.total >= count;
+	const n = usable ? (opts.total ?? 0) : count;
+	if (n <= 0) return undefined;
+	const word = COUNT_PLURALS.select(n) === "one" ? noun.one : noun.other;
+	const formatted = COUNT_NUMERALS.format(n);
+	return usable || opts.complete
+		? `${formatted} ${word}`
+		: `${formatted} ${word} ${PAGE_SCOPED_SUFFIX}`;
 }
 
 /** The wording of ONE zero state. Screens author every string. */
@@ -152,6 +203,10 @@ export interface ListOutcomeOptions {
 	readonly firstPage: boolean;
 	/** Whether a page remains behind this one. */
 	readonly hasNext: boolean;
+	/** The service's exact count of the filtered set (INC-23), when it reports
+	 *  one and the caller has not narrowed the fetched page itself. Absent ⇒ the
+	 *  count falls back to describing the page. See {@link rowCountLine}. */
+	readonly total?: number;
 	readonly noun: RowNoun;
 	/** Zero rows and NO filter on: the collection itself is empty. */
 	readonly empty: ZeroStateCopy;
@@ -169,6 +224,7 @@ export interface ListOutcomeOptions {
 export function listOutcome(opts: ListOutcomeOptions): ListOutcome {
 	const countLine = rowCountLine(opts.count, opts.noun, {
 		complete: opts.firstPage && !opts.hasNext,
+		...(opts.total !== undefined ? { total: opts.total } : {}),
 	});
 	if (opts.count > 0) {
 		return { kind: "rows", countLine, emptyText: opts.noMatch.emptyText };
