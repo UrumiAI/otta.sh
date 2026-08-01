@@ -455,6 +455,15 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 		return { products: rows.map((row) => this.#toSummary(row)), nextCursor };
 	}
 
+	/** Count under the SAME `#matchesFilter` predicate `listProducts` pages with
+	 *  (MOD-5) — one predicate, so a count and the list it captions can never
+	 *  disagree. No cursor: a count covers the whole filtered set, not a page. */
+	async countProducts(filter: ProductListFilter): Promise<number> {
+		let count = 0;
+		for (const row of this.#rows.values()) if (this.#matchesFilter(row, filter)) count++;
+		return count;
+	}
+
 	/** Count LIVE products referencing a tax class (port doc) — the delete-in-use
 	 *  guard's product half. Soft-deleted rows are historical, not live
 	 *  dependencies, so they never block reclaiming a class id. */

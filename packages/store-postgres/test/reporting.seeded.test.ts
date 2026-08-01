@@ -9,6 +9,7 @@ import {
 	FIXTURE_INVENTORY,
 	FIXTURE_ITEMS,
 	FIXTURE_ORDERS,
+	FIXTURE_REFUNDS,
 	REPORTING_WINDOW,
 	type ReportingStoreHarness,
 } from "@otta-sh/domain/testing";
@@ -27,6 +28,7 @@ async function seeded(make: () => Promise<ReportingStoreHarness>): Promise<Repor
 	for (const o of FIXTURE_ORDERS) await h.seedOrder(o);
 	for (const it of FIXTURE_ITEMS) await h.seedOrderItem(it);
 	for (const inv of FIXTURE_INVENTORY) await h.seedInventory(inv);
+	for (const r of FIXTURE_REFUNDS) await h.seedRefund(r);
 	return h;
 }
 
@@ -110,6 +112,9 @@ function suite(make: () => Promise<ReportingStoreHarness>, dialect: string): voi
 			expect(buckets).toHaveLength(1);
 			expect(buckets[0]?.revenueCents).toBe(expected);
 			expect(Number.isSafeInteger(buckets[0]?.revenueCents ?? NaN)).toBe(true);
+			// The union's zero-filled other half must not perturb the sum, and an
+			// unrefunded set reports zero refunded — a fact, not a gap.
+			expect(buckets[0]?.refundedCents).toBe(0);
 		});
 	});
 }

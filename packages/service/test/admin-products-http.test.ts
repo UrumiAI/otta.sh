@@ -264,6 +264,31 @@ describe.skipIf(PG === undefined)("admin Products console HTTP contract", () => 
 		expect([...p1, ...p2].map((p) => p.productId)).toEqual(["prod-3", "prod-2", "prod-1"]);
 	});
 
+	// -- total: the exact size of the filtered set (INC-23) --------------------
+
+	test("GET /admin/products carries `total` — the whole FILTERED set, identical on every page, and counting the ARCHIVE view when that is what was asked for", async () => {
+		await seed();
+		const page1 = await json(await get("/products?productKind=physical&limit=2"));
+		// 3 live physical products behind a 2-row page (the digital distractor and
+		// the tombstone are outside this filter, and outside its count).
+		expect(page1.total).toBe(3);
+		expect((page1.products as unknown[]).length).toBe(2);
+		const page2 = await json(
+			await get(`/products?cursor=${encodeURIComponent(page1.nextCursor as string)}`),
+		);
+		expect(page2.total).toBe(3);
+
+		// The tombstone default is shared with the list: 4 live rows, 1 archived.
+		expect((await json(await get("/products"))).total).toBe(4);
+		expect((await json(await get("/products?deleted=true"))).total).toBe(1);
+
+		const none = await json(await get("/products?search=nothing-matches-this"));
+		expect(none.products).toEqual([]);
+		// Zero is REPORTED, not omitted (the key's presence is the capability).
+		expect(none.total).toBe(0);
+		expect(Object.hasOwn(none, "total")).toBe(true);
+	});
+
 	test("GET /admin/products/:id returns the full detail incl. stock", async () => {
 		await seed();
 		await server.seed("SKU-1", 42);
@@ -282,11 +307,58 @@ describe.skipIf(PG === undefined)("admin Products console HTTP contract", () => 
 		});
 	});
 
-	test("GET /admin/products/:id with no inventory row reports onHand:0 (never a throw)", async () => {
+	// -- onHand on the DETAIL wire, with the LIST's semantics (INC-23) ----------
+	// The detail used to collapse both "no inventory row" and "no sku" to `0`,
+	// so the SAME product read `—` in the list and `0` on its own detail page,
+	// one click apart. These four pin the three cases apart, on the wire.
+
+	test("GET /admin/products/:id with no inventory row reports onHand:null (unknown), never 0", async () => {
 		await seed();
 		const body = await json(await get("/products/prod-2"));
 		expect(body.ok).toBe(true);
-		expect((body.product as Record<string, unknown>).onHand).toBe(0);
+		const product = body.product as Record<string, unknown>;
+		expect(product.onHand).toBeNull();
+		expect(product.onHand).not.toBe(0);
+		// The key is always present — a consumer never has to guess whether the
+		// field exists before reading it.
+		expect(Object.hasOwn(product, "onHand")).toBe(true);
+	});
+
+	test("GET /admin/products/:id reports onHand:0 for a sku that HAS a row at zero — out of stock is a fact, not an unknown", async () => {
+		await seed();
+		await server.seed("SKU-2", 0);
+		const product = (await json(await get("/products/prod-2"))).product as Record<string, unknown>;
+		expect(product.onHand).toBe(0);
+		expect(product.onHand).not.toBeNull();
+	});
+
+	test("GET /admin/products/:id agrees with GET /admin/products on the same product's onHand", async () => {
+		await seed();
+		await server.seed("SKU-3", 12);
+		const list = (await json(await get("/products"))).products as Array<Record<string, unknown>>;
+		const bySku = new Map(list.map((p) => [p.sku, p]));
+		for (const [sku, id] of [
+			["SKU-3", "prod-3"], // stocked
+			["SKU-2", "prod-2"], // no inventory row
+		] as const) {
+			const detail = (await json(await get(`/products/${id}`))).product as Record<string, unknown>;
+			expect(detail.onHand).toEqual(bySku.get(sku)?.onHand);
+		}
+	});
+
+	test("GET /admin/products/:id: a product with no sku reports onHand:null (nothing to look up)", async () => {
+		await server.seedProductRow({
+			id: "prod-skuless-detail",
+			sku: null,
+			title: "Create then price",
+			priceCents: null,
+			createdAt: "2026-07-14T00:00:00.000Z",
+		});
+		const product = (await json(await get("/products/prod-skuless-detail"))).product as Record<
+			string,
+			unknown
+		>;
+		expect(product.onHand).toBeNull();
 	});
 
 	test("GET /admin/products/:id 404s for an unknown product", async () => {

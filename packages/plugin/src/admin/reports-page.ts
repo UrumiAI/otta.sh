@@ -378,8 +378,40 @@ interface ReportsData {
 }
 
 export function buildReportsBlocks(data: ReportsData): BlockResponse {
+	// THE CURRENCY MODE OF THIS PAGE IS DECIDED BY REVENUE, NOT BY THE BUCKET
+	// LIST (INC-23). Since the revenue wire started reporting refunds, a bucket
+	// exists when EITHER half contributes — so a single fully-refunded EUR order
+	// in an otherwise USD store puts an EUR bucket on the wire at
+	// `revenueCents: 0`. Read naively, that ONE row flips the whole screen into
+	// multi-currency: a phantom `€0.00` Revenue card appears, AOV and every
+	// per-product revenue figure dash out (they refuse to compare units), the
+	// day series stops being zero-filled, and — worst — the fourth card is now
+	// spent on the phantom, which truncates the REFUNDED card off R-16's cap in
+	// precisely the case that card exists to report.
+	//
+	// So the split is explicit: a currency is a REVENUE currency when it has at
+	// least one revenue-bearing bucket; everything else is refund-only and is
+	// handled as refunds (counted, stated in its own currency, disclosed) rather
+	// than as a zero-revenue currency. Against a service that predates
+	// `refundedCents` every bucket is revenue-bearing, so this is byte-for-byte
+	// the old behavior there.
+	const revenueCurrencies = new Set(data.revenue.filter(isRevenueBearing).map((b) => b.currency));
+	// Buckets in a revenue currency — what the cards, the AOV denominator, the
+	// day series and the table are all computed from. A `revenueCents: 0` bucket
+	// in a currency that DOES earn elsewhere stays in (it is a real zero day, and
+	// the zero-fill would draw it anyway); only a wholly refund-only currency is
+	// held back.
+	const revenueBuckets = data.revenue.filter((b) => revenueCurrencies.has(b.currency));
+	// Currencies that appear ONLY because money came back in them. Deterministic
+	// order (ISO code), like the revenue cards.
+	const refundOnlyCurrencies = [
+		...new Set(
+			data.revenue.filter((b) => !revenueCurrencies.has(b.currency)).map((b) => b.currency),
+		),
+	].toSorted((a, b) => a.localeCompare(b));
+
 	const totalByCurrency = new Map<string, number>();
-	for (const b of data.revenue) {
+	for (const b of revenueBuckets) {
 		totalByCurrency.set(b.currency, (totalByCurrency.get(b.currency) ?? 0) + b.revenueCents);
 	}
 	// §12.5's listing asks for these cards ranked "by the most orders" — but
@@ -452,7 +484,18 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 		description: `Every status; ${paidOrderCount} paid`,
 	};
 	const aovTile = averageOrderValueTile(byCurrencyCode, singleCurrency, paidOrderCount, period);
-	const refundedTile = refundedTileFor(data.statuses, singleCurrency, period);
+	// The Refunded card's currency: the revenue currency when there is exactly
+	// one (the ordinary store), else — when NOTHING earned in this period but
+	// something came back — the single refund-only currency, so an all-refunds
+	// window still states its figure instead of dashing out. Anything genuinely
+	// plural stays "—": adding minor units across currencies is the one thing
+	// this screen never does.
+	const refundedCurrency =
+		singleCurrency ??
+		(byCurrencyCode.length === 0 && refundOnlyCurrencies.length === 1
+			? toCurrency(refundOnlyCurrencies[0]!)
+			: undefined);
+	const refundedTile = refundedTileFor(data.revenue, data.statuses, refundedCurrency, period);
 	const allTiles: StatItem[] = [...revenueTiles, ordersTile, aovTile, refundedTile];
 	const items: StatItem[] = allTiles.slice(0, MAX_STATS_ITEMS);
 	// R-16's cap is four cards. A multi-currency window spends them on revenue it
@@ -485,7 +528,11 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 	// month of steady sales and a month with a three-week hole render as the
 	// same four rows. A zero row is data — it is the shape a table can show
 	// without a chart.
-	const series = revenueSeries(data);
+	// Over the REVENUE buckets only: a refund-only currency contributes no
+	// revenue row, and letting one in would make the window look multi-currency
+	// to the fill (a day × currency cross product it declines to draw), costing
+	// an ordinary single-currency store its continuous series over one refund.
+	const series = revenueSeries(data, revenueBuckets);
 	const revenueRows = series.points.map(({ day, currencyCode, revenueCents }) => ({
 		bucketStart: day,
 		revenue: formatMoney(toCents(revenueCents), toCurrency(currencyCode), MONEY_LOCALE),
@@ -630,12 +677,52 @@ export function buildReportsBlocks(data: ReportsData): BlockResponse {
 					},
 				]
 			: []),
+		...refundOnlyNotes(data.revenue, refundOnlyCurrencies, refundedCurrency),
 		revenueAccordion,
 		statusesAccordion,
 		topAccordion,
 		lowAccordion,
 	];
 	return { blocks };
+}
+
+/**
+ * The line a refund-only currency gets INSTEAD of a revenue card (INC-23).
+ *
+ * A currency that appears in the window only because money came back in it is
+ * NOT a currency this store earned in, so it gets no `€0.00` Revenue card — that
+ * card would be a phantom, and (via R-16's four-card cap) it would push the
+ * Refunded card off the screen in exactly the case the Refunded card exists to
+ * report. The money is still stated, in its OWN currency and never added to
+ * another one, in one line under the cards.
+ *
+ * Emitted only for currencies whose figure is not already on a card: when the
+ * whole window is a single refund-only currency, the Refunded card itself states
+ * it and a second telling would be noise (T-8a).
+ */
+function refundOnlyNotes(
+	revenue: RevenueBucketWire[],
+	refundOnlyCurrencies: readonly string[],
+	shownOnCard: Currency | undefined,
+): Block[] {
+	const parts: string[] = [];
+	for (const code of refundOnlyCurrencies) {
+		if (code === shownOnCard) continue;
+		const currency = toCurrency(code);
+		const amount = refundedFor(revenue, currency);
+		if (amount === undefined || amount <= 0) continue;
+		parts.push(formatMoney(toCents(amount), currency, MONEY_LOCALE));
+	}
+	if (parts.length === 0) return [];
+	// ≤140 chars for a top-level context (X-11) — the amounts are short and the
+	// sentence is fixed; a store with enough refund-only currencies to overrun it
+	// would be well outside anything this console is built for.
+	return [
+		{
+			type: "context",
+			text: `Also refunded: ${listPhrase(parts)} — stated separately because this period earned nothing in ${parts.length === 1 ? "that currency" : "those currencies"}.`,
+		},
+	];
 }
 
 /**
@@ -765,34 +852,138 @@ function averageOrderValueTile(
 }
 
 /**
- * Refunded money for the period — a KNOWN GAP, rendered as one.
+ * Refunded money for the period — a real figure since the revenue wire started
+ * carrying `refundedCents` (INC-23). This tile used to render "—" on every
+ * store, because the amount existed nowhere on the wire: `/reports/revenue`
+ * EXCLUDED refunded orders from its allow-list rather than reporting them, and
+ * `/reports/orders-by-status` carries counts only.
  *
- * The reporting wire carries no refunded amount: `/reports/revenue` EXCLUDES
- * refunded orders from its allow-list rather than reporting them, and
- * `/reports/orders-by-status` carries counts only. Two wrong answers were
- * available and both are refused — summing nothing to `$0.00` (a partial refund
- * leaves the order in its previous state, so even "no refunded orders" does not
- * mean "no money went back"), and quietly relabelling the tile as a count so it
- * looks full. So the tile states its currency, renders "—", and says what is
- * known and what would fix it (DA-7 — the same disclosure the top-products
- * revenue column already makes). Closing it is a service change: a
- * `refundedCents` alongside `revenueCents` on the revenue wire.
+ * THE DASH IS NOW RESERVED FOR THE THREE CASES THAT GENUINELY HAVE NO ANSWER,
+ * and `$0.00` is emitted the moment there is one:
+ *
+ *  - the buckets carry NO `refundedCents` key — a service older than the field.
+ *    Detected by KEY PRESENCE, never by a zero value: `0` is the fact "nothing
+ *    came back", and reading an absent field as `0` would turn "this service
+ *    cannot tell you" into a confident "nothing was refunded", which is the
+ *    exact failure this whole increment exists to remove;
+ *  - the window spans several currencies (as AOV does — summing incommensurable
+ *    minor units produces a number that means nothing);
+ *  - the window has no orders at all, so there is no bucket to read a key from.
+ *
+ * Zero with the key present renders `$0.00`, because a period in which nothing
+ * was refunded is a FACT a merchant is entitled to read as one.
+ *
+ * The description names the COHORT ("orders placed in this period"), which is
+ * also what reconciles the two numbers on this tile: the amount includes PARTIAL
+ * refunds, whose orders stay `paid`, so `$2.50 refunded` alongside "no order
+ * refunded in full" is consistent rather than contradictory.
  */
 function refundedTileFor(
+	revenue: RevenueBucketWire[],
 	statuses: StatusCountWire[],
-	singleCurrency: Currency | undefined,
+	currency: Currency | undefined,
 	period: string,
 ): StatItem {
 	const refundedOrders = statuses.find((s) => s.status === "refunded")?.orderCount ?? 0;
-	const known =
-		refundedOrders === 0
-			? "No fully refunded orders"
-			: `${refundedOrders} fully refunded ${refundedOrders === 1 ? "order" : "orders"}`;
+	const inFull =
+		refundedOrders === 0 ? "no order refunded in full" : `${refundedOrders} refunded in full`;
+	const label = `Refunded${currency === undefined ? "" : ` (${currency})`} — ${period}`;
+	if (currency === undefined) {
+		return {
+			label,
+			value: "—",
+			description:
+				revenue.length === 0
+					? "Money returned — no orders in this period"
+					: "Money returned — this period spans several currencies",
+		};
+	}
+	const totalCents = refundedFor(revenue, currency);
+	if (totalCents === undefined) {
+		// The pre-INC-23 wire. Say what IS known (the fully-refunded order count,
+		// which `orders-by-status` has always carried) and what is missing — never
+		// a zero standing in for an unknown (DA-7).
+		const known =
+			refundedOrders === 0
+				? "No fully refunded orders"
+				: `${refundedOrders} fully refunded ${refundedOrders === 1 ? "order" : "orders"}`;
+		return { label, value: "—", description: `${known}; refunded amount not yet reported` };
+	}
 	return {
-		label: `Refunded${singleCurrency === undefined ? "" : ` (${singleCurrency})`} — ${period}`,
-		value: "—",
-		description: `${known}; refunded amount not yet reported`,
+		label,
+		value: formatMoney(toCents(totalCents), currency, MONEY_LOCALE),
+		// TWO DISCLOSURES RIDE HERE, because both change what the number means and
+		// neither is visible from the figure (DA-7):
+		//  - it is RETRO-MUTABLE. The cohort is orders PLACED in the period, so a
+		//    July order refunded in September moves July's figure — a closed month
+		//    re-run later does not have to match what it read at the time, and an
+		//    operator reconciling against a saved screenshot needs to know that.
+		//  - refunds still IN PROGRESS are excluded (`reserved`/`unverified` —
+		//    reserved ledger capacity whose gateway leg is unconfirmed or whose
+		//    fate is unknown). A store sitting on an ambiguous refund therefore
+		//    reads LOWER here than its own order screens suggest, and the reason
+		//    is not otherwise discoverable from this page.
+		description: `On orders placed in this period; ${inFull}. A later refund changes this figure; refunds in progress are excluded.`,
 	};
+}
+
+/**
+ * Σ refunded for ONE currency across the window, or `undefined` when any of that
+ * currency's buckets fails to carry a usable figure.
+ *
+ * Absent-or-unusable is ALL-OR-NOTHING on purpose: a partial sum would be a
+ * number smaller than the truth wearing the same formatting as a complete one,
+ * which is worse than the dash it falls back to (M-1).
+ */
+function refundedFor(revenue: RevenueBucketWire[], currency: Currency): number | undefined {
+	let total = 0;
+	for (const b of revenue) {
+		if (b.currency !== currency) continue;
+		const amount = readRefunded(b);
+		if (amount === undefined) return undefined;
+		total += amount;
+	}
+	return total;
+}
+
+/**
+ * Whether a bucket is on the wire because of REVENUE (INC-23). Since the revenue
+ * report started carrying refunds, a bucket exists when either half contributes,
+ * so this is what separates "a day that earned" from "a day that only gave money
+ * back" — and, one level up, a currency the store trades in from one that merely
+ * appears in a refund.
+ *
+ * A bucket with no revenue AND no refunds is counted as revenue-bearing, not as
+ * refund-only: it can only have come from the revenue half (a genuinely free
+ * order at `total_cents: 0`), and — the case that matters far more — it is what
+ * EVERY bucket looks like on a service that predates `refundedCents`, which must
+ * keep behaving exactly as it did.
+ */
+function isRevenueBearing(b: RevenueBucketWire): boolean {
+	return b.revenueCents > 0 || (readRefunded(b) ?? 0) === 0;
+}
+
+/**
+ * Read one bucket's refunded amount off the wire, keeping ABSENT and ZERO apart
+ * (the whole point of the field):
+ *
+ *  - a number — a known amount, `0` included;
+ *  - `undefined` — the response carried no `refundedCents` at all, i.e. a
+ *    service older than the field.
+ *
+ * A value that is present but UNUSABLE — not a number, not a safe integer (money
+ * is integer minor units; `19.99` reaching a `Cents` field is the float bug this
+ * codebase is built to refuse), or negative (a refund that gave money back to
+ * the store is not a thing this page can render) — is read as `undefined` too,
+ * so it lands on the same stated-gap path rather than being formatted. The
+ * screen-level fail-closed banner still covers a genuinely broken response
+ * shape; this is the narrower "the key is there and I cannot use it" case, and
+ * a dash with a reason beats a confidently wrong money value (M-1).
+ */
+function readRefunded(b: RevenueBucketWire): number | undefined {
+	const raw: unknown = (b as { refundedCents?: unknown }).refundedCents;
+	if (typeof raw !== "number" || !Number.isSafeInteger(raw) || raw < 0) return undefined;
+	return raw;
 }
 
 /** One row of the revenue table: a day, a currency, and that day's revenue in
@@ -840,9 +1031,9 @@ const SPARSE_SERIES_NOTE = "Periods with no revenue are omitted for this range."
  *    `$0.00` rows that outnumber the real ones and read as activity that never
  *    happened.
  */
-function revenueSeries(data: ReportsData): RevenueSeries {
+function revenueSeries(data: ReportsData, buckets: RevenueBucketWire[]): RevenueSeries {
 	const passthrough = (filled: boolean): RevenueSeries => ({
-		points: data.revenue.map((b) => ({
+		points: buckets.map((b) => ({
 			day: b.bucketStart.slice(0, 10),
 			currencyCode: b.currency,
 			revenueCents: b.revenueCents,
@@ -852,12 +1043,12 @@ function revenueSeries(data: ReportsData): RevenueSeries {
 	// An empty window has no gaps to fill and no rows to mislead anyone: the
 	// table's own `empty_text` covers it, so it is "filled" as far as the
 	// disclosure is concerned.
-	if (data.revenue.length === 0) return passthrough(true);
+	if (buckets.length === 0) return passthrough(true);
 	if (data.interval !== "day") return passthrough(false);
 
 	const byDay = new Map<string, number>();
 	const currencies = new Set<string>();
-	for (const b of data.revenue) {
+	for (const b of buckets) {
 		currencies.add(b.currency);
 		const day = b.bucketStart.slice(0, 10);
 		byDay.set(day, (byDay.get(day) ?? 0) + b.revenueCents);
@@ -872,7 +1063,7 @@ function revenueSeries(data: ReportsData): RevenueSeries {
 	if (
 		days.length === 0 ||
 		days.length > MAX_ZERO_FILL_DAYS ||
-		data.revenue.some((b) => !daySet.has(b.bucketStart.slice(0, 10)))
+		buckets.some((b) => !daySet.has(b.bucketStart.slice(0, 10)))
 	) {
 		return passthrough(false);
 	}

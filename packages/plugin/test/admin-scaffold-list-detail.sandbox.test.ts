@@ -10,6 +10,7 @@ import {
 	failClosedResponse,
 	filterPathField,
 	noticeBanner,
+	rowCountLine,
 	screenActions,
 	type Notice,
 } from "../src/admin/scaffold/index.js";
@@ -134,6 +135,50 @@ describe("scaffold nav primitives (pure serialization — no handler invoked)", 
 	test("claiming an already-registered entity namespace throws (silent dispatch-collision guard)", () => {
 		screenActions("dup-entity-check");
 		expect(() => screenActions("dup-entity-check")).toThrowError(/already claimed/);
+	});
+});
+
+describe("rowCountLine: the count states the SET when the service reports one (INC-23)", () => {
+	const noun = { one: "order", other: "orders" };
+
+	test("a reported total overrides the page count AND drops the page-scoped suffix, on any page", () => {
+		// 2 rows on screen, mid-scan (not the first page, more behind it) — the
+		// one shape that could never claim a whole-set count before.
+		expect(rowCountLine(2, noun, { complete: false, total: 17 })).toBe("17 orders");
+		expect(rowCountLine(1, noun, { complete: false, total: 1 })).toBe("1 order");
+	});
+
+	test("without a total the page-scoped rule is untouched", () => {
+		expect(rowCountLine(2, noun, { complete: false })).toBe("2 orders on this page");
+		expect(rowCountLine(3, noun, { complete: true })).toBe("3 orders");
+	});
+
+	test("a total of zero renders NO count, exactly as a zero page does", () => {
+		// The zero state says it in words; a count line repeating it is the
+		// "unknown rendered as 0" failure in a costume.
+		expect(rowCountLine(0, noun, { complete: true, total: 0 })).toBeUndefined();
+	});
+
+	test("a total that UNDERSTATES the rows on screen is refused, falling back to the page", () => {
+		// Two statements under one predicate can straddle a concurrent insert, so
+		// a total below the rendered row count is possible — and it is the one
+		// direction that would contradict what the operator can see and count.
+		expect(rowCountLine(5, noun, { complete: false, total: 2 })).toBe("5 orders on this page");
+	});
+
+	test("a non-integer or negative total is refused rather than formatted", () => {
+		expect(rowCountLine(2, noun, { complete: false, total: 4.5 })).toBe("2 orders on this page");
+		expect(rowCountLine(2, noun, { complete: false, total: -1 })).toBe("2 orders on this page");
+		expect(rowCountLine(2, noun, { complete: false, total: Number.NaN })).toBe(
+			"2 orders on this page",
+		);
+	});
+
+	test("a total is SUPPRESSED on a zero page — the zero state owns that render", () => {
+		// Paging off the end of a list that changed underneath. "17 orders" sitting
+		// above "Nothing on this page" is the screen contradicting itself in two
+		// adjacent blocks, so the count stands down and the zero state speaks alone.
+		expect(rowCountLine(0, noun, { complete: false, total: 17 })).toBeUndefined();
 	});
 });
 

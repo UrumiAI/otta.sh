@@ -270,6 +270,7 @@ describe("createOrderFromCart", () => {
 			deactivate: (id, key, t) => base.deactivate(id, key, t),
 			listCommerceByIds: (ids) => base.listCommerceByIds(ids),
 			listProducts: (filter, page) => base.listProducts(filter, page),
+			countProducts: (filter) => base.countProducts(filter),
 			countByTaxClass: (taxClassId) => base.countByTaxClass(taxClassId),
 		};
 

@@ -1907,5 +1907,57 @@ export function productCommerceStoreContract(
 			);
 			expect(products.map((p) => p.productId)).toEqual(["match"]);
 		});
+
+		// -- countProducts (INC-23: the exact count the admin list captions with) --
+
+		test("countProducts counts the whole filtered set, independently of any page size", async () => {
+			const h = await makeStore();
+			for (const id of ["c1", "c2", "c3"]) await h.seedProduct(productRow({ id }));
+			// The point of the count: a 2-row page says nothing about the set behind
+			// it, and keyset paging carries no running offset to derive one from.
+			const page = await h.store.listProducts({}, { limit: 2 });
+			expect(page.products).toHaveLength(2);
+			expect(page.nextCursor).not.toBeNull();
+			expect(await h.store.countProducts({})).toBe(3);
+		});
+
+		test("countProducts applies the SAME tombstone default as listProducts, and the archive axis with it", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "live-1" }));
+			await h.seedProduct(productRow({ id: "live-2" }));
+			await h.seedProduct(productRow({ id: "gone", deletedAt: "2026-07-10T02:00:00.000Z" }));
+			// Default: live rows only — a count must never include a tombstone the
+			// list it captions will never show.
+			expect(await h.store.countProducts({})).toBe(2);
+			// Archive view: the mirror image, exactly as `listProducts` flips it.
+			expect(await h.store.countProducts({ deleted: true })).toBe(1);
+		});
+
+		test("countProducts applies the full listProducts predicate (active AND kind AND search)", async () => {
+			const h = await makeStore();
+			await h.seedProduct(
+				productRow({ id: "match", active: true, productKind: "digital", title: "Findable Ebook" }),
+			);
+			await h.seedProduct(
+				productRow({ id: "wrong-kind", active: true, productKind: "physical", title: "Findable" }),
+			);
+			await h.seedProduct(
+				productRow({
+					id: "wrong-active",
+					active: false,
+					productKind: "digital",
+					title: "Findable",
+				}),
+			);
+			expect(
+				await h.store.countProducts({ active: true, productKind: "digital", search: "findable" }),
+			).toBe(1);
+			expect(await h.store.countProducts({})).toBe(3);
+		});
+
+		test("countProducts on an empty store is 0", async () => {
+			const h = await makeStore();
+			expect(await h.store.countProducts({})).toBe(0);
+		});
 	});
 }

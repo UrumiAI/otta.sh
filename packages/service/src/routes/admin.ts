@@ -162,10 +162,21 @@ export function adminRoutes(deps: AdminRoutesDeps): Hono {
 			limit = q.limit;
 		}
 
-		const result = await deps.orderStore.listOrders(filter, { cursor: cursorPos, limit });
+		// The page and its EXACT count, under one filter, in parallel (INC-23).
+		// `total` is the count of the whole filtered set — not of this page — so a
+		// console can caption "17 orders" on page 2 of 3 instead of the
+		// page-scoped hedge keyset paging otherwise forces (there is no running
+		// offset to derive one from, and a renderer must never invent one).
+		const [result, total] = await Promise.all([
+			deps.orderStore.listOrders(filter, { cursor: cursorPos, limit }),
+			deps.orderStore.countOrders(filter),
+		]);
 		const nextCursor =
 			result.nextCursor === null ? null : encodeCursor(result.nextCursor, filter, limit);
-		return c.json({ ok: true, orders: result.orders.map(serializeOrderSummary), nextCursor }, 200);
+		return c.json(
+			{ ok: true, orders: result.orders.map(serializeOrderSummary), nextCursor, total },
+			200,
+		);
 	});
 
 	app.get("/orders/:orderId", async (c) => {
@@ -238,11 +249,16 @@ export function adminRoutes(deps: AdminRoutesDeps): Hono {
 			limit = q.limit;
 		}
 
-		const result = await deps.productCommerce.listProducts(filter, { cursor: cursorPos, limit });
+		// The page and its EXACT count, under one filter, in parallel (INC-23) —
+		// the same shape as the Orders list above; see its note.
+		const [result, total] = await Promise.all([
+			deps.productCommerce.listProducts(filter, { cursor: cursorPos, limit }),
+			deps.productCommerce.countProducts(filter),
+		]);
 		const nextCursor =
 			result.nextCursor === null ? null : encodeProductCursor(result.nextCursor, filter, limit);
 		return c.json(
-			{ ok: true, products: result.products.map(serializeProductSummary), nextCursor },
+			{ ok: true, products: result.products.map(serializeProductSummary), nextCursor, total },
 			200,
 		);
 	});
@@ -260,16 +276,24 @@ export function adminRoutes(deps: AdminRoutesDeps): Hono {
 			// the tombstone from the admin (product lifecycle surfacing, port doc).
 			return c.json({ ok: false, reason: "PRODUCT_NOT_FOUND" }, 404);
 		}
-		// A single-sku read — never a per-row list join (port doc). A skuless
-		// "create then price" row has no sku to look up; stock reads as `0`. A
-		// soft-deleted row still resolves here (200, `deletedAt` non-null) — the
-		// detail is now the HONEST read-only tombstone view, not a 404 masquerading
-		// as "never existed" (product lifecycle surfacing). Its `onHand` is still
-		// read for informational value only; the write routes below (PATCH/restock/
+		// A single-sku read — never a per-row list join (port doc) — through
+		// `findOnHand`, which keeps "no inventory row" (`null`, unknown) apart from
+		// `0` ("out of stock") exactly as the LIST does. Both halves used to
+		// collapse to `0` here (`?? 0` inside `getOnHand`, plus a `sku === null ? 0`
+		// on this line), so one product could read `—` in the list and `0` on its
+		// own detail page, one click apart — and a detail view is the screen with
+		// the most context, so it is the last place that should be the one guessing.
+		// A skuless "create then price" row has nothing to look up at all: `null`,
+		// never a zero nobody counted.
+		//
+		// A soft-deleted row still resolves here (200, `deletedAt` non-null) — the
+		// detail is the HONEST read-only tombstone view, not a 404 masquerading as
+		// "never existed" (product lifecycle surfacing). Its `onHand` is read for
+		// informational value only; the write routes below (PATCH/restock/
 		// remove-stock) remain blocked for a deleted row via their OWN not_found
 		// guards (`updateCommerceFields`'s guard order / `resolveProductSku`) —
 		// this GET is visibility only, never a path back to editability.
-		const onHand = product.sku === null ? 0 : await deps.inventoryStore.getOnHand(product.sku);
+		const onHand = product.sku === null ? null : await deps.inventoryStore.findOnHand(product.sku);
 		return c.json({ ok: true, product: serializeProductDetail(product, onHand) }, 200);
 	});
 
@@ -985,8 +1009,15 @@ function serializeProductSummary(summary: ProductSummary): Record<string, unknow
 /** Wire shape of the admin Product detail (view-only; admin-UX Increment 2) —
  *  the FULL `ProductCommerce` row plus the single-sku `onHand` read (never a
  *  list-level join). Money as integer minor units + ISO-4217, exactly like
- *  `serializeOrder`'s money fields. */
-function serializeProductDetail(product: ProductCommerce, onHand: number): Record<string, unknown> {
+ *  `serializeOrder`'s money fields.
+ *
+ *  `onHand` is `number | null` with the LIST's semantics (INC-23): `null` is
+ *  "no inventory row / no sku" — unknown — and `0` is a known sku that is out
+ *  of stock. The two must never be folded into each other in either direction. */
+function serializeProductDetail(
+	product: ProductCommerce,
+	onHand: number | null,
+): Record<string, unknown> {
 	return {
 		productId: product.productId,
 		sku: product.sku,

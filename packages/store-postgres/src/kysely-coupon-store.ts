@@ -347,6 +347,17 @@ export class KyselyCouponStore implements CouponStore {
 		return { coupons, nextCursor };
 	}
 
+	/** Count under the SAME predicate as `listCoupons` (one builder —
+	 *  `couponFilterConditions`) over `coupons` alone: no ordering, no cursor,
+	 *  one scalar. Mirrors `KyselyOrderStore.countOrders`. */
+	async countCoupons(filter: CouponListFilter): Promise<number> {
+		let q = this.#db.selectFrom("coupons").select(sql<number>`count(*)`.as("n"));
+		const conds = couponFilterConditions(filter);
+		if (conds.length > 0) q = q.where((eb) => eb.and(conds));
+		const row = await q.executeTakeFirstOrThrow();
+		return Number(row.n);
+	}
+
 	// -- internals ------------------------------------------------------------
 
 	async #findRedemption(couponId: string, key: string): Promise<{ id: string } | undefined> {

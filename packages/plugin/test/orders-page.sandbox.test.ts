@@ -531,7 +531,7 @@ const ALLOWED_BY_STATE: Record<string, readonly string[]> = ORDER_STATE_MACHINE;
  *  block with its `Clear filters`, and — `none-more` — the zero page that still
  *  has a cursor behind it and must therefore keep `Load more` alive) — and, for
  *  D4, so is a page of two orders a human cannot tell apart (`twins`). */
-let listRows: "two" | "none" | "none-more" | "two-then-none" | "twins" = "two";
+let listRows: "two" | "none" | "none-more" | "two-then-none" | "twins" | "two-with-total" = "two";
 
 /**
  * Detail reads for the ids the LIST offers, so a test can walk from a picker
@@ -584,6 +584,22 @@ function makeGetResponder() {
 						nextCursor: null,
 					},
 				};
+			}
+			if (listRows === "two-with-total") {
+				// The CURRENT service wire (INC-23): a page, a cursor, AND the exact
+				// count of the filtered set behind them — 17 orders, of which this
+				// page shows 2 and the next shows 1. Both pages must say 17.
+				return query.includes("cursor=")
+					? { status: 200, body: { ok: true, orders: [SUMMARY_2], nextCursor: null, total: 17 } }
+					: {
+							status: 200,
+							body: {
+								ok: true,
+								orders: [SUMMARY_1, SUMMARY_2],
+								nextCursor: "svc-cursor-1",
+								total: 17,
+							},
+						};
 			}
 			if (query.includes("cursor=")) {
 				// Page 2 (the cursor page): the remainder, no further pages.
@@ -1785,9 +1801,9 @@ describe("admin Orders console (workerd sandbox)", () => {
 		expect(String((await list())[1]?.text)).toMatch(/^3 orders · /);
 
 		listRows = "two";
-		// 2 rows AND a next cursor ⇒ the count is a claim about this page only. The
-		// service's list responses carry a page and a cursor and NO total, so a
-		// whole-set count here would be invented.
+		// 2 rows AND a next cursor ⇒ the count is a claim about this page only.
+		// THIS stub answers without a `total` (a service older than INC-23), and
+		// with nothing but a page and a cursor a whole-set count would be invented.
 		const page1 = await list();
 		const intro = String(page1[1]?.text);
 		expect(intro).toMatch(/^2 orders on this page · /);
@@ -1805,6 +1821,26 @@ describe("admin Orders console (workerd sandbox)", () => {
 		const none = await list();
 		expect(String(none[1]?.text)).toBe(String(page1[1]?.text).split(" · ").slice(1).join(" · "));
 		expect(none.some((b) => String(b.text ?? "").includes("0 order"))).toBe(false);
+	});
+
+	test("INC-23: a service that reports `total` gets the EXACT set count on every page — no page-scoped hedge", async () => {
+		await boot();
+		listRows = "two-with-total";
+		const page1 = await list();
+		const intro = String(page1[1]?.text);
+		// 2 rows on screen, 17 in the set: the count describes the SET, and says so
+		// without the "on this page" suffix, which would now be understating it.
+		expect(intro).toMatch(/^17 orders · /);
+		expect(intro).not.toContain("on this page");
+		expect(intro.length).toBeLessThanOrEqual(140); // X-11
+		// Page 2 is a different page of the same filtered set — the count is the
+		// same 17, which is exactly what the page-scoped wording could never say
+		// (page 3 of 3 knows nothing about pages 1 and 2).
+		const page2 = await click({
+			action_id: "orders:page",
+			value: { cursor: tableWithId(page1, "orders:list")?.next_cursor },
+		});
+		expect(String(page2[1]?.text)).toMatch(/^17 orders · /);
 	});
 
 	test("INC-12: a zero page that is NOT the first one never claims the collection is empty — the whole-store wording is gated on `firstPage`, exactly as the count is", async () => {

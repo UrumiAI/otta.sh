@@ -31,14 +31,61 @@ describe.skipIf(PG === undefined)("reports HTTP contract", () => {
 	test("GET /reports/revenue returns per-day buckets grouped by currency, integer cents", async () => {
 		const body = await json(await get(`/revenue?from=${FROM}&to=${TO}&interval=day`));
 		expect(body.ok).toBe(true);
+		// Every bucket carries BOTH figures, `refundedCents` alongside — never
+		// netted into — `revenueCents` (INC-23). 07-10 USD shows a partial refund
+		// on an order whose full 1000 still counts as revenue; 07-12 USD shows a
+		// fully refunded order's 6666, money the revenue allow-list excludes and
+		// which no endpoint reported at all before this.
 		expect(body.buckets).toEqual([
-			{ bucketStart: "2026-07-10T00:00:00.000Z", currency: "EUR", revenueCents: 3000 },
-			{ bucketStart: "2026-07-10T00:00:00.000Z", currency: "USD", revenueCents: 3000 },
-			{ bucketStart: "2026-07-11T00:00:00.000Z", currency: "EUR", revenueCents: 2500 },
-			{ bucketStart: "2026-07-11T00:00:00.000Z", currency: "USD", revenueCents: 5500 },
-			{ bucketStart: "2026-07-12T00:00:00.000Z", currency: "EUR", revenueCents: 3500 },
-			{ bucketStart: "2026-07-12T00:00:00.000Z", currency: "USD", revenueCents: 3000 },
+			{
+				bucketStart: "2026-07-10T00:00:00.000Z",
+				currency: "EUR",
+				revenueCents: 3000,
+				refundedCents: 300,
+			},
+			{
+				bucketStart: "2026-07-10T00:00:00.000Z",
+				currency: "USD",
+				revenueCents: 3000,
+				refundedCents: 250,
+			},
+			{
+				bucketStart: "2026-07-11T00:00:00.000Z",
+				currency: "EUR",
+				revenueCents: 2500,
+				refundedCents: 0,
+			},
+			{
+				bucketStart: "2026-07-11T00:00:00.000Z",
+				currency: "USD",
+				revenueCents: 5500,
+				refundedCents: 0,
+			},
+			{
+				bucketStart: "2026-07-12T00:00:00.000Z",
+				currency: "EUR",
+				revenueCents: 3500,
+				refundedCents: 0,
+			},
+			{
+				bucketStart: "2026-07-12T00:00:00.000Z",
+				currency: "USD",
+				revenueCents: 3000,
+				refundedCents: 6666,
+			},
 		]);
+	});
+
+	test("GET /reports/revenue emits refundedCents as a KEY even at zero — absence is what means 'not reported'", async () => {
+		const body = await json(await get(`/revenue?from=${FROM}&to=${TO}&interval=day`));
+		const buckets = body.buckets as Array<Record<string, unknown>>;
+		const zeroBucket = buckets.find(
+			(b) => b.bucketStart === "2026-07-11T00:00:00.000Z" && b.currency === "EUR",
+		);
+		// `in`, not a truthiness/`?? 0` read: a client distinguishes "no refunds"
+		// from "this service predates the field" by the key, never by the value.
+		expect(zeroBucket !== undefined && "refundedCents" in zeroBucket).toBe(true);
+		expect(zeroBucket?.refundedCents).toBe(0);
 	});
 
 	test("GET /reports/orders-by-status counts every state including expired", async () => {
