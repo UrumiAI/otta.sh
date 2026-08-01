@@ -204,10 +204,19 @@ const TERMINAL_ORDER_STATES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * THE ONE PLACE AN ORDER STATE BECOMES A RENDERED VALUE (INC-10). List row,
- * the customer's other-orders table, the identity strip and the timeline's
- * `Status → …` all read through this, so the four surfaces cannot drift into
- * four vocabularies for one field.
+ * EVERY SURFACE THAT RENDERS AN ORDER STATE AS A VALUE READS THROUGH THIS
+ * (INC-10): the list row, the customer's other-orders table, the identity strip
+ * and the timeline's `Status → …`. Four surfaces, one vocabulary, so a state
+ * cannot say one thing on the list and another one click away.
+ *
+ * ONE SURFACE IS DELIBERATELY EXCLUDED, AND IT SITS ON THE SAME RESPONSE AS THE
+ * FIRST: the drill-in picker's option label ({@link openOrderForm}). That label
+ * is a ` · `-joined 4-tuple, so a marked state would silently make it a
+ * 5-tuple — the exact ambiguity `products-page.ts` avoids by keeping
+ * `active (not priced)` in parentheses rather than spelling it with a middot. A
+ * picker option is a CHOOSER, not a rendering of the record: the row directly
+ * above it carries the marked value. The suite pins that segment BARE so the
+ * exclusion cannot be "fixed" into ambiguity.
  *
  * BADGE THE EXCEPTIONS, PLAIN-TEXT THE HAPPY PATH — done in WORDS, because the
  * renderer cannot do it in ink. `format` is a property of the COLUMN, not of a
@@ -918,6 +927,12 @@ function openOrderForm(
 							// `shortIdsFor` is TOTAL over the ids it was given, so the fallback
 							// is unreachable — it is here so a future caller narrowing the set
 							// gets a short id rather than `undefined` in the operator's face.
+							//
+							// THE STATE IS BARE HERE, not `orderStateCell(o.state)` (INC-10):
+							// this label is a ` · `-joined 4-tuple, and a marked state would
+							// make it a 5-tuple neither an operator nor the suite can segment.
+							// The row above already carries the marked value; a picker option
+							// is a chooser, not a second rendering of the record.
 							label: `#${shortIds.get(o.id) ?? shortIdFixed(o.id)} · ${o.customerId ?? o.buyerRef} · ${formatTotal(o.totalCents, o.currency)} · ${o.state}`,
 						})),
 					],

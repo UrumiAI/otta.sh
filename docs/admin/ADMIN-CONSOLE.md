@@ -824,16 +824,35 @@ string, a joined address, a summary sentence).
 | Timestamp in a table | `relative_time` | "3 days ago" — for a column read as an AGE and stated on no other surface. A timestamp the detail screen ALSO shows renders absolute, in M-6's format, so the two agree (INC-13). |
 | Count, quantity | `number` | `num.toLocaleString()` — locale grouping (`table.tsx:26-29`). |
 | Money | *(none — plain text)* | Pre-formatted by `formatMoney` (M-1). **Never** `number`: `9900` would render as `9,900`, which is worse than raw because it looks like a formatted total. |
-| Lifecycle state | `badge` | Subject to T-5. |
+| Lifecycle state | *(none — plain text)* | Subject to T-5: a status column is **never** a badge column. |
+| A closed set of ≤3 values, none of them a happy path | `badge` | The only badge left (shipping-method `Type`). Subject to T-5. |
 | Everything else | *(none)* | |
 
-**T-5 — badge discipline.** A badge is reserved for **lifecycle state** — the value an operator
-scans a list *for*. Concretely: order status, product active/inactive/archived, timeline event kind,
-shipping-method type. Everything else is plain text.
+**T-5 — badge discipline: badge the exceptions, and a status column cannot.** *(Rewritten by
+INC-10, which overturned this rule's earlier "lifecycle state ⇒ badge" whitelist. The §11/§12
+wireframes still draw the old badges and are corrected in the docs increment.)*
 
-- At most **one** badge column per table.
+The right rendering for a status column is "mark the exception, leave the happy path quiet", and
+**Block Kit cannot express it**: `format` is a property of the COLUMN, not of a cell
+(`blocks/table.tsx`'s `formatCell` reads `col.format`), so a table badges every row of a column or
+none of them — and blanking the happy-path cell to fake the split is worse than either end, because
+`Badge` draws its pill from padding and a radius alone, so an empty cell in a badge column is a
+solid mark with no word in it. So:
+
+- **No status/lifecycle column is a badge column.** Order status, product status, coupon status,
+  timeline event kind: all plain text. A badge on them spends the heaviest ink on the value nearly
+  every row carries (`paid`, `active`), and one filter click later — Orders filtered by status,
+  Pricing & inventory filtered to Active — every row carries the SAME value, which is X-4.
+- **The exception is marked in the cell's own words**, the convention `On hand` ships
+  (`0 · Out of stock`) and Orders extends (`cancelled · closed`). What the mark says must be a fact
+  the console can stand behind and must come from ONE constant per vocabulary, never one per screen;
+  a value not in that set renders bare, so a new state never acquires the loudest rendering by
+  default.
+- **`format:"badge"` survives only for a closed, small set in which no value is the happy path** —
+  today exactly one column, the L-9 shipping-method `Type` (2 values, both meaningful, an operator
+  distinguishes them at a glance). At most **one** such column per table.
 - Never badge: a property near-constant across rows (`kind: physical` — the column of identical
-  black pills in the current products list), a boolean rendered yes/no (`Applies to shipping` —
+  black pills the products list used to draw), a boolean rendered yes/no (`Applies to shipping` —
   use `yes` / `—`), a currency code (delete the column instead, M-2), an id, money, a date, or free
   text.
 - Because every badge renders identically (R-6), a column whose values never differ is pure
@@ -1853,9 +1872,12 @@ event (`Placed`) and carries no `(UTC)` suffix. **A raw wire timestamp never rea
 rule that `fields` show ISO trimmed to seconds. Tables use `relative_time` only where T-4 still
 allows it; a field the detail screen also shows is absolute on both. Date-only bounds stay DAYS —
 a `date_input` submits and prefills `YYYY-MM-DD`, and a day a merchant set never acquires an
-invented time — but a day DISPLAYED renders in the dialect too, through `formatDate`
-(`10 Jul 2026`; a validity window reads `10 Jul 2026 – 1 Aug 2026`). No timezone conversion
-anywhere: every rendering is UTC-pinned.
+invented time. A bound stated as a VALUE renders in the dialect, through `formatDate`: a coupon's
+validity window reads `10 Jul 2026 – 1 Aug 2026`. **Two surfaces keep `YYYY-MM-DD` on purpose** —
+the Orders filter summary's parts (`from: 2026-07-10`), which echo back what the operator typed
+into a field they can reopen and edit, and Reports' `Period` column, whose cells are the bucket
+KEYS its rows are aligned by rather than dates being read. No timezone conversion anywhere: every
+rendering is UTC-pinned.
 
 **M-7 — IDs.** `format:"code"` in tables. In `fields`, the full id is the value of a labeled field
 (`Order ID`). An id never appears inside prose, inside a button or submit label (`Save std-us` →
@@ -3145,9 +3167,11 @@ items below record what Block Kit cannot do and stays unable to do; none is bein
    the field. A tracking URL renders in full, in `fields`, and the group's label carries the
    tracking *number* — permanently, absent a React migration.
 
-A sixth would be nice but is not needed: **`Badge` variants** driven by a per-column value map
-(R-6), which would let a status column encode severity instead of just chunking text. Until then,
-T-5's "one badge column, lifecycle state only" is the correct discipline.
+A sixth would be nice but is not needed: **per-value `Badge` variants** (R-6) — or, more modestly,
+a per-CELL `format` at all, since `formatCell` reads only `col.format`. Either would let a status
+column mark its exceptions instead of pilling every row identically. Until then, T-5's rewritten
+discipline is the correct one: no status column is a badge column, and the exception is marked in
+the cell's own words.
 
 Two upstream nuisances are recorded here rather than tracked as items, because neither affects
 rendered output: `ComboboxList` emits a React duplicate-key warning even when every option value is

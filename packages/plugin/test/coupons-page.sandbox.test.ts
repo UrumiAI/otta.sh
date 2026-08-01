@@ -1872,9 +1872,10 @@ describe("admin Coupons console — detail/edit leaf (workerd sandbox)", () => {
 		// the fixtures above are: `makeWelcomeState` expires at `ahead(30 days)`,
 		// and a hard-coded day eventually IS that day — at which point
 		// `resolveBound` correctly reads "unchanged, keep the stored instant" and
-		// this test, whose whole subject is a CHANGE, quietly stops testing one.
-		// (It fired on 2026-08-01, when `2026-08-31` became now + 30 days.) A
-		// 90/120-day offset cannot collide with the fixture's ±30.
+		// this test, whose whole subject is a CHANGE, no longer describes one. It
+		// FAILS LOUDLY when that happens rather than passing vacuously: it fired
+		// on 2026-08-01, when `2026-08-31` became now + 30 days, and took the
+		// suite red on `main`. A 90/120-day offset cannot collide with ±30.
 		const newStart = dayAhead(90 * DAY_MS);
 		const newExpiry = dayAhead(120 * DAY_MS);
 		await submitForm(blocks, "coupons:save", {

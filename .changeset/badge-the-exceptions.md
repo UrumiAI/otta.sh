@@ -50,6 +50,14 @@ into the text, which is the convention `On hand` already ships
   is Shipping's `Type`, a two-value closed set with no happy path to be
   near-constant about.
 
+**A dated test fixed on the way past.** The coupons suite's changed-expiry test
+hard-coded `2026-08-31` against a fixture that expires at `now + 30 days`. On
+2026-08-01 those became the same day, `resolveBound` correctly read the submit
+as "unchanged", and the assertion went red — a test about a CHANGE that no
+longer describes one, failing loudly on `main` rather than passing vacuously.
+The submitted days are relative now, like the fixtures the file already
+documents as time bombs when hard-coded.
+
 **Coupons joins the one date dialect, and the timestamp rule closes.** The
 detail's `Created (UTC) = 2026-06-01T00:00:00Z` was the last raw wire instant in
 the console; it reads `1 Jun 2026, 00:00 UTC` now, and the label drops its

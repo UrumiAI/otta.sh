@@ -144,10 +144,14 @@ export function formatTimestamp(iso: string): string {
 }
 
 /**
- * The same instant, DATE ONLY — `8 Jul 2026`. For the one surface that states a
- * date as part of a title rather than as a value: the order detail's H1
- * (`Order · <customer> · <date>`), where a time of day would be noise in the
- * largest type on the page.
+ * The same instant, DATE ONLY — `8 Jul 2026`. Two callers, and the shared
+ * reason is that a time of day would be noise in both:
+ *
+ *  - the order detail's H1 (`Order · <customer> · <date>`), which states a date
+ *    as part of a TITLE rather than as a value, in the largest type on the page;
+ *  - a coupon's validity window (`10 Jul 2026 – 1 Aug 2026`), whose bounds are
+ *    whole DAYS the merchant set — so rendering an hour would invent precision
+ *    the value does not have (INC-10).
  *
  * It is a strict PREFIX of {@link formatTimestamp} on the same input (both draw
  * on {@link DATE_PARTS}), which is what collapses the order detail's old habit

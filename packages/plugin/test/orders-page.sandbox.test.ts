@@ -462,6 +462,17 @@ const CUSTOMER_CONTEXT_LINKED = {
 	recentOrders: [SUMMARY_2],
 };
 
+/**
+ * The cancelled order's customer, whose ONE other order is itself in a DEAD-END
+ * state — the fixture that pins the other-orders table's INC-10 rendering. It
+ * is a separate context rather than a second row on `CUSTOMER_CONTEXT_LINKED`
+ * so the counts and short-id prefixes that table's own tests assert stay put.
+ */
+const CUSTOMER_CONTEXT_TERMINAL = {
+	...CUSTOMER_CONTEXT_LINKED,
+	recentOrders: [{ ...SUMMARY_2, id: TWIN_ID_A, state: "refunded" }],
+};
+
 /** Customer context for a true guest: no account, nothing to list. */
 const CUSTOMER_CONTEXT_GUEST = {
 	identity: {
@@ -614,6 +625,9 @@ function makeGetResponder() {
 			}
 			if (path.includes("/ord-guest")) {
 				return { status: 200, body: { ok: true, context: CUSTOMER_CONTEXT_GUEST } };
+			}
+			if (path.includes("/ord-cancelled")) {
+				return { status: 200, body: { ok: true, context: CUSTOMER_CONTEXT_TERMINAL } };
 			}
 			return { status: 200, body: { ok: true, context: CUSTOMER_CONTEXT_LINKED } };
 		}
@@ -3922,9 +3936,26 @@ describe("admin Orders console (workerd sandbox)", () => {
 		const whats = tableRows([timeline!]).map((r) => r.what);
 		expect(whats).toContain("Status → paid"); // a step ON the way stays bare
 		expect(whats).toContain("Status → cancelled · closed"); // the step that ends it
+		// The customer's other-orders table is the fourth surface, and it is its
+		// own assertion: without one, dropping `orderStateCell` from that single
+		// call leaves this suite green.
+		const other = groupBlocks(cancelled, "orders:ord-cancelled:other-orders");
+		expect(tableRows(other).map((r) => r.state)).toEqual(["refunded · closed"]);
 		for (const t of findBlocks(cancelled, "table")) {
 			expect(columnsOf(t).filter((c) => c.format === "badge")).toEqual([]);
 		}
+
+		// THE PICKER IS THE DELIBERATE EXCLUSION, and it is pinned BARE. Its
+		// option label is a ` · `-joined 4-tuple — the id, the customer, the
+		// money, the state — so a marked state would make it a 5-tuple neither an
+		// operator nor this assertion can segment. `paid`/`shipped` are the list
+		// fixtures' states; what matters is the shape, so the tail segment is read
+		// off the split rather than matched whole.
+		const segments = pickerOptions(blocks)
+			.filter((o) => o.value !== "none")
+			.map((o) => o.label.split(" · "));
+		expect(segments.map((parts) => parts.length)).toEqual([4, 4]);
+		expect(segments.map((parts) => parts[3])).toEqual(["paid", "shipped"]);
 	});
 
 	// X-20 (the banned-slogan check) and every other H-marked §13 row this
