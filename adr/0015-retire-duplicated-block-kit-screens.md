@@ -6,10 +6,9 @@
 - Supersedes: **one clause of [ADR-0014](./0014-second-native-descriptor-for-react-admin.md)** —
   "The Block Kit screens stay in the tree and stay green until a migration increment replaces
   each one" — **as to Orders and Pricing & inventory only**. That clause is the third bullet of
-  ADR-0014's "ADR-0006 Decision 1 is REAFFIRMED, not weakened" section, which is why superseding
-  it obliges this record to reaffirm ADR-0006 Decision 1 in its turn (see below) rather than
-  leaving the reaffirmation to be inferred. ADR-0014 is otherwise unchanged, including Decision 6
-  (Tax, Shipping and Settings stay Block Kit permanently; Reports and Coupons stay unruled).
+  ADR-0014's "ADR-0006 Decision 1 is REAFFIRMED, not weakened" section. ADR-0014 is otherwise
+  unchanged, including Decision 6 (Tax, Shipping and Settings stay Block Kit permanently;
+  Reports and Coupons stay unruled).
 - Relates to: [ADR-0006](./0006-trusted-in-process-deployment.md) — **Decision 1 is reaffirmed
   again here**, not weakened; [ADR-0013](./0013-product-title-is-cms-owned.md) (the read-only
   Title rule binds the surviving Pricing & inventory screen exactly as it binds the one being
@@ -44,9 +43,9 @@ rendered output**:
   **synthesized Block Kit interaction**, shaped per action rather than per screen: an action the
   Block Kit screen renders as a form is forwarded as the `form_submit` that form would have
   fired, carrier minted from the payload; every other action is forwarded as the `block_action`
-  a button would have fired. Orders is entirely the latter; Pricing & inventory is four form
-  saves plus one button, `products:remove-stock`, forwarded as a `block_action` like any Orders
-  write.
+  a button would have fired. Orders is entirely the latter; Pricing & inventory is four
+  form-shaped writes — three saves and a restock — plus one button, `products:remove-stock`,
+  forwarded as a `block_action` like any Orders write.
 - The outcome is then **scraped back out of the returned block tree**. `firstNotice(blocks)`
   reads the operator-facing banner off the render, and `blocks.length === 0` is interpreted as
   "nothing applied" — because an empty tree is the Block Kit dispatcher's fall-through, and the
@@ -67,16 +66,17 @@ lesson is to record the retirement condition when the coupling is introduced —
 later, in a record like this one.
 
 **Reads are already independent.** The console's list and detail paths call the admin clients
-directly and borrow only **Block-Kit-free** helpers: filter translation, the parallel
-secondary-surface load, the offered-transition computation, the page limit and the period
-vocabulary. Block-Kit-free is not side-effect-free — the secondary-surface load issues four
-parallel admin-client calls — and the claim being made is the narrower one: none of these helpers
-renders or reads a block tree. Only the **write** path is entangled.
+directly and borrow only **Block-Kit-free** helpers — among them filter translation, the parallel
+secondary-surface load, the offered-transition computation, the page limit, and the period and
+filter-option vocabularies; Decision 5 describes the class rather than listing it, and neither
+list here is exhaustive. Block-Kit-free is not side-effect-free — the secondary-surface load
+issues four parallel admin-client calls — and the claim being made is the narrower one: none of
+these helpers renders or reads a block tree. Only the **write** path is entangled.
 
 So retiring these two screens is **a rewrite of the write path, not a deletion of two files**.
 That is why it is an ADR and a multi-increment effort rather than a chore, and why anyone reading
-these screens as dead code has it exactly backwards: they were the live write path for their own
-replacements.
+these screens as dead code has it exactly backwards: they are, today, the live write path for
+their own replacements.
 
 ### What retirement has to carry across, or it is a silent regression
 
@@ -99,16 +99,17 @@ hide, and a green happy path is not evidence of it.**
 
 ## Decision
 
-**The Block Kit Orders and Pricing & inventory screens are to be removed from the tree — page modules,
-descriptor entries, dispatcher branches and sandbox suites — after, and only after, their write
-paths are re-implemented as structured, block-free actions the React console calls directly.**
+**The Block Kit Orders and Pricing & inventory screens are to be removed from the tree — page
+modules, descriptor entries, dispatcher branches and sandbox suites — after, and only after,
+their write paths are re-implemented as structured, block-free actions the React console calls
+directly.**
 
 Concretely:
 
 1. **What goes.** The two page modules and their two sandbox suites; their entries in the site's
    `adminPages` list; their `page_load` and `action_id` branches in the admin route dispatcher;
    and, once no caller remains, the block-tree half of the console transport — the forwarder, the
-   banner scrape, and the empty-tree refusal. The suffixes that existed only to disambiguate two
+   banner scrape, and the empty-tree refusal. The suffixes that exist only to disambiguate two
    sidebar entries of the same name go with them: with the original gone, "(new)" is the
    misleading thing.
 2. **What replaces it.** Each retired write becomes a function returning a **structured outcome**
@@ -119,16 +120,18 @@ Concretely:
    not a port. Dropping one of them is not authorised by this record and would need its own.
 4. **Order is a precondition, not a preference.** A screen may not be deleted before the write
    path is off it. Each increment extracts, proves, then deletes.
-5. **The read path's helpers leave the doomed modules before the modules do.** The console's read
-   path borrows a *class* of Block-Kit-free helpers from the two page modules being deleted:
-   filter translation and filter-form reading, the secondary-surface load, transition
-   computation, list narrowing, threshold and tax-class reading, and the shared page-limit,
-   period, cancellation-reason and reconciliation-outcome vocabularies. "The read path is
-   untouched" is therefore true of behaviour and false of the build — deleting a module deletes
-   its exports. **Each increment relocates every such helper its screen's console still imports
-   into a module that survives, as a move with no behavioural change, before the deletion** — not
-   as part of it. The rule is deliberately the class and not a list of symbols: an enumeration
-   written here would rot as the code moves, and the compiler names the members on the day.
+5. **The read path's imports leave the doomed modules before the modules do.** The console's read
+   path borrows a *class* of Block-Kit-free exports — helpers and the types that go with them —
+   from the two page modules being deleted: filter translation and filter-form reading, the
+   secondary-surface load, transition computation, list narrowing, threshold and tax-class
+   reading, the shared page-limit, period, cancellation-reason and reconciliation-outcome
+   vocabularies, and each screen's filter-option vocabulary. "The read path is untouched" is
+   therefore true of behaviour and false of the build — deleting a module deletes its exports.
+   **Each increment relocates every such export its screen's console still imports into a module
+   that survives, as a move with no behavioural change, before the deletion** — not as part of
+   it. The rule is deliberately the class and not a list of symbols: any enumeration written
+   here, the illustrative one above included, would rot as the code moves, and the compiler names
+   the members on the day.
 6. **The behavioural coverage moves; only the rendering coverage dies.** The two suites total
    over six thousand lines, most of which assert Block Kit *rendering* and cannot outlive the
    renderer. Everything asserting **behaviour** — above all the three refusals — moves onto the
@@ -177,13 +180,13 @@ ADR-0014 named as reopening this ground:
   idiom, with one place to be wrong. Today it is two renderers, two vocabularies of refusal copy,
   and a suite whose bulk asserts a rendering nobody is looking at.
 - **The notice-scraping coupling ends.** The console stops inferring "what happened" from "what
-  rendered". Outcome becomes a value the write path returns, which is what it was always standing
-  in for — and the empty-block-tree proxy, the most fragile thing in the arrangement, has no
-  successor because it needs none.
+  rendered". Outcome becomes a value the write path returns, which is what it has been standing
+  in for all along — and the empty-block-tree proxy, the most fragile thing in the arrangement,
+  has no successor because it needs none.
 - **The staged state stops round-tripping through an encoded carrier and a synthesized form
   submit** on the two-step flows; the console passes arguments and receives an outcome.
 - **The dispatcher and the transport shrink.** The transport keeps its interaction vocabulary and
-  its refusal constants — the things both tiers must agree on — and loses everything that existed
+  its refusal constants — the things both tiers must agree on — and loses everything that exists
   only to talk to a renderer.
 - **The sunk Block Kit investment stops accruing interest.** ADR-0014 accepted it as sunk on every
   migrated screen; it stops being maintained here.
@@ -195,15 +198,17 @@ ADR-0014 named as reopening this ground:
   on both sides, and each one must be demonstrated on the new path before its screen is deleted.
   This is the single largest risk in the effort and the reason the order in Decision 4 is not
   negotiable.
-- **Incidental coverage is the quiet exposure.** Six thousand lines of suite covered more than
-  their screens' rendering; anything they covered *only* incidentally leaves the tree with them.
+- **Incidental coverage is the quiet exposure.** Six thousand lines of suite cover more than
+  their screens' rendering; anything they cover *only* incidentally leaves the tree with them.
   Naming the dropped assertions per increment is the mitigation, and it is a weaker one than a
   compiler.
-- **Rollback stops being a descriptor line.** While both screens existed, reverting to Block Kit
-  was a registration change. Afterwards, "put the old screen back" is a revert of several
-  increments. Accepted: the parallel period is what it was for, and it has happened.
-- **The second implementation was also an oracle.** A behavioural question about these screens
-  could be answered by running the other one. Afterwards there is one answer, and the ported
+- **Rollback stops being a descriptor line.** While both screens are in the tree, reverting to
+  Block Kit is a registration change. Afterwards, "put the old screen back" is a revert of several
+  increments. Accepted: cheap rollback is what the parallel period is for, and by the time a
+  screen is deleted that period will have run — the replacement is proven before the original
+  goes.
+- **The second implementation is also an oracle.** A behavioural question about these screens
+  can today be answered by running the other one. Afterwards there is one answer, and the ported
   behavioural tests are the only oracle. That raises what those tests have to carry.
 - **This does not reduce the console to one idiom, and must not be sold as if it did.** Tax,
   Shipping and Settings never migrate (ADR-0014 Decision 6), so contributors still meet both
