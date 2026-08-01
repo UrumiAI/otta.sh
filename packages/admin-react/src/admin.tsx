@@ -14,10 +14,10 @@
  *     `X-EmDash-Request` CSRF header, and NOTHING in the request identifies the
  *     calling plugin.
  *
- * WHAT ALSO LIVES HERE NOW. INC-20 migrated Orders (`./orders/`), which is the
- * console's first real screen; Pricing & inventory follows in INC-21. Both Block
- * Kit originals stay in the tree and stay green until each replacement is
- * proven (ADR-0014 Decision 1, reaffirmed).
+ * WHAT ALSO LIVES HERE NOW. INC-20 migrated Orders (`./orders/`) and INC-21
+ * migrated Pricing & inventory (`./products/`) — every screen ADR-0014
+ * Decision 6 puts in scope. Both Block Kit originals stay in the tree and stay
+ * green until the user rules on removing them (Decision 1, reaffirmed).
  *
  * NO COMPONENT LIBRARY. `@cloudflare/kumo` and `@phosphor-icons/react` were
  * measured UNRESOLVABLE and unnecessary on the spike; `@emdash-cms/plugin-forms`
@@ -39,6 +39,7 @@ import { apiFetch } from "emdash/plugin-utils";
 import type { PluginAdminExports } from "emdash";
 import * as React from "react";
 import { OrdersScreen } from "./orders/orders-screen.js";
+import { ProductsScreen } from "./products/products-screen.js";
 
 /**
  * The Block Kit plugin's single admin dispatch route.
@@ -306,4 +307,5 @@ export function ConsoleHomePage(): React.ReactElement {
 export const pages = {
 	"/console": ConsoleHomePage,
 	"/orders": OrdersScreen,
+	"/products": ProductsScreen,
 } as unknown as PluginAdminExports["pages"];

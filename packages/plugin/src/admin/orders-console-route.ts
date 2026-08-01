@@ -72,23 +72,32 @@ import {
 	type OrdersPageInput,
 	type PeriodKey,
 } from "./orders-page.js";
+import {
+	CONSOLE_ACT_INTERACTION,
+	CONSOLE_INTERACTIONS,
+	CONSOLE_READ_INTERACTION,
+	UNREADABLE_REQUEST,
+	firstNotice,
+	forwardConsoleAct,
+	type ConsoleActPayload,
+	type ConsoleFailure,
+} from "./console-transport.js";
 import { asRecord, readAdminTokens, readString } from "./scaffold/index.js";
 import { ORDER_STATES } from "@otta-sh/admin-presentation";
-import type { Block, PluginContext, RouteHandler, SandboxedRouteContext } from "../types.js";
+import type { PluginContext, RouteHandler, SandboxedRouteContext } from "../types.js";
 
-/**
- * The interaction types this module answers to.
- *
- * Deliberately NOT `page_load` / `block_action`: those belong to EmDash's
- * `SandboxedPluginPage` transport and the Block Kit screens keep them
- * exclusively. A distinct pair means the dispatcher can never confuse a console
- * request with an admin-shell one, and — the reason that matters — it means
- * nothing this module does can change what the Block Kit Orders screen renders.
- * ADR-0014 requires both screens to work until the replacement is proven; two
- * disjoint interaction types is that requirement expressed in the dispatch table.
- */
-export const CONSOLE_READ_INTERACTION = "otta_console_read";
-export const CONSOLE_ACT_INTERACTION = "otta_console_act";
+/** INC-21 moved the two interaction types, the refusal shapes and the
+ *  act-forwarding into `./console-transport.js`, where the Pricing & inventory
+ *  branch reaches them too. They are RE-EXPORTED here because `admin-route.ts`
+ *  and this module's sandbox suite already name this file. Nothing changed. */
+export {
+	CONSOLE_ACT_INTERACTION,
+	CONSOLE_INTERACTIONS,
+	CONSOLE_READ_INTERACTION,
+	firstNotice,
+	type ConsoleActPayload,
+	type ConsoleFailure,
+};
 
 /** The resources the console can read. One per screen surface, not one per
  *  service endpoint: the detail fans out to five reads in parallel exactly as
@@ -139,14 +148,6 @@ export const CONSOLE_VOCABULARY: ConsoleVocabulary = {
 	pageLimit: PAGE_LIMIT,
 };
 
-/** A refusal the console renders instead of a blank pane (G5's reasoning, one
- *  tier up): the request completed, the answer is "no", and it says why. */
-export interface ConsoleFailure {
-	readonly ok: false;
-	readonly title: string;
-	readonly description: string;
-}
-
 export interface ConsoleListPayload {
 	readonly ok: true;
 	readonly orders: readonly OrderSummaryWire[];
@@ -177,18 +178,6 @@ export interface ConsoleDetailPayload {
 	readonly vocabulary: ConsoleVocabulary;
 }
 
-/** The banner the Block Kit handler produced for this write, forwarded verbatim.
- *  `null` when the action succeeded quietly (the Block Kit screen re-renders
- *  with no banner in that case, and so does the console). */
-export interface ConsoleActPayload {
-	readonly ok: true;
-	readonly notice: {
-		readonly variant: string;
-		readonly title: string;
-		readonly description: string;
-	} | null;
-}
-
 /** The console's fail-closed copy. It says the same three things
  *  `orders-page.ts`'s `failClosed()` says — symptom, the two things to check,
  *  and the possibility that this is a console bug rather than an outage — for
@@ -199,32 +188,6 @@ const UNAVAILABLE: ConsoleFailure = {
 	title: "Orders are unavailable",
 	description:
 		"Orders could not be loaded. Check the service connection and the admin token in Settings; if both look right, this is a fault in the console itself — not your data.",
-};
-
-const UNREADABLE_REQUEST: ConsoleFailure = {
-	ok: false,
-	title: "That request could not be read",
-	description:
-		"The console asked for something this screen does not serve. Reload the page; if it happens again, this is a fault in the console itself.",
-};
-
-/** An action id the Block Kit screen does not register. Reachable from a stale
- *  tab after a deploy that renamed one, and from a console bug — never from a
- *  button this release rendered. */
-const UNKNOWN_ACTION: ConsoleFailure = {
-	ok: false,
-	title: "Nothing was changed",
-	description:
-		"This console asked for an action this screen does not offer. Nothing was applied. Reload the page; if it happens again, this is a fault in the console itself.",
-};
-
-/** A registered action that produced no screen at all — so it produced no
- *  outcome either, and must not be reported as a quiet success. */
-const NOTHING_APPLIED: ConsoleFailure = {
-	ok: false,
-	title: "Nothing was changed",
-	description:
-		"That action did not complete and nothing was applied. Reload the order and try again; if it happens again, this is a fault in the console itself.",
 };
 
 const NOT_FOUND: ConsoleFailure = {
@@ -277,33 +240,6 @@ function readFilter(raw: unknown): OrdersFilterForm {
 		...(knownPeriod === "custom" && to !== undefined && to.length > 0 ? { to } : {}),
 		...(search !== undefined && search.length > 0 ? { search } : {}),
 	};
-}
-
-/**
- * Pull the outcome banner out of the block tree the Block Kit handler returned.
- *
- * WHY INDEX-FREE AND VARIANT-KEYED. `detailBlocks` emits at most two banners at
- * the top level: the notice, then the reconciliation alert. The alert is
- * `variant: "alert"` and is a property of the ORDER, not of what just happened —
- * forwarding it as the outcome of a refund would tell the operator their refund
- * produced a settlement warning. A `Notice` is only ever `default` or `error`
- * (`scaffold/banner.ts`), so keying on the variant separates the two without
- * depending on either one's position. Banners nested inside accordions are not
- * top-level blocks and are not seen here, which is why a scan is safe.
- */
-export function firstNotice(blocks: readonly Block[]): ConsoleActPayload["notice"] {
-	for (const block of blocks) {
-		if (block.type !== "banner") continue;
-		const banner = block as { variant?: unknown; title?: unknown; description?: unknown };
-		const variant = readString(banner.variant);
-		if (variant !== "default" && variant !== "error") continue;
-		return {
-			variant,
-			title: readString(banner.title) ?? "",
-			description: readString(banner.description) ?? "",
-		};
-	}
-	return null;
 }
 
 async function createClient(ctx: PluginContext): Promise<AdminOrdersClient> {
@@ -363,11 +299,18 @@ async function consoleDetail(
 /**
  * Forward a console click to the Block Kit action handler and return its notice.
  *
- * The `value` is passed through UNTOUCHED. Everything in it — the order id, the
- * state or ledger watermark the operator observed, the amount in minor units —
- * is what the Block Kit button would have carried, and every one of those fields
- * is re-validated and re-checked against live truth on the other side before a
- * single byte is written. This module adds no trust and removes none.
+ * Every Orders write is a BUTTON, so the payload is passed through UNTOUCHED as
+ * the `block_action` that button would have fired. Everything in it — the order
+ * id, the state or ledger watermark the operator observed, the amount in minor
+ * units — is what the Block Kit button would have carried, and every one of
+ * those fields is re-validated and re-checked against live truth on the other
+ * side before a single byte is written. This module adds no trust and removes
+ * none. (Pricing & inventory's writes are mostly FORM submits, which is why the
+ * shared forwarder also knows how to mint a carrier — see
+ * `products-console-route.ts`.)
+ *
+ * `ORDERS_ACTION_IDS` is the same set the dispatcher routes on, so the two
+ * cannot disagree about what exists.
  */
 async function consoleAct(
 	input: OrdersConsoleInput,
@@ -377,25 +320,15 @@ async function consoleAct(
 ): Promise<ConsoleActPayload | ConsoleFailure> {
 	const actionId = readString(input.action_id);
 	if (actionId === undefined) return UNREADABLE_REQUEST;
-	// GATE ON THE REGISTERED SET, and it is not belt-and-braces. The Block Kit
-	// dispatcher answers an id it does not recognise with `{blocks: []}` — the
-	// house-style fall-through — which on THIS branch is indistinguishable from
-	// "the write succeeded and had nothing to say". So a typo'd or stale action
-	// id would have rendered as a silent success on a refund button. The set is
-	// the same `ORDERS_ACTION_IDS` the dispatcher routes on, so the two cannot
-	// disagree about what exists.
-	if (!ORDERS_ACTION_IDS.has(actionId)) return UNKNOWN_ACTION;
-	const result = await orders(
-		{ input: { type: "block_action", action_id: actionId, value: input.value }, request },
+	return forwardConsoleAct({
+		actionId,
+		interaction: { type: "block_action", action_id: actionId, value: input.value },
+		registered: ORDERS_ACTION_IDS,
+		handler: orders,
 		ctx,
-	);
-	const envelope = asRecord(result);
-	const blocks = Array.isArray(envelope?.["blocks"]) ? (envelope["blocks"] as Block[]) : [];
-	// A registered id that STILL came back with no blocks did not render a
-	// screen, so it did not do what it was asked either. `{ok: true, notice:
-	// null}` here would report a refund that never happened as a quiet success.
-	if (blocks.length === 0) return NOTHING_APPLIED;
-	return { ok: true, notice: firstNotice(blocks) };
+		request,
+		record: "order",
+	});
 }
 
 /**
@@ -429,10 +362,3 @@ export function createOrdersConsoleHandler(): RouteHandler<OrdersConsoleInput> {
 		}
 	};
 }
-
-/** The interaction types the dispatcher routes here. Exported so
- *  `admin-route.ts` and its suite name the same two strings. */
-export const CONSOLE_INTERACTIONS: ReadonlySet<string> = new Set([
-	CONSOLE_READ_INTERACTION,
-	CONSOLE_ACT_INTERACTION,
-]);

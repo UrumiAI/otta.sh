@@ -33,7 +33,15 @@ module.exports = {
 				"— they run in Node, driving the sandbox from outside it. Complemented " +
 				"by the direct-fetch grep guard in " +
 				"packages/plugin/test/sandbox-clean-guard.test.ts (depcruise can't " +
-				"see ambient globals like workerd's own fetch). It ALSO forbids " +
+				"see ambient globals like workerd's own fetch). The node-builtin half " +
+				"reads `^(node:)?…` because dependency-cruiser reports " +
+				'`import ... from "node:fs"` under the BARE module name `fs`: a ' +
+				"`^node:`-only clause matches nothing, so this rule silently permitted " +
+				"every builtin it names, from the day it was written until INC-21. " +
+				"`domain-is-io-free` above always had the correct form, which is why " +
+				"the two rules disagreed about the same import. Verified by planting a " +
+				"`node:fs` import inside the perimeter: it passes under `^node:` and " +
+				"fails under this. It ALSO forbids " +
 				"@otta-sh/admin-react: without that, the console quarantine below is " +
 				"escapable in ONE HOP — packages/plugin importing packages/admin-react " +
 				"trips no rule, and react/emdash then reach the plugin transitively, " +
@@ -41,7 +49,7 @@ module.exports = {
 			severity: "error",
 			from: { path: "^packages/plugin/src" },
 			to: {
-				path: "(node_modules/(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|node_modules/@otta-sh/(domain|admin-react)(/|$)|^(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|^@otta-sh/(domain|admin-react)(/|$)|^node:(fs|child_process|net|http|https|os|dgram|dns|tls|worker_threads|cluster|vm)(/|$)|^packages/(store-[^/]+|service|payments-[^/]+|domain|admin-react)/)",
+				path: "(node_modules/(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|node_modules/@otta-sh/(domain|admin-react)(/|$)|^(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|^@otta-sh/(domain|admin-react)(/|$)|^(node:)?(fs|child_process|net|http|https|os|dgram|dns|tls|worker_threads|cluster|vm)(/|$)|^packages/(store-[^/]+|service|payments-[^/]+|domain|admin-react)/)",
 			},
 		},
 		{

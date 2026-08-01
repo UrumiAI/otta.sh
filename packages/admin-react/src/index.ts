@@ -54,10 +54,11 @@ export const OTTA_CONSOLE_ADMIN_ENTRY = `${OTTA_CONSOLE_PACKAGE}/admin`;
 /**
  * The console's landing page.
  *
- * INC-20 added Orders at `/orders` beside it; Pricing & inventory arrives in
- * INC-21 at `/products`. Each replaces a Block Kit screen that stays in the tree
- * and stays green until the replacement is proven. Tax, Shipping and Settings
- * never migrate (ADR-0014 Decision 6).
+ * INC-20 added Orders at `/orders` beside it and INC-21 added Pricing &
+ * inventory at `/products`. Each replaces a Block Kit screen that stays in the
+ * tree and stays green until the replacement is proven. Tax, Shipping and
+ * Settings never migrate (ADR-0014 Decision 6), so both idioms are permanently
+ * present in this admin.
  *
  * The path is explicit rather than `"/"`. The admin router builds a page path
  * from a splat (`"/" + (_splat || "")`), so `"/"` is reachable, but it makes
@@ -97,15 +98,35 @@ export const ORDERS_PAGE = {
 } as const satisfies PluginAdminPage;
 
 /**
+ * The migrated Pricing & inventory screen (INC-21) — the second and last screen
+ * ADR-0014 Decision 6 puts in scope.
+ *
+ * Same path as the Block Kit screen, same reason as Orders: the ids differ
+ * (`…/plugins/otta/products` versus `…/plugins/otta-console/products`), so the
+ * two can be compared by swapping one segment while both render. The label says
+ * which surface this is, because two sidebar entries reading
+ * `Pricing & inventory` with nothing to tell them apart would be the worst
+ * possible outcome of the two-descriptor arrangement.
+ */
+export const PRODUCTS_PAGE = {
+	path: "/products",
+	label: "Pricing & inventory (new)",
+	icon: "box",
+} as const satisfies PluginAdminPage;
+
+/**
  * Every page the console declares.
  *
  * A path listed here MUST have a component under the same key in `./admin`'s
  * `pages` export, or the sidebar silently drops the entry (the resolver quoted
- * in the module doc). `test/console-plugin.test.ts` pins the two together.
+ * in the module doc). `test/console-plugin.test.ts` pins the two together, and
+ * `sites/staging/test/site-config.test.ts` pins every entry to a Playwright
+ * gate.
  */
 export const OTTA_CONSOLE_ADMIN_PAGES: readonly PluginAdminPage[] = [
 	CONSOLE_HOME_PAGE,
 	ORDERS_PAGE,
+	PRODUCTS_PAGE,
 ];
 
 /**

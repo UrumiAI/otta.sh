@@ -63,8 +63,12 @@ export interface ConsoleScreen {
  * covered by `orders-page.sandbox.test.ts` — ADR-0014 Decision 1 is reaffirmed,
  * not spent, and both screens render until the user rules on removing one.
  *
- * INC-21 adds Pricing & inventory. Tax, Shipping and Settings stay Block Kit
- * permanently (ADR-0014 Decision 6) and must never appear here.
+ * INC-21 ADDS PRICING & INVENTORY, and with it the count answers its question
+ * for the last time under this ADR: two of the seven Block Kit screens have a
+ * React replacement. Tax, Shipping and Settings stay Block Kit permanently
+ * (ADR-0014 Decision 6) and must never appear here; Reports and Coupons are a
+ * ruling the user has not made (D3), so adding either is out of scope until
+ * they do.
  */
 export const MIGRATED_SCREENS: readonly ConsoleScreen[] = [
 	{
@@ -81,6 +85,17 @@ export const MIGRATED_SCREENS: readonly ConsoleScreen[] = [
 		// own, and matching the sidebar here would let a spec pass on a page that
 		// never rendered.
 		heading: /^Orders$/,
+	},
+	{
+		name: "Pricing & inventory",
+		increment: "INC-21",
+		// Same path as the Block Kit screen, same reason as `/orders` above.
+		path: "/products",
+		// The H1, not the sidebar label (`Pricing & inventory (new)`). The `&` is
+		// rendered from an HTML entity, so the regex matches the TEXT the browser
+		// produces rather than the source. Anchored at both ends so the sidebar
+		// label — which contains the heading as a prefix — cannot satisfy it.
+		heading: /^Pricing & inventory$/,
 	},
 ];
 

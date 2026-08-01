@@ -1,6 +1,79 @@
+import {
+	ABSENT,
+	ADD_STOCK_FIELD_LABEL,
+	ADD_STOCK_INVALID_QTY,
+	ADD_STOCK_LABEL,
+	ADD_STOCK_PLACEHOLDER,
+	APPLY_FILTERS_LABEL,
+	BACKORDERS_CONTEXT,
+	COMPARE_AT_PLACEHOLDER,
+	CURRENCY_FIELD_LABEL,
+	CURRENCY_PLACEHOLDER,
+	IDENTITY_FORM_CONTEXT,
+	LOW_STOCK_BAND_UNAVAILABLE_CONTEXT,
+	LOW_STOCK_FILTER_DESCRIPTION,
+	LOW_STOCK_FILTER_LABEL,
+	NO_INVENTORY_RECORD_CONTEXT,
+	NO_SKU_CONTEXT,
+	NO_TAX_CLASS,
+	PRICE_FORM_CONTEXT,
+	PRICE_PLACEHOLDER,
+	PRODUCTS_BACK_LABEL,
+	PRODUCTS_EMPTY,
+	PRODUCTS_LIST_INTRO,
+	PRODUCTS_LOW_STOCK_NO_MATCH,
+	PRODUCTS_NOUN,
+	PRODUCTS_NO_MATCH,
+	PRODUCTS_SCREEN_TITLE,
+	PRODUCTS_UNAVAILABLE_DESCRIPTION,
+	PRODUCTS_UNAVAILABLE_TITLE,
+	PRODUCT_COLUMN_LABELS,
+	PRODUCT_DELETED_SINCE_LOADED,
+	PRODUCT_FIELD_LABELS,
+	PRODUCT_FILTER_LABELS,
+	PRODUCT_KIND_LABELS,
+	PRODUCT_MEASUREMENT_LABELS,
+	PRODUCT_NOT_FOUND_TITLE,
+	PRODUCT_TAB_LABELS,
+	REMOVE_STOCK_BANNER,
+	REMOVE_STOCK_CONTEXT,
+	REMOVE_STOCK_FIELD_LABEL,
+	REMOVE_STOCK_GROUP_LABEL,
+	REMOVE_STOCK_INVALID_QTY,
+	REMOVE_STOCK_PLACEHOLDER,
+	SAVE_IDENTITY_LABEL,
+	SAVE_PRICE_LABEL,
+	SAVE_SHIPPING_LABEL,
+	SHIPPING_FORM_CONTEXT,
+	SPLIT_DISCARD_CONTEXT,
+	STATUS_FIELD_LABEL,
+	STOCK_ON_HAND_CONTEXT,
+	TOMBSTONE_BANNER_TITLE,
+	UNIT_COST_PLACEHOLDER,
+	UNTITLED,
+	TOMBSTONE_CONTEXT,
+	compareAtFieldLabel,
+	dimensionsSummary as dimensionsCell,
+	fitLabel,
+	formatOptionalAmount,
+	identityGroupLabel,
+	inventoryPolicyLabel,
+	onHandCell,
+	priceFieldLabel,
+	priceGroupLabel,
+	productFilterParts,
+	parseOnHandWatermark,
+	parseStockQty as parseStockQtyShared,
+	removeStockConfirm,
+	shippingGroupLabel,
+	statusLabel,
+	stockDegradation,
+	taxClassLabel,
+	taxClassOptions,
+	unitCostFieldLabel,
+	unitWord,
+} from "@otta-sh/admin-presentation";
 import { COMMERCE_SERVICE_BASE_URL } from "../manifest.js";
-import { formatMoney } from "../presentation/format-money.js";
-import { cents as toCents, currency as toCurrency } from "../presentation/money.js";
 import type {
 	AdminPageConfig,
 	Block,
@@ -101,6 +174,19 @@ import {
  *     degrades the badge, never the page.
  *
  * Built on the shared list/detail scaffold (`./scaffold`).
+ *
+ * SINCE INC-21 THIS SCREEN HAS A REACT TWIN, and the parts of it that decide
+ * WHAT AN OPERATOR READS live in `@otta-sh/admin-presentation`: `statusLabel`,
+ * `onHandCell`, `parseStockQty`, the list's copy, the stock-degradation
+ * banner's composition and the remove-stock confirm's sentence. Both screens
+ * render the same products in the same sidebar until the user rules on
+ * removing one, so those are a cross-surface contract rather than this file's
+ * private business — the same move `orders-page.ts` made in INC-20 for money,
+ * dates and short ids. What did NOT move is everything that decides what
+ * HAPPENS: the three split saves, both stock movements, every watermark,
+ * every idempotency key and every refusal a write can produce are here, and
+ * the React screen reaches them through `products-console-route.ts` rather
+ * than reimplementing any of them.
  */
 export const PRODUCTS_PAGE: AdminPageConfig = {
 	path: "/products",
@@ -130,21 +216,112 @@ export const PRODUCTS_ACTION_IDS: ReadonlySet<string> = PRODUCTS_ACTIONS.actionI
 	"remove-stock",
 );
 
-const PAGE_LIMIT = 25;
+/**
+ * How a REACT console click becomes the exact `form_submit` one of this file's
+ * handlers already reads (INC-21).
+ *
+ * WHY A TABLE AND NOT A SECOND SET OF HANDLERS. The Orders console forwards a
+ * click verbatim because every Orders write is a Block Kit BUTTON, and a button
+ * carries its whole payload in `value`. Four of this screen's five writes are
+ * FORM SUBMITS instead, and a form's internal context rides in its `block_id`
+ * carrier (`scaffold/carrier.ts`) rather than in its visible fields — that is
+ * the whole mechanism that stopped operators being asked to "pick" a
+ * `productId`. A React screen cannot mint a carrier (it may not import this
+ * package at all), so the console branch mints it from the payload the click
+ * carried and hands the handler the shape it has always read.
+ *
+ * NO TRUST IS ADDED BY THE ROUND TRIP. The keys named below are the same
+ * operator-round-tripped strings the Block Kit form would have carried, and the
+ * carrier's own doc already says to treat every decoded value as untrusted: the
+ * `expectedUpdatedAt` watermark is re-checked by the service's optimistic
+ * concurrency, and the `onHand` watermark is re-read against live truth before
+ * any stock moves. Encoding them is plumbing, not authorization.
+ *
+ * `products:remove-stock` is absent on purpose — it IS a button, so it forwards
+ * as a `block_action` exactly as an Orders write does.
+ * `products:remove-stock-review` is absent because the React screen has no
+ * staged review step to render into (it shows the confirm dialog directly, the
+ * same collapse INC-20 made for refunds), so a console request for it is a
+ * request for something that screen does not offer.
+ */
+export interface ConsoleFormShape {
+	/** The carrier namespace the Block Kit form uses — two sibling forms with
+	 *  identical context still need different React keys, which is what a
+	 *  namespace is for. */
+	readonly namespace: string;
+	/** Payload keys that ride in the carrier. Everything else in the payload is
+	 *  a visible field and lands in `values`. */
+	readonly carried: readonly string[];
+}
+
+export const PRODUCTS_CONSOLE_FORMS: ReadonlyMap<string, ConsoleFormShape> = new Map([
+	[
+		ACTION_SAVE_IDENTITY,
+		{ namespace: "products:identity", carried: ["productId", "expectedUpdatedAt"] },
+	],
+	[ACTION_SAVE_PRICE, { namespace: "products:price", carried: ["productId", "expectedUpdatedAt"] }],
+	[
+		ACTION_SAVE_SHIPPING,
+		{ namespace: "products:shipping", carried: ["productId", "expectedUpdatedAt"] },
+	],
+	[ACTION_RESTOCK, { namespace: "products:restock", carried: ["productId", "onHand"] }],
+]);
+
+/** The button-shaped console write — forwarded as a `block_action` with its
+ *  payload untouched, exactly as every Orders write is. */
+export const ACTION_REMOVE_STOCK = ACTION_REMOVE;
+
+/** Every action id the REACT screen may ask for — a strict subset of
+ *  {@link PRODUCTS_ACTION_IDS}, because the Block Kit screen keeps a `-review`
+ *  step the console does not have. */
+export const PRODUCTS_CONSOLE_ACTION_IDS: ReadonlySet<string> = new Set([
+	...PRODUCTS_CONSOLE_FORMS.keys(),
+	ACTION_REMOVE,
+]);
+
+export const PAGE_LIMIT = 25;
 
 /** A `select`/`combobox` sentinel meaning "no constraint". NEVER `""` — the
  *  pinned renderer treats an empty value as "no value" and draws a blank
  *  trigger (R-17a), and the trigger renders the raw VALUE, so a sentinel has
  *  to read acceptably as a word (F-6a, F-6c). */
 const ANY = "any";
+/** The Status filter's all-values sentinel, exported so the React screen offers
+ *  the SAME token rather than inventing one — a screen sending `""` here would
+ *  be indistinguishable from a screen sending nothing (F-6a). */
+export const PRODUCTS_FILTER_ANY = ANY;
+
+/**
+ * The two filter selects' options, authored ONCE and shipped to the React
+ * screen as data (INC-21).
+ *
+ * The alternative is the console package holding its own copy of
+ * "All statuses (live)" and "Archived (deleted)", in a package that cannot
+ * import the one place they are defined — four more strings that can disagree
+ * with the screen they are migrating from. `orders-console-route.ts` sends its
+ * period presets down the wire for exactly this reason and at exactly this
+ * cost: a few hundred bytes on a list load.
+ *
+ * THE COMBINED STATUS SELECT IS ONE CONTROL, not two axes. A soft-deleted row
+ * is always inactive, so `archived` and `active` are mutually exclusive by
+ * construction and offering them as one select is what makes that true in the
+ * UI rather than merely true in `toClientFilter`.
+ */
+export const PRODUCTS_STATUS_OPTIONS: readonly SelectOption[] = [
+	{ value: ANY, label: "All statuses (live)" },
+	{ value: "true", label: "Active" },
+	{ value: "false", label: "Inactive" },
+	{ value: "archived", label: "Archived (deleted)" },
+];
+
+export const PRODUCTS_KIND_OPTIONS: readonly SelectOption[] = [
+	{ value: ANY, label: "All kinds" },
+	{ value: "physical", label: PRODUCT_KIND_LABELS.physical },
+	{ value: "digital", label: PRODUCT_KIND_LABELS.digital },
+];
+
 /** The same, for the "Open product" picker with nothing selected (L-7). */
 const NONE = "none";
-/** The tax-class select's "clear it" sentinel — never `""` (F-6a). */
-const NO_TAX_CLASS = "none";
-
-/** §1's accordion-label budget (X-11). */
-const LABEL_BUDGET = 60;
-
 /** The console's own filter form values, kept alongside the opaque service
  *  cursor so paging preserves the form. `active`/`productKind` are tri-state
  *  strings (`ANY` ⇒ no constraint) because a Block Kit `select` has no
@@ -160,7 +337,7 @@ const LABEL_BUDGET = 60;
  *  only rows whose on-hand count is at or below the store's threshold. Stored
  *  as the same `"true"` string as `archived` because this object is JSON —
  *  it rides in the list cursor (`f`) so the filter survives paging. */
-interface ProductsFilterForm {
+export interface ProductsFilterForm {
 	active?: "true" | "false";
 	productKind?: "physical" | "digital";
 	search?: string;
@@ -203,7 +380,7 @@ export type ProductsPageInput = ListDetailInput;
  * It is never written from this screen: the threshold is edited on Settings,
  * and a form field for it here would be a second home for one value (G2).
  */
-interface ProductsScreenClient {
+export interface ProductsScreenClient {
 	products: AdminProductsClient;
 	settings: ReportingSettingsClient;
 }
@@ -286,7 +463,7 @@ interface ProductsListState {
 	stock?: StockPageContext;
 }
 
-interface StockPageContext {
+export interface StockPageContext {
 	/** The store's low-stock threshold, or `null` when the settings read failed
 	 *  (which costs the `Low` band and nothing else). */
 	threshold: number | null;
@@ -298,6 +475,78 @@ interface StockPageContext {
 	 *  or no stock to compare it against), so the page is UNFILTERED and says
 	 *  so — never silently the wrong set of rows. */
 	filterUnavailable: boolean;
+}
+
+/** One fetched row and its already-read on-hand count, before the cell text is
+ *  decided. Both surfaces need the count itself — the Block Kit one to render a
+ *  string, the React one to render a string AND to know whether to link. */
+export interface ReadStockRow {
+	readonly product: ProductSummaryWire;
+	readonly onHand: number | null | undefined;
+}
+
+export interface LowStockNarrowing {
+	/** The rows that survive the narrowing — every fetched row when it is off. */
+	readonly rows: readonly ReadStockRow[];
+	readonly stock: StockPageContext;
+	/** The service's `total`, or `undefined` when this render must not state
+	 *  one. See below. */
+	readonly total: number | undefined;
+}
+
+/**
+ * "Low stock only", applied — and the `total` decision that has to travel with
+ * it.
+ *
+ * SHARED BY BOTH SURFACES (INC-21), and it is the case where sharing earns its
+ * keep most obviously. Three coupled decisions live here:
+ *
+ *  1. **The filter narrows the FETCHED PAGE, not the query.** The service's
+ *     products list has no stock predicate, and the measurement behind that
+ *     (INC-03) chose ONE unconditional join over a gated one precisely because
+ *     the gated shape had to walk ~9x the rows. So the filter narrows what this
+ *     page shows and `Load more` keeps scanning. A row with no inventory record
+ *     is never "low", only unknown.
+ *  2. **The `total` is WITHHELD while the narrowing is on.** The service's
+ *     count is of the set ITS OWN filters selected, and "Low stock only" is not
+ *     one of them — so passing it would caption the rows on screen with a
+ *     number that does not describe them ("137 products" above three). Absent
+ *     is the honest answer, and `rowCountLine` already falls back to the
+ *     page-scoped wording for exactly this case.
+ *  3. **`unreadable` is ALL-OR-NOTHING.** The service fills the stock column
+ *     from one left join per page, so stock is present for every row or for
+ *     none — a partial page means a catalog fact (some skus have no inventory
+ *     row), not a degraded read, and must not raise the banner.
+ *
+ * A React screen that re-derived any of the three could show a different set of
+ * rows, or the same rows under a count that contradicts them, one sidebar entry
+ * away from the screen it replaces.
+ */
+export function applyLowStockNarrowing(
+	products: readonly ProductSummaryWire[],
+	opts: { wantsLowStock: boolean; threshold: number | null; total: number | undefined },
+): LowStockNarrowing {
+	const read: ReadStockRow[] = products.map((product) => ({
+		product,
+		onHand: readOnHand(product),
+	}));
+	const unreadable = read.length > 0 && read.every((r) => r.onHand === undefined);
+	const threshold = opts.threshold;
+	const canFilter = threshold !== null && !unreadable;
+	const narrowing = opts.wantsLowStock && canFilter;
+	const rows =
+		narrowing && threshold !== null
+			? read.filter((r) => r.onHand !== undefined && r.onHand !== null && r.onHand <= threshold)
+			: read;
+	return {
+		rows,
+		stock: {
+			threshold,
+			unreadable,
+			filterUnavailable: opts.wantsLowStock && !canFilter,
+		},
+		total: narrowing ? undefined : opts.total,
+	};
 }
 
 function productsListLevel() {
@@ -317,43 +566,19 @@ function productsListLevel() {
 				}),
 				readLowStockThreshold(client.settings),
 			]);
-			const read = page.products.map((product) => ({ product, onHand: readOnHand(product) }));
-			// ALL-OR-NOTHING on purpose: the service fills this column from ONE left
-			// join per page, so stock is present for every row or for none — a
-			// partial page means a catalog fact (some skus have no inventory row),
-			// not a degraded read, and must not raise the banner.
-			const unreadable = read.length > 0 && read.every((r) => r.onHand === undefined);
-			const wantsLowStock = form.lowStock === "true";
-			const canFilter = threshold !== null && !unreadable;
-			filter.stock = {
+			const narrowed = applyLowStockNarrowing(page.products, {
+				wantsLowStock: form.lowStock === "true",
 				threshold,
-				unreadable,
-				filterUnavailable: wantsLowStock && !canFilter,
-			};
-			// "Low stock only" is applied to the fetched page, not to the query: the
-			// service's products list has no stock predicate, and the measurement
-			// behind that (INC-03) chose ONE unconditional join over a gated one
-			// precisely because the gated shape had to walk ~9x the rows. So the
-			// filter narrows what this page shows and `Load more` keeps scanning —
-			// a row with no inventory record is never "low", only unknown.
-			const visible =
-				wantsLowStock && canFilter && threshold !== null
-					? read.filter((r) => r.onHand !== undefined && r.onHand !== null && r.onHand <= threshold)
-					: read;
-			// The service's `total` counts the set its OWN filters selected — and
-			// "Low stock only" is not one of them: it narrows the fetched page here
-			// (see the note above). While it is on, the total does not describe the
-			// rows on screen, so it is WITHHELD and the count falls back to the
-			// page-scoped wording this screen already uses for that mode. Absent on
-			// a service older than the field, which lands in the same place.
-			const totalDescribesTheseRows = !(wantsLowStock && canFilter);
+				total: page.total,
+			});
+			filter.stock = narrowed.stock;
 			return {
-				items: visible.map((r) => ({
+				items: narrowed.rows.map((r) => ({
 					product: r.product,
 					onHand: onHandCell(r.onHand, threshold),
 				})),
 				nextCursor: page.nextCursor,
-				...(totalDescribesTheseRows && page.total !== undefined ? { total: page.total } : {}),
+				...(narrowed.total !== undefined ? { total: narrowed.total } : {}),
 			};
 		},
 		render({ actions, path, filter, items, nextToken, firstPage, total, notice }) {
@@ -383,14 +608,6 @@ function listForm(filter: ProductsListState): ProductsFilterForm {
 	return state.form ?? state;
 }
 
-/** The standing half of the list's intro line — the row count goes in front of
- *  it ({@link listIntroLine}). 97 chars; the longest count line this screen can
- *  produce (`25 products on this page`) puts the whole line at 124 ≤ 140 (X-11).
- *  The "Archived" explanation lives in the filter accordion; stock is a COLUMN,
- *  so this line says what the count means instead of pointing at the detail. */
-const LIST_INTRO =
-	"Filter and open a product. Money in each product's own currency; On hand is what can be sold now.";
-
 /**
  * Read one list row's on-hand count off the wire, keeping THREE cases apart
  * that must never be folded into each other:
@@ -403,35 +620,18 @@ const LIST_INTRO =
  *    older than the on-hand projection, or one whose stock read degraded), which
  *    is why it is read as `unknown` here instead of trusted.
  */
-function readOnHand(p: ProductSummaryWire): number | null | undefined {
+export function readOnHand(p: ProductSummaryWire): number | null | undefined {
 	const raw: unknown = (p as { onHand?: unknown }).onHand;
 	if (raw === null) return null;
 	return typeof raw === "number" && Number.isFinite(raw) ? raw : undefined;
 }
 
-/**
- * The `On hand` cell — text, always, and never an empty string: the pinned
- * renderer's `format:"number"` cell does `Number(value)` and prints the RAW
- * string only when that is NaN (`blocks/table.tsx`), so `"—"` and
- * `"0 · Out of stock"` survive verbatim, `"12"` renders as a number, and `""`
- * or a missing key would render as `0` — a zero nobody counted.
- *
- * BADGE THE EXCEPTIONS AND ONLY THEM, in the cell's own text — the convention
- * INC-10 then took console-wide when it retired the last status badges: `0` is
- * out of stock, `1..threshold` is low, and anything above the threshold is a
- * plain count that competes with nothing.
- */
-function onHandCell(onHand: number | null | undefined, threshold: number | null): string {
-	if (onHand === undefined || onHand === null) return "—";
-	if (onHand <= 0) return `${onHand} · Out of stock`;
-	if (threshold !== null && onHand <= threshold) return `${onHand} · Low`;
-	return String(onHand);
-}
-
 /** The store's low-stock threshold, or null when it cannot be read. A refusal
  *  here costs the `Low` band alone — a count still renders and `0` still reads
  *  `Out of stock`, neither of which needs a threshold. */
-async function readLowStockThreshold(client: ReportingSettingsClient): Promise<number | null> {
+export async function readLowStockThreshold(
+	client: ReportingSettingsClient,
+): Promise<number | null> {
 	try {
 		const { lowStockThreshold } = await client.getSettings();
 		return Number.isSafeInteger(lowStockThreshold) && lowStockThreshold >= 0
@@ -444,103 +644,29 @@ async function readLowStockThreshold(client: ReportingSettingsClient): Promise<n
 }
 
 /**
- * The ONE stock-degradation banner. Every case shares a single slot because
- * X-31 caps a response at two top-level banners and the notice may already
- * hold one — so when two things are degraded at once the banner carries BOTH,
- * rather than one silently outranking the other. `alert`, never `error`: the
- * list rendered, and E-1/E-6 keep the error variant for a fail-close or a
- * refusal.
+ * The ONE stock-degradation banner — the WORDS are the shared decision's
+ * ({@link stockDegradation}), the BLOCK is this surface's.
  *
- * THREE FACTS, INDEPENDENTLY TRUE:
- *  - stock came back unreadable (every cell is `—`);
- *  - the threshold came back unreadable (nothing can read `Low`) — worth saying
- *    even when nothing was filtered, because the missing band is otherwise
- *    invisible: an under-stocked product just looks like an ordinary one;
- *  - a "Low stock only" request could not be honoured (the page is unfiltered).
+ * Every case shares a single slot because X-31 caps a response at two top-level
+ * banners and the notice may already hold one, so when two things are degraded
+ * at once the banner carries BOTH rather than one silently outranking the
+ * other. `alert`, never `error`: the list rendered, and E-1/E-6 keep the error
+ * variant for a fail-close or a refusal.
  */
 function stockBanner(stock: StockPageContext | undefined): Block | undefined {
 	if (stock === undefined) return undefined;
-	const symptoms: string[] = [];
-	const remedies: string[] = [];
-	if (stock.unreadable) {
-		symptoms.push("Stock levels are unavailable");
-		remedies.push("On hand reads — for every row here; open a product to read its stock.");
-	}
-	if (stock.threshold === null) {
-		symptoms.push("low-stock highlighting is unavailable");
-		remedies.push(
-			"The store's low-stock threshold could not be read — set it under Checkout & holds on Settings.",
-		);
-	}
-	if (stock.filterUnavailable) {
-		symptoms.push("the Low stock only filter was not applied");
-		remedies.push("Every product on this page is listed.");
-	}
-	if (symptoms.length === 0) return undefined;
-	const joined = symptoms.join("; ");
+	const degraded = stockDegradation({
+		unreadable: stock.unreadable,
+		thresholdUnreadable: stock.threshold === null,
+		filterUnavailable: stock.filterUnavailable,
+	});
+	if (degraded === undefined) return undefined;
 	return {
 		type: "banner",
 		variant: "alert",
-		title: `${joined.charAt(0).toUpperCase()}${joined.slice(1)}.`,
-		description: remedies.join(" "),
+		title: degraded.title,
+		description: degraded.description,
 	};
-}
-
-/**
- * The lifecycle status label a merchant reads: a soft-deleted row shows
- * "deleted", never "inactive" — `deletedAt` outranks `active` (a tombstoned
- * row is always inactive too, but "deleted" is the honest, non-recoverable-
- * from-here status a merchant needs to see). Shared by the list table, the
- * "Open product" picker, and the detail fields so the three surfaces can
- * never disagree.
- *
- * FOUR VALUES: the CMS sync upserts a `product_commerce` row for EVERY
- * products document ("one home per field" PR 1b), so publishing a product
- * that has never been priced sets `active: true` on a row with no
- * sku/price. A bare "active" there would be a lie — the service's catalog
- * read filters commerce-incomplete rows — so this mirrors that exact filter.
- */
-function statusLabel(p: {
-	active: boolean;
-	deletedAt: string | null;
-	sku: string | null;
-	priceCents: number | null;
-	currency: string | null;
-}): string {
-	if (p.deletedAt !== null) return "deleted";
-	if (!p.active) return "inactive";
-	const sellable = p.sku !== null && p.priceCents !== null && p.currency !== null;
-	return sellable ? "active" : "active (not priced)";
-}
-
-/** Human label for the out-of-stock policy (read-only display; the single-option
- *  select that used to carry this is deleted per F-3 — see the context line in
- *  `productPanel`). Only `"deny"` exists this slice; any other stored value
- *  renders verbatim (forward-safe). */
-function inventoryPolicyLabel(policy: string): string {
-	return policy === "deny" ? "Deny (stop selling at zero stock)" : policy;
-}
-
-/** Human label for a product's tax-class reference: the registry entry's name
- *  when known, else the raw id (a class the registry read didn't include),
- *  else "—" (unset ⇒ the checkout treats it as standard). */
-function taxClassLabel(taxClass: string | null, taxClasses: TaxClassWire[]): string {
-	if (taxClass === null) return "—";
-	const match = taxClasses.find((c) => c.id === taxClass);
-	return match !== undefined ? `${match.name} (${match.id})` : taxClass;
-}
-
-/** Build the tax-class select options: a "clear it" sentinel (never `""` —
- *  F-6a), every registry entry, and — if the product currently references a
- *  class the registry read did not include — that id too, so an existing
- *  value is never silently dropped from the picker. */
-function taxClassOptions(current: string | null, taxClasses: TaxClassWire[]): SelectOption[] {
-	const options: SelectOption[] = [{ value: NO_TAX_CLASS, label: "— None (standard) —" }];
-	for (const c of taxClasses) options.push({ value: c.id, label: `${c.name} (${c.id})` });
-	if (current !== null && !taxClasses.some((c) => c.id === current)) {
-		options.push({ value: current, label: current });
-	}
-	return options;
 }
 
 /** §12.1's list block order, exactly: `header` · `context` · notice `banner` ·
@@ -561,12 +687,15 @@ function listBlocks(
 	// ONE PART PER AUTHORED FILTER FIELD (L-3): the combined Status select is
 	// one field (active/archived share it), so it contributes one part.
 	const statusValue = form.archived === "true" ? "archived" : form.active;
-	const activeFilters = [
-		statusValue !== undefined && `status: ${statusValue}`,
-		form.productKind !== undefined && `kind: ${form.productKind}`,
-		form.lowStock === "true" && "stock: low only",
-		form.search !== undefined && `search: ${form.search}`,
-	];
+	// The FLATTENING is this surface's (it stores `active`/`archived` on two
+	// keys); the WORDING is the shared one, so the React panel counts the same
+	// parts and spells them the same way.
+	const activeFilters = productFilterParts({
+		status: statusValue,
+		kind: form.productKind,
+		lowStock: form.lowStock === "true",
+		search: form.search,
+	});
 	const summary = filterSummary(activeFilters);
 	// A "Low stock only" page reports on ITSELF, never on the catalog: the filter
 	// narrows the rows this page fetched (see `fetchPage`), so the sentence, the
@@ -583,34 +712,16 @@ function listBlocks(
 		// is on (it counted the UNNARROWED set), so this is simply whatever came
 		// through — the decision is made once, where the narrowing happens.
 		...(total !== undefined ? { total } : {}),
-		noun: { one: "product", other: "products" },
-		empty: {
-			title: "No products yet",
-			description:
-				"Products appear here as soon as a product document is saved in the CMS — pricing them is the next step, not a precondition.",
-			blockId: "products:empty",
-			// E-2: no way IN from here — products originate in the CMS.
-		},
+		noun: PRODUCTS_NOUN,
+		// E-2: no way IN from here — products originate in the CMS.
+		empty: { ...PRODUCTS_EMPTY, blockId: "products:empty" },
 		noMatch: narrowed
-			? {
-					title: "No low-stock products on this page",
-					description:
-						"Every product on this page is above the low-stock threshold. Clear the filters to see them all, or set the threshold on Settings.",
-					blockId: "products:no-match",
-					emptyText: "No low-stock products on this page.",
-					scanNote: "No low-stock products on this page — Load more scans further.",
-				}
-			: {
-					title: "No products match these filters",
-					description:
-						"Nothing came back for the filters you set. Clear them to go back to the whole catalog, or widen one and apply again.",
-					blockId: "products:no-match",
-					emptyText: "No products match these filters.",
-				},
+			? { ...PRODUCTS_LOW_STOCK_NO_MATCH, blockId: "products:no-match" }
+			: { ...PRODUCTS_NO_MATCH, blockId: "products:no-match" },
 	});
 	const blocks: Block[] = [
-		{ type: "header", text: "Pricing & inventory" },
-		listIntroLine(result.countLine, LIST_INTRO),
+		{ type: "header", text: PRODUCTS_SCREEN_TITLE },
+		listIntroLine(result.countLine, PRODUCTS_LIST_INTRO),
 	];
 	if (notice !== undefined) blocks.push(noticeBanner(notice));
 	// Page context, not row data (see `ProductsListState`): a page narrowed to
@@ -647,8 +758,8 @@ function listBlocks(
 		type: "table",
 		block_id: "products:list",
 		columns: [
-			{ key: "title", label: "Title" },
-			{ key: "sku", label: "SKU", format: "code" },
+			{ key: "title", label: PRODUCT_COLUMN_LABELS.title },
+			{ key: "sku", label: PRODUCT_COLUMN_LABELS.sku, format: "code" },
 			// PLAIN TEXT, not `format:"badge"` (INC-10). `Kind` was deleted from
 			// this table for being near-constant across a live catalog — and
 			// `Status` is the SAME COLUMN one filter along: a catalog is almost all
@@ -658,19 +769,19 @@ function listBlocks(
 			// `active` is one quiet word and every exception is longer and says why
 			// (`inactive`, `deleted`, `active (not priced)`) — which is the same
 			// convention the `On hand` cell ships (`0 · Out of stock`).
-			{ key: "status", label: "Status" },
+			{ key: "status", label: PRODUCT_COLUMN_LABELS.status },
 			// `Kind` column DELETED: near-constant across a live catalog, so its
 			// badge would be a column of identical pills (T-5, X-4). Kind is on
 			// the detail's identity strip.
 			//
 			// `On hand` is a COUNT, never money — `format: "number"` is right here
 			// and would be an X-9 violation one column along.
-			{ key: "onHand", label: "On hand", format: "number" },
-			{ key: "price", label: "Price" }, // money LAST, pre-formatted (T-2, M-1)
+			{ key: "onHand", label: PRODUCT_COLUMN_LABELS.onHand, format: "number" },
+			{ key: "price", label: PRODUCT_COLUMN_LABELS.price }, // money LAST, pre-formatted (T-2, M-1)
 		],
 		rows: rows.map((r) => ({
-			title: r.product.title ?? "(untitled)",
-			sku: r.product.sku ?? "—",
+			title: r.product.title ?? UNTITLED,
+			sku: r.product.sku ?? ABSENT,
 			status: statusLabel(r.product),
 			onHand: r.onHand,
 			price: formatOptionalTotal(r.product.priceCents, r.product.currency),
@@ -707,17 +818,8 @@ function listBlocks(
  * never does.
  */
 function filterForm(actions: ScreenActions, path: NavPath, form: ProductsFilterForm): FormBlock {
-	const statusOptions: SelectOption[] = [
-		{ value: ANY, label: "All statuses (live)" },
-		{ value: "true", label: "Active" },
-		{ value: "false", label: "Inactive" },
-		{ value: "archived", label: "Archived (deleted)" },
-	];
-	const kindOptions: SelectOption[] = [
-		{ value: ANY, label: "All kinds" },
-		{ value: "physical", label: "physical" },
-		{ value: "digital", label: "digital" },
-	];
+	const statusOptions: SelectOption[] = [...PRODUCTS_STATUS_OPTIONS];
+	const kindOptions: SelectOption[] = [...PRODUCTS_KIND_OPTIONS];
 	const statusInitialValue = form.archived === "true" ? "archived" : (form.active ?? ANY);
 	return carriedForm({
 		namespace: "products:filter",
@@ -732,38 +834,36 @@ function filterForm(actions: ScreenActions, path: NavPath, form: ProductsFilterF
 					// owned-field guard unable to tell a filter control from a write.
 					type: "select",
 					action_id: "status",
-					label: "Status",
+					label: PRODUCT_FILTER_LABELS.status,
 					options: statusOptions,
 					initial_value: statusInitialValue,
 				},
 				{
 					type: "select",
 					action_id: "productKind",
-					label: "Kind",
+					label: PRODUCT_FILTER_LABELS.kind,
 					options: kindOptions,
 					initial_value: form.productKind ?? ANY,
 				},
 				{
 					type: "toggle",
 					action_id: "lowStock",
-					label: "Low stock only",
+					label: LOW_STOCK_FILTER_LABEL,
 					// PAGE-SCOPED WORDING, because the filter is page-scoped: it narrows
-					// the rows this page fetched (see `fetchPage`), so a description
-					// promising "every low-stock product" would be a claim the screen
-					// cannot keep.
-					description:
-						"Show only products at or below the low-stock threshold (applies per page; set the threshold on Settings).",
+					// the rows this page fetched (see `fetchPage`). The React screen
+					// offers the same control and says the same words.
+					description: LOW_STOCK_FILTER_DESCRIPTION,
 					// F-6b/X-24: REQUIRED — a toggle reads its value at mount only.
 					initial_value: form.lowStock === "true",
 				},
 				{
 					type: "text_input",
 					action_id: "search",
-					label: "Search (SKU exact, or title contains)",
+					label: PRODUCT_FILTER_LABELS.search,
 					...(form.search !== undefined ? { initial_value: form.search } : {}),
 				},
 			],
-			submit: { label: "Apply filters", action_id: actions.applyFilter },
+			submit: { label: APPLY_FILTERS_LABEL, action_id: actions.applyFilter },
 		},
 	});
 }
@@ -816,7 +916,7 @@ function openProductForm(
 						{ value: NONE, label: "Choose a product…" },
 						...rows.map(({ product: p }) => ({
 							value: p.productId,
-							label: [p.title ?? "(untitled)", p.sku, statusLabel(p)]
+							label: [p.title ?? UNTITLED, p.sku, statusLabel(p)]
 								.filter((part) => part !== null)
 								.join(" · "),
 						})),
@@ -846,7 +946,7 @@ const DEFAULT_TAX_CLASSES: TaxClassWire[] = [
 
 /** The live tax-class registry, falling back to {@link DEFAULT_TAX_CLASSES} on
  *  a failed or empty read — a registry read must never break the detail (E-1). */
-async function readTaxClasses(client: AdminProductsClient): Promise<TaxClassWire[]> {
+export async function readTaxClasses(client: AdminProductsClient): Promise<TaxClassWire[]> {
 	try {
 		const fetched = await client.getTaxClasses();
 		return fetched.length > 0 ? fetched : DEFAULT_TAX_CLASSES;
@@ -871,12 +971,12 @@ function productDetailLevel() {
 		},
 		notFound({ actions, path, id }) {
 			return [
-				{ type: "header", text: "Product not found" },
-				backButton(actions.back, "← Back to pricing & inventory", path),
+				{ type: "header", text: PRODUCT_NOT_FOUND_TITLE },
+				backButton(actions.back, PRODUCTS_BACK_LABEL, path),
 				{
 					type: "banner",
 					variant: "error",
-					title: "Product not found",
+					title: PRODUCT_NOT_FOUND_TITLE,
 					description: `No product matches "${id}".`,
 				},
 			];
@@ -923,7 +1023,7 @@ function detailBlocks(
 		// M-10: the human handle (product title) stands in for the uuid when one
 		// exists.
 		{ type: "header", text: p.title ?? id },
-		backButton(actions.back, "← Back to pricing & inventory"),
+		backButton(actions.back, PRODUCTS_BACK_LABEL),
 	];
 	// At most 2 banners at the top level (X-31): the notice and the tombstone
 	// alert.
@@ -932,7 +1032,7 @@ function detailBlocks(
 		blocks.push({
 			type: "banner",
 			variant: "alert",
-			title: "This product was deleted in the CMS",
+			title: TOMBSTONE_BANNER_TITLE,
 			// The one place on this screen where a timestamp is composed into a
 			// SENTENCE rather than sitting beside its own label. `formatTimestamp`
 			// is locale-correct here, but the seam between the LTR-rendered value
@@ -971,9 +1071,9 @@ function detailBlocks(
 	// cap (D-1a).
 	blocks.push(
 		fields("products:identity", [
-			["SKU", p.sku ?? "—"],
-			["Price", formatOptionalTotal(p.priceCents, p.currency)],
-			["Status (set in the CMS)", statusLabel(p)],
+			[PRODUCT_FIELD_LABELS.sku, p.sku ?? ABSENT],
+			[PRODUCT_FIELD_LABELS.price, formatOptionalTotal(p.priceCents, p.currency)],
+			[STATUS_FIELD_LABEL, statusLabel(p)],
 			// The most operationally urgent number on the page, carrying its own
 			// exception (`Out of stock` / `Low`) so it does not read at the same
 			// weight as the rest of the strip. Same helper as the list's `On hand`
@@ -983,12 +1083,12 @@ function detailBlocks(
 			// "—" branch is now REACHED on this screen (no inventory record, or no
 			// sku to have one), which is the point: the two facts were previously
 			// both rendered as a zero nobody counted.
-			["Stock on hand", onHandCell(p.onHand, threshold)],
+			[PRODUCT_FIELD_LABELS.stockOnHand, onHandCell(p.onHand, threshold)],
 		]),
 	);
 	const panels: TabPanel[] = [
-		{ label: "Product", blocks: productPanel(id, p, taxClasses, open) },
-		{ label: "Stock", blocks: stockPanel(id, p, open, renderState, threshold) },
+		{ label: PRODUCT_TAB_LABELS[0], blocks: productPanel(id, p, taxClasses, open) },
+		{ label: PRODUCT_TAB_LABELS[1], blocks: stockPanel(id, p, open, renderState, threshold) },
 	];
 	blocks.push({
 		type: "tab",
@@ -1001,19 +1101,12 @@ function detailBlocks(
 	return blocks;
 }
 
-/** One line naming both what happened and what to do, for a tombstoned
- *  product — shown in place of the edit/stock-movement forms, in EITHER
- *  panel (DA-7). Editing and stock forms on a soft-deleted product are
- *  omitted entirely (never rendered-then-rejected), which is already
- *  correct; D-3 requires the panel itself keep rendering regardless. */
-const TOMBSTONE_CONTEXT =
-	"This product was deleted in the CMS — editing and stock moves are unavailable. Restore the document to re-enable them.";
-
-/** F-5a-i's normative sibling-discard line — ONE line, above the three split
- *  groups, never repeated inside them (X-45). Written to DA-7a's discipline:
- *  no "deliberately" / "there is no" / "we do not" (X-41). */
-const SPLIT_DISCARD_CONTEXT =
-	"Each section saves on its own. Save the section you are editing before you open another — saving one reloads the product and clears unsaved edits in the others.";
+// `TOMBSTONE_CONTEXT` (DA-7 — editing and stock forms are OMITTED for a
+// soft-deleted product, never rendered-then-rejected, while D-3 keeps the panel
+// itself rendering) and `SPLIT_DISCARD_CONTEXT` (F-5a-i's normative
+// sibling-discard line — ONE line, above the three split groups, never repeated
+// inside them, X-45) are shared with the React screen: it renders the same three
+// split forms and owes the operator the same warning.
 
 // -- panel "Product" -----------------------------------------------------------
 
@@ -1025,9 +1118,9 @@ function productPanel(
 ): Block[] {
 	const blocks: Block[] = [
 		fields("products:more", [
-			["Compare-at", formatOptionalTotal(p.compareAtCents, p.compareAtCurrency)],
-			["Unit cost", formatOptionalTotal(p.unitCostCents, p.unitCostCurrency)],
-			["Tax class", taxClassLabel(p.taxClass, taxClasses)],
+			[PRODUCT_FIELD_LABELS.compareAt, formatOptionalTotal(p.compareAtCents, p.compareAtCurrency)],
+			[PRODUCT_FIELD_LABELS.unitCost, formatOptionalTotal(p.unitCostCents, p.unitCostCurrency)],
+			[PRODUCT_FIELD_LABELS.taxClass, taxClassLabel(p.taxClass, taxClasses)],
 			// `Kind` lives here rather than in the identity strip (INC-15). It took
 			// the slot `Inventory policy` used to hold — that row was a verbatim
 			// duplicate of the Stock panel's own (`products:stock`), which is where
@@ -1036,13 +1129,13 @@ function productPanel(
 			// select) are skipped entirely for a deleted product, so without this row
 			// a tombstoned product would state its kind nowhere. Still 8 entries in 4
 			// row-major pairs (R-3) — a swap, not an addition.
-			["Kind", p.productKind],
-			["Weight (g)", p.weightGrams === null ? "—" : String(p.weightGrams)],
-			["Dimensions (mm, LxWxH)", dimensionsSummary(p)],
+			[PRODUCT_FIELD_LABELS.kind, p.productKind],
+			[PRODUCT_FIELD_LABELS.weight, p.weightGrams === null ? ABSENT : String(p.weightGrams)],
+			[PRODUCT_FIELD_LABELS.dimensions, dimensionsCell(p.lengthMm, p.widthMm, p.heightMm)],
 			// The labels dropped their `(UTC)` suffix because the value states the
 			// zone itself now (INC-13). Still 8 entries, still 4 row-major pairs.
-			["Created", formatTimestamp(p.createdAt)],
-			["Updated", formatTimestamp(p.updatedAt)],
+			[PRODUCT_FIELD_LABELS.created, formatTimestamp(p.createdAt)],
+			[PRODUCT_FIELD_LABELS.updated, formatTimestamp(p.updatedAt)],
 		]),
 	];
 	if (p.deletedAt !== null) {
@@ -1053,41 +1146,23 @@ function productPanel(
 	blocks.push({
 		type: "accordion",
 		block_id: `products:${id}:edit-identity`,
-		label: identityGroupLabel(p), // already inside the budget (valueLabel)
+		label: identityGroupLabel(p.sku), // already inside the budget (valueLabel)
 		default_open: open === "identity",
-		blocks: [
-			{
-				type: "context",
-				text: "SKU is the stock-keeping code the store sells against. The title is set in the CMS.",
-			},
-			identityForm(id, p),
-		],
+		blocks: [{ type: "context", text: IDENTITY_FORM_CONTEXT }, identityForm(id, p)],
 	});
 	blocks.push({
 		type: "accordion",
 		block_id: `products:${id}:edit-price`,
-		label: priceGroupLabel(p), // already inside the budget (valueLabel)
+		label: priceGroupLabel(p.priceCents, p.currency), // already inside the budget
 		default_open: false, // ALWAYS — not a D-5 rank (only Identity is)
-		blocks: [
-			{
-				type: "context",
-				text: "Price, compare-at and unit cost all use the product's one currency. A blank compare-at or unit cost clears it.",
-			},
-			priceForm(id, p),
-		],
+		blocks: [{ type: "context", text: PRICE_FORM_CONTEXT }, priceForm(id, p)],
 	});
 	blocks.push({
 		type: "accordion",
 		block_id: `products:${id}:edit-shipping`,
-		label: shippingGroupLabel(p), // already inside the budget (valueLabel)
+		label: shippingGroupLabel(p.taxClass, p.weightGrams), // already inside the budget
 		default_open: false, // ALWAYS
-		blocks: [
-			{
-				type: "context",
-				text: "Weight and dimensions feed shipping quotes; blank leaves them unchanged. A blank tax class clears it.",
-			},
-			shippingForm(id, p, taxClasses),
-		],
+		blocks: [{ type: "context", text: SHIPPING_FORM_CONTEXT }, shippingForm(id, p, taxClasses)],
 	});
 	// Replaces the deleted single-option "When out of stock" select (F-3) AND
 	// the banned "no overselling" phrasing (X-20) with the mechanism sentence,
@@ -1095,42 +1170,8 @@ function productPanel(
 	// DENY-ONLY this slice — no `allow_backorder` option exists anywhere in
 	// this form. The no-oversell invariant is non-negotiable, and backorders
 	// are a future capability that needs its own races and an ADR.
-	blocks.push({
-		type: "context",
-		text: "The store stops selling at zero stock; backorders are a future capability.",
-	});
+	blocks.push({ type: "context", text: BACKORDERS_CONTEXT });
 	return blocks;
-}
-
-/** D-6: the Price group's label carries the answer, so it can be skipped
- *  unopened. ≤60 chars (X-11), enforced by `valueLabel`. */
-function priceGroupLabel(p: ProductDetailWire): string {
-	if (p.priceCents === null || p.currency === null) return valueLabel("Price", ["not priced yet"]);
-	return valueLabel("Price", [`${formatOptionalTotal(p.priceCents, p.currency)} ${p.currency}`]);
-}
-
-/** D-6, INC-15: the Identity group holds exactly one value — the SKU — so the
- *  label states it and the group can be skipped unopened. A product created in
- *  the CMS before anyone set a SKU has none yet; that is a real state with a
- *  real consequence (no stock movements — D-7, see the Stock panel), so it is
- *  NAMED rather than rendered as an empty tail. */
-function identityGroupLabel(p: ProductDetailWire): string {
-	return valueLabel("Identity", [p.sku ?? "no SKU"]);
-}
-
-/** D-6, INC-15: the two values an operator opens `Classification & shipping`
- *  to check — the tax class, and the weight quotes are computed from.
- *
- *  The tax class renders as its ID, not the `name (id)` pair the `Tax class`
- *  summary row and the select use: these ids are readable natural-key slugs
- *  (`standard`, `eu-standard-vat`), never uuids, so §1.3 leaves them in full —
- *  and the full pair would consume the whole X-11 budget on its own, leaving no
- *  room for the weight. Neither value is invented when absent: an unset one
- *  says so. */
-function shippingGroupLabel(p: ProductDetailWire): string {
-	const taxClass = p.taxClass ?? "no tax class";
-	const weight = p.weightGrams === null ? "no weight" : `${p.weightGrams} g`;
-	return valueLabel("Classification & shipping", [taxClass, weight]);
 }
 
 /**
@@ -1150,11 +1191,11 @@ function identityForm(id: string, p: ProductDetailWire): FormBlock {
 				{
 					type: "text_input",
 					action_id: "sku",
-					label: "SKU",
+					label: PRODUCT_FIELD_LABELS.sku,
 					...(p.sku !== null ? { initial_value: p.sku } : {}),
 				},
 			],
-			submit: { label: "Save identity", action_id: ACTION_SAVE_IDENTITY },
+			submit: { label: SAVE_IDENTITY_LABEL, action_id: ACTION_SAVE_IDENTITY },
 		},
 	});
 }
@@ -1177,8 +1218,8 @@ function priceForm(id: string, p: ProductDetailWire): FormBlock {
 		{
 			type: "text_input",
 			action_id: "price",
-			label: `Price (${p.currency ?? "set currency below"}, e.g. 19.99)`,
-			placeholder: "19.99",
+			label: priceFieldLabel(p.currency),
+			placeholder: PRICE_PLACEHOLDER,
 			...(p.priceCents !== null ? { initial_value: formatPriceMinorUnits(p.priceCents) } : {}),
 		},
 	];
@@ -1186,16 +1227,16 @@ function priceForm(id: string, p: ProductDetailWire): FormBlock {
 		priceFields.push({
 			type: "text_input",
 			action_id: "currency",
-			label: "Currency (ISO-4217, e.g. USD) — set once when first pricing",
-			placeholder: "USD",
+			label: CURRENCY_FIELD_LABEL,
+			placeholder: CURRENCY_PLACEHOLDER,
 		});
 	}
 	priceFields.push(
 		{
 			type: "text_input",
 			action_id: "compareAt",
-			label: `Compare-at / was price (${p.currency ?? "same as price"}, e.g. 29.99) — blank to clear`,
-			placeholder: "29.99",
+			label: compareAtFieldLabel(p.currency),
+			placeholder: COMPARE_AT_PLACEHOLDER,
 			...(p.compareAtCents !== null
 				? { initial_value: formatPriceMinorUnits(p.compareAtCents) }
 				: {}),
@@ -1203,8 +1244,8 @@ function priceForm(id: string, p: ProductDetailWire): FormBlock {
 		{
 			type: "text_input",
 			action_id: "unitCost",
-			label: `Unit cost — admin only, never shown to buyers (${p.currency ?? "same as price"}) — blank to clear`,
-			placeholder: "8.50",
+			label: unitCostFieldLabel(p.currency),
+			placeholder: UNIT_COST_PLACEHOLDER,
 			...(p.unitCostCents !== null
 				? { initial_value: formatPriceMinorUnits(p.unitCostCents) }
 				: {}),
@@ -1221,7 +1262,7 @@ function priceForm(id: string, p: ProductDetailWire): FormBlock {
 		form: {
 			type: "form",
 			fields: priceFields,
-			submit: { label: "Save price", action_id: ACTION_SAVE_PRICE },
+			submit: { label: SAVE_PRICE_LABEL, action_id: ACTION_SAVE_PRICE },
 		},
 	});
 }
@@ -1240,46 +1281,46 @@ function shippingForm(id: string, p: ProductDetailWire, taxClasses: TaxClassWire
 				{
 					type: "select",
 					action_id: "productKind",
-					label: "Kind",
+					label: PRODUCT_FIELD_LABELS.kind,
 					options: [
-						{ value: "physical", label: "physical" },
-						{ value: "digital", label: "digital" },
+						{ value: "physical", label: PRODUCT_KIND_LABELS.physical },
+						{ value: "digital", label: PRODUCT_KIND_LABELS.digital },
 					],
 					initial_value: p.productKind,
 				},
 				{
 					type: "select",
 					action_id: "taxClass",
-					label: "Tax class",
+					label: PRODUCT_FIELD_LABELS.taxClass,
 					options: taxClassOptions(p.taxClass, taxClasses),
 					initial_value: p.taxClass ?? NO_TAX_CLASS,
 				},
 				{
 					type: "text_input",
 					action_id: "weightGrams",
-					label: "Weight (g)",
+					label: PRODUCT_MEASUREMENT_LABELS.weightGrams,
 					...(p.weightGrams !== null ? { initial_value: String(p.weightGrams) } : {}),
 				},
 				{
 					type: "text_input",
 					action_id: "lengthMm",
-					label: "Length (mm)",
+					label: PRODUCT_MEASUREMENT_LABELS.lengthMm,
 					...(p.lengthMm !== null ? { initial_value: String(p.lengthMm) } : {}),
 				},
 				{
 					type: "text_input",
 					action_id: "widthMm",
-					label: "Width (mm)",
+					label: PRODUCT_MEASUREMENT_LABELS.widthMm,
 					...(p.widthMm !== null ? { initial_value: String(p.widthMm) } : {}),
 				},
 				{
 					type: "text_input",
 					action_id: "heightMm",
-					label: "Height (mm)",
+					label: PRODUCT_MEASUREMENT_LABELS.heightMm,
 					...(p.heightMm !== null ? { initial_value: String(p.heightMm) } : {}),
 				},
 			],
-			submit: { label: "Save classification", action_id: ACTION_SAVE_SHIPPING },
+			submit: { label: SAVE_SHIPPING_LABEL, action_id: ACTION_SAVE_SHIPPING },
 		},
 	});
 }
@@ -1297,8 +1338,8 @@ function stockPanel(
 		fields("products:stock", [
 			// Badged exactly as the identity strip above and the list column
 			// before it — one helper, three surfaces (see `onHandCell`).
-			["On hand", onHandCell(p.onHand, threshold)],
-			["Inventory policy", inventoryPolicyLabel(p.inventoryPolicy)],
+			[PRODUCT_FIELD_LABELS.onHand, onHandCell(p.onHand, threshold)],
+			[PRODUCT_FIELD_LABELS.inventoryPolicy, inventoryPolicyLabel(p.inventoryPolicy)],
 		]),
 	];
 	if (threshold === null) {
@@ -1306,28 +1347,17 @@ function stockPanel(
 		// under-stocked product with no `Low` beside it reads as an ordinary one,
 		// and nothing else on the screen would give that away. Same fact the
 		// list's banner carries, in the register this panel already uses.
-		blocks.push({
-			type: "context",
-			text: "Low-stock highlighting is unavailable — the threshold could not be read. Set it under Checkout & holds on Settings.",
-		});
+		blocks.push({ type: "context", text: LOW_STOCK_BAND_UNAVAILABLE_CONTEXT });
 	}
 	if (p.deletedAt !== null) {
 		blocks.push({ type: "context", text: TOMBSTONE_CONTEXT });
 		return blocks;
 	}
-	blocks.push({
-		type: "context",
-		// X-20-safe rewrite: "on hand" and "the count available to sell right
-		// now" say the same thing the banned phrasing used to.
-		text: "On hand is what can be sold right now — open cart holds are already subtracted. Whole units only.",
-	});
+	blocks.push({ type: "context", text: STOCK_ON_HAND_CONTEXT });
 	if (p.sku === null) {
 		// D-7: a skuless "create then price" product has nothing to move stock
 		// against (the service would 409 NO_SKU anyway) — one line, no forms.
-		blocks.push({
-			type: "context",
-			text: "Stock movements need a SKU first — set one under Identity on the Product tab.",
-		});
+		blocks.push({ type: "context", text: NO_SKU_CONTEXT });
 		return blocks;
 	}
 	const onHand = p.onHand;
@@ -1338,10 +1368,7 @@ function stockPanel(
 		// creates the row — so rendering their forms would only ever produce a
 		// refusal, and their idempotency keys are derived from an on-hand watermark
 		// that does not exist. One line naming the state and the way out.
-		blocks.push({
-			type: "context",
-			text: "This SKU has no inventory record yet. Saving any section on the Product tab creates one, and stock can be added here after that.",
-		});
+		blocks.push({ type: "context", text: NO_INVENTORY_RECORD_CONTEXT });
 		return blocks;
 	}
 	blocks.push(restockGroup(id, onHand));
@@ -1357,7 +1384,7 @@ function restockGroup(id: string, onHand: number): Block {
 	return {
 		type: "accordion",
 		block_id: `products:${id}:restock`,
-		label: "Add stock",
+		label: ADD_STOCK_LABEL,
 		default_open: false,
 		blocks: [restockForm(id, onHand)],
 	};
@@ -1377,28 +1404,26 @@ function restockForm(id: string, onHand: number): FormBlock {
 				{
 					type: "text_input",
 					action_id: "qty",
-					label: "Units to add",
-					placeholder: "e.g. 12",
+					label: ADD_STOCK_FIELD_LABEL,
+					placeholder: ADD_STOCK_PLACEHOLDER,
 				},
 			],
-			submit: { label: "Add stock", action_id: ACTION_RESTOCK },
+			submit: { label: ADD_STOCK_LABEL, action_id: ACTION_RESTOCK },
 		},
 	});
 }
 
 /** DA-3 state 1's required alert banner + explanatory context, shared by the
  *  idle body and the flattened refusal body (DA-3a-i) so the two cannot
- *  drift — mirrors `orders-page.ts`'s `REFUND_PARTIAL_BANNER`. */
-const REMOVE_STOCK_BANNER: Block = {
+ *  drift — mirrors `orders-page.ts`'s `REFUND_PARTIAL_BANNER`. The WORDS are
+ *  shared one tier further out, with the React screen. */
+const REMOVE_STOCK_BANNER_BLOCK: Block = {
 	type: "banner",
 	variant: "alert",
-	title: "Removing stock cannot be undone by restocking",
-	description: "This records a stock removal — the store treats it as a separate ledger entry.",
+	title: REMOVE_STOCK_BANNER.title,
+	description: REMOVE_STOCK_BANNER.description,
 };
-const REMOVE_STOCK_CONTEXT: Block = {
-	type: "context",
-	text: "Restocking appends a second movement — it does not correct this one. Check the number before confirming.",
-};
+const REMOVE_STOCK_CONTEXT_BLOCK: Block = { type: "context", text: REMOVE_STOCK_CONTEXT };
 
 /**
  * The Remove-stock group — the screen's ONE destructive act (DA-5's second
@@ -1436,8 +1461,12 @@ function removeStockGroup(
 		staged !== undefined
 			? removeReviewBody(id, staged)
 			: draft !== undefined
-				? [REMOVE_STOCK_BANNER, REMOVE_STOCK_CONTEXT, removeStockForm(id, onHand, draft.qtyInput)]
-				: [REMOVE_STOCK_BANNER, REMOVE_STOCK_CONTEXT, removeStockForm(id, onHand)];
+				? [
+						REMOVE_STOCK_BANNER_BLOCK,
+						REMOVE_STOCK_CONTEXT_BLOCK,
+						removeStockForm(id, onHand, draft.qtyInput),
+					]
+				: [REMOVE_STOCK_BANNER_BLOCK, REMOVE_STOCK_CONTEXT_BLOCK, removeStockForm(id, onHand)];
 	return {
 		type: "accordion",
 		block_id:
@@ -1449,7 +1478,7 @@ function removeStockGroup(
 		// D-6a: the label carries the CONSEQUENCE, not just the verb — X-35's
 		// bare-verb-label check, and the reason §12.1's own "Remove stock" listing
 		// line is a defect (reported in the PR body).
-		label: fitLabel("Remove stock — permanent, cannot be undone by restocking"),
+		label: fitLabel(REMOVE_STOCK_GROUP_LABEL),
 		default_open: open === "remove",
 		blocks: body,
 	};
@@ -1470,8 +1499,8 @@ function removeStockForm(id: string, onHand: number, prefillQty?: string): FormB
 				{
 					type: "text_input",
 					action_id: "qty",
-					label: "Units to remove (damaged / shrinkage)",
-					placeholder: "e.g. 3",
+					label: REMOVE_STOCK_FIELD_LABEL,
+					placeholder: REMOVE_STOCK_PLACEHOLDER,
 					...(prefillQty !== undefined ? { initial_value: prefillQty } : {}),
 				},
 			],
@@ -1493,12 +1522,16 @@ function removeReviewBody(
 	id: string,
 	staged: ProductsRenderState & { kind: "remove-staged" },
 ): Block[] {
-	const unit = staged.qty === 1 ? "unit" : "units";
+	const unit = unitWord(staged.qty);
+	// THE DIALOG'S OWN WORDS ARE SHARED with the React screen, which shows the
+	// same sentence in a native `<dialog>` in place of this staged step. The
+	// staging is what collapses there, never the sentence.
+	const confirm = removeStockConfirm(staged.qty);
 	return [
 		{
 			type: "banner",
 			variant: "alert",
-			title: "Removing stock cannot be undone by restocking",
+			title: REMOVE_STOCK_BANNER.title,
 			description: `Confirm below to remove ${staged.qty} ${unit}. Edit the form and review again to change the amount.`,
 		},
 		removeStockForm(id, staged.onHand, String(staged.qty)),
@@ -1515,23 +1548,11 @@ function removeReviewBody(
 					// component of the idempotency key (F-2a).
 					value: { productId: id, qty: String(staged.qty), onHand: String(staged.onHand) },
 					style: "danger",
-					confirm: {
-						title: fit(`Remove ${staged.qty} ${unit}?`, LABEL_BUDGET),
-						text: `Remove ${staged.qty} ${unit} from stock? This records a removal and cannot be undone by restocking.`,
-						confirm: `Yes, remove ${staged.qty}`,
-						deny: "Keep as is",
-						style: "danger",
-					},
+					confirm: { ...confirm, style: "danger" },
 				},
 			],
 		},
 	];
-}
-
-function dimensionsSummary(p: ProductDetailWire): string {
-	if (p.lengthMm === null && p.widthMm === null && p.heightMm === null) return "—";
-	const dims = [p.lengthMm, p.widthMm, p.heightMm].map((d) => (d === null ? "?" : String(d)));
-	return dims.join(" x ");
 }
 
 // -- shared --------------------------------------------------------------------
@@ -1549,56 +1570,15 @@ function fields(
 	};
 }
 
-/** An `accordion.label` inside §1's 60-char budget (X-11). */
-function fit(text: string, max: number): string {
-	return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
-}
-function fitLabel(text: string): string {
-	return fit(text, LABEL_BUDGET);
-}
-
-/** Separator between the values on a D-6 label. */
-const VALUE_SEPARATOR = " · ";
-
-/**
- * A D-6 `<group> — <value> · <value>` label, kept inside the X-11 budget by
- * shortening a VALUE rather than the tail.
- *
- * `fitLabel` truncates from the right, which on these labels eats the LAST
- * value outright: a 40-character tax-class slug would silently delete `· 3200 g`
- * and leave a label that looks complete. The whole point of INC-15 is that the
- * label carries the values, so the truncation has to cost the value that has
- * the most to give — the longest one — and only by the overflow, leaving every
- * other segment (the tail included) intact. When even that is not enough
- * (a prefix that alone exceeds the budget — no caller has one) it falls back to
- * plain right-truncation, which is still inside the budget.
- */
-function valueLabel(prefix: string, values: readonly string[]): string {
-	if (values.length === 0) return fitLabel(prefix);
-	const full = `${prefix} — ${values.join(VALUE_SEPARATOR)}`;
-	if (full.length <= LABEL_BUDGET) return full;
-	let longest = 0;
-	values.forEach((value, index) => {
-		if (value.length > (values[longest] ?? "").length) longest = index;
-	});
-	const room = (values[longest] ?? "").length - (full.length - LABEL_BUDGET) - 1;
-	if (room < 1) return fitLabel(full);
-	const shortened = values.map((value, index) =>
-		index === longest ? `${value.slice(0, room)}…` : value,
-	);
-	return `${prefix} — ${shortened.join(VALUE_SEPARATOR)}`;
-}
-
 /** E-7's normative fail-closed banner — the copy names the symptom, lists the
  *  two things the operator can check, then says the remaining possibility
  *  out loud, so a console bug landing on this same path is never reported as
  *  an outage. */
 function failClosed() {
 	return failClosedResponse({
-		header: "Pricing & inventory",
-		title: "Pricing & inventory is unavailable",
-		description:
-			"Pricing & inventory could not be loaded. Check the service connection and the admin token in Settings; if both look right, this is a fault in the console itself — not your data.",
+		header: PRODUCTS_SCREEN_TITLE,
+		title: PRODUCTS_UNAVAILABLE_TITLE,
+		description: PRODUCTS_UNAVAILABLE_DESCRIPTION,
 		toast: "Could not load pricing & inventory",
 	});
 }
@@ -1608,7 +1588,7 @@ function failClosed() {
  *  construction (one combined "Status" select), but `deleted: true` is
  *  asserted alone regardless, so a hand-crafted `form_submit` can never
  *  smuggle both axes into one request. */
-function toClientFilter(form: ProductsFilterForm): ProductsListFilter {
+export function toClientFilter(form: ProductsFilterForm): ProductsListFilter {
 	const filter: ProductsListFilter = {};
 	if (form.archived === "true") {
 		filter.deleted = true;
@@ -1627,7 +1607,7 @@ function filterFromValues(values: Record<string, unknown>): ProductsListState {
 	return { form: filterFormFromValues(values) };
 }
 
-function filterFormFromValues(values: Record<string, unknown>): ProductsFilterForm {
+export function filterFormFromValues(values: Record<string, unknown>): ProductsFilterForm {
 	const form: ProductsFilterForm = {};
 	const status = readString(values.status);
 	const productKind = readString(values.productKind);
@@ -1646,18 +1626,16 @@ function filterFormFromValues(values: Record<string, unknown>): ProductsFilterFo
 	return form;
 }
 
-/** Format an optional (currency, minor-units) pair for display — either half
- *  missing (a "create then price" row) renders "—", never a partial/garbled
- *  string. Falls back to `${CUR} ${cents}` if `Intl` rejects the currency
- *  (never throws into the render path). */
-function formatOptionalTotal(minorUnits: number | null, currencyCode: string | null): string {
-	if (minorUnits === null || currencyCode === null) return "—";
-	try {
-		return formatMoney(toCents(minorUnits), toCurrency(currencyCode), "en-US");
-	} catch {
-		return `${currencyCode} ${minorUnits}`;
-	}
-}
+/**
+ * Format an optional (currency, minor-units) pair for display.
+ *
+ * RE-EXPORTED from `@otta-sh/admin-presentation` since INC-21 — this screen had
+ * the console's LAST second money renderer, whose Intl-failure branch printed
+ * `` `${CUR} ${minorUnits}` ``: raw minor units in a money field, which is the
+ * exact bug G1 exists to forbid. Sharing it deleted that branch rather than
+ * copying it into the React tier.
+ */
+const formatOptionalTotal = formatOptionalAmount;
 
 // -- money input parsing (NO float arithmetic — CLAUDE.md) --------------------
 // The exact-integer-string parse/format pair lives in `./money-input.js`,
@@ -1882,24 +1860,20 @@ function saveAction() {
 
 /** Parse a merchant-entered stock quantity into a POSITIVE WHOLE number — a
  *  TEXT input (never `number_input`, which hands back a float). Null for any
- *  non-conforming or non-positive input; never throws. Exported for its own
- *  test. */
-export function parseStockQty(input: string | undefined): number | null {
-	if (input === undefined) return null;
-	const trimmed = input.trim();
-	if (!/^\d+$/.test(trimmed)) return null;
-	const n = Number.parseInt(trimmed, 10);
-	return Number.isSafeInteger(n) && n > 0 ? n : null;
-}
+ *  non-conforming or non-positive input; never throws.
+ *
+ *  RE-EXPORTED from `@otta-sh/admin-presentation` since INC-21: the React
+ *  screen checks the quantity in the browser before it opens the remove-stock
+ *  confirm, so a second parser here would let an operator read a dialog for a
+ *  quantity the write then refuses. `parseStockQty` keeps this name because it
+ *  is the one `product-edit-money.test.ts`'s neighbours already use. */
+export const parseStockQty = parseStockQtyShared;
 
 /** Read the `onHand` watermark out of an untrusted carried payload — a plain
  *  non-negative integer string, or `null` for anything else (B-2: money and
  *  count watermarks never cross as floats or negatives). */
 function parseOnHand(value: unknown): number | null {
-	const raw = readString(value);
-	if (raw === undefined || !/^\d+$/.test(raw)) return null;
-	const n = Number.parseInt(raw, 10);
-	return Number.isSafeInteger(n) ? n : null;
+	return parseOnHandWatermark(readString(value));
 }
 
 /** F-2a: `${productId}:${direction}:${onHandAtRender}:${qty}` — content plus
@@ -1927,11 +1901,7 @@ function restockAction() {
 		if (onHand === null) return api.showLeaf([productId], UNREADABLE);
 		const qty = parseStockQty(readString(api.input.values?.qty));
 		if (qty === null) {
-			return api.showLeaf([productId], {
-				variant: "error",
-				title: "Enter a whole number of units",
-				description: "Units to add must be a positive whole number, like 12.",
-			});
+			return api.showLeaf([productId], { variant: "error", ...ADD_STOCK_INVALID_QTY });
 		}
 		const key = stockMovementKey(productId, "restock", onHand, qty);
 		const result = await api.client.products.restock(productId, qty, key);
@@ -1990,16 +1960,7 @@ function removeStockReviewAction() {
 		}
 		const qty = parseStockQty(qtyInput);
 		if (qty === null) {
-			return api.showLeaf(
-				[productId],
-				{
-					variant: "error",
-					title: "Not removed",
-					description:
-						"Enter a whole number of units greater than zero, like 3. Nothing was changed.",
-				},
-				draft(),
-			);
+			return api.showLeaf([productId], { variant: "error", ...REMOVE_STOCK_INVALID_QTY }, draft());
 		}
 		// DA-3c-i: re-read before rendering a button/confirm the write might
 		// refuse.
@@ -2027,7 +1988,7 @@ function removeStockReviewAction() {
 		}
 		// DA-3c: the bound check, against a ceiling just confirmed current.
 		if (qty > liveOnHand) {
-			const unit = liveOnHand === 1 ? "unit" : "units";
+			const unit = unitWord(liveOnHand);
 			return api.showLeaf(
 				[productId],
 				{
@@ -2100,7 +2061,7 @@ function restockNotice(result: RestockResult, qty: number): Notice {
 		return {
 			variant: "default",
 			title: "Stock added",
-			description: `Added ${qty} unit${qty === 1 ? "" : "s"}. Available is now ${result.onHand}.`,
+			description: `Added ${qty} ${unitWord(qty)}. Available is now ${result.onHand}.`,
 		};
 	}
 	return stockFailureNotice(result.reason);
@@ -2112,14 +2073,14 @@ function removeStockNotice(result: StockRemovalResult, qty: number): Notice {
 		return {
 			variant: "default",
 			title: "Stock removed",
-			description: `Removed ${qty} unit${qty === 1 ? "" : "s"}. Available is now ${result.onHand}.`,
+			description: `Removed ${qty} ${unitWord(qty)}. Available is now ${result.onHand}.`,
 		};
 	}
 	if (result.reason === "insufficient_stock") {
 		return {
 			variant: "error",
 			title: "Not enough stock to remove",
-			description: `Only ${result.onHand} unit${result.onHand === 1 ? "" : "s"} on hand — you cannot remove ${qty}.`,
+			description: `Only ${result.onHand} ${unitWord(result.onHand)} on hand — you cannot remove ${qty}.`,
 		};
 	}
 	return stockFailureNotice(result.reason);
@@ -2161,8 +2122,8 @@ function stockFailureNotice(
 		case "not_found":
 			return {
 				variant: "error",
-				title: "Product not found",
-				description: "This product no longer exists — it may have been deleted in the CMS.",
+				title: PRODUCT_NOT_FOUND_TITLE,
+				description: PRODUCT_DELETED_SINCE_LOADED,
 			};
 		default:
 			return {
@@ -2212,8 +2173,8 @@ function editNotice(result: Awaited<ReturnType<AdminProductsClient["updateProduc
 		case "not_found":
 			return {
 				variant: "error",
-				title: "Product not found",
-				description: "This product no longer exists — it may have been deleted in the CMS.",
+				title: PRODUCT_NOT_FOUND_TITLE,
+				description: PRODUCT_DELETED_SINCE_LOADED,
 			};
 		default:
 			return {

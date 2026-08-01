@@ -155,8 +155,22 @@ export function Button({
  *
  * `aria-label` names the id rather than saying "copy", because a screen reader
  * moving through a column of these otherwise hears "copy, copy, copy".
+ *
+ * `what` NAMES WHAT IS BEING COPIED, and it defaults to the Orders wording that
+ * shipped in INC-20. Pricing & inventory copies a SKU rather than an opaque id
+ * (§1.3 exempts a natural key, and that screen renders SKUs in full), so a
+ * screen-reader user there must hear "Copy SKU APR-LIN-NAT" and not "Copy full
+ * order id APR-LIN-NAT" — which would be wrong twice in five words.
  */
-export function CopyIdButton({ id, testId }: { id: string; testId?: string }): React.ReactElement {
+export function CopyIdButton({
+	id,
+	testId,
+	what = "full order id",
+}: {
+	id: string;
+	testId?: string;
+	what?: string;
+}): React.ReactElement {
 	const [state, setState] = React.useState<"idle" | "done" | "failed">("idle");
 
 	React.useEffect(() => {
@@ -171,7 +185,7 @@ export function CopyIdButton({ id, testId }: { id: string; testId?: string }): R
 			className="otta-focusable"
 			data-testid={testId}
 			data-full-id={id}
-			aria-label={`Copy full order id ${id}`}
+			aria-label={`Copy ${what} ${id}`}
 			title={id}
 			onClick={() => {
 				try {

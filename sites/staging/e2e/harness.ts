@@ -355,6 +355,65 @@ export async function skipWithoutOrders(testInfo: TestInfo, rowCount: number): P
 }
 
 /**
+ * Skip (or, under `OTTA_E2E_REQUIRE_SITE=1`, fail) when the stack has no
+ * products.
+ *
+ * ITS OWN MESSAGE, NOT {@link skipWithoutOrders}'S, for the reason that helper's
+ * neighbour already records: "no orders" and "no products" have different causes
+ * and different fixes. They are also NOT the same condition — a stack seeded
+ * with a catalog but no checkouts has products and no orders, which is the
+ * ordinary state of a freshly-seeded local stack.
+ */
+export async function skipWithoutProducts(testInfo: TestInfo, rowCount: number): Promise<void> {
+	if (rowCount > 0) return;
+	const how =
+		"the stack has no products, so this spec cannot exercise a row. Seed it " +
+		"(DIRECTOR-SPEC §0.2) or set OTTA_E2E_SEED_ON_AUTH=1 for this run.";
+	if (E2E_REQUIRES_SITE) throw new Error(`OTTA_E2E_REQUIRE_SITE=1 and ${how}`);
+	testInfo.skip(true, how);
+}
+
+/**
+ * Skip (or, under `OTTA_E2E_REQUIRE_SITE=1`, fail) when no product on the page
+ * has a SKU.
+ *
+ * ITS OWN MESSAGE, and the first cut of the SKU spec borrowed
+ * {@link skipWithoutProducts}'s — which was wrong in the way these helpers keep
+ * being wrong: the stack had products, so "the stack has no products" sent the
+ * reader to the seed, where nothing was broken. A catalog of "created but never
+ * priced" rows is a REAL state (the CMS sync mints a `product_commerce` row for
+ * every products document), and the fix is to price one, not to seed more.
+ */
+export async function skipWithoutSku(testInfo: TestInfo): Promise<void> {
+	const how =
+		"the stack has products but none on the first page has a SKU, so there is " +
+		"no natural key to render or copy. Every row is a 'created but never " +
+		"priced' product — price one (DIRECTOR-SPEC §0.2's seed does) and it gains " +
+		"a SKU.";
+	if (E2E_REQUIRES_SITE) throw new Error(`OTTA_E2E_REQUIRE_SITE=1 and ${how}`);
+	testInfo.skip(true, how);
+}
+
+/**
+ * Skip (or, under `OTTA_E2E_REQUIRE_SITE=1`, fail) when no product on the page
+ * has an inventory record to move stock against.
+ *
+ * A DIFFERENT CAUSE AND A DIFFERENT FIX AGAIN. A product with no SKU, or with a
+ * SKU that predates the seed-on-first-sku behaviour, renders a one-line
+ * explanation in place of both stock forms — by design (D-7). A spec that needs
+ * the forms must say THAT rather than "no products", which would send the reader
+ * to the seed where nothing is wrong.
+ */
+export async function skipWithoutStockableProduct(testInfo: TestInfo): Promise<void> {
+	const how =
+		"no product on the first page has an inventory record, so neither stock " +
+		"form renders. Seed the stack (DIRECTOR-SPEC §0.2), or price a product and " +
+		"give it a SKU so the service mints its stock row.";
+	if (E2E_REQUIRES_SITE) throw new Error(`OTTA_E2E_REQUIRE_SITE=1 and ${how}`);
+	testInfo.skip(true, how);
+}
+
+/**
  * Skip (or, under `OTTA_E2E_REQUIRE_SITE=1`, fail) when no order on the stack
  * has anything left to refund.
  *
