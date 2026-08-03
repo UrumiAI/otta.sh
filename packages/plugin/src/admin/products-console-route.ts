@@ -11,41 +11,38 @@
  * `"3 · Low"` (a decision already made) rather than the raw amount and the raw
  * count a React tier needs to render either.
  *
- * TWO THINGS ARE GENUINELY DIFFERENT FROM ORDERS, and both are worth reading
- * before touching this file.
+ * WRITES ARE STRUCTURED ACTIONS NOW (INC-R3, ADR-0015). They used to be
+ * forwarded through the Block Kit Pricing & inventory page handler: four of the
+ * five are FORM-shaped, so this module minted the `block_id` CARRIER those forms
+ * rode their context in, synthesized the `form_submit` the handler read, and
+ * then SCRAPED the outcome back out of the rendered block tree. That made the
+ * renderer of the screen this one replaced load-bearing for this one.
+ * `products-actions.ts` is that write path, re-expressed as functions returning
+ * an outcome: {@link consoleAct} looks the id up in the same table the gate
+ * reads and returns what it produced. The console sends one flat payload and the
+ * action takes its fields as arguments — no carrier, because a carrier was a
+ * rendering device (it kept `productId` from being drawn as a single-option
+ * select) rather than a check. Every watermark, every content-derived
+ * idempotency key and every word of refusal copy moved across verbatim.
  *
- * **1. MOST WRITES ARE FORM SUBMITS, NOT BUTTONS.** Every Orders write is a
- * Block Kit button, and a button carries its whole payload in `value`, so the
- * Orders console forwards a click verbatim. Four of this screen's five writes
- * are `form_submit`s whose internal context rides in the form's `block_id`
- * CARRIER — the mechanism that stopped operators being asked to "pick" a
- * `productId` from a single-option select. A React screen cannot mint a carrier
- * (it may not import this package at all), so this module mints it, from the
- * table `products-page.ts` publishes as `PRODUCTS_CONSOLE_FORMS`. The handler on
- * the other side reads exactly the shape it has always read; no write path is
- * duplicated, and no field skips a check. The carried values are the same
- * operator-round-tripped strings a Block Kit form would have carried, and both
- * watermarks in them (`expectedUpdatedAt`, `onHand`) are re-checked against live
- * truth before anything is written.
- *
- * **2. THE LIST IS NARROWED AFTER THE FETCH, AND THE `total` GOES WITH IT.**
- * "Low stock only" has no service-side predicate: it narrows the page this
- * request fetched, so the service's exact count describes a DIFFERENT set of
- * rows than the ones on screen and must be withheld while it is on.
- * `applyLowStockNarrowing` makes that one decision for both surfaces — see its
- * doc. A React screen that re-derived it could show three rows under a caption
- * reading "137 products", one sidebar entry away from the screen it replaces.
+ * THE LIST IS NARROWED AFTER THE FETCH, AND THE `total` GOES WITH IT. "Low
+ * stock only" has no service-side predicate: it narrows the page this request
+ * fetched, so the service's exact count describes a DIFFERENT set of rows than
+ * the ones on screen and must be withheld while it is on.
+ * `applyLowStockNarrowing` (now in `products-read.ts`) makes that one decision —
+ * see its doc. A screen that re-derived it could show three rows under a caption
+ * reading "137 products".
  *
  * WHAT THIS MODULE DOES NOT DO: decide anything about stock or money. Every
  * idempotency key, every watermark comparison, every guarded decrement and
- * every refusal sentence a write can produce is in `products-page.ts` and
- * covered by `products-page.sandbox.test.ts`.
+ * every refusal sentence a write can produce is in `products-actions.ts` and
+ * covered by `products-actions.sandbox.test.ts`.
  *
  * G5 APPLIES UNCHANGED: every response here is HTTP 200 with an outcome in the
  * body. A refusal is a value.
  */
 import { COMMERCE_SERVICE_BASE_URL } from "../manifest.js";
-import type { PluginContext, RouteHandler, SandboxedRouteContext, SelectOption } from "../types.js";
+import type { PluginContext, RouteHandler, SelectOption } from "../types.js";
 import {
 	AdminProductsClient,
 	type ProductDetailWire,
@@ -59,40 +56,38 @@ import {
 } from "@otta-sh/admin-presentation";
 import {
 	CONSOLE_ACT_INTERACTION,
+	UNKNOWN_ACTION,
 	UNREADABLE_REQUEST,
-	forwardConsoleAct,
-	forwardedFormSubmit,
 	readConsolePayload,
-	type ConsoleActPayload,
 	type ConsoleFailure,
 } from "./console-transport.js";
 import {
+	PRODUCTS_ACTION_IDS,
+	dispatchProductsAction,
+	type ProductsActionResult,
+} from "./products-actions.js";
+import {
 	PAGE_LIMIT,
-	PRODUCTS_CONSOLE_ACTION_IDS,
-	PRODUCTS_CONSOLE_FORMS,
 	PRODUCTS_FILTER_ANY,
 	PRODUCTS_KIND_OPTIONS,
 	PRODUCTS_STATUS_OPTIONS,
 	applyLowStockNarrowing,
-	createProductsPageHandler,
 	filterFormFromValues,
 	readLowStockThreshold,
 	readTaxClasses,
 	toClientFilter,
-	type ProductsPageInput,
-} from "./products-page.js";
+} from "./products-read.js";
 import { ReportingSettingsClient } from "./reporting-client.js";
 import { readAdminTokens, readString } from "./scaffold/index.js";
 
 /** The resources the console can read on this screen. One per SURFACE, not one
- *  per service endpoint: the detail fans out to three reads in parallel exactly
- *  as the Block Kit detail does, because a React screen making three sequential
- *  round trips through this route would be slower than the screen it replaces. */
+ *  per service endpoint: the detail fans out to three reads in PARALLEL, because
+ *  a screen making three sequential round trips through this route would be
+ *  slower than the one it replaced. */
 export type ProductsConsoleResource = "products.list" | "products.detail";
 
 /**
- * Everything the console needs to render the filter controls with the SAME
- * vocabulary the Block Kit screen offers.
+ * Everything the console needs to render the filter controls.
  *
  * SENT AS DATA, for the reason `ConsoleVocabulary` gives on Orders: the
  * alternative is the React package holding its own copy of "All statuses
@@ -109,8 +104,8 @@ export interface ProductsConsoleVocabulary {
 	readonly kinds: readonly SelectOption[];
 	/** The all-values sentinel both selects use. A real word, never `""`. */
 	readonly any: string;
-	/** The keyset page size, so the console's "Load more" matches the Block Kit
-	 *  screen's rather than guessing. */
+	/** The keyset page size, so the console's "Load more" matches the page the
+	 *  service was actually asked for rather than guessing. */
 	readonly pageLimit: number;
 }
 
@@ -121,10 +116,9 @@ export const PRODUCTS_CONSOLE_VOCABULARY: ProductsConsoleVocabulary = {
 	pageLimit: PAGE_LIMIT,
 };
 
-/** The page context a synchronous render cannot discover for itself, forwarded
- *  so the React list can raise the SAME degradation banner the Block Kit list
- *  raises — and, crucially, can raise it on a page narrowed to ZERO rows, which
- *  is exactly when it has to speak. */
+/** The page context a row cannot carry, forwarded so the React list can raise
+ *  the stock-degradation banner — and, crucially, can raise it on a page
+ *  narrowed to ZERO rows, which is exactly when it has to speak. */
 export interface ConsoleStockContext {
 	/** The store's low-stock threshold, or `null` when the settings read failed
 	 *  (which costs the `Low` band and nothing else). */
@@ -155,20 +149,25 @@ export interface ProductsConsoleListPayload {
 export interface ProductsConsoleDetailPayload {
 	readonly ok: true;
 	readonly product: ProductDetailWire;
-	/** The live tax-class registry, already backstopped by the static defaults —
-	 *  the SAME set the Block Kit edit form offers, computed by the same
-	 *  function, so a class present on one surface is present on the other. */
+	/** The live tax-class registry, already backstopped by the static defaults
+	 *  (`readTaxClasses`), so the edit form's select is never empty because one
+	 *  best-effort read failed. */
 	readonly taxClasses: readonly TaxClassWire[];
 	/** Secondary (E-1): `null` costs the `Low` band and nothing else. */
 	readonly threshold: number | null;
 	readonly vocabulary: ProductsConsoleVocabulary;
 }
 
-/** The console's fail-closed copy. It says the same three things
- *  `products-page.ts`'s `failClosed()` says — symptom, the two things to check,
- *  and the possibility that this is a console bug rather than an outage — for
- *  the same reason: naming a cause it does not know sends whoever the operator
- *  pages to the wrong team. */
+/** The console's fail-closed copy, and now the only Pricing & inventory copy of
+ *  it — the Block Kit screen it was written to match was retired by ADR-0015.
+ *
+ *  It says three things and no more: the symptom, the two settings to check, and
+ *  the possibility that this is a console bug rather than an outage. It names no
+ *  cause it does not know, because this path swallows an unreachable service, an
+ *  auth failure, a malformed response and a defect in the console's own code
+ *  alike — asserting any one of them sends whoever the operator pages to the
+ *  wrong team. It also carries no status code and no upstream path: a banner
+ *  gets screenshotted. */
 const UNAVAILABLE: ConsoleFailure = {
 	ok: false,
 	title: PRODUCTS_UNAVAILABLE_TITLE,
@@ -200,10 +199,11 @@ interface ProductsConsoleClient {
 }
 
 /**
- * Both service surfaces this screen reads, wired exactly as the Block Kit
- * screen wires them — the products client carrying the write-gate service token
- * and the settings client carrying the admin token alone, because a GET-only
- * surface has no business holding the token that writes.
+ * Both service surfaces this screen reads — the products client carrying the
+ * write-gate service token (the edit PATCH and the stock-movement POSTs are
+ * non-GETs the gate blocks without it) and the settings client carrying the
+ * admin token alone, because a GET-only surface has no business holding the
+ * token that writes.
  */
 async function createClient(ctx: PluginContext): Promise<ProductsConsoleClient> {
 	const tokens = await readAdminTokens(ctx);
@@ -222,17 +222,15 @@ async function createClient(ctx: PluginContext): Promise<ProductsConsoleClient> 
 }
 
 /**
- * Read the filter the console sent back into the SAME `ProductsFilterForm` a
- * Block Kit form submit produces.
+ * Read the filter the console sent into a `ProductsFilterForm`.
  *
- * It goes through `filterFormFromValues`, which is the Block Kit form's own
- * reader — so `status: "archived"` becomes `archived: "true"` on both surfaces,
- * `status: "any"` becomes no constraint on both, and an unknown token is
- * dropped on both. The ONE adaptation is the toggle: a Block Kit `toggle`
- * submits a real boolean, and JSON from a browser could carry either, so the
- * string form is normalised before the shared reader sees it. A React screen
- * building its own `ProductsListFilter` would be the second place this console
- * decides what "archived" means.
+ * It goes through `filterFormFromValues` — so `status: "archived"` becomes
+ * `archived: "true"`, `status: "any"` becomes no constraint, and an unknown
+ * token is dropped. The ONE adaptation is the toggle, which arrives from a
+ * browser as either a real boolean or the string `"true"`, so it is normalised
+ * before the shared reader sees it. A React screen building its own
+ * `ProductsListFilter` would be the second place this console decides what
+ * "archived" means.
  */
 function readFilter(raw: unknown): ReturnType<typeof filterFormFromValues> {
 	const record = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
@@ -300,58 +298,51 @@ async function consoleDetail(
 }
 
 /**
- * Forward a console click to the Block Kit action handler and return its notice.
+ * Run a console write and return its outcome.
  *
- * A write listed in `PRODUCTS_CONSOLE_FORMS` is a FORM on the Block Kit side, so
- * it is forwarded as the `form_submit` that form would have fired — the named
- * keys minted into the carrier, everything else a visible field.
- * `products:remove-stock` is a BUTTON, so it is forwarded as a `block_action`
- * with its payload untouched, exactly as every Orders write is.
+ * THE OUTCOME IS A VALUE NOW, not something read back off a render. Everything
+ * in the payload — the product id, the `expectedUpdatedAt` or `onHand` watermark
+ * the operator observed, the typed amounts — is untrusted operator-round-tripped
+ * input, and every one of those fields is re-validated (and, for stock,
+ * re-checked against live truth) inside `products-actions.ts` before a single
+ * byte is written. This module adds no trust and removes none.
  *
- * The gate is `PRODUCTS_CONSOLE_ACTION_IDS`, a strict subset of the dispatcher's
- * set: the Block Kit screen keeps a staged `-review` step the React screen does
- * not have, and a console asking for it is asking for something that screen does
- * not offer.
+ * THE GATE ON THE ID IS NOT BELT-AND-BRACES. An id this screen does not offer is
+ * reachable from a stale tab after a deploy that renamed one, and from a caller
+ * bug — never from a control this release rendered. Answering it as an outcome
+ * would report a stock movement that never happened as a quiet success, so an
+ * unknown id is a refusal with copy. `PRODUCTS_ACTION_IDS` is read straight off
+ * the same dispatch table `dispatchProductsAction` runs, so the two cannot
+ * disagree about what exists.
  */
 async function consoleAct(
 	input: ProductsConsoleInput,
 	ctx: PluginContext,
-	products: RouteHandler<ProductsPageInput>,
-	request: SandboxedRouteContext<ProductsConsoleInput>["request"],
-): Promise<ConsoleActPayload | ConsoleFailure> {
+): Promise<ProductsActionResult | ConsoleFailure> {
 	const actionId = readString(input.action_id);
 	if (actionId === undefined) return UNREADABLE_REQUEST;
-	const payload = readConsolePayload(input.value);
-	const form = PRODUCTS_CONSOLE_FORMS.get(actionId);
-	return forwardConsoleAct({
+	if (!PRODUCTS_ACTION_IDS.has(actionId)) return UNKNOWN_ACTION;
+	const client = await createClient(ctx);
+	const outcome = await dispatchProductsAction(
 		actionId,
-		interaction:
-			form !== undefined
-				? forwardedFormSubmit(actionId, payload, form)
-				: { type: "block_action", action_id: actionId, value: input.value },
-		registered: PRODUCTS_CONSOLE_ACTION_IDS,
-		handler: products,
-		ctx,
-		request,
-		record: "product",
-	});
+		readConsolePayload(input.value),
+		client.products,
+	);
+	// Unreachable while the gate above reads the same table — kept because the two
+	// are separate statements, and "the id was registered but nothing ran" must
+	// never fall through to a quiet success.
+	return outcome ?? UNKNOWN_ACTION;
 }
 
 /**
  * The console's half of the `otta` admin route, for Pricing & inventory.
- *
- * It constructs the Block Kit Products handler ONCE and holds it, the way
- * `admin-route.ts` holds the seven page handlers — the write path is that
- * handler, so there is exactly one of it.
  */
 export function createProductsConsoleHandler(): RouteHandler<ProductsConsoleInput> {
-	const products = createProductsPageHandler();
-
 	return async (routeCtx, ctx) => {
 		const input = routeCtx.input;
 		try {
 			if (readString(input.type) === CONSOLE_ACT_INTERACTION) {
-				return await consoleAct(input, ctx, products, routeCtx.request);
+				return await consoleAct(input, ctx);
 			}
 			const resource = readString(input.resource);
 			if (resource === "products.list") return await consoleList(input, ctx);

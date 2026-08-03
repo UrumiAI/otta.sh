@@ -34,7 +34,7 @@ export function parsePercentToBps(input: string): number | null {
 /**
  * Format integer basis points back to a hundredths-of-a-percent decimal
  * string (WITHOUT a trailing "%" — callers add it, mirroring
- * `formatPriceMinorUnits` not carrying a currency symbol) for a text input's
+ * `formatMinorUnitsInput` not carrying a currency symbol) for a text input's
  * initial value — pure integer math, no float division. Exported for its own
  * unit test.
  */

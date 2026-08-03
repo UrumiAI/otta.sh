@@ -79,11 +79,13 @@ describe("the screen is declared, and the console can actually render it", () =>
 		expect(Object.keys(admin.pages as Record<string, unknown>)).toContain(PRODUCTS_PAGE.path);
 	});
 
-	test("the sidebar label distinguishes it from the Block Kit screen it replaces", () => {
-		// Both descriptors declare `/products`. Two entries reading
-		// `Pricing & inventory` with nothing to tell them apart would be the worst
-		// possible outcome of the two-descriptor arrangement.
-		expect(PRODUCTS_PAGE.label).toBe("Pricing & inventory (new)");
+	test("the sidebar label carries NO disambiguating suffix — there is nothing left to disambiguate", () => {
+		// It read `Pricing & inventory (new)` while both descriptors declared
+		// `/products`, because two entries of that name with nothing to tell them
+		// apart would have been the worst outcome of the two-descriptor
+		// arrangement. INC-R3 retired the Block Kit screen, so the suffix expires
+		// with the thing it distinguished this one FROM (ADR-0015 Decision 1).
+		expect(PRODUCTS_PAGE.label).toBe("Pricing & inventory");
 	});
 });
 

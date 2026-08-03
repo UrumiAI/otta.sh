@@ -10,6 +10,14 @@
   refusal — is unchanged and still binding. Decision 2's "the staged state a two-step flow
   needs" is **moot**, not unaffected: the deletion removes exactly that member. Decisions 1,
   4, 5 and 6 stand as written. See "Amended 2026-08-03" at the end of this record.
+- Amended: 2026-08-03, second — **Decision 3 again, this time for Pricing & inventory.** The
+  first amendment above is scoped by its own text to three named ORDERS ids, and its own
+  argument — that enumerating only what an earlier record listed is not a record of what was
+  lost — applies to itself. This second amendment records the Pricing & inventory drop:
+  `products:remove-stock-review` is not ported, taking the DA-3c bound check, the
+  `REMOVE_STOCK_INVALID_QTY` field-level refusal and the `remove-draft`/`remove-staged` render
+  state with it. Neither had a reachable caller. The stale-watermark refusal is again
+  unchanged and still binding. See "Amended 2026-08-03, second" at the end of this record.
 - Supersedes: **one clause of [ADR-0014](./0014-second-native-descriptor-for-react-admin.md)** —
   "The Block Kit screens stay in the tree and stay green until a migration increment replaces
   each one" — **as to Orders and Pricing & inventory only**. That clause is the third bullet of
@@ -362,4 +370,98 @@ member.
   No suite is deleted, skipped or weakened here. The Orders write-path suite loses only the
   tests that drove the deleted ids, and each of those pinned behaviour that no longer exists
   rather than behaviour that moved somewhere else.
+- Reports and Coupons remain unruled; Tax, Shipping and Settings remain Block Kit permanently.
+
+## Amended 2026-08-03, second — Decision 3 again, for Pricing & inventory
+
+Everything above the first amendment is left exactly as written on 2026-08-01, and the first
+amendment is left exactly as written. This block records one more change to the same decision.
+
+**Why a second block rather than an edit to the first.** The amendment above is scoped by its
+own text to three named Orders ids, and it argues — in its own words — that "a record of what
+was lost that enumerates only what an earlier record happened to list is not a record of what
+was lost". That argument applies to the amendment itself: it enumerates the Orders drop and
+nothing else, so folding the Pricing & inventory drop into it silently, or leaving it out
+altogether, repeats exactly the mistake it was written to correct. Decision 3 still says a
+dropped refusal needs its own record. This is that record, for the second screen.
+
+### What happened
+
+The Pricing & inventory write-path extraction found the same shape one screen along.
+`products:remove-stock-review` was DA-3 state 1 → state 2 for the Block Kit screen: it parsed
+a quantity, staged it server-side together with the on-hand watermark, and returned a second
+render carrying a confirm button — because a Block Kit form cannot show a dialog over the
+values just typed. React can. The React screen composes its own confirm client-side and posts
+`products:remove-stock` directly, which is why the console's action gate has EXCLUDED the
+review id since the migration increment, and why **no shipped surface has ever reached that
+step**. Two reviews confirmed it independently: the id is unreachable, and an over-removal is
+refused on the path that is reachable.
+
+The reasoning of the first amendment carries over unchanged and is not restated at length: an
+unreachable safety check is not a safety check. It is a claim in the tree that a check is being
+made, which a reader has every reason to believe and which the running system does not honour.
+
+### The decision
+
+**`products:remove-stock-review` is not ported, as unreached surface.**
+
+**What goes with it — the whole of it, not only what Decision 3 happened to name:**
+
+- the **DA-3c bound check** — the requested quantity tested against the on-hand JUST re-read,
+  so that a confirm could never name a quantity already false at the moment it was drawn. It
+  lived only on the review step;
+- the **`REMOVE_STOCK_INVALID_QTY` field-level refusal** — the per-field line an unparseable or
+  non-positive quantity produced against the staged form's own input. Decision 3 never named
+  it, which is exactly why it is named here;
+- the **`remove-draft` / `remove-staged` render state** — the staged quantity plus watermark
+  the step handed back for a second render, and the draft that carried the operator's raw text
+  into a refusal. Both are members of a result shape that only a server-rendered second state
+  needs; the new outcome (Decision 2, as narrowed by the first amendment) is the flag and the
+  notice.
+
+None of the three ever ran for any surface that shipped. Dropping them removes no protection
+any operator has had.
+
+### What protects the reachable path instead
+
+**The removal that IS reachable is guarded in three places, and the bound is one of them.**
+
+- **The service applies a guarded decrement.** Removing more than is on hand is refused there —
+  never a negative count, never an oversell — and the refusal comes back with the REAL on-hand,
+  which the console surfaces to the operator as a named refusal quoting the actual count rather
+  than as a generic failure. That is a better bound than the deleted one in the respect that
+  matters: it is taken by the same statement that would have applied the movement, so nothing
+  can change between the check and the write.
+- **The domain contract pins it.** The no-negative-stock behaviour is a contract-suite
+  invariant, not an implementation detail of one adapter, so it holds for every store the
+  service runs on.
+- **The stale-watermark refusal (DA-3a) still runs first**, on the reachable path, and is
+  untouched: the on-hand the operator saw is re-read against live truth before anything moves,
+  a mismatch refuses with nothing posted, and an ABSENT watermark refuses fail-closed with no
+  re-read at all.
+
+What is genuinely gone is the *earlier* refusal — the one that could tell an operator the
+quantity was too large before any request left the plugin. On the reachable path that
+conversation now happens one round trip later, and it names the real number when it does.
+
+### The consequence to be clear-eyed about
+
+**Re-introducing a server-side staged removal later means WRITING these checks, not restoring
+them.** There is nothing left to restore, and a future flow will not have the same shape: the
+deleted bound check assumed a quantity staged between two server round trips and a watermark
+carried across them, and the deleted field-level refusal assumed a server-rendered form with a
+field to attach itself to. Anyone adding that flow owns all of it as new work. This amendment
+is not permission to ship a staged removal without them.
+
+### What is NOT changed
+
+- Decisions 1, 4, 5 and 6 stand as written, and Decision 2 stands as narrowed by the first
+  amendment — the outcome is the flag and the notice, because no two-step flow remains on
+  either screen.
+- **The stale-watermark refusal is Decision 3's binding requirement and is carried across
+  verbatim on this screen**, for both of its watermarks: the stock on-hand and the edit's
+  `expectedUpdatedAt`. A reworded one is still a failed port.
+- ADR-0006 Decision 1 is reaffirmed a fourth time: the sandbox suites remain the contract gate.
+  The Pricing & inventory write path is proven in the workerd sandbox on its new module, and
+  the retired screen's suite loses only assertions about a rendering that no longer exists.
 - Reports and Coupons remain unruled; Tax, Shipping and Settings remain Block Kit permanently.

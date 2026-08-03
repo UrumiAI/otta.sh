@@ -70,7 +70,8 @@ export const OTTA_CONSOLE_ADMIN_ENTRY = `${OTTA_CONSOLE_PACKAGE}/admin`;
  * arrangement. With the original gone, `(new)` is the misleading thing — a single
  * entry marked new against nothing (ADR-0015 Decision 1).
  *
- * {@link PRODUCTS_PAGE} keeps its suffix: its Block Kit original still renders.
+ * {@link PRODUCTS_PAGE} reached the same state one increment later, for the same
+ * reason and under the same clause.
  */
 export const ORDERS_PAGE = {
 	path: "/orders",
@@ -80,18 +81,28 @@ export const ORDERS_PAGE = {
 
 /**
  * The migrated Pricing & inventory screen (INC-21) — the second and last screen
- * ADR-0014 Decision 6 puts in scope.
+ * ADR-0014 Decision 6 puts in scope, and the console's whole page inventory
+ * beside {@link ORDERS_PAGE}.
  *
- * Same path as the Block Kit screen, same reason as Orders: the ids differ
- * (`…/plugins/otta/products` versus `…/plugins/otta-console/products`), so the
- * two can be compared by swapping one segment while both render. The label says
- * which surface this is, because two sidebar entries reading
- * `Pricing & inventory` with nothing to tell them apart would be the worst
- * possible outcome of the two-descriptor arrangement.
+ * THE ONLY PRICING & INVENTORY SCREEN, as of INC-R3. The story is Orders' one
+ * increment later, clause for clause: the Block Kit screen declared `/products`
+ * on the `otta` descriptor and this one declares it on `otta-console`, which
+ * never collided because a page's URL carries its plugin id, and identical paths
+ * were what let an operator compare the two by swapping one segment while both
+ * rendered. ADR-0015 ended that parallel period by retiring the original, so the
+ * path is now simply this screen's.
+ *
+ * AND WHY THE LABEL IS PLAIN `Pricing & inventory`. It read
+ * `Pricing & inventory (new)` while both entries were in the sidebar at once,
+ * because two entries of that name with nothing to tell them apart would have
+ * been the worst outcome of the two-descriptor arrangement. The suffix
+ * disambiguated this screen FROM the one this increment removes, so it expires
+ * with it (ADR-0015 Decision 1) — a single entry marked new against nothing is
+ * now the misleading thing.
  */
 export const PRODUCTS_PAGE = {
 	path: "/products",
-	label: "Pricing & inventory (new)",
+	label: "Pricing & inventory",
 	icon: "box",
 } as const satisfies PluginAdminPage;
 
