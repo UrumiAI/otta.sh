@@ -13,7 +13,6 @@ import {
 	ADMIN_BASE_PATH,
 	BLOCK_KIT_SIDEBAR_LINK,
 	CONSOLE_PLUGIN_ID,
-	CONSOLE_SHELL,
 	DEV_BYPASS_PATH,
 	E2E_BASE_URL,
 	E2E_PG_CONNECTION_STRING,
@@ -149,9 +148,7 @@ test.describe("harness configuration", () => {
 		expect(CONSOLE_PLUGIN_ID).toBe("otta-console");
 		expect(consoleScreenUrl("/orders")).toBe(`${ADMIN_BASE_PATH}/plugins/otta-console/orders`);
 		expect(consoleScreenUrl("/orders")).not.toContain("/plugins/otta/");
-		expect(consoleScreenUrl(CONSOLE_SHELL.path)).toBe(
-			`${ADMIN_BASE_PATH}/plugins/otta-console/console`,
-		);
+		expect(consoleScreenUrl("/products")).toBe(`${ADMIN_BASE_PATH}/plugins/otta-console/products`);
 
 		// The sidebar selector must not match the console's own links, or the
 		// "Block Kit screens are still there" assertion passes vacuously.
@@ -185,15 +182,19 @@ test.describe("the migrated-screen registry is the coverage gate", () => {
 		}
 	});
 
-	test("the INC-19 shell is described like a screen but is not registered as one", () => {
-		// The shell is a React page that never existed on Block Kit, so it is not
-		// a migration and does not belong in the registry — but it is still a
-		// React page needing a gate, which is why it exists as its own constant
-		// with its own spec file. The same well-formedness rules apply to it.
-		expect(CONSOLE_SHELL.path).toMatch(/^\//);
-		expect(CONSOLE_SHELL.increment).toMatch(/^INC-\d\d$/);
-		expect(NEVER_MIGRATED_PATHS).not.toContain(CONSOLE_SHELL.path);
-		expect(MIGRATED_SCREENS.map((screen) => screen.path)).not.toContain(CONSOLE_SHELL.path);
+	test("the registry is never empty", () => {
+		// Narrow on purpose, and named for what it checks. The two gates above are
+		// both `for` loops over this list, so an empty registry would make each of
+		// them pass over nothing; this refuses that.
+		//
+		// It does NOT check the inventory relationship — that every page the
+		// console serves is registered here. That pin lives in
+		// `site-config.test.ts`, which is the end that can see the descriptor.
+		// INC-19's shell was the one React page deliberately kept out of this
+		// registry (it replaced no Block Kit screen, so counting it would have made
+		// "migrated" mean "React"); ADR-0015 removed that page, and with it the only
+		// reason a console page could legitimately be absent.
+		expect(MIGRATED_SCREENS.length).toBeGreaterThan(0);
 	});
 });
 

@@ -10,7 +10,6 @@
  */
 import { describe, expect, test } from "vitest";
 import {
-	CONSOLE_HOME_PAGE,
 	OTTA_CONSOLE_ADMIN_ENTRY,
 	OTTA_CONSOLE_ADMIN_PAGES,
 	OTTA_CONSOLE_ENTRYPOINT,
@@ -19,7 +18,8 @@ import {
 	OTTA_CONSOLE_PLUGIN_VERSION,
 	createPlugin,
 } from "../src/index.js";
-import { OTTA_ADMIN_ROUTE, PROBE_INTERACTION, pages } from "../src/admin.js";
+import { OTTA_ADMIN_ROUTE } from "../src/console-api.js";
+import { pages } from "../src/admin.js";
 
 /** The cast in `admin.tsx` (EmDash types `pages` as elements, the router calls
  *  them as components) makes the export opaque; read it back as a plain map. */
@@ -92,12 +92,16 @@ describe("the declared pages and the React components cannot drift", () => {
 		expect(Object.keys(pageComponents).toSorted()).toEqual([...declared].toSorted());
 	});
 
-	test("the landing page keeps a concrete path, not the root fallback", () => {
+	test("every page keeps a concrete path, not the root fallback", () => {
 		// `resolvePluginPagePath` falls back to the FIRST page when the path is
-		// "/", so a root-mounted console would work by accident and change
-		// meaning the moment a second page is added.
-		expect(CONSOLE_HOME_PAGE.path).toBe("/console");
-		expect(CONSOLE_HOME_PAGE.path).not.toBe("/");
+		// "/", so a root-mounted page would resolve by accident and change meaning
+		// the moment the page order changes. INC-19's landing page carried this pin
+		// while it was the first entry; the rule was never about that page, so it
+		// stays and now applies to every declared path.
+		for (const page of OTTA_CONSOLE_ADMIN_PAGES) {
+			expect(page.path).toMatch(/^\/.+/);
+			expect(page.path).not.toBe("/");
+		}
 	});
 
 	test("no page collides with a screen ADR-0014 keeps on Block Kit permanently", () => {
@@ -110,19 +114,16 @@ describe("the declared pages and the React components cannot drift", () => {
 });
 
 describe("the console's only data path", () => {
-	test("the probe targets the `otta` plugin's admin route, not its own id", () => {
+	test("it targets the `otta` plugin's admin route, not its own id", () => {
 		// ADR-0014 Decision 3, and the single fact the 2026-07-31 spike existed
 		// to establish. `ctx.kv` is namespaced per plugin id, so a route on
 		// `otta-console` would open onto an empty settings namespace and would
 		// need the service token duplicated plus its own network:request
 		// capability — the exact thing the empty capability set forbids.
+		//
+		// Read from `console-api.ts`, which is where the constant lives now that
+		// INC-19's shell and its duplicate copy of it are gone.
 		expect(OTTA_ADMIN_ROUTE).toBe("/_emdash/api/plugins/otta/admin");
 		expect(OTTA_ADMIN_ROUTE).not.toContain(OTTA_CONSOLE_PLUGIN_ID);
-	});
-
-	test("the probe is a read — a page load, never a mutation", () => {
-		// A shell that ships a write on mount would make opening the console a
-		// side effect.
-		expect(PROBE_INTERACTION.type).toBe("page_load");
 	});
 });
