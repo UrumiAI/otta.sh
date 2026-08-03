@@ -244,6 +244,13 @@ test.describe("this gate is ADDITIVE — ADR-0006 Decision 1 is untouched", () =
 	 * a refund safe — moved onto the extracted write path and is gated here as
 	 * `orders-actions.sandbox.test.ts`. The list is a swap, not a deletion, and
 	 * ADR-0015 is where the swap is argued.
+	 *
+	 * INC-R3 IS THE SECOND SWAP, under the same record and for the same reason:
+	 * the Block Kit Pricing & inventory screen is retired, so
+	 * `products-page.sandbox.test.ts` becomes `products-actions.sandbox.test.ts`,
+	 * carrying the stale-watermark refusal, the money validation and the
+	 * content-derived idempotency keys onto the extracted write path. ADR-0015
+	 * bounds the deletions to exactly these two suites; the count stays 18.
 	 */
 	const ADR_0006_SUITES: readonly string[] = [
 		"account-routes.sandbox.test.ts",
@@ -254,7 +261,7 @@ test.describe("this gate is ADDITIVE — ADR-0006 Decision 1 is untouched", () =
 		"coupons-page.sandbox.test.ts",
 		"download-route.sandbox.test.ts",
 		"orders-actions.sandbox.test.ts",
-		"products-page.sandbox.test.ts",
+		"products-actions.sandbox.test.ts",
 		"publish-atomicity.sandbox.test.ts",
 		"reports-widget.sandbox.test.ts",
 		"settings-widget.sandbox.test.ts",

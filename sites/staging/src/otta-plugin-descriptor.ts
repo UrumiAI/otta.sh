@@ -14,7 +14,6 @@
 import type { PluginDescriptor } from "emdash";
 import {
 	COUPONS_PAGE,
-	PRODUCTS_PAGE,
 	REPORTS_PAGE,
 	SETTINGS_PAGE,
 	SHIPPING_PAGE,
@@ -46,21 +45,21 @@ export function ottaPluginDescriptor(serviceUrl: string): PluginDescriptor {
 		// without them here neither page appears in the admin nav. All are
 		// rendered by the single `admin` dispatch route (which em-dash resolves
 		// by the literal `"admin"` key): Reports on `page:"/reports"`, Settings on
-		// `page:"/settings"`, (admin-UX Increment 2)
-		// Products on `page:"/products"`, and (admin-UX Increment 3) Tax on
+		// `page:"/settings"`, and (admin-UX Increment 3) Tax on
 		// `page:"/tax"`, Shipping on `page:"/shipping"`, Coupons on
 		// `page:"/coupons"` — landed in prior slices but never added HERE (the
 		// #72/#73 gap-audit finding this Increment 3 closeout slice fixes: the
 		// three screens existed and worked, but were unreachable from the admin
 		// nav because this descriptor never listed them).
 		//
-		// ORDERS IS NO LONGER HERE (INC-R2, ADR-0015). Its Block Kit screen was
-		// retired once the React console's write path moved off it; `/orders` is
-		// served by the `otta-console` descriptor alone. The Settings form's
+		// NEITHER ORDERS NOR PRICING & INVENTORY IS HERE ANY MORE (INC-R2/INC-R3,
+		// ADR-0015). Both Block Kit screens were retired once the React console's
+		// write path moved off them; `/orders` and `/products` are served by the
+		// `otta-console` descriptor alone. The Settings form's
 		// admin token is a masked, write-only secret persisted to ctx.kv
 		// (webhook-notifier pattern) — no new capability: account/reports/
 		// products/tax/shipping/coupons routes are network:request proxies and
 		// ctx.kv is always-available.
-		adminPages: [REPORTS_PAGE, SETTINGS_PAGE, PRODUCTS_PAGE, TAX_PAGE, SHIPPING_PAGE, COUPONS_PAGE],
+		adminPages: [REPORTS_PAGE, SETTINGS_PAGE, TAX_PAGE, SHIPPING_PAGE, COUPONS_PAGE],
 	};
 }

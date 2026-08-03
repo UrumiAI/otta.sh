@@ -26,7 +26,6 @@ import { readFileSync } from "node:fs";
 import {
 	COMMERCE_SERVICE_BASE_URL,
 	COUPONS_PAGE,
-	PRODUCTS_PAGE,
 	REPORTS_PAGE,
 	SETTINGS_PAGE,
 	SHIPPING_PAGE,
@@ -93,7 +92,7 @@ describe("ottaPluginDescriptor", () => {
 		expect(descriptor.fieldWidgets).toBeUndefined();
 	});
 
-	test("declares the plugin's admin pages (Reports + Settings + Products + Tax + Shipping + Coupons)", () => {
+	test("declares the plugin's admin pages (Reports + Settings + Tax + Shipping + Coupons)", () => {
 		// The plugin's exported admin.pages entries — the trusted descriptor must
 		// carry ALL of them or the page never appears in the admin nav. All render
 		// through the single `admin` dispatch route (em-dash resolves admin pages by
@@ -103,13 +102,14 @@ describe("ottaPluginDescriptor", () => {
 		// finding) added them — each screen worked once opened directly, but was
 		// unreachable from the admin nav.
 		//
-		// ORDERS IS ABSENT (INC-R2, ADR-0015): its Block Kit screen was retired
-		// once the React console's write path moved off it. `/orders` is now
-		// served only by the `otta-console` descriptor.
+		// ORDERS AND PRICING & INVENTORY ARE BOTH ABSENT (INC-R2/INC-R3,
+		// ADR-0015): each Block Kit screen was retired once the React console's
+		// write path moved off it, taking the list from seven entries to FIVE.
+		// `/orders` and `/products` are now served only by the `otta-console`
+		// descriptor.
 		expect(descriptor.adminPages).toEqual([
 			REPORTS_PAGE,
 			SETTINGS_PAGE,
-			PRODUCTS_PAGE,
 			TAX_PAGE,
 			SHIPPING_PAGE,
 			COUPONS_PAGE,

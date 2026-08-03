@@ -61,12 +61,18 @@ export {
 	type OrderTotalsWire,
 	type TransitionOrderResult,
 } from "./admin/admin-orders-client.js";
+// `PRODUCTS_PAGE`, `ProductsPageInput` and the page handler this barrel used to
+// export are gone (INC-R3, ADR-0015): that Block Kit screen was retired once the
+// React console's writes moved off it, so `/products` is served by the
+// `otta-console` descriptor alone and there is no `AdminPageConfig` left to
+// declare. The read path's relocated helpers (`products-read.ts`) stay internal —
+// only `products-console-route.ts` consumes them.
 export {
-	createProductsPageHandler,
 	PRODUCTS_ACTION_IDS,
-	PRODUCTS_PAGE,
-	type ProductsPageInput,
-} from "./admin/products-page.js";
+	dispatchProductsAction,
+	type ProductsActionPayload,
+	type ProductsActionResult,
+} from "./admin/products-actions.js";
 export {
 	AdminProductsClient,
 	type ProductDetailWire,

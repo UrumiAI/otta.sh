@@ -7,18 +7,12 @@ import {
 } from "./coupons-page.js";
 import { CONSOLE_INTERACTIONS } from "./console-transport.js";
 import { createOrdersConsoleHandler, type OrdersConsoleInput } from "./orders-console-route.js";
+import { PRODUCTS_ACTION_IDS } from "./products-actions.js";
 import {
 	PRODUCTS_CONSOLE_RESOURCE_PREFIX,
 	createProductsConsoleHandler,
 	type ProductsConsoleInput,
 } from "./products-console-route.js";
-import {
-	createProductsPageHandler,
-	PRODUCTS_ACTION_IDS,
-	PRODUCTS_CONSOLE_ACTION_IDS,
-	PRODUCTS_PAGE,
-	type ProductsPageInput,
-} from "./products-page.js";
 import {
 	createReportsPageHandler,
 	REPORTS_ACTION_IDS,
@@ -77,7 +71,6 @@ interface AdminInteractionInput {
 export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 	const reports = createReportsPageHandler();
 	const settings = createSettingsFormHandler();
-	const products = createProductsPageHandler();
 	const tax = createTaxPageHandler();
 	const shipping = createShippingPageHandler();
 	const coupons = createCouponsPageHandler();
@@ -96,9 +89,9 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 		// operator's session and the same CSRF header the admin shell sends — the
 		// only data path the amendment grants them. The types are disjoint from
 		// EmDash's (`page_load` / `block_action` / `form_submit`), which is what
-		// guarantees the branches below are untouched: both Block Kit screens keep
-		// rendering exactly as they did, as ADR-0014 requires until each
-		// replacement is proven.
+		// guarantees the branches below are untouched: the five Block Kit screens
+		// that remain keep rendering exactly as they did. The two whose consoles
+		// these branches serve are gone (ADR-0015) — this is now their only surface.
 		//
 		// WHICH console screen: a READ names its `resource`, and an ACT names an
 		// action id that is already namespaced by screen. Orders is the fallthrough
@@ -109,7 +102,7 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 			const resource = typeof input.resource === "string" ? input.resource : undefined;
 			const forProducts =
 				resource?.startsWith(PRODUCTS_CONSOLE_RESOURCE_PREFIX) === true ||
-				(actionId !== undefined && PRODUCTS_CONSOLE_ACTION_IDS.has(actionId));
+				(actionId !== undefined && PRODUCTS_ACTION_IDS.has(actionId));
 			if (forProducts) {
 				return productsConsole(routeCtx as SandboxedRouteContext<ProductsConsoleInput>, ctx);
 			}
@@ -124,9 +117,6 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 		if (type === "page_load" && page === SETTINGS_PAGE.path) {
 			return settings(routeCtx as SandboxedRouteContext<SettingsFormInput>, ctx);
 		}
-		if (type === "page_load" && page === PRODUCTS_PAGE.path) {
-			return products(routeCtx as SandboxedRouteContext<ProductsPageInput>, ctx);
-		}
 		if (type === "page_load" && page === TAX_PAGE.path) {
 			return tax(routeCtx as SandboxedRouteContext<TaxPageInput>, ctx);
 		}
@@ -138,18 +128,15 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 		}
 
 		// 5. Action interactions (block_action/form_submit) carry an action_id and
-		// no page — route each page's actions to its handler. Every Orders/Products
-		// action is namespaced `orders:*`/`products:*` and listed in
-		// ORDERS_ACTION_IDS/PRODUCTS_ACTION_IDS (MOD-2), so none falls through to
-		// the blocks-empty fallback below.
+		// no page — route each remaining Block Kit page's actions to its handler.
+		// Orders and Pricing & inventory are ABSENT from this list (INC-R2/INC-R3,
+		// ADR-0015): both screens were retired, and their `orders:*`/`products:*`
+		// ids are now console actions, gated in branch 0 above.
 		if (actionId !== undefined && SETTINGS_ACTION_IDS.has(actionId)) {
 			return settings(routeCtx as SandboxedRouteContext<SettingsFormInput>, ctx);
 		}
 		if (actionId !== undefined && REPORTS_ACTION_IDS.has(actionId)) {
 			return reports(routeCtx as SandboxedRouteContext<ReportsPageInput>, ctx);
-		}
-		if (actionId !== undefined && PRODUCTS_ACTION_IDS.has(actionId)) {
-			return products(routeCtx as SandboxedRouteContext<ProductsPageInput>, ctx);
 		}
 		if (actionId !== undefined && TAX_ACTION_IDS.has(actionId)) {
 			return tax(routeCtx as SandboxedRouteContext<TaxPageInput>, ctx);

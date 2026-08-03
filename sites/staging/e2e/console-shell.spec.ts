@@ -31,7 +31,6 @@
 import type { Page } from "@playwright/test";
 import {
 	COUPONS_PAGE,
-	PRODUCTS_PAGE,
 	REPORTS_PAGE,
 	SETTINGS_PAGE,
 	SHIPPING_PAGE,
@@ -88,7 +87,6 @@ const HOST_SCREEN = hostScreen();
 const BLOCK_KIT_PAGES = [
 	REPORTS_PAGE,
 	SETTINGS_PAGE,
-	PRODUCTS_PAGE,
 	TAX_PAGE,
 	SHIPPING_PAGE,
 	COUPONS_PAGE,

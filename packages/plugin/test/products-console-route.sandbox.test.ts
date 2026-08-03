@@ -27,18 +27,7 @@
  * to this tier and replaces none of it.
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import {
-	LOW_STOCK_FILTER_DESCRIPTION,
-	PRODUCTS_EMPTY,
-	PRODUCTS_LIST_INTRO,
-	PRODUCTS_LOW_STOCK_NO_MATCH,
-	REMOVE_STOCK_BANNER,
-	SPLIT_DISCARD_CONTEXT,
-	STOCK_ON_HAND_CONTEXT,
-	onHandCell,
-	removeStockConfirm,
-	statusLabel,
-} from "@otta-sh/admin-presentation";
+import { onHandCell } from "@otta-sh/admin-presentation";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
 import {
 	startStubCommerceServer,
@@ -384,7 +373,7 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		expect((partial["stock"] as Record<string, unknown>)["unreadable"]).toBe(false);
 	});
 
-	test("the filter is translated through the SAME mapping the Block Kit form uses", async () => {
+	test("the combined Status select's `archived` asserts deleted=true ALONE, never both axes", async () => {
 		service.respondWith("GET", () => ({ status: 200, body: { products: [], nextCursor: null } }));
 		await invoke({
 			type: READ,
@@ -392,15 +381,90 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 			filter: { status: "archived", productKind: "digital", search: "APR" },
 		});
 		const seen = service.requests.find((r) => r.url.startsWith(LIST_ROUTE))?.url ?? "";
-		// `archived` asserts `deleted=true` ALONE — never both axes, whatever a
-		// hand-crafted request smuggles in.
+		// A soft-deleted row is always inactive, so the two are mutually exclusive
+		// by construction — and `deleted=true` is asserted alone regardless, so a
+		// hand-crafted request cannot smuggle both axes into one query.
 		expect(seen).toContain("deleted=true");
 		expect(seen).not.toContain("active=");
 		expect(seen).toContain("productKind=digital");
 		expect(seen).toContain("search=APR");
 	});
 
-	test("the filter vocabulary is the Block Kit screen's own", async () => {
+	test("the OTHER two Status options reach the service as `active=true` / `active=false`", async () => {
+		// RESTORED WITH INC-R3. The retired suite pinned this half of the mapping
+		// and the surviving coverage pinned only `archived`, so a mapping that sent
+		// the wrong boolean — or none — would have left every assertion here green
+		// while the operator got the wrong set of rows. It is a claim about the
+		// QUERY, not about a rendering, which is why it outlives the screen.
+		service.respondWith("GET", () => ({ status: 200, body: { products: [], nextCursor: null } }));
+		for (const [status, expected] of [
+			["true", "active=true"],
+			["false", "active=false"],
+		] as const) {
+			service.requests.length = 0;
+			await invoke({ type: READ, resource: "products.list", filter: { status } });
+			const seen = service.requests.find((r) => r.url.startsWith(LIST_ROUTE))?.url ?? "";
+			expect(seen, status).toContain(expected);
+			expect(seen, status).not.toContain("deleted=");
+		}
+		// ...and the all-values sentinel constrains NOTHING. `any` is a real word,
+		// not `""`, precisely so it can be told apart from a screen sending nothing.
+		service.requests.length = 0;
+		await invoke({ type: READ, resource: "products.list", filter: { status: "any" } });
+		const seen = service.requests.find((r) => r.url.startsWith(LIST_ROUTE))?.url ?? "";
+		expect(seen).not.toContain("active=");
+		expect(seen).not.toContain("deleted=");
+	});
+
+	test("`Low stock only` sends NO stock parameter to the service — the narrowing is page-scoped", async () => {
+		// RESTORED WITH INC-R3, and it is the other half of the withheld `total`.
+		// The service's products list has NO stock predicate; the filter narrows the
+		// page this request fetched. A console that put `lowStock` on the wire would
+		// be asking for something the service silently ignores, and the rows would
+		// disagree with the query that fetched them.
+		service.respondWith(
+			"GET",
+			responder({
+				[LIST_ROUTE]: () => ({
+					status: 200,
+					body: { products: [summary({ onHand: 2 })], nextCursor: null },
+				}),
+				[SETTINGS_ROUTE]: () => settingsBody(5),
+			}),
+		);
+		await invoke({
+			type: READ,
+			resource: "products.list",
+			filter: { search: "widget", lowStock: true },
+		});
+		const seen = service.requests.find((r) => r.url.startsWith(LIST_ROUTE))?.url ?? "";
+		expect(seen).toContain("search=widget");
+		expect(seen).not.toContain("lowStock");
+		expect(seen).not.toContain("stock");
+	});
+
+	test("a cursor is forwarded ALONE — the service cursor already carries the filter", async () => {
+		// RESTORED WITH INC-R3. `Load more` was a Block Kit `block_action` and its
+		// mechanism died with the screen, but what the SERVICE is asked for did not:
+		// sending the filter alongside the cursor is how a paged request can
+		// disagree with the page before it.
+		service.respondWith("GET", () => ({ status: 200, body: { products: [], nextCursor: null } }));
+		await invoke({
+			type: READ,
+			resource: "products.list",
+			cursor: "svc-cursor-1",
+			filter: { status: "true", search: "widget" },
+		});
+		const seen = service.requests.find((r) => r.url.startsWith(LIST_ROUTE))?.url ?? "";
+		expect(seen).toContain("cursor=svc-cursor-1");
+		expect(seen).not.toContain("active=");
+		expect(seen).not.toContain("search=");
+		// The page size still travels, so a "Load more" asks for the same-sized page
+		// the caption above it describes.
+		expect(seen).toContain("limit=25");
+	});
+
+	test("the filter vocabulary is shipped as data, so the React tier holds no second copy", async () => {
 		service.respondWith("GET", () => ({ status: 200, body: { products: [], nextCursor: null } }));
 		const result = await invoke({ type: READ, resource: "products.list" });
 		const vocabulary = result["vocabulary"] as Record<string, unknown>;
@@ -461,13 +525,23 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		expect(String(result["description"]).length).toBeGreaterThan(0);
 	});
 
-	test("an unreachable service fails CLOSED with the screen's own copy", async () => {
+	test("an unreachable service fails CLOSED with the screen's own copy, and leaks nothing", async () => {
 		service.respondWith("GET", () => ({ status: 500, body: {} }));
 		const result = await invoke({ type: READ, resource: "products.list" });
 		expect(result["ok"]).toBe(false);
 		expect(result["title"]).toBe("Pricing & inventory is unavailable");
-		// E-7: it must not assert a cause it does not know.
+		// E-7: it must not assert a cause it does not know. The last clause is what
+		// stops a console bug being reported as an outage.
 		expect(String(result["description"])).toContain("a fault in the console itself");
+		// THIS PATH SWALLOWS EVERYTHING — an unreachable service, a 401 on the admin
+		// token, a malformed response, and a bug in the console's own code. So the
+		// copy must carry no status code, no upstream path and no auth detail: an
+		// operator screenshotting a banner must not be publishing the shape of the
+		// admin API, and naming one cause is false whenever another was the real one.
+		const text = `${String(result["title"])} ${String(result["description"])}`;
+		expect(text).not.toMatch(/HTTP \d|\/admin\/|401/);
+		// A banner is read at a glance or not at all (BANNER_BUDGET).
+		expect(String(result["description"]).length).toBeLessThanOrEqual(240);
 	});
 
 	test("an unrecognised products resource is a refusal, not a blank body", async () => {
@@ -478,11 +552,10 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 
 	// ── writes ────────────────────────────────────────────────────────────────
 
-	test("a SAVE is forwarded as the form submit the Block Kit handler reads, carrier and all", async () => {
-		// THE INCREMENT'S ONE GENUINELY NEW MECHANISM. `productId` and
-		// `expectedUpdatedAt` ride in a `block_id` carrier a browser cannot mint;
-		// this proves the plugin mints it and the handler decodes it, because
-		// otherwise the PATCH below never happens at all.
+	test("a SAVE is DISPATCHED to the extracted action, and reaches the service", async () => {
+		// The act branch, end to end. What each action DECIDES is covered by
+		// `products-actions.sandbox.test.ts`; this asserts the wiring — that a flat
+		// console payload lands on the right handler and produces a real request.
 		service.respondWith(
 			"GET",
 			responder({ [DETAIL_ROUTE]: () => ({ status: 200, body: { product: detail() } }) }),
@@ -505,8 +578,8 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		expect(patch?.url).toContain(`/admin/products/${PRODUCT_ID}`);
 		const body = (patch?.body ?? {}) as Record<string, unknown>;
 		expect(body["sku"]).toBe("APR-LIN-NAT-2");
-		// THE WATERMARK SURVIVED THE ROUND TRIP. Without the carrier it would be
-		// absent, and the handler would have refused before writing.
+		// THE WATERMARK TRAVELLED AS A PLAIN ARGUMENT. Without it the action would
+		// have refused before writing.
 		expect(body["expectedUpdatedAt"]).toBe("2026-07-20T09:00:00.000Z");
 		// G2 / ADR-0013: `title` and `active` are CMS-owned. The wire cannot carry
 		// either, so a console that sent them changes nothing.
@@ -514,7 +587,7 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		expect(body).not.toHaveProperty("active");
 	});
 
-	test("a save with a STALE watermark is refused by the Block Kit handler, and its copy comes back", async () => {
+	test("a save with a STALE watermark comes back as the action's own refusal copy", async () => {
 		service.respondWith(
 			"GET",
 			responder({ [DETAIL_ROUTE]: () => ({ status: 200, body: { product: detail() } }) }),
@@ -590,8 +663,7 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 	});
 
 	test("a REMOVAL is re-checked against live stock before anything moves (DA-3a)", async () => {
-		// The operator saw 42; the live product is at 40. Nothing may be removed,
-		// and the refusal is the Block Kit handler's own.
+		// The operator saw 42; the live product is at 40. Nothing may be removed.
 		service.respondWith(
 			"GET",
 			responder({
@@ -631,6 +703,9 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 	});
 
 	test("an UNKNOWN action id is a refusal, not a quiet success", async () => {
+		// Reachable from a stale tab after a deploy that renamed an action. An id
+		// this screen does not offer must never come back as an outcome: that would
+		// render a stock movement that never happened as a silent success.
 		const result = await invoke({
 			type: ACT,
 			action_id: "products:no-such-action",
@@ -641,11 +716,11 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		expect(String(result["description"])).toContain("Nothing was applied");
 	});
 
-	test("the STAGED review step is not offered to the console at all", async () => {
-		// `products:remove-stock-review` is a registered Block Kit action, and the
-		// React screen has no staged step to render into — it shows the confirm
-		// dialog directly. Asking for it is asking for something that screen does
-		// not offer, and must not silently stage anything.
+	test("the RETIRED staged review step is not offered to the console at all", async () => {
+		// `products:remove-stock-review` was DA-3 state 1 → state 2 on the Block Kit
+		// screen. The React screen shows the confirm dialog directly, so the id has
+		// never had a caller; INC-R3 left it unported rather than carrying a step
+		// nothing reaches. Asking for it must refuse, not silently stage anything.
 		const result = await invoke({
 			type: ACT,
 			action_id: "products:remove-stock-review",
@@ -655,9 +730,9 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		expect(result["title"]).toBe("Nothing was changed");
 	});
 
-	test("a registered id that renders nothing is also a refusal", async () => {
-		// Every read fails, so the Block Kit action bails to a shape with no blocks.
-		// "Nothing came back" is not "nothing to say".
+	test("a REGISTERED id whose write could not complete is also a refusal", async () => {
+		// Every request fails, so nothing was saved. "Nothing came back" is not
+		// "nothing to say".
 		service.respondWith("GET", () => ({ status: 500, body: {} }));
 		service.respondWith("PATCH", () => ({ status: 500, body: {} }));
 		const result = await invoke({
@@ -667,103 +742,6 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		});
 		const quietSuccess = result["ok"] === true && result["notice"] === null;
 		expect(quietSuccess, "a failed write reported as a quiet success").toBe(false);
-	});
-
-	// ── cross-surface pins ────────────────────────────────────────────────────
-
-	test("BOTH SCREENS SAY THE SAME WORDS — the Block Kit render reads the shared copy", async () => {
-		// The React screen imports these constants; this asserts the BLOCK KIT
-		// screen renders them. Change either side's wording without changing the
-		// constant and this fails — the property a pair of hand-copied strings
-		// could never have.
-		service.respondWith(
-			"GET",
-			responder({
-				[LIST_ROUTE]: () => ({ status: 200, body: { products: [], nextCursor: null } }),
-			}),
-		);
-		const result = await invoke({ type: "page_load", page: "/products" });
-		const text = JSON.stringify(result["blocks"]);
-
-		expect(text).toContain(PRODUCTS_LIST_INTRO);
-		expect(text).toContain(PRODUCTS_EMPTY.title);
-		expect(text).toContain(PRODUCTS_EMPTY.description);
-		expect(text).toContain(LOW_STOCK_FILTER_DESCRIPTION);
-	});
-
-	test("...and the same page-scoped wording when `Low stock only` narrows a page to nothing", async () => {
-		// Outcome 3 on the Block Kit side: a `context` scan note rather than an
-		// empty state, so `Load more` survives. The React screen renders the same
-		// sentence for the same reason.
-		service.respondWith(
-			"GET",
-			responder({
-				[LIST_ROUTE]: () => ({
-					status: 200,
-					body: { products: [summary({ onHand: 99 })], nextCursor: "cur-2" },
-				}),
-				[SETTINGS_ROUTE]: () => settingsBody(5),
-			}),
-		);
-		const result = await invoke({
-			type: "form_submit",
-			action_id: "products:apply-filter",
-			values: { lowStock: true },
-		});
-		const blocks = result["blocks"] as Array<Record<string, unknown>>;
-		const text = JSON.stringify(blocks);
-		expect(text).toContain(PRODUCTS_LOW_STOCK_NO_MATCH.scanNote);
-		expect(blocks.some((block) => block["type"] === "empty")).toBe(false);
-	});
-
-	test("...and the same detail vocabulary, including the remove-stock confirm", async () => {
-		service.respondWith(
-			"GET",
-			responder({
-				[DETAIL_ROUTE]: () => ({ status: 200, body: { product: detail() } }),
-				[SETTINGS_ROUTE]: () => settingsBody(50),
-			}),
-		);
-		const detailResult = await invoke({
-			type: "form_submit",
-			action_id: "products:open",
-			values: { productId: PRODUCT_ID },
-		});
-		const text = JSON.stringify(detailResult["blocks"]);
-		expect(text).toContain(SPLIT_DISCARD_CONTEXT);
-		expect(text).toContain(STOCK_ON_HAND_CONTEXT);
-		expect(text).toContain(REMOVE_STOCK_BANNER.title);
-		// The status word in the identity strip is the shared function's.
-		expect(text).toContain(
-			statusLabel({
-				active: true,
-				deletedAt: null,
-				sku: "APR-LIN-NAT",
-				priceCents: 1999,
-				currency: "USD",
-			}),
-		);
-		// Both surfaces compose the confirm from ONE function, so the sentence an
-		// operator reads before stock moves cannot differ between them.
-		expect(removeStockConfirm(1).text).toContain("Remove 1 unit from stock?");
-		expect(removeStockConfirm(3).text).toContain("Remove 3 units from stock?");
-	});
-
-	test("the BLOCK KIT screen is untouched by any of this", async () => {
-		// ADR-0014 Decision 1: both screens render until the replacement is proven.
-		service.respondWith(
-			"GET",
-			responder({
-				[LIST_ROUTE]: () => ({ status: 200, body: { products: [summary()], nextCursor: null } }),
-				[SETTINGS_ROUTE]: () => settingsBody(5),
-			}),
-		);
-		const result = await invoke({ type: "page_load", page: "/products" });
-		const blocks = result["blocks"] as Array<Record<string, unknown>>;
-		expect(blocks[0]).toMatchObject({ type: "header", text: "Pricing & inventory" });
-		expect(blocks.some((block) => block["type"] === "table")).toBe(true);
-		expect(result["vocabulary"]).toBeUndefined();
-		expect(result["ok"]).toBeUndefined();
 	});
 
 	test("an ORDERS console request is still routed to the Orders branch", async () => {

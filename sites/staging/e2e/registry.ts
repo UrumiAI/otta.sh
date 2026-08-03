@@ -68,12 +68,12 @@ export interface ConsoleScreen {
  * that screen and retired it, so `/orders` is a console page only and the Block
  * Kit inventory is down to six.
  *
- * INC-21 ADDS PRICING & INVENTORY, and with it the count answers its question for
- * the last time under this ADR: of the six Block Kit screens that remain, one has
- * a React replacement rendering beside it and one has replaced its original
- * outright. Tax, Shipping and Settings stay Block Kit permanently (ADR-0014
- * Decision 6) and must never appear here; Reports and Coupons are a ruling the
- * user has not made (D3), so adding either is out of scope until they do.
+ * INC-21 ADDS PRICING & INVENTORY, and INC-R3 retired its original too — so both
+ * entries below have replaced the screen they were migrated from, and the Block
+ * Kit inventory is down to FIVE. Tax, Shipping and Settings stay Block Kit
+ * permanently (ADR-0014 Decision 6) and must never appear here; Reports and
+ * Coupons are a ruling the user has not made (D3), so adding either is out of
+ * scope until they do.
  */
 export const MIGRATED_SCREENS: readonly ConsoleScreen[] = [
 	{
@@ -96,12 +96,17 @@ export const MIGRATED_SCREENS: readonly ConsoleScreen[] = [
 	{
 		name: "Pricing & inventory",
 		increment: "INC-21",
-		// Same path as the Block Kit screen, same reason as `/orders` above.
+		// It shared this path with the Block Kit screen for the parallel period —
+		// they never collided, because a page's URL carries its plugin id — and
+		// INC-R3 retired that screen, so `/products` is now this screen's alone.
 		path: "/products",
-		// The H1, not the sidebar label (`Pricing & inventory (new)`). The `&` is
-		// rendered from an HTML entity, so the regex matches the TEXT the browser
-		// produces rather than the source. Anchored at both ends so the sidebar
-		// label — which contains the heading as a prefix — cannot satisfy it.
+		// The H1. The `&` is rendered from an HTML entity, so the regex matches the
+		// TEXT the browser produces rather than the source. INC-R3 dropped the
+		// `(new)` sidebar suffix with the screen it disambiguated from, so — exactly
+		// as on `/orders` — the nav label and this heading now read the same string
+		// and the anchors no longer separate them. Its consumers match the heading
+		// ROLE, which is unique; reviving a suffix to disambiguate a TEXT match
+		// would be fixing the wrong file.
 		heading: /^Pricing & inventory$/,
 	},
 ];
