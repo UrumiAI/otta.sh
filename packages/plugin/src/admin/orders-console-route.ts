@@ -58,6 +58,7 @@ import {
 } from "./admin-orders-client.js";
 import {
 	CANCELLATION_REASONS,
+	ONE_CLICK_CANCEL_REASONS,
 	ORDERS_ACTION_IDS,
 	RECONCILIATION_OUTCOMES,
 	dispatchOrdersAction,
@@ -124,6 +125,19 @@ export interface ConsoleVocabulary {
 	 *  `Custom…` last. `key` is the token the console sends back. */
 	readonly periods: ReadonlyArray<{ readonly key: string; readonly label: string }>;
 	readonly cancellationReasons: ReadonlyArray<{ readonly value: string; readonly label: string }>;
+	/** The subset of {@link cancellationReasons} that gets a ONE-CLICK control, and
+	 *  therefore a `orders:cancel-<reason>` id of its own — derived from the same
+	 *  constant the dispatch table derives its per-reason ids from, never
+	 *  hand-listed and never re-derived on the console side. A console that
+	 *  re-applied the `other` exclusion itself would hold the second copy of a rule
+	 *  whose two halves now fail HARD when they disagree: `orders:cancel-other` is
+	 *  not registered, so offering it posts an unknown id. Anything not in this list
+	 *  is cancellable only through the note form, which posts `orders:cancel` with
+	 *  the reason in its payload. */
+	readonly oneClickCancellationReasons: ReadonlyArray<{
+		readonly value: string;
+		readonly label: string;
+	}>;
 	readonly reconciliationOutcomes: ReadonlyArray<{
 		readonly value: string;
 		readonly label: string;
@@ -145,6 +159,10 @@ export const CONSOLE_VOCABULARY: ConsoleVocabulary = {
 		{ key: "custom", label: PERIOD_CUSTOM },
 	],
 	cancellationReasons: CANCELLATION_REASONS.map((r) => ({ value: r.value, label: r.label })),
+	oneClickCancellationReasons: ONE_CLICK_CANCEL_REASONS.map((r) => ({
+		value: r.value,
+		label: r.label,
+	})),
 	reconciliationOutcomes: RECONCILIATION_OUTCOMES.map((r) => ({ value: r.value, label: r.label })),
 	pageLimit: PAGE_LIMIT,
 };

@@ -8,31 +8,20 @@
  * outcome back out of the rendered block tree — the banner off the render, and an
  * empty tree read as "nothing applied". The Block Kit renderer was therefore
  * load-bearing for the screen that replaced it. Each action below is that write,
- * re-expressed as a function returning an {@link OrdersActionResult}: the applied/
- * refused flag, the notice, and the staged or draft state a two-step flow needs.
- * No page handler, no synthesized interaction, no notice-scraping.
+ * re-expressed as a function returning an {@link OrdersActionResult}: the
+ * applied/refused flag and the notice. No page handler, no synthesized
+ * interaction, no notice-scraping.
  *
- * THE THREE REFUSALS ARE CARRIED VERBATIM (ADR-0015 Decision 3). A reworded bound
- * check is a failed port, not a port:
- *
- *  1. **Stale-watermark refusal (DA-3a).** The watermark the operator SAW —
- *     `refundedSoFarCents` on the money path, the order `state` on every other —
- *     is re-read against live truth and the write REFUSES on a mismatch. Every
- *     site holding a watermark also refuses an ABSENT one, with no re-read and no
- *     `-review` exemption: see {@link readWatermark}.
- *  2. **Refund-ceiling bound check (DA-3c).** The parsed amount is bound-checked
- *     against the ceiling JUST RE-READ, and that check runs AFTER the watermark
- *     compare — so the bound is always one the operator has now been shown, and
- *     the movement refusal (whose copy already names the new remaining balance)
- *     wins when both would fire.
- *  3. **Unparseable-amount refusal.** `parseMinorUnitsInput` returning `null`
- *     refuses, and the draft carries the operator's RAW TEXT verbatim rather than
- *     re-deriving it from cents — on that path there IS no `amountCents`, and a
- *     rejected `19,99` cannot be reconstructed from minor units.
+ * THE STALE-WATERMARK REFUSAL IS CARRIED VERBATIM (ADR-0015 Decision 3, as
+ * amended). A reworded check is a failed port, not a port. **DA-3a:** the
+ * watermark the operator SAW — `refundedSoFarCents` on the money path, the order
+ * `state` on every other — is re-read against live truth and the write REFUSES on
+ * a mismatch. Every site holding a watermark also refuses an ABSENT one, with no
+ * re-read and no exemption: see {@link readWatermark}.
  *
  * MONEY IS INTEGER MINOR UNITS. Nothing here parses money with a float:
  * {@link parseCents} reads an untrusted payload's integer minor-units string, and
- * `parseMinorUnitsInput` does exact integer string math on what an operator typed.
+ * rejects anything that is not a plain non-negative integer.
  *
  * NO NONCE, ANYWHERE. Every write derives its idempotency key from its own content
  * plus the watermark the operator saw — for a refund,
@@ -47,27 +36,25 @@
  * watermarks are re-checked for PRESENCE as well as for equality, and nothing is
  * coerced.
  *
- * THE `-review` PAIR IS RETAINED BUT CURRENTLY UNREACHED, and a reader is owed the
- * plain version of that rather than being left to guess whether it is dead code.
- * `orders:refund-review` and `orders:cancel-review` — with {@link OrdersStaged},
- * {@link OrdersDraft} and the `staged`/`draft` members of
- * {@link OrdersActionResult} that exist for them — have no caller today: the React
- * order detail stages its own confirm client-side and posts `orders:refund` /
- * `orders:cancel` directly. They are kept because the two-step flow is the ported
- * shape and one refusal lives ONLY on this path: the unparseable-amount refusal,
- * whose draft carries the operator's raw text verbatim.
+ * THE `-review` PAIR IS GONE, DELETED AS UNREACHED SURFACE. `orders:refund-review`
+ * and `orders:cancel-review` — with the staged/draft state that existed only for
+ * them — were carried across by the extraction and then found to have NO CALLER:
+ * the React order detail stages its own confirm client-side and posts
+ * `orders:refund` / `orders:cancel` / `orders:cancel-<reason>` directly. Its
+ * per-reason controls deliberately omit `other` (the note form's reason picker is
+ * the only path that records a detail), so `orders:cancel-other` had no control
+ * that could send it either, and it is not derived. See ADR-0015's amendment.
  *
- * The consequence, stated without spin: **the DA-3c live-ceiling bound check never
- * runs for the React console**, because it sits in {@link refundReviewAction}. That
- * is PRE-EXISTING and not introduced by the extraction — the Block Kit screen
- * reached `-review` from its own form, the React screen never has. The reachable
- * confirm ({@link refundOrderAction}) is not unguarded: it re-reads the ledger and
- * refuses on a watermark mismatch (DA-3a), and an over-ceiling amount that survives
- * that is refused by the service itself as `REFUND_EXCEEDS_TOTAL` /
- * `REFUND_EXCEEDS_CAPTURED`, which {@link refundFailureNotice} renders. What is
- * lost is the EARLIER, better-worded refusal that names the real remaining balance,
- * not the ceiling itself. Wiring `-review` into the React flow, or moving the bound
- * check onto the confirm, is a change with its own increment — not this one.
+ * WHAT WENT WITH THEM, STATED PLAINLY rather than left for a reader to discover.
+ * Two checks lived ONLY on `refund-review`, so neither ever ran for any surface:
+ * the **DA-3c live-ceiling bound check**, and the **unparseable-amount refusal**
+ * whose draft carried the operator's raw text verbatim. The reachable confirm
+ * ({@link refundOrderAction}) is not unguarded: it re-reads the ledger and refuses
+ * on a watermark mismatch (DA-3a), and an over-ceiling amount that survives that is
+ * refused by the SERVICE as `REFUND_EXCEEDS_TOTAL` / `REFUND_EXCEEDS_CAPTURED`,
+ * which {@link refundFailureNotice} renders. Re-introducing a server-side two-step
+ * confirm means WRITING these checks against the shape of that new flow — not
+ * restoring them, because there is nothing left to restore.
  *
  * KNOWN FOLLOW-UP, ported verbatim and deliberately left alone here:
  * {@link resolveReconciliationAction} derives its idempotency key as
@@ -81,14 +68,9 @@
 import {
 	BANNER_BUDGET,
 	ORDER_STATES,
-	REFUND_AMOUNT_INVALID,
-	REFUND_BY_REQUIRED,
 	REFUND_TOO_HIGH_TITLE,
 	fit,
 	formatAmount as formatTotal,
-	formatMinorUnitsInput,
-	parseMinorUnitsInput,
-	refundTooHighText,
 } from "@otta-sh/admin-presentation";
 import { AdminOrdersClient, type RefundsSummaryWire } from "./admin-orders-client.js";
 import { readString, screenActions, startOfDay, type Notice } from "./scaffold/index.js";
@@ -99,14 +81,12 @@ const ORDERS_ACTIONS = screenActions("orders");
 const ACTION_ADD_NOTE = ORDERS_ACTIONS.custom("add-note");
 const ACTION_RESOLVE = ORDERS_ACTIONS.custom("resolve-reconciliation");
 const ACTION_RECORD_FULFILLMENT = ORDERS_ACTIONS.custom("record-fulfillment");
-/** DA-3 state 1 → state 2 (stage a cancellation with free-text detail). */
-const ACTION_CANCEL_REVIEW = ORDERS_ACTIONS.custom("cancel-review");
-/** The DA-3 state-2 confirm for a cancellation. DA-2b's per-reason verbs have
- *  their own ids so a surface can offer one control per reason. */
+/** The cancellation the surface confirms for itself, carrying a reason and an
+ *  optional free-text detail. DA-2b's per-reason verbs have their own ids so a
+ *  surface can offer one control per reason. */
 const ACTION_CANCEL = ORDERS_ACTIONS.custom("cancel");
-/** DA-3 state 1 → state 2 (stage a partial refund). */
-const ACTION_REFUND_REVIEW = ORDERS_ACTIONS.custom("refund-review");
-/** Both the DA-2b full-remaining refund and the DA-3 state-2 confirm. */
+/** Both the DA-2b full-remaining refund and the partial refund the surface
+ *  confirms for itself. */
 const ACTION_REFUND = ORDERS_ACTIONS.custom("refund");
 
 /** `transition-<state>` — one DISTINCT verb per state, derived. */
@@ -132,14 +112,21 @@ const CANCEL_REASON_LABELS: ReadonlyMap<string, string> = new Map(
 );
 
 /**
- * The inverse map. The two-step cancel flow's `-review` step takes the reason in
- * OPTION-VALUE space — which on this screen IS the human label — and maps it back
- * to the wire value here. Untrusted input: an unmapped value is refused, never
- * forwarded, and every mapped value is re-checked against
- * {@link CANCEL_REASON_LABELS} before it reaches the service.
+ * The reasons that get a ONE-CLICK control of their own, and therefore an action
+ * id of their own (DA-2b). `other` is deliberately not among them: a one-click
+ * "Other" fires immediately and records no detail, so the cancel-with-a-note form
+ * — which posts {@link ACTION_CANCEL} with the reason in its payload — is the only
+ * path that offers it. Deriving `orders:cancel-other` anyway would register an id
+ * no control can send, which is MOD-2 run backwards.
+ *
+ * THIS LIST IS SHIPPED TO THE CONSOLE, not re-derived there. The exclusion and the
+ * dispatch table below are two halves of one rule — a surface that offers `other`
+ * as a one-click control now posts an id that does not exist and is refused as
+ * unregistered. One source, sent down the wire (DA-6), is the only way the two
+ * halves cannot drift apart across the process boundary.
  */
-const CANCEL_REASON_BY_LABEL: ReadonlyMap<string, string> = new Map(
-	CANCELLATION_REASONS.map((r) => [r.label, r.value]),
+export const ONE_CLICK_CANCEL_REASONS: readonly SelectOption[] = CANCELLATION_REASONS.filter(
+	(r) => r.value !== "other",
 );
 
 /** The three admin dispositions. The labels spell out that a disposition is a
@@ -154,81 +141,23 @@ export const RECONCILIATION_OUTCOMES: readonly SelectOption[] = [
 ];
 
 /**
- * THE TWO-STEP FLOWS' STATE, and the pairing is the point:
- *
- *  - `*-staged` is DA-3 **state 2**: the operator's input has passed every check,
- *    so it is carried in PARSED form together with THE WATERMARK THEY SAW, which
- *    the confirm echoes back so the write can re-read and refuse on a mismatch.
- *  - `*-draft` is a **refusal**: state 1 handed back with the submitted values so
- *    the operator can correct them, and NO confirm control.
- *
- * TWO PROPERTIES OF THE DRAFT MEMBERS THAT ARE FORCED, NOT STYLISTIC:
- *
- *  1. **A DRAFT CARRIES RAW OPERATOR TEXT** (`amountInput`, `reasonInput`), never
- *     minor units. {@link refundReview} refuses precisely when
- *     `parseMinorUnitsInput` returns `null` — the most frequent refusal on this
- *     screen, a typo in the amount field — so on that path there IS no
- *     `amountCents` to re-derive a prefill from, and a rejected `19,99` cannot be
- *     reconstructed from cents.
- *  2. **A DRAFT CARRIES NO WATERMARK.** The next review re-reads it from live
- *     truth, so the operator's next attempt stages against current truth BY
- *     CONSTRUCTION rather than by anyone remembering to re-stamp it.
- */
-export type OrdersStaged =
-	| {
-			readonly kind: "refund-staged";
-			/** Integer minor units (M-3) — parsed, bound-checked and ≤ the live ceiling. */
-			readonly amountCents: number;
-			/** The watermark: `refundedTotalCents` AS THE OPERATOR SAW IT. */
-			readonly refundedSoFarCents: number;
-			readonly currency: string;
-			readonly reason: string;
-			readonly refundedBy: string;
-	  }
-	| {
-			readonly kind: "cancel-staged";
-			/** The WIRE reason (`out_of_stock`), mapped back from the option label. */
-			readonly reason: string;
-			readonly detail: string;
-			readonly cancelledBy: string;
-			/** The watermark: the order `state` AS THE OPERATOR SAW IT. */
-			readonly state: string;
-	  };
-
-export type OrdersDraft =
-	| {
-			readonly kind: "refund-draft";
-			/** VERBATIM operator text, unparsed — see the note above. */
-			readonly amountInput: string;
-			readonly reason: string;
-			readonly refundedBy: string;
-	  }
-	| {
-			readonly kind: "cancel-draft";
-			/** The submitted option value, which on this flow IS the human label —
-			 *  handed back verbatim when it is a known option, and dropped to `""`
-			 *  when it is not, because a surface must not prefill an option it does
-			 *  not offer. */
-			readonly reasonInput: string;
-			readonly detail: string;
-			readonly cancelledBy: string;
-	  };
-
-/**
  * What a write returns instead of a block tree.
  *
  * `ok: true` means the request was UNDERSTOOD and dispatched, not that anything
  * was written — a refusal is a `notice` with `variant: "error"`, which is the
  * shape the operator reads either way. `notice: null` is the quiet success the
  * Block Kit screen expressed as "re-render with no banner".
+ *
+ * THERE IS NO STAGED OR DRAFT MEMBER. Both existed for the deleted `-review` pair:
+ * a staged outcome carried the parsed input plus the watermark the operator saw
+ * into a server-rendered state 2, and a draft carried their raw text back into a
+ * server-rendered refusal. A surface that composes its own confirm holds the
+ * operator's input the whole time and never needs either handed back. Adding one
+ * again belongs with the flow that would need it.
  */
 export interface OrdersActionResult {
 	readonly ok: true;
 	readonly notice: Notice | null;
-	/** Present on a two-step flow's `-review` when every check passed. */
-	readonly staged?: OrdersStaged;
-	/** Present on a refusal that the operator can correct by re-submitting. */
-	readonly draft?: OrdersDraft;
 }
 
 /** A write's payload: the flat string record the caller carried. Untrusted,
@@ -265,17 +194,10 @@ const UNREADABLE: Notice = {
  *
  * THE RULE IS ABSOLUTE ON THIS SCREEN, and that is checkable. Every site holding a
  * watermark answers an absent one with {@link UNREADABLE} and NO re-read: the ten
- * transitions and {@link cancelReview}/{@link cancelOrder} through this helper, and
- * the two refund handlers through {@link parseCents} — the refund watermark is a
+ * transitions and {@link cancelOrderAction} through this helper, and
+ * {@link refundOrderAction} through {@link parseCents} — the refund watermark is a
  * MINOR-UNITS LEDGER TOTAL rather than a state name, so it cannot route through
  * here, but `observedSoFar === null` is the same check and gets the same answer.
- *
- * They differ only in whether a draft rides along, which is decided by whether the
- * refused payload came from a form the operator can correct.
- *
- * A `-review` is NOT an exception on the grounds that it writes nothing; see
- * {@link cancelReview}'s header for why re-stamping a fresh watermark onto the
- * confirm it stages makes the tolerance worse than the refusal, not better.
  */
 function readWatermark(value: unknown): string | undefined {
 	const raw = readString(value)?.trim();
@@ -300,9 +222,9 @@ function normalizeBound(value: string | undefined): string | undefined {
 	return startOfDay(value);
 }
 
+/** The one outcome constructor. A refusal is an `error`-variant notice, not a
+ *  different shape — see {@link OrdersActionResult}. */
 const applied = (notice: Notice | null): OrdersActionResult => ({ ok: true, notice });
-const refused = (notice: Notice, draft?: OrdersDraft): OrdersActionResult =>
-	draft === undefined ? { ok: true, notice } : { ok: true, notice, draft };
 
 // -- transitions --------------------------------------------------------------
 
@@ -536,127 +458,20 @@ const recordFulfillmentAction: OrdersAction = async (client, payload) => {
 // -- cancellation -------------------------------------------------------------
 
 /**
- * DA-3 state 1 → 2 for a cancellation: validate, RE-READ, then hand back the
- * staged values. NOTHING is written here.
- *
- * IT RE-READS BECAUSE `-review` PRODUCES THE STATEMENTS THE SHAPE EXISTS TO MAKE
- * TRUE (DA-3c: "not only the confirm handler"). The confirm it stages says *"Cancel
- * this order as 'out of stock'? This is permanent…"* over a payload carrying the
- * watermark. If the order moved between state 1 and this submit, that confirm is
- * dead on arrival — {@link cancelOrder}'s own DA-3a check will refuse it — and the
- * operator would be shown a coherent current panel beside a control that cannot
- * succeed, with nothing saying why. So the movement is caught HERE, at the step
- * whose only purpose is letting them check.
- *
- * AN ABSENT WATERMARK IS REFUSED HERE TOO, with no `-review` exemption —
- * {@link readWatermark}'s doc states that rule absolutely and this handler is not
- * outside it. Tolerating it (`observedState !== undefined && …`) looked safe, because
- * the confirm this handler stages could re-stamp `state` from its own fresh read and
- * {@link cancelOrder} would then check against that. It is not safe, for two reasons:
- *
- *  1. **The re-stamp launders the window it skipped.** The operator chose a reason
- *     while looking at some state; a fresh stamp asserts a state they never saw, and
- *     the confirm's check then passes trivially. The window from that page rendering
- *     to this submit goes unchecked while the payload claims otherwise — the X-38
- *     hole one step removed. {@link refundReview} names the identical move as wrong
- *     for the refund path ("re-stamping it fresh … would assert a decision the
- *     operator never made"); the same asymmetry cannot be a defect there and a
- *     tolerance here.
- *  2. **A `-review` has less standing to skip it, not more.** Its whole purpose is
- *     catching movement before a confirm is drawn. With no watermark it has nothing
- *     to compare, so the one step that exists to let an operator check silently
- *     checks nothing.
- *
- * So every DA-3a site on this screen refuses an absent watermark identically, and a
- * reviewer checks one boolean per site instead of judging each one. The cost is a
- * reload on a payload that was hand-edited or came from a pre-watermark tab.
- *
- * EVERY REFUSAL CARRIES A DRAFT: the operator's typed values, handed straight back.
- */
-const cancelReviewAction: OrdersAction = async (client, payload) => {
-	const orderId = readString(payload["orderId"]);
-	if (orderId === undefined) return applied(UNREADABLE);
-	const observedState = readWatermark(payload["state"]);
-	// The review step takes the reason in OPTION-VALUE space — the human label —
-	// so map back to the wire reason. Untrusted input: an unmapped value is
-	// refused, never forwarded.
-	const reasonInput = readString(payload["reason"]) ?? "";
-	const reason = CANCEL_REASON_BY_LABEL.get(reasonInput);
-	const detail = (readString(payload["detail"]) ?? "").trim();
-	const cancelledBy = (readString(payload["cancelledBy"]) ?? "").trim();
-	const draft = (): OrdersDraft => ({
-		kind: "cancel-draft",
-		reasonInput,
-		detail,
-		cancelledBy,
-	});
-	// DA-3a with NO `-review` EXEMPTION (see this function's header). Refused before
-	// the read, because no re-read can supply a watermark the operator never sent and
-	// the outcome cannot depend on what it would return.
-	if (observedState === undefined) {
-		return refused(UNREADABLE, draft());
-	}
-	if (reason === undefined || cancelledBy.length === 0) {
-		return refused(
-			{
-				variant: "error",
-				title: "Not cancelled",
-				description: "Choose a reason and enter who is cancelling it. Nothing was changed.",
-			},
-			draft(),
-		);
-	}
-	const live = await client.getOrder(orderId).catch(() => null);
-	if (live === null) {
-		return refused(
-			{
-				variant: "error",
-				title: "Could not check the order",
-				description:
-					"This order could not be re-read, so nothing was staged and nothing was changed. Reload and try again.",
-			},
-			draft(),
-		);
-	}
-	if (live.order.state !== observedState) {
-		return refused(
-			{
-				variant: "error",
-				title: "The order changed — nothing was staged",
-				description: `It was ${observedState} when you started and is now ${live.order.state} — someone else moved it since you opened this form. Check the order below, then review again.`,
-			},
-			draft(),
-		);
-	}
-	return {
-		ok: true,
-		notice: null,
-		staged: {
-			kind: "cancel-staged",
-			reason,
-			detail,
-			cancelledBy,
-			// The watermark FRESHLY CONFIRMED equal to the observed one, so the confirm
-			// this stages is one the write can actually accept.
-			state: live.order.state,
-		},
-	};
-};
-
-/**
- * Shared by DA-2b's four per-reason controls AND DA-3's state-2 confirm — one
- * handler, because both carry the same `{orderId, reason, state}` (the DA-3 one
- * adds `detail`).
+ * Shared by DA-2b's four per-reason controls AND the cancel-with-a-note write —
+ * one handler, because both carry the same `{orderId, reason, state}` (the note
+ * one adds `detail`). `other` reaches this handler only through the note form,
+ * which is why it has no per-reason id of its own
+ * ({@link ONE_CLICK_CANCEL_REASONS}).
  *
  * DA-3a, MANDATORY: re-read the order and refuse on a watermark mismatch. The
- * staged `state` is what the operator saw; if the order moved under them, apply
- * NOTHING and name both states.
+ * `state` in the payload is what the operator saw; if the order moved under them,
+ * apply NOTHING and name both states.
  *
- * EVERY REFUSAL HERE CARRIES A DRAFT, including the two that read like plumbing
- * failures. Nothing was written on any of them and the operator's typed detail is
- * in hand, so discarding it to tell them to try again makes the safe path the
- * expensive one — and the next thing they reach for is a one-click reason control,
- * which records no detail at all.
+ * NO REFUSAL HERE HANDS ANYTHING BACK, because there is nowhere to hand it: the
+ * surface composed its own confirm and still holds every value the operator typed
+ * (see {@link OrdersActionResult}). What each refusal owes them is a notice that
+ * names WHAT happened and WHY, which is what every branch below returns.
  */
 const cancelOrderAction: OrdersAction = async (client, payload) => {
 	const orderId = readString(payload["orderId"]);
@@ -665,42 +480,27 @@ const cancelOrderAction: OrdersAction = async (client, payload) => {
 	const detail = (readString(payload["detail"]) ?? "").trim();
 	const cancelledBy = (readString(payload["cancelledBy"]) ?? "").trim();
 	const observedState = readWatermark(payload["state"]);
-	// The draft is in OPTION-VALUE space (the human label), and an unrecognized
-	// reason simply has no label to put back — the operator's detail and name
-	// survive, which is the part they typed.
-	const draft = (): OrdersDraft => ({
-		kind: "cancel-draft",
-		reasonInput: CANCEL_REASON_LABELS.get(reason) ?? "",
-		detail,
-		cancelledBy,
-	});
 	// Every decoded value is UNTRUSTED operator-round-tripped input (B-1), so the
 	// closed set and the watermark's PRESENCE are both re-checked here.
 	if (!CANCEL_REASON_LABELS.has(reason) || observedState === undefined) {
-		return refused(UNREADABLE, draft());
+		return applied(UNREADABLE);
 	}
 	// DA-3a: re-read before writing.
 	const live = await client.getOrder(orderId).catch(() => null);
 	if (live === null) {
-		return refused(
-			{
-				variant: "error",
-				title: "Nothing was cancelled",
-				description:
-					"This order could not be re-checked before cancelling, so nothing was applied. Reload and try again.",
-			},
-			draft(),
-		);
+		return applied({
+			variant: "error",
+			title: "Nothing was cancelled",
+			description:
+				"This order could not be re-checked before cancelling, so nothing was applied. Reload and try again.",
+		});
 	}
 	if (live.order.state !== observedState) {
-		return refused(
-			{
-				variant: "error",
-				title: "The order changed — nothing was cancelled",
-				description: `It was ${observedState} when you started and is now ${live.order.state} — someone else moved it since you started. Check the order below, then cancel again if you still want to.`,
-			},
-			draft(),
-		);
+		return applied({
+			variant: "error",
+			title: "The order changed — nothing was cancelled",
+			description: `It was ${observedState} when you started and is now ${live.order.state} — someone else moved it since you started. Check the order below, then cancel again if you still want to.`,
+		});
 	}
 	const key = `admin-cancel:${orderId}`;
 	const result = await client.cancelOrder(
@@ -712,10 +512,9 @@ const cancelOrderAction: OrdersAction = async (client, payload) => {
 		},
 		{ idempotencyKey: key },
 	);
-	// NO DRAFT ON THESE: the write was attempted. `NOT_CANCELLABLE` means the
-	// order cannot be cancelled AT ALL now, so a prefilled retry would promise
-	// something that is no longer possible; the other branches are outcomes to
-	// read, not inputs to correct.
+	// The write was ATTEMPTED past this point, so every branch below is an outcome
+	// to read rather than an input to correct — `NOT_CANCELLABLE` above all, which
+	// means the order cannot be cancelled at all now.
 	if (!result.ok) {
 		return applied(
 			result.reason === "NOT_CANCELLABLE"
@@ -750,152 +549,9 @@ const cancelOrderAction: OrdersAction = async (client, payload) => {
 // -- refunds ------------------------------------------------------------------
 
 /**
- * DA-3 state 1 → 2 for a refund. NOTHING is written here — and yet this handler
- * runs FIVE checks around one read, because `-review` produces the two statements
- * the whole shape exists to make true: the confirm's label and its text.
- *
- * | Check | Rule | Refusal names |
- * |---|---|---|
- * | the payload decodes: watermark AND currency both present | DA-3b | the payload, NOT the amount |
- * | parses to a positive integer of minor units | M-3 | what was typed |
- * | required attribution present | DA-3c | the missing field |
- * | the ledger has not moved since state 1 | DA-3a | both figures AND the cause |
- * | `amountCents <= remainingRefundableCents` **live** | DA-3c | the real ceiling |
- *
- * THE FIRST ROW IS ITS OWN BRANCH, and folding it into the second is a real defect.
- * `refundedSoFar` and `currency` come off the PAYLOAD's carrier half; `amount` comes
- * off the operator's keyboard. Fold them together and a missing watermark answers
- * `5.00` with *"Enter a valid refund amount greater than zero (e.g. 19.99)"* over a
- * field reading `5.00` — the console naming a cause that is demonstrably not the
- * cause and sending the operator to re-type the one thing that was already right. A
- * missing watermark is an unreadable payload ({@link readWatermark}), so it gets
- * {@link UNREADABLE}, exactly as {@link refundOrder} gives it. It is checked FIRST
- * because a broken payload is not fixable by re-typing: no amount the operator
- * enters can make it decode, so no refusal that points at the amount field is
- * honest.
- *
- * WHY IT RE-READS THE LEDGER, given the payload already holds a watermark. Two
- * defects, one read:
- *
- *  1. **DA-3c wants the LIVE ceiling.** The payload holds `refundedSoFar`, not the
- *     remaining balance, and even a carried remaining would be the figure the
- *     operator SAW rather than the one the write will be judged against.
- *  2. **State 2 must not exist once the ledger has moved.** Everything else state 2
- *     shows is rebuilt from the FRESH read, while the confirm alone carries the
- *     state-1 watermark (correctly: re-stamping it fresh while leaving `amountCents`
- *     alone would assert a decision the operator never made). So a moved ledger
- *     produces a coherent current panel beside a control that CANNOT succeed, with
- *     nothing saying why. Refusing here is what removes that state from existence.
- *
- * THE ORDER MATTERS. The watermark comparison runs BEFORE the bound check, so the
- * bound check is always against a ceiling the operator has now been shown — and the
- * movement refusal, whose copy already names the new remaining balance, wins when
- * both would fire.
- *
- * EVERY REFUSAL CARRIES A DRAFT WITH THE RAW AMOUNT STRING — including the
- * unreadable-payload one, where nothing was written and the operator's typing is
- * still in hand. The parse check refuses precisely when the amount did NOT parse, so
- * there is no `amountCents` on that path and `19,99` cannot be re-derived from
- * cents: `amountInput` is the only thing that can put it back.
- */
-const refundReviewAction: OrdersAction = async (client, payload) => {
-	const orderId = readString(payload["orderId"]);
-	if (orderId === undefined) return applied(UNREADABLE);
-	const currency = (readString(payload["currency"]) ?? "").trim();
-	const observedSoFar = parseCents(payload["refundedSoFar"]);
-	const amountStr = (readString(payload["amount"]) ?? "").trim();
-	const reason = (readString(payload["reason"]) ?? "").trim();
-	const refundedBy = (readString(payload["refundedBy"]) ?? "").trim();
-	// The operator's input, VERBATIM, ready for any refusal below.
-	const draft = (): OrdersDraft => ({
-		kind: "refund-draft",
-		amountInput: amountStr,
-		reason,
-		refundedBy,
-	});
-	// DA-3b, BEFORE anything about the amount: these two come off the payload's
-	// carrier half, not the operator's keyboard, so their absence is an unreadable
-	// payload (`readWatermark`) and no refusal naming the amount field could be true.
-	// Blaming the amount here told the operator to fix a field that already held
-	// `5.00`.
-	if (observedSoFar === null || currency.length === 0) {
-		return refused(UNREADABLE, draft());
-	}
-	// Money parsed to integer MINOR UNITS with exact integer string math (no
-	// float). `allowZero:false` — a refund of nothing is meaningless.
-	const amountCents = parseMinorUnitsInput(amountStr, { allowZero: false });
-	if (amountCents === null) {
-		return refused(
-			{
-				variant: "error",
-				title: "Not refunded",
-				description: REFUND_AMOUNT_INVALID,
-			},
-			draft(),
-		);
-	}
-	if (refundedBy.length === 0) {
-		return refused(
-			{
-				variant: "error",
-				title: "Not refunded",
-				description: REFUND_BY_REQUIRED,
-			},
-			draft(),
-		);
-	}
-	const live = await client.getRefunds(orderId).catch(() => null);
-	if (live === null) {
-		return refused(
-			{
-				variant: "error",
-				title: "Could not check the refund ledger",
-				description:
-					"The refund ledger could not be re-read, so nothing was staged and nothing was changed. Reload and try again.",
-			},
-			draft(),
-		);
-	}
-	const liveCur = live.currency.length > 0 ? live.currency : currency;
-	// DA-3a at the REVIEW step: the ledger moved between state 1 and this submit,
-	// so state 2 would draw a confirm the write will refuse.
-	if (live.refundedTotalCents !== observedSoFar) {
-		return refused(staleLedgerNotice(amountCents, live, liveCur), draft());
-	}
-	// DA-3c: the bound check, against a ceiling just confirmed current. Without
-	// it, `900.00` on a $50 order stages a red `Refund $900.00` and a dialog reading
-	// "Refund $900.00 to …?" — both false at the exact moment they are shown, on the
-	// one step that exists to let an operator check exactly that.
-	if (amountCents > live.remainingCents) {
-		return refused(
-			{
-				variant: "error",
-				title: REFUND_TOO_HIGH_TITLE,
-				description: refundTooHighText(
-					formatTotal(amountCents, liveCur),
-					formatTotal(live.remainingCents, liveCur),
-				),
-			},
-			draft(),
-		);
-	}
-	return {
-		ok: true,
-		notice: null,
-		staged: {
-			kind: "refund-staged",
-			amountCents,
-			refundedSoFarCents: observedSoFar,
-			currency,
-			reason,
-			refundedBy,
-		},
-	};
-};
-
-/**
- * The DA-3a stale-watermark refusal, shared by the `-review` and the confirm
- * handlers so the two cannot drift.
+ * The DA-3a stale-watermark refusal. It is a named function rather than an inline
+ * literal because its wording is the whole point of it, and a wording argued out
+ * once should have one place to be wrong.
  *
  * THE CAUSAL CLAUSE IS NOT OPTIONAL. §8's normative example includes *"someone else
  * refunded this order"*, and an earlier version of this copy dropped it. "The ledger
@@ -904,7 +560,7 @@ const refundReviewAction: OrdersAction = async (client, payload) => {
  * 76 characters it is nowhere near the 240 budget — so this was never length-driven.
  */
 function staleLedgerNotice(
-	stagedAmountCents: number,
+	submittedAmountCents: number,
 	live: RefundsSummaryWire,
 	cur: string,
 ): Notice {
@@ -912,20 +568,23 @@ function staleLedgerNotice(
 		variant: "error",
 		title: "The refund ledger changed — nothing was refunded",
 		description: fit(
-			`${formatTotal(stagedAmountCents, cur)} was staged and was not recorded — someone else refunded this order since you started. ${formatTotal(live.remainingCents, cur)} now remains refundable; re-enter an amount below to try again.`,
+			`${formatTotal(submittedAmountCents, cur)} was staged and was not recorded — someone else refunded this order since you started. ${formatTotal(live.remainingCents, cur)} now remains refundable; re-enter an amount below to try again.`,
 			BANNER_BUDGET,
 		),
 	};
 }
 
 /**
- * The money-moving confirm — DA-2b's full-remaining control and DA-3's state-2
- * confirm both land here.
+ * The money-moving write — DA-2b's full-remaining control and the partial refund
+ * the surface confirmed for itself both land here. It is the ONLY refund handler:
+ * the `-review` step that used to precede it is deleted, so every guard a refund
+ * gets is in this function or in the service behind it.
  *
  * TWO RULES APPLY TOGETHER, and neither is sufficient alone:
  *  - DA-3a: RE-READ the refund ledger and refuse on a watermark mismatch, so a
- *    stale staged amount is never applied. Operator A stages $99.00; operator B
- *    refunds $99.00; A's dialog still says "Refund $99.00" — a false statement.
+ *    stale amount is never applied. Operator A opens a confirm for $99.00;
+ *    operator B refunds $99.00; A's dialog still says "Refund $99.00" — a false
+ *    statement.
  *  - F-2a: derive the key from `${orderId}:${amountCents}:${refundedSoFarCents}`.
  *    The watermark makes two DELIBERATE identical refunds differ (so both apply)
  *    while a double-click of the same control dedupes.
@@ -933,6 +592,17 @@ function staleLedgerNotice(
  * They compose: DA-3a rejects the stale submit before the key is ever derived,
  * which matters because `refundOrder` resolves a duplicate by KEY ALONE with no
  * amount comparison.
+ *
+ * THERE IS NO CLIENT-SIDE CEILING CHECK HERE, and that is a deliberate, recorded
+ * gap rather than an omission: the live-ceiling bound check lived only on the
+ * deleted `-review` step. An over-ceiling amount that clears the watermark compare
+ * is refused by the SERVICE as `REFUND_EXCEEDS_TOTAL` / `REFUND_EXCEEDS_CAPTURED`
+ * and rendered by {@link refundFailureNotice}. See ADR-0015's amendment.
+ *
+ * NOR IS THERE A `Refunded by` GUARD, for the same reason: the `REFUND_BY_REQUIRED`
+ * refusal also lived only on that step. A blank one is recorded as `admin` below.
+ * Attribution is therefore enforced by the surface alone — recorded, with its known
+ * gap, in the same amendment.
  */
 const refundOrderAction: OrdersAction = async (client, payload) => {
 	const orderId = readString(payload["orderId"]);
@@ -942,52 +612,31 @@ const refundOrderAction: OrdersAction = async (client, payload) => {
 	const currency = (readString(payload["currency"]) ?? "").trim();
 	const reason = (readString(payload["reason"]) ?? "").trim();
 	const refundedBy = (readString(payload["refundedBy"]) ?? "").trim();
-	// The refusal draft, in RAW STRING space — the only channel that can put the
-	// operator's figure back, since a `refund-draft` carries `amountInput` and
-	// nothing else. Where the amount parsed, formatting it back is what the field
-	// showed them.
-	const draft = (amountInput: string): OrdersDraft => ({
-		kind: "refund-draft",
-		amountInput,
-		reason,
-		refundedBy,
-	});
-	// DA-3b. FOUR DISJUNCTS, AND ONLY ONE OF THEM LACKS AN AMOUNT. A payload can
-	// carry a perfectly good `amountCents: "1000"` and still be unreadable because
-	// the WATERMARK or the CURRENCY is missing — and on that arrival the operator
-	// typed `10.00`, it parsed, nothing was written, and blanking the field
-	// discards a figure we are holding while `reason` survives beside it. So the
-	// draft is conditional on the amount, not on the branch: `$10.00` goes back,
-	// and only a genuinely unparseable or non-positive amount yields `""`.
+	// DA-3b. FOUR DISJUNCTS, AND THEY ARE ONE BRANCH ON PURPOSE. A payload can carry
+	// a perfectly good `amountCents: "1000"` and still be unreadable because the
+	// WATERMARK or the CURRENCY is missing — but none of the four is fixable by
+	// re-typing the amount, so all four get the same payload-level refusal rather
+	// than one that points at a field. M-3/B-2 rides here too: `amountCents` must be
+	// a plain integer minor-units string, so no float is ever laundered into cents.
 	if (amountCents === null || amountCents <= 0 || observedSoFar === null || currency.length === 0) {
-		return refused(
-			UNREADABLE,
-			draft(amountCents !== null && amountCents > 0 ? formatMinorUnitsInput(amountCents) : ""),
-		);
+		return applied(UNREADABLE);
 	}
 	// DA-3a: re-read, then compare against the watermark the operator SAW.
 	const live = await client.getRefunds(orderId).catch(() => null);
 	if (live === null) {
-		return refused(
-			{
-				variant: "error",
-				title: "Nothing was refunded",
-				description:
-					"The refund ledger could not be re-checked, so nothing was applied. Reload and try again.",
-			},
-			draft(formatMinorUnitsInput(amountCents)),
-		);
+		return applied({
+			variant: "error",
+			title: "Nothing was refunded",
+			description:
+				"The refund ledger could not be re-checked, so nothing was applied. Reload and try again.",
+		});
 	}
 	const liveCur = live.currency.length > 0 ? live.currency : currency;
 	if (live.refundedTotalCents !== observedSoFar) {
-		// The genuinely CONCURRENT case: the ledger moved between state 2 (or the
-		// DA-2b control's render) and this click. {@link refundReviewAction} catches
-		// movement one step earlier; both are required, and they catch different
-		// windows.
-		return refused(
-			staleLedgerNotice(amountCents, live, liveCur),
-			draft(formatMinorUnitsInput(amountCents)),
-		);
+		// The genuinely CONCURRENT case: the ledger moved between the confirm being
+		// drawn and this click. This is the ONLY window now checked server-side, and
+		// the surface's own pre-dialog validation cannot see it.
+		return applied(staleLedgerNotice(amountCents, live, liveCur));
 	}
 	// The observed watermark is the third key component (F-2a) — NOT a nonce.
 	const key = `admin-refund:${orderId}:${amountCents}:${observedSoFar}`;
@@ -1001,10 +650,9 @@ const refundOrderAction: OrdersAction = async (client, payload) => {
 		},
 		{ idempotencyKey: key },
 	);
-	// NO DRAFT ON THESE: the write was attempted, so every branch below is an
-	// outcome to read rather than an input to correct — and on `GATEWAY_UNVERIFIED`
-	// the outcome is unknown, where a form inviting a retry is the worst possible
-	// affordance.
+	// The write was ATTEMPTED past this point, so every branch below is an outcome
+	// to read rather than an input to correct — and on `GATEWAY_UNVERIFIED` the
+	// outcome is UNKNOWN, which is why its copy says not to retry.
 	if (!result.ok) return applied(refundFailureNotice(result.reason));
 	if (result.duplicate) {
 		// A benign replay: the SAME amount against the SAME watermark, i.e. a
@@ -1099,16 +747,16 @@ function refundFailureNotice(reason: string | undefined): Notice {
  * Every Orders write, keyed by the action id that names it.
  *
  * The per-state and per-reason entries are DERIVED from {@link ORDER_STATES} and
- * {@link CANCELLATION_REASONS} rather than hand-listed (DA-6), so a surface can
- * never offer a control for an id this table does not hold.
+ * {@link ONE_CLICK_CANCEL_REASONS} rather than hand-listed (DA-6), so a surface
+ * can never offer a control for an id this table does not hold. The rule runs the
+ * other way too: an id here that NO control can send is dead surface, which is why
+ * `orders:cancel-other` is not derived and why the `-review` pair is gone.
  */
 const ORDERS_ACTIONS_BY_ID: Readonly<Record<string, OrdersAction>> = {
 	[ACTION_ADD_NOTE]: addNoteAction,
 	[ACTION_RESOLVE]: resolveReconciliationAction,
 	[ACTION_RECORD_FULFILLMENT]: recordFulfillmentAction,
-	[ACTION_CANCEL_REVIEW]: cancelReviewAction,
 	[ACTION_CANCEL]: cancelOrderAction,
-	[ACTION_REFUND_REVIEW]: refundReviewAction,
 	[ACTION_REFUND]: refundOrderAction,
 	// One handler per state, keyed by the SAME derived id the control uses.
 	...Object.fromEntries(
@@ -1117,9 +765,9 @@ const ORDERS_ACTIONS_BY_ID: Readonly<Record<string, OrdersAction>> = {
 			transitionAction(state),
 		]),
 	),
-	// Likewise one per cancellation reason (DA-2b).
+	// Likewise one per ONE-CLICK cancellation reason (DA-2b).
 	...Object.fromEntries(
-		CANCELLATION_REASONS.map((r) => [
+		ONE_CLICK_CANCEL_REASONS.map((r) => [
 			ORDERS_ACTIONS.custom(cancelReasonVerb(r.value)),
 			cancelOrderAction,
 		]),

@@ -15,27 +15,32 @@
  * vocabularies, badge suppression, the fail-closed banner's shape. None of that
  * outlives the renderer. Everything asserting BEHAVIOUR moved here.
  *
- * THE THREE REFUSALS ARE THE GATE (ADR-0015 §1, Decision 3), and each has a test
- * that names it:
+ * THE STALE-WATERMARK REFUSAL IS THE GATE (ADR-0015 Decision 3, as amended), and
+ * it is proven on every write that carries a watermark: `THE REFUSAL — a refund
+ * whose watermark no longer matches applies NOTHING` for the refund ledger,
+ * `DA-3a: a cancel whose observed state no longer matches`, and `DA-3a: a
+ * transition whose observed state no longer matches`. Its absent-watermark half —
+ * refuse, do not re-read, do not tolerate — is `DA-3a is not opt-out` and the
+ * unreadable-payload cases beside it.
  *
- *  1. **Stale watermark (DA-3a)** — `refunds: the confirm REFUSES when the ledger
- *     moved`, plus the same check at the review step, on cancels and on
- *     transitions. Its absent-watermark half is `DA-3a is not opt-out`.
- *  2. **Refund ceiling (DA-3c)** — `refund-review BOUND-CHECKS against the live
- *     ceiling`, and `the watermark compare runs BEFORE the bound check` pins the
- *     ORDER the two run in.
- *  3. **Unparseable amount** — `an unparseable amount refuses and the draft carries
- *     the raw text VERBATIM`.
+ * WHAT IS NO LONGER TESTED HERE, AND WHY THAT IS NOT A GAP. THREE checks went with
+ * the deleted `-review` pair: the two further refusals ADR-0015 DECISION 3 names —
+ * the DA-3c live-ceiling bound check and the unparseable-amount refusal — and the
+ * `REFUND_BY_REQUIRED` attribution guard, which Decision 3 never named because it
+ * was never one of its three. All three lived ONLY on `orders:refund-review`,
+ * which no surface ever called; the ids and all three checks are deleted, so there
+ * is no behaviour left for a test to pin. Refund attribution is now enforced on
+ * the client alone — see ADR-0015's amendment, which records where that
+ * enforcement has a hole. The reachable confirm's own money validation — integer
+ * minor units, a positive amount, no float laundered into cents — is `M-3/B-2`
+ * below and stays, as does the service's over-refund refusal
+ * (`REFUND_EXCEEDS_TOTAL`).
  *
- * A green happy path is not evidence for any of them, so every refusal test also
+ * A green happy path is not evidence for any of this, so every refusal test also
  * asserts that NO POST was made.
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import {
-	REFUND_AMOUNT_INVALID,
-	REFUND_BY_REQUIRED,
-	REFUND_TOO_HIGH_TITLE,
-} from "@otta-sh/admin-presentation";
+import { REFUND_TOO_HIGH_TITLE } from "@otta-sh/admin-presentation";
 import { ORDERS_ACTION_IDS } from "../src/admin/orders-actions.js";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
 import {
@@ -57,8 +62,6 @@ interface ActOutcome {
 	title?: string;
 	description?: string;
 	notice?: Notice | null;
-	staged?: Record<string, unknown>;
-	draft?: Record<string, unknown>;
 }
 
 /** The order as the stub serves it. `state` is what a watermark is compared
@@ -202,7 +205,13 @@ describe("the Orders write path (workerd sandbox)", () => {
 		// The combination that used to blank a console: a control rendered for an id
 		// the dispatcher does not know. The set is read straight off the dispatch
 		// table, and this drives every member to prove it.
-		expect(ORDERS_ACTION_IDS.size).toBe(7 + 10 + 5);
+		// 5 named + one per order state + one per ONE-CLICK cancellation reason.
+		// `other` has no one-click control, so it derives no id (and the deleted
+		// `-review` pair derives none either).
+		expect(ORDERS_ACTION_IDS.size).toBe(5 + 10 + 4);
+		expect(ORDERS_ACTION_IDS.has("orders:cancel-other")).toBe(false);
+		expect(ORDERS_ACTION_IDS.has("orders:cancel-review")).toBe(false);
+		expect(ORDERS_ACTION_IDS.has("orders:refund-review")).toBe(false);
 		for (const actionId of ORDERS_ACTION_IDS) {
 			const result = await act(actionId, {});
 			// No order id, so each one refuses as unreadable — but it REFUSES, which
@@ -492,7 +501,7 @@ describe("the Orders write path (workerd sandbox)", () => {
 		expect(result.notice?.title).toBe("Order cancelled");
 	});
 
-	test("DA-3a: a cancel whose observed state no longer matches applies NOTHING, names both states, and hands the typed detail back", async () => {
+	test("DA-3a: a cancel whose observed state no longer matches applies NOTHING and names both states", async () => {
 		orderState = "shipped";
 		const result = await act("orders:cancel", {
 			orderId: ORDER_ID,
@@ -505,14 +514,6 @@ describe("the Orders write path (workerd sandbox)", () => {
 		expect(result.notice?.title).toBe("The order changed — nothing was cancelled");
 		expect(result.notice?.description).toContain("was paid when you started");
 		expect(result.notice?.description).toContain("is now shipped");
-		// Nothing was written and the operator's typing is in hand, so discarding it
-		// would make the safe path the expensive one.
-		expect(result.draft).toEqual({
-			kind: "cancel-draft",
-			reasonInput: "Out of stock",
-			detail: "warehouse fire",
-			cancelledBy: "carol",
-		});
 	});
 
 	test("a cancel reason outside the closed set, or a missing watermark, is an unreadable payload", async () => {
@@ -525,7 +526,6 @@ describe("the Orders write path (workerd sandbox)", () => {
 			const result = await act("orders:cancel", value);
 			expect(service.requests).toHaveLength(0);
 			expect(result.notice?.title).toBe("That action could not be read");
-			expect((result.draft as { kind?: string } | undefined)?.kind).toBe("cancel-draft");
 		}
 	});
 
@@ -539,248 +539,17 @@ describe("the Orders write path (workerd sandbox)", () => {
 			reason: "fraud_suspected",
 			state: "paid",
 		});
-		expect(result.notice?.title).toBe("Order can’t be cancelled right now");
 		// The write was ATTEMPTED, so this is an outcome to read rather than an input
 		// to correct — a prefilled retry would promise something no longer possible.
-		expect(result.draft).toBeUndefined();
-	});
-
-	test("DA-3: cancel-review stages the free text against a FRESHLY confirmed watermark and writes nothing", async () => {
-		const result = await act("orders:cancel-review", {
-			orderId: ORDER_ID,
-			// The review step takes the reason in OPTION-VALUE space — the human
-			// label — and maps it back to the wire value.
-			reason: "Out of stock",
-			detail: "warehouse fire",
-			cancelledBy: "carol",
-			state: "paid",
-		});
-		expect(posts()).toHaveLength(0);
-		expect(result.notice).toBeNull();
-		expect(result.staged).toEqual({
-			kind: "cancel-staged",
-			reason: "out_of_stock",
-			detail: "warehouse fire",
-			cancelledBy: "carol",
-			state: "paid",
-		});
-	});
-
-	test("DA-3c: cancel-review re-reads too, so state 2 never stages a confirm the write would already refuse", async () => {
-		orderState = "shipped";
-		const result = await act("orders:cancel-review", {
-			orderId: ORDER_ID,
-			reason: "Out of stock",
-			detail: "warehouse fire",
-			cancelledBy: "carol",
-			state: "paid",
-		});
-		expect(posts()).toHaveLength(0);
-		expect(result.staged).toBeUndefined();
-		expect(result.notice?.title).toBe("The order changed — nothing was staged");
-		expect(result.draft).toEqual({
-			kind: "cancel-draft",
-			reasonInput: "Out of stock",
-			detail: "warehouse fire",
-			cancelledBy: "carol",
-		});
-	});
-
-	test("DA-3a has NO `-review` exemption: a review with no watermark stages NOTHING and does not even re-read", async () => {
-		// Re-stamping a fresh watermark here would launder the window it skipped —
-		// the operator chose a reason while looking at some state, and a fresh stamp
-		// asserts one they never saw, after which the confirm's own check passes
-		// trivially. So the refusal comes before any read.
-		const result = await act("orders:cancel-review", {
-			orderId: ORDER_ID,
-			reason: "Out of stock",
-			cancelledBy: "carol",
-		});
-		expect(service.requests).toHaveLength(0);
-		expect(result.staged).toBeUndefined();
-		expect(result.notice?.title).toBe("That action could not be read");
-	});
-
-	test("cancel-review with an unmapped reason or a blank canceller stages nothing", async () => {
-		for (const value of [
-			{ orderId: ORDER_ID, reason: "out_of_stock", cancelledBy: "carol", state: "paid" },
-			{ orderId: ORDER_ID, reason: "Out of stock", cancelledBy: "", state: "paid" },
-		]) {
-			service.requests.length = 0;
-			const result = await act("orders:cancel-review", value);
-			expect(posts()).toHaveLength(0);
-			expect(result.staged).toBeUndefined();
-			expect(result.notice?.title).toBe("Not cancelled");
-		}
+		expect(result.notice?.title).toBe("Order can’t be cancelled right now");
 	});
 
 	// -- refunds: THE GATE ------------------------------------------------------
 
-	test("REFUSAL 3 — an unparseable amount refuses and the draft carries the RAW TEXT verbatim", async () => {
-		// The most frequent refusal on this screen is a typo in the amount field, and
-		// it is the one where nothing can be re-derived: `parseMinorUnitsInput`
-		// returned `null`, so there IS no `amountCents`, and a rejected `19,99`
-		// cannot be reconstructed from minor units. Money is integer minor units;
-		// a refusal that silently reformats what someone typed is a worse failure
-		// than the one it reports.
-		for (const amount of ["0", "abc", "19,99", "12.345", "-5.00"]) {
-			service.requests.length = 0;
-			const result = await act("orders:refund-review", {
-				orderId: ORDER_ID,
-				currency: "USD",
-				refundedSoFar: "500",
-				amount,
-				reason: "damaged",
-				refundedBy: "carol",
-			});
-			expect(posts(), amount).toHaveLength(0);
-			expect(result.staged, amount).toBeUndefined();
-			expect(result.notice?.variant).toBe("error");
-			expect(result.notice?.title).toBe("Not refunded");
-			expect(result.notice?.description).toBe(REFUND_AMOUNT_INVALID);
-			expect(result.draft, `draft for ${amount}`).toEqual({
-				kind: "refund-draft",
-				amountInput: amount,
-				reason: "damaged",
-				refundedBy: "carol",
-			});
-		}
-		// A blank amount refuses too, and there is nothing to put back for it.
-		const blank = await act("orders:refund-review", {
-			orderId: ORDER_ID,
-			currency: "USD",
-			refundedSoFar: "500",
-			amount: "  ",
-			refundedBy: "carol",
-		});
-		expect((blank.draft as { amountInput?: string } | undefined)?.amountInput).toBe("");
-	});
-
-	test("REFUSAL 2 — refund-review BOUND-CHECKS against the LIVE ceiling and names the real figure", async () => {
-		// An extra zero is the likeliest typo on a money field. Without the bound
-		// check this staged a red `Refund $99.99` and a dialog reading "Refund $99.99
-		// to …?" — BOTH FALSE at the exact moment they were shown, on the one step
-		// that exists to let an operator check exactly that.
-		const result = await act("orders:refund-review", {
-			orderId: ORDER_ID,
-			currency: "USD",
-			refundedSoFar: "500", // matches live, so DA-3a passes and DA-3c is what fires
-			amount: "99.99", // 9999 > the live remaining 1000
-			refundedBy: "carol",
-		});
-		expect(posts()).toHaveLength(0);
-		expect(result.staged).toBeUndefined();
-		expect(result.notice?.title).toBe(REFUND_TOO_HIGH_TITLE);
-		expect(result.notice?.title).toBe("Amount too high");
-		// The refusal names THE REAL FIGURE, not just "too high".
-		expect(result.notice?.description).toBe(
-			"$99.99 is more than the $10.00 that remains refundable on this order. Enter $10.00 or less.",
-		);
-		expect(String(result.notice?.description).length).toBeLessThanOrEqual(240);
-		// Prefilled VERBATIM so the operator can delete the extra zero.
-		expect((result.draft as { amountInput?: string } | undefined)?.amountInput).toBe("99.99");
-	});
-
-	test("REFUSAL 1 — refund-review refuses when the ledger moved, naming both figures AND the cause", async () => {
-		refundedSoFar = 900; // someone else refunded $4.00 since the form rendered
-		const result = await act("orders:refund-review", {
-			orderId: ORDER_ID,
-			currency: "USD",
-			refundedSoFar: "500",
-			amount: "5.00",
-			refundedBy: "carol",
-		});
-		expect(posts()).toHaveLength(0);
-		expect(result.staged).toBeUndefined();
-		expect(result.notice?.title).toBe("The refund ledger changed — nothing was refunded");
-		// The CAUSAL CLAUSE is not optional: "the ledger changed" states an effect and
-		// leaves the operator to guess whether they hit a bug.
-		expect(result.notice?.description).toContain("someone else refunded this order");
-		expect(result.notice?.description).toContain("$5.00 was staged");
-		expect(result.notice?.description).toContain("$6.00 now remains refundable");
-		expect((result.draft as { amountInput?: string } | undefined)?.amountInput).toBe("5.00");
-	});
-
-	test("THE ORDER OF THE TWO: the watermark compare runs BEFORE the bound check", async () => {
-		// Both would fire — the ledger moved AND $99.99 is over the new remaining
-		// $6.00. The movement refusal wins, because its copy already names the new
-		// remaining balance and the bound check must only ever quote a ceiling the
-		// operator has now been shown.
-		refundedSoFar = 900;
-		const result = await act("orders:refund-review", {
-			orderId: ORDER_ID,
-			currency: "USD",
-			refundedSoFar: "500",
-			amount: "99.99",
-			refundedBy: "carol",
-		});
-		expect(posts()).toHaveLength(0);
-		expect(result.notice?.title).toBe("The refund ledger changed — nothing was refunded");
-		expect(result.notice?.title).not.toBe(REFUND_TOO_HIGH_TITLE);
-	});
-
-	test("DA-3b: a review whose payload lost its watermark refuses as UNREADABLE, never as a bad amount", async () => {
-		// `refundedSoFar` and `currency` come off the payload's carrier half; `amount`
-		// comes off the operator's keyboard. Folded together, this branch answered
-		// `5.00` with "Enter a valid refund amount…" over a field still reading
-		// `5.00` — naming a cause that is checkably not the cause.
-		const cases: Record<string, string>[] = [
-			{ orderId: ORDER_ID, currency: "USD", amount: "5.00", refundedBy: "carol" },
-			{ orderId: ORDER_ID, refundedSoFar: "500", amount: "5.00", refundedBy: "carol" },
-		];
-		for (const value of cases) {
-			service.requests.length = 0;
-			const result = await act("orders:refund-review", { ...value, reason: "damaged" });
-			expect(service.requests).toHaveLength(0);
-			expect(result.staged).toBeUndefined();
-			expect(result.notice?.title).toBe("That action could not be read");
-			expect(String(result.notice?.description)).not.toMatch(/refund amount|19\.99/i);
-			expect(result.draft).toEqual({
-				kind: "refund-draft",
-				amountInput: "5.00",
-				reason: "damaged",
-				refundedBy: "carol",
-			});
-		}
-	});
-
-	test("a review with no `Refunded by` names the missing field, not the amount", async () => {
-		const result = await act("orders:refund-review", {
-			orderId: ORDER_ID,
-			currency: "USD",
-			refundedSoFar: "500",
-			amount: "5.00",
-			refundedBy: "  ",
-		});
-		expect(posts()).toHaveLength(0);
-		expect(result.notice?.description).toBe(REFUND_BY_REQUIRED);
-	});
-
-	test("a review that passes every check stages PARSED minor units and the watermark the operator saw", async () => {
-		const result = await act("orders:refund-review", {
-			orderId: ORDER_ID,
-			currency: "USD",
-			refundedSoFar: "500",
-			amount: "5.00",
-			reason: "damaged",
-			refundedBy: "carol",
-		});
-		expect(posts()).toHaveLength(0);
-		expect(result.notice).toBeNull();
-		expect(result.staged).toEqual({
-			kind: "refund-staged",
-			amountCents: 500,
-			refundedSoFarCents: 500,
-			currency: "USD",
-			reason: "damaged",
-			refundedBy: "carol",
-		});
-	});
-
-	test("REFUSAL 1, at the confirm — a refund whose watermark no longer matches applies NOTHING", async () => {
+	test("THE REFUSAL — a refund whose watermark no longer matches applies NOTHING", async () => {
 		// The genuinely CONCURRENT case: the ledger moved between the confirm being
-		// drawn and this click. The review catches movement one step earlier; both
-		// are required, and they catch different windows.
+		// drawn and this click. This is now the ONLY server-side window checked on a
+		// refund, so it carries the whole of DA-3a for the money path.
 		refundedSoFar = 900;
 		const result = await act("orders:refund", {
 			orderId: ORDER_ID,
@@ -793,8 +562,11 @@ describe("the Orders write path (workerd sandbox)", () => {
 		expect(posts()).toHaveLength(0);
 		expect(result.notice?.title).toBe("The refund ledger changed — nothing was refunded");
 		expect(result.notice?.description).toContain("someone else refunded this order");
-		// The figure goes back in the field it was typed into.
-		expect((result.draft as { amountInput?: string } | undefined)?.amountInput).toBe("5.00");
+		// The copy names BOTH figures and the CAUSE — "the ledger changed" alone
+		// states an effect and leaves the operator to guess whether they hit a bug.
+		expect(result.notice?.description).toContain("$5.00 was staged");
+		expect(result.notice?.description).toContain("$6.00 now remains refundable");
+		expect(String(result.notice?.description).length).toBeLessThanOrEqual(240);
 	});
 
 	test("F-2a: the refund key is `admin-refund:<order>:<amount>:<watermark>` — content plus the OBSERVED watermark, never a nonce", async () => {
@@ -869,43 +641,39 @@ describe("the Orders write path (workerd sandbox)", () => {
 		expect(second).not.toBe(first);
 	});
 
-	test("an unreadable CONFIRM payload puts back the amount it DID parse; only a genuinely unparseable one comes back blank", async () => {
-		// Four disjuncts, and only one of them lacks an amount. Blanking the field on
-		// the other three discards a figure we are holding.
-		const withAmount = await act("orders:refund", {
-			orderId: ORDER_ID,
-			amountCents: "1000",
-			currency: "USD", // watermark missing
-			reason: "damaged",
-			refundedBy: "carol",
-		});
-		expect(service.requests).toHaveLength(0);
-		expect(withAmount.notice?.title).toBe("That action could not be read");
-		expect(withAmount.draft).toEqual({
-			kind: "refund-draft",
-			amountInput: "10.00",
-			reason: "damaged",
-			refundedBy: "carol",
-		});
-		for (const amountCents of ["0", "not-a-number", "-100", "10.00"]) {
+	test("DA-3b: each of the FOUR disjuncts of an unreadable confirm refuses and makes NO request", async () => {
+		// A payload can carry a perfectly good `amountCents` and still be unreadable
+		// because the WATERMARK or the CURRENCY is missing. None of the four is
+		// fixable by re-typing the amount, so all four take the payload-level
+		// refusal — and, critically, none of them reaches the service.
+		const cases: Record<string, string>[] = [
+			// watermark missing, amount fine
+			{ amountCents: "1000", currency: "USD" },
+			// currency missing, amount fine
+			{ amountCents: "1000", refundedSoFarCents: "500" },
+			// amount not a positive integer of minor units
+			{ amountCents: "0", refundedSoFarCents: "500", currency: "USD" },
+			{ amountCents: "-100", refundedSoFarCents: "500", currency: "USD" },
+			{ amountCents: "not-a-number", refundedSoFarCents: "500", currency: "USD" },
+		];
+		for (const value of cases) {
 			service.requests.length = 0;
 			const result = await act("orders:refund", {
 				orderId: ORDER_ID,
-				amountCents,
-				refundedSoFarCents: "500",
-				currency: "USD",
+				reason: "damaged",
 				refundedBy: "carol",
+				...value,
 			});
-			expect(service.requests, amountCents).toHaveLength(0);
-			expect((result.draft as { amountInput?: string } | undefined)?.amountInput, amountCents).toBe(
-				"",
-			);
+			expect(service.requests, JSON.stringify(value)).toHaveLength(0);
+			expect(result.notice?.title, JSON.stringify(value)).toBe("That action could not be read");
 		}
 	});
 
-	test("the service's own 409 REFUND_EXCEEDS_TOTAL is still handled — the concurrent case the bound check cannot catch", async () => {
-		// The bound check tests what the review STAGES; it cannot see a capture that
-		// shrinks between the confirm being drawn and the click.
+	test("the service's own 409 REFUND_EXCEEDS_TOTAL is the over-refund guard — nothing else bounds the amount", async () => {
+		// There is no client-side ceiling check on this path: the one that existed
+		// lived on the deleted `-review` step and no surface ever called it. So an
+		// over-ceiling amount that clears the watermark compare reaches the service,
+		// and the SERVICE refuses it. This test is that guarantee.
 		service.respondWith("POST", () => ({
 			status: 409,
 			body: { ok: false, reason: "REFUND_EXCEEDS_TOTAL" },
@@ -922,7 +690,6 @@ describe("the Orders write path (workerd sandbox)", () => {
 		// two titles for one refusal has to work out whether they hit two limits.
 		expect(result.notice?.title).toBe(REFUND_TOO_HIGH_TITLE);
 		expect(String(result.notice?.description)).not.toMatch(/HTTP \d|409|\/admin\//);
-		expect(result.draft).toBeUndefined();
 	});
 
 	test("an ambiguous gateway timeout tells the operator NOT to retry, and offers no retry affordance", async () => {
@@ -939,9 +706,6 @@ describe("the Orders write path (workerd sandbox)", () => {
 		});
 		expect(result.notice?.title).toBe("Refund status unknown");
 		expect(String(result.notice?.description)).toContain("Do NOT retry");
-		// A form inviting a retry is the worst possible affordance on an unknown
-		// outcome, so no draft rides along.
-		expect(result.draft).toBeUndefined();
 	});
 
 	test("a fully-refunding refund says so, and an unreachable ledger applies nothing", async () => {

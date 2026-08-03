@@ -3,6 +3,13 @@
 - Status: accepted — the retirement is **authorised and not yet landed**; the screens are still
   in the tree until the increments below merge.
 - Date: 2026-08-01
+- Amended: 2026-08-03 — **Decision 3, and one clause of Decision 2 rendered moot.** THREE
+  checks are deleted along with the unreached two-step `-review` pair they were the only
+  implementation of: two of Decision 3's three refusals, and the `Refunded by` attribution
+  guard, which Decision 3 never named. Decision 3's third refusal — the stale-watermark
+  refusal — is unchanged and still binding. Decision 2's "the staged state a two-step flow
+  needs" is **moot**, not unaffected: the deletion removes exactly that member. Decisions 1,
+  4, 5 and 6 stand as written. See "Amended 2026-08-03" at the end of this record.
 - Supersedes: **one clause of [ADR-0014](./0014-second-native-descriptor-for-react-admin.md)** —
   "The Block Kit screens stay in the tree and stay green until a migration increment replaces
   each one" — **as to Orders and Pricing & inventory only**. That clause is the third bullet of
@@ -222,3 +229,137 @@ ADR-0014 named as reopening this ground:
   on its own terms, unchanged by this record.
 - A proposal to retire Reports or Coupons, to migrate Tax, Shipping or Settings, or to change
   `scaffold/`. None of those is decided here, and each needs its own record.
+
+## Amended 2026-08-03 — Decision 3, and one clause of Decision 2
+
+Everything above is left exactly as written on 2026-08-01. This block records one change to
+one decision, and notes one clause of a second that the change renders moot.
+
+**Decision 3 said the three refusals move across verbatim, and that "dropping one of them is
+not authorised by this record and would need its own." This is that record.** It also records
+a fourth check that Decision 3 never named and that goes the same way, because a record of
+what was lost that enumerates only what an earlier record happened to list is not a record of
+what was lost.
+
+### What happened
+
+The Orders write-path extraction carried the two-step refund and cancel flows across
+faithfully — `orders:refund-review` and `orders:cancel-review`, the staged and draft state
+they returned, and all three refusals. It was only after they had landed that two independent
+reviews established the thing the extraction had not thought to check: **nothing calls them.**
+The React order detail can show a confirm dialog over the values the operator just typed, so
+it composes its own confirm client-side and posts `orders:refund`, `orders:cancel` and
+`orders:cancel-<reason>` directly. There is no surface that reaches a `-review` step, and
+none since the Block Kit screen it was written for was retired. The per-reason cancel controls
+also omit `other` deliberately — a one-click "Other" fires immediately and records no detail,
+so that reason is offered only in the note form, which posts `orders:cancel` — which left
+`orders:cancel-other` derived, dispatchable and equally unreachable.
+
+The pair was retained at first under Decision 3, on the reading that a ported shape should
+survive its port. That was the wrong call, and the reason it was wrong is worth naming: **an
+unreachable safety check is not a safety check.** It is a claim in the tree that a check is
+being made, which a reader has every reason to believe, and which the running system does not
+honour. Keeping it costs more than deleting it.
+
+### The decision
+
+**`orders:refund-review`, `orders:cancel-review` and `orders:cancel-other` are deleted as
+unreached surface**, with the staged and draft members of the action result that existed only
+for them.
+
+**THREE checks go with them — two of Decision 3's three refusals, and one more that Decision 3
+never named. None had a reachable caller:**
+
+- the **refund-ceiling bound check** (Decision 3) — the parsed amount tested against the
+  ceiling just re-read — lived only on the refund review step;
+- the **unparseable-amount refusal** (Decision 3), whose draft carried the operator's raw text
+  verbatim rather than re-deriving it from cents, lived only on that step's draft;
+- the **`REFUND_BY_REQUIRED` attribution guard** — a blank `Refunded by` refused before
+  anything was staged, so that no refund could be recorded without a named person behind it.
+  Decision 3 did not list it among its three, which is precisely why it is listed here: it was
+  the check most likely to be lost silently.
+
+None of the three ever ran for any surface that shipped. Deleting them removes no protection
+that any operator has had.
+
+**The third refusal is untouched.** The stale-watermark refusal is on the reachable path and
+stays there, with the tests that prove it: the refund confirm re-reads the ledger and refuses
+on a mismatch; every cancel and every status transition re-reads the order and refuses on a
+mismatch; and an *absent* watermark is refused fail-closed at every one of those sites, with
+no re-read. The reachable refund's own money validation — integer minor units, a positive
+amount, no float laundered into cents — also stays.
+
+**The reachable refund confirm is therefore protected by the watermark compare plus the
+service's own over-refund guards.** An over-ceiling amount that clears the watermark compare
+reaches the service and is refused there as `REFUND_EXCEEDS_TOTAL` / `REFUND_EXCEEDS_CAPTURED`,
+rendered with the same title the deleted client-side check used. What is gone is the earlier,
+better-worded refusal that named the real remaining balance before anything was sent — and the
+React screen validates the amount against the remaining balance it is displaying before it
+opens its confirm, which is a courtesy to the operator and not a guard, because it runs on the
+client.
+
+### Refund attribution is now enforced on the client alone, and that enforcement has a hole
+
+This one is worth stating plainly rather than leaving to be discovered.
+
+With the attribution guard deleted, **nothing on the server requires a `Refunded by`**. The
+refund write records whatever the payload carries, and records the literal `admin` when the
+field is blank. The only check left is the console's own, applied in the partial-refund form
+before it opens its confirm dialog.
+
+**That check does not cover every control on the screen.** The "refund the full remaining
+balance" button asks for the confirm directly, without going through the partial form's
+validation, so a full refund submitted with the `Refunded by` field blank is recorded against
+`admin` — a real refund with no named person behind it.
+
+**This is pre-existing. It was true before this amendment and is not introduced by it**: the
+console has always had that path, and the server guard that would have caught it was on a step
+the console never called, so it never fired. What changes is the framing. While the guard
+existed, the gap read as a redundant client check with a server backstop; it never had one,
+and now the tree does not claim one either. **Client-side enforcement is the entire story for
+refund attribution, and it is incomplete.**
+
+Closing it belongs to whoever owns that control, not to this record. It is named here so that
+the next person to read "attribution is enforced" knows exactly where, and where it is not.
+
+### The consequence to be clear-eyed about
+
+**Re-introducing a server-side two-step confirm later means writing these checks, not restoring
+them.** There is nothing left to restore, and a future flow will not have the same shape: the
+deleted bound check assumed a staged amount and a watermark carried between two server round
+trips. Anyone adding that flow owns all three checks as new work, including the ordering that
+made the movement refusal win over the bound refusal when both would fire. This amendment is
+not permission to ship a two-step confirm without them.
+
+### The one id that had to be shipped rather than re-derived
+
+Deleting `orders:cancel-other` turned a harmless divergence into a hard failure. The console
+was already excluding `other` from its one-click cancel controls with its own copy of the
+exclusion, on its own side of the wire; while the id was registered, a drift toward offering it
+would merely have cancelled an order with a reason and no detail. It now posts an id that does
+not exist, and an unregistered action is refused — correctly, and confusingly, since the
+operator asked to cancel an order that is perfectly cancellable.
+
+**So the one-click reason list is shipped from the plugin, derived from the same constant the
+dispatch table derives the per-reason ids from, and the console consumes it instead of
+re-deriving the exclusion.** It is DA-6 — derived, never hand-listed — and the console's own
+reason for shipping its filter vocabulary as data rather than letting the React tier hold a
+second copy, applied to the two halves of one rule now that a process boundary runs between
+them. A test pins set equality in both directions: no member without an id, no id without a
+member.
+
+### What is NOT changed
+
+- Decisions 1, 4, 5 and 6 stand as written.
+- **Decision 2 is moot in one clause, not unaffected.** It defines the replacement outcome as
+  "the applied/refused flag, the notice, and the staged state a two-step flow needs" — and the
+  staged state is exactly what is deleted here. The clause was conditional on a two-step flow
+  existing; none does, so the outcome is now the flag and the notice. If a two-step flow is
+  ever added, that clause applies again as written, together with the three checks above.
+- The stale-watermark refusal remains Decision 3's binding requirement for every write that
+  carries a watermark, and a reworded one is still a failed port.
+- ADR-0006 Decision 1 is reaffirmed a third time: the sandbox suites remain the contract gate.
+  No suite is deleted, skipped or weakened here. The Orders write-path suite loses only the
+  tests that drove the deleted ids, and each of those pinned behaviour that no longer exists
+  rather than behaviour that moved somewhere else.
+- Reports and Coupons remain unruled; Tax, Shipping and Settings remain Block Kit permanently.
