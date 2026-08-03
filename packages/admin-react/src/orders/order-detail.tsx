@@ -606,28 +606,32 @@ export function OrderDetail({
 								description={CANCEL_BANNER.description}
 							/>
 							<p style={{ fontSize: 12, opacity: 0.75 }}>{CANCEL_PICK_REASON}</p>
+							{/* One button per reason the plugin says has an id, taken from the list
+							    it SHIPS rather than filtered out of `cancellationReasons` here. The
+							    ids are derived on that side from the same constant; a second copy
+							    of the exclusion on this side would post `orders:cancel-other` the
+							    day the two disagreed, and that id is not registered — the console
+							    would show an unknown-action refusal, not a cancel. */}
 							<div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBlockEnd: 12 }}>
-								{detail.vocabulary.cancellationReasons
-									.filter((reason) => reason.value !== "other")
-									.map((reason) => (
-										<Button
-											key={reason.value}
-											testId={`cancel-${reason.value}`}
-											label={reason.label}
-											danger
-											disabled={busy}
-											onClick={() => {
-												setPending({
-													actionId: `orders:cancel-${reason.value}`,
-													value: { orderId: order.id, reason: reason.value, state: order.state },
-													title: CANCEL_CONFIRM.title,
-													text: cancelConfirmText(reason.label),
-													confirmLabel: CANCEL_CONFIRM.confirm,
-													denyLabel: CANCEL_CONFIRM.deny,
-												});
-											}}
-										/>
-									))}
+								{detail.vocabulary.oneClickCancellationReasons.map((reason) => (
+									<Button
+										key={reason.value}
+										testId={`cancel-${reason.value}`}
+										label={reason.label}
+										danger
+										disabled={busy}
+										onClick={() => {
+											setPending({
+												actionId: `orders:cancel-${reason.value}`,
+												value: { orderId: order.id, reason: reason.value, state: order.state },
+												title: CANCEL_CONFIRM.title,
+												text: cancelConfirmText(reason.label),
+												confirmLabel: CANCEL_CONFIRM.confirm,
+												denyLabel: CANCEL_CONFIRM.deny,
+											});
+										}}
+									/>
+								))}
 							</div>
 							<Group testId="detail-cancel-note" label="Cancel with a note">
 								<div style={{ display: "grid", gap: 10, maxInlineSize: 420 }}>

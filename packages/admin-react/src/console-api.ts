@@ -201,6 +201,13 @@ export interface Vocabulary {
 	readonly statusAny: string;
 	readonly periods: readonly { readonly key: string; readonly label: string }[];
 	readonly cancellationReasons: readonly LabelledOption[];
+	/** The reasons that have a `orders:cancel-<reason>` action id, shipped by the
+	 *  plugin from the SAME constant its dispatch table derives those ids from.
+	 *  A one-click control may only offer a member of this list; the rest are
+	 *  reachable through the note form, which posts `orders:cancel`. Never filter
+	 *  {@link cancellationReasons} here to reconstruct it — that is the second copy
+	 *  of the rule this field exists to delete. */
+	readonly oneClickCancellationReasons: readonly LabelledOption[];
 	readonly reconciliationOutcomes: readonly LabelledOption[];
 	readonly pageLimit: number;
 }

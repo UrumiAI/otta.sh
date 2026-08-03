@@ -28,6 +28,7 @@
  * screen, so there is no second surface left for either claim to be about.
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { ORDERS_ACTION_IDS } from "../src/admin/orders-actions.js";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
 import {
 	startStubCommerceServer,
@@ -234,6 +235,44 @@ describe("the console's read/write branch on the otta admin route", () => {
 		expect(
 			(vocabulary["cancellationReasons"] as Array<{ label: string }>).map((r) => r.label),
 		).toContain("Out of stock");
+	});
+
+	test("the ONE-CLICK cancel reasons are SHIPPED, exclude `other`, and match the registered per-reason ids exactly", async () => {
+		service.respondWith(
+			"GET",
+			responder({
+				"/admin/orders": () => ({ status: 200, body: { orders: [], nextCursor: null } }),
+			}),
+		);
+		const result = await invoke({ type: READ, resource: "orders.list" });
+		const vocabulary = result["vocabulary"] as Record<string, unknown>;
+		const oneClick = vocabulary["oneClickCancellationReasons"] as Array<{ value: string }>;
+
+		// THE POINT OF SHIPPING IT. The console renders one button per member and
+		// posts `orders:cancel-<value>`; the dispatch table registers one id per
+		// member of the SAME constant. A console that re-derived the exclusion
+		// itself would hold the second copy of this rule, and the failure mode is
+		// no longer benign: `orders:cancel-other` is not registered, so a drift
+		// toward it posts an id the gate does not know and the operator gets an
+		// unknown-action refusal instead of a cancel.
+		//
+		// Pinned as SET EQUALITY in both directions, not containment: a member with
+		// no id is a broken button, an id with no member is dead surface.
+		expect(oneClick.length).toBeGreaterThan(0);
+		expect(oneClick.map((r) => r.value)).not.toContain("other");
+
+		const shippedIds = oneClick.map((r) => `orders:cancel-${r.value}`).toSorted();
+		const registeredIds = [...ORDERS_ACTION_IDS]
+			.filter((id) => id.startsWith("orders:cancel-"))
+			.toSorted();
+		expect(shippedIds).toEqual(registeredIds);
+		expect(registeredIds).not.toContain("orders:cancel-other");
+
+		// A SUBSET of the note form's vocabulary, never a second list: `other` is
+		// still offered there, where it records a detail.
+		const all = (vocabulary["cancellationReasons"] as Array<{ value: string }>).map((r) => r.value);
+		for (const reason of oneClick) expect(all).toContain(reason.value);
+		expect(all).toContain("other");
 	});
 
 	test("a filter is translated through the SAME mapping the Block Kit form uses", async () => {

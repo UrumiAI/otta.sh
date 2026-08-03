@@ -41,14 +41,14 @@ export {
 // was retired once the React console's writes moved off it, so `/orders` is
 // served by the `otta-console` descriptor alone and there is no `AdminPageConfig`
 // left to declare. The read path's relocated helpers (`orders-read.ts`) stay
-// internal — only `orders-console-route.ts` consumes them.
+// internal — only `orders-console-route.ts` consumes them. `OrdersStaged` and
+// `OrdersDraft` were exported here too, for the two-step `-review` flow that has
+// since been deleted as unreached; an outcome is now a notice and nothing else.
 export {
 	ORDERS_ACTION_IDS,
 	dispatchOrdersAction,
 	type OrdersActionPayload,
 	type OrdersActionResult,
-	type OrdersDraft,
-	type OrdersStaged,
 } from "./admin/orders-actions.js";
 export {
 	AdminOrdersClient,
