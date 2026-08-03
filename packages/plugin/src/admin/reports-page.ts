@@ -1,3 +1,6 @@
+// `orderStateCell` is imported from the shared presentation package directly:
+// it used to be re-exported by `orders-page.ts`, which ADR-0015 retires.
+import { orderStateCell } from "@otta-sh/admin-presentation";
 import { COMMERCE_SERVICE_BASE_URL } from "../manifest.js";
 import { formatMoney } from "../presentation/format-money.js";
 import { type Currency, cents as toCents, currency as toCurrency } from "../presentation/money.js";
@@ -22,7 +25,6 @@ import {
 	formatDay,
 	startOfDay,
 } from "./scaffold/index.js";
-import { orderStateCell } from "./orders-page.js";
 import { INTERNAL_TOKEN_KEY } from "./settings-form.js";
 import {
 	type LowStockWire,

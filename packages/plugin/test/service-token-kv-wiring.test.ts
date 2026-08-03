@@ -5,7 +5,7 @@ import { INTERNAL_TOKEN_KEY, createSettingsFormHandler } from "../src/admin/sett
 import { createAfterSaveHandler } from "../src/sync/hooks.js";
 import { createCartLineAddRouteHandler } from "../src/storefront/cart-routes.js";
 import { createAccountOrdersHandler } from "../src/storefront/account-routes.js";
-import { createOrdersPageHandler } from "../src/admin/orders-page.js";
+import { createOrdersConsoleHandler } from "../src/admin/orders-console-route.js";
 
 // ADR-0007 — every plugin client sources the write-gate token from write-only
 // kv (`settings:serviceToken`) at runtime and forwards it as `X-Service-Token`.
@@ -14,6 +14,10 @@ import { createOrdersPageHandler } from "../src/admin/orders-page.js";
 // site (sync hook, storefront write, dual-header session read, admin panel write,
 // settings PUT, admin transition), that an unset kv attaches NO header, and that
 // the Settings provisioning field persists write-only and never renders back.
+//
+// The Orders transition is driven through the CONSOLE route (INC-R2): the Block
+// Kit Orders screen it used to be driven through was retired by ADR-0015, and the
+// console branch is now the only construction site for an Orders write.
 
 const SERVICE_TOKEN = "SVC-9f3xQ-write-gate";
 const INTERNAL_TOKEN = "INT-admin-token";
@@ -155,14 +159,15 @@ describe("service token rides every construction site from write-only kv (ADR-00
 			[SERVICE_TOKEN_KEY]: SERVICE_TOKEN,
 			[INTERNAL_TOKEN_KEY]: INTERNAL_TOKEN,
 		});
-		await createOrdersPageHandler()(
+		await createOrdersConsoleHandler()(
 			{
 				// DA-6: the transition ids are per-state and DERIVED from the plugin's
 				// closed `ORDER_STATES`, so the target comes from the id, never from
 				// the operator-alterable `value.toState`.
 				input: {
+					type: "otta_console_act",
 					action_id: "orders:transition-paid",
-					// `state` is the DA-2a watermark the button rendered with. It is not
+					// `state` is the DA-2a watermark the control rendered with. It is not
 					// optional: with it absent the handler refuses instead of writing
 					// unchecked, so a token-wiring test has to send the real payload shape.
 					value: { orderId: "o1", toState: "paid", state: "paid" },
@@ -192,14 +197,15 @@ describe("service token rides every construction site from write-only kv (ADR-00
 
 	test("kv unset: an admin transition attaches NO X-Service-Token (internal token still flows)", async () => {
 		const { ctx, requests } = makeCtx({ [INTERNAL_TOKEN_KEY]: INTERNAL_TOKEN });
-		await createOrdersPageHandler()(
+		await createOrdersConsoleHandler()(
 			{
 				// DA-6: the transition ids are per-state and DERIVED from the plugin's
 				// closed `ORDER_STATES`, so the target comes from the id, never from
 				// the operator-alterable `value.toState`.
 				input: {
+					type: "otta_console_act",
 					action_id: "orders:transition-paid",
-					// `state` is the DA-2a watermark the button rendered with. It is not
+					// `state` is the DA-2a watermark the control rendered with. It is not
 					// optional: with it absent the handler refuses instead of writing
 					// unchecked, so a token-wiring test has to send the real payload shape.
 					value: { orderId: "o1", toState: "paid", state: "paid" },

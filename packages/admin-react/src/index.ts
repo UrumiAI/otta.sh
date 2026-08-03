@@ -55,24 +55,26 @@ export const OTTA_CONSOLE_ADMIN_ENTRY = `${OTTA_CONSOLE_PACKAGE}/admin`;
  * The migrated Orders screen (INC-20) — the console's first real screen and the
  * effort's flagship migration.
  *
- * THE PATH MATCHES THE BLOCK KIT SCREEN'S ON PURPOSE. Both descriptors declare
- * `/orders`; they do not collide, because a page's URL is
- * `/plugins/<pluginId>/<path>` and the ids differ
- * (`…/plugins/otta/orders` versus `…/plugins/otta-console/orders`). Keeping the
- * paths identical is what lets an operator compare the two screens by swapping
- * one segment, which is exactly what ADR-0014 asks for while both render: the
- * Block Kit screen stays in the tree and stays green until the replacement is
- * proven.
+ * THE ONLY ORDERS SCREEN, as of INC-R2. It used to be one of two: the Block Kit
+ * screen declared `/orders` on the `otta` descriptor and this one declares it on
+ * `otta-console`, which never collided because a page's URL carries its plugin id
+ * (`…/plugins/otta/orders` versus `…/plugins/otta-console/orders`). Identical
+ * paths were what let an operator compare the two by swapping one segment while
+ * both rendered — ADR-0014 Decision 1's parallel period. ADR-0015 ended it: the
+ * Block Kit screen is gone, so the path is now simply this screen's path and there
+ * is nothing left to compare it against.
  *
- * The label says which surface this is. Two sidebar entries reading `Orders`
- * with nothing to tell them apart would be the worst possible outcome of the
- * two-descriptor arrangement — the operator's first question on seeing this
- * console is "which of these is the new one", and the label answers it without
- * being clicked.
+ * WHICH IS WHY THE LABEL IS PLAIN `Orders`. It read `Orders (new)` for the whole
+ * parallel period, because two sidebar entries reading `Orders` with nothing to
+ * tell them apart would have been the worst outcome of the two-descriptor
+ * arrangement. With the original gone, `(new)` is the misleading thing — a single
+ * entry marked new against nothing (ADR-0015 Decision 1).
+ *
+ * {@link PRODUCTS_PAGE} keeps its suffix: its Block Kit original still renders.
  */
 export const ORDERS_PAGE = {
 	path: "/orders",
-	label: "Orders (new)",
+	label: "Orders",
 	icon: "receipt",
 } as const satisfies PluginAdminPage;
 

@@ -31,7 +31,6 @@
 import type { Page } from "@playwright/test";
 import {
 	COUPONS_PAGE,
-	ORDERS_PAGE,
 	PRODUCTS_PAGE,
 	REPORTS_PAGE,
 	SETTINGS_PAGE,
@@ -89,7 +88,6 @@ const HOST_SCREEN = hostScreen();
 const BLOCK_KIT_PAGES = [
 	REPORTS_PAGE,
 	SETTINGS_PAGE,
-	ORDERS_PAGE,
 	PRODUCTS_PAGE,
 	TAX_PAGE,
 	SHIPPING_PAGE,
@@ -185,7 +183,7 @@ test.describe("the otta-console React descriptor", () => {
 		await expect(blockKitLinks.first()).toBeVisible();
 
 		// The expectation is DERIVED from the plugin's own exported page list, not
-		// the literal 7 this first read. A hard-coded count is a second place the
+		// the literal count this first read. A hard-coded count is a second place the
 		// screen inventory is written down, and the wrong one wins: an increment
 		// that legitimately adds a Block Kit page would fail here and the obvious
 		// fix — bump the number — is indistinguishable from the obvious fix for
