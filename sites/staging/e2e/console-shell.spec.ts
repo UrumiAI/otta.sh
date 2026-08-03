@@ -103,7 +103,9 @@ const BLOCK_KIT_PAGES = [
  */
 async function openHostScreen(page: Page): Promise<void> {
 	await page.goto(consoleScreenUrl(HOST_SCREEN.path));
-	await expect(page.getByText(HOST_SCREEN.heading).first()).toBeVisible({
+	// The heading ROLE — see `console-screens.spec.ts` for why a text match on
+	// this screen's name is satisfied by the sidebar link as well as the H1.
+	await expect(page.getByRole("heading", { name: HOST_SCREEN.heading }).first()).toBeVisible({
 		timeout: ADMIN_SHELL_TIMEOUT_MS,
 	});
 }
@@ -155,9 +157,9 @@ test.describe("the otta-console React descriptor", () => {
 		// G5's reason transfers to the React tier for a different mechanism: a
 		// non-2xx here is an unmounted screen, not a banner.
 		expect(response?.status(), `${HOST_SCREEN.path} did not return 2xx`).toBeLessThan(300);
-		await expect(adminPage.getByText(HOST_SCREEN.heading).first()).toBeVisible({
-			timeout: ADMIN_SHELL_TIMEOUT_MS,
-		});
+		await expect(adminPage.getByRole("heading", { name: HOST_SCREEN.heading }).first()).toBeVisible(
+			{ timeout: ADMIN_SHELL_TIMEOUT_MS },
+		);
 
 		// It happened at all — a screen that never called would satisfy an
 		// "every call was 200" check vacuously...

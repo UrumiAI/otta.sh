@@ -49,7 +49,13 @@ for (const screen of MIGRATED_SCREENS) {
 		// G5's reason applies to the React tier too, for a different mechanism:
 		// a non-2xx here is an unmounted screen, not a banner.
 		expect(response?.status(), `${screen.path} did not return 2xx`).toBeLessThan(300);
-		await expect(adminPage.getByText(screen.heading).first()).toBeVisible({
+		// THE HEADING ROLE, NOT THE TEXT. A bare text match is satisfied by any
+		// element carrying the string, and on `/orders` three do — the sidebar
+		// link, the H1 and the table caption — so `.first()` was resolving to the
+		// SIDEBAR and this assertion passed whether or not the screen rendered.
+		// The screen's H1 is the only heading with that accessible name, and it is
+		// the fact this spec exists to state.
+		await expect(adminPage.getByRole("heading", { name: screen.heading }).first()).toBeVisible({
 			timeout: ADMIN_SHELL_TIMEOUT_MS,
 		});
 

@@ -37,7 +37,9 @@ export interface ConsoleScreen {
 	readonly increment: string;
 	/** `adminPages[].path` on the `otta-console` descriptor. */
 	readonly path: string;
-	/** Text the screen must render once loaded. */
+	/** The accessible name of the heading the screen renders once loaded.
+	 *  Matched by ROLE, not by text: a screen's name also appears in the sidebar
+	 *  link and, on some screens, in the table caption. */
 	readonly heading: RegExp;
 }
 
@@ -82,11 +84,13 @@ export const MIGRATED_SCREENS: readonly ConsoleScreen[] = [
 		// ADR-0015 retired that screen, so `/orders` is now this screen's alone.
 		path: "/orders",
 		// The H1 the screen renders. INC-R2 dropped the `(new)` sidebar suffix with
-		// the screen it disambiguated from, so for THIS entry the nav label and the
-		// H1 now read the same string — which means the smoke spec's text match no
-		// longer distinguishes "the screen rendered" from "the sidebar rendered".
-		// Recorded rather than papered over: the spec also asserts a 2xx for the
-		// page, and tightening the match to the heading ROLE is a separate change.
+		// the screen it disambiguated from, so for THIS entry the nav label, the H1
+		// and the table caption all read the same string. Measured in a browser: a
+		// text match resolved to all three and `.first()` took the SIDEBAR, so the
+		// smoke spec had stopped distinguishing "the screen rendered" from "the
+		// sidebar rendered". Its consumers now match the heading ROLE, which is
+		// unique — so this stays the H1's own text; disambiguating it here, by
+		// reviving a suffix, would be fixing the wrong file.
 		heading: /^Orders$/,
 	},
 	{
