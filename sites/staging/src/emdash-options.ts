@@ -53,7 +53,7 @@ export function buildEmdashOptions(serviceUrl: string): StagingEmdashOptions {
 		database: d1({ binding: "DB" }),
 		storage: r2({ binding: "MEDIA" }),
 		// TWO descriptors, one array. `otta` is unchanged — standard format,
-		// seven Block Kit pages, its own capabilities and allowedHosts.
+		// five Block Kit pages, its own capabilities and allowedHosts.
 		// `otta-console` is native and carries the React adminEntry. EmDash's
 		// build-time throw ("Standard plugins use Block Kit for admin UI, not
 		// React components") is evaluated PER DESCRIPTOR, which is what lets the

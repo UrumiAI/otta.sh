@@ -126,7 +126,7 @@ test.describe("harness configuration", () => {
 
 	test("console screens are addressed under the second descriptor id, never under `otta`", () => {
 		// A React page served under id `otta` would flip that plugin's
-		// `adminMode` to "react" and make its other six Block Kit pages VANISH
+		// `adminMode` to "react" and make its five Block Kit pages VANISH
 		// from the sidebar (ADR-0014 Decision 7). The url builder is the one
 		// place that could get this wrong for every screen at once.
 		//
@@ -141,10 +141,11 @@ test.describe("harness configuration", () => {
 		// `to: /plugins/${pluginId}${page.path}` in the sidebar and routes
 		// `/plugins/$pluginId/$`. INC-20 then MIGRATED `/orders`, so the literal
 		// below is no longer a placeholder for a future target: it is the live
-		// address of the console's Orders screen, and the second assertion — that
-		// it is NOT under `/plugins/otta/` — is now load-bearing rather than
-		// hypothetical, because a Block Kit screen with the same path is serving
-		// at that other id at the same time.
+		// address of the console's Orders screen. The second assertion — that it
+		// is NOT under `/plugins/otta/` — became load-bearing rather than
+		// hypothetical while a Block Kit screen served the same path at that other
+		// id; ADR-0015 has since retired that screen, and the assertion stays
+		// because the id, not the path, is what keeps the two descriptors apart.
 		expect(CONSOLE_PLUGIN_ID).toBe("otta-console");
 		expect(consoleScreenUrl("/orders")).toBe(`${ADMIN_BASE_PATH}/plugins/otta-console/orders`);
 		expect(consoleScreenUrl("/orders")).not.toContain("/plugins/otta/");
