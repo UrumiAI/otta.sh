@@ -13,7 +13,7 @@
  * shows only that plugin's pages having a React component
  * (`@emdash-cms/admin@0.31.1`, sidebar builder: `if (!isBlocksMode &&
  * !resolvePluginPagePath(pluginPages, page.path)) continue;`). One React page
- * added under id `otta` would therefore make its seven Block Kit screens vanish
+ * added under id `otta` would therefore make its five Block Kit screens vanish
  * from the sidebar while still rendering at their URLs. The second id avoids
  * that by construction — ADR-0014 Decision 7.
  *

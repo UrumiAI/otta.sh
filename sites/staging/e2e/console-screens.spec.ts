@@ -20,7 +20,7 @@
  * admin SPA's boot: until it finishes, the entire document is the string
  * "Loading EmDash…" and no plugin page exists in the DOM at all. That boot is
  * measured at roughly 5-25 seconds against `astro dev` on this box —
- * `ADMIN_SHELL_TIMEOUT_MS` exists for exactly this, `console-shell.spec.ts`
+ * `ADMIN_SHELL_TIMEOUT_MS` exists for exactly this, `two-descriptor-gate.spec.ts`
  * passes it on every first assertion, and this file did not, so the generated
  * Orders spec raced a 10-second default and failed with "element(s) not found"
  * — which reads like a broken selector and is not one. The wait is sized to a
@@ -60,7 +60,7 @@ for (const screen of MIGRATED_SCREENS) {
 		});
 
 		// The sidebar must still show the `otta` Block Kit group. Two descriptors
-		// exist precisely so a React page cannot hide the six screens that stay
+		// exist precisely so a React page cannot hide the five screens that stay
 		// on Block Kit (the `adminMode` granularity trap, ADR-0014 Decision 7);
 		// this is the assertion that would catch the two collapsing into one id.
 		// The selector lives in harness.ts so it and the URL builder move together.

@@ -30,7 +30,7 @@ describe("createPlugin — the native entrypoint EmDash calls", () => {
 
 	test("identifies as otta-console, never as the Block Kit plugin", () => {
 		// A React page under id `otta` would flip THAT plugin's adminMode to
-		// "react" and hide its seven Block Kit screens from the sidebar
+		// "react" and hide its five Block Kit screens from the sidebar
 		// (ADR-0014 Decision 7). The id is the whole defence.
 		expect(plugin.id).toBe(OTTA_CONSOLE_PLUGIN_ID);
 		expect(plugin.id).not.toBe("otta");

@@ -82,7 +82,6 @@ import {
 	UNKNOWN_ACTION,
 	UNREADABLE_REQUEST,
 	readConsolePayload,
-	type ConsoleActPayload,
 	type ConsoleFailure,
 } from "./console-transport.js";
 import { asRecord, readAdminTokens, readString } from "./scaffold/index.js";
@@ -97,7 +96,6 @@ export {
 	CONSOLE_ACT_INTERACTION,
 	CONSOLE_INTERACTIONS,
 	CONSOLE_READ_INTERACTION,
-	type ConsoleActPayload,
 	type ConsoleFailure,
 };
 

@@ -20,7 +20,10 @@
  * deleted, onto `/orders`, a console page that manages a great deal. Nothing
  * about it was weakened in the move: the Block Kit group is still counted AND
  * named, the console's own group is still required beside it, and the sidebar
- * screenshot is still captured on a passing run.
+ * screenshot is still captured on a passing run. The FILE NAME, its shot
+ * constant and the attached artifact kept saying `console-shell` for two more
+ * increments and were renamed here — a spec named after a page that no longer
+ * exists sends the next reader looking for it.
  *
  * Separate from `console-screens.spec.ts` on purpose. That file generates one
  * smoke spec per entry in `MIGRATED_SCREENS` and asserts, per screen, that the
@@ -55,7 +58,7 @@ import {
  *  start of the NEXT run, so it survives exactly as long as it is useful. The
  *  1440x2200 viewport comes from the project config; nothing here passes
  *  `fullPage`, which truncates these pages. */
-const SHELL_SHOT = `${REPO_ROOT}/node_modules/.playwright-artifacts/console-shell-1440x2200.png`;
+const GATE_SHOT = `${REPO_ROOT}/node_modules/.playwright-artifacts/two-descriptor-gate-1440x2200.png`;
 
 /**
  * The console page this gate is driven from — READ OUT OF THE REGISTRY, not
@@ -222,9 +225,9 @@ test.describe("the otta-console React descriptor", () => {
 		// ...and get the first-login modal out of the frame; it covers half the
 		// viewport and none of what this shot exists to show.
 		await dismissWelcomeDialog(adminPage);
-		await adminPage.screenshot({ path: SHELL_SHOT });
-		await testInfo.attach("console-shell-1440x2200", {
-			path: SHELL_SHOT,
+		await adminPage.screenshot({ path: GATE_SHOT });
+		await testInfo.attach("two-descriptor-gate-1440x2200", {
+			path: GATE_SHOT,
 			contentType: "image/png",
 		});
 	});
