@@ -33,15 +33,15 @@
  * header and the egress are identical, and every byte still comes from
  * `AdminOrdersClient` over `ctx.http`.
  *
- * WRITES ARE NOT REIMPLEMENTED, AND THAT IS THE POINT. Refunds, cancellations
- * and status transitions are money-moving paths with watermarks, content-derived
- * idempotency keys and a large, hard-won vocabulary of refusal copy — all of it
- * in `orders-page.ts` and all of it covered by `orders-page.sandbox.test.ts`. A
- * second implementation for React would be a second set of concurrency bugs. So
- * {@link consoleAct} forwards the operator's click to the Block Kit handler as
- * the exact `block_action` the Block Kit button would have sent, and returns the
- * notice that handler produced. The React screen renders a different banner; the
- * decision behind it is the same code, byte for byte.
+ * WRITES ARE STRUCTURED ACTIONS NOW (INC-R2, ADR-0015). They used to be
+ * forwarded through the Block Kit Orders page handler as a synthesized
+ * `block_action`, with the outcome SCRAPED back out of the rendered block tree —
+ * which made the renderer of the screen this one replaced load-bearing for this
+ * one. `orders-actions.ts` is that write path, re-expressed as functions
+ * returning an outcome: {@link consoleAct} looks the id up in the same table the
+ * gate reads and returns what it produced. Every watermark, every content-derived
+ * idempotency key and every word of refusal copy moved across verbatim; nothing
+ * about what a write decides changed with the shape it answers in.
  *
  * G5 APPLIES UNCHANGED: every response here is HTTP 200 with an outcome in the
  * body. A refusal is a value.
@@ -58,43 +58,44 @@ import {
 } from "./admin-orders-client.js";
 import {
 	CANCELLATION_REASONS,
+	ORDERS_ACTION_IDS,
+	RECONCILIATION_OUTCOMES,
+	dispatchOrdersAction,
+	type OrdersActionResult,
+} from "./orders-actions.js";
+import {
 	PAGE_LIMIT,
 	PERIOD_ANY,
 	PERIOD_CUSTOM,
 	PERIOD_PRESETS,
-	RECONCILIATION_OUTCOMES,
-	ORDERS_ACTION_IDS,
-	createOrdersPageHandler,
 	loadDetailSurfaces,
 	offeredTransitions,
 	toClientFilter,
 	type OrdersFilterForm,
-	type OrdersPageInput,
 	type PeriodKey,
-} from "./orders-page.js";
+} from "./orders-read.js";
 import {
 	CONSOLE_ACT_INTERACTION,
 	CONSOLE_INTERACTIONS,
 	CONSOLE_READ_INTERACTION,
+	UNKNOWN_ACTION,
 	UNREADABLE_REQUEST,
-	firstNotice,
-	forwardConsoleAct,
+	readConsolePayload,
 	type ConsoleActPayload,
 	type ConsoleFailure,
 } from "./console-transport.js";
 import { asRecord, readAdminTokens, readString } from "./scaffold/index.js";
 import { ORDER_STATES } from "@otta-sh/admin-presentation";
-import type { PluginContext, RouteHandler, SandboxedRouteContext } from "../types.js";
+import type { PluginContext, RouteHandler } from "../types.js";
 
-/** INC-21 moved the two interaction types, the refusal shapes and the
- *  act-forwarding into `./console-transport.js`, where the Pricing & inventory
- *  branch reaches them too. They are RE-EXPORTED here because `admin-route.ts`
- *  and this module's sandbox suite already name this file. Nothing changed. */
+/** INC-21 moved the two interaction types and the refusal shapes into
+ *  `./console-transport.js`, where the Pricing & inventory branch reaches them
+ *  too. They are RE-EXPORTED here because `admin-route.ts` and this module's
+ *  sandbox suite already name this file. Nothing changed. */
 export {
 	CONSOLE_ACT_INTERACTION,
 	CONSOLE_INTERACTIONS,
 	CONSOLE_READ_INTERACTION,
-	firstNotice,
 	type ConsoleActPayload,
 	type ConsoleFailure,
 };
@@ -178,11 +179,16 @@ export interface ConsoleDetailPayload {
 	readonly vocabulary: ConsoleVocabulary;
 }
 
-/** The console's fail-closed copy. It says the same three things
- *  `orders-page.ts`'s `failClosed()` says — symptom, the two things to check,
- *  and the possibility that this is a console bug rather than an outage — for
- *  the same reason: naming a cause it does not know sends whoever the operator
- *  pages to the wrong team. */
+/** The console's fail-closed copy, and now the only Orders copy of it — the
+ *  Block Kit screen it was written to match was retired by ADR-0015.
+ *
+ *  It says three things and no more: the symptom, the two settings to check, and
+ *  the possibility that this is a console bug rather than an outage. It names no
+ *  cause it does not know, because this path swallows an unreachable service, an
+ *  auth failure, a malformed response and a defect in the console's own code
+ *  alike — asserting any one of them sends whoever the operator pages to the
+ *  wrong team. It also carries no status code and no upstream path: a banner gets
+ *  screenshotted. Pinned by `orders-console-route.sandbox.test.ts`. */
 const UNAVAILABLE: ConsoleFailure = {
 	ok: false,
 	title: "Orders are unavailable",
@@ -297,55 +303,47 @@ async function consoleDetail(
 }
 
 /**
- * Forward a console click to the Block Kit action handler and return its notice.
+ * Run a console write and return its outcome.
  *
- * Every Orders write is a BUTTON, so the payload is passed through UNTOUCHED as
- * the `block_action` that button would have fired. Everything in it — the order
- * id, the state or ledger watermark the operator observed, the amount in minor
- * units — is what the Block Kit button would have carried, and every one of
- * those fields is re-validated and re-checked against live truth on the other
- * side before a single byte is written. This module adds no trust and removes
- * none. (Pricing & inventory's writes are mostly FORM submits, which is why the
- * shared forwarder also knows how to mint a carrier — see
- * `products-console-route.ts`.)
+ * THE OUTCOME IS A VALUE NOW, not something read back off a render. Everything in
+ * the payload — the order id, the state or ledger watermark the operator
+ * observed, the amount in minor units — is untrusted operator-round-tripped
+ * input, and every one of those fields is re-validated and re-checked against
+ * live truth inside `orders-actions.ts` before a single byte is written. This
+ * module adds no trust and removes none.
  *
- * `ORDERS_ACTION_IDS` is the same set the dispatcher routes on, so the two
- * cannot disagree about what exists.
+ * THE GATE ON THE ID IS NOT BELT-AND-BRACES. An id this screen does not offer is
+ * reachable from a stale tab after a deploy that renamed one, and from a caller
+ * bug — never from a control this release rendered. Answering it as an outcome
+ * would report a refund that never happened as a quiet success, so an unknown id
+ * is a refusal with copy. `ORDERS_ACTION_IDS` is read straight off the same
+ * dispatch table `dispatchOrdersAction` runs, so the two cannot disagree about
+ * what exists.
  */
 async function consoleAct(
 	input: OrdersConsoleInput,
 	ctx: PluginContext,
-	orders: RouteHandler<OrdersPageInput>,
-	request: SandboxedRouteContext<OrdersConsoleInput>["request"],
-): Promise<ConsoleActPayload | ConsoleFailure> {
+): Promise<OrdersActionResult | ConsoleFailure> {
 	const actionId = readString(input.action_id);
 	if (actionId === undefined) return UNREADABLE_REQUEST;
-	return forwardConsoleAct({
-		actionId,
-		interaction: { type: "block_action", action_id: actionId, value: input.value },
-		registered: ORDERS_ACTION_IDS,
-		handler: orders,
-		ctx,
-		request,
-		record: "order",
-	});
+	if (!ORDERS_ACTION_IDS.has(actionId)) return UNKNOWN_ACTION;
+	const client = await createClient(ctx);
+	const outcome = await dispatchOrdersAction(actionId, readConsolePayload(input.value), client);
+	// Unreachable while the gate above reads the same table — kept because the two
+	// are separate statements, and "the id was registered but nothing ran" must
+	// never fall through to a quiet success.
+	return outcome ?? UNKNOWN_ACTION;
 }
 
 /**
  * The console's half of the `otta` admin route.
- *
- * It constructs the Block Kit Orders handler ONCE and holds it, the way
- * `admin-route.ts` holds the seven page handlers — the write path is that
- * handler, so there is exactly one of it.
  */
 export function createOrdersConsoleHandler(): RouteHandler<OrdersConsoleInput> {
-	const orders = createOrdersPageHandler();
-
 	return async (routeCtx, ctx) => {
 		const input = routeCtx.input;
 		try {
 			if (readString(input.type) === CONSOLE_ACT_INTERACTION) {
-				return await consoleAct(input, ctx, orders, routeCtx.request);
+				return await consoleAct(input, ctx);
 			}
 			const resource = readString(input.resource);
 			if (resource === "orders.list") return await consoleList(input, ctx);

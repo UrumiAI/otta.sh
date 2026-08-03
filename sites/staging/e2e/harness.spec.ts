@@ -236,6 +236,14 @@ test.describe("this gate is ADDITIVE — ADR-0006 Decision 1 is untouched", () =
 	 * works trusted is still broken" applies to it exactly as to the other
 	 * eighteen. Adding to the gate is always allowed. Removing from it reopens
 	 * the ADR.
+	 *
+	 * INC-R2 is the first increment to REPLACE a name rather than add one, and it
+	 * did so under a record that authorises exactly that: ADR-0015 retires the
+	 * Block Kit Orders screen, so `orders-page.sandbox.test.ts` has no subject
+	 * left to test. Its BEHAVIOURAL half — above all the three refusals that make
+	 * a refund safe — moved onto the extracted write path and is gated here as
+	 * `orders-actions.sandbox.test.ts`. The list is a swap, not a deletion, and
+	 * ADR-0015 is where the swap is argued.
 	 */
 	const ADR_0006_SUITES: readonly string[] = [
 		"account-routes.sandbox.test.ts",
@@ -245,7 +253,7 @@ test.describe("this gate is ADDITIVE — ADR-0006 Decision 1 is untouched", () =
 		"cart-routes.sandbox.test.ts",
 		"coupons-page.sandbox.test.ts",
 		"download-route.sandbox.test.ts",
-		"orders-page.sandbox.test.ts",
+		"orders-actions.sandbox.test.ts",
 		"products-page.sandbox.test.ts",
 		"publish-atomicity.sandbox.test.ts",
 		"reports-widget.sandbox.test.ts",

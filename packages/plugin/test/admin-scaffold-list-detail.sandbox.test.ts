@@ -25,9 +25,11 @@ import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
 // SYNTHETIC 3-level geo fixture (`src/admin/scaffold/testing/geo-screen.ts`:
 // countries → cities → landmark, in-memory fake client, booted through the
 // production `createSandboxWorker` bridge via `testing/geo-entry.ts`) because
-// the production Orders screen only reaches depth 2 — the N-level nav core
-// needs depth 3 to be exercised. `orders-page.sandbox.test.ts` remains the
-// production-screen regression net.
+// no production screen reaches depth 3 — the N-level nav core needs depth 3 to
+// be exercised, and the deepest Block Kit screen is depth 2. The
+// production-screen regression net is the remaining screens' own sandbox suites
+// (`products-page.sandbox.test.ts` and its siblings); the Orders screen that
+// used to hold that role was retired by ADR-0015.
 
 let sandbox: SandboxHandle;
 beforeAll(async () => {

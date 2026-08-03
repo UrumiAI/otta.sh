@@ -13,12 +13,6 @@ import {
 	type ProductsConsoleInput,
 } from "./products-console-route.js";
 import {
-	createOrdersPageHandler,
-	ORDERS_ACTION_IDS,
-	ORDERS_PAGE,
-	type OrdersPageInput,
-} from "./orders-page.js";
-import {
 	createProductsPageHandler,
 	PRODUCTS_ACTION_IDS,
 	PRODUCTS_CONSOLE_ACTION_IDS,
@@ -83,7 +77,6 @@ interface AdminInteractionInput {
 export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 	const reports = createReportsPageHandler();
 	const settings = createSettingsFormHandler();
-	const orders = createOrdersPageHandler();
 	const products = createProductsPageHandler();
 	const tax = createTaxPageHandler();
 	const shipping = createShippingPageHandler();
@@ -131,9 +124,6 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 		if (type === "page_load" && page === SETTINGS_PAGE.path) {
 			return settings(routeCtx as SandboxedRouteContext<SettingsFormInput>, ctx);
 		}
-		if (type === "page_load" && page === ORDERS_PAGE.path) {
-			return orders(routeCtx as SandboxedRouteContext<OrdersPageInput>, ctx);
-		}
 		if (type === "page_load" && page === PRODUCTS_PAGE.path) {
 			return products(routeCtx as SandboxedRouteContext<ProductsPageInput>, ctx);
 		}
@@ -157,9 +147,6 @@ export function createAdminRouteHandler(): RouteHandler<AdminInteractionInput> {
 		}
 		if (actionId !== undefined && REPORTS_ACTION_IDS.has(actionId)) {
 			return reports(routeCtx as SandboxedRouteContext<ReportsPageInput>, ctx);
-		}
-		if (actionId !== undefined && ORDERS_ACTION_IDS.has(actionId)) {
-			return orders(routeCtx as SandboxedRouteContext<OrdersPageInput>, ctx);
 		}
 		if (actionId !== undefined && PRODUCTS_ACTION_IDS.has(actionId)) {
 			return products(routeCtx as SandboxedRouteContext<ProductsPageInput>, ctx);

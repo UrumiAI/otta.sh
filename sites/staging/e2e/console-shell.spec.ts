@@ -31,7 +31,6 @@
 import type { Page } from "@playwright/test";
 import {
 	COUPONS_PAGE,
-	ORDERS_PAGE,
 	PRODUCTS_PAGE,
 	REPORTS_PAGE,
 	SETTINGS_PAGE,
@@ -89,7 +88,6 @@ const HOST_SCREEN = hostScreen();
 const BLOCK_KIT_PAGES = [
 	REPORTS_PAGE,
 	SETTINGS_PAGE,
-	ORDERS_PAGE,
 	PRODUCTS_PAGE,
 	TAX_PAGE,
 	SHIPPING_PAGE,
@@ -105,7 +103,9 @@ const BLOCK_KIT_PAGES = [
  */
 async function openHostScreen(page: Page): Promise<void> {
 	await page.goto(consoleScreenUrl(HOST_SCREEN.path));
-	await expect(page.getByText(HOST_SCREEN.heading).first()).toBeVisible({
+	// The heading ROLE — see `console-screens.spec.ts` for why a text match on
+	// this screen's name is satisfied by the sidebar link as well as the H1.
+	await expect(page.getByRole("heading", { name: HOST_SCREEN.heading }).first()).toBeVisible({
 		timeout: ADMIN_SHELL_TIMEOUT_MS,
 	});
 }
@@ -157,9 +157,9 @@ test.describe("the otta-console React descriptor", () => {
 		// G5's reason transfers to the React tier for a different mechanism: a
 		// non-2xx here is an unmounted screen, not a banner.
 		expect(response?.status(), `${HOST_SCREEN.path} did not return 2xx`).toBeLessThan(300);
-		await expect(adminPage.getByText(HOST_SCREEN.heading).first()).toBeVisible({
-			timeout: ADMIN_SHELL_TIMEOUT_MS,
-		});
+		await expect(adminPage.getByRole("heading", { name: HOST_SCREEN.heading }).first()).toBeVisible(
+			{ timeout: ADMIN_SHELL_TIMEOUT_MS },
+		);
 
 		// It happened at all — a screen that never called would satisfy an
 		// "every call was 200" check vacuously...
@@ -185,7 +185,7 @@ test.describe("the otta-console React descriptor", () => {
 		await expect(blockKitLinks.first()).toBeVisible();
 
 		// The expectation is DERIVED from the plugin's own exported page list, not
-		// the literal 7 this first read. A hard-coded count is a second place the
+		// the literal count this first read. A hard-coded count is a second place the
 		// screen inventory is written down, and the wrong one wins: an increment
 		// that legitimately adds a Block Kit page would fail here and the obvious
 		// fix — bump the number — is indistinguishable from the obvious fix for

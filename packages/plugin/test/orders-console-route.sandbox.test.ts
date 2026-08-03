@@ -17,18 +17,17 @@
  *
  * WHAT IT DOES NOT COVER, deliberately: the React components. Those are gated by
  * Playwright (`sites/staging/e2e/orders-console.spec.ts`), which is additive to
- * this tier and replaces none of it.
+ * this tier and replaces none of it. Nor the write path's own decisions — those
+ * are `orders-actions.sandbox.test.ts` (INC-R2), which is where the three DA-3
+ * refusals are proven; this file covers the ROUTE: which branch a request lands
+ * on, and what a refusal on the branch itself looks like.
+ *
+ * FIVE CROSS-SURFACE PINS LEFT WITH INC-R2. They asserted that the BLOCK KIT
+ * Orders screen rendered the same shared copy constants the React screen imports,
+ * and that a plain `page_load` still produced its blocks. ADR-0015 retired that
+ * screen, so there is no second surface left for either claim to be about.
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import {
-	CLEAR_FILTERS_LABEL,
-	NOTHING_ON_PAGE,
-	ORDERS_EMPTY,
-	ORDERS_LIST_INTRO,
-	ORDERS_NO_MATCH,
-	SCAN_FURTHER,
-	reconciliationAlertSentence,
-} from "@otta-sh/admin-presentation";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
 import {
 	startStubCommerceServer,
@@ -96,8 +95,14 @@ function orderDetail(id: string): Record<string, unknown> {
 	};
 }
 
+/** The `YYYY-MM-DD` (UTC) `n` days before `day`, so a relative period's expected
+ *  bounds are not a function of the day the suite runs on. */
+function dayBefore(day: string, n: number): string {
+	return new Date(Date.parse(`${day}T00:00:00.000Z`) - n * 86_400_000).toISOString().slice(0, 10);
+}
+
 /** The stub keys ONE responder per HTTP method, so routing is a function of the
- *  url — the same shape `orders-page.sandbox.test.ts` uses. Each test declares
+ *  url — the shape the retired Block Kit suite used. Each test declares
  *  the routes it cares about and everything else 404s, which is itself part of
  *  the assertion: a surface this branch is not supposed to call shows up as a
  *  null rather than passing silently. */
@@ -260,6 +265,32 @@ describe("the console's read/write branch on the otta admin route", () => {
 		expect(decodeURIComponent(seen)).not.toContain("2020-01-01");
 	});
 
+	test("a relative preset resolves to WHOLE days, today included — the exact instants the service is asked for", async () => {
+		// THE WINDOW A PRESET REPLACES those ignored days WITH. The test above proves
+		// stray custom days are dropped; without this one, `days - 1` could become
+		// `days` — an off-by-one day on every relative period — and nothing in the
+		// tree would notice. `last7` is TODAY AND THE SIX BEFORE IT, not `now - 168h`:
+		// the label and the window it queries have to describe the same thing.
+		service.respondWith("GET", () => ({ status: 200, body: { orders: [], nextCursor: null } }));
+		const today = new Date().toISOString().slice(0, 10);
+
+		for (const [period, days] of [
+			["last7", 7],
+			["last30", 30],
+			["last90", 90],
+		] as const) {
+			service.requests.length = 0;
+			await invoke({ type: READ, resource: "orders.list", filter: { period } });
+			const seen = service.requests.find((r) => r.url.startsWith("/admin/orders"))?.url ?? "";
+			const query = new URLSearchParams(seen.split("?")[1] ?? "");
+			// Both ends inclusive: the start of the first day through the LAST
+			// millisecond of today. Midnight for both ends silently dropped every
+			// order placed on the last day the operator asked for.
+			expect(query.get("from")).toBe(`${dayBefore(today, days - 1)}T00:00:00.000Z`);
+			expect(query.get("to")).toBe(`${today}T23:59:59.999Z`);
+		}
+	});
+
 	test("orders.detail fans out to the secondary surfaces in one round trip", async () => {
 		service.respondWith(
 			"GET",
@@ -309,6 +340,51 @@ describe("the console's read/write branch on the otta admin route", () => {
 		expect(result["transitions"]).toEqual(["processing"]);
 	});
 
+	test("a service-offered state OUTSIDE the plugin's closed ORDER_STATES is never offered (DA-6)", async () => {
+		// The ids are fixed at module load and an id this plugin never registered is
+		// refused rather than dispatched, so a button for it could only ever refuse.
+		// The React screen renders its transition buttons straight off this list.
+		service.respondWith(
+			"GET",
+			responder({
+				[`/admin/orders/${ORDER_ID}`]: () => ({
+					status: 200,
+					body: {
+						order: orderDetail(ORDER_ID),
+						allowedTransitions: ["teleported", "completed"],
+					},
+				}),
+			}),
+		);
+
+		const result = await invoke({ type: READ, resource: "orders.detail", orderId: ORDER_ID });
+		expect(result["ok"]).toBe(true);
+		expect(result["transitions"]).toEqual(["completed"]);
+		// ...and it does not reach the client by any other route either.
+		expect(JSON.stringify(result)).not.toContain("teleported");
+	});
+
+	test("a PROCESSING order is offered no bare `shipped` — it is steered to the Fulfilment form", async () => {
+		// A bare `shipped` would ship without tracking and email the buyer an empty
+		// shipped notice. The Fulfilment form records tracking and ships atomically,
+		// so the transition button for it must not exist beside that form.
+		service.respondWith(
+			"GET",
+			responder({
+				[`/admin/orders/${ORDER_ID}`]: () => ({
+					status: 200,
+					body: {
+						order: { ...orderDetail(ORDER_ID), state: "processing" },
+						allowedTransitions: ["shipped", "delivered"],
+					},
+				}),
+			}),
+		);
+
+		const result = await invoke({ type: READ, resource: "orders.detail", orderId: ORDER_ID });
+		expect(result["transitions"]).toEqual(["delivered"]);
+	});
+
 	test("a secondary surface failing degrades to null, never to a failed screen (E-1)", async () => {
 		service.respondWith(
 			"GET",
@@ -336,7 +412,7 @@ describe("the console's read/write branch on the otta admin route", () => {
 		expect(String(result["description"]).length).toBeGreaterThan(0);
 	});
 
-	test("an unreachable service fails CLOSED with the screen's own copy", async () => {
+	test("an unreachable service fails CLOSED with the screen's own copy, and leaks nothing", async () => {
 		service.respondWith("GET", () => ({ status: 500, body: {} }));
 		const result = await invoke({ type: READ, resource: "orders.list" });
 		expect(result["ok"]).toBe(false);
@@ -344,6 +420,16 @@ describe("the console's read/write branch on the otta admin route", () => {
 		// E-7: it must not assert a cause it does not know. The last clause is
 		// what stops a console bug being reported as an outage.
 		expect(String(result["description"])).toContain("a fault in the console itself");
+		// THIS PATH SWALLOWS EVERYTHING — an unreachable service, a 401 on the admin
+		// token, a malformed response, and a bug in the console's own code. So the
+		// copy must carry no status code, no upstream path and no auth detail: an
+		// operator screenshotting a banner must not be publishing the shape of the
+		// admin API, and naming one cause is false whenever another was the real one.
+		const text = `${String(result["title"])} ${String(result["description"])}`;
+		expect(text).not.toMatch(/HTTP \d|\/admin\/|401/);
+		expect(text).not.toContain("Could not reach the commerce service");
+		// A banner is read at a glance or not at all (BANNER_BUDGET).
+		expect(String(result["description"]).length).toBeLessThanOrEqual(240);
 	});
 
 	test("an unrecognised resource is a refusal, not a blank body", async () => {
@@ -352,11 +438,11 @@ describe("the console's read/write branch on the otta admin route", () => {
 		expect(result["title"]).toBe("That request could not be read");
 	});
 
-	test("a write is FORWARDED to the Block Kit handler, and its notice comes back", async () => {
-		// The whole point of the act branch: no second implementation of a
-		// money-moving path. The watermark below (`state`) is re-checked by
-		// `orders-page.ts`'s own transition action, and the refusal it produces
-		// for a mismatch is what the console renders.
+	test("a write is DISPATCHED to the extracted action, and its notice comes back", async () => {
+		// The act branch, end to end. The watermark below (`state`) is re-read
+		// against live truth by `orders-actions.ts`, and the refusal it produces for
+		// a mismatch is what the console renders. What each action DECIDES is
+		// covered by `orders-actions.sandbox.test.ts`; this asserts the wiring.
 		service.respondWith(
 			"GET",
 			responder({
@@ -407,11 +493,12 @@ describe("the console's read/write branch on the otta admin route", () => {
 	});
 
 	test("a RECONCILIATION alert is never mistaken for the outcome of the write", async () => {
-		// `detailBlocks` emits at most two top-level banners: the notice, then the
-		// reconciliation alert. The alert is a property of the ORDER, not of what
-		// just happened — forwarding it would tell an operator their status change
-		// produced a settlement warning. The extractor keys on the variant, which
-		// a `Notice` never sets to "alert".
+		// The alert is a property of the ORDER, not of what just happened —
+		// reporting it as the outcome would tell an operator their status change
+		// produced a settlement warning. It used to be separated from the notice by
+		// keying on a rendered banner's variant; now the write simply returns its
+		// own outcome and never sees the record's alerts at all. Kept because the
+		// property is what matters, not the mechanism that used to deliver it.
 		const flagged = { ...orderDetail(ORDER_ID), reconciliationFlag: "amount mismatch" };
 		service.respondWith(
 			"GET",
@@ -434,11 +521,9 @@ describe("the console's read/write branch on the otta admin route", () => {
 	});
 
 	test("an UNKNOWN action id is a refusal, not a quiet success", async () => {
-		// The Block Kit dispatcher answers an unrecognised id with `{blocks: []}` —
-		// its house-style fall-through — which on this branch is indistinguishable
-		// from "the write succeeded and had nothing to say". Reachable from a stale
-		// tab after a deploy that renamed an action, and it would have rendered a
-		// refund that never happened as a silent success.
+		// Reachable from a stale tab after a deploy that renamed an action. An id
+		// this screen does not offer must never come back as an outcome: that would
+		// render a refund that never happened as a silent success.
 		const result = await invoke({
 			type: ACT,
 			action_id: "orders:no-such-action",
@@ -449,9 +534,9 @@ describe("the console's read/write branch on the otta admin route", () => {
 		expect(String(result["description"])).toContain("Nothing was applied");
 	});
 
-	test("a REGISTERED id that renders nothing is also a refusal", async () => {
-		// The service is unreachable for every read, so the Block Kit action bails
-		// to a shape with no blocks. "Nothing came back" is not "nothing to say".
+	test("a REGISTERED id whose write could not complete is also a refusal", async () => {
+		// The service is unreachable, so nothing was appended. "Nothing came back"
+		// is not "nothing to say".
 		service.respondWith("GET", () => ({ status: 500, body: {} }));
 		const result = await invoke({
 			type: ACT,
@@ -462,108 +547,5 @@ describe("the console's read/write branch on the otta admin route", () => {
 		// never `{ok: true, notice: null}`, which would claim the note was saved.
 		const quietSuccess = result["ok"] === true && result["notice"] === null;
 		expect(quietSuccess, "a failed write reported as a quiet success").toBe(false);
-	});
-
-	test("BOTH SCREENS SAY THE SAME WORDS — the Block Kit render reads the shared copy", async () => {
-		// THE CROSS-SURFACE PIN (INC-20 review). The React Orders screen imports
-		// these constants; this asserts the BLOCK KIT screen renders them. Change
-		// either side's wording without changing the constant and this fails —
-		// which is the property the shared module exists to give, and the one a
-		// pair of hand-copied strings could never have.
-		service.respondWith(
-			"GET",
-			responder({
-				"/admin/orders": () => ({ status: 200, body: { orders: [], nextCursor: null } }),
-			}),
-		);
-		const result = await invoke({ type: "page_load", page: "/orders" });
-		const blocks = result["blocks"] as Array<Record<string, unknown>>;
-		const text = JSON.stringify(blocks);
-
-		expect(text).toContain(ORDERS_LIST_INTRO);
-		// Zero rows, unfiltered, first page, no cursor → outcome 2, the screen's
-		// own `empty` copy and no `Clear filters`.
-		expect(text).toContain(ORDERS_EMPTY.title);
-		expect(text).toContain(ORDERS_EMPTY.description);
-		expect(text).not.toContain(CLEAR_FILTERS_LABEL);
-	});
-
-	test("...and the same words for a filter that matches nothing", async () => {
-		service.respondWith(
-			"GET",
-			responder({
-				"/admin/orders": () => ({ status: 200, body: { orders: [], nextCursor: null } }),
-			}),
-		);
-		const result = await invoke({
-			type: "form_submit",
-			action_id: "orders:apply-filter",
-			values: { status: "paid" },
-		});
-		const text = JSON.stringify(result["blocks"]);
-		expect(text).toContain(ORDERS_NO_MATCH.title);
-		expect(text).toContain(ORDERS_NO_MATCH.description);
-		expect(text).toContain(CLEAR_FILTERS_LABEL);
-	});
-
-	test("...and the same scan note when a page remains behind a zero-row one", async () => {
-		// Outcome 3 on the Block Kit side: no `empty` block at all, a `context`
-		// line instead, so `Load more` survives. The React screen renders the same
-		// sentence for the same reason.
-		service.respondWith(
-			"GET",
-			responder({
-				"/admin/orders": () => ({ status: 200, body: { orders: [], nextCursor: "cur-2" } }),
-			}),
-		);
-		const result = await invoke({ type: "page_load", page: "/orders" });
-		const blocks = result["blocks"] as Array<Record<string, unknown>>;
-		const text = JSON.stringify(blocks);
-		expect(text).toContain(`${NOTHING_ON_PAGE} ${SCAN_FURTHER}`);
-		expect(blocks.some((block) => block["type"] === "empty")).toBe(false);
-	});
-
-	test("...and the same reconciliation sentence on the detail", async () => {
-		const flagged = { ...orderDetail(ORDER_ID), reconciliationFlag: "amount mismatch" };
-		service.respondWith(
-			"GET",
-			responder({
-				[`/admin/orders/${ORDER_ID}`]: () => ({
-					status: 200,
-					body: { order: flagged, allowedTransitions: [] },
-				}),
-				[`/admin/orders/${ORDER_ID}/notes`]: () => ({ status: 200, body: { notes: [] } }),
-			}),
-		);
-		const result = await invoke({
-			type: "form_submit",
-			action_id: "orders:open",
-			values: { orderId: ORDER_ID },
-		});
-		expect(JSON.stringify(result["blocks"])).toContain(
-			reconciliationAlertSentence("amount mismatch"),
-		);
-	});
-
-	test("the BLOCK KIT screen is untouched by any of this", async () => {
-		// ADR-0014 Decision 1: both screens render until the replacement is
-		// proven. The console's interaction types are disjoint from EmDash's, so a
-		// plain `page_load` must still produce the Block Kit Orders blocks —
-		// header first, table present, and no console payload anywhere in it.
-		service.respondWith(
-			"GET",
-			responder({
-				"/admin/orders": () => ({
-					status: 200,
-					body: { orders: [orderSummary(ORDER_ID)], nextCursor: null },
-				}),
-			}),
-		);
-		const result = await invoke({ type: "page_load", page: "/orders" });
-		const blocks = result["blocks"] as Array<Record<string, unknown>>;
-		expect(blocks[0]).toMatchObject({ type: "header", text: "Orders" });
-		expect(blocks.some((block) => block["type"] === "table")).toBe(true);
-		expect(result["vocabulary"]).toBeUndefined();
-		expect(result["ok"]).toBeUndefined();
 	});
 });

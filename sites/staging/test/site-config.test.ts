@@ -26,7 +26,6 @@ import { readFileSync } from "node:fs";
 import {
 	COMMERCE_SERVICE_BASE_URL,
 	COUPONS_PAGE,
-	ORDERS_PAGE,
 	PRODUCTS_PAGE,
 	REPORTS_PAGE,
 	SETTINGS_PAGE,
@@ -94,7 +93,7 @@ describe("ottaPluginDescriptor", () => {
 		expect(descriptor.fieldWidgets).toBeUndefined();
 	});
 
-	test("declares the plugin's admin pages (Reports + Settings + Orders + Products + Tax + Shipping + Coupons)", () => {
+	test("declares the plugin's admin pages (Reports + Settings + Products + Tax + Shipping + Coupons)", () => {
 		// The plugin's exported admin.pages entries — the trusted descriptor must
 		// carry ALL of them or the page never appears in the admin nav. All render
 		// through the single `admin` dispatch route (em-dash resolves admin pages by
@@ -103,10 +102,13 @@ describe("ottaPluginDescriptor", () => {
 		// missing HERE until the Increment 3 closeout slice (#72/#73 gap-audit
 		// finding) added them — each screen worked once opened directly, but was
 		// unreachable from the admin nav.
+		//
+		// ORDERS IS ABSENT (INC-R2, ADR-0015): its Block Kit screen was retired
+		// once the React console's write path moved off it. `/orders` is now
+		// served only by the `otta-console` descriptor.
 		expect(descriptor.adminPages).toEqual([
 			REPORTS_PAGE,
 			SETTINGS_PAGE,
-			ORDERS_PAGE,
 			PRODUCTS_PAGE,
 			TAX_PAGE,
 			SHIPPING_PAGE,
@@ -321,7 +323,7 @@ describe("ottaConsoleDescriptor (ADR-0014's second descriptor)", () => {
 
 	test("the console never claims a screen ADR-0014 keeps on Block Kit permanently", () => {
 		// Decision 6: Tax, Shipping and Settings never migrate. The Block Kit
-		// descriptor keeps all seven of its pages either way (pinned above), so
+		// descriptor keeps every page it still declares either way (pinned above), so
 		// the failure this catches is a console page shadowing one of them in the
 		// nav rather than replacing it.
 		const consolePaths = (ottaConsoleDescriptor().adminPages ?? []).map((page) => page.path);

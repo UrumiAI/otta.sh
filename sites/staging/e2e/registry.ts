@@ -37,7 +37,9 @@ export interface ConsoleScreen {
 	readonly increment: string;
 	/** `adminPages[].path` on the `otta-console` descriptor. */
 	readonly path: string;
-	/** Text the screen must render once loaded. */
+	/** The accessible name of the heading the screen renders once loaded.
+	 *  Matched by ROLE, not by text: a screen's name also appears in the sidebar
+	 *  link and, on some screens, in the table caption. */
 	readonly heading: RegExp;
 }
 
@@ -59,33 +61,36 @@ export interface ConsoleScreen {
  * WHOLE page inventory as well as its migration count, and the two questions
  * happen to have the same answer rather than having been merged.
  *
- * INC-20 ADDS ORDERS, AND IT IS THE FIRST REAL ENTRY. The count now answers its
- * question honestly: one of the seven Block Kit screens has a React replacement.
- * The Block Kit original stays in the tree, stays in the sidebar and stays
- * covered by `orders-page.sandbox.test.ts` — ADR-0014 Decision 1 is reaffirmed,
- * not spent, and both screens render until the user rules on removing one.
+ * INC-20 ADDS ORDERS, AND IT IS THE FIRST REAL ENTRY. The Block Kit original
+ * stayed in the tree, in the sidebar and under its own sandbox suite for the
+ * whole parallel period — ADR-0014 Decision 1 was reaffirmed, not spent.
+ * ADR-0015 is the user's ruling that ended it: INC-R2 moved the write path off
+ * that screen and retired it, so `/orders` is a console page only and the Block
+ * Kit inventory is down to six.
  *
- * INC-21 ADDS PRICING & INVENTORY, and with it the count answers its question
- * for the last time under this ADR: two of the seven Block Kit screens have a
- * React replacement. Tax, Shipping and Settings stay Block Kit permanently
- * (ADR-0014 Decision 6) and must never appear here; Reports and Coupons are a
- * ruling the user has not made (D3), so adding either is out of scope until
- * they do.
+ * INC-21 ADDS PRICING & INVENTORY, and with it the count answers its question for
+ * the last time under this ADR: of the six Block Kit screens that remain, one has
+ * a React replacement rendering beside it and one has replaced its original
+ * outright. Tax, Shipping and Settings stay Block Kit permanently (ADR-0014
+ * Decision 6) and must never appear here; Reports and Coupons are a ruling the
+ * user has not made (D3), so adding either is out of scope until they do.
  */
 export const MIGRATED_SCREENS: readonly ConsoleScreen[] = [
 	{
 		name: "Orders",
 		increment: "INC-20",
-		// The SAME path the Block Kit screen declares. They do not collide: a
-		// page's URL carries its plugin id (`/plugins/otta/orders` versus
-		// `/plugins/otta-console/orders`), and keeping the paths identical is what
-		// lets the two be compared by swapping one segment while both render.
+		// It shared this path with the Block Kit screen for the parallel period —
+		// they never collided, because a page's URL carries its plugin id — and
+		// ADR-0015 retired that screen, so `/orders` is now this screen's alone.
 		path: "/orders",
-		// The H1, not the sidebar label. `Orders (new)` is what the nav entry
-		// says — deliberately, so two entries reading `Orders` are told apart
-		// without a click — but the heading an operator lands on is the screen's
-		// own, and matching the sidebar here would let a spec pass on a page that
-		// never rendered.
+		// The H1 the screen renders. INC-R2 dropped the `(new)` sidebar suffix with
+		// the screen it disambiguated from, so for THIS entry the nav label, the H1
+		// and the table caption all read the same string. Measured in a browser: a
+		// text match resolved to all three and `.first()` took the SIDEBAR, so the
+		// smoke spec had stopped distinguishing "the screen rendered" from "the
+		// sidebar rendered". Its consumers now match the heading ROLE, which is
+		// unique — so this stays the H1's own text; disambiguating it here, by
+		// reviving a suffix, would be fixing the wrong file.
 		heading: /^Orders$/,
 	},
 	{
