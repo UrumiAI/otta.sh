@@ -24,7 +24,9 @@ removing it is a rewrite and not a deletion.
   `onHand` the operator saw is re-read against live truth before any stock
   moves, and refuses on a mismatch, with an absent watermark refused fail-closed
   and with no re-read); the **edit watermark** (`expectedUpdatedAt` is mandatory,
-  and a save without one refuses rather than clobbering); **money as integer
+  and a save without one — or with a blank one — refuses rather than clobbering,
+  guarded at the same tier as the stock watermark rather than left to the service
+  to reject); **money as integer
   minor units** (an exact decimal parse, a positive amount, a required ISO-4217
   currency, and a blank compare-at as an explicit clear rather than a zero); and
   **content-derived idempotency keys** with no nonce anywhere.
@@ -40,16 +42,45 @@ removing it is a rewrite and not a deletion.
   branches. The suite's behavioural half moves onto the new path as
   `products-actions.sandbox.test.ts`, which drives the writes the way the console
   does, inside the workerd sandbox.
-- **`products:remove-stock-review` is left unported as unreached surface.** It
+- **`products:remove-stock-review` is left unported as unreached surface, and
+  ADR-0015 carries a second amendment recording exactly what went with it.** It
   staged a quantity server-side so a second render could draw a confirm button;
   the React screen shows that dialog over the values just typed, which is why the
   console's gate has excluded the id since the migration and why nothing
-  reachable has ever called it. One check lived only on that step and so never
-  ran for any shipped surface — the bound of the quantity against the on-hand
-  just re-read. An over-removal is refused by the service's guarded decrement
-  instead, which the new suite asserts.
+  reachable has ever called it. Three things lived only on that step and so never
+  ran for any shipped surface: the **DA-3c bound check** of the requested
+  quantity against the on-hand just re-read, the **`REMOVE_STOCK_INVALID_QTY`**
+  field-level refusal, and the **`remove-draft`/`remove-staged` render state**.
+  What protects the reachable path instead is the service's guarded decrement,
+  which refuses an over-removal with the real on-hand and is surfaced as a named
+  refusal quoting that count (asserted by the new suite), plus the inventory-store
+  contract suite pinning that an over-removal removes nothing and never goes
+  negative, on every adapter. Re-introducing a
+  server-side staged removal means WRITING these checks, not restoring them.
 
 The console's Pricing & inventory sidebar entry loses its `(new)` suffix. It
 existed to tell this screen apart from the Block Kit screen at the same path;
 with that screen gone, a single entry marked new against nothing is the
 misleading thing (ADR-0015 Decision 1).
+
+**Three read-path assertions were rescued from the deleted suite rather than
+written off as render-only**, because each is a claim about what the SERVICE is
+asked for and outlives the renderer: the internal admin token travelling on the
+list and detail GETs (every surviving header assertion was on a write); the
+absent-token → 401 fail-closed trigger (the anti-leak contract was otherwise
+exercised only through a 500, and an unconfigured token is the failure an
+operator actually meets); and the three filter axes — `active`, `productKind`
+and `search` — travelling together in ONE query rather than only one at a time.
+
+**The block-tree half of `console-transport.ts` now has no callers** —
+`firstNotice`, `forwardConsoleAct`, `forwardedFormSubmit` and `nothingApplied`,
+callerless once both consoles are off Block Kit. It is left byte-identical with a
+module note saying so; ADR-0015 Decision 1 puts its removal in the increment that
+follows, deliberately as its own change.
+
+**Known coverage gap, recorded rather than fixed here.** The stale-edit refusal
+tells the operator "the latest values are shown below", and with the Block Kit
+re-render gone that promise rests entirely on the React screen re-reading the
+product after a refused save. Nothing asserts it at either tier: the plugin suite
+ends at the refusal notice, and the React suite does not pin the re-read. The
+behaviour is correct today; only the guard against it regressing is missing.

@@ -30,6 +30,7 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { onHandCell } from "@otta-sh/admin-presentation";
 import { loadPluginInSandbox, type SandboxHandle } from "./sandbox/harness.js";
 import {
+	type RecordedRequest,
 	startStubCommerceServer,
 	type StubCommerceServer,
 } from "./helpers/stub-commerce-server.js";
@@ -38,6 +39,7 @@ const READ = "otta_console_read";
 const ACT = "otta_console_act";
 
 const PRODUCT_ID = "prod-1";
+const ADMIN_TOKEN = "admin-token-xyz";
 
 function summary(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
@@ -106,6 +108,12 @@ function settingsBody(lowStockThreshold: number): { status: number; body: unknow
 	return { status: 200, body: { settings: { lowStockThreshold } } };
 }
 
+/** One request header, case-insensitively. */
+function header(request: RecordedRequest | undefined, name: string): string | undefined {
+	const value = request?.headers[name.toLowerCase()];
+	return typeof value === "string" ? value : undefined;
+}
+
 describe("the console's Pricing & inventory branch on the otta admin route", () => {
 	let service: StubCommerceServer;
 	let sandbox: SandboxHandle;
@@ -127,6 +135,25 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		const outcome = await sandbox.invokeRoute("admin", input);
 		expect(outcome, JSON.stringify(outcome)).toHaveProperty("result");
 		return (outcome as { result: Record<string, unknown> }).result;
+	}
+
+	/** Put the admin token in write-only `ctx.kv`, the way the Settings screen
+	 *  does. Seeded per test rather than in `beforeEach`, so the NO-token case
+	 *  below is the ABSENCE of this call rather than a special setup. */
+	async function seedAdminToken(): Promise<void> {
+		await sandbox.invokeRoute("admin", {
+			type: "form_submit",
+			action_id: "save-token",
+			values: { internalToken: ADMIN_TOKEN },
+		});
+		service.requests.length = 0;
+	}
+
+	/** The request for one EXACT path. `/admin/products` and
+	 *  `/admin/products/<id>` share a prefix, so `startsWith` cannot tell a list
+	 *  read from a detail read. */
+	function requestTo(path: string): RecordedRequest | undefined {
+		return service.requests.find((r) => (r.url.split("?")[0] ?? "") === path);
 	}
 
 	test("products.list returns RAW minor units and a RAW on-hand count", async () => {
@@ -416,6 +443,28 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		expect(seen).not.toContain("deleted=");
 	});
 
+	test("`active`, `productKind` and `search` travel TOGETHER in ONE query", async () => {
+		// RESTORED WITH INC-R3. The three axes are each pinned separately above, and
+		// the `archived` case pins its own trio — but nothing pinned the combination
+		// the retired suite drove: status + kind + search on the ACTIVE axis, in a
+		// single GET. A translation that dropped one axis whenever another was set,
+		// or that let a later branch overwrite an earlier one, passes every
+		// single-axis assertion here and shows the operator the wrong set of rows.
+		// It is a claim about the QUERY, which is why it outlives the screen.
+		service.respondWith("GET", () => ({ status: 200, body: { products: [], nextCursor: null } }));
+		await invoke({
+			type: READ,
+			resource: "products.list",
+			filter: { status: "true", productKind: "physical", search: "widget" },
+		});
+		const seen = requestTo(LIST_ROUTE)?.url ?? "";
+		expect(seen).toContain("active=true");
+		expect(seen).toContain("productKind=physical");
+		expect(seen).toContain("search=widget");
+		// ...and the axis the ACTIVE half must never carry.
+		expect(seen).not.toContain("deleted=");
+	});
+
 	test("`Low stock only` sends NO stock parameter to the service — the narrowing is page-scoped", async () => {
 		// RESTORED WITH INC-R3, and it is the other half of the withheld `total`.
 		// The service's products list has NO stock predicate; the filter narrows the
@@ -542,6 +591,59 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		expect(text).not.toMatch(/HTTP \d|\/admin\/|401/);
 		// A banner is read at a glance or not at all (BANNER_BUDGET).
 		expect(String(result["description"]).length).toBeLessThanOrEqual(240);
+	});
+
+	test("the list AND detail GETs carry the internal admin token (ADR-0010)", async () => {
+		// RESTORED WITH INC-R3. Every surviving header assertion is on the PATCH or
+		// the stock POSTs, so a read path that stopped attaching the token would
+		// leave all of them green while every guarded READ answered 401 — and the
+		// route swallows a 401 into the same fail-closed banner as an outage, so the
+		// screen would look "unavailable" with nothing pointing at the cause. It is
+		// a claim about what the SERVICE is asked for, not about a rendering.
+		await seedAdminToken();
+		service.respondWith(
+			"GET",
+			responder({
+				[LIST_ROUTE]: () => ({ status: 200, body: { products: [summary()], nextCursor: null } }),
+				[DETAIL_ROUTE]: () => ({ status: 200, body: { product: detail() } }),
+				[TAX_CLASSES_ROUTE]: () => ({ status: 200, body: { classes: [] } }),
+				[SETTINGS_ROUTE]: () => settingsBody(5),
+			}),
+		);
+		await invoke({ type: READ, resource: "products.list" });
+		await invoke({ type: READ, resource: "products.detail", productId: PRODUCT_ID });
+		expect(header(requestTo(LIST_ROUTE), "X-Internal-Token")).toBe(ADMIN_TOKEN);
+		expect(header(requestTo(DETAIL_ROUTE), "X-Internal-Token")).toBe(ADMIN_TOKEN);
+		// The write-gate token is a NON-GET credential (ADR-0007) and has no business
+		// on a read, so its absence here is part of the assertion.
+		expect(header(requestTo(LIST_ROUTE), "X-Service-Token")).toBeUndefined();
+	});
+
+	test("with NO admin token the reads fail CLOSED on the service's 401, and the banner leaks nothing", async () => {
+		// RESTORED WITH INC-R3. The anti-leak contract was being exercised only
+		// through a 500 above; the ABSENT-token → 401 trigger had no successor, and
+		// it is the one an operator actually hits — an unconfigured or rotated admin
+		// token is the ordinary failure on this screen, an unreachable service is
+		// not. No `seedAdminToken()` call: the token really is missing.
+		service.respondWith("GET", (request) => {
+			if (request.headers["x-internal-token"] === undefined) {
+				return { status: 401, body: { ok: false, error: "unauthorized" } };
+			}
+			return { status: 200, body: { products: [], nextCursor: null } };
+		});
+		const result = await invoke({ type: READ, resource: "products.list" });
+		// The 401 really fired — otherwise this asserts nothing.
+		expect(requestTo(LIST_ROUTE)).toBeDefined();
+		expect(header(requestTo(LIST_ROUTE), "X-Internal-Token")).toBeUndefined();
+		expect(result["ok"]).toBe(false);
+		expect(result["title"]).toBe("Pricing & inventory is unavailable");
+		expect(String(result["description"])).toContain("a fault in the console itself");
+		// E-7: a banner gets screenshotted. No status code and no upstream path —
+		// and no claim that auth WAS the cause, because this path swallows four and
+		// naming one is false whenever another was the real one. (Naming the admin
+		// token as a thing to CHECK is the remediation hint, not a diagnosis.)
+		const text = `${String(result["title"])} ${String(result["description"])}`;
+		expect(text).not.toMatch(/HTTP \d|\/admin\/|401|unauthorized/i);
 	});
 
 	test("an unrecognised products resource is a refusal, not a blank body", async () => {

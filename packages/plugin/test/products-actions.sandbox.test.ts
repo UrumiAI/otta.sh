@@ -393,22 +393,28 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 		}
 	});
 
-	test("an EMPTY watermark is forwarded and refused BY THE SERVICE, which is where that guard lives", async () => {
-		// Ported behaviour, stated rather than left to be discovered. An empty
-		// string is a PRESENT watermark to this tier — unlike the stock watermark,
-		// which is parsed and rejects `""` — so the save is sent, and it is the
-		// service's compare that refuses it: `""` matches no `updatedAt`, so the
-		// answer is STALE_EDIT and the operator reads the re-apply warning. Nothing
-		// is clobbered either way; the two tiers just divide the work differently
-		// for the two kinds of watermark.
-		service.respondWith("PATCH", () => ({ status: 409, body: { reason: "STALE_EDIT" } }));
-		const result = await act("products:save-identity", {
-			...carrier,
-			expectedUpdatedAt: "",
-			sku: "S-1",
-		});
-		expect(patchBody()["expectedUpdatedAt"]).toBe("");
-		expect(result.notice?.title).toBe("This product changed since you opened it");
+	test("a BLANK `expectedUpdatedAt` refuses HERE, on the same terms a blank on-hand does", async () => {
+		// THE TWO WATERMARKS ARE GUARDED SYMMETRICALLY (INC-R3 review). A blank
+		// stock watermark has always been refused at this boundary, because
+		// `parseOnHandWatermark` rejects `""`. The edit watermark used to be
+		// forwarded instead and refused downstream, where `""` matches no
+		// `updatedAt` and comes back STALE_EDIT — fail-closed, but by a different
+		// route. Two watermarks on one screen guarded on two different tiers is a
+		// trap for whoever changes either tier next, so an empty or whitespace-only
+		// watermark is now an unreadable payload, exactly like an absent one, and
+		// NOTHING is sent.
+		for (const blank of ["", "   "]) {
+			service.requests.length = 0;
+			const result = await act("products:save-identity", {
+				...carrier,
+				expectedUpdatedAt: blank,
+				sku: "S-1",
+			});
+			expect(writes(), JSON.stringify(blank)).toHaveLength(0);
+			expect(result.notice?.title, JSON.stringify(blank)).toBe("Not changed");
+		}
+		// The stock watermark's half of the symmetry is asserted by "DA-3a is not
+		// opt-out" below, which runs the same two blanks through a removal.
 	});
 
 	test("a save carries a CONTENT-DERIVED Idempotency-Key, and the same submission replays to the same key", async () => {

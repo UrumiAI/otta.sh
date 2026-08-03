@@ -12,8 +12,11 @@
  * place in this console where drift is acceptable.
  *
  * `packages/plugin/src/admin/money-input.js` stays as this re-export because it
- * is the path `orders-page.ts` and `products-page.ts` already import, and
- * `@otta-sh/plugin`'s public `index.ts` re-exports both functions from it.
+ * is the path several modules already import — `shipping-page.ts`,
+ * `coupons-page.ts` and `products-actions.ts` — and `@otta-sh/plugin`'s public
+ * `index.ts` re-exports both functions from it. (The two importers this note
+ * used to name, `orders-page.ts` and `products-page.ts`, were the retired Block
+ * Kit screens and are gone; the shim outlived them.)
  *
  * ONE IDIOM, STATED ONCE (INC-20 review). A module in `src/` that needs a
  * shared primitive imports `@otta-sh/admin-presentation` DIRECTLY. This file

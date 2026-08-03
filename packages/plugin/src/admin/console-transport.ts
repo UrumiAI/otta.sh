@@ -21,6 +21,19 @@
  * product" on Pricing & inventory — because a refusal that tells an operator to
  * reload the wrong thing is worse than one that says nothing.
  *
+ * FOUR SYMBOLS BELOW HAVE NO CALLERS AS OF INC-R3, AND ARE RETAINED ON PURPOSE.
+ * {@link firstNotice}, {@link forwardConsoleAct}, {@link forwardedFormSubmit}
+ * and {@link nothingApplied} are the block-tree half of this module — the
+ * forwarder, the carrier mint, the banner scrape and the empty-tree refusal —
+ * and both consoles have now been extracted onto structured actions, so nothing
+ * drives a Block Kit handler any more. They are DEAD, not live: read them as
+ * history rather than as the way a console write works. ADR-0015 Decision 1 puts
+ * their removal in the increment that follows this one ("once no caller remains,
+ * the block-tree half of the console transport" goes), deliberately as its own
+ * change, so this one stays a single thing. Everything else here — the two
+ * interaction types, the refusal shape, the refusal constants and
+ * {@link readConsolePayload} — is live and stays.
+ *
  * G5 APPLIES UNCHANGED, one tier up: every response is HTTP 200 with an outcome
  * in the body. A refusal is a value.
  */

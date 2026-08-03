@@ -28,8 +28,12 @@
  * with NO inventory record at all, which gets its own sentence rather than being
  * reported as a count nobody took. An ABSENT or unparseable watermark refuses
  * fail-closed, with no re-read: see {@link parseOnHand}. The EDIT path carries
- * its own watermark, `expectedUpdatedAt`, which is likewise mandatory here and
- * re-checked by the service's optimistic concurrency behind it.
+ * its own watermark, `expectedUpdatedAt`, guarded on the SAME terms — absent or
+ * blank refuses here, before anything is sent — and re-checked by the service's
+ * optimistic concurrency behind it. Both watermarks are guarded at THIS tier,
+ * deliberately: two watermarks in one module guarded on two different tiers is a
+ * trap for whoever changes either tier next, even while the looser of them
+ * happens to fail closed downstream.
  *
  * MONEY IS INTEGER MINOR UNITS. Nothing here parses money with a float:
  * {@link parsePriceMinorUnits} reads an exact decimal string into integer minor
@@ -288,7 +292,18 @@ function buildEditWire(
 
 /** Stable content-derived idempotency key for an edit save (F-2a, `Edit /
  *  save` row: "content hash of the submitted wire + `expectedUpdatedAt`").
- *  FNV-1a twice with independent seeds — dependency-free and sandbox-safe. */
+ *  FNV-1a twice with independent seeds — dependency-free and sandbox-safe.
+ *
+ *  KNOWN FOOTGUN, INHERITED VERBATIM AND UNREACHABLE TODAY. `?? null`
+ *  canonicalises an ABSENT field and an EXPLICIT `null` identically, so "clear
+ *  the compare-at" and "leave the compare-at alone" hash to the same key. That
+ *  cannot bite across the three forms this screen ships: each carries its
+ *  clearable fields in every submit, so a form that can send `null` never omits
+ *  the field, and one that omits it can never send `null`. A FOURTH form that
+ *  submits a clearable field only sometimes would collide the two — and, under a
+ *  once-only store, silently drop the second write. Whoever adds one must
+ *  distinguish the cases here (an absent sentinel, not `null`) rather than
+ *  assume this holds. */
 function deriveEditIdempotencyKey(productId: string, wire: ProductEditWire): string {
 	const canonical = JSON.stringify([
 		productId,
@@ -322,14 +337,23 @@ function fnv1a(input: string, seed: number): string {
  * submits). Reads `productId`/`expectedUpdatedAt` off the payload, validates,
  * then PATCHes under the optimistic-concurrency watermark.
  *
- * THE WATERMARK IS MANDATORY. An absent `expectedUpdatedAt` refuses before
- * anything is sent, rather than PATCHing without one — a save with no watermark
- * is a clobber of whatever landed since the form was drawn.
+ * THE WATERMARK IS MANDATORY, AND BLANK COUNTS AS ABSENT. An absent or empty
+ * `expectedUpdatedAt` refuses before anything is sent, rather than PATCHing
+ * without a usable one — a save with no watermark is a clobber of whatever
+ * landed since the form was drawn. The empty case is refused HERE, on the same
+ * terms {@link parseOnHand} refuses a blank on-hand, rather than being left to
+ * the service: this screen has two watermarks, and two watermarks guarded
+ * asymmetrically in one module is a trap even while the looser one happens to
+ * fail closed downstream.
  */
 const saveAction: ProductsAction = async (client, payload) => {
 	const productId = readString(payload["productId"]);
 	const expectedUpdatedAt = readString(payload["expectedUpdatedAt"]);
-	if (productId === undefined || expectedUpdatedAt === undefined) {
+	if (
+		productId === undefined ||
+		expectedUpdatedAt === undefined ||
+		expectedUpdatedAt.trim().length === 0
+	) {
 		return applied(UNREADABLE);
 	}
 	const built = buildEditWire(payload, expectedUpdatedAt);
