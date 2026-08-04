@@ -74,7 +74,7 @@
  * and all 18 workerd sandbox suites now exercise THIS code through the plugin's
  * public surface. `test/` here covers the package on its own terms.
  */
-export { formatMinorUnitsInput, parseMinorUnitsInput } from "./money-input.js";
+export { canonicalMoneyInput, formatMinorUnitsInput, parseMinorUnitsInput } from "./money-input.js";
 export {
 	MONEY_LOCALE,
 	UNFORMATTABLE,

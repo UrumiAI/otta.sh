@@ -15,12 +15,16 @@ but it now has four states:
 - **clean** — `Save` is disabled under `No changes to save.`, because a clean
   save is a no-op that still bumps `updatedAt`. Dirtiness is compared against
   the last-committed values rather than latched, so typing a character and
-  deleting it leaves nothing to save;
+  deleting it leaves nothing to save — and compared as *amounts*, so `99.9` and
+  `99.90` are one amount and a successful save returns the group to clean
+  whether or not what was typed was already the formatter's spelling;
 - **dirty** — the group's own label gains ` · unsaved` so a shut group cannot
   hide work, each changed input takes a warn border, a pending block above the
   buttons names both amounts over the sentence saying the save publishes to the
   storefront immediately, and `Discard` appears beside `Save`;
-- **in flight** — only the button that was clicked reads `Saving…`;
+- **in flight** — only the button that was clicked reads `Saving…`, and it stays
+  that way until the re-read that follows the write lands, so no save button is
+  ever re-armed against a watermark the service has already superseded;
 - **saved** — a receipt renders inside the section, under the button, naming the
   two amounts and saying that orders already placed keep the price they were
   charged. It persists; nothing dismisses it.

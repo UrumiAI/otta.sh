@@ -85,6 +85,7 @@ import {
 	TOMBSTONE_CONTEXT,
 	UNIT_COST_PLACEHOLDER,
 	addStockConfirm,
+	canonicalMoneyInput,
 	compareAtFieldLabel,
 	dimensionsSummary,
 	dirtyGroupLabel,
@@ -194,6 +195,48 @@ export function changedFields(
 	return Object.keys(committed).filter((key) => committed[key] !== current[key]);
 }
 
+/**
+ * The same question for the Price group, asked about AMOUNTS rather than about
+ * keystrokes.
+ *
+ * WHY THIS EXISTS AT ALL. The committed side is always the money formatter's
+ * spelling (`99.90`); the typed side is whatever the operator typed (`99.9`).
+ * Those are one amount, and a save does not rewrite the field the operator is
+ * looking at — it re-reads the product. Compared as raw strings, a save of
+ * `99.9` therefore SUCCEEDS and leaves the group still marked ` · unsaved`,
+ * still bordered, with `Save` re-armed for a write that would change nothing
+ * and still bump `updatedAt` — sitting beside its own receipt saying the price
+ * was updated. That is the exact no-op write F4 disables, re-armed by the
+ * feature meant to prevent it.
+ *
+ * STILL COMPARED, STILL NOT LATCHED: typing a character and deleting it returns
+ * the field to its committed amount and so returns the form to clean, and an
+ * entry that does not parse is compared as itself, so it still reads as a
+ * change and the write's own refusal is what the operator sees. Currency is
+ * case- and space-insensitive for the same reason: it is stored in one case,
+ * and `usd` is not a different currency from `USD`.
+ */
+export function changedPriceFields(
+	committed: Readonly<Record<string, string>>,
+	current: Readonly<Record<string, string>>,
+): readonly string[] {
+	return changedFields(canonicalPriceValues(committed), canonicalPriceValues(current));
+}
+
+/** One spelling per field, so the comparison above is about amounts. Money goes
+ *  through the shared canonicaliser; a currency code is stored in one case, so
+ *  `usd` is not a different currency from `USD`. */
+function canonicalPriceValues(
+	values: Readonly<Record<string, string>>,
+): Readonly<Record<string, string>> {
+	return {
+		price: canonicalMoneyInput(values["price"] ?? ""),
+		currency: (values["currency"] ?? "").trim().toUpperCase(),
+		compareAt: canonicalMoneyInput(values["compareAt"] ?? ""),
+		unitCost: canonicalMoneyInput(values["unitCost"] ?? ""),
+	};
+}
+
 /** A text input's initial value for an optional money field. `null` is BLANK,
  *  never `0.00` — the blank-vs-zero distinction is load-bearing on this screen,
  *  because a blank compare-at CLEARS it and `0.00` would be a price of zero the
@@ -248,6 +291,15 @@ export function ProductDetail({
 		void fetchProductDetail(productId).then((result) => {
 			if (cancelled) return;
 			setRetrying(false);
+			// A WRITE'S BUSY STATE ENDS HERE, not when the write answered. The
+			// re-read a save triggers is what moves `expectedUpdatedAt`, so a save
+			// button re-armed before it lands is armed against a watermark the
+			// service has already superseded: the second click would be refused by
+			// optimistic concurrency and report an error for a save that in fact
+			// succeeded. Cleared before the failure check, so a failed re-read
+			// releases the controls too.
+			setBusy(false);
+			setActing(null);
 			if (isFailure(result)) {
 				setFailure({ title: result.title, description: result.description });
 				return;
@@ -269,11 +321,12 @@ export function ProductDetail({
 		// it goes on the click rather than on the answer.
 		if (slot !== undefined) setReceipts((prev) => ({ ...prev, [slot]: null }));
 		void performAction(action.actionId, action.value, PRODUCTS_ACT_SUBJECT).then((result) => {
-			setBusy(false);
-			setActing(null);
 			if (isFailure(result)) {
 				// A REFUSAL still reports at page top, for both surfaces' reasons: it is
-				// not a receipt, and the group it came from may be shut.
+				// not a receipt, and the group it came from may be shut. Nothing moved,
+				// so there is no re-read to wait for and the controls are released here.
+				setBusy(false);
+				setActing(null);
 				setNotice({ variant: "error", title: result.title, description: result.description });
 				return;
 			}
@@ -303,7 +356,8 @@ export function ProductDetail({
 			// watermark) and a stock movement moves `onHand`, so every value
 			// rendered below has to come from what the operator can now see. This is
 			// also the sibling-discard `SPLIT_DISCARD_CONTEXT` warns about, and it is
-			// the same behaviour the Block Kit screen has.
+			// the same behaviour the Block Kit screen has. The controls stay
+			// disabled until it lands.
 			setGeneration((n) => n + 1);
 		});
 	}, []);
@@ -474,18 +528,18 @@ export function ProductDetail({
 						busy={busy}
 						addReceipt={receipts["stock-add"]}
 						removeReceipt={receipts["stock-remove"]}
-						onRestock={(qty) => {
+						onRestock={(qty, sku, onHand) => {
 							// F5: the addition gets the gate the removal already had, and the
 							// dialog's job is restating the PARSED quantity — `qty` is what
 							// `parseStockQty` returned, never the raw field, so `100` typed for
 							// `10` is stated as 100 and the projection is built from 100.
-							const sku = p.sku;
-							const onHand = p.onHand;
-							// Unreachable: neither form renders without a SKU (D-7) or without
-							// an inventory record. Guarded rather than defaulted, because a
-							// missing on-hand reported as `0` would be a projection nobody can
-							// check — absent is not zero.
-							if (sku === null || onHand === null) return;
+							//
+							// THE SKU AND THE WATERMARK RIDE WITH THE CLICK rather than being
+							// re-derived and null-checked here. The panel renders this form
+							// only once it has both (no SKU is D-7's own state, no inventory
+							// record is its own line), so the absent case is not a branch to
+							// default to `0` — absent is not zero — nor one to swallow the
+							// click over. It is unrepresentable.
 							const confirm = addStockConfirm(qty, sku, onHand);
 							setPending({
 								actionId: "products:restock",
@@ -766,7 +820,7 @@ export function PriceGroup({
 		[p.priceCents, p.currency, p.compareAtCents, p.unitCostCents],
 	);
 	const [values, setValues] = React.useState<Record<string, string>>(committed);
-	const changed = changedFields(committed, values);
+	const changed = changedPriceFields(committed, values);
 	const dirty = changed.length > 0;
 
 	// The pending AFTER, through the same exact-integer parse the write uses.
@@ -1001,7 +1055,12 @@ function ShippingForm({
  * different acts look alike: `Remove stock` is the screen's ONE destructive act
  * (DA-5's second exception — a removal is reversible only by a separate,
  * forgettable manual operation), so it keeps its alert banner, its danger
- * styling and the consequence in its group label. `Add stock` has none of those.
+ * styling and the consequence in its group label. `Add stock` has none of those
+ * — with ONE exception this panel does not control: the shared confirm dialog
+ * styles its confirm button as destructive for every caller, so `Yes, add …`
+ * currently reads in the same ink as `Yes, remove …`. That is the dialog's to
+ * fix, not this panel's, and until it is fixed the distinction above holds
+ * everywhere except on that one button.
  */
 function StockPanel({
 	product: p,
@@ -1020,9 +1079,15 @@ function StockPanel({
 	 *  leaves the operator to work out which one it is reporting. */
 	addReceipt: Receipt | null;
 	removeReceipt: Receipt | null;
-	onRestock: (qty: number) => void;
+	/** The SKU and the on-hand watermark travel WITH the quantity, because this
+	 *  panel is the only place that knows the form was rendered at all — and it
+	 *  renders it only once both exist. The caller therefore has no absent case
+	 *  to default or to swallow. */
+	onRestock: (qty: number, sku: string, onHand: number) => void;
 	onRemove: (qty: number) => void;
 }): React.ReactElement {
+	const sku = p.sku;
+	const onHand = p.onHand;
 	return (
 		<>
 			<section style={panelStyle}>
@@ -1050,12 +1115,12 @@ function StockPanel({
 					<p style={{ fontSize: 12, opacity: 0.75 }} data-testid="stock-context">
 						{STOCK_ON_HAND_CONTEXT}
 					</p>
-					{p.sku === null ? (
+					{sku === null ? (
 						// D-7: nothing to move stock against, so no forms at all.
 						<p style={{ fontSize: 13, opacity: 0.8 }} data-testid="stock-no-sku">
 							{NO_SKU_CONTEXT}
 						</p>
-					) : p.onHand === null ? (
+					) : onHand === null ? (
 						// The sku exists but carries NO inventory record: both movements
 						// would 409, and their idempotency keys derive from a watermark
 						// that does not exist. One line naming the state and the way out.
@@ -1072,7 +1137,7 @@ function StockPanel({
 									testIdPrefix="restock"
 									invalid={ADD_STOCK_INVALID_QTY}
 									busy={busy}
-									onSubmit={onRestock}
+									onSubmit={(qty) => onRestock(qty, sku, onHand)}
 								/>
 								{addReceipt !== null && (
 									<Notice

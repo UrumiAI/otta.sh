@@ -38,7 +38,8 @@ const {
 const { activeFilterParts, clearAnswer, visibleDegradation, UNTITLED } =
 	await import("../src/products/products-list.js");
 const { CopyIdButton } = await import("../src/ui.js");
-const { PriceGroup, changedFields } = await import("../src/products/product-detail.js");
+const { PriceGroup, changedFields, changedPriceFields } =
+	await import("../src/products/product-detail.js");
 const {
 	LOW_STOCK_FILTER_DESCRIPTION,
 	PRODUCTS_LOW_STOCK_NO_MATCH,
@@ -367,6 +368,35 @@ describe("presentation primitives this screen relies on", () => {
 		expect(changedFields(committed, { ...committed, compareAt: "29.99" })).toEqual(["compareAt"]);
 		expect(changedFields(committed, { ...committed, price: "9.0" })).toEqual(["price"]);
 		expect(changedFields(committed, { ...committed, price: "9.00" })).toEqual([]);
+	});
+
+	test("the Price group asks about AMOUNTS, so a save returns it to clean (F4)", () => {
+		// The state that made the four states contradict each other. `9.9` and
+		// `9.90` are one amount, but only the committed side is ever respelled by
+		// the formatter: a save of `9.9` succeeds, the re-read commits `9.90`, and
+		// a raw string comparison then reports the group as still holding unsaved
+		// work — ` · unsaved`, a warn border and a re-armed `Save` for a write that
+		// changes nothing and still bumps `updatedAt`, beside a receipt saying the
+		// price was updated.
+		const committed = { price: "9.90", currency: "USD", compareAt: "", unitCost: "" };
+		expect(changedPriceFields(committed, { ...committed, price: "9.9" })).toEqual([]);
+		expect(changedPriceFields(committed, { ...committed, price: " 9.90 " })).toEqual([]);
+		// Currency is stored in one case, and `usd` is not a different currency.
+		const unpriced = { price: "", currency: "USD", compareAt: "", unitCost: "" };
+		expect(changedPriceFields(unpriced, { ...unpriced, currency: " usd " })).toEqual([]);
+		// Still compared and still not latched, and a real edit is still an edit.
+		expect(changedPriceFields(committed, committed)).toEqual([]);
+		expect(changedPriceFields(committed, { ...committed, price: "99.99" })).toEqual(["price"]);
+		expect(changedPriceFields(committed, { ...committed, compareAt: "29.99" })).toEqual([
+			"compareAt",
+		]);
+		// A blank price leaves the price unchanged and a blank compare-at CLEARS
+		// it; neither is the same as the amount already there, and neither is zero.
+		expect(changedPriceFields(committed, { ...committed, price: "" })).toEqual(["price"]);
+		expect(changedPriceFields(committed, { ...committed, price: "0.00" })).toEqual(["price"]);
+		// An entry that does not parse still reads as a change, so the write still
+		// happens and the write's own refusal is what the operator sees.
+		expect(changedPriceFields(committed, { ...committed, price: "abc" })).toEqual(["price"]);
 	});
 
 	test("a clean Price group disables Save and says why", () => {

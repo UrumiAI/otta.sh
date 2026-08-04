@@ -48,6 +48,7 @@ import {
 	SHORT_ID_MIN,
 	TERMINAL_ORDER_STATES,
 	addStockConfirm,
+	canonicalMoneyInput,
 	cancelConfirmText,
 	cents,
 	currency,
@@ -771,6 +772,36 @@ describe("a price save gets a before and an after (F4)", () => {
 	test("the pending sentence says the save publishes IMMEDIATELY", () => {
 		expect(PRICE_PENDING_CONTEXT).toContain("immediately");
 		expect(NO_CHANGES_TO_SAVE).toBe("No changes to save.");
+	});
+
+	test("two spellings of one amount are one amount", () => {
+		// The case that decides whether a form goes CLEAN again after its save. The
+		// committed side is always the formatter's spelling; the typed side is
+		// whatever was typed, and a save re-reads the former without rewriting the
+		// latter. Compared as raw strings, a successful save leaves the group
+		// claiming unsaved work it does not hold.
+		expect(canonicalMoneyInput("99.9")).toBe(canonicalMoneyInput("99.90"));
+		expect(canonicalMoneyInput(" 99.90 ")).toBe(canonicalMoneyInput("99.90"));
+		expect(canonicalMoneyInput("0")).toBe(canonicalMoneyInput("0.00"));
+		expect(canonicalMoneyInput("99")).toBe("99.00");
+	});
+
+	test("it normalises spelling and nothing else — a different amount stays different", () => {
+		expect(canonicalMoneyInput("9.99")).not.toBe(canonicalMoneyInput("99.90"));
+		// Blank is preserved as blank: on these fields blank means "leave
+		// unchanged" or "clear", and never zero.
+		expect(canonicalMoneyInput("")).toBe("");
+		expect(canonicalMoneyInput("   ")).toBe("");
+		expect(canonicalMoneyInput("")).not.toBe(canonicalMoneyInput("0.00"));
+	});
+
+	test("an unparseable entry is handed back, not swallowed", () => {
+		// It is not a validator. `abc` must still read as a change from `9.00`, so
+		// the write is still offered and the write's own refusal is what the
+		// operator reads.
+		expect(canonicalMoneyInput("abc")).toBe("abc");
+		expect(canonicalMoneyInput(" 9.999 ")).toBe("9.999");
+		expect(canonicalMoneyInput("abc")).not.toBe(canonicalMoneyInput("9.00"));
 	});
 });
 
