@@ -81,12 +81,14 @@ import {
 	isFailure,
 	performAction,
 	type DetailPayload,
+	type RefundsSummary,
 	type TimelineEntry,
 } from "../console-api.js";
 import {
 	Button,
 	CopyIdButton,
 	ConfirmDialog,
+	FAIL_ACCENT,
 	Field,
 	Fields,
 	Group,
@@ -102,6 +104,81 @@ import {
 const DANGER_TRANSITIONS: ReadonlySet<string> = new Set(["refunded"]);
 
 const TAB_LABELS = ["Order", "Fulfilment", "Money", "History"] as const;
+
+/** The id the refusal message carries so the input it is about can point at it
+ *  with `aria-describedby`. The message renders only while a refusal stands, and
+ *  the association is written only then, so it can never dangle. */
+const REFUND_ERROR_ID = "otta-refund-refusal";
+
+/** Which of the refund form's two inputs a refusal is about. Two of the three
+ *  refusals are about the amount and one is about who is issuing the refund; a
+ *  refusal that did not carry this could only ever focus one of them. */
+export type RefundRefusalField = "amount" | "refundedBy";
+
+export interface RefundRefusal {
+	readonly message: string;
+	readonly field: RefundRefusalField;
+}
+
+export type RefundCheck =
+	| { readonly ok: true; readonly amountCents: number }
+	| { readonly ok: false; readonly refusal: RefundRefusal };
+
+/**
+ * The refund form's three refusals, in the order the operator meets them.
+ *
+ * Parsed with the SHARED input parser — exact integer string math, never
+ * `parseFloat(...) * 100`. The refusal copy is the write handler's own, restated
+ * here only because this check happens before the dialog rather than after the
+ * click.
+ */
+export function checkRefundInput(
+	amountInput: string,
+	refundedBy: string,
+	remainingCents: number,
+	currency: string,
+): RefundCheck {
+	const parsed = parseMinorUnitsInput(amountInput, { allowZero: false });
+	if (parsed === null) {
+		return { ok: false, refusal: { message: REFUND_AMOUNT_INVALID, field: "amount" } };
+	}
+	if (refundedBy.trim().length === 0) {
+		return { ok: false, refusal: { message: REFUND_BY_REQUIRED, field: "refundedBy" } };
+	}
+	if (parsed > remainingCents) {
+		return {
+			ok: false,
+			refusal: {
+				message: refundTooHighInline(
+					formatAmount(parsed, currency),
+					formatAmount(remainingCents, currency),
+				),
+				field: "amount",
+			},
+		};
+	}
+	return { ok: true, amountCents: parsed };
+}
+
+/**
+ * What the refunds group shows beneath its ledger.
+ *
+ * THE CEILING IS THE TEST, NOT THE REMAINDER. An order that was never captured
+ * has a ceiling of zero and therefore a remainder of zero, and reading that
+ * remainder as "everything has been refunded" told an operator an order was
+ * fully refunded one line under a heading saying nothing was ever captured.
+ * Absent is not zero, and zero is not all of it. This is the same condition the
+ * group's own label uses, which is why the two can no longer disagree.
+ */
+export type RefundPanelMode = "empty" | "fully-refunded" | "form";
+
+export function refundPanelMode(summary: {
+	readonly ceilingCents: number;
+	readonly remainingCents: number;
+}): RefundPanelMode {
+	if (summary.ceilingCents === 0) return "empty";
+	return summary.remainingCents <= 0 ? "fully-refunded" : "form";
+}
 
 /** A pending confirm: what the operator is about to do, and the sentence they
  *  must read first. Held as ONE piece of state so two dialogs can never be open
@@ -166,6 +243,234 @@ function Unavailable({ text }: { text: string }): React.ReactElement {
 	return <p style={{ fontSize: 13, opacity: 0.75, margin: "0 0 12px" }}>{text}</p>;
 }
 
+/**
+ * The Money tab's refunds panel: a pure view over ONE loaded refunds summary and
+ * the refund form's drafts. It holds no state — the drafts, the standing refusal
+ * and the two focus refs belong to `OrderDetail`, which owns the write.
+ *
+ * ONE PREDICATE FEEDS BOTH THE GROUP'S HEADING AND ITS BODY. They are a line
+ * apart on screen and used to be computed independently, which is exactly how a
+ * heading saying "nothing captured" ended up over a sentence saying "fully
+ * refunded". Derived once here, they cannot drift again — and because the panel
+ * takes its summary as a prop, all three states can be rendered and asserted
+ * directly rather than inferred from the screen around them.
+ */
+export function RefundsPanel({
+	refunds,
+	currency: cur,
+	busy,
+	askRefund,
+	amountInput,
+	setAmountInput,
+	refundReason,
+	setRefundReason,
+	refundedBy,
+	setRefundedBy,
+	amountError,
+	setAmountError,
+	amountRef,
+	refundedByRef,
+}: {
+	readonly refunds: RefundsSummary;
+	readonly currency: string;
+	readonly busy: boolean;
+	readonly askRefund: (amountCents: number) => void;
+	readonly amountInput: string;
+	readonly setAmountInput: (value: string) => void;
+	readonly refundReason: string;
+	readonly setRefundReason: (value: string) => void;
+	readonly refundedBy: string;
+	readonly setRefundedBy: (value: string) => void;
+	readonly amountError: RefundRefusal | null;
+	readonly setAmountError: (refusal: RefundRefusal | null) => void;
+	readonly amountRef: React.RefObject<HTMLInputElement | null>;
+	readonly refundedByRef: React.RefObject<HTMLInputElement | null>;
+}): React.ReactElement {
+	const refundMode = refundPanelMode(refunds);
+	return (
+		<>
+			<section style={panelStyle}>
+				<Fields
+					testId="detail-money"
+					entries={[
+						["Captured", formatAmount(refunds.capturedTotalCents, cur)],
+						["Refunded", formatAmount(refunds.refundedTotalCents, cur)],
+						["Remaining refundable", formatAmount(refunds.remainingCents, cur)],
+						["Refunds recorded", String(refunds.refunds.length)],
+					]}
+				/>
+			</section>
+
+			<Group
+				testId="detail-refunds"
+				defaultOpen
+				label={
+					refundMode === "empty"
+						? REFUNDS_GROUP_EMPTY_LABEL
+						: refundsGroupLabel(
+								formatAmount(refunds.refundedTotalCents, cur),
+								formatAmount(refunds.ceilingCents, cur),
+							)
+				}
+			>
+				<p style={{ fontSize: 12, opacity: 0.8 }} data-testid="refund-capability">
+					{refundCapabilityText(refunds.refundable, refunds.paymentMethod)}
+				</p>
+
+				{refunds.refunds.length > 0 && (
+					<Table
+						testId="detail-refund-ledger"
+						caption="Refunds recorded"
+						headers={["Amount", "Provider ref", "By", "When"]}
+					>
+						{refunds.refunds.map((refund, index) => (
+							<tr key={`${refund.providerRef ?? "ref"}:${String(index)}`}>
+								<td className="otta-td otta-num">
+									{formatAmount(refund.amountCents, refund.currency ?? cur)}
+								</td>
+								<td className="otta-td">
+									<code>{refund.providerRef ?? "—"}</code>
+								</td>
+								<td className="otta-td">{refund.refundedBy ?? "—"}</td>
+								<td className="otta-td otta-num">
+									{refund.createdAt != null ? formatTimestamp(refund.createdAt) : "—"}
+								</td>
+							</tr>
+						))}
+					</Table>
+				)}
+
+				{/* The empty state says its piece once, in the heading. Repeating the
+				    same sentence in the body read as a rendering fault, and the defect
+				    this guards was a FALSE claim under that heading — not the absence
+				    of a second true one. */}
+				{refundMode === "empty" ? null : refundMode === "fully-refunded" ? (
+					<p style={{ fontSize: 13, marginBlockStart: 12 }} data-testid="refunds-full-note">
+						{FULLY_REFUNDED_NOTE}
+					</p>
+				) : (
+					<div style={{ marginBlockStart: 12, display: "grid", gap: 12, maxInlineSize: 420 }}>
+						<div>
+							<Button
+								testId="refund-full"
+								danger
+								disabled={busy}
+								label={`Refund ${formatAmount(refunds.remainingCents, cur)} (full remaining)`}
+								onClick={() => askRefund(refunds.remainingCents)}
+							/>
+						</div>
+						<Group testId="refund-partial" label={REFUND_PARTIAL_GROUP_LABEL}>
+							<div style={{ display: "grid", gap: 10 }}>
+								<Field label={`Refund amount (${cur})`}>
+									<input
+										className="otta-focusable"
+										data-testid="refund-amount"
+										ref={amountRef}
+										style={
+											amountError?.field === "amount"
+												? { ...inputStyle, borderColor: FAIL_ACCENT }
+												: inputStyle
+										}
+										placeholder="e.g. 19.99"
+										{...(amountError?.field === "amount"
+											? { "aria-invalid": true, "aria-describedby": REFUND_ERROR_ID }
+											: {})}
+										value={amountInput}
+										onChange={(event) => {
+											setAmountInput(event.target.value);
+											setAmountError(null);
+										}}
+									/>
+								</Field>
+								<Field label="Reason (optional)">
+									<input
+										className="otta-focusable"
+										data-testid="refund-reason"
+										style={inputStyle}
+										value={refundReason}
+										onChange={(event) => setRefundReason(event.target.value)}
+									/>
+								</Field>
+								<Field label="Refunded by">
+									<input
+										className="otta-focusable"
+										data-testid="refund-by"
+										ref={refundedByRef}
+										style={
+											amountError?.field === "refundedBy"
+												? { ...inputStyle, borderColor: FAIL_ACCENT }
+												: inputStyle
+										}
+										{...(amountError?.field === "refundedBy"
+											? { "aria-invalid": true, "aria-describedby": REFUND_ERROR_ID }
+											: {})}
+										value={refundedBy}
+										onChange={(event) => {
+											setRefundedBy(event.target.value);
+											setAmountError(null);
+										}}
+									/>
+								</Field>
+								{amountError !== null && (
+									<p
+										role="status"
+										aria-live="polite"
+										id={REFUND_ERROR_ID}
+										data-testid="refund-amount-error"
+										style={{
+											fontSize: 12,
+											margin: 0,
+											fontWeight: 600,
+											borderInlineStart: `3px solid ${FAIL_ACCENT}`,
+											paddingInlineStart: 8,
+											paddingBlock: 2,
+										}}
+									>
+										{amountError.message}
+									</p>
+								)}
+								<div>
+									<Button
+										testId="refund-partial-submit"
+										danger
+										disabled={busy}
+										label="Refund this amount"
+										onClick={() => {
+											const checked = checkRefundInput(
+												amountInput,
+												refundedBy,
+												refunds.remainingCents,
+												cur,
+											);
+											if (!checked.ok) {
+												// A refusal that leaves focus where it was makes the
+												// operator hunt for the field it is about.
+												setAmountError(checked.refusal);
+												const target =
+													checked.refusal.field === "amount"
+														? amountRef.current
+														: refundedByRef.current;
+												target?.focus();
+												return;
+											}
+											setAmountError(null);
+											askRefund(checked.amountCents);
+										}}
+									/>
+								</div>
+								<p style={{ fontSize: 12, opacity: 0.7, margin: 0 }}>
+									{REFUND_ADDITIVE_NOTE} The remaining refundable amount is{" "}
+									{formatMinorUnitsInput(refunds.remainingCents)}.
+								</p>
+							</div>
+						</Group>
+					</div>
+				)}
+			</Group>
+		</>
+	);
+}
+
 export function OrderDetail({
 	orderId,
 	onBack,
@@ -197,7 +502,11 @@ export function OrderDetail({
 	const [cancelledBy, setCancelledBy] = React.useState("");
 	const [noteAuthor, setNoteAuthor] = React.useState("");
 	const [noteBody, setNoteBody] = React.useState("");
-	const [amountError, setAmountError] = React.useState<string | null>(null);
+	const [amountError, setAmountError] = React.useState<RefundRefusal | null>(null);
+	// A refusal moves focus to the field it is about, so the two inputs it can
+	// name are addressable from the submit handler.
+	const amountRef = React.useRef<HTMLInputElement>(null);
+	const refundedByRef = React.useRef<HTMLInputElement>(null);
 
 	React.useEffect(() => {
 		let cancelled = false;
@@ -707,163 +1016,22 @@ export function OrderDetail({
 					(refunds === null ? (
 						<Unavailable text={REFUNDS_UNAVAILABLE} />
 					) : (
-						<>
-							<section style={panelStyle}>
-								<Fields
-									testId="detail-money"
-									entries={[
-										["Captured", formatAmount(refunds.capturedTotalCents, cur)],
-										["Refunded", formatAmount(refunds.refundedTotalCents, cur)],
-										["Remaining refundable", formatAmount(refunds.remainingCents, cur)],
-										["Refunds recorded", String(refunds.refunds.length)],
-									]}
-								/>
-							</section>
-
-							<Group
-								testId="detail-refunds"
-								defaultOpen
-								label={
-									refunds.ceilingCents === 0
-										? REFUNDS_GROUP_EMPTY_LABEL
-										: refundsGroupLabel(
-												formatAmount(refunds.refundedTotalCents, cur),
-												formatAmount(refunds.ceilingCents, cur),
-											)
-								}
-							>
-								<p style={{ fontSize: 12, opacity: 0.8 }} data-testid="refund-capability">
-									{refundCapabilityText(refunds.refundable, refunds.paymentMethod)}
-								</p>
-
-								{refunds.refunds.length > 0 && (
-									<Table
-										testId="detail-refund-ledger"
-										caption="Refunds recorded"
-										headers={["Amount", "Provider ref", "By", "When"]}
-									>
-										{refunds.refunds.map((refund, index) => (
-											<tr key={`${refund.providerRef ?? "ref"}:${String(index)}`}>
-												<td className="otta-td otta-num">
-													{formatAmount(refund.amountCents, refund.currency ?? cur)}
-												</td>
-												<td className="otta-td">
-													<code>{refund.providerRef ?? "—"}</code>
-												</td>
-												<td className="otta-td">{refund.refundedBy ?? "—"}</td>
-												<td className="otta-td otta-num">
-													{refund.createdAt != null ? formatTimestamp(refund.createdAt) : "—"}
-												</td>
-											</tr>
-										))}
-									</Table>
-								)}
-
-								{refunds.remainingCents <= 0 ? (
-									<p style={{ fontSize: 13, marginBlockStart: 12 }}>{FULLY_REFUNDED_NOTE}</p>
-								) : (
-									<div
-										style={{ marginBlockStart: 12, display: "grid", gap: 12, maxInlineSize: 420 }}
-									>
-										<div>
-											<Button
-												testId="refund-full"
-												danger
-												disabled={busy}
-												label={`Refund ${formatAmount(refunds.remainingCents, cur)} (full remaining)`}
-												onClick={() => askRefund(refunds.remainingCents)}
-											/>
-										</div>
-										<Group testId="refund-partial" label={REFUND_PARTIAL_GROUP_LABEL}>
-											<div style={{ display: "grid", gap: 10 }}>
-												<Field label={`Refund amount (${cur})`}>
-													<input
-														className="otta-focusable"
-														data-testid="refund-amount"
-														style={inputStyle}
-														placeholder="e.g. 19.99"
-														value={amountInput}
-														onChange={(event) => {
-															setAmountInput(event.target.value);
-															setAmountError(null);
-														}}
-													/>
-												</Field>
-												<Field label="Reason (optional)">
-													<input
-														className="otta-focusable"
-														data-testid="refund-reason"
-														style={inputStyle}
-														value={refundReason}
-														onChange={(event) => setRefundReason(event.target.value)}
-													/>
-												</Field>
-												<Field label="Refunded by">
-													<input
-														className="otta-focusable"
-														data-testid="refund-by"
-														style={inputStyle}
-														value={refundedBy}
-														onChange={(event) => setRefundedBy(event.target.value)}
-													/>
-												</Field>
-												{amountError !== null && (
-													<p
-														role="status"
-														aria-live="polite"
-														data-testid="refund-amount-error"
-														style={{ fontSize: 12, margin: 0 }}
-													>
-														{amountError}
-													</p>
-												)}
-												<div>
-													<Button
-														testId="refund-partial-submit"
-														danger
-														disabled={busy}
-														label="Refund this amount"
-														onClick={() => {
-															// Parsed with the SHARED input parser — exact integer
-															// string math, never `parseFloat(...) * 100`. The
-															// refusal copy is the write handler's own, restated
-															// here only because this check happens before the
-															// dialog rather than after the click.
-															const parsed = parseMinorUnitsInput(amountInput, {
-																allowZero: false,
-															});
-															if (parsed === null) {
-																setAmountError(REFUND_AMOUNT_INVALID);
-																return;
-															}
-															if (refundedBy.trim().length === 0) {
-																setAmountError(REFUND_BY_REQUIRED);
-																return;
-															}
-															if (parsed > refunds.remainingCents) {
-																setAmountError(
-																	refundTooHighInline(
-																		formatAmount(parsed, cur),
-																		formatAmount(refunds.remainingCents, cur),
-																	),
-																);
-																return;
-															}
-															setAmountError(null);
-															askRefund(parsed);
-														}}
-													/>
-												</div>
-												<p style={{ fontSize: 12, opacity: 0.7, margin: 0 }}>
-													{REFUND_ADDITIVE_NOTE} The remaining refundable amount is{" "}
-													{formatMinorUnitsInput(refunds.remainingCents)}.
-												</p>
-											</div>
-										</Group>
-									</div>
-								)}
-							</Group>
-						</>
+						<RefundsPanel
+							refunds={refunds}
+							currency={cur}
+							busy={busy}
+							askRefund={askRefund}
+							amountInput={amountInput}
+							setAmountInput={setAmountInput}
+							refundReason={refundReason}
+							setRefundReason={setRefundReason}
+							refundedBy={refundedBy}
+							setRefundedBy={setRefundedBy}
+							amountError={amountError}
+							setAmountError={setAmountError}
+							amountRef={amountRef}
+							refundedByRef={refundedByRef}
+						/>
 					))}
 
 				{tab === 3 && (

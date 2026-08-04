@@ -18,6 +18,8 @@
  */
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, test, vi } from "vitest";
+import type { RefundsSummary } from "../src/console-api.js";
+import type { RefundRefusal } from "../src/orders/order-detail.js";
 
 const apiFetch = vi.fn<(input: string, init?: RequestInit) => Promise<Response>>();
 
@@ -31,13 +33,22 @@ const { fetchOrderDetail, fetchOrders, isFailure, performAction, OTTA_ADMIN_ROUT
 const { activeFilterParts, clearAnswer, ordersChrome, ordersFailureCard, pageAfterFailure } =
 	await import("../src/orders/orders-list.js");
 const { Notice, CopyIdButton } = await import("../src/ui.js");
+const { RefundsPanel, checkRefundInput, refundPanelMode } =
+	await import("../src/orders/order-detail.js");
 const {
 	BANNER_BUDGET,
+	FULLY_REFUNDED_NOTE,
 	ORDERS_LOAD_MORE_FAILED_TITLE,
 	ORDERS_STALE_CLEARED_NOTE,
+	REFUNDS_GROUP_EMPTY_LABEL,
+	REFUND_AMOUNT_INVALID,
+	REFUND_BY_REQUIRED,
 	RETRYING_LABEL,
 	RETRY_LABEL,
+	formatAmount,
 	reconciliationAlertSentence,
+	refundTooHighInline,
+	refundsGroupLabel,
 } = await import("@otta-sh/admin-presentation");
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -486,5 +497,256 @@ describe("the React detail renders the SHARED reconciliation sentence", () => {
 		const sentence = reconciliationAlertSentence("x".repeat(500));
 		expect(sentence.length).toBe(BANNER_BUDGET);
 		expect(sentence.endsWith("…")).toBe(true);
+	});
+});
+
+/** A refunds summary at a given ceiling and remainder, consistent in its other
+ *  totals so the panel's own money lines cannot be what an assertion reads. */
+function refundsSummary(ceilingCents: number, remainingCents: number): RefundsSummary {
+	return {
+		refunds: [],
+		currency: "USD",
+		capturedTotalCents: ceilingCents,
+		refundedTotalCents: ceilingCents - remainingCents,
+		ceilingCents,
+		remainingCents,
+		paymentMethod: "card",
+		refundable: true,
+	};
+}
+
+/** The refunds panel alone, rendered from its props. `OrderDetail` cannot be
+ *  rendered statically — it loads in an effect and opens on another tab — which
+ *  is why the panel is a component of its own and its drafts, its refusal and
+ *  its two focus refs arrive from outside. */
+function renderRefundsPanel(
+	refunds: RefundsSummary,
+	amountError: RefundRefusal | null = null,
+): string {
+	return renderToStaticMarkup(
+		<RefundsPanel
+			refunds={refunds}
+			currency="USD"
+			busy={false}
+			askRefund={() => undefined}
+			amountInput=""
+			setAmountInput={() => undefined}
+			refundReason=""
+			setRefundReason={() => undefined}
+			refundedBy=""
+			setRefundedBy={() => undefined}
+			amountError={amountError}
+			setAmountError={() => undefined}
+			amountRef={{ current: null }}
+			refundedByRef={{ current: null }}
+		/>,
+	);
+}
+
+/** The single rendered tag carrying a given `data-testid`, so an assertion can
+ *  read one input's or one message's own attributes without the substring
+ *  search bleeding into the other input beside it. */
+function tagFor(html: string, testId: string): string {
+	const match = new RegExp(`<[a-z]+[^>]*data-testid="${testId}"[^>]*>`).exec(html);
+	if (match === null) throw new Error(`no element tagged ${testId} in: ${html}`);
+	return match[0];
+}
+
+/** An attribute's value off a tag string as `tagFor` returns it — `null` when
+ *  the attribute was not rendered at all, never an empty string standing in
+ *  for absence. */
+function attr(tag: string, name: string): string | null {
+	const match = new RegExp(`${name}="([^"]*)"`).exec(tag);
+	return match === null ? null : (match[1] ?? null);
+}
+
+describe("the refunds group's sentence agrees with its own heading", () => {
+	// AN ORDER THAT WAS NEVER CAPTURED WAS TOLD IT WAS FULLY REFUNDED. Captured,
+	// Refunded and Remaining all read $0.00, the ledger was empty, the heading
+	// said "nothing captured, nothing to refund" — and the sentence one line
+	// below said "Fully refunded". The test was on the REMAINDER, which is zero
+	// both when everything has been refunded and when there was never anything
+	// to refund. The ceiling is what separates those two.
+	test("a zero ceiling is nothing to refund, not everything refunded", () => {
+		expect(refundPanelMode({ ceilingCents: 0, remainingCents: 0 })).toBe("empty");
+	});
+
+	test("a real capture that has been fully refunded still says so", () => {
+		expect(refundPanelMode({ ceilingCents: 4500, remainingCents: 0 })).toBe("fully-refunded");
+	});
+
+	test("anything still refundable keeps the form", () => {
+		expect(refundPanelMode({ ceilingCents: 4500, remainingCents: 1200 })).toBe("form");
+	});
+
+	// THE ORIGINAL DEFECT WAS TWO COPIES OF ONE PREDICATE, not a wrong predicate.
+	// The heading and the sentence under it each decided the panel's state for
+	// themselves, so they were free to disagree — and did. The trio above covers
+	// the predicate; these cover the WIRING, by rendering the panel in each of its
+	// three states and reading the heading and the body TOGETHER out of one piece
+	// of markup. A second, independent test at either call site that answers
+	// differently from `refundPanelMode` — which is the whole of the defect —
+	// changes what one of them renders, and fails here.
+	test("a zero ceiling renders its heading and nothing claiming a refund", () => {
+		const html = renderRefundsPanel(refundsSummary(0, 0));
+		expect(html).toContain(REFUNDS_GROUP_EMPTY_LABEL);
+		// The defect itself: "Fully refunded" one line under "nothing captured".
+		expect(html).not.toContain('data-testid="refunds-full-note"');
+		expect(html).not.toContain('data-testid="refund-partial"');
+	});
+
+	test("a fully refunded capture renders both its heading and its note", () => {
+		const html = renderRefundsPanel(refundsSummary(4500, 0));
+		expect(html).toContain(refundsGroupLabel(formatAmount(4500, "USD"), formatAmount(4500, "USD")));
+		expect(html).not.toContain(REFUNDS_GROUP_EMPTY_LABEL);
+		expect(html).toContain('data-testid="refunds-full-note"');
+		expect(html).toContain(FULLY_REFUNDED_NOTE);
+	});
+
+	test("a partly refunded capture renders the refund form", () => {
+		const html = renderRefundsPanel(refundsSummary(4500, 1200));
+		expect(html).toContain(refundsGroupLabel(formatAmount(3300, "USD"), formatAmount(4500, "USD")));
+		expect(html).toContain('data-testid="refund-partial"');
+		expect(html).toContain('data-testid="refund-amount"');
+		expect(html).not.toContain('data-testid="refunds-full-note"');
+	});
+
+	test("the ceiling decides the state — never the captured total, which is independent (F10)", () => {
+		// Every fixture above sets `capturedTotalCents` equal to `ceilingCents`, so
+		// a re-derivation keyed on the captured total instead of the ceiling would
+		// render identically in all three. They are independent fields on
+		// `RefundsSummary`, and "never captured" is the ceiling's own claim — a
+		// captured total surviving beside a zero ceiling must still read as
+		// nothing to refund.
+		const html = renderRefundsPanel({
+			refunds: [],
+			currency: "USD",
+			capturedTotalCents: 4500,
+			refundedTotalCents: 0,
+			ceilingCents: 0,
+			remainingCents: 0,
+			paymentMethod: "card",
+			refundable: true,
+		});
+		expect(html).toContain(REFUNDS_GROUP_EMPTY_LABEL);
+		expect(html).not.toContain('data-testid="refunds-full-note"');
+		expect(html).not.toContain('data-testid="refund-partial"');
+	});
+});
+
+describe("each refund refusal names the field it is about", () => {
+	// THREE REFUSALS, TWO FIELDS. A refusal that could not say which input it
+	// meant could only ever focus one of them, and the third would move focus to
+	// a field the operator had already filled in correctly.
+	test("an unparseable amount is about the amount", () => {
+		const check = checkRefundInput("nineteen", "ops", 4500, "USD");
+		expect(check.ok).toBe(false);
+		if (check.ok) return;
+		expect(check.refusal.field).toBe("amount");
+		expect(check.refusal.message).toBe(REFUND_AMOUNT_INVALID);
+	});
+
+	test("an amount over the remainder is about the amount", () => {
+		const check = checkRefundInput("99.99", "ops", 4500, "USD");
+		expect(check.ok).toBe(false);
+		if (check.ok) return;
+		expect(check.refusal.field).toBe("amount");
+		// The over-ceiling copy stays the SHARED sentence, money and all.
+		expect(check.refusal.message).toBe(
+			refundTooHighInline(formatAmount(9999, "USD"), formatAmount(4500, "USD")),
+		);
+	});
+
+	test("nobody recorded as issuing it is about `refunded by`", () => {
+		const check = checkRefundInput("19.99", "   ", 4500, "USD");
+		expect(check.ok).toBe(false);
+		if (check.ok) return;
+		expect(check.refusal.field).toBe("refundedBy");
+		expect(check.refusal.message).toBe(REFUND_BY_REQUIRED);
+	});
+
+	test("a valid refund parses to exact minor units and refuses nothing", () => {
+		const check = checkRefundInput("19.99", "ops", 4500, "USD");
+		expect(check.ok).toBe(true);
+		if (!check.ok) return;
+		expect(check.amountCents).toBe(1999);
+	});
+});
+
+describe("a standing refusal accents the field it names, and only that field (F20)", () => {
+	// F20 extracted this markup so the panel could be statically rendered for the
+	// first time; `amountError` was `null` in every fixture above, so none of it
+	// — the accent rule, the weight, the `aria-invalid`/`aria-describedby` pair —
+	// had unit coverage. THREE REFUSALS, TWO FIELDS, as above: the amount input
+	// carries two of them and `refunded by` carries the third, and the mark must
+	// land only on the input the standing refusal actually names.
+	const FORM = refundsSummary(4500, 1200);
+
+	test("an unparseable amount marks the amount input, and only the amount input", () => {
+		const check = checkRefundInput("nineteen", "ops", 4500, "USD");
+		expect(check.ok).toBe(false);
+		if (check.ok) return;
+		const html = renderRefundsPanel(FORM, check.refusal);
+		const message = tagFor(html, "refund-amount-error");
+		const messageId = attr(message, "id");
+		expect(messageId).not.toBeNull();
+		expect(html).toContain(check.refusal.message);
+		expect(message).toMatch(/font-weight:\s?600/);
+		expect(message).toMatch(/border-inline-start:\s?3px solid #c53030/);
+		const offending = tagFor(html, "refund-amount");
+		const other = tagFor(html, "refund-by");
+		expect(attr(offending, "aria-invalid")).toBe("true");
+		expect(attr(offending, "aria-describedby")).toBe(messageId);
+		expect(attr(other, "aria-invalid")).toBeNull();
+		expect(attr(other, "aria-describedby")).toBeNull();
+	});
+
+	test("an amount over the remainder marks the amount input, and only the amount input", () => {
+		const check = checkRefundInput("99.99", "ops", 4500, "USD");
+		expect(check.ok).toBe(false);
+		if (check.ok) return;
+		const html = renderRefundsPanel(FORM, check.refusal);
+		const message = tagFor(html, "refund-amount-error");
+		const messageId = attr(message, "id");
+		expect(messageId).not.toBeNull();
+		expect(html).toContain(check.refusal.message);
+		expect(message).toMatch(/font-weight:\s?600/);
+		expect(message).toMatch(/border-inline-start:\s?3px solid #c53030/);
+		const offending = tagFor(html, "refund-amount");
+		const other = tagFor(html, "refund-by");
+		expect(attr(offending, "aria-invalid")).toBe("true");
+		expect(attr(offending, "aria-describedby")).toBe(messageId);
+		expect(attr(other, "aria-invalid")).toBeNull();
+		expect(attr(other, "aria-describedby")).toBeNull();
+	});
+
+	test("nobody recorded as issuing it marks the `refunded by` input, and only that input", () => {
+		const check = checkRefundInput("19.99", "   ", 4500, "USD");
+		expect(check.ok).toBe(false);
+		if (check.ok) return;
+		const html = renderRefundsPanel(FORM, check.refusal);
+		const message = tagFor(html, "refund-amount-error");
+		const messageId = attr(message, "id");
+		expect(messageId).not.toBeNull();
+		expect(html).toContain(check.refusal.message);
+		expect(message).toMatch(/font-weight:\s?600/);
+		expect(message).toMatch(/border-inline-start:\s?3px solid #c53030/);
+		const offending = tagFor(html, "refund-by");
+		const other = tagFor(html, "refund-amount");
+		expect(attr(offending, "aria-invalid")).toBe("true");
+		expect(attr(offending, "aria-describedby")).toBe(messageId);
+		expect(attr(other, "aria-invalid")).toBeNull();
+		expect(attr(other, "aria-describedby")).toBeNull();
+	});
+
+	test("with no standing refusal, no input carries aria-describedby or aria-invalid", () => {
+		const html = renderRefundsPanel(FORM, null);
+		expect(html).not.toContain('data-testid="refund-amount-error"');
+		const amount = tagFor(html, "refund-amount");
+		const by = tagFor(html, "refund-by");
+		expect(attr(amount, "aria-invalid")).toBeNull();
+		expect(attr(amount, "aria-describedby")).toBeNull();
+		expect(attr(by, "aria-invalid")).toBeNull();
+		expect(attr(by, "aria-describedby")).toBeNull();
 	});
 });
