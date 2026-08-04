@@ -19,6 +19,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { RefundsSummary } from "../src/console-api.js";
+import type { RefundRefusal } from "../src/orders/order-detail.js";
 
 const apiFetch = vi.fn<(input: string, init?: RequestInit) => Promise<Response>>();
 
@@ -518,7 +519,10 @@ function refundsSummary(ceilingCents: number, remainingCents: number): RefundsSu
  *  rendered statically — it loads in an effect and opens on another tab — which
  *  is why the panel is a component of its own and its drafts, its refusal and
  *  its two focus refs arrive from outside. */
-function renderRefundsPanel(refunds: RefundsSummary): string {
+function renderRefundsPanel(
+	refunds: RefundsSummary,
+	amountError: RefundRefusal | null = null,
+): string {
 	return renderToStaticMarkup(
 		<RefundsPanel
 			refunds={refunds}
@@ -531,12 +535,29 @@ function renderRefundsPanel(refunds: RefundsSummary): string {
 			setRefundReason={() => undefined}
 			refundedBy=""
 			setRefundedBy={() => undefined}
-			amountError={null}
+			amountError={amountError}
 			setAmountError={() => undefined}
 			amountRef={{ current: null }}
 			refundedByRef={{ current: null }}
 		/>,
 	);
+}
+
+/** The single rendered tag carrying a given `data-testid`, so an assertion can
+ *  read one input's or one message's own attributes without the substring
+ *  search bleeding into the other input beside it. */
+function tagFor(html: string, testId: string): string {
+	const match = new RegExp(`<[a-z]+[^>]*data-testid="${testId}"[^>]*>`).exec(html);
+	if (match === null) throw new Error(`no element tagged ${testId} in: ${html}`);
+	return match[0];
+}
+
+/** An attribute's value off a tag string as `tagFor` returns it — `null` when
+ *  the attribute was not rendered at all, never an empty string standing in
+ *  for absence. */
+function attr(tag: string, name: string): string | null {
+	const match = new RegExp(`${name}="([^"]*)"`).exec(tag);
+	return match === null ? null : (match[1] ?? null);
 }
 
 describe("the refunds group's sentence agrees with its own heading", () => {
@@ -589,6 +610,28 @@ describe("the refunds group's sentence agrees with its own heading", () => {
 		expect(html).toContain('data-testid="refund-amount"');
 		expect(html).not.toContain('data-testid="refunds-full-note"');
 	});
+
+	test("the ceiling decides the state — never the captured total, which is independent (F10)", () => {
+		// Every fixture above sets `capturedTotalCents` equal to `ceilingCents`, so
+		// a re-derivation keyed on the captured total instead of the ceiling would
+		// render identically in all three. They are independent fields on
+		// `RefundsSummary`, and "never captured" is the ceiling's own claim — a
+		// captured total surviving beside a zero ceiling must still read as
+		// nothing to refund.
+		const html = renderRefundsPanel({
+			refunds: [],
+			currency: "USD",
+			capturedTotalCents: 4500,
+			refundedTotalCents: 0,
+			ceilingCents: 0,
+			remainingCents: 0,
+			paymentMethod: "card",
+			refundable: true,
+		});
+		expect(html).toContain(REFUNDS_GROUP_EMPTY_LABEL);
+		expect(html).not.toContain('data-testid="refunds-full-note"');
+		expect(html).not.toContain('data-testid="refund-partial"');
+	});
 });
 
 describe("each refund refusal names the field it is about", () => {
@@ -627,5 +670,83 @@ describe("each refund refusal names the field it is about", () => {
 		expect(check.ok).toBe(true);
 		if (!check.ok) return;
 		expect(check.amountCents).toBe(1999);
+	});
+});
+
+describe("a standing refusal accents the field it names, and only that field (F20)", () => {
+	// F20 extracted this markup so the panel could be statically rendered for the
+	// first time; `amountError` was `null` in every fixture above, so none of it
+	// — the accent rule, the weight, the `aria-invalid`/`aria-describedby` pair —
+	// had unit coverage. THREE REFUSALS, TWO FIELDS, as above: the amount input
+	// carries two of them and `refunded by` carries the third, and the mark must
+	// land only on the input the standing refusal actually names.
+	const FORM = refundsSummary(4500, 1200);
+
+	test("an unparseable amount marks the amount input, and only the amount input", () => {
+		const check = checkRefundInput("nineteen", "ops", 4500, "USD");
+		expect(check.ok).toBe(false);
+		if (check.ok) return;
+		const html = renderRefundsPanel(FORM, check.refusal);
+		const message = tagFor(html, "refund-amount-error");
+		const messageId = attr(message, "id");
+		expect(messageId).not.toBeNull();
+		expect(html).toContain(check.refusal.message);
+		expect(message).toMatch(/font-weight:\s?600/);
+		expect(message).toMatch(/border-inline-start:\s?3px solid #c53030/);
+		const offending = tagFor(html, "refund-amount");
+		const other = tagFor(html, "refund-by");
+		expect(attr(offending, "aria-invalid")).toBe("true");
+		expect(attr(offending, "aria-describedby")).toBe(messageId);
+		expect(attr(other, "aria-invalid")).toBeNull();
+		expect(attr(other, "aria-describedby")).toBeNull();
+	});
+
+	test("an amount over the remainder marks the amount input, and only the amount input", () => {
+		const check = checkRefundInput("99.99", "ops", 4500, "USD");
+		expect(check.ok).toBe(false);
+		if (check.ok) return;
+		const html = renderRefundsPanel(FORM, check.refusal);
+		const message = tagFor(html, "refund-amount-error");
+		const messageId = attr(message, "id");
+		expect(messageId).not.toBeNull();
+		expect(html).toContain(check.refusal.message);
+		expect(message).toMatch(/font-weight:\s?600/);
+		expect(message).toMatch(/border-inline-start:\s?3px solid #c53030/);
+		const offending = tagFor(html, "refund-amount");
+		const other = tagFor(html, "refund-by");
+		expect(attr(offending, "aria-invalid")).toBe("true");
+		expect(attr(offending, "aria-describedby")).toBe(messageId);
+		expect(attr(other, "aria-invalid")).toBeNull();
+		expect(attr(other, "aria-describedby")).toBeNull();
+	});
+
+	test("nobody recorded as issuing it marks the `refunded by` input, and only that input", () => {
+		const check = checkRefundInput("19.99", "   ", 4500, "USD");
+		expect(check.ok).toBe(false);
+		if (check.ok) return;
+		const html = renderRefundsPanel(FORM, check.refusal);
+		const message = tagFor(html, "refund-amount-error");
+		const messageId = attr(message, "id");
+		expect(messageId).not.toBeNull();
+		expect(html).toContain(check.refusal.message);
+		expect(message).toMatch(/font-weight:\s?600/);
+		expect(message).toMatch(/border-inline-start:\s?3px solid #c53030/);
+		const offending = tagFor(html, "refund-by");
+		const other = tagFor(html, "refund-amount");
+		expect(attr(offending, "aria-invalid")).toBe("true");
+		expect(attr(offending, "aria-describedby")).toBe(messageId);
+		expect(attr(other, "aria-invalid")).toBeNull();
+		expect(attr(other, "aria-describedby")).toBeNull();
+	});
+
+	test("with no standing refusal, no input carries aria-describedby or aria-invalid", () => {
+		const html = renderRefundsPanel(FORM, null);
+		expect(html).not.toContain('data-testid="refund-amount-error"');
+		const amount = tagFor(html, "refund-amount");
+		const by = tagFor(html, "refund-by");
+		expect(attr(amount, "aria-invalid")).toBeNull();
+		expect(attr(amount, "aria-describedby")).toBeNull();
+		expect(attr(by, "aria-invalid")).toBeNull();
+		expect(attr(by, "aria-describedby")).toBeNull();
 	});
 });
