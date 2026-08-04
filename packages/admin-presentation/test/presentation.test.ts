@@ -30,13 +30,17 @@ import {
 	NOTHING_ON_PAGE,
 	NO_TAX_CLASS,
 	ORDERS_EMPTY,
+	ORDERS_LOAD_MORE_FAILED_TITLE,
 	ORDERS_NOUN,
 	ORDERS_NO_MATCH,
+	ORDERS_STALE_CLEARED_NOTE,
 	ORDER_STATES,
 	PAGE_ZERO,
 	REFUND_ADDITIVE_NOTE,
 	REFUND_REVIEW_STEP_PREFIX,
 	RESOLVE_RECONCILIATION_NOTE,
+	RETRYING_LABEL,
+	RETRY_LABEL,
 	SCAN_FURTHER,
 	SHORT_ID_CONFIRM_LEN,
 	SHORT_ID_MIN,
@@ -75,6 +79,35 @@ import {
 } from "../src/index.js";
 
 const USD = currency("USD");
+
+describe("the words a failed load is answered with (F1, F2)", () => {
+	test("the retry label and its in-flight form are authored here, not at the call sites", () => {
+		// Three screens offer a retry — two lists and the product detail — and a
+		// label spelled per screen is exactly the drift this package exists to
+		// prevent.
+		expect(RETRY_LABEL).toBe("Retry");
+		expect(RETRYING_LABEL).toBe("Retrying…");
+		// The in-flight form is the same word: an operator watching the button must
+		// see it change state, not change subject.
+		expect(RETRYING_LABEL.startsWith("Retry")).toBe(true);
+	});
+
+	test("the stale sentence says the rows went AND why, in the past tense", () => {
+		// The rows are already gone by the time this is read, and the operator
+		// watched them go. It has to read as the screen refusing to state something
+		// it no longer knows, not as data loss.
+		expect(ORDERS_STALE_CLEARED_NOTE).toBe(
+			"The orders that were here have been cleared — they were from an earlier request and may no longer be current.",
+		);
+	});
+
+	test("a continuation failure makes the SMALLER claim", () => {
+		// The service's refusal is about the whole collection; on page two the rows
+		// already on screen disprove that. What failed is the next page.
+		expect(ORDERS_LOAD_MORE_FAILED_TITLE).toBe("Couldn't load more orders");
+		expect(ORDERS_LOAD_MORE_FAILED_TITLE).toContain("more");
+	});
+});
 
 describe("the package imports nothing", () => {
 	test("every module is dependency-free", async () => {

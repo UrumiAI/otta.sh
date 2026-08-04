@@ -30,6 +30,19 @@
  */
 export const ABSENT = "—";
 
+/**
+ * The label on the control that re-runs a load that failed, and what that
+ * control reads while the re-run is in flight.
+ *
+ * HERE RATHER THAN BESIDE THE LIST VOCABULARY, because a retry is not a list
+ * affordance: the product detail offers one too, beside its Back button, and a
+ * detail screen importing the list module for one word would say something
+ * false about how the two relate. Every failed load in the console offers the
+ * same word.
+ */
+export const RETRY_LABEL = "Retry";
+export const RETRYING_LABEL = "Retrying…";
+
 /** §1's banner prose budget. */
 export const BANNER_BUDGET = 240;
 

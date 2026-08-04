@@ -62,6 +62,8 @@ import {
 	PRODUCTS_SCREEN_TITLE,
 	PRODUCT_COLUMN_LABELS,
 	PRODUCT_FILTER_LABELS,
+	RETRYING_LABEL,
+	RETRY_LABEL,
 	UNTITLED,
 	formatOptionalAmount,
 	listOutcome,
@@ -148,6 +150,24 @@ interface LoadedPage {
 	readonly firstPage: boolean;
 }
 
+/**
+ * Drop the ANSWER from a loaded page while keeping what the page is not (F2).
+ *
+ * Same rule as the Orders list, and it is the SIMPLER half of it: this screen
+ * has no accumulated-pages case to preserve, so every failure clears. The rows,
+ * the cursor and the exact count go together — a count without its rows is the
+ * same false claim in fewer words, and `12 products · …` over an error notice
+ * is the defect F2 names.
+ *
+ * The VOCABULARY AND THE STOCK CONTEXT SURVIVE, because they are not the
+ * answer: they are what the filter panel's two selects are built from, and
+ * clearing them would answer a failed load by emptying the controls the
+ * operator needs to retry it differently.
+ */
+export function clearAnswer(page: LoadedPage | null): LoadedPage | null {
+	return page === null ? null : { ...page, products: [], nextCursor: null, total: undefined };
+}
+
 export function ProductsList({
 	onOpen,
 }: {
@@ -169,6 +189,9 @@ export function ProductsList({
 			setBusy(false);
 			if (isFailure(result)) {
 				setFailure({ title: result.title, description: result.description });
+				// F2: THE ANSWER GOES WITH THE FAILURE, in the same transition. The
+				// table and the count describe a response this render no longer has.
+				setPage(clearAnswer);
 				return;
 			}
 			setFailure(null);
@@ -249,6 +272,15 @@ export function ProductsList({
 					variant="error"
 					title={failure.title}
 					description={failure.description}
+					// SAME GENERATION COUNTER, same refusal to clear the failure on the
+					// click: the response clears it, so nothing flashes back in the
+					// meantime.
+					action={{
+						label: busy ? RETRYING_LABEL : RETRY_LABEL,
+						onClick: () => setGeneration((n) => n + 1),
+						disabled: busy,
+						busy,
+					}}
 					testId="products-failure"
 				/>
 			)}

@@ -35,7 +35,8 @@ const {
 	performAction,
 	OTTA_ADMIN_ROUTE,
 } = await import("../src/console-api.js");
-const { activeFilterParts, UNTITLED } = await import("../src/products/products-list.js");
+const { activeFilterParts, clearAnswer, UNTITLED } =
+	await import("../src/products/products-list.js");
 const { CopyIdButton } = await import("../src/ui.js");
 const {
 	LOW_STOCK_FILTER_DESCRIPTION,
@@ -86,6 +87,43 @@ describe("the screen is declared, and the console can actually render it", () =>
 		// arrangement. INC-R3 retired the Block Kit screen, so the suffix expires
 		// with the thing it distinguished this one FROM (ADR-0015 Decision 1).
 		expect(PRODUCTS_PAGE.label).toBe("Pricing & inventory");
+	});
+});
+
+describe("a failed load stops showing the previous answer (F2)", () => {
+	// The same defect class as Orders, on a simpler screen: there is no
+	// accumulated-pages case to preserve here, so EVERY failure clears.
+	const page = {
+		products: [{ productId: "p-1" }] as never,
+		nextCursor: "cursor-2",
+		total: 12,
+		stock: { threshold: 3, unreadable: false, filterUnavailable: false },
+		vocabulary: {
+			statuses: [{ value: "true", label: "Active" }],
+			kinds: [{ value: "physical", label: "Physical" }],
+			any: "any",
+			pageLimit: 25,
+		},
+		firstPage: true,
+	};
+
+	test("the table goes, and the `12 products · …` count goes with it", () => {
+		const cleared = clearAnswer(page);
+		expect(cleared?.products).toEqual([]);
+		// A count over an error notice is the same false claim in fewer words.
+		expect(cleared?.total).toBeUndefined();
+		// And `Load more` would ask for page two of an answer that no longer exists.
+		expect(cleared?.nextCursor).toBeNull();
+	});
+
+	test("the filter panel keeps the vocabulary it is built from", () => {
+		// Clearing the page wholesale would answer a failed load by emptying both
+		// selects — the operator would be left unable to retry it differently,
+		// which is the cold-failure defect F3 names on the Orders bar.
+		const cleared = clearAnswer(page);
+		expect(cleared?.vocabulary).toBe(page.vocabulary);
+		expect(cleared?.stock).toBe(page.stock);
+		expect(clearAnswer(null)).toBeNull();
 	});
 });
 

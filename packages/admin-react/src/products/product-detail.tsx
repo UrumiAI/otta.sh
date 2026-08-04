@@ -68,6 +68,8 @@ import {
 	REMOVE_STOCK_GROUP_LABEL,
 	REMOVE_STOCK_INVALID_QTY,
 	REMOVE_STOCK_PLACEHOLDER,
+	RETRYING_LABEL,
+	RETRY_LABEL,
 	SAVE_IDENTITY_LABEL,
 	SAVE_PRICE_LABEL,
 	SAVE_SHIPPING_LABEL,
@@ -166,11 +168,16 @@ export function ProductDetail({
 	const [pending, setPending] = React.useState<PendingAction | null>(null);
 	const [busy, setBusy] = React.useState(false);
 	const [generation, setGeneration] = React.useState(0);
+	// Confined to the failure branch: the re-read a save triggers has the whole
+	// screen to show for itself, but a Retry on a screen that is nothing but an
+	// error card has to say that the click landed.
+	const [retrying, setRetrying] = React.useState(false);
 
 	React.useEffect(() => {
 		let cancelled = false;
 		void fetchProductDetail(productId).then((result) => {
 			if (cancelled) return;
+			setRetrying(false);
 			if (isFailure(result)) {
 				setFailure({ title: result.title, description: result.description });
 				return;
@@ -214,7 +221,26 @@ export function ProductDetail({
 	if (failure !== null) {
 		return (
 			<div>
-				<Button label={PRODUCTS_BACK_LABEL} onClick={onBack} testId="products-back" />
+				{/*
+				  BESIDE BACK, not instead of it. A failed read leaves two useful
+				  moves — ask again, or leave — and the one that costs nothing is the
+				  one an operator should not have to reload the page to make. Same
+				  generation counter as the two list screens, and the same refusal to
+				  clear the failure on the click: the response clears it.
+				*/}
+				<div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+					<Button label={PRODUCTS_BACK_LABEL} onClick={onBack} testId="products-back" />
+					<Button
+						label={retrying ? RETRYING_LABEL : RETRY_LABEL}
+						onClick={() => {
+							setRetrying(true);
+							setGeneration((n) => n + 1);
+						}}
+						disabled={retrying}
+						busy={retrying}
+						testId="detail-retry"
+					/>
+				</div>
 				<div style={{ marginBlockStart: 16 }}>
 					<Notice
 						variant="error"
