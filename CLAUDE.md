@@ -5,10 +5,10 @@ Operational guide for Claude working in this repo. The **why** lives in
 (architecture); read those first. This file is the quick, agent-facing contract: commands,
 conventions, and the guardrails that must not be crossed.
 
-> **Status: pre-scaffold.** Design is fully specified; implementation not yet started. The
-> toolchain commands below are the **intended** ones (per `DEVELOPMENT.md` §6) — a package
-> may not be wired until scaffolding lands. When a command doesn't exist yet, say so rather
-> than inventing output.
+> **Status: shipped, pre-1.0.** Phases 0–7 are merged and the full toolchain below is wired —
+> `@otta-sh/domain`, `@otta-sh/service`, the storefront/admin adapters, and the EmDash plugin
+> all exist under `packages/`. Treat the commands below as live, not aspirational; if one
+> genuinely doesn't exist, say so rather than inventing output.
 
 ---
 
