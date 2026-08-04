@@ -38,6 +38,7 @@ const {
 const { activeFilterParts, clearAnswer, visibleDegradation, UNTITLED } =
 	await import("../src/products/products-list.js");
 const { CopyIdButton } = await import("../src/ui.js");
+const { PriceGroup, changedFields } = await import("../src/products/product-detail.js");
 const {
 	LOW_STOCK_FILTER_DESCRIPTION,
 	PRODUCTS_LOW_STOCK_NO_MATCH,
@@ -45,9 +46,36 @@ const {
 	listOutcome,
 	PRODUCTS_EMPTY,
 	PRODUCTS_NO_MATCH,
+	priceSavedNotice,
 } = await import("@otta-sh/admin-presentation");
 const { OTTA_CONSOLE_ADMIN_PAGES, PRODUCTS_PAGE } = await import("../src/index.js");
 const admin = await import("../src/admin.js");
+
+/** A priced, in-stock, live product — the ordinary case the Price group's four
+ *  states are argued about. Synthetic throughout. */
+const PRICED = {
+	productId: "prod-1",
+	sku: "APR-LIN-NAT",
+	title: "Linen apron",
+	priceCents: 900,
+	currency: "USD",
+	taxClass: "standard",
+	compareAtCents: null,
+	compareAtCurrency: null,
+	unitCostCents: null,
+	unitCostCurrency: null,
+	inventoryPolicy: "deny",
+	weightGrams: 420,
+	lengthMm: null,
+	widthMm: null,
+	heightMm: null,
+	productKind: "physical",
+	active: true,
+	deletedAt: null,
+	onHand: 12,
+	createdAt: "2026-01-01T00:00:00.000Z",
+	updatedAt: "2026-01-02T00:00:00.000Z",
+} as const;
 
 function jsonResponse(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -325,6 +353,81 @@ describe("presentation primitives this screen relies on", () => {
 
 	test("a product with no title reads as `(untitled)`, never as its id", () => {
 		expect(UNTITLED).toBe("(untitled)");
+	});
+
+	test("a price save's four states are DERIVED, and none of them is latched (F4)", () => {
+		// The one that a `touched` boolean gets wrong, and the reason this compares
+		// values instead: type a character into the price and delete it again, and
+		// there is nothing to save. A form that stayed dirty would offer a save that
+		// writes nothing and still bumps `updatedAt`.
+		const committed = { price: "9.00", currency: "USD", compareAt: "", unitCost: "" };
+		expect(changedFields(committed, committed)).toEqual([]);
+		expect(changedFields(committed, { ...committed, price: "99.99" })).toEqual(["price"]);
+		// …and it reports WHICH field, so only the changed input takes the border.
+		expect(changedFields(committed, { ...committed, compareAt: "29.99" })).toEqual(["compareAt"]);
+		expect(changedFields(committed, { ...committed, price: "9.0" })).toEqual(["price"]);
+		expect(changedFields(committed, { ...committed, price: "9.00" })).toEqual([]);
+	});
+
+	test("a clean Price group disables Save and says why", () => {
+		// The screen's one no-op write. Disabling it without the hint would be a
+		// dead control; the hint without disabling it would be advice.
+		const html = renderToStaticMarkup(
+			<PriceGroup
+				product={PRICED}
+				busy={false}
+				saving={false}
+				receipt={null}
+				onSubmit={() => undefined}
+			/>,
+		);
+		expect(html).toContain("No changes to save.");
+		expect(html).toContain('data-testid="save-price" disabled=""');
+		// Nothing pending, nothing to discard, and no receipt for a save nobody made.
+		expect(html).not.toContain('data-testid="price-pending"');
+		expect(html).not.toContain('data-testid="discard-price"');
+		expect(html).not.toContain('data-testid="price-receipt"');
+		expect(html).not.toContain("· unsaved");
+	});
+
+	test("the acting button says `Saving…` while its own write is outstanding", () => {
+		// `busy` alone would put the word on all three save buttons, which reports
+		// two writes that are not happening. `aria-busy` is what distinguishes
+		// mid-flight from merely unavailable for a screen-reader user.
+		const html = renderToStaticMarkup(
+			<PriceGroup
+				product={PRICED}
+				busy={true}
+				saving={true}
+				receipt={null}
+				onSubmit={() => undefined}
+			/>,
+		);
+		expect(html).toContain("Saving…");
+		expect(html).not.toContain("Save price");
+		expect(html).toContain('aria-busy="true"');
+	});
+
+	test("the receipt renders INSIDE the section, under the button, and nothing dismisses it", () => {
+		// Page top is where the operator is not looking. The ordering assertion is
+		// the half that matters: a receipt above the field it reports on reads as a
+		// precondition rather than an outcome.
+		const html = renderToStaticMarkup(
+			<PriceGroup
+				product={PRICED}
+				busy={false}
+				saving={false}
+				receipt={priceSavedNotice("$9.00 → $99.99")}
+				onSubmit={() => undefined}
+			/>,
+		);
+		expect(html).toContain("Price updated — live on the storefront");
+		expect(html).toContain("orders already placed keep the price they were charged");
+		expect(html.indexOf('data-testid="price-receipt"')).toBeGreaterThan(
+			html.indexOf('data-testid="save-price"'),
+		);
+		// Inside the group, not beside it.
+		expect(html.startsWith("<details")).toBe(true);
 	});
 
 	test("the low-stock control's description is page-scoped", () => {

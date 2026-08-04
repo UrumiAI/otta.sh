@@ -28,6 +28,7 @@ import {
 	LABEL_BUDGET,
 	MARK_REFUNDED_CONFIRM,
 	NOTHING_ON_PAGE,
+	NO_CHANGES_TO_SAVE,
 	NO_TAX_CLASS,
 	ORDERS_EMPTY,
 	ORDERS_LOAD_MORE_FAILED_TITLE,
@@ -36,6 +37,7 @@ import {
 	ORDERS_STALE_CLEARED_NOTE,
 	ORDER_STATES,
 	PAGE_ZERO,
+	PRICE_PENDING_CONTEXT,
 	REFUND_ADDITIVE_NOTE,
 	REFUND_REVIEW_STEP_PREFIX,
 	RESOLVE_RECONCILIATION_NOTE,
@@ -45,6 +47,7 @@ import {
 	SHORT_ID_CONFIRM_LEN,
 	SHORT_ID_MIN,
 	TERMINAL_ORDER_STATES,
+	addStockConfirm,
 	cancelConfirmText,
 	cents,
 	currency,
@@ -57,6 +60,7 @@ import {
 	formatMoney,
 	formatOptionalAmount,
 	formatTimestamp,
+	dirtyGroupLabel,
 	identityGroupLabel,
 	listOutcome,
 	majorUnits,
@@ -64,7 +68,10 @@ import {
 	orderStateCell,
 	parseOnHandWatermark,
 	parseStockQty,
+	priceChangeSummary,
 	priceGroupLabel,
+	pricePendingLine,
+	priceSavedNotice,
 	refundTooHighText,
 	removeStockConfirm,
 	rowCountLine,
@@ -675,6 +682,95 @@ describe("the remove-stock confirm is composed once for both surfaces", () => {
 
 	test("the title stays inside the label budget however large the quantity", () => {
 		expect(removeStockConfirm(999_999_999).title.length).toBeLessThanOrEqual(LABEL_BUDGET);
+	});
+});
+
+describe("the add-stock confirm restates the quantity the system will act on (F5)", () => {
+	test("it names the parsed quantity, the SKU and BOTH ends of the projection", () => {
+		// The whole point: `100` typed where `10` was meant is valid input, so the
+		// only place it can be caught is a sentence stating the number and what it
+		// does to on-hand.
+		const confirm = addStockConfirm(100, "GDE-CARE-PDF", 0);
+		expect(confirm.title).toBe("Add 100 units?");
+		expect(confirm.text).toBe(
+			"Add 100 units to GDE-CARE-PDF? On hand goes from 0 to 100 and the store can sell them immediately.",
+		);
+		expect(confirm.confirm).toBe("Yes, add 100");
+		expect(confirm.deny).toBe("Keep as is");
+	});
+
+	test("the projection is computed FROM the quantity, not restated from the field", () => {
+		expect(addStockConfirm(10, "GDE-CARE-PDF", 42).text).toContain("from 42 to 52");
+	});
+
+	test("it agrees with itself about the unit, as the removal's does", () => {
+		expect(addStockConfirm(1, "APR-LIN-NAT", 7).title).toBe("Add 1 unit?");
+		expect(addStockConfirm(1, "APR-LIN-NAT", 7).text).toContain("Add 1 unit to APR-LIN-NAT?");
+	});
+
+	test("it says what the addition ENABLES, where the removal says what it costs", () => {
+		// Levelling the two gates must not level the two sentences: the reason to
+		// check an addition is that the store starts selling the units.
+		expect(addStockConfirm(5, "APR-LIN-NAT", 0).text).toContain("can sell them immediately");
+		expect(addStockConfirm(5, "APR-LIN-NAT", 0).text).not.toContain("cannot be undone");
+	});
+
+	test("the title stays inside the label budget however large the quantity", () => {
+		expect(addStockConfirm(999_999_999, "APR-LIN-NAT", 0).title.length).toBeLessThanOrEqual(
+			LABEL_BUDGET,
+		);
+	});
+});
+
+describe("a price save gets a before and an after (F4)", () => {
+	test("the pending line names both amounts, through the money formatter", () => {
+		const change = priceChangeSummary(900, 9999, "USD");
+		expect(change).toBe("$9.00 → $99.99");
+		expect(pricePendingLine(change)).toBe("Price $9.00 → $99.99");
+	});
+
+	test("an unchanged amount is not a change, so there is nothing to state", () => {
+		// The clean form must not carry a pending block reading `$9.00 → $9.00`.
+		expect(priceChangeSummary(900, 900, "USD")).toBeNull();
+		expect(pricePendingLine(null)).toBeNull();
+	});
+
+	test("an absent end is stated as nothing, never as `$0.00`", () => {
+		// A product priced for the FIRST time has no before; a blank field leaves
+		// the price unchanged and has no after. Neither of them is a zero.
+		expect(priceChangeSummary(null, 9999, "USD")).toBeNull();
+		expect(priceChangeSummary(900, null, "USD")).toBeNull();
+		expect(priceChangeSummary(900, 9999, null)).toBeNull();
+		expect(priceChangeSummary(900, 9999, "NOT-A-CURRENCY")).toBeNull();
+	});
+
+	test("the receipt names the amounts AND what they did not touch", () => {
+		const notice = priceSavedNotice("$9.00 → $99.99");
+		expect(notice.title).toBe("Price updated — live on the storefront");
+		expect(notice.description).toBe(
+			"$9.00 → $99.99. Shoppers see the new price now; orders already placed keep the price they were charged.",
+		);
+	});
+
+	test("a save with no amount change still reports, without inventing amounts", () => {
+		// A compare-at or unit-cost edit is still a save, and still publishes.
+		const notice = priceSavedNotice(null);
+		expect(notice.description).toBe(
+			"Shoppers see the new price now; orders already placed keep the price they were charged.",
+		);
+		expect(notice.description).not.toContain("→");
+	});
+
+	test("a group holding unsaved work says so on its own label", () => {
+		// A SHUT group must not be able to hide an edit.
+		const label = priceGroupLabel(900, "USD");
+		expect(dirtyGroupLabel(label, true)).toBe(`${label} · unsaved`);
+		expect(dirtyGroupLabel(label, false)).toBe(label);
+	});
+
+	test("the pending sentence says the save publishes IMMEDIATELY", () => {
+		expect(PRICE_PENDING_CONTEXT).toContain("immediately");
+		expect(NO_CHANGES_TO_SAVE).toBe("No changes to save.");
 	});
 });
 
