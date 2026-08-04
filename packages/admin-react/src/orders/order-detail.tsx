@@ -348,6 +348,11 @@ export function OrderDetail({
 	const order = detail.order;
 	const recipient = order.customerId ?? order.buyerRef;
 	const refunds = detail.refunds;
+	// ONE predicate feeds both the group's heading and its body. They are a line
+	// apart on screen and used to be computed independently, which is exactly how
+	// a heading saying "nothing captured" ended up over a sentence saying "fully
+	// refunded". Derived once here, they cannot drift again.
+	const refundMode = refunds === null ? null : refundPanelMode(refunds);
 	const cur =
 		refunds?.currency !== undefined && refunds.currency.length > 0
 			? refunds.currency
@@ -804,7 +809,7 @@ export function OrderDetail({
 								testId="detail-refunds"
 								defaultOpen
 								label={
-									refunds.ceilingCents === 0
+									refundMode === "empty"
 										? REFUNDS_GROUP_EMPTY_LABEL
 										: refundsGroupLabel(
 												formatAmount(refunds.refundedTotalCents, cur),
@@ -839,14 +844,11 @@ export function OrderDetail({
 									</Table>
 								)}
 
-								{refundPanelMode(refunds) === "empty" ? (
-									<p
-										style={{ fontSize: 13, marginBlockStart: 12 }}
-										data-testid="refunds-empty-note"
-									>
-										{REFUNDS_GROUP_EMPTY_LABEL}
-									</p>
-								) : refundPanelMode(refunds) === "fully-refunded" ? (
+								{/* The empty state says its piece once, in the heading. Repeating the
+								    same sentence in the body read as a rendering fault, and the defect
+								    this guards was a FALSE claim under that heading — not the absence
+								    of a second true one. */}
+								{refundMode === "empty" ? null : refundMode === "fully-refunded" ? (
 									<p style={{ fontSize: 13, marginBlockStart: 12 }} data-testid="refunds-full-note">
 										{FULLY_REFUNDED_NOTE}
 									</p>

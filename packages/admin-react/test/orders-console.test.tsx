@@ -16,6 +16,8 @@
  * tests are that deferral being closed — not "the screen said something", but
  * "the screen said what to DO".
  */
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -511,6 +513,36 @@ describe("the refunds group's sentence agrees with its own heading", () => {
 
 	test("anything still refundable keeps the form", () => {
 		expect(refundPanelMode({ ceilingCents: 4500, remainingCents: 1200 })).toBe("form");
+	});
+
+	// THE ORIGINAL DEFECT WAS TWO COPIES OF ONE PREDICATE, not a wrong predicate.
+	// The heading and the sentence under it each decided the panel's state for
+	// themselves, so they were free to disagree — and did. Correcting only the
+	// sentence would leave that structure standing, and the next edit to either
+	// line could split them again. This asserts there is exactly ONE place in the
+	// screen where the panel's state is decided; re-inlining a second copy of the
+	// test, in either the heading or the body, fails here.
+	test("only `refundPanelMode` decides the panel's state", async () => {
+		const source = await readFile(
+			fileURLToPath(new URL("../src/orders/order-detail.tsx", import.meta.url)),
+			"utf8",
+		);
+		const start = source.indexOf("export function refundPanelMode");
+		expect(start).toBeGreaterThan(-1);
+		// The declaration's own closing brace is the only `}` on a line of its own
+		// inside it — the parameter's inline type closes with `}): …`.
+		const end = source.indexOf("\n}\n", start) + 3;
+		const predicate = source.slice(start, end);
+		const everywhereElse = source.slice(0, start) + source.slice(end);
+		// A slice that ran away would make the negative assertions vacuous.
+		expect(predicate.length).toBeLessThan(500);
+
+		// The one legitimate home for the ceiling and remainder tests.
+		expect(predicate).toMatch(/ceilingCents === 0/);
+		expect(predicate).toMatch(/remainingCents <= 0/);
+		// And nowhere else may re-derive either of them.
+		expect(everywhereElse).not.toMatch(/ceilingCents\s*(===|==|<|>|!==)/);
+		expect(everywhereElse).not.toMatch(/remainingCents\s*(===|==|<=|>=|<|>|!==)/);
 	});
 });
 
