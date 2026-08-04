@@ -306,6 +306,139 @@ export function removeStockConfirm(qty: number): {
 	};
 }
 
+/**
+ * The add-stock confirm dialog, composed beside the removal's.
+ *
+ * WHY THE TWO MOVEMENTS ARE GATED THE SAME WAY, and why the reconciliation went
+ * UPWARD. Two controls sat on one panel with opposite gates and no stated
+ * reason: a removal confirmed, an addition committed on the click. Levelling
+ * DOWN would delete the only safeguard on the screen's one destructive act;
+ * levelling up costs a keystroke on an event that happens per delivery, not per
+ * edit. The direction is also the safer one — an over-add lets the store sell
+ * units it does not have, where an over-remove only costs sales.
+ *
+ * THE DIALOG'S REAL JOB IS RESTATING THE PARSED QUANTITY. The `100` typed where
+ * `10` was meant is exactly what the field cannot catch, because both are valid
+ * input; so the sentence names the number the system will act on, and the
+ * projected on-hand is derived FROM that number rather than from the raw string.
+ * The derivation lives here rather than on the surface for the reason the
+ * removal's composition does: two screens describing one movement must not
+ * describe it two ways.
+ *
+ * `onHand` is the watermark the render was built from — the same value that
+ * rides with the write. It is never defaulted: the add form is not rendered at
+ * all for a SKU with no inventory record, so an absent on-hand cannot reach here
+ * and cannot be reported as a zero.
+ */
+export function addStockConfirm(
+	qty: number,
+	sku: string,
+	onHand: number,
+): {
+	readonly title: string;
+	readonly text: string;
+	readonly confirm: string;
+	readonly deny: string;
+} {
+	const unit = unitWord(qty);
+	return {
+		title: fit(`Add ${String(qty)} ${unit}?`, LABEL_BUDGET),
+		text: `Add ${String(qty)} ${unit} to ${sku}? On hand goes from ${String(onHand)} to ${String(onHand + qty)} and the store can sell them immediately.`,
+		confirm: `Yes, add ${String(qty)}`,
+		deny: "Keep as is",
+	};
+}
+
+// ── an edit's before and after ──────────────────────────────────────────────
+//
+// F4. A price save had neither: nothing stated the pending change or its size,
+// and the receipt was a generic grey `Saved` that would read identically for a
+// weight edit. What it does NOT get is a confirm dialog — that taxes every
+// correct edit to guard the rare one, and an ordinary price edit stays one
+// click. It gets a before, an after, and a way back.
+
+/** The hint on a disabled Save. A clean save is a no-op that still bumps
+ *  `updatedAt`, so the button is disabled rather than merely harmless — and a
+ *  disabled control with no explanation is its own defect. */
+export const NO_CHANGES_TO_SAVE = "No changes to save.";
+
+/** Appended to a group's own label while it holds unsaved edits, so a group
+ *  that is SHUT cannot hide work. Composed by {@link dirtyGroupLabel}. */
+export const UNSAVED_SUFFIX = " · unsaved";
+
+/** The in-flight label a save button takes while its write is outstanding. */
+export const SAVING_LABEL = "Saving…";
+
+/** The way back out of an unsaved edit, beside Save. */
+export const DISCARD_LABEL = "Discard";
+
+/** What the operator is about to publish, under the pending amounts. It says
+ *  IMMEDIATELY because there is no staging step: the storefront reads the same
+ *  row this write updates. */
+export const PRICE_PENDING_CONTEXT = "Saving publishes this price to the storefront immediately.";
+
+/** A group label with its unsaved marker. Per-section by construction — every
+ *  editable group on the screen composes its label this way. */
+export function dirtyGroupLabel(label: string, dirty: boolean): string {
+	return dirty ? `${label}${UNSAVED_SUFFIX}` : label;
+}
+
+/**
+ * `$9.00 → $99.99` — the two ends of a price change, or `null` when there is no
+ * change to state.
+ *
+ * BOTH SIDES COME FROM THE MONEY FORMATTER, and neither is assembled here. The
+ * "after" is integer minor units parsed by `parseMinorUnitsInput` — the same
+ * exact-integer parse the write itself goes through — so nothing on this path
+ * ever holds a float or does arithmetic on an amount.
+ *
+ * `null` (rather than a half-sentence) for every case where an end is not a
+ * formattable amount: an unpriced product has no BEFORE, a blank field leaves
+ * the price unchanged and has no AFTER, and an unparseable one has neither.
+ * Absence is not rendered as `$0.00` and not rendered as an empty slot.
+ */
+export function priceChangeSummary(
+	fromCents: number | null,
+	toCents: number | null,
+	currencyCode: string | null,
+): string | null {
+	if (fromCents === null || toCents === null || currencyCode === null) return null;
+	if (fromCents === toCents) return null;
+	const from = formatOptionalAmount(fromCents, currencyCode);
+	const to = formatOptionalAmount(toCents, currencyCode);
+	if (from === UNFORMATTABLE || to === UNFORMATTABLE) return null;
+	return `${from} → ${to}`;
+}
+
+/** The pending block's first line. The second is {@link PRICE_PENDING_CONTEXT},
+ *  which stands alone when there is no amount change to name — a compare-at
+ *  edit is still an edit, and still publishes. */
+export function pricePendingLine(change: string | null): string | null {
+	return change === null ? null : `Price ${change}`;
+}
+
+/**
+ * The receipt a completed price save leaves BEHIND IT, inside the section.
+ *
+ * IT PERSISTS, and that is the fix. A receipt that fades is one the operator —
+ * who is looking at the field they just edited, not at the top of the page —
+ * never sees at all, which is how a generic `Saved` managed to answer nothing
+ * about the storefront. The second sentence answers the question a price change
+ * actually raises: whether it reaches orders that were already placed. It does
+ * not.
+ */
+export function priceSavedNotice(change: string | null): {
+	readonly title: string;
+	readonly description: string;
+} {
+	const consequence =
+		"Shoppers see the new price now; orders already placed keep the price they were charged.";
+	return {
+		title: "Price updated — live on the storefront",
+		description: change === null ? consequence : `${change}. ${consequence}`,
+	};
+}
+
 // ── composed labels and cells ────────────────────────────────────────────────
 //
 // D-6: a group's label carries its ANSWER, so the group can be skipped

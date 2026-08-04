@@ -54,8 +54,11 @@ import {
 	COMPARE_AT_PLACEHOLDER,
 	CURRENCY_FIELD_LABEL,
 	CURRENCY_PLACEHOLDER,
+	DISCARD_LABEL,
+	NO_CHANGES_TO_SAVE,
 	NO_TAX_CLASS,
 	PRICE_FORM_CONTEXT,
+	PRICE_PENDING_CONTEXT,
 	PRICE_PLACEHOLDER,
 	PRODUCTS_BACK_LABEL,
 	PRODUCT_FIELD_LABELS,
@@ -73,6 +76,7 @@ import {
 	SAVE_IDENTITY_LABEL,
 	SAVE_PRICE_LABEL,
 	SAVE_SHIPPING_LABEL,
+	SAVING_LABEL,
 	SHIPPING_FORM_CONTEXT,
 	SPLIT_DISCARD_CONTEXT,
 	STATUS_FIELD_LABEL,
@@ -80,17 +84,24 @@ import {
 	TOMBSTONE_BANNER_TITLE,
 	TOMBSTONE_CONTEXT,
 	UNIT_COST_PLACEHOLDER,
+	addStockConfirm,
+	canonicalMoneyInput,
 	compareAtFieldLabel,
 	dimensionsSummary,
+	dirtyGroupLabel,
 	formatMinorUnitsInput,
 	formatOptionalAmount,
 	formatTimestamp,
 	identityGroupLabel,
 	inventoryPolicyLabel,
 	onHandCell,
+	parseMinorUnitsInput,
 	parseStockQty,
+	priceChangeSummary,
 	priceFieldLabel,
 	priceGroupLabel,
+	pricePendingLine,
+	priceSavedNotice,
 	removeStockConfirm,
 	shippingGroupLabel,
 	statusLabel,
@@ -115,6 +126,7 @@ import {
 	Fields,
 	Group,
 	Notice,
+	WARN_ACCENT,
 	buttonStyle,
 	inputStyle,
 	panelStyle,
@@ -134,6 +146,95 @@ interface PendingAction {
 	readonly text: string;
 	readonly confirmLabel: string;
 	readonly denyLabel: string;
+	/** Where this write's RECEIPT belongs. A write that names a slot reports
+	 *  inside the group that caused it instead of at page top — see
+	 *  {@link ReceiptSlot}. Absent for the two saves increment 3 owns, which keep
+	 *  reporting at the top for now. */
+	readonly slot?: ReceiptSlot;
+	/** An AUTHORED receipt, composed at submit time. Only the price save has one:
+	 *  its receipt names the before and the after, and the re-read that follows a
+	 *  save replaces the before — so the sentence cannot be composed on arrival.
+	 *  Everything else keeps the receipt the handler served. */
+	readonly receipt?: Receipt;
+}
+
+/**
+ * A group that reports its own outcome, in place.
+ *
+ * WHY NOT PAGE TOP. The operator who just clicked `Save price` is looking at the
+ * price field, several hundred pixels below a banner that says `Saved` in grey
+ * and would say exactly the same thing for a weight edit. A receipt has to land
+ * where the eye already is, and it has to say which of the five writes on this
+ * screen it is reporting.
+ */
+type ReceiptSlot = "price" | "stock-add" | "stock-remove";
+
+interface Receipt {
+	readonly title: string;
+	readonly description: string;
+}
+
+/**
+ * Which fields differ from what was last committed.
+ *
+ * COMPARED, NEVER LATCHED. A `touched` boolean would call a form dirty forever
+ * once a character was typed — including after the operator typed one and
+ * deleted it, which leaves the record exactly as it was and must offer nothing
+ * to save. The committed side is re-derived from the product on every render, so
+ * a re-read that moves a value the operator has not touched correctly makes the
+ * form dirty against the NEW truth.
+ *
+ * Keyed by field so a changed input can carry the warn border on its own; the
+ * caller decides which section it is asking about, which is what makes this
+ * reusable per section rather than per screen.
+ */
+export function changedFields(
+	committed: Readonly<Record<string, string>>,
+	current: Readonly<Record<string, string>>,
+): readonly string[] {
+	return Object.keys(committed).filter((key) => committed[key] !== current[key]);
+}
+
+/**
+ * The same question for the Price group, asked about AMOUNTS rather than about
+ * keystrokes.
+ *
+ * WHY THIS EXISTS AT ALL. The committed side is always the money formatter's
+ * spelling (`99.90`); the typed side is whatever the operator typed (`99.9`).
+ * Those are one amount, and a save does not rewrite the field the operator is
+ * looking at — it re-reads the product. Compared as raw strings, a save of
+ * `99.9` therefore SUCCEEDS and leaves the group still marked ` · unsaved`,
+ * still bordered, with `Save` re-armed for a write that would change nothing
+ * and still bump `updatedAt` — sitting beside its own receipt saying the price
+ * was updated. That is the exact no-op write F4 disables, re-armed by the
+ * feature meant to prevent it.
+ *
+ * STILL COMPARED, STILL NOT LATCHED: typing a character and deleting it returns
+ * the field to its committed amount and so returns the form to clean, and an
+ * entry that does not parse is compared as itself, so it still reads as a
+ * change and the write's own refusal is what the operator sees. Currency is
+ * case- and space-insensitive for the same reason: it is stored in one case,
+ * and `usd` is not a different currency from `USD`.
+ */
+export function changedPriceFields(
+	committed: Readonly<Record<string, string>>,
+	current: Readonly<Record<string, string>>,
+): readonly string[] {
+	return changedFields(canonicalPriceValues(committed), canonicalPriceValues(current));
+}
+
+/** One spelling per field, so the comparison above is about amounts. Money goes
+ *  through the shared canonicaliser; a currency code is stored in one case, so
+ *  `usd` is not a different currency from `USD`. */
+function canonicalPriceValues(
+	values: Readonly<Record<string, string>>,
+): Readonly<Record<string, string>> {
+	return {
+		price: canonicalMoneyInput(values["price"] ?? ""),
+		currency: (values["currency"] ?? "").trim().toUpperCase(),
+		compareAt: canonicalMoneyInput(values["compareAt"] ?? ""),
+		unitCost: canonicalMoneyInput(values["unitCost"] ?? ""),
+	};
 }
 
 /** A text input's initial value for an optional money field. `null` is BLANK,
@@ -148,6 +249,68 @@ function moneyInput(minorUnits: number | null): string {
  *  "leave unchanged". */
 function numberInput(value: number | null): string {
 	return value === null ? "" : String(value);
+}
+
+/**
+ * WHERE A WRITE HAS GOT TO — the whole lifecycle as one value, so that when the
+ * controls are released is a decision this module states once and can be read
+ * back, rather than a pair of `setBusy(false)` calls whose placement is the
+ * entire behaviour.
+ *
+ * A write is two round trips, not one. The POST answers, and only then does the
+ * re-read that follows it move `updatedAt` — and therefore every form's
+ * `expectedUpdatedAt` watermark. A button re-armed in the gap between them is
+ * armed against a watermark the service has already superseded: the second
+ * click is refused by optimistic concurrency and reports an error for a save
+ * that in fact succeeded. So `accepted` does not end the write; it moves it to
+ * its second leg, and `read-settled` is the only event that returns the screen
+ * to idle.
+ *
+ * `refused` is the exception, and it is not an asymmetry: a refused write moved
+ * nothing, so there is no re-read to wait for and nothing to be stale against.
+ */
+export type WritePhase =
+	| { readonly step: "idle" }
+	| { readonly step: "writing"; readonly actionId: string }
+	| { readonly step: "rereading"; readonly actionId: string };
+
+export type WriteEvent =
+	| { readonly type: "dispatched"; readonly actionId: string }
+	| { readonly type: "refused" }
+	| { readonly type: "accepted" }
+	| { readonly type: "read-settled" };
+
+/** Pure. The one place a write's progress is decided; the component only
+ *  reports what happened. */
+export function nextWritePhase(phase: WritePhase, event: WriteEvent): WritePhase {
+	switch (event.type) {
+		case "dispatched":
+			return { step: "writing", actionId: event.actionId };
+		case "refused":
+			return { step: "idle" };
+		case "accepted":
+			// NOT A RELEASE. The write answered; the screen has not caught up with
+			// it yet. Ignored unless a write is actually outstanding, so a late or
+			// duplicated answer cannot re-arm a leg that has already settled.
+			return phase.step === "writing" ? { step: "rereading", actionId: phase.actionId } : phase;
+		case "read-settled":
+			// Every read settles the screen, the failed one included: a re-read that
+			// could not be made would otherwise strand the controls disabled.
+			return { step: "idle" };
+	}
+}
+
+/** Pure. Both guards the screen needs from a phase: `busy` disables every
+ *  control (one write at a time is the existing contract) while `acting` names
+ *  the single button allowed to say `Saving…` — a screen where three buttons
+ *  claim to be saving reports two writes that are not happening. */
+export function writeControls(phase: WritePhase): {
+	readonly busy: boolean;
+	readonly acting: string | null;
+} {
+	return phase.step === "idle"
+		? { busy: false, acting: null }
+		: { busy: true, acting: phase.actionId };
 }
 
 export function ProductDetail({
@@ -166,7 +329,18 @@ export function ProductDetail({
 	} | null>(null);
 	const [tab, setTab] = React.useState(0);
 	const [pending, setPending] = React.useState<PendingAction | null>(null);
-	const [busy, setBusy] = React.useState(false);
+	// WHICH write is outstanding and HOW FAR ALONG, not merely THAT one is: the
+	// screen reports events into `nextWritePhase` and reads both its guards back
+	// out of `writeControls`, so neither is set at a call site.
+	const [writePhase, setWritePhase] = React.useState<WritePhase>({ step: "idle" });
+	const { busy, acting } = writeControls(writePhase);
+	// Receipts persist until the same group is written again. No timer, no fade:
+	// a receipt the operator has to catch is the defect, not the feature.
+	const [receipts, setReceipts] = React.useState<Readonly<Record<ReceiptSlot, Receipt | null>>>({
+		price: null,
+		"stock-add": null,
+		"stock-remove": null,
+	});
 	const [generation, setGeneration] = React.useState(0);
 	// Confined to the failure branch: the re-read a save triggers has the whole
 	// screen to show for itself, but a Retry on a screen that is nothing but an
@@ -178,6 +352,10 @@ export function ProductDetail({
 		void fetchProductDetail(productId).then((result) => {
 			if (cancelled) return;
 			setRetrying(false);
+			// A WRITE'S BUSY STATE ENDS HERE, not when the write answered — see
+			// `nextWritePhase`, which is where that is argued and tested. Reported
+			// before the failure check, so a failed re-read releases the controls too.
+			setWritePhase((phase) => nextWritePhase(phase, { type: "read-settled" }));
 			if (isFailure(result)) {
 				setFailure({ title: result.title, description: result.description });
 				return;
@@ -192,28 +370,53 @@ export function ProductDetail({
 
 	const dispatch = React.useCallback((action: PendingAction) => {
 		setPending(null);
-		setBusy(true);
+		setWritePhase((phase) =>
+			nextWritePhase(phase, { type: "dispatched", actionId: action.actionId }),
+		);
+		const slot = action.slot;
+		// The previous receipt describes a state this write is about to replace, so
+		// it goes on the click rather than on the answer.
+		if (slot !== undefined) setReceipts((prev) => ({ ...prev, [slot]: null }));
 		void performAction(action.actionId, action.value, PRODUCTS_ACT_SUBJECT).then((result) => {
-			setBusy(false);
 			if (isFailure(result)) {
+				// A REFUSAL still reports at page top, for both surfaces' reasons: it is
+				// not a receipt, and the group it came from may be shut. Nothing moved,
+				// so there is no re-read to wait for and the controls are released here.
+				setWritePhase((phase) => nextWritePhase(phase, { type: "refused" }));
 				setNotice({ variant: "error", title: result.title, description: result.description });
 				return;
 			}
+			// ACCEPTED IS NOT SETTLED — the re-read below is the second leg, and the
+			// controls stay disabled across it. Deliberately not a release.
+			setWritePhase((phase) => nextWritePhase(phase, { type: "accepted" }));
 			const served = result.notice;
-			setNotice(
+			const outcome: { variant: "default" | "error"; title: string; description: string } | null =
 				served === null
 					? null
 					: {
 							variant: served.variant === "error" ? "error" : "default",
 							title: served.title,
 							description: served.description,
-						},
-			);
+						};
+			if (slot === undefined) {
+				setNotice(outcome);
+			} else {
+				// One outcome, one place: a receipt that lands in the group does not
+				// also stand at the top saying the same thing in greyer words.
+				setNotice(null);
+				setReceipts((prev) => ({
+					...prev,
+					[slot]:
+						action.receipt ??
+						(outcome === null ? null : { title: outcome.title, description: outcome.description }),
+				}));
+			}
 			// Re-read: a save moves `updatedAt` (and therefore every form's
 			// watermark) and a stock movement moves `onHand`, so every value
 			// rendered below has to come from what the operator can now see. This is
 			// also the sibling-discard `SPLIT_DISCARD_CONTEXT` warns about, and it is
-			// the same behaviour the Block Kit screen has.
+			// the same behaviour the Block Kit screen has. The controls stay
+			// disabled until it lands.
 			setGeneration((n) => n + 1);
 		});
 	}, []);
@@ -361,7 +564,9 @@ export function ProductDetail({
 						product={p}
 						taxClasses={detail.taxClasses}
 						busy={busy}
-						onSubmit={(actionId, value) =>
+						savingPrice={acting === "products:save-price"}
+						priceReceipt={receipts.price}
+						onSubmit={(actionId, value, report) =>
 							dispatch({
 								actionId,
 								value,
@@ -369,6 +574,7 @@ export function ProductDetail({
 								text: "",
 								confirmLabel: "",
 								denyLabel: "",
+								...(report === undefined ? {} : { slot: report.slot, receipt: report.receipt }),
 							})
 						}
 					/>
@@ -379,20 +585,35 @@ export function ProductDetail({
 						product={p}
 						threshold={threshold}
 						busy={busy}
-						onRestock={(qty) =>
-							dispatch({
+						addReceipt={receipts["stock-add"]}
+						removeReceipt={receipts["stock-remove"]}
+						onRestock={(qty, sku, onHand) => {
+							// F5: the addition gets the gate the removal already had, and the
+							// dialog's job is restating the PARSED quantity — `qty` is what
+							// `parseStockQty` returned, never the raw field, so `100` typed for
+							// `10` is stated as 100 and the projection is built from 100.
+							//
+							// THE SKU AND THE WATERMARK RIDE WITH THE CLICK rather than being
+							// re-derived and null-checked here. The panel renders this form
+							// only once it has both (no SKU is D-7's own state, no inventory
+							// record is its own line), so the absent case is not a branch to
+							// default to `0` — absent is not zero — nor one to swallow the
+							// click over. It is unrepresentable.
+							const confirm = addStockConfirm(qty, sku, onHand);
+							setPending({
 								actionId: "products:restock",
 								value: {
 									productId: p.productId,
-									onHand: String(p.onHand ?? 0),
+									onHand: String(onHand),
 									qty: String(qty),
 								},
-								title: "",
-								text: "",
-								confirmLabel: "",
-								denyLabel: "",
-							})
-						}
+								title: confirm.title,
+								text: confirm.text,
+								confirmLabel: confirm.confirm,
+								denyLabel: confirm.deny,
+								slot: "stock-add",
+							});
+						}}
 						onRemove={(qty) => {
 							const confirm = removeStockConfirm(qty);
 							setPending({
@@ -410,6 +631,7 @@ export function ProductDetail({
 								text: confirm.text,
 								confirmLabel: confirm.confirm,
 								denyLabel: confirm.deny,
+								slot: "stock-remove",
 							});
 						}}
 					/>
@@ -437,12 +659,22 @@ function ProductPanel({
 	product: p,
 	taxClasses,
 	busy,
+	savingPrice,
+	priceReceipt,
 	onSubmit,
 }: {
 	product: ProductRecord;
 	taxClasses: readonly { id: string; name: string }[];
 	busy: boolean;
-	onSubmit: (actionId: string, value: Record<string, string>) => void;
+	/** Only the price save reports in place so far; increment 3 extends the same
+	 *  treatment to identity and classification. */
+	savingPrice: boolean;
+	priceReceipt: Receipt | null;
+	onSubmit: (
+		actionId: string,
+		value: Record<string, string>,
+		report?: { slot: ReceiptSlot; receipt: Receipt },
+	) => void;
 }): React.ReactElement {
 	const carrier = { productId: p.productId, expectedUpdatedAt: p.updatedAt };
 	return (
@@ -502,14 +734,22 @@ function ProductPanel({
 						/>
 					</Group>
 
-					<Group testId="edit-price" label={priceGroupLabel(p.priceCents, p.currency)}>
-						<p style={{ fontSize: 12, opacity: 0.75, marginBlockStart: 0 }}>{PRICE_FORM_CONTEXT}</p>
-						<PriceForm
-							product={p}
-							busy={busy}
-							onSubmit={(values) => onSubmit("products:save-price", { ...carrier, ...values })}
-						/>
-					</Group>
+					<PriceGroup
+						product={p}
+						busy={busy}
+						saving={savingPrice}
+						receipt={priceReceipt}
+						onSubmit={(values, change) =>
+							onSubmit(
+								"products:save-price",
+								{ ...carrier, ...values },
+								// COMPOSED AT SUBMIT TIME, on purpose: the save is followed by a
+								// re-read that replaces the BEFORE amount, so a receipt composed
+								// on arrival could only ever state the after.
+								{ slot: "price", receipt: priceSavedNotice(change) },
+							)
+						}
+					/>
 
 					<Group testId="edit-shipping" label={shippingGroupLabel(p.taxClass, p.weightGrams)}>
 						<p style={{ fontSize: 12, opacity: 0.75, marginBlockStart: 0 }}>
@@ -577,9 +817,28 @@ function IdentityForm({
 }
 
 /**
- * The Price group's form: price, an optional currency, compare-at and unit cost
- * — the four fields that must co-reside because they all read the product's one
- * currency.
+ * The Price group: price, an optional currency, compare-at and unit cost — the
+ * four fields that must co-reside because they all read the product's one
+ * currency — and the four states a save can be in.
+ *
+ * IT OWNS ITS OWN `Group`, which is what lets a SHUT group say it is holding
+ * work: the ` · unsaved` marker belongs on the summary line, and the dirty state
+ * that decides it lives with the fields. Nothing is lifted out of this component
+ * and nothing is stored for it.
+ *
+ * FOUR STATES, NO MODAL. An ordinary price edit is still one click — routing
+ * every save through a confirm dialog taxes the correct edits to guard the rare
+ * one, and answers nothing about what happened afterwards. What the save gains
+ * instead is a BEFORE (the pending block naming both amounts, a warn border on
+ * what changed, and a way to discard) and an AFTER (a receipt that names the
+ * amounts and does not fade). `Save` is disabled while clean, because a clean
+ * save is a no-op that still bumps `updatedAt` — a silent write that will make
+ * the next operator's optimistic-concurrency check fail for no reason.
+ *
+ * NO AMOUNT IS ASSEMBLED HERE. The after-amount goes through the same
+ * `parseMinorUnitsInput` the write itself does, and both ends of the arrow are
+ * rendered by the shared money formatter; the component holds integer minor
+ * units and strings, and never a float.
  *
  * CURRENCY IS NEVER A FIXED SINGLE-OPTION SELECT (F-3). For an ALREADY-PRICED
  * product the currency cannot change here, so it is submitted invisibly and no
@@ -592,73 +851,167 @@ function IdentityForm({
  * decided here — this form's only job is not to turn a null into `"0.00"` on
  * the way in.
  */
-function PriceForm({
+export function PriceGroup({
 	product: p,
 	busy,
+	saving,
+	receipt,
 	onSubmit,
 }: {
 	product: ProductRecord;
 	busy: boolean;
-	onSubmit: (values: Record<string, string>) => void;
+	/** THIS save is the one in flight — not merely that some write is. */
+	saving: boolean;
+	receipt: Receipt | null;
+	onSubmit: (values: Record<string, string>, change: string | null) => void;
 }): React.ReactElement {
 	const priced = p.priceCents !== null && p.currency !== null;
-	const [price, setPrice] = React.useState(moneyInput(p.priceCents));
-	const [currency, setCurrency] = React.useState(p.currency ?? "");
-	const [compareAt, setCompareAt] = React.useState(moneyInput(p.compareAtCents));
-	const [unitCost, setUnitCost] = React.useState(moneyInput(p.unitCostCents));
+	// The last-committed values, re-derived from the product on every render. A
+	// save is followed by a re-read, so this is what makes the form clean again
+	// afterwards without anything resetting it.
+	const committed = React.useMemo(
+		() => ({
+			price: moneyInput(p.priceCents),
+			currency: p.currency ?? "",
+			compareAt: moneyInput(p.compareAtCents),
+			unitCost: moneyInput(p.unitCostCents),
+		}),
+		[p.priceCents, p.currency, p.compareAtCents, p.unitCostCents],
+	);
+	const [values, setValues] = React.useState<Record<string, string>>(committed);
+	const changed = changedPriceFields(committed, values);
+	const dirty = changed.length > 0;
+
+	// The pending AFTER, through the same exact-integer parse the write uses.
+	// `null` for a blank field (which leaves the price unchanged) and for
+	// anything unparseable — neither has an amount to name.
+	const change = priceChangeSummary(
+		p.priceCents,
+		parseMinorUnitsInput(values["price"] ?? "", { allowZero: false }),
+		p.currency,
+	);
+	const pendingLine = pricePendingLine(change);
+
+	const set = (key: string) => (event: React.ChangeEvent<HTMLInputElement>) => {
+		const next = event.target.value;
+		setValues((prev) => ({ ...prev, [key]: next }));
+	};
+	// The accent is a BORDER, never a text colour — it has to be legible over a
+	// ground this file does not control, in both themes. Stated as the same
+	// SHORTHAND `inputStyle` uses rather than as `borderColor`/`borderWidth`
+	// longhands over it: React warns about mixing the two on one element, and the
+	// warning is right — the shorthand wins on a re-render and the accent
+	// disappears exactly when the field becomes clean again.
+	const dirtyInputStyle: React.CSSProperties = {
+		...inputStyle,
+		border: `2px solid ${WARN_ACCENT}`,
+	};
+	const fieldStyle = (key: string): React.CSSProperties =>
+		changed.includes(key) ? dirtyInputStyle : inputStyle;
+
 	return (
-		<div style={{ display: "grid", gap: 10, maxInlineSize: 460 }}>
-			<Field label={priceFieldLabel(p.currency)}>
-				<input
-					className="otta-focusable"
-					data-testid="edit-price"
-					style={inputStyle}
-					placeholder={PRICE_PLACEHOLDER}
-					value={price}
-					onChange={(event) => setPrice(event.target.value)}
-				/>
-			</Field>
-			{!priced && (
-				<Field label={CURRENCY_FIELD_LABEL}>
+		<Group
+			testId="edit-price"
+			label={dirtyGroupLabel(priceGroupLabel(p.priceCents, p.currency), dirty)}
+		>
+			<p style={{ fontSize: 12, opacity: 0.75, marginBlockStart: 0 }}>{PRICE_FORM_CONTEXT}</p>
+			<div style={{ display: "grid", gap: 10, maxInlineSize: 460 }}>
+				<Field label={priceFieldLabel(p.currency)}>
 					<input
 						className="otta-focusable"
-						data-testid="edit-currency"
-						style={inputStyle}
-						placeholder={CURRENCY_PLACEHOLDER}
-						value={currency}
-						onChange={(event) => setCurrency(event.target.value)}
+						data-testid="edit-price"
+						style={fieldStyle("price")}
+						placeholder={PRICE_PLACEHOLDER}
+						value={values["price"] ?? ""}
+						onChange={set("price")}
 					/>
 				</Field>
-			)}
-			<Field label={compareAtFieldLabel(p.currency)}>
-				<input
-					className="otta-focusable"
-					data-testid="edit-compare-at"
-					style={inputStyle}
-					placeholder={COMPARE_AT_PLACEHOLDER}
-					value={compareAt}
-					onChange={(event) => setCompareAt(event.target.value)}
-				/>
-			</Field>
-			<Field label={unitCostFieldLabel(p.currency)}>
-				<input
-					className="otta-focusable"
-					data-testid="edit-unit-cost"
-					style={inputStyle}
-					placeholder={UNIT_COST_PLACEHOLDER}
-					value={unitCost}
-					onChange={(event) => setUnitCost(event.target.value)}
-				/>
-			</Field>
-			<div>
-				<Button
-					label={SAVE_PRICE_LABEL}
-					testId="save-price"
-					disabled={busy}
-					onClick={() => onSubmit({ price, currency, compareAt, unitCost })}
-				/>
+				{!priced && (
+					<Field label={CURRENCY_FIELD_LABEL}>
+						<input
+							className="otta-focusable"
+							data-testid="edit-currency"
+							style={fieldStyle("currency")}
+							placeholder={CURRENCY_PLACEHOLDER}
+							value={values["currency"] ?? ""}
+							onChange={set("currency")}
+						/>
+					</Field>
+				)}
+				<Field label={compareAtFieldLabel(p.currency)}>
+					<input
+						className="otta-focusable"
+						data-testid="edit-compare-at"
+						style={fieldStyle("compareAt")}
+						placeholder={COMPARE_AT_PLACEHOLDER}
+						value={values["compareAt"] ?? ""}
+						onChange={set("compareAt")}
+					/>
+				</Field>
+				<Field label={unitCostFieldLabel(p.currency)}>
+					<input
+						className="otta-focusable"
+						data-testid="edit-unit-cost"
+						style={fieldStyle("unitCost")}
+						placeholder={UNIT_COST_PLACEHOLDER}
+						value={values["unitCost"] ?? ""}
+						onChange={set("unitCost")}
+					/>
+				</Field>
+
+				{dirty && (
+					<div
+						data-testid="price-pending"
+						style={{
+							borderInlineStartWidth: 3,
+							borderInlineStartStyle: "solid",
+							borderInlineStartColor: WARN_ACCENT,
+							paddingInlineStart: 10,
+						}}
+					>
+						{pendingLine !== null && (
+							<p className="otta-num" style={{ fontSize: 13, fontWeight: 650, margin: 0 }}>
+								{pendingLine}
+							</p>
+						)}
+						<p style={{ fontSize: 12, opacity: 0.8, margin: "4px 0 0" }}>{PRICE_PENDING_CONTEXT}</p>
+					</div>
+				)}
+
+				<div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+					<Button
+						label={saving ? SAVING_LABEL : SAVE_PRICE_LABEL}
+						testId="save-price"
+						disabled={busy || !dirty}
+						busy={saving}
+						onClick={() => onSubmit(values, change)}
+					/>
+					{dirty && (
+						<Button
+							label={DISCARD_LABEL}
+							testId="discard-price"
+							disabled={busy}
+							onClick={() => setValues(committed)}
+						/>
+					)}
+					{!dirty && (
+						<span data-testid="price-clean-hint" style={{ fontSize: 12, opacity: 0.75 }}>
+							{NO_CHANGES_TO_SAVE}
+						</span>
+					)}
+				</div>
+
+				{/* UNDER THE BUTTON, and it stays there. */}
+				{receipt !== null && (
+					<Notice
+						variant="default"
+						title={receipt.title}
+						description={receipt.description}
+						testId="price-receipt"
+					/>
+				)}
 			</div>
-		</div>
+		</Group>
 	);
 }
 
@@ -749,26 +1102,51 @@ function ShippingForm({
 /**
  * The two adjacent stock forms (PM §E2) — one recoverable, one not.
  *
- * `Add stock` is DA-4: one-shot, no confirm, no danger styling. `Remove stock`
- * is the screen's ONE destructive act (DA-5's second exception: a removal is
- * reversible only by a separate, forgettable manual operation), so it is the one
- * that carries an alert banner, danger styling and a confirm dialog. The
- * difference between them has to be legible at a glance, because they sit one
- * above the other and take the same input.
+ * BOTH MOVEMENTS NOW CONFIRM (F5), and the reconciliation went upward on
+ * purpose. They sat one above the other, took the same input, and had opposite
+ * gates for no stated reason; levelling DOWN would have deleted the only
+ * safeguard on the screen's one destructive act, and the addition is in fact the
+ * more dangerous typo — an over-add lets the store sell units it does not have,
+ * where an over-remove only costs sales. What each dialog is FOR is restating
+ * the parsed quantity, which is the one failure the field cannot catch.
+ *
+ * WHAT STILL DISTINGUISHES THEM, because a shared gate must not make two
+ * different acts look alike: `Remove stock` is the screen's ONE destructive act
+ * (DA-5's second exception — a removal is reversible only by a separate,
+ * forgettable manual operation), so it keeps its alert banner, its danger
+ * styling and the consequence in its group label. `Add stock` has none of those
+ * — with ONE exception this panel does not control: the shared confirm dialog
+ * styles its confirm button as destructive for every caller, so `Yes, add …`
+ * currently reads in the same ink as `Yes, remove …`. That is the dialog's to
+ * fix, not this panel's, and until it is fixed the distinction above holds
+ * everywhere except on that one button.
  */
 function StockPanel({
 	product: p,
 	threshold,
 	busy,
+	addReceipt,
+	removeReceipt,
 	onRestock,
 	onRemove,
 }: {
 	product: ProductRecord;
 	threshold: number | null;
 	busy: boolean;
-	onRestock: (qty: number) => void;
+	/** Each movement's receipt, rendered in the group that caused it. The two
+	 *  forms are adjacent and take the same input, so a receipt at page top
+	 *  leaves the operator to work out which one it is reporting. */
+	addReceipt: Receipt | null;
+	removeReceipt: Receipt | null;
+	/** The SKU and the on-hand watermark travel WITH the quantity, because this
+	 *  panel is the only place that knows the form was rendered at all — and it
+	 *  renders it only once both exist. The caller therefore has no absent case
+	 *  to default or to swallow. */
+	onRestock: (qty: number, sku: string, onHand: number) => void;
 	onRemove: (qty: number) => void;
 }): React.ReactElement {
+	const sku = p.sku;
+	const onHand = p.onHand;
 	return (
 		<>
 			<section style={panelStyle}>
@@ -796,12 +1174,12 @@ function StockPanel({
 					<p style={{ fontSize: 12, opacity: 0.75 }} data-testid="stock-context">
 						{STOCK_ON_HAND_CONTEXT}
 					</p>
-					{p.sku === null ? (
+					{sku === null ? (
 						// D-7: nothing to move stock against, so no forms at all.
 						<p style={{ fontSize: 13, opacity: 0.8 }} data-testid="stock-no-sku">
 							{NO_SKU_CONTEXT}
 						</p>
-					) : p.onHand === null ? (
+					) : onHand === null ? (
 						// The sku exists but carries NO inventory record: both movements
 						// would 409, and their idempotency keys derive from a watermark
 						// that does not exist. One line naming the state and the way out.
@@ -818,8 +1196,16 @@ function StockPanel({
 									testIdPrefix="restock"
 									invalid={ADD_STOCK_INVALID_QTY}
 									busy={busy}
-									onSubmit={onRestock}
+									onSubmit={(qty) => onRestock(qty, sku, onHand)}
 								/>
+								{addReceipt !== null && (
+									<Notice
+										variant="default"
+										title={addReceipt.title}
+										description={addReceipt.description}
+										testId="stock-add-receipt"
+									/>
+								)}
 							</Group>
 
 							<Group testId="stock-remove" label={REMOVE_STOCK_GROUP_LABEL}>
@@ -840,6 +1226,14 @@ function StockPanel({
 									busy={busy}
 									onSubmit={onRemove}
 								/>
+								{removeReceipt !== null && (
+									<Notice
+										variant="default"
+										title={removeReceipt.title}
+										description={removeReceipt.description}
+										testId="stock-remove-receipt"
+									/>
+								)}
 							</Group>
 						</>
 					)}

@@ -74,7 +74,7 @@
  * and all 18 workerd sandbox suites now exercise THIS code through the plugin's
  * public surface. `test/` here covers the package on its own terms.
  */
-export { formatMinorUnitsInput, parseMinorUnitsInput } from "./money-input.js";
+export { canonicalMoneyInput, formatMinorUnitsInput, parseMinorUnitsInput } from "./money-input.js";
 export {
 	MONEY_LOCALE,
 	UNFORMATTABLE,
@@ -197,7 +197,9 @@ export {
 	LOW_STOCK_FILTER_LABEL,
 	NO_INVENTORY_RECORD_CONTEXT,
 	NO_SKU_CONTEXT,
+	NO_CHANGES_TO_SAVE,
 	PRICE_FORM_CONTEXT,
+	PRICE_PENDING_CONTEXT,
 	PRICE_PLACEHOLDER,
 	PRODUCTS_BACK_LABEL,
 	PRODUCTS_EMPTY,
@@ -224,6 +226,9 @@ export {
 	REMOVE_STOCK_PLACEHOLDER,
 	SAVE_IDENTITY_LABEL,
 	SAVE_PRICE_LABEL,
+	SAVING_LABEL,
+	DISCARD_LABEL,
+	UNSAVED_SUFFIX,
 	SAVE_SHIPPING_LABEL,
 	SHIPPING_FORM_CONTEXT,
 	SPLIT_DISCARD_CONTEXT,
@@ -234,11 +239,16 @@ export {
 	UNTITLED,
 	TOMBSTONE_CONTEXT,
 	NO_TAX_CLASS,
+	addStockConfirm,
 	compareAtFieldLabel,
 	dimensionsSummary,
+	dirtyGroupLabel,
 	identityGroupLabel,
+	priceChangeSummary,
 	priceFieldLabel,
 	priceGroupLabel,
+	pricePendingLine,
+	priceSavedNotice,
 	productFilterParts,
 	removeStockConfirm,
 	shippingGroupLabel,

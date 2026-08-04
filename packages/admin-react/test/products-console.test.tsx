@@ -38,6 +38,10 @@ const {
 const { activeFilterParts, clearAnswer, visibleDegradation, UNTITLED } =
 	await import("../src/products/products-list.js");
 const { CopyIdButton } = await import("../src/ui.js");
+const { PriceGroup, changedFields, changedPriceFields, nextWritePhase, writeControls } =
+	await import("../src/products/product-detail.js");
+type WriteEvent = import("../src/products/product-detail.js").WriteEvent;
+type WritePhase = import("../src/products/product-detail.js").WritePhase;
 const {
 	LOW_STOCK_FILTER_DESCRIPTION,
 	PRODUCTS_LOW_STOCK_NO_MATCH,
@@ -45,9 +49,36 @@ const {
 	listOutcome,
 	PRODUCTS_EMPTY,
 	PRODUCTS_NO_MATCH,
+	priceSavedNotice,
 } = await import("@otta-sh/admin-presentation");
 const { OTTA_CONSOLE_ADMIN_PAGES, PRODUCTS_PAGE } = await import("../src/index.js");
 const admin = await import("../src/admin.js");
+
+/** A priced, in-stock, live product — the ordinary case the Price group's four
+ *  states are argued about. Synthetic throughout. */
+const PRICED = {
+	productId: "prod-1",
+	sku: "APR-LIN-NAT",
+	title: "Linen apron",
+	priceCents: 900,
+	currency: "USD",
+	taxClass: "standard",
+	compareAtCents: null,
+	compareAtCurrency: null,
+	unitCostCents: null,
+	unitCostCurrency: null,
+	inventoryPolicy: "deny",
+	weightGrams: 420,
+	lengthMm: null,
+	widthMm: null,
+	heightMm: null,
+	productKind: "physical",
+	active: true,
+	deletedAt: null,
+	onHand: 12,
+	createdAt: "2026-01-01T00:00:00.000Z",
+	updatedAt: "2026-01-02T00:00:00.000Z",
+} as const;
 
 function jsonResponse(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -325,6 +356,164 @@ describe("presentation primitives this screen relies on", () => {
 
 	test("a product with no title reads as `(untitled)`, never as its id", () => {
 		expect(UNTITLED).toBe("(untitled)");
+	});
+
+	test("a price save's four states are DERIVED, and none of them is latched (F4)", () => {
+		// The one that a `touched` boolean gets wrong, and the reason this compares
+		// values instead: type a character into the price and delete it again, and
+		// there is nothing to save. A form that stayed dirty would offer a save that
+		// writes nothing and still bumps `updatedAt`.
+		const committed = { price: "9.00", currency: "USD", compareAt: "", unitCost: "" };
+		expect(changedFields(committed, committed)).toEqual([]);
+		expect(changedFields(committed, { ...committed, price: "99.99" })).toEqual(["price"]);
+		// …and it reports WHICH field, so only the changed input takes the border.
+		expect(changedFields(committed, { ...committed, compareAt: "29.99" })).toEqual(["compareAt"]);
+		expect(changedFields(committed, { ...committed, price: "9.0" })).toEqual(["price"]);
+		expect(changedFields(committed, { ...committed, price: "9.00" })).toEqual([]);
+	});
+
+	test("the Price group asks about AMOUNTS, so a save returns it to clean (F4)", () => {
+		// The state that made the four states contradict each other. `9.9` and
+		// `9.90` are one amount, but only the committed side is ever respelled by
+		// the formatter: a save of `9.9` succeeds, the re-read commits `9.90`, and
+		// a raw string comparison then reports the group as still holding unsaved
+		// work — ` · unsaved`, a warn border and a re-armed `Save` for a write that
+		// changes nothing and still bumps `updatedAt`, beside a receipt saying the
+		// price was updated.
+		const committed = { price: "9.90", currency: "USD", compareAt: "", unitCost: "" };
+		expect(changedPriceFields(committed, { ...committed, price: "9.9" })).toEqual([]);
+		expect(changedPriceFields(committed, { ...committed, price: " 9.90 " })).toEqual([]);
+		// Currency is stored in one case, and `usd` is not a different currency.
+		const unpriced = { price: "", currency: "USD", compareAt: "", unitCost: "" };
+		expect(changedPriceFields(unpriced, { ...unpriced, currency: " usd " })).toEqual([]);
+		// Still compared and still not latched, and a real edit is still an edit.
+		expect(changedPriceFields(committed, committed)).toEqual([]);
+		expect(changedPriceFields(committed, { ...committed, price: "99.99" })).toEqual(["price"]);
+		expect(changedPriceFields(committed, { ...committed, compareAt: "29.99" })).toEqual([
+			"compareAt",
+		]);
+		// A blank price leaves the price unchanged and a blank compare-at CLEARS
+		// it; neither is the same as the amount already there, and neither is zero.
+		expect(changedPriceFields(committed, { ...committed, price: "" })).toEqual(["price"]);
+		expect(changedPriceFields(committed, { ...committed, price: "0.00" })).toEqual(["price"]);
+		// An entry that does not parse still reads as a change, so the write still
+		// happens and the write's own refusal is what the operator sees.
+		expect(changedPriceFields(committed, { ...committed, price: "abc" })).toEqual(["price"]);
+	});
+
+	test("a write is released by its re-read, NOT by the write answering (F4)", () => {
+		// THE RACE THIS CLOSES. The POST answers, and only the re-read after it
+		// moves `updatedAt` — so a `Save` re-armed in the gap is armed against an
+		// `expectedUpdatedAt` the service has already superseded, and the second
+		// click reports a concurrency error for a save that in fact succeeded.
+		// Asserted on the reducer because there is no DOM environment here: the
+		// screen sets neither guard at a call site, it reports these events and
+		// reads `busy`/`acting` back out, so the sequence below IS the behaviour.
+		const SAVE = "products:save-price";
+		const run = (...events: readonly WriteEvent[]): WritePhase =>
+			events.reduce<WritePhase>(nextWritePhase, { step: "idle" });
+
+		// The click: everything disabled, and exactly one button may say `Saving…`.
+		expect(writeControls(run({ type: "dispatched", actionId: SAVE }))).toEqual({
+			busy: true,
+			acting: SAVE,
+		});
+
+		// The write has ANSWERED and the screen has not caught up with it. This is
+		// the assertion that fails the moment the release moves back into the
+		// write's own `.then`, which is what it is here for.
+		const accepted = run({ type: "dispatched", actionId: SAVE }, { type: "accepted" });
+		expect(accepted.step).toBe("rereading");
+		expect(writeControls(accepted)).toEqual({ busy: true, acting: SAVE });
+
+		// The re-read landing is the one event that re-arms the screen — and it
+		// re-arms it whether the re-read succeeded or failed, because the screen
+		// reports it before it checks, rather than stranding the controls.
+		expect(writeControls(nextWritePhase(accepted, { type: "read-settled" }))).toEqual({
+			busy: false,
+			acting: null,
+		});
+
+		// A REFUSED write is released at once: nothing moved, so no re-read is
+		// coming and there is no superseded watermark to be armed against.
+		expect(writeControls(run({ type: "dispatched", actionId: SAVE }, { type: "refused" }))).toEqual(
+			{ busy: false, acting: null },
+		);
+
+		// A late or duplicated answer cannot re-arm a leg that already settled, and
+		// the mount read of an idle screen disables nothing.
+		expect(
+			writeControls(
+				run(
+					{ type: "dispatched", actionId: SAVE },
+					{ type: "accepted" },
+					{ type: "read-settled" },
+					{ type: "accepted" },
+				),
+			),
+		).toEqual({ busy: false, acting: null });
+		expect(writeControls(run({ type: "read-settled" }))).toEqual({ busy: false, acting: null });
+	});
+
+	test("a clean Price group disables Save and says why", () => {
+		// The screen's one no-op write. Disabling it without the hint would be a
+		// dead control; the hint without disabling it would be advice.
+		const html = renderToStaticMarkup(
+			<PriceGroup
+				product={PRICED}
+				busy={false}
+				saving={false}
+				receipt={null}
+				onSubmit={() => undefined}
+			/>,
+		);
+		expect(html).toContain("No changes to save.");
+		expect(html).toContain('data-testid="save-price" disabled=""');
+		// Nothing pending, nothing to discard, and no receipt for a save nobody made.
+		expect(html).not.toContain('data-testid="price-pending"');
+		expect(html).not.toContain('data-testid="discard-price"');
+		expect(html).not.toContain('data-testid="price-receipt"');
+		expect(html).not.toContain("· unsaved");
+	});
+
+	test("the acting button says `Saving…` while its own write is outstanding", () => {
+		// `busy` alone would put the word on all three save buttons, which reports
+		// two writes that are not happening. `aria-busy` is what distinguishes
+		// mid-flight from merely unavailable for a screen-reader user.
+		const html = renderToStaticMarkup(
+			<PriceGroup
+				product={PRICED}
+				busy={true}
+				saving={true}
+				receipt={null}
+				onSubmit={() => undefined}
+			/>,
+		);
+		expect(html).toContain("Saving…");
+		expect(html).not.toContain("Save price");
+		expect(html).toContain('aria-busy="true"');
+	});
+
+	test("the receipt renders INSIDE the section, under the button, and nothing dismisses it", () => {
+		// Page top is where the operator is not looking. The ordering assertion is
+		// the half that matters: a receipt above the field it reports on reads as a
+		// precondition rather than an outcome.
+		const html = renderToStaticMarkup(
+			<PriceGroup
+				product={PRICED}
+				busy={false}
+				saving={false}
+				receipt={priceSavedNotice("$9.00 → $99.99")}
+				onSubmit={() => undefined}
+			/>,
+		);
+		expect(html).toContain("Price updated — live on the storefront");
+		expect(html).toContain("orders already placed keep the price they were charged");
+		expect(html.indexOf('data-testid="price-receipt"')).toBeGreaterThan(
+			html.indexOf('data-testid="save-price"'),
+		);
+		// Inside the group, not beside it.
+		expect(html.startsWith("<details")).toBe(true);
 	});
 
 	test("the low-stock control's description is page-scoped", () => {

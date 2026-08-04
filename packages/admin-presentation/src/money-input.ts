@@ -52,3 +52,27 @@ export function formatMinorUnitsInput(minorUnits: number): string {
 	const fracStr = frac < 10 ? `0${frac}` : String(frac);
 	return `${minorUnits < 0 ? "-" : ""}${major}.${fracStr}`;
 }
+
+/**
+ * The one spelling of an entered amount, FOR COMPARISON ONLY.
+ *
+ * WHY A FORM NEEDS THIS. A field's committed value is `formatMinorUnitsInput`
+ * output (`99.90`), and what the operator typed is whatever they typed (`99.9`,
+ * or `99.90 `). Comparing those two as strings calls a form dirty that holds
+ * exactly the amount already stored — so a save would leave the group claiming
+ * unsaved work, with a re-armed `Save` for a write that changes nothing, beside
+ * a receipt saying it succeeded. Two spellings of one amount are one amount:
+ * both sides go through the same exact-integer parse and come back in the same
+ * spelling.
+ *
+ * NOT A VALIDATOR, and it decides nothing about what may be written. Anything
+ * that does not parse is handed back trimmed, so an unparseable entry still
+ * reads as a change from a parseable one and the write's own refusal is what
+ * the operator sees. Zero is accepted here for the same reason: whether `0.00`
+ * is a legal amount belongs to the write (`allowZero`), not to the question of
+ * whether the field moved.
+ */
+export function canonicalMoneyInput(input: string): string {
+	const units = parseMinorUnitsInput(input, { allowZero: true });
+	return units === null ? input.trim() : formatMinorUnitsInput(units);
+}
