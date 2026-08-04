@@ -192,10 +192,21 @@ export const TOMBSTONE_CONTEXT =
  *  composed at the call site through the shared date dialect. */
 export const TOMBSTONE_BANNER_TITLE = "This product was deleted in the CMS";
 
-/** F-5a-i's normative sibling-discard line — ONE line, above the three split
- *  groups, never repeated inside them (X-45). */
+/**
+ * ONE line, above the three split groups, never repeated inside them (X-45).
+ *
+ * REWRITTEN TO DESCRIBE WHAT THE SCREEN NOW DOES (F9). It used to tell the
+ * operator to save before opening another section, because saving one "clears
+ * unsaved edits in the others" — which was the one promise the screen could not
+ * keep in the direction it mattered: a tab switch unmounted every form and took
+ * all three drafts with it, while a sibling save never cleared anything. Both
+ * halves are now true as written: the inactive tab panel stays mounted, and a
+ * save re-seeds only the section that was saved. The single remaining way to
+ * lose a draft is leaving the product, which is the one place that now asks
+ * first.
+ */
 export const SPLIT_DISCARD_CONTEXT =
-	"Each section saves on its own. Save the section you are editing before you open another — saving one reloads the product and clears unsaved edits in the others.";
+	"Each section saves on its own. Unsaved edits are kept when you switch tabs and when you save another section — leaving this product is what discards them.";
 
 /** The Identity group's helper line. Names the CMS as the title's owner without
  *  offering a control for it (G2). */
@@ -381,6 +392,80 @@ export const PRICE_PENDING_CONTEXT = "Saving publishes this price to the storefr
  *  editable group on the screen composes its label this way. */
 export function dirtyGroupLabel(label: string, dirty: boolean): string {
 	return dirty ? `${label}${UNSAVED_SUFFIX}` : label;
+}
+
+/** The three editable sections of the Product tab, named. Each group's own
+ *  label answers "what is in here" and is composed from the record; these are
+ *  the bare NOUNS, for the two places that have to name a section rather than
+ *  describe it — the leave confirm, and a report of which sections are dirty. */
+export const PRODUCT_SECTION_LABELS = {
+	identity: "Identity",
+	price: "Price",
+	shipping: "Classification & shipping",
+} as const;
+
+export type ProductSection = keyof typeof PRODUCT_SECTION_LABELS;
+
+/** Screen order, so a sentence naming two sections names them in the order the
+ *  operator scrolled past them rather than in the order they went dirty. */
+export const PRODUCT_SECTION_ORDER: readonly ProductSection[] = ["identity", "price", "shipping"];
+
+/** Which sections hold unsaved work, named and in screen order. */
+export function dirtySectionLabels(
+	dirty: Readonly<Record<ProductSection, boolean>>,
+): readonly string[] {
+	return PRODUCT_SECTION_ORDER.filter((section) => dirty[section]).map(
+		(section) => PRODUCT_SECTION_LABELS[section],
+	);
+}
+
+/** A tab button's accessible name while the sections behind it hold unsaved
+ *  work. The dot itself is a shape and is hidden from assistive technology —
+ *  "•" announced as "bullet" says nothing — so the fact it carries has to be in
+ *  the name. */
+export function tabUnsavedLabel(label: string): string {
+	return `${label} — unsaved changes`;
+}
+
+/**
+ * The one dialog on this screen that guards WORK rather than an act.
+ *
+ * F8. Once a tab switch keeps every draft and a save re-seeds only its own
+ * section, Back is the single remaining way to lose typed work — so it is the
+ * single place a prompt is worth its cost. The sentence NAMES the sections
+ * holding work, because "you have unsaved changes" on a screen with three
+ * independent forms and two tabs leaves the operator to hunt for them.
+ *
+ * The multi-section wording is composed rather than authored per case: the
+ * count is 1, 2 or 3 and every one of them has to read as English, so the list
+ * is joined with a serial "and" and the verb agrees with it. `sections` is
+ * expected non-empty — the caller opens this dialog only when something is
+ * dirty — but an empty list degrades to the generic sentence rather than to
+ * "The  sections have…".
+ */
+export function leaveWithoutSavingConfirm(sections: readonly string[]): {
+	readonly title: string;
+	readonly text: string;
+	readonly confirm: string;
+	readonly deny: string;
+} {
+	return {
+		title: "Leave without saving?",
+		text: `${namedSections(sections)} Leaving this product discards them.`,
+		confirm: "Leave and discard",
+		deny: "Stay",
+	};
+}
+
+/** `The Price section has unsaved changes.` — or the two- and three-section
+ *  forms of the same sentence. */
+function namedSections(sections: readonly string[]): string {
+	if (sections.length === 0) return "This product has unsaved changes.";
+	const first = sections[0] ?? "";
+	if (sections.length === 1) return `The ${first} section has unsaved changes.`;
+	const last = sections[sections.length - 1] ?? "";
+	const list = `${sections.slice(0, -1).join(", ")} and ${last}`;
+	return `The ${list} sections have unsaved changes.`;
 }
 
 /**

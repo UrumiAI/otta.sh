@@ -61,9 +61,14 @@ import {
 	formatMoney,
 	formatOptionalAmount,
 	formatTimestamp,
+	PRODUCT_SECTION_ORDER,
+	SPLIT_DISCARD_CONTEXT,
 	dirtyGroupLabel,
+	dirtySectionLabels,
 	identityGroupLabel,
+	leaveWithoutSavingConfirm,
 	listOutcome,
+	tabUnsavedLabel,
 	majorUnits,
 	onHandCell,
 	orderStateCell,
@@ -938,5 +943,63 @@ describe("the Orders detail copy is shared, and says what the Block Kit screen s
 
 	test("the mark-refunded confirm separates the ledger from the money", () => {
 		expect(MARK_REFUNDED_CONFIRM.text).toContain("does not move money");
+	});
+});
+
+describe("the words that describe unsaved work (F6, F8, F9)", () => {
+	test("the sibling-save line describes what the screen DOES, not the opposite (F9)", () => {
+		// The one sanctioned wording change in this build. It used to tell the
+		// operator that saving one section "clears unsaved edits in the others" and
+		// to save before opening another — while the actual loss was a TAB SWITCH,
+		// which unmounted all three forms, and a sibling save cleared nothing. Both
+		// halves are now true as written.
+		expect(SPLIT_DISCARD_CONTEXT).not.toContain("clears unsaved edits in the others");
+		expect(SPLIT_DISCARD_CONTEXT).toContain("switch tabs");
+		expect(SPLIT_DISCARD_CONTEXT).toContain("kept");
+		// …and it names the one path that still discards, which is the one that now
+		// asks first.
+		expect(SPLIT_DISCARD_CONTEXT).toContain("leaving this product");
+	});
+
+	test("the leave confirm NAMES the sections holding work, at one, two and three", () => {
+		// "You have unsaved changes" on a screen with three independent forms
+		// behind two tabs leaves the operator to hunt. Every count has to read as
+		// English, so the list is composed rather than authored per case.
+		const one = leaveWithoutSavingConfirm(["Price"]);
+		expect(one.title).toBe("Leave without saving?");
+		expect(one.text).toBe(
+			"The Price section has unsaved changes. Leaving this product discards them.",
+		);
+		expect(one.confirm).toBe("Leave and discard");
+		expect(one.deny).toBe("Stay");
+
+		expect(leaveWithoutSavingConfirm(["Price", "Classification & shipping"]).text).toBe(
+			"The Price and Classification & shipping sections have unsaved changes. Leaving this product discards them.",
+		);
+		expect(leaveWithoutSavingConfirm(["Identity", "Price", "Classification & shipping"]).text).toBe(
+			"The Identity, Price and Classification & shipping sections have unsaved changes. Leaving this product discards them.",
+		);
+		// Not reachable from the screen — the dialog opens only when something is
+		// dirty — but it degrades to a sentence rather than to "The  sections".
+		expect(leaveWithoutSavingConfirm([]).text).toContain("This product has unsaved changes.");
+	});
+
+	test("dirty sections are named in SCREEN order, not in the order they went dirty", () => {
+		expect(dirtySectionLabels({ identity: false, price: true, shipping: false })).toEqual([
+			"Price",
+		]);
+		expect(dirtySectionLabels({ identity: true, price: false, shipping: true })).toEqual([
+			"Identity",
+			"Classification & shipping",
+		]);
+		expect(dirtySectionLabels({ identity: false, price: false, shipping: false })).toEqual([]);
+		expect(PRODUCT_SECTION_ORDER).toEqual(["identity", "price", "shipping"]);
+	});
+
+	test("a tab's dot has a NAME, because a bullet announces as nothing useful", () => {
+		expect(tabUnsavedLabel("Product")).toBe("Product — unsaved changes");
+		// The suffix a shut group's summary takes is the same fact in the same
+		// register, and it is still the group's, not the tab's.
+		expect(dirtyGroupLabel("Price — $9.00 USD", true)).toBe("Price — $9.00 USD · unsaved");
 	});
 });

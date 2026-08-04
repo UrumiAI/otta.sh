@@ -37,9 +37,21 @@ const {
 } = await import("../src/console-api.js");
 const { activeFilterParts, clearAnswer, visibleDegradation, UNTITLED } =
 	await import("../src/products/products-list.js");
-const { CopyIdButton } = await import("../src/ui.js");
-const { PriceGroup, changedFields, changedPriceFields, nextWritePhase, writeControls } =
-	await import("../src/products/product-detail.js");
+const { CopyIdButton, WARN_ACCENT } = await import("../src/ui.js");
+const {
+	IdentityFields,
+	LeaveConfirm,
+	PriceGroup,
+	ProductTabs,
+	ShippingFields,
+	changedFields,
+	changedPriceFields,
+	leaveNeedsConfirm,
+	nextFormKeys,
+	nextWritePhase,
+	sectionForAction,
+	writeControls,
+} = await import("../src/products/product-detail.js");
 type WriteEvent = import("../src/products/product-detail.js").WriteEvent;
 type WritePhase = import("../src/products/product-detail.js").WritePhase;
 const {
@@ -79,6 +91,32 @@ const PRICED = {
 	createdAt: "2026-01-01T00:00:00.000Z",
 	updatedAt: "2026-01-02T00:00:00.000Z",
 } as const;
+
+/** The tabs and both panels, with recognisable stand-ins for the two real ones
+ *  — what is under test is which of them is in the DOM, not what they contain. */
+function renderTabs(tab: number, unsaved: readonly boolean[]): string {
+	return renderToStaticMarkup(
+		<ProductTabs
+			labels={["Product", "Stock"]}
+			tab={tab}
+			unsaved={unsaved}
+			onSelect={() => undefined}
+			panels={[<p key="p">the product forms</p>, <p key="s">the stock forms</p>]}
+		/>,
+	);
+}
+
+/** The one rendered tag carrying `data-testid`, so a style assertion is about
+ *  the field it names and not about "somewhere in the group". */
+function tagFor(html: string, testId: string): string {
+	const found = new RegExp(`<[a-z]+[^>]*data-testid="${testId}"[^>]*>`).exec(html);
+	if (found === null) throw new Error(`no element with data-testid="${testId}"`);
+	return found[0];
+}
+
+/** The three sections' dirty record, clean. */
+const NO_SECTION_DIRTY = { identity: false, price: false, shipping: false } as const;
+const noop = (): undefined => undefined;
 
 function jsonResponse(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -436,9 +474,11 @@ describe("presentation primitives this screen relies on", () => {
 
 		// A REFUSED write is released at once: nothing moved, so no re-read is
 		// coming and there is no superseded watermark to be armed against.
-		expect(writeControls(run({ type: "dispatched", actionId: SAVE }, { type: "refused" }))).toEqual(
-			{ busy: false, acting: null },
-		);
+		expect(
+			writeControls(
+				run({ type: "dispatched", actionId: SAVE }, { type: "refused", actionId: SAVE }),
+			),
+		).toEqual({ busy: false, acting: null });
 
 		// A late or duplicated answer cannot re-arm a leg that already settled, and
 		// the mount read of an idle screen disables nothing.
@@ -514,6 +554,262 @@ describe("presentation primitives this screen relies on", () => {
 		);
 		// Inside the group, not beside it.
 		expect(html.startsWith("<details")).toBe(true);
+	});
+
+	test("a refusal releases the write it NAMES, and a second dispatch cannot retarget one", () => {
+		// Carried from increment 2's re-review. Unreachable today — every submit is
+		// `busy`-gated, so there is never a second write to be confused with — but
+		// the failure is silent if that gate ever loosens: an unguarded refusal
+		// releases whatever is outstanding, so a superseded write's refusal would
+		// re-arm every control in the middle of a live one.
+		const SAVE = "products:save-price";
+		const OTHER = "products:save-shipping";
+		const writing = nextWritePhase({ step: "idle" }, { type: "dispatched", actionId: SAVE });
+
+		// A refusal for a DIFFERENT write changes nothing: the live one is still
+		// writing, and still the one the button reports.
+		expect(nextWritePhase(writing, { type: "refused", actionId: OTHER })).toEqual(writing);
+		expect(writeControls(nextWritePhase(writing, { type: "refused", actionId: OTHER }))).toEqual({
+			busy: true,
+			acting: SAVE,
+		});
+		// Its own refusal still releases it.
+		expect(nextWritePhase(writing, { type: "refused", actionId: SAVE })).toEqual({ step: "idle" });
+		// And a second dispatch does not overwrite the outstanding write's id —
+		// which would hand the FIRST write's answer to the second.
+		expect(nextWritePhase(writing, { type: "dispatched", actionId: OTHER })).toEqual(writing);
+		// A refusal arriving after everything settled releases nothing either.
+		expect(nextWritePhase({ step: "idle" }, { type: "refused", actionId: SAVE })).toEqual({
+			step: "idle",
+		});
+	});
+
+	test("only a SECTION save re-seeds a form, and only its own (F7)", () => {
+		// The `key` bump is this map. Bumped on someone else's save it would
+		// destroy the drafts F6 exists to protect — the defect inverted — and a
+		// stock movement owns no form on the Product tab at all.
+		expect(sectionForAction("products:save-identity")).toBe("identity");
+		expect(sectionForAction("products:save-price")).toBe("price");
+		expect(sectionForAction("products:save-shipping")).toBe("shipping");
+		expect(sectionForAction("products:restock")).toBeNull();
+		expect(sectionForAction("products:remove-stock")).toBeNull();
+	});
+
+	test("a dirty IDENTITY group borders the changed field and marks its summary (F6)", () => {
+		// The Price group had this treatment before this increment; Identity and
+		// shipping did not. Rendered at BOTH states from the same component, so the
+		// assertion is the wiring — `changedFields` being right proves nothing about
+		// whether this group asks it anything.
+		const props = {
+			product: PRICED,
+			busy: false,
+			report: noop,
+			onChange: noop,
+			onSubmit: noop,
+		} as const;
+		const clean = renderToStaticMarkup(
+			<IdentityFields
+				{...props}
+				committed={{ sku: "APR-LIN-NAT" }}
+				values={{ sku: "APR-LIN-NAT" }}
+			/>,
+		);
+		expect(clean).not.toContain("· unsaved");
+		expect(tagFor(clean, "edit-sku")).not.toContain(WARN_ACCENT);
+
+		const dirty = renderToStaticMarkup(
+			<IdentityFields
+				{...props}
+				committed={{ sku: "APR-LIN-NAT" }}
+				values={{ sku: "APR-LIN-XL" }}
+			/>,
+		);
+		// On the SUMMARY line, so a SHUT group cannot hide the work.
+		expect(dirty).toMatch(/<summary[^>]*>(?:(?!<\/summary>).)*· unsaved/s);
+		// A border, never a text colour — the accent has to survive both themes.
+		expect(tagFor(dirty, "edit-sku")).toContain(`2px solid ${WARN_ACCENT}`);
+	});
+
+	test("a dirty SHIPPING group borders ONLY the field that changed (F6)", () => {
+		const props = {
+			product: PRICED,
+			taxClasses: [{ id: "standard", name: "Standard" }],
+			busy: false,
+			report: noop,
+			onChange: noop,
+			onSubmit: noop,
+		} as const;
+		const committed = {
+			productKind: "physical",
+			taxClass: "standard",
+			weightGrams: "420",
+			lengthMm: "",
+			widthMm: "",
+			heightMm: "",
+		};
+		const clean = renderToStaticMarkup(
+			<ShippingFields {...props} committed={committed} values={committed} />,
+		);
+		expect(clean).not.toContain("· unsaved");
+		expect(tagFor(clean, "edit-weight")).not.toContain(WARN_ACCENT);
+
+		const dirty = renderToStaticMarkup(
+			<ShippingFields
+				{...props}
+				committed={committed}
+				values={{ ...committed, weightGrams: "500" }}
+			/>,
+		);
+		expect(dirty).toMatch(/<summary[^>]*>(?:(?!<\/summary>).)*· unsaved/s);
+		expect(tagFor(dirty, "edit-weight")).toContain(`2px solid ${WARN_ACCENT}`);
+		// Six fields, one changed: marking the other five would say the operator
+		// edited things they never touched.
+		for (const id of ["edit-kind", "edit-tax-class", "edit-length", "edit-width", "edit-height"]) {
+			expect(tagFor(dirty, id)).not.toContain(WARN_ACCENT);
+		}
+	});
+
+	test("a save re-seeds its OWN form and leaves both siblings' drafts mounted (F7)", () => {
+		const keys = { identity: 0, price: 3, shipping: 7 } as const;
+
+		// The saving section remounts…
+		const afterPrice = nextFormKeys(keys, "price");
+		expect(afterPrice.price).toBe(4);
+		// …AND THIS IS THE ASSERTION THE INCREMENT IS FOR. Bump all three and the
+		// sibling forms remount against the record, discarding exactly the drafts
+		// F6 exists to protect — the original defect, inverted.
+		expect(afterPrice.identity).toBe(0);
+		expect(afterPrice.shipping).toBe(7);
+
+		expect(nextFormKeys(keys, "identity")).toEqual({ identity: 1, price: 3, shipping: 7 });
+		expect(nextFormKeys(keys, "shipping")).toEqual({ identity: 0, price: 3, shipping: 8 });
+
+		// A stock movement owns no form on the Product tab, and a write that was
+		// refused never named a section — neither may move anything. Same OBJECT,
+		// so React bails out instead of reconciling three forms for nothing.
+		expect(nextFormKeys(keys, sectionForAction("products:restock"))).toBe(keys);
+		expect(nextFormKeys(keys, sectionForAction("products:remove-stock"))).toBe(keys);
+		expect(nextFormKeys(keys, null)).toBe(keys);
+	});
+
+	test("Back asks only when there is work to lose, and the ask NAMES it (F8)", () => {
+		// The predicate the back link reads. A clean product must go straight back:
+		// a dialog on every exit is the tax that teaches operators to dismiss them.
+		expect(leaveNeedsConfirm(NO_SECTION_DIRTY)).toBe(false);
+		expect(leaveNeedsConfirm({ ...NO_SECTION_DIRTY, identity: true })).toBe(true);
+		expect(leaveNeedsConfirm({ ...NO_SECTION_DIRTY, price: true })).toBe(true);
+		expect(leaveNeedsConfirm({ ...NO_SECTION_DIRTY, shipping: true })).toBe(true);
+
+		const open = renderToStaticMarkup(
+			<LeaveConfirm
+				open={true}
+				dirty={{ ...NO_SECTION_DIRTY, price: true }}
+				onStay={noop}
+				onLeave={noop}
+			/>,
+		);
+		expect(open).toContain('data-testid="detail-leave-confirm"');
+		expect(open).toContain("Leave without saving?");
+		expect(open).toContain("Price");
+		expect(open).toContain("Leaving this product discards them.");
+		expect(open).toContain("Leave and discard");
+		expect(open).toContain("Stay");
+		// Derived, never hard-coded: two dirty sections are both named, in screen
+		// order, and the section that is clean is not.
+		const multi = renderToStaticMarkup(
+			<LeaveConfirm
+				open={true}
+				dirty={{ identity: true, price: false, shipping: true }}
+				onStay={noop}
+				onLeave={noop}
+			/>,
+		);
+		expect(multi.indexOf("Identity")).toBeGreaterThan(-1);
+		// `&` arrives escaped — this is the rendered dialog, not the copy module.
+		expect(multi.indexOf("Classification &amp; shipping")).toBeGreaterThan(
+			multi.indexOf("Identity"),
+		);
+		expect(multi).not.toContain("Price");
+
+		// Shut, it composes nothing — a sentence naming a section that has since
+		// been saved must not be sitting inside the dialog waiting to be shown.
+		const shut = renderToStaticMarkup(
+			<LeaveConfirm
+				open={false}
+				dirty={{ ...NO_SECTION_DIRTY, price: true }}
+				onStay={noop}
+				onLeave={noop}
+			/>,
+		);
+		expect(shut).toContain('data-testid="detail-leave-confirm"');
+		expect(shut).not.toContain("Leave without saving?");
+		expect(shut).not.toContain("Leave and discard");
+		expect(shut).not.toContain("Price");
+	});
+
+	test("BOTH tab panels are rendered, and the inactive one is `hidden`, not gone (F6)", () => {
+		// THE WHOLE OF F6. The panel used to be rendered conditionally on the
+		// active tab, so a switch unmounted three forms and React discarded every
+		// draft in them. `hidden` keeps the node — and therefore the state — while
+		// taking it out of the accessibility tree and the tab order.
+		const onProduct = renderTabs(0, [false, false]);
+		// Both panels exist in both tab states — this is the assertion that fails
+		// the moment anyone reaches for a conditional again.
+		expect(onProduct).toContain("the product forms");
+		expect(onProduct).toContain("the stock forms");
+		expect(onProduct).toMatch(/id="otta-panel-1"[^>]*hidden=""/);
+		expect(onProduct).not.toMatch(/id="otta-panel-0"[^>]*hidden=""/);
+
+		const onStock = renderTabs(1, [false, false]);
+		expect(onStock).toContain("the product forms");
+		expect(onStock).toMatch(/id="otta-panel-0"[^>]*hidden=""/);
+		expect(onStock).not.toMatch(/id="otta-panel-1"[^>]*hidden=""/);
+
+		// The free side effect, and it is a real defect closed: each tab's
+		// `aria-controls` pointed at its own panel id while only the ACTIVE panel
+		// was rendered, so the inactive tab controlled nothing that existed.
+		for (const html of [onProduct, onStock]) {
+			const controls = [...html.matchAll(/aria-controls="([^"]+)"/g)].map((m) => m[1]);
+			expect(controls).toEqual(["otta-panel-0", "otta-panel-1"]);
+			for (const id of controls) expect(html).toContain(`id="${String(id)}"`);
+		}
+	});
+
+	test("a tab holding unsaved work carries a dot AND says so in its name (F6)", () => {
+		const html = renderToStaticMarkup(
+			<ProductTabs
+				labels={["Product", "Stock"]}
+				tab={1}
+				unsaved={[true, false]}
+				onSelect={() => undefined}
+				panels={[<p key="p">forms</p>, <p key="s">stock</p>]}
+			/>,
+		);
+		// The dot is a shape and is hidden from assistive technology — "bullet"
+		// reports nothing — so the fact it stands for is the accessible name.
+		expect(html).toContain('aria-label="Product — unsaved changes"');
+		expect(html).toContain('data-testid="tab-product-unsaved"');
+		expect(html).toContain('aria-hidden="true"');
+		// The clean tab keeps its plain name and takes no dot.
+		expect(html).not.toContain('aria-label="Stock');
+		expect(html).not.toContain('data-testid="tab-stock-unsaved"');
+	});
+
+	test("a clean screen puts no dot on any tab", () => {
+		const html = renderToStaticMarkup(
+			<ProductTabs
+				labels={["Product", "Stock"]}
+				tab={0}
+				unsaved={[false, false]}
+				onSelect={() => undefined}
+				panels={[<p key="p">forms</p>, <p key="s">stock</p>]}
+			/>,
+		);
+		expect(html).not.toContain("unsaved");
+		// The tablist keeps its own name; no BUTTON takes one.
+		expect(html).toContain('aria-label="Product sections"');
+		expect(html).not.toContain('aria-label="Product "');
+		expect(html).not.toMatch(/<button[^>]*aria-label=/);
 	});
 
 	test("the low-stock control's description is page-scoped", () => {
