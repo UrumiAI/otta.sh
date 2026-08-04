@@ -38,8 +38,15 @@ const {
 const { activeFilterParts, clearAnswer, visibleDegradation, UNTITLED } =
 	await import("../src/products/products-list.js");
 const { CopyIdButton } = await import("../src/ui.js");
-const { PriceGroup, changedFields, changedPriceFields, nextWritePhase, writeControls } =
-	await import("../src/products/product-detail.js");
+const {
+	PriceGroup,
+	ProductTabs,
+	changedFields,
+	changedPriceFields,
+	nextWritePhase,
+	sectionForAction,
+	writeControls,
+} = await import("../src/products/product-detail.js");
 type WriteEvent = import("../src/products/product-detail.js").WriteEvent;
 type WritePhase = import("../src/products/product-detail.js").WritePhase;
 const {
@@ -79,6 +86,20 @@ const PRICED = {
 	createdAt: "2026-01-01T00:00:00.000Z",
 	updatedAt: "2026-01-02T00:00:00.000Z",
 } as const;
+
+/** The tabs and both panels, with recognisable stand-ins for the two real ones
+ *  — what is under test is which of them is in the DOM, not what they contain. */
+function renderTabs(tab: number, unsaved: readonly boolean[]): string {
+	return renderToStaticMarkup(
+		<ProductTabs
+			labels={["Product", "Stock"]}
+			tab={tab}
+			unsaved={unsaved}
+			onSelect={() => undefined}
+			panels={[<p key="p">the product forms</p>, <p key="s">the stock forms</p>]}
+		/>,
+	);
+}
 
 function jsonResponse(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -436,9 +457,11 @@ describe("presentation primitives this screen relies on", () => {
 
 		// A REFUSED write is released at once: nothing moved, so no re-read is
 		// coming and there is no superseded watermark to be armed against.
-		expect(writeControls(run({ type: "dispatched", actionId: SAVE }, { type: "refused" }))).toEqual(
-			{ busy: false, acting: null },
-		);
+		expect(
+			writeControls(
+				run({ type: "dispatched", actionId: SAVE }, { type: "refused", actionId: SAVE }),
+			),
+		).toEqual({ busy: false, acting: null });
 
 		// A late or duplicated answer cannot re-arm a leg that already settled, and
 		// the mount read of an idle screen disables nothing.
@@ -514,6 +537,110 @@ describe("presentation primitives this screen relies on", () => {
 		);
 		// Inside the group, not beside it.
 		expect(html.startsWith("<details")).toBe(true);
+	});
+
+	test("a refusal releases the write it NAMES, and a second dispatch cannot retarget one", () => {
+		// Carried from increment 2's re-review. Unreachable today — every submit is
+		// `busy`-gated, so there is never a second write to be confused with — but
+		// the failure is silent if that gate ever loosens: an unguarded refusal
+		// releases whatever is outstanding, so a superseded write's refusal would
+		// re-arm every control in the middle of a live one.
+		const SAVE = "products:save-price";
+		const OTHER = "products:save-shipping";
+		const writing = nextWritePhase({ step: "idle" }, { type: "dispatched", actionId: SAVE });
+
+		// A refusal for a DIFFERENT write changes nothing: the live one is still
+		// writing, and still the one the button reports.
+		expect(nextWritePhase(writing, { type: "refused", actionId: OTHER })).toEqual(writing);
+		expect(writeControls(nextWritePhase(writing, { type: "refused", actionId: OTHER }))).toEqual({
+			busy: true,
+			acting: SAVE,
+		});
+		// Its own refusal still releases it.
+		expect(nextWritePhase(writing, { type: "refused", actionId: SAVE })).toEqual({ step: "idle" });
+		// And a second dispatch does not overwrite the outstanding write's id —
+		// which would hand the FIRST write's answer to the second.
+		expect(nextWritePhase(writing, { type: "dispatched", actionId: OTHER })).toEqual(writing);
+		// A refusal arriving after everything settled releases nothing either.
+		expect(nextWritePhase({ step: "idle" }, { type: "refused", actionId: SAVE })).toEqual({
+			step: "idle",
+		});
+	});
+
+	test("only a SECTION save re-seeds a form, and only its own (F7)", () => {
+		// The `key` bump is this map. Bumped on someone else's save it would
+		// destroy the drafts F6 exists to protect — the defect inverted — and a
+		// stock movement owns no form on the Product tab at all.
+		expect(sectionForAction("products:save-identity")).toBe("identity");
+		expect(sectionForAction("products:save-price")).toBe("price");
+		expect(sectionForAction("products:save-shipping")).toBe("shipping");
+		expect(sectionForAction("products:restock")).toBeNull();
+		expect(sectionForAction("products:remove-stock")).toBeNull();
+	});
+
+	test("BOTH tab panels are rendered, and the inactive one is `hidden`, not gone (F6)", () => {
+		// THE WHOLE OF F6. The panel used to be rendered conditionally on the
+		// active tab, so a switch unmounted three forms and React discarded every
+		// draft in them. `hidden` keeps the node — and therefore the state — while
+		// taking it out of the accessibility tree and the tab order.
+		const onProduct = renderTabs(0, [false, false]);
+		// Both panels exist in both tab states — this is the assertion that fails
+		// the moment anyone reaches for a conditional again.
+		expect(onProduct).toContain("the product forms");
+		expect(onProduct).toContain("the stock forms");
+		expect(onProduct).toMatch(/id="otta-panel-1"[^>]*hidden=""/);
+		expect(onProduct).not.toMatch(/id="otta-panel-0"[^>]*hidden=""/);
+
+		const onStock = renderTabs(1, [false, false]);
+		expect(onStock).toContain("the product forms");
+		expect(onStock).toMatch(/id="otta-panel-0"[^>]*hidden=""/);
+		expect(onStock).not.toMatch(/id="otta-panel-1"[^>]*hidden=""/);
+
+		// The free side effect, and it is a real defect closed: each tab's
+		// `aria-controls` pointed at its own panel id while only the ACTIVE panel
+		// was rendered, so the inactive tab controlled nothing that existed.
+		for (const html of [onProduct, onStock]) {
+			const controls = [...html.matchAll(/aria-controls="([^"]+)"/g)].map((m) => m[1]);
+			expect(controls).toEqual(["otta-panel-0", "otta-panel-1"]);
+			for (const id of controls) expect(html).toContain(`id="${String(id)}"`);
+		}
+	});
+
+	test("a tab holding unsaved work carries a dot AND says so in its name (F6)", () => {
+		const html = renderToStaticMarkup(
+			<ProductTabs
+				labels={["Product", "Stock"]}
+				tab={1}
+				unsaved={[true, false]}
+				onSelect={() => undefined}
+				panels={[<p key="p">forms</p>, <p key="s">stock</p>]}
+			/>,
+		);
+		// The dot is a shape and is hidden from assistive technology — "bullet"
+		// reports nothing — so the fact it stands for is the accessible name.
+		expect(html).toContain('aria-label="Product — unsaved changes"');
+		expect(html).toContain('data-testid="tab-product-unsaved"');
+		expect(html).toContain('aria-hidden="true"');
+		// The clean tab keeps its plain name and takes no dot.
+		expect(html).not.toContain('aria-label="Stock');
+		expect(html).not.toContain('data-testid="tab-stock-unsaved"');
+	});
+
+	test("a clean screen puts no dot on any tab", () => {
+		const html = renderToStaticMarkup(
+			<ProductTabs
+				labels={["Product", "Stock"]}
+				tab={0}
+				unsaved={[false, false]}
+				onSelect={() => undefined}
+				panels={[<p key="p">forms</p>, <p key="s">stock</p>]}
+			/>,
+		);
+		expect(html).not.toContain("unsaved");
+		// The tablist keeps its own name; no BUTTON takes one.
+		expect(html).toContain('aria-label="Product sections"');
+		expect(html).not.toContain('aria-label="Product "');
+		expect(html).not.toMatch(/<button[^>]*aria-label=/);
 	});
 
 	test("the low-stock control's description is page-scoped", () => {

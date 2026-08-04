@@ -89,11 +89,13 @@ import {
 	compareAtFieldLabel,
 	dimensionsSummary,
 	dirtyGroupLabel,
+	dirtySectionLabels,
 	formatMinorUnitsInput,
 	formatOptionalAmount,
 	formatTimestamp,
 	identityGroupLabel,
 	inventoryPolicyLabel,
+	leaveWithoutSavingConfirm,
 	onHandCell,
 	parseMinorUnitsInput,
 	parseStockQty,
@@ -105,9 +107,11 @@ import {
 	removeStockConfirm,
 	shippingGroupLabel,
 	statusLabel,
+	tabUnsavedLabel,
 	taxClassLabel,
 	taxClassOptions,
 	unitCostFieldLabel,
+	type ProductSection,
 } from "@otta-sh/admin-presentation";
 import * as React from "react";
 import {
@@ -276,7 +280,7 @@ export type WritePhase =
 
 export type WriteEvent =
 	| { readonly type: "dispatched"; readonly actionId: string }
-	| { readonly type: "refused" }
+	| { readonly type: "refused"; readonly actionId: string }
 	| { readonly type: "accepted" }
 	| { readonly type: "read-settled" };
 
@@ -285,9 +289,22 @@ export type WriteEvent =
 export function nextWritePhase(phase: WritePhase, event: WriteEvent): WritePhase {
 	switch (event.type) {
 		case "dispatched":
-			return { step: "writing", actionId: event.actionId };
+			// GUARDED THE WAY `accepted` IS, and for the same reason. One write at a
+			// time is the screen's contract, enforced today by every submit being
+			// `busy`-gated — so a second dispatch is unreachable and this branch
+			// changes nothing now. It is here because the failure it prevents is
+			// silent if the gate ever loosens: a second dispatch would overwrite the
+			// outstanding write's `actionId`, and the answer to the FIRST write would
+			// then release the second.
+			return phase.step === "idle" ? { step: "writing", actionId: event.actionId } : phase;
 		case "refused":
-			return { step: "idle" };
+			// A refusal releases only the write it refers to. Unguarded, a refusal
+			// arriving for a superseded write would release one that is still in
+			// flight — re-arming every control mid-write, which is the exact race
+			// `accepted` is guarded against, inverted.
+			return phase.step === "writing" && phase.actionId === event.actionId
+				? { step: "idle" }
+				: phase;
 		case "accepted":
 			// NOT A RELEASE. The write answered; the screen has not caught up with
 			// it yet. Ignored unless a write is actually outstanding, so a late or
@@ -311,6 +328,68 @@ export function writeControls(phase: WritePhase): {
 	return phase.step === "idle"
 		? { busy: false, acting: null }
 		: { busy: true, acting: phase.actionId };
+}
+
+/**
+ * Which section a successful write re-seeds — and `null` for the writes that
+ * re-seed none of them.
+ *
+ * F7's whole content is this map. Every write on this screen is followed by a
+ * re-read, and the re-read is what moves each form's `expectedUpdatedAt`; what
+ * must NOT follow it is a remount of a form the operator has typed into. So the
+ * saving section's `key` changes and the other two keep their drafts — which
+ * means a stock movement, which owns no form on the Product tab, must bump
+ * nothing at all.
+ */
+export function sectionForAction(actionId: string): ProductSection | null {
+	switch (actionId) {
+		case "products:save-identity":
+			return "identity";
+		case "products:save-price":
+			return "price";
+		case "products:save-shipping":
+			return "shipping";
+		default:
+			return null;
+	}
+}
+
+/** How a section tells the screen it is holding work, so that the two places
+ *  that cannot see inside a form — the tab button's dot, and the leave confirm's
+ *  sentence — can name it. The values themselves stay in the form: nothing is
+ *  lifted, because lifting them is what a re-render of the parent would then
+ *  have to preserve. */
+type DirtyReporter = (section: ProductSection, dirty: boolean) => void;
+
+/** Stable, so a form rendered without a reporter (a static render, a test)
+ *  neither crashes nor re-runs its effect every render. */
+const NO_REPORT: DirtyReporter = () => undefined;
+
+/** The cleanup matters: a form that unmounts — a tombstoned product, a tab that
+ *  is not there, a `key` bump after its own save — must stop claiming to hold
+ *  work, or the dot and the leave confirm outlive the draft they describe. */
+function useReportDirty(section: ProductSection, dirty: boolean, report: DirtyReporter): void {
+	React.useEffect(() => {
+		report(section, dirty);
+		return () => {
+			report(section, false);
+		};
+	}, [section, dirty, report]);
+}
+
+/** The warn accent, applied as a BORDER on the one input that changed (never as
+ *  a text colour — rule: accents must be legible on a ground this file does not
+ *  control, in both themes). Stated as the same `border` SHORTHAND `inputStyle`
+ *  uses rather than as longhands over it: React warns about mixing the two on
+ *  one element, and the warning is right — the shorthand wins on a re-render and
+ *  the accent would disappear exactly when the field became clean again. */
+const dirtyInputStyle: React.CSSProperties = {
+	...inputStyle,
+	border: `2px solid ${WARN_ACCENT}`,
+};
+
+function fieldStyle(changed: readonly string[], key: string): React.CSSProperties {
+	return changed.includes(key) ? dirtyInputStyle : inputStyle;
 }
 
 export function ProductDetail({
@@ -342,6 +421,32 @@ export function ProductDetail({
 		"stock-remove": null,
 	});
 	const [generation, setGeneration] = React.useState(0);
+	// WHICH SECTIONS HOLD UNSAVED WORK — reported up by the forms, never read out
+	// of them. The screen needs it in two places no form can reach: the tab
+	// button's dot, and the sentence the leave confirm has to compose.
+	const [dirty, setDirty] = React.useState<Record<ProductSection, boolean>>({
+		identity: false,
+		price: false,
+		shipping: false,
+	});
+	const reportDirty = React.useCallback<DirtyReporter>((section, value) => {
+		setDirty((prev) => (prev[section] === value ? prev : { ...prev, [section]: value }));
+	}, []);
+	// F7: one key per section, bumped ONLY by that section's own successful save.
+	// A form whose key changes remounts and re-seeds from the record; the other
+	// two keep exactly what the operator typed.
+	const [formKeys, setFormKeys] = React.useState<Record<ProductSection, number>>({
+		identity: 0,
+		price: 0,
+		shipping: 0,
+	});
+	// The section whose save is being re-read. A REF, not state: the bump belongs
+	// to the moment the fresh record lands, and bumping on the write's answer
+	// instead would remount the form against the record it just replaced.
+	const savedSection = React.useRef<ProductSection | null>(null);
+	// F8: Back is the one remaining way to lose typed work, so it is the one
+	// place that asks.
+	const [leaving, setLeaving] = React.useState(false);
 	// Confined to the failure branch: the re-read a save triggers has the whole
 	// screen to show for itself, but a Retry on a screen that is nothing but an
 	// error card has to say that the click landed.
@@ -362,6 +467,16 @@ export function ProductDetail({
 			}
 			setFailure(null);
 			setDetail(result);
+			// HERE, not when the write answered: this is the render that first has
+			// the saved values, so this is the only moment a remount re-seeds the
+			// form with them rather than with the record the save replaced. A
+			// re-read that FAILED leaves the section pending, so a later Retry that
+			// succeeds still re-seeds it.
+			const saved = savedSection.current;
+			if (saved !== null) {
+				savedSection.current = null;
+				setFormKeys((prev) => ({ ...prev, [saved]: prev[saved] + 1 }));
+			}
 		});
 		return () => {
 			cancelled = true;
@@ -382,13 +497,18 @@ export function ProductDetail({
 				// A REFUSAL still reports at page top, for both surfaces' reasons: it is
 				// not a receipt, and the group it came from may be shut. Nothing moved,
 				// so there is no re-read to wait for and the controls are released here.
-				setWritePhase((phase) => nextWritePhase(phase, { type: "refused" }));
+				setWritePhase((phase) =>
+					nextWritePhase(phase, { type: "refused", actionId: action.actionId }),
+				);
 				setNotice({ variant: "error", title: result.title, description: result.description });
 				return;
 			}
 			// ACCEPTED IS NOT SETTLED — the re-read below is the second leg, and the
 			// controls stay disabled across it. Deliberately not a release.
 			setWritePhase((phase) => nextWritePhase(phase, { type: "accepted" }));
+			// F7: claimed on the ACCEPTED write, applied when its re-read lands. A
+			// stock movement names no section and so bumps nothing.
+			savedSection.current = sectionForAction(action.actionId);
 			const served = result.notice;
 			const outcome: { variant: "default" | "error"; title: string; description: string } | null =
 				served === null
@@ -467,6 +587,11 @@ export function ProductDetail({
 	const p = detail.product;
 	const threshold = detail.threshold;
 	const tombstoned = p.deletedAt !== null;
+	// Named, in screen order, by the copy module — the confirm's sentence and the
+	// tab's accessible name are the same fact said twice, and neither is composed
+	// here.
+	const dirtyLabels = dirtySectionLabels(dirty);
+	const leaveConfirm = leaveWithoutSavingConfirm(dirtyLabels);
 
 	return (
 		<div>
@@ -475,7 +600,17 @@ export function ProductDetail({
 				{p.title ?? p.productId}
 			</h1>
 			<div style={{ marginBlockEnd: 16 }}>
-				<Button label={PRODUCTS_BACK_LABEL} onClick={onBack} testId="products-back" />
+				{/* F8: the ONLY control on this screen that still discards typed work,
+				    now that a tab switch keeps it and a save re-seeds one section. It
+				    asks only when there is something to lose. */}
+				<Button
+					label={PRODUCTS_BACK_LABEL}
+					onClick={() => {
+						if (dirtyLabels.length > 0) setLeaving(true);
+						else onBack();
+					}}
+					testId="products-back"
+				/>
 			</div>
 
 			{notice !== null && (
@@ -526,46 +661,23 @@ export function ProductDetail({
 				/>
 			</section>
 
-			<div
-				role="tablist"
-				aria-label="Product sections"
-				style={{ display: "flex", gap: 4, marginBlockEnd: 12 }}
-			>
-				{TAB_LABELS.map((label, index) => (
-					<button
-						key={label}
-						type="button"
-						role="tab"
-						id={`otta-tab-${String(index)}`}
-						aria-selected={tab === index}
-						aria-controls={`otta-panel-${String(index)}`}
-						className="otta-focusable"
-						data-testid={`tab-${label.toLowerCase()}`}
-						onClick={() => setTab(index)}
-						style={{
-							...buttonStyle,
-							borderBlockEndWidth: tab === index ? 2 : 1,
-							fontWeight: tab === index ? 650 : 400,
-							opacity: tab === index ? 1 : 0.7,
-						}}
-					>
-						{label}
-					</button>
-				))}
-			</div>
-
-			<div
-				role="tabpanel"
-				id={`otta-panel-${String(tab)}`}
-				aria-labelledby={`otta-tab-${String(tab)}`}
-			>
-				{tab === 0 && (
+			<ProductTabs
+				labels={TAB_LABELS}
+				tab={tab}
+				onSelect={setTab}
+				// Only the Product tab holds editable sections; the Stock tab's forms
+				// are movements, not drafts, and settle on their own confirm.
+				unsaved={[dirtyLabels.length > 0, false]}
+				panels={[
 					<ProductPanel
+						key="product"
 						product={p}
 						taxClasses={detail.taxClasses}
 						busy={busy}
 						savingPrice={acting === "products:save-price"}
 						priceReceipt={receipts.price}
+						formKeys={formKeys}
+						onDirtyChange={reportDirty}
 						onSubmit={(actionId, value, report) =>
 							dispatch({
 								actionId,
@@ -577,11 +689,9 @@ export function ProductDetail({
 								...(report === undefined ? {} : { slot: report.slot, receipt: report.receipt }),
 							})
 						}
-					/>
-				)}
-
-				{tab === 1 && (
+					/>,
 					<StockPanel
+						key="stock"
 						product={p}
 						threshold={threshold}
 						busy={busy}
@@ -634,8 +744,27 @@ export function ProductDetail({
 								slot: "stock-remove",
 							});
 						}}
-					/>
-				)}
+					/>,
+				]}
+			/>
+
+			{/* Two dialogs, never both open: the confirm below is modal, which makes
+			    the Back button behind it inert, and this one is reachable only from
+			    that button. The wrapper is how a test tells them apart — the dialog
+			    itself is shared and carries one testId for every caller. */}
+			<div data-testid="detail-leave-confirm">
+				<ConfirmDialog
+					open={leaving}
+					title={leaveConfirm.title}
+					text={leaveConfirm.text}
+					confirmLabel={leaveConfirm.confirm}
+					denyLabel={leaveConfirm.deny}
+					onDeny={() => setLeaving(false)}
+					onConfirm={() => {
+						setLeaving(false);
+						onBack();
+					}}
+				/>
 			</div>
 
 			<ConfirmDialog
@@ -653,6 +782,112 @@ export function ProductDetail({
 	);
 }
 
+/**
+ * The two tabs and BOTH of their panels — the inactive one hidden, never
+ * unmounted.
+ *
+ * F6, AND THE WHOLE OF IT. The panel used to be rendered conditionally on the
+ * active tab, so switching tabs unmounted it: React discarded three forms'
+ * state, and an operator who typed a price, glanced at Stock and came back
+ * found the field as it was on arrival. Nothing warned them, and nothing
+ * restored it. Rendering both and putting `hidden` on the inactive one costs
+ * one extra subtree and fixes it outright — no lifted state, no prompt, no
+ * draft store, because the state never leaves the form that owns it.
+ *
+ * `hidden` IS LOAD-BEARING, AND IS NOT `display: none` BY ANOTHER ROUTE. The
+ * attribute takes the node out of the accessibility tree and out of the tab
+ * order, so a keyboard user cannot land in an invisible form — while leaving it
+ * mounted, which is the entire point. Anything that unmounts the subtree
+ * (a conditional, a remount-driven style swap) reimplements the defect.
+ *
+ * IT ALSO REPAIRS `aria-controls`, which is not a side quest: each button
+ * pointed at `otta-panel-<its own index>` while only the ACTIVE panel existed,
+ * so the inactive tab's control reference resolved to nothing. Both ids exist
+ * in both states now.
+ */
+export function ProductTabs({
+	labels,
+	tab,
+	unsaved,
+	onSelect,
+	panels,
+}: {
+	labels: readonly string[];
+	tab: number;
+	/** Per tab: does anything behind it hold unsaved work. */
+	unsaved: readonly boolean[];
+	onSelect: (index: number) => void;
+	/** One node per label, all of them rendered. */
+	panels: readonly React.ReactNode[];
+}): React.ReactElement {
+	return (
+		<>
+			<div
+				role="tablist"
+				aria-label="Product sections"
+				style={{ display: "flex", gap: 4, marginBlockEnd: 12 }}
+			>
+				{labels.map((label, index) => {
+					const holdsWork = unsaved[index] === true;
+					return (
+						<button
+							key={label}
+							type="button"
+							role="tab"
+							id={`otta-tab-${String(index)}`}
+							aria-selected={tab === index}
+							aria-controls={`otta-panel-${String(index)}`}
+							// The dot is a shape, and "bullet" is not a fact. The name it
+							// stands for is the accessible name, composed by the copy module.
+							aria-label={holdsWork ? tabUnsavedLabel(label) : undefined}
+							className="otta-focusable"
+							data-testid={`tab-${label.toLowerCase()}`}
+							onClick={() => {
+								onSelect(index);
+							}}
+							style={{
+								...buttonStyle,
+								borderBlockEndWidth: tab === index ? 2 : 1,
+								fontWeight: tab === index ? 650 : 400,
+								opacity: tab === index ? 1 : 0.7,
+							}}
+						>
+							{label}
+							{holdsWork && (
+								<span
+									aria-hidden="true"
+									data-testid={`tab-${label.toLowerCase()}-unsaved`}
+									style={{
+										display: "inline-block",
+										inlineSize: 8,
+										blockSize: 8,
+										marginInlineStart: 6,
+										borderRadius: 999,
+										border: `2px solid ${WARN_ACCENT}`,
+										verticalAlign: "middle",
+									}}
+								/>
+							)}
+						</button>
+					);
+				})}
+			</div>
+
+			{labels.map((label, index) => (
+				<div
+					key={label}
+					role="tabpanel"
+					id={`otta-panel-${String(index)}`}
+					aria-labelledby={`otta-tab-${String(index)}`}
+					hidden={tab !== index}
+				>
+					{panels[index]}
+				</div>
+			))}
+		</>
+	);
+}
+
 // ── panel "Product" ──────────────────────────────────────────────────────────
 
 function ProductPanel({
@@ -661,6 +896,8 @@ function ProductPanel({
 	busy,
 	savingPrice,
 	priceReceipt,
+	formKeys,
+	onDirtyChange,
 	onSubmit,
 }: {
 	product: ProductRecord;
@@ -670,6 +907,11 @@ function ProductPanel({
 	 *  treatment to identity and classification. */
 	savingPrice: boolean;
 	priceReceipt: Receipt | null;
+	/** F7: one per section, bumped by that section's own successful save and by
+	 *  nothing else. Applied as the form's React `key`, so the saved section
+	 *  re-seeds from the fresh record and the other two keep their drafts. */
+	formKeys: Readonly<Record<ProductSection, number>>;
+	onDirtyChange: DirtyReporter;
 	onSubmit: (
 		actionId: string,
 		value: Record<string, string>,
@@ -723,22 +965,21 @@ function ProductPanel({
 					  D-5 rank 3: `Identity` is this screen's named primary edit group and
 					  is open on arrival whenever the record is editable.
 					*/}
-					<Group testId="edit-identity" defaultOpen label={identityGroupLabel(p.sku)}>
-						<p style={{ fontSize: 12, opacity: 0.75, marginBlockStart: 0 }}>
-							{IDENTITY_FORM_CONTEXT}
-						</p>
-						<IdentityForm
-							product={p}
-							busy={busy}
-							onSubmit={(values) => onSubmit("products:save-identity", { ...carrier, ...values })}
-						/>
-					</Group>
+					<IdentityGroup
+						key={`identity-${String(formKeys.identity)}`}
+						product={p}
+						busy={busy}
+						onDirtyChange={onDirtyChange}
+						onSubmit={(values) => onSubmit("products:save-identity", { ...carrier, ...values })}
+					/>
 
 					<PriceGroup
+						key={`price-${String(formKeys.price)}`}
 						product={p}
 						busy={busy}
 						saving={savingPrice}
 						receipt={priceReceipt}
+						onDirtyChange={onDirtyChange}
 						onSubmit={(values, change) =>
 							onSubmit(
 								"products:save-price",
@@ -751,17 +992,14 @@ function ProductPanel({
 						}
 					/>
 
-					<Group testId="edit-shipping" label={shippingGroupLabel(p.taxClass, p.weightGrams)}>
-						<p style={{ fontSize: 12, opacity: 0.75, marginBlockStart: 0 }}>
-							{SHIPPING_FORM_CONTEXT}
-						</p>
-						<ShippingForm
-							product={p}
-							taxClasses={taxClasses}
-							busy={busy}
-							onSubmit={(values) => onSubmit("products:save-shipping", { ...carrier, ...values })}
-						/>
-					</Group>
+					<ShippingGroup
+						key={`shipping-${String(formKeys.shipping)}`}
+						product={p}
+						taxClasses={taxClasses}
+						busy={busy}
+						onDirtyChange={onDirtyChange}
+						onSubmit={(values) => onSubmit("products:save-shipping", { ...carrier, ...values })}
+					/>
 
 					{/* X-20-safe: the mechanism sentence, in place of the deleted
 					    single-option "When out of stock" select. */}
@@ -783,36 +1021,56 @@ function ProductPanel({
  * between. The title renders as this screen's H1 and nowhere else, and the
  * context line above says who owns it.
  */
-function IdentityForm({
+export function IdentityGroup({
 	product: p,
 	busy,
+	onDirtyChange,
 	onSubmit,
 }: {
 	product: ProductRecord;
 	busy: boolean;
+	onDirtyChange?: DirtyReporter;
 	onSubmit: (values: Record<string, string>) => void;
 }): React.ReactElement {
-	const [sku, setSku] = React.useState(p.sku ?? "");
+	// Re-derived from the product on every render, exactly as the Price group's
+	// is: a save is followed by a re-read, and that is what returns this form to
+	// clean without anything resetting it. COMPARED, NEVER LATCHED — type a
+	// character into the SKU and delete it and there is nothing unsaved here.
+	const committed = React.useMemo(() => ({ sku: p.sku ?? "" }), [p.sku]);
+	const [values, setValues] = React.useState<Record<string, string>>(committed);
+	const changed = changedFields(committed, values);
+	const dirty = changed.length > 0;
+	useReportDirty("identity", dirty, onDirtyChange ?? NO_REPORT);
 	return (
-		<div style={{ display: "grid", gap: 10, maxInlineSize: 420 }}>
-			<Field label={PRODUCT_FIELD_LABELS.sku}>
-				<input
-					className="otta-focusable"
-					data-testid="edit-sku"
-					style={inputStyle}
-					value={sku}
-					onChange={(event) => setSku(event.target.value)}
-				/>
-			</Field>
-			<div>
-				<Button
-					label={SAVE_IDENTITY_LABEL}
-					testId="save-identity"
-					disabled={busy}
-					onClick={() => onSubmit({ sku })}
-				/>
+		<Group
+			testId="edit-identity"
+			defaultOpen
+			label={dirtyGroupLabel(identityGroupLabel(p.sku), dirty)}
+		>
+			<p style={{ fontSize: 12, opacity: 0.75, marginBlockStart: 0 }}>{IDENTITY_FORM_CONTEXT}</p>
+			<div style={{ display: "grid", gap: 10, maxInlineSize: 420 }}>
+				<Field label={PRODUCT_FIELD_LABELS.sku}>
+					<input
+						className="otta-focusable"
+						data-testid="edit-sku"
+						style={fieldStyle(changed, "sku")}
+						value={values["sku"] ?? ""}
+						onChange={(event) => {
+							const next = event.target.value;
+							setValues((prev) => ({ ...prev, sku: next }));
+						}}
+					/>
+				</Field>
+				<div>
+					<Button
+						label={SAVE_IDENTITY_LABEL}
+						testId="save-identity"
+						disabled={busy}
+						onClick={() => onSubmit(values)}
+					/>
+				</div>
 			</div>
-		</div>
+		</Group>
 	);
 }
 
@@ -856,6 +1114,7 @@ export function PriceGroup({
 	busy,
 	saving,
 	receipt,
+	onDirtyChange,
 	onSubmit,
 }: {
 	product: ProductRecord;
@@ -863,6 +1122,7 @@ export function PriceGroup({
 	/** THIS save is the one in flight — not merely that some write is. */
 	saving: boolean;
 	receipt: Receipt | null;
+	onDirtyChange?: DirtyReporter;
 	onSubmit: (values: Record<string, string>, change: string | null) => void;
 }): React.ReactElement {
 	const priced = p.priceCents !== null && p.currency !== null;
@@ -881,6 +1141,7 @@ export function PriceGroup({
 	const [values, setValues] = React.useState<Record<string, string>>(committed);
 	const changed = changedPriceFields(committed, values);
 	const dirty = changed.length > 0;
+	useReportDirty("price", dirty, onDirtyChange ?? NO_REPORT);
 
 	// The pending AFTER, through the same exact-integer parse the write uses.
 	// `null` for a blank field (which leaves the price unchanged) and for
@@ -896,19 +1157,6 @@ export function PriceGroup({
 		const next = event.target.value;
 		setValues((prev) => ({ ...prev, [key]: next }));
 	};
-	// The accent is a BORDER, never a text colour — it has to be legible over a
-	// ground this file does not control, in both themes. Stated as the same
-	// SHORTHAND `inputStyle` uses rather than as `borderColor`/`borderWidth`
-	// longhands over it: React warns about mixing the two on one element, and the
-	// warning is right — the shorthand wins on a re-render and the accent
-	// disappears exactly when the field becomes clean again.
-	const dirtyInputStyle: React.CSSProperties = {
-		...inputStyle,
-		border: `2px solid ${WARN_ACCENT}`,
-	};
-	const fieldStyle = (key: string): React.CSSProperties =>
-		changed.includes(key) ? dirtyInputStyle : inputStyle;
-
 	return (
 		<Group
 			testId="edit-price"
@@ -920,7 +1168,7 @@ export function PriceGroup({
 					<input
 						className="otta-focusable"
 						data-testid="edit-price"
-						style={fieldStyle("price")}
+						style={fieldStyle(changed, "price")}
 						placeholder={PRICE_PLACEHOLDER}
 						value={values["price"] ?? ""}
 						onChange={set("price")}
@@ -931,7 +1179,7 @@ export function PriceGroup({
 						<input
 							className="otta-focusable"
 							data-testid="edit-currency"
-							style={fieldStyle("currency")}
+							style={fieldStyle(changed, "currency")}
 							placeholder={CURRENCY_PLACEHOLDER}
 							value={values["currency"] ?? ""}
 							onChange={set("currency")}
@@ -942,7 +1190,7 @@ export function PriceGroup({
 					<input
 						className="otta-focusable"
 						data-testid="edit-compare-at"
-						style={fieldStyle("compareAt")}
+						style={fieldStyle(changed, "compareAt")}
 						placeholder={COMPARE_AT_PLACEHOLDER}
 						value={values["compareAt"] ?? ""}
 						onChange={set("compareAt")}
@@ -952,7 +1200,7 @@ export function PriceGroup({
 					<input
 						className="otta-focusable"
 						data-testid="edit-unit-cost"
-						style={fieldStyle("unitCost")}
+						style={fieldStyle(changed, "unitCost")}
 						placeholder={UNIT_COST_PLACEHOLDER}
 						value={values["unitCost"] ?? ""}
 						onChange={set("unitCost")}
@@ -1019,81 +1267,109 @@ export function PriceGroup({
  *  Kit form carries. `Kind` and `Tax class` are closed sets; the four
  *  measurements are non-money integers, validated server-side by the same
  *  `buildEditWire` (`/^\d+$/`) that validates the Block Kit submit. */
-function ShippingForm({
+export function ShippingGroup({
 	product: p,
 	taxClasses,
 	busy,
+	onDirtyChange,
 	onSubmit,
 }: {
 	product: ProductRecord;
 	taxClasses: readonly { id: string; name: string }[];
 	busy: boolean;
+	onDirtyChange?: DirtyReporter;
 	onSubmit: (values: Record<string, string>) => void;
 }): React.ReactElement {
-	const [productKind, setProductKind] = React.useState(p.productKind);
-	const [taxClass, setTaxClass] = React.useState(p.taxClass ?? NO_TAX_CLASS);
-	const [weightGrams, setWeightGrams] = React.useState(numberInput(p.weightGrams));
-	const [lengthMm, setLengthMm] = React.useState(numberInput(p.lengthMm));
-	const [widthMm, setWidthMm] = React.useState(numberInput(p.widthMm));
-	const [heightMm, setHeightMm] = React.useState(numberInput(p.heightMm));
+	// ONE record rather than six `useState`s, for one reason: dirty is a
+	// COMPARISON against what was last committed, and six independent values have
+	// nothing to compare against. The wire shape is unchanged — the same six keys
+	// in the same order reach `onSubmit`.
+	const committed = React.useMemo(
+		() => ({
+			productKind: p.productKind,
+			taxClass: p.taxClass ?? NO_TAX_CLASS,
+			weightGrams: numberInput(p.weightGrams),
+			lengthMm: numberInput(p.lengthMm),
+			widthMm: numberInput(p.widthMm),
+			heightMm: numberInput(p.heightMm),
+		}),
+		[p.productKind, p.taxClass, p.weightGrams, p.lengthMm, p.widthMm, p.heightMm],
+	);
+	const [values, setValues] = React.useState<Record<string, string>>(committed);
+	const changed = changedFields(committed, values);
+	const dirty = changed.length > 0;
+	useReportDirty("shipping", dirty, onDirtyChange ?? NO_REPORT);
+	const set = (key: string) => (next: string) => {
+		setValues((prev) => ({ ...prev, [key]: next }));
+	};
 	return (
-		<div style={{ display: "grid", gap: 10, maxInlineSize: 460 }}>
-			<Field label={PRODUCT_FIELD_LABELS.kind}>
-				<select
-					className="otta-focusable"
-					data-testid="edit-kind"
-					style={inputStyle}
-					value={productKind}
-					onChange={(event) => setProductKind(event.target.value)}
-				>
-					<option value="physical">{PRODUCT_KIND_LABELS.physical}</option>
-					<option value="digital">{PRODUCT_KIND_LABELS.digital}</option>
-				</select>
-			</Field>
-			<Field label={PRODUCT_FIELD_LABELS.taxClass}>
-				<select
-					className="otta-focusable"
-					data-testid="edit-tax-class"
-					style={inputStyle}
-					value={taxClass}
-					onChange={(event) => setTaxClass(event.target.value)}
-				>
-					{taxClassOptions(p.taxClass, taxClasses).map((option) => (
-						<option key={option.value} value={option.value}>
-							{option.label}
-						</option>
-					))}
-				</select>
-			</Field>
-			{(
-				[
-					[PRODUCT_MEASUREMENT_LABELS.weightGrams, "edit-weight", weightGrams, setWeightGrams],
-					[PRODUCT_MEASUREMENT_LABELS.lengthMm, "edit-length", lengthMm, setLengthMm],
-					[PRODUCT_MEASUREMENT_LABELS.widthMm, "edit-width", widthMm, setWidthMm],
-					[PRODUCT_MEASUREMENT_LABELS.heightMm, "edit-height", heightMm, setHeightMm],
-				] as const
-			).map(([label, testId, value, set]) => (
-				<Field key={testId} label={label}>
-					<input
+		<Group
+			testId="edit-shipping"
+			label={dirtyGroupLabel(shippingGroupLabel(p.taxClass, p.weightGrams), dirty)}
+		>
+			<p style={{ fontSize: 12, opacity: 0.75, marginBlockStart: 0 }}>{SHIPPING_FORM_CONTEXT}</p>
+			<div style={{ display: "grid", gap: 10, maxInlineSize: 460 }}>
+				<Field label={PRODUCT_FIELD_LABELS.kind}>
+					<select
 						className="otta-focusable"
-						data-testid={testId}
-						style={inputStyle}
-						value={value}
-						onChange={(event) => set(event.target.value)}
-					/>
+						data-testid="edit-kind"
+						style={fieldStyle(changed, "productKind")}
+						value={values["productKind"] ?? ""}
+						onChange={(event) => {
+							set("productKind")(event.target.value);
+						}}
+					>
+						<option value="physical">{PRODUCT_KIND_LABELS.physical}</option>
+						<option value="digital">{PRODUCT_KIND_LABELS.digital}</option>
+					</select>
 				</Field>
-			))}
-			<div>
-				<Button
-					label={SAVE_SHIPPING_LABEL}
-					testId="save-shipping"
-					disabled={busy}
-					onClick={() =>
-						onSubmit({ productKind, taxClass, weightGrams, lengthMm, widthMm, heightMm })
-					}
-				/>
+				<Field label={PRODUCT_FIELD_LABELS.taxClass}>
+					<select
+						className="otta-focusable"
+						data-testid="edit-tax-class"
+						style={fieldStyle(changed, "taxClass")}
+						value={values["taxClass"] ?? ""}
+						onChange={(event) => {
+							set("taxClass")(event.target.value);
+						}}
+					>
+						{taxClassOptions(p.taxClass, taxClasses).map((option) => (
+							<option key={option.value} value={option.value}>
+								{option.label}
+							</option>
+						))}
+					</select>
+				</Field>
+				{(
+					[
+						[PRODUCT_MEASUREMENT_LABELS.weightGrams, "edit-weight", "weightGrams"],
+						[PRODUCT_MEASUREMENT_LABELS.lengthMm, "edit-length", "lengthMm"],
+						[PRODUCT_MEASUREMENT_LABELS.widthMm, "edit-width", "widthMm"],
+						[PRODUCT_MEASUREMENT_LABELS.heightMm, "edit-height", "heightMm"],
+					] as const
+				).map(([label, testId, key]) => (
+					<Field key={testId} label={label}>
+						<input
+							className="otta-focusable"
+							data-testid={testId}
+							style={fieldStyle(changed, key)}
+							value={values[key] ?? ""}
+							onChange={(event) => {
+								set(key)(event.target.value);
+							}}
+						/>
+					</Field>
+				))}
+				<div>
+					<Button
+						label={SAVE_SHIPPING_LABEL}
+						testId="save-shipping"
+						disabled={busy}
+						onClick={() => onSubmit(values)}
+					/>
+				</div>
 			</div>
-		</div>
+		</Group>
 	);
 }
 
