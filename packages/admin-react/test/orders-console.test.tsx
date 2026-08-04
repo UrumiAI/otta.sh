@@ -16,10 +16,9 @@
  * tests are that deferral being closed — not "the screen said something", but
  * "the screen said what to DO".
  */
-import { readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, test, vi } from "vitest";
+import type { RefundsSummary } from "../src/console-api.js";
 
 const apiFetch = vi.fn<(input: string, init?: RequestInit) => Promise<Response>>();
 
@@ -33,11 +32,14 @@ const { fetchOrderDetail, fetchOrders, isFailure, performAction, OTTA_ADMIN_ROUT
 const { activeFilterParts, clearAnswer, ordersChrome, ordersFailureCard, pageAfterFailure } =
 	await import("../src/orders/orders-list.js");
 const { Notice, CopyIdButton } = await import("../src/ui.js");
-const { checkRefundInput, refundPanelMode } = await import("../src/orders/order-detail.js");
+const { RefundsPanel, checkRefundInput, refundPanelMode } =
+	await import("../src/orders/order-detail.js");
 const {
 	BANNER_BUDGET,
+	FULLY_REFUNDED_NOTE,
 	ORDERS_LOAD_MORE_FAILED_TITLE,
 	ORDERS_STALE_CLEARED_NOTE,
+	REFUNDS_GROUP_EMPTY_LABEL,
 	REFUND_AMOUNT_INVALID,
 	REFUND_BY_REQUIRED,
 	RETRYING_LABEL,
@@ -45,6 +47,7 @@ const {
 	formatAmount,
 	reconciliationAlertSentence,
 	refundTooHighInline,
+	refundsGroupLabel,
 } = await import("@otta-sh/admin-presentation");
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -496,6 +499,46 @@ describe("the React detail renders the SHARED reconciliation sentence", () => {
 	});
 });
 
+/** A refunds summary at a given ceiling and remainder, consistent in its other
+ *  totals so the panel's own money lines cannot be what an assertion reads. */
+function refundsSummary(ceilingCents: number, remainingCents: number): RefundsSummary {
+	return {
+		refunds: [],
+		currency: "USD",
+		capturedTotalCents: ceilingCents,
+		refundedTotalCents: ceilingCents - remainingCents,
+		ceilingCents,
+		remainingCents,
+		paymentMethod: "card",
+		refundable: true,
+	};
+}
+
+/** The refunds panel alone, rendered from its props. `OrderDetail` cannot be
+ *  rendered statically — it loads in an effect and opens on another tab — which
+ *  is why the panel is a component of its own and its drafts, its refusal and
+ *  its two focus refs arrive from outside. */
+function renderRefundsPanel(refunds: RefundsSummary): string {
+	return renderToStaticMarkup(
+		<RefundsPanel
+			refunds={refunds}
+			currency="USD"
+			busy={false}
+			askRefund={() => undefined}
+			amountInput=""
+			setAmountInput={() => undefined}
+			refundReason=""
+			setRefundReason={() => undefined}
+			refundedBy=""
+			setRefundedBy={() => undefined}
+			amountError={null}
+			setAmountError={() => undefined}
+			amountRef={{ current: null }}
+			refundedByRef={{ current: null }}
+		/>,
+	);
+}
+
 describe("the refunds group's sentence agrees with its own heading", () => {
 	// AN ORDER THAT WAS NEVER CAPTURED WAS TOLD IT WAS FULLY REFUNDED. Captured,
 	// Refunded and Remaining all read $0.00, the ledger was empty, the heading
@@ -517,32 +560,34 @@ describe("the refunds group's sentence agrees with its own heading", () => {
 
 	// THE ORIGINAL DEFECT WAS TWO COPIES OF ONE PREDICATE, not a wrong predicate.
 	// The heading and the sentence under it each decided the panel's state for
-	// themselves, so they were free to disagree — and did. Correcting only the
-	// sentence would leave that structure standing, and the next edit to either
-	// line could split them again. This asserts there is exactly ONE place in the
-	// screen where the panel's state is decided; re-inlining a second copy of the
-	// test, in either the heading or the body, fails here.
-	test("only `refundPanelMode` decides the panel's state", async () => {
-		const source = await readFile(
-			fileURLToPath(new URL("../src/orders/order-detail.tsx", import.meta.url)),
-			"utf8",
-		);
-		const start = source.indexOf("export function refundPanelMode");
-		expect(start).toBeGreaterThan(-1);
-		// The declaration's own closing brace is the only `}` on a line of its own
-		// inside it — the parameter's inline type closes with `}): …`.
-		const end = source.indexOf("\n}\n", start) + 3;
-		const predicate = source.slice(start, end);
-		const everywhereElse = source.slice(0, start) + source.slice(end);
-		// A slice that ran away would make the negative assertions vacuous.
-		expect(predicate.length).toBeLessThan(500);
+	// themselves, so they were free to disagree — and did. The trio above covers
+	// the predicate; these cover the WIRING, by rendering the panel in each of its
+	// three states and reading the heading and the body TOGETHER out of one piece
+	// of markup. A second, independent test at either call site that answers
+	// differently from `refundPanelMode` — which is the whole of the defect —
+	// changes what one of them renders, and fails here.
+	test("a zero ceiling renders its heading and nothing claiming a refund", () => {
+		const html = renderRefundsPanel(refundsSummary(0, 0));
+		expect(html).toContain(REFUNDS_GROUP_EMPTY_LABEL);
+		// The defect itself: "Fully refunded" one line under "nothing captured".
+		expect(html).not.toContain('data-testid="refunds-full-note"');
+		expect(html).not.toContain('data-testid="refund-partial"');
+	});
 
-		// The one legitimate home for the ceiling and remainder tests.
-		expect(predicate).toMatch(/ceilingCents === 0/);
-		expect(predicate).toMatch(/remainingCents <= 0/);
-		// And nowhere else may re-derive either of them.
-		expect(everywhereElse).not.toMatch(/ceilingCents\s*(===|==|<|>|!==)/);
-		expect(everywhereElse).not.toMatch(/remainingCents\s*(===|==|<=|>=|<|>|!==)/);
+	test("a fully refunded capture renders both its heading and its note", () => {
+		const html = renderRefundsPanel(refundsSummary(4500, 0));
+		expect(html).toContain(refundsGroupLabel(formatAmount(4500, "USD"), formatAmount(4500, "USD")));
+		expect(html).not.toContain(REFUNDS_GROUP_EMPTY_LABEL);
+		expect(html).toContain('data-testid="refunds-full-note"');
+		expect(html).toContain(FULLY_REFUNDED_NOTE);
+	});
+
+	test("a partly refunded capture renders the refund form", () => {
+		const html = renderRefundsPanel(refundsSummary(4500, 1200));
+		expect(html).toContain(refundsGroupLabel(formatAmount(3300, "USD"), formatAmount(4500, "USD")));
+		expect(html).toContain('data-testid="refund-partial"');
+		expect(html).toContain('data-testid="refund-amount"');
+		expect(html).not.toContain('data-testid="refunds-full-note"');
 	});
 });
 
