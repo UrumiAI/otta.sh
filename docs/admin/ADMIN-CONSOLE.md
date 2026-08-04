@@ -54,8 +54,11 @@ requirement here:
 - **§11 (Worked example — Orders) is deleted.** The rules whose only worked example it was now state
   their requirement in §5–§10 with no example. Where such a rule has **no live instance on any
   surviving Block Kit screen and none planned**, its own text says so rather than implying one:
-  **DA-2b**, **DA-2c**, **DA-3**, **DA-3c**, **DA-3c-i**, **DA-3a-v** and **DA-3a-vi** all describe
-  shapes only the two retired screens ever built. They still bind the day a screen builds one.
+  **DA-2b**, **DA-2c**, **DA-3**, **DA-3c**, **DA-3c-i** and **DA-3a-v** all describe shapes only
+  the two retired screens ever built, and still bind the day a screen builds one. **DA-3a-vi is
+  dormant only in its first row** — the state-2 suppression — because its second row and its second
+  clause govern *any* refusal that names a live figure, and Tax, Shipping and Coupons all refuse.
+  Read each rule's own note before ruling a check inapplicable; none of them is a blanket exemption.
 - **§12.1 (Pricing & inventory) is deleted.** §12.2–§12.7 are unchanged and never depended on it.
 - **Section numbers are NOT reflowed.** §12–§16 keep their numbers and **§11 is retired rather than
   reused** — the cross-references of the form "§14 item 2", "§12.7", "§13 X-20" resolve today and
@@ -1263,11 +1266,13 @@ Why the watermark is the crux — it delivers all three properties at once:
 Why a render-time nonce is not defensible: `packages/domain/src/orders/refund-order.ts:192-201`
 resolves `getRefundByIdempotencyKey(cmd.idempotencyKey)` and, on `status === "recorded"`, returns
 `{ok:true, duplicate:true, refund: existing}` — **keyed on the key alone, with no comparison
-against `cmd.amount`**. The refund handler then renders "Already refunded (a duplicate submission)"
-(`orders-actions.ts:657-666`). So the same key with a *different* amount would produce a success
-banner for an amount never applied. And the carrier's change-token doctrine makes a form's React key
-deterministic and stable, removing the accidental index-shift remount that would otherwise refresh a
-nonce some of the time — a nonce in the carrier turns an intermittent bug into a reliable one.
+against `cmd.amount`**. The refund handler then renders a **default**-variant notice titled
+*"Already refunded"* and described *"This refund was already recorded (a duplicate submission); the
+ledger above is unchanged."* (`orders-actions.ts:657-666`). So the same key with a *different*
+amount would produce a success banner for an amount never applied. And the carrier's change-token
+doctrine makes a form's React key deterministic and stable, removing the accidental index-shift
+remount that would otherwise refresh a nonce some of the time — a nonce in the carrier turns an
+intermittent bug into a reliable one.
 
 **There is no live violation.** The console's four were on the two retired screens — a rendered
 `nonce` carrier and a nonce-keyed refund on Orders, and the two stock movements on Pricing &
@@ -1976,9 +1981,12 @@ no confirm control") and generalises it: the test is not "is this the same butto
 clicking this commit an act of the kind this response just refused?"** If yes, it is absent from the
 refusal body.
 
-*(Dormant with DA-3, and with DA-2b: this rule needs a refusal render that is co-located with a
-one-click equivalent of the refused act, and no surviving Block Kit screen has either half. It is kept
-in full because the reasoning is the expensive part, not the code.)*
+*(Dormant with DA-3, and with DA-2b — but not because the surviving screens never refuse: Tax,
+Shipping and Coupons all do. What none of them has is a refusal **co-located with a one-click
+equivalent of the refused act**, so the first half below never removes anything, and the second half
+is the alarm handoff the first half creates — with nothing suppressed there is nothing to hand off.
+A create refusal on those screens re-renders the create level, which carries no `style:"danger"`
+control at all. It is kept in full because the reasoning is the expensive part, not the code.)*
 
 Do not implement this as a list of cases; the two on the retired Orders screen are only instances, and
 both show that the re-offered control is *worse* than the one refused:
@@ -3119,9 +3127,9 @@ suite. You call it; you do not hand-roll it.
 
 **Three caveats it states about itself, and they matter more than the count.** (1) Some **H** rows
 are **not** implemented, on purpose, each with a `NOT IMPLEMENTED` comment naming why — an honest
-"cannot be decided without guessing" beats a heuristic that false-positives across six screens
-(the X-9 / X-11a failure modes §0.2 E-i and E-j already record). (2) X-29, X-39 and the payload
-half of X-38 are inherently **cross-response** claims and stay the calling screen's own
+"cannot be decided without guessing" beats a heuristic that false-positives on every screen that
+calls it (the X-9 / X-11a failure modes §0.2 E-i and E-j already record). (2) X-29, X-39 and the
+payload half of X-38 are inherently **cross-response** claims and stay the calling screen's own
 before/after test — a single-`blocks` signature has no earlier response to compare against.
 (3) There is **no per-rule opt-out**: every implemented check runs on every call, so a screen
 cannot suppress the one rule it fails today. A row the helper does not implement is a human review
@@ -3387,7 +3395,12 @@ counts predate ADR-0015 and were not updated with it.)
 | 1 | **Orders** — the reference screen (PR #161) | in revision |
 | 2 | **`assertBlockContract`** — its own `[Plugin]` PR (V-3a) | **gates everything below** |
 | 3 | **Coupons** · **Tax** · **Shipping** · **Reports + Settings** | **four PARALLEL lanes** |
-| 4 | **Pricing & inventory** (`products-page.ts`) | after the four lanes |
+| 4 | **Pricing & inventory** (`products-page.ts` †) | after the four lanes |
+
+**† `products-page.ts` no longer exists**, and neither does the Orders page module in step 1: both
+were deleted with their screens under ADR-0015, the same treatment §15's suite table gives the two
+suites that tested them. The path is kept because this table is a dated record of the order the
+programme ran in, not a list of live files.
 
 Three things to read off this table:
 
@@ -3446,10 +3459,16 @@ Every item below is a rule elsewhere in this document; this is the index, ordere
 is to get wrong, and each line is phrased so a reviewer can rule pass/fail. Read it before you start
 and again before you open your PR.
 
-**Items 2, 3, 5 and 6 all describe a DA-3 flow, and no Block Kit screen has one** (DA-3's note). They
-are kept, unranked and unedited, because this list is ordered by *cost when you get it wrong* rather
-than by *how often it comes up* — and the first screen to build a staged confirm again will get all
-four wrong in one PR if they are not here to be read first. Items 1, 4, 7 and 8 bind today.
+**Items 2 and 3 describe a DA-3 flow, and no Block Kit screen has one** (DA-3's note). They are kept
+and unranked, because this list is ordered by *cost when you get it wrong* rather than by *how often
+it comes up* — and the first screen to build a staged confirm again will get both wrong in one PR if
+they are not here to be read first. **Items 5 and 6 are NOT in that class**, and each was rewritten
+rather than left alone. Item 5's mirror-image case is live on all three of Tax, Shipping and
+Coupons — each refuses from a **create** handler as well as from a save handler. Item 6 is not a
+DA-3 item either: it binds on any refusal whose copy names something the same render may omit, and
+both ingredients are present — Shipping's method rows carry an E-1-contained price lookup that
+degrades a row on its own, and Tax's rate-create level renders no zone control at all when the store
+has no zones. **The other six items bind today.**
 
 | # | The mistake | The rule | What a reviewer checks |
 |---|---|---|---|

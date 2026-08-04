@@ -1,7 +1,9 @@
 # 0015. The duplicated Block Kit Orders and Pricing & inventory screens are to be retired, once their write paths move off them
 
-- Status: accepted — the retirement is **authorised and not yet landed**; the screens are still
-  in the tree until the increments below merge.
+- Status: accepted — **landed 2026-08-03**. The retirement was conditional on each screen's write
+  path being re-implemented off Block Kit first, and it was; both page modules, their descriptor
+  entries, their dispatcher branches and their two sandbox suites are gone, and five Block Kit
+  screens remain.
 - Date: 2026-08-01
 - Amended: 2026-08-03 — **Decision 3, and one clause of Decision 2 rendered moot.** THREE
   checks are deleted along with the unreached two-step `-review` pair they were the only
