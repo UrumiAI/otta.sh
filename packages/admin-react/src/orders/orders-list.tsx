@@ -38,9 +38,13 @@ import {
 	LOAD_MORE_LABEL,
 	ORDERS_EMPTY,
 	ORDERS_LIST_INTRO,
+	ORDERS_LOAD_MORE_FAILED_TITLE,
 	ORDERS_NOUN,
 	ORDERS_NO_MATCH,
 	ORDERS_SEARCH_LABEL,
+	ORDERS_STALE_CLEARED_NOTE,
+	RETRYING_LABEL,
+	RETRY_LABEL,
 	formatAmount,
 	formatTimestamp,
 	listOutcome,
@@ -133,25 +137,210 @@ interface LoadedPage {
 	readonly firstPage: boolean;
 }
 
+/** A load that came back a refusal. `continuation` records WHICH request failed
+ *  — a first page, or a page behind one that already succeeded — because that
+ *  is what decides whether the rows on screen are disproved by the failure or
+ *  untouched by it. */
+export interface OrdersFailure {
+	readonly title: string;
+	readonly description: string;
+	readonly continuation: boolean;
+}
+
+/**
+ * Drop the ANSWER from a loaded page while keeping what the page is not.
+ *
+ * The rows, the cursor and the exact count are claims about a response this
+ * render can no longer vouch for, and they go together — a count without its
+ * rows is the same lie in fewer words. The VOCABULARY is not part of the
+ * answer: it is what the filter controls are built from, and clearing it would
+ * leave the operator standing in front of a Period menu with no options, which
+ * is precisely the cold-failure defect this screen is fixing (F3).
+ *
+ * Nothing here is a render guard. The screen is cleared in STATE, so no branch
+ * can accidentally read a row that is no longer true.
+ */
+export function clearAnswer(page: LoadedPage | null): LoadedPage | null {
+	return page === null ? null : { ...page, orders: [], nextCursor: null, total: undefined };
+}
+
+/**
+ * What a failed response leaves of the page.
+ *
+ * THE PARTIAL CASE IS THE ONE THE OBVIOUS IMPLEMENTATION DESTROYS. "On failure,
+ * clear the page" is right for cold and for stale and wrong here: a page that
+ * failed BEHIND one that succeeded disproves nothing already on screen, so
+ * every accumulated row, the exact count and the cursor stand untouched.
+ *
+ * It is a function rather than two lines inside the effect so that the branch
+ * is a value a test can read — the same reason `clearAnswer` is one.
+ */
+export function pageAfterFailure(
+	page: LoadedPage | null,
+	continuation: boolean,
+): LoadedPage | null {
+	return continuation ? page : clearAnswer(page);
+}
+
+/** What a failure leaves on the screen, and what the card over it says. */
+export interface OrdersFailureCard {
+	readonly kind: "cold" | "stale" | "partial";
+	readonly title: string;
+	readonly description: string;
+	/** The rows, the count line, the zero states and `Load more`. */
+	readonly answerVisible: boolean;
+	/** The filter bar and the filter summary. */
+	readonly filtersVisible: boolean;
+	/** Rendered where `Load more` was, rather than above the list. */
+	readonly inline: boolean;
+	/** Focus was inside a row that no longer exists. */
+	readonly focusRetry: boolean;
+}
+
+/**
+ * THREE FAILURES, NOT ONE (F1).
+ *
+ * `everLoaded` is "a page has landed at least once", NOT "there are rows right
+ * now" — by the time this is read the rows are already gone, so counting them
+ * would report every stale failure as a cold one and take the filter bar with
+ * it.
+ *
+ *  - **Cold.** Nothing has ever loaded, so there is nothing to filter with and
+ *    nothing to keep: the error card alone.
+ *  - **Stale.** A first page failed under rows that are now cleared. The card
+ *    carries the server's own words plus the sentence that says the rows went
+ *    and why; the filter bar stays, because the operator's typed filters are
+ *    input rather than answer.
+ *  - **Partial.** A page BEHIND a successful one failed. Every accumulated row
+ *    and the count stand, and the server's whole-collection title is dropped —
+ *    the rows above disprove it. What failed was the next page, and the card
+ *    says so from where `Load more` was.
+ */
+export function ordersFailureCard(failure: OrdersFailure, everLoaded: boolean): OrdersFailureCard {
+	if (!everLoaded) {
+		return {
+			kind: "cold",
+			title: failure.title,
+			description: failure.description,
+			answerVisible: false,
+			filtersVisible: false,
+			inline: false,
+			focusRetry: false,
+		};
+	}
+	if (failure.continuation) {
+		return {
+			kind: "partial",
+			title: ORDERS_LOAD_MORE_FAILED_TITLE,
+			description: failure.description,
+			answerVisible: true,
+			filtersVisible: true,
+			inline: true,
+			focusRetry: false,
+		};
+	}
+	return {
+		kind: "stale",
+		title: failure.title,
+		description:
+			failure.description.length > 0
+				? `${failure.description} ${ORDERS_STALE_CLEARED_NOTE}`
+				: ORDERS_STALE_CLEARED_NOTE,
+		answerVisible: false,
+		filtersVisible: true,
+		inline: false,
+		focusRetry: true,
+	};
+}
+
+/** Everything the screen draws AROUND the answer, decided in one place. */
+export interface OrdersChrome {
+	/** `null` when there is no failure to report. */
+	readonly card: OrdersFailureCard | null;
+	/** The rows, the count line, the zero states and `Load more`. */
+	readonly answerVisible: boolean;
+	/** The filter bar and the filter summary. */
+	readonly filtersVisible: boolean;
+	/** The Retry on the card, in whichever of its two states applies. */
+	readonly retry: {
+		readonly label: string;
+		readonly disabled: boolean;
+		readonly busy: boolean;
+		readonly autoFocus: boolean;
+	};
+}
+
+/**
+ * ONE GUARD PER THING THE SCREEN CLAIMS, and both are the failure card's to
+ * withdraw. The bug F1 names is that the table rendered under
+ * `outcome.kind === "rows"` while its two sibling branches also checked
+ * `failure === null`, so a failure the count and the notice both acknowledged
+ * left the rows standing.
+ *
+ * NO FAILURE MEANS NOTHING IS WITHDRAWN — including on the very first fetch,
+ * before any page has landed. A load in progress is not a failure: hiding the
+ * filter bar until the first response arrives would take it off the screen on
+ * every mount and drop it back in mid-render. Only a COLD FAILURE removes the
+ * bar (F3), and only because the Period menu it would draw has no options.
+ *
+ * `retrying` IS THE RETRY'S OWN CLICK, never the screen-wide load flag. The
+ * filter bar stays interactive in the stale and partial states, so an "Apply
+ * filters" the operator pressed would otherwise make the untouched Retry beside
+ * it read "Retrying…", disable, and claim `aria-busy` for a request nobody
+ * issued.
+ */
+export function ordersChrome({
+	failure,
+	everLoaded,
+	retrying,
+}: {
+	readonly failure: OrdersFailure | null;
+	readonly everLoaded: boolean;
+	readonly retrying: boolean;
+}): OrdersChrome {
+	const card = failure === null ? null : ordersFailureCard(failure, everLoaded);
+	return {
+		card,
+		answerVisible: card === null || card.answerVisible,
+		filtersVisible: card === null || card.filtersVisible,
+		retry: {
+			label: retrying ? RETRYING_LABEL : RETRY_LABEL,
+			disabled: retrying,
+			busy: retrying,
+			autoFocus: card?.focusRetry === true,
+		},
+	};
+}
+
 export function OrdersList({ onOpen }: { onOpen: (orderId: string) => void }): React.ReactElement {
 	const [applied, setApplied] = React.useState<OrdersFilter>({});
 	const [draft, setDraft] = React.useState<OrdersFilter>({});
 	const [page, setPage] = React.useState<LoadedPage | null>(null);
-	const [failure, setFailure] = React.useState<{ title: string; description: string } | null>(null);
+	const [failure, setFailure] = React.useState<OrdersFailure | null>(null);
 	const [busy, setBusy] = React.useState(true);
-	// Bumped by "Apply filters" and by "Load more" so a re-fetch is an effect
-	// dependency rather than a call scattered through event handlers.
+	// The Retry's OWN in-flight state, separate from `busy` because `busy` is the
+	// whole screen's: see `ordersChrome`.
+	const [retrying, setRetrying] = React.useState(false);
+	// Bumped by "Apply filters", by "Load more" and by Retry, so a re-fetch is an
+	// effect dependency rather than a call scattered through event handlers.
+	// RETRY IS THE WHOLE OF THE MECHANISM: same filter, same cursor, one integer.
 	const [generation, setGeneration] = React.useState(0);
 	const [cursor, setCursor] = React.useState<string | undefined>(undefined);
 
 	React.useEffect(() => {
 		let cancelled = false;
+		const continuation = cursor !== undefined;
 		setBusy(true);
 		void fetchOrders(applied, cursor).then((result) => {
 			if (cancelled) return;
 			setBusy(false);
+			// Whatever the outcome, the click that asked for this is over.
+			setRetrying(false);
 			if (isFailure(result)) {
-				setFailure({ title: result.title, description: result.description });
+				setFailure({ title: result.title, description: result.description, continuation });
+				// A FIRST PAGE THAT FAILED DISPROVES WHAT IS ON SCREEN; a page behind
+				// one that succeeded does not. Only the first case clears.
+				setPage((current) => pageAfterFailure(current, continuation));
 				return;
 			}
 			setFailure(null);
@@ -216,115 +405,138 @@ export function OrdersList({ onOpen }: { onOpen: (orderId: string) => void }): R
 		setGeneration((n) => n + 1);
 	};
 
+	// EVERY GUARD ON THIS SCREEN, DECIDED ONCE — see `ordersChrome`. `everLoaded`
+	// is "a page has landed", not "there are rows now": by the time this is read
+	// the rows are already gone.
+	const { card, answerVisible, filtersVisible, retry } = ordersChrome({
+		failure,
+		everLoaded: page !== null,
+		retrying,
+	});
+
+	// THE FAILURE IS NOT CLEARED HERE. Clearing it on the click rather than on
+	// the response would flash the stale answer back for the length of the
+	// request — the exact defect being fixed. The response clears it.
+	const retryAction = {
+		...retry,
+		onClick: () => {
+			setRetrying(true);
+			setGeneration((n) => n + 1);
+		},
+	};
+
 	return (
 		<div>
 			<h1 style={{ fontSize: 24, fontWeight: 700, marginBlockEnd: 4 }}>Orders</h1>
 			<p style={{ fontSize: 13, opacity: 0.75, marginBlockEnd: 16 }} data-testid="orders-intro">
-				{outcome.countLine === undefined
+				{outcome.countLine === undefined || !answerVisible
 					? ORDERS_LIST_INTRO
 					: `${outcome.countLine} · ${ORDERS_LIST_INTRO}`}
 			</p>
 
-			{failure !== null && (
+			{card !== null && !card.inline && (
 				<Notice
 					variant="error"
-					title={failure.title}
-					description={failure.description}
+					title={card.title}
+					description={card.description}
+					action={retryAction}
 					testId="orders-failure"
 				/>
 			)}
 
-			<Group
-				label={`Filters${parts.length > 0 ? ` (${String(parts.length)} active)` : ""}`}
-				testId="orders-filters"
-			>
-				<div
-					style={{
-						display: "grid",
-						gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-						gap: 12,
-						alignItems: "end",
-					}}
+			{filtersVisible && (
+				<Group
+					label={`Filters${parts.length > 0 ? ` (${String(parts.length)} active)` : ""}`}
+					testId="orders-filters"
 				>
-					<Field label="Status">
-						<select
-							className="otta-focusable"
-							data-testid="filter-status"
-							style={inputStyle}
-							value={draft.status ?? statusAny}
-							onChange={(event) => setDraft({ ...draft, status: event.target.value })}
-						>
-							<option value={statusAny}>All statuses</option>
-							{(vocabulary?.statuses ?? []).map((state) => (
-								<option key={state} value={state}>
-									{state}
-								</option>
-							))}
-						</select>
-					</Field>
-
-					{draft.period === "custom" ? (
-						<>
-							<Field label="From">
-								<input
-									type="date"
-									className="otta-focusable"
-									data-testid="filter-from"
-									style={inputStyle}
-									value={draft.from ?? ""}
-									onChange={(event) => setDraft({ ...draft, from: event.target.value })}
-								/>
-							</Field>
-							<Field label="To">
-								<input
-									type="date"
-									className="otta-focusable"
-									data-testid="filter-to"
-									style={inputStyle}
-									value={draft.to ?? ""}
-									onChange={(event) => setDraft({ ...draft, to: event.target.value })}
-								/>
-							</Field>
-						</>
-					) : (
-						<Field label="Period">
+					<div
+						style={{
+							display: "grid",
+							gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+							gap: 12,
+							alignItems: "end",
+						}}
+					>
+						<Field label="Status">
 							<select
 								className="otta-focusable"
-								data-testid="filter-period"
+								data-testid="filter-status"
 								style={inputStyle}
-								value={draft.period ?? statusAny}
-								onChange={(event) => setDraft({ ...draft, period: event.target.value })}
+								value={draft.status ?? statusAny}
+								onChange={(event) => setDraft({ ...draft, status: event.target.value })}
 							>
-								{(vocabulary?.periods ?? []).map((period) => (
-									<option key={period.key} value={period.key}>
-										{period.label}
+								<option value={statusAny}>All statuses</option>
+								{(vocabulary?.statuses ?? []).map((state) => (
+									<option key={state} value={state}>
+										{state}
 									</option>
 								))}
 							</select>
 						</Field>
-					)}
 
-					<Field label={ORDERS_SEARCH_LABEL}>
-						<input
-							type="search"
-							className="otta-focusable"
-							data-testid="filter-search"
-							style={inputStyle}
-							value={draft.search ?? ""}
-							onChange={(event) => setDraft({ ...draft, search: event.target.value })}
+						{draft.period === "custom" ? (
+							<>
+								<Field label="From">
+									<input
+										type="date"
+										className="otta-focusable"
+										data-testid="filter-from"
+										style={inputStyle}
+										value={draft.from ?? ""}
+										onChange={(event) => setDraft({ ...draft, from: event.target.value })}
+									/>
+								</Field>
+								<Field label="To">
+									<input
+										type="date"
+										className="otta-focusable"
+										data-testid="filter-to"
+										style={inputStyle}
+										value={draft.to ?? ""}
+										onChange={(event) => setDraft({ ...draft, to: event.target.value })}
+									/>
+								</Field>
+							</>
+						) : (
+							<Field label="Period">
+								<select
+									className="otta-focusable"
+									data-testid="filter-period"
+									style={inputStyle}
+									value={draft.period ?? statusAny}
+									onChange={(event) => setDraft({ ...draft, period: event.target.value })}
+								>
+									{(vocabulary?.periods ?? []).map((period) => (
+										<option key={period.key} value={period.key}>
+											{period.label}
+										</option>
+									))}
+								</select>
+							</Field>
+						)}
+
+						<Field label={ORDERS_SEARCH_LABEL}>
+							<input
+								type="search"
+								className="otta-focusable"
+								data-testid="filter-search"
+								style={inputStyle}
+								value={draft.search ?? ""}
+								onChange={(event) => setDraft({ ...draft, search: event.target.value })}
+							/>
+						</Field>
+					</div>
+					<div style={{ marginBlockStart: 12 }}>
+						<Button
+							label={APPLY_FILTERS_LABEL}
+							testId="apply-filters"
+							onClick={() => apply(normalize(draft, statusAny))}
 						/>
-					</Field>
-				</div>
-				<div style={{ marginBlockStart: 12 }}>
-					<Button
-						label={APPLY_FILTERS_LABEL}
-						testId="apply-filters"
-						onClick={() => apply(normalize(draft, statusAny))}
-					/>
-				</div>
-			</Group>
+					</div>
+				</Group>
+			)}
 
-			{filtered && (
+			{filtered && filtersVisible && (
 				<section
 					data-testid="orders-filter-summary"
 					style={{
@@ -355,7 +567,7 @@ export function OrdersList({ onOpen }: { onOpen: (orderId: string) => void }): R
 			  wording with nothing to click, because there is no filter to clear and
 			  no "back to the first page" control to fabricate.
 			*/}
-			{page !== null && outcome.kind === "empty" && failure === null && (
+			{page !== null && outcome.kind === "empty" && answerVisible && (
 				<EmptyState
 					testId={
 						outcome.offer === "clear-filters"
@@ -378,7 +590,7 @@ export function OrdersList({ onOpen }: { onOpen: (orderId: string) => void }): R
 			  on a page that is not the end of anything. The note says what to do
 			  with the button that is still there, and the button still is.
 			*/}
-			{page !== null && outcome.kind === "scan" && failure === null && (
+			{page !== null && outcome.kind === "scan" && answerVisible && (
 				<p
 					data-testid="orders-scan-note"
 					style={{ fontSize: 13, opacity: 0.8, marginBlockEnd: 12 }}
@@ -387,7 +599,7 @@ export function OrdersList({ onOpen }: { onOpen: (orderId: string) => void }): R
 				</p>
 			)}
 
-			{outcome.kind === "rows" && (
+			{outcome.kind === "rows" && answerVisible && (
 				<Table
 					testId="orders-table"
 					caption="Orders"
@@ -443,7 +655,24 @@ export function OrdersList({ onOpen }: { onOpen: (orderId: string) => void }): R
 				</Table>
 			)}
 
-			{page?.nextCursor != null && (
+			{/*
+			  THE CONTINUATION FAILURE RENDERS WHERE `Load more` WAS, and replaces
+			  it: the button and the card would otherwise offer the same request
+			  twice, and the one that failed is the one the operator just pressed.
+			*/}
+			{card !== null && card.inline && (
+				<div style={{ marginBlockStart: 12 }}>
+					<Notice
+						variant="error"
+						title={card.title}
+						description={card.description}
+						action={retryAction}
+						testId="orders-load-more-failure"
+					/>
+				</div>
+			)}
+
+			{page?.nextCursor != null && failure === null && (
 				<div style={{ marginBlockStart: 12 }}>
 					<button
 						type="button"

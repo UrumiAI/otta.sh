@@ -94,6 +94,26 @@ export const ORDERS_NO_MATCH: ZeroStateCopy & { readonly emptyText: string } = {
 };
 
 /**
+ * The second sentence on a FIRST-PAGE failure that had rows behind it.
+ *
+ * The rows are gone by the time this is read, and the operator watched them go.
+ * It says WHY they went — they answered an earlier request and this render
+ * cannot vouch for them — so the clearing reads as the screen refusing to state
+ * something it no longer knows, rather than as data loss.
+ */
+export const ORDERS_STALE_CLEARED_NOTE =
+	"The orders that were here have been cleared — they were from an earlier request and may no longer be current.";
+
+/**
+ * A CONTINUATION failure's title, which is a smaller claim than the server's.
+ *
+ * The service answers a whole-collection refusal ("Orders could not be
+ * reached"), and on page two that is disproved by the rows already on screen.
+ * What failed is the next page, so that is what the title says.
+ */
+export const ORDERS_LOAD_MORE_FAILED_TITLE = "Couldn't load more orders";
+
+/**
  * The reconciliation alert's sentence, on the order detail.
  *
  * It names the flag the SERVICE produced, so its length depends on service data

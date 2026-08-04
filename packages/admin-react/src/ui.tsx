@@ -107,12 +107,22 @@ export function Button({
 	onClick,
 	danger,
 	disabled,
+	busy,
+	autoFocus,
 	testId,
 }: {
 	label: string;
 	onClick: () => void;
 	danger?: boolean;
 	disabled?: boolean;
+	/** A click whose work is still in flight. `aria-busy` is what tells a screen
+	 *  reader the control is mid-flight rather than simply unavailable, which
+	 *  `disabled` alone says and says wrongly. */
+	busy?: boolean;
+	/** Focus this control on mount. Used where the element the operator's focus
+	 *  was on has just been unmounted, so the alternative is focus falling back
+	 *  to the document. */
+	autoFocus?: boolean;
 	testId?: string;
 }): React.ReactElement {
 	return (
@@ -121,6 +131,9 @@ export function Button({
 			className="otta-focusable"
 			data-testid={testId}
 			disabled={disabled === true}
+			aria-busy={busy === true ? true : undefined}
+			// eslint-disable-next-line jsx-a11y/no-autofocus -- see the prop's note
+			autoFocus={autoFocus === true}
 			onClick={onClick}
 			style={{
 				...(danger === true ? dangerButtonStyle : buttonStyle),
@@ -224,16 +237,29 @@ export function CopyIdButton({
  * user already on the page is told nothing without it. `role="status"` rather
  * than `alert` even for errors: these are outcomes of something the operator
  * just did, not interruptions.
+ *
+ * `action` IS `EmptyState`'s, deliberately — same prop shape, same markup,
+ * same `Button`. A notice that reports a failed load has a way out for exactly
+ * the reason a zero state has a way back to every row, and the two should not
+ * be two different affordances.
  */
 export function Notice({
 	variant,
 	title,
 	description,
+	action,
 	testId,
 }: {
 	variant: "default" | "error" | "alert";
 	title: string;
 	description: string;
+	action?: {
+		label: string;
+		onClick: () => void;
+		disabled?: boolean;
+		busy?: boolean;
+		autoFocus?: boolean;
+	};
 	testId?: string;
 }): React.ReactElement {
 	const accent = variant === "error" ? FAIL_ACCENT : variant === "alert" ? WARN_ACCENT : OK_ACCENT;
@@ -252,6 +278,18 @@ export function Notice({
 			<h3 style={{ fontSize: 14, fontWeight: 650, margin: 0 }}>{title}</h3>
 			{description.length > 0 && (
 				<p style={{ fontSize: 13, opacity: 0.85, margin: "6px 0 0" }}>{description}</p>
+			)}
+			{action !== undefined && (
+				<div style={{ marginBlockStart: 12 }}>
+					<Button
+						label={action.label}
+						onClick={action.onClick}
+						{...(action.disabled !== undefined ? { disabled: action.disabled } : {})}
+						{...(action.busy !== undefined ? { busy: action.busy } : {})}
+						{...(action.autoFocus !== undefined ? { autoFocus: action.autoFocus } : {})}
+						testId={testId === undefined ? undefined : `${testId}-action`}
+					/>
+				</div>
 			)}
 		</section>
 	);
