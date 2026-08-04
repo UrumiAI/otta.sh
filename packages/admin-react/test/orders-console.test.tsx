@@ -31,13 +31,18 @@ const { fetchOrderDetail, fetchOrders, isFailure, performAction, OTTA_ADMIN_ROUT
 const { activeFilterParts, clearAnswer, ordersChrome, ordersFailureCard, pageAfterFailure } =
 	await import("../src/orders/orders-list.js");
 const { Notice, CopyIdButton } = await import("../src/ui.js");
+const { checkRefundInput, refundPanelMode } = await import("../src/orders/order-detail.js");
 const {
 	BANNER_BUDGET,
 	ORDERS_LOAD_MORE_FAILED_TITLE,
 	ORDERS_STALE_CLEARED_NOTE,
+	REFUND_AMOUNT_INVALID,
+	REFUND_BY_REQUIRED,
 	RETRYING_LABEL,
 	RETRY_LABEL,
+	formatAmount,
 	reconciliationAlertSentence,
+	refundTooHighInline,
 } = await import("@otta-sh/admin-presentation");
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -486,5 +491,64 @@ describe("the React detail renders the SHARED reconciliation sentence", () => {
 		const sentence = reconciliationAlertSentence("x".repeat(500));
 		expect(sentence.length).toBe(BANNER_BUDGET);
 		expect(sentence.endsWith("…")).toBe(true);
+	});
+});
+
+describe("the refunds group's sentence agrees with its own heading", () => {
+	// AN ORDER THAT WAS NEVER CAPTURED WAS TOLD IT WAS FULLY REFUNDED. Captured,
+	// Refunded and Remaining all read $0.00, the ledger was empty, the heading
+	// said "nothing captured, nothing to refund" — and the sentence one line
+	// below said "Fully refunded". The test was on the REMAINDER, which is zero
+	// both when everything has been refunded and when there was never anything
+	// to refund. The ceiling is what separates those two.
+	test("a zero ceiling is nothing to refund, not everything refunded", () => {
+		expect(refundPanelMode({ ceilingCents: 0, remainingCents: 0 })).toBe("empty");
+	});
+
+	test("a real capture that has been fully refunded still says so", () => {
+		expect(refundPanelMode({ ceilingCents: 4500, remainingCents: 0 })).toBe("fully-refunded");
+	});
+
+	test("anything still refundable keeps the form", () => {
+		expect(refundPanelMode({ ceilingCents: 4500, remainingCents: 1200 })).toBe("form");
+	});
+});
+
+describe("each refund refusal names the field it is about", () => {
+	// THREE REFUSALS, TWO FIELDS. A refusal that could not say which input it
+	// meant could only ever focus one of them, and the third would move focus to
+	// a field the operator had already filled in correctly.
+	test("an unparseable amount is about the amount", () => {
+		const check = checkRefundInput("nineteen", "ops", 4500, "USD");
+		expect(check.ok).toBe(false);
+		if (check.ok) return;
+		expect(check.refusal.field).toBe("amount");
+		expect(check.refusal.message).toBe(REFUND_AMOUNT_INVALID);
+	});
+
+	test("an amount over the remainder is about the amount", () => {
+		const check = checkRefundInput("99.99", "ops", 4500, "USD");
+		expect(check.ok).toBe(false);
+		if (check.ok) return;
+		expect(check.refusal.field).toBe("amount");
+		// The over-ceiling copy stays the SHARED sentence, money and all.
+		expect(check.refusal.message).toBe(
+			refundTooHighInline(formatAmount(9999, "USD"), formatAmount(4500, "USD")),
+		);
+	});
+
+	test("nobody recorded as issuing it is about `refunded by`", () => {
+		const check = checkRefundInput("19.99", "   ", 4500, "USD");
+		expect(check.ok).toBe(false);
+		if (check.ok) return;
+		expect(check.refusal.field).toBe("refundedBy");
+		expect(check.refusal.message).toBe(REFUND_BY_REQUIRED);
+	});
+
+	test("a valid refund parses to exact minor units and refuses nothing", () => {
+		const check = checkRefundInput("19.99", "ops", 4500, "USD");
+		expect(check.ok).toBe(true);
+		if (!check.ok) return;
+		expect(check.amountCents).toBe(1999);
 	});
 });

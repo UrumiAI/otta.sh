@@ -87,6 +87,7 @@ import {
 	Button,
 	CopyIdButton,
 	ConfirmDialog,
+	FAIL_ACCENT,
 	Field,
 	Fields,
 	Group,
@@ -102,6 +103,81 @@ import {
 const DANGER_TRANSITIONS: ReadonlySet<string> = new Set(["refunded"]);
 
 const TAB_LABELS = ["Order", "Fulfilment", "Money", "History"] as const;
+
+/** The id the refusal message carries so the input it is about can point at it
+ *  with `aria-describedby`. The message renders only while a refusal stands, and
+ *  the association is written only then, so it can never dangle. */
+const REFUND_ERROR_ID = "otta-refund-refusal";
+
+/** Which of the refund form's two inputs a refusal is about. Two of the three
+ *  refusals are about the amount and one is about who is issuing the refund; a
+ *  refusal that did not carry this could only ever focus one of them. */
+export type RefundRefusalField = "amount" | "refundedBy";
+
+export interface RefundRefusal {
+	readonly message: string;
+	readonly field: RefundRefusalField;
+}
+
+export type RefundCheck =
+	| { readonly ok: true; readonly amountCents: number }
+	| { readonly ok: false; readonly refusal: RefundRefusal };
+
+/**
+ * The refund form's three refusals, in the order the operator meets them.
+ *
+ * Parsed with the SHARED input parser — exact integer string math, never
+ * `parseFloat(...) * 100`. The refusal copy is the write handler's own, restated
+ * here only because this check happens before the dialog rather than after the
+ * click.
+ */
+export function checkRefundInput(
+	amountInput: string,
+	refundedBy: string,
+	remainingCents: number,
+	currency: string,
+): RefundCheck {
+	const parsed = parseMinorUnitsInput(amountInput, { allowZero: false });
+	if (parsed === null) {
+		return { ok: false, refusal: { message: REFUND_AMOUNT_INVALID, field: "amount" } };
+	}
+	if (refundedBy.trim().length === 0) {
+		return { ok: false, refusal: { message: REFUND_BY_REQUIRED, field: "refundedBy" } };
+	}
+	if (parsed > remainingCents) {
+		return {
+			ok: false,
+			refusal: {
+				message: refundTooHighInline(
+					formatAmount(parsed, currency),
+					formatAmount(remainingCents, currency),
+				),
+				field: "amount",
+			},
+		};
+	}
+	return { ok: true, amountCents: parsed };
+}
+
+/**
+ * What the refunds group shows beneath its ledger.
+ *
+ * THE CEILING IS THE TEST, NOT THE REMAINDER. An order that was never captured
+ * has a ceiling of zero and therefore a remainder of zero, and reading that
+ * remainder as "everything has been refunded" told an operator an order was
+ * fully refunded one line under a heading saying nothing was ever captured.
+ * Absent is not zero, and zero is not all of it. This is the same condition the
+ * group's own label uses, which is why the two can no longer disagree.
+ */
+export type RefundPanelMode = "empty" | "fully-refunded" | "form";
+
+export function refundPanelMode(summary: {
+	readonly ceilingCents: number;
+	readonly remainingCents: number;
+}): RefundPanelMode {
+	if (summary.ceilingCents === 0) return "empty";
+	return summary.remainingCents <= 0 ? "fully-refunded" : "form";
+}
 
 /** A pending confirm: what the operator is about to do, and the sentence they
  *  must read first. Held as ONE piece of state so two dialogs can never be open
@@ -197,7 +273,11 @@ export function OrderDetail({
 	const [cancelledBy, setCancelledBy] = React.useState("");
 	const [noteAuthor, setNoteAuthor] = React.useState("");
 	const [noteBody, setNoteBody] = React.useState("");
-	const [amountError, setAmountError] = React.useState<string | null>(null);
+	const [amountError, setAmountError] = React.useState<RefundRefusal | null>(null);
+	// A refusal moves focus to the field it is about, so the two inputs it can
+	// name are addressable from the submit handler.
+	const amountRef = React.useRef<HTMLInputElement>(null);
+	const refundedByRef = React.useRef<HTMLInputElement>(null);
 
 	React.useEffect(() => {
 		let cancelled = false;
@@ -759,8 +839,17 @@ export function OrderDetail({
 									</Table>
 								)}
 
-								{refunds.remainingCents <= 0 ? (
-									<p style={{ fontSize: 13, marginBlockStart: 12 }}>{FULLY_REFUNDED_NOTE}</p>
+								{refundPanelMode(refunds) === "empty" ? (
+									<p
+										style={{ fontSize: 13, marginBlockStart: 12 }}
+										data-testid="refunds-empty-note"
+									>
+										{REFUNDS_GROUP_EMPTY_LABEL}
+									</p>
+								) : refundPanelMode(refunds) === "fully-refunded" ? (
+									<p style={{ fontSize: 13, marginBlockStart: 12 }} data-testid="refunds-full-note">
+										{FULLY_REFUNDED_NOTE}
+									</p>
 								) : (
 									<div
 										style={{ marginBlockStart: 12, display: "grid", gap: 12, maxInlineSize: 420 }}
@@ -780,8 +869,16 @@ export function OrderDetail({
 													<input
 														className="otta-focusable"
 														data-testid="refund-amount"
-														style={inputStyle}
+														ref={amountRef}
+														style={
+															amountError?.field === "amount"
+																? { ...inputStyle, borderColor: FAIL_ACCENT }
+																: inputStyle
+														}
 														placeholder="e.g. 19.99"
+														{...(amountError?.field === "amount"
+															? { "aria-invalid": true, "aria-describedby": REFUND_ERROR_ID }
+															: {})}
 														value={amountInput}
 														onChange={(event) => {
 															setAmountInput(event.target.value);
@@ -802,19 +899,38 @@ export function OrderDetail({
 													<input
 														className="otta-focusable"
 														data-testid="refund-by"
-														style={inputStyle}
+														ref={refundedByRef}
+														style={
+															amountError?.field === "refundedBy"
+																? { ...inputStyle, borderColor: FAIL_ACCENT }
+																: inputStyle
+														}
+														{...(amountError?.field === "refundedBy"
+															? { "aria-invalid": true, "aria-describedby": REFUND_ERROR_ID }
+															: {})}
 														value={refundedBy}
-														onChange={(event) => setRefundedBy(event.target.value)}
+														onChange={(event) => {
+															setRefundedBy(event.target.value);
+															setAmountError(null);
+														}}
 													/>
 												</Field>
 												{amountError !== null && (
 													<p
 														role="status"
 														aria-live="polite"
+														id={REFUND_ERROR_ID}
 														data-testid="refund-amount-error"
-														style={{ fontSize: 12, margin: 0 }}
+														style={{
+															fontSize: 12,
+															margin: 0,
+															fontWeight: 600,
+															borderInlineStart: `3px solid ${FAIL_ACCENT}`,
+															paddingInlineStart: 8,
+															paddingBlock: 2,
+														}}
 													>
-														{amountError}
+														{amountError.message}
 													</p>
 												)}
 												<div>
@@ -824,33 +940,25 @@ export function OrderDetail({
 														disabled={busy}
 														label="Refund this amount"
 														onClick={() => {
-															// Parsed with the SHARED input parser — exact integer
-															// string math, never `parseFloat(...) * 100`. The
-															// refusal copy is the write handler's own, restated
-															// here only because this check happens before the
-															// dialog rather than after the click.
-															const parsed = parseMinorUnitsInput(amountInput, {
-																allowZero: false,
-															});
-															if (parsed === null) {
-																setAmountError(REFUND_AMOUNT_INVALID);
-																return;
-															}
-															if (refundedBy.trim().length === 0) {
-																setAmountError(REFUND_BY_REQUIRED);
-																return;
-															}
-															if (parsed > refunds.remainingCents) {
-																setAmountError(
-																	refundTooHighInline(
-																		formatAmount(parsed, cur),
-																		formatAmount(refunds.remainingCents, cur),
-																	),
-																);
+															const checked = checkRefundInput(
+																amountInput,
+																refundedBy,
+																refunds.remainingCents,
+																cur,
+															);
+															if (!checked.ok) {
+																// A refusal that leaves focus where it was makes the
+																// operator hunt for the field it is about.
+																setAmountError(checked.refusal);
+																const target =
+																	checked.refusal.field === "amount"
+																		? amountRef.current
+																		: refundedByRef.current;
+																target?.focus();
 																return;
 															}
 															setAmountError(null);
-															askRefund(parsed);
+															askRefund(checked.amountCents);
 														}}
 													/>
 												</div>
