@@ -354,6 +354,38 @@ export function sectionForAction(actionId: string): ProductSection | null {
 	}
 }
 
+/**
+ * The `key` bump itself, as a decision rather than as a line inside an effect:
+ * given the keys the three forms are mounted under and the section whose own
+ * save has just been re-read, return the keys they should be mounted under next.
+ *
+ * ONE section moves. Bumping a sibling remounts a form the operator has typed
+ * into and destroys the draft F6 exists to protect — the defect inverted — so
+ * "the other two are untouched" is the assertion that matters here, not "the
+ * saved one changed". `null` (a stock movement, a refusal, a re-read with no
+ * save behind it) returns the SAME OBJECT, so React bails out of the re-render
+ * rather than reconciling three forms for nothing.
+ */
+export function nextFormKeys(
+	keys: Readonly<Record<ProductSection, number>>,
+	saved: ProductSection | null,
+): Readonly<Record<ProductSection, number>> {
+	if (saved === null) return keys;
+	return { ...keys, [saved]: keys[saved] + 1 };
+}
+
+/**
+ * Whether Back has to ask before it discards (F8).
+ *
+ * Back is the one control left on this screen that can still lose typed work —
+ * a tab switch keeps it and a save re-seeds one section — so this predicate is
+ * the whole of when the dialog appears. It reads the same `dirty` record the tab
+ * dot and the confirm's sentence read, so the three cannot disagree.
+ */
+export function leaveNeedsConfirm(dirty: Readonly<Record<ProductSection, boolean>>): boolean {
+	return dirty.identity || dirty.price || dirty.shipping;
+}
+
 /** How a section tells the screen it is holding work, so that the two places
  *  that cannot see inside a form — the tab button's dot, and the leave confirm's
  *  sentence — can name it. The values themselves stay in the form: nothing is
@@ -473,10 +505,8 @@ export function ProductDetail({
 			// re-read that FAILED leaves the section pending, so a later Retry that
 			// succeeds still re-seeds it.
 			const saved = savedSection.current;
-			if (saved !== null) {
-				savedSection.current = null;
-				setFormKeys((prev) => ({ ...prev, [saved]: prev[saved] + 1 }));
-			}
+			savedSection.current = null;
+			setFormKeys((prev) => nextFormKeys(prev, saved));
 		});
 		return () => {
 			cancelled = true;
@@ -533,10 +563,11 @@ export function ProductDetail({
 			}
 			// Re-read: a save moves `updatedAt` (and therefore every form's
 			// watermark) and a stock movement moves `onHand`, so every value
-			// rendered below has to come from what the operator can now see. This is
-			// also the sibling-discard `SPLIT_DISCARD_CONTEXT` warns about, and it is
-			// the same behaviour the Block Kit screen has. The controls stay
-			// disabled until it lands.
+			// rendered below has to come from what the operator can now see. It
+			// re-seeds ONLY the section claimed on the line above — the other two
+			// forms keep what the operator typed, which is exactly what
+			// `SPLIT_DISCARD_CONTEXT` now promises. The controls stay disabled
+			// until it lands.
 			setGeneration((n) => n + 1);
 		});
 	}, []);
@@ -587,11 +618,9 @@ export function ProductDetail({
 	const p = detail.product;
 	const threshold = detail.threshold;
 	const tombstoned = p.deletedAt !== null;
-	// Named, in screen order, by the copy module — the confirm's sentence and the
-	// tab's accessible name are the same fact said twice, and neither is composed
-	// here.
-	const dirtyLabels = dirtySectionLabels(dirty);
-	const leaveConfirm = leaveWithoutSavingConfirm(dirtyLabels);
+	// The confirm's sentence and the tab's accessible name are the same fact said
+	// twice, so both read this one predicate rather than each deciding.
+	const holdsWork = leaveNeedsConfirm(dirty);
 
 	return (
 		<div>
@@ -606,7 +635,7 @@ export function ProductDetail({
 				<Button
 					label={PRODUCTS_BACK_LABEL}
 					onClick={() => {
-						if (dirtyLabels.length > 0) setLeaving(true);
+						if (holdsWork) setLeaving(true);
 						else onBack();
 					}}
 					testId="products-back"
@@ -667,7 +696,7 @@ export function ProductDetail({
 				onSelect={setTab}
 				// Only the Product tab holds editable sections; the Stock tab's forms
 				// are movements, not drafts, and settle on their own confirm.
-				unsaved={[dirtyLabels.length > 0, false]}
+				unsaved={[holdsWork, false]}
 				panels={[
 					<ProductPanel
 						key="product"
@@ -752,20 +781,15 @@ export function ProductDetail({
 			    the Back button behind it inert, and this one is reachable only from
 			    that button. The wrapper is how a test tells them apart — the dialog
 			    itself is shared and carries one testId for every caller. */}
-			<div data-testid="detail-leave-confirm">
-				<ConfirmDialog
-					open={leaving}
-					title={leaveConfirm.title}
-					text={leaveConfirm.text}
-					confirmLabel={leaveConfirm.confirm}
-					denyLabel={leaveConfirm.deny}
-					onDeny={() => setLeaving(false)}
-					onConfirm={() => {
-						setLeaving(false);
-						onBack();
-					}}
-				/>
-			</div>
+			<LeaveConfirm
+				open={leaving}
+				dirty={dirty}
+				onStay={() => setLeaving(false)}
+				onLeave={() => {
+					setLeaving(false);
+					onBack();
+				}}
+			/>
 
 			<ConfirmDialog
 				open={pending !== null}
@@ -777,6 +801,44 @@ export function ProductDetail({
 				onConfirm={() => {
 					if (pending !== null) dispatch(pending);
 				}}
+			/>
+		</div>
+	);
+}
+
+/**
+ * Back's confirm (F8), as its own component so the markup it produces can be
+ * asserted at a dirty state the screen cannot be driven into without a DOM.
+ *
+ * The sentence is COMPOSED, never stored: the sections are named in screen order
+ * by the copy module from the same `dirty` record the tab dot reads, so a
+ * confirm can never name a section that has since gone clean. Closed, it
+ * composes nothing at all — the shared dialog stays mounted (its `showModal`
+ * lives in an effect keyed on `open`), and holding a stale sentence inside a
+ * hidden dialog is how one gets shown to the next operator who opens it.
+ */
+export function LeaveConfirm({
+	open,
+	dirty,
+	onStay,
+	onLeave,
+}: {
+	open: boolean;
+	dirty: Readonly<Record<ProductSection, boolean>>;
+	onStay: () => void;
+	onLeave: () => void;
+}): React.ReactElement {
+	const confirm = open ? leaveWithoutSavingConfirm(dirtySectionLabels(dirty)) : null;
+	return (
+		<div data-testid="detail-leave-confirm">
+			<ConfirmDialog
+				open={open}
+				title={confirm?.title ?? ""}
+				text={confirm?.text ?? ""}
+				confirmLabel={confirm?.confirm ?? ""}
+				denyLabel={confirm?.deny ?? ""}
+				onDeny={onStay}
+				onConfirm={onLeave}
 			/>
 		</div>
 	);
@@ -1037,10 +1099,47 @@ export function IdentityGroup({
 	// clean without anything resetting it. COMPARED, NEVER LATCHED — type a
 	// character into the SKU and delete it and there is nothing unsaved here.
 	const committed = React.useMemo(() => ({ sku: p.sku ?? "" }), [p.sku]);
+	// THE DRAFT LIVES HERE AND NOWHERE ELSE, which is the whole of F6. The split
+	// below is a container/view split and nothing more: this half owns the state,
+	// the half below is pure in it — so the dirty treatment can be rendered, and
+	// asserted, at a draft state a static render could not otherwise reach.
 	const [values, setValues] = React.useState<Record<string, string>>(committed);
+	return (
+		<IdentityFields
+			product={p}
+			committed={committed}
+			values={values}
+			busy={busy}
+			report={onDirtyChange ?? NO_REPORT}
+			onChange={setValues}
+			onSubmit={onSubmit}
+		/>
+	);
+}
+
+/** The Identity form itself. `committed` is what the record says, `values` is
+ *  what the operator has typed, and every mark this group makes about unsaved
+ *  work — the warn border, the ` · unsaved` summary — is the difference. */
+export function IdentityFields({
+	product: p,
+	committed,
+	values,
+	busy,
+	report,
+	onChange,
+	onSubmit,
+}: {
+	product: ProductRecord;
+	committed: Record<string, string>;
+	values: Record<string, string>;
+	busy: boolean;
+	report: DirtyReporter;
+	onChange: (next: (prev: Record<string, string>) => Record<string, string>) => void;
+	onSubmit: (values: Record<string, string>) => void;
+}): React.ReactElement {
 	const changed = changedFields(committed, values);
 	const dirty = changed.length > 0;
-	useReportDirty("identity", dirty, onDirtyChange ?? NO_REPORT);
+	useReportDirty("identity", dirty, report);
 	return (
 		<Group
 			testId="edit-identity"
@@ -1057,7 +1156,7 @@ export function IdentityGroup({
 						value={values["sku"] ?? ""}
 						onChange={(event) => {
 							const next = event.target.value;
-							setValues((prev) => ({ ...prev, sku: next }));
+							onChange((prev) => ({ ...prev, sku: next }));
 						}}
 					/>
 				</Field>
@@ -1295,12 +1394,49 @@ export function ShippingGroup({
 		}),
 		[p.productKind, p.taxClass, p.weightGrams, p.lengthMm, p.widthMm, p.heightMm],
 	);
+	// Owned here for the same reason Identity's is — see that group's note on the
+	// container/view split; the six values never leave the form that holds them.
 	const [values, setValues] = React.useState<Record<string, string>>(committed);
+	return (
+		<ShippingFields
+			product={p}
+			taxClasses={taxClasses}
+			committed={committed}
+			values={values}
+			busy={busy}
+			report={onDirtyChange ?? NO_REPORT}
+			onChange={setValues}
+			onSubmit={onSubmit}
+		/>
+	);
+}
+
+/** The Classification & shipping form itself, pure in its draft so the dirty
+ *  treatment can be rendered at any state. */
+export function ShippingFields({
+	product: p,
+	taxClasses,
+	committed,
+	values,
+	busy,
+	report,
+	onChange,
+	onSubmit,
+}: {
+	product: ProductRecord;
+	taxClasses: readonly { id: string; name: string }[];
+	committed: Record<string, string>;
+	values: Record<string, string>;
+	busy: boolean;
+	report: DirtyReporter;
+	onChange: (next: (prev: Record<string, string>) => Record<string, string>) => void;
+	onSubmit: (values: Record<string, string>) => void;
+}): React.ReactElement {
 	const changed = changedFields(committed, values);
 	const dirty = changed.length > 0;
-	useReportDirty("shipping", dirty, onDirtyChange ?? NO_REPORT);
+	useReportDirty("shipping", dirty, report);
 	const set = (key: string) => (next: string) => {
-		setValues((prev) => ({ ...prev, [key]: next }));
+		onChange((prev) => ({ ...prev, [key]: next }));
 	};
 	return (
 		<Group

@@ -37,12 +37,17 @@ const {
 } = await import("../src/console-api.js");
 const { activeFilterParts, clearAnswer, visibleDegradation, UNTITLED } =
 	await import("../src/products/products-list.js");
-const { CopyIdButton } = await import("../src/ui.js");
+const { CopyIdButton, WARN_ACCENT } = await import("../src/ui.js");
 const {
+	IdentityFields,
+	LeaveConfirm,
 	PriceGroup,
 	ProductTabs,
+	ShippingFields,
 	changedFields,
 	changedPriceFields,
+	leaveNeedsConfirm,
+	nextFormKeys,
 	nextWritePhase,
 	sectionForAction,
 	writeControls,
@@ -100,6 +105,18 @@ function renderTabs(tab: number, unsaved: readonly boolean[]): string {
 		/>,
 	);
 }
+
+/** The one rendered tag carrying `data-testid`, so a style assertion is about
+ *  the field it names and not about "somewhere in the group". */
+function tagFor(html: string, testId: string): string {
+	const found = new RegExp(`<[a-z]+[^>]*data-testid="${testId}"[^>]*>`).exec(html);
+	if (found === null) throw new Error(`no element with data-testid="${testId}"`);
+	return found[0];
+}
+
+/** The three sections' dirty record, clean. */
+const NO_SECTION_DIRTY = { identity: false, price: false, shipping: false } as const;
+const noop = (): undefined => undefined;
 
 function jsonResponse(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -576,6 +593,158 @@ describe("presentation primitives this screen relies on", () => {
 		expect(sectionForAction("products:save-shipping")).toBe("shipping");
 		expect(sectionForAction("products:restock")).toBeNull();
 		expect(sectionForAction("products:remove-stock")).toBeNull();
+	});
+
+	test("a dirty IDENTITY group borders the changed field and marks its summary (F6)", () => {
+		// The Price group had this treatment before this increment; Identity and
+		// shipping did not. Rendered at BOTH states from the same component, so the
+		// assertion is the wiring — `changedFields` being right proves nothing about
+		// whether this group asks it anything.
+		const props = {
+			product: PRICED,
+			busy: false,
+			report: noop,
+			onChange: noop,
+			onSubmit: noop,
+		} as const;
+		const clean = renderToStaticMarkup(
+			<IdentityFields
+				{...props}
+				committed={{ sku: "APR-LIN-NAT" }}
+				values={{ sku: "APR-LIN-NAT" }}
+			/>,
+		);
+		expect(clean).not.toContain("· unsaved");
+		expect(tagFor(clean, "edit-sku")).not.toContain(WARN_ACCENT);
+
+		const dirty = renderToStaticMarkup(
+			<IdentityFields
+				{...props}
+				committed={{ sku: "APR-LIN-NAT" }}
+				values={{ sku: "APR-LIN-XL" }}
+			/>,
+		);
+		// On the SUMMARY line, so a SHUT group cannot hide the work.
+		expect(dirty).toMatch(/<summary[^>]*>(?:(?!<\/summary>).)*· unsaved/s);
+		// A border, never a text colour — the accent has to survive both themes.
+		expect(tagFor(dirty, "edit-sku")).toContain(`2px solid ${WARN_ACCENT}`);
+	});
+
+	test("a dirty SHIPPING group borders ONLY the field that changed (F6)", () => {
+		const props = {
+			product: PRICED,
+			taxClasses: [{ id: "standard", name: "Standard" }],
+			busy: false,
+			report: noop,
+			onChange: noop,
+			onSubmit: noop,
+		} as const;
+		const committed = {
+			productKind: "physical",
+			taxClass: "standard",
+			weightGrams: "420",
+			lengthMm: "",
+			widthMm: "",
+			heightMm: "",
+		};
+		const clean = renderToStaticMarkup(
+			<ShippingFields {...props} committed={committed} values={committed} />,
+		);
+		expect(clean).not.toContain("· unsaved");
+		expect(tagFor(clean, "edit-weight")).not.toContain(WARN_ACCENT);
+
+		const dirty = renderToStaticMarkup(
+			<ShippingFields
+				{...props}
+				committed={committed}
+				values={{ ...committed, weightGrams: "500" }}
+			/>,
+		);
+		expect(dirty).toMatch(/<summary[^>]*>(?:(?!<\/summary>).)*· unsaved/s);
+		expect(tagFor(dirty, "edit-weight")).toContain(`2px solid ${WARN_ACCENT}`);
+		// Six fields, one changed: marking the other five would say the operator
+		// edited things they never touched.
+		for (const id of ["edit-kind", "edit-tax-class", "edit-length", "edit-width", "edit-height"]) {
+			expect(tagFor(dirty, id)).not.toContain(WARN_ACCENT);
+		}
+	});
+
+	test("a save re-seeds its OWN form and leaves both siblings' drafts mounted (F7)", () => {
+		const keys = { identity: 0, price: 3, shipping: 7 } as const;
+
+		// The saving section remounts…
+		const afterPrice = nextFormKeys(keys, "price");
+		expect(afterPrice.price).toBe(4);
+		// …AND THIS IS THE ASSERTION THE INCREMENT IS FOR. Bump all three and the
+		// sibling forms remount against the record, discarding exactly the drafts
+		// F6 exists to protect — the original defect, inverted.
+		expect(afterPrice.identity).toBe(0);
+		expect(afterPrice.shipping).toBe(7);
+
+		expect(nextFormKeys(keys, "identity")).toEqual({ identity: 1, price: 3, shipping: 7 });
+		expect(nextFormKeys(keys, "shipping")).toEqual({ identity: 0, price: 3, shipping: 8 });
+
+		// A stock movement owns no form on the Product tab, and a write that was
+		// refused never named a section — neither may move anything. Same OBJECT,
+		// so React bails out instead of reconciling three forms for nothing.
+		expect(nextFormKeys(keys, sectionForAction("products:restock"))).toBe(keys);
+		expect(nextFormKeys(keys, sectionForAction("products:remove-stock"))).toBe(keys);
+		expect(nextFormKeys(keys, null)).toBe(keys);
+	});
+
+	test("Back asks only when there is work to lose, and the ask NAMES it (F8)", () => {
+		// The predicate the back link reads. A clean product must go straight back:
+		// a dialog on every exit is the tax that teaches operators to dismiss them.
+		expect(leaveNeedsConfirm(NO_SECTION_DIRTY)).toBe(false);
+		expect(leaveNeedsConfirm({ ...NO_SECTION_DIRTY, identity: true })).toBe(true);
+		expect(leaveNeedsConfirm({ ...NO_SECTION_DIRTY, price: true })).toBe(true);
+		expect(leaveNeedsConfirm({ ...NO_SECTION_DIRTY, shipping: true })).toBe(true);
+
+		const open = renderToStaticMarkup(
+			<LeaveConfirm
+				open={true}
+				dirty={{ ...NO_SECTION_DIRTY, price: true }}
+				onStay={noop}
+				onLeave={noop}
+			/>,
+		);
+		expect(open).toContain('data-testid="detail-leave-confirm"');
+		expect(open).toContain("Leave without saving?");
+		expect(open).toContain("Price");
+		expect(open).toContain("Leaving this product discards them.");
+		expect(open).toContain("Leave and discard");
+		expect(open).toContain("Stay");
+		// Derived, never hard-coded: two dirty sections are both named, in screen
+		// order, and the section that is clean is not.
+		const multi = renderToStaticMarkup(
+			<LeaveConfirm
+				open={true}
+				dirty={{ identity: true, price: false, shipping: true }}
+				onStay={noop}
+				onLeave={noop}
+			/>,
+		);
+		expect(multi.indexOf("Identity")).toBeGreaterThan(-1);
+		// `&` arrives escaped — this is the rendered dialog, not the copy module.
+		expect(multi.indexOf("Classification &amp; shipping")).toBeGreaterThan(
+			multi.indexOf("Identity"),
+		);
+		expect(multi).not.toContain("Price");
+
+		// Shut, it composes nothing — a sentence naming a section that has since
+		// been saved must not be sitting inside the dialog waiting to be shown.
+		const shut = renderToStaticMarkup(
+			<LeaveConfirm
+				open={false}
+				dirty={{ ...NO_SECTION_DIRTY, price: true }}
+				onStay={noop}
+				onLeave={noop}
+			/>,
+		);
+		expect(shut).toContain('data-testid="detail-leave-confirm"');
+		expect(shut).not.toContain("Leave without saving?");
+		expect(shut).not.toContain("Leave and discard");
+		expect(shut).not.toContain("Price");
 	});
 
 	test("BOTH tab panels are rendered, and the inactive one is `hidden`, not gone (F6)", () => {
