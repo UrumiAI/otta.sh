@@ -38,8 +38,10 @@ const {
 const { activeFilterParts, clearAnswer, visibleDegradation, UNTITLED } =
 	await import("../src/products/products-list.js");
 const { CopyIdButton } = await import("../src/ui.js");
-const { PriceGroup, changedFields, changedPriceFields } =
+const { PriceGroup, changedFields, changedPriceFields, nextWritePhase, writeControls } =
 	await import("../src/products/product-detail.js");
+type WriteEvent = import("../src/products/product-detail.js").WriteEvent;
+type WritePhase = import("../src/products/product-detail.js").WritePhase;
 const {
 	LOW_STOCK_FILTER_DESCRIPTION,
 	PRODUCTS_LOW_STOCK_NO_MATCH,
@@ -397,6 +399,60 @@ describe("presentation primitives this screen relies on", () => {
 		// An entry that does not parse still reads as a change, so the write still
 		// happens and the write's own refusal is what the operator sees.
 		expect(changedPriceFields(committed, { ...committed, price: "abc" })).toEqual(["price"]);
+	});
+
+	test("a write is released by its re-read, NOT by the write answering (F4)", () => {
+		// THE RACE THIS CLOSES. The POST answers, and only the re-read after it
+		// moves `updatedAt` — so a `Save` re-armed in the gap is armed against an
+		// `expectedUpdatedAt` the service has already superseded, and the second
+		// click reports a concurrency error for a save that in fact succeeded.
+		// Asserted on the reducer because there is no DOM environment here: the
+		// screen sets neither guard at a call site, it reports these events and
+		// reads `busy`/`acting` back out, so the sequence below IS the behaviour.
+		const SAVE = "products:save-price";
+		const run = (...events: readonly WriteEvent[]): WritePhase =>
+			events.reduce<WritePhase>(nextWritePhase, { step: "idle" });
+
+		// The click: everything disabled, and exactly one button may say `Saving…`.
+		expect(writeControls(run({ type: "dispatched", actionId: SAVE }))).toEqual({
+			busy: true,
+			acting: SAVE,
+		});
+
+		// The write has ANSWERED and the screen has not caught up with it. This is
+		// the assertion that fails the moment the release moves back into the
+		// write's own `.then`, which is what it is here for.
+		const accepted = run({ type: "dispatched", actionId: SAVE }, { type: "accepted" });
+		expect(accepted.step).toBe("rereading");
+		expect(writeControls(accepted)).toEqual({ busy: true, acting: SAVE });
+
+		// The re-read landing is the one event that re-arms the screen — and it
+		// re-arms it whether the re-read succeeded or failed, because the screen
+		// reports it before it checks, rather than stranding the controls.
+		expect(writeControls(nextWritePhase(accepted, { type: "read-settled" }))).toEqual({
+			busy: false,
+			acting: null,
+		});
+
+		// A REFUSED write is released at once: nothing moved, so no re-read is
+		// coming and there is no superseded watermark to be armed against.
+		expect(writeControls(run({ type: "dispatched", actionId: SAVE }, { type: "refused" }))).toEqual(
+			{ busy: false, acting: null },
+		);
+
+		// A late or duplicated answer cannot re-arm a leg that already settled, and
+		// the mount read of an idle screen disables nothing.
+		expect(
+			writeControls(
+				run(
+					{ type: "dispatched", actionId: SAVE },
+					{ type: "accepted" },
+					{ type: "read-settled" },
+					{ type: "accepted" },
+				),
+			),
+		).toEqual({ busy: false, acting: null });
+		expect(writeControls(run({ type: "read-settled" }))).toEqual({ busy: false, acting: null });
 	});
 
 	test("a clean Price group disables Save and says why", () => {

@@ -251,6 +251,68 @@ function numberInput(value: number | null): string {
 	return value === null ? "" : String(value);
 }
 
+/**
+ * WHERE A WRITE HAS GOT TO — the whole lifecycle as one value, so that when the
+ * controls are released is a decision this module states once and can be read
+ * back, rather than a pair of `setBusy(false)` calls whose placement is the
+ * entire behaviour.
+ *
+ * A write is two round trips, not one. The POST answers, and only then does the
+ * re-read that follows it move `updatedAt` — and therefore every form's
+ * `expectedUpdatedAt` watermark. A button re-armed in the gap between them is
+ * armed against a watermark the service has already superseded: the second
+ * click is refused by optimistic concurrency and reports an error for a save
+ * that in fact succeeded. So `accepted` does not end the write; it moves it to
+ * its second leg, and `read-settled` is the only event that returns the screen
+ * to idle.
+ *
+ * `refused` is the exception, and it is not an asymmetry: a refused write moved
+ * nothing, so there is no re-read to wait for and nothing to be stale against.
+ */
+export type WritePhase =
+	| { readonly step: "idle" }
+	| { readonly step: "writing"; readonly actionId: string }
+	| { readonly step: "rereading"; readonly actionId: string };
+
+export type WriteEvent =
+	| { readonly type: "dispatched"; readonly actionId: string }
+	| { readonly type: "refused" }
+	| { readonly type: "accepted" }
+	| { readonly type: "read-settled" };
+
+/** Pure. The one place a write's progress is decided; the component only
+ *  reports what happened. */
+export function nextWritePhase(phase: WritePhase, event: WriteEvent): WritePhase {
+	switch (event.type) {
+		case "dispatched":
+			return { step: "writing", actionId: event.actionId };
+		case "refused":
+			return { step: "idle" };
+		case "accepted":
+			// NOT A RELEASE. The write answered; the screen has not caught up with
+			// it yet. Ignored unless a write is actually outstanding, so a late or
+			// duplicated answer cannot re-arm a leg that has already settled.
+			return phase.step === "writing" ? { step: "rereading", actionId: phase.actionId } : phase;
+		case "read-settled":
+			// Every read settles the screen, the failed one included: a re-read that
+			// could not be made would otherwise strand the controls disabled.
+			return { step: "idle" };
+	}
+}
+
+/** Pure. Both guards the screen needs from a phase: `busy` disables every
+ *  control (one write at a time is the existing contract) while `acting` names
+ *  the single button allowed to say `Saving…` — a screen where three buttons
+ *  claim to be saving reports two writes that are not happening. */
+export function writeControls(phase: WritePhase): {
+	readonly busy: boolean;
+	readonly acting: string | null;
+} {
+	return phase.step === "idle"
+		? { busy: false, acting: null }
+		: { busy: true, acting: phase.actionId };
+}
+
 export function ProductDetail({
 	productId,
 	onBack,
@@ -267,12 +329,11 @@ export function ProductDetail({
 	} | null>(null);
 	const [tab, setTab] = React.useState(0);
 	const [pending, setPending] = React.useState<PendingAction | null>(null);
-	const [busy, setBusy] = React.useState(false);
-	// WHICH write is outstanding, not merely THAT one is. `busy` still disables
-	// every control — one write at a time is the existing contract — but only the
-	// button that was clicked may say `Saving…`, and a screen where three buttons
-	// claim to be saving reports two writes that are not happening.
-	const [acting, setActing] = React.useState<string | null>(null);
+	// WHICH write is outstanding and HOW FAR ALONG, not merely THAT one is: the
+	// screen reports events into `nextWritePhase` and reads both its guards back
+	// out of `writeControls`, so neither is set at a call site.
+	const [writePhase, setWritePhase] = React.useState<WritePhase>({ step: "idle" });
+	const { busy, acting } = writeControls(writePhase);
 	// Receipts persist until the same group is written again. No timer, no fade:
 	// a receipt the operator has to catch is the defect, not the feature.
 	const [receipts, setReceipts] = React.useState<Readonly<Record<ReceiptSlot, Receipt | null>>>({
@@ -291,15 +352,10 @@ export function ProductDetail({
 		void fetchProductDetail(productId).then((result) => {
 			if (cancelled) return;
 			setRetrying(false);
-			// A WRITE'S BUSY STATE ENDS HERE, not when the write answered. The
-			// re-read a save triggers is what moves `expectedUpdatedAt`, so a save
-			// button re-armed before it lands is armed against a watermark the
-			// service has already superseded: the second click would be refused by
-			// optimistic concurrency and report an error for a save that in fact
-			// succeeded. Cleared before the failure check, so a failed re-read
-			// releases the controls too.
-			setBusy(false);
-			setActing(null);
+			// A WRITE'S BUSY STATE ENDS HERE, not when the write answered — see
+			// `nextWritePhase`, which is where that is argued and tested. Reported
+			// before the failure check, so a failed re-read releases the controls too.
+			setWritePhase((phase) => nextWritePhase(phase, { type: "read-settled" }));
 			if (isFailure(result)) {
 				setFailure({ title: result.title, description: result.description });
 				return;
@@ -314,8 +370,9 @@ export function ProductDetail({
 
 	const dispatch = React.useCallback((action: PendingAction) => {
 		setPending(null);
-		setBusy(true);
-		setActing(action.actionId);
+		setWritePhase((phase) =>
+			nextWritePhase(phase, { type: "dispatched", actionId: action.actionId }),
+		);
 		const slot = action.slot;
 		// The previous receipt describes a state this write is about to replace, so
 		// it goes on the click rather than on the answer.
@@ -325,11 +382,13 @@ export function ProductDetail({
 				// A REFUSAL still reports at page top, for both surfaces' reasons: it is
 				// not a receipt, and the group it came from may be shut. Nothing moved,
 				// so there is no re-read to wait for and the controls are released here.
-				setBusy(false);
-				setActing(null);
+				setWritePhase((phase) => nextWritePhase(phase, { type: "refused" }));
 				setNotice({ variant: "error", title: result.title, description: result.description });
 				return;
 			}
+			// ACCEPTED IS NOT SETTLED — the re-read below is the second leg, and the
+			// controls stay disabled across it. Deliberately not a release.
+			setWritePhase((phase) => nextWritePhase(phase, { type: "accepted" }));
 			const served = result.notice;
 			const outcome: { variant: "default" | "error"; title: string; description: string } | null =
 				served === null
