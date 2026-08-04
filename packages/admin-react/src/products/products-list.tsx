@@ -168,6 +168,27 @@ export function clearAnswer(page: LoadedPage | null): LoadedPage | null {
 	return page === null ? null : { ...page, products: [], nextCursor: null, total: undefined };
 }
 
+/**
+ * The stock alert a page earned, WITHDRAWN with that page's answer.
+ *
+ * `clearAnswer` keeps `stock` because the filter panel is built from it, but the
+ * alert is not the panel: "Stock levels are unavailable — for every row here"
+ * is a claim about rows that a failure has just taken off the screen, and left
+ * standing it sits beside the failure notice describing a response that is
+ * gone. It goes with the table, for the same reason the count line does.
+ */
+export function visibleDegradation(
+	page: LoadedPage | null,
+	failed: boolean,
+): { readonly title: string; readonly description: string } | undefined {
+	if (page === null || failed) return undefined;
+	return stockDegradation({
+		unreadable: page.stock.unreadable,
+		thresholdUnreadable: page.stock.threshold === null,
+		filterUnavailable: page.stock.filterUnavailable,
+	});
+}
+
 export function ProductsList({
 	onOpen,
 }: {
@@ -178,6 +199,11 @@ export function ProductsList({
 	const [page, setPage] = React.useState<LoadedPage | null>(null);
 	const [failure, setFailure] = React.useState<{ title: string; description: string } | null>(null);
 	const [busy, setBusy] = React.useState(true);
+	// The Retry's OWN in-flight state. `busy` is the whole screen's, and the
+	// filter panel stays interactive under a failure notice, so driving the Retry
+	// from `busy` would make an "Apply filters" the operator pressed read back as
+	// "Retrying…" on a request they never issued.
+	const [retrying, setRetrying] = React.useState(false);
 	const [generation, setGeneration] = React.useState(0);
 	const [cursor, setCursor] = React.useState<string | undefined>(undefined);
 
@@ -187,6 +213,8 @@ export function ProductsList({
 		void fetchProducts(applied, cursor).then((result) => {
 			if (cancelled) return;
 			setBusy(false);
+			// Whatever the outcome, the click that asked for this is over.
+			setRetrying(false);
 			if (isFailure(result)) {
 				setFailure({ title: result.title, description: result.description });
 				// F2: THE ANSWER GOES WITH THE FAILURE, in the same transition. The
@@ -241,15 +269,9 @@ export function ProductsList({
 
 	// PAGE CONTEXT, NOT ROW DATA: a page narrowed to zero rows still has to be
 	// able to say what went wrong, so this is derived from the payload's `stock`
-	// rather than from the rows.
-	const degraded =
-		page === null
-			? undefined
-			: stockDegradation({
-					unreadable: page.stock.unreadable,
-					thresholdUnreadable: page.stock.threshold === null,
-					filterUnavailable: page.stock.filterUnavailable,
-				});
+	// rather than from the rows — and it is withdrawn when the page it describes
+	// is.
+	const degraded = visibleDegradation(page, failure !== null);
 
 	const apply = (next: ProductsFilter) => {
 		setApplied(next);
@@ -276,10 +298,13 @@ export function ProductsList({
 					// click: the response clears it, so nothing flashes back in the
 					// meantime.
 					action={{
-						label: busy ? RETRYING_LABEL : RETRY_LABEL,
-						onClick: () => setGeneration((n) => n + 1),
-						disabled: busy,
-						busy,
+						label: retrying ? RETRYING_LABEL : RETRY_LABEL,
+						onClick: () => {
+							setRetrying(true);
+							setGeneration((n) => n + 1);
+						},
+						disabled: retrying,
+						busy: retrying,
 					}}
 					testId="products-failure"
 				/>
@@ -451,7 +476,15 @@ export function ProductsList({
 				</p>
 			)}
 
-			{outcome.kind === "rows" && (
+			{/*
+			  `failure === null` IS PART OF THE GUARD, exactly as it is on the two
+			  branches above. The table used to render on `outcome.kind` alone while
+			  its siblings checked the failure — the inconsistency F1 names — and
+			  although `clearAnswer` now empties the rows in STATE and no "rows"
+			  outcome can survive a failure, a table whose guard disagrees with the
+			  notice above it is how that bug got written the first time.
+			*/}
+			{outcome.kind === "rows" && failure === null && (
 				<Table
 					testId="products-table"
 					caption="Products"

@@ -28,7 +28,7 @@ vi.mock("emdash/plugin-utils", async (importOriginal) => {
 
 const { fetchOrderDetail, fetchOrders, isFailure, performAction, OTTA_ADMIN_ROUTE } =
 	await import("../src/console-api.js");
-const { activeFilterParts, clearAnswer, ordersFailureCard } =
+const { activeFilterParts, clearAnswer, ordersChrome, ordersFailureCard, pageAfterFailure } =
 	await import("../src/orders/orders-list.js");
 const { Notice, CopyIdButton } = await import("../src/ui.js");
 const {
@@ -84,6 +84,22 @@ describe("a failed load stops showing the previous answer (F1)", () => {
 	// it is not one clearing but three answers, because a page-two failure
 	// disproves nothing that is already on screen.
 	const SERVED = { title: "HTTP 502 · Orders could not be loaded", description: "Bad gateway." };
+	const VOCABULARY = {
+		statuses: ["paid"],
+		statusAny: "any",
+		periods: [{ key: "last30", label: "Last 30 days" }],
+		cancellationReasons: [],
+		oneClickCancellationReasons: [],
+		reconciliationOutcomes: [],
+		pageLimit: 25,
+	};
+	const LOADED = {
+		orders: [{ id: "7e4ce728" }] as never,
+		nextCursor: "cursor-2",
+		total: 18,
+		vocabulary: VOCABULARY,
+		firstPage: true,
+	};
 
 	test("COLD — nothing ever loaded: the error card alone", () => {
 		const card = ordersFailureCard({ ...SERVED, continuation: false }, false);
@@ -136,22 +152,7 @@ describe("a failed load stops showing the previous answer (F1)", () => {
 	});
 
 	test("clearing drops the answer and keeps the vocabulary the filters are built from", () => {
-		const vocabulary = {
-			statuses: ["paid"],
-			statusAny: "any",
-			periods: [{ key: "last30", label: "Last 30 days" }],
-			cancellationReasons: [],
-			oneClickCancellationReasons: [],
-			reconciliationOutcomes: [],
-			pageLimit: 25,
-		};
-		const cleared = clearAnswer({
-			orders: [{ id: "7e4ce728" }] as never,
-			nextCursor: "cursor-2",
-			total: 18,
-			vocabulary,
-			firstPage: true,
-		});
+		const cleared = clearAnswer(LOADED);
 		expect(cleared?.orders).toEqual([]);
 		// The count goes WITH the rows — `18 orders` over an error card is the same
 		// false claim in fewer words.
@@ -160,8 +161,81 @@ describe("a failed load stops showing the previous answer (F1)", () => {
 		// no longer exists.
 		expect(cleared?.nextCursor).toBeNull();
 		// The Period menu's options are not the answer and survive (F3).
-		expect(cleared?.vocabulary).toBe(vocabulary);
+		expect(cleared?.vocabulary).toBe(VOCABULARY);
 		expect(clearAnswer(null)).toBeNull();
+	});
+
+	test("a page BEHIND a successful one fails without clearing anything", () => {
+		// The transition, not just the card: "on failure, clear the page" is right
+		// for cold and stale and destroys the partial case, so which failure clears
+		// is a value a test can read rather than a branch buried in the effect.
+		// Page two failed — the same page object comes back, rows, count and cursor
+		// untouched.
+		expect(pageAfterFailure(LOADED, true)).toBe(LOADED);
+		// Page one failed under those rows — the answer goes.
+		expect(pageAfterFailure(LOADED, false)?.orders).toEqual([]);
+		expect(pageAfterFailure(LOADED, false)?.total).toBeUndefined();
+		expect(pageAfterFailure(LOADED, false)?.nextCursor).toBeNull();
+		expect(pageAfterFailure(null, false)).toBeNull();
+	});
+
+	test("A LOAD IN PROGRESS IS NOT A FAILURE — the first fetch keeps the filter bar", () => {
+		// Mount: no page has landed and nothing has failed. Deriving the bar from
+		// "has a page landed" would take it off the screen on every mount and drop
+		// it back in when the first response arrives, which is a layout shift on a
+		// screen that never failed.
+		const loading = ordersChrome({ failure: null, everLoaded: false, retrying: false });
+		expect(loading.card).toBeNull();
+		expect(loading.filtersVisible).toBe(true);
+		expect(loading.answerVisible).toBe(true);
+
+		// It is the COLD FAILURE that takes the bar, and only it (F3) — the Period
+		// menu it would draw has no options.
+		const cold = ordersChrome({
+			failure: { ...SERVED, continuation: false },
+			everLoaded: false,
+			retrying: false,
+		});
+		expect(cold.filtersVisible).toBe(false);
+		expect(cold.answerVisible).toBe(false);
+
+		// A stale failure keeps the bar; the operator's typed filters are input.
+		const stale = ordersChrome({
+			failure: { ...SERVED, continuation: false },
+			everLoaded: true,
+			retrying: false,
+		});
+		expect(stale.filtersVisible).toBe(true);
+		expect(stale.answerVisible).toBe(false);
+	});
+
+	test("the retry reports ITS OWN click, and nothing else the screen is loading", () => {
+		// `retrying` is the only in-flight input there is: the screen-wide load flag
+		// cannot reach this decision. The filter bar stays interactive in the stale
+		// and partial states, so an "Apply filters" the operator pressed must not
+		// make the untouched Retry beside it read "Retrying…".
+		const failure = { ...SERVED, continuation: false };
+		const idle = ordersChrome({ failure, everLoaded: true, retrying: false });
+		expect(idle.retry.label).toBe(RETRY_LABEL);
+		expect(idle.retry.disabled).toBe(false);
+		expect(idle.retry.busy).toBe(false);
+		// Focus was inside a row that no longer exists.
+		expect(idle.retry.autoFocus).toBe(true);
+
+		const inFlight = ordersChrome({ failure, everLoaded: true, retrying: true });
+		expect(inFlight.retry.label).toBe(RETRYING_LABEL);
+		expect(inFlight.retry.disabled).toBe(true);
+		expect(inFlight.retry.busy).toBe(true);
+
+		// A continuation failure renders where `Load more` was, and nothing was
+		// unmounted under the operator's focus.
+		expect(
+			ordersChrome({
+				failure: { ...SERVED, continuation: true },
+				everLoaded: true,
+				retrying: false,
+			}).retry.autoFocus,
+		).toBe(false);
 	});
 
 	test("the retry sits on the error card, and says so while it is in flight", () => {

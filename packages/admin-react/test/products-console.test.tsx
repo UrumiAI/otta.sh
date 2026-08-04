@@ -35,7 +35,7 @@ const {
 	performAction,
 	OTTA_ADMIN_ROUTE,
 } = await import("../src/console-api.js");
-const { activeFilterParts, clearAnswer, UNTITLED } =
+const { activeFilterParts, clearAnswer, visibleDegradation, UNTITLED } =
 	await import("../src/products/products-list.js");
 const { CopyIdButton } = await import("../src/ui.js");
 const {
@@ -124,6 +124,24 @@ describe("a failed load stops showing the previous answer (F2)", () => {
 		expect(cleared?.vocabulary).toBe(page.vocabulary);
 		expect(cleared?.stock).toBe(page.stock);
 		expect(clearAnswer(null)).toBeNull();
+	});
+
+	test("the stock alert is withdrawn with the rows it was about", () => {
+		// `stock` survives the clear because the filter panel is built from it — but
+		// "Stock levels are unavailable — for every row here" describes rows the
+		// failure has just taken off the screen, so leaving it up would stand a
+		// second stale claim beside the failure notice.
+		const degradedPage = {
+			...page,
+			stock: { threshold: null, unreadable: true, filterUnavailable: false },
+		};
+		expect(visibleDegradation(degradedPage, false)?.title).toContain(
+			"Stock levels are unavailable",
+		);
+		expect(visibleDegradation(degradedPage, true)).toBeUndefined();
+		// A healthy page says nothing either way, and nothing has loaded to say it.
+		expect(visibleDegradation(page, false)).toBeUndefined();
+		expect(visibleDegradation(null, false)).toBeUndefined();
 	});
 });
 

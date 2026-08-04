@@ -164,6 +164,24 @@ export function clearAnswer(page: LoadedPage | null): LoadedPage | null {
 	return page === null ? null : { ...page, orders: [], nextCursor: null, total: undefined };
 }
 
+/**
+ * What a failed response leaves of the page.
+ *
+ * THE PARTIAL CASE IS THE ONE THE OBVIOUS IMPLEMENTATION DESTROYS. "On failure,
+ * clear the page" is right for cold and for stale and wrong here: a page that
+ * failed BEHIND one that succeeded disproves nothing already on screen, so
+ * every accumulated row, the exact count and the cursor stand untouched.
+ *
+ * It is a function rather than two lines inside the effect so that the branch
+ * is a value a test can read — the same reason `clearAnswer` is one.
+ */
+export function pageAfterFailure(
+	page: LoadedPage | null,
+	continuation: boolean,
+): LoadedPage | null {
+	return continuation ? page : clearAnswer(page);
+}
+
 /** What a failure leaves on the screen, and what the card over it says. */
 export interface OrdersFailureCard {
 	readonly kind: "cold" | "stale" | "partial";
@@ -235,12 +253,74 @@ export function ordersFailureCard(failure: OrdersFailure, everLoaded: boolean): 
 	};
 }
 
+/** Everything the screen draws AROUND the answer, decided in one place. */
+export interface OrdersChrome {
+	/** `null` when there is no failure to report. */
+	readonly card: OrdersFailureCard | null;
+	/** The rows, the count line, the zero states and `Load more`. */
+	readonly answerVisible: boolean;
+	/** The filter bar and the filter summary. */
+	readonly filtersVisible: boolean;
+	/** The Retry on the card, in whichever of its two states applies. */
+	readonly retry: {
+		readonly label: string;
+		readonly disabled: boolean;
+		readonly busy: boolean;
+		readonly autoFocus: boolean;
+	};
+}
+
+/**
+ * ONE GUARD PER THING THE SCREEN CLAIMS, and both are the failure card's to
+ * withdraw. The bug F1 names is that the table rendered under
+ * `outcome.kind === "rows"` while its two sibling branches also checked
+ * `failure === null`, so a failure the count and the notice both acknowledged
+ * left the rows standing.
+ *
+ * NO FAILURE MEANS NOTHING IS WITHDRAWN — including on the very first fetch,
+ * before any page has landed. A load in progress is not a failure: hiding the
+ * filter bar until the first response arrives would take it off the screen on
+ * every mount and drop it back in mid-render. Only a COLD FAILURE removes the
+ * bar (F3), and only because the Period menu it would draw has no options.
+ *
+ * `retrying` IS THE RETRY'S OWN CLICK, never the screen-wide load flag. The
+ * filter bar stays interactive in the stale and partial states, so an "Apply
+ * filters" the operator pressed would otherwise make the untouched Retry beside
+ * it read "Retrying…", disable, and claim `aria-busy` for a request nobody
+ * issued.
+ */
+export function ordersChrome({
+	failure,
+	everLoaded,
+	retrying,
+}: {
+	readonly failure: OrdersFailure | null;
+	readonly everLoaded: boolean;
+	readonly retrying: boolean;
+}): OrdersChrome {
+	const card = failure === null ? null : ordersFailureCard(failure, everLoaded);
+	return {
+		card,
+		answerVisible: card === null || card.answerVisible,
+		filtersVisible: card === null || card.filtersVisible,
+		retry: {
+			label: retrying ? RETRYING_LABEL : RETRY_LABEL,
+			disabled: retrying,
+			busy: retrying,
+			autoFocus: card?.focusRetry === true,
+		},
+	};
+}
+
 export function OrdersList({ onOpen }: { onOpen: (orderId: string) => void }): React.ReactElement {
 	const [applied, setApplied] = React.useState<OrdersFilter>({});
 	const [draft, setDraft] = React.useState<OrdersFilter>({});
 	const [page, setPage] = React.useState<LoadedPage | null>(null);
 	const [failure, setFailure] = React.useState<OrdersFailure | null>(null);
 	const [busy, setBusy] = React.useState(true);
+	// The Retry's OWN in-flight state, separate from `busy` because `busy` is the
+	// whole screen's: see `ordersChrome`.
+	const [retrying, setRetrying] = React.useState(false);
 	// Bumped by "Apply filters", by "Load more" and by Retry, so a re-fetch is an
 	// effect dependency rather than a call scattered through event handlers.
 	// RETRY IS THE WHOLE OF THE MECHANISM: same filter, same cursor, one integer.
@@ -254,11 +334,13 @@ export function OrdersList({ onOpen }: { onOpen: (orderId: string) => void }): R
 		void fetchOrders(applied, cursor).then((result) => {
 			if (cancelled) return;
 			setBusy(false);
+			// Whatever the outcome, the click that asked for this is over.
+			setRetrying(false);
 			if (isFailure(result)) {
 				setFailure({ title: result.title, description: result.description, continuation });
 				// A FIRST PAGE THAT FAILED DISPROVES WHAT IS ON SCREEN; a page behind
 				// one that succeeded does not. Only the first case clears.
-				if (!continuation) setPage(clearAnswer);
+				setPage((current) => pageAfterFailure(current, continuation));
 				return;
 			}
 			setFailure(null);
@@ -323,31 +405,25 @@ export function OrdersList({ onOpen }: { onOpen: (orderId: string) => void }): R
 		setGeneration((n) => n + 1);
 	};
 
-	// ONE GUARD, USED BY EVERY BRANCH THAT STATES SOMETHING ABOUT THE ANSWER —
-	// the table, the count line, the zero states and `Load more`. The bug F1
-	// names is that the table rendered under `outcome.kind === "rows"` while its
-	// two sibling branches also checked `failure === null`, so a failure the
-	// count and the notice both acknowledged left the rows standing.
-	const card = failure === null ? null : ordersFailureCard(failure, page !== null);
-	const answerVisible = card === null || card.answerVisible;
-	const filtersVisible = card === null ? page !== null : card.filtersVisible;
+	// EVERY GUARD ON THIS SCREEN, DECIDED ONCE — see `ordersChrome`. `everLoaded`
+	// is "a page has landed", not "there are rows now": by the time this is read
+	// the rows are already gone.
+	const { card, answerVisible, filtersVisible, retry } = ordersChrome({
+		failure,
+		everLoaded: page !== null,
+		retrying,
+	});
 
 	// THE FAILURE IS NOT CLEARED HERE. Clearing it on the click rather than on
 	// the response would flash the stale answer back for the length of the
 	// request — the exact defect being fixed. The response clears it.
-	const retryAction = (): {
-		label: string;
-		onClick: () => void;
-		disabled: boolean;
-		busy: boolean;
-		autoFocus: boolean;
-	} => ({
-		label: busy ? RETRYING_LABEL : RETRY_LABEL,
-		onClick: () => setGeneration((n) => n + 1),
-		disabled: busy,
-		busy,
-		autoFocus: card?.focusRetry === true,
-	});
+	const retryAction = {
+		...retry,
+		onClick: () => {
+			setRetrying(true);
+			setGeneration((n) => n + 1);
+		},
+	};
 
 	return (
 		<div>
@@ -363,7 +439,7 @@ export function OrdersList({ onOpen }: { onOpen: (orderId: string) => void }): R
 					variant="error"
 					title={card.title}
 					description={card.description}
-					action={retryAction()}
+					action={retryAction}
 					testId="orders-failure"
 				/>
 			)}
@@ -590,7 +666,7 @@ export function OrdersList({ onOpen }: { onOpen: (orderId: string) => void }): R
 						variant="error"
 						title={card.title}
 						description={card.description}
-						action={retryAction()}
+						action={retryAction}
 						testId="orders-load-more-failure"
 					/>
 				</div>
