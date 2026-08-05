@@ -575,7 +575,7 @@ export function ProductsList({
 				<div style={{ marginBlockStart: 12 }}>
 					<button
 						type="button"
-						className="otta-focusable"
+						className="otta-focusable otta-btn"
 						data-testid="products-load-more"
 						disabled={busy}
 						style={buttonStyle}

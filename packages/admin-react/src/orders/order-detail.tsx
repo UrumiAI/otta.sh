@@ -688,7 +688,7 @@ export function OrderDetail({
 						id={`otta-tab-${String(index)}`}
 						aria-selected={tab === index}
 						aria-controls={`otta-panel-${String(index)}`}
-						className="otta-focusable"
+						className="otta-focusable otta-btn"
 						data-testid={`tab-${label.toLowerCase()}`}
 						onClick={() => setTab(index)}
 						style={{
