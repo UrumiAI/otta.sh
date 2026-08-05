@@ -270,7 +270,7 @@ test("every other order state on the detail is drawn as the bare phrase", async 
 	// Three states the service ships today and one it does not: the decision is
 	// an equality against a single literal, so a status invented upstream later
 	// arrives here bare rather than pilled by a match that broadened to fit.
-	for (const state of ["paid", "delivered", "cancelled", "quarantined"]) {
+	for (const state of ["paid", "delivered", "cancelled", "refunded", "quarantined"]) {
 		const view = await show(detailFor(state));
 		const bare = fieldValue(view, "detail-identity", "Status");
 		expect(bare.querySelector("[data-tone]"), `${state} is wearing a ring`).toBeNull();
@@ -401,5 +401,14 @@ test("every amount on the detail is the one the formatter makes of the record", 
 
 	expect(cellIn(table(view, "detail-refund-ledger"), 0, 0).textContent).toBe(
 		formatAmount(REFUNDED_CENTS, CUR),
+	);
+
+	// The full-refund button's own label, not merely a money cell beside it — a
+	// hand-assembled `$${(cents / 100).toFixed(2)}` reads identically to the
+	// formatter's output for round amounts, so this has to check the string the
+	// formatter itself makes of the fixture's remainder.
+	const refundFull = one<HTMLButtonElement>(view, '[data-testid="refund-full"]');
+	expect(refundFull.textContent).toBe(
+		`Refund ${formatAmount(CAPTURED.remainingCents, CUR)} (full remaining)`,
 	);
 });

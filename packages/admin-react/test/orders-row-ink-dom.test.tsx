@@ -46,15 +46,15 @@ function order(id: string, state: string, totalCents: number, currency = "USD") 
 }
 
 /**
- * Four rows spanning the four statuses this screen has to draw differently —
- * one exception and three ordinary ones.
+ * Five rows spanning the five statuses this screen has to draw differently —
+ * one exception and four ordinary ones.
  *
  * THE AMOUNTS ARE CHOSEN SO THE FORMATTER IS THE ONLY THING THAT CAN PRODUCE
  * THEM. `$19.99` reads identically whether it came from the formatter or from a
  * call site assembling a symbol and a division by a hundred, so a fixture made
  * only of small round amounts cannot tell those apart. One total crosses a
  * thousands separator and one is in a currency with no minor units at all;
- * neither survives a hand-built string, and none of the four is the `$0.00` a
+ * neither survives a hand-built string, and none of the five is the `$0.00` a
  * hard-coded zero would show.
  */
 const ROWS = [
@@ -62,6 +62,7 @@ const ROWS = [
 	order("ord_failed", "failed", 1999),
 	order("ord_delivered", "delivered", 12_000),
 	order("ord_cancelled", "cancelled", 125_000, "JPY"),
+	order("ord_refunded", "refunded", 87_500),
 ];
 
 beforeEach(() => {
@@ -130,9 +131,11 @@ test("the one status that needs attention is the only one wearing a ring", async
 	expect(pill?.textContent).toBe(orderStateCell("failed"));
 
 	// THE POINT OF THE DECISION, and the thing a symmetric "pill every status"
-	// change breaks: three ordinary statuses in the same column, all bare. A
-	// mark on every row marks nothing.
-	for (const id of ["ord_paid", "ord_delivered", "ord_cancelled"]) {
+	// change breaks: four ordinary statuses in the same column, all bare. A
+	// mark on every row marks nothing. `refunded` is here on purpose — the state
+	// most tempting to pill by "symmetry" with `failed`, and the one a broadened
+	// match would catch first.
+	for (const id of ["ord_paid", "ord_delivered", "ord_cancelled", "ord_refunded"]) {
 		const bare = cell(container, id, STATUS);
 		expect(bare.querySelector("[data-tone]")).toBeNull();
 		expect(bare.textContent).toBe(orderStateCell(id.slice(4)));
