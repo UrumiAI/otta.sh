@@ -5,10 +5,10 @@
  * WHAT IS DIFFERENT FROM THE BLOCK KIT SCREEN, and it is the same short list
  * INC-20's Orders list carries, because this is a migration and not a redesign:
  *
- *  - **Row click.** The title cell is a link to the product's detail, with a
- *    full-row hover tint (DESIGNER §8) — never `<tr onClick>`, which would
- *    leave no cell selectable for copy/paste on a screen whose whole second
- *    column is a code an operator pastes into a spreadsheet.
+ *  - **Row click.** The title cell is a link to the product's detail and the
+ *    whole row is a target (DESIGNER §8), through ONE delegated listener on the
+ *    table body. A selection guard is what keeps the second column — a code an
+ *    operator pastes into a spreadsheet — selectable rather than dead.
  *  - **No picker.** `Open product` is deleted, and with it the `ComboboxList`
  *    duplicate-key React error, which is picker-only.
  *  - **A copy button on the SKU.** See the identity note below.
@@ -495,16 +495,22 @@ export function ProductsList({
 						PRODUCT_COLUMN_LABELS.onHand,
 						PRODUCT_COLUMN_LABELS.price,
 					]}
+					onActivateRow={onOpen}
 				>
 					{products.map((product) => (
-						<tr key={product.productId} className="otta-row" data-testid="products-row">
+						<tr
+							key={product.productId}
+							className="otta-row"
+							data-testid="products-row"
+							data-row-id={product.productId}
+						>
 							<td className="otta-td">
 								{/*
-								  DESIGNER §8: the PRIMARY CELL is the link and the row gets a
-								  hover tint. The title is the human handle (M-10) and the first
-								  column on the screen being migrated, so it is the cell that
-								  opens the record — and the SKU beside it stays plain text,
-								  selectable, with its own copy button.
+								  DESIGNER §8: the PRIMARY CELL is the link, and it stays the row's
+								  ONLY tab stop now that the whole row activates. The title is the
+								  human handle (M-10) and the first column on the screen, so it is
+								  the cell that opens the record — and the SKU beside it stays
+								  plain text, selectable, with its own copy button.
 								*/}
 								<a
 									href={`?product=${encodeURIComponent(product.productId)}`}

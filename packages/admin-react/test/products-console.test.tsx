@@ -37,7 +37,15 @@ const {
 } = await import("../src/console-api.js");
 const { activeFilterParts, clearAnswer, visibleDegradation, UNTITLED } =
 	await import("../src/products/products-list.js");
-const { CopyIdButton, WARN_ACCENT } = await import("../src/ui.js");
+const {
+	CopyIdButton,
+	WARN_ACCENT,
+	CONSOLE_STYLES,
+	CURSOR_RESET_DESCENDANT_SELECTOR,
+	INTERACTIVE_DESCENDANT_SELECTOR,
+	ROW_ID_ATTRIBUTE,
+	rowActivationId,
+} = await import("../src/ui.js");
 const {
 	IdentityFields,
 	LeaveConfirm,
@@ -816,5 +824,62 @@ describe("presentation primitives this screen relies on", () => {
 		// The filter narrows the FETCHED PAGE, so a description promising "every
 		// low-stock product" would be a claim the screen cannot keep.
 		expect(LOW_STOCK_FILTER_DESCRIPTION).toContain("applies per page");
+	});
+});
+/**
+ * ROW ACTIVATION on the screen whose second column is a code (F11). The guards
+ * themselves are pinned in the Orders suite; what matters here is that the SKU
+ * cell survives them — it must be selectable AND activatable, and its copy
+ * button must be neither.
+ */
+describe("row activation and the SKU cell", () => {
+	const cell = (tag: string, inControl: string | null) => ({
+		closest: (selectors: string) => {
+			const wanted = selectors.split(",").map((raw) => raw.trim());
+			if (wanted.includes(`[${ROW_ID_ATTRIBUTE}]`)) return row;
+			if (inControl !== null && wanted.includes(inControl)) return row;
+			return wanted.includes(tag) ? row : null;
+		},
+		getAttribute: () => "prod_41c",
+		contains: () => false,
+	});
+	const row = {
+		closest: () => row,
+		getAttribute: (name: string) => (name === ROW_ID_ATTRIBUTE ? "prod_41c" : null),
+		contains: () => false,
+	};
+	const STEADY = {
+		modified: false,
+		origin: { x: 10, y: 10 },
+		point: { x: 10, y: 10 },
+		selection: null,
+	} as const;
+
+	test("clicking the SKU opens the product; clicking Copy beside it does not", () => {
+		// `code` is deliberately not exempt: exempting it would make the one cell a
+		// merchant most needs the one cell that does nothing.
+		expect(rowActivationId(cell("code", null), STEADY)).toBe("prod_41c");
+		expect(rowActivationId(cell("span", "button"), STEADY)).toBeNull();
+		expect(rowActivationId(cell("span", "a"), STEADY)).toBeNull();
+	});
+
+	test("the pointer stops at the row's controls", () => {
+		const sheet = CONSOLE_STYLES.replace(/\s+/g, " ");
+		// Scoped to rows that actually activate, so the four detail tables — same
+		// `Table`, no callback, no row id — keep the default cursor.
+		expect(sheet).toContain(`.otta-row[${ROW_ID_ATTRIBUTE}] { cursor: pointer; }`);
+		// `!important` is load-bearing: `Button` and `CopyIdButton` set `cursor`
+		// inline, and an inline declaration outranks a rule in this sheet without
+		// it — leaving the pointer promising row activation on a control that
+		// copies.
+		expect(sheet).toContain(
+			`.otta-row[${ROW_ID_ATTRIBUTE}] :is(${CURSOR_RESET_DESCENDANT_SELECTOR}) ` +
+				"{ cursor: auto !important; }",
+		);
+		expect(INTERACTIVE_DESCENDANT_SELECTOR).not.toContain("code");
+		// The drill-in link goes to the same destination the row now does, so it
+		// keeps the row's pointer instead of falling back to auto with the rest.
+		expect(CURSOR_RESET_DESCENDANT_SELECTOR.split(", ")).not.toContain("a");
+		expect(INTERACTIVE_DESCENDANT_SELECTOR.split(", ")).toContain("a");
 	});
 });
