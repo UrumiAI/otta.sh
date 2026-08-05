@@ -46,6 +46,21 @@ const COUNT_NUMERALS = new Intl.NumberFormat(DATE_LOCALE);
 /** The suffix that keeps a page-scoped count from reading as a whole-set one. */
 export const PAGE_SCOPED_SUFFIX = "on this page";
 
+/**
+ * The same qualifier for a list that KEEPS the pages it has loaded.
+ *
+ * "on this page" is exactly true of a surface where the next page replaces the
+ * one before it, and false the moment two pages are on screen at once: forty
+ * rows drawn from two requests are not "on this page", they are what has been
+ * loaded so far — still a smaller claim than the whole set, which is the job the
+ * suffix exists to do.
+ *
+ * IT IS OPT-IN, AND THE DEFAULT DOES NOT MOVE. Only a surface that accumulates
+ * asks for it; a surface whose count really does describe one fetched page keeps
+ * {@link PAGE_SCOPED_SUFFIX} and reads exactly as it did.
+ */
+export const ACCUMULATED_SUFFIX = "loaded so far";
+
 /** The trailing half of a "there is another page behind this one" note. */
 export const SCAN_FURTHER = "Load more scans further.";
 
@@ -119,7 +134,7 @@ export const LOAD_MORE_LABEL = "Load more";
 export function rowCountLine(
 	count: number,
 	noun: RowNoun,
-	opts: { complete: boolean; total?: number },
+	opts: { complete: boolean; total?: number; scopeSuffix?: string },
 ): string | undefined {
 	// ZERO ROWS RENDER NO COUNT — `total` present or not. The alternative,
 	// "17 orders" sitting immediately above "No orders yet" or "Nothing on this
@@ -136,7 +151,7 @@ export function rowCountLine(
 	const formatted = COUNT_NUMERALS.format(n);
 	return usable || opts.complete
 		? `${formatted} ${word}`
-		: `${formatted} ${word} ${PAGE_SCOPED_SUFFIX}`;
+		: `${formatted} ${word} ${opts.scopeSuffix ?? PAGE_SCOPED_SUFFIX}`;
 }
 
 /** The wording of ONE zero state. Screens author every string. */
@@ -214,6 +229,11 @@ export interface ListOutcomeOptions {
 	 *  one and the caller has not narrowed the fetched page itself. Absent ⇒ the
 	 *  count falls back to describing the page. See {@link rowCountLine}. */
 	readonly total?: number;
+	/** What qualifies a count the render cannot claim as the whole set. Absent ⇒
+	 *  {@link PAGE_SCOPED_SUFFIX}; a list that accumulates passes
+	 *  {@link ACCUMULATED_SUFFIX} instead, because its rows outlive the page they
+	 *  arrived on. */
+	readonly scopeSuffix?: string;
 	readonly noun: RowNoun;
 	/** Zero rows and NO filter on: the collection itself is empty. */
 	readonly empty: ZeroStateCopy;
@@ -232,6 +252,7 @@ export function listOutcome(opts: ListOutcomeOptions): ListOutcome {
 	const countLine = rowCountLine(opts.count, opts.noun, {
 		complete: opts.firstPage && !opts.hasNext,
 		...(opts.total !== undefined ? { total: opts.total } : {}),
+		...(opts.scopeSuffix !== undefined ? { scopeSuffix: opts.scopeSuffix } : {}),
 	});
 	if (opts.count > 0) {
 		return { kind: "rows", countLine, emptyText: opts.noMatch.emptyText };

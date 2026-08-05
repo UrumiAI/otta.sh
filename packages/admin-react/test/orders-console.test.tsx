@@ -119,6 +119,7 @@ describe("a failed load stops showing the previous answer (F1)", () => {
 		total: 18,
 		vocabulary: VOCABULARY,
 		firstPage: true,
+		pages: 1,
 	};
 
 	test("COLD — nothing ever loaded: the error card alone", () => {

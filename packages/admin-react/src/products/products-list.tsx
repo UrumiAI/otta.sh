@@ -49,13 +49,17 @@
  */
 import {
 	ABSENT,
+	ACCUMULATED_SUFFIX,
 	APPLY_FILTERS_LABEL,
 	CLEAR_FILTERS_LABEL,
 	LOAD_MORE_LABEL,
 	LOW_STOCK_FILTER_DESCRIPTION,
 	LOW_STOCK_FILTER_LABEL,
+	LOW_STOCK_PER_PAGE_NOTE,
 	PRODUCTS_EMPTY,
 	PRODUCTS_LIST_INTRO,
+	PRODUCTS_LOAD_MORE_FAILED_TITLE,
+	PRODUCTS_LOW_STOCK_NOUN,
 	PRODUCTS_LOW_STOCK_NO_MATCH,
 	PRODUCTS_NOUN,
 	PRODUCTS_NO_MATCH,
@@ -76,6 +80,7 @@ import {
 	type ProductTone,
 } from "@otta-sh/admin-presentation";
 import * as React from "react";
+import { continuationCursor, mergeById, type PendingCursor } from "../accumulate.js";
 import {
 	fetchProducts,
 	isFailure,
@@ -207,7 +212,8 @@ function normalize(draft: ProductsFilter, any: string): ProductsFilter {
 	};
 }
 
-interface LoadedPage {
+/** One response, before it is merged into what is already on screen. */
+export interface ProductsResponse {
 	readonly products: readonly ProductSummary[];
 	readonly nextCursor: string | null;
 	/** INC-23's exact filtered-set count, when the service reports one AND this
@@ -215,17 +221,64 @@ interface LoadedPage {
 	readonly total: number | undefined;
 	readonly stock: StockContext;
 	readonly vocabulary: ProductsVocabulary;
+}
+
+interface LoadedPage extends ProductsResponse {
+	/** Whether the rendered rows START at the catalog's first page — which, now
+	 *  that pages accumulate, stays TRUE across a `Load more`: the rows above are
+	 *  still there. */
 	readonly firstPage: boolean;
+	/** How many responses these rows were merged from. `1` is the ordinary
+	 *  render; anything above it is what makes "on this page" the wrong words. */
+	readonly pages: number;
+}
+
+/**
+ * WHAT A SUCCESSFUL RESPONSE DOES TO THE ROWS ALREADY ON SCREEN (F24).
+ *
+ * The defect this replaces was one line: the response was ASSIGNED into list
+ * state, so a successful `Load more` threw away the page the merchant was
+ * reading. On THIS screen that is what made a low-stock scan useless — the
+ * filter keeps only the low-stock rows out of each page as it arrives, so page
+ * one's matches vanished at the exact moment the merchant asked to see more of
+ * them.
+ *
+ * A CONTINUATION EXTENDS; EVERYTHING ELSE RESETS. `continuation` is "this
+ * request carried a cursor", which is exactly the request `Load more` (and a
+ * Retry of it) issues. A filter change clears the cursor before re-fetching, so
+ * it arrives here as a reset and the previous filter's rows go — and a first
+ * mount, including one deep-linked to a filtered address, is the same reset.
+ *
+ * THE CURSOR, THE TOTAL, THE STOCK CONTEXT AND THE VOCABULARY TAKE THE NEW
+ * PAGE'S VALUES; the rows merge by id (see {@link mergeById}) and `firstPage` is
+ * inherited, because a scan that began at the first page still starts there
+ * after its second page lands.
+ */
+export function nextPage(
+	current: LoadedPage | null,
+	incoming: ProductsResponse,
+	continuation: boolean,
+): LoadedPage {
+	if (!continuation) return { ...incoming, firstPage: true, pages: 1 };
+	if (current === null) return { ...incoming, firstPage: false, pages: 1 };
+	return {
+		...incoming,
+		products: mergeById(current.products, incoming.products, (product) => product.productId),
+		firstPage: current.firstPage,
+		pages: current.pages + 1,
+	};
 }
 
 /**
  * Drop the ANSWER from a loaded page while keeping what the page is not (F2).
  *
- * Same rule as the Orders list, and it is the SIMPLER half of it: this screen
- * has no accumulated-pages case to preserve, so every failure clears. The rows,
- * the cursor and the exact count go together — a count without its rows is the
- * same false claim in fewer words, and `12 products · …` over an error notice
- * is the defect F2 names.
+ * Same rule as the Orders list: the rows, the cursor and the exact count go
+ * together — a count without its rows is the same false claim in fewer words,
+ * and `12 products · …` over an error notice is the defect F2 names.
+ *
+ * THIS IS THE FIRST-PAGE CASE ONLY, now that pages accumulate. A page that
+ * failed BEHIND one that succeeded disproves nothing already on screen; see
+ * {@link pageAfterFailure}, which is what the effect actually calls.
  *
  * The VOCABULARY AND THE STOCK CONTEXT SURVIVE, because they are not the
  * answer: they are what the filter panel's two selects are built from, and
@@ -234,6 +287,72 @@ interface LoadedPage {
  */
 export function clearAnswer(page: LoadedPage | null): LoadedPage | null {
 	return page === null ? null : { ...page, products: [], nextCursor: null, total: undefined };
+}
+
+/**
+ * What a failed response leaves of the page.
+ *
+ * THE PARTIAL CASE ARRIVED WITH ACCUMULATION (F24). "On failure, clear the
+ * page" was right for this screen while a second page replaced the first, and
+ * is wrong the moment the first page survives the second: a request that failed
+ * BEHIND one that succeeded disproves none of the rows above it, and clearing
+ * them would throw away a low-stock scan the merchant may have spent several
+ * pages building.
+ *
+ * THE CURSOR STAYS TOO, and taking it was a defect rather than tidiness. A
+ * cursor is this render's evidence that the collection continues past the rows
+ * on screen, and a failed attempt to follow it does not disprove that. Nulling
+ * it flipped `hasNext` false, which flipped the outcome to a completed scan,
+ * which dropped the qualifier off the count — turning a mid-scan
+ * "6 low-stock products loaded so far" into "6 low-stock products", a
+ * whole-set claim made at the exact moment the render knows another page is
+ * out there. It is reachable on the flagship path, because the service withholds
+ * the total precisely while "Low stock only" is on. Worse at zero rows: a page
+ * narrowed to nothing with a cursor behind it turned from a scan note with
+ * paging still offered into an empty state offering `Clear filters`, dead-ending
+ * the scan.
+ *
+ * SO THE CONTROL IS GUARDED INSTEAD OF THE STATE DESTROYED. `Load more` renders
+ * on `there is no failure` as well as on the cursor, so it does not stand beside
+ * a notice already carrying the Retry for the same request; the retry re-runs
+ * from the cursor the page kept, and its response merges onto the rows that
+ * stayed. Same shape as the Orders list, which had it right.
+ */
+export function pageAfterFailure(
+	page: LoadedPage | null,
+	continuation: boolean,
+): LoadedPage | null {
+	return continuation ? page : clearAnswer(page);
+}
+
+/**
+ * WHERE A FAILURE IS DRAWN, AND WHAT IT IS ENTITLED TO CLAIM.
+ *
+ * TWO PLACES, NOT ONE, and the split is the same one the Orders list makes —
+ * this screen inherits the accumulated-pages state F24 gave it, so it inherits
+ * that state's design rather than an exemption from it.
+ *
+ *  - A COLD OR STALE failure is about the whole screen: nothing on it is true
+ *    any more, so the service's own whole-collection title stands at the top,
+ *    above the space the rows used to occupy.
+ *  - A CONTINUATION failure is about ONE REQUEST, and the rows above it are the
+ *    answer to a different one that succeeded. Rendering the service's
+ *    whole-collection refusal over rows that are still on screen states
+ *    something those rows disprove, so the title shrinks to the claim this
+ *    render can back — the NEXT page failed — and it is drawn inline, where
+ *    `Load more` was, because that is the control it replaces.
+ */
+export function failureNotice(
+	failure: {
+		readonly title: string;
+		readonly description: string;
+		readonly continuation: boolean;
+	} | null,
+): { readonly title: string; readonly description: string; readonly inline: boolean } | null {
+	if (failure === null) return null;
+	return failure.continuation
+		? { title: PRODUCTS_LOAD_MORE_FAILED_TITLE, description: failure.description, inline: true }
+		: { title: failure.title, description: failure.description, inline: false };
 }
 
 /**
@@ -275,40 +394,64 @@ export function ProductsList({
 	const [applied, setApplied] = React.useState<ProductsFilter>(initialFilter);
 	const [draft, setDraft] = React.useState<ProductsFilter>(initialFilter);
 	const [page, setPage] = React.useState<LoadedPage | null>(null);
-	const [failure, setFailure] = React.useState<{ title: string; description: string } | null>(null);
+	/** `continuation` records WHICH request failed — a first page, or a page
+	 *  behind one that already succeeded — because that is what decides whether
+	 *  the rows on screen are disproved by the failure or untouched by it. */
+	const [failure, setFailure] = React.useState<{
+		title: string;
+		description: string;
+		continuation: boolean;
+	} | null>(null);
 	const [busy, setBusy] = React.useState(true);
 	// The Retry's OWN in-flight state. `busy` is the whole screen's, and the
 	// filter panel stays interactive under a failure notice, so driving the Retry
 	// from `busy` would make an "Apply filters" the operator pressed read back as
 	// "Retrying…" on a request they never issued.
 	const [retrying, setRetrying] = React.useState(false);
+	// Bumped by "Apply filters" and by Retry. `Load more` re-runs this effect
+	// through the cursor it sets, which is a fresh object on every click, so a
+	// service that repeats a cursor VALUE still gets a request.
 	const [generation, setGeneration] = React.useState(0);
-	const [cursor, setCursor] = React.useState<string | undefined>(undefined);
+	const [cursor, setCursor] = React.useState<PendingCursor<ProductsFilter> | null>(null);
 
 	React.useEffect(() => {
 		let cancelled = false;
+		// A CURSOR IS ONLY A CONTINUATION OF ITS OWN FILTER (see
+		// `continuationCursor`): one belonging to a filter that has since been
+		// replaced is not sent, and this request is the new filter's first page.
+		const from = continuationCursor(cursor, applied);
+		const continuation = from !== undefined;
 		setBusy(true);
-		void fetchProducts(applied, cursor).then((result) => {
+		void fetchProducts(applied, from).then((result) => {
 			if (cancelled) return;
 			setBusy(false);
 			// Whatever the outcome, the click that asked for this is over.
 			setRetrying(false);
 			if (isFailure(result)) {
-				setFailure({ title: result.title, description: result.description });
-				// F2: THE ANSWER GOES WITH THE FAILURE, in the same transition. The
-				// table and the count describe a response this render no longer has.
-				setPage(clearAnswer);
+				setFailure({ title: result.title, description: result.description, continuation });
+				// F2: THE ANSWER GOES WITH THE FAILURE, in the same transition — for a
+				// FIRST page. A page behind one that succeeded takes only its own
+				// cursor with it (F24); see `pageAfterFailure`.
+				setPage((current) => pageAfterFailure(current, continuation));
 				return;
 			}
 			setFailure(null);
-			setPage({
-				products: result.products,
-				nextCursor: result.nextCursor,
-				total: result.total,
-				stock: result.stock,
-				vocabulary: result.vocabulary,
-				firstPage: cursor === undefined,
-			});
+			// F24: MERGE, NEVER ASSIGN. The functional form is required, not
+			// stylistic: the rows it merges into are the ones in state at the moment
+			// the response lands.
+			setPage((current) =>
+				nextPage(
+					current,
+					{
+						products: result.products,
+						nextCursor: result.nextCursor,
+						total: result.total,
+						stock: result.stock,
+						vocabulary: result.vocabulary,
+					},
+					continuation,
+				),
+			);
 		});
 		return () => {
 			cancelled = true;
@@ -336,7 +479,15 @@ export function ProductsList({
 		filtered,
 		firstPage: page?.firstPage ?? true,
 		hasNext,
-		noun: PRODUCTS_NOUN,
+		// F29: NAME WHAT WAS COUNTED. While the narrowing is on, the rows are the
+		// low-stock ones the fetched pages happened to hold, and calling them
+		// "3 products" invites the merchant to read three as the catalog's answer.
+		noun: narrowed ? PRODUCTS_LOW_STOCK_NOUN : PRODUCTS_NOUN,
+		// F24. Once two responses are on screen at once, "on this page" is the
+		// wrong sentence for rows drawn from both. The Block Kit tier still
+		// replaces rather than accumulates, so it keeps the shared phrasing and
+		// the divergence is deliberate.
+		...((page?.pages ?? 1) > 1 ? { scopeSuffix: ACCUMULATED_SUFFIX } : {}),
 		empty: PRODUCTS_EMPTY,
 		noMatch: narrowed ? PRODUCTS_LOW_STOCK_NO_MATCH : PRODUCTS_NO_MATCH,
 		// The plugin already withheld this while the narrowing was on, so this is
@@ -349,15 +500,39 @@ export function ProductsList({
 	// able to say what went wrong, so this is derived from the payload's `stock`
 	// rather than from the rows — and it is withdrawn when the page it describes
 	// is.
-	const degraded = visibleDegradation(page, failure !== null);
+	// A CONTINUATION FAILURE WITHDRAWS NOTHING (F24). The rows above it are the
+	// answer to a request that succeeded, so they, the count line and the alert
+	// that describes them all stand; only a FIRST-page failure takes them.
+	const answerVisible = failure === null || failure.continuation;
+	const degraded = visibleDegradation(page, !answerVisible);
 	// F3: a cold failure has no vocabulary to build the two selects from, so the
 	// panel goes with the answer rather than standing there empty.
 	const showFilters = filtersVisible(page, failure !== null);
+	// WHICH OF THE TWO PLACES THE FAILURE IS DRAWN IN — see `failureNotice`.
+	const notice = failureNotice(failure);
+
+	// THE FAILURE IS NOT CLEARED ON THE CLICK. Clearing it here rather than on the
+	// response would flash the stale answer back for the length of the request.
+	const retryAction = {
+		label: retrying ? RETRYING_LABEL : RETRY_LABEL,
+		onClick: () => {
+			setRetrying(true);
+			setGeneration((n) => n + 1);
+		},
+		disabled: retrying,
+		busy: retrying,
+	};
 
 	const apply = (next: ProductsFilter) => {
 		setApplied(next);
 		setDraft(next);
-		setCursor(undefined);
+		setCursor(null);
+		// BUSY IS THE CLICK'S, NOT THE EFFECT'S. Setting it only inside the effect
+		// left one commit in which the applied filter had already moved and
+		// `Load more` still rendered enabled — offering the previous page's cursor
+		// under the new filter. The pairing is refused in `continuationCursor`
+		// whatever happens here; this is what stops the control being offered at all.
+		setBusy(true);
 		setGeneration((n) => n + 1);
 		// The cursor deliberately does NOT go with it: paging is where the merchant
 		// got to, not what the link describes, and a link that replays N pages is a
@@ -374,23 +549,12 @@ export function ProductsList({
 					: `${outcome.countLine} · ${PRODUCTS_LIST_INTRO}`}
 			</p>
 
-			{failure !== null && (
+			{notice !== null && !notice.inline && (
 				<Notice
 					variant="error"
-					title={failure.title}
-					description={failure.description}
-					// SAME GENERATION COUNTER, same refusal to clear the failure on the
-					// click: the response clears it, so nothing flashes back in the
-					// meantime.
-					action={{
-						label: retrying ? RETRYING_LABEL : RETRY_LABEL,
-						onClick: () => {
-							setRetrying(true);
-							setGeneration((n) => n + 1);
-						},
-						disabled: retrying,
-						busy: retrying,
-					}}
+					title={notice.title}
+					description={notice.description}
+					action={retryAction}
 					testId="products-failure"
 				/>
 			)}
@@ -529,7 +693,7 @@ export function ProductsList({
 			  OUTCOMES 2 / 2b / 4 — the empty state REPLACES the table. Which words
 			  and which offer are the shared decision's, not this file's.
 			*/}
-			{page !== null && outcome.kind === "empty" && failure === null && (
+			{page !== null && outcome.kind === "empty" && answerVisible && (
 				<EmptyState
 					testId={
 						outcome.offer === "clear-filters"
@@ -554,7 +718,7 @@ export function ProductsList({
 			  narrows the fetched page: page 1 of a healthy catalog holds no low-stock
 			  rows at all.
 			*/}
-			{page !== null && outcome.kind === "scan" && failure === null && (
+			{page !== null && outcome.kind === "scan" && answerVisible && (
 				<p
 					data-testid="products-scan-note"
 					style={{ fontSize: 13, opacity: 0.8, marginBlockEnd: 12 }}
@@ -571,7 +735,7 @@ export function ProductsList({
 			  outcome can survive a failure, a table whose guard disagrees with the
 			  notice above it is how that bug got written the first time.
 			*/}
-			{outcome.kind === "rows" && failure === null && (
+			{outcome.kind === "rows" && answerVisible && (
 				<Table
 					testId="products-table"
 					caption="Products"
@@ -704,7 +868,25 @@ export function ProductsList({
 				</Table>
 			)}
 
-			{page?.nextCursor != null && (
+			{/*
+			  THE CONTINUATION FAILURE RENDERS WHERE `Load more` WAS, and replaces
+			  it: the button and the notice would otherwise offer the same request
+			  twice, and the one that failed is the one the merchant just pressed.
+			  The cursor is NOT destroyed to achieve that — see `pageAfterFailure`.
+			*/}
+			{notice !== null && notice.inline && (
+				<div style={{ marginBlockStart: 12 }}>
+					<Notice
+						variant="error"
+						title={notice.title}
+						description={notice.description}
+						action={retryAction}
+						testId="products-load-more-failure"
+					/>
+				</div>
+			)}
+
+			{page?.nextCursor != null && failure === null && (
 				<div style={{ marginBlockStart: 12 }}>
 					<button
 						type="button"
@@ -712,10 +894,29 @@ export function ProductsList({
 						data-testid="products-load-more"
 						disabled={busy}
 						style={buttonStyle}
-						onClick={() => setCursor(page.nextCursor ?? undefined)}
+						onClick={() => {
+							const value = page.nextCursor;
+							if (value !== null) setCursor({ filter: applied, value });
+						}}
 					>
 						{busy ? "Loading…" : LOAD_MORE_LABEL}
 					</button>
+					{/*
+					  F29: BESIDE THE BUTTON, AND ONLY WITH BOTH FACTS TRUE. The
+					  narrowing has no service predicate, so `Load more` is a scan
+					  rather than the next page of a result set — a merchant who does
+					  not know that reads a short list as the whole answer. It says so
+					  where the scan is offered, and disappears once there is nothing
+					  left to scan, because then the rows ARE all of them.
+					*/}
+					{narrowed && (
+						<p
+							data-testid="products-low-stock-paging-note"
+							style={{ fontSize: 12, opacity: 0.75, marginBlockStart: 8 }}
+						>
+							{LOW_STOCK_PER_PAGE_NOTE}
+						</p>
+					)}
 				</div>
 			)}
 		</div>
