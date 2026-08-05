@@ -70,7 +70,10 @@ import {
 	onHandCell,
 	productFilterParts,
 	statusLabel,
+	statusTone,
 	stockDegradation,
+	stockTone,
+	type ProductTone,
 } from "@otta-sh/admin-presentation";
 import * as React from "react";
 import {
@@ -85,11 +88,14 @@ import {
 	Button,
 	CopyIdButton,
 	EmptyState,
+	EndHeader,
 	Field,
 	Group,
 	Notice,
+	StatusPill,
 	Table,
 	buttonStyle,
+	endCellStyle,
 	inputStyle,
 	panelStyle,
 } from "../ui.js";
@@ -97,6 +103,68 @@ import {
 /** Re-exported so this screen's own modules and its tests name the shared
  *  fallback once, without importing the presentation package for one string. */
 export { UNTITLED };
+
+/**
+ * A phrase, ringed only when the record says it is an exception (D1).
+ *
+ * BADGE THE EXCEPTION, LEAVE THE HAPPY PATH BARE. A sellable active product and
+ * a healthy count are the quiet majority of both columns, and a mark on every
+ * row marks nothing — so `plain` returns the phrase itself, with no wrapper and
+ * no attribute. The tone comes from the RECORD, through the shared derivations,
+ * so the ink cannot disagree with the words beside it or drift from what the
+ * Block Kit screen decides about the same product.
+ *
+ * IT WRAPS THE PHRASE, IT NEVER MAKES ONE: the caller passes the shared label,
+ * so the copy module stays the single source of wording.
+ */
+export function toned(tone: ProductTone, phrase: string, testId: string): React.ReactNode {
+	return tone === "plain" ? (
+		phrase
+	) : (
+		<StatusPill tone={tone} testId={testId}>
+			{phrase}
+		</StatusPill>
+	);
+}
+
+/** The title cell's link, and the only tab stop in its row.
+ *
+ *  UNDECORATED AT REST, unlike the Orders prefix — and not as a reading of the
+ *  two columns. F18 specifies this list's link in as many words: "the title link
+ *  stays undecorated at rest and underlines on row hover". Both halves are the
+ *  requirement. The rest state is the shared `.otta-link` class's own `none`;
+ *  the row-hover half is why this call site adds `.otta-link-row`, the modifier
+ *  the sheet's row-hover trigger names and the Orders prefix does not carry.
+ *  Hover and keyboard focus come from `.otta-link` itself, so that much of the
+ *  affordance is identical on both lists.
+ *
+ *  Weight 600 is F16's title anchor as much as F18's link: the title IS this
+ *  cell's content, so one declaration serves both rather than the cell and the
+ *  link each carrying their own. The negative margin pays back the padding, so
+ *  the hit area exceeds the glyphs without the row growing around it. */
+const productLinkStyle: React.CSSProperties = {
+	color: "inherit",
+	fontWeight: 600,
+	padding: "2px 4px",
+	margin: "-2px -4px",
+};
+
+/**
+ * Whether the filter panel and its summary are on the screen (F3).
+ *
+ * ONLY A COLD FAILURE TAKES THEM, and "cold" is `page === null` — nothing has
+ * ever landed, so the two selects have no vocabulary and would render as empty
+ * menus offering the operator no way to filter differently. That is the same
+ * call the Orders list makes, and this screen's `clearAnswer` is what makes the
+ * other half of it true: a STALE failure keeps `vocabulary` precisely because
+ * the panel is built from it, so those selects stay populated and the bar stays.
+ *
+ * A load in progress is not a failure. Before the first response there is no
+ * failure to report, so the bar renders, exactly as it does on every mount.
+ */
+export function filtersVisible(page: LoadedPage | null, failed: boolean): boolean {
+	return !failed || page !== null;
+}
 
 /**
  * One string per authored filter that is not at its default — the same parts
@@ -272,6 +340,9 @@ export function ProductsList({
 	// rather than from the rows — and it is withdrawn when the page it describes
 	// is.
 	const degraded = visibleDegradation(page, failure !== null);
+	// F3: a cold failure has no vocabulary to build the two selects from, so the
+	// panel goes with the answer rather than standing there empty.
+	const showFilters = filtersVisible(page, failure !== null);
 
 	const apply = (next: ProductsFilter) => {
 		setApplied(next);
@@ -319,103 +390,105 @@ export function ProductsList({
 				/>
 			)}
 
-			<Group
-				label={`Filters${parts.length > 0 ? ` (${String(parts.length)} active)` : ""}`}
-				testId="products-filters"
-			>
-				<div
-					style={{
-						display: "grid",
-						gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-						gap: 12,
-						alignItems: "end",
-					}}
+			{showFilters && (
+				<Group
+					label={`Filters${parts.length > 0 ? ` (${String(parts.length)} active)` : ""}`}
+					testId="products-filters"
 				>
-					<Field label={PRODUCT_FILTER_LABELS.status}>
-						<select
-							className="otta-focusable"
-							data-testid="filter-status"
-							style={inputStyle}
-							value={draft.status ?? any}
-							onChange={(event) => setDraft({ ...draft, status: event.target.value })}
-						>
-							{(vocabulary?.statuses ?? []).map((option) => (
-								<option key={option.value} value={option.value}>
-									{option.label}
-								</option>
-							))}
-						</select>
-					</Field>
+					<div
+						style={{
+							display: "grid",
+							gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+							gap: 12,
+							alignItems: "end",
+						}}
+					>
+						<Field label={PRODUCT_FILTER_LABELS.status}>
+							<select
+								className="otta-focusable"
+								data-testid="filter-status"
+								style={inputStyle}
+								value={draft.status ?? any}
+								onChange={(event) => setDraft({ ...draft, status: event.target.value })}
+							>
+								{(vocabulary?.statuses ?? []).map((option) => (
+									<option key={option.value} value={option.value}>
+										{option.label}
+									</option>
+								))}
+							</select>
+						</Field>
 
-					<Field label={PRODUCT_FILTER_LABELS.kind}>
-						<select
-							className="otta-focusable"
-							data-testid="filter-kind"
-							style={inputStyle}
-							value={draft.productKind ?? any}
-							onChange={(event) => setDraft({ ...draft, productKind: event.target.value })}
-						>
-							{(vocabulary?.kinds ?? []).map((option) => (
-								<option key={option.value} value={option.value}>
-									{option.label}
-								</option>
-							))}
-						</select>
-					</Field>
+						<Field label={PRODUCT_FILTER_LABELS.kind}>
+							<select
+								className="otta-focusable"
+								data-testid="filter-kind"
+								style={inputStyle}
+								value={draft.productKind ?? any}
+								onChange={(event) => setDraft({ ...draft, productKind: event.target.value })}
+							>
+								{(vocabulary?.kinds ?? []).map((option) => (
+									<option key={option.value} value={option.value}>
+										{option.label}
+									</option>
+								))}
+							</select>
+						</Field>
 
-					<Field label={PRODUCT_FILTER_LABELS.search}>
-						<input
-							type="search"
-							className="otta-focusable"
-							data-testid="filter-search"
-							style={inputStyle}
-							value={draft.search ?? ""}
-							onChange={(event) => setDraft({ ...draft, search: event.target.value })}
-						/>
-					</Field>
-				</div>
+						<Field label={PRODUCT_FILTER_LABELS.search}>
+							<input
+								type="search"
+								className="otta-focusable"
+								data-testid="filter-search"
+								style={inputStyle}
+								value={draft.search ?? ""}
+								onChange={(event) => setDraft({ ...draft, search: event.target.value })}
+							/>
+						</Field>
+					</div>
 
-				{/*
+					{/*
 				  A CHECKBOX RATHER THAN A FIFTH SELECT, as on the Block Kit screen: it
 				  is one boolean, and its description states WHERE the threshold lives
 				  rather than its value — the number is a service read, and a control
 				  that sometimes carries a number and sometimes does not is worse than
 				  one that never does. The wording is page-scoped because the filter is.
 				*/}
-				<label
-					style={{
-						display: "flex",
-						gap: 8,
-						alignItems: "flex-start",
-						fontSize: 13,
-						marginBlockStart: 12,
-					}}
-				>
-					<input
-						type="checkbox"
-						className="otta-focusable"
-						data-testid="filter-low-stock"
-						checked={draft.lowStock === true}
-						onChange={(event) => setDraft({ ...draft, lowStock: event.target.checked })}
-					/>
-					<span>
-						{LOW_STOCK_FILTER_LABEL}
-						<span style={{ display: "block", fontSize: 12, opacity: 0.7 }}>
-							{LOW_STOCK_FILTER_DESCRIPTION}
+					<label
+						style={{
+							display: "flex",
+							gap: 8,
+							alignItems: "flex-start",
+							fontSize: 13,
+							marginBlockStart: 12,
+						}}
+					>
+						<input
+							type="checkbox"
+							className="otta-focusable"
+							data-testid="filter-low-stock"
+							checked={draft.lowStock === true}
+							onChange={(event) => setDraft({ ...draft, lowStock: event.target.checked })}
+						/>
+						<span>
+							{LOW_STOCK_FILTER_LABEL}
+							<span style={{ display: "block", fontSize: 12, opacity: 0.7 }}>
+								{LOW_STOCK_FILTER_DESCRIPTION}
+							</span>
 						</span>
-					</span>
-				</label>
+					</label>
 
-				<div style={{ marginBlockStart: 12 }}>
-					<Button
-						label={APPLY_FILTERS_LABEL}
-						testId="apply-filters"
-						onClick={() => apply(normalize(draft, any))}
-					/>
-				</div>
-			</Group>
+					<div style={{ marginBlockStart: 12 }}>
+						<Button
+							label={APPLY_FILTERS_LABEL}
+							testId="apply-filters"
+							onClick={() => apply(normalize(draft, any))}
+						/>
+					</div>
+				</Group>
+			)}
 
-			{filtered && (
+			{filtered && showFilters && (
 				<section
 					data-testid="products-filter-summary"
 					style={{
@@ -492,71 +565,116 @@ export function ProductsList({
 						PRODUCT_COLUMN_LABELS.title,
 						PRODUCT_COLUMN_LABELS.sku,
 						PRODUCT_COLUMN_LABELS.status,
+						// `On hand` is NOT end-aligned, and that is the one place this
+						// screen departs from the money treatment: its cells carry a
+						// trailing phrase (`0 · Out of stock`), so pushing them to the edge
+						// would line the WORDS up and leave the digits ragged — the
+						// opposite of what aligning a figure column is for. Price has no
+						// suffix and gets the treatment.
 						PRODUCT_COLUMN_LABELS.onHand,
-						PRODUCT_COLUMN_LABELS.price,
+						<EndHeader label={PRODUCT_COLUMN_LABELS.price} />,
 					]}
 					onActivateRow={onOpen}
 				>
-					{products.map((product) => (
-						<tr
-							key={product.productId}
-							className="otta-row"
-							data-testid="products-row"
-							data-row-id={product.productId}
-						>
-							<td className="otta-td">
-								{/*
+					{products.map((product) => {
+						// Derived once, because each is read twice — by the ink and by the
+						// pill — and two calls are two places for them to disagree.
+						const status = statusTone(product);
+						const stock = stockTone(product.onHand, threshold);
+						return (
+							<tr
+								key={product.productId}
+								className="otta-row"
+								data-testid="products-row"
+								data-row-id={product.productId}
+							>
+								<td className="otta-td">
+									{/*
 								  DESIGNER §8: the PRIMARY CELL is the link, and it stays the row's
 								  ONLY tab stop now that the whole row activates. The title is the
 								  human handle (M-10) and the first column on the screen, so it is
 								  the cell that opens the record — and the SKU beside it stays
 								  plain text, selectable, with its own copy button.
 								*/}
-								<a
-									href={`?product=${encodeURIComponent(product.productId)}`}
-									className="otta-focusable"
-									data-testid="product-link"
-									data-product-id={product.productId}
-									onClick={(event) => {
-										// A MODIFIED CLICK IS THE BROWSER'S, NOT OURS. Ctrl/Cmd/shift
-										// click is how a merchant opens three products in three tabs
-										// to compare their pricing, and `preventDefault()` on all of
-										// them turns the one genuinely linkable thing on this screen
-										// back into a button.
-										if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
-											return;
-										}
-										event.preventDefault();
-										onOpen(product.productId);
-									}}
-									style={{ color: "inherit" }}
-								>
-									{product.title ?? UNTITLED}
-								</a>
-							</td>
-							<td className="otta-td" style={{ whiteSpace: "nowrap" }}>
-								{/*
+									<a
+										href={`?product=${encodeURIComponent(product.productId)}`}
+										className="otta-focusable otta-link otta-link-row"
+										data-testid="product-link"
+										data-product-id={product.productId}
+										onClick={(event) => {
+											// A MODIFIED CLICK IS THE BROWSER'S, NOT OURS. Ctrl/Cmd/shift
+											// click is how a merchant opens three products in three tabs
+											// to compare their pricing, and `preventDefault()` on all of
+											// them turns the one genuinely linkable thing on this screen
+											// back into a button.
+											if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
+												return;
+											}
+											event.preventDefault();
+											onOpen(product.productId);
+										}}
+										style={productLinkStyle}
+									>
+										{product.title ?? UNTITLED}
+									</a>
+								</td>
+								<td className="otta-td" style={{ whiteSpace: "nowrap" }}>
+									{/*
 								  IN FULL. A SKU is a natural key, not an opaque id — §1.3 exempts
 								  it, and shortening it would truncate the one value on this row an
 								  operator has to read whole. The copy button is the affordance the
 								  React tier adds, not a concession to a prefix rule that does not
 								  apply here.
 								*/}
-								{product.sku === null ? (
-									ABSENT
-								) : (
-									<>
-										<code data-testid="product-sku">{product.sku}</code>
-										<CopyIdButton id={product.sku} testId="copy-sku" what="SKU" />
-									</>
-								)}
-							</td>
-							<td className="otta-td">{statusLabel(product)}</td>
-							<td className="otta-td otta-num" data-testid="product-on-hand">
-								{onHandCell(product.onHand, threshold)}
-							</td>
-							<td className="otta-td otta-num">
+									{product.sku === null ? (
+										ABSENT
+									) : (
+										<>
+											{/*
+										  F16: the SKU recedes to 0.75 — and the declaration is on the
+										  CODE rather than on the cell, because the cell also holds the
+										  copy control, whose own opacity would then be multiplied by
+										  this one and land somewhere neither of them chose.
+										*/}
+											<code data-testid="product-sku" style={{ opacity: 0.75 }}>
+												{product.sku}
+											</code>
+											<CopyIdButton id={product.sku} testId="copy-sku" what="SKU" />
+										</>
+									)}
+								</td>
 								{/*
+							  F16: TWO ANCHORS PER ROW — the title, and the two operational
+							  numbers. SKU and status recede to 0.75; `On hand` and `Price`
+							  stay at full strength and weight 400, because they are what a
+							  merchant is on this screen to read. Every cell stays 13px: a
+							  type ramp would trade a stable grid for emphasis the weight
+							  already carries. The recession is opacity, never a second
+							  foreground colour, which could not be safe in both themes.
+							*/}
+								<td
+									className="otta-td"
+									// RECEDE THE QUIET ANSWER, NOT THE RINGED ONE. F16's 0.75 is
+									// there because `active` is the answer on most rows and is not
+									// worth reading; a pill exists because its answer IS. Dimming
+									// the ring too would be the two decisions cancelling, so the
+									// recession applies to the bare phrase only.
+									style={status === "plain" ? { opacity: 0.75 } : undefined}
+								>
+									{toned(status, statusLabel(product), "product-status-pill")}
+								</td>
+								<td className="otta-td otta-num" data-testid="product-on-hand">
+									{/*
+								  D1 on a count: `0` and a low count are the two an operator has
+								  to act on, and an UNKNOWN count is not one of them — it stays
+								  the bare em dash `onHandCell` returns, because absence is not
+								  an exception state and a ring around it would claim the store
+								  had read something it never read.
+								*/}
+									{toned(stock, onHandCell(product.onHand, threshold), "product-stock-pill")}
+								</td>
+								<td className="otta-td otta-num" style={endCellStyle}>
+									{/*
 								  G1: the row carries integer minor units and the SHARED
 								  `formatOptionalAmount` renders them — the same function the Block
 								  Kit cell calls, rather than this file's own opinion about what a
@@ -564,10 +682,11 @@ export function ProductsList({
 								  never been priced, and it reads as an em dash, never `$0.00`,
 								  which is a price nobody set.
 								*/}
-								{formatOptionalAmount(product.priceCents, product.currency)}
-							</td>
-						</tr>
-					))}
+									{formatOptionalAmount(product.priceCents, product.currency)}
+								</td>
+							</tr>
+						);
+					})}
 				</Table>
 			)}
 

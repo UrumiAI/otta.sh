@@ -27,6 +27,7 @@ vi.mock("emdash/plugin-utils", async (importOriginal) => {
 });
 
 const { OrdersList } = await import("../src/orders/orders-list.js");
+const { CONSOLE_STYLES } = await import("../src/ui.js");
 const { formatAmount, orderStateCell } = await import("@otta-sh/admin-presentation");
 
 let mounted: Mounted | null = null;
@@ -191,6 +192,11 @@ test("the way in is underlined and its hit area exceeds its glyphs", async () =>
 	expect(link).not.toBeNull();
 	expect(link?.style.fontWeight).toBe("600");
 	expect(link?.style.textDecorationLine).toBe("underline");
+	// THE CLASS IS THE OTHER HALF, and it is the half nothing else here holds
+	// down: every remaining assertion in this test reads an inline declaration
+	// that survives losing it, so a change that dropped the class would take the
+	// solid hover and focus states off this list and still leave the file green.
+	expect(link?.classList.contains("otta-link")).toBe(true);
 	// Colour stays inherited — the sheet bans fixed foregrounds for theme
 	// reasons, so weight and a rule under the word are the whole affordance.
 	expect(link?.style.color).toBe("inherit");
@@ -198,6 +204,72 @@ test("the way in is underlined and its hit area exceeds its glyphs", async () =>
 	// unchanged row height.
 	expect(link?.style.padding).not.toBe("");
 	expect(link?.style.margin).not.toBe("");
+});
+
+/** The sheet's selectors, one per line, with the braces and the commas of a
+ *  selector list taken off. A cascade cannot be resolved outside a browser, so
+ *  the rule a class reaches is checked as text — the same reason the shared
+ *  chrome's own suite reads the sheet as a string. */
+function selectors(): readonly string[] {
+	return CONSOLE_STYLES.split(/[\n,{]/)
+		.map((part) => part.trim())
+		.filter((part) => part.length > 0 && part.startsWith("."));
+}
+
+/** The declarations inside one rule's block — trimmed, semicolons dropped,
+ *  order not preserved as anything meaningful. A caller checks membership
+ *  (`toContain`) rather than comparing the array itself, so a declaration
+ *  moving within its own block, a formatting change with no effect on the
+ *  cascade, cannot fail an assertion built on this. */
+function declarationsOf(selector: string): readonly string[] {
+	const css = CONSOLE_STYLES.replace(/\s+/g, " ");
+	const opener = `${selector} {`;
+	const start = css.indexOf(opener);
+	if (start === -1) throw new Error(`no rule for ${selector}`);
+	const bodyEnd = css.indexOf("}", start + opener.length);
+	return css
+		.slice(start + opener.length, bodyEnd)
+		.split(";")
+		.map((part) => part.trim())
+		.filter((part) => part.length > 0);
+}
+
+test("this list takes the shared underline, and stops at three states", async () => {
+	const container = await mountList();
+	const link = cell(container, "ord_failed", IDENTITY).querySelector("a");
+
+	// The rule the class above reaches has to exist at all, with all three of
+	// the declarations this change relocated off the call site: the line, the
+	// muted colour (its `color-mix` and the 45% figure both), and the
+	// underline's offset. Read as a set, not a string, so reordering the
+	// declarations — a formatting change with no effect on the cascade —
+	// cannot fail this test.
+	//
+	// WHAT THIS DOES AND DOES NOT PROVE. This confirms the declarations are
+	// present in the sheet's text. It cannot see the cascade: a
+	// higher-specificity rule elsewhere could still override every one of
+	// these while this assertion stays green. Rendered behaviour is
+	// established at the browser tier, not here.
+	const rest = declarationsOf(".otta-link");
+	expect(rest).toContain("text-decoration-line: none");
+	expect(rest).toContain(
+		"text-decoration-color: color-mix(in srgb, currentColor 45%, transparent)",
+	);
+	expect(rest).toContain("text-underline-offset: 2px");
+
+	const active = declarationsOf(".otta-link:hover, .otta-link:focus-visible");
+	expect(active).toContain("text-decoration-line: underline");
+	expect(active).toContain("text-decoration-color: currentColor");
+
+	// AND ROW HOVER IS NOT ONE OF THIS LIST'S STATES. F18 gives row-hover
+	// underlining to Pricing alone, so the sheet's row-hover trigger has to name
+	// the modifier that only Pricing's title carries — and this prefix must not
+	// carry it. Three states here and no fourth: muted at rest (above), solid on
+	// the link's own hover, solid on `:focus-visible`.
+	expect(
+		selectors().filter((one) => one.startsWith(".otta-row:hover") && one.includes("link")),
+	).toEqual([".otta-row:hover .otta-link-row"]);
+	expect(link?.classList.contains("otta-link-row")).toBe(false);
 });
 
 /** The visibility a browser would actually apply, inheritance included.

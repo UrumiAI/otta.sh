@@ -85,6 +85,26 @@ export const ROW_ACTIVATION_SLOP_PX = 4;
  * should not leave a ring behind it, but every keyboard arrival must be visible.
  * The ring uses `outline` (not `border`) so it never reflows the control it is
  * on, and `outline-offset` keeps it clear of the element's own hairline.
+ *
+ * `.otta-link` IS WHY A DRILL-IN LOOKS LIKE ONE, and its whole reason for being
+ * in the sheet rather than in a style object is that its states are pseudo-class
+ * states: the rule under the word goes SOLID on `:hover` and on
+ * `:focus-visible`. An inline `text-decoration-color` outranks both of those
+ * triggers — the same trap `.otta-copy-reveal` documents for `opacity` — so the
+ * colour is the sheet's, not the call site's. Both lists reach that solid state
+ * through this one rule.
+ *
+ * ROW HOVER IS A THIRD TRIGGER AND IT BELONGS TO ONE LIST. F18 asks for it on
+ * the Pricing title only — "the title link stays undecorated at rest and
+ * underlines on row hover" — so it hangs off `.otta-link-row`, a modifier that
+ * only that call site carries. Widening the selector back to `.otta-link` would
+ * put a rule under the Orders prefix whenever a pointer crossed its row, which
+ * is a state that item does not ask for.
+ *
+ * The REST state is the other thing the two lists differ on, and that too is the
+ * item's wording rather than a house preference: the Orders prefix takes a muted
+ * rule at 2px offset (its call site adds `text-decoration-line`), while the
+ * Pricing title stays undecorated and takes this class's own `none`.
  */
 export const CONSOLE_STYLES = `
 .otta-focusable:focus-visible {
@@ -141,6 +161,17 @@ export const CONSOLE_STYLES = `
 @media (max-width: 599px) {
 	.otta-table-card :is(.otta-th, .otta-td):first-child { padding-inline-start: 12px; }
 	.otta-table-card :is(.otta-th, .otta-td):last-child { padding-inline-end: 12px; }
+}
+.otta-link {
+	text-decoration-line: none;
+	text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
+	text-underline-offset: 2px;
+}
+.otta-row:hover .otta-link-row,
+.otta-link:hover,
+.otta-link:focus-visible {
+	text-decoration-line: underline;
+	text-decoration-color: currentColor;
 }
 .otta-copy-reveal { opacity: 0; }
 .otta-row:hover .otta-copy-reveal,
@@ -441,6 +472,28 @@ export function Notice({
 		</section>
 	);
 }
+
+/**
+ * A header over a figure column, end-aligned to meet the tabular numerals under
+ * it.
+ *
+ * A SPAN INSIDE THE EXISTING HEADER SLOT rather than a new prop on the shared
+ * table: alignment is a property of the column's CONTENT, and six money columns
+ * across three tables are not a reason for every table in the console to learn
+ * it. `display: block` is what makes `text-align` reach the whole cell width —
+ * an inline span would end-align nothing but itself.
+ *
+ * IT LIVES HERE BECAUSE IT WAS SPELLED TWICE. The lists wrote the span inline
+ * and the order detail wrote a local component with the same body; a third
+ * screen would have made three, and three spellings of one decision drift the
+ * moment one of them is adjusted. The cell under it takes {@link endCellStyle}.
+ */
+export function EndHeader({ label }: { label: string }): React.ReactElement {
+	return <span style={{ display: "block", textAlign: "end" }}>{label}</span>;
+}
+
+/** The cell under an {@link EndHeader}. */
+export const endCellStyle: React.CSSProperties = { textAlign: "end" };
 
 /** Which of the three accents a pill wears. There is no `ok` call site by
  *  design — a green "everything is fine" badge is the noise the badge-the-
