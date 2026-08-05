@@ -429,9 +429,27 @@ function fieldStyle(changed: readonly string[], key: string): React.CSSPropertie
 export function ProductDetail({
 	productId,
 	onBack,
+	initialTab = 0,
+	onTabChange,
+	onUnsavedChange,
+	leavePrompt = 0,
 }: {
 	productId: string;
 	onBack: () => void;
+	/** The tab a shared link named (F23), already resolved from its slug — the
+	 *  first tab whenever the link named none, or named one that no longer
+	 *  exists. */
+	initialTab?: number;
+	/** Announced on every tab change, for the screen to write to the URL. The
+	 *  detail never touches history itself: one writer. */
+	onTabChange?: (index: number) => void;
+	/** Whether anything on this screen is holding typed work. Only the forms
+	 *  know, and the screen has to, because a browser Back is caught out there. */
+	onUnsavedChange?: (unsaved: boolean) => void;
+	/** Bumped by the screen when a browser Back needs the confirm this component
+	 *  already owns. The screen decides that a confirm is owed; the sentence
+	 *  stays here, composed from the sections that are actually dirty. */
+	leavePrompt?: number;
 }): React.ReactElement {
 	const [detail, setDetail] = React.useState<ProductDetailPayload | null>(null);
 	const [failure, setFailure] = React.useState<{ title: string; description: string } | null>(null);
@@ -440,7 +458,7 @@ export function ProductDetail({
 		title: string;
 		description: string;
 	} | null>(null);
-	const [tab, setTab] = React.useState(0);
+	const [tab, setTab] = React.useState(initialTab);
 	const [pending, setPending] = React.useState<PendingAction | null>(null);
 	// WHICH write is outstanding and HOW FAR ALONG, not merely THAT one is: the
 	// screen reports events into `nextWritePhase` and reads both its guards back
@@ -481,6 +499,34 @@ export function ProductDetail({
 	// F8: Back is the one remaining way to lose typed work, so it is the one
 	// place that asks.
 	const [leaving, setLeaving] = React.useState(false);
+	// The confirm's sentence and the tab's accessible name are the same fact said
+	// twice, so both read this one predicate rather than each deciding. Computed
+	// HERE, above the loading branch, because the two effects below are hooks and
+	// the screen outside needs the answer before this component has a record.
+	const holdsWork = leaveNeedsConfirm(dirty);
+	React.useEffect(() => {
+		onUnsavedChange?.(holdsWork);
+	}, [holdsWork, onUnsavedChange]);
+	// A browser Back has already happened by the time anyone hears about it; the
+	// screen puts the entry back and asks here.
+	//
+	// AN EVENT, NOT A LEVEL. The screen's counter only ever climbs, and this
+	// component is mounted afresh for every record opened and again for every
+	// traversal — so reading the counter as "has anyone ever asked" would open
+	// this dialog on the mount of every record after the first Back that raised
+	// it: over records holding nothing, on a screen the merchant only just
+	// arrived at, with a Leave button that walks them off work they never
+	// started. A confirmation that appears when nothing is unsaved teaches people
+	// to dismiss the one that matters. Reading only the CHANGE, from a baseline
+	// taken at mount, is what confines a request to the record it was raised for
+	// — a fresh detail starts level with the count and owes nothing, whatever the
+	// count happens to be.
+	const promptedAt = React.useRef(leavePrompt);
+	React.useEffect(() => {
+		if (leavePrompt === promptedAt.current) return;
+		promptedAt.current = leavePrompt;
+		setLeaving(true);
+	}, [leavePrompt]);
 	// Confined to the failure branch: the re-read a save triggers has the whole
 	// screen to show for itself, but a Retry on a screen that is nothing but an
 	// error card has to say that the click landed.
@@ -620,9 +666,6 @@ export function ProductDetail({
 	const p = detail.product;
 	const threshold = detail.threshold;
 	const tombstoned = p.deletedAt !== null;
-	// The confirm's sentence and the tab's accessible name are the same fact said
-	// twice, so both read this one predicate rather than each deciding.
-	const holdsWork = leaveNeedsConfirm(dirty);
 
 	return (
 		<div>
@@ -707,7 +750,10 @@ export function ProductDetail({
 			<ProductTabs
 				labels={TAB_LABELS}
 				tab={tab}
-				onSelect={setTab}
+				onSelect={(index) => {
+					setTab(index);
+					onTabChange?.(index);
+				}}
 				// Only the Product tab holds editable sections; the Stock tab's forms
 				// are movements, not drafts, and settle on their own confirm.
 				unsaved={[holdsWork, false]}

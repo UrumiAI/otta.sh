@@ -349,9 +349,23 @@ export function ordersChrome({
 	};
 }
 
-export function OrdersList({ onOpen }: { onOpen: (orderId: string) => void }): React.ReactElement {
-	const [applied, setApplied] = React.useState<OrdersFilter>({});
-	const [draft, setDraft] = React.useState<OrdersFilter>({});
+export function OrdersList({
+	onOpen,
+	initialFilter = {},
+	onFilterChange,
+}: {
+	onOpen: (orderId: string) => void;
+	/** The filter the address bar arrived with (F22). BOTH the applied filter and
+	 *  the draft are seeded from it, so a shared link lands filtered AND the panel
+	 *  shows why, rather than reading as an unfiltered list that mysteriously
+	 *  holds four rows. */
+	initialFilter?: OrdersFilter;
+	/** Announced whenever the applied filter changes, for the screen to write to
+	 *  the URL. The list never touches history itself: one writer. */
+	onFilterChange?: (filter: OrdersFilter) => void;
+}): React.ReactElement {
+	const [applied, setApplied] = React.useState<OrdersFilter>(initialFilter);
+	const [draft, setDraft] = React.useState<OrdersFilter>(initialFilter);
 	const [page, setPage] = React.useState<LoadedPage | null>(null);
 	const [failure, setFailure] = React.useState<OrdersFailure | null>(null);
 	const [busy, setBusy] = React.useState(true);
@@ -440,6 +454,10 @@ export function OrdersList({ onOpen }: { onOpen: (orderId: string) => void }): R
 		setDraft(next);
 		setCursor(undefined);
 		setGeneration((n) => n + 1);
+		// The cursor deliberately does NOT go with it: paging is where the operator
+		// got to, not what the link describes, and a link that replays N pages is a
+		// different feature.
+		onFilterChange?.(next);
 	};
 
 	// EVERY GUARD ON THIS SCREEN, DECIDED ONCE — see `ordersChrome`. `everLoaded`
