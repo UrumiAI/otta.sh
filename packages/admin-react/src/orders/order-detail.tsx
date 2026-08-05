@@ -93,6 +93,7 @@ import {
 	Fields,
 	Group,
 	Notice,
+	StatusPill,
 	Table,
 	buttonStyle,
 	inputStyle,
@@ -244,6 +245,24 @@ function Unavailable({ text }: { text: string }): React.ReactElement {
 }
 
 /**
+ * The one order state that earns a ring (D1) — the same single exception the
+ * list marks, so the two surfaces cannot disagree about which status is loud.
+ * Every other state renders as the bare phrase.
+ */
+const PILLED_ORDER_STATE = "failed";
+
+/** F17: a header over a figure column, end-aligned to meet the tabular numerals
+ *  under it. A span inside the existing header slot rather than a new prop on
+ *  the shared table — four money columns are not a reason for every table in the
+ *  console to learn alignment. */
+function EndHeader({ label }: { label: string }): React.ReactElement {
+	return <span style={{ display: "block", textAlign: "end" }}>{label}</span>;
+}
+
+/** The cell under an {@link EndHeader}. */
+const endCellStyle: React.CSSProperties = { textAlign: "end" };
+
+/**
  * The Money tab's refunds panel: a pure view over ONE loaded refunds summary and
  * the refund form's drafts. It holds no state — the drafts, the standing refusal
  * and the two focus refs belong to `OrderDetail`, which owns the write.
@@ -313,19 +332,36 @@ export function RefundsPanel({
 							)
 				}
 			>
-				<p style={{ fontSize: 12, opacity: 0.8 }} data-testid="refund-capability">
-					{refundCapabilityText(refunds.refundable, refunds.paymentMethod)}
-				</p>
+				{/*
+				  THE CAPABILITY LINE IS ABOUT A REFUND THAT COULD HAPPEN, so it is
+				  withdrawn when there is none to make. On an order that was never
+				  captured it warned that refunding here issues a REAL refund through
+				  Stripe and money moves back to the buyer, directly beside a heading
+				  saying nothing was ever captured — a warning about an action the
+				  panel is simultaneously refusing to offer.
+
+				  IT IS GATED ON `refundMode`, NOT ON A SECOND CONDITION OF ITS OWN.
+				  A separate predicate here is exactly how the heading and the body
+				  drifted apart the first time; and it must not be re-derived from the
+				  REMAINDER, because a never-captured order and a fully-refunded one
+				  both have a remainder of zero and only one of them has nothing to
+				  say. The ceiling is the test, once, for all three.
+				*/}
+				{refundMode !== "empty" && (
+					<p style={{ fontSize: 12, opacity: 0.8 }} data-testid="refund-capability">
+						{refundCapabilityText(refunds.refundable, refunds.paymentMethod)}
+					</p>
+				)}
 
 				{refunds.refunds.length > 0 && (
 					<Table
 						testId="detail-refund-ledger"
 						caption="Refunds recorded"
-						headers={["Amount", "Provider ref", "By", "When"]}
+						headers={[<EndHeader label="Amount" />, "Provider ref", "By", "When"]}
 					>
 						{refunds.refunds.map((refund, index) => (
 							<tr key={`${refund.providerRef ?? "ref"}:${String(index)}`}>
-								<td className="otta-td otta-num">
+								<td className="otta-td otta-num" style={endCellStyle}>
 									{formatAmount(refund.amountCents, refund.currency ?? cur)}
 								</td>
 								<td className="otta-td">
@@ -650,7 +686,18 @@ export function OrderDetail({
 				<Fields
 					testId="detail-identity"
 					entries={[
-						["Status", orderStateCell(order.state)],
+						[
+							// D1: `failed` is the one status that gets a ring, here and on the
+							// list. Nothing else on this screen is pilled.
+							"Status",
+							order.state === PILLED_ORDER_STATE ? (
+								<StatusPill key="state" tone="fail" testId="detail-state-pill">
+									{orderStateCell(order.state)}
+								</StatusPill>
+							) : (
+								orderStateCell(order.state)
+							),
+						],
 						["Total", formatAmount(order.totals.totalCents, order.totals.currency)],
 						["Placed", formatTimestamp(order.createdAt)],
 						["Payment", order.paymentMethod ?? "—"],
@@ -714,7 +761,13 @@ export function OrderDetail({
 						<Table
 							testId="detail-lines"
 							caption="Line items"
-							headers={["SKU", "Title", "Qty", "Unit price", "Line total"]}
+							headers={[
+								"SKU",
+								"Title",
+								<EndHeader label="Qty" />,
+								<EndHeader label="Unit price" />,
+								<EndHeader label="Line total" />,
+							]}
 						>
 							{order.lines.map((line, index) => (
 								<tr key={`${line.sku}:${String(index)}`}>
@@ -722,11 +775,13 @@ export function OrderDetail({
 										<code>{line.sku}</code>
 									</td>
 									<td className="otta-td">{line.title}</td>
-									<td className="otta-td otta-num">{line.quantity}</td>
-									<td className="otta-td otta-num">
+									<td className="otta-td otta-num" style={endCellStyle}>
+										{line.quantity}
+									</td>
+									<td className="otta-td otta-num" style={endCellStyle}>
 										{formatAmount(line.unitPriceCents, line.currency)}
 									</td>
-									<td className="otta-td otta-num">
+									<td className="otta-td otta-num" style={endCellStyle}>
 										{formatAmount(line.unitPriceCents * line.quantity, line.currency)}
 									</td>
 								</tr>
@@ -740,11 +795,15 @@ export function OrderDetail({
 						</p>
 
 						<div style={{ marginBlockStart: 16, maxInlineSize: 360 }}>
-							<Table testId="detail-totals" caption="Totals" headers={["Line", "Amount"]}>
+							<Table
+								testId="detail-totals"
+								caption="Totals"
+								headers={["Line", <EndHeader label="Amount" />]}
+							>
 								{ladder.map(([label, amount]) => (
 									<tr key={label}>
 										<td className="otta-td">{label}</td>
-										<td className="otta-td otta-num">
+										<td className="otta-td otta-num" style={endCellStyle}>
 											{formatAmount(amount, order.totals.currency)}
 										</td>
 									</tr>

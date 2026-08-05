@@ -641,6 +641,34 @@ describe("the refunds group's sentence agrees with its own heading", () => {
 		expect(html).not.toContain('data-testid="refunds-full-note"');
 		expect(html).not.toContain('data-testid="refund-partial"');
 	});
+
+	// A WARNING ABOUT AN ACTION THE PANEL IS REFUSING TO OFFER. The capability
+	// line rendered unconditionally, so an order that was never captured was told
+	// that refunding here issues a REAL refund through Stripe and money moves back
+	// to the buyer — one line under a heading saying there is nothing to refund.
+	// It is the same `refundPanelMode` that withdraws it, not a second predicate,
+	// because two copies of this decision is how the heading and the body drifted
+	// apart in the first place.
+	test("nothing captured means nothing is said about how a refund would move money", () => {
+		const html = renderRefundsPanel(refundsSummary(0, 0));
+		expect(html).not.toContain('data-testid="refund-capability"');
+		expect(html).not.toContain("Stripe");
+	});
+
+	test("a real capture still states how a refund would move money", () => {
+		const html = renderRefundsPanel(refundsSummary(4500, 1200));
+		expect(html).toContain('data-testid="refund-capability"');
+		expect(html).toContain("Stripe");
+	});
+
+	// The line is about a CAPTURE, not about a remaining balance: an order that
+	// was captured and then fully refunded still has refunds on it that moved
+	// real money, and the operator reading that ledger is owed the same sentence.
+	test("a capture that has been fully refunded keeps the line", () => {
+		expect(renderRefundsPanel(refundsSummary(4500, 0))).toContain(
+			'data-testid="refund-capability"',
+		);
+	});
 });
 
 describe("each refund refusal names the field it is about", () => {

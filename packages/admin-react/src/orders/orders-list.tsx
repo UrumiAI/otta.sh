@@ -67,11 +67,44 @@ import {
 	Field,
 	Group,
 	Notice,
+	StatusPill,
 	Table,
 	buttonStyle,
 	inputStyle,
 	panelStyle,
 } from "../ui.js";
+
+/**
+ * The one order state that earns a ring (D1).
+ *
+ * BADGE THE EXCEPTION, LEAVE THE REST BARE. `failed` is the only status an
+ * operator has to act on out of a column of forty, so it is the only one drawn
+ * as anything other than the word itself. Pilling `paid` and `delivered` too
+ * would be the symmetric-looking change that destroys the whole point: a mark on
+ * every row marks nothing. The phrase inside the pill is still
+ * `orderStateCell`'s, so the words cannot drift from the bare cells beside it.
+ */
+const PILLED_ORDER_STATE = "failed";
+
+/** The identity cell's link, and the only tab stop in its row.
+ *
+ *  Weight and a muted underline at a 2px offset are what make a link that
+ *  inherits its colour (the sheet bans fixed foregrounds) still read as a way in
+ *  rather than as the static text beside it. The negative margin pays back the
+ *  padding, so the hit area is larger than the four glyphs without the cell
+ *  growing around it. */
+const orderLinkStyle: React.CSSProperties = {
+	color: "inherit",
+	fontFamily: "ui-monospace, monospace",
+	fontWeight: 600,
+	// F16 recedes the prefix; F18 makes what is left legible as a link.
+	opacity: 0.72,
+	textDecorationLine: "underline",
+	textDecorationColor: "color-mix(in srgb, currentColor 45%, transparent)",
+	textUnderlineOffset: 2,
+	padding: "2px 4px",
+	margin: "-2px -4px",
+};
 
 /**
  * THE FIVE-OUTCOME LADDER IS NOT REIMPLEMENTED HERE (INC-20 review).
@@ -603,7 +636,17 @@ export function OrdersList({ onOpen }: { onOpen: (orderId: string) => void }): R
 				<Table
 					testId="orders-table"
 					caption="Orders"
-					headers={["Placed", "Customer", "Status", "Order #", "Total"]}
+					card
+					headers={[
+						"Placed",
+						"Customer",
+						"Status",
+						"Order #",
+						// F17: the header end-aligns through a span in this array rather
+						// than through a new prop on the shared table — one money column on
+						// one screen is not a reason for every table to learn alignment.
+						<span style={{ display: "block", textAlign: "end" }}>Total</span>,
+					]}
 					onActivateRow={onOpen}
 				>
 					{orders.map((order) => {
@@ -615,9 +658,28 @@ export function OrdersList({ onOpen }: { onOpen: (orderId: string) => void }): R
 								data-testid="orders-row"
 								data-row-id={order.id}
 							>
-								<td className="otta-td otta-num">{formatTimestamp(order.createdAt)}</td>
-								<td className="otta-td">{order.customerId ?? order.buyerRef}</td>
-								<td className="otta-td">{orderStateCell(order.state)}</td>
+								{/*
+								  F16: TWO ANCHORS PER ROW — who, and how much. Customer and
+								  total carry the weight; the date and the id prefix recede to
+								  0.72; the status keeps 400 so the pill below is the only thing
+								  that stands out in that column. Every cell stays 13px: an
+								  operator scanning forty rows wants a stable grid, not a ramp.
+								*/}
+								<td className="otta-td otta-num" style={{ opacity: 0.72 }}>
+									{formatTimestamp(order.createdAt)}
+								</td>
+								<td className="otta-td" style={{ fontWeight: 600 }}>
+									{order.customerId ?? order.buyerRef}
+								</td>
+								<td className="otta-td">
+									{order.state === PILLED_ORDER_STATE ? (
+										<StatusPill tone="fail" testId="order-state-pill">
+											{orderStateCell(order.state)}
+										</StatusPill>
+									) : (
+										orderStateCell(order.state)
+									)}
+								</td>
 								<td className="otta-td" style={{ whiteSpace: "nowrap" }}>
 									{/*
 									  DESIGNER §8: the PRIMARY CELL is the link, and it stays the row's
@@ -646,13 +708,13 @@ export function OrdersList({ onOpen }: { onOpen: (orderId: string) => void }): R
 											event.preventDefault();
 											onOpen(order.id);
 										}}
-										style={{ color: "inherit", fontFamily: "ui-monospace, monospace" }}
+										style={orderLinkStyle}
 									>
 										{prefix}
 									</a>
-									<CopyIdButton id={order.id} testId="copy-order-id" />
+									<CopyIdButton id={order.id} testId="copy-order-id" revealOnRowHover />
 								</td>
-								<td className="otta-td otta-num">
+								<td className="otta-td otta-num" style={{ fontWeight: 600, textAlign: "end" }}>
 									{formatAmount(order.totalCents, order.currency)}
 								</td>
 							</tr>
