@@ -33,6 +33,7 @@
  *    does today.
  */
 import {
+	ACCUMULATED_SUFFIX,
 	APPLY_FILTERS_LABEL,
 	CLEAR_FILTERS_LABEL,
 	LOAD_MORE_LABEL,
@@ -53,6 +54,7 @@ import {
 	shortIdsFor,
 } from "@otta-sh/admin-presentation";
 import * as React from "react";
+import { continuationCursor, mergeById, type PendingCursor } from "../accumulate.js";
 import {
 	fetchOrders,
 	isFailure,
@@ -165,13 +167,62 @@ function normalize(draft: OrdersFilter, statusAny: string): OrdersFilter {
 	};
 }
 
-interface LoadedPage {
+/** One response, before it is merged into what is already on screen. */
+export interface OrdersResponse {
 	readonly orders: readonly OrderSummary[];
 	readonly nextCursor: string | null;
 	/** INC-23's exact filtered-set count, when the service reports one. */
 	readonly total: number | undefined;
 	readonly vocabulary: Vocabulary;
+}
+
+interface LoadedPage extends OrdersResponse {
+	/** Whether the rendered rows START at the collection's first page — which,
+	 *  now that pages accumulate, stays TRUE across a `Load more`: the rows above
+	 *  are still there. It is what lets the count claim the whole set on the last
+	 *  page of a scan that began at the first. */
 	readonly firstPage: boolean;
+	/** How many responses these rows were merged from. `1` is the ordinary
+	 *  render; anything above it is what makes "on this page" the wrong words. */
+	readonly pages: number;
+}
+
+/**
+ * WHAT A SUCCESSFUL RESPONSE DOES TO THE ROWS ALREADY ON SCREEN (F24).
+ *
+ * The defect this replaces was one line: the response was ASSIGNED into list
+ * state, so a successful `Load more` threw away the page the operator was
+ * reading and showed them page two alone. Nothing had to fail for that.
+ *
+ * A CONTINUATION EXTENDS; EVERYTHING ELSE RESETS. `continuation` is "this
+ * request carried a cursor", which is exactly the request `Load more` (and a
+ * Retry of it) issues. A filter change clears the cursor before re-fetching, so
+ * it arrives here as a reset and the previous filter's rows go — and a first
+ * mount, including one deep-linked to a filtered address, is the same reset.
+ * Getting that backwards shows either the old filter's rows under the new
+ * filter, or page two alone with everything above it dropped.
+ *
+ * THE CURSOR, THE TOTAL AND THE VOCABULARY TAKE THE NEW PAGE'S VALUES; the rows
+ * merge by id (see {@link mergeById}) and `firstPage` is inherited, because a
+ * scan that began at the first page still starts there after its second page
+ * lands.
+ */
+export function nextPage(
+	current: LoadedPage | null,
+	incoming: OrdersResponse,
+	continuation: boolean,
+): LoadedPage {
+	if (!continuation) return { ...incoming, firstPage: true, pages: 1 };
+	// A continuation with nothing to continue is not reachable from this screen
+	// — the cursor is cleared whenever the page state is — but it is still a
+	// render that does NOT start at the first page, and says so.
+	if (current === null) return { ...incoming, firstPage: false, pages: 1 };
+	return {
+		...incoming,
+		orders: mergeById(current.orders, incoming.orders, (order) => order.id),
+		firstPage: current.firstPage,
+		pages: current.pages + 1,
+	};
 }
 
 /** A load that came back a refusal. `continuation` records WHICH request failed
@@ -372,17 +423,26 @@ export function OrdersList({
 	// The Retry's OWN in-flight state, separate from `busy` because `busy` is the
 	// whole screen's: see `ordersChrome`.
 	const [retrying, setRetrying] = React.useState(false);
-	// Bumped by "Apply filters", by "Load more" and by Retry, so a re-fetch is an
-	// effect dependency rather than a call scattered through event handlers.
-	// RETRY IS THE WHOLE OF THE MECHANISM: same filter, same cursor, one integer.
+	// Bumped by "Apply filters" and by Retry, so a re-fetch is an effect
+	// dependency rather than a call scattered through event handlers. RETRY IS THE
+	// WHOLE OF THE MECHANISM: same filter, same cursor, one integer.
+	//
+	// `Load more` DOES NOT BUMP IT, and does not need to: the cursor it sets is a
+	// fresh object on every click, so the effect re-runs even when the service
+	// hands back a cursor VALUE it has already used. Keying the re-fetch on that
+	// value alone is what would make such a click a silent no-op.
 	const [generation, setGeneration] = React.useState(0);
-	const [cursor, setCursor] = React.useState<string | undefined>(undefined);
+	const [cursor, setCursor] = React.useState<PendingCursor<OrdersFilter> | null>(null);
 
 	React.useEffect(() => {
 		let cancelled = false;
-		const continuation = cursor !== undefined;
+		// A CURSOR IS ONLY A CONTINUATION OF ITS OWN FILTER (see
+		// `continuationCursor`): one belonging to a filter that has since been
+		// replaced is not sent, and this request is the new filter's first page.
+		const from = continuationCursor(cursor, applied);
+		const continuation = from !== undefined;
 		setBusy(true);
-		void fetchOrders(applied, cursor).then((result) => {
+		void fetchOrders(applied, from).then((result) => {
 			if (cancelled) return;
 			setBusy(false);
 			// Whatever the outcome, the click that asked for this is over.
@@ -395,13 +455,21 @@ export function OrdersList({
 				return;
 			}
 			setFailure(null);
-			setPage({
-				orders: result.orders,
-				nextCursor: result.nextCursor,
-				total: result.total,
-				vocabulary: result.vocabulary,
-				firstPage: cursor === undefined,
-			});
+			// F24: MERGE, NEVER ASSIGN. See `nextPage` — the functional form is
+			// required, not stylistic, because the rows it merges into are the ones
+			// in state at the moment the response lands.
+			setPage((current) =>
+				nextPage(
+					current,
+					{
+						orders: result.orders,
+						nextCursor: result.nextCursor,
+						total: result.total,
+						vocabulary: result.vocabulary,
+					},
+					continuation,
+				),
+			);
 		});
 		return () => {
 			cancelled = true;
@@ -440,6 +508,11 @@ export function OrdersList({
 		noun: ORDERS_NOUN,
 		empty: ORDERS_EMPTY,
 		noMatch: ORDERS_NO_MATCH,
+		// F24. Once two responses are on screen at once, "25 orders on this page"
+		// is the wrong sentence for 50 rows — they are what has been loaded so
+		// far. The Block Kit tier still replaces rather than accumulates, so it
+		// keeps the shared phrasing and the divergence is deliberate.
+		...((page?.pages ?? 1) > 1 ? { scopeSuffix: ACCUMULATED_SUFFIX } : {}),
 		// INC-23. The React list states the SAME exact figure the Block Kit list
 		// states, because both hand it to the same `rowCountLine`. Threading it
 		// here is the whole of what "honour total on the React side" costs, and
@@ -452,7 +525,13 @@ export function OrdersList({
 	const apply = (next: OrdersFilter) => {
 		setApplied(next);
 		setDraft(next);
-		setCursor(undefined);
+		setCursor(null);
+		// BUSY IS THE CLICK'S, NOT THE EFFECT'S. Setting it only inside the effect
+		// left one commit in which the applied filter had already moved and
+		// `Load more` still rendered enabled — offering the previous page's cursor
+		// under the new filter. The pairing is refused in `continuationCursor`
+		// whatever happens here; this is what stops the control being offered at all.
+		setBusy(true);
 		setGeneration((n) => n + 1);
 		// The cursor deliberately does NOT go with it: paging is where the operator
 		// got to, not what the link describes, and a link that replays N pages is a
@@ -761,7 +840,10 @@ export function OrdersList({
 						data-testid="orders-load-more"
 						disabled={busy}
 						style={buttonStyle}
-						onClick={() => setCursor(page.nextCursor ?? undefined)}
+						onClick={() => {
+							const value = page.nextCursor;
+							if (value !== null) setCursor({ filter: applied, value });
+						}}
 					>
 						{busy ? "Loading…" : LOAD_MORE_LABEL}
 					</button>

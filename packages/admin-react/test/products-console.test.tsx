@@ -183,6 +183,7 @@ describe("a failed load stops showing the previous answer (F2)", () => {
 			pageLimit: 25,
 		},
 		firstPage: true,
+		pages: 1,
 	};
 
 	test("the table goes, and the `12 products · …` count goes with it", () => {

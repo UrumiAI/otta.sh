@@ -54,6 +54,44 @@ import type { RowNoun, ZeroStateCopy } from "./list-outcome.js";
 export const PRODUCTS_NOUN: RowNoun = { one: "product", other: "products" };
 
 /**
+ * The noun the count uses while "Low stock only" is on (F29).
+ *
+ * A CORRECTNESS FIX IN A FILTER, NOT A FLOURISH. The narrowing keeps only the
+ * low-stock rows out of the page it fetched, and the count then described those
+ * rows with the noun for the whole catalog — "3 products" over a screen holding
+ * three low-stock products out of twenty-five read. The number was right and the
+ * sentence was not, which is the failure an operator reconciles against and
+ * loses. Naming what was counted costs one word and removes the ambiguity.
+ */
+export const PRODUCTS_LOW_STOCK_NOUN: RowNoun = {
+	one: "low-stock product",
+	other: "low-stock products",
+};
+
+/**
+ * What the narrowing does to paging, said where the paging control is (F29).
+ *
+ * The other half of the same correctness fix. "Low stock only" has no service
+ * predicate — it keeps the low-stock rows out of each page as that page arrives
+ * — so `Load more` is genuinely a scan rather than a page of results, and an
+ * operator who does not know that reads a short list as "these are all of them".
+ * It renders beside the button, and only while both facts hold: the filter is
+ * on, and there is another page to fetch.
+ */
+export const LOW_STOCK_PER_PAGE_NOTE = "Low stock only filters each page as it loads.";
+
+/**
+ * A CONTINUATION failure's title, which is a smaller claim than the server's.
+ *
+ * The same ruling the Orders list already made, and this screen inherits it
+ * along with the accumulated-pages state itself: the service answers a
+ * whole-collection refusal ("Products could not be reached"), and rendering that
+ * above rows that are still on screen states something those rows disprove. What
+ * failed is the next page, so that is what the title says.
+ */
+export const PRODUCTS_LOAD_MORE_FAILED_TITLE = "Couldn't load more products";
+
+/**
  * The standing half of the list's intro line — the row count goes in front of
  * it.
  *
