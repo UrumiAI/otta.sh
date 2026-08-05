@@ -27,15 +27,15 @@ vi.mock("emdash/plugin-utils", async (importOriginal) => {
 });
 
 const { OrdersList } = await import("../src/orders/orders-list.js");
-const { orderStateCell } = await import("@otta-sh/admin-presentation");
+const { formatAmount, orderStateCell } = await import("@otta-sh/admin-presentation");
 
 let mounted: Mounted | null = null;
 
-function order(id: string, state: string, totalCents: number) {
+function order(id: string, state: string, totalCents: number, currency = "USD") {
 	return {
 		id,
 		state,
-		currency: "USD",
+		currency,
 		buyerRef: `buyer_${id}`,
 		customerId: `cust_${id}`,
 		paymentMethod: "card",
@@ -45,13 +45,23 @@ function order(id: string, state: string, totalCents: number) {
 	};
 }
 
-/** Four rows spanning the four statuses this screen has to draw differently —
- *  one exception and three ordinary ones. */
+/**
+ * Four rows spanning the four statuses this screen has to draw differently —
+ * one exception and three ordinary ones.
+ *
+ * THE AMOUNTS ARE CHOSEN SO THE FORMATTER IS THE ONLY THING THAT CAN PRODUCE
+ * THEM. `$19.99` reads identically whether it came from the formatter or from a
+ * call site assembling a symbol and a division by a hundred, so a fixture made
+ * only of small round amounts cannot tell those apart. One total crosses a
+ * thousands separator and one is in a currency with no minor units at all;
+ * neither survives a hand-built string, and none of the four is the `$0.00` a
+ * hard-coded zero would show.
+ */
 const ROWS = [
-	order("ord_paid", "paid", 4500),
+	order("ord_paid", "paid", 1_299_000),
 	order("ord_failed", "failed", 1999),
-	order("ord_delivered", "delivered", 12000),
-	order("ord_cancelled", "cancelled", 800),
+	order("ord_delivered", "delivered", 12_000),
+	order("ord_cancelled", "cancelled", 125_000, "JPY"),
 ];
 
 beforeEach(() => {
@@ -125,7 +135,7 @@ test("the one status that needs attention is the only one wearing a ring", async
 	for (const id of ["ord_paid", "ord_delivered", "ord_cancelled"]) {
 		const bare = cell(container, id, STATUS);
 		expect(bare.querySelector("[data-tone]")).toBeNull();
-		expect(bare.textContent).toBe(orderStateCell(id === "ord_paid" ? "paid" : id.slice(4)));
+		expect(bare.textContent).toBe(orderStateCell(id.slice(4)));
 	}
 });
 
@@ -156,6 +166,21 @@ test("the money column is end-aligned, header and cells together", async () => {
 	expect(span?.style.textAlign).toBe("end");
 });
 
+test("the money column shows what the formatter makes of the record, on every row", async () => {
+	const container = await mountList();
+
+	// ALIGNMENT IS THE HALF THAT DOES NOT MATTER IF THE NUMBER IS WRONG. A cell
+	// asserted only for its edge accepts a hand-assembled amount and accepts a
+	// hard-coded `$0.00` — and "absent is not zero" is this console's own
+	// signature defect, so the rendered VALUE is what has to be read.
+	for (const record of ROWS) {
+		const total = cell(container, record.id, TOTAL);
+		expect(total.textContent, `row ${record.id}`).toBe(
+			formatAmount(record.totalCents, record.currency),
+		);
+	}
+});
+
 test("the way in is underlined and its hit area exceeds its glyphs", async () => {
 	const container = await mountList();
 
@@ -172,20 +197,60 @@ test("the way in is underlined and its hit area exceeds its glyphs", async () =>
 	expect(link?.style.margin).not.toBe("");
 });
 
-test("the copy control fades rather than leaving the tab order", async () => {
+/** The visibility a browser would actually apply, inheritance included.
+ *
+ *  `style.visibility` is the element's OWN declaration and is blind to an
+ *  ancestor that hid the subtree — so a control wrapped in a hidden parent
+ *  passes an inline check while being unreachable on the page. `visibility`
+ *  inherits, so the computed value is the one that answers the question the
+ *  reveal exists to answer. happy-dom leaves an undeclared value empty, which is
+ *  the initial `visible`. */
+function effectiveVisibility(node: Element): string {
+	const declared = window.getComputedStyle(node).visibility;
+	return declared === "" ? "visible" : declared;
+}
+
+/** The first ancestor between `node` and `stop` (inclusive) that is not
+ *  rendered at all. `display` does not inherit, so this one has to be walked. */
+function undisplayedAncestor(node: Element, stop: Element): Element | null {
+	let current: Element | null = node;
+	while (current !== null) {
+		if (window.getComputedStyle(current).display === "none") return current;
+		if (current === stop) return null;
+		current = current.parentElement;
+	}
+	return null;
+}
+
+test("the copy control fades rather than leaving the tab order, on every row", async () => {
 	const container = await mountList();
 
-	const copy = cell(container, "ord_failed", IDENTITY).querySelector("button");
-	expect(copy).not.toBeNull();
-	// THE LOAD-BEARING DETAIL. `visibility` or `display` would take the control
-	// out of the tab order, so a keyboard operator could never reach a button
-	// revealed only by a pointer. The class is opacity-driven, and no inline
-	// declaration may outrank its reveal triggers.
-	expect(copy?.classList.contains("otta-copy-reveal")).toBe(true);
-	expect(copy?.style.visibility).toBe("");
-	expect(copy?.style.display).toBe("");
-	expect(copy?.style.opacity).toBe("");
-	// Still a real, named tab stop while faded.
-	expect(copy?.hasAttribute("disabled")).toBe(false);
-	expect(copy?.getAttribute("aria-label")).toBe("Copy full order id ord_failed");
+	// ONE ROW IS NOT FOUR. A control rendered only for the row that happens to be
+	// inspected — say, only where the status is `failed` — is missing from three
+	// rows out of four, and a test that reads a single row calls that fine.
+	for (const record of ROWS) {
+		const scope = row(container, record.id);
+		const copy = cell(container, record.id, IDENTITY).querySelector("button");
+		expect(copy, `row ${record.id} has no copy control`).not.toBeNull();
+		if (copy === null) continue;
+
+		// THE LOAD-BEARING DETAIL. `visibility` or `display` would take the control
+		// out of the tab order, so a keyboard operator could never reach a button
+		// revealed only by a pointer. The class is opacity-driven, and no inline
+		// declaration may outrank its reveal triggers.
+		expect(copy.classList.contains("otta-copy-reveal"), record.id).toBe(true);
+		expect(copy.style.visibility, record.id).toBe("");
+		expect(copy.style.display, record.id).toBe("");
+		expect(copy.style.opacity, record.id).toBe("");
+		// And the effective values, which is what the operator meets: an ancestor
+		// carrying `visibility: hidden` or `display: none` removes the control just
+		// as thoroughly as declaring it on the button, and leaves every inline
+		// check above untouched.
+		expect(effectiveVisibility(copy), record.id).toBe("visible");
+		expect(undisplayedAncestor(copy, scope), record.id).toBeNull();
+
+		// Still a real, named tab stop while faded.
+		expect(copy.hasAttribute("disabled"), record.id).toBe(false);
+		expect(copy.getAttribute("aria-label"), record.id).toBe(`Copy full order id ${record.id}`);
+	}
 });

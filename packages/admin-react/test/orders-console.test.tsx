@@ -524,10 +524,19 @@ function refundsSummary(ceilingCents: number, remainingCents: number): RefundsSu
 	};
 }
 
-/** The refunds panel alone, rendered from its props. `OrderDetail` cannot be
- *  rendered statically — it loads in an effect and opens on another tab — which
- *  is why the panel is a component of its own and its drafts, its refusal and
- *  its two focus refs arrive from outside. */
+/**
+ * The refunds panel alone, rendered from its props: a summary in, one of three
+ * modes out, with no screen around it. Its drafts, its standing refusal and its
+ * two focus refs arrive from outside, which is what lets a mode be posed here
+ * directly instead of being driven to.
+ *
+ * THIS TIER STATES WHAT THE PANEL DOES WITH THE SUMMARY IT IS HANDED, AND ONLY
+ * THAT. It cannot state that the screen hands it the right one: nothing here
+ * renders through `OrderDetail`, which loads in an effect and opens on another
+ * tab. The mounted screen's own wiring — the status it rings, the tab that
+ * reaches this panel, the amounts it puts in it — is asserted in
+ * `order-detail-dom.test.tsx`, which has a document to load into.
+ */
 function renderRefundsPanel(
 	refunds: RefundsSummary,
 	amountError: RefundRefusal | null = null,
