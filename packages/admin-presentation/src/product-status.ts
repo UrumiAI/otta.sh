@@ -96,6 +96,57 @@ export function statusLabel(p: ProductLifecycle): string {
 	return sellable ? "active" : "active (not priced)";
 }
 
+/**
+ * How loudly a cell has to be drawn — the SAME decision the two label functions
+ * above make, exposed as data so a renderer never has to read a phrase back.
+ *
+ * `plain` is the happy path AND absence, together and on purpose: an unpriced
+ * product is an exception with a longer phrase, but an unknown count is not an
+ * exception at all, and neither one may be dressed up on arrival.
+ */
+export type ProductTone = "plain" | "warn" | "fail";
+
+/**
+ * The tone of {@link statusLabel}'s answer.
+ *
+ * IT DERIVES FROM THE RECORD, NEVER FROM THE LABEL. Matching `"deleted"` or
+ * testing for `"(not priced)"` in a rendered string would put the wording and
+ * the ink one typo apart, and would break the moment a phrase is translated —
+ * so both read the same five fields and neither reads the other's output.
+ *
+ * `deleted` is the only irreversible one and is the only `fail`. `inactive` and
+ * `active (not priced)` are both "this product is not being sold", which is a
+ * state a merchant may well have chosen, so they warn rather than fail. A
+ * sellable `active` is the quiet majority and gets nothing.
+ */
+export function statusTone(p: ProductLifecycle): ProductTone {
+	if (p.deletedAt !== null) return "fail";
+	if (!p.active) return "warn";
+	const sellable = p.sku !== null && p.priceCents !== null && p.currency !== null;
+	return sellable ? "plain" : "warn";
+}
+
+/**
+ * The tone of {@link onHandCell}'s answer, on the same three input cases.
+ *
+ * ABSENCE IS NOT AN EXCEPTION (and this is the one that is easy to get wrong):
+ * an unknown count returns `plain`, so the cell stays a bare em dash. Marking it
+ * would claim the store had learned something about that sku, when the truth is
+ * that it read nothing at all. `0` is the opposite — a fact, and the one that
+ * stops a sale — so it is the `fail`. A count at or below the store's threshold
+ * warns; a missing threshold costs that band and nothing else, exactly as it
+ * costs `onHandCell` its suffix.
+ */
+export function stockTone(
+	onHand: number | null | undefined,
+	threshold: number | null,
+): ProductTone {
+	if (onHand === undefined || onHand === null) return "plain";
+	if (onHand <= 0) return "fail";
+	if (threshold !== null && onHand <= threshold) return "warn";
+	return "plain";
+}
+
 /** Human label for the out-of-stock policy (read-only display). Only `"deny"`
  *  exists this slice; any other stored value renders verbatim (forward-safe). */
 export function inventoryPolicyLabel(policy: string): string {

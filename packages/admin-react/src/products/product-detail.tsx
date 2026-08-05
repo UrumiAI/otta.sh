@@ -107,6 +107,8 @@ import {
 	removeStockConfirm,
 	shippingGroupLabel,
 	statusLabel,
+	statusTone,
+	stockTone,
 	tabUnsavedLabel,
 	taxClassLabel,
 	taxClassOptions,
@@ -135,7 +137,7 @@ import {
 	inputStyle,
 	panelStyle,
 } from "../ui.js";
-import { UNTITLED } from "./products-list.js";
+import { UNTITLED, toned } from "./products-list.js";
 
 const TAB_LABELS = PRODUCT_TAB_LABELS;
 
@@ -684,8 +686,20 @@ export function ProductDetail({
 							),
 						],
 						[PRODUCT_FIELD_LABELS.price, formatOptionalAmount(p.priceCents, p.currency)],
-						[STATUS_FIELD_LABEL, statusLabel(p)],
-						[PRODUCT_FIELD_LABELS.stockOnHand, onHandCell(p.onHand, threshold)],
+						// D1, and the SAME two cells the list rings, from the same
+						// derivations — a product that wears a ring in the table must not
+						// lose it on the way to its own record. Nothing else on this
+						// screen is pilled, and an unknown count is not an exception: it
+						// stays the bare em dash `onHandCell` returns.
+						[STATUS_FIELD_LABEL, toned(statusTone(p), statusLabel(p), "detail-status-pill")],
+						[
+							PRODUCT_FIELD_LABELS.stockOnHand,
+							toned(
+								stockTone(p.onHand, threshold),
+								onHandCell(p.onHand, threshold),
+								"detail-stock-pill",
+							),
+						],
 					]}
 				/>
 			</section>
@@ -1142,11 +1156,7 @@ export function IdentityFields({
 	const dirty = changed.length > 0;
 	useReportDirty("identity", dirty, report);
 	return (
-		<Group
-			testId="edit-identity"
-			defaultOpen
-			label={dirtyGroupLabel(identityGroupLabel(p.sku), dirty)}
-		>
+		<Group testId="edit-identity" label={dirtyGroupLabel(identityGroupLabel(p.sku), dirty)}>
 			<p style={{ fontSize: 12, opacity: 0.75, marginBlockStart: 0 }}>{IDENTITY_FORM_CONTEXT}</p>
 			<div style={{ display: "grid", gap: 10, maxInlineSize: 420 }}>
 				<Field label={PRODUCT_FIELD_LABELS.sku}>
@@ -1258,8 +1268,13 @@ export function PriceGroup({
 		setValues((prev) => ({ ...prev, [key]: next }));
 	};
 	return (
+		// F19: THE NAMESAKE GROUP IS THE ONE THAT OPENS, on the screen called
+		// Pricing & inventory. Exactly one is open on arrival, and it used to be
+		// Identity — whose summary already answers itself with the sku, while the
+		// price a merchant came here to change sat behind a click.
 		<Group
 			testId="edit-price"
+			defaultOpen
 			label={dirtyGroupLabel(priceGroupLabel(p.priceCents, p.currency), dirty)}
 		>
 			<p style={{ fontSize: 12, opacity: 0.75, marginBlockStart: 0 }}>{PRICE_FORM_CONTEXT}</p>

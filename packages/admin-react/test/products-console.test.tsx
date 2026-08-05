@@ -35,7 +35,7 @@ const {
 	performAction,
 	OTTA_ADMIN_ROUTE,
 } = await import("../src/console-api.js");
-const { activeFilterParts, clearAnswer, visibleDegradation, UNTITLED } =
+const { activeFilterParts, clearAnswer, filtersVisible, visibleDegradation, UNTITLED } =
 	await import("../src/products/products-list.js");
 const {
 	CopyIdButton,
@@ -220,6 +220,23 @@ describe("a failed load stops showing the previous answer (F2)", () => {
 		// A healthy page says nothing either way, and nothing has loaded to say it.
 		expect(visibleDegradation(page, false)).toBeUndefined();
 		expect(visibleDegradation(null, false)).toBeUndefined();
+	});
+
+	test("A LOAD IN PROGRESS IS NOT A FAILURE — the first fetch keeps the panel", () => {
+		// THE BRANCH THE OTHER TIER CANNOT REACH. The two failure branches are
+		// walked through a live render; this third one — nothing landed, nothing
+		// failed — is the mount itself, and it is the one a panel derived from "has
+		// a page arrived" gets wrong: the filters would leave the screen on every
+		// mount and drop back in when the first response landed, a layout shift on
+		// a screen that never failed.
+		expect(filtersVisible(null, false)).toBe(true);
+		// Only the cold failure withdraws them: the selects have no vocabulary yet
+		// and would offer the operator no way to ask differently (F3).
+		expect(filtersVisible(null, true)).toBe(false);
+		// A stale failure keeps them — the typed filters are input, not answer —
+		// and so does an ordinary loaded page.
+		expect(filtersVisible(page, true)).toBe(true);
+		expect(filtersVisible(page, false)).toBe(true);
 	});
 });
 

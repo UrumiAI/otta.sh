@@ -64,12 +64,14 @@ import {
 	Button,
 	CopyIdButton,
 	EmptyState,
+	EndHeader,
 	Field,
 	Group,
 	Notice,
 	StatusPill,
 	Table,
 	buttonStyle,
+	endCellStyle,
 	inputStyle,
 	panelStyle,
 } from "../ui.js";
@@ -99,9 +101,11 @@ const orderLinkStyle: React.CSSProperties = {
 	fontWeight: 600,
 	// F16 recedes the prefix; F18 makes what is left legible as a link.
 	opacity: 0.72,
+	// THE REST STATE ONLY. The muted colour, the offset, and going solid on hover
+	// and on keyboard focus belong to `.otta-link`, which both lists now share: a
+	// pseudo-class cannot be written as a style object, and an inline decoration
+	// colour here would outrank every one of that rule's triggers.
 	textDecorationLine: "underline",
-	textDecorationColor: "color-mix(in srgb, currentColor 45%, transparent)",
-	textUnderlineOffset: 2,
 	padding: "2px 4px",
 	margin: "-2px -4px",
 };
@@ -637,16 +641,7 @@ export function OrdersList({ onOpen }: { onOpen: (orderId: string) => void }): R
 					testId="orders-table"
 					caption="Orders"
 					card
-					headers={[
-						"Placed",
-						"Customer",
-						"Status",
-						"Order #",
-						// F17: the header end-aligns through a span in this array rather
-						// than through a new prop on the shared table — one money column on
-						// one screen is not a reason for every table to learn alignment.
-						<span style={{ display: "block", textAlign: "end" }}>Total</span>,
-					]}
+					headers={["Placed", "Customer", "Status", "Order #", <EndHeader label="Total" />]}
 					onActivateRow={onOpen}
 				>
 					{orders.map((order) => {
@@ -692,7 +687,7 @@ export function OrdersList({ onOpen }: { onOpen: (orderId: string) => void }): R
 									*/}
 									<a
 										href={`?order=${encodeURIComponent(order.id)}`}
-										className="otta-focusable"
+										className="otta-focusable otta-link"
 										data-testid="order-link"
 										data-order-id={order.id}
 										onClick={(event) => {
@@ -714,7 +709,7 @@ export function OrdersList({ onOpen }: { onOpen: (orderId: string) => void }): R
 									</a>
 									<CopyIdButton id={order.id} testId="copy-order-id" revealOnRowHover />
 								</td>
-								<td className="otta-td otta-num" style={{ fontWeight: 600, textAlign: "end" }}>
+								<td className="otta-td otta-num" style={{ ...endCellStyle, fontWeight: 600 }}>
 									{formatAmount(order.totalCents, order.currency)}
 								</td>
 							</tr>

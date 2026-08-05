@@ -86,6 +86,8 @@ import {
 	shortIdsFor,
 	startOfDay,
 	statusLabel,
+	statusTone,
+	stockTone,
 	stockDegradation,
 	taxClassLabel,
 	taxClassOptions,
@@ -578,6 +580,49 @@ describe("the On hand cell keeps three cases apart that must never be folded", (
 	test("a MISSING threshold costs the Low band and nothing else", () => {
 		expect(onHandCell(3, null)).toBe("3");
 		expect(onHandCell(0, null)).toBe("0 · Out of stock");
+	});
+});
+
+describe("the tone a cell is drawn in, derived from the record and never from the phrase", () => {
+	const base = { active: true, deletedAt: null, sku: "S", priceCents: 1, currency: "USD" };
+
+	test("the tone follows the LABEL's own ranking, on the same five fields", () => {
+		// Matching `"deleted"` or searching a rendered phrase for `"(not priced)"`
+		// would put the wording and the ink one typo apart and would break the
+		// moment a phrase is translated. Both read the record.
+		expect(statusTone({ ...base, deletedAt: "2026-07-01T00:00:00.000Z" })).toBe("fail");
+		expect(statusTone({ ...base, active: false })).toBe("warn");
+		expect(statusTone({ ...base, priceCents: null })).toBe("warn");
+		expect(statusTone({ ...base, sku: null })).toBe("warn");
+		expect(statusTone({ ...base, currency: null })).toBe("warn");
+		expect(statusTone(base)).toBe("plain");
+	});
+
+	test("a tombstone outranks everything, as it does in the label", () => {
+		expect(statusTone({ ...base, active: true, deletedAt: "2026-07-01T00:00:00.000Z" })).toBe(
+			"fail",
+		);
+	});
+
+	test("zero stops a sale and is the only count that fails", () => {
+		expect(stockTone(0, 5)).toBe("fail");
+		expect(stockTone(4, 5)).toBe("warn");
+		// The threshold is INCLUSIVE, exactly as the suffix is.
+		expect(stockTone(5, 5)).toBe("warn");
+		expect(stockTone(6, 5)).toBe("plain");
+	});
+
+	test("an UNKNOWN count is not an exception and must never be marked as one", () => {
+		// Absence is not zero and it is not low: marking it would claim the store
+		// had learned something about this sku when it read nothing at all.
+		expect(stockTone(null, 5)).toBe("plain");
+		expect(stockTone(undefined, 5)).toBe("plain");
+		expect(stockTone(null, null)).toBe("plain");
+	});
+
+	test("a MISSING threshold costs the warn band and nothing else", () => {
+		expect(stockTone(3, null)).toBe("plain");
+		expect(stockTone(0, null)).toBe("fail");
 	});
 });
 

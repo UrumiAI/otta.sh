@@ -88,6 +88,7 @@ import {
 	Button,
 	CopyIdButton,
 	ConfirmDialog,
+	EndHeader,
 	FAIL_ACCENT,
 	Field,
 	Fields,
@@ -96,6 +97,7 @@ import {
 	StatusPill,
 	Table,
 	buttonStyle,
+	endCellStyle,
 	inputStyle,
 	panelStyle,
 } from "../ui.js";
@@ -250,17 +252,6 @@ function Unavailable({ text }: { text: string }): React.ReactElement {
  * Every other state renders as the bare phrase.
  */
 const PILLED_ORDER_STATE = "failed";
-
-/** F17: a header over a figure column, end-aligned to meet the tabular numerals
- *  under it. A span inside the existing header slot rather than a new prop on
- *  the shared table — four money columns are not a reason for every table in the
- *  console to learn alignment. */
-function EndHeader({ label }: { label: string }): React.ReactElement {
-	return <span style={{ display: "block", textAlign: "end" }}>{label}</span>;
-}
-
-/** The cell under an {@link EndHeader}. */
-const endCellStyle: React.CSSProperties = { textAlign: "end" };
 
 /**
  * The Money tab's refunds panel: a pure view over ONE loaded refunds summary and

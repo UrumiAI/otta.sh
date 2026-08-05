@@ -179,7 +179,10 @@ export {
 	inventoryPolicyLabel,
 	onHandCell,
 	statusLabel,
+	statusTone,
+	stockTone,
 	type ProductLifecycle,
+	type ProductTone,
 } from "./product-status.js";
 export { parseOnHandWatermark, parseStockQty } from "./stock-input.js";
 export {
