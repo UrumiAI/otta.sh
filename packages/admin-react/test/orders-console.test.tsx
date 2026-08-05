@@ -524,10 +524,19 @@ function refundsSummary(ceilingCents: number, remainingCents: number): RefundsSu
 	};
 }
 
-/** The refunds panel alone, rendered from its props. `OrderDetail` cannot be
- *  rendered statically — it loads in an effect and opens on another tab — which
- *  is why the panel is a component of its own and its drafts, its refusal and
- *  its two focus refs arrive from outside. */
+/**
+ * The refunds panel alone, rendered from its props: a summary in, one of three
+ * modes out, with no screen around it. Its drafts, its standing refusal and its
+ * two focus refs arrive from outside, which is what lets a mode be posed here
+ * directly instead of being driven to.
+ *
+ * THIS TIER STATES WHAT THE PANEL DOES WITH THE SUMMARY IT IS HANDED, AND ONLY
+ * THAT. It cannot state that the screen hands it the right one: nothing here
+ * renders through `OrderDetail`, which loads in an effect and opens on another
+ * tab. The mounted screen's own wiring — the status it rings, the tab that
+ * reaches this panel, the amounts it puts in it — is asserted in
+ * `order-detail-dom.test.tsx`, which has a document to load into.
+ */
 function renderRefundsPanel(
 	refunds: RefundsSummary,
 	amountError: RefundRefusal | null = null,
@@ -640,6 +649,34 @@ describe("the refunds group's sentence agrees with its own heading", () => {
 		expect(html).toContain(REFUNDS_GROUP_EMPTY_LABEL);
 		expect(html).not.toContain('data-testid="refunds-full-note"');
 		expect(html).not.toContain('data-testid="refund-partial"');
+	});
+
+	// A WARNING ABOUT AN ACTION THE PANEL IS REFUSING TO OFFER. The capability
+	// line rendered unconditionally, so an order that was never captured was told
+	// that refunding here issues a REAL refund through Stripe and money moves back
+	// to the buyer — one line under a heading saying there is nothing to refund.
+	// It is the same `refundPanelMode` that withdraws it, not a second predicate,
+	// because two copies of this decision is how the heading and the body drifted
+	// apart in the first place.
+	test("nothing captured means nothing is said about how a refund would move money", () => {
+		const html = renderRefundsPanel(refundsSummary(0, 0));
+		expect(html).not.toContain('data-testid="refund-capability"');
+		expect(html).not.toContain("Stripe");
+	});
+
+	test("a real capture still states how a refund would move money", () => {
+		const html = renderRefundsPanel(refundsSummary(4500, 1200));
+		expect(html).toContain('data-testid="refund-capability"');
+		expect(html).toContain("Stripe");
+	});
+
+	// The line is about a CAPTURE, not about a remaining balance: an order that
+	// was captured and then fully refunded still has refunds on it that moved
+	// real money, and the operator reading that ledger is owed the same sentence.
+	test("a capture that has been fully refunded keeps the line", () => {
+		expect(renderRefundsPanel(refundsSummary(4500, 0))).toContain(
+			'data-testid="refund-capability"',
+		);
 	});
 });
 

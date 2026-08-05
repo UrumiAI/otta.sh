@@ -1,0 +1,259 @@
+/**
+ * @vitest-environment happy-dom
+ *
+ * The Orders list's row ink, through a real render of the real screen.
+ *
+ * WHY A DOCUMENT. Every claim here is about which element carries a decision,
+ * and the screen only reaches its table after an effect resolves — so a static
+ * render never draws a row at all. A live mount is the only tier that can read
+ * the status cell of the `failed` row and the status cells of the rows beside
+ * it out of the same paint.
+ *
+ * WHY THE ASSERTIONS ARE SCOPED TO A CELL AND NEVER TO THE MARKUP STRING. A
+ * substring search for a pill in the page's HTML answers "somewhere on this
+ * screen" and calls it "on this row", which is precisely how a decision that is
+ * per-row gets a test that cannot tell rows apart. Each assertion below starts
+ * from the row whose id it names and reads that row's own cells.
+ */
+import * as React from "react";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { mount, type Mounted } from "./dom.js";
+
+const apiFetch = vi.fn<(input: string, init?: RequestInit) => Promise<Response>>();
+
+vi.mock("emdash/plugin-utils", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("emdash/plugin-utils")>();
+	return { ...actual, apiFetch };
+});
+
+const { OrdersList } = await import("../src/orders/orders-list.js");
+const { formatAmount, orderStateCell } = await import("@otta-sh/admin-presentation");
+
+let mounted: Mounted | null = null;
+
+function order(id: string, state: string, totalCents: number, currency = "USD") {
+	return {
+		id,
+		state,
+		currency,
+		buyerRef: `buyer_${id}`,
+		customerId: `cust_${id}`,
+		paymentMethod: "card",
+		createdAt: "2026-03-04T10:15:00.000Z",
+		totalCents,
+		reconciliationFlag: null,
+	};
+}
+
+/**
+ * Five rows spanning the five statuses this screen has to draw differently —
+ * one exception and four ordinary ones.
+ *
+ * THE AMOUNTS ARE CHOSEN SO THE FORMATTER IS THE ONLY THING THAT CAN PRODUCE
+ * THEM. `$19.99` reads identically whether it came from the formatter or from a
+ * call site assembling a symbol and a division by a hundred, so a fixture made
+ * only of small round amounts cannot tell those apart. One total crosses a
+ * thousands separator and one is in a currency with no minor units at all;
+ * neither survives a hand-built string, and none of the five is the `$0.00` a
+ * hard-coded zero would show.
+ */
+const ROWS = [
+	order("ord_paid", "paid", 1_299_000),
+	order("ord_failed", "failed", 1999),
+	order("ord_delivered", "delivered", 12_000),
+	order("ord_cancelled", "cancelled", 125_000, "JPY"),
+	order("ord_refunded", "refunded", 87_500),
+];
+
+beforeEach(() => {
+	apiFetch.mockReset();
+	apiFetch.mockResolvedValue(
+		new Response(
+			JSON.stringify({
+				data: {
+					ok: true,
+					orders: ROWS,
+					nextCursor: null,
+					vocabulary: {
+						statuses: ["paid", "failed", "delivered", "cancelled"],
+						statusAny: "any",
+						periods: [{ key: "any", label: "Any time" }],
+						cancellationReasons: [],
+						oneClickCancellationReasons: [],
+					},
+				},
+			}),
+			{ status: 200, headers: { "Content-Type": "application/json" } },
+		),
+	);
+});
+
+afterEach(async () => {
+	await mounted?.unmount();
+	mounted = null;
+});
+
+async function mountList(): Promise<HTMLElement> {
+	const node = <OrdersList onOpen={() => undefined} />;
+	mounted = await mount(node);
+	// The first page arrives through a promise chain the mount's own `act` does
+	// not outlive — the response, its `json()`, and the state that follows are
+	// three microtask turns apart. A second flush is what puts rows on screen.
+	await mounted.rerender(node);
+	return mounted.container;
+}
+
+/** A row by the id it carries, and only that row. */
+function row(container: HTMLElement, id: string): HTMLTableRowElement {
+	const found = container.querySelector<HTMLTableRowElement>(`tr[data-row-id="${id}"]`);
+	if (found === null) throw new Error(`no row for ${id}`);
+	return found;
+}
+
+function cell(container: HTMLElement, id: string, index: number): HTMLTableCellElement {
+	const found = row(container, id).cells.item(index);
+	if (found === null) throw new Error(`row ${id} has no cell ${String(index)}`);
+	return found;
+}
+
+const STATUS = 2;
+const IDENTITY = 3;
+const TOTAL = 4;
+
+test("the one status that needs attention is the only one wearing a ring", async () => {
+	const container = await mountList();
+
+	const failed = cell(container, "ord_failed", STATUS);
+	const pill = failed.querySelector("[data-tone]");
+	expect(pill).not.toBeNull();
+	expect(pill?.getAttribute("data-tone")).toBe("fail");
+	// The pill wraps the shared phrase; it does not make one.
+	expect(pill?.textContent).toBe(orderStateCell("failed"));
+
+	// THE POINT OF THE DECISION, and the thing a symmetric "pill every status"
+	// change breaks: four ordinary statuses in the same column, all bare. A
+	// mark on every row marks nothing. `refunded` is here on purpose — the state
+	// most tempting to pill by "symmetry" with `failed`, and the one a broadened
+	// match would catch first.
+	for (const id of ["ord_paid", "ord_delivered", "ord_cancelled", "ord_refunded"]) {
+		const bare = cell(container, id, STATUS);
+		expect(bare.querySelector("[data-tone]")).toBeNull();
+		expect(bare.textContent).toBe(orderStateCell(id.slice(4)));
+	}
+});
+
+test("the row's two anchors carry the weight and the rest recedes", async () => {
+	const container = await mountList();
+
+	expect(cell(container, "ord_paid", 1).style.fontWeight).toBe("600");
+	expect(cell(container, "ord_paid", TOTAL).style.fontWeight).toBe("600");
+	// Recessive, and stated as opacity so the ink is the same ink at less of it —
+	// never a second foreground colour, which cannot be safe in both themes.
+	expect(cell(container, "ord_paid", 0).style.opacity).toBe("0.72");
+	// The status column keeps its default weight: the pill is the only thing in
+	// it that is allowed to stand out.
+	expect(cell(container, "ord_paid", STATUS).style.fontWeight).toBe("");
+});
+
+test("the money column is end-aligned, header and cells together", async () => {
+	const container = await mountList();
+
+	expect(cell(container, "ord_paid", TOTAL).style.textAlign).toBe("end");
+
+	const headers = container.querySelectorAll<HTMLTableCellElement>("th.otta-th");
+	const totalHeader = headers.item(TOTAL);
+	// A header end-aligned by the cell alone would leave the word over the wrong
+	// edge of its own column, so the span inside it is what is read here.
+	const span = totalHeader.querySelector("span");
+	expect(span?.textContent).toBe("Total");
+	expect(span?.style.textAlign).toBe("end");
+});
+
+test("the money column shows what the formatter makes of the record, on every row", async () => {
+	const container = await mountList();
+
+	// ALIGNMENT IS THE HALF THAT DOES NOT MATTER IF THE NUMBER IS WRONG. A cell
+	// asserted only for its edge accepts a hand-assembled amount and accepts a
+	// hard-coded `$0.00` — and "absent is not zero" is this console's own
+	// signature defect, so the rendered VALUE is what has to be read.
+	for (const record of ROWS) {
+		const total = cell(container, record.id, TOTAL);
+		expect(total.textContent, `row ${record.id}`).toBe(
+			formatAmount(record.totalCents, record.currency),
+		);
+	}
+});
+
+test("the way in is underlined and its hit area exceeds its glyphs", async () => {
+	const container = await mountList();
+
+	const link = cell(container, "ord_failed", IDENTITY).querySelector("a");
+	expect(link).not.toBeNull();
+	expect(link?.style.fontWeight).toBe("600");
+	expect(link?.style.textDecorationLine).toBe("underline");
+	// Colour stays inherited — the sheet bans fixed foregrounds for theme
+	// reasons, so weight and a rule under the word are the whole affordance.
+	expect(link?.style.color).toBe("inherit");
+	// Padding paid back by an equal negative margin: a bigger target, an
+	// unchanged row height.
+	expect(link?.style.padding).not.toBe("");
+	expect(link?.style.margin).not.toBe("");
+});
+
+/** The visibility a browser would actually apply, inheritance included.
+ *
+ *  `style.visibility` is the element's OWN declaration and is blind to an
+ *  ancestor that hid the subtree — so a control wrapped in a hidden parent
+ *  passes an inline check while being unreachable on the page. `visibility`
+ *  inherits, so the computed value is the one that answers the question the
+ *  reveal exists to answer. happy-dom leaves an undeclared value empty, which is
+ *  the initial `visible`. */
+function effectiveVisibility(node: Element): string {
+	const declared = window.getComputedStyle(node).visibility;
+	return declared === "" ? "visible" : declared;
+}
+
+/** The first ancestor between `node` and `stop` (inclusive) that is not
+ *  rendered at all. `display` does not inherit, so this one has to be walked. */
+function undisplayedAncestor(node: Element, stop: Element): Element | null {
+	let current: Element | null = node;
+	while (current !== null) {
+		if (window.getComputedStyle(current).display === "none") return current;
+		if (current === stop) return null;
+		current = current.parentElement;
+	}
+	return null;
+}
+
+test("the copy control fades rather than leaving the tab order, on every row", async () => {
+	const container = await mountList();
+
+	// ONE ROW IS NOT FOUR. A control rendered only for the row that happens to be
+	// inspected — say, only where the status is `failed` — is missing from three
+	// rows out of four, and a test that reads a single row calls that fine.
+	for (const record of ROWS) {
+		const scope = row(container, record.id);
+		const copy = cell(container, record.id, IDENTITY).querySelector("button");
+		expect(copy, `row ${record.id} has no copy control`).not.toBeNull();
+		if (copy === null) continue;
+
+		// THE LOAD-BEARING DETAIL. `visibility` or `display` would take the control
+		// out of the tab order, so a keyboard operator could never reach a button
+		// revealed only by a pointer. The class is opacity-driven, and no inline
+		// declaration may outrank its reveal triggers.
+		expect(copy.classList.contains("otta-copy-reveal"), record.id).toBe(true);
+		expect(copy.style.visibility, record.id).toBe("");
+		expect(copy.style.display, record.id).toBe("");
+		expect(copy.style.opacity, record.id).toBe("");
+		// And the effective values, which is what the operator meets: an ancestor
+		// carrying `visibility: hidden` or `display: none` removes the control just
+		// as thoroughly as declaring it on the button, and leaves every inline
+		// check above untouched.
+		expect(effectiveVisibility(copy), record.id).toBe("visible");
+		expect(undisplayedAncestor(copy, scope), record.id).toBeNull();
+
+		// Still a real, named tab stop while faded.
+		expect(copy.hasAttribute("disabled"), record.id).toBe(false);
+		expect(copy.getAttribute("aria-label"), record.id).toBe(`Copy full order id ${record.id}`);
+	}
+});
