@@ -61,6 +61,12 @@ export const INTERACTIVE_DESCENDANT_SELECTOR = "a, button, input, select, textar
  * guard above: it goes to the same destination the row now does, so a pointer
  * over it is not the false promise the reset exists to prevent — only the
  * controls that do something else (Copy, form controls) fall back to `auto`.
+ *
+ * EVERY ENTRY HERE HAS TO TAKE ITS OWN POINTER FROM THE SHEET for the reset to
+ * be worth anything. `summary` is the one that reads like an exception and is
+ * not: it is listed here, and a disclosure whose pointer were declared inline
+ * would outrank this rule exactly the way the buttons used to, so `Group` puts
+ * it on `.otta-summary` instead.
  */
 export const CURSOR_RESET_DESCENDANT_SELECTOR = "button, input, select, textarea, summary, label";
 
@@ -107,11 +113,48 @@ export const CONSOLE_STYLES = `
 	white-space: nowrap;
 }
 .otta-num { font-variant-numeric: tabular-nums; }
+.otta-btn { cursor: pointer; }
+.otta-btn:disabled { cursor: not-allowed; }
+.otta-summary { cursor: pointer; }
 .otta-row[${ROW_ID_ATTRIBUTE}] {
 	cursor: pointer;
 }
 .otta-row[${ROW_ID_ATTRIBUTE}] :is(${CURSOR_RESET_DESCENDANT_SELECTOR}) {
-	cursor: auto !important;
+	cursor: auto;
+}
+.otta-row[${ROW_ID_ATTRIBUTE}] :is(${CURSOR_RESET_DESCENDANT_SELECTOR}):disabled {
+	cursor: not-allowed;
+}
+.otta-notice:focus-visible {
+	outline: 2px solid currentColor;
+	outline-offset: 2px;
+}
+.otta-table-card {
+	border: ${HAIRLINE};
+	border-radius: 8px;
+	overflow: hidden;
+}
+.otta-table-card thead tr { background: rgba(128, 128, 128, 0.06); }
+.otta-table-card :is(.otta-th, .otta-td):first-child { padding-inline-start: 16px; }
+.otta-table-card :is(.otta-th, .otta-td):last-child { padding-inline-end: 16px; }
+.otta-table-card tbody tr:last-child .otta-td { border-block-end: 0; }
+@media (max-width: 599px) {
+	.otta-table-card :is(.otta-th, .otta-td):first-child { padding-inline-start: 12px; }
+	.otta-table-card :is(.otta-th, .otta-td):last-child { padding-inline-end: 12px; }
+}
+.otta-copy-reveal { opacity: 0; }
+.otta-row:hover .otta-copy-reveal,
+.otta-row:focus-within .otta-copy-reveal,
+.otta-copy-reveal:focus-visible {
+	opacity: 0.85;
+}
+@media (hover: none) {
+	.otta-copy-reveal { opacity: 0.85; }
+}
+.otta-dialog { margin: auto; }
+.otta-dialog::backdrop {
+	background: rgba(0, 0, 0, 0.55);
+	backdrop-filter: blur(2px);
 }
 `;
 
@@ -127,6 +170,15 @@ export const panelStyle: React.CSSProperties = {
 	textAlign: "start",
 };
 
+/**
+ * NO `cursor` HERE, AND THAT IS THE POINT. It lives on `.otta-btn` in the sheet
+ * instead, because an inline declaration outranks every rule a stylesheet can
+ * write — so while `cursor` was inline, the row-activation reset could only beat
+ * it with `!important`, which in turn flattened `not-allowed` on any disabled
+ * button inside an activatable row. As a class rule it loses to the more
+ * specific descendant reset on cascade alone, and the disabled case survives.
+ * Anything that spreads this style must carry `otta-btn` in its `className`.
+ */
 export const buttonStyle: React.CSSProperties = {
 	padding: "5px 12px",
 	fontSize: 13,
@@ -134,7 +186,6 @@ export const buttonStyle: React.CSSProperties = {
 	borderRadius: 6,
 	background: "transparent",
 	color: "inherit",
-	cursor: "pointer",
 };
 
 /** A control whose click cannot be undone. The weight is carried by a border and
@@ -153,6 +204,7 @@ export function Button({
 	disabled,
 	busy,
 	autoFocus,
+	handOffFocusTo,
 	testId,
 }: {
 	label: string;
@@ -167,22 +219,42 @@ export function Button({
 	 *  was on has just been unmounted, so the alternative is focus falling back
 	 *  to the document. */
 	autoFocus?: boolean;
+	/**
+	 * Where focus goes the moment this button is clicked.
+	 *
+	 * FOR THE CONTROL WHOSE OWN CLICK DISABLES IT — Retry being the one that
+	 * shipped broken. A disabled element cannot hold focus, so the browser drops
+	 * it to `<body>` and a keyboard operator is stranded at the top of the
+	 * document with nothing focused and no ring to find. The handoff is done
+	 * HERE, in the click, BEFORE `onClick` runs the work that flips `disabled` —
+	 * ordering it after would be a race against React's commit, and reacting to
+	 * the disable in an effect would be reacting to a blur that has already
+	 * happened.
+	 *
+	 * Note that this is invisible to jsdom/happy-dom, where disabling a focused
+	 * element does NOT blur it: the only thing worth asserting without a real
+	 * browser is that focus reached this target, not that it was not lost.
+	 */
+	handOffFocusTo?: React.RefObject<HTMLElement | null>;
 	testId?: string;
 }): React.ReactElement {
 	return (
 		<button
 			type="button"
-			className="otta-focusable"
+			className="otta-focusable otta-btn"
 			data-testid={testId}
 			disabled={disabled === true}
 			aria-busy={busy === true ? true : undefined}
 			// eslint-disable-next-line jsx-a11y/no-autofocus -- see the prop's note
 			autoFocus={autoFocus === true}
-			onClick={onClick}
+			onClick={() => {
+				const handoff = handOffFocusTo === undefined ? null : handOffFocusTo.current;
+				if (handoff !== null) handoff.focus();
+				onClick();
+			}}
 			style={{
 				...(danger === true ? dangerButtonStyle : buttonStyle),
 				opacity: disabled === true ? 0.5 : 1,
-				cursor: disabled === true ? "not-allowed" : "pointer",
 			}}
 		>
 			{label}
@@ -223,10 +295,25 @@ export function CopyIdButton({
 	id,
 	testId,
 	what = "full order id",
+	revealOnRowHover,
 }: {
 	id: string;
 	testId?: string;
 	what?: string;
+	/**
+	 * Fade the control out until the row is hovered or holds focus — a list-row
+	 * opt-in, never a default, because the two detail call sites sit in an
+	 * identity strip that has no row to hover.
+	 *
+	 * `opacity: 0` AND NOT `visibility`/`display`. Hidden content leaves the tab
+	 * order, so a keyboard operator could never reach a control revealed only by
+	 * a pointer — that would be a new accessibility defect wearing a fix's
+	 * clothes. Opacity keeps the button focusable, keeps it in the accessibility
+	 * tree, and keeps its box, so revealing it reflows nothing. Its own
+	 * `:focus-visible` is one of the reveal triggers, and `@media (hover: none)`
+	 * pins it visible where there is no hover at all.
+	 */
+	revealOnRowHover?: boolean;
 }): React.ReactElement {
 	const [state, setState] = React.useState<"idle" | "done" | "failed">("idle");
 
@@ -239,7 +326,11 @@ export function CopyIdButton({
 	return (
 		<button
 			type="button"
-			className="otta-focusable"
+			className={
+				revealOnRowHover === true
+					? "otta-focusable otta-btn otta-copy-reveal"
+					: "otta-focusable otta-btn"
+			}
 			data-testid={testId}
 			data-full-id={id}
 			aria-label={`Copy ${what} ${id}`}
@@ -264,7 +355,9 @@ export function CopyIdButton({
 				padding: "1px 6px",
 				fontSize: 11,
 				marginInlineStart: 6,
-				opacity: 0.85,
+				// The reveal owns opacity from the sheet when it is on; an inline
+				// declaration here would outrank every one of its triggers.
+				...(revealOnRowHover === true ? {} : { opacity: 0.85 }),
 			}}
 		>
 			{state === "done" ? "Copied" : state === "failed" ? "Press ⌘C" : "Copy"}
@@ -307,10 +400,19 @@ export function Notice({
 	testId?: string;
 }): React.ReactElement {
 	const accent = variant === "error" ? FAIL_ACCENT : variant === "alert" ? WARN_ACCENT : OK_ACCENT;
+	// WHERE FOCUS LANDS WHEN THE ACTION DISABLES ITSELF. Retry is focused on
+	// arrival, and its own click is what disables it — so without somewhere to go,
+	// focus falls to `<body>`. This region is the button's own container and it
+	// carries the sentence explaining why the operator is here, which makes it the
+	// correct destination whether or not the button survives the click.
+	const region = React.useRef<HTMLElement | null>(null);
 	return (
 		<section
+			ref={region}
 			role="status"
 			aria-live="polite"
+			className="otta-notice"
+			tabIndex={-1}
 			data-testid={testId}
 			data-variant={variant}
 			style={{
@@ -331,11 +433,75 @@ export function Notice({
 						{...(action.disabled !== undefined ? { disabled: action.disabled } : {})}
 						{...(action.busy !== undefined ? { busy: action.busy } : {})}
 						{...(action.autoFocus !== undefined ? { autoFocus: action.autoFocus } : {})}
+						handOffFocusTo={region}
 						testId={testId === undefined ? undefined : `${testId}-action`}
 					/>
 				</div>
 			)}
 		</section>
+	);
+}
+
+/** Which of the three accents a pill wears. There is no `ok` call site by
+ *  design — a green "everything is fine" badge is the noise the badge-the-
+ *  exception rule exists to prevent — but the tone stays in the type because the
+ *  accent constant is real and a screen that needs it should not invent one. */
+export type StatusTone = "ok" | "warn" | "fail";
+
+const PILL_ACCENT: Readonly<Record<StatusTone, string>> = {
+	ok: OK_ACCENT,
+	warn: WARN_ACCENT,
+	fail: FAIL_ACCENT,
+};
+
+/**
+ * A state phrase that has to be picked out of a dense column.
+ *
+ * BORDER ONLY, AND THE MEASUREMENT SAYS SO rather than taste. Every one of the
+ * three accents fails the 4.5:1 text threshold against one ground or the other —
+ * the greens and the red on the dark ground, the amber on white — while every
+ * one of them clears the 3:1 non-text threshold on BOTH. So the accent is spent
+ * on a 1px border and the text stays `currentColor`, which is the only way one
+ * pill can serve light and dark with no conditional colour anywhere.
+ *
+ * BADGE THE EXCEPTION, LEAVE THE HAPPY PATH BARE. Whether a given state is an
+ * exception is the CALL SITE's decision, not this component's: it holds the raw
+ * record, and it is the only place that knows a `failed` order is worth a ring
+ * while every other order status is not. Absence is never an exception — unknown
+ * stock stays a bare em dash and gets no pill at all.
+ *
+ * IT WRAPS A PHRASE, IT NEVER MAKES ONE. The words arrive as children from the
+ * shared copy module, which stays the single source of wording.
+ */
+export function StatusPill({
+	tone,
+	children,
+	testId,
+}: {
+	tone: StatusTone;
+	children: React.ReactNode;
+	testId?: string;
+}): React.ReactElement {
+	return (
+		<span
+			data-testid={testId}
+			data-tone={tone}
+			style={{
+				display: "inline-block",
+				padding: "1px 8px",
+				fontSize: 11,
+				fontWeight: 600,
+				lineHeight: 1.6,
+				border: `1px solid ${PILL_ACCENT[tone]}`,
+				borderRadius: 999,
+				background: "transparent",
+				// Never the accent. See the note above.
+				color: "currentColor",
+				whiteSpace: "nowrap",
+			}}
+		>
+			{children}
+		</span>
 	);
 }
 
@@ -432,8 +598,12 @@ export function Group({
 			style={{ ...panelStyle, padding: "10px 14px" }}
 		>
 			<summary
-				className="otta-focusable"
-				style={{ cursor: "pointer", fontSize: 14, fontWeight: 600, listStyle: "revert" }}
+				// NO `cursor` IN THE STYLE OBJECT, for the reason `buttonStyle` has
+				// none: a disclosure inside an activatable row has to be able to fall
+				// back to `auto`, and an inline declaration cannot be reset by any
+				// rule the sheet is allowed to write.
+				className="otta-focusable otta-summary"
+				style={{ fontSize: 14, fontWeight: 600, listStyle: "revert" }}
 			>
 				{label}
 			</summary>
@@ -446,11 +616,12 @@ export function Group({
  * The confirm dialog for a click that moves money or cannot be undone.
  *
  * IT IS A NATIVE `<dialog>` opened MODALLY, which buys three behaviours this
- * screen would otherwise have to build and get wrong: focus is trapped inside
- * it, the rest of the page is inert to assistive technology, and Escape closes
- * it. The confirm button is NOT autofocused — the whole point of the dialog is
- * that the operator reads the sentence, and a focused confirm invites a second
- * Return keypress to land on it.
+ * screen would otherwise have to build and get wrong: keyboard focus stays among
+ * this dialog's own controls and reaches nothing behind it, the rest of the page
+ * is inert to assistive technology, and Escape closes it. The confirm button is
+ * NOT autofocused — the whole point of the dialog is that the operator reads the
+ * sentence, and a focused confirm invites a second Return keypress to land on
+ * it.
  *
  * `text` is composed by the caller from the SHARED
  * `@otta-sh/admin-presentation` copy helpers, so the sentence an operator reads
@@ -463,6 +634,7 @@ export function ConfirmDialog({
 	text,
 	confirmLabel,
 	denyLabel,
+	confirmTone = "danger",
 	onConfirm,
 	onDeny,
 }: {
@@ -471,6 +643,16 @@ export function ConfirmDialog({
 	text: string;
 	confirmLabel: string;
 	denyLabel: string;
+	/**
+	 * How the confirm button is weighted. `danger` is the default because it is
+	 * what every call site already got when the tone was hard-coded, and two of
+	 * the three — removing stock, and leaving with unsaved work — are correctly
+	 * destructive. Flipping the default would quietly de-weight both of them to
+	 * fix the one that is wrong. The additive confirm passes `neutral`: adding
+	 * stock is undoable and reversible, and dressing it as destruction teaches an
+	 * operator to read past the styling on the confirms that are not.
+	 */
+	confirmTone?: "danger" | "neutral";
 	onConfirm: () => void;
 	onDeny: () => void;
 }): React.ReactElement | null {
@@ -486,6 +668,7 @@ export function ConfirmDialog({
 	return (
 		<dialog
 			ref={ref}
+			className="otta-dialog"
 			data-testid="otta-confirm"
 			onCancel={(event) => {
 				event.preventDefault();
@@ -511,7 +694,12 @@ export function ConfirmDialog({
 			</p>
 			<div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
 				<Button label={denyLabel} onClick={onDeny} testId="otta-confirm-deny" />
-				<Button label={confirmLabel} onClick={onConfirm} danger testId="otta-confirm-yes" />
+				<Button
+					label={confirmLabel}
+					onClick={onConfirm}
+					danger={confirmTone === "danger"}
+					testId="otta-confirm-yes"
+				/>
 			</div>
 		</dialog>
 	);
@@ -640,12 +828,26 @@ export function Table({
 	headers,
 	children,
 	testId,
+	card,
 	onActivateRow,
 }: {
 	caption: string;
 	headers: readonly React.ReactNode[];
 	children: React.ReactNode;
 	testId?: string;
+	/**
+	 * Frame the table in the same card the rest of the console's panels already
+	 * use: shared hairline, 8px radius, a header band stated as an alpha over
+	 * whatever is behind it, generous first/last cell insets, and no rule under
+	 * the last row so the card edge is the final line.
+	 *
+	 * OPT-IN, because only the two LIST tables want it. The four detail tables
+	 * already sit inside a panel and a card there would double-border. The clip
+	 * is `overflow: hidden` from the sheet on the same element that scrolls
+	 * horizontally, so a narrow viewport still scrolls the columns and the band
+	 * still stops at the corner.
+	 */
+	card?: boolean;
 	/** Called with the `data-row-id` of the row a click activated. Rows without
 	 *  that attribute are inert. */
 	onActivateRow?: (id: string) => void;
@@ -677,7 +879,7 @@ export function Table({
 				};
 
 	return (
-		<div style={{ overflowX: "auto" }}>
+		<div className={card === true ? "otta-table-card" : undefined} style={{ overflowX: "auto" }}>
 			<table
 				data-testid={testId}
 				style={{ inlineSize: "100%", borderCollapse: "collapse", fontSize: 13 }}

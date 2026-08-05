@@ -39,6 +39,7 @@ const { activeFilterParts, clearAnswer, visibleDegradation, UNTITLED } =
 	await import("../src/products/products-list.js");
 const {
 	CopyIdButton,
+	FAIL_ACCENT,
 	WARN_ACCENT,
 	CONSOLE_STYLES,
 	CURSOR_RESET_DESCENDANT_SELECTOR,
@@ -722,6 +723,11 @@ describe("presentation primitives this screen relies on", () => {
 		expect(open).toContain("Leaving this product discards them.");
 		expect(open).toContain("Leave and discard");
 		expect(open).toContain("Stay");
+		// Discarding unsaved work is destructive, so this call site keeps the
+		// dialog's default weight rather than opting out of it — ON THE BUTTON THAT
+		// DISCARDS, which a whole-markup match for the accent cannot establish.
+		expect(tagFor(open, "otta-confirm-yes")).toContain(`border-color:${FAIL_ACCENT}`);
+		expect(tagFor(open, "otta-confirm-deny")).not.toContain(FAIL_ACCENT);
 		// Derived, never hard-coded: two dirty sections are both named, in screen
 		// order, and the section that is clean is not.
 		const multi = renderToStaticMarkup(
@@ -868,14 +874,16 @@ describe("row activation and the SKU cell", () => {
 		// Scoped to rows that actually activate, so the four detail tables — same
 		// `Table`, no callback, no row id — keep the default cursor.
 		expect(sheet).toContain(`.otta-row[${ROW_ID_ATTRIBUTE}] { cursor: pointer; }`);
-		// `!important` is load-bearing: `Button` and `CopyIdButton` set `cursor`
-		// inline, and an inline declaration outranks a rule in this sheet without
-		// it — leaving the pointer promising row activation on a control that
-		// copies.
+		// No `!important`, and none needed. `cursor` is a class rule now rather
+		// than an inline declaration on every button, so this more specific
+		// descendant rule outranks it on its own — and a disabled control inside
+		// the row keeps `not-allowed` instead of being flattened to `auto` with
+		// the rest.
 		expect(sheet).toContain(
 			`.otta-row[${ROW_ID_ATTRIBUTE}] :is(${CURSOR_RESET_DESCENDANT_SELECTOR}) ` +
-				"{ cursor: auto !important; }",
+				"{ cursor: auto; }",
 		);
+		expect(sheet).not.toContain("!important");
 		expect(INTERACTIVE_DESCENDANT_SELECTOR).not.toContain("code");
 		// The drill-in link goes to the same destination the row now does, so it
 		// keeps the row's pointer instead of falling back to auto with the rest.

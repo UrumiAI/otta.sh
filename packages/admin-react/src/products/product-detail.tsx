@@ -797,6 +797,7 @@ export function ProductDetail({
 				text={pending?.text ?? ""}
 				confirmLabel={pending?.confirmLabel ?? ""}
 				denyLabel={pending?.denyLabel ?? ""}
+				confirmTone={pending?.slot === "stock-add" ? "neutral" : "danger"}
 				onDeny={() => setPending(null)}
 				onConfirm={() => {
 					if (pending !== null) dispatch(pending);
@@ -902,7 +903,7 @@ export function ProductTabs({
 							// The dot is a shape, and "bullet" is not a fact. The name it
 							// stands for is the accessible name, composed by the copy module.
 							aria-label={holdsWork ? tabUnsavedLabel(label) : undefined}
-							className="otta-focusable"
+							className="otta-focusable otta-btn"
 							data-testid={`tab-${label.toLowerCase()}`}
 							onClick={() => {
 								onSelect(index);

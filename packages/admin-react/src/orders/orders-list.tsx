@@ -682,7 +682,7 @@ export function OrdersList({ onOpen }: { onOpen: (orderId: string) => void }): R
 				<div style={{ marginBlockStart: 12 }}>
 					<button
 						type="button"
-						className="otta-focusable"
+						className="otta-focusable otta-btn"
 						data-testid="orders-load-more"
 						disabled={busy}
 						style={buttonStyle}
