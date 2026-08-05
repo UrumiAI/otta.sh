@@ -11,6 +11,7 @@
  */
 import {
 	CART_COOKIE_NAME,
+	CART_COOKIE_PATH,
 	STOREFRONT_CART_CREATE_ROUTE,
 	type CartCreateRouteResult,
 } from "@otta-sh/plugin";
@@ -48,7 +49,7 @@ export function currentCartId(context: APIContext): string | undefined {
 }
 
 export function clearCartCookie(context: APIContext): void {
-	context.cookies.delete(CART_COOKIE_NAME, { path: "/" });
+	context.cookies.delete(CART_COOKIE_NAME, { path: CART_COOKIE_PATH });
 }
 
 /**
