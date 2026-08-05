@@ -35,6 +35,35 @@ export const WARN_ACCENT = "#b7791f";
 export const MUTED = "rgba(128, 128, 128, 0.6)";
 
 /**
+ * The attribute a row carries its record id in.
+ *
+ * The id lives on the ROW rather than in a closure per row because activation is
+ * ONE delegated listener on the table body — forty rows must not mean forty
+ * listeners — and a delegated handler has nothing but the DOM to read the
+ * record out of.
+ */
+export const ROW_ID_ATTRIBUTE = "data-row-id";
+
+/**
+ * Anything inside a row that already does something of its own. A click that
+ * starts inside one of these is that control's click and never the row's.
+ *
+ * `code` IS DELIBERATELY ABSENT. The SKU cell is a `<code>`, and exempting it
+ * would make the one cell an operator most needs to select the one cell that
+ * does nothing — the selection guard below is what keeps it selectable, not an
+ * exemption that would also make it dead.
+ */
+export const INTERACTIVE_DESCENDANT_SELECTOR = "a, button, input, select, textarea, summary, label";
+
+/**
+ * How far the pointer may travel between `mousedown` and `click` and still count
+ * as a click rather than a drag. Measured from the press to the CLICK — not to a
+ * `mouseup` on some other element — or a careful click on a trackpad is
+ * swallowed as a selection.
+ */
+export const ROW_ACTIVATION_SLOP_PX = 4;
+
+/**
  * The stylesheet, mounted once by the screen.
  *
  * `:focus-visible` rather than `:focus` is deliberate: a mouse click on a button
@@ -69,6 +98,12 @@ export const CONSOLE_STYLES = `
 	white-space: nowrap;
 }
 .otta-num { font-variant-numeric: tabular-nums; }
+.otta-row[${ROW_ID_ATTRIBUTE}] {
+	cursor: pointer;
+}
+.otta-row[${ROW_ID_ATTRIBUTE}] :is(${INTERACTIVE_DESCENDANT_SELECTOR}) {
+	cursor: auto !important;
+}
 `;
 
 export function ConsoleStyles(): React.ReactElement {
@@ -501,20 +536,133 @@ export const inputStyle: React.CSSProperties = {
 	color: "inherit",
 };
 
+/**
+ * The part of an element the row guard reads. A real `Element` satisfies it,
+ * which is the point: the decision below stays a pure function of its inputs and
+ * can be exercised without a DOM.
+ */
+export interface RowActivationNode {
+	closest(selectors: string): RowActivationNode | null;
+	getAttribute(name: string): string | null;
+	contains(other: unknown): boolean;
+}
+
+/** Where the pointer was, in client coordinates. */
+export interface RowActivationPoint {
+	x: number;
+	y: number;
+}
+
+/** What the document had selected when the click landed. */
+export interface RowActivationSelection {
+	collapsed: boolean;
+	anchor: unknown;
+}
+
+/**
+ * Which record a click just activated, or `null` for a click that activates
+ * nothing.
+ *
+ * FIVE WAYS TO BAIL, and each of them is a real click an operator makes:
+ *
+ *  - A MODIFIED CLICK. The row is not a link — it has no `href` for a new tab to
+ *    be opened at — so ctrl/cmd/shift-click on a bare cell must do nothing at
+ *    all rather than something approximate.
+ *  - AN INTERACTIVE DESCENDANT. Without this the drill-in link navigates and the
+ *    row navigates again, or Copy copies AND navigates. Double-firing is the
+ *    failure this guard exists for.
+ *  - NO ROW. Clicks land on padding and on the table body itself.
+ *  - A LIVE SELECTION INSIDE THE ROW. A merchant drag-selecting a SKU is
+ *    finishing a selection, not opening an order.
+ *  - A PRESS THAT MOVED. Same intent, caught earlier: a drag that started on the
+ *    row is a drag even before the selection settles. An absent origin is also a
+ *    bail — a click with no press behind it is not one this row saw begin.
+ */
+export function rowActivationId(
+	target: RowActivationNode | null,
+	context: {
+		modified: boolean;
+		origin: RowActivationPoint | null;
+		point: RowActivationPoint;
+		selection: RowActivationSelection | null;
+	},
+): string | null {
+	if (target === null || context.modified) return null;
+	if (target.closest(INTERACTIVE_DESCENDANT_SELECTOR) !== null) return null;
+
+	const row = target.closest(`[${ROW_ID_ATTRIBUTE}]`);
+	if (row === null) return null;
+
+	const selection = context.selection;
+	if (
+		selection !== null &&
+		!selection.collapsed &&
+		selection.anchor !== null &&
+		selection.anchor !== undefined &&
+		row.contains(selection.anchor)
+	) {
+		return null;
+	}
+
+	const origin = context.origin;
+	if (origin === null) return null;
+	if (Math.hypot(context.point.x - origin.x, context.point.y - origin.y) > ROW_ACTIVATION_SLOP_PX) {
+		return null;
+	}
+
+	const id = row.getAttribute(ROW_ID_ATTRIBUTE);
+	return id === null || id.length === 0 ? null : id;
+}
+
 /** A plain data table. `caption` is visually hidden but present: a table with a
  *  name is navigable, and a screen with two tables in one panel is otherwise two
- *  anonymous grids to a screen-reader user. */
+ *  anonymous grids to a screen-reader user.
+ *
+ *  `onActivateRow` MAKES THE WHOLE ROW THE TARGET the hover tint has always
+ *  promised. It is one listener on the body, not one per row, and it adds NO tab
+ *  stop: the row takes no `tabindex`, no `role` and no keydown handler, because
+ *  the primary cell's link is already a tab stop that Enter already opens, and a
+ *  second one per row would double keyboard traversal on a forty-row list. */
 export function Table({
 	caption,
 	headers,
 	children,
 	testId,
+	onActivateRow,
 }: {
 	caption: string;
 	headers: readonly React.ReactNode[];
 	children: React.ReactNode;
 	testId?: string;
+	/** Called with the `data-row-id` of the row a click activated. Rows without
+	 *  that attribute are inert. */
+	onActivateRow?: (id: string) => void;
 }): React.ReactElement {
+	const origin = React.useRef<RowActivationPoint | null>(null);
+
+	const bodyHandlers =
+		onActivateRow === undefined
+			? {}
+			: {
+					onMouseDown: (event: React.MouseEvent<HTMLTableSectionElement>) => {
+						origin.current = { x: event.clientX, y: event.clientY };
+					},
+					onClick: (event: React.MouseEvent<HTMLTableSectionElement>) => {
+						const target = event.target;
+						const selection = typeof window === "undefined" ? null : window.getSelection();
+						const id = rowActivationId(target instanceof Element ? target : null, {
+							modified: event.metaKey || event.ctrlKey || event.shiftKey || event.altKey,
+							origin: origin.current,
+							point: { x: event.clientX, y: event.clientY },
+							selection:
+								selection === null
+									? null
+									: { collapsed: selection.isCollapsed, anchor: selection.anchorNode },
+						});
+						if (id !== null) onActivateRow(id);
+					},
+				};
+
 	return (
 		<div style={{ overflowX: "auto" }}>
 			<table
@@ -542,7 +690,9 @@ export function Table({
 						))}
 					</tr>
 				</thead>
-				<tbody>{children}</tbody>
+				{/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- the
+				    handler is delegation for the rows' own links, which remain the tab stops */}
+				<tbody {...bodyHandlers}>{children}</tbody>
 			</table>
 		</div>
 	);

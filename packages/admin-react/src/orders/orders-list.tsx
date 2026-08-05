@@ -604,21 +604,27 @@ export function OrdersList({ onOpen }: { onOpen: (orderId: string) => void }): R
 					testId="orders-table"
 					caption="Orders"
 					headers={["Placed", "Customer", "Status", "Order #", "Total"]}
+					onActivateRow={onOpen}
 				>
 					{orders.map((order) => {
 						const prefix = shortIds.get(order.id) ?? shortIdFixed(order.id);
 						return (
-							<tr key={order.id} className="otta-row" data-testid="orders-row">
+							<tr
+								key={order.id}
+								className="otta-row"
+								data-testid="orders-row"
+								data-row-id={order.id}
+							>
 								<td className="otta-td otta-num">{formatTimestamp(order.createdAt)}</td>
 								<td className="otta-td">{order.customerId ?? order.buyerRef}</td>
 								<td className="otta-td">{orderStateCell(order.state)}</td>
 								<td className="otta-td" style={{ whiteSpace: "nowrap" }}>
 									{/*
-									  DESIGNER §8: the PRIMARY CELL is the link and the row gets a
-									  hover tint — never `<tr onClick>`. A whole-row target invites
-									  double-clicks and leaves no cell selectable for copy/paste,
-									  which order ops need constantly. The identity cell is the one
-									  that opens the record, and the copy button sits beside it so
+									  DESIGNER §8: the PRIMARY CELL is the link, and it stays the row's
+									  ONLY tab stop now that the whole row activates — the row itself
+									  takes no `tabindex`, and the descendant guard is what stops this
+									  link and the copy button firing twice. The identity cell is the
+									  one that opens the record, and the copy button sits beside it so
 									  §1.3's two halves — prefix on screen, full id in the clipboard
 									  — are one affordance in one place.
 									*/}

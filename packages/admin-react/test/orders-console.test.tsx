@@ -32,7 +32,16 @@ const { fetchOrderDetail, fetchOrders, isFailure, performAction, OTTA_ADMIN_ROUT
 	await import("../src/console-api.js");
 const { activeFilterParts, clearAnswer, ordersChrome, ordersFailureCard, pageAfterFailure } =
 	await import("../src/orders/orders-list.js");
-const { Notice, CopyIdButton } = await import("../src/ui.js");
+const {
+	Notice,
+	CopyIdButton,
+	INTERACTIVE_DESCENDANT_SELECTOR,
+	ROW_ACTIVATION_SLOP_PX,
+	ROW_ID_ATTRIBUTE,
+	Table,
+	rowActivationId,
+} = await import("../src/ui.js");
+type RowActivationNode = import("../src/ui.js").RowActivationNode;
 const { RefundsPanel, checkRefundInput, refundPanelMode } =
 	await import("../src/orders/order-detail.js");
 const {
@@ -748,5 +757,132 @@ describe("a standing refusal accents the field it names, and only that field (F2
 		expect(attr(amount, "aria-describedby")).toBeNull();
 		expect(attr(by, "aria-invalid")).toBeNull();
 		expect(attr(by, "aria-describedby")).toBeNull();
+	});
+});
+/**
+ * ROW ACTIVATION (F11). The row tints on hover; these are the rules that decide
+ * whether a click on it actually opens anything.
+ *
+ * `rowActivationId` is exercised directly rather than through a rendered table
+ * because this package has no DOM test environment — and because the decision is
+ * the thing worth pinning. The fake node below implements only what the guard
+ * reads (`closest`, `getAttribute`, `contains`) against the REAL selector
+ * constants, so a change to either one is caught here.
+ */
+describe("row activation guards", () => {
+	interface FakeSpec {
+		tag: string;
+		rowId?: string;
+	}
+
+	const matches = (spec: FakeSpec, selectors: string): boolean =>
+		selectors.split(",").some((raw) => {
+			const selector = raw.trim();
+			if (selector === `[${ROW_ID_ATTRIBUTE}]`) return spec.rowId !== undefined;
+			return selector === spec.tag;
+		});
+
+	/** `chain[0]` is the event target; each entry after it is its next ancestor. */
+	const nodeFor = (chain: readonly FakeSpec[], index = 0): RowActivationNode => ({
+		closest(selectors: string): RowActivationNode | null {
+			for (let at = index; at < chain.length; at += 1) {
+				const spec = chain[at];
+				if (spec !== undefined && matches(spec, selectors)) return nodeFor(chain, at);
+			}
+			return null;
+		},
+		getAttribute(name: string): string | null {
+			const spec = chain[index];
+			if (spec === undefined) return null;
+			return name === ROW_ID_ATTRIBUTE ? (spec.rowId ?? null) : null;
+		},
+		contains(other: unknown): boolean {
+			// The fake's "descendants" are everything earlier in the chain.
+			return chain.slice(0, index + 1).includes(other as FakeSpec);
+		},
+	});
+
+	const BARE_CELL: readonly FakeSpec[] = [
+		{ tag: "td" },
+		{ tag: "tr", rowId: "ord_9f2" },
+		{ tag: "tbody" },
+	];
+	const STEADY = {
+		modified: false,
+		origin: { x: 100, y: 60 },
+		point: { x: 100, y: 60 },
+		selection: null,
+	} as const;
+
+	test("a click on a bare cell activates that row, and the id comes off the row", () => {
+		expect(rowActivationId(nodeFor(BARE_CELL), STEADY)).toBe("ord_9f2");
+		// A row with no id attribute is inert, which is what keeps the four detail
+		// tables — same `Table`, no `onActivateRow` — from activating anything.
+		expect(rowActivationId(nodeFor([{ tag: "td" }, { tag: "tr" }]), STEADY)).toBeNull();
+		// A click that landed outside any row activates nothing.
+		expect(rowActivationId(nodeFor([{ tag: "tbody" }]), STEADY)).toBeNull();
+		expect(rowActivationId(null, STEADY)).toBeNull();
+	});
+
+	test("a click inside an interactive descendant is that control's, not the row's", () => {
+		// This is what stops the drill-in link navigating twice and the Copy
+		// button copying AND navigating.
+		for (const tag of ["a", "button", "input", "select", "textarea", "summary", "label"]) {
+			const chain = [{ tag: "span" }, { tag }, ...BARE_CELL];
+			expect(rowActivationId(nodeFor(chain), STEADY)).toBeNull();
+		}
+		expect(INTERACTIVE_DESCENDANT_SELECTOR).not.toContain("code");
+	});
+
+	test("the SKU's `code` element is NOT exempt — the cell stays live", () => {
+		const chain = [{ tag: "code" }, ...BARE_CELL];
+		expect(rowActivationId(nodeFor(chain), STEADY)).toBe("ord_9f2");
+	});
+
+	test("a press that travelled more than 4px was a drag, not a click", () => {
+		const at = (x: number, y: number) =>
+			rowActivationId(nodeFor(BARE_CELL), { ...STEADY, point: { x, y } });
+		expect(ROW_ACTIVATION_SLOP_PX).toBe(4);
+		// Measured from the MOUSEDOWN to the CLICK. Exactly 4px is still a click —
+		// a careful click on a trackpad must not be swallowed.
+		expect(at(104, 60)).toBe("ord_9f2");
+		expect(at(100, 56)).toBe("ord_9f2");
+		expect(at(105, 60)).toBeNull();
+		expect(at(103, 63)).toBeNull();
+		// A click with no press behind it is not one this body saw begin.
+		expect(rowActivationId(nodeFor(BARE_CELL), { ...STEADY, origin: null })).toBeNull();
+	});
+
+	test("a live selection inside the row means the merchant was selecting text", () => {
+		const anchor = BARE_CELL[0];
+		const withSelection = (selection: { collapsed: boolean; anchor: unknown }) =>
+			rowActivationId(nodeFor(BARE_CELL), { ...STEADY, selection });
+		expect(withSelection({ collapsed: false, anchor })).toBeNull();
+		// A caret is not a selection, and a selection somewhere else is not this
+		// row's business.
+		expect(withSelection({ collapsed: true, anchor })).toBe("ord_9f2");
+		expect(withSelection({ collapsed: false, anchor: { tag: "elsewhere" } })).toBe("ord_9f2");
+		expect(withSelection({ collapsed: false, anchor: null })).toBe("ord_9f2");
+	});
+
+	test("a modified click on a bare cell does nothing — the row is not a link", () => {
+		expect(rowActivationId(nodeFor(BARE_CELL), { ...STEADY, modified: true })).toBeNull();
+	});
+
+	test("an activatable row takes no tab stop and no role", () => {
+		const html = renderToStaticMarkup(
+			<Table caption="Orders" headers={["Order #"]} onActivateRow={() => undefined}>
+				<tr className="otta-row" data-row-id="ord_9f2">
+					<td className="otta-td">
+						<a href="?order=ord_9f2">9f2</a>
+					</td>
+				</tr>
+			</Table>,
+		);
+		// The link is already a tab stop that Enter already opens; a second one per
+		// row would double keyboard traversal on a forty-row list.
+		expect(html).not.toContain("tabindex");
+		expect(html).not.toMatch(/<tr[^>]*role=/);
+		expect(html).toContain(`${ROW_ID_ATTRIBUTE}="ord_9f2"`);
 	});
 });
