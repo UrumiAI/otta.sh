@@ -259,11 +259,21 @@ export function visibleDegradation(
 
 export function ProductsList({
 	onOpen,
+	initialFilter = {},
+	onFilterChange,
 }: {
 	onOpen: (productId: string) => void;
+	/** The filter the address bar arrived with (F22). BOTH the applied filter and
+	 *  the draft are seeded from it, so a shared link lands filtered AND the panel
+	 *  shows why, rather than reading as an unfiltered catalog that mysteriously
+	 *  holds four rows. */
+	initialFilter?: ProductsFilter;
+	/** Announced whenever the applied filter changes, for the screen to write to
+	 *  the URL. The list never touches history itself: one writer. */
+	onFilterChange?: (filter: ProductsFilter) => void;
 }): React.ReactElement {
-	const [applied, setApplied] = React.useState<ProductsFilter>({});
-	const [draft, setDraft] = React.useState<ProductsFilter>({});
+	const [applied, setApplied] = React.useState<ProductsFilter>(initialFilter);
+	const [draft, setDraft] = React.useState<ProductsFilter>(initialFilter);
 	const [page, setPage] = React.useState<LoadedPage | null>(null);
 	const [failure, setFailure] = React.useState<{ title: string; description: string } | null>(null);
 	const [busy, setBusy] = React.useState(true);
@@ -349,6 +359,10 @@ export function ProductsList({
 		setDraft(next);
 		setCursor(undefined);
 		setGeneration((n) => n + 1);
+		// The cursor deliberately does NOT go with it: paging is where the merchant
+		// got to, not what the link describes, and a link that replays N pages is a
+		// different feature.
+		onFilterChange?.(next);
 	};
 
 	return (

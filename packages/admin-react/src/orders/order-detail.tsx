@@ -501,9 +501,18 @@ export function RefundsPanel({
 export function OrderDetail({
 	orderId,
 	onBack,
+	initialTab = 0,
+	onTabChange,
 }: {
 	orderId: string;
 	onBack: () => void;
+	/** The tab a shared link named (F23), already resolved from its slug — the
+	 *  first tab whenever the link named none, or named one that no longer
+	 *  exists. */
+	initialTab?: number;
+	/** Announced on every tab change, for the screen to write to the URL. The
+	 *  detail never touches history itself: one writer. */
+	onTabChange?: (index: number) => void;
 }): React.ReactElement {
 	const [detail, setDetail] = React.useState<DetailPayload | null>(null);
 	const [failure, setFailure] = React.useState<{ title: string; description: string } | null>(null);
@@ -512,7 +521,7 @@ export function OrderDetail({
 		title: string;
 		description: string;
 	} | null>(null);
-	const [tab, setTab] = React.useState(0);
+	const [tab, setTab] = React.useState(initialTab);
 	const [pending, setPending] = React.useState<PendingAction | null>(null);
 	const [busy, setBusy] = React.useState(false);
 	const [generation, setGeneration] = React.useState(0);
@@ -728,7 +737,10 @@ export function OrderDetail({
 						aria-controls={`otta-panel-${String(index)}`}
 						className="otta-focusable otta-btn"
 						data-testid={`tab-${label.toLowerCase()}`}
-						onClick={() => setTab(index)}
+						onClick={() => {
+							setTab(index);
+							onTabChange?.(index);
+						}}
 						style={{
 							...buttonStyle,
 							borderBlockEndWidth: tab === index ? 2 : 1,
