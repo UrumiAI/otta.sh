@@ -56,6 +56,15 @@ export const ROW_ID_ATTRIBUTE = "data-row-id";
 export const INTERACTIVE_DESCENDANT_SELECTOR = "a, button, input, select, textarea, summary, label";
 
 /**
+ * The subset of {@link INTERACTIVE_DESCENDANT_SELECTOR} whose cursor is reset
+ * to `auto`. The link is deliberately absent here even though it stays in the
+ * guard above: it goes to the same destination the row now does, so a pointer
+ * over it is not the false promise the reset exists to prevent — only the
+ * controls that do something else (Copy, form controls) fall back to `auto`.
+ */
+export const CURSOR_RESET_DESCENDANT_SELECTOR = "button, input, select, textarea, summary, label";
+
+/**
  * How far the pointer may travel between `mousedown` and `click` and still count
  * as a click rather than a drag. Measured from the press to the CLICK — not to a
  * `mouseup` on some other element — or a careful click on a trackpad is
@@ -101,7 +110,7 @@ export const CONSOLE_STYLES = `
 .otta-row[${ROW_ID_ATTRIBUTE}] {
 	cursor: pointer;
 }
-.otta-row[${ROW_ID_ATTRIBUTE}] :is(${INTERACTIVE_DESCENDANT_SELECTOR}) {
+.otta-row[${ROW_ID_ATTRIBUTE}] :is(${CURSOR_RESET_DESCENDANT_SELECTOR}) {
 	cursor: auto !important;
 }
 `;
@@ -576,7 +585,10 @@ export interface RowActivationSelection {
  *    finishing a selection, not opening an order.
  *  - A PRESS THAT MOVED. Same intent, caught earlier: a drag that started on the
  *    row is a drag even before the selection settles. An absent origin is also a
- *    bail — a click with no press behind it is not one this row saw begin.
+ *    bail — a click with no press behind it is not one this row saw begin. The
+ *    handler clears the origin at the end of every click it sees, so a click
+ *    that reuses a stale press is not merely unreachable today, it is
+ *    impossible: there is never a leftover origin to reuse.
  */
 export function rowActivationId(
 	target: RowActivationNode | null,
@@ -660,6 +672,7 @@ export function Table({
 									: { collapsed: selection.isCollapsed, anchor: selection.anchorNode },
 						});
 						if (id !== null) onActivateRow(id);
+						origin.current = null;
 					},
 				};
 

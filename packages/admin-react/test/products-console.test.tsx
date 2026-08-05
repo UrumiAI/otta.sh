@@ -41,6 +41,7 @@ const {
 	CopyIdButton,
 	WARN_ACCENT,
 	CONSOLE_STYLES,
+	CURSOR_RESET_DESCENDANT_SELECTOR,
 	INTERACTIVE_DESCENDANT_SELECTOR,
 	ROW_ID_ATTRIBUTE,
 	rowActivationId,
@@ -872,9 +873,13 @@ describe("row activation and the SKU cell", () => {
 		// it — leaving the pointer promising row activation on a control that
 		// copies.
 		expect(sheet).toContain(
-			`.otta-row[${ROW_ID_ATTRIBUTE}] :is(${INTERACTIVE_DESCENDANT_SELECTOR}) ` +
+			`.otta-row[${ROW_ID_ATTRIBUTE}] :is(${CURSOR_RESET_DESCENDANT_SELECTOR}) ` +
 				"{ cursor: auto !important; }",
 		);
 		expect(INTERACTIVE_DESCENDANT_SELECTOR).not.toContain("code");
+		// The drill-in link goes to the same destination the row now does, so it
+		// keeps the row's pointer instead of falling back to auto with the rest.
+		expect(CURSOR_RESET_DESCENDANT_SELECTOR.split(", ")).not.toContain("a");
+		expect(INTERACTIVE_DESCENDANT_SELECTOR.split(", ")).toContain("a");
 	});
 });
