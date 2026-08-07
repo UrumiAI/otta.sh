@@ -30,13 +30,13 @@ Otta is **two deployables and two databases**:
 > completing a purchase end-to-end means building the #27 surface or driving the service API
 > directly. When #27 and the account-pages task close, this banner shrinks to a version note.
 
-| | Shape A | Shape B |
-|---|---|---|
-| Service runtime | Node process (§2.2) | Cloudflare Worker |
-| Commerce DB | any Postgres you can reach | external Postgres via Hyperdrive |
-| Site runtime | EmDash on Node (link-out, §2.5) | `sites/staging` on Workers **free** plan |
-| Sweeps | self-intervals + one external driver (§2.4) | `*/15` cron runs all four (§6) |
-| Starts at | §2 | §3 |
+| | Shape A | Shape B | Shape C |
+|---|---|---|---|
+| Service runtime | Node process (§2.2) | Cloudflare Worker | container, `Dockerfile.service` |
+| Commerce DB | any Postgres you can reach | external Postgres via Hyperdrive | any Postgres the pod can reach |
+| Site runtime | EmDash on Node (link-out, §2.5) | `sites/staging` on Workers **free** plan | `sites/staging` container, root `Dockerfile` |
+| Sweeps | self-intervals + one external driver (§2.4) | `*/15` cron runs all four (§6) | self-intervals + one external driver (§2.4) |
+| Starts at | §2 | §3 | §3bis |
 
 ## 1. Universal contracts
 
@@ -365,6 +365,96 @@ cannot be retried in place:
 > are not subject to the workers.dev subrequest block) lets the site drop the flag and
 > re-enable `session: "auto"`, and deletes this box. A custom domain is also what unlocks
 > zone-level WAF rules (§4).
+
+## 3bis. Shape C — two containers
+
+Both deployables as OCI images, for a Kubernetes platform or anything else that runs
+containers. This is the shape a hosting platform's **"Deploy from GitHub"** expects: a
+`Dockerfile` at the repo root producing an image that serves on `PORT` and takes its
+configuration entirely from the environment, so the same image tag can be rolled out to
+QA and production against different databases.
+
+Two images, built from the repo root, in the order §1 requires:
+
+| | Image | Serves | Database |
+|---|---|---|---|
+| Commerce service | `Dockerfile.service` | `:3000` | commerce Postgres (`PG_CONNECTION_STRING`) |
+| Storefront + admin | `Dockerfile` | `:4321` | content Postgres (`DATABASE_URL`) + S3 media |
+
+```bash
+# 1. The service first — the site build needs its final URL.
+docker build -f Dockerfile.service -t otta-service .
+docker run -e PG_CONNECTION_STRING=postgres://…/otta_commerce -p 3000:3000 otta-service
+curl http://localhost:3000/health          # {"ok":true}
+
+# 2. Then the site, with that URL baked in (§1 — build-time contract).
+docker build --build-arg COMMERCE_SERVICE_URL=https://commerce.example.com -t otta-store .
+```
+
+### 3bis.1 What is different from Shape B
+
+`OTTA_SITE_TARGET=node` (set by the root `Dockerfile`, never by hand) swaps three things
+in `sites/staging`, and nothing else — the theme, the pages, the cart shim and both plugin
+descriptors are identical on every target, because the plugin only ever talks HTTP:
+
+- the Astro adapter becomes `@astrojs/node` (`mode: "standalone"`);
+- the content database becomes **Postgres** instead of D1;
+- media storage becomes **S3** instead of R2. `s3()` takes no credentials — it reads
+  `S3_BUCKET` / `S3_REGION` / `S3_ENDPOINT` and authenticates through the AWS default
+  provider chain, which on EKS resolves to the pod's IRSA role.
+
+Neither `wrangler.jsonc` is involved, and the whole `global_fetch_strictly_public` ↔ D1
+`session` pairing invariant of §3.5 is a Workers concern that does not apply here.
+
+Anything other than `cloudflare` or `node` in `OTTA_SITE_TARGET` fails the build rather
+than falling back — a typo would otherwise produce a Cloudflare bundle bound to D1 and R2
+bindings that do not exist in a container.
+
+### 3bis.2 The DATABASE_URL detour
+
+`astro.config.ts` is evaluated at **build** time, inside an image build that has no
+database, and the emdash integration serializes the `database` descriptor it returns
+straight into the bundle. `createDialect()` reads only `config.connectionString` and has
+no runtime environment fallback, so the built server cannot see `DATABASE_URL` on its own.
+Baking a URL in would be wrong regardless — QA and production run the same image tag
+against different databases.
+
+`server/cluster.mjs` closes the gap before forking any worker: it translates `DATABASE_URL`
+into the `PG*` variables that `pg` falls back to when a Pool option is undefined. An
+explicit `PGHOST` in the environment disables the whole translation, on the assumption that
+whoever set it meant it. `sslmode` survives the translation because RDS presents a
+certificate chain the container's default trust store does not carry.
+
+`WEB_CONCURRENCY` forks that many workers across the pod's CPU allocation; workers that die
+are replaced, except during a SIGTERM drain, where respawning would outlive the termination
+grace period.
+
+### 3bis.3 Runtime environment
+
+| Variable | Image | Required | Purpose |
+|---|---|---|---|
+| `PG_CONNECTION_STRING` | service | yes | commerce Postgres; migrates forward on boot |
+| `SERVICE_API_TOKEN` | service | strongly | the write gate — unset leaves the write surface open (boot warns) |
+| `DATABASE_URL` | site | yes | content Postgres (see §3bis.2) |
+| `EMDASH_ENCRYPTION_KEY` | site | yes | the site's one secret |
+| `EMDASH_SITE_URL` | site | yes | canonical URL, and the WebAuthn relying-party id |
+| `S3_BUCKET` / `S3_REGION` / `S3_ENDPOINT` | site | media only | media library; credentials come from the provider chain |
+| `WEB_CONCURRENCY` | site | no | workers per pod (default 1) |
+| `HOST` / `PORT` | site | no | bind address; defaults `0.0.0.0:4321` |
+
+The rest of §4 and §5 apply unchanged — they are about the service, which does not care
+how it is packaged. Note `HOST` is site-only: the service always binds `0.0.0.0`
+(issue #43), which is what a kubelet's probes need.
+
+### 3bis.4 Two things the images deliberately do not do
+
+- **No `better-sqlite3`.** Both images install with `--ignore-scripts` and never compile a
+  native addon: the service imports the sqlite-free `@otta-sh/store-postgres/pg` subpath,
+  and the site's content database is Postgres. Both are pinned by tests
+  (`packages/service/test/container-entry.test.ts`, `sites/staging/test/node-target.test.ts`).
+- **No sweep cron.** Shape C runs the service's self-scheduled intervals, exactly like
+  Shape A — so §2.4's order-expiry gap applies here too, and wants the same external
+  driver.
 
 ## 4. Secrets & tokens checklist
 
