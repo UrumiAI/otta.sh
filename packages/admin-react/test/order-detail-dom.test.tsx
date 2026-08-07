@@ -35,7 +35,7 @@ vi.mock("emdash/plugin-utils", async (importOriginal) => {
 });
 
 const { OrderDetail } = await import("../src/orders/order-detail.js");
-const { formatAmount, orderStateCell, refundCapabilityText } =
+const { ABSENT, formatAmount, orderStateCell, refundCapabilityText } =
 	await import("@otta-sh/admin-presentation");
 type DetailPayload = import("../src/console-api.js").DetailPayload;
 type RefundsSummary = import("../src/console-api.js").RefundsSummary;
@@ -156,6 +156,17 @@ function detailFor(state: string, refunds: RefundsSummary = CAPTURED): DetailPay
 		notes: [],
 		vocabulary: VOCABULARY,
 	};
+}
+
+/** `detailFor` with the buyer identity overridden — everything else about the
+ *  fixture (money, lines, refunds) is irrelevant to the heading/confirm bug,
+ *  so this reuses `detailFor`'s record rather than repeating it. */
+function withIdentity(
+	payload: DetailPayload,
+	buyerRef: string,
+	customerId: string | null,
+): DetailPayload {
+	return { ...payload, order: { ...payload.order, buyerRef, customerId } };
 }
 
 // ── mounting ─────────────────────────────────────────────────────────────────
@@ -411,4 +422,52 @@ test("every amount on the detail is the one the formatter makes of the record", 
 	expect(refundFull.textContent).toBe(
 		`Refund ${formatAmount(CAPTURED.remainingCents, CUR)} (full remaining)`,
 	);
+});
+
+// ── THE DEFECT: the heading and the refund confirm both named the opaque
+// customer id on a CLAIMED order, the same bug as the list's Customer cell ──
+
+const CLAIMED_BUYER_REF = "priya.kapoor@example.test";
+const CLAIMED_CUSTOMER_ID = "4c2a8f91-7b3e-4d6a-9f1c-8a2b3c4d5e6f";
+
+test("the heading names the readable buyer reference, not the opaque customer id, for a claimed order", async () => {
+	const view = await show(withIdentity(detailFor("paid"), CLAIMED_BUYER_REF, CLAIMED_CUSTOMER_ID));
+
+	const heading = one<HTMLHeadingElement>(view, '[data-testid="detail-heading"]');
+	expect(heading.textContent).toContain(CLAIMED_BUYER_REF);
+	expect(heading.textContent).not.toContain(CLAIMED_CUSTOMER_ID);
+});
+
+test("the customer id stays reachable from the heading, as a non-focusable data attribute", async () => {
+	const view = await show(withIdentity(detailFor("paid"), CLAIMED_BUYER_REF, CLAIMED_CUSTOMER_ID));
+
+	const heading = one<HTMLHeadingElement>(view, '[data-testid="detail-heading"]');
+	expect(heading.getAttribute("data-customer-id")).toBe(CLAIMED_CUSTOMER_ID);
+	// Still an h1 — no tabindex, no role that would make it a second focusable
+	// stop on a screen whose only tab-order additions are its own controls.
+	expect(heading.hasAttribute("tabindex")).toBe(false);
+});
+
+test("an empty buyer reference renders the shared em dash in the heading, never the customer id and never blank", async () => {
+	const view = await show(withIdentity(detailFor("paid"), "", CLAIMED_CUSTOMER_ID));
+
+	const heading = one<HTMLHeadingElement>(view, '[data-testid="detail-heading"]');
+	expect(heading.textContent).toContain(ABSENT);
+	expect(heading.textContent).not.toContain(CLAIMED_CUSTOMER_ID);
+	expect(heading.textContent).not.toContain("null");
+	// The id is still on the row even though the heading has nothing readable —
+	// an operator can still act on the order from the id alone.
+	expect(heading.getAttribute("data-customer-id")).toBe(CLAIMED_CUSTOMER_ID);
+});
+
+test("the refund confirm names who the money goes back to by the readable reference, not the customer id", async () => {
+	const view = await show(
+		withIdentity(detailFor("paid", CAPTURED), CLAIMED_BUYER_REF, CLAIMED_CUSTOMER_ID),
+	);
+	await fire(tab(view, "money"), "click");
+	await fire(one<HTMLButtonElement>(view, '[data-testid="refund-full"]'), "click");
+
+	const confirmText = one(view, '[data-testid="otta-confirm-text"]');
+	expect(confirmText.textContent).toContain(CLAIMED_BUYER_REF);
+	expect(confirmText.textContent).not.toContain(CLAIMED_CUSTOMER_ID);
 });

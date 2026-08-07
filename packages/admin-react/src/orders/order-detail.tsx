@@ -40,6 +40,7 @@
  * that has to change changes once.
  */
 import {
+	ABSENT,
 	CANCEL_BANNER,
 	CANCEL_CONFIRM,
 	CANCEL_GROUP_LABEL,
@@ -252,6 +253,28 @@ function Unavailable({ text }: { text: string }): React.ReactElement {
  * Every other state renders as the bare phrase.
  */
 const PILLED_ORDER_STATE = "failed";
+
+/**
+ * The readable buyer reference for the heading and the refund confirm —
+ * NEVER the opaque `customerId` uuid. Same bug as the list's Customer cell
+ * (`orders-list.tsx`), one click away: this screen used to read
+ * `order.customerId ?? order.buyerRef`, so a CLAIMED order — the one where
+ * the most is known about the buyer — showed a uuid in its own H1, and in the
+ * sentence a refund confirm asks an operator to approve.
+ *
+ * Duplicated here rather than imported from `orders-list.tsx` — the same
+ * choice this file already made for `PILLED_ORDER_STATE` above, so the two
+ * screens stay independently editable rather than newly coupled to each
+ * other's module.
+ *
+ * `buyerRef` is typed as a required `string` on the wire but nothing upstream
+ * of this render enforces that at runtime, so an absent or empty value is
+ * treated as absent — the shared `ABSENT` em dash, never a blank heading and
+ * never the literal string "null".
+ */
+function customerReference(buyerRef: string | null | undefined): string {
+	return typeof buyerRef === "string" && buyerRef.length > 0 ? buyerRef : ABSENT;
+}
 
 /**
  * The Money tab's refunds panel: a pure view over ONE loaded refunds summary and
@@ -611,7 +634,7 @@ export function OrderDetail({
 	}
 
 	const order = detail.order;
-	const recipient = order.customerId ?? order.buyerRef;
+	const recipient = customerReference(order.buyerRef);
 	const refunds = detail.refunds;
 	const cur =
 		refunds?.currency !== undefined && refunds.currency.length > 0
@@ -650,7 +673,16 @@ export function OrderDetail({
 
 	return (
 		<div>
-			<h1 style={{ fontSize: 22, fontWeight: 700, marginBlockEnd: 8 }} data-testid="detail-heading">
+			<h1
+				style={{ fontSize: 22, fontWeight: 700, marginBlockEnd: 8 }}
+				data-testid="detail-heading"
+				// The uuid is reachable from the heading without being printed on the
+				// page — the same non-focusable attribute the list's Customer cell now
+				// carries it in (`data-customer-id`, `orders-list.tsx`). `undefined` on
+				// an unclaimed order omits the attribute rather than rendering
+				// `data-customer-id="null"`.
+				data-customer-id={order.customerId ?? undefined}
+			>
 				Order · {recipient} · {formatDate(order.createdAt)}
 			</h1>
 			<div style={{ marginBlockEnd: 16 }}>
