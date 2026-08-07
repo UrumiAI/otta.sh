@@ -19,16 +19,17 @@
  *      Block Kit screen enforces this in the type system, and the React screen
  *      does not, which is exactly why it is asserted here in the browser rather
  *      than only in a unit test;
- *   7. the two adjacent stock forms (PM §E2) behave differently — one recoverable
- *      and one not: restock is one-shot, removal raises a confirm naming the
- *      concrete quantity.
+ *   7. the two adjacent stock forms (PM §E2) both raise a confirm on a valid
+ *      quantity — restock is gated the same way removal is — but at different
+ *      weight: removal's is destructive-styled and says it cannot be undone by
+ *      restocking, restock's is neutral and reversible by a later removal.
  *
  * ROWS ARE A PREREQUISITE, NOT AN ASSUMPTION. The row-dependent specs call
  * `skipWithoutProducts`, which skips loudly on a bare stack and THROWS under
  * `OTTA_E2E_REQUIRE_SITE=1`. A gate run therefore cannot go green by asserting
  * nothing.
  */
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import {
 	ADMIN_SHELL_TIMEOUT_MS,
 	MIGRATED_SCREENS,
@@ -88,26 +89,33 @@ async function openStockableProduct(page: Page, limit = 6): Promise<boolean> {
 }
 
 /**
- * The stock movement's own confirm — `otta-confirm-*` scoped to the ONE
- * `ConfirmDialog` currently shown modally.
+ * Whichever `ConfirmDialog` is currently shown modally — NOT "the stock
+ * confirm" specifically, only whatever happens to be open, so a caller must
+ * not reach for this by name alone. Matches the discriminator this repo
+ * already uses for the same dialog pair in
+ * `packages/admin-react/test/console-chrome-dom.test.tsx`'s `openDialog`.
  *
  * `ConfirmDialog` is a shared component with one testid per part, and the
- * detail screen now mounts it TWICE at once: the stock-remove confirm this
- * spec drives, and `detail-leave-confirm`'s own instance, kept permanently
- * mounted (never unmounted) so a tab switch cannot lose a typed price. A bare
+ * detail screen now mounts it TWICE at once: the stock confirm this spec
+ * drives, and `detail-leave-confirm`'s own instance, kept permanently mounted
+ * (never unmounted) so a tab switch cannot lose a typed price. A bare
  * `getByTestId("otta-confirm-text")` therefore resolves to two nodes and
  * Playwright's strict mode rejects it, visible or not.
  *
- * The two are never open together — product-detail.tsx says so directly
- * ("Two dialogs, never both open"), and this spec never clicks the Back
- * button that is the leave-confirm's only trigger. So the native `<dialog
- * open>` attribute, which React sets via `showModal()`/`close()`, names
- * exactly the dialog this spec means at every point it checks: zero matches
- * while nothing is open (which `toBeHidden()` reads as hidden, correctly),
- * one match — this dialog, never the other one — once the remove confirm is
- * raised.
+ * SAFE HERE, NOT SAFE BY CONSTRUCTION. `product-detail.tsx` says the two
+ * dialogs are never open together, but Back (`products-back`) is not the
+ * leave-confirm's only trigger — a browser Back also bumps `leavePrompt`
+ * (`product-detail.tsx:524-529`, via `products-screen.tsx`'s `popstate`
+ * handler), which does not require the modal Back button at all. That path is
+ * gated on `unsaved.current`, which tracks only identity/price/shipping
+ * dirtiness (`leaveNeedsConfirm`) — and this spec dirties none of them, so for
+ * THIS spec the leave-confirm never opens. A future spec that dirties one of
+ * those sections and then calls this helper would get whichever dialog is
+ * open, possibly the wrong one under the right-sounding name — check that the
+ * same contingency still holds before reusing it, rather than trusting the
+ * name.
  */
-function stockConfirmDialog(page: Page) {
+function openConfirmDialog(page: Page): Locator {
 	return page.locator('dialog[data-testid="otta-confirm"][open]');
 }
 
@@ -343,7 +351,7 @@ test.describe("the migrated Pricing & inventory console", () => {
 		await expect(adminPage.getByTestId("detail-identity")).toContainText("Status (set in the CMS)");
 	});
 
-	test("the two adjacent stock forms differ: one recoverable, one not (PM §E2)", async ({
+	test("the two adjacent stock forms differ: destructive removal, neutral restock (PM §E2)", async ({
 		adminPage,
 	}, info) => {
 		await openProducts(adminPage);
@@ -365,27 +373,53 @@ test.describe("the migrated Pricing & inventory console", () => {
 		await adminPage.getByTestId("remove-qty").fill("nope");
 		await adminPage.getByTestId("remove-submit").click();
 		await expect(adminPage.getByTestId("remove-qty-error")).toContainText("Nothing was changed");
-		await expect(stockConfirmDialog(adminPage).getByTestId("otta-confirm-text")).toBeHidden();
+		await expect(openConfirmDialog(adminPage).getByTestId("otta-confirm-text")).toBeHidden();
 
 		// A REMOVAL raises a confirm naming the concrete quantity and its
-		// consequence. Nothing is removed by this spec: deny, and confirm it shut.
+		// consequence, weighted destructive: a bold border in the fail colour on
+		// the button that does it. Nothing is removed by this spec: deny, and
+		// confirm it shut.
 		await adminPage.getByTestId("remove-qty").fill("1");
 		await adminPage.getByTestId("remove-submit").click();
-		const confirmText = stockConfirmDialog(adminPage).getByTestId("otta-confirm-text");
+		const confirmText = openConfirmDialog(adminPage).getByTestId("otta-confirm-text");
 		await expect(confirmText).toBeVisible();
-		await expect(stockConfirmDialog(adminPage).getByTestId("otta-confirm-title")).toHaveText(
+		await expect(openConfirmDialog(adminPage).getByTestId("otta-confirm-title")).toHaveText(
 			"Remove 1 unit?",
 		);
 		await expect(confirmText).toContainText("Remove 1 unit from stock?");
 		await expect(confirmText).toContainText("cannot be undone by restocking");
-		await stockConfirmDialog(adminPage).getByTestId("otta-confirm-deny").click();
+		await expect(openConfirmDialog(adminPage).getByTestId("otta-confirm-yes")).toHaveCSS(
+			"font-weight",
+			"600",
+		);
+		await openConfirmDialog(adminPage).getByTestId("otta-confirm-deny").click();
 		await expect(confirmText).toBeHidden();
 
-		// A RESTOCK raises no dialog at all — DA-4, one-shot, reversible by nature.
-		// The refusal path proves the button is wired without moving any stock.
+		// A bad quantity is refused INLINE on the add form too, before any confirm
+		// is raised.
 		await adminPage.getByTestId("restock-qty").fill("0");
 		await adminPage.getByTestId("restock-submit").click();
 		await expect(adminPage.getByTestId("restock-qty-error")).toBeVisible();
+		await expect(confirmText).toBeHidden();
+
+		// A valid RESTOCK raises a confirm too — gated the same way removal is —
+		// but at neutral weight, never the fail-coloured border: adding stock is
+		// undoable, and dressing it as destruction would teach an operator to read
+		// past the weight on the confirm that is not. Nothing is added by this
+		// spec: deny, and confirm it shut.
+		await adminPage.getByTestId("restock-qty").fill("5");
+		await adminPage.getByTestId("restock-submit").click();
+		await expect(confirmText).toBeVisible();
+		await expect(openConfirmDialog(adminPage).getByTestId("otta-confirm-title")).toHaveText(
+			"Add 5 units?",
+		);
+		await expect(confirmText).toContainText("Add 5 units to");
+		await expect(confirmText).toContainText("sell them immediately");
+		await expect(openConfirmDialog(adminPage).getByTestId("otta-confirm-yes")).not.toHaveCSS(
+			"font-weight",
+			"600",
+		);
+		await openConfirmDialog(adminPage).getByTestId("otta-confirm-deny").click();
 		await expect(confirmText).toBeHidden();
 	});
 

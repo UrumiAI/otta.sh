@@ -2102,8 +2102,9 @@ inventory screen, and on any Block Kit screen that ever grows a stock movement. 
 appends a second movement to the ledger, so an accidental removal of 40 units where 4 were meant
 leaves two wrong entries and no correction trail. The risk is also asymmetric: an accidental
 removal makes sellable stock vanish (lost sales while the merchant hunts for the cause), while an
-accidental addition surfaces at the next count. Its inverse, **restock, stays DA-4** for exactly
-that reason. No other act may be argued into this clause.
+accidental addition surfaces at the next count. Its inverse, **restock, never qualifies for the
+danger weight** for exactly that reason — it earned its own confirm too, but at neutral tone, and
+neutral is not danger. No other act may be argued into this clause.
 
 **DA-6 — status moves are one `actions` block, with ids derived from the closed state list.** All
 offered transitions in a single block with **distinct** `action_id`s —
