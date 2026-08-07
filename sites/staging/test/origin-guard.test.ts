@@ -41,3 +41,33 @@ describe("isForbiddenCrossOrigin", () => {
 		expect(isForbiddenCrossOrigin("null", SITE)).toBe(true);
 	});
 });
+
+describe("behind a TLS-terminating proxy", () => {
+	// The edge speaks https to the browser and http to the pod, so the app's
+	// own origin differs from the browser's Origin BY SCHEME ONLY. Without
+	// this, every add-to-cart 403s for real users while curl (no Origin) sails
+	// through — broken in browsers, green from a terminal.
+	const APP = "http://shop.example";
+
+	test("same host, https Origin, edge reports https ⇒ allowed", () => {
+		expect(isForbiddenCrossOrigin("https://shop.example", APP, "https")).toBe(false);
+	});
+
+	test("takes the CLIENT-facing hop when proxies are chained", () => {
+		expect(isForbiddenCrossOrigin("https://shop.example", APP, "https, http")).toBe(false);
+	});
+
+	test("a DIFFERENT host is still forbidden, whatever the edge reports", () => {
+		expect(isForbiddenCrossOrigin("https://evil.example", APP, "https")).toBe(true);
+	});
+
+	test("the header only relaxes the SCHEME — a junk value changes nothing", () => {
+		expect(isForbiddenCrossOrigin("https://shop.example", APP, "javascript")).toBe(true);
+		expect(isForbiddenCrossOrigin("https://shop.example", APP, "")).toBe(true);
+	});
+
+	test("absent header keeps the original strict comparison", () => {
+		expect(isForbiddenCrossOrigin("https://shop.example", APP)).toBe(true);
+		expect(isForbiddenCrossOrigin("http://shop.example", APP)).toBe(false);
+	});
+});
