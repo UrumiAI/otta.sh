@@ -1,0 +1,48 @@
+# Everything the image builds for itself, plus anything that would carry local
+# state or credentials into a layer. Both Dockerfiles build from the repo root,
+# so this file governs the context for each of them.
+node_modules
+**/node_modules
+dist
+**/dist
+build
+**/build
+.astro
+**/.astro
+.wrangler
+**/.wrangler
+*.tsbuildinfo
+
+# Local deploy config and secrets — the tracked wrangler.jsonc files are
+# placeholder templates; the real identifiers live in these.
+**/wrangler.local.jsonc
+.env
+.env.*
+!.env.example
+**/.dev.vars
+
+# Local dev data
+*.db
+*.db-shm
+*.db-wal
+uploads
+**/uploads
+
+.git
+.github
+draft-plans
+*.log
+.DS_Store
+.vscode
+.idea
+
+# Docs and tests: not needed to build either image, and dropping them keeps
+# the build context small enough that a cold `docker build` is not dominated
+# by the upload.
+adr
+plans
+docs
+**/*.md
+!README.md
+**/test
+**/e2e

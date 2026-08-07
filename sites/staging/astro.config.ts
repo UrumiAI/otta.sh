@@ -12,11 +12,17 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import cloudflare from "@astrojs/cloudflare";
+import node from "@astrojs/node";
 import react from "@astrojs/react";
 import { defineConfig, fontProviders } from "astro/config";
 import emdash from "emdash/astro";
 import { parseDotEnv } from "./src/lib/dot-env.js";
-import { buildEmdashOptions, resolveServiceUrl } from "./src/emdash-options.js";
+import {
+	buildEmdashOptions,
+	resolveServiceUrl,
+	resolveSiteTarget,
+	SITE_TARGET_VAR,
+} from "./src/emdash-options.js";
 import { resolveStripePublishableKey, STRIPE_PUBLIC_KEY_VAR } from "./src/lib/stripe-config.js";
 
 /** Astro does NOT load .env into process.env for THIS module (verified —
@@ -59,11 +65,39 @@ const localWranglerConfig = existsSync(new URL("wrangler.local.jsonc", import.me
 	? "wrangler.local.jsonc"
 	: undefined;
 
+/** `cloudflare` unless OTTA_SITE_TARGET says otherwise — see
+ *  src/emdash-options.ts. Resolved the same way as every other build-time
+ *  variable here (shell env, then .env). */
+const target = resolveSiteTarget(process.env[SITE_TARGET_VAR] ?? readDotEnv(SITE_TARGET_VAR));
+
+/**
+ * Hosts `astro dev` will answer to on the Node target. Vite refuses any
+ * request whose Host header it does not recognise and returns a 403
+ * explaining the block rather than the site — which, behind the platform's
+ * load balancer, means the builder's preview pane shows the refusal instead
+ * of the store, since the Host header there is the public preview hostname
+ * and never localhost. A leading dot matches the domain and all subdomains,
+ * so this covers every per-store and per-workspace preview host without
+ * naming any of them. Dev server only: the Node adapter does no host
+ * checking in production, and the Cloudflare target never reads this.
+ */
+const devAllowedHosts = (process.env["DEV_ALLOWED_HOSTS"] ?? ".otta.sh,.myscalablesite.com")
+	.split(",")
+	.map((host) => host.trim())
+	.filter(Boolean);
+
 export default defineConfig({
 	output: "server",
 	// NOT `cloudflare({ imageService: "cloudflare" })` — that's the paid
 	// image resizing product; Astro's built-in service is fine for staging.
-	adapter: cloudflare(localWranglerConfig !== undefined ? { configPath: localWranglerConfig } : {}),
+	//
+	// `node({mode:"standalone"})` emits `dist/server/entry.mjs` with its own
+	// HTTP listener, which `server/cluster.mjs` imports once per worker.
+	adapter:
+		target === "node"
+			? node({ mode: "standalone" })
+			: cloudflare(localWranglerConfig !== undefined ? { configPath: localWranglerConfig } : {}),
+	...(target === "node" ? { server: { allowedHosts: devAllowedHosts } } : {}),
 	image: {
 		layout: "constrained",
 		responsiveStyles: true,
@@ -121,7 +155,7 @@ export default defineConfig({
 			options: { experimental: { variableAxis: { wdth: [["75", "112.5"]] } } },
 		},
 	],
-	integrations: [react(), emdash(buildEmdashOptions(serviceUrl))],
+	integrations: [react(), emdash(buildEmdashOptions(serviceUrl, target))],
 	// CSRF: Astro's `security.checkOrigin` does NOT protect the /cart/*
 	// endpoints — the emdash integration force-injects `checkOrigin: false`
 	// and its replacement layer covers only /_emdash/api/* routes. The
