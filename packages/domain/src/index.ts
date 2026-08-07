@@ -340,7 +340,9 @@ export type {
 	UpsertProductCommerceInput,
 } from "./ports/product-commerce-store.js";
 export {
+	InvalidLowStockThresholdError,
 	InvalidProductFieldError,
+	isValidLowStockThreshold,
 	MissingProductIdError,
 	SkuConflictError,
 } from "./product-commerce/errors.js";

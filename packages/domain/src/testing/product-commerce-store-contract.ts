@@ -1,7 +1,11 @@
 import { describe, expect, test } from "vitest";
 import { cents, currency, money } from "../money/cents.js";
 import { idempotencyKey, productId, sku } from "../money/ids.js";
-import { MissingProductIdError, SkuConflictError } from "../product-commerce/errors.js";
+import {
+	InvalidLowStockThresholdError,
+	MissingProductIdError,
+	SkuConflictError,
+} from "../product-commerce/errors.js";
 import type { ProductCommerce, ProductCommerceStore } from "../ports/product-commerce-store.js";
 import type { SeedProductSummaryRow } from "./in-memory-product-commerce-store.js";
 
@@ -1908,6 +1912,182 @@ export function productCommerceStoreContract(
 			expect(products.map((p) => p.productId)).toEqual(["match"]);
 		});
 
+		// -- lowStockThreshold (the low-stock filter predicate) ----------------
+		// The SQL-side twin of the plugin's client-side `applyLowStockNarrowing`
+		// rule (`packages/plugin/src/admin/products-read.ts`): a row matches iff
+		// its sku resolves to a KNOWN on-hand count (an `inventory` row exists)
+		// AND that count is <= the threshold. Absent (no inventory row, or no sku
+		// at all) is NEVER low stock — "unknown" is a different fact from "known
+		// and low" (port doc, `ProductSummary.onHand`). Omitting the field is a
+		// no-op, mirroring the plugin's `filterUnavailable` degradation for an
+		// unresolved threshold: never filter, never "filter to nothing".
+
+		test("listProducts filter.lowStockThreshold omitted is a no-op — every row lists regardless of stock (the unchanged default)", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "p-low", sku: "SKU-LOW" }));
+			await h.seedProduct(productRow({ id: "p-high", sku: "SKU-HIGH" }));
+			await h.seedProduct(productRow({ id: "p-none", sku: "SKU-NONE" }));
+			await h.seedStock("SKU-LOW", 1);
+			await h.seedStock("SKU-HIGH", 100);
+			// SKU-NONE is never seeded: onHand stays null (unknown), and the omitted
+			// filter still lists it — proof this is a no-op, not "threshold 0".
+			const { products } = await h.store.listProducts({}, { limit: 25 });
+			expect(products.map((p) => p.productId).toSorted()).toEqual(["p-high", "p-low", "p-none"]);
+		});
+
+		test("listProducts filter.lowStockThreshold matches a KNOWN on-hand count at or below the threshold, inclusive", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "p-low", sku: "SKU-LOW" }));
+			await h.seedProduct(productRow({ id: "p-boundary", sku: "SKU-BOUNDARY" }));
+			await h.seedProduct(productRow({ id: "p-high", sku: "SKU-HIGH" }));
+			await h.seedStock("SKU-LOW", 2);
+			await h.seedStock("SKU-BOUNDARY", 5); // exactly the threshold: INCLUDED (<=, not <).
+			await h.seedStock("SKU-HIGH", 6); // one over the threshold: excluded.
+			const { products } = await h.store.listProducts({ lowStockThreshold: 5 }, { limit: 25 });
+			expect(products.map((p) => p.productId).toSorted()).toEqual(["p-boundary", "p-low"]);
+		});
+
+		test("listProducts filter.lowStockThreshold treats on-hand ZERO as low stock — a known fact, not an unknown one", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "p-zero", sku: "SKU-ZERO" }));
+			await h.seedStock("SKU-ZERO", 0);
+			const { products } = await h.store.listProducts({ lowStockThreshold: 5 }, { limit: 25 });
+			expect(products.map((p) => p.productId)).toEqual(["p-zero"]);
+		});
+
+		test("listProducts filter.lowStockThreshold EXCLUDES a product with NO inventory row — unknown is never low stock", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "p-unknown", sku: "SKU-UNKNOWN" }));
+			await h.seedProduct(productRow({ id: "p-low", sku: "SKU-LOW" }));
+			await h.seedStock("SKU-LOW", 1);
+			// SKU-UNKNOWN is never seeded — absent is not zero (port doc).
+			const { products } = await h.store.listProducts({ lowStockThreshold: 5 }, { limit: 25 });
+			expect(products.map((p) => p.productId)).toEqual(["p-low"]);
+		});
+
+		test("listProducts filter.lowStockThreshold EXCLUDES a 'create then price' row with no sku at all", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "p-nosku", sku: null, title: "No sku yet" }));
+			await h.seedProduct(productRow({ id: "p-low", sku: "SKU-LOW" }));
+			await h.seedStock("SKU-LOW", 1);
+			const { products } = await h.store.listProducts({ lowStockThreshold: 5 }, { limit: 25 });
+			expect(products.map((p) => p.productId)).toEqual(["p-low"]);
+		});
+
+		test("listProducts filter.lowStockThreshold composes with active/productKind/search like every other axis", async () => {
+			const h = await makeStore();
+			await h.seedProduct(
+				productRow({
+					id: "match",
+					sku: "SKU-MATCH",
+					active: true,
+					productKind: "digital",
+					title: "Findable Ebook",
+				}),
+			);
+			await h.seedStock("SKU-MATCH", 1);
+			await h.seedProduct(
+				productRow({
+					id: "wrong-kind",
+					sku: "SKU-WRONG-KIND",
+					active: true,
+					productKind: "physical",
+					title: "Findable Mug",
+				}),
+			);
+			await h.seedStock("SKU-WRONG-KIND", 1);
+			await h.seedProduct(
+				productRow({
+					id: "wrong-stock",
+					sku: "SKU-WRONG-STOCK",
+					active: true,
+					productKind: "digital",
+					title: "Findable Plenty",
+				}),
+			);
+			await h.seedStock("SKU-WRONG-STOCK", 999);
+			const { products } = await h.store.listProducts(
+				{ active: true, productKind: "digital", search: "findable", lowStockThreshold: 5 },
+				{ limit: 25 },
+			);
+			expect(products.map((p) => p.productId)).toEqual(["match"]);
+		});
+
+		test("listProducts filter.lowStockThreshold paginates correctly — a filtered set keysets with no overlap and no gap", async () => {
+			const h = await makeStore();
+			// Five low-stock rows, distinct createdAt for a deterministic order, plus
+			// a plentiful row and an unknown-stock row that must NEVER surface on any
+			// page of the filtered walk.
+			for (let i = 0; i < 5; i++) {
+				await h.seedProduct(
+					productRow({
+						id: `p-low-${i}`,
+						sku: `SKU-LOW-${i}`,
+						createdAt: `2026-07-10T0${String(i)}:00:00.000Z`,
+					}),
+				);
+				await h.seedStock(`SKU-LOW-${i}`, i);
+			}
+			await h.seedProduct(
+				productRow({ id: "p-high", sku: "SKU-HIGH", createdAt: "2026-07-10T09:00:00.000Z" }),
+			);
+			await h.seedStock("SKU-HIGH", 999);
+			await h.seedProduct(
+				productRow({ id: "p-unknown", sku: "SKU-UNKNOWN", createdAt: "2026-07-10T08:00:00.000Z" }),
+			);
+
+			// Newest-first: p-low-4, p-low-3, p-low-2, p-low-1, p-low-0 — p-high and
+			// p-unknown never appear on any page.
+			const page1 = await h.store.listProducts({ lowStockThreshold: 4 }, { limit: 2 });
+			expect(page1.products.map((p) => p.productId)).toEqual(["p-low-4", "p-low-3"]);
+			expect(page1.nextCursor).not.toBeNull();
+			const page2 = await h.store.listProducts(
+				{ lowStockThreshold: 4 },
+				{ limit: 2, cursor: page1.nextCursor },
+			);
+			expect(page2.products.map((p) => p.productId)).toEqual(["p-low-2", "p-low-1"]);
+			expect(page2.nextCursor).not.toBeNull();
+			const page3 = await h.store.listProducts(
+				{ lowStockThreshold: 4 },
+				{ limit: 2, cursor: page2.nextCursor },
+			);
+			expect(page3.products.map((p) => p.productId)).toEqual(["p-low-0"]);
+			expect(page3.nextCursor).toBeNull();
+		});
+
+		test("listProducts filter.lowStockThreshold matching NOTHING returns an empty page with a null cursor (an inventory-never-synced store)", async () => {
+			const h = await makeStore();
+			// Never seeded via `seedStock` at all — every row is unknown stock, the
+			// most realistic way to hit the "total describes the filtered set"
+			// boundary this increment exists to guarantee.
+			await h.seedProduct(productRow({ id: "p-unsynced-1", sku: "SKU-UNSYNCED-1" }));
+			await h.seedProduct(productRow({ id: "p-unsynced-2", sku: "SKU-UNSYNCED-2" }));
+			const { products, nextCursor } = await h.store.listProducts(
+				{ lowStockThreshold: 0 },
+				{ limit: 25 },
+			);
+			expect(products).toEqual([]);
+			expect(nextCursor).toBeNull();
+		});
+
+		test("listProducts filter.lowStockThreshold OUTSIDE its non-negative-integer domain throws InvalidLowStockThresholdError, never a silent per-adapter answer", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "p-1", sku: "SKU-1" }));
+			await h.seedStock("SKU-1", 3);
+			for (const bad of [
+				2.5,
+				-1,
+				-0.5,
+				Number.NaN,
+				Number.POSITIVE_INFINITY,
+				Number.NEGATIVE_INFINITY,
+			]) {
+				await expect(
+					h.store.listProducts({ lowStockThreshold: bad }, { limit: 25 }),
+				).rejects.toBeInstanceOf(InvalidLowStockThresholdError);
+			}
+		});
+
 		// -- countProducts (INC-23: the exact count the admin list captions with) --
 
 		test("countProducts counts the whole filtered set, independently of any page size", async () => {
@@ -1953,6 +2133,77 @@ export function productCommerceStoreContract(
 				await h.store.countProducts({ active: true, productKind: "digital", search: "findable" }),
 			).toBe(1);
 			expect(await h.store.countProducts({})).toBe(3);
+		});
+
+		test("countProducts applies the SAME lowStockThreshold predicate as listProducts, inclusive at the boundary", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "p-low", sku: "SKU-LOW" }));
+			await h.seedProduct(productRow({ id: "p-boundary", sku: "SKU-BOUNDARY" }));
+			await h.seedProduct(productRow({ id: "p-high", sku: "SKU-HIGH" }));
+			await h.seedProduct(productRow({ id: "p-unknown", sku: "SKU-UNKNOWN" }));
+			await h.seedStock("SKU-LOW", 2);
+			await h.seedStock("SKU-BOUNDARY", 5);
+			await h.seedStock("SKU-HIGH", 6);
+			// SKU-UNKNOWN is never seeded.
+			expect(await h.store.countProducts({ lowStockThreshold: 5 })).toBe(2);
+			expect(await h.store.countProducts({})).toBe(4);
+		});
+
+		test("countProducts filter.lowStockThreshold composes with active/productKind/search like every other axis", async () => {
+			const h = await makeStore();
+			await h.seedProduct(
+				productRow({
+					id: "match",
+					sku: "SKU-MATCH",
+					active: true,
+					productKind: "digital",
+					title: "Findable Ebook",
+				}),
+			);
+			await h.seedStock("SKU-MATCH", 1);
+			await h.seedProduct(
+				productRow({
+					id: "wrong-stock",
+					sku: "SKU-WRONG-STOCK",
+					active: true,
+					productKind: "digital",
+					title: "Findable Plenty",
+				}),
+			);
+			await h.seedStock("SKU-WRONG-STOCK", 999);
+			expect(
+				await h.store.countProducts({
+					active: true,
+					productKind: "digital",
+					search: "findable",
+					lowStockThreshold: 5,
+				}),
+			).toBe(1);
+			expect(await h.store.countProducts({})).toBe(2);
+		});
+
+		test("countProducts filter.lowStockThreshold matching NOTHING is 0 — describes the filtered set, not the unfiltered catalog (an inventory-never-synced store)", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "p-unsynced-1", sku: "SKU-UNSYNCED-1" }));
+			await h.seedProduct(productRow({ id: "p-unsynced-2", sku: "SKU-UNSYNCED-2" }));
+			expect(await h.store.countProducts({ lowStockThreshold: 0 })).toBe(0);
+			expect(await h.store.countProducts({})).toBe(2);
+		});
+
+		test("countProducts filter.lowStockThreshold OUTSIDE its non-negative-integer domain throws InvalidLowStockThresholdError, matching listProducts", async () => {
+			const h = await makeStore();
+			for (const bad of [
+				2.5,
+				-1,
+				-0.5,
+				Number.NaN,
+				Number.POSITIVE_INFINITY,
+				Number.NEGATIVE_INFINITY,
+			]) {
+				await expect(h.store.countProducts({ lowStockThreshold: bad })).rejects.toBeInstanceOf(
+					InvalidLowStockThresholdError,
+				);
+			}
 		});
 
 		test("countProducts on an empty store is 0", async () => {

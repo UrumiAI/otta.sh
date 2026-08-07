@@ -49,6 +49,79 @@ export interface ProductListFilter {
 	 *    or browse the archive — never both at once).
 	 */
 	deleted?: boolean;
+	/**
+	 * Low-stock predicate parameter — the SQL-side twin of the plugin's
+	 * client-side `applyLowStockNarrowing` rule
+	 * (`packages/plugin/src/admin/products-read.ts`), moved into the store so
+	 * the database does the filtering instead of a page-scoped client-side
+	 * narrowing. The threshold is the store's SINGLE GLOBAL scalar
+	 * (`SettingsStore.lowStockThreshold`), never a per-product reorder point —
+	 * this store does not read settings itself; the CALLER resolves the
+	 * threshold and passes the number through, exactly like every other value
+	 * on this filter.
+	 *
+	 * DOMAIN: a NON-NEGATIVE INTEGER — mirrors the HTTP boundary's own
+	 * validation (`packages/service/src/schemas.ts`'s `lowStockQuery` /
+	 * `settingsBody`: `z.number().int().nonnegative()`), and the ONLY domain
+	 * every adapter agrees on. A value outside it (fractional, negative,
+	 * `NaN`, `±Infinity`) throws `InvalidLowStockThresholdError` — checked by
+	 * EVERY adapter via the shared `isValidLowStockThreshold` guard, BEFORE
+	 * any comparison or query runs — never a silent per-adapter answer: a raw
+	 * fractional threshold applies cleanly in a naive fake/SQLite comparison
+	 * but Postgres rejects it binding an `integer` column, and a raw `NaN`
+	 * threshold would silently mean "everything passes" in a naive fake
+	 * (`onHand > NaN` is always false) and "nothing passes" in SQLite — three
+	 * different answers to one input, which is what the shared guard exists
+	 * to make unreachable. Contract-pinned so the three can never drift apart.
+	 *
+	 * NOT YET ENFORCED AT THIS FILTER'S OWN HTTP BOUNDARY: `lowStockQuery` and
+	 * `settingsBody` (above) constrain the OTHER two `lowStockThreshold`
+	 * call sites, but `productListFilterSchema` in `packages/service/src/
+	 * schemas.ts` — the schema this filter's own list/count query param would
+	 * parse through — has no `lowStockThreshold` field at all yet, so it
+	 * cannot reject a bad one before this port does. Whichever increment wires
+	 * a query param to this field MUST add the same `z.number().int()
+	 * .nonnegative()` there and map `InvalidLowStockThresholdError` to a 400,
+	 * or a bad value 500s instead of 400s.
+	 *
+	 * A row matches iff BOTH hold:
+	 *  - its sku resolves to a KNOWN `inventory` row — the same LEFT JOIN
+	 *    `ProductSummary.onHand` is sourced from. A product with NO inventory
+	 *    row (or no sku at all — a "create then price" row) is UNKNOWN stock,
+	 *    never "low": absent is not zero (see `ProductSummary.onHand`'s doc).
+	 *    Folding the two would render every never-synced/unpriced sku as
+	 *    artificially urgent.
+	 *  - `on_hand <= lowStockThreshold` — INCLUSIVE, so a sku stocked exactly
+	 *    at the threshold counts as low, and `on_hand === 0` ("out of stock",
+	 *    a KNOWN fact) always matches a non-negative threshold.
+	 *
+	 * A SECOND, DELIBERATELY DIFFERENT "low stock" lives at
+	 * `ReportingStore.lowStock(threshold)`: that report is INVENTORY-first (an
+	 * orphan sku with no live product still lists, ordered by `on_hand`),
+	 * while this filter is PRODUCT-first (a rowless product is excluded,
+	 * ordered by `created_at`). Both happen to be inclusive at the boundary
+	 * today, so the two agree there — but they are independent definitions
+	 * with independent absent-row rules, and a future change to either one's
+	 * boundary or absent-row decision must update BOTH docs, not just one.
+	 *
+	 * OMITTED (`undefined`) ⇒ no stock-based filtering — the unchanged
+	 * default every existing caller keeps seeing. This is also the correct
+	 * behavior when a caller cannot resolve a threshold at all (settings
+	 * unset/unreadable) — never treat "no threshold" as "threshold 0" (which
+	 * would silently return only out-of-stock rows instead of the honest
+	 * "can't filter" answer).
+	 *
+	 * THIS ONLY MIRRORS HALF of the plugin's `filterUnavailable` degradation
+	 * (`canFilter = threshold !== null && !unreadable`) — specifically the
+	 * "no threshold to filter by" cause. It does NOT, and cannot, mirror the
+	 * OTHER cause (`unreadable`: every row's `onHand` missing on the WIRE) —
+	 * that is a client-side projection concern, orthogonal to whether this
+	 * predicate ran. Once a caller wires this field up, a page can be
+	 * genuinely, correctly filtered by real `on_hand` values while the
+	 * client's OWN `onHand` display column is still unreadable: the two
+	 * causes are independent axes post-wiring, not one merged concept.
+	 */
+	lowStockThreshold?: number;
 }
 
 /** A keyset cursor POSITION — the `(createdAt, productId)` of the last row of
@@ -595,7 +668,9 @@ export interface ProductCommerceStore {
 	 * a filter) and needs no new index; the LEFT half is load-bearing, because
 	 * a sku with no inventory row must yield `onHand: null` ("unknown"), which
 	 * is NOT the same fact as `0` ("out of stock"). `inventory.sku` is that
-	 * table's primary key, so the join can never multiply a page's rows.
+	 * table's primary key, so the join can never multiply a page's rows. The
+	 * SAME join backs `filter.lowStockThreshold` (see that field's doc) — no
+	 * second join, no separate query.
 	 * Excludes soft-deleted rows
 	 * (`deleted_at IS NULL`) by DEFAULT — mirrors `listCommerceByIds`'s
 	 * tombstone discipline — UNLESS `filter.deleted: true` requests the archive
@@ -626,10 +701,10 @@ export interface ProductCommerceStore {
 	/**
 	 * Count the products matching a filter (INC-23: the admin list's exact
 	 * "N products" caption). Shares the EXACT predicate with `listProducts` —
-	 * same `active`/`deleted`/`productKind`/`search` semantics, including the
-	 * tombstone default — so a count can never disagree with the list it
-	 * captions (one predicate builder in every adapter; mirrors
-	 * `OrderStore.countOrders` 1:1).
+	 * same `active`/`deleted`/`productKind`/`search`/`lowStockThreshold`
+	 * semantics, including the tombstone default — so a count can never
+	 * disagree with the list it captions (one predicate builder in every
+	 * adapter; mirrors `OrderStore.countOrders` 1:1).
 	 *
 	 * A SEPARATE method rather than a `total` on `ListResult`, deliberately: the
 	 * count is a second statement, and folding it into the page read would
@@ -637,8 +712,23 @@ export interface ProductCommerceStore {
 	 * renders one. The keyset page and the count are independent questions and
 	 * stay independently callable.
 	 *
-	 * NO JOIN and no ordering — `listProducts`'s stock LEFT JOIN exists to fill
-	 * a column, and a count has no columns.
+	 * NO JOIN and no ordering by default — `listProducts`'s stock LEFT JOIN
+	 * exists to fill a column, and a count has no columns. The join is added
+	 * back CONDITIONALLY, only when `filter.lowStockThreshold` is set (the one
+	 * axis a count cannot resolve without it), so every other predicate keeps
+	 * the join-free plan this method was measured against.
+	 *
+	 * CAPTION HAZARD for whichever caller wires this filter up: this method
+	 * returns a GENUINELY FILTERED total whenever `filter.lowStockThreshold`
+	 * is set, and the UNFILTERED total when it is omitted — the inverse of
+	 * the plugin's CURRENT client-side narrowing, which deliberately withholds
+	 * `total` while narrowing, precisely because that count did not describe
+	 * the rows on screen (see `applyLowStockNarrowing`'s doc). Once this
+	 * predicate is wired server-side, a caller that could not resolve a
+	 * threshold and therefore omitted this field is holding an UNFILTERED
+	 * total — it must not caption the list or the total as filtered in that
+	 * case. The omission has to propagate all the way to the caption, not
+	 * stop at the query.
 	 */
 	countProducts(filter: ProductListFilter): Promise<number>;
 

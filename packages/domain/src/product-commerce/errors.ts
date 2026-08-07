@@ -50,3 +50,46 @@ export class InvalidProductFieldError extends Error {
 		this.field = field;
 	}
 }
+
+/**
+ * Domain validation error for `ProductListFilter.lowStockThreshold` (the
+ * admin Products list/count low-stock predicate). The port's declared domain
+ * is a NON-NEGATIVE INTEGER — the only domain every adapter agrees on, and
+ * the same domain the HTTP boundary already validates to
+ * (`packages/service/src/schemas.ts`'s `lowStockQuery`/`settingsBody`:
+ * `z.number().int().nonnegative()`). Outside that domain the raw adapters
+ * silently DISAGREE, which is exactly what this error exists to prevent:
+ * measured, a fractional threshold (e.g. `2.5`) filters cleanly in the fake
+ * and SQLite but Postgres rejects it binding an `integer` column
+ * ("invalid input syntax for type integer"); a `NaN` threshold returns
+ * EVERY stocked row in a naive fake (`onHand > NaN` is always false, so
+ * nothing is excluded), returns NONE in SQLite, and throws in Postgres —
+ * three answers to one input. Every `ProductCommerceStore` adapter (the
+ * fake, the Kysely store on both dialects) therefore validates the
+ * threshold FIRST, via the shared `isValidLowStockThreshold` guard, and
+ * throws this SAME error before any comparison or query runs — contract-
+ * pinned (`product-commerce-store-contract.ts`) so the three can never
+ * drift apart again.
+ */
+export class InvalidLowStockThresholdError extends Error {
+	readonly value: number;
+
+	constructor(value: number) {
+		super(`lowStockThreshold must be a non-negative integer, got ${String(value)}`);
+		this.name = "InvalidLowStockThresholdError";
+		this.value = value;
+	}
+}
+
+/**
+ * The domain guard `InvalidLowStockThresholdError` enforces: a finite,
+ * non-negative integer. Exported so every adapter shares ONE definition
+ * instead of re-deriving `Number.isInteger` checks that could quietly drift
+ * apart from each other (the exact failure `InvalidLowStockThresholdError`'s
+ * doc records). `Number.isInteger` is `false` for `NaN`/`±Infinity`/any
+ * fractional value, so those are rejected without a separate finiteness
+ * check.
+ */
+export function isValidLowStockThreshold(value: number): boolean {
+	return Number.isInteger(value) && value >= 0;
+}
