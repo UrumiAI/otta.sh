@@ -467,6 +467,9 @@ function couponsBlocks(
 		firstPage,
 		nextToken,
 		...(total !== undefined ? { total } : {}),
+		// Every filter here (`code`) is a service predicate — there is no
+		// products-style narrowing of an already-fetched page on this screen.
+		countScope: "service-filtered",
 		noun: { one: "coupon", other: "coupons" },
 		empty: {
 			title: "No coupons yet",

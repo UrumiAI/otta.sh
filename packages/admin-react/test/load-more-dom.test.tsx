@@ -383,7 +383,7 @@ test("F29: the narrowed count names what it counted, and the scan says it is one
 	expect(text(view, "products-intro")).toContain("5 low-stock products loaded so far");
 });
 
-test("A2a: a narrowed catalog that fits on ONE page still gets the page-scoped qualifier", async () => {
+test("a narrowed catalog that fits on ONE page still gets the page-scoped qualifier", async () => {
 	// THE DEFECT THIS PINS. "Low stock only" has no service predicate — it keeps
 	// the low-stock rows out of whatever page was fetched — so `nextCursor: null`
 	// on the FIRST response means only "the fetch stopped here", never "every
@@ -415,6 +415,86 @@ test("A2a: a narrowed catalog that fits on ONE page still gets the page-scoped q
 	// beside a live button.
 	expect(absent(view, "products-load-more")).toBe(true);
 	expect(absent(view, "products-low-stock-paging-note")).toBe(true);
+});
+
+test("a narrowed SCAN that exhausts the catalog keeps 'loaded so far'", async () => {
+	// THE HALF THE F29 TEST (ABOVE) NEVER REACHES: its second response always
+	// carries a non-null `nextCursor`, so `hasNext` never goes false once pages
+	// accumulate and that test would stay green even if THIS fix were reverted.
+	// Here a scan runs three responses deep and the THIRD exhausts the catalog —
+	// `firstPage` stays true throughout (the render started at page one), so the
+	// pre-fix `complete = firstPage && !hasNext` would have gone true on exactly
+	// this response and dropped straight to whole-set phrasing on an accumulated,
+	// still page-scoped count.
+	let call = 0;
+	serve(() => {
+		call += 1;
+		const page =
+			call === 1
+				? { products: ids("p", 1, 2), nextCursor: "cursor-2" }
+				: call === 2
+					? { products: ids("p", 3, 3), nextCursor: "cursor-3" }
+					: { products: ids("p", 4, 4), nextCursor: null };
+		return envelope({
+			ok: true,
+			products: page.products.map(product),
+			nextCursor: page.nextCursor,
+			stock: { threshold: 5, unreadable: false, filterUnavailable: false },
+			vocabulary: PRODUCTS_VOCABULARY,
+		});
+	});
+	view = await mount(<ProductsList onOpen={() => {}} initialFilter={{ lowStock: true }} />);
+	await settle();
+	expect(rows(view, "products-row")).toHaveLength(2);
+
+	await press(view, "products-load-more");
+	await settle();
+	expect(rows(view, "products-row")).toHaveLength(3);
+	expect(text(view, "products-intro")).toContain("3 low-stock products loaded so far");
+
+	await press(view, "products-load-more");
+	await settle();
+	expect(rows(view, "products-row")).toHaveLength(4);
+	// THE SCAN RAN OUT OF CATALOG ON ITS THIRD REQUEST, not out of doubt — the
+	// four accumulated rows are still only what the scan happened to find, never
+	// promoted to a whole-catalog claim just because nothing was left to fetch.
+	expect(text(view, "products-intro")).toContain("4 low-stock products loaded so far");
+	expect(absent(view, "products-load-more")).toBe(true);
+});
+
+test("a filterUnavailable page keeps the SERVICE'S noun and total, not the checkbox's", async () => {
+	// END TO END: the operator checked "Low stock only", but the plugin could
+	// not read the threshold this time (`stock.filterUnavailable`)
+	// — narrowing did not apply, every product on the page is listed, and the
+	// service's own exact `total` still arrived (`applyLowStockNarrowing` only
+	// withholds `total` when it actually narrows). Reading `narrowed` off the
+	// checkbox alone renders "137 low-stock products": a wrong number (a real
+	// `total` refused, then a fallback describing only 5 rows) and a wrong noun,
+	// directly above the banner already saying the filter was not applied. This
+	// also distinguishes the real fix from a `firstPage: false` hack at the call
+	// site: the hack alone would not honour a real `total` or pick the ordinary
+	// noun here, because it never asks whether the narrowing actually applied.
+	serve(() =>
+		envelope({
+			ok: true,
+			products: ids("p", 1, 5).map(product),
+			nextCursor: null,
+			total: 137,
+			stock: { threshold: null, unreadable: false, filterUnavailable: true },
+			vocabulary: PRODUCTS_VOCABULARY,
+		}),
+	);
+	view = await mount(<ProductsList onOpen={() => {}} initialFilter={{ lowStock: true }} />);
+	await settle();
+	expect(rows(view, "products-row")).toHaveLength(5);
+	// THE SERVICE'S REAL TOTAL, HONOURED — an ordinary, service-filtered page once
+	// the narrowing did not actually apply, entitled to the same exact figure any
+	// other filtered list states.
+	expect(text(view, "products-intro")).toContain("137 products");
+	expect(text(view, "products-intro")).not.toContain("low-stock");
+	expect(text(view, "products-stock-degraded")).toContain(
+		"the Low stock only filter was not applied",
+	);
 });
 
 /**

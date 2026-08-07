@@ -469,7 +469,24 @@ export function ProductsList({
 	// narrows the rows this page fetched, so the zero-state wording, the offer to
 	// keep looking and the offer to stop are all page-scoped. Same switch the
 	// Block Kit screen makes, on the same boolean.
-	const narrowed = applied.lowStock === true;
+	//
+	// NARROWED MEANS APPLIED, NOT MERELY REQUESTED. The checkbox can be checked
+	// while nothing about THIS page's rows changed: the plugin withholds the
+	// narrowing — and forwards ITS OWN `total` instead — whenever the low-stock
+	// threshold cannot be read (`stock.filterUnavailable`,
+	// `applyLowStockNarrowing`). Reading `narrowed` off the checkbox alone would
+	// then state "137 low-stock products" for an ordinary, service-filtered page
+	// of every product — a wrong number AND a wrong noun, directly above the
+	// degradation banner that already says the filter was not applied.
+	//
+	// `stock` IS THE LATEST RESPONSE'S ANSWER ONLY (see `nextPage`) — exactly
+	// right for a single page, and an approximation once pages accumulate: a
+	// `filterUnavailable` flip between two `Load more` responses would apply
+	// THIS render's scope to rows merged from both, one narrowed and one not.
+	// Only reachable if the threshold read itself flips mid-scan, and still the
+	// smaller, more honest claim than reading the checkbox alone — but worth
+	// naming rather than leaving implied.
+	const narrowed = applied.lowStock === true && page?.stock.filterUnavailable !== true;
 
 	// THE SHARED DECISION. Same function, same inputs, as the Block Kit screen's
 	// `listResult` — so the count line, the wording, and which state renders at
@@ -487,11 +504,16 @@ export function ProductsList({
 		// `complete` true and the count line dropped its qualifier — "3 low-stock
 		// products", read as a whole-catalog claim, which is exactly what this
 		// filter's contract (above, and `applyLowStockNarrowing`'s) says it must
-		// never state. `narrowed` already gates `total` for the same reason.
-		narrowedAfterFetch: narrowed,
-		// F29: NAME WHAT WAS COUNTED. While the narrowing is on, the rows are the
-		// low-stock ones the fetched pages happened to hold, and calling them
-		// "3 products" invites the merchant to read three as the catalog's answer.
+		// never state. `narrowed` already gates `total` the same way, and
+		// `listOutcome` now refuses one on this scope regardless.
+		countScope: narrowed ? "narrowed-after-fetch" : "service-filtered",
+		// F29: NAME WHAT WAS COUNTED. While the narrowing is ACTUALLY on, the rows
+		// are the low-stock ones the fetched pages happened to hold, and calling
+		// them "3 products" invites the merchant to read three as the catalog's
+		// answer. The same `narrowed` boolean is why this reverts to the ordinary
+		// noun on a `filterUnavailable` page: the rows there are every product,
+		// not a low-stock subset, and "low-stock products" would be the wrong
+		// word for them.
 		noun: narrowed ? PRODUCTS_LOW_STOCK_NOUN : PRODUCTS_NOUN,
 		// F24. Once two responses are on screen at once, "on this page" is the
 		// wrong sentence for rows drawn from both. The Block Kit tier still
@@ -500,9 +522,13 @@ export function ProductsList({
 		...((page?.pages ?? 1) > 1 ? { scopeSuffix: ACCUMULATED_SUFFIX } : {}),
 		empty: PRODUCTS_EMPTY,
 		noMatch: narrowed ? PRODUCTS_LOW_STOCK_NO_MATCH : PRODUCTS_NO_MATCH,
-		// The plugin already withheld this while the narrowing was on, so this is
-		// simply whatever came through — the decision is made once, where the
-		// narrowing happens (`applyLowStockNarrowing`).
+		// The plugin already withheld this while the narrowing was ACTUALLY on,
+		// so this is simply whatever came through — the decision is made once,
+		// where the narrowing happens (`applyLowStockNarrowing`) — and
+		// `listOutcome` no longer trusts it blindly either: it refuses a `total`
+		// outright whenever `countScope` says the page was narrowed after the
+		// fetch, so a mislabelled `narrowed` here still cannot resurrect
+		// whole-set phrasing.
 		...(page?.total !== undefined ? { total: page.total } : {}),
 	});
 

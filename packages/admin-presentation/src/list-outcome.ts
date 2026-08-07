@@ -235,29 +235,34 @@ export interface ListOutcomeOptions {
 	 *  arrived on. */
 	readonly scopeSuffix?: string;
 	/**
-	 * True when `count` was produced by narrowing an ALREADY-FETCHED page rather
-	 * than by a service predicate — products' "Low stock only" is the one caller
-	 * today (`applyLowStockNarrowing`), which is why `total` never arrives while
-	 * it is on (see that function's doc).
+	 * WHAT `count` (and any `total`) DESCRIBE — a REQUIRED discriminant, not an
+	 * opt-in, so a caller that narrows a page after fetching it cannot forget to
+	 * say so and quietly inherit the larger, whole-set-capable default.
 	 *
-	 * WITHOUT THIS, `firstPage && !hasNext` reads as "the fetch is complete" and
-	 * `rowCountLine` treats that as "the counted set is complete" — true for an
-	 * ordinary, service-filtered list, where the fetched page and the filtered
-	 * set are the same collection, but not for a narrowing applied AFTER the
-	 * fetch: the moment a query happens to fit on one page (or a scan exhausts
-	 * every page), `complete` goes true and a count that has only ever described
-	 * rows on screen starts reading as a whole-catalog claim — "3 low-stock
-	 * products" with no qualifier, for a filter whose own contract is that it
-	 * never says anything about the catalog. Passing `true` here keeps the
-	 * qualifier regardless of `firstPage`/`hasNext`, because this render is never
-	 * entitled to the whole-set phrasing no matter how the fetch happened to
-	 * land.
-	 *
-	 * Absent ⇒ `false`, unchanged for every other caller: their filters are
-	 * service-side, so `firstPage && !hasNext` really does mean the counted set
-	 * is complete.
+	 *  - `"service-filtered"` — every filter that produced `count` (and, when
+	 *    present, `total`) is a predicate the SERVICE applied to its query. The
+	 *    fetched page and the filtered set are the same collection, so
+	 *    `firstPage && !hasNext` really does mean the counted set is complete,
+	 *    and a `total` is honoured exactly as {@link rowCountLine} validates it.
+	 *  - `"narrowed-after-fetch"` — `count` was produced by narrowing an
+	 *    ALREADY-FETCHED page client-side (products' "Low stock only" is the one
+	 *    caller today, via `applyLowStockNarrowing`). Two things follow, and both
+	 *    are ENFORCED here rather than left to the caller to get right:
+	 *      1. `firstPage && !hasNext` is the FETCH being complete, not the
+	 *         narrowed set — the moment a query happens to fit on one page, or a
+	 *         scan exhausts every page, that would otherwise read as "the
+	 *         counted set is complete" and drop the qualifier off a count that
+	 *         has only ever described rows on screen. `complete` never goes true
+	 *         in this scope.
+	 *      2. A `total`, however it arrives, is NOT honoured: `listOutcome`
+	 *         drops it before it reaches {@link rowCountLine}. A caller whose
+	 *         narrowing did not actually apply to this page (products'
+	 *         `stock.filterUnavailable`) must report `"service-filtered"` for
+	 *         that page — passing `"narrowed-after-fetch"` with a total present
+	 *         is exactly the caller error this refusal exists to survive, not a
+	 *         state this helper trusts a caller to avoid on its own.
 	 */
-	readonly narrowedAfterFetch?: boolean;
+	readonly countScope: "service-filtered" | "narrowed-after-fetch";
 	readonly noun: RowNoun;
 	/** Zero rows and NO filter on: the collection itself is empty. */
 	readonly empty: ZeroStateCopy;
@@ -273,9 +278,17 @@ export interface ListOutcomeOptions {
 }
 
 export function listOutcome(opts: ListOutcomeOptions): ListOutcome {
+	const narrowedAfterFetch = opts.countScope === "narrowed-after-fetch";
 	const countLine = rowCountLine(opts.count, opts.noun, {
-		complete: opts.firstPage && !opts.hasNext && opts.narrowedAfterFetch !== true,
-		...(opts.total !== undefined ? { total: opts.total } : {}),
+		complete: opts.firstPage && !opts.hasNext && !narrowedAfterFetch,
+		// REFUSED, NOT MERELY UNCLAIMED: a `total` is dropped here whenever the
+		// scope says the page was narrowed after the fetch, even if the caller
+		// passed one — see `countScope`'s doc. This is what survives a caller
+		// mislabelling a page `narrowed-after-fetch` while a real `total` is
+		// present (a `filterUnavailable` page that forwards the service's own
+		// count): the mislabel would still be a bug, but it can no longer
+		// resurrect the whole-set phrasing this scope exists to withhold.
+		...(!narrowedAfterFetch && opts.total !== undefined ? { total: opts.total } : {}),
 		...(opts.scopeSuffix !== undefined ? { scopeSuffix: opts.scopeSuffix } : {}),
 	});
 	if (opts.count > 0) {
