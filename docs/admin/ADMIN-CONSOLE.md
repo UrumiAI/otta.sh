@@ -2075,8 +2075,8 @@ again."* (`UNREADABLE`, `orders-actions.ts:172-180`; the same shape at
 refusal is reached from a dozen branches and must read identically from all of them.
 
 **DA-4 — non-destructive writes stay one-shot.** Plain `form`, no confirm, no danger: add note,
-restock, save/rename, create, resolve reconciliation (it records a decision and moves no money —
-say so in the copy, and never style it as danger).
+save/rename, create, resolve reconciliation (it records a decision and moves no money — say so in
+the copy, and never style it as danger).
 
 **DA-5 — button colour means exactly one thing.** `danger` ⇔ **irreversible, or reversible only by
 a separate manual operation an operator can forget.** Everything else is default `secondary`. A red

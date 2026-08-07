@@ -376,9 +376,9 @@ test.describe("the migrated Pricing & inventory console", () => {
 		await expect(openConfirmDialog(adminPage).getByTestId("otta-confirm-text")).toBeHidden();
 
 		// A REMOVAL raises a confirm naming the concrete quantity and its
-		// consequence, weighted destructive: a bold border in the fail colour on
-		// the button that does it. Nothing is removed by this spec: deny, and
-		// confirm it shut.
+		// consequence, weighted destructive: the bold font-weight on the button
+		// that does it. Nothing is removed by this spec: deny, and confirm it
+		// shut.
 		await adminPage.getByTestId("remove-qty").fill("1");
 		await adminPage.getByTestId("remove-submit").click();
 		const confirmText = openConfirmDialog(adminPage).getByTestId("otta-confirm-text");
@@ -403,7 +403,7 @@ test.describe("the migrated Pricing & inventory console", () => {
 		await expect(confirmText).toBeHidden();
 
 		// A valid RESTOCK raises a confirm too — gated the same way removal is —
-		// but at neutral weight, never the fail-coloured border: adding stock is
+		// but at neutral weight, never the bold font-weight: adding stock is
 		// undoable, and dressing it as destruction would teach an operator to read
 		// past the weight on the confirm that is not. Nothing is added by this
 		// spec: deny, and confirm it shut.
