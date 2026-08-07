@@ -1026,17 +1026,36 @@ describe("refundConfirmText — the refund confirm's one sentence, exercised dir
 		expect(refundConfirmText(ORDER_ID, "$1.00", "x@y.test", true)).not.toContain(ORDER_ID);
 	});
 
-	test("the recipient is always quoted (finding N3) — an operator can see where the token begins and ends", () => {
+	test("a real recipient is always quoted (finding N3) — an operator can see where the token begins and ends", () => {
 		expect(refundConfirmText(ORDER_ID, "$1.00", "avery@example.test", true)).toContain(
 			'to "avery@example.test"?',
 		);
 	});
 
-	test("a recipient long enough to overflow the budget is dropped for the shared, quoted fallback phrase", () => {
+	/**
+	 * Round 3, finding 2: quotes mark UNTRUSTED input and nothing else.
+	 * `UNNAMED_REFUND_RECIPIENT` is authored by this module, not a caller, so
+	 * it must never appear quoted — wrapping it the same way would claim a
+	 * provenance it does not have, and (paired with `order-detail.tsx`
+	 * escaping every real recipient before it reaches here) would make
+	 * "quoted" stop meaning anything.
+	 */
+	test("UNNAMED_REFUND_RECIPIENT is never quoted, however it reaches this function", () => {
+		// Passed directly, as a caller with no identity at all does.
+		expect(refundConfirmText(ORDER_ID, "$1.00", UNNAMED_REFUND_RECIPIENT, true)).toContain(
+			`to ${UNNAMED_REFUND_RECIPIENT}?`,
+		);
+		expect(refundConfirmText(ORDER_ID, "$1.00", UNNAMED_REFUND_RECIPIENT, true)).not.toContain(
+			`"${UNNAMED_REFUND_RECIPIENT}"`,
+		);
+	});
+
+	test("a recipient long enough to overflow the budget is dropped for the shared, UNQUOTED fallback phrase", () => {
 		const longRecipient = "x".repeat(180);
 		const text = refundConfirmText(ORDER_ID, "$1.00", longRecipient, true);
 		expect(text).not.toContain(longRecipient);
-		expect(text).toContain(`to "${UNNAMED_REFUND_RECIPIENT}"?`);
+		expect(text).toContain(`to ${UNNAMED_REFUND_RECIPIENT}?`);
+		expect(text).not.toContain(`"${UNNAMED_REFUND_RECIPIENT}"`);
 		expect(text.length).toBeLessThanOrEqual(200);
 	});
 

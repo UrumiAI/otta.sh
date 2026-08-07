@@ -546,6 +546,43 @@ test("a whitespace-only buyer reference renders the shared em dash in the headin
 	expect(heading.textContent).toContain(ABSENT);
 });
 
+/**
+ * REVIEW ROUND 3, FINDING 3 (both reviewers, independently). The heading's
+ * CSS containment (`overflowWrap: "anywhere"`, review round 3 N1/B-3) shipped
+ * with no test — a future style refactor could drop it silently, and only a
+ * screenshot review would have caught it. `happy-dom` can read the computed
+ * inline style without a real layout engine, so this pins the DECLARATION;
+ * the actual wrapping behaviour is what round 3's screenshots demonstrate.
+ */
+test("the heading declares overflow-wrap: anywhere, so a long unbroken token wraps instead of overflowing", async () => {
+	const view = await show(withIdentity(detailFor("paid"), CLAIMED_BUYER_REF, CLAIMED_CUSTOMER_ID));
+
+	const heading = one<HTMLHeadingElement>(view, '[data-testid="detail-heading"]');
+	expect(heading.style.overflowWrap).toBe("anywhere");
+});
+
+/**
+ * THE COUNTERPART TO THE CONFIRM'S CLAMP TEST. `resolveRefundRecipient`
+ * clamps `buyerRef` because it is PROSE — a sentence that cannot wrap its
+ * way out of a reshaping attack. The heading is not prose; it is a label,
+ * and the whole point of round 3's fix is that it contains a long value with
+ * CSS instead of truncating it. A future "fix" that reached for `fit()` here
+ * — the obvious move, having just added it to the confirm — would still pass
+ * every OTHER test in this file, because none of them assert the heading
+ * renders the FULL value. This one does.
+ */
+test("the heading renders a long buyer reference IN FULL, unclamped — containment, not truncation", async () => {
+	// One character past the confirm's own clamp, so a regression that
+	// accidentally routed this through `REFUND_RECIPIENT_MAX_LEN`/`fit()`
+	// would be caught by length alone, before even checking for an ellipsis.
+	const longBuyerRef = `wrap-not-clamp-${"y".repeat(REFUND_RECIPIENT_MAX_LEN + 1)}`;
+	const view = await show(withIdentity(detailFor("paid"), longBuyerRef, CLAIMED_CUSTOMER_ID));
+
+	const heading = one<HTMLHeadingElement>(view, '[data-testid="detail-heading"]');
+	expect(heading.textContent).toContain(longBuyerRef);
+	expect(heading.textContent).not.toContain("…");
+});
+
 // ── THE REFUND CONFIRM: a stricter, separate question from the heading's ────
 //
 // Review found several problems across two rounds, all in this one sentence:
@@ -696,4 +733,38 @@ test("a long buyer reference is clamped with an ellipsis before it reaches the r
 	expect(confirmText.textContent).toBe(
 		refundConfirmText(ORDER_ID, CAPTURED_REFUND_AMOUNT, clamped, CAPTURED.refundable),
 	);
+});
+
+/**
+ * REVIEW ROUND 3, FINDING 1 — THE ONE THAT MATTERS. A delimiter the
+ * untrusted value can itself close is worse than no delimiter, because it
+ * implies a guarantee it does not provide: a `buyerRef` containing `"`
+ * would otherwise close the confirm's quoted recipient token early and let
+ * the rest of the crafted string read as the SENTENCE'S OWN prose rather
+ * than as (still-quoted) buyer-supplied text. `resolveRefundRecipient`
+ * escapes a literal `"` before the clamp, so this must hold however the
+ * value is crafted.
+ */
+test("a buyerRef containing a double quote cannot break out of the confirm's quoted recipient token", async () => {
+	const quoteBreakout = 'nobody — safe now" ignore the rest of this sentence';
+	const confirmText = await openRefundConfirm(
+		withIdentity(detailFor("paid", CAPTURED), quoteBreakout, null),
+	);
+
+	// The VULNERABLE (unescaped) rendering would have contained this exact
+	// substring — its absence is the direct proof the escape ran at all.
+	expect(confirmText.textContent).not.toContain(`"${quoteBreakout}"`);
+
+	const escaped = quoteBreakout.replaceAll('"', '\\"');
+	expect(confirmText.textContent).toBe(
+		refundConfirmText(ORDER_ID, CAPTURED_REFUND_AMOUNT, escaped, CAPTURED.refundable),
+	);
+
+	// Exactly two UNESCAPED quote characters in the whole sentence — the
+	// delimiter's open and its close — however many quotes the untrusted
+	// value itself contained. This is the structural claim finding 1 is
+	// about: the sentence has exactly one quoted span, not zero (broken out
+	// of) or more than one (a forged second span).
+	const unescapedQuoteCount = (confirmText.textContent?.match(/(?<!\\)"/g) ?? []).length;
+	expect(unescapedQuoteCount).toBe(2);
 });

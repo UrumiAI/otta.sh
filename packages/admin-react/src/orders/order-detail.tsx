@@ -83,6 +83,7 @@ import {
 	fetchOrderDetail,
 	isFailure,
 	performAction,
+	type CustomerContext,
 	type DetailPayload,
 	type RefundsSummary,
 	type TimelineEntry,
@@ -280,6 +281,18 @@ const PILLED_ORDER_STATE = "failed";
 export const REFUND_RECIPIENT_MAX_LEN = 60;
 
 /**
+ * Escape a literal `"` so it cannot close `refundConfirmText`'s own `"…"`
+ * delimiter early (review round 3, finding 1). Backslash-escaping rather
+ * than stripping: the character stays visible — an operator can still see
+ * that the original text had a quote in it — while ceasing to be able to
+ * act as ONE. Only the recipient token needs this; the order id and the
+ * amount are never caller-supplied free text.
+ */
+function escapeQuoteForRecipient(value: string): string {
+	return value.replaceAll('"', '\\"');
+}
+
+/**
  * WHO A REFUND CONFIRM NAMES — review-mandated, and a DIFFERENT, STRICTER
  * question than {@link buyerReferenceText} answers for the heading and the
  * list cell. A destructive action's confirm text must name the most
@@ -299,8 +312,11 @@ export const REFUND_RECIPIENT_MAX_LEN = 60;
  *     error — so a missing customer falls through the chain below rather
  *     than rendering a placeholder account.
  *  2. `buyerRef` — caller-supplied, unverified free text, and now also where
- *     an UNPROVEN email lands — CLAMPED (see {@link REFUND_RECIPIENT_MAX_LEN})
- *     precisely because it is untrusted.
+ *     an UNPROVEN email lands — ESCAPED then CLAMPED (see
+ *     {@link escapeQuoteForRecipient}, {@link REFUND_RECIPIENT_MAX_LEN})
+ *     precisely because it is untrusted: `refundConfirmText` quotes this
+ *     branch's return value, and an unescaped `"` inside it would close
+ *     that quote early.
  *  3. {@link UNNAMED_REFUND_RECIPIENT} (`@otta-sh/admin-presentation`) — no
  *     rendering of `ABSENT` (the em dash) here. THE EM DASH IS NEVER A NOUN
  *     IN A SENTENCE: it is correct on the table cell and the heading, where
@@ -311,14 +327,7 @@ export const REFUND_RECIPIENT_MAX_LEN = 60;
  *     and reintroduces the em-dash-as-noun defect.
  */
 function resolveRefundRecipient(
-	identity:
-		| {
-				readonly email?: string | null;
-				readonly emailVerifiedAt?: string | null;
-				readonly linkage: string;
-		  }
-		| null
-		| undefined,
+	identity: CustomerContext["identity"] | null | undefined,
 	buyerRef: string | null | undefined,
 ): string {
 	if (
@@ -332,7 +341,15 @@ function resolveRefundRecipient(
 		return identity.email.trim();
 	}
 	if (typeof buyerRef === "string" && buyerRef.trim().length > 0) {
-		return fit(buyerRef.trim(), REFUND_RECIPIENT_MAX_LEN);
+		// ESCAPE BEFORE THE CLAMP (review round 3): `refundConfirmText` wraps
+		// this value in a straight `"…"` delimiter, and a raw `"` inside
+		// caller-supplied text closes that delimiter early — a quote the
+		// untrusted value can itself close is worse than no delimiter, because
+		// it implies a guarantee it does not provide. Escaping first, THEN
+		// clamping, means a truncation that lands mid-escape can only ever
+		// strand a bare backslash before the ellipsis, never a live,
+		// unescaped `"`.
+		return fit(escapeQuoteForRecipient(buyerRef.trim()), REFUND_RECIPIENT_MAX_LEN);
 	}
 	return UNNAMED_REFUND_RECIPIENT;
 }

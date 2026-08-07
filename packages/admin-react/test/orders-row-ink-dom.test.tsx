@@ -461,3 +461,36 @@ test("an unclaimed order still renders the buyer reference, and carries no data-
 	expect(customer.hasAttribute("data-customer-id")).toBe(false);
 	expect(customer.getAttribute("data-customer-id")).toBeNull();
 });
+
+/**
+ * REVIEW ROUND 3, FINDING 3 (both reviewers, independently). The Customer
+ * cell's CSS containment (`overflowWrap: "anywhere"`, round 3 N1/B-3)
+ * shipped with no test — a future style refactor could drop it silently,
+ * and only a screenshot review would have caught it. `happy-dom` can read
+ * the computed inline style without a real layout engine, so this pins the
+ * DECLARATION; the actual wrapping behaviour is what round 3's screenshots
+ * demonstrate.
+ */
+test("the Customer cell declares overflow-wrap: anywhere, so a long unbroken token wraps instead of overflowing", async () => {
+	const container = await mountList();
+	const customer = cell(container, "ord_paid", CUSTOMER);
+	expect(customer.style.overflowWrap).toBe("anywhere");
+});
+
+/**
+ * THE COUNTERPART TO THE CONFIRM'S CLAMP TEST (`order-detail-dom.test.tsx`).
+ * The cell is not prose — it contains a long value with CSS instead of
+ * truncating it, unlike the refund confirm's `buyerRef`. A future "fix" that
+ * reached for a string clamp here would still pass every OTHER test in this
+ * file, because none of them assert the cell renders the FULL value. This
+ * one does.
+ */
+test("the Customer cell renders a long buyer reference IN FULL, unclamped — containment, not truncation", async () => {
+	const longBuyerRef = `wrap-not-clamp-${"y".repeat(320 - "wrap-not-clamp-".length)}`;
+	respondWithOneOrder({ id: "ord_long_ref", buyerRef: longBuyerRef, customerId: "cust_long_ref" });
+
+	const container = await mountList();
+	const customer = cell(container, "ord_long_ref", CUSTOMER);
+	expect(customer.textContent).toBe(longBuyerRef);
+	expect(customer.textContent).not.toContain("…");
+});

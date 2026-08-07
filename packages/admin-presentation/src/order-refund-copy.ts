@@ -42,15 +42,20 @@ export const UNNAMED_REFUND_RECIPIENT = "this order's buyer";
  * candidate set in hand; at 8 characters it is a visible superset of the
  * 4-character prefix the operator just read in the list row.
  *
- * THE RECIPIENT IS ALWAYS QUOTED (review finding N3). `recipient` may be
- * caller-supplied, unverified free text — this function has no way to know —
- * so it is delimited the same way regardless of source: an operator can see
- * exactly where the token begins and ends rather than reading it as an
- * unbounded run of the sentence's own prose. A quoted `UNNAMED_REFUND_RECIPIENT`
- * reads a little oddly on its own ("to 'this order's buyer'?") but keeps one
- * rule for every recipient this function is ever handed, rather than a
- * caller-visible distinction between "trusted" and "untrusted" text this
- * module has no way to enforce.
+ * QUOTES MARK UNTRUSTED INPUT, AND NOTHING ELSE (review round 3, finding 2).
+ * `recipient` may be caller-supplied, unverified free text — this function
+ * has no way to know, so a real recipient is ALWAYS quoted (review finding
+ * N3), delimited so an operator can see exactly where the token begins and
+ * ends rather than reading it as an unbounded run of the sentence's own
+ * prose. {@link UNNAMED_REFUND_RECIPIENT} is the ONE exception: it is
+ * authored BY THIS MODULE, never by a caller, so quoting it would claim a
+ * provenance it does not have — the same marks used to say "this text came
+ * from the buyer" wrapped around a system phrase. The rule only holds
+ * because the delimiter cannot be forged from the other end either: a
+ * caller passing untrusted text through this function must escape a literal
+ * `"` in it BEFORE calling (`order-detail.tsx`'s `escapeQuoteForRecipient`),
+ * because this function has no way to tell an intentional close-quote from
+ * one embedded in the value it is quoting.
  *
  * The recipient is dropped when a long buyer handle would push the string over
  * budget — the id and the amount are never the thing that goes. Truncating a
@@ -71,10 +76,13 @@ export function refundConfirmText(
 		? "This sends the money back through Stripe and cannot be reversed."
 		: "This records a refund made out of band — it does not move money.";
 	const order = `Order #${shortIdFixed(orderId, SHORT_ID_CONFIRM_LEN)}`;
-	const named = `${order} — refund ${amount} to "${recipient}"? ${consequence}`;
+	const named =
+		recipient === UNNAMED_REFUND_RECIPIENT
+			? `${order} — refund ${amount} to ${recipient}? ${consequence}`
+			: `${order} — refund ${amount} to "${recipient}"? ${consequence}`;
 	return named.length <= CONFIRM_BUDGET
 		? named
-		: `${order} — refund ${amount} to "${UNNAMED_REFUND_RECIPIENT}"? ${consequence}`;
+		: `${order} — refund ${amount} to ${UNNAMED_REFUND_RECIPIENT}? ${consequence}`;
 }
 
 /** The honest per-gateway capability copy (ADR-0008), each ≤200 (§1): Stripe
