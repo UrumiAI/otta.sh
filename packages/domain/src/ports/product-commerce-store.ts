@@ -74,6 +74,16 @@ export interface ProductListFilter {
 	 * different answers to one input, which is what the shared guard exists
 	 * to make unreachable. Contract-pinned so the three can never drift apart.
 	 *
+	 * NOT YET ENFORCED AT THIS FILTER'S OWN HTTP BOUNDARY: `lowStockQuery` and
+	 * `settingsBody` (above) constrain the OTHER two `lowStockThreshold`
+	 * call sites, but `productListFilterSchema` in `packages/service/src/
+	 * schemas.ts` — the schema this filter's own list/count query param would
+	 * parse through — has no `lowStockThreshold` field at all yet, so it
+	 * cannot reject a bad one before this port does. Whichever increment wires
+	 * a query param to this field MUST add the same `z.number().int()
+	 * .nonnegative()` there and map `InvalidLowStockThresholdError` to a 400,
+	 * or a bad value 500s instead of 400s.
+	 *
 	 * A row matches iff BOTH hold:
 	 *  - its sku resolves to a KNOWN `inventory` row — the same LEFT JOIN
 	 *    `ProductSummary.onHand` is sourced from. A product with NO inventory

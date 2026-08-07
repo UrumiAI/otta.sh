@@ -407,10 +407,6 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 
 	// -- Admin Products console: view-only keyset list (admin-UX Increment 2) --
 
-	/** The ONE `ProductListFilter` predicate (mirrors `OrderStore`'s
-	 *  `#matchesFilter` / the Kysely adapter's shared predicate builder) —
-	 *  excludes soft-deleted rows UNLESS `filter.deleted: true` requests the
-	 *  archive view (product lifecycle surfacing — see the port doc). */
 	/**
 	 * Validates `filter.lowStockThreshold` BEFORE any row is considered (port
 	 * doc — `InvalidLowStockThresholdError`), via the shared
@@ -433,6 +429,10 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 		}
 	}
 
+	/** The ONE `ProductListFilter` predicate (mirrors `OrderStore`'s
+	 *  `#matchesFilter` / the Kysely adapter's shared predicate builder) —
+	 *  excludes soft-deleted rows UNLESS `filter.deleted: true` requests the
+	 *  archive view (product lifecycle surfacing — see the port doc). */
 	#matchesFilter(row: ProductCommerce, filter: ProductListFilter): boolean {
 		const wantDeleted = filter.deleted === true;
 		if (wantDeleted !== (row.deletedAt !== null)) return false;
