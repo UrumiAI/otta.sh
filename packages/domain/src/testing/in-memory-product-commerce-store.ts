@@ -416,6 +416,13 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 			const byTitle = row.title !== null && containsCaseInsensitive(row.title, filter.search);
 			if (!bySku && !byTitle) return false;
 		}
+		if (filter.lowStockThreshold !== undefined) {
+			// Mirrors the SQL adapter's LEFT JOIN predicate: a row with no sku (or
+			// a sku with no inventory row) resolves to `null` — UNKNOWN stock,
+			// never "low" — so it fails this half regardless of the threshold.
+			const onHand = row.sku === null ? null : this.#inventoryOnHand(row.sku);
+			if (onHand === null || onHand > filter.lowStockThreshold) return false;
+		}
 		return true;
 	}
 

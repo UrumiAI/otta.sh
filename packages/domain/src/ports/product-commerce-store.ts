@@ -49,6 +49,37 @@ export interface ProductListFilter {
 	 *    or browse the archive — never both at once).
 	 */
 	deleted?: boolean;
+	/**
+	 * Low-stock predicate parameter — the SQL-side twin of the plugin's
+	 * client-side `applyLowStockNarrowing` rule
+	 * (`packages/plugin/src/admin/products-read.ts`), moved into the store so
+	 * the database does the filtering instead of a page-scoped client-side
+	 * narrowing. The threshold is the store's SINGLE GLOBAL scalar
+	 * (`SettingsStore.lowStockThreshold`), never a per-product reorder point —
+	 * this store does not read settings itself; the CALLER resolves the
+	 * threshold and passes the number through, exactly like every other value
+	 * on this filter.
+	 *
+	 * A row matches iff BOTH hold:
+	 *  - its sku resolves to a KNOWN `inventory` row — the same LEFT JOIN
+	 *    `ProductSummary.onHand` is sourced from. A product with NO inventory
+	 *    row (or no sku at all — a "create then price" row) is UNKNOWN stock,
+	 *    never "low": absent is not zero (see `ProductSummary.onHand`'s doc).
+	 *    Folding the two would render every never-synced/unpriced sku as
+	 *    artificially urgent.
+	 *  - `on_hand <= lowStockThreshold` — INCLUSIVE, so a sku stocked exactly
+	 *    at the threshold counts as low, and `on_hand === 0` ("out of stock",
+	 *    a KNOWN fact) always matches a non-negative threshold.
+	 *
+	 * OMITTED (`undefined`) ⇒ no stock-based filtering — the unchanged
+	 * default every existing caller keeps seeing. This is also the correct
+	 * behavior when a caller cannot resolve a threshold at all (settings
+	 * unset/unreadable): mirror the plugin's `filterUnavailable` degradation
+	 * by simply not setting this field — never filter, and never treat "no
+	 * threshold" as "threshold 0" (which would silently return only
+	 * out-of-stock rows instead of the honest "can't filter" answer).
+	 */
+	lowStockThreshold?: number;
 }
 
 /** A keyset cursor POSITION — the `(createdAt, productId)` of the last row of
@@ -595,7 +626,9 @@ export interface ProductCommerceStore {
 	 * a filter) and needs no new index; the LEFT half is load-bearing, because
 	 * a sku with no inventory row must yield `onHand: null` ("unknown"), which
 	 * is NOT the same fact as `0` ("out of stock"). `inventory.sku` is that
-	 * table's primary key, so the join can never multiply a page's rows.
+	 * table's primary key, so the join can never multiply a page's rows. The
+	 * SAME join backs `filter.lowStockThreshold` (see that field's doc) — no
+	 * second join, no separate query.
 	 * Excludes soft-deleted rows
 	 * (`deleted_at IS NULL`) by DEFAULT — mirrors `listCommerceByIds`'s
 	 * tombstone discipline — UNLESS `filter.deleted: true` requests the archive
@@ -626,10 +659,10 @@ export interface ProductCommerceStore {
 	/**
 	 * Count the products matching a filter (INC-23: the admin list's exact
 	 * "N products" caption). Shares the EXACT predicate with `listProducts` —
-	 * same `active`/`deleted`/`productKind`/`search` semantics, including the
-	 * tombstone default — so a count can never disagree with the list it
-	 * captions (one predicate builder in every adapter; mirrors
-	 * `OrderStore.countOrders` 1:1).
+	 * same `active`/`deleted`/`productKind`/`search`/`lowStockThreshold`
+	 * semantics, including the tombstone default — so a count can never
+	 * disagree with the list it captions (one predicate builder in every
+	 * adapter; mirrors `OrderStore.countOrders` 1:1).
 	 *
 	 * A SEPARATE method rather than a `total` on `ListResult`, deliberately: the
 	 * count is a second statement, and folding it into the page read would
@@ -637,8 +670,11 @@ export interface ProductCommerceStore {
 	 * renders one. The keyset page and the count are independent questions and
 	 * stay independently callable.
 	 *
-	 * NO JOIN and no ordering — `listProducts`'s stock LEFT JOIN exists to fill
-	 * a column, and a count has no columns.
+	 * NO JOIN and no ordering by default — `listProducts`'s stock LEFT JOIN
+	 * exists to fill a column, and a count has no columns. The join is added
+	 * back CONDITIONALLY, only when `filter.lowStockThreshold` is set (the one
+	 * axis a count cannot resolve without it), so every other predicate keeps
+	 * the join-free plan this method was measured against.
 	 */
 	countProducts(filter: ProductListFilter): Promise<number>;
 

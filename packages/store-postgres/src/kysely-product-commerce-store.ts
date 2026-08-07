@@ -630,6 +630,12 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 	async countProducts(filter: ProductListFilter): Promise<number> {
 		let q = this.#db
 			.selectFrom("product_commerce")
+			// Joined back CONDITIONALLY — only `filter.lowStockThreshold`'s
+			// predicate needs `inventory.on_hand`; every other axis keeps the
+			// join-free plan this method was measured against (port doc).
+			.$if(filter.lowStockThreshold !== undefined, (qb) =>
+				qb.leftJoin("inventory", "inventory.sku", "product_commerce.sku"),
+			)
 			.select(sql<number>`count(*)`.as("n"))
 			.where("product_commerce.deleted_at", filter.deleted === true ? "is not" : "is", null);
 		const conds = productFilterConditions(filter);
@@ -737,7 +743,10 @@ function isLiveSkuUniqueViolation(err: unknown): boolean {
  * `deleted` is DELIBERATELY absent from this builder — it flips the base
  * query's `deleted_at IS [NOT] NULL` clause in `listProducts` directly, not an
  * ANDed condition here (the two are mutually exclusive branches, not a
- * composable filter half).
+ * composable filter half). `lowStockThreshold` (port doc) reads
+ * `inventory.on_hand` — present in `listProducts`'s unconditional LEFT JOIN,
+ * and in `countProducts`'s CONDITIONAL one — so this builder is safe to share
+ * between both callers regardless of which one actually joined the table.
  */
 function productFilterConditions(filter: ProductListFilter): Expression<SqlBool>[] {
 	const eb: ExpressionBuilder<Database, "product_commerce"> = expressionBuilder();
@@ -756,6 +765,19 @@ function productFilterConditions(filter: ProductListFilter): Expression<SqlBool>
 				eb(sql`lower(product_commerce.sku)`, "=", search.toLowerCase()),
 				sql<SqlBool>`lower(product_commerce.title) like lower(${likePattern}) escape '\\'`,
 			]),
+		);
+	}
+	if (filter.lowStockThreshold !== undefined) {
+		// `inventory` isn't in this builder's typed FROM set (it's only ever
+		// LEFT JOINed onto the caller's query, not this detached
+		// `expressionBuilder`), so this is raw SQL rather than a typed `eb(...)`
+		// ref — same escape hatch the title half of `search` already uses.
+		// `on_hand IS NOT NULL` is load-bearing: a LEFT JOIN miss must fail this
+		// predicate (unknown stock is never "low"), never compare NULL <= n
+		// (which SQL evaluates to unknown/false anyway, but the explicit guard
+		// documents the intent rather than relying on that quirk).
+		conds.push(
+			sql<SqlBool>`(inventory.on_hand is not null and inventory.on_hand <= ${filter.lowStockThreshold})`,
 		);
 	}
 	return conds;
