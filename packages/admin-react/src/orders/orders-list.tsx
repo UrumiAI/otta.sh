@@ -46,6 +46,7 @@ import {
 	ORDERS_STALE_CLEARED_NOTE,
 	RETRYING_LABEL,
 	RETRY_LABEL,
+	buyerReferenceText,
 	formatAmount,
 	formatTimestamp,
 	listOutcome,
@@ -760,8 +761,61 @@ export function OrdersList({
 								<td className="otta-td otta-num" style={{ opacity: 0.72 }}>
 									{formatTimestamp(order.createdAt)}
 								</td>
-								<td className="otta-td" style={{ fontWeight: 600 }}>
-									{order.customerId ?? order.buyerRef}
+								<td
+									className="otta-td"
+									style={{
+										fontWeight: 600,
+										// LAYOUT CONTAINMENT, NOT STRING CLAMPING (review finding N1,
+										// director ruling). `buyerRef` is caller-supplied free text up
+										// to 320 characters with no format check
+										// (`packages/service/src/schemas.ts`), and this column has no
+										// bound of its own under the table's `table-layout: auto`: one
+										// unbroken long token would otherwise widen this column and
+										// push every column to its right — Status, Order #, Total — off
+										// the table card's `overflow-x: auto`, which the operator would
+										// then have to scroll sideways to find. `overflowWrap` IS THE
+										// LOAD-BEARING DECLARATION: it is what lets the browser satisfy
+										// `maxInlineSize` at all by giving it somewhere to put the
+										// characters that don't fit — WITHOUT it, `max-width` on a `td`
+										// under `table-layout: auto` is only ADVISORY, and a browser
+										// will still widen the column past it rather than break an
+										// unbreakable token (verified against this exact fixture: round
+										// 3's screenshots are the wrap, not the cap, doing the work). Do
+										// not drop `overflowWrap` while keeping `maxInlineSize` — that
+										// keeps the number in the code and loses the behaviour it
+										// implies. The value stays fully selectable and copy-pasteable,
+										// which a DOM truncation could not honestly promise. THE
+										// PRINCIPLE: layout containment via CSS wherever the full value
+										// must remain copyable; string clamping only in prose
+										// (`order-detail.tsx`'s `resolveRefundRecipient`), which cannot
+										// wrap its way out of a reshaping attack the way a table cell
+										// can. KNOWN, ACCEPTED TRADE-OFF: at narrow widths a
+										// near-maximum-length `buyerRef` wraps across many lines and
+										// makes that one row tall — every cell in the row grows with
+										// it, since a `<tr>` cannot vary its own cells' heights. Left as
+										// is; the alternative is clamping the value, which is the thing
+										// this fix exists to avoid.
+										maxInlineSize: 360,
+										overflowWrap: "anywhere",
+									}}
+									// The uuid is reachable from the row without being printed on
+									// the page — the same split the products list makes between
+									// the SKU it prints and the id it carries only as an attribute.
+									// React omits a `data-*` attribute whose value is `null` OR
+									// `undefined`; the `?? undefined` here is only to satisfy the
+									// attribute's TypeScript type (`customerId` is `string | null`),
+									// not what makes the omission happen. Covered by the guest/
+									// unclaimed-row case in `orders-row-ink-dom.test.tsx`.
+									data-customer-id={order.customerId ?? undefined}
+								>
+									{/* THIS WAS BACKWARDS: the cell used to read
+									  `order.customerId ?? order.buyerRef`, showing the readable
+									  reference only on an UNCLAIMED order — the one where the LEAST
+									  is known about the buyer — and an opaque uuid on every CLAIMED
+									  one. `buyerReferenceText` is shared with the detail heading
+									  (`order-detail.tsx`, `@otta-sh/admin-presentation`) so the two
+									  screens cannot drift back apart on this rule. */}
+									{buyerReferenceText(order.buyerRef)}
 								</td>
 								<td className="otta-td">
 									{order.state === PILLED_ORDER_STATE ? (

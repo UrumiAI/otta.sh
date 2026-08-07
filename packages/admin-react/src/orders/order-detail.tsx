@@ -61,7 +61,10 @@ import {
 	SHIPPING_ADDRESS_ABSENT,
 	TIMELINE_EMPTY,
 	TIMELINE_UNAVAILABLE,
+	UNNAMED_REFUND_RECIPIENT,
+	buyerReferenceText,
 	cancelConfirmText,
+	fit,
 	formatAmount,
 	formatDate,
 	formatMinorUnitsInput,
@@ -80,6 +83,7 @@ import {
 	fetchOrderDetail,
 	isFailure,
 	performAction,
+	type CustomerContext,
 	type DetailPayload,
 	type RefundsSummary,
 	type TimelineEntry,
@@ -252,6 +256,103 @@ function Unavailable({ text }: { text: string }): React.ReactElement {
  * Every other state renders as the bare phrase.
  */
 const PILLED_ORDER_STATE = "failed";
+
+/**
+ * How far a refund confirm's recipient token may reach before it is cut,
+ * with a visible ellipsis so an operator can SEE that it was cut.
+ *
+ * `buyerRef` is unverified free text up to 320 characters
+ * (`min(1).max(320)`, format unchecked — `packages/service/src/schemas.ts`,
+ * `packages/plugin/src/storefront/checkout-route-input.ts`) landing inside a
+ * ~200-character sentence (`order-refund-copy.ts`'s `CONFIRM_BUDGET`). That
+ * function already refuses to overflow the budget, but its own answer to
+ * overflow is to DROP the recipient silently and say "this order's buyer" —
+ * fine for an honestly long value, and no defence at all against a short,
+ * deliberately crafted one that stays under budget while reshaping the
+ * sentence around it. 60 leaves ~140 characters of headroom under the
+ * budget even with the longer of the two consequence clauses and the widest
+ * realistic amount/id. THE TRADE-OFF IS NAMED, NOT HIDDEN: RFC 5321 allows
+ * email addresses past 60 characters, so a legitimately long address is
+ * visibly truncated here too (`refundConfirmText`'s own quoting marks where
+ * it was cut) — accepted because the alternative is a number generous
+ * enough to stop bounding the untrusted, reshaping case this clamp exists
+ * for at all.
+ */
+export const REFUND_RECIPIENT_MAX_LEN = 60;
+
+/**
+ * Escape a literal `"` so it cannot close `refundConfirmText`'s own `"…"`
+ * delimiter early (review round 3, finding 1). Backslash-escaping rather
+ * than stripping: the character stays visible — an operator can still see
+ * that the original text had a quote in it — while ceasing to be able to
+ * act as ONE. Only the recipient token needs this; the order id and the
+ * amount are never caller-supplied free text.
+ */
+function escapeQuoteForRecipient(value: string): string {
+	return value.replaceAll('"', '\\"');
+}
+
+/**
+ * WHO A REFUND CONFIRM NAMES — review-mandated, and a DIFFERENT, STRICTER
+ * question than {@link buyerReferenceText} answers for the heading and the
+ * list cell. A destructive action's confirm text must name the most
+ * TRUSTWORTHY identity available, not the most readable one:
+ *
+ *  1. The account email, but ONLY when it is PROVEN — `linkage === "claimed"`
+ *     AND `emailVerifiedAt` is set. `identity.email` being PRESENT proves
+ *     nothing by itself: on `linkage: "unclaimed"` the account is resolved by
+ *     looking up the caller-supplied `buyerRef` itself
+ *     (`domain/src/orders/customer-context.ts`), so an "email" reached that
+ *     way is the SAME untrusted value laundered through a lookup, not a
+ *     second, independent source — the earlier cut of this function called
+ *     that branch "verified" and skipped the clamp on it, which was the
+ *     defect (review finding N2). `detail.customer` is `null` whenever
+ *     customer context could not be loaded, which is a NORMAL state (see
+ *     `CUSTOMER_CONTEXT_UNAVAILABLE` elsewhere on this screen), not an
+ *     error — so a missing customer falls through the chain below rather
+ *     than rendering a placeholder account.
+ *  2. `buyerRef` — caller-supplied, unverified free text, and now also where
+ *     an UNPROVEN email lands — ESCAPED then CLAMPED (see
+ *     {@link escapeQuoteForRecipient}, {@link REFUND_RECIPIENT_MAX_LEN})
+ *     precisely because it is untrusted: `refundConfirmText` quotes this
+ *     branch's return value, and an unescaped `"` inside it would close
+ *     that quote early.
+ *  3. {@link UNNAMED_REFUND_RECIPIENT} (`@otta-sh/admin-presentation`) — no
+ *     rendering of `ABSENT` (the em dash) here. THE EM DASH IS NEVER A NOUN
+ *     IN A SENTENCE: it is correct on the table cell and the heading, where
+ *     it marks an empty FIELD, and wrong inside prose ("refund $42 to
+ *     '—'?"), which reads as though "—" were the buyer's name rather than a
+ *     marker for nothing being there. Keep this distinction — it is the
+ *     kind of thing a later "simplification" merges back into one helper
+ *     and reintroduces the em-dash-as-noun defect.
+ */
+function resolveRefundRecipient(
+	identity: CustomerContext["identity"] | null | undefined,
+	buyerRef: string | null | undefined,
+): string {
+	if (
+		identity != null &&
+		identity.linkage === "claimed" &&
+		typeof identity.emailVerifiedAt === "string" &&
+		identity.emailVerifiedAt.trim().length > 0 &&
+		typeof identity.email === "string" &&
+		identity.email.trim().length > 0
+	) {
+		return identity.email.trim();
+	}
+	if (typeof buyerRef === "string" && buyerRef.trim().length > 0) {
+		// ESCAPE BEFORE THE CLAMP (review round 3): `refundConfirmText` wraps
+		// this value in a straight `"…"` delimiter, and a raw `"` inside
+		// caller-supplied text closes that delimiter early — a quote the
+		// untrusted value can itself close is worse than no delimiter, because
+		// it implies a guarantee it does not provide. Escaping first, THEN
+		// clamping, means a truncation that lands mid-escape can only ever
+		// strand a bare backslash before the ellipsis, never a live,
+		// unescaped `"`.
+		return fit(escapeQuoteForRecipient(buyerRef.trim()), REFUND_RECIPIENT_MAX_LEN);
+	}
+	return UNNAMED_REFUND_RECIPIENT;
+}
 
 /**
  * The Money tab's refunds panel: a pure view over ONE loaded refunds summary and
@@ -611,7 +712,11 @@ export function OrderDetail({
 	}
 
 	const order = detail.order;
-	const recipient = order.customerId ?? order.buyerRef;
+	// The HEADING'S OWN QUESTION — "what to print" — answered by the same
+	// shared helper the list's Customer cell uses. NOT what a refund confirm
+	// uses: see `resolveRefundRecipient` below for why that is a stricter,
+	// separate question.
+	const recipient = buyerReferenceText(order.buyerRef);
 	const refunds = detail.refunds;
 	const cur =
 		refunds?.currency !== undefined && refunds.currency.length > 0
@@ -629,6 +734,12 @@ export function OrderDetail({
 	const askRefund = (amountCents: number) => {
 		if (refunds === null) return;
 		const amount = formatAmount(amountCents, cur);
+		// THE DESTRUCTIVE ACTION'S OWN, STRICTER RECIPIENT — see
+		// `resolveRefundRecipient`. A PROVEN email first (claimed + verified),
+		// then the clamped buyerRef, then the shared "this order's buyer"
+		// fallback; never the heading's `recipient` (readable but unverified)
+		// and never `ABSENT`.
+		const refundRecipient = resolveRefundRecipient(detail.customer?.identity, order.buyerRef);
 		setPending({
 			actionId: "orders:refund",
 			value: {
@@ -642,7 +753,7 @@ export function OrderDetail({
 			title: `Refund ${amount}?`,
 			// THE SHARED SENTENCE. Id first, 8 characters, the same helper the
 			// Block Kit confirm calls — see `@otta-sh/admin-presentation`.
-			text: refundConfirmText(order.id, amount, recipient, refunds.refundable),
+			text: refundConfirmText(order.id, amount, refundRecipient, refunds.refundable),
 			confirmLabel: `Yes, refund ${amount}`,
 			denyLabel: "Keep as is",
 		});
@@ -650,7 +761,41 @@ export function OrderDetail({
 
 	return (
 		<div>
-			<h1 style={{ fontSize: 22, fontWeight: 700, marginBlockEnd: 8 }} data-testid="detail-heading">
+			<h1
+				style={{
+					fontSize: 22,
+					fontWeight: 700,
+					marginBlockEnd: 8,
+					// LAYOUT CONTAINMENT, NOT STRING CLAMPING (review finding N1,
+					// director ruling). `recipient` carries no length bound — unlike
+					// the refund confirm's `resolveRefundRecipient`, this text is
+					// meant to stay fully selectable and copy-pasteable, which a
+					// clamp inside the DOM cannot honestly promise. `buyerRef` is
+					// caller-supplied free text up to 320 characters with no format
+					// check (`packages/service/src/schemas.ts`), so the heading's ONE
+					// unbroken token has to be able to WRAP rather than push the rest
+					// of the line — including the date — off the viewport. THE
+					// PRINCIPLE: layout containment via CSS wherever the full value
+					// must remain copyable; string clamping only in prose, where a
+					// value cannot wrap its way out of reshaping the sentence around
+					// it (`resolveRefundRecipient`'s own comment). A block heading
+					// under a plain `<div>`, not a flex/grid item, needs no companion
+					// `min-width: 0` to honour this — there is no flex-basis/min-
+					// content floor here to override.
+					overflowWrap: "anywhere",
+					maxInlineSize: "100%",
+				}}
+				data-testid="detail-heading"
+				// The uuid is reachable from the heading without being printed on the
+				// page — the same non-focusable attribute the list's Customer cell
+				// carries it in (`data-customer-id`, `orders-list.tsx`). React omits a
+				// `data-*` attribute whose value is `null` OR `undefined`; the
+				// `?? undefined` here is only to satisfy the attribute's TypeScript
+				// type (`customerId` is `string | null`), not what makes the omission
+				// happen. Covered by the guest/unclaimed-order case in
+				// `order-detail-dom.test.tsx`.
+				data-customer-id={order.customerId ?? undefined}
+			>
 				Order · {recipient} · {formatDate(order.createdAt)}
 			</h1>
 			<div style={{ marginBlockEnd: 16 }}>

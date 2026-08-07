@@ -28,7 +28,7 @@ vi.mock("emdash/plugin-utils", async (importOriginal) => {
 
 const { OrdersList } = await import("../src/orders/orders-list.js");
 const { CONSOLE_STYLES } = await import("../src/ui.js");
-const { formatAmount, orderStateCell } = await import("@otta-sh/admin-presentation");
+const { ABSENT, formatAmount, orderStateCell } = await import("@otta-sh/admin-presentation");
 
 let mounted: Mounted | null = null;
 
@@ -117,6 +117,7 @@ function cell(container: HTMLElement, id: string, index: number): HTMLTableCellE
 	return found;
 }
 
+const CUSTOMER = 1;
 const STATUS = 2;
 const IDENTITY = 3;
 const TOTAL = 4;
@@ -328,4 +329,168 @@ test("the copy control fades rather than leaving the tab order, on every row", a
 		expect(copy.hasAttribute("disabled"), record.id).toBe(false);
 		expect(copy.getAttribute("aria-label"), record.id).toBe(`Copy full order id ${record.id}`);
 	}
+});
+
+/**
+ * THE DEFECT: a CLAIMED order — the one where the most is known about the
+ * buyer — used to render its Customer cell as `order.customerId`, an opaque
+ * uuid, because the cell read `order.customerId ?? order.buyerRef` and every
+ * fixture row here carries both. An UNCLAIMED/guest row (`customerId: null`)
+ * happened to read fine by the same bug, for the wrong reason.
+ *
+ * Every `ROWS` fixture sets `customerId` to a DIFFERENT string than
+ * `buyerRef` (`cust_<id>` vs `buyer_<id>`), so this assertion cannot pass by
+ * the two values coinciding — only by the cell actually preferring the
+ * readable reference.
+ */
+test("the Customer cell renders the readable buyer reference, not the opaque customer id, for a claimed order", async () => {
+	const container = await mountList();
+
+	for (const record of ROWS) {
+		const customer = cell(container, record.id, CUSTOMER);
+		expect(customer.textContent, record.id).toBe(record.buyerRef);
+		expect(customer.textContent, record.id).not.toBe(record.customerId);
+	}
+});
+
+/**
+ * THE UUID IS NOT DELETED, IT IS MOVED — off the rendered text and onto a
+ * data attribute in the row, the same shape the products list carries its own
+ * id in (`data-product-id` beside a human-readable title). There is no
+ * customer-detail screen in this console to link to, so this is an attribute
+ * rather than an `href`; the requirement it satisfies is the same one that
+ * href satisfies there — the id stays reachable from the row without being
+ * printed on the page.
+ */
+test("the customer id stays reachable from the row, as a data attribute beside the readable text", async () => {
+	const container = await mountList();
+
+	for (const record of ROWS) {
+		const customer = cell(container, record.id, CUSTOMER);
+		expect(customer.getAttribute("data-customer-id"), record.id).toBe(record.customerId);
+	}
+});
+
+/** One synthetic order, wrapped in the response shape `mountList` needs —
+ *  factored out because the three tests below each need their own single
+ *  row and differ only in `buyerRef`/`customerId`. */
+function respondWithOneOrder(identity: {
+	readonly id: string;
+	readonly buyerRef: string;
+	readonly customerId: string | null;
+}): void {
+	apiFetch.mockResolvedValue(
+		new Response(
+			JSON.stringify({
+				data: {
+					ok: true,
+					orders: [
+						{
+							state: "paid",
+							currency: "USD",
+							paymentMethod: "card",
+							createdAt: "2026-03-04T10:15:00.000Z",
+							totalCents: 4200,
+							reconciliationFlag: null,
+							...identity,
+						},
+					],
+					nextCursor: null,
+					vocabulary: {
+						statuses: ["paid"],
+						statusAny: "any",
+						periods: [{ key: "any", label: "Any time" }],
+						cancellationReasons: [],
+						oneClickCancellationReasons: [],
+					},
+				},
+			}),
+			{ status: 200, headers: { "Content-Type": "application/json" } },
+		),
+	);
+}
+
+/**
+ * ABSENT IS AN EM DASH, NEVER THE UUID, NEVER "null", NEVER BLANK. A row
+ * whose `buyerRef` came back empty is exactly the case §1.3's fallback would
+ * paper over by falling back to the id — the one rendering this change
+ * exists to remove.
+ */
+test("an empty buyer reference renders the shared em dash, never the customer id and never blank", async () => {
+	respondWithOneOrder({ id: "ord_no_ref", buyerRef: "", customerId: "cust_no_ref" });
+
+	const container = await mountList();
+	const customer = cell(container, "ord_no_ref", CUSTOMER);
+	expect(customer.textContent).toBe(ABSENT);
+	expect(customer.textContent).not.toBe("");
+	expect(customer.textContent).not.toBe("null");
+	expect(customer.textContent).not.toBe("cust_no_ref");
+	// The id is still on the row even though the cell has nothing readable to
+	// show — an operator can still act on the order from the id alone.
+	expect(customer.getAttribute("data-customer-id")).toBe("cust_no_ref");
+});
+
+/** Reviewer B: `buyerRef.length > 0` alone is true for `" "` — a cell that
+ *  rendered a bare space would be the "never an empty cell" rule broken by a
+ *  value that LOOKS empty rather than one that measures empty. */
+test("a whitespace-only buyer reference renders the shared em dash, not a blank-looking space", async () => {
+	respondWithOneOrder({ id: "ord_ws_ref", buyerRef: "   ", customerId: "cust_ws_ref" });
+
+	const container = await mountList();
+	const customer = cell(container, "ord_ws_ref", CUSTOMER);
+	expect(customer.textContent).toBe(ABSENT);
+	expect(customer.getAttribute("data-customer-id")).toBe("cust_ws_ref");
+});
+
+/**
+ * THE GUEST/UNCLAIMED CASE, WHICH NO `ROWS` FIXTURE EXERCISES. Every row
+ * above carries a non-null `customerId`, so neither of this cell's two claims
+ * — the readable text, and the reachable-but-unprinted id — has ever been
+ * checked against the row where `customerId` is `null`. That is the row where
+ * `getAttribute("data-customer-id")` returning `null` has to mean "no
+ * attribute", not "the record happened not to carry one down two different
+ * paths" (the earlier assertions never fail on a vacuously absent attribute,
+ * because every fixture row supplies a customerId to compare against).
+ */
+test("an unclaimed order still renders the buyer reference, and carries no data-customer-id attribute at all", async () => {
+	respondWithOneOrder({ id: "ord_guest", buyerRef: "guest_checkout_991", customerId: null });
+
+	const container = await mountList();
+	const customer = cell(container, "ord_guest", CUSTOMER);
+	expect(customer.textContent).toBe("guest_checkout_991");
+	expect(customer.hasAttribute("data-customer-id")).toBe(false);
+	expect(customer.getAttribute("data-customer-id")).toBeNull();
+});
+
+/**
+ * REVIEW ROUND 3, FINDING 3 (both reviewers, independently). The Customer
+ * cell's CSS containment (`overflowWrap: "anywhere"`, round 3 N1/B-3)
+ * shipped with no test — a future style refactor could drop it silently,
+ * and only a screenshot review would have caught it. `happy-dom` can read
+ * the computed inline style without a real layout engine, so this pins the
+ * DECLARATION; the actual wrapping behaviour is what round 3's screenshots
+ * demonstrate.
+ */
+test("the Customer cell declares overflow-wrap: anywhere, so a long unbroken token wraps instead of overflowing", async () => {
+	const container = await mountList();
+	const customer = cell(container, "ord_paid", CUSTOMER);
+	expect(customer.style.overflowWrap).toBe("anywhere");
+});
+
+/**
+ * THE COUNTERPART TO THE CONFIRM'S CLAMP TEST (`order-detail-dom.test.tsx`).
+ * The cell is not prose — it contains a long value with CSS instead of
+ * truncating it, unlike the refund confirm's `buyerRef`. A future "fix" that
+ * reached for a string clamp here would still pass every OTHER test in this
+ * file, because none of them assert the cell renders the FULL value. This
+ * one does.
+ */
+test("the Customer cell renders a long buyer reference IN FULL, unclamped — containment, not truncation", async () => {
+	const longBuyerRef = `wrap-not-clamp-${"y".repeat(320 - "wrap-not-clamp-".length)}`;
+	respondWithOneOrder({ id: "ord_long_ref", buyerRef: longBuyerRef, customerId: "cust_long_ref" });
+
+	const container = await mountList();
+	const customer = cell(container, "ord_long_ref", CUSTOMER);
+	expect(customer.textContent).toBe(longBuyerRef);
+	expect(customer.textContent).not.toContain("…");
 });

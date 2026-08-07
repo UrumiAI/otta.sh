@@ -22,6 +22,15 @@ import { SHORT_ID_CONFIRM_LEN, shortIdFixed } from "./short-id.js";
 const CONFIRM_BUDGET = 200;
 
 /**
+ * The recipient phrase when no identity names the buyer — the ONLY exported
+ * form of this text, so a caller with nothing to name (no verified email, no
+ * buyer reference) can pass it AS the recipient and get exactly the words
+ * this function's own overflow branch below would otherwise produce, rather
+ * than re-typing the literal and letting the two drift (review finding N4).
+ */
+export const UNNAMED_REFUND_RECIPIENT = "this order's buyer";
+
+/**
  * `confirm.text` — exactly two sentences, ≤200 (§1): one naming the concrete
  * ORDER, amount and recipient, one naming the consequence.
  *
@@ -33,16 +42,29 @@ const CONFIRM_BUDGET = 200;
  * candidate set in hand; at 8 characters it is a visible superset of the
  * 4-character prefix the operator just read in the list row.
  *
+ * QUOTES MARK UNTRUSTED INPUT, AND NOTHING ELSE (review round 3, finding 2).
+ * `recipient` may be caller-supplied, unverified free text — this function
+ * has no way to know, so a real recipient is ALWAYS quoted (review finding
+ * N3), delimited so an operator can see exactly where the token begins and
+ * ends rather than reading it as an unbounded run of the sentence's own
+ * prose. {@link UNNAMED_REFUND_RECIPIENT} is the ONE exception: it is
+ * authored BY THIS MODULE, never by a caller, so quoting it would claim a
+ * provenance it does not have — the same marks used to say "this text came
+ * from the buyer" wrapped around a system phrase. The rule only holds
+ * because the delimiter cannot be forged from the other end either: a
+ * caller passing untrusted text through this function must escape a literal
+ * `"` in it BEFORE calling (`order-detail.tsx`'s `escapeQuoteForRecipient`),
+ * because this function has no way to tell an intentional close-quote from
+ * one embedded in the value it is quoting.
+ *
  * The recipient is dropped when a long buyer handle would push the string over
  * budget — the id and the amount are never the thing that goes. Truncating a
  * confirm dialog mid-sentence would be worse than a slightly less specific one,
- * and the budget is a hard rule (X-11).
- *
- * BOTH SURFACES CALL THIS ONE FUNCTION. The Block Kit screen passes it to a
- * `confirm` object the renderer draws; the React screen passes it to its own
- * dialog. That is what makes "identical confirm semantics" a property of the
- * code rather than a claim in a PR description — including the part that
- * matters most, that the id is named first and in the same 8 characters.
+ * and the budget is a hard rule (X-11). This is a BACKSTOP, not the primary
+ * defence against a crafted value that stays under budget while reshaping the
+ * sentence around it — a short recipient never reaches this branch at all, so
+ * a caller expecting a bound on a value that legitimately fits the budget
+ * still owns its own clamp (`order-detail.tsx`'s `REFUND_RECIPIENT_MAX_LEN`).
  */
 export function refundConfirmText(
 	orderId: string,
@@ -54,10 +76,13 @@ export function refundConfirmText(
 		? "This sends the money back through Stripe and cannot be reversed."
 		: "This records a refund made out of band — it does not move money.";
 	const order = `Order #${shortIdFixed(orderId, SHORT_ID_CONFIRM_LEN)}`;
-	const named = `${order} — refund ${amount} to ${recipient}? ${consequence}`;
+	const named =
+		recipient === UNNAMED_REFUND_RECIPIENT
+			? `${order} — refund ${amount} to ${recipient}? ${consequence}`
+			: `${order} — refund ${amount} to "${recipient}"? ${consequence}`;
 	return named.length <= CONFIRM_BUDGET
 		? named
-		: `${order} — refund ${amount} to this order's buyer? ${consequence}`;
+		: `${order} — refund ${amount} to ${UNNAMED_REFUND_RECIPIENT}? ${consequence}`;
 }
 
 /** The honest per-gateway capability copy (ADR-0008), each ≤200 (§1): Stripe
