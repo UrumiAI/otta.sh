@@ -188,6 +188,7 @@ export {
 // ── Phase 3 group E: cart (plan §7 step E1, shape per ADR-0003) ─────────────
 export {
 	CART_COOKIE_NAME,
+	CART_COOKIE_PATH,
 	createCartCreateRouteHandler,
 	createCartLineAddRouteHandler,
 	createCartLineRemoveRouteHandler,

@@ -63,6 +63,10 @@ export const STOREFRONT_CART_LINE_REMOVE_ROUTE = "storefront/cart/lines/remove";
  *  (documentation for) the theme shim's read side never drift. */
 export const CART_COOKIE_NAME = "otta_cart";
 
+/** The cart-cookie path — a single constant so the plugin's descriptor and
+ *  the theme shim's delete side share one source of truth. */
+export const CART_COOKIE_PATH = "/";
+
 /** 30 days — not specified by the plan (only the hold TTL, 15 min, is); a
  *  reasonable default for how long an anonymous cart pointer survives. The
  *  CART itself has no TTL (only its held LINES do, via `expiresAt`); an
@@ -92,7 +96,7 @@ function cartCookieDescriptor(cartId: string): CartCookieDescriptor {
 		httpOnly: true,
 		secure: true,
 		sameSite: "lax",
-		path: "/",
+		path: CART_COOKIE_PATH,
 		maxAgeSeconds: CART_COOKIE_MAX_AGE_SECONDS,
 	};
 }
