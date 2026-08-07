@@ -251,6 +251,7 @@ describe("a page that fails BEHIND one that succeeded", () => {
 				filtered: true,
 				firstPage: after?.firstPage ?? true,
 				hasNext: after?.nextCursor != null,
+				countScope: "narrowed-after-fetch",
 				noun: PRODUCTS_LOW_STOCK_NOUN,
 				empty: PRODUCTS_EMPTY,
 				noMatch: PRODUCTS_LOW_STOCK_NO_MATCH,
@@ -270,6 +271,7 @@ describe("a page that fails BEHIND one that succeeded", () => {
 				filtered: true,
 				firstPage: true,
 				hasNext: emptied?.nextCursor != null,
+				countScope: "narrowed-after-fetch",
 				noun: PRODUCTS_LOW_STOCK_NOUN,
 				empty: PRODUCTS_EMPTY,
 				noMatch: PRODUCTS_LOW_STOCK_NO_MATCH,
@@ -308,10 +310,15 @@ describe("what the count line calls rows drawn from more than one response", () 
 		filtered: false,
 		firstPage: true,
 		hasNext: true,
+		// "service-filtered": this describe block is about the ACCUMULATED_SUFFIX
+		// / firstPage-survives-the-merge mechanics generically, decoupled from
+		// whether any one caller narrows a page after fetching it — and the last
+		// test below needs the whole-set claim this scope allows on completion.
+		countScope: "service-filtered",
 		noun: PRODUCTS_NOUN,
 		empty: PRODUCTS_EMPTY,
 		noMatch: PRODUCTS_LOW_STOCK_NO_MATCH,
-	};
+	} as const;
 
 	test("one response keeps the shared page-scoped phrasing", () => {
 		expect(listOutcome({ ...base, count: 25 }).countLine).toBe("25 products on this page");
@@ -324,11 +331,29 @@ describe("what the count line calls rows drawn from more than one response", () 
 	});
 
 	test("F29: the narrowing names what it counted", () => {
+		// ITS OWN SCOPE, NOT `base`'S: this case models the low-stock caller, so
+		// it states `narrowed-after-fetch` explicitly rather than inheriting
+		// `base`'s `service-filtered` — which happens to read the same here only
+		// because `base`'s `hasNext: true` keeps `complete` false either way. A
+		// caller that inherited the wrong scope by accident is exactly the shape
+		// of the defect this file's fix closed.
 		expect(
-			listOutcome({ ...base, count: 3, filtered: true, noun: PRODUCTS_LOW_STOCK_NOUN }).countLine,
+			listOutcome({
+				...base,
+				count: 3,
+				filtered: true,
+				countScope: "narrowed-after-fetch",
+				noun: PRODUCTS_LOW_STOCK_NOUN,
+			}).countLine,
 		).toBe("3 low-stock products on this page");
 		expect(
-			listOutcome({ ...base, count: 1, filtered: true, noun: PRODUCTS_LOW_STOCK_NOUN }).countLine,
+			listOutcome({
+				...base,
+				count: 1,
+				filtered: true,
+				countScope: "narrowed-after-fetch",
+				noun: PRODUCTS_LOW_STOCK_NOUN,
+			}).countLine,
 		).toBe("1 low-stock product on this page");
 	});
 

@@ -344,7 +344,11 @@ describe("the list outcome ladder — FIVE outcomes, and both surfaces read them
 	const noun = ORDERS_NOUN;
 	const empty = ORDERS_EMPTY;
 	const noMatch = ORDERS_NO_MATCH;
-	const base = { noun, empty, noMatch } as const;
+	// EVERY CASE IN THIS DESCRIBE BLOCK IS THE ORDINARY, SERVICE-FILTERED SHAPE —
+	// the products-specific "narrowed-after-fetch" scope gets its own describe
+	// block below, so the required discriminant is stated once here rather than
+	// at each of the nine call sites that spread `base`.
+	const base = { noun, empty, noMatch, countScope: "service-filtered" } as const;
 
 	test("1. rows: the table renders, and page 1 with no next page states a TOTAL", () => {
 		const outcome = listOutcome({
@@ -520,6 +524,7 @@ describe("INC-23's exact count, shared by both surfaces", () => {
 			firstPage: false,
 			hasNext: true,
 			total: 137,
+			countScope: "service-filtered",
 			noun,
 			empty: ORDERS_EMPTY,
 			noMatch: ORDERS_NO_MATCH,
@@ -537,11 +542,54 @@ describe("INC-23's exact count, shared by both surfaces", () => {
 			filtered: true,
 			firstPage: true,
 			hasNext: true,
+			countScope: "narrowed-after-fetch",
 			noun,
 			empty: ORDERS_EMPTY,
 			noMatch: ORDERS_NO_MATCH,
 		});
 		expect(outcome.countLine).toBe("4 orders on this page");
+	});
+
+	test("narrowed-after-fetch never borrows the FETCH's completeness", () => {
+		// The exact shape that shipped the blocking defect: the fetch itself is
+		// complete (first page, no next cursor) — a catalog that happens to fit on
+		// one page, or a scan that reached the end of it — but the NARROWING is not
+		// a service predicate, so the fetch being done says nothing about whether
+		// the narrowed set is. `complete` must not go true on this scope no matter
+		// what `firstPage`/`hasNext` say.
+		const outcome = listOutcome({
+			count: 3,
+			filtered: true,
+			firstPage: true,
+			hasNext: false,
+			countScope: "narrowed-after-fetch",
+			noun,
+			empty: ORDERS_EMPTY,
+			noMatch: ORDERS_NO_MATCH,
+		});
+		expect(outcome.countLine).toBe("3 orders on this page");
+	});
+
+	test("a `total` under narrowed-after-fetch is REFUSED, not rendered", () => {
+		// PINNED DIRECTLY: a caller can mislabel a page `narrowed-after-fetch`
+		// while a real `total` is present (products'
+		// `stock.filterUnavailable` — the narrowing did not apply, but the service's
+		// exact count still arrived). The ladder must not let that total resurrect
+		// whole-set phrasing: this scope refuses one unconditionally, independently
+		// of whether the caller's own labelling was correct.
+		const outcome = listOutcome({
+			count: 3,
+			filtered: true,
+			firstPage: true,
+			hasNext: false,
+			total: 137,
+			countScope: "narrowed-after-fetch",
+			noun,
+			empty: ORDERS_EMPTY,
+			noMatch: ORDERS_NO_MATCH,
+		});
+		expect(outcome.countLine).toBe("3 orders on this page");
+		expect(outcome.countLine).not.toContain("137");
 	});
 });
 

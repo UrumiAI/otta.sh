@@ -506,6 +506,13 @@ export function OrdersList({
 		filtered,
 		firstPage: page?.firstPage ?? true,
 		hasNext,
+		// EVERY FILTER ON THIS SCREEN IS A SERVICE PREDICATE (status, period,
+		// search) — there is no Orders equivalent of products' "Low stock only",
+		// so the fetched page and the filtered set are always the same
+		// collection and `firstPage && !hasNext` may stand for "the counted set
+		// is complete". `countScope` is required on every `listOutcome` call, so
+		// a future narrowing here cannot omit stating it.
+		countScope: "service-filtered",
 		noun: ORDERS_NOUN,
 		empty: ORDERS_EMPTY,
 		noMatch: ORDERS_NO_MATCH,

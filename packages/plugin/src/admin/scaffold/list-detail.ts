@@ -891,6 +891,18 @@ export interface ListResultOptions {
 	 *  service reports one. Absent ⇒ the count falls back to describing the page
 	 *  (see the module note above). */
 	total?: number;
+	/**
+	 * What `count` (and `total`) describe — forwarded to `listOutcome`'s own
+	 * required discriminant of the same name. REQUIRED here too, and
+	 * deliberately not defaulted: every list has a scope, so there is no real
+	 * state an absent value could mean, unlike `total` above (whose absence
+	 * genuinely means "the service reported none"). Coupons — the only caller
+	 * today — filters entirely through the service and states
+	 * `"service-filtered"`; a Block Kit screen that ever narrows a fetched page
+	 * client-side, the way products' "Low stock only" does on the React tier,
+	 * now has somewhere to say so instead of a screen forgetting to.
+	 */
+	countScope: "service-filtered" | "narrowed-after-fetch";
 	noun: RowNoun;
 	/** Zero rows and NO filter on: the collection itself is empty. Non-accusatory
 	 *  by construction — nothing has gone wrong — and it may offer the way IN
@@ -961,6 +973,7 @@ export function listResult(opts: ListResultOptions): ListResult {
 		filtered: opts.filtered,
 		firstPage: opts.firstPage,
 		hasNext: opts.nextToken !== undefined,
+		countScope: opts.countScope,
 		noun: opts.noun,
 		empty: opts.empty,
 		noMatch: opts.noMatch,
