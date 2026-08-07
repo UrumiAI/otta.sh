@@ -2,6 +2,8 @@ import {
 	cents,
 	currency,
 	idempotencyKey as toIdempotencyKey,
+	InvalidLowStockThresholdError,
+	isValidLowStockThreshold,
 	MissingProductIdError,
 	money,
 	productId as toProductId,
@@ -532,6 +534,7 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 	 * and pg. Always excludes soft-deleted rows (port doc).
 	 */
 	async listProducts(filter: ProductListFilter, page: ProductListPage): Promise<ProductListResult> {
+		assertValidLowStockThreshold(filter);
 		let q = this.#db
 			.selectFrom("product_commerce")
 			.leftJoin("inventory", "inventory.sku", "product_commerce.sku")
@@ -628,6 +631,7 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 	 * 0.80 ms at the same row count, against 1.14 / 0.60 ms page reads.)
 	 */
 	async countProducts(filter: ProductListFilter): Promise<number> {
+		assertValidLowStockThreshold(filter);
 		let q = this.#db
 			.selectFrom("product_commerce")
 			// Joined back CONDITIONALLY — only `filter.lowStockThreshold`'s
@@ -730,6 +734,26 @@ function isLiveSkuUniqueViolation(err: unknown): boolean {
 		);
 	}
 	return false;
+}
+
+/**
+ * Validates `filter.lowStockThreshold` BEFORE any query is built (port doc —
+ * `InvalidLowStockThresholdError`), via the SAME `isValidLowStockThreshold`
+ * guard the fake calls, so the two dialects sharing this class and the
+ * IO-free fake can never drift on out-of-domain input. Called at the top of
+ * BOTH `listProducts` and `countProducts` — never left to the driver: a raw
+ * out-of-domain value reaching Postgres fails binding an `integer` column
+ * ("invalid input syntax for type integer"), while better-sqlite3 accepts it
+ * and answers a DIFFERENT (wrong) row set, which is the exact three-way
+ * disagreement this guard exists to make unreachable.
+ */
+function assertValidLowStockThreshold(filter: ProductListFilter): void {
+	if (
+		filter.lowStockThreshold !== undefined &&
+		!isValidLowStockThreshold(filter.lowStockThreshold)
+	) {
+		throw new InvalidLowStockThresholdError(filter.lowStockThreshold);
+	}
 }
 
 /**

@@ -1,5 +1,5 @@
 ---
-"@otta-sh/domain": patch
+"@otta-sh/domain": minor
 "@otta-sh/store-postgres": patch
 ---
 
@@ -16,11 +16,19 @@ existing caller keeps seeing exactly what it saw before, and a caller that
 cannot resolve a threshold should simply omit the field rather than filter to
 nothing.
 
+The field's domain is a non-negative integer (mirroring the HTTP boundary's own
+`z.number().int().nonnegative()` validation). A value outside it throws the new
+`InvalidLowStockThresholdError`, exported alongside its `isValidLowStockThreshold`
+guard, on every adapter alike — checked before any comparison or query runs, so
+a fractional or non-finite threshold can never get three different answers from
+the fake, SQLite, and Postgres.
+
 `store-postgres` reuses `listProducts`'s existing `inventory` LEFT JOIN (no new
 join, no new index — the join already carries `on_hand`) and adds the SAME join
 to `countProducts`, but only when this filter is set, so every other predicate
 keeps its join-free plan. The in-memory fake mirrors both dialects byte-for-byte,
 pinned by the shared contract suite across every case: the boundary (inclusive),
-zero-on-hand, the two "unknown" shapes, filter composition, and pagination.
+zero-on-hand, the two "unknown" shapes, the empty-match shape, out-of-domain
+rejection, filter composition, and pagination.
 
 Port-level only — no consumer wires this filter up yet.

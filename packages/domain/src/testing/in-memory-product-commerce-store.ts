@@ -14,7 +14,12 @@ import type {
 	UpdateProductCommerceFieldsInput,
 	UpsertProductCommerceInput,
 } from "../ports/product-commerce-store.js";
-import { MissingProductIdError, SkuConflictError } from "../product-commerce/errors.js";
+import {
+	InvalidLowStockThresholdError,
+	isValidLowStockThreshold,
+	MissingProductIdError,
+	SkuConflictError,
+} from "../product-commerce/errors.js";
 
 /** Test-only seed shape for the admin-list contract — a direct product row (no
  *  upsert/idempotency-key dance), so a case can pin an EXACT `createdAt` per
@@ -406,6 +411,28 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 	 *  `#matchesFilter` / the Kysely adapter's shared predicate builder) —
 	 *  excludes soft-deleted rows UNLESS `filter.deleted: true` requests the
 	 *  archive view (product lifecycle surfacing — see the port doc). */
+	/**
+	 * Validates `filter.lowStockThreshold` BEFORE any row is considered (port
+	 * doc — `InvalidLowStockThresholdError`), via the shared
+	 * `isValidLowStockThreshold` guard every adapter calls. Checked ONCE per
+	 * `listProducts`/`countProducts` invocation, never inside `#matchesFilter`
+	 * (which only runs per EXISTING row): an empty store must throw exactly
+	 * like a populated one, mirroring the SQL adapters, whose parameter
+	 * binding rejects an out-of-domain value independently of how many rows
+	 * the query would have matched. Short-circuits BEFORE any `>` comparison
+	 * ever runs — the fix for the divergence `InvalidLowStockThresholdError`'s
+	 * doc records (a naive `onHand > threshold` lets `NaN` silently decide
+	 * "nothing is low stock" instead of failing loudly).
+	 */
+	#assertValidLowStockThreshold(filter: ProductListFilter): void {
+		if (
+			filter.lowStockThreshold !== undefined &&
+			!isValidLowStockThreshold(filter.lowStockThreshold)
+		) {
+			throw new InvalidLowStockThresholdError(filter.lowStockThreshold);
+		}
+	}
+
 	#matchesFilter(row: ProductCommerce, filter: ProductListFilter): boolean {
 		const wantDeleted = filter.deleted === true;
 		if (wantDeleted !== (row.deletedAt !== null)) return false;
@@ -431,6 +458,7 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 		// `InMemoryOrderStore.listOrders`, MOD-5): same filters (via the shared
 		// `#matchesFilter` predicate), same `created_at DESC, product_id DESC`
 		// order, same `limit + 1` next-page detection.
+		this.#assertValidLowStockThreshold(filter);
 		const cursor = page.cursor ?? null;
 
 		const matched = [...this.#rows.values()]
@@ -466,6 +494,7 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 	 *  (MOD-5) — one predicate, so a count and the list it captions can never
 	 *  disagree. No cursor: a count covers the whole filtered set, not a page. */
 	async countProducts(filter: ProductListFilter): Promise<number> {
+		this.#assertValidLowStockThreshold(filter);
 		let count = 0;
 		for (const row of this.#rows.values()) if (this.#matchesFilter(row, filter)) count++;
 		return count;

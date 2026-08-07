@@ -59,6 +59,14 @@ export interface ReportingStore {
 	 * otherwise DUPLICATE the low-stock row (and could win the title). With the
 	 * tombstone predicate the join is at most 1:1, and only a live product can
 	 * title a row.
+	 *
+	 * A SECOND, DELIBERATELY DIFFERENT "low stock" lives at
+	 * `ProductCommerceStore`'s `ProductListFilter.lowStockThreshold`: this
+	 * report is INVENTORY-first (an orphan sku with no live product still
+	 * lists here), while that filter is PRODUCT-first (a rowless product is
+	 * excluded there). Both are inclusive at the boundary today, so the two
+	 * agree there, but they are independent definitions — a future change to
+	 * either one's boundary or absent-row rule must update both docs.
 	 */
 	lowStock(threshold: number): Promise<LowStockRow[]>;
 }

@@ -60,6 +60,20 @@ export interface ProductListFilter {
 	 * threshold and passes the number through, exactly like every other value
 	 * on this filter.
 	 *
+	 * DOMAIN: a NON-NEGATIVE INTEGER — mirrors the HTTP boundary's own
+	 * validation (`packages/service/src/schemas.ts`'s `lowStockQuery` /
+	 * `settingsBody`: `z.number().int().nonnegative()`), and the ONLY domain
+	 * every adapter agrees on. A value outside it (fractional, negative,
+	 * `NaN`, `±Infinity`) throws `InvalidLowStockThresholdError` — checked by
+	 * EVERY adapter via the shared `isValidLowStockThreshold` guard, BEFORE
+	 * any comparison or query runs — never a silent per-adapter answer: a raw
+	 * fractional threshold applies cleanly in a naive fake/SQLite comparison
+	 * but Postgres rejects it binding an `integer` column, and a raw `NaN`
+	 * threshold would silently mean "everything passes" in a naive fake
+	 * (`onHand > NaN` is always false) and "nothing passes" in SQLite — three
+	 * different answers to one input, which is what the shared guard exists
+	 * to make unreachable. Contract-pinned so the three can never drift apart.
+	 *
 	 * A row matches iff BOTH hold:
 	 *  - its sku resolves to a KNOWN `inventory` row — the same LEFT JOIN
 	 *    `ProductSummary.onHand` is sourced from. A product with NO inventory
@@ -71,13 +85,31 @@ export interface ProductListFilter {
 	 *    at the threshold counts as low, and `on_hand === 0` ("out of stock",
 	 *    a KNOWN fact) always matches a non-negative threshold.
 	 *
+	 * A SECOND, DELIBERATELY DIFFERENT "low stock" lives at
+	 * `ReportingStore.lowStock(threshold)`: that report is INVENTORY-first (an
+	 * orphan sku with no live product still lists, ordered by `on_hand`),
+	 * while this filter is PRODUCT-first (a rowless product is excluded,
+	 * ordered by `created_at`). Both happen to be inclusive at the boundary
+	 * today, so the two agree there — but they are independent definitions
+	 * with independent absent-row rules, and a future change to either one's
+	 * boundary or absent-row decision must update BOTH docs, not just one.
+	 *
 	 * OMITTED (`undefined`) ⇒ no stock-based filtering — the unchanged
 	 * default every existing caller keeps seeing. This is also the correct
 	 * behavior when a caller cannot resolve a threshold at all (settings
-	 * unset/unreadable): mirror the plugin's `filterUnavailable` degradation
-	 * by simply not setting this field — never filter, and never treat "no
-	 * threshold" as "threshold 0" (which would silently return only
-	 * out-of-stock rows instead of the honest "can't filter" answer).
+	 * unset/unreadable) — never treat "no threshold" as "threshold 0" (which
+	 * would silently return only out-of-stock rows instead of the honest
+	 * "can't filter" answer).
+	 *
+	 * THIS ONLY MIRRORS HALF of the plugin's `filterUnavailable` degradation
+	 * (`canFilter = threshold !== null && !unreadable`) — specifically the
+	 * "no threshold to filter by" cause. It does NOT, and cannot, mirror the
+	 * OTHER cause (`unreadable`: every row's `onHand` missing on the WIRE) —
+	 * that is a client-side projection concern, orthogonal to whether this
+	 * predicate ran. Once a caller wires this field up, a page can be
+	 * genuinely, correctly filtered by real `on_hand` values while the
+	 * client's OWN `onHand` display column is still unreadable: the two
+	 * causes are independent axes post-wiring, not one merged concept.
 	 */
 	lowStockThreshold?: number;
 }
@@ -675,6 +707,18 @@ export interface ProductCommerceStore {
 	 * back CONDITIONALLY, only when `filter.lowStockThreshold` is set (the one
 	 * axis a count cannot resolve without it), so every other predicate keeps
 	 * the join-free plan this method was measured against.
+	 *
+	 * CAPTION HAZARD for whichever caller wires this filter up: this method
+	 * returns a GENUINELY FILTERED total whenever `filter.lowStockThreshold`
+	 * is set, and the UNFILTERED total when it is omitted — the inverse of
+	 * the plugin's CURRENT client-side narrowing, which deliberately withholds
+	 * `total` while narrowing, precisely because that count did not describe
+	 * the rows on screen (see `applyLowStockNarrowing`'s doc). Once this
+	 * predicate is wired server-side, a caller that could not resolve a
+	 * threshold and therefore omitted this field is holding an UNFILTERED
+	 * total — it must not caption the list or the total as filtered in that
+	 * case. The omission has to propagate all the way to the caption, not
+	 * stop at the query.
 	 */
 	countProducts(filter: ProductListFilter): Promise<number>;
 

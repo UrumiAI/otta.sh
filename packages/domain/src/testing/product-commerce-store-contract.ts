@@ -1,7 +1,11 @@
 import { describe, expect, test } from "vitest";
 import { cents, currency, money } from "../money/cents.js";
 import { idempotencyKey, productId, sku } from "../money/ids.js";
-import { MissingProductIdError, SkuConflictError } from "../product-commerce/errors.js";
+import {
+	InvalidLowStockThresholdError,
+	MissingProductIdError,
+	SkuConflictError,
+} from "../product-commerce/errors.js";
 import type { ProductCommerce, ProductCommerceStore } from "../ports/product-commerce-store.js";
 import type { SeedProductSummaryRow } from "./in-memory-product-commerce-store.js";
 
@@ -2051,6 +2055,39 @@ export function productCommerceStoreContract(
 			expect(page3.nextCursor).toBeNull();
 		});
 
+		test("listProducts filter.lowStockThreshold matching NOTHING returns an empty page with a null cursor (an inventory-never-synced store)", async () => {
+			const h = await makeStore();
+			// Never seeded via `seedStock` at all — every row is unknown stock, the
+			// most realistic way to hit the "total describes the filtered set"
+			// boundary this increment exists to guarantee.
+			await h.seedProduct(productRow({ id: "p-unsynced-1", sku: "SKU-UNSYNCED-1" }));
+			await h.seedProduct(productRow({ id: "p-unsynced-2", sku: "SKU-UNSYNCED-2" }));
+			const { products, nextCursor } = await h.store.listProducts(
+				{ lowStockThreshold: 0 },
+				{ limit: 25 },
+			);
+			expect(products).toEqual([]);
+			expect(nextCursor).toBeNull();
+		});
+
+		test("listProducts filter.lowStockThreshold OUTSIDE its non-negative-integer domain throws InvalidLowStockThresholdError, never a silent per-adapter answer", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "p-1", sku: "SKU-1" }));
+			await h.seedStock("SKU-1", 3);
+			for (const bad of [
+				2.5,
+				-1,
+				-0.5,
+				Number.NaN,
+				Number.POSITIVE_INFINITY,
+				Number.NEGATIVE_INFINITY,
+			]) {
+				await expect(
+					h.store.listProducts({ lowStockThreshold: bad }, { limit: 25 }),
+				).rejects.toBeInstanceOf(InvalidLowStockThresholdError);
+			}
+		});
+
 		// -- countProducts (INC-23: the exact count the admin list captions with) --
 
 		test("countProducts counts the whole filtered set, independently of any page size", async () => {
@@ -2143,6 +2180,30 @@ export function productCommerceStoreContract(
 				}),
 			).toBe(1);
 			expect(await h.store.countProducts({})).toBe(2);
+		});
+
+		test("countProducts filter.lowStockThreshold matching NOTHING is 0 — describes the filtered set, not the unfiltered catalog (an inventory-never-synced store)", async () => {
+			const h = await makeStore();
+			await h.seedProduct(productRow({ id: "p-unsynced-1", sku: "SKU-UNSYNCED-1" }));
+			await h.seedProduct(productRow({ id: "p-unsynced-2", sku: "SKU-UNSYNCED-2" }));
+			expect(await h.store.countProducts({ lowStockThreshold: 0 })).toBe(0);
+			expect(await h.store.countProducts({})).toBe(2);
+		});
+
+		test("countProducts filter.lowStockThreshold OUTSIDE its non-negative-integer domain throws InvalidLowStockThresholdError, matching listProducts", async () => {
+			const h = await makeStore();
+			for (const bad of [
+				2.5,
+				-1,
+				-0.5,
+				Number.NaN,
+				Number.POSITIVE_INFINITY,
+				Number.NEGATIVE_INFINITY,
+			]) {
+				await expect(h.store.countProducts({ lowStockThreshold: bad })).rejects.toBeInstanceOf(
+					InvalidLowStockThresholdError,
+				);
+			}
 		});
 
 		test("countProducts on an empty store is 0", async () => {
