@@ -34,8 +34,8 @@ vi.mock("emdash/plugin-utils", async (importOriginal) => {
 	return { ...actual, apiFetch };
 });
 
-const { OrderDetail } = await import("../src/orders/order-detail.js");
-const { ABSENT, formatAmount, orderStateCell, refundCapabilityText } =
+const { OrderDetail, REFUND_RECIPIENT_MAX_LEN } = await import("../src/orders/order-detail.js");
+const { ABSENT, fit, formatAmount, orderStateCell, refundCapabilityText, refundConfirmText } =
 	await import("@otta-sh/admin-presentation");
 type DetailPayload = import("../src/console-api.js").DetailPayload;
 type RefundsSummary = import("../src/console-api.js").RefundsSummary;
@@ -167,6 +167,24 @@ function withIdentity(
 	customerId: string | null,
 ): DetailPayload {
 	return { ...payload, order: { ...payload.order, buyerRef, customerId } };
+}
+
+/** `detailFor` with a `CustomerContext` attached — the VERIFIED identity a
+ *  refund confirm is required to prefer over `buyerRef`. `null` reproduces
+ *  the ordinary "customer context could not be loaded" state, which the
+ *  confirm's recipient resolution must fall through rather than error on. */
+function withCustomerEmail(payload: DetailPayload, email: string | null): DetailPayload {
+	return {
+		...payload,
+		customer: {
+			identity: {
+				email,
+				buyerRef: payload.order.buyerRef,
+				linkage: email !== null ? "claimed" : "guest",
+			},
+			orderCount: 1,
+		},
+	};
 }
 
 // ── mounting ─────────────────────────────────────────────────────────────────
@@ -430,12 +448,32 @@ test("every amount on the detail is the one the formatter makes of the record", 
 const CLAIMED_BUYER_REF = "priya.kapoor@example.test";
 const CLAIMED_CUSTOMER_ID = "4c2a8f91-7b3e-4d6a-9f1c-8a2b3c4d5e6f";
 
+/** Open the refund confirm over a `CAPTURED`-refunds record and return its
+ *  text node — every confirm-recipient test below needs exactly this. */
+async function openRefundConfirm(payload: DetailPayload): Promise<HTMLElement> {
+	const view = await show(payload);
+	await fire(tab(view, "money"), "click");
+	await fire(one<HTMLButtonElement>(view, '[data-testid="refund-full"]'), "click");
+	return one<HTMLElement>(view, '[data-testid="otta-confirm-text"]');
+}
+
+const CAPTURED_REFUND_AMOUNT = formatAmount(CAPTURED.remainingCents, CUR);
+
 test("the heading names the readable buyer reference, not the opaque customer id, for a claimed order", async () => {
 	const view = await show(withIdentity(detailFor("paid"), CLAIMED_BUYER_REF, CLAIMED_CUSTOMER_ID));
 
 	const heading = one<HTMLHeadingElement>(view, '[data-testid="detail-heading"]');
 	expect(heading.textContent).toContain(CLAIMED_BUYER_REF);
 	expect(heading.textContent).not.toContain(CLAIMED_CUSTOMER_ID);
+});
+
+test("the heading still names the buyer reference on an unclaimed/guest order, and carries no data-customer-id attribute", async () => {
+	const view = await show(withIdentity(detailFor("paid"), "guest_checkout_551", null));
+
+	const heading = one<HTMLHeadingElement>(view, '[data-testid="detail-heading"]');
+	expect(heading.textContent).toContain("guest_checkout_551");
+	expect(heading.hasAttribute("data-customer-id")).toBe(false);
+	expect(heading.getAttribute("data-customer-id")).toBeNull();
 });
 
 test("the customer id stays reachable from the heading, as a non-focusable data attribute", async () => {
@@ -460,14 +498,105 @@ test("an empty buyer reference renders the shared em dash in the heading, never 
 	expect(heading.getAttribute("data-customer-id")).toBe(CLAIMED_CUSTOMER_ID);
 });
 
-test("the refund confirm names who the money goes back to by the readable reference, not the customer id", async () => {
-	const view = await show(
+/** Reviewer B: `.length > 0` alone is true for `" "` — the heading would
+ *  render a bare, blank-LOOKING space rather than the required em dash. */
+test("a whitespace-only buyer reference renders the shared em dash in the heading, not a blank-looking space", async () => {
+	const view = await show(withIdentity(detailFor("paid"), "   ", CLAIMED_CUSTOMER_ID));
+
+	const heading = one<HTMLHeadingElement>(view, '[data-testid="detail-heading"]');
+	expect(heading.textContent).toContain(ABSENT);
+});
+
+// ── THE REFUND CONFIRM: a stricter, separate question from the heading's ────
+//
+// Review found three problems in the first cut, all in this one sentence:
+// the em dash was fed into it as a NOUN ("refund $42 to —?"), the unverified
+// `buyerRef` replaced a previously-proven account id with no clamp, and nothing
+// pinned that the order id / amount / consequence clause survived the change.
+// Every test below reads `otta-confirm-text` against the FULL string
+// `refundConfirmText` itself would produce — not a substring — so a future
+// change that keeps the right recipient but drops the id, the amount or the
+// consequence clause fails here.
+
+test("the refund confirm prefers buyerRef over the customer id, and states the exact sentence refundConfirmText would", async () => {
+	const confirmText = await openRefundConfirm(
 		withIdentity(detailFor("paid", CAPTURED), CLAIMED_BUYER_REF, CLAIMED_CUSTOMER_ID),
 	);
-	await fire(tab(view, "money"), "click");
-	await fire(one<HTMLButtonElement>(view, '[data-testid="refund-full"]'), "click");
 
-	const confirmText = one(view, '[data-testid="otta-confirm-text"]');
-	expect(confirmText.textContent).toContain(CLAIMED_BUYER_REF);
+	expect(confirmText.textContent).toBe(
+		refundConfirmText(ORDER_ID, CAPTURED_REFUND_AMOUNT, CLAIMED_BUYER_REF, CAPTURED.refundable),
+	);
 	expect(confirmText.textContent).not.toContain(CLAIMED_CUSTOMER_ID);
+});
+
+test("a verified account email outranks buyerRef in the refund confirm", async () => {
+	const VERIFIED_EMAIL = "verified.buyer@example.test";
+	const payload = withCustomerEmail(
+		withIdentity(detailFor("paid", CAPTURED), CLAIMED_BUYER_REF, CLAIMED_CUSTOMER_ID),
+		VERIFIED_EMAIL,
+	);
+	const confirmText = await openRefundConfirm(payload);
+
+	expect(confirmText.textContent).toBe(
+		refundConfirmText(ORDER_ID, CAPTURED_REFUND_AMOUNT, VERIFIED_EMAIL, CAPTURED.refundable),
+	);
+	expect(confirmText.textContent).not.toContain(CLAIMED_BUYER_REF);
+	expect(confirmText.textContent).not.toContain(CLAIMED_CUSTOMER_ID);
+});
+
+test("a null customer context (context unavailable) falls through to buyerRef in the refund confirm, not an error state", async () => {
+	// `detailFor` already leaves `customer: null` — the ordinary "could not be
+	// loaded" state — so this is the fixture's default, named explicitly.
+	const confirmText = await openRefundConfirm(
+		withIdentity(detailFor("paid", CAPTURED), CLAIMED_BUYER_REF, CLAIMED_CUSTOMER_ID),
+	);
+	expect(confirmText.textContent).toBe(
+		refundConfirmText(ORDER_ID, CAPTURED_REFUND_AMOUNT, CLAIMED_BUYER_REF, CAPTURED.refundable),
+	);
+});
+
+test("with no verified email and no buyer reference, the refund confirm falls back to the shared phrase, never the em dash as a noun", async () => {
+	const confirmText = await openRefundConfirm(withIdentity(detailFor("paid", CAPTURED), "", null));
+
+	expect(confirmText.textContent).toBe(
+		refundConfirmText(ORDER_ID, CAPTURED_REFUND_AMOUNT, "this order's buyer", CAPTURED.refundable),
+	);
+	// THE EM DASH IS NEVER A NOUN (finding 1): "to —?" is exactly the defect
+	// this fallback replaces. The sentence template legitimately uses the same
+	// glyph as PUNCTUATION ("Order #… — refund …"), so the check is for the
+	// dash in the RECIPIENT position specifically, not for the character's
+	// absence from the string.
+	expect(confirmText.textContent).not.toContain(`to ${ABSENT}?`);
+});
+
+test("a whitespace-only buyer reference is treated as no reference in the refund confirm too", async () => {
+	const confirmText = await openRefundConfirm(
+		withIdentity(detailFor("paid", CAPTURED), "   ", CLAIMED_CUSTOMER_ID),
+	);
+	expect(confirmText.textContent).toBe(
+		refundConfirmText(ORDER_ID, CAPTURED_REFUND_AMOUNT, "this order's buyer", CAPTURED.refundable),
+	);
+});
+
+/**
+ * FINDING 2: `buyerRef` is unverified, caller-supplied free text up to 320
+ * characters, and a value short enough to stay under the confirm's own
+ * 200-character budget can still reshape the sentence an operator is asked
+ * to approve. The clamp is the defence — enforced HERE, not by
+ * `refundConfirmText`'s own overflow fallback, which only reacts once the
+ * WHOLE sentence overflows and this value alone does not.
+ */
+test("a long buyer reference is clamped with an ellipsis before it reaches the refund confirm, never printed in full", async () => {
+	const longBuyerRef = `attacker-controlled-recipient-${"x".repeat(80)}`;
+	const confirmText = await openRefundConfirm(
+		withIdentity(detailFor("paid", CAPTURED), longBuyerRef, null),
+	);
+
+	expect(confirmText.textContent).not.toContain(longBuyerRef);
+	const clamped = fit(longBuyerRef, REFUND_RECIPIENT_MAX_LEN);
+	expect(clamped.endsWith("…")).toBe(true);
+	expect(confirmText.textContent).toContain(clamped);
+	expect(confirmText.textContent).toBe(
+		refundConfirmText(ORDER_ID, CAPTURED_REFUND_AMOUNT, clamped, CAPTURED.refundable),
+	);
 });

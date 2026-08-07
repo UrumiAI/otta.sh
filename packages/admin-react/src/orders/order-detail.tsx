@@ -40,7 +40,6 @@
  * that has to change changes once.
  */
 import {
-	ABSENT,
 	CANCEL_BANNER,
 	CANCEL_CONFIRM,
 	CANCEL_GROUP_LABEL,
@@ -62,7 +61,9 @@ import {
 	SHIPPING_ADDRESS_ABSENT,
 	TIMELINE_EMPTY,
 	TIMELINE_UNAVAILABLE,
+	buyerReferenceText,
 	cancelConfirmText,
+	fit,
 	formatAmount,
 	formatDate,
 	formatMinorUnitsInput,
@@ -255,25 +256,68 @@ function Unavailable({ text }: { text: string }): React.ReactElement {
 const PILLED_ORDER_STATE = "failed";
 
 /**
- * The readable buyer reference for the heading and the refund confirm —
- * NEVER the opaque `customerId` uuid. Same bug as the list's Customer cell
- * (`orders-list.tsx`), one click away: this screen used to read
- * `order.customerId ?? order.buyerRef`, so a CLAIMED order — the one where
- * the most is known about the buyer — showed a uuid in its own H1, and in the
- * sentence a refund confirm asks an operator to approve.
+ * How far a refund confirm's recipient token may reach before it is cut,
+ * with a visible ellipsis so an operator can SEE that it was cut.
  *
- * Duplicated here rather than imported from `orders-list.tsx` — the same
- * choice this file already made for `PILLED_ORDER_STATE` above, so the two
- * screens stay independently editable rather than newly coupled to each
- * other's module.
- *
- * `buyerRef` is typed as a required `string` on the wire but nothing upstream
- * of this render enforces that at runtime, so an absent or empty value is
- * treated as absent — the shared `ABSENT` em dash, never a blank heading and
- * never the literal string "null".
+ * `buyerRef` is unverified free text up to 320 characters
+ * (`min(1).max(320)`, format unchecked — `packages/service/src/schemas.ts`,
+ * `packages/plugin/src/storefront/checkout-route-input.ts`) landing inside a
+ * ~200-character sentence (`order-refund-copy.ts`'s `CONFIRM_BUDGET`). That
+ * function already refuses to overflow the budget, but its own answer to
+ * overflow is to DROP the recipient silently and say "this order's buyer" —
+ * fine for an honestly long value, and no defence at all against a short,
+ * deliberately crafted one that stays under budget while reshaping the
+ * sentence around it. 60 leaves ~140 characters of headroom under the
+ * budget even with the longer of the two consequence clauses and the widest
+ * realistic amount/id — room a real email or handle never needs and a
+ * crafted string is not given.
  */
-function customerReference(buyerRef: string | null | undefined): string {
-	return typeof buyerRef === "string" && buyerRef.length > 0 ? buyerRef : ABSENT;
+export const REFUND_RECIPIENT_MAX_LEN = 60;
+
+/**
+ * The exact fallback `refundConfirmText` reaches for on its own overflow
+ * (`order-refund-copy.ts`'s `refundConfirmText`, the `to this order's buyer?`
+ * branch) — duplicated as a literal because that function takes `recipient`
+ * as ordinary text with no "no identity" mode of its own, and this file may
+ * not add one to it (out of scope; see the confirm-recipient resolution
+ * below). If that fallback's wording ever changes, this string has to change
+ * with it — there is no import to keep the two in sync.
+ */
+const NO_IDENTITY_RECIPIENT = "this order's buyer";
+
+/**
+ * WHO A REFUND CONFIRM NAMES — review-mandated, and a DIFFERENT, STRICTER
+ * question than {@link buyerReferenceText} answers for the heading and the
+ * list cell. A destructive action's confirm text must name the most
+ * TRUSTWORTHY identity available, not the most readable one:
+ *
+ *  1. The VERIFIED account email (`detail.customer.identity.email`) — a
+ *     proven identity, unclamped, and preferred whenever present.
+ *     `detail.customer` is `null` whenever customer context could not be
+ *     loaded, which is a NORMAL state (see `CUSTOMER_CONTEXT_UNAVAILABLE`
+ *     elsewhere on this screen), not an error — so a missing customer falls
+ *     through the chain below rather than rendering a placeholder account.
+ *  2. `buyerRef` — caller-supplied, unverified free text — CLAMPED (see
+ *     {@link REFUND_RECIPIENT_MAX_LEN}) precisely because it is untrusted.
+ *  3. {@link NO_IDENTITY_RECIPIENT} — no rendering of `ABSENT` (the em dash)
+ *     here. THE EM DASH IS NEVER A NOUN IN A SENTENCE: it is correct on the table
+ *     cell and the heading, where it marks an empty FIELD, and wrong inside
+ *     prose ("refund $42 to —?"), which reads as though "—" were the
+ *     buyer's name rather than a marker for nothing being there. Keep this
+ *     distinction — it is the kind of thing a later "simplification" merges
+ *     back into one helper and reintroduces the em-dash-as-noun defect.
+ */
+function resolveRefundRecipient(
+	verifiedEmail: string | null | undefined,
+	buyerRef: string | null | undefined,
+): string {
+	if (typeof verifiedEmail === "string" && verifiedEmail.trim().length > 0) {
+		return verifiedEmail.trim();
+	}
+	if (typeof buyerRef === "string" && buyerRef.trim().length > 0) {
+		return fit(buyerRef.trim(), REFUND_RECIPIENT_MAX_LEN);
+	}
+	return NO_IDENTITY_RECIPIENT;
 }
 
 /**
@@ -634,7 +678,11 @@ export function OrderDetail({
 	}
 
 	const order = detail.order;
-	const recipient = customerReference(order.buyerRef);
+	// The HEADING'S OWN QUESTION — "what to print" — answered by the same
+	// shared helper the list's Customer cell uses. NOT what a refund confirm
+	// uses: see `resolveRefundRecipient` below for why that is a stricter,
+	// separate question.
+	const recipient = buyerReferenceText(order.buyerRef);
 	const refunds = detail.refunds;
 	const cur =
 		refunds?.currency !== undefined && refunds.currency.length > 0
@@ -652,6 +700,11 @@ export function OrderDetail({
 	const askRefund = (amountCents: number) => {
 		if (refunds === null) return;
 		const amount = formatAmount(amountCents, cur);
+		// THE DESTRUCTIVE ACTION'S OWN, STRICTER RECIPIENT — see
+		// `resolveRefundRecipient`. Verified email first, then the clamped
+		// buyerRef, then the shared "this order's buyer" fallback; never the
+		// heading's `recipient` (readable but unverified) and never `ABSENT`.
+		const refundRecipient = resolveRefundRecipient(detail.customer?.identity.email, order.buyerRef);
 		setPending({
 			actionId: "orders:refund",
 			value: {
@@ -665,7 +718,7 @@ export function OrderDetail({
 			title: `Refund ${amount}?`,
 			// THE SHARED SENTENCE. Id first, 8 characters, the same helper the
 			// Block Kit confirm calls — see `@otta-sh/admin-presentation`.
-			text: refundConfirmText(order.id, amount, recipient, refunds.refundable),
+			text: refundConfirmText(order.id, amount, refundRecipient, refunds.refundable),
 			confirmLabel: `Yes, refund ${amount}`,
 			denyLabel: "Keep as is",
 		});
@@ -677,10 +730,13 @@ export function OrderDetail({
 				style={{ fontSize: 22, fontWeight: 700, marginBlockEnd: 8 }}
 				data-testid="detail-heading"
 				// The uuid is reachable from the heading without being printed on the
-				// page — the same non-focusable attribute the list's Customer cell now
-				// carries it in (`data-customer-id`, `orders-list.tsx`). `undefined` on
-				// an unclaimed order omits the attribute rather than rendering
-				// `data-customer-id="null"`.
+				// page — the same non-focusable attribute the list's Customer cell
+				// carries it in (`data-customer-id`, `orders-list.tsx`). React omits a
+				// `data-*` attribute whose value is `null` OR `undefined`; the
+				// `?? undefined` here is only to satisfy the attribute's TypeScript
+				// type (`customerId` is `string | null`), not what makes the omission
+				// happen. Covered by the guest/unclaimed-order case in
+				// `order-detail-dom.test.tsx`.
 				data-customer-id={order.customerId ?? undefined}
 			>
 				Order · {recipient} · {formatDate(order.createdAt)}

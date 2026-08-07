@@ -100,6 +100,7 @@ export {
 	ORDER_STATE_SET,
 	ORDER_STATES,
 	TERMINAL_ORDER_STATES,
+	buyerReferenceText,
 	orderStateCell,
 	reconciliationSummary,
 	type OrderState,

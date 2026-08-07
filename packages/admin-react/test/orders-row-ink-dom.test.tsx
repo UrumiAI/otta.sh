@@ -377,7 +377,14 @@ test("the customer id stays reachable from the row, as a data attribute beside t
  * paper over by falling back to the id — the one rendering this change
  * exists to remove.
  */
-test("an empty buyer reference renders the shared em dash, never the customer id and never blank", async () => {
+/** One synthetic order, wrapped in the response shape `mountList` needs —
+ *  factored out because the three tests below each need their own single
+ *  row and differ only in `buyerRef`/`customerId`. */
+function respondWithOneOrder(identity: {
+	readonly id: string;
+	readonly buyerRef: string;
+	readonly customerId: string | null;
+}): void {
 	apiFetch.mockResolvedValue(
 		new Response(
 			JSON.stringify({
@@ -385,15 +392,13 @@ test("an empty buyer reference renders the shared em dash, never the customer id
 					ok: true,
 					orders: [
 						{
-							id: "ord_no_ref",
 							state: "paid",
 							currency: "USD",
-							buyerRef: "",
-							customerId: "cust_no_ref",
 							paymentMethod: "card",
 							createdAt: "2026-03-04T10:15:00.000Z",
 							totalCents: 4200,
 							reconciliationFlag: null,
+							...identity,
 						},
 					],
 					nextCursor: null,
@@ -409,6 +414,10 @@ test("an empty buyer reference renders the shared em dash, never the customer id
 			{ status: 200, headers: { "Content-Type": "application/json" } },
 		),
 	);
+}
+
+test("an empty buyer reference renders the shared em dash, never the customer id and never blank", async () => {
+	respondWithOneOrder({ id: "ord_no_ref", buyerRef: "", customerId: "cust_no_ref" });
 
 	const container = await mountList();
 	const customer = cell(container, "ord_no_ref", CUSTOMER);
@@ -419,4 +428,36 @@ test("an empty buyer reference renders the shared em dash, never the customer id
 	// The id is still on the row even though the cell has nothing readable to
 	// show — an operator can still act on the order from the id alone.
 	expect(customer.getAttribute("data-customer-id")).toBe("cust_no_ref");
+});
+
+/** Reviewer B: `buyerRef.length > 0` alone is true for `" "` — a cell that
+ *  rendered a bare space would be the "never an empty cell" rule broken by a
+ *  value that LOOKS empty rather than one that measures empty. */
+test("a whitespace-only buyer reference renders the shared em dash, not a blank-looking space", async () => {
+	respondWithOneOrder({ id: "ord_ws_ref", buyerRef: "   ", customerId: "cust_ws_ref" });
+
+	const container = await mountList();
+	const customer = cell(container, "ord_ws_ref", CUSTOMER);
+	expect(customer.textContent).toBe(ABSENT);
+	expect(customer.getAttribute("data-customer-id")).toBe("cust_ws_ref");
+});
+
+/**
+ * THE GUEST/UNCLAIMED CASE, WHICH NO `ROWS` FIXTURE EXERCISES. Every row
+ * above carries a non-null `customerId`, so neither of this cell's two claims
+ * — the readable text, and the reachable-but-unprinted id — has ever been
+ * checked against the row where `customerId` is `null`. That is the row where
+ * `getAttribute("data-customer-id")` returning `null` has to mean "no
+ * attribute", not "the record happened not to carry one down two different
+ * paths" (the earlier assertions never fail on a vacuously absent attribute,
+ * because every fixture row supplies a customerId to compare against).
+ */
+test("an unclaimed order still renders the buyer reference, and carries no data-customer-id attribute at all", async () => {
+	respondWithOneOrder({ id: "ord_guest", buyerRef: "guest_checkout_991", customerId: null });
+
+	const container = await mountList();
+	const customer = cell(container, "ord_guest", CUSTOMER);
+	expect(customer.textContent).toBe("guest_checkout_991");
+	expect(customer.hasAttribute("data-customer-id")).toBe(false);
+	expect(customer.getAttribute("data-customer-id")).toBeNull();
 });

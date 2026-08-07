@@ -33,7 +33,6 @@
  *    does today.
  */
 import {
-	ABSENT,
 	ACCUMULATED_SUFFIX,
 	APPLY_FILTERS_LABEL,
 	CLEAR_FILTERS_LABEL,
@@ -47,6 +46,7 @@ import {
 	ORDERS_STALE_CLEARED_NOTE,
 	RETRYING_LABEL,
 	RETRY_LABEL,
+	buyerReferenceText,
 	formatAmount,
 	formatTimestamp,
 	listOutcome,
@@ -112,29 +112,6 @@ const orderLinkStyle: React.CSSProperties = {
 	padding: "2px 4px",
 	margin: "-2px -4px",
 };
-
-/**
- * The Customer cell's text — always the human-readable buyer reference, NEVER
- * the opaque `customerId` uuid, and never a blank cell or the string "null".
- *
- * THIS WAS BACKWARDS. The cell used to read `order.customerId ?? order.buyerRef`,
- * which shows the readable reference only on an UNCLAIMED order — the one
- * where the LEAST is known about the buyer — and shows an opaque uuid on
- * every CLAIMED order, where the most is known. `buyerRef` is what an
- * operator scanning this column can read; `customerId` is what a screen this
- * console does not yet have would look the record up by, and it is still on
- * the row (`data-customer-id`, beside this cell) for exactly that reason —
- * the same split the products list makes between the SKU it prints and the
- * uuid it carries only in `data-product-id`.
- *
- * `buyerRef` is typed as a required `string` on the wire, but nothing
- * upstream of this render enforces that at runtime — so an absent or empty
- * value is treated as absent rather than trusted, and renders the shared em
- * dash instead of a blank cell.
- */
-export function customerCellText(buyerRef: string | null | undefined): string {
-	return typeof buyerRef === "string" && buyerRef.length > 0 ? buyerRef : ABSENT;
-}
 
 /**
  * THE FIVE-OUTCOME LADDER IS NOT REIMPLEMENTED HERE (INC-20 review).
@@ -790,11 +767,21 @@ export function OrdersList({
 									// The uuid is reachable from the row without being printed on
 									// the page — the same split the products list makes between
 									// the SKU it prints and the id it carries only as an attribute.
-									// `undefined` on an unclaimed order omits the attribute rather
-									// than rendering `data-customer-id="null"`.
+									// React omits a `data-*` attribute whose value is `null` OR
+									// `undefined`; the `?? undefined` here is only to satisfy the
+									// attribute's TypeScript type (`customerId` is `string | null`),
+									// not what makes the omission happen. Covered by the guest/
+									// unclaimed-row case in `orders-row-ink-dom.test.tsx`.
 									data-customer-id={order.customerId ?? undefined}
 								>
-									{customerCellText(order.buyerRef)}
+									{/* THIS WAS BACKWARDS: the cell used to read
+									  `order.customerId ?? order.buyerRef`, showing the readable
+									  reference only on an UNCLAIMED order — the one where the LEAST
+									  is known about the buyer — and an opaque uuid on every CLAIMED
+									  one. `buyerReferenceText` is shared with the detail heading
+									  (`order-detail.tsx`, `@otta-sh/admin-presentation`) so the two
+									  screens cannot drift back apart on this rule. */}
+									{buyerReferenceText(order.buyerRef)}
 								</td>
 								<td className="otta-td">
 									{order.state === PILLED_ORDER_STATE ? (
