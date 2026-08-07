@@ -35,8 +35,15 @@ vi.mock("emdash/plugin-utils", async (importOriginal) => {
 });
 
 const { OrderDetail, REFUND_RECIPIENT_MAX_LEN } = await import("../src/orders/order-detail.js");
-const { ABSENT, fit, formatAmount, orderStateCell, refundCapabilityText, refundConfirmText } =
-	await import("@otta-sh/admin-presentation");
+const {
+	ABSENT,
+	UNNAMED_REFUND_RECIPIENT,
+	fit,
+	formatAmount,
+	orderStateCell,
+	refundCapabilityText,
+	refundConfirmText,
+} = await import("@otta-sh/admin-presentation");
 type DetailPayload = import("../src/console-api.js").DetailPayload;
 type RefundsSummary = import("../src/console-api.js").RefundsSummary;
 type Vocabulary = import("../src/console-api.js").Vocabulary;
@@ -169,18 +176,50 @@ function withIdentity(
 	return { ...payload, order: { ...payload.order, buyerRef, customerId } };
 }
 
-/** `detailFor` with a `CustomerContext` attached — the VERIFIED identity a
- *  refund confirm is required to prefer over `buyerRef`. `null` reproduces
- *  the ordinary "customer context could not be loaded" state, which the
- *  confirm's recipient resolution must fall through rather than error on. */
-function withCustomerEmail(payload: DetailPayload, email: string | null): DetailPayload {
+/** `detailFor` with a `CustomerContext` attached whose email is PROVEN —
+ *  `linkage: "claimed"` AND a real `emailVerifiedAt`. This is the ONLY
+ *  identity shape `resolveRefundRecipient` may skip its clamp for (review
+ *  finding N2); {@link withUnverifiedEmail} covers every shape that must
+ *  NOT qualify. */
+function withVerifiedEmail(payload: DetailPayload, email: string): DetailPayload {
 	return {
 		...payload,
 		customer: {
 			identity: {
 				email,
 				buyerRef: payload.order.buyerRef,
-				linkage: email !== null ? "claimed" : "guest",
+				linkage: "claimed",
+				emailVerifiedAt: "2026-01-01T00:00:00.000Z",
+			},
+			orderCount: 1,
+		},
+	};
+}
+
+/**
+ * `detailFor` with a `CustomerContext` whose email is PRESENT but NOT
+ * proven — no `emailVerifiedAt`, or a `linkage` short of `"claimed"`. This is
+ * the exact shape review finding N2 named as the vulnerability: on
+ * `linkage: "unclaimed"` the account is resolved by looking up the
+ * caller-supplied `buyerRef` itself (`domain/src/orders/customer-context.ts`),
+ * so an email reached that way is the SAME untrusted value laundered through
+ * a lookup, not a second, independent source — and `identity.email` being
+ * merely present proves nothing on its own even when `linkage` says
+ * `"claimed"`, if the account was never actually verified.
+ */
+function withUnverifiedEmail(
+	payload: DetailPayload,
+	email: string,
+	linkage: "claimed" | "unclaimed" = "unclaimed",
+): DetailPayload {
+	return {
+		...payload,
+		customer: {
+			identity: {
+				email,
+				buyerRef: payload.order.buyerRef,
+				linkage,
+				emailVerifiedAt: null,
 			},
 			orderCount: 1,
 		},
@@ -509,16 +548,24 @@ test("a whitespace-only buyer reference renders the shared em dash in the headin
 
 // ── THE REFUND CONFIRM: a stricter, separate question from the heading's ────
 //
-// Review found three problems in the first cut, all in this one sentence:
-// the em dash was fed into it as a NOUN ("refund $42 to —?"), the unverified
-// `buyerRef` replaced a previously-proven account id with no clamp, and nothing
-// pinned that the order id / amount / consequence clause survived the change.
+// Review found several problems across two rounds, all in this one sentence:
+// the em dash was fed into it as a NOUN ("refund $42 to —?"); the unverified
+// `buyerRef` replaced a previously-proven account id with no clamp; a PRESENT
+// email was treated as a PROVEN one, when `linkage: "unclaimed"` resolves that
+// email by looking up the caller-supplied `buyerRef` itself — the untrusted
+// value laundered through a lookup; and the untrusted token was undelimited.
+//
 // Every test below reads `otta-confirm-text` against the FULL string
-// `refundConfirmText` itself would produce — not a substring — so a future
-// change that keeps the right recipient but drops the id, the amount or the
-// consequence clause fails here.
+// `refundConfirmText` itself would produce for the same arguments — not a
+// substring — so a future change AT THIS CALL SITE that keeps the right
+// recipient but drops the id, the amount or the consequence clause fails
+// here. A change INSIDE `refundConfirmText` (e.g. its quoting or its own
+// overflow fallback) would NOT be caught by these — that function has its
+// own direct unit tests in `admin-presentation/test/presentation.test.ts`
+// (review finding N6 / reviewer B), which is where a copy edit that dropped
+// the amount would actually be caught.
 
-test("the refund confirm prefers buyerRef over the customer id, and states the exact sentence refundConfirmText would", async () => {
+test("the refund confirm prefers buyerRef over the customer id when there is no proven email, and states the exact sentence refundConfirmText would", async () => {
 	const confirmText = await openRefundConfirm(
 		withIdentity(detailFor("paid", CAPTURED), CLAIMED_BUYER_REF, CLAIMED_CUSTOMER_ID),
 	);
@@ -529,9 +576,9 @@ test("the refund confirm prefers buyerRef over the customer id, and states the e
 	expect(confirmText.textContent).not.toContain(CLAIMED_CUSTOMER_ID);
 });
 
-test("a verified account email outranks buyerRef in the refund confirm", async () => {
+test("a PROVEN account email — claimed AND verified — outranks buyerRef in the refund confirm", async () => {
 	const VERIFIED_EMAIL = "verified.buyer@example.test";
-	const payload = withCustomerEmail(
+	const payload = withVerifiedEmail(
 		withIdentity(detailFor("paid", CAPTURED), CLAIMED_BUYER_REF, CLAIMED_CUSTOMER_ID),
 		VERIFIED_EMAIL,
 	);
@@ -542,6 +589,46 @@ test("a verified account email outranks buyerRef in the refund confirm", async (
 	);
 	expect(confirmText.textContent).not.toContain(CLAIMED_BUYER_REF);
 	expect(confirmText.textContent).not.toContain(CLAIMED_CUSTOMER_ID);
+});
+
+/**
+ * REVIEW FINDING N2, THE CORE OF IT. An unclaimed account's email is
+ * resolved BY LOOKING UP the caller-supplied `buyerRef` — so treating that
+ * email as "verified" is the untrusted value laundered through a lookup and
+ * then exempted from the clamp meant to contain it. This must take the SAME
+ * clamped path as `buyerRef` on its own, not the unclamped email path.
+ */
+test("an email reached through an UNCLAIMED lookup does not outrank buyerRef in the refund confirm", async () => {
+	const LOOKED_UP_EMAIL = "resolved-by-lookup@example.test";
+	const payload = withUnverifiedEmail(
+		withIdentity(detailFor("paid", CAPTURED), CLAIMED_BUYER_REF, CLAIMED_CUSTOMER_ID),
+		LOOKED_UP_EMAIL,
+		"unclaimed",
+	);
+	const confirmText = await openRefundConfirm(payload);
+
+	expect(confirmText.textContent).toBe(
+		refundConfirmText(ORDER_ID, CAPTURED_REFUND_AMOUNT, CLAIMED_BUYER_REF, CAPTURED.refundable),
+	);
+	expect(confirmText.textContent).not.toContain(LOOKED_UP_EMAIL);
+});
+
+/** The other half of N2: `linkage: "claimed"` alone is not enough either —
+ *  an email present with no `emailVerifiedAt` is exactly as unproven as one
+ *  reached by an unclaimed lookup, and must take the same clamped path. */
+test("a claimed account with no verified-at timestamp does not outrank buyerRef in the refund confirm", async () => {
+	const UNVERIFIED_EMAIL = "claimed-not-verified@example.test";
+	const payload = withUnverifiedEmail(
+		withIdentity(detailFor("paid", CAPTURED), CLAIMED_BUYER_REF, CLAIMED_CUSTOMER_ID),
+		UNVERIFIED_EMAIL,
+		"claimed",
+	);
+	const confirmText = await openRefundConfirm(payload);
+
+	expect(confirmText.textContent).toBe(
+		refundConfirmText(ORDER_ID, CAPTURED_REFUND_AMOUNT, CLAIMED_BUYER_REF, CAPTURED.refundable),
+	);
+	expect(confirmText.textContent).not.toContain(UNVERIFIED_EMAIL);
 });
 
 test("a null customer context (context unavailable) falls through to buyerRef in the refund confirm, not an error state", async () => {
@@ -555,18 +642,23 @@ test("a null customer context (context unavailable) falls through to buyerRef in
 	);
 });
 
-test("with no verified email and no buyer reference, the refund confirm falls back to the shared phrase, never the em dash as a noun", async () => {
+test("with no proven email and no buyer reference, the refund confirm falls back to the shared phrase, never the em dash as a noun", async () => {
 	const confirmText = await openRefundConfirm(withIdentity(detailFor("paid", CAPTURED), "", null));
 
 	expect(confirmText.textContent).toBe(
-		refundConfirmText(ORDER_ID, CAPTURED_REFUND_AMOUNT, "this order's buyer", CAPTURED.refundable),
+		refundConfirmText(
+			ORDER_ID,
+			CAPTURED_REFUND_AMOUNT,
+			UNNAMED_REFUND_RECIPIENT,
+			CAPTURED.refundable,
+		),
 	);
-	// THE EM DASH IS NEVER A NOUN (finding 1): "to —?" is exactly the defect
-	// this fallback replaces. The sentence template legitimately uses the same
-	// glyph as PUNCTUATION ("Order #… — refund …"), so the check is for the
-	// dash in the RECIPIENT position specifically, not for the character's
-	// absence from the string.
-	expect(confirmText.textContent).not.toContain(`to ${ABSENT}?`);
+	// THE EM DASH IS NEVER A NOUN (finding N1/2026-08 round 2): "to "—"?" is
+	// exactly the defect this fallback replaces. The sentence template
+	// legitimately uses the same glyph as PUNCTUATION ("Order #… — refund
+	// …"), so the check is for the QUOTED dash in the RECIPIENT position
+	// specifically, not for the character's absence from the string.
+	expect(confirmText.textContent).not.toContain(`to "${ABSENT}"?`);
 });
 
 test("a whitespace-only buyer reference is treated as no reference in the refund confirm too", async () => {
@@ -574,17 +666,22 @@ test("a whitespace-only buyer reference is treated as no reference in the refund
 		withIdentity(detailFor("paid", CAPTURED), "   ", CLAIMED_CUSTOMER_ID),
 	);
 	expect(confirmText.textContent).toBe(
-		refundConfirmText(ORDER_ID, CAPTURED_REFUND_AMOUNT, "this order's buyer", CAPTURED.refundable),
+		refundConfirmText(
+			ORDER_ID,
+			CAPTURED_REFUND_AMOUNT,
+			UNNAMED_REFUND_RECIPIENT,
+			CAPTURED.refundable,
+		),
 	);
 });
 
 /**
- * FINDING 2: `buyerRef` is unverified, caller-supplied free text up to 320
- * characters, and a value short enough to stay under the confirm's own
- * 200-character budget can still reshape the sentence an operator is asked
- * to approve. The clamp is the defence — enforced HERE, not by
- * `refundConfirmText`'s own overflow fallback, which only reacts once the
- * WHOLE sentence overflows and this value alone does not.
+ * `buyerRef` is unverified, caller-supplied free text up to 320 characters,
+ * and a value short enough to stay under the confirm's own 200-character
+ * budget can still reshape the sentence an operator is asked to approve. The
+ * clamp is the defence — enforced HERE, not by `refundConfirmText`'s own
+ * overflow fallback, which only reacts once the WHOLE sentence overflows and
+ * this value alone does not.
  */
 test("a long buyer reference is clamped with an ellipsis before it reaches the refund confirm, never printed in full", async () => {
 	const longBuyerRef = `attacker-controlled-recipient-${"x".repeat(80)}`;

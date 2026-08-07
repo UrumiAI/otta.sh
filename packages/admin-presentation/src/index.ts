@@ -100,12 +100,15 @@ export {
 	ORDER_STATE_SET,
 	ORDER_STATES,
 	TERMINAL_ORDER_STATES,
-	buyerReferenceText,
 	orderStateCell,
 	reconciliationSummary,
 	type OrderState,
 } from "./order-status.js";
-export { refundCapabilityText, refundConfirmText } from "./order-refund-copy.js";
+export {
+	UNNAMED_REFUND_RECIPIENT,
+	refundCapabilityText,
+	refundConfirmText,
+} from "./order-refund-copy.js";
 export {
 	ACCUMULATED_SUFFIX,
 	APPLY_FILTERS_LABEL,
@@ -130,6 +133,7 @@ export {
 	RETRYING_LABEL,
 	RETRY_LABEL,
 	VALUE_SEPARATOR,
+	buyerReferenceText,
 	fit,
 	fitBanner,
 	fitLabel,

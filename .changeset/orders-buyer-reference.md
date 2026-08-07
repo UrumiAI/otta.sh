@@ -4,8 +4,9 @@
 ---
 
 The Orders console now shows a readable buyer reference — an email address or
-handle — instead of an opaque customer identifier. This applies to the Orders
-list's Customer column, the order detail heading, and the refund confirmation
-dialog, which prefers a verified account email when one is on file and falls
-back to a generic phrase when no identity is available, never a blank or
-truncated-looking value.
+handle — instead of an opaque customer identifier, in the Orders list's
+Customer column and the order detail heading; an absent reference still shows
+as a dash, never blank. The refund confirmation dialog now names, in order, a
+confirmed account email when one exists, otherwise the buyer reference
+(visibly truncated with an ellipsis if very long), otherwise a generic
+phrase — and the named recipient is now shown in quotes.

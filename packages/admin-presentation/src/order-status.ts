@@ -1,5 +1,3 @@
-import { ABSENT } from "./copy.js";
-
 /**
  * The order-status vocabulary — the words BOTH admin surfaces put on screen.
  *
@@ -131,31 +129,4 @@ export function reconciliationSummary(flag: string | null, resolvedOutcome: stri
 	if (flag !== null) return "\u26a0 Needs reconciliation";
 	if (resolvedOutcome !== null) return `Resolved (${resolvedOutcome})`;
 	return "None";
-}
-
-/**
- * The readable buyer reference for anywhere an order names its buyer AS
- * PLAIN TEXT \u2014 the list's Customer cell, the detail heading \u2014 NEVER the
- * opaque `customerId` uuid a wire payload also carries.
- *
- * ONE HOME, review-mandated. This started as two byte-identical functions,
- * one declared in `orders-list.tsx` and one in `order-detail.tsx`, encoding
- * the same rule with no shared import between the sibling files \u2014 exactly
- * the drift `orderStateCell` above exists to prevent, just not caught before
- * review. Shared for the same reason: both admin surfaces render an order's
- * buyer, and a fix landing on one screen and not the other is the defect.
- *
- * Absent, empty, or WHITESPACE-ONLY renders {@link ABSENT} \u2014 matching this
- * console's existing "blank means absent" convention
- * (`order-detail.tsx`'s `refundedBy.trim().length === 0`) \u2014 never a blank
- * cell/heading and never the literal string "null".
- *
- * THIS IS "WHAT TO PRINT", NOT "WHO A REFUND ACTUALLY GOES TO". A
- * destructive confirmation is a stricter, different question \u2014 it prefers a
- * VERIFIED identity over this readable one, clamps what it accepts, and
- * never uses {@link ABSENT} (an em dash is a field marker, not a word in a
- * sentence) \u2014 so it is answered locally in `order-detail.tsx`, not here.
- */
-export function buyerReferenceText(buyerRef: string | null | undefined): string {
-	return typeof buyerRef === "string" && buyerRef.trim().length > 0 ? buyerRef : ABSENT;
 }

@@ -371,12 +371,6 @@ test("the customer id stays reachable from the row, as a data attribute beside t
 	}
 });
 
-/**
- * ABSENT IS AN EM DASH, NEVER THE UUID, NEVER "null", NEVER BLANK. A row
- * whose `buyerRef` came back empty is exactly the case §1.3's fallback would
- * paper over by falling back to the id — the one rendering this change
- * exists to remove.
- */
 /** One synthetic order, wrapped in the response shape `mountList` needs —
  *  factored out because the three tests below each need their own single
  *  row and differ only in `buyerRef`/`customerId`. */
@@ -416,6 +410,12 @@ function respondWithOneOrder(identity: {
 	);
 }
 
+/**
+ * ABSENT IS AN EM DASH, NEVER THE UUID, NEVER "null", NEVER BLANK. A row
+ * whose `buyerRef` came back empty is exactly the case §1.3's fallback would
+ * paper over by falling back to the id — the one rendering this change
+ * exists to remove.
+ */
 test("an empty buyer reference renders the shared em dash, never the customer id and never blank", async () => {
 	respondWithOneOrder({ id: "ord_no_ref", buyerRef: "", customerId: "cust_no_ref" });
 

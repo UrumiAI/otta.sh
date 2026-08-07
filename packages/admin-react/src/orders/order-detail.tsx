@@ -61,6 +61,7 @@ import {
 	SHIPPING_ADDRESS_ABSENT,
 	TIMELINE_EMPTY,
 	TIMELINE_UNAVAILABLE,
+	UNNAMED_REFUND_RECIPIENT,
 	buyerReferenceText,
 	cancelConfirmText,
 	fit,
@@ -269,21 +270,14 @@ const PILLED_ORDER_STATE = "failed";
  * deliberately crafted one that stays under budget while reshaping the
  * sentence around it. 60 leaves ~140 characters of headroom under the
  * budget even with the longer of the two consequence clauses and the widest
- * realistic amount/id — room a real email or handle never needs and a
- * crafted string is not given.
+ * realistic amount/id. THE TRADE-OFF IS NAMED, NOT HIDDEN: RFC 5321 allows
+ * email addresses past 60 characters, so a legitimately long address is
+ * visibly truncated here too (`refundConfirmText`'s own quoting marks where
+ * it was cut) — accepted because the alternative is a number generous
+ * enough to stop bounding the untrusted, reshaping case this clamp exists
+ * for at all.
  */
 export const REFUND_RECIPIENT_MAX_LEN = 60;
-
-/**
- * The exact fallback `refundConfirmText` reaches for on its own overflow
- * (`order-refund-copy.ts`'s `refundConfirmText`, the `to this order's buyer?`
- * branch) — duplicated as a literal because that function takes `recipient`
- * as ordinary text with no "no identity" mode of its own, and this file may
- * not add one to it (out of scope; see the confirm-recipient resolution
- * below). If that fallback's wording ever changes, this string has to change
- * with it — there is no import to keep the two in sync.
- */
-const NO_IDENTITY_RECIPIENT = "this order's buyer";
 
 /**
  * WHO A REFUND CONFIRM NAMES — review-mandated, and a DIFFERENT, STRICTER
@@ -291,33 +285,56 @@ const NO_IDENTITY_RECIPIENT = "this order's buyer";
  * list cell. A destructive action's confirm text must name the most
  * TRUSTWORTHY identity available, not the most readable one:
  *
- *  1. The VERIFIED account email (`detail.customer.identity.email`) — a
- *     proven identity, unclamped, and preferred whenever present.
- *     `detail.customer` is `null` whenever customer context could not be
- *     loaded, which is a NORMAL state (see `CUSTOMER_CONTEXT_UNAVAILABLE`
- *     elsewhere on this screen), not an error — so a missing customer falls
- *     through the chain below rather than rendering a placeholder account.
- *  2. `buyerRef` — caller-supplied, unverified free text — CLAMPED (see
- *     {@link REFUND_RECIPIENT_MAX_LEN}) precisely because it is untrusted.
- *  3. {@link NO_IDENTITY_RECIPIENT} — no rendering of `ABSENT` (the em dash)
- *     here. THE EM DASH IS NEVER A NOUN IN A SENTENCE: it is correct on the table
- *     cell and the heading, where it marks an empty FIELD, and wrong inside
- *     prose ("refund $42 to —?"), which reads as though "—" were the
- *     buyer's name rather than a marker for nothing being there. Keep this
- *     distinction — it is the kind of thing a later "simplification" merges
- *     back into one helper and reintroduces the em-dash-as-noun defect.
+ *  1. The account email, but ONLY when it is PROVEN — `linkage === "claimed"`
+ *     AND `emailVerifiedAt` is set. `identity.email` being PRESENT proves
+ *     nothing by itself: on `linkage: "unclaimed"` the account is resolved by
+ *     looking up the caller-supplied `buyerRef` itself
+ *     (`domain/src/orders/customer-context.ts`), so an "email" reached that
+ *     way is the SAME untrusted value laundered through a lookup, not a
+ *     second, independent source — the earlier cut of this function called
+ *     that branch "verified" and skipped the clamp on it, which was the
+ *     defect (review finding N2). `detail.customer` is `null` whenever
+ *     customer context could not be loaded, which is a NORMAL state (see
+ *     `CUSTOMER_CONTEXT_UNAVAILABLE` elsewhere on this screen), not an
+ *     error — so a missing customer falls through the chain below rather
+ *     than rendering a placeholder account.
+ *  2. `buyerRef` — caller-supplied, unverified free text, and now also where
+ *     an UNPROVEN email lands — CLAMPED (see {@link REFUND_RECIPIENT_MAX_LEN})
+ *     precisely because it is untrusted.
+ *  3. {@link UNNAMED_REFUND_RECIPIENT} (`@otta-sh/admin-presentation`) — no
+ *     rendering of `ABSENT` (the em dash) here. THE EM DASH IS NEVER A NOUN
+ *     IN A SENTENCE: it is correct on the table cell and the heading, where
+ *     it marks an empty FIELD, and wrong inside prose ("refund $42 to
+ *     '—'?"), which reads as though "—" were the buyer's name rather than a
+ *     marker for nothing being there. Keep this distinction — it is the
+ *     kind of thing a later "simplification" merges back into one helper
+ *     and reintroduces the em-dash-as-noun defect.
  */
 function resolveRefundRecipient(
-	verifiedEmail: string | null | undefined,
+	identity:
+		| {
+				readonly email?: string | null;
+				readonly emailVerifiedAt?: string | null;
+				readonly linkage: string;
+		  }
+		| null
+		| undefined,
 	buyerRef: string | null | undefined,
 ): string {
-	if (typeof verifiedEmail === "string" && verifiedEmail.trim().length > 0) {
-		return verifiedEmail.trim();
+	if (
+		identity != null &&
+		identity.linkage === "claimed" &&
+		typeof identity.emailVerifiedAt === "string" &&
+		identity.emailVerifiedAt.trim().length > 0 &&
+		typeof identity.email === "string" &&
+		identity.email.trim().length > 0
+	) {
+		return identity.email.trim();
 	}
 	if (typeof buyerRef === "string" && buyerRef.trim().length > 0) {
 		return fit(buyerRef.trim(), REFUND_RECIPIENT_MAX_LEN);
 	}
-	return NO_IDENTITY_RECIPIENT;
+	return UNNAMED_REFUND_RECIPIENT;
 }
 
 /**
@@ -701,10 +718,11 @@ export function OrderDetail({
 		if (refunds === null) return;
 		const amount = formatAmount(amountCents, cur);
 		// THE DESTRUCTIVE ACTION'S OWN, STRICTER RECIPIENT — see
-		// `resolveRefundRecipient`. Verified email first, then the clamped
-		// buyerRef, then the shared "this order's buyer" fallback; never the
-		// heading's `recipient` (readable but unverified) and never `ABSENT`.
-		const refundRecipient = resolveRefundRecipient(detail.customer?.identity.email, order.buyerRef);
+		// `resolveRefundRecipient`. A PROVEN email first (claimed + verified),
+		// then the clamped buyerRef, then the shared "this order's buyer"
+		// fallback; never the heading's `recipient` (readable but unverified)
+		// and never `ABSENT`.
+		const refundRecipient = resolveRefundRecipient(detail.customer?.identity, order.buyerRef);
 		setPending({
 			actionId: "orders:refund",
 			value: {
@@ -727,7 +745,29 @@ export function OrderDetail({
 	return (
 		<div>
 			<h1
-				style={{ fontSize: 22, fontWeight: 700, marginBlockEnd: 8 }}
+				style={{
+					fontSize: 22,
+					fontWeight: 700,
+					marginBlockEnd: 8,
+					// LAYOUT CONTAINMENT, NOT STRING CLAMPING (review finding N1,
+					// director ruling). `recipient` carries no length bound — unlike
+					// the refund confirm's `resolveRefundRecipient`, this text is
+					// meant to stay fully selectable and copy-pasteable, which a
+					// clamp inside the DOM cannot honestly promise. `buyerRef` is
+					// caller-supplied free text up to 320 characters with no format
+					// check (`packages/service/src/schemas.ts`), so the heading's ONE
+					// unbroken token has to be able to WRAP rather than push the rest
+					// of the line — including the date — off the viewport. THE
+					// PRINCIPLE: layout containment via CSS wherever the full value
+					// must remain copyable; string clamping only in prose, where a
+					// value cannot wrap its way out of reshaping the sentence around
+					// it (`resolveRefundRecipient`'s own comment). A block heading
+					// under a plain `<div>`, not a flex/grid item, needs no companion
+					// `min-width: 0` to honour this — there is no flex-basis/min-
+					// content floor here to override.
+					overflowWrap: "anywhere",
+					maxInlineSize: "100%",
+				}}
 				data-testid="detail-heading"
 				// The uuid is reachable from the heading without being printed on the
 				// page — the same non-focusable attribute the list's Customer cell

@@ -23,6 +23,7 @@
  */
 import { describe, expect, test } from "vitest";
 import {
+	ABSENT,
 	CANCEL_BANNER,
 	DATE_LOCALE,
 	LABEL_BUDGET,
@@ -47,7 +48,9 @@ import {
 	SHORT_ID_CONFIRM_LEN,
 	SHORT_ID_MIN,
 	TERMINAL_ORDER_STATES,
+	UNNAMED_REFUND_RECIPIENT,
 	addStockConfirm,
+	buyerReferenceText,
 	canonicalMoneyInput,
 	cancelConfirmText,
 	cents,
@@ -78,6 +81,7 @@ import {
 	priceGroupLabel,
 	pricePendingLine,
 	priceSavedNotice,
+	refundConfirmText,
 	refundTooHighText,
 	removeStockConfirm,
 	rowCountLine,
@@ -988,6 +992,93 @@ describe("the Orders detail copy is shared, and says what the Block Kit screen s
 
 	test("the mark-refunded confirm separates the ledger from the money", () => {
 		expect(MARK_REFUNDED_CONFIRM.text).toContain("does not move money");
+	});
+});
+
+/**
+ * `refundConfirmText` HAD ZERO UNIT TESTS ANYWHERE IN THE REPO (review
+ * findings N6 / reviewer B) despite composing money-moving prose at click
+ * time from figures a server has not seen yet — the one string in this
+ * console where a silent copy-edit could drop the amount, the order id or
+ * the consequence clause from a REFUND CONFIRMATION and still read as a
+ * passing build everywhere else it is only exercised indirectly (through
+ * `@otta-sh/admin-react`'s DOM suite, which pins the call SITE's arguments,
+ * not this function's own composition).
+ */
+describe("refundConfirmText — the refund confirm's one sentence, exercised directly", () => {
+	const ORDER_ID = "7e4ce728-abcd-4000-8000-000000000000";
+	const SHORT_ORDER = `Order #${shortIdFixed(ORDER_ID, SHORT_ID_CONFIRM_LEN)}`;
+
+	test("names the order, the amount and the recipient, and states the Stripe consequence when refundable", () => {
+		expect(refundConfirmText(ORDER_ID, "$42.00", "avery@example.test", true)).toBe(
+			`${SHORT_ORDER} — refund $42.00 to "avery@example.test"? This sends the money back through Stripe and cannot be reversed.`,
+		);
+	});
+
+	test("states the record-only consequence when not refundable, not the Stripe one", () => {
+		const text = refundConfirmText(ORDER_ID, "$42.00", "avery@example.test", false);
+		expect(text).toContain("This records a refund made out of band — it does not move money.");
+		expect(text).not.toContain("Stripe");
+	});
+
+	test("the order id is the fixed 8-character short id, not the full uuid", () => {
+		expect(refundConfirmText(ORDER_ID, "$1.00", "x@y.test", true)).toContain(SHORT_ORDER);
+		expect(refundConfirmText(ORDER_ID, "$1.00", "x@y.test", true)).not.toContain(ORDER_ID);
+	});
+
+	test("the recipient is always quoted (finding N3) — an operator can see where the token begins and ends", () => {
+		expect(refundConfirmText(ORDER_ID, "$1.00", "avery@example.test", true)).toContain(
+			'to "avery@example.test"?',
+		);
+	});
+
+	test("a recipient long enough to overflow the budget is dropped for the shared, quoted fallback phrase", () => {
+		const longRecipient = "x".repeat(180);
+		const text = refundConfirmText(ORDER_ID, "$1.00", longRecipient, true);
+		expect(text).not.toContain(longRecipient);
+		expect(text).toContain(`to "${UNNAMED_REFUND_RECIPIENT}"?`);
+		expect(text.length).toBeLessThanOrEqual(200);
+	});
+
+	test("a recipient that keeps the sentence inside budget is never replaced", () => {
+		expect(refundConfirmText(ORDER_ID, "$1.00", "short@x.test", true)).toContain(
+			'to "short@x.test"?',
+		);
+	});
+});
+
+/**
+ * `buyerReferenceText` — the one function the list's Customer cell and the
+ * detail heading both read through (review findings N6/N7/N8; reviewer B).
+ * ADR-0015 retired the Block Kit Orders screen, so this is not a
+ * cross-surface guard the way `orderStateCell` still is; it is what keeps
+ * the React list and the React detail from drifting from EACH OTHER.
+ */
+describe("buyerReferenceText — the readable buyer reference, never the uuid", () => {
+	test("renders an ordinary reference as-is", () => {
+		expect(buyerReferenceText("avery.stone@example.com")).toBe("avery.stone@example.com");
+	});
+
+	test("TRIMS incidental leading/trailing whitespace — the returned value, not merely the emptiness check (finding N8)", () => {
+		// The earlier cut trimmed ONLY to decide whether the value counted as
+		// absent, then returned the untrimmed original — invisible in rendered
+		// HTML, and exactly the kind of whitespace an operator's copy-paste into
+		// a downstream field should never carry.
+		expect(buyerReferenceText("  avery.stone@example.com  ")).toBe("avery.stone@example.com");
+		expect(buyerReferenceText("\tguest_checkout_772\n")).toBe("guest_checkout_772");
+	});
+
+	test("an empty string renders the shared em dash, never a blank string", () => {
+		expect(buyerReferenceText("")).toBe(ABSENT);
+	});
+
+	test("a whitespace-only string renders the shared em dash, not a blank-looking space", () => {
+		expect(buyerReferenceText("   ")).toBe(ABSENT);
+	});
+
+	test("null and undefined both render the shared em dash", () => {
+		expect(buyerReferenceText(null)).toBe(ABSENT);
+		expect(buyerReferenceText(undefined)).toBe(ABSENT);
 	});
 });
 

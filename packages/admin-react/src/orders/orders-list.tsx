@@ -763,7 +763,28 @@ export function OrdersList({
 								</td>
 								<td
 									className="otta-td"
-									style={{ fontWeight: 600 }}
+									style={{
+										fontWeight: 600,
+										// LAYOUT CONTAINMENT, NOT STRING CLAMPING (review finding N1,
+										// director ruling). `buyerRef` is caller-supplied free text up
+										// to 320 characters with no format check
+										// (`packages/service/src/schemas.ts`), and this column has no
+										// bound of its own under the table's `table-layout: auto`: one
+										// unbroken long token would otherwise widen this column and
+										// push every column to its right — Status, Order #, Total — off
+										// the table card's `overflow-x: auto`, which the operator would
+										// then have to scroll sideways to find. `maxInlineSize` caps the
+										// COLUMN; `overflowWrap` makes the token WRAP inside that cap
+										// instead of forcing the column wider — the value stays fully
+										// selectable and copy-pasteable, which a DOM truncation could
+										// not honestly promise. THE PRINCIPLE: layout containment via
+										// CSS wherever the full value must remain copyable; string
+										// clamping only in prose (`order-detail.tsx`'s
+										// `resolveRefundRecipient`), which cannot wrap its way out of a
+										// reshaping attack the way a table cell can.
+										maxInlineSize: 360,
+										overflowWrap: "anywhere",
+									}}
 									// The uuid is reachable from the row without being printed on
 									// the page — the same split the products list makes between
 									// the SKU it prints and the id it carries only as an attribute.

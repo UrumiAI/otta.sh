@@ -119,3 +119,42 @@ export function valueLabel(prefix: string, values: readonly string[]): string {
 	);
 	return `${prefix} — ${shortened.join(VALUE_SEPARATOR)}`;
 }
+
+/**
+ * The readable buyer reference for anywhere an order names its buyer AS
+ * PLAIN TEXT — the list's Customer cell, the detail heading — NEVER the
+ * opaque `customerId` uuid a wire payload also carries.
+ *
+ * ONE HOME, review-mandated. This started as two byte-identical functions,
+ * one declared in `orders-list.tsx` and one in `order-detail.tsx`, encoding
+ * the same rule with no shared import between the sibling files. THE REACT
+ * ORDERS SCREEN IS THE ONLY CONSUMER TODAY — ADR-0015 retired the Block Kit
+ * Orders screen, so this is not a cross-surface-drift guard the way
+ * `orderStateCell` (`order-status.ts`) still is; it exists so the LIST and
+ * the DETAIL, both React, cannot drift from each other on this one rule.
+ * Filed beside `ABSENT` and `fit` rather than in `order-status.ts`: it is a
+ * value-formatting primitive, not part of the order-state vocabulary that
+ * module owns.
+ *
+ * Absent, empty, or WHITESPACE-ONLY renders {@link ABSENT} — matching this
+ * console's existing "blank means absent" convention
+ * (`order-detail.tsx`'s `refundedBy.trim().length === 0`) — never a blank
+ * cell/heading and never the literal string "null". THE RETURNED VALUE IS
+ * ITSELF TRIMMED, not merely trim-CHECKED: an incidental leading/trailing
+ * space is exactly the kind of thing an operator's copy-paste into a
+ * downstream field should never carry, and the earlier cut of this function
+ * trimmed only to decide, then returned the untrimmed original — invisible
+ * in rendered HTML, and a defect all the same.
+ *
+ * THIS IS "WHAT TO PRINT", NOT "WHO A REFUND ACTUALLY GOES TO". A
+ * destructive confirmation is a stricter, different question — it requires a
+ * PROVEN identity (a verified email on a claimed account, not merely a
+ * present one) before it will skip its own clamp, and never uses
+ * {@link ABSENT} (an em dash is a field marker, not a word in a sentence) —
+ * so it is answered locally in `order-detail.tsx`, not here.
+ */
+export function buyerReferenceText(buyerRef: string | null | undefined): string {
+	if (typeof buyerRef !== "string") return ABSENT;
+	const trimmed = buyerRef.trim();
+	return trimmed.length > 0 ? trimmed : ABSENT;
+}
