@@ -27,7 +27,16 @@ import {
 	makePostgresPool,
 	migrateToLatest,
 	uuidIdGen,
-} from "@otta-sh/store-postgres";
+	// The SQLITE-FREE subpath, never the `.` barrel. This entry is
+	// postgres-only by construction (it throws without PG_CONNECTION_STRING),
+	// and the barrel re-exports `makeSqliteDb`, which statically imports the
+	// `better-sqlite3` NATIVE addon. Through the barrel every consumer of this
+	// entry inherits that addon: `Dockerfile.service` would need a C++
+	// toolchain to install it, and the container bundle (tsdown.container.
+	// config.ts, which inlines all `@otta-sh/*` code) would try to bundle it —
+	// the same reason `src/worker.ts` has always imported from here. Pinned by
+	// test/container-entry.test.ts.
+} from "@otta-sh/store-postgres/pg";
 import { createApp } from "./app.js";
 import { openWriteGateWarning, resolveServiceConfig } from "./config.js";
 import { ConsoleEmailSender, HttpEmailSender } from "./email/senders.js";

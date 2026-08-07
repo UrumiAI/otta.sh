@@ -39,6 +39,7 @@
 	},
 	"scripts": {
 		"build": "tsdown",
+		"build:container": "tsdown --config tsdown.container.config.ts",
 		"dev:worker": "wrangler dev",
 		"deploy": "wrangler deploy"
 	},
