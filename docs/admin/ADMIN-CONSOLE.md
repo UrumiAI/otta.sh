@@ -2075,8 +2075,8 @@ again."* (`UNREADABLE`, `orders-actions.ts:172-180`; the same shape at
 refusal is reached from a dozen branches and must read identically from all of them.
 
 **DA-4 — non-destructive writes stay one-shot.** Plain `form`, no confirm, no danger: add note,
-restock, save/rename, create, resolve reconciliation (it records a decision and moves no money —
-say so in the copy, and never style it as danger).
+save/rename, create, resolve reconciliation (it records a decision and moves no money — say so in
+the copy, and never style it as danger).
 
 **DA-5 — button colour means exactly one thing.** `danger` ⇔ **irreversible, or reversible only by
 a separate manual operation an operator can forget.** Everything else is default `secondary`. A red
@@ -2102,8 +2102,9 @@ inventory screen, and on any Block Kit screen that ever grows a stock movement. 
 appends a second movement to the ledger, so an accidental removal of 40 units where 4 were meant
 leaves two wrong entries and no correction trail. The risk is also asymmetric: an accidental
 removal makes sellable stock vanish (lost sales while the merchant hunts for the cause), while an
-accidental addition surfaces at the next count. Its inverse, **restock, stays DA-4** for exactly
-that reason. No other act may be argued into this clause.
+accidental addition surfaces at the next count. Its inverse, **restock, never qualifies for the
+danger weight** for exactly that reason — it earned its own confirm too, but at neutral tone, and
+neutral is not danger. No other act may be argued into this clause.
 
 **DA-6 — status moves are one `actions` block, with ids derived from the closed state list.** All
 offered transitions in a single block with **distinct** `action_id`s —
