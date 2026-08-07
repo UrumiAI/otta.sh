@@ -108,9 +108,13 @@ jobs:
       # START of every `playwright test` run (`createRemoveOutputDirsTask`,
       # `preserveOutputDir` is an IDE/UI-only opt-out) — so a collected report
       # written there would be deleted by the very run step meant to be checked
-      # against it. `runner.temp` is a GitHub Actions-provisioned directory
-      # outside the checkout entirely, fresh per job and never committable.
-      COLLECTED_REPORT: ${{ runner.temp }}/e2e-collected.json
+      # against it. It is defined per-STEP below (as `${{ runner.temp }}/…`)
+      # rather than here: the `runner` context does not exist in a job-level
+      # `env:` block, only inside a step's — GitHub rejects the whole workflow
+      # at dispatch otherwise. `runner.temp` is one GitHub Actions-provisioned
+      # directory for the life of the job, so both steps that reference the
+      # expression resolve the same absolute path; it is outside the checkout
+      # entirely and never committable.
       RESULTS_REPORT: node_modules/.playwright-artifacts/e2e-results.json
     steps:
       - uses: actions/checkout@v4
@@ -146,7 +150,8 @@ jobs:
       # those two files can join the gate is separate, future work.
       - name: Collect the gated test set (stack-free)
         env:
-          PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ env.COLLECTED_REPORT }}
+          COLLECTED_REPORT: ${{ runner.temp }}/e2e-collected.json
+          PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ runner.temp }}/e2e-collected.json
         run: >-
           pnpm exec playwright test --list --reporter=json
           sites/staging/e2e/harness.spec.ts
@@ -185,6 +190,11 @@ jobs:
       # something the suite itself owns is real, separate, future work.
       - name: Verify the run covered exactly the gated set
         if: always()
+        env:
+          # Must resolve to the SAME absolute path the "Collect" step above
+          # wrote to: `runner.temp` is one directory for the whole job, so the
+          # same expression in a second step's `env:` resolves identically.
+          COLLECTED_REPORT: ${{ runner.temp }}/e2e-collected.json
         run: |
           node - <<'EOF'
           const fs = require("node:fs");
