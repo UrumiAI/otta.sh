@@ -479,6 +479,16 @@ export function ProductsList({
 		filtered,
 		firstPage: page?.firstPage ?? true,
 		hasNext,
+		// THE NARROWING HAS NO SERVICE PREDICATE, SO `firstPage && !hasNext` DOES
+		// NOT MEAN "the low-stock set is complete" — it means the FETCH is, which
+		// is a different claim the moment the rows are narrowed after it lands.
+		// Without this, a catalog that happened to fit on one page (or a scan a
+		// merchant paged to the end of) flipped `listOutcome`'s internal
+		// `complete` true and the count line dropped its qualifier — "3 low-stock
+		// products", read as a whole-catalog claim, which is exactly what this
+		// filter's contract (above, and `applyLowStockNarrowing`'s) says it must
+		// never state. `narrowed` already gates `total` for the same reason.
+		narrowedAfterFetch: narrowed,
 		// F29: NAME WHAT WAS COUNTED. While the narrowing is on, the rows are the
 		// low-stock ones the fetched pages happened to hold, and calling them
 		// "3 products" invites the merchant to read three as the catalog's answer.

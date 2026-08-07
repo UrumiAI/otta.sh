@@ -383,6 +383,40 @@ test("F29: the narrowed count names what it counted, and the scan says it is one
 	expect(text(view, "products-intro")).toContain("5 low-stock products loaded so far");
 });
 
+test("A2a: a narrowed catalog that fits on ONE page still gets the page-scoped qualifier", async () => {
+	// THE DEFECT THIS PINS. "Low stock only" has no service predicate — it keeps
+	// the low-stock rows out of whatever page was fetched — so `nextCursor: null`
+	// on the FIRST response means only "the fetch stopped here", never "every
+	// low-stock row in the catalog is on screen". `listOutcome` used to read
+	// `firstPage && !hasNext` as proof the counted set was complete regardless of
+	// how it was counted, so a catalog that happened to fit on one page dropped
+	// the qualifier and read as a whole-catalog claim — "3 low-stock products" —
+	// which is exactly the claim `LOW_STOCK_FILTER_DESCRIPTION` and
+	// `PRODUCTS_LOW_STOCK_NO_MATCH` both promise this filter never makes.
+	serve(() =>
+		envelope({
+			ok: true,
+			products: ids("p", 1, 3).map(product),
+			nextCursor: null,
+			stock: { threshold: 5, unreadable: false, filterUnavailable: false },
+			vocabulary: PRODUCTS_VOCABULARY,
+		}),
+	);
+	view = await mount(<ProductsList onOpen={() => {}} initialFilter={{ lowStock: true }} />);
+	await settle();
+	expect(rows(view, "products-row")).toHaveLength(3);
+	// PAGE-SCOPED, NOT WHOLE-SET — the render never fetched a second page because
+	// there was not one, not because it proved every low-stock row in the
+	// catalog is on screen. Those are different claims and only the first is
+	// true here.
+	expect(text(view, "products-intro")).toContain("3 low-stock products on this page");
+	// No `Load more`, because there really is nothing left to fetch — the
+	// qualifier stands on its own, without the paging note that only renders
+	// beside a live button.
+	expect(absent(view, "products-load-more")).toBe(true);
+	expect(absent(view, "products-low-stock-paging-note")).toBe(true);
+});
+
 /**
  * THE PRODUCTS LIST GETS THE SAME TREATMENT AS ORDERS, and not as a courtesy.
  * F24 gave it the same accumulated-pages state, so it inherits that state's

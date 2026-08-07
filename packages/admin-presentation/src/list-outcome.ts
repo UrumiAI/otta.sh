@@ -234,6 +234,30 @@ export interface ListOutcomeOptions {
 	 *  {@link ACCUMULATED_SUFFIX} instead, because its rows outlive the page they
 	 *  arrived on. */
 	readonly scopeSuffix?: string;
+	/**
+	 * True when `count` was produced by narrowing an ALREADY-FETCHED page rather
+	 * than by a service predicate — products' "Low stock only" is the one caller
+	 * today (`applyLowStockNarrowing`), which is why `total` never arrives while
+	 * it is on (see that function's doc).
+	 *
+	 * WITHOUT THIS, `firstPage && !hasNext` reads as "the fetch is complete" and
+	 * `rowCountLine` treats that as "the counted set is complete" — true for an
+	 * ordinary, service-filtered list, where the fetched page and the filtered
+	 * set are the same collection, but not for a narrowing applied AFTER the
+	 * fetch: the moment a query happens to fit on one page (or a scan exhausts
+	 * every page), `complete` goes true and a count that has only ever described
+	 * rows on screen starts reading as a whole-catalog claim — "3 low-stock
+	 * products" with no qualifier, for a filter whose own contract is that it
+	 * never says anything about the catalog. Passing `true` here keeps the
+	 * qualifier regardless of `firstPage`/`hasNext`, because this render is never
+	 * entitled to the whole-set phrasing no matter how the fetch happened to
+	 * land.
+	 *
+	 * Absent ⇒ `false`, unchanged for every other caller: their filters are
+	 * service-side, so `firstPage && !hasNext` really does mean the counted set
+	 * is complete.
+	 */
+	readonly narrowedAfterFetch?: boolean;
 	readonly noun: RowNoun;
 	/** Zero rows and NO filter on: the collection itself is empty. */
 	readonly empty: ZeroStateCopy;
@@ -250,7 +274,7 @@ export interface ListOutcomeOptions {
 
 export function listOutcome(opts: ListOutcomeOptions): ListOutcome {
 	const countLine = rowCountLine(opts.count, opts.noun, {
-		complete: opts.firstPage && !opts.hasNext,
+		complete: opts.firstPage && !opts.hasNext && opts.narrowedAfterFetch !== true,
 		...(opts.total !== undefined ? { total: opts.total } : {}),
 		...(opts.scopeSuffix !== undefined ? { scopeSuffix: opts.scopeSuffix } : {}),
 	});
