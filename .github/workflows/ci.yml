@@ -63,3 +63,189 @@ jobs:
       # Scoped to the files that actually touch Postgres (scripts/pg-test-files.sh) —
       # the sqlite/fake-only suite already ran in `unit`, no need to redo it here.
       - run: pnpm test:pg
+
+  e2e-fixture-free:
+    needs: unit
+    runs-on: ubuntu-latest
+    # A gate people rerun is not a gate: bound the wall clock instead of letting
+    # a hang sit until the platform default kills it. Sized to the gated set's
+    # own per-test budgets, not trimmed to the full 34-test suite: install +
+    # chromium + up to 180s webServer allowance, plus `two-descriptor-gate.spec.ts`
+    # (`test.slow()`, 3 tests at 180s each) and `console-screens.spec.ts`
+    # (`test.describe.configure({ timeout: 120_000 })`, 2 tests at 120s each). A
+    # tighter budget would hit the JOB timeout before Playwright's own per-test
+    # timeouts fire, which is a far less legible failure.
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: otta
+        # 55432, matching the e2e harness's own default (sites/staging/e2e/harness.ts)
+        # — never 5432, which this repo's e2e tooling refuses to resolve to (see
+        # harness.ts's loopback/port guard, enforced again by harness.spec.ts).
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PG_CONNECTION_STRING: postgres://postgres:postgres@127.0.0.1:55432/otta
+      # Have Playwright boot the real stack (service + `astro dev`, the same
+      # trusted-in-process topology the site deploys — see ADR-0006) instead of
+      # the bare, server-free run, and turn "no stack reachable" from a silent
+      # skip into a failure. See the comment at playwright.config.ts:16-18.
+      OTTA_E2E_START_STACK: "1"
+      OTTA_E2E_REQUIRE_SITE: "1"
+      # The RESULTS report lives under the config's own artifact root (never the
+      # repo root, which is untracked/unignored — a stray committed report there
+      # would let a dead run read back as green). The COLLECTED report cannot go
+      # there: `node_modules/.playwright-artifacts` IS `playwright.config.ts`'s
+      # `outputDir`, and Playwright's global setup removes `outputDir` at the
+      # START of every `playwright test` run (`createRemoveOutputDirsTask`,
+      # `preserveOutputDir` is an IDE/UI-only opt-out) — so a collected report
+      # written there would be deleted by the very run step meant to be checked
+      # against it. `runner.temp` is a GitHub Actions-provisioned directory
+      # outside the checkout entirely, fresh per job and never committable.
+      COLLECTED_REPORT: ${{ runner.temp }}/e2e-collected.json
+      RESULTS_REPORT: node_modules/.playwright-artifacts/e2e-results.json
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ hashFiles('pnpm-lock.yaml') }}
+      - run: pnpm exec playwright install --with-deps chromium
+      # THE GATED SET, AND WHY IT IS NOT ALL FIVE SPEC FILES. `harness.spec.ts`
+      # and `two-descriptor-gate.spec.ts` are entirely server/data-free config
+      # and registry checks (the latter includes the single most valuable test
+      # in the suite: that a React admin page does not silently blank out the
+      # Block Kit sidebar group — ADR-0014 Decision 7's `adminMode` trap).
+      # `console-screens.spec.ts` is a generated smoke spec per migrated screen
+      # that only asserts a 2xx render and a visible heading. None of those three
+      # files' tests ever reach `skipWithoutProducts` / `skipWithoutOrders` /
+      # `skipWithoutSku` / `skipWithoutStockableProduct` /
+      # `skipWithoutRefundableOrder` (sites/staging/e2e/harness.ts) — they need no
+      # seeded rows.
+      #
+      # `orders-console.spec.ts` and `products-console.spec.ts` are EXCLUDED.
+      # Most of their tests do call those guards, which THROW (not skip) under
+      # `OTTA_E2E_REQUIRE_SITE=1` on the empty database a fresh CI runner always
+      # boots with — this is not a judgment that those tests are less important,
+      # it is that CI cannot yet seed the rows they need. Seeding the stack so
+      # those two files can join the gate is separate, future work.
+      - name: Collect the gated test set (stack-free)
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ env.COLLECTED_REPORT }}
+        run: >-
+          pnpm exec playwright test --list --reporter=json
+          sites/staging/e2e/harness.spec.ts
+          sites/staging/e2e/two-descriptor-gate.spec.ts
+          sites/staging/e2e/console-screens.spec.ts
+      # `--reporter` overrides playwright.config.ts's own `list` reporter for
+      # this invocation only (the config is untouched); adding `json` alongside
+      # it gives the verify step below a machine-readable summary without
+      # silencing the human-readable one.
+      - name: Run the gated e2e suite against a live stack
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_FILE: ${{ env.RESULTS_REPORT }}
+        run: >-
+          pnpm exec playwright test --reporter=list,json
+          sites/staging/e2e/harness.spec.ts
+          sites/staging/e2e/two-descriptor-gate.spec.ts
+          sites/staging/e2e/console-screens.spec.ts
+      # Playwright exits 0 on a run that matched and skipped every test, and
+      # OTTA_E2E_REQUIRE_SITE=1 above is what is supposed to stop that — this
+      # step is the tripwire for the case where that flag stops doing its job (a
+      # future edit drops it, the env var name is typo'd, or the stack silently
+      # fails to answer). It re-derives pass/fail from the executed test count
+      # against the COLLECTED count above — not a hand-maintained literal, so a
+      # new TEST added inside one of the three files below joins the gate (and
+      # this check) automatically. It does NOT extend to a new spec FILE: both
+      # the collect and run steps hardcode the same three paths, so a new
+      # fixture-free spec file is collected by neither and sits outside the gate
+      # silently until someone adds it to both lists below.
+      #
+      # What this check closes, precisely: RUN-TIME divergence between the two
+      # steps — a skip, a `--grep` filter, sharding, a crashed worker — nothing
+      # that would make "executed" and "collected" disagree while the file list
+      # stays the same. It does NOT bound the gate's SIZE: deleting a test (or a
+      # whole file, from both lists at once) shrinks collected and executed
+      # together and this still passes. Asserting the gate's size against
+      # something the suite itself owns is real, separate, future work.
+      - name: Verify the run covered exactly the gated set
+        if: always()
+        run: |
+          node - <<'EOF'
+          const fs = require("node:fs");
+
+          function readStats(path, label) {
+            if (!fs.existsSync(path)) {
+              console.error(`e2e gate: FAIL — no report at ${path} (${label}); see the previous step's log`);
+              process.exit(1);
+            }
+            const { stats } = JSON.parse(fs.readFileSync(path, "utf8"));
+            const { expected, unexpected, skipped, flaky } = stats ?? {};
+            for (const [name, value] of Object.entries({ expected, unexpected, skipped, flaky })) {
+              if (typeof value !== "number" || !Number.isFinite(value)) {
+                console.error(
+                  `e2e gate: FAIL — ${label} stats.${name} is ${String(value)}, not a finite number ` +
+                    "(the reporter's stats shape may have changed)",
+                );
+                process.exit(1);
+              }
+            }
+            return { expected, unexpected, skipped, flaky, total: expected + unexpected + skipped + flaky };
+          }
+
+          const collected = readStats(process.env.COLLECTED_REPORT, "the collected (--list) report");
+          const results = readStats(process.env.RESULTS_REPORT, "the executed report");
+
+          console.log(
+            `e2e gate: collected=${collected.total} executed=${results.total} ` +
+              `(expected=${results.expected} unexpected=${results.unexpected} skipped=${results.skipped} flaky=${results.flaky})`,
+          );
+
+          if (results.unexpected > 0) {
+            console.error("e2e gate: FAIL — one or more gated tests failed");
+            process.exit(1);
+          }
+          if (results.skipped > 0) {
+            console.error(
+              "e2e gate: FAIL — a gated test was skipped. Every spec in the gated set is chosen to need " +
+                "no seeded rows, so this is not the expected 'no stack' skip path — check the run log for " +
+                "which test skipped and why (the stack not answering is one possibility, not the only one).",
+            );
+            process.exit(1);
+          }
+          if (collected.total === 0) {
+            console.error("e2e gate: FAIL — the gated set collected 0 tests; the file selection is broken");
+            process.exit(1);
+          }
+          if (results.total !== collected.total) {
+            console.error(
+              `e2e gate: FAIL — executed ${results.total} tests but the gated set collects ${collected.total}; ` +
+                "the run did not cover the full gated set",
+            );
+            process.exit(1);
+          }
+          console.log("e2e gate: PASS");
+          EOF
+      - name: Upload failure artifacts (traces, screenshots)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-failure-artifacts
+          path: node_modules/.playwright-artifacts
+          if-no-files-found: ignore
+          retention-days: 7
