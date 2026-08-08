@@ -144,6 +144,20 @@ export async function listProductCommerceByIds(
  * reloads the fresh detail first, so it carries a new `expectedUpdatedAt` and
  * hence a new key, and heals through the ordinary CAS path instead. Both routes
  * heal; the tests name and pin each one separately.
+ *
+ * A SKU RENAME IS NOT THIS FUNCTION'S BUSINESS, and that is deliberate. When an
+ * edit CHANGES the sku, the store carries that sku's on-hand row onto the new
+ * one inside its own transaction (THE SKU-RENAME RULE on `ProductCommerceStore`
+ * — carry, retain the source zeroed, or refuse with `SkuStockConflictError`),
+ * because only the store can make the movement atomic with the row write; this
+ * use-case composes two ports over two IO calls and could only ever leave a
+ * half-done rename behind. The seed below therefore stays exactly what it was:
+ * UNCONDITIONAL on every `ok`, never gated on "the sku changed". It runs after
+ * a rename too, where the row it would create already exists holding the
+ * carried units, so create-if-absent makes it the no-op it always was — the
+ * always-attempt heal path is preserved, and the carried count is never
+ * clobbered back to zero. A refusal propagates: the store threw, nothing was
+ * written on either side, and no seed is attempted.
  */
 export async function updateProductCommerceFields(
 	deps: ProductCommerceDeps,
