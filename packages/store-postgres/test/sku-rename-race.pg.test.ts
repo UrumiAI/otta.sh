@@ -95,8 +95,12 @@ describe.skipIf(PG === undefined)("sku rename concurrency [postgres]", () => {
 			const wmB = await h.seedProduct(b, skuB, 7);
 
 			// Both products reach for the same, currently free, target sku on
-			// independent connections. Nothing outside the two transactions
-			// serializes them — the claim inside the rule has to.
+			// independent connections. Two guards can arbitrate this — the live-sku
+			// partial index on `product_commerce` and the rule's own inventory
+			// claim — and which one fires is a timing detail. What this case pins
+			// is the OUTCOME, whichever does: one winner, a clean loser, and every
+			// unit accounted for. (The claim's own contention is the fourth case
+			// below, where the index has nothing to say.)
 			const results = await Promise.allSettled([
 				h.products.updateCommerceFields(
 					{ productId: productId(a), sku: sku(target) },
@@ -202,6 +206,59 @@ describe.skipIf(PG === undefined)("sku rename concurrency [postgres]", () => {
 			expect(await h.onHand(skuA), `loop ${loop}`).toBe(10);
 			expect(await h.onHand(skuB), `loop ${loop}`).toBe(3);
 			expect(await h.onHand(parked), `loop ${loop}: parked units untouched`).toBe(99);
+		}
+	}, 120_000);
+
+	test("a rename racing a SEED of the target sku: the claim decides it, and the loser is still a typed refusal", async () => {
+		const LOOPS = 30;
+		const h = await freshPg(8);
+
+		for (let loop = 0; loop < LOOPS; loop++) {
+			const id = `seed-race-${loop}`;
+			const from = `SKU-SR-FROM-${loop}`;
+			const target = `SKU-SR-TO-${loop}`;
+			const wm = await h.seedProduct(id, from, 40);
+
+			// The one contention the live-sku index CANNOT arbitrate. `seedOnHand`
+			// is attempted on every product save, and live-sku uniqueness is a
+			// PARTIAL index — a soft-deleted product may still hold the target sku,
+			// so a sync save of that tombstone seeds the target's inventory row
+			// while a live product is renaming onto it. Both creators reach for the
+			// same row with nothing above them to serialize the attempt.
+			const [renamed] = await Promise.allSettled([
+				h.products.updateCommerceFields(
+					{ productId: productId(id), sku: sku(target) },
+					idempotencyKey(`seed-race-${loop}`),
+					wm,
+				),
+				h.inventory.seedOnHand(target, 0),
+			]);
+
+			if (renamed === undefined) throw new Error("no result");
+			if (renamed.status === "rejected") {
+				// The seed got there first. That MUST arrive as the typed refusal —
+				// a naive "look, then insert" would surface the collision as a raw
+				// duplicate-key violation instead, i.e. a 500 where the operator
+				// should have been told the sku is taken.
+				expect(renamed.reason, `loop ${loop}: typed, never a raw constraint error`).toBeInstanceOf(
+					SkuStockConflictError,
+				);
+				// …and it refused ATOMICALLY: the product kept its sku and its units.
+				expect(await h.skuOf(id), `loop ${loop}`).toBe(from);
+				expect(await h.onHand(from), `loop ${loop}`).toBe(40);
+				expect(await h.onHand(target), `loop ${loop}: the seed's empty row`).toBe(0);
+			} else {
+				// The rename got there first: it owns the row, and the seed that
+				// followed found it and left the carried units alone.
+				expect(renamed.value.ok, `loop ${loop}`).toBe(true);
+				expect(await h.skuOf(id), `loop ${loop}`).toBe(target);
+				expect(await h.onHand(target), `loop ${loop}: carried, not reset`).toBe(40);
+				expect(await h.onHand(from), `loop ${loop}: source retained at zero`).toBe(0);
+			}
+
+			// Either way, 40 units in, 40 units out — never 80, never 0.
+			const total = ((await h.onHand(from)) ?? 0) + ((await h.onHand(target)) ?? 0);
+			expect(total, `loop ${loop}: conservation`).toBe(40);
 		}
 	}, 120_000);
 
