@@ -412,10 +412,17 @@ describe.skipIf(PG === undefined)("sku rename concurrency [postgres]", () => {
 		}
 	}, 120_000);
 
-	test("upsert RACING a CAS edit: the edit loses its compare-and-set, and the units are never split", async () => {
+	test("upsert RACING a CAS edit: whoever loses writes nothing, and the units are never split", async () => {
 		const LOOPS = 25;
 		const h = await freshPg(8);
 		let editStale = 0;
+
+		// Warm the pool before timing anything. A first use of a connection pays
+		// for the TCP connect and session setup, and that cost lands on whichever
+		// side happens to open a fresh one — enough to change which writer reaches
+		// the row first. Warming makes the ordering below the usual one rather
+		// than a coin flip; the assertions inside the loop do not depend on it.
+		await Promise.all(Array.from({ length: 8 }, () => h.onHand("warm-up")));
 
 		for (let loop = 0; loop < LOOPS; loop++) {
 			const id = `up-cas-${loop}`;
@@ -428,13 +435,19 @@ describe.skipIf(PG === undefined)("sku rename concurrency [postgres]", () => {
 			// moment: the integrator PUT and the console's guarded edit, renaming to
 			// different skus.
 			//
-			// The edit reliably LOSES, and not by luck: its before-read is a plain
+			// The edit USUALLY loses, and not by luck: its before-read is a plain
 			// SELECT that takes no lock, so the upsert's locking read slips between
 			// that SELECT and the edit's guarded UPDATE whichever is issued first.
 			// The edit then waits, the upsert commits and moves `updated_at`, and
-			// the CAS no longer matches. That is the CAS doing its job — and it is
-			// exactly why the edit's before-read needs no lock of its own while the
-			// upsert's does. (The other ordering is the sequenced case below.)
+			// the CAS no longer matches — the CAS doing exactly its job, which is
+			// why the edit's before-read needs no lock of its own while the upsert's
+			// does.
+			//
+			// "Usually" is deliberate. On a cold connection the setup cost can hand
+			// the edit the row first, and then the edit legitimately applies and the
+			// upsert renames again on top of it. Both are correct, so the assertions
+			// below describe the OUTCOME rather than the schedule: whichever way it
+			// falls, no writer leaves units behind and none are duplicated.
 			const [up, ed] = await Promise.allSettled([
 				h.products.upsert(
 					{ productId: productId(id), sku: sku(viaUpsert) },
@@ -447,6 +460,8 @@ describe.skipIf(PG === undefined)("sku rename concurrency [postgres]", () => {
 				),
 			]);
 
+			// The upsert has no CAS, so it always applies; the edit either applied or
+			// reported `stale`. Neither may throw, and neither may half-apply.
 			expect(up?.status, `loop ${loop}: the upsert applies`).toBe("fulfilled");
 			expect(ed?.status, `loop ${loop}: the edit resolves, never throws`).toBe("fulfilled");
 			if (ed?.status === "fulfilled" && !ed.value.ok) {
@@ -454,20 +469,35 @@ describe.skipIf(PG === undefined)("sku rename concurrency [postgres]", () => {
 				editStale++;
 			}
 
-			// The edit wrote nothing, so the product is on the upsert's sku with all
-			// of its units, and the sku the edit named holds nothing at all — a
-			// carry from a losing writer would have split the twelve.
-			expect(await h.skuOf(id), `loop ${loop}`).toBe(viaUpsert);
+			// OUTCOME-SHAPED, so both legal schedules pass a correct implementation.
+			// The product ends on the upsert's sku either way — it is the writer
+			// with no CAS to lose — and every unit is under whichever sku the
+			// product actually holds. The edit's sku is left with no units whether
+			// it never got one (the edit went stale) or was carried through (the
+			// edit applied and the upsert then moved them on).
+			const finalSku = await h.skuOf(id);
+			expect(finalSku, `loop ${loop}`).toBe(viaUpsert);
 			expect(await h.onHand(viaUpsert), `loop ${loop}: units follow the product`).toBe(12);
-			expect(await h.onHand(viaEdit), `loop ${loop}: the losing writer moved nothing`).toBeNull();
-			const total = ((await h.onHand(from)) ?? 0) + ((await h.onHand(viaUpsert)) ?? 0);
+			expect(
+				(await h.onHand(viaEdit)) ?? 0,
+				`loop ${loop}: no units left under the sku the product does not hold`,
+			).toBe(0);
+			// Conservation across EVERY sku that was named — the assertion that
+			// catches a split, whichever writer did the splitting.
+			const total =
+				((await h.onHand(from)) ?? 0) +
+				((await h.onHand(viaEdit)) ?? 0) +
+				((await h.onHand(viaUpsert)) ?? 0);
 			expect(total, `loop ${loop}: conservation`).toBe(12);
 		}
 
-		expect(editStale, "the CAS actually rejected the edit").toBe(LOOPS);
+		// At least one loop genuinely exercised the CAS rejection — without this
+		// the case could pass having never raced at all. It is deliberately NOT an
+		// equality: a loop where the edit wins is a legal schedule, not a failure.
+		expect(editStale, "the CAS rejected the edit at least once").toBeGreaterThan(0);
 	}, 120_000);
 
-	test("upsert renaming AFTER a CAS edit landed: it carries from the edit's sku, not from the one the caller last saw", async () => {
+	test("upsert renaming AFTER a CAS edit landed: the before-read comes from the STORED row, not from the caller's input", async () => {
 		const LOOPS = 25;
 		const h = await freshPg(8);
 
@@ -478,10 +508,19 @@ describe.skipIf(PG === undefined)("sku rename concurrency [postgres]", () => {
 			const viaUpsert = `SKU-US2-UP-${loop}`;
 			const wm = await h.seedProduct(id, from, 12);
 
-			// SEQUENCED, not raced — the other half of the pair above, and the half
-			// a same-tick race cannot reach. The edit commits first and moves the
-			// units to its own sku; the upsert then renames again from a starting
-			// point its caller never saw.
+			// SEQUENCED, not raced, and it does NOT discriminate the row lock —
+			// worth saying plainly, because the name invites the opposite reading.
+			// The edit is fully committed before the upsert starts, so there is no
+			// concurrent window and nothing for a snapshot to be stale about; a
+			// plain SELECT would read the edit's sku here just as correctly.
+			//
+			// What it DOES pin is that the before-read is taken from the STORED row
+			// at all, rather than from anything the caller knows. The upsert's own
+			// input names only the destination, and its caller last saw the product
+			// on `from` — so a carry sourced from caller state, or from a sku
+			// remembered anywhere but the row, moves the wrong units. The lock's own
+			// necessity is pinned by the three concurrent cases above, each of which
+			// fails without it.
 			const ed = await h.products.updateCommerceFields(
 				{ productId: productId(id), sku: sku(viaEdit) },
 				idempotencyKey(`us2-ed-${loop}`),
@@ -495,9 +534,10 @@ describe.skipIf(PG === undefined)("sku rename concurrency [postgres]", () => {
 				idempotencyKey(`us2-up-${loop}`),
 			);
 
-			// THE ASSERTION THAT BITES: the upsert's before-read must see the EDIT's
-			// sku. Reading the row as it stood before the edit would carry an empty
-			// `from` and leave all twelve units stranded under the edit's sku.
+			// The upsert's before-read has to yield the EDIT's sku, because that is
+			// what the row holds. Sourcing it from the caller's last-known value
+			// would carry an already-empty `from` and strand all twelve units under
+			// the edit's sku.
 			expect(up.sku, `loop ${loop}`).toBe(viaUpsert);
 			expect(await h.onHand(viaUpsert), `loop ${loop}: carried from the edit's sku`).toBe(12);
 			expect(await h.onHand(viaEdit), `loop ${loop}: the intermediate sku is emptied`).toBe(0);

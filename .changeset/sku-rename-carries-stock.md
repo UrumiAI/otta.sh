@@ -59,7 +59,10 @@ exactly once.
 - `SkuStockConflictError` and `SkuHeldStockError` currently surface as generic failures at the
   HTTP boundary; mapping them to structured responses and legible messages in the admin console is
   a follow-up.
-- The live-reservation check a rename runs is an unindexed scan of the reservations table. It is
-  bounded (one lookup per rename, under a lock the rename already holds) and renames are rare, so
-  it is not a hot path — but a partial index on the reservations SKU covering only live states is
-  the right follow-up, and needs a migration of its own rather than riding along here.
+- **A follow-up with a real stake:** the live-reservation check a rename runs is an unindexed scan
+  of the reservations table, and it runs while the rename holds the lock on the old SKU's inventory
+  row — the same lock a reservation's oversell-critical decrement needs. On a store whose
+  reservations table has grown large, that scan is time during which checkouts of that SKU wait on
+  the rename. Renames are rare, so this is a latency spike rather than a steady-state cost, but the
+  fix is a partial index on the reservations SKU covering only the live states, and it needs a
+  migration of its own rather than riding along here.

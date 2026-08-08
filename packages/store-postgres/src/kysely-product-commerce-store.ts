@@ -297,9 +297,10 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 	 *     never deleted regardless.
 	 *
 	 * `commandKey` is the idempotency key of the product write this carry belongs
-	 * to; the ledger rows derive their own keys from it, so they are unique per
-	 * command and a replay (which never reaches this method) cannot double-write
-	 * them.
+	 * to, and the audit rows in step 4 derive their own keys from it. It is not a
+	 * uniqueness guarantee — it is client-supplied — so see `#recordCarry` for
+	 * what those keys do and do not promise, and why a collision there is
+	 * survivable.
 	 */
 	async #carrySkuStock(
 		exec: Kysely<Database>,

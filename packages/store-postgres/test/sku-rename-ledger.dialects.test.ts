@@ -214,6 +214,37 @@ function renameLedgerSuite(makeDb: () => Promise<Kysely<Database>>, dialect: str
 			const out = await movements(db, "SKU-LEDC-FROM");
 			expect(out).toHaveLength(1);
 			expect(out[0]).toMatchObject({ direction: "removal", qty: 1 });
+
+			// ONLY the colliding half is lost. The other half's key was never
+			// squatted, so it lands normally — DO NOTHING drops the row that
+			// conflicts, not the whole insert, so the trail keeps what it can.
+			const into = await movements(db, "SKU-LEDC-TO");
+			expect(into).toHaveLength(1);
+			expect(into[0]).toMatchObject({ direction: "rename_in", qty: 30, result_on_hand: 30 });
+		});
+
+		test("a rename through UPSERT writes the same pair — the trail follows the column, not one writer", async () => {
+			const db = await makeDb();
+			const store = new KyselyProductCommerceStore({ db, clock });
+			await seedStocked(db, store, "prod-led-up", "SKU-LEDU-FROM", 17);
+
+			const renamed = await store.upsert(
+				{ productId: productId("prod-led-up"), sku: sku("SKU-LEDU-TO") },
+				idempotencyKey("ledu-rename"),
+			);
+			expect(renamed.sku).toBe("SKU-LEDU-TO");
+
+			// The integrator PUT moves stock exactly as the console edit does, so it
+			// has to leave the same record behind — an audit trail with a hole in it
+			// for one of the two writers is worse than none, because it reads as a
+			// complete history.
+			const out = await movements(db, "SKU-LEDU-FROM");
+			expect(out).toHaveLength(1);
+			expect(out[0]).toMatchObject({ direction: "rename_out", qty: 17, result_on_hand: 0 });
+
+			const into = await movements(db, "SKU-LEDU-TO");
+			expect(into).toHaveLength(1);
+			expect(into[0]).toMatchObject({ direction: "rename_in", qty: 17, result_on_hand: 17 });
 		});
 	});
 }
