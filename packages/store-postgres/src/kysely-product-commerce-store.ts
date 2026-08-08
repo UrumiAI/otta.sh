@@ -5,6 +5,7 @@ import {
 	InvalidLowStockThresholdError,
 	isValidLowStockThreshold,
 	MissingProductIdError,
+	MissingVariantKeyError,
 	money,
 	productId as toProductId,
 	sku as toSku,
@@ -24,8 +25,13 @@ import {
 	type ProductListPage,
 	type ProductListResult,
 	type ProductSummary,
+	type ProductVariant,
+	type ProductVariantSummary,
+	type ProductVariantUpdateResult,
 	type UpdateProductCommerceFieldsInput,
+	type UpdateProductVariantFieldsInput,
 	type UpsertProductCommerceInput,
+	type UpsertProductVariantInput,
 } from "@otta-sh/domain";
 import {
 	type Expression,
@@ -35,7 +41,7 @@ import {
 	sql,
 	type SqlBool,
 } from "kysely";
-import type { Database, ProductCommerceTable } from "./schema.js";
+import type { Database, ProductCommerceTable, ProductVariantsTable } from "./schema.js";
 
 export interface KyselyProductCommerceStoreOptions {
 	db: Kysely<Database>;
@@ -86,6 +92,78 @@ export interface KyselyProductCommerceStoreOptions {
  * target stays the `product_id` PK, so the partial index never arbitrates
  * the upsert; a genuinely conflicting live sku surfaces as a constraint
  * error on both dialects, and a soft-deleted row's sku is reusable.
+ *
+ * ─── THE LOCK ORDER ────────────────────────────────────────────────────────
+ *
+ * The VARIANT writers take row locks in one order, and this is the only place it
+ * is written down:
+ *
+ *     product_commerce  →  inventory, IN SKU ORDER  →  product_variants
+ *
+ * Skipping a stage is always allowed; taking one out of order is not.
+ *
+ * WHAT IS ACTUALLY PROVED, stated as the obligation rather than as a slogan,
+ * because "one total order" is stronger than what holds here:
+ *  1. Every variant writer that will APPLY takes the parent's lock first — except
+ *     the single-lock writer in (2), which needs no ordering to be safe. Two
+ *     writers under one product therefore never interleave at all, which makes
+ *     every intra-product cycle unreachable rather than merely ordered — including
+ *     the one inside `product_variants_live_sku_unique`.
+ *  2. Writers that take at most ONE lock cannot participate in a cycle, since a
+ *     cycle needs someone waiting while holding. `deactivateVariant` is a single
+ *     conditional UPDATE and is in that class.
+ *  3. Across DIFFERENT parents, the only shared resources are `inventory` rows,
+ *     and those are taken in sorted sku order by every writer that takes two.
+ *  4. The `couldApply`-FALSE branch of `updateVariantFields` skips the parent lock
+ *     and so is outside (1). It is cycle-free only because such an edit never
+ *     applies, and THAT rests on the monotonic-clock assumption named on
+ *     `updateVariantFields` — the same assumption its guard 4b already rests on.
+ *     If that assumption is ever false, this branch is the second thing to fix.
+ *  5. `#applyVariantDeclare` is the one deliberate inversion: it cannot know which
+ *     sku to lock until it has read the row, so it takes the parent, then the
+ *     variant row, then at most ONE `inventory` row. It never holds two stock rows,
+ *     and every writer that could wait on its variant row holds the parent it
+ *     already owns — so it closes no cycle. Raced directly against a price edit of
+ *     the SAME variant in the variant race suite.
+ *
+ * WHY THIS ORDER, rather than any other:
+ *  - `product_commerce` FIRST because it is the aggregate root — a product's
+ *    currency is a fact about the product, so both the product's own repricing
+ *    and any variant's pricing have to agree under one lock.
+ *  - `inventory` before `product_variants`, which is the opposite of what the
+ *    reading order suggests and is the whole lesson of this class. A variant's
+ *    guarded UPDATE looks like the decision that precedes the movement, but
+ *    writing a sku also takes an entry in `product_variants_live_sku_unique`,
+ *    and two writers crossing skus each end up waiting on the other's
+ *    uncommitted index entry — a cycle formed inside the index, before either
+ *    has touched a stock row.
+ *  - `inventory` rows IN SKU ORDER — sorted, never by role. A carry touches two
+ *    of them, and which is "source" and which is "target" belongs to the caller
+ *    rather than to the rows: two crossing renames, X→Y and Y→X, disagree about
+ *    role order on the same pair, so ordering by role is ordering by nothing and
+ *    they deadlock (measured: `40P01` around one loop in 250). Sorting gives every
+ *    writer one agreed order over any pair.
+ *
+ * KNOWN, PRE-EXISTING, AND NOT ADDRESSED HERE: the PRODUCT-side writers have the
+ * same exposure this order closes for variants, and it predates variants. `upsert`
+ * and `#applyCommerceFields` write `sku` in their guarded statement, which takes
+ * an entry in `product_commerce_live_sku_unique`, BEFORE any `inventory` lock — so
+ * two products renaming onto each other's skus can deadlock inside that index
+ * exactly as two variants could. Restructuring them is deliberately out of scope
+ * for the change that introduced variants: it touches the two writers the whole
+ * catalog runs through, and it deserves its own change and its own race. Recorded
+ * so the next reader finds a known follow-up rather than an oversight.
+ *
+ * WHY IT IS WRITTEN DOWN RATHER THAN INFERRED. Every lock here is a portable
+ * self-assignment `UPDATE` (`FOR UPDATE` is not SQLite), so the locks are
+ * invisible at the call sites that need them and are easy to add in the wrong
+ * place. A violation does not fail a unit test: better-sqlite3 serializes every
+ * writer onto one connection and cannot deadlock at all, so an inversion is
+ * green on the fast tier and surfaces only on Postgres, as an unmapped `40P01`
+ * reaching a merchant instead of the typed refusal this port documents. The
+ * race suites (`test/sku-rename-race.pg.test.ts`,
+ * `test/variant-sku-rename-race.pg.test.ts`) are where that is caught, and each
+ * inversion this order rules out has a case named after it.
  */
 export class KyselyProductCommerceStore implements ProductCommerceStore {
 	readonly #db: Kysely<Database>;
@@ -255,11 +333,37 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 		if (resolved === undefined) {
 			throw new Error(`product_commerce upsert lost its row for product_id ${input.productId}`);
 		}
-		// THE SKU-RENAME RULE (port doc), against the row's before/after values —
-		// so a same-key replay and a stale-watermark no-op, which both re-read and
-		// return the STORED row, compare equal here and move nothing.
-		if (beforeSku !== null && resolved.sku !== null && resolved.sku !== beforeSku) {
-			await this.#carrySkuStock(exec, beforeSku, resolved.sku, key);
+		const renaming = beforeSku !== null && resolved.sku !== null && resolved.sku !== beforeSku;
+		// The RECIPROCAL half of "a sku names one live sellable unit" (port doc):
+		// the partial index covers product↔product, and this covers product↔variant,
+		// which no index can. `row !== undefined` is the "the statement applied"
+		// witness, so a same-key replay or a stale-watermark no-op refuses nothing —
+		// the same position the index occupies. Inside the sku-bearing path's own
+		// transaction, so the throw rolls the write back exactly as the index would.
+		//
+		// BEFORE THE CARRY, and this is a PRECEDENCE decision rather than a locking
+		// one (locks are acquired below and above in the class's order regardless;
+		// LOCKS ARE NOT CHECKS). Both refusals can apply to one rename — a target sku
+		// that another live unit holds will, in production-normal state, also have an
+		// `inventory` row, because every applied assignment seeds one. Whichever runs
+		// first decides what the operator is told, so the order is fixed rather than
+		// incidental: "that sku names another sellable unit" is the actionable truth,
+		// and "units are parked under that sku" would be a misleading description of
+		// the same state. `SkuConflictError` therefore outranks
+		// `SkuStockConflictError` whenever a live unit holds the target.
+		if (row !== undefined && input.sku !== undefined) {
+			const pair = renaming && beforeSku !== null ? [beforeSku, input.sku].toSorted() : [input.sku];
+			for (const s of pair) await this.#lockSkuRowIfPresent(exec, s);
+			if (await this.#skuTakenByLiveVariant(exec, input.sku)) {
+				throw new SkuConflictError(input.sku);
+			}
+		}
+		// THE SKU-RENAME RULE (port doc), against the row's before/after values — so
+		// a same-key replay and a stale-watermark no-op, which both re-read and return
+		// the STORED row, compare equal here and move nothing. The carry re-acquires
+		// the same sorted pair, which is a no-op now that this path holds it.
+		if (renaming && resolved.sku !== null) {
+			await this.#carrySkuStock(exec, beforeSku as string, resolved.sku, key);
 		}
 		return toDomain(resolved);
 	}
@@ -309,6 +413,29 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 		commandKey: IdempotencyKey,
 	): Promise<void> {
 		if (sourceSku === targetSku) return;
+
+		// THE PAIR IS ACQUIRED AS A PAIR, IN SKU ORDER — never one role and then the
+		// other, which is what deadlocked before this loop existed.
+		//
+		// A carry touches two `inventory` rows, and which of them is "source" and
+		// which is "target" is a property of the CALLER, not of the rows. Two
+		// crossing renames — X→Y and Y→X — therefore disagree about role order on
+		// the same two rows, so ordering by role is ordering by nothing: each locks
+		// its own source and then waits on the other's. It deadlocks even though the
+		// claim is an `ON CONFLICT DO NOTHING` that looks lock-free, because a
+		// speculative insert must wait on a conflicting tuple another transaction has
+		// updated — and the peer's source lock is exactly such an update. Measured:
+		// this is a `40P01` roughly one loop in 250, i.e. rare enough to survive
+		// review and frequent enough to reach a merchant.
+		//
+		// Sorting the two skus gives every carry in the system ONE agreed order over
+		// any pair, which is the textbook resolution and the only one that does not
+		// depend on who called. Rows that do not exist yet lock nothing here; the
+		// claim below is still what arbitrates those, via the speculative-insert
+		// conflict.
+		for (const s of [sourceSku, targetSku].toSorted()) {
+			await this.#lockSkuRowIfPresent(exec, s);
+		}
 
 		const source = await exec
 			.updateTable("inventory")
@@ -553,18 +680,47 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 		key: IdempotencyKey,
 		expectedUpdatedAt: string,
 	): Promise<ProductCommerceUpdateResult> {
-		// As in `upsert`: no sku in play ⇒ no rename ⇒ the edit stays the single
+		// As in `upsert`: neither a sku (which may rename) nor a price (whose
+		// currency the live variants get a say in) ⇒ the edit stays the single
 		// statement it has always been, on the plain connection.
-		if (input.sku === undefined) {
-			return this.#applyCommerceFields(this.#db, input, key, expectedUpdatedAt, null);
+		if (input.sku === undefined && input.price === undefined) {
+			return this.#applyCommerceFields(this.#db, input, key, expectedUpdatedAt, null, []);
 		}
 		return this.#db.transaction().execute(async (trx) => {
+			// Clause 4c reads `product_variants`, and the variant path reaches that
+			// table only AFTER locking this same parent row. So this path takes the
+			// parent lock FIRST — stage one of the class lock order — and only then
+			// reads. Reading before the lock is the inversion that lets a product
+			// repricing and a variant pricing each see the other's "before" state and
+			// both apply; it is not merely a weaker guard, it is no guard at all.
+			//
+			// Taken only when a price is in play: a sku-only edit consults no variant
+			// currencies, so it has nothing to serialize against and keeps the shape it
+			// has always had. The lock is a self-assignment UPDATE that touches no
+			// observable column, so the guarded UPDATE below still sees exactly what it
+			// did — in particular `updated_at` is untouched, so the CAS is unaffected.
+			if (input.price !== undefined) {
+				await trx
+					.updateTable("product_commerce")
+					.set((eb) => ({ product_id: eb.ref("product_id") }))
+					.where("product_id", "=", input.productId)
+					.execute();
+			}
 			const before = await trx
 				.selectFrom("product_commerce")
 				.select("sku")
 				.where("product_id", "=", input.productId)
 				.executeTakeFirst();
-			return this.#applyCommerceFields(trx, input, key, expectedUpdatedAt, before?.sku ?? null);
+			const variantCurrencies =
+				input.price === undefined ? [] : await this.#liveVariantCurrencies(trx, input.productId);
+			return this.#applyCommerceFields(
+				trx,
+				input,
+				key,
+				expectedUpdatedAt,
+				before?.sku ?? null,
+				variantCurrencies,
+			);
 		});
 	}
 
@@ -587,8 +743,18 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 		key: IdempotencyKey,
 		expectedUpdatedAt: string,
 		beforeSku: string | null,
+		variantCurrencies: string[],
 	): Promise<ProductCommerceUpdateResult> {
 		const now = this.#clock.now().toISOString();
+		// Clause 4c (port doc): a repricing that would leave a LIVE VARIANT of this
+		// product holding another currency. Checked in APP CODE and used to SUPPRESS
+		// the statement rather than short-circuit the method — the classifier below
+		// still runs, so a replay of a disagreeing edit still reports its replay `ok`
+		// and a stale one still reports `stale`, exactly as the guard order requires.
+		// Empty for an unvarianted product, so this can never fire on the catalog as
+		// it stands.
+		const variantCurrencyConflict =
+			input.price !== undefined && variantCurrencies.some((c) => c !== input.price?.currency);
 		const set: Record<string, string | number | null> = {
 			idempotency_key: key,
 			updated_at: now,
@@ -618,51 +784,77 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 		if (input.productKind !== undefined) set.product_kind = input.productKind;
 
 		let updated: ProductCommerceTable | undefined;
-		try {
-			let stmt = exec
-				.updateTable("product_commerce")
-				.set(set)
-				.where("product_id", "=", input.productId)
-				.where("deleted_at", "is", null)
-				.where("updated_at", "=", expectedUpdatedAt)
-				.where("idempotency_key", "!=", key);
-			if (input.price !== undefined) {
-				// Currency integrity: never silently switch an already-priced row's
-				// currency. NULL (first pricing) passes.
-				const cur = input.price.currency;
-				stmt = stmt.where(sql<SqlBool>`(price_currency is null or price_currency = ${cur})`);
-			} else {
-				// compare-at / cost supplied WITHOUT a price in the same edit must EACH
-				// match the STORED price currency (the row currency) — BOTH fields are
-				// guarded INDEPENDENTLY, exactly like the fake's 4b loop (review of PR
-				// #70: a single either/or pick here let a "compare-at matches, cost
-				// doesn't" edit write a mixed-currency row). A NULL stored price
-				// currency FAILS the guard — compare-at / cost require a priced product.
-				// (The within-edit currency agreement, when a price IS present, is the
-				// use-case's `InvalidProductFieldError` concern, so this branch only
-				// runs when price is absent.) A cleared (null) field carries no
-				// currency and adds no guard.
-				for (const extra of [input.compareAtPrice, input.unitCost]) {
-					if (extra != null) {
-						const extraCur = extra.currency;
-						stmt = stmt.where(
-							sql<SqlBool>`(price_currency is not null and price_currency = ${extraCur})`,
-						);
+		// The conflict SUPPRESSES the statement; the classifier below still runs, so
+		// guard order is preserved (see the note beside `variantCurrencyConflict`).
+		if (!variantCurrencyConflict) {
+			try {
+				let stmt = exec
+					.updateTable("product_commerce")
+					.set(set)
+					.where("product_id", "=", input.productId)
+					.where("deleted_at", "is", null)
+					.where("updated_at", "=", expectedUpdatedAt)
+					.where("idempotency_key", "!=", key);
+				if (input.price !== undefined) {
+					// Currency integrity: never silently switch an already-priced row's
+					// currency. NULL (first pricing) passes.
+					const cur = input.price.currency;
+					stmt = stmt.where(sql<SqlBool>`(price_currency is null or price_currency = ${cur})`);
+				} else {
+					// compare-at / cost supplied WITHOUT a price in the same edit must EACH
+					// match the STORED price currency (the row currency) — BOTH fields are
+					// guarded INDEPENDENTLY, exactly like the fake's 4b loop (review of PR
+					// #70: a single either/or pick here let a "compare-at matches, cost
+					// doesn't" edit write a mixed-currency row). A NULL stored price
+					// currency FAILS the guard — compare-at / cost require a priced product.
+					// (The within-edit currency agreement, when a price IS present, is the
+					// use-case's `InvalidProductFieldError` concern, so this branch only
+					// runs when price is absent.) A cleared (null) field carries no
+					// currency and adds no guard.
+					for (const extra of [input.compareAtPrice, input.unitCost]) {
+						if (extra != null) {
+							const extraCur = extra.currency;
+							stmt = stmt.where(
+								sql<SqlBool>`(price_currency is not null and price_currency = ${extraCur})`,
+							);
+						}
 					}
 				}
+				updated = await stmt.returningAll().executeTakeFirst();
+			} catch (err) {
+				if (input.sku !== undefined && isLiveSkuUniqueViolation(err)) {
+					throw new SkuConflictError(input.sku);
+				}
+				throw err;
 			}
-			updated = await stmt.returningAll().executeTakeFirst();
-		} catch (err) {
-			if (input.sku !== undefined && isLiveSkuUniqueViolation(err)) {
-				throw new SkuConflictError(input.sku);
-			}
-			throw err;
 		}
 
 		if (updated !== undefined) {
+			const renaming = beforeSku !== null && updated.sku !== null && updated.sku !== beforeSku;
+			// The RECIPROCAL of the variant writer's cross-table check (port doc):
+			// product↔product is the partial index, product↔variant is this. Only the
+			// applying branch reaches it, and the throw rolls back inside the
+			// sku-bearing path's own transaction.
+			//
+			// BEFORE THE CARRY — a PRECEDENCE decision, not a locking one. In
+			// production-normal state a sku another live unit holds ALSO has an
+			// `inventory` row (every applied assignment seeds one), so both refusals
+			// apply and whichever runs first is what the operator reads.
+			// `SkuConflictError` wins: "that sku names another sellable unit" is
+			// actionable, while "units are parked under that sku" describes the same
+			// state misleadingly. The sorted pair is acquired here so the check reads
+			// under the same locks the carry will re-acquire.
+			if (input.sku !== undefined) {
+				const pair =
+					renaming && beforeSku !== null ? [beforeSku, input.sku].toSorted() : [input.sku];
+				for (const s of pair) await this.#lockSkuRowIfPresent(exec, s);
+				if (await this.#skuTakenByLiveVariant(exec, input.sku)) {
+					throw new SkuConflictError(input.sku);
+				}
+			}
 			// THE SKU-RENAME RULE (port doc) — the applying branch, and only it.
-			if (beforeSku !== null && updated.sku !== null && updated.sku !== beforeSku) {
-				await this.#carrySkuStock(exec, beforeSku, updated.sku, key);
+			if (renaming && updated.sku !== null) {
+				await this.#carrySkuStock(exec, beforeSku as string, updated.sku, key);
 			}
 			return { ok: true, product: toDomain(updated) };
 		}
@@ -696,6 +888,11 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 					return { ok: false, reason: "currency_mismatch", current: toDomain(current) };
 				}
 			}
+		}
+		// 4c, LAST in the currency group so the pre-existing sub-axes keep reporting
+		// first and an unvarianted product's classification is byte-identical.
+		if (variantCurrencyConflict) {
+			return { ok: false, reason: "currency_mismatch", current: toDomain(current) };
 		}
 		// No guard explains the no-op — the statement should have applied. Fail
 		// loudly rather than silently swallow a lost write.
@@ -930,6 +1127,719 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 		return Number(row?.n ?? 0);
 	}
 
+	// -- Variants: one commerce row per sellable unit --------------------------
+
+	/**
+	 * The CMS-sync declare (port doc): ONE conditional statement — an `INSERT …
+	 * ON CONFLICT (product_id, variant_key) DO UPDATE … WHERE <guards>` — on the
+	 * plain connection, never a transaction, because this channel CANNOT carry a
+	 * sku (the input has no such field) and therefore can never be a stock
+	 * movement. That is the whole reason the sync path stays as cheap as the
+	 * product-level title sync it rides beside.
+	 *
+	 * TWO PATHS, decided by an `INSERT … ON CONFLICT DO NOTHING RETURNING *`:
+	 *  - A key nobody has declared before INSERTS and is DONE — one statement, no
+	 *    transaction, no read. That is the steady-state cost of a new size.
+	 *  - A key that already has a row comes back with nothing, and the write then
+	 *    runs inside a TRANSACTION, because a resurrect has to REVALIDATE the
+	 *    stored commerce facts (port doc) and the revalidation and the row write
+	 *    must commit together. Deciding it this way rather than with a preliminary
+	 *    SELECT closes the window where a row is orphaned between the look and the
+	 *    write: the transaction re-reads THROUGH THE ROW LOCK and decides there.
+	 *
+	 * The guards mirror `upsert`'s: same-key replay first, then the watermark. The
+	 * RESURRECT sits behind a THIRD, narrower guard — presence moves only on a
+	 * delivery that carries a watermark AND is strictly newer than the stored one
+	 * — which is what makes a redelivered or watermark-less declare unable to undo
+	 * an orphan (port doc). The title is not held to it: it is an unordered cache.
+	 *
+	 * `variant_key` is absent from every SET clause and always will be: it is half
+	 * the primary key, it is the identity, and a re-key is a refusal rather than
+	 * an update.
+	 */
+	async upsertVariant(
+		input: UpsertProductVariantInput,
+		key: IdempotencyKey,
+	): Promise<ProductVariant> {
+		if (typeof input.productId !== "string" || input.productId.length === 0) {
+			throw new MissingProductIdError();
+		}
+		if (typeof input.variantKey !== "string" || input.variantKey.length === 0) {
+			throw new MissingVariantKeyError();
+		}
+		const now = this.#clock.now().toISOString();
+
+		// A brand-new key: one statement. `sku` is null on a fresh row and NULLs do
+		// not collide in a partial unique index, so the PK is the only conflict
+		// target and a raw constraint error is unreachable here.
+		const inserted = await this.#db
+			.insertInto("product_variants")
+			.values({
+				product_id: input.productId,
+				variant_key: input.variantKey,
+				// Declared, not priced — this channel has no field for either, so a
+				// fresh row is always absent on both (never 0, never "").
+				sku: null,
+				price_cents: null,
+				price_currency: null,
+				title: input.title ?? null,
+				orphaned_at: null,
+				idempotency_key: key,
+				content_updated_at: input.contentUpdatedAt ?? null,
+				created_at: now,
+				updated_at: now,
+			})
+			.onConflict((oc) => oc.columns(["product_id", "variant_key"]).doNothing())
+			.returningAll()
+			.executeTakeFirst();
+		if (inserted !== undefined) return toVariantDomain(inserted);
+
+		return this.#db.transaction().execute((trx) => this.#applyVariantDeclare(trx, input, key));
+	}
+
+	/**
+	 * `upsertVariant`'s existing-row path, inside the transaction the resurrect's
+	 * revalidation needs.
+	 *
+	 * FULLY ENROLLED IN THE CLASS LOCK ORDER, because a resurrect is a writer like
+	 * any other — it can restore a sku and a price, so it contends with exactly the
+	 * writers that assign them:
+	 *  1. `product_commerce` (the parent) FIRST, unconditionally on this path. The
+	 *     guarded edit reaches the parent before it touches its own variant row, so
+	 *     a declare that took the variant row first would be a clean ABBA against a
+	 *     price edit of the same variant — one deadlocking as an unmapped `40P01`
+	 *     out of the CMS sync, which is the one thing this channel must never do.
+	 *     It is taken unconditionally rather than "only when resurrecting" because
+	 *     whether this IS a resurrect can only be known after reading the row, and
+	 *     reading it means holding it: deciding first and locking second is the
+	 *     inversion all over again.
+	 *  2. the variant row, read THROUGH its lock — a self-assignment `UPDATE …
+	 *     RETURNING *`, the portable form (`FOR UPDATE` is not SQLite), touching no
+	 *     observable column so no guard below sees it.
+	 *  3. the stored sku's `inventory` row, before the revalidation reads it. That
+	 *     is what makes the revalidation an answer rather than a guess: without it a
+	 *     concurrent claim of the same sku either lands after our read — leaving two
+	 *     live units on one sku when the claimant is a product — or races our own
+	 *     restore into a raw `23505` escaping the sync when the claimant is another
+	 *     variant. Both are the failures the clearing exists to prevent.
+	 *
+	 * PERFORMANCE, stated plainly because it is not free: a re-declare is the
+	 * STEADY STATE — every CMS save re-declares every key the repeater still
+	 * carries — and each one now costs a transaction plus two row locks instead of
+	 * one statement. That is the price of a resurrect that cannot corrupt, and it is
+	 * paid on an admin-frequency path (a document save), never on a checkout or
+	 * catalog read. A first declare of a new key is still the single INSERT above.
+	 *
+	 * AND THEY SERIALIZE ON THE PARENT. One save re-declaring N keys takes the SAME
+	 * `product_commerce` row lock N times, so those N declares run strictly one
+	 * after another rather than concurrently, and the save's variant sync is linear
+	 * in the number of sizes. For a garment's handful of sizes that is nothing; a
+	 * product with hundreds of variants would feel it, and the fix then is to batch
+	 * the declares into one transaction that takes the parent once — not to weaken
+	 * the lock.
+	 */
+	async #applyVariantDeclare(
+		exec: Kysely<Database>,
+		input: UpsertProductVariantInput,
+		key: IdempotencyKey,
+	): Promise<ProductVariant> {
+		// Stage 1: the parent. Matches zero rows when the product row has not synced
+		// yet (the documented out-of-order case), which takes nothing and is correct.
+		await exec
+			.updateTable("product_commerce")
+			.set((eb) => ({ product_id: eb.ref("product_id") }))
+			.where("product_id", "=", input.productId)
+			.execute();
+
+		// Stage 2: the variant row.
+		const stored = await exec
+			.updateTable("product_variants")
+			.set((eb) => ({ product_id: eb.ref("product_id") }))
+			.where("product_id", "=", input.productId)
+			.where("variant_key", "=", input.variantKey)
+			.returningAll()
+			.executeTakeFirst();
+		if (stored === undefined) {
+			// Variant rows are never deleted, so the row that just refused our INSERT
+			// cannot have gone. Fail loudly rather than mint a second one.
+			throw new Error(
+				`product_variants declare lost its row for ${input.productId}/${input.variantKey}`,
+			);
+		}
+
+		// Guard 1: same-key replay — a provable no-op, ahead of everything else.
+		if (stored.idempotency_key === key) return toVariantDomain(stored);
+		// Guard 2: a strictly older content revision never overwrites fresher data.
+		if (
+			input.contentUpdatedAt !== undefined &&
+			stored.content_updated_at !== null &&
+			input.contentUpdatedAt < stored.content_updated_at
+		) {
+			return toVariantDomain(stored);
+		}
+
+		// PRESENCE moves only on an ordered, strictly newer delivery (port doc).
+		const resurrecting =
+			stored.orphaned_at !== null &&
+			input.contentUpdatedAt !== undefined &&
+			(stored.content_updated_at === null || input.contentUpdatedAt > stored.content_updated_at);
+
+		// A resurrect REVALIDATES: an orphan's sku was free for reuse, so it may no
+		// longer be there to reclaim, and a price in a currency the product no
+		// longer holds is not a price. Cleared, never refused — the declare states a
+		// fact about the CMS and cannot be voted down by the commerce row. The
+		// `inventory` row is untouched: a cleared sku leaves its stock where it is,
+		// and re-assigning it later ADOPTS that row under THE FIRST-SKU ASYMMETRY.
+		let sku = stored.sku;
+		let priceCents = stored.price_cents;
+		let priceCurrency = stored.price_currency;
+		if (resurrecting) {
+			if (sku !== null) {
+				// Stage 3: the sku's stock row, before either read — the same row and
+				// the same terms the two assigning writers use, so a claim in flight is
+				// waited for and then SEEN rather than missed.
+				await this.#lockSkuRowIfPresent(exec, sku);
+				if (
+					(await this.#skuTakenByLiveVariant(exec, sku, input.variantKey)) ||
+					(await this.#skuTakenByLiveProduct(exec, sku))
+				) {
+					sku = null;
+				}
+			}
+			if (priceCurrency !== null) {
+				const productCurrency = await this.#resolveProductCurrency(
+					exec,
+					input.productId,
+					input.variantKey,
+				);
+				if (productCurrency !== null && productCurrency !== priceCurrency) {
+					priceCents = null;
+					priceCurrency = null;
+				}
+			}
+		}
+
+		const updated = await exec
+			.updateTable("product_variants")
+			.set({
+				title: input.title !== undefined ? input.title : stored.title,
+				sku,
+				price_cents: priceCents,
+				price_currency: priceCurrency,
+				orphaned_at: resurrecting ? null : stored.orphaned_at,
+				idempotency_key: key,
+				content_updated_at:
+					input.contentUpdatedAt !== undefined ? input.contentUpdatedAt : stored.content_updated_at,
+				updated_at: this.#clock.now().toISOString(),
+			})
+			.where("product_id", "=", input.productId)
+			.where("variant_key", "=", input.variantKey)
+			.returningAll()
+			.executeTakeFirstOrThrow();
+		return toVariantDomain(updated);
+	}
+
+	/**
+	 * Every variant of one product (port doc): ONE statement — `product_variants`
+	 * LEFT JOINed to `inventory` for the per-row `onHand`, never an N+1 of
+	 * per-variant stock reads. `inventory.sku` is that table's PRIMARY KEY, so the
+	 * join matches at most one row and can never multiply the result; the LEFT
+	 * half is what makes a variant with no inventory row surface as `onHand: null`
+	 * ("unknown"), distinct from `0` ("out of stock"). A NULL `sku` simply never
+	 * matches, landing on the same null — correct, and identical on both dialects.
+	 *
+	 * Ordered `variant_key ASC` — the only stable order (see the port doc) —
+	 * served by the `(product_id, variant_key)` primary key with no extra index.
+	 * Orphaned rows are INCLUDED, flagged by a non-null `orphanedAt`.
+	 */
+	async listVariants(productId: ProductId): Promise<ProductVariantSummary[]> {
+		const rows = await this.#db
+			.selectFrom("product_variants")
+			.leftJoin("inventory", "inventory.sku", "product_variants.sku")
+			.select([
+				"product_variants.product_id as product_id",
+				"product_variants.variant_key as variant_key",
+				"product_variants.sku as sku",
+				"product_variants.price_cents as price_cents",
+				"product_variants.price_currency as price_currency",
+				"product_variants.title as title",
+				"product_variants.orphaned_at as orphaned_at",
+				"product_variants.created_at as created_at",
+				"product_variants.updated_at as updated_at",
+				"inventory.on_hand as on_hand",
+			])
+			.where("product_variants.product_id", "=", productId)
+			.orderBy("product_variants.variant_key", "asc")
+			.execute();
+
+		// NARROWED: `idempotency_key` and `content_updated_at` are not in the SELECT
+		// list at all (port doc — write-path bookkeeping a reader never needs), so
+		// the projection cannot leak them by accident. `updated_at` stays: it is the
+		// compare-and-set watermark an editor passes back.
+		// The LEFT JOIN miss IS the null — `?? 0` here would invent "out of stock"
+		// for a variant that has no inventory row at all.
+		return rows.map((r) => ({
+			productId: toProductId(r.product_id),
+			variantKey: r.variant_key,
+			sku: r.sku === null ? null : toSku(r.sku),
+			price:
+				r.price_cents === null || r.price_currency === null
+					? null
+					: money(cents(r.price_cents), currency(r.price_currency)),
+			title: r.title,
+			orphanedAt: r.orphaned_at === null ? null : new Date(r.orphaned_at),
+			createdAt: new Date(r.created_at),
+			updatedAt: new Date(r.updated_at),
+			onHand: r.on_hand,
+		}));
+	}
+
+	/**
+	 * The guarded admin edit at variant grain (port doc): a conditional `UPDATE`
+	 * under an optimistic compare-and-set, the atomic mirror of the fake's guard
+	 * chain and of `updateCommerceFields` one level down. An edit that touches
+	 * neither `sku` nor `price` is the single statement it looks like; an edit
+	 * that touches either opens a transaction, because both are movements that
+	 * must commit with the row — the sku's stock carry, and the currency
+	 * resolution's row lock.
+	 *
+	 * WHY THE BEFORE-READ NEEDS NO LOCK, unlike `upsert`'s: the applying statement
+	 * only matches while `updated_at` still equals `expectedUpdatedAt`, and every
+	 * writer advances it, so an interleaved write turns this into `stale` rather
+	 * than a carry against a sku that has since moved. Same argument as
+	 * `#applyCommerceFields`, unchanged.
+	 *
+	 * THE PARENT LOCK IS SKIPPED FOR AN EDIT THAT CANNOT APPLY. Currency resolution
+	 * locks the `product_commerce` row (see `#resolveProductCurrency`), and that
+	 * lock is held to the end of the transaction — so taking it for a merchant's
+	 * stale or replayed save, of which there are many, would block every other
+	 * write to that product for the length of this transaction. The before-read
+	 * that already feeds the rename carry therefore also decides whether the lock
+	 * is worth taking. When it IS taken it is still stage one of the class lock
+	 * order, ahead of the guarded UPDATE's own lock on the variant row.
+	 *
+	 * WHAT THE PRE-CHECK RESTS ON, stated because it is load-bearing and was not
+	 * obvious. Skipping the lock also skips resolving `productCurrency`, which
+	 * switches OFF guard 4b — so the pre-check must never say "cannot apply" about
+	 * an edit the statement then applies. It cannot, and the reason is the store's
+	 * own compare-and-set contract rather than anything local: EVERY writer of a
+	 * variant row advances `updated_at` from the injected `Clock`, and the guarded
+	 * UPDATE matches only while `updated_at` still equals `expectedUpdatedAt`. So a
+	 * row that failed the CAS at pre-read time can pass it at statement time only
+	 * if some writer moved `updated_at` BACKWARDS onto the exact value the caller
+	 * quoted — i.e. only under a non-monotonic clock. THAT IS THE ASSUMPTION, named
+	 * here rather than left implicit: a `Clock` that can go backwards breaks the
+	 * optimistic-concurrency design of this whole port long before it reaches this
+	 * optimization. The orphaned and replay branches need no clock argument at all
+	 * (a resurrect advances `updated_at`, and a stored key changes only by a write
+	 * that does too).
+	 *
+	 * It is belt-and-braces rather than an argument alone: if the statement DOES
+	 * apply with a price while the resolution was skipped, `#applyVariantFields`
+	 * fails loudly instead of writing a currency it never checked.
+	 *
+	 * WHAT A REFUSED EDIT STILL COSTS, since the pre-check does not make it free: a
+	 * stale or replayed edit that CARRIES A SKU still opens a transaction and still
+	 * takes up to two `inventory` row locks before the guarded UPDATE classifies it,
+	 * and holds them until the transaction commits. Those locks are on the sku rows,
+	 * not on the product, so they block only writers touching the same stock — but a
+	 * client retrying a stale save in a tight loop is contending for real rows, not
+	 * merely failing. The pre-check spares such an edit the PARENT lock, which is
+	 * the one that would serialize the whole product.
+	 */
+	async updateVariantFields(
+		input: UpdateProductVariantFieldsInput,
+		key: IdempotencyKey,
+		expectedUpdatedAt: string,
+	): Promise<ProductVariantUpdateResult> {
+		if (input.sku === undefined && input.price === undefined) {
+			// No price in the input at all, so guard 4b has nothing to evaluate and
+			// `currencyResolved` is vacuously satisfied.
+			return this.#applyVariantFields(this.#db, input, key, expectedUpdatedAt, null, null, true);
+		}
+		return this.#db.transaction().execute(async (trx) => {
+			const before = await this.#selectVariant(trx, input.productId, input.variantKey);
+			const couldApply =
+				before !== undefined &&
+				before.orphaned_at === null &&
+				before.idempotency_key !== key &&
+				before.updated_at === expectedUpdatedAt;
+			// Stage one of the lock order, taken for EVERY applying edit and not only
+			// a priced one. Two writers under one product then never interleave at
+			// all, which is what rules out every intra-product cycle — including the
+			// one on `product_variants`' own partial unique index, where two crossing
+			// renames each wait on the other's uncommitted index entry long before
+			// either reaches an `inventory` row.
+			if (couldApply) {
+				await trx
+					.updateTable("product_commerce")
+					.set((eb) => ({ product_id: eb.ref("product_id") }))
+					.where("product_id", "=", input.productId)
+					.execute();
+			}
+			const resolveCurrency = input.price !== undefined && couldApply;
+			const productCurrency = resolveCurrency
+				? await this.#resolveProductCurrency(trx, input.productId, input.variantKey)
+				: null;
+			return this.#applyVariantFields(
+				trx,
+				input,
+				key,
+				expectedUpdatedAt,
+				before?.sku ?? null,
+				productCurrency,
+				resolveCurrency,
+			);
+		});
+	}
+
+	/**
+	 * The currency every money value under one product must agree on: the product
+	 * row's own price currency when it has one, else any OTHER live priced
+	 * variant's (a product whose sizes carry the prices has no product-level price
+	 * to read). `null` ⇒ nothing to match yet, so a first pricing is free.
+	 *
+	 * THE PARENT READ IS A LOCKING READ — a self-assignment `UPDATE … SET
+	 * product_id = product_id`, the same portable row lock `upsert`'s before-read
+	 * takes (`FOR UPDATE` is not SQLite), and it touches no observable column so
+	 * no other guard sees it. It is here to SERIALIZE, not to read: the compare-
+	 * and-set on each variant row is per-row, so two first-pricings of two
+	 * DIFFERENT variants of one product have different CAS targets and nothing
+	 * else would order them — both would read "no currency yet" and both would
+	 * apply, leaving one product holding two currencies. Taking the parent's lock
+	 * makes one wait for the other and then see its currency.
+	 *
+	 * KNOWN BOUND, deliberate: a product whose `product_commerce` row does not
+	 * exist yet has no row to lock (the out-of-order delivery case the port
+	 * documents), so that one interleaving is unserialized. Closing it would mean
+	 * minting a product row from a variant write, which is a worse trade than a
+	 * window that requires a variant to be priced before its product has synced.
+	 */
+	async #resolveProductCurrency(
+		exec: Kysely<Database>,
+		productId: string,
+		exceptVariantKey: string,
+	): Promise<string | null> {
+		const parent = await exec
+			.updateTable("product_commerce")
+			.set((eb) => ({ product_id: eb.ref("product_id") }))
+			.where("product_id", "=", productId)
+			.returning("price_currency")
+			.executeTakeFirst();
+		if (parent?.price_currency != null) return parent.price_currency;
+
+		const sibling = await exec
+			.selectFrom("product_variants")
+			.select("price_currency")
+			.where("product_id", "=", productId)
+			.where("variant_key", "!=", exceptVariantKey)
+			.where("orphaned_at", "is", null)
+			.where("price_currency", "is not", null)
+			.limit(1)
+			.executeTakeFirst();
+		return sibling?.price_currency ?? null;
+	}
+
+	/**
+	 * `updateVariantFields`'s statement and its zero-row classifier, on whichever
+	 * executor the caller opened. The classifier runs the SAME order the fake
+	 * does — not_found (unknown / orphaned) FIRST, then replay, then stale, then
+	 * currency_mismatch — so fake, sqlite and pg agree byte-for-byte.
+	 *
+	 * A product-level currency disagreement is checked in APP CODE rather than as
+	 * a SQL guard (its two operands are both constants, which is a comparison no
+	 * dialect should be asked to type), and it SUPPRESSES the statement entirely
+	 * rather than short-circuiting the method: the classifier still runs, so a
+	 * replay of a disagreeing edit still reports the replay `ok` and a stale one
+	 * still reports `stale`, exactly as the guard order requires.
+	 */
+	async #applyVariantFields(
+		exec: Kysely<Database>,
+		input: UpdateProductVariantFieldsInput,
+		key: IdempotencyKey,
+		expectedUpdatedAt: string,
+		beforeSku: string | null,
+		productCurrency: string | null,
+		/** Whether the caller actually resolved the product currency. `false` means
+		 *  guard 4b is switched off for this call — legal only when the pre-check
+		 *  established the edit cannot apply, which the applying branch re-asserts. */
+		currencyResolved: boolean,
+	): Promise<ProductVariantUpdateResult> {
+		const now = this.#clock.now().toISOString();
+		const productCurrencyConflict =
+			input.price !== undefined &&
+			productCurrency !== null &&
+			productCurrency !== input.price.currency;
+
+		let updated: ProductVariantsTable | undefined;
+		if (!productCurrencyConflict) {
+			// The `inventory` pair, in SKU ORDER, BEFORE the guarded UPDATE — because
+			// the UPDATE is what writes the sku, and writing it takes an entry in
+			// `product_variants_live_sku_unique`. Two writers crossing skus each wait
+			// on the other's uncommitted index entry there, which is a cycle no
+			// later lock can undo. Serializing them on the shared `inventory` rows
+			// first means only one of them is ever inside the index at a time.
+			if (input.sku !== undefined) {
+				const pair = beforeSku === null ? [input.sku] : [beforeSku, input.sku].toSorted();
+				for (const s of pair) await this.#lockSkuRowIfPresent(exec, s);
+			}
+			const set: Record<string, string | number | null> = {
+				idempotency_key: key,
+				updated_at: now,
+			};
+			if (input.sku !== undefined) set.sku = input.sku;
+			if (input.price !== undefined) {
+				set.price_cents = input.price.amount;
+				set.price_currency = input.price.currency;
+			}
+			// No `title` branch and no `variant_key` branch: neither field exists on
+			// this input (ADR-0016; the key is the identity).
+			try {
+				let stmt = exec
+					.updateTable("product_variants")
+					.set(set)
+					.where("product_id", "=", input.productId)
+					.where("variant_key", "=", input.variantKey)
+					// An edit is neither a create nor a resurrection — an orphaned row is
+					// unreachable from this surface, exactly like a tombstoned product.
+					.where("orphaned_at", "is", null)
+					.where("updated_at", "=", expectedUpdatedAt)
+					.where("idempotency_key", "!=", key);
+				if (input.price !== undefined) {
+					// Never silently switch this variant's own currency. NULL (a first
+					// pricing) passes.
+					const cur = input.price.currency;
+					stmt = stmt.where(sql<SqlBool>`(price_currency is null or price_currency = ${cur})`);
+				}
+				updated = await stmt.returningAll().executeTakeFirst();
+			} catch (err) {
+				// Variant↔variant live-sku uniqueness is the partial index; surface it
+				// as the structured domain error, never an opaque 500.
+				if (input.sku !== undefined && isLiveVariantSkuUniqueViolation(err)) {
+					throw new SkuConflictError(input.sku);
+				}
+				throw err;
+			}
+		}
+
+		if (updated !== undefined) {
+			// The pre-check said this edit could not apply, so guard 4b was never
+			// resolved — and yet here it is applying, with a price. That is reachable
+			// only if `updated_at` moved BACKWARDS onto the caller's quoted value (see
+			// `updateVariantFields`'s note on the clock assumption). Fail loudly rather
+			// than write a currency nothing checked; the transaction rolls back.
+			if (input.price !== undefined && !currencyResolved) {
+				throw new Error(
+					`updateVariantFields applied a price whose product currency was never resolved for ${input.productId}/${input.variantKey}`,
+				);
+			}
+			// A SKU NAMES ONE LIVE SELLABLE UNIT, and the other kind of unit is a
+			// `product_commerce` row, which no index can cover from here. Checked
+			// AFTER the guarded UPDATE matched, so the refusal keeps its place in the
+			// guard order (a stale or replayed edit never reaches it) — and inside the
+			// caller's transaction, so the throw rolls the write back exactly as the
+			// index's would.
+			const renaming = beforeSku !== null && updated.sku !== null && updated.sku !== beforeSku;
+			// BEFORE THE CARRY — a PRECEDENCE decision, not a locking one. The sorted
+			// pair was already acquired above, ahead of the guarded UPDATE, so this
+			// check reads under the locks it needs; what is decided here is only WHICH
+			// typed refusal wins when both apply, which in production-normal state is
+			// most of the time (an applied assignment seeds an `inventory` row, so a
+			// sku another live unit holds nearly always has one too). `SkuConflictError`
+			// wins: it names the real obstacle, where `SkuStockConflictError` would
+			// describe the same state as parked units and send the operator looking for
+			// stock to move.
+			if (input.sku !== undefined && (await this.#skuTakenByLiveProduct(exec, input.sku))) {
+				throw new SkuConflictError(input.sku);
+			}
+			// THE SKU-RENAME RULE (port doc) — the applying branch, and only it. The
+			// SAME carry the two product-level writers use: `inventory` is keyed by the
+			// bare sku and knows nothing about products or variants.
+			if (renaming && updated.sku !== null) {
+				await this.#carrySkuStock(exec, beforeSku as string, updated.sku, key);
+			}
+			return { ok: true, variant: toVariantDomain(updated) };
+		}
+
+		const current = await this.#selectVariant(exec, input.productId, input.variantKey);
+		if (current === undefined || current.orphaned_at !== null) {
+			return { ok: false, reason: "not_found" };
+		}
+		if (current.idempotency_key === key) {
+			return { ok: true, variant: toVariantDomain(current) }; // replay no-op.
+		}
+		if (current.updated_at !== expectedUpdatedAt) {
+			return { ok: false, reason: "stale", current: toVariantDomain(current) };
+		}
+		if (
+			input.price !== undefined &&
+			current.price_currency !== null &&
+			current.price_currency !== input.price.currency
+		) {
+			return { ok: false, reason: "currency_mismatch", current: toVariantDomain(current) };
+		}
+		if (productCurrencyConflict) {
+			return { ok: false, reason: "currency_mismatch", current: toVariantDomain(current) };
+		}
+		// No guard explains the no-op — fail loudly rather than swallow a lost write.
+		throw new Error(
+			`updateVariantFields matched zero rows but no guard explains it for ${input.productId}/${input.variantKey}`,
+		);
+	}
+
+	/**
+	 * The ORPHAN transition (port doc): a single conditional `UPDATE`, mirroring
+	 * `deactivate`'s shape one level down. Guards ANDed together:
+	 *  - `idempotency_key != :key` — a SAME-KEY REPLAY is a no-op unconditionally,
+	 *    the per-row compare-on-write both write paths already use. Without it a
+	 *    redelivered drop could apply a second time on a row that has since been
+	 *    re-declared, quietly un-selling a size the CMS currently lists.
+	 *  - `orphaned_at IS NULL` — already-orphaned is a stable no-op under replay,
+	 *    leaving the original tombstone instant and the watermark untouched.
+	 *  - `content_updated_at IS NULL OR content_updated_at <= :t` — a delayed "the
+	 *    repeater row is gone" can never orphan a variant a NEWER save has since
+	 *    re-declared. NULL (never synced) is `-infinity`, so the first transition
+	 *    wins. The SAME column `upsertVariant` guards on, because both transitions
+	 *    ride the same save event (see the port doc for why the product's publish
+	 *    gate needed a second column and this does not). `<=` here against the
+	 *    resurrect's strict `>`: one save may declare some keys and drop others at
+	 *    one watermark, so an orphan must apply at an equal one — while a resurrect
+	 *    at an equal watermark would re-litigate a decision already taken.
+	 * An unknown `(product_id, variant_key)` matches zero rows — a no-op, no row
+	 * minted. The row itself is RETAINED with its sku, price and stock:
+	 * deactivation, never deletion.
+	 */
+	async deactivateVariant(
+		productId: ProductId,
+		variantKey: string,
+		key: IdempotencyKey,
+		contentUpdatedAt: string,
+	): Promise<void> {
+		const now = this.#clock.now().toISOString();
+		await this.#db
+			.updateTable("product_variants")
+			.set({
+				orphaned_at: now,
+				content_updated_at: contentUpdatedAt,
+				idempotency_key: key,
+				updated_at: now,
+			})
+			.where("product_id", "=", productId)
+			.where("variant_key", "=", variantKey)
+			.where("idempotency_key", "!=", key)
+			.where("orphaned_at", "is", null)
+			.where(
+				sql<SqlBool>`(content_updated_at is null or content_updated_at <= ${contentUpdatedAt})`,
+			)
+			.execute();
+	}
+
+	/**
+	 * A SKU NAMES ONE LIVE SELLABLE UNIT (port doc). Two halves, because no
+	 * dialect indexes across two tables and each writer only needs the half its
+	 * own unique index does not already cover.
+	 *
+	 * `#skuTakenByLiveProduct` is what a VARIANT writer asks; `#skuTakenByLiveVariant`
+	 * is the reciprocal, what the two PRODUCT-level writers ask. Both are called
+	 * only where the write actually applies, so a replayed, stale or
+	 * watermark-rejected write refuses nothing — the exact position the partial
+	 * unique index occupies on each same-table half.
+	 */
+	/**
+	 * Take the target sku's `inventory` row lock, when it has one — the ONE row
+	 * the two halves of the cross-table uniqueness rule can both contend on, since
+	 * no dialect indexes across two tables and neither writer's unique index can
+	 * see the other's.
+	 *
+	 * A self-assignment `UPDATE`, the same portable row lock `upsert`'s before-read
+	 * takes (`FOR UPDATE` is not SQLite), touching no observable column. With it,
+	 * a product write and a variant write reaching for one sku serialize: the
+	 * second waits for the first to commit and then SEES it, so its cross-table
+	 * check refuses instead of passing on a stale snapshot.
+	 *
+	 * THE BOUND, and it is worth stating precisely because the fix is otherwise
+	 * airtight: a sku that has NEVER had an `inventory` row has nothing to lock, so
+	 * two writers assigning that same never-used sku — one to a product, one to a
+	 * variant, in the same instant — can still both pass. Every sku that has ever
+	 * been stocked, restocked, renamed onto, or seeded by the caller's
+	 * always-attempt `seedOnHand` after any earlier assignment is covered. Closing
+	 * the remainder needs a row to contend on: either a sku assignment claims the
+	 * `inventory` row (which would make a first sku a stock movement — the
+	 * FIRST-SKU semantics deliberately say it is not), or a dedicated claim table
+	 * carries a unique index spanning both kinds of unit. Both are their own
+	 * decision; committed state is arbitrated correctly either way, on every
+	 * adapter, and that is what the contract suite pins.
+	 */
+	async #lockSkuRowIfPresent(exec: Kysely<Database>, s: string): Promise<void> {
+		await exec
+			.updateTable("inventory")
+			.set((eb) => ({ on_hand: eb.ref("on_hand") }))
+			.where("sku", "=", s)
+			.execute();
+	}
+
+	async #skuTakenByLiveProduct(exec: Kysely<Database>, s: string): Promise<boolean> {
+		const row = await exec
+			.selectFrom("product_commerce")
+			.select("product_id")
+			.where("sku", "=", s)
+			.where("deleted_at", "is", null)
+			.limit(1)
+			.executeTakeFirst();
+		return row !== undefined;
+	}
+
+	/** As above, from the other side. `exceptVariantKey` excludes the variant doing
+	 *  the writing — re-supplying your own sku is not a conflict. */
+	async #skuTakenByLiveVariant(
+		exec: Kysely<Database>,
+		s: string,
+		exceptVariantKey?: string,
+	): Promise<boolean> {
+		let q = exec
+			.selectFrom("product_variants")
+			.select("variant_key")
+			.where("sku", "=", s)
+			.where("orphaned_at", "is", null);
+		if (exceptVariantKey !== undefined) q = q.where("variant_key", "!=", exceptVariantKey);
+		const row = await q.limit(1).executeTakeFirst();
+		return row !== undefined;
+	}
+
+	/**
+	 * The live-variant currencies of one product, for the reciprocal currency guard
+	 * (`updateCommerceFields` clause 4c). Read under the parent row's own lock — the
+	 * guarded UPDATE that lock belongs to is the very row being repriced — so a
+	 * product repricing and a variant pricing cannot both pass by reading each
+	 * other's "before" state. Empty for an unvarianted product, which is why the
+	 * guard cannot fire on the catalog as it stands.
+	 */
+	async #liveVariantCurrencies(exec: Kysely<Database>, productId: string): Promise<string[]> {
+		const rows = await exec
+			.selectFrom("product_variants")
+			.select("price_currency")
+			.where("product_id", "=", productId)
+			.where("orphaned_at", "is", null)
+			.where("price_currency", "is not", null)
+			.execute();
+		return rows.flatMap((r) => (r.price_currency === null ? [] : [r.price_currency]));
+	}
+
+	/** One variant row by its composite identity. `exec` is the caller's executor
+	 *  so a write that opened a transaction re-reads inside it. */
+	async #selectVariant(
+		exec: Kysely<Database>,
+		productId: string,
+		variantKey: string,
+	): Promise<ProductVariantsTable | undefined> {
+		return exec
+			.selectFrom("product_variants")
+			.selectAll()
+			.where("product_id", "=", productId)
+			.where("variant_key", "=", variantKey)
+			.executeTakeFirst();
+	}
+
 	/** The row by its link key. `exec` defaults to the plain connection; a write
 	 *  that opened a transaction passes it in, so its own re-read sees the
 	 *  statement it just ran rather than the pre-transaction snapshot. */
@@ -976,6 +1886,53 @@ function toDomain(row: ProductCommerceTable): ProductCommerce {
 		createdAt: new Date(row.created_at),
 		updatedAt: new Date(row.updated_at),
 	};
+}
+
+/** One `product_variants` row → the domain shape. Money stays branded and
+ *  NULLABLE: an absent price is absent, never zero. */
+function toVariantDomain(row: ProductVariantsTable): ProductVariant {
+	return {
+		productId: toProductId(row.product_id),
+		variantKey: row.variant_key,
+		sku: row.sku === null ? null : toSku(row.sku),
+		price:
+			row.price_cents === null || row.price_currency === null
+				? null
+				: money(cents(row.price_cents), currency(row.price_currency)),
+		title: row.title,
+		orphanedAt: row.orphaned_at === null ? null : new Date(row.orphaned_at),
+		idempotencyKey: toIdempotencyKey(row.idempotency_key),
+		contentUpdatedAt: row.content_updated_at,
+		createdAt: new Date(row.created_at),
+		updatedAt: new Date(row.updated_at),
+	};
+}
+
+/**
+ * The variant-grain twin of {@link isLiveSkuUniqueViolation}, for the
+ * `product_variants_live_sku_unique` partial index — same two dialect shapes
+ * (pg SQLSTATE `23505` naming the constraint; better-sqlite3's
+ * `SQLITE_CONSTRAINT_UNIQUE` naming the violated columns in `table.column`
+ * form), same narrow scoping, so anything else still propagates untouched.
+ */
+function isLiveVariantSkuUniqueViolation(err: unknown): boolean {
+	if (typeof err !== "object" || err === null) return false;
+	const { code, constraint, message } = err as {
+		code?: unknown;
+		constraint?: unknown;
+		message?: unknown;
+	};
+	if (code === "23505") {
+		return constraint === "product_variants_live_sku_unique";
+	}
+	if (code === "SQLITE_CONSTRAINT_UNIQUE") {
+		return (
+			typeof message === "string" &&
+			(message.includes("product_variants_live_sku_unique") ||
+				message.includes("product_variants.sku"))
+		);
+	}
+	return false;
 }
 
 /**

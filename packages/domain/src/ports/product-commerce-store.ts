@@ -482,6 +482,40 @@ export interface ProductCommerceView {
  * `getByProductId` (not `get`) so the identity it reads by is unambiguous at
  * every call site.
  *
+ * A SKU NAMES EXACTLY ONE LIVE SELLABLE UNIT, AND THE RULE IS BIDIRECTIONAL.
+ * Since variants exist, "live sellable unit" spans live `product_commerce` rows
+ * AND live (non-orphaned) `product_variants` rows, so uniqueness has to hold
+ * across the pair or it holds nowhere: a sku a live VARIANT already carries is
+ * refused to BOTH product-level writers (`upsert` and `updateCommerceFields`)
+ * with the same `SkuConflictError` the variant writer raises in the opposite
+ * direction. Checking only one direction would leave the other open, and two
+ * sellable units over one `inventory` row is precisely the state THE SKU-RENAME
+ * RULE cannot then reason about — a later rename of either one carries the
+ * other's stock away, silently.
+ *
+ * The cross-table half cannot be an index (no dialect indexes across two
+ * tables), so each adapter runs it as an explicit check inside the SAME
+ * transaction as the write, positioned so it fires ONLY when the write actually
+ * applies — a replayed, stale or watermark-rejected write moves no sku and must
+ * refuse nothing. That is the same position the partial unique index occupies by
+ * construction, so the two halves of the rule stay indistinguishable to a
+ * caller. With no variant rows declared the check matches nothing, which is why
+ * an unvarianted catalog behaves exactly as it did before.
+ *
+ * THE CURRENCY AXIS IS NOT SYMMETRIC ACROSS THE TWO PRODUCT-LEVEL WRITERS, and
+ * that asymmetry predates variants. `updateCommerceFields` owns currency
+ * integrity at product level and gains the reciprocal live-variant guard (its
+ * clause 4c). `upsert` has never had a currency guard on ANY axis — it may
+ * already switch an already-priced product's own currency silently, which is the
+ * documented last-writer-wins stance of the integrator PUT and the CMS sync — so
+ * bolting a variant-only currency refusal onto it would refuse the cross-ROW
+ * case while still permitting the same-ROW case, in the same call. The sku axis
+ * differs precisely because `upsert` DOES already refuse there
+ * (`SkuConflictError` from the partial index), so extending that refusal across
+ * the table is a widening of an existing rule rather than a new one. Giving
+ * `upsert` a currency guard means giving it one on both axes at once, which is a
+ * change to its own documented semantics and belongs to its own decision.
+ *
  * THE SKU-RENAME RULE, shared by BOTH writers of `sku` (`upsert` and
  * `updateCommerceFields`) — a property of the COLUMN, not of one caller, so
  * neither writer may skip it. When a write changes a row's `sku` from one
@@ -622,7 +656,18 @@ export interface ProductCommerceStore {
 	 *         within-edit currencies were already checked upstream
 	 *         (`InvalidProductFieldError`), and the price guard (4a) fixes the row
 	 *         currency, so compare-at / cost inherit it with no separate store
-	 *         guard.
+	 *         guard; OR
+	 *      c. a `price` whose currency differs from that of any LIVE VARIANT of
+	 *         this product — the reciprocal of `updateVariantFields`'s guard 4b,
+	 *         and required for the same reason it is: a product and its sizes are
+	 *         one purchasable thing, so a repricing that would leave a live size
+	 *         holding another currency is refused rather than rendered. Without
+	 *         this direction the guard is trivially bypassed by repricing the
+	 *         product instead of the size. Resolved under the parent row's lock —
+	 *         the same lock, in the same order, that the variant path takes — so
+	 *         a product repricing and a variant pricing cannot both pass by
+	 *         reading each other's "before" state. With no variants declared it
+	 *         matches nothing and this guard cannot fire.
 	 *  5. otherwise → applies the partial update, stamps `key` as the row's
 	 *     last-applied replay key, bumps `updatedAt`, returns the updated row —
 	 *     and, when the update CHANGED the row's `sku`, carries that sku's
@@ -828,4 +873,406 @@ export interface ProductCommerceStore {
 	 * id. `0` ⇒ no live product references the class.
 	 */
 	countByTaxClass(taxClassId: string): Promise<number>;
+
+	// -- Variants: one commerce row per sellable unit --------------------------
+
+	/**
+	 * The CMS-SYNC channel for one variant (see {@link UpsertProductVariantInput}
+	 * and `adr/0016-variant-title-is-cms-owned.md`): insert-or-update by
+	 * `(productId, variantKey)`, idempotent under `key`, order-aware under
+	 * `contentUpdatedAt`, and — because a variant EXISTS exactly while the CMS
+	 * says it does — it is also the RESURRECT half of the presence axis:
+	 *  - unknown `(productId, variantKey)` ⇒ a new row, with `sku`/`price` NULL
+	 *    (a variant is DECLARED by the CMS and PRICED by the admin — this channel
+	 *    can write neither, which is the whole of the decision).
+	 *  - a same-`key` replay ⇒ a no-op returning the stored row unchanged.
+	 *  - a STRICTLY OLDER `contentUpdatedAt` than the stored watermark ⇒ a stale
+	 *    no-op, so out-of-order hook delivery converges (mirrors `upsert`).
+	 *  - an ORPHANED row ⇒ RESURRECTED (`orphanedAt` back to null). This is the
+	 *    deliberate DIVERGENCE from `softDelete` + `activate`, where a publish must
+	 *    never resurrect a tombstone: THAT tombstone records a MERCHANT decision
+	 *    that a CMS event must not override, while an orphan records the CMS's OWN
+	 *    statement that the repeater row is gone — so the same channel that removed
+	 *    it is the right one to bring it back, and refusing would strand the
+	 *    variant's stock behind a key nobody can re-declare.
+	 *
+	 * THIS CHANNEL NEVER REFUSES PRESENCE AND NEVER THROWS A CONSTRAINT ERROR. A
+	 * declare states a fact about the CMS — this key exists — and the commerce
+	 * database does not get a vote on it. That is the whole reason the two clauses
+	 * below exist rather than a refusal: while a variant was orphaned its sku was
+	 * FREE for reuse (see `deactivateVariant`), so by the time it comes back the
+	 * commerce facts it was carrying may no longer hold, and a resurrect that
+	 * insisted on them would either raise a raw unique-index violation at the sync
+	 * — an opaque 500 on a hook the merchant cannot see — or leave two live
+	 * sellable units sharing one `inventory` row.
+	 *
+	 * So a resurrect REVALIDATES the stale commerce facts on the way back in, and
+	 * CLEARS whatever no longer holds:
+	 *  - the stored `sku` is KEPT when it is still free among live sellable units,
+	 *    and CLEARED to null when another live variant or live product has taken
+	 *    it since. An orphan cannot reclaim what was legitimately reused. This is
+	 *    the ONE case where a sku goes back to null after being set: it is not an
+	 *    edit clearing it (no writer can do that) but the row losing a claim it no
+	 *    longer has, and the operator re-prices the size exactly as they would a
+	 *    newly declared one.
+	 *  - the stored `price` is CLEARED when its currency now conflicts with the
+	 *    product's current currency (see `updateVariantFields` guard 4b for how
+	 *    that currency is resolved) — the same integrity axis, and for the same
+	 *    reason: a price the product can no longer honour is not a price.
+	 * THE INVENTORY ROW IS NEVER TOUCHED by any of this. A kept sku keeps its
+	 * units; a cleared sku leaves its `inventory` row exactly where it is, and
+	 * re-assigning that sku later is governed unchanged by THE FIRST-SKU
+	 * ASYMMETRY — a first sku ADOPTS the existing row, units and all, which is
+	 * precisely how a variant re-linked to a sku it used to own gets its stock
+	 * back.
+	 *
+	 * PRESENCE MOVES ONLY ON AN ORDERED, STRICTLY NEWER DELIVERY, and this is
+	 * narrower than the title's own guard on purpose. The title is an unordered
+	 * last-writer-wins cache, so a watermark-less save (a panel-style write) may
+	 * update it. Presence is an axis with two OPPOSING transitions, so it needs
+	 * the same treatment the publish gate gets: a resurrect applies only when the
+	 * incoming `contentUpdatedAt` is present AND STRICTLY NEWER than the stored
+	 * watermark (or the row has none yet). Two consequences, both load-bearing:
+	 *  - a REDELIVERED watermark-less declare can never resurrect a variant a
+	 *    newer save has since orphaned;
+	 *  - a redelivered declare at an EQUAL watermark cannot resurrect either, so
+	 *    the deactivate it raced with stays applied and a redelivery of THAT
+	 *    command finds the row already orphaned and does nothing. Equal watermarks
+	 *    across two different saves cannot occur in any case (every save bumps the
+	 *    content's `updatedAt`), and one save can never both declare and drop the
+	 *    same key.
+	 * THE COST OF THE STRICT COMPARISON, so nobody has to discover it: re-sending
+	 * the SAME save cannot repair an orphan that save caused in error, because its
+	 * watermark is no longer strictly newer. The repair is a FRESH CMS save — any
+	 * edit to the document, which bumps `updatedAt` and re-declares the key. That is
+	 * the deliberate trade: a redelivery must never flip presence, so a redelivery
+	 * cannot un-flip it either, and only a new decision by the CMS can.
+	 *
+	 * Rejects a missing/empty `productId` with `MissingProductIdError` and a
+	 * missing/empty `variantKey` with `MissingVariantKeyError`, BEFORE any row is
+	 * minted — the key is the identity, and an identity-less variant row could
+	 * never be addressed again.
+	 *
+	 * NO PARENT-ROW CHECK, deliberately: a variant may land before its
+	 * `product_commerce` row does (`content:afterSave` and the repeater's own
+	 * delivery are independent fire-and-forget POSTs), exactly as `activate` may
+	 * arrive before the row it publishes. Convergence is by the watermark, not by
+	 * a foreign key that would abort instead.
+	 */
+	upsertVariant(input: UpsertProductVariantInput, key: IdempotencyKey): Promise<ProductVariant>;
+
+	/**
+	 * Every variant of one product — the Variants-tab read, and the projection a
+	 * later "one row per sellable unit" list expands a product into.
+	 *
+	 * ORDERED `variant_key ASC`, the only stable order available: the key is
+	 * immutable and unique within the product, while `created_at` moves with
+	 * whichever sync happened to mint the row and a display name is a CACHE that
+	 * may be null. Compared as plain text on both dialects (no casts, no
+	 * collation clause), so keys that must sort predictably across dialects
+	 * should stay within a character set the two agree on.
+	 *
+	 * INCLUDES ORPHANED ROWS, flagged by a non-null `orphanedAt` — surfacing the
+	 * orphan is the point (it may hold stock and sit on live orders), and a
+	 * caller that wants only sellable units filters on the field it can see.
+	 *
+	 * `onHand` comes from a LEFT JOIN onto `inventory` in the SAME statement —
+	 * one round trip per product, never an N+1 of per-variant stock reads — and
+	 * carries the identical three-state meaning as `ProductSummary.onHand`:
+	 * `null` is "no inventory row for this sku (or no sku yet)" — UNKNOWN, never
+	 * rendered as `0`; `0` is a known sku that is out of stock. A variant with no
+	 * inventory row is ABSENT, never zero.
+	 *
+	 * An unknown product (or one that has declared no variants) returns `[]` —
+	 * absence, never an error. That is the state the ENTIRE live catalog is in,
+	 * and it is why nothing else in this port changes shape.
+	 */
+	listVariants(productId: ProductId): Promise<ProductVariantSummary[]>;
+
+	/**
+	 * The guarded ADMIN edit of a variant's commerce-owned fields — the exact
+	 * mirror of `updateCommerceFields`, one level down, including its guard ORDER
+	 * (contract-pinned on every adapter):
+	 *  1. unknown `(productId, variantKey)`, or an ORPHANED row → `not_found`
+	 *     FIRST, never a row minted: an edit is not a create, and it is not a
+	 *     resurrection either (the way back is the CMS re-declaring the repeater
+	 *     row, which is `upsertVariant`'s job — the same shape as a soft-deleted
+	 *     product being unreachable from this surface).
+	 *  2. a same-`key` replay against the live row → a no-op `ok` carrying the
+	 *     stored row, AHEAD of the staleness check, so a double-submit dedupes
+	 *     and a rename's units move exactly once.
+	 *  3. `updatedAt` != `expectedUpdatedAt` → `stale` with the current row (the
+	 *     optimistic compare-and-set; the port's lost-update guard).
+	 *  4. a money-currency conflict → `currency_mismatch` with the current row.
+	 *     Currency is an integrity axis at variant grain too, on TWO sub-axes:
+	 *      a. a `price` whose currency differs from the VARIANT's stored price
+	 *         currency (only once it has one — a first pricing is free); and
+	 *      b. a `price` whose currency differs from the PRODUCT's currency — the
+	 *         parent `product_commerce` row's price currency when it has one,
+	 *         otherwise the currency of any other live priced variant of the same
+	 *         product. A product whose sizes are priced in different currencies
+	 *         has no honest total, no honest picker and no honest cart, so the
+	 *         disagreement is refused at the write rather than rendered.
+	 *  5. otherwise → applies the partial update (`undefined` PRESERVES; there is
+	 *     no clear-to-null for either field), stamps `key`, bumps `updatedAt` —
+	 *     and, when the update CHANGED the row's `sku`, carries that sku's
+	 *     inventory row with it under THE SKU-RENAME RULE stated on this
+	 *     interface, in this same transaction.
+	 *
+	 * THE SKU-RENAME RULE BINDS THIS WRITER UNCHANGED, because it is a property
+	 * of the `sku` COLUMN rather than of one caller: refuse while the source sku
+	 * has live holds, claim-or-refuse the target, carry the count, retain the
+	 * source zeroed. `inventory` is keyed by the bare sku and knows nothing about
+	 * products or variants, so a variant rename strands units exactly as a
+	 * product rename did before the rule existed.
+	 *
+	 * A sku another LIVE sellable unit already holds throws `SkuConflictError` —
+	 * "live sellable unit" spanning BOTH live variants (a partial unique index,
+	 * mirroring `product_commerce`'s) and live `product_commerce` rows, INCLUDING
+	 * this variant's own parent. One sku names one sellable unit: two names over
+	 * one `inventory` row would let a later rename of either one carry the other's
+	 * stock away. Moving a 1:1 product's sku DOWN onto its own first variant is
+	 * therefore not expressible here — it is a two-row movement and needs its own
+	 * transactional verb.
+	 *
+	 * NEVER writes `title` (CMS-owned — `adr/0016`), `variantKey` (the identity;
+	 * the input names it as the TARGET and there is no field to change it with, so
+	 * a re-key does not compile), or `orphanedAt` (the CMS presence axis).
+	 */
+	updateVariantFields(
+		input: UpdateProductVariantFieldsInput,
+		key: IdempotencyKey,
+		expectedUpdatedAt: string,
+	): Promise<ProductVariantUpdateResult>;
+
+	/**
+	 * The ORPHAN transition: the CMS repeater row that declared this variant is
+	 * gone, so the variant stops being sellable — but the row is RETAINED, with
+	 * its sku, its price and its inventory. DEACTIVATION, NEVER DELETION: an
+	 * orphaned variant may still hold stock and still sit on live order lines, so
+	 * deleting it would strand the units and dangle the history, which is the same
+	 * class of loss THE SKU-RENAME RULE exists to prevent.
+	 *
+	 * `contentUpdatedAt` is the CMS content's own `updatedAt` for the save that
+	 * dropped the row, and it shares ONE watermark with `upsertVariant` — unlike
+	 * the product's publish gate, which needs a watermark of its own. The reason
+	 * is that presence and title arrive on the SAME event: every save either
+	 * re-declares a key (an upsert) or does not (a deactivate), so one watermark
+	 * orders both transitions correctly and a second could only drift from it. A
+	 * strictly older watermark is a no-op, so a delayed "the row is gone" can
+	 * never orphan a variant a newer save has since re-declared.
+	 *  - unknown `(productId, variantKey)` → no-op (no row minted).
+	 *  - a same-`key` replay → no-op, unconditionally and AHEAD of every other
+	 *    guard, exactly as the two write paths dedupe. Without it a redelivered
+	 *    orphan whose row has since come back would apply a second time.
+	 *  - already-orphaned → no-op (stable under replay), watermark untouched.
+	 *  - a STALE watermark → no-op.
+	 *  - otherwise → `orphanedAt` set to the store clock, the watermark advanced,
+	 *    and `key` stamped as the row's last-applied replay key.
+	 * The watermark comparison here is `<=` rather than the resurrect's strict
+	 * `<`, and the asymmetry is deliberate: one save legitimately declares some
+	 * keys and drops others at the SAME watermark, so an orphan must apply at a
+	 * watermark equal to the one a previous save left behind — while a resurrect
+	 * at an equal watermark would be re-litigating a decision already made (see
+	 * `upsertVariant`).
+	 *
+	 * An orphaned variant's sku is FREED for reuse (the live-sku uniqueness index
+	 * is partial, `WHERE orphaned_at IS NULL`) — exactly like a soft-deleted
+	 * product's, and for the same reason: the tombstone keeps the history without
+	 * locking the identifier forever.
+	 */
+	deactivateVariant(
+		productId: ProductId,
+		variantKey: string,
+		key: IdempotencyKey,
+		contentUpdatedAt: string,
+	): Promise<void>;
 }
+
+// -- Variants: one commerce row per sellable unit ----------------------------
+//
+// Stock and price are SKU-LEVEL facts by construction, so a size that can be
+// bought separately is a ROW, not a decoration on the product row. The commerce
+// row keys on the product PLUS a stable variant key; nothing about the product
+// row changes, and a product that declares no variants has no variant rows and
+// behaves exactly as it always did.
+
+/**
+ * One sellable unit of a product — the stored row, as read back from a store.
+ *
+ * IDENTITY IS `(productId, variantKey)`, and `variantKey` IS IMMUTABLE. It is
+ * the CMS repeater row's own stable key, it is the primary key here, it appears
+ * in no `SET` clause in any adapter, and neither write input carries a field
+ * that could change it — so a re-key is unrepresentable rather than merely
+ * discouraged. A key that mutates in the CMS therefore looks to this store like
+ * a NEW variant plus a DROPPED one, which is precisely the loss the sync's own
+ * save-time refusal exists to make legible in the editor before it happens.
+ */
+export interface ProductVariant {
+	productId: ProductId;
+	/** The CMS repeater row's stable, immutable key — the variant's identity
+	 *  within its product. Opaque text; the store never parses or orders on its
+	 *  structure beyond plain text comparison. */
+	variantKey: string;
+	/**
+	 * This variant's own stock-keeping unit — the sku a cart line, a reservation
+	 * and an order line all name. Null until an admin sets one ("declare then
+	 * price": the CMS declares the variant, the admin prices it). Admin-owned:
+	 * written ONLY by `updateVariantFields`, under THE SKU-RENAME RULE, and no
+	 * writer can CLEAR it — there is no "unsku" edit.
+	 *
+	 * ONE EXCEPTION, and it is not an edit: a RESURRECT clears it when the sku was
+	 * taken by another live sellable unit while this variant was orphaned (see
+	 * `ProductCommerceStore.upsertVariant`). The row is not being edited there; it
+	 * is losing a claim it no longer has.
+	 */
+	sku: Sku | null;
+	/**
+	 * This variant's own price — integer minor units plus an explicit currency,
+	 * never a float. Null means ABSENT, which is a different fact from zero and
+	 * must never be rendered as `0`, `0.00` or "Free"; the console's rule for an
+	 * absent money value is an em dash. Admin-owned, like `sku`.
+	 */
+	price: Money | null;
+	/**
+	 * The variant's display name — a DERIVED CACHE of the CMS repeater row's name
+	 * sub-field, with a SINGLE writer: `upsertVariant` (see
+	 * {@link UpsertProductVariantInput} and `adr/0016-variant-title-is-cms-owned
+	 * .md`). ADR-0013 applied one level down, clause for clause: the name is
+	 * customer-facing content the CMS owns and translates, and this column exists
+	 * so an ORDER LINE can snapshot the size a buyer actually bought without a
+	 * cross-database read.
+	 *
+	 * Null until the first sync carries one, and eventually consistent — a failed
+	 * sync leaves it stale until the next save of that document.
+	 */
+	title: string | null;
+	/**
+	 * The ORPHAN tombstone: non-null once the CMS stopped declaring this key, null
+	 * while the variant is live. A distinct state from "absent" — the row, its
+	 * sku, its price and its stock are all retained — and the state a console must
+	 * render distinctly rather than hide, because an orphan may still hold units
+	 * and still sit on live orders. Set by `deactivateVariant`, cleared by
+	 * `upsertVariant` when the CMS declares the key again — which REVALIDATES the
+	 * sku and price on the way back in rather than asserting them (see that
+	 * method: an orphan's sku is free for reuse, so it may no longer be there to
+	 * reclaim).
+	 */
+	orphanedAt: Date | null;
+	/** Per-row "last applied" replay key — compare-on-write, exactly like
+	 *  `ProductCommerce.idempotencyKey`, NOT a global UNIQUE constraint. */
+	idempotencyKey: IdempotencyKey;
+	/** The ONE ordering watermark for BOTH presence transitions (upsert and
+	 *  deactivate) — the CMS content's own `updatedAt`, ISO-8601 text, so
+	 *  lexicographic comparison IS chronological. Null until a sync carries one.
+	 *  See `ProductCommerceStore.deactivateVariant` for why one watermark is
+	 *  correct here where the product's publish gate needed a second. */
+	contentUpdatedAt: string | null;
+	createdAt: Date;
+	updatedAt: Date;
+}
+
+/**
+ * `listVariants`'s row: the stored variant, NARROWED, plus the stock the same
+ * statement joined for it.
+ *
+ * `idempotencyKey` and `contentUpdatedAt` are deliberately DROPPED. Both are
+ * internal write-path bookkeeping — a per-row replay marker and a sync-ordering
+ * watermark — and neither is a fact about the variant that any reader needs:
+ * projecting them onto a list invites a caller to branch on machinery it does
+ * not own, and puts a value the CMS controls onto a wire it has no business
+ * reaching. `updatedAt` STAYS, because it is the compare-and-set watermark an
+ * editor must pass back to `updateVariantFields` — the one piece of write-path
+ * state a reader legitimately needs. A caller that genuinely needs the dropped
+ * two is holding the full `ProductVariant` a write returned.
+ */
+export interface ProductVariantSummary extends Omit<
+	ProductVariant,
+	"idempotencyKey" | "contentUpdatedAt"
+> {
+	/**
+	 * Stock on hand for this variant's sku — a COUNT, never money.
+	 *
+	 * THREE STATES, never two: `null` is "no inventory row for this sku, or no
+	 * sku yet" (UNKNOWN — a variant with no inventory row is ABSENT, never 0),
+	 * and `0` is a known sku that is out of stock. Sourced by the same LEFT JOIN
+	 * onto `inventory` that `ProductSummary.onHand` uses, in the same statement
+	 * as the page — the join miss IS the null.
+	 */
+	onHand: number | null;
+}
+
+/**
+ * The CMS-sync input for one variant — the ONLY channel that may write
+ * `ProductVariant.title`.
+ *
+ * ADR-0013 ONE LEVEL DOWN, CLAUSE FOR CLAUSE (`adr/0016-variant-title-is-cms-
+ * owned.md`). The CMS repeater row owns the variant's identity and its display
+ * name and carries NOTHING COMMERCIAL; the commerce row owns the sku, the price
+ * and the stock. So this input deliberately EXCLUDES:
+ *  - `sku` and `price` — commerce-owned, edited through
+ *    {@link UpdateProductVariantFieldsInput} under a compare-and-set. A sync that
+ *    could write them would be a second writer racing the admin, which is the
+ *    exact failure the product-level decision removed.
+ *  - `orphanedAt` — the presence axis is a TRANSITION (`deactivateVariant`), not
+ *    a field, for the same reason `active` is not a field on
+ *    `UpsertProductCommerceInput`.
+ * And the admin edit correspondingly has no `title`, so neither writer can reach
+ * the other's column and the two can never disagree.
+ *
+ * `variantKey` is the IDENTITY, not an editable field: supplying a different one
+ * addresses a DIFFERENT variant (creating it if unknown) and leaves the first
+ * exactly as it was — it is never a rename.
+ */
+export interface UpsertProductVariantInput {
+	productId: ProductId;
+	variantKey: string;
+	/** The CMS repeater row's display name. `undefined` PRESERVES the stored
+	 *  cache, an explicit `null` CLEARS it (a collection whose name sub-field is
+	 *  empty), exactly like `UpsertProductCommerceInput.title`. */
+	title?: string | null;
+	/** The CMS content's own `updatedAt` — the ordering watermark shared with
+	 *  `deactivateVariant` (see `ProductVariant.contentUpdatedAt`). A strictly
+	 *  older value than the stored watermark makes this upsert a no-op. */
+	contentUpdatedAt?: string;
+}
+
+/**
+ * The commerce fields an admin may edit on ONE variant — a strict mirror of
+ * `UpdateProductCommerceFieldsInput`, one level down. Deliberately EXCLUDES:
+ *  - `title` — CMS-OWNED (`adr/0016`), for exactly the reason
+ *    `UpdateProductCommerceFieldsInput` excludes the product's. The console
+ *    renders the variant name as READ-ONLY text, never an input.
+ *  - `variantKey` as anything but the TARGET — the key is the identity and is
+ *    immutable, so there is no field here to change it with and a re-key does
+ *    not compile.
+ *  - `orphanedAt` — the CMS presence axis, moved by `deactivateVariant` /
+ *    `upsertVariant`, never by a merchant edit.
+ * Partial-update grain matches its product-level sibling: `undefined` PRESERVES
+ * the stored value. Neither field can be cleared back to null once set (there is
+ * no "unsku" and no "unprice" case in scope). A raw `number` price is a compile
+ * error — `price.amount` is branded `Cents`.
+ */
+export interface UpdateProductVariantFieldsInput {
+	productId: ProductId;
+	variantKey: string;
+	/** Supplying a DIFFERENT value than the row holds is a RENAME, and a rename
+	 *  carries this variant's on-hand count onto the new sku in the SAME
+	 *  transaction — or refuses (THE SKU-RENAME RULE on `ProductCommerceStore`,
+	 *  which binds this writer exactly as it binds the two product-level ones). */
+	sku?: Sku;
+	price?: Money;
+}
+
+/**
+ * Outcome of a guarded variant edit — the same discriminated union shape as
+ * `ProductCommerceUpdateResult`, so a console renders both without
+ * status-code-as-logic. `not_found` covers an unknown key AND an orphaned row
+ * (an edit is neither a create nor a resurrection); `stale` and
+ * `currency_mismatch` carry the fresh row to reload from.
+ */
+export type ProductVariantUpdateResult =
+	| { ok: true; variant: ProductVariant }
+	| { ok: false; reason: "not_found" }
+	| { ok: false; reason: "stale"; current: ProductVariant }
+	| { ok: false; reason: "currency_mismatch"; current: ProductVariant };
