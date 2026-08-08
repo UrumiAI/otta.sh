@@ -18,9 +18,12 @@
  *     tests below drive a save and a restock end to end and assert the SERVICE
  *     saw the right request — which is only possible if the carrier round-tripped
  *     through `decodeCarrier` into the handler that reads it.
- *  2. **Withholding the `total` under a page-scoped narrowing.** "Low stock
- *     only" narrows the fetched page, so the service's exact count describes a
- *     different set of rows and must not reach the caption above them.
+ *  2. **Resolving the threshold into a server-side predicate, and captioning
+ *     it correctly.** "Low stock only" carries the store's threshold on the
+ *     outgoing request now, and the service's exact count is of the SAME set
+ *     the page is drawn from — so the total is forwarded whenever the
+ *     predicate ran, and withheld only on the one case where it could not
+ *     (`stock.filterUnavailable`).
  *
  * WHAT IT DOES NOT COVER, deliberately: the React components. Those are gated by
  * Playwright (`sites/staging/e2e/products-console.spec.ts`), which is additive
@@ -263,18 +266,20 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		expect(result["total"]).toBe(137);
 	});
 
-	test("the `total` is WITHHELD while `Low stock only` narrows the page (INC-23's contract)", async () => {
-		// THE ONE THAT MATTERS. The service counted the UNNARROWED set, so passing
-		// its total would caption one row with "137 products". Both surfaces make
-		// this call in `applyLowStockNarrowing`; this proves the React tier's
-		// payload honours it.
+	test("the `total` IS SHOWN once filtering is server-side — the caption rule inverts", async () => {
+		// THE CAPTION RULE INVERTS. The service applies the predicate now (the
+		// stub stands in for it, already returning only the matching row) and
+		// counts the SAME set the page is drawn from, so its exact `total`
+		// describes the rows on screen and is forwarded — the opposite of the
+		// client-side-narrowing days this replaces, which withheld it because
+		// the service's count then described a different, unnarrowed set.
 		service.respondWith(
 			"GET",
 			responder({
 				[LIST_ROUTE]: () => ({
 					status: 200,
 					body: {
-						products: [summary({ productId: "low", onHand: 2 }), summary({ onHand: 42 })],
+						products: [summary({ productId: "low", onHand: 2 })],
 						nextCursor: "cur-2",
 						total: 137,
 					},
@@ -287,52 +292,45 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 			resource: "products.list",
 			filter: { lowStock: true },
 		});
-		expect(result).not.toHaveProperty("total");
-		// ...and the page really is narrowed: only the row at or below 5 survives.
+		expect(result["total"]).toBe(137);
 		expect(
 			(result["products"] as Array<Record<string, unknown>>).map((p) => p["productId"]),
 		).toEqual(["low"]);
-		// `Load more` still has somewhere to go — the filter narrowed a PAGE.
 		expect(result["nextCursor"]).toBe("cur-2");
+		// ...and the predicate really did travel on the outgoing request — the
+		// service could not have filtered without it.
+		const seen = service.requests.find((r) => r.url.startsWith(LIST_ROUTE))?.url ?? "";
+		expect(seen).toContain("lowStockThreshold=5");
 	});
 
-	test("a product AT the threshold is low — the boundary is `<=`, on both surfaces", async () => {
-		// THE MUTATION THIS EXISTS TO KILL. `onHand <= threshold` → `<` changes one
-		// row's answer and nothing else's, so every other assertion in this file
-		// stays green while the screen quietly stops warning about the product that
-		// is exactly at the reorder point — the one the threshold was set for.
-		//
-		// It is asserted at BOTH tiers, because the boundary is enforced twice: the
-		// PAGE narrowing decides whether the row survives "Low stock only", and the
-		// CELL decides whether it reads `Low`. A mutation to either alone would
-		// otherwise be invisible.
+	test("the resolved threshold travels to the service AS THE NUMBER ITSELF — the boundary is the store's job now", async () => {
+		// THE BOUNDARY (`onHand <= threshold`) MOVED. It used to be enforced
+		// twice — once by this module's own client-side narrowing, once by the
+		// `On hand` cell — because the page narrowing was this module's own
+		// decision. Now the SERVER decides which rows match (pinned by the
+		// domain's own contract suite, out of this module's scope) and this
+		// module's only remaining job is to carry the resolved number through
+		// UNCHANGED — never rounded, never re-derived, never off by one.
 		service.respondWith(
 			"GET",
 			responder({
 				[LIST_ROUTE]: () => ({
 					status: 200,
-					body: {
-						products: [
-							summary({ productId: "at", onHand: 5 }), // exactly at
-							summary({ productId: "below", onHand: 4 }),
-							summary({ productId: "above", onHand: 6 }),
-						],
-						nextCursor: null,
-					},
+					body: { products: [summary({ productId: "at", onHand: 5 })], nextCursor: null },
 				}),
 				[SETTINGS_ROUTE]: () => settingsBody(5),
 			}),
 		);
-		const result = await invoke({
+		await invoke({
 			type: READ,
 			resource: "products.list",
 			filter: { lowStock: true },
 		});
-		expect(
-			(result["products"] as Array<Record<string, unknown>>).map((p) => p["productId"]),
-		).toEqual(["at", "below"]);
+		const seen = service.requests.find((r) => r.url.startsWith(LIST_ROUTE))?.url ?? "";
+		expect(seen).toContain("lowStockThreshold=5");
 
-		// ...and the cell agrees with the filter that let the row through.
+		// ...and the `On hand` cell's OWN boundary is unaffected by where the row
+		// came from — still `<=`, still exact at the threshold.
 		expect(onHandCell(5, 5)).toBe("5 · Low");
 		expect(onHandCell(6, 5)).toBe("6");
 		// A threshold of ZERO is its own boundary: `0` is out of stock, and nothing
@@ -341,10 +339,14 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		expect(onHandCell(1, 0)).toBe("1");
 	});
 
-	test("a low-stock request that CANNOT be honoured leaves the page unfiltered and says so", async () => {
-		// No threshold ⇒ nothing to compare against. The page is UNFILTERED and the
-		// screen must say so rather than silently showing the wrong set of rows —
-		// and the total is legitimate again, because nothing was narrowed.
+	test("a low-stock request that CANNOT be honoured leaves the page unfiltered AND withholds the total", async () => {
+		// No threshold ⇒ nothing to filter by, so the outgoing request never
+		// carries `lowStockThreshold` at all — the page is genuinely UNFILTERED
+		// and the screen must say so. THE CAPTION RULE INVERTS BACK here: the
+		// service's own count is real (of the unfiltered set), but stating it
+		// would caption an unfiltered page as though "Low stock only" had been
+		// honoured, so it is withheld — the opposite of an ordinary
+		// service-filtered page, and the one case that still hides it.
 		service.respondWith(
 			"GET",
 			responder({
@@ -352,6 +354,7 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 					status: 200,
 					body: { products: [summary(), summary({ productId: "b" })], nextCursor: null, total: 2 },
 				}),
+				// no /settings route ⇒ 404 ⇒ the threshold cannot be read
 			}),
 		);
 		const result = await invoke({
@@ -361,7 +364,11 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		});
 		expect((result["products"] as unknown[]).length).toBe(2);
 		expect((result["stock"] as Record<string, unknown>)["filterUnavailable"]).toBe(true);
-		expect(result["total"]).toBe(2);
+		expect(result).not.toHaveProperty("total");
+		// ...and the outgoing request never carried a predicate it had no number
+		// for.
+		const seen = service.requests.find((r) => r.url.startsWith(LIST_ROUTE))?.url ?? "";
+		expect(seen).not.toContain("lowStockThreshold");
 	});
 
 	test("stock that came back unreadable on EVERY row raises the degradation, not a partial page", async () => {
@@ -398,6 +405,40 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		);
 		const partial = await invoke({ type: READ, resource: "products.list" });
 		expect((partial["stock"] as Record<string, unknown>)["unreadable"]).toBe(false);
+	});
+
+	test("a page can be GENUINELY low-stock-filtered while its own on-hand column is unreadable — two independent causes, not one", async () => {
+		// THE BUG A SHARED `canFilter` BOOLEAN PRODUCED. The threshold resolves
+		// (5), so the outgoing request DOES carry the predicate and the service
+		// DID filter — that has nothing to do with whether THIS page's own
+		// `onHand` wire projection came back readable, a fact discovered only
+		// after the fetch. `filterUnavailable` must stay false (the filter ran)
+		// while `unreadable` is independently true, and the `total` — real,
+		// under the same predicate — must still be forwarded.
+		const { onHand: _a, ...noStock1 } = summary({ productId: "a" });
+		const { onHand: _b, ...noStock2 } = summary({ productId: "b" });
+		service.respondWith(
+			"GET",
+			responder({
+				[LIST_ROUTE]: () => ({
+					status: 200,
+					body: { products: [noStock1, noStock2], nextCursor: null, total: 41 },
+				}),
+				[SETTINGS_ROUTE]: () => settingsBody(5),
+			}),
+		);
+		const result = await invoke({
+			type: READ,
+			resource: "products.list",
+			filter: { lowStock: true },
+		});
+		const stock = result["stock"] as Record<string, unknown>;
+		expect(stock["unreadable"]).toBe(true);
+		expect(stock["filterUnavailable"]).toBe(false);
+		expect(result["total"]).toBe(41);
+		// ...and the predicate really did travel, proving the filter ran.
+		const seen = service.requests.find((r) => r.url.startsWith(LIST_ROUTE))?.url ?? "";
+		expect(seen).toContain("lowStockThreshold=5");
 	});
 
 	test("the combined Status select's `archived` asserts deleted=true ALONE, never both axes", async () => {
@@ -465,12 +506,12 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		expect(seen).not.toContain("deleted=");
 	});
 
-	test("`Low stock only` sends NO stock parameter to the service — the narrowing is page-scoped", async () => {
-		// RESTORED WITH INC-R3, and it is the other half of the withheld `total`.
-		// The service's products list has NO stock predicate; the filter narrows the
-		// page this request fetched. A console that put `lowStock` on the wire would
-		// be asking for something the service silently ignores, and the rows would
-		// disagree with the query that fetched them.
+	test("`Low stock only` SENDS the resolved threshold to the service — the predicate is server-side now", async () => {
+		// INVERTED FROM THE CLIENT-NARROWING DAYS this replaces. The service's
+		// products list HAS a stock predicate now (port doc); this module's job
+		// is to resolve the threshold and carry it on the SAME query every other
+		// filter already travels on, alongside `search` rather than instead of
+		// it.
 		service.respondWith(
 			"GET",
 			responder({
@@ -488,8 +529,28 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		});
 		const seen = service.requests.find((r) => r.url.startsWith(LIST_ROUTE))?.url ?? "";
 		expect(seen).toContain("search=widget");
-		expect(seen).not.toContain("lowStock");
-		expect(seen).not.toContain("stock");
+		expect(seen).toContain("lowStockThreshold=5");
+	});
+
+	test("a request that does NOT ask for low stock never carries the threshold, even when one resolves", async () => {
+		// The threshold is read for the `Low` band's display purposes on every
+		// call — the checkbox is what gates whether it ALSO becomes a query
+		// predicate. Without this, an operator who never asked to filter would
+		// see the catalog silently narrowed underneath them.
+		service.respondWith(
+			"GET",
+			responder({
+				[LIST_ROUTE]: () => ({
+					status: 200,
+					body: { products: [summary({ onHand: 2 })], nextCursor: null },
+				}),
+				[SETTINGS_ROUTE]: () => settingsBody(5),
+			}),
+		);
+		await invoke({ type: READ, resource: "products.list", filter: { search: "widget" } });
+		const seen = service.requests.find((r) => r.url.startsWith(LIST_ROUTE))?.url ?? "";
+		expect(seen).toContain("search=widget");
+		expect(seen).not.toContain("lowStockThreshold");
 	});
 
 	test("a cursor is forwarded ALONE — the service cursor already carries the filter", async () => {
@@ -511,6 +572,35 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		// The page size still travels, so a "Load more" asks for the same-sized page
 		// the caption above it describes.
 		expect(seen).toContain("limit=25");
+	});
+
+	test("a `Load more` continuation never re-sends `lowStockThreshold` either — it already rode in the cursor", async () => {
+		// The one place the threshold-first sequencing does NOT apply: a
+		// continuation's filter (including whatever threshold page one
+		// resolved) already rode in the opaque cursor the SERVICE minted, and
+		// `AdminProductsClient.listProducts` ignores a filter argument whenever
+		// a cursor is present. Re-sending it here would be redundant, not wrong
+		// — but proving it is ABSENT is what proves this module is not
+		// re-deriving a second, possibly-stale predicate.
+		service.respondWith(
+			"GET",
+			responder({
+				[LIST_ROUTE]: () => ({
+					status: 200,
+					body: { products: [summary({ onHand: 2 })], nextCursor: null },
+				}),
+				[SETTINGS_ROUTE]: () => settingsBody(5),
+			}),
+		);
+		await invoke({
+			type: READ,
+			resource: "products.list",
+			cursor: "svc-cursor-1",
+			filter: { lowStock: true },
+		});
+		const seen = service.requests.find((r) => r.url.startsWith(LIST_ROUTE))?.url ?? "";
+		expect(seen).toContain("cursor=svc-cursor-1");
+		expect(seen).not.toContain("lowStockThreshold");
 	});
 
 	test("the filter vocabulary is shipped as data, so the React tier holds no second copy", async () => {

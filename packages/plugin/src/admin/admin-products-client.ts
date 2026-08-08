@@ -97,6 +97,13 @@ export interface ProductsListFilter {
 	deleted?: boolean;
 	productKind?: string;
 	search?: string;
+	/** The store's low-stock threshold, when the console has resolved one AND
+	 *  "Low stock only" is on — mirrors the domain port's `ProductListFilter.
+	 *  lowStockThreshold` one field at a time, same as every other
+	 *  axis here. OMITTED means "no stock-based filtering", not "threshold 0":
+	 *  the caller (the console route) only sets this once a settings read has
+	 *  actually resolved a number, never a raw checkbox state. */
+	lowStockThreshold?: number;
 }
 
 export interface ProductsListResult {
@@ -346,6 +353,9 @@ export class AdminProductsClient {
 				q.set("productKind", filter.productKind);
 			}
 			if (filter.search !== undefined && filter.search.length > 0) q.set("search", filter.search);
+			if (filter.lowStockThreshold !== undefined) {
+				q.set("lowStockThreshold", String(filter.lowStockThreshold));
+			}
 		}
 		if (opts.limit !== undefined) q.set("limit", String(opts.limit));
 		const body = await this.#getJson<{

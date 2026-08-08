@@ -358,7 +358,7 @@ test("a deep-linked filtered URL starts a FRESH accumulation, and Back restarts 
 	expect(text(view, "orders-intro")).toContain("20 orders on this page");
 });
 
-test("F29: the narrowed count names what it counted, and the scan says it is one", async () => {
+test("F29: the count names what it counted, on a genuinely low-stock-filtered page", async () => {
 	serve((request) =>
 		envelope({
 			ok: true,
@@ -371,11 +371,10 @@ test("F29: the narrowed count names what it counted, and the scan says it is one
 	view = await mount(<ProductsList onOpen={() => {}} initialFilter={{ lowStock: true }} />);
 	await settle();
 	expect(text(view, "products-intro")).toContain("3 low-stock products on this page");
-	// The note belongs beside the control it qualifies, and only while there is
-	// something left to scan.
-	expect(text(view, "products-low-stock-paging-note")).toBe(
-		"Low stock only filters each page as it loads.",
-	);
+	// No paging note beside `Load more`: the predicate is the SERVICE's now, so
+	// `Load more` really does fetch the next page of the filtered set rather
+	// than re-scanning for matches, and there is nothing left to caveat.
+	expect(absent(view, "products-low-stock-paging-note")).toBe(true);
 
 	await press(view, "products-load-more");
 	await settle();
@@ -383,16 +382,18 @@ test("F29: the narrowed count names what it counted, and the scan says it is one
 	expect(text(view, "products-intro")).toContain("5 low-stock products loaded so far");
 });
 
-test("a narrowed catalog that fits on ONE page still gets the page-scoped qualifier", async () => {
-	// THE DEFECT THIS PINS. "Low stock only" has no service predicate — it keeps
-	// the low-stock rows out of whatever page was fetched — so `nextCursor: null`
-	// on the FIRST response means only "the fetch stopped here", never "every
-	// low-stock row in the catalog is on screen". `listOutcome` used to read
-	// `firstPage && !hasNext` as proof the counted set was complete regardless of
-	// how it was counted, so a catalog that happened to fit on one page dropped
-	// the qualifier and read as a whole-catalog claim — "3 low-stock products" —
-	// which is exactly the claim `LOW_STOCK_FILTER_DESCRIPTION` and
-	// `PRODUCTS_LOW_STOCK_NO_MATCH` both promise this filter never makes.
+test("a genuinely low-stock-filtered catalog that fits on ONE page is COMPLETE, not page-scoped", async () => {
+	// THE OLD DEFECT THIS PINNED, INVERTED. "Low stock only" used to have no
+	// service predicate — it kept the low-stock rows out of whatever RAW page
+	// was fetched — so `nextCursor: null` on the first response proved only
+	// that the raw fetch stopped there, never that every low-stock row in the
+	// catalog was on screen, and `countScope: "narrowed-after-fetch"` refused
+	// to read it as complete for exactly that reason. The predicate is the
+	// SERVICE's now: a first page with no next cursor is drawn from a query
+	// that already applied the threshold, so `firstPage && !hasNext` really
+	// does mean the whole filtered set is on screen — the same claim any other
+	// `service-filtered` list on this screen is entitled to make, which is why
+	// `countScope` is unconditional now.
 	serve(() =>
 		envelope({
 			ok: true,
@@ -405,27 +406,31 @@ test("a narrowed catalog that fits on ONE page still gets the page-scoped qualif
 	view = await mount(<ProductsList onOpen={() => {}} initialFilter={{ lowStock: true }} />);
 	await settle();
 	expect(rows(view, "products-row")).toHaveLength(3);
-	// PAGE-SCOPED, NOT WHOLE-SET — the render never fetched a second page because
-	// there was not one, not because it proved every low-stock row in the
-	// catalog is on screen. Those are different claims and only the first is
-	// true here.
-	expect(text(view, "products-intro")).toContain("3 low-stock products on this page");
-	// No `Load more`, because there really is nothing left to fetch — the
-	// qualifier stands on its own, without the paging note that only renders
-	// beside a live button.
+	// WHOLE-SET PHRASING — the fetch really is the entire low-stock set, so the
+	// page-scoped qualifier no longer applies.
+	expect(text(view, "products-intro")).toContain("3 low-stock products");
+	expect(text(view, "products-intro")).not.toContain("on this page");
+	// No `Load more`, because there really is nothing left to fetch, and no
+	// paging note — that affordance described a mechanism this screen no
+	// longer has.
 	expect(absent(view, "products-load-more")).toBe(true);
 	expect(absent(view, "products-low-stock-paging-note")).toBe(true);
 });
 
-test("a narrowed SCAN that exhausts the catalog keeps 'loaded so far'", async () => {
+test("an accumulated fetch that exhausts the catalog DROPS 'loaded so far' once it is provably complete", async () => {
 	// THE HALF THE F29 TEST (ABOVE) NEVER REACHES: its second response always
 	// carries a non-null `nextCursor`, so `hasNext` never goes false once pages
-	// accumulate and that test would stay green even if THIS fix were reverted.
-	// Here a scan runs three responses deep and the THIRD exhausts the catalog —
-	// `firstPage` stays true throughout (the render started at page one), so the
-	// pre-fix `complete = firstPage && !hasNext` would have gone true on exactly
-	// this response and dropped straight to whole-set phrasing on an accumulated,
-	// still page-scoped count.
+	// accumulate. Here a scan runs three responses deep and the THIRD exhausts
+	// the catalog — `firstPage` stays true throughout (the render started at
+	// page one), so `complete = firstPage && !hasNext` goes true on exactly
+	// this response.
+	//
+	// THAT IS NOW CORRECT, where it once was the defect: the predicate is the
+	// SERVICE's, so a keyset scan that runs out of matching rows has PROVEN the
+	// four accumulated rows are the entire low-stock set, not merely "what a
+	// client-side narrowing happened to keep before the raw fetch stopped".
+	// Continuing to hedge with "loaded so far" past that proof would be the
+	// less honest sentence, not the safer one.
 	let call = 0;
 	serve(() => {
 		call += 1;
@@ -450,36 +455,37 @@ test("a narrowed SCAN that exhausts the catalog keeps 'loaded so far'", async ()
 	await press(view, "products-load-more");
 	await settle();
 	expect(rows(view, "products-row")).toHaveLength(3);
+	// STILL HEDGED — there is provably another page out there (`hasNext` is
+	// true), so the accumulated count cannot yet claim completeness.
 	expect(text(view, "products-intro")).toContain("3 low-stock products loaded so far");
 
 	await press(view, "products-load-more");
 	await settle();
 	expect(rows(view, "products-row")).toHaveLength(4);
-	// THE SCAN RAN OUT OF CATALOG ON ITS THIRD REQUEST, not out of doubt — the
-	// four accumulated rows are still only what the scan happened to find, never
-	// promoted to a whole-catalog claim just because nothing was left to fetch.
-	expect(text(view, "products-intro")).toContain("4 low-stock products loaded so far");
+	// THE SCAN RAN OUT OF CATALOG ON ITS THIRD REQUEST — a fact the query
+	// proved, not a coincidence of where the client happened to stop — so the
+	// count drops the qualifier and states the whole low-stock set plainly.
+	expect(text(view, "products-intro")).toContain("4 low-stock products");
+	expect(text(view, "products-intro")).not.toContain("loaded so far");
 	expect(absent(view, "products-load-more")).toBe(true);
 });
 
-test("a filterUnavailable page keeps the SERVICE'S noun and total, not the checkbox's", async () => {
+test("a filterUnavailable page keeps the SERVICE'S noun, and states no total the plugin did not send", async () => {
 	// END TO END: the operator checked "Low stock only", but the plugin could
-	// not read the threshold this time (`stock.filterUnavailable`)
-	// — narrowing did not apply, every product on the page is listed, and the
-	// service's own exact `total` still arrived (`applyLowStockNarrowing` only
-	// withholds `total` when it actually narrows). Reading `narrowed` off the
-	// checkbox alone renders "137 low-stock products": a wrong number (a real
-	// `total` refused, then a fallback describing only 5 rows) and a wrong noun,
-	// directly above the banner already saying the filter was not applied. This
-	// also distinguishes the real fix from a `firstPage: false` hack at the call
-	// site: the hack alone would not honour a real `total` or pick the ordinary
-	// noun here, because it never asks whether the narrowing actually applied.
+	// not read the threshold this time (`stock.filterUnavailable`) — the
+	// outgoing request never carried a predicate, so every product on the page
+	// is listed under the ORDINARY noun, and the plugin withholds any `total`
+	// it might otherwise have forwarded (`resolveStockContext`: a `total` here
+	// would caption an UNFILTERED page as though "Low stock only" had been
+	// honoured). Reading `narrowed` off the checkbox alone would render
+	// "low-stock products" for rows that are every product, directly above the
+	// banner already saying the filter was not applied.
 	serve(() =>
 		envelope({
 			ok: true,
 			products: ids("p", 1, 5).map(product),
-			nextCursor: null,
-			total: 137,
+			nextCursor: "cursor-2",
+			// NO `total` — see above. The wire never carries one on this scope.
 			stock: { threshold: null, unreadable: false, filterUnavailable: true },
 			vocabulary: PRODUCTS_VOCABULARY,
 		}),
@@ -487,10 +493,9 @@ test("a filterUnavailable page keeps the SERVICE'S noun and total, not the check
 	view = await mount(<ProductsList onOpen={() => {}} initialFilter={{ lowStock: true }} />);
 	await settle();
 	expect(rows(view, "products-row")).toHaveLength(5);
-	// THE SERVICE'S REAL TOTAL, HONOURED — an ordinary, service-filtered page once
-	// the narrowing did not actually apply, entitled to the same exact figure any
-	// other filtered list states.
-	expect(text(view, "products-intro")).toContain("137 products");
+	// THE ORDINARY NOUN, page-scoped — an unfiltered page with more behind it,
+	// entitled to nothing stronger than the rows it can back up on its own.
+	expect(text(view, "products-intro")).toContain("5 products on this page");
 	expect(text(view, "products-intro")).not.toContain("low-stock");
 	expect(text(view, "products-stock-degraded")).toContain(
 		"the Low stock only filter was not applied",

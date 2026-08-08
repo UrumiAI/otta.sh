@@ -334,9 +334,10 @@ export interface ProductsListPayload {
 	readonly ok: true;
 	readonly products: readonly ProductSummary[];
 	readonly nextCursor: string | null;
-	/** Absent when the service reports none AND when "Low stock only" narrowed
-	 *  this page after the count was taken — see the plugin's
-	 *  `applyLowStockNarrowing`. Both land on the page-scoped count. */
+	/** Absent when the service reports none AND when "Low stock only" was
+	 *  asked for but the threshold could not be resolved, so the request never
+	 *  carried the predicate (`stock.filterUnavailable`) — see the plugin's
+	 *  `resolveStockContext`. Both land on the page-scoped count. */
 	readonly total?: number;
 	readonly stock: StockContext;
 	readonly vocabulary: ProductsVocabulary;

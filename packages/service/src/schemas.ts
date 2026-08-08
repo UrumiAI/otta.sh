@@ -660,16 +660,27 @@ export const productsListQuery = z.object({
 	search: z.string().min(1).max(200).optional(),
 	cursor: z.string().min(1).max(1000).optional(),
 	limit: z.coerce.number().int().min(1).max(100).optional().default(25),
+	// The low-stock predicate's query-string twin (the admin list's own filter,
+	// port doc): a raw query param arrives as a string, so it is COERCED like
+	// `limit` rather than kept as one, unlike the tri-state `active`/`deleted`
+	// enums above — this one is a number, not a two-value axis. Same domain as
+	// `lowStockQuery`/`settingsBody` below: a non-negative integer, and nothing
+	// outside it reaches the port (which would otherwise throw
+	// `InvalidLowStockThresholdError` and 500 rather than 400 a bad query).
+	lowStockThreshold: z.coerce.number().int().nonnegative().optional(),
 });
 
 /** Validates the FILTER object carried inside a decoded opaque product-list
  *  cursor (MOD-1: re-validate the decoded filter through zod before trusting
- *  it) — mirrors `orderListFilterSchema`. */
+ *  it) — mirrors `orderListFilterSchema`. `lowStockThreshold` mirrors
+ *  `productsListQuery`'s own field one layer in: the cursor already carries a
+ *  real number (not a query string), so it is validated rather than coerced. */
 export const productListFilterSchema = z.object({
 	active: z.boolean().optional(),
 	deleted: z.boolean().optional(),
 	productKind: productKindEnum.optional(),
 	search: z.string().min(1).max(200).optional(),
+	lowStockThreshold: z.number().int().nonnegative().optional(),
 });
 
 export type ProductsListQuery = z.infer<typeof productsListQuery>;

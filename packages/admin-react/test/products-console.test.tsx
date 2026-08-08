@@ -66,6 +66,7 @@ type WritePhase = import("../src/products/product-detail.js").WritePhase;
 const {
 	LOW_STOCK_FILTER_DESCRIPTION,
 	PRODUCTS_LOW_STOCK_NO_MATCH,
+	PRODUCTS_LOW_STOCK_NOUN,
 	PRODUCTS_NOUN,
 	listOutcome,
 	PRODUCTS_EMPTY,
@@ -275,18 +276,22 @@ describe("the active-filter summary counts what is not at its default", () => {
 	});
 });
 
-describe("the list ladder is the SHARED one, page-scoped when the narrowing is on", () => {
+describe("the list ladder is the SHARED one, and low stock is a service-filtered scope now", () => {
 	test("a low-stock page with another page behind it SCANS rather than emptying", () => {
-		// The ordinary case on a real catalog: page 1 of a healthy store holds no
-		// low-stock rows at all. An empty state here would sit on top of
-		// `Load more` and dead-end the filter on a sentence that is also false.
+		// Still reachable — a genuine race (a look-ahead either side of a
+		// concurrent stock change) can leave a cursor pointing past the last
+		// matching row — but no longer the ORDINARY case a real catalog hits on
+		// page 1: the predicate is the service's, so a scan is the exotic edge
+		// case every other filter already has, not the expected shape of this
+		// one. `countScope` is `"service-filtered"` here because the screen
+		// declares it unconditionally now (products-list.tsx).
 		const outcome = listOutcome({
 			count: 0,
 			filtered: true,
 			firstPage: true,
 			hasNext: true,
-			countScope: "narrowed-after-fetch",
-			noun: PRODUCTS_NOUN,
+			countScope: "service-filtered",
+			noun: PRODUCTS_LOW_STOCK_NOUN,
 			empty: PRODUCTS_EMPTY,
 			noMatch: PRODUCTS_LOW_STOCK_NO_MATCH,
 		});
@@ -294,21 +299,25 @@ describe("the list ladder is the SHARED one, page-scoped when the narrowing is o
 		expect(outcome.kind === "scan" && outcome.scanNote).toBe(PRODUCTS_LOW_STOCK_NO_MATCH.scanNote);
 	});
 
-	test("a WITHHELD total leaves the count describing the page, not the catalog", () => {
-		// The plugin omits `total` while "Low stock only" is on, because the
-		// service counted the unnarrowed set. The React list must then say the
-		// smaller, true thing rather than inventing one.
+	test("a `total` on a genuinely low-stock-filtered page states the WHOLE low-stock set", () => {
+		// THE CAPTION RULE INVERTS. The predicate is the service's now, so its
+		// exact count is of the SAME set the page is drawn from — the count
+		// DESCRIBES the rows on screen, and is shown with the low-stock noun,
+		// the opposite of the client-side-narrowing days this replaces (which
+		// withheld it because the service's count then described a different,
+		// unnarrowed set).
 		const outcome = listOutcome({
 			count: 3,
 			filtered: true,
 			firstPage: true,
 			hasNext: true,
-			countScope: "narrowed-after-fetch",
-			noun: PRODUCTS_NOUN,
+			total: 137,
+			countScope: "service-filtered",
+			noun: PRODUCTS_LOW_STOCK_NOUN,
 			empty: PRODUCTS_EMPTY,
 			noMatch: PRODUCTS_LOW_STOCK_NO_MATCH,
 		});
-		expect(outcome.countLine).toBe("3 products on this page");
+		expect(outcome.countLine).toBe("137 low-stock products");
 	});
 
 	test("a total that IS forwarded describes the whole filtered set", () => {

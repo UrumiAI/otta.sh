@@ -189,74 +189,76 @@ export interface StockPageContext {
 	threshold: number | null;
 	/** The page came back carrying no stock figure on ANY row — a degraded read
 	 *  rather than a catalog fact. Every cell reads `—` and the list says so
-	 *  once, in a banner, inside a 200 (G5/E-1). */
+	 *  once, in a banner, inside a 200 (G5/E-1). Independent of
+	 *  `filterUnavailable` — see `resolveStockContext`'s doc. */
 	unreadable: boolean;
-	/** "Low stock only" was asked for and could not be honoured (no threshold,
-	 *  or no stock to compare it against), so the page is UNFILTERED and says
-	 *  so — never silently the wrong set of rows. */
+	/**
+	 * "Low stock only" was asked for and the outgoing request could not carry a
+	 * predicate, so the page is UNFILTERED and says so — never silently the
+	 * wrong set of rows.
+	 *
+	 * ONE CAUSE ONLY, where the client-side narrowing this replaced
+	 * folded two into one. The threshold could not be read is the sole reason
+	 * left: `unreadable` used to ALSO force this true, because the old
+	 * narrowing could not tell "no threshold" apart from "nothing to compare
+	 * it against" — both cost the same thing then, a page that stayed
+	 * unfiltered. Now the predicate is the SERVER's, so a resolved threshold
+	 * means the request really did carry it and the page really is filtered,
+	 * whether or not THIS page's own on-hand DISPLAY column came back
+	 * readable. Folding `unreadable` back in here would raise "the filter was
+	 * not applied" over a list that is — see `resolveStockContext`'s doc.
+	 */
 	filterUnavailable: boolean;
 }
 
-/** One fetched row and its already-read on-hand count. The count itself is what
- *  a React tier needs — to render a string AND to know whether to link. */
-export interface ReadStockRow {
-	readonly product: ProductSummaryWire;
-	readonly onHand: number | null | undefined;
-}
-
-export interface LowStockNarrowing {
-	/** The rows that survive the narrowing — every fetched row when it is off. */
-	readonly rows: readonly ReadStockRow[];
+/** What {@link resolveStockContext} decides. */
+export interface StockPageResult {
 	readonly stock: StockPageContext;
-	/** The service's `total`, or `undefined` when this render must not state
-	 *  one. See below. */
+	/** The `total` this render may state, or `undefined` when it must not. See
+	 *  {@link resolveStockContext}'s doc. */
 	readonly total: number | undefined;
 }
 
 /**
- * "Low stock only", applied — and the `total` decision that has to travel with
- * it. Three coupled decisions live here:
+ * The page context "Low stock only" and the settings read leave behind, now
+ * that the predicate is the SERVER's rather than a narrowing this
+ * module used to apply to an already-fetched page. Two decisions live here:
  *
- *  1. **The filter narrows the FETCHED PAGE, not the query.** The service's
- *     products list has no stock predicate, and the measurement behind that
- *     (INC-03) chose ONE unconditional join over a gated one precisely because
- *     the gated shape had to walk ~9x the rows. So the filter narrows what this
- *     page shows and `Load more` keeps scanning. A row with no inventory record
- *     is never "low", only unknown.
- *  2. **The `total` is WITHHELD while the narrowing is on.** The service's
- *     count is of the set ITS OWN filters selected, and "Low stock only" is not
- *     one of them — so passing it would caption the rows on screen with a
- *     number that does not describe them ("137 products" above three). Absent
- *     is the honest answer, and the render's page-scoped fallback is a claim it
- *     can back up on its own.
- *  3. **`unreadable` is ALL-OR-NOTHING.** The service fills the stock column
- *     from one left join per page, so stock is present for every row or for
- *     none — a partial page means a catalog fact (some skus have no inventory
- *     row), not a degraded read, and must not raise the banner.
+ *  1. **`filterUnavailable` has ONE cause, not two.** The retired client-side
+ *     narrowing conflated "no threshold to filter by" with "every row's
+ *     on-hand came back unreadable" into one `canFilter` boolean, because both
+ *     used to cost the SAME thing — the page stayed unfiltered either way.
+ *     They no longer cost the same thing: `threshold === null` means the
+ *     outgoing request never carried a predicate at all, so the page
+ *     genuinely IS every row. `unreadable` is a fact about the WIRE
+ *     PROJECTION of an already-(possibly-)filtered page, discovered only
+ *     after the fetch, and says nothing about whether the predicate ran — a
+ *     page can be genuinely low-stock-filtered by real `on_hand` values while
+ *     its OWN on-hand DISPLAY column is unreadable. So `filterUnavailable`
+ *     reports the first cause alone; `unreadable` travels ALONGSIDE it, never
+ *     folded in, and the banner (`stockDegradation`) already composes the two
+ *     as independently-true facts.
+ *  2. **`total` inherits the truth `filterUnavailable` states.** Once the
+ *     predicate is server-side, the service's count is of the SAME set the
+ *     page is drawn from whenever the predicate actually ran, because
+ *     `listProducts` and `countProducts` share one predicate builder — so the
+ *     count now DESCRIBES the rows on screen and must be shown, the inverse of
+ *     the client-side-narrowing days this replaces (that count described a
+ *     DIFFERENT, unnarrowed set and had to be withheld). It reverts to
+ *     withheld on exactly the one case where nothing was filtered: a `total`
+ *     shown there would caption an unfiltered page as though the operator's
+ *     request had been honoured. `unreadable` alone never touches `total` —
+ *     an unreadable on-hand COLUMN says nothing about whether the COUNT is
+ *     right.
  */
-export function applyLowStockNarrowing(
+export function resolveStockContext(
 	products: readonly ProductSummaryWire[],
 	opts: { wantsLowStock: boolean; threshold: number | null; total: number | undefined },
-): LowStockNarrowing {
-	const read: ReadStockRow[] = products.map((product) => ({
-		product,
-		onHand: readOnHand(product),
-	}));
-	const unreadable = read.length > 0 && read.every((r) => r.onHand === undefined);
-	const threshold = opts.threshold;
-	const canFilter = threshold !== null && !unreadable;
-	const narrowing = opts.wantsLowStock && canFilter;
-	const rows =
-		narrowing && threshold !== null
-			? read.filter((r) => r.onHand !== undefined && r.onHand !== null && r.onHand <= threshold)
-			: read;
+): StockPageResult {
+	const unreadable = products.length > 0 && products.every((p) => readOnHand(p) === undefined);
+	const filterUnavailable = opts.wantsLowStock && opts.threshold === null;
 	return {
-		rows,
-		stock: {
-			threshold,
-			unreadable,
-			filterUnavailable: opts.wantsLowStock && !canFilter,
-		},
-		total: narrowing ? undefined : opts.total,
+		stock: { threshold: opts.threshold, unreadable, filterUnavailable },
+		total: filterUnavailable ? undefined : opts.total,
 	};
 }

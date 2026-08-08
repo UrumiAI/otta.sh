@@ -38,14 +38,18 @@
  *  - **Sorting stays OFF** (§1.2): sort is not wired through
  *    `ListLevelDef.fetchPage` into the list ports, so a client-side sort would
  *    order the LOADED PAGE and silently present it as the order of the list.
- *  - **Filtering stays SERVER-SIDE**, keyset-paged at 25 — except the one
- *    filter that cannot be, and that exception is stated rather than hidden.
- *    "Low stock only" has no service predicate (INC-03 measured one
- *    unconditional join as cheaper than a gated one that walked ~9x the rows),
- *    so it narrows the page this request fetched, `Load more` keeps scanning,
- *    and every sentence around it is page-scoped. The `total` is WITHHELD while
- *    it is on, by the plugin, for the same reason: the service counted a
- *    different set of rows than the ones on screen.
+ *  - **Filtering stays SERVER-SIDE**, keyset-paged at 25 — "Low stock only"
+ *    included. It USED TO be the one exception: the service's products list
+ *    had no stock predicate, so the plugin narrowed the fetched page itself
+ *    and withheld the `total` (the service's count described a different set
+ *    of rows than the ones on screen). It is a real predicate now — the
+ *    plugin resolves the store's threshold and carries it on the request the
+ *    same as every other filter — so `Load more` is a genuine next page, the
+ *    `total` (when the plugin can resolve one) DESCRIBES the rows on screen
+ *    and is shown, and `countScope` is unconditionally `"service-filtered"`
+ *    below. The one thing that can still go wrong is the threshold itself
+ *    being unreadable, in which case the plugin sends no predicate at all and
+ *    says so via `stock.filterUnavailable` — see `narrowed` below.
  */
 import {
 	ABSENT,
@@ -55,7 +59,6 @@ import {
 	LOAD_MORE_LABEL,
 	LOW_STOCK_FILTER_DESCRIPTION,
 	LOW_STOCK_FILTER_LABEL,
-	LOW_STOCK_PER_PAGE_NOTE,
 	PRODUCTS_EMPTY,
 	PRODUCTS_LIST_INTRO,
 	PRODUCTS_LOAD_MORE_FAILED_TITLE,
@@ -465,24 +468,23 @@ export function ProductsList({
 	const parts = activeFilterParts(applied, any);
 	const filtered = parts.length > 0;
 	const hasNext = page?.nextCursor != null;
-	// A "Low stock only" page reports on ITSELF, never on the catalog: the filter
-	// narrows the rows this page fetched, so the zero-state wording, the offer to
-	// keep looking and the offer to stop are all page-scoped. Same switch the
-	// Block Kit screen makes, on the same boolean.
+	// A "Low stock only" page reports on ITSELF, never on the catalog, in
+	// exactly one case now: when the store's threshold could not be resolved.
+	// Same switch the Block Kit screen made, on the same boolean — only the
+	// mechanism underneath it changed.
 	//
-	// NARROWED MEANS APPLIED, NOT MERELY REQUESTED. The checkbox can be checked
-	// while nothing about THIS page's rows changed: the plugin withholds the
-	// narrowing — and forwards ITS OWN `total` instead — whenever the low-stock
-	// threshold cannot be read (`stock.filterUnavailable`,
-	// `applyLowStockNarrowing`). Reading `narrowed` off the checkbox alone would
-	// then state "137 low-stock products" for an ordinary, service-filtered page
-	// of every product — a wrong number AND a wrong noun, directly above the
-	// degradation banner that already says the filter was not applied.
+	// APPLIED MEANS APPLIED, NOT MERELY REQUESTED. The checkbox can be checked
+	// while the plugin still could not honour it: it sends no predicate at all
+	// whenever the low-stock threshold cannot be read
+	// (`stock.filterUnavailable`, `resolveStockContext`). Reading `narrowed`
+	// off the checkbox alone would then state "137 low-stock products" for an
+	// ordinary, unfiltered page of every product — a wrong noun directly above
+	// the degradation banner that already says the filter was not applied.
 	//
 	// `stock` IS THE LATEST RESPONSE'S ANSWER ONLY (see `nextPage`) — exactly
 	// right for a single page, and an approximation once pages accumulate: a
 	// `filterUnavailable` flip between two `Load more` responses would apply
-	// THIS render's scope to rows merged from both, one narrowed and one not.
+	// THIS render's scope to rows merged from both, one filtered and one not.
 	// Only reachable if the threshold read itself flips mid-scan, and still the
 	// smaller, more honest claim than reading the checkbox alone — but worth
 	// naming rather than leaving implied.
@@ -496,24 +498,21 @@ export function ProductsList({
 		filtered,
 		firstPage: page?.firstPage ?? true,
 		hasNext,
-		// THE NARROWING HAS NO SERVICE PREDICATE, SO `firstPage && !hasNext` DOES
-		// NOT MEAN "the low-stock set is complete" — it means the FETCH is, which
-		// is a different claim the moment the rows are narrowed after it lands.
-		// Without this, a catalog that happened to fit on one page (or a scan a
-		// merchant paged to the end of) flipped `listOutcome`'s internal
-		// `complete` true and the count line dropped its qualifier — "3 low-stock
-		// products", read as a whole-catalog claim, which is exactly what this
-		// filter's contract (above, and `applyLowStockNarrowing`'s) says it must
-		// never state. `narrowed` already gates `total` the same way, and
-		// `listOutcome` now refuses one on this scope regardless.
-		countScope: narrowed ? "narrowed-after-fetch" : "service-filtered",
-		// F29: NAME WHAT WAS COUNTED. While the narrowing is ACTUALLY on, the rows
-		// are the low-stock ones the fetched pages happened to hold, and calling
-		// them "3 products" invites the merchant to read three as the catalog's
-		// answer. The same `narrowed` boolean is why this reverts to the ordinary
-		// noun on a `filterUnavailable` page: the rows there are every product,
-		// not a low-stock subset, and "low-stock products" would be the wrong
-		// word for them.
+		// ALWAYS the ordinary, service-filtered scope now: "Low stock only" is a
+		// predicate the SERVICE applies (or, on `filterUnavailable`, honestly
+		// did not — see `narrowed` above), never a narrowing this screen does to
+		// an already-fetched page. So `firstPage && !hasNext` really does mean
+		// the counted set is complete, and a `total` the plugin forwards is
+		// honoured exactly as `rowCountLine` validates it — no scope-specific
+		// exception left to state.
+		countScope: "service-filtered",
+		// F29: NAME WHAT WAS COUNTED. While the filter is ACTUALLY applied, the
+		// rows are the low-stock ones the service selected, and calling them "3
+		// products" invites the merchant to read three as the catalog's answer.
+		// The same `narrowed` boolean is why this reverts to the ordinary noun
+		// on a `filterUnavailable` page: the rows there are every product, not a
+		// low-stock subset, and "low-stock products" would be the wrong word for
+		// them.
 		noun: narrowed ? PRODUCTS_LOW_STOCK_NOUN : PRODUCTS_NOUN,
 		// F24. Once two responses are on screen at once, "on this page" is the
 		// wrong sentence for rows drawn from both. The Block Kit tier still
@@ -522,13 +521,10 @@ export function ProductsList({
 		...((page?.pages ?? 1) > 1 ? { scopeSuffix: ACCUMULATED_SUFFIX } : {}),
 		empty: PRODUCTS_EMPTY,
 		noMatch: narrowed ? PRODUCTS_LOW_STOCK_NO_MATCH : PRODUCTS_NO_MATCH,
-		// The plugin already withheld this while the narrowing was ACTUALLY on,
-		// so this is simply whatever came through — the decision is made once,
-		// where the narrowing happens (`applyLowStockNarrowing`) — and
-		// `listOutcome` no longer trusts it blindly either: it refuses a `total`
-		// outright whenever `countScope` says the page was narrowed after the
-		// fetch, so a mislabelled `narrowed` here still cannot resurrect
-		// whole-set phrasing.
+		// The plugin has already decided whether this render may state one
+		// (`resolveStockContext`: shown once the predicate is genuinely
+		// applied, withheld on `filterUnavailable`) — this is simply whatever
+		// came through.
 		...(page?.total !== undefined ? { total: page.total } : {}),
 	});
 
@@ -937,22 +933,6 @@ export function ProductsList({
 					>
 						{busy ? "Loading…" : LOAD_MORE_LABEL}
 					</button>
-					{/*
-					  F29: BESIDE THE BUTTON, AND ONLY WITH BOTH FACTS TRUE. The
-					  narrowing has no service predicate, so `Load more` is a scan
-					  rather than the next page of a result set — a merchant who does
-					  not know that reads a short list as the whole answer. It says so
-					  where the scan is offered, and disappears once there is nothing
-					  left to scan, because then the rows ARE all of them.
-					*/}
-					{narrowed && (
-						<p
-							data-testid="products-low-stock-paging-note"
-							style={{ fontSize: 12, opacity: 0.75, marginBlockStart: 8 }}
-						>
-							{LOW_STOCK_PER_PAGE_NOTE}
-						</p>
-					)}
 				</div>
 			)}
 		</div>
