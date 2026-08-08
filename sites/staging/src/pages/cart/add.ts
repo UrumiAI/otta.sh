@@ -75,14 +75,21 @@ export const POST: APIRoute = async (context) => {
 	const handler = routeDispatcher(context);
 
 	// Bogus SKU / garbage productId pre-check (item 3, fail fast — BEFORE
-	// `ensureCartId` mints a cart for a request that will be rejected): the
-	// service's SKU_MISMATCH check only fires when a `product_commerce` row
-	// exists for the submitted productId (documented issue #80 threat model,
-	// out of bounds to change here — routes/carts.ts:104-121); a garbage/
-	// nonexistent productId has nothing to reconcile against and is let
-	// through by design, deferred to checkout's PRODUCT_NOT_PRICED. The theme
-	// already owns a CMS-existence check via `getEmDashEntry` (the same
-	// slug-or-id lookup `[slug].astro` uses), so it runs here instead.
+	// `ensureCartId` mints a cart for a request that will be rejected).
+	//
+	// The service's own guard is now the stronger one and no longer needs
+	// covering for: an add that names a productId must RESOLVE its sku to a
+	// live, priced sellable unit of that product, so a garbage/nonexistent
+	// productId is refused SKU_MISMATCH at the add rather than let through to
+	// checkout's PRODUCT_NOT_PRICED (`routes/carts.ts`, `resolveSellableUnit`).
+	//
+	// This check stays anyway, for the two things the service's cannot do from
+	// where it stands. It runs BEFORE a cart is minted, so a request that was
+	// never going to succeed does not leave an empty cart and a cookie behind;
+	// and it checks the CMS, which the service has no access to — a productId
+	// can be perfectly valid commerce-side while naming content this site
+	// cannot render, and the theme already owns that lookup via
+	// `getEmDashEntry` (the same slug-or-id lookup `[slug].astro` uses).
 	if (productId !== undefined) {
 		const { entry, error: entryError } = await getEmDashEntry("products", productId);
 		// Reproduced live against a real dev instance (real astro:content live
