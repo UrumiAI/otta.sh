@@ -22,6 +22,7 @@ import { migration0019OrderShippingAddress } from "./0019_order_shipping_address
 import { migration0020Refunds } from "./0020_refunds.js";
 import { migration0021CartOrderId } from "./0021_cart_order_id.js";
 import { migration0022OrderLookupIndices } from "./0022_order_lookup_indices.js";
+import { migration0023ProductVariants } from "./0023_product_variants.js";
 
 /** Ordered, append-only migration list (forward-only). */
 const migrations: Record<string, Migration> = {
@@ -47,6 +48,7 @@ const migrations: Record<string, Migration> = {
 	"0020_refunds": migration0020Refunds,
 	"0021_cart_order_id": migration0021CartOrderId,
 	"0022_order_lookup_indices": migration0022OrderLookupIndices,
+	"0023_product_variants": migration0023ProductVariants,
 };
 
 export const migrationProvider: MigrationProvider = {

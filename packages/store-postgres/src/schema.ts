@@ -169,6 +169,39 @@ export interface ProductCommerceTable {
 	updated_at: string;
 }
 
+/**
+ * ONE COMMERCE ROW PER SELLABLE UNIT (`0023_product_variants`): a size that can
+ * be bought on its own is a row, keyed `(product_id, variant_key)`.
+ *
+ * A SEPARATE TABLE so the model lands inert — with no rows, `product_commerce`'s
+ * every statement, projection and keyset cursor is byte-identical, and the
+ * eventual one-row-per-unit list is a LEFT JOIN whose cursor EXTENDS the
+ * existing position with `variant_key` rather than replacing it.
+ */
+export interface ProductVariantsTable {
+	product_id: string;
+	/** The CMS repeater row's stable key — IMMUTABLE, and half the primary key,
+	 *  so it appears in no `SET` clause anywhere. */
+	variant_key: string;
+	/** Nullable: "declare then price" — the CMS declares a variant carrying
+	 *  nothing commercial, and an admin sets the sku later. */
+	sku: string | null;
+	price_cents: number | null;
+	price_currency: string | null;
+	/** The variant's display-name CACHE, single-writer (the CMS sync) — ADR-0016,
+	 *  which is ADR-0013 one level down. */
+	title: string | null;
+	/** Presence tombstone: non-null once the CMS stops declaring the key.
+	 *  Deactivation, never deletion — the row keeps its sku, price and stock. */
+	orphaned_at: string | null;
+	idempotency_key: string;
+	/** The ONE ordering watermark for BOTH presence transitions (declare and
+	 *  orphan): they arrive on the same save event, so one column orders both. */
+	content_updated_at: string | null;
+	created_at: string;
+	updated_at: string;
+}
+
 /** Phase 4 §4 + Phase 5 §5: orders carry NO money column — keys / state / TTL /
  *  identity only. Phase 5 widens the `state` value set (a text column — no DDL
  *  change for the new values). */
@@ -555,6 +588,7 @@ export interface Database {
 	inventory: InventoryTable;
 	reservations: ReservationsTable;
 	product_commerce: ProductCommerceTable;
+	product_variants: ProductVariantsTable;
 	carts: CartsTable;
 	cart_lines: CartLinesTable;
 	cart_mutations: CartMutationsTable;
