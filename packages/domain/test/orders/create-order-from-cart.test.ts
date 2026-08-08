@@ -272,6 +272,10 @@ describe("createOrderFromCart", () => {
 			listProducts: (filter, page) => base.listProducts(filter, page),
 			countProducts: (filter) => base.countProducts(filter),
 			countByTaxClass: (taxClassId) => base.countByTaxClass(taxClassId),
+			upsertVariant: (input, key) => base.upsertVariant(input, key),
+			listVariants: (id) => base.listVariants(id),
+			updateVariantFields: (input, key, expected) => base.updateVariantFields(input, key, expected),
+			deactivateVariant: (id, variantKey, key, t) => base.deactivateVariant(id, variantKey, key, t),
 		};
 
 		const res = await createOrderFromCart({ ...h.createDeps, productCommerce: spy }, cmd(cartId));

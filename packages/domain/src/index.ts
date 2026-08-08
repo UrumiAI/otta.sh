@@ -336,8 +336,13 @@ export type {
 	ProductListPage,
 	ProductListResult,
 	ProductSummary,
+	ProductVariant,
+	ProductVariantSummary,
+	ProductVariantUpdateResult,
 	UpdateProductCommerceFieldsInput,
+	UpdateProductVariantFieldsInput,
 	UpsertProductCommerceInput,
+	UpsertProductVariantInput,
 } from "./ports/product-commerce-store.js";
 export {
 	InvalidLowStockThresholdError,
@@ -345,6 +350,7 @@ export {
 	isValidLowStockThreshold,
 	MAX_LOW_STOCK_THRESHOLD,
 	MissingProductIdError,
+	MissingVariantKeyError,
 	SkuConflictError,
 	SkuHeldStockError,
 	SkuStockConflictError,
@@ -352,11 +358,15 @@ export {
 export {
 	activateProductCommerce,
 	deactivateProductCommerce,
+	deactivateProductVariant,
 	getProductCommerce,
 	listProductCommerceByIds,
+	listProductVariants,
 	softDeleteProductCommerce,
 	updateProductCommerceFields,
+	updateProductVariantFields,
 	upsertProductCommerce,
+	upsertProductVariant,
 	type ProductCommerceDeps,
 } from "./product-commerce/use-cases.js";
 export {

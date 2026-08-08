@@ -11,10 +11,14 @@ import type { ProductCommerceDeps } from "../src/product-commerce/use-cases.js";
 import {
 	activateProductCommerce,
 	deactivateProductCommerce,
+	deactivateProductVariant,
 	getProductCommerce,
+	listProductVariants,
 	softDeleteProductCommerce,
 	updateProductCommerceFields,
+	updateProductVariantFields,
 	upsertProductCommerce,
+	upsertProductVariant,
 } from "../src/product-commerce/use-cases.js";
 import { CountingIdGen, FixedClock } from "../src/testing/deterministic.js";
 import { InMemoryInventoryStore } from "../src/testing/in-memory-inventory-store.js";
@@ -731,6 +735,204 @@ describe("a sku rename survives the caller's always-attempt seed", () => {
 			ok: true,
 			onHand: 20,
 		});
+	});
+});
+
+/**
+ * The variant use-cases, from the CALLER's side. The store's own semantics
+ * (guard order, the presence watermark, THE SKU-RENAME RULE) are pinned by the
+ * contract suite on every adapter; what only this layer can show is the
+ * COMPOSITION — which use-case validates what before the write, and which one
+ * follows an `ok` with the always-attempt `seedOnHand` that holds the "a
+ * sellable unit with a sku has an inventory row" invariant.
+ */
+describe("variant use-cases (over the in-memory fakes)", () => {
+	let productCommerce: InMemoryProductCommerceStore;
+	let inventory: InMemoryInventoryStore;
+	let recorder: RecordingInventory;
+	let deps: ProductCommerceDeps;
+	let clock: FixedClock;
+
+	beforeEach(() => {
+		clock = new FixedClock(new Date("2026-07-10T00:00:00.000Z"));
+		inventory = new InMemoryInventoryStore({ idGen: new CountingIdGen("res"), clock });
+		// The two fakes share ONE inventory table, so "the store carried it, then
+		// the caller seeded over the top" is observable at all.
+		productCommerce = new InMemoryProductCommerceStore({
+			clock,
+			inventoryOnHand: (s) => inventory.peekOnHand(s),
+			writeInventoryOnHand: (s, onHand) => {
+				inventory.seed(s, onHand);
+			},
+		});
+		recorder = recordingInventory(inventory);
+		deps = { productCommerce, inventory: recorder };
+	});
+
+	/** Declare a variant the way the CMS does, then return the watermark its
+	 *  first guarded edit has to pass back. */
+	async function declared(pid: string, key: string): Promise<string> {
+		const row = await upsertProductVariant(
+			productCommerce,
+			{ productId: productId(pid), variantKey: key, title: `Variant ${key}` },
+			idempotencyKey(`declare-${pid}-${key}`),
+		);
+		clock.advance(1000);
+		return row.updatedAt.toISOString();
+	}
+
+	test("upsertProductVariant declares without touching inventory — the CMS channel carries no sku, so there is nothing to seed", async () => {
+		const row = await upsertProductVariant(
+			productCommerce,
+			{ productId: productId("prod-v"), variantKey: "large", title: "Large" },
+			idempotencyKey("declare-1"),
+		);
+
+		expect(row.title).toBe("Large");
+		expect(row.sku).toBeNull();
+		// The deliberate contrast with `upsertProductCommerce`, which always
+		// attempts a seed precisely because its input CAN carry a sku.
+		expect(recorder.seeds).toEqual([]);
+	});
+
+	test("listProductVariants passes the store's projection through unchanged", async () => {
+		await declared("prod-list", "small");
+		await declared("prod-list", "large");
+
+		const rows = await listProductVariants(productCommerce, productId("prod-list"));
+		expect(rows.map((v) => v.variantKey)).toEqual(["large", "small"]);
+		expect(rows.every((v) => v.onHand === null)).toBe(true);
+	});
+
+	test("updateProductVariantFields rejects a non-positive price BEFORE the store write — a $0 size is a missing price, not a price", async () => {
+		const watermark = await declared("prod-zero", "large");
+
+		await expect(
+			updateProductVariantFields(
+				deps,
+				{
+					productId: productId("prod-zero"),
+					variantKey: "large",
+					price: money(cents(0), currency("USD")),
+				},
+				idempotencyKey("zero-1"),
+				watermark,
+			),
+		).rejects.toBeInstanceOf(InvalidProductFieldError);
+
+		// Nothing was written on either side, and the seed was never reached.
+		const [row] = await listProductVariants(productCommerce, productId("prod-zero"));
+		expect(row?.price).toBeNull();
+		expect(recorder.seeds).toEqual([]);
+	});
+
+	test("updateProductVariantFields seeds a create-if-absent inventory row for a FIRST sku — the one case the rename rule never covers", async () => {
+		const watermark = await declared("prod-first", "large");
+
+		const res = await updateProductVariantFields(
+			deps,
+			{ productId: productId("prod-first"), variantKey: "large", sku: sku("V-FIRST") },
+			idempotencyKey("first-1"),
+			watermark,
+		);
+
+		expect(res.ok).toBe(true);
+		expect(recorder.seeds).toEqual([{ sku: "V-FIRST", qty: 0 }]);
+		// A sellable unit with a sku now has an inventory row — the invariant that
+		// keeps a later restock from being a permanent NO_INVENTORY_ROW refusal.
+		expect(inventory.peekOnHand("V-FIRST")).toBe(0);
+	});
+
+	test("a variant rename survives the caller's always-attempt seed: the carried units are never reset to zero", async () => {
+		const watermark = await declared("prod-carry", "large");
+		const priced = await updateProductVariantFields(
+			deps,
+			{ productId: productId("prod-carry"), variantKey: "large", sku: sku("V-FROM") },
+			idempotencyKey("carry-price"),
+			watermark,
+		);
+		if (!priced.ok) throw new Error("unreachable");
+		await inventory.restock("V-FROM", 40, idempotencyKey("carry-restock"));
+		clock.advance(1000);
+
+		const res = await updateProductVariantFields(
+			deps,
+			{ productId: productId("prod-carry"), variantKey: "large", sku: sku("V-TO") },
+			idempotencyKey("carry-rename"),
+			priced.variant.updatedAt.toISOString(),
+		);
+
+		expect(res.ok).toBe(true);
+		// The seed still ran — always-attempt is the heal path and stays
+		// unconditional — and create-if-absent found the carried row and left it
+		// alone. This is the exact call that would otherwise mint a fresh zero row
+		// beside 40 orphaned units.
+		expect(recorder.seeds).toEqual([
+			{ sku: "V-FROM", qty: 0 },
+			{ sku: "V-TO", qty: 0 },
+		]);
+		expect(inventory.onHand("V-TO")).toBe(40);
+		expect(inventory.peekOnHand("V-FROM")).toBe(0);
+	});
+
+	test("a refused variant rename propagates the typed error and never reaches the seed", async () => {
+		const watermark = await declared("prod-refuse", "large");
+		const priced = await updateProductVariantFields(
+			deps,
+			{ productId: productId("prod-refuse"), variantKey: "large", sku: sku("V-SRC") },
+			idempotencyKey("refuse-price"),
+			watermark,
+		);
+		if (!priced.ok) throw new Error("unreachable");
+		inventory.seed("V-TAKEN", 12);
+		clock.advance(1000);
+
+		await expect(
+			updateProductVariantFields(
+				deps,
+				{ productId: productId("prod-refuse"), variantKey: "large", sku: sku("V-TAKEN") },
+				idempotencyKey("refuse-1"),
+				priced.variant.updatedAt.toISOString(),
+			),
+		).rejects.toBeInstanceOf(SkuStockConflictError);
+
+		// The store threw, so nothing was written on either side — and in
+		// particular the caller never seeded a row for a sku the write refused.
+		expect(recorder.seeds).toEqual([{ sku: "V-SRC", qty: 0 }]);
+		expect(inventory.peekOnHand("V-TAKEN")).toBe(12);
+	});
+
+	test("deactivateProductVariant orphans without deleting, and a not_found edit afterwards never seeds", async () => {
+		const watermark = await declared("prod-orph", "large");
+		const priced = await updateProductVariantFields(
+			deps,
+			{ productId: productId("prod-orph"), variantKey: "large", sku: sku("V-ORPH") },
+			idempotencyKey("orph-price"),
+			watermark,
+		);
+		if (!priced.ok) throw new Error("unreachable");
+
+		await deactivateProductVariant(
+			productCommerce,
+			productId("prod-orph"),
+			"large",
+			idempotencyKey("orph-1"),
+			"2026-07-10T01:00:00.000Z",
+		);
+
+		const [row] = await listProductVariants(productCommerce, productId("prod-orph"));
+		expect(row?.orphanedAt).not.toBeNull();
+		expect(row?.sku).toBe("V-ORPH");
+
+		const res = await updateProductVariantFields(
+			deps,
+			{ productId: productId("prod-orph"), variantKey: "large", sku: sku("V-ORPH-2") },
+			idempotencyKey("orph-2"),
+			priced.variant.updatedAt.toISOString(),
+		);
+		expect(res).toEqual({ ok: false, reason: "not_found" });
+		// A zero-row outcome wrote no sku, so there is none for the seed to claim.
+		expect(recorder.seeds).toEqual([{ sku: "V-ORPH", qty: 0 }]);
 	});
 });
 

@@ -5,8 +5,13 @@ import type {
 	ProductCommerceStore,
 	ProductCommerceUpdateResult,
 	ProductCommerceView,
+	ProductVariant,
+	ProductVariantSummary,
+	ProductVariantUpdateResult,
 	UpdateProductCommerceFieldsInput,
+	UpdateProductVariantFieldsInput,
 	UpsertProductCommerceInput,
+	UpsertProductVariantInput,
 } from "../ports/product-commerce-store.js";
 import { InvalidProductFieldError } from "./errors.js";
 
@@ -252,4 +257,93 @@ export async function deactivateProductCommerce(
 	contentUpdatedAt: string,
 ): Promise<void> {
 	return store.deactivate(productId, key, contentUpdatedAt);
+}
+
+// -- Variants: one commerce row per sellable unit ----------------------------
+
+/**
+ * The CMS-sync declare (port doc on `ProductCommerceStore.upsertVariant`): a
+ * thin pass-through, because this channel writes only the variant's display-name
+ * cache and its presence — no sku, so there is nothing for an inventory row to
+ * be seeded against and no second port to compose (the deliberate contrast with
+ * `upsertProductCommerce`, which always attempts a seed precisely because it CAN
+ * carry a sku). Exists so `@otta-sh/service` composes a use-case, not a store
+ * method, like its siblings.
+ */
+export async function upsertProductVariant(
+	store: ProductCommerceStore,
+	input: UpsertProductVariantInput,
+	key: IdempotencyKey,
+): Promise<ProductVariant> {
+	return store.upsertVariant(input, key);
+}
+
+/** Every variant of one product (port doc) — a query, not a command. Ordered by
+ *  key, orphans included and flagged, `onHand` joined in the same statement. */
+export async function listProductVariants(
+	store: ProductCommerceStore,
+	productId: ProductId,
+): Promise<ProductVariantSummary[]> {
+	return store.listVariants(productId);
+}
+
+/**
+ * The guarded admin edit at variant grain — `updateProductCommerceFields`'s
+ * mirror, one level down: pure field validation the branded types cannot
+ * express, then the store's compare-and-set (whose guard order, currency
+ * integrity and rename carry are the PORT's contract).
+ *
+ * Validation (throws `InvalidProductFieldError`, mapped to 400 upstream):
+ *  - `price.amount` must be STRICTLY POSITIVE. Branded `Cents` already rejects a
+ *    float or a negative; ">0" is the one rule left to the domain, and it is the
+ *    same rule the product level applies — a $0 size is not a price, it is a
+ *    missing one, and an absent price is expressed by leaving the field unset.
+ * There is no within-edit currency check here as there is at product level: a
+ * variant edit carries exactly ONE money field, so there is nothing for it to
+ * disagree with inside one call. The cross-row agreements — against the
+ * variant's own stored currency and against the product's — are the store's
+ * atomic concern, checked under the same compare-and-set that applies the write.
+ *
+ * IT SEEDS, exactly like its product-level sibling and for the same B1 reason:
+ * the invariant is "a sellable unit with a sku has an inventory row", held by the
+ * data rather than by one caller. THE SKU-RENAME RULE already claims (and thereby
+ * creates) the target row inside the store's own transaction, so the seed is a
+ * no-op after a rename; the case it actually covers is a FIRST sku, where the
+ * rule never engages and nothing else would create the row. Always-attempt, never
+ * gated on "the sku changed", so a retried save heals a stranded unit — and
+ * because `seedOnHand` is create-if-absent, it can never clobber units the carry
+ * just moved. A refused edit (a throw) never reaches it, and every zero-row
+ * outcome except the replay `ok` wrote no sku for it to claim.
+ */
+export async function updateProductVariantFields(
+	deps: ProductCommerceDeps,
+	input: UpdateProductVariantFieldsInput,
+	key: IdempotencyKey,
+	expectedUpdatedAt: string,
+): Promise<ProductVariantUpdateResult> {
+	if (input.price !== undefined && input.price.amount <= 0) {
+		throw new InvalidProductFieldError("price", "price must be greater than zero");
+	}
+	const result = await deps.productCommerce.updateVariantFields(input, key, expectedUpdatedAt);
+	// The same always-attempt heal the product level runs, for the same reason
+	// (two IO calls, no shared transaction): only an applied or replayed edit has
+	// a sku it may claim, and `seedOnHand` is create-if-absent, so it can never
+	// clobber units the rename carry just moved.
+	if (result.ok && result.variant.sku !== null) {
+		await deps.inventory.seedOnHand(result.variant.sku, 0);
+	}
+	return result;
+}
+
+/** The ORPHAN transition (port doc): a thin pass-through. Deactivation, never
+ *  deletion — the row, its sku, its price and its stock are all retained, and a
+ *  stale watermark is a no-op so out-of-order delivery converges. */
+export async function deactivateProductVariant(
+	store: ProductCommerceStore,
+	productId: ProductId,
+	variantKey: string,
+	key: IdempotencyKey,
+	contentUpdatedAt: string,
+): Promise<void> {
+	return store.deactivateVariant(productId, variantKey, key, contentUpdatedAt);
 }
