@@ -262,21 +262,25 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 	 *     that has ever been reserved can be neither deleted nor re-keyed, and a
 	 *     stock row is never deleted regardless.
 	 */
-	async #carrySkuStock(exec: Kysely<Database>, fromSku: string, toSku: string): Promise<void> {
-		if (fromSku === toSku) return;
+	async #carrySkuStock(
+		exec: Kysely<Database>,
+		sourceSku: string,
+		targetSku: string,
+	): Promise<void> {
+		if (sourceSku === targetSku) return;
 
 		const claimed = await exec
 			.insertInto("inventory")
-			.values({ sku: toSku, on_hand: 0 })
+			.values({ sku: targetSku, on_hand: 0 })
 			.onConflict((oc) => oc.column("sku").doNothing())
 			.returning("sku")
 			.executeTakeFirst();
-		if (claimed === undefined) throw new SkuStockConflictError(fromSku, toSku);
+		if (claimed === undefined) throw new SkuStockConflictError(sourceSku, targetSku);
 
 		const source = await exec
 			.updateTable("inventory")
 			.set((eb) => ({ on_hand: eb.ref("on_hand") }))
-			.where("sku", "=", fromSku)
+			.where("sku", "=", sourceSku)
 			.returning("on_hand")
 			.executeTakeFirst();
 		if (source === undefined || source.on_hand === 0) return;
@@ -284,9 +288,9 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 		await exec
 			.updateTable("inventory")
 			.set({ on_hand: source.on_hand })
-			.where("sku", "=", toSku)
+			.where("sku", "=", targetSku)
 			.execute();
-		await exec.updateTable("inventory").set({ on_hand: 0 }).where("sku", "=", fromSku).execute();
+		await exec.updateTable("inventory").set({ on_hand: 0 }).where("sku", "=", sourceSku).execute();
 	}
 
 	async getByProductId(productId: ProductId): Promise<ProductCommerce | null> {
