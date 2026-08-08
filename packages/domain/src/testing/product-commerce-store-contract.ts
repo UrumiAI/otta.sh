@@ -672,10 +672,11 @@ export function productCommerceStoreContract(
 				expect(first.ok).toBe(true);
 				expect(await onHandOf(h, "prod-replay")).toBe(30);
 
-				// Re-stock the retained source row, so a SECOND carry would be loudly
-				// visible (it would either move 77 units again or refuse outright,
-				// SKU-R-TO now being occupied).
-				await h.seedStock("SKU-R-FROM", 77);
+				// The same key against the now-stale watermark: the replay branch,
+				// which the port pins AHEAD of the staleness check. A second carry
+				// could not stay quiet even if it wanted to — SKU-R-TO now has a row
+				// of its own, so re-running the rule would REFUSE this replay instead
+				// of returning ok.
 				const replay = await h.store.updateCommerceFields(
 					input,
 					key,
@@ -684,7 +685,7 @@ export function productCommerceStoreContract(
 
 				expect(replay.ok).toBe(true);
 				expect(await onHandOf(h, "prod-replay")).toBe(30);
-				expect(await onHandOfSku(h, "probe-replay", "SKU-R-FROM")).toBe(77);
+				expect(await onHandOfSku(h, "probe-replay", "SKU-R-FROM")).toBe(0);
 			});
 
 			test("updateCommerceFields: a stale or unknown edit naming a new sku moves nothing", async () => {
