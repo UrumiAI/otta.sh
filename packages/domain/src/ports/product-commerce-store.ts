@@ -494,11 +494,13 @@ export interface ProductCommerceView {
  *     `inventory.sku`, so it can be neither re-keyed nor deleted). Left alone,
  *     every later transition on that hold lands on the row the rename emptied: a
  *     release credits units back to a sku no product owns, and an upward adjust
- *     fails OUT_OF_STOCK against a zero the shopper cannot see. Holds are
- *     short-lived by construction (a cart hold expires and is swept; an adopted
- *     hold commits or releases with its order), so this is "retry shortly", not
- *     a dead end. Migrating the holds instead was rejected — see
- *     `SkuHeldStockError`.
+ *     fails OUT_OF_STOCK against a zero the shopper cannot see. Every hold does
+ *     end on its own — a cart hold expires on its deadline and the sweep
+ *     releases it; an adopted hold resolves when its order does — but "ends on
+ *     its own" is not "ends soon": an adopted hold lives as long as the order
+ *     awaits payment, so a product with an order in flight can stay unrenameable
+ *     for as long as that order does. Migrating the holds instead was rejected —
+ *     see `SkuHeldStockError`.
  *  1. CLAIM the target sku's inventory row. If a row already exists there the
  *     whole write is REFUSED with `SkuStockConflictError` naming both skus —
  *     nothing is renamed, nothing moves. Occupied is occupied: the refusal does
@@ -535,15 +537,22 @@ export interface ProductCommerceView {
  * assignment adopts. Changing it means designing the heal path a different way,
  * which is its own change.
  *
- * A NARROW DEADLOCK, documented rather than defended against. Two renames that
- * cross — A→B and B→A — where NEITHER source has an inventory row, both reach
- * the claim with nothing yet committed and each waits on the other's
- * speculative insert; Postgres breaks the tie by aborting one with a
- * serialization failure (SQLSTATE 40P01) rather than a typed refusal. It needs
- * simultaneous crossed renames between two never-stocked skus, both write paths
- * live at once, and it resolves itself on retry. Left as-is: a lock ordering
- * that would prevent it costs a round trip on every rename to buy nothing an
- * operator would ever notice.
+ * The same "there is no row yet" reasoning bounds what a CREATE can do: two
+ * concurrent upserts that both create the SAME product with DIFFERENT skus
+ * carry nothing either way, because neither finds a prior row to lock or a
+ * prior sku to move from. The product ends on whichever write committed last,
+ * with an empty inventory row under each sku that was named — no units exist to
+ * strand, since a product only acquires them after it exists.
+ *
+ * WHAT THE CLAIM WAITS ON, because "it takes a lock" invites the wrong mental
+ * model and the wrong worry. The claim waits only on a SAME-KEY speculative
+ * insert: another transaction that has inserted the very same target sku and
+ * not yet committed. It does NOT wait on a committed row (it conflicts and does
+ * nothing), and the source lock waits on nothing at all when the source has no
+ * row to lock. Crossed renames therefore cannot cycle — A→B and B→A claim
+ * DIFFERENT keys, so neither ever waits on the other. Writes aimed at the SAME
+ * target sku are the only ones that queue, and all but one of those is about to
+ * be refused regardless.
  */
 export interface ProductCommerceStore {
 	upsert(input: UpsertProductCommerceInput, key: IdempotencyKey): Promise<ProductCommerce>;

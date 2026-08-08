@@ -362,7 +362,16 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 	 * The keys are derived from the command's key, which is unique per command
 	 * and never reaches here twice (a replay applies no update, so it never
 	 * carries). `qty > 0` is a column CHECK, which is why this is called only
-	 * when units actually moved.
+	 * when units actually moved — a rename that carries NOTHING (an empty or
+	 * absent source row) writes no ledger entry at all, there being no movement
+	 * to record.
+	 *
+	 * WRITE-ONLY TODAY. Nothing reads these rows yet: no admin screen, report or
+	 * endpoint surfaces stock movements, and `InventoryStore`'s own ledger reads
+	 * are per-key replay lookups that can never match a `rename_*` key. The trail
+	 * exists so the history is already there when something does surface it, and
+	 * so a rename stops being the one stock movement that leaves no record; a
+	 * movements view is a separate change.
 	 */
 	async #recordCarry(
 		exec: Kysely<Database>,
@@ -394,6 +403,16 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 					created_at: at,
 				},
 			])
+			// THE AUDIT ROW MUST NEVER FAIL THE MOVE IT DESCRIBES. These keys derive
+			// from `commandKey`, which is client-supplied (the wire's
+			// `Idempotency-Key`), so this primary key is not ours to guarantee: a
+			// client reusing one key across two renames of the SAME source sku, or a
+			// caller crafting a `restock` key that happens to equal one of these,
+			// would otherwise abort a perfectly legal rename with a raw unique
+			// violation. DO NOTHING makes that pathological case cost the audit row
+			// rather than the merchant's rename. Pinned in
+			// `test/sku-rename-ledger.dialects.test.ts`.
+			.onConflict((oc) => oc.doNothing())
 			.execute();
 	}
 

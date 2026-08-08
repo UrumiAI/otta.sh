@@ -773,6 +773,11 @@ export function productCommerceStoreContract(
 				const h = await makeStore();
 				const seeded = await seedEditable(h, "prod-held", { sku: "SKU-HELD" });
 				await h.seedStock("SKU-HELD", 20);
+				// `seedHold` writes the reservation row WITHOUT the on_hand decrement a
+				// real `reserve` would also make, so the 20 asserted below is the
+				// fixture's number rather than stock arithmetic. That is deliberate:
+				// the rule branches on a hold EXISTING, and the decrement's own
+				// arithmetic belongs to `InventoryStore`'s contract, not this one.
 				await h.seedHold("SKU-HELD", 3);
 
 				// The hold's units are already out of on_hand, and the hold itself
@@ -816,6 +821,30 @@ export function productCommerceStoreContract(
 					),
 				).rejects.toBeInstanceOf(SkuHeldStockError);
 				expect((await h.store.getByProductId(productId("prod-held-typed")))?.sku).toBe("SKU-HT");
+			});
+
+			test("when BOTH refusals apply, the live hold wins — guard order is fixed, like every sibling guard on this port", async () => {
+				const h = await makeStore();
+				const seeded = await seedEditable(h, "prod-both", { sku: "SKU-BOTH" });
+				await h.seedStock("SKU-BOTH", 7);
+				await h.seedHold("SKU-BOTH", 1);
+				// The target is occupied TOO, so both refusals are live at once and
+				// only a fixed order can make every adapter answer the same way.
+				await h.seedStock("SKU-BOTH-TARGET", 9);
+
+				// Holds first: it is a fact about the sku the operator is renaming
+				// AWAY from, so it is the one they can act on without first choosing a
+				// different target — and it is the refusal that will clear by itself.
+				await expect(
+					h.store.updateCommerceFields(
+						{ productId: productId("prod-both"), sku: sku("SKU-BOTH-TARGET") },
+						idempotencyKey("both-1"),
+						seeded.updatedAt.toISOString(),
+					),
+				).rejects.toBeInstanceOf(SkuHeldStockError);
+
+				expect((await h.store.getByProductId(productId("prod-both")))?.sku).toBe("SKU-BOTH");
+				expect(await onHandOf(h, "prod-both")).toBe(7);
 			});
 
 			test("a live hold on the sku does NOT block an edit that leaves the sku alone", async () => {

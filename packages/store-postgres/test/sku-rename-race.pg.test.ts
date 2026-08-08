@@ -309,7 +309,7 @@ describe.skipIf(PG === undefined)("sku rename concurrency [postgres]", () => {
 	// why these three cases exist.
 
 	test("upsert: two concurrent renames of ONE product to DIFFERENT skus chain — the second carries from the first's result, not from a stale read", async () => {
-		const LOOPS = 20;
+		const LOOPS = 40;
 		const h = await freshPg(8);
 		let bWon = 0;
 		let cWon = 0;
@@ -325,16 +325,26 @@ describe.skipIf(PG === undefined)("sku rename concurrency [postgres]", () => {
 			// loser reads `from`, the winner moves the units to its own target, and
 			// the loser then carries an already-empty `from` to ITS target — leaving
 			// 40 units under a sku no product owns, with no error raised anywhere.
-			const results = await Promise.allSettled([
+			//
+			// The two calls are ALTERNATED rather than left to the scheduler. Both
+			// start in the same tick and the first one issued always reaches the row
+			// lock first, so a fixed order would exercise exactly one interleaving
+			// forty times over and quietly leave the other unproven. Swapping which
+			// is issued first drives both, deterministically.
+			const bFirst = loop % 2 === 0;
+			const renameB = () =>
 				h.products.upsert(
 					{ productId: productId(id), sku: sku(toB) },
 					idempotencyKey(`ud-b-${loop}`),
-				),
+				);
+			const renameC = () =>
 				h.products.upsert(
 					{ productId: productId(id), sku: sku(toC) },
 					idempotencyKey(`ud-c-${loop}`),
-				),
-			]);
+				);
+			const results = await Promise.allSettled(
+				bFirst ? [renameB(), renameC()] : [renameC(), renameB()],
+			);
 
 			// Both writes are legal — they serialize rather than conflict — so both
 			// must succeed, and the row ends on whichever committed last.
@@ -358,7 +368,12 @@ describe.skipIf(PG === undefined)("sku rename concurrency [postgres]", () => {
 			expect(total, `loop ${loop}: conservation`).toBe(40);
 		}
 
-		expect(bWon + cWon, "every loop resolved").toBe(LOOPS);
+		// Both orderings really did run, so the conservation assertions above were
+		// exercised in both directions — and the row always ends on whichever
+		// write was issued SECOND, which is itself the claim that the second
+		// write read the first's result instead of a stale snapshot.
+		expect(bWon, "the B-last ordering occurred").toBeGreaterThan(0);
+		expect(cWon, "the C-last ordering occurred").toBeGreaterThan(0);
 	}, 120_000);
 
 	test("upsert: two concurrent renames of one product to the SAME sku both succeed — the second sees the rename already done, not a conflict it did not cause", async () => {
@@ -397,11 +412,10 @@ describe.skipIf(PG === undefined)("sku rename concurrency [postgres]", () => {
 		}
 	}, 120_000);
 
-	test("upsert racing a CAS edit on the same product: whichever lands second sees the first, and the units are never split", async () => {
-		const LOOPS = 20;
+	test("upsert RACING a CAS edit: the edit loses its compare-and-set, and the units are never split", async () => {
+		const LOOPS = 25;
 		const h = await freshPg(8);
-		let editApplied = 0;
-		let editStaleOrRefused = 0;
+		let editStale = 0;
 
 		for (let loop = 0; loop < LOOPS; loop++) {
 			const id = `up-cas-${loop}`;
@@ -410,9 +424,17 @@ describe.skipIf(PG === undefined)("sku rename concurrency [postgres]", () => {
 			const viaEdit = `SKU-UC-ED-${loop}`;
 			const wm = await h.seedProduct(id, from, 12);
 
-			// The two writers with different guards, aimed at the same row: the
-			// integrator PUT and the console's guarded edit, renaming to different
-			// skus at the same moment.
+			// The two writers with different guards, aimed at one row at the same
+			// moment: the integrator PUT and the console's guarded edit, renaming to
+			// different skus.
+			//
+			// The edit reliably LOSES, and not by luck: its before-read is a plain
+			// SELECT that takes no lock, so the upsert's locking read slips between
+			// that SELECT and the edit's guarded UPDATE whichever is issued first.
+			// The edit then waits, the upsert commits and moves `updated_at`, and
+			// the CAS no longer matches. That is the CAS doing its job — and it is
+			// exactly why the edit's before-read needs no lock of its own while the
+			// upsert's does. (The other ordering is the sequenced case below.)
 			const [up, ed] = await Promise.allSettled([
 				h.products.upsert(
 					{ productId: productId(id), sku: sku(viaUpsert) },
@@ -425,26 +447,66 @@ describe.skipIf(PG === undefined)("sku rename concurrency [postgres]", () => {
 				),
 			]);
 
-			// The upsert always applies (last-writer-wins by design). The edit
-			// either got in first, or lost its CAS and reported `stale` — the
-			// clock advances, so that guard is real here.
 			expect(up?.status, `loop ${loop}: the upsert applies`).toBe("fulfilled");
-			if (ed?.status === "fulfilled" && ed.value.ok) editApplied++;
-			else editStaleOrRefused++;
+			expect(ed?.status, `loop ${loop}: the edit resolves, never throws`).toBe("fulfilled");
+			if (ed?.status === "fulfilled" && !ed.value.ok) {
+				expect(ed.value.reason, `loop ${loop}`).toBe("stale");
+				editStale++;
+			}
 
-			const finalSku = await h.skuOf(id);
-			if (finalSku === null) throw new Error(`loop ${loop}: the product lost its sku`);
-			// However they interleaved, the product's units are under the product's
-			// own sku and the total is intact across every sku involved.
-			expect(await h.onHand(finalSku), `loop ${loop}: units follow the product`).toBe(12);
-			const total =
-				((await h.onHand(from)) ?? 0) +
-				((await h.onHand(viaUpsert)) ?? 0) +
-				((await h.onHand(viaEdit)) ?? 0);
+			// The edit wrote nothing, so the product is on the upsert's sku with all
+			// of its units, and the sku the edit named holds nothing at all — a
+			// carry from a losing writer would have split the twelve.
+			expect(await h.skuOf(id), `loop ${loop}`).toBe(viaUpsert);
+			expect(await h.onHand(viaUpsert), `loop ${loop}: units follow the product`).toBe(12);
+			expect(await h.onHand(viaEdit), `loop ${loop}: the losing writer moved nothing`).toBeNull();
+			const total = ((await h.onHand(from)) ?? 0) + ((await h.onHand(viaUpsert)) ?? 0);
 			expect(total, `loop ${loop}: conservation`).toBe(12);
 		}
 
-		expect(editApplied + editStaleOrRefused, "every loop resolved").toBe(LOOPS);
+		expect(editStale, "the CAS actually rejected the edit").toBe(LOOPS);
+	}, 120_000);
+
+	test("upsert renaming AFTER a CAS edit landed: it carries from the edit's sku, not from the one the caller last saw", async () => {
+		const LOOPS = 25;
+		const h = await freshPg(8);
+
+		for (let loop = 0; loop < LOOPS; loop++) {
+			const id = `up-seq-${loop}`;
+			const from = `SKU-US2-FROM-${loop}`;
+			const viaEdit = `SKU-US2-ED-${loop}`;
+			const viaUpsert = `SKU-US2-UP-${loop}`;
+			const wm = await h.seedProduct(id, from, 12);
+
+			// SEQUENCED, not raced — the other half of the pair above, and the half
+			// a same-tick race cannot reach. The edit commits first and moves the
+			// units to its own sku; the upsert then renames again from a starting
+			// point its caller never saw.
+			const ed = await h.products.updateCommerceFields(
+				{ productId: productId(id), sku: sku(viaEdit) },
+				idempotencyKey(`us2-ed-${loop}`),
+				wm,
+			);
+			expect(ed.ok, `loop ${loop}: the edit lands`).toBe(true);
+			expect(await h.onHand(viaEdit), `loop ${loop}`).toBe(12);
+
+			const up = await h.products.upsert(
+				{ productId: productId(id), sku: sku(viaUpsert) },
+				idempotencyKey(`us2-up-${loop}`),
+			);
+
+			// THE ASSERTION THAT BITES: the upsert's before-read must see the EDIT's
+			// sku. Reading the row as it stood before the edit would carry an empty
+			// `from` and leave all twelve units stranded under the edit's sku.
+			expect(up.sku, `loop ${loop}`).toBe(viaUpsert);
+			expect(await h.onHand(viaUpsert), `loop ${loop}: carried from the edit's sku`).toBe(12);
+			expect(await h.onHand(viaEdit), `loop ${loop}: the intermediate sku is emptied`).toBe(0);
+			const total =
+				((await h.onHand(from)) ?? 0) +
+				((await h.onHand(viaEdit)) ?? 0) +
+				((await h.onHand(viaUpsert)) ?? 0);
+			expect(total, `loop ${loop}: conservation`).toBe(12);
+		}
 	}, 120_000);
 
 	test("a rename racing a restock of the sku it is leaving conserves every unit", async () => {

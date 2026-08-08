@@ -18,9 +18,11 @@ never come apart:
 - the count is carried onto the new SKU;
 - the old record is kept, emptied — stock records are never deleted, because reservations and
   placed orders still point at them;
-- the move is recorded as a pair of entries in the stock-movement ledger (one out of the old SKU,
-  one into the new), so a rename is no longer the one way to move stock and leave nothing behind
-  explaining where it went;
+- a move of one or more units is recorded as a pair of entries in the stock-movement ledger (one
+  out of the old SKU, one into the new), so a rename is no longer the one way to move stock and
+  leave nothing behind explaining where it went. A rename that carries **nothing** — the old SKU
+  had no record, or one holding zero — writes no entry, because no units moved. Nothing surfaces
+  these entries yet; they are recorded for when something does;
 - if the new SKU **already has a stock record of its own**, the rename is refused outright with a
   new `SkuStockConflictError` naming both SKUs, and nothing is written on either side. Merging two
   counts would invent a stock figure nobody counted, and picking one would throw the other away,
@@ -57,3 +59,7 @@ exactly once.
 - `SkuStockConflictError` and `SkuHeldStockError` currently surface as generic failures at the
   HTTP boundary; mapping them to structured responses and legible messages in the admin console is
   a follow-up.
+- The live-reservation check a rename runs is an unindexed scan of the reservations table. It is
+  bounded (one lookup per rename, under a lock the rename already holds) and renames are rare, so
+  it is not a hot path — but a partial index on the reservations SKU covering only live states is
+  the right follow-up, and needs a migration of its own rather than riding along here.
