@@ -594,6 +594,65 @@ describe.skipIf(PG === undefined)("variant sku rename concurrency [postgres]", (
 		expect(variantSideRefused + productSideRefused, "every loop was arbitrated").toBe(LOOPS);
 	}, 120_000);
 
+	test("the same two first-pricings with NO head start: overlapping, and still one currency", async () => {
+		const LOOPS = 40;
+		const h = await freshPg(8);
+		let refusals = 0;
+
+		await Promise.all(Array.from({ length: 8 }, () => h.onHand("warm-up")));
+
+		for (let loop = 0; loop < LOOPS; loop++) {
+			const id = `xc0-${loop}`;
+			const wmP = await h.seedProduct(id);
+			const wmV = await h.declareVariant(id, "large");
+
+			// THE COMPANION TO THE CASE ABOVE, and the one that actually discriminates
+			// the lock ORDER. A head start decides which transaction holds the parent,
+			// which is what makes guard 4c reachable — but at roughly a millisecond a
+			// statement it also lets the leader COMMIT before the follower reads, so a
+			// follower that read the live variants BEFORE taking the parent's lock
+			// would still see committed data and still refuse. Issued in the same tick,
+			// the two genuinely overlap: the follower's read lands inside the leader's
+			// open transaction, and only the lock makes it wait for the answer.
+			const results = await Promise.allSettled([
+				h.products.updateCommerceFields(
+					{ productId: productId(id), price: money(cents(4000), currency("GBP")) },
+					idempotencyKey(`xc0-p-${loop}`),
+					wmP,
+				),
+				h.products.updateVariantFields(
+					{
+						productId: productId(id),
+						variantKey: "large",
+						price: money(cents(2500), currency("EUR")),
+					},
+					idempotencyKey(`xc0-v-${loop}`),
+					wmV,
+				),
+			]);
+
+			for (const r of results) {
+				expect(r.status, `loop ${loop}: resolves, never throws`).toBe("fulfilled");
+			}
+			const outcomes = results.map((r) =>
+				r.status === "fulfilled" ? (r.value.ok ? "ok" : r.value.reason) : "threw",
+			);
+			if (outcomes.includes("currency_mismatch")) refusals++;
+
+			const productCurrency = await h.currencyOfProduct(id);
+			const all = new Set([
+				...(productCurrency === null ? [] : [productCurrency]),
+				...(await h.currencies(id)),
+			]);
+			expect(
+				[...all],
+				`loop ${loop}: one currency per product (${outcomes.join("/")})`,
+			).toHaveLength(1);
+		}
+
+		expect(refusals, "the overlap was arbitrated at least once").toBeGreaterThan(0);
+	}, 120_000);
+
 	// -- the lock order itself -------------------------------------------------
 	//
 	// Both cases below deadlock (Postgres `40P01`, an unmapped raw error reaching
@@ -727,4 +786,133 @@ describe.skipIf(PG === undefined)("variant sku rename concurrency [postgres]", (
 			expect([...all], `loop ${loop}: one currency per product`).toHaveLength(1);
 		}
 	}, 120_000);
+
+	test("CROSSING RENAMES ACROSS TWO PARENTS: P1's size X→Y against P2's size Y→X, both stocked", async () => {
+		const LOOPS = 300;
+		const h = await freshPg(8);
+
+		await Promise.all(Array.from({ length: 8 }, () => h.onHand("warm-up")));
+
+		for (let loop = 0; loop < LOOPS; loop++) {
+			const p1 = `xpar-1-${loop}`;
+			const p2 = `xpar-2-${loop}`;
+			const skuX = `XPAR-X-${loop}`;
+			const skuY = `XPAR-Y-${loop}`;
+			await h.seedProduct(p1);
+			await h.seedProduct(p2);
+			const wm1 = await h.seedVariant(p1, "large", skuX, 13);
+			const wm2 = await h.seedVariant(p2, "large", skuY, 6);
+
+			// THE CASE THE SORTED PAIR LOCK EXISTS FOR. Two DIFFERENT parents, so the
+			// parent lock — which makes every intra-product cycle unreachable — has
+			// nothing to say here: these two writers never contend on a product row or
+			// on a variant row, only on the two `inventory` rows they share. Their
+			// roles are mirrored, so ordering those by role (source, then target) sends
+			// them round the cycle in opposite directions; ordering by SKU sends both
+			// the same way.
+			const results = await Promise.allSettled([
+				h.products.updateVariantFields(
+					{ productId: productId(p1), variantKey: "large", sku: sku(skuY) },
+					idempotencyKey(`xpar-1-${loop}`),
+					wm1,
+				),
+				h.products.updateVariantFields(
+					{ productId: productId(p2), variantKey: "large", sku: sku(skuX) },
+					idempotencyKey(`xpar-2-${loop}`),
+					wm2,
+				),
+			]);
+
+			for (const r of results) {
+				if (r.status === "rejected") {
+					const err = r.reason as Error & { code?: string };
+					expect(err.code, `loop ${loop}: never a deadlock — ${err.message}`).not.toBe("40P01");
+					expect(
+						["SkuConflictError", "SkuStockConflictError"],
+						`loop ${loop}: typed refusal, got ${err.name}: ${err.message}`,
+					).toContain(err.name);
+				}
+			}
+
+			// Both targets are held by a live unit, so neither rename can land, and
+			// every unit stays where it was.
+			expect(await h.skuOfVariant(p1, "large"), `loop ${loop}`).toBe(skuX);
+			expect(await h.skuOfVariant(p2, "large"), `loop ${loop}`).toBe(skuY);
+			expect(await h.onHand(skuX), `loop ${loop}`).toBe(13);
+			expect(await h.onHand(skuY), `loop ${loop}`).toBe(6);
+		}
+	}, 180_000);
+
+	test("a RESURRECT racing a PRICE EDIT of THE SAME variant: no deadlock, and the row is never left half-restored", async () => {
+		const LOOPS = 120;
+		const h = await freshPg(8);
+
+		await Promise.all(Array.from({ length: 8 }, () => h.onHand("warm-up")));
+
+		for (let loop = 0; loop < LOOPS; loop++) {
+			const id = `rvs-${loop}`;
+			await h.seedProduct(id);
+			const wmL = await h.declareVariant(id, "large");
+			const priced = await h.products.updateVariantFields(
+				{
+					productId: productId(id),
+					variantKey: "large",
+					price: money(cents(3000), currency("GBP")),
+				},
+				idempotencyKey(`rvs-price-${loop}`),
+				wmL,
+			);
+			expect(priced.ok, `loop ${loop}: the orphan was priced`).toBe(true);
+			const orphanWm = priced.ok ? priced.variant.updatedAt.toISOString() : "";
+			await h.products.deactivateVariant(
+				productId(id),
+				"large",
+				idempotencyKey(`rvs-orphan-${loop}`),
+				"2026-07-10T01:00:00.000Z",
+			);
+
+			// THE PAIR THE HEADER'S EXCEPTION TURNS ON. The declare is the one writer
+			// that takes the variant row BEFORE an `inventory` row, because it cannot
+			// know which sku to lock until it has read the row; every other writer goes
+			// the other way. Aimed at the SAME variant, that exception is the only
+			// thing standing between these two and a cycle — so this is where it is
+			// argued, not in a comment. The edit quotes the pre-orphan watermark, so it
+			// is a legal edit that the orphaning may or may not have invalidated,
+			// depending on which lands first.
+			const [declared, edited] = await Promise.allSettled([
+				h.products.upsertVariant(
+					{
+						productId: productId(id),
+						variantKey: "large",
+						title: "Large",
+						contentUpdatedAt: "2026-07-10T02:00:00.000Z",
+					},
+					idempotencyKey(`rvs-back-${loop}`),
+				),
+				h.products.updateVariantFields(
+					{
+						productId: productId(id),
+						variantKey: "large",
+						price: money(cents(3500), currency("GBP")),
+					},
+					idempotencyKey(`rvs-edit-${loop}`),
+					orphanWm,
+				),
+			]);
+
+			// The CMS channel never fails — not on a constraint, not on a deadlock.
+			expect(declared?.status, `loop ${loop}: the declare resolves`).toBe("fulfilled");
+			expect(edited?.status, `loop ${loop}: the edit resolves, never throws`).toBe("fulfilled");
+			if (edited?.status === "rejected") {
+				const err = edited.reason as Error & { code?: string };
+				expect(err.code, `loop ${loop}: never a deadlock — ${err.message}`).not.toBe("40P01");
+			}
+
+			// However they interleaved, the row is coherent: live again, in one
+			// currency, and never half-restored.
+			const [row] = await h.products.listVariants(productId(id));
+			expect(row?.orphanedAt, `loop ${loop}: the declare won presence`).toBeNull();
+			expect(new Set(await h.currencies(id)).size, `loop ${loop}`).toBeLessThanOrEqual(1);
+		}
+	}, 180_000);
 });

@@ -4092,7 +4092,14 @@ export function productCommerceStoreContract(
 			// pinned above.
 
 			describe("a product-level write sees live variants", () => {
-				/** A live variant holding `s`, on a product with no sku of its own. */
+				/**
+				 * A live variant holding `s`, on a product with no sku of its own — WITH
+				 * an `inventory` row, because that is production-normal: every applied
+				 * assignment is followed by the caller's create-if-absent seed, so a sku
+				 * a live unit holds nearly always has a stock row too. Seeding it here
+				 * keeps the two refusals SIMULTANEOUSLY applicable, which is the only
+				 * state in which their precedence is observable at all.
+				 */
 				async function variantHolding(
 					h: ProductCommerceStoreHarness,
 					pid: string,
@@ -4107,6 +4114,7 @@ export function productCommerceStoreContract(
 						declared.updatedAt.toISOString(),
 					);
 					if (!res.ok) throw new Error(`variantHolding: ${pid}/${key} could not take a sku`);
+					await h.seedStock(s, 0);
 				}
 
 				test("updateCommerceFields refuses a sku a LIVE VARIANT holds — the same typed refusal, the other way round", async () => {
@@ -4234,6 +4242,97 @@ export function productCommerceStoreContract(
 						seeded.updatedAt.toISOString(),
 					);
 					expect(res.ok).toBe(true);
+				});
+
+				test("PRECEDENCE: a product rename onto a sku a LIVE VARIANT holds refuses as SkuConflictError, never as a stock conflict", async () => {
+					const h = await makeStore();
+					// BOTH refusals apply here, which is the point: the target sku is held
+					// by a live variant AND has an inventory row. Only a fixed precedence
+					// makes every adapter say the same thing, and only one of the two
+					// sentences is actionable — the operator has to pick a different sku,
+					// not go looking for units to move.
+					await variantHolding(h, "prec-owner", "large", "PREC-OWNED");
+					const seeded = await seedEditable(h, "prec-taker", { sku: "PREC-FROM" });
+					await h.seedStock("PREC-FROM", 9);
+
+					await expect(
+						h.store.updateCommerceFields(
+							{ productId: productId("prec-taker"), sku: sku("PREC-OWNED") },
+							idempotencyKey("prec-1"),
+							seeded.updatedAt.toISOString(),
+						),
+					).rejects.toMatchObject({ name: "SkuConflictError" });
+
+					// Atomic either way: the rename applied nothing and moved nothing.
+					expect((await h.store.getByProductId(productId("prec-taker")))?.sku).toBe("PREC-FROM");
+					expect(await onHandOf(h, "prec-taker")).toBe(9);
+				});
+
+				test("PRECEDENCE, the same way round for upsert", async () => {
+					const h = await makeStore();
+					await variantHolding(h, "prec-owner-u", "large", "PREC-OWNED-U");
+					await h.store.upsert(
+						{ productId: productId("prec-taker-u"), sku: sku("PREC-FROM-U") },
+						idempotencyKey("prec-u-seed"),
+					);
+					await h.seedStock("PREC-FROM-U", 4);
+
+					await expect(
+						h.store.upsert(
+							{ productId: productId("prec-taker-u"), sku: sku("PREC-OWNED-U") },
+							idempotencyKey("prec-u-1"),
+						),
+					).rejects.toMatchObject({ name: "SkuConflictError" });
+					expect((await h.store.getByProductId(productId("prec-taker-u")))?.sku).toBe(
+						"PREC-FROM-U",
+					);
+				});
+
+				test("PRECEDENCE, from the variant side: a variant rename onto a sku a LIVE PRODUCT holds is also SkuConflictError", async () => {
+					const h = await makeStore();
+					// The mirror image, and it must answer identically — the rule belongs
+					// to the pair, so the sentence an operator reads cannot depend on
+					// which kind of unit they happened to be editing.
+					await seedEditable(h, "prec-p-owner", { sku: "PREC-P-OWNED" });
+					await h.seedStock("PREC-P-OWNED", 3);
+					await h.store.upsert({ productId: productId("prec-v") }, idempotencyKey("prec-v-seed"));
+					const declared = await declare(h, "prec-v", "large");
+					const priced = await h.store.updateVariantFields(
+						{ productId: productId("prec-v"), variantKey: "large", sku: sku("PREC-V-FROM") },
+						idempotencyKey("prec-v-price"),
+						declared.updatedAt.toISOString(),
+					);
+					if (!priced.ok) throw new Error("unreachable");
+					await h.seedStock("PREC-V-FROM", 7);
+
+					await expect(
+						h.store.updateVariantFields(
+							{ productId: productId("prec-v"), variantKey: "large", sku: sku("PREC-P-OWNED") },
+							idempotencyKey("prec-v-1"),
+							priced.variant.updatedAt.toISOString(),
+						),
+					).rejects.toMatchObject({ name: "SkuConflictError" });
+
+					const row = await variantOf(h, "prec-v", "large");
+					expect(row.sku).toBe("PREC-V-FROM");
+					expect(row.onHand).toBe(7);
+				});
+
+				test("a sku NO live unit holds still refuses as SkuStockConflictError — the two are distinguishable, not collapsed", async () => {
+					const h = await makeStore();
+					// The other refusal has to remain reachable, or the precedence above
+					// would just be the stock rule quietly deleted.
+					const seeded = await seedEditable(h, "prec-stock", { sku: "PREC-S-FROM" });
+					await h.seedStock("PREC-S-FROM", 5);
+					await h.seedStock("PREC-S-PARKED", 12);
+
+					await expect(
+						h.store.updateCommerceFields(
+							{ productId: productId("prec-stock"), sku: sku("PREC-S-PARKED") },
+							idempotencyKey("prec-s-1"),
+							seeded.updatedAt.toISOString(),
+						),
+					).rejects.toMatchObject({ name: "SkuStockConflictError" });
 				});
 
 				test("an ORPHANED variant's price never blocks a product pricing", async () => {

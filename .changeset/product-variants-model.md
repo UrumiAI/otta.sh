@@ -51,3 +51,11 @@ and keyset cursor is byte-identical and the whole existing contract suite is unt
 
 No REST surface, no CMS sync and no console changes yet; those are separate changes on top of
 this model.
+
+**Known follow-up, pre-existing and deliberately out of scope here:** the two product-level writers
+have the same deadlock exposure the variant writers now close, and it predates variants. They write
+`sku` in their guarded statement — taking an entry in the live-sku unique index — before any
+inventory lock, so two products renaming onto each other's skus can deadlock inside that index
+exactly as two variants could. Restructuring the writers the whole catalogue runs through belongs
+to its own change, with its own race.
+

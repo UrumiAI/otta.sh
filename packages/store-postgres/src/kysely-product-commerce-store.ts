@@ -95,40 +95,63 @@ export interface KyselyProductCommerceStoreOptions {
  *
  * ─── THE LOCK ORDER ────────────────────────────────────────────────────────
  *
- * EVERY writer in this class takes row locks in ONE total order, and this is
- * the only place it is written down:
+ * The VARIANT writers take row locks in one order, and this is the only place it
+ * is written down:
  *
  *     product_commerce  →  inventory, IN SKU ORDER  →  product_variants
  *
- * Skipping a stage is always allowed; taking one out of order is not. A writer
- * that never touches variants stops after `inventory`; a writer that touches one
- * sku takes one `inventory` lock. EVERY variant writer takes the parent's lock
- * first, so two writers under one product never interleave at all — which is what
- * makes the intra-product cases unreachable rather than merely ordered.
+ * Skipping a stage is always allowed; taking one out of order is not.
  *
- * WHY THIS ORDER, rather than any other total order:
+ * WHAT IS ACTUALLY PROVED, stated as the obligation rather than as a slogan,
+ * because "one total order" is stronger than what holds here:
+ *  1. Every variant writer that will APPLY takes the parent's lock first. Two
+ *     writers under one product therefore never interleave at all, which makes
+ *     every intra-product cycle unreachable rather than merely ordered — including
+ *     the one inside `product_variants_live_sku_unique`.
+ *  2. Writers that take at most ONE lock cannot participate in a cycle, since a
+ *     cycle needs someone waiting while holding. `deactivateVariant` is a single
+ *     conditional UPDATE and is in that class.
+ *  3. Across DIFFERENT parents, the only shared resources are `inventory` rows,
+ *     and those are taken in sorted sku order by every writer that takes two.
+ *  4. The `couldApply`-FALSE branch of `updateVariantFields` skips the parent lock
+ *     and so is outside (1). It is cycle-free only because such an edit never
+ *     applies, and THAT rests on the monotonic-clock assumption named on
+ *     `updateVariantFields` — the same assumption its guard 4b already rests on.
+ *     If that assumption is ever false, this branch is the second thing to fix.
+ *  5. `#applyVariantDeclare` is the one deliberate inversion: it cannot know which
+ *     sku to lock until it has read the row, so it takes the parent, then the
+ *     variant row, then at most ONE `inventory` row. It never holds two stock rows,
+ *     and every writer that could wait on its variant row holds the parent it
+ *     already owns — so it closes no cycle. Raced directly against a price edit of
+ *     the SAME variant in the variant race suite.
+ *
+ * WHY THIS ORDER, rather than any other:
  *  - `product_commerce` FIRST because it is the aggregate root — a product's
  *    currency is a fact about the product, so both the product's own repricing
- *    and any variant's pricing have to agree under one lock, and the variant
- *    paths must reach the parent before they own anything else.
+ *    and any variant's pricing have to agree under one lock.
  *  - `inventory` before `product_variants`, which is the opposite of what the
  *    reading order suggests and is the whole lesson of this class. A variant's
  *    guarded UPDATE looks like the decision that precedes the movement, but
  *    writing a sku also takes an entry in `product_variants_live_sku_unique`,
  *    and two writers crossing skus each end up waiting on the other's
  *    uncommitted index entry — a cycle formed inside the index, before either
- *    has touched a stock row. Taking the `inventory` rows first is what keeps
- *    only one of them inside the index at a time. The one deliberate exception
- *    is `#applyVariantDeclare`, which cannot know which sku to lock until it has
- *    read the row: it takes the parent, then the variant row, then at most ONE
- *    `inventory` row. It never holds two, and no other writer waits on a variant
- *    row while holding stock, so it closes no cycle.
+ *    has touched a stock row.
  *  - `inventory` rows IN SKU ORDER — sorted, never by role. A carry touches two
  *    of them, and which is "source" and which is "target" belongs to the caller
  *    rather than to the rows: two crossing renames, X→Y and Y→X, disagree about
  *    role order on the same pair, so ordering by role is ordering by nothing and
- *    they deadlock. Sorting gives every carry one agreed order over any pair.
- *    See `#carrySkuStock`, which is the only place two are held at once.
+ *    they deadlock (measured: `40P01` around one loop in 250). Sorting gives every
+ *    writer one agreed order over any pair.
+ *
+ * KNOWN, PRE-EXISTING, AND NOT ADDRESSED HERE: the PRODUCT-side writers have the
+ * same exposure this order closes for variants, and it predates variants. `upsert`
+ * and `#applyCommerceFields` write `sku` in their guarded statement, which takes
+ * an entry in `product_commerce_live_sku_unique`, BEFORE any `inventory` lock — so
+ * two products renaming onto each other's skus can deadlock inside that index
+ * exactly as two variants could. Restructuring them is deliberately out of scope
+ * for the change that introduced variants: it touches the two writers the whole
+ * catalog runs through, and it deserves its own change and its own race. Recorded
+ * so the next reader finds a known follow-up rather than an oversight.
  *
  * WHY IT IS WRITTEN DOWN RATHER THAN INFERRED. Every lock here is a portable
  * self-assignment `UPDATE` (`FOR UPDATE` is not SQLite), so the locks are
@@ -309,31 +332,37 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 		if (resolved === undefined) {
 			throw new Error(`product_commerce upsert lost its row for product_id ${input.productId}`);
 		}
-		// THE SKU-RENAME RULE (port doc), against the row's before/after values —
-		// so a same-key replay and a stale-watermark no-op, which both re-read and
-		// return the STORED row, compare equal here and move nothing.
-		//
-		// FIRST, because it is the carry that takes the SOURCE lock, and SOURCE
-		// precedes TARGET in the class's lock order. Doing the cross-table check
-		// first would take the target's lock ahead of the source's and deadlock two
-		// crossing renames.
 		const renaming = beforeSku !== null && resolved.sku !== null && resolved.sku !== beforeSku;
-		if (renaming && resolved.sku !== null) {
-			await this.#carrySkuStock(exec, beforeSku as string, resolved.sku, key);
-		}
 		// The RECIPROCAL half of "a sku names one live sellable unit" (port doc):
 		// the partial index covers product↔product, and this covers product↔variant,
 		// which no index can. `row !== undefined` is the "the statement applied"
 		// witness, so a same-key replay or a stale-watermark no-op refuses nothing —
 		// the same position the index occupies. Inside the sku-bearing path's own
 		// transaction, so the throw rolls the write back exactly as the index would.
-		// A rename already holds the target row (the carry's claim INSERTED it); a
-		// first assignment takes it here, which is the only lock it needs.
+		//
+		// BEFORE THE CARRY, and this is a PRECEDENCE decision rather than a locking
+		// one (locks are acquired below and above in the class's order regardless;
+		// LOCKS ARE NOT CHECKS). Both refusals can apply to one rename — a target sku
+		// that another live unit holds will, in production-normal state, also have an
+		// `inventory` row, because every applied assignment seeds one. Whichever runs
+		// first decides what the operator is told, so the order is fixed rather than
+		// incidental: "that sku names another sellable unit" is the actionable truth,
+		// and "units are parked under that sku" would be a misleading description of
+		// the same state. `SkuConflictError` therefore outranks
+		// `SkuStockConflictError` whenever a live unit holds the target.
 		if (row !== undefined && input.sku !== undefined) {
-			if (!renaming) await this.#lockSkuRowIfPresent(exec, input.sku);
+			const pair = renaming && beforeSku !== null ? [beforeSku, input.sku].toSorted() : [input.sku];
+			for (const s of pair) await this.#lockSkuRowIfPresent(exec, s);
 			if (await this.#skuTakenByLiveVariant(exec, input.sku)) {
 				throw new SkuConflictError(input.sku);
 			}
+		}
+		// THE SKU-RENAME RULE (port doc), against the row's before/after values — so
+		// a same-key replay and a stale-watermark no-op, which both re-read and return
+		// the STORED row, compare equal here and move nothing. The carry re-acquires
+		// the same sorted pair, which is a no-op now that this path holds it.
+		if (renaming && resolved.sku !== null) {
+			await this.#carrySkuStock(exec, beforeSku as string, resolved.sku, key);
 		}
 		return toDomain(resolved);
 	}
@@ -384,8 +413,8 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 	): Promise<void> {
 		if (sourceSku === targetSku) return;
 
-		// THE PAIR IS LOCKED IN SKU ORDER, NOT IN ROLE ORDER, and that distinction is
-		// the whole of the class lock order's last stage.
+		// THE PAIR IS ACQUIRED AS A PAIR, IN SKU ORDER — never one role and then the
+		// other, which is what deadlocked before this loop existed.
 		//
 		// A carry touches two `inventory` rows, and which of them is "source" and
 		// which is "target" is a property of the CALLER, not of the rows. Two
@@ -800,24 +829,31 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 		}
 
 		if (updated !== undefined) {
-			// THE SKU-RENAME RULE (port doc) — the applying branch, and only it, and
-			// FIRST because the carry is what takes the SOURCE lock (class lock order:
-			// SOURCE before TARGET).
 			const renaming = beforeSku !== null && updated.sku !== null && updated.sku !== beforeSku;
-			if (renaming && updated.sku !== null) {
-				await this.#carrySkuStock(exec, beforeSku as string, updated.sku, key);
-			}
 			// The RECIPROCAL of the variant writer's cross-table check (port doc):
 			// product↔product is the partial index, product↔variant is this. Only the
 			// applying branch reaches it, and the throw rolls back inside the
-			// sku-bearing path's own transaction. A rename already holds the target row
-			// (the carry's claim inserted it); a first assignment takes it here, so the
-			// two halves of the rule serialize on that row rather than on nothing.
+			// sku-bearing path's own transaction.
+			//
+			// BEFORE THE CARRY — a PRECEDENCE decision, not a locking one. In
+			// production-normal state a sku another live unit holds ALSO has an
+			// `inventory` row (every applied assignment seeds one), so both refusals
+			// apply and whichever runs first is what the operator reads.
+			// `SkuConflictError` wins: "that sku names another sellable unit" is
+			// actionable, while "units are parked under that sku" describes the same
+			// state misleadingly. The sorted pair is acquired here so the check reads
+			// under the same locks the carry will re-acquire.
 			if (input.sku !== undefined) {
-				if (!renaming) await this.#lockSkuRowIfPresent(exec, input.sku);
+				const pair =
+					renaming && beforeSku !== null ? [beforeSku, input.sku].toSorted() : [input.sku];
+				for (const s of pair) await this.#lockSkuRowIfPresent(exec, s);
 				if (await this.#skuTakenByLiveVariant(exec, input.sku)) {
 					throw new SkuConflictError(input.sku);
 				}
+			}
+			// THE SKU-RENAME RULE (port doc) — the applying branch, and only it.
+			if (renaming && updated.sku !== null) {
+				await this.#carrySkuStock(exec, beforeSku as string, updated.sku, key);
 			}
 			return { ok: true, product: toDomain(updated) };
 		}
@@ -1192,6 +1228,14 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 	 * one statement. That is the price of a resurrect that cannot corrupt, and it is
 	 * paid on an admin-frequency path (a document save), never on a checkout or
 	 * catalog read. A first declare of a new key is still the single INSERT above.
+	 *
+	 * AND THEY SERIALIZE ON THE PARENT. One save re-declaring N keys takes the SAME
+	 * `product_commerce` row lock N times, so those N declares run strictly one
+	 * after another rather than concurrently, and the save's variant sync is linear
+	 * in the number of sizes. For a garment's handful of sizes that is nothing; a
+	 * product with hundreds of variants would feel it, and the fix then is to batch
+	 * the declares into one transaction that takes the parent once — not to weaken
+	 * the lock.
 	 */
 	async #applyVariantDeclare(
 		exec: Kysely<Database>,
@@ -1392,6 +1436,15 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 	 * It is belt-and-braces rather than an argument alone: if the statement DOES
 	 * apply with a price while the resolution was skipped, `#applyVariantFields`
 	 * fails loudly instead of writing a currency it never checked.
+	 *
+	 * WHAT A REFUSED EDIT STILL COSTS, since the pre-check does not make it free: a
+	 * stale or replayed edit that CARRIES A SKU still opens a transaction and still
+	 * takes up to two `inventory` row locks before the guarded UPDATE classifies it,
+	 * and holds them until the transaction commits. Those locks are on the sku rows,
+	 * not on the product, so they block only writers touching the same stock — but a
+	 * client retrying a stale save in a tight loop is contending for real rows, not
+	 * merely failing. The pre-check spares such an edit the PARENT lock, which is
+	 * the one that would serialize the whole product.
 	 */
 	async updateVariantFields(
 		input: UpdateProductVariantFieldsInput,
@@ -1585,19 +1638,24 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 			// guard order (a stale or replayed edit never reaches it) — and inside the
 			// caller's transaction, so the throw rolls the write back exactly as the
 			// index's would.
-			// THE SKU-RENAME RULE (port doc) — the applying branch, and only it, and
-			// FIRST for the class lock order's sake (SOURCE before TARGET). The SAME
-			// carry the two product-level writers use: `inventory` is keyed by the bare
-			// sku and knows nothing about products or variants.
 			const renaming = beforeSku !== null && updated.sku !== null && updated.sku !== beforeSku;
+			// BEFORE THE CARRY — a PRECEDENCE decision, not a locking one. The sorted
+			// pair was already acquired above, ahead of the guarded UPDATE, so this
+			// check reads under the locks it needs; what is decided here is only WHICH
+			// typed refusal wins when both apply, which in production-normal state is
+			// most of the time (an applied assignment seeds an `inventory` row, so a
+			// sku another live unit holds nearly always has one too). `SkuConflictError`
+			// wins: it names the real obstacle, where `SkuStockConflictError` would
+			// describe the same state as parked units and send the operator looking for
+			// stock to move.
+			if (input.sku !== undefined && (await this.#skuTakenByLiveProduct(exec, input.sku))) {
+				throw new SkuConflictError(input.sku);
+			}
+			// THE SKU-RENAME RULE (port doc) — the applying branch, and only it. The
+			// SAME carry the two product-level writers use: `inventory` is keyed by the
+			// bare sku and knows nothing about products or variants.
 			if (renaming && updated.sku !== null) {
 				await this.#carrySkuStock(exec, beforeSku as string, updated.sku, key);
-			}
-			if (input.sku !== undefined) {
-				if (!renaming) await this.#lockSkuRowIfPresent(exec, input.sku);
-				if (await this.#skuTakenByLiveProduct(exec, input.sku)) {
-					throw new SkuConflictError(input.sku);
-				}
 			}
 			return { ok: true, variant: toVariantDomain(updated) };
 		}
