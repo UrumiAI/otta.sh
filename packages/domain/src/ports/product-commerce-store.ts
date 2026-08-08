@@ -50,11 +50,10 @@ export interface ProductListFilter {
 	 */
 	deleted?: boolean;
 	/**
-	 * Low-stock predicate parameter — the SQL-side twin of the plugin's
-	 * client-side `applyLowStockNarrowing` rule
-	 * (`packages/plugin/src/admin/products-read.ts`), moved into the store so
-	 * the database does the filtering instead of a page-scoped client-side
-	 * narrowing. The threshold is the store's SINGLE GLOBAL scalar
+	 * Low-stock predicate parameter — the rule behind the admin console's "Low
+	 * stock only" filter, applied by the DATABASE so it selects across the whole
+	 * catalog rather than trimming rows a page already fetched. The threshold is
+	 * the store's SINGLE GLOBAL scalar
 	 * (`SettingsStore.lowStockThreshold`), never a per-product reorder point —
 	 * this store does not read settings itself; the CALLER resolves the
 	 * threshold and passes the number through, exactly like every other value
@@ -718,17 +717,13 @@ export interface ProductCommerceStore {
 	 * axis a count cannot resolve without it), so every other predicate keeps
 	 * the join-free plan this method was measured against.
 	 *
-	 * CAPTION HAZARD for whichever caller wires this filter up: this method
-	 * returns a GENUINELY FILTERED total whenever `filter.lowStockThreshold`
-	 * is set, and the UNFILTERED total when it is omitted — the inverse of
-	 * the plugin's CURRENT client-side narrowing, which deliberately withholds
-	 * `total` while narrowing, precisely because that count did not describe
-	 * the rows on screen (see `applyLowStockNarrowing`'s doc). Once this
-	 * predicate is wired server-side, a caller that could not resolve a
-	 * threshold and therefore omitted this field is holding an UNFILTERED
-	 * total — it must not caption the list or the total as filtered in that
-	 * case. The omission has to propagate all the way to the caption, not
-	 * stop at the query.
+	 * CAPTION HAZARD for every caller of this filter: this method returns a
+	 * GENUINELY FILTERED total whenever `filter.lowStockThreshold` is set, and
+	 * the UNFILTERED total when it is omitted — and the two are captioned
+	 * differently. A caller that could not resolve a threshold and therefore
+	 * omitted this field is holding an UNFILTERED total: it must not caption
+	 * the list or the total as filtered in that case. The omission has to
+	 * propagate all the way to the caption, not stop at the query.
 	 */
 	countProducts(filter: ProductListFilter): Promise<number>;
 

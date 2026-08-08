@@ -5,9 +5,9 @@
  * fetched page straight into list state, so a successful `Load more` REPLACED
  * the rows the operator was reading instead of adding to them. Nothing had to
  * fail for that to happen — the success path alone lost the page above. On
- * Pricing & inventory it is what made a low-stock scan useless: the filter
- * narrows the page it fetched, so page one's matches vanished at the exact
- * moment the operator asked to see more of them.
+ * Pricing & inventory it is what made a low-stock scan useless: the matches the
+ * operator had already gathered vanished at the exact moment they asked to see
+ * more of them.
  *
  * MERGE ON IDENTITY, NEVER ON POSITION. The two requests are two statements
  * about a collection that keeps moving underneath them: a record inserted,

@@ -66,7 +66,9 @@ type WritePhase = import("../src/products/product-detail.js").WritePhase;
 const {
 	LOW_STOCK_FILTER_DESCRIPTION,
 	PRODUCTS_LOW_STOCK_NO_MATCH,
+	PRODUCTS_LOW_STOCK_NOUN,
 	PRODUCTS_NOUN,
+	SCAN_FURTHER,
 	listOutcome,
 	PRODUCTS_EMPTY,
 	PRODUCTS_NO_MATCH,
@@ -275,40 +277,55 @@ describe("the active-filter summary counts what is not at its default", () => {
 	});
 });
 
-describe("the list ladder is the SHARED one, page-scoped when the narrowing is on", () => {
+describe("the list ladder is the SHARED one, and low stock is a service-filtered scope now", () => {
 	test("a low-stock page with another page behind it SCANS rather than emptying", () => {
-		// The ordinary case on a real catalog: page 1 of a healthy store holds no
-		// low-stock rows at all. An empty state here would sit on top of
-		// `Load more` and dead-end the filter on a sentence that is also false.
+		// THE RUNG IS PINNED, NOT THE ROUTE TO IT. Against the real store this
+		// state cannot arise for this screen — a cursor is emitted only when a
+		// page overflows its limit, so zero rows always means no cursor — but the
+		// ladder must still choose `scan` over `empty` whenever a caller reports
+		// one, because an empty state renders on top of `Load more` and strands
+		// an operator mid-scan. The note is the ladder's DEFAULT now: the screen
+		// stopped authoring its own once the narrowing that made this the
+		// ordinary case was retired. `countScope` is `"service-filtered"` because
+		// the screen declares it unconditionally now (products-list.tsx).
 		const outcome = listOutcome({
 			count: 0,
 			filtered: true,
 			firstPage: true,
 			hasNext: true,
-			countScope: "narrowed-after-fetch",
-			noun: PRODUCTS_NOUN,
+			countScope: "service-filtered",
+			noun: PRODUCTS_LOW_STOCK_NOUN,
 			empty: PRODUCTS_EMPTY,
 			noMatch: PRODUCTS_LOW_STOCK_NO_MATCH,
 		});
 		expect(outcome.kind).toBe("scan");
-		expect(outcome.kind === "scan" && outcome.scanNote).toBe(PRODUCTS_LOW_STOCK_NO_MATCH.scanNote);
+		expect(outcome.kind === "scan" && outcome.scanNote).toBe(
+			`${PRODUCTS_LOW_STOCK_NO_MATCH.emptyText} ${SCAN_FURTHER}`,
+		);
+		expect(outcome.kind === "scan" && outcome.scanNote).toBe(
+			"No products are at or below the low-stock threshold. Load more scans further.",
+		);
 	});
 
-	test("a WITHHELD total leaves the count describing the page, not the catalog", () => {
-		// The plugin omits `total` while "Low stock only" is on, because the
-		// service counted the unnarrowed set. The React list must then say the
-		// smaller, true thing rather than inventing one.
+	test("a `total` on a genuinely low-stock-filtered page states the WHOLE low-stock set", () => {
+		// THE CAPTION RULE INVERTS. The predicate is the service's now, so its
+		// exact count is of the SAME set the page is drawn from — the count
+		// DESCRIBES the rows on screen, and is shown with the low-stock noun,
+		// the opposite of the client-side-narrowing days this replaces (which
+		// withheld it because the service's count then described a different,
+		// unnarrowed set).
 		const outcome = listOutcome({
 			count: 3,
 			filtered: true,
 			firstPage: true,
 			hasNext: true,
-			countScope: "narrowed-after-fetch",
-			noun: PRODUCTS_NOUN,
+			total: 137,
+			countScope: "service-filtered",
+			noun: PRODUCTS_LOW_STOCK_NOUN,
 			empty: PRODUCTS_EMPTY,
 			noMatch: PRODUCTS_LOW_STOCK_NO_MATCH,
 		});
-		expect(outcome.countLine).toBe("3 products on this page");
+		expect(outcome.countLine).toBe("137 low-stock products");
 	});
 
 	test("a total that IS forwarded describes the whole filtered set", () => {
@@ -848,10 +865,18 @@ describe("presentation primitives this screen relies on", () => {
 		expect(html).not.toMatch(/<button[^>]*aria-label=/);
 	});
 
-	test("the low-stock control's description is page-scoped", () => {
-		// The filter narrows the FETCHED PAGE, so a description promising "every
-		// low-stock product" would be a claim the screen cannot keep.
-		expect(LOW_STOCK_FILTER_DESCRIPTION).toContain("applies per page");
+	test("the low-stock control's description claims the WHOLE CATALOG", () => {
+		// The filter is a predicate the service applies to the query, so promising
+		// every low-stock product is a promise the screen keeps. The negative half
+		// is the one that matters: the page-scoped hedge this replaced would now
+		// understate what the control does.
+		expect(LOW_STOCK_FILTER_DESCRIPTION).toContain("every product in the catalog");
+		for (const stale of ["per page", "this page"]) {
+			expect(LOW_STOCK_FILTER_DESCRIPTION).not.toContain(stale);
+			expect(PRODUCTS_LOW_STOCK_NO_MATCH.emptyText).not.toContain(stale);
+			expect(PRODUCTS_LOW_STOCK_NO_MATCH.title).not.toContain(stale);
+			expect(PRODUCTS_LOW_STOCK_NO_MATCH.description).not.toContain(stale);
+		}
 	});
 });
 /**

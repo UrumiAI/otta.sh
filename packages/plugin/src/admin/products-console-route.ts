@@ -25,13 +25,18 @@
  * select) rather than a check. Every watermark, every content-derived
  * idempotency key and every word of refusal copy moved across verbatim.
  *
- * THE LIST IS NARROWED AFTER THE FETCH, AND THE `total` GOES WITH IT. "Low
- * stock only" has no service-side predicate: it narrows the page this request
- * fetched, so the service's exact count describes a DIFFERENT set of rows than
- * the ones on screen and must be withheld while it is on.
- * `applyLowStockNarrowing` (now in `products-read.ts`) makes that one decision —
- * see its doc. A screen that re-derived it could show three rows under a caption
- * reading "137 products".
+ * "LOW STOCK ONLY" IS A SERVER-SIDE PREDICATE NOW. The console resolves
+ * the store's threshold via the settings read this module already made for the
+ * `Low` band, and — only once that resolves to a real number — carries it on
+ * the outgoing list request as `ProductsListFilter.lowStockThreshold`, the same
+ * axis every other filter travels on. The service applies it to the WHOLE
+ * catalogue (not the fetched page) and its exact count is taken under the same
+ * predicate, so the count now describes the rows on screen and is forwarded
+ * rather than withheld. `resolveStockContext` (in `products-read.ts`) makes
+ * that one decision, and the one case it still withholds `total` for is the
+ * threshold-unreadable one: the request never carried a predicate, so a `total`
+ * there would caption an UNFILTERED page as though "Low stock only" had been
+ * honoured — see its doc.
  *
  * WHAT THIS MODULE DOES NOT DO: decide anything about stock or money. Every
  * idempotency key, every watermark comparison, every guarded decrement and
@@ -46,6 +51,7 @@ import type { PluginContext, RouteHandler, SelectOption } from "../types.js";
 import {
 	AdminProductsClient,
 	type ProductDetailWire,
+	type ProductsListResult,
 	type ProductSummaryWire,
 	type TaxClassWire,
 } from "./admin-products-client.js";
@@ -71,10 +77,10 @@ import {
 	PRODUCTS_FILTER_ANY,
 	PRODUCTS_KIND_OPTIONS,
 	PRODUCTS_STATUS_OPTIONS,
-	applyLowStockNarrowing,
 	filterFormFromValues,
 	readLowStockThreshold,
 	readTaxClasses,
+	resolveStockContext,
 	toClientFilter,
 } from "./products-read.js";
 import { ReportingSettingsClient } from "./reporting-client.js";
@@ -136,10 +142,12 @@ export interface ProductsConsoleListPayload {
 	 * it describes the rows above it.
 	 *
 	 * ABSENT STAYS ABSENT, and here it is absent for TWO reasons rather than
-	 * one: a service older than the field, and a "Low stock only" page whose
-	 * rows this module narrowed after the count was taken. Both land in the same
-	 * place, which is the point — `rowCountLine`'s page-scoped fallback is a
-	 * claim the render can back up on its own.
+	 * one: a service older than the field, and a "Low stock only" request whose
+	 * threshold could not be resolved, so the outgoing query never carried a
+	 * predicate and a count would caption an unfiltered page as filtered
+	 * (`stock.filterUnavailable`; see `resolveStockContext`'s doc). Both land in
+	 * the same place, which is the point — `rowCountLine`'s page-scoped fallback
+	 * is a claim the render can back up on its own.
 	 */
 	readonly total?: number;
 	readonly stock: ConsoleStockContext;
@@ -247,28 +255,49 @@ async function consoleList(
 	const client = await createClient(ctx);
 	const cursor = readString(input.cursor);
 	const form = readFilter(input.filter);
-	// The threshold read runs ALONGSIDE the page read and is secondary in both
-	// directions: it can never delay the list beyond its own latency, and it can
-	// never fail it (E-1) — `readLowStockThreshold` resolves to null instead of
-	// throwing.
-	const [page, threshold] = await Promise.all([
-		client.products.listProducts(toClientFilter(form), {
-			limit: PAGE_LIMIT,
-			...(cursor !== undefined && cursor.length > 0 ? { cursor } : {}),
-		}),
-		readLowStockThreshold(client.settings),
-	]);
-	const narrowed = applyLowStockNarrowing(page.products, {
-		wantsLowStock: form.lowStock === "true",
+	const wantsLowStock = form.lowStock === "true";
+	const hasCursor = cursor !== undefined && cursor.length > 0;
+	const pageOpts = { limit: PAGE_LIMIT, ...(hasCursor ? { cursor } : {}) };
+
+	let page: ProductsListResult;
+	let threshold: number | null;
+	if (wantsLowStock && !hasCursor) {
+		// THE THRESHOLD GATES THE QUERY on a fresh (non-continuation) request:
+		// the server can only filter by a number it was given, so the settings
+		// read runs FIRST rather than alongside the page read — the one case
+		// where E-1's "never delays the list beyond its own latency" no longer
+		// holds, and a `lowStock` filter is worth the one extra round trip. A
+		// CONTINUATION never resolves this way: its filter (with whatever
+		// threshold page one resolved) already rode in the opaque cursor the
+		// service minted, and `AdminProductsClient.listProducts` ignores a
+		// filter argument whenever a cursor is present, so re-sequencing here
+		// would only add latency for no effect.
+		threshold = await readLowStockThreshold(client.settings);
+		const filter = toClientFilter(form);
+		if (threshold !== null) filter.lowStockThreshold = threshold;
+		page = await client.products.listProducts(filter, pageOpts);
+	} else {
+		[page, threshold] = await Promise.all([
+			client.products.listProducts(toClientFilter(form), pageOpts),
+			readLowStockThreshold(client.settings),
+		]);
+	}
+
+	const resolved = resolveStockContext(page.products, {
+		wantsLowStock,
 		threshold,
 		total: page.total,
+		// THE CURSOR IS THE PREDICATE'S EVIDENCE on a continuation: the filter
+		// rode inside it, and the settings read above never reached the query.
+		// See `resolveStockContext`'s decision 3.
+		continuation: hasCursor,
 	});
 	return {
 		ok: true,
-		products: narrowed.rows.map((r) => r.product),
+		products: page.products,
 		nextCursor: page.nextCursor,
-		...(narrowed.total !== undefined ? { total: narrowed.total } : {}),
-		stock: narrowed.stock,
+		...(resolved.total !== undefined ? { total: resolved.total } : {}),
+		stock: resolved.stock,
 		vocabulary: PRODUCTS_CONSOLE_VOCABULARY,
 	};
 }

@@ -289,6 +289,63 @@ describe.skipIf(PG === undefined)("admin Products console HTTP contract", () => 
 		expect(Object.hasOwn(none, "total")).toBe(true);
 	});
 
+	// -- lowStockThreshold: the server-side predicate wired from the query string -
+
+	test("?lowStockThreshold filters to on_hand <= threshold, excludes rows with no inventory record, and `total` agrees", async () => {
+		await seed();
+		await server.seed("SKU-3", 2); // low
+		await server.seed("SKU-2", 10); // known, not low
+		// SKU-1 and SKU-EBOOK are deliberately left with NO inventory row — absent
+		// is not zero, so neither may match a low-stock predicate.
+		const body = await json(await get("/products?lowStockThreshold=5"));
+		const products = body.products as Array<Record<string, unknown>>;
+		expect(products.map((p) => p.productId)).toEqual(["prod-3"]);
+		expect(body.total).toBe(1);
+	});
+
+	test("?lowStockThreshold=0 is its own boundary — INCLUSIVE, and matches only a genuinely out-of-stock row", async () => {
+		await seed();
+		await server.seed("SKU-3", 0);
+		await server.seed("SKU-2", 1);
+		const body = await json(await get("/products?lowStockThreshold=0"));
+		expect((body.products as Array<Record<string, unknown>>).map((p) => p.productId)).toEqual([
+			"prod-3",
+		]);
+	});
+
+	test("an out-of-domain ?lowStockThreshold is a 400, never a 500", async () => {
+		await seed();
+		expect((await get("/products?lowStockThreshold=-1")).status).toBe(400);
+		expect((await get("/products?lowStockThreshold=2.5")).status).toBe(400);
+		expect((await get("/products?lowStockThreshold=not-a-number")).status).toBe(400);
+	});
+
+	test("keyset cursor round-trips `lowStockThreshold` across pages — the filter survives paging", async () => {
+		await seed();
+		await server.seed("SKU-3", 1);
+		await server.seed("SKU-2", 2);
+		await server.seed("SKU-1", 3);
+		const page1 = await json(await get("/products?lowStockThreshold=5&limit=2"));
+		const p1 = page1.products as Array<Record<string, unknown>>;
+		expect(p1).toHaveLength(2);
+		expect(page1.total).toBe(3);
+		expect(typeof page1.nextCursor).toBe("string");
+
+		const page2 = await json(
+			await get(`/products?cursor=${encodeURIComponent(page1.nextCursor as string)}`),
+		);
+		const p2 = page2.products as Array<Record<string, unknown>>;
+		// The remainder is exactly the third low-stock row — the digital
+		// distractor (no inventory row) never leaks in behind the cursor.
+		expect(p2).toHaveLength(1);
+		expect(page2.total).toBe(3);
+		expect([...p1, ...p2].map((p) => p.productId).toSorted()).toEqual([
+			"prod-1",
+			"prod-2",
+			"prod-3",
+		]);
+	});
+
 	test("GET /admin/products/:id returns the full detail incl. stock", async () => {
 		await seed();
 		await server.seed("SKU-1", 42);

@@ -343,6 +343,7 @@ export {
 	InvalidLowStockThresholdError,
 	InvalidProductFieldError,
 	isValidLowStockThreshold,
+	MAX_LOW_STOCK_THRESHOLD,
 	MissingProductIdError,
 	SkuConflictError,
 } from "./product-commerce/errors.js";

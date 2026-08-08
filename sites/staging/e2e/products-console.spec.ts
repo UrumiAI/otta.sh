@@ -227,24 +227,28 @@ test.describe("the migrated Pricing & inventory console", () => {
 		await expect(adminPage.getByTestId("products-filter-summary")).toHaveCount(0);
 	});
 
-	test("`Low stock only` is honest about being PAGE-SCOPED", async ({ adminPage }) => {
+	test("`Low stock only` states the WHOLE CATALOG", async ({ adminPage }) => {
 		await openProducts(adminPage);
 		const panel = adminPage.getByTestId("products-filters");
 		await panel.locator("summary").click();
 
 		// The control's own description says where the threshold lives and that the
-		// filter applies per page — a promise of "every low-stock product" is one
-		// this screen cannot keep, because the filter narrows the fetched page.
-		await expect(panel).toContainText("applies per page");
+		// filter reaches the whole catalog — a promise this screen keeps, because
+		// the threshold is a predicate the SERVICE applies to the query rather
+		// than a narrowing of the rows one page happened to fetch.
+		await expect(panel).toContainText(
+			"Show every product in the catalog at or below the low-stock threshold (set the threshold on Settings).",
+		);
 		await adminPage.getByTestId("filter-low-stock").check();
 		await adminPage.getByTestId("apply-filters").click();
 
 		await expect(adminPage.getByTestId("products-filter-summary")).toContainText("stock: low only");
 
-		// Whatever the seeded catalog holds, the screen must land in a PAGE-SCOPED
-		// state: rows under a page-scoped count, a scan note that keeps `Load more`
-		// alive, or the page-scoped zero state. What it must never do is claim
-		// anything about the whole catalog.
+		// Whatever the seeded catalog holds, the screen must land in a state whose
+		// words match what the SERVICE was asked: rows counted as low-stock ones,
+		// or the whole-catalog zero state. What it must never do is hedge back to
+		// the page — that qualifier described a narrowing this screen no longer
+		// does — or claim the catalog is empty when it is merely well stocked.
 		//
 		// ASSERTED ON THE SETTLED STATE, via `toPass`. The filter summary is
 		// derived from the applied filter and updates SYNCHRONOUSLY on click, while
@@ -256,20 +260,53 @@ test.describe("the migrated Pricing & inventory console", () => {
 		const intro = adminPage.getByTestId("products-intro");
 		const scan = adminPage.getByTestId("products-scan-note");
 		const empty = adminPage.getByTestId("products-no-match");
+		// A threshold the plugin could not read sends NO predicate, so the page is
+		// unfiltered and its ordinary words are the honest ones. That is a
+		// different state, not a softer version of this one, and it gets the
+		// assertions it earns rather than weakening the ones below.
+		//
+		// READ OFF THE BANNER'S TEXT, NOT ITS EXISTENCE. The banner carries three
+		// independently-true facts in one slot, and the increment that split them
+		// apart is exactly why its presence no longer implies this one: a page
+		// with a perfectly readable threshold whose on-hand COLUMN came back
+		// unreadable raises the same banner while the filter genuinely ran.
+		// Keying on `count()` would send that page down the unfiltered branch and
+		// assert the count must NOT say "low-stock product" — which it will.
+		const degraded = adminPage.getByTestId("products-stock-degraded");
+		const FILTER_NOT_APPLIED = "the Low stock only filter was not applied";
 		await expect(async () => {
 			const rows = await adminPage.getByTestId("products-row").count();
+			const unfiltered =
+				(await degraded.count()) > 0 &&
+				((await degraded.textContent()) ?? "").includes(FILTER_NOT_APPLIED);
 			if (rows === 0) {
-				// Either the page-scoped zero state, or the scan note that keeps
+				// Either the whole-catalog zero state, or the scan note that keeps
 				// `Load more` alive — never the whole-catalog "No products yet".
 				const scanned = await scan.count();
 				expect(scanned + (await empty.count())).toBeGreaterThan(0);
 				const shown = (await (scanned > 0 ? scan : empty).textContent()) ?? "";
-				expect(shown).toContain("No low-stock products on this page");
+				if (unfiltered) {
+					expect(shown).toContain("No products match these filters");
+				} else if (scanned > 0) {
+					expect(shown).toContain(
+						"No products are at or below the low-stock threshold. Load more scans further.",
+					);
+				} else {
+					expect(shown).toContain("No products are low on stock");
+					expect(shown).toContain(
+						"No product in the catalog is at or below the low-stock threshold.",
+					);
+				}
 			} else {
-				// A count line that describes the catalog would be the bug. Under the
-				// narrowing the plugin withholds the service's total, so the intro can
-				// only ever say "N products on this page".
-				expect((await intro.textContent()) ?? "").toContain("on this page");
+				// THE COUNT NAMES WHAT WAS COUNTED. The predicate ran server-side, so
+				// the rows are the low-stock ones the service selected and the count
+				// says so; the page-scoped hedge would now understate a real answer.
+				const counted = (await intro.textContent()) ?? "";
+				if (unfiltered) {
+					expect(counted).not.toContain("low-stock product");
+				} else {
+					expect(counted).toContain("low-stock product");
+				}
 			}
 		}).toPass({ timeout: 15_000 });
 

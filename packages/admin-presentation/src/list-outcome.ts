@@ -97,10 +97,12 @@ export const LOAD_MORE_LABEL = "Load more";
  *    about pages 1 and 2 (keyset paging carries no running offset);
  *  - THIS PAGE otherwise — `25 orders on this page`, a smaller claim and a true
  *    one. That is the fallback for a service older than `total`, and for a
- *    level that deliberately WITHHOLDS one because it narrowed the fetched page
- *    itself (products' "Low stock only" — the service counted the unnarrowed
- *    set, so passing it would caption the rows on screen with a number that
- *    does not describe them).
+ *    level that deliberately WITHHOLDS one because the count it holds describes
+ *    a different set of rows than the page does — a level that narrowed the
+ *    fetched page itself, or one whose filter the service could not be asked to
+ *    apply (products' "Low stock only" with no readable threshold: the service
+ *    counted every product, so passing that number would caption the rows on
+ *    screen as though the filter had run).
  *
  * `total` IS VALIDATED HERE RATHER THAN TRUSTED: a non-integer, negative, or
  * below-the-page count is a service disagreeing with itself, and the
@@ -245,9 +247,12 @@ export interface ListOutcomeOptions {
 	 *    `firstPage && !hasNext` really does mean the counted set is complete,
 	 *    and a `total` is honoured exactly as {@link rowCountLine} validates it.
 	 *  - `"narrowed-after-fetch"` — `count` was produced by narrowing an
-	 *    ALREADY-FETCHED page client-side (products' "Low stock only" is the one
-	 *    caller today, via `applyLowStockNarrowing`). Two things follow, and both
-	 *    are ENFORCED here rather than left to the caller to get right:
+	 *    ALREADY-FETCHED page client-side. NO caller states this scope today:
+	 *    products' "Low stock only" was the one that did, and it is a service
+	 *    predicate now. The scope stays because the failure it prevents is one a
+	 *    caller commits SILENTLY — a screen that filters rows in the browser and
+	 *    says nothing gets the whole-set phrasing for free. Two things follow,
+	 *    and both are ENFORCED here rather than left to the caller to get right:
 	 *      1. `firstPage && !hasNext` is the FETCH being complete, not the
 	 *         narrowed set — the moment a query happens to fit on one page, or a
 	 *         scan exhausts every page, that would otherwise read as "the
@@ -256,9 +261,9 @@ export interface ListOutcomeOptions {
 	 *         in this scope.
 	 *      2. A `total`, however it arrives, is NOT honoured: `listOutcome`
 	 *         drops it before it reaches {@link rowCountLine}. A caller whose
-	 *         narrowing did not actually apply to this page (products'
-	 *         `stock.filterUnavailable`) must report `"service-filtered"` for
-	 *         that page — passing `"narrowed-after-fetch"` with a total present
+	 *         narrowing did not actually apply to the page it is rendering must
+	 *         report `"service-filtered"` for that page — passing
+	 *         `"narrowed-after-fetch"` with a total present
 	 *         is exactly the caller error this refusal exists to survive, not a
 	 *         state this helper trusts a caller to avoid on its own.
 	 */

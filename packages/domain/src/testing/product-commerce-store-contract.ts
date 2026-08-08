@@ -3,6 +3,7 @@ import { cents, currency, money } from "../money/cents.js";
 import { idempotencyKey, productId, sku } from "../money/ids.js";
 import {
 	InvalidLowStockThresholdError,
+	MAX_LOW_STOCK_THRESHOLD,
 	MissingProductIdError,
 	SkuConflictError,
 } from "../product-commerce/errors.js";
@@ -1913,9 +1914,10 @@ export function productCommerceStoreContract(
 		});
 
 		// -- lowStockThreshold (the low-stock filter predicate) ----------------
-		// The SQL-side twin of the plugin's client-side `applyLowStockNarrowing`
-		// rule (`packages/plugin/src/admin/products-read.ts`): a row matches iff
-		// its sku resolves to a KNOWN on-hand count (an `inventory` row exists)
+		// The rule behind the admin console's "Low stock only" filter, applied by
+		// the store over the whole catalog rather than by a caller trimming a
+		// page it already fetched: a row matches iff its sku resolves to a KNOWN
+		// on-hand count (an `inventory` row exists)
 		// AND that count is <= the threshold. Absent (no inventory row, or no sku
 		// at all) is NEVER low stock — "unknown" is a different fact from "known
 		// and low" (port doc, `ProductSummary.onHand`). Omitting the field is a
@@ -2081,6 +2083,14 @@ export function productCommerceStoreContract(
 				Number.NaN,
 				Number.POSITIVE_INFINITY,
 				Number.NEGATIVE_INFINITY,
+				// ABOVE int4, and it belongs IN this list rather than beside it: the
+				// threshold is bound against `inventory.on_hand`, a Postgres
+				// `integer`, so an out-of-range value is refused by pg and ACCEPTED
+				// by SQLite and the fake. That is the same three-way disagreement
+				// every other entry here names, which is why the bound lives in the
+				// shared guard rather than at one adapter.
+				MAX_LOW_STOCK_THRESHOLD + 1,
+				Number.MAX_SAFE_INTEGER,
 			]) {
 				await expect(
 					h.store.listProducts({ lowStockThreshold: bad }, { limit: 25 }),
@@ -2199,6 +2209,14 @@ export function productCommerceStoreContract(
 				Number.NaN,
 				Number.POSITIVE_INFINITY,
 				Number.NEGATIVE_INFINITY,
+				// ABOVE int4, and it belongs IN this list rather than beside it: the
+				// threshold is bound against `inventory.on_hand`, a Postgres
+				// `integer`, so an out-of-range value is refused by pg and ACCEPTED
+				// by SQLite and the fake. That is the same three-way disagreement
+				// every other entry here names, which is why the bound lives in the
+				// shared guard rather than at one adapter.
+				MAX_LOW_STOCK_THRESHOLD + 1,
+				Number.MAX_SAFE_INTEGER,
 			]) {
 				await expect(h.store.countProducts({ lowStockThreshold: bad })).rejects.toBeInstanceOf(
 					InvalidLowStockThresholdError,

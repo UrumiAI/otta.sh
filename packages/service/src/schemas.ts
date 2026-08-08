@@ -1,3 +1,4 @@
+import { MAX_LOW_STOCK_THRESHOLD } from "@otta-sh/domain";
 import { z } from "zod";
 
 // Wire-level qty caps (service-hardening plan §4). Two different numbers,
@@ -660,16 +661,50 @@ export const productsListQuery = z.object({
 	search: z.string().min(1).max(200).optional(),
 	cursor: z.string().min(1).max(1000).optional(),
 	limit: z.coerce.number().int().min(1).max(100).optional().default(25),
+	// The low-stock predicate's query-string twin (the admin list's own filter,
+	// port doc): a raw query param arrives as a string, so it is converted here
+	// rather than kept as one, unlike the tri-state `active`/`deleted` enums
+	// above — this one is a number, not a two-value axis. Same domain as
+	// `lowStockQuery`/`settingsBody` below and as the port's own guard: a
+	// non-negative integer no greater than `MAX_LOW_STOCK_THRESHOLD`, so nothing
+	// outside it reaches the port (which would otherwise throw
+	// `InvalidLowStockThresholdError` and 500 rather than 400 a bad query).
+	//
+	// THE DIGIT GATE IS NOT DECORATION, and it is why this does not use
+	// `z.coerce` the way `limit` above does. Coercion is `Number(value)`, and
+	// `Number("")` is 0 — so a bare `?lowStockThreshold=` would arrive as a
+	// perfectly valid threshold of ZERO and silently narrow the list to
+	// out-of-stock rows, which is the one answer an operator who typed nothing
+	// cannot have meant. `Number` is equally content with `0x10` (16), `1e2`
+	// (100) and `" 7 "`, none of which a query string should be allowed to mean
+	// here. So the SHAPE is checked before the conversion: plain digits, or a
+	// 400.
+	//
+	// (`limit` above keeps its coercion, and the difference is not that an empty
+	// value is harmless there — `?limit=` coerces to 0, fails `min(1)` and 400s
+	// the whole query; `.default(25)` only fires when the key is ABSENT. It is
+	// that `limit`'s bounds catch every value coercion invents, whereas a
+	// threshold has no upper bound tight enough to do the same job: `0` is a
+	// perfectly valid threshold, so an empty parameter would sail through.)
+	lowStockThreshold: z
+		.string()
+		.regex(/^\d+$/)
+		.transform(Number)
+		.pipe(z.number().int().nonnegative().max(MAX_LOW_STOCK_THRESHOLD))
+		.optional(),
 });
 
 /** Validates the FILTER object carried inside a decoded opaque product-list
  *  cursor (MOD-1: re-validate the decoded filter through zod before trusting
- *  it) — mirrors `orderListFilterSchema`. */
+ *  it) — mirrors `orderListFilterSchema`. `lowStockThreshold` mirrors
+ *  `productsListQuery`'s own field one layer in: the cursor already carries a
+ *  real number (not a query string), so it is validated rather than coerced. */
 export const productListFilterSchema = z.object({
 	active: z.boolean().optional(),
 	deleted: z.boolean().optional(),
 	productKind: productKindEnum.optional(),
 	search: z.string().min(1).max(200).optional(),
+	lowStockThreshold: z.number().int().nonnegative().max(MAX_LOW_STOCK_THRESHOLD).optional(),
 });
 
 export type ProductsListQuery = z.infer<typeof productsListQuery>;
@@ -721,15 +756,20 @@ export const topProductsQuery = z.object({
 });
 
 export const lowStockQuery = z.object({
-	threshold: z.coerce.number().int().nonnegative().optional(),
+	threshold: z.coerce.number().int().nonnegative().max(MAX_LOW_STOCK_THRESHOLD).optional(),
 });
 
 // Settings body — both fields optional (partial update). Bounds mirror the
-// domain use-case (holdTtlMinutes positive, ≤ 1 week; lowStockThreshold ≥ 0):
-// invalid values are a 400, never silently clamped (§5.3).
+// domain use-case (holdTtlMinutes positive, ≤ 1 week) and, for the threshold,
+// the port's own guard: `MAX_LOW_STOCK_THRESHOLD` is `int4`'s maximum, because
+// `inventory.on_hand` is a Postgres `integer` the threshold is compared
+// against. The SAVED value is what every later list read binds, so an
+// unbounded write here is how an out-of-range threshold would reach the query
+// without ever appearing in a URL. Invalid values are a 400, never silently
+// clamped (§5.3).
 export const settingsBody = z.object({
 	holdTtlMinutes: z.number().int().positive().max(10_080).optional(),
-	lowStockThreshold: z.number().int().nonnegative().optional(),
+	lowStockThreshold: z.number().int().nonnegative().max(MAX_LOW_STOCK_THRESHOLD).optional(),
 });
 
 export type SettingsBody = z.infer<typeof settingsBody>;

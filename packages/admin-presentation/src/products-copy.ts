@@ -56,29 +56,21 @@ export const PRODUCTS_NOUN: RowNoun = { one: "product", other: "products" };
 /**
  * The noun the count uses while "Low stock only" is on (F29).
  *
- * A CORRECTNESS FIX IN A FILTER, NOT A FLOURISH. The narrowing keeps only the
- * low-stock rows out of the page it fetched, and the count then described those
- * rows with the noun for the whole catalog — "3 products" over a screen holding
- * three low-stock products out of twenty-five read. The number was right and the
- * sentence was not, which is the failure an operator reconciles against and
- * loses. Naming what was counted costs one word and removes the ambiguity.
+ * A CORRECTNESS FIX IN A FILTER, NOT A FLOURISH. The count describes the rows
+ * the low-stock predicate selected, and naming them with the noun for the whole
+ * catalog read as a claim about the catalog — "3 products" over a screen showing
+ * the three that are low. The number was right and the sentence was not, which
+ * is the failure an operator reconciles against and loses. Naming what was
+ * counted costs one word and removes the ambiguity.
+ *
+ * ONLY WHILE THE PREDICATE ACTUALLY RAN. A page the filter could not be applied
+ * to holds every product, and {@link PRODUCTS_NOUN} is the honest word for those
+ * rows — see the degradation banner's `filterUnavailable`.
  */
 export const PRODUCTS_LOW_STOCK_NOUN: RowNoun = {
 	one: "low-stock product",
 	other: "low-stock products",
 };
-
-/**
- * What the narrowing does to paging, said where the paging control is (F29).
- *
- * The other half of the same correctness fix. "Low stock only" has no service
- * predicate — it keeps the low-stock rows out of each page as that page arrives
- * — so `Load more` is genuinely a scan rather than a page of results, and an
- * operator who does not know that reads a short list as "these are all of them".
- * It renders beside the button, and only while both facts hold: the filter is
- * on, and there is another page to fetch.
- */
-export const LOW_STOCK_PER_PAGE_NOTE = "Low stock only filters each page as it loads.";
 
 /**
  * A CONTINUATION failure's title, which is a smaller claim than the server's.
@@ -111,7 +103,7 @@ export const PRODUCTS_EMPTY: ZeroStateCopy = {
 		"Products appear here as soon as a product document is saved in the CMS — pricing them is the next step, not a precondition.",
 };
 
-/** Zero rows with a filter on and NO low-stock narrowing: the operator narrowed
+/** Zero rows with a filter on and "Low stock only" OFF: the operator narrowed
  *  to nothing, so the way out is the filter. */
 export const PRODUCTS_NO_MATCH: ZeroStateCopy & { readonly emptyText: string } = {
 	title: "No products match these filters",
@@ -121,36 +113,54 @@ export const PRODUCTS_NO_MATCH: ZeroStateCopy & { readonly emptyText: string } =
 };
 
 /**
- * Zero rows with "Low stock only" ON — and every sentence in it is PAGE-SCOPED,
- * because the filter is.
+ * Zero rows with "Low stock only" ON AND NOTHING ELSE — a WHOLE-CATALOG claim,
+ * which is why the second half of that condition is load-bearing.
  *
- * "Low stock only" narrows the rows this page FETCHED rather than the query
- * (the service's products list has no stock predicate, and INC-03 measured one
- * unconditional join as cheaper than a gated one that walked ~9x the rows). So
- * page 1 holding no low-stock rows is the ordinary case on a real catalog, and
- * a whole-catalog claim here would be one the screen cannot keep. The
- * `scanNote` is what a zero-row page with another page behind it renders
- * instead of an empty state, so `Load more` survives and says what it is for.
+ * "Low stock only" is a predicate the SERVICE applies to the query, so a
+ * zero-row result means nothing in the catalog sits at or below the threshold —
+ * a claim the screen can now keep, and the opposite of the page-scoped
+ * narrowing this replaced.
+ *
+ * ONLY WHEN IT IS THE SOLE ACTIVE FILTER. The predicates are ANDed, so "low
+ * stock + Archived", "low stock + Digital" and "low stock + a search" can each
+ * return nothing while the catalog is full of low-stock products; this copy
+ * would then blame the threshold for the other filter's work. A caller with a
+ * second filter on renders {@link PRODUCTS_NO_MATCH} instead, which names the
+ * filters rather than the stock — see `products-list.tsx`'s `noMatch` choice.
+ *
+ * WHAT "NOTHING IS LOW" MEANS, EXACTLY. Not "everything is above the
+ * threshold": a product with no inventory row is neither low nor comparable to
+ * it (`ProductSummary.onHand`'s null is unknown, never zero). Both sentences
+ * below therefore say what the PREDICATE found — no row at or below the
+ * threshold — rather than making a claim about every product's stock level.
+ *
+ * NO `scanNote` OF ITS OWN ANY MORE, and the deletion is the point. That field
+ * exists for a screen with BETTER WORDS than the ladder's default, and this
+ * screen had them only while the narrowing made a zero-row page with a cursor
+ * behind it the ORDINARY case. It is now unreachable: the store emits a cursor
+ * only when a page overflows its limit, so zero rows always means no cursor.
+ * The ladder's default composes `emptyText` with the shared "Load more scans
+ * further", which keeps the rung — and `Load more` with it — should a future
+ * caller ever reach it, without this screen authoring a sentence nothing can
+ * render.
  */
 export const PRODUCTS_LOW_STOCK_NO_MATCH: ZeroStateCopy & {
 	readonly emptyText: string;
-	readonly scanNote: string;
 } = {
-	title: "No low-stock products on this page",
+	title: "No products are low on stock",
 	description:
-		"Every product on this page is above the low-stock threshold. Clear the filters to see them all, or set the threshold on Settings.",
-	emptyText: "No low-stock products on this page.",
-	scanNote: "No low-stock products on this page — Load more scans further.",
+		"No product in the catalog is at or below the low-stock threshold. Clear the filters to see them all, or set the threshold on Settings.",
+	emptyText: "No products are at or below the low-stock threshold.",
 };
 
-/** The "Low stock only" control's own description. PAGE-SCOPED WORDING, for the
- *  reason above: a description promising "every low-stock product" would be a
- *  claim the screen cannot keep. It states WHERE the threshold lives rather
- *  than its value — the number is a service read, and a filter control that
- *  sometimes carries a number and sometimes does not is worse than one that
- *  never does. */
+/** The "Low stock only" control's own description. It names the WHOLE CATALOG,
+ *  for the reason above: the threshold is a predicate on the query, so
+ *  promising every low-stock product is a promise the screen keeps. It states
+ *  WHERE the threshold lives rather than its value — the number is a service
+ *  read, and a filter control that sometimes carries a number and sometimes
+ *  does not is worse than one that never does. */
 export const LOW_STOCK_FILTER_DESCRIPTION =
-	"Show only products at or below the low-stock threshold (applies per page; set the threshold on Settings).";
+	"Show every product in the catalog at or below the low-stock threshold (set the threshold on Settings).";
 
 /** The `Low stock only` control's label, on both surfaces. */
 export const LOW_STOCK_FILTER_LABEL = "Low stock only";
@@ -203,7 +213,10 @@ export function stockDegradation(
 	}
 	if (facts.filterUnavailable) {
 		symptoms.push("the Low stock only filter was not applied");
-		remedies.push("Every product on this page is listed.");
+		// NOT "on this page": the React list accumulates, and this fact LATCHES
+		// across a scan (`nextPage`), so the sentence can sit over rows merged
+		// from several responses. "The rows below" is true of one page and of six.
+		remedies.push("The rows below are every product, not just the low-stock ones.");
 	}
 	if (symptoms.length === 0) return undefined;
 	const joined = symptoms.join("; ");

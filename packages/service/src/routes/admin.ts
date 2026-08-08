@@ -8,6 +8,7 @@ import {
 	getOrderCustomerContext,
 	getOrderTimeline,
 	idempotencyKey as toIdempotencyKey,
+	InvalidLowStockThresholdError,
 	type InventoryStore,
 	InvalidProductFieldError,
 	legalNextStates,
@@ -244,23 +245,37 @@ export function adminRoutes(deps: AdminRoutesDeps): Hono {
 				deleted: q.deleted === undefined ? undefined : q.deleted === "true",
 				productKind: q.productKind,
 				search: q.search,
+				lowStockThreshold: q.lowStockThreshold,
 			});
 			cursorPos = null;
 			limit = q.limit;
 		}
 
-		// The page and its EXACT count, under one filter, in parallel (INC-23) —
-		// the same shape as the Orders list above; see its note.
-		const [result, total] = await Promise.all([
-			deps.productCommerce.listProducts(filter, { cursor: cursorPos, limit }),
-			deps.productCommerce.countProducts(filter),
-		]);
-		const nextCursor =
-			result.nextCursor === null ? null : encodeProductCursor(result.nextCursor, filter, limit);
-		return c.json(
-			{ ok: true, products: result.products.map(serializeProductSummary), nextCursor, total },
-			200,
-		);
+		try {
+			// The page and its EXACT count, under one filter, in parallel (INC-23) —
+			// the same shape as the Orders list above; see its note. Sharing the
+			// filter is what lets the count describe the low-stock-filtered page
+			// once `filter.lowStockThreshold` is set (port doc).
+			const [result, total] = await Promise.all([
+				deps.productCommerce.listProducts(filter, { cursor: cursorPos, limit }),
+				deps.productCommerce.countProducts(filter),
+			]);
+			const nextCursor =
+				result.nextCursor === null ? null : encodeProductCursor(result.nextCursor, filter, limit);
+			return c.json(
+				{ ok: true, products: result.products.map(serializeProductSummary), nextCursor, total },
+				200,
+			);
+		} catch (err) {
+			// Defense-in-depth (port doc): both zod layers above already constrain
+			// `lowStockThreshold` to a non-negative integer, so this is normally
+			// unreachable — but an unmapped throw here would 500 a bad query
+			// instead of 400ing it, exactly the asymmetry the port doc calls out.
+			if (err instanceof InvalidLowStockThresholdError) {
+				return c.json({ error: "invalid query", issues: [{ message: err.message }] }, 400);
+			}
+			throw err;
+		}
 	});
 
 	app.get("/products/:productId", async (c) => {
@@ -1183,12 +1198,14 @@ function toProductFilter(parsed: {
 	deleted?: boolean;
 	productKind?: "physical" | "digital";
 	search?: string;
+	lowStockThreshold?: number;
 }): ProductListFilter {
 	const filter: ProductListFilter = {};
 	if (parsed.active !== undefined) filter.active = parsed.active;
 	if (parsed.deleted !== undefined) filter.deleted = parsed.deleted;
 	if (parsed.productKind !== undefined) filter.productKind = parsed.productKind;
 	if (parsed.search !== undefined) filter.search = parsed.search;
+	if (parsed.lowStockThreshold !== undefined) filter.lowStockThreshold = parsed.lowStockThreshold;
 	return filter;
 }
 
