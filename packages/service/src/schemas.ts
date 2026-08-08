@@ -536,10 +536,30 @@ export const editProductVariantBody = z
 export type EditProductVariantBody = z.infer<typeof editProductVariantBody>;
 
 // The ORPHAN transition (`POST /products/:id/variants/:variantKey/deactivate`).
-// Same shape and same rationale as `lifecycleProductCommerceBody`: the ordering
-// watermark is REQUIRED, because presence has two opposing transitions arriving
-// as independent fire-and-forget POSTs and only the watermark orders them.
-export const deactivateProductVariantBody = lifecycleProductCommerceBody;
+// The watermark is REQUIRED, because presence has two opposing transitions
+// arriving as independent fire-and-forget POSTs and only the watermark orders
+// them — the same reason `lifecycleProductCommerceBody` requires one.
+//
+// Written out rather than ALIASED to that body, and `.strict()` like its two
+// variant siblings. The two are identical today and are still not the same
+// schema: they gate different transitions on different tables, so a field added
+// to the publish gate must not silently become part of the orphan transition's
+// contract. And the alias inherited the lifecycle body's non-strict behaviour,
+// which left this one route quietly STRIPPING an unknown key while the declare
+// and the edit beside it answered 400 — the same "it saved" failure both of
+// those are `.strict()` to prevent.
+export const deactivateProductVariantBody = z
+	.object({
+		contentUpdatedAt: z
+			.string()
+			.regex(
+				/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/,
+				"contentUpdatedAt must be a Date.toISOString()-format UTC timestamp",
+			),
+	})
+	.strict();
+
+export type DeactivateProductVariantBody = z.infer<typeof deactivateProductVariantBody>;
 
 // Admin Products console: merchant restock / stock removal (admin-UX Increment
 // 2). `qty` is a positive integer count of whole units — NOT a money field, but

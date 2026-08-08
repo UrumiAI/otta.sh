@@ -217,16 +217,48 @@ export function productCommerceRoutes(deps: ProductCommerceDeps): Hono {
 	// `MISSING_PRODUCT_ID` guard above — routing already forbids an empty
 	// segment, so the route-level check covers the whitespace-only case and the
 	// `catch` covers whatever an adapter decides is empty.
+	//
+	// THE WRITE REPLIES ARE NOT LIST ROWS, and the asymmetry is a decision. `PUT`
+	// and `PATCH` answer the row they just wrote, WITHOUT `inStock`: a write reply
+	// states what the write did, and the store returns the stored row — no stock
+	// is joined for it, so an `inStock` here could only be invented. Emitting a
+	// hardcoded `false` beside a size that has units would be worse than omitting
+	// it, and re-reading inventory to fill the field would put a second query on
+	// every write to serve a value the caller did not ask for. A caller that wants
+	// the stock signal reads the list, which joins it in the same statement.
 
+	/**
+	 * The variants read. LIVE ROWS ONLY: an orphan is filtered out here, and the
+	 * filter is the decision — this GET is unauthenticated (the write gate covers
+	 * non-GET verbs only), and the caller it exists for is the storefront picker,
+	 * which needs the sizes a shopper may buy and nothing else.
+	 *
+	 * An orphan is a size the merchant has DISCONTINUED. Publishing it here would
+	 * put its title and its last price on an anonymous read — the shape of the
+	 * catalogue somebody stopped selling, and what they used to charge for it —
+	 * to serve a picker that must not render it anyway. Same rule as the omitted
+	 * unit cost on the commerce read beside this one: the ungated read carries
+	 * what a buyer may act on, and nothing else.
+	 *
+	 * Surfacing orphans is exactly what the console needs (a tombstone may still
+	 * hold stock and sit on live orders, and hiding it is how units get stranded),
+	 * so the orphan projection is owed to the INTERNAL-TOKEN admin surface, where
+	 * unit cost and the exact on-hand count already live. The port keeps returning
+	 * orphans flagged; this route is the boundary that decides who sees them.
+	 */
 	app.get("/:id/variants", async (c) => {
 		const id = c.req.param("id");
 		if (id.length === 0) {
 			return c.json({ error: "MISSING_PRODUCT_ID" }, 400);
 		}
 		const rows = await listProductVariants(deps.productCommerce, productId(id));
-		// An unknown product, or one that has declared no variants, is `[]` —
-		// absence, never a 404. That is the state the entire live catalog is in.
-		return c.json({ variants: rows.map(serializeVariantSummary) }, 200);
+		// An unknown product, one that has declared no variants, and one whose
+		// every size is orphaned are all `[]` — absence, never a 404. The first of
+		// those is the state the entire live catalog is in.
+		return c.json(
+			{ variants: rows.filter((row) => row.orphanedAt === null).map(serializeVariantSummary) },
+			200,
+		);
 	});
 
 	// The CMS-SYNC channel. Writes presence + the display-name cache and NOTHING
@@ -326,8 +358,15 @@ export function productCommerceRoutes(deps: ProductCommerceDeps): Hono {
 					409,
 				);
 			}
-			// currency_mismatch — the variant's own stored currency, or the
-			// product's. Absent is null, never a coerced string.
+			// currency_mismatch. `currency` is THE VARIANT'S OWN stored currency and
+			// only that — it is read off the row the store handed back, so it is
+			// `null` in the archetypal case, a FIRST pricing refused because it
+			// disagreed with the PRODUCT's currency rather than with anything this
+			// row holds. That is not a gap to paper over with the product's
+			// currency: the field states what this row is anchored to, `null` means
+			// "nothing yet", and a console renders the conflict from the product it
+			// already has on screen. Absent is null, never a coerced string, and
+			// never the other row's value smuggled in under this name.
 			return c.json(
 				{ ok: false, error: "CURRENCY_MISMATCH", currency: res.current.price?.currency ?? null },
 				409,
@@ -455,6 +494,16 @@ function serializeVariant(row: ProductVariant | ProductVariantSummary): Record<s
  * correct here and would be wrong on any surface that renders the number: a
  * size whose stock nobody knows is not one to offer. An admin surface that needs
  * the count reads it behind the internal token, where cost already lives.
+ *
+ * IT IS A STOCK SIGNAL ONLY, AND IT IS NOT PURCHASABILITY ON ITS OWN. `inStock`
+ * reads `true` for a stocked size of a product that is unpublished, or even
+ * soft-deleted — this projection knows about the variant row and its units, and
+ * nothing about the row above it. Purchasability has always been a JOIN in this
+ * codebase (`purchasable ⟺ commerce !== null && commerce.active`), decided by
+ * the plugin and not by a store projection, and that is unchanged one level
+ * down: a caller renders a size as buyable only when its PARENT's `active` says
+ * the product is, and this field says the size has units. Reading `inStock`
+ * alone offers sizes of products nobody has published.
  */
 function serializeVariantSummary(row: ProductVariantSummary): Record<string, unknown> {
 	return {

@@ -104,14 +104,18 @@ export function cartRoutes(deps: CartRoutesDeps & { productCommerce: ProductComm
 		// B's stock.
 		//
 		// Issue #80 closed the half of that where a product_commerce row existed
-		// and its sku differed. Two halves stayed open, and both become REACHABLE
-		// the moment a product hands out more than one sku, which is what variants
-		// are: a productId with NO row was waved through as "harmless", and a
-		// product whose skus live on its VARIANTS could never match at all. So the
-		// rule is now stated positively rather than as a list of rejections —
-		// every add must RESOLVE its sku to a live sellable unit OF THE NAMED
-		// PRODUCT (see `resolveSellableUnit`), and anything that does not resolve
-		// is rejected rather than reinterpreted.
+		// and its sku differed. The rule is now stated positively rather than as a
+		// list of rejections — every add must RESOLVE its sku to a live, priced
+		// sellable unit OF THE NAMED PRODUCT (see `resolveSellableUnit`), and
+		// anything that does not resolve is rejected rather than reinterpreted.
+		// That closes three cases the old check let through: a productId with NO
+		// commerce row (waved through as "harmless"), a soft-deleted product's
+		// sku, and — with the row present — a sku belonging to another product.
+		//
+		// A live VARIANT's sku is resolved and then refused, deliberately, until
+		// order pricing resolves the sellable unit rather than the product row.
+		// The reasoning is on `resolveSellableUnit`; it is a correctness gate, not
+		// a policy, and nothing on this endpoint changes when it opens.
 		//
 		// A BARE ADD (no productId) IS LEFT EXACTLY AS IT WAS, and that is a
 		// decision, not an oversight. Resolving a bare sku means asking "which
@@ -130,9 +134,19 @@ export function cartRoutes(deps: CartRoutesDeps & { productCommerce: ProductComm
 		// NOT AN N+1, and not on the reserve path: the resolution is at most two
 		// keyed reads per REQUEST (never per line — an add carries exactly one),
 		// the product read alone answers the storefront's hot path, and nothing
-		// here reserves, seeds or otherwise touches inventory. It runs BEFORE
-		// `addLine`, so a rejected add writes nothing and a replay of it is
-		// rejected identically rather than half-applied.
+		// here reserves, seeds or otherwise touches inventory.
+		//
+		// REPLAY PARITY HOLDS IN THE REJECTED DIRECTION, which is the direction
+		// that matters here: the guard runs BEFORE `addLine`, so a refused add
+		// writes nothing at all, and a same-key retry of it meets the same guard
+		// against the same catalog and is refused identically rather than
+		// half-applied. It does NOT hold in the other direction, and that is not a
+		// regression to fix here: an add that succeeded and whose unit is LATER
+		// orphaned, soft-deleted or unpriced meets the guard first on a same-key
+		// retry and answers 409, where before it would have replayed the stored
+		// line. The catalog genuinely changed under the caller between the two
+		// requests, so a refusal is the honest answer — and the original line, and
+		// its hold, are untouched by it.
 		let productId: string | null = null;
 		let kind: FulfillmentKind = "physical";
 		if (parsed.data.productId !== undefined) {
@@ -292,6 +306,24 @@ function serializeLine(line: CartLine): {
  * refuses the unpriced case here rather than letting it travel to a checkout
  * that would resolve the price from somewhere else.
  *
+ * A LIVE, PRICED VARIANT IS RESOLVED AND THEN REFUSED, and that is the whole of
+ * the variant branch today. The resolution is real — it is what tells a live
+ * size apart from a spoof — but the answer is still `unknown`, because ORDER
+ * PRICING IS NOT VARIANT-AWARE: `createOrderFromCart` and `POST /checkout/quote`
+ * both read the snapshot price AND the snapshot title from the `product_commerce`
+ * row named by `productId`, and neither has any way to reach a variant. Letting a
+ * size into a cart therefore does not sell the size; it sells the parent's price
+ * under the parent's name, immutably, because an order line's snapshot is never
+ * rewritten. A cheap product with an expensive size is then the issue-#80 attack
+ * one level down, and a product whose sizes carry all the money has no price at
+ * all and cannot check out.
+ *
+ * So the branch stays closed until the thing that makes it safe exists. THE
+ * UN-GATING CRITERION, stated once: order pricing resolves the SELLABLE UNIT
+ * rather than the product row — snapshotting the variant's own price and its own
+ * title onto the line. On that day this branch returns `ok` and its pinned test
+ * flips from refusal to acceptance; nothing else here has to move.
+ *
  * COST: one keyed read when the product's own sku matches — the storefront's
  * hot path, and byte-for-byte the read this route already did — and a second
  * only when it does not, which is the variant case. Both are per REQUEST, and an
@@ -318,11 +350,21 @@ async function resolveSellableUnit(
 		(row) => row.orphanedAt === null && row.sku !== null && String(row.sku) === submittedSku,
 	);
 	if (variant === undefined) return { status: "unknown" };
-	if (variant.price === null) return { status: "unpriced" };
-	// Fulfillment kind is a PRODUCT-level fact (there is no per-variant kind on
-	// the port), so a size inherits its product's: digital sizes of a digital
-	// product reserve nothing, exactly as the product itself would.
-	return { status: "ok", productKind: product.productKind };
+	// Resolved: a live size of exactly this product — and still refused, for the
+	// reason stated above. Deliberately the SAME refusal a spoof gets, so the
+	// endpoint publishes nothing about which sizes exist; and deliberately NOT
+	// `unpriced`, which would be a different and untrue statement — a priced size
+	// is priced, the price is simply one checkout cannot reach yet.
+	//
+	// The lookup above is not decoration. It is what tells a live size apart from
+	// a spoof, and it is the line the flip lands on: when order pricing resolves
+	// the sellable unit, this return becomes
+	//     return variant.price === null
+	//         ? { status: "unpriced" }
+	//         : { status: "ok", productKind: product.productKind };
+	// — a size inheriting its product's fulfillment kind, since there is no
+	// per-variant kind on the port.
+	return { status: "unknown" };
 }
 
 function failure(c: Context, reason: CartFailure): Response {

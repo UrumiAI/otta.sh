@@ -727,7 +727,12 @@ describe.skipIf(PG === undefined)("HTTP product-commerce contract [live server, 
 		expect(rows[0]).not.toHaveProperty("onHand");
 	});
 
-	test("the list is ordered by variant key and INCLUDES orphans, flagged", async () => {
+	// This read is UNAUTHENTICATED (the write gate covers non-GET verbs only) and
+	// exists for the storefront picker, so it carries live sizes and nothing else.
+	// A discontinued size's name and its last price are not public data; surfacing
+	// orphans is the internal-token console's job, where unit cost and the exact
+	// on-hand count already live.
+	test("the list is ordered by variant key and EXCLUDES orphans — the public read is live rows only", async () => {
 		await parent("prod-v5", "SKU-V5");
 		for (const k of ["small", "large", "medium"]) await declare("prod-v5", k);
 		const dropped = await request(
@@ -739,9 +744,28 @@ describe.skipIf(PG === undefined)("HTTP product-commerce contract [live server, 
 		expect(dropped.status).toBe(200);
 
 		const rows = (await listVariants("prod-v5")).body?.variants as Array<Record<string, unknown>>;
-		expect(rows.map((r) => r.variantKey)).toEqual(["large", "medium", "small"]);
-		expect(rows.find((r) => r.variantKey === "medium")?.orphanedAt).toEqual(expect.any(String));
-		expect(rows.find((r) => r.variantKey === "large")?.orphanedAt).toBeNull();
+		expect(rows.map((r) => r.variantKey)).toEqual(["large", "small"]);
+		// Every row this read emits is live, so the flag is present and always null
+		// — a caller never has to branch on it.
+		expect(rows.every((r) => r.orphanedAt === null)).toBe(true);
+	});
+
+	test("a product whose every size is orphaned reads as an empty list, not as tombstones", async () => {
+		await parent("prod-v5b", "SKU-V5B");
+		const declared = await declare("prod-v5b", "large");
+		const priced = await edit("prod-v5b", "large", {
+			sku: "SKU-V5B-L",
+			price: { amount: 7700, currency: "USD" },
+			expectedUpdatedAt: declared.body?.updatedAt as string,
+		});
+		expect(priced.status).toBe(200);
+		await request(
+			"POST",
+			"/products/prod-v5b/variants/large/deactivate",
+			{ contentUpdatedAt: "2026-08-09T00:00:00.000Z" },
+			{ "Idempotency-Key": "drop-v5b-large" },
+		);
+		expect((await listVariants("prod-v5b")).body).toEqual({ variants: [] });
 	});
 
 	test("editing an unknown key, and editing an ORPHANED one, are both VARIANT_NOT_FOUND — an edit is neither a create nor a resurrection", async () => {
@@ -771,9 +795,9 @@ describe.skipIf(PG === undefined)("HTTP product-commerce contract [live server, 
 		);
 		expect(orphaned.status).toBe(404);
 		expect(orphaned.body).toEqual({ ok: false, error: "VARIANT_NOT_FOUND" });
-		// No row was minted by either refusal.
-		const rows = (await listVariants("prod-v6")).body?.variants as Array<Record<string, unknown>>;
-		expect(rows).toHaveLength(1);
+		// No row was minted by either refusal — and the orphan the second one
+		// addressed is absent from the public read rather than resurrected by it.
+		expect((await listVariants("prod-v6")).body).toEqual({ variants: [] });
 	});
 
 	test("a lost update is a 409 STALE_EDIT carrying the watermark to reload from", async () => {
@@ -852,17 +876,19 @@ describe.skipIf(PG === undefined)("HTTP product-commerce contract [live server, 
 		expect(priced.status).toBe(200);
 		await server.seed("SKU-V11-L", 5);
 
-		// A shopper holds two of that size — reached through the cart's own guard,
-		// which now resolves a variant sku against its product.
-		const cart = await request("POST", "/carts", { currency: "USD" });
-		const cartId = (cart.body as { cartId: string }).cartId;
-		const added = await request(
+		// Two units of that size are held. Taken through the raw inventory
+		// primitive rather than a cart line, because a variant sku is not addable
+		// to a cart yet — and because THE SKU-RENAME RULE is a property of the sku
+		// column, not of one caller: any live reservation naming it blocks the
+		// rename, whatever took it.
+		const held = await request(
 			"POST",
-			`/carts/${cartId}/lines`,
-			{ sku: "SKU-V11-L", productId: "prod-v11", qty: 2 },
+			"/inventory/reserve",
+			{ sku: "SKU-V11-L", qty: 2 },
 			{ "Idempotency-Key": "hold-v11" },
 		);
-		expect(added.status).toBe(200);
+		expect(held.status).toBe(200);
+		expect(held.body?.ok).toBe(true);
 
 		const rename = await edit(
 			"prod-v11",
@@ -953,16 +979,46 @@ describe.skipIf(PG === undefined)("HTTP product-commerce contract [live server, 
 		);
 		expect(drop.status).toBe(200);
 
-		const rows = (await listVariants("prod-v15")).body?.variants as Array<Record<string, unknown>>;
-		expect(rows).toHaveLength(1);
-		expect(rows[0]).toMatchObject({
+		// Gone from the public read — and RETAINED, which that read can no longer
+		// show. The proof is the resurrect: the CMS declaring the key again brings
+		// back the SAME row, sku and price intact, which is only possible because
+		// deactivate never deleted it. The units never moved at any point.
+		expect((await listVariants("prod-v15")).body).toEqual({ variants: [] });
+		expect(await server.onHand("SKU-V15-L")).toBe(11);
+
+		const back = await declare(
+			"prod-v15",
+			"large",
+			{ title: "Large", contentUpdatedAt: "2026-08-10T00:00:00.000Z" },
+			"dcl-v15-resurrect",
+		);
+		expect(back.status).toBe(200);
+		expect(back.body).toMatchObject({
 			variantKey: "large",
-			// Retained in full: the row keeps its sku and its price, and the units
-			// stay exactly where they are.
 			sku: "SKU-V15-L",
 			price: { amount: 4200, currency: "USD" },
+			orphanedAt: null,
 		});
-		expect(rows[0]?.orphanedAt).toEqual(expect.any(String));
+		const rows = (await listVariants("prod-v15")).body?.variants as Array<Record<string, unknown>>;
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toMatchObject({ variantKey: "large", sku: "SKU-V15-L" });
 		expect(await server.onHand("SKU-V15-L")).toBe(11);
+	});
+
+	test("the deactivate body is strict too — an unknown key is a 400, never a silent strip", async () => {
+		await parent("prod-v16", "SKU-V16");
+		await declare("prod-v16", "large");
+		const res = await request(
+			"POST",
+			"/products/prod-v16/variants/large/deactivate",
+			{ contentUpdatedAt: VWM, title: "not this writer's field" },
+			{ "Idempotency-Key": "drop-v16-strict" },
+		);
+		expect(res.status).toBe(400);
+		expect(res.body?.error).toBe("invalid request body");
+		// Refused whole: the size is still live and still listed.
+		const rows = (await listVariants("prod-v16")).body?.variants as Array<Record<string, unknown>>;
+		expect(rows).toHaveLength(1);
+		expect(rows[0]?.orphanedAt).toBeNull();
 	});
 });
