@@ -362,17 +362,26 @@ export function refusalField(payload: ActPayload): "sku" | null {
 }
 
 /**
- * Whether a write's outcome APPLIED anything.
+ * Whether an outcome withholds F7's re-seed of the form it came from.
  *
- * The plugin's contract, stated once here: `ok` means the request was understood
- * and dispatched, and a REFUSAL is an error-variant notice — so the variant is
- * the whole discriminator, and nothing on this screen reads the sentence to
- * decide. It answers the one question F7 turns on: a refusal must not re-seed
- * the form it came from, because the operator's rejected input is what they need
- * in front of them to fix it.
+ * THE QUESTION IS NOT "DID THE WRITE APPLY", it is "DID THE RECORD MOVE" — and
+ * the two come apart on exactly one outcome. A refusal that NAMES A FIELD is the
+ * domain declining a value: nothing was written, the record underneath is the
+ * one already on screen, and re-seeding would replace the rejected input with
+ * the stored one underneath a sentence telling the operator to change it. Those
+ * keep their draft.
+ *
+ * A STALE refusal is the opposite fact wearing the same variant. The write was
+ * rejected because SOMEONE ELSE'S landed, so the record HAS moved; its notice
+ * says the latest values are shown below and to re-apply, and both halves of
+ * that are promises about the form. Keeping the draft would make the sentence
+ * false and leave the operator one Save away from overwriting the other writer
+ * with values chosen against a record they never saw — the reconciliation the
+ * whole optimistic-concurrency check exists to force. So `stale`, and every
+ * other outcome about the record as a whole, re-seeds exactly as before.
  */
-export function outcomeApplied(notice: ScreenNotice | null): boolean {
-	return notice === null || notice.variant !== "error";
+export function refusalKeepsDraft(notice: ScreenNotice | null): boolean {
+	return notice !== null && notice.variant === "error" && notice.field !== null;
 }
 
 /**
@@ -641,15 +650,14 @@ export function ProductDetail({
 							// would be a second author of it.
 							field: refusalField(result),
 						};
-			// F7, and the whole of why the claim is HERE rather than on the click: a
-			// write that was understood and REFUSED applied nothing, so re-seeding its
-			// form would replace the value the operator was told to change with the
-			// one still stored — under a sentence telling them to change it. They
-			// would have to retype what they already typed to read what they typed.
-			// The record still re-reads (the watermark moved for every OTHER form);
-			// only the remount is withheld, so the rejected draft stays on screen and
-			// the group reports itself as unsaved, which it is.
-			savedSection.current = outcomeApplied(outcome) ? sectionForAction(action.actionId) : null;
+			// F7, and the whole of why the claim is HERE rather than on the click: an
+			// outcome that names a FIELD wrote nothing, so re-seeding its form would
+			// replace the value the operator was told to change with the one still
+			// stored — under a sentence telling them to change it. Only that case is
+			// withheld; a stale refusal re-seeds, because there the record really did
+			// move (see `refusalKeepsDraft`). The re-read happens either way — every
+			// other form's watermark moved with it.
+			savedSection.current = refusalKeepsDraft(outcome) ? null : sectionForAction(action.actionId);
 			if (slot === undefined) {
 				setNotice(outcome);
 			} else {
@@ -1298,12 +1306,25 @@ export function IdentityFields({
 	// Save, and Save is not where the answer is; the sentence is also no longer
 	// duplicated at the top of the page, so a screen reader that misses a live
 	// region inserted together with its text gets no announcement at all. Moving
-	// focus into the region states it once, unconditionally, and leaves the
-	// operator one Tab from the input they have to change.
+	// focus into the region states it once. The region sits BETWEEN the input and
+	// Save, so from here Tab continues to Save and Shift+Tab returns to the input
+	// the sentence is about — which also re-reads this region on the way, through
+	// the `aria-describedby` below.
+	//
+	// IT IS NOT A GRAB. A write answers asynchronously, and by the time it does
+	// the operator may have moved on to another field — taking their caret out of
+	// it mid-word is worse than the announcement is worth. So focus moves only
+	// from somewhere it can be moved from: this form's own controls (where the
+	// click left it), or nowhere at all.
 	const region = React.useRef<HTMLDivElement | null>(null);
+	const form = React.useRef<HTMLDivElement | null>(null);
 	React.useEffect(() => {
 		if (refusal === null) return;
-		region.current?.focus();
+		const target = region.current;
+		if (target === null) return;
+		const active = document.activeElement;
+		const parked = active === null || active === document.body;
+		if (parked || form.current?.contains(active) === true) target.focus();
 	}, [refusal]);
 	return (
 		// A REFUSAL HOLDS THE GROUP OPEN — this is the one group shut on arrival
@@ -1315,7 +1336,7 @@ export function IdentityFields({
 			label={dirtyGroupLabel(identityGroupLabel(p.sku), dirty)}
 		>
 			<p style={{ fontSize: 12, opacity: 0.75, marginBlockStart: 0 }}>{IDENTITY_FORM_CONTEXT}</p>
-			<div style={{ display: "grid", gap: 10, maxInlineSize: 420 }}>
+			<div ref={form} style={{ display: "grid", gap: 10, maxInlineSize: 420 }}>
 				<Field label={PRODUCT_FIELD_LABELS.sku}>
 					<input
 						className="otta-focusable"
@@ -1335,8 +1356,10 @@ export function IdentityFields({
 				    be where they are looking. */}
 				{refusal !== null && (
 					// `tabIndex={-1}` so focus can be MOVED here without adding a stop to
-					// the tab order: the region is a destination, not a control.
-					<div id={refusalId} ref={region} tabIndex={-1} style={{ outline: "none" }}>
+					// the tab order: the region is a destination, not a control. It keeps
+					// the platform focus ring — a sighted keyboard operator has to be able
+					// to see where their focus went, exactly as `Notice`'s own region does.
+					<div id={refusalId} ref={region} tabIndex={-1}>
 						<Notice
 							variant={refusal.variant}
 							title={refusal.title}

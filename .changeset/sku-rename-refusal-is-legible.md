@@ -34,13 +34,21 @@ service log.
   opened it stays opened, and closing it remains the operator's to do. Every other outcome — a
   save, a stale watermark, a SKU another live product already holds — reports at the top of the
   screen exactly as before.
-- **A refused save keeps what the operator typed.** Every save on this screen is followed by a
-  re-read, and the section that saved is re-seeded from the record that came back. A refusal wrote
-  nothing, so there is nothing to re-seed from — and re-seeding anyway replaced the rejected SKU
-  with the stored one, underneath a sentence advising a different SKU. The form now keeps the
-  draft and reports itself unsaved, which it is. This applies to all three of the split forms: a
-  refused price or shipping save keeps its typed values too.
+- **A refusal that names a field keeps what the operator typed.** Every save on this screen is
+  followed by a re-read, and the section that saved is re-seeded from the record that came back.
+  These two refusals wrote nothing, so there is nothing to re-seed from — and re-seeding anyway
+  replaced the rejected SKU with the stored one, underneath a sentence advising a different SKU.
+  That form now keeps its draft and reports itself unsaved, which it is. **Only** refusals that
+  name a field do: a save refused as *stale* still re-seeds, because there the record genuinely
+  moved, and its message promises the latest values are shown and asks for the change to be
+  re-applied on top of them — keeping the draft would make both false, and would leave one more
+  Save between the operator and silently overwriting a writer they never saw.
 
 A count the service did not send is never rendered as `0`: zero reservations beside a refusal
 caused by reservations would be the one thing the sentence must not say, so the copy drops the
 figure and keeps the fact.
+
+Known, and untouched here: a **refused price save still shows a success receipt** in the Price
+group. That receipt is composed at submit time from the amounts on screen rather than from the
+outcome, so it reports a change that did not happen — for every refusal, not only these two. It
+predates this change and is left for a fix of its own.

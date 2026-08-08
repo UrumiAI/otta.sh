@@ -497,13 +497,14 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 		expect(result.field).toBe("sku");
 	});
 
-	test("a rename blocked by live holds names the sku AND the count, and the whole clause agrees with it", async () => {
-		// THE SINGULAR IS THE COMMON CASE, and it is the one a pluralised noun with a
-		// fixed verb gets wrong ("1 live reservation still hold units"). Both forms
-		// are pinned as complete clauses for that reason.
-		for (const [liveHolds, clause] of [
-			[3, '3 live reservations still hold units of "SKU-1"'],
-			[1, '1 live reservation still holds units of "SKU-1"'],
+	test("a rename blocked by live holds names the sku AND the count, and the whole sentence agrees with it", async () => {
+		// THE SINGULAR IS THE COMMON CASE, and a pluralised noun gets it wrong twice
+		// over — at the verb ("1 live reservation still hold units") and again at the
+		// pronoun the advice refers back with ("once those have been paid", of one
+		// reservation). Both forms are pinned WHOLE, end to end, for that reason.
+		for (const [liveHolds, clause, settled] of [
+			[3, '3 live reservations still hold units of "SKU-1"', "those have"],
+			[1, '1 live reservation still holds units of "SKU-1"', "it has"],
 		] as const) {
 			service.respondWith("PATCH", () => ({
 				status: 409,
@@ -516,7 +517,7 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 			expect(String(result.notice?.description), clause).toBe(
 				`Nothing was changed: ${clause}, and a reservation cannot follow a rename — its units ` +
 					"would return to the old SKU when the cart or order finishes. Try the rename again once " +
-					"those have been paid, cancelled or expired, usually a few minutes.",
+					`${settled} been paid, cancelled or expired, usually a few minutes.`,
 			);
 			expect(result.field, clause).toBe("sku");
 		}

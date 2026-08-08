@@ -454,21 +454,24 @@ function editOutcome(
 		}
 		case "sku_held_stock": {
 			const held = namedSku(result.sku, "this SKU");
-			// THE WHOLE CLAUSE AGREES, subject and verb together. Assembling a
-			// pluralised noun and then a fixed verb is how "1 live reservation still
-			// hold units" gets shipped — the SINGULAR is the common case here, so
-			// that is the one an operator would have read most often.
+			// THE WHOLE SENTENCE AGREES WITH THE COUNT — subject, verb, and the
+			// pronoun the advice refers back with. Assembling a pluralised noun and
+			// leaving anything downstream of it fixed is how "1 live reservation still
+			// hold units … once those have been paid" ships, and ONE is the commonest
+			// count there is.
+			const one = result.liveHolds === 1;
 			const holds =
 				result.liveHolds === null
 					? `live reservations still hold units of ${held}`
-					: result.liveHolds === 1
+					: one
 						? `1 live reservation still holds units of ${held}`
 						: `${String(result.liveHolds)} live reservations still hold units of ${held}`;
+			const settled = one ? "it has" : "those have";
 			return applied(
 				{
 					variant: "error",
 					title: "This SKU has reservations in flight",
-					description: `Nothing was changed: ${holds}, and a reservation cannot follow a rename — its units would return to the old SKU when the cart or order finishes. Try the rename again once those have been paid, cancelled or expired, usually a few minutes.`,
+					description: `Nothing was changed: ${holds}, and a reservation cannot follow a rename — its units would return to the old SKU when the cart or order finishes. Try the rename again once ${settled} been paid, cancelled or expired, usually a few minutes.`,
 				},
 				"sku",
 			);

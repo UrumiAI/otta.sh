@@ -285,6 +285,46 @@ test("a refused rename renders the SERVED sentence beside the SKU field, and onl
 	expect(container.querySelector('[data-testid="detail-notice"]')).toBeNull();
 });
 
+test("a refusal that lands after the operator has moved on does NOT take the caret off them", async () => {
+	// A write answers whenever the service gets round to it, and an operator does
+	// not stand still meanwhile. Announcing the refusal is worth moving focus FROM
+	// the button that raised it; it is not worth pulling someone out of a field
+	// they are mid-way through typing into. So the move happens only from this
+	// form's own controls, or from nowhere at all.
+	let release: (() => void) | null = null;
+	const inFlight = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	apiFetch.mockImplementation((_input, init) => {
+		const sent = JSON.parse(String(init?.body ?? "{}")) as { type?: string };
+		if (sent.type !== "otta_console_act") return Promise.resolve(payload({}));
+		return inFlight.then(() => actPayload(RENAME_REFUSAL, "sku"));
+	});
+	mounted = await mount(NODE);
+	await mounted.rerender(NODE);
+	const container = mounted.container;
+
+	const save = container.querySelector('[data-testid="save-identity"]');
+	if (save === null) throw new Error("no identity save control");
+	await fire(save, "click");
+
+	// ...and while it is in flight, the operator goes to work on the price.
+	const price = container.querySelector<HTMLInputElement>('input[data-testid="edit-price"]');
+	if (price === null) throw new Error("no price input");
+	price.focus();
+	expect(document.activeElement).toBe(price);
+
+	await React.act(async () => {
+		release?.();
+	});
+	await mounted.rerender(NODE);
+	await mounted.rerender(NODE);
+
+	// The refusal is on screen — and the caret never left the field they moved to.
+	expect(container.querySelector('[data-testid="edit-sku-refusal"]')).not.toBeNull();
+	expect(document.activeElement).toBe(price);
+});
+
 test("a REFUSED rename keeps the SKU the operator typed — it does not restore the stored one", async () => {
 	// THE SENTENCE SAYS "rename to a SKU that has never held stock". A form that
 	// re-seeded itself from the record would answer that advice by silently
@@ -324,26 +364,52 @@ test("an APPLIED save still re-seeds the form from the record it just wrote", as
 	);
 });
 
+/** The identity disclosure AS IT IS NOW. Re-queried at every use on purpose: a
+ *  remount replaces the element, and a handle taken before one reports `open`
+ *  off a node that has left the document — which is true whatever the screen
+ *  does to the live one. */
+function disclosure(container: HTMLElement): HTMLDetailsElement | null {
+	return container.querySelector<HTMLDetailsElement>('details[data-testid="edit-identity"]');
+}
+
 test("a later outcome that clears the refusal does NOT slam the disclosure shut", async () => {
 	// `Group` renders a native `<details open={…}>`, and React reconciles that
 	// prop: a `false` arriving after a `true` closes the element. So a refusal
 	// followed by any other write would have closed a group the operator is
 	// working in — the one thing `Group`'s own doc promises the screen can never
 	// do to them.
+	//
+	// THE CLEARING WRITE GOES THROUGH THE PRICE FORM, which is the whole test.
+	// A second identity save would remount identity and draw a fresh `<details>`
+	// that never sees the `true → false` transition at all; a price save leaves
+	// the identity element in place and merely re-renders it with no refusal —
+	// which is exactly the path an operator takes, and the only one where the
+	// force-close is observable.
 	const saved = { variant: "default", title: "Saved", description: "Updated." };
 	const container = await mountForWrites(
 		() => actPayload(RENAME_REFUSAL, "sku"),
 		() => actPayload(saved),
 	);
 	await clickSaveIdentity();
-	const identity = container.querySelector<HTMLDetailsElement>(
-		'details[data-testid="edit-identity"]',
-	);
-	expect(identity?.open).toBe(true);
+	const opened = disclosure(container);
+	expect(opened?.open).toBe(true);
 
-	await clickSaveIdentity();
+	// SCOPED TO THE INPUT: the price DISCLOSURE carries the same testid, and the
+	// bare selector matches it first.
+	const price = container.querySelector<HTMLInputElement>('input[data-testid="edit-price"]');
+	if (price === null) throw new Error("no price input");
+	await type(price, "44.00");
+	const savePrice = container.querySelector('[data-testid="save-price"]');
+	if (savePrice === null) throw new Error("no price save control");
+	await fire(savePrice, "click");
+	await mounted?.rerender(NODE);
+	await mounted?.rerender(NODE);
+
+	// The refusal is gone, the identity element is the SAME one, and it is still
+	// open — the assertion is on the live node, not on the handle taken above.
 	expect(container.querySelector('[data-testid="edit-sku-refusal"]')).toBeNull();
-	expect(identity?.open).toBe(true);
+	expect(disclosure(container)).toBe(opened);
+	expect(disclosure(container)?.open).toBe(true);
 });
 
 test("an outcome that names no field still reports at the top, and never beside the SKU", async () => {
@@ -364,6 +430,35 @@ test("an outcome that names no field still reports at the top, and never beside 
 	expect(container.querySelector('[data-testid="edit-sku"]')?.getAttribute("aria-invalid")).toBe(
 		null,
 	);
+});
+
+test("a STALE refusal re-seeds the form, because there the record really did move", async () => {
+	// THE ONE REFUSAL THAT IS NOT ABOUT A VALUE. `stale` means someone else's write
+	// landed, so the record underneath changed and the notice promises the operator
+	// two things about this form: that the latest values are shown, and that they
+	// should re-apply their change on top of them. Keeping the draft would make
+	// both false — and would leave one more Save between the operator and silently
+	// overwriting a writer whose values they never saw. Draft retention is for the
+	// refusals that name a FIELD, where nothing moved at all.
+	const stale = {
+		variant: "error",
+		title: "This product changed since you opened it",
+		description: "Your edit was NOT applied — the latest values are shown below.",
+	};
+	const container = await mountForWrites(() => actPayload(stale));
+	const input = container.querySelector<HTMLInputElement>('[data-testid="edit-sku"]');
+	if (input === null) throw new Error("no sku input");
+	await type(input, "APR-LIN-LOSER");
+	await clickSaveIdentity();
+
+	expect(container.querySelector<HTMLInputElement>('[data-testid="edit-sku"]')?.value).toBe(
+		BASE.sku,
+	);
+	// ...and with the draft gone, the group is clean again — no ` · unsaved` over
+	// work the screen has just discarded on the operator's behalf.
+	expect(
+		container.querySelector('details[data-testid="edit-identity"] summary')?.textContent,
+	).not.toContain("unsaved");
 });
 
 test("the group that opens on arrival is the one the screen is named for", async () => {
