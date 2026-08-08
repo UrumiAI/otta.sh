@@ -104,7 +104,8 @@ export interface KyselyProductCommerceStoreOptions {
  *
  * WHAT IS ACTUALLY PROVED, stated as the obligation rather than as a slogan,
  * because "one total order" is stronger than what holds here:
- *  1. Every variant writer that will APPLY takes the parent's lock first. Two
+ *  1. Every variant writer that will APPLY takes the parent's lock first — except
+ *     the single-lock writer in (2), which needs no ordering to be safe. Two
  *     writers under one product therefore never interleave at all, which makes
  *     every intra-product cycle unreachable rather than merely ordered — including
  *     the one inside `product_variants_live_sku_unique`.

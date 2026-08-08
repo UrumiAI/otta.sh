@@ -3628,6 +3628,36 @@ export function productCommerceStoreContract(
 					).rejects.toBeInstanceOf(SkuHeldStockError);
 					expect((await variantOf(h, "prod-vboth", "large")).sku).toBe("VBOTH");
 				});
+
+				test("PRECEDENCE over the live-hold refusal: a target held by a LIVE UNIT is SkuConflictError, even when the source also has holds", async () => {
+					const h = await makeStore();
+					// THREE refusals are live at once here — the source has a hold, the
+					// target has a stock row, and the target is held by a live product —
+					// so this is where the whole ladder is fixed rather than left to
+					// whichever check a future reorder happens to run first.
+					//
+					// The live-unit collision wins, and it should: a hold clears by
+					// itself and the message says "try again shortly", while a sku that
+					// names another sellable unit never clears on its own. Telling the
+					// operator to wait for a hold that is not the real obstacle sends
+					// them back for nothing.
+					const wm = await stockedVariant(h, "prod-vprec", "large", "VPREC-SRC", 6);
+					await h.seedHold("VPREC-SRC", 1);
+					await seedEditable(h, "prod-vprec-owner", { sku: "VPREC-OWNED" });
+					await h.seedStock("VPREC-OWNED", 3);
+
+					await expect(
+						h.store.updateVariantFields(
+							{ productId: productId("prod-vprec"), variantKey: "large", sku: sku("VPREC-OWNED") },
+							idempotencyKey("vprec-1"),
+							wm,
+						),
+					).rejects.toMatchObject({ name: "SkuConflictError" });
+
+					const row = await variantOf(h, "prod-vprec", "large");
+					expect(row.sku).toBe("VPREC-SRC");
+					expect(row.onHand).toBe(6);
+				});
 			});
 
 			// -- the resurrect revalidates rather than asserts ----------------------
@@ -4316,6 +4346,30 @@ export function productCommerceStoreContract(
 					const row = await variantOf(h, "prec-v", "large");
 					expect(row.sku).toBe("PREC-V-FROM");
 					expect(row.onHand).toBe(7);
+				});
+
+				test("PRECEDENCE over the live-hold refusal, from the product side too", async () => {
+					const h = await makeStore();
+					// The mirror of the variant-side ladder: same three refusals live at
+					// once, same winner, so the sentence an operator reads does not depend
+					// on which kind of unit they were editing.
+					await variantHolding(h, "prec-hold-owner", "large", "PREC-HOLD-OWNED");
+					const seeded = await seedEditable(h, "prec-hold-taker", { sku: "PREC-HOLD-FROM" });
+					await h.seedStock("PREC-HOLD-FROM", 8);
+					await h.seedHold("PREC-HOLD-FROM", 2);
+
+					await expect(
+						h.store.updateCommerceFields(
+							{ productId: productId("prec-hold-taker"), sku: sku("PREC-HOLD-OWNED") },
+							idempotencyKey("prec-hold-1"),
+							seeded.updatedAt.toISOString(),
+						),
+					).rejects.toMatchObject({ name: "SkuConflictError" });
+
+					expect((await h.store.getByProductId(productId("prec-hold-taker")))?.sku).toBe(
+						"PREC-HOLD-FROM",
+					);
+					expect(await onHandOf(h, "prec-hold-taker")).toBe(8);
 				});
 
 				test("a sku NO live unit holds still refuses as SkuStockConflictError — the two are distinguishable, not collapsed", async () => {

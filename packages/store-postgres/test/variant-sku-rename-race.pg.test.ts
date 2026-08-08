@@ -843,42 +843,50 @@ describe.skipIf(PG === undefined)("variant sku rename concurrency [postgres]", (
 		}
 	}, 180_000);
 
-	test("a RESURRECT racing a PRICE EDIT of THE SAME variant: no deadlock, and the row is never left half-restored", async () => {
-		const LOOPS = 120;
+	test("a RESURRECT racing a PRODUCT claiming THE ORPHAN'S OWN SKU: no deadlock, and exactly one live unit ends up holding it", async () => {
+		const LOOPS = 150;
 		const h = await freshPg(8);
+		let resurrectKept = 0;
+		let editTookIt = 0;
 
 		await Promise.all(Array.from({ length: 8 }, () => h.onHand("warm-up")));
 
 		for (let loop = 0; loop < LOOPS; loop++) {
 			const id = `rvs-${loop}`;
+			const orphanSku = `RVS-S-${loop}`;
 			await h.seedProduct(id);
-			const wmL = await h.declareVariant(id, "large");
-			const priced = await h.products.updateVariantFields(
-				{
-					productId: productId(id),
-					variantKey: "large",
-					price: money(cents(3000), currency("GBP")),
-				},
-				idempotencyKey(`rvs-price-${loop}`),
-				wmL,
-			);
-			expect(priced.ok, `loop ${loop}: the orphan was priced`).toBe(true);
-			const orphanWm = priced.ok ? priced.variant.updatedAt.toISOString() : "";
+			// An orphan carrying a SKU WITH A STOCK ROW — the only state in which the
+			// declare reaches its third stage and takes an `inventory` lock at all. An
+			// orphan that is merely priced never gets there, so a race built on one
+			// would exercise the exception's comment rather than the exception.
+			await h.seedVariant(id, "large", orphanSku, 9);
 			await h.products.deactivateVariant(
 				productId(id),
 				"large",
 				idempotencyKey(`rvs-orphan-${loop}`),
 				"2026-07-10T01:00:00.000Z",
 			);
+			// The claimant is a PRODUCT of its own, and that is deliberate: a sibling
+			// VARIANT reaching for the same sku is arbitrated by
+			// `product_variants_live_sku_unique` whatever the declare does, so a race
+			// built on one would pass with the declare's stage-3 lock deleted. No index
+			// spans the two tables, so the product claimant is the case where that lock
+			// is the only thing standing between a stale read and two live sellable
+			// units on one sku.
+			//
+			// The same VARIANT cannot serve as the competitor either: while it is
+			// orphaned every edit of it is `not_found`, and the moment the declare
+			// revives it the edit's watermark is stale — so a literal same-variant pair
+			// can never both hold locks, and the contention worth racing is over the
+			// SKU rather than over the row.
+			const claimant = `rvs-claimant-${loop}`;
 
-			// THE PAIR THE HEADER'S EXCEPTION TURNS ON. The declare is the one writer
-			// that takes the variant row BEFORE an `inventory` row, because it cannot
-			// know which sku to lock until it has read the row; every other writer goes
-			// the other way. Aimed at the SAME variant, that exception is the only
-			// thing standing between these two and a cycle — so this is where it is
-			// argued, not in a comment. The edit quotes the pre-orphan watermark, so it
-			// is a legal edit that the orphaning may or may not have invalidated,
-			// depending on which lands first.
+			// THE PAIR THE HEADER'S ONE DELIBERATE INVERSION TURNS ON. The declare goes
+			// parent → variant row → inventory(orphan's sku); every other writer goes
+			// parent → inventory → variant row. Here they meet on the same stock row
+			// from opposite directions: the declare holds `large` and wants the sku,
+			// the edit holds the sku and wants `small`. Nobody waits on a row the other
+			// holds, which is exactly the argument — and this is where it is checked.
 			const [declared, edited] = await Promise.allSettled([
 				h.products.upsertVariant(
 					{
@@ -889,30 +897,44 @@ describe.skipIf(PG === undefined)("variant sku rename concurrency [postgres]", (
 					},
 					idempotencyKey(`rvs-back-${loop}`),
 				),
-				h.products.updateVariantFields(
-					{
-						productId: productId(id),
-						variantKey: "large",
-						price: money(cents(3500), currency("GBP")),
-					},
-					idempotencyKey(`rvs-edit-${loop}`),
-					orphanWm,
+				h.products.upsert(
+					{ productId: productId(claimant), sku: sku(orphanSku) },
+					idempotencyKey(`rvs-claim-${loop}`),
 				),
 			]);
 
 			// The CMS channel never fails — not on a constraint, not on a deadlock.
 			expect(declared?.status, `loop ${loop}: the declare resolves`).toBe("fulfilled");
-			expect(edited?.status, `loop ${loop}: the edit resolves, never throws`).toBe("fulfilled");
 			if (edited?.status === "rejected") {
 				const err = edited.reason as Error & { code?: string };
 				expect(err.code, `loop ${loop}: never a deadlock — ${err.message}`).not.toBe("40P01");
+				expect(err.name, `loop ${loop}: typed refusal — ${err.message}`).toBe("SkuConflictError");
 			}
 
-			// However they interleaved, the row is coherent: live again, in one
-			// currency, and never half-restored.
-			const [row] = await h.products.listVariants(productId(id));
-			expect(row?.orphanedAt, `loop ${loop}: the declare won presence`).toBeNull();
-			expect(new Set(await h.currencies(id)).size, `loop ${loop}`).toBeLessThanOrEqual(1);
+			// However they interleaved: the variant is live again, and the sku names
+			// exactly ONE live unit. Either the resurrect got there first and kept its
+			// sku (so the edit was refused), or the edit got there first and the
+			// revalidation handed the sku back as absent.
+			const rows = await h.products.listVariants(productId(id));
+			const large = rows.find((v) => v.variantKey === "large");
+			const claimed = await h.skuOfProduct(claimant);
+			expect(large?.orphanedAt, `loop ${loop}: the declare won presence`).toBeNull();
+			const holders = [large?.sku, claimed].filter((x) => x === orphanSku);
+			// THE ASSERTION THAT BITES: never both. No index spans the two tables, so
+			// this holds only because the two writers met on the sku's stock row.
+			expect(holders, `loop ${loop}: exactly one live unit holds the sku`).toHaveLength(1);
+			if (large?.sku === orphanSku) {
+				resurrectKept++;
+				// Kept, units and all — the resurrect never touches `inventory`.
+				expect(large?.onHand, `loop ${loop}`).toBe(9);
+			} else {
+				editTookIt++;
+			}
 		}
+
+		// Both interleavings occurred, so both branches above were genuinely
+		// asserted rather than merely written down.
+		expect(resurrectKept, "the resurrect-first branch fired").toBeGreaterThan(0);
+		expect(editTookIt, "the claimant-first branch fired").toBeGreaterThan(0);
 	}, 180_000);
 });
