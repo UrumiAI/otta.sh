@@ -123,16 +123,26 @@ describe.skipIf(PG === undefined)(
 			expect(b.totalCents).toBe(3000);
 		});
 
-		test("no false positive: an UNPRICED product (row exists, no price) still QUOTES 409 PRODUCT_NOT_PRICED even with productId threaded", async () => {
+		// The guarantee this test has always made is unchanged — threading a
+		// productId must never make an unpriced row look purchasable — but the
+		// service now makes it EARLIER. Since the add endpoint's SKU guard, an
+		// unpriced sellable unit is refused at the Add button rather than accepted
+		// and then refused at the quote, so the shopper is told while they can
+		// still do something about it and no stock is held for a line that could
+		// never have been bought. The token is the same one the quote used.
+		test("no false positive: an UNPRICED product (row exists, no price) is refused PRODUCT_NOT_PRICED at the ADD, with the productId threaded", async () => {
 			const productId = await seedProduct({ sku: "SKU-UNPRICED", onHand: 5 }); // no price
 			const { cartId } = await client.createCart("USD");
 			const added = await client.addCartLine(cartId, "SKU-UNPRICED", productId, 1, "unpriced-1");
-			if (!added.ok) throw new Error("unreachable");
-			expect(added.line.productId).toBe(productId); // productId DID thread…
+			expect(added).toEqual({ ok: false, reason: "PRODUCT_NOT_PRICED" });
 
-			const q = await quote(cartId); // …but there is genuinely no price
+			// Nothing persisted, nothing held, and the cart is still empty — so the
+			// downstream quote cannot see a priced line either.
+			const read = await client.getCart(cartId);
+			expect(read).toMatchObject({ ok: true, cart: { lines: [] } });
+			const q = await quote(cartId);
 			expect(q.status).toBe(409);
-			expect(q.body.reason).toBe("PRODUCT_NOT_PRICED");
+			expect(q.body.reason).toBe("CART_EMPTY");
 		});
 
 		test("a legacy add with NO productId (absent) is preserved as null and still quotes PRODUCT_NOT_PRICED", async () => {
@@ -211,7 +221,11 @@ describe.skipIf(PG === undefined)(
 		});
 
 		test("addCartLine beyond on_hand returns the typed OUT_OF_STOCK token as a normal (non-throwing) result", async () => {
-			const productId = await seedProduct({ sku: "SKU-CART-2", onHand: 1 });
+			const productId = await seedProduct({
+				sku: "SKU-CART-2",
+				onHand: 1,
+				price: { amount: 1500, currency: "USD" },
+			});
 			const { cartId } = await client.createCart();
 
 			const result = await client.addCartLine(cartId, "SKU-CART-2", productId, 5, "add-key-2");
@@ -219,7 +233,11 @@ describe.skipIf(PG === undefined)(
 		});
 
 		test("adjustCartLine sends the TARGET qty; the service applies the delta and the client reflects the new qty", async () => {
-			const productId = await seedProduct({ sku: "SKU-CART-4", onHand: 5 });
+			const productId = await seedProduct({
+				sku: "SKU-CART-4",
+				onHand: 5,
+				price: { amount: 1500, currency: "USD" },
+			});
 			const { cartId } = await client.createCart();
 			const added = await client.addCartLine(cartId, "SKU-CART-4", productId, 2, "add-key-4");
 			if (!added.ok) throw new Error("unreachable");
@@ -229,7 +247,11 @@ describe.skipIf(PG === undefined)(
 		});
 
 		test("adjustCartLine increasing beyond available stock returns OUT_OF_STOCK, line unchanged", async () => {
-			const productId = await seedProduct({ sku: "SKU-CART-5", onHand: 3 });
+			const productId = await seedProduct({
+				sku: "SKU-CART-5",
+				onHand: 3,
+				price: { amount: 1500, currency: "USD" },
+			});
 			const { cartId } = await client.createCart();
 			const added = await client.addCartLine(cartId, "SKU-CART-5", productId, 2, "add-key-5");
 			if (!added.ok) throw new Error("unreachable");
@@ -242,7 +264,11 @@ describe.skipIf(PG === undefined)(
 		});
 
 		test("removeCartLine releases the reservation and drops the line; the typed CartResult carries ok:true only", async () => {
-			const productId = await seedProduct({ sku: "SKU-CART-6", onHand: 5 });
+			const productId = await seedProduct({
+				sku: "SKU-CART-6",
+				onHand: 5,
+				price: { amount: 1500, currency: "USD" },
+			});
 			const { cartId } = await client.createCart();
 			const added = await client.addCartLine(cartId, "SKU-CART-6", productId, 2, "add-key-6");
 			if (!added.ok) throw new Error("unreachable");
@@ -258,6 +284,68 @@ describe.skipIf(PG === undefined)(
 			const { cartId } = await client.createCart();
 			const result = await client.adjustCartLine(cartId, "does-not-exist", 1, "adjust-key-missing");
 			expect(result).toEqual({ ok: false, reason: "LINE_NOT_FOUND" });
+		});
+
+		// The add endpoint's SKU guard, from the client's side: a size is a row of
+		// its own, so its sku is addable against its product — and the moment the
+		// CMS stops declaring the size, the same sku stops resolving even though
+		// the row still holds it. Both answers ride the client's ordinary typed
+		// envelope; neither is a thrown transport error.
+		test("a LIVE variant's sku adds against its product; once ORPHANED the same sku is SKU_MISMATCH", async () => {
+			const productId = await seedProduct({
+				sku: "SKU-CART-VAR",
+				onHand: 5,
+				price: { amount: 2000, currency: "USD" },
+			});
+			// The size's units. A variant's first sku ADOPTS whatever inventory row
+			// already stands under it (units and all), so stocking one means
+			// creating that row and then freeing the sku: a soft-deleted product is
+			// no longer a LIVE sellable unit, so its sku is available again while
+			// its stock stays exactly where it is. That is the documented path, and
+			// it is the only one this wire exposes — the product upsert cannot seed
+			// stock under a sku a live variant holds, because it would be claiming a
+			// sku that already names a sellable unit.
+			const donor = await seedProduct({
+				sku: "SKU-CART-VAR-L",
+				onHand: 4,
+				price: { amount: 2500, currency: "USD" },
+			});
+			await client.softDeleteProductCommerce(donor, "cartvar-free-sku");
+
+			const declared = await client.upsertProductVariant(
+				productId,
+				"large",
+				{ title: "Large", contentUpdatedAt: "2026-08-08T00:00:00.000Z" },
+				"cartvar-declare",
+			);
+			const priced = await client.updateProductVariantFields(
+				productId,
+				"large",
+				{ sku: "SKU-CART-VAR-L", price: { amount: 2500, currency: "USD" } },
+				declared.updatedAt,
+				"cartvar-price",
+			);
+			if (!priced.ok) throw new Error("unreachable");
+
+			const { cartId } = await client.createCart("USD");
+			const added = await client.addCartLine(cartId, "SKU-CART-VAR-L", productId, 1, "cartvar-add");
+			expect(added).toMatchObject({ ok: true, line: { sku: "SKU-CART-VAR-L", productId } });
+
+			await client.deactivateProductVariant(
+				productId,
+				"large",
+				"cartvar-drop",
+				"2026-08-09T00:00:00.000Z",
+			);
+			const { cartId: secondCart } = await client.createCart("USD");
+			const afterDrop = await client.addCartLine(
+				secondCart,
+				"SKU-CART-VAR-L",
+				productId,
+				1,
+				"cartvar-add-2",
+			);
+			expect(afterDrop).toEqual({ ok: false, reason: "SKU_MISMATCH" });
 		});
 
 		test("a genuinely malformed request (a bad qty) still surfaces as a structured CommerceClientError", async () => {

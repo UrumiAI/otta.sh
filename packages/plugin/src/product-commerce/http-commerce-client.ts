@@ -15,13 +15,18 @@ import {
 	type PaymentIntentWire,
 	type ProductCommerce,
 	type ProductCommerceBatchItem,
+	type ProductVariantSummaryWire,
+	type ProductVariantWire,
 	type PublicOrderResult,
 	type PublicOrderWire,
 	type QuoteBreakdownWire,
 	type QuoteFailureReason,
 	type QuoteRequestWire,
 	type QuoteResult,
+	type UpdateProductVariantFieldsInput,
 	type UpsertProductCommerceInput,
+	type UpsertProductVariantInput,
+	type VariantUpdateResult,
 } from "./commerce-client.js";
 
 export interface HttpCommerceClientOptions {
@@ -149,6 +154,98 @@ export class HttpCommerceClient implements CommerceClient {
 	}
 
 	// ── end Phase 2 catalog batch read ────────────────────────────────────
+
+	// ── Variants: one method per WRITER (ADR-0016) ────────────────────────
+	// 1:1 mirrors of the service's `/products/:id/variants*` routes. The
+	// variant key is a path SEGMENT and is `encodeURIComponent`-escaped: it is
+	// opaque CMS text, so a key carrying a slash or a space must address its own
+	// row rather than a route that does not exist.
+
+	/** `GET /products/:id/variants` — every variant of one product, ordered by
+	 *  key, ORPHANS INCLUDED and flagged. A pure read: no idempotency key, and
+	 *  an unknown product is `[]` rather than an error. */
+	async listProductVariants(productId: string): Promise<ProductVariantSummaryWire[]> {
+		const res = await this.#fetch(this.#variantsUrl(productId), {
+			method: "GET",
+			headers: this.#baseHeaders(),
+		});
+		const body = await this.#json<{ variants: ProductVariantSummaryWire[] }>(res);
+		return body.variants;
+	}
+
+	/** `PUT /products/:id/variants/:variantKey` — the CMS-sync declare. Sends
+	 *  ONLY the name cache and the watermark; the body is `.strict()` at the
+	 *  service, so a stray commercial field is a 400 rather than a silent drop. */
+	async upsertProductVariant(
+		productId: string,
+		variantKey: string,
+		input: UpsertProductVariantInput,
+		idempotencyKey: string,
+	): Promise<ProductVariantWire> {
+		const res = await this.#fetch(this.#variantUrl(productId, variantKey), {
+			method: "PUT",
+			headers: this.#baseHeaders({
+				"content-type": "application/json",
+				"Idempotency-Key": idempotencyKey,
+			}),
+			body: JSON.stringify(input),
+		});
+		return this.#json<ProductVariantWire>(res);
+	}
+
+	/** `PATCH /products/:id/variants/:variantKey` — the guarded admin edit.
+	 *  Every documented refusal is normalized to a typed VALUE; only a body with
+	 *  no recognizable envelope at all still throws `CommerceClientError`. */
+	async updateProductVariantFields(
+		productId: string,
+		variantKey: string,
+		input: UpdateProductVariantFieldsInput,
+		expectedUpdatedAt: string,
+		idempotencyKey: string,
+	): Promise<VariantUpdateResult> {
+		const res = await this.#fetch(this.#variantUrl(productId, variantKey), {
+			method: "PATCH",
+			headers: this.#baseHeaders({
+				"content-type": "application/json",
+				"Idempotency-Key": idempotencyKey,
+			}),
+			body: JSON.stringify({ ...input, expectedUpdatedAt }),
+		});
+		let body: unknown;
+		try {
+			body = await res.json();
+		} catch {
+			body = undefined;
+		}
+		if (res.ok) return { ok: true, variant: body as ProductVariantWire };
+		// The integrator commerce routes carry their machine code on `error`,
+		// where the cart/checkout envelopes carry it on `reason`. Normalize to
+		// `reason` HERE so every typed failure in this client reads the same way,
+		// and a caller never has to know which family of routes answered it.
+		const refusal = asVariantRefusal(body);
+		if (refusal !== null) return refusal;
+		throw new CommerceClientError(res.status, body);
+	}
+
+	/** `POST /products/:id/variants/:variantKey/deactivate` — the orphan
+	 *  transition. Deactivation, never deletion; an unknown key is a no-op. */
+	async deactivateProductVariant(
+		productId: string,
+		variantKey: string,
+		idempotencyKey: string,
+		contentUpdatedAt: string,
+	): Promise<void> {
+		const res = await this.#fetch(`${this.#variantUrl(productId, variantKey)}/deactivate`, {
+			method: "POST",
+			headers: this.#baseHeaders({
+				"content-type": "application/json",
+				"Idempotency-Key": idempotencyKey,
+			}),
+			body: JSON.stringify({ contentUpdatedAt }),
+		});
+		await this.#json<{ ok: true }>(res);
+	}
+	// ── end variants ──────────────────────────────────────────────────────
 
 	// ── Phase 3 group E: cart (plan §6 step 6) ────────────────────────────
 	// Straight 1:1 mirrors of `@otta-sh/service`'s `routes/carts.ts`. Typed
@@ -508,6 +605,14 @@ export class HttpCommerceClient implements CommerceClient {
 		return `${this.#baseUrl}/products/${encodeURIComponent(productId)}/commerce`;
 	}
 
+	#variantsUrl(productId: string): string {
+		return `${this.#baseUrl}/products/${encodeURIComponent(productId)}/variants`;
+	}
+
+	#variantUrl(productId: string, variantKey: string): string {
+		return `${this.#variantsUrl(productId)}/${encodeURIComponent(variantKey)}`;
+	}
+
 	async #json<T>(res: Response): Promise<T> {
 		let body: unknown;
 		try {
@@ -519,6 +624,54 @@ export class HttpCommerceClient implements CommerceClient {
 			throw new CommerceClientError(res.status, body);
 		}
 		return body as T;
+	}
+}
+
+/**
+ * Map one variant-edit refusal body onto its typed value, or `null` when the
+ * body carries no refusal this client knows — which is what makes an unknown
+ * shape throw instead of silently becoming a plausible-looking failure.
+ *
+ * The operands travel WITH the token on purpose: every one of these refusals is
+ * something an operator has to act on (which sku is taken, which two skus a
+ * rename spans, how many holds are still live, which watermark to reload), and
+ * the service composes no sentence — the console does, from these fields, in one
+ * place. A refusal whose operands are missing or the wrong type degrades to its
+ * safe default rather than being rejected: the token is the decision, the
+ * operands only sharpen the copy.
+ */
+function asVariantRefusal(body: unknown): VariantUpdateResult | null {
+	if (typeof body !== "object" || body === null) return null;
+	const row = body as Record<string, unknown>;
+	if (row.ok !== false) return null;
+	const text = (key: string): string | null => (typeof row[key] === "string" ? row[key] : null);
+	switch (row.error) {
+		case "VARIANT_NOT_FOUND":
+			return { ok: false, reason: "VARIANT_NOT_FOUND" };
+		case "STALE_EDIT":
+			return { ok: false, reason: "STALE_EDIT", currentUpdatedAt: text("currentUpdatedAt") ?? "" };
+		case "CURRENCY_MISMATCH":
+			return { ok: false, reason: "CURRENCY_MISMATCH", currency: text("currency") };
+		case "INVALID_FIELD":
+			return { ok: false, reason: "INVALID_FIELD", field: text("field") ?? "" };
+		case "SKU_TAKEN":
+			return { ok: false, reason: "SKU_TAKEN", sku: text("sku") ?? "" };
+		case "SKU_STOCK_CONFLICT":
+			return {
+				ok: false,
+				reason: "SKU_STOCK_CONFLICT",
+				fromSku: text("fromSku") ?? "",
+				toSku: text("toSku") ?? "",
+			};
+		case "SKU_HELD_STOCK":
+			return {
+				ok: false,
+				reason: "SKU_HELD_STOCK",
+				sku: text("sku") ?? "",
+				liveHolds: typeof row.liveHolds === "number" ? row.liveHolds : 0,
+			};
+		default:
+			return null;
 	}
 }
 
