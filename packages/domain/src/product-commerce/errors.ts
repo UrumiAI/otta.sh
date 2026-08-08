@@ -31,6 +31,50 @@ export class SkuConflictError extends Error {
 }
 
 /**
+ * Domain error for a SKU RENAME that would land on an inventory row that
+ * already exists. Raised by every `ProductCommerceStore` adapter from inside
+ * the SAME transaction as the product-row write (`upsert` /
+ * `updateCommerceFields` — see their port docs), so the refusal is atomic: the
+ * rename is not applied and no stock moves.
+ *
+ * A rename CARRIES the sku's on-hand count forward, because an inventory row
+ * is keyed by the natural key `sku`: without the carry the units would sit
+ * under the old sku, referenced by nothing, while the product started again
+ * from a fresh zero row. When the target sku ALREADY has a row of its own the
+ * carry has no honest answer — merging two counts invents a single stock
+ * figure the warehouse never agreed to, and picking a winner silently discards
+ * the other — so the rename is refused instead and the operator decides.
+ *
+ * OCCUPIED IS OCCUPIED: the refusal does NOT depend on what the target row
+ * holds. A row at `0` is still a row (a known sku that is out of stock, which
+ * is a different fact from "no such sku"), and it may already be referenced by
+ * reservations and order lines. Consequence, deliberate: a sku that has ever
+ * held stock can never be renamed ONTO again — including undoing a rename,
+ * since the source row is retained (at zero) rather than deleted.
+ *
+ * Both skus are named so an operator can act on the message without opening a
+ * database; `@otta-sh/service` maps it to a structured 409, never an opaque
+ * 500.
+ */
+export class SkuStockConflictError extends Error {
+	/** The sku the product holds today — the one whose units would have moved. */
+	readonly fromSku: string;
+	/** The sku the rename asked for, which already has an inventory row. */
+	readonly toSku: string;
+
+	constructor(fromSku: string, toSku: string) {
+		super(
+			`cannot rename sku "${fromSku}" to "${toSku}": "${toSku}" already has its own inventory ` +
+				"row, and stock is never merged between skus — rename to a sku that has never held " +
+				`stock, or move "${toSku}"'s units elsewhere first`,
+		);
+		this.name = "SkuStockConflictError";
+		this.fromSku = fromSku;
+		this.toSku = toSku;
+	}
+}
+
+/**
  * Domain validation error for a standalone product EDIT (admin-UX Increment 2,
  * slice 2): a field the merchant supplied is out of the domain's bounds — a
  * price that is not strictly positive, or a negative weight/dimension. Thrown

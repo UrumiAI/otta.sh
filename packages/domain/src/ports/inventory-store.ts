@@ -91,6 +91,19 @@ export interface InventoryStore {
 	// `reserve`) is a no-op that never clobbers the current `on_hand`. Its
 	// natural key is `sku` — deliberately no `idempotencyKey` (the
 	// create-if-absent guard IS the idempotency; see Phase 1 plan §8 Risk 4).
+	//
+	// THAT NATURAL KEY IS WHY A SKU RENAME IS NOT A STRING SWAP. `seedOnHand` is
+	// attempted after EVERY product save with a known sku, and it is
+	// create-if-absent, so on its own it answers a rename by minting a fresh
+	// ZERO row under the new sku and leaving the old row holding the units,
+	// referenced by nothing. The carry-forward that prevents that is NOT here: it
+	// belongs to whichever write changed the sku, because it has to commit with
+	// the product row — see THE SKU-RENAME RULE on `ProductCommerceStore`. This
+	// call stays exactly what it is: UNCONDITIONAL on every save (the heal path
+	// for a product whose row never landed) and a pure no-op once the row exists,
+	// including the row a rename just carried. Do NOT make it conditional on "the
+	// sku changed", and do NOT teach it to move stock — a create-if-absent write
+	// that sometimes moves units is neither.
 	seedOnHand(sku: string, qty: number): Promise<void>;
 	// Additive (Phase 3): atomically move a *held* reservation to `newQty` and
 	// couple the change with the matching durable inventory movement, so the
