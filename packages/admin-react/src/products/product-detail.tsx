@@ -1356,10 +1356,13 @@ export function IdentityFields({
 				    be where they are looking. */}
 				{refusal !== null && (
 					// `tabIndex={-1}` so focus can be MOVED here without adding a stop to
-					// the tab order: the region is a destination, not a control. It keeps
-					// the platform focus ring — a sighted keyboard operator has to be able
-					// to see where their focus went, exactly as `Notice`'s own region does.
-					<div id={refusalId} ref={region} tabIndex={-1}>
+					// the tab order: the region is a destination, not a control. And
+					// `otta-focusable` because that class IS the console's focus ring
+					// (`CONSOLE_STYLES`) — a bare element carrying only a tabindex takes
+					// whatever the user agent draws, which is not what anything else on
+					// this screen draws, and a sighted keyboard operator has to be able to
+					// see where their focus went.
+					<div className="otta-focusable" id={refusalId} ref={region} tabIndex={-1}>
 						<Notice
 							variant={refusal.variant}
 							title={refusal.title}

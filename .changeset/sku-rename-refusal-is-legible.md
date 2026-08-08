@@ -48,7 +48,10 @@ A count the service did not send is never rendered as `0`: zero reservations bes
 caused by reservations would be the one thing the sentence must not say, so the copy drops the
 figure and keeps the fact.
 
-Known, and untouched here: a **refused price save still shows a success receipt** in the Price
-group. That receipt is composed at submit time from the amounts on screen rather than from the
-outcome, so it reports a change that did not happen — for every refusal, not only these two. It
-predates this change and is left for a fix of its own.
+Known, and untouched here: **a refused price save reports the wrong thing and then loses the
+amount.** Its receipt is composed at submit time from the figures on screen rather than from the
+outcome, so a refusal is announced as a completed price change; and because that refusal names no
+field, the form re-seeds from the record and the typed amount is gone with it — so the operator is
+told a price landed, shown the old one, and left nothing to retry from. Both halves predate this
+change, apply to every refusal a price save can meet rather than only to these two, and are left
+for a fix of their own.
