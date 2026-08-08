@@ -9,6 +9,7 @@ import {
 	productId as toProductId,
 	sku as toSku,
 	SkuConflictError,
+	SkuStockConflictError,
 	type Clock,
 	type IdempotencyKey,
 	type InventoryPolicy,
@@ -88,7 +89,38 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 		if (typeof input.productId !== "string" || input.productId.length === 0) {
 			throw new MissingProductIdError();
 		}
+		// No sku in play ⇒ no rename is possible ⇒ the statement stays exactly
+		// what it was, on the plain connection. Only a write that could move the
+		// sku pays for a transaction (the CMS sync, which is every upsert on the
+		// hot path, never carries one).
+		if (input.sku === undefined) return this.#applyUpsert(this.#db, input, key, null);
+		return this.#db.transaction().execute(async (trx) => {
+			// The row's sku BEFORE the write, read inside the transaction: it is
+			// half of THE SKU-RENAME RULE's input, and the carry below must commit
+			// or roll back with the row it belongs to.
+			const before = await trx
+				.selectFrom("product_commerce")
+				.select("sku")
+				.where("product_id", "=", input.productId)
+				.executeTakeFirst();
+			return this.#applyUpsert(trx, input, key, before?.sku ?? null);
+		});
+	}
 
+	/**
+	 * `upsert`'s statement, on whichever executor the caller opened (the plain
+	 * connection, or the transaction a sku change needs). `beforeSku` is the
+	 * row's sku as it stood before this write, or null when there was no row /
+	 * no sku; the carry compares it against the RESOLVED row, so the upsert's
+	 * own no-op branches (same-key replay, stale watermark) move nothing without
+	 * needing to know they were no-ops.
+	 */
+	async #applyUpsert(
+		exec: Kysely<Database>,
+		input: UpsertProductCommerceInput,
+		key: IdempotencyKey,
+		beforeSku: string | null,
+	): Promise<ProductCommerce> {
 		const now = this.#clock.now().toISOString();
 		const hasSku = input.sku !== undefined;
 		const hasPrice = input.price !== undefined;
@@ -103,7 +135,7 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 
 		let row: ProductCommerceTable | undefined;
 		try {
-			row = await this.#db
+			row = await exec
 				.insertInto("product_commerce")
 				.values({
 					product_id: input.productId,
@@ -192,11 +224,69 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 			throw err;
 		}
 
-		const resolved = row ?? (await this.#selectByProductId(input.productId));
+		const resolved = row ?? (await this.#selectByProductId(input.productId, exec));
 		if (resolved === undefined) {
 			throw new Error(`product_commerce upsert lost its row for product_id ${input.productId}`);
 		}
+		// THE SKU-RENAME RULE (port doc), against the row's before/after values —
+		// so a same-key replay and a stale-watermark no-op, which both re-read and
+		// return the STORED row, compare equal here and move nothing.
+		if (beforeSku !== null && resolved.sku !== null && resolved.sku !== beforeSku) {
+			await this.#carrySkuStock(exec, beforeSku, resolved.sku);
+		}
 		return toDomain(resolved);
+	}
+
+	/**
+	 * THE SKU-RENAME RULE's inventory half (port doc on `ProductCommerceStore`),
+	 * on the SAME executor as the product-row write so the rename and the stock
+	 * movement commit or roll back together. Three statements, portable across
+	 * both dialects:
+	 *
+	 *  1. CLAIM the target — `INSERT … ON CONFLICT (sku) DO NOTHING RETURNING`.
+	 *     The insert IS the occupancy test, which is what makes it safe under
+	 *     concurrency: two renames onto one free target cannot both see it free,
+	 *     because the second conflicts with the first's uncommitted row. Zero
+	 *     rows back ⇒ the sku already has an inventory row ⇒ refuse the whole
+	 *     write. The test never looks at what the row HOLDS, so a row at 0
+	 *     refuses exactly like a stocked one.
+	 *  2. LOCK AND READ the source — a self-assignment `UPDATE … SET on_hand =
+	 *     on_hand … RETURNING on_hand`. Reading through an UPDATE rather than a
+	 *     SELECT takes the row's write lock for the rest of the transaction
+	 *     (portably — `FOR UPDATE` is not SQLite), so the count read here cannot
+	 *     move under a concurrent reserve/restock/removal between this statement
+	 *     and the zeroing below, which is exactly how units would go missing.
+	 *     No row ⇒ nothing to carry; the claimed target simply stays at 0.
+	 *  3. MOVE — the count onto the target, then zero the source. The source row
+	 *     is RETAINED: `reservations.sku` references `inventory.sku`, so a sku
+	 *     that has ever been reserved can be neither deleted nor re-keyed, and a
+	 *     stock row is never deleted regardless.
+	 */
+	async #carrySkuStock(exec: Kysely<Database>, fromSku: string, toSku: string): Promise<void> {
+		if (fromSku === toSku) return;
+
+		const claimed = await exec
+			.insertInto("inventory")
+			.values({ sku: toSku, on_hand: 0 })
+			.onConflict((oc) => oc.column("sku").doNothing())
+			.returning("sku")
+			.executeTakeFirst();
+		if (claimed === undefined) throw new SkuStockConflictError(fromSku, toSku);
+
+		const source = await exec
+			.updateTable("inventory")
+			.set((eb) => ({ on_hand: eb.ref("on_hand") }))
+			.where("sku", "=", fromSku)
+			.returning("on_hand")
+			.executeTakeFirst();
+		if (source === undefined || source.on_hand === 0) return;
+
+		await exec
+			.updateTable("inventory")
+			.set({ on_hand: source.on_hand })
+			.where("sku", "=", toSku)
+			.execute();
+		await exec.updateTable("inventory").set({ on_hand: 0 }).where("sku", "=", fromSku).execute();
 	}
 
 	async getByProductId(productId: ProductId): Promise<ProductCommerce | null> {
@@ -326,6 +416,41 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 		key: IdempotencyKey,
 		expectedUpdatedAt: string,
 	): Promise<ProductCommerceUpdateResult> {
+		// As in `upsert`: no sku in play ⇒ no rename ⇒ the edit stays the single
+		// statement it has always been, on the plain connection.
+		if (input.sku === undefined) {
+			return this.#applyCommerceFields(this.#db, input, key, expectedUpdatedAt, null);
+		}
+		return this.#db.transaction().execute(async (trx) => {
+			const before = await trx
+				.selectFrom("product_commerce")
+				.select("sku")
+				.where("product_id", "=", input.productId)
+				.executeTakeFirst();
+			return this.#applyCommerceFields(trx, input, key, expectedUpdatedAt, before?.sku ?? null);
+		});
+	}
+
+	/**
+	 * `updateCommerceFields`'s statement and its zero-row classifier, on
+	 * whichever executor the caller opened. `beforeSku` is the row's sku as it
+	 * stood before this edit; the carry runs ONLY on the applying branch, which
+	 * is what keeps every zero-row outcome — including the replay `ok` — free of
+	 * stock movement.
+	 *
+	 * Reading `beforeSku` before the guarded UPDATE is safe for the same reason
+	 * the edit itself is: the UPDATE only applies while `updated_at` still equals
+	 * `expectedUpdatedAt`, and every writer advances it, so an interleaved write
+	 * turns this into a `stale` no-op rather than a carry against a sku that has
+	 * since moved.
+	 */
+	async #applyCommerceFields(
+		exec: Kysely<Database>,
+		input: UpdateProductCommerceFieldsInput,
+		key: IdempotencyKey,
+		expectedUpdatedAt: string,
+		beforeSku: string | null,
+	): Promise<ProductCommerceUpdateResult> {
 		const now = this.#clock.now().toISOString();
 		const set: Record<string, string | number | null> = {
 			idempotency_key: key,
@@ -357,7 +482,7 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 
 		let updated: ProductCommerceTable | undefined;
 		try {
-			let stmt = this.#db
+			let stmt = exec
 				.updateTable("product_commerce")
 				.set(set)
 				.where("product_id", "=", input.productId)
@@ -397,11 +522,17 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 			throw err;
 		}
 
-		if (updated !== undefined) return { ok: true, product: toDomain(updated) };
+		if (updated !== undefined) {
+			// THE SKU-RENAME RULE (port doc) — the applying branch, and only it.
+			if (beforeSku !== null && updated.sku !== null && updated.sku !== beforeSku) {
+				await this.#carrySkuStock(exec, beforeSku, updated.sku);
+			}
+			return { ok: true, product: toDomain(updated) };
+		}
 
 		// Zero rows applied — classify the no-op from a fresh read, in the fake's
 		// guard order so fake/sqlite/pg agree byte-for-byte.
-		const current = await this.#selectByProductId(input.productId);
+		const current = await this.#selectByProductId(input.productId, exec);
 		if (current === undefined || current.deleted_at !== null) {
 			return { ok: false, reason: "not_found" };
 		}
@@ -662,8 +793,14 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 		return Number(row?.n ?? 0);
 	}
 
-	async #selectByProductId(productId: string): Promise<ProductCommerceTable | undefined> {
-		return this.#db
+	/** The row by its link key. `exec` defaults to the plain connection; a write
+	 *  that opened a transaction passes it in, so its own re-read sees the
+	 *  statement it just ran rather than the pre-transaction snapshot. */
+	async #selectByProductId(
+		productId: string,
+		exec: Kysely<Database> = this.#db,
+	): Promise<ProductCommerceTable | undefined> {
+		return exec
 			.selectFrom("product_commerce")
 			.selectAll()
 			.where("product_id", "=", productId)
