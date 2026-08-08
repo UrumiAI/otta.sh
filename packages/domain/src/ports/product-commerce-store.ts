@@ -311,6 +311,15 @@ export interface UpsertProductCommerceInput {
  */
 export interface UpdateProductCommerceFieldsInput {
 	productId: ProductId;
+	/**
+	 * The product's stock-keeping unit. Supplying a DIFFERENT value than the row
+	 * holds is a RENAME, and a rename is never just a string swap: `inventory` is
+	 * keyed by this exact natural key, so the row's on-hand count is carried onto
+	 * the new sku in the SAME transaction as this edit, or the edit is refused
+	 * (`SkuStockConflictError`) — see `ProductCommerceStore.updateCommerceFields`
+	 * for the full rule. `undefined` PRESERVES the stored sku; there is no
+	 * "unsku" case (a sku cannot be cleared back to null once set).
+	 */
 	sku?: Sku;
 	price?: Money;
 	taxClass?: string | null;
@@ -472,6 +481,78 @@ export interface ProductCommerceView {
  * by a partial unique index in the store, mirrored by the fake).
  * `getByProductId` (not `get`) so the identity it reads by is unambiguous at
  * every call site.
+ *
+ * THE SKU-RENAME RULE, shared by BOTH writers of `sku` (`upsert` and
+ * `updateCommerceFields`) — a property of the COLUMN, not of one caller, so
+ * neither writer may skip it. When a write changes a row's `sku` from one
+ * non-null value to another, the adapter MUST, in the SAME transaction as the
+ * product-row write:
+ *  0. REFUSE while any LIVE (`held`/`adopted`) reservation still references the
+ *     SOURCE sku — `SkuHeldStockError`, naming the sku and how many. A hold's
+ *     units are already OUT of `on_hand`, so the carry cannot move them, and the
+ *     hold cannot follow the rename (`reservations.sku` references
+ *     `inventory.sku`, so it can be neither re-keyed nor deleted). Left alone,
+ *     every later transition on that hold lands on the row the rename emptied: a
+ *     release credits units back to a sku no product owns, and an upward adjust
+ *     fails OUT_OF_STOCK against a zero the shopper cannot see. Every hold does
+ *     end on its own — a cart hold expires on its deadline and the sweep
+ *     releases it; an adopted hold resolves when its order does — but "ends on
+ *     its own" is not "ends soon": an adopted hold lives as long as the order
+ *     awaits payment, so a product with an order in flight can stay unrenameable
+ *     for as long as that order does. Migrating the holds instead was rejected —
+ *     see `SkuHeldStockError`.
+ *  1. CLAIM the target sku's inventory row. If a row already exists there the
+ *     whole write is REFUSED with `SkuStockConflictError` naming both skus —
+ *     nothing is renamed, nothing moves. Occupied is occupied: the refusal does
+ *     NOT depend on the quantity, because a row holding `0` is still a row
+ *     ("known sku, out of stock" — a different fact from "no such sku") and may
+ *     already be referenced by reservations and order lines. Merging the two
+ *     counts would invent a stock figure, and picking a winner would discard
+ *     one; the operator decides instead.
+ *  2. CARRY the source sku's on-hand count onto the target. Without this a
+ *     rename strands the units under a sku no product owns while the product
+ *     starts again from zero — silent inventory loss with nothing on screen.
+ *  3. RETAIN the source row, zeroed. A stock row is NEVER deleted and never
+ *     re-keyed: `reservations.sku` references `inventory.sku`, so the rows a
+ *     sold sku leaves behind are load-bearing history.
+ * A write that changes nothing (same sku), applies nothing (a same-key replay,
+ * a stale-watermark sync no-op, `not_found`, `stale`, `currency_mismatch`), or
+ * sets the FIRST sku on a row that had none carries nothing — the carry follows
+ * the ROW's before/after sku, never the input's. A source sku with no inventory
+ * row has nothing to carry; the claimed target row simply stays at `0`, which
+ * is the row `InventoryStore.seedOnHand` would have created a moment later
+ * anyway (that always-attempt seed stays UNCONDITIONAL — the carry never turns
+ * it into a conditional write; see `upsertProductCommerce` /
+ * `updateProductCommerceFields`).
+ *
+ * THE FIRST-SKU ASYMMETRY, deliberate and pinned by the contract suite. Setting
+ * the FIRST sku on a row that had none is NOT a rename, so none of the above
+ * runs — and if that sku already has an inventory row, the product simply
+ * ADOPTS it, units and all, where a rename onto the same row would have been
+ * refused. This is the pre-existing seed/heal semantics, not a new decision:
+ * `seedOnHand` is create-if-absent on the natural key, which is exactly how a
+ * product re-linked to a sku it used to own gets its stock back after a failed
+ * sync. Adoption is the ONLY way that heal can work, and there is no second
+ * count to reconcile because the product had none. Renames refuse; first
+ * assignment adopts. Changing it means designing the heal path a different way,
+ * which is its own change.
+ *
+ * The same "there is no row yet" reasoning bounds what a CREATE can do: two
+ * concurrent upserts that both create the SAME product with DIFFERENT skus
+ * carry nothing either way, because neither finds a prior row to lock or a
+ * prior sku to move from. The product ends on whichever write committed last,
+ * with an empty inventory row under each sku that was named — no units exist to
+ * strand, since a product only acquires them after it exists.
+ *
+ * WHAT THE CLAIM WAITS ON, because "it takes a lock" invites the wrong mental
+ * model and the wrong worry. The claim waits only on a SAME-KEY speculative
+ * insert: another transaction that has inserted the very same target sku and
+ * not yet committed. It does NOT wait on a committed row (it conflicts and does
+ * nothing), and the source lock waits on nothing at all when the source has no
+ * row to lock. Crossed renames therefore cannot cycle — A→B and B→A claim
+ * DIFFERENT keys, so neither ever waits on the other. Writes aimed at the SAME
+ * target sku are the only ones that queue, and all but one of those is about to
+ * be refused regardless.
  */
 export interface ProductCommerceStore {
 	upsert(input: UpsertProductCommerceInput, key: IdempotencyKey): Promise<ProductCommerce>;
@@ -543,7 +624,13 @@ export interface ProductCommerceStore {
 	 *         currency, so compare-at / cost inherit it with no separate store
 	 *         guard.
 	 *  5. otherwise → applies the partial update, stamps `key` as the row's
-	 *     last-applied replay key, bumps `updatedAt`, returns the updated row.
+	 *     last-applied replay key, bumps `updatedAt`, returns the updated row —
+	 *     and, when the update CHANGED the row's `sku`, carries that sku's
+	 *     inventory row with it under THE SKU-RENAME RULE on this interface
+	 *     (claim-or-refuse, carry, retain the source zeroed), inside this same
+	 *     transaction. Only an applied update carries: every zero-row branch
+	 *     above (including the replay `ok`) moves no stock, so a double-submitted
+	 *     rename moves the units exactly once.
 	 * NEVER touches `active`/`deletedAt`/`contentUpdatedAt`/`active_updated_at`
 	 * (the publish-gate + sync axes; a commerce edit is orthogonal to them). A
 	 * live-SKU collision throws `SkuConflictError` — the same partial-index guard

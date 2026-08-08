@@ -408,6 +408,22 @@ export class InMemoryInventoryStore implements InventoryStore {
 		return this.#onHand.get(sku) ?? 0;
 	}
 
+	/**
+	 * The SYNC, row-presence-preserving read — `findOnHand`'s test-surface twin:
+	 * `null` when the sku has no inventory row, which is a different fact from
+	 * the `0` its sibling `onHand` collapses that case to.
+	 *
+	 * Exists so this fake can BE the shared inventory table for the
+	 * `ProductCommerceStore` fake, whose `inventoryOnHand`/`writeInventoryOnHand`
+	 * hooks are synchronous and must tell the two facts apart. That pairing is
+	 * what lets a use-case test watch a sku rename carry its units and then watch
+	 * the caller's always-attempt `seedOnHand` no-op on the carried row instead
+	 * of resetting it — a fact neither fake can show on its own.
+	 */
+	peekOnHand(sku: string): number | null {
+		return this.#onHand.get(sku) ?? null;
+	}
+
 	reservationState(reservationId: string): ReservationState {
 		return this.#mustGet(reservationId).state;
 	}

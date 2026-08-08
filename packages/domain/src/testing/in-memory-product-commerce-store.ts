@@ -19,6 +19,8 @@ import {
 	isValidLowStockThreshold,
 	MissingProductIdError,
 	SkuConflictError,
+	SkuHeldStockError,
+	SkuStockConflictError,
 } from "../product-commerce/errors.js";
 
 /** Test-only seed shape for the admin-list contract — a direct product row (no
@@ -68,6 +70,39 @@ export interface InMemoryProductCommerceStoreOptions {
 	 * "no inventory row" (`null`), so `inStock` stays coarsely false.
 	 */
 	inventoryOnHand?: (sku: string) => number | null;
+	/**
+	 * The WRITE half of the same stand-in, for THE SKU-RENAME RULE (see the
+	 * `ProductCommerceStore` port doc): a rename carries the source sku's
+	 * on-hand count onto the target row, in the same "transaction" as the
+	 * product-row write. Create-or-overwrite, exactly like the SQL adapters'
+	 * `INSERT … ON CONFLICT` + `UPDATE` pair.
+	 *
+	 * OPTIONAL, and normally omitted. Left out, the fake keeps its own overlay
+	 * of the rows IT has written and layers that over `inventoryOnHand`, so a
+	 * harness that only supplies a reader still exercises the rule end to end.
+	 * Supply it when the fake must share ONE inventory table with something
+	 * else — a fake `InventoryStore` in a use-case test, where the point is
+	 * that the caller's always-attempt `seedOnHand` sees the carried row and
+	 * no-ops on it rather than clobbering it.
+	 *
+	 * THE OVERLAY'S ONE LIMIT, which is why the option exists: a sku this store
+	 * has written SHADOWS `inventoryOnHand` from then on, so a harness that
+	 * re-seeds that same sku afterwards is not seen. The SQL adapters have one
+	 * table and no such blind spot, so a contract case must either avoid
+	 * re-seeding a carried sku or supply a shared writer here.
+	 */
+	writeInventoryOnHand?: (sku: string, onHand: number) => void;
+	/**
+	 * How many LIVE (`held`/`adopted`) reservations reference a sku — the fake's
+	 * stand-in for the adapters' `reservations` count, and step 0 of THE
+	 * SKU-RENAME RULE: a rename AWAY from a sku with live holds is refused,
+	 * because a hold's units are already out of `on_hand` (so the carry cannot
+	 * move them) and the hold itself cannot follow the rename.
+	 *
+	 * Defaults to "no holds" — which is the truth for a harness that has no
+	 * reservations at all, so a store built without it behaves as it always did.
+	 */
+	liveHoldsOnSku?: (sku: string) => number;
 }
 
 /**
@@ -104,10 +139,58 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 	 */
 	#activeWatermark = new Map<string, string>();
 	#inventoryOnHand: (sku: string) => number | null;
+	#writeInventoryOnHand: ((sku: string, onHand: number) => void) | undefined;
+	/** Rows THIS store has written (the sku-rename carry), when no external
+	 *  writer was supplied — layered OVER `#inventoryOnHand` so the fake models
+	 *  one inventory table rather than a read-only view plus a lost write. */
+	#localOnHand = new Map<string, number>();
+	#liveHoldsOnSku: (sku: string) => number;
 
 	constructor(options: InMemoryProductCommerceStoreOptions) {
 		this.#clock = options.clock;
 		this.#inventoryOnHand = options.inventoryOnHand ?? (() => null);
+		this.#writeInventoryOnHand = options.writeInventoryOnHand;
+		this.#liveHoldsOnSku = options.liveHoldsOnSku ?? (() => 0);
+	}
+
+	/** The one inventory read every projection and predicate goes through:
+	 *  this store's own writes first, then the harness's lookup. `null` is "no
+	 *  row" and `0` is "a row holding nothing" — never collapsed. */
+	#readOnHand(s: string): number | null {
+		return this.#localOnHand.get(s) ?? this.#inventoryOnHand(s);
+	}
+
+	/** Create-or-overwrite one inventory row (the rename carry's only write). */
+	#writeOnHand(s: string, onHand: number): void {
+		if (this.#writeInventoryOnHand !== undefined) this.#writeInventoryOnHand(s, onHand);
+		else this.#localOnHand.set(s, onHand);
+	}
+
+	/**
+	 * THE SKU-RENAME RULE (port doc), applied synchronously so it lands with the
+	 * row write it belongs to — the fake's stand-in for the adapters' single
+	 * transaction. Called by BOTH writers of `sku`, with the row's BEFORE and
+	 * AFTER values, so a write that changes no sku (a same-key replay, a stale
+	 * sync no-op, a re-supplied identical sku) never reaches it.
+	 *
+	 * Live holds on the SOURCE refuse FIRST (rule step 0): their units are
+	 * already out of `on_hand`, and the hold cannot follow the rename. Then
+	 * claim the target — a row already there refuses too, occupied being
+	 * occupied whatever it holds. Only then move the source's count and zero the
+	 * source, retaining that row. Mirrors the SQL adapters' statement order
+	 * byte-for-byte, including minting the target at `0` when the source has no
+	 * row to carry.
+	 */
+	#carrySkuStock(fromSku: string, toSku: string): void {
+		if (fromSku === toSku) return;
+		const liveHolds = this.#liveHoldsOnSku(fromSku);
+		if (liveHolds > 0) throw new SkuHeldStockError(fromSku, liveHolds);
+		if (this.#readOnHand(toSku) !== null) throw new SkuStockConflictError(fromSku, toSku);
+		this.#writeOnHand(toSku, 0);
+		const carried = this.#readOnHand(fromSku);
+		if (carried === null || carried === 0) return;
+		this.#writeOnHand(toSku, carried);
+		this.#writeOnHand(fromSku, 0);
 	}
 
 	async upsert(input: UpsertProductCommerceInput, key: IdempotencyKey): Promise<ProductCommerce> {
@@ -136,6 +219,11 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 			// After the no-op guards, mirroring the store: a skipped DO UPDATE
 			// never contends for the sku index.
 			this.#assertLiveSkuFree(input);
+			// THE SKU-RENAME RULE — before the row is replaced, so a refusal leaves
+			// the stored row exactly as it was (the adapters' rollback).
+			if (input.sku !== undefined && existing.sku !== null) {
+				this.#carrySkuStock(existing.sku, input.sku);
+			}
 			const updated: ProductCommerce = {
 				...existing,
 				sku: input.sku !== undefined ? input.sku : existing.sku,
@@ -260,6 +348,11 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 		}
 		// 5. Apply. Live-sku collisions throw SkuConflictError, exactly like upsert.
 		this.#assertLiveSkuFree(input);
+		// THE SKU-RENAME RULE — only an APPLYING edit reaches here (every zero-row
+		// branch returned above), so a replay/stale/not_found never moves stock.
+		if (input.sku !== undefined && existing.sku !== null) {
+			this.#carrySkuStock(existing.sku, input.sku);
+		}
 		const updated: ProductCommerce = {
 			...existing,
 			sku: input.sku !== undefined ? input.sku : existing.sku,
@@ -324,7 +417,7 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 				sku: row.sku,
 				price: row.price,
 				// A join miss (`null`) is coarsely "not in stock", exactly like 0.
-				inStock: (this.#inventoryOnHand(row.sku) ?? 0) > 0,
+				inStock: (this.#readOnHand(row.sku) ?? 0) > 0,
 				active: row.active,
 			});
 		}
@@ -447,7 +540,7 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 			// Mirrors the SQL adapter's LEFT JOIN predicate: a row with no sku (or
 			// a sku with no inventory row) resolves to `null` — UNKNOWN stock,
 			// never "low" — so it fails this half regardless of the threshold.
-			const onHand = row.sku === null ? null : this.#inventoryOnHand(row.sku);
+			const onHand = row.sku === null ? null : this.#readOnHand(row.sku);
 			if (onHand === null || onHand > filter.lowStockThreshold) return false;
 		}
 		return true;
@@ -522,7 +615,7 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 			// Mirrors the adapters' LEFT JOIN: a row with NO sku can never match
 			// an inventory row, so it lands on the same `null` ("unknown") the
 			// lookup returns for an unseeded sku. Never 0.
-			onHand: row.sku === null ? null : this.#inventoryOnHand(row.sku),
+			onHand: row.sku === null ? null : this.#readOnHand(row.sku),
 			deletedAt: row.deletedAt === null ? null : row.deletedAt.toISOString(),
 			createdAt: row.createdAt.toISOString(),
 		};

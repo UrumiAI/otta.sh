@@ -9,6 +9,8 @@ import {
 	productId as toProductId,
 	sku as toSku,
 	SkuConflictError,
+	SkuHeldStockError,
+	SkuStockConflictError,
 	type Clock,
 	type IdempotencyKey,
 	type InventoryPolicy,
@@ -44,7 +46,13 @@ export interface KyselyProductCommerceStoreOptions {
  * `ProductCommerceStore` over Kysely (Phase 1 step 4), dialect-agnostic
  * across better-sqlite3 and pg.
  *
- * `upsert` is ONE conditional statement (adapter-architecture §2): an
+ * `upsert` is ONE conditional statement WHEN THE INPUT CARRIES NO `sku` — the
+ * shape it has always had, and still the shape of every CMS-sync save (the
+ * sync writes title and watermark only). An input that DOES carry a sku may be
+ * a rename, and a rename is a stock movement that has to commit with the row,
+ * so that path opens a transaction and runs THE SKU-RENAME RULE inside it (see
+ * the port doc, and `#carrySkuStock` below). The conditional statement itself
+ * is unchanged in either case: an
  * `INSERT … ON CONFLICT (product_id) DO UPDATE … WHERE <guards>` with two
  * guards ANDed together:
  *  1. replay dedupe — `product_commerce.idempotency_key != :key` (per-row
@@ -65,9 +73,13 @@ export interface KyselyProductCommerceStoreOptions {
  * `excluded.<col>`, so a partial upsert never clobbers fields it didn't
  * touch. When a WHERE guard makes the statement a no-op (same-key replay or
  * stale sync), `RETURNING` yields no row, and the current row is re-read
- * with one follow-up `SELECT` — this is not an oversell-style race target
- * (plan §7: no new concurrency test here), so the extra read does not
- * compromise any invariant.
+ * with one follow-up `SELECT`.
+ *
+ * CONCURRENCY, on the sku-bearing path only: the rename carry moves real units,
+ * so it IS a race target, and `test/sku-rename-race.pg.test.ts` covers it on
+ * Postgres (concurrent renames through both writers, a rename against the seed
+ * that can contend its claim, and a rename against a restock of the sku it is
+ * leaving). The no-sku path is unchanged and remains none of that.
  *
  * Live-sku uniqueness is the migration's partial unique index
  * (`UNIQUE (sku) WHERE deleted_at IS NULL`, review S3) — the `ON CONFLICT`
@@ -88,7 +100,54 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 		if (typeof input.productId !== "string" || input.productId.length === 0) {
 			throw new MissingProductIdError();
 		}
+		// No sku in play ⇒ no rename is possible ⇒ the statement stays exactly
+		// what it was, on the plain connection. Only a write that could move the
+		// sku pays for a transaction (the CMS sync, which is every upsert on the
+		// hot path, never carries one).
+		if (input.sku === undefined) return this.#applyUpsert(this.#db, input, key, null);
+		return this.#db.transaction().execute(async (trx) => {
+			// The row's sku BEFORE the write — half of THE SKU-RENAME RULE's input,
+			// read THROUGH THE ROW LOCK rather than with a plain SELECT.
+			//
+			// This is load-bearing, and a plain SELECT here is a silent-stranding
+			// bug. `upsert` has no compare-and-set: under READ COMMITTED a peer that
+			// renames the same product between the read and the `ON CONFLICT DO
+			// UPDATE` is simply waited for and then written over, so the carry would
+			// run against a sku that is no longer the row's. Concretely — this tx
+			// reads A, a peer commits A→B (units follow to B), this tx then applies
+			// sku=C and carries A(now empty)→C, leaving the units orphaned under B
+			// with no error raised: exactly the loss this rule exists to prevent.
+			// Taking the lock on the read makes the peer's rename either entirely
+			// before us (so we read B and carry B→C) or entirely after.
+			//
+			// A self-assignment UPDATE is how you take that lock portably —
+			// `FOR UPDATE` is not SQLite. Assigning `product_id` to itself touches
+			// no observable column, and in particular leaves `updated_at` alone, so
+			// the replay and watermark guards below still see exactly what they did.
+			const before = await trx
+				.updateTable("product_commerce")
+				.set((eb) => ({ product_id: eb.ref("product_id") }))
+				.where("product_id", "=", input.productId)
+				.returning("sku")
+				.executeTakeFirst();
+			return this.#applyUpsert(trx, input, key, before?.sku ?? null);
+		});
+	}
 
+	/**
+	 * `upsert`'s statement, on whichever executor the caller opened (the plain
+	 * connection, or the transaction a sku change needs). `beforeSku` is the
+	 * row's sku as it stood before this write, or null when there was no row /
+	 * no sku; the carry compares it against the RESOLVED row, so the upsert's
+	 * own no-op branches (same-key replay, stale watermark) move nothing without
+	 * needing to know they were no-ops.
+	 */
+	async #applyUpsert(
+		exec: Kysely<Database>,
+		input: UpsertProductCommerceInput,
+		key: IdempotencyKey,
+		beforeSku: string | null,
+	): Promise<ProductCommerce> {
 		const now = this.#clock.now().toISOString();
 		const hasSku = input.sku !== undefined;
 		const hasPrice = input.price !== undefined;
@@ -103,7 +162,7 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 
 		let row: ProductCommerceTable | undefined;
 		try {
-			row = await this.#db
+			row = await exec
 				.insertInto("product_commerce")
 				.values({
 					product_id: input.productId,
@@ -192,11 +251,170 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 			throw err;
 		}
 
-		const resolved = row ?? (await this.#selectByProductId(input.productId));
+		const resolved = row ?? (await this.#selectByProductId(input.productId, exec));
 		if (resolved === undefined) {
 			throw new Error(`product_commerce upsert lost its row for product_id ${input.productId}`);
 		}
+		// THE SKU-RENAME RULE (port doc), against the row's before/after values —
+		// so a same-key replay and a stale-watermark no-op, which both re-read and
+		// return the STORED row, compare equal here and move nothing.
+		if (beforeSku !== null && resolved.sku !== null && resolved.sku !== beforeSku) {
+			await this.#carrySkuStock(exec, beforeSku, resolved.sku, key);
+		}
 		return toDomain(resolved);
+	}
+
+	/**
+	 * THE SKU-RENAME RULE's inventory half (port doc on `ProductCommerceStore`),
+	 * on the SAME executor as the product-row write so the rename and the stock
+	 * movement commit or roll back together. Portable across both dialects:
+	 *
+	 *  1. LOCK AND READ the source — a self-assignment `UPDATE … SET on_hand =
+	 *     on_hand … RETURNING on_hand`. Reading through an UPDATE rather than a
+	 *     SELECT takes the row's write lock for the rest of the transaction
+	 *     (portably — `FOR UPDATE` is not SQLite), so the count read here cannot
+	 *     move under a concurrent reserve/restock/removal before step 4 zeroes
+	 *     it, which is exactly how units would go missing. Taking it FIRST also
+	 *     serializes this whole carry against `reserve`, whose guarded decrement
+	 *     needs the same lock — so the hold check below cannot be outrun by a
+	 *     reservation landing a moment later. No row ⇒ nothing to carry.
+	 *  2. REFUSE on live holds — `SkuHeldStockError` when any `held`/`adopted`
+	 *     reservation still names the source. Their units are already out of
+	 *     `on_hand` and the hold cannot follow the rename, so there is nothing
+	 *     honest to move; see the port doc for what leaks if this is skipped.
+	 *  3. CLAIM the target — `INSERT … ON CONFLICT (sku) DO NOTHING RETURNING`.
+	 *     The insert IS the occupancy test, which is what makes it safe under
+	 *     concurrency: two creators of one free target cannot both see it free,
+	 *     because the second conflicts with the first's uncommitted row (the
+	 *     other creator being `seedOnHand`, which every product save attempts —
+	 *     pinned in `test/sku-rename-race.pg.test.ts`). Zero rows back ⇒ the sku
+	 *     already has an inventory row ⇒ refuse. The test never looks at what
+	 *     that row HOLDS, so a row at 0 refuses exactly like a stocked one.
+	 *  4. MOVE — the count onto the target, then zero the source, then record the
+	 *     pair in the stock-movement ledger. The source row is RETAINED:
+	 *     `reservations.sku` references `inventory.sku`, so a sku that has ever
+	 *     been reserved can be neither deleted nor re-keyed, and a stock row is
+	 *     never deleted regardless.
+	 *
+	 * `commandKey` is the idempotency key of the product write this carry belongs
+	 * to, and the audit rows in step 4 derive their own keys from it. It is not a
+	 * uniqueness guarantee — it is client-supplied — so see `#recordCarry` for
+	 * what those keys do and do not promise, and why a collision there is
+	 * survivable.
+	 */
+	async #carrySkuStock(
+		exec: Kysely<Database>,
+		sourceSku: string,
+		targetSku: string,
+		commandKey: IdempotencyKey,
+	): Promise<void> {
+		if (sourceSku === targetSku) return;
+
+		const source = await exec
+			.updateTable("inventory")
+			.set((eb) => ({ on_hand: eb.ref("on_hand") }))
+			.where("sku", "=", sourceSku)
+			.returning("on_hand")
+			.executeTakeFirst();
+
+		const held = await exec
+			.selectFrom("reservations")
+			.select((eb) => eb.fn.countAll<number>().as("n"))
+			.where("sku", "=", sourceSku)
+			.where("state", "in", ["held", "adopted"])
+			.executeTakeFirst();
+		const liveHolds = Number(held?.n ?? 0);
+		if (liveHolds > 0) throw new SkuHeldStockError(sourceSku, liveHolds);
+
+		const claimed = await exec
+			.insertInto("inventory")
+			.values({ sku: targetSku, on_hand: 0 })
+			.onConflict((oc) => oc.column("sku").doNothing())
+			.returning("sku")
+			.executeTakeFirst();
+		if (claimed === undefined) throw new SkuStockConflictError(sourceSku, targetSku);
+
+		if (source === undefined || source.on_hand === 0) return;
+
+		await exec
+			.updateTable("inventory")
+			.set({ on_hand: source.on_hand })
+			.where("sku", "=", targetSku)
+			.execute();
+		await exec.updateTable("inventory").set({ on_hand: 0 }).where("sku", "=", sourceSku).execute();
+		await this.#recordCarry(exec, sourceSku, targetSku, source.on_hand, commandKey);
+	}
+
+	/**
+	 * The carry's AUDIT TRAIL: one row out of the source and one into the target
+	 * in `inventory_stock_movements`, written inside the carry's own transaction
+	 * so a move can never be durable without its record.
+	 *
+	 * Every other `on_hand` mutation an operator can trigger already lands in
+	 * this ledger (`restock`, `removeStock`); without these two rows a rename
+	 * would be the one way to move forty units and leave nothing behind
+	 * explaining where they went.
+	 *
+	 * `rename_out` / `rename_in` are their own directions rather than a reused
+	 * `removal` + `restock` pair, so the ledger does not claim a merchant
+	 * counted anything: the column is plain text and needs no migration, and
+	 * `InventoryStore`'s own paths keep their narrowed `"restock" | "removal"`
+	 * signatures, so nothing can mistake a carry row for a replayable movement.
+	 * The keys are derived from the command's key, which is unique per command
+	 * and never reaches here twice (a replay applies no update, so it never
+	 * carries). `qty > 0` is a column CHECK, which is why this is called only
+	 * when units actually moved — a rename that carries NOTHING (an empty or
+	 * absent source row) writes no ledger entry at all, there being no movement
+	 * to record.
+	 *
+	 * WRITE-ONLY TODAY. Nothing reads these rows yet: no admin screen, report or
+	 * endpoint surfaces stock movements, and `InventoryStore`'s own ledger reads
+	 * are per-key replay lookups that can never match a `rename_*` key. The trail
+	 * exists so the history is already there when something does surface it, and
+	 * so a rename stops being the one stock movement that leaves no record; a
+	 * movements view is a separate change.
+	 */
+	async #recordCarry(
+		exec: Kysely<Database>,
+		sourceSku: string,
+		targetSku: string,
+		qty: number,
+		commandKey: IdempotencyKey,
+	): Promise<void> {
+		const at = this.#clock.now().toISOString();
+		await exec
+			.insertInto("inventory_stock_movements")
+			.values([
+				{
+					idempotency_key: `${commandKey}:sku-rename:out:${sourceSku}`,
+					sku: sourceSku,
+					direction: "rename_out",
+					qty,
+					outcome: "ok",
+					result_on_hand: 0,
+					created_at: at,
+				},
+				{
+					idempotency_key: `${commandKey}:sku-rename:in:${targetSku}`,
+					sku: targetSku,
+					direction: "rename_in",
+					qty,
+					outcome: "ok",
+					result_on_hand: qty,
+					created_at: at,
+				},
+			])
+			// THE AUDIT ROW MUST NEVER FAIL THE MOVE IT DESCRIBES. These keys derive
+			// from `commandKey`, which is client-supplied (the wire's
+			// `Idempotency-Key`), so this primary key is not ours to guarantee: a
+			// client reusing one key across two renames of the SAME source sku, or a
+			// caller crafting a `restock` key that happens to equal one of these,
+			// would otherwise abort a perfectly legal rename with a raw unique
+			// violation. DO NOTHING makes that pathological case cost the audit row
+			// rather than the merchant's rename. Pinned in
+			// `test/sku-rename-ledger.dialects.test.ts`.
+			.onConflict((oc) => oc.doNothing())
+			.execute();
 	}
 
 	async getByProductId(productId: ProductId): Promise<ProductCommerce | null> {
@@ -301,8 +519,11 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 	}
 
 	/**
-	 * Guarded admin edit (port doc): a single conditional `UPDATE` under an
-	 * optimistic compare-and-set — the atomic mirror of the fake's guard chain.
+	 * Guarded admin edit (port doc): a conditional `UPDATE` under an optimistic
+	 * compare-and-set — the atomic mirror of the fake's guard chain. It is the
+	 * WHOLE statement list only when the input carries no `sku`; an edit that
+	 * could rename runs in a transaction alongside THE SKU-RENAME RULE's stock
+	 * movement, exactly as `upsert` does (see the class doc).
 	 * The applying statement ANDs the guards: `product_id = :id`, `deleted_at IS
 	 * NULL`, `updated_at = :expectedUpdatedAt` (the CAS), `idempotency_key !=
 	 * :key` (replay dedupe), and — only when a price is supplied — a currency-
@@ -316,15 +537,56 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 	 * then replay (stored key == key), then stale (updatedAt moved), then
 	 * currency_mismatch (see the port doc: not_found outranks replay, so a
 	 * same-key replay after a soft delete is not_found on every adapter) —
-	 * mirroring `upsert`'s no-op-then-reread pattern (not an oversell race
-	 * target: the mutation itself is one atomic statement; a lost concurrent edit
-	 * surfaces deterministically as `stale`, never a torn write). Live-sku
-	 * collisions surface as `SkuConflictError`, exactly like `upsert`.
+	 * mirroring `upsert`'s no-op-then-reread pattern. A lost concurrent edit
+	 * surfaces deterministically as `stale`, never a torn write.
+	 *
+	 * The FIELD edit is still not an oversell-style race target; the rename that
+	 * may ride along with it IS, and is covered on Postgres by
+	 * `test/sku-rename-race.pg.test.ts`. Unlike `upsert`, the before-read this
+	 * path feeds the carry needs no lock of its own: the CAS already collapses an
+	 * interleaved write into `stale`, so a carry can only run against the sku the
+	 * applying statement matched. Live-sku collisions surface as
+	 * `SkuConflictError`, exactly like `upsert`.
 	 */
 	async updateCommerceFields(
 		input: UpdateProductCommerceFieldsInput,
 		key: IdempotencyKey,
 		expectedUpdatedAt: string,
+	): Promise<ProductCommerceUpdateResult> {
+		// As in `upsert`: no sku in play ⇒ no rename ⇒ the edit stays the single
+		// statement it has always been, on the plain connection.
+		if (input.sku === undefined) {
+			return this.#applyCommerceFields(this.#db, input, key, expectedUpdatedAt, null);
+		}
+		return this.#db.transaction().execute(async (trx) => {
+			const before = await trx
+				.selectFrom("product_commerce")
+				.select("sku")
+				.where("product_id", "=", input.productId)
+				.executeTakeFirst();
+			return this.#applyCommerceFields(trx, input, key, expectedUpdatedAt, before?.sku ?? null);
+		});
+	}
+
+	/**
+	 * `updateCommerceFields`'s statement and its zero-row classifier, on
+	 * whichever executor the caller opened. `beforeSku` is the row's sku as it
+	 * stood before this edit; the carry runs ONLY on the applying branch, which
+	 * is what keeps every zero-row outcome — including the replay `ok` — free of
+	 * stock movement.
+	 *
+	 * Reading `beforeSku` before the guarded UPDATE is safe for the same reason
+	 * the edit itself is: the UPDATE only applies while `updated_at` still equals
+	 * `expectedUpdatedAt`, and every writer advances it, so an interleaved write
+	 * turns this into a `stale` no-op rather than a carry against a sku that has
+	 * since moved.
+	 */
+	async #applyCommerceFields(
+		exec: Kysely<Database>,
+		input: UpdateProductCommerceFieldsInput,
+		key: IdempotencyKey,
+		expectedUpdatedAt: string,
+		beforeSku: string | null,
 	): Promise<ProductCommerceUpdateResult> {
 		const now = this.#clock.now().toISOString();
 		const set: Record<string, string | number | null> = {
@@ -357,7 +619,7 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 
 		let updated: ProductCommerceTable | undefined;
 		try {
-			let stmt = this.#db
+			let stmt = exec
 				.updateTable("product_commerce")
 				.set(set)
 				.where("product_id", "=", input.productId)
@@ -397,11 +659,17 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 			throw err;
 		}
 
-		if (updated !== undefined) return { ok: true, product: toDomain(updated) };
+		if (updated !== undefined) {
+			// THE SKU-RENAME RULE (port doc) — the applying branch, and only it.
+			if (beforeSku !== null && updated.sku !== null && updated.sku !== beforeSku) {
+				await this.#carrySkuStock(exec, beforeSku, updated.sku, key);
+			}
+			return { ok: true, product: toDomain(updated) };
+		}
 
 		// Zero rows applied — classify the no-op from a fresh read, in the fake's
 		// guard order so fake/sqlite/pg agree byte-for-byte.
-		const current = await this.#selectByProductId(input.productId);
+		const current = await this.#selectByProductId(input.productId, exec);
 		if (current === undefined || current.deleted_at !== null) {
 			return { ok: false, reason: "not_found" };
 		}
@@ -662,8 +930,14 @@ export class KyselyProductCommerceStore implements ProductCommerceStore {
 		return Number(row?.n ?? 0);
 	}
 
-	async #selectByProductId(productId: string): Promise<ProductCommerceTable | undefined> {
-		return this.#db
+	/** The row by its link key. `exec` defaults to the plain connection; a write
+	 *  that opened a transaction passes it in, so its own re-read sees the
+	 *  statement it just ran rather than the pre-transaction snapshot. */
+	async #selectByProductId(
+		productId: string,
+		exec: Kysely<Database> = this.#db,
+	): Promise<ProductCommerceTable | undefined> {
+		return exec
 			.selectFrom("product_commerce")
 			.selectAll()
 			.where("product_id", "=", productId)

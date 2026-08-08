@@ -346,6 +346,8 @@ export {
 	MAX_LOW_STOCK_THRESHOLD,
 	MissingProductIdError,
 	SkuConflictError,
+	SkuHeldStockError,
+	SkuStockConflictError,
 } from "./product-commerce/errors.js";
 export {
 	activateProductCommerce,
