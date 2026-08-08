@@ -242,7 +242,7 @@ describe.skipIf(PG === undefined)("HttpCommerceClient [live @otta-sh/service, Po
 		).toEqual({ ok: false, reason: "SKU_TAKEN", sku: "SKU-CV2-TAKEN" });
 	});
 
-	test("deactivate orphans the row without deleting it, and the orphan is LISTED with its tombstone", async () => {
+	test("deactivate orphans the row without deleting it — gone from the public read, brought back intact by a re-declare", async () => {
 		await parentProduct("prod-cv3", "SKU-CV3");
 		const declared = await client.upsertProductVariant(
 			"prod-cv3",
@@ -265,14 +265,27 @@ describe.skipIf(PG === undefined)("HttpCommerceClient [live @otta-sh/service, Po
 			"cv3-drop",
 			"2026-08-09T00:00:00.000Z",
 		);
-		const listed = await client.listProductVariants("prod-cv3");
-		expect(listed).toHaveLength(1);
-		expect(listed[0]?.orphanedAt).toEqual(expect.any(String));
-		// Retained in full: sku and price survive the tombstone.
-		expect(listed[0]).toMatchObject({
+		// The public read carries live sizes only, so a discontinued one — and its
+		// last price — simply is not there.
+		expect(await client.listProductVariants("prod-cv3")).toEqual([]);
+
+		// Retained, not deleted: the CMS declaring the key again brings back the
+		// same row with its sku and price intact, which is only possible because
+		// the tombstone kept them.
+		const back = await client.upsertProductVariant(
+			"prod-cv3",
+			"large",
+			{ title: "Large", contentUpdatedAt: "2026-08-10T00:00:00.000Z" },
+			"cv3-resurrect",
+		);
+		expect(back).toMatchObject({
 			sku: "SKU-CV3-L",
 			price: { amount: 4200, currency: "USD" },
+			orphanedAt: null,
 		});
+		const listed = await client.listProductVariants("prod-cv3");
+		expect(listed).toHaveLength(1);
+		expect(listed[0]).toMatchObject({ variantKey: "large", sku: "SKU-CV3-L" });
 
 		// An unknown key is a no-op, not an error — the sync fires and forgets.
 		await expect(

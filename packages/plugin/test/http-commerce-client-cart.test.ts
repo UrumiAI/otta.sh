@@ -286,12 +286,17 @@ describe.skipIf(PG === undefined)(
 			expect(result).toEqual({ ok: false, reason: "LINE_NOT_FOUND" });
 		});
 
-		// The add endpoint's SKU guard, from the client's side: a size is a row of
-		// its own, so its sku is addable against its product — and the moment the
-		// CMS stops declaring the size, the same sku stops resolving even though
-		// the row still holds it. Both answers ride the client's ordinary typed
-		// envelope; neither is a thrown transport error.
-		test("a LIVE variant's sku adds against its product; once ORPHANED the same sku is SKU_MISMATCH", async () => {
+		// The add endpoint's SKU guard, from the client's side. A size is a row of
+		// its own and resolves against its product — and is REFUSED anyway, with
+		// the same typed token a spoof gets, because order pricing still reads the
+		// snapshot price and title from the product row and cannot reach a variant.
+		//
+		// THIS TEST FLIPS when order pricing resolves the sellable unit rather than
+		// the product row: the first expectation becomes the accepted line the
+		// comment below spells out. The orphaned half does not flip — a
+		// discontinued size stays unaddable either way — so it is asserted here
+		// against a distinct sku, keeping the two halves independent.
+		test("a LIVE variant's sku is REFUSED at the add for now, and an ORPHANED one is refused permanently", async () => {
 			const productId = await seedProduct({
 				sku: "SKU-CART-VAR",
 				onHand: 5,
@@ -329,7 +334,12 @@ describe.skipIf(PG === undefined)(
 
 			const { cartId } = await client.createCart("USD");
 			const added = await client.addCartLine(cartId, "SKU-CART-VAR-L", productId, 1, "cartvar-add");
-			expect(added).toMatchObject({ ok: true, line: { sku: "SKU-CART-VAR-L", productId } });
+			expect(added).toEqual({ ok: false, reason: "SKU_MISMATCH" });
+			// Nothing held: the size still has every unit it adopted.
+			const read = await client.getCart(cartId);
+			expect(read).toMatchObject({ ok: true, cart: { lines: [] } });
+			// On the flip, this is the assertion:
+			//   expect(added).toMatchObject({ ok: true, line: { sku: "SKU-CART-VAR-L", productId } });
 
 			await client.deactivateProductVariant(
 				productId,

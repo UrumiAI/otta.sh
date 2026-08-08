@@ -161,9 +161,11 @@ export class HttpCommerceClient implements CommerceClient {
 	// opaque CMS text, so a key carrying a slash or a space must address its own
 	// row rather than a route that does not exist.
 
-	/** `GET /products/:id/variants` — every variant of one product, ordered by
-	 *  key, ORPHANS INCLUDED and flagged. A pure read: no idempotency key, and
-	 *  an unknown product is `[]` rather than an error. */
+	/** `GET /products/:id/variants` — the LIVE variants of one product, ordered
+	 *  by key. Orphans are filtered out server-side: this read is unauthenticated
+	 *  and exists for the picker, and a discontinued size's name and last price
+	 *  are not public data. A pure read: no idempotency key, and an unknown
+	 *  product — or one whose every size is orphaned — is `[]`, never an error. */
 	async listProductVariants(productId: string): Promise<ProductVariantSummaryWire[]> {
 		const res = await this.#fetch(this.#variantsUrl(productId), {
 			method: "GET",
@@ -636,9 +638,15 @@ export class HttpCommerceClient implements CommerceClient {
  * something an operator has to act on (which sku is taken, which two skus a
  * rename spans, how many holds are still live, which watermark to reload), and
  * the service composes no sentence — the console does, from these fields, in one
- * place. A refusal whose operands are missing or the wrong type degrades to its
- * safe default rather than being rejected: the token is the decision, the
- * operands only sharpen the copy.
+ * place.
+ *
+ * A missing or wrong-typed operand becomes `null`, and NEVER a stand-in value.
+ * The token is still the decision, so the refusal is not discarded over a field
+ * the console can render as "unavailable" — but a default here is a lie the
+ * console cannot detect: `liveHolds: 0` beside SKU_HELD_STOCK denies the very
+ * holds that caused the refusal, and `currentUpdatedAt: ""` hands back a
+ * watermark that is guaranteed to be stale again on the retry. See
+ * `VariantUpdateResult`.
  */
 function asVariantRefusal(body: unknown): VariantUpdateResult | null {
 	if (typeof body !== "object" || body === null) return null;
@@ -649,26 +657,26 @@ function asVariantRefusal(body: unknown): VariantUpdateResult | null {
 		case "VARIANT_NOT_FOUND":
 			return { ok: false, reason: "VARIANT_NOT_FOUND" };
 		case "STALE_EDIT":
-			return { ok: false, reason: "STALE_EDIT", currentUpdatedAt: text("currentUpdatedAt") ?? "" };
+			return { ok: false, reason: "STALE_EDIT", currentUpdatedAt: text("currentUpdatedAt") };
 		case "CURRENCY_MISMATCH":
 			return { ok: false, reason: "CURRENCY_MISMATCH", currency: text("currency") };
 		case "INVALID_FIELD":
-			return { ok: false, reason: "INVALID_FIELD", field: text("field") ?? "" };
+			return { ok: false, reason: "INVALID_FIELD", field: text("field") };
 		case "SKU_TAKEN":
-			return { ok: false, reason: "SKU_TAKEN", sku: text("sku") ?? "" };
+			return { ok: false, reason: "SKU_TAKEN", sku: text("sku") };
 		case "SKU_STOCK_CONFLICT":
 			return {
 				ok: false,
 				reason: "SKU_STOCK_CONFLICT",
-				fromSku: text("fromSku") ?? "",
-				toSku: text("toSku") ?? "",
+				fromSku: text("fromSku"),
+				toSku: text("toSku"),
 			};
 		case "SKU_HELD_STOCK":
 			return {
 				ok: false,
 				reason: "SKU_HELD_STOCK",
-				sku: text("sku") ?? "",
-				liveHolds: typeof row.liveHolds === "number" ? row.liveHolds : 0,
+				sku: text("sku"),
+				liveHolds: typeof row.liveHolds === "number" ? row.liveHolds : null,
 			};
 		default:
 			return null;
