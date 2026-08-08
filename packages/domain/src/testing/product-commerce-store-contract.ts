@@ -106,6 +106,23 @@ async function onHandOfSku(
 	return onHandOf(h, probeId);
 }
 
+/**
+ * One variant's row as the store projects it, by key — the only window the
+ * contract has onto a variant's stock, since `onHand` rides on `listVariants`
+ * exactly as `ProductSummary.onHand` rides on `listProducts`. Throws rather than
+ * returning undefined so a case never quietly asserts against a hole.
+ */
+async function variantOf(
+	h: ProductCommerceStoreHarness,
+	pid: string,
+	key: string,
+): Promise<ProductVariantSummary> {
+	const rows = await h.store.listVariants(productId(pid));
+	const row = rows.find((v) => v.variantKey === key);
+	if (row === undefined) throw new Error(`variantOf: no variant ${key} on ${pid}`);
+	return row;
+}
+
 /** A summary-row seed with sensible defaults; overridable per admin-list case. */
 function productRow(
 	overrides: Partial<SeedProductSummaryRow> & { id: string },
@@ -2720,19 +2737,6 @@ export function productCommerceStoreContract(
 					},
 					idempotencyKey(`declare-${pid}-${key}`),
 				);
-			}
-
-			/** One variant's row as the store projects it, by key. Throws rather
-			 *  than returning undefined so a case never asserts against a hole. */
-			async function variantOf(
-				h: ProductCommerceStoreHarness,
-				pid: string,
-				key: string,
-			): Promise<ProductVariantSummary> {
-				const rows = await h.store.listVariants(productId(pid));
-				const row = rows.find((v) => v.variantKey === key);
-				if (row === undefined) throw new Error(`variantOf: no variant ${key} on ${pid}`);
-				return row;
 			}
 
 			test("INERT: a product that declares no variants lists none, and the product surfaces are untouched", async () => {
