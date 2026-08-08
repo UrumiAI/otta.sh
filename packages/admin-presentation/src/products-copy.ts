@@ -213,7 +213,10 @@ export function stockDegradation(
 	}
 	if (facts.filterUnavailable) {
 		symptoms.push("the Low stock only filter was not applied");
-		remedies.push("Every product on this page is listed.");
+		// NOT "on this page": the React list accumulates, and this fact LATCHES
+		// across a scan (`nextPage`), so the sentence can sit over rows merged
+		// from several responses. "The rows below" is true of one page and of six.
+		remedies.push("The rows below are every product, not just the low-stock ones.");
 	}
 	if (symptoms.length === 0) return undefined;
 	const joined = symptoms.join("; ");

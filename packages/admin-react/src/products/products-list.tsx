@@ -256,22 +256,32 @@ interface LoadedPage extends ProductsResponse {
  * because a scan that began at the first page still starts there after its
  * second page lands.
  *
- * `filterUnavailable` IS THE ONE EXCEPTION, AND IT LATCHES. Every other field
- * describes the newest response, which is what a single page needs; that flag
- * describes the ROWS, and after a merge the rows come from several responses.
- * The plugin cannot see this: a continuation's predicate rode inside the opaque
- * cursor, so it always reports `false` (`resolveStockContext`'s decision 3).
- * Taking that at face value is how a scan whose FIRST page went out unfiltered
- * — the threshold was unreadable just then — quietly turns into "137 low-stock
- * products" over every product in the catalog, with the banner that said so
- * vanishing at the click of `Load more`. Once any page in the accumulation went
- * out unfiltered the whole accumulation is unfiltered, and it says so until the
- * scan resets.
+ * `filterUnavailable` IS THE ONE EXCEPTION, AND IT LATCHES — it is INHERITED
+ * from the accumulation rather than read off the newest response. Every other
+ * field describes that response, which is what a single page needs; this one
+ * describes whether the operator's filter was ever applied to the rows they are
+ * looking at. A continuation's predicate rode inside the opaque cursor, so the
+ * plugin reports `false` for every one of them by contract
+ * (`resolveStockContext`'s decision 3) — there is no incoming `true` to combine
+ * with, which is why this inherits instead of OR-ing. Taking that `false` at
+ * face value is how a scan whose FIRST page went out unfiltered, the threshold
+ * having been unreadable just then, quietly drops the banner at the click of
+ * `Load more` and starts calling every product in the catalog low-stock. Page
+ * one's answer stands until the scan resets.
  *
- * THE `total` GOES WITH IT for the same reason: a latched flag means the rows
- * on screen were fetched under two different predicates, and no single exact
- * count describes that mixture. The count falls back to what the render can
- * back up on its own.
+ * THE `total` GOES WITH IT, and the reason is page one's, not a mixture: the
+ * continuation's rows were fetched under the SAME (absent) predicate, so they
+ * are homogeneous — but the count that arrives with them is the count of every
+ * product, while the operator asked for the low-stock ones. Page one already
+ * withheld its own total on exactly that ground, so honouring this one would
+ * jump the caption from a hedged page count to a confident exact number
+ * underneath a banner saying the filter was skipped. The count falls back to
+ * what the render can back up on its own.
+ *
+ * `unreadable` DOES NOT LATCH, deliberately. It describes how the newest
+ * response could be RENDERED — whether its own rows carry an on-hand figure —
+ * and the newest response is what the column shows; the latch exists only
+ * because `filterUnavailable` gates a CLAIM about the whole accumulation.
  */
 export function nextPage(
 	current: LoadedPage | null,
@@ -280,7 +290,7 @@ export function nextPage(
 ): LoadedPage {
 	if (!continuation) return { ...incoming, firstPage: true, pages: 1 };
 	if (current === null) return { ...incoming, firstPage: false, pages: 1 };
-	const filterUnavailable = current.stock.filterUnavailable || incoming.stock.filterUnavailable;
+	const { filterUnavailable } = current.stock;
 	return {
 		...incoming,
 		products: mergeById(current.products, incoming.products, (product) => product.productId),

@@ -230,8 +230,12 @@ describe("`filterUnavailable` LATCHES across a scan, because it describes the ro
 		expect(first.stock.filterUnavailable).toBe(true);
 		const second = productsNextPage(first, stockPage(["p2"], null, false, 137), true);
 		expect(second.stock.filterUnavailable).toBe(true);
-		// AND THE TOTAL GOES WITH IT: the rows came from two predicates, so no
-		// single exact count describes them.
+		// AND THE TOTAL GOES WITH IT. Not because the rows are a mixture — they
+		// were all fetched WITHOUT the predicate — but because 137 is the count of
+		// every product while the operator asked for the low-stock ones. Page one
+		// withheld its own total on that ground, and honouring this one would jump
+		// the caption to a confident exact number under a banner saying the filter
+		// was skipped.
 		expect(second.total).toBeUndefined();
 	});
 

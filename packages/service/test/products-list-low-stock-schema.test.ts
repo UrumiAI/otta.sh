@@ -1,5 +1,11 @@
+import { isValidLowStockThreshold, MAX_LOW_STOCK_THRESHOLD } from "@otta-sh/domain";
 import { describe, expect, test } from "vitest";
-import { productListFilterSchema, productsListQuery } from "../src/schemas.js";
+import {
+	lowStockQuery,
+	productListFilterSchema,
+	productsListQuery,
+	settingsBody,
+} from "../src/schemas.js";
 
 // The FAST LOOP half of the low-stock query-parameter guard (port doc, the
 // admin Products list filter). The HTTP half — that a bad value 400s rather
@@ -58,6 +64,66 @@ describe("productsListQuery reads `lowStockThreshold` off the raw query string a
 			const res = productsListQuery.safeParse({ lowStockThreshold: bad });
 			expect(res.success, bad).toBe(false);
 		}
+	});
+
+	test("REJECTS a threshold above int4 — digits alone are not the whole domain", () => {
+		// `inventory.on_hand` is a Postgres `integer` and the predicate binds the
+		// threshold straight into `on_hand <= $1`. Above `int4`'s maximum Postgres
+		// throws on the bind while better-sqlite3 and the fake accept it and
+		// answer — the three-way dialect disagreement the port's guard exists to
+		// make unreachable, arriving as a 500 through the very catch that turns a
+		// bad threshold into a 400. A shape gate does not stop it; the bound does.
+		expect(
+			productsListQuery.safeParse({ lowStockThreshold: String(MAX_LOW_STOCK_THRESHOLD) }).success,
+		).toBe(true);
+		expect(
+			productsListQuery.safeParse({ lowStockThreshold: String(MAX_LOW_STOCK_THRESHOLD + 1) })
+				.success,
+		).toBe(false);
+		expect(productsListQuery.safeParse({ lowStockThreshold: "99999999999999" }).success).toBe(
+			false,
+		);
+	});
+});
+
+describe("the ceiling is the SAME number everywhere it is enforced", () => {
+	test("the domain guard agrees with the wire, at the boundary and one past it", () => {
+		// ONE DEFINITION, THREE LAYERS. The query string, the cursor-embedded
+		// filter and the port's own guard all bound on `MAX_LOW_STOCK_THRESHOLD`;
+		// a value the wire lets through and the guard refuses (or the reverse) is
+		// the drift `isValidLowStockThreshold` was extracted to prevent.
+		expect(isValidLowStockThreshold(MAX_LOW_STOCK_THRESHOLD)).toBe(true);
+		expect(isValidLowStockThreshold(MAX_LOW_STOCK_THRESHOLD + 1)).toBe(false);
+		expect(isValidLowStockThreshold(Number.MAX_SAFE_INTEGER)).toBe(false);
+		// ...and the three schemas draw the line in the same place.
+		expect(
+			productListFilterSchema.safeParse({ lowStockThreshold: MAX_LOW_STOCK_THRESHOLD }).success,
+		).toBe(true);
+		expect(
+			productListFilterSchema.safeParse({ lowStockThreshold: MAX_LOW_STOCK_THRESHOLD + 1 }).success,
+		).toBe(false);
+		expect(lowStockQuery.safeParse({ threshold: String(MAX_LOW_STOCK_THRESHOLD) }).success).toBe(
+			true,
+		);
+		expect(
+			lowStockQuery.safeParse({ threshold: String(MAX_LOW_STOCK_THRESHOLD + 1) }).success,
+		).toBe(false);
+	});
+
+	test("the SETTINGS WRITE is bounded too — the saved value is what every later read binds", () => {
+		// THE PATH THAT NEVER APPEARS IN A URL. An operator saves the threshold
+		// once; every subsequent list read then binds that stored number into the
+		// predicate. An unbounded write is therefore the same int4 overflow with a
+		// longer fuse, and the one the query-string gate cannot see.
+		expect(settingsBody.safeParse({ lowStockThreshold: MAX_LOW_STOCK_THRESHOLD }).success).toBe(
+			true,
+		);
+		expect(settingsBody.safeParse({ lowStockThreshold: MAX_LOW_STOCK_THRESHOLD + 1 }).success).toBe(
+			false,
+		);
+		expect(settingsBody.safeParse({ lowStockThreshold: Number.MAX_SAFE_INTEGER }).success).toBe(
+			false,
+		);
 	});
 });
 

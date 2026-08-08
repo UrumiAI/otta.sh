@@ -534,9 +534,9 @@ describe("INC-23's exact count, shared by both surfaces", () => {
 	});
 
 	test("a level that narrowed the fetched page WITHHOLDS the total, and is believed", () => {
-		// Products' "Low stock only" narrows client-side, so the service's count
-		// describes a different set than the rows on screen. Omitting it is the
-		// contract; the ladder must then say the smaller, true thing.
+		// A level that trims rows after fetching them holds a count of a different
+		// set than the one on screen. Omitting it is the contract; the ladder must
+		// then say the smaller, true thing.
 		const outcome = listOutcome({
 			count: 4,
 			filtered: true,
@@ -572,11 +572,11 @@ describe("INC-23's exact count, shared by both surfaces", () => {
 
 	test("a `total` under narrowed-after-fetch is REFUSED, not rendered", () => {
 		// PINNED DIRECTLY: a caller can mislabel a page `narrowed-after-fetch`
-		// while a real `total` is present (products'
-		// `stock.filterUnavailable` — the narrowing did not apply, but the service's
-		// exact count still arrived). The ladder must not let that total resurrect
-		// whole-set phrasing: this scope refuses one unconditionally, independently
-		// of whether the caller's own labelling was correct.
+		// while a real `total` is present — its own trimming did not actually
+		// apply to this page, but the service's exact count arrived anyway. The
+		// ladder must not let that total resurrect whole-set phrasing: this scope
+		// refuses one unconditionally, independently of whether the caller's own
+		// labelling was correct.
 		const outcome = listOutcome({
 			count: 3,
 			filtered: true,
@@ -754,15 +754,21 @@ describe("the stock-degradation banner carries every true fact, not the first on
 		expect(banner?.description).toContain("Checkout & holds on Settings");
 	});
 
-	test("a filter that could not be applied says the page is UNFILTERED", () => {
-		// Never silently the wrong set of rows.
+	test("a filter that could not be applied says the rows are UNFILTERED", () => {
+		// Never silently the wrong set of rows — and never scoped to "this page",
+		// because the React list accumulates and latches this fact across a scan,
+		// so the sentence has to stay true over rows merged from several
+		// responses.
 		const banner = stockDegradation({
 			unreadable: false,
 			thresholdUnreadable: false,
 			filterUnavailable: true,
 		});
 		expect(banner?.title).toBe("The Low stock only filter was not applied.");
-		expect(banner?.description).toBe("Every product on this page is listed.");
+		expect(banner?.description).toBe(
+			"The rows below are every product, not just the low-stock ones.",
+		);
+		expect(banner?.description).not.toContain("this page");
 	});
 });
 

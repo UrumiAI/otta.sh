@@ -3,6 +3,7 @@ import { cents, currency, money } from "../money/cents.js";
 import { idempotencyKey, productId, sku } from "../money/ids.js";
 import {
 	InvalidLowStockThresholdError,
+	MAX_LOW_STOCK_THRESHOLD,
 	MissingProductIdError,
 	SkuConflictError,
 } from "../product-commerce/errors.js";
@@ -2082,6 +2083,14 @@ export function productCommerceStoreContract(
 				Number.NaN,
 				Number.POSITIVE_INFINITY,
 				Number.NEGATIVE_INFINITY,
+				// ABOVE int4, and it belongs IN this list rather than beside it: the
+				// threshold is bound against `inventory.on_hand`, a Postgres
+				// `integer`, so an out-of-range value is refused by pg and ACCEPTED
+				// by SQLite and the fake. That is the same three-way disagreement
+				// every other entry here names, which is why the bound lives in the
+				// shared guard rather than at one adapter.
+				MAX_LOW_STOCK_THRESHOLD + 1,
+				Number.MAX_SAFE_INTEGER,
 			]) {
 				await expect(
 					h.store.listProducts({ lowStockThreshold: bad }, { limit: 25 }),
@@ -2200,6 +2209,14 @@ export function productCommerceStoreContract(
 				Number.NaN,
 				Number.POSITIVE_INFINITY,
 				Number.NEGATIVE_INFINITY,
+				// ABOVE int4, and it belongs IN this list rather than beside it: the
+				// threshold is bound against `inventory.on_hand`, a Postgres
+				// `integer`, so an out-of-range value is refused by pg and ACCEPTED
+				// by SQLite and the fake. That is the same three-way disagreement
+				// every other entry here names, which is why the bound lives in the
+				// shared guard rather than at one adapter.
+				MAX_LOW_STOCK_THRESHOLD + 1,
+				Number.MAX_SAFE_INTEGER,
 			]) {
 				await expect(h.store.countProducts({ lowStockThreshold: bad })).rejects.toBeInstanceOf(
 					InvalidLowStockThresholdError,
