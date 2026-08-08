@@ -162,10 +162,12 @@ export class HttpCommerceClient implements CommerceClient {
 	// row rather than a route that does not exist.
 
 	/** `GET /products/:id/variants` — the LIVE variants of one product, ordered
-	 *  by key. Orphans are filtered out server-side: this read is unauthenticated
-	 *  and exists for the picker, and a discontinued size's name and last price
-	 *  are not public data. A pure read: no idempotency key, and an unknown
-	 *  product — or one whose every size is orphaned — is `[]`, never an error. */
+	 *  by key. The route answers two projections and this call takes the PUBLIC
+	 *  one: it deliberately sends no `X-Internal-Token`, so orphans are filtered
+	 *  out server-side, for the same reason `getPublicOrder` withholds that header
+	 *  — a storefront page must never be handed the operator's view. A pure read:
+	 *  no idempotency key, and an unknown product — or one whose every size is
+	 *  orphaned — is `[]`, never an error. */
 	async listProductVariants(productId: string): Promise<ProductVariantSummaryWire[]> {
 		const res = await this.#fetch(this.#variantsUrl(productId), {
 			method: "GET",

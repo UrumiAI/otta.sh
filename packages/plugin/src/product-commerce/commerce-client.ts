@@ -111,11 +111,11 @@ export interface ProductVariantWire {
 	/** The ORPHAN tombstone: non-null once the CMS stopped declaring this key.
 	 *  The row keeps its sku, price and stock — deactivation, never deletion.
 	 *
-	 *  ALWAYS NULL ON `listProductVariants`, which serves live rows only; a write
-	 *  reply is the one place a non-null value reaches this client today, when a
-	 *  declare RESURRECTS a key and answers with the row it revived (null again by
-	 *  then). Rendering an orphan distinctly — it may hold stock and sit on live
-	 *  orders — needs the internal-token console read, not this one. */
+	 *  ALWAYS NULL ON `listProductVariants` as this client calls it: it sends no
+	 *  internal token, so it receives the public projection, which is live rows
+	 *  only. Rendering an orphan distinctly — it may hold stock and sit on live
+	 *  orders — means asking the same route for the operator's projection, which
+	 *  this client does not do. */
 	orphanedAt: string | null;
 	createdAt: string;
 	/** The compare-and-set watermark an edit must pass back. */
@@ -241,10 +241,12 @@ export interface CommerceClient {
 	// presence + the display name, the admin sets sku + price, and neither
 	// input type carries the other's fields — so crossing the line does not
 	// compile here either, not merely 400 at the wire.
-	/** LIVE variants only — the service filters orphans out of this
-	 *  unauthenticated read (a discontinued size's name and last price are not
-	 *  public data). A console that needs tombstones reads them behind the
-	 *  internal token. */
+	/** LIVE variants only. The service serves this read in two projections off
+	 *  one route — anonymous callers get live rows, a caller holding
+	 *  `X-Internal-Token` gets every row with orphans flagged — and this client
+	 *  is the STOREFRONT's, so it never sends that header and never receives a
+	 *  tombstone (a discontinued size's name and last price are not public data).
+	 *  A console that needs tombstones asks for the operator's projection. */
 	listProductVariants(productId: string): Promise<ProductVariantSummaryWire[]>;
 	/** The CMS-sync DECLARE. Brings a variant into existence, refreshes its
 	 *  name cache, and RESURRECTS an orphan — it never refuses presence, so

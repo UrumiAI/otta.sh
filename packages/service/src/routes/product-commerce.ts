@@ -26,6 +26,7 @@ import {
 	type ProductVariantSummary,
 } from "@otta-sh/domain";
 import { type Context, Hono } from "hono";
+import { tokenMatches } from "../auth.js";
 import {
 	deactivateProductVariantBody,
 	editProductVariantBody,
@@ -39,6 +40,22 @@ import {
 export type { ProductCommerceDeps };
 
 /**
+ * The use-case deps, plus the one thing a ROUTE needs that a use-case does not:
+ * the shared secret that unlocks the operator's view of a read.
+ *
+ * OPTIONAL, and an unset or empty value means the unlock is UNAVAILABLE rather
+ * than open — the rule `auth.ts` states and `routes/orders.ts` follows on its
+ * own dual-projection read. It is also why the check below tests the configured
+ * token for presence BEFORE comparing: `tokenMatches` takes a required
+ * `expected`, so calling it with an unset token would hash the empty string and
+ * invite a caller to "authenticate" with an empty header against a server that
+ * configured none.
+ */
+export interface ProductCommerceRoutesDeps extends ProductCommerceDeps {
+	internalToken?: string;
+}
+
+/**
  * Product-commerce routes — 1:1 with the port (Phase 1 §7): `PUT`/`GET`/
  * `DELETE /products/:id/commerce`, the two publish-gate actions, and the
  * variant surface (`GET /products/:id/variants` plus one route per variant
@@ -50,7 +67,7 @@ export type { ProductCommerceDeps };
  * `STALE_EDIT`, `CURRENCY_MISMATCH`); money on the wire is an integer +
  * ISO-4217 string, and an absent price is `null` rather than zero.
  */
-export function productCommerceRoutes(deps: ProductCommerceDeps): Hono {
+export function productCommerceRoutes(deps: ProductCommerceRoutesDeps): Hono {
 	const app = new Hono();
 
 	app.put("/:id/commerce", async (c) => {
@@ -228,23 +245,33 @@ export function productCommerceRoutes(deps: ProductCommerceDeps): Hono {
 	// the stock signal reads the list, which joins it in the same statement.
 
 	/**
-	 * The variants read. LIVE ROWS ONLY: an orphan is filtered out here, and the
-	 * filter is the decision — this GET is unauthenticated (the write gate covers
-	 * non-GET verbs only), and the caller it exists for is the storefront picker,
-	 * which needs the sizes a shopper may buy and nothing else.
+	 * The variants read, in TWO PROJECTIONS off one route — exactly the shape
+	 * `GET /orders/:orderId` already uses: the same URL answers the public view
+	 * to anyone and the operator's view to a caller holding `X-Internal-Token`.
 	 *
-	 * An orphan is a size the merchant has DISCONTINUED. Publishing it here would
-	 * put its title and its last price on an anonymous read — the shape of the
-	 * catalogue somebody stopped selling, and what they used to charge for it —
-	 * to serve a picker that must not render it anyway. Same rule as the omitted
-	 * unit cost on the commerce read beside this one: the ungated read carries
-	 * what a buyer may act on, and nothing else.
+	 * ANONYMOUS ⇒ LIVE ROWS ONLY. The write gate covers non-GET verbs, so this is
+	 * a storefront-reachable read, and the caller it exists for is the picker,
+	 * which needs the sizes a shopper may buy and nothing else. An orphan is a
+	 * size the merchant DISCONTINUED; publishing it here would put its name and
+	 * its last price on an anonymous read — the shape of a catalogue somebody
+	 * stopped selling, and what they used to charge — to serve a picker that must
+	 * not render it. Same rule as the unit cost omitted from the commerce read
+	 * beside this one.
 	 *
-	 * Surfacing orphans is exactly what the console needs (a tombstone may still
-	 * hold stock and sit on live orders, and hiding it is how units get stranded),
-	 * so the orphan projection is owed to the INTERNAL-TOKEN admin surface, where
-	 * unit cost and the exact on-hand count already live. The port keeps returning
-	 * orphans flagged; this route is the boundary that decides who sees them.
+	 * WITH THE TOKEN ⇒ EVERY ROW, orphans included and flagged by a non-null
+	 * `orphanedAt`. Surfacing the tombstone is the whole point for an operator: it
+	 * may still hold stock and still sit on live order lines, and hiding it is how
+	 * units get stranded. It is also the only way `deactivate`'s effect is
+	 * OBSERVABLE over HTTP at all — without this mode the transition can be
+	 * driven and never seen, and a later console screen would have to either
+	 * build on the public read (which lies to it by omission) or add its own
+	 * route as a hidden prerequisite.
+	 *
+	 * The token is checked for presence before it is compared: unset or empty
+	 * means the unlock is UNAVAILABLE, never open (see `ProductCommerceRoutesDeps`).
+	 * A wrong token is not an error here — it simply does not unlock, and the
+	 * caller gets the public projection, which is the same stance the order read
+	 * takes and keeps this from becoming an oracle for whether a token exists.
 	 */
 	app.get("/:id/variants", async (c) => {
 		const id = c.req.param("id");
@@ -252,13 +279,15 @@ export function productCommerceRoutes(deps: ProductCommerceDeps): Hono {
 			return c.json({ error: "MISSING_PRODUCT_ID" }, 400);
 		}
 		const rows = await listProductVariants(deps.productCommerce, productId(id));
-		// An unknown product, one that has declared no variants, and one whose
-		// every size is orphaned are all `[]` — absence, never a 404. The first of
-		// those is the state the entire live catalog is in.
-		return c.json(
-			{ variants: rows.filter((row) => row.orphanedAt === null).map(serializeVariantSummary) },
-			200,
-		);
+		const authorized =
+			deps.internalToken !== undefined &&
+			deps.internalToken.length > 0 &&
+			tokenMatches(c.req.header("X-Internal-Token"), deps.internalToken);
+		const visible = authorized ? rows : rows.filter((row) => row.orphanedAt === null);
+		// An unknown product, one that has declared no variants, and — on the
+		// public projection — one whose every size is orphaned are all `[]`:
+		// absence, never a 404. The first of those is the state of the live catalog.
+		return c.json({ variants: visible.map(serializeVariantSummary) }, 200);
 	});
 
 	// The CMS-SYNC channel. Writes presence + the display-name cache and NOTHING

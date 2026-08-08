@@ -124,12 +124,20 @@ export function cartRoutes(deps: CartRoutesDeps & { productCommerce: ProductComm
 		// productId. A bare line is also unorderable by construction (both
 		// checkout paths reject a null productId with PRODUCT_NOT_PRICED before
 		// they price anything), so it can confer neither price nor entitlement and
-		// the spoof this guard exists to stop is not expressible through it. What
-		// a bare add CAN still do is reserve stock — which every legitimate add
-		// does too, so it is a rate-limiting concern and not this one. Closing it
-		// honestly needs a by-sku resolver on the port; the guard cannot invent
-		// one, and guessing with the admin list's case-insensitive search would
-		// resolve "sku-a" onto "SKU-A" and see no variants at all.
+		// the spoof this guard exists to stop is not expressible through it.
+		//
+		// THE RESIDUAL RISK IS LARGER THAN "IT RESERVES STOCK", and it is worth
+		// naming precisely. Reserving is what every legitimate add does, so on its
+		// own that is a rate-limiting concern rather than this one. But the cart
+		// store's add upserts on `(cart_id, sku)` and its conflict update writes
+		// `product_id` from the incoming request unconditionally — so a BARE
+		// re-add of a sku already on the cart overwrites that line's product_id
+		// with null, downgrading a line this guard admitted into one checkout
+		// refuses. A bare add can therefore reach past its own line and damage a
+		// guarded one. Guarding it needs the same by-sku resolver the port does
+		// not have; the guard cannot invent one, and guessing with the admin
+		// list's case-insensitive search would resolve "sku-a" onto "SKU-A" and
+		// see no variants at all. Tracked separately as issue #235.
 		//
 		// NOT AN N+1, and not on the reserve path: the resolution is at most two
 		// keyed reads per REQUEST (never per line — an add carries exactly one),
@@ -160,10 +168,12 @@ export function cartRoutes(deps: CartRoutesDeps & { productCommerce: ProductComm
 				return c.json({ ok: false, reason: "SKU_MISMATCH" }, 409);
 			}
 			if (resolved.status === "unpriced") {
-				// Live, correctly named, and nobody has priced it — a variant whose
-				// price a resurrect cleared is exactly this state. Refused HERE and by
-				// name, because the alternative is a line that looks purchasable and
-				// then gets charged whatever the row above it happens to hold.
+				// Live, correctly named, and nobody has priced it — a product synced
+				// but not yet priced ("create then price"), which is the only way to
+				// reach this today, since every variant is refused above whether it
+				// carries a price or not. Refused HERE and by name so a shopper is
+				// told at the Add button rather than at the last step, and so no
+				// stock is held for a line that could never have been bought.
 				return c.json({ ok: false, reason: "PRODUCT_NOT_PRICED" }, 409);
 			}
 			kind = resolved.productKind;
@@ -350,20 +360,26 @@ async function resolveSellableUnit(
 		(row) => row.orphanedAt === null && row.sku !== null && String(row.sku) === submittedSku,
 	);
 	if (variant === undefined) return { status: "unknown" };
-	// Resolved: a live size of exactly this product — and still refused, for the
-	// reason stated above. Deliberately the SAME refusal a spoof gets, so the
-	// endpoint publishes nothing about which sizes exist; and deliberately NOT
-	// `unpriced`, which would be a different and untrue statement — a priced size
-	// is priced, the price is simply one checkout cannot reach yet.
+	// BOTH ARMS RETURN `unknown` TODAY, and the lookup above is therefore
+	// SCAFFOLDING — say it plainly rather than let a reader hunt for the
+	// behavioural difference it does not make. It is held here, unobserved, for
+	// one reason: it keeps the flip to a single return statement, in the one
+	// place that already knows which rows are live and which sku was asked for.
+	// Deleting it would mean re-deriving all of that later, in a change whose
+	// risk is entirely about pricing.
 	//
-	// The lookup above is not decoration. It is what tells a live size apart from
-	// a spoof, and it is the line the flip lands on: when order pricing resolves
-	// the sellable unit, this return becomes
+	// The refusal is deliberately the SAME token a spoof gets, so the endpoint
+	// publishes nothing about which sizes exist; and deliberately NOT `unpriced`,
+	// which would be a different and untrue statement — a priced size is priced,
+	// the price is simply one checkout cannot reach yet.
+	//
+	// When order pricing resolves the sellable unit, this return becomes
 	//     return variant.price === null
 	//         ? { status: "unpriced" }
 	//         : { status: "ok", productKind: product.productKind };
 	// — a size inheriting its product's fulfillment kind, since there is no
-	// per-variant kind on the port.
+	// per-variant kind on the port — and the scaffolding above becomes the thing
+	// that tells a live size apart from a spoof.
 	return { status: "unknown" };
 }
 

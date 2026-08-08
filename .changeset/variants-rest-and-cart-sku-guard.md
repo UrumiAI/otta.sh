@@ -17,8 +17,11 @@ endpoint's missing check reachable.
   silently dropped. The variant key is a path segment because it is the identity:
   immutable, half the primary key, and unreachable from any body.
 - **This manages catalogue data ahead of the storefront wiring.** A merchant can declare,
-  price, rename and discontinue sizes over HTTP. **Variant SKUs are not yet addable to a
-  cart**, and that is a deliberate gate rather than a missing feature — see the guard
+  price, rename and discontinue sizes over HTTP. What it does not yet do is sell them:
+  **no guarded, priceable line can carry a variant SKU.** A bare add — one naming no
+  product — can still place the SKU string on a line and reserve its units, exactly as it
+  could before this change; that line has no product reference, so it cannot be priced,
+  quoted or ordered. The gate is deliberate rather than a missing feature — see the guard
   below.
 - **Every documented refusal is a typed envelope, never a 500.** The three SKU refusals
   answer the same `SKU_TAKEN` / `SKU_STOCK_CONFLICT` / `SKU_HELD_STOCK` 409s the product
@@ -31,12 +34,15 @@ endpoint's missing check reachable.
 - **Money is integer minor units plus a currency, and absent is absent.** A declared but
   unpriced size serializes `null` — never `0`, never a zero-amount object, never
   "Free".
-- **The variants read is unauthenticated, so it carries live rows only.** Orphans are
-  filtered out: a discontinued size's name and its last price are the shape of a
-  catalogue somebody stopped selling, and the caller this read exists for — the
-  storefront picker — must not render them anyway. It publishes a coarse `inStock`
-  rather than the exact on-hand count, for the reason the commerce read omits unit cost.
-  Surfacing tombstones and counts is owed to the internal-token console surface.
+- **The variants read answers two projections off one route**, the shape
+  `GET /orders/:orderId` already uses. Anonymously it carries LIVE rows only: a
+  discontinued size's name and its last price are the shape of a catalogue somebody
+  stopped selling, and the caller this read exists for — the storefront picker — must not
+  render them anyway. With `X-Internal-Token` it carries every row, orphans flagged,
+  which is what makes the deactivate transition observable over HTTP at all. A wrong
+  token does not unlock and does not say so; it simply gets the public view. Both
+  projections publish a coarse `inStock` rather than the exact on-hand count, for the
+  reason the commerce read omits unit cost.
 - **The cart add endpoint now resolves its SKU instead of forwarding it.** An add that
   names a product must resolve that SKU to a live, priced sellable unit **of that
   product**. A SKU belonging to another product, to a soft-deleted product, or to a
@@ -71,10 +77,17 @@ endpoint's missing check reachable.
   an empty `currentUpdatedAt` would re-submit as a guaranteed second stale edit. Its
   cart methods gain `PRODUCT_NOT_PRICED` alongside `SKU_MISMATCH`.
 
+**Named obligation — the console's variants read is the operator projection, not the
+public one.** A Variants tab must send `X-Internal-Token` and render the orphaned state
+distinctly: a tombstone can hold stock and sit on live order lines, and a screen built on
+the anonymous projection would show a merchant a catalogue with the discontinued sizes
+silently missing — which is how units get stranded. The exact on-hand count that tab
+needs is not on either projection here and is owed to the same gated surface.
+
 **Named follow-up — a by-SKU resolver on `ProductCommerceStore`.** It is what a bare add
 needs to resolve rather than be waved through, and there is a second, sharper motivation
 already in the tree: the Postgres cart store's add upserts on `(cart_id, sku)` and its
 `doUpdateSet` writes `product_id` from the incoming request, so a bare re-add of a SKU
 already on the cart **degrades that line's `product_id` to null** — silently converting a
 priced, orderable line into one checkout refuses. Guarding that properly needs the same
-lookup. The store is deliberately unchanged here.
+lookup. The store is deliberately unchanged here; the defect is tracked as issue #235.

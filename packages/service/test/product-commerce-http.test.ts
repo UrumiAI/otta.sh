@@ -632,8 +632,13 @@ describe.skipIf(PG === undefined)("HTTP product-commerce contract [live server, 
 		});
 	}
 
-	function listVariants(id: string): Promise<JsonResponse> {
-		return request("GET", `/products/${id}/variants`);
+	function listVariants(id: string, headers: Record<string, string> = {}): Promise<JsonResponse> {
+		return request("GET", `/products/${id}/variants`, undefined, headers);
+	}
+
+	/** The operator's projection of the same read — orphans included and flagged. */
+	function listVariantsAsOperator(id: string): Promise<JsonResponse> {
+		return listVariants(id, { "X-Internal-Token": server.internalToken ?? "" });
 	}
 
 	/** A parent product, priced in USD, so the currency guards have an anchor. */
@@ -745,9 +750,25 @@ describe.skipIf(PG === undefined)("HTTP product-commerce contract [live server, 
 
 		const rows = (await listVariants("prod-v5")).body?.variants as Array<Record<string, unknown>>;
 		expect(rows.map((r) => r.variantKey)).toEqual(["large", "small"]);
-		// Every row this read emits is live, so the flag is present and always null
-		// — a caller never has to branch on it.
+		// Every row the PUBLIC read emits is live, so the flag is present and
+		// always null — an anonymous caller never has to branch on it.
 		expect(rows.every((r) => r.orphanedAt === null)).toBe(true);
+
+		// The operator sees all three, with the tombstone flagged — the same route,
+		// a second projection, exactly as `GET /orders/:orderId` already works.
+		const all = (await listVariantsAsOperator("prod-v5")).body?.variants as Array<
+			Record<string, unknown>
+		>;
+		expect(all.map((r) => r.variantKey)).toEqual(["large", "medium", "small"]);
+		expect(all.find((r) => r.variantKey === "medium")?.orphanedAt).toEqual(expect.any(String));
+		expect(all.find((r) => r.variantKey === "large")?.orphanedAt).toBeNull();
+
+		// A WRONG token does not unlock, and does not announce that it was wrong:
+		// the caller gets the public projection, so this is no oracle for whether
+		// a token is configured.
+		const wrong = (await listVariants("prod-v5", { "X-Internal-Token": "not-the-token" })).body
+			?.variants as Array<Record<string, unknown>>;
+		expect(wrong.map((r) => r.variantKey)).toEqual(["large", "small"]);
 	});
 
 	test("a product whose every size is orphaned reads as an empty list, not as tombstones", async () => {
@@ -979,11 +1000,21 @@ describe.skipIf(PG === undefined)("HTTP product-commerce contract [live server, 
 		);
 		expect(drop.status).toBe(200);
 
-		// Gone from the public read — and RETAINED, which that read can no longer
-		// show. The proof is the resurrect: the CMS declaring the key again brings
-		// back the SAME row, sku and price intact, which is only possible because
-		// deactivate never deleted it. The units never moved at any point.
+		// Gone from the public read — and RETAINED, which the operator's projection
+		// shows directly: this is the transition's only HTTP-observable effect, and
+		// without the token-gated mode it could be driven and never seen.
 		expect((await listVariants("prod-v15")).body).toEqual({ variants: [] });
+		const tombstone = (await listVariantsAsOperator("prod-v15")).body?.variants as Array<
+			Record<string, unknown>
+		>;
+		expect(tombstone).toHaveLength(1);
+		expect(tombstone[0]).toMatchObject({
+			variantKey: "large",
+			// Retained in full: the row keeps its sku and its price.
+			sku: "SKU-V15-L",
+			price: { amount: 4200, currency: "USD" },
+		});
+		expect(tombstone[0]?.orphanedAt).toEqual(expect.any(String));
 		expect(await server.onHand("SKU-V15-L")).toBe(11);
 
 		const back = await declare(
