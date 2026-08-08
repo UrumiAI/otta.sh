@@ -209,6 +209,109 @@ describe.skipIf(PG === undefined)("admin product EDIT HTTP contract", () => {
 		expect((await json(res)).reason).toBe("SKU_TAKEN");
 	});
 
+	// -- the two RENAME refusals, as structured 409s ---------------------------
+	// A rename carries the sku's on-hand forward, and the domain refuses the two
+	// states it cannot carry honestly. Both used to reach the console as an opaque
+	// `internal_error` 500 — a refusal an operator could neither read nor act on,
+	// on the one screen where the answer is "type a different SKU" or "wait a few
+	// minutes". Each is now a 409 carrying a machine code plus the operands the
+	// sentence needs, in the same envelope SKU_TAKEN already uses.
+
+	test("renaming ONTO a sku that already has an inventory row is a 409 SKU_STOCK_CONFLICT naming both skus", async () => {
+		const watermark = await seedAndReadWatermark();
+		await server.seed("SKU-prod-1", 12);
+		// The target's row belongs to no live product — a sku renamed away from, or
+		// one whose product was deleted. A LIVE holder would be SKU_TAKEN instead,
+		// which is a different refusal with different advice.
+		await server.seed("SKU-RETIRED", 3);
+
+		const res = await patch("prod-1", { expectedUpdatedAt: watermark, sku: "SKU-RETIRED" });
+		expect(res.status).toBe(409);
+		expect(await json(res)).toEqual({
+			ok: false,
+			reason: "SKU_STOCK_CONFLICT",
+			fromSku: "SKU-prod-1",
+			toSku: "SKU-RETIRED",
+		});
+
+		// NOTHING MOVED. The refusal and the product write are one transaction, so
+		// the product keeps its sku and both counts stand exactly where they were —
+		// which is the fact the operator's next decision rests on.
+		expect(((await json(await get("prod-1"))).product as Record<string, unknown>).sku).toBe(
+			"SKU-prod-1",
+		);
+		expect(await server.onHand("SKU-prod-1")).toBe(12);
+		expect(await server.onHand("SKU-RETIRED")).toBe(3);
+	});
+
+	test("renaming a sku with LIVE HOLDS is a 409 SKU_HELD_STOCK naming the sku and the count", async () => {
+		const watermark = await seedAndReadWatermark();
+		await server.seed("SKU-prod-1", 12);
+		const reserved = await fetch(`${server.baseUrl}/inventory/reserve`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", "Idempotency-Key": "hold-1" },
+			body: JSON.stringify({ sku: "SKU-prod-1", qty: 2 }),
+		});
+		expect(reserved.status).toBe(200);
+
+		const res = await patch("prod-1", { expectedUpdatedAt: watermark, sku: "SKU-NEW" });
+		expect(res.status).toBe(409);
+		expect(await json(res)).toEqual({
+			ok: false,
+			reason: "SKU_HELD_STOCK",
+			sku: "SKU-prod-1",
+			liveHolds: 1,
+		});
+
+		// The hold's units are still out of on_hand and still name the old sku;
+		// nothing was renamed and no row was claimed at the target.
+		expect(((await json(await get("prod-1"))).product as Record<string, unknown>).sku).toBe(
+			"SKU-prod-1",
+		);
+		expect(await server.onHand("SKU-prod-1")).toBe(10);
+	});
+
+	test("neither rename refusal leaks anything internal — a code and the operands, nothing else", async () => {
+		// The refusals carry operator data (skus, a hold count) and MUST NOT carry
+		// the domain's own message, the class name, a stack, or any hint of the
+		// tables the check ran against. A 500 would have leaked the lot through the
+		// generic handler, which is what these two arms exist to prevent.
+		const watermark = await seedAndReadWatermark();
+		await server.seed("SKU-prod-1", 4);
+		await server.seed("SKU-RETIRED", 0);
+		// Distinct keys: both refusals run against the SAME unmoved watermark, and
+		// the route's content-derived fallback key would otherwise be identical for
+		// the two — a replay, not a second refusal.
+		const conflict = await patch(
+			"prod-1",
+			{ expectedUpdatedAt: watermark, sku: "SKU-RETIRED" },
+			{ idempotencyKey: "rename-conflict" },
+		);
+		// OCCUPIED IS OCCUPIED: a target row at 0 refuses exactly like a stocked one.
+		expect(conflict.status).toBe(409);
+
+		await fetch(`${server.baseUrl}/inventory/reserve`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", "Idempotency-Key": "hold-2" },
+			body: JSON.stringify({ sku: "SKU-prod-1", qty: 1 }),
+		});
+		const held = await patch(
+			"prod-1",
+			{ expectedUpdatedAt: watermark, sku: "SKU-NEW" },
+			{ idempotencyKey: "rename-held" },
+		);
+		expect(held.status).toBe(409);
+
+		for (const res of [conflict, held]) {
+			const body = await json(res);
+			expect(body).not.toHaveProperty("stack");
+			expect(body).not.toHaveProperty("message");
+			expect(JSON.stringify(body)).not.toMatch(
+				/constraint|violates|duplicate key|inventory|reservation|SkuStockConflict|SkuHeldStock|\.ts:/i,
+			);
+		}
+	});
+
 	test("404s for an unknown product (an edit is not a create)", async () => {
 		const res = await patch("does-not-exist", {
 			expectedUpdatedAt: "2026-07-10T01:00:00.000Z",
