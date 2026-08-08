@@ -1913,9 +1913,10 @@ export function productCommerceStoreContract(
 		});
 
 		// -- lowStockThreshold (the low-stock filter predicate) ----------------
-		// The SQL-side twin of the plugin's client-side `applyLowStockNarrowing`
-		// rule (`packages/plugin/src/admin/products-read.ts`): a row matches iff
-		// its sku resolves to a KNOWN on-hand count (an `inventory` row exists)
+		// The rule behind the admin console's "Low stock only" filter, applied by
+		// the store over the whole catalog rather than by a caller trimming a
+		// page it already fetched: a row matches iff its sku resolves to a KNOWN
+		// on-hand count (an `inventory` row exists)
 		// AND that count is <= the threshold. Absent (no inventory row, or no sku
 		// at all) is NEVER low stock — "unknown" is a different fact from "known
 		// and low" (port doc, `ProductSummary.onHand`). Omitting the field is a

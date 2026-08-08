@@ -111,7 +111,7 @@ export const PRODUCTS_EMPTY: ZeroStateCopy = {
 		"Products appear here as soon as a product document is saved in the CMS — pricing them is the next step, not a precondition.",
 };
 
-/** Zero rows with a filter on and NO low-stock narrowing: the operator narrowed
+/** Zero rows with a filter on and "Low stock only" OFF: the operator narrowed
  *  to nothing, so the way out is the filter. */
 export const PRODUCTS_NO_MATCH: ZeroStateCopy & { readonly emptyText: string } = {
 	title: "No products match these filters",
@@ -121,36 +121,37 @@ export const PRODUCTS_NO_MATCH: ZeroStateCopy & { readonly emptyText: string } =
 };
 
 /**
- * Zero rows with "Low stock only" ON — and every sentence in it is PAGE-SCOPED,
- * because the filter is.
+ * Zero rows with "Low stock only" ON — and every sentence in it is a
+ * WHOLE-CATALOG claim, because the filter is.
  *
- * "Low stock only" narrows the rows this page FETCHED rather than the query
- * (the service's products list has no stock predicate, and INC-03 measured one
- * unconditional join as cheaper than a gated one that walked ~9x the rows). So
- * page 1 holding no low-stock rows is the ordinary case on a real catalog, and
- * a whole-catalog claim here would be one the screen cannot keep. The
- * `scanNote` is what a zero-row page with another page behind it renders
- * instead of an empty state, so `Load more` survives and says what it is for.
+ * "Low stock only" is a predicate the SERVICE applies to the query, so a
+ * zero-row result means nothing in the catalog sits at or below the threshold
+ * — a claim the screen can now keep, and the opposite of the page-scoped
+ * narrowing this replaced. The `scanNote` is what a zero-row render with
+ * another page behind it shows instead of an empty state, so `Load more`
+ * survives and says what it is for; on this filter that is a defensive rung
+ * rather than the ordinary case, since an empty filtered page carries no
+ * cursor.
  */
 export const PRODUCTS_LOW_STOCK_NO_MATCH: ZeroStateCopy & {
 	readonly emptyText: string;
 	readonly scanNote: string;
 } = {
-	title: "No low-stock products on this page",
+	title: "No products are low on stock",
 	description:
-		"Every product on this page is above the low-stock threshold. Clear the filters to see them all, or set the threshold on Settings.",
-	emptyText: "No low-stock products on this page.",
-	scanNote: "No low-stock products on this page — Load more scans further.",
+		"Every product in the catalog is above the low-stock threshold. Clear the filters to see them all, or set the threshold on Settings.",
+	emptyText: "No products are at or below the low-stock threshold.",
+	scanNote: "No low-stock products so far — Load more scans further.",
 };
 
-/** The "Low stock only" control's own description. PAGE-SCOPED WORDING, for the
- *  reason above: a description promising "every low-stock product" would be a
- *  claim the screen cannot keep. It states WHERE the threshold lives rather
- *  than its value — the number is a service read, and a filter control that
- *  sometimes carries a number and sometimes does not is worse than one that
- *  never does. */
+/** The "Low stock only" control's own description. It names the WHOLE CATALOG,
+ *  for the reason above: the threshold is a predicate on the query, so
+ *  promising every low-stock product is a promise the screen keeps. It states
+ *  WHERE the threshold lives rather than its value — the number is a service
+ *  read, and a filter control that sometimes carries a number and sometimes
+ *  does not is worse than one that never does. */
 export const LOW_STOCK_FILTER_DESCRIPTION =
-	"Show only products at or below the low-stock threshold (applies per page; set the threshold on Settings).";
+	"Show every product in the catalog at or below the low-stock threshold (set the threshold on Settings).";
 
 /** The `Low stock only` control's label, on both surfaces. */
 export const LOW_STOCK_FILTER_LABEL = "Low stock only";

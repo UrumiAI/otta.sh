@@ -2,6 +2,7 @@
 "@otta-sh/plugin": minor
 "@otta-sh/service": minor
 "@otta-sh/admin-react": patch
+"@otta-sh/admin-presentation": patch
 ---
 
 Wire the Pricing & inventory screen's "Low stock only" filter to the server-side
@@ -27,3 +28,8 @@ one fetched page, and pagination works correctly across a filtered scan.
   only" is a real server-side predicate, so a filtered page that exhausts the
   catalogue states its count as complete instead of always hedging with "on
   this page" / "loaded so far".
+- `@otta-sh/admin-presentation`: the "Low stock only" copy stops describing the
+  page-scoped behaviour it no longer has. The control's description now names
+  the whole catalogue, and the filter's zero state claims the catalogue rather
+  than the page ("No products are low on stock", not "No low-stock products on
+  this page"). Callers rendering these strings need no change.

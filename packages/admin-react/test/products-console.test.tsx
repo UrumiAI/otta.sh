@@ -857,10 +857,19 @@ describe("presentation primitives this screen relies on", () => {
 		expect(html).not.toMatch(/<button[^>]*aria-label=/);
 	});
 
-	test("the low-stock control's description is page-scoped", () => {
-		// The filter narrows the FETCHED PAGE, so a description promising "every
-		// low-stock product" would be a claim the screen cannot keep.
-		expect(LOW_STOCK_FILTER_DESCRIPTION).toContain("applies per page");
+	test("the low-stock control's description claims the WHOLE CATALOG", () => {
+		// The filter is a predicate the service applies to the query, so promising
+		// every low-stock product is a promise the screen keeps. The negative half
+		// is the one that matters: the page-scoped hedge this replaced would now
+		// understate what the control does.
+		expect(LOW_STOCK_FILTER_DESCRIPTION).toContain("every product in the catalog");
+		for (const stale of ["per page", "this page"]) {
+			expect(LOW_STOCK_FILTER_DESCRIPTION).not.toContain(stale);
+			expect(PRODUCTS_LOW_STOCK_NO_MATCH.scanNote).not.toContain(stale);
+			expect(PRODUCTS_LOW_STOCK_NO_MATCH.emptyText).not.toContain(stale);
+			expect(PRODUCTS_LOW_STOCK_NO_MATCH.title).not.toContain(stale);
+			expect(PRODUCTS_LOW_STOCK_NO_MATCH.description).not.toContain(stale);
+		}
 	});
 });
 /**
