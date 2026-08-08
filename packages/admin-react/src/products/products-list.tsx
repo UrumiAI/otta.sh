@@ -745,10 +745,15 @@ export function ProductsList({
 			{/*
 			  OUTCOME 3 — zero rows with another page BEHIND them. NO empty state:
 			  one would sit on top of `Load more` and strand the operator mid-scan on
-			  a page that is not the end of anything. On THIS screen that is the
-			  ordinary case rather than the exotic one, because "Low stock only"
-			  narrows the fetched page: page 1 of a healthy catalog holds no low-stock
-			  rows at all.
+			  a page that is not the end of anything.
+
+			  KEPT AS A GUARD, NOT AS A CASE. "Low stock only" is a predicate the
+			  SERVICE applies across the whole catalog, so a page that comes back
+			  empty is the end of the filtered set and carries no cursor — the store
+			  emits one only when a page overflows its limit. This branch was the
+			  ORDINARY case while the filter narrowed an already-fetched page, and
+			  it is unreachable now; it stays because the cost of being wrong about
+			  that is burying the operator's only way forward.
 			*/}
 			{page !== null && outcome.kind === "scan" && answerVisible && (
 				<p

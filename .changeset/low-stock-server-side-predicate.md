@@ -32,4 +32,8 @@ one fetched page, and pagination works correctly across a filtered scan.
   page-scoped behaviour it no longer has. The control's description now names
   the whole catalogue, and the filter's zero state claims the catalogue rather
   than the page ("No products are low on stock", not "No low-stock products on
-  this page"). Callers rendering these strings need no change.
+  this page"). `PRODUCTS_LOW_STOCK_NO_MATCH` also drops its bespoke `scanNote`:
+  a cursor is only ever emitted for a page that overflows its limit, so a
+  zero-row filtered page cannot carry one, and the list ladder's default note
+  still covers the rung if a caller ever reaches it. Callers rendering these
+  strings need no change.

@@ -68,6 +68,7 @@ const {
 	PRODUCTS_LOW_STOCK_NO_MATCH,
 	PRODUCTS_LOW_STOCK_NOUN,
 	PRODUCTS_NOUN,
+	SCAN_FURTHER,
 	listOutcome,
 	PRODUCTS_EMPTY,
 	PRODUCTS_NO_MATCH,
@@ -278,13 +279,15 @@ describe("the active-filter summary counts what is not at its default", () => {
 
 describe("the list ladder is the SHARED one, and low stock is a service-filtered scope now", () => {
 	test("a low-stock page with another page behind it SCANS rather than emptying", () => {
-		// Still reachable — a genuine race (a look-ahead either side of a
-		// concurrent stock change) can leave a cursor pointing past the last
-		// matching row — but no longer the ORDINARY case a real catalog hits on
-		// page 1: the predicate is the service's, so a scan is the exotic edge
-		// case every other filter already has, not the expected shape of this
-		// one. `countScope` is `"service-filtered"` here because the screen
-		// declares it unconditionally now (products-list.tsx).
+		// THE RUNG IS PINNED, NOT THE ROUTE TO IT. Against the real store this
+		// state cannot arise for this screen — a cursor is emitted only when a
+		// page overflows its limit, so zero rows always means no cursor — but the
+		// ladder must still choose `scan` over `empty` whenever a caller reports
+		// one, because an empty state renders on top of `Load more` and strands
+		// an operator mid-scan. The note is the ladder's DEFAULT now: the screen
+		// stopped authoring its own once the narrowing that made this the
+		// ordinary case was retired. `countScope` is `"service-filtered"` because
+		// the screen declares it unconditionally now (products-list.tsx).
 		const outcome = listOutcome({
 			count: 0,
 			filtered: true,
@@ -296,7 +299,12 @@ describe("the list ladder is the SHARED one, and low stock is a service-filtered
 			noMatch: PRODUCTS_LOW_STOCK_NO_MATCH,
 		});
 		expect(outcome.kind).toBe("scan");
-		expect(outcome.kind === "scan" && outcome.scanNote).toBe(PRODUCTS_LOW_STOCK_NO_MATCH.scanNote);
+		expect(outcome.kind === "scan" && outcome.scanNote).toBe(
+			`${PRODUCTS_LOW_STOCK_NO_MATCH.emptyText} ${SCAN_FURTHER}`,
+		);
+		expect(outcome.kind === "scan" && outcome.scanNote).toBe(
+			"No products are at or below the low-stock threshold. Load more scans further.",
+		);
 	});
 
 	test("a `total` on a genuinely low-stock-filtered page states the WHOLE low-stock set", () => {
@@ -865,7 +873,6 @@ describe("presentation primitives this screen relies on", () => {
 		expect(LOW_STOCK_FILTER_DESCRIPTION).toContain("every product in the catalog");
 		for (const stale of ["per page", "this page"]) {
 			expect(LOW_STOCK_FILTER_DESCRIPTION).not.toContain(stale);
-			expect(PRODUCTS_LOW_STOCK_NO_MATCH.scanNote).not.toContain(stale);
 			expect(PRODUCTS_LOW_STOCK_NO_MATCH.emptyText).not.toContain(stale);
 			expect(PRODUCTS_LOW_STOCK_NO_MATCH.title).not.toContain(stale);
 			expect(PRODUCTS_LOW_STOCK_NO_MATCH.description).not.toContain(stale);

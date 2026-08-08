@@ -125,23 +125,27 @@ export const PRODUCTS_NO_MATCH: ZeroStateCopy & { readonly emptyText: string } =
  * WHOLE-CATALOG claim, because the filter is.
  *
  * "Low stock only" is a predicate the SERVICE applies to the query, so a
- * zero-row result means nothing in the catalog sits at or below the threshold
- * — a claim the screen can now keep, and the opposite of the page-scoped
- * narrowing this replaced. The `scanNote` is what a zero-row render with
- * another page behind it shows instead of an empty state, so `Load more`
- * survives and says what it is for; on this filter that is a defensive rung
- * rather than the ordinary case, since an empty filtered page carries no
- * cursor.
+ * zero-row result means nothing in the catalog sits at or below the threshold —
+ * a claim the screen can now keep, and the opposite of the page-scoped
+ * narrowing this replaced.
+ *
+ * NO `scanNote` OF ITS OWN ANY MORE, and the deletion is the point. That field
+ * exists for a screen with BETTER WORDS than the ladder's default, and this
+ * screen had them only while the narrowing made a zero-row page with a cursor
+ * behind it the ORDINARY case. It is now unreachable: the store emits a cursor
+ * only when a page overflows its limit, so zero rows always means no cursor.
+ * The ladder's default composes `emptyText` with the shared "Load more scans
+ * further", which keeps the rung — and `Load more` with it — should a future
+ * caller ever reach it, without this screen authoring a sentence nothing can
+ * render.
  */
 export const PRODUCTS_LOW_STOCK_NO_MATCH: ZeroStateCopy & {
 	readonly emptyText: string;
-	readonly scanNote: string;
 } = {
 	title: "No products are low on stock",
 	description:
 		"Every product in the catalog is above the low-stock threshold. Clear the filters to see them all, or set the threshold on Settings.",
 	emptyText: "No products are at or below the low-stock threshold.",
-	scanNote: "No low-stock products so far — Load more scans further.",
 };
 
 /** The "Low stock only" control's own description. It names the WHOLE CATALOG,
