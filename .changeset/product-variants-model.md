@@ -29,16 +29,25 @@ and keyset cursor is byte-identical and the whole existing contract suite is unt
   against a concurrent seed of the target sku.
 - **An orphan is a state, not an absence.** When the CMS stops declaring a key the row is
   deactivated, never deleted: it keeps its sku, its price, its stock and its place on live order
-  lines, and a console can render it distinctly. A re-declared key resurrects it, stock intact —
-  the deliberate divergence from publish-never-resurrects, since an orphan records the CMS's own
-  statement rather than a merchant decision. Both transitions share one ordering watermark,
-  because both ride the same save event.
-- **A sku names exactly one live sellable unit**, spanning live product rows and live variant
-  rows, so two names can never share one inventory row. A variant with no inventory row is
-  absent, never zero; an absent price is absent, never `0`. Currency is an integrity axis one
-  level down too: a size's price must agree with the product's, or — for a product whose sizes
-  carry the money — with its siblings', serialized by a row lock so two first-pricings cannot
-  leave one product holding two currencies.
+  lines, and a console can render it distinctly. A re-declared key resurrects it — the deliberate
+  divergence from publish-never-resurrects, since an orphan records the CMS's own statement rather
+  than a merchant decision. The declare can never be refused and never raises a constraint error,
+  so it **revalidates** the stale commerce facts instead: an orphan's sku was free for reuse, so a
+  sku another live unit has taken since comes back absent, and a price in a currency the product
+  no longer holds comes back absent too. The inventory row is never touched either way — a cleared
+  sku leaves its stock where it stands, and re-assigning it later adopts the row, units and all.
+  Presence moves only on an ordered, strictly newer delivery, and a drop whose key already applied
+  is a no-op, so neither a redelivered drop nor a redelivered watermark-less declare can flip a
+  size's sellability behind the merchant's back.
+- **A sku names exactly one live sellable unit, in both directions**, so two names can never share
+  one inventory row: the variant writer refuses a sku a live product holds, and both product-level
+  writers refuse a sku a live variant holds, with the same typed refusal. Uniqueness across a pair
+  of tables holds both ways or neither. A variant with no inventory row is absent, never zero; an
+  absent price is absent, never `0`. Currency is an integrity axis one level down and equally
+  bidirectional: a size's price must agree with the product's — or, for a product whose sizes carry
+  the money, with its siblings' — and a product repricing that would strand a live size in another
+  currency is refused. Both directions resolve under one lock ordering, so neither can pass by
+  reading the other's "before" state, and the crossing cases are raced on Postgres.
 
 No REST surface, no CMS sync and no console changes yet; those are separate changes on top of
 this model.

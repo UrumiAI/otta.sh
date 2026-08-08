@@ -4,6 +4,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { KyselyInventoryStore, KyselyProductCommerceStore, uuidIdGen } from "../src/index.js";
 import type { Database } from "../src/schema.js";
 import { createIsolatedPgSchema } from "../src/testing.js";
+import { TickingClock } from "./ticking-clock.js";
 
 // THE SKU-RENAME RULE under REAL concurrency (Postgres-required, independent
 // connections — better-sqlite3 serializes every writer onto one connection and
@@ -22,28 +23,6 @@ import { createIsolatedPgSchema } from "../src/testing.js";
 // races below would go quiet first if that lock were dropped.
 
 const PG = process.env.PG_CONNECTION_STRING;
-
-/**
- * A clock that ADVANCES a millisecond per reading — the whole point.
- *
- * A `FixedClock` here would make `updated_at` identical on every write, which
- * silently turns `updateCommerceFields`'s compare-and-set into a guard that
- * always passes: a same-product race would then "pass" while proving nothing,
- * because the CAS it depends on was never actually exercised. Real writers read
- * a moving clock, so these cases do too.
- */
-class TickingClock {
-	#at: number;
-
-	constructor(start: string) {
-		this.#at = new Date(start).getTime();
-	}
-
-	now(): Date {
-		this.#at += 1;
-		return new Date(this.#at);
-	}
-}
 
 interface PgFixture {
 	products: KyselyProductCommerceStore;

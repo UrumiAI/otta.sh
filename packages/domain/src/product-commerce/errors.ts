@@ -17,7 +17,14 @@ export class MissingProductIdError extends Error {
  * a sharper reason than symmetry: `(product_id, variant_key)` IS the row's
  * identity, so a row minted under an empty key could never be addressed, edited
  * or deactivated again. Enforced at every `ProductCommerceStore` adapter before
- * any row is written, and mapped to HTTP 400 by `@otta-sh/service`.
+ * any row is written.
+ *
+ * NOT YET MAPPED AT ANY HTTP BOUNDARY, unlike {@link MissingProductIdError}'s
+ * 400 — there is no REST surface for variants yet, so today this error can only
+ * reach an in-process caller. Whichever change adds that surface owes it the same
+ * 400 its sibling has, or a missing key arrives as a 500. Recorded here as the
+ * INTENDED mapping rather than a present fact, so the gap is visible from the
+ * error rather than discovered by a merchant.
  */
 export class MissingVariantKeyError extends Error {
 	constructor() {

@@ -87,6 +87,35 @@ The one asymmetry with the product's soft-delete tombstone is deliberate — a r
 **resurrects** the variant, because an orphan records the CMS's own statement rather than a
 merchant decision, and refusing would strand the units behind a key nobody can re-declare.
 
+**A resurrect revalidates; it does not assert.** These two clauses interact, and the interaction
+has a consequence that has to be written down rather than discovered. An orphaned variant's sku
+is *freed for reuse* — that is what the partial unique index means — so by the time the CMS
+declares the key again, another live variant or another live product may legitimately hold it.
+The declare states a fact about the CMS and **cannot be refused**: the commerce database does not
+get a vote on whether a size exists, and a sync that raised a unique-index violation would be an
+opaque 500 on a hook no merchant can see. So the row gives way instead. On the way back in:
+
+- the stored **sku is kept when it is still free, and cleared to absent when it is not**. An
+  orphan cannot reclaim what was legitimately reused. This is the only case in the model where a
+  sku returns to null after being set, and it is not an edit doing it — no writer can clear a sku
+  — it is the row losing a claim it no longer has. The operator re-prices the size exactly as
+  they would a newly declared one.
+- the stored **price is cleared when its currency no longer matches the product's**, on the same
+  integrity axis and for the same reason: a price the product can no longer honour is not a
+  price. Absent, never coerced, never zero.
+- **the inventory row is never touched.** A kept sku keeps its units; a cleared sku leaves its
+  stock row exactly where it stands, and re-assigning that sku later adopts the row, units and
+  all, under the first-sku rule the product level already uses. Nothing is stranded and nothing
+  is invented.
+
+**Presence moves only on an ordered, strictly newer delivery.** The name is an unordered cache, so
+a watermark-less save may refresh it. Presence has two opposing transitions arriving as
+independent fire-and-forget POSTs, so it gets the treatment the publish gate already gets: a
+resurrect applies only when the incoming content watermark is present and strictly newer than the
+stored one, and a drop is refused when its own key has already been applied. Together those make
+a redelivered drop unable to un-sell a size the CMS currently lists, and a redelivered or
+watermark-less declare unable to bring back one it has since removed.
+
 ### The migration
 
 One forward-only migration adds `product_variants`. `product_commerce` is untouched: no column is
@@ -103,9 +132,14 @@ guard:
 1. **The port types.** `title` is absent from `UpdateProductVariantFieldsInput`, and `sku`/`price`
    are absent from `UpsertProductVariantInput`. Each writer is missing the other's fields, so
    crossing the line does not compile in either direction.
-2. **The contract suite**, on every adapter: a declare writes the name and leaves sku and price
-   null; an edit changes sku and price and leaves the name byte-identical.
-3. **A doc comment on each input**, positioned where someone is already standing, naming this file.
+2. **Compile-time type tests** — `packages/domain/test/product-commerce.type-test.ts` pins both
+   directions with `@ts-expect-error`, plus the money rule at variant grain (a raw `number` price,
+   and a raw-number `amount`), and states the positive halves beside them so the file records the
+   asymmetry rather than half of it. Checked by `pnpm typecheck`: a directive that stops erroring
+   is itself an error, so these cannot rot into decoration.
+3. **The contract suite**, on all three adapters: a declare writes the name and leaves sku and
+   price null; an edit changes sku and price and leaves the name byte-identical.
+4. **A doc comment on each input**, positioned where someone is already standing, naming this file.
 
 ### Accepted costs
 
@@ -123,10 +157,33 @@ guard:
   whether a null variant name blocks the line the way a null product title does; this ADR records
   the question rather than pretending it does not exist.
 - **A sku still names exactly one live sellable unit**, and "live sellable unit" now spans both
-  live product rows and live variant rows. One consequence is worth stating plainly: moving a 1:1
-  product's sku down onto its own first variant is not expressible through either write surface,
-  because it is a two-row movement. It needs its own transactional verb, and does not have one
-  yet.
+  live product rows and live variant rows — **in both directions**. The variant writer refuses a
+  sku a live product holds, and both product-level writers refuse a sku a live variant holds, with
+  the same typed refusal. Uniqueness across a pair of tables holds in both directions or in
+  neither: checking one way leaves the other open, and two sellable units over one inventory row
+  is exactly the state a later rename of either one silently drains.
+
+  Two consequences are worth stating plainly. Moving a 1:1 product's sku *down* onto its own first
+  variant is not expressible through either write surface, because it is a two-row movement; it
+  needs its own transactional verb and does not have one yet. And the cross-table half cannot be
+  an index — no dialect indexes across two tables — so the two writers serialize on the target
+  sku's inventory row instead, which covers every sku that has ever been stocked. A sku that has
+  never had a stock row has nothing to serialize on, so two writers assigning that same never-used
+  sku in the same instant can still both pass. Committed state is arbitrated correctly on every
+  adapter; closing the remainder needs a row to contend on, which means either making a first sku
+  claim its stock row (the first-sku rule deliberately says a first sku is not a stock movement)
+  or a dedicated claim table. Both are their own decision.
+
+- **Currency integrity is bidirectional too.** A variant's price must agree with the product's —
+  the parent's own price currency, or, for a product whose sizes carry the money, its siblings' —
+  and a product repricing that would leave a live size in another currency is refused with the
+  same `currency_mismatch` outcome. Without the second direction the first is bypassed by
+  repricing the product instead of the size. The two resolve under one lock ordering, so they
+  cannot both pass by reading each other's "before" state. `upsert` is deliberately **not** given
+  this guard: it has never had a currency guard on any axis, so adding a cross-row one there would
+  refuse the cross-row case while still permitting the same-row case in the same call — giving it
+  one means giving it both, which is a change to its own documented last-writer-wins semantics and
+  belongs to its own decision.
 
 ### What would change this decision
 

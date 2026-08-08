@@ -482,6 +482,40 @@ export interface ProductCommerceView {
  * `getByProductId` (not `get`) so the identity it reads by is unambiguous at
  * every call site.
  *
+ * A SKU NAMES EXACTLY ONE LIVE SELLABLE UNIT, AND THE RULE IS BIDIRECTIONAL.
+ * Since variants exist, "live sellable unit" spans live `product_commerce` rows
+ * AND live (non-orphaned) `product_variants` rows, so uniqueness has to hold
+ * across the pair or it holds nowhere: a sku a live VARIANT already carries is
+ * refused to BOTH product-level writers (`upsert` and `updateCommerceFields`)
+ * with the same `SkuConflictError` the variant writer raises in the opposite
+ * direction. Checking only one direction would leave the other open, and two
+ * sellable units over one `inventory` row is precisely the state THE SKU-RENAME
+ * RULE cannot then reason about — a later rename of either one carries the
+ * other's stock away, silently.
+ *
+ * The cross-table half cannot be an index (no dialect indexes across two
+ * tables), so each adapter runs it as an explicit check inside the SAME
+ * transaction as the write, positioned so it fires ONLY when the write actually
+ * applies — a replayed, stale or watermark-rejected write moves no sku and must
+ * refuse nothing. That is the same position the partial unique index occupies by
+ * construction, so the two halves of the rule stay indistinguishable to a
+ * caller. With no variant rows declared the check matches nothing, which is why
+ * an unvarianted catalog behaves exactly as it did before.
+ *
+ * THE CURRENCY AXIS IS NOT SYMMETRIC ACROSS THE TWO PRODUCT-LEVEL WRITERS, and
+ * that asymmetry predates variants. `updateCommerceFields` owns currency
+ * integrity at product level and gains the reciprocal live-variant guard (its
+ * clause 4c). `upsert` has never had a currency guard on ANY axis — it may
+ * already switch an already-priced product's own currency silently, which is the
+ * documented last-writer-wins stance of the integrator PUT and the CMS sync — so
+ * bolting a variant-only currency refusal onto it would refuse the cross-ROW
+ * case while still permitting the same-ROW case, in the same call. The sku axis
+ * differs precisely because `upsert` DOES already refuse there
+ * (`SkuConflictError` from the partial index), so extending that refusal across
+ * the table is a widening of an existing rule rather than a new one. Giving
+ * `upsert` a currency guard means giving it one on both axes at once, which is a
+ * change to its own documented semantics and belongs to its own decision.
+ *
  * THE SKU-RENAME RULE, shared by BOTH writers of `sku` (`upsert` and
  * `updateCommerceFields`) — a property of the COLUMN, not of one caller, so
  * neither writer may skip it. When a write changes a row's `sku` from one
@@ -622,7 +656,18 @@ export interface ProductCommerceStore {
 	 *         within-edit currencies were already checked upstream
 	 *         (`InvalidProductFieldError`), and the price guard (4a) fixes the row
 	 *         currency, so compare-at / cost inherit it with no separate store
-	 *         guard.
+	 *         guard; OR
+	 *      c. a `price` whose currency differs from that of any LIVE VARIANT of
+	 *         this product — the reciprocal of `updateVariantFields`'s guard 4b,
+	 *         and required for the same reason it is: a product and its sizes are
+	 *         one purchasable thing, so a repricing that would leave a live size
+	 *         holding another currency is refused rather than rendered. Without
+	 *         this direction the guard is trivially bypassed by repricing the
+	 *         product instead of the size. Resolved under the parent row's lock —
+	 *         the same lock, in the same order, that the variant path takes — so
+	 *         a product repricing and a variant pricing cannot both pass by
+	 *         reading each other's "before" state. With no variants declared it
+	 *         matches nothing and this guard cannot fire.
 	 *  5. otherwise → applies the partial update, stamps `key` as the row's
 	 *     last-applied replay key, bumps `updatedAt`, returns the updated row —
 	 *     and, when the update CHANGED the row's `sku`, carries that sku's
@@ -843,14 +888,59 @@ export interface ProductCommerceStore {
 	 *  - a same-`key` replay ⇒ a no-op returning the stored row unchanged.
 	 *  - a STRICTLY OLDER `contentUpdatedAt` than the stored watermark ⇒ a stale
 	 *    no-op, so out-of-order hook delivery converges (mirrors `upsert`).
-	 *  - an ORPHANED row ⇒ RESURRECTED (`orphanedAt` back to null), sku, price and
-	 *    stock intact. This is the deliberate DIVERGENCE from `softDelete` +
-	 *    `activate`, where a publish must never resurrect a tombstone: THAT
-	 *    tombstone records a MERCHANT decision that a CMS event must not override,
-	 *    while an orphan records the CMS's OWN statement that the repeater row is
-	 *    gone — so the same channel that removed it is the right one to bring it
-	 *    back, and refusing would strand the variant's stock behind a key nobody
-	 *    can re-declare.
+	 *  - an ORPHANED row ⇒ RESURRECTED (`orphanedAt` back to null). This is the
+	 *    deliberate DIVERGENCE from `softDelete` + `activate`, where a publish must
+	 *    never resurrect a tombstone: THAT tombstone records a MERCHANT decision
+	 *    that a CMS event must not override, while an orphan records the CMS's OWN
+	 *    statement that the repeater row is gone — so the same channel that removed
+	 *    it is the right one to bring it back, and refusing would strand the
+	 *    variant's stock behind a key nobody can re-declare.
+	 *
+	 * THIS CHANNEL NEVER REFUSES PRESENCE AND NEVER THROWS A CONSTRAINT ERROR. A
+	 * declare states a fact about the CMS — this key exists — and the commerce
+	 * database does not get a vote on it. That is the whole reason the two clauses
+	 * below exist rather than a refusal: while a variant was orphaned its sku was
+	 * FREE for reuse (see `deactivateVariant`), so by the time it comes back the
+	 * commerce facts it was carrying may no longer hold, and a resurrect that
+	 * insisted on them would either raise a raw unique-index violation at the sync
+	 * — an opaque 500 on a hook the merchant cannot see — or leave two live
+	 * sellable units sharing one `inventory` row.
+	 *
+	 * So a resurrect REVALIDATES the stale commerce facts on the way back in, and
+	 * CLEARS whatever no longer holds:
+	 *  - the stored `sku` is KEPT when it is still free among live sellable units,
+	 *    and CLEARED to null when another live variant or live product has taken
+	 *    it since. An orphan cannot reclaim what was legitimately reused. This is
+	 *    the ONE case where a sku goes back to null after being set: it is not an
+	 *    edit clearing it (no writer can do that) but the row losing a claim it no
+	 *    longer has, and the operator re-prices the size exactly as they would a
+	 *    newly declared one.
+	 *  - the stored `price` is CLEARED when its currency now conflicts with the
+	 *    product's current currency (see `updateVariantFields` guard 4b for how
+	 *    that currency is resolved) — the same integrity axis, and for the same
+	 *    reason: a price the product can no longer honour is not a price.
+	 * THE INVENTORY ROW IS NEVER TOUCHED by any of this. A kept sku keeps its
+	 * units; a cleared sku leaves its `inventory` row exactly where it is, and
+	 * re-assigning that sku later is governed unchanged by THE FIRST-SKU
+	 * ASYMMETRY — a first sku ADOPTS the existing row, units and all, which is
+	 * precisely how a variant re-linked to a sku it used to own gets its stock
+	 * back.
+	 *
+	 * PRESENCE MOVES ONLY ON AN ORDERED, STRICTLY NEWER DELIVERY, and this is
+	 * narrower than the title's own guard on purpose. The title is an unordered
+	 * last-writer-wins cache, so a watermark-less save (a panel-style write) may
+	 * update it. Presence is an axis with two OPPOSING transitions, so it needs
+	 * the same treatment the publish gate gets: a resurrect applies only when the
+	 * incoming `contentUpdatedAt` is present AND STRICTLY NEWER than the stored
+	 * watermark (or the row has none yet). Two consequences, both load-bearing:
+	 *  - a REDELIVERED watermark-less declare can never resurrect a variant a
+	 *    newer save has since orphaned;
+	 *  - a redelivered declare at an EQUAL watermark cannot resurrect either, so
+	 *    the deactivate it raced with stays applied and a redelivery of THAT
+	 *    command finds the row already orphaned and does nothing. Equal watermarks
+	 *    across two different saves cannot occur in any case (every save bumps the
+	 *    content's `updatedAt`), and one save can never both declare and drop the
+	 *    same key.
 	 *
 	 * Rejects a missing/empty `productId` with `MissingProductIdError` and a
 	 * missing/empty `variantKey` with `MissingVariantKeyError`, BEFORE any row is
@@ -966,10 +1056,19 @@ export interface ProductCommerceStore {
 	 * strictly older watermark is a no-op, so a delayed "the row is gone" can
 	 * never orphan a variant a newer save has since re-declared.
 	 *  - unknown `(productId, variantKey)` → no-op (no row minted).
+	 *  - a same-`key` replay → no-op, unconditionally and AHEAD of every other
+	 *    guard, exactly as the two write paths dedupe. Without it a redelivered
+	 *    orphan whose row has since come back would apply a second time.
 	 *  - already-orphaned → no-op (stable under replay), watermark untouched.
 	 *  - a STALE watermark → no-op.
 	 *  - otherwise → `orphanedAt` set to the store clock, the watermark advanced,
 	 *    and `key` stamped as the row's last-applied replay key.
+	 * The watermark comparison here is `<=` rather than the resurrect's strict
+	 * `<`, and the asymmetry is deliberate: one save legitimately declares some
+	 * keys and drops others at the SAME watermark, so an orphan must apply at a
+	 * watermark equal to the one a previous save left behind — while a resurrect
+	 * at an equal watermark would be re-litigating a decision already made (see
+	 * `upsertVariant`).
 	 *
 	 * An orphaned variant's sku is FREED for reuse (the live-sku uniqueness index
 	 * is partial, `WHERE orphaned_at IS NULL`) — exactly like a soft-deleted
@@ -1012,9 +1111,14 @@ export interface ProductVariant {
 	/**
 	 * This variant's own stock-keeping unit — the sku a cart line, a reservation
 	 * and an order line all name. Null until an admin sets one ("declare then
-	 * price": the CMS declares the variant, the admin prices it), and never
-	 * cleared back to null once set. Admin-owned: written ONLY by
-	 * `updateVariantFields`, under THE SKU-RENAME RULE.
+	 * price": the CMS declares the variant, the admin prices it). Admin-owned:
+	 * written ONLY by `updateVariantFields`, under THE SKU-RENAME RULE, and no
+	 * writer can CLEAR it — there is no "unsku" edit.
+	 *
+	 * ONE EXCEPTION, and it is not an edit: a RESURRECT clears it when the sku was
+	 * taken by another live sellable unit while this variant was orphaned (see
+	 * `ProductCommerceStore.upsertVariant`). The row is not being edited there; it
+	 * is losing a claim it no longer has.
 	 */
 	sku: Sku | null;
 	/**
@@ -1043,7 +1147,10 @@ export interface ProductVariant {
 	 * sku, its price and its stock are all retained — and the state a console must
 	 * render distinctly rather than hide, because an orphan may still hold units
 	 * and still sit on live orders. Set by `deactivateVariant`, cleared by
-	 * `upsertVariant` when the CMS declares the key again.
+	 * `upsertVariant` when the CMS declares the key again — which REVALIDATES the
+	 * sku and price on the way back in rather than asserting them (see that
+	 * method: an orphan's sku is free for reuse, so it may no longer be there to
+	 * reclaim).
 	 */
 	orphanedAt: Date | null;
 	/** Per-row "last applied" replay key — compare-on-write, exactly like
@@ -1060,12 +1167,23 @@ export interface ProductVariant {
 }
 
 /**
- * `listVariants`'s row: the stored variant plus the stock the same statement
- * joined for it. Kept as a WIDENING of `ProductVariant` rather than a separate
- * projection because a variants tab shows every field of the row it edits —
- * unlike the products LIST, which is a deliberate narrowing of a much wider row.
+ * `listVariants`'s row: the stored variant, NARROWED, plus the stock the same
+ * statement joined for it.
+ *
+ * `idempotencyKey` and `contentUpdatedAt` are deliberately DROPPED. Both are
+ * internal write-path bookkeeping — a per-row replay marker and a sync-ordering
+ * watermark — and neither is a fact about the variant that any reader needs:
+ * projecting them onto a list invites a caller to branch on machinery it does
+ * not own, and puts a value the CMS controls onto a wire it has no business
+ * reaching. `updatedAt` STAYS, because it is the compare-and-set watermark an
+ * editor must pass back to `updateVariantFields` — the one piece of write-path
+ * state a reader legitimately needs. A caller that genuinely needs the dropped
+ * two is holding the full `ProductVariant` a write returned.
  */
-export interface ProductVariantSummary extends ProductVariant {
+export interface ProductVariantSummary extends Omit<
+	ProductVariant,
+	"idempotencyKey" | "contentUpdatedAt"
+> {
 	/**
 	 * Stock on hand for this variant's sku — a COUNT, never money.
 	 *

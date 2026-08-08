@@ -123,6 +123,25 @@ async function variantOf(
 	return row;
 }
 
+/**
+ * Re-declare a variant key at a given content watermark — the CMS-sync shape a
+ * resurrect needs. Presence moves only on a delivery that CARRIES a watermark
+ * and is strictly newer than the stored one, so every case that expects a
+ * resurrect goes through here rather than through the bare `declare` helper.
+ */
+function redeclare(
+	h: ProductCommerceStoreHarness,
+	pid: string,
+	key: string,
+	at: string,
+	idem: string,
+): Promise<ProductVariant> {
+	return h.store.upsertVariant(
+		{ productId: productId(pid), variantKey: key, title: `Variant ${key}`, contentUpdatedAt: at },
+		idempotencyKey(idem),
+	);
+}
+
 /** A summary-row seed with sensible defaults; overridable per admin-list case. */
 function productRow(
 	overrides: Partial<SeedProductSummaryRow> & { id: string },
@@ -3608,6 +3627,538 @@ export function productCommerceStoreContract(
 						),
 					).rejects.toBeInstanceOf(SkuHeldStockError);
 					expect((await variantOf(h, "prod-vboth", "large")).sku).toBe("VBOTH");
+				});
+			});
+
+			// -- the resurrect revalidates rather than asserts ----------------------
+			//
+			// An orphan's sku is FREE for reuse, so by the time the CMS declares the
+			// key again the commerce facts the row is carrying may no longer hold.
+			// The declare states a fact about the CMS and cannot be refused, so the
+			// row gives way: whatever no longer holds is CLEARED, and nothing throws.
+
+			describe("a resurrect revalidates the stale commerce facts", () => {
+				/** Declare, price with a sku, then orphan — the state every case here
+				 *  starts from. Returns the orphaning watermark. */
+				async function orphanedWithSku(
+					h: ProductCommerceStoreHarness,
+					pid: string,
+					key: string,
+					s: string,
+				): Promise<void> {
+					const declared = await declare(h, pid, key);
+					const priced = await h.store.updateVariantFields(
+						{ productId: productId(pid), variantKey: key, sku: sku(s) },
+						idempotencyKey(`ow-price-${pid}-${key}`),
+						declared.updatedAt.toISOString(),
+					);
+					if (!priced.ok) throw new Error(`orphanedWithSku: ${pid}/${key} could not take a sku`);
+					await h.store.deactivateVariant(
+						productId(pid),
+						key,
+						idempotencyKey(`ow-orphan-${pid}-${key}`),
+						"2026-07-10T01:00:00.000Z",
+					);
+				}
+
+				test("the sku is KEPT when it is still free — the ordinary case, stock and all", async () => {
+					const h = await makeStore();
+					await orphanedWithSku(h, "prod-keep", "large", "KEEP-L");
+					await h.seedStock("KEEP-L", 6);
+
+					const back = await redeclare(
+						h,
+						"prod-keep",
+						"large",
+						"2026-07-10T02:00:00.000Z",
+						"keep-1",
+					);
+
+					expect(back.orphanedAt).toBeNull();
+					expect(back.sku).toBe("KEEP-L");
+					expect((await variantOf(h, "prod-keep", "large")).onHand).toBe(6);
+				});
+
+				test("the sku is CLEARED when another live VARIANT took it while the row was orphaned — never a throw, and the reuser keeps it", async () => {
+					const h = await makeStore();
+					await orphanedWithSku(h, "prod-reuse", "large", "REUSE-1");
+					await h.seedStock("REUSE-1", 9);
+					// The blessed reuse: an orphan frees its sku, so a sibling may take it.
+					const sibling = await declare(h, "prod-reuse", "small");
+					const took = await h.store.updateVariantFields(
+						{ productId: productId("prod-reuse"), variantKey: "small", sku: sku("REUSE-1") },
+						idempotencyKey("reuse-took"),
+						sibling.updatedAt.toISOString(),
+					);
+					expect(took.ok).toBe(true);
+
+					// The declare states a fact about the CMS. It cannot refuse presence,
+					// and it must not raise a raw unique-index violation at a hook the
+					// merchant never sees — so the orphan comes back WITHOUT the claim.
+					const back = await redeclare(
+						h,
+						"prod-reuse",
+						"large",
+						"2026-07-10T02:00:00.000Z",
+						"reuse-back",
+					);
+
+					expect(back.orphanedAt).toBeNull();
+					expect(back.sku).toBeNull();
+					// The reuser is untouched, and so is the stock: nothing moved, the
+					// row simply lost a claim it no longer had.
+					const rows = await h.store.listVariants(productId("prod-reuse"));
+					expect(rows.find((v) => v.variantKey === "small")?.sku).toBe("REUSE-1");
+					expect(rows.find((v) => v.variantKey === "small")?.onHand).toBe(9);
+					expect(rows.find((v) => v.variantKey === "large")?.onHand).toBeNull();
+				});
+
+				test("the sku is CLEARED when a live PRODUCT took it while the row was orphaned", async () => {
+					const h = await makeStore();
+					await orphanedWithSku(h, "prod-pgrab", "large", "PGRAB-1");
+					// A product row is the other kind of live sellable unit.
+					await seedEditable(h, "prod-other", { sku: "PGRAB-1" });
+
+					const back = await redeclare(
+						h,
+						"prod-pgrab",
+						"large",
+						"2026-07-10T02:00:00.000Z",
+						"pgrab-back",
+					);
+
+					expect(back.orphanedAt).toBeNull();
+					expect(back.sku).toBeNull();
+					expect((await h.store.getByProductId(productId("prod-other")))?.sku).toBe("PGRAB-1");
+				});
+
+				test("a cleared sku leaves its inventory row where it is — re-assigning it later ADOPTS the units back", async () => {
+					const h = await makeStore();
+					await orphanedWithSku(h, "prod-adoptback", "large", "ADOPTBACK-1");
+					await h.seedStock("ADOPTBACK-1", 14);
+					const sibling = await declare(h, "prod-adoptback", "small");
+					await h.store.updateVariantFields(
+						{
+							productId: productId("prod-adoptback"),
+							variantKey: "small",
+							sku: sku("ADOPTBACK-1"),
+						},
+						idempotencyKey("adoptback-took"),
+						sibling.updatedAt.toISOString(),
+					);
+					const back = await redeclare(
+						h,
+						"prod-adoptback",
+						"large",
+						"2026-07-10T02:00:00.000Z",
+						"adoptback-back",
+					);
+					expect(back.sku).toBeNull();
+
+					// Free the sku again, then give it back to the resurrected size. The
+					// units are still there: the resurrect never touched `inventory`, and
+					// a FIRST sku adopts the existing row (THE FIRST-SKU ASYMMETRY).
+					await h.store.deactivateVariant(
+						productId("prod-adoptback"),
+						"small",
+						idempotencyKey("adoptback-free"),
+						"2026-07-10T03:00:00.000Z",
+					);
+					const reassigned = await h.store.updateVariantFields(
+						{
+							productId: productId("prod-adoptback"),
+							variantKey: "large",
+							sku: sku("ADOPTBACK-1"),
+						},
+						idempotencyKey("adoptback-again"),
+						back.updatedAt.toISOString(),
+					);
+					expect(reassigned.ok).toBe(true);
+					expect((await variantOf(h, "prod-adoptback", "large")).onHand).toBe(14);
+				});
+
+				test("the PRICE is cleared when its currency no longer matches the product's", async () => {
+					const h = await makeStore();
+					// A product with no price of its own: the sizes carry the currency.
+					await h.store.upsert(
+						{ productId: productId("prod-vcur2") },
+						idempotencyKey("vcur2-seed"),
+					);
+					const declared = await declare(h, "prod-vcur2", "large");
+					const priced = await h.store.updateVariantFields(
+						{
+							productId: productId("prod-vcur2"),
+							variantKey: "large",
+							price: money(cents(3000), currency("GBP")),
+						},
+						idempotencyKey("vcur2-price"),
+						declared.updatedAt.toISOString(),
+					);
+					expect(priced.ok).toBe(true);
+					await h.store.deactivateVariant(
+						productId("prod-vcur2"),
+						"large",
+						idempotencyKey("vcur2-orphan"),
+						"2026-07-10T01:00:00.000Z",
+					);
+					// While it was away the product settled on a different currency.
+					const sibling = await declare(h, "prod-vcur2", "small");
+					const settled = await h.store.updateVariantFields(
+						{
+							productId: productId("prod-vcur2"),
+							variantKey: "small",
+							price: money(cents(2500), currency("USD")),
+						},
+						idempotencyKey("vcur2-settle"),
+						sibling.updatedAt.toISOString(),
+					);
+					expect(settled.ok).toBe(true);
+
+					const back = await redeclare(
+						h,
+						"prod-vcur2",
+						"large",
+						"2026-07-10T02:00:00.000Z",
+						"vcur2-back",
+					);
+
+					// A price the product can no longer honour is not a price. Absent,
+					// never coerced and never zero.
+					expect(back.orphanedAt).toBeNull();
+					expect(back.price).toBeNull();
+				});
+
+				test("a MATCHING price survives the resurrect untouched", async () => {
+					const h = await makeStore();
+					await seedEditable(h, "prod-vkeep", { sku: "VKEEP-P", currency: "USD" });
+					const declared = await declare(h, "prod-vkeep", "large");
+					const priced = await h.store.updateVariantFields(
+						{
+							productId: productId("prod-vkeep"),
+							variantKey: "large",
+							price: money(cents(1200), currency("USD")),
+						},
+						idempotencyKey("vkeep-price"),
+						declared.updatedAt.toISOString(),
+					);
+					expect(priced.ok).toBe(true);
+					await h.store.deactivateVariant(
+						productId("prod-vkeep"),
+						"large",
+						idempotencyKey("vkeep-orphan"),
+						"2026-07-10T01:00:00.000Z",
+					);
+
+					const back = await redeclare(
+						h,
+						"prod-vkeep",
+						"large",
+						"2026-07-10T02:00:00.000Z",
+						"vkeep-back",
+					);
+					expect(back.price).toEqual({ amount: 1200, currency: "USD" });
+				});
+			});
+
+			// -- redelivery of a presence command ----------------------------------
+			//
+			// Presence has two OPPOSING transitions delivered by independent
+			// fire-and-forget POSTs, so a redelivery of either one must not undo the
+			// other. Both sequences below are no-ops on a correct store, and both
+			// flip a variant's sellability on a naive one.
+
+			describe("a redelivered presence command changes nothing", () => {
+				test("resurrect, then a REPLAYED deactivate: the variant stays live", async () => {
+					const h = await makeStore();
+					await declare(h, "prod-rd1", "large");
+					const orphanKey = idempotencyKey("rd1-orphan");
+					await h.store.deactivateVariant(
+						productId("prod-rd1"),
+						"large",
+						orphanKey,
+						"2026-07-10T01:00:00.000Z",
+					);
+					await h.store.upsertVariant(
+						{
+							productId: productId("prod-rd1"),
+							variantKey: "large",
+							title: "Large",
+							contentUpdatedAt: "2026-07-10T02:00:00.000Z",
+						},
+						idempotencyKey("rd1-back"),
+					);
+					expect((await variantOf(h, "prod-rd1", "large")).orphanedAt).toBeNull();
+
+					// The hook retries the drop it already delivered. Applied a second
+					// time it would silently un-sell a size the CMS currently declares.
+					await h.store.deactivateVariant(
+						productId("prod-rd1"),
+						"large",
+						orphanKey,
+						"2026-07-10T01:00:00.000Z",
+					);
+
+					expect((await variantOf(h, "prod-rd1", "large")).orphanedAt).toBeNull();
+				});
+
+				test("orphan, then a REPLAYED WATERMARK-LESS declare: the variant stays orphaned, though its title still updates", async () => {
+					const h = await makeStore();
+					// A watermark-less declare is a panel-shaped, unordered write. It may
+					// refresh the cache — last-writer-wins — but it carries no position,
+					// so it can never move an ordered axis.
+					await h.store.upsertVariant(
+						{ productId: productId("prod-rd2"), variantKey: "large", title: "Large" },
+						idempotencyKey("rd2-declare"),
+					);
+					await h.store.deactivateVariant(
+						productId("prod-rd2"),
+						"large",
+						idempotencyKey("rd2-orphan"),
+						"2026-07-10T01:00:00.000Z",
+					);
+
+					await h.store.upsertVariant(
+						{ productId: productId("prod-rd2"), variantKey: "large", title: "Large (redelivered)" },
+						idempotencyKey("rd2-redelivered"),
+					);
+
+					const row = await variantOf(h, "prod-rd2", "large");
+					expect(row.orphanedAt).not.toBeNull();
+					expect(row.title).toBe("Large (redelivered)");
+				});
+
+				test("a declare at an EQUAL watermark cannot resurrect either — presence moves only strictly forward", async () => {
+					const h = await makeStore();
+					await declare(h, "prod-rd3", "large");
+					await h.store.deactivateVariant(
+						productId("prod-rd3"),
+						"large",
+						idempotencyKey("rd3-orphan"),
+						"2026-07-10T01:00:00.000Z",
+					);
+
+					await h.store.upsertVariant(
+						{
+							productId: productId("prod-rd3"),
+							variantKey: "large",
+							title: "Large",
+							contentUpdatedAt: "2026-07-10T01:00:00.000Z",
+						},
+						idempotencyKey("rd3-equal"),
+					);
+
+					expect((await variantOf(h, "prod-rd3", "large")).orphanedAt).not.toBeNull();
+				});
+
+				test("a same-key deactivate replay is a no-op even after the row came back and went out again", async () => {
+					const h = await makeStore();
+					await declare(h, "prod-rd4", "large");
+					const key = idempotencyKey("rd4-orphan");
+					await h.store.deactivateVariant(
+						productId("prod-rd4"),
+						"large",
+						key,
+						"2026-07-10T01:00:00.000Z",
+					);
+					const first = await variantOf(h, "prod-rd4", "large");
+
+					// Straight redelivery, nothing in between: already orphaned AND a
+					// same-key replay, so the tombstone instant must not move either.
+					await h.store.deactivateVariant(
+						productId("prod-rd4"),
+						"large",
+						key,
+						"2026-07-10T01:00:00.000Z",
+					);
+					expect((await variantOf(h, "prod-rd4", "large")).orphanedAt).toEqual(first.orphanedAt);
+				});
+			});
+
+			// -- the reciprocal direction: product-level writers see variants -------
+			//
+			// Uniqueness across a pair of tables holds in both directions or in
+			// neither. These are the product-level half; the variant-level half is
+			// pinned above.
+
+			describe("a product-level write sees live variants", () => {
+				/** A live variant holding `s`, on a product with no sku of its own. */
+				async function variantHolding(
+					h: ProductCommerceStoreHarness,
+					pid: string,
+					key: string,
+					s: string,
+				): Promise<void> {
+					await h.store.upsert({ productId: productId(pid) }, idempotencyKey(`vh-seed-${pid}`));
+					const declared = await declare(h, pid, key);
+					const res = await h.store.updateVariantFields(
+						{ productId: productId(pid), variantKey: key, sku: sku(s) },
+						idempotencyKey(`vh-price-${pid}-${key}`),
+						declared.updatedAt.toISOString(),
+					);
+					if (!res.ok) throw new Error(`variantHolding: ${pid}/${key} could not take a sku`);
+				}
+
+				test("updateCommerceFields refuses a sku a LIVE VARIANT holds — the same typed refusal, the other way round", async () => {
+					const h = await makeStore();
+					await variantHolding(h, "prod-owner-v", "large", "OWNED-BY-VARIANT");
+					const seeded = await seedEditable(h, "prod-taker", { sku: "TAKER-1" });
+
+					await expect(
+						h.store.updateCommerceFields(
+							{ productId: productId("prod-taker"), sku: sku("OWNED-BY-VARIANT") },
+							idempotencyKey("recip-1"),
+							seeded.updatedAt.toISOString(),
+						),
+					).rejects.toBeInstanceOf(SkuConflictError);
+
+					// Atomic: the product kept its own sku and its own replay key.
+					const after = await h.store.getByProductId(productId("prod-taker"));
+					expect(after?.sku).toBe("TAKER-1");
+					expect(after?.idempotencyKey).toBe("seed-prod-taker");
+				});
+
+				test("upsert refuses a sku a LIVE VARIANT holds too — the rule belongs to the column, not to one writer", async () => {
+					const h = await makeStore();
+					await variantHolding(h, "prod-owner-u", "large", "OWNED-BY-VARIANT-U");
+					await h.store.upsert(
+						{ productId: productId("prod-taker-u"), sku: sku("TAKER-U") },
+						idempotencyKey("recip-u-seed"),
+					);
+
+					await expect(
+						h.store.upsert(
+							{ productId: productId("prod-taker-u"), sku: sku("OWNED-BY-VARIANT-U") },
+							idempotencyKey("recip-u-1"),
+						),
+					).rejects.toBeInstanceOf(SkuConflictError);
+					expect((await h.store.getByProductId(productId("prod-taker-u")))?.sku).toBe("TAKER-U");
+				});
+
+				test("an ORPHANED variant's sku is FREE to a product writer — the tombstone releases the identifier", async () => {
+					const h = await makeStore();
+					await variantHolding(h, "prod-freed", "large", "FREED-1");
+					await h.store.deactivateVariant(
+						productId("prod-freed"),
+						"large",
+						idempotencyKey("freed-orphan"),
+						"2026-07-10T02:00:00.000Z",
+					);
+
+					const res = await h.store.upsert(
+						{ productId: productId("prod-freed-taker"), sku: sku("FREED-1") },
+						idempotencyKey("freed-take"),
+					);
+					expect(res.sku).toBe("FREED-1");
+				});
+
+				test("a STALE product edit naming a live variant's sku refuses nothing — the check keeps its place in the guard order", async () => {
+					const h = await makeStore();
+					await variantHolding(h, "prod-guard-v", "large", "GUARDED-1");
+					await seedEditable(h, "prod-stale-taker", { sku: "STALE-TAKER" });
+
+					// The write never applies, so it never contends for the sku — exactly
+					// as a skipped statement never contends for a unique index.
+					const res = await h.store.updateCommerceFields(
+						{ productId: productId("prod-stale-taker"), sku: sku("GUARDED-1") },
+						idempotencyKey("guard-v-1"),
+						"1999-01-01T00:00:00.000Z",
+					);
+					expect(res).toMatchObject({ ok: false, reason: "stale" });
+				});
+
+				test("updateCommerceFields refuses a repricing that would leave a LIVE VARIANT in another currency", async () => {
+					const h = await makeStore();
+					const seeded = await seedEditable(h, "prod-recur", {
+						sku: "RECUR-1",
+						currency: "USD",
+						priceCents: 1000,
+					});
+					const declared = await declare(h, "prod-recur", "large");
+					const priced = await h.store.updateVariantFields(
+						{
+							productId: productId("prod-recur"),
+							variantKey: "large",
+							price: money(cents(2000), currency("USD")),
+						},
+						idempotencyKey("recur-price"),
+						declared.updatedAt.toISOString(),
+					);
+					expect(priced.ok).toBe(true);
+
+					// Without this direction the variant guard is bypassed by repricing
+					// the product instead of the size.
+					const res = await h.store.updateCommerceFields(
+						{ productId: productId("prod-recur"), price: money(cents(1000), currency("EUR")) },
+						idempotencyKey("recur-1"),
+						seeded.updatedAt.toISOString(),
+					);
+					expect(res).toMatchObject({ ok: false, reason: "currency_mismatch" });
+					expect((await h.store.getByProductId(productId("prod-recur")))?.price).toEqual({
+						amount: 1000,
+						currency: "USD",
+					});
+				});
+
+				test("a repricing in the SAME currency as the live variants applies", async () => {
+					const h = await makeStore();
+					const seeded = await seedEditable(h, "prod-recur-ok", {
+						sku: "RECUR-OK",
+						currency: "USD",
+						priceCents: 1000,
+					});
+					const declared = await declare(h, "prod-recur-ok", "large");
+					await h.store.updateVariantFields(
+						{
+							productId: productId("prod-recur-ok"),
+							variantKey: "large",
+							price: money(cents(2000), currency("USD")),
+						},
+						idempotencyKey("recur-ok-price"),
+						declared.updatedAt.toISOString(),
+					);
+
+					const res = await h.store.updateCommerceFields(
+						{ productId: productId("prod-recur-ok"), price: money(cents(1500), currency("USD")) },
+						idempotencyKey("recur-ok-1"),
+						seeded.updatedAt.toISOString(),
+					);
+					expect(res.ok).toBe(true);
+				});
+
+				test("an ORPHANED variant's price never blocks a product pricing", async () => {
+					const h = await makeStore();
+					// Deliberately UNPRICED: the product's own stored currency (guard 4a)
+					// then has nothing to say, so this case is genuinely about 4c and
+					// cannot pass for the wrong reason.
+					const seeded = await h.store.upsert(
+						{ productId: productId("prod-recur-orph"), sku: sku("RECUR-ORPH") },
+						idempotencyKey("recur-orph-seed"),
+					);
+					const declared = await declare(h, "prod-recur-orph", "large");
+					await h.store.updateVariantFields(
+						{
+							productId: productId("prod-recur-orph"),
+							variantKey: "large",
+							price: money(cents(2000), currency("USD")),
+						},
+						idempotencyKey("recur-orph-price"),
+						declared.updatedAt.toISOString(),
+					);
+					await h.store.deactivateVariant(
+						productId("prod-recur-orph"),
+						"large",
+						idempotencyKey("recur-orph-drop"),
+						"2026-07-10T02:00:00.000Z",
+					);
+
+					// A tombstone is history, not a live dependency — the same stance the
+					// tax-class delete guard takes about soft-deleted products.
+					const res = await h.store.updateCommerceFields(
+						{ productId: productId("prod-recur-orph"), price: money(cents(900), currency("EUR")) },
+						idempotencyKey("recur-orph-1"),
+						seeded.updatedAt.toISOString(),
+					);
+					expect(res.ok).toBe(true);
 				});
 			});
 		});

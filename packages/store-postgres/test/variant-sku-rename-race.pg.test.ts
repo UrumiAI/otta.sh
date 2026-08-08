@@ -5,6 +5,7 @@ import {
 	money,
 	productId,
 	sku,
+	SkuConflictError,
 	SkuStockConflictError,
 } from "@otta-sh/domain";
 import type { Kysely } from "kysely";
@@ -12,6 +13,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { KyselyInventoryStore, KyselyProductCommerceStore, uuidIdGen } from "../src/index.js";
 import type { Database } from "../src/schema.js";
 import { createIsolatedPgSchema } from "../src/testing.js";
+import { TickingClock } from "./ticking-clock.js";
 
 // THE SKU-RENAME RULE at VARIANT grain, under REAL concurrency
 // (Postgres-required, independent connections — better-sqlite3 serializes every
@@ -30,31 +32,14 @@ import { createIsolatedPgSchema } from "../src/testing.js";
 
 const PG = process.env.PG_CONNECTION_STRING;
 
-/**
- * A clock that ADVANCES a millisecond per reading. A `FixedClock` would make
- * `updated_at` identical on every write, silently turning the compare-and-set
- * into a guard that always passes — a race that "passes" while proving nothing.
- */
-class TickingClock {
-	#at: number;
-
-	constructor(start: string) {
-		this.#at = new Date(start).getTime();
-	}
-
-	now(): Date {
-		this.#at += 1;
-		return new Date(this.#at);
-	}
-}
-
 interface PgFixture {
 	products: KyselyProductCommerceStore;
 	inventory: KyselyInventoryStore;
 	db: Kysely<Database>;
-	/** A product row with no price of its own — the realistic variants shape,
-	 *  where the sizes carry the money. */
-	seedProduct(id: string): Promise<void>;
+	/** A product row with no sku and no price of its own — the realistic variants
+	 *  shape, where the sizes carry the money. Returns the `updatedAt` watermark
+	 *  its next guarded edit has to pass back. */
+	seedProduct(id: string): Promise<string>;
 	/** A declared, sku-bearing, stocked variant; returns the `updatedAt`
 	 *  watermark its next guarded edit has to pass back. */
 	seedVariant(id: string, key: string, s: string, onHand: number): Promise<string>;
@@ -62,6 +47,11 @@ interface PgFixture {
 	declareVariant(id: string, key: string): Promise<string>;
 	onHand(s: string): Promise<number | null>;
 	skuOfVariant(id: string, key: string): Promise<string | null>;
+	/** A live, sku-bearing PRODUCT row; returns the watermark its next guarded
+	 *  edit has to pass back. The other kind of live sellable unit. */
+	seedPricedProduct(id: string, s: string, cur: string): Promise<string>;
+	skuOfProduct(id: string): Promise<string | null>;
+	currencyOfProduct(id: string): Promise<string | null>;
 	currencies(id: string): Promise<string[]>;
 }
 
@@ -85,7 +75,8 @@ async function freshPg(poolMax: number): Promise<PgFixture> {
 		inventory,
 		db,
 		async seedProduct(id) {
-			await products.upsert({ productId: productId(id) }, idempotencyKey(`seed-${id}`));
+			const row = await products.upsert({ productId: productId(id) }, idempotencyKey(`seed-${id}`));
+			return row.updatedAt.toISOString();
 		},
 		async declareVariant(id, key) {
 			const row = await products.upsertVariant(
@@ -119,6 +110,33 @@ async function freshPg(poolMax: number): Promise<PgFixture> {
 				.where("sku", "=", s)
 				.executeTakeFirst();
 			return row?.on_hand ?? null;
+		},
+		async seedPricedProduct(id, s, cur) {
+			const row = await products.upsert(
+				{
+					productId: productId(id),
+					sku: sku(s),
+					price: money(cents(1000), currency(cur)),
+				},
+				idempotencyKey(`seed-product-${id}`),
+			);
+			return row.updatedAt.toISOString();
+		},
+		async skuOfProduct(id) {
+			const row = await db
+				.selectFrom("product_commerce")
+				.select("sku")
+				.where("product_id", "=", id)
+				.executeTakeFirst();
+			return row?.sku ?? null;
+		},
+		async currencyOfProduct(id) {
+			const row = await db
+				.selectFrom("product_commerce")
+				.select("price_currency")
+				.where("product_id", "=", id)
+				.executeTakeFirst();
+			return row?.price_currency ?? null;
 		},
 		async skuOfVariant(id, key) {
 			const row = await db
@@ -381,5 +399,147 @@ describe.skipIf(PG === undefined)("variant sku rename concurrency [postgres]", (
 		// two currencies, and the assertion above would already have caught it — but
 		// this pins that the race really was raced rather than serialized by luck.
 		expect(mismatches, "the currency refusal fired at least once").toBeGreaterThan(0);
+	}, 120_000);
+
+	// -- across the pair: a product write and a variant write, at once ---------
+	//
+	// Uniqueness and currency integrity both span two tables, and no index spans
+	// two tables, so both directions are app-level checks inside a transaction.
+	// That makes the CROSSING race the one that decides whether the pair is one
+	// rule or two half-rules that happen to agree when run apart.
+
+	test("a PRODUCT and a VARIANT reaching for one free sku at once: never both, and the loser refuses typed", async () => {
+		const LOOPS = 20;
+		const h = await freshPg(8);
+		let tookIt = 0;
+
+		for (let loop = 0; loop < LOOPS; loop++) {
+			const varProd = `xp-v-${loop}`;
+			const plainProd = `xp-p-${loop}`;
+			const target = `XP-T-${loop}`;
+			await h.seedProduct(varProd);
+			const wmV = await h.declareVariant(varProd, "large");
+			// BOTH sides are FIRST-sku assignments, deliberately: a rename onto an
+			// occupied row would be refused by the rename rule before the cross-table
+			// check was ever consulted, and the case would pass while proving nothing.
+			// A first sku ADOPTS an existing row, so both writes are legal and the
+			// cross-table rule is the ONLY thing that can arbitrate them.
+			const wmP = await h.seedProduct(plainProd);
+			// The target already has a stock row — the state every sku that has ever
+			// been stocked, restocked or renamed onto is in, and the row the two
+			// halves of the cross-table rule serialize on (see
+			// `#lockSkuRowIfPresent`, which also records the never-used-sku bound).
+			await h.db.insertInto("inventory").values({ sku: target, on_hand: 0 }).execute();
+
+			// One free sku, two KINDS of sellable unit reaching for it on independent
+			// connections. Neither side's unique index can see the other's table, so
+			// if the cross-table checks were merely advisory both would land and one
+			// `inventory` row would be named by two units — the state a later rename
+			// of either one silently drains.
+			const results = await Promise.allSettled([
+				h.products.updateVariantFields(
+					{ productId: productId(varProd), variantKey: "large", sku: sku(target) },
+					idempotencyKey(`xp-v-${loop}`),
+					wmV,
+				),
+				h.products.updateCommerceFields(
+					{ productId: productId(plainProd), sku: sku(target) },
+					idempotencyKey(`xp-p-${loop}`),
+					wmP,
+				),
+			]);
+
+			const landed = results.filter((r) => r.status === "fulfilled" && r.value.ok);
+			expect(landed.length, `loop ${loop}: at most one unit takes the sku`).toBeLessThanOrEqual(1);
+
+			const variantHas = (await h.skuOfVariant(varProd, "large")) === target;
+			const productHas = (await h.skuOfProduct(plainProd)) === target;
+			// THE ASSERTION THAT BITES: never both. One sku, one live sellable unit.
+			expect(
+				variantHas && productHas,
+				`loop ${loop}: a sku may not name two live sellable units`,
+			).toBe(false);
+			if (variantHas || productHas) tookIt++;
+
+			// A loser refuses TYPED, never a raw constraint violation surfacing as a
+			// 500 — and never with a half-applied write behind it.
+			for (const r of results) {
+				if (r.status === "rejected") {
+					expect(r.reason, `loop ${loop}: typed refusal`).toBeInstanceOf(SkuConflictError);
+				}
+			}
+			// The loser is left exactly as it arrived: still sku-less, never half-way
+			// into an assignment it was refused.
+			if (!productHas) expect(await h.skuOfProduct(plainProd), `loop ${loop}`).toBeNull();
+			if (!variantHas) expect(await h.skuOfVariant(varProd, "large"), `loop ${loop}`).toBeNull();
+		}
+
+		// Somebody won every loop: refusing both sides would be the pair deadlocking
+		// itself out of a legal write rather than arbitrating one. (The product side
+		// is a RENAME onto an occupied row, so it may legitimately lose to the stock
+		// refusal; the variant side is a first assignment, which adopts.)
+		expect(tookIt, "the sku was claimed by exactly one kind of unit").toBe(LOOPS);
+	}, 120_000);
+
+	test("a PRODUCT repricing racing a VARIANT pricing: the product never ends in a currency its live sizes do not share", async () => {
+		const LOOPS = 25;
+		const h = await freshPg(8);
+		let refusals = 0;
+
+		// Warm the pool: a first use of a connection pays for the TCP connect and
+		// session setup, enough to decide which writer reaches the parent row first.
+		await Promise.all(Array.from({ length: 8 }, () => h.onHand("warm-up")));
+
+		for (let loop = 0; loop < LOOPS; loop++) {
+			const id = `xc-${loop}`;
+			const wmP = await h.seedPricedProduct(id, `XC-SKU-${loop}`, "USD");
+			const wmV = await h.declareVariant(id, "large");
+
+			// Both directions of the currency rule fired at one instant. The
+			// product-side guard reads the live variants and the variant-side guard
+			// reads the product, so without ONE lock ordering each reads the other's
+			// "before" state and both apply — leaving a product priced in GBP beside a
+			// size priced in EUR, which has no honest total and no honest cart.
+			const results = await Promise.allSettled([
+				h.products.updateCommerceFields(
+					{ productId: productId(id), price: money(cents(4000), currency("GBP")) },
+					idempotencyKey(`xc-p-${loop}`),
+					wmP,
+				),
+				h.products.updateVariantFields(
+					{
+						productId: productId(id),
+						variantKey: "large",
+						price: money(cents(2500), currency("EUR")),
+					},
+					idempotencyKey(`xc-v-${loop}`),
+					wmV,
+				),
+			]);
+
+			// A currency disagreement is a reported outcome, never an exception.
+			for (const r of results) {
+				expect(r.status, `loop ${loop}: resolves, never throws`).toBe("fulfilled");
+			}
+			const outcomes = results.map((r) =>
+				r.status === "fulfilled" ? (r.value.ok ? "ok" : r.value.reason) : "threw",
+			);
+			if (outcomes.includes("currency_mismatch")) refusals++;
+
+			// THE ASSERTION THAT BITES: every currency under this product agrees.
+			const productCurrency = await h.currencyOfProduct(id);
+			const variantCurrencies = await h.currencies(id);
+			const all = new Set([
+				...(productCurrency === null ? [] : [productCurrency]),
+				...variantCurrencies,
+			]);
+			expect(
+				[...all],
+				`loop ${loop}: one currency per product (${outcomes.join("/")})`,
+			).toHaveLength(1);
+		}
+
+		// The refusal genuinely fired rather than the schedule sparing it.
+		expect(refusals, "the cross-table currency refusal fired at least once").toBeGreaterThan(0);
 	}, 120_000);
 });
