@@ -305,6 +305,79 @@ describe.skipIf(PG === undefined)("HTTP product-commerce contract [live server, 
 		expect(retry.status).toBe(200);
 	});
 
+	// -- the two RENAME refusals, on the integrator's own upsert ---------------
+	// The sync PUT can rename a sku exactly as the admin edit can, so it meets the
+	// same two refusals and answers them in this route's own envelope (`error`,
+	// beside `SKU_TAKEN`) rather than falling through to an opaque 500.
+
+	test("a rename ONTO an occupied inventory sku is a structured 409 SKU_STOCK_CONFLICT — nothing leaked, nothing moved", async () => {
+		await put(
+			"prod-http-f3",
+			{ sku: "SKU-HF3", price: { amount: 100, currency: "USD" } },
+			{ "Idempotency-Key": "kf3a" },
+		);
+		await server.seed("SKU-HF3", 7);
+		// An inventory row under no live product: what a sku renamed away from
+		// leaves behind (retained at zero), or a deleted product's sku.
+		await server.seed("SKU-HF3-TAKEN", 2);
+
+		const refused = await put(
+			"prod-http-f3",
+			{ sku: "SKU-HF3-TAKEN" },
+			{ "Idempotency-Key": "kf3b" },
+		);
+		expect(refused.status).toBe(409);
+		expect(refused.body).toEqual({
+			ok: false,
+			error: "SKU_STOCK_CONFLICT",
+			fromSku: "SKU-HF3",
+			toSku: "SKU-HF3-TAKEN",
+		});
+		expect(refused.body).not.toHaveProperty("stack");
+		expect(JSON.stringify(refused.body)).not.toMatch(
+			/constraint|violates|duplicate key|inventory|reservation|SkuStockConflict|SkuHeldStock|\.ts:/i,
+		);
+
+		// The rename and the carry are one transaction: the product still holds its
+		// sku, and neither count moved by a unit.
+		expect((await get("prod-http-f3")).body).toMatchObject({ sku: "SKU-HF3" });
+		expect(await server.onHand("SKU-HF3")).toBe(7);
+		expect(await server.onHand("SKU-HF3-TAKEN")).toBe(2);
+	});
+
+	test("a rename with LIVE HOLDS against the source is a structured 409 SKU_HELD_STOCK carrying the count", async () => {
+		await put(
+			"prod-http-f4",
+			{ sku: "SKU-HF4", price: { amount: 100, currency: "USD" } },
+			{ "Idempotency-Key": "kf4a" },
+		);
+		await server.seed("SKU-HF4", 9);
+		const reserved = await fetch(`${server.baseUrl}/inventory/reserve`, {
+			method: "POST",
+			headers: { "content-type": "application/json", "Idempotency-Key": "kf4-hold" },
+			body: JSON.stringify({ sku: "SKU-HF4", qty: 3 }),
+		});
+		expect(reserved.status).toBe(200);
+
+		const refused = await put(
+			"prod-http-f4",
+			{ sku: "SKU-HF4-NEW" },
+			{ "Idempotency-Key": "kf4b" },
+		);
+		expect(refused.status).toBe(409);
+		expect(refused.body).toEqual({
+			ok: false,
+			error: "SKU_HELD_STOCK",
+			sku: "SKU-HF4",
+			liveHolds: 1,
+		});
+		expect(refused.body).not.toHaveProperty("stack");
+
+		expect((await get("prod-http-f4")).body).toMatchObject({ sku: "SKU-HF4" });
+		// The hold's units are already out of on_hand and stay out of it.
+		expect(await server.onHand("SKU-HF4")).toBe(6);
+	});
+
 	// -- POST /products/:id/commerce/activate (the afterPublish→activate follow-up) --
 
 	test("POST .../commerce/activate flips a row to active=true", async () => {

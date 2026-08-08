@@ -55,13 +55,13 @@ export class SkuConflictError extends Error {
  * Both skus are named so an operator can act on the message without opening a
  * database.
  *
- * NOT YET MAPPED AT THE HTTP BOUNDARY — stated as intent, not as fact.
- * `@otta-sh/service` has no arm for this error today, so it falls through to
- * the generic handler and reaches the console as an `internal_error` 500; the
- * message above currently survives only in the service log. Mapping it to a
- * structured 409 beside `SkuConflictError`'s `SKU_TAKEN`, and rendering it as a
- * per-field warning on the Pricing & inventory form, is the intended follow-up.
- * Until then the refusal is correct and atomic, but not legible in the UI.
+ * MAPPED AT THE HTTP BOUNDARY, beside `SkuConflictError`'s `SKU_TAKEN`: both
+ * writers answer a structured 409 `SKU_STOCK_CONFLICT` carrying `fromSku` and
+ * `toSku` — `reason` on the admin edit (`PATCH /admin/products/:id`), `error` on
+ * the integrator upsert (`PUT /products/:id/commerce`), each in the envelope its
+ * own route already uses. The message above stays inside the service: the two
+ * skus are what crosses the wire, and the sentence an operator reads is composed
+ * once in the admin plugin and rendered beside the SKU field it is about.
  */
 export class SkuStockConflictError extends Error {
 	/** The sku the product holds today — the one whose units would have moved. */
@@ -111,10 +111,13 @@ export class SkuStockConflictError extends Error {
  * shortly", not a dead end, and the message says so. The sku and the number of
  * live holds are named so an operator can tell a busy product from a stuck one.
  *
- * NOT YET MAPPED AT THE HTTP BOUNDARY, exactly like its sibling above: it
- * currently reaches the console as an `internal_error` 500. A structured 409
- * and a legible "this SKU has N reservations in flight — try again in a few
- * minutes" is the same follow-up.
+ * MAPPED AT THE HTTP BOUNDARY, exactly like its sibling above: both writers
+ * answer a structured 409 `SKU_HELD_STOCK` carrying the `sku` and the
+ * `liveHolds` count. The admin composes its own sentence from those two and
+ * renders it beside the SKU field; no operator copy is written down here, in
+ * either direction — this package has nothing to render it on, and a second
+ * statement of a sentence is a second statement that can drift from the one
+ * that ships.
  */
 export class SkuHeldStockError extends Error {
 	/** The sku being renamed away from — the one the live holds still name. */

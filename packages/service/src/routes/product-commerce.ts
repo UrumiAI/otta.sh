@@ -11,6 +11,8 @@ import {
 	softDeleteProductCommerce,
 	sku,
 	SkuConflictError,
+	SkuHeldStockError,
+	SkuStockConflictError,
 	upsertProductCommerce,
 	type ProductCommerce,
 	type ProductCommerceDeps,
@@ -25,8 +27,10 @@ export type { ProductCommerceDeps };
 /**
  * Product-commerce routes — 1:1 with the port (Phase 1 §7): `PUT`/`GET`/
  * `DELETE /products/:id/commerce`. No status-code-as-logic beyond schema/
- * validation failures and `MISSING_PRODUCT_ID` (the one domain rejection
- * this port has); money on the wire is an integer + ISO-4217 string.
+ * validation failures and the domain's own rejections, each a structured body
+ * carrying a machine code — `MISSING_PRODUCT_ID`, and the three sku refusals
+ * (`SKU_TAKEN`, `SKU_STOCK_CONFLICT`, `SKU_HELD_STOCK`); money on the wire is
+ * an integer + ISO-4217 string.
  */
 export function productCommerceRoutes(deps: ProductCommerceDeps): Hono {
 	const app = new Hono();
@@ -78,6 +82,22 @@ export function productCommerceRoutes(deps: ProductCommerceDeps): Hono {
 			// the panel can render.
 			if (err instanceof SkuConflictError) {
 				return c.json({ ok: false, error: "SKU_TAKEN", sku: err.sku }, 409);
+			}
+			// A SKU RENAME the domain refuses, in the same shape: a machine code plus
+			// the operands the caller has to act on — both skus, or the sku and how
+			// many live holds still name it. Never the 500 an unmapped throw would be,
+			// and never the domain's internal sentence.
+			if (err instanceof SkuStockConflictError) {
+				return c.json(
+					{ ok: false, error: "SKU_STOCK_CONFLICT", fromSku: err.fromSku, toSku: err.toSku },
+					409,
+				);
+			}
+			if (err instanceof SkuHeldStockError) {
+				return c.json(
+					{ ok: false, error: "SKU_HELD_STOCK", sku: err.sku, liveHolds: err.liveHolds },
+					409,
+				);
 			}
 			throw err;
 		}

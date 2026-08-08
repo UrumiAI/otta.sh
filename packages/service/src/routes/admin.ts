@@ -40,6 +40,8 @@ import {
 	restock,
 	type SessionStore,
 	SkuConflictError,
+	SkuHeldStockError,
+	SkuStockConflictError,
 	sumCapturedPayments,
 	sumRefunds,
 	transitionOrder,
@@ -416,6 +418,23 @@ export function adminRoutes(deps: AdminRoutesDeps): Hono {
 			}
 			if (err instanceof SkuConflictError) {
 				return c.json({ ok: false, reason: "SKU_TAKEN", sku: err.sku }, 409);
+			}
+			// The two RENAME refusals, in the same 409 shape as the collision above:
+			// a machine `reason` plus the operands an operator has to act on — the
+			// two skus, or the sku and how many holds still name it. The domain's own
+			// sentence stays server-side; the console composes the operator's copy
+			// from these fields, so there is exactly one place it is written.
+			if (err instanceof SkuStockConflictError) {
+				return c.json(
+					{ ok: false, reason: "SKU_STOCK_CONFLICT", fromSku: err.fromSku, toSku: err.toSku },
+					409,
+				);
+			}
+			if (err instanceof SkuHeldStockError) {
+				return c.json(
+					{ ok: false, reason: "SKU_HELD_STOCK", sku: err.sku, liveHolds: err.liveHolds },
+					409,
+				);
 			}
 			throw err;
 		}
