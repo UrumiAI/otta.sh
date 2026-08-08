@@ -486,19 +486,24 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 		expect(result.notice?.variant).toBe("error");
 		expect(result.notice?.title).toBe("That SKU already has stock of its own");
 		const sentence = String(result.notice?.description);
-		// Both skus, quoted, so the operator can act without opening a database —
-		// and the advice, which is the difference between a refusal and a dead end.
-		expect(sentence).toContain('"SKU-1"');
-		expect(sentence).toContain('"SKU-RETIRED"');
-		expect(sentence).toContain("Nothing was changed");
-		expect(sentence).toContain("never held stock");
+		// THE WHOLE SENTENCE, not fragments of it. A fragment pin passes over a
+		// clause that reads as broken English around the value it interpolates,
+		// which is exactly the defect this file exists to catch.
+		expect(sentence).toBe(
+			'Nothing was changed. Stock is never merged between SKUs, and "SKU-RETIRED" already has ' +
+				'its own inventory record — so "SKU-1" was not renamed onto it. Rename to a SKU that has ' +
+				'never held stock, or move the units under "SKU-RETIRED" elsewhere first.',
+		);
 		expect(result.field).toBe("sku");
 	});
 
-	test("a rename blocked by live holds names the sku AND the count, and counts in the plural it means", async () => {
-		for (const [liveHolds, phrase] of [
-			[3, "3 live reservations"],
-			[1, "1 live reservation"],
+	test("a rename blocked by live holds names the sku AND the count, and the whole clause agrees with it", async () => {
+		// THE SINGULAR IS THE COMMON CASE, and it is the one a pluralised noun with a
+		// fixed verb gets wrong ("1 live reservation still hold units"). Both forms
+		// are pinned as complete clauses for that reason.
+		for (const [liveHolds, clause] of [
+			[3, '3 live reservations still hold units of "SKU-1"'],
+			[1, '1 live reservation still holds units of "SKU-1"'],
 		] as const) {
 			service.respondWith("PATCH", () => ({
 				status: 409,
@@ -506,31 +511,57 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 			}));
 			const result = await act("products:save-identity", { ...carrier, sku: "SKU-NEW" });
 
-			expect(result.notice?.variant, phrase).toBe("error");
-			expect(result.notice?.title, phrase).toBe("This SKU has reservations in flight");
-			const sentence = String(result.notice?.description);
-			expect(sentence, phrase).toContain(phrase);
-			expect(sentence, phrase).toContain('"SKU-1"');
-			// A "try again shortly", not a dead end: every one of these holds ends on
-			// its own, and the sentence has to say so or the operator files a bug.
-			expect(sentence, phrase).toContain("Try the rename again");
-			expect(result.field, phrase).toBe("sku");
+			expect(result.notice?.variant, clause).toBe("error");
+			expect(result.notice?.title, clause).toBe("This SKU has reservations in flight");
+			expect(String(result.notice?.description), clause).toBe(
+				`Nothing was changed: ${clause}, and a reservation cannot follow a rename — its units ` +
+					"would return to the old SKU when the cart or order finishes. Try the rename again once " +
+					"those have been paid, cancelled or expired, usually a few minutes.",
+			);
+			expect(result.field, clause).toBe("sku");
 		}
 	});
 
-	test("a hold count the service did not send is never rendered as a count — and never as zero", async () => {
-		// `0` beside a refusal CAUSED by holds reads as "no holds", which is the one
-		// thing the sentence must not say. Absent is absent (CLAUDE.md), so the copy
-		// drops the figure and keeps the fact.
-		for (const body of [
-			{ ok: false, reason: "SKU_HELD_STOCK", sku: "SKU-1" },
-			{ ok: false, reason: "SKU_HELD_STOCK", sku: "SKU-1", liveHolds: "many" },
-		]) {
+	test("an operand the service did not send degrades to a phrase that still reads as a sentence", async () => {
+		// Every one of these is unreachable while the service sends what it says it
+		// sends — which is precisely why they are pinned: a degraded branch nobody
+		// reads is where "Nothing was changed. that SKU already has…" ships.
+		//
+		// A HOLD COUNT IS NEVER GUESSED AT. `0` beside a refusal CAUSED by holds
+		// reads as "no holds", which is the one thing the sentence must not say, so
+		// the copy drops the figure and keeps the fact (absent is absent, CLAUDE.md).
+		const cases: Array<[Record<string, unknown>, string]> = [
+			[
+				{ ok: false, reason: "SKU_HELD_STOCK", sku: "SKU-1" },
+				'Nothing was changed: live reservations still hold units of "SKU-1", and',
+			],
+			[
+				{ ok: false, reason: "SKU_HELD_STOCK", sku: "SKU-1", liveHolds: "many" },
+				'Nothing was changed: live reservations still hold units of "SKU-1", and',
+			],
+			[
+				{ ok: false, reason: "SKU_HELD_STOCK", liveHolds: 2 },
+				"Nothing was changed: 2 live reservations still hold units of this SKU, and",
+			],
+			[
+				{ ok: false, reason: "SKU_STOCK_CONFLICT", fromSku: "SKU-1" },
+				"Nothing was changed. Stock is never merged between SKUs, and the SKU you asked for " +
+					'already has its own inventory record — so "SKU-1" was not renamed onto it.',
+			],
+			[
+				{ ok: false, reason: "SKU_STOCK_CONFLICT", toSku: "SKU-RETIRED" },
+				'Nothing was changed. Stock is never merged between SKUs, and "SKU-RETIRED" already ' +
+					"has its own inventory record — so this product's SKU was not renamed onto it.",
+			],
+		];
+		for (const [body, opening] of cases) {
 			service.respondWith("PATCH", () => ({ status: 409, body }));
 			const result = await act("products:save-identity", { ...carrier, sku: "SKU-NEW" });
 			const sentence = String(result.notice?.description);
-			expect(sentence, JSON.stringify(body)).toContain("Live reservations still hold units");
+			expect(sentence, JSON.stringify(body)).toContain(opening);
 			expect(sentence, JSON.stringify(body)).not.toContain("0 live");
+			// No empty quotes anywhere: a sku called nothing is not a fallback.
+			expect(sentence, JSON.stringify(body)).not.toContain('""');
 			expect(result.field, JSON.stringify(body)).toBe("sku");
 		}
 	});

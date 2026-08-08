@@ -196,26 +196,52 @@ const RENAME_REFUSAL = {
 		'never merged between SKUs, so "APR-LIN-NAT" was not renamed onto it.',
 };
 
-/** Mount the detail, then answer the first write with `answer`. The read and the
- *  write share one endpoint, so they are told apart by the request body — the
- *  same discriminator the plugin's own route reads. */
-async function saveIdentity(answer: () => Response): Promise<HTMLElement> {
+/** Type into a controlled field the way an operator does — through the event
+ *  React's own value tracker listens for, not by assigning `value`. */
+async function type(target: HTMLInputElement, text: string): Promise<void> {
+	const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")?.set;
+	if (setter === undefined) throw new Error("no value setter on HTMLInputElement");
+	await React.act(async () => {
+		setter.call(target, text);
+		target.dispatchEvent(new Event("input", { bubbles: true }));
+	});
+}
+
+const NODE = <ProductDetail productId="p_base" onBack={() => undefined} />;
+
+/** Mount the detail and answer every write from `answers`, in order (the last
+ *  one repeats). The read and the write share one endpoint, so they are told
+ *  apart by the request body — the same discriminator the plugin's route reads. */
+async function mountForWrites(...answers: Array<() => Response>): Promise<HTMLElement> {
+	let written = 0;
 	apiFetch.mockImplementation((_input, init) => {
 		const sent = JSON.parse(String(init?.body ?? "{}")) as { type?: string };
-		return Promise.resolve(sent.type === "otta_console_act" ? answer() : payload({}));
+		if (sent.type !== "otta_console_act") return Promise.resolve(payload({}));
+		const answer = answers[Math.min(written, answers.length - 1)];
+		written += 1;
+		if (answer === undefined) throw new Error("no answer for this write");
+		return Promise.resolve(answer());
 	});
-	const node = <ProductDetail productId="p_base" onBack={() => undefined} />;
-	mounted = await mount(node);
-	await mounted.rerender(node);
-
-	const save = mounted.container.querySelector('[data-testid="save-identity"]');
-	if (save === null) throw new Error("no identity save control");
-	await fire(save, "click");
-	// The write answers, the screen re-reads, and the identity form remounts on
-	// the fresh record — the refusal has to survive all three.
-	await mounted.rerender(node);
-	await mounted.rerender(node);
+	mounted = await mount(NODE);
+	await mounted.rerender(NODE);
 	return mounted.container;
+}
+
+/** Click Save on the identity form and settle: the write answers, the screen
+ *  re-reads, and — for an APPLIED write — the form remounts on the fresh
+ *  record. Everything asserted below has to survive all three. */
+async function clickSaveIdentity(): Promise<void> {
+	const save = mounted?.container.querySelector('[data-testid="save-identity"]');
+	if (save === undefined || save === null) throw new Error("no identity save control");
+	await fire(save, "click");
+	await mounted?.rerender(NODE);
+	await mounted?.rerender(NODE);
+}
+
+async function saveIdentity(answer: () => Response): Promise<HTMLElement> {
+	const container = await mountForWrites(answer);
+	await clickSaveIdentity();
+	return container;
 }
 
 test("a refused rename renders the SERVED sentence beside the SKU field, and only there", async () => {
@@ -238,17 +264,86 @@ test("a refused rename renders the SERVED sentence beside the SKU field, and onl
 	const region = refusal?.parentElement;
 	expect(region?.previousElementSibling?.contains(input as Node)).toBe(true);
 	// ...and the operator can actually see it. Identity is the group that is SHUT
-	// on arrival, and the save remounts this form, so a refusal that did not force
-	// the disclosure open would read as a save that did nothing at all.
+	// on arrival, so a refusal that did not hold the disclosure open would read as
+	// a save that did nothing at all.
 	expect(identity?.open).toBe(true);
 	// The input points at it, so it is announced with the field and not just
-	// drawn near it.
+	// drawn near it — and the id is per instance, not a module constant.
 	expect(input?.getAttribute("aria-invalid")).toBe("true");
-	expect(input?.getAttribute("aria-describedby")).toBe(region?.getAttribute("id"));
+	const describedBy = input?.getAttribute("aria-describedby");
+	expect(describedBy).toBe(region?.getAttribute("id"));
+	expect(describedBy).not.toBe("");
+	expect(describedBy).not.toBeNull();
+
+	// ANNOUNCED AT ALL. The click landed on Save, the sentence no longer stands at
+	// the top of the page, and a live region inserted together with its text is
+	// not reliably read — so focus moves into the region, which states it once.
+	expect(document.activeElement).toBe(region);
 
 	// ONE PLACE. The same sentence at the top as well would have the operator
 	// reading it twice and wondering whether it happened twice.
 	expect(container.querySelector('[data-testid="detail-notice"]')).toBeNull();
+});
+
+test("a REFUSED rename keeps the SKU the operator typed — it does not restore the stored one", async () => {
+	// THE SENTENCE SAYS "rename to a SKU that has never held stock". A form that
+	// re-seeded itself from the record would answer that advice by silently
+	// putting the OLD sku back in the box, so the operator would have to retype
+	// what they typed before they could read what they typed. A refusal applied
+	// nothing, so there is nothing for the form to re-seed FROM.
+	const container = await mountForWrites(() => actPayload(RENAME_REFUSAL, "sku"));
+	const input = container.querySelector<HTMLInputElement>('[data-testid="edit-sku"]');
+	if (input === null) throw new Error("no sku input");
+	await type(input, "APR-LIN-RET");
+	await clickSaveIdentity();
+
+	const after = container.querySelector<HTMLInputElement>('[data-testid="edit-sku"]');
+	expect(after?.value).toBe("APR-LIN-RET");
+	expect(after?.value).not.toBe(BASE.sku);
+	// ...and the screen says so out loud: the group still reports unsaved work,
+	// which is the truth about a draft that was refused.
+	const summary = container.querySelector('details[data-testid="edit-identity"] summary');
+	expect(summary?.textContent).toContain("unsaved");
+});
+
+test("an APPLIED save still re-seeds the form from the record it just wrote", async () => {
+	// The other half of the rule above, and the reason it is a rule about
+	// REFUSALS rather than about saves: a save that landed must leave the form
+	// showing the record, not a draft that is now identical to it by luck.
+	const saved = { variant: "default", title: "Saved", description: "Updated." };
+	const container = await mountForWrites(() => actPayload(saved));
+	const input = container.querySelector<HTMLInputElement>('[data-testid="edit-sku"]');
+	if (input === null) throw new Error("no sku input");
+	await type(input, "APR-LIN-TYPED");
+	await clickSaveIdentity();
+
+	// The mocked re-read serves the unchanged record, so a re-seeded form shows
+	// its sku — and a form that kept the draft would still show the typed value.
+	expect(container.querySelector<HTMLInputElement>('[data-testid="edit-sku"]')?.value).toBe(
+		BASE.sku,
+	);
+});
+
+test("a later outcome that clears the refusal does NOT slam the disclosure shut", async () => {
+	// `Group` renders a native `<details open={…}>`, and React reconciles that
+	// prop: a `false` arriving after a `true` closes the element. So a refusal
+	// followed by any other write would have closed a group the operator is
+	// working in — the one thing `Group`'s own doc promises the screen can never
+	// do to them.
+	const saved = { variant: "default", title: "Saved", description: "Updated." };
+	const container = await mountForWrites(
+		() => actPayload(RENAME_REFUSAL, "sku"),
+		() => actPayload(saved),
+	);
+	await clickSaveIdentity();
+	const identity = container.querySelector<HTMLDetailsElement>(
+		'details[data-testid="edit-identity"]',
+	);
+	expect(identity?.open).toBe(true);
+
+	await clickSaveIdentity();
+	expect(container.querySelector('[data-testid="edit-sku-refusal"]')).toBeNull();
+	expect(identity?.open).toBe(true);
 });
 
 test("an outcome that names no field still reports at the top, and never beside the SKU", async () => {

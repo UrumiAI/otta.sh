@@ -121,6 +121,7 @@ import {
 	fetchProductDetail,
 	isFailure,
 	performAction,
+	type ActPayload,
 	type ProductDetailPayload,
 	type ProductRecord,
 } from "../console-api.js";
@@ -333,21 +334,6 @@ export function writeControls(phase: WritePhase): {
 }
 
 /**
- * Which section a successful write re-seeds — and `null` for the writes that
- * re-seed none of them.
- *
- * F7's whole content is this map. Every write on this screen is followed by a
- * re-read, and the re-read is what moves each form's `expectedUpdatedAt`; what
- * must NOT follow it is a remount of a form the operator has typed into. So the
- * saving section's `key` changes and the other two keep their drafts — which
- * means a stock movement, which owns no form on the Product tab, must bump
- * nothing at all.
- */
-/** The refusal region the SKU input points at, so the sentence is announced with
- *  the field rather than only being near it. */
-const SKU_REFUSAL_ID = "otta-sku-refusal";
-
-/**
  * An outcome as this screen holds it: the served sentence, plus WHERE it goes.
  *
  * `field` is the whole of the second part. `null` is "about the record", which
@@ -363,19 +349,43 @@ export interface ScreenNotice {
 }
 
 /**
- * The field a write's outcome is about, off the payload the plugin returned.
+ * The field a write's outcome is about.
  *
- * READ STRUCTURALLY, and deliberately so: the member is OPTIONAL on the wire —
- * every outcome that is about the record as a whole omits it — so this is a
- * lookup with a default, not a shape this screen can assume. Anything that is
- * not a field this screen renders beside reports at the top, which is the
- * behaviour that existed before there was a field at all.
+ * The member is OPTIONAL on the wire — every outcome about the record as a whole
+ * omits it — and the value is re-checked rather than trusted, because this
+ * payload crossed HTTP and its declared type is a mirror, not a guarantee.
+ * Anything that is not a field this screen renders beside reports at the top,
+ * which is the behaviour that existed before there was a field at all.
  */
-export function refusalField(payload: unknown): "sku" | null {
-	const field = (payload as { field?: unknown } | null)?.field;
-	return field === "sku" ? "sku" : null;
+export function refusalField(payload: ActPayload): "sku" | null {
+	return payload.field === "sku" ? "sku" : null;
 }
 
+/**
+ * Whether a write's outcome APPLIED anything.
+ *
+ * The plugin's contract, stated once here: `ok` means the request was understood
+ * and dispatched, and a REFUSAL is an error-variant notice — so the variant is
+ * the whole discriminator, and nothing on this screen reads the sentence to
+ * decide. It answers the one question F7 turns on: a refusal must not re-seed
+ * the form it came from, because the operator's rejected input is what they need
+ * in front of them to fix it.
+ */
+export function outcomeApplied(notice: ScreenNotice | null): boolean {
+	return notice === null || notice.variant !== "error";
+}
+
+/**
+ * Which section a successful write re-seeds — and `null` for the writes that
+ * re-seed none of them.
+ *
+ * F7's whole content is this map. Every write on this screen is followed by a
+ * re-read, and the re-read is what moves each form's `expectedUpdatedAt`; what
+ * must NOT follow it is a remount of a form the operator has typed into. So the
+ * saving section's `key` changes and the other two keep their drafts — which
+ * means a stock movement, which owns no form on the Product tab, must bump
+ * nothing at all.
+ */
 export function sectionForAction(actionId: string): ProductSection | null {
 	switch (actionId) {
 		case "products:save-identity":
@@ -618,9 +628,6 @@ export function ProductDetail({
 			// ACCEPTED IS NOT SETTLED — the re-read below is the second leg, and the
 			// controls stay disabled across it. Deliberately not a release.
 			setWritePhase((phase) => nextWritePhase(phase, { type: "accepted" }));
-			// F7: claimed on the ACCEPTED write, applied when its re-read lands. A
-			// stock movement names no section and so bumps nothing.
-			savedSection.current = sectionForAction(action.actionId);
 			const served = result.notice;
 			const outcome: ScreenNotice | null =
 				served === null
@@ -634,6 +641,15 @@ export function ProductDetail({
 							// would be a second author of it.
 							field: refusalField(result),
 						};
+			// F7, and the whole of why the claim is HERE rather than on the click: a
+			// write that was understood and REFUSED applied nothing, so re-seeding its
+			// form would replace the value the operator was told to change with the
+			// one still stored — under a sentence telling them to change it. They
+			// would have to retype what they already typed to read what they typed.
+			// The record still re-reads (the watermark moved for every OTHER form);
+			// only the remount is withheld, so the rejected draft stays on screen and
+			// the group reports itself as unsaved, which it is.
+			savedSection.current = outcomeApplied(outcome) ? sectionForAction(action.actionId) : null;
 			if (slot === undefined) {
 				setNotice(outcome);
 			} else {
@@ -650,8 +666,8 @@ export function ProductDetail({
 			// Re-read: a save moves `updatedAt` (and therefore every form's
 			// watermark) and a stock movement moves `onHand`, so every value
 			// rendered below has to come from what the operator can now see. It
-			// re-seeds ONLY the section claimed on the line above — the other two
-			// forms keep what the operator typed, which is exactly what
+			// re-seeds ONLY the section claimed above — the other two forms, and a
+			// refused one, keep what the operator typed, which is exactly what
 			// `SPLIT_DISCARD_CONTEXT` now promises. The controls stay disabled
 			// until it lands.
 			setGeneration((n) => n + 1);
@@ -1217,6 +1233,16 @@ export function IdentityGroup({
 	// the half below is pure in it — so the dirty treatment can be rendered, and
 	// asserted, at a draft state a static render could not otherwise reach.
 	const [values, setValues] = React.useState<Record<string, string>>(committed);
+	// THE DISCLOSURE LATCH, and it only ever climbs. `Group` renders a native
+	// `<details open={…}>`, so the prop is not a default — React reconciles it,
+	// and a `false` arriving after a `true` CLOSES the element. Deriving it from
+	// `refusal` alone would therefore make the next write's outcome (which clears
+	// the refusal) slam shut a group the operator is working in, which is the one
+	// thing `Group`'s own doc promises the screen can never do. Once a refusal has
+	// opened it, it stays opened here; closing it stays the operator's to do, in
+	// the DOM, where no prop of ours contradicts them.
+	const [opened, setOpened] = React.useState(refusal !== null);
+	if (refusal !== null && !opened) setOpened(true);
 	return (
 		<IdentityFields
 			product={p}
@@ -1224,6 +1250,7 @@ export function IdentityGroup({
 			values={values}
 			busy={busy}
 			refusal={refusal}
+			open={opened}
 			report={onDirtyChange ?? NO_REPORT}
 			onChange={setValues}
 			onSubmit={onSubmit}
@@ -1240,6 +1267,7 @@ export function IdentityFields({
 	values,
 	busy,
 	refusal = null,
+	open = false,
 	report,
 	onChange,
 	onSubmit,
@@ -1251,6 +1279,10 @@ export function IdentityFields({
 	/** The served refusal for this field, rendered VERBATIM. Nothing here reads
 	 *  it, reformats it or decides anything from it. */
 	refusal?: ScreenNotice | null;
+	/** Whether the disclosure is held open. Owned by the container above, because
+	 *  it LATCHES: see the note there for why deriving it from `refusal` in this
+	 *  pure half would close a group the operator opened. */
+	open?: boolean;
 	report: DirtyReporter;
 	onChange: (next: (prev: Record<string, string>) => Record<string, string>) => void;
 	onSubmit: (values: Record<string, string>) => void;
@@ -1258,14 +1290,28 @@ export function IdentityFields({
 	const changed = changedFields(committed, values);
 	const dirty = changed.length > 0;
 	useReportDirty("identity", dirty, report);
+	// Per INSTANCE, never a module constant: `aria-describedby` resolves by
+	// document id, so two of these on one page — the drawer this screen is headed
+	// for — would point both inputs at whichever refusal rendered first.
+	const refusalId = React.useId();
+	// WHERE FOCUS GOES WHEN A REFUSAL ARRIVES. The click that raised it landed on
+	// Save, and Save is not where the answer is; the sentence is also no longer
+	// duplicated at the top of the page, so a screen reader that misses a live
+	// region inserted together with its text gets no announcement at all. Moving
+	// focus into the region states it once, unconditionally, and leaves the
+	// operator one Tab from the input they have to change.
+	const region = React.useRef<HTMLDivElement | null>(null);
+	React.useEffect(() => {
+		if (refusal === null) return;
+		region.current?.focus();
+	}, [refusal]);
 	return (
-		// A REFUSAL FORCES THE GROUP OPEN, because this is the one group that is
-		// shut on arrival (F19) and a save is followed by a re-read that remounts
-		// this form: a sentence rendered inside a closed disclosure is a refusal the
-		// operator never sees, and the save would read as a silent no-op.
+		// A REFUSAL HOLDS THE GROUP OPEN — this is the one group shut on arrival
+		// (F19), and a sentence rendered inside a closed disclosure is a refusal the
+		// operator never sees, which makes the save read as a silent no-op.
 		<Group
 			testId="edit-identity"
-			defaultOpen={refusal !== null}
+			defaultOpen={open}
 			label={dirtyGroupLabel(identityGroupLabel(p.sku), dirty)}
 		>
 			<p style={{ fontSize: 12, opacity: 0.75, marginBlockStart: 0 }}>{IDENTITY_FORM_CONTEXT}</p>
@@ -1276,7 +1322,7 @@ export function IdentityFields({
 						data-testid="edit-sku"
 						style={fieldStyle(changed, "sku")}
 						value={values["sku"] ?? ""}
-						aria-describedby={refusal === null ? undefined : SKU_REFUSAL_ID}
+						aria-describedby={refusal === null ? undefined : refusalId}
 						aria-invalid={refusal === null ? undefined : true}
 						onChange={(event) => {
 							const next = event.target.value;
@@ -1288,7 +1334,9 @@ export function IdentityFields({
 				    next move is in this input, and the answer to "what happened" has to
 				    be where they are looking. */}
 				{refusal !== null && (
-					<div id={SKU_REFUSAL_ID}>
+					// `tabIndex={-1}` so focus can be MOVED here without adding a stop to
+					// the tab order: the region is a destination, not a control.
+					<div id={refusalId} ref={region} tabIndex={-1} style={{ outline: "none" }}>
 						<Notice
 							variant={refusal.variant}
 							title={refusal.title}

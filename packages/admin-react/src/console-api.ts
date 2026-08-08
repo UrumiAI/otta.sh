@@ -249,6 +249,18 @@ export interface ActPayload {
 		readonly title: string;
 		readonly description: string;
 	} | null;
+	/**
+	 * WHICH INPUT the outcome is about, when it is about exactly one — the
+	 * plugin's `ProductsActionResult.field`, mirrored here so the contract
+	 * between the two tiers is declared rather than living in a cast at the one
+	 * call site that reads it.
+	 *
+	 * OPTIONAL, and absent is the common case: an outcome about the record as a
+	 * whole omits it and reports at the top of the screen. The value is still
+	 * re-checked where it is read — this is a mirror of a payload that crossed
+	 * HTTP, not a guarantee about it.
+	 */
+	readonly field?: "sku";
 }
 
 // ── wire shapes: Pricing & inventory (INC-21) ────────────────────────────────

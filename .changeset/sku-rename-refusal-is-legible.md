@@ -28,10 +28,18 @@ service log.
   rests on.
 - **It renders beside the SKU field, not at the top of the page.** A refusal an operator can only
   answer by changing one input belongs next to that input, and the field points at it so it is
-  announced together with the field. Identity is the group that is shut on arrival and a save
-  re-reads the record underneath it, so a served refusal now opens that group — otherwise the save
-  would read as having done nothing at all. Every other outcome — a save, a stale watermark, a SKU
-  another live product already holds — reports at the top of the screen exactly as before.
+  announced together with the field — focus moves into the message when it arrives, because the
+  click that raised it landed on Save and the message is no longer repeated at the top of the page.
+  Identity is the group that is shut on arrival, so a served refusal holds that group open — once
+  opened it stays opened, and closing it remains the operator's to do. Every other outcome — a
+  save, a stale watermark, a SKU another live product already holds — reports at the top of the
+  screen exactly as before.
+- **A refused save keeps what the operator typed.** Every save on this screen is followed by a
+  re-read, and the section that saved is re-seeded from the record that came back. A refusal wrote
+  nothing, so there is nothing to re-seed from — and re-seeding anyway replaced the rejected SKU
+  with the stored one, underneath a sentence advising a different SKU. The form now keeps the
+  draft and reports itself unsaved, which it is. This applies to all three of the split forms: a
+  refused price or shipping save keeps its typed values too.
 
 A count the service did not send is never rendered as `0`: zero reservations beside a refusal
 caused by reservations would be the one thing the sentence must not say, so the copy drops the

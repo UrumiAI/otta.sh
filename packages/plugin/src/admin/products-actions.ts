@@ -439,27 +439,36 @@ function editOutcome(
 		// product on its old sku with its units where they were.
 		case "sku_stock_conflict": {
 			const from = namedSku(result.fromSku, "this product's SKU");
-			const to = namedSku(result.toSku, "that SKU");
+			const to = namedSku(result.toSku, "the SKU you asked for");
 			return applied(
 				{
 					variant: "error",
 					title: "That SKU already has stock of its own",
-					description: `Nothing was changed. ${to} already has its own inventory record, and stock is never merged between SKUs, so ${from} was not renamed onto it. Rename to a SKU that has never held stock, or move the units under ${to} elsewhere first.`,
+					// The sku is never the first word of a sentence: a fallback phrase
+					// would arrive lower-case there, and a real sku would arrive with
+					// whatever case the merchant typed. Both read as a typo.
+					description: `Nothing was changed. Stock is never merged between SKUs, and ${to} already has its own inventory record — so ${from} was not renamed onto it. Rename to a SKU that has never held stock, or move the units under ${to} elsewhere first.`,
 				},
 				"sku",
 			);
 		}
 		case "sku_held_stock": {
 			const held = namedSku(result.sku, "this SKU");
+			// THE WHOLE CLAUSE AGREES, subject and verb together. Assembling a
+			// pluralised noun and then a fixed verb is how "1 live reservation still
+			// hold units" gets shipped — the SINGULAR is the common case here, so
+			// that is the one an operator would have read most often.
 			const holds =
 				result.liveHolds === null
-					? "Live reservations"
-					: `${String(result.liveHolds)} live ${result.liveHolds === 1 ? "reservation" : "reservations"}`;
+					? `live reservations still hold units of ${held}`
+					: result.liveHolds === 1
+						? `1 live reservation still holds units of ${held}`
+						: `${String(result.liveHolds)} live reservations still hold units of ${held}`;
 			return applied(
 				{
 					variant: "error",
 					title: "This SKU has reservations in flight",
-					description: `Nothing was changed. ${holds} still hold units of ${held}, and a reservation cannot follow a rename — its units would return to the old SKU when the cart or order finishes. Try the rename again once those have been paid, cancelled or expired, usually a few minutes.`,
+					description: `Nothing was changed: ${holds}, and a reservation cannot follow a rename — its units would return to the old SKU when the cart or order finishes. Try the rename again once those have been paid, cancelled or expired, usually a few minutes.`,
 				},
 				"sku",
 			);

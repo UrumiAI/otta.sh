@@ -113,8 +113,11 @@ export class SkuStockConflictError extends Error {
  *
  * MAPPED AT THE HTTP BOUNDARY, exactly like its sibling above: both writers
  * answer a structured 409 `SKU_HELD_STOCK` carrying the `sku` and the
- * `liveHolds` count, and the admin renders "this SKU has N reservations in
- * flight — try again shortly" beside the SKU field.
+ * `liveHolds` count. The admin composes its own sentence from those two and
+ * renders it beside the SKU field; no operator copy is written down here, in
+ * either direction — this package has nothing to render it on, and a second
+ * statement of a sentence is a second statement that can drift from the one
+ * that ships.
  */
 export class SkuHeldStockError extends Error {
 	/** The sku being renamed away from — the one the live holds still name. */
