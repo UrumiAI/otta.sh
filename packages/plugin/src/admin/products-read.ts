@@ -207,6 +207,13 @@ export interface StockPageContext {
 	 * whether or not THIS page's own on-hand DISPLAY column came back
 	 * readable. Folding `unreadable` back in here would raise "the filter was
 	 * not applied" over a list that is — see `resolveStockContext`'s doc.
+	 *
+	 * IT DESCRIBES ONE RESPONSE, NOT A SCAN. A continuation can only ever report
+	 * `false` (`resolveStockContext`'s doc says why), so a caller that
+	 * ACCUMULATES pages must carry the flag forward itself rather than take the
+	 * newest response's word for the rows above it — `nextPage` in
+	 * `products-list.tsx` is where that is done, and where the reason is
+	 * written down.
 	 */
 	filterUnavailable: boolean;
 }
@@ -250,13 +257,38 @@ export interface StockPageResult {
  *     request had been honoured. `unreadable` alone never touches `total` —
  *     an unreadable on-hand COLUMN says nothing about whether the COUNT is
  *     right.
+ *  3. **A CONTINUATION IS NEVER `filterUnavailable`, because this request's
+ *     settings read is not evidence about it.** On a request carrying a
+ *     cursor the predicate is whatever page one baked into that opaque cursor
+ *     — `AdminProductsClient.listProducts` ignores the filter argument
+ *     entirely once a cursor is present — so the page's filtered-ness was
+ *     settled before this request was made. Deriving the flag from a FRESH
+ *     settings read there gets it wrong in both directions: a read that fails
+ *     only on the continuation would raise "the Low stock only filter was not
+ *     applied" over a page the service genuinely filtered, AND withhold a
+ *     `total` that really is of the filtered set. So the cursor is the
+ *     evidence, and a continuation reports `false`.
+ *
+ *     THE OTHER DIRECTION IS NOT THIS FUNCTION'S TO FIX. If the read failed on
+ *     PAGE ONE, that page went out unfiltered and its cursor carries no
+ *     threshold, so a continuation of it is unfiltered too while reporting
+ *     `false` here — correct for the one response, wrong for the accumulated
+ *     rows. Only a caller that keeps the pages knows that, which is why
+ *     `products-list.tsx`'s `nextPage` carries the flag forward and is where
+ *     that half is pinned.
  */
 export function resolveStockContext(
 	products: readonly ProductSummaryWire[],
-	opts: { wantsLowStock: boolean; threshold: number | null; total: number | undefined },
+	opts: {
+		wantsLowStock: boolean;
+		threshold: number | null;
+		total: number | undefined;
+		/** Whether this request carried a cursor. See the doc above. */
+		continuation: boolean;
+	},
 ): StockPageResult {
 	const unreadable = products.length > 0 && products.every((p) => readOnHand(p) === undefined);
-	const filterUnavailable = opts.wantsLowStock && opts.threshold === null;
+	const filterUnavailable = opts.wantsLowStock && !opts.continuation && opts.threshold === null;
 	return {
 		stock: { threshold: opts.threshold, unreadable, filterUnavailable },
 		total: filterUnavailable ? undefined : opts.total,

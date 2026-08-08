@@ -371,6 +371,39 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		expect(seen).not.toContain("lowStockThreshold");
 	});
 
+	test("a CONTINUATION whose settings read fails is still a FILTERED page — the cursor is the predicate's evidence", async () => {
+		// THE FLAG IS NOT RE-DERIVED ON A CONTINUATION, and this is the direction
+		// that goes wrong when it is. The predicate rode inside the opaque cursor
+		// the service minted for page one; `AdminProductsClient.listProducts`
+		// ignores the filter argument entirely once a cursor is present, so this
+		// request's settings read never reached the query and says nothing about
+		// whether the page is filtered. Deriving `filterUnavailable` from it would
+		// raise "the Low stock only filter was not applied" OVER A FILTERED LIST
+		// and withhold a total that really is of the filtered set — two false
+		// statements bought by consulting the wrong evidence.
+		service.respondWith(
+			"GET",
+			responder({
+				[LIST_ROUTE]: () => ({
+					status: 200,
+					body: { products: [summary({ onHand: 2 })], nextCursor: null, total: 7 },
+				}),
+				// no /settings route ⇒ 404 ⇒ the threshold cannot be read HERE
+			}),
+		);
+		const result = await invoke({
+			type: READ,
+			resource: "products.list",
+			cursor: "svc-cursor-1",
+			filter: { lowStock: true },
+		});
+		expect((result["stock"] as Record<string, unknown>)["filterUnavailable"]).toBe(false);
+		expect(result["total"]).toBe(7);
+		// The Low BAND is still lost, and that is the honest independent fact:
+		// `threshold` is null and the banner reports that cause on its own.
+		expect((result["stock"] as Record<string, unknown>)["threshold"]).toBeNull();
+	});
+
 	test("stock that came back unreadable on EVERY row raises the degradation, not a partial page", async () => {
 		// ALL-OR-NOTHING: the service fills the column from one left join, so a
 		// PARTIAL page is a catalog fact (some skus have no inventory row) and must

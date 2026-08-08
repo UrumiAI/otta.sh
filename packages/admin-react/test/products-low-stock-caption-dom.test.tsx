@@ -168,9 +168,61 @@ test("a page can be GENUINELY filtered while its own on-hand column is unreadabl
 	const banner =
 		container.querySelector('[data-testid="products-stock-degraded"]')?.textContent ?? "";
 	expect(banner).toContain("Stock levels are unavailable");
-	// THE OTHER CAUSE DID NOT FIRE — the filter genuinely ran; saying otherwise
-	// over a list that IS filtered is the exact defect this increment fixes.
+	// THE OTHER CAUSE DID NOT FIRE — the filter genuinely ran, and saying
+	// otherwise over a list that IS filtered is the defect this guards.
 	expect(banner).not.toContain("the Low stock only filter was not applied");
+});
+
+test("the whole-catalog zero state is earned ONLY when low stock is the sole filter", async () => {
+	// THE PREDICATES ARE ANDed. "Low stock only" plus a search that matches
+	// nothing returns zero rows on a catalog that may be full of low-stock
+	// products, and blaming the threshold there sends the operator to Settings
+	// to fix a filter. The stock sentence is a whole-catalog claim, so it is
+	// spent only when nothing else could have emptied the page.
+	apiFetch.mockResolvedValue(
+		envelope({
+			ok: true,
+			products: [],
+			nextCursor: null,
+			total: 0,
+			stock: { threshold: 5, unreadable: false, filterUnavailable: false },
+			vocabulary: VOCABULARY,
+		}),
+	);
+	const node = (
+		<ProductsList onOpen={() => undefined} initialFilter={{ lowStock: true, search: "nothing" }} />
+	);
+	mounted = await mount(node);
+	await mounted.rerender(node);
+
+	const shown = mounted.container.querySelector('[data-testid="products-no-match"]')?.textContent;
+	expect(shown).toContain("No products match these filters");
+	expect(shown).not.toContain("No products are low on stock");
+	expect(shown).not.toContain("at or below the low-stock threshold");
+});
+
+test("with low stock as the ONLY filter, the zero state does claim the catalog", async () => {
+	// The converse, so the guard above cannot be satisfied by never using the
+	// stock copy at all. It also pins the WORDING: "no product is at or below
+	// the threshold" is what the predicate found, where "every product is above
+	// it" would be false of a product with no inventory row — unknown stock is
+	// not a stock level.
+	apiFetch.mockResolvedValue(
+		envelope({
+			ok: true,
+			products: [],
+			nextCursor: null,
+			total: 0,
+			stock: { threshold: 5, unreadable: false, filterUnavailable: false },
+			vocabulary: VOCABULARY,
+		}),
+	);
+	const container = await mountLowStockList();
+
+	const shown = container.querySelector('[data-testid="products-no-match"]')?.textContent;
+	expect(shown).toContain("No products are low on stock");
+	expect(shown).toContain("No product in the catalog is at or below the low-stock threshold.");
+	expect(shown).not.toContain("Every product in the catalog is above");
 });
 
 test("a live checkbox toggle re-fetches with the predicate, and the caption follows the new response", async () => {

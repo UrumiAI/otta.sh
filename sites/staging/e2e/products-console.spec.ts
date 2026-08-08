@@ -261,13 +261,24 @@ test.describe("the migrated Pricing & inventory console", () => {
 		const scan = adminPage.getByTestId("products-scan-note");
 		const empty = adminPage.getByTestId("products-no-match");
 		// A threshold the plugin could not read sends NO predicate, so the page is
-		// unfiltered and its ordinary words are the honest ones — the banner says
-		// so. That is a different state, not a softer version of this one, and it
-		// gets the assertions it earns rather than weakening the ones below.
+		// unfiltered and its ordinary words are the honest ones. That is a
+		// different state, not a softer version of this one, and it gets the
+		// assertions it earns rather than weakening the ones below.
+		//
+		// READ OFF THE BANNER'S TEXT, NOT ITS EXISTENCE. The banner carries three
+		// independently-true facts in one slot, and the increment that split them
+		// apart is exactly why its presence no longer implies this one: a page
+		// with a perfectly readable threshold whose on-hand COLUMN came back
+		// unreadable raises the same banner while the filter genuinely ran.
+		// Keying on `count()` would send that page down the unfiltered branch and
+		// assert the count must NOT say "low-stock product" — which it will.
 		const degraded = adminPage.getByTestId("products-stock-degraded");
+		const FILTER_NOT_APPLIED = "the Low stock only filter was not applied";
 		await expect(async () => {
 			const rows = await adminPage.getByTestId("products-row").count();
-			const unfiltered = (await degraded.count()) > 0;
+			const unfiltered =
+				(await degraded.count()) > 0 &&
+				((await degraded.textContent()) ?? "").includes(FILTER_NOT_APPLIED);
 			if (rows === 0) {
 				// Either the whole-catalog zero state, or the scan note that keeps
 				// `Load more` alive — never the whole-catalog "No products yet".
@@ -282,7 +293,9 @@ test.describe("the migrated Pricing & inventory console", () => {
 					);
 				} else {
 					expect(shown).toContain("No products are low on stock");
-					expect(shown).toContain("Every product in the catalog is above the low-stock threshold.");
+					expect(shown).toContain(
+						"No product in the catalog is at or below the low-stock threshold.",
+					);
 				}
 			} else {
 				// THE COUNT NAMES WHAT WAS COUNTED. The predicate ran server-side, so

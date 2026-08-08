@@ -661,13 +661,29 @@ export const productsListQuery = z.object({
 	cursor: z.string().min(1).max(1000).optional(),
 	limit: z.coerce.number().int().min(1).max(100).optional().default(25),
 	// The low-stock predicate's query-string twin (the admin list's own filter,
-	// port doc): a raw query param arrives as a string, so it is COERCED like
-	// `limit` rather than kept as one, unlike the tri-state `active`/`deleted`
-	// enums above — this one is a number, not a two-value axis. Same domain as
+	// port doc): a raw query param arrives as a string, so it is converted here
+	// rather than kept as one, unlike the tri-state `active`/`deleted` enums
+	// above — this one is a number, not a two-value axis. Same domain as
 	// `lowStockQuery`/`settingsBody` below: a non-negative integer, and nothing
 	// outside it reaches the port (which would otherwise throw
 	// `InvalidLowStockThresholdError` and 500 rather than 400 a bad query).
-	lowStockThreshold: z.coerce.number().int().nonnegative().optional(),
+	//
+	// THE DIGIT GATE IS NOT DECORATION, and it is why this does not use
+	// `z.coerce` the way `limit` above does. Coercion is `Number(value)`, and
+	// `Number("")` is 0 — so a bare `?lowStockThreshold=` would arrive as a
+	// perfectly valid threshold of ZERO and silently narrow the list to
+	// out-of-stock rows, which is the one answer an operator who typed nothing
+	// cannot have meant. `Number` is equally content with `0x10` (16), `1e2`
+	// (100) and `" 7 "`, none of which a query string should be allowed to mean
+	// here. So the SHAPE is checked before the conversion: plain digits, or a
+	// 400. (`limit` keeps its coercion — it has a default and a `min(1)`, so an
+	// empty value falls back rather than becoming a live filter.)
+	lowStockThreshold: z
+		.string()
+		.regex(/^\d+$/)
+		.transform(Number)
+		.pipe(z.number().int().nonnegative())
+		.optional(),
 });
 
 /** Validates the FILTER object carried inside a decoded opaque product-list

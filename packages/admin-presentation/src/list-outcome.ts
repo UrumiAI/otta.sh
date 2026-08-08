@@ -97,10 +97,12 @@ export const LOAD_MORE_LABEL = "Load more";
  *    about pages 1 and 2 (keyset paging carries no running offset);
  *  - THIS PAGE otherwise — `25 orders on this page`, a smaller claim and a true
  *    one. That is the fallback for a service older than `total`, and for a
- *    level that deliberately WITHHOLDS one because it narrowed the fetched page
- *    itself (products' "Low stock only" — the service counted the unnarrowed
- *    set, so passing it would caption the rows on screen with a number that
- *    does not describe them).
+ *    level that deliberately WITHHOLDS one because the count it holds describes
+ *    a different set of rows than the page does — a level that narrowed the
+ *    fetched page itself, or one whose filter the service could not be asked to
+ *    apply (products' "Low stock only" with no readable threshold: the service
+ *    counted every product, so passing that number would caption the rows on
+ *    screen as though the filter had run).
  *
  * `total` IS VALIDATED HERE RATHER THAN TRUSTED: a non-integer, negative, or
  * below-the-page count is a service disagreeing with itself, and the

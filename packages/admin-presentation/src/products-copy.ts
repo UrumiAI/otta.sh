@@ -56,29 +56,21 @@ export const PRODUCTS_NOUN: RowNoun = { one: "product", other: "products" };
 /**
  * The noun the count uses while "Low stock only" is on (F29).
  *
- * A CORRECTNESS FIX IN A FILTER, NOT A FLOURISH. The narrowing keeps only the
- * low-stock rows out of the page it fetched, and the count then described those
- * rows with the noun for the whole catalog — "3 products" over a screen holding
- * three low-stock products out of twenty-five read. The number was right and the
- * sentence was not, which is the failure an operator reconciles against and
- * loses. Naming what was counted costs one word and removes the ambiguity.
+ * A CORRECTNESS FIX IN A FILTER, NOT A FLOURISH. The count describes the rows
+ * the low-stock predicate selected, and naming them with the noun for the whole
+ * catalog read as a claim about the catalog — "3 products" over a screen showing
+ * the three that are low. The number was right and the sentence was not, which
+ * is the failure an operator reconciles against and loses. Naming what was
+ * counted costs one word and removes the ambiguity.
+ *
+ * ONLY WHILE THE PREDICATE ACTUALLY RAN. A page the filter could not be applied
+ * to holds every product, and {@link PRODUCTS_NOUN} is the honest word for those
+ * rows — see the degradation banner's `filterUnavailable`.
  */
 export const PRODUCTS_LOW_STOCK_NOUN: RowNoun = {
 	one: "low-stock product",
 	other: "low-stock products",
 };
-
-/**
- * What the narrowing does to paging, said where the paging control is (F29).
- *
- * The other half of the same correctness fix. "Low stock only" has no service
- * predicate — it keeps the low-stock rows out of each page as that page arrives
- * — so `Load more` is genuinely a scan rather than a page of results, and an
- * operator who does not know that reads a short list as "these are all of them".
- * It renders beside the button, and only while both facts hold: the filter is
- * on, and there is another page to fetch.
- */
-export const LOW_STOCK_PER_PAGE_NOTE = "Low stock only filters each page as it loads.";
 
 /**
  * A CONTINUATION failure's title, which is a smaller claim than the server's.
@@ -121,13 +113,26 @@ export const PRODUCTS_NO_MATCH: ZeroStateCopy & { readonly emptyText: string } =
 };
 
 /**
- * Zero rows with "Low stock only" ON — and every sentence in it is a
- * WHOLE-CATALOG claim, because the filter is.
+ * Zero rows with "Low stock only" ON AND NOTHING ELSE — a WHOLE-CATALOG claim,
+ * which is why the second half of that condition is load-bearing.
  *
  * "Low stock only" is a predicate the SERVICE applies to the query, so a
  * zero-row result means nothing in the catalog sits at or below the threshold —
  * a claim the screen can now keep, and the opposite of the page-scoped
  * narrowing this replaced.
+ *
+ * ONLY WHEN IT IS THE SOLE ACTIVE FILTER. The predicates are ANDed, so "low
+ * stock + Archived", "low stock + Digital" and "low stock + a search" can each
+ * return nothing while the catalog is full of low-stock products; this copy
+ * would then blame the threshold for the other filter's work. A caller with a
+ * second filter on renders {@link PRODUCTS_NO_MATCH} instead, which names the
+ * filters rather than the stock — see `products-list.tsx`'s `noMatch` choice.
+ *
+ * WHAT "NOTHING IS LOW" MEANS, EXACTLY. Not "everything is above the
+ * threshold": a product with no inventory row is neither low nor comparable to
+ * it (`ProductSummary.onHand`'s null is unknown, never zero). Both sentences
+ * below therefore say what the PREDICATE found — no row at or below the
+ * threshold — rather than making a claim about every product's stock level.
  *
  * NO `scanNote` OF ITS OWN ANY MORE, and the deletion is the point. That field
  * exists for a screen with BETTER WORDS than the ladder's default, and this
@@ -144,7 +149,7 @@ export const PRODUCTS_LOW_STOCK_NO_MATCH: ZeroStateCopy & {
 } = {
 	title: "No products are low on stock",
 	description:
-		"Every product in the catalog is above the low-stock threshold. Clear the filters to see them all, or set the threshold on Settings.",
+		"No product in the catalog is at or below the low-stock threshold. Clear the filters to see them all, or set the threshold on Settings.",
 	emptyText: "No products are at or below the low-stock threshold.",
 };
 

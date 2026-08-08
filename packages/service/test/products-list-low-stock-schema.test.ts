@@ -6,12 +6,12 @@ import { productListFilterSchema, productsListQuery } from "../src/schemas.js";
 // than 500s against a live server, and that a valid one actually filters —
 // lives in `admin-products-http.test.ts`, which is `describe.skipIf(PG ===
 // undefined)`. These cases need no server and no database, so they fire on
-// every local run: if `lowStockThreshold` ever loses its constraint again
-// (the regression this increment fixes — it was absent from
-// `productListFilterSchema` while `lowStockQuery`/`settingsBody` already had
-// it), this file goes red immediately.
+// every local run: if `lowStockThreshold` ever loses its constraint again (it
+// was once absent from `productListFilterSchema` while
+// `lowStockQuery`/`settingsBody` already had it), this file goes red
+// immediately.
 
-describe("productsListQuery COERCES `lowStockThreshold` from the raw query string, like `limit`", () => {
+describe("productsListQuery reads `lowStockThreshold` off the raw query string as DIGITS, not by coercion", () => {
 	test("a valid non-negative integer string parses to a number", () => {
 		const res = productsListQuery.safeParse({ lowStockThreshold: "5" });
 		expect(res.success).toBe(true);
@@ -35,6 +35,26 @@ describe("productsListQuery COERCES `lowStockThreshold` from the raw query strin
 
 	test("REJECTS negative, fractional, and non-numeric strings — a 400, never silently clamped", () => {
 		for (const bad of ["-1", "2.5", "not-a-number", "NaN", "Infinity"]) {
+			const res = productsListQuery.safeParse({ lowStockThreshold: bad });
+			expect(res.success, bad).toBe(false);
+		}
+	});
+
+	test("REJECTS `?lowStockThreshold=` — an EMPTY value is not a threshold of zero", () => {
+		// THE ONE `Number()` WOULD HAVE WAVED THROUGH, and the reason this field
+		// gates on digits instead of coercing. `Number("")` is 0, a perfectly
+		// valid threshold, so an empty parameter would have narrowed the list to
+		// out-of-stock rows — silently, and to the one answer an operator who
+		// typed nothing cannot have meant. Absent and empty must not diverge.
+		const res = productsListQuery.safeParse({ lowStockThreshold: "" });
+		expect(res.success).toBe(false);
+	});
+
+	test("REJECTS the other shapes `Number()` accepts — hex, exponent, and padded digits", () => {
+		// `Number` reads "0x10" as 16, "1e2" as 100 and " 7 " as 7. None of those
+		// is a threshold a query string should be allowed to express: the value
+		// an operator sees in the URL would not be the value the predicate uses.
+		for (const bad of ["0x10", "1e2", " 7 ", "+7", "7 "]) {
 			const res = productsListQuery.safeParse({ lowStockThreshold: bad });
 			expect(res.success, bad).toBe(false);
 		}

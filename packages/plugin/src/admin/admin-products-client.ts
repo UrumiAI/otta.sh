@@ -353,6 +353,15 @@ export class AdminProductsClient {
 				q.set("productKind", filter.productKind);
 			}
 			if (filter.search !== undefined && filter.search.length > 0) q.set("search", filter.search);
+			// ASSUMED, AND WORTH WRITING DOWN: that the service on the other end
+			// UNDERSTANDS this parameter. A service predating the low-stock
+			// predicate ignores the unknown key, answers with an unfiltered page
+			// and an unfiltered `total`, and says nothing about having done so — so
+			// the console would caption every product as "N low-stock products".
+			// The wire carries no capability handshake to check it against, and the
+			// plugin and the service ship from this repo together, which is what
+			// makes the assumption safe rather than merely convenient. A build that
+			// ever pairs them independently needs a version signal here.
 			if (filter.lowStockThreshold !== undefined) {
 				q.set("lowStockThreshold", String(filter.lowStockThreshold));
 			}

@@ -98,11 +98,12 @@ export interface ListLevelDef<Client, Filter, Summary, RenderState = unknown> {
 		 * reports one (INC-23). Passed straight through to `render` and on to
 		 * {@link listResult}, which is the only thing that reads it.
 		 *
-		 * OMIT IT rather than guessing. A level that narrows the FETCHED PAGE
-		 * client-side (products' "Low stock only") MUST omit it while that
-		 * narrowing is on: the service counted the unnarrowed set, so passing it
-		 * would caption the rows on screen with a number that does not describe
-		 * them — the same class of lie the page-scoped wording exists to avoid.
+		 * OMIT IT rather than guessing. Any level whose count was taken under a
+		 * DIFFERENT predicate than its page MUST omit it — one that narrows the
+		 * fetched page client-side, and equally one whose filter the service was
+		 * never asked to apply. Passing it would caption the rows on screen with
+		 * a number that does not describe them, the same class of lie the
+		 * page-scoped wording exists to avoid.
 		 */
 		total?: number;
 	}>;
@@ -899,8 +900,7 @@ export interface ListResultOptions {
 	 * genuinely means "the service reported none"). Coupons — the only caller
 	 * today — filters entirely through the service and states
 	 * `"service-filtered"`; a Block Kit screen that ever narrows a fetched page
-	 * client-side, the way products' "Low stock only" does on the React tier,
-	 * now has somewhere to say so instead of a screen forgetting to.
+	 * client-side now has somewhere to say so instead of forgetting to.
 	 */
 	countScope: "service-filtered" | "narrowed-after-fetch";
 	noun: RowNoun;
@@ -937,9 +937,10 @@ export interface ListResultOptions {
  *     that carries `empty_text` to a bare `<p>` (`blocks/table.tsx`) AND takes
  *     the "Load more" button with it, so both would strand an operator mid-scan
  *     on a page that is not the end of anything. A headers-only table keeps
- *     `Load more` alive and the note says what to do with it. (Established by the
- *     stock increment for the low-stock filter, which narrows the FETCHED PAGE;
- *     generalized here so no screen has to rediscover it.)
+ *     `Load more` alive and the note says what to do with it. (First established
+ *     for the low-stock filter, back when it narrowed the fetched page and made
+ *     this the ordinary case; generalized here so no screen has to rediscover
+ *     it.)
  *  4. **Zero, filtered, last page.** `emptyBlock` carries the screen's `noMatch`
  *     copy plus the `Clear filters` button, and replaces the table.
  */

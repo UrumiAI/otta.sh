@@ -287,6 +287,10 @@ async function consoleList(
 		wantsLowStock,
 		threshold,
 		total: page.total,
+		// THE CURSOR IS THE PREDICATE'S EVIDENCE on a continuation: the filter
+		// rode inside it, and the settings read above never reached the query.
+		// See `resolveStockContext`'s decision 3.
+		continuation: hasCursor,
 	});
 	return {
 		ok: true,

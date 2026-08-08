@@ -242,9 +242,8 @@ interface LoadedPage extends ProductsResponse {
  * The defect this replaces was one line: the response was ASSIGNED into list
  * state, so a successful `Load more` threw away the page the merchant was
  * reading. On THIS screen that is what made a low-stock scan useless — the
- * filter keeps only the low-stock rows out of each page as it arrives, so page
- * one's matches vanished at the exact moment the merchant asked to see more of
- * them.
+ * matches the merchant had already gathered vanished at the exact moment they
+ * asked to see more of them.
  *
  * A CONTINUATION EXTENDS; EVERYTHING ELSE RESETS. `continuation` is "this
  * request carried a cursor", which is exactly the request `Load more` (and a
@@ -252,10 +251,27 @@ interface LoadedPage extends ProductsResponse {
  * it arrives here as a reset and the previous filter's rows go — and a first
  * mount, including one deep-linked to a filtered address, is the same reset.
  *
- * THE CURSOR, THE TOTAL, THE STOCK CONTEXT AND THE VOCABULARY TAKE THE NEW
- * PAGE'S VALUES; the rows merge by id (see {@link mergeById}) and `firstPage` is
- * inherited, because a scan that began at the first page still starts there
- * after its second page lands.
+ * THE CURSOR, THE VOCABULARY AND THE STOCK CONTEXT TAKE THE NEW PAGE'S VALUES;
+ * the rows merge by id (see {@link mergeById}) and `firstPage` is inherited,
+ * because a scan that began at the first page still starts there after its
+ * second page lands.
+ *
+ * `filterUnavailable` IS THE ONE EXCEPTION, AND IT LATCHES. Every other field
+ * describes the newest response, which is what a single page needs; that flag
+ * describes the ROWS, and after a merge the rows come from several responses.
+ * The plugin cannot see this: a continuation's predicate rode inside the opaque
+ * cursor, so it always reports `false` (`resolveStockContext`'s decision 3).
+ * Taking that at face value is how a scan whose FIRST page went out unfiltered
+ * — the threshold was unreadable just then — quietly turns into "137 low-stock
+ * products" over every product in the catalog, with the banner that said so
+ * vanishing at the click of `Load more`. Once any page in the accumulation went
+ * out unfiltered the whole accumulation is unfiltered, and it says so until the
+ * scan resets.
+ *
+ * THE `total` GOES WITH IT for the same reason: a latched flag means the rows
+ * on screen were fetched under two different predicates, and no single exact
+ * count describes that mixture. The count falls back to what the render can
+ * back up on its own.
  */
 export function nextPage(
 	current: LoadedPage | null,
@@ -264,9 +280,12 @@ export function nextPage(
 ): LoadedPage {
 	if (!continuation) return { ...incoming, firstPage: true, pages: 1 };
 	if (current === null) return { ...incoming, firstPage: false, pages: 1 };
+	const filterUnavailable = current.stock.filterUnavailable || incoming.stock.filterUnavailable;
 	return {
 		...incoming,
 		products: mergeById(current.products, incoming.products, (product) => product.productId),
+		stock: { ...incoming.stock, filterUnavailable },
+		...(filterUnavailable ? { total: undefined } : {}),
 		firstPage: current.firstPage,
 		pages: current.pages + 1,
 	};
@@ -309,11 +328,11 @@ export function clearAnswer(page: LoadedPage | null): LoadedPage | null {
  * which dropped the qualifier off the count — turning a mid-scan
  * "6 low-stock products loaded so far" into "6 low-stock products", a
  * whole-set claim made at the exact moment the render knows another page is
- * out there. It is reachable on the flagship path, because the service withholds
- * the total precisely while "Low stock only" is on. Worse at zero rows: a page
- * narrowed to nothing with a cursor behind it turned from a scan note with
- * paging still offered into an empty state offering `Clear filters`, dead-ending
- * the scan.
+ * out there. Reachable whenever no `total` is on the response to carry the
+ * claim instead — a service older than `total`, or a page the low-stock filter
+ * could not be applied to. Worse at zero rows: a zero-row page with a cursor
+ * behind it turned from a scan note with paging still offered into an empty
+ * state offering `Clear filters`, dead-ending the scan.
  *
  * SO THE CONTROL IS GUARDED INSTEAD OF THE STATE DESTROYED. `Load more` renders
  * on `there is no failure` as well as on the cursor, so it does not stand beside
@@ -520,7 +539,14 @@ export function ProductsList({
 		// the divergence is deliberate.
 		...((page?.pages ?? 1) > 1 ? { scopeSuffix: ACCUMULATED_SUFFIX } : {}),
 		empty: PRODUCTS_EMPTY,
-		noMatch: narrowed ? PRODUCTS_LOW_STOCK_NO_MATCH : PRODUCTS_NO_MATCH,
+		// THE LOW-STOCK ZERO STATE IS A WHOLE-CATALOG CLAIM, so it is earned only
+		// when the threshold is the ONLY thing that could have emptied the page.
+		// The predicates are ANDed: "low stock + Archived", "low stock + Digital"
+		// and "low stock + a search" each return nothing on a catalog that is full
+		// of low-stock products, and blaming the threshold there sends the operator
+		// to Settings to fix a filter. `parts` is the same list the summary above
+		// the table is built from, so the sentence and the chips cannot disagree.
+		noMatch: narrowed && parts.length === 1 ? PRODUCTS_LOW_STOCK_NO_MATCH : PRODUCTS_NO_MATCH,
 		// The plugin has already decided whether this render may state one
 		// (`resolveStockContext`: shown once the predicate is genuinely
 		// applied, withheld on `filterUnavailable`) — this is simply whatever

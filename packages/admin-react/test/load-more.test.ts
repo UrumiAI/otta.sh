@@ -1,6 +1,6 @@
 /**
  * What a second page does to the first (F24), and what the count calls the rows
- * once the narrowing is on (F29).
+ * once "Low stock only" is on (F29).
  *
  * NO DOCUMENT HERE ON PURPOSE. Accumulation is a pure function of what is on
  * screen and what just arrived, and it is written as one so the hard part — the
@@ -164,8 +164,8 @@ function productsLoaded() {
 	);
 }
 
-/** Four more low-stock rows, another cursor behind them, and the total the
- *  narrowing withholds. */
+/** Four more low-stock rows, another cursor behind them, and no total — the
+ *  case where the service calculated none. */
 const PAGE_TWO = {
 	products: [
 		{ productId: "p3" },
@@ -181,10 +181,11 @@ const PAGE_TWO = {
 
 describe("a total the service never calculated stays ABSENT through a merge", () => {
 	test("on both lists — `0` is a count nobody made", () => {
-		// The narrowing withholds the total on the products list by design, and a
-		// service older than the exact count sends none on either. Coercing that to
-		// zero inside the merge is the one place this change could invent a number,
-		// and it would then be handed to the count line as fact.
+		// A service older than the exact count sends none on either list, and the
+		// products list withholds it by design on a page its filter could not be
+		// applied to. Coercing that to zero inside the merge is the one place this
+		// change could invent a number, and it would then be handed to the count
+		// line as fact.
 		const firstOrders = ordersNextPage(null, ordersPage(["a"], "cursor-2"), false);
 		expect(firstOrders.total).toBeUndefined();
 		expect(ordersNextPage(firstOrders, ordersPage(["b"], null), true).total).toBeUndefined();
@@ -200,6 +201,55 @@ describe("a total the service never calculated stays ABSENT through a merge", ()
 		const firstProducts = productsNextPage(null, productsPage(["p1"], "cursor-2"), false);
 		expect(firstProducts.total).toBeUndefined();
 		expect(productsNextPage(firstProducts, productsPage(["p2"], null), true).total).toBeUndefined();
+	});
+});
+
+const stockPage = (
+	ids: readonly string[],
+	nextCursor: string | null,
+	filterUnavailable: boolean,
+	total: number | undefined,
+) => ({
+	products: ids.map((productId) => ({ productId })) as never,
+	nextCursor,
+	total,
+	stock: { threshold: filterUnavailable ? null : 3, unreadable: false, filterUnavailable },
+	vocabulary: { statuses: [], kinds: [], any: "any", pageLimit: 25 } as never,
+});
+
+describe("`filterUnavailable` LATCHES across a scan, because it describes the rows", () => {
+	test("a page one that went out UNFILTERED keeps saying so after a continuation reports false", () => {
+		// THE DIRECTION THE PLUGIN CANNOT SEE. Page one's settings read failed, so
+		// no predicate was sent and its cursor carries none either — the
+		// continuation is unfiltered too. But a continuation's predicate rode
+		// inside that opaque cursor, so the plugin always answers `false` for it
+		// (`resolveStockContext`'s decision 3). Taking the newest response at face
+		// value would drop the banner and caption every product in the catalog as
+		// "N low-stock products" at the click of `Load more`.
+		const first = productsNextPage(null, stockPage(["p1"], "cursor-2", true, undefined), false);
+		expect(first.stock.filterUnavailable).toBe(true);
+		const second = productsNextPage(first, stockPage(["p2"], null, false, 137), true);
+		expect(second.stock.filterUnavailable).toBe(true);
+		// AND THE TOTAL GOES WITH IT: the rows came from two predicates, so no
+		// single exact count describes them.
+		expect(second.total).toBeUndefined();
+	});
+
+	test("a scan that was filtered throughout keeps its total and raises nothing", () => {
+		// THE CONVERSE, so the latch cannot be satisfied by always answering true.
+		const first = productsNextPage(null, stockPage(["p1"], "cursor-2", false, 137), false);
+		const second = productsNextPage(first, stockPage(["p2"], null, false, 137), true);
+		expect(second.stock.filterUnavailable).toBe(false);
+		expect(second.total).toBe(137);
+	});
+
+	test("a RESET drops the latch — a re-applied filter is a new question", () => {
+		// `apply()` nulls the cursor, so the next response arrives as a reset and
+		// the previous scan's degradation must not outlive it.
+		const first = productsNextPage(null, stockPage(["p1"], "cursor-2", true, undefined), false);
+		const reset = productsNextPage(first, stockPage(["p9"], null, false, 4), false);
+		expect(reset.stock.filterUnavailable).toBe(false);
+		expect(reset.total).toBe(4);
 	});
 });
 
@@ -261,9 +311,9 @@ describe("a page that fails BEHIND one that succeeded", () => {
 	});
 
 	test("zero rows with a cursor behind them stay a SCAN, not an empty state", () => {
-		// The worse half of the same defect. A low-stock page that narrowed to
-		// nothing used to flip to `Clear filters` when the next page failed — the
-		// scan dead-ending, with the only way on a Retry above the fold.
+		// The worse half of the same defect. A low-stock page holding no rows used
+		// to flip to `Clear filters` when the next page failed — the scan
+		// dead-ending, with the only way on a Retry above the fold.
 		const emptied = pageAfterFailure({ ...loaded, products: [] }, true);
 		expect(
 			listOutcome({
@@ -330,8 +380,8 @@ describe("what the count line calls rows drawn from more than one response", () 
 		);
 	});
 
-	test("F29: the narrowing names what it counted", () => {
-		// ITS OWN SCOPE, NOT `base`'S: this case models the low-stock caller, so
+	test("F29: the count names what it counted", () => {
+		// ITS OWN SCOPE, NOT `base`'S: this case models a page-scoped caller, so
 		// it states `narrowed-after-fetch` explicitly rather than inheriting
 		// `base`'s `service-filtered` — which happens to read the same here only
 		// because `base`'s `hasNext: true` keeps `complete` false either way. A
