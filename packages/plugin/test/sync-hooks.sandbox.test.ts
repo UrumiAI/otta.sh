@@ -46,6 +46,72 @@ function putRequests(stubServer: StubCommerceServer) {
 	return stubServer.requests.filter((r) => r.method === "PUT");
 }
 
+/** The DECLARE channel's writes: `PUT /products/:id/variants/:variantKey`. */
+function variantPuts(stubServer: StubCommerceServer) {
+	return putRequests(stubServer).filter((r) => r.url.includes("/variants/"));
+}
+
+/** The ORPHAN transition: `POST /products/:id/variants/:variantKey/deactivate`. */
+function variantDeactivates(stubServer: StubCommerceServer) {
+	return stubServer.requests.filter(
+		(r) => r.method === "POST" && r.url.endsWith("/deactivate") && r.url.includes("/variants/"),
+	);
+}
+
+/** The live-variants read the drop set is computed from. */
+function variantLists(stubServer: StubCommerceServer) {
+	return stubServer.requests.filter((r) => r.method === "GET" && r.url.endsWith("/variants"));
+}
+
+/** THE SECOND-WRITER GUARD, at variant grain. The declare's body is the name
+ *  cache plus the ordering watermark, as a STRICT key set — `sku` and `price`
+ *  are absent from `UpsertProductVariantInput` by design (ADR-0016), and this is
+ *  the runtime half of that: a repeater sub-field that started carrying money
+ *  would have to reach the wire to do any damage, and it cannot get past here. */
+function expectDeclareBody(body: unknown, expected: Record<string, unknown>): void {
+	expect(body).toEqual(expected);
+	const keys = Object.keys((body ?? {}) as Record<string, unknown>);
+	for (const banned of COMMERCIAL_KEYS) expect(keys).not.toContain(banned);
+	// The presence axis is a TRANSITION (the deactivate route), never a field on
+	// the declare — and the variant key is the identity, carried in the PATH.
+	expect(keys).not.toContain("orphanedAt");
+	expect(keys).not.toContain("variantKey");
+}
+
+/** A `ProductVariantWire` as the service serializes one — the declare's reply.
+ *  Unpriced and un-skued, which is the state a freshly declared size is in:
+ *  the CMS declares, the admin prices. */
+function variantRow(variantKey: string, title: string | null) {
+	return {
+		productId: "prod-x",
+		variantKey,
+		sku: null,
+		price: null,
+		title,
+		orphanedAt: null,
+		createdAt: "2026-07-10T00:00:00.000Z",
+		updatedAt: "2026-07-10T00:00:00.000Z",
+	};
+}
+
+/** Wire the stub for a product that syncs variants: the commerce upsert, the
+ *  declare, the live-variant read (`live`, the keys the commerce side currently
+ *  holds) and the two POST transitions. */
+function serveVariants(stubServer: StubCommerceServer, live: string[]): void {
+	stubServer.respondWith("PUT", (req) =>
+		req.url.includes("/variants/")
+			? { status: 200, body: variantRow(req.url.split("/variants/")[1] ?? "", null) }
+			: { status: 200, body: BARE_ROW },
+	);
+	stubServer.respondWith("GET", () => ({
+		status: 200,
+		// The PUBLIC projection — live rows only. An already-orphaned key is not
+		// in it, which is why a drop is never re-sent for one.
+		body: { variants: live.map((key) => ({ ...variantRow(key, null), inStock: false })) },
+	}));
+	stubServer.respondWith("POST", () => ({ status: 200, body: { ok: true } }));
+}
+
 /** Every commercial key the CMS path must NEVER put on the wire again. The
  *  first three are the headline (`sku`/`price`/`initialOnHand`); the rest are
  *  the remainder of the deleted widget bag. */
@@ -593,6 +659,367 @@ describe("sync hooks — afterSave keeps product_commerce alive and its title cu
 			id: "page-1",
 			collection: "pages",
 			permanent: false,
+		});
+
+		expect(stubServer.requests).toHaveLength(0);
+	});
+});
+
+/**
+ * THE CMS REPEATER IS THE VARIANT NAME (ADR-0016) — the sync half.
+ *
+ * A product's sizes are declared in ONE content field: a repeater whose rows
+ * carry a stable key and a display name, and nothing commercial. This block
+ * pins what the sync does with it — that each declared row reaches the declare
+ * channel with the save's own watermark, that a row the merchant DELETES
+ * deactivates its commerce variant rather than removing it, and above all that a
+ * document with no repeater is untouched by any of it.
+ */
+describe("sync hooks — the variant repeater declares presence and the name cache (ADR-0016, workerd sandbox)", () => {
+	const VARIANTS = [
+		{ key: "small", name: "Small" },
+		{ key: "large", name: "Large" },
+	];
+
+	test("THE LIVE CATALOGUE'S PATH: a product with NO repeater sends exactly what it always sent — one PUT, nothing else", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+		serveVariants(stubServer, ["small"]);
+
+		await sandboxHandle.invokeHook("content:afterSave", {
+			content: productContent("prod-no-repeater"),
+			collection: "products",
+			isNew: false,
+		});
+
+		// THE REGRESSION GUARD FOR THIS WHOLE INCREMENT. Every product in the live
+		// catalogue is in this state, so "byte-identical" has to mean the REQUEST
+		// COUNT too — not merely "no variant was written". A drop-set read fired
+		// speculatively here would be a per-save round trip added to every product
+		// in the store, and a `[]` repeater read as "delete every size" would be
+		// catastrophic. The sync must not even look.
+		expect(stubServer.requests).toHaveLength(1);
+		expect(stubServer.requests[0]?.method).toBe("PUT");
+		expect(stubServer.requests[0]?.url).toBe("/products/prod-no-repeater/commerce");
+		expect(variantLists(stubServer)).toHaveLength(0);
+		expect(variantPuts(stubServer)).toHaveLength(0);
+		expect(variantDeactivates(stubServer)).toHaveLength(0);
+	});
+
+	test("each repeater row is DECLARED — key in the path, display name and the save's watermark in the body, nothing commercial", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+		serveVariants(stubServer, []);
+
+		await sandboxHandle.invokeHook("content:afterSave", {
+			content: productContent("prod-v", {}, TITLE, { variants: VARIANTS }),
+			collection: "products",
+			isNew: false,
+		});
+
+		const declares = variantPuts(stubServer);
+		expect(declares).toHaveLength(2);
+		expect(declares.map((r) => r.url)).toEqual([
+			"/products/prod-v/variants/small",
+			"/products/prod-v/variants/large",
+		]);
+		expectDeclareBody(declares[0]?.body, { title: "Small", contentUpdatedAt: WM });
+		expectDeclareBody(declares[1]?.body, { title: "Large", contentUpdatedAt: WM });
+		// Distinct keys per row: the store's replay guard is PER ROW, so one key
+		// across two sizes would drop the second declare of every save.
+		const keys = declares.map((r) => r.headers["idempotency-key"]);
+		expect(keys[0]).toBeTruthy();
+		expect(keys[0]).not.toBe(keys[1]);
+		// The product's own title sync is untouched and still first.
+		const commerce = putRequests(stubServer).filter((r) => !r.url.includes("/variants/"));
+		expect(commerce).toHaveLength(1);
+		expectTitleOnlyBody(commerce[0]?.body, { title: TITLE, contentUpdatedAt: WM });
+		expect(stubServer.requests.indexOf(commerce[0]!)).toBeLessThan(
+			stubServer.requests.indexOf(declares[0]!),
+		);
+	});
+
+	test("DELETING A ROW DEACTIVATES ITS VARIANT ON THE SAME SAVE — never deletes it", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+		// The commerce side currently holds three live sizes; this save declares
+		// two of them. "medium" is the row the merchant deleted.
+		serveVariants(stubServer, ["small", "medium", "large"]);
+
+		await sandboxHandle.invokeHook("content:afterSave", {
+			content: productContent("prod-drop", {}, TITLE, { variants: VARIANTS }),
+			collection: "products",
+			isNew: false,
+		});
+
+		const dropped = variantDeactivates(stubServer);
+		expect(dropped).toHaveLength(1);
+		expect(dropped[0]?.url).toBe("/products/prod-drop/variants/medium/deactivate");
+		// The watermark is REQUIRED on this transition: presence has two opposing
+		// transitions arriving as independent fire-and-forget POSTs, and only the
+		// watermark orders them.
+		expect(dropped[0]?.body).toEqual({ contentUpdatedAt: WM });
+		expect(dropped[0]?.headers["idempotency-key"]).toBeTruthy();
+		// There is no DELETE anywhere on this path. The orphaned row keeps its
+		// sku, its price and its stock — it may still sit on live order lines.
+		expect(stubServer.requests.filter((r) => r.method === "DELETE")).toHaveLength(0);
+		// …and the two still-declared sizes were re-declared, not dropped.
+		expect(variantPuts(stubServer)).toHaveLength(2);
+	});
+
+	test("the drop set is read AFTER the declares, so a resurrected key is never dropped by the save that brought it back", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+		serveVariants(stubServer, ["small", "large"]);
+
+		await sandboxHandle.invokeHook("content:afterSave", {
+			content: productContent("prod-order", {}, TITLE, { variants: VARIANTS }),
+			collection: "products",
+			isNew: false,
+		});
+
+		const lists = variantLists(stubServer);
+		expect(lists).toHaveLength(1);
+		expect(lists[0]?.url).toBe("/products/prod-order/variants");
+		for (const declare of variantPuts(stubServer)) {
+			expect(stubServer.requests.indexOf(declare)).toBeLessThan(
+				stubServer.requests.indexOf(lists[0]!),
+			);
+		}
+		expect(variantDeactivates(stubServer)).toHaveLength(0);
+	});
+
+	test("REDELIVERY of the same save derives the SAME declare and orphan keys (the store dedupes); a newer save derives fresh ones", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+		serveVariants(stubServer, ["small", "medium"]);
+
+		const delivered = productContent("prod-replay", { version: 7 }, TITLE, { variants: VARIANTS });
+		await sandboxHandle.invokeHook("content:afterSave", {
+			content: delivered,
+			collection: "products",
+			isNew: false,
+		});
+		await sandboxHandle.invokeHook("content:afterSave", {
+			content: delivered,
+			collection: "products",
+			isNew: false,
+		});
+
+		const declareKeys = variantPuts(stubServer).map((r) => r.headers["idempotency-key"]);
+		expect(declareKeys).toHaveLength(4);
+		expect(declareKeys.slice(0, 2)).toEqual(declareKeys.slice(2));
+		const orphanKeys = variantDeactivates(stubServer).map((r) => r.headers["idempotency-key"]);
+		expect(orphanKeys).toHaveLength(2);
+		expect(orphanKeys[0]).toBe(orphanKeys[1]);
+		// The two transitions never share a key-space: they contend for one
+		// per-row `idempotency_key` column, and a collision would make a drop look
+		// like an already-applied declare.
+		expect(declareKeys).not.toContain(orphanKeys[0]);
+
+		// A genuinely newer save (only `version` moves on em-dash 0.31.1) mints
+		// fresh keys, so the merchant's rename actually applies.
+		await sandboxHandle.invokeHook("content:afterSave", {
+			content: productContent("prod-replay", { version: 8 }, TITLE, {
+				variants: [{ key: "small", name: "Small (petite)" }, VARIANTS[1]],
+			}),
+			collection: "products",
+			isNew: false,
+		});
+		const afterNewer = variantPuts(stubServer).map((r) => r.headers["idempotency-key"]);
+		expect(afterNewer.slice(4)).not.toEqual(declareKeys.slice(0, 2));
+	});
+
+	test("an EMPTY or ABSENT name sub-field CLEARS the cache with an explicit null — never an empty string", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+		serveVariants(stubServer, []);
+
+		await sandboxHandle.invokeHook("content:afterSave", {
+			content: productContent("prod-names", {}, TITLE, {
+				variants: [{ key: "a", name: "   " }, { key: "b" }, { key: "c", name: null }],
+			}),
+			collection: "products",
+			isNew: false,
+		});
+
+		// `undefined` PRESERVES the stored cache and `null` CLEARS it — two
+		// different facts. An emptied name sub-field is the merchant unnaming a
+		// size, so it must clear. `""` would be a 400 (a content problem turned
+		// into a transport failure), which is the mistake the product title's own
+		// parser exists to prevent.
+		for (const declare of variantPuts(stubServer)) {
+			expectDeclareBody(declare.body, { title: null, contentUpdatedAt: WM });
+		}
+		expect(variantPuts(stubServer)).toHaveLength(3);
+	});
+
+	test("an over-long or non-string name OMITS itself (the stored name is kept) and never blocks the size's declare", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+		serveVariants(stubServer, []);
+
+		await sandboxHandle.invokeHook("content:afterSave", {
+			content: productContent("prod-badname", {}, TITLE, {
+				variants: [
+					{ key: "long", name: "L".repeat(501) },
+					{ key: "numeric", name: 42 },
+					{ key: "ok", name: "Fine" },
+				],
+			}),
+			collection: "products",
+			isNew: false,
+		});
+
+		const declares = variantPuts(stubServer);
+		expect(declares).toHaveLength(3);
+		// Omitted, NOT null: a null would erase a good stored name over a content
+		// problem the merchant can still fix.
+		expectDeclareBody(declares[0]?.body, { contentUpdatedAt: WM });
+		expectDeclareBody(declares[1]?.body, { contentUpdatedAt: WM });
+		expectDeclareBody(declares[2]?.body, { title: "Fine", contentUpdatedAt: WM });
+	});
+
+	test("a row with NO USABLE KEY declares nothing, and never blocks its siblings", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+		serveVariants(stubServer, []);
+
+		await sandboxHandle.invokeHook("content:afterSave", {
+			content: productContent("prod-badkey", {}, TITLE, {
+				variants: [{ key: "  ", name: "Blank" }, { name: "Keyless" }, "not-a-row", VARIANTS[0]],
+			}),
+			collection: "products",
+			isNew: false,
+		});
+
+		// A key is the variant's identity; a row that cannot be addressed could
+		// never be priced, re-declared or orphaned again, so it is skipped and
+		// logged rather than minted under an invented key.
+		const declares = variantPuts(stubServer);
+		expect(declares).toHaveLength(1);
+		expect(declares[0]?.url).toBe("/products/prod-badkey/variants/small");
+	});
+
+	test("the key is TRIMMED, so a stray keystroke cannot fork a size into two", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+		serveVariants(stubServer, ["small"]);
+
+		await sandboxHandle.invokeHook("content:afterSave", {
+			content: productContent("prod-trimkey", {}, TITLE, {
+				variants: [{ key: "  small  ", name: "Small" }],
+			}),
+			collection: "products",
+			isNew: false,
+		});
+
+		// The normalised key addresses the SAME row the untrimmed one would have
+		// orphaned. Without this, saving a document whose key gained a trailing
+		// space would orphan the live size and declare a new, unpriced one.
+		expect(variantPuts(stubServer).map((r) => r.url)).toEqual([
+			"/products/prod-trimkey/variants/small",
+		]);
+		expect(variantDeactivates(stubServer)).toHaveLength(0);
+	});
+
+	test("A REUSED KEY IS DECLARED ONCE — the first row wins, deterministically", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+		serveVariants(stubServer, []);
+
+		await sandboxHandle.invokeHook("content:afterSave", {
+			content: productContent("prod-dupe", {}, TITLE, {
+				variants: [
+					{ key: "small", name: "Small" },
+					{ key: "small", name: "Also small" },
+				],
+			}),
+			collection: "products",
+			isNew: false,
+		});
+
+		// THE DEGRADED PATH, PINNED. The repeater editor enforces no uniqueness on
+		// a sub-field and the save-time refusal ADR-0016 asks for is not reachable
+		// from a sandbox-clean plugin (see the note in `sync/hooks.ts`), so two
+		// rows can claim one key. They describe ONE sellable unit, twice, with two
+		// names, and nothing in the document says which is meant. Declaring both
+		// would make the stored name depend on request ordering; declaring neither
+		// would orphan a live size over a typo. First row wins, and it is logged.
+		const declares = variantPuts(stubServer);
+		expect(declares).toHaveLength(1);
+		expect(declares[0]?.url).toBe("/products/prod-dupe/variants/small");
+		expectDeclareBody(declares[0]?.body, { title: "Small", contentUpdatedAt: WM });
+	});
+
+	test("PUBLISH ATOMICITY holds for variants too: a pending-draft save sends no variant request at all", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+		serveVariants(stubServer, ["small"]);
+
+		await sandboxHandle.invokeHook("content:afterSave", {
+			content: productContent(
+				"prod-draftv",
+				{ status: "published", liveRevisionId: "rev-live", draftRevisionId: "rev-draft" },
+				TITLE,
+				{ variants: VARIANTS },
+			),
+			collection: "products",
+			isNew: false,
+		});
+
+		// A draft's repeater must not orphan a size the published document still
+		// sells, nor put a draft rename on the label a picker renders. The whole
+		// sync — product and variants alike — defers to publish.
+		expect(stubServer.requests).toHaveLength(0);
+	});
+
+	test("content:afterPublish carries the repeater too — publish is when a deferred draft's sizes go live", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+		serveVariants(stubServer, ["medium"]);
+
+		await sandboxHandle.invokeHook("content:afterPublish", {
+			content: productContent("prod-pubv", { status: "published" }, TITLE, { variants: VARIANTS }),
+			collection: "products",
+		});
+
+		expect(variantPuts(stubServer)).toHaveLength(2);
+		expect(variantDeactivates(stubServer)).toHaveLength(1);
+		expect(variantDeactivates(stubServer)[0]?.url).toBe(
+			"/products/prod-pubv/variants/medium/deactivate",
+		);
+		// Still after the activate — the variant sync can never affect the
+		// publish gate.
+		const acts = activatePosts(stubServer, "prod-pubv");
+		expect(acts).toHaveLength(1);
+		expect(stubServer.requests.indexOf(acts[0]!)).toBeLessThan(
+			stubServer.requests.indexOf(variantPuts(stubServer)[0]!),
+		);
+	});
+
+	test("a failing variant sync never throws into the CMS save path, and never withholds the product's own sync", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+		stubServer.respondWith("PUT", (req) =>
+			req.url.includes("/variants/")
+				? { status: 503, body: { error: "unavailable" } }
+				: { status: 200, body: BARE_ROW },
+		);
+		stubServer.respondWith("GET", () => ({ status: 200, body: { variants: [] } }));
+
+		const outcome = await sandboxHandle.invokeHook("content:afterSave", {
+			content: productContent("prod-failv", {}, TITLE, { variants: VARIANTS }),
+			collection: "products",
+			isNew: false,
+		});
+
+		// Fire-and-forget, exactly like the product title's channel: logged, never
+		// thrown, and lost until the next save (there is still no reconcile job).
+		expect(outcome).toEqual({ result: null });
+		const commerce = putRequests(stubServer).filter((r) => !r.url.includes("/variants/"));
+		expect(commerce).toHaveLength(1);
+		// The first declare failed and aborted the rest of the variant sync — one
+		// failure, one log line, no half-orphaning of a product whose live set
+		// could not be read.
+		expect(variantDeactivates(stubServer)).toHaveLength(0);
+	});
+
+	test("a repeater on a NON-PRODUCTS collection is ignored, like everything else on that path", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+		serveVariants(stubServer, ["small"]);
+
+		await sandboxHandle.invokeHook("content:afterSave", {
+			content: productContent("page-v", {}, TITLE, { variants: VARIANTS }),
+			collection: "pages",
+			isNew: false,
 		});
 
 		expect(stubServer.requests).toHaveLength(0);

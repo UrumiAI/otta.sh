@@ -3,7 +3,7 @@
 	"version": "1",
 	"meta": {
 		"name": "Otta staging store",
-		"description": "Products collection matching CmsProductContent — content fields only; pricing, stock and the other commercial fields are edited in the admin's Pricing & inventory page. Includes sample entries for an immediately browsable catalog.",
+		"description": "Products collection matching CmsProductContent — content fields only; pricing, stock and the other commercial fields are edited in the admin's Pricing & inventory page. Includes sample entries for an immediately browsable catalog, none of which declare a variant.",
 		"author": "Otta"
 	},
 	"settings": {
@@ -15,7 +15,7 @@
 			"slug": "products",
 			"label": "Products",
 			"labelSingular": "Product",
-			"description": "Product content — title, description and images. Pricing and stock are edited in Pricing & inventory.",
+			"description": "Product content — title, description, images, and the variants a product sells in. A variant row is a stable key plus a display name; its price and stock are edited in Pricing & inventory.",
 			"urlPattern": "/products/{slug}",
 			"supports": ["drafts", "revisions", "search", "seo"],
 			"fields": [
@@ -36,6 +36,27 @@
 					"slug": "images",
 					"label": "Images",
 					"type": "image"
+				},
+				{
+					"slug": "variants",
+					"label": "Variants",
+					"type": "repeater",
+					"validation": {
+						"subFields": [
+							{
+								"slug": "key",
+								"label": "Key",
+								"type": "string",
+								"required": true
+							},
+							{
+								"slug": "name",
+								"label": "Name",
+								"type": "string",
+								"required": true
+							}
+						]
+					}
 				}
 			]
 		}

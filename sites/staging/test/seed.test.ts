@@ -1,8 +1,8 @@
 /**
  * Seed guard (plan §3.3): the seed must declare the ONE collection the
  * plugin's sync hooks guard on (`PRODUCTS_COLLECTION = "products"`), with
- * the field set `CmsProductContent` reads (title/description/images) — and
- * NOTHING commercial.
+ * the field set `CmsProductContent` reads (title/description/images) plus the
+ * variants repeater (ADR-0016) — and NOTHING commercial.
  *
  * ONE HOME PER FIELD (PR 1b): the collection used to carry a `json` field
  * called `commerce`, bound to a "Product data" Block Kit widget, holding sku /
@@ -20,6 +20,12 @@ import { fileURLToPath } from "node:url";
 import { PRODUCTS_COLLECTION } from "@otta-sh/plugin";
 import { describe, expect, test } from "vitest";
 
+interface SeedSubField {
+	slug: string;
+	type: string;
+	required?: boolean;
+}
+
 interface SeedField {
 	slug: string;
 	type: string;
@@ -27,6 +33,9 @@ interface SeedField {
 	/** Plugin field-widget binding: `"pluginId:widgetName"`. The products
 	 *  collection must declare NONE — the plugin registers no field widget. */
 	widget?: string;
+	/** em-dash puts a repeater's sub-field declarations inside `validation`
+	 *  (`FieldValidation.subFields`), not in a sibling `fields` array. */
+	validation?: { subFields?: SeedSubField[] };
 }
 
 interface SeedCollection {
@@ -77,7 +86,35 @@ describe("seed/seed.json", () => {
 		expect(slugs).not.toContain("commerce");
 		// Exactly the content field set, nothing else: a differently-named bag
 		// would be the same bug wearing a different hat.
-		expect(slugs).toEqual(["title", "description", "images"]);
+		expect(slugs).toEqual(["title", "description", "images", "variants"]);
+	});
+
+	// -- the variant repeater (ADR-0016) -------------------------------------
+	// A variant's NAME is content: translated, and the label a storefront picker
+	// renders. It lives here, beside the product's own title, and the commerce
+	// side caches it through the one sync channel — the same shape ADR-0013
+	// established for the product title, one level down.
+	test("the variants field is a repeater of exactly a key and a name", () => {
+		const variants = products?.fields.find((f) => f.slug === "variants");
+		expect(variants?.type).toBe("repeater");
+		const subFields = variants?.validation?.subFields ?? [];
+		// EXACTLY TWO, AND THIS IS THE LOAD-BEARING ASSERTION. The repeater is
+		// the CMS's statement of which sizes exist and what each is called; a
+		// third sub-field is how a price or a sku gets back into the content
+		// document and makes the CMS a second writer again — the whole failure
+		// PR 1b removed at product grain and ADR-0016 forbids at variant grain.
+		expect(subFields.map((f) => f.slug)).toEqual(["key", "name"]);
+		for (const subField of subFields) expect(subField.type).toBe("string");
+	});
+
+	test("the seed stays INERT for the live catalogue — no sample entry declares a variant", () => {
+		// The sync reads `data.variants` and does nothing at all when the key is
+		// absent, so every existing product syncs exactly as it did before
+		// variants existed — not one extra request. Seeding a variant row here
+		// would silently change that for the demo catalogue.
+		for (const entry of seed.content?.[PRODUCTS_COLLECTION] ?? []) {
+			expect(entry.data).not.toHaveProperty("variants");
+		}
 	});
 
 	test("binds NO plugin field widget — the plugin registers none (PR 1b)", () => {
