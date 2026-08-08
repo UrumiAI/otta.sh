@@ -12,6 +12,21 @@ export class MissingProductIdError extends Error {
 }
 
 /**
+ * Domain error for a variant write with a missing/empty `variant_key` — the
+ * variant grain's counterpart to {@link MissingProductIdError}, and rejected for
+ * a sharper reason than symmetry: `(product_id, variant_key)` IS the row's
+ * identity, so a row minted under an empty key could never be addressed, edited
+ * or deactivated again. Enforced at every `ProductCommerceStore` adapter before
+ * any row is written, and mapped to HTTP 400 by `@otta-sh/service`.
+ */
+export class MissingVariantKeyError extends Error {
+	constructor() {
+		super("variant_key is required");
+		this.name = "MissingVariantKeyError";
+	}
+}
+
+/**
  * Domain error for a live-SKU uniqueness conflict (review F2): a merchant
  * assigning a SKU another LIVE (non-deleted) product already holds — the
  * most likely real merchant input error. Raised by every
@@ -19,6 +34,13 @@ export class MissingProductIdError extends Error {
  * store's narrowly-scoped catch of the `product_commerce_live_sku_unique`
  * partial-index violation) and mapped to a structured HTTP 409 `SKU_TAKEN`
  * by `@otta-sh/service` — never an opaque 500.
+ *
+ * ALSO ARBITRATES VARIANT GRAIN, unchanged: a sku names exactly ONE live
+ * sellable unit, and "live sellable unit" spans live `product_commerce` rows AND
+ * live (non-orphaned) variant rows. `ProductCommerceStore.updateVariantFields`
+ * raises this same error for a sku either kind of row already holds — the
+ * message's "another live product" stays accurate, because a variant is a row of
+ * one.
  */
 export class SkuConflictError extends Error {
 	readonly sku: string;
