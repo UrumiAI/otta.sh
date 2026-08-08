@@ -85,9 +85,11 @@ function payload(over: Partial<ProductRecord>): Response {
 
 /** A write's answer, exactly as the plugin returns one: the served notice, and
  *  — for a refusal about a single input — the field it belongs beside. */
-function actPayload(notice: Record<string, string>, field?: string): Response {
+function actPayload(notice: Record<string, string>, about?: string): Response {
 	return new Response(
-		JSON.stringify({ data: { ok: true, notice, ...(field === undefined ? {} : { field }) } }),
+		JSON.stringify({
+			data: { ok: true, notice, ...(about === undefined ? {} : { field: about }) },
+		}),
 		{ status: 200, headers: { "Content-Type": "application/json" } },
 	);
 }
