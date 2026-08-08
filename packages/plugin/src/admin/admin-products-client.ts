@@ -156,13 +156,24 @@ export interface TaxClassWire {
 }
 
 /** Discriminated edit outcome — the plugin renders each without status-code-as-
- *  logic (stale → reload notice, currency/sku → per-field warning). */
+ *  logic (stale → reload notice, currency/sku → per-field warning).
+ *
+ *  THE TWO RENAME REFUSALS ARE THEIR OWN MEMBERS, not one "sku problem". They
+ *  ask the operator for different things — pick another sku, versus wait for
+ *  the carts to finish — so folding them together would cost the only sentence
+ *  that helps, and each carries the operands its sentence names. */
 export type ProductEditResult =
 	| { ok: true; updatedAt: string | null }
 	| { ok: false; reason: "not_found" }
 	| { ok: false; reason: "stale"; currentUpdatedAt: string | null }
 	| { ok: false; reason: "currency_mismatch"; currency: string | null }
 	| { ok: false; reason: "sku_taken"; sku: string | null }
+	/** The rename's target sku already has an inventory row of its own; stock is
+	 *  never merged between skus, so the rename was refused whole. */
+	| { ok: false; reason: "sku_stock_conflict"; fromSku: string | null; toSku: string | null }
+	/** Live held/adopted reservations still name the sku being renamed away
+	 *  from. `liveHolds` is `null` only if the service omitted the count. */
+	| { ok: false; reason: "sku_held_stock"; sku: string | null; liveHolds: number | null }
 	| { ok: false; reason: "invalid"; field: string | null }
 	| { ok: false; reason: "error" };
 
@@ -249,7 +260,15 @@ export class AdminProductsClient {
 		}
 		if (res.status === 409) {
 			const parsed = (await safeJson(res)) as
-				| { reason?: string; currentUpdatedAt?: string; currency?: string; sku?: string }
+				| {
+						reason?: string;
+						currentUpdatedAt?: string;
+						currency?: string;
+						sku?: string;
+						fromSku?: string;
+						toSku?: string;
+						liveHolds?: unknown;
+				  }
 				| undefined;
 			if (parsed?.reason === "STALE_EDIT") {
 				return { ok: false, reason: "stale", currentUpdatedAt: parsed.currentUpdatedAt ?? null };
@@ -259,6 +278,27 @@ export class AdminProductsClient {
 			}
 			if (parsed?.reason === "SKU_TAKEN") {
 				return { ok: false, reason: "sku_taken", sku: parsed.sku ?? null };
+			}
+			if (parsed?.reason === "SKU_STOCK_CONFLICT") {
+				return {
+					ok: false,
+					reason: "sku_stock_conflict",
+					fromSku: parsed.fromSku ?? null,
+					toSku: parsed.toSku ?? null,
+				};
+			}
+			if (parsed?.reason === "SKU_HELD_STOCK") {
+				// A count that is not a whole number is NOT a count. `null` says "some,
+				// number unknown" and the copy says so too — it is never rendered as 0,
+				// which would read as "no holds" beside a refusal caused by holds.
+				const holds = parsed.liveHolds;
+				return {
+					ok: false,
+					reason: "sku_held_stock",
+					sku: parsed.sku ?? null,
+					liveHolds:
+						typeof holds === "number" && Number.isInteger(holds) && holds > 0 ? holds : null,
+				};
 			}
 			return { ok: false, reason: "error" };
 		}

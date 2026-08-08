@@ -120,6 +120,16 @@ const ACTION_REMOVE_STOCK = PRODUCTS_ACTIONS.custom("remove-stock");
 export interface ProductsActionResult {
 	readonly ok: true;
 	readonly notice: Notice | null;
+	/**
+	 * WHICH FIELD THE OUTCOME IS ABOUT, when it is about exactly one — the only
+	 * machine-readable member of this result. A refusal an operator can only fix
+	 * by changing one input belongs BESIDE that input, and the surface cannot
+	 * work that out from the sentence without re-deriving the copy, which is the
+	 * one thing that must not happen twice. Absent (the common case) means the
+	 * outcome is about the record as a whole and reports at the top of the
+	 * screen, exactly as every outcome did before.
+	 */
+	readonly field?: "sku";
 }
 
 /** A write's payload: the flat string record the caller carried. Untrusted,
@@ -142,8 +152,11 @@ const UNREADABLE: Notice = {
 };
 
 /** The one outcome constructor. A refusal is an `error`-variant notice, not a
- *  different shape — see {@link ProductsActionResult}. */
-const applied = (notice: Notice | null): ProductsActionResult => ({ ok: true, notice });
+ *  different shape — see {@link ProductsActionResult}. `field` is set only by an
+ *  outcome about a single input, and omitted (not `undefined`) otherwise, so the
+ *  wire carries the member only when it means something. */
+const applied = (notice: Notice | null, field?: "sku"): ProductsActionResult =>
+	field === undefined ? { ok: true, notice } : { ok: true, notice, field };
 
 // -- money input parsing (NO float arithmetic — CLAUDE.md) --------------------
 // The exact-integer-string parse lives in `./money-input.js`, SHARED with the
@@ -369,57 +382,107 @@ const saveAction: ProductsAction = async (client, payload) => {
 	// The surface re-reads the product after every write, so a stale save leaves
 	// the operator looking at the latest row — and the OTHER two split forms
 	// remount with it, which is the sibling-discard hazard the screen warns about.
-	return applied(editNotice(result));
+	return editOutcome(result);
 };
 
-/** Map an edit outcome to the notice shown above the reloaded detail. */
-function editNotice(result: Awaited<ReturnType<AdminProductsClient["updateProduct"]>>): Notice {
+/** A sku as it appears INSIDE a sentence: quoted, so a sku with a space or a
+ *  trailing character is still copyable exactly; or a plain phrase when the
+ *  service named none, because an empty pair of quotes reads as a sku called
+ *  nothing. */
+function namedSku(value: string | null, fallback: string): string {
+	return value === null ? fallback : `"${value}"`;
+}
+
+/**
+ * Map an edit outcome to what the operator reads — the notice, and the field it
+ * belongs beside when the refusal is about exactly one.
+ *
+ * THIS IS THE ONLY PLACE THESE SENTENCES ARE WRITTEN. The service answers a
+ * machine code plus operands (both skus, or the sku and how many holds); the
+ * console renders what comes back verbatim. A second copy of any sentence on the
+ * React side would be free to drift from this one, and the operator would have
+ * no way to tell which of the two they were reading.
+ */
+function editOutcome(
+	result: Awaited<ReturnType<AdminProductsClient["updateProduct"]>>,
+): ProductsActionResult {
 	if (result.ok) {
-		return {
+		return applied({
 			variant: "default",
 			title: "Saved",
 			description: "The product's commerce fields were updated.",
-		};
+		});
 	}
 	switch (result.reason) {
 		case "stale":
-			return {
+			return applied({
 				variant: "error",
 				title: "This product changed since you opened it",
 				description:
 					"Your edit was NOT applied — the latest values are shown below. Re-apply your changes and save again.",
-			};
+			});
 		case "currency_mismatch":
-			return {
+			return applied({
 				variant: "error",
 				title: "Currency cannot be changed here",
 				description: `This product is priced in ${result.currency ?? "its existing currency"}. A price edit keeps the same currency; re-currencying a product is not supported on this page.`,
-			};
+			});
 		case "sku_taken":
-			return {
+			return applied({
 				variant: "error",
 				title: "SKU already in use",
 				description: `SKU "${result.sku ?? ""}" is already used by another live product. Choose a different SKU.`,
-			};
+			});
+		// THE TWO RENAME REFUSALS. Both name the sku(s) so the sentence can be acted
+		// on without opening a database, and both say NOTHING MOVED out loud: the
+		// rename and the stock carry are one transaction, so a refusal leaves the
+		// product on its old sku with its units where they were.
+		case "sku_stock_conflict": {
+			const from = namedSku(result.fromSku, "this product's SKU");
+			const to = namedSku(result.toSku, "that SKU");
+			return applied(
+				{
+					variant: "error",
+					title: "That SKU already has stock of its own",
+					description: `Nothing was changed. ${to} already has its own inventory record, and stock is never merged between SKUs, so ${from} was not renamed onto it. Rename to a SKU that has never held stock, or move ${to}'s units elsewhere first.`,
+				},
+				"sku",
+			);
+		}
+		case "sku_held_stock": {
+			const held = namedSku(result.sku, "this SKU");
+			const holds =
+				result.liveHolds === null
+					? "Live reservations"
+					: `${String(result.liveHolds)} live ${result.liveHolds === 1 ? "reservation" : "reservations"}`;
+			return applied(
+				{
+					variant: "error",
+					title: "This SKU has reservations in flight",
+					description: `Nothing was changed. ${holds} still hold units of ${held}, and a reservation cannot follow a rename — its units would return to the old SKU when the cart or order finishes. Try the rename again once those have been paid, cancelled or expired, usually a few minutes.`,
+				},
+				"sku",
+			);
+		}
 		case "invalid":
-			return {
+			return applied({
 				variant: "error",
 				title: "Invalid value",
 				description: `The field "${result.field ?? "input"}" is out of range — price must be greater than zero and measurements must be non-negative whole numbers.`,
-			};
+			});
 		case "not_found":
-			return {
+			return applied({
 				variant: "error",
 				title: PRODUCT_NOT_FOUND_TITLE,
 				description: PRODUCT_DELETED_SINCE_LOADED,
-			};
+			});
 		default:
-			return {
+			return applied({
 				variant: "error",
 				title: "Save failed",
 				description:
 					"The change could not be saved — check the service connection and the admin token in Settings.",
-			};
+			});
 	}
 }
 

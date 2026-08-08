@@ -343,6 +343,39 @@ export function writeControls(phase: WritePhase): {
  * means a stock movement, which owns no form on the Product tab, must bump
  * nothing at all.
  */
+/** The refusal region the SKU input points at, so the sentence is announced with
+ *  the field rather than only being near it. */
+const SKU_REFUSAL_ID = "otta-sku-refusal";
+
+/**
+ * An outcome as this screen holds it: the served sentence, plus WHERE it goes.
+ *
+ * `field` is the whole of the second part. `null` is "about the record", which
+ * reports at the top of the screen and is what every outcome before the rename
+ * refusals was. A named field is a refusal an operator can only answer by
+ * changing that one input, and it renders beside it.
+ */
+export interface ScreenNotice {
+	readonly variant: "default" | "error";
+	readonly title: string;
+	readonly description: string;
+	readonly field: "sku" | null;
+}
+
+/**
+ * The field a write's outcome is about, off the payload the plugin returned.
+ *
+ * READ STRUCTURALLY, and deliberately so: the member is OPTIONAL on the wire —
+ * every outcome that is about the record as a whole omits it — so this is a
+ * lookup with a default, not a shape this screen can assume. Anything that is
+ * not a field this screen renders beside reports at the top, which is the
+ * behaviour that existed before there was a field at all.
+ */
+export function refusalField(payload: unknown): "sku" | null {
+	const field = (payload as { field?: unknown } | null)?.field;
+	return field === "sku" ? "sku" : null;
+}
+
 export function sectionForAction(actionId: string): ProductSection | null {
 	switch (actionId) {
 		case "products:save-identity":
@@ -453,11 +486,7 @@ export function ProductDetail({
 }): React.ReactElement {
 	const [detail, setDetail] = React.useState<ProductDetailPayload | null>(null);
 	const [failure, setFailure] = React.useState<{ title: string; description: string } | null>(null);
-	const [notice, setNotice] = React.useState<{
-		variant: "default" | "error";
-		title: string;
-		description: string;
-	} | null>(null);
+	const [notice, setNotice] = React.useState<ScreenNotice | null>(null);
 	const [tab, setTab] = React.useState(initialTab);
 	const [pending, setPending] = React.useState<PendingAction | null>(null);
 	// WHICH write is outstanding and HOW FAR ALONG, not merely THAT one is: the
@@ -578,7 +607,12 @@ export function ProductDetail({
 				setWritePhase((phase) =>
 					nextWritePhase(phase, { type: "refused", actionId: action.actionId }),
 				);
-				setNotice({ variant: "error", title: result.title, description: result.description });
+				setNotice({
+					variant: "error",
+					title: result.title,
+					description: result.description,
+					field: null,
+				});
 				return;
 			}
 			// ACCEPTED IS NOT SETTLED — the re-read below is the second leg, and the
@@ -588,13 +622,17 @@ export function ProductDetail({
 			// stock movement names no section and so bumps nothing.
 			savedSection.current = sectionForAction(action.actionId);
 			const served = result.notice;
-			const outcome: { variant: "default" | "error"; title: string; description: string } | null =
+			const outcome: ScreenNotice | null =
 				served === null
 					? null
 					: {
 							variant: served.variant === "error" ? "error" : "default",
 							title: served.title,
 							description: served.description,
+							// WHERE IT GOES, decided by the write and not re-derived here. The
+							// sentence itself is never inspected: a screen that matched on copy
+							// would be a second author of it.
+							field: refusalField(result),
 						};
 			if (slot === undefined) {
 				setNotice(outcome);
@@ -687,7 +725,11 @@ export function ProductDetail({
 				/>
 			</div>
 
-			{notice !== null && (
+			{/* THE TOP IS FOR OUTCOMES ABOUT THE RECORD. One that names a field is
+			    rendered beside that field instead, and in exactly one of the two
+			    places — a refusal repeated at the top is the operator reading the
+			    same sentence twice and wondering whether it happened twice. */}
+			{notice !== null && notice.field === null && (
 				<Notice
 					variant={notice.variant}
 					title={notice.title}
@@ -765,6 +807,7 @@ export function ProductDetail({
 						busy={busy}
 						savingPrice={acting === "products:save-price"}
 						priceReceipt={receipts.price}
+						skuRefusal={notice !== null && notice.field === "sku" ? notice : null}
 						formKeys={formKeys}
 						onDirtyChange={reportDirty}
 						onSubmit={(actionId, value, report) =>
@@ -1019,6 +1062,7 @@ function ProductPanel({
 	busy,
 	savingPrice,
 	priceReceipt,
+	skuRefusal,
 	formKeys,
 	onDirtyChange,
 	onSubmit,
@@ -1030,6 +1074,10 @@ function ProductPanel({
 	 *  treatment to identity and classification. */
 	savingPrice: boolean;
 	priceReceipt: Receipt | null;
+	/** A refusal the last save named the SKU field for — rendered beside that
+	 *  field rather than at the top of the screen. Passed straight through: this
+	 *  panel neither composes nor edits the sentence. */
+	skuRefusal: ScreenNotice | null;
 	/** F7: one per section, bumped by that section's own successful save and by
 	 *  nothing else. Applied as the form's React `key`, so the saved section
 	 *  re-seeds from the fresh record and the other two keep their drafts. */
@@ -1092,6 +1140,7 @@ function ProductPanel({
 						key={`identity-${String(formKeys.identity)}`}
 						product={p}
 						busy={busy}
+						refusal={skuRefusal}
 						onDirtyChange={onDirtyChange}
 						onSubmit={(values) => onSubmit("products:save-identity", { ...carrier, ...values })}
 					/>
@@ -1147,11 +1196,14 @@ function ProductPanel({
 export function IdentityGroup({
 	product: p,
 	busy,
+	refusal = null,
 	onDirtyChange,
 	onSubmit,
 }: {
 	product: ProductRecord;
 	busy: boolean;
+	/** The last save's refusal, when the write named this field. */
+	refusal?: ScreenNotice | null;
 	onDirtyChange?: DirtyReporter;
 	onSubmit: (values: Record<string, string>) => void;
 }): React.ReactElement {
@@ -1171,6 +1223,7 @@ export function IdentityGroup({
 			committed={committed}
 			values={values}
 			busy={busy}
+			refusal={refusal}
 			report={onDirtyChange ?? NO_REPORT}
 			onChange={setValues}
 			onSubmit={onSubmit}
@@ -1186,6 +1239,7 @@ export function IdentityFields({
 	committed,
 	values,
 	busy,
+	refusal = null,
 	report,
 	onChange,
 	onSubmit,
@@ -1194,6 +1248,9 @@ export function IdentityFields({
 	committed: Record<string, string>;
 	values: Record<string, string>;
 	busy: boolean;
+	/** The served refusal for this field, rendered VERBATIM. Nothing here reads
+	 *  it, reformats it or decides anything from it. */
+	refusal?: ScreenNotice | null;
 	report: DirtyReporter;
 	onChange: (next: (prev: Record<string, string>) => Record<string, string>) => void;
 	onSubmit: (values: Record<string, string>) => void;
@@ -1202,7 +1259,15 @@ export function IdentityFields({
 	const dirty = changed.length > 0;
 	useReportDirty("identity", dirty, report);
 	return (
-		<Group testId="edit-identity" label={dirtyGroupLabel(identityGroupLabel(p.sku), dirty)}>
+		// A REFUSAL FORCES THE GROUP OPEN, because this is the one group that is
+		// shut on arrival (F19) and a save is followed by a re-read that remounts
+		// this form: a sentence rendered inside a closed disclosure is a refusal the
+		// operator never sees, and the save would read as a silent no-op.
+		<Group
+			testId="edit-identity"
+			defaultOpen={refusal !== null}
+			label={dirtyGroupLabel(identityGroupLabel(p.sku), dirty)}
+		>
 			<p style={{ fontSize: 12, opacity: 0.75, marginBlockStart: 0 }}>{IDENTITY_FORM_CONTEXT}</p>
 			<div style={{ display: "grid", gap: 10, maxInlineSize: 420 }}>
 				<Field label={PRODUCT_FIELD_LABELS.sku}>
@@ -1211,12 +1276,27 @@ export function IdentityFields({
 						data-testid="edit-sku"
 						style={fieldStyle(changed, "sku")}
 						value={values["sku"] ?? ""}
+						aria-describedby={refusal === null ? undefined : SKU_REFUSAL_ID}
+						aria-invalid={refusal === null ? undefined : true}
 						onChange={(event) => {
 							const next = event.target.value;
 							onChange((prev) => ({ ...prev, sku: next }));
 						}}
 					/>
 				</Field>
+				{/* BESIDE THE FIELD, above the button that raised it: the operator's
+				    next move is in this input, and the answer to "what happened" has to
+				    be where they are looking. */}
+				{refusal !== null && (
+					<div id={SKU_REFUSAL_ID}>
+						<Notice
+							variant={refusal.variant}
+							title={refusal.title}
+							description={refusal.description}
+							testId="edit-sku-refusal"
+						/>
+					</div>
+				)}
 				<div>
 					<Button
 						label={SAVE_IDENTITY_LABEL}

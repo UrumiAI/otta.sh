@@ -84,6 +84,8 @@ interface ActOutcome {
 	title?: string;
 	description?: string;
 	notice?: Notice | null;
+	/** Present only on an outcome about ONE input — see the rename refusals. */
+	field?: string;
 }
 
 /** Mutable read-time state the GET responder serves — lets a test move stock
@@ -463,6 +465,96 @@ describe("the Pricing & inventory write path (workerd sandbox)", () => {
 			const result = await act("products:save-identity", { ...carrier, sku: "S-1" });
 			expect(result.notice?.variant, title).toBe("error");
 			expect(result.notice?.title, title).toBe(title);
+		}
+	});
+
+	// -- the two RENAME refusals, and where they belong -------------------------
+	// The service answers a machine code plus operands; the sentence an operator
+	// reads is composed HERE and nowhere else, so these assertions are on the copy
+	// itself rather than on a code the console would have to re-word. Each names
+	// what the operator has to know to act — which skus, or how many holds — and
+	// each carries `field: "sku"`, which is what puts it beside the input that
+	// caused it instead of at the top of the screen.
+
+	test("a rename onto an occupied sku names BOTH skus, says nothing moved, and belongs to the SKU field", async () => {
+		service.respondWith("PATCH", () => ({
+			status: 409,
+			body: { ok: false, reason: "SKU_STOCK_CONFLICT", fromSku: "SKU-1", toSku: "SKU-RETIRED" },
+		}));
+		const result = await act("products:save-identity", { ...carrier, sku: "SKU-RETIRED" });
+
+		expect(result.notice?.variant).toBe("error");
+		expect(result.notice?.title).toBe("That SKU already has stock of its own");
+		const sentence = String(result.notice?.description);
+		// Both skus, quoted, so the operator can act without opening a database —
+		// and the advice, which is the difference between a refusal and a dead end.
+		expect(sentence).toContain('"SKU-1"');
+		expect(sentence).toContain('"SKU-RETIRED"');
+		expect(sentence).toContain("Nothing was changed");
+		expect(sentence).toContain("never held stock");
+		expect(result.field).toBe("sku");
+	});
+
+	test("a rename blocked by live holds names the sku AND the count, and counts in the plural it means", async () => {
+		for (const [liveHolds, phrase] of [
+			[3, "3 live reservations"],
+			[1, "1 live reservation"],
+		] as const) {
+			service.respondWith("PATCH", () => ({
+				status: 409,
+				body: { ok: false, reason: "SKU_HELD_STOCK", sku: "SKU-1", liveHolds },
+			}));
+			const result = await act("products:save-identity", { ...carrier, sku: "SKU-NEW" });
+
+			expect(result.notice?.variant, phrase).toBe("error");
+			expect(result.notice?.title, phrase).toBe("This SKU has reservations in flight");
+			const sentence = String(result.notice?.description);
+			expect(sentence, phrase).toContain(phrase);
+			expect(sentence, phrase).toContain('"SKU-1"');
+			// A "try again shortly", not a dead end: every one of these holds ends on
+			// its own, and the sentence has to say so or the operator files a bug.
+			expect(sentence, phrase).toContain("Try the rename again");
+			expect(result.field, phrase).toBe("sku");
+		}
+	});
+
+	test("a hold count the service did not send is never rendered as a count — and never as zero", async () => {
+		// `0` beside a refusal CAUSED by holds reads as "no holds", which is the one
+		// thing the sentence must not say. Absent is absent (CLAUDE.md), so the copy
+		// drops the figure and keeps the fact.
+		for (const body of [
+			{ ok: false, reason: "SKU_HELD_STOCK", sku: "SKU-1" },
+			{ ok: false, reason: "SKU_HELD_STOCK", sku: "SKU-1", liveHolds: "many" },
+		]) {
+			service.respondWith("PATCH", () => ({ status: 409, body }));
+			const result = await act("products:save-identity", { ...carrier, sku: "SKU-NEW" });
+			const sentence = String(result.notice?.description);
+			expect(sentence, JSON.stringify(body)).toContain("Live reservations still hold units");
+			expect(sentence, JSON.stringify(body)).not.toContain("0 live");
+			expect(result.field, JSON.stringify(body)).toBe("sku");
+		}
+	});
+
+	test("every OTHER outcome names no field at all — the top of the screen is still the default", async () => {
+		// The plain edit path is untouched by the two refusals above: a save, a
+		// stale watermark and the live-sku collision all still report where they
+		// always did, and a screen reading `field` gets nothing to route on.
+		const cases: Array<[number, Record<string, unknown>]> = [
+			[200, { ok: true, updatedAt: UPDATED_AT }],
+			[409, { reason: "STALE_EDIT", currentUpdatedAt: "2026-07-30T00:00:00.000Z" }],
+			[409, { reason: "SKU_TAKEN", sku: "SKU-DUP" }],
+			// The 400's own `field` is the SERVICE naming an out-of-range input, and it
+			// is not this outcome's field: one names a value the domain rejected, the
+			// other is where a sentence renders. Letting them cross would put the
+			// price validator's copy beside the SKU input.
+			[400, { field: "price" }],
+			[404, {}],
+		];
+		for (const [status, body] of cases) {
+			service.respondWith("PATCH", () => ({ status, body }));
+			const result = await act("products:save-identity", { ...carrier, sku: "S-1" });
+			expect(result.field, JSON.stringify(body)).toBeUndefined();
+			expect(result.notice, JSON.stringify(body)).not.toBeNull();
 		}
 	});
 
