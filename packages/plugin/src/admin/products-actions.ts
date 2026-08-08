@@ -444,7 +444,7 @@ function editOutcome(
 				{
 					variant: "error",
 					title: "That SKU already has stock of its own",
-					description: `Nothing was changed. ${to} already has its own inventory record, and stock is never merged between SKUs, so ${from} was not renamed onto it. Rename to a SKU that has never held stock, or move ${to}'s units elsewhere first.`,
+					description: `Nothing was changed. ${to} already has its own inventory record, and stock is never merged between SKUs, so ${from} was not renamed onto it. Rename to a SKU that has never held stock, or move the units under ${to} elsewhere first.`,
 				},
 				"sku",
 			);
