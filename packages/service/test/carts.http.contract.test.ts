@@ -60,6 +60,67 @@ describe.skipIf(PG === undefined)("HTTP cart contract [live server, Postgres]", 
 		);
 	}
 
+	// -- Variant helpers: the two-writer split, over the wire -----------------
+	// A size is DECLARED by the CMS sync (name + presence, nothing commercial)
+	// and PRICED by the admin (sku + price, under a compare-and-set). These
+	// helpers keep that split visible in every test below, because a helper that
+	// merged them would quietly make the tests pass through a door the product
+	// does not have.
+
+	const CWM = "2026-08-08T00:00:00.000Z";
+
+	async function declareVariant(
+		productId: string,
+		variantKey: string,
+		title: string,
+		contentUpdatedAt: string = CWM,
+	): Promise<JsonResponse> {
+		return req(
+			"PUT",
+			`/products/${productId}/variants/${variantKey}`,
+			{ title, contentUpdatedAt },
+			{ "Idempotency-Key": `declare-${productId}-${variantKey}-${contentUpdatedAt}` },
+		);
+	}
+
+	async function priceVariant(
+		productId: string,
+		variantKey: string,
+		skuValue: string,
+		amount: number,
+		expectedUpdatedAt: string,
+	): Promise<JsonResponse> {
+		return req(
+			"PATCH",
+			`/products/${productId}/variants/${variantKey}`,
+			{ sku: skuValue, price: { amount, currency: "USD" }, expectedUpdatedAt },
+			{ "Idempotency-Key": `price-${productId}-${variantKey}` },
+		);
+	}
+
+	/** Declare a size, price it, and stock it — the full "live sellable unit"
+	 *  state a cart add is entitled to resolve against. */
+	async function liveVariant(
+		productId: string,
+		variantKey: string,
+		skuValue: string,
+		amount: number,
+		onHand: number,
+	): Promise<void> {
+		const declared = await declareVariant(productId, variantKey, variantKey);
+		expect(declared.status).toBe(200);
+		const priced = await priceVariant(
+			productId,
+			variantKey,
+			skuValue,
+			amount,
+			declared.body.updatedAt as string,
+		);
+		expect(priced.status).toBe(200);
+		// The edit seeds the sku's inventory row at zero; give it real units.
+		await server.seed(skuValue, onHand);
+	}
+
 	// SECURITY (issue #80 review): the client supplies `sku` and `productId`
 	// independently; the service must reconcile them against the trusted catalog
 	// so a caller cannot pair product A's productId (from which checkout takes
@@ -114,6 +175,264 @@ describe.skipIf(PG === undefined)("HTTP cart contract [live server, Postgres]", 
 		expect(add.status).toBe(200);
 		expect(add.body.ok).toBe(true);
 		expect((add.body.line as Record<string, unknown>).productId).toBe("prod-match");
+	});
+
+	// -- The add endpoint's SKU guard ----------------------------------------
+	// The rule, stated once: an add that names a product must RESOLVE its sku to
+	// a live, priced sellable unit OF THAT PRODUCT — the product's own row, or
+	// one of its live variants. Everything below is a case of that one sentence,
+	// and each case is one an attacker or a stale client can actually send.
+
+	test("a productId with NO commerce row no longer waves an arbitrary sku through", async () => {
+		// Previously "harmless" — the line was unorderable, so it was allowed. It
+		// is still unorderable, and it still reserves real stock against a sku the
+		// named product has never been shown to own, so it is now refused.
+		await server.seed("SKU-UNOWNED", 7);
+		const cartId = await newCart();
+
+		const add = await addLineWithProduct(cartId, "SKU-UNOWNED", "prod-never-synced", 3, "k-norow");
+		expect(add.status).toBe(409);
+		expect(add.body).toEqual({ ok: false, reason: "SKU_MISMATCH" });
+		// Nothing reserved: the guard runs before the domain's add, so a refusal
+		// costs no units at all.
+		expect(await server.onHand("SKU-UNOWNED")).toBe(7);
+	});
+
+	test("a soft-deleted product cannot lend its sku to a cart line", async () => {
+		await server.seedProduct({
+			productId: "prod-gone",
+			sku: "SKU-GONE",
+			priceCents: 900,
+			title: "Gone",
+			kind: "physical",
+			onHand: 5,
+		});
+		const del = await req("DELETE", "/products/prod-gone/commerce", undefined, {
+			"Idempotency-Key": "del-gone",
+		});
+		expect(del.status).toBe(200);
+
+		const cartId = await newCart();
+		const add = await addLineWithProduct(cartId, "SKU-GONE", "prod-gone", 1, "k-gone");
+		expect(add.status).toBe(409);
+		expect(add.body).toEqual({ ok: false, reason: "SKU_MISMATCH" });
+		expect(await server.onHand("SKU-GONE")).toBe(5);
+	});
+
+	// THIS TEST IS WRITTEN TO FLIP. A live, priced size of exactly this product
+	// resolves — and is refused anyway, with the same token a spoof gets, because
+	// order pricing reads the snapshot price AND title from the `product_commerce`
+	// row named by `productId` and cannot reach a variant. Accepting the line here
+	// would sell a 2500 size for the parent's 2000 under the parent's name, frozen
+	// onto the order line forever.
+	//
+	// IT FLIPS WHEN ORDER PRICING RESOLVES THE SELLABLE UNIT RATHER THAN THE
+	// PRODUCT ROW — snapshotting the size's own price and its own title. On that
+	// day this expectation becomes the 200 the commented block below describes,
+	// and `resolveSellableUnit`'s variant branch returns `ok`. Until then the
+	// refusal is the contract, not an omission.
+	test("a LIVE variant's sku is REFUSED until order pricing resolves the sellable unit", async () => {
+		await server.seedProduct({
+			productId: "prod-tee",
+			sku: "SKU-TEE",
+			priceCents: 2000,
+			title: "Tee",
+			kind: "physical",
+			onHand: 4,
+		});
+		await liveVariant("prod-tee", "large", "SKU-TEE-L", 2500, 6);
+		const cartId = await newCart();
+
+		const add = await addLineWithProduct(cartId, "SKU-TEE-L", "prod-tee", 2, "k-variant");
+		expect(add.status).toBe(409);
+		expect(add.body).toEqual({ ok: false, reason: "SKU_MISMATCH" });
+		// Nothing held, on either sku: the refusal precedes the domain's add.
+		expect(await server.onHand("SKU-TEE-L")).toBe(6);
+		expect(await server.onHand("SKU-TEE")).toBe(4);
+		const get = await req("GET", `/carts/${cartId}`);
+		expect((get.body.cart as { lines: unknown[] }).lines).toHaveLength(0);
+
+		// On the flip, this is the assertion:
+		//   expect(add.status).toBe(200);
+		//   expect((add.body.line as Record<string, unknown>).sku).toBe("SKU-TEE-L");
+		//   expect(await server.onHand("SKU-TEE-L")).toBe(4);  // the SIZE's units
+		//   expect(await server.onHand("SKU-TEE")).toBe(4);    // the parent's, untouched
+	});
+
+	// The second half of the same ruling, and the one a merchant hits first: a
+	// product whose sizes carry all the money has no price of its own, so its
+	// cart could never reach a quote even if the add succeeded. Refusing at the
+	// add is the same answer stated where it can still be acted on.
+	test("a product priced ONLY through its sizes cannot be added yet — the same refusal, one step earlier", async () => {
+		const bare = await req(
+			"PUT",
+			"/products/prod-sizes-only/commerce",
+			{ sku: "SKU-SIZES-ONLY", title: "Sizes only", productKind: "physical" },
+			{ "Idempotency-Key": "seed-sizes-only" },
+		);
+		expect(bare.status).toBe(200);
+		expect(bare.body.price).toBeNull();
+		await liveVariant("prod-sizes-only", "large", "SKU-SIZES-L", 3000, 5);
+		const cartId = await newCart();
+
+		const add = await addLineWithProduct(
+			cartId,
+			"SKU-SIZES-L",
+			"prod-sizes-only",
+			1,
+			"k-sizes-only",
+		);
+		expect(add.status).toBe(409);
+		expect(add.body).toEqual({ ok: false, reason: "SKU_MISMATCH" });
+		expect(await server.onHand("SKU-SIZES-L")).toBe(5);
+	});
+
+	test("one product cannot borrow ANOTHER product's variant sku", async () => {
+		await server.seedProduct({
+			productId: "prod-plain",
+			sku: "SKU-PLAIN",
+			priceCents: 500,
+			title: "Plain",
+			kind: "physical",
+			onHand: 3,
+		});
+		await server.seedProduct({
+			productId: "prod-fancy",
+			sku: "SKU-FANCY",
+			priceCents: 99000,
+			title: "Fancy",
+			kind: "physical",
+			onHand: 3,
+		});
+		await liveVariant("prod-fancy", "xl", "SKU-FANCY-XL", 99000, 3);
+		const cartId = await newCart();
+
+		// The #80 attack, one level down: the cheap product's id paired with the
+		// expensive product's SIZE.
+		const add = await addLineWithProduct(cartId, "SKU-FANCY-XL", "prod-plain", 1, "k-crossvar");
+		expect(add.status).toBe(409);
+		expect(add.body).toEqual({ ok: false, reason: "SKU_MISMATCH" });
+		expect(await server.onHand("SKU-FANCY-XL")).toBe(3);
+	});
+
+	test("an ORPHANED variant's sku is dead to the cart, though the row keeps sku, price and stock", async () => {
+		await server.seedProduct({
+			productId: "prod-orph",
+			sku: "SKU-ORPH",
+			priceCents: 1000,
+			title: "Orph",
+			kind: "physical",
+			onHand: 2,
+		});
+		await liveVariant("prod-orph", "small", "SKU-ORPH-S", 1200, 9);
+
+		// The CMS dropped the repeater row. Deactivation, never deletion.
+		const drop = await req(
+			"POST",
+			"/products/prod-orph/variants/small/deactivate",
+			{ contentUpdatedAt: "2026-08-09T00:00:00.000Z" },
+			{ "Idempotency-Key": "drop-orph-small" },
+		);
+		expect(drop.status).toBe(200);
+
+		const cartId = await newCart();
+		const add = await addLineWithProduct(cartId, "SKU-ORPH-S", "prod-orph", 1, "k-orphaned");
+		expect(add.status).toBe(409);
+		expect(add.body).toEqual({ ok: false, reason: "SKU_MISMATCH" });
+		// The units are retained — that is what "deactivate, never delete" means —
+		// they are simply no longer sellable through this sku.
+		expect(await server.onHand("SKU-ORPH-S")).toBe(9);
+
+		// And the discontinued size does not appear on the unauthenticated read:
+		// its title and its last price are not public data.
+		const list = await req("GET", "/products/prod-orph/variants");
+		expect(list.body.variants).toEqual([]);
+	});
+
+	test("an UNPRICED variant fails legibly as unpriced — never a line priced at the row above it", async () => {
+		await server.seedProduct({
+			productId: "prod-unpriced",
+			sku: "SKU-UP",
+			priceCents: 100,
+			title: "Unpriced parent",
+			kind: "physical",
+			onHand: 5,
+		});
+		// Declared and given a sku, but never priced: the state a resurrect leaves
+		// behind when it clears a price whose currency no longer holds.
+		const declared = await declareVariant("prod-unpriced", "medium", "Medium");
+		expect(declared.status).toBe(200);
+		const skued = await req(
+			"PATCH",
+			"/products/prod-unpriced/variants/medium",
+			{ sku: "SKU-UP-M", expectedUpdatedAt: declared.body.updatedAt as string },
+			{ "Idempotency-Key": "sku-only-medium" },
+		);
+		expect(skued.status).toBe(200);
+		expect(skued.body.price).toBeNull();
+		await server.seed("SKU-UP-M", 4);
+
+		const cartId = await newCart();
+		const add = await addLineWithProduct(cartId, "SKU-UP-M", "prod-unpriced", 1, "k-unpriced");
+		expect(add.status).toBe(409);
+		// SKU_MISMATCH rather than PRODUCT_NOT_PRICED, because every variant sku is
+		// refused today whether priced or not (see the flip test above). When that
+		// branch opens, this case becomes the PRODUCT_NOT_PRICED it describes — an
+		// unpriced size must fail as unpriced and never at the row above it.
+		expect(add.body).toEqual({ ok: false, reason: "SKU_MISMATCH" });
+		// Emphatically NOT charged the parent's 100: no line exists at all.
+		expect(await server.onHand("SKU-UP-M")).toBe(4);
+		const get = await req("GET", `/carts/${cartId}`);
+		expect((get.body.cart as { lines: unknown[] }).lines).toHaveLength(0);
+	});
+
+	test("a REPLAYED rejected add is rejected identically — never half-applied on the retry", async () => {
+		await server.seedProduct({
+			productId: "prod-replay",
+			sku: "SKU-REPLAY",
+			priceCents: 700,
+			title: "Replay",
+			kind: "physical",
+			onHand: 6,
+		});
+		await server.seed("SKU-ELSEWHERE", 6);
+		const cartId = await newCart();
+
+		const first = await addLineWithProduct(cartId, "SKU-ELSEWHERE", "prod-replay", 1, "k-replay");
+		const replay = await addLineWithProduct(cartId, "SKU-ELSEWHERE", "prod-replay", 1, "k-replay");
+		expect(first.status).toBe(409);
+		expect(replay.status).toBe(first.status);
+		expect(replay.body).toEqual(first.body);
+		// The guard refuses BEFORE the idempotency key ever reaches the domain, so
+		// there is no half-applied first attempt for the replay to complete.
+		expect(await server.onHand("SKU-ELSEWHERE")).toBe(6);
+		const get = await req("GET", `/carts/${cartId}`);
+		expect((get.body.cart as { lines: unknown[] }).lines).toHaveLength(0);
+	});
+
+	// THE BARE-ADD RULE, pinned so the decision is a test rather than a memory.
+	// An add that names NO product is left exactly as it was, and this is why:
+	// `ProductCommerceStore` has no by-sku lookup — every read on it is keyed by
+	// productId — so "which live sellable unit holds this sku" is a question the
+	// guard cannot ask, and refusing every bare add would break the raw
+	// reservation primitive without closing a spoof. It closes no spoof because
+	// the line is UNORDERABLE BY CONSTRUCTION: both checkout paths reject a null
+	// productId before they price anything, so it can confer neither a price nor
+	// an entitlement. Closing the remainder honestly needs a by-sku resolver on
+	// the port, and inventing one from the admin list's case-insensitive search
+	// would resolve "sku-a" onto "SKU-A" and would not see variants at all.
+	test("a BARE add still reserves, and is still unorderable — the line can confer no price", async () => {
+		await server.seed("SKU-BARE", 5);
+		const cartId = await newCart();
+
+		const add = await addLine(cartId, "SKU-BARE", 2, "k-bare");
+		expect(add.status).toBe(200);
+		expect((add.body.line as Record<string, unknown>).productId).toBeNull();
+		expect(await server.onHand("SKU-BARE")).toBe(3);
+
+		const quote = await req("POST", "/checkout/quote", { cartId });
+		expect(quote.status).toBe(409);
+		expect(quote.body.reason).toBe("PRODUCT_NOT_PRICED");
 	});
 
 	test("POST /carts mints a cart id", async () => {

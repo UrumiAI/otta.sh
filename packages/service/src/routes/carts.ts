@@ -15,6 +15,7 @@ import {
 	idempotencyKey,
 	productId as toProductId,
 	type ProductCommerceStore,
+	type ProductId,
 	removeLine,
 	sku,
 	updateLine,
@@ -33,7 +34,11 @@ export interface CartRoutesDeps {
 	store: InventoryStore;
 	cartStore: CartStore;
 	/** Resolves a line's fulfillment kind server-side (Phase 4 §6) — a digital
-	 *  product reserves nothing. Optional so `expireHoldsRoutes` can share the type. */
+	 *  product reserves nothing — and, since the add endpoint's SKU guard, the
+	 *  catalog the guard resolves a submitted sku against. Optional ONLY so
+	 *  `expireHoldsRoutes` can share the type: `cartRoutes` narrows it back to
+	 *  REQUIRED in its own signature, so the guard cannot be silently disabled by
+	 *  a call site that forgets to wire the store. */
 	productCommerce?: ProductCommerceStore;
 	clock: Clock;
 	/** Hold TTL in ms; defaults to the domain's DEFAULT_HOLD_TTL_MS. */
@@ -54,7 +59,7 @@ const DEFAULT_CURRENCY = "USD";
  * 200 typed body (mirroring `reserve`). Not-found is 404; a checked-out fence is
  * 409. The `Idempotency-Key` header threads into the domain command.
  */
-export function cartRoutes(deps: CartRoutesDeps): Hono {
+export function cartRoutes(deps: CartRoutesDeps & { productCommerce: ProductCommerceStore }): Hono {
 	const app = new Hono();
 	const cartDeps: CartDeps = {
 		cartStore: deps.cartStore,
@@ -89,36 +94,89 @@ export function cartRoutes(deps: CartRoutesDeps): Hono {
 		if (!parsed.success) {
 			return c.json({ error: "invalid request body", issues: parsed.error.issues }, 400);
 		}
-		// Resolve the product's fulfillment kind server-side (§6): a digital line
-		// reserves nothing. Requires the productId; without it we default physical
-		// (bare Phase-3 add). A provided-but-unknown product also defaults physical.
+		// SECURITY — the add endpoint's SKU guard. `sku` and `productId` arrive as
+		// two INDEPENDENT client inputs (both editable on the storefront /cart/add
+		// POST). Checkout takes price/title/currency AND grants the digital
+		// entitlement from the productId's row, but stamps the order line's `sku`
+		// from the cart line (the client value). If the two may disagree, a caller
+		// pairs product A's productId (cheap / its entitlement) with product B's
+		// sku (pricey / a different good) and is charged A's price while reserving
+		// B's stock.
 		//
-		// SECURITY (issue #80 review): `sku` and `productId` arrive as two
-		// INDEPENDENT client inputs (both editable on the storefront /cart/add
-		// POST). Checkout later takes price/title/currency AND grants the digital
-		// entitlement from the productId's product_commerce row, but stamps the
-		// order line's `sku` from the cart line (the client value). If the two are
-		// allowed to disagree, a caller can pair product A's productId (cheap /
-		// its entitlement) with product B's sku (pricey / a different good) and be
-		// charged A's price while reserving B's stock or being entitled to B.
-		// So when a product_commerce row EXISTS it is authoritative: its sku MUST
-		// equal the submitted sku, else reject (SKU_MISMATCH) — we reject rather
-		// than silently substituting, so a buggy/hostile caller gets a clear
-		// signal and we never reinterpret the request. A productId with NO
-		// product_commerce row has nothing to reconcile against and is harmless:
-		// checkout gates on that row existing (→ PRODUCT_NOT_PRICED), so such a
-		// line can confer neither price nor entitlement.
+		// Issue #80 closed the half of that where a product_commerce row existed
+		// and its sku differed. The rule is now stated positively rather than as a
+		// list of rejections — every add must RESOLVE its sku to a live, priced
+		// sellable unit OF THE NAMED PRODUCT (see `resolveSellableUnit`), and
+		// anything that does not resolve is rejected rather than reinterpreted.
+		// That closes three cases the old check let through: a productId with NO
+		// commerce row (waved through as "harmless"), a soft-deleted product's
+		// sku, and — with the row present — a sku belonging to another product.
+		//
+		// A live VARIANT's sku is resolved and then refused, deliberately, until
+		// order pricing resolves the sellable unit rather than the product row.
+		// The reasoning is on `resolveSellableUnit`; it is a correctness gate, not
+		// a policy, and nothing on this endpoint changes when it opens.
+		//
+		// A BARE ADD (no productId) IS LEFT EXACTLY AS IT WAS, and that is a
+		// decision, not an oversight. Resolving a bare sku means asking "which
+		// live sellable unit, across the whole catalog, holds this sku" — and
+		// `ProductCommerceStore` has no such lookup: every read on it is keyed by
+		// productId. A bare line is also unorderable by construction (both
+		// checkout paths reject a null productId with PRODUCT_NOT_PRICED before
+		// they price anything), so it can confer neither price nor entitlement and
+		// the spoof this guard exists to stop is not expressible through it.
+		//
+		// THE RESIDUAL RISK IS LARGER THAN "IT RESERVES STOCK", and it is worth
+		// naming precisely. Reserving is what every legitimate add does, so on its
+		// own that is a rate-limiting concern rather than this one. But the cart
+		// store's add upserts on `(cart_id, sku)` and its conflict update writes
+		// `product_id` from the incoming request unconditionally — so a BARE
+		// re-add of a sku already on the cart overwrites that line's product_id
+		// with null, downgrading a line this guard admitted into one checkout
+		// refuses. A bare add can therefore reach past its own line and damage a
+		// guarded one. Guarding it needs the same by-sku resolver the port does
+		// not have; the guard cannot invent one, and guessing with the admin
+		// list's case-insensitive search would resolve "sku-a" onto "SKU-A" and
+		// see no variants at all. Tracked separately as issue #235.
+		//
+		// NOT AN N+1, and not on the reserve path: the resolution is at most two
+		// keyed reads per REQUEST (never per line — an add carries exactly one),
+		// the product read alone answers the storefront's hot path, and nothing
+		// here reserves, seeds or otherwise touches inventory.
+		//
+		// REPLAY PARITY HOLDS IN THE REJECTED DIRECTION, which is the direction
+		// that matters here: the guard runs BEFORE `addLine`, so a refused add
+		// writes nothing at all, and a same-key retry of it meets the same guard
+		// against the same catalog and is refused identically rather than
+		// half-applied. It does NOT hold in the other direction, and that is not a
+		// regression to fix here: an add that succeeded and whose unit is LATER
+		// orphaned, soft-deleted or unpriced meets the guard first on a same-key
+		// retry and answers 409, where before it would have replayed the stored
+		// line. The catalog genuinely changed under the caller between the two
+		// requests, so a refusal is the honest answer — and the original line, and
+		// its hold, are untouched by it.
 		let productId: string | null = null;
 		let kind: FulfillmentKind = "physical";
 		if (parsed.data.productId !== undefined) {
 			productId = parsed.data.productId;
-			const pc = await deps.productCommerce?.getByProductId(toProductId(parsed.data.productId));
-			if (pc !== null && pc !== undefined) {
-				if (pc.sku === null || String(pc.sku) !== parsed.data.sku) {
-					return c.json({ ok: false, reason: "SKU_MISMATCH" }, 409);
-				}
-				kind = pc.productKind;
+			const resolved = await resolveSellableUnit(
+				deps.productCommerce,
+				toProductId(parsed.data.productId),
+				parsed.data.sku,
+			);
+			if (resolved.status === "unknown") {
+				return c.json({ ok: false, reason: "SKU_MISMATCH" }, 409);
 			}
+			if (resolved.status === "unpriced") {
+				// Live, correctly named, and nobody has priced it — a product synced
+				// but not yet priced ("create then price"), which is the only way to
+				// reach this today, since every variant is refused above whether it
+				// carries a price or not. Refused HERE and by name so a shopper is
+				// told at the Add button rather than at the last step, and so no
+				// stock is held for a line that could never have been bought.
+				return c.json({ ok: false, reason: "PRODUCT_NOT_PRICED" }, 409);
+			}
+			kind = resolved.productKind;
 		}
 		const res = await addLine(
 			cartDeps,
@@ -234,6 +292,95 @@ function serializeLine(line: CartLine): {
 		reservationId: line.reservationId,
 		expiresAt: line.expiresAt,
 	};
+}
+
+/**
+ * Resolve a submitted sku to ONE live sellable unit of ONE named product — the
+ * whole of the add endpoint's SKU guard.
+ *
+ * "Live sellable unit" is the port's own phrase and the port's own definition,
+ * spanning both tables: a `product_commerce` row that is not soft-deleted, and a
+ * `product_variants` row that is not orphaned. That is deliberately the SAME
+ * predicate the live-sku uniqueness indexes use (`WHERE deleted_at IS NULL` /
+ * `WHERE orphaned_at IS NULL`), which is what makes "one sku names one unit"
+ * true here rather than merely likely — and it is NOT the publish gate: `active`
+ * decides whether a storefront lists a product, not whether the sku on a request
+ * names a real thing, and the two must not be conflated in a security check.
+ *
+ * A DEAD unit therefore fails to resolve, by construction and without a special
+ * case: a soft-deleted product, and an orphaned variant that still holds its sku,
+ * its price and its stock, both simply are not live and neither is reachable.
+ *
+ * PRICED IS PART OF SELLABLE. A unit nobody has priced cannot be sold, and a
+ * unit priced at a row that is not its own is worse than unsold — so the guard
+ * refuses the unpriced case here rather than letting it travel to a checkout
+ * that would resolve the price from somewhere else.
+ *
+ * A LIVE, PRICED VARIANT IS RESOLVED AND THEN REFUSED, and that is the whole of
+ * the variant branch today. The resolution is real — it is what tells a live
+ * size apart from a spoof — but the answer is still `unknown`, because ORDER
+ * PRICING IS NOT VARIANT-AWARE: `createOrderFromCart` and `POST /checkout/quote`
+ * both read the snapshot price AND the snapshot title from the `product_commerce`
+ * row named by `productId`, and neither has any way to reach a variant. Letting a
+ * size into a cart therefore does not sell the size; it sells the parent's price
+ * under the parent's name, immutably, because an order line's snapshot is never
+ * rewritten. A cheap product with an expensive size is then the issue-#80 attack
+ * one level down, and a product whose sizes carry all the money has no price at
+ * all and cannot check out.
+ *
+ * So the branch stays closed until the thing that makes it safe exists. THE
+ * UN-GATING CRITERION, stated once: order pricing resolves the SELLABLE UNIT
+ * rather than the product row — snapshotting the variant's own price and its own
+ * title onto the line. On that day this branch returns `ok` and its pinned test
+ * flips from refusal to acceptance; nothing else here has to move.
+ *
+ * COST: one keyed read when the product's own sku matches — the storefront's
+ * hot path, and byte-for-byte the read this route already did — and a second
+ * only when it does not, which is the variant case. Both are per REQUEST, and an
+ * add carries exactly one line; there is no per-line loop here and there must
+ * never be one.
+ */
+async function resolveSellableUnit(
+	store: ProductCommerceStore,
+	productId: ProductId,
+	submittedSku: string,
+): Promise<
+	{ status: "ok"; productKind: FulfillmentKind } | { status: "unknown" } | { status: "unpriced" }
+> {
+	const product = await store.getByProductId(productId);
+	if (product === null || product.deletedAt !== null) return { status: "unknown" };
+	if (product.sku !== null && String(product.sku) === submittedSku) {
+		return product.price === null
+			? { status: "unpriced" }
+			: { status: "ok", productKind: product.productKind };
+	}
+	// The product's own sku is not the one submitted — so either this product
+	// sells through variants, or the sku belongs to somebody else entirely.
+	const variant = (await store.listVariants(productId)).find(
+		(row) => row.orphanedAt === null && row.sku !== null && String(row.sku) === submittedSku,
+	);
+	if (variant === undefined) return { status: "unknown" };
+	// BOTH ARMS RETURN `unknown` TODAY, and the lookup above is therefore
+	// SCAFFOLDING — say it plainly rather than let a reader hunt for the
+	// behavioural difference it does not make. It is held here, unobserved, for
+	// one reason: it keeps the flip to a single return statement, in the one
+	// place that already knows which rows are live and which sku was asked for.
+	// Deleting it would mean re-deriving all of that later, in a change whose
+	// risk is entirely about pricing.
+	//
+	// The refusal is deliberately the SAME token a spoof gets, so the endpoint
+	// publishes nothing about which sizes exist; and deliberately NOT `unpriced`,
+	// which would be a different and untrue statement — a priced size is priced,
+	// the price is simply one checkout cannot reach yet.
+	//
+	// When order pricing resolves the sellable unit, this return becomes
+	//     return variant.price === null
+	//         ? { status: "unpriced" }
+	//         : { status: "ok", productKind: product.productKind };
+	// — a size inheriting its product's fulfillment kind, since there is no
+	// per-variant kind on the port — and the scaffolding above becomes the thing
+	// that tells a live size apart from a spoof.
+	return { status: "unknown" };
 }
 
 function failure(c: Context, reason: CartFailure): Response {

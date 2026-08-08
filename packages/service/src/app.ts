@@ -131,7 +131,16 @@ export function createApp(deps: AppDeps): Hono {
 	app.route("/inventory", inventoryRoutes(deps));
 	app.route(
 		"/products",
-		productCommerceRoutes({ productCommerce: deps.productCommerce, inventory: deps.store }),
+		productCommerceRoutes({
+			productCommerce: deps.productCommerce,
+			inventory: deps.store,
+			// Unlocks the operator's projection of the variants read (orphaned
+			// tombstones), exactly as it does on `GET /orders/:orderId`. Spread
+			// conditionally so an unconfigured server passes no key at all rather
+			// than an explicit `undefined` — the unlock is then unavailable, never
+			// open, matching the other sub-apps threaded below.
+			...(deps.internalToken !== undefined ? { internalToken: deps.internalToken } : {}),
+		}),
 	);
 	app.route("/catalog", catalogRoutes({ productCommerce: deps.productCommerce }));
 	app.route("/carts", cartRoutes(deps));

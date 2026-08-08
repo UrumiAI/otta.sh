@@ -51,8 +51,12 @@ export const addLineBody = z.object({
 	qty: z.number().int().positive().max(CART_LINE_MAX_QTY),
 	// Phase 4: the product this line references. Optional for backward-compat with
 	// bare Phase-3 adds; REQUIRED to later check out (an order needs a priced
-	// product). When present, the service resolves the fulfillment kind from
-	// `product_commerce` (server-authoritative) so a digital line reserves nothing.
+	// product). When present it is the subject of the route's SKU GUARD, not a
+	// hint: the service resolves `sku` against THIS product's live sellable units
+	// and refuses the add if it does not name one, and it reads the fulfillment
+	// kind from the same row (server-authoritative) so a digital line reserves
+	// nothing. See `routes/carts.ts` for why a bare add is deliberately left
+	// unguarded — and why that is not the hole it looks like.
 	productId: z.string().min(1).max(200).optional(),
 });
 
@@ -457,6 +461,105 @@ export const editProductCommerceBody = z
 	.strict();
 
 export type EditProductCommerceBody = z.infer<typeof editProductCommerceBody>;
+
+// -- Variants: one wire body per WRITER, never one per row --------------------
+//
+// The two variant write bodies below are the wire half of ADR-0016's two-writer
+// split (`adr/0016-variant-title-is-cms-owned.md`), and the split is the reason
+// there are two of them rather than one merged body with optional fields: the
+// CMS sync owns the variant's presence and its display name, the admin owns its
+// sku and price, and NEITHER may reach the other's column. The port makes that
+// uncrossable in TypeScript (`UpsertProductVariantInput` has no `sku`/`price`;
+// `UpdateProductVariantFieldsInput` has no `title`); these schemas make it
+// uncrossable over HTTP, which is the layer a stale client actually reaches.
+//
+// BOTH ARE `.strict()`, for `editProductCommerceBody`'s reason restated one
+// level down: zod's default object behaviour STRIPS an unknown key, so a
+// declare that sent `price`, or an edit that sent `title`, would come back 200
+// with the field silently discarded — the failure mode most likely to be
+// misread as "it saved". A 400 is the honest answer, and it names the field.
+
+// The CMS-sync DECLARE (`PUT /products/:id/variants/:variantKey`). Carries the
+// display-name cache and the ordering watermark, and NOTHING COMMERCIAL. The
+// variant key is the identity and travels in the PATH, never here — there is no
+// field that could re-key a row (ADR-0016: a re-key is unrepresentable, not
+// merely discouraged).
+export const upsertProductVariantBody = z
+	.object({
+		// `undefined` PRESERVES the stored cache; an explicit `null` CLEARS it (a
+		// repeater row whose name sub-field is empty) — the same grain as
+		// `upsertProductCommerceBody.title`, and the same single-writer rule.
+		title: z.string().min(1).max(500).nullable().optional(),
+		// The CMS content's own `updatedAt` — ONE watermark for both presence
+		// transitions (declare and deactivate). STRICT `Date.toISOString()` format
+		// for `upsertProductCommerceBody.contentUpdatedAt`'s reason: it feeds a raw
+		// lexicographic comparison in SQL, so one garbage high-sorting value stored
+		// once would wedge every later sync as a stale no-op.
+		contentUpdatedAt: z
+			.string()
+			.regex(
+				/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/,
+				"contentUpdatedAt must be a Date.toISOString()-format UTC timestamp",
+			)
+			.optional(),
+	})
+	.strict();
+
+export type UpsertProductVariantBody = z.infer<typeof upsertProductVariantBody>;
+
+// The guarded ADMIN edit (`PATCH /products/:id/variants/:variantKey`) — the
+// exact mirror of `editProductCommerceBody`, one level down: the commerce-owned
+// fields plus the REQUIRED compare-and-set watermark. Deliberately OMITS
+// `title` (CMS-owned) and any field that could move `orphanedAt` (the presence
+// axis is a transition, not a field). `price.amount` is `.positive()`, matching
+// the domain's own `price > 0` rule so the boundary 400s before the use-case
+// throws — an absent price is expressed by leaving the field unset, never by
+// sending zero.
+export const editProductVariantBody = z
+	.object({
+		expectedUpdatedAt: z
+			.string()
+			.regex(
+				/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/,
+				"expectedUpdatedAt must be a Date.toISOString()-format UTC timestamp",
+			),
+		sku: z.string().min(1).optional(),
+		price: z
+			.object({
+				amount: z.number().int().positive(),
+				currency: z.string().regex(/^[A-Z]{3}$/),
+			})
+			.optional(),
+	})
+	.strict();
+
+export type EditProductVariantBody = z.infer<typeof editProductVariantBody>;
+
+// The ORPHAN transition (`POST /products/:id/variants/:variantKey/deactivate`).
+// The watermark is REQUIRED, because presence has two opposing transitions
+// arriving as independent fire-and-forget POSTs and only the watermark orders
+// them — the same reason `lifecycleProductCommerceBody` requires one.
+//
+// Written out rather than ALIASED to that body, and `.strict()` like its two
+// variant siblings. The two are identical today and are still not the same
+// schema: they gate different transitions on different tables, so a field added
+// to the publish gate must not silently become part of the orphan transition's
+// contract. And the alias inherited the lifecycle body's non-strict behaviour,
+// which left this one route quietly STRIPPING an unknown key while the declare
+// and the edit beside it answered 400 — the same "it saved" failure both of
+// those are `.strict()` to prevent.
+export const deactivateProductVariantBody = z
+	.object({
+		contentUpdatedAt: z
+			.string()
+			.regex(
+				/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/,
+				"contentUpdatedAt must be a Date.toISOString()-format UTC timestamp",
+			),
+	})
+	.strict();
+
+export type DeactivateProductVariantBody = z.infer<typeof deactivateProductVariantBody>;
 
 // Admin Products console: merchant restock / stock removal (admin-UX Increment
 // 2). `qty` is a positive integer count of whole units — NOT a money field, but

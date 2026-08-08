@@ -87,6 +87,119 @@ export interface ProductCommerceBatchItem {
 }
 // ── end Phase 2 catalog batch read ───────────────────────────────────────
 
+// ── Variants wire types ──────────────────────────────────────────────────
+// Mirror `@otta-sh/service`'s `serializeVariant`/`serializeVariantSummary` 1:1.
+// Money is an integer minor-unit amount + an ISO-4217 string, and ABSENT IS
+// ABSENT: an unpriced size is `null`, never `0` and never a zero-amount object.
+
+/** One sellable unit of a product, as the service serializes it. */
+export interface ProductVariantWire {
+	productId: string;
+	/** The CMS repeater row's stable, IMMUTABLE key — the variant's identity
+	 *  within its product. Never editable: neither write input carries a field
+	 *  that could change it, so a re-key does not compile. */
+	variantKey: string;
+	/** Null until an admin sets one ("declare then price"). */
+	sku: string | null;
+	/** Null means ABSENT — a different fact from zero, and never rendered as
+	 *  `0`, `0.00` or "Free". A resurrect clears a price whose currency the
+	 *  product can no longer honour, which is how a live size ends up here. */
+	price: CommerceMoney | null;
+	/** The display name — a CACHE of the CMS repeater row's name sub-field, with
+	 *  a single writer (`upsertProductVariant`). Eventually consistent. */
+	title: string | null;
+	/** The ORPHAN tombstone: non-null once the CMS stopped declaring this key.
+	 *  The row keeps its sku, price and stock — deactivation, never deletion.
+	 *
+	 *  ALWAYS NULL ON `listProductVariants` as this client calls it: it sends no
+	 *  internal token, so it receives the public projection, which is live rows
+	 *  only. Rendering an orphan distinctly — it may hold stock and sit on live
+	 *  orders — means asking the same route for the operator's projection, which
+	 *  this client does not do. */
+	orphanedAt: string | null;
+	createdAt: string;
+	/** The compare-and-set watermark an edit must pass back. */
+	updatedAt: string;
+}
+
+/** A LIST row: the variant plus the coarse stock signal the same statement
+ *  joined. The service deliberately does NOT publish the exact count on this
+ *  read (it is storefront-reachable) — `inStock` is a stock signal, so a size
+ *  whose stock is unknown reads `false`.
+ *
+ *  It is NOT purchasability on its own: it knows about the size's units and
+ *  nothing about the row above it, so it reads `true` for a stocked size of an
+ *  unpublished or soft-deleted product. Offer a size only when its PARENT's
+ *  `active` says the product is — the same join the product level already
+ *  makes (`purchasable ⟺ commerce !== null && commerce.active`). */
+export interface ProductVariantSummaryWire extends ProductVariantWire {
+	inStock: boolean;
+}
+
+/** The CMS-sync DECLARE's body — presence + the name cache, NOTHING
+ *  commercial. `sku` and `price` are absent BY DESIGN (ADR-0016): a sync that
+ *  could write them would be a second writer racing the admin. */
+export interface UpsertProductVariantInput {
+	/** `undefined` PRESERVES the stored cache; an explicit `null` CLEARS it. */
+	title?: string | null;
+	/** The CMS content's `updatedAt` — one ordering watermark for BOTH presence
+	 *  transitions. A resurrect applies only on a STRICTLY NEWER value. */
+	contentUpdatedAt?: string;
+}
+
+/** The ADMIN edit's body — the commerce-owned fields only. `title` is absent BY
+ *  DESIGN: the console renders a variant's name as read-only text. */
+export interface UpdateProductVariantFieldsInput {
+	/** A DIFFERENT value than the row holds is a RENAME, which carries the sku's
+	 *  on-hand count with it or refuses — never a silent stranding. */
+	sku?: string;
+	price?: CommerceMoney;
+}
+
+/**
+ * The guarded edit's outcome. Every refusal is a VALUE, not a thrown error, so
+ * a console renders all of them without branching on an HTTP status.
+ *
+ * EVERY OPERAND IS NULLABLE, and none of them has a default. The token is what a
+ * caller branches on; the operands only sharpen the sentence it renders, and a
+ * missing one means THE SERVICE DID NOT SAY — a different fact from any value
+ * this client could invent. Both plausible defaults are actively harmful. A
+ * `liveHolds` of `0` states that no holds exist, beside a refusal caused BY
+ * holds — the one number the console's own rule forbids rendering there, and a
+ * flat contradiction of the message it sits in. A `currentUpdatedAt` of `""`
+ * re-submits as a watermark that cannot match, turning one recoverable stale
+ * edit into a guaranteed second one. A null renders as "unavailable" and the
+ * operator reloads; a fabricated value renders as a fact and the operator acts
+ * on it.
+ */
+export type VariantUpdateResult =
+	| { ok: true; variant: ProductVariantWire }
+	/** Unknown key, or an ORPHANED row — an edit is neither a create nor a
+	 *  resurrection; the way back is the CMS re-declaring the key. */
+	| { ok: false; reason: "VARIANT_NOT_FOUND" }
+	/** Someone else saved first. `currentUpdatedAt` is the watermark to reload
+	 *  from and re-submit against — null when the service did not send one, which
+	 *  means RELOAD THE ROW, never "re-submit an empty watermark". */
+	| { ok: false; reason: "STALE_EDIT"; currentUpdatedAt: string | null }
+	/** The price disagrees with the currency the variant, or its product, is
+	 *  anchored to. `currency` is THE VARIANT'S OWN, and null when it has none
+	 *  yet — the archetypal case, a first pricing refused against the PRODUCT's
+	 *  currency. Null is "nothing yet", never "no conflict". */
+	| { ok: false; reason: "CURRENCY_MISMATCH"; currency: string | null }
+	/** Price must be > 0 — an absent price is expressed by omitting the field. */
+	| { ok: false; reason: "INVALID_FIELD"; field: string | null }
+	/** Another LIVE sellable unit — a product OR a variant — already holds it. */
+	| { ok: false; reason: "SKU_TAKEN"; sku: string | null }
+	/** A rename onto a sku that already has its own inventory row. Stock is never
+	 *  merged between skus, so the operator decides. */
+	| { ok: false; reason: "SKU_STOCK_CONFLICT"; fromSku: string | null; toSku: string | null }
+	/** A rename away from a sku that still has live holds. Short-lived by
+	 *  construction — a "try again shortly", not a dead end. `liveHolds` is null
+	 *  when the count did not arrive; it is NEVER 0, because a zero beside this
+	 *  refusal contradicts the refusal. */
+	| { ok: false; reason: "SKU_HELD_STOCK"; sku: string | null; liveHolds: number | null };
+// ── end variants wire types ──────────────────────────────────────────────
+
 export interface CommerceClient {
 	upsertProductCommerce(
 		productId: string,
@@ -121,6 +234,48 @@ export interface CommerceClient {
 	// the delimiters so the diff surfaces stay additive.)
 	getCommerceBatch(productIds: string[]): Promise<ProductCommerceBatchItem[]>;
 	// ── end Phase 2 catalog batch read ────────────────────────────────────
+
+	// ── Variants: one method per WRITER, never one per row ────────────────
+	// Mirrors the service's `/products/:id/variants*` routes 1:1, and mirrors
+	// the two-writer split those routes enforce (ADR-0016): the sync declares
+	// presence + the display name, the admin sets sku + price, and neither
+	// input type carries the other's fields — so crossing the line does not
+	// compile here either, not merely 400 at the wire.
+	/** LIVE variants only. The service serves this read in two projections off
+	 *  one route — anonymous callers get live rows, a caller holding
+	 *  `X-Internal-Token` gets every row with orphans flagged — and this client
+	 *  is the STOREFRONT's, so it never sends that header and never receives a
+	 *  tombstone (a discontinued size's name and last price are not public data).
+	 *  A console that needs tombstones asks for the operator's projection. */
+	listProductVariants(productId: string): Promise<ProductVariantSummaryWire[]>;
+	/** The CMS-sync DECLARE. Brings a variant into existence, refreshes its
+	 *  name cache, and RESURRECTS an orphan — it never refuses presence, so
+	 *  there is no typed-failure envelope to normalize. */
+	upsertProductVariant(
+		productId: string,
+		variantKey: string,
+		input: UpsertProductVariantInput,
+		idempotencyKey: string,
+	): Promise<ProductVariantWire>;
+	/** The guarded ADMIN edit. `expectedUpdatedAt` is the compare-and-set
+	 *  watermark read off the row; every refusal is a typed result, never a
+	 *  thrown transport error. */
+	updateProductVariantFields(
+		productId: string,
+		variantKey: string,
+		input: UpdateProductVariantFieldsInput,
+		expectedUpdatedAt: string,
+		idempotencyKey: string,
+	): Promise<VariantUpdateResult>;
+	/** The ORPHAN transition — deactivation, never deletion; an unknown key is
+	 *  a no-op, so this resolves for a key that was never declared. */
+	deactivateProductVariant(
+		productId: string,
+		variantKey: string,
+		idempotencyKey: string,
+		contentUpdatedAt: string,
+	): Promise<void>;
+	// ── end variants ──────────────────────────────────────────────────────
 
 	// ── Phase 3 group E: cart (plan §6, wire mirrors @otta-sh/service's ─────
 	// `/carts` routes 1:1, hand-rolled like the wire types above — the
@@ -432,7 +587,20 @@ export type CartFailureReason =
 	// `productId` disagree with the trusted catalog (issue #80 review). The
 	// service returns it as a 409 typed envelope; `#cartResult` normalizes it
 	// like any other typed cart failure.
-	| "SKU_MISMATCH";
+	//
+	// Since the add endpoint's SKU guard the token covers the whole of "this sku
+	// does not name a live sellable unit of that product": an unknown or
+	// soft-deleted product, a sku belonging to a different product, and a sku
+	// whose variant the CMS has since orphaned. The caller's response is the same
+	// in every case — do not re-derive which one it was, the service deliberately
+	// does not say.
+	| "SKU_MISMATCH"
+	// The second route-level reject from the same guard: the sku DOES name a live
+	// sellable unit of the product, and nothing has priced it — a variant whose
+	// price a resurrect cleared is exactly this state. The same token the quote
+	// and checkout paths already use, raised earlier so a shopper is told at the
+	// Add button rather than at the last step.
+	| "PRODUCT_NOT_PRICED";
 
 export type CartResult<T> = ({ ok: true } & T) | { ok: false; reason: CartFailureReason };
 // ── end Phase 3 group E: cart wire types ───────────────────────────────────
