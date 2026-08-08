@@ -6,6 +6,7 @@ import {
 	MAX_LOW_STOCK_THRESHOLD,
 	MissingProductIdError,
 	SkuConflictError,
+	SkuHeldStockError,
 	SkuStockConflictError,
 } from "../product-commerce/errors.js";
 import type { ProductCommerce, ProductCommerceStore } from "../ports/product-commerce-store.js";
@@ -23,6 +24,18 @@ export interface ProductCommerceStoreHarness {
 	 *  the Kysely harness inserts a real row — so fake, sqlite, and pg exercise
 	 *  the identical `listProducts` spec (mirrors `OrderStoreHarness.seedOrder`). */
 	seedProduct(row: SeedProductSummaryRow): Promise<void>;
+	/**
+	 * Put a LIVE (`held`) reservation on a sku — step 0 of THE SKU-RENAME RULE,
+	 * which refuses to rename away from a sku that still has one. The dialect
+	 * harness inserts a real `reservations` row; the fake harness feeds the
+	 * fake's live-hold lookup.
+	 *
+	 * Models the reservation row ONLY, not the `on_hand` decrement a real
+	 * `reserve` would also make — the rule branches on the hold's EXISTENCE, and
+	 * a case that cares about the count seeds it separately with `seedStock`.
+	 * Seed the sku's stock first: `reservations.sku` references `inventory.sku`.
+	 */
+	seedHold(sku: string, qty: number): Promise<void>;
 }
 
 /** Seed a priced live product via upsert; return its post-seed row (its
@@ -754,6 +767,96 @@ export function productCommerceStoreContract(
 				expect(after?.sku).toBe("SKU-UX-FROM");
 				expect(after?.idempotencyKey).toBe("ux-1");
 				expect(await onHandOf(h, "prod-ux")).toBe(4);
+			});
+
+			test("a rename away from a sku with a LIVE hold is refused, naming the sku and the count", async () => {
+				const h = await makeStore();
+				const seeded = await seedEditable(h, "prod-held", { sku: "SKU-HELD" });
+				await h.seedStock("SKU-HELD", 20);
+				await h.seedHold("SKU-HELD", 3);
+
+				// The hold's units are already out of on_hand, and the hold itself
+				// cannot follow the rename — so the carry has nothing honest to do
+				// with them, and the whole write waits.
+				await expect(
+					h.store.updateCommerceFields(
+						{ productId: productId("prod-held"), sku: sku("SKU-HELD-NEW") },
+						idempotencyKey("rename-held"),
+						seeded.updatedAt.toISOString(),
+					),
+				).rejects.toMatchObject({ name: "SkuHeldStockError", sku: "SKU-HELD", liveHolds: 1 });
+
+				const after = await h.store.getByProductId(productId("prod-held"));
+				expect(after?.sku).toBe("SKU-HELD");
+				expect(after?.idempotencyKey).toBe("seed-prod-held");
+				expect(await onHandOf(h, "prod-held")).toBe(20);
+				// The target sku was never even claimed.
+				expect(await onHandOfSku(h, "probe-held", "SKU-HELD-NEW")).toBeNull();
+			});
+
+			test("the live-hold refusal is a typed domain error, and applies to upsert too", async () => {
+				const h = await makeStore();
+				const seeded = await seedEditable(h, "prod-held-typed", { sku: "SKU-HT" });
+				await h.seedStock("SKU-HT", 4);
+				await h.seedHold("SKU-HT", 1);
+
+				await expect(
+					h.store.updateCommerceFields(
+						{ productId: productId("prod-held-typed"), sku: sku("SKU-HT-NEW") },
+						idempotencyKey("ht-1"),
+						seeded.updatedAt.toISOString(),
+					),
+				).rejects.toBeInstanceOf(SkuHeldStockError);
+
+				// Same rule, other writer — it belongs to the column, not the caller.
+				await expect(
+					h.store.upsert(
+						{ productId: productId("prod-held-typed"), sku: sku("SKU-HT-NEW2") },
+						idempotencyKey("ht-2"),
+					),
+				).rejects.toBeInstanceOf(SkuHeldStockError);
+				expect((await h.store.getByProductId(productId("prod-held-typed")))?.sku).toBe("SKU-HT");
+			});
+
+			test("a live hold on the sku does NOT block an edit that leaves the sku alone", async () => {
+				const h = await makeStore();
+				const seeded = await seedEditable(h, "prod-held-other", { sku: "SKU-HO" });
+				await h.seedStock("SKU-HO", 5);
+				await h.seedHold("SKU-HO", 2);
+
+				// The refusal is the RENAME's, not the sku's: a busy product stays
+				// fully editable on every other field, and on its own sku re-supplied.
+				const res = await h.store.updateCommerceFields(
+					{ productId: productId("prod-held-other"), sku: sku("SKU-HO"), taxClass: "reduced" },
+					idempotencyKey("ho-1"),
+					seeded.updatedAt.toISOString(),
+				);
+				expect(res.ok).toBe(true);
+				expect(await onHandOf(h, "prod-held-other")).toBe(5);
+			});
+
+			test("THE FIRST-SKU ASYMMETRY: a first sku ADOPTS an existing inventory row, where a rename would have refused", async () => {
+				const h = await makeStore();
+				const bare = await h.store.upsert(
+					{ productId: productId("prod-adopt") },
+					idempotencyKey("seed-adopt"),
+				);
+				// Units already parked under the sku — the state a rename refuses.
+				await h.seedStock("SKU-ADOPTED", 33);
+
+				const res = await h.store.updateCommerceFields(
+					{ productId: productId("prod-adopt"), sku: sku("SKU-ADOPTED") },
+					idempotencyKey("adopt-1"),
+					bare.updatedAt.toISOString(),
+				);
+
+				// Deliberate, and the pre-existing seed/heal semantics rather than a
+				// new decision (see THE FIRST-SKU ASYMMETRY on the port): a product
+				// re-linked to a sku it used to own gets its stock back this way, and
+				// there is no second count to reconcile because it had none. Renames
+				// refuse; first assignment adopts.
+				expect(res.ok).toBe(true);
+				expect(await onHandOf(h, "prod-adopt")).toBe(33);
 			});
 
 			test("upsert: a STALE (reordered) sync whose sku was REJECTED carries nothing", async () => {

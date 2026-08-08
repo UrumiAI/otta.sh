@@ -1,5 +1,4 @@
 import { idempotencyKey, productId, sku, SkuStockConflictError } from "@otta-sh/domain";
-import { FixedClock } from "@otta-sh/domain/testing";
 import type { Kysely } from "kysely";
 import { afterEach, describe, expect, test } from "vitest";
 import { KyselyInventoryStore, KyselyProductCommerceStore, uuidIdGen } from "../src/index.js";
@@ -16,8 +15,35 @@ import { createIsolatedPgSchema } from "../src/testing.js";
 // fail cleanly and leave BOTH products exactly as they were, and the units must
 // be conserved to the unit — never duplicated onto the target, never lost
 // between the two rows.
+//
+// BOTH WRITERS ARE RACED, deliberately. `updateCommerceFields` is protected by
+// its compare-and-set on `updated_at`; `upsert` has NO such guard, so it is the
+// one whose before-read has to take the row lock itself, and the one whose
+// races below would go quiet first if that lock were dropped.
 
 const PG = process.env.PG_CONNECTION_STRING;
+
+/**
+ * A clock that ADVANCES a millisecond per reading — the whole point.
+ *
+ * A `FixedClock` here would make `updated_at` identical on every write, which
+ * silently turns `updateCommerceFields`'s compare-and-set into a guard that
+ * always passes: a same-product race would then "pass" while proving nothing,
+ * because the CAS it depends on was never actually exercised. Real writers read
+ * a moving clock, so these cases do too.
+ */
+class TickingClock {
+	#at: number;
+
+	constructor(start: string) {
+		this.#at = new Date(start).getTime();
+	}
+
+	now(): Date {
+		this.#at += 1;
+		return new Date(this.#at);
+	}
+}
 
 interface PgFixture {
 	products: KyselyProductCommerceStore;
@@ -42,7 +68,7 @@ async function freshPg(poolMax: number): Promise<PgFixture> {
 	const iso = await createIsolatedPgSchema(PG, { poolMax });
 	cleanups.push(() => iso.teardown());
 	const db = iso.db;
-	const clock = new FixedClock(new Date("2026-07-10T00:00:00.000Z"));
+	const clock = new TickingClock("2026-07-10T00:00:00.000Z");
 	const products = new KyselyProductCommerceStore({ db, clock });
 	const inventory = new KyselyInventoryStore({ db, idGen: uuidIdGen, clock });
 	return {
@@ -212,6 +238,10 @@ describe.skipIf(PG === undefined)("sku rename concurrency [postgres]", () => {
 	test("a rename racing a SEED of the target sku: the claim decides it, and the loser is still a typed refusal", async () => {
 		const LOOPS = 30;
 		const h = await freshPg(8);
+		// An interleaving case that only ever took ONE branch would assert half of
+		// what it claims and never say so. Counted, then asserted at the end.
+		let renameWon = 0;
+		let seedWon = 0;
 
 		for (let loop = 0; loop < LOOPS; loop++) {
 			const id = `seed-race-${loop}`;
@@ -235,6 +265,8 @@ describe.skipIf(PG === undefined)("sku rename concurrency [postgres]", () => {
 			]);
 
 			if (renamed === undefined) throw new Error("no result");
+			if (renamed.status === "rejected") seedWon++;
+			else renameWon++;
 			if (renamed.status === "rejected") {
 				// The seed got there first. That MUST arrive as the typed refusal —
 				// a naive "look, then insert" would surface the collision as a raw
@@ -260,6 +292,159 @@ describe.skipIf(PG === undefined)("sku rename concurrency [postgres]", () => {
 			const total = ((await h.onHand(from)) ?? 0) + ((await h.onHand(target)) ?? 0);
 			expect(total, `loop ${loop}: conservation`).toBe(40);
 		}
+
+		// Both interleavings actually happened, so both branches above were
+		// genuinely asserted rather than merely written down.
+		expect(renameWon, "the rename-first branch fired").toBeGreaterThan(0);
+		expect(seedWon, "the seed-first branch fired").toBeGreaterThan(0);
+	}, 120_000);
+
+	// -- upsert: the writer with NO compare-and-set -------------------------
+	//
+	// `updateCommerceFields` is guarded by its CAS on `updated_at`, so an
+	// interleaved write turns it into `stale` and the carry never runs on a sku
+	// that moved underneath it. `upsert` has no such guard: its before-read is
+	// the only thing standing between a concurrent rename and a carry against a
+	// sku the row no longer holds, which is why the read takes the row lock and
+	// why these three cases exist.
+
+	test("upsert: two concurrent renames of ONE product to DIFFERENT skus chain — the second carries from the first's result, not from a stale read", async () => {
+		const LOOPS = 20;
+		const h = await freshPg(8);
+		let bWon = 0;
+		let cWon = 0;
+
+		for (let loop = 0; loop < LOOPS; loop++) {
+			const id = `up-diff-${loop}`;
+			const from = `SKU-UD-FROM-${loop}`;
+			const toB = `SKU-UD-B-${loop}`;
+			const toC = `SKU-UD-C-${loop}`;
+			await h.seedProduct(id, from, 40);
+
+			// With a plain SELECT before-read this is the silent-stranding case: the
+			// loser reads `from`, the winner moves the units to its own target, and
+			// the loser then carries an already-empty `from` to ITS target — leaving
+			// 40 units under a sku no product owns, with no error raised anywhere.
+			const results = await Promise.allSettled([
+				h.products.upsert(
+					{ productId: productId(id), sku: sku(toB) },
+					idempotencyKey(`ud-b-${loop}`),
+				),
+				h.products.upsert(
+					{ productId: productId(id), sku: sku(toC) },
+					idempotencyKey(`ud-c-${loop}`),
+				),
+			]);
+
+			// Both writes are legal — they serialize rather than conflict — so both
+			// must succeed, and the row ends on whichever committed last.
+			for (const r of results) {
+				expect(r.status, `loop ${loop}: both upserts apply`).toBe("fulfilled");
+			}
+			const finalSku = await h.skuOf(id);
+			if (finalSku === null) throw new Error(`loop ${loop}: the product lost its sku`);
+			expect([toB, toC], `loop ${loop}`).toContain(finalSku);
+			if (finalSku === toB) bWon++;
+			else cWon++;
+
+			// THE ASSERTION THAT BITES: every unit is under the sku the product
+			// actually holds. A stale before-read parks them under the other target.
+			expect(await h.onHand(finalSku), `loop ${loop}: units follow the product`).toBe(40);
+			const orphan = finalSku === toB ? toC : toB;
+			expect(await h.onHand(from), `loop ${loop}: original source emptied`).toBe(0);
+			expect(await h.onHand(orphan), `loop ${loop}: intermediate sku emptied`).toBe(0);
+			const total =
+				((await h.onHand(from)) ?? 0) + ((await h.onHand(toB)) ?? 0) + ((await h.onHand(toC)) ?? 0);
+			expect(total, `loop ${loop}: conservation`).toBe(40);
+		}
+
+		expect(bWon + cWon, "every loop resolved").toBe(LOOPS);
+	}, 120_000);
+
+	test("upsert: two concurrent renames of one product to the SAME sku both succeed — the second sees the rename already done, not a conflict it did not cause", async () => {
+		const LOOPS = 20;
+		const h = await freshPg(8);
+
+		for (let loop = 0; loop < LOOPS; loop++) {
+			const id = `up-same-${loop}`;
+			const from = `SKU-US-FROM-${loop}`;
+			const to = `SKU-US-TO-${loop}`;
+			await h.seedProduct(id, from, 18);
+
+			const results = await Promise.allSettled([
+				h.products.upsert(
+					{ productId: productId(id), sku: sku(to) },
+					idempotencyKey(`us-1-${loop}`),
+				),
+				h.products.upsert(
+					{ productId: productId(id), sku: sku(to) },
+					idempotencyKey(`us-2-${loop}`),
+				),
+			]);
+
+			// A stale before-read makes the second racer think it is renaming
+			// from → to all over again, find `to` occupied by the first, and refuse
+			// with a SkuStockConflictError against a conflict the operator never
+			// created. Read through the lock, it sees the row already at `to`,
+			// compares equal, and carries nothing.
+			for (const r of results) {
+				const why = r.status === "rejected" ? String((r.reason as Error).message) : "";
+				expect(r.status, `loop ${loop}: no spurious refusal — ${why}`).toBe("fulfilled");
+			}
+			expect(await h.skuOf(id), `loop ${loop}`).toBe(to);
+			expect(await h.onHand(to), `loop ${loop}: carried exactly once`).toBe(18);
+			expect(await h.onHand(from), `loop ${loop}: source emptied`).toBe(0);
+		}
+	}, 120_000);
+
+	test("upsert racing a CAS edit on the same product: whichever lands second sees the first, and the units are never split", async () => {
+		const LOOPS = 20;
+		const h = await freshPg(8);
+		let editApplied = 0;
+		let editStaleOrRefused = 0;
+
+		for (let loop = 0; loop < LOOPS; loop++) {
+			const id = `up-cas-${loop}`;
+			const from = `SKU-UC-FROM-${loop}`;
+			const viaUpsert = `SKU-UC-UP-${loop}`;
+			const viaEdit = `SKU-UC-ED-${loop}`;
+			const wm = await h.seedProduct(id, from, 12);
+
+			// The two writers with different guards, aimed at the same row: the
+			// integrator PUT and the console's guarded edit, renaming to different
+			// skus at the same moment.
+			const [up, ed] = await Promise.allSettled([
+				h.products.upsert(
+					{ productId: productId(id), sku: sku(viaUpsert) },
+					idempotencyKey(`uc-up-${loop}`),
+				),
+				h.products.updateCommerceFields(
+					{ productId: productId(id), sku: sku(viaEdit) },
+					idempotencyKey(`uc-ed-${loop}`),
+					wm,
+				),
+			]);
+
+			// The upsert always applies (last-writer-wins by design). The edit
+			// either got in first, or lost its CAS and reported `stale` — the
+			// clock advances, so that guard is real here.
+			expect(up?.status, `loop ${loop}: the upsert applies`).toBe("fulfilled");
+			if (ed?.status === "fulfilled" && ed.value.ok) editApplied++;
+			else editStaleOrRefused++;
+
+			const finalSku = await h.skuOf(id);
+			if (finalSku === null) throw new Error(`loop ${loop}: the product lost its sku`);
+			// However they interleaved, the product's units are under the product's
+			// own sku and the total is intact across every sku involved.
+			expect(await h.onHand(finalSku), `loop ${loop}: units follow the product`).toBe(12);
+			const total =
+				((await h.onHand(from)) ?? 0) +
+				((await h.onHand(viaUpsert)) ?? 0) +
+				((await h.onHand(viaEdit)) ?? 0);
+			expect(total, `loop ${loop}: conservation`).toBe(12);
+		}
+
+		expect(editApplied + editStaleOrRefused, "every loop resolved").toBe(LOOPS);
 	}, 120_000);
 
 	test("a rename racing a restock of the sku it is leaving conserves every unit", async () => {

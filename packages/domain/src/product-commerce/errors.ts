@@ -53,8 +53,15 @@ export class SkuConflictError extends Error {
  * since the source row is retained (at zero) rather than deleted.
  *
  * Both skus are named so an operator can act on the message without opening a
- * database; `@otta-sh/service` maps it to a structured 409, never an opaque
- * 500.
+ * database.
+ *
+ * NOT YET MAPPED AT THE HTTP BOUNDARY — stated as intent, not as fact.
+ * `@otta-sh/service` has no arm for this error today, so it falls through to
+ * the generic handler and reaches the console as an `internal_error` 500; the
+ * message above currently survives only in the service log. Mapping it to a
+ * structured 409 beside `SkuConflictError`'s `SKU_TAKEN`, and rendering it as a
+ * per-field warning on the Pricing & inventory form, is the intended follow-up.
+ * Until then the refusal is correct and atomic, but not legible in the UI.
  */
 export class SkuStockConflictError extends Error {
 	/** The sku the product holds today — the one whose units would have moved. */
@@ -71,6 +78,59 @@ export class SkuStockConflictError extends Error {
 		this.name = "SkuStockConflictError";
 		this.fromSku = fromSku;
 		this.toSku = toSku;
+	}
+}
+
+/**
+ * Domain error for a SKU RENAME whose SOURCE sku still has live reservations
+ * against it. Raised by every `ProductCommerceStore` adapter from inside the
+ * same transaction as the product-row write, exactly like
+ * {@link SkuStockConflictError}: the rename is not applied and no stock moves.
+ *
+ * WHY A CARRY IS NOT ENOUGH WHILE A HOLD IS LIVE. The carry moves `on_hand` —
+ * the AVAILABLE units — and a `held`/`adopted` reservation's units are already
+ * OUT of that count, decremented when the hold was taken. The hold itself is
+ * keyed by `reservations.sku`, which still names the OLD sku, and it cannot
+ * follow the rename: `reservations.sku` references `inventory.sku`, so the row
+ * can be neither re-keyed nor deleted. Every later transition on that hold
+ * therefore lands on the source row the rename left behind and zeroed:
+ *  - `release` / `releaseAdopted` (a cart expiring, an order failing) CREDITS
+ *    the units back to the source sku — units that silently leave the product,
+ *    reappearing under a sku nothing points at;
+ *  - a downward `adjust` credits the same orphaned row;
+ *  - an upward `adjust` decrements the SOURCE, which the rename just emptied,
+ *    so a shopper enlarging a live cart line gets a spurious OUT_OF_STOCK while
+ *    the product's real units sit under the new sku.
+ * Carrying the holds instead was considered and rejected: it is a second
+ * movement with its own races, and the standing pattern for a state the domain
+ * cannot honestly reconcile is to refuse rather than pick a winner.
+ *
+ * So a rename waits for the holds to finish. They are all short-lived by
+ * construction — a cart hold expires on its deadline and the sweep releases it,
+ * an adopted hold commits or releases with its order — so this is a "try again
+ * shortly", not a dead end, and the message says so. The sku and the number of
+ * live holds are named so an operator can tell a busy product from a stuck one.
+ *
+ * NOT YET MAPPED AT THE HTTP BOUNDARY, exactly like its sibling above: it
+ * currently reaches the console as an `internal_error` 500. A structured 409
+ * and a legible "this SKU has N reservations in flight — try again in a few
+ * minutes" is the same follow-up.
+ */
+export class SkuHeldStockError extends Error {
+	/** The sku being renamed away from — the one the live holds still name. */
+	readonly sku: string;
+	/** How many `held`/`adopted` reservations still reference it. */
+	readonly liveHolds: number;
+
+	constructor(sku: string, liveHolds: number) {
+		super(
+			`cannot rename sku "${sku}": ${String(liveHolds)} live reservation(s) still reference it, ` +
+				"and a reservation cannot follow a rename — its units would return to the old sku when " +
+				"the cart or order finishes. Retry once the holds are committed, released, or expired",
+		);
+		this.name = "SkuHeldStockError";
+		this.sku = sku;
+		this.liveHolds = liveHolds;
 	}
 }
 

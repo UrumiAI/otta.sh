@@ -579,7 +579,7 @@ describe("the sku ⇒ inventory-row invariant (PR 1a)", () => {
 });
 
 /**
- * THE SKU-RENAME RULE, from the CALLER's side (W1). The rule itself is the
+ * THE SKU-RENAME RULE, from the CALLER's side. The rule itself is the
  * store's — only it can move stock atomically with the row write, and the
  * contract suite pins it there, on every adapter. What can only be seen from
  * here is the COMPOSITION: `updateProductCommerceFields` follows every `ok`

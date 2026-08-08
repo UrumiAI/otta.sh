@@ -19,6 +19,7 @@ import {
 	isValidLowStockThreshold,
 	MissingProductIdError,
 	SkuConflictError,
+	SkuHeldStockError,
 	SkuStockConflictError,
 } from "../product-commerce/errors.js";
 
@@ -91,6 +92,17 @@ export interface InMemoryProductCommerceStoreOptions {
 	 * re-seeding a carried sku or supply a shared writer here.
 	 */
 	writeInventoryOnHand?: (sku: string, onHand: number) => void;
+	/**
+	 * How many LIVE (`held`/`adopted`) reservations reference a sku — the fake's
+	 * stand-in for the adapters' `reservations` count, and step 0 of THE
+	 * SKU-RENAME RULE: a rename AWAY from a sku with live holds is refused,
+	 * because a hold's units are already out of `on_hand` (so the carry cannot
+	 * move them) and the hold itself cannot follow the rename.
+	 *
+	 * Defaults to "no holds" — which is the truth for a harness that has no
+	 * reservations at all, so a store built without it behaves as it always did.
+	 */
+	liveHoldsOnSku?: (sku: string) => number;
 }
 
 /**
@@ -132,11 +144,13 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 	 *  writer was supplied — layered OVER `#inventoryOnHand` so the fake models
 	 *  one inventory table rather than a read-only view plus a lost write. */
 	#localOnHand = new Map<string, number>();
+	#liveHoldsOnSku: (sku: string) => number;
 
 	constructor(options: InMemoryProductCommerceStoreOptions) {
 		this.#clock = options.clock;
 		this.#inventoryOnHand = options.inventoryOnHand ?? (() => null);
 		this.#writeInventoryOnHand = options.writeInventoryOnHand;
+		this.#liveHoldsOnSku = options.liveHoldsOnSku ?? (() => 0);
 	}
 
 	/** The one inventory read every projection and predicate goes through:
@@ -159,14 +173,18 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 	 * AFTER values, so a write that changes no sku (a same-key replay, a stale
 	 * sync no-op, a re-supplied identical sku) never reaches it.
 	 *
-	 * Claim the target FIRST: a row already there refuses the whole write —
-	 * occupied is occupied, whatever it holds. Only then move the source's
-	 * count and zero the source, retaining that row. Mirrors the SQL adapters'
-	 * `INSERT … ON CONFLICT (sku) DO NOTHING RETURNING` claim byte-for-byte,
-	 * including minting the target at `0` when the source has no row to carry.
+	 * Live holds on the SOURCE refuse FIRST (rule step 0): their units are
+	 * already out of `on_hand`, and the hold cannot follow the rename. Then
+	 * claim the target — a row already there refuses too, occupied being
+	 * occupied whatever it holds. Only then move the source's count and zero the
+	 * source, retaining that row. Mirrors the SQL adapters' statement order
+	 * byte-for-byte, including minting the target at `0` when the source has no
+	 * row to carry.
 	 */
 	#carrySkuStock(fromSku: string, toSku: string): void {
 		if (fromSku === toSku) return;
+		const liveHolds = this.#liveHoldsOnSku(fromSku);
+		if (liveHolds > 0) throw new SkuHeldStockError(fromSku, liveHolds);
 		if (this.#readOnHand(toSku) !== null) throw new SkuStockConflictError(fromSku, toSku);
 		this.#writeOnHand(toSku, 0);
 		const carried = this.#readOnHand(fromSku);

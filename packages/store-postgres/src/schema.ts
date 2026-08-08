@@ -87,7 +87,7 @@ export interface InventoryAdjustmentsTable {
 	created_at: string;
 }
 
-export type StockMovementDirection = "restock" | "removal";
+export type StockMovementDirection = "restock" | "removal" | "rename_out" | "rename_in";
 export type StockMovementOutcome = "ok" | "insufficient_stock";
 
 /**

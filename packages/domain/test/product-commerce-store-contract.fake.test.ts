@@ -15,9 +15,14 @@ import {
 productCommerceStoreContract(
 	async () => {
 		const onHand = new Map<string, number>();
+		// Live (`held`) reservations per sku — the fake's stand-in for the
+		// `reservations` rows the dialect harnesses insert, feeding step 0 of THE
+		// SKU-RENAME RULE (a rename away from a held sku is refused).
+		const liveHolds = new Map<string, number>();
 		const store = new InMemoryProductCommerceStore({
 			clock: new FixedClock(new Date("2026-07-10T00:00:00.000Z")),
 			inventoryOnHand: (sku) => onHand.get(sku) ?? null,
+			liveHoldsOnSku: (sku) => liveHolds.get(sku) ?? 0,
 		});
 		return {
 			store,
@@ -26,6 +31,9 @@ productCommerceStoreContract(
 			},
 			async seedProduct(row) {
 				store.seedProductRow(row);
+			},
+			async seedHold(sku) {
+				liveHolds.set(sku, (liveHolds.get(sku) ?? 0) + 1);
 			},
 		};
 	},

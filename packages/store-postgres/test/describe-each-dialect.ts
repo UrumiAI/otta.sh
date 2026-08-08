@@ -119,6 +119,24 @@ function buildProductCommerceHarness(db: Kysely<Database>): ProductCommerceStore
 	const clock = new FixedClock(new Date("2026-07-10T00:00:00.000Z"));
 	return {
 		store: new KyselyProductCommerceStore({ db, clock }),
+		// A real `held` reservation row — step 0 of THE SKU-RENAME RULE reads
+		// `reservations` directly, so the contract's refusal cases need the
+		// genuine row rather than a flag (its `sku` FK onto `inventory` is why
+		// those cases seed the sku's stock first).
+		async seedHold(sku, qty) {
+			const seq = holdSeedSeq++;
+			await db
+				.insertInto("reservations")
+				.values({
+					id: `hold-${sku}-${String(seq)}`,
+					sku,
+					qty,
+					state: "held",
+					idempotency_key: `hold-key-${sku}-${String(seq)}`,
+					created_at: "2026-07-10T00:00:00.000Z",
+				})
+				.execute();
+		},
 		// Phase 2 (`listCommerceByIds`): seed the REAL inventory table the
 		// store's single-statement inStock join reads.
 		async seedStock(sku, qty) {
@@ -163,6 +181,11 @@ function buildProductCommerceHarness(db: Kysely<Database>): ProductCommerceStore
 		},
 	};
 }
+
+/** Monotonic id/idempotency-key source for `buildProductCommerceHarness.
+ *  seedHold` — `reservations.idempotency_key` is UNIQUE, and one sku may carry
+ *  several holds. */
+let holdSeedSeq = 0;
 
 /** Fresh, isolated in-memory SQLite db, migrated to latest. */
 export async function makeSqliteProductCommerceHarness(): Promise<ProductCommerceStoreHarness> {

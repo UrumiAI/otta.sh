@@ -487,6 +487,18 @@ export interface ProductCommerceView {
  * neither writer may skip it. When a write changes a row's `sku` from one
  * non-null value to another, the adapter MUST, in the SAME transaction as the
  * product-row write:
+ *  0. REFUSE while any LIVE (`held`/`adopted`) reservation still references the
+ *     SOURCE sku — `SkuHeldStockError`, naming the sku and how many. A hold's
+ *     units are already OUT of `on_hand`, so the carry cannot move them, and the
+ *     hold cannot follow the rename (`reservations.sku` references
+ *     `inventory.sku`, so it can be neither re-keyed nor deleted). Left alone,
+ *     every later transition on that hold lands on the row the rename emptied: a
+ *     release credits units back to a sku no product owns, and an upward adjust
+ *     fails OUT_OF_STOCK against a zero the shopper cannot see. Holds are
+ *     short-lived by construction (a cart hold expires and is swept; an adopted
+ *     hold commits or releases with its order), so this is "retry shortly", not
+ *     a dead end. Migrating the holds instead was rejected — see
+ *     `SkuHeldStockError`.
  *  1. CLAIM the target sku's inventory row. If a row already exists there the
  *     whole write is REFUSED with `SkuStockConflictError` naming both skus —
  *     nothing is renamed, nothing moves. Occupied is occupied: the refusal does
@@ -510,6 +522,28 @@ export interface ProductCommerceView {
  * anyway (that always-attempt seed stays UNCONDITIONAL — the carry never turns
  * it into a conditional write; see `upsertProductCommerce` /
  * `updateProductCommerceFields`).
+ *
+ * THE FIRST-SKU ASYMMETRY, deliberate and pinned by the contract suite. Setting
+ * the FIRST sku on a row that had none is NOT a rename, so none of the above
+ * runs — and if that sku already has an inventory row, the product simply
+ * ADOPTS it, units and all, where a rename onto the same row would have been
+ * refused. This is the pre-existing seed/heal semantics, not a new decision:
+ * `seedOnHand` is create-if-absent on the natural key, which is exactly how a
+ * product re-linked to a sku it used to own gets its stock back after a failed
+ * sync. Adoption is the ONLY way that heal can work, and there is no second
+ * count to reconcile because the product had none. Renames refuse; first
+ * assignment adopts. Changing it means designing the heal path a different way,
+ * which is its own change.
+ *
+ * A NARROW DEADLOCK, documented rather than defended against. Two renames that
+ * cross — A→B and B→A — where NEITHER source has an inventory row, both reach
+ * the claim with nothing yet committed and each waits on the other's
+ * speculative insert; Postgres breaks the tie by aborting one with a
+ * serialization failure (SQLSTATE 40P01) rather than a typed refusal. It needs
+ * simultaneous crossed renames between two never-stocked skus, both write paths
+ * live at once, and it resolves itself on retry. Left as-is: a lock ordering
+ * that would prevent it costs a round trip on every rename to buy nothing an
+ * operator would ever notice.
  */
 export interface ProductCommerceStore {
 	upsert(input: UpsertProductCommerceInput, key: IdempotencyKey): Promise<ProductCommerce>;
