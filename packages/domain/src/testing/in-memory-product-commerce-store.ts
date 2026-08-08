@@ -720,7 +720,14 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 			let sku = existing.sku;
 			let price = existing.price;
 			if (resurrecting) {
-				if (sku !== null && this.#skuTakenByLiveUnit(sku, input.productId, input.variantKey)) {
+				if (
+					sku !== null &&
+					(this.#skuTakenByLiveVariant(sku, {
+						productId: input.productId,
+						variantKey: input.variantKey,
+					}) ||
+						this.#skuTakenByLiveProduct(sku))
+				) {
 					sku = null;
 				}
 				if (price !== null) {
@@ -881,53 +888,73 @@ export class InMemoryProductCommerceStore implements ProductCommerceStore {
 	}
 
 	/**
-	 * A SKU NAMES ONE LIVE SELLABLE UNIT, in BOTH directions (port doc). The ONE
-	 * predicate every writer on either side of the pair consults, so the two
-	 * directions can never drift into disagreeing about what "taken" means.
+	 * Is this sku carried by a LIVE VARIANT? Mirrors the store's
+	 * `UNIQUE (sku) WHERE orphaned_at IS NULL` partial index.
 	 *
-	 * `exceptVariant` excludes the variant doing the writing (re-supplying your own
-	 * sku is not a conflict); pass `undefined` from the product-level writers,
-	 * which have no variant of their own to exclude. Live product rows are checked
-	 * unconditionally, INCLUDING a variant's own parent — two names over one
-	 * `inventory` row would let a later rename of either carry the other's stock
-	 * away.
+	 * `exceptVariant` excludes the variant doing the writing — re-supplying your
+	 * own sku is not a conflict. The product-level writers pass nothing, having no
+	 * variant of their own to exclude.
 	 */
-	#skuTakenByLiveUnit(s: string, productId: string, exceptVariantKey: string | undefined): boolean {
+	#skuTakenByLiveVariant(
+		s: string,
+		exceptVariant?: { productId: string; variantKey: string },
+	): boolean {
 		for (const v of this.#variants.values()) {
 			if (
-				exceptVariantKey !== undefined &&
-				v.productId === productId &&
-				v.variantKey === exceptVariantKey
+				exceptVariant !== undefined &&
+				v.productId === exceptVariant.productId &&
+				v.variantKey === exceptVariant.variantKey
 			) {
 				continue;
 			}
 			if (v.orphanedAt === null && v.sku === s) return true;
 		}
-		if (exceptVariantKey === undefined) return false; // the product half is the caller's own row set
+		return false;
+	}
+
+	/** Is this sku carried by a LIVE PRODUCT row? Mirrors the store's
+	 *  `UNIQUE (sku) WHERE deleted_at IS NULL` partial index. */
+	#skuTakenByLiveProduct(s: string): boolean {
 		for (const row of this.#rows.values()) {
 			if (row.deletedAt === null && row.sku === s) return true;
 		}
 		return false;
 	}
 
-	/** The variant writer's half of the rule above. */
+	/**
+	 * A SKU NAMES ONE LIVE SELLABLE UNIT, in BOTH directions (port doc) — but the
+	 * two sides ask DIFFERENT questions, which is why this is two predicates and
+	 * not one. Each writer's own table is already covered by its own partial unique
+	 * index, so each only has to ask about the OTHER table: the variant writer asks
+	 * about live products, the product writers ask about live variants. A single
+	 * shared predicate would have to be told which half to skip, which is the same
+	 * branch wearing a disguise.
+	 *
+	 * This is the variant writer's half. Live product rows are checked
+	 * unconditionally, INCLUDING a variant's own parent — two names over one
+	 * `inventory` row would let a later rename of either carry the other's stock
+	 * away.
+	 */
 	#assertVariantSkuFree(input: UpdateProductVariantFieldsInput): void {
 		if (input.sku === undefined) return;
-		if (this.#skuTakenByLiveUnit(input.sku, input.productId, input.variantKey)) {
-			throw new SkuConflictError(input.sku);
-		}
+		const taken =
+			this.#skuTakenByLiveVariant(input.sku, {
+				productId: input.productId,
+				variantKey: input.variantKey,
+			}) || this.#skuTakenByLiveProduct(input.sku);
+		if (taken) throw new SkuConflictError(input.sku);
 	}
 
 	/**
-	 * The RECIPROCAL half (port doc): a product-level writer refuses a sku a LIVE
-	 * VARIANT already carries, with the same typed refusal the variant writer
-	 * raises in the other direction. Called only where the write actually applies,
-	 * so a replayed / stale / watermark-rejected write refuses nothing — the exact
-	 * position the partial unique index occupies on the same-table half.
+	 * The RECIPROCAL half: a product-level writer refuses a sku a LIVE VARIANT
+	 * already carries, with the same typed refusal the variant writer raises in the
+	 * other direction. Called only where the write actually applies, so a replayed
+	 * / stale / watermark-rejected write refuses nothing — the exact position the
+	 * partial unique index occupies on the same-table half.
 	 */
 	#assertProductSkuFreeOfVariants(s: string | null | undefined): void {
 		if (s === undefined || s === null) return;
-		if (this.#skuTakenByLiveUnit(s, "", undefined)) throw new SkuConflictError(s);
+		if (this.#skuTakenByLiveVariant(s)) throw new SkuConflictError(s);
 	}
 
 	/** TEST-ONLY: directly seed a product row for the admin-list contract with

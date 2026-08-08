@@ -3828,6 +3828,117 @@ export function productCommerceStoreContract(
 					expect(back.price).toBeNull();
 				});
 
+				test("BOTH are cleared in one resurrect: a sku that was reused AND a price whose currency moved on", async () => {
+					const h = await makeStore();
+					// The corner where the two clearing rules meet. Each is pinned alone
+					// above; a store that cleared one and asserted the other would pass
+					// both of those and fail this.
+					await h.store.upsert(
+						{ productId: productId("prod-both2") },
+						idempotencyKey("both2-seed"),
+					);
+					const declared = await declare(h, "prod-both2", "large");
+					const priced = await h.store.updateVariantFields(
+						{
+							productId: productId("prod-both2"),
+							variantKey: "large",
+							sku: sku("BOTH2-L"),
+							price: money(cents(3000), currency("GBP")),
+						},
+						idempotencyKey("both2-price"),
+						declared.updatedAt.toISOString(),
+					);
+					expect(priced.ok).toBe(true);
+					await h.seedStock("BOTH2-L", 4);
+					await h.store.deactivateVariant(
+						productId("prod-both2"),
+						"large",
+						idempotencyKey("both2-orphan"),
+						"2026-07-10T01:00:00.000Z",
+					);
+
+					// While it was away a sibling took both the sku AND the currency.
+					const sibling = await declare(h, "prod-both2", "small");
+					const took = await h.store.updateVariantFields(
+						{
+							productId: productId("prod-both2"),
+							variantKey: "small",
+							sku: sku("BOTH2-L"),
+							price: money(cents(2500), currency("USD")),
+						},
+						idempotencyKey("both2-took"),
+						sibling.updatedAt.toISOString(),
+					);
+					expect(took.ok).toBe(true);
+
+					const back = await redeclare(
+						h,
+						"prod-both2",
+						"large",
+						"2026-07-10T02:00:00.000Z",
+						"both2-back",
+					);
+
+					expect(back.orphanedAt).toBeNull();
+					expect(back.sku).toBeNull();
+					expect(back.price).toBeNull();
+					// And neither clearing disturbed the unit that legitimately holds them.
+					const rows = await h.store.listVariants(productId("prod-both2"));
+					expect(rows.find((v) => v.variantKey === "small")).toMatchObject({
+						sku: "BOTH2-L",
+						onHand: 4,
+					});
+				});
+
+				test("the price is cleared against a SIBLING's currency when the product itself carries no price", async () => {
+					const h = await makeStore();
+					// The `#resolveProductCurrency` FALLBACK branch: with no product-level
+					// price there is nothing to read on the parent, so the currency has to
+					// come from a live sibling. A resurrect that consulted only the parent
+					// would find null, conclude "nothing to match", and hand back a price
+					// in a currency the product no longer sells in.
+					await h.store.upsert({ productId: productId("prod-sib2") }, idempotencyKey("sib2-seed"));
+					const declared = await declare(h, "prod-sib2", "large");
+					const priced = await h.store.updateVariantFields(
+						{
+							productId: productId("prod-sib2"),
+							variantKey: "large",
+							price: money(cents(3000), currency("GBP")),
+						},
+						idempotencyKey("sib2-price"),
+						declared.updatedAt.toISOString(),
+					);
+					expect(priced.ok).toBe(true);
+					await h.store.deactivateVariant(
+						productId("prod-sib2"),
+						"large",
+						idempotencyKey("sib2-orphan"),
+						"2026-07-10T01:00:00.000Z",
+					);
+					expect((await h.store.getByProductId(productId("prod-sib2")))?.price).toBeNull();
+
+					// The only currency the product now has lives on a sibling size.
+					const sibling = await declare(h, "prod-sib2", "small");
+					await h.store.updateVariantFields(
+						{
+							productId: productId("prod-sib2"),
+							variantKey: "small",
+							price: money(cents(2500), currency("USD")),
+						},
+						idempotencyKey("sib2-settle"),
+						sibling.updatedAt.toISOString(),
+					);
+
+					const back = await redeclare(
+						h,
+						"prod-sib2",
+						"large",
+						"2026-07-10T02:00:00.000Z",
+						"sib2-back",
+					);
+					expect(back.price).toBeNull();
+				});
+
 				test("a MATCHING price survives the resurrect untouched", async () => {
 					const h = await makeStore();
 					await seedEditable(h, "prod-vkeep", { sku: "VKEEP-P", currency: "USD" });

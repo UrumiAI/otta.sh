@@ -146,6 +146,12 @@ guard:
 - **The merchant leaves the console to rename a size**, exactly as they already do to rename a
   product. Accepted for the same reason: the alternative is a field that appears to work and does
   not.
+- **A re-declare is the steady state, and it now costs a transaction and two row locks.** Every CMS
+  save re-declares every key the repeater still carries, and each of those takes the product row's
+  lock and then the variant row's, inside one transaction — the price of a resurrect that can
+  revalidate without corrupting. A *first* declare of a new key is still a single insert. The cost
+  lands on a document save, never on a checkout or a catalog read, which is why it was accepted
+  rather than optimised around.
 - **The cache is eventually consistent and there is still no reconcile job.** ADR-0013 recorded
   this for the product title; variants inherit it unchanged, and multiply it by the number of
   sizes. A sync that fails leaves a stale size name until the next save, and an order placed in

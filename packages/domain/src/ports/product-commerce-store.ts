@@ -941,6 +941,12 @@ export interface ProductCommerceStore {
 	 *    across two different saves cannot occur in any case (every save bumps the
 	 *    content's `updatedAt`), and one save can never both declare and drop the
 	 *    same key.
+	 * THE COST OF THE STRICT COMPARISON, so nobody has to discover it: re-sending
+	 * the SAME save cannot repair an orphan that save caused in error, because its
+	 * watermark is no longer strictly newer. The repair is a FRESH CMS save — any
+	 * edit to the document, which bumps `updatedAt` and re-declares the key. That is
+	 * the deliberate trade: a redelivery must never flip presence, so a redelivery
+	 * cannot un-flip it either, and only a new decision by the CMS can.
 	 *
 	 * Rejects a missing/empty `productId` with `MissingProductIdError` and a
 	 * missing/empty `variantKey` with `MissingVariantKeyError`, BEFORE any row is
