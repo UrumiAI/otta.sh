@@ -2,6 +2,9 @@
 
 - Status: accepted
 - Date: 2026-08-08
+- Amended: 2026-08-09 — the enforcement clause only ("the sync's save-time hook must refuse a
+  mutated or reused key inside the CMS editor"). Every other clause is reaffirmed unchanged. See
+  "Amendment 2026-08-09" at the end of this record.
 - Refines 0001/0002 (the hybrid product model), and applies
   [ADR-0013](./0013-product-title-is-cms-owned.md) one level down — clause for clause, not as an
   amendment to it
@@ -74,9 +77,12 @@ ADR-0013's clauses, restated at variant grain:
 primary key; the key appears in no `SET` clause in any adapter, and neither write input carries a
 field that could change it, so a re-key is unrepresentable rather than discouraged. A key that
 mutates in the CMS therefore looks to the commerce side like a new variant plus a dropped one —
-which is a real loss of the size's sku, price and stock, and is why the sync's save-time hook
-must refuse a mutated or reused key **inside the CMS editor**, where it can still be explained to
-the person doing it. A refusal that only reaches a log is not a refusal.
+which is why this record originally required the sync's save-time hook to refuse a mutated or
+reused key **inside the CMS editor**, where it can still be explained to the person doing it.
+That requirement is superseded: the CMS offers no way to express it. See "Amendment 2026-08-09"
+below for the verified API facts and the posture adopted in its place. The identity rule itself is
+unchanged — the key is still immutable, and a re-key is still unrepresentable through either write
+input.
 
 **Removal is deactivation, never deletion.** Deleting a CMS repeater row orphans a commerce
 variant that may hold stock and may sit on live order lines. The sync sets an orphan tombstone;
@@ -197,3 +203,77 @@ The same upstream change ADR-0013 named: a `ContentAccess` that gains both an id
 a `getMany`) and a search option, projected through the plugin bridge. Variants raise the price of
 the alternative rather than lowering it, so if that day comes, ADR-0013 is the one to re-price
 first and this record follows it.
+
+## Amendment 2026-08-09 — the variant key is enforced by recovery, not by refusal
+
+This record originally required the sync to refuse a mutated or reused variant key at save time,
+inside the CMS editor, and said that a refusal reaching only a log is not a refusal. That
+requirement is withdrawn. It cannot be expressed against the CMS the plugin runs on, and the
+alternative it was protecting against is not the loss it was written to prevent.
+
+### What the CMS API actually offers
+
+Verified against the pinned CMS, stated neutrally because these are facts about someone else's
+API rather than complaints about it:
+
+- **The save hook returns a replacement, not a verdict.** `content:beforeSave`'s handler contract
+  resolves to a content bag or to nothing. There is no cancel token and no `false` return, so the
+  only expressible refusal is a thrown error. The sibling delete hook does honour a `false` return
+  as a veto; the save hook has no equivalent in either dispatch path.
+- **A sandboxed plugin's error does not reach the editor.** The sandboxed dispatch path records a
+  thrown hook error to the server log and lets the save proceed. The abort policy that would
+  propagate it exists on the trusted in-process pipeline only — so a refusal built on it would
+  work in-process and be a silent no-op under the sandbox, which ADR-0006 rules out as a matter of
+  contract. Where the error does propagate, nothing converts it into the CMS's own error envelope,
+  so the response carries no body and the editor's save toast shows its generic failure text.
+- **The event carries no prior document.** The save event is the incoming content, the collection
+  and a new-or-not flag. There is no pre-save document, and on an update no id, so "did this key
+  change?" is not answerable at that point — and this plugin holds no content-read surface it
+  could answer it with.
+- **The field editor cannot express the rule either.** A repeater sub-field is declared with a
+  slug, a type, a label, a required flag and an optional option list. There is no uniqueness rule,
+  no immutability rule and no per-sub-field pattern, and a repeater's shape is not validated
+  server-side.
+
+Any of the four alone would be sufficient; together they mean an editor-legible refusal is
+available only through a change to the CMS itself.
+
+### The posture adopted instead
+
+**A mutated key resolves as deactivate-plus-declare, and is recoverable.** The save that changes a
+key reads to the commerce side as one variant dropped and another declared. The dropped one is
+**deactivated, never deleted**: it keeps its sku, its price and its inventory, and its stock stays
+where it is, under the sku it was already keyed by. Restoring the original key in the CMS
+**resurrects** that same row under the resurrect rules already specified above — a kept sku keeps
+its units, and a sku legitimately reused in the interval is cleared rather than reclaimed. So the
+outcome of the mistake is a recoverable state with nothing destroyed, rather than a silent loss.
+This is the same answer the SKU-rename rule gives, arrived at from the other direction: retain,
+refuse to guess, and make the state visible.
+
+**A reused key resolves first-row-wins, and is logged.** Two repeater rows claiming one key
+describe one sellable unit twice, with two names, and the document does not say which is meant.
+The sync declares the first occurrence and reports the rest. Declaring both would make the stored
+name depend on request ordering; declaring neither would orphan a live size over a typo.
+
+**The admin variant list is therefore obligated to surface orphaned rows distinctly.** This was
+already required by the removal clause; the amendment makes it load-bearing rather than merely
+good practice. With no save-time refusal, the orphan row is the *only* place a mistaken re-key
+becomes visible to the person who made it, and it is what makes the mistake recoverable rather
+than merely survivable. A list that filters orphans out, or renders them as ordinary rows, breaks
+the enforcement story this amendment substitutes — it is not a display preference.
+
+### Consequences
+
+- The merchant is told late rather than early. A re-key is discovered when the operator sees an
+  orphaned size holding stock, not when they save the document.
+- Nothing is lost silently, and no repair is manual: the CMS re-declaring the key is the repair.
+- Two observations worth recording for the day the CMS side is revisited: an editor-legible
+  refusal needs a sandboxed save-hook veto whose message survives into the CMS's own error
+  envelope; and the capability that gates registering the save hook is enforced on the trusted
+  registration path but not on the sandboxed one.
+
+### What would change this amendment
+
+A sandboxed save hook that can refuse a write and have its message rendered by the editor. That
+would restore the original clause exactly as written, and the recovery posture would remain
+underneath it as the second line rather than the only one.

@@ -187,13 +187,15 @@ export function parseVariantName(value: unknown): { title: string | null } | { p
  * key do not describe two sellable units — they describe one, twice, with two
  * names, and nothing in the document says which name is meant. Declaring both
  * would make the outcome depend on request ordering; declaring neither would
- * orphan a live size over a typo. So the first occurrence is taken, the rest are
- * reported, and the merchant's next save decides. This is the DEGRADED path: the
- * repeater editor enforces no uniqueness on a sub-field (em-dash's
- * `RepeaterSubField` carries `slug`/`type`/`label`/`required`/`options` and no
- * uniqueness or immutability rule at all), and the save-time refusal ADR-0016
- * asks for cannot be delivered from a sandbox-clean plugin — see the module note
- * in `hooks.ts`.
+ * orphan a live size over a typo. So the first occurrence is taken and the rest
+ * are reported.
+ *
+ * THIS IS THE RULE, not a stand-in for one. A repeater sub-field is declared
+ * with a slug, a type, a label, a required flag and an option list — the CMS has
+ * no uniqueness constraint to express here — so resolving the ambiguity
+ * deterministically at this point is what keeps the stored name independent of
+ * request ordering (ADR-0016, amended 2026-08-09; see the module note in
+ * `hooks.ts`).
  */
 export function parseVariantRepeater(rows: readonly unknown[]): ParsedRepeater {
 	const declared: DeclaredVariant[] = [];

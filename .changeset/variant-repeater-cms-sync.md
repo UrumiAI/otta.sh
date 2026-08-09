@@ -41,16 +41,24 @@ The staging seed declares the repeater on the products collection so the field
 exists where a merchant edits the rest of the product's content. No sample entry
 declares a variant, so the demo catalogue is unchanged.
 
-**Known gap, deliberately not worked around.** ADR-0016 asks the sync to refuse a
-mutated or reused variant key at save time, legibly inside the CMS editor. That
-refusal is not implemented, because it is not reachable from a sandbox-clean
-plugin on the pinned CMS: the save hook's contract offers no veto (only a
-replacement content bag), a sandboxed plugin's thrown error is logged and the
-save proceeds regardless, a message that does abort in-process never survives to
-the editor's toast, and the event carries neither the prior document nor an id to
-fetch one by. The field editor cannot express a uniqueness or immutability rule
-either. Making the refusal legible needs an upstream change and its own decision.
-Until then nothing is lost silently: a mutated key reads as one variant dropped
-and another declared, the dropped one is retained rather than deleted, and a
-reused key is resolved deterministically (the first row wins) and logged. The
-reasoning is recorded in full beside the code.
+**The variant key is enforced by recovery, not by refusal** (ADR-0016, amended).
+The CMS cannot express a save-time refusal of a mutated or reused key: the save
+hook returns a replacement content bag rather than a verdict, a sandboxed hook's
+error is logged while the save proceeds, the event carries no pre-save document
+to compare against, and a repeater sub-field has no uniqueness or immutability
+rule. The guarantee sits on the other side of the mistake instead, and nothing is
+destroyed by one:
+
+- A changed key reads as one variant dropped and another declared. The dropped
+  one is deactivated, never deleted — it keeps its sku, its price and its
+  inventory, and its stock stays where it is under the sku it was already keyed
+  by.
+- Restoring the original key in the CMS resurrects that same row under the
+  existing resurrect rules, so a kept sku keeps its units. The repair is a CMS
+  save, not a manual reconciliation.
+- A reused key resolves to the first row, deterministically, and is logged, so
+  the stored name never depends on request ordering.
+
+Because there is no save-time refusal, the admin's variant list is obliged to
+render an orphaned row distinctly — that row is the only place a mistaken re-key
+becomes visible to the person who made it.

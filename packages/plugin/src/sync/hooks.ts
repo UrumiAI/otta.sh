@@ -76,56 +76,38 @@ import { syncVariants } from "./variants.js";
  * entire live catalogue — takes exactly the path it always did, down to the
  * request count.
  *
- * WHAT IS DELIBERATELY NOT HERE: A SAVE-TIME REFUSAL. ADR-0016 asks the sync to
- * refuse a MUTATED or REUSED variant key at save time, "inside the CMS editor,
- * where it can still be explained to the person doing it", because a re-key
- * looks to the commerce side like a new variant plus a dropped one. That guard
- * is NOT implemented, and it is not an oversight — it is not reachable from a
- * sandbox-clean plugin on the pinned em-dash:
+ * THE VARIANT KEY IS ENFORCED BY RECOVERY, NOT BY REFUSAL (ADR-0016, amended
+ * 2026-08-09). The key is the variant's identity and is immutable in the store —
+ * it appears in no `SET` clause and neither write input carries a field that
+ * could change it — so a key that changes in the CMS reads here as one variant
+ * dropped and another declared. This module does NOT refuse that at save time,
+ * and the amendment records why the CMS cannot express such a refusal: the save
+ * hook returns a replacement content bag rather than a verdict, a sandboxed
+ * hook's error is logged while the save proceeds, the event carries no pre-save
+ * document (and, on an update, no id) to compare against, and a repeater
+ * sub-field is declared with a slug, type, label, required flag and option list
+ * — no uniqueness rule and no immutability rule.
  *
- *  1. **THE HOOK HAS NO VETO.** `content:beforeSave` exists, but its handler
- *     contract is `Promise<Record<string, unknown> | void>` — a REPLACEMENT
- *     content bag, or nothing. There is no `{cancel, message}` and no `false`
- *     return; the only way to refuse is to throw. Compare
- *     `content:beforeDelete`, which explicitly honours a `false` return as a
- *     veto — `beforeSave` has no equivalent, in either dispatch path.
- *  2. **A SANDBOXED PLUGIN CANNOT REFUSE AT ALL.** em-dash's sandboxed dispatch
- *     catches every error out of the hook, writes it to a server-side
- *     `console.error`, and lets the save proceed. The abort path
- *     (`errorPolicy: "abort"`) exists on the TRUSTED pipeline alone, so a
- *     refusal built on it would work in-process and be a silent no-op in the
- *     sandbox — exactly the "if it only works trusted, it's broken" case
- *     ADR-0006 forbids.
- *  3. **EVEN TRUSTED, THE MESSAGE NEVER REACHES THE EDITOR.** A throw that does
- *     abort propagates uncaught through the content route; nothing converts it
- *     into em-dash's own `{success:false,error:{code,message}}` envelope, so the
- *     response is a bodyless 500 and the admin's save toast falls back to its
- *     generic "Failed to save" text. The plugin's sentence is discarded. A
- *     refusal the merchant cannot read is the thing ADR-0016 explicitly rules
- *     out: "A refusal that only reaches a log is not a refusal."
- *  4. **THE COMPARISON IS NOT EVEN DECIDABLE THERE.** `ContentHookEvent` is
- *     `{content, collection, isNew}` — no pre-save document and, on an update,
- *     NO ID. So the prior keys cannot be read off the event, and cannot be
- *     fetched either: there is nothing to fetch them by (and this plugin has no
- *     `ctx.content` in any case).
- *  5. **THE EDITOR CANNOT ENFORCE IT NATIVELY.** em-dash's `RepeaterSubField` is
- *     `{slug, type, label, required, options}` — no uniqueness rule, no
- *     immutability rule, no per-sub-field pattern. The server does not even
- *     validate a repeater's shape (the schema generator has no `repeater` case
- *     and falls through to `unknown`), which is why `parseVariantRepeater` is
- *     defensive about every sub-field it reads.
+ * SO THE DESIGN PUTS THE GUARANTEE ON THE OTHER SIDE OF THE MISTAKE, and it is
+ * a real one rather than a consolation:
  *
- * Making the refusal legible therefore needs an UPSTREAM change — a sandboxed
- * `beforeSave` veto whose message survives to the editor — which is a decision,
- * not a patch, and is out of scope here.
+ *  - A DROP IS DEACTIVATION, NEVER DELETION. The orphaned row keeps its sku, its
+ *    price and its inventory, and its stock stays where it is under the sku it
+ *    was already keyed by. Nothing is destroyed by a re-key.
+ *  - A RE-KEY IS REVERSIBLE. Restoring the original key in the CMS resurrects
+ *    that same row under the resurrect rules — a kept sku keeps its units. The
+ *    repair is a CMS save, not a manual reconciliation.
+ *  - A REUSED KEY RESOLVES DETERMINISTICALLY. `parseVariantRepeater` declares
+ *    the first occurrence and reports the rest, so the stored name never depends
+ *    on request ordering, and one typo never orphans a live size.
  *
- * WHAT HOLDS THE LINE INSTEAD, and why this is a degraded UX rather than a data
- * hazard: the model already refuses to lose anything. A mutated key reads as a
- * new variant plus a dropped one, and a drop is DEACTIVATION, NEVER DELETION —
- * the orphaned row keeps its sku, its price and its stock, and a later increment
- * surfaces that state in the console. A reused key is resolved deterministically
- * rather than by request ordering (first row wins) and logged. Nothing is
- * silently destroyed; the operator is told late instead of early.
+ * WHAT THIS OBLIGES ELSEWHERE, stated here because this module is what creates
+ * the obligation: the admin's variant list MUST render an orphaned row
+ * distinctly. With no save-time refusal, that row is the only place a mistaken
+ * re-key becomes visible to the person who made it, and it is what makes the
+ * mistake recoverable rather than merely survivable. Filtering orphans out of
+ * that list, or drawing them as ordinary rows, is not a display choice — it
+ * removes the enforcement this design substitutes for the refusal.
  */
 
 /**

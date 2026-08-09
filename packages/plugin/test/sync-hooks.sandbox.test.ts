@@ -929,13 +929,12 @@ describe("sync hooks — the variant repeater declares presence and the name cac
 			isNew: false,
 		});
 
-		// THE DEGRADED PATH, PINNED. The repeater editor enforces no uniqueness on
-		// a sub-field and the save-time refusal ADR-0016 asks for is not reachable
-		// from a sandbox-clean plugin (see the note in `sync/hooks.ts`), so two
-		// rows can claim one key. They describe ONE sellable unit, twice, with two
-		// names, and nothing in the document says which is meant. Declaring both
-		// would make the stored name depend on request ordering; declaring neither
-		// would orphan a live size over a typo. First row wins, and it is logged.
+		// THE RULE, PINNED. The CMS has no uniqueness constraint to put on a
+		// repeater sub-field, so two rows can claim one key. They describe ONE
+		// sellable unit, twice, with two names, and nothing in the document says
+		// which is meant. Declaring both would make the stored name depend on
+		// request ordering; declaring neither would orphan a live size over a
+		// typo. First row wins, deterministically, and it is logged.
 		const declares = variantPuts(stubServer);
 		expect(declares).toHaveLength(1);
 		expect(declares[0]?.url).toBe("/products/prod-dupe/variants/small");
