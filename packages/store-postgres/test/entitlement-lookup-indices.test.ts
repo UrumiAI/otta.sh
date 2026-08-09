@@ -115,8 +115,10 @@ async function explainEachCheckShape(
 	//     This fold assertion is load-bearing, not decoration: a functional
 	//     index still gets NAMED in the plan of a differently-folded predicate,
 	//     because its trailing `sku, state` columns remain usable while the
-	//     rewritten expression degrades to a heap filter. The plan check alone
-	//     would therefore survive a switch to `upper()`; this one would not.
+	//     rewritten expression degrades to a heap filter. "The named index
+	//     appears and no `Seq Scan` does" therefore survives a switch to
+	//     `upper()` on its own; this does not, and neither does the pg half's
+	//     `Index Cond` assertion.
 	const buyerScope = await run({ buyerRef: TARGET_BUYER_REF.toUpperCase(), sku: toSku(SKU) });
 	expect(captured[0]?.sql).toContain("lower(buyer_ref)");
 	// (3) both — the operator-authenticated shape, which ANDs the two.
@@ -255,6 +257,16 @@ describe.skipIf(PG === undefined)("postgres: entitlement lookup indices [pg]", (
 		expect(plans.orderScope).not.toContain("Seq Scan");
 		expect(plans.buyerScope).toContain(BUYER_INDEX);
 		expect(plans.buyerScope).not.toContain("Seq Scan");
+		// Naming the index is not enough on the buyer path: a predicate that no
+		// longer matches the index EXPRESSION can still scan this index for its
+		// trailing `sku, state` columns and recheck the expression on the heap —
+		// same index name, same absence of a `Seq Scan` node, whole point lost.
+		// `Index Cond` is where the planner records what it resolved INSIDE the
+		// index, so requiring the fold to appear there is the node-level form of
+		// "the functional term is doing the work". Matched loosely (a substring
+		// of the cond line) so it survives EXPLAIN's wording differences across
+		// server versions.
+		expect(plans.buyerScope).toMatch(/Index Cond:[^\n]*lower\(buyer_ref\)/);
 		// Both scopes together: either index resolves it, the other axis is a
 		// filter. The invariant is only that neither axis falls back to a scan.
 		expect(plans.bothScopes).toMatch(new RegExp(`${BUYER_INDEX}|${ORDER_INDEX}`));

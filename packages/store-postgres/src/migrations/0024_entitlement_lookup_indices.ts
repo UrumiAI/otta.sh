@@ -42,25 +42,35 @@ import type { Migration } from "kysely/migration";
  * order-scope check touched 14 buffers on the single composite versus 4 on this
  * pair, and that gap widens linearly with entitlements granted per sku.
  *
- * Why `state` is a COLUMN and not a partial `WHERE state = 'active'` predicate:
- * `check` binds the state as a PARAMETER (`state = $1`), and Postgres can only
- * prove a partial index's predicate from a parameter once that parameter has
- * been folded to a constant — which happens under a custom plan but not under a
- * generic one. Verified against a partial form: the same statement planned as
- * `Bitmap Index Scan` with a custom plan and fell back to `Seq Scan` under
- * `plan_cache_mode = force_generic_plan`. That is a regression an EXPLAIN test
- * cannot see (it always plans custom), so the state axis is carried as an
- * ordinary trailing column, which is a boundary condition in every plan mode.
- * It is trailing rather than leading because two distinct values narrow almost
- * nothing on their own. Contrast `0022`'s `idx_orders_customer_id`, whose
- * partial `WHERE customer_id IS NOT NULL` is provable from `customer_id = $1`
- * structurally, independent of the parameter's value.
+ * Why `state` is a COLUMN and not a partial `WHERE state = 'active'` predicate
+ * — insurance, not a fix for anything observed today: `check` binds the state as
+ * a PARAMETER (`state = $1`), and Postgres can only prove a partial index's
+ * predicate from a parameter once that parameter has been folded to a constant,
+ * which happens under a custom plan but not under a generic one. The current
+ * driver path never plans generically — node-postgres sends unnamed
+ * extended-protocol statements, and a generic plan requires a NAMED prepared
+ * statement the server can reuse — so a partial form would work as things
+ * stand. It would stop working the day a driver, a pooler or a
+ * `plan_cache_mode` setting introduces named statements, and that failure is
+ * invisible to an EXPLAIN test (which always plans custom): confirmed by
+ * building the partial form, which planned as `Bitmap Index Scan` normally and
+ * fell back to `Seq Scan` under `plan_cache_mode = force_generic_plan`.
+ * Carrying the state as an ordinary column makes it a boundary condition in
+ * every plan mode, for a few hundred kB. It is trailing rather than leading
+ * because two distinct values narrow almost nothing on their own. Contrast
+ * `0022`'s `idx_orders_customer_id`, whose partial `WHERE customer_id IS NOT
+ * NULL` is provable from `customer_id = $1` structurally, independent of the
+ * parameter's value.
  *
  * Safe on a populated table: both are additive `CREATE INDEX … IF NOT EXISTS`
  * statements — no rewrite, no constraint, no data change. No `CONCURRENTLY`,
  * matching the `0008`/`0009`/`0022` precedent: the migration runner wraps each
  * migration in a transaction, inside which `CREATE INDEX CONCURRENTLY` cannot
- * run on Postgres.
+ * run on Postgres. The cost of that choice is a write stall: a plain `CREATE
+ * INDEX` holds a lock that blocks grant inserts (and on SQLite, the whole file)
+ * for the duration of the build. Negligible at the row counts this table
+ * carries; if `entitlements` ever grows to where it is not, the fix is a
+ * separate migration issued outside the transaction, not an edit to this one.
  *
  * SQLite: no dialect fork. Expression indices (3.9.0) and the portable column
  * form both apply, `lower()` is spelled identically on both dialects — the same
