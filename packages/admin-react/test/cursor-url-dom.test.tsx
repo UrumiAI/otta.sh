@@ -6,7 +6,7 @@
  *
  * WHY A DOCUMENT IS THE ONLY TIER THAT CAN SETTLE THIS. The encode/decode half
  * is pure and is pinned next door in `url-state.test.ts`; what a pure test
- * cannot see is the seam this increment is actually about — the FIRST request a
+ * cannot see is the seam this change is actually about — the FIRST request a
  * mount issues. A cursor decoded from a URL has no filter object behind it,
  * while `PendingCursor` pairs a cursor with the REFERENCE of the filter it was
  * issued under, so a seed bound to the wrong object degrades every deep link
