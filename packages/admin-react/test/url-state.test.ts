@@ -10,6 +10,7 @@
  * would mean nothing.
  */
 import { describe, expect, it } from "vitest";
+import { cursorQuery, readCursor, seedCursor } from "../src/accumulate.js";
 import {
 	ORDER_TAB_SLUGS,
 	orderTabQuery,
@@ -271,5 +272,114 @@ describe("the tab a link was shared from", () => {
 		for (const [index] of PRODUCT_TAB_SLUGS.entries()) {
 			expect(readProductTab(`?${productTabQuery("", index)}`)).toBe(index);
 		}
+	});
+});
+
+/**
+ * THE PAGE A LINK WAS SHARED FROM.
+ *
+ * The cursor is the one screen parameter this console does not author: it is an
+ * opaque token the service issued, and every function below moves it verbatim.
+ * Nothing here parses it, validates its shape or synthesises one — a token this
+ * tier "understood" would be a keyset predicate reimplemented in a browser, and
+ * the service's fail-closed refusal of a token it did not issue is what makes
+ * carrying it in a public address safe in the first place.
+ */
+describe("the page a link was shared from (the cursor)", () => {
+	it("reads no cursor as page one — absent, not an empty string", () => {
+		// The distinction is the whole of the default: `?cursor=` is a stale or
+		// hand-trimmed link, and answering it with `""` would put an empty token on
+		// the wire for the service to refuse, instead of simply asking for page one.
+		expect(readCursor("")).toBeUndefined();
+		expect(readCursor("?")).toBeUndefined();
+		expect(readCursor("?cursor=")).toBeUndefined();
+		expect(readCursor("?status=paid&order=abc")).toBeUndefined();
+	});
+
+	it("reads the token back exactly as the service issued it", () => {
+		expect(readCursor("?cursor=abc")).toBe("abc");
+		// A base64 token carries `+`, `/` and `=`, and `+` decodes to a SPACE in a
+		// query string — so the round trip has to go through the encoder, which is
+		// what `cursorQuery` is for. A hand-concatenated address would corrupt the
+		// token and the service would (correctly) refuse it.
+		const token = "eyJjIjoiMjAyNi0wMS0wMSJ9+a/b=";
+		expect(readCursor(`?${cursorQuery("", token)}`)).toBe(token);
+	});
+
+	it("writes the cursor, and writes NOTHING for page one", () => {
+		expect(cursorQuery("", "abc")).toBe("cursor=abc");
+		// Page one is the absence of the parameter, so returning to it must DELETE
+		// rather than write an empty value — the same rule every other parameter on
+		// this screen follows.
+		expect(cursorQuery("?cursor=abc", undefined)).toBe("");
+		expect(cursorQuery("?cursor=abc", "def")).toBe("cursor=def");
+	});
+
+	it("composes with the filter and the drill-in, which share the address", () => {
+		const params = new URLSearchParams(cursorQuery("?order=abc&status=paid&tab=money", "c2"));
+		expect(params.get("order")).toBe("abc");
+		expect(params.get("status")).toBe("paid");
+		expect(params.get("tab")).toBe("money");
+		expect(params.get("cursor")).toBe("c2");
+		// And dropping the page keeps every one of them.
+		const back = new URLSearchParams(cursorQuery(params.toString(), undefined));
+		expect(back.get("order")).toBe("abc");
+		expect(back.get("status")).toBe("paid");
+		expect(back.get("cursor")).toBeNull();
+	});
+
+	it("survives a filtered, drilled-into address in one read", () => {
+		const query = cursorQuery(ordersFilterQuery("?order=abc", { status: "paid" }), "c2");
+		expect(readOrdersFilter(`?${query}`)).toEqual({ status: "paid" });
+		expect(readCursor(`?${query}`)).toBe("c2");
+		expect(new URLSearchParams(query).get("order")).toBe("abc");
+	});
+
+	it("takes the page OUT of the address when the filter changes", () => {
+		// A filter change is page one of a NEW set, and the list clears its cursor
+		// to say so. A cursor left in the address would then describe a page of the
+		// previous predicate — the pairing `continuationCursor` exists to refuse,
+		// preserved in a link and reloaded later as though it were valid.
+		expect(ordersFilterQuery("?cursor=c2", { status: "paid" })).toBe("status=paid");
+		expect(ordersFilterQuery("?cursor=c2&status=paid", {})).toBe("");
+		expect(productsFilterQuery("?cursor=c2&low=1", {})).toBe("");
+		expect(new URLSearchParams(productsFilterQuery("?cursor=c2", { lowStock: true }))).toEqual(
+			new URLSearchParams("low=1"),
+		);
+	});
+
+	it("keeps the page across a tab change, which is not a page change", () => {
+		const params = new URLSearchParams(orderTabQuery("?order=abc&cursor=c2", 2));
+		expect(params.get("cursor")).toBe("c2");
+		expect(params.get("tab")).toBe("money");
+	});
+
+	/**
+	 * THE DEEP LINK'S SEED — the hazard this whole increment turns on.
+	 *
+	 * `PendingCursor` pairs a cursor with the REFERENCE of the filter it was
+	 * issued under, and {@link continuationCursor} compares by identity. A cursor
+	 * decoded from a URL has no such reference, so seeding it means binding it to
+	 * the freshly-decoded filter object the list is about to apply. Bind it to
+	 * anything else — a structurally equal copy, a per-render derivation — and
+	 * every deep link degrades silently into a first-page reload.
+	 */
+	describe("seeding a decoded cursor", () => {
+		it("binds the cursor to the filter object the list will apply", () => {
+			const filter = readOrdersFilter("?status=paid");
+			const seeded = seedCursor(filter, "c2");
+			expect(seeded).not.toBeNull();
+			// IDENTITY, not equality: this is exactly what `continuationCursor`
+			// tests, so a copy here would be refused as a stale pairing.
+			expect(seeded?.filter).toBe(filter);
+			expect(seeded?.value).toBe("c2");
+		});
+
+		it("seeds nothing for page one", () => {
+			expect(seedCursor({}, undefined)).toBeNull();
+			// Belt and braces for a caller that hands over a raw parameter without
+			// passing it through `readCursor` first.
+			expect(seedCursor({}, "")).toBeNull();
+		});
 	});
 });

@@ -111,3 +111,103 @@ export function continuationCursor<F>(
 ): string | undefined {
 	return cursor !== null && cursor.filter === applied ? cursor.value : undefined;
 }
+
+/**
+ * THE CURSOR A DEEP LINK ARRIVED WITH, bound to the filter that link decoded to.
+ *
+ * THIS IS THE ONE PATH `PendingCursor` DOES NOT GET FOR FREE, and it is the
+ * whole reason this helper exists rather than an inline object literal at two
+ * call sites. Every other cursor on these screens is issued by a response the
+ * list already holds, so the filter it belongs to is the applied filter, sitting
+ * right there in state. A cursor decoded from an address has no such history: it
+ * is a bare string that arrives BEFORE the first request, at the same moment the
+ * filter is being decoded from the same address. Binding the two is what makes
+ * the pair a continuation at all — {@link continuationCursor} compares filters
+ * by IDENTITY, so a structurally-equal copy, or a filter re-derived on a later
+ * render, is refused, and the deep link silently degrades into a first-page
+ * reload that looks exactly like an operator's ordinary first visit.
+ *
+ * THE CALLER'S OBLIGATION, and it is the only one: pass the SAME filter object
+ * the list is about to apply — the one seeding `applied`, not a copy of it. Both
+ * lists satisfy this by seeding both pieces of state from the one `initialFilter`
+ * prop in the same render.
+ *
+ * An absent value is page one, and so is an empty one: a URL is user input, and
+ * `?cursor=` is a trimmed or stale link rather than a request for the empty
+ * token.
+ */
+export function seedCursor<F>(filter: F, value: string | undefined): PendingCursor<F> | null {
+	return value === undefined || value.length === 0 ? null : { filter, value };
+}
+
+/**
+ * THE PAGE IS PART OF THE ADDRESS.
+ *
+ * WHY THIS IS SAFE, since a keyset cursor in a public, hand-editable string
+ * looks alarming at first reading. The token is OPAQUE and self-describing: the
+ * service issued it, only the service can read it, and it refuses one it did not
+ * issue rather than guessing. So the two things a client could get wrong are
+ * both unavailable to it — it cannot mint a token, and it cannot interpret one
+ * — and everything below moves the value verbatim. Nothing here parses,
+ * validates or reconstructs it; a token this tier "understood" would be the
+ * service's keyset predicate reimplemented in a browser, and it would rot the
+ * first time the cursor shape changed.
+ *
+ * WHY IT LIVES BESIDE THE MERGE RATHER THAN IN EITHER SCREEN. Both screens spell
+ * the parameter identically and must keep spelling it identically — an address
+ * is a compatibility surface, and two independent copies of one is how the
+ * Orders link and the Pricing & inventory link quietly stop meaning the same
+ * thing. The filter parameters legitimately differ per screen and stay there;
+ * the cursor does not.
+ */
+export const CURSOR_PARAM = "cursor";
+
+/** The page a link names, or `undefined` for the first one. ABSENT, not empty:
+ *  `?cursor=` is a stale or hand-trimmed link, and sending `""` would put a
+ *  token on the wire for the service to refuse when the honest reading is "no
+ *  page was named". */
+export function readCursor(search: string): string | undefined {
+	const value = new URLSearchParams(search).get(CURSOR_PARAM);
+	return value !== null && value.length > 0 ? value : undefined;
+}
+
+/**
+ * The query naming a page, or naming none.
+ *
+ * It starts from the CURRENT query, so the filter parameters, the drill-in and
+ * anything the host admin put there survive a page change — this parameter
+ * shares one address bar with all of them.
+ *
+ * `URLSearchParams` DOES THE ESCAPING, and on this parameter that is
+ * load-bearing rather than hygienic: a base64 token carries `+`, `/` and `=`,
+ * and a `+` written raw into a query string decodes back as a SPACE. Hand
+ * concatenation would corrupt the token on the way out and the service would
+ * refuse it on the way back in — the fail-closed path, reached by our own bug.
+ */
+export function cursorQuery(current: string, cursor: string | undefined): string {
+	const params = new URLSearchParams(current);
+	params.delete(CURSOR_PARAM);
+	if (cursor !== undefined && cursor.length > 0) params.set(CURSOR_PARAM, cursor);
+	return params.toString();
+}
+
+/**
+ * WHAT AN ADDRESS THE SERVICE WOULD NOT HONOUR SAYS TO THE OPERATOR.
+ *
+ * A refused token is not a fault to apologise for and not an error to dead-end
+ * on: the link is simply older than the list it names — shared before the
+ * filters moved, truncated by a chat client, or edited by hand — and the useful
+ * answer is the first page of the filters that link DID carry, with one sentence
+ * saying why the operator is not where they expected to be. Saying nothing would
+ * be worse than the error card: the screen would silently show page one of a
+ * link that promised page four.
+ *
+ * IT IS NOT IN THE SHARED COPY PACKAGE, deliberately. That package exists so the
+ * Block Kit tier and the React tier cannot drift on wording they BOTH render,
+ * and the Block Kit screens have no addressable cursor — no URL, no shareable
+ * page, nothing that can arrive stale. This sentence has exactly one surface. If
+ * a second one ever grows it, it moves.
+ */
+export const CURSOR_RESET_TITLE = "That link named a page this list could not open";
+export const CURSOR_RESET_DESCRIPTION =
+	"The link may have been shared before these filters changed, or edited on the way. Showing the first page of these filters instead.";

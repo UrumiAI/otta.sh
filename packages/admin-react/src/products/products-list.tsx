@@ -83,7 +83,14 @@ import {
 	type ProductTone,
 } from "@otta-sh/admin-presentation";
 import * as React from "react";
-import { continuationCursor, mergeById, type PendingCursor } from "../accumulate.js";
+import {
+	CURSOR_RESET_DESCRIPTION,
+	CURSOR_RESET_TITLE,
+	continuationCursor,
+	mergeById,
+	seedCursor,
+	type PendingCursor,
+} from "../accumulate.js";
 import {
 	fetchProducts,
 	isFailure,
@@ -411,7 +418,9 @@ export function visibleDegradation(
 export function ProductsList({
 	onOpen,
 	initialFilter = {},
+	initialCursor,
 	onFilterChange,
+	onCursorChange,
 }: {
 	onOpen: (productId: string) => void;
 	/** The filter the address bar arrived with (F22). BOTH the applied filter and
@@ -419,9 +428,18 @@ export function ProductsList({
 	 *  shows why, rather than reading as an unfiltered catalog that mysteriously
 	 *  holds four rows. */
 	initialFilter?: ProductsFilter;
+	/** The page the address bar arrived with — an opaque service token, moved
+	 *  verbatim and never inspected. IT IS THE PAGE, NOT THE SCAN: a reload
+	 *  restores the page the merchant was on, not the stack of pages they scrolled
+	 *  through to reach it. Same contract, same reasoning, as the Orders list. */
+	initialCursor?: string;
 	/** Announced whenever the applied filter changes, for the screen to write to
 	 *  the URL. The list never touches history itself: one writer. */
 	onFilterChange?: (filter: ProductsFilter) => void;
+	/** Announced whenever the page the list is showing changes — a cursor the
+	 *  merchant paged to, or `undefined` for "back at page one". The list states
+	 *  what happened; the screen decides what it does to the history stack. */
+	onCursorChange?: (cursor: string | undefined) => void;
 }): React.ReactElement {
 	const [applied, setApplied] = React.useState<ProductsFilter>(initialFilter);
 	const [draft, setDraft] = React.useState<ProductsFilter>(initialFilter);
@@ -444,7 +462,19 @@ export function ProductsList({
 	// through the cursor it sets, which is a fresh object on every click, so a
 	// service that repeats a cursor VALUE still gets a request.
 	const [generation, setGeneration] = React.useState(0);
-	const [cursor, setCursor] = React.useState<PendingCursor<ProductsFilter> | null>(null);
+	/** SEEDED FROM THE ADDRESS, bound to the very filter object that seeded
+	 *  `applied` above — see {@link seedCursor}. Binding it to a copy would make
+	 *  every deep link fail `continuationCursor`'s identity test and degrade,
+	 *  silently, into a first-page reload. */
+	const [cursor, setCursor] = React.useState<PendingCursor<ProductsFilter> | null>(() =>
+		seedCursor(initialFilter, initialCursor),
+	);
+	/** The address named a page the service would not open, and this render is the
+	 *  first page of its filters instead. See the reset branch in the effect. */
+	const [cursorReset, setCursorReset] = React.useState(false);
+	/** Has ANY page landed on this mount? A ref because the fetch effect does not
+	 *  depend on `page` and would otherwise read a render-old value. */
+	const landed = React.useRef(false);
 
 	React.useEffect(() => {
 		let cancelled = false;
@@ -460,6 +490,31 @@ export function ProductsList({
 			// Whatever the outcome, the click that asked for this is over.
 			setRetrying(false);
 			if (isFailure(result)) {
+				/*
+				 * AN ADDRESS THE SERVICE WOULD NOT HONOUR, DEGRADING SAFELY — the
+				 * same branch, and the same reasoning, as the Orders list.
+				 *
+				 * A continuation that failed before any page landed can only be a cursor
+				 * this mount was SEEDED with from the address, refused by the service:
+				 * `Load more` exists only under a page that landed, and every reset
+				 * clears the cursor with the page. So the page is dropped and the
+				 * FILTERS are kept — clearing the cursor re-runs this effect as their
+				 * first page, with a notice saying why, rather than a cold error card
+				 * whose Retry would re-send the refused token forever. It cannot loop:
+				 * the retry carries no cursor, so a second failure is an ordinary cold
+				 * one. `landed` is a ref because this effect does not depend on `page`.
+				 */
+				if (continuation && !landed.current) {
+					setCursor(null);
+					setCursorReset(true);
+					// The re-fetch is already on its way out; the screen must not blink
+					// through a commit claiming otherwise.
+					setBusy(true);
+					// The address is corrected in place — see the screen's
+					// `onCursorChange`.
+					onCursorChange?.(undefined);
+					return;
+				}
 				setFailure({ title: result.title, description: result.description, continuation });
 				// F2: THE ANSWER GOES WITH THE FAILURE, in the same transition — for a
 				// FIRST page. A page behind one that succeeded takes only its own
@@ -468,6 +523,7 @@ export function ProductsList({
 				return;
 			}
 			setFailure(null);
+			landed.current = true;
 			// F24: MERGE, NEVER ASSIGN. The functional form is required, not
 			// stylistic: the rows it merges into are the ones in state at the moment
 			// the response lands.
@@ -595,6 +651,9 @@ export function ProductsList({
 		setApplied(next);
 		setDraft(next);
 		setCursor(null);
+		// THE RESET NOTICE IS ABOUT THE ARRIVAL, so it goes the moment the merchant
+		// asks for something themselves.
+		setCursorReset(false);
 		// BUSY IS THE CLICK'S, NOT THE EFFECT'S. Setting it only inside the effect
 		// left one commit in which the applied filter had already moved and
 		// `Load more` still rendered enabled — offering the previous page's cursor
@@ -633,6 +692,23 @@ export function ProductsList({
 					title={degraded.title}
 					description={degraded.description}
 					testId="products-stock-degraded"
+				/>
+			)}
+
+			{/*
+			  THE ADDRESS NAMED A PAGE THE SERVICE WOULD NOT OPEN, and this is
+			  the first page of its filters instead. An ALERT rather than an error:
+			  there is a working list underneath, and what the merchant needs is the
+			  one sentence explaining why they are not where their link said. It is
+			  withdrawn with the answer, so it never sits over a cold failure
+			  describing rows that are not there.
+			*/}
+			{cursorReset && answerVisible && (
+				<Notice
+					variant="alert"
+					title={CURSOR_RESET_TITLE}
+					description={CURSOR_RESET_DESCRIPTION}
+					testId="products-cursor-reset"
 				/>
 			)}
 
@@ -969,7 +1045,12 @@ export function ProductsList({
 						style={buttonStyle}
 						onClick={() => {
 							const value = page.nextCursor;
-							if (value !== null) setCursor({ filter: applied, value });
+							if (value === null) return;
+							setCursor({ filter: applied, value });
+							setCursorReset(false);
+							// The page goes in the address, and the screen is the only
+							// writer — this states what happened, it does not navigate.
+							onCursorChange?.(value);
 						}}
 					>
 						{busy ? "Loading…" : LOAD_MORE_LABEL}

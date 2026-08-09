@@ -21,16 +21,17 @@
  * listener firing, the screen still works — it loses the browser Back button,
  * not the navigation.
  *
- * THE FILTER AND THE TAB ARE IN THE ADDRESS TOO (F22, F23), and their plumbing
- * lives here rather than in the list and the detail for one reason: this is the
- * file that already touches `window.history`, and a screen with two writers to
- * the same address bar is a screen whose URL and rendered state drift. The list
- * and the detail ANNOUNCE a change and are TOLD what to start from; neither
- * reads or writes history itself.
+ * THE FILTER, THE TAB AND THE PAGE ARE ALL IN THE ADDRESS (F22, F23), and
+ * their plumbing lives here rather than in the list and the detail for one
+ * reason: this is the file that already touches `window.history`, and a screen
+ * with two writers to the same address bar is a screen whose URL and rendered
+ * state drift. The list and the detail ANNOUNCE a change and are TOLD what to
+ * start from; neither reads or writes history itself.
  */
 import type { OrdersFilter } from "../console-api.js";
 import { ORDER_STATES } from "@otta-sh/admin-presentation";
 import * as React from "react";
+import { CURSOR_PARAM, cursorQuery, readCursor } from "../accumulate.js";
 import { ConsoleStyles } from "../ui.js";
 import { OrderDetail } from "./order-detail.js";
 import { OrdersList } from "./orders-list.js";
@@ -130,6 +131,12 @@ export function readOrdersFilter(search: string): OrdersFilter {
 export function ordersFilterQuery(current: string, filter: OrdersFilter): string {
 	const params = new URLSearchParams(current);
 	for (const name of FILTER_PARAMS) params.delete(name);
+	// THE PAGE GOES WITH THE PREDICATE IT WAS ISSUED UNDER. A filter change
+	// is page one of a NEW set — the list clears its cursor to say so — and a
+	// cursor left in the address would describe a page of the filter the operator
+	// just left: exactly the pairing `continuationCursor` refuses in memory,
+	// preserved in a link and handed back to a reload as though it were valid.
+	params.delete(CURSOR_PARAM);
 	if (filter.status !== undefined && filter.status.length > 0) params.set("status", filter.status);
 	if (filter.period !== undefined && filter.period.length > 0) {
 		params.set("period", filter.period);
@@ -183,6 +190,27 @@ function replaceQuery(query: string): void {
 	const url = new URL(window.location.href);
 	url.search = query;
 	window.history.replaceState(window.history.state, "", url);
+}
+
+/**
+ * Swap the whole query, ON A NEW ENTRY.
+ *
+ * THE ONE THING THAT PUSHES WITHOUT LEAVING THE LIST, and the exception is the
+ * point of putting the page there: a filter and a tab REFINE one view, but a
+ * page is a PLACE the operator went to. Replacing here would leave Back with nothing to walk — the
+ * browser's own Back would jump straight out of a four-page scan to whatever
+ * came before the screen — which is the behaviour that made the address bar and
+ * the pagination disagree in the first place.
+ *
+ * The entry names no record, because a page of the list is not one; nothing
+ * reads this state (the selection is read off the address, not off
+ * `history.state`), so it is a statement about the entry rather than a channel.
+ */
+function pushQuery(query: string): void {
+	if (typeof window === "undefined") return;
+	const url = new URL(window.location.href);
+	url.search = query;
+	window.history.pushState({ ottaOrder: null }, "", url);
 }
 
 function readSelectedOrder(): string | null {
@@ -241,6 +269,17 @@ export function OrdersScreen(): React.ReactElement {
 	 *  panel showing why (F22), and re-derived on `popstate` so Back out of a
 	 *  detail restores the filters as well as the list. */
 	const [filter, setFilter] = React.useState<OrdersFilter>(() => readOrdersFilter(currentSearch()));
+	/**
+	 * THE PAGE THE ADDRESS NAMES, read the same way and at the same moment as
+	 * the filter — the two are one pair, and a cursor is only meaningful against
+	 * the predicate it was issued under.
+	 *
+	 * IT IS ONLY EVER A SEED. The list owns where it has paged to once it is
+	 * mounted; this value is what it STARTS from, on a first mount and on the
+	 * remount a traversal triggers. Keeping it in step with the address afterwards
+	 * is what stops a later remount seeding the list from a page it already left.
+	 */
+	const [cursor, setCursor] = React.useState<string | undefined>(() => readCursor(currentSearch()));
 	const [tab, setTab] = React.useState<number>(() => readOrderTab(currentSearch()));
 	/** Bumped on every `popstate`, and used as the child's `key`: a traversal is
 	 *  the one moment the URL knows something the mounted child does not, so the
@@ -258,6 +297,12 @@ export function OrdersScreen(): React.ReactElement {
 			pushed.current = false;
 			setSelected(readSelectedOrder());
 			setFilter(readOrdersFilter(currentSearch()));
+			// THE PAGE RIDES THE SAME RESTORE PATH THE FILTER DOES, and deliberately
+			// not a second mechanism: a traversal re-derives the whole address at
+			// once and the `key={restore}` bump below rebuilds the list from all of
+			// it. A cursor restored through some other channel would race the filter
+			// it belongs to through the one commit where they disagree.
+			setCursor(readCursor(currentSearch()));
 			setTab(readOrderTab(currentSearch()));
 			setRestore((n) => n + 1);
 		};
@@ -272,8 +317,30 @@ export function OrdersScreen(): React.ReactElement {
 				<OrdersList
 					key={restore}
 					initialFilter={filter}
+					initialCursor={cursor}
 					onFilterChange={(next) => {
+						// The filter query drops the cursor with the filter it belonged to
+						// (see `ordersFilterQuery`), so this one write says both things.
+						setCursor(undefined);
 						replaceQuery(ordersFilterQuery(currentSearch(), next));
+					}}
+					/*
+					 * PAGING PUSHES; RETURNING TO PAGE ONE REPLACES.
+					 *
+					 * A page the operator asked for is somewhere they went, so it earns a
+					 * history entry and Back walks the pages they actually visited. The
+					 * `undefined` case is not a journey in the other direction: it is the
+					 * list telling this screen that the address named a page the service
+					 * would not open, so the entry the operator is standing on is
+					 * corrected in place rather than buried under a second one they never
+					 * asked for — and a reload of the corrected address no longer re-runs
+					 * the refusal.
+					 */
+					onCursorChange={(next) => {
+						setCursor(next);
+						const query = cursorQuery(currentSearch(), next);
+						if (next === undefined) replaceQuery(query);
+						else pushQuery(query);
 					}}
 					onOpen={(orderId) => {
 						pushSelectedOrder(orderId);

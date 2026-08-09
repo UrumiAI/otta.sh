@@ -55,7 +55,14 @@ import {
 	shortIdsFor,
 } from "@otta-sh/admin-presentation";
 import * as React from "react";
-import { continuationCursor, mergeById, type PendingCursor } from "../accumulate.js";
+import {
+	CURSOR_RESET_DESCRIPTION,
+	CURSOR_RESET_TITLE,
+	continuationCursor,
+	mergeById,
+	seedCursor,
+	type PendingCursor,
+} from "../accumulate.js";
 import {
 	fetchOrders,
 	isFailure,
@@ -404,7 +411,9 @@ export function ordersChrome({
 export function OrdersList({
 	onOpen,
 	initialFilter = {},
+	initialCursor,
 	onFilterChange,
+	onCursorChange,
 }: {
 	onOpen: (orderId: string) => void;
 	/** The filter the address bar arrived with (F22). BOTH the applied filter and
@@ -412,9 +421,26 @@ export function OrdersList({
 	 *  shows why, rather than reading as an unfiltered list that mysteriously
 	 *  holds four rows. */
 	initialFilter?: OrdersFilter;
+	/**
+	 * The page the address bar arrived with — an opaque service token, moved
+	 * verbatim and never inspected.
+	 *
+	 * IT IS THE PAGE, NOT THE SCAN. A reload of a paged address restores the page
+	 * the operator was on, not the stack of pages they scrolled through to reach
+	 * it: the address carries one cursor, and a link that replayed N requests
+	 * would be a different feature (and a slower one). So a deep-linked page
+	 * renders as its own rows with `firstPage` false, which is what makes the
+	 * count line say "on this page" rather than claiming the collection.
+	 */
+	initialCursor?: string;
 	/** Announced whenever the applied filter changes, for the screen to write to
 	 *  the URL. The list never touches history itself: one writer. */
 	onFilterChange?: (filter: OrdersFilter) => void;
+	/** Announced whenever the page the list is showing changes — a cursor the
+	 *  operator paged to, or `undefined` for "back at page one". Same contract as
+	 *  {@link onFilterChange}: the list states what happened, the screen decides
+	 *  what that does to the history stack. */
+	onCursorChange?: (cursor: string | undefined) => void;
 }): React.ReactElement {
 	const [applied, setApplied] = React.useState<OrdersFilter>(initialFilter);
 	const [draft, setDraft] = React.useState<OrdersFilter>(initialFilter);
@@ -433,7 +459,20 @@ export function OrdersList({
 	// hands back a cursor VALUE it has already used. Keying the re-fetch on that
 	// value alone is what would make such a click a silent no-op.
 	const [generation, setGeneration] = React.useState(0);
-	const [cursor, setCursor] = React.useState<PendingCursor<OrdersFilter> | null>(null);
+	/** SEEDED FROM THE ADDRESS, bound to the very filter object that seeded
+	 *  `applied` above — see {@link seedCursor}. Binding it to a copy would make
+	 *  every deep link fail `continuationCursor`'s identity test and degrade,
+	 *  silently, into a first-page reload. */
+	const [cursor, setCursor] = React.useState<PendingCursor<OrdersFilter> | null>(() =>
+		seedCursor(initialFilter, initialCursor),
+	);
+	/** The address named a page the service would not open, and this render is the
+	 *  first page of its filters instead. See the reset branch in the effect. */
+	const [cursorReset, setCursorReset] = React.useState(false);
+	/** Has ANY page landed on this mount? A ref because the fetch effect does not
+	 *  depend on `page` and would otherwise read a render-old value — and this is
+	 *  read at the moment a response arrives, which may be several renders later. */
+	const landed = React.useRef(false);
 
 	React.useEffect(() => {
 		let cancelled = false;
@@ -449,6 +488,47 @@ export function OrdersList({
 			// Whatever the outcome, the click that asked for this is over.
 			setRetrying(false);
 			if (isFailure(result)) {
+				/*
+				 * AN ADDRESS THE SERVICE WOULD NOT HONOUR, DEGRADING SAFELY.
+				 *
+				 * "A CONTINUATION THAT FAILED BEFORE ANY PAGE LANDED" IS THE WHOLE
+				 * DISCRIMINATOR, and it is exact rather than approximate: a continuation
+				 * with nothing to continue is unreachable from the screen itself — `Load
+				 * more` only exists under a page that landed, and every reset clears the
+				 * cursor with the page — so the only way to be here is a cursor this
+				 * mount was SEEDED with from the address, refused by the service on the
+				 * first request. Which is what fail-closed opaque tokens are supposed to
+				 * do to a link that is older than the filters it names, or that was
+				 * edited on the way.
+				 *
+				 * IT READS A REF, NOT `page`. This effect does not depend on `page`, so
+				 * the `page` in scope here is whatever it was when the effect was
+				 * created; `landed` is the same fact, read at the moment the response
+				 * actually arrives.
+				 *
+				 * SO THE PAGE IS DROPPED AND THE FILTERS ARE KEPT. Clearing the cursor
+				 * re-runs this effect (it is a dependency) as the filters' FIRST page,
+				 * with a notice saying why — rather than the cold error card, which on
+				 * this path would take the filter panel with it and leave a Retry that
+				 * re-sends the same refused token forever.
+				 *
+				 * IT CANNOT LOOP. The retry carries no cursor, so `continuation` is false
+				 * and a second failure is an ordinary cold one: at most one reset per
+				 * mount, whatever the service does.
+				 */
+				if (continuation && !landed.current) {
+					setCursor(null);
+					setCursorReset(true);
+					// The re-fetch is already on its way out (clearing the cursor re-runs
+					// this effect), so the screen must not blink through a commit that
+					// claims otherwise.
+					setBusy(true);
+					// The address is corrected in place — see the screen's
+					// `onCursorChange`. Leaving the refused token there would re-run this
+					// on every reload and hand a colleague the same broken link back.
+					onCursorChange?.(undefined);
+					return;
+				}
 				setFailure({ title: result.title, description: result.description, continuation });
 				// A FIRST PAGE THAT FAILED DISPROVES WHAT IS ON SCREEN; a page behind
 				// one that succeeded does not. Only the first case clears.
@@ -456,6 +536,7 @@ export function OrdersList({
 				return;
 			}
 			setFailure(null);
+			landed.current = true;
 			// F24: MERGE, NEVER ASSIGN. See `nextPage` — the functional form is
 			// required, not stylistic, because the rows it merges into are the ones
 			// in state at the moment the response lands.
@@ -534,6 +615,10 @@ export function OrdersList({
 		setApplied(next);
 		setDraft(next);
 		setCursor(null);
+		// THE RESET NOTICE IS ABOUT THE ARRIVAL, so it goes the moment the operator
+		// asks for something themselves. Left standing it would explain a link that
+		// no longer has anything to do with what is on screen.
+		setCursorReset(false);
 		// BUSY IS THE CLICK'S, NOT THE EFFECT'S. Setting it only inside the effect
 		// left one commit in which the applied filter had already moved and
 		// `Load more` still rendered enabled — offering the previous page's cursor
@@ -583,6 +668,24 @@ export function OrdersList({
 					description={card.description}
 					action={retryAction}
 					testId="orders-failure"
+				/>
+			)}
+
+			{/*
+			  THE ADDRESS NAMED A PAGE THE SERVICE WOULD NOT OPEN, and this is
+			  the first page of its filters instead. An ALERT rather than an error:
+			  nothing failed that the operator can act on, and there is a working
+			  list underneath — what they need is the one sentence explaining why
+			  they are not where the link they followed said they would be. It is
+			  withdrawn with the answer, so it never sits over a cold failure
+			  describing rows that are not there.
+			*/}
+			{cursorReset && answerVisible && (
+				<Notice
+					variant="alert"
+					title={CURSOR_RESET_TITLE}
+					description={CURSOR_RESET_DESCRIPTION}
+					testId="orders-cursor-reset"
 				/>
 			)}
 
@@ -903,7 +1006,12 @@ export function OrdersList({
 						style={buttonStyle}
 						onClick={() => {
 							const value = page.nextCursor;
-							if (value !== null) setCursor({ filter: applied, value });
+							if (value === null) return;
+							setCursor({ filter: applied, value });
+							setCursorReset(false);
+							// The page goes in the address, and the screen is the only
+							// writer — this states what happened, it does not navigate.
+							onCursorChange?.(value);
 						}}
 					>
 						{busy ? "Loading…" : LOAD_MORE_LABEL}
