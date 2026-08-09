@@ -620,9 +620,9 @@ describe.skipIf(PG === undefined)("admin Products console HTTP contract", () => 
 		expect(await omitted.text()).toBe(explicitAlone);
 
 		// `active=false` is NOT that kind of axis: the store emits a real
-		// `active = false` for it, so it and an omitted `active` are genuinely
-		// different predicates and must keep disagreeing. The asymmetry belongs to
-		// the store, and is deliberate here rather than an inconsistency to tidy.
+		// `active = 0` for it (an integer column), so it and an omitted `active` are
+		// genuinely different predicates and must keep disagreeing. The asymmetry
+		// belongs to the store, and is deliberate rather than an inconsistency.
 		expect(
 			(await get(`/products?cursor=${bareCursor}&productKind=physical&active=false`)).status,
 		).toBe(400);

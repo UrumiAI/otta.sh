@@ -1191,12 +1191,26 @@ function buildFilterFromQuery(
 	return filter;
 }
 
+/**
+ * Every order-list query param that is a FILTER axis — i.e. every one except the
+ * two paging controls. Written as an exhaustive key map rather than a chain of
+ * `||`s so that adding an axis to `ordersListQuery` without teaching the
+ * presence check about it is a COMPILE error, not a silently unguarded axis that
+ * a cursor request could then contradict for free.
+ */
+const ORDER_FILTER_PARAMS = {
+	states: true,
+	from: true,
+	to: true,
+	search: true,
+} satisfies Record<Exclude<keyof OrdersListQuery, "cursor" | "limit">, true>;
+
 /** Did the request SPELL OUT any order filter axis? Presence, not value — an
  *  absent param claims nothing, so a cursor-alone request is never compared
  *  against (and never 400s on) the filter its token carries. */
 function hasOrderFilterParams(q: OrdersListQuery): boolean {
-	return (
-		q.states !== undefined || q.from !== undefined || q.to !== undefined || q.search !== undefined
+	return (Object.keys(ORDER_FILTER_PARAMS) as (keyof typeof ORDER_FILTER_PARAMS)[]).some(
+		(key) => q[key] !== undefined,
 	);
 }
 
@@ -1213,14 +1227,19 @@ function buildProductFilterFromQuery(q: ProductsListQuery): ProductListFilter {
 	});
 }
 
+/** `ORDER_FILTER_PARAMS` for the product list — exhaustive for the same reason. */
+const PRODUCT_FILTER_PARAMS = {
+	active: true,
+	deleted: true,
+	productKind: true,
+	search: true,
+	lowStockThreshold: true,
+} satisfies Record<Exclude<keyof ProductsListQuery, "cursor" | "limit">, true>;
+
 /** `hasOrderFilterParams` for the product list. */
 function hasProductFilterParams(q: ProductsListQuery): boolean {
-	return (
-		q.active !== undefined ||
-		q.deleted !== undefined ||
-		q.productKind !== undefined ||
-		q.search !== undefined ||
-		q.lowStockThreshold !== undefined
+	return (Object.keys(PRODUCT_FILTER_PARAMS) as (keyof typeof PRODUCT_FILTER_PARAMS)[]).some(
+		(key) => q[key] !== undefined,
 	);
 }
 
@@ -1270,9 +1289,10 @@ function canonicalFilter(filter: OrderListFilter | ProductListFilter): string {
  * two spellings of one predicate — precisely the failure this gate exists to
  * prevent, inverted.
  *
- * `active: false` is NOT: the store emits a real `active = false` for it, so it
- * and an omitted `active` are genuinely different predicates and must keep
- * disagreeing. The asymmetry is the store's, not a tidying opportunity.
+ * `active: false` is NOT: the store emits a real `active = 0` for it (an integer
+ * column, `filter.active ? 1 : 0`), so it and an omitted `active` are genuinely
+ * different predicates and must keep disagreeing. The asymmetry is the store's,
+ * not a tidying opportunity.
  */
 function isNoOpAxis(key: string, value: unknown): boolean {
 	return key === "deleted" && value === false;

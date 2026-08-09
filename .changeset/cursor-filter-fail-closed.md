@@ -28,9 +28,18 @@ before that lands than after.
   cursor beside AGREEING params is byte-identical to that same cursor alone: agreeing
   params are redundant, not a second opinion. A cursor beside DISAGREEING params is
   `400 {"error":"cursor filter mismatch"}`, the same envelope as the neighbouring
-  invalid-cursor and invalid-states-filter 400s, with its own value so a client can tell
-  "your cursor is garbage" from "your cursor is not the one for this request" and drop
-  the cursor rather than the filter. A request with no cursor at all is unchanged.
+  invalid-cursor and invalid-states-filter 400s, with its own value so the two causes
+  stay tellable apart. A request with no cursor at all is unchanged.
+- **Two obligations this puts on a client that sends both.** (1) A paged request must
+  send the RESOLVED instants the cursor was minted with, not the period they came from:
+  re-resolving "last 30 days" at page-two time yields different `from`/`to` values, which
+  is a genuinely different predicate and will 400 — correctly, because the rows behind
+  that cursor are not the rows that window now describes. Carry the resolved bounds
+  alongside the cursor, or send the cursor alone. (2) `cursor filter mismatch` means
+  "drop the cursor and re-issue page one with these parameters", not "show the operator
+  an error": the request is answerable, just not from that token, and the recovery is
+  mechanical. It is deliberately one code across the filter and limit axes for that
+  reason — one condition, one remedy.
 - **Compared as predicates, not as spelling**, so an agreeing request cannot 400 by
   accident: key order is irrelevant, an absent axis and an `undefined` one are the same
   thing, an OR-able array is a SET (`states=paid,cancelled` and `states=cancelled,paid,paid`
@@ -41,9 +50,9 @@ before that lands than after.
 - **`deleted=false` and an omitted `deleted` are one predicate, and agree.** The
   tombstone axis is `deleted_at IS NULL` for every value except `true`, so the two
   spellings issue identical SQL; comparing them as distinct would 400 one predicate
-  written two ways. `active=false` is NOT that — the store emits a real `active = false`
-  — so it keeps disagreeing with an omitted `active`. The asymmetry is the store's, and
-  both halves are pinned.
+  written two ways. `active=false` is NOT that — the store emits a real `active = 0`
+  against an integer column — so it keeps disagreeing with an omitted `active`. The
+  asymmetry is the store's, and both halves are pinned.
 - **A subset is not agreement.** A request naming only `states` while the token also
   carries a date window is a disagreement, not a narrowing: the rows are tighter than
   the request describes, which is the same invisible divergence in a quieter form.
@@ -54,8 +63,7 @@ before that lands than after.
   number and clamps it into range, consulting the query's only when the token's is
   missing or unusable. So a token carrying `999999` pages at 100 and a `?limit=50`
   beside it is a real disagreement, while a token carrying nothing usable pages at
-  exactly the query's limit and agrees with it. It shares the one mismatch code because
-  it has the one remedy: drop the cursor, re-issue the first page.
+  exactly the query's limit and agrees with it.
 - **An unparseable `states` beside a cursor** is newly reachable and answers the
   invalid-filter 400 the no-cursor arm has always given — one rule, both arms.
 
