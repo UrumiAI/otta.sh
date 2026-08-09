@@ -33,6 +33,39 @@ export const OK_ACCENT = "#2f855a";
 export const FAIL_ACCENT = "#c53030";
 export const WARN_ACCENT = "#b7791f";
 export const MUTED = "rgba(128, 128, 128, 0.6)";
+/**
+ * THE LOOK OF A CONTROL THAT IS PRESENT BUT CANNOT BE USED.
+ *
+ * TWO OVERCORRECTIONS, AND THIS IS THE MIDDLE. The first cut dropped the whole
+ * button to `opacity: 0.45`, which took the 13px LABEL down with the border and
+ * left a word a low-vision operator had to work to read. The second went the
+ * other way — a near-invisible border and a token opacity — and made unavailable
+ * and live nearly indistinguishable, which is worse: a control that looks
+ * pressable and does nothing.
+ *
+ * SO THE STATE IS CARRIED BY THREE DECLARATIONS, and the point is WHICH of them
+ * loses strength. A flat fill (the surface reads as inert rather than raised), a
+ * border visibly lighter than {@link HAIRLINE} but still THERE, and a label
+ * mixed down to 62% of the theme's own foreground.
+ *
+ * THE MIX IS AN ALPHA — that is exactly what `color-mix(…, transparent)` is, and
+ * claiming otherwise would be dressing up the same technique in better words.
+ * What makes it different from the `opacity` it replaces is WHERE it lands:
+ * `opacity` fades the whole element, so the border and the fill that carry the
+ * state fade at precisely the rate the label does, and the only way to keep the
+ * state visible is to keep the label legible or vice versa. Here the fill and the
+ * border stay at full strength and only the word is muted, so the two jobs stop
+ * competing. 62% clears the contrast floor at this size while reading
+ * unmistakably as "off"; it is stated against `currentColor` so it follows the
+ * theme rather than pinning a grey that is legible in one of them.
+ *
+ * A whole `border` rather than a `border-color`: `buttonStyle` states the
+ * shorthand, and React warns (correctly) that mixing the two on one element
+ * makes removals order-dependent.
+ */
+export const UNAVAILABLE_BORDER = "1px solid rgba(128, 128, 128, 0.22)";
+export const UNAVAILABLE_FILL = "rgba(128, 128, 128, 0.10)";
+export const UNAVAILABLE_INK = "color-mix(in srgb, currentColor 62%, transparent)";
 
 /**
  * The attribute a row carries its record id in.
@@ -135,6 +168,23 @@ export const CONSOLE_STYLES = `
 .otta-num { font-variant-numeric: tabular-nums; }
 .otta-btn { cursor: pointer; }
 .otta-btn:disabled { cursor: not-allowed; }
+/* A CONTROL DIMMED WITHOUT LEAVING THE TAB ORDER — see PagerButton. The rule
+   above cannot match it: aria-disabled is a STATE, not the disabled property,
+   and the whole point of using it is that the element stays focusable and
+   clickable at the DOM level while refusing its own click. (No backticks in
+   this sheet: it is a template literal, and one would end it.) */
+.otta-btn[aria-disabled="true"] { cursor: not-allowed; }
+/* Present to assistive technology, absent from the page. The same recipe the
+   table caption uses inline; it is a class here because it is applied to
+   elements that are not tables and would otherwise be a fourth copy. */
+.otta-sr-only {
+	position: absolute;
+	inline-size: 1px;
+	block-size: 1px;
+	overflow: hidden;
+	clip-path: inset(50%);
+	white-space: nowrap;
+}
 .otta-summary { cursor: pointer; }
 .otta-row[${ROW_ID_ATTRIBUTE}] {
 	cursor: pointer;
@@ -290,6 +340,84 @@ export function Button({
 		>
 			{label}
 		</button>
+	);
+}
+
+/**
+ * ONE PAGER CONTROL — `Previous` or `Next`, on either list.
+ *
+ * IT DECIDES NOTHING. Which of the two states it is in, and what it says about
+ * being unavailable, are `pagerView`'s answer (`accumulate.ts`, which reads its
+ * words from `@otta-sh/admin-presentation`). This is the markup, and it is HERE
+ * rather than in a list because both lists rendered it verbatim: two copies of a
+ * control whose accessibility is the interesting part is two copies that drift.
+ *
+ * `aria-disabled` RATHER THAN `disabled`, which is the whole reason this is not
+ * `Button`. A `disabled` element leaves the tab order, and that is exactly what
+ * must not happen at the moment `Next` is pressed onto the LAST page: the
+ * control the operator's focus is sitting on would stop being focusable under
+ * their hands and the browser would drop focus to `<body>`, halfway down a long
+ * list, with no ring to find. So it keeps its tab stop and its focus ring,
+ * announces itself as unavailable, and refuses its own click.
+ *
+ * THE REASON IS A VISUALLY-HIDDEN SENTENCE, referenced by `aria-describedby`,
+ * and `title` is a bonus rather than the mechanism. The earlier version had this
+ * exactly backwards — it claimed `title` was what a keyboard user could reach,
+ * which is the one thing `title` is NOT: a tooltip is a POINTER affordance,
+ * shown on hover, and keyboard exposure of it is inconsistent across browsers
+ * and screen readers. A described-by node is read out with the control's name
+ * every time, by every screen reader, whether the operator arrived by pointer,
+ * by tab, or by a rotor listing of the page's buttons.
+ *
+ * DIMMED WITHOUT GOING ILLEGIBLE, AND WITHOUT GOING INVISIBLE. See
+ * {@link UNAVAILABLE_BORDER} for what the state is drawn with and why it is
+ * three declarations rather than an opacity.
+ */
+export function PagerButton({
+	control,
+	testId,
+	onClick,
+}: {
+	control: { readonly label: string; readonly unavailable: boolean; readonly title?: string };
+	testId: string;
+	onClick: () => void;
+}): React.ReactElement {
+	// `useId` rather than a name derived from `testId`: two lists could mount at
+	// once under a host that renders both, and a duplicated id would point every
+	// description at whichever one the document found first.
+	const describedBy = `${React.useId()}-why`;
+	const reason = control.title;
+	return (
+		<span style={{ display: "inline-flex", alignItems: "center" }}>
+			<button
+				type="button"
+				className="otta-focusable otta-btn"
+				data-testid={testId}
+				aria-disabled={control.unavailable || undefined}
+				{...(reason !== undefined ? { "aria-describedby": describedBy, title: reason } : {})}
+				style={{
+					...buttonStyle,
+					...(control.unavailable
+						? {
+								border: UNAVAILABLE_BORDER,
+								background: UNAVAILABLE_FILL,
+								color: UNAVAILABLE_INK,
+							}
+						: {}),
+				}}
+				onClick={() => {
+					if (control.unavailable) return;
+					onClick();
+				}}
+			>
+				{control.label}
+			</button>
+			{reason !== undefined && (
+				<span className="otta-sr-only" id={describedBy}>
+					{reason}
+				</span>
+			)}
+		</span>
 	);
 }
 

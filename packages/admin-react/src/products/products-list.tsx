@@ -59,9 +59,10 @@ import {
 	LOAD_MORE_LABEL,
 	LOW_STOCK_FILTER_DESCRIPTION,
 	LOW_STOCK_FILTER_LABEL,
+	PAGER_LABEL,
 	PRODUCTS_EMPTY,
 	PRODUCTS_LIST_INTRO,
-	PRODUCTS_LOAD_MORE_FAILED_TITLE,
+	PRODUCTS_PAGE_FAILED_TITLE,
 	PRODUCTS_LOW_STOCK_NOUN,
 	PRODUCTS_LOW_STOCK_NO_MATCH,
 	PRODUCTS_NOUN,
@@ -86,11 +87,20 @@ import * as React from "react";
 import {
 	CURSOR_RESET_DESCRIPTION,
 	CURSOR_RESET_TITLE,
+	FIRST_PAGE,
 	PAGING_STOPPED_DESCRIPTION,
 	PAGING_STOPPED_TITLE,
+	askedForPage,
 	continuationCursor,
 	mergeById,
+	pagerView,
+	poppedPage,
+	pushedPage,
 	seedCursor,
+	seedTrail,
+	type PageArrival,
+	type PageChange,
+	type PageTrail,
 	type PendingCursor,
 } from "../accumulate.js";
 import {
@@ -109,6 +119,7 @@ import {
 	Field,
 	Group,
 	Notice,
+	PagerButton,
 	StatusPill,
 	Table,
 	buttonStyle,
@@ -254,38 +265,18 @@ interface LoadedPage extends ProductsResponse {
  * matches the merchant had already gathered vanished at the exact moment they
  * asked to see more of them.
  *
- * A CONTINUATION EXTENDS; EVERYTHING ELSE RESETS. `continuation` is "this
- * request carried a cursor", which is exactly the request `Load more` (and a
- * Retry of it) issues. A filter change clears the cursor before re-fetching, so
- * it arrives here as a reset and the previous filter's rows go — and a first
- * mount, including one deep-linked to a filtered address, is the same reset.
+ * THREE ARRIVALS, NOT TWO — see {@link PageArrival}. `extend` is `Load more`
+ * (and a Retry of it); `replace` is a pager step or a deep link, which move the
+ * window rather than growing it; everything else is a `reset`, including a
+ * filter change and a first mount.
  *
  * THE CURSOR, THE VOCABULARY AND THE STOCK CONTEXT TAKE THE NEW PAGE'S VALUES;
- * the rows merge by id (see {@link mergeById}) and `firstPage` is inherited,
- * because a scan that began at the first page still starts there after its
- * second page lands.
+ * on an `extend` the rows merge by id (see {@link mergeById}) and `firstPage` is
+ * inherited, because a scan that began at the first page still starts there
+ * after its second page lands.
  *
- * `filterUnavailable` IS THE ONE EXCEPTION, AND IT LATCHES — it is INHERITED
- * from the accumulation rather than read off the newest response. Every other
- * field describes that response, which is what a single page needs; this one
- * describes whether the operator's filter was ever applied to the rows they are
- * looking at. A continuation's predicate rode inside the opaque cursor, so the
- * plugin reports `false` for every one of them by contract
- * (`resolveStockContext`'s decision 3) — there is no incoming `true` to combine
- * with, which is why this inherits instead of OR-ing. Taking that `false` at
- * face value is how a scan whose FIRST page went out unfiltered, the threshold
- * having been unreadable just then, quietly drops the banner at the click of
- * `Load more` and starts calling every product in the catalog low-stock. Page
- * one's answer stands until the scan resets.
- *
- * THE `total` GOES WITH IT, and the reason is page one's, not a mixture: the
- * continuation's rows were fetched under the SAME (absent) predicate, so they
- * are homogeneous — but the count that arrives with them is the count of every
- * product, while the operator asked for the low-stock ones. Page one already
- * withheld its own total on exactly that ground, so honouring this one would
- * jump the caption from a hedged page count to a confident exact number
- * underneath a banner saying the filter was skipped. The count falls back to
- * what the render can back up on its own.
+ * `filterUnavailable` IS THE ONE EXCEPTION, AND IT LATCHES ACROSS BOTH KINDS OF
+ * CONTINUATION — the long argument is at the branch itself.
  *
  * `unreadable` DOES NOT LATCH, deliberately. It describes how the newest
  * response could be RENDERED — whether its own rows carry an on-hand figure —
@@ -295,16 +286,63 @@ interface LoadedPage extends ProductsResponse {
 export function nextPage(
 	current: LoadedPage | null,
 	incoming: ProductsResponse,
-	continuation: boolean,
+	arrival: PageArrival,
 ): LoadedPage {
-	if (!continuation) return { ...incoming, firstPage: true, pages: 1 };
-	if (current === null) return { ...incoming, firstPage: false, pages: 1 };
-	const { filterUnavailable } = current.stock;
-	return {
+	if (arrival === "reset") return { ...incoming, firstPage: true, pages: 1 };
+	/*
+	 * THE LATCH SURVIVES A PAGER STEP, and getting this wrong was the sharpest
+	 * defect the pager introduced.
+	 *
+	 * `filterUnavailable` is not a property of the rows; it is the answer to "was
+	 * the merchant's low-stock filter ever applied to what you are looking at",
+	 * and only PAGE ONE can answer it. Every request carrying a cursor reports
+	 * `false` by contract (`resolveStockContext`'s decision 3), because the
+	 * predicate rode inside the opaque token and the plugin has nothing to
+	 * re-check. So a continuation has NO answer of its own — `false` there means
+	 * "not asked", not "the filter ran".
+	 *
+	 * The first cut inherited the latch only on an `extend`, on the reasoning that
+	 * a replaced window is a single page and a single page speaks for itself. It
+	 * does not: `Next` from a first page whose threshold could not be read sends a
+	 * cursor exactly like `Load more` does, gets the same contractual `false`
+	 * back, and would drop the banner and start captioning every product in the
+	 * catalog as low stock — at the click of a control that has nothing to do with
+	 * filtering. The latch therefore rides on the CONTINUATION, not on the merge.
+	 *
+	 * AND ONLY ON A CONTINUATION. A request that put no cursor on the wire —
+	 * `Previous` off the bottom of the stack as much as a filter apply — is page
+	 * one, answered authoritatively, and arrives as a `reset` above: it may clear
+	 * a stale banner and it may raise a fresh one. Latching there would have been
+	 * the same defect pointing the other way, with a banner nothing could ever
+	 * dismiss.
+	 *
+	 * KNOWN LIMIT, STATED RATHER THAN HIDDEN: a continuation with NOTHING BEHIND
+	 * IT — a page deep-linked straight from an address — has no page-one answer to
+	 * inherit, so it takes the contractual `false` at face value and shows no
+	 * banner even if the threshold is unreadable. The screen cannot do better
+	 * without a second request it has no reason to make: the fact simply is not on
+	 * the wire for that page. It self-corrects the moment the merchant pages back
+	 * to the first page or applies a filter.
+	 *
+	 * THE `total` GOES WITH IT for page one's own reason: the count that arrives
+	 * is the count of every product while the merchant asked for the low-stock
+	 * ones, so honouring it would put a confident exact number under a banner
+	 * saying the filter was skipped.
+	 */
+	const filterUnavailable = current?.stock.filterUnavailable ?? incoming.stock.filterUnavailable;
+	const carried = {
 		...incoming,
-		products: mergeById(current.products, incoming.products, (product) => product.productId),
 		stock: { ...incoming.stock, filterUnavailable },
 		...(filterUnavailable ? { total: undefined } : {}),
+	};
+	// A WINDOW THAT MOVED, or one with nothing to merge into: the page stands on
+	// its own, and it does not start at the first page.
+	if (arrival === "replace" || current === null) {
+		return { ...carried, firstPage: false, pages: 1 };
+	}
+	return {
+		...carried,
+		products: mergeById(current.products, incoming.products, (product) => product.productId),
 		firstPage: current.firstPage,
 		pages: current.pages + 1,
 	};
@@ -359,11 +397,8 @@ export function clearAnswer(page: LoadedPage | null): LoadedPage | null {
  * from the cursor the page kept, and its response merges onto the rows that
  * stayed. Same shape as the Orders list, which had it right.
  */
-export function pageAfterFailure(
-	page: LoadedPage | null,
-	continuation: boolean,
-): LoadedPage | null {
-	return continuation ? page : clearAnswer(page);
+export function pageAfterFailure(page: LoadedPage | null, paging: boolean): LoadedPage | null {
+	return paging ? page : clearAnswer(page);
 }
 
 /**
@@ -376,23 +411,23 @@ export function pageAfterFailure(
  *  - A COLD OR STALE failure is about the whole screen: nothing on it is true
  *    any more, so the service's own whole-collection title stands at the top,
  *    above the space the rows used to occupy.
- *  - A CONTINUATION failure is about ONE REQUEST, and the rows above it are the
- *    answer to a different one that succeeded. Rendering the service's
- *    whole-collection refusal over rows that are still on screen states
- *    something those rows disprove, so the title shrinks to the claim this
- *    render can back — the NEXT page failed — and it is drawn inline, where
- *    `Load more` was, because that is the control it replaces.
+ *  - A PAGING failure is about ONE REQUEST, and the rows above it are the answer
+ *    to a different one that succeeded. Rendering the service's whole-collection
+ *    refusal over rows that are still on screen states something those rows
+ *    disprove, so the title shrinks to the claim this render can back — ONE page
+ *    failed, in whichever direction it was asked for — and it is drawn inline,
+ *    where the paging controls were, because that is what it replaces.
  */
 export function failureNotice(
 	failure: {
 		readonly title: string;
 		readonly description: string;
-		readonly continuation: boolean;
+		readonly paging: boolean;
 	} | null,
 ): { readonly title: string; readonly description: string; readonly inline: boolean } | null {
 	if (failure === null) return null;
-	return failure.continuation
-		? { title: PRODUCTS_LOAD_MORE_FAILED_TITLE, description: failure.description, inline: true }
+	return failure.paging
+		? { title: PRODUCTS_PAGE_FAILED_TITLE, description: failure.description, inline: true }
 		: { title: failure.title, description: failure.description, inline: false };
 }
 
@@ -421,6 +456,7 @@ export function ProductsList({
 	onOpen,
 	initialFilter = {},
 	initialCursor,
+	initialTrail,
 	onFilterChange,
 	onCursorChange,
 }: {
@@ -439,6 +475,14 @@ export function ProductsList({
 	 *  service that omits the field leaves it on the page-scoped hedge. Same
 	 *  contract, same reasoning, as the Orders list. */
 	initialCursor?: string;
+	/** THE WALK THE HISTORY ENTRY RECORDED, when it recorded one. A URL carries
+	 *  one cursor, which is what makes a link shareable; a history entry is this
+	 *  browser's private record of somewhere this merchant already stood, and can
+	 *  carry the stack the address cannot. Without it, Back onto a page they had
+	 *  walked to came back UNGROUNDED — the position fell to a dash and `Previous`
+	 *  dimmed, two presses into a scan. Absent is a deep link, which is the honest
+	 *  default. Same contract as the Orders list. */
+	initialTrail?: PageTrail;
 	/** Announced whenever the applied filter changes, for the screen to write to
 	 *  the URL. The list never touches history itself: one writer. */
 	onFilterChange?: (filter: ProductsFilter) => void;
@@ -448,18 +492,20 @@ export function ProductsList({
 	 *  IDENTITY MUST BE STABLE ACROSS RENDERS: it is a dependency of the fetch
 	 *  effect, so a fresh arrow per render would re-fetch on every render. The
 	 *  screens wrap it in `useCallback`. */
-	onCursorChange?: (cursor: string | undefined) => void;
+	onCursorChange?: (change: PageChange) => void;
 }): React.ReactElement {
 	const [applied, setApplied] = React.useState<ProductsFilter>(initialFilter);
 	const [draft, setDraft] = React.useState<ProductsFilter>(initialFilter);
 	const [page, setPage] = React.useState<LoadedPage | null>(null);
-	/** `continuation` records WHICH request failed — a first page, or a page
-	 *  behind one that already succeeded — because that is what decides whether
-	 *  the rows on screen are disproved by the failure or untouched by it. */
+	/** `paging` records WHICH request failed — a page the merchant MOVED to, or a
+	 *  fresh load — because that is what decides whether the rows on screen are
+	 *  disproved by the failure or untouched by it. Not "did a cursor go out":
+	 *  `Previous` onto page one sends none and is still a move. See
+	 *  {@link askedForPage}. */
 	const [failure, setFailure] = React.useState<{
 		title: string;
 		description: string;
-		continuation: boolean;
+		paging: boolean;
 	} | null>(null);
 	const [busy, setBusy] = React.useState(true);
 	// The Retry's OWN in-flight state. `busy` is the whole screen's, and the
@@ -477,6 +523,21 @@ export function ProductsList({
 	 *  silently, into a first-page reload. */
 	const [cursor, setCursor] = React.useState<PendingCursor<ProductsFilter> | null>(() =>
 		seedCursor(initialFilter, initialCursor),
+	);
+	/**
+	 * THE PAGES WALKED TO GET HERE — the client-side stack `Previous` pops.
+	 *
+	 * SEEDED FROM THE SAME ADDRESS THE CURSOR IS, and ungrounded when that address
+	 * named a page: a link says WHICH page, never HOW MANY came before it, so this
+	 * mount can go forward and come back without ever being entitled to print a
+	 * page number. See {@link PageTrail}.
+	 *
+	 * IT MOVES ON THE CLICK, exactly as the cursor and the address do, and is not
+	 * rewound by a refusal — a failed page withdraws the pager rather than
+	 * pretending the merchant never asked.
+	 */
+	const [trail, setTrail] = React.useState<PageTrail>(
+		() => initialTrail ?? seedTrail(initialCursor),
 	);
 	/** The address named a page that would not open, and this render is the first
 	 *  page of its filters instead — the SEEDED path only. See the effect. */
@@ -545,7 +606,14 @@ export function ProductsList({
 		// `continuationCursor`): one belonging to a filter that has since been
 		// replaced is not sent, and this request is the new filter's first page.
 		const from = continuationCursor(cursor, applied);
-		const continuation = from !== undefined;
+		// DID THE MERCHANT ASK FOR THIS PAGE? Not "is there a cursor on the wire" —
+		// `Previous` onto page one sends none and is still a move. See
+		// {@link askedForPage}.
+		const paging = askedForPage(cursor, applied);
+		// WHICH OF THE TWO ADVANCING CONTROLS ISSUED IT. Only `Load more` extends
+		// the rows on screen; a pager step and a deep link name a page that stands
+		// on its own. See `PendingCursor.extend`.
+		const extending = paging && cursor?.extend === true;
 		setBusy(true);
 		void fetchProducts(applied, from).then((result) => {
 			if (cancelled) return;
@@ -563,11 +631,11 @@ export function ProductsList({
 				 * A failure therefore leaves the cursor exactly where it was, in state
 				 * and in the address, so a reload after recovery still restores the page.
 				 */
-				setFailure({ title: result.title, description: result.description, continuation });
+				setFailure({ title: result.title, description: result.description, paging });
 				// F2: THE ANSWER GOES WITH THE FAILURE, in the same transition — for a
 				// FIRST page. A page behind one that succeeded takes only its own
 				// cursor with it (F24); see `pageAfterFailure`.
-				setPage((current) => pageAfterFailure(current, continuation));
+				setPage((current) => pageAfterFailure(current, paging));
 				return;
 			}
 			setFailure(null);
@@ -599,9 +667,22 @@ export function ProductsList({
 			if (rejected) {
 				skipRefetchAfterReset.current = true;
 				setCursor(null);
-				onCursorChange?.(undefined);
+				// A CORRECTION, NEVER A JOURNEY: the entry the merchant is standing on
+				// is rewritten rather than buried under one they never asked for. The
+				// stack it records is page one's, which is what a reload of the
+				// corrected address would produce — mid-scan that deliberately differs
+				// from the in-memory stack, which still describes the rows on screen.
+				onCursorChange?.({ cursor: undefined, trail: FIRST_PAGE, kind: "correct" });
 				if (midScan) setPagingStopped(true);
-				else setCursorReset(true);
+				else {
+					setCursorReset(true);
+					// THE ROWS BELOW REALLY ARE PAGE ONE, so the stack has to say so —
+					// otherwise the position would keep the unknowable page the address
+					// asked for while the screen showed the first one. The mid-scan
+					// branch deliberately does NOT reset: those rows are still the pages
+					// the merchant gathered, and the pager is withdrawn there anyway.
+					setTrail(FIRST_PAGE);
+				}
 			}
 			if (midScan) {
 				// THE ONE RESPONSE THIS SCREEN THROWS AWAY. Every row in it is real and
@@ -614,6 +695,33 @@ export function ProductsList({
 			// F24: MERGE, NEVER ASSIGN. The functional form is required, not
 			// stylistic: the rows it merges into are the ones in state at the moment
 			// the response lands.
+			/*
+			 * WHAT THE WIRE SAYS THIS RESPONSE IS — and it is the WIRE, not the
+			 * operator's intent, that decides.
+			 *
+			 * A REQUEST THAT CARRIED NO CURSOR IS PAGE ONE, whoever asked for it. A
+			 * filter apply, a first mount and a `Previous` off the bottom of the
+			 * stack all send the same empty request and all come back with the same
+			 * thing: the first page, under the current predicate, answered
+			 * authoritatively. Calling the last of those a `replace` — which the
+			 * first cut did, because the OPERATOR had asked for a page — was wrong in
+			 * two directions at once. It captioned a render that IS the first page as
+			 * `firstPage: false`, which takes the whole-collection empty copy away and
+			 * puts the "on this page" hedge on a count the render could prove; and on
+			 * Pricing & inventory it carried a latch forward over a response entitled
+			 * to clear it, so a banner raised by a settings blip could never go away
+			 * — while a blip happening ON that request could not raise one.
+			 *
+			 * THE FAILURE CLASSIFICATION IS A SEPARATE QUESTION and stays on `paging`.
+			 * "Is this response page one" and "do the rows on screen survive this
+			 * request failing" are genuinely different questions, and keeping them
+			 * apart is what makes answering the first one straight off the wire safe.
+			 *
+			 * A REFUSED CURSOR IS PAGE ONE TOO: the plugin already performed the
+			 * recovery, so these are the first page's rows however they were asked for.
+			 */
+			const arrival: PageArrival =
+				rejected || from === undefined ? "reset" : extending ? "extend" : "replace";
 			setPage((current) =>
 				nextPage(
 					current,
@@ -624,10 +732,7 @@ export function ProductsList({
 						stock: result.stock,
 						vocabulary: result.vocabulary,
 					},
-					// A REFUSED CURSOR MAKES THIS A RESET whatever the request was: these
-					// are page one's rows, and merging them onto an accumulation would
-					// caption a first page as the middle of a scan.
-					continuation && !rejected,
+					arrival,
 				),
 			);
 		});
@@ -736,13 +841,124 @@ export function ProductsList({
 	// A CONTINUATION FAILURE WITHDRAWS NOTHING (F24). The rows above it are the
 	// answer to a request that succeeded, so they, the count line and the alert
 	// that describes them all stand; only a FIRST-page failure takes them.
-	const answerVisible = failure === null || failure.continuation;
+	const answerVisible = failure === null || failure.paging;
 	const degraded = visibleDegradation(page, !answerVisible);
 	// F3: a cold failure has no vocabulary to build the two selects from, so the
 	// panel goes with the answer rather than standing there empty.
 	const showFilters = filtersVisible(page, failure !== null);
 	// WHICH OF THE TWO PLACES THE FAILURE IS DRAWN IN — see `failureNotice`.
 	const notice = failureNotice(failure);
+
+	/**
+	 * THE PAGER, decided in `pagerView` and only drawn here.
+	 *
+	 * WITHDRAWN WHEREVER `Load more` IS. A failure has already replaced the offer
+	 * to page with a Retry for the request that failed, and the paging-stopped
+	 * state has just taken the page out of the ADDRESS — leaving `Previous`
+	 * standing there would offer to step back relative to a position the screen
+	 * disowned one line above. Both states leave the rows exactly where they are;
+	 * it is only the paging that goes.
+	 *
+	 * THE `total` IS WHATEVER THIS RENDER IS ENTITLED TO STATE — the same value
+	 * the count line reads, so a low-stock page whose predicate never ran (see
+	 * `nextPage`) withholds the page count exactly as it withholds the count.
+	 */
+	const pager = pagerView({
+		trail,
+		hasNext,
+		rows: products.length,
+		// THE COUNT LINE'S OWN FIGURE, not the payload's — `listOutcome` is the one
+		// place a `total` is validated and, on some scopes, withheld, and a page
+		// count derived from a number the caption refused would contradict it one
+		// line down. On this screen that is not hypothetical: a `filterUnavailable`
+		// page withholds its total by design.
+		...(outcome.statedTotal !== undefined ? { total: outcome.statedTotal } : {}),
+		// HOW MANY PAGES ARE ON SCREEN AT ONCE. Above one the position states the
+		// window (`Pages 2–3 of 6`) rather than only where it ends.
+		span: page?.pages ?? 1,
+		// THE PAGE SIZE IS ON THE WIRE ALREADY — the plugin sends the keyset limit
+		// it pages by, so `M` costs no request. A service that omits it leaves the
+		// page count an em dash rather than a guess.
+		...(vocabulary !== undefined ? { pageSize: vocabulary.pageLimit } : {}),
+		busy,
+		withdrawn: page === null || !answerVisible || failure !== null || pagingStopped,
+	});
+	/** The same withdrawal, on the control that was already gated this way. */
+	const loadMoreVisible = page?.nextCursor != null && failure === null && !pagingStopped;
+
+	/**
+	 * One page forward, from whichever control asked. Both push the same stack;
+	 * they disagree only about whether the rows above stay.
+	 *
+	 * IT READS `trail` OUT OF THE CLOSURE, which is the exception to the functional
+	 * `setPage` form a few lines up, and the difference is WHEN the value is
+	 * needed. `setPage` runs when a RESPONSE lands, which may be several renders
+	 * after the request went out, so it must see whatever is in state then. This
+	 * runs inside the click, on the render the merchant is looking at, and the
+	 * same value has to reach three places at once — the state, the history entry,
+	 * and the cursor — so reading it once is what keeps the three in step. A
+	 * functional update here would hand the entry a stack the state had not
+	 * committed to.
+	 *
+	 * THE BUSY GUARD IS STILL LOAD-BEARING, and {@link pushedPage}'s idempotence
+	 * does not replace it: repeating a cursor cannot deepen the STACK, but two
+	 * presses resolved before the effect runs would still push two history
+	 * ENTRIES for one page, and a duplicate entry is not something this tier can
+	 * take back.
+	 */
+	const goForward = (extend: boolean) => {
+		const value = page?.nextCursor;
+		if (value == null) return;
+		setCursor({ filter: applied, value, ...(extend ? { extend: true } : {}) });
+		const moved = pushedPage(trail, value);
+		setTrail(moved);
+		setCursorReset(false);
+		// BUSY IS THE CLICK'S, NOT THE EFFECT'S — the same rule `apply` follows. The
+		// effect that issues the request runs after this commit, so without this
+		// there is one render in which the position has already moved and both pager
+		// controls are still live: a second press would push the SAME cursor again
+		// and leave the stack one deeper than the pages actually walked.
+		setBusy(true);
+		// The page goes in the address, and the screen is the only writer — this
+		// states what happened, it does not navigate. `navigate`, because the
+		// merchant went somewhere: the entry is pushed, and it carries the stack
+		// that produced it so a later Back lands here still knowing where it is.
+		onCursorChange?.({ cursor: value, trail: moved, kind: "navigate" });
+	};
+
+	/**
+	 * One page back, by REPLAYING the cursor the stack popped.
+	 *
+	 * IT RE-REQUESTS RATHER THAN RESTORING. The stack holds cursors, not pages, and
+	 * that is the choice rather than an implementation detail: a re-request under a
+	 * token the service already issued is exact and answers with the catalog as it
+	 * stands NOW — which on this screen is the whole point, since the column an
+	 * operator came back to check is stock. Replaying rows kept in memory would
+	 * show a page that may be minutes stale, would disagree with a reload of the
+	 * very same address, and would grow without bound down a long scan.
+	 *
+	 * POPPING THE LAST ENTRY IS PAGE ONE, cursor and all: the request goes out
+	 * without a token and the address is corrected through the one path this list
+	 * announces its page on.
+	 */
+	const goBack = () => {
+		const { trail: rest, cursor: target } = poppedPage(trail);
+		setTrail(rest);
+		// A CURSOR OBJECT EVEN WHEN THE PAGE IS ONE. `null` would mean "no page was
+		// asked for" and would make a failure here clear the rows — see
+		// {@link askedForPage}. Page one is asked for by sending no token, which is
+		// a `value` of `undefined`, not by having no request.
+		setCursor({ filter: applied, value: target });
+		setCursorReset(false);
+		// See `goForward`: the controls go unavailable on the click rather than on
+		// the effect, so the commit in between cannot take a second press.
+		setBusy(true);
+		// NAVIGATE, NOT CORRECT — the correction that shares this shape is the
+		// refused-cursor recovery, which REPLACES the entry. A merchant stepping
+		// back deliberately went somewhere, and overwriting the entry they stepped
+		// from would delete the page they just left from their own history.
+		onCursorChange?.({ cursor: target, trail: rest, kind: "navigate" });
+	};
 
 	// THE FAILURE IS NOT CLEARED ON THE CLICK. Clearing it here rather than on the
 	// response would flash the stale answer back for the length of the request.
@@ -760,6 +976,13 @@ export function ProductsList({
 		setApplied(next);
 		setDraft(next);
 		setCursor(null);
+		// THE STACK RESETS WITH THE PREDICATE, and this is not tidiness. A cursor
+		// is only meaningful against the filter it was issued under, so a stack that
+		// survived an apply would hand `Previous` a token from the set the merchant
+		// just left — a page of the old predicate, or (once the service notices the
+		// disagreement) a refusal and a bounce back to page one. Page one of the new
+		// filter has nothing behind it, and the pager must say so.
+		setTrail(FIRST_PAGE);
 		// THE RESET NOTICE IS ABOUT THE ARRIVAL, so it goes the moment the merchant
 		// asks for something themselves.
 		setCursorReset(false);
@@ -1141,10 +1364,11 @@ export function ProductsList({
 			)}
 
 			{/*
-			  THE CONTINUATION FAILURE RENDERS WHERE `Load more` WAS, and replaces
-			  it: the button and the notice would otherwise offer the same request
-			  twice, and the one that failed is the one the merchant just pressed.
-			  The cursor is NOT destroyed to achieve that — see `pageAfterFailure`.
+			  A FAILED PAGE MOVE RENDERS WHERE THE PAGING BAR WAS, and replaces the
+			  whole bar: its controls and this notice would otherwise offer the same
+			  request twice, and the one that failed is the one the merchant just
+			  pressed. It replaces `Previous`/`Next` as much as `Load more`. The
+			  cursor is NOT destroyed to achieve that — see `pageAfterFailure`.
 			*/}
 			{notice !== null && notice.inline && (
 				<div style={{ marginBlockStart: 12 }}>
@@ -1159,8 +1383,8 @@ export function ProductsList({
 			)}
 
 			{/*
-			  PAGING STOPPED MID-SCAN — rendered where `Load more` was, because it is
-			  what replaces that control. NO FOCUS MOVE, unlike the seeded-link
+			  PAGING STOPPED MID-SCAN — rendered where the paging bar was, because it
+			  is what replaces every control in it. NO FOCUS MOVE, unlike the seeded-link
 			  notice: the operator is mid-interaction with their hands on the page,
 			  and taking focus off what they were doing to announce a control that
 			  simply is not there any more would be the more disruptive answer to the
@@ -1177,26 +1401,64 @@ export function ProductsList({
 				</div>
 			)}
 
-			{page?.nextCursor != null && failure === null && !pagingStopped && (
-				<div style={{ marginBlockStart: 12 }}>
-					<button
-						type="button"
-						className="otta-focusable otta-btn"
-						data-testid="products-load-more"
-						disabled={busy}
-						style={buttonStyle}
-						onClick={() => {
-							const value = page.nextCursor;
-							if (value === null) return;
-							setCursor({ filter: applied, value });
-							setCursorReset(false);
-							// The page goes in the address, and the screen is the only
-							// writer — this states what happened, it does not navigate.
-							onCursorChange?.(value);
-						}}
-					>
-						{busy ? "Loading…" : LOAD_MORE_LABEL}
-					</button>
+			{/*
+			  THE TWO WAYS FORWARD, IN ONE BAR — and they are two acts, not two
+			  spellings of one. `Previous`/`Next` MOVE a one-page window and are how a
+			  merchant navigates a long catalog; `Load more` EXTENDS the window and is
+			  how they build a low-stock scan to read in one go. Both advance the same
+			  position, so the page number below counts either — what differs is
+			  whether the rows above stay.
+			*/}
+			{(pager.visible || loadMoreVisible) && (
+				<div
+					style={{
+						marginBlockStart: 12,
+						display: "flex",
+						flexWrap: "wrap",
+						gap: 12,
+						alignItems: "center",
+						justifyContent: "space-between",
+					}}
+				>
+					{pager.visible && (
+						<nav
+							aria-label={PAGER_LABEL}
+							data-testid="products-pager"
+							style={{ display: "flex", gap: 8, alignItems: "center" }}
+						>
+							<PagerButton control={pager.previous} testId="products-prev" onClick={goBack} />
+							{pager.position !== undefined && (
+								<span
+									data-testid="products-page-position"
+									// ANNOUNCED, because the one control whose focus survives a
+									// page change is the one that caused it: a merchant pressing
+									// `Next` from the keyboard keeps focus on the button and would
+									// otherwise get no word that anything moved.
+									aria-live="polite"
+									style={{ fontSize: 13, opacity: 0.75, whiteSpace: "nowrap" }}
+								>
+									{pager.position}
+								</span>
+							)}
+							<PagerButton
+								control={pager.next}
+								testId="products-next"
+								onClick={() => goForward(false)}
+							/>
+						</nav>
+					)}
+					{loadMoreVisible && (
+						<button
+							type="button"
+							className="otta-focusable otta-btn"
+							data-testid="products-load-more"
+							disabled={busy}
+							style={buttonStyle}
+							onClick={() => goForward(true)}
+						>
+							{busy ? "Loading…" : LOAD_MORE_LABEL}
+						</button>
+					)}
 				</div>
 			)}
 		</div>

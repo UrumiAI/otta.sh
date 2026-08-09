@@ -105,13 +105,18 @@ export const ORDERS_STALE_CLEARED_NOTE =
 	"The orders that were here have been cleared — they were from an earlier request and may no longer be current.";
 
 /**
- * A CONTINUATION failure's title, which is a smaller claim than the server's.
+ * A PAGING failure's title, which is a smaller claim than the server's.
  *
  * The service answers a whole-collection refusal ("Orders could not be
  * reached"), and on page two that is disproved by the rows already on screen.
- * What failed is the next page, so that is what the title says.
+ * What failed is one page, so that is what the title says.
+ *
+ * IT NAMES NO DIRECTION, and that is a correction rather than a preference:
+ * three controls now produce this card — `Load more`, `Next` and `Previous` —
+ * and "load more" over a failed `Previous` describes a request the operator did
+ * not make. The claim that has to be small is "one page", not "the page after".
  */
-export const ORDERS_LOAD_MORE_FAILED_TITLE = "Couldn't load more orders";
+export const ORDERS_PAGE_FAILED_TITLE = "Couldn't open that page of orders";
 
 /**
  * The reconciliation alert's sentence, on the order detail.

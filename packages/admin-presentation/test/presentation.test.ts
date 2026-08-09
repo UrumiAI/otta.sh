@@ -32,7 +32,7 @@ import {
 	NO_CHANGES_TO_SAVE,
 	NO_TAX_CLASS,
 	ORDERS_EMPTY,
-	ORDERS_LOAD_MORE_FAILED_TITLE,
+	ORDERS_PAGE_FAILED_TITLE,
 	ORDERS_NOUN,
 	ORDERS_NO_MATCH,
 	ORDERS_STALE_CLEARED_NOTE,
@@ -73,10 +73,18 @@ import {
 	listOutcome,
 	tabUnsavedLabel,
 	majorUnits,
+	NEXT_AT_END_TITLE,
+	NEXT_PAGE_LABEL,
+	NEXT_RELEASES_SCAN_TITLE,
 	onHandCell,
 	orderStateCell,
+	pageCount,
+	pagePositionLine,
 	parseOnHandWatermark,
 	parseStockQty,
+	PREVIOUS_AT_START_TITLE,
+	PREVIOUS_PAGE_LABEL,
+	PREVIOUS_UNWALKED_TITLE,
 	priceChangeSummary,
 	priceGroupLabel,
 	pricePendingLine,
@@ -120,11 +128,15 @@ describe("the words a failed load is answered with (F1, F2)", () => {
 		);
 	});
 
-	test("a continuation failure makes the SMALLER claim", () => {
+	test("a paging failure makes the SMALLER claim, and names no direction", () => {
 		// The service's refusal is about the whole collection; on page two the rows
-		// already on screen disprove that. What failed is the next page.
-		expect(ORDERS_LOAD_MORE_FAILED_TITLE).toBe("Couldn't load more orders");
-		expect(ORDERS_LOAD_MORE_FAILED_TITLE).toContain("more");
+		// already on screen disprove that. What failed is one page.
+		expect(ORDERS_PAGE_FAILED_TITLE).toBe("Couldn't open that page of orders");
+		expect(ORDERS_PAGE_FAILED_TITLE).toContain("that page");
+		// THREE CONTROLS LAND HERE — `Load more`, `Next` and `Previous` — so a
+		// title that said "more" would describe a request a merchant pressing
+		// `Previous` never made.
+		expect(ORDERS_PAGE_FAILED_TITLE).not.toMatch(/\bmore\b|\bnext\b|\bafter\b/i);
 	});
 });
 
@@ -590,6 +602,201 @@ describe("INC-23's exact count, shared by both surfaces", () => {
 		});
 		expect(outcome.countLine).toBe("3 orders on this page");
 		expect(outcome.countLine).not.toContain("137");
+	});
+});
+
+describe("Page N of M — derived from what the list already has, never fetched", () => {
+	const noun = ORDERS_NOUN;
+
+	test("the labels are authored here, not at the two call sites", () => {
+		// Two React lists render this pager and must not drift on the words, for
+		// the same reason `Load more` and `Apply filters` live beside them.
+		expect(PREVIOUS_PAGE_LABEL).toBe("Previous");
+		expect(NEXT_PAGE_LABEL).toBe("Next");
+	});
+
+	test("M is the exact total over the page size — the two the wire already carries", () => {
+		// COUNT(*) under the page's own predicate, and the limit the plugin sends
+		// with every request. Neither is a new query; the page count is arithmetic
+		// over two values already on screen.
+		expect(pageCount(25, { total: 137, pageSize: 25 })).toBe(6);
+		expect(pageCount(25, { total: 125, pageSize: 25 })).toBe(5);
+		// A collection smaller than one page is one page.
+		expect(pageCount(1, { total: 1, pageSize: 25 })).toBe(1);
+		// An ACCUMULATED scan counts the same way: `rows` is what is on screen, and
+		// the page size is still the page size.
+		expect(pageCount(50, { total: 137, pageSize: 25 })).toBe(6);
+	});
+
+	test("an ABSENT total is not a page count — never 1, never 0", () => {
+		// The hazard this test exists for. `total` is optional by design (a service
+		// that omits it, and a products page whose low-stock predicate never ran),
+		// and "of 1" would state that the operator is looking at the whole set at
+		// the exact moment nothing knows how big it is.
+		expect(pageCount(25, { pageSize: 25 })).toBeUndefined();
+		expect(pageCount(25, { total: undefined, pageSize: 25 })).toBeUndefined();
+		// And an absent page size is the same refusal from the other side.
+		expect(pageCount(25, { total: 137 })).toBeUndefined();
+	});
+
+	test("M IS REFUSED ON EXACTLY THE TOTALS THE COUNT LINE REFUSES", () => {
+		// THE COORDINATION, PINNED. "Page 2 of 6" and "137 orders" are two
+		// sentences about one set, so a total the count line will not state must
+		// not reappear as a page count — otherwise a render that hedges to
+		// "25 orders on this page" would sit under a confident "of 6" derived from
+		// the very figure it just refused.
+		for (const bad of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+			expect(rowCountLine(25, noun, { complete: false, total: bad })).toBe(
+				"25 orders on this page",
+			);
+			expect(pageCount(25, { total: bad, pageSize: 25 })).toBeUndefined();
+		}
+		// Below the rows on screen is the one direction both refuse: it would
+		// understate what the operator can already see.
+		expect(rowCountLine(50, noun, { complete: false, total: 3 })).toBe("50 orders on this page");
+		expect(pageCount(50, { total: 3, pageSize: 25 })).toBeUndefined();
+		// A page size that is not a positive whole number describes no paging.
+		for (const bad of [0, -5, 2.5, Number.NaN]) {
+			expect(pageCount(25, { total: 137, pageSize: bad })).toBeUndefined();
+		}
+	});
+
+	test("zero rows have no page count, exactly as they have no count line", () => {
+		// A total above an empty page is a service disagreeing with itself, and
+		// the count line already suppresses it. The pager says nothing rather than
+		// captioning an empty page "Page 1 of 6".
+		expect(rowCountLine(0, noun, { complete: false, total: 137 })).toBeUndefined();
+		expect(pageCount(0, { total: 137, pageSize: 25 })).toBeUndefined();
+	});
+
+	test("the line reads `Page 2 of 6`, through Intl, on both halves", () => {
+		expect(pagePositionLine({ index: 2, pages: 6 })).toBe("Page 2 of 6");
+		// The thousands separator is the visible proof that `Intl.NumberFormat` is
+		// in the path on BOTH numbers — `String(n)` cannot produce it.
+		expect(pagePositionLine({ index: 1234, pages: 5678 })).toBe("Page 1,234 of 5,678");
+	});
+
+	test("an unknown M is an EM DASH — the house rule for absent, never a guess", () => {
+		expect(pagePositionLine({ index: 3 })).toBe(`Page 3 of ${ABSENT}`);
+		expect(pagePositionLine({ index: 3, pages: undefined })).toBe(`Page 3 of ${ABSENT}`);
+		// The failure this forbids in as many words: absent is not one, and it is
+		// not zero.
+		expect(pagePositionLine({ index: 3 })).not.toContain("of 1");
+		expect(pagePositionLine({ index: 3 })).not.toContain("of 0");
+	});
+
+	test("an unknown N is an em dash too — a deep link cannot know its own page", () => {
+		// A page opened straight from an address has no walk behind it, so the
+		// list knows the SIZE of the collection and not where in it the operator
+		// is standing. That is a value this console renders as a dash, like every
+		// other absent one.
+		expect(pagePositionLine({ pages: 6 })).toBe(`Page ${ABSENT} of 6`);
+	});
+
+	test("knowing NEITHER renders nothing at all", () => {
+		// "Page — of —" states nothing and occupies a line saying so.
+		expect(pagePositionLine({})).toBeUndefined();
+		expect(pagePositionLine({ index: undefined, pages: undefined })).toBeUndefined();
+	});
+
+	test("a page count BELOW the page you are on is refused, not printed", () => {
+		// Same doctrine as `rowCountLine` refusing a total below its own rows: the
+		// two figures come from statements taken at different moments, and a
+		// concurrent delete can shrink the derived count under the page the
+		// operator walked to. "Page 7 of 6" is the contradiction; a dash is not.
+		expect(pagePositionLine({ index: 7, pages: 6 })).toBe(`Page 7 of ${ABSENT}`);
+		// Equal is the last page, and perfectly ordinary.
+		expect(pagePositionLine({ index: 6, pages: 6 })).toBe("Page 6 of 6");
+	});
+
+	test("the unavailable controls explain themselves, and name no cause they lack", () => {
+		// A dimmed control with no explanation is the same defect as a silent empty
+		// state: the operator is told what they cannot do and not why.
+		expect(PREVIOUS_AT_START_TITLE).toBe("This is the first page.");
+		expect(NEXT_AT_END_TITLE).toBe("There is no page after this one.");
+		// THE UNKNOWN CASE STATES IGNORANCE, NOT PROVENANCE. An earlier wording said
+		// the page "was opened from a link" — a claim about how the operator got
+		// here that this tier cannot make: a reload, a bookmark, a traversal whose
+		// entry lost its stack and a host remount all produce the identical state.
+		// All the screen knows is that it holds no record of the page before.
+		expect(PREVIOUS_UNWALKED_TITLE).toBe("The page before this one is not known here.");
+		expect(PREVIOUS_UNWALKED_TITLE).not.toMatch(/link|bookmark|reload|shared|pasted/i);
+		expect(PREVIOUS_UNWALKED_TITLE).not.toMatch(/expired|invalid|error|failed/i);
+	});
+
+	test("`Next` states its COST before the click, while it still has one", () => {
+		// Paging on from an accumulated scan shows the next page alone, so the
+		// pages the operator gathered are released. A control that quietly discards
+		// gathered work is the defect; one sentence in front of the click is the
+		// fix.
+		expect(NEXT_RELEASES_SCAN_TITLE).toContain("released");
+		expect(NEXT_RELEASES_SCAN_TITLE).toContain("above");
+	});
+
+	test("an ACCUMULATED window states the range, not only where it ends", () => {
+		// "Page 3 of 6" over fifty rows beginning at page two tells an operator
+		// reading the top of that list the wrong page number.
+		expect(pagePositionLine({ index: 3, pages: 6, span: 2 })).toBe("Pages 2\u20133 of 6");
+		expect(pagePositionLine({ index: 6, pages: 6, span: 6 })).toBe("Pages 1\u20136 of 6");
+		// A span of one is the ordinary single page and says so in the singular.
+		expect(pagePositionLine({ index: 3, pages: 6, span: 1 })).toBe("Page 3 of 6");
+		// AN EN DASH JOINS A RANGE, never the em dash reserved for an absence — the
+		// one line that can carry both must not spell them the same way.
+		expect(pagePositionLine({ index: 3, pages: 6, span: 2 })).not.toContain(ABSENT);
+		// The numerals can be unknown while the SPAN is not: how many pages are on
+		// screen is known even when their numbers are not.
+		expect(pagePositionLine({ pages: 6, span: 2 })).toBe(`Pages ${ABSENT} of 6`);
+	});
+
+	test("the effective total the COUNT LINE used is what the page count must consume", () => {
+		// THE COUPLING, PINNED. A page narrowed after the fetch withholds its total
+		// from the caption; handing the raw payload figure to `pageCount` would put
+		// "of 6" under a line that had just refused the 137 it came from. The ladder
+		// hands back the figure it actually used, and the caller feeds THAT.
+		const narrowed = listOutcome({
+			count: 4,
+			filtered: true,
+			firstPage: true,
+			hasNext: true,
+			total: 137,
+			countScope: "narrowed-after-fetch",
+			noun: ORDERS_NOUN,
+			empty: ORDERS_EMPTY,
+			noMatch: ORDERS_NO_MATCH,
+		});
+		expect(narrowed.countLine).toBe("4 orders on this page");
+		expect(narrowed.statedTotal).toBeUndefined();
+		expect(pageCount(4, { total: narrowed.statedTotal, pageSize: 25 })).toBeUndefined();
+
+		// And the ordinary scope hands back exactly what it stated.
+		const served = listOutcome({
+			count: 25,
+			filtered: false,
+			firstPage: true,
+			hasNext: true,
+			total: 137,
+			countScope: "service-filtered",
+			noun: ORDERS_NOUN,
+			empty: ORDERS_EMPTY,
+			noMatch: ORDERS_NO_MATCH,
+		});
+		expect(served.countLine).toBe("137 orders");
+		expect(served.statedTotal).toBe(137);
+		expect(pageCount(25, { total: served.statedTotal, pageSize: 25 })).toBe(6);
+
+		// A zero-row page states no count and therefore offers no page count.
+		const emptyPage = listOutcome({
+			count: 0,
+			filtered: false,
+			firstPage: false,
+			hasNext: false,
+			total: 137,
+			countScope: "service-filtered",
+			noun: ORDERS_NOUN,
+			empty: ORDERS_EMPTY,
+			noMatch: ORDERS_NO_MATCH,
+		});
+		expect(emptyPage.statedTotal).toBeUndefined();
 	});
 });
 

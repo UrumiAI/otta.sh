@@ -28,7 +28,17 @@
 import type { ProductsFilter } from "../console-api.js";
 import { PRODUCT_KIND_LABELS } from "@otta-sh/admin-presentation";
 import * as React from "react";
-import { CURSOR_PARAM, cursorQuery, readCursor } from "../accumulate.js";
+import {
+	CURSOR_PARAM,
+	FIRST_PAGE,
+	cursorQuery,
+	entryState,
+	readCursor,
+	readTrailState,
+	seedTrail,
+	type PageChange,
+	type PageTrail,
+} from "../accumulate.js";
 import { ConsoleStyles } from "../ui.js";
 import { ProductDetail } from "./product-detail.js";
 import { ProductsList } from "./products-list.js";
@@ -158,6 +168,12 @@ function currentSearch(): string {
 	return typeof window === "undefined" ? "" : window.location.search;
 }
 
+/** The entry's own state, which is where the pager's stack lives — see
+ *  {@link PAGE_STATE_KEY}. */
+function currentState(): unknown {
+	return typeof window === "undefined" ? null : window.history.state;
+}
+
 /**
  * Swap the whole query, keeping the entry.
  *
@@ -168,11 +184,15 @@ function currentSearch(): string {
  * relies on. Returns the resulting address, which the caller keeps so it can
  * restore it.
  */
-function replaceQuery(query: string): string {
+function replaceQuery(query: string, trail?: PageTrail): string {
 	if (typeof window === "undefined") return "";
 	const url = new URL(window.location.href);
 	url.search = query;
-	window.history.replaceState(window.history.state, "", url);
+	// THE ENTRY'S OWN RECORD OF THE WALK rides alongside the address — through
+	// {@link entryState}, which merges rather than clobbers. Tabs and the
+	// unsaved-work guard write through here too, and a tab change must not
+	// silently drop what a later Back would read.
+	window.history.replaceState(entryState(window.history.state, {}, trail), "", url);
 	return url.href;
 }
 
@@ -186,11 +206,16 @@ function replaceQuery(query: string): string {
  * It does NOT touch `detailHref`: this fires only while the list is on screen,
  * where there is no record to restore.
  */
-function pushQuery(query: string): void {
+function pushQuery(query: string, trail: PageTrail): void {
 	if (typeof window === "undefined") return;
 	const url = new URL(window.location.href);
 	url.search = query;
-	window.history.pushState({ ottaProduct: null }, "", url);
+	// THE STACK GOES ON THE ENTRY, which is what lets a traversal land on page
+	// four still knowing it is page four. The ADDRESS carries one cursor, because
+	// that is what makes a link shareable; a history entry is this browser's
+	// private note about somewhere this merchant already stood, and can hold what
+	// a link cannot.
+	window.history.pushState(entryState(window.history.state, { ottaProduct: null }, trail), "", url);
 }
 
 function readSelectedProduct(): string | null {
@@ -199,11 +224,19 @@ function readSelectedProduct(): string | null {
 	return value !== null && value.length > 0 ? value : null;
 }
 
-function pushSelectedProduct(productId: string): string {
+function pushSelectedProduct(productId: string, trail: PageTrail): string {
 	if (typeof window === "undefined") return "";
 	const url = new URL(window.location.href);
 	url.searchParams.set(PRODUCT_PARAM, productId);
-	window.history.pushState({ ottaProduct: productId }, "", url);
+	// THE RECORD'S ENTRY CARRIES THE LIST'S PAGE TOO — a drill-in from page four
+	// is still page four, and Back (or a reload of the record's own address
+	// followed by `Back to pricing & inventory`) has to return the merchant to a
+	// list that knows it.
+	window.history.pushState(
+		entryState(window.history.state, { ottaProduct: productId }, trail),
+		"",
+		url,
+	);
 	return url.href;
 }
 
@@ -232,7 +265,9 @@ function popSelectedProduct(pushed: boolean): void {
 	// address afterwards: a `tab` left behind here would sit on a list URL that
 	// has no tabs and then seed the NEXT record the merchant opened.
 	url.searchParams.delete(TAB_PARAM);
-	window.history.replaceState({ ottaProduct: null }, "", url);
+	// MERGED, NEVER CLOBBERED: this writer means "no record is open" and nothing
+	// else, so the entry's page stack is not its to discard.
+	window.history.replaceState(entryState(window.history.state, { ottaProduct: null }), "", url);
 }
 
 export function ProductsScreen(): React.ReactElement {
@@ -249,6 +284,13 @@ export function ProductsScreen(): React.ReactElement {
 	 *  it has paged to once mounted, and this is what it starts from on a first
 	 *  mount and on the remount a traversal triggers. */
 	const [cursor, setCursor] = React.useState<string | undefined>(() => readCursor(currentSearch()));
+	/** THE WALK THIS ENTRY RECORDED, read from `history.state` so a traversal
+	 *  keeps the pager's position; absent — a pasted link, a fresh tab, an entry
+	 *  the host pushed — it falls back to seeding from the address, which is the
+	 *  deep-link behaviour. Only ever a SEED, exactly like the cursor. */
+	const [trail, setTrail] = React.useState<PageTrail>(
+		() => readTrailState(currentState()) ?? seedTrail(readCursor(currentSearch())),
+	);
 	const [tab, setTab] = React.useState<number>(() => readProductTab(currentSearch()));
 	/** Bumped on every `popstate`, and used as the child's `key`: a traversal is
 	 *  the one moment the URL knows something the mounted child does not, so the
@@ -292,15 +334,20 @@ export function ProductsScreen(): React.ReactElement {
 	 */
 	const detailHref = React.useRef<string | null>(null);
 
-	/** PAGING PUSHES; RETURNING TO PAGE ONE REPLACES — the same rule the Orders
-	 *  screen states at length. `useCallback` is required rather than tidy: the
-	 *  list depends on this function in its fetch effect, so a fresh arrow per
-	 *  render would re-fetch on every render. It closes over nothing that changes. */
-	const onCursorChange = React.useCallback((next: string | undefined) => {
-		setCursor(next);
-		const query = cursorQuery(currentSearch(), next);
-		if (next === undefined) replaceQuery(query);
-		else pushQuery(query);
+	/** NAVIGATION PUSHES; A CORRECTION REPLACES, and the LIST says which — the
+	 *  same rule the Orders screen states at length, including why the intent
+	 *  cannot be inferred from "no cursor" (page one is reached both by an
+	 *  operator stepping back and by the recovery from a page that would not
+	 *  open). Every write carries the stack, so a traversal lands knowing where it
+	 *  is. `useCallback` is required rather than tidy: the list depends on this
+	 *  function in its fetch effect, so a fresh arrow per render would re-fetch on
+	 *  every render. It closes over nothing that changes. */
+	const onCursorChange = React.useCallback((change: PageChange) => {
+		setCursor(change.cursor);
+		setTrail(change.trail);
+		const query = cursorQuery(currentSearch(), change.cursor);
+		if (change.kind === "correct") replaceQuery(query, change.trail);
+		else pushQuery(query, change.trail);
 	}, []);
 
 	React.useEffect(() => {
@@ -394,7 +441,10 @@ export function ProductsScreen(): React.ReactElement {
 			 */
 			const href = detailHref.current;
 			if (unsaved.current && was !== null && href !== null && next !== was) {
-				window.history.pushState({ ottaProduct: was }, "", href);
+				// DEPTH-NEUTRAL AND STATE-NEUTRAL: this re-push puts the record's own
+				// entry back exactly as it was, so it merges rather than composing a
+				// fresh object that would drop the list's page from it.
+				window.history.pushState(entryState(window.history.state, { ottaProduct: was }), "", href);
 				pushed.current = true;
 				setLeavePrompt((n) => n + 1);
 				return;
@@ -406,6 +456,10 @@ export function ProductsScreen(): React.ReactElement {
 			// second mechanism: one traversal re-derives the whole address, and the
 			// `key={restore}` bump rebuilds the list from all of it at once.
 			setCursor(readCursor(currentSearch()));
+			// AND THE STACK THE ENTRY CARRIED — without it a Back onto a page the
+			// merchant had walked to came back as if it had been pasted in: position
+			// dashed, `Previous` dimmed, two presses into a scan.
+			setTrail(readTrailState(window.history.state) ?? seedTrail(readCursor(currentSearch())));
 			setTab(readProductTab(currentSearch()));
 			setRestore((n) => n + 1);
 		};
@@ -421,15 +475,19 @@ export function ProductsScreen(): React.ReactElement {
 					key={restore}
 					initialFilter={filter}
 					initialCursor={cursor}
+					initialTrail={trail}
 					onFilterChange={(next) => {
 						// The filter query drops the cursor with the filter it belonged to
-						// (see `productsFilterQuery`), so this one write says both things.
+						// (see `productsFilterQuery`), so this one write says both things —
+						// and the entry's stack goes with them, because a stack from the
+						// previous predicate is exactly what `Previous` must never pop.
 						setCursor(undefined);
-						replaceQuery(productsFilterQuery(currentSearch(), next));
+						setTrail(FIRST_PAGE);
+						replaceQuery(productsFilterQuery(currentSearch(), next), FIRST_PAGE);
 					}}
 					onCursorChange={onCursorChange}
 					onOpen={(productId) => {
-						detailHref.current = pushSelectedProduct(productId);
+						detailHref.current = pushSelectedProduct(productId, trail);
 						pushed.current = true;
 						setSelected(productId);
 					}}
