@@ -14,10 +14,11 @@ Add a WooCommerce-style admin Orders console — VIEW + STATUS-TRANSITION only
   is HALF-OPEN `[from, to)` (deliberately unlike `ReportingStore`'s inclusive
   `BETWEEN`); `search` matches an order id OR a case-insensitive `buyer_ref`,
   both exact as introduced here and widened to an id PREFIX / buyer_ref
-  SUBSTRING later in this same release. Adds `legalNextStates(from)` for the console's transition
-  buttons. The `InMemoryOrderStore` fake and the contract suite pin the spec
-  (empty, single/multi state, date boundary, search, pagination no-overlap/no-gap,
-  identical-`created_at` tie-break, limit boundary).
+  SUBSTRING later in this same release. Adds `legalNextStates(from)` for the
+  console's transition buttons. The `InMemoryOrderStore` fake and the contract
+  suite pin the spec (empty, single/multi state, date boundary, search,
+  pagination no-overlap/no-gap, identical-`created_at` tie-break, limit
+  boundary).
 - `@otta-sh/store-postgres`: implements `listOrders` as a single
   `orders → order_totals` SELECT with a grouped keyset predicate, dialect-identical
   on better-sqlite3 and Postgres. Adds forward-only migration `0009` (a

@@ -24,9 +24,14 @@ bumped: it forwards `search` verbatim and has no code, wire or copy change here.
   exactly as stored.
 - **The fold is explicit on both sides, in both dialects and in the fake.** A bare `LIKE` is
   case-sensitive on Postgres and ASCII-case-insensitive on SQLite — the two would have disagreed
-  silently. `lower(col) LIKE lower(:pattern)` makes all three implementations agree case for
-  case, and the contract suite pins every new case on the fake, SQLite and Postgres. Ids are
-  lowercase hex, so folding the id is a no-op on the stored side; it forgives the typed side.
+  silently. `lower(col) LIKE lower(:pattern)` makes all three implementations agree for ASCII,
+  and the contract suite pins every new case on the fake, SQLite and Postgres. The non-ASCII
+  divergence is the repo's existing accepted position, inherited rather than introduced here:
+  SQLite's built-in `lower()` folds ASCII only where JS `toLowerCase()` is Unicode-aware, so a
+  buyer_ref like `JOSÉ@…` folds differently on sqlite than on pg and the fake — the same caveat
+  `couponFilterConditions` and `linkGuestOrders` already carry. Emails and hex ids are ASCII,
+  which is why it is accepted rather than solved. Ids are lowercase hex, so folding the id is a
+  no-op on the stored side; it forgives the typed side.
 - **`%`, `_` and `\` are characters, not wildcards.** The adapters escape the pattern and pass
   `ESCAPE '\'`; the fake builds no pattern at all. Searching `50%off` finds `50%off@…` and not
   `50xoff@…`, a bare `%` no longer means "every order", and the escape character itself is

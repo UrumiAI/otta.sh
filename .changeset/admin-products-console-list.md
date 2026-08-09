@@ -22,10 +22,10 @@ VIEW-ONLY product list + read-only detail (admin-UX Increment 2, "product enumer
   a case-insensitive SUBSTRING match on `title` (free text a merchant partially
   remembers) OR an exact match on `sku` (a structured identifier). Orders' own
   search is widened later in this release, converging on the title half and
-  leaving `sku` as the one axis that stays exact. Always excludes soft-deleted rows. Also adds
-  `InventoryStore.getOnHand(sku)` — a bare, read-only single-sku stock lookup (a
-  sku with no row reads as `0`) so the product detail leaf can show stock without
-  a store-side join or N+1. The `InMemoryProductCommerceStore`/
+  leaving `sku` as the one axis that stays exact. Always excludes soft-deleted
+  rows. Also adds `InventoryStore.getOnHand(sku)` — a bare, read-only single-sku
+  stock lookup (a sku with no row reads as `0`) so the product detail leaf can
+  show stock without a store-side join or N+1. The `InMemoryProductCommerceStore`/
   `InMemoryInventoryStore` fakes and the contract suites pin both specs (empty,
   filters, pagination no-overlap/no-gap, identical-`created_at` tie-break, limit
   boundary, tombstone exclusion).
