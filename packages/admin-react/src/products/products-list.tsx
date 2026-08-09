@@ -973,13 +973,13 @@ export function ProductsList({
 			  one would sit on top of `Load more` and strand the operator mid-scan on
 			  a page that is not the end of anything.
 
-			  KEPT AS A GUARD, NOT AS A CASE. "Low stock only" is a predicate the
+			  NOT THE ORDINARY CASE ANY MORE. "Low stock only" is a predicate the
 			  SERVICE applies across the whole catalog, so a page that comes back
-			  empty is the end of the filtered set and carries no cursor — the store
-			  emits one only when a page overflows its limit. This branch was the
-			  ORDINARY case while the filter narrowed an already-fetched page, and
-			  it is unreachable now; it stays because the cost of being wrong about
-			  that is burying the merchant's only way forward.
+			  empty is usually the end of the filtered set and carries no cursor —
+			  the store emits one only when a page overflows its limit. This branch
+			  was the ordinary case while the filter narrowed an already-fetched
+			  page; it is the exception now, and the cost of being wrong about that
+			  is burying the merchant's only way forward.
 
 			  AND IT IS WITHDRAWN WITH THE CONTROL IT DESCRIBES. Its whole content is
 			  an instruction to press `Load more`, so printing it above a notice that
