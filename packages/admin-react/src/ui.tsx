@@ -43,13 +43,21 @@ export const MUTED = "rgba(128, 128, 128, 0.6)";
  * and live nearly indistinguishable, which is worse: a control that looks
  * pressable and does nothing.
  *
- * SO THE STATE IS CARRIED BY THREE THINGS AT ONCE, none of them the label's
- * legibility. A flat fill (the surface reads as inert rather than raised), a
- * border that is visibly lighter than {@link HAIRLINE} but still THERE, and a
- * label muted through `color-mix` against `currentColor` — which stays a real,
- * measurable foreground in both themes rather than an alpha over an unknown
- * background. 62% of the theme's own text colour clears the contrast floor at
- * this size while reading unmistakably as "off".
+ * SO THE STATE IS CARRIED BY THREE DECLARATIONS, and the point is WHICH of them
+ * loses strength. A flat fill (the surface reads as inert rather than raised), a
+ * border visibly lighter than {@link HAIRLINE} but still THERE, and a label
+ * mixed down to 62% of the theme's own foreground.
+ *
+ * THE MIX IS AN ALPHA — that is exactly what `color-mix(…, transparent)` is, and
+ * claiming otherwise would be dressing up the same technique in better words.
+ * What makes it different from the `opacity` it replaces is WHERE it lands:
+ * `opacity` fades the whole element, so the border and the fill that carry the
+ * state fade at precisely the rate the label does, and the only way to keep the
+ * state visible is to keep the label legible or vice versa. Here the fill and the
+ * border stay at full strength and only the word is muted, so the two jobs stop
+ * competing. 62% clears the contrast floor at this size while reading
+ * unmistakably as "off"; it is stated against `currentColor` so it follows the
+ * theme rather than pinning a grey that is legible in one of them.
  *
  * A whole `border` rather than a `border-color`: `buttonStyle` states the
  * shorthand, and React warns (correctly) that mixing the two on one element

@@ -116,6 +116,29 @@ describe("the cursor stack — where the operator is, as a value", () => {
 		expect(seedTrail("")).toEqual(FIRST_PAGE);
 	});
 
+	test("the same cursor pushed twice is ONE page — the stack cannot outrun the walk", () => {
+		// AN INVARIANT, NOT A GUARD. The screens make the control unavailable while a
+		// request is in flight, but "unavailable" is a rendered state: two presses
+		// resolved inside one batch, a synthetic double event, or a service that
+		// answers two consecutive pages with the same `nextCursor` would each push
+		// the same token twice and leave the position quietly one too deep — which
+		// is the one defect a page number exists to avoid.
+		const once = pushedPage(FIRST_PAGE, "c2");
+		expect(pushedPage(once, "c2")).toEqual(once);
+		// A DIFFERENT cursor is a different page and is pushed normally.
+		expect(pageNumber(pushedPage(once, "c3"))).toBe(3);
+	});
+
+	test("the stack and the cursor agree, or the move is inert", () => {
+		// `Previous` is offered only when there is a page recorded behind this one,
+		// and every path that clears the cursor (a filter apply, a refused deep
+		// link) resets the stack in the same commit. Should the two ever disagree
+		// anyway, the pop cannot invent a page that was never walked to: it answers
+		// with the page it is already on.
+		expect(hasPreviousPage(seedTrail("c-deep"))).toBe(false);
+		expect(poppedPage(seedTrail("c-deep")).cursor).toBe("c-deep");
+	});
+
 	test("popping a stack with nowhere to go changes nothing", () => {
 		// Total rather than partial: the controls guard this, and a helper that
 		// threw (or silently invented page one) would make the guard load-bearing.
