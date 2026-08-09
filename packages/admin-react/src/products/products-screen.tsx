@@ -292,6 +292,17 @@ export function ProductsScreen(): React.ReactElement {
 	 */
 	const detailHref = React.useRef<string | null>(null);
 
+	/** PAGING PUSHES; RETURNING TO PAGE ONE REPLACES — the same rule the Orders
+	 *  screen states at length. `useCallback` is required rather than tidy: the
+	 *  list depends on this function in its fetch effect, so a fresh arrow per
+	 *  render would re-fetch on every render. It closes over nothing that changes. */
+	const onCursorChange = React.useCallback((next: string | undefined) => {
+		setCursor(next);
+		const query = cursorQuery(currentSearch(), next);
+		if (next === undefined) replaceQuery(query);
+		else pushQuery(query);
+	}, []);
+
 	React.useEffect(() => {
 		selectedRef.current = selected;
 	}, [selected]);
@@ -363,12 +374,15 @@ export function ProductsScreen(): React.ReactElement {
 			 * the SAME record (`next === was`) while it holds unsaved work skips this
 			 * guard by design and falls through to the remount below, discarding that
 			 * work with no confirmation. This console cannot produce that case on its
-			 * own — the drill-in pushes exactly one entry above the list entry, a
-			 * filter or tab change replaces rather than pushes, and this guard's own
-			 * re-push truncates anything ahead of it — so reaching it would require a
-			 * host router pushing its own entry that names this same record. Not
-			 * changing the guard to close it; noted here for whoever changes the
-			 * navigation around it next.
+			 * own, and the enumeration is FOUR items now rather than three: the
+			 * drill-in pushes exactly one entry above the list entry; a filter or tab
+			 * change replaces rather than pushes; a PAGE change pushes, but only ever
+			 * from the LIST, where no record is on screen and every entry it creates
+			 * therefore names none; and this guard's own re-push truncates anything
+			 * ahead of it. So reaching the uncovered case would still require a host
+			 * router pushing its own entry that names this same record. Not changing
+			 * the guard to close it; noted here for whoever changes the navigation
+			 * around it next.
 			 *
 			 * A traversal that leaves the DOCUMENT is not covered here — nothing is
 			 * delivered to a document being torn down — and is covered by the
@@ -413,19 +427,7 @@ export function ProductsScreen(): React.ReactElement {
 						setCursor(undefined);
 						replaceQuery(productsFilterQuery(currentSearch(), next));
 					}}
-					/*
-					 * PAGING PUSHES; RETURNING TO PAGE ONE REPLACES — the same rule the
-					 * Orders screen states at length. A page is somewhere the merchant
-					 * went; being sent back to page one because the address named a page
-					 * the service would not open is this screen correcting the entry the
-					 * merchant is standing on, not a journey they took.
-					 */
-					onCursorChange={(next) => {
-						setCursor(next);
-						const query = cursorQuery(currentSearch(), next);
-						if (next === undefined) replaceQuery(query);
-						else pushQuery(query);
-					}}
+					onCursorChange={onCursorChange}
 					onOpen={(productId) => {
 						detailHref.current = pushSelectedProduct(productId);
 						pushed.current = true;

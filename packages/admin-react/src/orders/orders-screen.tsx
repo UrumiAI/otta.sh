@@ -292,6 +292,29 @@ export function OrdersScreen(): React.ReactElement {
 	 *  has nothing of ours to pop. */
 	const pushed = React.useRef(false);
 
+	/**
+	 * PAGING PUSHES; RETURNING TO PAGE ONE REPLACES.
+	 *
+	 * A page the operator asked for is somewhere they went, so it earns a history
+	 * entry and Back walks the pages they actually visited. The `undefined` case
+	 * is not a journey in the other direction: it is the list reporting that the
+	 * page the address named would not open AND that page one has since landed, so
+	 * the entry the operator is standing on is corrected in place rather than
+	 * buried under a second one they never asked for.
+	 *
+	 * `useCallback` IS REQUIRED, NOT TIDINESS. The list depends on this function
+	 * in its fetch effect; a fresh arrow on every render would re-run that effect,
+	 * and therefore re-fetch, on every render. It closes over nothing that changes
+	 * — `setCursor` is stable and the rest is module scope — so the empty
+	 * dependency list is exact rather than a suppression.
+	 */
+	const onCursorChange = React.useCallback((next: string | undefined) => {
+		setCursor(next);
+		const query = cursorQuery(currentSearch(), next);
+		if (next === undefined) replaceQuery(query);
+		else pushQuery(query);
+	}, []);
+
 	React.useEffect(() => {
 		const onPop = () => {
 			pushed.current = false;
@@ -324,24 +347,7 @@ export function OrdersScreen(): React.ReactElement {
 						setCursor(undefined);
 						replaceQuery(ordersFilterQuery(currentSearch(), next));
 					}}
-					/*
-					 * PAGING PUSHES; RETURNING TO PAGE ONE REPLACES.
-					 *
-					 * A page the operator asked for is somewhere they went, so it earns a
-					 * history entry and Back walks the pages they actually visited. The
-					 * `undefined` case is not a journey in the other direction: it is the
-					 * list telling this screen that the address named a page the service
-					 * would not open, so the entry the operator is standing on is
-					 * corrected in place rather than buried under a second one they never
-					 * asked for — and a reload of the corrected address no longer re-runs
-					 * the refusal.
-					 */
-					onCursorChange={(next) => {
-						setCursor(next);
-						const query = cursorQuery(currentSearch(), next);
-						if (next === undefined) replaceQuery(query);
-						else pushQuery(query);
-					}}
+					onCursorChange={onCursorChange}
 					onOpen={(orderId) => {
 						pushSelectedOrder(orderId);
 						pushed.current = true;

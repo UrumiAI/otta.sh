@@ -278,12 +278,17 @@ describe("the tab a link was shared from", () => {
 /**
  * THE PAGE A LINK WAS SHARED FROM.
  *
- * The cursor is the one screen parameter this console does not author: it is an
- * opaque token the service issued, and every function below moves it verbatim.
- * Nothing here parses it, validates its shape or synthesises one — a token this
- * tier "understood" would be a keyset predicate reimplemented in a browser, and
- * the service's fail-closed refusal of a token it did not issue is what makes
- * carrying it in a public address safe in the first place.
+ * The cursor is the one screen parameter this console does not author: it is a
+ * token the service issued, and every function below moves it verbatim. Nothing
+ * here parses it, validates its shape or synthesises one — a token this tier
+ * "understood" would be a keyset predicate reimplemented in a browser, coupled
+ * to an encoding it does not own.
+ *
+ * IT IS NOT SAFE BECAUSE IT IS UNREADABLE — it is unsigned base64url JSON, so
+ * anyone can read one and anyone can mint one. It is safe because the ROUTE
+ * re-validates the filter the token carries through the same schema a query
+ * string is held to and re-clamps its limit, both failing closed. A minted token
+ * can therefore only restate a query an operator was already allowed to make.
  */
 describe("the page a link was shared from (the cursor)", () => {
 	it("reads no cursor as page one — absent, not an empty string", () => {
@@ -298,12 +303,23 @@ describe("the page a link was shared from (the cursor)", () => {
 
 	it("reads the token back exactly as the service issued it", () => {
 		expect(readCursor("?cursor=abc")).toBe("abc");
-		// A base64 token carries `+`, `/` and `=`, and `+` decodes to a SPACE in a
-		// query string — so the round trip has to go through the encoder, which is
-		// what `cursorQuery` is for. A hand-concatenated address would corrupt the
-		// token and the service would (correctly) refuse it.
-		const token = "eyJjIjoiMjAyNi0wMS0wMSJ9+a/b=";
-		expect(readCursor(`?${cursorQuery("", token)}`)).toBe(token);
+		// A REAL TOKEN'S SHAPE — base64URL, so `+` and `/` are already `-` and `_`
+		// and the padding is gone. It needs no escaping today, and this pins that it
+		// survives the round trip unaltered rather than that it required rescuing.
+		const real = "eyJwb3MiOnsiY3JlYXRlZEF0IjoiMjAyNi0wMy0wMlQxMDoyMDowMFoifSwibGltaXQiOjI1fQ";
+		expect(cursorQuery("", real)).toBe(`cursor=${real}`);
+		expect(readCursor(`?${cursorQuery("", real)}`)).toBe(real);
+	});
+
+	it("round-trips a token whose alphabet is NOT query-safe", () => {
+		// WHY THE ENCODER IS USED ANYWAY, and it is not about today's token. The
+		// alphabet belongs to the service: the day the token gains a signature, a
+		// version prefix or a different encoding, hand concatenation would corrupt
+		// it silently — a raw `+` decodes back as a SPACE — and the route would
+		// refuse a value this tier had mangled. One `params.set` removes the
+		// dependency on an assumption this tier is not entitled to make.
+		const awkward = "a+b/c=d&e f";
+		expect(readCursor(`?${cursorQuery("", awkward)}`)).toBe(awkward);
 	});
 
 	it("writes the cursor, and writes NOTHING for page one", () => {
