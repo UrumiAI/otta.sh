@@ -94,9 +94,17 @@ import { syncVariants } from "./variants.js";
  *  - A DROP IS DEACTIVATION, NEVER DELETION. The orphaned row keeps its sku, its
  *    price and its inventory, and its stock stays where it is under the sku it
  *    was already keyed by. Nothing is destroyed by a re-key.
- *  - A RE-KEY IS REVERSIBLE. Restoring the original key in the CMS resurrects
- *    that same row under the resurrect rules — a kept sku keeps its units. The
- *    repair is a CMS save, not a manual reconciliation.
+ *  - A RE-KEY IS REVERSIBLE, AND THE REPAIR VERB IS PUBLISH. Restoring the
+ *    original key in the CMS resurrects that same row under the resurrect rules
+ *    — a kept sku keeps its units — but resurrect applies ONLY on a STRICTLY
+ *    NEWER content watermark, and on a revision-supporting collection a
+ *    draft-only save can leave `updatedAt` frozen (em-dash stopped stamping it
+ *    on a column no-op; see `derive-idempotency-key.ts`). So re-adding a deleted
+ *    key while the document sits in the draft window leaves the variant orphaned
+ *    until "Publish changes" — the same recovery verb publish atomicity already
+ *    makes load-bearing above. A bare re-save repairs it only where the CMS
+ *    actually bumps the watermark. Either way it is a CMS action, never a manual
+ *    reconciliation of the commerce database.
  *  - A REUSED KEY RESOLVES DETERMINISTICALLY. `parseVariantRepeater` declares
  *    the first occurrence and reports the rest, so the stored name never depends
  *    on request ordering, and one typo never orphans a live size.
@@ -418,7 +426,7 @@ export function createAfterSaveHandler(
 			});
 		} catch (err) {
 			console.error(
-				`[otta] content:afterSave sync failed for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}). No reconcile cron exists yet — this sync (the title cache, and any variant this save declared or dropped) is lost until the product is saved again:`,
+				`[otta] content:afterSave sync failed for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}). No reconcile cron exists yet — this sync (the title cache, and any variant this save declared or dropped) is lost until the product is saved/published again:`,
 				err,
 			);
 		}

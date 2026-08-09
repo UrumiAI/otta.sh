@@ -941,6 +941,138 @@ describe("sync hooks — the variant repeater declares presence and the name cac
 		expectDeclareBody(declares[0]?.body, { title: "Small", contentUpdatedAt: WM });
 	});
 
+	// -- the three branches that decide whether a size lives or dies ----------
+	// The drop phase is the only destructive half of this channel, and three
+	// documents reach it looking superficially alike: a repeater that is absent,
+	// one that is present and empty, and one that is present with rows none of
+	// which parse. They must resolve differently, and only the first of them was
+	// pinned by the inert-path test above.
+
+	test("`variants: []` orphans every live size — the merchant deleted the last row", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+		serveVariants(stubServer, ["small", "large"]);
+
+		await sandboxHandle.invokeHook("content:afterSave", {
+			content: productContent("prod-empty", {}, TITLE, { variants: [] }),
+			collection: "products",
+			isNew: false,
+		});
+
+		// A present, empty list is the merchant's own statement that this product
+		// sells no sizes any more — a DIFFERENT fact from a document that never
+		// declared the field, which is why `readVariantRows` distinguishes them.
+		// Deactivation, never deletion: both rows keep their sku, price and stock.
+		expect(variantPuts(stubServer)).toHaveLength(0);
+		const dropped = variantDeactivates(stubServer).map((r) => r.url);
+		expect(dropped).toEqual([
+			"/products/prod-empty/variants/small/deactivate",
+			"/products/prod-empty/variants/large/deactivate",
+		]);
+		expect(stubServer.requests.filter((r) => r.method === "DELETE")).toHaveLength(0);
+	});
+
+	test("PRESENT WITH ROWS THAT ALL FAIL TO PARSE drops NOTHING — a bad import must never retire a range", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+		serveVariants(stubServer, ["small", "large"]);
+
+		await sandboxHandle.invokeHook("content:afterSave", {
+			content: productContent("prod-allbad", {}, TITLE, {
+				// Every row malformed: a blank key, a keyless row, a non-object.
+				variants: [{ key: "   ", name: "Blank" }, { name: "Keyless" }, "not-a-row"],
+			}),
+			collection: "products",
+			isNew: false,
+		});
+
+		// THE ASYMMETRY THAT MATTERS. "Every row is malformed" and "there are no
+		// rows" both yield an empty declared set, but they are not the same claim:
+		// the first is a content problem — a renamed sub-field, a broken import —
+		// and reading it as the second would orphan the product's entire range,
+		// silently, on a document the merchant believes still lists every size.
+		// So the drop phase is withheld and the problem is logged.
+		expect(variantDeactivates(stubServer)).toHaveLength(0);
+		expect(variantPuts(stubServer)).toHaveLength(0);
+		// Not even the drop-set read is taken: there is nothing it could be used for.
+		expect(variantLists(stubServer)).toHaveLength(0);
+		// The product's own title sync is untouched by any of it.
+		expect(putRequests(stubServer)).toHaveLength(1);
+	});
+
+	test("a `variants` member that is not a list declares nothing and drops nothing", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+		serveVariants(stubServer, ["small"]);
+
+		await sandboxHandle.invokeHook("content:afterSave", {
+			content: productContent("prod-notalist", {}, TITLE, { variants: { small: "Small" } }),
+			collection: "products",
+			isNew: false,
+		});
+
+		// Same reasoning as the all-malformed case: a value this sync cannot read
+		// is not evidence that a size was removed.
+		expect(variantPuts(stubServer)).toHaveLength(0);
+		expect(variantDeactivates(stubServer)).toHaveLength(0);
+		expect(variantLists(stubServer)).toHaveLength(0);
+	});
+
+	test("NO PARSEABLE WATERMARK ⇒ the whole variant sync is skipped, declares included", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+		serveVariants(stubServer, ["medium"]);
+
+		await sandboxHandle.invokeHook("content:afterSave", {
+			content: productContent("prod-nowm", { updatedAt: "not-a-date" }, TITLE, {
+				variants: VARIANTS,
+			}),
+			collection: "products",
+			isNew: false,
+		});
+
+		// The orphan transition REQUIRES a watermark, so half this channel cannot
+		// be sent at all. Running the other half alone would declare sizes while
+		// being unable to retire any — a divergence that persists until the next
+		// save — so both halves skip together, and the document syncs no variant
+		// at all despite declaring two.
+		expect(variantPuts(stubServer)).toHaveLength(0);
+		expect(variantDeactivates(stubServer)).toHaveLength(0);
+		expect(variantLists(stubServer)).toHaveLength(0);
+		// The product row is still upserted — the title cache tolerates a missing
+		// watermark, presence does not.
+		const commerce = putRequests(stubServer);
+		expect(commerce).toHaveLength(1);
+		expectTitleOnlyBody(commerce[0]?.body, { title: TITLE });
+	});
+
+	test("an ALREADY-ORPHANED row is never re-dropped", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+		stubServer.respondWith("PUT", (req) =>
+			req.url.includes("/variants/")
+				? { status: 200, body: variantRow(req.url.split("/variants/")[1] ?? "", null) }
+				: { status: 200, body: BARE_ROW },
+		);
+		stubServer.respondWith("POST", () => ({ status: 200, body: { ok: true } }));
+		// A projection that leaked a tombstone — which the public read does not do,
+		// because this client sends no internal token. The guard is local anyway.
+		stubServer.respondWith("GET", () => ({
+			status: 200,
+			body: {
+				variants: [
+					{ ...variantRow("gone", null), orphanedAt: "2026-07-09T00:00:00.000Z", inStock: false },
+					{ ...variantRow("medium", null), inStock: false },
+				],
+			},
+		}));
+
+		await sandboxHandle.invokeHook("content:afterSave", {
+			content: productContent("prod-orphaned", {}, TITLE, { variants: VARIANTS }),
+			collection: "products",
+			isNew: false,
+		});
+
+		expect(variantDeactivates(stubServer).map((r) => r.url)).toEqual([
+			"/products/prod-orphaned/variants/medium/deactivate",
+		]);
+	});
+
 	test("PUBLISH ATOMICITY holds for variants too: a pending-draft save sends no variant request at all", async () => {
 		const { stubServer, sandboxHandle } = await setup();
 		serveVariants(stubServer, ["small"]);

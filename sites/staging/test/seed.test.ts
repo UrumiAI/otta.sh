@@ -35,7 +35,7 @@ interface SeedField {
 	widget?: string;
 	/** em-dash puts a repeater's sub-field declarations inside `validation`
 	 *  (`FieldValidation.subFields`), not in a sibling `fields` array. */
-	validation?: { subFields?: SeedSubField[] };
+	validation?: { subFields?: SeedSubField[]; maxItems?: number };
 }
 
 interface SeedCollection {
@@ -104,7 +104,27 @@ describe("seed/seed.json", () => {
 		// document and makes the CMS a second writer again — the whole failure
 		// PR 1b removed at product grain and ADR-0016 forbids at variant grain.
 		expect(subFields.map((f) => f.slug)).toEqual(["key", "name"]);
-		for (const subField of subFields) expect(subField.type).toBe("string");
+		for (const subField of subFields) {
+			expect(subField.type).toBe("string");
+			// BOTH sub-fields are required. The key is the variant's identity and a
+			// row without one declares nothing; the name is what a picker renders and
+			// what an order line freezes, so an editor that let a merchant save a
+			// nameless size would be shipping blank labels to customers. The sync
+			// still tolerates a missing name (it clears the cache rather than
+			// refusing the size), because non-editor clients — an import, a CLI or
+			// API write, a seed — bypass this validation.
+			expect(subField.required).toBe(true);
+		}
+	});
+
+	test("the repeater carries a deliberate fan-out bound", () => {
+		// Every declared row is one request on every save of the document, and the
+		// drop-set read is one more. The bound is a decision rather than a limit
+		// discovered in production: 50 sizes is far past any real garment or
+		// hardware range, and it caps a single save's variant fan-out at a number
+		// that stays comfortable on a fire-and-forget hook with no retry.
+		const variants = products?.fields.find((f) => f.slug === "variants");
+		expect(variants?.validation?.maxItems).toBe(50);
 	});
 
 	test("the seed stays INERT for the live catalogue — no sample entry declares a variant", () => {

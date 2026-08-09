@@ -250,6 +250,16 @@ outcome of the mistake is a recoverable state with nothing destroyed, rather tha
 This is the same answer the SKU-rename rule gives, arrived at from the other direction: retain,
 refuse to guess, and make the state visible.
 
+**The repair verb is publish, and this needs stating precisely rather than as "just save it
+again".** Presence moves only on a strictly newer watermark — that is the resurrect rule above, and
+it is what stops a redelivered declare from reviving a size a newer save retired. On a
+revision-supporting collection a draft-only save can be a column no-op that leaves the content's
+`updatedAt` frozen, so restoring the key while the document sits in the draft window produces a
+declare whose watermark is not strictly newer, and the variant stays orphaned until **Publish
+changes**. A bare re-save repairs it only where the CMS genuinely bumps the watermark. This is the
+same asymmetry publish atomicity already relies on, reaching one level down; it is a recovery that
+always exists, not one that is always one click.
+
 **A reused key resolves first-row-wins, and is logged.** Two repeater rows claiming one key
 describe one sellable unit twice, with two names, and the document does not say which is meant.
 The sync declares the first occurrence and reports the rest. Declaring both would make the stored
@@ -267,10 +277,11 @@ the enforcement story this amendment substitutes — it is not a display prefere
 - The merchant is told late rather than early. A re-key is discovered when the operator sees an
   orphaned size holding stock, not when they save the document.
 - Nothing is lost silently, and no repair is manual: the CMS re-declaring the key is the repair.
-- Two observations worth recording for the day the CMS side is revisited: an editor-legible
-  refusal needs a sandboxed save-hook veto whose message survives into the CMS's own error
-  envelope; and the capability that gates registering the save hook is enforced on the trusted
-  registration path but not on the sandboxed one.
+- One observation worth recording for the day the CMS side is revisited: an editor-legible refusal
+  needs a sandboxed save-hook veto whose message survives into the CMS's own error envelope.
+  Registering the save hook also requires a content-write capability, which this plugin does not
+  hold and does not want — it writes no CMS content — so the hook would be a capability widening
+  bought for a guard that could not fire.
 
 ### What would change this amendment
 

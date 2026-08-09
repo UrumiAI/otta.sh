@@ -42,6 +42,7 @@
 					"label": "Variants",
 					"type": "repeater",
 					"validation": {
+						"maxItems": 50,
 						"subFields": [
 							{
 								"slug": "key",

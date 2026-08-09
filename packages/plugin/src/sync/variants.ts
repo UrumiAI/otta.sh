@@ -37,9 +37,12 @@
  * capability, no new host), over `ctx.http` to the commerce service, and it is
  * FIRE-AND-FORGET: a failure is logged and never thrown into the CMS save path.
  * There is still no reconcile job anywhere in the repo, so a failed variant sync
- * — presence and name alike — is lost until the product is saved again, with
- * the same "the idempotent upsert makes that replay safe" caveat the product
- * title carries.
+ * — presence and name alike — is lost until the product is saved or published
+ * again, with the same "the idempotent upsert makes that replay safe" caveat the
+ * product title carries. PUBLISH IS THE STRONGER VERB, and on a
+ * revision-supporting collection it is sometimes the only one that works: a
+ * draft-only save can leave `updatedAt` frozen, and the resurrect half of the
+ * presence axis applies only on a STRICTLY NEWER watermark.
  */
 import type {
 	ProductVariantSummaryWire,
@@ -94,10 +97,19 @@ export interface ParsedRepeater {
 	problems: string[];
 }
 
+/** What one document says about the repeater. THREE outcomes, because the third
+ *  used to hide inside the first: a field that is present but is not an array is
+ *  a content problem worth a log line, not the same fact as a document that
+ *  never declared the field. */
+export type RepeaterRead =
+	| { kind: "absent" }
+	| { kind: "rows"; rows: unknown[] }
+	| { kind: "unusable"; problem: string };
+
 /**
  * Read the repeater out of the saved content record's `data` bag.
  *
- * `undefined` MEANS "THIS DOCUMENT DECLARES NO REPEATER AT ALL", and it is the
+ * `absent` MEANS "THIS DOCUMENT DECLARES NO REPEATER AT ALL", and it is the
  * whole of the inert-on-the-live-catalogue guarantee: the caller does nothing —
  * not one extra request — so a product with no variants syncs byte-identically
  * to how it did before variants existed. Defensive about the `data` overlay
@@ -107,19 +119,29 @@ export interface ParsedRepeater {
  * THE ONE THING THIS CANNOT DISTINGUISH, stated so nobody has to discover it:
  * em-dash's `mapRow()` EXCLUDES null columns from `data`, so a collection with
  * no repeater field and a repeater the merchant emptied to null look identical
- * here — both are `undefined`, both sync nothing. An emptied repeater that
- * persists as `[]` (a real, present, empty array) IS distinguishable and DOES
- * orphan every live variant, which is the intended reading of "the merchant
- * deleted every row". The conservative branch is deliberate: silently orphaning
- * every size of every product on a collection that never had a repeater would be
+ * here — both are `absent`, both sync nothing. An emptied repeater that persists
+ * as `[]` (a real, present, empty array) IS distinguishable and DOES orphan
+ * every live variant, which is the intended reading of "the merchant deleted
+ * every row". The conservative branch is deliberate: silently orphaning every
+ * size of every product on a collection that never had a repeater would be
  * catastrophic, and being wrong in the other direction merely leaves a variant
  * live until the next save that carries rows.
  */
-export function readVariantRows(content: Record<string, unknown>): unknown[] | undefined {
+export function readVariantRows(content: Record<string, unknown>): RepeaterRead {
 	const data = content["data"];
-	if (typeof data !== "object" || data === null) return undefined;
+	if (typeof data !== "object" || data === null) return { kind: "absent" };
 	const raw = (data as Record<string, unknown>)[VARIANTS_FIELD];
-	return Array.isArray(raw) ? raw : undefined;
+	if (raw === undefined || raw === null) return { kind: "absent" };
+	if (!Array.isArray(raw)) {
+		// PRESENT BUT NOT A LIST. Nothing can be read out of it, so nothing is
+		// declared and — critically — nothing is dropped: a value this module
+		// cannot parse is not evidence that the merchant deleted anything.
+		return {
+			kind: "unusable",
+			problem: `\`data.${VARIANTS_FIELD}\` is ${typeof raw}, not a list of repeater rows`,
+		};
+	}
+	return { kind: "rows", rows: raw };
 }
 
 /** Read one sub-field off a repeater row, tolerating a non-object row. */
@@ -136,9 +158,13 @@ function readSubField(row: unknown, subField: string): unknown {
  *  - a usable name ⇒ send it, TRIMMED (one source of truth with the storefront
  *    picker, exactly as the product title is trimmed);
  *  - an EMPTY / whitespace-only / absent name ⇒ send an explicit `null`, which
- *    CLEARS the stored cache. This is the merchant's only way to unname a size,
- *    and the service's own schema documents this exact mapping ("a repeater row
- *    whose name sub-field is empty");
+ *    CLEARS the stored cache — the service's own schema documents this exact
+ *    mapping ("a repeater row whose name sub-field is empty"). NOT A PATH THE
+ *    EDITOR CAN TAKE: the name sub-field is declared `required`, so the content
+ *    editor will not save a row without one. It is reachable by the clients that
+ *    bypass that validation — an API or CLI write, an importer, a seed — and it
+ *    is handled here so those writes clear the cache honestly rather than
+ *    stranding a stale name that no longer appears in the document;
  *  - anything else — a non-string, or a string past the service's 500-character
  *    bound ⇒ OMIT the field (preserving whatever is stored) and report a
  *    problem. Sending it would be a 400, and a 400 is a TRANSPORT failure: a
@@ -322,8 +348,20 @@ export interface SyncVariantsInput {
  * channel simply cannot be sent without one. Running the other half alone would
  * declare sizes while being unable to retire any — a divergence that persists
  * until the next save — so both halves skip together. Same posture, and the same
- * honest "lost until the next save" caveat, that `content:afterUnpublish` takes
- * on an unparseable `updatedAt`.
+ * honest "lost until the next save/publish" caveat, that
+ * `content:afterUnpublish` takes on an unparseable `updatedAt`.
+ *
+ * TWO GUARDS ON THE DROP PHASE, because it is the only destructive half of this
+ * channel and the cost of being wrong is asymmetric:
+ *  - a repeater that is PRESENT WITH ROWS but yields NO USABLE KEY drops
+ *    nothing. Rows that are all malformed are a content problem, not the
+ *    merchant's statement that every size is gone — the same conservative
+ *    reading `readVariantRows` gives an absent field, applied one step later.
+ *    A DELIBERATELY EMPTIED repeater (`[]`, present, zero rows) is a different
+ *    fact and DOES orphan everything, which is the whole point of the
+ *    distinction.
+ *  - a row the read already reports as ORPHANED is skipped rather than
+ *    re-dropped.
  */
 export async function syncVariants({
 	client,
@@ -334,13 +372,20 @@ export async function syncVariants({
 	hook,
 	allowedHosts,
 }: SyncVariantsInput): Promise<void> {
-	const rows = readVariantRows(content);
+	const read = readVariantRows(content);
 	// THE LIVE CATALOGUE'S PATH: no repeater, no requests, no behavior change.
-	if (rows === undefined) return;
+	if (read.kind === "absent") return;
+	if (read.kind === "unusable") {
+		console.warn(
+			`[otta] ${hook}: product_id=${productId} variant repeater problem — ${read.problem}. No variant was declared and NOTHING was dropped: a value this sync cannot read is not evidence that a size was removed.`,
+		);
+		return;
+	}
+	const rows = read.rows;
 
 	if (watermark === undefined) {
 		console.error(
-			`[otta] ${hook} for product_id=${productId} carried no parseable updatedAt watermark — variant sync skipped (the orphan transition requires one). No reconcile cron exists yet — this sync is lost until the product is saved again.`,
+			`[otta] ${hook} for product_id=${productId} carried no parseable updatedAt watermark — variant sync skipped (the orphan transition requires one). No reconcile cron exists yet — this sync is lost until the product is saved/published again.`,
 		);
 		return;
 	}
@@ -374,13 +419,30 @@ export async function syncVariants({
 			);
 		}
 
-		// The drop set: every LIVE variant this save stopped declaring. The read is
-		// the public projection (no internal token), so it is live rows only —
-		// an already-orphaned key is absent and is never re-orphaned.
+		// THE DROP PHASE IS WITHHELD when the repeater carried rows and not one of
+		// them yielded a usable key. "Every row is malformed" is a content problem;
+		// "there are no rows" is the merchant deleting the last size. Reading the
+		// first as the second would orphan a product's entire range over a bad
+		// import or a renamed sub-field — the same catastrophe the absent-field
+		// branch exists to avoid, one step further in.
+		if (rows.length > 0 && declared.length === 0) {
+			console.warn(
+				`[otta] ${hook}: product_id=${productId} declared ${rows.length} variant repeater row(s) and NONE carried a usable \`${VARIANT_KEY_SUBFIELD}\` — no variant was dropped. An intentionally emptied repeater (zero rows) is what retires every size.`,
+			);
+			return;
+		}
+
+		// The drop set: every LIVE variant this save stopped declaring.
 		const declaredKeys = new Set(declared.map((variant) => variant.variantKey));
 		const live = await client.listProductVariants(productId);
 		for (const row of live) {
 			if (declaredKeys.has(row.variantKey)) continue;
+			// Belt and braces. THE LOAD-BEARING FILTER IS THE SERVICE'S: this client
+			// sends no internal token, so it receives the public projection, which is
+			// live rows only. This line makes the invariant local, so re-orphaning
+			// does not silently start happening if that header choice ever changes
+			// three files away.
+			if (row.orphanedAt !== null) continue;
 			// DEACTIVATION, NEVER DELETION: the row keeps its sku, its price and its
 			// inventory, because an orphan may still hold stock and still sit on live
 			// order lines. Surfacing that state in the console is a later increment;
@@ -397,7 +459,7 @@ export async function syncVariants({
 		// the honest caveat. A partial application is safe to re-run: every call on
 		// this channel is idempotent under its key and ordered by the watermark.
 		console.error(
-			`[otta] ${hook} variant sync failed for product_id=${productId} (host allowlist: ${allowedHosts.join(", ")}). No reconcile cron exists yet — this sync is lost until the product is saved again:`,
+			`[otta] ${hook} variant sync failed for product_id=${productId} (host allowlist: ${allowedHosts.join(", ")}). No reconcile cron exists yet — this sync is lost until the product is saved/published again:`,
 			err,
 		);
 	}

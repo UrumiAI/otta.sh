@@ -39,7 +39,9 @@ ADR-0016 applied clause for clause (itself ADR-0013 one level down).
 
 The staging seed declares the repeater on the products collection so the field
 exists where a merchant edits the rest of the product's content. No sample entry
-declares a variant, so the demo catalogue is unchanged.
+declares a variant, so the demo catalogue is unchanged. The repeater is bounded
+at 50 rows as a deliberate fan-out limit: every declared row is one request on
+every save of the document, on a fire-and-forget hook with no retry.
 
 **The variant key is enforced by recovery, not by refusal** (ADR-0016, amended).
 The CMS cannot express a save-time refusal of a mutated or reused key: the save
@@ -54,10 +56,18 @@ destroyed by one:
   inventory, and its stock stays where it is under the sku it was already keyed
   by.
 - Restoring the original key in the CMS resurrects that same row under the
-  existing resurrect rules, so a kept sku keeps its units. The repair is a CMS
-  save, not a manual reconciliation.
+  existing resurrect rules, so a kept sku keeps its units. The repair verb is
+  **publish**: presence moves only on a strictly newer content watermark, and a
+  draft-only save can leave that watermark frozen, so re-adding a deleted key
+  inside the draft window takes effect when the document is published. A bare
+  re-save repairs it only where the CMS bumps the watermark. Either way it is a
+  CMS action, never a manual reconciliation of the commerce database.
 - A reused key resolves to the first row, deterministically, and is logged, so
   the stored name never depends on request ordering.
+- The drop phase is withheld whenever the repeater cannot be read as a list of
+  rows, or carries rows of which none yields a usable key. A content problem is
+  never read as "the merchant deleted every size" — only a present, empty
+  repeater retires a product's whole range.
 
 Because there is no save-time refusal, the admin's variant list is obliged to
 render an orphaned row distinctly — that row is the only place a mistaken re-key
