@@ -15,6 +15,11 @@
  * transition this file chooses rather than an environment it has to arrange.
  */
 import { PRODUCTS_PAGE_FAILED_TITLE } from "@otta-sh/admin-presentation";
+import {
+	REFRESH_FAILED_TITLE,
+	REFRESH_STOPPED_TITLE,
+	REFRESH_UNCHANGED_NOTE,
+} from "../src/accumulate.js";
 import * as React from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { fire, mount, type Mounted } from "./dom.js";
@@ -746,4 +751,324 @@ test("a colliding id on page 2 lengthens the prefix a page-1 row already showed"
 	expect(link(ORIGINAL)?.textContent).toBe("abcd0");
 	expect(link(COLLIDING)?.textContent).toBe("abcd9");
 	expect(link(ORIGINAL)?.getAttribute("href")).toBe(`?order=${encodeURIComponent(ORIGINAL)}`);
+});
+
+/**
+ * WHAT `Refresh` DOES TO A SCAN THAT HAS ACCUMULATED — the act correction 03
+ * found missing.
+ *
+ * WHY A DOCUMENT. The arithmetic of the walk is pure and pinned next door; what
+ * only a live mount can show is the part that was actually absent — the requests
+ * that go out, in order, and the rows that are on screen when they have all come
+ * back. Every claim below is counted in rendered rows or read off the wire.
+ *
+ * THE SERVICE HERE IS MUTABLE ON PURPOSE. A refresh that cannot be told from a
+ * re-render is a refresh that proves nothing, so the collection is edited between
+ * the scan and the click: a row is deleted, and another's customer changes.
+ */
+const CATALOG_PAGE = 2;
+
+/** The collection the fixture service is currently serving. */
+let catalog: { id: string; buyerRef: string }[] = [];
+/** Requests to answer normally before the service starts refusing — `null` never
+ *  refuses. Set immediately before the act under test. */
+let refuseAfter: number | null = null;
+/** The same, for the refusal the plugin recovers from by re-issuing page one. */
+let rejectAfter: number | null = null;
+let served = 0;
+let issuedCursors = 0;
+
+function stockCatalog(size: number): void {
+	catalog = ids("o", 1, size).map((id) => ({ id, buyerRef: `buyer-${id}` }));
+	refuseAfter = null;
+	rejectAfter = null;
+	served = 0;
+	issuedCursors = 0;
+}
+
+/** Answer normally for `n` more requests, then refuse. */
+function refuseAfterRequests(n: number): void {
+	served = 0;
+	refuseAfter = n;
+}
+
+/** Answer normally for `n` more requests, then answer page one with the flag the
+ *  plugin's client sets when the service refused the token it sent. */
+function rejectAfterRequests(n: number): void {
+	served = 0;
+	rejectAfter = n;
+}
+
+/**
+ * A tiny keyset service over {@link catalog}, paged at two.
+ *
+ * EVERY CURSOR IT ISSUES IS UNIQUE, even for the same position, which is what
+ * lets the wire log prove the walk FOLLOWED the fresh boundaries rather than
+ * replaying the ones the scan was built with.
+ */
+function serveCatalog(): void {
+	serve((request) => {
+		served += 1;
+		if (refuseAfter !== null && served > refuseAfter) {
+			return envelope({
+				ok: false,
+				title: "Orders could not be reached",
+				description: "Try again in a moment.",
+			});
+		}
+		const rejected = rejectAfter !== null && served > rejectAfter;
+		const start =
+			rejected || request.cursor === undefined ? 0 : Number(request.cursor.split("-")[1]);
+		const window = catalog.slice(start, start + CATALOG_PAGE);
+		const end = start + window.length;
+		issuedCursors += 1;
+		return envelope({
+			ok: true,
+			...(rejected ? { cursorRejected: true } : {}),
+			orders: window.map((row) => ({
+				...order(row.id, `Customer ${row.id}`),
+				buyerRef: row.buyerRef,
+			})),
+			nextCursor: end < catalog.length ? `at-${String(end)}-${String(issuedCursors)}` : null,
+			vocabulary: VOCABULARY,
+		});
+	});
+}
+
+/** Page one and two `Load more` — three responses, six rows, more behind them. */
+async function scanThreePages(): Promise<Mounted> {
+	stockCatalog(10);
+	serveCatalog();
+	const scan = await mount(<OrdersList onOpen={() => {}} />);
+	await settle();
+	await press(scan, "orders-load-more");
+	await settle();
+	await press(scan, "orders-load-more");
+	await settle();
+	expect(rowIds(scan, "orders-row")).toEqual(["o-1", "o-2", "o-3", "o-4", "o-5", "o-6"]);
+	return scan;
+}
+
+test("a refresh re-reads every page on screen, from page one, following fresh cursors", async () => {
+	view = await scanThreePages();
+	asked = [];
+
+	await press(view, "orders-refresh");
+	await settle();
+
+	// THREE REQUESTS FOR THREE PAGES, in order: the first carries no token,
+	// because a grounded window opens on page one, and each one after it carries
+	// the cursor the PREVIOUS RESPONSE issued — never the one the scan was built
+	// with, which describes a boundary that may have moved.
+	expect(asked).toHaveLength(3);
+	expect(asked[0]?.cursor).toBeUndefined();
+	expect(asked[1]?.cursor).toBe("at-2-4");
+	expect(asked[2]?.cursor).toBe("at-4-5");
+	// The depth is kept: three pages in, three pages out.
+	expect(rowIds(view, "orders-row")).toEqual(["o-1", "o-2", "o-3", "o-4", "o-5", "o-6"]);
+	expect(text(view, "orders-intro")).toContain("6 orders loaded so far");
+	expect(text(view, "orders-page-position")).toContain("Pages 1–3");
+});
+
+test("a refresh shows what changed, and stops showing what has gone", async () => {
+	view = await scanThreePages();
+	// Between the scan and the click: one row is edited, and one is deleted.
+	const edited = catalog.find((row) => row.id === "o-1");
+	if (edited !== undefined) edited.buyerRef = "buyer-renamed";
+	catalog = catalog.filter((row) => row.id !== "o-3");
+	expect(text(view, "orders-table")).toContain("buyer-o-1");
+
+	await press(view, "orders-refresh");
+	await settle();
+
+	// THE EDIT LANDS.
+	expect(text(view, "orders-table")).toContain("buyer-renamed");
+	expect(text(view, "orders-table")).not.toContain("buyer-o-1");
+	// AND THE DELETED ROW GOES. It is in none of the pages the walk re-read, and
+	// keeping it would have the screen assert a record that is not there at the
+	// exact moment the operator asked whether it still was. The depth is what is
+	// kept — three pages — so the window closes over the row that left.
+	expect(rowIds(view, "orders-row")).toEqual(["o-1", "o-2", "o-4", "o-5", "o-6", "o-7"]);
+	expect(text(view, "orders-intro")).toContain("6 orders loaded so far");
+});
+
+test("a refresh that stops part-way keeps what it re-read, and says the rest is not shown", async () => {
+	view = await scanThreePages();
+	// Two pages answer, the third does not.
+	refuseAfterRequests(2);
+
+	await press(view, "orders-refresh");
+	await settle();
+
+	// WHAT IS ON SCREEN IS WHAT WAS RE-READ, and nothing else: a window half
+	// reconciled would carry one count line over rows taken at two moments.
+	expect(rowIds(view, "orders-row")).toEqual(["o-1", "o-2", "o-3", "o-4"]);
+	expect(text(view, "orders-intro")).toContain("4 orders loaded so far");
+	// The position says two pages, because the stack was truncated with the
+	// window — a stack still claiming three would number these rows wrongly.
+	expect(text(view, "orders-page-position")).toContain("Pages 1–2");
+	expect(text(view, "orders-refresh-stopped")).toContain(REFRESH_STOPPED_TITLE);
+	// NOTHING IS WITHDRAWN: the last page it did re-read carries a live cursor, so
+	// `Load more` is exactly how the missing depth comes back — which is what the
+	// sentence tells the operator to do.
+	expect(absent(view, "orders-load-more")).toBe(false);
+	expect(absent(view, "orders-paging-stopped")).toBe(true);
+
+	refuseAfter = null;
+	await press(view, "orders-load-more");
+	await settle();
+	expect(rowIds(view, "orders-row")).toEqual(["o-1", "o-2", "o-3", "o-4", "o-5", "o-6"]);
+	expect(absent(view, "orders-refresh-stopped")).toBe(true);
+});
+
+test("a refresh that re-reads NOTHING leaves the window exactly as it was", async () => {
+	view = await scanThreePages();
+	refuseAfterRequests(0);
+
+	await press(view, "orders-refresh");
+	await settle();
+
+	// Nothing was replaced, so nothing is lost: the window on screen is still the
+	// coherent one it was a moment ago, and the card says the refresh did not
+	// happen rather than describing a page move nobody made.
+	expect(rowIds(view, "orders-row")).toEqual(["o-1", "o-2", "o-3", "o-4", "o-5", "o-6"]);
+	expect(text(view, "orders-load-more-failure")).toContain(REFRESH_FAILED_TITLE);
+	expect(text(view, "orders-load-more-failure")).toContain(REFRESH_UNCHANGED_NOTE);
+	expect(absent(view, "orders-refresh-stopped")).toBe(true);
+
+	// AND RETRY RE-ISSUES THE WHOLE WALK, not the one page a Retry used to mean.
+	refuseAfter = null;
+	asked = [];
+	await press(view, "orders-load-more-failure-action");
+	await settle();
+	expect(asked).toHaveLength(3);
+	expect(rowIds(view, "orders-row")).toEqual(["o-1", "o-2", "o-3", "o-4", "o-5", "o-6"]);
+});
+
+test("a refresh whose page is REFUSED does not relocate the operator to page one", async () => {
+	view = await scanThreePages();
+	// The first request answers; the second is refused and recovered to page one
+	// by the plugin's client, which is right for a deep link and wrong here.
+	rejectAfterRequests(1);
+
+	await press(view, "orders-refresh");
+	await settle();
+
+	// The recovered page-one payload is discarded rather than merged, so the
+	// window is the one page that genuinely answered.
+	expect(rowIds(view, "orders-row")).toEqual(["o-1", "o-2"]);
+	expect(text(view, "orders-refresh-stopped")).toContain(REFRESH_STOPPED_TITLE);
+	expect(text(view, "orders-page-position")).toContain("Page 1");
+});
+
+test("`Apply filters` over an UNCHANGED predicate refreshes the scan instead of collapsing it", async () => {
+	view = await scanThreePages();
+	asked = [];
+
+	await press(view, "apply-filters");
+	await settle();
+
+	// It is the same query restated, so there is no licence to throw the scan
+	// away: three requests go out, and three pages come back.
+	expect(asked).toHaveLength(3);
+	expect(asked[0]?.cursor).toBeUndefined();
+	expect(rowIds(view, "orders-row")).toEqual(["o-1", "o-2", "o-3", "o-4", "o-5", "o-6"]);
+	expect(text(view, "orders-intro")).toContain("6 orders loaded so far");
+});
+
+test("`Apply filters` over a CHANGED predicate still collapses to page one", async () => {
+	view = await scanThreePages();
+	asked = [];
+
+	await React.act(async () => {
+		retype(element(view as Mounted, "filter-status") as HTMLSelectElement, "failed");
+	});
+	await press(view, "apply-filters");
+	await settle();
+
+	// A cursor is meaningless against a predicate it was not issued under, so the
+	// window cannot survive this one — and this is the only act licensed to end it.
+	expect(asked).toHaveLength(1);
+	expect(asked[0]?.cursor).toBeUndefined();
+	expect(asked[0]?.filter?.status).toBe("failed");
+	expect(rowIds(view, "orders-row")).toEqual(["o-1", "o-2"]);
+	expect(text(view, "orders-intro")).toContain("2 orders on this page");
+});
+
+test("no two reads at once: Refresh is unavailable while a page is in flight, and refuses its click", async () => {
+	view = await scanThreePages();
+	// A `Load more` that has not answered yet.
+	let release: ((response: Response) => void) | null = null;
+	apiFetch.mockImplementation(
+		() =>
+			new Promise<Response>((resolve) => {
+				release = resolve;
+			}),
+	);
+	await press(view, "orders-load-more");
+
+	const refresh = element(view, "orders-refresh");
+	expect(refresh.getAttribute("aria-disabled")).toBe("true");
+	// It keeps its tab stop while unavailable — this is the control the operator's
+	// focus is sitting on — and it refuses its own click rather than starting a
+	// rebuild the pending page would then land on top of.
+	expect(refresh.tagName).toBe("BUTTON");
+	expect(refresh.hasAttribute("disabled")).toBe(false);
+	asked = [];
+	await press(view, "orders-refresh");
+	expect(asked).toHaveLength(0);
+
+	await React.act(async () => {
+		(release as ((response: Response) => void) | null)?.(
+			envelope({ ok: true, orders: [], nextCursor: null, vocabulary: VOCABULARY }),
+		);
+	});
+	await settle();
+	expect(element(view, "orders-refresh").getAttribute("aria-disabled")).toBeNull();
+});
+
+/**
+ * ON PRICING & INVENTORY THE FIRST RESPONSE OF A WALK IS A VERDICT, not just
+ * rows.
+ *
+ * Only page one can say whether the low-stock predicate was actually applied —
+ * every continuation reports `false` by contract, because the predicate rode
+ * inside the opaque token — so a refresh that opens on page one is entitled to
+ * raise that banner and, as here, to take it down. Getting this wrong in either
+ * direction is a banner that can never be dismissed, or a catalog captioned as
+ * low stock.
+ */
+test("a refresh clears a low-stock banner its page-one answer disproves, and keeps the scan", async () => {
+	let unreadable = true;
+	serve((request) => {
+		const n = request.cursor === undefined ? 1 : Number(request.cursor.slice("cursor-".length));
+		return envelope({
+			ok: true,
+			products: ids("p", n * 3 - 2, n * 3).map(product),
+			nextCursor: `cursor-${String(n + 1)}`,
+			stock: {
+				threshold: unreadable ? null : 5,
+				unreadable: false,
+				filterUnavailable: request.cursor === undefined && unreadable,
+			},
+			vocabulary: PRODUCTS_VOCABULARY,
+		});
+	});
+	view = await mount(<ProductsList onOpen={() => {}} initialFilter={{ lowStock: true }} />);
+	await settle();
+	await press(view, "products-load-more");
+	await settle();
+	expect(rows(view, "products-row")).toHaveLength(6);
+	expect(absent(view, "products-stock-degraded")).toBe(false);
+	// The filter was not applied, so these are every product, and the count says so.
+	expect(text(view, "products-intro")).toContain("6 products loaded so far");
+
+	// The store's threshold becomes readable again.
+	unreadable = false;
+	await press(view, "products-refresh");
+	await settle();
+
+	expect(absent(view, "products-stock-degraded")).toBe(true);
+	expect(rows(view, "products-row")).toHaveLength(6);
+	expect(text(view, "products-intro")).toContain("6 low-stock products loaded so far");
 });

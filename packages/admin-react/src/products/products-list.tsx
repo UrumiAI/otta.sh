@@ -90,12 +90,21 @@ import {
 	FIRST_PAGE,
 	PAGING_STOPPED_DESCRIPTION,
 	PAGING_STOPPED_TITLE,
+	REFRESH_FAILED_TITLE,
+	REFRESH_REFUSED_NOTE,
+	REFRESH_STOPPED_DESCRIPTION,
+	REFRESH_STOPPED_TITLE,
+	REFRESH_UNCHANGED_NOTE,
 	askedForPage,
 	continuationCursor,
 	mergeById,
 	pagerView,
 	poppedPage,
 	pushedPage,
+	refreshControl,
+	refreshWalk,
+	refreshedTrail,
+	sameFilter,
 	seedCursor,
 	seedTrail,
 	type PageArrival,
@@ -417,18 +426,28 @@ export function pageAfterFailure(page: LoadedPage | null, paging: boolean): Load
  *    disprove, so the title shrinks to the claim this render can back — ONE page
  *    failed, in whichever direction it was asked for — and it is drawn inline,
  *    where the paging controls were, because that is what it replaces.
+ *  - A REFRESH THAT RE-READ NOTHING is the paging case in every respect that
+ *    decides behaviour — the rows stand, the card is inline, the Retry re-issues
+ *    the same request — and differs only in what it is called. "That page could
+ *    not be opened" would name a page move the merchant never made.
  */
 export function failureNotice(
 	failure: {
 		readonly title: string;
 		readonly description: string;
 		readonly paging: boolean;
+		readonly refresh?: boolean;
 	} | null,
 ): { readonly title: string; readonly description: string; readonly inline: boolean } | null {
 	if (failure === null) return null;
-	return failure.paging
-		? { title: PRODUCTS_PAGE_FAILED_TITLE, description: failure.description, inline: true }
-		: { title: failure.title, description: failure.description, inline: false };
+	if (failure.paging) {
+		return {
+			title: failure.refresh === true ? REFRESH_FAILED_TITLE : PRODUCTS_PAGE_FAILED_TITLE,
+			description: failure.description,
+			inline: true,
+		};
+	}
+	return { title: failure.title, description: failure.description, inline: false };
 }
 
 /**
@@ -506,6 +525,9 @@ export function ProductsList({
 		title: string;
 		description: string;
 		paging: boolean;
+		/** The request that failed was a REFRESH that re-read nothing — see
+		 *  {@link failureNotice}. It changes the card's title and nothing else. */
+		refresh?: boolean;
 	} | null>(null);
 	const [busy, setBusy] = React.useState(true);
 	// The Retry's OWN in-flight state. `busy` is the whole screen's, and the
@@ -513,6 +535,20 @@ export function ProductsList({
 	// from `busy` would make an "Apply filters" the operator pressed read back as
 	// "Retrying…" on a request they never issued.
 	const [retrying, setRetrying] = React.useState(false);
+	/** The Refresh's own in-flight state, for the same reason the Retry has one:
+	 *  its label and its unavailability are about ITS click, and `busy` is every
+	 *  read this screen has. */
+	const [refreshing, setRefreshing] = React.useState(false);
+	/**
+	 * A refresh re-read some of its window and then could not read the rest.
+	 *
+	 * SEPARATE FROM `pagingStopped`, which describes a CONTINUATION that was
+	 * refused and withdraws the paging controls. This one withdraws nothing: the
+	 * last page it did re-read carries a live cursor, so `Load more` and `Next`
+	 * are exactly how the merchant gets the missing depth back — which is why the
+	 * sentence names them.
+	 */
+	const [refreshStopped, setRefreshStopped] = React.useState(false);
 	// Bumped by "Apply filters" and by Retry. `Load more` re-runs this effect
 	// through the cursor it sets, which is a fresh object on every click, so a
 	// service that repeats a cursor VALUE still gets a request.
@@ -614,12 +650,112 @@ export function ProductsList({
 		// the rows on screen; a pager step and a deep link name a page that stands
 		// on its own. See `PendingCursor.extend`.
 		const extending = paging && cursor?.extend === true;
+		// A REFRESH IS A WALK, NOT A REQUEST — see {@link RefreshWalk}. Read off the
+		// same cursor and under the same filter-identity test as everything else, so
+		// a walk planned under a filter that has since been replaced refreshes
+		// nothing and this list falls through to a fresh first page.
+		const walk = paging ? cursor?.refresh : undefined;
 		setBusy(true);
+		if (walk !== undefined) {
+			void (async () => {
+				/** The cursors each response AFTER the first was fetched with — the
+				 *  boundaries this walk established, which become the stack. */
+				const walked: string[] = [];
+				/** Built OFF `null`, so the window is REPLACED rather than merged into:
+				 *  a product that has left the catalog (or left the filter) is in none of
+				 *  these responses, and merging would keep it on screen at the exact
+				 *  moment the merchant asked whether it was still there. */
+				let built: LoadedPage | null = null;
+				/** Why the walk stopped short, or `null` if it ran to the end of the
+				 *  window — or off the end of a catalog that has since become shorter,
+				 *  which is not a failure and says so by simply being smaller. */
+				let stopped: { readonly title: string; readonly description: string } | null = null;
+				let at = walk.anchor;
+				for (let step = 0; step < walk.depth; step += 1) {
+					const result = await fetchProducts(applied, at);
+					if (cancelled) return;
+					if (isFailure(result)) {
+						stopped = { title: result.title, description: result.description };
+						break;
+					}
+					if (result.cursorRejected === true) {
+						// PAGE ONE IS NOT AN ANSWER TO THIS QUESTION. The plugin's client
+						// recovers a refused token by re-issuing page one, which is right
+						// for a deep link and wrong here: it would relocate a window that
+						// opens somewhere else, silently, under the word `Refresh`.
+						stopped = { title: REFRESH_FAILED_TITLE, description: REFRESH_REFUSED_NOTE };
+						break;
+					}
+					// THE FIRST RESPONSE IS THE WINDOW'S OWN PAGE and the rest continue it.
+					// A grounded walk opens on page one and arrives as a `reset`, which is
+					// what makes its answer about the low-stock threshold authoritative —
+					// it may raise the banner and it may clear it. Every step after it is
+					// an `extend`, which is what carries that verdict across responses
+					// contractually unable to answer for themselves (see `nextPage`).
+					built = nextPage(
+						built,
+						{
+							products: result.products,
+							nextCursor: result.nextCursor,
+							total: result.total,
+							stock: result.stock,
+							vocabulary: result.vocabulary,
+						},
+						step === 0 ? (walk.grounded ? "reset" : "replace") : "extend",
+					);
+					if (step > 0 && at !== undefined) walked.push(at);
+					const next = result.nextCursor;
+					if (next == null) break;
+					at = next;
+				}
+				if (cancelled) return;
+				setBusy(false);
+				setRetrying(false);
+				setRefreshing(false);
+				if (built === null) {
+					// NOTHING WAS RE-READ, so nothing is replaced. The window on screen is
+					// still the coherent one it was a moment ago — every boundary in it
+					// still lines up with the one before — and the honest response is to
+					// leave it entirely alone and say the refresh did not happen.
+					setFailure({
+						title: REFRESH_FAILED_TITLE,
+						description: `${stopped?.description ?? ""} ${REFRESH_UNCHANGED_NOTE}`.trim(),
+						paging: true,
+						refresh: true,
+					});
+					return;
+				}
+				setFailure(null);
+				landed.current = true;
+				// COMMITTED IN ONE TRANSITION, and that is why the responses were
+				// collected rather than written as they arrived: a window half re-read
+				// carries one count line over rows taken at two different moments, and
+				// every intermediate render down a deep walk would state one.
+				setPage(built);
+				const moved = refreshedTrail(walk, walked);
+				setTrail(moved);
+				setCursorReset(false);
+				// THE REFUSAL THAT WITHDREW PAGING IS ANSWERED BY THIS WALK: its cause was
+				// a continuation this list can no longer follow, and every boundary in the
+				// window has just been re-derived from responses that did arrive.
+				setPagingStopped(false);
+				setRefreshStopped(stopped !== null);
+				// A CORRECTION, NOT A JOURNEY: the merchant did not go anywhere, and a
+				// refresh that pushed an entry would put a Back between them and the page
+				// they were already on. The address names the page the window now ENDS on.
+				onCursorChange?.({ cursor: moved.cursors.at(-1), trail: moved, kind: "correct" });
+			})();
+			return () => {
+				cancelled = true;
+			};
+		}
 		void fetchProducts(applied, from).then((result) => {
 			if (cancelled) return;
 			setBusy(false);
-			// Whatever the outcome, the click that asked for this is over.
+			// Whatever the outcome, the click that asked for this is over — including
+			// a refresh whose walk was abandoned mid-flight by this very request.
 			setRetrying(false);
+			setRefreshing(false);
 			if (isFailure(result)) {
 				/*
 				 * A FAILURE NEVER RESETS THE PAGE — the same correction, and the same
@@ -913,6 +1049,9 @@ export function ProductsList({
 		const moved = pushedPage(trail, value);
 		setTrail(moved);
 		setCursorReset(false);
+		// The merchant is doing the thing the notice told them to do; it has nothing
+		// left to say the moment they do it.
+		setRefreshStopped(false);
 		// BUSY IS THE CLICK'S, NOT THE EFFECT'S — the same rule `apply` follows. The
 		// effect that issues the request runs after this commit, so without this
 		// there is one render in which the position has already moved and both pager
@@ -950,6 +1089,7 @@ export function ProductsList({
 		// a `value` of `undefined`, not by having no request.
 		setCursor({ filter: applied, value: target });
 		setCursorReset(false);
+		setRefreshStopped(false);
 		// See `goForward`: the controls go unavailable on the click rather than on
 		// the effect, so the commit in between cannot take a second press.
 		setBusy(true);
@@ -972,7 +1112,59 @@ export function ProductsList({
 		busy: retrying,
 	};
 
+	/**
+	 * RE-READ EVERY PAGE ON SCREEN, AND KEEP THE MERCHANT WHERE THEY ARE.
+	 *
+	 * THIS SCREEN IS THE ONE THAT NEEDED IT MOST. Its whole reason to accumulate
+	 * pages is a low-stock scan, and stock is the fastest-moving number in the
+	 * product — so the pages an operator gathers to decide what to reorder are
+	 * exactly the pages most likely to be wrong by the time they finish gathering
+	 * them. Before this the only ways to re-read them were to lose the scan or to
+	 * refresh one page of it.
+	 *
+	 * IT IS ISSUED AS A CURSOR, like every other read here, which buys the rest of
+	 * the machinery for nothing: the walk is refused if the filter has since moved,
+	 * its failure is classified as a page move so the rows survive it, and a Retry
+	 * re-issues THE WHOLE WALK rather than one page.
+	 *
+	 * NOTHING HAS LOADED MEANS THERE IS NOTHING TO RECONCILE — a cold screen's act
+	 * is Retry, and it is already on the card.
+	 */
+	const refresh = () => {
+		if (page === null) return;
+		const walk = refreshWalk(trail, page.pages);
+		setCursor({ filter: applied, value: walk.anchor, refresh: walk });
+		setCursorReset(false);
+		setRefreshing(true);
+		// BUSY IS THE CLICK'S, NOT THE EFFECT'S — the same rule `apply` and
+		// `goForward` follow, and here it is what makes "one read at a time" true of
+		// the commit in between rather than only of the request.
+		setBusy(true);
+	};
+
 	const apply = (next: ProductsFilter) => {
+		/*
+		 * AN APPLY THAT CHANGES NOTHING IS A REFRESH, NOT A COLLAPSE.
+		 *
+		 * Throwing away an accumulated scan is licensed by exactly one thing: the
+		 * predicate moved, so the cursors underneath those pages describe a set the
+		 * merchant has just left. Press `Apply filters` without touching the panel
+		 * and none of that is true — it is the same query, restated, and the only
+		 * act it can honestly mean is "show me this query as it stands now". That is
+		 * this screen's Refresh, so it IS this screen's Refresh.
+		 *
+		 * THE APPLIED FILTER OBJECT IS DELIBERATELY NOT REPLACED. Its identity is
+		 * what every held cursor is tested against ({@link continuationCursor}), so
+		 * assigning an equal-but-new object here would invalidate the whole trail to
+		 * say nothing had changed.
+		 */
+		if (sameFilter(next, applied)) {
+			// The panel still gets the normalized form, so a submitted sentinel
+			// (`any`) settles back to what is actually applied.
+			setDraft(next);
+			refresh();
+			return;
+		}
 		setApplied(next);
 		setDraft(next);
 		setCursor(null);
@@ -988,6 +1180,9 @@ export function ProductsList({
 		setCursorReset(false);
 		// A fresh scan is exactly what the withdrawn control was waiting for.
 		setPagingStopped(false);
+		// And it is a new window, so what a refresh could not reach in the old one
+		// describes nothing on screen.
+		setRefreshStopped(false);
 		// BUSY IS THE CLICK'S, NOT THE EFFECT'S. Setting it only inside the effect
 		// left one commit in which the applied filter had already moved and
 		// `Load more` still rendered enabled — offering the previous page's cursor
@@ -1004,11 +1199,44 @@ export function ProductsList({
 	return (
 		<div>
 			<h1 style={{ fontSize: 24, fontWeight: 700, marginBlockEnd: 4 }}>{PRODUCTS_SCREEN_TITLE}</h1>
-			<p style={{ fontSize: 13, opacity: 0.75, marginBlockEnd: 16 }} data-testid="products-intro">
-				{outcome.countLine === undefined
-					? PRODUCTS_LIST_INTRO
-					: `${outcome.countLine} · ${PRODUCTS_LIST_INTRO}`}
-			</p>
+			{/*
+			  REFRESH SITS WITH THE COUNT LINE, not in the paging bar, and the two
+			  answer different questions: the bar is about WHERE the merchant is, and
+			  this is about WHEN what they are reading was true — which on a stock
+			  column is the question. The count line is the sentence a refresh
+			  changes, so the control that changes it belongs beside it, and it stays
+			  on screen in the states that withdraw the pager entirely.
+
+			  It wraps at narrow widths rather than crowding the sentence, and the
+			  paragraph's own bottom margin moves to this row so the spacing below is
+			  unchanged whether or not the control is there.
+			*/}
+			<div
+				style={{
+					display: "flex",
+					flexWrap: "wrap",
+					gap: 12,
+					alignItems: "baseline",
+					justifyContent: "space-between",
+					marginBlockEnd: 16,
+				}}
+			>
+				<p style={{ fontSize: 13, opacity: 0.75 }} data-testid="products-intro">
+					{outcome.countLine === undefined
+						? PRODUCTS_LIST_INTRO
+						: `${outcome.countLine} · ${PRODUCTS_LIST_INTRO}`}
+				</p>
+				{/* THERE HAS TO BE AN ANSWER TO RECONCILE. A cold or stale failure has
+				  taken the rows off the screen and put a Retry on the card, which is
+				  the same act by the only name that is true there. */}
+				{page !== null && answerVisible && (
+					<PagerButton
+						control={refreshControl({ busy, refreshing })}
+						testId="products-refresh"
+						onClick={refresh}
+					/>
+				)}
+			</div>
 
 			{notice !== null && !notice.inline && (
 				<Notice
@@ -1047,6 +1275,25 @@ export function ProductsList({
 						testId="products-cursor-reset"
 					/>
 				</div>
+			)}
+
+			{/*
+			  A REFRESH THAT COVERED ONLY PART OF ITS WINDOW — drawn HERE, at the top,
+			  because it is the result of the control directly above it and reports a
+			  fact about the whole list rather than about paging. The paging-stopped
+			  notice at the bottom is the other way round on both counts.
+
+			  NO FOCUS MOVE: the merchant's hands are on the Refresh control, which
+			  survives its own click. An ALERT rather than an error — the rows
+			  underneath are current, there are simply fewer of them.
+			*/}
+			{refreshStopped && answerVisible && (
+				<Notice
+					variant="alert"
+					title={REFRESH_STOPPED_TITLE}
+					description={REFRESH_STOPPED_DESCRIPTION}
+					testId="products-refresh-stopped"
+				/>
 			)}
 
 			{showFilters && (
