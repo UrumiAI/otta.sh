@@ -436,6 +436,14 @@ export class AdminOrdersClient {
 		};
 
 		const first = await this.#getList(`/admin/orders?${query(paged)}`);
+		if (first === CURSOR_REFUSED && !paged) {
+			// A CURSOR REFUSAL FOR A REQUEST THAT CARRIED NO CURSOR is the service
+			// contradicting itself, and there is no recovery to attempt: re-issuing
+			// the identical cursor-less request would ask the same question again and
+			// get the same answer. It fails, like any other refusal this client
+			// cannot act on.
+			throw new Error(`GET /admin/orders failed (HTTP 400)`);
+		}
 		if (first === CURSOR_REFUSED) {
 			/*
 			 * THE PRESCRIBED RECOVERY, PERFORMED HERE. A refused cursor means "drop

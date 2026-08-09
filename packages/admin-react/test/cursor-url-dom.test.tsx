@@ -34,7 +34,12 @@
  */
 import * as React from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { CURSOR_RESET_DESCRIPTION, CURSOR_RESET_TITLE } from "../src/accumulate.js";
+import {
+	CURSOR_RESET_DESCRIPTION,
+	CURSOR_RESET_TITLE,
+	PAGING_STOPPED_DESCRIPTION,
+	PAGING_STOPPED_TITLE,
+} from "../src/accumulate.js";
 import { fire, mount, type Mounted } from "./dom.js";
 
 const apiFetch = vi.fn<(input: string, init?: RequestInit) => Promise<Response>>();
@@ -616,6 +621,112 @@ test("the address correction ARRIVES WITH the rows it describes", async () => {
 	expect(element(view, "orders-intro").textContent).toContain("20 orders on this page");
 });
 
+/**
+ * A REFUSAL MID-SCAN COSTS SOMETHING A REFUSAL ON ARRIVAL DOES NOT, and the two
+ * are answered differently for that reason alone. The condition is identical —
+ * the service would not continue from this token — but on arrival there is
+ * nothing to lose, and twenty rows in there is a scan the operator built.
+ */
+test("a refusal MID-SCAN keeps the accumulated pages and stops paging", async () => {
+	let call = 0;
+	serve((request) => {
+		call += 1;
+		if (request.cursor === undefined) {
+			return envelope({
+				ok: true,
+				orders: ids("o", 1, 20).map(order),
+				nextCursor: PAGE_TWO,
+				vocabulary: VOCABULARY,
+			});
+		}
+		if (call === 2) {
+			return envelope({
+				ok: true,
+				orders: ids("o", 21, 40).map(order),
+				nextCursor: PAGE_THREE,
+				vocabulary: VOCABULARY,
+			});
+		}
+		// The third request — a `Load more` from page two — is refused, and the
+		// plugin's page-one recovery answers it with rows 1–20 and the flag.
+		return envelope({
+			ok: true,
+			orders: ids("o", 1, 20).map(order),
+			nextCursor: PAGE_TWO,
+			cursorRejected: true,
+			vocabulary: VOCABULARY,
+		});
+	});
+
+	view = await mount(<OrdersScreen />);
+	await settle();
+	await press(view, "orders-load-more");
+	await settle();
+	const accumulated = rowIds(view, "orders-row");
+	expect(accumulated).toHaveLength(40);
+
+	await press(view, "orders-load-more");
+	await settle();
+
+	// THE SCAN SURVIVES, UNREORDERED. The retry's page-one rows are discarded
+	// rather than merged: merging them would move rows the operator scrolled past
+	// twenty rows ago, and replacing with them would delete the scan outright.
+	expect(rowIds(view, "orders-row")).toEqual(accumulated);
+	// AND THE COUNT KEEPS ITS HEDGE. There really is more out there; withdrawing
+	// the control is not the same as proving the collection ended here.
+	expect(element(view, "orders-intro").textContent).toContain("40 orders loaded so far");
+
+	// PAGING IS OVER until a filter or a reload starts a fresh scan.
+	expect(absent(view, "orders-load-more")).toBe(true);
+	const notice = element(view, "orders-paging-stopped");
+	expect(notice.textContent).toContain(PAGING_STOPPED_TITLE);
+	expect(notice.textContent).toContain(PAGING_STOPPED_DESCRIPTION);
+	expect(notice.textContent).not.toMatch(/expired|invalid|refused|tampered/i);
+	// IT IS NOT THE ARRIVAL NOTICE, and it does not steal focus: the operator's
+	// hands are on the page.
+	expect(absent(view, "orders-cursor-reset")).toBe(true);
+	expect(document.activeElement).not.toBe(notice);
+
+	// THE DEAD PAGE LEAVES THE ADDRESS — it names somewhere this screen can no
+	// longer go — without pushing an entry for a journey nobody took.
+	expect(search().get("cursor")).toBeNull();
+});
+
+test("a filter change after paging stopped starts a fresh scan", async () => {
+	serve((request) =>
+		request.cursor === undefined
+			? envelope({
+					ok: true,
+					orders: ids("o", 1, 20).map(order),
+					nextCursor: PAGE_TWO,
+					vocabulary: VOCABULARY,
+				})
+			: envelope({
+					ok: true,
+					orders: ids("o", 1, 20).map(order),
+					nextCursor: PAGE_TWO,
+					cursorRejected: true,
+					vocabulary: VOCABULARY,
+				}),
+	);
+	view = await mount(<OrdersScreen />);
+	await settle();
+	await press(view, "orders-load-more");
+	await settle();
+	expect(absent(view, "orders-paging-stopped")).toBe(false);
+
+	await React.act(async () => {
+		retype(element(view as Mounted, "filter-status") as HTMLSelectElement, "failed");
+	});
+	await press(view, "apply-filters");
+	await settle();
+
+	// The offer is back, because this is a different scan.
+	expect(absent(view, "orders-paging-stopped")).toBe(true);
+	expect(absent(view, "orders-load-more")).toBe(false);
+	expect(rowIds(view, "orders-row")).toHaveLength(20);
+});
+
 // ── the same rules on Pricing & inventory ────────────────────────────────────
 
 test("products: a deep-linked page is the page that loads, filter and all", async () => {
@@ -710,4 +821,66 @@ test("products: opening a record from a paged list keeps the page, and Back retu
 	expect(search().get("cursor")).toBe(PAGE_TWO);
 	expect(asked.at(-1)?.cursor).toBe(PAGE_TWO);
 	expect(rowIds(view, "products-row")).toEqual(ids("p", 4, 6));
+});
+
+test("products: a settings blip mid-scan costs the paging, never the low-stock scan", async () => {
+	/*
+	 * THE CASE THIS RULING ABSORBS. "Low stock only" is a real service predicate
+	 * now, and the threshold that expresses it is read from settings on every
+	 * request — so a settings read that blinks between two pages sends a filter
+	 * that no longer matches the token, and the route refuses to continue. That is
+	 * correct of the route. What must not follow is the merchant losing four pages
+	 * of a low-stock scan to a blip that lasted one request.
+	 */
+	let call = 0;
+	serve((request) => {
+		const stock = { threshold: 5, unreadable: false, filterUnavailable: false };
+		call += 1;
+		if (request.cursor === undefined) {
+			return envelope({
+				ok: true,
+				products: ids("p", 1, 3).map(product),
+				nextCursor: PAGE_TWO,
+				stock,
+				vocabulary: PRODUCTS_VOCABULARY,
+			});
+		}
+		if (call === 2) {
+			return envelope({
+				ok: true,
+				products: ids("p", 4, 6).map(product),
+				nextCursor: PAGE_THREE,
+				stock,
+				vocabulary: PRODUCTS_VOCABULARY,
+			});
+		}
+		return envelope({
+			ok: true,
+			products: ids("p", 1, 3).map(product),
+			nextCursor: PAGE_TWO,
+			cursorRejected: true,
+			stock,
+			vocabulary: PRODUCTS_VOCABULARY,
+		});
+	});
+
+	window.history.replaceState(null, "", "/products?low=1");
+	view = await mount(<ProductsScreen />);
+	await settle();
+	await press(view, "products-load-more");
+	await settle();
+	expect(rowIds(view, "products-row")).toEqual(ids("p", 1, 6));
+
+	await press(view, "products-load-more");
+	await settle();
+
+	expect(rowIds(view, "products-row")).toEqual(ids("p", 1, 6));
+	expect(element(view, "products-intro").textContent).toContain(
+		"6 low-stock products loaded so far",
+	);
+	expect(absent(view, "products-load-more")).toBe(true);
+	expect(element(view, "products-paging-stopped").textContent).toContain(PAGING_STOPPED_TITLE);
+	expect(absent(view, "products-cursor-reset")).toBe(true);
+	expect(search().get("cursor")).toBeNull();
+	expect(search().get("low")).toBe("1");
 });

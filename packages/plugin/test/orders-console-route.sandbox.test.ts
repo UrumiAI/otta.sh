@@ -391,6 +391,23 @@ describe("the console's read/write branch on the otta admin route", () => {
 		expect(result["cursorRejected"]).toBe(true);
 	});
 
+	test("a cursor refusal for a request that carried NO cursor cannot re-issue", async () => {
+		// The service contradicting itself. There is nothing to retry — the same
+		// cursor-less request would ask the same question — so it fails like any
+		// other refusal rather than looping or reporting a page nobody asked for.
+		service.respondWith("GET", () => ({
+			status: 400,
+			body: { error: "cursor filter mismatch" },
+		}));
+		const result = await invoke({
+			type: READ,
+			resource: "orders.list",
+			filter: { status: "paid" },
+		});
+		expect(result["ok"]).toBe(false);
+		expect(service.requests.filter((r) => r.url.startsWith("/admin/orders"))).toHaveLength(1);
+	});
+
 	test("a refusal that is NOT about the cursor stays a failure", async () => {
 		// The distinction the console cannot make for itself. An outage, an expired
 		// admin token, an unparseable filter: none is answerable by asking again

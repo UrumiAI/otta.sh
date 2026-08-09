@@ -57,6 +57,28 @@ cursor refusal resets, because only that one arrives as a page rather than as a
 failure; everything else leaves the cursor in the address, so a reload after
 signing back in still restores the page.
 
+A refusal that lands MID-SCAN is answered differently from one that lands on
+arrival, because the two cost different things. On arrival there is nothing to
+lose and page one of the link's filters is a complete answer. Twenty rows into a
+scan it is not: the accumulated rows stay exactly as they are, the recovered
+page-one rows are discarded rather than merged, and the only thing withdrawn is
+the offer to continue — under a notice that names no cause and takes no focus,
+since the operator is mid-interaction. The count keeps its "loaded so far"
+hedge, because a page that could not be fetched is not proof the collection
+ended. A filter change or a reload starts a fresh scan. This is also what a
+transient settings blip on a low-stock continuation now costs: the ability to
+page further, never the scan.
+
+**Follow-up, not done here (service-side).** The gate compares a cursor against
+the request's filter params only when the request states at least one axis;
+absent params still claim nothing. So a token minted under a filter, sent beside
+a request naming no filter at all, is still answered from the token — the one
+shape of the original divergence that survives. Closing it means treating "no
+axes" as a real predicate, which would immediately break the coupons list, whose
+cursor arm still sends the cursor alone; that caller has to be converted first.
+The fail-closed story is complete for every request that states an axis, which
+is every request these two consoles make.
+
 What a reload restores is that page, not the accumulated stack of pages a scan
 walked through; the same applies to a traversal, where Back onto an earlier
 page's entry re-fetches that page rather than the accumulation the operator had

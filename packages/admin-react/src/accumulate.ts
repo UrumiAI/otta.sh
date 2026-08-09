@@ -235,3 +235,31 @@ export function cursorQuery(current: string, cursor: string | undefined): string
 export const CURSOR_RESET_TITLE = "This link's page could not be opened";
 export const CURSOR_RESET_DESCRIPTION =
 	"Showing the first page of these filters instead. Whether that page is gone or the request simply failed, the answer that came back does not say.";
+
+/**
+ * WHAT A SCAN THAT CANNOT BE CONTINUED SAYS — and why it is not the sentence
+ * above.
+ *
+ * THE TWO REFUSALS DIFFER IN WHAT IS AT STAKE, not in what went wrong. A deep
+ * link naming a page that will not open costs nothing: there is no scan yet, and
+ * page one of its filters is a complete answer. A `Load more` refused halfway
+ * through costs the pages the operator has already gathered — and answering it
+ * the same way would throw those away to show them the first page they saw
+ * twenty rows ago. The refusal is identical; the right response is not.
+ *
+ * SO THE ROWS STAY AND THE PAGING STOPS. What was already loaded is still true —
+ * nothing about it is disproved by a later page being unavailable — so it stays
+ * on screen, the retry's page-one rows are discarded rather than merged into it,
+ * and the only thing withdrawn is the offer to continue. The count line keeps its
+ * "loaded so far" hedge, because there IS more out there and this render still
+ * knows it.
+ *
+ * NO CAUSE, same doctrine as {@link CURSOR_RESET_DESCRIPTION}: a stale token, an
+ * expired session and a settings read that blinked are one value by the time they
+ * reach a screen. And no attempt at a fix the operator did not ask for — the two
+ * things that restart a scan honestly are a filter and a reload, so those are
+ * what it names.
+ */
+export const PAGING_STOPPED_TITLE = "Paging stopped here";
+export const PAGING_STOPPED_DESCRIPTION =
+	"The rows already loaded are unaffected and still on screen; the page after them could not be added. Apply a filter or reload to start a fresh scan.";

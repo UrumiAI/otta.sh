@@ -58,6 +58,8 @@ import * as React from "react";
 import {
 	CURSOR_RESET_DESCRIPTION,
 	CURSOR_RESET_TITLE,
+	PAGING_STOPPED_DESCRIPTION,
+	PAGING_STOPPED_TITLE,
 	continuationCursor,
 	mergeById,
 	seedCursor,
@@ -483,22 +485,55 @@ export function OrdersList({
 		seedCursor(initialFilter, initialCursor),
 	);
 	/** The address named a page that would not open, and this render is the first
-	 *  page of its filters instead. See the reset branch in the effect. */
+	 *  page of its filters instead — the SEEDED path only. See the effect. */
 	const [cursorReset, setCursorReset] = React.useState(false);
+	/**
+	 * A `Load more` was refused mid-scan, so paging is over until the operator
+	 * starts a fresh one.
+	 *
+	 * IT WITHDRAWS THE CONTROL, NEVER THE CURSOR. Nulling `page.nextCursor` would
+	 * be the obvious way to hide `Load more`, and it is the trap: `hasNext` going
+	 * false flips the shared outcome to a COMPLETED scan, which drops the "loaded
+	 * so far" hedge and states the accumulated rows as the whole set — a
+	 * whole-collection claim made at the exact moment this render learned it cannot
+	 * see the rest. The cursor is this render's evidence that more exists, and a
+	 * refused attempt to follow it does not disprove that. So the evidence stays
+	 * and only the offer is taken away.
+	 */
+	const [pagingStopped, setPagingStopped] = React.useState(false);
+	/**
+	 * Has any page landed on this mount? It is what tells the two refusals apart.
+	 *
+	 * A refused cursor is one condition with two costs. Before any page has landed
+	 * it came from the ADDRESS — a deep link or a reload — and there is nothing to
+	 * lose: page one of the link's filters is a complete answer, so the retry's
+	 * rows are shown and the address is corrected. After a page has landed it came
+	 * from a `Load more`, and the same treatment would throw away every page the
+	 * operator has gathered to show them the first one again. Same refusal,
+	 * opposite response.
+	 *
+	 * A REF because the fetch effect does not depend on `page` and would otherwise
+	 * read a render-old value — and this is read when a response arrives, which may
+	 * be several renders later.
+	 */
+	const landed = React.useRef(false);
 	/**
 	 * ONE CLEARED CURSOR THAT MUST NOT RE-FETCH.
 	 *
-	 * The cursor is an effect dependency, so clearing it normally means "go and
-	 * ask again" — which is exactly right when a filter changes, and exactly wrong
-	 * after a refused page: that response ALREADY carried page one's rows, so
-	 * asking again would issue a second identical request and re-render the list
-	 * from it for nothing. The cursor still has to go (a stale, refused token left
-	 * in state is a token a later Retry would re-send), so the clear happens and
-	 * the fetch it would trigger is skipped, once.
+	 * The cursor is an effect dependency, so clearing it normally means "go and ask
+	 * again" — exactly right when a filter changes, exactly wrong after a refused
+	 * page: that response already carried the answer, so asking again would issue a
+	 * second identical request for nothing (and, mid-scan, would fetch rows this
+	 * screen has just decided to discard). The cursor still has to go — a refused
+	 * token left in state is one a later Retry would re-send — so the clear happens
+	 * and the single fetch it would trigger is skipped.
 	 *
-	 * A REF, AND CONSUMED IN THE EFFECT ITSELF, because the thing being suppressed
-	 * is the effect's own next run. The three updates in that branch land in one
-	 * commit, so exactly one run follows and exactly one is skipped.
+	 * IT IS CONSUMED BY THE VERY NEXT RUN, WHICHEVER RUN THAT IS. Read and reset at
+	 * the top of the effect before anything can return early, so the flag cannot
+	 * outlive the run it was set for and suppress an unrelated fetch later; the
+	 * `cursor === null` half is what makes it skip only the run the clear caused.
+	 * A boolean that is merely usually consumed is a boolean that eventually eats
+	 * somebody's page.
 	 */
 	const skipRefetchAfterReset = React.useRef(false);
 	/** The reset notice's own region, focused when it appears — see the effect
@@ -506,13 +541,11 @@ export function OrdersList({
 	const resetRegion = React.useRef<HTMLDivElement | null>(null);
 
 	React.useEffect(() => {
+		const skip = skipRefetchAfterReset.current;
+		skipRefetchAfterReset.current = false;
 		// See {@link skipRefetchAfterReset}: this run exists only because a refused
-		// page cleared the cursor, and the rows it would fetch are already on
-		// screen.
-		if (skipRefetchAfterReset.current) {
-			skipRefetchAfterReset.current = false;
-			return;
-		}
+		// page cleared the cursor, and its answer is already on screen.
+		if (skip && cursor === null) return;
 		let cancelled = false;
 		// A CURSOR IS ONLY A CONTINUATION OF ITS OWN FILTER (see
 		// `continuationCursor`): one belonging to a filter that has since been
@@ -556,27 +589,42 @@ export function OrdersList({
 			 * THE PAGE THIS REQUEST ASKED FOR WAS REFUSED, AND THIS IS PAGE ONE.
 			 *
 			 * The service fails closed when a cursor disagrees with the filters beside
-			 * it or will not decode, and its remedy for that is mechanical rather than
-			 * an error: drop the token, re-issue page one with the same parameters.
-			 * The plugin's client does exactly that and says so, so what arrives here
-			 * is a real first page plus the fact that the operator did not get the one
-			 * they named.
+			 * it or will not decode, and its remedy is mechanical rather than an error:
+			 * drop the token, re-issue page one with the same parameters. The plugin's
+			 * client does exactly that and says so, so what arrives is a real first
+			 * page plus the fact that the operator did not get the one they named.
 			 *
-			 * THREE THINGS FOLLOW, and the order matters. The cursor in state is
-			 * dropped, so this response is treated as a RESET rather than merged onto
-			 * nothing as a continuation. The address is corrected — safely, and with
-			 * none of the deferral the first cut needed, because the fallback page has
-			 * already landed by the time this runs. And the notice goes up, because a
-			 * screen that silently showed page one to someone who followed a link to
-			 * page four would be the worse failure of the two.
+			 * WHAT THAT COSTS DEPENDS ENTIRELY ON WHERE THE CURSOR CAME FROM, which is
+			 * why this branches (see {@link landed}):
+			 *
+			 *  - FROM THE ADDRESS, before anything landed — a deep link or a reload.
+			 *    Nothing is lost by showing page one of that link's filters, which is
+			 *    a complete answer; the rows below are used, the address is corrected
+			 *    to match them, and the notice explains the difference.
+			 *  - FROM A `Load more`, with pages already gathered. Showing page one here
+			 *    would DESTROY the scan to re-show the rows the operator read twenty
+			 *    rows ago. So the retry's rows are discarded unmerged, the accumulation
+			 *    stands untouched, and the only thing withdrawn is the offer to
+			 *    continue. The address drops the dead page either way — it names
+			 *    somewhere this screen can no longer go.
 			 */
 			const rejected = result.cursorRejected === true;
+			const midScan = rejected && landed.current;
 			if (rejected) {
 				skipRefetchAfterReset.current = true;
 				setCursor(null);
-				setCursorReset(true);
 				onCursorChange?.(undefined);
+				if (midScan) setPagingStopped(true);
+				else setCursorReset(true);
 			}
+			if (midScan) {
+				// THE ONE RESPONSE THIS SCREEN THROWS AWAY. Every row in it is real and
+				// none of it belongs here: it answers a question (page one) nobody on
+				// this screen asked, and merging it would reorder a scan around rows the
+				// operator has already scrolled past.
+				return;
+			}
+			landed.current = true;
 			// F24: MERGE, NEVER ASSIGN. See `nextPage` — the functional form is
 			// required, not stylistic, because the rows it merges into are the ones
 			// in state at the moment the response lands.
@@ -692,6 +740,8 @@ export function OrdersList({
 		// asks for something themselves. Left standing it would explain a link that
 		// no longer has anything to do with what is on screen.
 		setCursorReset(false);
+		// A fresh scan is exactly what the withdrawn control was waiting for.
+		setPagingStopped(false);
 		// BUSY IS THE CLICK'S, NOT THE EFFECT'S. Setting it only inside the effect
 		// left one commit in which the applied filter had already moved and
 		// `Load more` still rendered enabled — offering the previous page's cursor
@@ -1071,7 +1121,26 @@ export function OrdersList({
 				</div>
 			)}
 
-			{page?.nextCursor != null && failure === null && (
+			{/*
+			  PAGING STOPPED MID-SCAN — rendered where `Load more` was, because it is
+			  what replaces that control. NO FOCUS MOVE, unlike the seeded-link
+			  notice: the operator is mid-interaction with their hands on the page,
+			  and taking focus off what they were doing to announce a control that
+			  simply is not there any more would be the more disruptive answer to the
+			  smaller problem.
+			*/}
+			{pagingStopped && answerVisible && (
+				<div style={{ marginBlockStart: 12 }}>
+					<Notice
+						variant="alert"
+						title={PAGING_STOPPED_TITLE}
+						description={PAGING_STOPPED_DESCRIPTION}
+						testId="orders-paging-stopped"
+					/>
+				</div>
+			)}
+
+			{page?.nextCursor != null && failure === null && !pagingStopped && (
 				<div style={{ marginBlockStart: 12 }}>
 					<button
 						type="button"

@@ -244,8 +244,12 @@ export interface ListPayload {
 	 * would be indistinguishable from an expired session or a dropped connection,
 	 * and correcting the address on those would throw away the operator's page at
 	 * the moment a reload would have restored it.
+	 *
+	 * `?: true`, NOT `?: boolean`, matching the plugin's own declaration: the wire
+	 * never carries `false`, and a field with two spellings of "no" is a field two
+	 * call sites will eventually check differently.
 	 */
-	readonly cursorRejected?: boolean;
+	readonly cursorRejected?: true;
 	readonly vocabulary: Vocabulary;
 }
 
@@ -385,8 +389,12 @@ export interface ProductsListPayload {
 	 * would be indistinguishable from an expired session or a dropped connection,
 	 * and correcting the address on those would throw away the operator's page at
 	 * the moment a reload would have restored it.
+	 *
+	 * `?: true`, NOT `?: boolean`, matching the plugin's own declaration: the wire
+	 * never carries `false`, and a field with two spellings of "no" is a field two
+	 * call sites will eventually check differently.
 	 */
-	readonly cursorRejected?: boolean;
+	readonly cursorRejected?: true;
 	readonly stock: StockContext;
 	readonly vocabulary: ProductsVocabulary;
 }
