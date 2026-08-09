@@ -606,11 +606,17 @@ export class InMemoryOrderStore implements OrderStore {
 		}
 		if (filter.from !== undefined && o.createdAt < filter.from) return false; // inclusive lower
 		if (filter.to !== undefined && o.createdAt >= filter.to) return false; // EXCLUSIVE upper
-		if (
-			filter.search !== undefined &&
-			!(o.id === filter.search || o.buyerRef.toLowerCase() === filter.search.toLowerCase())
-		) {
-			return false;
+		if (filter.search !== undefined) {
+			// Order-id PREFIX or buyer_ref SUBSTRING, both sides folded (port doc).
+			// The fake's stand-in for the adapter's `lower(col) LIKE lower(:pattern)
+			// ESCAPE '\'`: `startsWith`/`includes` build no pattern, so `%` and `_`
+			// are already ordinary characters here — exactly what the SQL side buys
+			// by escaping them. The fold is explicit on BOTH sides, matching the SQL
+			// (whose bare-LIKE case behaviour differs between pg and SQLite).
+			const needle = filter.search.toLowerCase();
+			const byId = o.id.toLowerCase().startsWith(needle);
+			const byRef = o.buyerRef.toLowerCase().includes(needle);
+			if (!byId && !byRef) return false;
 		}
 		// The customer dimension: a UNION inside the key (customer_id = :id OR
 		// lower(buyer_ref) = lower(:buyerRef)), ANDed with everything above. A key
@@ -637,9 +643,8 @@ export class InMemoryOrderStore implements OrderStore {
 	async listOrders(filter: OrderListFilter, page: OrderListPage): Promise<OrderListResult> {
 		// EXACT parity with `KyselyOrderStore.listOrders` (MOD-5): same filters
 		// (via the shared `#matchesFilter` predicate), same `created_at DESC, id
-		// DESC` order, same half-open `[from, to)` window, same `lower(buyer_ref)
-		// = lower(:search)` (exact-lower-equals, NOT substring), same `limit + 1`
-		// next-page detection.
+		// DESC` order, same half-open `[from, to)` window, same folded id-PREFIX /
+		// buyer_ref-SUBSTRING `search`, same `limit + 1` next-page detection.
 		const cursor = page.cursor ?? null;
 
 		const matched = [...this.#orders.values()]

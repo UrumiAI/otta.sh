@@ -16,10 +16,11 @@ coupon editing/creation UI, no new coupon fields — both are separate slices.
   column before this slice — `create()` now stamps one from the injected
   `Clock` (`KyselyCouponStore`/`InMemoryCouponStore` both gain a required
   `clock` constructor option). `CouponListFilter` is deliberately minimal:
-  `search`, a case-insensitive EXACT match on `code` (mirrors
-  `OrderListFilter.search`'s exact-only semantics — a coupon code is a
-  structured identifier, not free text like a product title, so there is no
-  substring half). `CouponSummary` mirrors `CouponRecord` field-for-field plus
+  `search`, a case-insensitive EXACT match on `code` (the strictest `search` in
+  the product — a coupon code is a structured identifier, not free text like a
+  product title, so there is no substring half, and it did not follow the later
+  widening of `OrderListFilter.search` in this release either). `CouponSummary`
+  mirrors `CouponRecord` field-for-field plus
   `createdAt` — a small, header-only table has nothing expensive to trim off
   the list (unlike `ProductSummary`'s narrower projection). `usesCount`
   (already a plain stored column) doubles as the cheap "has this been

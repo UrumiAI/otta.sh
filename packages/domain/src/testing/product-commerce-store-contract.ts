@@ -2278,13 +2278,15 @@ export function productCommerceStoreContract(
 			await h.seedProduct(productRow({ id: "b", sku: "Widget-Red" }));
 			const { products } = await h.store.listProducts({ search: "widget-blue" }, { limit: 25 });
 			expect(products.map((p) => p.productId)).toEqual(["a"]);
-			// A substring of a sku must NOT match (exact-lower-equals only, like
-			// OrderListFilter's buyer_ref search).
+			// A substring of a sku must NOT match (exact-lower-equals only). The sku
+			// half is now the STRICTEST search axis in the product: an order's
+			// buyer_ref matches as a folded SUBSTRING and its id as a PREFIX, while
+			// a sku is quoted whole and stays exact.
 			const partial = await h.store.listProducts({ search: "widget" }, { limit: 25 });
 			expect(partial.products.map((p) => p.productId).toSorted()).toEqual([]);
 		});
 
-		test("listProducts search matches a title SUBSTRING, case-insensitively (deliberately diverges from the exact sku/order-search semantics)", async () => {
+		test("listProducts search matches a title SUBSTRING, case-insensitively (the sku half stays exact)", async () => {
 			const h = await makeStore();
 			await h.seedProduct(productRow({ id: "a", title: "Blue Widget Deluxe" }));
 			await h.seedProduct(productRow({ id: "b", title: "Red Gadget" }));
@@ -2311,6 +2313,18 @@ export function productCommerceStoreContract(
 			await h.seedProduct(productRow({ id: "no-percent", title: "50X off Widget" }));
 			const percentSearch = await h.store.listProducts({ search: "50%" }, { limit: 25 });
 			expect(percentSearch.products.map((p) => p.productId)).toEqual(["literal-percent"]);
+
+			// `\` is the ESCAPE character itself, and the one metacharacter the two
+			// cases above cannot pin: leave it unescaped and a search for `a\b`
+			// becomes the pattern `%a\b%`, where `\b` means "a literal b" — it
+			// matches "AB Widget" and MISSES the title actually containing the
+			// backslash, i.e. exactly inverted. It is escaped FIRST for the same
+			// reason (escaping it last would re-escape the backslashes the other two
+			// rules just introduced).
+			await h.seedProduct(productRow({ id: "literal-backslash", title: "A\\B Widget" }));
+			await h.seedProduct(productRow({ id: "no-backslash", title: "AB Widget" }));
+			const backslashSearch = await h.store.listProducts({ search: "a\\b" }, { limit: 25 });
+			expect(backslashSearch.products.map((p) => p.productId)).toEqual(["literal-backslash"]);
 		});
 
 		test("listProducts search matches EITHER the sku half or the title half (not both required)", async () => {

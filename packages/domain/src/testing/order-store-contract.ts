@@ -414,23 +414,122 @@ export function orderStoreContract(
 			expect(orders.map((o) => o.id).toSorted()).toEqual(["at-from", "inside"]);
 		});
 
-		test("listOrders search matches an exact order id", async () => {
+		test("listOrders search matches an order-id PREFIX, and a whole id (its own prefix)", async () => {
 			const h = await makeHarness();
 			await h.seedOrder(summaryRow({ id: "ord-find-me", buyerRef: "a@x.com" }));
 			await h.seedOrder(summaryRow({ id: "ord-other", buyerRef: "b@x.com" }));
-			const { orders } = await h.store.listOrders({ search: "ord-find-me" }, { limit: 25 });
-			expect(orders.map((o) => o.id)).toEqual(["ord-find-me"]);
+			// The whole id — the pre-prefix behaviour, preserved as a special case.
+			const whole = await h.store.listOrders({ search: "ord-find-me" }, { limit: 25 });
+			expect(whole.orders.map((o) => o.id)).toEqual(["ord-find-me"]);
+			// A leading fragment — what the console actually renders (the git-style
+			// short id) and therefore what an operator types back.
+			const prefix = await h.store.listOrders({ search: "ord-find" }, { limit: 25 });
+			expect(prefix.orders.map((o) => o.id)).toEqual(["ord-find-me"]);
+			// A common prefix matches BOTH, in the LIST's order, not the search's:
+			// the two share a created_at, so the tie breaks on id DESC. Search widens
+			// the set; it never reorders it.
+			const both = await h.store.listOrders({ search: "ord-" }, { limit: 25 });
+			expect(both.orders.map((o) => o.id)).toEqual(["ord-other", "ord-find-me"]);
+			// ANCHORED: a mid-string fragment of an id is NOT a match (the id half is
+			// a prefix, never a substring — that widening belongs to buyer_ref alone).
+			const mid = await h.store.listOrders({ search: "find-me" }, { limit: 25 });
+			expect(mid.orders).toHaveLength(0);
 		});
 
-		test("listOrders search matches buyer_ref case-insensitively (exact, not substring)", async () => {
+		test("listOrders search folds the id prefix on BOTH sides (ids are lowercase hex)", async () => {
 			const h = await makeHarness();
-			await h.seedOrder(summaryRow({ id: "a", buyerRef: "Buyer@Example.com" }));
-			await h.seedOrder(summaryRow({ id: "b", buyerRef: "someone-else@example.com" }));
-			const { orders } = await h.store.listOrders({ search: "buyer@example.com" }, { limit: 25 });
-			expect(orders.map((o) => o.id)).toEqual(["a"]);
-			// A substring of a buyer_ref must NOT match (exact-lower-equals only).
-			const partial = await h.store.listOrders({ search: "buyer" }, { limit: 25 });
-			expect(partial.orders).toHaveLength(0);
+			await h.seedOrder(summaryRow({ id: "ord-7e4ce728", buyerRef: "a@x.com" }));
+			// A uuid pasted back from a mail client that upper-cased it still finds
+			// its order: `lower(id) LIKE lower(:s || '%')`, explicit on both sides in
+			// both dialects and in the fake (never a bare LIKE, whose default case
+			// sensitivity differs between Postgres and SQLite).
+			const upper = await h.store.listOrders({ search: "ORD-7E4C" }, { limit: 25 });
+			expect(upper.orders.map((o) => o.id)).toEqual(["ord-7e4ce728"]);
+		});
+
+		test("listOrders search matches a buyer_ref SUBSTRING, case-folded on both sides", async () => {
+			const h = await makeHarness();
+			await h.seedOrder(summaryRow({ id: "ord-a", buyerRef: "Buyer@Example.com" }));
+			await h.seedOrder(summaryRow({ id: "ord-b", buyerRef: "someone-else@example.com" }));
+			// The whole address, folded — the pre-substring behaviour, preserved.
+			const whole = await h.store.listOrders({ search: "buyer@example.com" }, { limit: 25 });
+			expect(whole.orders.map((o) => o.id)).toEqual(["ord-a"]);
+			// A local-part fragment.
+			const local = await h.store.listOrders({ search: "BUY" }, { limit: 25 });
+			expect(local.orders.map((o) => o.id)).toEqual(["ord-a"]);
+			// A mid-string fragment — UNANCHORED, unlike the id half.
+			const domain = await h.store.listOrders({ search: "example.COM" }, { limit: 25 });
+			expect(domain.orders.map((o) => o.id).toSorted()).toEqual(["ord-a", "ord-b"]);
+			// A fragment of neither column matches nothing.
+			const miss = await h.store.listOrders({ search: "nobody" }, { limit: 25 });
+			expect(miss.orders).toHaveLength(0);
+		});
+
+		test("listOrders search treats `%` and `_` as LITERAL characters, never wildcards", async () => {
+			const h = await makeHarness();
+			await h.seedOrder(summaryRow({ id: "ord-pct", buyerRef: "50%off@example.com" }));
+			await h.seedOrder(summaryRow({ id: "ord-plain", buyerRef: "50xoff@example.com" }));
+			await h.seedOrder(summaryRow({ id: "ord-us", buyerRef: "a_b@example.com" }));
+			await h.seedOrder(summaryRow({ id: "ord-any", buyerRef: "axb@example.com" }));
+			// `%` unescaped would make this pattern match `50xoff@…` too.
+			const pct = await h.store.listOrders({ search: "50%off" }, { limit: 25 });
+			expect(pct.orders.map((o) => o.id)).toEqual(["ord-pct"]);
+			// `_` unescaped is LIKE's single-character wildcard — it would match `axb`.
+			const us = await h.store.listOrders({ search: "a_b" }, { limit: 25 });
+			expect(us.orders.map((o) => o.id)).toEqual(["ord-us"]);
+			// A bare `%` is a character to search for, not "match everything".
+			const bare = await h.store.listOrders({ search: "%" }, { limit: 25 });
+			expect(bare.orders.map((o) => o.id)).toEqual(["ord-pct"]);
+			// And a bare `_` likewise.
+			const bareUs = await h.store.listOrders({ search: "_" }, { limit: 25 });
+			expect(bareUs.orders.map((o) => o.id)).toEqual(["ord-us"]);
+		});
+
+		test("listOrders search treats `\\` — the ESCAPE character itself — LITERALLY", async () => {
+			const h = await makeHarness();
+			await h.seedOrder(summaryRow({ id: "ord-bs", buyerRef: "a\\b@example.com" }));
+			await h.seedOrder(summaryRow({ id: "ord-nobs", buyerRef: "ab@example.com" }));
+			// The metacharacter the `%`/`_` cases cannot catch. Unescaped, a search
+			// for `a\b` compiles to the pattern `%a\b%`, where `\b` means "a literal
+			// b" — it matches `ab@…` and MISSES the address that actually contains
+			// the backslash. Exactly inverted, on both halves of the OR.
+			const both = await h.store.listOrders({ search: "a\\b" }, { limit: 25 });
+			expect(both.orders.map((o) => o.id)).toEqual(["ord-bs"]);
+			// A bare backslash finds the one address containing one, and nothing else
+			// — it is a character, not an escape introducer, once it reaches the store.
+			const bare = await h.store.listOrders({ search: "\\" }, { limit: 25 });
+			expect(bare.orders.map((o) => o.id)).toEqual(["ord-bs"]);
+		});
+
+		test("listOrders search of the EMPTY string matches every order (it constrains nothing)", async () => {
+			const h = await makeHarness();
+			await h.seedOrder(summaryRow({ id: "ord-a", createdAt: "2026-07-10T00:00:02.000Z" }));
+			await h.seedOrder(summaryRow({ id: "ord-b", createdAt: "2026-07-10T00:00:01.000Z" }));
+			// The inverted edge of a prefix/substring predicate: EVERY string starts
+			// with "" and contains "", so an empty search is the widest filter there
+			// is, not the narrowest. Pinned because the naive reading of "search for
+			// nothing" is "find nothing", and because the fake and the SQL have to
+			// agree on which one it is. The service never sends it — its query schema
+			// requires `min(1)` — so this is the port's own boundary, held for any
+			// other caller.
+			const { orders } = await h.store.listOrders({ search: "" }, { limit: 25 });
+			expect(orders.map((o) => o.id)).toEqual(["ord-a", "ord-b"]);
+			expect(await h.store.countOrders({ search: "" })).toBe(2);
+			const unfiltered = await h.store.listOrders({}, { limit: 25 });
+			expect(orders.map((o) => o.id)).toEqual(unfiltered.orders.map((o) => o.id));
+		});
+
+		test("countOrders counts under the SAME search predicate as listOrders", async () => {
+			const h = await makeHarness();
+			await h.seedOrder(summaryRow({ id: "ord-a", buyerRef: "amy@example.com" }));
+			await h.seedOrder(summaryRow({ id: "ord-b", buyerRef: "bea@example.com" }));
+			await h.seedOrder(summaryRow({ id: "zzz-c", buyerRef: "cal@other.test" }));
+			// The id half (prefix) and the buyer_ref half (substring) both count.
+			expect(await h.store.countOrders({ search: "ord-" })).toBe(2);
+			expect(await h.store.countOrders({ search: "example.com" })).toBe(2);
+			expect(await h.store.countOrders({ search: "other.test" })).toBe(1);
+			const { orders } = await h.store.listOrders({ search: "ord-" }, { limit: 25 });
+			expect(orders).toHaveLength(await h.store.countOrders({ search: "ord-" }));
 		});
 
 		test("listOrders paginates forward with a keyset cursor — no overlap, no gap", async () => {
@@ -536,7 +635,7 @@ export function orderStoreContract(
 			expect(orders.map((o) => o.id)).toEqual(["ord-both"]);
 		});
 
-		test("listOrders customer.buyerRef folds case exactly (never substring), matching search's semantics", async () => {
+		test("listOrders customer.buyerRef folds case but stays EXACT — it does NOT follow search's substring", async () => {
 			const h = await makeHarness();
 			await h.seedOrder(summaryRow({ id: "a", buyerRef: "Buyer@Example.com" }));
 			await h.seedOrder(summaryRow({ id: "b", buyerRef: "someone-else@example.com" }));
@@ -545,8 +644,14 @@ export function orderStoreContract(
 				{ limit: 25 },
 			);
 			expect(exact.orders.map((o) => o.id)).toEqual(["a"]);
+			// The two keys diverge on purpose: this one is an IDENTITY predicate
+			// (one person's orders, index-backed `lower(buyer_ref) = lower(:ref)`),
+			// while `search` is a fuzzy operator lookup. The same fragment that
+			// `search` now matches must still miss here.
 			const partial = await h.store.listOrders({ customer: { buyerRef: "buyer" } }, { limit: 25 });
 			expect(partial.orders).toHaveLength(0);
+			const bySearch = await h.store.listOrders({ search: "buyer" }, { limit: 25 });
+			expect(bySearch.orders.map((o) => o.id)).toEqual(["a"]);
 		});
 
 		test("listOrders customer key with a single half set filters on that half alone", async () => {

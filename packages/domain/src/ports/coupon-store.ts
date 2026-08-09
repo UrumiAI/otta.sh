@@ -111,13 +111,16 @@ export interface CouponStore {
 	 * cheap "has this been redeemed" indicator the admin list needs — no
 	 * correlated `EXISTS` on `coupon_redemptions`, no N+1.
 	 *
-	 * `filter.search` is a case-insensitive EXACT match on `code` — a
-	 * structured identifier a merchant looks up precisely (mirrors
-	 * `OrderListFilter.search`'s exact-only semantics, NOT `ProductListFilter
-	 * .search`'s title-substring half — a coupon has no free-text field to
-	 * partially remember). No other filter axis ships this slice (coupons have
-	 * no soft-delete/publish-gate/kind axis to mirror `deleted`/`active`/
-	 * `productKind`) — deliberately minimal, not "filterable where cheap".
+	 * `filter.search` is a case-insensitive EXACT match on `code` — a structured
+	 * identifier a merchant looks up precisely, and the strictest `search` in the
+	 * product: NEITHER `ProductListFilter.search`'s title-substring half NOR
+	 * `OrderListFilter.search`'s id-PREFIX / buyer_ref-SUBSTRING widening applies
+	 * here. A coupon has no free-text field to partially remember, and a code is
+	 * short, chosen and quoted whole — it never renders as a truncated prefix the
+	 * way an order uuid does, which is what earned orders their prefix match. No
+	 * other filter axis ships this slice (coupons have no soft-delete/
+	 * publish-gate/kind axis to mirror `deleted`/`active`/`productKind`) —
+	 * deliberately minimal, not "filterable where cheap".
 	 */
 	listCoupons(filter: CouponListFilter, page: CouponListPage): Promise<CouponListResult>;
 
