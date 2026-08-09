@@ -14,7 +14,7 @@
  * EVERY RESPONSE IS SERVED HERE, successes included, so a failure is a
  * transition this file chooses rather than an environment it has to arrange.
  */
-import { PRODUCTS_LOAD_MORE_FAILED_TITLE } from "@otta-sh/admin-presentation";
+import { PRODUCTS_PAGE_FAILED_TITLE } from "@otta-sh/admin-presentation";
 import * as React from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { fire, mount, type Mounted } from "./dom.js";
@@ -556,7 +556,7 @@ test("a continuation failure on the products list keeps the rows, the cursor's c
 	// INLINE, WHERE THE CONTROL WAS, exactly as on Orders — and under a title the
 	// rows on screen do not disprove, rather than the service's whole-collection
 	// refusal carried to the top of the screen above them.
-	expect(text(view, "products-load-more-failure")).toContain(PRODUCTS_LOAD_MORE_FAILED_TITLE);
+	expect(text(view, "products-load-more-failure")).toContain(PRODUCTS_PAGE_FAILED_TITLE);
 	expect(text(view, "products-load-more-failure")).not.toContain("Products could not be reached");
 	expect(absent(view, "products-failure")).toBe(true);
 	// The offer that just failed is not made twice.

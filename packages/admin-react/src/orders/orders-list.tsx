@@ -39,7 +39,7 @@ import {
 	LOAD_MORE_LABEL,
 	ORDERS_EMPTY,
 	ORDERS_LIST_INTRO,
-	ORDERS_LOAD_MORE_FAILED_TITLE,
+	ORDERS_PAGE_FAILED_TITLE,
 	ORDERS_NOUN,
 	ORDERS_NO_MATCH,
 	ORDERS_SEARCH_LABEL,
@@ -309,7 +309,8 @@ export interface OrdersFailureCard {
 	readonly answerVisible: boolean;
 	/** The filter bar and the filter summary. */
 	readonly filtersVisible: boolean;
-	/** Rendered where `Load more` was, rather than above the list. */
+	/** Rendered in the paging bar, where the control that issued the failed
+	 *  request was, rather than above the list. */
 	readonly inline: boolean;
 	/** Focus was inside a row that no longer exists. */
 	readonly focusRetry: boolean;
@@ -329,10 +330,11 @@ export interface OrdersFailureCard {
  *    carries the server's own words plus the sentence that says the rows went
  *    and why; the filter bar stays, because the operator's typed filters are
  *    input rather than answer.
- *  - **Partial.** A page BEHIND a successful one failed. Every accumulated row
- *    and the count stand, and the server's whole-collection title is dropped —
- *    the rows above disprove it. What failed was the next page, and the card
- *    says so from where `Load more` was.
+ *  - **Partial.** A PAGE MOVE failed under rows that succeeded — in either
+ *    direction, and including a `Previous` that put no cursor on the wire. Every
+ *    row on screen and the count stand, and the server's whole-collection title
+ *    is dropped: the rows disprove it. What failed was one page, and the card
+ *    says so from the paging bar, where the control that asked for it was.
  */
 export function ordersFailureCard(failure: OrdersFailure, everLoaded: boolean): OrdersFailureCard {
 	if (!everLoaded) {
@@ -349,7 +351,7 @@ export function ordersFailureCard(failure: OrdersFailure, everLoaded: boolean): 
 	if (failure.paging) {
 		return {
 			kind: "partial",
-			title: ORDERS_LOAD_MORE_FAILED_TITLE,
+			title: ORDERS_PAGE_FAILED_TITLE,
 			description: failure.description,
 			answerVisible: true,
 			filtersVisible: true,
@@ -700,11 +702,33 @@ export function OrdersList({
 			// F24: MERGE, NEVER ASSIGN. See `nextPage` — the functional form is
 			// required, not stylistic, because the rows it merges into are the ones
 			// in state at the moment the response lands.
-			// A REFUSED CURSOR MAKES THIS A RESET, whatever the request was: the rows
-			// are page one's, so merging them onto an accumulation — or inheriting
-			// `firstPage: false` from a move that never happened — would caption a
-			// first page as the middle of a scan.
-			const arrival: PageArrival = rejected || !paging ? "reset" : extending ? "extend" : "replace";
+			/*
+			 * WHAT THE WIRE SAYS THIS RESPONSE IS — and it is the WIRE, not the
+			 * operator's intent, that decides.
+			 *
+			 * A REQUEST THAT CARRIED NO CURSOR IS PAGE ONE, whoever asked for it. A
+			 * filter apply, a first mount and a `Previous` off the bottom of the
+			 * stack all send the same empty request and all come back with the same
+			 * thing: the first page, under the current predicate, answered
+			 * authoritatively. Calling the last of those a `replace` — which the
+			 * first cut did, because the OPERATOR had asked for a page — was wrong in
+			 * two directions at once. It captioned a render that IS the first page as
+			 * `firstPage: false`, which takes the whole-collection empty copy away and
+			 * puts the "on this page" hedge on a count the render could prove; and on
+			 * Pricing & inventory it carried a latch forward over a response entitled
+			 * to clear it, so a banner raised by a settings blip could never go away
+			 * — while a blip happening ON that request could not raise one.
+			 *
+			 * THE FAILURE CLASSIFICATION IS A SEPARATE QUESTION and stays on `paging`.
+			 * "Is this response page one" and "do the rows on screen survive this
+			 * request failing" are genuinely different questions, and keeping them
+			 * apart is what makes answering the first one straight off the wire safe.
+			 *
+			 * A REFUSED CURSOR IS PAGE ONE TOO: the plugin already performed the
+			 * recovery, so these are the first page's rows however they were asked for.
+			 */
+			const arrival: PageArrival =
+				rejected || from === undefined ? "reset" : extending ? "extend" : "replace";
 			setPage((current) =>
 				nextPage(
 					current,
@@ -877,8 +901,26 @@ export function OrdersList({
 	/** The same withdrawal, on the control that was already gated this way. */
 	const loadMoreVisible = page?.nextCursor != null && failure === null && !pagingStopped;
 
-	/** One page forward, from whichever control asked. Both push the same stack;
-	 *  they disagree only about whether the rows above stay. */
+	/**
+	 * One page forward, from whichever control asked. Both push the same stack;
+	 * they disagree only about whether the rows above stay.
+	 *
+	 * IT READS `trail` OUT OF THE CLOSURE, which is the exception to the functional
+	 * `setPage` form a few lines up, and the difference is WHEN the value is
+	 * needed. `setPage` runs when a RESPONSE lands, which may be several renders
+	 * after the request went out, so it must see whatever is in state then. This
+	 * runs inside the click, on the render the operator is looking at, and the
+	 * same value has to reach three places at once — the state, the history entry,
+	 * and the cursor — so reading it once is what keeps the three in step. A
+	 * functional update here would hand the entry a stack the state had not
+	 * committed to.
+	 *
+	 * THE BUSY GUARD IS STILL LOAD-BEARING, and {@link pushedPage}'s idempotence
+	 * does not replace it: repeating a cursor cannot deepen the STACK, but two
+	 * presses resolved before the effect runs would still push two history
+	 * ENTRIES for one page, and a duplicate entry is not something this tier can
+	 * take back.
+	 */
 	const goForward = (extend: boolean) => {
 		const value = page?.nextCursor;
 		if (value == null) return;
@@ -1285,9 +1327,11 @@ export function OrdersList({
 			)}
 
 			{/*
-			  THE CONTINUATION FAILURE RENDERS WHERE `Load more` WAS, and replaces
-			  it: the button and the card would otherwise offer the same request
-			  twice, and the one that failed is the one the operator just pressed.
+			  A FAILED PAGE MOVE RENDERS WHERE THE PAGING BAR WAS, and replaces the
+			  whole bar: its controls and this card would otherwise offer the same
+			  request twice, and the one that failed is the one the operator just
+			  pressed. It replaces `Previous`/`Next` as much as `Load more` — all
+			  three land here.
 			*/}
 			{card !== null && card.inline && (
 				<div style={{ marginBlockStart: 12 }}>
@@ -1302,8 +1346,8 @@ export function OrdersList({
 			)}
 
 			{/*
-			  PAGING STOPPED MID-SCAN — rendered where `Load more` was, because it is
-			  what replaces that control. NO FOCUS MOVE, unlike the seeded-link
+			  PAGING STOPPED MID-SCAN — rendered where the paging bar was, because it
+			  is what replaces every control in it. NO FOCUS MOVE, unlike the seeded-link
 			  notice: the operator is mid-interaction with their hands on the page,
 			  and taking focus off what they were doing to announce a control that
 			  simply is not there any more would be the more disruptive answer to the

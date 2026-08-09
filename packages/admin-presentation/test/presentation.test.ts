@@ -32,7 +32,7 @@ import {
 	NO_CHANGES_TO_SAVE,
 	NO_TAX_CLASS,
 	ORDERS_EMPTY,
-	ORDERS_LOAD_MORE_FAILED_TITLE,
+	ORDERS_PAGE_FAILED_TITLE,
 	ORDERS_NOUN,
 	ORDERS_NO_MATCH,
 	ORDERS_STALE_CLEARED_NOTE,
@@ -131,12 +131,12 @@ describe("the words a failed load is answered with (F1, F2)", () => {
 	test("a paging failure makes the SMALLER claim, and names no direction", () => {
 		// The service's refusal is about the whole collection; on page two the rows
 		// already on screen disprove that. What failed is one page.
-		expect(ORDERS_LOAD_MORE_FAILED_TITLE).toBe("Couldn't open that page of orders");
-		expect(ORDERS_LOAD_MORE_FAILED_TITLE).toContain("that page");
+		expect(ORDERS_PAGE_FAILED_TITLE).toBe("Couldn't open that page of orders");
+		expect(ORDERS_PAGE_FAILED_TITLE).toContain("that page");
 		// THREE CONTROLS LAND HERE — `Load more`, `Next` and `Previous` — so a
 		// title that said "more" would describe a request a merchant pressing
 		// `Previous` never made.
-		expect(ORDERS_LOAD_MORE_FAILED_TITLE).not.toMatch(/\bmore\b|\bnext\b|\bafter\b/i);
+		expect(ORDERS_PAGE_FAILED_TITLE).not.toMatch(/\bmore\b|\bnext\b|\bafter\b/i);
 	});
 });
 

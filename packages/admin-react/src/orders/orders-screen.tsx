@@ -34,12 +34,11 @@ import * as React from "react";
 import {
 	CURSOR_PARAM,
 	FIRST_PAGE,
-	PAGE_STATE_KEY,
 	cursorQuery,
+	entryState,
 	readCursor,
 	readTrailState,
 	seedTrail,
-	trailState,
 	type PageChange,
 	type PageTrail,
 } from "../accumulate.js";
@@ -207,15 +206,11 @@ function replaceQuery(query: string, trail?: PageTrail): void {
 	if (typeof window === "undefined") return;
 	const url = new URL(window.location.href);
 	url.search = query;
-	// THE ENTRY'S OWN RECORD OF THE WALK rides alongside the address — see
-	// {@link PAGE_STATE_KEY}. Everything else on the entry is preserved: this
-	// function is used by filters and tabs too, and a filter change must not
-	// silently drop the drill-in state a later Back would read.
-	const state: unknown =
-		trail === undefined
-			? window.history.state
-			: { ...(window.history.state as object | null), [PAGE_STATE_KEY]: trailState(trail) };
-	window.history.replaceState(state, "", url);
+	// THE ENTRY'S OWN RECORD OF THE WALK rides alongside the address — through
+	// {@link entryState}, which merges rather than clobbers. This function is used
+	// by filters and tabs too, and a filter change must not silently drop the
+	// drill-in state a later Back would read.
+	window.history.replaceState(entryState(window.history.state, {}, trail), "", url);
 }
 
 /**
@@ -242,7 +237,7 @@ function pushQuery(query: string, trail: PageTrail): void {
 	// replayed a walk would be a different feature — but a history entry is this
 	// browser's private note about somewhere this operator already stood, and it
 	// can hold what a link cannot.
-	window.history.pushState({ ottaOrder: null, [PAGE_STATE_KEY]: trailState(trail) }, "", url);
+	window.history.pushState(entryState(window.history.state, { ottaOrder: null }, trail), "", url);
 }
 
 function readSelectedOrder(): string | null {
@@ -251,11 +246,20 @@ function readSelectedOrder(): string | null {
 	return value !== null && value.length > 0 ? value : null;
 }
 
-function pushSelectedOrder(orderId: string): void {
+function pushSelectedOrder(orderId: string, trail: PageTrail): void {
 	if (typeof window === "undefined") return;
 	const url = new URL(window.location.href);
 	url.searchParams.set(ORDER_PARAM, orderId);
-	window.history.pushState({ ottaOrder: orderId }, "", url);
+	// THE RECORD'S ENTRY CARRIES THE LIST'S PAGE TOO. A drill-in from page four is
+	// still page four: the operator opened a record from there, and Back — or a
+	// reload of the record's own address followed by `Back to orders` — has to
+	// return them to a list that knows it. Composing this entry without the stack
+	// is how the pager forgot its position one click away from where it earned it.
+	window.history.pushState(
+		entryState(window.history.state, { ottaOrder: orderId }, trail),
+		"",
+		url,
+	);
 }
 
 /**
@@ -292,7 +296,9 @@ function popSelectedOrder(pushed: boolean): void {
 	// address afterwards: a `tab` left behind here would sit on a list URL that
 	// has no tabs and then seed the NEXT record the operator opened.
 	url.searchParams.delete(TAB_PARAM);
-	window.history.replaceState({ ottaOrder: null }, "", url);
+	// MERGED, NEVER CLOBBERED: this writer means "no record is open" and nothing
+	// else, so the entry's page stack is not its to discard.
+	window.history.replaceState(entryState(window.history.state, { ottaOrder: null }), "", url);
 }
 
 export function OrdersScreen(): React.ReactElement {
@@ -413,7 +419,7 @@ export function OrdersScreen(): React.ReactElement {
 					}}
 					onCursorChange={onCursorChange}
 					onOpen={(orderId) => {
-						pushSelectedOrder(orderId);
+						pushSelectedOrder(orderId, trail);
 						pushed.current = true;
 						setSelected(orderId);
 					}}

@@ -42,13 +42,25 @@ memory: a cursor is only meaningful against the predicate it was issued under,
 so a stack that survived an apply would offer to step back into the set the
 operator just left.
 
-**Paging survives the browser's own Back and Forward.** The address carries one
-cursor, which is what makes a link shareable; the history entry carries the walk
-behind it, which a link must not. Without that, a Back onto a page an operator
-had walked to came back as though it had been pasted in — position unknown,
-`Previous` unavailable, two presses into a scan. Returning to page one deliberately
-pushes an entry, as any other page does; only the recovery from a page that
-would not open still corrects the entry in place.
+**Returning to page one is page one**, whatever asked for it. A request that
+carries no cursor comes back as the first page under the current predicate, so
+it may state the whole set without a hedge, it gets the empty-collection words
+rather than the page-scoped ones when it comes back empty, and on Pricing &
+inventory it may both raise and clear the banner that says the low-stock
+threshold could not be read. Only a page reached WITH a cursor carries that
+banner forward, because such a request reports the filter as available by
+contract and so has no answer of its own.
+
+**Paging survives the browser's own Back and Forward, and a drill-in.** The
+address carries one cursor, which is what makes a link shareable; the history
+entry carries the walk behind it, which a link must not. Without that, a Back
+onto a page an operator had walked to came back as though it had been pasted in
+— position unknown, `Previous` unavailable, two presses into a scan. The entry a
+record's drill-in pushes carries it too, so opening an order from page two,
+reloading, and pressing `Back to orders` returns to a list that still knows
+where it is. Returning to page one deliberately pushes an entry, as any other
+page does; only the recovery from a page that would not open still corrects the
+entry in place.
 
 **A page nothing holds a record of cannot know its own number.** The position
 reads `Page — of 6` and `Previous` is offered dimmed, carrying the reason: the
@@ -76,5 +88,7 @@ The controls are dimmed with `aria-disabled` rather than disabled outright, so
 they keep their place in the tab order and their visible focus ring: pressing
 `Next` onto the last page would otherwise take the control out from under the
 operator's focus. The reason a control is dimmed is exposed as an accessible
-description rather than only as a tooltip, and the dimming is carried by the
-border so the label stays legible.
+description rather than only as a tooltip. The unavailable state is drawn as a
+flat fill, a lighter border and a muted label rather than as a blanket opacity —
+enough to read as "off" at a glance, and not so much that the word on it becomes
+work to read.

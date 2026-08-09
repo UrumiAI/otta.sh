@@ -83,7 +83,7 @@ export const PRODUCTS_LOW_STOCK_NOUN: RowNoun = {
  * DIRECTION, because `Load more`, `Next` and `Previous` all land here and only
  * one of them is "more".
  */
-export const PRODUCTS_LOAD_MORE_FAILED_TITLE = "Couldn't open that page of products";
+export const PRODUCTS_PAGE_FAILED_TITLE = "Couldn't open that page of products";
 
 /**
  * The standing half of the list's intro line — the row count goes in front of

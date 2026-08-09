@@ -12,7 +12,7 @@
 import {
 	ACCUMULATED_SUFFIX,
 	PRODUCTS_EMPTY,
-	PRODUCTS_LOAD_MORE_FAILED_TITLE,
+	PRODUCTS_PAGE_FAILED_TITLE,
 	PRODUCTS_LOW_STOCK_NOUN,
 	PRODUCTS_LOW_STOCK_NO_MATCH,
 	PRODUCTS_NOUN,
@@ -345,7 +345,7 @@ describe("where a failure is drawn, and what it may claim", () => {
 		});
 		// The service's whole-collection refusal is dropped: the rows still on
 		// screen are the answer to a request that worked.
-		expect(notice?.title).toBe(PRODUCTS_LOAD_MORE_FAILED_TITLE);
+		expect(notice?.title).toBe(PRODUCTS_PAGE_FAILED_TITLE);
 		expect(notice?.inline).toBe(true);
 	});
 

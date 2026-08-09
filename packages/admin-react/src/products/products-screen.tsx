@@ -31,12 +31,11 @@ import * as React from "react";
 import {
 	CURSOR_PARAM,
 	FIRST_PAGE,
-	PAGE_STATE_KEY,
 	cursorQuery,
+	entryState,
 	readCursor,
 	readTrailState,
 	seedTrail,
-	trailState,
 	type PageChange,
 	type PageTrail,
 } from "../accumulate.js";
@@ -189,15 +188,11 @@ function replaceQuery(query: string, trail?: PageTrail): string {
 	if (typeof window === "undefined") return "";
 	const url = new URL(window.location.href);
 	url.search = query;
-	// THE ENTRY'S OWN RECORD OF THE WALK rides alongside the address — see
-	// {@link PAGE_STATE_KEY}. Everything else on the entry is preserved: tabs and
-	// the unsaved-work guard write through here too, and a tab change must not
+	// THE ENTRY'S OWN RECORD OF THE WALK rides alongside the address — through
+	// {@link entryState}, which merges rather than clobbers. Tabs and the
+	// unsaved-work guard write through here too, and a tab change must not
 	// silently drop what a later Back would read.
-	const state: unknown =
-		trail === undefined
-			? window.history.state
-			: { ...(window.history.state as object | null), [PAGE_STATE_KEY]: trailState(trail) };
-	window.history.replaceState(state, "", url);
+	window.history.replaceState(entryState(window.history.state, {}, trail), "", url);
 	return url.href;
 }
 
@@ -220,7 +215,7 @@ function pushQuery(query: string, trail: PageTrail): void {
 	// that is what makes a link shareable; a history entry is this browser's
 	// private note about somewhere this merchant already stood, and can hold what
 	// a link cannot.
-	window.history.pushState({ ottaProduct: null, [PAGE_STATE_KEY]: trailState(trail) }, "", url);
+	window.history.pushState(entryState(window.history.state, { ottaProduct: null }, trail), "", url);
 }
 
 function readSelectedProduct(): string | null {
@@ -229,11 +224,19 @@ function readSelectedProduct(): string | null {
 	return value !== null && value.length > 0 ? value : null;
 }
 
-function pushSelectedProduct(productId: string): string {
+function pushSelectedProduct(productId: string, trail: PageTrail): string {
 	if (typeof window === "undefined") return "";
 	const url = new URL(window.location.href);
 	url.searchParams.set(PRODUCT_PARAM, productId);
-	window.history.pushState({ ottaProduct: productId }, "", url);
+	// THE RECORD'S ENTRY CARRIES THE LIST'S PAGE TOO — a drill-in from page four
+	// is still page four, and Back (or a reload of the record's own address
+	// followed by `Back to pricing & inventory`) has to return the merchant to a
+	// list that knows it.
+	window.history.pushState(
+		entryState(window.history.state, { ottaProduct: productId }, trail),
+		"",
+		url,
+	);
 	return url.href;
 }
 
@@ -262,7 +265,9 @@ function popSelectedProduct(pushed: boolean): void {
 	// address afterwards: a `tab` left behind here would sit on a list URL that
 	// has no tabs and then seed the NEXT record the merchant opened.
 	url.searchParams.delete(TAB_PARAM);
-	window.history.replaceState({ ottaProduct: null }, "", url);
+	// MERGED, NEVER CLOBBERED: this writer means "no record is open" and nothing
+	// else, so the entry's page stack is not its to discard.
+	window.history.replaceState(entryState(window.history.state, { ottaProduct: null }), "", url);
 }
 
 export function ProductsScreen(): React.ReactElement {
@@ -436,7 +441,10 @@ export function ProductsScreen(): React.ReactElement {
 			 */
 			const href = detailHref.current;
 			if (unsaved.current && was !== null && href !== null && next !== was) {
-				window.history.pushState({ ottaProduct: was }, "", href);
+				// DEPTH-NEUTRAL AND STATE-NEUTRAL: this re-push puts the record's own
+				// entry back exactly as it was, so it merges rather than composing a
+				// fresh object that would drop the list's page from it.
+				window.history.pushState(entryState(window.history.state, { ottaProduct: was }), "", href);
 				pushed.current = true;
 				setLeavePrompt((n) => n + 1);
 				return;
@@ -479,7 +487,7 @@ export function ProductsScreen(): React.ReactElement {
 					}}
 					onCursorChange={onCursorChange}
 					onOpen={(productId) => {
-						detailHref.current = pushSelectedProduct(productId);
+						detailHref.current = pushSelectedProduct(productId, trail);
 						pushed.current = true;
 						setSelected(productId);
 					}}

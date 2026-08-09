@@ -626,6 +626,38 @@ export function trailState(trail: PageTrail): { cursors: string[]; grounded: boo
 	return { cursors: [...trail.cursors], grounded: trail.grounded };
 }
 
+/**
+ * THE ONE WAY THIS CONSOLE BUILDS A HISTORY ENTRY'S STATE.
+ *
+ * FIVE WRITERS, ONE SHAPE. Each screen writes `history.state` from five places —
+ * a page change, a filter or tab change, the drill-in push, the drill-out
+ * replace, and (on Pricing & inventory) the unsaved-work guard's re-push — and
+ * every one of them used to compose an object literal of its own. That is how
+ * the stack went missing from three of them: a key added for one writer is
+ * silently absent from the other four, and the loss only shows up two
+ * traversals later as a pager that has forgotten where it is.
+ *
+ * IT MERGES, IT DOES NOT CLOBBER. The base is whatever the entry already holds,
+ * so a writer that only means to say "no record is open" cannot take the walk
+ * with it, and anything the host admin put on the entry survives all five.
+ * `patch` states only what this writer actually decided; `trail` is optional
+ * because two of the writers genuinely have no opinion about the page and must
+ * leave whatever is there alone.
+ */
+export function entryState(
+	current: unknown,
+	patch: Record<string, unknown>,
+	trail?: PageTrail,
+): Record<string, unknown> {
+	const base =
+		typeof current === "object" && current !== null ? (current as Record<string, unknown>) : {};
+	return {
+		...base,
+		...patch,
+		...(trail !== undefined ? { [PAGE_STATE_KEY]: trailState(trail) } : {}),
+	};
+}
+
 /** The walk an entry recorded, or `null` when it recorded none. `null` is not a
  *  failure: an entry pushed by the host, or by a build of this console older
  *  than the field, simply has nothing to say, and the caller falls back to

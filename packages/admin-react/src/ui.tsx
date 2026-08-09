@@ -33,12 +33,31 @@ export const OK_ACCENT = "#2f855a";
 export const FAIL_ACCENT = "#c53030";
 export const WARN_ACCENT = "#b7791f";
 export const MUTED = "rgba(128, 128, 128, 0.6)";
-/** {@link HAIRLINE} at a third of its weight — the border of a control that is
- *  present but cannot be used. It carries the dimming so the LABEL does not have
- *  to. A whole `border` rather than a `border-color`: `buttonStyle` states the
- *  shorthand, and React warns (correctly) that mixing the two on one element
- *  makes removals order-dependent. */
-export const MUTED_HAIRLINE = "1px solid rgba(128, 128, 128, 0.12)";
+/**
+ * THE LOOK OF A CONTROL THAT IS PRESENT BUT CANNOT BE USED.
+ *
+ * TWO OVERCORRECTIONS, AND THIS IS THE MIDDLE. The first cut dropped the whole
+ * button to `opacity: 0.45`, which took the 13px LABEL down with the border and
+ * left a word a low-vision operator had to work to read. The second went the
+ * other way — a near-invisible border and a token opacity — and made unavailable
+ * and live nearly indistinguishable, which is worse: a control that looks
+ * pressable and does nothing.
+ *
+ * SO THE STATE IS CARRIED BY THREE THINGS AT ONCE, none of them the label's
+ * legibility. A flat fill (the surface reads as inert rather than raised), a
+ * border that is visibly lighter than {@link HAIRLINE} but still THERE, and a
+ * label muted through `color-mix` against `currentColor` — which stays a real,
+ * measurable foreground in both themes rather than an alpha over an unknown
+ * background. 62% of the theme's own text colour clears the contrast floor at
+ * this size while reading unmistakably as "off".
+ *
+ * A whole `border` rather than a `border-color`: `buttonStyle` states the
+ * shorthand, and React warns (correctly) that mixing the two on one element
+ * makes removals order-dependent.
+ */
+export const UNAVAILABLE_BORDER = "1px solid rgba(128, 128, 128, 0.22)";
+export const UNAVAILABLE_FILL = "rgba(128, 128, 128, 0.10)";
+export const UNAVAILABLE_INK = "color-mix(in srgb, currentColor 62%, transparent)";
 
 /**
  * The attribute a row carries its record id in.
@@ -342,11 +361,9 @@ export function Button({
  * every time, by every screen reader, whether the operator arrived by pointer,
  * by tab, or by a rotor listing of the page's buttons.
  *
- * DIMMED WITHOUT GOING ILLEGIBLE. The first cut dropped the whole control to
- * `opacity: 0.45`, which takes the LABEL down with the border and leaves 13px
- * text that a low-vision operator has to work to read — punishing them for a
- * state they did not cause. The weight of the dimming goes on the BORDER, which
- * is decoration and can afford it; the word keeps its own colour and weight.
+ * DIMMED WITHOUT GOING ILLEGIBLE, AND WITHOUT GOING INVISIBLE. See
+ * {@link UNAVAILABLE_BORDER} for what the state is drawn with and why it is
+ * three declarations rather than an opacity.
  */
 export function PagerButton({
 	control,
@@ -372,7 +389,13 @@ export function PagerButton({
 				{...(reason !== undefined ? { "aria-describedby": describedBy, title: reason } : {})}
 				style={{
 					...buttonStyle,
-					...(control.unavailable ? { border: MUTED_HAIRLINE, opacity: 0.85 } : {}),
+					...(control.unavailable
+						? {
+								border: UNAVAILABLE_BORDER,
+								background: UNAVAILABLE_FILL,
+								color: UNAVAILABLE_INK,
+							}
+						: {}),
 				}}
 				onClick={() => {
 					if (control.unavailable) return;

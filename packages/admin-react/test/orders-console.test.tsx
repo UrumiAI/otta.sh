@@ -47,7 +47,7 @@ const { RefundsPanel, checkRefundInput, refundPanelMode } =
 const {
 	BANNER_BUDGET,
 	FULLY_REFUNDED_NOTE,
-	ORDERS_LOAD_MORE_FAILED_TITLE,
+	ORDERS_PAGE_FAILED_TITLE,
 	ORDERS_STALE_CLEARED_NOTE,
 	REFUNDS_GROUP_EMPTY_LABEL,
 	REFUND_AMOUNT_INVALID,
@@ -156,7 +156,7 @@ describe("a failed load stops showing the previous answer (F1)", () => {
 		expect(card.answerVisible).toBe(true);
 		// The whole-collection title is DROPPED: the rows above disprove it. What
 		// failed is the next page, and that is the whole of the claim.
-		expect(card.title).toBe(ORDERS_LOAD_MORE_FAILED_TITLE);
+		expect(card.title).toBe(ORDERS_PAGE_FAILED_TITLE);
 		expect(card.title).not.toBe(SERVED.title);
 		expect(card.description).toBe(SERVED.description);
 		// Where `Load more` was, not above the rows it did not invalidate.

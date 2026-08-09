@@ -116,7 +116,7 @@ export const ORDERS_STALE_CLEARED_NOTE =
  * and "load more" over a failed `Previous` describes a request the operator did
  * not make. The claim that has to be small is "one page", not "the page after".
  */
-export const ORDERS_LOAD_MORE_FAILED_TITLE = "Couldn't open that page of orders";
+export const ORDERS_PAGE_FAILED_TITLE = "Couldn't open that page of orders";
 
 /**
  * The reconciliation alert's sentence, on the order detail.

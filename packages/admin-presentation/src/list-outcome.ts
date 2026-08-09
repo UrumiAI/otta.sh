@@ -315,6 +315,11 @@ export function pagePositionLine(opts: {
 		return `Page ${index === undefined ? ABSENT : COUNT_NUMERALS.format(index)} of ${m}`;
 	}
 	if (index === undefined) return `Pages ${ABSENT} of ${m}`;
+	// CLAMPED AT ONE because `span` counts RESPONSES, not pages of the collection:
+	// a window built from a deep link plus a `Load more` spans two responses while
+	// its first page number is unknown, and a caller that ever hands a span larger
+	// than the position it belongs to would otherwise compute a page zero — or a
+	// negative one — and print it.
 	const start = COUNT_NUMERALS.format(Math.max(1, index - span + 1));
 	return `Pages ${start}${PAGE_RANGE_DASH}${COUNT_NUMERALS.format(index)} of ${m}`;
 }
