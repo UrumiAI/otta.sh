@@ -1110,8 +1110,9 @@ export class KyselyOrderStore implements OrderStore {
  * is a UNION inside the key (`customer_id = :id OR lower(buyer_ref) =
  * lower(:buyerRef)`) — lazy linking means one person's orders split across the
  * two columns; a key with neither half set constrains nothing. `search` is the
- * operator's fuzzy lookup (id prefix OR buyer_ref substring) and is deliberately
- * NOT the same predicate as the customer key's exact `buyerRef`.
+ * operator's fuzzy lookup (id prefix OR buyer_ref substring OR an exact line
+ * sku, the last as an EXISTS over `order_items` — never a join) and is
+ * deliberately NOT the same predicate as the customer key's exact `buyerRef`.
  */
 function orderFilterConditions(filter: OrderListFilter): Expression<SqlBool>[] {
 	const eb: ExpressionBuilder<Database, "orders"> = expressionBuilder();
@@ -1122,24 +1123,46 @@ function orderFilterConditions(filter: OrderListFilter): Expression<SqlBool>[] {
 	if (filter.from !== undefined) conds.push(eb("orders.created_at", ">=", filter.from)); // inclusive
 	if (filter.to !== undefined) conds.push(eb("orders.created_at", "<", filter.to)); // EXCLUSIVE (half-open, MOD-7)
 	if (filter.search !== undefined) {
-		// An order-id PREFIX or a buyer_ref SUBSTRING, both folded on BOTH sides
-		// (port doc). `lower(:pattern)` rather than a JS `.toLowerCase()` so ONE
-		// function folds both operands — within a dialect the two sides are then
-		// folded identically by construction. The explicit fold is also what makes
-		// the dialects agree at all: a bare LIKE is case-sensitive on pg and
-		// ASCII-case-insensitive on SQLite. `ESCAPE '\'` over an escaped pattern
-		// keeps a `%`/`_` in the operator's search a literal character.
+		// An order-id PREFIX, a buyer_ref SUBSTRING, or an EXACT purchase-time line
+		// sku — all folded on BOTH sides (port doc). `lower(:pattern)` rather than a
+		// JS `.toLowerCase()` so ONE function folds both operands — within a dialect
+		// the two sides are then folded identically by construction. The explicit
+		// fold is also what makes the dialects agree at all: a bare LIKE is
+		// case-sensitive on pg and ASCII-case-insensitive on SQLite. `ESCAPE '\'`
+		// over an escaped pattern keeps a `%`/`_` in the operator's search a literal
+		// character; the sku half is an equality, so it needs no pattern and is
+		// literal by construction.
+		//
+		// The sku half is a CORRELATED `EXISTS`, never a join onto `order_items`
+		// (port doc — the named hazard). `listOrders` selects one row per order via
+		// a 1:1 `order_totals` join; joining a 1:N table would emit an order once
+		// PER matching line, so a two-line order would appear twice, the `limit + 1`
+		// next-page detection would count duplicates as rows, and `countOrders`
+		// would over-count the very page it captions. `EXISTS` asks "does this order
+		// have such a line?" and stops at the first — one row per order, always.
 		//
 		// This is a SEQUENTIAL SCAN and that is the design (port doc): the
 		// unanchored buyer_ref half cannot use `idx_orders_buyer_ref_lower`, and
 		// the anchored id half cannot use the primary key under a default
-		// collation. Both equality paths that DO use those indices —
-		// `linkGuestOrders` and the `customer` key below — are untouched.
+		// collation. The sku arm adds ONE more scan, of `order_items`: pg
+		// de-correlates this EXISTS into a hashed subplan (one pass over the line
+		// table filtered on `lower(sku)`, hashed by order_id, probed in memory) —
+		// NOT a per-row index probe, which EXPLAIN shows to be the slower plan
+		// here. It is paid by every search, not only a sku-shaped one. Both
+		// equality paths that DO use the buyer_ref index — `linkGuestOrders` and
+		// the `customer` key below — are untouched.
 		const escaped = escapeLikePattern(filter.search);
 		conds.push(
 			eb.or([
 				sql<SqlBool>`lower(orders.id) like lower(${`${escaped}%`}) escape '\\'`,
 				sql<SqlBool>`lower(orders.buyer_ref) like lower(${`%${escaped}%`}) escape '\\'`,
+				eb.exists(
+					eb
+						.selectFrom("order_items")
+						.select("order_items.id")
+						.whereRef("order_items.order_id", "=", "orders.id")
+						.where(sql<SqlBool>`lower(order_items.sku) = lower(${filter.search})`),
+				),
 			]),
 		);
 	}

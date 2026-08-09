@@ -607,16 +607,22 @@ export class InMemoryOrderStore implements OrderStore {
 		if (filter.from !== undefined && o.createdAt < filter.from) return false; // inclusive lower
 		if (filter.to !== undefined && o.createdAt >= filter.to) return false; // EXCLUSIVE upper
 		if (filter.search !== undefined) {
-			// Order-id PREFIX or buyer_ref SUBSTRING, both sides folded (port doc).
-			// The fake's stand-in for the adapter's `lower(col) LIKE lower(:pattern)
-			// ESCAPE '\'`: `startsWith`/`includes` build no pattern, so `%` and `_`
-			// are already ordinary characters here — exactly what the SQL side buys
-			// by escaping them. The fold is explicit on BOTH sides, matching the SQL
-			// (whose bare-LIKE case behaviour differs between pg and SQLite).
+			// Order-id PREFIX, buyer_ref SUBSTRING or an EXACT line sku, all sides
+			// folded (port doc). The fake's stand-in for the adapter's `lower(col)
+			// LIKE lower(:pattern) ESCAPE '\'`: `startsWith`/`includes` build no
+			// pattern, so `%` and `_` are already ordinary characters here — exactly
+			// what the SQL side buys by escaping them (the sku half is an equality,
+			// so it is literal in both by construction). The fold is explicit on BOTH
+			// sides, matching the SQL (whose bare-LIKE case behaviour differs between
+			// pg and SQLite).
 			const needle = filter.search.toLowerCase();
 			const byId = o.id.toLowerCase().startsWith(needle);
 			const byRef = o.buyerRef.toLowerCase().includes(needle);
-			if (!byId && !byRef) return false;
+			// `some` over the order's OWN line snapshots — the fake's stand-in for the
+			// adapter's correlated EXISTS over `order_items`, and an existence test
+			// for the same reason: an order whose lines match twice is still ONE row.
+			const bySku = o.lines.some((l) => l.sku.toLowerCase() === needle);
+			if (!byId && !byRef && !bySku) return false;
 		}
 		// The customer dimension: a UNION inside the key (customer_id = :id OR
 		// lower(buyer_ref) = lower(:buyerRef)), ANDed with everything above. A key
@@ -644,7 +650,8 @@ export class InMemoryOrderStore implements OrderStore {
 		// EXACT parity with `KyselyOrderStore.listOrders` (MOD-5): same filters
 		// (via the shared `#matchesFilter` predicate), same `created_at DESC, id
 		// DESC` order, same half-open `[from, to)` window, same folded id-PREFIX /
-		// buyer_ref-SUBSTRING `search`, same `limit + 1` next-page detection.
+		// buyer_ref-SUBSTRING / exact-line-sku `search`, same `limit + 1` next-page
+		// detection.
 		const cursor = page.cursor ?? null;
 
 		const matched = [...this.#orders.values()]
