@@ -19,8 +19,23 @@ import {
 	listOutcome,
 } from "@otta-sh/admin-presentation";
 import { describe, expect, test } from "vitest";
-import { continuationCursor, mergeById } from "../src/accumulate.js";
-import { nextPage as ordersNextPage } from "../src/orders/orders-list.js";
+import {
+	REFRESHING_LABEL,
+	REFRESH_BUSY_TITLE,
+	REFRESH_FAILED_TITLE,
+	REFRESH_LABEL,
+	REFRESH_REFUSED_NOTE,
+	REFRESH_TITLE,
+	continuationCursor,
+	mergeById,
+	refreshControl,
+	refreshWalk,
+	refreshedTrail,
+	sameFilter,
+	walkWindow,
+	type PageArrival,
+} from "../src/accumulate.js";
+import { nextPage as ordersNextPage, ordersFailureCard } from "../src/orders/orders-list.js";
 import {
 	failureNotice,
 	nextPage as productsNextPage,
@@ -359,6 +374,147 @@ describe("where a failure is drawn, and what it may claim", () => {
 		expect(notice?.inline).toBe(false);
 		expect(failureNotice(null)).toBeNull();
 	});
+
+	test("a REFRESH that re-read nothing is titled as one, and still keeps its rows", () => {
+		// Same survival rules as a page move — inline, rows untouched — because the
+		// window on screen was never replaced. Only the name differs, and it has to:
+		// the operator pressed Refresh, not Next.
+		const products = failureNotice({
+			title: "Products could not be reached",
+			description: "Try again.",
+			paging: true,
+			refresh: true,
+		});
+		expect(products?.title).toBe(REFRESH_FAILED_TITLE);
+		expect(products?.inline).toBe(true);
+
+		const orders = ordersFailureCard(
+			{
+				title: "Orders could not be reached",
+				description: "Try again.",
+				paging: true,
+				refresh: true,
+			},
+			true,
+		);
+		expect(orders.title).toBe(REFRESH_FAILED_TITLE);
+		expect(orders.kind).toBe("partial");
+		expect(orders.answerVisible).toBe(true);
+		expect(orders.inline).toBe(true);
+	});
+});
+
+/**
+ * WHAT A REFRESH RE-READS, AND WHAT IT LEAVES OF THE WALK.
+ *
+ * The window is the pages ON SCREEN — `span` responses ending at the stack's last
+ * entry — and the walk re-reads exactly those, anchored where the window opens.
+ * These are the arithmetic; what the walk does with the answers is next door in
+ * `load-more-dom.test.tsx`, where there is a document to count rows in.
+ */
+describe("planning a refresh of the window on screen", () => {
+	test("a scan built from page one is re-walked FROM page one", () => {
+		// Page 1 + two `Load more`: three responses, two cursors behind them.
+		const walk = refreshWalk({ cursors: ["c1", "c2"], grounded: true }, 3);
+		// No token, because page one is asked for by sending none — and that is
+		// what makes its answer authoritative about the whole set.
+		expect(walk.anchor).toBeUndefined();
+		expect(walk.depth).toBe(3);
+		expect(walk.kept).toEqual([]);
+		expect(walk.grounded).toBe(true);
+	});
+
+	test("a page reached by PAGING re-reads that page alone, and keeps the walk behind it", () => {
+		// Three `Next` presses: one page on screen, two cursors behind it.
+		const walk = refreshWalk({ cursors: ["c1", "c2"], grounded: true }, 1);
+		expect(walk.anchor).toBe("c2");
+		expect(walk.depth).toBe(1);
+		// EVERYTHING UP TO AND INCLUDING THE ANCHOR SURVIVES: those pages are not
+		// being re-read, so their boundaries are not being re-derived, and
+		// `Previous` still has somewhere to go.
+		expect(walk.kept).toEqual(["c1", "c2"]);
+	});
+
+	test("a window opened by a LINK is anchored on that link's page, never on page one", () => {
+		// A deep link plus one `Load more`. Walking two pages from page one would
+		// land somewhere else entirely and caption it as a refresh of these rows.
+		const walk = refreshWalk({ cursors: ["cA", "cB"], grounded: false }, 2);
+		expect(walk.anchor).toBe("cA");
+		expect(walk.kept).toEqual(["cA"]);
+		expect(walk.grounded).toBe(false);
+	});
+
+	test("an ungrounded stack is never walked back past its deepest entry", () => {
+		// Arithmetic that cannot arise today, clamped rather than trusted: the
+		// failure it would cause is silently relocating the operator to page one.
+		const walk = refreshWalk({ cursors: ["cA"], grounded: false }, 4);
+		expect(walk.anchor).toBe("cA");
+		expect(walk.kept).toEqual(["cA"]);
+	});
+
+	test("a span below one is one page — a window is never zero responses wide", () => {
+		expect(refreshWalk({ cursors: [], grounded: true }, 0).depth).toBe(1);
+		expect(refreshWalk({ cursors: [], grounded: true }, Number.NaN).depth).toBe(1);
+	});
+
+	test("the walk's own boundaries become the stack, and a SHORT walk a short stack", () => {
+		const walk = refreshWalk({ cursors: ["c1", "c2"], grounded: true }, 3);
+		// Ran to the end: two fresh boundaries, so three pages and a page number of 3.
+		expect(refreshedTrail(walk, ["f1", "f2"])).toEqual({ cursors: ["f1", "f2"], grounded: true });
+		// Refused at its third page: two pages re-read, and a stack that says two.
+		// A stack still claiming three would number the pages wrongly and offer a
+		// `Previous` into a page this list never established.
+		expect(refreshedTrail(walk, ["f1"])).toEqual({ cursors: ["f1"], grounded: true });
+	});
+
+	test("the pages BELOW the window keep their own cursors", () => {
+		const walk = refreshWalk({ cursors: ["c1", "c2", "c3"], grounded: true }, 2);
+		expect(walk.anchor).toBe("c2");
+		expect(refreshedTrail(walk, ["f3"])).toEqual({ cursors: ["c1", "c2", "f3"], grounded: true });
+	});
+});
+
+describe("the Refresh control", () => {
+	test("says what pressing it costs, before it is pressed", () => {
+		const control = refreshControl({ busy: false, refreshing: false });
+		expect(control.label).toBe(REFRESH_LABEL);
+		expect(control.unavailable).toBe(false);
+		expect(control.title).toBe(REFRESH_TITLE);
+	});
+
+	test("ANY read in flight makes it unavailable — one at a time, across the screen", () => {
+		// A refresh over a pending `Load more` would rebuild the window and then
+		// have the older page land on top of it, merged against boundaries that no
+		// longer exist.
+		expect(refreshControl({ busy: true, refreshing: false }).unavailable).toBe(true);
+		expect(refreshControl({ busy: true, refreshing: true }).label).toBe(REFRESHING_LABEL);
+		// AND IT SAYS WHY IT IS DIMMED rather than keeping a sentence describing an
+		// act it is currently refusing.
+		expect(refreshControl({ busy: true, refreshing: true }).title).toBe(REFRESH_BUSY_TITLE);
+	});
+});
+
+describe("did the predicate actually move", () => {
+	test("the same fields are the same predicate, whoever built the object", () => {
+		expect(sameFilter({ status: "paid" }, { status: "paid" })).toBe(true);
+		expect(sameFilter({}, {})).toBe(true);
+	});
+
+	test("an explicitly absent field is an absent field", () => {
+		// A filter seeded from an address and one built by the panel are built by
+		// different paths; `{}` and `{ status: undefined }` are one predicate.
+		expect(sameFilter({ status: undefined }, {})).toBe(true);
+		expect(sameFilter({ status: undefined, search: "x" }, { search: "x" })).toBe(true);
+	});
+
+	test("a changed, added or removed field is a different predicate", () => {
+		expect(sameFilter({ status: "paid" }, { status: "failed" })).toBe(false);
+		expect(sameFilter({ status: "paid" }, { status: "paid", search: "x" })).toBe(false);
+		expect(sameFilter({ status: "paid", search: "x" }, { status: "paid" })).toBe(false);
+		// `false` is a stated value, not an absence — the low-stock checkbox is the
+		// one boolean here, and unchecking it is a real change.
+		expect(sameFilter({ lowStock: false }, {})).toBe(false);
+	});
 });
 
 describe("what the count line calls rows drawn from more than one response", () => {
@@ -420,5 +576,176 @@ describe("what the count line calls rows drawn from more than one response", () 
 			listOutcome({ ...base, count: 40, hasNext: false, scopeSuffix: ACCUMULATED_SUFFIX })
 				.countLine,
 		).toBe("40 products");
+	});
+});
+
+/**
+ * THE WALK ITSELF — one control flow, tested once, which is the reason it is one
+ * function rather than a shape each screen writes out.
+ */
+interface Answer {
+	readonly at: string | undefined;
+	readonly arrival: PageArrival;
+}
+
+/** What the walk hands the caller, kept in arrival order so the classification of
+ *  each step is readable as a value. */
+const collect = (built: Answer[] | null, page: Answer, arrival: PageArrival): Answer[] => [
+	...(built ?? []),
+	{ ...page, arrival },
+];
+
+describe("walking a window", () => {
+	/** A service over `pages`: index 0 is the anchor's own page, and each entry is
+	 *  the token the NEXT step should be fetched with (`null` ends the walk). */
+	function walker(pages: readonly (string | null)[], stop?: { at: number; refused?: boolean }) {
+		const seen: (string | undefined)[] = [];
+		let step = -1;
+		return {
+			seen,
+			fetch: (at: string | undefined) => {
+				seen.push(at);
+				step += 1;
+				if (stop !== undefined && step === stop.at) {
+					return Promise.resolve(
+						stop.refused === true
+							? ({ kind: "refused" } as const)
+							: ({ kind: "failure", description: "Try again." } as const),
+					);
+				}
+				return Promise.resolve({
+					kind: "answer",
+					page: { at, arrival: "reset" } as Answer,
+					nextCursor: pages[step] ?? null,
+				} as const);
+			},
+		};
+	}
+
+	test("a walk that opens on page one classifies its first response as page one", async () => {
+		const service = walker(["f1", "f2"]);
+		const outcome = await walkWindow<Answer, Answer[]>({
+			walk: refreshWalk({ cursors: ["c1", "c2"], grounded: true }, 3),
+			fetch: service.fetch,
+			merge: collect,
+			cancelled: () => false,
+		});
+		// No token on the wire for the first request, then the cursors the responses
+		// themselves issued — never the ones the scan was built with.
+		expect(service.seen).toEqual([undefined, "f1", "f2"]);
+		expect(outcome?.page?.map((p) => p.arrival)).toEqual(["reset", "extend", "extend"]);
+		expect(outcome?.trail).toEqual({ cursors: ["f1", "f2"], grounded: true });
+		expect(outcome?.stopped).toBeNull();
+	});
+
+	test("a walk ANCHORED on a page does not call that page the first one", async () => {
+		// THE DEFECT THIS PINS: reading the arrival off `grounded` rather than off the
+		// wire. This stack IS grounded — the operator walked here from page one — and
+		// the window still opens on page three. Calling that response `reset` captions
+		// a deep page as the start of the collection: an empty answer claims the whole
+		// collection is empty, and a service sending no `total` drops the page-scoped
+		// hedge and states these rows as the entire set.
+		const service = walker([null]);
+		const outcome = await walkWindow<Answer, Answer[]>({
+			walk: refreshWalk({ cursors: ["c1", "c2"], grounded: true }, 1),
+			fetch: service.fetch,
+			merge: collect,
+			cancelled: () => false,
+		});
+		expect(service.seen).toEqual(["c2"]);
+		expect(outcome?.page?.map((p) => p.arrival)).toEqual(["replace"]);
+		// The pages below it are untouched, so the position is still knowable.
+		expect(outcome?.trail).toEqual({ cursors: ["c1", "c2"], grounded: true });
+	});
+
+	test("each request is told which step it is, so a first-page-only fact applies once", async () => {
+		const steps: number[] = [];
+		await walkWindow<Answer, Answer[]>({
+			walk: refreshWalk({ cursors: ["c1"], grounded: true }, 2),
+			fetch: (at, step) => {
+				steps.push(step);
+				return Promise.resolve({
+					kind: "answer",
+					page: { at, arrival: "reset" } as Answer,
+					nextCursor: step === 0 ? "f1" : null,
+				} as const);
+			},
+			merge: collect,
+			cancelled: () => false,
+		});
+		expect(steps).toEqual([0, 1]);
+	});
+
+	test("a collection that has become shorter than the window simply comes back smaller", async () => {
+		const service = walker(["f1", null]);
+		const outcome = await walkWindow<Answer, Answer[]>({
+			walk: refreshWalk({ cursors: ["c1", "c2"], grounded: true }, 3),
+			fetch: service.fetch,
+			merge: collect,
+			cancelled: () => false,
+		});
+		expect(service.seen).toEqual([undefined, "f1"]);
+		expect(outcome?.page).toHaveLength(2);
+		// Not a failure, and it says so by having nothing to report.
+		expect(outcome?.stopped).toBeNull();
+	});
+
+	test("a service that repeats a cursor makes no progress, and cannot deepen the stack", async () => {
+		// Two consecutive pages answering with the same `nextCursor` would otherwise
+		// re-read one page for every remaining step and count each as another page of
+		// the window — a page NUMBER quietly wrong, which is the one defect a pager
+		// exists to avoid.
+		const service = walker(["f1", "f1", "f1"]);
+		const outcome = await walkWindow<Answer, Answer[]>({
+			walk: refreshWalk({ cursors: ["c1", "c2"], grounded: true }, 4),
+			fetch: service.fetch,
+			merge: collect,
+			cancelled: () => false,
+		});
+		expect(service.seen).toEqual([undefined, "f1"]);
+		expect(outcome?.trail).toEqual({ cursors: ["f1"], grounded: true });
+	});
+
+	test("a stop is reported with what it costs, and refusal is told from silence", async () => {
+		const failed = await walkWindow<Answer, Answer[]>({
+			walk: refreshWalk({ cursors: ["c1", "c2"], grounded: true }, 3),
+			fetch: walker(["f1", "f2"], { at: 2 }).fetch,
+			merge: collect,
+			cancelled: () => false,
+		});
+		expect(failed?.page).toHaveLength(2);
+		expect(failed?.stopped).toEqual({ description: "Try again.", refused: false });
+
+		// A REFUSED token is the sharper case: the window's own `nextCursor` IS that
+		// token, so the caller has to withdraw paging rather than promise it.
+		const refused = await walkWindow<Answer, Answer[]>({
+			walk: refreshWalk({ cursors: ["c1", "c2"], grounded: true }, 3),
+			fetch: walker(["f1", "f2"], { at: 1, refused: true }).fetch,
+			merge: collect,
+			cancelled: () => false,
+		});
+		expect(refused?.page).toHaveLength(1);
+		expect(refused?.stopped?.refused).toBe(true);
+		expect(refused?.stopped?.description).toBe(REFRESH_REFUSED_NOTE);
+	});
+
+	test("a walk the screen has moved on from commits nothing at all", async () => {
+		const outcome = await walkWindow<Answer, Answer[]>({
+			walk: refreshWalk({ cursors: [], grounded: true }, 2),
+			fetch: walker(["f1"]).fetch,
+			merge: collect,
+			cancelled: () => true,
+		});
+		expect(outcome).toBeNull();
+	});
+
+	test("a repeated boundary cannot deepen the rebuilt stack either", () => {
+		const walk = refreshWalk({ cursors: ["c1"], grounded: false }, 1);
+		// `kept` ends on the anchor, and a first response handing that same token
+		// back would push it twice.
+		expect(refreshedTrail(walk, ["c1", "f2"])).toEqual({
+			cursors: ["c1", "f2"],
+			grounded: false,
+		});
 	});
 });

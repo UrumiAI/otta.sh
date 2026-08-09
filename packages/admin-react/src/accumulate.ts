@@ -128,6 +128,25 @@ export interface PendingCursor<F> {
 	 * call site per screen sets this, and it is the one labelled `Load more`.
 	 */
 	readonly extend?: boolean;
+	/**
+	 * THIS REQUEST IS A REFRESH, and it is the WHOLE WINDOW rather than one page.
+	 *
+	 * WHY IT RIDES ON THE CURSOR AND NOT BESIDE IT — the reason {@link extend} and
+	 * the filter do. A refresh is issued by setting the pending cursor to the page
+	 * its window OPENS on, and "which request is this" has to arrive at the effect
+	 * in the same value as "which page", or one commit exists in which the anchor
+	 * has moved and the intent has not.
+	 *
+	 * IT CARRIES THE WINDOW IT WAS PLANNED FOR, captured at the click. The walk
+	 * cannot re-derive it later from state: a walk that stops part-way TRUNCATES
+	 * the trail (see {@link refreshedTrail}), so a Retry re-reading the trail would
+	 * plan a different, shallower walk from a different anchor — and the operator
+	 * pressing Retry is asking for the refresh they asked for the first time. The
+	 * anchor is in {@link value} because that is the one field that reaches the
+	 * wire; `depth`, `kept` and `grounded` are what the response is written back
+	 * with.
+	 */
+	readonly refresh?: RefreshWalk;
 }
 
 /**
@@ -182,6 +201,45 @@ export function continuationCursor<F>(
  */
 export function askedForPage<F>(cursor: PendingCursor<F> | null, applied: F): boolean {
 	return cursor !== null && cursor.filter === applied;
+}
+
+/**
+ * DID THE PREDICATE ACTUALLY MOVE? — the one question `Apply filters` never
+ * asked.
+ *
+ * WHAT IT IS FOR, and it is exactly one thing: an apply that changes the filter
+ * starts a new query and must collapse the scan to page one, because a cursor is
+ * meaningless against a predicate it was not issued under. An apply that changes
+ * NOTHING has no such licence — it is the same query restated, and throwing away
+ * an operator's accumulated pages for it is the defect this comparison exists to
+ * remove. The screens route the second case to a refresh instead.
+ *
+ * IT IS STRUCTURAL, DELIBERATELY, AND IT IS THE SAFE DIRECTION. Everything else
+ * on this module compares filters by IDENTITY ({@link continuationCursor}), for
+ * the stated reason that a structural match between two differently-derived
+ * filters would let a cursor be reused across a change. This comparison cannot
+ * cause that, because a match here means the applied filter object is KEPT — no
+ * new reference is created, so no held cursor's identity test changes answer. A
+ * false NEGATIVE here costs a collapse the operator would have got anyway; a
+ * false positive is unreachable, since the same fields compared equal.
+ *
+ * UNDEFINED IS ABSENT, not a value. Both screens normalize a submitted form down
+ * to the fields that are not at their default, so `{}` and `{ status: undefined }`
+ * are the same predicate and have to compare that way — a filter seeded from an
+ * address is built by a different path than one built by the panel.
+ */
+export function sameFilter<F extends object>(a: F, b: F): boolean {
+	if ((a as object) === (b as object)) return true;
+	const left = statedFields(a);
+	const right = new Map(statedFields(b));
+	if (left.length !== right.size) return false;
+	return left.every(([key, value]) => right.get(key) === value);
+}
+
+/** The fields a filter actually states — see {@link sameFilter}'s note on why an
+ *  explicitly `undefined` field is the same predicate as an absent one. */
+function statedFields(filter: object): [string, unknown][] {
+	return Object.entries(filter).filter(([, value]) => value !== undefined);
 }
 
 /**
@@ -352,13 +410,19 @@ export const CURSOR_RESET_DESCRIPTION =
  *
  * NO CAUSE, same doctrine as {@link CURSOR_RESET_DESCRIPTION}: a stale token, an
  * expired session and a settings read that blinked are one value by the time they
- * reach a screen. And no attempt at a fix the operator did not ask for — the two
- * things that restart paging honestly are a filter and a reload, so those are
- * what it names.
+ * reach a screen. And no attempt at a fix the operator did not ask for — the
+ * things that restart paging honestly are what it names.
+ *
+ * IT NAMES `Refresh` FIRST, now that there is one. A refresh re-reads the pages
+ * on screen and re-derives their boundaries from the responses, which is exactly
+ * what a refused continuation destroyed — so it is both the cheapest way out of
+ * this state and the only one that does not cost the operator their scan. A
+ * filter and a reload still work and still start over; they are the fallbacks
+ * now, not the whole answer.
  */
 export const PAGING_STOPPED_TITLE = "Paging stopped here";
 export const PAGING_STOPPED_DESCRIPTION =
-	"The rows already on screen are unaffected; the page that was asked for could not be opened. Apply a filter or reload to start again.";
+	"The rows already on screen are unaffected; the page that was asked for could not be opened. Refresh re-reads the pages on screen and can restart paging from there; a filter or a reload starts again.";
 
 /**
  * WHERE THE OPERATOR IS IN A KEYSET SCAN — a CLIENT-SIDE STACK of cursors.
@@ -474,6 +538,359 @@ export function pageNumber(trail: PageTrail): number | undefined {
  */
 export function hasPreviousPage(trail: PageTrail): boolean {
 	return trail.grounded ? trail.cursors.length > 0 : trail.cursors.length > 1;
+}
+
+/**
+ * A REFRESH, PLANNED — which pages are re-read, from where, and what of the walk
+ * survives it.
+ *
+ * WHAT A REFRESH IS, since nothing on these screens performed one before. An
+ * operator who has pressed `Load more` three times is reading fifty rows drawn
+ * from three responses, and the only acts that ever put a fresh read under them
+ * were `Apply filters`, which threw all three away and showed page one, and
+ * `Retry`, which re-read the ONE page that had failed and left the two above it
+ * exactly as stale as they were. So the screen could be made current, or it could
+ * keep the operator's depth, and never both — which is not a state a panel write
+ * can reconcile a row against.
+ *
+ * SO: RE-ASK THE QUESTIONS THAT PRODUCED WHAT IS ON SCREEN, IN ORDER. The window
+ * opens on a page — page one for a walk that started there, the address's own
+ * cursor for one that did not — and every page after it is reached by following
+ * the nextCursor of the page before. That is a WALK, not a replay: only the
+ * ANCHOR is a token this list already held; every boundary inside the window is
+ * re-derived from the responses as they come back now.
+ *
+ * WHY NOT REPLAY THE HELD CURSORS INSTEAD, which would be one request per page
+ * and could run them all at once. Because the held boundaries no longer line up
+ * with each other the moment anything is inserted above them: page one re-read
+ * under three new rows ends three rows EARLIER than the token that was minted
+ * from its old tail, so the rows in between are covered by no request in the set
+ * — a hole in the middle of the operator's window, silently. Re-deriving each
+ * boundary from the response before it cannot produce a hole, because each page
+ * begins exactly where the previous one ended. The cost is that the requests are
+ * necessarily SERIAL — `depth` round trips, one at a time — and that is the
+ * price of a window with nothing missing from it.
+ *
+ * THE ANCHOR IS WHY THIS IS NOT SIMPLY "WALK FROM PAGE ONE". A window that began
+ * at a deep link has no page number ({@link pageNumber} refuses to invent one),
+ * so walking `depth` pages from page one would land the operator on a different
+ * set of rows entirely and caption it as a refresh of the ones they were reading.
+ * An ungrounded walk is therefore anchored at the address's own cursor, which is
+ * the same token a reload of that address would send.
+ *
+ * AND THE ANCHOR — NOT {@link grounded} — IS WHAT SAYS WHETHER THE FIRST RESPONSE
+ * IS PAGE ONE. The two came apart in the first cut and it was a real defect: a
+ * GROUNDED stack describes a walk that STARTED at page one, which is what makes
+ * the page NUMBER knowable, and says nothing about where the window now sits. An
+ * operator three `Next` presses in is grounded and standing on page three, so a
+ * refresh anchored on page three's token that classified its answer as "page one"
+ * would caption a deep page as the start of the collection: an empty answer would
+ * claim the whole collection is empty, and a service that sends no `total` would
+ * drop the page-scoped hedge and state those rows as the entire set. The wire
+ * decides — a request that carried no token is page one, whoever asked for it —
+ * exactly as it does for every other response these lists classify.
+ */
+export interface RefreshWalk {
+	/** The page the window OPENS on — `undefined` is page one, asked for by
+	 *  sending no token. */
+	readonly anchor: string | undefined;
+	/** How many responses the window is made of, and therefore how many requests
+	 *  the walk makes at most. It stops early if the collection has since become
+	 *  shorter than the window. */
+	readonly depth: number;
+	/** The trail entries up to AND INCLUDING the anchor — the pages BELOW the
+	 *  window, which this walk does not re-read and does not re-derive. They stay
+	 *  exactly as valid as they were: a cursor is a keyset POSITION, so it neither
+	 *  expires nor depends on the row it was minted from still existing, and
+	 *  `Previous` has always re-requested rather than replayed rows. */
+	readonly kept: readonly string[];
+	/**
+	 * Did the walk being refreshed start at page one?
+	 *
+	 * IT IS ABOUT THE PAGE NUMBER AND NOTHING ELSE — carried so the rebuilt stack
+	 * keeps saying whether its depth is a position in the collection or merely a
+	 * count of pages walked from somewhere unnamed. It is NOT what decides whether
+	 * the first response of this walk is page one; {@link anchor} is, and the note
+	 * above says why conflating them mis-captions a deep page.
+	 */
+	readonly grounded: boolean;
+	/**
+	 * A VERDICT THE WIRE CANNOT RESTATE FOR THIS WALK, captured with the plan.
+	 *
+	 * WHY IT IS IN THIS VALUE and not beside it — the reason `PendingCursor` carries
+	 * its filter and its intent rather than letting the screen hold them separately:
+	 * a plan and a fact about the window it describes are one thing, and two pieces
+	 * of state set by one click can be read in either order, overwritten by a second
+	 * click, or replayed by a Retry that finds only one of them still true.
+	 *
+	 * THE ONE SUCH VERDICT TODAY is Pricing & inventory's `filterUnavailable`: only
+	 * a request carrying no cursor can say whether the low-stock predicate was
+	 * applied, because every continuation reports it available by contract. A walk
+	 * anchored anywhere but page one therefore cannot ask, and must carry the answer
+	 * it had. Absent means there is nothing to carry, which is what an unanchored
+	 * walk (and the Orders list, which has no such verdict) passes.
+	 */
+	readonly carried?: boolean;
+}
+
+/**
+ * THE WINDOW ON SCREEN, EXPRESSED AS A WALK — from the stack and the number of
+ * responses the rows were merged from.
+ *
+ * `span` IS THE WINDOW AND THE STACK IS THE POSITION, and it takes both. The
+ * stack's last entry is the page the window ENDS on; `span` (the list's
+ * `page.pages`) is how many responses are on screen at once, which is 1 for a
+ * pager step and grows only with `Load more`. So the window opens `span − 1`
+ * entries back up the stack, and an index that falls off the bottom of a GROUNDED
+ * stack is page one — the absence of an entry, which is exactly what page one is.
+ *
+ * AN UNGROUNDED STACK IS NEVER WALKED PAST ITS DEEPEST ENTRY. That entry is the
+ * address's own page and there is nothing recorded before it, so page one is not
+ * an answer here — it is a different place. Unreachable arithmetic today (every
+ * response after a deep link pushes an entry), and clamped rather than trusted,
+ * because the failure it would cause is silently relocating the operator.
+ */
+export function refreshWalk(trail: PageTrail, span: number, carried?: boolean): RefreshWalk {
+	const depth = Number.isSafeInteger(span) && span > 1 ? span : 1;
+	const floor = trail.grounded ? -1 : 0;
+	const index = Math.max(floor, trail.cursors.length - depth);
+	return {
+		anchor: index < 0 ? undefined : trail.cursors[index],
+		depth,
+		kept: trail.cursors.slice(0, index + 1),
+		grounded: trail.grounded,
+		...(carried === true ? { carried: true } : {}),
+	};
+}
+
+/**
+ * THE STACK A COMPLETED — OR ABANDONED — REFRESH LEAVES BEHIND.
+ *
+ * `walked` ARE THE BOUNDARIES THE WALK ACTUALLY CROSSED: the cursor each response
+ * after the first was fetched with, which are the ones the service issued during
+ * THIS refresh. They replace whatever the stack held for the inside of the
+ * window, because those old tokens describe boundaries that have moved.
+ *
+ * A SHORT WALK MAKES A SHORT STACK, and that is the honest answer rather than a
+ * lost one. A refresh that was refused at its third page has re-read two, and the
+ * window on screen is those two: a stack still claiming three would number the
+ * pages wrongly and offer a `Previous` into a page this list never established.
+ * Grounding is untouched — whether the walk started at page one is not something
+ * a refresh can change.
+ *
+ * IT PUSHES RATHER THAN CONCATENATES, so {@link pushedPage}'s idempotence covers
+ * this path too. A service that answers two consecutive pages with the same
+ * `nextCursor` — or one whose first answer hands back the very token the window is
+ * anchored on — would otherwise deepen the stack by an entry no page stands on,
+ * and that shows up as a page NUMBER that is quietly wrong. The walk itself stops
+ * on a repeated token for the same reason ({@link walkWindow}); this is the
+ * invariant underneath that guard rather than a second copy of it.
+ */
+export function refreshedTrail(walk: RefreshWalk, walked: readonly string[]): PageTrail {
+	return walked.reduce((trail, cursor) => pushedPage(trail, cursor), {
+		cursors: walk.kept,
+		grounded: walk.grounded,
+	});
+}
+
+/** Why a refresh walk stopped before it had re-read its whole window. */
+export interface RefreshStop {
+	/** What the screen may say about it — the fact, never the cause, per the same
+	 *  doctrine as {@link PAGING_STOPPED_DESCRIPTION}. */
+	readonly description: string;
+	/**
+	 * THE SERVICE REFUSED THE TOKEN THIS WALK MINTED, rather than failing to answer
+	 * at all — and the difference decides whether paging may be offered afterwards.
+	 *
+	 * The cursor the committed window ends on IS that refused token: it is the
+	 * `nextCursor` of the last page that answered, and the request the walk made
+	 * with it is the one that came back refused. So `Load more` from there would
+	 * re-send a token this list has just watched be rejected, and a notice promising
+	 * it gathers the missing pages would be walking the operator into the
+	 * paging-stopped state one click later.
+	 */
+	readonly refused: boolean;
+}
+
+/** What a walk leaves behind: the window it rebuilt (or `null` if it re-read
+ *  nothing), the stack that window stands on, and why it stopped if it did. */
+export interface RefreshOutcome<P> {
+	readonly page: P | null;
+	readonly trail: PageTrail;
+	readonly stopped: RefreshStop | null;
+}
+
+/**
+ * THE WALK ITSELF, ONCE, FOR BOTH LISTS.
+ *
+ * IT IS GENERIC OVER THE RESPONSE AND OVER THE PAGE IT BUILDS, which is the whole
+ * point: the control flow — the arrival of the first response, which boundaries
+ * get recorded, when to stop, and what the outcome is called — is one decision, and
+ * the first cut of this feature wrote it out twice. Both of the defects that
+ * survived review had to be found twice as a consequence. The screens keep exactly
+ * what is genuinely theirs: how to fetch, how to read a refusal off their own
+ * payload, and how to merge (which is where Pricing & inventory carries its
+ * low-stock verdict).
+ *
+ * THE FIRST RESPONSE IS CLASSIFIED OFF THE WIRE. A request that carried no token is
+ * page one and arrives as a `reset`; one that carried the window's anchor is a page
+ * standing on its own and arrives as a `replace`. Every step after it continues the
+ * window and is an `extend`. See {@link RefreshWalk} for why this is the anchor's
+ * question and never `grounded`'s.
+ *
+ * IT COMMITS NOTHING. The caller gets one value describing the whole walk, and
+ * writes it in a single transition — a window half re-read would otherwise carry one
+ * count line over rows taken at two different moments, and every intermediate render
+ * down a deep walk would state one.
+ *
+ * `cancelled` IS A FUNCTION, not a boolean, because it is read again after every
+ * await: the effect that started this walk can be superseded mid-flight by a filter
+ * apply or by another refresh, and a walk that checked a value captured at the top
+ * would commit into a screen that had moved on.
+ */
+export type RefreshAnswer<A> =
+	/** A page, and the boundary the next step continues from. */
+	| { readonly kind: "answer"; readonly page: A; readonly nextCursor: string | null }
+	/** No answer came back. The description is the service's; the title is not,
+	 *  because a whole-collection refusal is not what one refused page proves. */
+	| { readonly kind: "failure"; readonly description: string }
+	/** The service refused the token and answered page one instead. That payload is
+	 *  DISCARDED rather than merged: it answers a different question, and merging it
+	 *  would silently relocate a window that opens somewhere else. */
+	| { readonly kind: "refused" };
+
+export async function walkWindow<A, P>(opts: {
+	readonly walk: RefreshWalk;
+	/** One request, already read into the three things a walk can be told. Both
+	 *  screens narrow their own payload here and nowhere else. `step` is 0 for the
+	 *  window's own page, which is the only one a carried verdict applies to. */
+	readonly fetch: (cursor: string | undefined, step: number) => Promise<RefreshAnswer<A>>;
+	/** The list's own `nextPage` — how a response joins what the walk has built. */
+	readonly merge: (built: P | null, page: A, arrival: PageArrival) => P;
+	readonly cancelled: () => boolean;
+}): Promise<RefreshOutcome<P> | null> {
+	/** The cursors each response AFTER the first was fetched with — the boundaries
+	 *  this walk established, which become the stack. */
+	const walked: string[] = [];
+	let built: P | null = null;
+	let stopped: RefreshStop | null = null;
+	let at = opts.walk.anchor;
+	for (let step = 0; step < opts.walk.depth; step += 1) {
+		const answer = await opts.fetch(at, step);
+		if (opts.cancelled()) return null;
+		if (answer.kind === "failure") {
+			stopped = { description: answer.description, refused: false };
+			break;
+		}
+		if (answer.kind === "refused") {
+			stopped = { description: REFRESH_REFUSED_NOTE, refused: true };
+			break;
+		}
+		built = opts.merge(
+			built,
+			answer.page,
+			step === 0 ? (opts.walk.anchor === undefined ? "reset" : "replace") : "extend",
+		);
+		if (step > 0 && at !== undefined) walked.push(at);
+		const next = answer.nextCursor;
+		// NO NEXT PAGE is the collection having become shorter than the window, which
+		// is not a failure and says so by simply being smaller. A REPEATED token is a
+		// service making no progress, and following it would re-read one page for
+		// every remaining step while counting each as another page of the window.
+		if (next === null || next === at) break;
+		at = next;
+	}
+	return { page: built, trail: refreshedTrail(opts.walk, walked), stopped };
+}
+
+/**
+ * WHAT A REFRESH SAYS — ON THE CONTROL, AND WHEN IT DOES NOT FINISH.
+ *
+ * NOT IN THE SHARED COPY PACKAGE, and for the reason {@link CURSOR_RESET_TITLE}
+ * states rather than out of convenience: that package exists so the Block Kit
+ * tier and the React tier cannot drift on wording they BOTH render, and the Block
+ * Kit lists do not accumulate, have no window to reconcile and offer no refresh.
+ * These sentences have exactly one surface. If a second one ever grows them, they
+ * move.
+ *
+ * THE LABEL IS `Refresh`, NOT `Reload`. A reload is the browser's word for
+ * throwing the page away and starting again, which is precisely what this does
+ * NOT do — the operator's depth, filters and position all survive it.
+ *
+ * THE STOPPED NOTICE NAMES THE FACT AND NOT THE CAUSE, the same doctrine as
+ * {@link PAGING_STOPPED_DESCRIPTION}: a refused token, an expired session and a
+ * request that never arrived are one value by the time they reach a screen. What
+ * it must say instead is what the operator is now looking at — fewer pages than
+ * they had, all of them re-read — because that is the part they would otherwise
+ * have to discover by counting.
+ */
+export const REFRESH_LABEL = "Refresh";
+export const REFRESHING_LABEL = "Refreshing…";
+export const REFRESH_TITLE =
+	"Re-reads every page on screen. Rows that are no longer in the list stop being shown.";
+/** Why it is dimmed — see {@link refreshControl} for why this control says so and
+ *  the pager's own controls do not. */
+export const REFRESH_BUSY_TITLE = "Available once the read already in flight has answered.";
+export const REFRESH_FAILED_TITLE = "This list could not be refreshed";
+export const REFRESH_UNCHANGED_NOTE =
+	"Nothing on screen has changed — these rows are still the last answer that arrived.";
+export const REFRESH_REFUSED_NOTE = "The page this list opens on could not be re-opened.";
+export const REFRESH_STOPPED_TITLE = "Only part of this list was refreshed";
+export const REFRESH_STOPPED_DESCRIPTION =
+	"The pages shown were re-read and are current. The ones after them could not be, so they are no longer shown — Load more gathers them again.";
+/**
+ * AND THE SAME STOP WHEN THE PAGE WAS REFUSED RATHER THAN UNANSWERED.
+ *
+ * IT NEEDS ITS OWN SENTENCE FOR TWO REASONS, and the first is that the other two
+ * are both false here. `PAGING_STOPPED_DESCRIPTION` opens by promising the rows on
+ * screen are unaffected — they are not, this walk replaced them with fewer pages —
+ * and {@link REFRESH_STOPPED_DESCRIPTION} ends by naming `Load more`, which is the
+ * one control that cannot help: the window now ends on the very token that was
+ * refused (see {@link RefreshStop.refused}), so pressing it re-sends it.
+ *
+ * SO IT STATES THE THREE FACTS THE OPERATOR IS STANDING IN: the list came back
+ * shorter, there is no way on from here, and the act that can restore both is the
+ * one they just pressed — a fresh walk re-derives every boundary, which is exactly
+ * what a refused token means it could not do this time.
+ */
+export const REFRESH_HALTED_TITLE = "This list came back shorter, and paging has stopped";
+export const REFRESH_HALTED_DESCRIPTION =
+	"The pages shown were re-read and are current. The page after them would not open, so it is not shown and there is no way on from here. Refresh again to re-read the list and restart paging.";
+
+/**
+ * THE CONTROL, AND WHAT IT PROMISES BEFORE IT IS PRESSED.
+ *
+ * IT IS A {@link PagerControl} AND IT IS DRAWN BY `PagerButton`, which is not
+ * decoration: that control keeps its tab stop when it goes unavailable and says
+ * why, and this is the one button on the screen whose own click makes it
+ * unavailable while the operator's focus is sitting on it. A `disabled` button
+ * would drop that focus to `<body>`, halfway down a list, mid-refresh.
+ *
+ * ONE REQUEST AT A TIME, ACROSS THE WHOLE SCREEN. `busy` is every in-flight read
+ * this list has — a first load, a filter apply, a pager step, a `Load more`, and
+ * a refresh already running — and all of them make this unavailable. Two refreshes
+ * overlapping would race two rebuilds of the same window into one state; a refresh
+ * launched over a pending `Load more` would rebuild the window and then have the
+ * older page land on top of it, merged against boundaries that no longer exist.
+ *
+ * THE TITLE FOLLOWS THE STATE, and this is the one place the pager's rule is
+ * deliberately not copied. `Next` says nothing while it is merely busy, because
+ * "busy" is not a place and its own words do not change. This control's words DO:
+ * its live title states a cost — that it re-reads every page on screen and that
+ * rows gone from the collection will stop being shown — and leaving that sentence
+ * attached to a control that is currently refusing the click describes an act that
+ * is not on offer. So while it is unavailable it says why, and it states the cost
+ * only when pressing it would incur one.
+ */
+export function refreshControl(opts: {
+	readonly busy: boolean;
+	readonly refreshing: boolean;
+}): PagerControl {
+	return {
+		label: opts.refreshing ? REFRESHING_LABEL : REFRESH_LABEL,
+		unavailable: opts.busy,
+		title: opts.busy ? REFRESH_BUSY_TITLE : REFRESH_TITLE,
+	};
 }
 
 /** One pager control: what it says, whether it can be used, and — when it

@@ -309,9 +309,24 @@ test("a cold failure withdraws the filter panel; a stale one keeps it populated"
 	// STALE: a page landed, a later request failed. The operator's typed filters
 	// are input rather than answer, so the panel stays — and its selects stay
 	// populated, because the vocabulary survived the clear.
+	//
+	// THE FILTER IS GENUINELY CHANGED FIRST, and that is what makes this the stale
+	// case rather than a refresh: `Apply filters` over an UNCHANGED predicate is a
+	// refresh of the window on screen, and a refresh that fails leaves those rows
+	// standing by design. A fresh load under a NEW predicate is the request whose
+	// failure disproves them.
 	apiFetch.mockImplementation(() => Promise.resolve(page()));
 	const stale = await mountList();
 	apiFetch.mockImplementation(() => Promise.resolve(new Response("", { status: 500 })));
+	const search = stale.querySelector<HTMLInputElement>('[data-testid="filter-search"]');
+	expect(search).not.toBeNull();
+	await React.act(async () => {
+		Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
+			search,
+			"widget",
+		);
+		search?.dispatchEvent(new Event("input", { bubbles: true }));
+	});
 	const apply = stale.querySelector<HTMLButtonElement>('[data-testid="apply-filters"]');
 	expect(apply).not.toBeNull();
 	if (apply !== null) await fire(apply, "click");
