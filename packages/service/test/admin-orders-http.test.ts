@@ -243,4 +243,173 @@ describe.skipIf(PG === undefined)("admin Orders console HTTP contract", () => {
 		const orders = (await json(res)).orders as Array<Record<string, unknown>>;
 		expect(orders.map((o) => o.id)).toEqual(["ord-3", "ord-cancel", "ord-2", "ord-1"]);
 	});
+
+	// -- a cursor that disagrees with the query's filters fails CLOSED ----------
+	//
+	// The token is authoritative for paging AND carries the filter it was minted
+	// under, so a request that ALSO spells that filter out in the query string can
+	// contradict it. Resolving the contradiction in the token's favour is silent
+	// divergence: the address claims one predicate while the rows answer another,
+	// and nothing in the response says so. PRESENT filter params must therefore
+	// canonicalize to exactly the token's filter; ABSENT ones claim nothing (the
+	// cursor-alone request every client sends today must keep working).
+	//
+	// The four quadrants are pinned below: cursor alone, cursor + agreeing params,
+	// cursor + disagreeing params, params alone.
+
+	test("quadrant: cursor + AGREEING filter params pages byte-identically to the cursor ALONE", async () => {
+		await seed();
+		const page1 = await json(await get("/orders?states=paid&limit=2"));
+		const cursor = encodeURIComponent(page1.nextCursor as string);
+
+		const aloneRes = await get(`/orders?cursor=${cursor}`);
+		const alone = await aloneRes.text();
+		const agreeRes = await get(`/orders?cursor=${cursor}&states=paid`);
+		expect(aloneRes.status).toBe(200);
+		expect(agreeRes.status).toBe(200);
+		// BYTE-identical — same rows, same total, same nextCursor. The agreeing
+		// params are redundant, not a second opinion.
+		expect(await agreeRes.text()).toBe(alone);
+		const parsed = JSON.parse(alone) as { orders: Array<{ id: string }>; total: number };
+		expect(parsed.orders.map((o) => o.id)).toEqual(["ord-1"]);
+		expect(parsed.total).toBe(3);
+	});
+
+	test("quadrant: cursor + DISAGREEING filter params ⇒ 400, never a silently divergent page", async () => {
+		await seed();
+		// An UNFILTERED first page mints an UNFILTERED token. Paging it with
+		// `states=paid` beside it used to answer 200 with the unfiltered set —
+		// four orders under an address that claims only the paid ones.
+		const unfiltered = await json(await get("/orders?limit=1"));
+		const unfilteredCursor = encodeURIComponent(unfiltered.nextCursor as string);
+		const res = await get(`/orders?cursor=${unfilteredCursor}&states=paid`);
+		expect(res.status).toBe(400);
+		expect(await json(res)).toEqual({ error: "cursor filter mismatch" });
+
+		// And the mirror: a FILTERED token under a different states value.
+		const paid = await json(await get("/orders?states=paid&limit=1"));
+		const paidCursor = encodeURIComponent(paid.nextCursor as string);
+		expect((await get(`/orders?cursor=${paidCursor}&states=cancelled`)).status).toBe(400);
+		// Every filter axis participates, not just `states` — BOTH window bounds
+		// included.
+		expect((await get(`/orders?cursor=${paidCursor}&states=paid&search=ord-2`)).status).toBe(400);
+		expect(
+			(await get(`/orders?cursor=${paidCursor}&states=paid&from=2026-07-01T00:00:00.000Z`)).status,
+		).toBe(400);
+		expect(
+			(await get(`/orders?cursor=${paidCursor}&states=paid&to=2026-08-01T00:00:00.000Z`)).status,
+		).toBe(400);
+	});
+
+	test("an unparseable `states` beside a cursor is the invalid-FILTER 400, not the mismatch one", async () => {
+		await seed();
+		const page1 = await json(await get("/orders?states=paid&limit=2"));
+		const cursor = encodeURIComponent(page1.nextCursor as string);
+		// Newly REACHABLE: the cursor arm used to ignore the query's states
+		// outright, so an unknown token beside a cursor answered 200. It now gets
+		// the answer the no-cursor arm has always given — and it is the
+		// invalid-filter 400, not the mismatch one, because the request is
+		// unanswerable before there is anything to compare.
+		const res = await get(`/orders?cursor=${cursor}&states=bogus-state`);
+		expect(res.status).toBe(400);
+		expect(await json(res)).toEqual({ error: "invalid states filter" });
+		// The same value with no cursor is the same 400 — one rule, both arms.
+		expect(await json(await get("/orders?states=bogus-state"))).toEqual({
+			error: "invalid states filter",
+		});
+	});
+
+	test("quadrant: filter params ALONE (no cursor) are untouched by the gate", async () => {
+		await seed();
+		const body = await json(await get("/orders?states=paid"));
+		expect((body.orders as Array<Record<string, unknown>>).map((o) => o.id)).toEqual([
+			"ord-3",
+			"ord-2",
+			"ord-1",
+		]);
+		expect(body.total).toBe(3);
+	});
+
+	test("a filter axis the query OMITS is still a disagreement when the token carries it", async () => {
+		await seed();
+		// The token carries states + a window; the address claims only the states.
+		// A subset is not agreement — the rows are narrower than the address says.
+		const page1 = await json(
+			await get("/orders?states=paid&from=2026-07-10T00:00:00.000Z&limit=2"),
+		);
+		const cursor = encodeURIComponent(page1.nextCursor as string);
+		expect((await get(`/orders?cursor=${cursor}&states=paid`)).status).toBe(400);
+		// Spelling BOTH axes out agrees, and pages.
+		expect(
+			(await get(`/orders?cursor=${cursor}&states=paid&from=2026-07-10T00:00:00.000Z`)).status,
+		).toBe(200);
+	});
+
+	test("canonicalization: state ORDER, duplicates and datetime SPELLING are not disagreements", async () => {
+		await seed();
+		const page1 = await json(await get("/orders?states=paid,cancelled&limit=2"));
+		const cursor = encodeURIComponent(page1.nextCursor as string);
+		const alone = await (await get(`/orders?cursor=${cursor}`)).text();
+		// Same SET of states, written in the other order — and with a duplicate.
+		expect(await (await get(`/orders?cursor=${cursor}&states=cancelled,paid`)).text()).toBe(alone);
+		expect(await (await get(`/orders?cursor=${cursor}&states=paid,paid,cancelled`)).text()).toBe(
+			alone,
+		);
+
+		// A window bound is an INSTANT, not a string: the same moment spelled with
+		// and without the fractional part is the same filter.
+		const windowed = await json(
+			await get("/orders?states=paid&from=2026-07-10T00:00:00.000Z&limit=2"),
+		);
+		const windowedCursor = encodeURIComponent(windowed.nextCursor as string);
+		const windowedAlone = await (await get(`/orders?cursor=${windowedCursor}`)).text();
+		expect(
+			await (
+				await get(`/orders?cursor=${windowedCursor}&states=paid&from=2026-07-10T00:00:00Z`)
+			).text(),
+		).toBe(windowedAlone);
+	});
+
+	test("a `limit` that disagrees with the token's embedded limit ⇒ 400; an agreeing one pages", async () => {
+		await seed();
+		const page1 = await json(await get("/orders?states=paid&limit=2"));
+		const cursor = encodeURIComponent(page1.nextCursor as string);
+		const alone = await (await get(`/orders?cursor=${cursor}`)).text();
+
+		// The shape live clients send today: cursor + the same page limit.
+		const agree = await get(`/orders?cursor=${cursor}&limit=2`);
+		expect(agree.status).toBe(200);
+		expect(await agree.text()).toBe(alone);
+
+		const disagree = await get(`/orders?cursor=${cursor}&limit=5`);
+		expect(disagree.status).toBe(400);
+		expect(await json(disagree)).toEqual({ error: "cursor filter mismatch" });
+	});
+
+	test("the limit gate compares the EFFECTIVE page size, which is the token's whenever it is usable", async () => {
+		await seed();
+		// A FINITE but out-of-range token limit is clamped and HONORED (MOD-1) —
+		// the query's own value is never consulted — so a page of 100 beside a
+		// request asking for 50 is a real disagreement, not a spurious one.
+		const clamped = b64url({
+			pos: { createdAt: "2999-01-01T00:00:00.000Z", id: "zzzz" },
+			filter: {},
+			limit: 999_999,
+		});
+		expect((await get(`/orders?cursor=${clamped}&limit=50`)).status).toBe(400);
+		// The same token ALONE still pages, clamped, exactly as it did before.
+		expect((await get(`/orders?cursor=${clamped}`)).status).toBe(200);
+
+		// A token limit that is not a finite number is UNUSABLE, and only then is
+		// the query's value the one honored — so it agrees with itself rather than
+		// 400ing, and the page it describes is the page it gets.
+		const unusable = b64url({
+			pos: { createdAt: "2999-01-01T00:00:00.000Z", id: "zzzz" },
+			filter: {},
+			limit: "not-a-number",
+		});
+		const res = await get(`/orders?cursor=${unusable}&limit=3`);
+		expect(res.status).toBe(200);
+		expect((await json(res)).orders as unknown[]).toHaveLength(3);
+	});
 });

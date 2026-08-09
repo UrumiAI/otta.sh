@@ -60,10 +60,12 @@ import {
 	orderListFilterSchema,
 	orderPathParams,
 	ordersListQuery,
+	type OrdersListQuery,
 	orderStateEnum,
 	productListFilterSchema,
 	productPathParams,
 	productsListQuery,
+	type ProductsListQuery,
 	recordFulfillmentBody,
 	refundOrderBody,
 	resolveReconciliationBody,
@@ -129,7 +131,8 @@ export function adminRoutes(deps: AdminRoutesDeps): Hono {
 		const denied = requireInternalToken(c, deps.internalToken);
 		if (denied !== null) return denied;
 
-		const parsed = ordersListQuery.safeParse(c.req.query());
+		const rawQuery = c.req.query();
+		const parsed = ordersListQuery.safeParse(rawQuery);
 		if (!parsed.success)
 			return c.json({ error: "invalid query", issues: parsed.error.issues }, 400);
 		const q = parsed.data;
@@ -154,6 +157,38 @@ export function adminRoutes(deps: AdminRoutesDeps): Hono {
 			filter = toFilter(filterParsed.data);
 			cursorPos = posParsed;
 			limit = clampLimit(decoded.limit, q.limit);
+
+			// The token is authoritative for paging — but a request may ALSO spell
+			// the filter out beside it, and then the two can CONTRADICT each other.
+			// Resolving that silently in the token's favour is the defect: the
+			// request claims one predicate while the rows answer another, and
+			// nothing in the response says so. So a disagreement fails CLOSED.
+			// ABSENT params claim nothing — the cursor-alone request every client
+			// sends today is untouched.
+			if (hasOrderFilterParams(q)) {
+				const claimed = buildFilterFromQuery(q.states, q.from, q.to, q.search);
+				if (claimed === null) return c.json({ error: "invalid states filter" }, 400);
+				if (canonicalFilter(claimed) !== canonicalFilter(filter)) {
+					return c.json({ error: "cursor filter mismatch" }, 400);
+				}
+			}
+			// The page size rides in the token too, and disagrees the same way: a
+			// request asking for 50 rows while the token says 25 is the same
+			// contradiction in a different field. It shares the one mismatch code
+			// because it has the one remedy — drop the cursor and re-issue the first
+			// page from the parameters — and splitting it would buy a client a
+			// distinction it cannot act on differently.
+			//
+			// Compared against the EFFECTIVE limit, which is what the page will
+			// actually be. `clampLimit` prefers the token's value whenever it is a
+			// FINITE number and clamps it into range; the query's value is honored
+			// ONLY when the token's is missing or non-finite. So a token carrying
+			// 999_999 pages at 100 and a `?limit=50` beside it is a real
+			// disagreement (400), while a token carrying nothing usable pages at
+			// exactly the query's limit and agrees with it.
+			if (rawQuery.limit !== undefined && q.limit !== limit) {
+				return c.json({ error: "cursor filter mismatch" }, 400);
+			}
 		} else {
 			// First page: build the filter from the query string (CSV states →
 			// per-token validated enum array), validate the assembled filter, and take
@@ -215,7 +250,8 @@ export function adminRoutes(deps: AdminRoutesDeps): Hono {
 		const denied = requireInternalToken(c, deps.internalToken);
 		if (denied !== null) return denied;
 
-		const parsed = productsListQuery.safeParse(c.req.query());
+		const rawQuery = c.req.query();
+		const parsed = productsListQuery.safeParse(rawQuery);
 		if (!parsed.success)
 			return c.json({ error: "invalid query", issues: parsed.error.issues }, 400);
 		const q = parsed.data;
@@ -241,14 +277,21 @@ export function adminRoutes(deps: AdminRoutesDeps): Hono {
 			filter = toProductFilter(filterParsed.data);
 			cursorPos = posParsed;
 			limit = clampLimit(decoded.limit, q.limit);
+
+			// Fails CLOSED on a cursor that disagrees with the query's own filter or
+			// limit — see the Orders list above for why, of which this is the exact
+			// mirror. `lowStockThreshold` is one of the axes compared, because it is
+			// one of the axes the token carries.
+			if (hasProductFilterParams(q)) {
+				if (canonicalFilter(buildProductFilterFromQuery(q)) !== canonicalFilter(filter)) {
+					return c.json({ error: "cursor filter mismatch" }, 400);
+				}
+			}
+			if (rawQuery.limit !== undefined && q.limit !== limit) {
+				return c.json({ error: "cursor filter mismatch" }, 400);
+			}
 		} else {
-			filter = toProductFilter({
-				active: q.active === undefined ? undefined : q.active === "true",
-				deleted: q.deleted === undefined ? undefined : q.deleted === "true",
-				productKind: q.productKind,
-				search: q.search,
-				lowStockThreshold: q.lowStockThreshold,
-			});
+			filter = buildProductFilterFromQuery(q);
 			cursorPos = null;
 			limit = q.limit;
 		}
@@ -1146,6 +1189,122 @@ function buildFilterFromQuery(
 	if (to !== undefined) filter.to = to;
 	if (search !== undefined) filter.search = search;
 	return filter;
+}
+
+/**
+ * Every order-list query param that is a FILTER axis — i.e. every one except the
+ * two paging controls. Written as an exhaustive key map rather than a chain of
+ * `||`s so that adding an axis to `ordersListQuery` without teaching the
+ * presence check about it is a COMPILE error, not a silently unguarded axis that
+ * a cursor request could then contradict for free.
+ */
+const ORDER_FILTER_PARAMS = {
+	states: true,
+	from: true,
+	to: true,
+	search: true,
+} satisfies Record<Exclude<keyof OrdersListQuery, "cursor" | "limit">, true>;
+
+/** Did the request SPELL OUT any order filter axis? Presence, not value — an
+ *  absent param claims nothing, so a cursor-alone request is never compared
+ *  against (and never 400s on) the filter its token carries. */
+function hasOrderFilterParams(q: OrdersListQuery): boolean {
+	return (Object.keys(ORDER_FILTER_PARAMS) as (keyof typeof ORDER_FILTER_PARAMS)[]).some(
+		(key) => q[key] !== undefined,
+	);
+}
+
+/** The product-list twin of `buildFilterFromQuery`: the domain filter a raw
+ *  query string asks for. Used by BOTH the first-page arm and the cursor arm's
+ *  agreement check, so the two can never normalize a filter differently. */
+function buildProductFilterFromQuery(q: ProductsListQuery): ProductListFilter {
+	return toProductFilter({
+		active: q.active === undefined ? undefined : q.active === "true",
+		deleted: q.deleted === undefined ? undefined : q.deleted === "true",
+		productKind: q.productKind,
+		search: q.search,
+		lowStockThreshold: q.lowStockThreshold,
+	});
+}
+
+/** `ORDER_FILTER_PARAMS` for the product list — exhaustive for the same reason. */
+const PRODUCT_FILTER_PARAMS = {
+	active: true,
+	deleted: true,
+	productKind: true,
+	search: true,
+	lowStockThreshold: true,
+} satisfies Record<Exclude<keyof ProductsListQuery, "cursor" | "limit">, true>;
+
+/** `hasOrderFilterParams` for the product list. */
+function hasProductFilterParams(q: ProductsListQuery): boolean {
+	return (Object.keys(PRODUCT_FILTER_PARAMS) as (keyof typeof PRODUCT_FILTER_PARAMS)[]).some(
+		(key) => q[key] !== undefined,
+	);
+}
+
+/**
+ * A list filter rendered so that two filters can be compared as PREDICATES, not
+ * as JSON text.
+ *
+ * Each side arrives already normalized, by a DIFFERENT route: the token's filter
+ * through `*ListFilterSchema` + `to*Filter` (decode, re-validate, drop the
+ * `undefined` keys), the query's through `buildFilterFromQuery` /
+ * `buildProductFilterFromQuery` (the same builders the first-page arm uses, so
+ * the query side is normalized exactly once and identically in both arms). The
+ * two agree on SHAPE by construction. What is left is the gap between "the same
+ * predicate" and "the same spelling", and closing it is this function's whole
+ * job — an agreeing request must never 400 by accident:
+ *   - key ORDER is irrelevant (sorted),
+ *   - an absent axis and an `undefined` one are the same thing (dropped),
+ *   - an OR-able array is a SET (sorted, deduped): `states=paid,cancelled` and
+ *     `states=cancelled,paid,paid` select the same rows,
+ *   - a window bound is an INSTANT, not a string: `...T00:00:00Z` and
+ *     `...T00:00:00.000Z` are the same moment,
+ *   - an axis whose value is its own default is dropped — see `isNoOpAxis`.
+ * Case is deliberately NOT folded: the store's own case-insensitivity is the
+ * store's business, and a token round-trips whatever the query said.
+ *
+ * FILE-LOCAL ON PURPOSE, FOR NOW. This and the `has*FilterParams` predicates
+ * serve the two list routes in this file. The rules-admin coupons list has the
+ * same cursor shape and the same unclosed gap; when it is closed, these should
+ * be LIFTED into a shared module and reused — a second copy would be free to
+ * drift on exactly the canonicalization details this exists to pin.
+ */
+function canonicalFilter(filter: OrderListFilter | ProductListFilter): string {
+	const entries = (Object.entries(filter) as [string, unknown][])
+		.filter(([key, value]) => value !== undefined && !isNoOpAxis(key, value))
+		.map(([key, value]): [string, unknown] => [key, canonicalFilterValue(key, value)])
+		.toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+	return JSON.stringify(entries);
+}
+
+/**
+ * Is this axis, at this value, indistinguishable from omitting it?
+ *
+ * `deleted: false` is: the tombstone axis is `deleted_at IS NULL` for EVERY
+ * value except `true` (`filter.deleted === true ? "is not" : "is"` in the store,
+ * and the port doc says so), so `?deleted=false` and no `deleted` at all issue
+ * the same SQL and select the same rows. Comparing them as distinct would 400
+ * two spellings of one predicate — precisely the failure this gate exists to
+ * prevent, inverted.
+ *
+ * `active: false` is NOT: the store emits a real `active = 0` for it (an integer
+ * column, `filter.active ? 1 : 0`), so it and an omitted `active` are genuinely
+ * different predicates and must keep disagreeing. The asymmetry is the store's,
+ * not a tidying opportunity.
+ */
+function isNoOpAxis(key: string, value: unknown): boolean {
+	return key === "deleted" && value === false;
+}
+
+function canonicalFilterValue(key: string, value: unknown): unknown {
+	if (Array.isArray(value)) return [...new Set(value as unknown[])].toSorted();
+	if ((key === "from" || key === "to") && typeof value === "string") {
+		const ms = Date.parse(value);
+		return Number.isNaN(ms) ? value : new Date(ms).toISOString();
+	}
+	return value;
 }
 
 /** Narrow a validated-filter zod result back into the domain `OrderListFilter`

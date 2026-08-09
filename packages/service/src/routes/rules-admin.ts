@@ -222,6 +222,14 @@ export function rulesAdminRoutes(deps: RulesAdminDeps): Hono {
 			// 500s (MOD-1, mirrors the Products list). The decoded filter is
 			// RE-VALIDATED through zod and the decoded limit RE-CLAMPED server-side
 			// (never trusted past max=100).
+			//
+			// NOT yet at parity with the Orders/Products lists: those now fail CLOSED
+			// when a request carries a cursor AND query filter/limit params that
+			// disagree with the token's, while this arm still takes the predicate
+			// SOLELY from the token and ignores the query's `search`/`limit`. Closing
+			// it means lifting `canonicalFilter` / `has*FilterParams` out of
+			// `admin.ts` and reusing them here — not copying them, which would let
+			// the two canonicalizations drift apart.
 			const decoded = decodeCouponCursor(q.cursor);
 			if (decoded === null) return c.json({ error: "invalid cursor" }, 400);
 			const filterParsed = couponListFilterSchema.safeParse(decoded.filter);
