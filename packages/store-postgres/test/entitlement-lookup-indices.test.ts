@@ -112,6 +112,11 @@ async function explainEachCheckShape(
 	expect(captured[0]?.sql).toContain("order_id");
 	// (2) buyer scope — the session path; a lower-normalized session email must
 	//     match the mixed-case checkout ref, so the compare side is folded.
+	//     This fold assertion is load-bearing, not decoration: a functional
+	//     index still gets NAMED in the plan of a differently-folded predicate,
+	//     because its trailing `sku, state` columns remain usable while the
+	//     rewritten expression degrades to a heap filter. The plan check alone
+	//     would therefore survive a switch to `upper()`; this one would not.
 	const buyerScope = await run({ buyerRef: TARGET_BUYER_REF.toUpperCase(), sku: toSku(SKU) });
 	expect(captured[0]?.sql).toContain("lower(buyer_ref)");
 	// (3) both — the operator-authenticated shape, which ANDs the two.
