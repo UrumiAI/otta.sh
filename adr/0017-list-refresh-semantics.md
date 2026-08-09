@@ -95,7 +95,7 @@ Lingering was rejected: keeping a row the collection no longer has makes the scr
 a record that is not there, at the exact moment the operator asked whether it still was,
 and puts it in the count.
 
-### 3. `Apply filters` over an unchanged predicate is a refresh; over a changed one it still collapses
+### 3. An unchanged predicate re-applied is a refresh; a changed one still collapses
 
 Discarding an accumulated scan is licensed by exactly one thing — the predicate moved, so
 the cursors underneath those pages describe a set the operator has left. When the
@@ -137,9 +137,12 @@ ever grows these sentences, they move.
   live cursor. **Unless the stop was a refusal**, and then that promise would be false: the
   committed window's own `nextCursor` *is* the token the service just rejected, so `Load
   more` would re-send it and land the operator in the paging-stopped state one click later.
-  A refused stop therefore withdraws paging and draws that state's own notice, whose remedy
-  — a refresh, which re-derives every boundary — is the one that can actually restore it.
-  The notice is announced rather than merely rendered, per the obligation in clause 2.
+  A refused stop therefore withdraws paging, **under its own sentence rather than the
+  paging-stopped one**: that notice opens by promising the rows on screen are unaffected,
+  and this walk has just replaced them with fewer pages. The third sentence states the
+  three facts the operator is standing in — the list came back shorter, there is no way on
+  from here, and a fresh walk is what can restore both. Both stop notices are announced
+  rather than merely rendered, per the obligation in clause 2.
 - **A walk that re-read NOTHING.** Nothing is replaced. The window on screen is still
   coherent — every boundary in it still lines up with the one before — so it is left entirely
   alone, and an inline card says the refresh did not happen. It is classified as a page-move
@@ -149,12 +152,14 @@ ever grows these sentences, they move.
   page one. That payload is discarded rather than merged: it answers a different question, and
   merging it would silently relocate a window that opens somewhere else, under the word
   `Refresh`.
-- **The plan is made from the stack the rows on screen were fetched by.** The stack moves on
-  the click and the rows move on the answer, so between them — and after a page move that
-  failed or was refused — it holds one entry more than the window it describes. The pager is
-  withdrawn in exactly those states so nothing else reads that entry; a refresh would, and one
-  entry of drift moves the anchor a whole page, answering "the same query restated" with a
-  different one.
+- **The plan is made from the stack the rows on screen were fetched by**, which is KEPT
+  rather than derived. The stack moves on the click and the rows move on the answer, so after
+  a page move that failed or was refused the two describe different places, and one entry of
+  drift moves a refresh's anchor a whole page — answering "the same query restated" with a
+  different query. Computing it as an offset from the current stack is not merely fragile, it
+  is wrong in one direction outright: `Previous` pops *before* it asks, so subtracting an
+  entry there lands two pages behind and turns page three into page one. What was true when
+  the rows arrived is recorded when they arrive.
 - **`Retry` after a refresh re-issues the whole walk**, not one page, because the walk is
   carried on the cursor the retry replays. The window it was planned for is captured at the
   click for the same reason: a truncated stack must not re-plan a shallower walk from a
@@ -190,10 +195,13 @@ silently costing an operator their scan.
 
 Harder, and accepted: a refresh of a deep window is N serial round trips, so it is
 visibly slower than a page load and the control says nothing during it beyond its own busy
-label — and for that whole time the list takes no other read, `Apply filters` included. Rows can disappear at a moment the operator chose — that is the point, but it is
-still a change under their eyes, and the count line is the only thing that reports it.
-A window can come back shorter than it went in, either because the collection shrank or
-because the walk stopped, and only the second of those says so.
+label — and for that whole time the list takes no other read, `Apply filters` included.
+Rows can disappear at a moment the operator chose — that is the point, but it is still a
+change under their eyes. A window can also come back shorter than it went in, and the two
+reasons read differently: a collection that simply shrank is reported by the count line
+alone, while a walk that stopped short says so in its own announced notice — one sentence
+if the missing pages can still be gathered, a different one if the stop was a refusal and
+paging went with it.
 
 The walk itself is one function both lists call, not a shape each of them spells out:
 which response is the window's own page, which boundaries get recorded, when to stop and
