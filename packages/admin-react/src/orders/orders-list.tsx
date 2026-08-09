@@ -632,10 +632,13 @@ export function OrdersList({
 	 * arrived, so it is kept.
 	 *
 	 * REFS because they are written when a response lands and read inside a click,
-	 * and nothing renders from either.
+	 * and nothing renders from either. Both are seeded from `trail`'s own first
+	 * value rather than re-deriving it: `useRef`'s argument is evaluated on every
+	 * render and used on none but the first, so the seeding belongs where it already
+	 * happens once — the state initializer above.
 	 */
-	const askedStack = React.useRef<PageTrail>(initialTrail ?? seedTrail(initialCursor));
-	const landedStack = React.useRef<PageTrail>(initialTrail ?? seedTrail(initialCursor));
+	const askedStack = React.useRef<PageTrail>(trail);
+	const landedStack = React.useRef<PageTrail>(trail);
 	/**
 	 * ONE CLEARED CURSOR THAT MUST NOT RE-FETCH.
 	 *
@@ -1082,8 +1085,15 @@ export function OrdersList({
 		setDraft(next);
 		setCursor(null);
 		// A new predicate is asked for at page one, and that is the stack this
-		// request goes out under.
+		// request goes out under — AND the stack the rows will have been fetched by,
+		// whatever happens to this request. Leaving the landed one holding the old
+		// predicate's cursors is how a filter apply that FAILED turned the next
+		// `Apply` into a refresh anchored on a token minted under the filter the
+		// operator just left: the service fail-closes it every time, so the act can
+		// never succeed, and the emptied screen reads as an answer to a query nobody
+		// ran. Both stacks reset with the predicate, for the reason below.
 		askedStack.current = FIRST_PAGE;
+		landedStack.current = FIRST_PAGE;
 		// THE STACK RESETS WITH THE PREDICATE, and this is not tidiness. A cursor
 		// is only meaningful against the filter it was issued under, so a stack that
 		// survived an apply would hand `Previous` a token from the set the operator

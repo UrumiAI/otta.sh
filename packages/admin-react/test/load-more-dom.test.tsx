@@ -17,8 +17,8 @@
 import { PRODUCTS_PAGE_FAILED_TITLE } from "@otta-sh/admin-presentation";
 import {
 	REFRESH_BUSY_TITLE,
-	REFRESH_HALTED_TITLE,
 	REFRESH_FAILED_TITLE,
+	REFRESH_HALTED_TITLE,
 	REFRESH_STOPPED_TITLE,
 	REFRESH_UNCHANGED_NOTE,
 } from "../src/accumulate.js";
@@ -1308,4 +1308,32 @@ test("the same, on a window a LINK opened: it is never walked back to page one",
 	expect(asked[0]?.cursor).toBe("at-4-0");
 	expect(asked).toHaveLength(2);
 	expect(rowIds(view, "orders-row")).toEqual(["o-5", "o-6", "o-7", "o-8"]);
+});
+
+test("a refresh after a FAILED filter apply walks from page one under the new filter", async () => {
+	// Page three, reached by paging — so the stack the rows were fetched by ends on
+	// a real token, which is what makes this reachable at all.
+	view = await walkToPageThree();
+	// A filter change whose first page never arrives. The rows go with it, and the
+	// stack the operator was standing on describes a predicate they have left.
+	refuseAfterRequests(0);
+	await React.act(async () => {
+		retype(element(view as Mounted, "filter-status") as HTMLSelectElement, "failed");
+	});
+	await press(view, "apply-filters");
+	await settle();
+	expect(rows(view, "orders-row")).toHaveLength(0);
+
+	// Pressing `Apply` again changes nothing, so it is a refresh — and the window it
+	// refreshes is the new predicate's first page. Anchoring on the OLD filter's
+	// token would be fail-closed by the service every time, leaving an emptied
+	// screen reading as an answer to a query nobody ran.
+	refuseAfter = null;
+	asked = [];
+	await press(view, "apply-filters");
+	await settle();
+
+	expect(asked[0]?.cursor).toBeUndefined();
+	expect(asked[0]?.filter?.status).toBe("failed");
+	expect(absent(view, "orders-load-more-failure")).toBe(true);
 });
