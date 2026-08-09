@@ -534,8 +534,10 @@ export interface OrderListFilter {
 	 * The operator's free-text lookup: an order-id PREFIX, **or** a `buyer_ref`
 	 * SUBSTRING, **or** an EXACT purchase-time line sku, ORed, with `lower()`
 	 * applied to BOTH sides of all three arms — `lower(id) LIKE lower(:s || '%')`
-	 * OR `lower(buyer_ref) LIKE lower('%' || :s || '%')` OR `EXISTS (SELECT 1 FROM
-	 * order_items WHERE order_id = orders.id AND lower(sku) = lower(:s))`. The
+	 * OR `lower(buyer_ref) LIKE lower('%' || :s || '%')` OR `EXISTS (SELECT id
+	 * FROM order_items WHERE order_id = orders.id AND lower(sku) = lower(:s))`
+	 * (`SELECT id` rather than `SELECT 1` only because that is what the adapters
+	 * emit — an `EXISTS` never reads the projection). The
 	 * fake, SQLite and Postgres implement exactly this, case for case, and the
 	 * contract suite pins every one of them on all three.
 	 *
@@ -631,26 +633,37 @@ export interface OrderListFilter {
 	 * `linkGuestOrders` and the `customer` key below — which is exactly why those
 	 * keep exact-lower-equals semantics and did NOT follow this widening.
 	 *
-	 * THE SKU ARM COSTS ONE MORE SCAN, of `order_items` — not a per-row probe, and
-	 * not a free ride on an index. Planning it was measured rather than assumed,
-	 * because the intuitive reading is wrong: Postgres does NOT run the correlated
-	 * `EXISTS` once per candidate order. It DE-CORRELATES it into a hashed
-	 * subplan — one pass over `order_items` filtered on `lower(sku)`, hashed by
-	 * `order_id`, then probed in memory per row. `lower(sku)` has no index, so
-	 * that one pass is a sequential scan of the line table. `EXPLAIN` on a
-	 * synthetic 5k-order / 10k-line set (ANALYZEd, local pg 16) read: a sku search
-	 * 5.9–8.1 ms for the page and 5.9 ms for its count, against 4.3 ms for the
-	 * SAME id-prefix search with this arm stripped out — so the arm cost ~1.4 ms
-	 * there, and it costs it on EVERY search, including ones that are plainly an
-	 * id or an email, twice per page (list + count). Forcing the intuitive plan
-	 * instead (`enable_seqscan = off`, which does make the probe an index scan on
-	 * `idx_order_items_order_product` per candidate row) was SLOWER — 21 ms, 5000
-	 * loops — so that index is not what keeps this cheap; the hash is. Read those
-	 * as a shape, not a budget, for the same reasons the figures above are a
-	 * floor. The obvious lever, if the shape stops holding, is a functional index
-	 * on `lower(order_items.sku)`, which turns that one scan into an index scan;
-	 * deliberately not pulled now, on the same reasoning that declined the trigram
-	 * index — measure the real statement first.
+	 * THE SKU ARM IS PLANNED DIFFERENTLY BY THE TWO DIALECTS, and neither shape
+	 * was assumed — both were read off `EXPLAIN` of the statement the adapter
+	 * actually compiles, over a synthetic 5k-order / 10k-line set (ANALYZEd).
+	 *
+	 * ON POSTGRES IT IS ONE MORE SCAN, of `order_items`, not a per-row probe. pg
+	 * DE-CORRELATES the `EXISTS` into a hashed subplan: one pass over the line
+	 * table filtered on `lower(sku)` — a sequential scan, since `lower(sku)` has
+	 * no index — hashed by `order_id` and then probed in memory per row. That pass
+	 * is paid by EVERY search, including one that is plainly an id or an email,
+	 * and by BOTH statements a searched page issues. Measured (statement
+	 * `Execution Time`, pg 16): a sku search 6.3 ms for the page and 5.9 ms for
+	 * its count, against 2.8 ms and 2.8 ms for the same search with the arm
+	 * stripped out; an id-PREFIX search 5.4 ms and 5.6 ms, against 4.2 ms and
+	 * 2.7 ms without it. Forcing the intuitive plan instead (`enable_seqscan =
+	 * off`, which does make the probe an index scan on
+	 * `idx_order_items_order_product`, 5000 loops) was SLOWER — 21–24 ms across
+	 * runs — so that index is not what keeps this cheap on pg; the hash is.
+	 *
+	 * ON SQLITE IT IS THE OPPOSITE, and that is fine. SQLite keeps the subquery
+	 * CORRELATED and serves it as a per-row `SEARCH order_items USING INDEX
+	 * idx_order_items_order_product (order_id=?)`, so there the arm rides the very
+	 * index the pg plan ignores; and because SQL's `OR` short-circuits and the two
+	 * cheap arms are written FIRST, a row already matched by id or buyer_ref never
+	 * runs the probe at all. Measured there (mean of 5 store calls,
+	 * better-sqlite3): 4.4 ms for an id-prefix page against 5.2 ms for a sku page.
+	 *
+	 * Read all of these as a SHAPE, not a budget, for the same reasons the figures
+	 * above are a floor. The obvious lever, if the shape stops holding on pg, is a
+	 * functional index on `lower(order_items.sku)`, which turns that one scan into
+	 * an index scan; deliberately not pulled now, on the same reasoning that
+	 * declined the trigram index — measure the real statement first.
 	 */
 	search?: string;
 	/** The customer dimension (admin-UX Increment 1) — see `OrderCustomerKey`.

@@ -115,9 +115,12 @@ export interface CouponStore {
 	 * identifier a merchant looks up precisely, and the strictest `search` in the
 	 * product: NEITHER `ProductListFilter.search`'s title-substring half NOR
 	 * `OrderListFilter.search`'s id-PREFIX / buyer_ref-SUBSTRING widening applies
-	 * here. A coupon has no free-text field to partially remember, and a code is
-	 * short, chosen and quoted whole — it never renders as a truncated prefix the
-	 * way an order uuid does, which is what earned orders their prefix match. No
+	 * here (that filter's THIRD arm, an exact-lower purchase-time line sku, is a
+	 * widening only in what it reaches, not in how it matches — it is the same
+	 * exact-identifier rule this one keeps). A coupon has no free-text field to
+	 * partially remember, and a code is short, chosen and quoted whole — it never
+	 * renders as a truncated prefix the way an order uuid does, which is what
+	 * earned orders their prefix match. No
 	 * other filter axis ships this slice (coupons have no soft-delete/
 	 * publish-gate/kind axis to mirror `deleted`/`active`/`productKind`) —
 	 * deliberately minimal, not "filterable where cheap".

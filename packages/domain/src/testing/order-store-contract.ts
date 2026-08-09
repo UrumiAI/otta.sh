@@ -625,6 +625,48 @@ export function orderStoreContract(
 			expect(renamed.orders.map((o) => o.id)).toEqual(["ord-after"]);
 		});
 
+		test("listOrders search treats a sku's `%`/`_`/`\\` as LITERAL characters", async () => {
+			const h = await makeHarness();
+			// The sku half is an EQUALITY, so it has no pattern language to escape —
+			// but a sku really can be spelled with LIKE metacharacters, and the claim
+			// that they are inert has to be pinned rather than reasoned about. Under
+			// LIKE semantics `50%_OFF` would also match `50-XOFF` (`%` any run, `_`
+			// any one character); under equality it matches itself and nothing else.
+			await seedLinedOrder(h.store, { id: "ord-meta", skus: ["50%_OFF"] });
+			await seedLinedOrder(h.store, { id: "ord-decoy", skus: ["50-XOFF"] });
+			await seedLinedOrder(h.store, { id: "ord-esc", skus: ["A\\B"] });
+			const meta = await h.store.listOrders({ search: "50%_OFF" }, { limit: 25 });
+			expect(meta.orders.map((o) => o.id)).toEqual(["ord-meta"]);
+			expect(await h.store.countOrders({ search: "50%_OFF" })).toBe(1);
+			// The decoy answers only to its own spelling — nothing wildcarded onto it.
+			const decoy = await h.store.listOrders({ search: "50-XOFF" }, { limit: 25 });
+			expect(decoy.orders.map((o) => o.id)).toEqual(["ord-decoy"]);
+			// The escape character itself is just a character on this half too.
+			const esc = await h.store.listOrders({ search: "a\\b" }, { limit: 25 });
+			expect(esc.orders.map((o) => o.id)).toEqual(["ord-esc"]);
+			// And a bare metacharacter matches no sku at all (it is not "everything").
+			expect((await h.store.listOrders({ search: "%" }, { limit: 25 })).orders).toHaveLength(0);
+		});
+
+		test("listOrders search UNIONS its arms — one string, one order by id, another by sku", async () => {
+			const h = await makeHarness();
+			// The three arms are ORed, so a single string can reach two DIFFERENT
+			// orders through two different arms. Each still appears exactly once, in
+			// the LIST's order rather than the search's — the union is over rows, not
+			// over arms, and an order that matched twice would be the same row twice.
+			await seedLinedOrder(h.store, { id: "sku-7", skus: ["OTHER"] }); // by id PREFIX
+			await seedLinedOrder(h.store, { id: "ord-buyer", skus: ["SKU-7"] }); // by line SKU
+			const both = await h.store.listOrders({ search: "SKU-7" }, { limit: 25 });
+			// Same clock ⇒ the tie breaks on id DESC: "sku-7" sorts after "ord-buyer".
+			expect(both.orders.map((o) => o.id)).toEqual(["sku-7", "ord-buyer"]);
+			expect(await h.store.countOrders({ search: "SKU-7" })).toBe(2);
+			// The order that matches BOTH arms at once is still one row, not two.
+			await seedLinedOrder(h.store, { id: "sku-7-self", skus: ["SKU-7-SELF"] });
+			const selfMatch = await h.store.listOrders({ search: "SKU-7-SELF" }, { limit: 25 });
+			expect(selfMatch.orders.map((o) => o.id)).toEqual(["sku-7-self"]);
+			expect(await h.store.countOrders({ search: "SKU-7-SELF" })).toBe(1);
+		});
+
 		test("countOrders counts under the SAME search predicate as listOrders", async () => {
 			const h = await makeHarness();
 			await h.seedOrder(summaryRow({ id: "ord-a", buyerRef: "amy@example.com" }));

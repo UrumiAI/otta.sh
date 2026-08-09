@@ -1,6 +1,8 @@
 ---
 "@otta-sh/domain": minor
 "@otta-sh/store-postgres": minor
+"@otta-sh/admin-presentation": patch
+"@otta-sh/admin-react": patch
 "@otta-sh/service": patch
 ---
 
@@ -10,9 +12,18 @@ EXACT (case-folded) line sku, ORed. Nothing that matched before stops matching �
 halves are untouched — and the wire is unchanged: one search box, one `search` param, one more
 thing it can find.
 
+The Orders list's search box now says so: **Search order ID, buyer email, or exact SKU**. A search
+axis the label does not name ships dark — nobody types into a box for a thing they have no reason
+to think it reads — so the label change is part of the feature, not a follow-up. It spends exactly
+one mode word, on the one axis whose mode changes what to type: a partial id or email still finds
+the order, a partial SKU finds nothing. That is the same principle behind the products list's
+`Search (SKU exact, or title contains)`, and both labels are now pinned side by side, plus a
+mounted check that the sentence actually reaches the control an operator types into.
+
 `@otta-sh/service` is bumped because its `GET /admin/orders` answers differently for the same
-query, though no service source changed — only its test coverage. `@otta-sh/plugin` is NOT bumped:
-it forwards `search` verbatim and has no code, wire or copy change here.
+query, though no service source changed — only its test coverage. `@otta-sh/admin-presentation`
+and `@otta-sh/admin-react` are bumped for the label. `@otta-sh/plugin` is NOT bumped: it forwards
+`search` verbatim, and the Orders list it renders is the React one.
 
 - **The purchase-time snapshot, not the live catalogue.** The sku compared is the one on the
   order's own lines — the insert-once snapshot the detail screen renders. Renaming a product's sku
@@ -39,21 +50,26 @@ it forwards `search` verbatim and has no code, wire or copy change here.
   adapter expresses the half as a correlated existence test and the fake as `lines.some(...)`; a
   contract case seeds an order whose lines BOTH match and pins that it comes back once, across a
   page boundary and in the count.
-- **One more scan, and it is paid by every search.** Planning was measured rather than assumed,
-  because the intuitive reading is wrong: Postgres does not run the correlated `EXISTS` per
-  candidate order — it de-correlates it into a hashed subplan, one pass over `order_items`
-  filtered on `lower(sku)`, hashed by `order_id` and probed in memory. `lower(sku)` has no index,
-  so that pass is a sequential scan of the line table, and it happens whatever the operator typed:
-  an id search pays for it too, twice per page (list plus count). `EXPLAIN` on a synthetic
-  5k-order / 10k-line set read 5.9–8.1 ms for a searched page and 5.9 ms for its count, against
-  4.3 ms for the same id-prefix search with the arm stripped out. Forcing the intuitive plan
-  instead (`enable_seqscan = off`, which does turn the probe into a per-row index scan on
-  `idx_order_items_order_product`) was slower — 21 ms over 5000 loops — so that index is not what
-  keeps this cheap; the hash is. A functional index on `lower(order_items.sku)` is the obvious
-  lever if the shape stops holding, and is deliberately not pulled now, on the same reasoning that
-  declined a trigram index for the substring half: measure the real statement first.
+- **The two dialects plan it oppositely, and both shapes were measured rather than assumed.** On
+  Postgres the intuitive reading is simply wrong: it does not run the correlated `EXISTS` per
+  candidate order, it de-correlates it into a hashed subplan — one pass over `order_items` filtered
+  on `lower(sku)`, hashed by `order_id` and probed in memory. `lower(sku)` has no index, so that
+  pass is a sequential scan of the line table, and it happens whatever the operator typed: an id
+  search pays for it too, and so does each of the two statements a searched page issues. Measured
+  (statement `Execution Time`, synthetic 5k-order / 10k-line set): a SKU search 6.3 ms for the page
+  and 5.9 ms for its count, against 2.8 ms and 2.8 ms with the arm stripped out; an id-prefix
+  search 5.4 ms and 5.6 ms against 4.2 ms and 2.7 ms. Forcing the intuitive plan instead
+  (`enable_seqscan = off`, which does turn the probe into a per-row index scan on
+  `idx_order_items_order_product` over 5000 loops) was slower — 21–24 ms across runs — so that
+  index is not what keeps this cheap on Postgres; the hash is. SQLite does the opposite and keeps
+  the subquery correlated, serving it as a per-row index probe on that same index, and short-
+  circuits the arm entirely for a row the two cheaper arms already matched (4.4 ms for an id page
+  against 5.2 ms for a SKU page there). A functional index on `lower(order_items.sku)` is the
+  obvious lever if the Postgres shape stops holding, and is deliberately not pulled now, on the
+  same reasoning that declined a trigram index for the substring half: measure the real statement
+  first.
 - **The cursor gate is unaffected.** It compares the search STRING, not what the string selects,
   so the canonical form on the wire is identical before and after; a sku search pages and re-pages
   exactly like the other two, and a differently spelled one still fails closed.
 
-No wire, schema or migration change, and no console copy change.
+No wire, schema or migration change.

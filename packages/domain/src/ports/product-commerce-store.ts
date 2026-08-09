@@ -14,15 +14,20 @@ import type { IdempotencyKey, ProductId, Sku } from "../money/ids.js";
  * equality filter is the honest, minimal mirror rather than an over-general
  * array.
  *
- * `search` still diverges from `OrderListFilter.search` (an order-id PREFIX or
- * a case-folded `buyer_ref` SUBSTRING), but the two have converged on the
- * shape: a `title` is free text a merchant partially remembers, so it matches
- * as a case-insensitive SUBSTRING, exactly as an order's `buyer_ref` now does.
- * What remains different is `sku` — a structured identifier a merchant quotes
- * whole, so it stays an exact, case-insensitive match rather than taking the
- * order id's PREFIX treatment (a sku is short and readable and renders in full,
- * where an order uuid renders only as a short prefix). A row matches if EITHER
- * half matches (never both required).
+ * `search` and `OrderListFilter.search` (an order-id PREFIX, a case-folded
+ * `buyer_ref` SUBSTRING, or an exact case-folded purchase-time line SKU) have
+ * converged on both shapes they share. A `title` is free text a merchant
+ * partially remembers, so it matches as a case-insensitive SUBSTRING, exactly
+ * as an order's `buyer_ref` does; and `sku` is a structured identifier a
+ * merchant quotes whole, so it stays an exact, case-insensitive match — which
+ * is now the SAME rule the orders list applies to the sku frozen on an order
+ * line, making `sku` the axis on which the two searches AGREE rather than the
+ * one where they part. Neither takes the order id's PREFIX treatment (a sku is
+ * short and readable and renders in full, where an order uuid renders only as a
+ * short prefix). The two lists still read that sku from different TABLES — this
+ * one from the live catalogue row, the orders list from the purchase-time
+ * snapshot on `order_items` — so a rename moves this list's rows and not that
+ * one's. A row matches if EITHER half matches (never both required).
  */
 export interface ProductListFilter {
 	/** Equality filter on the publish-gate flag; omitted ⇒ both active and

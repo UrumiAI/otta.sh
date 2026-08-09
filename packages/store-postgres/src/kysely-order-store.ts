@@ -1144,13 +1144,17 @@ function orderFilterConditions(filter: OrderListFilter): Expression<SqlBool>[] {
 		// This is a SEQUENTIAL SCAN and that is the design (port doc): the
 		// unanchored buyer_ref half cannot use `idx_orders_buyer_ref_lower`, and
 		// the anchored id half cannot use the primary key under a default
-		// collation. The sku arm adds ONE more scan, of `order_items`: pg
-		// de-correlates this EXISTS into a hashed subplan (one pass over the line
-		// table filtered on `lower(sku)`, hashed by order_id, probed in memory) —
-		// NOT a per-row index probe, which EXPLAIN shows to be the slower plan
-		// here. It is paid by every search, not only a sku-shaped one. Both
-		// equality paths that DO use the buyer_ref index — `linkGuestOrders` and
-		// the `customer` key below — are untouched.
+		// collation. The two dialects then plan the sku arm OPPOSITELY, and both
+		// shapes were read off EXPLAIN rather than assumed (port doc): pg
+		// DE-CORRELATES this EXISTS into a hashed subplan — one extra sequential
+		// pass over `order_items` on `lower(sku)`, hashed by order_id and probed in
+		// memory, paid by every search and by both statements a page issues, with
+		// the per-row index probe measurably the SLOWER plan there — while SQLite
+		// keeps it CORRELATED and probes `idx_order_items_order_product
+		// (order_id=?)` per row, skipping the arm entirely on a row the two cheaper
+		// arms (written FIRST, deliberately, since `OR` short-circuits) already
+		// matched. Both equality paths that DO use the buyer_ref index —
+		// `linkGuestOrders` and the `customer` key below — are untouched.
 		const escaped = escapeLikePattern(filter.search);
 		conds.push(
 			eb.or([

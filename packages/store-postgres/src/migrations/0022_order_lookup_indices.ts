@@ -30,8 +30,11 @@ import type { Migration } from "kysely/migration";
  *   `KyselyOrderStore#linkGuestOrders` and the `customer` key half of
  *   `orderFilterConditions` (`customer_id = :id OR lower(buyer_ref) =
  *   lower(:buyerRef)`) in `kysely-order-store.ts`. NOT the admin list's
- *   `search`: that is an id PREFIX or an unanchored `buyer_ref` SUBSTRING
- *   (port doc), which no b-tree can serve and which deliberately scans. A
+ *   `search`: that is an id PREFIX, an unanchored `buyer_ref` SUBSTRING, or an
+ *   exact-lower sku on the order's LINES (port doc) — the first two of which no
+ *   b-tree here can serve, so the predicate deliberately scans, and the third of
+ *   which is a different table entirely (`order_items`, reached by `EXISTS`) and
+ *   so was never this index's business. A
  *   plain b-tree on `buyer_ref` would never be chosen by the planner for the
  *   equality queries either, so the index expression matches `lower(buyer_ref)`
  *   exactly — Postgres resolves an unqualified vs. `orders.`-qualified column
