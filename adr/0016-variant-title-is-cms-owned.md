@@ -226,20 +226,16 @@ API rather than complaints about it:
   resolves to a content bag or to nothing. There is no cancel token and no `false` return, so the
   only expressible refusal is a thrown error. The sibling delete hook does honour a `false` return
   as a veto; the save hook has no equivalent in either dispatch path.
-- **A sandboxed plugin's error does not reach the editor.** The sandboxed dispatch path records a
-  thrown hook error to the server log and lets the save proceed. The abort policy that would
-  propagate it exists on the trusted in-process pipeline only — so a refusal built on it would
-  work in-process and be a silent no-op under the sandbox, which ADR-0006 rules out as a matter of
-  contract. Where the error does propagate, nothing converts it into the CMS's own error envelope,
-  so the response carries no body and the editor's save toast shows its generic failure text.
+- **A sandboxed hook has no way to signal failure to the editor** — the save proceeds regardless
+  of the hook's outcome.
 - **The event carries no prior document.** The save event is the incoming content, the collection
   and a new-or-not flag. There is no pre-save document, and on an update no id, so "did this key
   change?" is not answerable at that point — and this plugin holds no content-read surface it
   could answer it with.
 - **The field editor cannot express the rule either.** A repeater sub-field is declared with a
-  slug, a type, a label, a required flag and an optional option list. There is no uniqueness rule,
-  no immutability rule and no per-sub-field pattern, and a repeater's shape is not validated
-  server-side.
+  slug, a type, a label, a required flag and an optional option list. No uniqueness or
+  immutability rule is expressible for a repeater sub-field, and sub-field rules are editor
+  affordances.
 
 Any of the four alone would be sufficient; together they mean an editor-legible refusal is
 available only through a change to the CMS itself.
