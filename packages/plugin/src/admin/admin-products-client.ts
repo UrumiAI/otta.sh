@@ -1,4 +1,5 @@
 import type { HttpAccess } from "../types.js";
+import { CURSOR_REFUSED, isCursorRefusal } from "./cursor-refusal.js";
 
 /**
  * A tiny `ctx.http`-only client for the admin Products console service surface
@@ -120,6 +121,15 @@ export interface ProductsListResult {
 	 * a page of rows with a count of none.
 	 */
 	total?: number;
+	/**
+	 * THIS IS PAGE ONE, because the cursor the caller asked with was REFUSED —
+	 * mismatched against these filters, or undecodable — and
+	 * {@link AdminProductsClient.listProducts} re-issued without it. Absent on
+	 * every ordinary page, first pages included: the flag means "you asked for a
+	 * page you did not get", which the renderer has to be able to say out loud.
+	 * Same contract, same reasoning, as the Orders client's.
+	 */
+	cursorRejected?: true;
 }
 
 /** The commerce-owned fields a product edit may change (mirrors the service's
@@ -377,16 +387,33 @@ export class AdminProductsClient {
 		});
 	}
 
+	/**
+	 * THE FILTER TRAVELS BESIDE THE CURSOR, and it did not used to — the same
+	 * correction, for the same reason, as `AdminOrdersClient.listOrders`, whose
+	 * doc carries the argument in full. In short: the route used to take the
+	 * predicate solely from the token and never read the query's filter params, so
+	 * an unfiltered token sent beside `?lowStockThreshold=5` answered 200 with the
+	 * unfiltered catalog and a console captioned those rows "low-stock". It now
+	 * compares the two as predicates and 400s a disagreement, which is only useful
+	 * if the request states both.
+	 *
+	 * EVERY AXIS PARTICIPATES, the threshold included — `0` is a real threshold
+	 * and is compared as one, never read as "absent". So a paged low-stock request
+	 * must carry the threshold page one was filtered by; the console route
+	 * resolves it before paging for exactly that reason.
+	 *
+	 * NO CASE FOLDING between the URL and the wire: the comparison is
+	 * case-sensitive by design, and a client that normalised a search term on one
+	 * request but not the other would manufacture mismatches.
+	 */
 	async listProducts(
 		filter: ProductsListFilter,
 		opts: { cursor?: string; limit?: number } = {},
 	): Promise<ProductsListResult> {
-		const q = new URLSearchParams();
-		if (opts.cursor !== undefined && opts.cursor.length > 0) {
-			// The service cursor already embeds the active filter — send ONLY the
-			// cursor (+limit) when paging so the two never disagree.
-			q.set("cursor", opts.cursor);
-		} else {
+		const paged = opts.cursor !== undefined && opts.cursor.length > 0;
+		const query = (withCursor: boolean): string => {
+			const q = new URLSearchParams();
+			if (withCursor && opts.cursor !== undefined) q.set("cursor", opts.cursor);
 			if (filter.active !== undefined) q.set("active", filter.active ? "true" : "false");
 			if (filter.deleted !== undefined) q.set("deleted", filter.deleted ? "true" : "false");
 			if (filter.productKind !== undefined && filter.productKind.length > 0) {
@@ -405,13 +432,37 @@ export class AdminProductsClient {
 			if (filter.lowStockThreshold !== undefined) {
 				q.set("lowStockThreshold", String(filter.lowStockThreshold));
 			}
+			if (opts.limit !== undefined) q.set("limit", String(opts.limit));
+			return q.toString();
+		};
+
+		const first = await this.#getList(`/admin/products?${query(paged)}`);
+		if (first === CURSOR_REFUSED) {
+			// THE PRESCRIBED RECOVERY — drop the token, re-issue page one with the
+			// same parameters, once. See `AdminOrdersClient.listOrders` for why this
+			// tier is the right one to do it at, and why the flag on the way back
+			// matters as much as the rows.
+			const retried = await this.#getList(`/admin/products?${query(false)}`);
+			if (retried === CURSOR_REFUSED) throw new Error("GET /admin/products failed (HTTP 400)");
+			return { ...retried, cursorRejected: true };
 		}
-		if (opts.limit !== undefined) q.set("limit", String(opts.limit));
-		const body = await this.#getJson<{
+		return first;
+	}
+
+	async #getList(path: string): Promise<ProductsListResult | typeof CURSOR_REFUSED> {
+		const res = await this.#fetch(`${this.#baseUrl}${path}`, {
+			method: "GET",
+			headers: this.#authHeaders(),
+		});
+		if (!res.ok) {
+			if (await isCursorRefusal(res)) return CURSOR_REFUSED;
+			throw new Error(`GET ${path} failed (HTTP ${res.status})`);
+		}
+		const body = (await res.json()) as {
 			products?: ProductSummaryWire[];
 			nextCursor?: string | null;
 			total?: unknown;
-		}>(`/admin/products?${q.toString()}`);
+		};
 		return {
 			products: body.products ?? [],
 			nextCursor: body.nextCursor ?? null,

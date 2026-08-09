@@ -150,6 +150,16 @@ export interface ProductsConsoleListPayload {
 	 * is a claim the render can back up on its own.
 	 */
 	readonly total?: number;
+	/**
+	 * THE PAGE THE REQUEST ASKED FOR WAS REFUSED, and these are the first page's
+	 * rows instead — the cursor disagreed with the filters beside it, or would not
+	 * decode, and `AdminProductsClient` performed the service's own prescribed
+	 * remedy (drop the token, re-issue page one) before this route saw a result.
+	 * On the SUCCESS payload because the request was answered; forwarded because
+	 * an address naming that page must be corrected and the merchant is owed a
+	 * sentence. Same contract as the Orders route's.
+	 */
+	readonly cursorRejected?: true;
 	readonly stock: ConsoleStockContext;
 	readonly vocabulary: ProductsConsoleVocabulary;
 }
@@ -261,17 +271,25 @@ async function consoleList(
 
 	let page: ProductsListResult;
 	let threshold: number | null;
-	if (wantsLowStock && !hasCursor) {
-		// THE THRESHOLD GATES THE QUERY on a fresh (non-continuation) request:
-		// the server can only filter by a number it was given, so the settings
-		// read runs FIRST rather than alongside the page read — the one case
-		// where E-1's "never delays the list beyond its own latency" no longer
-		// holds, and a `lowStock` filter is worth the one extra round trip. A
-		// CONTINUATION never resolves this way: its filter (with whatever
-		// threshold page one resolved) already rode in the opaque cursor the
-		// service minted, and `AdminProductsClient.listProducts` ignores a
-		// filter argument whenever a cursor is present, so re-sequencing here
-		// would only add latency for no effect.
+	if (wantsLowStock) {
+		/*
+		 * THE THRESHOLD GATES THE QUERY, on a continuation as much as on a fresh
+		 * request: the server can only filter by a number it was given, so the
+		 * settings read runs FIRST rather than alongside the page read — the one
+		 * case where E-1's "never delays the list beyond its own latency" no longer
+		 * holds, and a `lowStock` filter is worth the extra round trip.
+		 *
+		 * A CONTINUATION USED TO SKIP THIS, and the reason it gave has stopped
+		 * being true. The filter did ride inside the opaque cursor, and the client
+		 * did ignore its filter argument once a cursor was present — so resolving
+		 * the threshold again could only add latency. The client now states the
+		 * filter on EVERY request, because the service compares the two and fails
+		 * closed on a disagreement; a paged low-stock request that omitted the
+		 * threshold would be a subset of what the token carries, which is a
+		 * mismatch, which would drop the merchant back to page one on every `Load
+		 * more`. So the read is sequenced here whenever the filter is on, and the
+		 * cursor branch pays the same round trip page one always did.
+		 */
 		threshold = await readLowStockThreshold(client.settings);
 		const filter = toClientFilter(form);
 		if (threshold !== null) filter.lowStockThreshold = threshold;
@@ -287,16 +305,23 @@ async function consoleList(
 		wantsLowStock,
 		threshold,
 		total: page.total,
-		// THE CURSOR IS THE PREDICATE'S EVIDENCE on a continuation: the filter
-		// rode inside it, and the settings read above never reached the query.
-		// See `resolveStockContext`'s decision 3.
-		continuation: hasCursor,
+		// THE CURSOR IS THE PREDICATE'S EVIDENCE on a continuation — but only on a
+		// continuation the service HONOURED. A refused cursor was answered with
+		// page one instead, and that page was filtered (or not) by the threshold
+		// resolved just now, exactly like any fresh request; reading it as a
+		// continuation would let an unfiltered page-one retry claim the filter had
+		// been applied. See `resolveStockContext`'s decision 3.
+		continuation: hasCursor && page.cursorRejected !== true,
 	});
 	return {
 		ok: true,
 		products: page.products,
 		nextCursor: page.nextCursor,
 		...(resolved.total !== undefined ? { total: resolved.total } : {}),
+		// FORWARDED, NEVER RE-DERIVED: only the client sees the service's refusal
+		// code and knows whether these rows came from the cursor or from the
+		// page-one retry it made instead.
+		...(page.cursorRejected === true ? { cursorRejected: true as const } : {}),
 		stock: resolved.stock,
 		vocabulary: PRODUCTS_CONSOLE_VOCABULARY,
 	};

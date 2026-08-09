@@ -479,20 +479,34 @@ export function ProductsList({
 	/** The address named a page that would not open, and this render is the first
 	 *  page of its filters instead. See the reset branch in the effect. */
 	const [cursorReset, setCursorReset] = React.useState(false);
-	/** Has ANY page landed on this mount? A ref because the fetch effect does not
-	 *  depend on `page` and would otherwise read a render-old value. */
-	const landed = React.useRef(false);
-	/** A reset has happened and the address STILL NAMES THE PAGE IT ASKED FOR. The
-	 *  correction waits for a request that actually succeeds — a refusal this tier
-	 *  cannot diagnose may be a session, a service or a connection rather than the
-	 *  token, and for all three the cursor is the only record of where the merchant
-	 *  was. Same reasoning, at length, on the Orders list. */
-	const addressNamesLostPage = React.useRef(false);
+	/**
+	 * ONE CLEARED CURSOR THAT MUST NOT RE-FETCH.
+	 *
+	 * The cursor is an effect dependency, so clearing it normally means "go and
+	 * ask again" — which is exactly right when a filter changes, and exactly wrong
+	 * after a refused page: that response ALREADY carried page one's rows, so
+	 * asking again would issue a second identical request and re-render the list
+	 * from it for nothing. The cursor still has to go (a stale, refused token left
+	 * in state is a token a later Retry would re-send), so the clear happens and
+	 * the fetch it would trigger is skipped, once.
+	 *
+	 * A REF, AND CONSUMED IN THE EFFECT ITSELF, because the thing being suppressed
+	 * is the effect's own next run. The three updates in that branch land in one
+	 * commit, so exactly one run follows and exactly one is skipped.
+	 */
+	const skipRefetchAfterReset = React.useRef(false);
 	/** The reset notice's own region, focused when it appears — see the effect
 	 *  below. */
 	const resetRegion = React.useRef<HTMLDivElement | null>(null);
 
 	React.useEffect(() => {
+		// See {@link skipRefetchAfterReset}: this run exists only because a refused
+		// page cleared the cursor, and the rows it would fetch are already on
+		// screen.
+		if (skipRefetchAfterReset.current) {
+			skipRefetchAfterReset.current = false;
+			return;
+		}
 		let cancelled = false;
 		// A CURSOR IS ONLY A CONTINUATION OF ITS OWN FILTER (see
 		// `continuationCursor`): one belonging to a filter that has since been
@@ -507,36 +521,15 @@ export function ProductsList({
 			setRetrying(false);
 			if (isFailure(result)) {
 				/*
-				 * AN ADDRESS THE SERVICE WOULD NOT HONOUR, DEGRADING SAFELY — the
-				 * same branch, and the same reasoning, as the Orders list.
-				 *
-				 * A continuation that failed before any page landed can only be a cursor
-				 * this mount was SEEDED with from the address: `Load more` exists only
-				 * under a page that landed, and every reset clears the cursor with the
-				 * page. So the page is dropped and the FILTERS are kept — clearing the
-				 * cursor re-runs this effect as their first page, rather than a cold
-				 * error card whose Retry would re-send the same token forever. It cannot
-				 * loop: the retry carries no cursor, so a second failure is an ordinary
-				 * cold one. `landed` is a ref because this effect does not depend on
-				 * `page`.
-				 *
-				 * WHY IT FAILED IS NOT KNOWN HERE — every failure arrives as one shape,
-				 * so a token the route rejected, an expired session, a 500 and a dropped
-				 * connection are indistinguishable. The fallback suits all four; the
-				 * notice therefore names no cause, and the ADDRESS is not rewritten until
-				 * a request succeeds (see {@link addressNamesLostPage}), so a recoverable
-				 * failure leaves the merchant holding a link that still restores their
-				 * page.
+				 * A FAILURE NEVER RESETS THE PAGE — the same correction, and the same
+				 * reasoning, as the Orders list, whose branch carries it in full. Every
+				 * failure arrives in one shape, so a refused token cannot be told from an
+				 * expired session here; the distinction is made in the plugin's admin
+				 * client, which reads the service's refusal code, performs the page-one
+				 * recovery itself and reports `cursorRejected` on a SUCCESSFUL payload.
+				 * A failure therefore leaves the cursor exactly where it was, in state
+				 * and in the address, so a reload after recovery still restores the page.
 				 */
-				if (continuation && !landed.current) {
-					setCursor(null);
-					setCursorReset(true);
-					addressNamesLostPage.current = true;
-					// The re-fetch is already on its way out; the screen must not blink
-					// through a commit claiming otherwise.
-					setBusy(true);
-					return;
-				}
 				setFailure({ title: result.title, description: result.description, continuation });
 				// F2: THE ANSWER GOES WITH THE FAILURE, in the same transition — for a
 				// FIRST page. A page behind one that succeeded takes only its own
@@ -545,11 +538,19 @@ export function ProductsList({
 				return;
 			}
 			setFailure(null);
-			landed.current = true;
-			// THE DEFERRED ADDRESS CORRECTION, now that a page has actually landed:
-			// this render IS page one, so the address must stop naming another.
-			if (addressNamesLostPage.current) {
-				addressNamesLostPage.current = false;
+			/*
+			 * THE PAGE THIS REQUEST ASKED FOR WAS REFUSED, AND THIS IS PAGE ONE. The
+			 * plugin's client performed the service's own prescribed recovery — drop
+			 * the token, re-issue page one — so a real first page arrives here with the
+			 * fact attached. The cursor in state goes (this is a RESET, not a
+			 * continuation), the address is corrected (the fallback has already landed,
+			 * so there is nothing to defer), and the notice goes up.
+			 */
+			const rejected = result.cursorRejected === true;
+			if (rejected) {
+				skipRefetchAfterReset.current = true;
+				setCursor(null);
+				setCursorReset(true);
 				onCursorChange?.(undefined);
 			}
 			// F24: MERGE, NEVER ASSIGN. The functional form is required, not
@@ -565,7 +566,10 @@ export function ProductsList({
 						stock: result.stock,
 						vocabulary: result.vocabulary,
 					},
-					continuation,
+					// A REFUSED CURSOR MAKES THIS A RESET whatever the request was: these
+					// are page one's rows, and merging them onto an accumulation would
+					// caption a first page as the middle of a scan.
+					continuation && !rejected,
 				),
 			);
 		});
@@ -699,10 +703,8 @@ export function ProductsList({
 		setDraft(next);
 		setCursor(null);
 		// THE RESET NOTICE IS ABOUT THE ARRIVAL, so it goes the moment the merchant
-		// asks for something themselves — and the deferred address correction with
-		// it, since this apply rewrites the query including the cursor.
+		// asks for something themselves.
 		setCursorReset(false);
-		addressNamesLostPage.current = false;
 		// BUSY IS THE CLICK'S, NOT THE EFFECT'S. Setting it only inside the effect
 		// left one commit in which the applied filter had already moved and
 		// `Load more` still rendered enabled — offering the previous page's cursor

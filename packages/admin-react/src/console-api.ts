@@ -228,6 +228,24 @@ export interface ListPayload {
 	 *  a service older than the field omits it, and `formatAmount`'s rule
 	 *  applies to counts too: absent is not zero. */
 	readonly total?: number;
+	/**
+	 * THE PAGE THIS SCREEN ASKED FOR WAS REFUSED, and these are the first page's
+	 * rows instead.
+	 *
+	 * The service fails closed when a cursor disagrees with the filters sent
+	 * beside it, or when the token will not decode, and its prescribed remedy is
+	 * mechanical: drop the cursor and re-issue page one with the same parameters.
+	 * The plugin performs that before answering, so this arrives as a SUCCESS with
+	 * a flag rather than as a failure — the request was answered, just not from
+	 * the page that was named.
+	 *
+	 * IT IS THE ONLY THING THAT MAY TRIGGER THE ADDRESS-BAR RESET. A failure
+	 * cannot: every failure reaches this tier in one shape, so a refused token
+	 * would be indistinguishable from an expired session or a dropped connection,
+	 * and correcting the address on those would throw away the operator's page at
+	 * the moment a reload would have restored it.
+	 */
+	readonly cursorRejected?: boolean;
 	readonly vocabulary: Vocabulary;
 }
 
@@ -351,6 +369,24 @@ export interface ProductsListPayload {
 	 *  carried the predicate (`stock.filterUnavailable`) — see the plugin's
 	 *  `resolveStockContext`. Both land on the page-scoped count. */
 	readonly total?: number;
+	/**
+	 * THE PAGE THIS SCREEN ASKED FOR WAS REFUSED, and these are the first page's
+	 * rows instead.
+	 *
+	 * The service fails closed when a cursor disagrees with the filters sent
+	 * beside it, or when the token will not decode, and its prescribed remedy is
+	 * mechanical: drop the cursor and re-issue page one with the same parameters.
+	 * The plugin performs that before answering, so this arrives as a SUCCESS with
+	 * a flag rather than as a failure — the request was answered, just not from
+	 * the page that was named.
+	 *
+	 * IT IS THE ONLY THING THAT MAY TRIGGER THE ADDRESS-BAR RESET. A failure
+	 * cannot: every failure reaches this tier in one shape, so a refused token
+	 * would be indistinguishable from an expired session or a dropped connection,
+	 * and correcting the address on those would throw away the operator's page at
+	 * the moment a reload would have restored it.
+	 */
+	readonly cursorRejected?: boolean;
 	readonly stock: StockContext;
 	readonly vocabulary: ProductsVocabulary;
 }

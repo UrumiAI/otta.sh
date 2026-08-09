@@ -485,29 +485,34 @@ export function OrdersList({
 	/** The address named a page that would not open, and this render is the first
 	 *  page of its filters instead. See the reset branch in the effect. */
 	const [cursorReset, setCursorReset] = React.useState(false);
-	/** Has ANY page landed on this mount? A ref because the fetch effect does not
-	 *  depend on `page` and would otherwise read a render-old value — and this is
-	 *  read at the moment a response arrives, which may be several renders later. */
-	const landed = React.useRef(false);
 	/**
-	 * A reset has happened and the address STILL NAMES THE PAGE IT ASKED FOR.
+	 * ONE CLEARED CURSOR THAT MUST NOT RE-FETCH.
 	 *
-	 * THE ADDRESS IS NOT REWRITTEN UNTIL THE FALLBACK LANDS, and the reason is the
-	 * one thing this branch cannot know: WHY the request failed. A token the route
-	 * rejected is unrecoverable and the address should stop naming it; a session
-	 * that expired, a 500, or a laptop that lost its connection are all recoverable
-	 * — and for those, the cursor is the only record of where the operator was.
-	 * Deleting it eagerly would mean a reload after signing back in silently landed
-	 * on page one, having thrown away the address that would have restored the
-	 * page. So the correction waits for evidence that a request can succeed at all;
-	 * until then the link the operator followed stays intact and reloadable.
+	 * The cursor is an effect dependency, so clearing it normally means "go and
+	 * ask again" — which is exactly right when a filter changes, and exactly wrong
+	 * after a refused page: that response ALREADY carried page one's rows, so
+	 * asking again would issue a second identical request and re-render the list
+	 * from it for nothing. The cursor still has to go (a stale, refused token left
+	 * in state is a token a later Retry would re-send), so the clear happens and
+	 * the fetch it would trigger is skipped, once.
+	 *
+	 * A REF, AND CONSUMED IN THE EFFECT ITSELF, because the thing being suppressed
+	 * is the effect's own next run. The three updates in that branch land in one
+	 * commit, so exactly one run follows and exactly one is skipped.
 	 */
-	const addressNamesLostPage = React.useRef(false);
+	const skipRefetchAfterReset = React.useRef(false);
 	/** The reset notice's own region, focused when it appears — see the effect
 	 *  below. */
 	const resetRegion = React.useRef<HTMLDivElement | null>(null);
 
 	React.useEffect(() => {
+		// See {@link skipRefetchAfterReset}: this run exists only because a refused
+		// page cleared the cursor, and the rows it would fetch are already on
+		// screen.
+		if (skipRefetchAfterReset.current) {
+			skipRefetchAfterReset.current = false;
+			return;
+		}
 		let cancelled = false;
 		// A CURSOR IS ONLY A CONTINUATION OF ITS OWN FILTER (see
 		// `continuationCursor`): one belonging to a filter that has since been
@@ -522,47 +527,24 @@ export function OrdersList({
 			setRetrying(false);
 			if (isFailure(result)) {
 				/*
-				 * THE ADDRESS NAMED A PAGE THAT WOULD NOT OPEN. FALL BACK, DON'T DIAGNOSE.
+				 * A FAILURE NEVER RESETS THE PAGE, and the first cut had this wrong.
 				 *
-				 * "A CONTINUATION THAT FAILED BEFORE ANY PAGE LANDED" IS THE WHOLE
-				 * DISCRIMINATOR, and it is exact rather than approximate: a continuation
-				 * with nothing to continue is unreachable from the screen itself — `Load
-				 * more` only exists under a page that landed, and every reset clears the
-				 * cursor with the page — so the only way to be here is a cursor this
-				 * mount was SEEDED with from the address, and a request carrying it that
-				 * came back a refusal.
-				 *
-				 * WHAT THIS BRANCH DOES *NOT* KNOW IS WHY. Every failure reaches this
-				 * screen as one shape (`Failure`, by design — a console that had to tell
+				 * It treated any refusal of a seeded cursor as "that token is no good",
+				 * dropped the cursor and rewrote the address. But every failure reaches
+				 * this tier in ONE shape — by design, since a console that had to tell
 				 * transport from authorization from refusal would be a console with three
-				 * empty states), so "the route rejected this token", "your session
-				 * expired", "the service is down" and "you went offline" are
-				 * indistinguishable here. The fallback is right for all four — page one
-				 * of the filters is the best available answer either way — but the
-				 * NOTICE must not name a cause and the ADDRESS must not be rewritten yet.
-				 * See {@link addressNamesLostPage}: the correction waits until a request
-				 * actually succeeds, so a recoverable failure leaves the operator holding
-				 * a link that still restores their page.
+				 * empty states — so an expired session, a 500 and a dropped connection
+				 * all looked like a bad token, and the address was rewritten for all of
+				 * them, discarding the only record of where the operator was at exactly
+				 * the moment a reload would have restored it.
 				 *
-				 * IT READS A REF, NOT `page`. This effect does not depend on `page`, so
-				 * the `page` in scope here is whatever it was when the effect was
-				 * created; `landed` is the same fact, read at the moment the response
-				 * actually arrives.
-				 *
-				 * IT CANNOT LOOP. The retry carries no cursor, so `continuation` is false
-				 * and a second failure is an ordinary cold one: at most one reset per
-				 * mount, whatever the service does.
+				 * THE DISTINCTION IS MADE WHERE IT CAN BE SEEN: the plugin's admin client
+				 * reads the service's own refusal code, performs the prescribed page-one
+				 * recovery itself, and reports it as `cursorRejected` on a SUCCESSFUL
+				 * payload (see the branch below). So a refused page arrives here as rows,
+				 * and everything else arrives here — as a failure that leaves the cursor
+				 * exactly where it was, in state and in the address.
 				 */
-				if (continuation && !landed.current) {
-					setCursor(null);
-					setCursorReset(true);
-					addressNamesLostPage.current = true;
-					// The re-fetch is already on its way out (clearing the cursor re-runs
-					// this effect), so the screen must not blink through a commit that
-					// claims otherwise.
-					setBusy(true);
-					return;
-				}
 				setFailure({ title: result.title, description: result.description, continuation });
 				// A FIRST PAGE THAT FAILED DISPROVES WHAT IS ON SCREEN; a page behind
 				// one that succeeded does not. Only the first case clears.
@@ -570,13 +552,29 @@ export function OrdersList({
 				return;
 			}
 			setFailure(null);
-			landed.current = true;
-			// THE DEFERRED ADDRESS CORRECTION, now that a page has actually landed —
-			// this render IS page one, so the address must stop naming another. Doing
-			// it here rather than at the moment of the refusal is what keeps a
-			// recoverable failure's link intact; see {@link addressNamesLostPage}.
-			if (addressNamesLostPage.current) {
-				addressNamesLostPage.current = false;
+			/*
+			 * THE PAGE THIS REQUEST ASKED FOR WAS REFUSED, AND THIS IS PAGE ONE.
+			 *
+			 * The service fails closed when a cursor disagrees with the filters beside
+			 * it or will not decode, and its remedy for that is mechanical rather than
+			 * an error: drop the token, re-issue page one with the same parameters.
+			 * The plugin's client does exactly that and says so, so what arrives here
+			 * is a real first page plus the fact that the operator did not get the one
+			 * they named.
+			 *
+			 * THREE THINGS FOLLOW, and the order matters. The cursor in state is
+			 * dropped, so this response is treated as a RESET rather than merged onto
+			 * nothing as a continuation. The address is corrected — safely, and with
+			 * none of the deferral the first cut needed, because the fallback page has
+			 * already landed by the time this runs. And the notice goes up, because a
+			 * screen that silently showed page one to someone who followed a link to
+			 * page four would be the worse failure of the two.
+			 */
+			const rejected = result.cursorRejected === true;
+			if (rejected) {
+				skipRefetchAfterReset.current = true;
+				setCursor(null);
+				setCursorReset(true);
 				onCursorChange?.(undefined);
 			}
 			// F24: MERGE, NEVER ASSIGN. See `nextPage` — the functional form is
@@ -591,7 +589,11 @@ export function OrdersList({
 						total: result.total,
 						vocabulary: result.vocabulary,
 					},
-					continuation,
+					// A REFUSED CURSOR MAKES THIS A RESET, whatever the request was: the
+					// rows are page one's, so merging them onto an accumulation (or
+					// inheriting `firstPage: false` from a continuation that never
+					// happened) would caption a first page as the middle of a scan.
+					continuation && !rejected,
 				),
 			);
 		});
@@ -688,11 +690,8 @@ export function OrdersList({
 		setCursor(null);
 		// THE RESET NOTICE IS ABOUT THE ARRIVAL, so it goes the moment the operator
 		// asks for something themselves. Left standing it would explain a link that
-		// no longer has anything to do with what is on screen. The deferred address
-		// correction goes with it: this apply rewrites the query itself, cursor
-		// included, so there is nothing left for a later response to correct.
+		// no longer has anything to do with what is on screen.
 		setCursorReset(false);
-		addressNamesLostPage.current = false;
 		// BUSY IS THE CLICK'S, NOT THE EFFECT'S. Setting it only inside the effect
 		// left one commit in which the applied filter had already moved and
 		// `Load more` still rendered enabled — offering the previous page's cursor

@@ -149,8 +149,10 @@ function serve(handler: (request: Request) => Response): void {
 }
 
 /** A refusal, in the ONE shape every failure reaches this console as — which is
- *  exactly why the reset branch cannot diagnose: a rejected token, an expired
- *  session, a 500 and a dead connection are this same value. */
+ *  exactly why the console may not diagnose one: a rejected token, an expired
+ *  session, a 500 and a dead connection are all this same value, and only the
+ *  plugin's client (which can read the service's refusal code) can tell them
+ *  apart. */
 function refusal(subject: string, status = 400): Response {
 	return envelope({
 		ok: false,
@@ -214,7 +216,18 @@ function serveOrders(): void {
 				vocabulary: VOCABULARY,
 			});
 		}
-		return refusal("Orders are unavailable");
+		// A CURSOR THE SERVICE REFUSED — mismatched against the filters beside it,
+		// or undecodable. The plugin performs the prescribed recovery (drop the
+		// token, re-issue page one) before answering, so what the console receives
+		// is a real FIRST PAGE carrying the fact that it did not get the page it
+		// asked for. One console request, not two.
+		return envelope({
+			ok: true,
+			orders: ids("o", 1, 20).map(order),
+			nextCursor: PAGE_TWO,
+			cursorRejected: true,
+			vocabulary: VOCABULARY,
+		});
 	});
 }
 
@@ -270,7 +283,16 @@ function serveProducts(): void {
 				vocabulary: PRODUCTS_VOCABULARY,
 			});
 		}
-		return refusal("Pricing & inventory is unavailable");
+		// A refused cursor, already recovered from by the plugin — page one's rows
+		// plus the fact. See the Orders fake above.
+		return envelope({
+			ok: true,
+			products: ids("p", 1, 3).map(product),
+			nextCursor: PAGE_TWO,
+			cursorRejected: true,
+			stock,
+			vocabulary: PRODUCTS_VOCABULARY,
+		});
 	});
 }
 
@@ -489,13 +511,13 @@ test("a cursor the service refuses resets to page one, legibly, and exactly once
 	view = await mount(<OrdersScreen />);
 	await settle();
 
-	// TWO REQUESTS, NEVER MORE. The seeded continuation was refused, so the list
-	// drops the cursor and asks for page one of the SAME filters. A retry loop
-	// here is the failure mode this guard exists to prevent.
-	expect(asked).toHaveLength(2);
+	// ONE CONSOLE REQUEST, carrying the filters AND the page it was told to open —
+	// which is the pairing that lets the service notice the disagreement at all.
+	// The page-one recovery happens below this tier, so a retry loop is not even
+	// expressible here.
+	expect(asked).toHaveLength(1);
 	expect(asked[0]?.cursor).toBe("tampered");
-	expect(asked[1]?.cursor).toBeUndefined();
-	expect(asked[1]?.filter?.status).toBe("paid");
+	expect(asked[0]?.filter?.status).toBe("paid");
 
 	// AND THE OPERATOR IS LOOKING AT A LIST, not at a dead error pane: rows, the
 	// filter panel, and one sentence saying why they are not where the link said.
@@ -542,19 +564,22 @@ test("the reset notice is withdrawn once the operator pages again", async () => 
 	expect(search().get("cursor")).toBe(PAGE_TWO);
 });
 
-test("a failure that is NOT the token leaves the page in the address, for a reload to restore", async () => {
+test("a failure leaves the page in the address, for a reload to restore", async () => {
 	/*
-	 * THE CASE THE FIRST CUT GOT WRONG. Every failure reaches this console as one
-	 * shape, so the reset branch cannot tell a token the route rejected from a
-	 * session that expired, a 500, or a laptop that went offline — and the first
-	 * cut rewrote the address the moment ANY of them arrived, deleting the only
-	 * record of where the operator was. Sign back in, reload, and you silently
-	 * landed on page one.
+	 * THE CASE THE FIRST CUT GOT WRONG, twice over.
 	 *
-	 * The fallback to page one still happens (it is the right answer either way),
-	 * but the ADDRESS is only corrected once a request actually succeeds. Here
-	 * nothing does, so the link the operator followed is still intact and still
-	 * reloadable — which is the whole difference.
+	 * Every failure reaches this console in ONE shape, so the screen cannot tell a
+	 * token the route rejected from a session that expired, a 500, or a laptop
+	 * that went offline — and the first cut reset the page and rewrote the address
+	 * the moment ANY of them arrived, deleting the only record of where the
+	 * operator was. Sign back in, reload, and you silently landed on page one.
+	 *
+	 * A FAILURE NOW RESETS NOTHING. The refused-cursor case does not arrive here
+	 * as a failure at all: the plugin's client reads the service's own refusal
+	 * code, performs the page-one recovery and reports it as a successful page
+	 * (the test above). So everything that DOES arrive as a failure keeps the
+	 * cursor — in state and in the address — and the link the operator followed is
+	 * still intact and still reloadable.
 	 */
 	serve(() => refusal("Orders are unavailable", 401));
 	window.history.replaceState(
@@ -565,12 +590,8 @@ test("a failure that is NOT the token leaves the page in the address, for a relo
 	view = await mount(<OrdersScreen />);
 	await settle();
 
-	expect(asked).toHaveLength(2);
+	expect(asked).toHaveLength(1);
 	expect(asked[0]?.cursor).toBe(PAGE_TWO);
-	expect(asked[1]?.cursor).toBeUndefined();
-	// The cold-failure card is what the operator gets, with the service's own
-	// words — the reset notice does not sit on top of it describing a list that
-	// is not there.
 	expect(element(view, "orders-failure").textContent).toContain("Orders are unavailable");
 	expect(absent(view, "orders-cursor-reset")).toBe(true);
 	// AND THE PAGE IS STILL IN THE ADDRESS.
@@ -578,28 +599,21 @@ test("a failure that is NOT the token leaves the page in the address, for a relo
 	expect(search().get("status")).toBe("paid");
 });
 
-test("the address is corrected only AFTER the fallback page one lands", async () => {
-	// The other half of the same rule, from the recoverable direction: the first
-	// request is refused, the second succeeds, and only then does the address stop
-	// naming a page the operator is no longer on.
-	let calls = 0;
-	serve((request) => {
-		calls += 1;
-		if (request.cursor !== undefined) return refusal("Orders are unavailable");
-		return envelope({
-			ok: true,
-			orders: ids("o", 1, 20).map(order),
-			nextCursor: PAGE_TWO,
-			vocabulary: VOCABULARY,
-		});
-	});
+test("the address correction ARRIVES WITH the rows it describes", async () => {
+	// The other half of the same rule. The address stops naming a page only in the
+	// same transition that puts page one on screen — never speculatively, on a
+	// response that might yet turn out to be an outage.
+	serveOrders();
 	window.history.replaceState(null, "", `/orders?cursor=${encodeURIComponent(PAGE_THREE)}`);
 	view = await mount(<OrdersScreen />);
 	await settle();
 
-	expect(calls).toBe(2);
+	expect(asked).toHaveLength(1);
 	expect(search().get("cursor")).toBeNull();
 	expect(rowIds(view, "orders-row")).toEqual(ids("o", 1, 20));
+	// AND IT IS PAGE ONE, not a continuation that merged onto nothing: the count
+	// line is the page's own, and `Load more` is offered from the top again.
+	expect(element(view, "orders-intro").textContent).toContain("20 orders on this page");
 });
 
 // ── the same rules on Pricing & inventory ────────────────────────────────────
@@ -640,10 +654,12 @@ test("products: a cursor the service refuses resets to page one, legibly, and ex
 	view = await mount(<ProductsScreen />);
 	await settle();
 
-	expect(asked).toHaveLength(2);
+	expect(asked).toHaveLength(1);
 	expect(asked[0]?.cursor).toBe("tampered");
-	expect(asked[1]?.cursor).toBeUndefined();
-	expect(asked[1]?.filter?.lowStock).toBe(true);
+	// THE FILTER RODE ALONGSIDE THE PAGE, which is what let the service notice the
+	// disagreement rather than answer an unfiltered catalog under a low-stock
+	// caption.
+	expect(asked[0]?.filter?.lowStock).toBe(true);
 	expect(rowIds(view, "products-row")).toEqual(ids("p", 1, 3));
 	expect(absent(view, "products-failure")).toBe(true);
 
@@ -660,14 +676,13 @@ test("products: a cursor the service refuses resets to page one, legibly, and ex
 	expect(window.history.length).toBe(depthOnArrival);
 });
 
-test("products: a failure that is NOT the token leaves the page in the address", async () => {
+test("products: a failure leaves the page in the address", async () => {
 	serve(() => refusal("Pricing & inventory is unavailable", 500));
 	window.history.replaceState(null, "", `/products?low=1&cursor=${encodeURIComponent(PAGE_TWO)}`);
 	view = await mount(<ProductsScreen />);
 	await settle();
 
-	expect(asked).toHaveLength(2);
-	expect(asked[1]?.cursor).toBeUndefined();
+	expect(asked).toHaveLength(1);
 	expect(absent(view, "products-cursor-reset")).toBe(true);
 	expect(search().get("cursor")).toBe(PAGE_TWO);
 });

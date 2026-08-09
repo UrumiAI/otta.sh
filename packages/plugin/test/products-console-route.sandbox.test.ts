@@ -586,11 +586,14 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		expect(seen).not.toContain("lowStockThreshold");
 	});
 
-	test("a cursor is forwarded ALONE — the service cursor already carries the filter", async () => {
-		// RESTORED WITH INC-R3. `Load more` was a Block Kit `block_action` and its
-		// mechanism died with the screen, but what the SERVICE is asked for did not:
-		// sending the filter alongside the cursor is how a paged request can
-		// disagree with the page before it.
+	test("a cursor travels WITH the filters it was minted under, never alone", async () => {
+		// THE INVERSION OF WHAT THIS ONCE PINNED, and the reason is the service's.
+		// Sending only the cursor did not stop a paged request disagreeing with the
+		// page before it — it hid the disagreement: the route took the predicate
+		// solely from the token and never read the query's filter params, so an
+		// unfiltered token beside `?active=true` answered 200 with the unfiltered
+		// catalog. The route now compares the two as predicates and fails closed on
+		// a difference, which is only useful if the request states both.
 		service.respondWith("GET", () => ({ status: 200, body: { products: [], nextCursor: null } }));
 		await invoke({
 			type: READ,
@@ -600,21 +603,78 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		});
 		const seen = service.requests.find((r) => r.url.startsWith(LIST_ROUTE))?.url ?? "";
 		expect(seen).toContain("cursor=svc-cursor-1");
-		expect(seen).not.toContain("active=");
-		expect(seen).not.toContain("search=");
+		expect(seen).toContain("active=true");
+		expect(seen).toContain("search=widget");
+		// AND THE TERM IS NOT FOLDED on its way to the wire. The comparison is
+		// case-sensitive by design, so a client that normalised here and not on page
+		// one would manufacture a mismatch out of nothing.
+		expect(seen).not.toContain("search=WIDGET");
 		// The page size still travels, so a "Load more" asks for the same-sized page
-		// the caption above it describes.
+		// the caption above it describes — and so the route's effective-limit
+		// comparison sees the same number the token carries.
 		expect(seen).toContain("limit=25");
 	});
 
-	test("a `Load more` continuation never re-sends `lowStockThreshold` either — it already rode in the cursor", async () => {
-		// The one place the threshold-first sequencing does NOT apply: a
-		// continuation's filter (including whatever threshold page one
-		// resolved) already rode in the opaque cursor the SERVICE minted, and
-		// `AdminProductsClient.listProducts` ignores a filter argument whenever
-		// a cursor is present. Re-sending it here would be redundant, not wrong
-		// — but proving it is ABSENT is what proves this module is not
-		// re-deriving a second, possibly-stale predicate.
+	test("a refused cursor comes back as page one, flagged, not as an error", async () => {
+		// THE SERVICE'S OWN REMEDY, performed at the client: `cursor filter
+		// mismatch` means "drop the token and re-issue page one with these
+		// parameters", so the console gets rows plus the fact that it did not get
+		// the page it asked for. Two service requests, one console answer.
+		let call = 0;
+		service.respondWith("GET", (req) => {
+			if (!req.url.startsWith(LIST_ROUTE)) return settingsBody(5);
+			call += 1;
+			if (call === 1) return { status: 400, body: { error: "cursor filter mismatch" } };
+			return { status: 200, body: { products: [summary({ onHand: 2 })], nextCursor: "next-1" } };
+		});
+		const result = await invoke({
+			type: READ,
+			resource: "products.list",
+			cursor: "stale-cursor",
+			filter: { status: "true" },
+		});
+		expect(result["ok"]).toBe(true);
+		expect(result["cursorRejected"]).toBe(true);
+		expect((result["products"] as unknown[]).length).toBe(1);
+		const asked = service.requests.filter((r) => r.url.startsWith(LIST_ROUTE)).map((r) => r.url);
+		expect(asked).toHaveLength(2);
+		expect(asked[0]).toContain("cursor=stale-cursor");
+		// THE RETRY DROPS THE TOKEN AND KEEPS THE PARAMETERS — page one of what was
+		// actually asked for, which is why it cannot loop.
+		expect(asked[1]).not.toContain("cursor=");
+		expect(asked[1]).toContain("active=true");
+	});
+
+	test("a refusal that is NOT about the cursor stays a failure", async () => {
+		// The distinction the console cannot make for itself: an outage, an expired
+		// admin token, an unparseable filter. None of them is answerable by asking
+		// again without the cursor, and none of them may be reported as a page the
+		// operator did not get — the address they are on still names a real page.
+		service.respondWith("GET", (req) =>
+			req.url.startsWith(LIST_ROUTE)
+				? { status: 503, body: { error: "service unavailable" } }
+				: settingsBody(5),
+		);
+		const result = await invoke({
+			type: READ,
+			resource: "products.list",
+			cursor: "svc-cursor-1",
+			filter: { status: "true" },
+		});
+		expect(result["ok"]).toBe(false);
+		expect(result["cursorRejected"]).toBeUndefined();
+		expect(service.requests.filter((r) => r.url.startsWith(LIST_ROUTE))).toHaveLength(1);
+	});
+
+	test("a `Load more` continuation DOES re-send `lowStockThreshold`", async () => {
+		// THE OTHER HALF OF THE INVERSION, and the one with teeth. The threshold is
+		// an axis of the predicate the token carries, and the route treats a request
+		// that names fewer axes than the token as a DISAGREEMENT rather than a
+		// narrowing. So a paged low-stock request that omitted it would be refused,
+		// every time, and the merchant would be dropped back to page one on every
+		// `Load more`. That is why the settings read is now sequenced ahead of the
+		// page read on a continuation too, at the cost of the round trip page one
+		// always paid.
 		service.respondWith(
 			"GET",
 			responder({
@@ -633,7 +693,7 @@ describe("the console's Pricing & inventory branch on the otta admin route", () 
 		});
 		const seen = service.requests.find((r) => r.url.startsWith(LIST_ROUTE))?.url ?? "";
 		expect(seen).toContain("cursor=svc-cursor-1");
-		expect(seen).not.toContain("lowStockThreshold");
+		expect(seen).toContain("lowStockThreshold=5");
 	});
 
 	test("the filter vocabulary is shipped as data, so the React tier holds no second copy", async () => {
