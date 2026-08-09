@@ -1359,3 +1359,60 @@ test("a refresh of a paged window re-reads that page alone and keeps the walk be
 	expect(position(view, "orders")).toBe("Page 2 of 6");
 	expect(rowIds(view, "orders-row").at(0)).toBe("o-26");
 });
+
+/**
+ * A REFRESHED DEEP PAGE IS STILL A DEEP PAGE.
+ *
+ * The first response of a walk is classified off the WIRE — a request that carried
+ * no token is page one, one that carried the window's anchor is not. Reading it off
+ * the walk's GROUNDING instead conflates two different facts: grounding says the
+ * page NUMBER is knowable, and an operator three `Next` presses in is grounded and
+ * standing on page three. Both consequences of getting that wrong are captions.
+ */
+test("a refreshed last page keeps the page-scoped hedge instead of claiming the whole set", async () => {
+	// No `total` on the wire, so the count line is this render's own claim about its
+	// own rows — which is exactly where a wrong `firstPage` shows up.
+	serveOrders({});
+	view = await mount(<OrdersScreen />);
+	await settle();
+	for (let step = 0; step < 3; step += 1) {
+		await press(view, "orders-next");
+		await settle();
+	}
+	expect(element(view, "orders-intro").textContent).toContain("25 orders on this page");
+
+	await press(view, "orders-refresh");
+	await settle();
+
+	// `firstPage: true` here would drop the hedge — a last page with nothing after
+	// it and nothing before it is a COMPLETE collection — and state 25 rows as the
+	// whole of Orders.
+	expect(rowIds(view, "orders-row").at(0)).toBe("o-76");
+	expect(element(view, "orders-intro").textContent).toContain("25 orders on this page");
+});
+
+test("a refreshed deep page that comes back empty says so about the page, not the collection", async () => {
+	let secondPageReads = 0;
+	serve((request) => {
+		const body = (orders: readonly unknown[], nextCursor: string | null) =>
+			envelope({ ok: true, orders, nextCursor, vocabulary: VOCABULARY });
+		if (request.cursor === undefined) return body(ids("o", 1, 25).map(order), PAGE_TWO);
+		secondPageReads += 1;
+		// The rows are gone by the time the refresh asks for them again.
+		return body(secondPageReads > 1 ? [] : ids("o", 26, 50).map(order), null);
+	});
+	view = await mount(<OrdersScreen />);
+	await settle();
+	await press(view, "orders-next");
+	await settle();
+	expect(rowIds(view, "orders-row")).toHaveLength(25);
+
+	await press(view, "orders-refresh");
+	await settle();
+
+	// PAGE-SCOPED WORDS, because this render is page two of something. The
+	// whole-collection empty state would tell an operator there are no orders at
+	// all, standing on a page they reached by paging past twenty-five of them.
+	expect(absent(view, "orders-page-zero")).toBe(false);
+	expect(absent(view, "orders-empty")).toBe(true);
+});

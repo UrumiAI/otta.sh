@@ -1,5 +1,5 @@
 ---
-"@otta-sh/plugin": minor
+"@otta-sh/admin-react": patch
 ---
 
 The two React admin lists gain a `Refresh` that re-reads the pages on screen and keeps the
@@ -10,8 +10,11 @@ cursor, leaving everything above it exactly as stale as it was. The ruling is
 [ADR-0017](../adr/0017-list-refresh-semantics.md).
 
 - **A refresh is a WALK, anchored where the window opens.** It re-requests the page the
-  window starts on — no token at all when the walk began at page one, the address's own
-  cursor when it did not — and then follows each response's `nextCursor` to the same depth.
+  window starts on — no token at all when the window opens on page one, the anchoring
+  cursor when it opens anywhere else — and then follows each response's `nextCursor` to the
+  same depth. The anchor, never the walk's grounding, is what says whether that first
+  response *is* page one: grounding only makes the page number knowable, and an operator
+  three `Next` presses in is grounded while standing on page three.
   Only the anchor is a token the list already held; every boundary inside the window is
   re-derived from the responses as they come back. Replaying the held cursors instead would
   parallelize, and was rejected: those boundaries stop lining up with each other the moment
@@ -20,9 +23,9 @@ cursor, leaving everything above it exactly as stale as it was. The ruling is
   reached by paging.
 - **The window is replaced, not merged into**, and committed in one transition. A row in
   none of the refreshed pages — deleted, or no longer matching the filter — stops being
-  shown. That is the one act allowed to remove a row, and it is safe precisely because the
-  operator asked for it: focus is on the control, which survives its own click, so nothing
-  is stranded inside a row that vanishes.
+  shown. That is the one act allowed to remove a row, under an obligation any trigger has
+  to meet: it survives its own act or hands focus off before the window is replaced, and
+  what it removed is reported where the operator is looking.
 - **`Apply filters` over an unchanged predicate is now a refresh, not a collapse.**
   Discarding a scan is licensed by the predicate moving; when the submitted filter is
   field-for-field the applied one, none of that holds and the scan stays. A changed
@@ -34,17 +37,23 @@ cursor, leaving everything above it exactly as stale as it was. The ruling is
   wrongly. A walk that re-read *nothing* leaves the window entirely alone under its own
   title, because the rows on screen are still coherent. A page the service refuses mid-walk
   is discarded rather than merged: the recovered first page answers a different question,
-  and merging it would silently relocate a window that opens elsewhere.
+  and merging it would silently relocate a window that opens elsewhere — and because the
+  committed window then ends on the very token that was refused, paging is withdrawn there
+  rather than promised.
 - **`Retry` after a refresh re-issues the whole walk**, not one page. The paging-stopped
   state is answered by a refresh, which is now what its sentence names first. On Pricing &
-  inventory a grounded walk's first response is page one, so a refresh may raise the
-  low-stock banner and may clear it, while its continuations inherit that verdict as before.
+  inventory only a walk that opens on page one can answer for the low-stock predicate, so
+  such a walk may raise the banner and may clear it, while one anchored deeper carries the
+  pre-refresh verdict (and the withheld exact count) in rather than believing the value a
+  continuation reports by contract.
 - **One read at a time.** Every in-flight read makes the control unavailable and it refuses
-  its own click; a refresh cancels a pending read rather than overlapping it. It is drawn
-  with `aria-disabled` rather than `disabled`, so the control the operator's focus is on
-  keeps its tab stop, and it states its cost before the click. History records a correction,
-  never a journey: the entry is replaced with the page the window now ends on and the stack
-  that produced it.
+  its own click — and so is `Apply filters`, which now has two meanings and both are reads.
+  The control is drawn with `aria-disabled` rather than `disabled`, so the one the
+  operator's focus is on keeps its tab stop; it states its cost when pressing it would incur
+  one and why it is dimmed when it would not. The plan is made from the stack the rows on
+  screen were fetched by, which is not the same stack after a page move that failed. History
+  records a correction, never a journey: the entry is replaced with the page the window now
+  ends on and the stack that produced it.
 
 No service or plugin API changes — a refresh is built from requests the service already
 answers, and the browser still never parses a cursor. The Block Kit lists replace rather

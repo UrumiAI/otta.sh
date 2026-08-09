@@ -16,6 +16,8 @@
  */
 import { PRODUCTS_PAGE_FAILED_TITLE } from "@otta-sh/admin-presentation";
 import {
+	PAGING_STOPPED_TITLE,
+	REFRESH_BUSY_TITLE,
 	REFRESH_FAILED_TITLE,
 	REFRESH_STOPPED_TITLE,
 	REFRESH_UNCHANGED_NOTE,
@@ -945,7 +947,7 @@ test("a refresh that re-reads NOTHING leaves the window exactly as it was", asyn
 	expect(rowIds(view, "orders-row")).toEqual(["o-1", "o-2", "o-3", "o-4", "o-5", "o-6"]);
 });
 
-test("a refresh whose page is REFUSED does not relocate the operator to page one", async () => {
+test("a refresh whose page is REFUSED does not relocate the operator, and stops offering the token that was refused", async () => {
 	view = await scanThreePages();
 	// The first request answers; the second is refused and recovered to page one
 	// by the plugin's client, which is right for a deep link and wrong here.
@@ -957,7 +959,24 @@ test("a refresh whose page is REFUSED does not relocate the operator to page one
 	// The recovered page-one payload is discarded rather than merged, so the
 	// window is the one page that genuinely answered.
 	expect(rowIds(view, "orders-row")).toEqual(["o-1", "o-2"]);
-	expect(text(view, "orders-refresh-stopped")).toContain(REFRESH_STOPPED_TITLE);
+	// AND PAGING IS WITHDRAWN, not merely narrated. The committed window's own
+	// `nextCursor` IS the token that was just refused, so `Load more` from here
+	// would re-send it — a notice saying "Load more gathers them again" would be
+	// walking the operator into the paging-stopped state one click later.
+	expect(text(view, "orders-paging-stopped")).toContain(PAGING_STOPPED_TITLE);
+	expect(absent(view, "orders-refresh-stopped")).toBe(true);
+	expect(absent(view, "orders-load-more")).toBe(true);
+	expect(absent(view, "orders-pager")).toBe(true);
+
+	// And the way out is the act the sentence names first: a fresh walk re-derives
+	// every boundary, so the offer comes back rather than staying gone.
+	rejectAfter = null;
+	await press(view, "orders-refresh");
+	await settle();
+	expect(absent(view, "orders-paging-stopped")).toBe(true);
+	expect(absent(view, "orders-load-more")).toBe(false);
+	expect(rowIds(view, "orders-row")).toEqual(["o-1", "o-2"]);
+	// The position comes back with the paging it belongs to.
 	expect(text(view, "orders-page-position")).toContain("Page 1");
 });
 
@@ -1071,4 +1090,123 @@ test("a refresh clears a low-stock banner its page-one answer disproves, and kee
 	expect(absent(view, "products-stock-degraded")).toBe(true);
 	expect(rows(view, "products-row")).toHaveLength(6);
 	expect(text(view, "products-intro")).toContain("6 low-stock products loaded so far");
+});
+
+test("a refresh plans from the stack the ROWS were fetched by, not the one a failed page move advanced", async () => {
+	view = await scanThreePages();
+	// A `Load more` that fails. The stack keeps the entry it pushed on the click —
+	// deliberately, so the pager is withdrawn rather than pretending the operator
+	// never asked — while the rows on screen are still the three pages behind it.
+	refuseAfterRequests(0);
+	await press(view, "orders-load-more");
+	await settle();
+	expect(rowIds(view, "orders-row")).toEqual(["o-1", "o-2", "o-3", "o-4", "o-5", "o-6"]);
+
+	refuseAfter = null;
+	asked = [];
+	await press(view, "orders-refresh");
+	await settle();
+
+	// ONE ENTRY OF DRIFT WOULD MOVE THE ANCHOR A WHOLE PAGE: planning from the raw
+	// stack would open this walk on page two and render pages 2–4 as the window
+	// that starts at page one. The operator asked for the same query restated.
+	expect(asked[0]?.cursor).toBeUndefined();
+	expect(rowIds(view, "orders-row")).toEqual(["o-1", "o-2", "o-3", "o-4", "o-5", "o-6"]);
+});
+
+test("the low-stock verdict and the withheld total survive a Next, then a Refresh", async () => {
+	// Page one cannot read the store's threshold; every continuation reports the
+	// filter as available BY CONTRACT, because the predicate rode inside the token.
+	// That contractual `false` is the value a refresh must not believe.
+	serve((request) => {
+		const n = request.cursor === undefined ? 1 : Number(request.cursor.slice("cursor-".length));
+		return envelope({
+			ok: true,
+			products: ids("p", n * 3 - 2, n * 3).map(product),
+			nextCursor: `cursor-${String(n + 1)}`,
+			total: 137,
+			stock: {
+				threshold: null,
+				unreadable: false,
+				filterUnavailable: request.cursor === undefined,
+			},
+			vocabulary: PRODUCTS_VOCABULARY,
+		});
+	});
+	view = await mount(<ProductsList onOpen={() => {}} initialFilter={{ lowStock: true }} />);
+	await settle();
+	expect(absent(view, "products-stock-degraded")).toBe(false);
+
+	await press(view, "products-next");
+	await settle();
+	expect(absent(view, "products-stock-degraded")).toBe(false);
+	// The exact count is withheld with it: a confident 137 under a banner saying
+	// the filter was skipped is the claim this pair exists to prevent.
+	expect(text(view, "products-intro")).not.toContain("137");
+
+	await press(view, "products-refresh");
+	await settle();
+
+	// A WALK ANCHORED ON A CONTINUATION CANNOT ANSWER THIS QUESTION, so it carries
+	// the answer in rather than taking the contractual `false` at face value —
+	// which would drop the banner and restore the total at the click of a control
+	// that has nothing to do with filtering.
+	expect(absent(view, "products-stock-degraded")).toBe(false);
+	expect(text(view, "products-intro")).not.toContain("137");
+	expect(rows(view, "products-row")).toHaveLength(3);
+});
+
+test("a Retry that replays a refresh reads as a refresh while it runs", async () => {
+	view = await scanThreePages();
+	refuseAfterRequests(0);
+	await press(view, "orders-refresh");
+	await settle();
+	expect(text(view, "orders-load-more-failure")).toContain(REFRESH_FAILED_TITLE);
+
+	// The retry re-issues the WHOLE walk, so the control that names that act must
+	// not sit there live, unbusy, over a walk already in flight.
+	apiFetch.mockImplementation(() => new Promise<Response>(() => {}));
+	await press(view, "orders-load-more-failure-action");
+	expect(text(view, "orders-refresh")).toContain("Refreshing");
+	expect(element(view, "orders-refresh").getAttribute("aria-disabled")).toBe("true");
+	// And says why it is dimmed rather than stating a cost it is refusing to incur.
+	expect(element(view, "orders-refresh").getAttribute("title")).toBe(REFRESH_BUSY_TITLE);
+});
+
+test("Apply is unavailable while a read is in flight, rather than silently doing nothing", async () => {
+	stockCatalog(10);
+	let release: ((response: Response) => void) | null = null;
+	apiFetch.mockImplementation(
+		() =>
+			new Promise<Response>((resolve) => {
+				release = resolve;
+			}),
+	);
+	view = await mount(<OrdersList onOpen={() => {}} />);
+	// The very first load: `refresh` would refuse an Apply here, and a live button
+	// over a refusal is a control that lies about what it does.
+	const apply = element(view, "apply-filters") as HTMLButtonElement;
+	expect(apply.disabled).toBe(true);
+
+	serveCatalog();
+	await React.act(async () => {
+		(release as ((response: Response) => void) | null)?.(
+			envelope({ ok: true, orders: [], nextCursor: null, vocabulary: VOCABULARY }),
+		);
+	});
+	await settle();
+	expect((element(view, "apply-filters") as HTMLButtonElement).disabled).toBe(false);
+});
+
+test("the notice that says rows are no longer shown is announced, not merely rendered", async () => {
+	view = await scanThreePages();
+	refuseAfterRequests(2);
+	await press(view, "orders-refresh");
+	await settle();
+
+	// The licence to remove rows rests on the operator being able to perceive that
+	// it happened — a live region inserted with its text already in place is the
+	// one case assistive technology need not announce, so focus is handed to it.
+	const notice = element(view, "orders-refresh-stopped");
+	expect(notice.contains(document.activeElement)).toBe(true);
 });

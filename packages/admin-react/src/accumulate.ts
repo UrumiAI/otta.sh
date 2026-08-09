@@ -577,6 +577,18 @@ export function hasPreviousPage(trail: PageTrail): boolean {
  * set of rows entirely and caption it as a refresh of the ones they were reading.
  * An ungrounded walk is therefore anchored at the address's own cursor, which is
  * the same token a reload of that address would send.
+ *
+ * AND THE ANCHOR — NOT {@link grounded} — IS WHAT SAYS WHETHER THE FIRST RESPONSE
+ * IS PAGE ONE. The two came apart in the first cut and it was a real defect: a
+ * GROUNDED stack describes a walk that STARTED at page one, which is what makes
+ * the page NUMBER knowable, and says nothing about where the window now sits. An
+ * operator three `Next` presses in is grounded and standing on page three, so a
+ * refresh anchored on page three's token that classified its answer as "page one"
+ * would caption a deep page as the start of the collection: an empty answer would
+ * claim the whole collection is empty, and a service that sends no `total` would
+ * drop the page-scoped hedge and state those rows as the entire set. The wire
+ * decides — a request that carried no token is page one, whoever asked for it —
+ * exactly as it does for every other response these lists classify.
  */
 export interface RefreshWalk {
 	/** The page the window OPENS on — `undefined` is page one, asked for by
@@ -592,10 +604,15 @@ export interface RefreshWalk {
 	 *  expires nor depends on the row it was minted from still existing, and
 	 *  `Previous` has always re-requested rather than replayed rows. */
 	readonly kept: readonly string[];
-	/** Did the walk being refreshed start at page one? Carried so the rebuilt page
-	 *  can say whether its first response is the first page — which is what lets a
-	 *  count line claim the whole set, and (on Pricing & inventory) what makes
-	 *  page one's answer about the low-stock threshold authoritative. */
+	/**
+	 * Did the walk being refreshed start at page one?
+	 *
+	 * IT IS ABOUT THE PAGE NUMBER AND NOTHING ELSE — carried so the rebuilt stack
+	 * keeps saying whether its depth is a position in the collection or merely a
+	 * count of pages walked from somewhere unnamed. It is NOT what decides whether
+	 * the first response of this walk is page one; {@link anchor} is, and the note
+	 * above says why conflating them mis-captions a deep page.
+	 */
 	readonly grounded: boolean;
 }
 
@@ -642,9 +659,156 @@ export function refreshWalk(trail: PageTrail, span: number): RefreshWalk {
  * pages wrongly and offer a `Previous` into a page this list never established.
  * Grounding is untouched — whether the walk started at page one is not something
  * a refresh can change.
+ *
+ * IT PUSHES RATHER THAN CONCATENATES, so {@link pushedPage}'s idempotence covers
+ * this path too. A service that answers two consecutive pages with the same
+ * `nextCursor` — or one whose first answer hands back the very token the window is
+ * anchored on — would otherwise deepen the stack by an entry no page stands on,
+ * and that shows up as a page NUMBER that is quietly wrong. The walk itself stops
+ * on a repeated token for the same reason ({@link walkWindow}); this is the
+ * invariant underneath that guard rather than a second copy of it.
  */
 export function refreshedTrail(walk: RefreshWalk, walked: readonly string[]): PageTrail {
-	return { cursors: [...walk.kept, ...walked], grounded: walk.grounded };
+	return walked.reduce((trail, cursor) => pushedPage(trail, cursor), {
+		cursors: walk.kept,
+		grounded: walk.grounded,
+	});
+}
+
+/**
+ * THE STACK AS OF THE LAST PAGE THAT ACTUALLY LANDED.
+ *
+ * WHY THE TWO DIFFER. The stack moves on the CLICK — deliberately, so the pager
+ * cannot take a second press in the commit before the request goes out, and so a
+ * refusal withdraws the pager rather than pretending the operator never asked. The
+ * ROWS move when a response arrives. Between those two moments, and after a page
+ * move that failed or was refused outright, the stack holds one entry more than the
+ * rows on screen were fetched by.
+ *
+ * WHICH IS FINE FOR THE PAGER AND FATAL FOR A REFRESH. The pager is withdrawn in
+ * exactly those states, so nobody reads the extra entry — but a refresh PLANS from
+ * the stack, and one entry of drift moves the anchor a whole page: the walk would
+ * re-read pages 2…N+1 and render them as the window that starts at page one. The
+ * operator asks for the same query restated and gets a different page silently.
+ *
+ * ONE ENTRY, NEVER MORE. Only `Next`, `Previous` and `Load more` push, all three
+ * are unavailable while a request is in flight, and all three are withdrawn under
+ * the failure their own refusal produces — so at most one move can be outstanding
+ * at a time.
+ */
+export function landedTrail(trail: PageTrail, outstanding: boolean): PageTrail {
+	return outstanding && trail.cursors.length > 0
+		? { cursors: trail.cursors.slice(0, -1), grounded: trail.grounded }
+		: trail;
+}
+
+/** Why a refresh walk stopped before it had re-read its whole window. */
+export interface RefreshStop {
+	/** What the screen may say about it — the fact, never the cause, per the same
+	 *  doctrine as {@link PAGING_STOPPED_DESCRIPTION}. */
+	readonly description: string;
+	/**
+	 * THE SERVICE REFUSED THE TOKEN THIS WALK MINTED, rather than failing to answer
+	 * at all — and the difference decides whether paging may be offered afterwards.
+	 *
+	 * The cursor the committed window ends on IS that refused token: it is the
+	 * `nextCursor` of the last page that answered, and the request the walk made
+	 * with it is the one that came back refused. So `Load more` from there would
+	 * re-send a token this list has just watched be rejected, and a notice promising
+	 * it gathers the missing pages would be walking the operator into the
+	 * paging-stopped state one click later.
+	 */
+	readonly refused: boolean;
+}
+
+/** What a walk leaves behind: the window it rebuilt (or `null` if it re-read
+ *  nothing), the stack that window stands on, and why it stopped if it did. */
+export interface RefreshOutcome<P> {
+	readonly page: P | null;
+	readonly trail: PageTrail;
+	readonly stopped: RefreshStop | null;
+}
+
+/**
+ * THE WALK ITSELF, ONCE, FOR BOTH LISTS.
+ *
+ * IT IS GENERIC OVER THE RESPONSE AND OVER THE PAGE IT BUILDS, which is the whole
+ * point: the control flow — the arrival of the first response, which boundaries
+ * get recorded, when to stop, and what the outcome is called — is one decision, and
+ * the first cut of this feature wrote it out twice. Both of the defects that
+ * survived review had to be found twice as a consequence. The screens keep exactly
+ * what is genuinely theirs: how to fetch, how to read a refusal off their own
+ * payload, and how to merge (which is where Pricing & inventory carries its
+ * low-stock verdict).
+ *
+ * THE FIRST RESPONSE IS CLASSIFIED OFF THE WIRE. A request that carried no token is
+ * page one and arrives as a `reset`; one that carried the window's anchor is a page
+ * standing on its own and arrives as a `replace`. Every step after it continues the
+ * window and is an `extend`. See {@link RefreshWalk} for why this is the anchor's
+ * question and never `grounded`'s.
+ *
+ * IT COMMITS NOTHING. The caller gets one value describing the whole walk, and
+ * writes it in a single transition — a window half re-read would otherwise carry one
+ * count line over rows taken at two different moments, and every intermediate render
+ * down a deep walk would state one.
+ *
+ * `cancelled` IS A FUNCTION, not a boolean, because it is read again after every
+ * await: the effect that started this walk can be superseded mid-flight by a filter
+ * apply or by another refresh, and a walk that checked a value captured at the top
+ * would commit into a screen that had moved on.
+ */
+export type RefreshAnswer<A> =
+	/** A page, and the boundary the next step continues from. */
+	| { readonly kind: "answer"; readonly page: A; readonly nextCursor: string | null }
+	/** No answer came back. The description is the service's; the title is not,
+	 *  because a whole-collection refusal is not what one refused page proves. */
+	| { readonly kind: "failure"; readonly description: string }
+	/** The service refused the token and answered page one instead. That payload is
+	 *  DISCARDED rather than merged: it answers a different question, and merging it
+	 *  would silently relocate a window that opens somewhere else. */
+	| { readonly kind: "refused" };
+
+export async function walkWindow<A, P>(opts: {
+	readonly walk: RefreshWalk;
+	/** One request, already read into the three things a walk can be told. Both
+	 *  screens narrow their own payload here and nowhere else. */
+	readonly fetch: (cursor: string | undefined) => Promise<RefreshAnswer<A>>;
+	/** The list's own `nextPage` — how a response joins what the walk has built. */
+	readonly merge: (built: P | null, page: A, arrival: PageArrival) => P;
+	readonly cancelled: () => boolean;
+}): Promise<RefreshOutcome<P> | null> {
+	/** The cursors each response AFTER the first was fetched with — the boundaries
+	 *  this walk established, which become the stack. */
+	const walked: string[] = [];
+	let built: P | null = null;
+	let stopped: RefreshStop | null = null;
+	let at = opts.walk.anchor;
+	for (let step = 0; step < opts.walk.depth; step += 1) {
+		const answer = await opts.fetch(at);
+		if (opts.cancelled()) return null;
+		if (answer.kind === "failure") {
+			stopped = { description: answer.description, refused: false };
+			break;
+		}
+		if (answer.kind === "refused") {
+			stopped = { description: REFRESH_REFUSED_NOTE, refused: true };
+			break;
+		}
+		built = opts.merge(
+			built,
+			answer.page,
+			step === 0 ? (opts.walk.anchor === undefined ? "reset" : "replace") : "extend",
+		);
+		if (step > 0 && at !== undefined) walked.push(at);
+		const next = answer.nextCursor;
+		// NO NEXT PAGE is the collection having become shorter than the window, which
+		// is not a failure and says so by simply being smaller. A REPEATED token is a
+		// service making no progress, and following it would re-read one page for
+		// every remaining step while counting each as another page of the window.
+		if (next === null || next === at) break;
+		at = next;
+	}
+	return { page: built, trail: refreshedTrail(opts.walk, walked), stopped };
 }
 
 /**
@@ -672,6 +836,9 @@ export const REFRESH_LABEL = "Refresh";
 export const REFRESHING_LABEL = "Refreshing…";
 export const REFRESH_TITLE =
 	"Re-reads every page on screen. Rows that are no longer in the list stop being shown.";
+/** Why it is dimmed — see {@link refreshControl} for why this control says so and
+ *  the pager's own controls do not. */
+export const REFRESH_BUSY_TITLE = "Available once the read already in flight has answered.";
 export const REFRESH_FAILED_TITLE = "This list could not be refreshed";
 export const REFRESH_UNCHANGED_NOTE =
 	"Nothing on screen has changed — these rows are still the last answer that arrived.";
@@ -696,11 +863,14 @@ export const REFRESH_STOPPED_DESCRIPTION =
  * launched over a pending `Load more` would rebuild the window and then have the
  * older page land on top of it, merged against boundaries that no longer exist.
  *
- * THE TITLE STATES THE COST, not the busy state — the same rule the pager's
- * `Next` follows. "Busy" is not a place, and a control about to become usable
- * again does not need explaining; what does need saying, before the click rather
- * than after it, is that this re-reads every page on screen and that rows which
- * are gone from the collection will go from the list.
+ * THE TITLE FOLLOWS THE STATE, and this is the one place the pager's rule is
+ * deliberately not copied. `Next` says nothing while it is merely busy, because
+ * "busy" is not a place and its own words do not change. This control's words DO:
+ * its live title states a cost — that it re-reads every page on screen and that
+ * rows gone from the collection will stop being shown — and leaving that sentence
+ * attached to a control that is currently refusing the click describes an act that
+ * is not on offer. So while it is unavailable it says why, and it states the cost
+ * only when pressing it would incur one.
  */
 export function refreshControl(opts: {
 	readonly busy: boolean;
@@ -709,7 +879,7 @@ export function refreshControl(opts: {
 	return {
 		label: opts.refreshing ? REFRESHING_LABEL : REFRESH_LABEL,
 		unavailable: opts.busy,
-		title: REFRESH_TITLE,
+		title: opts.busy ? REFRESH_BUSY_TITLE : REFRESH_TITLE,
 	};
 }
 
