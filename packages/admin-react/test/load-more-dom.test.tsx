@@ -347,10 +347,18 @@ test("a deep-linked filtered URL starts a FRESH accumulation, and Back restarts 
 
 	// A traversal is the one moment the address knows something the mounted list
 	// does not, so the screen rebuilds the list from it — and the rebuilt list
-	// starts at page one of whatever the address now names. Accumulated pages are
-	// NOT restored; the URL carries a filter, never a page count.
+	// starts at whatever page the address now names. Accumulated pages are NOT
+	// restored: the address carries ONE page's cursor, never the stack of
+	// pages a scan walked through.
+	//
+	// A REAL Back, not a hand-dispatched `popstate`. Now that `Load more` pushes
+	// the page it moved to, dispatching the event alone would re-derive the
+	// address the click just wrote — page two — and assert the opposite of what
+	// this test is about. This lands on the entry BEFORE that push: the filtered
+	// list, at page one.
 	await React.act(async () => {
-		window.dispatchEvent(new PopStateEvent("popstate"));
+		window.history.back();
+		await new Promise((resolve) => setTimeout(resolve, 25));
 	});
 	await settle();
 	expect(asked.at(-1)?.cursor).toBeUndefined();

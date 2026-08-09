@@ -293,6 +293,152 @@ describe("the console's read/write branch on the otta admin route", () => {
 		expect(decodeURIComponent(seen)).toContain("2026-07-31T23:59:59.999Z");
 	});
 
+	test("a cursor travels WITH the filters it was minted under, never alone", async () => {
+		// Sending only the cursor did not stop a paged request disagreeing with the
+		// page before it — it HID the disagreement: the route took the predicate
+		// solely from the token and never read the query's filter params, so an
+		// unfiltered token beside `?states=paid` answered 200 with the unfiltered
+		// set and a console captioned those rows "Paid". The route now compares the
+		// two as predicates and fails closed on a difference, which is only useful
+		// if the request states both.
+		service.respondWith("GET", () => ({ status: 200, body: { orders: [], nextCursor: null } }));
+		await invoke({
+			type: READ,
+			resource: "orders.list",
+			cursor: "svc-cursor-1",
+			filter: { status: "paid", search: "Ada" },
+		});
+		const seen = service.requests.find((r) => r.url.startsWith("/admin/orders"))?.url ?? "";
+		expect(seen).toContain("cursor=svc-cursor-1");
+		expect(seen).toContain("states=paid");
+		// THE TERM IS NOT FOLDED between the address and the wire. The comparison is
+		// case-SENSITIVE by design (the store's case-insensitivity is the store's
+		// business), so normalising here and not on page one would manufacture a
+		// mismatch out of nothing.
+		expect(decodeURIComponent(seen)).toContain("search=Ada");
+		expect(seen).toContain("limit=25");
+	});
+
+	test("a paged relative period sends the SAME instants page one was minted with", async () => {
+		// THE OBLIGATION THE GATE PUTS ON A CLIENT THAT SENDS BOTH: re-resolving
+		// "last 7 days" at page-two time must not yield a different window, or every
+		// `Load more` would 400. It cannot here, and by construction rather than by
+		// luck — `periodWindow` resolves a preset to WHOLE-DAY bounds, so two
+		// requests on the same UTC day resolve to the same two instants. (A scan
+		// that crosses UTC midnight genuinely does describe a different window; the
+		// refusal and the page-one recovery are the right answer to that, not a
+		// defect to design around.)
+		service.respondWith("GET", () => ({ status: 200, body: { orders: [], nextCursor: null } }));
+		await invoke({ type: READ, resource: "orders.list", filter: { period: "last7" } });
+		await invoke({
+			type: READ,
+			resource: "orders.list",
+			cursor: "svc-cursor-1",
+			filter: { period: "last7" },
+		});
+		const asked = service.requests
+			.filter((r) => r.url.startsWith("/admin/orders"))
+			.map((r) => new URLSearchParams(r.url.split("?")[1] ?? ""));
+		expect(asked).toHaveLength(2);
+		expect(asked[1]?.get("cursor")).toBe("svc-cursor-1");
+		expect(asked[1]?.get("from")).toBe(asked[0]?.get("from"));
+		expect(asked[1]?.get("to")).toBe(asked[0]?.get("to"));
+	});
+
+	test("a refused cursor comes back as page one, flagged, not as an error", async () => {
+		// THE SERVICE'S OWN REMEDY, performed at the client: `cursor filter
+		// mismatch` means "drop the token and re-issue page one with these
+		// parameters". Two service requests, one console answer, and the fact
+		// travels so the screen can correct an address that still names that page.
+		let call = 0;
+		service.respondWith("GET", () => {
+			call += 1;
+			return call === 1
+				? { status: 400, body: { error: "cursor filter mismatch" } }
+				: { status: 200, body: { orders: [], nextCursor: "next-1" } };
+		});
+		const result = await invoke({
+			type: READ,
+			resource: "orders.list",
+			cursor: "stale-cursor",
+			filter: { status: "paid" },
+		});
+		expect(result["ok"]).toBe(true);
+		expect(result["cursorRejected"]).toBe(true);
+		const asked = service.requests
+			.filter((r) => r.url.startsWith("/admin/orders"))
+			.map((r) => r.url);
+		expect(asked).toHaveLength(2);
+		expect(asked[0]).toContain("cursor=stale-cursor");
+		// THE RETRY DROPS THE TOKEN AND KEEPS THE PARAMETERS, which is why it cannot
+		// loop: there is no cursor left to refuse.
+		expect(asked[1]).not.toContain("cursor=");
+		expect(asked[1]).toContain("states=paid");
+	});
+
+	test("an undecodable cursor is recovered the same way", async () => {
+		// One condition, one remedy: `invalid cursor` and `cursor filter mismatch`
+		// are both "that token is no good, ask again without it".
+		let call = 0;
+		service.respondWith("GET", () => {
+			call += 1;
+			return call === 1
+				? { status: 400, body: { error: "invalid cursor" } }
+				: { status: 200, body: { orders: [], nextCursor: null } };
+		});
+		const result = await invoke({ type: READ, resource: "orders.list", cursor: "!!!garbage" });
+		expect(result["ok"]).toBe(true);
+		expect(result["cursorRejected"]).toBe(true);
+	});
+
+	test("a cursor refusal for a request that carried NO cursor cannot re-issue", async () => {
+		// The service contradicting itself. There is nothing to retry — the same
+		// cursor-less request would ask the same question — so it fails like any
+		// other refusal rather than looping or reporting a page nobody asked for.
+		service.respondWith("GET", () => ({
+			status: 400,
+			body: { error: "cursor filter mismatch" },
+		}));
+		const result = await invoke({
+			type: READ,
+			resource: "orders.list",
+			filter: { status: "paid" },
+		});
+		expect(result["ok"]).toBe(false);
+		expect(service.requests.filter((r) => r.url.startsWith("/admin/orders"))).toHaveLength(1);
+	});
+
+	test("a refusal that is NOT about the cursor stays a failure", async () => {
+		// The distinction the console cannot make for itself. An outage, an expired
+		// admin token, an unparseable filter: none is answerable by asking again
+		// without the cursor, and none may be reported as a page the operator did
+		// not get — the address they are on still names a real page, and rewriting
+		// it would throw that away at the moment a reload would have restored it.
+		service.respondWith("GET", () => ({ status: 503, body: { error: "service unavailable" } }));
+		const result = await invoke({
+			type: READ,
+			resource: "orders.list",
+			cursor: "svc-cursor-1",
+			filter: { status: "paid" },
+		});
+		expect(result["ok"]).toBe(false);
+		expect(result["cursorRejected"]).toBeUndefined();
+		expect(service.requests.filter((r) => r.url.startsWith("/admin/orders"))).toHaveLength(1);
+	});
+
+	test("a 400 with no readable body is NOT read as a cursor refusal", async () => {
+		// The safe reading of an unexplained failure is the one that keeps the
+		// operator's page in the address rather than the one that discards it.
+		service.respondWith("GET", () => ({ status: 400, body: "" }));
+		const result = await invoke({
+			type: READ,
+			resource: "orders.list",
+			cursor: "svc-cursor-1",
+		});
+		expect(result["ok"]).toBe(false);
+		expect(service.requests.filter((r) => r.url.startsWith("/admin/orders"))).toHaveLength(1);
+	});
+
 	test("days are ignored unless the period is custom, exactly as on the form", async () => {
 		service.respondWith("GET", () => ({ status: 200, body: { orders: [], nextCursor: null } }));
 		await invoke({

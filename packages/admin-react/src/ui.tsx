@@ -406,6 +406,16 @@ export function CopyIdButton({
  * than `alert` even for errors: these are outcomes of something the operator
  * just did, not interruptions.
  *
+ * NOT EVERY NOTICE ANSWERS AN INTERACTION, THOUGH, and that is the one case
+ * `role="status"` does not cover on its own: a live region INSERTED with its text
+ * already in place is not required to be announced, and the lists' stale-link
+ * notice appears on arrival, unbidden, with nothing to click. So a caller raising
+ * a notice the operator did not just ask for hands focus to this section — which
+ * is what `tabIndex={-1}` is for, and where `handOffFocusTo` already sends it —
+ * while a caller whose notice answers an interaction must NOT: there the live
+ * region is doing its job, and taking focus off what the operator was doing is
+ * the more disruptive fix.
+ *
  * `action` IS `EmptyState`'s, deliberately — same prop shape, same markup,
  * same `Button`. A notice that reports a failed load has a way out for exactly
  * the reason a zero state has a way back to every row, and the two should not

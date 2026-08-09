@@ -178,6 +178,23 @@ export interface ConsoleListPayload {
 	 * both surfaces fall back to the page-scoped count they always had.
 	 */
 	readonly total?: number;
+	/**
+	 * THE PAGE THE REQUEST ASKED FOR WAS REFUSED, and these are the first page's
+	 * rows instead.
+	 *
+	 * WHY IT IS ON THE SUCCESS PAYLOAD RATHER THAN A FAILURE. The request WAS
+	 * answered: the cursor disagreed with the filters beside it, or would not
+	 * decode, and the service's own remedy for that code is "drop the cursor and
+	 * re-issue page one" — which `AdminOrdersClient` performs before this route
+	 * ever sees a result. So there is a list to render and nothing to apologise
+	 * for; what the console still needs is the FACT, because an address that names
+	 * that page must be corrected and an operator who followed a link to it is
+	 * owed a sentence.
+	 *
+	 * ABSENT ON EVERY ORDINARY PAGE. A console that ignores it renders the right
+	 * rows one page from where it meant to be — the safe direction.
+	 */
+	readonly cursorRejected?: true;
 	readonly vocabulary: ConsoleVocabulary;
 }
 
@@ -288,6 +305,10 @@ async function consoleList(
 		orders: page.orders,
 		nextCursor: page.nextCursor,
 		...(page.total !== undefined ? { total: page.total } : {}),
+		// FORWARDED, NEVER RE-DERIVED: only the client can see the service's own
+		// refusal code, and only it knows whether the rows below came from the
+		// cursor the console asked with or from the page-one retry it made instead.
+		...(page.cursorRejected === true ? { cursorRejected: true as const } : {}),
 		vocabulary: CONSOLE_VOCABULARY,
 	};
 }

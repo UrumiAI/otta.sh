@@ -1,4 +1,5 @@
 import type { HttpAccess } from "../types.js";
+import { CURSOR_REFUSED, isCursorRefusal } from "./cursor-refusal.js";
 
 /**
  * A tiny `ctx.http`-only client for the admin Orders console service surface
@@ -139,6 +140,20 @@ export interface OrdersListResult {
 	 * page of rows with a count of none.
 	 */
 	total?: number;
+	/**
+	 * THIS IS PAGE ONE, and it is page one because the cursor the caller asked
+	 * with was REFUSED — mismatched against these filters, or undecodable — and
+	 * {@link AdminOrdersClient.listOrders} re-issued the request without it.
+	 *
+	 * ABSENT ON EVERY ORDINARY PAGE, including an ordinary first page: the flag
+	 * means "you asked for a page you did not get", which is a thing a renderer
+	 * must be able to say out loud (an address still naming that page has to be
+	 * corrected, and an operator who followed a link to it deserves a sentence).
+	 * A caller that ignores it renders a correct list, one page from where the
+	 * caller meant — the safe direction, and the reason this is optional rather
+	 * than a second result type.
+	 */
+	cursorRejected?: true;
 }
 
 export interface OrderDetailResult {
@@ -368,29 +383,116 @@ export class AdminOrdersClient {
 		this.#serviceToken = options.serviceToken;
 	}
 
+	/**
+	 * THE FILTER TRAVELS BESIDE THE CURSOR, and it did not used to.
+	 *
+	 * The old rule was "send ONLY the cursor when paging, so the two never
+	 * disagree", and it was the wrong half of a true observation. The cursor does
+	 * embed the filter it was minted under — but the route, given both, took the
+	 * predicate SOLELY from the token and never read the query's filter params at
+	 * all. So a page-two request that meant "paid orders" while carrying an
+	 * unfiltered token got the unfiltered set, 200, with nothing in the response
+	 * admitting the substitution; upstream, a console deriving its filters from
+	 * the address captions those rows "Paid". Sending only the cursor did not
+	 * prevent the disagreement — it hid it.
+	 *
+	 * The route now compares the two as PREDICATES and answers
+	 * `400 {"error":"cursor filter mismatch"}` when they differ, so stating the
+	 * filter on every request is what turns an invisible divergence into an
+	 * answerable one. Agreeing params are byte-identical to the cursor alone: they
+	 * are redundant, not a second opinion.
+	 *
+	 * NO CASE FOLDING, HERE OR ANYWHERE BETWEEN THE URL AND THE WIRE. The
+	 * comparison is deliberately case-SENSITIVE — the store's case-insensitivity
+	 * is the store's business, and a token round-trips whatever the query said —
+	 * so a client that helpfully lowercased a search term on one request and not
+	 * on the other would manufacture mismatches out of nothing.
+	 *
+	 * WHAT THE CALLER OWES: for a filter derived from a RELATIVE period, the
+	 * instants passed here must be the ones the cursor was minted under, not a
+	 * fresh resolution of the same words. `orders-read.ts`'s `periodWindow`
+	 * resolves presets to WHOLE-DAY bounds precisely so that holds — two requests
+	 * on the same UTC day resolve identically, which is every request in a paging
+	 * session bar one that crosses UTC midnight. That crossing describes a
+	 * genuinely different window, so the 400 and the page-one recovery below are
+	 * the correct answer to it rather than a defect to design around.
+	 */
 	async listOrders(
 		filter: OrdersListFilter,
 		opts: { cursor?: string; limit?: number } = {},
 	): Promise<OrdersListResult> {
-		const q = new URLSearchParams();
-		if (opts.cursor !== undefined && opts.cursor.length > 0) {
-			// The service cursor already embeds the active filter — send ONLY the
-			// cursor (+limit) when paging so the two never disagree.
-			q.set("cursor", opts.cursor);
-		} else {
+		const paged = opts.cursor !== undefined && opts.cursor.length > 0;
+		const query = (withCursor: boolean): string => {
+			const q = new URLSearchParams();
+			if (withCursor && opts.cursor !== undefined) q.set("cursor", opts.cursor);
 			if (filter.states !== undefined && filter.states.length > 0) {
 				q.set("states", filter.states.join(","));
 			}
 			if (filter.from !== undefined && filter.from.length > 0) q.set("from", filter.from);
 			if (filter.to !== undefined && filter.to.length > 0) q.set("to", filter.to);
 			if (filter.search !== undefined && filter.search.length > 0) q.set("search", filter.search);
+			if (opts.limit !== undefined) q.set("limit", String(opts.limit));
+			return q.toString();
+		};
+
+		const first = await this.#getList(`/admin/orders?${query(paged)}`);
+		if (first === CURSOR_REFUSED && !paged) {
+			// A CURSOR REFUSAL FOR A REQUEST THAT CARRIED NO CURSOR is the service
+			// contradicting itself, and there is no recovery to attempt: re-issuing
+			// the identical cursor-less request would ask the same question again and
+			// get the same answer. It fails, like any other refusal this client
+			// cannot act on.
+			throw new Error(`GET /admin/orders failed (HTTP 400)`);
 		}
-		if (opts.limit !== undefined) q.set("limit", String(opts.limit));
-		const body = await this.#getJson<{
+		if (first === CURSOR_REFUSED) {
+			/*
+			 * THE PRESCRIBED RECOVERY, PERFORMED HERE. A refused cursor means "drop
+			 * the token and re-issue page one with these parameters", not "show the
+			 * operator an error": the request is answerable, just not from that
+			 * token, and the remedy is mechanical.
+			 *
+			 * IT BELONGS AT THIS TIER because this is the last one that can read the
+			 * service's own error value, and the distinction it carries is the one the
+			 * console needs most: a refused PAGE comes back as a first page with a
+			 * flag, an unreachable SERVICE comes back as a thrown failure, and those
+			 * two want opposite treatments of the address bar — the first is corrected
+			 * to page one, the second must keep the page it names so a reload after
+			 * recovery still restores it. Collapsing them into one "list failed" is
+			 * what made the console guess.
+			 *
+			 * ONE retry, without the cursor, so it cannot loop: the second request
+			 * carries no token to be refused.
+			 *
+			 * THE RETRY IS THE SHARED REMEDY, NOT ALWAYS THE ANSWER. A consumer is
+			 * entitled to DISCARD these rows: a console refused mid-scan keeps the
+			 * pages it already has and throws page one away unmerged, because showing
+			 * it would destroy the scan to re-print rows the operator read first. That
+			 * is why the request is still made — the flag needs a page behind it to be
+			 * an honest answer to the caller that does want one — and why the
+			 * discarded case must not be optimised away by skipping the retry when
+			 * somebody guesses it will be unused. This tier cannot know.
+			 */
+			const retried = await this.#getList(`/admin/orders?${query(false)}`);
+			if (retried === CURSOR_REFUSED) throw new Error("GET /admin/orders failed (HTTP 400)");
+			return { ...retried, cursorRejected: true };
+		}
+		return first;
+	}
+
+	async #getList(path: string): Promise<OrdersListResult | typeof CURSOR_REFUSED> {
+		const res = await this.#fetch(`${this.#baseUrl}${path}`, {
+			method: "GET",
+			headers: this.#authHeaders(),
+		});
+		if (!res.ok) {
+			if (await isCursorRefusal(res)) return CURSOR_REFUSED;
+			throw new Error(`GET ${path} failed (HTTP ${res.status})`);
+		}
+		const body = (await res.json()) as {
 			orders?: OrderSummaryWire[];
 			nextCursor?: string | null;
 			total?: unknown;
-		}>(`/admin/orders?${q.toString()}`);
+		};
 		return {
 			orders: body.orders ?? [],
 			nextCursor: body.nextCursor ?? null,

@@ -259,15 +259,24 @@ export interface StockPageResult {
  *     right.
  *  3. **A CONTINUATION IS NEVER `filterUnavailable`, because this request's
  *     settings read is not evidence about it.** On a request carrying a
- *     cursor the predicate is whatever page one baked into that opaque cursor
- *     — `AdminProductsClient.listProducts` ignores the filter argument
- *     entirely once a cursor is present — so the page's filtered-ness was
- *     settled before this request was made. Deriving the flag from a FRESH
- *     settings read there gets it wrong in both directions: a read that fails
- *     only on the continuation would raise "the Low stock only filter was not
- *     applied" over a page the service genuinely filtered, AND withhold a
- *     `total` that really is of the filtered set. So the cursor is the
- *     evidence, and a continuation reports `false`.
+ *     cursor the predicate is whatever page one baked into that opaque cursor,
+ *     so the page's filtered-ness was settled before this request was made.
+ *     Deriving the flag from a FRESH settings read there gets it wrong in both
+ *     directions: a read that fails only on the continuation would raise "the
+ *     Low stock only filter was not applied" over a page the service genuinely
+ *     filtered, AND withhold a `total` that really is of the filtered set. So
+ *     the cursor is the evidence, and a continuation reports `false`.
+ *
+ *     ONE PREMISE HERE HAS CHANGED, and only one. This used to add that the
+ *     client "ignores the filter argument entirely once a cursor is present".
+ *     It no longer does — it states the filter on every request, because the
+ *     service compares the two and fails closed on a disagreement — so the
+ *     console route resolves the threshold before paging as well. The
+ *     conclusion is untouched: the predicate that produced the rows is still
+ *     the token's, and this request's settings read is still not evidence about
+ *     it. What the caller must now also do is stop calling a REFUSED cursor a
+ *     continuation: that request was answered with page one, filtered by the
+ *     threshold resolved just now, which makes the fresh read evidence again.
  *
  *     THE OTHER DIRECTION IS NOT THIS FUNCTION'S TO FIX. If the read failed on
  *     PAGE ONE, that page went out unfiltered and its cursor carries no

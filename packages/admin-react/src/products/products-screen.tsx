@@ -28,6 +28,7 @@
 import type { ProductsFilter } from "../console-api.js";
 import { PRODUCT_KIND_LABELS } from "@otta-sh/admin-presentation";
 import * as React from "react";
+import { CURSOR_PARAM, cursorQuery, readCursor } from "../accumulate.js";
 import { ConsoleStyles } from "../ui.js";
 import { ProductDetail } from "./product-detail.js";
 import { ProductsList } from "./products-list.js";
@@ -121,6 +122,11 @@ export function readProductsFilter(search: string): ProductsFilter {
 export function productsFilterQuery(current: string, filter: ProductsFilter): string {
 	const params = new URLSearchParams(current);
 	for (const name of FILTER_PARAMS) params.delete(name);
+	// THE PAGE GOES WITH THE PREDICATE IT WAS ISSUED UNDER — same rule, same
+	// reason, as the Orders screen: a filter change is page one of a new set, and
+	// a cursor left in the address would describe a page of the filter the
+	// merchant just left.
+	params.delete(CURSOR_PARAM);
 	if (filter.status !== undefined && filter.status.length > 0) params.set("status", filter.status);
 	if (filter.productKind !== undefined && filter.productKind.length > 0)
 		params.set("kind", filter.productKind);
@@ -168,6 +174,23 @@ function replaceQuery(query: string): string {
 	url.search = query;
 	window.history.replaceState(window.history.state, "", url);
 	return url.href;
+}
+
+/**
+ * Swap the whole query, ON A NEW ENTRY.
+ *
+ * THE ONE THING THAT PUSHES WITHOUT LEAVING THE LIST, and the exception is
+ * deliberate: a filter and a tab refine one view, but a page is a PLACE the
+ * merchant went to. Replacing here would leave Back with nothing to walk.
+ *
+ * It does NOT touch `detailHref`: this fires only while the list is on screen,
+ * where there is no record to restore.
+ */
+function pushQuery(query: string): void {
+	if (typeof window === "undefined") return;
+	const url = new URL(window.location.href);
+	url.search = query;
+	window.history.pushState({ ottaProduct: null }, "", url);
 }
 
 function readSelectedProduct(): string | null {
@@ -220,6 +243,12 @@ export function ProductsScreen(): React.ReactElement {
 	const [filter, setFilter] = React.useState<ProductsFilter>(() =>
 		readProductsFilter(currentSearch()),
 	);
+	/** THE PAGE THE ADDRESS NAMES, read at the same moment as the filter
+	 *  because the two are one pair — a cursor is only meaningful against the
+	 *  predicate it was issued under. It is only ever a SEED: the list owns where
+	 *  it has paged to once mounted, and this is what it starts from on a first
+	 *  mount and on the remount a traversal triggers. */
+	const [cursor, setCursor] = React.useState<string | undefined>(() => readCursor(currentSearch()));
 	const [tab, setTab] = React.useState<number>(() => readProductTab(currentSearch()));
 	/** Bumped on every `popstate`, and used as the child's `key`: a traversal is
 	 *  the one moment the URL knows something the mounted child does not, so the
@@ -262,6 +291,17 @@ export function ProductsScreen(): React.ReactElement {
 	 * approximating it.
 	 */
 	const detailHref = React.useRef<string | null>(null);
+
+	/** PAGING PUSHES; RETURNING TO PAGE ONE REPLACES — the same rule the Orders
+	 *  screen states at length. `useCallback` is required rather than tidy: the
+	 *  list depends on this function in its fetch effect, so a fresh arrow per
+	 *  render would re-fetch on every render. It closes over nothing that changes. */
+	const onCursorChange = React.useCallback((next: string | undefined) => {
+		setCursor(next);
+		const query = cursorQuery(currentSearch(), next);
+		if (next === undefined) replaceQuery(query);
+		else pushQuery(query);
+	}, []);
 
 	React.useEffect(() => {
 		selectedRef.current = selected;
@@ -334,12 +374,15 @@ export function ProductsScreen(): React.ReactElement {
 			 * the SAME record (`next === was`) while it holds unsaved work skips this
 			 * guard by design and falls through to the remount below, discarding that
 			 * work with no confirmation. This console cannot produce that case on its
-			 * own — the drill-in pushes exactly one entry above the list entry, a
-			 * filter or tab change replaces rather than pushes, and this guard's own
-			 * re-push truncates anything ahead of it — so reaching it would require a
-			 * host router pushing its own entry that names this same record. Not
-			 * changing the guard to close it; noted here for whoever changes the
-			 * navigation around it next.
+			 * own, and the enumeration is FOUR items now rather than three: the
+			 * drill-in pushes exactly one entry above the list entry; a filter or tab
+			 * change replaces rather than pushes; a PAGE change pushes, but only ever
+			 * from the LIST, where no record is on screen and every entry it creates
+			 * therefore names none; and this guard's own re-push truncates anything
+			 * ahead of it. So reaching the uncovered case would still require a host
+			 * router pushing its own entry that names this same record. Not changing
+			 * the guard to close it; noted here for whoever changes the navigation
+			 * around it next.
 			 *
 			 * A traversal that leaves the DOCUMENT is not covered here — nothing is
 			 * delivered to a document being torn down — and is covered by the
@@ -359,6 +402,10 @@ export function ProductsScreen(): React.ReactElement {
 			pushed.current = false;
 			setSelected(next);
 			setFilter(readProductsFilter(currentSearch()));
+			// THE PAGE RIDES THE SAME RESTORE PATH THE FILTER DOES, never a
+			// second mechanism: one traversal re-derives the whole address, and the
+			// `key={restore}` bump rebuilds the list from all of it at once.
+			setCursor(readCursor(currentSearch()));
 			setTab(readProductTab(currentSearch()));
 			setRestore((n) => n + 1);
 		};
@@ -373,9 +420,14 @@ export function ProductsScreen(): React.ReactElement {
 				<ProductsList
 					key={restore}
 					initialFilter={filter}
+					initialCursor={cursor}
 					onFilterChange={(next) => {
+						// The filter query drops the cursor with the filter it belonged to
+						// (see `productsFilterQuery`), so this one write says both things.
+						setCursor(undefined);
 						replaceQuery(productsFilterQuery(currentSearch(), next));
 					}}
+					onCursorChange={onCursorChange}
 					onOpen={(productId) => {
 						detailHref.current = pushSelectedProduct(productId);
 						pushed.current = true;
