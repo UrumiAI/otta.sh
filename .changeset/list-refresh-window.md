@@ -46,6 +46,12 @@ cursor, leaving everything above it exactly as stale as it was. The ruling is
   such a walk may raise the banner and may clear it, while one anchored deeper carries the
   pre-refresh verdict (and the withheld exact count) in rather than believing the value a
   continuation reports by contract.
+- **A walk that was REFUSED gets its own sentence.** It ends on a window with fewer pages
+  than it had *and* on the token the service just rejected, so neither of the other two
+  notices may stand there: the paging-stopped one opens by promising the rows on screen are
+  unaffected, and the partial-refresh one ends by naming `Load more`, which would re-send
+  that token. Both stop notices are announced, because either way rows the operator had are
+  no longer on screen.
 - **One read at a time.** Every in-flight read makes the control unavailable and it refuses
   its own click — and so is `Apply filters`, which now has two meanings and both are reads.
   The control is drawn with `aria-disabled` rather than `disabled`, so the one the
@@ -54,6 +60,14 @@ cursor, leaving everything above it exactly as stale as it was. The ruling is
   screen were fetched by, which is not the same stack after a page move that failed. History
   records a correction, never a journey: the entry is replaced with the page the window now
   ends on and the stack that produced it.
+
+**Named follow-up — a deep walk freezes the filter panel for as long as it runs.** The
+walk is `depth` serial round trips and `Apply filters` is unavailable for all of them, so
+a merchant who scanned twenty pages and pressed Refresh cannot change their filters until
+it finishes, with no way to abandon it. Neither remedy belongs in this change: bounding
+the walk trades depth for latency, and letting Apply cancel it needs a rule for what the
+half-rebuilt window then shows. Reachable today only at depths no fixture exercises;
+recorded so it is a decision rather than a discovery.
 
 No service or plugin API changes — a refresh is built from requests the service already
 answers, and the browser still never parses a cursor. The Block Kit lists replace rather

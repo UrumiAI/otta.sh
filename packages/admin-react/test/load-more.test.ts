@@ -20,7 +20,6 @@ import {
 } from "@otta-sh/admin-presentation";
 import { describe, expect, test } from "vitest";
 import {
-	FIRST_PAGE,
 	REFRESHING_LABEL,
 	REFRESH_BUSY_TITLE,
 	REFRESH_FAILED_TITLE,
@@ -28,7 +27,6 @@ import {
 	REFRESH_REFUSED_NOTE,
 	REFRESH_TITLE,
 	continuationCursor,
-	landedTrail,
 	mergeById,
 	refreshControl,
 	refreshWalk,
@@ -660,6 +658,24 @@ describe("walking a window", () => {
 		expect(outcome?.trail).toEqual({ cursors: ["c1", "c2"], grounded: true });
 	});
 
+	test("each request is told which step it is, so a first-page-only fact applies once", async () => {
+		const steps: number[] = [];
+		await walkWindow<Answer, Answer[]>({
+			walk: refreshWalk({ cursors: ["c1"], grounded: true }, 2),
+			fetch: (at, step) => {
+				steps.push(step);
+				return Promise.resolve({
+					kind: "answer",
+					page: { at, arrival: "reset" } as Answer,
+					nextCursor: step === 0 ? "f1" : null,
+				} as const);
+			},
+			merge: collect,
+			cancelled: () => false,
+		});
+		expect(steps).toEqual([0, 1]);
+	});
+
 	test("a collection that has become shorter than the window simply comes back smaller", async () => {
 		const service = walker(["f1", null]);
 		const outcome = await walkWindow<Answer, Answer[]>({
@@ -731,25 +747,5 @@ describe("walking a window", () => {
 			cursors: ["c1", "f2"],
 			grounded: false,
 		});
-	});
-});
-
-describe("the stack the rows on screen were fetched by", () => {
-	test("with nothing outstanding it is the stack itself", () => {
-		const trail = { cursors: ["c1", "c2"], grounded: true };
-		expect(landedTrail(trail, false)).toBe(trail);
-	});
-
-	test("a move that was asked for and did not land is not part of it", () => {
-		// The stack moves on the click and the rows move on the answer. One entry of
-		// drift moves a refresh's anchor a whole page.
-		expect(landedTrail({ cursors: ["c1", "c2"], grounded: true }, true)).toEqual({
-			cursors: ["c1"],
-			grounded: true,
-		});
-	});
-
-	test("page one has nothing to take off", () => {
-		expect(landedTrail(FIRST_PAGE, true)).toEqual(FIRST_PAGE);
 	});
 });

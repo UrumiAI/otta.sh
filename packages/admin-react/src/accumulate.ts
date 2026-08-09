@@ -614,6 +614,23 @@ export interface RefreshWalk {
 	 * above says why conflating them mis-captions a deep page.
 	 */
 	readonly grounded: boolean;
+	/**
+	 * A VERDICT THE WIRE CANNOT RESTATE FOR THIS WALK, captured with the plan.
+	 *
+	 * WHY IT IS IN THIS VALUE and not beside it — the reason `PendingCursor` carries
+	 * its filter and its intent rather than letting the screen hold them separately:
+	 * a plan and a fact about the window it describes are one thing, and two pieces
+	 * of state set by one click can be read in either order, overwritten by a second
+	 * click, or replayed by a Retry that finds only one of them still true.
+	 *
+	 * THE ONE SUCH VERDICT TODAY is Pricing & inventory's `filterUnavailable`: only
+	 * a request carrying no cursor can say whether the low-stock predicate was
+	 * applied, because every continuation reports it available by contract. A walk
+	 * anchored anywhere but page one therefore cannot ask, and must carry the answer
+	 * it had. Absent means there is nothing to carry, which is what an unanchored
+	 * walk (and the Orders list, which has no such verdict) passes.
+	 */
+	readonly carried?: boolean;
 }
 
 /**
@@ -633,7 +650,7 @@ export interface RefreshWalk {
  * response after a deep link pushes an entry), and clamped rather than trusted,
  * because the failure it would cause is silently relocating the operator.
  */
-export function refreshWalk(trail: PageTrail, span: number): RefreshWalk {
+export function refreshWalk(trail: PageTrail, span: number, carried?: boolean): RefreshWalk {
 	const depth = Number.isSafeInteger(span) && span > 1 ? span : 1;
 	const floor = trail.grounded ? -1 : 0;
 	const index = Math.max(floor, trail.cursors.length - depth);
@@ -642,6 +659,7 @@ export function refreshWalk(trail: PageTrail, span: number): RefreshWalk {
 		depth,
 		kept: trail.cursors.slice(0, index + 1),
 		grounded: trail.grounded,
+		...(carried === true ? { carried: true } : {}),
 	};
 }
 
@@ -673,33 +691,6 @@ export function refreshedTrail(walk: RefreshWalk, walked: readonly string[]): Pa
 		cursors: walk.kept,
 		grounded: walk.grounded,
 	});
-}
-
-/**
- * THE STACK AS OF THE LAST PAGE THAT ACTUALLY LANDED.
- *
- * WHY THE TWO DIFFER. The stack moves on the CLICK — deliberately, so the pager
- * cannot take a second press in the commit before the request goes out, and so a
- * refusal withdraws the pager rather than pretending the operator never asked. The
- * ROWS move when a response arrives. Between those two moments, and after a page
- * move that failed or was refused outright, the stack holds one entry more than the
- * rows on screen were fetched by.
- *
- * WHICH IS FINE FOR THE PAGER AND FATAL FOR A REFRESH. The pager is withdrawn in
- * exactly those states, so nobody reads the extra entry — but a refresh PLANS from
- * the stack, and one entry of drift moves the anchor a whole page: the walk would
- * re-read pages 2…N+1 and render them as the window that starts at page one. The
- * operator asks for the same query restated and gets a different page silently.
- *
- * ONE ENTRY, NEVER MORE. Only `Next`, `Previous` and `Load more` push, all three
- * are unavailable while a request is in flight, and all three are withdrawn under
- * the failure their own refusal produces — so at most one move can be outstanding
- * at a time.
- */
-export function landedTrail(trail: PageTrail, outstanding: boolean): PageTrail {
-	return outstanding && trail.cursors.length > 0
-		? { cursors: trail.cursors.slice(0, -1), grounded: trail.grounded }
-		: trail;
 }
 
 /** Why a refresh walk stopped before it had re-read its whole window. */
@@ -771,8 +762,9 @@ export type RefreshAnswer<A> =
 export async function walkWindow<A, P>(opts: {
 	readonly walk: RefreshWalk;
 	/** One request, already read into the three things a walk can be told. Both
-	 *  screens narrow their own payload here and nowhere else. */
-	readonly fetch: (cursor: string | undefined) => Promise<RefreshAnswer<A>>;
+	 *  screens narrow their own payload here and nowhere else. `step` is 0 for the
+	 *  window's own page, which is the only one a carried verdict applies to. */
+	readonly fetch: (cursor: string | undefined, step: number) => Promise<RefreshAnswer<A>>;
 	/** The list's own `nextPage` — how a response joins what the walk has built. */
 	readonly merge: (built: P | null, page: A, arrival: PageArrival) => P;
 	readonly cancelled: () => boolean;
@@ -784,7 +776,7 @@ export async function walkWindow<A, P>(opts: {
 	let stopped: RefreshStop | null = null;
 	let at = opts.walk.anchor;
 	for (let step = 0; step < opts.walk.depth; step += 1) {
-		const answer = await opts.fetch(at);
+		const answer = await opts.fetch(at, step);
 		if (opts.cancelled()) return null;
 		if (answer.kind === "failure") {
 			stopped = { description: answer.description, refused: false };
@@ -846,6 +838,24 @@ export const REFRESH_REFUSED_NOTE = "The page this list opens on could not be re
 export const REFRESH_STOPPED_TITLE = "Only part of this list was refreshed";
 export const REFRESH_STOPPED_DESCRIPTION =
 	"The pages shown were re-read and are current. The ones after them could not be, so they are no longer shown — Load more gathers them again.";
+/**
+ * AND THE SAME STOP WHEN THE PAGE WAS REFUSED RATHER THAN UNANSWERED.
+ *
+ * IT NEEDS ITS OWN SENTENCE FOR TWO REASONS, and the first is that the other two
+ * are both false here. `PAGING_STOPPED_DESCRIPTION` opens by promising the rows on
+ * screen are unaffected — they are not, this walk replaced them with fewer pages —
+ * and {@link REFRESH_STOPPED_DESCRIPTION} ends by naming `Load more`, which is the
+ * one control that cannot help: the window now ends on the very token that was
+ * refused (see {@link RefreshStop.refused}), so pressing it re-sends it.
+ *
+ * SO IT STATES THE THREE FACTS THE OPERATOR IS STANDING IN: the list came back
+ * shorter, there is no way on from here, and the act that can restore both is the
+ * one they just pressed — a fresh walk re-derives every boundary, which is exactly
+ * what a refused token means it could not do this time.
+ */
+export const REFRESH_HALTED_TITLE = "This list came back shorter, and paging has stopped";
+export const REFRESH_HALTED_DESCRIPTION =
+	"The pages shown were re-read and are current. The page after them would not open, so it is not shown and there is no way on from here. Refresh again to re-read the list and restart paging.";
 
 /**
  * THE CONTROL, AND WHAT IT PROMISES BEFORE IT IS PRESSED.

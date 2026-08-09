@@ -16,8 +16,8 @@
  */
 import { PRODUCTS_PAGE_FAILED_TITLE } from "@otta-sh/admin-presentation";
 import {
-	PAGING_STOPPED_TITLE,
 	REFRESH_BUSY_TITLE,
+	REFRESH_HALTED_TITLE,
 	REFRESH_FAILED_TITLE,
 	REFRESH_STOPPED_TITLE,
 	REFRESH_UNCHANGED_NOTE,
@@ -963,17 +963,28 @@ test("a refresh whose page is REFUSED does not relocate the operator, and stops 
 	// `nextCursor` IS the token that was just refused, so `Load more` from here
 	// would re-send it — a notice saying "Load more gathers them again" would be
 	// walking the operator into the paging-stopped state one click later.
-	expect(text(view, "orders-paging-stopped")).toContain(PAGING_STOPPED_TITLE);
-	expect(absent(view, "orders-refresh-stopped")).toBe(true);
 	expect(absent(view, "orders-load-more")).toBe(true);
 	expect(absent(view, "orders-pager")).toBe(true);
+	// UNDER ITS OWN SENTENCE. The paging-stopped notice opens by promising the rows
+	// on screen are unaffected, and this walk has just replaced them with fewer
+	// pages; the refresh-stopped one ends by naming the one control that cannot
+	// help. Neither may stand here.
+	expect(absent(view, "orders-paging-stopped")).toBe(true);
+	expect(absent(view, "orders-refresh-stopped")).toBe(true);
+	const halted = text(view, "orders-refresh-halted");
+	expect(halted).toContain(REFRESH_HALTED_TITLE);
+	expect(halted).toContain("came back shorter");
+	expect(halted).not.toContain("Load more");
+	// And it is announced, for the same reason the other stop is: rows the operator
+	// had are no longer on screen.
+	expect(element(view, "orders-refresh-halted").contains(document.activeElement)).toBe(true);
 
 	// And the way out is the act the sentence names first: a fresh walk re-derives
 	// every boundary, so the offer comes back rather than staying gone.
 	rejectAfter = null;
 	await press(view, "orders-refresh");
 	await settle();
-	expect(absent(view, "orders-paging-stopped")).toBe(true);
+	expect(absent(view, "orders-refresh-halted")).toBe(true);
 	expect(absent(view, "orders-load-more")).toBe(false);
 	expect(rowIds(view, "orders-row")).toEqual(["o-1", "o-2"]);
 	// The position comes back with the paging it belongs to.
@@ -1209,4 +1220,92 @@ test("the notice that says rows are no longer shown is announced, not merely ren
 	// one case assistive technology need not announce, so focus is handed to it.
 	const notice = element(view, "orders-refresh-stopped");
 	expect(notice.contains(document.activeElement)).toBe(true);
+});
+
+/**
+ * THE POP DIRECTION — the case an arithmetic answer got backwards.
+ *
+ * `Previous` POPS the stack and THEN asks, so after it the stack is already one
+ * entry shorter than the window on screen. Deriving "what the rows were fetched
+ * by" by subtracting an entry therefore lands two pages behind: page three
+ * teleports to page one, under the words "the same query restated". What a refresh
+ * plans from is not arithmetic on the current stack — it is the stack that was
+ * true when the rows arrived, which is kept rather than computed.
+ */
+async function walkToPageThree(): Promise<Mounted> {
+	stockCatalog(10);
+	serveCatalog();
+	const scan = await mount(<OrdersList onOpen={() => {}} />);
+	await settle();
+	await press(scan, "orders-next");
+	await settle();
+	await press(scan, "orders-next");
+	await settle();
+	expect(rowIds(scan, "orders-row")).toEqual(["o-5", "o-6"]);
+	return scan;
+}
+
+test("a refresh after a FAILED Previous re-reads the page on screen, not two pages back", async () => {
+	view = await walkToPageThree();
+	refuseAfterRequests(0);
+	await press(view, "orders-prev");
+	await settle();
+	// The move failed, so the rows are still page three's — and the stack has
+	// already popped to page two.
+	expect(rowIds(view, "orders-row")).toEqual(["o-5", "o-6"]);
+
+	refuseAfter = null;
+	asked = [];
+	await press(view, "orders-refresh");
+	await settle();
+
+	expect(asked).toHaveLength(1);
+	expect(asked[0]?.cursor).toBe("at-4-2");
+	expect(rowIds(view, "orders-row")).toEqual(["o-5", "o-6"]);
+});
+
+test("a refresh after a REFUSED Previous re-reads the page on screen", async () => {
+	view = await walkToPageThree();
+	// The service rejects the popped token and recovers to page one; mid-scan that
+	// payload is discarded and paging is withdrawn, so the rows are still page
+	// three's — and the stack has still already popped.
+	rejectAfterRequests(0);
+	await press(view, "orders-prev");
+	await settle();
+	expect(rowIds(view, "orders-row")).toEqual(["o-5", "o-6"]);
+
+	rejectAfter = null;
+	asked = [];
+	await press(view, "orders-refresh");
+	await settle();
+
+	expect(asked[0]?.cursor).toBe("at-4-2");
+	expect(rowIds(view, "orders-row")).toEqual(["o-5", "o-6"]);
+});
+
+test("the same, on a window a LINK opened: it is never walked back to page one", async () => {
+	stockCatalog(10);
+	serveCatalog();
+	// A deep link to page three, then one `Load more`: an ungrounded window two
+	// responses wide. Subtracting an entry here reached the very state the plan's
+	// clamp calls unreachable — an ungrounded walk anchored on nothing, which is
+	// page one, which is not where this operator is.
+	view = await mount(<OrdersList onOpen={() => {}} initialCursor="at-4-0" />);
+	await settle();
+	await press(view, "orders-load-more");
+	await settle();
+	expect(rowIds(view, "orders-row")).toEqual(["o-5", "o-6", "o-7", "o-8"]);
+
+	refuseAfterRequests(0);
+	await press(view, "orders-prev");
+	await settle();
+	refuseAfter = null;
+	asked = [];
+	await press(view, "orders-refresh");
+	await settle();
+
+	// Anchored on the link's own page, two deep, exactly as the window is.
+	expect(asked[0]?.cursor).toBe("at-4-0");
+	expect(asked).toHaveLength(2);
+	expect(rowIds(view, "orders-row")).toEqual(["o-5", "o-6", "o-7", "o-8"]);
 });
