@@ -163,11 +163,17 @@ guard:
   sizes. A sync that fails leaves a stale size name until the next save, and an order placed in
   that window freezes the stale one.
 - **A collection whose repeater sub-fields are named something else syncs no names**, the variant
-  twin of ADR-0013's one genuine capability regression. The failure is quieter here: an untitled
-  product is rejected at checkout, while an untitled *variant* would sell perfectly well and
-  simply print a blank size on the receipt. Whichever increment wires the sync must decide
-  whether a null variant name blocks the line the way a null product title does; this ADR records
-  the question rather than pretending it does not exist.
+  twin of ADR-0013's one genuine capability regression. It syncs no names — it does not ERASE
+  them: an absent name sub-field omits the field from the declare, so the store preserves whatever
+  it holds. That distinction is load-bearing rather than pedantic, because the name is a cache with
+  a single writer, so treating "absent" as "cleared" would blank every stored variant name on every
+  save of such a collection, and every order line placed afterwards would freeze the blank
+  permanently. Only an explicit null, or an emptied name, clears. The failure is quieter here than
+  at the product level: an untitled product is rejected at checkout, while an untitled *variant*
+  sells perfectly well and simply prints a blank size on the receipt. The question this ADR left
+  open — whether a null variant name should block the line the way a null product title does — is
+  answered NO by the sync: a nameless size is declared and sellable, because refusing it would hide
+  a sellable unit from the operator who would fix it.
 - **A sku still names exactly one live sellable unit**, and "live sellable unit" now spans both
   live product rows and live variant rows — **in both directions**. The variant writer refuses a
   sku a live product holds, and both product-level writers refuse a sku a live variant holds, with

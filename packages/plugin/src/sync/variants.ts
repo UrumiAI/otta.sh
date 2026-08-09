@@ -154,32 +154,53 @@ function readSubField(row: unknown, subField: string): unknown {
 /**
  * Validate a repeater row's display name.
  *
- * THREE OUTCOMES, and they are three different facts:
- *  - a usable name ⇒ send it, TRIMMED (one source of truth with the storefront
- *    picker, exactly as the product title is trimmed);
- *  - an EMPTY / whitespace-only / absent name ⇒ send an explicit `null`, which
- *    CLEARS the stored cache — the service's own schema documents this exact
- *    mapping ("a repeater row whose name sub-field is empty"). NOT A PATH THE
- *    EDITOR CAN TAKE: the name sub-field is declared `required`, so the content
- *    editor will not save a row without one. It is reachable by the clients that
- *    bypass that validation — an API or CLI write, an importer, a seed — and it
- *    is handled here so those writes clear the cache honestly rather than
- *    stranding a stale name that no longer appears in the document;
- *  - anything else — a non-string, or a string past the service's 500-character
- *    bound ⇒ OMIT the field (preserving whatever is stored) and report a
- *    problem. Sending it would be a 400, and a 400 is a TRANSPORT failure: a
+ * ABSENT IS NOT EMPTY, and getting that wrong is the one way this module could
+ * destroy data. The name is a CACHE whose only writer is this channel, so an
+ * `undefined` that reached the wire as an explicit `null` would BLANK the stored
+ * name of every variant, on every save, for any document that stopped carrying
+ * the sub-field — a renamed sub-field, an importer that never wrote it, a client
+ * that posts a partial row. And a blanked variant name is not merely a display
+ * regression: every order line placed afterwards freezes the blank at purchase
+ * time, and the snapshot rule forbids rewriting it. So the sibling rule applies
+ * unchanged (`parseProductTitle`): a field that is not there omits itself, and
+ * the store preserves what it holds.
+ *
+ * FOUR OUTCOMES, and the first two are the whole of the rule:
+ *  - the sub-field is ABSENT (`undefined`) ⇒ OMIT it and report a problem. The
+ *    store preserves the stored name. This is the case a collection whose
+ *    repeater sub-fields are named something else lands in, on every row, on
+ *    every save — it syncs no names rather than erasing them.
+ *  - an EXPLICIT `null`, or an empty / whitespace-only string ⇒ send `null`,
+ *    which CLEARS the stored cache. The merchant's document said the name is
+ *    gone, which is a statement rather than an absence, and the service's own
+ *    schema documents this exact mapping ("a repeater row whose name sub-field
+ *    is empty"). NOT A PATH THE EDITOR CAN TAKE: the name sub-field is declared
+ *    `required`, so the content editor will not save a row without one. It is
+ *    reachable by the clients that bypass that validation — an API or CLI write,
+ *    an importer, a seed — and it is handled here so those writes clear the cache
+ *    honestly rather than stranding a name the document no longer carries.
+ *  - a NON-STRING, or a string past the service's 500-character bound ⇒ OMIT and
+ *    report. Sending it would be a 400, and a 400 is a TRANSPORT failure: a
  *    content problem must never masquerade as one.
  *
  * A null name is NOT fatal and NOT a reason to withhold the variant. Unlike the
  * product title — whose absence makes checkout reject the line with
  * `PRODUCT_NOT_PRICED` — an unnamed variant sells perfectly well and simply
  * prints a blank size on the receipt. ADR-0016 recorded that asymmetry as an
- * open question rather than deciding it; this module takes the non-blocking
- * reading, because the alternative (refusing to declare a size because its name
- * is missing) hides a sellable unit from the operator who would fix it.
+ * open question; this module answers it the non-blocking way, because the
+ * alternative (refusing to declare a size because its name is missing) hides a
+ * sellable unit from the operator who would fix it.
  */
 export function parseVariantName(value: unknown): { title: string | null } | { problem: string } {
-	if (value === undefined || value === null) return { title: null };
+	// ABSENT ⇒ OMIT. Never a clear: see the rule above — this is what stops a
+	// renamed or missing sub-field from blanking every stored variant name.
+	if (value === undefined) {
+		return {
+			problem: `no \`${VARIANT_NAME_SUBFIELD}\` sub-field on the row (expected \`data.${VARIANTS_FIELD}[].${VARIANT_NAME_SUBFIELD}\`)`,
+		};
+	}
+	// An EXPLICIT null is the document saying the name is gone.
+	if (value === null) return { title: null };
 	if (typeof value !== "string") {
 		return { problem: `\`${VARIANT_NAME_SUBFIELD}\` is ${typeof value}, not a string` };
 	}

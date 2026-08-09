@@ -123,6 +123,12 @@ describe("seed/seed.json", () => {
 		// discovered in production: 50 sizes is far past any real garment or
 		// hardware range, and it caps a single save's variant fan-out at a number
 		// that stays comfortable on a fire-and-forget hook with no retry.
+		//
+		// AN EDITOR-SIDE AFFORDANCE ONLY, the same caveat the `required` flags
+		// above carry: the clients that bypass editor validation — an API or CLI
+		// write, an importer, a seed — are unbounded by it, and the sync declares
+		// every row it is given. This is a guard rail on the merchant's path, not
+		// a limit the sync enforces.
 		const variants = products?.fields.find((f) => f.slug === "variants");
 		expect(variants?.validation?.maxItems).toBe(50);
 	});

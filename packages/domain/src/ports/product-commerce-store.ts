@@ -938,9 +938,9 @@ export interface ProductCommerceStore {
 	 *  - a redelivered declare at an EQUAL watermark cannot resurrect either, so
 	 *    the deactivate it raced with stays applied and a redelivery of THAT
 	 *    command finds the row already orphaned and does nothing. Equal watermarks
-	 *    across two different saves are possible where the CMS leaves `updatedAt`
-	 *    frozen on a draft-only save, which is exactly why a resurrect needs the
-	 *    strict comparison and why re-declaring a key inside that window does not
+	 *    across two different saves ARE possible where the CMS leaves `updatedAt`
+	 *    frozen on a draft-only save (which is exactly why a resurrect needs the
+	 *    strict comparison, and why re-declaring a key inside that window does not
 	 *    take effect until the document is published), and one save can never both
 	 *    declare and drop the same key.
 	 * THE COST OF THE STRICT COMPARISON, so nobody has to discover it: re-sending

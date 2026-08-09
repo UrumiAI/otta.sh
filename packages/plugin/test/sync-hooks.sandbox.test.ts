@@ -825,27 +825,61 @@ describe("sync hooks — the variant repeater declares presence and the name cac
 		expect(afterNewer.slice(4)).not.toEqual(declareKeys.slice(0, 2));
 	});
 
-	test("an EMPTY or ABSENT name sub-field CLEARS the cache with an explicit null — never an empty string", async () => {
+	test("AN ABSENT name sub-field PRESERVES the stored name — it never clears it", async () => {
 		const { stubServer, sandboxHandle } = await setup();
 		serveVariants(stubServer, []);
 
 		await sandboxHandle.invokeHook("content:afterSave", {
-			content: productContent("prod-names", {}, TITLE, {
-				variants: [{ key: "a", name: "   " }, { key: "b" }, { key: "c", name: null }],
+			content: productContent("prod-absentname", {}, TITLE, {
+				variants: [{ key: "a" }, { key: "b", name: undefined }],
 			}),
 			collection: "products",
 			isNew: false,
 		});
 
-		// `undefined` PRESERVES the stored cache and `null` CLEARS it — two
-		// different facts. An emptied name sub-field is the merchant unnaming a
-		// size, so it must clear. `""` would be a 400 (a content problem turned
-		// into a transport failure), which is the mistake the product title's own
-		// parser exists to prevent.
-		for (const declare of variantPuts(stubServer)) {
+		// THE DATA-LOSS GUARD. The name is a cache whose only writer is this
+		// channel, so reading "the sub-field isn't there" as "the merchant cleared
+		// it" would blank every stored variant name on every save of any document
+		// that stopped carrying the sub-field — a renamed sub-field, an importer
+		// that never wrote it, a partial API write. Worse, it is irreversible in
+		// the place it matters: every order line placed afterwards freezes the
+		// blank, and the snapshot rule forbids rewriting it. Omitted means the
+		// store preserves what it holds, exactly as the product title does.
+		const declares = variantPuts(stubServer);
+		expect(declares).toHaveLength(2);
+		for (const declare of declares) {
+			expectDeclareBody(declare.body, { contentUpdatedAt: WM });
+			expect(Object.keys(declare.body as Record<string, unknown>)).not.toContain("title");
+		}
+	});
+
+	test("an EXPLICIT null or an emptied name sub-field CLEARS the cache — a statement, not an absence", async () => {
+		const { stubServer, sandboxHandle } = await setup();
+		serveVariants(stubServer, []);
+
+		await sandboxHandle.invokeHook("content:afterSave", {
+			content: productContent("prod-clearname", {}, TITLE, {
+				variants: [
+					{ key: "a", name: null },
+					{ key: "b", name: "" },
+					{ key: "c", name: "   " },
+				],
+			}),
+			collection: "products",
+			isNew: false,
+		});
+
+		// `undefined` PRESERVES and `null` CLEARS — two different facts, and the
+		// service's schema maps them exactly this way. `""` would be a 400 (a
+		// content problem turned into a transport failure), so an emptied name is
+		// sent as the explicit clear it means. The editor cannot reach this branch
+		// — the name sub-field is `required` — but an import, a CLI or an API write
+		// can, and those must be able to unname a size honestly.
+		const declares = variantPuts(stubServer);
+		expect(declares).toHaveLength(3);
+		for (const declare of declares) {
 			expectDeclareBody(declare.body, { title: null, contentUpdatedAt: WM });
 		}
-		expect(variantPuts(stubServer)).toHaveLength(3);
 	});
 
 	test("an over-long or non-string name OMITS itself (the stored name is kept) and never blocks the size's declare", async () => {

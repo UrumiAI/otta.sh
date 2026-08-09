@@ -41,7 +41,9 @@ The staging seed declares the repeater on the products collection so the field
 exists where a merchant edits the rest of the product's content. No sample entry
 declares a variant, so the demo catalogue is unchanged. The repeater is bounded
 at 50 rows as a deliberate fan-out limit: every declared row is one request on
-every save of the document, on a fire-and-forget hook with no retry.
+every save of the document, on a fire-and-forget hook with no retry. The bound is
+an editor-side affordance only — writes that bypass editor validation (API, CLI,
+import, seed) are unbounded by it, and the sync declares every row it is given.
 
 **The variant key is enforced by recovery, not by refusal** (ADR-0016, amended).
 The CMS cannot express a save-time refusal of a mutated or reused key: the save
@@ -64,6 +66,11 @@ destroyed by one:
   CMS action, never a manual reconciliation of the commerce database.
 - A reused key resolves to the first row, deterministically, and is logged, so
   the stored name never depends on request ordering.
+- An absent name sub-field omits the field so the store preserves the stored
+  name; only an explicit null or an emptied name clears it. The name is a cache
+  with a single writer, so reading "absent" as "cleared" would blank every stored
+  variant name on every save of a document that stopped carrying the sub-field,
+  and every order line placed afterwards would freeze the blank permanently.
 - The drop phase is withheld whenever the repeater cannot be read as a list of
   rows, or carries rows of which none yields a usable key. A content problem is
   never read as "the merchant deleted every size" — only a present, empty
