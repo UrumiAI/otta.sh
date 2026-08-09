@@ -14,13 +14,15 @@ import type { IdempotencyKey, ProductId, Sku } from "../money/ids.js";
  * equality filter is the honest, minimal mirror rather than an over-general
  * array.
  *
- * `search` DELIBERATELY DIVERGES from `OrderListFilter.search`'s exact-only
- * semantics: an order's `id`/`buyer_ref` are identifiers a merchant looks up
- * exactly, but a product `title` is free text a merchant partially
- * remembers, so title matches as a case-insensitive SUBSTRING; `sku` — a
- * structured identifier, like an order's `buyer_ref` — stays an exact,
- * case-insensitive match. A row matches if EITHER half matches (never both
- * required).
+ * `search` still diverges from `OrderListFilter.search` (an order-id PREFIX or
+ * a case-folded `buyer_ref` SUBSTRING), but the two have converged on the
+ * shape: a `title` is free text a merchant partially remembers, so it matches
+ * as a case-insensitive SUBSTRING, exactly as an order's `buyer_ref` now does.
+ * What remains different is `sku` — a structured identifier a merchant quotes
+ * whole, so it stays an exact, case-insensitive match rather than taking the
+ * order id's PREFIX treatment (a sku is short and readable and renders in full,
+ * where an order uuid renders only as a short prefix). A row matches if EITHER
+ * half matches (never both required).
  */
 export interface ProductListFilter {
 	/** Equality filter on the publish-gate flag; omitted ⇒ both active and
