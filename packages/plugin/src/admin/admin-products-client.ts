@@ -450,6 +450,13 @@ export class AdminProductsClient {
 			// same parameters, once. See `AdminOrdersClient.listOrders` for why this
 			// tier is the right one to do it at, and why the flag on the way back
 			// matters as much as the rows.
+			//
+			// THE RETRY IS THE SHARED REMEDY, NOT ALWAYS THE ANSWER: a consumer may
+			// DISCARD these rows — a console refused mid-scan keeps the pages it
+			// already has rather than destroying the scan to re-print page one — so
+			// the request is still made (the flag needs a page behind it for the
+			// caller that does want one) and the discard must not be optimised away
+			// by skipping it. This tier cannot know which caller it has.
 			const retried = await this.#getList(`/admin/products?${query(false)}`);
 			if (retried === CURSOR_REFUSED) throw new Error("GET /admin/products failed (HTTP 400)");
 			return { ...retried, cursorRejected: true };

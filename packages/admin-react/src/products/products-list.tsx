@@ -979,9 +979,18 @@ export function ProductsList({
 			  emits one only when a page overflows its limit. This branch was the
 			  ORDINARY case while the filter narrowed an already-fetched page, and
 			  it is unreachable now; it stays because the cost of being wrong about
-			  that is burying the operator's only way forward.
+			  that is burying the merchant's only way forward.
+
+			  AND IT IS WITHDRAWN WITH THE CONTROL IT DESCRIBES. Its whole content is
+			  an instruction to press `Load more`, so printing it above a notice that
+			  says paging has stopped would be the screen contradicting itself in two
+			  consecutive paragraphs. Reachable on a low-stock scan that has matched
+			  nothing yet — zero rows, a cursor still behind them — whose continuation
+			  is refused: the cursor is deliberately KEPT (it is the evidence more
+			  exists), so `hasNext` stays true and this branch is live at the exact
+			  moment its advice stops being true.
 			*/}
-			{page !== null && outcome.kind === "scan" && answerVisible && (
+			{page !== null && outcome.kind === "scan" && answerVisible && !pagingStopped && (
 				<p
 					data-testid="products-scan-note"
 					style={{ fontSize: 13, opacity: 0.8, marginBlockEnd: 12 }}

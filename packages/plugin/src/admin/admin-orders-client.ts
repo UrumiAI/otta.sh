@@ -462,6 +462,15 @@ export class AdminOrdersClient {
 			 *
 			 * ONE retry, without the cursor, so it cannot loop: the second request
 			 * carries no token to be refused.
+			 *
+			 * THE RETRY IS THE SHARED REMEDY, NOT ALWAYS THE ANSWER. A consumer is
+			 * entitled to DISCARD these rows: a console refused mid-scan keeps the
+			 * pages it already has and throws page one away unmerged, because showing
+			 * it would destroy the scan to re-print rows the operator read first. That
+			 * is why the request is still made — the flag needs a page behind it to be
+			 * an honest answer to the caller that does want one — and why the
+			 * discarded case must not be optimised away by skipping the retry when
+			 * somebody guesses it will be unused. This tier cannot know.
 			 */
 			const retried = await this.#getList(`/admin/orders?${query(false)}`);
 			if (retried === CURSOR_REFUSED) throw new Error("GET /admin/orders failed (HTTP 400)");

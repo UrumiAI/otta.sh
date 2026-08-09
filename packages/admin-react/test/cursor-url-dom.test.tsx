@@ -692,6 +692,46 @@ test("a refusal MID-SCAN keeps the accumulated pages and stops paging", async ()
 	expect(search().get("cursor")).toBeNull();
 });
 
+test("a refusal on a scan that has matched NOTHING yet withdraws the note with the button", async () => {
+	/*
+	 * THE EDGE THE SPLIT INTRODUCED. A scan whose pages have matched nothing yet
+	 * renders no rows and no empty state — it renders the SCAN NOTE, whose whole
+	 * content is an instruction to press `Load more`, because a zero-row page with
+	 * a cursor behind it is not the end of anything.
+	 *
+	 * The cursor is deliberately KEPT when paging stops (it is this render's
+	 * evidence that more exists, and nulling it would state the accumulated rows as
+	 * the whole set), so `hasNext` stays true and that branch stays live at exactly
+	 * the moment its advice stops being true — printing "Load more scans further"
+	 * directly above a notice explaining that paging has stopped.
+	 */
+	let call = 0;
+	serve(() => {
+		call += 1;
+		const empty = { ok: true, orders: [], nextCursor: PAGE_TWO, vocabulary: VOCABULARY };
+		return envelope(call === 1 ? empty : { ...empty, cursorRejected: true });
+	});
+	view = await mount(<OrdersScreen />);
+	await settle();
+	// A scan in progress with nothing matched: the note, and the button it names.
+	expect(rowIds(view, "orders-row")).toHaveLength(0);
+	expect(absent(view, "orders-scan-note")).toBe(false);
+	expect(absent(view, "orders-load-more")).toBe(false);
+
+	await press(view, "orders-load-more");
+	await settle();
+
+	// BOTH GO TOGETHER. The screen must not tell the operator to press a control
+	// it has just taken away.
+	expect(absent(view, "orders-load-more")).toBe(true);
+	expect(absent(view, "orders-scan-note")).toBe(true);
+	expect(element(view, "orders-paging-stopped").textContent).toContain(PAGING_STOPPED_TITLE);
+	// And no empty state has appeared in its place claiming the collection is
+	// empty — nothing here has earned a whole-set claim.
+	expect(absent(view, "orders-empty")).toBe(true);
+	expect(absent(view, "orders-no-match")).toBe(true);
+});
+
 test("a filter change after paging stopped starts a fresh scan", async () => {
 	serve((request) =>
 		request.cursor === undefined
@@ -883,4 +923,36 @@ test("products: a settings blip mid-scan costs the paging, never the low-stock s
 	expect(absent(view, "products-cursor-reset")).toBe(true);
 	expect(search().get("cursor")).toBeNull();
 	expect(search().get("low")).toBe("1");
+});
+
+test("products: a low-stock scan matching nothing yet withdraws the note with the button", async () => {
+	// The same edge on the screen it is genuinely reachable from: a low-stock scan
+	// several pages deep that has matched nothing, whose continuation is refused
+	// by a settings blip.
+	let call = 0;
+	serve(() => {
+		call += 1;
+		const empty = {
+			ok: true,
+			products: [],
+			nextCursor: PAGE_TWO,
+			stock: { threshold: 5, unreadable: false, filterUnavailable: false },
+			vocabulary: PRODUCTS_VOCABULARY,
+		};
+		return envelope(call === 1 ? empty : { ...empty, cursorRejected: true });
+	});
+	window.history.replaceState(null, "", "/products?low=1");
+	view = await mount(<ProductsScreen />);
+	await settle();
+	expect(absent(view, "products-scan-note")).toBe(false);
+	expect(absent(view, "products-load-more")).toBe(false);
+
+	await press(view, "products-load-more");
+	await settle();
+
+	expect(absent(view, "products-load-more")).toBe(true);
+	expect(absent(view, "products-scan-note")).toBe(true);
+	expect(element(view, "products-paging-stopped").textContent).toContain(PAGING_STOPPED_TITLE);
+	expect(absent(view, "products-no-match")).toBe(true);
+	expect(absent(view, "products-page-zero")).toBe(true);
 });

@@ -958,9 +958,20 @@ export function OrdersList({
 			  OUTCOME 3 — zero rows with another page BEHIND them. NO empty state:
 			  one would sit on top of `Load more` and strand the operator mid-scan
 			  on a page that is not the end of anything. The note says what to do
-			  with the button that is still there, and the button still is.
+			  with the button that is still there.
+
+			  UNLESS THE BUTTON IS NOT THERE. `pagingStopped` withdraws it, and this
+			  note's whole content is an instruction to press it — "Load more scans
+			  further" printed directly above a notice explaining that paging has
+			  stopped is the screen contradicting itself in two consecutive
+			  paragraphs. Reachable on a scan that has matched NOTHING yet (zero rows,
+			  a cursor still behind them) when the continuation is refused: the count
+			  is zero, `hasNext` is still true because the cursor is deliberately kept,
+			  so this branch is live at the exact moment its advice stops being true.
+			  The paging-stopped notice says what to do instead, so it replaces this
+			  rather than sitting under it.
 			*/}
-			{page !== null && outcome.kind === "scan" && answerVisible && (
+			{page !== null && outcome.kind === "scan" && answerVisible && !pagingStopped && (
 				<p
 					data-testid="orders-scan-note"
 					style={{ fontSize: 13, opacity: 0.8, marginBlockEnd: 12 }}
