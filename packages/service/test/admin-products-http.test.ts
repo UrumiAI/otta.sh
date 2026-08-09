@@ -525,4 +525,108 @@ describe.skipIf(PG === undefined)("admin Products console HTTP contract", () => 
 		const products = (await json(res)).products as Array<Record<string, unknown>>;
 		expect(products.map((p) => p.productId)).toEqual(["prod-3", "prod-ebook", "prod-2", "prod-1"]);
 	});
+
+	// -- a cursor that disagrees with the query's filters fails CLOSED ----------
+	// Mirrors the Orders list's gate 1:1 (see admin-orders-http.test.ts for the
+	// reasoning): PRESENT filter params must canonicalize to exactly the token's
+	// embedded filter, ABSENT ones claim nothing. The four quadrants — cursor
+	// alone, cursor + agreeing params, cursor + disagreeing params, params alone —
+	// are pinned below, `lowStockThreshold` included.
+
+	test("quadrant: cursor + AGREEING filter params pages byte-identically to the cursor ALONE", async () => {
+		await seed();
+		const page1 = await json(await get("/products?productKind=physical&limit=2"));
+		const cursor = encodeURIComponent(page1.nextCursor as string);
+
+		const aloneRes = await get(`/products?cursor=${cursor}`);
+		const alone = await aloneRes.text();
+		const agreeRes = await get(`/products?cursor=${cursor}&productKind=physical`);
+		expect(aloneRes.status).toBe(200);
+		expect(agreeRes.status).toBe(200);
+		expect(await agreeRes.text()).toBe(alone);
+		const parsed = JSON.parse(alone) as { products: Array<{ productId: string }>; total: number };
+		expect(parsed.products.map((p) => p.productId)).toEqual(["prod-1"]);
+		expect(parsed.total).toBe(3);
+	});
+
+	test("quadrant: cursor + DISAGREEING filter params ⇒ 400, never a silently divergent page", async () => {
+		await seed();
+		// An UNFILTERED token paged under a `productKind` the token never carried.
+		const unfiltered = await json(await get("/products?limit=1"));
+		const unfilteredCursor = encodeURIComponent(unfiltered.nextCursor as string);
+		const res = await get(`/products?cursor=${unfilteredCursor}&productKind=physical`);
+		expect(res.status).toBe(400);
+		expect(await json(res)).toEqual({ error: "cursor filter mismatch" });
+
+		// The mirror, plus the other axes: active, deleted, search.
+		const physical = await json(await get("/products?productKind=physical&limit=1"));
+		const physicalCursor = encodeURIComponent(physical.nextCursor as string);
+		expect((await get(`/products?cursor=${physicalCursor}&productKind=digital`)).status).toBe(400);
+		expect(
+			(await get(`/products?cursor=${physicalCursor}&productKind=physical&active=true`)).status,
+		).toBe(400);
+		expect(
+			(await get(`/products?cursor=${physicalCursor}&productKind=physical&deleted=true`)).status,
+		).toBe(400);
+		expect(
+			(await get(`/products?cursor=${physicalCursor}&productKind=physical&search=widget`)).status,
+		).toBe(400);
+	});
+
+	test("quadrant: filter params ALONE (no cursor) are untouched by the gate", async () => {
+		await seed();
+		const body = await json(await get("/products?productKind=physical"));
+		expect((body.products as Array<Record<string, unknown>>).map((p) => p.productId)).toEqual([
+			"prod-3",
+			"prod-2",
+			"prod-1",
+		]);
+		expect(body.total).toBe(3);
+	});
+
+	test("a filter axis the query OMITS is still a disagreement when the token carries it", async () => {
+		await seed();
+		const page1 = await json(await get("/products?active=true&productKind=physical&limit=2"));
+		const cursor = encodeURIComponent(page1.nextCursor as string);
+		// A subset is not agreement: the rows are narrower than the address says.
+		expect((await get(`/products?cursor=${cursor}&productKind=physical`)).status).toBe(400);
+		expect((await get(`/products?cursor=${cursor}&active=true&productKind=physical`)).status).toBe(
+			200,
+		);
+	});
+
+	test("the low-stock threshold participates in the comparison, like every other axis", async () => {
+		await seed();
+		await server.seed("SKU-3", 1);
+		await server.seed("SKU-2", 2);
+		await server.seed("SKU-1", 3);
+		const page1 = await json(await get("/products?lowStockThreshold=5&limit=2"));
+		const cursor = encodeURIComponent(page1.nextCursor as string);
+		const alone = await (await get(`/products?cursor=${cursor}`)).text();
+
+		// The SAME threshold agrees and pages; a DIFFERENT one is a 400 rather than
+		// a page whose rows answer a threshold the address does not name.
+		const agree = await get(`/products?cursor=${cursor}&lowStockThreshold=5`);
+		expect(agree.status).toBe(200);
+		expect(await agree.text()).toBe(alone);
+		expect((await get(`/products?cursor=${cursor}&lowStockThreshold=9`)).status).toBe(400);
+		// Zero is a real threshold, not an absent one.
+		expect((await get(`/products?cursor=${cursor}&lowStockThreshold=0`)).status).toBe(400);
+	});
+
+	test("a `limit` that disagrees with the token's embedded limit ⇒ 400; an agreeing one pages", async () => {
+		await seed();
+		const page1 = await json(await get("/products?productKind=physical&limit=2"));
+		const cursor = encodeURIComponent(page1.nextCursor as string);
+		const alone = await (await get(`/products?cursor=${cursor}`)).text();
+
+		// The shape live clients send today: cursor + the same page limit.
+		const agree = await get(`/products?cursor=${cursor}&limit=2`);
+		expect(agree.status).toBe(200);
+		expect(await agree.text()).toBe(alone);
+
+		const disagree = await get(`/products?cursor=${cursor}&limit=5`);
+		expect(disagree.status).toBe(400);
+		expect(await json(disagree)).toEqual({ error: "cursor filter mismatch" });
+	});
 });
