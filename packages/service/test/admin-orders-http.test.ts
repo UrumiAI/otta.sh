@@ -290,11 +290,33 @@ describe.skipIf(PG === undefined)("admin Orders console HTTP contract", () => {
 		const paid = await json(await get("/orders?states=paid&limit=1"));
 		const paidCursor = encodeURIComponent(paid.nextCursor as string);
 		expect((await get(`/orders?cursor=${paidCursor}&states=cancelled`)).status).toBe(400);
-		// Every filter axis participates, not just `states`.
+		// Every filter axis participates, not just `states` — BOTH window bounds
+		// included.
 		expect((await get(`/orders?cursor=${paidCursor}&states=paid&search=ord-2`)).status).toBe(400);
 		expect(
 			(await get(`/orders?cursor=${paidCursor}&states=paid&from=2026-07-01T00:00:00.000Z`)).status,
 		).toBe(400);
+		expect(
+			(await get(`/orders?cursor=${paidCursor}&states=paid&to=2026-08-01T00:00:00.000Z`)).status,
+		).toBe(400);
+	});
+
+	test("an unparseable `states` beside a cursor is the invalid-FILTER 400, not the mismatch one", async () => {
+		await seed();
+		const page1 = await json(await get("/orders?states=paid&limit=2"));
+		const cursor = encodeURIComponent(page1.nextCursor as string);
+		// Newly REACHABLE: the cursor arm used to ignore the query's states
+		// outright, so an unknown token beside a cursor answered 200. It now gets
+		// the answer the no-cursor arm has always given — and it is the
+		// invalid-filter 400, not the mismatch one, because the request is
+		// unanswerable before there is anything to compare.
+		const res = await get(`/orders?cursor=${cursor}&states=bogus-state`);
+		expect(res.status).toBe(400);
+		expect(await json(res)).toEqual({ error: "invalid states filter" });
+		// The same value with no cursor is the same 400 — one rule, both arms.
+		expect(await json(await get("/orders?states=bogus-state"))).toEqual({
+			error: "invalid states filter",
+		});
 	});
 
 	test("quadrant: filter params ALONE (no cursor) are untouched by the gate", async () => {
@@ -362,5 +384,32 @@ describe.skipIf(PG === undefined)("admin Orders console HTTP contract", () => {
 		const disagree = await get(`/orders?cursor=${cursor}&limit=5`);
 		expect(disagree.status).toBe(400);
 		expect(await json(disagree)).toEqual({ error: "cursor filter mismatch" });
+	});
+
+	test("the limit gate compares the EFFECTIVE page size, which is the token's whenever it is usable", async () => {
+		await seed();
+		// A FINITE but out-of-range token limit is clamped and HONORED (MOD-1) —
+		// the query's own value is never consulted — so a page of 100 beside a
+		// request asking for 50 is a real disagreement, not a spurious one.
+		const clamped = b64url({
+			pos: { createdAt: "2999-01-01T00:00:00.000Z", id: "zzzz" },
+			filter: {},
+			limit: 999_999,
+		});
+		expect((await get(`/orders?cursor=${clamped}&limit=50`)).status).toBe(400);
+		// The same token ALONE still pages, clamped, exactly as it did before.
+		expect((await get(`/orders?cursor=${clamped}`)).status).toBe(200);
+
+		// A token limit that is not a finite number is UNUSABLE, and only then is
+		// the query's value the one honored — so it agrees with itself rather than
+		// 400ing, and the page it describes is the page it gets.
+		const unusable = b64url({
+			pos: { createdAt: "2999-01-01T00:00:00.000Z", id: "zzzz" },
+			filter: {},
+			limit: "not-a-number",
+		});
+		const res = await get(`/orders?cursor=${unusable}&limit=3`);
+		expect(res.status).toBe(200);
+		expect((await json(res)).orders as unknown[]).toHaveLength(3);
 	});
 });

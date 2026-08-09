@@ -158,13 +158,13 @@ export function adminRoutes(deps: AdminRoutesDeps): Hono {
 			cursorPos = posParsed;
 			limit = clampLimit(decoded.limit, q.limit);
 
-			// The token is authoritative for paging — but the URL may ALSO spell the
-			// filter out beside it (a console keeps both in one shareable address),
-			// and then the two can CONTRADICT each other. Resolving that silently in
-			// the token's favour is the defect: the address claims one predicate
-			// while the rows answer another, and nothing in the response says so. So
-			// a disagreement fails CLOSED. ABSENT params claim nothing — the
-			// cursor-alone request every client sends today is untouched.
+			// The token is authoritative for paging — but a request may ALSO spell
+			// the filter out beside it, and then the two can CONTRADICT each other.
+			// Resolving that silently in the token's favour is the defect: the
+			// request claims one predicate while the rows answer another, and
+			// nothing in the response says so. So a disagreement fails CLOSED.
+			// ABSENT params claim nothing — the cursor-alone request every client
+			// sends today is untouched.
 			if (hasOrderFilterParams(q)) {
 				const claimed = buildFilterFromQuery(q.states, q.from, q.to, q.search);
 				if (claimed === null) return c.json({ error: "invalid states filter" }, 400);
@@ -172,11 +172,20 @@ export function adminRoutes(deps: AdminRoutesDeps): Hono {
 					return c.json({ error: "cursor filter mismatch" }, 400);
 				}
 			}
-			// The page size rides in the token too, and disagrees the same way: an
-			// address asking for 50 rows while the token says 25 is the same lie in a
-			// different field. Compared against the EFFECTIVE limit (re-clamped), so
-			// a token whose limit is out of range or unusable — where the query's own
-			// value is what ends up being honored — is not a spurious disagreement.
+			// The page size rides in the token too, and disagrees the same way: a
+			// request asking for 50 rows while the token says 25 is the same
+			// contradiction in a different field. It shares the one mismatch code
+			// because it has the one remedy — drop the cursor and re-issue the first
+			// page from the parameters — and splitting it would buy a client a
+			// distinction it cannot act on differently.
+			//
+			// Compared against the EFFECTIVE limit, which is what the page will
+			// actually be. `clampLimit` prefers the token's value whenever it is a
+			// FINITE number and clamps it into range; the query's value is honored
+			// ONLY when the token's is missing or non-finite. So a token carrying
+			// 999_999 pages at 100 and a `?limit=50` beside it is a real
+			// disagreement (400), while a token carrying nothing usable pages at
+			// exactly the query's limit and agrees with it.
 			if (rawQuery.limit !== undefined && q.limit !== limit) {
 				return c.json({ error: "cursor filter mismatch" }, 400);
 			}
@@ -1216,27 +1225,57 @@ function hasProductFilterParams(q: ProductsListQuery): boolean {
 }
 
 /**
- * A list filter rendered so that two filters can be compared as VALUES, not as
- * JSON text. Both sides reach this the same way — through the same
- * `build*FromQuery` + `to*Filter` normalization the token's own filter went
- * through when it was minted — and this closes the residual gap between "the
- * same predicate" and "the same spelling", so an agreeing request never 400s by
- * accident:
+ * A list filter rendered so that two filters can be compared as PREDICATES, not
+ * as JSON text.
+ *
+ * Each side arrives already normalized, by a DIFFERENT route: the token's filter
+ * through `*ListFilterSchema` + `to*Filter` (decode, re-validate, drop the
+ * `undefined` keys), the query's through `buildFilterFromQuery` /
+ * `buildProductFilterFromQuery` (the same builders the first-page arm uses, so
+ * the query side is normalized exactly once and identically in both arms). The
+ * two agree on SHAPE by construction. What is left is the gap between "the same
+ * predicate" and "the same spelling", and closing it is this function's whole
+ * job — an agreeing request must never 400 by accident:
  *   - key ORDER is irrelevant (sorted),
  *   - an absent axis and an `undefined` one are the same thing (dropped),
  *   - an OR-able array is a SET (sorted, deduped): `states=paid,cancelled` and
  *     `states=cancelled,paid,paid` select the same rows,
  *   - a window bound is an INSTANT, not a string: `...T00:00:00Z` and
- *     `...T00:00:00.000Z` are the same moment.
+ *     `...T00:00:00.000Z` are the same moment,
+ *   - an axis whose value is its own default is dropped — see `isNoOpAxis`.
  * Case is deliberately NOT folded: the store's own case-insensitivity is the
  * store's business, and a token round-trips whatever the query said.
+ *
+ * FILE-LOCAL ON PURPOSE, FOR NOW. This and the `has*FilterParams` predicates
+ * serve the two list routes in this file. The rules-admin coupons list has the
+ * same cursor shape and the same unclosed gap; when it is closed, these should
+ * be LIFTED into a shared module and reused — a second copy would be free to
+ * drift on exactly the canonicalization details this exists to pin.
  */
 function canonicalFilter(filter: OrderListFilter | ProductListFilter): string {
 	const entries = (Object.entries(filter) as [string, unknown][])
-		.filter(([, value]) => value !== undefined)
+		.filter(([key, value]) => value !== undefined && !isNoOpAxis(key, value))
 		.map(([key, value]): [string, unknown] => [key, canonicalFilterValue(key, value)])
 		.toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 	return JSON.stringify(entries);
+}
+
+/**
+ * Is this axis, at this value, indistinguishable from omitting it?
+ *
+ * `deleted: false` is: the tombstone axis is `deleted_at IS NULL` for EVERY
+ * value except `true` (`filter.deleted === true ? "is not" : "is"` in the store,
+ * and the port doc says so), so `?deleted=false` and no `deleted` at all issue
+ * the same SQL and select the same rows. Comparing them as distinct would 400
+ * two spellings of one predicate — precisely the failure this gate exists to
+ * prevent, inverted.
+ *
+ * `active: false` is NOT: the store emits a real `active = false` for it, so it
+ * and an omitted `active` are genuinely different predicates and must keep
+ * disagreeing. The asymmetry is the store's, not a tidying opportunity.
+ */
+function isNoOpAxis(key: string, value: unknown): boolean {
+	return key === "deleted" && value === false;
 }
 
 function canonicalFilterValue(key: string, value: unknown): unknown {

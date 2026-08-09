@@ -595,6 +595,43 @@ describe.skipIf(PG === undefined)("admin Products console HTTP contract", () => 
 		);
 	});
 
+	test("`deleted=false` and an OMITTED `deleted` are one predicate, so the two spellings agree", async () => {
+		await seed();
+		// The tombstone axis is `deleted_at IS NULL` for every value except `true`
+		// (store + port doc), so these two requests issue identical SQL. Treating
+		// them as different filters would 400 two spellings of ONE predicate — the
+		// exact failure this gate exists to prevent, inverted.
+		const bare = await json(await get("/products?productKind=physical&limit=2"));
+		const bareCursor = encodeURIComponent(bare.nextCursor as string);
+		const bareAlone = await (await get(`/products?cursor=${bareCursor}`)).text();
+		const withFalse = await get(
+			`/products?cursor=${bareCursor}&productKind=physical&deleted=false`,
+		);
+		expect(withFalse.status).toBe(200);
+		expect(await withFalse.text()).toBe(bareAlone);
+
+		// And the reverse: a token MINTED with `deleted=false`, paged by a request
+		// that leaves the axis out.
+		const explicit = await json(await get("/products?productKind=physical&deleted=false&limit=2"));
+		const explicitCursor = encodeURIComponent(explicit.nextCursor as string);
+		const explicitAlone = await (await get(`/products?cursor=${explicitCursor}`)).text();
+		const omitted = await get(`/products?cursor=${explicitCursor}&productKind=physical`);
+		expect(omitted.status).toBe(200);
+		expect(await omitted.text()).toBe(explicitAlone);
+
+		// `active=false` is NOT that kind of axis: the store emits a real
+		// `active = false` for it, so it and an omitted `active` are genuinely
+		// different predicates and must keep disagreeing. The asymmetry belongs to
+		// the store, and is deliberate here rather than an inconsistency to tidy.
+		expect(
+			(await get(`/products?cursor=${bareCursor}&productKind=physical&active=false`)).status,
+		).toBe(400);
+		// `deleted=true` is a different predicate from both, and still disagrees.
+		expect(
+			(await get(`/products?cursor=${bareCursor}&productKind=physical&deleted=true`)).status,
+		).toBe(400);
+	});
+
 	test("the low-stock threshold participates in the comparison, like every other axis", async () => {
 		await seed();
 		await server.seed("SKU-3", 1);
