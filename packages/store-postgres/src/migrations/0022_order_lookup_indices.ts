@@ -25,19 +25,26 @@ import type { Migration } from "kysely/migration";
  *   uses this index for its `customer_id = :id` half: the planner proves
  *   equality to a literal implies `IS NOT NULL` and picks the partial index.
  * - `idx_orders_buyer_ref_lower` is a FUNCTIONAL index on `lower(buyer_ref)`.
- *   Every predicate on `buyer_ref` is case-folded at the compare side
- *   (`lower(buyer_ref) = lower(:buyerRef)` / `lower(orders.buyer_ref) =
- *   :search.toLowerCase()`) — see `KyselyOrderStore#linkGuestOrders` and
- *   `orderFilterConditions` (order search + the customer `customer_id OR
- *   lower(buyer_ref)` key) in `kysely-order-store.ts`. A plain b-tree on
- *   `buyer_ref` would never be chosen by the planner for any of those
- *   queries, so the index expression matches `lower(buyer_ref)` exactly —
- *   Postgres resolves an unqualified vs. `orders.`-qualified column reference
- *   to the same parsed expression node, so this one expression serves both
- *   call-site spellings. `order-lookup-indices.test.ts` pins both index
- *   definitions so a predicate rewrite (a different fold, a `LIKE`, a column
- *   swap) that stops matching this expression fails loudly instead of
- *   silently losing the index.
+ *   Its consumers are the EQUALITY predicates on `buyer_ref`, each folded at
+ *   the compare side (`lower(buyer_ref) = lower(:buyerRef)`):
+ *   `KyselyOrderStore#linkGuestOrders` and the `customer` key half of
+ *   `orderFilterConditions` (`customer_id = :id OR lower(buyer_ref) =
+ *   lower(:buyerRef)`) in `kysely-order-store.ts`. NOT the admin list's
+ *   `search`: that is an id PREFIX or an unanchored `buyer_ref` SUBSTRING
+ *   (port doc), which no b-tree can serve and which deliberately scans. A
+ *   plain b-tree on `buyer_ref` would never be chosen by the planner for the
+ *   equality queries either, so the index expression matches `lower(buyer_ref)`
+ *   exactly — Postgres resolves an unqualified vs. `orders.`-qualified column
+ *   reference to the same parsed expression node, so this one expression serves
+ *   both call-site spellings.
+ *
+ *   WHAT THE TEST ACTUALLY PINS. `order-lookup-indices.test.ts` EXPLAINs the
+ *   three statements above (`listForCustomer`, `linkGuestOrders`, the customer
+ *   key) and asserts each plan names the index it was built for. That catches a
+ *   rewrite of THOSE predicates — a different fold, a column swap — by failing
+ *   loudly rather than silently losing the index. It does NOT cover every
+ *   predicate in the store, and never covered `search`; a query the test does
+ *   not EXPLAIN can drop off an index with nothing turning red.
  *
  * Neither duplicates the existing `orders` indices: `idx_orders_created_state`
  * (`created_at, state`, `0008`) and `idx_orders_created_id` (the admin keyset

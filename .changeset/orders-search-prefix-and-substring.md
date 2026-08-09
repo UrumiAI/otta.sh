@@ -1,12 +1,18 @@
 ---
 "@otta-sh/domain": minor
 "@otta-sh/store-postgres": minor
+"@otta-sh/service": patch
 ---
 
 Orders search stops being exact-match only. `OrderListFilter.search` now matches an order-id
-PREFIX or a `buyer_ref` SUBSTRING, ORed, with `lower()` on both sides of both halves. Exact
-lookups are unaffected: a whole id is its own prefix and a whole address is its own substring,
-so every search that worked before still returns the same row.
+PREFIX or a `buyer_ref` SUBSTRING, ORed, with `lower()` on both sides of both halves. Every
+exact lookup that worked before still RETURNS the same row — a whole id is its own prefix, a
+whole address its own substring — but it no longer runs the same PLAN: the old exact pair was
+served by an index and the new predicate scans (see below). Results preserved, cost changed.
+
+`@otta-sh/service` is bumped because its `GET /admin/orders` answers differently for the same
+query, though no service source changed — only its test coverage. `@otta-sh/plugin` is NOT
+bumped: it forwards `search` verbatim and has no code, wire or copy change here.
 
 - **A prefix, because a prefix is all the operator can see.** The console never renders a full
   uuid — it renders the shortest unique prefix (the git-style short id). Pasting the characters
@@ -21,15 +27,24 @@ so every search that worked before still returns the same row.
   silently. `lower(col) LIKE lower(:pattern)` makes all three implementations agree case for
   case, and the contract suite pins every new case on the fake, SQLite and Postgres. Ids are
   lowercase hex, so folding the id is a no-op on the stored side; it forgives the typed side.
-- **`%` and `_` are characters, not wildcards.** The adapters escape the pattern and pass
+- **`%`, `_` and `\` are characters, not wildcards.** The adapters escape the pattern and pass
   `ESCAPE '\'`; the fake builds no pattern at all. Searching `50%off` finds `50%off@…` and not
-  `50xoff@…`, and a bare `%` no longer means "every order".
+  `50xoff@…`, a bare `%` no longer means "every order", and the escape character itself is
+  escaped first so it cannot re-escape the other two rules' output. The empty string, by the
+  same logic, matches EVERYTHING — every string starts with and contains `""` — which is the
+  inverted reading of "search for nothing" and is now pinned rather than left to be discovered.
+  The service's query schema requires `min(1)`, so the wire cannot send it.
 - **The sequential scan is the design.** An unanchored substring cannot be served by a b-tree, so
   this predicate no longer uses `idx_orders_buyer_ref_lower`, and the anchored id half cannot use
   the primary key under a default collation. A trigram or full-text index was declined at this
-  scale — the products list already runs an unanchored substring at roughly 27 ms per page over
-  5k rows, and an index here buys operational surface rather than latency. Recorded in the port
-  where the old "deliberate divergence from products" note used to be.
+  scale, and the shape of the cost was measured first: over 5k rows a page whose search matches
+  nothing (worst case — whole table scanned, then sorted) took 3.4 ms, and one dense enough for
+  the keyset index to keep driving the ordering took under 1 ms. Those are a FLOOR, not the
+  production statement — a synthetic four-column table, no `order_totals` join, and a real
+  searched page pays the predicate twice (list plus count). The products list's ~27 ms figure is
+  cited in the port only as the precedent for ACCEPTING an unanchored scan, never as a bound on
+  this one; the two harnesses are not comparable. Recorded in the port where the old "deliberate
+  divergence from products" note used to be.
 - **The customer key did NOT follow.** `OrderCustomerKey.buyerRef` stays exact-lower-equals: it
   answers "whose orders are these", where a substring would fold two customers into one person's
   history, and equality is what keeps the functional index on the plan. `linkGuestOrders` is

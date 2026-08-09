@@ -18,10 +18,11 @@ VIEW-ONLY product list + read-only detail (admin-UX Increment 2, "product enumer
   that isn't "sortable where cheap" yet, so it's deferred. `ProductListFilter` is
   `active`/`productKind` (single-value equality — a product's publish gate and kind
   are each two-value axes, unlike `OrderListFilter.states`'s OR-set) plus `search`,
-  which DELIBERATELY DIVERGES from `OrderListFilter.search`'s exact-only semantics:
+  which DELIBERATELY DIVERGES from `OrderListFilter.search` as it stood here:
   a case-insensitive SUBSTRING match on `title` (free text a merchant partially
-  remembers) OR an exact match on `sku` (a structured identifier, like a
-  buyer_ref). Always excludes soft-deleted rows. Also adds
+  remembers) OR an exact match on `sku` (a structured identifier). Orders' own
+  search is widened later in this release, converging on the title half and
+  leaving `sku` as the one axis that stays exact. Always excludes soft-deleted rows. Also adds
   `InventoryStore.getOnHand(sku)` — a bare, read-only single-sku stock lookup (a
   sku with no row reads as `0`) so the product detail leaf can show stock without
   a store-side join or N+1. The `InMemoryProductCommerceStore`/

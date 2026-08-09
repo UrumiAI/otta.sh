@@ -1992,10 +1992,10 @@ function assertValidLowStockThreshold(filter: ProductListFilter): void {
  * `orderFilterConditions` — a single builder so semantics can never drift).
  * Returns standalone expressions (a detached `expressionBuilder`) to AND onto
  * the query. `search` matches EITHER an exact-lower sku OR a case-insensitive
- * substring of `title` (port doc — still diverges from `OrderListFilter
- * .search`, which is an id PREFIX or a folded `buyer_ref` SUBSTRING, on the sku
- * half alone); a NULL `sku`/`title` simply fails its half
- * of the OR (SQL `NULL LIKE …` / `NULL = …` is unknown ⇒ false), never a throw.
+ * substring of `title` (port doc — still diverges from `OrderListFilter.search`,
+ * which is an id PREFIX or a folded `buyer_ref` SUBSTRING, on the sku half
+ * alone); a NULL `sku`/`title` simply fails its half of the OR (SQL `NULL LIKE
+ * …` / `NULL = …` is unknown ⇒ false), never a throw.
  * `deleted` is DELIBERATELY absent from this builder — it flips the base
  * query's `deleted_at IS [NOT] NULL` clause in `listProducts` directly, not an
  * ANDed condition here (the two are mutually exclusive branches, not a

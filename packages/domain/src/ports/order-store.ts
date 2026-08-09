@@ -544,15 +544,28 @@ export interface OrderListFilter {
 	 *
 	 * WHY THE FOLD IS EXPLICIT ON BOTH SIDES. A bare `LIKE` is case-SENSITIVE on
 	 * Postgres and ASCII-case-INSENSITIVE on SQLite; only an explicit `lower()`
-	 * on both operands makes the two dialects (and the fake) agree byte for
-	 * byte. Ids are lowercase hex (`crypto.randomUUID()`), so folding the id is a
-	 * no-op on the STORED side — it is there to forgive the TYPED side, e.g. a
+	 * on both operands makes the two dialects and the fake agree. The pattern
+	 * side is folded by SQL `lower()` rather than JS `toLowerCase()` — one
+	 * function folds both operands, so within a dialect the two sides cannot
+	 * drift. Known, accepted divergence (the same one `couponFilterConditions`
+	 * and `linkGuestOrders` already carry): SQLite's built-in `lower()` folds
+	 * ASCII only, while JS `toLowerCase()` is Unicode-aware, so a non-ASCII
+	 * buyer_ref ("JOSÉ@…") folds differently on sqlite than on pg/the fake.
+	 * Emails and hex ids are ASCII, which is why this is accepted rather than
+	 * solved. Ids are lowercase hex (`crypto.randomUUID()`), so folding the id is
+	 * a no-op on the STORED side — it is there to forgive the TYPED side, e.g. a
 	 * uuid pasted back from a client that upper-cased it.
 	 *
-	 * WILDCARDS ARE LITERAL. `%` and `_` are `LIKE` metacharacters; a search
-	 * containing them matches them as characters (the adapters escape the
-	 * pattern and pass `ESCAPE '\'`; the fake builds no pattern at all, so
-	 * `startsWith`/`includes` are literal by construction).
+	 * WILDCARDS ARE LITERAL. `%`, `_` and `\` (the escape character itself) are
+	 * `LIKE` metacharacters; a search containing them matches them as characters
+	 * (the adapters escape the pattern and pass `ESCAPE '\'`; the fake builds no
+	 * pattern at all, so `startsWith`/`includes` are literal by construction).
+	 *
+	 * THE EMPTY STRING MATCHES EVERYTHING, because every string starts with `""`
+	 * and contains `""`. That is the widest filter this axis has, not the
+	 * narrowest — the inverted reading of "search for nothing". The service's
+	 * query schema requires `min(1)`, so the wire cannot send it; the boundary is
+	 * pinned in the contract for every other caller.
 	 *
 	 * THE SEQUENTIAL SCAN IS THE DESIGN, not an oversight. An unanchored
 	 * substring cannot be served by a b-tree, so `idx_orders_buyer_ref_lower`
@@ -560,18 +573,22 @@ export interface OrderListFilter {
 	 * serve the anchored id half, since a default-collation b-tree answers
 	 * `LIKE 'x%'` only with `text_pattern_ops`, and either way an OR arm that
 	 * must scan forces a scan for the whole predicate. A trigram/full-text index
-	 * was declined outright at this scale: the products list already runs an
-	 * unanchored substring at roughly 27 ms per page over 5k rows, and an index
-	 * here buys operational surface rather than latency. Measured on this
-	 * predicate over 5k orders, a page costs ~3 ms in the WORST case (a search
-	 * matching nothing, so the whole table is scanned and sorted) and well under
-	 * 1 ms whenever matches are dense enough that the `(created_at, id)` keyset
-	 * index still drives the ordering and the search rides as a heap filter.
-	 * Revisit if orders reach a scale where that stops holding — not before. The
-	 * index still backs
-	 * every EQUALITY path on `buyer_ref` — `linkGuestOrders` and the `customer`
-	 * key below — which is exactly why those keep exact-lower-equals semantics
-	 * and did NOT follow this widening.
+	 * was declined outright at this scale, and the shape of the cost was measured
+	 * before deciding: over 5k rows, a page whose search matches NOTHING (the
+	 * worst case — the whole table scanned, then sorted) took 3.4 ms, and one
+	 * with matches dense enough for the `(created_at, id)` keyset index to keep
+	 * driving the ordering took under 1 ms with the search riding as a heap
+	 * filter. Read those as a FLOOR, not as the production statement: they came
+	 * from a synthetic four-column `orders` table with no `order_totals` join and
+	 * no other filter axis, and a searched page issues the list AND the count
+	 * (INC-23), so a real page pays this predicate twice. They are not comparable
+	 * to the products list's ~27 ms/page figure either — different table, columns
+	 * and harness — which is why that number is cited only as the precedent for
+	 * ACCEPTING an unanchored scan, never as a bound on this one. Revisit if
+	 * orders reach a scale where the shape stops holding; measure the real
+	 * statement then. The index still backs every EQUALITY path on `buyer_ref` —
+	 * `linkGuestOrders` and the `customer` key below — which is exactly why those
+	 * keep exact-lower-equals semantics and did NOT follow this widening.
 	 */
 	search?: string;
 	/** The customer dimension (admin-UX Increment 1) — see `OrderCustomerKey`.

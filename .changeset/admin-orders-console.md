@@ -12,8 +12,9 @@ Add a WooCommerce-style admin Orders console — VIEW + STATUS-TRANSITION only
   lightweight, keyset-paginated `OrderSummary` PROJECTION (no per-row
   line/totals fan-out). Ordering is `created_at DESC, id DESC`; the date window
   is HALF-OPEN `[from, to)` (deliberately unlike `ReportingStore`'s inclusive
-  `BETWEEN`); `search` matches an exact order id OR a case-insensitive exact
-  `buyer_ref`. Adds `legalNextStates(from)` for the console's transition
+  `BETWEEN`); `search` matches an order id OR a case-insensitive `buyer_ref`,
+  both exact as introduced here and widened to an id PREFIX / buyer_ref
+  SUBSTRING later in this same release. Adds `legalNextStates(from)` for the console's transition
   buttons. The `InMemoryOrderStore` fake and the contract suite pin the spec
   (empty, single/multi state, date boundary, search, pagination no-overlap/no-gap,
   identical-`created_at` tie-break, limit boundary).
