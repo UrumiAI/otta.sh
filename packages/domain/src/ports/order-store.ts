@@ -580,8 +580,9 @@ export interface OrderListFilter {
 	 * driving the ordering took under 1 ms with the search riding as a heap
 	 * filter. Read those as a FLOOR, not as the production statement: they came
 	 * from a synthetic four-column `orders` table with no `order_totals` join and
-	 * no other filter axis, and a searched page issues the list AND the count
-	 * (INC-23), so a real page pays this predicate twice. They are not comparable
+	 * no other filter axis, and a searched page issues the list AND the exact
+	 * filtered-set count together, so a real page pays this predicate twice under
+	 * the same filter (see `countOrders`). They are not comparable
 	 * to the products list's ~27 ms/page figure either — different table, columns
 	 * and harness — which is why that number is cited only as the precedent for
 	 * ACCEPTING an unanchored scan, never as a bound on this one. Revisit if
