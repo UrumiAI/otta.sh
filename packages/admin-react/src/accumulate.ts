@@ -1,3 +1,13 @@
+import {
+	NEXT_AT_END_TITLE,
+	NEXT_PAGE_LABEL,
+	PREVIOUS_AT_START_TITLE,
+	PREVIOUS_PAGE_LABEL,
+	PREVIOUS_UNWALKED_TITLE,
+	pageCount,
+	pagePositionLine,
+} from "@otta-sh/admin-presentation";
+
 /**
  * What `Load more` does to the rows already on screen (F24).
  *
@@ -81,6 +91,28 @@ export function mergeById<T>(
 export interface PendingCursor<F> {
 	readonly filter: F;
 	readonly value: string;
+	/**
+	 * Does this cursor CONTINUE the rows on screen, or REPLACE them?
+	 *
+	 * TWO CONTROLS NOW ADVANCE THE SAME CURSOR AND ONLY ONE ACCUMULATES.
+	 * `Load more` extends the window — the rows above it are the operator's scan
+	 * and merging is the whole point (see {@link mergeById}). `Next` and
+	 * `Previous` MOVE the window: what comes back is one page, standing on its
+	 * own, and merging it would paste page three onto page two and caption the
+	 * result as a scan the operator never made.
+	 *
+	 * IT RIDES ON THE CURSOR RATHER THAN BESIDE IT, for the reason the filter
+	 * does: two pieces of state set by one click can still be read by an effect in
+	 * either order, and the pair that must never exist is a REPLACE cursor read as
+	 * an EXTEND one. Carrying the intent in the same value makes that
+	 * unrepresentable rather than merely unlikely.
+	 *
+	 * ABSENT IS REPLACE, and that is the safe default rather than an accident: a
+	 * cursor decoded from an address ({@link seedCursor}) names a page and has
+	 * nothing on screen to continue, and a pager step is the same. Exactly one
+	 * call site per screen sets this, and it is the one labelled `Load more`.
+	 */
+	readonly extend?: boolean;
 }
 
 /**
@@ -263,3 +295,185 @@ export const CURSOR_RESET_DESCRIPTION =
 export const PAGING_STOPPED_TITLE = "Paging stopped here";
 export const PAGING_STOPPED_DESCRIPTION =
 	"The rows already loaded are unaffected and still on screen; the page after them could not be added. Apply a filter or reload to start a fresh scan.";
+
+/**
+ * WHERE THE OPERATOR IS IN A KEYSET SCAN — a CLIENT-SIDE STACK of cursors.
+ *
+ * WHY A STACK AND NOT A QUERY. Keyset paging is one-directional by construction:
+ * a cursor names "everything after this row", and there is no token for
+ * "everything before it". The obvious fix is a reverse keyset read — flip the
+ * ordering, take a page, reverse it back — and it was considered and DECLINED.
+ * It is a second query shape in the store, a second index consideration, and a
+ * second set of edge cases at the boundaries, bought to answer a question the
+ * browser can already answer exactly: the cursors of the pages the operator
+ * walked through are cursors the SERVICE ISSUED, and going back is replaying
+ * one. Exact, free, and no server work.
+ *
+ * WHAT IS IN IT. `cursors` are the tokens each page after the first was fetched
+ * with, in visit order, so the last entry is the page on screen and the entry
+ * before it is where `Previous` goes. Page one is the ABSENCE of a cursor and
+ * therefore the absence of an entry — which is why popping the last one lands
+ * there with nothing on the wire.
+ *
+ * WHY `grounded` IS SEPARATE FROM THE DEPTH. A stack one deep can mean two
+ * different things: the operator pressed `Next` once (they are on page two), or
+ * they arrived on an address naming a page (they are on page ?). `grounded`
+ * records which — whether the walk started at page one — and it is the whole
+ * reason {@link pageNumber} can refuse to answer instead of inventing "page 2"
+ * for a link to page 40. It is also what stops `Previous` popping a deep link's
+ * single entry: that pop would land page one, which is not the page before this
+ * one.
+ */
+export interface PageTrail {
+	/** The cursors of the pages after the first, in the order they were visited.
+	 *  The last is the page on screen. */
+	readonly cursors: readonly string[];
+	/** Did this walk start at page one? Only then is the depth a page number. */
+	readonly grounded: boolean;
+}
+
+/** Page one, with nothing behind it — a fresh list, and where a filter apply
+ *  puts every list. */
+export const FIRST_PAGE: PageTrail = { cursors: [], grounded: true };
+
+/**
+ * The stack an ADDRESS produces, which is the one case that is not grounded.
+ *
+ * An absent value is page one, and so is an empty one, for the same reason
+ * {@link seedCursor} treats them alike: `?cursor=` is a trimmed or stale link
+ * rather than a request for the empty token. Anything else is a page this list
+ * did not walk to — it can be paged forward from and returned to, and it cannot
+ * be numbered.
+ */
+export function seedTrail(cursor: string | undefined): PageTrail {
+	return cursor === undefined || cursor.length === 0
+		? FIRST_PAGE
+		: { cursors: [cursor], grounded: false };
+}
+
+/** One page forward. Both controls that advance the page push here — `Next`,
+ *  which replaces the rows, and `Load more`, which keeps them: they disagree
+ *  about the window, never about the position. */
+export function pushedPage(trail: PageTrail, cursor: string): PageTrail {
+	return { cursors: [...trail.cursors, cursor], grounded: trail.grounded };
+}
+
+/**
+ * One page back: the stack to keep, and the cursor to fetch it with.
+ *
+ * `undefined` IS PAGE ONE, not "no answer" — popping the last entry off a
+ * grounded stack leaves nothing, and nothing is exactly what page one is asked
+ * for with.
+ *
+ * TOTAL, NOT PARTIAL. A stack with nowhere to go answers with itself and stays
+ * put, so the controls' guard ({@link hasPreviousPage}) is what OFFERS the act
+ * rather than what makes it safe. A helper that threw here, or that quietly
+ * invented page one for a deep link, would make the guard load-bearing and the
+ * bug it prevents invisible.
+ */
+export function poppedPage(trail: PageTrail): {
+	readonly trail: PageTrail;
+	readonly cursor: string | undefined;
+} {
+	if (!hasPreviousPage(trail)) return { trail, cursor: trail.cursors.at(-1) };
+	const cursors = trail.cursors.slice(0, -1);
+	return { trail: { cursors, grounded: trail.grounded }, cursor: cursors.at(-1) };
+}
+
+/** Which page this is, 1-based — or `undefined` when the walk did not start at
+ *  page one and the number is therefore not knowable. See {@link PageTrail}. */
+export function pageNumber(trail: PageTrail): number | undefined {
+	return trail.grounded ? trail.cursors.length + 1 : undefined;
+}
+
+/**
+ * Is there a page to go BACK to?
+ *
+ * A grounded stack answers yes as soon as it has one entry: popping it lands
+ * page one, which is a real page. An UNGROUNDED one needs two — the deepest
+ * entry is the address's own page, and popping it would land page one, which is
+ * not the page before it.
+ */
+export function hasPreviousPage(trail: PageTrail): boolean {
+	return trail.grounded ? trail.cursors.length > 0 : trail.cursors.length > 1;
+}
+
+/** One pager control: what it says, whether it can be used, and — when it
+ *  cannot — why. */
+export interface PagerControl {
+	readonly label: string;
+	readonly unavailable: boolean;
+	/** The reason it is dimmed, when there is one to give. Absent while a request
+	 *  is merely in flight: "busy" is not a place, and naming it would put a
+	 *  sentence on a control that is about to be usable again. */
+	readonly title: string | undefined;
+}
+
+export interface PagerView {
+	readonly visible: boolean;
+	readonly previous: PagerControl;
+	readonly next: PagerControl;
+	/** `Page 2 of 6` — or with either half an em dash. `undefined` when neither
+	 *  half is known, because "Page — of —" is a line that says nothing. */
+	readonly position: string | undefined;
+}
+
+/**
+ * THE WHOLE PAGER DECIDED IN ONE PLACE, so two React lists draw it and neither
+ * decides it.
+ *
+ * `M` IS DERIVED, NEVER FETCHED. The service already counts the filtered set
+ * alongside the page it returns, and the plugin already sends the keyset limit
+ * it paged by, so the page count is arithmetic over two values this render is
+ * holding — see `pageCount`, which refuses exactly the totals the count line
+ * refuses so that "Page 2 of 6" and "137 orders" cannot contradict each other.
+ *
+ * THE LAST PAGE IS THE PAGE COUNT, and that rule outranks the arithmetic. A
+ * render whose response carried no next cursor has DIRECT evidence of standing
+ * on the last page, while a derived count is two statements taken at different
+ * moments — so on the last page of a walked scan, `M` is `N`. It is also the
+ * only thing that can answer at all when the service sends no total.
+ *
+ * WITHDRAWN IS THE CALLER'S WORD. A failure card and the paging-stopped state
+ * both take the whole control away — the list knows about those, this function
+ * does not — and everything else here is about whether there is anywhere to go.
+ */
+export function pagerView(opts: {
+	readonly trail: PageTrail;
+	readonly hasNext: boolean;
+	/** Rows on screen, which is what a `total` is sanity-checked against. */
+	readonly rows: number;
+	readonly total?: number;
+	readonly pageSize?: number;
+	readonly busy: boolean;
+	readonly withdrawn: boolean;
+}): PagerView {
+	const index = pageNumber(opts.trail);
+	const derived = pageCount(opts.rows, {
+		...(opts.total !== undefined ? { total: opts.total } : {}),
+		...(opts.pageSize !== undefined ? { pageSize: opts.pageSize } : {}),
+	});
+	const pages = !opts.hasNext && index !== undefined ? index : derived;
+	const canPrevious = hasPreviousPage(opts.trail);
+	return {
+		visible: !opts.withdrawn && (opts.hasNext || canPrevious),
+		previous: {
+			label: PREVIOUS_PAGE_LABEL,
+			unavailable: opts.busy || !canPrevious,
+			title: canPrevious
+				? undefined
+				: opts.trail.grounded
+					? PREVIOUS_AT_START_TITLE
+					: PREVIOUS_UNWALKED_TITLE,
+		},
+		next: {
+			label: NEXT_PAGE_LABEL,
+			unavailable: opts.busy || !opts.hasNext,
+			title: opts.hasNext ? undefined : NEXT_AT_END_TITLE,
+		},
+		position: pagePositionLine({
+			...(index !== undefined ? { index } : {}),
+			...(pages !== undefined ? { pages } : {}),
+		}),
+	};
+}

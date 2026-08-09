@@ -44,6 +44,7 @@ import {
 	ORDERS_NO_MATCH,
 	ORDERS_SEARCH_LABEL,
 	ORDERS_STALE_CLEARED_NOTE,
+	PAGER_LABEL,
 	RETRYING_LABEL,
 	RETRY_LABEL,
 	buyerReferenceText,
@@ -58,11 +59,18 @@ import * as React from "react";
 import {
 	CURSOR_RESET_DESCRIPTION,
 	CURSOR_RESET_TITLE,
+	FIRST_PAGE,
 	PAGING_STOPPED_DESCRIPTION,
 	PAGING_STOPPED_TITLE,
 	continuationCursor,
 	mergeById,
+	pagerView,
+	poppedPage,
+	pushedPage,
 	seedCursor,
+	seedTrail,
+	type PageTrail,
+	type PagerControl,
 	type PendingCursor,
 } from "../accumulate.js";
 import {
@@ -121,6 +129,52 @@ const orderLinkStyle: React.CSSProperties = {
 	padding: "2px 4px",
 	margin: "-2px -4px",
 };
+
+/**
+ * ONE PAGER CONTROL, drawn from a decision `pagerView` has already made — this
+ * component chooses nothing except how to say it in a document.
+ *
+ * `aria-disabled` RATHER THAN `disabled`, and it is the only interesting thing
+ * here. A `disabled` button leaves the tab order, which is exactly what must not
+ * happen at the moment `Next` is pressed onto the LAST page: the control the
+ * operator's focus is sitting on would go unfocusable under their hands and focus
+ * would fall to `document.body`, halfway down a list. So it stays focusable,
+ * keeps the sheet's visible focus ring, announces itself as unavailable, and
+ * refuses its own click. The reason rides in `title`, which a `disabled` button
+ * could not offer a keyboard at all.
+ *
+ * The unavailable cursor is inline because the sheet's rule is `:disabled` and an
+ * ARIA state is not one. That is the pager's own condition, not a house one.
+ */
+function PagerButton({
+	control,
+	testId,
+	onClick,
+}: {
+	control: PagerControl;
+	testId: string;
+	onClick: () => void;
+}): React.ReactElement {
+	return (
+		<button
+			type="button"
+			className="otta-focusable otta-btn"
+			data-testid={testId}
+			aria-disabled={control.unavailable || undefined}
+			{...(control.title !== undefined ? { title: control.title } : {})}
+			style={{
+				...buttonStyle,
+				...(control.unavailable ? { opacity: 0.45, cursor: "not-allowed" } : {}),
+			}}
+			onClick={() => {
+				if (control.unavailable) return;
+				onClick();
+			}}
+		>
+			{control.label}
+		</button>
+	);
+}
 
 /**
  * THE FIVE-OUTCOME LADDER IS NOT REIMPLEMENTED HERE (INC-20 review).
@@ -223,9 +277,12 @@ export function nextPage(
 	continuation: boolean,
 ): LoadedPage {
 	if (!continuation) return { ...incoming, firstPage: true, pages: 1 };
-	// A continuation with nothing to continue is not reachable from this screen
-	// — the cursor is cleared whenever the page state is — but it is still a
-	// render that does NOT start at the first page, and says so.
+	// A CONTINUATION WITH NOTHING TO CONTINUE — a render that does not start at
+	// the first page and says so. It is how a deep-linked page arrives, and it is
+	// also how the pager's `Next`/`Previous` arrive: a pager step MOVES the
+	// window rather than extending it, so the caller passes `null` here on
+	// purpose and this page stands on its own instead of being pasted onto the
+	// one before it.
 	if (current === null) return { ...incoming, firstPage: false, pages: 1 };
 	return {
 		...incoming,
@@ -484,6 +541,19 @@ export function OrdersList({
 	const [cursor, setCursor] = React.useState<PendingCursor<OrdersFilter> | null>(() =>
 		seedCursor(initialFilter, initialCursor),
 	);
+	/**
+	 * THE PAGES WALKED TO GET HERE — the client-side stack `Previous` pops.
+	 *
+	 * SEEDED FROM THE SAME ADDRESS THE CURSOR IS, and ungrounded when that address
+	 * named a page: a link says WHICH page, never HOW MANY came before it, so this
+	 * mount can go forward and come back without ever being entitled to print a
+	 * page number. See {@link PageTrail}.
+	 *
+	 * IT MOVES ON THE CLICK, exactly as the cursor and the address do, and is not
+	 * rewound by a refusal — a failed page withdraws the pager rather than
+	 * pretending the operator never asked.
+	 */
+	const [trail, setTrail] = React.useState<PageTrail>(() => seedTrail(initialCursor));
 	/** The address named a page that would not open, and this render is the first
 	 *  page of its filters instead — the SEEDED path only. See the effect. */
 	const [cursorReset, setCursorReset] = React.useState(false);
@@ -552,6 +622,10 @@ export function OrdersList({
 		// replaced is not sent, and this request is the new filter's first page.
 		const from = continuationCursor(cursor, applied);
 		const continuation = from !== undefined;
+		// WHICH OF THE TWO ADVANCING CONTROLS ISSUED THIS. Only `Load more` extends
+		// the rows on screen; a pager step and a deep link name a page that stands
+		// on its own. See `PendingCursor.extend`.
+		const extending = continuation && cursor?.extend === true;
 		setBusy(true);
 		void fetchOrders(applied, from).then((result) => {
 			if (cancelled) return;
@@ -615,7 +689,15 @@ export function OrdersList({
 				setCursor(null);
 				onCursorChange?.(undefined);
 				if (midScan) setPagingStopped(true);
-				else setCursorReset(true);
+				else {
+					setCursorReset(true);
+					// THE ROWS BELOW REALLY ARE PAGE ONE, so the stack has to say so —
+					// otherwise the position would keep the unknowable page the address
+					// asked for while the screen showed the first one. The mid-scan
+					// branch deliberately does NOT reset: those rows are still the pages
+					// the operator gathered, and the pager is withdrawn there anyway.
+					setTrail(FIRST_PAGE);
+				}
 			}
 			if (midScan) {
 				// THE ONE RESPONSE THIS SCREEN THROWS AWAY. Every row in it is real and
@@ -630,7 +712,11 @@ export function OrdersList({
 			// in state at the moment the response lands.
 			setPage((current) =>
 				nextPage(
-					current,
+					// A PAGER STEP HAS NOTHING TO CONTINUE, and says so by handing the
+					// merge no accumulation: `Next` and `Previous` move the window, so
+					// the page that lands replaces what was there rather than being
+					// pasted onto it. Only `Load more` passes the rows through.
+					extending ? current : null,
 					{
 						orders: result.orders,
 						nextCursor: result.nextCursor,
@@ -736,6 +822,13 @@ export function OrdersList({
 		setApplied(next);
 		setDraft(next);
 		setCursor(null);
+		// THE STACK RESETS WITH THE PREDICATE, and this is not tidiness. A cursor
+		// is only meaningful against the filter it was issued under, so a stack that
+		// survived an apply would hand `Previous` a token from the set the operator
+		// just left — a page of the old predicate, or (once the service notices the
+		// disagreement) a refusal and a bounce back to page one. Page one of the new
+		// filter has nothing behind it, and the pager must say so.
+		setTrail(FIRST_PAGE);
 		// THE RESET NOTICE IS ABOUT THE ARRIVAL, so it goes the moment the operator
 		// asks for something themselves. Left standing it would explain a link that
 		// no longer has anything to do with what is on screen.
@@ -763,6 +856,76 @@ export function OrdersList({
 		everLoaded: page !== null,
 		retrying,
 	});
+
+	/**
+	 * THE PAGER, decided in `pagerView` and only drawn here.
+	 *
+	 * WITHDRAWN WHEREVER `Load more` IS. A failure has already replaced the offer
+	 * to page with a Retry for the request that failed, and the paging-stopped
+	 * state has just taken the page out of the ADDRESS — leaving `Previous`
+	 * standing there would offer to step back relative to a position the screen
+	 * disowned one line above. Both states leave the rows exactly where they are;
+	 * it is only the paging that goes.
+	 */
+	const pager = pagerView({
+		trail,
+		hasNext,
+		rows: orders.length,
+		...(page?.total !== undefined ? { total: page.total } : {}),
+		// THE PAGE SIZE IS ON THE WIRE ALREADY — the plugin sends the keyset limit
+		// it pages by, so `M` costs no request. A service that omits it leaves the
+		// page count an em dash rather than a guess.
+		...(vocabulary !== undefined ? { pageSize: vocabulary.pageLimit } : {}),
+		busy,
+		withdrawn: page === null || !answerVisible || failure !== null || pagingStopped,
+	});
+	/** The same withdrawal, on the control that was already gated this way. */
+	const loadMoreVisible = page?.nextCursor != null && failure === null && !pagingStopped;
+
+	/** One page forward, from whichever control asked. Both push the same stack;
+	 *  they disagree only about whether the rows above stay. */
+	const goForward = (extend: boolean) => {
+		const value = page?.nextCursor;
+		if (value == null) return;
+		setCursor({ filter: applied, value, ...(extend ? { extend: true } : {}) });
+		setTrail((current) => pushedPage(current, value));
+		setCursorReset(false);
+		// BUSY IS THE CLICK'S, NOT THE EFFECT'S — the same rule `apply` follows. The
+		// effect that issues the request runs after this commit, so without this
+		// there is one render in which the position has already moved and both pager
+		// controls are still live: a second press would push the SAME cursor again
+		// and leave the stack one deeper than the pages actually walked.
+		setBusy(true);
+		// The page goes in the address, and the screen is the only writer — this
+		// states what happened, it does not navigate.
+		onCursorChange?.(value);
+	};
+
+	/**
+	 * One page back, by REPLAYING the cursor the stack popped.
+	 *
+	 * IT RE-REQUESTS RATHER THAN RESTORING. The stack holds cursors, not pages, and
+	 * that is the choice rather than an implementation detail: a re-request under a
+	 * token the service already issued is exact and answers with the collection as
+	 * it stands NOW, while replaying rows kept in memory would show a page that may
+	 * be minutes stale — and would disagree with a reload of the very same address,
+	 * which fetches. Holding N pages of rows to avoid one round trip would also
+	 * grow without bound down a long scan.
+	 *
+	 * POPPING THE LAST ENTRY IS PAGE ONE, cursor and all: the request goes out
+	 * without a token and the address is corrected through the one path this list
+	 * announces its page on.
+	 */
+	const goBack = () => {
+		const { trail: rest, cursor: target } = poppedPage(trail);
+		setTrail(rest);
+		setCursor(target === undefined ? null : { filter: applied, value: target });
+		setCursorReset(false);
+		// See `goForward`: the controls go unavailable on the click rather than on
+		// the effect, so the commit in between cannot take a second press.
+		setBusy(true);
+		onCursorChange?.(target);
+	};
 
 	// THE FAILURE IS NOT CLEARED HERE. Clearing it on the click rather than on
 	// the response would flash the stale answer back for the length of the
@@ -1151,26 +1314,64 @@ export function OrdersList({
 				</div>
 			)}
 
-			{page?.nextCursor != null && failure === null && !pagingStopped && (
-				<div style={{ marginBlockStart: 12 }}>
-					<button
-						type="button"
-						className="otta-focusable otta-btn"
-						data-testid="orders-load-more"
-						disabled={busy}
-						style={buttonStyle}
-						onClick={() => {
-							const value = page.nextCursor;
-							if (value === null) return;
-							setCursor({ filter: applied, value });
-							setCursorReset(false);
-							// The page goes in the address, and the screen is the only
-							// writer — this states what happened, it does not navigate.
-							onCursorChange?.(value);
-						}}
-					>
-						{busy ? "Loading…" : LOAD_MORE_LABEL}
-					</button>
+			{/*
+			  THE TWO WAYS FORWARD, IN ONE BAR — and they are two acts, not two
+			  spellings of one. `Previous`/`Next` MOVE a one-page window and are how
+			  an operator navigates a long list; `Load more` EXTENDS the window and is
+			  how they build a scan to read in one go. Both advance the same position,
+			  so the page number below counts either — what differs is whether the rows
+			  above stay.
+			*/}
+			{(pager.visible || loadMoreVisible) && (
+				<div
+					style={{
+						marginBlockStart: 12,
+						display: "flex",
+						flexWrap: "wrap",
+						gap: 12,
+						alignItems: "center",
+						justifyContent: "space-between",
+					}}
+				>
+					{pager.visible && (
+						<nav
+							aria-label={PAGER_LABEL}
+							data-testid="orders-pager"
+							style={{ display: "flex", gap: 8, alignItems: "center" }}
+						>
+							<PagerButton control={pager.previous} testId="orders-prev" onClick={goBack} />
+							{pager.position !== undefined && (
+								<span
+									data-testid="orders-page-position"
+									// ANNOUNCED, because the one control whose focus survives a
+									// page change is the one that caused it: an operator pressing
+									// `Next` from the keyboard keeps focus on the button and would
+									// otherwise get no word that anything moved.
+									aria-live="polite"
+									style={{ fontSize: 13, opacity: 0.75, whiteSpace: "nowrap" }}
+								>
+									{pager.position}
+								</span>
+							)}
+							<PagerButton
+								control={pager.next}
+								testId="orders-next"
+								onClick={() => goForward(false)}
+							/>
+						</nav>
+					)}
+					{loadMoreVisible && (
+						<button
+							type="button"
+							className="otta-focusable otta-btn"
+							data-testid="orders-load-more"
+							disabled={busy}
+							style={buttonStyle}
+							onClick={() => goForward(true)}
+						>
+							{busy ? "Loading…" : LOAD_MORE_LABEL}
+						</button>
+					)}
 				</div>
 			)}
 		</div>

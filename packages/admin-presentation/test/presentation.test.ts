@@ -73,10 +73,17 @@ import {
 	listOutcome,
 	tabUnsavedLabel,
 	majorUnits,
+	NEXT_AT_END_TITLE,
+	NEXT_PAGE_LABEL,
 	onHandCell,
 	orderStateCell,
+	pageCount,
+	pagePositionLine,
 	parseOnHandWatermark,
 	parseStockQty,
+	PREVIOUS_AT_START_TITLE,
+	PREVIOUS_PAGE_LABEL,
+	PREVIOUS_UNWALKED_TITLE,
 	priceChangeSummary,
 	priceGroupLabel,
 	pricePendingLine,
@@ -590,6 +597,123 @@ describe("INC-23's exact count, shared by both surfaces", () => {
 		});
 		expect(outcome.countLine).toBe("3 orders on this page");
 		expect(outcome.countLine).not.toContain("137");
+	});
+});
+
+describe("Page N of M — derived from what the list already has, never fetched", () => {
+	const noun = ORDERS_NOUN;
+
+	test("the labels are authored here, not at the two call sites", () => {
+		// Two React lists render this pager and must not drift on the words, for
+		// the same reason `Load more` and `Apply filters` live beside them.
+		expect(PREVIOUS_PAGE_LABEL).toBe("Previous");
+		expect(NEXT_PAGE_LABEL).toBe("Next");
+	});
+
+	test("M is the exact total over the page size — the two the wire already carries", () => {
+		// COUNT(*) under the page's own predicate, and the limit the plugin sends
+		// with every request. Neither is a new query; the page count is arithmetic
+		// over two values already on screen.
+		expect(pageCount(25, { total: 137, pageSize: 25 })).toBe(6);
+		expect(pageCount(25, { total: 125, pageSize: 25 })).toBe(5);
+		// A collection smaller than one page is one page.
+		expect(pageCount(1, { total: 1, pageSize: 25 })).toBe(1);
+		// An ACCUMULATED scan counts the same way: `rows` is what is on screen, and
+		// the page size is still the page size.
+		expect(pageCount(50, { total: 137, pageSize: 25 })).toBe(6);
+	});
+
+	test("an ABSENT total is not a page count — never 1, never 0", () => {
+		// The hazard this test exists for. `total` is optional by design (a service
+		// that omits it, and a products page whose low-stock predicate never ran),
+		// and "of 1" would state that the operator is looking at the whole set at
+		// the exact moment nothing knows how big it is.
+		expect(pageCount(25, { pageSize: 25 })).toBeUndefined();
+		expect(pageCount(25, { total: undefined, pageSize: 25 })).toBeUndefined();
+		// And an absent page size is the same refusal from the other side.
+		expect(pageCount(25, { total: 137 })).toBeUndefined();
+	});
+
+	test("M IS REFUSED ON EXACTLY THE TOTALS THE COUNT LINE REFUSES", () => {
+		// THE COORDINATION, PINNED. "Page 2 of 6" and "137 orders" are two
+		// sentences about one set, so a total the count line will not state must
+		// not reappear as a page count — otherwise a render that hedges to
+		// "25 orders on this page" would sit under a confident "of 6" derived from
+		// the very figure it just refused.
+		for (const bad of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+			expect(rowCountLine(25, noun, { complete: false, total: bad })).toBe(
+				"25 orders on this page",
+			);
+			expect(pageCount(25, { total: bad, pageSize: 25 })).toBeUndefined();
+		}
+		// Below the rows on screen is the one direction both refuse: it would
+		// understate what the operator can already see.
+		expect(rowCountLine(50, noun, { complete: false, total: 3 })).toBe("50 orders on this page");
+		expect(pageCount(50, { total: 3, pageSize: 25 })).toBeUndefined();
+		// A page size that is not a positive whole number describes no paging.
+		for (const bad of [0, -5, 2.5, Number.NaN]) {
+			expect(pageCount(25, { total: 137, pageSize: bad })).toBeUndefined();
+		}
+	});
+
+	test("zero rows have no page count, exactly as they have no count line", () => {
+		// A total above an empty page is a service disagreeing with itself, and
+		// the count line already suppresses it. The pager says nothing rather than
+		// captioning an empty page "Page 1 of 6".
+		expect(rowCountLine(0, noun, { complete: false, total: 137 })).toBeUndefined();
+		expect(pageCount(0, { total: 137, pageSize: 25 })).toBeUndefined();
+	});
+
+	test("the line reads `Page 2 of 6`, through Intl, on both halves", () => {
+		expect(pagePositionLine({ index: 2, pages: 6 })).toBe("Page 2 of 6");
+		// The thousands separator is the visible proof that `Intl.NumberFormat` is
+		// in the path on BOTH numbers — `String(n)` cannot produce it.
+		expect(pagePositionLine({ index: 1234, pages: 5678 })).toBe("Page 1,234 of 5,678");
+	});
+
+	test("an unknown M is an EM DASH — the house rule for absent, never a guess", () => {
+		expect(pagePositionLine({ index: 3 })).toBe(`Page 3 of ${ABSENT}`);
+		expect(pagePositionLine({ index: 3, pages: undefined })).toBe(`Page 3 of ${ABSENT}`);
+		// The failure this forbids in as many words: absent is not one, and it is
+		// not zero.
+		expect(pagePositionLine({ index: 3 })).not.toContain("of 1");
+		expect(pagePositionLine({ index: 3 })).not.toContain("of 0");
+	});
+
+	test("an unknown N is an em dash too — a deep link cannot know its own page", () => {
+		// A page opened straight from an address has no walk behind it, so the
+		// list knows the SIZE of the collection and not where in it the operator
+		// is standing. That is a value this console renders as a dash, like every
+		// other absent one.
+		expect(pagePositionLine({ pages: 6 })).toBe(`Page ${ABSENT} of 6`);
+	});
+
+	test("knowing NEITHER renders nothing at all", () => {
+		// "Page — of —" states nothing and occupies a line saying so.
+		expect(pagePositionLine({})).toBeUndefined();
+		expect(pagePositionLine({ index: undefined, pages: undefined })).toBeUndefined();
+	});
+
+	test("a page count BELOW the page you are on is refused, not printed", () => {
+		// Same doctrine as `rowCountLine` refusing a total below its own rows: the
+		// two figures come from statements taken at different moments, and a
+		// concurrent delete can shrink the derived count under the page the
+		// operator walked to. "Page 7 of 6" is the contradiction; a dash is not.
+		expect(pagePositionLine({ index: 7, pages: 6 })).toBe(`Page 7 of ${ABSENT}`);
+		// Equal is the last page, and perfectly ordinary.
+		expect(pagePositionLine({ index: 6, pages: 6 })).toBe("Page 6 of 6");
+	});
+
+	test("the unavailable controls explain themselves, and name no cause they lack", () => {
+		// A disabled control with no explanation is the same defect as a silent
+		// empty state: the operator is told what they cannot do and not why.
+		expect(PREVIOUS_AT_START_TITLE).toBe("This is the first page.");
+		expect(NEXT_AT_END_TITLE).toBe("There is no page after this one.");
+		// The deep-link case is the one that has to be said out loud — the button
+		// is dimmed because THIS SCREEN has no record of the page before, not
+		// because there isn't one.
+		expect(PREVIOUS_UNWALKED_TITLE).toContain("opened from a link");
+		expect(PREVIOUS_UNWALKED_TITLE).not.toMatch(/expired|invalid|error|failed/i);
 	});
 });
 

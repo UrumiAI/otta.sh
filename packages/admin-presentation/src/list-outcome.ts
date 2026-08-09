@@ -20,6 +20,7 @@
  * IO-FREE — pure `Intl` and string work, safe inside the workerd sandbox (G7)
  * and in a browser.
  */
+import { ABSENT } from "./copy.js";
 import { DATE_LOCALE } from "./datetime.js";
 
 /** How a screen names one row and many. Six screens describe their rows
@@ -80,6 +81,28 @@ export const APPLY_FILTERS_LABEL = "Apply filters";
 export const LOAD_MORE_LABEL = "Load more";
 
 /**
+ * The service's `total`, or `undefined` when this render may not state it.
+ *
+ * VALIDATED RATHER THAN TRUSTED, and shared by everything that would state it,
+ * which is the whole reason it is a function rather than a line inside the count
+ * line. A non-integer, a negative, or a count BELOW the rows already on screen is
+ * a service disagreeing with itself; the safe direction is the claim a render can
+ * back up on its own. `total < count` is impossible for a count and a page taken
+ * under one predicate, but they are two statements, so a concurrent insert or
+ * delete between them is the ordinary case — only the direction that would
+ * UNDERSTATE what the operator can see is refused.
+ *
+ * ZERO ROWS REFUSE EVERY TOTAL. A `total` above an empty page is the same
+ * self-contradiction from the other side, and nothing may render it: not the
+ * count line, not the page count.
+ */
+function statedTotal(count: number, total: number | undefined): number | undefined {
+	if (count <= 0) return undefined;
+	if (total === undefined || !Number.isSafeInteger(total) || total < count) return undefined;
+	return total;
+}
+
+/**
  * `17 orders` · `1 order` · `25 orders on this page`, or `undefined` at zero.
  *
  * WHAT THE WIRE SUPPORTS, because the copy here is bounded by it. The three
@@ -104,13 +127,9 @@ export const LOAD_MORE_LABEL = "Load more";
  *    counted every product, so passing that number would caption the rows on
  *    screen as though the filter had run).
  *
- * `total` IS VALIDATED HERE RATHER THAN TRUSTED: a non-integer, negative, or
- * below-the-page count is a service disagreeing with itself, and the
- * page-scoped fallback — a claim this render can back up on its own — is the
- * safe direction. `total < count` is impossible for a count and a page taken
- * under one predicate, but they are two statements, so a concurrent
- * insert/delete between them is the ordinary case; only the direction that
- * would UNDERSTATE the rows an operator can see is refused.
+ * `total` IS VALIDATED RATHER THAN TRUSTED, through {@link statedTotal} — which
+ * is shared with the page count beneath this line precisely so that a figure one
+ * of them refuses cannot reappear in the other.
  *
  * NOTHING HERE INVENTS A TOTAL. A count that says the set is bigger than the
  * page must have been told so by the service; a renderer that guessed one would
@@ -142,18 +161,114 @@ export function rowCountLine(
 	// "17 orders" sitting immediately above "No orders yet" or "Nothing on this
 	// page", is the screen contradicting itself in two adjacent blocks.
 	if (count <= 0) return undefined;
-	const usable =
-		opts.total !== undefined &&
-		Number.isSafeInteger(opts.total) &&
-		opts.total >= 0 &&
-		opts.total >= count;
-	const n = usable ? (opts.total ?? 0) : count;
-	if (n <= 0) return undefined;
+	const stated = statedTotal(count, opts.total);
+	const n = stated ?? count;
 	const word = COUNT_PLURALS.select(n) === "one" ? noun.one : noun.other;
 	const formatted = COUNT_NUMERALS.format(n);
-	return usable || opts.complete
+	return stated !== undefined || opts.complete
 		? `${formatted} ${word}`
 		: `${formatted} ${word} ${opts.scopeSuffix ?? PAGE_SCOPED_SUFFIX}`;
+}
+
+/** The pager's two controls, authored here for the same reason `Load more` is:
+ *  two React lists render them, and a label spelled per screen is the drift this
+ *  package exists to prevent. */
+export const PREVIOUS_PAGE_LABEL = "Previous";
+export const NEXT_PAGE_LABEL = "Next";
+
+/** The pager's own accessible name — it is a second navigation region on a
+ *  screen that already has the admin's, so it has to say which one it is. */
+export const PAGER_LABEL = "Pages";
+
+/**
+ * WHY A PAGER CONTROL IS DIMMED, in the three cases it can be.
+ *
+ * A control the operator cannot use and cannot see a reason for is the same
+ * defect as a zero state with no words. Two of these are self-evident once said
+ * ("first page", "last page"); the third is not evident at all, and is the one
+ * this console had to decide: a page opened straight from an ADDRESS has no walk
+ * behind it, so `Previous` is dimmed not because there is no earlier page but
+ * because THIS SCREEN has no record of which one it was. Saying that is what
+ * stops it reading as a bug.
+ *
+ * NONE OF THEM NAMES A CAUSE THE SCREEN CANNOT KNOW, the same doctrine the
+ * refusal notices follow.
+ */
+export const PREVIOUS_AT_START_TITLE = "This is the first page.";
+export const NEXT_AT_END_TITLE = "There is no page after this one.";
+export const PREVIOUS_UNWALKED_TITLE =
+	"This page was opened from a link, so the page before it is not known here.";
+
+/**
+ * HOW MANY PAGES THERE ARE — derived, never fetched.
+ *
+ * THE WHOLE POINT: both halves are already on the wire. The service counts the
+ * filtered set alongside the page it returns (`total`), and the plugin sends the
+ * keyset limit it paged by (`vocabulary.pageLimit`), so the page count is
+ * arithmetic over two values the render is already holding. A second query for
+ * it would be a request bought with nothing.
+ *
+ * IT REFUSES EXACTLY WHAT THE COUNT LINE REFUSES, through the same
+ * {@link statedTotal} gate, and that is the coordination rather than a
+ * coincidence: "Page 2 of 6" and "137 orders" are two sentences about one set,
+ * so a total the count line will not state must not reappear as a page count
+ * underneath it. An absent, contradictory or below-the-rows total yields
+ * `undefined` — which renders as an em dash, never as `1` and never as `0`.
+ *
+ * A PAGE SIZE MUST BE A WHOLE POSITIVE NUMBER. Anything else describes no
+ * paging at all, and dividing by it would invent a figure out of a malformed
+ * one.
+ *
+ * IT IS AN APPROXIMATION UNDER CONCURRENCY, exactly as the count line is: the
+ * count and the page were taken at two moments, and rows inserted between them
+ * move the boundary. That is the same accuracy the operator already reads on
+ * the line above; it is not a new claim.
+ */
+export function pageCount(
+	rows: number,
+	opts: { total?: number; pageSize?: number },
+): number | undefined {
+	const total = statedTotal(rows, opts.total);
+	if (total === undefined) return undefined;
+	const size = opts.pageSize;
+	if (size === undefined || !Number.isSafeInteger(size) || size <= 0) return undefined;
+	return Math.ceil(total / size);
+}
+
+/**
+ * `Page 2 of 6` — and what it says when one half is unknown.
+ *
+ * BOTH HALVES CAN BE ABSENT, INDEPENDENTLY, and each renders {@link ABSENT}:
+ *
+ *  - **M unknown** — the service sent no `total`, or sent one this render
+ *    refuses. `Page 3 of —`. NEVER "of 1": that would state the operator is
+ *    looking at the whole set at the exact moment nothing knows how big it is,
+ *    and never "of 0", which is the absent-rendered-as-zero failure this
+ *    console forbids everywhere else.
+ *  - **N unknown** — the page was opened straight from an address, so there is
+ *    no walk behind it to count. `Page — of 6`. The list still knows the size of
+ *    the collection; it does not know where in it the operator is standing, and
+ *    the dash is that fact rather than a hidden one.
+ *
+ * NEITHER KNOWN RENDERS NOTHING. "Page — of —" is a line that occupies space to
+ * say it has nothing to say.
+ *
+ * AND M IS REFUSED WHEN IT FALLS BELOW N, the same rule {@link statedTotal}
+ * applies one level down: the two figures come from statements taken at
+ * different moments, so a concurrent delete can shrink the derived count below
+ * the page the operator actually walked to. `Page 7 of 6` is a contradiction on
+ * screen; a dash is an absence.
+ */
+export function pagePositionLine(opts: { index?: number; pages?: number }): string | undefined {
+	const { index, pages } = opts;
+	if (index === undefined && pages === undefined) return undefined;
+	const usablePages =
+		pages !== undefined && Number.isSafeInteger(pages) && pages > 0 && (index ?? 0) <= pages
+			? pages
+			: undefined;
+	const n = index === undefined ? ABSENT : COUNT_NUMERALS.format(index);
+	const m = usablePages === undefined ? ABSENT : COUNT_NUMERALS.format(usablePages);
+	return `Page ${n} of ${m}`;
 }
 
 /** The wording of ONE zero state. Screens author every string. */
@@ -174,8 +289,11 @@ export interface ZeroStateCopy {
  * delete leave a cursor pointing past the last row.
  *
  * Deliberately offers NOTHING to click: no filter is on, so there is nothing to
- * clear, and neither surface has a "back to the first page" control to
- * fabricate.
+ * clear, and this state must not invent a control of its own. That is unchanged
+ * by the React pager below it — `Previous` is a control the SCREEN already
+ * offers, standing where it always stands and reachable from any page; it is not
+ * an affordance this zero state fabricated, and the Block Kit surface, which has
+ * no pager, still renders exactly these words with nothing beside them.
  */
 export const PAGE_ZERO: ZeroStateCopy = {
 	title: "Nothing on this page",
