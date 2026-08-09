@@ -46,8 +46,12 @@ vi.mock("emdash/plugin-utils", async (importOriginal) => {
 
 const { OrdersScreen } = await import("../src/orders/orders-screen.js");
 const { ProductsScreen } = await import("../src/products/products-screen.js");
-const { NEXT_AT_END_TITLE, PREVIOUS_AT_START_TITLE, PREVIOUS_UNWALKED_TITLE } =
-	await import("@otta-sh/admin-presentation");
+const {
+	NEXT_AT_END_TITLE,
+	NEXT_RELEASES_SCAN_TITLE,
+	PREVIOUS_AT_START_TITLE,
+	PREVIOUS_UNWALKED_TITLE,
+} = await import("@otta-sh/admin-presentation");
 
 // ── the stack, as a value ────────────────────────────────────────────────────
 
@@ -136,10 +140,40 @@ describe("what the pager offers, and what it says", () => {
 		// taken at different moments. Direct evidence wins, and it is also the only
 		// thing that can answer at all when the service sends no total.
 		const walked = pushedPage(pushedPage(FIRST_PAGE, "c2"), "c3");
-		expect(pagerView({ ...base, trail: walked, hasNext: false }).position).toBe("Page 3 of 3");
+		expect(pagerView({ ...base, total: 70, trail: walked, hasNext: false }).position).toBe(
+			"Page 3 of 3",
+		);
 		expect(pagerView({ ...base, total: undefined, trail: walked, hasNext: false }).position).toBe(
 			"Page 3 of 3",
 		);
+	});
+
+	test("a page count that OUTRUNS the last page is a disagreement, and dashes", () => {
+		// THE CASE THE OVERRIDE GOT WRONG. Standing on page 3 with no cursor after
+		// it while the count implies six pages is two statements that cannot both
+		// be true — a concurrent write between the count and the page, or a service
+		// disagreeing with itself. "Page 3 of 3" beside "137 orders" picks a winner
+		// this render has no grounds to pick, so it states neither.
+		const walked = pushedPage(pushedPage(FIRST_PAGE, "c2"), "c3");
+		expect(pagerView({ ...base, trail: walked, hasNext: false }).position).toBe("Page 3 of —");
+	});
+
+	test("an accumulated window states its RANGE, and `Next` says what it costs", () => {
+		// Fifty rows beginning at page one are not "Page 2", and pressing `Next`
+		// over them releases the pages above — said in front of the click rather
+		// than discovered after it.
+		const view = pagerView({
+			...base,
+			rows: 50,
+			trail: pushedPage(FIRST_PAGE, "c2"),
+			hasNext: true,
+			span: 2,
+		});
+		expect(view.position).toBe("Pages 1–2 of 6");
+		expect(view.next.title).toBe(NEXT_RELEASES_SCAN_TITLE);
+		// With one page on screen there is nothing to release and nothing to warn
+		// about.
+		expect(pagerView({ ...base, trail: FIRST_PAGE, hasNext: true }).next.title).toBeUndefined();
 	});
 
 	test("NO total is an em dash, never `of 1` and never `of 0`", () => {
@@ -272,6 +306,17 @@ interface Request {
 }
 
 let asked: Request[] = [];
+
+/** A refusal, in the ONE shape every failure reaches this console as: a rejected
+ *  token, an expired session, a 500 and a dead connection are all this value by
+ *  the time a screen sees them. */
+function refusal(subject: string, status = 500): Response {
+	return envelope({
+		ok: false,
+		title: `${subject} (HTTP ${String(status)})`,
+		description: "The request was not completed.",
+	});
+}
 
 function serve(handler: (request: Request) => Response): void {
 	apiFetch.mockImplementation((_input, init) => {
@@ -587,7 +632,10 @@ test("Load more and the pager share one position: the scan is where the pager is
 	await press(view, "orders-load-more");
 	await settle();
 	expect(rowIds(view, "orders-row")).toHaveLength(50);
-	expect(position(view, "orders")).toBe("Page 2 of 6");
+	// THE WINDOW, NOT ITS LAST PAGE: fifty rows beginning at page one are not
+	// "Page 2", and an operator reading the top of that list would be told the
+	// wrong number.
+	expect(position(view, "orders")).toBe("Pages 1–2 of 6");
 	expect(element(view, "orders-intro").textContent).toContain("137 orders");
 
 	// NEXT FROM AN ACCUMULATED SCAN pages on from the scan's last cursor, and the
@@ -697,4 +745,222 @@ test("products pages the same way, from the same stack", async () => {
 	expect(rowIds(view, "products-row")).toEqual(ids("p", 1, 25));
 	expect(position(view, "products")).toBe("Page 1 of 6");
 	expect(search().get("cursor")).toBeNull();
+});
+
+// ── the browser's own Back, and the pager ────────────────────────────────────
+
+/** A REAL traversal, not a hand-dispatched `popstate`: `happy-dom` resolves the
+ *  entry, moves the address and delivers the event, all asynchronously. */
+async function traverse(direction: "back" | "forward"): Promise<void> {
+	await React.act(async () => {
+		if (direction === "back") window.history.back();
+		else window.history.forward();
+		await new Promise((resolve) => setTimeout(resolve, 25));
+	});
+	await settle();
+}
+
+test("browser Back mid-walk keeps the position AND a live Previous", async () => {
+	/*
+	 * THE DEFECT THIS CLOSES. The address carries one cursor, so a traversal used
+	 * to land on a page with no stack behind it: the position fell to a dash and
+	 * `Previous` dimmed, two presses into a scan, for no reason visible on screen.
+	 * A history ENTRY is not a link, and can carry what a link must not.
+	 */
+	serveOrders();
+	view = await mount(<OrdersScreen />);
+	await settle();
+	await press(view, "orders-next");
+	await settle();
+	await press(view, "orders-next");
+	await settle();
+	expect(position(view, "orders")).toBe("Page 3 of 6");
+
+	await traverse("back");
+
+	// STILL GROUNDED. The entry knew it was page two, so the pager does too.
+	expect(position(view, "orders")).toBe("Page 2 of 6");
+	expect(search().get("cursor")).toBe(PAGE_TWO);
+	expect(element(view, "orders-prev").getAttribute("aria-disabled")).toBeNull();
+	expect(element(view, "orders-prev").getAttribute("title")).toBeNull();
+	expect(rowIds(view, "orders-row")).toEqual(ids("o", 26, 50));
+
+	// FORWARD RETURNS TO THE PAGE JUST LEFT, still knowing which one it is.
+	await traverse("forward");
+	expect(position(view, "orders")).toBe("Page 3 of 6");
+	expect(element(view, "orders-prev").getAttribute("aria-disabled")).toBeNull();
+
+	// AND PREVIOUS STILL WORKS from a traversed-to page, which is the half a
+	// dashed position would have taken away. (It PUSHES, so it truncates the
+	// forward entries — see the entry-kind test below.)
+	await traverse("back");
+	asked = [];
+	await press(view, "orders-prev");
+	await settle();
+	expect(asked.at(-1)?.cursor).toBeUndefined();
+	expect(position(view, "orders")).toBe("Page 1 of 6");
+});
+
+test("Previous onto page one PUSHES — it is a journey, not a correction", async () => {
+	/*
+	 * THE TWO MEANINGS THAT USED TO SHARE ONE VALUE. "No cursor" was read as "the
+	 * list is correcting an address that would not open", which REPLACES the
+	 * entry — right for a refused deep link, and wrong for an operator who
+	 * deliberately stepped back, whose entry for the page they stepped FROM was
+	 * being silently overwritten.
+	 */
+	serveOrders();
+	view = await mount(<OrdersScreen />);
+	await settle();
+	await press(view, "orders-next");
+	await settle();
+	const depth = window.history.length;
+
+	await press(view, "orders-prev");
+	await settle();
+	expect(search().get("cursor")).toBeNull();
+	expect(window.history.length).toBe(depth + 1);
+
+	// AND THE PAGE IT STEPPED FROM IS STILL BEHIND IT.
+	await traverse("back");
+	expect(search().get("cursor")).toBe(PAGE_TWO);
+	expect(position(view, "orders")).toBe("Page 2 of 6");
+});
+
+test("a refused deep link still CORRECTS in place, entry and stack together", async () => {
+	// The other half of the same discriminator: a page that would not open must
+	// not bury the entry the operator is standing on under one they never asked
+	// for, or their Back walks into the refused link they just arrived from.
+	serve((request) =>
+		envelope({
+			ok: true,
+			orders: ids("o", 1, 25).map(order),
+			nextCursor: PAGE_TWO,
+			total: 137,
+			vocabulary: VOCABULARY,
+			...(request.cursor !== undefined ? { cursorRejected: true } : {}),
+		}),
+	);
+	window.history.replaceState(null, "", "/orders?cursor=tampered");
+	const depth = window.history.length;
+	view = await mount(<OrdersScreen />);
+	await settle();
+
+	expect(window.history.length).toBe(depth);
+	expect(search().get("cursor")).toBeNull();
+	expect(position(view, "orders")).toBe("Page 1 of 6");
+});
+
+test("a FAILED Previous onto page one leaves the rows exactly where they are", async () => {
+	/*
+	 * THE ROWS ARE NOT DISPROVED BY THE MOVE THAT FAILED. `Previous` onto page one
+	 * sends no cursor, and reading "was there a cursor?" as "was this a fresh
+	 * load?" made this failure clear a screenful of rows that were still a true
+	 * answer to the query that produced them — the exact opposite of the rule a
+	 * failed `Load more` already follows.
+	 */
+	let calls = 0;
+	serve((request) => {
+		calls += 1;
+		if (calls > 2) return refusal("Orders are unavailable", 500);
+		return envelope({
+			ok: true,
+			orders:
+				request.cursor === undefined ? ids("o", 1, 25).map(order) : ids("o", 26, 50).map(order),
+			nextCursor: request.cursor === undefined ? PAGE_TWO : PAGE_THREE,
+			total: 137,
+			vocabulary: VOCABULARY,
+		});
+	});
+	view = await mount(<OrdersScreen />);
+	await settle();
+	await press(view, "orders-next");
+	await settle();
+	expect(rowIds(view, "orders-row")).toEqual(ids("o", 26, 50));
+
+	await press(view, "orders-prev");
+	await settle();
+
+	// THE ROWS STAND, and the refusal is drawn beside them rather than over the
+	// space they used to occupy.
+	expect(rowIds(view, "orders-row")).toEqual(ids("o", 26, 50));
+	expect(absent(view, "orders-load-more-failure")).toBe(false);
+	expect(absent(view, "orders-failure")).toBe(true);
+	// The filter panel and the count line are untouched, because nothing about
+	// them was disproved either.
+	expect(element(view, "orders-intro").textContent).toContain("137 orders");
+});
+
+test("an unavailable control carries its reason where a screen reader will read it", async () => {
+	// `title` is a POINTER affordance; a described-by node is read out with the
+	// control's name every time, by every screen reader, however the operator
+	// arrived at it.
+	serveOrders();
+	view = await mount(<OrdersScreen />);
+	await settle();
+
+	const previous = element(view, "orders-prev");
+	const describedBy = previous.getAttribute("aria-describedby");
+	expect(describedBy).not.toBeNull();
+	const reason = view.container.querySelector(`#${CSS.escape(String(describedBy))}`);
+	expect(reason?.textContent).toBe(PREVIOUS_AT_START_TITLE);
+	expect(reason?.className).toContain("otta-sr-only");
+	// The tooltip is a bonus, not the mechanism.
+	expect(previous.getAttribute("title")).toBe(PREVIOUS_AT_START_TITLE);
+
+	// AND AN AVAILABLE CONTROL DESCRIBES NOTHING — a permanent "you may press
+	// this" would be read out on every visit and mean nothing.
+	expect(element(view, "orders-next").getAttribute("aria-describedby")).toBeNull();
+});
+
+test("products: a pager step keeps the banner a settings blip raised", async () => {
+	/*
+	 * THE SHARPEST DEFECT THE PAGER INTRODUCED, and the reason the latch rides on
+	 * the CONTINUATION rather than on the merge. `filterUnavailable` is page one's
+	 * answer to "was the low-stock filter ever applied to what you are looking
+	 * at"; every request carrying a cursor reports `false` by contract, because
+	 * the predicate rode inside the opaque token. Reading that `false` as an
+	 * answer drops the banner at the click of `Next` and starts captioning every
+	 * product in the catalog as low stock.
+	 */
+	serve((request) => {
+		const blind = { threshold: null, unreadable: false, filterUnavailable: true };
+		const seeing = { threshold: 5, unreadable: false, filterUnavailable: false };
+		return envelope(
+			request.cursor === undefined
+				? {
+						ok: true,
+						products: ids("p", 1, 25).map(product),
+						nextCursor: PAGE_TWO,
+						stock: blind,
+						vocabulary: PRODUCTS_VOCABULARY,
+					}
+				: {
+						ok: true,
+						products: ids("p", 26, 50).map(product),
+						nextCursor: PAGE_THREE,
+						// The contractual `false` plus a total for the WHOLE catalog — the
+						// pair that must not be believed on a continuation.
+						total: 137,
+						stock: seeing,
+						vocabulary: PRODUCTS_VOCABULARY,
+					},
+		);
+	});
+	window.history.replaceState(null, "", "/products?low=1");
+	view = await mount(<ProductsScreen />);
+	await settle();
+	expect(absent(view, "products-stock-degraded")).toBe(false);
+
+	await press(view, "products-next");
+	await settle();
+
+	// THE BANNER STANDS, page one's answer intact.
+	expect(rowIds(view, "products-row")).toEqual(ids("p", 26, 50));
+	expect(absent(view, "products-stock-degraded")).toBe(false);
+	// AND THE TOTAL IS STILL WITHHELD: 137 counts every product while the
+	// merchant asked for the low-stock ones, so neither the caption nor the page
+	// count may state it.
+	expect(element(view, "products-intro").textContent).not.toContain("137");
+	expect(position(view, "products")).toBe("Page 2 of —");
 });

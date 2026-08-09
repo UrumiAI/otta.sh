@@ -73,15 +73,17 @@ export const PRODUCTS_LOW_STOCK_NOUN: RowNoun = {
 };
 
 /**
- * A CONTINUATION failure's title, which is a smaller claim than the server's.
+ * A PAGING failure's title, which is a smaller claim than the server's.
  *
  * The same ruling the Orders list already made, and this screen inherits it
  * along with the accumulated-pages state itself: the service answers a
  * whole-collection refusal ("Products could not be reached"), and rendering that
  * above rows that are still on screen states something those rows disprove. What
- * failed is the next page, so that is what the title says.
+ * failed is one page, so that is what the title says — and it names no
+ * DIRECTION, because `Load more`, `Next` and `Previous` all land here and only
+ * one of them is "more".
  */
-export const PRODUCTS_LOAD_MORE_FAILED_TITLE = "Couldn't load more products";
+export const PRODUCTS_LOAD_MORE_FAILED_TITLE = "Couldn't open that page of products";
 
 /**
  * The standing half of the list's intro line — the row count goes in front of

@@ -123,7 +123,7 @@ describe("a failed load stops showing the previous answer (F1)", () => {
 	};
 
 	test("COLD — nothing ever loaded: the error card alone", () => {
-		const card = ordersFailureCard({ ...SERVED, continuation: false }, false);
+		const card = ordersFailureCard({ ...SERVED, paging: false }, false);
 		expect(card.kind).toBe("cold");
 		// No rows, no count line, no Load more...
 		expect(card.answerVisible).toBe(false);
@@ -136,7 +136,7 @@ describe("a failed load stops showing the previous answer (F1)", () => {
 	});
 
 	test("STALE — a first page failed under rows: the answer goes, the filters stay", () => {
-		const card = ordersFailureCard({ ...SERVED, continuation: false }, true);
+		const card = ordersFailureCard({ ...SERVED, paging: false }, true);
 		expect(card.kind).toBe("stale");
 		expect(card.answerVisible).toBe(false);
 		// The operator's typed filters are INPUT, not answer.
@@ -151,7 +151,7 @@ describe("a failed load stops showing the previous answer (F1)", () => {
 	});
 
 	test("PARTIAL — page two failed: every row and the count stand", () => {
-		const card = ordersFailureCard({ ...SERVED, continuation: true }, true);
+		const card = ordersFailureCard({ ...SERVED, paging: true }, true);
 		expect(card.kind).toBe("partial");
 		expect(card.answerVisible).toBe(true);
 		// The whole-collection title is DROPPED: the rows above disprove it. What
@@ -168,8 +168,8 @@ describe("a failed load stops showing the previous answer (F1)", () => {
 		// By the time the card is read the rows are already gone, so counting them
 		// would report every stale failure as a cold one and take the filter bar
 		// with it.
-		expect(ordersFailureCard({ ...SERVED, continuation: false }, true).kind).toBe("stale");
-		expect(ordersFailureCard({ ...SERVED, continuation: false }, false).kind).toBe("cold");
+		expect(ordersFailureCard({ ...SERVED, paging: false }, true).kind).toBe("stale");
+		expect(ordersFailureCard({ ...SERVED, paging: false }, false).kind).toBe("cold");
 	});
 
 	test("clearing drops the answer and keeps the vocabulary the filters are built from", () => {
@@ -213,7 +213,7 @@ describe("a failed load stops showing the previous answer (F1)", () => {
 		// It is the COLD FAILURE that takes the bar, and only it (F3) — the Period
 		// menu it would draw has no options.
 		const cold = ordersChrome({
-			failure: { ...SERVED, continuation: false },
+			failure: { ...SERVED, paging: false },
 			everLoaded: false,
 			retrying: false,
 		});
@@ -222,7 +222,7 @@ describe("a failed load stops showing the previous answer (F1)", () => {
 
 		// A stale failure keeps the bar; the operator's typed filters are input.
 		const stale = ordersChrome({
-			failure: { ...SERVED, continuation: false },
+			failure: { ...SERVED, paging: false },
 			everLoaded: true,
 			retrying: false,
 		});
@@ -235,7 +235,7 @@ describe("a failed load stops showing the previous answer (F1)", () => {
 		// cannot reach this decision. The filter bar stays interactive in the stale
 		// and partial states, so an "Apply filters" the operator pressed must not
 		// make the untouched Retry beside it read "Retrying…".
-		const failure = { ...SERVED, continuation: false };
+		const failure = { ...SERVED, paging: false };
 		const idle = ordersChrome({ failure, everLoaded: true, retrying: false });
 		expect(idle.retry.label).toBe(RETRY_LABEL);
 		expect(idle.retry.disabled).toBe(false);
@@ -252,7 +252,7 @@ describe("a failed load stops showing the previous answer (F1)", () => {
 		// unmounted under the operator's focus.
 		expect(
 			ordersChrome({
-				failure: { ...SERVED, continuation: true },
+				failure: { ...SERVED, paging: true },
 				everLoaded: true,
 				retrying: false,
 			}).retry.autoFocus,
