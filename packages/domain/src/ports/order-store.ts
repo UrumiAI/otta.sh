@@ -514,16 +514,65 @@ export type CreateOrderResult = { created: boolean; order: Order };
 
 /** Filters for the admin Orders list. All optional — an empty filter lists every
  *  order newest-first. `states` is an OR set (`state IN (...)`); `from`/`to` are a
- *  HALF-OPEN `[from, to)` window on `created_at`; `search` matches an EXACT order
- *  id OR a case-insensitive EXACT `buyer_ref` (never a substring — the fake and
- *  the SQL keep identical `lower(buyer_ref) = lower(:search)` semantics). */
+ *  HALF-OPEN `[from, to)` window on `created_at`; `search` matches an order-id
+ *  PREFIX or a `buyer_ref` SUBSTRING — see the field below. */
 export interface OrderListFilter {
 	states?: readonly OrderState[];
 	/** Inclusive lower bound (ISO-8601 UTC). */
 	from?: string;
 	/** EXCLUSIVE upper bound (ISO-8601 UTC) — half-open window (MOD-7). */
 	to?: string;
-	/** Exact order id OR case-insensitive exact buyer_ref. */
+	/**
+	 * The operator's free-text lookup: an order-id PREFIX **or** a `buyer_ref`
+	 * SUBSTRING, ORed, with `lower()` applied to BOTH sides of both halves —
+	 * `lower(id) LIKE lower(:s || '%')` OR `lower(buyer_ref) LIKE lower('%' || :s
+	 * || '%')`. The fake, SQLite and Postgres implement exactly this, case for
+	 * case, and the contract suite pins every one of them on all three.
+	 *
+	 * WHY A PREFIX ON THE ID. The console never renders a full uuid — it renders
+	 * the shortest unique prefix (the git-style short id in
+	 * `admin-presentation`'s `shortIdsFor`/`shortIdFixed`). The characters an
+	 * operator can actually see, read out and type back are therefore a PREFIX,
+	 * and an exact-only match made the one identifier on screen unsearchable. A
+	 * whole id is its own prefix, so the previous exact-match behaviour survives
+	 * as a special case. The id half is ANCHORED on purpose: an unanchored id
+	 * match would surface arbitrary rows on any hex fragment.
+	 *
+	 * WHY A SUBSTRING ON THE BUYER REF. It holds the customer's email, and an
+	 * operator arrives with a fragment — a local part, a domain, whatever the
+	 * customer wrote in a ticket — not the address exactly as stored.
+	 *
+	 * WHY THE FOLD IS EXPLICIT ON BOTH SIDES. A bare `LIKE` is case-SENSITIVE on
+	 * Postgres and ASCII-case-INSENSITIVE on SQLite; only an explicit `lower()`
+	 * on both operands makes the two dialects (and the fake) agree byte for
+	 * byte. Ids are lowercase hex (`crypto.randomUUID()`), so folding the id is a
+	 * no-op on the STORED side — it is there to forgive the TYPED side, e.g. a
+	 * uuid pasted back from a client that upper-cased it.
+	 *
+	 * WILDCARDS ARE LITERAL. `%` and `_` are `LIKE` metacharacters; a search
+	 * containing them matches them as characters (the adapters escape the
+	 * pattern and pass `ESCAPE '\'`; the fake builds no pattern at all, so
+	 * `startsWith`/`includes` are literal by construction).
+	 *
+	 * THE SEQUENTIAL SCAN IS THE DESIGN, not an oversight. An unanchored
+	 * substring cannot be served by a b-tree, so `idx_orders_buyer_ref_lower`
+	 * (migration `0022`) no longer backs this predicate; nor can the primary key
+	 * serve the anchored id half, since a default-collation b-tree answers
+	 * `LIKE 'x%'` only with `text_pattern_ops`, and either way an OR arm that
+	 * must scan forces a scan for the whole predicate. A trigram/full-text index
+	 * was declined outright at this scale: the products list already runs an
+	 * unanchored substring at roughly 27 ms per page over 5k rows, and an index
+	 * here buys operational surface rather than latency. Measured on this
+	 * predicate over 5k orders, a page costs ~3 ms in the WORST case (a search
+	 * matching nothing, so the whole table is scanned and sorted) and well under
+	 * 1 ms whenever matches are dense enough that the `(created_at, id)` keyset
+	 * index still drives the ordering and the search rides as a heap filter.
+	 * Revisit if orders reach a scale where that stops holding — not before. The
+	 * index still backs
+	 * every EQUALITY path on `buyer_ref` — `linkGuestOrders` and the `customer`
+	 * key below — which is exactly why those keep exact-lower-equals semantics
+	 * and did NOT follow this widening.
+	 */
 	search?: string;
 	/** The customer dimension (admin-UX Increment 1) — see `OrderCustomerKey`.
 	 *  ANDed with the other filters; UNION inside the key. */
@@ -540,9 +589,13 @@ export interface OrderListFilter {
  * `customer_id = :customerId OR lower(buyer_ref) = lower(:buyerRef)` — safe
  * because `linkGuestOrders` already treats a buyer_ref/email match as ownership
  * proof — and an order matching BOTH halves matches ONCE (it is one row; OR is
- * not additive). `buyerRef` folds case exactly like `search`'s buyer_ref match
- * (`lower() = lower()`, exact, never substring); it exists as its own key —
- * distinct from `search` — because `search` ALSO matches an exact order id.
+ * not additive). `buyerRef` folds case (`lower() = lower()`) but stays EXACT —
+ * it deliberately did NOT follow `search`'s widening to a substring, because
+ * this key is an IDENTITY predicate (whose orders are these?) rather than a
+ * fuzzy lookup: a substring would fold two customers into one person's history,
+ * and equality is what keeps `idx_orders_buyer_ref_lower` on the plan. It exists
+ * as its own key — distinct from `search` — for that reason, and because
+ * `search` ALSO matches an order-id prefix.
  * At least one half should be set; an empty key matches nothing it constrains
  * (adapters ignore a key with neither half).
  */

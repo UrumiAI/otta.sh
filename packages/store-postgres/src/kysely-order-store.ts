@@ -1109,7 +1109,9 @@ export class KyselyOrderStore implements OrderStore {
  * expressions are self-contained) to AND onto either query. The `customer` key
  * is a UNION inside the key (`customer_id = :id OR lower(buyer_ref) =
  * lower(:buyerRef)`) — lazy linking means one person's orders split across the
- * two columns; a key with neither half set constrains nothing.
+ * two columns; a key with neither half set constrains nothing. `search` is the
+ * operator's fuzzy lookup (id prefix OR buyer_ref substring) and is deliberately
+ * NOT the same predicate as the customer key's exact `buyerRef`.
  */
 function orderFilterConditions(filter: OrderListFilter): Expression<SqlBool>[] {
 	const eb: ExpressionBuilder<Database, "orders"> = expressionBuilder();
@@ -1120,13 +1122,24 @@ function orderFilterConditions(filter: OrderListFilter): Expression<SqlBool>[] {
 	if (filter.from !== undefined) conds.push(eb("orders.created_at", ">=", filter.from)); // inclusive
 	if (filter.to !== undefined) conds.push(eb("orders.created_at", "<", filter.to)); // EXCLUSIVE (half-open, MOD-7)
 	if (filter.search !== undefined) {
-		const search = filter.search;
-		// Exact order id OR case-insensitive EXACT buyer_ref — `lower(buyer_ref) =
-		// lower(:search)`, matching the fake (never a substring/LIKE).
+		// An order-id PREFIX or a buyer_ref SUBSTRING, both folded on BOTH sides
+		// (port doc). `lower(:pattern)` rather than a JS `.toLowerCase()` so ONE
+		// function folds both operands — within a dialect the two sides are then
+		// folded identically by construction. The explicit fold is also what makes
+		// the dialects agree at all: a bare LIKE is case-sensitive on pg and
+		// ASCII-case-insensitive on SQLite. `ESCAPE '\'` over an escaped pattern
+		// keeps a `%`/`_` in the operator's search a literal character.
+		//
+		// This is a SEQUENTIAL SCAN and that is the design (port doc): the
+		// unanchored buyer_ref half cannot use `idx_orders_buyer_ref_lower`, and
+		// the anchored id half cannot use the primary key under a default
+		// collation. Both equality paths that DO use those indices —
+		// `linkGuestOrders` and the `customer` key below — are untouched.
+		const escaped = escapeLikePattern(filter.search);
 		conds.push(
 			eb.or([
-				eb("orders.id", "=", search),
-				eb(sql`lower(orders.buyer_ref)`, "=", search.toLowerCase()),
+				sql<SqlBool>`lower(orders.id) like lower(${`${escaped}%`}) escape '\\'`,
+				sql<SqlBool>`lower(orders.buyer_ref) like lower(${`%${escaped}%`}) escape '\\'`,
 			]),
 		);
 	}
@@ -1140,6 +1153,20 @@ function orderFilterConditions(filter: OrderListFilter): Expression<SqlBool>[] {
 		if (halves.length > 0) conds.push(eb.or(halves));
 	}
 	return conds;
+}
+
+/** Escape a raw user string for safe embedding in a SQL `LIKE` pattern —
+ *  `\`, `%`, and `_` are LIKE metacharacters (the escape char first, so it never
+ *  double-escapes itself). Portable across pg and better-sqlite3, both of which
+ *  support `LIKE … ESCAPE '\'`. A search for a literal `%`/`_` (an operator
+ *  hunting `50%off@…`) must match literally, never as a wildcard.
+ *
+ *  A DELIBERATE TWIN of the identical helper in `kysely-product-commerce-store
+ *  .ts` — the two lists grew their substring search separately and neither file
+ *  exports it. Lifting both into one shared module is a tidy-up worth doing on
+ *  its own, not a drive-by inside a semantics change. */
+function escapeLikePattern(value: string): string {
+	return value.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
 }
 
 /** Serialize a jsonb-as-text column value (null passes through). */

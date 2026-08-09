@@ -111,17 +111,72 @@ describe.skipIf(PG === undefined)("admin Orders console HTTP contract", () => {
 		const orders = body.orders as Array<Record<string, unknown>>;
 		expect(orders.map((o) => o.id)).toEqual(["ord-2", "ord-1"]); // ord-3 excluded, cancel excluded
 
-		// Search by exact order id.
+		// Search by whole order id (a whole id is its own prefix).
 		const byId = (await json(await get("/orders?search=ord-2"))).orders as Array<
 			Record<string, unknown>
 		>;
 		expect(byId.map((o) => o.id)).toEqual(["ord-2"]);
 
-		// Search by buyer_ref, case-insensitive.
+		// Search by whole buyer_ref, case-insensitive.
 		const byRef = (await json(await get("/orders?search=ALICE@example.com"))).orders as Array<
 			Record<string, unknown>
 		>;
 		expect(byRef.map((o) => o.id)).toEqual(["ord-1"]);
+	});
+
+	test("search passes the port's id-PREFIX / email-SUBSTRING semantics through the wire", async () => {
+		await seed();
+		// An id PREFIX — what the console renders (the short id) and therefore what
+		// an operator types back. All four seeded ids share it, newest-first.
+		const prefix = await json(await get("/orders?search=ord-"));
+		expect((prefix.orders as Array<{ id: string }>).map((o) => o.id)).toEqual([
+			"ord-3",
+			"ord-cancel",
+			"ord-2",
+			"ord-1",
+		]);
+		// `total` is counted under the SAME predicate as the rows.
+		expect(prefix.total).toBe(4);
+
+		// A MID-STRING fragment of the buyer email — unanchored, unlike the id half.
+		const infix = await json(await get("/orders?search=arol@"));
+		expect((infix.orders as Array<{ id: string }>).map((o) => o.id)).toEqual(["ord-3"]);
+		expect(infix.total).toBe(1);
+
+		// A mid-string fragment of an ID is NOT a match: the id half is anchored.
+		const midId = await json(await get("/orders?search=cancel"));
+		expect(midId.orders).toEqual([]);
+		expect(midId.total).toBe(0);
+
+		// A LIKE metacharacter is a character to search for, never a wildcard —
+		// unescaped, `%` would match every row here.
+		const wildcard = await json(await get("/orders?search=%25"));
+		expect(wildcard.orders).toEqual([]);
+		expect(wildcard.total).toBe(0);
+	});
+
+	test("the cursor gate compares the search STRING, not its semantics", async () => {
+		await seed();
+		// A search that now matches four rows still mints a cursor whose filter is
+		// the raw string. Paging it with the SAME string agrees; the widened
+		// semantics change nothing about the canonical form on the wire.
+		const page1 = await json(await get("/orders?search=ord-&limit=2"));
+		expect((page1.orders as Array<{ id: string }>).map((o) => o.id)).toEqual([
+			"ord-3",
+			"ord-cancel",
+		]);
+		const cursor = encodeURIComponent(page1.nextCursor as string);
+		const aloneRes = await get(`/orders?cursor=${cursor}`);
+		const agreeRes = await get(`/orders?cursor=${cursor}&search=ord-`);
+		expect(aloneRes.status).toBe(200);
+		expect(agreeRes.status).toBe(200);
+		expect(await agreeRes.text()).toBe(await aloneRes.text());
+		// A DIFFERENT string is a different filter, even though this one selects a
+		// superset of the same rows — the gate compares spellings, not result sets.
+		expect((await get(`/orders?cursor=${cursor}&search=ord`)).status).toBe(400);
+		// Case is NOT folded by the canonicalizer (the store's case-insensitivity is
+		// the store's business): a differently-cased spelling still disagrees.
+		expect((await get(`/orders?cursor=${cursor}&search=ORD-`)).status).toBe(400);
 	});
 
 	test("keyset cursor round-trips and preserves the filter across pages (no overlap/gap)", async () => {
