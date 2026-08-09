@@ -2906,8 +2906,10 @@ export function productCommerceStoreContract(
 
 				// The shape a CMS re-key takes on this side: a new key arrives, the old
 				// one is still there holding the sku. Nothing is renamed and nothing is
-				// silently moved — which is exactly why the sync must refuse the re-key
-				// at save time, where it can still be explained to the operator.
+				// silently moved — and nothing has to be, because the old row is
+				// retained rather than deleted and re-declaring its key brings it back.
+				// That retention IS the enforcement (adr/0016, "Amendment 2026-08-09");
+				// the CMS has no way to refuse the re-key at save time.
 				await declare(h, "prod-key", "sizelarge", "Large");
 
 				const rows = await h.store.listVariants(productId("prod-key"));

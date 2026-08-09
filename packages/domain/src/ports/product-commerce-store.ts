@@ -938,9 +938,11 @@ export interface ProductCommerceStore {
 	 *  - a redelivered declare at an EQUAL watermark cannot resurrect either, so
 	 *    the deactivate it raced with stays applied and a redelivery of THAT
 	 *    command finds the row already orphaned and does nothing. Equal watermarks
-	 *    across two different saves cannot occur in any case (every save bumps the
-	 *    content's `updatedAt`), and one save can never both declare and drop the
-	 *    same key.
+	 *    across two different saves ARE possible where the CMS leaves `updatedAt`
+	 *    frozen on a draft-only save (which is exactly why a resurrect needs the
+	 *    strict comparison, and why re-declaring a key inside that window does not
+	 *    take effect until the document is published), and one save can never both
+	 *    declare and drop the same key.
 	 * THE COST OF THE STRICT COMPARISON, so nobody has to discover it: re-sending
 	 * the SAME save cannot repair an orphan that save caused in error, because its
 	 * watermark is no longer strictly newer. The repair is a FRESH CMS save — any
@@ -1105,8 +1107,12 @@ export interface ProductCommerceStore {
  * in no `SET` clause in any adapter, and neither write input carries a field
  * that could change it — so a re-key is unrepresentable rather than merely
  * discouraged. A key that mutates in the CMS therefore looks to this store like
- * a NEW variant plus a DROPPED one, which is precisely the loss the sync's own
- * save-time refusal exists to make legible in the editor before it happens.
+ * a NEW variant plus a DROPPED one. THAT IS THE DESIGNED OUTCOME, not a gap: the
+ * CMS cannot express a save-time refusal of a re-key, so the guarantee is on the
+ * recovery side instead — the dropped row is orphaned rather than deleted and
+ * keeps its sku, price and stock, and re-declaring the original key resurrects
+ * it (on a strictly newer watermark). See `adr/0016-variant-title-is-cms-owned.md`,
+ * "Amendment 2026-08-09".
  */
 export interface ProductVariant {
 	productId: ProductId;

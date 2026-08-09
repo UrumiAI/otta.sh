@@ -16,6 +16,7 @@ import {
 	deriveUnpublishIdempotencyKey,
 } from "./derive-idempotency-key.js";
 import { normalizeWatermark } from "./normalize-watermark.js";
+import { syncVariants } from "./variants.js";
 
 /**
  * ONE HOME PER FIELD (PR 1b) — what this module does, and no longer does.
@@ -65,6 +66,56 @@ import { normalizeWatermark } from "./normalize-watermark.js";
  *    delivery would then leave the cache permanently wrong on the value
  *    `order_items` snapshots. The correct seam is making `updated_at`
  *    conditional on an owned column genuinely differing, in the adapter.
+ *
+ * SINCE VARIANTS, THE SYNC CARRIES ONE MORE CMS-OWNED NAME — a variant's, at
+ * variant grain (ADR-0016, which applies ADR-0013 one level down clause for
+ * clause). The repeater on the products document declares which sizes exist and
+ * what each is called; `sync/variants.ts` projects it through the SAME channel,
+ * on the same hooks, the same watermark and the same fire-and-forget posture,
+ * and it too can write nothing commercial. A document with no repeater — the
+ * entire live catalogue — takes exactly the path it always did, down to the
+ * request count.
+ *
+ * THE VARIANT KEY IS ENFORCED BY RECOVERY, NOT BY REFUSAL (ADR-0016, amended
+ * 2026-08-09). The key is the variant's identity and is immutable in the store —
+ * it appears in no `SET` clause and neither write input carries a field that
+ * could change it — so a key that changes in the CMS reads here as one variant
+ * dropped and another declared. This module does NOT refuse that at save time,
+ * and the amendment records why the CMS cannot express such a refusal: the save
+ * hook returns a replacement content bag rather than a verdict, a sandboxed
+ * hook's error is logged while the save proceeds, the event carries no pre-save
+ * document (and, on an update, no id) to compare against, and a repeater
+ * sub-field is declared with a slug, type, label, required flag and option list
+ * — no uniqueness rule and no immutability rule.
+ *
+ * SO THE DESIGN PUTS THE GUARANTEE ON THE OTHER SIDE OF THE MISTAKE, and it is
+ * a real one rather than a consolation:
+ *
+ *  - A DROP IS DEACTIVATION, NEVER DELETION. The orphaned row keeps its sku, its
+ *    price and its inventory, and its stock stays where it is under the sku it
+ *    was already keyed by. Nothing is destroyed by a re-key.
+ *  - A RE-KEY IS REVERSIBLE, AND THE REPAIR VERB IS PUBLISH. Restoring the
+ *    original key in the CMS resurrects that same row under the resurrect rules
+ *    — a kept sku keeps its units — but resurrect applies ONLY on a STRICTLY
+ *    NEWER content watermark, and on a revision-supporting collection a
+ *    draft-only save can leave `updatedAt` frozen (em-dash stopped stamping it
+ *    on a column no-op; see `derive-idempotency-key.ts`). So re-adding a deleted
+ *    key while the document sits in the draft window leaves the variant orphaned
+ *    until "Publish changes" — the same recovery verb publish atomicity already
+ *    makes load-bearing above. A bare re-save repairs it only where the CMS
+ *    actually bumps the watermark. Either way it is a CMS action, never a manual
+ *    reconciliation of the commerce database.
+ *  - A REUSED KEY RESOLVES DETERMINISTICALLY. `parseVariantRepeater` declares
+ *    the first occurrence and reports the rest, so the stored name never depends
+ *    on request ordering, and one typo never orphans a live size.
+ *
+ * WHAT THIS OBLIGES ELSEWHERE, stated here because this module is what creates
+ * the obligation: the admin's variant list MUST render an orphaned row
+ * distinctly. With no save-time refusal, that row is the only place a mistaken
+ * re-key becomes visible to the person who made it, and it is what makes the
+ * mistake recoverable rather than merely survivable. Filtering orphans out of
+ * that list, or drawing them as ordinary rows, is not a display choice — it
+ * removes the enforcement this design substitutes for the refusal.
  */
 
 /**
@@ -359,9 +410,23 @@ export function createAfterSaveHandler(
 					watermark,
 				);
 			}
+			// THE REPEATER'S OWN PROJECTION (ADR-0016) — same client, same watermark,
+			// same save. Placed AFTER the activate so it can never affect the publish
+			// gate, and it NEVER THROWS: a variant failure logs on its own line and
+			// leaves the product's sync alone. A document with no repeater returns
+			// immediately, having sent nothing — which is the entire live catalogue.
+			await syncVariants({
+				client,
+				collection: event.collection,
+				productId: id,
+				content: event.content,
+				watermark,
+				hook: "content:afterSave",
+				allowedHosts,
+			});
 		} catch (err) {
 			console.error(
-				`[otta] content:afterSave sync failed for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}). No reconcile cron exists yet — this sync is lost until the product is saved again:`,
+				`[otta] content:afterSave sync failed for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}). No reconcile cron exists yet — this sync (the title cache, and any variant this save declared or dropped) is lost until the product is saved/published again:`,
 				err,
 			);
 		}
@@ -373,6 +438,13 @@ export function createAfterSaveHandler(
  * delete on both trash and permanent delete (plan §4/§8 Risk 6) — order
  * history integrity; a hard purge policy is a later retention decision, not
  * built here.
+ *
+ * NO VARIANT TRANSITION, deliberately. `ContentDeleteEvent` carries only
+ * `{id, collection, permanent}` — no `content`, so no repeater and no watermark
+ * — and orphaning a deleted product's sizes would buy nothing anyway: the
+ * product row's own tombstone already withholds the whole product from every
+ * catalog and checkout path, and a variant's rows keep their sku, price and
+ * stock exactly as an orphan's would. Retaining them is the point.
  */
 export function createAfterDeleteHandler(): HookHandler<ContentDeleteEvent> {
 	return async (event, ctx) => {
@@ -496,15 +568,29 @@ export function createAfterPublishHandler(
 				// not write. Distinct from the generic sync-failed line below so
 				// the skipped activation is visible in logs.
 				console.error(
-					`[otta] content:afterPublish: commerce upsert FAILED for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}) — activation skipped (fail-closed). No reconcile cron exists yet — this sync is lost until the product is published again:`,
+					`[otta] content:afterPublish: commerce upsert FAILED for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}) — activation AND variant sync skipped (fail-closed). No reconcile cron exists yet — this sync is lost until the product is published again:`,
 					err,
 				);
 				return;
 			}
 			await client.activateProductCommerce(id, key, watermark);
+			// The repeater's projection, on the publish's own watermark — the same
+			// call `content:afterSave` makes, for the same reason it derives and
+			// upserts here: publish is the moment live content changes, and a
+			// pending-draft save deferred everything to this hook. It never throws,
+			// and a document with no repeater sends nothing.
+			await syncVariants({
+				client,
+				collection: event.collection,
+				productId: id,
+				content: event.content,
+				watermark,
+				hook: "content:afterPublish",
+				allowedHosts,
+			});
 		} catch (err) {
 			console.error(
-				`[otta] content:afterPublish sync failed for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}). No reconcile cron exists yet — this activation is lost until the product is saved/published again:`,
+				`[otta] content:afterPublish sync failed for product_id=${id} (host allowlist: ${allowedHosts.join(", ")}). No reconcile cron exists yet — this activation (and any variant this publish declared or dropped) is lost until the product is saved/published again:`,
 				err,
 			);
 		}
@@ -513,7 +599,17 @@ export function createAfterPublishHandler(
 
 /**
  * `content:afterUnpublish` → deactivate (the afterUnpublish→deactivate
- * follow-up, plan §1/§6 step 7) — the exact mirror of
+ * follow-up, plan §1/§6 step 7).
+ *
+ * NO VARIANT TRANSITION HERE EITHER, and for a different reason than
+ * `afterDelete`'s: unpublishing does not retract the CMS's statement that these
+ * sizes exist — the repeater still declares every one of them — so orphaning
+ * them would be this channel inventing a decision the CMS never made, and the
+ * next save would resurrect them all. Purchasability is already withheld one
+ * level up: a size is offered only when its PARENT's `active` says the product
+ * is, which this hook is what clears. The orphan axis is the repeater's alone.
+ *
+ * Otherwise the exact mirror of
  * `createAfterPublishHandler`, closing the publish gate so an unpublished
  * product stops being purchasable (without it `active` is a one-way latch).
  * Confirmed against `~/em-dash`: `content:afterUnpublish` is a DISTINCT hook
