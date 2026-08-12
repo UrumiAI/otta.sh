@@ -59,6 +59,40 @@ function physicalInput(overrides: Partial<CreateOrderInput> = {}): CreateOrderIn
 }
 
 /**
+ * Seed an order that carries REAL line snapshots, through the port's own
+ * `createFromCart` — the harness's `seedOrder` writes a bare order + totals row
+ * with NO lines, and the line-sku search half reads the line snapshots. Every
+ * harness runs a clock fixed to the same instant, so these orders share a
+ * `created_at` and the list's tie-break (`id DESC`) is what orders them.
+ */
+async function seedLinedOrder(
+	store: OrderStore,
+	input: { id: string; skus: readonly string[]; productIdValue?: string; buyerRef?: string },
+): Promise<void> {
+	const unit = 500;
+	const lines: CreateOrderInput["lines"] = input.skus.map((s, i) => ({
+		productId: productId(input.productIdValue ?? `p-${input.id}-${String(i)}`),
+		sku: sku(s),
+		title: "Widget",
+		unitPrice: cents(unit),
+		currency: USD,
+		quantity: 1,
+		fulfillmentKind: "physical",
+		reservationId: reservationId(`res-${input.id}-${String(i)}`),
+	}));
+	const total = cents(unit * input.skus.length);
+	await store.createFromCart(
+		physicalInput({
+			orderId: orderId(input.id),
+			idempotencyKey: idempotencyKey(`key-${input.id}`),
+			...(input.buyerRef !== undefined ? { buyerRef: input.buyerRef } : {}),
+			lines,
+			totals: { subtotal: total, total, currency: USD },
+		}),
+	);
+}
+
+/**
  * The reusable `OrderStore` behavioral spec (§7): create + snapshot, get,
  * idempotent replay, insert-once snapshot immutability, and legal / illegal
  * guarded transitions. Runs against the fake first, then each DB dialect.
@@ -519,17 +553,140 @@ export function orderStoreContract(
 			expect(orders.map((o) => o.id)).toEqual(unfiltered.orders.map((o) => o.id));
 		});
 
+		test("listOrders search matches a purchase-time LINE SKU, folded but EXACT", async () => {
+			const h = await makeHarness();
+			await seedLinedOrder(h.store, { id: "ord-alpha", skus: ["SKU-ALPHA"] });
+			await seedLinedOrder(h.store, { id: "ord-beta", skus: ["SKU-BETA"] });
+			// The sku an operator pastes off a packing slip finds the order that
+			// bought it — read off the ORDER's own line snapshot, not the catalogue.
+			const exact = await h.store.listOrders({ search: "SKU-ALPHA" }, { limit: 25 });
+			expect(exact.orders.map((o) => o.id)).toEqual(["ord-alpha"]);
+			// Folded on both sides, like every other half of this predicate.
+			const folded = await h.store.listOrders({ search: "sku-alpha" }, { limit: 25 });
+			expect(folded.orders.map((o) => o.id)).toEqual(["ord-alpha"]);
+			// EXACT, unlike the buyer_ref half: a sku is an identifier the operator
+			// pastes whole, so neither a PREFIX nor a mid-string fragment is a match.
+			// (Both would otherwise hit here — `SKU-` is a prefix of both seeded skus.)
+			expect((await h.store.listOrders({ search: "SKU-" }, { limit: 25 })).orders).toHaveLength(0);
+			expect((await h.store.listOrders({ search: "ALPHA" }, { limit: 25 })).orders).toHaveLength(0);
+			// An order with no lines at all is simply not matched by this half.
+			await h.seedOrder(summaryRow({ id: "ord-lineless", buyerRef: "z@x.test" }));
+			const still = await h.store.listOrders({ search: "SKU-ALPHA" }, { limit: 25 });
+			expect(still.orders.map((o) => o.id)).toEqual(["ord-alpha"]);
+			expect(await h.store.countOrders({ search: "SKU-ALPHA" })).toBe(1);
+		});
+
+		test("listOrders returns a MULTI-LINE order matching on sku exactly ONCE", async () => {
+			const h = await makeHarness();
+			// Two lines of the SAME sku on one order (a split shipment, a re-add), plus
+			// a third line that does not match. The line half must be an EXISTENCE
+			// test over the lines, never a join onto them: a join would emit this
+			// order once PER matching line, double it in the page, and make the
+			// `limit + 1` next-page detection — and the count that captions it — lie.
+			await seedLinedOrder(h.store, { id: "ord-dup", skus: ["SKU-DUP", "SKU-DUP", "SKU-OTHER"] });
+			const one = await h.store.listOrders({ search: "SKU-DUP" }, { limit: 25 });
+			expect(one.orders.map((o) => o.id)).toEqual(["ord-dup"]);
+			expect(await h.store.countOrders({ search: "SKU-DUP" })).toBe(1);
+
+			// And the page size stays honest across a boundary: two such orders at
+			// `limit: 1` are two pages of one row, not one page that repeats a row.
+			await seedLinedOrder(h.store, { id: "ord-dup2", skus: ["SKU-DUP", "SKU-DUP"] });
+			const page1 = await h.store.listOrders({ search: "SKU-DUP" }, { limit: 1 });
+			expect(page1.orders.map((o) => o.id)).toEqual(["ord-dup2"]); // same clock ⇒ id DESC
+			expect(page1.nextCursor).not.toBeNull();
+			const page2 = await h.store.listOrders(
+				{ search: "SKU-DUP" },
+				{ limit: 1, cursor: page1.nextCursor },
+			);
+			expect(page2.orders.map((o) => o.id)).toEqual(["ord-dup"]);
+			expect(page2.nextCursor).toBeNull();
+			expect(await h.store.countOrders({ search: "SKU-DUP" })).toBe(2);
+		});
+
+		test("listOrders search reads the FROZEN sku — a later rename never moves an old order", async () => {
+			const h = await makeHarness();
+			// One product, sold under one sku and later renamed to another: the two
+			// orders differ only in the sku frozen onto their lines at purchase time.
+			await seedLinedOrder(h.store, {
+				id: "ord-before",
+				skus: ["sku-old"],
+				productIdValue: "p-renamed",
+			});
+			await seedLinedOrder(h.store, {
+				id: "ord-after",
+				skus: ["sku-new"],
+				productIdValue: "p-renamed",
+			});
+			// The old order answers to the sku it was BOUGHT under, forever…
+			const old = await h.store.listOrders({ search: "sku-old" }, { limit: 25 });
+			expect(old.orders.map((o) => o.id)).toEqual(["ord-before"]);
+			// …and never migrates to the new one, which finds only what shipped as it.
+			const renamed = await h.store.listOrders({ search: "sku-new" }, { limit: 25 });
+			expect(renamed.orders.map((o) => o.id)).toEqual(["ord-after"]);
+		});
+
+		test("listOrders search treats a sku's `%`/`_`/`\\` as LITERAL characters", async () => {
+			const h = await makeHarness();
+			// The sku half is an EQUALITY, so it has no pattern language to escape —
+			// but a sku really can be spelled with LIKE metacharacters, and the claim
+			// that they are inert has to be pinned rather than reasoned about. Under
+			// LIKE semantics `50%_OFF` would also match `50-XOFF` (`%` any run, `_`
+			// any one character); under equality it matches itself and nothing else.
+			await seedLinedOrder(h.store, { id: "ord-meta", skus: ["50%_OFF"] });
+			await seedLinedOrder(h.store, { id: "ord-decoy", skus: ["50-XOFF"] });
+			await seedLinedOrder(h.store, { id: "ord-esc", skus: ["A\\B"] });
+			const meta = await h.store.listOrders({ search: "50%_OFF" }, { limit: 25 });
+			expect(meta.orders.map((o) => o.id)).toEqual(["ord-meta"]);
+			expect(await h.store.countOrders({ search: "50%_OFF" })).toBe(1);
+			// The decoy answers only to its own spelling — nothing wildcarded onto it.
+			const decoy = await h.store.listOrders({ search: "50-XOFF" }, { limit: 25 });
+			expect(decoy.orders.map((o) => o.id)).toEqual(["ord-decoy"]);
+			// The escape character itself is just a character on this half too.
+			const esc = await h.store.listOrders({ search: "a\\b" }, { limit: 25 });
+			expect(esc.orders.map((o) => o.id)).toEqual(["ord-esc"]);
+			// And a bare metacharacter matches no sku at all (it is not "everything").
+			expect((await h.store.listOrders({ search: "%" }, { limit: 25 })).orders).toHaveLength(0);
+		});
+
+		test("listOrders search UNIONS its arms — one string, one order by id, another by sku", async () => {
+			const h = await makeHarness();
+			// The three arms are ORed, so a single string can reach two DIFFERENT
+			// orders through two different arms. Each still appears exactly once, in
+			// the LIST's order rather than the search's — the union is over rows, not
+			// over arms, and an order that matched twice would be the same row twice.
+			await seedLinedOrder(h.store, { id: "sku-7", skus: ["OTHER"] }); // by id PREFIX
+			await seedLinedOrder(h.store, { id: "ord-buyer", skus: ["SKU-7"] }); // by line SKU
+			const both = await h.store.listOrders({ search: "SKU-7" }, { limit: 25 });
+			// Same clock ⇒ the tie breaks on id DESC: "sku-7" sorts after "ord-buyer".
+			expect(both.orders.map((o) => o.id)).toEqual(["sku-7", "ord-buyer"]);
+			expect(await h.store.countOrders({ search: "SKU-7" })).toBe(2);
+			// The order that matches BOTH arms at once is still one row, not two.
+			await seedLinedOrder(h.store, { id: "sku-7-self", skus: ["SKU-7-SELF"] });
+			const selfMatch = await h.store.listOrders({ search: "SKU-7-SELF" }, { limit: 25 });
+			expect(selfMatch.orders.map((o) => o.id)).toEqual(["sku-7-self"]);
+			expect(await h.store.countOrders({ search: "SKU-7-SELF" })).toBe(1);
+		});
+
 		test("countOrders counts under the SAME search predicate as listOrders", async () => {
 			const h = await makeHarness();
 			await h.seedOrder(summaryRow({ id: "ord-a", buyerRef: "amy@example.com" }));
 			await h.seedOrder(summaryRow({ id: "ord-b", buyerRef: "bea@example.com" }));
 			await h.seedOrder(summaryRow({ id: "zzz-c", buyerRef: "cal@other.test" }));
-			// The id half (prefix) and the buyer_ref half (substring) both count.
+			await seedLinedOrder(h.store, {
+				id: "yyy-d",
+				skus: ["SKU-COUNTED"],
+				buyerRef: "dee@lined.test",
+			});
+			// The id half (prefix), the buyer_ref half (substring) and the line-sku
+			// half (exact) all count, under the one shared predicate.
 			expect(await h.store.countOrders({ search: "ord-" })).toBe(2);
 			expect(await h.store.countOrders({ search: "example.com" })).toBe(2);
 			expect(await h.store.countOrders({ search: "other.test" })).toBe(1);
+			expect(await h.store.countOrders({ search: "SKU-COUNTED" })).toBe(1);
 			const { orders } = await h.store.listOrders({ search: "ord-" }, { limit: 25 });
 			expect(orders).toHaveLength(await h.store.countOrders({ search: "ord-" }));
+			const lined = await h.store.listOrders({ search: "SKU-COUNTED" }, { limit: 25 });
+			expect(lined.orders).toHaveLength(await h.store.countOrders({ search: "SKU-COUNTED" }));
 		});
 
 		test("listOrders paginates forward with a keyset cursor — no overlap, no gap", async () => {

@@ -35,10 +35,12 @@ import {
 	ORDERS_PAGE_FAILED_TITLE,
 	ORDERS_NOUN,
 	ORDERS_NO_MATCH,
+	ORDERS_SEARCH_LABEL,
 	ORDERS_STALE_CLEARED_NOTE,
 	ORDER_STATES,
 	PAGE_ZERO,
 	PRICE_PENDING_CONTEXT,
+	PRODUCT_FILTER_LABELS,
 	REFUND_ADDITIVE_NOTE,
 	REFUND_REVIEW_STEP_PREFIX,
 	RESOLVE_RECONCILIATION_NOTE,
@@ -1253,6 +1255,26 @@ describe("the Orders detail copy is shared, and says what the Block Kit screen s
 
 	test("the mark-refunded confirm separates the ledger from the money", () => {
 		expect(MARK_REFUNDED_CONFIRM.text).toContain("does not move money");
+	});
+
+	test("the list's search label names EVERY axis the filter searches", () => {
+		// A search axis the label does not mention ships dark: nobody types into a
+		// box for a thing they have no reason to believe it looks at. This pins the
+		// label against the port's `OrderListFilter.search`, which matches an
+		// order-id PREFIX, a buyer_ref SUBSTRING and an exact purchase-time line
+		// SKU — so adding a fourth axis without a word here fails right here.
+		expect(ORDERS_SEARCH_LABEL).toBe("Search order ID, buyer email, or exact SKU");
+		for (const axis of ["order ID", "buyer email", "SKU"]) {
+			expect(ORDERS_SEARCH_LABEL).toContain(axis);
+		}
+		// ONE mode word, on the one axis whose mode changes what to type: a partial
+		// id or email still finds the order, a partial sku finds nothing. The
+		// products list spends its mode words on the same principle, which is why
+		// that label is pinned beside this one rather than left to memory.
+		expect(ORDERS_SEARCH_LABEL).toContain("exact");
+		expect(PRODUCT_FILTER_LABELS.search).toBe("Search (SKU exact, or title contains)");
+		// A filter label is still a label: it lives inside the §1 budget.
+		expect(ORDERS_SEARCH_LABEL.length).toBeLessThanOrEqual(LABEL_BUDGET);
 	});
 });
 

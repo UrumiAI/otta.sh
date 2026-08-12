@@ -314,9 +314,17 @@ export function refundsGroupLabel(refunded: string, ceiling: string): string {
 /** The back control, on the detail and on its failure state. */
 export const ORDERS_BACK_LABEL = "← Back to orders";
 
-/** The list's free-text filter. It names BOTH things it searches, because an
- *  operator who thinks it is id-only will not paste an email into it. */
-export const ORDERS_SEARCH_LABEL = "Search order ID or buyer email";
+/** The list's free-text filter. It names ALL THREE things it searches, because
+ *  an operator who thinks it is id-only will not paste an email into it — and
+ *  one that reaches a purchased SKU without saying so is a feature that ships
+ *  dark. It also names ONE match mode, following `products-copy.ts`'s
+ *  `Search (SKU exact, or title contains)`: a mode is worth a word exactly when
+ *  it changes what the operator should type. The id and the email FORGIVE a
+ *  fragment (a prefix and a substring), so a partial attempt teaches itself; a
+ *  SKU is matched whole, so a pasted fragment returns nothing and reads as
+ *  "SKU search is broken". `exact` is the word that prevents that, and it is the
+ *  only mode word the label spends. */
+export const ORDERS_SEARCH_LABEL = "Search order ID, buyer email, or exact SKU";
 
 /** The fulfilment form. `Ship date (optional, UTC)` states the zone in the
  *  LABEL because the control is a bare `<input type="date">` that shows none —

@@ -286,6 +286,13 @@ export interface OrderStore {
 	 * adapter fetches `limit + 1` rows to decide whether a next page exists and
 	 * emits `nextCursor` from the LAST RETURNED row (null when the page is the last).
 	 *
+	 * ONE ROW PER ORDER, whatever the filter reaches. The only table this may join
+	 * is the 1:1 `order_totals`; any 1:N table a filter has to consult — today
+	 * `order_items`, for `search`'s line-sku half — is reached by an EXISTENCE test
+	 * and never by a join, or an order with two matching lines is returned twice,
+	 * the `limit + 1` next-page detection counts duplicates as rows, and the page
+	 * silently shrinks. `countOrders` shares the predicate and so shares the rule.
+	 *
 	 * The date window is HALF-OPEN `[from, to)` — `from` inclusive, `to`
 	 * EXCLUSIVE. This deliberately DIFFERS from `ReportingStore`'s inclusive/
 	 * inclusive `BETWEEN` window (MOD-7): the list is a browsing surface where an
@@ -515,7 +522,8 @@ export type CreateOrderResult = { created: boolean; order: Order };
 /** Filters for the admin Orders list. All optional — an empty filter lists every
  *  order newest-first. `states` is an OR set (`state IN (...)`); `from`/`to` are a
  *  HALF-OPEN `[from, to)` window on `created_at`; `search` matches an order-id
- *  PREFIX or a `buyer_ref` SUBSTRING — see the field below. */
+ *  PREFIX, a `buyer_ref` SUBSTRING or an EXACT purchase-time line sku — see the
+ *  field below. */
 export interface OrderListFilter {
 	states?: readonly OrderState[];
 	/** Inclusive lower bound (ISO-8601 UTC). */
@@ -523,11 +531,15 @@ export interface OrderListFilter {
 	/** EXCLUSIVE upper bound (ISO-8601 UTC) — half-open window (MOD-7). */
 	to?: string;
 	/**
-	 * The operator's free-text lookup: an order-id PREFIX **or** a `buyer_ref`
-	 * SUBSTRING, ORed, with `lower()` applied to BOTH sides of both halves —
-	 * `lower(id) LIKE lower(:s || '%')` OR `lower(buyer_ref) LIKE lower('%' || :s
-	 * || '%')`. The fake, SQLite and Postgres implement exactly this, case for
-	 * case, and the contract suite pins every one of them on all three.
+	 * The operator's free-text lookup: an order-id PREFIX, **or** a `buyer_ref`
+	 * SUBSTRING, **or** an EXACT purchase-time line sku, ORed, with `lower()`
+	 * applied to BOTH sides of all three arms — `lower(id) LIKE lower(:s || '%')`
+	 * OR `lower(buyer_ref) LIKE lower('%' || :s || '%')` OR `EXISTS (SELECT id
+	 * FROM order_items WHERE order_id = orders.id AND lower(sku) = lower(:s))`
+	 * (`SELECT id` rather than `SELECT 1` only because that is what the adapters
+	 * emit — an `EXISTS` never reads the projection). The
+	 * fake, SQLite and Postgres implement exactly this, case for case, and the
+	 * contract suite pins every one of them on all three.
 	 *
 	 * WHY A PREFIX ON THE ID. The console never renders a full uuid — it renders
 	 * the shortest unique prefix (the git-style short id in
@@ -542,6 +554,28 @@ export interface OrderListFilter {
 	 * operator arrives with a fragment — a local part, a domain, whatever the
 	 * customer wrote in a ticket — not the address exactly as stored.
 	 *
+	 * WHY THE SKU HALF READS THE ORDER'S OWN LINES, AND IS EXACT. The sku matched
+	 * is the one FROZEN onto the order's lines at purchase time — the same
+	 * insert-once snapshot the detail screen renders — never the live catalogue's
+	 * current sku for that product. Renaming a product's sku therefore leaves
+	 * every earlier order findable under the sku it was bought as, and moves none
+	 * of them to the new one; that is the point of the snapshot, and the contract
+	 * pins it. The half is EXACT (folded, but no prefix, no substring) because a
+	 * sku is an IDENTIFIER an operator pastes whole off a packing slip or a
+	 * support ticket, and because exactness is the settled house rule for skus:
+	 * `ProductListFilter.search` matches an exact-lower sku beside its substring
+	 * title, and the `customer` key below keeps exact-lower `buyer_ref` for the
+	 * same identity reason. A substring here would drag every variant of a family
+	 * (`TEE-BLK-S`, `TEE-BLK-M`, …) into a search for one of them, which is a
+	 * different question from the one the operator asked.
+	 *
+	 * WHY `EXISTS`, NEVER A JOIN. `order_items` is 1:N; the list's contract is one
+	 * row per order (`listOrders` doc). An order carrying two matching lines must
+	 * appear ONCE — a join would return it twice, inflate the `limit + 1`
+	 * next-page probe, and make `countOrders` (which shares this predicate)
+	 * over-count the page it captions. Every adapter therefore expresses this half
+	 * as a correlated existence test, and the fake as `lines.some(...)`.
+	 *
 	 * WHY THE FOLD IS EXPLICIT ON BOTH SIDES. A bare `LIKE` is case-SENSITIVE on
 	 * Postgres and ASCII-case-INSENSITIVE on SQLite; only an explicit `lower()`
 	 * on both operands makes the two dialects and the fake agree. The pattern
@@ -554,18 +588,26 @@ export interface OrderListFilter {
 	 * Emails and hex ids are ASCII, which is why this is accepted rather than
 	 * solved. Ids are lowercase hex (`crypto.randomUUID()`), so folding the id is
 	 * a no-op on the STORED side — it is there to forgive the TYPED side, e.g. a
-	 * uuid pasted back from a client that upper-cased it.
+	 * uuid pasted back from a client that upper-cased it. The sku half folds the
+	 * same way and inherits the same caveat: it spells `lower(sku) = lower(:s)`
+	 * (SQL folding both operands) rather than the products list's `lower(sku) =
+	 * :sJsLowered` — identical for the ASCII skus a catalogue actually carries,
+	 * and one fewer place the two sides can drift apart within a dialect.
 	 *
 	 * WILDCARDS ARE LITERAL. `%`, `_` and `\` (the escape character itself) are
 	 * `LIKE` metacharacters; a search containing them matches them as characters
 	 * (the adapters escape the pattern and pass `ESCAPE '\'`; the fake builds no
-	 * pattern at all, so `startsWith`/`includes` are literal by construction).
+	 * pattern at all, so `startsWith`/`includes` are literal by construction). The
+	 * sku half needs no escaping at all — an equality has no pattern language, so
+	 * a sku spelled `50%_OFF` is compared character for character.
 	 *
 	 * THE EMPTY STRING MATCHES EVERYTHING, because every string starts with `""`
 	 * and contains `""`. That is the widest filter this axis has, not the
-	 * narrowest — the inverted reading of "search for nothing". The service's
-	 * query schema requires `min(1)`, so the wire cannot send it; the boundary is
-	 * pinned in the contract for every other caller.
+	 * narrowest — the inverted reading of "search for nothing". (The sku half does
+	 * not widen it further and does not narrow it: `""` equals no real sku, and
+	 * the id arm has already matched every row.) The service's query schema
+	 * requires `min(1)`, so the wire cannot send it; the boundary is pinned in the
+	 * contract for every other caller.
 	 *
 	 * THE SEQUENTIAL SCAN IS THE DESIGN, not an oversight. An unanchored
 	 * substring cannot be served by a b-tree, so `idx_orders_buyer_ref_lower`
@@ -590,6 +632,38 @@ export interface OrderListFilter {
 	 * statement then. The index still backs every EQUALITY path on `buyer_ref` —
 	 * `linkGuestOrders` and the `customer` key below — which is exactly why those
 	 * keep exact-lower-equals semantics and did NOT follow this widening.
+	 *
+	 * THE SKU ARM IS PLANNED DIFFERENTLY BY THE TWO DIALECTS, and neither shape
+	 * was assumed — both were read off `EXPLAIN` of the statement the adapter
+	 * actually compiles, over a synthetic 5k-order / 10k-line set (ANALYZEd).
+	 *
+	 * ON POSTGRES IT IS ONE MORE SCAN, of `order_items`, not a per-row probe. pg
+	 * DE-CORRELATES the `EXISTS` into a hashed subplan: one pass over the line
+	 * table filtered on `lower(sku)` — a sequential scan, since `lower(sku)` has
+	 * no index — hashed by `order_id` and then probed in memory per row. That pass
+	 * is paid by EVERY search, including one that is plainly an id or an email,
+	 * and by BOTH statements a searched page issues. Measured (statement
+	 * `Execution Time`, pg 16): a sku search 6.3 ms for the page and 5.9 ms for
+	 * its count, against 2.8 ms and 2.8 ms for the same search with the arm
+	 * stripped out; an id-PREFIX search 5.4 ms and 5.6 ms, against 4.2 ms and
+	 * 2.7 ms without it. Forcing the intuitive plan instead (`enable_seqscan =
+	 * off`, which does make the probe an index scan on
+	 * `idx_order_items_order_product`, 5000 loops) was SLOWER — 21–24 ms across
+	 * runs — so that index is not what keeps this cheap on pg; the hash is.
+	 *
+	 * ON SQLITE IT IS THE OPPOSITE, and that is fine. SQLite keeps the subquery
+	 * CORRELATED and serves it as a per-row `SEARCH order_items USING INDEX
+	 * idx_order_items_order_product (order_id=?)`, so there the arm rides the very
+	 * index the pg plan ignores; and because SQL's `OR` short-circuits and the two
+	 * cheap arms are written FIRST, a row already matched by id or buyer_ref never
+	 * runs the probe at all. Measured there (mean of 5 store calls,
+	 * better-sqlite3): 4.4 ms for an id-prefix page against 5.2 ms for a sku page.
+	 *
+	 * Read all of these as a SHAPE, not a budget, for the same reasons the figures
+	 * above are a floor. The obvious lever, if the shape stops holding on pg, is a
+	 * functional index on `lower(order_items.sku)`, which turns that one scan into
+	 * an index scan; deliberately not pulled now, on the same reasoning that
+	 * declined the trigram index — measure the real statement first.
 	 */
 	search?: string;
 	/** The customer dimension (admin-UX Increment 1) — see `OrderCustomerKey`.
@@ -613,7 +687,7 @@ export interface OrderListFilter {
  * fuzzy lookup: a substring would fold two customers into one person's history,
  * and equality is what keeps `idx_orders_buyer_ref_lower` on the plan. It exists
  * as its own key — distinct from `search` — for that reason, and because
- * `search` ALSO matches an order-id prefix.
+ * `search` ALSO matches an order-id prefix and a purchase-time line sku.
  * At least one half should be set; an empty key matches nothing it constrains
  * (adapters ignore a key with neither half).
  */

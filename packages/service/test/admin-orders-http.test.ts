@@ -155,6 +155,105 @@ describe.skipIf(PG === undefined)("admin Orders console HTTP contract", () => {
 		expect(wildcard.total).toBe(0);
 	});
 
+	/** Check an order out through the real cart → checkout path, so it carries
+	 *  REAL purchase-time line snapshots (`seedOrder` writes a bare order + totals
+	 *  row with no lines, and the sku half of `search` reads the lines). */
+	async function checkoutOrder(input: {
+		key: string;
+		buyerRef: string;
+		items: ReadonlyArray<{ productId: string; sku: string }>;
+	}): Promise<string> {
+		for (const item of input.items) {
+			await server.seedProduct({
+				productId: item.productId,
+				sku: item.sku,
+				priceCents: 500,
+				title: "Item",
+				kind: "physical",
+				onHand: 5,
+			});
+		}
+		const cart = await json(
+			await fetch(`${server.baseUrl}/carts`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ currency: "USD" }),
+			}),
+		);
+		const cartId = cart["cartId"] as string;
+		for (const item of input.items) {
+			const addRes = await fetch(`${server.baseUrl}/carts/${cartId}/lines`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"Idempotency-Key": `add-${input.key}-${item.sku}`,
+				},
+				body: JSON.stringify({ sku: item.sku, qty: 1, productId: item.productId }),
+			});
+			expect(addRes.status).toBe(200);
+		}
+		const coRes = await fetch(`${server.baseUrl}/checkout/orders`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", "Idempotency-Key": `co-${input.key}` },
+			body: JSON.stringify({ cartId, paymentMethod: "stripe", buyerRef: input.buyerRef }),
+		});
+		expect(coRes.status).toBe(201);
+		const order = (await json(coRes))["order"] as Record<string, unknown>;
+		return order["id"] as string;
+	}
+
+	test("search passes the port's purchase-time SKU semantics through the wire", async () => {
+		await seed(); // lineless distractors, none of which any sku may drag in
+		const twoLine = await checkoutOrder({
+			key: "sku-two",
+			buyerRef: "erin@example.com",
+			items: [
+				{ productId: "p-alpha", sku: "SKU-ALPHA" },
+				{ productId: "p-beta", sku: "SKU-BETA" },
+			],
+		});
+		const otherLine = await checkoutOrder({
+			key: "sku-one",
+			buyerRef: "frank@example.com",
+			items: [{ productId: "p-gamma", sku: "SKU-GAMMA" }],
+		});
+
+		// The sku frozen on a line finds the order that bought it, folded…
+		const alpha = await json(await get("/orders?search=SKU-ALPHA"));
+		expect((alpha.orders as Array<{ id: string }>).map((o) => o.id)).toEqual([twoLine]);
+		expect(alpha.total).toBe(1);
+		const folded = await json(await get("/orders?search=sku-alpha"));
+		expect((folded.orders as Array<{ id: string }>).map((o) => o.id)).toEqual([twoLine]);
+
+		// …and a two-line order is ONE row, whichever of its lines matched.
+		const beta = await json(await get("/orders?search=SKU-BETA"));
+		expect((beta.orders as Array<{ id: string }>).map((o) => o.id)).toEqual([twoLine]);
+		expect(beta.total).toBe(1);
+		const gamma = await json(await get("/orders?search=SKU-GAMMA"));
+		expect((gamma.orders as Array<{ id: string }>).map((o) => o.id)).toEqual([otherLine]);
+
+		// EXACT on the wire too: neither a prefix nor a fragment of a sku matches
+		// (both would hit here — `SKU-` leads all three).
+		const prefix = await json(await get("/orders?search=SKU-"));
+		expect(prefix.orders).toEqual([]);
+		expect(prefix.total).toBe(0);
+		const fragment = await json(await get("/orders?search=ALPHA"));
+		expect(fragment.orders).toEqual([]);
+
+		// The LIVE CATALOGUE is not what is searched: a product nobody ordered
+		// matches no order, however real its sku is.
+		await server.seedProductRow({
+			id: "p-unsold",
+			sku: "SKU-UNSOLD",
+			title: "Unsold",
+			priceCents: 900,
+			createdAt: "2026-07-10T00:00:00.000Z",
+		});
+		const unsold = await json(await get("/orders?search=SKU-UNSOLD"));
+		expect(unsold.orders).toEqual([]);
+		expect(unsold.total).toBe(0);
+	});
+
 	test("the cursor gate compares the search STRING, not its semantics", async () => {
 		await seed();
 		// A search that now matches four rows still mints a cursor whose filter is
@@ -177,6 +276,38 @@ describe.skipIf(PG === undefined)("admin Orders console HTTP contract", () => {
 		// Case is NOT folded by the canonicalizer (the store's case-insensitivity is
 		// the store's business): a differently-cased spelling still disagrees.
 		expect((await get(`/orders?cursor=${cursor}&search=ORD-`)).status).toBe(400);
+	});
+
+	test("a SKU search pages like any other — the gate still compares the raw string", async () => {
+		// Two orders of the same item: the sku half has to compose with the keyset
+		// WHERE across a page boundary, and its spelling has to survive the cursor
+		// the same way the other two halves do.
+		const first = await checkoutOrder({
+			key: "sku-page-1",
+			buyerRef: "gia@example.com",
+			items: [{ productId: "p-paged", sku: "SKU-PAGED" }],
+		});
+		const second = await checkoutOrder({
+			key: "sku-page-2",
+			buyerRef: "hal@example.com",
+			items: [{ productId: "p-paged", sku: "SKU-PAGED" }],
+		});
+		const page1 = await json(await get("/orders?search=SKU-PAGED&limit=1"));
+		expect((page1.orders as unknown[]).length).toBe(1);
+		expect(page1.total).toBe(2); // the SET, counted under the same predicate
+		const cursor = encodeURIComponent(page1.nextCursor as string);
+		const page2 = await json(await get(`/orders?cursor=${cursor}&search=SKU-PAGED`));
+		expect((page2.orders as unknown[]).length).toBe(1);
+		expect(page2.total).toBe(2);
+		expect(page2.nextCursor).toBeNull();
+		// Union is both orders, once each — no overlap, no gap, no duplicate row.
+		const paged = [
+			...(page1.orders as Array<{ id: string }>),
+			...(page2.orders as Array<{ id: string }>),
+		].map((o) => o.id);
+		expect(paged.toSorted()).toEqual([first, second].toSorted());
+		// A different spelling of the same search is still a different filter.
+		expect((await get(`/orders?cursor=${cursor}&search=SKU-PAGE`)).status).toBe(400);
 	});
 
 	test("keyset cursor round-trips and preserves the filter across pages (no overlap/gap)", async () => {
