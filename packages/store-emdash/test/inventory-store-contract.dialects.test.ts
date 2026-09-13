@@ -16,12 +16,7 @@ import { idempotencyKey } from "@otta-sh/domain";
 import type { InventoryStoreHarness } from "@otta-sh/domain/testing";
 import { CountingIdGen, FixedClock, inventoryStoreContract } from "@otta-sh/domain/testing";
 import { describe, expect, it } from "vitest";
-import type {
-	InventoryDoc,
-	ReservationKeyDoc,
-	StorageAccess,
-	StorageCollection,
-} from "../src/index.js";
+import type { InventoryDoc, ReservationKeyDoc, StorageAccess } from "../src/index.js";
 import {
 	collectionOf,
 	EmdashInventoryStore,
@@ -33,6 +28,12 @@ import {
 	uuidIdGen,
 } from "../src/index.js";
 import { describeEachDialect } from "./describe-each-dialect.js";
+import {
+	alwaysLosingCollection,
+	isUpdateWrite,
+	parkCall,
+	withCollection,
+} from "./helpers/fault-injection.js";
 import { INVENTORY_LAYOUT } from "./inventory-collections.js";
 
 /** The dialect harness plus the one crash-window seam this model actually has. */
@@ -188,35 +189,11 @@ describeEachDialect("EmdashInventoryStore document model", (ctx) => {
 
 			const raw = bound.storage[INVENTORY_COLLECTION];
 			if (raw === undefined) throw new Error("the inventory collection is not declared");
-			let release: (() => void) | undefined;
-			let arrived: (() => void) | undefined;
-			const blockedArrived = new Promise<void>((resolve) => {
-				arrived = resolve;
-			});
-			const gate = new Promise<void>((resolve) => {
-				release = resolve;
-			});
-			let held = false;
-			const gated: StorageCollection = {
-				get: (id) => raw.get(id),
-				put: (id, data) => raw.put(id, data),
-				delete: (id) => raw.delete(id),
-				query: (options) => raw.query(options),
-				count: (where) => raw.count(where),
-				updateIf: (id, args) => raw.updateIf(id, args),
-				getVersioned: (id) => raw.getVersioned(id),
-				compareAndDelete: (id, revision) => raw.compareAndDelete(id, revision),
-				async compareAndSet(id, expectedRevision, data) {
-					if (!held && expectedRevision !== null) {
-						held = true;
-						arrived?.();
-						await gate;
-					}
-					return raw.compareAndSet(id, expectedRevision, data);
-				},
-			};
+			// The gate is the shared fault-injection helper: one real call parked
+			// until the peer has finished, everything else straight through.
+			const gated = parkCall(raw, isUpdateWrite);
 			const blocked = new EmdashInventoryStore({
-				storage: { ...bound.storage, [INVENTORY_COLLECTION]: gated },
+				storage: withCollection(bound.storage, INVENTORY_COLLECTION, gated.collection),
 				idGen: new CountingIdGen("blocked"),
 				clock: new FixedClock(new Date("2026-07-10T00:00:00.000Z")),
 				sleep: async () => {},
@@ -225,7 +202,7 @@ describeEachDialect("EmdashInventoryStore document model", (ctx) => {
 
 			const key = idempotencyKey("k-window");
 			const slow = blocked.reserve("SKU-WINDOW", 2, key);
-			await blockedArrived;
+			await gated.arrived;
 
 			// The peer finishes the very same claim, then commits and prunes it.
 			const peer = await h.store.reserve("SKU-WINDOW", 2, key);
@@ -234,7 +211,7 @@ describeEachDialect("EmdashInventoryStore document model", (ctx) => {
 			expect(await h.onHand("SKU-WINDOW")).toBe(3);
 			expect(await h.holdCount("SKU-WINDOW")).toBe(0);
 
-			release?.();
+			gated.release();
 			// One answer, one decrement, no resurrected hold.
 			expect(await slow).toEqual(peer);
 			expect(await h.onHand("SKU-WINDOW")).toBe(3);
@@ -351,28 +328,12 @@ describeEachDialect("EmdashInventoryStore document model", (ctx) => {
 			// loses.
 			const raw = bound.storage[INVENTORY_COLLECTION];
 			if (raw === undefined) throw new Error("the inventory collection is not declared");
-			const alwaysLoses: StorageCollection = {
-				get: (id) => raw.get(id),
-				put: (id, data) => raw.put(id, data),
-				delete: (id) => raw.delete(id),
-				query: (options) => raw.query(options),
-				count: (where) => raw.count(where),
-				updateIf: (id, args) => raw.updateIf(id, args),
-				getVersioned: (id) => raw.getVersioned(id),
-				compareAndDelete: (id, revision) => raw.compareAndDelete(id, revision),
-				async compareAndSet(id, expectedRevision, data) {
-					if (expectedRevision !== null) {
-						const current = await raw.getVersioned(id);
-						if (current !== null) await raw.put(id, current.value);
-					}
-					return raw.compareAndSet(id, expectedRevision, data);
-				},
-			};
+			const alwaysLoses = alwaysLosingCollection(raw);
 
 			const seeder = harness();
 			await seeder.seed("SKU-1", 50);
 			const store = new EmdashInventoryStore({
-				storage: { ...bound.storage, [INVENTORY_COLLECTION]: alwaysLoses },
+				storage: withCollection(bound.storage, INVENTORY_COLLECTION, alwaysLoses),
 				idGen: uuidIdGen,
 				clock: new FixedClock(new Date("2026-07-10T00:00:00.000Z")),
 				maxCasAttempts: 3,

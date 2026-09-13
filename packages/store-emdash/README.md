@@ -183,3 +183,99 @@ id, including the reservation lookups — the port has no cross-SKU listing or
 expiry-scan method, so nothing here needs to query a field. The `sku`/`createdAt`
 indexes on `inventory_movements` are declared for the stock-movement audit a later
 increment renders, not for this store.
+
+## Contention budget
+
+R2 has no structural fix — the aggregate is written by read-modify-write, so a hot
+SKU retries — which makes the measured retry depth a **permanent** budget rather
+than an interim number. `test/inventory-crash-seams.dialects.test.ts` exports
+`CAS_ATTEMPT_BUDGET` and asserts it on Postgres:
+
+**Contention budget: measured max CAS attempts M=5/N=50 (20 loops) → 5–6,
+M=1/N=100 → 2; budget asserted at 8 (< `CAS_MAX_ATTEMPTS` = 12).**
+
+Both figures are stable across repeated runs, and both sit at M+1: only M writes can
+succeed before the guard turns every remaining caller into a clean `OUT_OF_STOCK`
+with no write at all, so a writer loses at most M times. Depth tracks the UNITS on
+one document, not the size of the crowd.
+
+The merchant shape is the exception worth naming: twenty guarded `removeStock`
+calls racing twenty `reserve`s on one document — where a REFUSED removal still
+writes its ledger entry, so the writes are not bounded by the units — does reach
+the ceiling and does raise `StorageContentionError`.
+
+**Removal shape (20 removals racing 20 reserves on 12 units, 15 loops = 600 calls):
+measured max CAS attempts 12 (the ceiling), measured typed contention failures 8–29
+per run; asserted at `<= CAS_MAX_ATTEMPTS` and `<= 90` (15% of the calls) respectively.**
+
+Per-shape depth and contention, as the suite reports them per case:
+
+| shape | max CAS attempts | typed contention failures |
+|---|---|---|
+| restock same key ×24 | 2 | 0 |
+| removeStock same key ×24 | 2 | 0 |
+| restock +10 racing 40 reserves on 5 units | 12 | 2–6 |
+| restock then 40 reserves on 15 units (sequenced) | 12 | 0–1 |
+| 20 removals racing 20 reserves on 12 units | 12 | 8–29 |
+
+`restock-concurrency.pg.test.ts` reports its depth and contention count **per case**
+rather than per file, so a ceiling is attributed to the shape that produced it by
+evidence rather than by assumption, and it asserts what survives contention: no
+over-consumption, exact conservation, never negative, at least one success per loop,
+the original's lower bound (successes plus retry-exhausted callers still cover the
+initial units), and every ordinary loser failing cleanly. A contention failure
+writes nothing, which is why conservation still pins it. The SEQUENCED restock case
+is what would catch an "everything contends" regression: it has no contention to
+hide behind, so its exact honour count fails if the retry loop degrades.
+
+## Crash seams proven
+
+`test/inventory-crash-seams.dialects.test.ts` opens each window on real storage
+with `test/helpers/fault-injection.ts` — a wrapper that delegates every method to
+the real repository and only **parks** a chosen call or **throws** on it, so the
+document a replay heals is the one the host would really have left behind. Every
+case reads the documents back before replaying, and every case carries the
+assertion that would fail if the write order were reversed.
+
+- **(a) claim written, the inventory compare-and-set never ran** — the replay
+  completes with the id RECORDED in the claim, one hold, one decrement.
+- **(b) reverse-lookup entry written, the compare-and-set never ran** — the orphan
+  index entry misleads no id-taking method (`commit` is the loud `COMMIT_LOST`
+  anomaly; `adopt`/`adoptMany`/`commitMany`/`releaseAdopted` report it lost or
+  no-op without throwing), and the claim still heals to the same id.
+- **(c) the compare-and-set ran, the terminal answer was never written** — the
+  replay returns the SAME reservation id, writes no second hold, and leaves
+  `onHand` decremented exactly once.
+- **(d) terminal answer written, the prune never ran** — a replay of the
+  commit/release is a no-op success that completes the prune exactly once, a
+  same-key reserve replay is answered from the key document, and a released hold's
+  units come back once and only once.
+- **(e) prune-before-terminal, the FORBIDDEN order** — pinned from the other side,
+  because the store does not do it: the terminal write is PARKED, and while it is
+  parked the hold must still be live and the units still off the shelf; the prune
+  follows only after the release. This is the only test of the ordering rule, and
+  a store that pruned first would pass every replay case above and fail here.
+- **(f) the movement landed, its claim was never marked applied** — restock,
+  removeStock and adjust each replay to the aggregate's own witness, moving
+  nothing twice. Past ring eviction the suite asserts the **documented, accepted
+  residual** rather than papering over it: a stock movement re-applies, and an
+  adjust whose hold is also gone throws `ReservationNotHeldError`. Both cases name
+  the sweeper contract above, so nobody "fixes" the test instead of the sweeper.
+- **(g) a partial `commitMany` / `adoptMany` across 3 SKUs** — the first SKU
+  lands, the rest stay held, and a replay of the same batch completes the
+  unreached ones with the already-done ones idempotent. Note what the suite pins
+  about `commitMany`: it SKIPS an id that is already terminal, so a SKU caught
+  between its terminal record and its prune is completed by the singular `commit`
+  a replayer or the order-intent sweeper runs, not by re-running the batch.
+
+  **The consequence, handed to INC-C4.** A batch-only replayer therefore leaves a
+  hold in the aggregate's `holds` map whose reservation is already `committed`. Its
+  units are spent, so **any future expiry or reaping path must consult
+  `reservation_index.terminalState` before returning units — returning a committed
+  hold's units to the shelf would be an oversell**, and the hold looks live to
+  anything that reads only the aggregate. The two obligations go together: the
+  sweeper drives per-id `commit` (or prune) rather than re-running the batch, and
+  every expiry path checks the terminal state first.
+- **(h) a late same-key caller after the prune** — not duplicated here: it is the
+  gated mid-flight case in `test/inventory-store-contract.dialects.test.ts`, which
+  opens the same window with the same helper.
