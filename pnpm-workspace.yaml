@@ -63,6 +63,18 @@ catalog:
 
 minimumReleaseAgeExclude:
   - hono@4.12.29
+  # The D1 test tier's toolchain (`@cloudflare/vitest-plugin`), which pins its own
+  # wrangler/miniflare exactly and therefore its own workerd — see the "D1 tier"
+  # section of `packages/store-emdash/README.md`.
+  - "@cloudflare/vitest-plugin@1.1.8"
+  - "wrangler@4.131.1"
+  - "miniflare@5.20260911.0-alpha"
+  - "workerd@1.20260911.1"
+  - "@cloudflare/workerd-darwin-64@1.20260911.1"
+  - "@cloudflare/workerd-darwin-arm64@1.20260911.1"
+  - "@cloudflare/workerd-linux-64@1.20260911.1"
+  - "@cloudflare/workerd-linux-arm64@1.20260911.1"
+  - "@cloudflare/workerd-windows-64@1.20260911.1"
   - "@cloudflare/workerd-darwin-64@1.20260710.1"
   - "@cloudflare/workerd-darwin-arm64@1.20260710.1"
   - "@cloudflare/workerd-linux-64@1.20260710.1"

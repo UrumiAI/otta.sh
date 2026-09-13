@@ -34,6 +34,89 @@ The schema always comes from the host's `runMigrations`; never hand-create the
 storage table. Revisions come from a trigger that migration creates — which is
 also why cases reset by emptying the table rather than recreating it.
 
+## The D1 tier
+
+D1 is the dialect a deployed storefront actually runs on, and the two Node tiers
+never touch it: the conditional-write primitives ride the host's **SQLite branch**
+there by inference. `updateIf` is one
+`UPDATE … SET data = json_set(…) WHERE … RETURNING data`; revisions are stamped by
+the `AFTER INSERT` / `AFTER UPDATE` triggers the conditional-write migration
+creates on that branch. `better-sqlite3` runs the same SQL against a different
+engine build, in a different process model. So this tier exists to answer, rather
+than assume, whether D1 agrees.
+
+```bash
+pnpm test:d1        # from the repo root, or from this package
+```
+
+It runs under the Cloudflare workers vitest pool on the **local miniflare D1
+simulator** — no Cloudflare account, API token, remote database or deployment is
+involved, and nothing here can reach one. It is wired as its own vitest project
+(`store-emdash-d1`, `vitest.d1.config.ts`) rather than into the default battery:
+it boots `workerd`, migrates a fresh database per test file, and takes a couple of
+minutes. CI runs it **nightly** and on manual dispatch, never per PR. Miniflare is
+given the **storefront's own** compatibility date and flags
+(`sites/staging/wrangler.jsonc`), so a divergence found here means something about
+production rather than about an invented runtime.
+
+**What the toolchain costs, stated plainly.** `@cloudflare/vitest-plugin` pins its
+`wrangler` and `miniflare` versions **exactly**, and that `miniflare` in turn pins
+its own `workerd` exactly. So installing it adds a third `workerd` build (~150 MB)
+that only the nightly job ever executes, and **every** install — including every
+per-PR CI install — pays for it. It also moves the version `sites/staging`'s
+`@astrojs/cloudflare` peer-resolves `workerd` to, because pnpm picks the highest
+`workerd` in the graph: the storefront build now runs the newer one. Overriding
+`wrangler` back to the catalog version was tried and does **not** undo either
+effect — `miniflare`'s exact `workerd` pin is what carries it — so the override is
+deliberately absent rather than forgotten. The honest fix is upstream ranges or a
+separate install for the nightly; until then the whole toolchain is enumerated in
+`pnpm-workspace.yaml`'s `minimumReleaseAgeExclude` so nothing about it is
+implicit.
+
+**How the tier is built.** `test/d1/describe-d1.ts` is a sibling of
+`test/describe-each-dialect.ts`, not an extension of it. The split is structural:
+the Node harness imports `better-sqlite3` and `pg` at module scope, and neither
+exists inside `workerd`. What the two share is imported — the collection layout,
+the document helpers, the fault-injection wrappers, the domain contract itself —
+so only the test-surface plumbing is restated. The D1 files are named `*.spec.ts`
+so the default project's `test/**/*.test.ts` glob cannot pick them up, and so
+`scripts/pg-test-files.sh` never selects them.
+
+The dialect comes from the host's own `createDialect` reading the `DB` binding out
+of `cloudflare:workers` — the same call a real site makes — which makes this the
+only tier that observes the host's wiring rather than Otta's. The schema comes
+from the host's full `runMigrations` set, and the suite asserts that the revision
+triggers really exist on D1 and really fire for a writer that supplies no
+revision.
+
+**What it proves.** The primitive suite (`updateIf`'s `RETURNING` and `json_set`,
+`getVersioned`, `compareAndSet`'s revision assignment, `compareAndDelete`, the
+query allow-list, the 100-row page ceiling) behaves on D1 exactly as it does on
+better-sqlite3 and Postgres — case for case, no divergence. `inventoryStoreContract`
+passes in full, with no skips — including the W1 crash-window case, which needs the
+harness's `abandonPending` hook and silently asserts nothing without it.
+Representative crash seams — (a), (c), (e) and the cross-SKU `commitMany` of (g) —
+heal on D1 under the same real fault injection.
+
+**What it does NOT prove, and where that is proved instead.** Miniflare runs a
+test file in one `workerd` isolate on one thread, so concurrent promises
+**interleave** but no two statements execute at the same instant. The race file
+therefore runs the M=5/N=50 shape as an interleaving check — strictly stronger
+than the sequential contract path, strictly weaker than simultaneity. Atomicity
+under genuinely simultaneous writers is the **Postgres** tier's job, and it stays
+the no-oversell gate. A staging site on real D1 has many isolates at once, so the
+race this tier cannot run is real in production.
+
+The crash tier is also not reused wholesale: the eighteen cases in
+`test/inventory-crash-seams.dialects.test.ts` live inside a closure passed to
+`describeEachDialect`, so running all of them on D1 means first splitting that
+harness into a driver-agnostic binder plus two driver modules — a change to the
+Node tiers, and its own change rather than a rider on this one. Seams (b),
+(d-release), (f) and (g-`adoptMany`) are therefore Node-only today; they exercise
+the same two injection mechanisms this tier already proves on D1, so what is
+missing is logic coverage the Node tiers give on every commit — but it is a gap,
+not a non-issue.
+
 ## Known gap: no physical indexes
 
 Declared indexes reach a collection through the repository's `indexes`
