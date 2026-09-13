@@ -138,6 +138,13 @@ export default defineConfig({
 			// bakes "", which that module reads as undefined; baking `undefined`
 			// would leave the identifier undeclared in the worker bundle.
 			__OTTA_STRIPE_PUBLIC_KEY__: JSON.stringify(stripePublishableKey ?? ""),
+			// TRANSITIONAL (work order 02 D6): which commerce transport the
+			// plugin bundle is built for. `"http"` is today's behaviour — the
+			// plugin talks to @otta-sh/service over ctx.http. `"in-process"`
+			// will hold commerce truth on ctx.storage and needs no service.
+			// This define, the mode branch it drives and the service itself are
+			// all DELETED at INC-D3b; nothing may be designed around the flag.
+			__OTTA_COMMERCE_MODE__: JSON.stringify("http"),
 		},
 		ssr: {
 			// UNCONDITIONAL: if @otta-sh/plugin is ever externalized the define

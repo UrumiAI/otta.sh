@@ -542,4 +542,27 @@ describe("astro.config", () => {
 		},
 		CONFIG_IMPORT_TIMEOUT_MS,
 	);
+
+	test(
+		'the commerce mode rides a THIRD build-time define, and this site is still "http"',
+		async () => {
+			// TRANSITIONAL (work order 02 D6). `__OTTA_COMMERCE_MODE__` selects the
+			// plugin's commerce transport at BUILD time: "http" talks to
+			// @otta-sh/service over ctx.http, "in-process" will hold commerce truth
+			// on ctx.storage. The define, the factory branch it drives, the service
+			// and this assertion are all DELETED at INC-D3b — the flag exists only
+			// so the client contract can be run against both implementations before
+			// the HTTP one is removed, and must not be treated as permanent.
+			//
+			// It must be PRESENT, not merely correct: an absent define leaves the
+			// identifier undeclared in the worker bundle, and while the plugin's
+			// `typeof` guard makes that safe, baking the mode explicitly is what
+			// makes a site's transport readable from its own config.
+			const config = (await import("../astro.config.js")).default;
+			const define = config.vite?.define as Record<string, string>;
+			expect(Object.keys(define)).toContain("__OTTA_COMMERCE_MODE__");
+			expect(JSON.parse(define["__OTTA_COMMERCE_MODE__"] ?? "null")).toBe("http");
+		},
+		CONFIG_IMPORT_TIMEOUT_MS,
+	);
 });
