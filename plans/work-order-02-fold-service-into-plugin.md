@@ -1,19 +1,21 @@
-# Work order 02 — fold `@otta-sh/service` into the EmDash plugin, and delete it (v5)
+# Work order 02 — fold `@otta-sh/service` into the EmDash plugin, and delete it (v6)
 
-- **Date:** 2026-09-13 (v5 — the service is removed, not retained)
-- **Status:** Draft — three ⚠ USER DECISIONs remain (D1's #2980 gate, D3's no-migration, D3's Orders
-  search)
+- **Date:** 2026-09-13 (v6 — #2169 is merged upstream; the binding rebases onto it)
+- **Status:** Ratified — **all three remaining USER DECISIONs were ratified 2026-09-13, as
+  recommended:** **D1** accepted (the design binds `compareAndSet`'s create-if-absent semantics; the
+  `put()` + unique-index workaround is not adopted), **D3** no data migration (staging is re-seeded),
+  and **D3** the Orders list search narrows to a prefix-only `searchKey`.
 - **Owner:** Otta maintainers
+- **Supersedes:** v1–v5 — work order 02, same title. See "Changes from v5" at the end.
 - **Supersedes/extends:** ADR-0002 (the merge it anticipated — and, at INC-D4, the split itself),
   ADR-0006 Decision 2 (one clause)
-- **Supersedes:** work order 02 v1–v4 (same title). See "Changes from v4" at the end.
 
 ## Goal
 
-Adopt EmDash's plugin-storage conditional-write API (`updateIf`, PR #2169; `getVersioned` /
-`compareAndSet` / `compareAndDelete`, PR #2980) and re-home commerce truth from the service's
-Postgres onto `ctx.storage`, so `@otta-sh/plugin` owns inventory, cart, order, payment and reporting
-state in-process.
+Adopt EmDash's plugin-storage conditional-write API (`updateIf`, PR #2169 — **merged upstream**, so
+it is simply part of `main`; `getVersioned` / `compareAndSet` / `compareAndDelete`, PR #2980 — still
+open) and re-home commerce truth from the service's Postgres onto `ctx.storage`, so
+`@otta-sh/plugin` owns inventory, cart, order, payment and reporting state in-process.
 
 **End state: one deployable, one mode, no service.** The EmDash site Worker is the whole product.
 `@otta-sh/service`, `@otta-sh/store-postgres`, `HttpCommerceClient`, the four admin HTTP clients, the
@@ -22,13 +24,15 @@ no users, so there is nothing to keep a second mode alive for, and a second mode
 exercised is a second mode that quietly rots.
 
 The near-term goal is a `@otta-sh/store-emdash` adapter passing the domain's contract suites **now**,
-against the **real** `PluginStorageRepository` from a locally built, vendored merge of the two PR
-branches — no reference implementation, no waiting on upstream.
+against the **real** `PluginStorageRepository` from a locally built, vendored build of upstream
+`main` — which already carries #2169 — with #2980 merged onto it. No reference implementation, no
+waiting on upstream.
 
 ## Goals of removal (Phase D)
 
-- **Delete `@otta-sh/service`** — the Hono app, its routes, its 41 test files (including the 8
-  wire-contract suites), its wrangler config, its Node bin and its deploy job.
+- **Delete `@otta-sh/service`** — the Hono app, its routes, its 40 test files (including the 8
+  wire-contract suites), its wrangler config, its Node bin and its `wrangler deploy` script (there is
+  no CI deploy job; deploys are manual `wrangler deploy` scripts).
 - **Delete `@otta-sh/store-postgres`** — all 24 migrations, every `Kysely*Store`, the `./pg` and
   `./testing` subpaths, its 29 `*.dialects.test.ts` files and its 12 `*.pg.test.ts` race files (the
   race files having first been re-pointed at `store-emdash` in Phases A–B).
@@ -64,8 +68,8 @@ branches — no reference implementation, no waiting on upstream.
 - Migrating live merchant data (see D3) or publishing packages to npm (issue #44).
 - Marketing claims about oversell in user-facing copy.
 - **Any upstream engagement.** See Decision 0.
-- **Wiring `updateIf` through EmDash's sandbox bridges.** #2169 does not do it and Otta is not
-  proposing it (see the binding section, "What the build does and does not give us").
+- **Wiring `updateIf` through EmDash's sandbox bridges.** Nothing to do: upstream `main` already
+  wires it end to end (see the binding section, "What the build does and does not give us").
 - **Keeping a non-EmDash deployment story.** That is the thing being given up, deliberately and
   explicitly (D5).
 
@@ -73,56 +77,65 @@ branches — no reference implementation, no waiting on upstream.
 
 ## Decision 0 — upstream posture and binding (ratified 2026-09-12)
 
-**Otta does no upstream work of any kind.** No new upstream PRs, no pushes to the existing #2169, no
+**Otta does no upstream work of any kind.** No new upstream PRs, no pushes to any upstream branch, no
 comments, reviews or design notes on the storage discussion (#632) or anywhere else upstream.
 
-**The feature branch binds a locally built merge of the two PR branches, vendored into the repo as
-tarballs.** Not a reference implementation, not a prerelease, not an eventual npm release — the real
-`packages/core` built from:
+**#2169 is merged upstream.** `updateIf` is now simply part of the CMS's `main`, which collapses the
+binding to a single-PR merge: the feature branch binds **upstream `main`, with #2980 merged onto it**,
+vendored into the repo as tarballs. Not a reference implementation, not a prerelease, not an eventual
+npm release — the real `packages/core` built from:
 
-| PR | Branch | Head commit |
+| Base / PR | State | Commit |
 |---|---|---|
-| **#2169** — predicate-guarded atomic `updateIf` | `feat/plugin-storage-updateif` | `36621619` |
-| **#2980** — revision-based conditional writes for storage and KV | `feat/plugin-storage-conditional-writes` (the #2980 author's fork) | `c4b441b0` |
+| **upstream `main`** — already carries #2169's predicate-guarded atomic `updateIf` | merged (#2169 merge commit `107c3ccd`) | `ea2ccd54` |
+| **#2980** — revision-based conditional writes for storage and KV | open, non-draft | `c4b441b0` |
 
 merged onto a single branch, **`otta/emdash-cas`**, built, packed, and committed under `vendor/`.
-Full mechanics and evidence are in "Binding: the vendored CAS build" below.
+Full mechanics and the re-verification obligation are in "Binding: the vendored CAS build" below.
 
 **No Otta work is blocked on upstream.** Every increment from INC-A0 onward runs today against the
 real primitives.
 
-**The integration branch merges to `main` only after** an npm `emdash` release carrying both PRs
-exists **and** the vendored build has been swapped for it (**INC-D6**).
+**The integration branch merges to `main` only after** an npm `emdash` release carrying **#2980**
+exists **and** the vendored build has been swapped for it (**INC-D6**). #2169 is merged, so it will be
+in the next release regardless; #2980 is the only thing left to wait on.
 
-**Recommended, user may veto:** push the merge branch `otta/emdash-cas` to **Otta's own fork** of the
-CMS repository so the vendored build is reproducible by anyone with the repo, rather than only from a
-local clone. Pushing a branch to Otta's own fork is not upstream engagement — no PR is opened,
-nothing is proposed, and nothing is visible to the upstream maintainers as a request. If vetoed,
-`scripts/vendor-emdash.sh` plus the two head SHAs in `vendor/README.md` remain the reproduction
-recipe, which is sufficient but requires network access to both PR heads at rebuild time.
+**Accepted (ratified 2026-09-13):** the merge branch `otta/emdash-cas` is pushed to **Otta's own fork**
+of the CMS repository — the `vedanshujain/emdash` remote — so the vendored build is reproducible by
+anyone with the repo rather than only from a local clone. Pushing a branch to Otta's own fork is not
+upstream engagement: no PR is opened, nothing is proposed, and nothing is visible to the upstream
+maintainers as a request. `scripts/vendor-emdash.sh` plus the pinned base and #2980 head SHAs in
+`vendor/README.md` remain the reproduction recipe either way.
 
 ---
 
 ## Binding: the vendored CAS build
 
-Everything in this section was executed end-to-end and verified; it is not a plan.
+The mechanics below were executed end-to-end and verified — but **on the pre-merge base**, when #2169
+was still an open branch and the recipe merged two PR heads. #2169 has since merged upstream, so the
+base has changed. **Every number and every claim in this section is therefore evidence from the old
+base, and INC-A0 re-verifies all of it on the new one and records the new figures** (see INC-A0).
 
 ### The merge
 
-Both PR heads carry `packages/core` at version **0.37.0**. They merge with **three trivial
-conflicts**:
+**Base: upstream `main` at `ea2ccd54`, which already carries #2169's `updateIf`.** `packages/core` is
+at version **0.37.0** there. Only **#2980** (head `c4b441b0`) is merged onto it, on branch
+`otta/emdash-cas`.
 
-1. **Migration number collision.** Both add a `076_*` migration — #2980's
-   `076_plugin_storage_revisions` collides with main's `076_collection_nav_group`. **Resolution:
-   renumber to `077_plugin_storage_revisions`** — the file rename plus four `.ts` references plus the
-   runner's map key.
-2. **Adjacent type-import lines** in `repositories/plugin-storage.ts`. **Resolution: keep both.**
-3. **`tests/integration/database/migrations.test.ts`.** **Resolution: take #2980's
-   `MIGRATION_NAMES.slice` form.**
+**The only known conflict is the migration-number collision.** #2980 adds
+`076_plugin_storage_revisions`; upstream `main` already ends at `076_collection_nav_group`.
+**Resolution: renumber #2980's migration to `077_plugin_storage_revisions`** — the file rename plus
+four `.ts` references plus the runner's map key. **Verify the free number at build time**: if upstream
+`main` has since added further migrations, renumber to the next free number instead, and record the
+number actually used in `vendor/README.md`. The two other conflicts the old two-head recipe hit (the
+adjacent type-import lines in `repositories/plugin-storage.ts` and
+`tests/integration/database/migrations.test.ts`) were artefacts of merging #2169's branch and may or
+may not recur; resolve as "keep both" and "take #2980's `MIGRATION_NAMES.slice` form" if they do.
 
-The merged tree builds and passes its own suites: install 67s, core build 23s, admin 19s, cloudflare
-12s; **147/147** upstream tests green (`updateIf`, conditional storage, no-oversell, migrations,
-units), and on real Postgres the upstream no-oversell race passes **78/78 across both dialects**.
+On the **old** base the merged tree built and passed its own suites: install 67s, core build 23s,
+admin 19s, cloudflare 12s; **147/147** upstream tests green (`updateIf`, conditional storage,
+no-oversell, migrations, units), and on real Postgres the upstream no-oversell race passed **78/78
+across both dialects**. INC-A0 reproduces these on the new base and records the new numbers.
 
 ### Why tarballs, not a git dependency
 
@@ -132,7 +145,9 @@ and `catalog:` specifiers, and `packages/core` has no `prepare` script, so it wo
 resolution succeeded. **Ruled out on evidence.**
 
 **Committed tarballs work and are the recommendation.** `pnpm pack` three packages, versioned
-**`0.37.1-otta.1`** before packing so they are not confusable with real 0.37.0:
+**`<upstream core version>-otta.1`** before packing so they are not confusable with a real release.
+Upstream `main` at `ea2ccd54` is at `0.37.0`, so the tarball version is **`0.37.1-otta.1`**; if the
+base's version has moved by build time, derive the tarball version from it instead.
 
 | Package | Size | Why |
 |---|---|---|
@@ -171,18 +186,19 @@ up in the same PR.
 
 Scripted as **`scripts/vendor-emdash.sh`**, ~2 minutes:
 
-1. Fetch the two PR heads.
-2. Check out `otta/emdash-cas` from the #2169 head; merge the #2980 head; resolve the three conflicts
-   above.
+1. Fetch upstream `main` and the #2980 head.
+2. Check out `otta/emdash-cas` from upstream `main`; merge the #2980 head; resolve the
+   migration-number collision above (checking the next free number first).
 3. `pnpm install --frozen-lockfile`.
 4. Build `emdash`, `@emdash-cms/admin`, `@emdash-cms/cloudflare`.
 5. Bump all three to `0.37.1-otta.1`.
 6. `pnpm pack --pack-destination <repo>/vendor` ×3.
 
-**Re-run whenever either PR moves.** `vendor/README.md` records the two PR numbers, the two head SHAs,
-and the three conflict resolutions, so a reader can tell exactly what is in the tarballs.
+**Re-run whenever the base or #2980 moves.** `vendor/README.md` records the base `main` SHA, the
+#2980 head SHA, the migration number actually used, and any conflict resolutions, so a reader can tell
+exactly what is in the tarballs.
 
-### Verified in a throwaway consumer
+### Verified in a throwaway consumer — on the old base; INC-A0 re-verifies
 
 - Migrations apply — 76 of them, tail `077_plugin_storage_revisions`.
 - `updateIf` — `applied: true`, then `applied: false` when the guard fails.
@@ -193,20 +209,25 @@ and the three conflict resolutions, so a reader can tell exactly what is in the 
 
 ### What the build does and does not give us
 
-**#2980 wires its operations through both the workerd and cloudflare sandbox bridges. #2169 does not
-wire `updateIf`** — it is one line in `context.ts` only. So on this build a **sandboxed** plugin has
-CAS but not `updateIf`.
+**Re-checked on the new base: `updateIf` *is* wired through the sandbox bridge.** Upstream `main`
+carries it end to end — `storageUpdateIf` on the bridge protocol
+(`packages/cloudflare/src/sandbox/types.ts`), the host-side implementation
+(`packages/cloudflare/src/sandbox/bridge.ts`) and the in-sandbox wrapper
+(`packages/cloudflare/src/sandbox/wrapper.ts`), alongside the `context.ts` line for the trusted path.
+#2980 wires its own conditional-write operations through the same bridge. So on this build a
+**sandboxed** plugin has both `updateIf` and CAS, and the v5 claim that it had CAS but not `updateIf`
+is stale.
 
-This costs Otta nothing that ships: Otta runs **trusted in-process** (ADR-0006), where `updateIf` is
-present, and Otta's own workerd harness hand-builds `ctx` and never touches EmDash's bridge. The
+This changes nothing Otta ships — Otta runs **trusted in-process** (ADR-0006), and Otta's own workerd
+harness hand-builds `ctx` and never touches EmDash's bridge — but it does remove a standing gap. The
 consequences for this document are:
 
 - **T4's storage-backed sandbox suites bind `ctx.storage` in the harness to the real
   `PluginStorageRepository` over better-sqlite3** — the real implementation, injected by Otta rather
   than by the host bridge.
 - **R8 is "the harness is not the real bridge."** The tier that observes the host is T3.
-- If Otta ever needs `updateIf` under the real sandbox, wiring the bridge is **Otta-side work on the
-  merge branch** — a possible optional increment, deliberately **not planned**.
+- If Otta ever needs `updateIf` under the real sandbox, **the host already provides it**; no Otta-side
+  bridge work exists to plan.
 
 ### Migration-name risk
 
@@ -228,10 +249,10 @@ anyway). Recorded as **R13** and as a checklist item in **INC-D6**.
 - **`main` is merged into the integration branch** after every merge to `main` that touches
   `packages/plugin`, `sites/staging`, `.dependency-cruiser.cjs`, or `adr/`. Do not let this
   accumulate — the branch lives for months and these are exactly the files it rewrites.
-  **Named drift risk: PR #102.** It touches `manifest.ts`, `plugin.ts`, `types.ts`,
-  `site-config.test.ts` and `adr/README.md`, re-adds a field widget (flipping the existing
+  **Named drift risk: PR #102, which is being closed.** It touches `manifest.ts`, `plugin.ts`,
+  `types.ts`, `site-config.test.ts` and `adr/README.md`, re-adds a field widget (flipping the existing
   `fieldWidgets` assertion), adds a `content:write` capability, and collides on an ADR number — all
-  five are files INC-A5/A6/C3/D1 rewrite. Land or close #102 early and merge it down immediately.
+  five are files INC-A5/A6/C3/D1 rewrite. Closing it removes the drift and frees ADR-0018's number.
 
 **Staging is deployable from the feature branch.** This is the point of vendoring rather than
 waiting: **INC-D1 (the staging cut-over) happens on the vendored build**, subject to R13's
@@ -239,7 +260,8 @@ migration-name risk. Staging runs the feature branch; `main` does not.
 
 **The integration branch merges to `main` only when all three hold:**
 
-1. An npm `emdash` release carrying **both** #2169 and #2980 exists.
+1. An npm `emdash` release carrying **#2980** exists. (#2169 is already merged upstream, so it will be
+   in the next release regardless; #2980 is the only gate.)
 2. **INC-D6** (swap the vendored build for the release) is complete and green.
 3. The **full battery** plus **T3** are green on the released build.
 
@@ -257,7 +279,7 @@ extraction — so either could be taken to `main` directly to shrink the eventua
 
 ## Decision record
 
-### D1. Storage primitives and the adapter seam ⚠ USER DECISION
+### D1. Storage primitives and the adapter seam (ratified 2026-09-13)
 
 **Recommendation.** Bind the *real* primitives from the vendored build, and keep one structural seam
 so the binding can be swapped without touching the adapters.
@@ -298,15 +320,15 @@ what lets the same adapter run against `ctx.storage` in production and a bare re
 **Cost.** The repo carries 9.1 MB of vendored tarballs until INC-D6, and a rebuild script that must be
 re-run whenever either PR moves. Both are cheap and visible.
 
-**⚠ Ratify:** accept that the whole design rests on `compareAndSet`'s create-if-absent semantics
-surviving to the npm release, with no Otta-side workaround — and note that **with the service deleted
-there is no fallback transport either**. The alternative primitive — `put()` plus a declared
+**Ratified 2026-09-13:** accepted — the design rests on `compareAndSet`'s create-if-absent semantics
+surviving to the npm release, with no Otta-side workaround, and with the service deleted there is no
+fallback transport either. The alternative primitive — `put()` plus a declared
 `uniqueIndexes` constraint-violation catch — is **rejected on evidence**:
 `syncDeclaredStorageIndexes` logs index failures and *never throws* (its own comment: "a missing index
 affects query performance, not correctness, so it must not fail an install or a scheduler tick"), and
 the failure is swallowed per index inside `createStorageIndexes`, including for `unique: true`. A
 unique index that fails to materialize silently degrades once-only enforcement. That is not acceptable
-for money.
+for money. **That workaround is not adopted.**
 
 **Rejected alternatives.**
 - **A pnpm git dependency on the merge branch** — verified not to work
@@ -358,7 +380,7 @@ the sequencing note.
 | **`adopt` / `adoptMany` / `commitMany` / `releaseAdopted` — one order's holds spanning N SKUs** (`kysely-inventory-store.ts:223,258,309,189`) | **(b) Intent-claim.** These take reservation ids with **no sku**, and today each is ONE guarded `UPDATE … WHERE id IN (:ids)`. Under per-SKU documents they become N writes across N documents, which is not atomic. The order document records the `holdsAdopted` / `holdsCommitted` **intent** before any per-SKU write; each per-SKU write is idempotent by reservation id; a **sweeper completes a partial set from the order's intent**. Reservation id → sku comes from `reservation_index`. | a paid order never has a hold left un-committed and then reaped by the Phase-3 sweep | `inventoryStoreContract`'s `adoptMany`/`commitMany` cases (incl. the unknown-id asymmetry: `commitMany` **throws**, `adoptMany` returns `lost`) + `no-oversell-checkout-multiline.pg.test.ts` (3 SKUs) + a new partial-commit crash case |
 | `#flipAndEnqueue` — guarded order flip **+** append-only `order_events` **+** `order_emails_outbox` upsert (`kysely-order-store.ts:1002-1065`) | **(a) Embed.** The order document carries `state`, `events[]`, `emailOutbox[]`. One `compareAndSet` guarded on `rev` and `state === from`. "Flipped but no event" becomes structurally unreachable, as today. | transition once-only; audit completeness; outbox exactly-once per `(orderId, toState)` | `order-transition-contract`, `order-timeline-contract`, `outbox-dispatch.dialects.test.ts` |
 | `createFromCart` — `orders` insert `ON CONFLICT DO NOTHING` **+** multi-row `order_items` **+** `order_totals` **+** `order_shipping_address` (`kysely-order-store.ts:99-193`) | **(a) Embed** header + items + totals + address in one document, created by a single create-if-absent. **Snapshot immutability becomes structural**: items are written only by the creating write, and `OrderDoc.items` is `readonly`. Plus **(b)** for the key→id link: `order_keys/{idempotencyKey}` is claimed first and carries the full intent (orderId + payload), so any replayer can deterministically finish the create; the create itself is create-if-absent on `orderId`, hence idempotent. | replay once-only; order snapshot immutability (price + title frozen at purchase) | `order-store-contract`, `order-flow.dialects.test.ts`, the existing "editing a product never rewrites an order line" case |
-| Refund `reserveRefund`/`finalizeRefund` + ceiling `min(Σcaptured, frozen total)` computed under a portable row lock (`kysely-order-store.ts:337-342`, `:538-544`) | **(a) Embed** `payments[]` and `refunds[]` inside the order document, **plus `refund_keys/{refundIdempotencyKey} → { orderId }`**: the settle path today finds the order by the refund key alone (`updateTable("refunds").where("idempotency_key", …)` then reads `order_id`), and an embedded array cannot be looked up by that key without a scan. The ceiling is computed *inside* the read-modify-write and committed by the same `compareAndSet`. | refund ceiling never exceeded; refund idempotency once-only | `refund-order-contract`, `refund-race.pg.test.ts` |
+| Refund `reserveRefund`/`finalizeRefund` + ceiling `min(Σcaptured, frozen total)` computed under a portable row lock (`kysely-order-store.ts:382`, `:560`) | **(a) Embed** `payments[]` and `refunds[]` inside the order document, **plus `refund_keys/{refundIdempotencyKey} → { orderId }`**: the settle path today finds the order by the refund key alone (`updateTable("refunds").where("idempotency_key", …)` then reads `order_id`), and an embedded array cannot be looked up by that key without a scan. The ceiling is computed *inside* the read-modify-write and committed by the same `compareAndSet`. | refund ceiling never exceeded; refund idempotency once-only | `refund-order-contract`, `refund-race.pg.test.ts` |
 | `#carrySkuStock` — sku rename, two inventory rows locked in sorted order (`kysely-product-commerce-store.ts:409-473`) | **(b) Intent-claim.** One `compareAndSet` on the source doc sets `onHand → 0` *and* `transferOut: { token, toSku, qty }` — and the "refuse if the source has a `held`/`adopted` reservation" check (`SkuHeldStockError`) is now a read of the *same document*, so that guard also becomes structural. Then the target doc applies the transfer iff `appliedTransfers` lacks `token` (bounded ring). Then the source clears `transferOut`. Any replayer or the sweeper completes it. | stock conservation across rename; `SkuHeldStockError`; idempotent replay | `sku-rename-ledger.dialects.test.ts`, `sku-rename-race.pg.test.ts`, `variant-sku-rename-race.pg.test.ts` |
 | Cart `expireHold` — deadline re-check + stock return + line delete in one tx (`kysely-cart-store.ts:327-368`) | **(b) Intent-claim.** Guarded flip of the cart line to `expiring` (once-only token) → release the reservation (idempotent by its own state machine) → remove the line. Sweeper completes a partial. Today's fixed lock order becomes a fixed *step* order. | hold expiry returns stock exactly once | `hold-expiry.dialects.test.ts`, `cart-fence.dialects.test.ts`, `no-oversell-cart.pg.test.ts` |
 | Coupon no-over-redeem — `uses_count+1 WHERE max_uses IS NULL OR uses_count < max_uses` (`kysely-coupon-store.ts:211-219`) | **(a)** single-row already. Split the `OR` into two client-side branches (`updateIf` with `where: { usesCount: { lt: max } }` when capped; unguarded `delta` when uncapped — an uncapped coupon has no invariant to violate). Per-customer cap keeps today's after-the-lock semantics in a `coupon_redemptions/{couponId}:{customerId}` counter doc. | `CouponExhaustedError` ceiling | `coupon-lifecycle.dialects.test.ts`, `coupon-no-over-redeem.pg.test.ts` |
@@ -416,7 +438,7 @@ aggregate discipline resolves orders, refunds and carts for free.
 
 ---
 
-### D3. Data home ⚠ USER DECISION (migration, and orders search)
+### D3. Data home (both decisions ratified 2026-09-13: no migration; prefix-only Orders search)
 
 **Recommendation — collection layout: one collection per aggregate, one per ledger that has no
 aggregate, plus the two lookup collections the port signatures force.** Declared on the descriptor's
@@ -447,7 +469,7 @@ format or trust gate anywhere** — `adaptSandboxEntry` builds the storage confi
 
 **Why `reservation_index` and `refund_keys` are not optional.** `commit`, `release`, `adjust`,
 `releaseAdopted`, `adoptMany` and `commitMany` all take reservation ids **with no sku**
-(`packages/domain/src/ports/inventory-store.ts:28-78`); with holds embedded per SKU there is no way to
+(`packages/domain/src/ports/inventory-store.ts:33-126`); with holds embedded per SKU there is no way to
 find the document. The contract also pins two *different* unknown-id behaviours —
 `commitMany(["no-such-reservation"])` must **throw** `ReservationNotFoundError`
 (`inventory-store-contract.ts:653`) while `adoptMany` must fold an unknown id into `lost` and never
@@ -495,7 +517,8 @@ only.
 
 #### What it genuinely cannot serve, and the fix
 
-**1. The Orders list search — it is an OR of three arms, not a substring problem. ⚠ USER DECISION**
+**1. The Orders list search — it is an OR of three arms, not a substring problem. Ratified
+2026-09-13: prefix-only `searchKey`.**
 
 `listOrders`' search predicate is an id-prefix arm **OR** a folded buyer_ref substring arm **OR** an
 exact-lower sku arm expressed as a correlated `EXISTS`
@@ -513,15 +536,15 @@ partial id or sku matches. v4 offered "keep the Orders list on the service" as t
 the service deleted (D5) that option no longer exists**, which raises the stakes on this ratification
 rather than lowering them.
 
-**Recommend the `searchKey` denormalization**, documented in the screen's empty state. **⚠ Ratify
-before INC-B4 is scoped.** If it is rejected, the only remaining move is to widen the domain port —
-a separate change with its own PR.
+**The `searchKey` denormalization was ratified 2026-09-13**, with the narrowing documented in the
+screen's empty state. Widening the domain port instead — the only other move — was not taken, and
+would be a separate change with its own PR if it is ever wanted.
 
 **2. Correlated existence (search by line SKU).** → `order_sku_index` documents, written after order
 creation, derived and idempotent (so no atomicity needed), healed by the sweeper. Feeds `searchKey`.
 
 **3. Keyset pagination maps in shape but not in token.** `OrderListCursor` is a value position
-`{createdAt, id}` that the plugin route mints for the wire (`order-store.ts:699-712`). The host cursor
+`{createdAt, id}` that the plugin route mints for the wire (`order-store.ts:704-707`). The host cursor
 is an **opaque host-minted string** whose encoder is internal and whose seek re-reads the cursor row
 from the database by id. So: `listOrders` is keyset, which is the right shape, but the adapter must
 either round-trip the host cursor through the route's opaque token or re-derive the position; decide
@@ -546,13 +569,13 @@ count over a created-at window with no allow-list (`:36-41`). `ReportInterval` i
 
 **5. Raw SQL / host DB handle** — never available to a plugin. Nothing in the plan needs it.
 
-**Data migration: no migration. ⚠ Ratify.** Staging's commerce data is demo data with an existing
+**Data migration: none. Ratified 2026-09-13.** Staging's commerce data is demo data with an existing
 re-seed script (`sites/staging/scripts/seed-demo-commerce.ts`), nothing is published to npm, and there
-is no live merchant. Cut over by re-seeding; staging's order history is discarded. This also makes
-R13's migration-name remediation trivial. If rejected, the fallback is a one-shot
+is no live merchant. Staging is **re-seeded** at cut-over and its order history is discarded. This also
+makes R13's migration-name remediation trivial. The rejected fallback — a one-shot
 `@otta-sh/store-emdash/migrate` reading Postgres through the existing Kysely stores and writing
-documents through the new adapters — roughly one increment, and **it must be built before INC-D3
-deletes those stores**, so a late rejection is expensive. Decide early.
+documents through the new adapters — is **not built**, and with the decision ratified there is no
+longer a deadline hanging over INC-D3b.
 
 **Cost.** ~22 collections to declare and keep in sync with the descriptor; the index lists become part
 of the read contract and must be pinned; the search narrowing above; reporting becomes write-time work
@@ -569,11 +592,14 @@ indexes, guarantees hot-row contention). Mirroring the Postgres tables one-to-on
 **Recommendation.**
 
 1. **Amend `plugin-is-sandbox-clean`** (`.dependency-cruiser.cjs:21-54`) to admit `@otta-sh/domain`
-   and `packages/store-emdash/`. This is **three regex clauses, not two**:
-   `node_modules/@otta-sh/(domain|admin-react)`, the bare-specifier
+   and `packages/store-emdash/`. **Read against the file as it stands, the shape is this:** the rule's
+   single `to.path` alternation already names **both** `domain` and `admin-react` in **all three**
+   `@otta-sh` clauses — `node_modules/@otta-sh/(domain|admin-react)`, the bare specifier
    `^@otta-sh/(domain|admin-react)`, and `^packages/(store-[^/]+|service|payments-[^/]+|domain|admin-react)/`
-   — and `store-[^/]+` must become an explicit list or a negative lookahead, since it currently
-   swallows `store-emdash`. Everything else stays exactly as-is for now: `pg`, `pg-pool`, `kysely`,
+   — so the edit is to **drop `domain` from all three** (admitting the domain) while **keeping
+   `admin-react` in all three** (the one-hop escape from the console quarantine stays banned). Separately,
+   `store-[^/]+` in the third clause must become an explicit list or a negative lookahead, because as
+   written it swallows `store-emdash` along with `store-postgres`. Everything else stays exactly as-is for now: `pg`, `pg-pool`, `kysely`,
    `better-sqlite3`, `workerd`, `hono`, `undici`, `node-fetch`, `axios`, `ws`, the
    `^(node:)?(fs|child_process|net|http|https|os|dgram|dns|tls|worker_threads|cluster|vm)` builtin
    half (note the deliberate optional-`node:` form the rule's own comment explains),
@@ -718,24 +744,24 @@ release will ever carry, and INC-D6 would silently remove it).
 existing HTTP test body stays green while the adapters land. Then delete all of it.
 
 - **Composition root.** `packages/plugin/src/commerce/make-commerce-client.ts` exports
-  `makeCommerceClient(ctx)` returning the plugin-local `CommerceClient`. The ~11 direct construction
-  sites across 15 modules (`storefront/{pdp,cart,checkout,account}-routes.ts`,
+  `makeCommerceClient(ctx)` returning the plugin-local `CommerceClient`. The ~14 construction
+  sites across 14 modules (`storefront/pdp-route.ts`,
+  `storefront/{cart,checkout,account}-routes.ts`,
   `entitlements/download-route.ts`, `sync/hooks.ts`, `admin/{orders,products}-console-route.ts`,
-  `admin/{reports,settings,tax,shipping,coupons}-page.ts`, `admin/scaffold/list-detail.ts`) are
+  `admin/settings-form.ts`, `admin/{reports,tax,shipping,coupons}-page.ts`, `admin/scaffold/list-detail.ts`) are
   refactored to call it. **This refactor ships first, alone, with no behavioural change** (INC-A6) so
   the later switch is a one-line diff in one file. It is also what carries the React console: the
   `otta-console` descriptor holds no routes and no storage — its own docblock records that "its data
   comes from `otta`'s existing authenticated admin route, called with the operator's own session" — so
   the console needs no increment of its own.
 - **Why keep a flag at all, when there will be one mode?** Because the HTTP client's test body *is* the
-  spec. `commerceClientContract` is extracted from `http-commerce-client.test.ts`,
-  `http-commerce-client-cart.test.ts` and `admin-rules-client.test.ts` (INC-A7), and running it against
+  spec. `commerceClientContract` is extracted from **all eight** client test files (INC-A7), and running it against
   **both** implementations is what proves the in-process client is behaviourally identical before the
   HTTP one is deleted. The flag buys that proof and nothing else.
 - **Everything in this decision is deleted in Phase D.** Specifically, at INC-D3:
   `__OTTA_COMMERCE_MODE__`, `resolveCommerceMode`, `__OTTA_COMMERCE_SERVICE_URL__`,
   `COMMERCE_SERVICE_BASE_URL` and the derivation of `ALLOWED_HOSTS` from it, `HttpCommerceClient`, the
-  four admin HTTP clients, `start-live-service.ts`, `packages/service`'s 41 test files (including its 8
+  four admin HTTP clients, `start-live-service.ts`, `packages/service`'s 40 test files (including its 8
   wire-contract suites), and the `settings:serviceToken` / `settings:internalToken` kv keys and
   Settings-form fields. **Write the deletion into INC-A6's own PR description** so nobody builds on the
   flag as if it were permanent.
@@ -773,7 +799,7 @@ from the vendored build.**
 
 | Tier | What it runs | Backing | When |
 |---|---|---|---|
-| **T0 fake** | 14 `*.contract.fake.test.ts` | in-memory domain fakes (kept forever — they are part of `@otta-sh/domain`) | every run |
+| **T0 fake** | 15 `*-contract.fake.test.ts` | in-memory domain fakes (kept forever — they are part of `@otta-sh/domain`) | every run |
 | **T1 emdash-sqlite** | all 21 contract suites against `store-emdash` | **real `PluginStorageRepository` over better-sqlite3**, schema from `runMigrations` | every run — the fast local loop |
 | **T2 emdash-postgres** | same suites **+ the 12 race files** re-pointed at `store-emdash` | **the same repository over Postgres — the real race** | per-PR when the diff touches an adapter; full battery at work-order end |
 | **T3 real D1** | contract suites + races | the same repository over D1 under a workers pool — **the production dialect, and the only tier that observes the host's own wiring** | **hard gate once, at INC-A4**; thereafter **nightly + release gate** |
@@ -876,10 +902,11 @@ an increment.
 
 | Item | State | What Otta does |
 |---|---|---|
-| **#2169 `updateIf`** — head `36621619`, pinned in `vendor/README.md` | open, draft | **If the head moves:** re-run `scripts/vendor-emdash.sh`, re-resolve the three conflicts if they changed, re-run the full battery. Record the new SHA in `vendor/README.md`. |
-| **#2980 conditional writes** — head `c4b441b0`, pinned in `vendor/README.md` | open, non-draft | Same. Watch especially for a change to `compareAndSet`'s create-if-absent semantics (D1's ⚠) or to the migration number (R13). |
-| **An npm `emdash` release carrying both** | does not exist yet | **INC-D6** — swap the overrides to the registry version, delete `vendor/`, re-run the full battery and T3, reconcile the migration name against staging D1, then merge the integration branch to `main`. |
-| **`updateIf` sandbox bridge wiring** (absent from #2169) | not wired | Nothing. Otta runs trusted in-process; the harness injects the repository directly. |
+| **#2169 `updateIf`** | **merged** (merge commit `107c3ccd`) | Nothing. It is part of `main`; it is no longer a watch item. |
+| **Base: upstream `main`** — `ea2ccd54`, pinned in `vendor/README.md` | moves continuously | **If the base moves and Otta rebases:** re-run `scripts/vendor-emdash.sh`, **re-check the next free migration number**, re-run the full battery. Record the new base SHA in `vendor/README.md`. |
+| **#2980 conditional writes** — head `c4b441b0`, pinned in `vendor/README.md` | open, non-draft | Same. Watch especially for a change to `compareAndSet`'s create-if-absent semantics (D1) or to the migration number (R13). |
+| **An npm `emdash` release carrying #2980** | does not exist yet | **INC-D6** — swap the overrides to the registry version, delete `vendor/`, re-run the full battery and T3, reconcile the migration name against staging D1, then merge the integration branch to `main`. (#2169 needs no watching — it ships with the next release either way.) |
+| **`updateIf` sandbox bridge wiring** | **wired on `main`** (`packages/cloudflare/src/sandbox/{types,bridge,wrapper}.ts`) | Nothing. Otta runs trusted in-process; the harness injects the repository directly. The gap v5 recorded here is closed. |
 | **Nested-path `updateIf`** | not proposed | Nothing. Reserve stays a CAS read-modify-write permanently (D2, R2). |
 | **`rawBody` on `PluginRoute`** | not proposed | Nothing. The site-owned webhook endpoint is the end state (D5, R9). |
 | **Index materialization** | already merged upstream and present in the build | See D3's index rule. |
@@ -897,11 +924,21 @@ the branch is "revert the merge commit".
 **INC-A0 `[CI]` Vendor the CAS build and bump the host to `0.37.1-otta.1`** — *first on the feature
 branch; everything else depends on it*
 - Branch: `chore/vendor-emdash-cas-build`
+- **Re-verification is part of the scope, not a formality.** The binding section's evidence was gathered
+  on the **pre-merge base**, when #2169 was an open branch. The base is now upstream `main` at
+  `ea2ccd54`, which carries #2169. **Every claim must be re-executed on the new base and the new numbers
+  recorded in the PR body:** the upstream suite count (was 147/147), the Postgres no-oversell race (was
+  78/78 across both dialects), the throwaway-consumer checks (migrations apply and their tail name;
+  `updateIf` applied/not-applied; `getVersioned`; `compareAndSet` including the stale-revision case;
+  `compareAndDelete`), **that `@emdash-cms/admin` is still required** (core's `dist` importing the
+  unreleased `./portable-text-table` subpath), and **that the overrides behaviour is unchanged** (a
+  second stock `emdash` appears without them; `pnpm.overrides` in `package.json` is still ignored).
+  Anything that no longer holds is corrected in this PR, in this document, and in `vendor/README.md`.
 - Scope:
-  1. **`scripts/vendor-emdash.sh`** — the six-step rebuild recipe.
-  2. **`vendor/`** — the three tarballs (9.1 MB total), committed.
-  3. **`vendor/README.md`** — the two PR numbers, the two head SHAs, the three conflict resolutions, and
-     why `@emdash-cms/admin` is required.
+  1. **`scripts/vendor-emdash.sh`** — the six-step rebuild recipe (base `main` + #2980, not two PR heads).
+  2. **`vendor/`** — the three tarballs (9.1 MB total on the old base; re-measure), committed.
+  3. **`vendor/README.md`** — the base `main` SHA, the #2980 number and head SHA, the migration number
+     actually used, any conflict resolutions, and why `@emdash-cms/admin` is required.
   4. **Overrides in `pnpm-workspace.yaml`** (not `package.json` — pnpm 11.10 silently ignores
      `pnpm.overrides` there). Manifests keep plain `"0.37.0"` specifiers.
   5. **`minimumReleaseAgeExclude` cleanup** — drop the stale 0.31.1-train entries.
@@ -982,7 +1019,13 @@ wiring*
   vendored build plus a copied stub plugin?** (see D7 for the obstacles). **Fallback: drive the
   operations through the vendored cloudflare sandbox bridge.** **Question #2 (R1)** — does `RETURNING` /
   `json_set` under `updateIf` behave on D1? Then `inventoryStoreContract` and `no-oversell` on D1. Adds
-  `pnpm test:d1` and a nightly workflow job.
+  `pnpm test:d1` and a nightly workflow job. **Vitest wiring:** the root `vitest.config.ts` aggregates
+  per-package projects via the globs `packages/*/vitest.config.ts` and `sites/*/vitest.config.ts`, and
+  sets `fileParallelism: process.env.PG_CONNECTION_STRING === undefined` at the root. The workers-pool
+  D1 project needs its own pool and cannot share one, so it must be added as a **separate project**
+  without losing that root `fileParallelism` behaviour under Postgres — a D1 project that resets
+  `fileParallelism` for the whole run would let the pg race files run in parallel and flake on
+  `max_connections`.
 - Acceptance: contract and race green on real D1 by one of the two routes; the route taken recorded;
   nightly job wired; **hard gate — the branch does not proceed to the staging cut-over if D1 diverges.**
 - Depends: **INC-A0**, INC-A2. Size: **M**.
@@ -990,8 +1033,9 @@ wiring*
 **INC-A5 `[CI][Docs]` Amend the plugin boundary + ADR-0018** *(behaviour-neutral)*
 - Branch: `chore/plugin-boundary-admits-domain`
 - Scope: `.dependency-cruiser.cjs` — `plugin-is-sandbox-clean` admits `@otta-sh/domain` and
-  `packages/store-emdash/` across **all three clauses**, `store-[^/]+` becoming an explicit list or a
-  negative lookahead; comment rewritten; `adr/0018-plugin-owns-commerce-truth-in-process.md`;
+  `packages/store-emdash/`: **`domain` is removed from all three `@otta-sh` clauses** (which already
+  name it today) while `admin-react` stays in all three, and `store-[^/]+` in the third becomes an
+  explicit list or a negative lookahead so it stops swallowing `store-emdash`; comment rewritten; `adr/0018-plugin-owns-commerce-truth-in-process.md`;
   `adr/README.md` record entry.
 - Failing test first: **a new `packages/plugin/test/depcruise-boundary.test.ts`** shelling out to
   `depcruise` over a fixture tree with planted `pg`, `node:fs`, `@otta-sh/admin-react` and
@@ -1007,7 +1051,7 @@ wiring*
 **INC-A6 `[Plugin]` Commerce-client factory + transitional `commerce.mode` flag (pure refactor)**
 - Branch: `refactor/commerce-client-factory`
 - Scope: `packages/plugin/src/commerce/make-commerce-client.ts`; all direct client constructions in the
-  15 modules listed in D6 routed through it; `__OTTA_COMMERCE_MODE__` define + a pure
+  14 modules listed in D6 routed through it; `__OTTA_COMMERCE_MODE__` define + a pure
   `resolveCommerceMode()` in `manifest.ts`, which also drives `COMMERCE_SERVICE_BASE_URL` and
   `ALLOWED_HOSTS` per mode; `InProcessCommerceClient` stub throwing `not implemented`;
   `sites/staging/astro.config.ts` sets the define to `"http"`. **Packaging:** promote `@otta-sh/domain`
@@ -1024,9 +1068,14 @@ wiring*
 
 **INC-A7 `[Test]` Extract `commerceClientContract`** *(behaviour-neutral)*
 - Branch: `test/commerce-client-contract`
-- Scope: lift the assertions from `http-commerce-client.test.ts`, `http-commerce-client-cart.test.ts` and
-  `admin-rules-client.test.ts` into `packages/plugin/test/contracts/commerce-client-contract.ts` taking
-  `makeClient`; the http tier calls it over the existing live-service harness. Split the contract into
+- Scope: lift the assertions from **all eight** client test files — `http-commerce-client.test.ts`,
+  `http-commerce-client-cart.test.ts`, `http-commerce-client-cart-order-id.test.ts`,
+  `http-commerce-client-checkout.test.ts`, `http-commerce-client-entitlement.test.ts`,
+  `http-commerce-client-service-token.test.ts`, `http-commerce-client-service-token.live.test.ts` and
+  `admin-rules-client.test.ts` — into `packages/plugin/test/contracts/commerce-client-contract.ts` taking
+  `makeClient`; those eight are the complete set (verified by listing `packages/plugin/test/`: no other
+  file constructs `HttpCommerceClient` or one of the four admin clients except the sandbox route suites,
+  which are not client tests); the http tier calls it over the existing live-service harness. Split the contract into
   the three slices B10a/B10b/B10c will consume. **This extraction is what survives the deletion of the
   HTTP client** — it is the spec, lifted out of the implementation that is going away.
 - Acceptance: the http tier is green with no assertion lost (diff-reviewed case-by-case).
@@ -1069,8 +1118,8 @@ Depends: INC-B2. Size: **L**.
 
 **INC-B4 `[Adapters]` `EmdashOrderStore` III — lists, counts, customer views, search, email outbox** —
 branch `feat/emdash-order-store-lists`. `listOrders`/`countOrders` on `query`+`count` with the D3 index
-set; `order_sku_index`; the **`searchKey` denormalization** — **⚠ do not merge before D3's orders-search
-decision is ratified**; the cursor-mapping decision is made here and written down; `listForCustomer`,
+set; `order_sku_index`; the **`searchKey` denormalization** (D3's orders-search decision
+is ratified: prefix-only); the cursor-mapping decision is made here and written down; `listForCustomer`,
 `linkGuestOrders`, `claimNextEmail` lease via guarded `updateIf` on `emailDueAt`. Test first: the
 list/count cases in `order-store-contract`, `outbox-dispatch.dialects.test.ts`, ADR-0017's refresh
 semantics, plus a case pinning the **one-row-per-order** guarantee under a multi-line sku match and a
@@ -1191,8 +1240,12 @@ INC-D1 is smoke-green**, because after D3b there is nothing to fall back to.
 
 **INC-D3a `[Service][Site][CI]` Retire the deployment and the mode plumbing** — branch
 `chore/retire-service-deployment`
-- Remove the service's wrangler config and its deploy job; **retire the staging service Worker, its
-  database binding and its managed Postgres** (a deployment action, no source deleted here).
+- Remove the service's wrangler config and **its `wrangler deploy` scripts in
+  `packages/service/package.json`** — there is **no CI deploy job and no CI matrix** to edit; CI has a
+  `unit` job and an `integration` job only, and deploys are manual `wrangler deploy` scripts documented
+  in `DEPLOYMENT.md`. **Delete the service's `DEPLOYMENT.md` section** in the same PR.
+- **Retire the staging service Worker, its database binding and its managed Postgres** (a deployment
+  action, no source deleted here).
 - Delete `__OTTA_COMMERCE_MODE__`, `resolveCommerceMode`, `__OTTA_COMMERCE_SERVICE_URL__`,
   `COMMERCE_SERVICE_BASE_URL` and the derivation of `ALLOWED_HOSTS` from it — `ALLOWED_HOSTS` becomes a
   plain literal list (Stripe API, email API, x402 facilitator).
@@ -1203,7 +1256,7 @@ INC-D1 is smoke-green**, because after D3b there is nothing to fall back to.
 
 **INC-D3b `[Adapters][Plugin][Test]` Delete the packages, the HTTP clients and their tests** — branch
 `chore/delete-service-and-store-postgres`
-- Delete **`packages/service`** — the Hono app, routes, Node bin, and all 41 test files including the 8
+- Delete **`packages/service`** — the Hono app, routes, Node bin, and all 40 test files including the 8
   wire-contract suites.
 - Delete **`packages/store-postgres`** — all 24 migrations, every `Kysely*Store`, `src/id-gen.ts`, the
   `.`/`./pg`/`./testing` subpaths, its 29 `*.dialects.test.ts` files and its 12 `*.pg.test.ts` race
@@ -1212,7 +1265,14 @@ INC-D1 is smoke-green**, because after D3b there is nothing to fall back to.
   removes a gate.
 - **Do not delete** the Kysely dialect construction that `store-emdash`'s test harness needs (D7).
 - Delete `HttpCommerceClient`, `admin-orders-client`, `admin-products-client`, `admin-rules-client`,
-  `reporting-client`, their tests, and `packages/plugin/test/helpers/start-live-service.ts`.
+  `reporting-client`, their tests, and **both** `packages/plugin/test/helpers/start-live-service.ts`
+  **and `packages/plugin/test/helpers/stub-commerce-server.ts`** — the stub server exists only to stand
+  in for the HTTP transport.
+- **Rewrite or remove the 58 unreleased changesets under `.changeset/` that name `@otta-sh/service` or
+  `@otta-sh/store-postgres`** (58 of 120 files). `changeset version` **breaks** on a changeset naming a
+  package that no longer exists, so this is not housekeeping — it is a required part of the deletion.
+  Re-point an entry at a surviving package where the note still means something, and drop it where it
+  does not.
 - Collapse `makeCommerceClient` to return the in-process client unconditionally; `commerceClientContract`
   now has one tier.
 - Decide and record: do `packages/plugin/src/types.ts`'s hand-mirrored wire types stay as the admin
@@ -1227,8 +1287,10 @@ INC-D1 is smoke-green**, because after D3b there is nothing to fall back to.
   path cannot be tested and will silently rot. Re-run the `depcruise-boundary.test.ts` fixtures.
 - CLAUDE.md: remove the `[Service]` tag row from the PR-tag table and the `@otta-sh/service` /
   store-adapter lines from the status paragraph.
-- CI: remove the service matrix entries and any job step that builds or deploys it; **keep the Postgres
-  service container and `test:pg`**.
+- CI: there is **no service matrix and no service deploy job** to remove — CI is a `unit` job plus an
+  `integration` job, both workspace-wide, so deleting the package is the whole change. Confirm no job
+  step references the deleted package by path, and **keep the Postgres service container and
+  `test:pg`**.
 - Acceptance: `pnpm lint` green; CI green with no orphaned job. Depends: INC-D3b. Size: **S**.
 
 ---
@@ -1249,14 +1311,16 @@ INC-D1 is smoke-green**, because after D3b there is nothing to fall back to.
   databases" architecture line if Q1 confirms commerce documents share the CMS database. No oversell
   claim in any user-facing copy. Size: **M**.
 
-**INC-D5 `[Docs]` Memory note** — record the outcome, the measured contention/D1 numbers, the two pinned
-PR head SHAs, the conflict resolutions, what was deleted, and anything INC-D6 had to reconcile.
+**INC-D5 `[Docs]` Memory note** — record the outcome, the measured contention/D1 numbers, the pinned
+base `main` SHA and #2980 head SHA, the migration number used, any conflict resolutions, what was
+deleted, and anything INC-D6 had to reconcile.
 Size: **S**.
 
 **INC-D6 `[CI]` Swap the vendored build for the npm release, then merge to main** — *the gate for
 merging the integration branch*
 - Branch: `chore/unvendor-emdash`
-- Preconditions: an npm `emdash` release exists carrying **both** #2169 and #2980.
+- Preconditions: an npm `emdash` release exists carrying **#2980**. (#2169 is merged upstream, so any
+  release cut after its merge carries it; #2980 is the only precondition.)
 - Scope:
   1. Point the three `pnpm-workspace.yaml` overrides at the **registry** version, or remove the overrides
      entirely if the released `@emdash-cms/cloudflare` no longer pins an exact stale `emdash`. **Verify
@@ -1399,8 +1463,8 @@ graph TD
 | **0019** | Commerce aggregates are one storage document per aggregate; idempotency is the document id | proposed → accepted at INC-B0 | New. Names the document model that satisfies ADR-0002's storage seam without transactions. Records the replay **ordering** rule, the two lookup collections the port signatures force, the permanent CAS contention budget, the two-sided index rule, and — **because the Kysely stores are deleted at INC-D3b** — a prose snapshot of the guard semantics each document write replaces. |
 | **0020** | **One deployable: the plugin owns commerce truth; the service is removed** | proposed → accepted at INC-D4 | **Supersedes ADR-0002 in part** — the plugin/service split it established is undone; **the ports-and-adapters discipline it established stands and is what makes the removal safe.** Answers ADR-0002's five "a service may remain" reasons as **explicitly rejected, pre-launch, no users**. Records that a future service would be **re-derived from the unchanged domain ports**, never kept on standby. Records the Stripe-secret trust widening, the non-public settle-route requirement, and that the site-owned webhook endpoint is permanent. Does **not** deprecate ADR-0001. |
 
-Note: open PR #102 adds an `adr/0012-…` whose number collides with the accepted ADR-0012. Resolve that
-before 0018 is written, or the `adr/README.md` record list will be wrong in two places at once.
+Note: PR #102 added an `adr/0012-…` whose number collided with the accepted ADR-0012. **#102 is being
+closed**, which resolves the collision; confirm `adr/` still ends at 0017 before 0018 is written.
 
 ---
 
@@ -1408,21 +1472,21 @@ before 0018 is written, or the `adr/README.md` record list will be wrong in two 
 
 | # | Risk | Mitigation / resolving experiment |
 |---|---|---|
-| **R0** | **Either PR head moves, or the merged semantics change before release.** | `vendor/README.md` pins both head SHAs and the three conflict resolutions; `scripts/vendor-emdash.sh` re-creates the build in ~2 minutes. Re-run on any head move and re-run the full battery. The `StorageAccess` seam means a shape change is a one-file adapter edit. **INC-D6** reconciles the released code once and for all. |
+| **R0** | **The base `main` moves, #2980's head moves, or the merged semantics change before release.** #2169 is merged, so only one PR can still move under Otta. | `vendor/README.md` pins the base `main` SHA, the #2980 head SHA, the migration number used and any conflict resolutions; `scripts/vendor-emdash.sh` re-creates the build in ~2 minutes. Re-run on any move, **re-checking the next free migration number**, and re-run the full battery. The `StorageAccess` seam means a shape change is a one-file adapter edit. **INC-D6** reconciles the released code once and for all. |
 | **R0b** | **The host bump 0.31.1 → 0.37.1-otta.1 breaks an assertion pinned to old behaviour.** Verified: zero export removals, Block Kit byte-identical, no major changes in range — but five named places need **re-verification, not find-and-replace**. | **INC-A0**, gated on all 20 sandbox suites, the five Block Kit and two React console suites, `site-config.test.ts`, the storefront e2e and `pnpm -r build`, with the list walked item by item. Watch `SandboxRunner.unavailableReason?()`, flagged upstream as a future required break. |
 | **R1** | **D1 `RETURNING` / `json_set` under `updateIf` is unproven**, and **`PluginStorageRepository` may not instantiate in a workers pool**. | **INC-A4** answers both; instantiation first. **Fallback: drive the operations through the vendored cloudflare sandbox bridge.** Hard gate before the staging cut-over. |
 | **R2** | **CAS contention on a hot inventory document** could retry-storm under a flash sale. **There is no structural fix in this plan.** | Measurement, not a fix: INC-A3 records retry depth and fails above a documented ceiling — the **permanent** contention budget, repeated in the memory note. INC-A2 defines the typed retryable error and its 503 mapping. |
 | **R3** | **D1 row-size limits vs. embedding.** | Measure p99 document size in INC-B2/B3 and assert a hard cap. Prune terminal holds (after the outcome copy); bound `appliedTransfers`; split `notes[]` into a child collection if needed. |
-| **R4** | **#2980 never merges upstream, or merges with different create-if-absent semantics — and there is now no fallback transport.** Deleting the service removes the "run it the old way" option entirely. | Nothing on the branch is blocked; staging can run on the vendored build indefinitely. **INC-D3 is gated on INC-D1 being smoke-green, so the service is deleted only after the in-process path has actually served traffic** — and `main` still carries the service until the integration branch merges, which INC-D6 gates on a real release. If #2980 is abandoned, the effort stays on the branch and `main` is untouched. |
-| **R5** | **The Orders search narrows on two axes, and the "keep it on the service" fallback no longer exists.** | ⚠ D3 ratification, **before INC-B4 is scoped**. If the narrowing is unacceptable, the only remaining move is widening the domain port — a separate change with its own PR. |
+| **R4** | **#2980 never merges upstream, or merges with different create-if-absent semantics — and there is now no fallback transport.** This is the only remaining upstream risk: #2169 is merged. Deleting the service removes the "run it the old way" option entirely. | Nothing on the branch is blocked; staging can run on the vendored build indefinitely. **INC-D3 is gated on INC-D1 being smoke-green, so the service is deleted only after the in-process path has actually served traffic** — and `main` still carries the service until the integration branch merges, which INC-D6 gates on a real release carrying #2980. If #2980 is abandoned, the effort stays on the branch and `main` is untouched. |
+| **R5** | **The Orders search narrows on two axes, and the "keep it on the service" fallback no longer exists.** | **Accepted: ratified 2026-09-13 as prefix-only `searchKey`.** The narrowing is documented in the screen's empty state. Widening the domain port remains available as a separate change with its own PR if the narrowing later proves unacceptable. |
 | **R6** | **Worker bundle size.** The site Worker gains the domain, `store-emdash` and both payment gateways. | INC-A6 makes the bundle correct (`dependencies` + `noExternal`, asserted). Measure at INC-B10a and record the number. If close, lazy-import the admin/reporting paths. |
 | **R7** | **D1 write throughput** is materially below Postgres and is now the only ceiling there is. | Accepted as the price (D5 reason 5). Record a measured writes/second figure from the D1 tier so the limit is a number. Pre-launch, this is theoretical; ADR-0020 records the re-derivation path if it ever stops being. |
-| **R8** | **Otta's sandbox suites are not the real storage bridge.** #2169 does not wire `updateIf` through EmDash's bridges at all. | Say so in ADR-0018. **T3/INC-A4 is the tier that observes the host.** Otta ships trusted in-process, so nothing deployed depends on the bridge. |
+| **R8** | **Otta's sandbox suites are not the real storage bridge** — the harness injects the repository, so T4 proves Otta's storage code paths, not the host's wiring. (Unlike v5, this is no longer compounded by a missing bridge: upstream `main` wires `updateIf` through the sandbox bridge.) | Say so in ADR-0018. **T3/INC-A4 is the tier that observes the host.** Otta ships trusted in-process, so nothing deployed depends on the bridge. |
 | **R9** | **The webhook edge lives in `sites/staging` permanently**, so a fresh site has no webhook path — and a public settle route would be a forged-webhook bypass. | Documented in ADR-0020 and DEPLOYMENT.md as the end state. The settle route is non-public and INC-C2 pins that. Ship the endpoint as a copy-pasteable, tested file with its own depcruise rule. |
-| **R10** | **The vendored tarballs drift from what anyone can rebuild** — a 9.1 MB blob whose provenance is a script and two SHAs. | `vendor/README.md` + `scripts/vendor-emdash.sh` + pnpm's per-tarball sha512 under `--frozen-lockfile`. **Strongly consider pushing `otta/emdash-cas` to Otta's own fork** (Decision 0). `vendor/` is deleted at INC-D6. |
+| **R10** | **The vendored tarballs drift from what anyone can rebuild** — a 9.1 MB blob whose provenance is a script and two SHAs. | `vendor/README.md` + `scripts/vendor-emdash.sh` + pnpm's per-tarball sha512 under `--frozen-lockfile`. `otta/emdash-cas` **is pushed to Otta's own fork** (Decision 0, accepted 2026-09-13), so the branch is fetchable rather than local-only. `vendor/` is deleted at INC-D6. |
 | **R11** | **Long-lived-branch drift**, PR #102 above all. | Land or close #102 early. Merge `main` down after every `main` merge touching `packages/plugin`, `sites/staging`, `.dependency-cruiser.cjs` or `adr/`. A5 and A7 are behaviour-neutral and could go to `main` directly to shrink the final diff. |
 | **R12** | **Reporting rollups are lossy without a heal.** | INC-C4's reporting-heal sweeper; INC-B9's crash-between-transition-and-rollup case and its refund-into-an-earlier-bucket case. |
-| **R13** | **Migration-name divergence.** Otta's build numbers #2980's migration `077_plugin_storage_revisions`. If upstream lands it under a different number, a database migrated by Otta's build carries a name the released runner does not know. | **Staging is the only database that can hit this**, and it is demo data, re-seeded anyway. One-off rename in staging's migration table. Checklist item in **INC-D6**, acknowledged in **INC-D1**'s PR body. |
+| **R13** | **Migration-name divergence.** Otta's build renumbers #2980's migration to `077_plugin_storage_revisions` (or the next free number if upstream `main` has added more by build time). If upstream lands it under a different number, a database migrated by Otta's build carries a name the released runner does not know. | **Staging is the only database that can hit this**, and it is demo data, re-seeded anyway. One-off rename in staging's migration table. Checklist item in **INC-D6**, acknowledged in **INC-D1**'s PR body. |
 | **R14** | **Deleting `store-postgres` takes a race file or a Kysely dialect with it.** The 12 race files and the test harness's dialect construction are easy to sweep up in a package deletion. | **INC-D3b's review is a file-by-file check** that each of the 12 races has a green re-pointed `store-emdash` counterpart, and that the harness's dialect construction survives (D7). The Postgres CI job and `test:pg` are explicitly out of scope for deletion. |
 | **R15** | **The `Kysely*Store` semantics are lost when the package is deleted** — this document cites them by line number, and those lines stop existing. | **INC-B0/ADR-0019 snapshots the guard semantics in prose** before INC-D3b, written as "what the old SQL guaranteed, and which document write now guarantees it". The sequencing section makes B0 a dependency of D3b. |
 | **Q1** | Does trusted-mode `ctx.storage` share the site's D1 binding — i.e. do commerce documents live in the same database as CMS content? (Almost certainly yes.) | Confirm at INC-A4. Affects backup/restore posture and contradicts the README's "separate databases" line, which INC-D4 must then correct. |
@@ -1433,8 +1497,8 @@ before 0018 is written, or the `adr/README.md` record list will be wrong in two 
 ## Definition of done
 
 1. **Decision 0 is honoured**: no upstream PR, push, comment or design note was made. The only
-   host-repository artefact is the `otta/emdash-cas` merge branch, built locally and (recommended)
-   pushed to Otta's own fork.
+   host-repository artefact is the `otta/emdash-cas` merge branch, built locally and pushed to Otta's
+   own fork.
 2. **INC-A0 has landed**: the three tarballs are vendored, the overrides are in `pnpm-workspace.yaml`,
    a clean reinstall yields exactly one `emdash@` in the store, and the 0.31.1 → 0.37.1-otta.1
    re-verification list has been walked item by item with the outcome recorded.
@@ -1451,8 +1515,9 @@ before 0018 is written, or the `adr/README.md` record list will be wrong in two 
 7. **`@otta-sh/service` and `@otta-sh/store-postgres` are deleted** — packages, tests, migrations, the
    HTTP client and the four admin HTTP clients, the live-service harness, the `commerce.mode` machinery,
    the service-token settings fields, the wrangler config, the deploy job, the depcruise clauses, the
-   CLAUDE.md `[Service]` row and the CI matrix entries. The staging service Worker and its database are
-   retired. **The repo has one deployable.** `@otta-sh/domain` (ports, fakes, contract suites) and both
+   CLAUDE.md `[Service]` row, the `wrangler deploy` script and the `DEPLOYMENT.md` section. **The 58
+   unreleased changesets naming either package have been rewritten or removed, so `changeset version`
+   runs.** The staging service Worker and its database are retired. **The repo has one deployable.** `@otta-sh/domain` (ports, fakes, contract suites) and both
    `payments-*` packages are untouched; the Postgres CI job and `pnpm test:pg` still run, now against
    `store-emdash`.
 8. **The built plugin bundle contains no bare `@otta-sh/*` import**, and its size is recorded.
@@ -1462,13 +1527,15 @@ before 0018 is written, or the `adr/README.md` record list will be wrong in two 
     carries no service section or asymmetric-rollback caveat; ADR-0018, 0019 and 0020 accepted and
     recorded, with ADR-0002 marked superseded in part and ADR-0020 recording the re-derivation path; no
     internal environment identifiers anywhere in the public text; no user-facing oversell claim.
-11. **INC-D6 is complete**: an npm release carrying both PRs exists, the overrides point at it,
+11. **INC-D6 is complete**: an npm release carrying **#2980** exists (#2169 being merged upstream and
+    therefore in any release cut after it), the overrides point at it,
     `vendor/` and the vendor script are deleted, staging's migration name is reconciled, and the **full
     battery plus T3 are green on the released build**.
 12. **The integration branch has merged to `main`** as one merge commit whose PR body carries the
     full-battery summary.
-13. **A memory note** records the outcome, the measured numbers (R2/R3/R6/R7), the two pinned PR head
-    SHAs, the three conflict resolutions, what was deleted, and anything INC-D6 had to reconcile.
+13. **A memory note** records the outcome, the measured numbers (R2/R3/R6/R7), the pinned base `main`
+    SHA and #2980 head SHA, the migration number used, any conflict resolutions, what was deleted, and
+    anything INC-D6 had to reconcile.
 
 ---
 
@@ -1478,21 +1545,34 @@ before 0018 is written, or the `adr/README.md` record list will be wrong in two 
   `ctx.storage`. `@otta-sh/service`, `@otta-sh/store-postgres`, `HttpCommerceClient`, the four admin
   HTTP clients and the `commerce.mode` flag are **deleted** in Phase D. Otta is pre-launch with no
   users; a second mode nobody exercises is a second mode that rots.
-- **Decision 0 — RESOLVED.** No upstream engagement of any kind. The feature branch binds a **locally
-  built merge of #2169 (`36621619`) and #2980 (`c4b441b0`) on branch `otta/emdash-cas`**, vendored as
-  three `0.37.1-otta.1` tarballs (9.1 MB) with `file:` overrides in `pnpm-workspace.yaml`.
+- **Decision 0 — RESOLVED, and #2169 is now MERGED upstream.** No upstream engagement of any kind. The
+  binding is therefore a single-PR merge: **upstream `main` at `ea2ccd54` — which already carries
+  #2169 — with #2980 (`c4b441b0`) merged onto branch `otta/emdash-cas`**, vendored as three
+  `0.37.1-otta.1` tarballs with `file:` overrides in `pnpm-workspace.yaml`. The only known conflict is
+  the migration-number collision (#2980's `076_plugin_storage_revisions` → `077`, or the next free
+  number). The merge branch is pushed to Otta's own fork. Only the merge to `main` waits on upstream,
+  and only on a release carrying **#2980**.
 - **D5 — RESOLVED.** ADR-0002's five "a service may remain" reasons are all explicitly rejected,
   pre-launch. A future service would be **re-derived from the unchanged domain ports**, not kept on
   standby — ADR-0020 says so, so the deletion is not mistaken for a lost capability.
-- **Three ⚠ USER DECISIONs remain:** D1 (the design rests on `compareAndSet` keeping create-if-absent
-  through to release, and with the service gone there is no fallback transport); D3 (no data migration —
-  and if rejected, the migrate tool must be built **before** INC-D3b deletes the Kysely stores); D3
-  (the Orders search narrows on two axes, and "keep it on the service" is no longer an option).
+- **All three remaining USER DECISIONs were ratified 2026-09-13, as recommended:** **D1** accepted —
+  the design rests on `compareAndSet` keeping create-if-absent through to release, with no
+  `put()` + unique-index workaround and no fallback transport; **D3** no data migration — staging is
+  re-seeded and its order history discarded, so no migrate tool is built; **D3** the Orders list search
+  narrows to a **prefix-only `searchKey`**, documented in the screen's empty state. Nothing in this
+  document is open for decision.
 - **Nothing is blocked on upstream** — including the staging cut-over, which ships from the feature
   branch on the vendored build. Only the merge to `main` waits, on **INC-D6**'s swap to an npm release.
-- **Verified binding mechanics:** a pnpm git dependency with `&path:` does **not** work; committed
-  tarballs do; the `@emdash-cms/admin` tarball is **required**; overrides in `package.json` are
-  **silently ignored** on pnpm 11.10; without them a second stock `emdash` shadows the Worker bridge.
+- **Binding mechanics, verified on the pre-merge base:** a pnpm git dependency with `&path:` does
+  **not** work; committed tarballs do; the `@emdash-cms/admin` tarball is **required**; overrides in
+  `package.json` are **silently ignored** on pnpm 11.10; without them a second stock `emdash` shadows
+  the Worker bridge. **INC-A0 re-verifies every one of these on the new base and records the new
+  numbers** — the 147/147, the 78/78, the throwaway-consumer checks and the overrides behaviour
+  included.
+- **`updateIf` is wired through the sandbox bridge on upstream `main`**
+  (`packages/cloudflare/src/sandbox/{types,bridge,wrapper}.ts`), so v5's "sandboxed plugins have CAS but
+  not `updateIf`" gap is closed. It changes nothing Otta ships — Otta runs trusted in-process — but R8
+  is now only "the harness is not the real bridge".
 - **The `commerce.mode` flag is deliberately temporary.** It exists so `commerceClientContract` — the
   spec, extracted from the HTTP client's own tests — can run against both implementations. That
   equivalence proof at **INC-B10c** is what licenses **INC-D3b** to delete the HTTP tier.
@@ -1512,6 +1592,56 @@ before 0018 is written, or the `adr/README.md` record list will be wrong in two 
   week to collect zero traffic is not evidence.
 - **Gates:** the local targeted run per PR; INC-A4 before the staging cut-over; INC-D1 smoke-green
   before INC-D3; INC-D6 plus the full battery and T3 on the released build before the merge to `main`.
+
+---
+
+## Changes from v5
+
+1. **#2169 is merged upstream, so the binding rebases onto it.** The base is now upstream `main` at
+   `ea2ccd54` (which carries #2169's merge commit `107c3ccd`) with **only #2980** (`c4b441b0`) merged
+   onto `otta/emdash-cas`. The only known conflict is the migration-number collision — renumber
+   #2980's `076_plugin_storage_revisions` to `077`, or to the next free number if upstream `main` has
+   added further migrations by build time. Decision 0's PR table, the whole "Binding" section, the
+   "Upstream watch" table, R0, R4, R13, INC-A0, INC-D6 and the Executive summary are rewritten to match.
+   The tarball version is `<upstream core version>-otta.1`, still `0.37.1-otta.1` at `0.37.0`.
+2. **The binding evidence is re-labelled as pre-merge, and INC-A0 must re-verify it.** The 147/147, the
+   78/78, the throwaway-consumer checks, `@emdash-cms/admin` being required and the overrides behaviour
+   were all measured on the old two-head base. INC-A0 now carries an explicit re-verification list and
+   records the new numbers.
+3. **The merge-to-`main` gate is now "a release carrying #2980".** #2169 ships with the next release
+   regardless. Applied to INC-D6, the Branching section and DoD 11.
+4. **`updateIf` *is* wired through the sandbox bridge on upstream `main`** — `storageUpdateIf` in
+   `packages/cloudflare/src/sandbox/{types,bridge,wrapper}.ts` plus the `context.ts` line. The non-goal,
+   the "What the build does and does not give us" point, the Upstream-watch row and R8 are corrected;
+   v5's "sandboxed plugins have CAS but not `updateIf`" claim is withdrawn.
+5. **All three remaining USER DECISIONs ratified 2026-09-13, as recommended.** D1 accepted with no
+   `put()` + unique-index workaround; D3 no data migration (staging re-seeded, no migrate tool, no
+   deadline over INC-D3b); D3 Orders search narrows to a prefix-only `searchKey`. The ⚠ markers and
+   "⚠ Ratify" sentences are gone from the D1 and D3 headings, and the header, Status line and Executive
+   summary say so. Decision 0's fork push is accepted rather than recommended.
+6. **Path and citation fixes.** `storefront/pdp-routes.ts` → `storefront/pdp-route.ts`;
+   `admin/settings-page.ts` → `admin/settings-form.ts`; the refund ceiling is
+   `kysely-order-store.ts:382` / `:560`; the reservation-id methods are
+   `inventory-store.ts:33-126`; `OrderListCursor` is `order-store.ts:704-707`.
+7. **Count fixes.** The service has **40** test files, not 41; T0 is **15** `*-contract.fake.test.ts`,
+   not 14; the commerce-client factory touches **~14 construction sites across 14 modules**, not ~11
+   across 15.
+8. **INC-A5 / D4 §1 restated against the file as it stands.** All three `@otta-sh` clauses of
+   `plugin-is-sandbox-clean` already name **both** `domain` and `admin-react`, so the edit is to **drop
+   `domain` from all three** while keeping `admin-react`, and separately to narrow `store-[^/]+` so it
+   stops swallowing `store-emdash`.
+9. **INC-A7 extracts from all eight client test files**, not three — the five further
+   `http-commerce-client-*` suites (cart-order-id, checkout, entitlement, service-token and
+   service-token.live) were silently dropped. Eight is the complete set.
+10. **Scope corrections in Phase D.** There is **no service deploy job and no CI matrix** (CI is `unit`
+    + `integration`; deploys are manual `wrangler deploy` scripts), so INC-D3a deletes the service's
+    `wrangler deploy` scripts and its `DEPLOYMENT.md` section instead, and INC-D3c says there is nothing
+    to remove from CI. INC-D3b gains the **58 unreleased changesets naming `@otta-sh/service` or
+    `@otta-sh/store-postgres`** (`changeset version` breaks otherwise) and
+    `packages/plugin/test/helpers/stub-commerce-server.ts`; DoD 7 carries the changeset item. INC-A4
+    notes that the root `vitest.config.ts` aggregates per-package projects and sets `fileParallelism`
+    conditionally, and that the D1 workers-pool project must be a separate project that does not lose
+    that behaviour under Postgres.
 
 ---
 
