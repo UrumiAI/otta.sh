@@ -1,5 +1,4 @@
-import { COMMERCE_SERVICE_BASE_URL, serviceTokenFromKv } from "../manifest.js";
-import { HttpCommerceClient } from "../product-commerce/http-commerce-client.js";
+import { makeCommerceClient } from "../commerce/make-commerce-client.js";
 import { isNonEmptyString } from "../storefront/account-routes.js";
 import type { RouteHandler } from "../types.js";
 
@@ -52,13 +51,9 @@ export function createEntitlementDownloadHandler(): RouteHandler<EntitlementDown
 
 		// `checkEntitlement` is a GET (write-gate-exempt), but the SERVICE token is
 		// threaded for uniformity (ADR-0007) — undefined ⇒ no header ⇒ unchanged
-		// wire. This is `settings:serviceToken`, never `settings:internalToken`.
-		const serviceToken = await serviceTokenFromKv(ctx);
-		const client = new HttpCommerceClient({
-			fetch: ctx.http.fetch,
-			baseUrl: COMMERCE_SERVICE_BASE_URL,
-			...(serviceToken !== undefined ? { serviceToken } : {}),
-		});
+		// wire. That threading, and the choice of `settings:serviceToken` over
+		// `settings:internalToken`, now live in the one composition root.
+		const client = await makeCommerceClient(ctx);
 
 		// PRECEDENCE FIX (review): the service gives an `orderId` in the query
 		// priority over a session Bearer riding along in the SAME request (ADR-0011

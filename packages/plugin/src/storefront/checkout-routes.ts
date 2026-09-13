@@ -24,16 +24,15 @@
  * — which is why Stripe's script host appears NOWHERE in this package, a
  * property `sandbox-clean-guard.test.ts` asserts by scanning `src/`.
  */
+import { makeCommerceClient } from "../commerce/make-commerce-client.js";
 import type { CatalogProductCommerce } from "../catalog/commerce-view.js";
-import { COMMERCE_SERVICE_BASE_URL, serviceTokenFromKv } from "../manifest.js";
 import type {
 	CartFailureReason,
 	CheckoutFailureReason,
 	ClientActionWire,
 	QuoteFailureReason,
 } from "../product-commerce/commerce-client.js";
-import { HttpCommerceClient } from "../product-commerce/http-commerce-client.js";
-import type { PluginContext, RouteHandler } from "../types.js";
+import type { RouteHandler } from "../types.js";
 import {
 	buildCartPricing,
 	DEGRADED_CART_PRICING,
@@ -149,19 +148,6 @@ export type OrderRouteResult =
 	| { ok: false; reason: "ORDER_NOT_FOUND" }
 	| { ok: false; error: "RENDER_FAILED" };
 
-/** One client per invocation (cart-routes.ts's request-scoped lifecycle). The
- *  two checkout POSTs are non-GET, so they genuinely need the ADR-0007
- *  write-gate token; `GET /orders/:id` is gate-exempt but carries it harmlessly
- *  rather than making a future reader reason about which verb needs what. */
-async function createCommerceClient(ctx: PluginContext): Promise<HttpCommerceClient> {
-	const serviceToken = await serviceTokenFromKv(ctx);
-	return new HttpCommerceClient({
-		fetch: ctx.http.fetch,
-		baseUrl: COMMERCE_SERVICE_BASE_URL,
-		...(serviceToken !== undefined ? { serviceToken } : {}),
-	});
-}
-
 /**
  * `GET /carts/:id` + `POST /catalog/commerce/batch` + `POST /checkout/quote` →
  * one review view model. Three calls, in that order, one batch regardless of
@@ -173,7 +159,7 @@ export function createCheckoutSummaryRouteHandler(): RouteHandler<CheckoutSummar
 			const input = parseCheckoutSummaryInput(routeCtx.input);
 			if (input === null) return { ok: false, error: "INVALID_INPUT" } as const;
 
-			const client = await createCommerceClient(ctx);
+			const client = await makeCommerceClient(ctx);
 			const cartResult = await client.getCart(input.cartId);
 			if (!cartResult.ok) return { ok: false as const, reason: cartResult.reason };
 			const cart = cartResult.cart;
@@ -238,7 +224,7 @@ export function createCheckoutPlaceRouteHandler(): RouteHandler<CheckoutPlaceRou
 			const input = parseCheckoutPlaceInput(routeCtx.input);
 			if (input === null) return { ok: false, error: "INVALID_INPUT" } as const;
 
-			const client = await createCommerceClient(ctx);
+			const client = await makeCommerceClient(ctx);
 			const result = await client.createOrder(
 				{
 					cartId: input.cartId,
@@ -294,7 +280,7 @@ export function createOrderRouteHandler(): RouteHandler<OrderRouteInput> {
 			const input = parseOrderRouteInput(routeCtx.input);
 			if (input === null) return { ok: false, error: "INVALID_INPUT" } as const;
 
-			const client = await createCommerceClient(ctx);
+			const client = await makeCommerceClient(ctx);
 			const result = await client.getPublicOrder(input.orderId);
 			if (!result.ok) return { ok: false as const, reason: result.reason };
 

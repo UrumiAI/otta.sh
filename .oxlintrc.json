@@ -21,6 +21,17 @@
 			}
 		},
 		{
+			"files": ["packages/plugin/src/commerce/commerce-mode.ts"],
+			"rules": {
+				"no-underscore-dangle": [
+					"error",
+					{
+						"allow": ["__OTTA_COMMERCE_MODE__"]
+					}
+				]
+			}
+		},
+		{
 			"files": ["sites/staging/src/lib/stripe-config.ts"],
 			"rules": {
 				"no-underscore-dangle": [

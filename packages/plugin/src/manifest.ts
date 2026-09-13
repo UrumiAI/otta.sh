@@ -3,7 +3,7 @@
  * egress allowlist — imported by both the runtime (`plugin.ts`) and the
  * sandbox-clean guard test (DEVELOPMENT.md §5), so the two can never drift.
  *
- * `COMMERCE_SERVICE_BASE_URL` / `ALLOWED_HOSTS` are plain build-time
+ * `COMMERCE_SERVICE_BASE_URL` / `ALLOWED_HOSTS` are build-time
  * constants (matching the plan's manifest example,
  * `allowedHosts: [COMMERCE_SERVICE_HOST]`) — a real deploy pipeline pins
  * these to the merchant's commerce service before publishing the plugin
@@ -12,6 +12,7 @@
  * file before bundling — `src/manifest.ts` itself is never mutated.
  */
 
+import { resolveCommerceMode } from "./commerce/commerce-mode.js";
 import type { PluginContext } from "./types.js";
 
 export const OTTA_PLUGIN_ID = "otta";
@@ -91,11 +92,38 @@ export function resolveCommerceServiceBaseUrl(override: string | undefined): str
 		: COMMERCE_SERVICE_BASE_URL_PLACEHOLDER;
 }
 
+/**
+ * TRANSITIONAL (work order 02 D6): used only in `"http"` mode, and DELETED at
+ * INC-D3b along with `HttpCommerceClient`, the four admin HTTP clients,
+ * `__OTTA_COMMERCE_MODE__` and `resolveCommerceMode`. In `"in-process"` mode it
+ * is unused — nothing constructs an HTTP client — and `ALLOWED_HOSTS` below
+ * stops deriving from it.
+ */
 export const COMMERCE_SERVICE_BASE_URL = resolveCommerceServiceBaseUrl(
 	typeof __OTTA_COMMERCE_SERVICE_URL__ === "string" ? __OTTA_COMMERCE_SERVICE_URL__ : undefined,
 );
 
-/** The plugin's egress allowlist — the host's `ctx.http.fetch` rejects any
- *  host not in this list (plan §5). Must stay in sync with
- *  `COMMERCE_SERVICE_BASE_URL`'s host. */
-export const ALLOWED_HOSTS: string[] = [new URL(COMMERCE_SERVICE_BASE_URL).hostname];
+/**
+ * The plugin's egress allowlist — the host's `ctx.http.fetch` rejects any host
+ * not in this list (plan §5).
+ *
+ * MODE-RESOLVED, TRANSITIONALLY (work order 02 D6). In `"http"` mode — the
+ * default, and what every existing build, every vitest run and the sandbox
+ * harness resolve to — this is byte-identical to what it has always been: the
+ * single host derived from `COMMERCE_SERVICE_BASE_URL`. In `"in-process"` mode
+ * there is no commerce service to reach, so the list is EMPTY for now; INC-C3
+ * fills it with the Stripe API, email API and x402 facilitator hosts once those
+ * calls move in-process.
+ *
+ * Still a module-load `string[]`, not a function, and deliberately so: the
+ * descriptor in `plugin.ts`, `sandbox-entry.ts`'s `createHttpAccess`, the three
+ * `sync/hooks.ts` defaults and both guard suites all consume it as a VALUE.
+ * Turning it into a function would have rippled through the descriptor shape,
+ * which INC-A6 must not touch. The mode is a build-time constant, so resolving
+ * it at module load loses nothing.
+ *
+ * At INC-D3a this becomes a plain literal list and `COMMERCE_SERVICE_BASE_URL`
+ * is deleted outright.
+ */
+export const ALLOWED_HOSTS: string[] =
+	resolveCommerceMode() === "in-process" ? [] : [new URL(COMMERCE_SERVICE_BASE_URL).hostname];

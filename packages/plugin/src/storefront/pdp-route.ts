@@ -22,8 +22,7 @@
  * request-scoped batch loader, so the PDP exercises the same one-call path
  * the PLP proves at scale.
  */
-import { COMMERCE_SERVICE_BASE_URL, serviceTokenFromKv } from "../manifest.js";
-import { HttpCommerceClient } from "../product-commerce/http-commerce-client.js";
+import { makeCommerceClient } from "../commerce/make-commerce-client.js";
 import { CommerceBatchLoader } from "../catalog/commerce-batch-loader.js";
 import { parseCommerceBatchItem } from "../catalog/commerce-view.js";
 import { joinProduct } from "../catalog/join-product.js";
@@ -76,12 +75,7 @@ export async function renderGuard<T>(
  *  `X-Service-Token` — so PDP/PLP genuinely depend on kv provisioning when the
  *  service secret is set. Undefined ⇒ no header ⇒ pre-gate wire. */
 export async function createCommerceLoader(ctx: PluginContext): Promise<CommerceBatchLoader> {
-	const serviceToken = await serviceTokenFromKv(ctx);
-	const client = new HttpCommerceClient({
-		fetch: ctx.http.fetch,
-		baseUrl: COMMERCE_SERVICE_BASE_URL,
-		...(serviceToken !== undefined ? { serviceToken } : {}),
-	});
+	const client = await makeCommerceClient(ctx);
 	return new CommerceBatchLoader(async (ids) =>
 		(await client.getCommerceBatch(ids)).map(parseCommerceBatchItem),
 	);

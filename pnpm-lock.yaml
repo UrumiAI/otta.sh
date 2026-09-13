@@ -206,13 +206,16 @@ importers:
       '@otta-sh/admin-presentation':
         specifier: workspace:*
         version: link:../admin-presentation
+      '@otta-sh/domain':
+        specifier: workspace:*
+        version: link:../domain
+      '@otta-sh/store-emdash':
+        specifier: workspace:*
+        version: link:../store-emdash
     devDependencies:
       '@hono/node-server':
         specifier: 'catalog:'
         version: 2.0.8(hono@4.12.29)
-      '@otta-sh/domain':
-        specifier: workspace:*
-        version: link:../domain
       '@otta-sh/payments-stripe':
         specifier: workspace:*
         version: link:../payments-stripe

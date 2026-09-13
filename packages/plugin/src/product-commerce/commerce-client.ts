@@ -322,6 +322,28 @@ export interface CommerceClient {
 	listMyAddresses(sessionToken: string): Promise<AuthedResult<{ addresses: AddressWire[] }>>;
 	// ── end Phase 5 customer account ──────────────────────────────────────
 
+	// ── Delivery authorization (ADR-0011) ─────────────────────────────────
+	/**
+	 * Two scopes only, by PRESENCE: `scope.orderId` (the download link's
+	 * unguessable order id — an open bearer capability, no auth header) or a
+	 * logged-in customer's own `opts.sessionToken`. The plugin NEVER sends
+	 * `buyerRef`: the raw-email scope is operator-only and its secret is one the
+	 * sandbox does not and must not hold.
+	 *
+	 * DECLARED HERE, not only on `HttpCommerceClient`: `entitlements/download-route.ts`
+	 * calls it through the client it is handed, so the PORT has to carry it. The
+	 * declaration was missing while that route constructed the concrete class
+	 * directly; INC-A6 routes it through `makeCommerceClient`, which returns the
+	 * port. `HttpCommerceClient` already implements exactly this signature, so
+	 * adding it changes no behaviour — only what the type system knows.
+	 */
+	checkEntitlement(
+		scope: { orderId?: string },
+		sku: string,
+		opts?: { sessionToken?: string },
+	): Promise<AuthedResult<{ active: boolean }>>;
+	// ── end delivery authorization ────────────────────────────────────────
+
 	// ── Phase 4: checkout (quote → order → public order read) ─────────────
 	// Wire mirrors @otta-sh/service's routes/orders.ts 1:1. Every typed failure
 	// rides the same `{ ok: false, reason }` envelope regardless of status
