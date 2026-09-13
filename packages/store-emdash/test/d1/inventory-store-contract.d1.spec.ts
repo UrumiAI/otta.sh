@@ -78,17 +78,16 @@ function buildHarness(storage: StorageAccess): EmdashHarness {
 			// A held reservation with the cart's hold deadline stamped on it — the
 			// precondition `adopt`/`adoptMany`'s `expiresAt > now` guard needs, since
 			// a bare `reserve` leaves it unstamped.
+			//
+			// It calls the store's OWN `stampHoldDeadline`, the same `held`-scoped
+			// guarded write the cart adapter's attach guard uses, rather than patching
+			// the document by hand: a hand patch could stamp a hold the real stamp
+			// would have refused, and this hook's whole job is to build a state the
+			// production path can produce.
 			const reserved = await store.reserve(sku, qty, idempotencyKey(key));
 			if (!reserved.ok) throw new Error(`holdWithExpiry reserve failed for ${sku}`);
-			const current = await inventory.getVersioned(sku);
-			if (current === null) throw new Error(`no inventory document for ${sku}`);
-			const doc = normalizeInventoryDoc(current.value);
-			const hold = doc.holds[key];
-			if (hold === undefined) throw new Error(`no hold under key ${key}`);
-			await inventory.compareAndSet(sku, current.revision, {
-				...doc,
-				holds: { ...doc.holds, [key]: { ...hold, expiresAt } },
-			});
+			const stamped = await store.stampHoldDeadline(reserved.reservationId, expiresAt);
+			if (!stamped) throw new Error(`could not stamp the hold under key ${key}`);
 			return reserved.reservationId;
 		},
 		async abandonPending(sku, qty, key) {
