@@ -1,6 +1,50 @@
+export {
+	CAS_BASE_DELAY_MS,
+	CAS_MAX_ATTEMPTS,
+	CAS_MAX_DELAY_MS,
+	CAS_RETRY,
+	casDone,
+	isStorageContentionError,
+	StorageContentionError,
+	withCasRetry,
+	type CasRetryOptions,
+	type CasStep,
+} from "./cas-retry.js";
 export { systemClock } from "./clock.js";
 export { collectionOf } from "./collection-of.js";
+export {
+	EmdashInventoryStore,
+	type EmdashInventoryStoreOptions,
+} from "./emdash-inventory-store.js";
 export { uuidIdGen } from "./id-gen.js";
+export { ReservationIdCollisionError } from "./errors.js";
+export {
+	adjustClaimId,
+	APPLIED_MOVEMENT_RING_SIZE,
+	findAppliedMovement,
+	INVENTORY_COLLECTION,
+	INVENTORY_COLLECTIONS,
+	INVENTORY_MOVEMENTS_COLLECTION,
+	newInventoryDoc,
+	normalizeInventoryDoc,
+	pushAppliedMovement,
+	RESERVATION_INDEX_COLLECTION,
+	RESERVATION_KEYS_COLLECTION,
+	stockClaimId,
+	type AdjustClaim,
+	type AppliedMovement,
+	type CollectionIndexDeclaration,
+	type HoldEntry,
+	type HoldState,
+	type InventoryDoc,
+	type MovementClaimDoc,
+	type ReservationIndexDoc,
+	type ReservationKeyDoc,
+	type StockDirection,
+	type StockMovementClaim,
+	type TerminalReservationState,
+	type TransferOut,
+} from "./inventory-documents.js";
 export {
 	isStorageQueryError,
 	isStorageSerializationError,
