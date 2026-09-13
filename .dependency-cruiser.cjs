@@ -70,14 +70,113 @@ module.exports = {
 				"and still binds the same package; violating either fails `pnpm lint`. " +
 				"sites/staging is deliberately out of scope (it is the EmDash HOST: it " +
 				"imports `emdash` types and renders React storefront components) and " +
-				"`pnpm lint` cruises `packages` only.",
+				"`pnpm lint` cruises `packages` only. " +
+				"@otta-sh/store-emdash is the SECOND exemption, and it is a HANDOFF to " +
+				"three rules below, not a hole: that package exists to name the host's " +
+				"plugin-storage types, so the blanket ban would forbid the one import it " +
+				"is for. What replaces it, precisely, because 'nothing is lost' was " +
+				"claimed once here and was false: `store-emdash-no-console-react` bans " +
+				"react, react-dom, kumo and phosphor across the WHOLE package including " +
+				"`test/` (the first split bound `src` only, which left the tests free); " +
+				"`store-emdash-runs-no-host-code` bans `emdash` and @emdash-cms/* in " +
+				"`src` as RUNTIME imports while permitting type-only ones; and " +
+				"`store-emdash-is-sandbox-clean` adds the DB/Node/HTTP/sibling-package " +
+				"perimeter this rule says nothing about. The exemption is written on " +
+				"`from` rather than on `to` because dependency-cruiser cannot express one " +
+				"rule whose forbidden list varies by source, and a type-only carve-out " +
+				"here would have loosened the ban for admin-react and every other " +
+				"package too.",
 			severity: "error",
-			from: { path: "^packages/", pathNot: "^packages/admin-react/" },
+			from: { path: "^packages/", pathNot: "^packages/(admin-react|store-emdash)/" },
 			to: {
 				// Same both-forms shape as the rules above: a resolved node_modules
 				// path (direct or pnpm-store) or a bare specifier left unresolved by
 				// pnpm's strict isolation.
 				path: "(node_modules/(react|react-dom|emdash|@emdash-cms/[^/]+|@cloudflare/kumo|@phosphor-icons/react)(/|$)|^(react|react-dom|emdash|@emdash-cms/[^/]+|@cloudflare/kumo|@phosphor-icons/react)(/|$))",
+			},
+		},
+		{
+			name: "store-emdash-no-console-react",
+			comment:
+				"The console quarantine, restated for the ONE package whose `from` " +
+				"`console-react-is-quarantined` exempts. That exemption exists because " +
+				"the blanket ban names `emdash`, which is the one import " +
+				"@otta-sh/store-emdash is FOR — but react has nothing to do with that, " +
+				"and losing the react ban as a side effect of the EmDash carve-out would " +
+				"be exactly the silent hole ADR-0014 Decision 1 forbids. So this rule " +
+				"binds the WHOLE package, `test/` included: unlike the IO rule below, " +
+				"there is no version of importing react here that is legitimate in a " +
+				"Node test, and the first version of this split bound `src` only and " +
+				"left `test/**` free to import react, react-dom, kumo and phosphor with " +
+				"nothing catching it. Deliberately carries NO `dependencyTypesNot`: a " +
+				"type-only react import is a signal that a component is being written " +
+				"where none belongs, and it costs nothing to refuse.",
+			severity: "error",
+			from: { path: "^packages/store-emdash/" },
+			to: {
+				// Both spellings, as in every rule here: resolved into node_modules
+				// (direct or via the pnpm store), or left a bare specifier by pnpm's
+				// strict isolation.
+				path: "(node_modules/(react|react-dom|@cloudflare/kumo|@phosphor-icons/react)(/|$)|^(react|react-dom|@cloudflare/kumo|@phosphor-icons/react)(/|$))",
+			},
+		},
+		{
+			name: "store-emdash-is-sandbox-clean",
+			comment:
+				"@otta-sh/store-emdash's src is commerce-truth code that runs INSIDE the " +
+				"workerd sandbox, bound to the `ctx.storage` the host injects. It " +
+				"therefore carries the same perimeter as `plugin-is-sandbox-clean`: no " +
+				"DB driver, no filesystem/process/socket builtin, no HTTP or WS client, " +
+				"no sibling server package. Type-only imports are NOT exempt here, and " +
+				"the exemption is not a detail: `dependencyTypesNot` on a whole `to` " +
+				'clause would have permitted `import type { Pool } from "pg"` and ' +
+				'`import type { Stats } from "node:fs"`, which are how a module starts ' +
+				"being written against a host it must never touch. Only the EmDash " +
+				"clause below gets that allowance, and it gets it precisely because it " +
+				"is the seam. Sibling store packages are matched by negative lookahead " +
+				"rather than by name, so a future store-d1 is banned on the day it is " +
+				"created instead of the day someone remembers this list. Test code is " +
+				"exempt, as it is for every rule here — `test/describe-each-dialect.ts` " +
+				"runs in NODE and constructs real `PluginStorageRepository` instances " +
+				"over better-sqlite3 and Postgres on purpose: real databases, never " +
+				"mocks. That harness is why the ban can be this strict in `src` without " +
+				"costing coverage. (`react` and friends are banned across the whole " +
+				"package by `store-emdash-no-console-react` above.)",
+			severity: "error",
+			from: { path: "^packages/store-emdash/src" },
+			to: {
+				// Both spellings, as above. The builtin half is the optional-`node:`
+				// form the plugin rule's comment explains — dependency-cruiser reports
+				// `from "node:fs"` under the bare name `fs`.
+				path: "(node_modules/(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|node_modules/@otta-sh/admin-react(/|$)|^(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|^@otta-sh/admin-react(/|$)|^(node:)?(fs|child_process|net|http|https|os|dgram|dns|tls|worker_threads|cluster|vm)(/|$)|^packages/(service|payments-[^/]+|admin-react)/|^packages/(?!store-emdash/)store-[^/]+/)",
+			},
+		},
+		{
+			name: "store-emdash-runs-no-host-code",
+			comment:
+				"The seam, as a rule. @otta-sh/store-emdash may NAME EmDash's storage " +
+				"types and may never EXECUTE EmDash's code: `src/storage-access.ts` is " +
+				"written in terms of the host's `StorageCollection` and its conditional-" +
+				"write result types, and the implementation arrives injected — " +
+				"`ctx.storage` in production, a real `PluginStorageRepository` in the " +
+				"harness. That is what makes replacing the host build a dependency " +
+				"change rather than an adapter rewrite. `dependencyTypesNot: " +
+				"['type-only']` is the whole rule: a type import emits no code and " +
+				"cannot put host behaviour inside the isolate, while a runtime import of " +
+				"the same module fails the build. It is a SEPARATE rule from " +
+				"`store-emdash-is-sandbox-clean` for exactly that reason — the " +
+				"allowance is specific to the host and must not leak onto the IO bans, " +
+				"which is what a single merged clause did in the first version. " +
+				"`^emdash$|^emdash/` rather than a bare prefix, so a package merely " +
+				"NAMED like the host is not swept in.",
+			severity: "error",
+			from: { path: "^packages/store-emdash/src" },
+			to: {
+				path: "(node_modules/(emdash|@emdash-cms/[^/]+)(/|$)|^emdash$|^emdash/|^@emdash-cms/)",
+				// The one allowance in this package's perimeter, and the reason the
+				// structural port can be written against the host's own types instead
+				// of a hand-mirrored copy left to drift.
+				dependencyTypesNot: ["type-only"],
 			},
 		},
 		{
