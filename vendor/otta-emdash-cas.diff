@@ -1,0 +1,2389 @@
+diff --git a/packages/cloudflare/src/sandbox/bridge.ts b/packages/cloudflare/src/sandbox/bridge.ts
+index db7ef2d0..8b1d58c8 100644
+--- a/packages/cloudflare/src/sandbox/bridge.ts
++++ b/packages/cloudflare/src/sandbox/bridge.ts
+@@ -9,7 +9,15 @@
+ 
+ import type { D1Database } from "@cloudflare/workers-types";
+ import { WorkerEntrypoint } from "cloudflare:workers";
+-import type { ContentCreateOptions, Database, I18nConfig, SandboxEmailSendCallback } from "emdash";
++import type {
++	ConditionalDeleteResult,
++	ConditionalWriteResult,
++	ContentCreateOptions,
++	Database,
++	I18nConfig,
++	SandboxEmailSendCallback,
++	VersionedValue,
++} from "emdash";
+ import {
+ 	ContentRepository,
+ 	createSandboxRouteError,
+@@ -291,12 +299,31 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
+ 	async kvSet(key: string, value: unknown): Promise<void> {
+ 		const { pluginId } = this.ctx.props;
+ 		await this.env.DB.prepare(
+-			"INSERT OR REPLACE INTO _plugin_storage (plugin_id, collection, id, data, updated_at) VALUES (?, '__kv', ?, ?, datetime('now'))",
++			"INSERT OR REPLACE INTO _plugin_storage (plugin_id, collection, id, data, revision, updated_at) VALUES (?, '__kv', ?, ?, ?, datetime('now'))",
+ 		)
+-			.bind(pluginId, key, JSON.stringify(value))
++			.bind(pluginId, key, JSON.stringify(value), crypto.randomUUID())
+ 			.run();
+ 	}
+ 
++	async kvGetVersioned(key: string): Promise<VersionedValue | null> {
++		return this.getStorageRepo("__kv").getVersioned(key);
++	}
++
++	async kvCompareAndSet(
++		key: string,
++		expectedRevision: string | null,
++		value: unknown,
++	): Promise<ConditionalWriteResult> {
++		return this.getStorageRepo("__kv").compareAndSet(key, expectedRevision, value);
++	}
++
++	async kvCompareAndDelete(
++		key: string,
++		expectedRevision: string,
++	): Promise<ConditionalDeleteResult> {
++		return this.getStorageRepo("__kv").compareAndDelete(key, expectedRevision);
++	}
++
+ 	async kvDelete(key: string): Promise<boolean> {
+ 		const { pluginId } = this.ctx.props;
+ 		const result = await this.env.DB.prepare(
+@@ -345,9 +372,9 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
+ 			throw new Error(`Storage collection not declared: ${collection}`);
+ 		}
+ 		await this.env.DB.prepare(
+-			"INSERT OR REPLACE INTO _plugin_storage (plugin_id, collection, id, data, updated_at) VALUES (?, ?, ?, ?, datetime('now'))",
++			"INSERT OR REPLACE INTO _plugin_storage (plugin_id, collection, id, data, revision, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
+ 		)
+-			.bind(pluginId, collection, id, JSON.stringify(data))
++			.bind(pluginId, collection, id, JSON.stringify(data), crypto.randomUUID())
+ 			.run();
+ 	}
+ 
+@@ -378,6 +405,36 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
+ 		}
+ 	}
+ 
++	async storageGetVersioned(collection: string, id: string): Promise<VersionedValue | null> {
++		if (!this.ctx.props.storageCollections.includes(collection)) {
++			throw new Error(`Storage collection not declared: ${collection}`);
++		}
++		return this.getStorageRepo(collection).getVersioned(id);
++	}
++
++	async storageCompareAndSet(
++		collection: string,
++		id: string,
++		expectedRevision: string | null,
++		data: unknown,
++	): Promise<ConditionalWriteResult> {
++		if (!this.ctx.props.storageCollections.includes(collection)) {
++			throw new Error(`Storage collection not declared: ${collection}`);
++		}
++		return this.getStorageRepo(collection).compareAndSet(id, expectedRevision, data);
++	}
++
++	async storageCompareAndDelete(
++		collection: string,
++		id: string,
++		expectedRevision: string,
++	): Promise<ConditionalDeleteResult> {
++		if (!this.ctx.props.storageCollections.includes(collection)) {
++			throw new Error(`Storage collection not declared: ${collection}`);
++		}
++		return this.getStorageRepo(collection).compareAndDelete(id, expectedRevision);
++	}
++
+ 	async storageDelete(collection: string, id: string): Promise<boolean> {
+ 		const { pluginId, storageCollections } = this.ctx.props;
+ 		if (!storageCollections.includes(collection)) {
+@@ -465,13 +522,11 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
+ 		}
+ 		if (items.length === 0) return;
+ 
+-		// D1 doesn't support batch in prepare, so we do individual inserts
+-		// In future, we could use batch API
+ 		for (const item of items) {
+ 			await this.env.DB.prepare(
+-				"INSERT OR REPLACE INTO _plugin_storage (plugin_id, collection, id, data, updated_at) VALUES (?, ?, ?, ?, datetime('now'))",
++				"INSERT OR REPLACE INTO _plugin_storage (plugin_id, collection, id, data, revision, updated_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
+ 			)
+-				.bind(pluginId, collection, item.id, JSON.stringify(item.data))
++				.bind(pluginId, collection, item.id, JSON.stringify(item.data), crypto.randomUUID())
+ 				.run();
+ 		}
+ 	}
+diff --git a/packages/cloudflare/src/sandbox/types.ts b/packages/cloudflare/src/sandbox/types.ts
+index 2841ebff..4a1282e1 100644
+--- a/packages/cloudflare/src/sandbox/types.ts
++++ b/packages/cloudflare/src/sandbox/types.ts
+@@ -3,7 +3,14 @@
+  */
+ 
+ import type { D1Database, R2Bucket } from "@cloudflare/workers-types";
+-import type { ContentCreateOptions, UpdateIfArgs, UpdateIfResult } from "emdash";
++import type {
++	ConditionalDeleteResult,
++	ConditionalWriteResult,
++	ContentCreateOptions,
++	UpdateIfArgs,
++	UpdateIfResult,
++	VersionedValue,
++} from "emdash";
+ 
+ /**
+  * Environment bindings required for sandbox runner.
+@@ -171,6 +178,13 @@ export interface PluginBridgeBinding {
+ 	// KV
+ 	kvGet(key: string): Promise<unknown>;
+ 	kvSet(key: string, value: unknown): Promise<void>;
++	kvGetVersioned(key: string): Promise<VersionedValue | null>;
++	kvCompareAndSet(
++		key: string,
++		expectedRevision: string | null,
++		value: unknown,
++	): Promise<ConditionalWriteResult>;
++	kvCompareAndDelete(key: string, expectedRevision: string): Promise<ConditionalDeleteResult>;
+ 	kvDelete(key: string): Promise<boolean>;
+ 	kvList(prefix?: string): Promise<Array<{ key: string; value: unknown }>>;
+ 	// Storage
+@@ -181,6 +195,18 @@ export interface PluginBridgeBinding {
+ 		id: string,
+ 		args: UpdateIfArgs<unknown>,
+ 	): Promise<StorageUpdateIfResponse>;
++	storageGetVersioned(collection: string, id: string): Promise<VersionedValue | null>;
++	storageCompareAndSet(
++		collection: string,
++		id: string,
++		expectedRevision: string | null,
++		data: unknown,
++	): Promise<ConditionalWriteResult>;
++	storageCompareAndDelete(
++		collection: string,
++		id: string,
++		expectedRevision: string,
++	): Promise<ConditionalDeleteResult>;
+ 	storageDelete(collection: string, id: string): Promise<boolean>;
+ 	storageQuery(
+ 		collection: string,
+diff --git a/packages/cloudflare/src/sandbox/wrapper.ts b/packages/cloudflare/src/sandbox/wrapper.ts
+index 36694fed..5427002d 100644
+--- a/packages/cloudflare/src/sandbox/wrapper.ts
++++ b/packages/cloudflare/src/sandbox/wrapper.ts
+@@ -106,6 +106,9 @@ function createContext(env) {
+ 	const kv = {
+ 		get: (key) => bridge.kvGet(key),
+ 		set: (key, value) => bridge.kvSet(key, value),
++		getVersioned: (key) => bridge.kvGetVersioned(key),
++		compareAndSet: (key, expectedRevision, value) => bridge.kvCompareAndSet(key, expectedRevision, value),
++		compareAndDelete: (key, expectedRevision) => bridge.kvCompareAndDelete(key, expectedRevision),
+ 		delete: (key) => bridge.kvDelete(key),
+ 		list: (prefix) => bridge.kvList(prefix)
+ 	};
+@@ -124,6 +127,9 @@ function createContext(env) {
+ 				}
+ 				return result;
+ 			},
++			getVersioned: (id) => bridge.storageGetVersioned(collectionName, id),
++			compareAndSet: (id, expectedRevision, data) => bridge.storageCompareAndSet(collectionName, id, expectedRevision, data),
++			compareAndDelete: (id, expectedRevision) => bridge.storageCompareAndDelete(collectionName, id, expectedRevision),
+ 			delete: (id) => bridge.storageDelete(collectionName, id),
+ 			exists: async (id) => (await bridge.storageGet(collectionName, id)) !== null,
+ 			query: (opts) => bridge.storageQuery(collectionName, opts),
+diff --git a/packages/core/src/database/migrations/077_plugin_storage_revisions.ts b/packages/core/src/database/migrations/077_plugin_storage_revisions.ts
+new file mode 100644
+index 00000000..0607219e
+--- /dev/null
++++ b/packages/core/src/database/migrations/077_plugin_storage_revisions.ts
+@@ -0,0 +1,89 @@
++import { type Kysely, sql } from "kysely";
++
++import { columnExists, isPostgres } from "../dialect-helpers.js";
++
++const TABLES = [
++	{ name: "options", keys: ["name"] },
++	{ name: "_plugin_storage", keys: ["plugin_id", "collection", "id"] },
++] as const;
++
++const DUPLICATE_COLUMN_REGEX =
++	/(?:duplicate column|column .* already exists|already exists.*column)/i;
++
++export async function up(db: Kysely<unknown>): Promise<void> {
++	for (const table of TABLES) {
++		if (await columnExists(db, table.name, "revision")) continue;
++		try {
++			await db.schema
++				.alterTable(table.name)
++				.addColumn("revision", "text", (column) => column.notNull().defaultTo("0"))
++				.execute();
++		} catch (error) {
++			if (isDuplicateColumnError(error) && (await columnExists(db, table.name, "revision"))) {
++				continue;
++			}
++			throw error;
++		}
++	}
++
++	if (isPostgres(db)) {
++		await sql`
++			CREATE OR REPLACE FUNCTION emdash_plugin_storage_assign_revision()
++			RETURNS trigger
++			LANGUAGE plpgsql
++			AS $$
++			BEGIN
++				IF TG_OP = 'INSERT' THEN
++					IF NEW.revision = '0' THEN
++						NEW.revision := gen_random_uuid()::text;
++					END IF;
++				ELSIF NEW.revision = '0' OR NEW.revision = OLD.revision THEN
++					NEW.revision := gen_random_uuid()::text;
++				END IF;
++				RETURN NEW;
++			END;
++			$$
++		`.execute(db);
++		for (const table of TABLES) {
++			await sql`
++				CREATE OR REPLACE TRIGGER ${sql.ref(`emdash_${table.name}_revision`)}
++				BEFORE INSERT OR UPDATE ON ${sql.ref(table.name)}
++				FOR EACH ROW EXECUTE FUNCTION emdash_plugin_storage_assign_revision()
++			`.execute(db);
++		}
++	} else {
++		for (const table of TABLES) {
++			const rowKey = sql.join(
++				table.keys.map((key) => sql`${sql.ref(key)} = ${sql.ref(`NEW.${key}`)}`),
++				sql` AND `,
++			);
++			await sql`
++				CREATE TRIGGER IF NOT EXISTS ${sql.ref(`emdash_${table.name}_revision_insert`)}
++				AFTER INSERT ON ${sql.ref(table.name)}
++				WHEN NEW.revision = '0'
++				BEGIN
++					UPDATE ${sql.ref(table.name)} SET revision = lower(hex(randomblob(16)))
++					WHERE ${rowKey} AND revision = NEW.revision;
++				END
++			`.execute(db);
++			await sql`
++				CREATE TRIGGER IF NOT EXISTS ${sql.ref(`emdash_${table.name}_revision_update`)}
++				AFTER UPDATE ON ${sql.ref(table.name)}
++				WHEN NEW.revision = '0' OR NEW.revision = OLD.revision
++				BEGIN
++					UPDATE ${sql.ref(table.name)} SET revision = lower(hex(randomblob(16)))
++					WHERE ${rowKey} AND revision = NEW.revision;
++				END
++			`.execute(db);
++		}
++	}
++}
++
++function isDuplicateColumnError(error: unknown): boolean {
++	if (!(error instanceof Error)) return false;
++	return DUPLICATE_COLUMN_REGEX.test(error.message) || isDuplicateColumnError(error.cause);
++}
++
++export async function down(_db: Kysely<unknown>): Promise<void> {
++	// Revisions must survive a host rollback while other writers still use them.
++}
+diff --git a/packages/core/src/database/migrations/runner.ts b/packages/core/src/database/migrations/runner.ts
+index fe474cdc..e9264222 100644
+--- a/packages/core/src/database/migrations/runner.ts
++++ b/packages/core/src/database/migrations/runner.ts
+@@ -79,6 +79,7 @@ import * as m073 from "./073_media_focal_point.js";
+ import * as m074 from "./074_content_deleted_scheduled_index.js";
+ import * as m075 from "./075_entry_edit_locks.js";
+ import * as m076 from "./076_collection_nav_group.js";
++import * as m077 from "./077_plugin_storage_revisions.js";
+ 
+ const MIGRATIONS: Readonly<Record<string, Migration>> = Object.freeze({
+ 	"001_initial": m001,
+@@ -156,6 +157,7 @@ const MIGRATIONS: Readonly<Record<string, Migration>> = Object.freeze({
+ 	"074_content_deleted_scheduled_index": m074,
+ 	"075_entry_edit_locks": m075,
+ 	"076_collection_nav_group": m076,
++	"077_plugin_storage_revisions": m077,
+ });
+ 
+ /** Ordered names from the statically registered migration set. */
+diff --git a/packages/core/src/database/repositories/options.ts b/packages/core/src/database/repositories/options.ts
+index 0a6317c5..ca06b226 100644
+--- a/packages/core/src/database/repositories/options.ts
++++ b/packages/core/src/database/repositories/options.ts
+@@ -1,5 +1,15 @@
+-import { sql, type Kysely, type SqlBool } from "kysely";
+-
++import { sql, type Insertable, type Kysely, type SqlBool } from "kysely";
++
++import {
++	assertStorageKey,
++	assertStorageRevision,
++	serializeConditionalValue,
++} from "../../plugins/conditional-storage.js";
++import type {
++	VersionedValue,
++	ConditionalWriteResult,
++	ConditionalDeleteResult,
++} from "../../plugins/types.js";
+ import type { Database, OptionTable } from "../types.js";
+ 
+ function escapeLike(value: string): string {
+@@ -42,16 +52,19 @@ export class OptionsRepository {
+ 	 * Set an option value (creates or updates)
+ 	 */
+ 	async set<T = unknown>(name: string, value: T): Promise<void> {
+-		const row: OptionTable = {
++		const row: Insertable<OptionTable> = {
+ 			name,
+ 			value: JSON.stringify(value),
++			revision: crypto.randomUUID(),
+ 		};
+ 
+ 		// Upsert: insert or replace
+ 		await this.db
+ 			.insertInto("options")
+ 			.values(row)
+-			.onConflict((oc) => oc.column("name").doUpdateSet({ value: row.value }))
++			.onConflict((oc) =>
++				oc.column("name").doUpdateSet({ value: row.value, revision: row.revision }),
++			)
+ 			.execute();
+ 	}
+ 
+@@ -64,9 +77,10 @@ export class OptionsRepository {
+ 	 * existed (regardless of its value — even an empty string or null).
+ 	 */
+ 	async setIfAbsent<T = unknown>(name: string, value: T): Promise<boolean> {
+-		const row: OptionTable = {
++		const row: Insertable<OptionTable> = {
+ 			name,
+ 			value: JSON.stringify(value),
++			revision: crypto.randomUUID(),
+ 		};
+ 
+ 		const result = await this.db
+@@ -80,6 +94,56 @@ export class OptionsRepository {
+ 		return (result.numInsertedOrUpdatedRows ?? 0n) > 0n;
+ 	}
+ 
++	async getVersioned<T = unknown>(name: string): Promise<VersionedValue<T> | null> {
++		assertStorageKey(name, 2048);
++		const row = await this.db
++			.selectFrom("options")
++			.select(["value", "revision"])
++			.where("name", "=", name)
++			.executeTakeFirst();
++		if (!row) return null;
++		return { value: JSON.parse(row.value), revision: row.revision };
++	}
++
++	async compareAndSet(
++		name: string,
++		expectedRevision: string | null,
++		value: unknown,
++	): Promise<ConditionalWriteResult> {
++		assertStorageKey(name, 2048);
++		if (expectedRevision !== null) assertStorageRevision(expectedRevision);
++		const serialized = serializeConditionalValue(value);
++		const revision = crypto.randomUUID();
++		const row =
++			expectedRevision === null
++				? await this.db
++						.insertInto("options")
++						.values({ name, value: serialized, revision })
++						.onConflict((oc) => oc.column("name").doNothing())
++						.returning("revision")
++						.executeTakeFirst()
++				: await this.db
++						.updateTable("options")
++						.set({ value: serialized, revision })
++						.where("name", "=", name)
++						.where("revision", "=", expectedRevision)
++						.returning("revision")
++						.executeTakeFirst();
++		return row ? { applied: true, revision: row.revision } : { applied: false };
++	}
++
++	async compareAndDelete(name: string, expectedRevision: string): Promise<ConditionalDeleteResult> {
++		assertStorageKey(name, 2048);
++		assertStorageRevision(expectedRevision);
++		const row = await this.db
++			.deleteFrom("options")
++			.where("name", "=", name)
++			.where("revision", "=", expectedRevision)
++			.returning("name")
++			.executeTakeFirst();
++		return { applied: row !== undefined };
++	}
++
+ 	/**
+ 	 * Delete an option
+ 	 */
+diff --git a/packages/core/src/database/repositories/plugin-storage.ts b/packages/core/src/database/repositories/plugin-storage.ts
+index 8219b0ac..134c1cf2 100644
+--- a/packages/core/src/database/repositories/plugin-storage.ts
++++ b/packages/core/src/database/repositories/plugin-storage.ts
+@@ -10,6 +10,11 @@
+ import type { Kysely, RawBuilder } from "kysely";
+ import { sql } from "kysely";
+ 
++import {
++	assertStorageKey,
++	assertStorageRevision,
++	serializeConditionalValue,
++} from "../../plugins/conditional-storage.js";
+ import {
+ 	buildWhereClause,
+ 	validateWhereClause,
+@@ -27,6 +32,9 @@ import type {
+ 	PaginatedResult,
+ 	WhereClause,
+ 	UpdateIfResult,
++	VersionedValue,
++	ConditionalWriteResult,
++	ConditionalDeleteResult,
+ } from "../../plugins/types.js";
+ import { pluginDataWriteExpr, pluginDataUpdateGuard } from "../dialect-helpers.js";
+ import { withTransaction } from "../transaction.js";
+@@ -140,6 +148,7 @@ export class PluginStorageRepository<T = unknown> implements StorageCollection<T
+ 	async put(id: string, data: T): Promise<void> {
+ 		const now = new Date().toISOString();
+ 		const jsonData = JSON.stringify(data);
++		const revision = crypto.randomUUID();
+ 
+ 		await this.db
+ 			.insertInto("_plugin_storage")
+@@ -148,18 +157,85 @@ export class PluginStorageRepository<T = unknown> implements StorageCollection<T
+ 				collection: this.collection,
+ 				id,
+ 				data: jsonData,
++				revision,
+ 				created_at: now,
+ 				updated_at: now,
+ 			})
+ 			.onConflict((oc) =>
+ 				oc.columns(["plugin_id", "collection", "id"]).doUpdateSet({
+ 					data: jsonData,
++					revision,
+ 					updated_at: now,
+ 				}),
+ 			)
+ 			.execute();
+ 	}
+ 
++	async getVersioned(id: string): Promise<VersionedValue<T> | null> {
++		assertStorageKey(id);
++		const row = await this.db
++			.selectFrom("_plugin_storage")
++			.select(["data", "revision"])
++			.where("plugin_id", "=", this.pluginId)
++			.where("collection", "=", this.collection)
++			.where("id", "=", id)
++			.executeTakeFirst();
++		if (!row) return null;
++		return { value: JSON.parse(row.data), revision: row.revision };
++	}
++
++	async compareAndSet(
++		id: string,
++		expectedRevision: string | null,
++		data: T,
++	): Promise<ConditionalWriteResult> {
++		assertStorageKey(id);
++		if (expectedRevision !== null) assertStorageRevision(expectedRevision);
++		const jsonData = serializeConditionalValue(data);
++		const revision = crypto.randomUUID();
++		const now = new Date().toISOString();
++		const row =
++			expectedRevision === null
++				? await this.db
++						.insertInto("_plugin_storage")
++						.values({
++							plugin_id: this.pluginId,
++							collection: this.collection,
++							id,
++							data: jsonData,
++							revision,
++							created_at: now,
++							updated_at: now,
++						})
++						.onConflict((oc) => oc.columns(["plugin_id", "collection", "id"]).doNothing())
++						.returning("revision")
++						.executeTakeFirst()
++				: await this.db
++						.updateTable("_plugin_storage")
++						.set({ data: jsonData, revision, updated_at: now })
++						.where("plugin_id", "=", this.pluginId)
++						.where("collection", "=", this.collection)
++						.where("id", "=", id)
++						.where("revision", "=", expectedRevision)
++						.returning("revision")
++						.executeTakeFirst();
++		return row ? { applied: true, revision: row.revision } : { applied: false };
++	}
++
++	async compareAndDelete(id: string, expectedRevision: string): Promise<ConditionalDeleteResult> {
++		assertStorageKey(id);
++		assertStorageRevision(expectedRevision);
++		const row = await this.db
++			.deleteFrom("_plugin_storage")
++			.where("plugin_id", "=", this.pluginId)
++			.where("collection", "=", this.collection)
++			.where("id", "=", id)
++			.where("revision", "=", expectedRevision)
++			.returning("id")
++			.executeTakeFirst();
++		return { applied: row !== undefined };
++	}
++
+ 	/**
+ 	 * Delete a document
+ 	 */
+@@ -224,6 +300,7 @@ export class PluginStorageRepository<T = unknown> implements StorageCollection<T
+ 		await withTransaction(this.db, async (trx) => {
+ 			for (const item of items) {
+ 				const jsonData = JSON.stringify(item.data);
++				const revision = crypto.randomUUID();
+ 				await trx
+ 					.insertInto("_plugin_storage")
+ 					.values({
+@@ -231,12 +308,14 @@ export class PluginStorageRepository<T = unknown> implements StorageCollection<T
+ 						collection: this.collection,
+ 						id: item.id,
+ 						data: jsonData,
++						revision,
+ 						created_at: now,
+ 						updated_at: now,
+ 					})
+ 					.onConflict((oc) =>
+ 						oc.columns(["plugin_id", "collection", "id"]).doUpdateSet({
+ 							data: jsonData,
++							revision,
+ 							updated_at: now,
+ 						}),
+ 					)
+diff --git a/packages/core/src/database/types.ts b/packages/core/src/database/types.ts
+index 03e3be71..c7d2ed84 100644
+--- a/packages/core/src/database/types.ts
++++ b/packages/core/src/database/types.ts
+@@ -396,6 +396,7 @@ export interface DeviceCodeTable {
+ export interface OptionTable {
+ 	name: string;
+ 	value: string; // JSON
++	revision: Generated<string>;
+ }
+ 
+ export interface AuditLogTable {
+@@ -484,6 +485,7 @@ export interface PluginStorageTable {
+ 	collection: string;
+ 	id: string;
+ 	data: string; // JSON
++	revision: Generated<string>;
+ 	created_at: Generated<string>;
+ 	updated_at: Generated<string>;
+ }
+diff --git a/packages/core/src/index.ts b/packages/core/src/index.ts
+index bf794aaf..5146c0ef 100644
+--- a/packages/core/src/index.ts
++++ b/packages/core/src/index.ts
+@@ -292,6 +292,9 @@ export type {
+ 	NumericDelta,
+ 	UpdateIfArgs,
+ 	UpdateIfResult,
++	VersionedValue,
++	ConditionalWriteResult,
++	ConditionalDeleteResult,
+ 	KVAccess,
+ 	ContentAccess,
+ 	ContentCreateOptions,
+diff --git a/packages/core/src/plugin-types.ts b/packages/core/src/plugin-types.ts
+index bdcdc10f..d5f735d6 100644
+--- a/packages/core/src/plugin-types.ts
++++ b/packages/core/src/plugin-types.ts
+@@ -297,3 +297,9 @@ export type {
+ 	PluginContext,
+ 	UninstallEvent,
+ };
++
++export type {
++	VersionedValue,
++	ConditionalWriteResult,
++	ConditionalDeleteResult,
++} from "./plugins/types.js";
+diff --git a/packages/core/src/plugins/conditional-storage.ts b/packages/core/src/plugins/conditional-storage.ts
+new file mode 100644
+index 00000000..00345a52
+--- /dev/null
++++ b/packages/core/src/plugins/conditional-storage.ts
+@@ -0,0 +1,30 @@
++const MAX_KEY_LENGTH = 1024;
++const MAX_REVISION_LENGTH = 128;
++const MAX_VALUE_BYTES = 1024 * 1024;
++
++export function assertStorageKey(key: unknown, maxLength = MAX_KEY_LENGTH): asserts key is string {
++	if (typeof key !== "string" || key.length === 0 || key.length > maxLength) {
++		throw new TypeError(`Storage key must be a nonempty string of at most ${maxLength} characters`);
++	}
++}
++
++export function assertStorageRevision(revision: unknown): asserts revision is string {
++	if (
++		typeof revision !== "string" ||
++		revision.length === 0 ||
++		revision.length > MAX_REVISION_LENGTH
++	) {
++		throw new TypeError("Storage revision must be a nonempty string of at most 128 characters");
++	}
++}
++
++export function serializeConditionalValue(value: unknown): string {
++	const serialized = JSON.stringify(value);
++	if (serialized === undefined) {
++		throw new TypeError("Storage value must be JSON serializable");
++	}
++	if (new TextEncoder().encode(serialized).byteLength > MAX_VALUE_BYTES) {
++		throw new TypeError("Conditional storage value must not exceed 1 MiB of JSON");
++	}
++	return serialized;
++}
+diff --git a/packages/core/src/plugins/context.ts b/packages/core/src/plugins/context.ts
+index 1d35cf42..281dea56 100644
+--- a/packages/core/src/plugins/context.ts
++++ b/packages/core/src/plugins/context.ts
+@@ -28,6 +28,7 @@ import { enrichImageMetadata } from "../media/enrich.js";
+ import { markContentMediaUsageCollectionStaleSafely } from "../media/usage/content-refresh.js";
+ import { invalidateSiteSettingsCache } from "../settings/index.js";
+ import type { Storage } from "../storage/types.js";
++import { assertStorageKey } from "./conditional-storage.js";
+ import { CronAccessImpl } from "./cron.js";
+ import type { EmailPipeline } from "./email.js";
+ import type {
+@@ -77,6 +78,18 @@ export function createKVAccess(optionsRepo: OptionsRepository, pluginId: string)
+ 		async get<T>(key: string): Promise<T | null> {
+ 			return optionsRepo.get<T>(`${prefix}${key}`);
+ 		},
++		async getVersioned<T>(key: string) {
++			assertStorageKey(key);
++			return optionsRepo.getVersioned<T>(`${prefix}${key}`);
++		},
++		async compareAndSet(key, expectedRevision, value) {
++			assertStorageKey(key);
++			return optionsRepo.compareAndSet(`${prefix}${key}`, expectedRevision, value);
++		},
++		async compareAndDelete(key, expectedRevision) {
++			assertStorageKey(key);
++			return optionsRepo.compareAndDelete(`${prefix}${key}`, expectedRevision);
++		},
+ 
+ 		async set(key: string, value: unknown): Promise<void> {
+ 			await optionsRepo.set(`${prefix}${key}`, value);
+@@ -119,6 +132,9 @@ function createStorageCollection<T>(
+ 
+ 	return {
+ 		get: (id) => repo.get(id),
++		getVersioned: (id) => repo.getVersioned(id),
++		compareAndSet: (id, expectedRevision, data) => repo.compareAndSet(id, expectedRevision, data),
++		compareAndDelete: (id, expectedRevision) => repo.compareAndDelete(id, expectedRevision),
+ 		put: (id, data) => repo.put(id, data),
+ 		delete: (id) => repo.delete(id),
+ 		exists: (id) => repo.exists(id),
+diff --git a/packages/core/src/plugins/index.ts b/packages/core/src/plugins/index.ts
+index 5ba58fce..53d90adf 100644
+--- a/packages/core/src/plugins/index.ts
++++ b/packages/core/src/plugins/index.ts
+@@ -123,6 +123,9 @@ export type {
+ 	NumericDelta,
+ 	UpdateIfArgs,
+ 	UpdateIfResult,
++	VersionedValue,
++	ConditionalWriteResult,
++	ConditionalDeleteResult,
+ 	KVAccess,
+ 	ContentAccess,
+ 	ContentAccessWithWrite,
+diff --git a/packages/core/src/plugins/types.ts b/packages/core/src/plugins/types.ts
+index c0e3eab2..e94c8610 100644
+--- a/packages/core/src/plugins/types.ts
++++ b/packages/core/src/plugins/types.ts
+@@ -135,6 +135,18 @@ export interface PaginatedResult<T> {
+ 	hasMore: boolean;
+ }
+ 
++export interface VersionedValue<T = unknown> {
++	value: T;
++	/** Opaque host revision, valid only for the key from which it was read. */
++	revision: string;
++}
++
++export type ConditionalWriteResult = { applied: true; revision: string } | { applied: false };
++
++export interface ConditionalDeleteResult {
++	applied: boolean;
++}
++
+ /**
+  * A single per-field integer delta for {@link StorageCollection.updateIf}.
+  *
+@@ -198,6 +210,15 @@ export interface StorageCollection<T = unknown> {
+ 	put(id: string, data: T): Promise<void>;
+ 	delete(id: string): Promise<boolean>;
+ 	exists(id: string): Promise<boolean>;
++	/** A stored JSON null returns an envelope with value: null; only an absent row returns null. */
++	getVersioned(id: string): Promise<VersionedValue<T> | null>;
++	/** A null expected revision creates only when absent. Errors reject; conflicts return applied: false. */
++	compareAndSet(
++		id: string,
++		expectedRevision: string | null,
++		data: T,
++	): Promise<ConditionalWriteResult>;
++	compareAndDelete(id: string, expectedRevision: string): Promise<ConditionalDeleteResult>;
+ 
+ 	// Batch operations
+ 	getMany(ids: string[]): Promise<Map<string, T>>;
+@@ -246,6 +267,14 @@ export type PluginStorage<T extends PluginStorageConfig> = {
+  */
+ export interface KVAccess {
+ 	get<T>(key: string): Promise<T | null>;
++	getVersioned<T>(key: string): Promise<VersionedValue<T> | null>;
++	/** A null expected revision creates only when absent. Errors reject; conflicts return applied: false. */
++	compareAndSet(
++		key: string,
++		expectedRevision: string | null,
++		value: unknown,
++	): Promise<ConditionalWriteResult>;
++	compareAndDelete(key: string, expectedRevision: string): Promise<ConditionalDeleteResult>;
+ 	set(key: string, value: unknown): Promise<void>;
+ 	delete(key: string): Promise<boolean>;
+ 	list(prefix?: string): Promise<Array<{ key: string; value: unknown }>>;
+diff --git a/packages/core/tests/integration/database/migrations.test.ts b/packages/core/tests/integration/database/migrations.test.ts
+index 0f95762a..4535cab5 100644
+--- a/packages/core/tests/integration/database/migrations.test.ts
++++ b/packages/core/tests/integration/database/migrations.test.ts
+@@ -145,52 +145,10 @@ describe("Database Migrations (Integration)", () => {
+ 		await db.destroy();
+ 		db = await setupTestDatabaseWithCollections();
+ 
+-		// Kysely only re-runs trailing entries; include the latest migrations.
+-		const trailing = [
+-			"034_published_at_index",
+-			"035_bounded_404_log",
+-			"036_i18n_menus_and_taxonomies",
+-			"037_credential_algorithm",
+-			"038_registry_plugin_state",
+-			"039_fix_fts5_triggers",
+-			"040_byline_i18n",
+-			"041_content_locale_list_index",
+-			"042_byline_fields",
+-			"043_content_references",
+-			"044_comment_reactions",
+-			"045_taxonomy_parent_group",
+-			"046_media_usage_index",
+-			"047_restore_taxonomy_parent_index",
+-			"048_restore_content_taxonomies_term_index",
+-			"049_taxonomies_name_locale_index",
+-			"050_media_usage_index_status",
+-			"051_content_taxonomies_denorm",
+-			"052_media_usage_read_index",
+-			"053_plugin_mcp_tools",
+-			"054_media_upload_attempts",
+-			"055_content_translation_group_locale_index",
+-			"056_taxonomy_term_sort_order",
+-			"057_collection_hidden",
+-			"058_collection_sort_order",
+-			"059_revision_prune_queue",
+-			"060_collection_admin_config",
+-			"061_media_usage_cleanup",
+-			"062_media_usage_cleanup_fence",
+-			"063_media_usage_incremental_work",
+-			"064_fts_plain_text",
+-			"065_media_usage_collection_deletion",
+-			"066_media_usage_reconciliation",
+-			"067_indexed_content_fields",
+-			"068_content_taxonomy_entry_groups",
+-			"069_collection_title_date_fields",
+-			"070_collection_routable",
+-			"071_restore_content_bylines_table",
+-			"072_media_folders",
+-			"073_media_focal_point",
+-			"074_content_deleted_scheduled_index",
+-			"075_entry_edit_locks",
+-			"076_collection_nav_group",
+-		];
++		// Kysely requires the retained migration records to form a contiguous prefix.
++		const start = MIGRATION_NAMES.indexOf("034_published_at_index");
++		expect(start).toBeGreaterThanOrEqual(0);
++		const trailing = MIGRATION_NAMES.slice(start);
+ 
+ 		await db.deleteFrom("_emdash_migrations").where("name", "in", trailing).execute();
+ 
+diff --git a/packages/core/tests/integration/database/plugin-storage-revisions-migration.test.ts b/packages/core/tests/integration/database/plugin-storage-revisions-migration.test.ts
+new file mode 100644
+index 00000000..9110c07f
+--- /dev/null
++++ b/packages/core/tests/integration/database/plugin-storage-revisions-migration.test.ts
+@@ -0,0 +1,27 @@
++import { afterEach, beforeEach } from "vitest";
++
++import {
++	createLegacyPluginStorageTables,
++	pluginStorageRevisionMigrationCases,
++} from "../../utils/plugin-storage-revision-cases.js";
++import {
++	createForDialect,
++	describeEachDialect,
++	teardownForDialect,
++	type DialectTestContext,
++} from "../../utils/test-db.js";
++
++describeEachDialect("plugin storage revision migration", (dialect) => {
++	let ctx: DialectTestContext;
++
++	beforeEach(async () => {
++		ctx = await createForDialect(dialect);
++		await createLegacyPluginStorageTables(ctx.db);
++	});
++
++	afterEach(async () => {
++		await teardownForDialect(ctx);
++	});
++
++	pluginStorageRevisionMigrationCases(() => ctx.db, dialect === "sqlite");
++});
+diff --git a/packages/core/tests/integration/plugins/conditional-storage.test.ts b/packages/core/tests/integration/plugins/conditional-storage.test.ts
+new file mode 100644
+index 00000000..d6a70dfd
+--- /dev/null
++++ b/packages/core/tests/integration/plugins/conditional-storage.test.ts
+@@ -0,0 +1,327 @@
++import { type Kysely, sql } from "kysely";
++import { afterEach, beforeEach, expect, it } from "vitest";
++
++import { up as migrateRevisions } from "../../../src/database/migrations/077_plugin_storage_revisions.js";
++import { OptionsRepository } from "../../../src/database/repositories/options.js";
++import { PluginStorageRepository } from "../../../src/database/repositories/plugin-storage.js";
++import type { Database } from "../../../src/database/types.js";
++import { createKVAccess, createStorageAccess } from "../../../src/plugins/context.js";
++import type {
++	ConditionalDeleteResult,
++	ConditionalWriteResult,
++	VersionedValue,
++} from "../../../src/plugins/types.js";
++import { createLegacyPluginStorageTables } from "../../utils/plugin-storage-revision-cases.js";
++import {
++	createForDialect,
++	describeEachDialect,
++	setupForDialect,
++	teardownForDialect,
++	type DialectTestContext,
++} from "../../utils/test-db.js";
++
++interface Store {
++	getVersioned(key: string): Promise<VersionedValue | null>;
++	compareAndSet(
++		key: string,
++		revision: string | null,
++		value: unknown,
++	): Promise<ConditionalWriteResult>;
++	compareAndDelete(key: string, revision: string): Promise<ConditionalDeleteResult>;
++	put(key: string, value: unknown): Promise<void>;
++	putMany(items: Array<{ id: string; data: unknown }>): Promise<void>;
++	delete(key: string): Promise<boolean>;
++}
++
++describeEachDialect("conditional plugin storage", (dialect) => {
++	let ctx: DialectTestContext;
++	let db: Kysely<Database>;
++
++	beforeEach(async () => {
++		ctx = await setupForDialect(dialect);
++		db = ctx.db;
++	});
++	afterEach(async () => {
++		await teardownForDialect(ctx);
++	});
++
++	function store(kind: "collection" | "kv", pluginId = "owner", collection = "jobs"): Store {
++		if (kind === "collection") {
++			return createStorageAccess(db, pluginId, { [collection]: { indexes: [] } })[collection];
++		}
++		const options = new OptionsRepository(db);
++		const kv = createKVAccess(options, pluginId);
++		return {
++			...kv,
++			put: (key, value) => kv.set(key, value),
++			putMany: (items) =>
++				options.setMany(
++					Object.fromEntries(items.map(({ id, data }) => [`plugin:${pluginId}:${id}`, data])),
++				),
++		};
++	}
++
++	for (const kind of ["collection", "kv"] as const) {
++		it(`${kind}: distinguishes an absent key from stored JSON null`, async () => {
++			const target = store(kind);
++			expect(await target.getVersioned("key")).toBeNull();
++			expect(await target.compareAndSet("key", "missing-revision", "value")).toEqual({
++				applied: false,
++			});
++			expect(await target.compareAndDelete("key", "missing-revision")).toEqual({ applied: false });
++			const result = await target.compareAndSet("key", null, null);
++			expect(result.applied).toBe(true);
++			if (!result.applied) throw new Error("Expected insertion");
++			expect(await target.getVersioned("key")).toEqual({ value: null, revision: result.revision });
++			expect(await target.compareAndSet("key", null, "overwrite")).toEqual({ applied: false });
++		});
++
++		it(`${kind}: admits one concurrent creator and one replacement for a revision`, async () => {
++			const target = store(kind);
++			const creates = await Promise.all(
++				Array.from({ length: 8 }, (_, value) => target.compareAndSet("key", null, value)),
++			);
++			expect(creates.filter((result) => result.applied)).toHaveLength(1);
++			const first = await target.getVersioned("key");
++			if (!first) throw new Error("Missing inserted value");
++			const writes = await Promise.all(
++				Array.from({ length: 8 }, (_, value) =>
++					target.compareAndSet("key", first.revision, value + 10),
++				),
++			);
++			const winner = writes.find((result) => result.applied);
++			expect(writes.filter((result) => result.applied)).toHaveLength(1);
++			expect(winner?.applied && winner.revision).toBe((await target.getVersioned("key"))?.revision);
++			expect((await target.getVersioned("key"))?.revision).not.toBe(first.revision);
++		});
++
++		it(`${kind}: rejects stale deletion after an intervening write`, async () => {
++			const target = store(kind);
++			await target.put("key", "initial");
++			const first = await target.getVersioned("key");
++			if (!first) throw new Error("Missing value");
++			await target.put("key", "newer");
++			expect(await target.compareAndDelete("key", first.revision)).toEqual({ applied: false });
++			const current = await target.getVersioned("key");
++			if (!current) throw new Error("Missing current value");
++			const results = await Promise.all([
++				target.compareAndDelete("key", current.revision),
++				target.compareAndDelete("key", current.revision),
++			]);
++			expect(results.filter((result) => result.applied)).toHaveLength(1);
++			expect(await target.getVersioned("key")).toBeNull();
++		});
++
++		it(`${kind}: invalidates tokens after equal-value single and batch writes`, async () => {
++			const target = store(kind);
++			await target.put("key", { revision: "untrusted", value: 1 });
++			for (const write of [
++				() => target.put("key", { revision: "untrusted", value: 1 }),
++				() => target.putMany([{ id: "key", data: { revision: "untrusted", value: 1 } }]),
++			]) {
++				const old = await target.getVersioned("key");
++				if (!old) throw new Error("Missing value");
++				expect(old.revision).not.toBe("untrusted");
++				await write();
++				expect(await target.compareAndSet("key", old.revision, "stale")).toEqual({
++					applied: false,
++				});
++			}
++		});
++
++		it(`${kind}: never revives a token after delete and recreation`, async () => {
++			const target = store(kind);
++			await target.put("key", "same");
++			const old = await target.getVersioned("key");
++			if (!old) throw new Error("Missing value");
++			await target.delete("key");
++			await target.put("key", "same");
++			expect(await target.compareAndSet("key", old.revision, "stale")).toEqual({ applied: false });
++			expect(await target.compareAndDelete("key", old.revision)).toEqual({ applied: false });
++			expect((await target.getVersioned("key"))?.value).toBe("same");
++		});
++
++		it(`${kind}: keeps tokens and SQL-like keys scoped to the owning plugin`, async () => {
++			const owner = store(kind);
++			const other = store(kind, "other");
++			for (const key of ["__proto__", "constructor", "toString", "x' OR 1=1 --"]) {
++				await owner.put(key, "owner");
++				await other.put(key, "other");
++				const record = await owner.getVersioned(key);
++				if (!record) throw new Error("Missing owner value");
++				expect(await other.compareAndSet(key, record.revision, "overwrite")).toEqual({
++					applied: false,
++				});
++				expect(await other.compareAndDelete(key, record.revision)).toEqual({ applied: false });
++				expect((await owner.getVersioned(key))?.value).toBe("owner");
++				expect((await other.getVersioned(key))?.value).toBe("other");
++			}
++		});
++
++		it(`${kind}: rejects malformed preconditions before changing stored data`, async () => {
++			const target = store(kind);
++			await target.put("key", "retained");
++			for (const revision of [undefined, 0, {}, [], "", "x".repeat(129)]) {
++				// @ts-expect-error -- untyped bridge callers can send invalid preconditions.
++				await expect(target.compareAndSet("key", revision, "bad")).rejects.toThrow();
++				// @ts-expect-error -- untyped bridge callers can send invalid preconditions.
++				await expect(target.compareAndDelete("key", revision)).rejects.toThrow();
++			}
++			for (const key of [undefined, null, {}, [], "", "x".repeat(1025)]) {
++				// @ts-expect-error -- untyped bridge callers can send invalid keys.
++				await expect(target.compareAndSet(key, null, "bad")).rejects.toThrow();
++			}
++			expect((await target.getVersioned("key"))?.value).toBe("retained");
++		});
++
++		it(`${kind}: rejects missing and oversized JSON values instead of creating a row`, async () => {
++			const target = store(kind);
++			const cyclic: { self?: unknown } = {};
++			cyclic.self = cyclic;
++			for (const value of [
++				undefined,
++				BigInt(1),
++				cyclic,
++				"x".repeat(1024 * 1024),
++				"€".repeat(350_000),
++			]) {
++				await expect(target.compareAndSet("key", null, value)).rejects.toThrow();
++			}
++			expect(await target.getVersioned("key")).toBeNull();
++		});
++	}
++
++	it("keeps collection revisions separate within a plugin", async () => {
++		const left = store("collection", "owner", "left");
++		const right = store("collection", "owner", "right");
++		await left.put("key", 1);
++		await right.put("key", 2);
++		const old = await left.getVersioned("key");
++		if (!old) throw new Error("Missing value");
++		expect(await right.compareAndSet("key", old.revision, 3)).toEqual({ applied: false });
++		expect(await right.compareAndDelete("key", old.revision)).toEqual({ applied: false });
++		expect((await right.getVersioned("key"))?.value).toBe(2);
++	});
++
++	it("propagates unrelated unique constraint failures", async () => {
++		await db.schema
++			.createIndex("conditional_unique_data")
++			.unique()
++			.on("_plugin_storage")
++			.columns(["plugin_id", "collection", "data"])
++			.execute();
++		const target = new PluginStorageRepository(db, "owner", "jobs", []);
++		await target.put("first", "unique");
++		await expect(target.compareAndSet("second", null, "unique")).rejects.toThrow();
++		expect(await target.getVersioned("second")).toBeNull();
++		await target.put("second", "other");
++		const before = await target.getVersioned("second");
++		if (!before) throw new Error("Missing second value");
++		await expect(target.compareAndSet("second", before.revision, "unique")).rejects.toThrow();
++		expect(await target.getVersioned("second")).toEqual(before);
++	});
++
++	it("propagates database failures instead of reporting a conflict", async () => {
++		const target = store("collection");
++		await db.schema.dropTable("_plugin_storage").execute();
++		await expect(target.compareAndSet("key", null, "value")).rejects.toThrow();
++		await expect(target.compareAndDelete("key", "revision")).rejects.toThrow();
++	});
++});
++
++describeEachDialect("conditional plugin storage after a legacy upgrade", (dialect) => {
++	let ctx: DialectTestContext;
++	let db: Kysely<Database>;
++
++	beforeEach(async () => {
++		ctx = await createForDialect(dialect);
++		db = ctx.db;
++		await createLegacyPluginStorageTables(db);
++	});
++	afterEach(async () => {
++		await teardownForDialect(ctx);
++	});
++
++	function store(kind: "collection" | "kv", pluginId = "owner", collection = "jobs") {
++		return kind === "collection"
++			? createStorageAccess(db, pluginId, { [collection]: { indexes: [] } })[collection]
++			: createKVAccess(new OptionsRepository(db), pluginId);
++	}
++
++	async function oldPut(
++		kind: "collection" | "kv",
++		key: string,
++		pluginId = "owner",
++		collection = "jobs",
++	) {
++		if (kind === "kv") {
++			await sql`
++				INSERT INTO options (name, value) VALUES (${`plugin:${pluginId}:${key}`}, ${'"same"'})
++				ON CONFLICT (name) DO UPDATE SET value = excluded.value
++			`.execute(db);
++		} else {
++			await sql`
++				INSERT INTO _plugin_storage (plugin_id, collection, id, data)
++				VALUES (${pluginId}, ${collection}, ${key}, ${'"same"'})
++				ON CONFLICT (plugin_id, collection, id) DO UPDATE SET data = excluded.data
++			`.execute(db);
++		}
++	}
++
++	for (const kind of ["collection", "kv"] as const) {
++		it(`${kind}: admits one writer at revision 0 without changing other legacy keys`, async () => {
++			await oldPut(kind, "key");
++			await oldPut(kind, "neighbor");
++			await oldPut(kind, "key", "other");
++			if (kind === "collection") await oldPut(kind, "key", "owner", "other");
++			await migrateRevisions(db);
++			const target = store(kind);
++			const initial = await target.getVersioned("key");
++			expect(initial).toEqual({ value: "same", revision: "0" });
++			if (!initial) throw new Error("Missing legacy value");
++
++			const writes = await Promise.all([
++				target.compareAndSet("key", initial.revision, "first"),
++				target.compareAndSet("key", initial.revision, "second"),
++			]);
++
++			expect(writes.filter((result) => result.applied)).toHaveLength(1);
++			const winner = writes.find((result) => result.applied);
++			if (!winner?.applied) throw new Error("Missing conditional write winner");
++			expect(winner.revision).not.toBe("0");
++			expect((await target.getVersioned("key"))?.revision).toBe(winner.revision);
++			expect(await target.compareAndDelete("key", initial.revision)).toEqual({ applied: false });
++			expect(await store(kind, "other").getVersioned("key")).toEqual(initial);
++			if (kind === "collection") {
++				expect(await store(kind, "owner", "other").getVersioned("key")).toEqual(initial);
++			}
++			expect(await target.getVersioned("neighbor")).toEqual(initial);
++			const neighborWrite = await target.compareAndSet("neighbor", "0", "neighbor updated");
++			if (!neighborWrite.applied) throw new Error("Expected legacy neighbor write");
++			expect(neighborWrite.revision).not.toBe("0");
++			expect(await target.getVersioned("neighbor")).toEqual({
++				value: "neighbor updated",
++				revision: neighborWrite.revision,
++			});
++		});
++
++		it(`${kind}: rejects deletion at revision 0 after old writes and recreation`, async () => {
++			for (const key of ["updated", "recreated"]) await oldPut(kind, key);
++			await migrateRevisions(db);
++			const target = store(kind);
++
++			for (const key of ["updated", "recreated"]) {
++				const initial = await target.getVersioned(key);
++				expect(initial).toEqual({ value: "same", revision: "0" });
++				if (!initial) throw new Error("Missing legacy value");
++				if (key === "recreated") await target.delete(key);
++				await oldPut(kind, key);
++				const current = await target.getVersioned(key);
++				expect(current?.value).toBe("same");
++				expect(current?.revision).not.toBe(initial.revision);
++				expect(await target.compareAndDelete(key, initial.revision)).toEqual({ applied: false });
++				expect(await target.getVersioned(key)).toEqual(current);
++			}
++		});
++	}
++});
+diff --git a/packages/core/tests/utils/plugin-storage-revision-cases.ts b/packages/core/tests/utils/plugin-storage-revision-cases.ts
+new file mode 100644
+index 00000000..7226cd9a
+--- /dev/null
++++ b/packages/core/tests/utils/plugin-storage-revision-cases.ts
+@@ -0,0 +1,393 @@
++import { type Kysely, type KyselyPlugin, sql } from "kysely";
++import { expect, it } from "vitest";
++
++import { down, up } from "../../src/database/migrations/077_plugin_storage_revisions.js";
++
++const STORES = [
++	{ table: "options", keys: ["name"], values: ["plugin:test:state"], data: "value" },
++	{
++		table: "_plugin_storage",
++		keys: ["plugin_id", "collection", "id"],
++		values: ["test", "items", "item"],
++		data: "data",
++	},
++] as const;
++
++type Store = (typeof STORES)[number];
++
++export async function createLegacyPluginStorageTables(db: Kysely<unknown>): Promise<void> {
++	await sql`
++		CREATE TABLE options (name TEXT PRIMARY KEY, value TEXT NOT NULL)
++	`.execute(db);
++	await sql`
++		CREATE TABLE _plugin_storage (
++			plugin_id TEXT NOT NULL,
++			collection TEXT NOT NULL,
++			id TEXT NOT NULL,
++			data TEXT NOT NULL,
++			created_at TEXT NOT NULL DEFAULT '2026-01-01T00:00:00.000Z',
++			updated_at TEXT NOT NULL DEFAULT '2026-01-01T00:00:00.000Z',
++			PRIMARY KEY (plugin_id, collection, id)
++		)
++	`.execute(db);
++}
++
++function whereKey(store: Store) {
++	return sql.join(
++		store.keys.map((key, index) => sql`${sql.ref(key)} = ${store.values[index]}`),
++		sql` AND `,
++	);
++}
++
++async function oldPut(db: Kysely<unknown>, store: Store, value = '{"count":1}') {
++	await sql`
++		INSERT INTO ${sql.ref(store.table)}
++			(${sql.join([...store.keys, store.data].map((column) => sql.ref(column)))})
++		VALUES (${sql.join([...store.values, value].map((item) => sql`${item}`))})
++		ON CONFLICT (${sql.join(store.keys.map((column) => sql.ref(column)))})
++		DO UPDATE SET ${sql.ref(store.data)} = ${sql.ref(`excluded.${store.data}`)}
++	`.execute(db);
++}
++
++async function readRow(db: Kysely<unknown>, store: Store) {
++	const result = await sql<{ value: string; revision: string }>`
++		SELECT ${sql.ref(store.data)} AS value, revision FROM ${sql.ref(store.table)}
++		WHERE ${whereKey(store)}
++	`.execute(db);
++	const row = result.rows[0];
++	if (!row) throw new Error(`Missing fixture row in ${store.table}`);
++	return row;
++}
++
++function afterStatement(callback: () => void): KyselyPlugin {
++	return {
++		transformQuery: ({ node }) => node,
++		transformResult: ({ result }) => {
++			callback();
++			return Promise.resolve(result);
++		},
++	};
++}
++
++async function readRows(db: Kysely<unknown>, store: Store) {
++	const result = await sql<Record<string, string>>`
++		SELECT * FROM ${sql.ref(store.table)}
++		ORDER BY ${sql.join(store.keys.map((column) => sql.ref(column)))}
++	`.execute(db);
++	return result.rows;
++}
++
++const WHITESPACE_REGEX = /\s+/g;
++
++function captureStatements(db: Kysely<unknown>, statements: string[]): KyselyPlugin {
++	return {
++		transformQuery: ({ node, queryId }) => {
++			const query = db.getExecutor().compileQuery(node, queryId);
++			statements.push(query.sql.replace(WHITESPACE_REGEX, " ").trim().toUpperCase());
++			return node;
++		},
++		transformResult: ({ result }) => Promise.resolve(result),
++	};
++}
++
++export function pluginStorageRevisionMigrationCases(
++	getDb: () => Kysely<unknown>,
++	sqlite: boolean,
++): void {
++	it("initializes legacy revisions without reading or updating stored rows", async () => {
++		const db = getDb();
++		for (const store of STORES) await oldPut(db, store);
++		await sql`
++			UPDATE _plugin_storage
++			SET created_at = '2026-02-01T12:34:56.000Z', updated_at = '2026-08-01T12:34:56.000Z'
++		`.execute(db);
++		const before = await Promise.all(STORES.map((store) => readRows(db, store)));
++		const statements: string[] = [];
++
++		await up(db.withPlugin(captureStatements(db, statements)));
++
++		expect(statements.length).toBeGreaterThan(0);
++		for (const [index, store] of STORES.entries()) {
++			const table = `"${store.table.toUpperCase()}"`;
++			expect(
++				statements.filter(
++					(statement) => statement.startsWith("SELECT ") && statement.includes(` FROM ${table}`),
++				),
++			).toEqual([]);
++			expect(statements.filter((statement) => statement.startsWith(`UPDATE ${table}`))).toEqual([]);
++			expect(await readRows(db, store)).toEqual(
++				before[index]?.map((row) => ({ ...row, revision: "0" })),
++			);
++		}
++	});
++
++	for (const store of STORES) {
++		it(`${store.table}: accepts the first conditional write at revision 0 and rejects its reuse`, async () => {
++			const db = getDb();
++			await oldPut(db, store);
++			await up(db);
++			expect((await readRow(db, store)).revision).toBe("0");
++			const revision = crypto.randomUUID();
++			const value = '{"count":2}';
++
++			const first = await sql<{ revision: string }>`
++				UPDATE ${sql.ref(store.table)} SET ${sql.ref(store.data)} = ${value}, revision = ${revision}
++				WHERE ${whereKey(store)} AND revision = '0'
++				RETURNING revision
++			`.execute(db);
++			const stale = await sql<{ revision: string }>`
++				UPDATE ${sql.ref(store.table)} SET ${sql.ref(store.data)} = ${'{"count":3}'}, revision = ${crypto.randomUUID()}
++				WHERE ${whereKey(store)} AND revision = '0'
++				RETURNING revision
++			`.execute(db);
++
++			expect(first.rows).toEqual([{ revision }]);
++			expect(stale.rows).toEqual([]);
++			expect(await readRow(db, store)).toEqual({ value, revision });
++		});
++
++		it(`${store.table}: invalidates legacy revision 0 on the first old-writer update`, async () => {
++			const db = getDb();
++			await oldPut(db, store);
++			await up(db);
++			const before = await readRow(db, store);
++			expect(before.revision).toBe("0");
++
++			await oldPut(db, store);
++
++			const updated = await readRow(db, store);
++			expect(updated.value).toBe(before.value);
++			expect(updated.revision).not.toBe("0");
++			const stale = await sql<{ revision: string }>`
++				UPDATE ${sql.ref(store.table)} SET ${sql.ref(store.data)} = ${'{"count":2}'}, revision = ${crypto.randomUUID()}
++				WHERE ${whereKey(store)} AND revision = '0'
++				RETURNING revision
++			`.execute(db);
++			expect(stale.rows).toEqual([]);
++			expect(await readRow(db, store)).toEqual(updated);
++		});
++
++		it(`${store.table}: invalidates legacy revision 0 after an old writer deletes and recreates the same value`, async () => {
++			const db = getDb();
++			await oldPut(db, store);
++			await up(db);
++			const before = await readRow(db, store);
++			expect(before.revision).toBe("0");
++
++			await sql`DELETE FROM ${sql.ref(store.table)} WHERE ${whereKey(store)}`.execute(db);
++			await oldPut(db, store);
++
++			const recreated = await readRow(db, store);
++			expect(recreated.value).toBe(before.value);
++			expect(recreated.revision).not.toBe("0");
++			const stale = await sql<{ revision: string }>`
++				DELETE FROM ${sql.ref(store.table)}
++				WHERE ${whereKey(store)} AND revision = '0'
++				RETURNING revision
++			`.execute(db);
++			expect(stale.rows).toEqual([]);
++			expect(await readRow(db, store)).toEqual(recreated);
++		});
++	}
++
++	it("preserves mixed zero and assigned revisions when the migration resumes", async () => {
++		const db = getDb();
++		for (const store of STORES) {
++			await oldPut(db, store);
++			await db.schema
++				.alterTable(store.table)
++				.addColumn("revision", "text", (column) => column.notNull().defaultTo("0"))
++				.execute();
++			await sql`
++				INSERT INTO ${sql.ref(store.table)}
++					(${sql.join([...store.keys, store.data, "revision"].map((column) => sql.ref(column)))})
++				VALUES (${sql.join(
++					[
++						...store.values.map((value) => `${value}:assigned`),
++						'{"count":2}',
++						crypto.randomUUID(),
++					].map((value) => sql`${value}`),
++				)})
++			`.execute(db);
++		}
++		const before = await Promise.all(STORES.map((store) => readRows(db, store)));
++
++		await up(db);
++		await up(db);
++
++		expect(await Promise.all(STORES.map((store) => readRows(db, store)))).toEqual(before);
++	});
++
++	it("preserves assigned revisions and payloads when the migration runs again", async () => {
++		const db = getDb();
++		await up(db);
++		for (const store of STORES) await oldPut(db, store);
++		const before = await Promise.all(STORES.map((store) => readRow(db, store)));
++
++		await up(db);
++		await up(db);
++
++		expect(await Promise.all(STORES.map((store) => readRow(db, store)))).toEqual(before);
++	});
++
++	it("keeps revision protection when an older host rolls migrations back", async () => {
++		const db = getDb();
++		await up(db);
++		for (const store of STORES) await oldPut(db, store);
++		const before = await Promise.all(STORES.map((store) => readRow(db, store)));
++
++		await down(db);
++
++		expect(await Promise.all(STORES.map((store) => readRow(db, store)))).toEqual(before);
++		for (const [index, store] of STORES.entries()) {
++			await oldPut(db, store);
++			expect((await readRow(db, store)).revision).not.toBe(before[index]?.revision);
++		}
++	});
++
++	it("changes revisions for old inserts, upserts and same-value writes", async () => {
++		const db = getDb();
++		await up(db);
++		for (const store of STORES) {
++			await oldPut(db, store);
++			const inserted = await readRow(db, store);
++			expect(inserted?.revision).not.toBe("0");
++			await oldPut(db, store, '{"count":2}');
++			const updated = await readRow(db, store);
++			expect(updated?.value).toBe('{"count":2}');
++			expect(updated?.revision).not.toBe(inserted?.revision);
++			await oldPut(db, store, '{"count":2}');
++			const unchanged = await readRow(db, store);
++			expect(unchanged?.revision).not.toBe(updated?.revision);
++			await sql`
++				UPDATE ${sql.ref(store.table)} SET ${sql.ref(store.data)} = ${sql.ref(store.data)}
++				WHERE ${whereKey(store)}
++			`.execute(db);
++			expect((await readRow(db, store))?.revision).not.toBe(unchanged?.revision);
++		}
++	});
++
++	it("keeps explicitly assigned write revisions consistent with RETURNING", async () => {
++		const db = getDb();
++		await up(db);
++		for (const store of STORES) {
++			const insertedRevision = crypto.randomUUID();
++			const inserted = await sql<{ revision: string }>`
++				INSERT INTO ${sql.ref(store.table)}
++					(${sql.join([...store.keys, store.data, "revision"].map((column) => sql.ref(column)))})
++				VALUES (${sql.join([...store.values, "null", insertedRevision].map((value) => sql`${value}`))})
++				RETURNING revision
++			`.execute(db);
++			expect(inserted.rows).toEqual([{ revision: insertedRevision }]);
++			expect(await readRow(db, store)).toEqual({ value: "null", revision: insertedRevision });
++			const updatedRevision = crypto.randomUUID();
++			const updated = await sql<{ revision: string }>`
++				UPDATE ${sql.ref(store.table)} SET revision = ${updatedRevision}
++				WHERE ${whereKey(store)} AND revision = ${insertedRevision}
++				RETURNING revision
++			`.execute(db);
++			expect(updated.rows).toEqual([{ revision: updatedRevision }]);
++			expect((await readRow(db, store))?.revision).toBe(updatedRevision);
++		}
++	});
++
++	it("rejects a stale revision after an old writer deletes and recreates the same value", async () => {
++		const db = getDb();
++		await up(db);
++		for (const store of STORES) {
++			await oldPut(db, store);
++			const before = await readRow(db, store);
++			await sql`DELETE FROM ${sql.ref(store.table)} WHERE ${whereKey(store)}`.execute(db);
++			await oldPut(db, store);
++			const recreated = await readRow(db, store);
++			expect(recreated?.value).toBe(before?.value);
++			expect(recreated?.revision).not.toBe(before?.revision);
++			const staleDelete = await sql<{ revision: string }>`
++				DELETE FROM ${sql.ref(store.table)}
++				WHERE ${whereKey(store)} AND revision = ${before?.revision}
++				RETURNING revision
++			`.execute(db);
++			expect(staleDelete.rows).toEqual([]);
++			expect(await readRow(db, store)).toEqual(recreated);
++		}
++	});
++
++	it("resumes after a response is lost following every completed migration statement", async () => {
++		const db = getDb();
++		for (const store of STORES) await oldPut(db, store);
++		let statements = 0;
++		await up(db.withPlugin(afterStatement(() => statements++)));
++
++		for (let failAfter = 1; failAfter <= statements; failAfter++) {
++			for (const store of STORES) await sql`DROP TABLE ${sql.ref(store.table)}`.execute(db);
++			await createLegacyPluginStorageTables(db);
++			for (const store of STORES) await oldPut(db, store);
++			let completed = 0;
++			const failing = db.withPlugin(
++				afterStatement(() => {
++					if (++completed === failAfter) throw new Error("Lost migration response");
++				}),
++			);
++			await expect(up(failing), `statement ${failAfter}`).rejects.toThrow(
++				"Lost migration response",
++			);
++			await up(db);
++			const recovered = await Promise.all(STORES.map((store) => readRow(db, store)));
++			for (const row of recovered) {
++				expect(row?.value).toBe('{"count":1}');
++				expect(row?.revision).toBe("0");
++			}
++			await up(db);
++			expect(await Promise.all(STORES.map((store) => readRow(db, store)))).toEqual(recovered);
++		}
++	});
++
++	if (sqlite) {
++		it("tolerates concurrent migration starts without losing existing values", async () => {
++			const db = getDb();
++			for (const store of STORES) await oldPut(db, store);
++
++			await Promise.all([up(db), up(db)]);
++
++			for (const store of STORES) {
++				const row = await readRow(db, store);
++				expect(row.value).toBe('{"count":1}');
++				expect(row.revision).toBe("0");
++			}
++		});
++
++		it("changes revisions after INSERT OR REPLACE from an older Cloudflare bridge", async () => {
++			const db = getDb();
++			await up(db);
++			for (const store of STORES) {
++				await oldPut(db, store);
++				const before = await readRow(db, store);
++				await sql`
++					INSERT OR REPLACE INTO ${sql.ref(store.table)}
++						(${sql.join([...store.keys, store.data].map((column) => sql.ref(column)))})
++					VALUES (${sql.join([...store.values, '{"count":1}'].map((value) => sql`${value}`))})
++				`.execute(db);
++				const replaced = await readRow(db, store);
++				expect(replaced?.value).toBe(before?.value);
++				expect(replaced?.revision).not.toBe("0");
++				expect(replaced?.revision).not.toBe(before?.revision);
++			}
++		});
++
++		it("terminates revision triggers with recursive triggers enabled", async () => {
++			const db = getDb();
++			await sql`PRAGMA recursive_triggers = ON`.execute(db);
++			try {
++				await up(db);
++				for (const store of STORES) {
++					await oldPut(db, store);
++					const before = await readRow(db, store);
++					await oldPut(db, store);
++					expect((await readRow(db, store))?.revision).not.toBe(before?.revision);
++				}
++			} finally {
++				await sql`PRAGMA recursive_triggers = OFF`.execute(db);
++			}
++		});
++	}
++}
+diff --git a/packages/core/tests/workerd/plugin-storage-conditional-d1.test.ts b/packages/core/tests/workerd/plugin-storage-conditional-d1.test.ts
+new file mode 100644
+index 00000000..a9787d30
+--- /dev/null
++++ b/packages/core/tests/workerd/plugin-storage-conditional-d1.test.ts
+@@ -0,0 +1,300 @@
++import { env, exports as workerExports } from "cloudflare:workers";
++import { Kysely, sql } from "kysely";
++import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
++
++import { RawBindingD1Dialect } from "../../../cloudflare/src/db/d1-dialect.js";
++import { up } from "../../src/database/migrations/077_plugin_storage_revisions.js";
++import type { Database } from "../../src/database/types.js";
++import type {
++	ConditionalDeleteResult,
++	ConditionalWriteResult,
++	VersionedValue,
++} from "../../src/plugins/types.js";
++import { createLegacyPluginStorageTables } from "../utils/plugin-storage-revision-cases.js";
++import { resetD1Schema } from "./d1-schema.js";
++
++declare global {
++	namespace Cloudflare {
++		interface Env {
++			DB: D1Database;
++		}
++		interface GlobalProps {
++			mainModule: typeof import("./fixtures/plugin-storage-worker.js");
++		}
++	}
++}
++
++let db: Kysely<Database>;
++
++beforeAll(() => {
++	db = new Kysely<Database>({ dialect: new RawBindingD1Dialect({ database: env.DB }) });
++});
++
++beforeEach(async () => {
++	await resetD1Schema(db);
++	await createLegacyPluginStorageTables(db);
++	await up(db);
++});
++
++afterAll(async () => {
++	await db.destroy();
++});
++
++function bridge(pluginId = "owner", storageCollections = ["records"]) {
++	return workerExports.PluginBridge({
++		props: {
++			pluginId,
++			pluginVersion: "1.0.0",
++			capabilities: [],
++			allowedHosts: [],
++			storageCollections,
++		},
++	});
++}
++
++// RPC promises are callable; assertion libraries must receive a native promise.
++async function awaitRpc<T>(result: PromiseLike<T>): Promise<T> {
++	return await result;
++}
++
++interface AtomicStore {
++	getVersioned(key: string): Promise<VersionedValue | null>;
++	compareAndSet(
++		key: string,
++		revision: string | null,
++		value: unknown,
++	): Promise<ConditionalWriteResult>;
++	compareAndDelete(key: string, revision: string): Promise<ConditionalDeleteResult>;
++	put(key: string, value: unknown): Promise<void>;
++	delete(key: string): Promise<boolean>;
++}
++
++function store(kind: "collection" | "kv", pluginId = "owner", collection = "records"): AtomicStore {
++	const rpc = bridge(pluginId, [collection]);
++	return kind === "kv"
++		? {
++				getVersioned: (key) => awaitRpc(rpc.kvGetVersioned(key)),
++				compareAndSet: (key, revision, value) =>
++					awaitRpc(rpc.kvCompareAndSet(key, revision, value)),
++				compareAndDelete: (key, revision) => awaitRpc(rpc.kvCompareAndDelete(key, revision)),
++				put: (key, value) => awaitRpc(rpc.kvSet(key, value)),
++				delete: (key) => awaitRpc(rpc.kvDelete(key)),
++			}
++		: {
++				getVersioned: (key) => awaitRpc(rpc.storageGetVersioned(collection, key)),
++				compareAndSet: (key, revision, value) =>
++					awaitRpc(rpc.storageCompareAndSet(collection, key, revision, value)),
++				compareAndDelete: (key, revision) =>
++					awaitRpc(rpc.storageCompareAndDelete(collection, key, revision)),
++				put: (key, value) => awaitRpc(rpc.storagePut(collection, key, value)),
++				delete: (key) => awaitRpc(rpc.storageDelete(collection, key)),
++			};
++}
++
++async function current(target: AtomicStore, key = "key"): Promise<VersionedValue> {
++	const value = await target.getVersioned(key);
++	if (!value) throw new Error("Missing fixture value");
++	return value;
++}
++
++describe("conditional plugin storage through Cloudflare RPC and D1", () => {
++	it("legacy KV reads propagate database failures through RPC", async () => {
++		const rpc = bridge();
++		await rpc.kvSet("key", "stored");
++		expect(await rpc.kvGet("key")).toBe("stored");
++		await sql`DROP TABLE _plugin_storage`.execute(db);
++		await expect(awaitRpc(rpc.kvGet("key"))).rejects.toThrow();
++	});
++
++	for (const kind of ["collection", "kv"] as const) {
++		it(`${kind}: keeps absent keys distinct from stored JSON null across RPC`, async () => {
++			const target = store(kind);
++			expect(await target.getVersioned("key")).toBeNull();
++			const inserted = await target.compareAndSet("key", null, null);
++			if (!inserted.applied) throw new Error("Expected insertion");
++			expect(await target.getVersioned("key")).toEqual({
++				value: null,
++				revision: inserted.revision,
++			});
++			expect(await target.compareAndSet("key", null, "overwrite")).toEqual({ applied: false });
++			expect(await target.compareAndSet("missing", inserted.revision, "overwrite")).toEqual({
++				applied: false,
++			});
++			expect(await target.compareAndDelete("missing", inserted.revision)).toEqual({
++				applied: false,
++			});
++		});
++
++		it(`${kind}: admits one concurrent creator, replacer and deleter`, async () => {
++			const target = store(kind);
++			const creates = await Promise.all(
++				Array.from({ length: 6 }, (_, index) => target.compareAndSet("key", null, index)),
++			);
++			expect(creates.filter((result) => result.applied)).toHaveLength(1);
++			const initial = await current(target);
++			const updates = await Promise.all(
++				Array.from({ length: 6 }, (_, index) =>
++					target.compareAndSet("key", initial.revision, index + 10),
++				),
++			);
++			expect(updates.filter((result) => result.applied)).toHaveLength(1);
++			const updated = await current(target);
++			expect(updates.find((result) => result.applied)).toEqual({
++				applied: true,
++				revision: updated.revision,
++			});
++			expect(updated.revision).not.toBe(initial.revision);
++			const deletes = await Promise.all(
++				Array.from({ length: 6 }, () => target.compareAndDelete("key", updated.revision)),
++			);
++			expect(deletes.filter((result) => result.applied)).toHaveLength(1);
++			expect(await target.getVersioned("key")).toBeNull();
++		});
++
++		it(`${kind}: existing unconditional writes invalidate equal-value revisions`, async () => {
++			const target = store(kind);
++			await target.put("key", { state: "ready", revision: "caller-value" });
++			const initial = await current(target);
++			expect(initial.revision).not.toBe("caller-value");
++			await target.put("key", initial.value);
++			expect((await current(target)).revision).not.toBe(initial.revision);
++			expect(await target.compareAndSet("key", initial.revision, "stale")).toEqual({
++				applied: false,
++			});
++			expect(await target.compareAndDelete("key", initial.revision)).toEqual({ applied: false });
++		});
++
++		it(`${kind}: rejects stale tokens after deletion and recreation`, async () => {
++			const target = store(kind);
++			await target.put("key", "same");
++			const initial = await current(target);
++			await target.delete("key");
++			await target.put("key", "same");
++			expect((await current(target)).revision).not.toBe(initial.revision);
++			expect(await target.compareAndSet("key", initial.revision, "stale")).toEqual({
++				applied: false,
++			});
++			expect(await target.compareAndDelete("key", initial.revision)).toEqual({ applied: false });
++			expect((await current(target)).value).toBe("same");
++		});
++
++		it(`${kind}: rejects omitted preconditions, invalid keys and missing values`, async () => {
++			const target = store(kind);
++			await target.put("key", "retained");
++			for (const revision of [undefined, 0, {}, [], "", "x".repeat(129)]) {
++				// @ts-expect-error -- RPC callers can omit or send malformed preconditions.
++				await expect(target.compareAndSet("key", revision, "bad")).rejects.toThrow();
++				// @ts-expect-error -- RPC callers can omit or send malformed preconditions.
++				await expect(target.compareAndDelete("key", revision)).rejects.toThrow();
++			}
++			for (const key of [undefined, null, {}, "", "x".repeat(1025)]) {
++				// @ts-expect-error -- RPC callers can send malformed keys.
++				await expect(target.compareAndSet(key, null, "bad")).rejects.toThrow();
++			}
++			await expect(target.compareAndSet("missing", null, undefined)).rejects.toThrow();
++			await expect(
++				target.compareAndSet("missing", null, "x".repeat(1024 * 1024)),
++			).rejects.toThrow();
++			expect(await target.getVersioned("missing")).toBeNull();
++			expect((await current(target)).value).toBe("retained");
++		});
++
++		it(`${kind}: scopes literal keys and revision tokens to the authenticated plugin`, async () => {
++			const owner = store(kind);
++			const other = store(kind, "other");
++			for (const key of ["__proto__", "constructor", "toString", "x' OR 1=1 --"]) {
++				await owner.put(key, "owner");
++				await other.put(key, "other");
++				const initial = await current(owner, key);
++				expect(await other.compareAndSet(key, initial.revision, "overwrite")).toEqual({
++					applied: false,
++				});
++				expect(await other.compareAndDelete(key, initial.revision)).toEqual({ applied: false });
++				expect((await current(owner, key)).value).toBe("owner");
++				expect((await current(other, key)).value).toBe("other");
++			}
++		});
++
++		it(`${kind}: preserves secondary constraint errors for creation and replacement`, async () => {
++			await sql`
++				CREATE UNIQUE INDEX conditional_unique_value
++				ON _plugin_storage (plugin_id, collection, data)
++			`.execute(db);
++			const target = store(kind);
++			await target.put("first", "unique");
++			await target.put("second", "other");
++			const second = await current(target, "second");
++			await expect(target.compareAndSet("third", null, "unique")).rejects.toThrow();
++			await expect(target.compareAndSet("second", second.revision, "unique")).rejects.toThrow();
++			expect(await target.getVersioned("third")).toBeNull();
++			expect(await target.getVersioned("second")).toEqual(second);
++		});
++	}
++
++	it("rejects direct RPC access to undeclared collections", async () => {
++		const owner = store("collection", "owner", "hidden");
++		await owner.put("key", "retained");
++		const initial = await current(owner);
++		const restricted = bridge();
++		await expect(awaitRpc(restricted.storageGetVersioned("hidden", "key"))).rejects.toThrow();
++		await expect(
++			awaitRpc(restricted.storageCompareAndSet("hidden", "key", initial.revision, "bad")),
++		).rejects.toThrow();
++		await expect(
++			awaitRpc(restricted.storageCompareAndSet("hidden", "fresh", null, "bad")),
++		).rejects.toThrow();
++		await expect(
++			awaitRpc(restricted.storageCompareAndDelete("hidden", "key", initial.revision)),
++		).rejects.toThrow();
++		expect(await owner.getVersioned("key")).toEqual(initial);
++		expect(await owner.getVersioned("fresh")).toBeNull();
++	});
++
++	it("keeps collection and KV namespaces separate for the same key", async () => {
++		const records = store("collection");
++		const settings = store("collection", "owner", "settings");
++		const kv = store("kv");
++		await records.put("key", "record");
++		await settings.put("key", "setting");
++		await kv.put("key", "value");
++		const initial = await current(records);
++		for (const target of [settings, kv]) {
++			expect(await target.compareAndSet("key", initial.revision, "overwrite")).toEqual({
++				applied: false,
++			});
++			expect(await target.compareAndDelete("key", initial.revision)).toEqual({ applied: false });
++		}
++		expect((await current(records)).value).toBe("record");
++		expect((await current(settings)).value).toBe("setting");
++		expect((await current(kv)).value).toBe("value");
++	});
++
++	it("existing bulk writes advance each affected revision through the bridge", async () => {
++		const target = store("collection");
++		await target.put("first", "same");
++		await target.put("second", "same");
++		const first = await current(target, "first");
++		const second = await current(target, "second");
++		await bridge().storagePutMany("records", [
++			{ id: "first", data: "same" },
++			{ id: "second", data: "same" },
++		]);
++		for (const [key, before] of [
++			["first", first],
++			["second", second],
++		] as const) {
++			expect((await current(target, key)).revision).not.toBe(before.revision);
++			expect(await target.compareAndSet(key, before.revision, "stale")).toEqual({ applied: false });
++		}
++	});
++
++	it("rejects operational database failures instead of reporting conflicts", async () => {
++		await sql`DROP TABLE _plugin_storage`.execute(db);
++		for (const kind of ["collection", "kv"] as const) {
++			const target = store(kind);
++			await expect(target.getVersioned("key")).rejects.toThrow();
++			await expect(target.compareAndSet("key", null, "value")).rejects.toThrow();
++			await expect(target.compareAndDelete("key", "revision")).rejects.toThrow();
++		}
++	});
++});
+diff --git a/packages/core/tests/workerd/plugin-storage-revisions-d1.test.ts b/packages/core/tests/workerd/plugin-storage-revisions-d1.test.ts
+new file mode 100644
+index 00000000..bddd6c52
+--- /dev/null
++++ b/packages/core/tests/workerd/plugin-storage-revisions-d1.test.ts
+@@ -0,0 +1,36 @@
++import { env } from "cloudflare:test";
++import { Kysely } from "kysely";
++import { afterAll, beforeAll, beforeEach, describe } from "vitest";
++
++import { RawBindingD1Dialect } from "../../../cloudflare/src/db/d1-dialect.js";
++import type { Database } from "../../src/database/types.js";
++import {
++	createLegacyPluginStorageTables,
++	pluginStorageRevisionMigrationCases,
++} from "../utils/plugin-storage-revision-cases.js";
++import { resetD1Schema } from "./d1-schema.js";
++
++declare module "cloudflare:test" {
++	interface ProvidedEnv {
++		DB: D1Database;
++	}
++}
++
++let db: Kysely<Database>;
++
++beforeAll(() => {
++	db = new Kysely<Database>({ dialect: new RawBindingD1Dialect({ database: env.DB }) });
++});
++
++beforeEach(async () => {
++	await resetD1Schema(db);
++	await createLegacyPluginStorageTables(db);
++});
++
++afterAll(async () => {
++	await db.destroy();
++});
++
++describe("plugin storage revision migration on D1", () => {
++	pluginStorageRevisionMigrationCases(() => db, true);
++});
+diff --git a/packages/core/tests/workerd/plugin-storage-updateif-d1.test.ts b/packages/core/tests/workerd/plugin-storage-updateif-d1.test.ts
+index 2ba69847..48deb5e6 100644
+--- a/packages/core/tests/workerd/plugin-storage-updateif-d1.test.ts
++++ b/packages/core/tests/workerd/plugin-storage-updateif-d1.test.ts
+@@ -30,6 +30,8 @@ beforeAll(async () => {
+ 		.addColumn("data", "text", (column) => column.notNull())
+ 		.addColumn("created_at", "text", (column) => column.notNull().defaultTo("2026-01-01"))
+ 		.addColumn("updated_at", "text", (column) => column.notNull())
++		// Merged in from #2980: every plugin-storage write assigns a revision.
++		.addColumn("revision", "text", (column) => column.notNull().defaultTo("0"))
+ 		.addPrimaryKeyConstraint("pk_plugin_storage", ["plugin_id", "collection", "id"])
+ 		.execute();
+ });
+diff --git a/packages/workerd/src/sandbox/bridge-handler.ts b/packages/workerd/src/sandbox/bridge-handler.ts
+index f1335cd5..ea36403a 100644
+--- a/packages/workerd/src/sandbox/bridge-handler.ts
++++ b/packages/workerd/src/sandbox/bridge-handler.ts
+@@ -191,6 +191,19 @@ async function dispatch(
+ 			return kvGet(db, pluginId, requireString(body, "key"));
+ 		case "kv/set":
+ 			return kvSet(db, pluginId, requireString(body, "key"), body.value);
++		case "kv/getVersioned":
++			return getStorageRepo(opts, "__kv").getVersioned(requireString(body, "key"));
++		case "kv/compareAndSet":
++			return getStorageRepo(opts, "__kv").compareAndSet(
++				requireString(body, "key"),
++				requireExpectedRevision(body),
++				body.value,
++			);
++		case "kv/compareAndDelete":
++			return getStorageRepo(opts, "__kv").compareAndDelete(
++				requireString(body, "key"),
++				requireString(body, "expectedRevision"),
++			);
+ 		case "kv/delete":
+ 			return kvDelete(db, pluginId, requireString(body, "key"));
+ 		case "kv/list":
+@@ -333,6 +346,24 @@ async function dispatch(
+ 				requireString(body, "id"),
+ 				body.args,
+ 			);
++		case "storage/getVersioned":
++			validateStorageCollection(opts, requireString(body, "collection"));
++			return getStorageRepo(opts, requireString(body, "collection")).getVersioned(
++				requireString(body, "id"),
++			);
++		case "storage/compareAndSet":
++			validateStorageCollection(opts, requireString(body, "collection"));
++			return getStorageRepo(opts, requireString(body, "collection")).compareAndSet(
++				requireString(body, "id"),
++				requireExpectedRevision(body),
++				body.data,
++			);
++		case "storage/compareAndDelete":
++			validateStorageCollection(opts, requireString(body, "collection"));
++			return getStorageRepo(opts, requireString(body, "collection")).compareAndDelete(
++				requireString(body, "id"),
++				requireString(body, "expectedRevision"),
++			);
+ 		case "storage/put":
+ 			validateStorageCollection(opts, requireString(body, "collection"));
+ 			return storagePut(
+@@ -411,6 +442,12 @@ type StorageItem = { id: string; data: unknown };
+ 
+ const LOG_LEVELS = new Set<string>(["debug", "info", "warn", "error"]);
+ 
++function requireExpectedRevision(body: Record<string, unknown>): string | null {
++	const value = body.expectedRevision;
++	if (value === null || typeof value === "string") return value;
++	throw new Error("expectedRevision must be a string or null");
++}
++
+ function isRecord(value: unknown): value is Record<string, unknown> {
+ 	return value !== null && typeof value === "object" && !Array.isArray(value);
+ }
+@@ -669,25 +706,7 @@ async function kvSet(
+ 	key: string,
+ 	value: unknown,
+ ): Promise<void> {
+-	const serialized = JSON.stringify(value);
+-	const now = new Date().toISOString();
+-	await db
+-		.insertInto("_plugin_storage")
+-		.values({
+-			plugin_id: pluginId,
+-			collection: "__kv",
+-			id: key,
+-			data: serialized,
+-			created_at: now,
+-			updated_at: now,
+-		})
+-		.onConflict((oc) =>
+-			oc.columns(["plugin_id", "collection", "id"]).doUpdateSet({
+-				data: serialized,
+-				updated_at: now,
+-			}),
+-		)
+-		.execute();
++	await new PluginStorageRepository(db, pluginId, "__kv", []).put(key, value);
+ }
+ 
+ async function kvDelete(db: Kysely<Database>, pluginId: string, key: string): Promise<boolean> {
+diff --git a/packages/workerd/src/sandbox/wrapper.ts b/packages/workerd/src/sandbox/wrapper.ts
+index 42a4310b..0aa5582a 100644
+--- a/packages/workerd/src/sandbox/wrapper.ts
++++ b/packages/workerd/src/sandbox/wrapper.ts
+@@ -222,6 +222,9 @@ function createContext() {
+ 	const kv = {
+ 		get: (key) => bridgeCall("kv/get", { key }),
+ 		set: (key, value) => bridgeCall("kv/set", { key, value }),
++		getVersioned: (key) => bridgeCall("kv/getVersioned", { key }),
++		compareAndSet: (key, expectedRevision, value) => bridgeCall("kv/compareAndSet", { key, expectedRevision, value }),
++		compareAndDelete: (key, expectedRevision) => bridgeCall("kv/compareAndDelete", { key, expectedRevision }),
+ 		delete: (key) => bridgeCall("kv/delete", { key }),
+ 		list: (prefix) => bridgeCall("kv/list", { prefix }),
+ 	};
+@@ -234,6 +237,9 @@ function createContext() {
+ 				if (typeof id !== "string") throw new TypeError("Storage ID must be a string");
+ 				return bridgeCall("storage/updateIf", { collection: collectionName, id, args: marshalStorageUpdate(args) });
+ 			},
++			getVersioned: (id) => bridgeCall("storage/getVersioned", { collection: collectionName, id }),
++			compareAndSet: (id, expectedRevision, data) => bridgeCall("storage/compareAndSet", { collection: collectionName, id, expectedRevision, data }),
++			compareAndDelete: (id, expectedRevision) => bridgeCall("storage/compareAndDelete", { collection: collectionName, id, expectedRevision }),
+ 			delete: (id) => bridgeCall("storage/delete", { collection: collectionName, id }),
+ 			exists: async (id) => (await bridgeCall("storage/get", { collection: collectionName, id })) !== null,
+ 			query: (opts) => bridgeCall("storage/query", { collection: collectionName, ...opts }),
+diff --git a/packages/workerd/test/bridge-handler.test.ts b/packages/workerd/test/bridge-handler.test.ts
+index bd597e7e..dfe8b4a4 100644
+--- a/packages/workerd/test/bridge-handler.test.ts
++++ b/packages/workerd/test/bridge-handler.test.ts
+@@ -32,6 +32,7 @@ async function setupTables(db: Kysely<any>) {
+ 		.addColumn("collection", "text", (col) => col.notNull())
+ 		.addColumn("id", "text", (col) => col.notNull())
+ 		.addColumn("data", "text", (col) => col.notNull())
++		.addColumn("revision", "text", (col) => col.notNull().defaultTo("0"))
+ 		.addColumn("created_at", "text", (col) => col.notNull())
+ 		.addColumn("updated_at", "text", (col) => col.notNull())
+ 		.addPrimaryKeyConstraint("pk_plugin_storage", ["plugin_id", "collection", "id"])
+@@ -77,13 +78,14 @@ describe("Bridge Handler Conformance", () => {
+ 	});
+ 
+ 	function makeHandler(opts: {
++		pluginId?: string;
+ 		capabilities?: string[];
+ 		allowedHosts?: string[];
+ 		storageCollections?: string[];
+ 		beforeContentWrite?: () => Promise<void>;
+ 	}) {
+ 		return createBridgeHandler({
+-			pluginId: "test-plugin",
++			pluginId: opts.pluginId ?? "test-plugin",
+ 			version: "1.0.0",
+ 			capabilities: opts.capabilities ?? [],
+ 			allowedHosts: opts.allowedHosts ?? [],
+@@ -177,6 +179,213 @@ describe("Bridge Handler Conformance", () => {
+ 		});
+ 	});
+ 
++	describe.each(["kv", "storage"] as const)("%s conditional operations", (kind) => {
++		const keyFields = (key: string) =>
++			kind === "kv" ? { key } : { collection: "records", id: key };
++		const valueFields = (value: unknown) => (kind === "kv" ? { value } : { data: value });
++		const writeMethod = kind === "kv" ? "set" : "put";
++
++		async function readRevision(handler: ReturnType<typeof makeHandler>, key: string) {
++			const result = await call(handler, `${kind}/getVersioned`, keyFields(key));
++			const value = result.result;
++			if (
++				!value ||
++				typeof value !== "object" ||
++				!("revision" in value) ||
++				typeof value.revision !== "string"
++			) {
++				throw new Error(`Expected a versioned value: ${JSON.stringify(result)}`);
++			}
++			return value.revision;
++		}
++
++		it("allows one concurrent creator, replacement, and deletion for an exact key", async () => {
++			const handler = makeHandler({ storageCollections: ["records"] });
++			const create = await Promise.all(
++				["first", "second"].map((value) =>
++					call(handler, `${kind}/compareAndSet`, {
++						...keyFields("job"),
++						expectedRevision: null,
++						...valueFields(value),
++					}),
++				),
++			);
++			expect(
++				create.filter(
++					(result) =>
++						result.result &&
++						typeof result.result === "object" &&
++						"applied" in result.result &&
++						result.result.applied === true,
++				),
++			).toHaveLength(1);
++			const revision = await readRevision(handler, "job");
++			const replace = await Promise.all(
++				["next", "later"].map((value) =>
++					call(handler, `${kind}/compareAndSet`, {
++						...keyFields("job"),
++						expectedRevision: revision,
++						...valueFields(value),
++					}),
++				),
++			);
++			expect(
++				replace.filter(
++					(result) =>
++						result.result &&
++						typeof result.result === "object" &&
++						"applied" in result.result &&
++						result.result.applied === true,
++				),
++			).toHaveLength(1);
++			const updatedRevision = await readRevision(handler, "job");
++			expect(updatedRevision).not.toBe(revision);
++			const remove = await Promise.all(
++				[0, 1].map(() =>
++					call(handler, `${kind}/compareAndDelete`, {
++						...keyFields("job"),
++						expectedRevision: updatedRevision,
++					}),
++				),
++			);
++			expect(remove).toContainEqual({ result: { applied: true } });
++			expect(remove).toContainEqual({ result: { applied: false } });
++			expect(await call(handler, `${kind}/getVersioned`, keyFields("job"))).toEqual({
++				result: null,
++			});
++			await call(handler, `${kind}/compareAndSet`, {
++				...keyFields("job"),
++				expectedRevision: null,
++				...valueFields(null),
++			});
++			expect(await readRevision(handler, "job")).not.toBe(updatedRevision);
++			expect(
++				await call(handler, `${kind}/compareAndDelete`, {
++					...keyFields("job"),
++					expectedRevision: updatedRevision,
++				}),
++			).toEqual({ result: { applied: false } });
++			expect(await call(handler, `${kind}/getVersioned`, keyFields("job"))).toEqual({
++				result: { value: null, revision: expect.any(String) },
++			});
++		});
++
++		it("invalidates a revision after an ordinary same-value write", async () => {
++			const handler = makeHandler({ storageCollections: ["records"] });
++			await call(handler, `${kind}/${writeMethod}`, {
++				...keyFields("settings"),
++				...valueFields(false),
++			});
++			const revision = await readRevision(handler, "settings");
++			await call(handler, `${kind}/${writeMethod}`, {
++				...keyFields("settings"),
++				...valueFields(false),
++			});
++			expect(await readRevision(handler, "settings")).not.toBe(revision);
++			expect(
++				await call(handler, `${kind}/compareAndSet`, {
++					...keyFields("settings"),
++					expectedRevision: revision,
++					...valueFields(true),
++				}),
++			).toEqual({ result: { applied: false } });
++		});
++
++		it("rejects invalid keys, revisions, and oversized values without writing", async () => {
++			const handler = makeHandler({ storageCollections: ["records"] });
++			for (const key of ["", "x".repeat(1025)]) {
++				expect((await call(handler, `${kind}/getVersioned`, keyFields(key))).error).toBeDefined();
++			}
++			for (const expectedRevision of [undefined, 1, {}, "", "r".repeat(129)]) {
++				expect(
++					(
++						await call(handler, `${kind}/compareAndSet`, {
++							...keyFields("invalid"),
++							expectedRevision,
++							...valueFields("value"),
++						})
++					).error,
++				).toBeDefined();
++			}
++			expect(
++				(
++					await call(handler, `${kind}/compareAndDelete`, {
++						...keyFields("invalid"),
++						expectedRevision: null,
++					})
++				).error,
++			).toBeDefined();
++			expect(
++				(
++					await call(handler, `${kind}/compareAndSet`, {
++						...keyFields("invalid"),
++						expectedRevision: null,
++						...valueFields("x".repeat(1024 * 1024)),
++					})
++				).error,
++			).toBeDefined();
++			expect(await call(handler, `${kind}/getVersioned`, keyFields("invalid"))).toEqual({
++				result: null,
++			});
++		});
++
++		it("keeps revisions scoped to the authenticated plugin and exact key", async () => {
++			const handler = makeHandler({ storageCollections: ["records"] });
++			const other = makeHandler({ pluginId: "other-plugin", storageCollections: ["records"] });
++			for (const target of [handler, other]) {
++				await call(target, `${kind}/${writeMethod}`, {
++					...keyFields("shared"),
++					...valueFields("original"),
++				});
++			}
++			const revision = await readRevision(handler, "shared");
++			expect(
++				await call(other, `${kind}/compareAndSet`, {
++					...keyFields("shared"),
++					pluginId: "test-plugin",
++					expectedRevision: revision,
++					...valueFields("changed"),
++				}),
++			).toEqual({ result: { applied: false } });
++			expect(
++				await call(handler, `${kind}/compareAndSet`, {
++					...keyFields("different"),
++					expectedRevision: revision,
++					...valueFields("changed"),
++				}),
++			).toEqual({ result: { applied: false } });
++			expect(await call(other, `${kind}/get`, keyFields("shared"))).toEqual({ result: "original" });
++		});
++	});
++
++	it("guards declared collections for all conditional operations and advances bulk-write revisions", async () => {
++		const handler = makeHandler({ storageCollections: ["records"] });
++		for (const method of ["getVersioned", "compareAndSet", "compareAndDelete"]) {
++			expect(
++				(
++					await call(handler, `storage/${method}`, {
++						collection: "undeclared",
++						id: "job",
++						expectedRevision: null,
++						data: "value",
++					})
++				).error,
++			).toContain("Storage collection not declared");
++		}
++		await call(handler, "storage/put", { collection: "records", id: "job", data: 0 });
++		const before = await call(handler, "storage/getVersioned", {
++			collection: "records",
++			id: "job",
++		});
++		await call(handler, "storage/putMany", {
++			collection: "records",
++			items: [{ id: "job", data: 0 }],
++		});
++		const after = await call(handler, "storage/getVersioned", { collection: "records", id: "job" });
++		expect(after.result).toMatchObject({ value: 0, revision: expect.any(String) });
++		expect(after.result).not.toEqual(before.result);
++	});
++
+ 	// ── Capability Enforcement ────────────────────────────────────────────
+ 
+ 	describe("capability enforcement", () => {
+diff --git a/packages/workerd/test/plugin-integration.test.ts b/packages/workerd/test/plugin-integration.test.ts
+index 63dc6c2c..0541b845 100644
+--- a/packages/workerd/test/plugin-integration.test.ts
++++ b/packages/workerd/test/plugin-integration.test.ts
+@@ -71,6 +71,7 @@ async function runMigrations(db: Kysely<any>) {
+ 		.addColumn("collection", "text", (col) => col.notNull())
+ 		.addColumn("id", "text", (col) => col.notNull())
+ 		.addColumn("data", "text", (col) => col.notNull())
++		.addColumn("revision", "text", (col) => col.notNull().defaultTo("0"))
+ 		.addColumn("created_at", "text", (col) => col.notNull())
+ 		.addColumn("updated_at", "text", (col) => col.notNull())
+ 		.addPrimaryKeyConstraint("pk_plugin_storage", ["plugin_id", "collection", "id"])
+diff --git a/packages/workerd/test/workerd-integration.test.ts b/packages/workerd/test/workerd-integration.test.ts
+index f5882fcf..64ba6a9f 100644
+--- a/packages/workerd/test/workerd-integration.test.ts
++++ b/packages/workerd/test/workerd-integration.test.ts
+@@ -39,6 +39,7 @@ async function setupTables(db: Kysely<any>) {
+ 		.addColumn("collection", "text", (col) => col.notNull())
+ 		.addColumn("id", "text", (col) => col.notNull())
+ 		.addColumn("data", "text", (col) => col.notNull())
++		.addColumn("revision", "text", (col) => col.notNull().defaultTo("0"))
+ 		.addColumn("created_at", "text", (col) => col.notNull())
+ 		.addColumn("updated_at", "text", (col) => col.notNull())
+ 		.addPrimaryKeyConstraint("pk_plugin_storage", ["plugin_id", "collection", "id"])
+@@ -87,6 +88,21 @@ export default {
+ 				const result = await ctx.kv.get("test-key");
+ 				return { stored: result };
+ 			}
++		},
++		"conditional-test": {
++			handler: async (_routeCtx, ctx) => {
++				const results = [];
++				for (const store of [ctx.kv, ctx.storage.records]) {
++					const created = await store.compareAndSet("__proto__", null, null);
++					const saved = await store.getVersioned("__proto__");
++					const conflict = await store.compareAndSet("__proto__", null, "overwrite");
++					const updated = await store.compareAndSet("__proto__", saved.revision, { status: "ready" });
++					const staleDelete = await store.compareAndDelete("__proto__", saved.revision);
++					const deleted = await store.compareAndDelete("__proto__", updated.revision);
++					results.push({ created, saved, conflict, updated, staleDelete, deleted, missing: await store.getVersioned("__proto__") });
++				}
++				return results;
++			}
+ 		}
+ 	}
+ };
+@@ -362,6 +378,39 @@ describe.skipIf(!workerdAvailable)("WorkerdSandboxRunner integration", () => {
+ 		});
+ 	}, 30_000);
+ 
++	it("preserves versioned values and conditional results through the generated worker", async () => {
++		const plugin = await runner.load(
++			{
++				id: "test-conditional",
++				version: "1.0.0",
++				capabilities: [],
++				allowedHosts: [],
++				storage: { records: { indexes: [] } },
++			},
++			ECHO_PLUGIN,
++		);
++		const result = await plugin.invokeRoute(
++			"conditional-test",
++			{},
++			{
++				method: "POST",
++				url: "/api/conditional",
++				headers: {},
++			},
++		);
++		expect(result).toEqual(
++			[0, 1].map(() => ({
++				created: { applied: true, revision: expect.any(String) },
++				saved: { value: null, revision: expect.any(String) },
++				conflict: { applied: false },
++				updated: { applied: true, revision: expect.any(String) },
++				staleDelete: { applied: false },
++				deleted: { applied: true },
++				missing: null,
++			})),
++		);
++	}, 30_000);
++
+ 	it("handles plugin unload and reload", async () => {
+ 		const plugin1 = await runner.load(
+ 			{
