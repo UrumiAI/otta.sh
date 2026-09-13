@@ -7,6 +7,7 @@
 		"typecheck": "tsc -b && tsc -p tsconfig.e2e.json",
 		"test": "vitest run",
 		"test:pg": "vitest run $(./scripts/pg-test-files.sh)",
+		"test:d1": "pnpm -C packages/store-emdash test:d1",
 		"test:e2e": "playwright test",
 		"format": "oxfmt",
 		"format:check": "oxfmt --check",

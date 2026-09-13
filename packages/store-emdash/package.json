@@ -28,12 +28,15 @@
 		}
 	},
 	"scripts": {
-		"build": "tsdown"
+		"build": "tsdown",
+		"test:d1": "vitest run --config vitest.d1.config.ts"
 	},
 	"dependencies": {
 		"@otta-sh/domain": "workspace:*"
 	},
 	"devDependencies": {
+		"@cloudflare/vitest-plugin": "^1.1.8",
+		"@emdash-cms/cloudflare": "0.37.0",
 		"@types/better-sqlite3": "catalog:",
 		"@types/pg": "catalog:",
 		"better-sqlite3": "catalog:",
