@@ -5,6 +5,9 @@
 - Amended: 2026-07-31 — **Decision 2 only**, by
   [ADR-0014](./0014-second-native-descriptor-for-react-admin.md); Decision 1 is reaffirmed
   unchanged. See "Amended 2026-07-31" at the end of this record.
+- Amended: 2026-09-13 — **Decision 2 only**, and within it only the **"no direct DB/storage
+  access"** clause, by [ADR-0018](./0018-plugin-owns-commerce-truth-in-process.md); Decision 1 is
+  reaffirmed again. See "Amended 2026-09-13" at the end of this record.
 - Refines: ADR-0001 (the plugin's runtime placement), ADR-0003 (the storefront/cart shim contract)
 
 ## Context
@@ -124,3 +127,27 @@ React screens as an *addition*, never a replacement. Decision 2 continues to bin
 `@otta-sh/plugin` in full — standard format, sandbox-clean, zero EmDash dependency — and its
 other prohibitions (no `page:fragments`, no `options`-configured native format, no direct
 DB/storage access, ADR-0003's route-based storefront) stand unamended.
+
+## Amended 2026-09-13 — Decision 2's "no direct DB/storage access" clause, and only that clause
+
+Everything above is left exactly as written. This block only points at the record that amends
+one phrase of it.
+
+**[ADR-0018](./0018-plugin-owns-commerce-truth-in-process.md)** permits the plugin to own
+commerce truth **in-process on `ctx.storage`**, and admits `@otta-sh/domain` and the
+`@otta-sh/store-emdash` adapter package into the plugin's dependency perimeter. The reasoning is
+that the ban was a proxy for "the plugin must not acquire IO", and that property is enforced
+directly by the domain-purity rule rather than by forbidding the import.
+
+**The capability posture of Decision 3 is unchanged**: the descriptor's capabilities stay exactly
+the manifest's two. `ctx.storage` is built on an always-available path with no capability string
+to grant, so nothing here widens a declared permission — and `sandboxed:` / `sandboxRunner:` stay
+absent, as Decision 3 requires.
+
+**Decision 1 is untouched and expressly reaffirmed there**, with an added statement of what the
+sandbox suites prove and what they do not: the storage-backed suites are an **obligation** of
+ADR-0018 that lands with the storage increment, no Otta tier exercises the host's sandbox
+storage bridge, and the D1 tier observes the host's real repository, migrations and dialect
+rather than the bridge. Decision 2's other prohibitions — no React admin components in this
+package, no `page:fragments`, no `options`-configured native format, ADR-0003's route-based
+storefront — stand unamended.

@@ -22,34 +22,58 @@ module.exports = {
 			name: "plugin-is-sandbox-clean",
 			comment:
 				"@otta-sh/plugin's src (loaded inside the workerd sandbox) has NO DB/" +
-				"storage/filesystem/process/network-client surface — its only egress " +
-				"is the injected ctx.http (DEVELOPMENT.md §5, sandbox-clean guard). " +
-				"The forbidden list is a superset of domain-is-io-free's, plus " +
-				"HTTP/WS client libs (undici, node-fetch, axios, ws). It ALSO forbids " +
-				"@otta-sh/domain: the plugin defines its OWN local wire types and never " +
-				"imports the domain (the admin console's allowedTransitions come from " +
-				"the SERVICE, not a domain import), so the ports-and-adapters boundary " +
-				"stays enforced, not trusted (MOD-4). Test helpers (test/) are exempt " +
-				"— they run in Node, driving the sandbox from outside it. Complemented " +
-				"by the direct-fetch grep guard in " +
-				"packages/plugin/test/sandbox-clean-guard.test.ts (depcruise can't " +
-				"see ambient globals like workerd's own fetch). The node-builtin half " +
-				"reads `^(node:)?…` because dependency-cruiser reports " +
+				"driver, filesystem, process, socket or network-client surface, and no " +
+				"dependency on a SQL store, the service or a payment adapter. Its egress " +
+				"is the injected ctx.http; its commerce truth is the injected ctx.storage " +
+				"(DEVELOPMENT.md §5, ADR-0018, sandbox-clean guard). The forbidden list is " +
+				"a superset of domain-is-io-free's, plus HTTP/WS client libs (undici, " +
+				"node-fetch, axios, ws). Test helpers (test/) are exempt — they run in " +
+				"Node, driving the sandbox from outside it. Complemented by the " +
+				"direct-fetch grep guard in " +
+				"packages/plugin/test/sandbox-clean-guard.test.ts (depcruise can't see " +
+				"ambient globals like workerd's own fetch), and executed case by case in " +
+				"packages/plugin/test/depcruise-boundary.test.ts, which cruises THIS file " +
+				"over planted imports and asserts the rule name each one trips. The " +
+				"node-builtin half reads `^(node:)?…` because dependency-cruiser reports " +
 				'`import ... from "node:fs"` under the BARE module name `fs`: a ' +
 				"`^node:`-only clause matches nothing, so this rule silently permitted " +
 				"every builtin it names, from the day it was written until INC-21. " +
 				"`domain-is-io-free` above always had the correct form, which is why " +
-				"the two rules disagreed about the same import. Verified by planting a " +
-				"`node:fs` import inside the perimeter: it passes under `^node:` and " +
-				"fails under this. It ALSO forbids " +
-				"@otta-sh/admin-react: without that, the console quarantine below is " +
-				"escapable in ONE HOP — packages/plugin importing packages/admin-react " +
-				"trips no rule, and react/emdash then reach the plugin transitively, " +
-				"which is precisely what ADR-0014 Decision 1 forbids.",
+				"the two rules disagreed about the same import. It still forbids " +
+				"@otta-sh/admin-react, in all three spellings: without that, the console " +
+				"quarantine below is escapable in ONE HOP — packages/plugin importing " +
+				"packages/admin-react trips no rule, and react/emdash then reach the " +
+				"plugin transitively, which is precisely what ADR-0014 Decision 1 " +
+				"forbids.\n\n" +
+				"TWO things this rule USED to forbid and deliberately no longer does " +
+				"(ADR-0018). First, @otta-sh/domain, which was named in all three " +
+				"@otta-sh clauses. The boundary was never `the plugin must not know the " +
+				"domain`; it was `the plugin must not acquire IO`, and banning the domain " +
+				"was a cheap PROXY for that — cheap because the domain is the package " +
+				"most likely to grow an adapter import. The proxy is no longer needed and " +
+				"was blocking the thing ADR-0002 designed for: the domain has zero " +
+				"runtime dependencies and zero node: imports, and `domain-is-io-free` " +
+				"above enforces exactly that, on every commit, as this rule's premise. " +
+				"Importing the domain therefore cannot put IO inside the isolate; " +
+				"importing an ADAPTER can, which is why every adapter except one stays " +
+				"banned. Second, that one exception: `store-[^/]+` in the packages clause " +
+				"became `(?!store-emdash/)store-[^/]+`, so packages/store-emdash is " +
+				"admitted while store-postgres — and any store-* added later — is banned " +
+				"by default rather than by anyone remembering to add it — and the same list " +
+				"is mirrored into the two SPECIFIER clauses, not only the packages " +
+				"clause, because pnpm's strict isolation leaves an UNDECLARED import as " +
+				"a bare specifier that never resolves to a packages/ path: naming only " +
+				"admin-react there meant an undeclared @otta-sh/store-postgres, service " +
+				"or payments-* import tripped nothing at all, which is the same class of " +
+				"silent miss as the `^node:`-only builtin clause. store-emdash is " +
+				"admissible because it carries no IO of its own: it is written against a " +
+				"structural StorageAccess port whose implementation arrives injected, and " +
+				"three store-emdash-* rules below hold it to the same perimeter as this " +
+				"one, type-only imports included.",
 			severity: "error",
 			from: { path: "^packages/plugin/src" },
 			to: {
-				path: "(node_modules/(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|node_modules/@otta-sh/(domain|admin-react)(/|$)|^(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|^@otta-sh/(domain|admin-react)(/|$)|^(node:)?(fs|child_process|net|http|https|os|dgram|dns|tls|worker_threads|cluster|vm)(/|$)|^packages/(store-[^/]+|service|payments-[^/]+|domain|admin-react)/)",
+				path: "(node_modules/(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|node_modules/@otta-sh/((?!store-emdash(/|$))store-[^/]+|service|payments-[^/]+|admin-react)(/|$)|^(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|^@otta-sh/((?!store-emdash(/|$))store-[^/]+|service|payments-[^/]+|admin-react)(/|$)|^(node:)?(fs|child_process|net|http|https|os|dgram|dns|tls|worker_threads|cluster|vm)(/|$)|^packages/((?!store-emdash(/|$))store-[^/]+|service|payments-[^/]+|admin-react)/)",
 			},
 		},
 		{
@@ -141,14 +165,26 @@ module.exports = {
 				"over better-sqlite3 and Postgres on purpose: real databases, never " +
 				"mocks. That harness is why the ban can be this strict in `src` without " +
 				"costing coverage. (`react` and friends are banned across the whole " +
-				"package by `store-emdash-no-console-react` above.)",
+				"package by `store-emdash-no-console-react` above.) @otta-sh/plugin is " +
+				"banned here too, in all three spellings, and that half is about LAYERING " +
+				"rather than IO: the plugin is what injects ctx.storage into this " +
+				"package, so an import in this direction would make the adapter depend on " +
+				"its own caller. Nothing else caught the inversion — `plugin-is-sandbox-" +
+				"clean` admits store-emdash, this rule said nothing about the plugin, and " +
+				"the console rules bind neither package — so the cycle would have been " +
+				"a review catch rather than a build failure. Sibling adapters, the service " +
+				"and the payment packages are likewise named in all three spellings " +
+				"rather than in the packages clause alone, for the bare-specifier reason " +
+				"the plugin rule's comment sets out. Every case this rule and " +
+				"the plugin rule turn on are executed in " +
+				"packages/plugin/test/depcruise-boundary.test.ts.",
 			severity: "error",
 			from: { path: "^packages/store-emdash/src" },
 			to: {
 				// Both spellings, as above. The builtin half is the optional-`node:`
 				// form the plugin rule's comment explains — dependency-cruiser reports
 				// `from "node:fs"` under the bare name `fs`.
-				path: "(node_modules/(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|node_modules/@otta-sh/admin-react(/|$)|^(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|^@otta-sh/admin-react(/|$)|^(node:)?(fs|child_process|net|http|https|os|dgram|dns|tls|worker_threads|cluster|vm)(/|$)|^packages/(service|payments-[^/]+|admin-react)/|^packages/(?!store-emdash/)store-[^/]+/)",
+				path: "(node_modules/(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|node_modules/@otta-sh/((?!store-emdash(/|$))store-[^/]+|service|payments-[^/]+|admin-react|plugin)(/|$)|^(pg|pg-pool|kysely|better-sqlite3|workerd|hono|node-fetch|undici|axios|ws)(/|$)|^@otta-sh/((?!store-emdash(/|$))store-[^/]+|service|payments-[^/]+|admin-react|plugin)(/|$)|^(node:)?(fs|child_process|net|http|https|os|dgram|dns|tls|worker_threads|cluster|vm)(/|$)|^packages/(service|payments-[^/]+|admin-react|plugin)/|^packages/(?!store-emdash(/|$))store-[^/]+/)",
 			},
 		},
 		{
