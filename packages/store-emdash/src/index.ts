@@ -10,14 +10,37 @@ export {
 	type CasRetryOptions,
 	type CasStep,
 } from "./cas-retry.js";
+export {
+	CART_ABANDONED_LEDGER_SIZE,
+	CART_COLLECTIONS,
+	CART_MUTATION_INDEX_COLLECTION,
+	CART_MUTATION_LEDGER_SIZE,
+	CARTS_COLLECTION,
+	computeHoldExpiresAt,
+	findLineById,
+	findLineByReservation,
+	newCartDoc,
+	normalizeCartDoc,
+	pruneMutations,
+	type CartDoc,
+	type CartLineDoc,
+	type CartMutationIndexDoc,
+	type CartMutationRecord,
+} from "./cart-documents.js";
 export { systemClock } from "./clock.js";
 export { collectionOf } from "./collection-of.js";
+export { EmdashCartStore, type EmdashCartStoreOptions } from "./emdash-cart-store.js";
 export {
 	EmdashInventoryStore,
 	type EmdashInventoryStoreOptions,
 } from "./emdash-inventory-store.js";
+export type { HoldDeadlineStamper } from "./hold-deadline-stamper.js";
 export { uuidIdGen } from "./id-gen.js";
-export { ReservationIdCollisionError } from "./errors.js";
+export {
+	isReservationNotReleasableError,
+	ReservationIdCollisionError,
+	ReservationNotReleasableError,
+} from "./errors.js";
 export {
 	adjustClaimId,
 	APPLIED_MOVEMENT_RING_SIZE,

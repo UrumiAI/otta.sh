@@ -267,6 +267,191 @@ expiry-scan method, so nothing here needs to query a field. The `sku`/`createdAt
 indexes on `inventory_movements` are declared for the stock-movement audit a later
 increment renders, not for this store.
 
+## Cart document model
+
+`EmdashCartStore` implements the domain's `CartStore` over **one aggregate document
+per cart**, plus one lookup collection the port signature forces.
+
+| Collection | Doc id | Holds | Declared indexes |
+|---|---|---|---|
+| `carts` | cart id | `state`, `orderId`, `currency`, the `lines` map keyed by sku, the embedded mutation ledger, the denormalized `holdExpiresAt` | `state`, `holdExpiresAt` |
+| `cart_mutation_index` | mutation idempotency key | `{ cartId }` — a locator, never the record | — |
+
+**Three SQL features disappear into the shape.** `cart_lines (cart_id, sku)` UNIQUE
+becomes the lines map being keyed by sku — structural, and not an index, which
+matters because no tier here materializes one. The `cart_mutations` TABLE becomes
+the embedded ledger, read and written in the SAME `compareAndSet` as the line it
+records, so "claim the key, write the line, mark it completed" is one atom on the
+cart side instead of three statements that can tear. And `reservations.expires_at
+<= now` as a scan target becomes the declared `holdExpiresAt` field, because the
+filter algebra has no OR and cannot reach inside a map.
+
+**Why there is a second collection.** `recordedMutation(key)` and
+`expireHold(reservationId)` are handed an identifier with no cart id, and an
+embedded map cannot be queried by its keys. `cart_mutation_index` answers "which
+cart claimed this key", for exactly the reason `reservation_index` exists on the
+inventory side. It is written AFTER the ledger entry, never before, so it can never
+name a cart that has no record; the reverse gap is harmless, because every method
+that mutates is given the cart id directly and each of them re-ensures the locator.
+`expireHold` reaches a cart in two hops — `reservation_index` gives the reservation's
+reserve key, which IS the add's mutation key, which the locator maps to the cart —
+and that second hop is also the sweep's SCOPING: a raw reserve has no cart claim,
+so no locator, so the cart sweep can never reap it.
+
+### The cart is the first cross-aggregate edge
+
+Inventory keeps every invariant it owns inside one document. The cart cannot:
+`upsertLine`, `adjustLine`, `removeLine` and `expireHold` each pair a cart write
+with an inventory movement across two aggregates with no transaction between them.
+Every one of them is therefore written as **intent claim → inventory op →
+deterministic completion**, and the bracket is visible in the code rather than
+implied:
+
+1. `claimMutation` adds the key to the ledger with `completed: false`,
+   create-if-absent by the map's own compare-and-set.
+2. The inventory op runs through `InventoryStore` and nothing else — idempotent on
+   its own terms (`reserve`/`adjust` by their key, `release` by the reservation's
+   state machine), which is what makes step 3 safe to reach from any interruption.
+3. The line write and `completed: true` land in the SAME compare-and-set.
+
+Nothing here writes an inventory document. The store READS `inventory`,
+`reservation_index` and `reservation_keys` — a line's live hold state and a crashed
+claim's reservation id are facts about the other aggregate that the port asks this
+one to report — and every WRITE goes through the injected store.
+
+**The attach guard is a guarded WRITE, not a read.** `CartStore.upsertLine`'s
+contract makes the deadline stamp and the attach guard the same act: the SQL did
+both in `UPDATE reservations SET expires_at = :deadline WHERE id = :id AND
+state = 'held'`, and zero rows was `HoldExpiredError`. A *read* of the hold cannot
+substitute — the sweep can reap it between the read and the cart write, and the line
+would be resurrected anyway — and dropping the stamp would break checkout outright,
+because `adopt`/`adoptMany` are scoped `state='held' AND expires_at > :now` and would
+classify every cart hold as lost.
+
+`InventoryStore` declares no such method, and widening the port is a domain change
+this package may not make, so the capability is adapter-local:
+`HoldDeadlineStamper.stampHoldDeadline(reservationId, expiresAt)`, implemented by
+`EmdashInventoryStore` as ONE guarded compare-and-set on the inventory document in
+which the `state === "held"` precondition, the ownership check and the new deadline
+commit together. It returns `false` — never throws — for an unknown, pruned or
+adopted hold, and never touches a non-`held` one, so it can neither extend an
+order's adopted deadline nor revive a reaped hold. `EmdashCartStore`'s constructor
+asks for `InventoryStore & HoldDeadlineStamper`, which also keeps an adapter that
+cannot supply it from being injected by mistake — and is what makes the two
+tolerated `release` refusals in `expireHold` safe to recognize by TYPE, since the
+errors that `release` can raise are then known rather than assumed.
+
+It also refuses a reservation whose TERMINAL record has been written but whose hold
+is not yet pruned — a state the ordered settle really passes through — so a cart can
+never attach a line to units that are already spent. Same gate, same reason, as the
+one `expireHold` applies before minting a fresh expiry token.
+
+`upsertLine` and `adjustLine` both call it INSIDE the compare-and-set step, before
+the cart write (the SQL's fixed step order, reservation before line), so the guard is
+re-evaluated on every attempt rather than once outside the loop. The two call sites
+treat a refusal DIFFERENTLY, and the asymmetry is the port's, not a shortcut:
+`upsertLine` is ATTACHING a hold to a line, so a refusal is `HoldExpiredError`;
+`adjustLine`'s line already references the hold, so there is nothing to guard,
+refusing the cart write would gain nothing, and `HoldExpiredError` is documented as
+`upsertLine`'s failure — the update use-case calls `adjustLine` outside any catch, so
+throwing there would escape unmapped whenever a checkout or the sweep took the hold
+between `inventoryStore.adjust` returning and the re-stamp. The SQL's adjust stamp
+was likewise unguarded. `upsertLine` additionally re-reads the claim's `abandoned`
+marker on every attempt, so a reaping that lands mid-retry is still seen — and that
+marker is only a fast path, which is what makes bounding the abandoned records safe:
+the guarantee is the guarded stamp, which refuses the same replay one round trip
+later even with the marker evicted. The regression case is in `cart-fence.dialects.test.ts`: a real `addLine`, then
+`adoptMany` for an order, asserting `adopted` and not `lost` — nothing in the cart
+contract or the fences would notice the stamp going missing, and only that case does.
+
+**The expiry choreography.** `expireHold` is the intent-claim of ADR-0019 §7.7: a
+guarded flip that writes a once-only token — onto the LINE when there is one, onto
+the outstanding CLAIM when the crash left none — then the release, then the removal.
+The deadline is re-checked inside the flip, so a hold an active shopper reset
+between listing and release is not reaped. Two rules make replay exact:
+
+- the token is **never cleared**; the line is deleted by the completion, so a token
+  on a still-present line means "an expiry was claimed and did not finish", which is
+  precisely what a replayer must complete;
+- only the writer that **minted** the token reports the reclaim, so a lazy read
+  racing the sweep counts one expiry between them rather than two.
+
+A **fresh** token is additionally refused whenever the reservation is already
+terminal. That is the obligation the inventory tier hands every reaping path: the
+terminal record is written before the hold is pruned, so a `committed` reservation
+can leave a hold that still looks live, and returning its spent units would be an
+oversell. An **existing** token is not gated — it means the expiry is owed its
+completion.
+
+**`adjustLine` converges, and the reconcile is a REPAIR.** The stored qty is
+re-derived from the hold the store just read (ADR-0019's R5), and the hold can move
+between that read and the cart write. So after the write the step goes round once
+more: once the key is completed the mutation itself must never re-apply, but the
+stored qty still owes the hold agreement, so a divergence is repaired IN PLACE with
+the completion preserved. A bare retry could not do this — it would find `completed`
+and hand back the stale line. Since a call's inventory movement always precedes its
+cart write, whichever cart write lands last is followed by a pass that sees the
+final hold; the loop ends the first time the two agree, inside the usual
+compare-and-set budget. Pinned by `no-oversell-cart.pg.test.ts`'s convergence case,
+which races two different-key adjusts on one line and asserts the pair agrees and
+the units are conserved.
+
+**The ledger is bounded — and the bound cannot drop a crash marker.** Three classes
+of record, three rules. A record that is claimed and neither completed nor abandoned
+is **never** pruned at any age: it is what tells a replayer to resume and what makes
+a dangling hold listable, so dropping one would orphan real stock. `completed`
+records keep the last `CART_MUTATION_LEDGER_SIZE = 64`, oldest evicted. `abandoned`
+records — the audit trail of a reaped crash, whose units are already back and whose
+claim is retired — keep the last `CART_ABANDONED_LEDGER_SIZE = 16`, so the second
+thing that could grow without limit on a long-lived cart does not. The accepted
+residual is
+narrow and stated in the source: a replay of a key whose completed record was
+evicted no longer short-circuits, so it answers with current truth instead of the
+recorded qty. It is not a double-apply — the inventory ops are idempotent by key —
+and reaching it takes 64 later mutations on ONE cart between a request and its retry.
+
+**`holdExpiresAt` is a candidate filter, deliberately.** The SQL predicate was an OR
+of a stamped-deadline arm (`expires_at <= now`) and a crashed-claim arm
+(`expires_at IS NULL AND created_at <= cutoff`), against two different instants. The
+filter algebra has no OR, so both fold into one indexed `<= now` and the exact
+per-arm predicate is re-applied to the fetched document — an outstanding claim
+contributes its `claimedAt`, which is always in the past. A cart can therefore be
+listed and yield nothing, which costs a read and changes no answer. `listExpired`
+pages, because the host clamps `limit` at 100.
+
+### Cart crash seams proven
+
+`test/cart-crash-seams.dialects.test.ts` opens each gap on real storage. Four of the
+seven cases INJECT a fault with the shared helper — (b) through (e) let the real
+writes before the gap land, throw where the process would have died, read the
+documents back, and only then replay. The other three do not need to: (a) stops
+after a real `claimMutation`, which IS the whole of the first step; (f) builds the
+terminal-record-before-prune state with one direct conditional write; (g) asserts a
+typed error rather than a crash. The file says so, rather than claiming otherwise:
+
+- **(a) the claim landed, the inventory movement never ran** — the record is
+  incomplete, no line, no stock moved; the replay resumes and decrements once.
+- **(b) the reserve landed, the completion never did** — the units are gone and the
+  hold is live with NO line; the replay attaches the SAME hold without a second
+  decrement. A store that wrote the line outside the completion fails here.
+- **(c) `expireHold` crashed after the once-only flip** — the token landed and
+  nothing else: line still there, stock still off the shelf. The replay completes it,
+  returns the stock exactly once, and reports `false` because it did not mint.
+- **(d) `expireHold` crashed after the release** — the hardest: the stock is already
+  back while the line is still visible. The completion is re-runnable, the line goes,
+  and the stock does not come back twice.
+- **(e) `checkout` crashed after the cart flip** — both fields landed together, so a
+  `checked_out` cart with a null order id is unreachable through the port, and the
+  replay is a benign `false` that never rewrites the id.
+- **(f) a hold left live after its reservation went terminal** — not reaped, the
+  spent units stay spent, and the line survives on purpose: the per-id commit/prune
+  is the sweeper's, not something the cart may force.
+- **(h) a settled-but-unpruned reservation** — the stamp refuses it even though the
+  hold still reads `held`, so no line can be attached to spent units.
+- **(g) a release the cart may not perform** — a typed `ReservationNotReleasableError`
+  the expiry can classify, rather than a bare `Error` a caller would have to match by
+  message.
+
 ## Contention budget
 
 R2 has no structural fix — the aggregate is written by read-modify-write, so a hot
@@ -288,7 +473,7 @@ writes its ledger entry, so the writes are not bounded by the units — does rea
 the ceiling and does raise `StorageContentionError`.
 
 **Removal shape (20 removals racing 20 reserves on 12 units, 15 loops = 600 calls):
-measured max CAS attempts 12 (the ceiling), measured typed contention failures 8–29
+measured max CAS attempts 12 (the ceiling), measured typed contention failures 11–29
 per run; asserted at `<= CAS_MAX_ATTEMPTS` and `<= 90` (15% of the calls) respectively.**
 
 Per-shape depth and contention, as the suite reports them per case:
@@ -299,7 +484,7 @@ Per-shape depth and contention, as the suite reports them per case:
 | removeStock same key ×24 | 2 | 0 |
 | restock +10 racing 40 reserves on 5 units | 12 | 2–6 |
 | restock then 40 reserves on 15 units (sequenced) | 12 | 0–1 |
-| 20 removals racing 20 reserves on 12 units | 12 | 8–29 |
+| 20 removals racing 20 reserves on 12 units | 12 | 11–29 |
 
 `restock-concurrency.pg.test.ts` reports its depth and contention count **per case**
 rather than per file, so a ceiling is attributed to the shape that produced it by

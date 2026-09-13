@@ -86,7 +86,8 @@ import {
 	type CasStep,
 } from "./cas-retry.js";
 import { collectionOf } from "./collection-of.js";
-import { ReservationIdCollisionError } from "./errors.js";
+import { ReservationIdCollisionError, ReservationNotReleasableError } from "./errors.js";
+import type { HoldDeadlineStamper } from "./hold-deadline-stamper.js";
 import {
 	adjustClaimId,
 	findAppliedMovement,
@@ -161,7 +162,7 @@ const OUT_OF_STOCK: ReserveResult = { ok: false, reason: "OUT_OF_STOCK" };
 /** Rounds `reserve` spends resolving its key document; see the loop's comment. */
 const ROUNDS = 2;
 
-export class EmdashInventoryStore implements InventoryStore {
+export class EmdashInventoryStore implements InventoryStore, HoldDeadlineStamper {
 	readonly #inventory: StorageCollection<InventoryDoc>;
 	readonly #index: StorageCollection<ReservationIndexDoc>;
 	readonly #keys: StorageCollection<ReservationKeyDoc>;
@@ -373,13 +374,15 @@ export class EmdashInventoryStore implements InventoryStore {
 		if (index.terminalState !== undefined) {
 			await this.#prune(index.sku, this.#pruneEntries(index, reservationId), "release");
 			if (index.terminalState === "released") return; // benign double-release
-			throw new Error(
-				`cannot release reservation ${reservationId} in state ${index.terminalState}`,
-			);
+			// Typed, not a bare Error: a caller that must classify this — the cart
+			// expiry swallows it, because a hold an order already committed is not
+			// the cart's to return — should not have to match on a message. The text
+			// is unchanged from the bare error it replaces.
+			throw new ReservationNotReleasableError(reservationId, index.terminalState);
 		}
 		const hold = await this.#liveHold(index, reservationId);
 		if (hold === undefined) {
-			throw new Error(`cannot release reservation ${reservationId} in state pending`);
+			throw new ReservationNotReleasableError(reservationId, "pending");
 		}
 		await this.#settle(index, reservationId, "released");
 	}
@@ -782,6 +785,53 @@ export class EmdashInventoryStore implements InventoryStore {
 			return { ...settled.applied.result };
 		}
 		return witnessed;
+	}
+
+	// -- the cart's hold deadline ---------------------------------------------
+
+	/**
+	 * {@link HoldDeadlineStamper.stampHoldDeadline} — the `held`-scoped deadline
+	 * write that is ALSO the cart's attach guard.
+	 *
+	 * It is the document counterpart of the SQL adapter's
+	 * `UPDATE reservations SET expires_at = :deadline WHERE id = :id AND
+	 * state = 'held'`: one guarded compare-and-set in which the state precondition,
+	 * the ownership check and the new deadline commit together. That is why the
+	 * cart store may treat `true` as durable proof the hold was live — a read could
+	 * only prove it was live a moment ago.
+	 *
+	 * It lives here rather than on the port because it is not commerce policy: the
+	 * deadline is the cart's, and the only reason the inventory aggregate has to
+	 * write it is that the hold lives inside the inventory document.
+	 */
+	async stampHoldDeadline(reservationId: string, expiresAt: string | null): Promise<boolean> {
+		const index = await this.#index.get(reservationId);
+		if (index === null) return false;
+		// A settled reservation is never stampable, even while its hold is still in the
+		// aggregate: the terminal record is written BEFORE the prune, so a committed or
+		// released reservation can leave a hold that still reads `held`. Stamping it
+		// would let a cart attach a line to spent units. The same gate `expireHold`'s
+		// claim applies before minting a fresh expiry token, for the same reason.
+		if (index.terminalState !== undefined) return false;
+		return this.#cas<boolean>("stampHoldDeadline", async () => {
+			const current = await this.#inventory.getVersioned(index.sku);
+			if (current === null) return casDone(false);
+			const doc = normalizeInventoryDoc(current.value);
+			const hold = doc.holds[index.idempotencyKey];
+			// No hold, somebody else's hold, or a hold that has left `held`: there is
+			// nothing this may touch. `false`, never a throw — the caller (the cart's
+			// attach guard) turns it into the port's typed `HoldExpiredError`.
+			if (hold === undefined || hold.reservationId !== reservationId) return casDone(false);
+			if (hold.state !== "held") return casDone(false);
+			// Idempotent: the deadline it already carries needs no write, and skipping
+			// one keeps a replay from adding contention to a hot aggregate.
+			if (hold.expiresAt === expiresAt) return casDone(true);
+			const written = await this.#inventory.compareAndSet(index.sku, current.revision, {
+				...doc,
+				holds: { ...doc.holds, [index.idempotencyKey]: { ...hold, expiresAt } },
+			});
+			return written.applied ? casDone(true) : CAS_RETRY;
+		});
 	}
 
 	// -- raw stock reads and writes -------------------------------------------
