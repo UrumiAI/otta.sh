@@ -2,7 +2,7 @@
  * The domain's `productCommerceStoreContract` against
  * `EmdashProductCommerceStore`, on every Node dialect.
  *
- * The contract suite IS the spec: the same ~185 cases the fake and the SQL
+ * The contract suite IS the spec: the same 183 cases the fake and the SQL
  * adapter run, with no skips and no narrowing. What it exercises here that it
  * cannot exercise on the fake is that the guard ORDER survives being reassembled
  * out of compare-and-sets — the zero-row classifier, the sku claim's precedence

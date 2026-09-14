@@ -89,10 +89,12 @@ describeEachDialect("getManyByProductId call count", (ctx) => {
 		const map = await counted.store.getManyByProductId(ids);
 
 		expect(map.size).toBe(120);
-		// Two chunks of ids; the first fills its page exactly, so the host reports
-		// more and that chunk costs a second, empty read. Three calls for 120 ids,
-		// which is the ceiling's arithmetic — and nothing like 120.
-		expect(counted.counts.of("query")).toBeLessThanOrEqual(4);
+		// TWO calls for 120 ids, exactly: one per chunk of 100. A chunk that fills its
+		// page costs no extra read, because the host looks one row past the limit to
+		// decide `hasMore` rather than making the caller discover it with an empty page.
+		// Asserted as an equality — a bound that drifted upward is the regression this
+		// case exists to catch, and one that drifted to 120 is the one it is named for.
+		expect(counted.counts.of("query")).toBe(2);
 		expect(counted.counts.of("get")).toBe(0);
 	});
 

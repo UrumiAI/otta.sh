@@ -975,10 +975,20 @@ could serve it and declaring one would be a read contract for a query that is ne
 issued. The title half of the search is resolved in memory over the rows the indexed
 axes already narrowed.
 
-Two fields the design's table does not mention ARE declared, because the store queries
-them: `productId` (the two batch reads fetch a whole batch with one `productId in [...]`
-query rather than a `get` per id) and `createdAt` (the admin list orders by it, and
-ordering on an undeclared field throws exactly as filtering on one does).
+**The full difference from ADR-0019 §4's list, so nothing is undercounted.** The design
+names `sku`, `active`, `taxClass`, `titleLower`; this store declares `productId`,
+`lifecycle`, `publishKey`, `productKind`, `taxClass`, `createdAt`.
+
+| Field | Change | Why |
+|---|---|---|
+| `taxClass` | kept | `countByTaxClass`'s only predicate |
+| `active` | replaced by `publishKey` | a boolean cannot be bound as a filter value on one dialect (above) |
+| `titleLower` | DROPPED | the search is a substring and the algebra has none (above) |
+| `sku` | DROPPED | nothing queries `product_commerce` by sku. Live-sku uniqueness is the `sku_owners` claim, reached by document id, and a variant's sku is not a field of its product document at all — an index on the product's own `sku` column would answer half the question and would be a read contract for a query never issued |
+| `lifecycle` | ADDED | the tombstone axis, as three states rather than a nullable column (below) |
+| `productKind` | ADDED | `ProductListFilter.productKind` is an equality the list pushes down |
+| `createdAt` | ADDED | the admin list ORDERS by it, and ordering on an undeclared field throws exactly as filtering on one does |
+| `productId` | ADDED | the two batch reads fetch a whole batch with one `productId in [...]` query rather than a `get` per id |
 
 ### `lifecycle` is a three-state discriminator, and a variant may land first
 
@@ -1020,14 +1030,39 @@ own compare-and-set is therefore the mutual exclusion.
 recomputes it and adds nothing twice. A freshly minted token would make every retry a
 second transfer.
 
+**What the lock order actually left open, corrected against the spec.** The SQL package
+had NO `40P01`/`40001` retry anywhere: deadlock was avoided by acquiring the two
+inventory rows in sorted sku order, and that avoidance was recorded as INCOMPLETE — the
+product-side writers took a unique-index lock ahead of the inventory locks, so two
+products renaming onto each other's skus could still deadlock, and a lock-order deadlock
+was never mapped to a typed error. It would have reached a merchant as a 500 on a legal
+edit. There is no lock here at all, so the residual goes with the mechanism rather than
+being closed: the two crossing-rename cases in `variant-sku-rename-race.pg.test.ts`
+assert `40P01` never surfaces, and they now pass by construction. A `40001`
+serialization abort from a host above READ COMMITTED is still retried, by `cas-retry.ts`,
+exactly as it is for every other document write in this package.
+
 ### What the carry cannot make atomic, stated exactly
 
-- **A hold arriving between step 1 and step 3** leaves the rename COMMITTED and the
-  carry recorded. The units stay on the source, the record says where they are going,
-  and the sweeper — `completeRecordedRenames(productId)`, which any later write on the
-  product also runs — finishes it once the hold resolves. A NEW rename of the same
-  owner is refused with that same `SkuHeldStockError` while a carry is owed, so a
-  product can never leave units queued for a sku it has since renamed away from.
+- **A hold arriving between step 1 and step 3 changes the held-stock semantics, and this
+  is a deliberate weakening.** The SQL adapter refused ATOMICALLY: the source row was
+  locked before the hold count was read, so a reservation could not land inside the
+  window and the whole rename rolled back. Here the product write has already committed
+  by the time the move runs, so a hold arriving in that window leaves the rename
+  COMMITTED with the carry OWED. What an observer sees is a product whose sku is the new
+  one while its stock is still under the old one — a phantom out-of-stock on the target,
+  never an oversell, because no unit is ever counted twice and the source's units stay
+  exactly where a release of that hold expects them. It is completed by
+  `completeRecordedRenames(productId)`, which the sweeper runs and which ANY later write
+  on the product runs first, and a NEW rename of the same owner is refused with that same
+  `SkuHeldStockError` meanwhile. The contract pins only the SEQUENTIAL refusal, which is
+  unchanged and green; the window is reachable only by a concurrent reserve, and
+  `product-commerce-crash-seams.dialects.test.ts` drives it deliberately.
+- **The SOURCE sku's claim is held until the carry is terminal.** Releasing it while the
+  carry is owed would leave a sku that still holds units looking free, and a first-sku
+  assignment ADOPTS an existing inventory document by design (THE FIRST-SKU ASYMMETRY) —
+  so a different owner would take those units and the eventual completion would zero them
+  out from under it. The claim is released only by whoever finishes the move.
 - **A contended target claim.** "This owner won the sku's claim while the target had no
   inventory document, and by the time the document was claimed one existed" has two
   producers: a second call renaming the SAME product onto the SAME sku (legitimate) and
@@ -1035,10 +1070,23 @@ second transfer.
   indistinguishable from the documents, so the write waits `TARGET_CLAIM_CONTENTION_ATTEMPTS`
   = 6 jittered attempts — the peer case resolves within a round trip — and refuses
   `SkuStockConflictError` if it does not.
-- **An abandoned claim.** A call that takes a sku claim and then never commits gives it
-  back in a `finally`: the claim returns to `live: false` and a pristine target document
-  this call created is withdrawn. A process that dies in between leaves a released-able
-  claim behind, which the next claimant takes over by compare-and-set.
+- **An abandoned claim, and its inventory residue.** A call that takes a sku claim and
+  then never commits gives it back in a `finally`. A process that DIES in that window
+  cannot, and both residues are durable: a live claim nothing backs, plus — for a rename
+  — an empty inventory document under the target, which "occupied is occupied" would
+  otherwise refuse forever. So the claim is a LEASE. A live claim is taken over when
+  nothing backs it, nobody owes a carry away from it, and it is older than
+  `CLAIM_ABANDON_AFTER_MS` (60 s — far beyond the whole retry budget, so an in-flight
+  writer is never mistaken for a dead one); the takeover also withdraws the empty
+  inventory document, and only that one, which is what `SkuOwnerDoc.createsTarget`
+  records. A seeded empty row is never withdrawn, so "occupied is occupied" still holds
+  for real stock.
+- **The audit trail of a swept carry.** A carry finished by
+  `completeRecordedRenames`/`completePendingSkuTransfer` writes NO `rename_out`/`rename_in`
+  pair: the entry ids derive from the write's idempotency key, which a completion does not
+  hold. A rename that crashed mid-flight and was finished by the sweep therefore leaves no
+  audit pair. That is stated rather than papered over — an entry invented by a sweeper
+  would claim a movement it cannot attribute.
 
 ### `SkuConflictError` outranks both stock refusals, and is checked for BACKING
 

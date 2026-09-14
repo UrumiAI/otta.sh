@@ -218,7 +218,11 @@ describe.skipIf(!PG_ENABLED)("variant sku rename concurrency [postgres]", () => 
 			expect(refused, `loop ${String(loop)}: exactly one loser`).toHaveLength(1);
 
 			// The loser failed with a TYPED domain refusal, never a raw storage failure
-			// surfacing as a 500.
+			// surfacing as a 500 — and BOTH shapes of loss are checked, because a loser can
+			// lose in two ways here: refused by the claim (a throw) or, if the winner's
+			// write moved its own watermark, reported `stale`. Nothing else is legal, and
+			// an unchecked `ok: false` branch would let a currency or not_found answer pass
+			// for arbitration.
 			const loser = refused[0];
 			if (loser?.status === "rejected") {
 				const err = loser.reason as Error;
@@ -226,6 +230,10 @@ describe.skipIf(!PG_ENABLED)("variant sku rename concurrency [postgres]", () => 
 					["SkuConflictError", "SkuStockConflictError"],
 					`loop ${String(loop)}: typed refusal, got ${err.name}: ${err.message}`,
 				).toContain(err.name);
+			} else if (loser?.status === "fulfilled" && !loser.value.ok) {
+				expect(loser.value.reason, `loop ${String(loop)}: the only legal reported loss`).toBe(
+					"stale",
+				);
 			}
 
 			// The loser's SIZE is untouched — still its own sku, still its own units.

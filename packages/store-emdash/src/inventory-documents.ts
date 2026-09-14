@@ -158,11 +158,16 @@ export const APPLIED_MOVEMENT_RING_SIZE = 256;
  * replayer — the writer itself on retry, a later rename of the same sku, or a
  * sweeper — finishes a partial from the source document alone.
  *
- * **Units in flight are still accounted for.** While this field is present the
- * `qty` it names is out of `onHand` and not yet in the target, so a reader that
- * must not lose a unit reads `onHand + (transferOut?.qty ?? 0)` for the source.
- * Nothing on the hot reserve path does — a source mid-transfer is a sku no
- * product holds any more — but the conservation argument depends on it.
+ * **Units in flight are still accounted for, and the rule has a window.** Between the
+ * write that stamps this field and the write that adds `qty` to the target, the units
+ * are on neither count, and `onHand + (transferOut?.qty ?? 0)` is what accounts for
+ * them on the source. AFTER the target has applied the token and BEFORE the source
+ * clears the stamp, that same sum DOUBLE-COUNTS them — the target holds them and the
+ * source still names them. So the rule is conditional: add `transferOut.qty` to the
+ * source only while the target's {@link InventoryDoc.appliedTransfers} ring does not
+ * yet hold the token. Nothing on the hot reserve path reads either — a source
+ * mid-transfer is a sku no product holds any more — but the conservation argument, and
+ * the crash-seam suite that checks it, depend on the qualification.
  */
 export interface TransferOut {
 	/**

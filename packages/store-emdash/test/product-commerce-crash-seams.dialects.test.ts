@@ -29,17 +29,28 @@
  * replay heals is the state the store really leaves behind rather than one the test
  * assumed.
  */
-import { idempotencyKey, productId, sku, SkuHeldStockError } from "@otta-sh/domain";
+import {
+	idempotencyKey,
+	productId,
+	sku,
+	SkuConflictError,
+	SkuHeldStockError,
+} from "@otta-sh/domain";
 import { expect, test } from "vitest";
 import {
 	INVENTORY_COLLECTION,
+	PRODUCT_COMMERCE_COLLECTION,
+	SKU_OWNERS_COLLECTION,
 	skuTransferToken,
 	type InventoryDoc,
 	type ProductCommerceDoc,
+	type SkuOwnerDoc,
 } from "../src/index.js";
 import { describeEachDialect } from "./describe-each-dialect.js";
 import {
+	delegatingCollection,
 	failCall,
+	InjectedCrashError,
 	isUpdateWrite,
 	onId,
 	parkCall,
@@ -70,6 +81,11 @@ describeEachDialect("sku-rename crash seams", (ctx) => {
 	async function recorded(pid: string): Promise<Record<string, unknown>> {
 		const doc = await bound.collection<ProductCommerceDoc>("product_commerce").get(pid);
 		return doc?.pendingRenames ?? {};
+	}
+
+	/** The live-sku claim for a sku, if any. */
+	async function claimOf(s: string): Promise<SkuOwnerDoc | null> {
+		return bound.collection<SkuOwnerDoc>(SKU_OWNERS_COLLECTION).get(s);
 	}
 
 	/** The source document's in-flight stamp, if any. */
@@ -325,5 +341,157 @@ describeEachDialect("sku-rename crash seams", (ctx) => {
 		expect(await h.onHandOf("SEAM5-TO")).toBe(21);
 		expect(await h.onHandOf("SEAM5-FROM")).toBe(0);
 		expect(await recorded("prod-seam-5")).toEqual({});
+	});
+
+	test("a second owner cannot claim a sku whose carry is still OWED, and can once it completes", async () => {
+		const raw = bound.collection<InventoryDoc>(INVENTORY_COLLECTION);
+		const h = makeProductCommerceHarness(bound.storage);
+		const wm = await seedStocked(h, "prod-owed", "OWED-FROM", 12);
+
+		// Reach the state the previous case produces: a hold lands between the decision
+		// and the move, so the rename commits with its carry owed and the units still on
+		// the source.
+		const parked = parkCall(raw, onId("OWED-FROM", isUpdateWrite));
+		const racing = makeProductCommerceHarness(bound.storage, {
+			storageForStore: withCollection(bound.storage, INVENTORY_COLLECTION, parked.collection),
+		});
+		const rename = racing.store.updateCommerceFields(
+			{ productId: productId("prod-owed"), sku: sku("OWED-TO") },
+			idempotencyKey("owed-1"),
+			wm,
+		);
+		await parked.arrived;
+		await h.seedHold("OWED-FROM", 4);
+		parked.release();
+		expect((await rename).ok).toBe(true);
+		expect(await h.onHandOf("OWED-FROM")).toBe(12);
+
+		// THE ASSERTION THAT BITES. The source no longer belongs to any product's `sku`
+		// field, so a naive release would leave it looking free — and a FIRST-sku
+		// assignment ADOPTS an existing inventory document, units and all, by design. The
+		// second owner would walk off with twelve units the carry is still going to move.
+		expect(await claimOf("OWED-FROM")).toMatchObject({ live: true, ownerId: "prod-owed" });
+		await expect(
+			h.store.upsert(
+				{ productId: productId("prod-owed-other"), sku: sku("OWED-FROM") },
+				idempotencyKey("owed-other-1"),
+			),
+		).rejects.toBeInstanceOf(SkuConflictError);
+		expect(await h.store.getByProductId(productId("prod-owed-other"))).toBeNull();
+		expect(await h.onHandOf("OWED-FROM")).toBe(12);
+
+		// The hold resolves and the carry finishes; only then is the sku given back.
+		const inventory = bound.collection<InventoryDoc>(INVENTORY_COLLECTION);
+		const held = await inventory.getVersioned("OWED-FROM");
+		if (held === null) throw new Error("the source document was not retained");
+		await inventory.compareAndSet("OWED-FROM", held.revision, { ...held.value, holds: {} });
+		expect(await h.store.completeRecordedRenames(productId("prod-owed"))).toBe(1);
+		expect(await h.onHandOf("OWED-TO")).toBe(12);
+		expect(await h.onHandOf("OWED-FROM")).toBe(0);
+		expect(await claimOf("OWED-FROM")).toMatchObject({ live: false });
+
+		// And now the takeover is legitimate: the sku is free, and what it adopts is the
+		// emptied document the rename left behind rather than the units it was owed.
+		const adopted = await h.store.upsert(
+			{ productId: productId("prod-owed-other"), sku: sku("OWED-FROM") },
+			idempotencyKey("owed-other-2"),
+		);
+		expect(adopted.sku).toBe("OWED-FROM");
+		expect(await h.onHandOf("OWED-FROM")).toBe(0);
+		expect(((await h.onHandOf("OWED-FROM")) ?? 0) + ((await h.onHandOf("OWED-TO")) ?? 0)).toBe(12);
+	});
+
+	test("a crash between the sku claim and the product write leaves a residue a later writer clears on its own", async () => {
+		const h = makeProductCommerceHarness(bound.storage);
+		const wm = await seedStocked(h, "prod-wedge", "WEDGE-FROM", 9);
+
+		// The window: the claim is written and the target's inventory document created,
+		// and THEN the process dies before the product write commits. The in-process
+		// `finally` would normally give both back, so this case takes that away too — the
+		// release is an UPDATE on the claim (the claim itself was a create, which still
+		// succeeds) and the withdrawal is a delete. What is left behind is durable, and
+		// no retry can reach it: the writer is gone.
+		const products = failCall(
+			bound.collection<ProductCommerceDoc>(PRODUCT_COMMERCE_COLLECTION),
+			isUpdateWrite,
+			{ mode: "instead" },
+		);
+		const owners = failCall(bound.collection<SkuOwnerDoc>(SKU_OWNERS_COLLECTION), isUpdateWrite, {
+			mode: "instead",
+		});
+		const rawInventory = bound.collection<InventoryDoc>(INVENTORY_COLLECTION);
+		const inventory = delegatingCollection(rawInventory, {
+			compareAndDelete(id) {
+				throw new InjectedCrashError({ method: "compareAndDelete", id });
+			},
+		});
+		const crashing = makeProductCommerceHarness(bound.storage, {
+			storageForStore: withCollection(
+				withCollection(
+					withCollection(bound.storage, PRODUCT_COMMERCE_COLLECTION, products.collection),
+					SKU_OWNERS_COLLECTION,
+					owners.collection,
+				),
+				INVENTORY_COLLECTION,
+				inventory,
+			),
+		});
+		await expect(
+			crashing.store.updateCommerceFields(
+				{ productId: productId("prod-wedge"), sku: sku("WEDGE-TO") },
+				idempotencyKey("wedge-1"),
+				wm,
+			),
+		).rejects.toMatchObject({ name: "InjectedCrashError" });
+
+		// Read the residue back rather than assuming it: a live claim nothing references,
+		// and an empty inventory document under the target.
+		expect(await claimOf("WEDGE-TO")).toMatchObject({
+			live: true,
+			ownerId: "prod-wedge",
+			createsTarget: true,
+		});
+		expect(await h.onHandOf("WEDGE-TO")).toBe(0);
+		expect((await h.store.getByProductId(productId("prod-wedge")))?.sku).toBe("WEDGE-FROM");
+
+		// Straight away, the residue is indistinguishable from a writer one round trip
+		// from committing, so it is respected.
+		const other = await h.store.upsert(
+			{ productId: productId("prod-wedge-other") },
+			idempotencyKey("wedge-other-seed"),
+		);
+		await h.seedStock("WEDGE-OTHER-FROM", 5);
+		const claimant = await h.store.upsert(
+			{ productId: productId("prod-wedge-other"), sku: sku("WEDGE-OTHER-FROM") },
+			idempotencyKey("wedge-other-sku"),
+		);
+		void other;
+		await expect(
+			h.store.updateCommerceFields(
+				{ productId: productId("prod-wedge-other"), sku: sku("WEDGE-TO") },
+				idempotencyKey("wedge-other-early"),
+				claimant.updatedAt.toISOString(),
+			),
+		).rejects.toMatchObject({ name: "SkuStockConflictError" });
+
+		// Past the lease it is not. The claim is taken over, its inventory residue goes
+		// with it — otherwise "occupied is occupied" would wedge this sku for good — and
+		// the rename lands, units and all.
+		h.clock.advance(61_000);
+		const res = await h.store.updateCommerceFields(
+			{ productId: productId("prod-wedge-other"), sku: sku("WEDGE-TO") },
+			idempotencyKey("wedge-other-late"),
+			claimant.updatedAt.toISOString(),
+		);
+		expect(res.ok).toBe(true);
+		expect(await claimOf("WEDGE-TO")).toMatchObject({
+			live: true,
+			ownerId: "prod-wedge-other",
+		});
+		expect(await h.onHandOf("WEDGE-TO")).toBe(5);
+		expect(await h.onHandOf("WEDGE-OTHER-FROM")).toBe(0);
+		// The crashed product is untouched throughout — it never committed anything.
+		expect((await h.store.getByProductId(productId("prod-wedge")))?.sku).toBe("WEDGE-FROM");
+		expect(await h.onHandOf("WEDGE-FROM")).toBe(9);
 	});
 });

@@ -56,6 +56,15 @@ import type {
 	Sku,
 } from "@otta-sh/domain";
 
+/**
+ * The replay key a SHELL document carries — a document a variant created before its
+ * product row existed. It is never read back: `getByProductId` answers null while
+ * `lifecycle` is `"absent"`, and the first product-level write stamps its own key. The
+ * empty string is used because no real `IdempotencyKey` can be empty, so it can never
+ * dedupe a genuine write by accident.
+ */
+const EMPTY_KEY = "" as IdempotencyKey;
+
 /** Collection name: the per-product aggregate, variants embedded. */
 export const PRODUCT_COMMERCE_COLLECTION = "product_commerce";
 /** Collection name: the live-sku uniqueness claim, one document per sku. */
@@ -85,13 +94,17 @@ export interface CollectionIndexDeclaration {
  * ORDERS by, and ordering on an undeclared field throws exactly as filtering on
  * one does.
  *
- * **`active` is filtered through a STRING mirror, `publishKey`, and that is a
- * driver constraint rather than a preference.** A `where` value is bound as a
- * parameter, and better-sqlite3 binds only numbers, strings, bigints, buffers and
- * null — a boolean throws `SQLite3 can only bind …` before any comparison runs.
- * So the publish gate is stored twice: `active` is the boolean the port reads back,
- * and `publishKey` is the indexed text the filter binds. {@link publishKeyFor} is
- * the only thing that derives one from the other, so they cannot drift.
+ * **`active` is filtered through a STRING mirror, `publishKey`.** The host turns a
+ * `where` value into a bound parameter, and on the better-sqlite3 path a boolean
+ * reaches the driver unconverted and throws `SQLite3 can only bind numbers, strings,
+ * bigints, buffers, and null` before any comparison runs — measured against the build
+ * this package is written for, where the first contract run failed exactly there.
+ * Whether that is a driver law or one missing coercion in the host's query builder is
+ * not this package's to settle: the adapter is written against the host it is given.
+ * So the publish gate is stored twice — `active` is the boolean the port reads back,
+ * `publishKey` is the indexed text the filter binds, and {@link publishKeyFor} is the
+ * only thing that derives one from the other, so they cannot drift. If the host later
+ * coerces booleans the mirror becomes redundant rather than wrong.
  *
  * **`titleLower` is deliberately NOT declared, against ADR-0019 §4's table.**
  * The port's `search` is a case-insensitive SUBSTRING on the title (it says so,
@@ -266,7 +279,28 @@ export interface SkuOwnerDoc {
 	variantKey: string | null;
 	/** False once the owner released it (soft delete, orphan, or rename away). */
 	live: boolean;
+	/**
+	 * When this claim was won. It is a LEASE, not decoration: a claim is written one
+	 * round trip before the document that will hold the sku, so a process that dies in
+	 * between leaves a live claim nothing backs. Such a claim is taken over only once
+	 * it is older than `CLAIM_ABANDON_AFTER_MS` — long enough that an in-flight writer
+	 * is never mistaken for a dead one, short enough that the residue heals without an
+	 * operator. A claim whose owner still OWES a stock carry away from this sku is
+	 * never taken over, whatever its age.
+	 */
 	claimedAt: string;
+	/**
+	 * This claim intends to CREATE the sku's inventory document, because the sku had
+	 * none when the claim was won and the write that took it is a rename.
+	 *
+	 * It is what makes the crash residue distinguishable. A dead claim that created an
+	 * empty inventory document would otherwise wedge the sku forever — "occupied is
+	 * occupied" refuses a target that has a document, whatever it holds — so a takeover
+	 * withdraws that document, and ONLY that one. A claim without the flag never
+	 * created anything (a first-sku assignment ADOPTS whatever is there, under THE
+	 * FIRST-SKU ASYMMETRY), so a takeover leaves the sku's stock exactly where it is.
+	 */
+	createsTarget?: boolean;
 }
 
 /** Who is asking about a sku claim — a product row, or one variant of one. */
@@ -281,7 +315,12 @@ export function isOwnedBy(claim: SkuOwnerDoc, ref: SkuOwnerRef): boolean {
 }
 
 /** The claim document a fresh (or taken-over) claim writes. */
-export function newSkuOwnerDoc(sku: string, ref: SkuOwnerRef, claimedAt: string): SkuOwnerDoc {
+export function newSkuOwnerDoc(
+	sku: string,
+	ref: SkuOwnerRef,
+	claimedAt: string,
+	createsTarget: boolean,
+): SkuOwnerDoc {
 	return {
 		sku,
 		ownerKind: ref.kind,
@@ -289,7 +328,27 @@ export function newSkuOwnerDoc(sku: string, ref: SkuOwnerRef, claimedAt: string)
 		variantKey: ref.kind === "variant" ? ref.variantKey : null,
 		live: true,
 		claimedAt,
+		createsTarget,
 	};
+}
+
+/**
+ * Does the claim's owner still OWE a stock carry away from `sku`?
+ *
+ * A rename whose move was blocked by a live hold keeps the SOURCE sku's claim while
+ * the carry is outstanding. Without that, the sku would look free to a different
+ * owner, who would ADOPT its still-present units under THE FIRST-SKU ASYMMETRY — and a
+ * later completion of the blocked carry would then zero them out from under it and
+ * deposit them in the first product's target.
+ */
+export function owesCarryFrom(doc: ProductCommerceDoc, claim: SkuOwnerDoc, sku: string): boolean {
+	const records =
+		claim.ownerKind === "product"
+			? doc.pendingRenames
+			: claim.variantKey === null
+				? undefined
+				: doc.variants[claim.variantKey]?.pendingRenames;
+	return Object.values(records ?? {}).some((carry) => carry.fromSku === sku);
 }
 
 /**
@@ -320,7 +379,11 @@ export function newShellProductDoc(productId: ProductId, at: string): ProductCom
 		active: false,
 		publishKey: "inactive",
 		deletedAt: null,
-		idempotencyKey: "" as IdempotencyKey,
+		// The shell has no replay key, and no reader ever sees one: `getByProductId`
+		// answers null while `lifecycle` is "absent", and the first product-level write
+		// stamps its own. The empty string is the only value that cannot collide with a
+		// real key, which is why it is asserted rather than minted.
+		idempotencyKey: EMPTY_KEY,
 		contentUpdatedAt: null,
 		activeUpdatedAt: null,
 		createdAt: at,
@@ -336,7 +399,11 @@ export function newShellProductDoc(productId: ProductId, at: string): ProductCom
  * `noUncheckedIndexedAccess` protects the element type, not the container.
  */
 export function normalizeProductDoc(doc: ProductCommerceDoc): ProductCommerceDoc {
-	return { ...doc, variants: doc.variants ?? {} };
+	// `publishKey` is RE-DERIVED rather than trusted. It is a mirror of `active`, and a
+	// document written before the mirror existed — or by any path that set one without
+	// the other — would otherwise read as published while filtering as unpublished. The
+	// boolean is the source of truth; the text is only how the filter reaches it.
+	return { ...doc, variants: doc.variants ?? {}, publishKey: publishKeyFor(doc.active) };
 }
 
 /** Is there a readable product row here? `"absent"` reads as "no such product". */

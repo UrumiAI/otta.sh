@@ -93,6 +93,7 @@ import {
 	newSkuOwnerDoc,
 	newVariantDoc,
 	normalizeProductDoc,
+	owesCarryFrom,
 	PRODUCT_COMMERCE_COLLECTION,
 	publishKeyFor,
 	resolveProductCurrency,
@@ -140,6 +141,28 @@ const TARGET_CLAIM_CONTENTION_ATTEMPTS = 6;
 
 /** A prepared sku axis, or a target claim contended by a peer of the same owner. */
 const CONTENDED = "contended" as const;
+
+/**
+ * How old a live sku claim that nothing backs must be before another owner may take
+ * it over.
+ *
+ * The claim document is written ONE round trip before the product document that will
+ * hold the sku, so a process that dies in between leaves a live claim nothing
+ * references — and, if the write was a rename, an empty inventory document under the
+ * target. Both are durable, and neither `finally` nor a retry can reach them: the
+ * process is gone. Without a way out, that sku is wedged for good, which is exactly
+ * the "any replayer completes it" contract this design rests on.
+ *
+ * A lease is the way out, and the age is the only signal available: an in-flight
+ * claim is milliseconds old, a dead one is not. A minute is far beyond the worst
+ * legitimate case — the whole retry budget is `CAS_MAX_ATTEMPTS` attempts with sleeps
+ * capped at `CAS_MAX_DELAY_MS`, well under two seconds — and short enough that a
+ * merchant retrying a crashed rename is not told to come back tomorrow.
+ *
+ * It is NOT a general unlock. A claim whose owner holds the sku, and a claim whose
+ * owner still OWES a stock carry away from it, are never taken over at any age.
+ */
+const CLAIM_ABANDON_AFTER_MS = 60_000;
 
 export interface EmdashProductCommerceStoreOptions {
 	/**
@@ -197,6 +220,21 @@ interface SkuClaimLedger {
 	/** How many attempts have found the target's claim contended by a peer. */
 	contended: number;
 }
+
+/**
+ * What a LIVE claim held by somebody else actually means.
+ *
+ *  - `"held"` — the owner's live product row (or non-orphaned variant) carries this
+ *    sku. The refusal is a statement of fact.
+ *  - `"owed"` — the owner no longer carries the sku but still OWES a stock carry away
+ *    from it: its units are mid-move and belong to that carry. Never taken over, at
+ *    any age.
+ *  - `"in-flight"` — nothing backs it and it is younger than the lease: a writer one
+ *    round trip from committing the document that will back it.
+ *  - `"abandoned"` — nothing backs it, nothing owes it, and it is older than the
+ *    lease. The writer that took it is gone; the claim may be taken over.
+ */
+type ClaimStatus = "held" | "owed" | "in-flight" | "abandoned";
 
 /** One resolved sku claim: whether it was already ours, and what it found. */
 interface SkuClaim {
@@ -276,17 +314,22 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 		let finished = 0;
 		const settle = async (
 			records: Record<string, PendingRenameDoc> | undefined,
+			ref: SkuOwnerRef,
 			clear: (token: string) => Promise<void>,
 		): Promise<void> => {
-			await this.#settleRecorded(records, async (token) => {
+			await this.#settleRecorded(records, ref, async (token) => {
 				finished++;
 				await clear(token);
 			});
 		};
-		await settle(normalized.pendingRenames, (token) => this.#clearProductStamp(productId, token));
+		await settle(normalized.pendingRenames, { kind: "product", productId }, (token) =>
+			this.#clearProductStamp(productId, token),
+		);
 		for (const variant of Object.values(normalized.variants)) {
-			await settle(variant.pendingRenames, (token) =>
-				this.#clearVariantStamp(productId, variant.variantKey, token),
+			await settle(
+				variant.pendingRenames,
+				{ kind: "variant", productId, variantKey: variant.variantKey },
+				(token) => this.#clearVariantStamp(productId, variant.variantKey, token),
 			);
 		}
 		return finished;
@@ -329,24 +372,23 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 	 * document store for is a single statement.
 	 */
 	async listCommerceByIds(productIds: ProductId[]): Promise<ProductCommerceView[]> {
-		const complete = (await this.#readBatch(productIds)).filter(
-			(doc) => doc.lifecycle === "live" && doc.sku !== null && doc.price !== null,
-		);
+		// Narrowed by a LOOP rather than by `filter`, so the compiler carries the guard
+		// through: a predicate-filtered array forgets that `sku` and `price` are non-null
+		// and the code would need a cast to say what the guard already proved.
+		const sellable: Omit<ProductCommerceView, "inStock">[] = [];
+		for (const doc of await this.#readBatch(productIds)) {
+			if (doc.lifecycle !== "live") continue;
+			const { sku, price } = doc;
+			if (sku === null || price === null) continue;
+			sellable.push({ productId: doc.productId, sku, price, active: doc.active });
+		}
 		const stock = this.#stockReader();
 		return Promise.all(
-			complete.map(async (doc) => {
-				const sku = doc.sku as Sku;
-				const price = doc.price;
-				if (price === null) throw new Error("unreachable: filtered above");
-				return {
-					productId: doc.productId,
-					sku,
-					price,
-					// A missing document (`null`) is coarsely "not in stock", exactly like 0.
-					inStock: ((await stock(sku)) ?? 0) > 0,
-					active: doc.active,
-				};
-			}),
+			sellable.map(async (row) => ({
+				...row,
+				// A missing document (`null`) is coarsely "not in stock", exactly like 0.
+				inStock: ((await stock(row.sku)) ?? 0) > 0,
+			})),
 		);
 	}
 
@@ -587,7 +629,7 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 				// `DO UPDATE` occupies by construction.
 				// Carries an earlier write recorded but did not finish are completed before
 				// this one moves the same skus; see `#settleRecorded`.
-				const owed = await this.#settleRecorded(doc.pendingRenames, clearStamp);
+				const owed = await this.#settleRecorded(doc.pendingRenames, ref, clearStamp);
 				EmdashProductCommerceStore.#refuseWhileOwed(owed, doc.sku, input.sku);
 				const prepared = await this.#prepareSku(ledger, ref, doc.sku, input.sku, key);
 				if (prepared === CONTENDED) return CAS_RETRY;
@@ -738,7 +780,7 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 			}
 
 			// 5. Apply.
-			const owed = await this.#settleRecorded(doc.pendingRenames, clearStamp);
+			const owed = await this.#settleRecorded(doc.pendingRenames, ref, clearStamp);
 			EmdashProductCommerceStore.#refuseWhileOwed(owed, doc.sku, input.sku);
 			const prepared = await this.#prepareSku(ledger, ref, doc.sku, input.sku, key);
 			if (prepared === CONTENDED) return CAS_RETRY;
@@ -1060,7 +1102,7 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 				}
 			}
 
-			const owed = await this.#settleRecorded(existing.pendingRenames, clearStamp);
+			const owed = await this.#settleRecorded(existing.pendingRenames, ref, clearStamp);
 			EmdashProductCommerceStore.#refuseWhileOwed(owed, existing.sku, input.sku);
 			const prepared = await this.#prepareSku(ledger, ref, existing.sku, input.sku, key);
 			if (prepared === CONTENDED) return CAS_RETRY;
@@ -1206,10 +1248,18 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 	 * stock it recorded, drop the record, and release the sku it moved off.
 	 *
 	 * A `SkuHeldStockError` here is not a refusal — the rename is already committed —
-	 * but a hold that arrived between the decision and the move. The recorded intent
-	 * is LEFT IN PLACE and the sweeper (or the next write on this product) completes
-	 * the move once the hold resolves. Stock is conserved throughout: the units are
-	 * still on the source, and the source still names where they are going.
+	 * but a hold that arrived between the decision and the move. The recorded intent is
+	 * LEFT IN PLACE and the sweeper (or the next write on this product) completes the
+	 * move once the hold resolves. Stock is conserved throughout: the units are still on
+	 * the source, and the source still names where they are going.
+	 *
+	 * **And the SOURCE's claim is kept, which is the half that is easy to get wrong.**
+	 * Releasing it while the carry is owed would leave a sku that still HOLDS units
+	 * looking free. A different owner would then take it and ADOPT those units under THE
+	 * FIRST-SKU ASYMMETRY — first assignment adopts, by design — and the eventual
+	 * completion of the blocked carry would zero them out from under it and deposit them
+	 * in the first product's target. The claim is therefore released only by whoever
+	 * finishes the move; see {@link EmdashProductCommerceStore.#settleRecorded}.
 	 */
 	async #settleWrite(
 		prepared: SkuPreparation,
@@ -1223,6 +1273,8 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 				await clearStamp(carry.token);
 			} catch (err) {
 				if (!(err instanceof SkuHeldStockError)) throw err;
+				// Owed, not done: the source keeps its units AND its claim.
+				return;
 			}
 		}
 		if (prepared.releaseSku !== null) await this.#releaseSku(prepared.releaseSku, ref);
@@ -1240,6 +1292,7 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 	 */
 	async #settleRecorded(
 		records: Record<string, PendingRenameDoc> | undefined,
+		ref: SkuOwnerRef,
 		clearStamp: (token: string) => Promise<void>,
 	): Promise<SkuHeldStockError | undefined> {
 		let blocked: SkuHeldStockError | undefined;
@@ -1247,6 +1300,10 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 			try {
 				await this.#transfer.move(carry.fromSku, carry.toSku, carry.token, carry.commandKey);
 				await clearStamp(carry.token);
+				// The source is empty at last, so the sku it was holding onto is free. This
+				// is the ONLY place a blocked rename's source claim is given back, which is
+				// what keeps another owner from adopting units the carry had not yet moved.
+				await this.#releaseSku(carry.fromSku, ref);
 			} catch (err) {
 				if (!(err instanceof SkuHeldStockError)) throw err;
 				blocked ??= err;
@@ -1343,51 +1400,54 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 	}
 
 	/**
-	 * Claim `sku` for `ref`, or refuse with `SkuConflictError`.
+	 * Claim `sku` for `ref`, or refuse.
 	 *
-	 * Three outcomes, and the distinction between the last two is load-bearing for
-	 * the carry (see {@link SkuStockTransfer.carry}'s `targetIsOurs`):
+	 * Outcomes, and the distinctions are all load-bearing:
 	 *  - no document ⇒ create-if-absent, which is a DB-level
 	 *    `INSERT … ON CONFLICT DO NOTHING` and therefore race-safe;
 	 *  - a RELEASED document (`live: false`) ⇒ taken over by compare-and-set on its
-	 *    revision, which is how a sku freed by a soft delete or an orphaning is
-	 *    reused;
-	 *  - a LIVE document held by somebody else ⇒ a refusal, whose KIND depends on
-	 *    whether the claim is BACKED (see below);
-	 *  - a LIVE document already held by `ref` ⇒ nothing to do, and the caller is
-	 *    told it was already ours.
+	 *    revision, which is how a sku freed by a soft delete or an orphaning is reused;
+	 *  - a LIVE document already held by `ref` ⇒ nothing to do, and the caller is told
+	 *    it was already ours;
+	 *  - a LIVE document held by somebody else ⇒ see {@link ClaimStatus}: `held` and
+	 *    `owed` refuse, `in-flight` refuses, and `abandoned` is taken over.
 	 *
-	 * **Why a live claim is checked for BACKING.** A claim is written before the
-	 * document that will hold the sku, so for one round trip a live claim can exist
-	 * that no committed product or variant actually holds — an in-flight writer, or
-	 * one that is a moment away from being refused and releasing it. Answering
-	 * `SkuConflictError` there would state something false ("another live product
-	 * holds this sku") about a peer that holds nothing. So an UNBACKED live claim
-	 * falls through to the stock question: if the target sku already has an inventory
-	 * document then the honest refusal is `SkuStockConflictError`, which is what the
-	 * operator can act on and what the SQL adapter answered, since its partial unique
-	 * index had nothing to say about a sku no live row held. Only when there is no
-	 * inventory document either does an unbacked claim refuse as a sku conflict —
-	 * somebody is taking this sku right now, which is the truthful reading.
+	 * **Why a live claim's backing is examined at all.** The claim is written one round
+	 * trip before the document that will hold the sku, so for that round trip a live
+	 * claim can exist that no committed row backs. Answering `SkuConflictError` there
+	 * would state something false — "another live product holds this sku" — about a peer
+	 * holding nothing. So an unbacked live claim falls through to the stock question:
+	 * with an inventory document present and a source sku to name, the honest refusal is
+	 * `SkuStockConflictError`, which is what the operator can act on and what the SQL
+	 * adapter answered, its partial unique index having had nothing to say about a sku no
+	 * live row held.
 	 *
-	 * `fromSku` is the sku the write is moving away from, needed to name both ends of
-	 * a stock refusal; `null` for a first assignment, which has no stock question.
+	 * **And why an abandoned one is taken over.** That same round trip is durable if the
+	 * process dies inside it. See {@link CLAIM_ABANDON_AFTER_MS} for the lease, and
+	 * {@link SkuOwnerDoc.createsTarget} for the inventory residue a takeover also clears.
+	 *
+	 * `fromSku` is the sku the write is moving away from, needed to name both ends of a
+	 * stock refusal; `null` for a first assignment, which has no stock question.
 	 */
 	#claimSku(sku: string, ref: SkuOwnerRef, fromSku: Sku | null): Promise<SkuClaim> {
 		return this.#cas<SkuClaim>("claimSku", async () => {
 			const current = await this.#skuOwners.getVersioned(sku);
+			// Read BEFORE the claim is written, so the answer can travel IN it: a takeover
+			// has to know whether the claim it is replacing created an inventory document,
+			// and a claim cannot record that about itself after the fact without a second
+			// write on every rename.
+			const occupied = await this.#occupiedNow(sku, fromSku);
 			const at = this.#clock.now().toISOString();
+			const mine = (): SkuOwnerDoc =>
+				newSkuOwnerDoc(sku, ref, at, fromSku !== null && fromSku !== sku && !occupied);
+
 			if (current === null) {
-				const written = await this.#skuOwners.compareAndSet(
-					sku,
-					null,
-					newSkuOwnerDoc(sku, ref, at),
-				);
+				const written = await this.#skuOwners.compareAndSet(sku, null, mine());
 				if (!written.applied) return CAS_RETRY;
 				return casDone<SkuClaim>({
 					alreadyOurs: false,
 					createdNow: true,
-					occupiedAtClaim: await this.#occupiedNow(sku, fromSku),
+					occupiedAtClaim: occupied,
 				});
 			}
 			if (current.value.live) {
@@ -1398,21 +1458,30 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 						occupiedAtClaim: false,
 					});
 				}
-				if (await this.#claimIsBacked(current.value, sku)) throw new SkuConflictError(sku);
-				if (fromSku !== null && (await this.#inventory.get(sku)) !== null) {
-					throw new SkuStockConflictError(fromSku, sku);
+				const status = await this.#claimStatus(current.value, sku);
+				if (status !== "abandoned") {
+					if (status === "held") throw new SkuConflictError(sku);
+					// `owed` and `in-flight` are both "somebody else's, right now". With units
+					// under the sku and a source to name, the stock refusal is the more
+					// specific true one.
+					if (fromSku !== null && (await this.#inventory.get(sku)) !== null) {
+						throw new SkuStockConflictError(fromSku, sku);
+					}
+					throw new SkuConflictError(sku);
 				}
-				throw new SkuConflictError(sku);
+				// An abandoned claim's inventory residue goes with it, or the sku stays
+				// wedged behind a document that only a dead writer ever wanted.
+				if (current.value.createsTarget === true) {
+					await this.#transfer.withdrawPristineClaim(sku);
+				}
 			}
-			const written = await this.#skuOwners.compareAndSet(
-				sku,
-				current.revision,
-				newSkuOwnerDoc(sku, ref, at),
-			);
+			const written = await this.#skuOwners.compareAndSet(sku, current.revision, mine());
 			if (!written.applied) return CAS_RETRY;
 			return casDone<SkuClaim>({
 				alreadyOurs: false,
 				createdNow: true,
+				// Re-read: a takeover that just withdrew a residue must not remember the
+				// document it removed as an occupancy.
 				occupiedAtClaim: await this.#occupiedNow(sku, fromSku),
 			});
 		});
@@ -1420,7 +1489,7 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 
 	/**
 	 * Does the sku have an inventory document RIGHT NOW — read the instant this owner
-	 * won its claim, which is what makes a later lost claim decidable.
+	 * wins its claim, which is what makes a later lost claim decidable.
 	 *
 	 * `false` without reading when there is no source sku: a first assignment moves no
 	 * stock, so there is no occupancy question and the document it finds is the one it
@@ -1431,17 +1500,25 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 		return (await this.#inventory.get(sku)) !== null;
 	}
 
+	/** What a live claim held by another owner means; see {@link ClaimStatus}. */
+	async #claimStatus(claim: SkuOwnerDoc, sku: string): Promise<ClaimStatus> {
+		const stored = await this.#products.get(claim.ownerId);
+		if (stored !== null) {
+			const doc = normalizeProductDoc(stored);
+			if (this.#claimIsBacked(doc, claim, sku)) return "held";
+			if (owesCarryFrom(doc, claim, sku)) return "owed";
+		}
+		const age = this.#clock.now().getTime() - new Date(claim.claimedAt).getTime();
+		return age >= CLAIM_ABANDON_AFTER_MS ? "abandoned" : "in-flight";
+	}
+
 	/**
 	 * Does the document this claim names actually hold this sku, committed?
 	 *
 	 * A claim whose owner holds the sku on a live product row (or a non-orphaned
-	 * variant) is BACKED, and refusing it is a statement of fact. An unbacked live
-	 * claim is an in-flight write — see {@link EmdashProductCommerceStore.#claimSku}.
+	 * variant) is BACKED, and refusing it is a statement of fact.
 	 */
-	async #claimIsBacked(claim: SkuOwnerDoc, sku: string): Promise<boolean> {
-		const stored = await this.#products.get(claim.ownerId);
-		if (stored === null) return false;
-		const doc = normalizeProductDoc(stored);
+	#claimIsBacked(doc: ProductCommerceDoc, claim: SkuOwnerDoc, sku: string): boolean {
 		if (claim.ownerKind === "product") return doc.lifecycle === "live" && doc.sku === sku;
 		if (claim.variantKey === null) return false;
 		const variant = doc.variants[claim.variantKey];
