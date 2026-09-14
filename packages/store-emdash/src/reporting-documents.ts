@@ -292,6 +292,18 @@ export function normalizeStateCounts(counts: Record<string, number>): Record<str
 	return out;
 }
 
+/**
+ * Has a recompute absorbed this claim — is its delta forbidden?
+ *
+ * Read through a function rather than by comparing the field, so the gate does not depend
+ * on every writer of the collection having set it: a document written before the field
+ * existed, or by any path that omits it, is NOT absorbed, and a bare `!== null` on an
+ * absent field would have said the opposite and silently dropped that event's delta.
+ */
+export function isAbsorbed(claim: ReportingAppliedDoc): boolean {
+	return (claim.absorbedAt ?? null) !== null;
+}
+
 /** Read a stored document back with its containers present. */
 export function normalizeReportingDailyDoc(doc: ReportingDailyDoc): ReportingDailyDoc {
 	return {

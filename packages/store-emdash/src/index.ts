@@ -403,6 +403,7 @@ export {
 	dayKeysBetween,
 	dayStartOf,
 	FINALIZED_REFUND_STATUS,
+	isAbsorbed,
 	newReportingDailyDoc,
 	normalizeReportingDailyDoc,
 	normalizeStateCounts,

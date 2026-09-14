@@ -80,12 +80,13 @@ import {
 	reportingDailyDocId,
 	reportingRefundClaimId,
 	reportingTransitionClaimId,
+	isAbsorbed,
 	REVENUE_STATES,
 	type ReportingAppliedDoc,
 	type ReportingDailyDoc,
 	type ReportingOrderEvent,
 } from "./reporting-documents.js";
-import type { StorageAccess, StorageCollection, WhereClause } from "./storage-access.js";
+import type { StorageAccess, StorageCollection, Versioned, WhereClause } from "./storage-access.js";
 
 /** The host clamps `limit` at 100, so that is the page every scan here reads. */
 const PAGE_SIZE = 100;
@@ -307,7 +308,7 @@ export class EmdashReportingStore implements ReportingStore {
 			async () => {
 				// Re-asserted on every attempt, immediately before the write it guards.
 				const claim = await this.#applied.get(claimId);
-				if (claim !== null && claim.absorbedAt !== null) return casDone(false);
+				if (claim !== null && isAbsorbed(claim)) return casDone(false);
 				const held = await this.#daily.getVersioned(docId);
 				const base =
 					held === null
@@ -361,6 +362,14 @@ export class EmdashReportingStore implements ReportingStore {
 	 * commit leaves the same shape. Neither can double-count, because nothing here ever
 	 * applies a delta whose claim is absorbed.
 	 *
+	 * A failed attempt can leave claims absorbed that this attempt never committed
+	 * counters for; the next successful run absorbs nothing new and commits the absolute
+	 * value, which lifts them. That is the same under-counting residue in another dress,
+	 * and it is why a CLOSED day is the cheap and safe thing to reconcile: yesterday and
+	 * older have no live events to race, so an attempt cannot lose its pin. **Reconcile a
+	 * closed day as a matter of course, and a live day only on demand** — a live day's
+	 * events are still arriving, so a recompute over it is a race it may have to re-run.
+	 *
 	 * The page budget is per DAY, so a long range is safe by construction; a caller
 	 * sweeping a large history should still chunk it (a month at a time keeps one call's
 	 * work, and one call's retries, bounded).
@@ -401,12 +410,14 @@ export class EmdashReportingStore implements ReportingStore {
 				};
 				const now = this.#clock.now().toISOString();
 
-				// 1. PIN: the currencies this day already has, and each document's revision,
-				//    read before anything is scanned.
-				const pinned = new Map<string, string | null>();
+				// 1. PIN: the currencies this day already has, and each document's revision AND
+				//    value, read before anything is scanned. The value is kept as well as the
+				//    revision so the "already exact" short-circuit below and the pin agree on
+				//    ONE snapshot — re-reading the document there would let a commit be skipped
+				//    against a value newer than the one this attempt is pinned to.
+				const pinned = new Map<string, Versioned<ReportingDailyDoc> | null>();
 				for (const currency of await this.#dayCurrencies(day, budget)) {
-					const held = await this.#daily.getVersioned(reportingDailyDocId(currency, day));
-					pinned.set(currency, held?.revision ?? null);
+					pinned.set(currency, await this.#daily.getVersioned(reportingDailyDocId(currency, day)));
 				}
 
 				// 2. SCAN.
@@ -418,14 +429,10 @@ export class EmdashReportingStore implements ReportingStore {
 				const computed = computeDay(day, orders, now);
 
 				// 3. ABSORB, before a single counter is committed.
-				let claims = 0;
-				for (const event of reconstructEvents(orders)) {
-					const absorbed = await this.#absorbClaim(event, now);
-					// The claim moved under us — a peer stamped or created it between the read
-					// and the write — so this day's premises are stale. Re-run it.
-					if (absorbed === "retry") return CAS_RETRY;
-					if (absorbed === "absorbed") claims++;
-				}
+				const absorbed = await this.#absorbDayClaims(orders, budget, now);
+				// A claim moved under us — a peer created or stamped one between the read and
+				// the write — so this day's premises are stale. Re-run it.
+				if (absorbed === "retry") return CAS_RETRY;
 
 				// 4. COMMIT, each document against the revision pinned in step 1.
 				let written = 0;
@@ -433,7 +440,7 @@ export class EmdashReportingStore implements ReportingStore {
 					const docId = reportingDailyDocId(currency, day);
 					// A currency the scan found that the pin did not see is a create-if-absent:
 					// `null` is a real pin, and a peer creating it first loses this commit.
-					const revision = pinned.get(currency) ?? null;
+					const held = pinned.get(currency) ?? null;
 					// A day that has lost every order keeps a ZEROED document rather than being
 					// deleted: a live event racing this write needs a revision to lose to, and
 					// an all-zero document is read as no bucket at all.
@@ -441,21 +448,76 @@ export class EmdashReportingStore implements ReportingStore {
 						...(computed.get(currency) ?? newReportingDailyDoc(currency, day, now)),
 						updatedAt: now,
 					};
-					const current = revision === null ? null : await this.#daily.get(docId);
-					if (current !== null && sameCounters(normalizeReportingDailyDoc(current), target)) {
+					if (held !== null && sameCounters(normalizeReportingDailyDoc(held.value), target)) {
 						continue;
 					}
-					const applied = await this.#daily.compareAndSet(docId, revision, target);
+					const applied = await this.#daily.compareAndSet(docId, held?.revision ?? null, target);
 					// A peer moved this day after it was pinned. Re-scan: the value in hand was
 					// derived from an older snapshot of the orders.
 					if (!applied.applied) return CAS_RETRY;
 					written++;
 				}
 
-				return casDone({ written, claims, scanned: budget.scanned });
+				return casDone({ written, claims: absorbed.claims, scanned: budget.scanned });
 			},
 			this.#retry,
 		);
+	}
+
+	/**
+	 * Absorb the claims a day's scanned orders PROVE, one indexed page per order.
+	 *
+	 * The shape matters as much as the effect. A read per reconstructed event would be a
+	 * round trip per transition an order has ever made, every attempt and every sweep, and
+	 * every one of them widens the window in which a live delta invalidates the pin — a
+	 * busy day could spend the whole retry budget losing that race, and each failed attempt
+	 * leaves absorbed-but-uncommitted claims behind, which deepens the very under-count the
+	 * recompute is there to lift. So the claims are read the way the collection is indexed:
+	 * one `orderId` query per scanned order, and a guarded write only for a claim that is
+	 * not already absorbed.
+	 *
+	 * **Every round trip is charged to the page budget** — one unit per claim-index page
+	 * (100 claims, the host's clamp) and one unit per claim that actually needs absorbing,
+	 * the same unit a page of orders costs. An unbudgeted pass is how a recompute over a
+	 * long history stops being bounded.
+	 */
+	async #absorbDayClaims(
+		orders: OrderDoc[],
+		budget: PageBudget,
+		now: string,
+	): Promise<{ claims: number } | "retry"> {
+		let claims = 0;
+		const byOrder = new Map<string, ReportingOrderEvent[]>();
+		for (const event of reconstructEvents(orders)) {
+			byOrder.set(event.orderId, [...(byOrder.get(event.orderId) ?? []), event]);
+		}
+		for (const [orderId, events] of byOrder) {
+			// One indexed page per order, paged only for an order with more than 100 claims.
+			const present = new Map<string, ReportingAppliedDoc>();
+			let cursor: string | undefined;
+			for (;;) {
+				this.#spend(budget, "reconcileReporting", claims);
+				const page = await this.#applied.query({
+					where: { orderId },
+					limit: PAGE_SIZE,
+					cursor,
+				});
+				for (const { id, data } of page.items) present.set(id, data);
+				if (!page.hasMore || page.cursor === undefined) break;
+				cursor = page.cursor;
+			}
+			for (const event of events) {
+				const claimId = claimIdFor(event);
+				const seen = present.get(claimId);
+				// Already absorbed by an earlier run — nothing to pay and nothing to write.
+				if (seen !== undefined && isAbsorbed(seen)) continue;
+				this.#spend(budget, "reconcileReporting", claims);
+				const outcome = await this.#absorbClaim(event, claimId, now);
+				if (outcome === "retry") return "retry";
+				if (outcome === "absorbed") claims++;
+			}
+		}
+		return { claims };
 	}
 
 	/**
@@ -464,16 +526,16 @@ export class EmdashReportingStore implements ReportingStore {
 	 *
 	 * Creating the claim when it is absent is what makes a rollup collection restored from
 	 * nothing safe to run events against: the event is already counted, so its redelivery
-	 * must find a claim that says so. Absorbing an existing one is a compare-and-set at
-	 * the revision just read, so a concurrent applier is never overwritten — a refusal is
-	 * reported as `"retry"` rather than ignored, because it means the claim this day's
-	 * premises rest on has moved.
+	 * must find a claim that says so. A LOST create is not a failure — it means a live
+	 * event claimed this id a moment ago — so the claim is re-read and absorbed in place;
+	 * `"retry"` is reserved for a guarded write that lost against a revision that moved,
+	 * which is the case where this day's premises really have changed underneath it.
 	 */
 	async #absorbClaim(
 		event: ReportingOrderEvent,
+		claimId: string,
 		now: string,
 	): Promise<"absorbed" | "already" | "retry"> {
-		const claimId = claimIdFor(event);
 		const held = await this.#applied.getVersioned(claimId);
 		if (held === null) {
 			const created = await this.#applied.compareAndSet(claimId, null, {
@@ -491,15 +553,38 @@ export class EmdashReportingStore implements ReportingStore {
 				appliedAt: now,
 				absorbedAt: now,
 			});
-			return created.applied ? "absorbed" : "retry";
+			if (created.applied) return "absorbed";
+			// A live event won the id between the read and the create. Its claim is what must
+			// carry the marker, so absorb THAT one rather than re-running the whole day.
+			const live = await this.#applied.getVersioned(claimId);
+			if (live === null) return "retry";
+			return this.#stampAbsorbed(claimId, live, now);
 		}
-		if (held.value.absorbedAt !== null) return "already";
+		if (isAbsorbed(held.value)) return "already";
+		return this.#stampAbsorbed(claimId, held, now);
+	}
+
+	/** Mark one claim absorbed at the revision just read. */
+	async #stampAbsorbed(
+		claimId: string,
+		held: Versioned<ReportingAppliedDoc>,
+		now: string,
+	): Promise<"absorbed" | "already" | "retry"> {
+		if (isAbsorbed(held.value)) return "already";
 		const marked = await this.#applied.compareAndSet(claimId, held.revision, {
 			...held.value,
 			appliedAt: held.value.appliedAt ?? now,
 			absorbedAt: now,
 		});
 		return marked.applied ? "absorbed" : "retry";
+	}
+
+	/** Spend one budget unit, or refuse loudly. The unit is one storage round trip. */
+	#spend(budget: PageBudget, operation: string, collected: number): void {
+		if (budget.used >= budget.limit) {
+			throw new ScanPageLimitError(operation, budget.limit, collected, budget.option);
+		}
+		budget.used++;
 	}
 
 	// -- the read surface ------------------------------------------------------
@@ -711,10 +796,15 @@ export class EmdashReportingStore implements ReportingStore {
 	 * bound is not midnight) is computed from an instant-filtered scan of that day's
 	 * orders — the same machinery `topProducts` uses, over a single day's worth of rows.
 	 *
-	 * So there is no day-granular approximation here and no divergence from the statement
-	 * this replaced: `created_at BETWEEN from AND to` means the same thing in both. The
-	 * cost of a ragged window is bounded and visible: two extra order scans, paid only by
-	 * the caller that asks for one.
+	 * So the window means what the statement this replaced meant: `created_at BETWEEN from
+	 * AND to`, to the instant. The cost of a ragged window is bounded and visible: two
+	 * extra order scans, paid only by the caller that asks for one.
+	 *
+	 * One consequence is worth stating, because it is easy to misread a ragged report: an
+	 * edge day is computed from the ORDERS and is therefore exact even when the rollups
+	 * have drifted, while an interior day is read from its document and carries whatever
+	 * that document holds. A single report can mix the two — an exact edge beside an
+	 * interior day that is reading low until the next recompute.
 	 */
 	async #windowDays(range: DateRange, operation: string): Promise<ReportingDailyDoc[]> {
 		if (range.to < range.from) return [];
@@ -876,6 +966,9 @@ function reconstructEvents(orders: OrderDoc[]): ReportingOrderEvent[] {
 				currency: order.currency,
 				fromState: event.fromState,
 				toState: event.toState,
+				// DIAGNOSTIC only here: a reconstructed event is used to identify a CLAIM, never
+				// to move a counter, so this is the order's total today rather than whatever it
+				// was when that transition happened — and nothing recomputes from it.
 				orderTotalCents: order.totals.total,
 			});
 		}
