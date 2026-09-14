@@ -278,3 +278,62 @@ export {
 	type WhereClause,
 	type WhereValue,
 } from "./storage-access.js";
+export {
+	EmdashAddressStore,
+	EmdashCustomerStore,
+	type EmdashCustomerStoreOptions,
+} from "./emdash-customer-store.js";
+export {
+	DEFAULT_CHALLENGE_TTL_MS,
+	DEFAULT_MAX_ACTIVE_CHALLENGES,
+	EmdashCredentialVerifier,
+	type EmdashCredentialVerifierOptions,
+} from "./emdash-credential-verifier.js";
+export {
+	DEFAULT_SESSION_TTL_MS,
+	EmdashSessionStore,
+	type EmdashSessionStoreOptions,
+} from "./emdash-session-store.js";
+export {
+	consumedFor,
+	CUSTOMER_EMAILS_COLLECTION,
+	CUSTOMERS_COLLECTION,
+	findAddress,
+	foldEmail,
+	hasCustomerRow,
+	IDENTITY_COLLECTIONS,
+	isLiveSession,
+	liveSlots,
+	LOGIN_CHALLENGE_CLAIMS_COLLECTION,
+	LOGIN_CHALLENGES_COLLECTION,
+	newAddressOnlyDoc,
+	normalizeChallengeDoc,
+	normalizeCustomerDoc,
+	normalizeSessionDoc,
+	normalizeThrottleDoc,
+	SESSIONS_COLLECTION,
+	sortAddresses,
+	sortSessionHistory,
+	toAddress,
+	toCustomer,
+	toSessionSummary,
+	withAddress,
+	withoutAddress,
+	withUpdatedAddress,
+	type AddressDoc,
+	type ChallengeConsumed,
+	type ChallengeDoc,
+	type ChallengeSlot,
+	type ChallengeThrottleDoc,
+	type CustomerDoc,
+	type CustomerEmailDoc,
+	type IdentityCollectionIndexDeclaration,
+	type SessionDoc,
+} from "./identity-documents.js";
+export {
+	ChallengeIdCollisionError,
+	CustomerIdCollisionError,
+	isChallengeIdCollisionError,
+	isCustomerIdCollisionError,
+} from "./identity-errors.js";
+export { hashToken, tokenHashEquals } from "./token-hash.js";
