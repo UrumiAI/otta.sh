@@ -160,7 +160,11 @@ describeEachDialect("EmdashReportingStore replay equivalence", (ctx) => {
 		expect(values(await h.dailyDocs())).toEqual(healed);
 	});
 
-	test("a recompute whose scan exceeds its page budget throws ScanPageLimitError, never a partial rebuild", async () => {
+	test("a recompute that cannot afford its scan throws ScanPageLimitError instead of scanning", async () => {
+		// What is asserted is the REFUSAL, not the absence of a partial rebuild: the budget
+		// is per day, and a day that cannot afford its own scan writes nothing at all, so
+		// a range whose later days run out leaves the earlier days committed. That residue
+		// is real and documented with the others; it is not what this case pins.
 		const h = makeReportingHarness(bound.storage);
 		await driveSequence(h);
 		const tight = makeReportingHarness(bound.storage, {

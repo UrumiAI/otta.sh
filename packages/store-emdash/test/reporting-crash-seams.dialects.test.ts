@@ -213,6 +213,104 @@ describeEachDialect("EmdashReportingStore crash seams", (ctx) => {
 		});
 	});
 
+	test("a crash AFTER the claim landed leaves a permanent under-count, and only a recompute lifts it", async () => {
+		const h = makeReportingHarness(bound.storage);
+		await seedPending(h, "c9", 600);
+		await h.transitionOrder("c9", "paid");
+		await seedPending(h, "c10", 1500);
+
+		// The claim write itself succeeds and THEN the caller dies: the event is spent
+		// before a single counter moved. This is the residue the claim-first ordering
+		// chooses, and it is why it is an under-count rather than a double count.
+		const crashed = crashingOn(
+			h,
+			bound.storage,
+			bound.collection(REPORTING_APPLIED_COLLECTION),
+			REPORTING_APPLIED_COLLECTION,
+			"after",
+		);
+		const event = await h.moveOrderDocument("c10", "paid");
+		await expect(crashed.store.recordOrderEvent(event)).rejects.toThrow(InjectedCrashError);
+		expect(await h.applied.get("c10:pending>paid")).not.toBeNull();
+		expect((await bucket(h))?.revenueCents).toBe(600);
+
+		// The redelivery finds the claim and does nothing: the gap does NOT close itself,
+		// whoever retries and however often.
+		await h.store.recordOrderEvent(event);
+		await h.store.recordOrderEvent(event);
+		expect(await bucket(h)).toEqual({
+			revenueCents: 600,
+			refundedCents: 0,
+			stateCounts: { paid: 1, pending: 1 },
+		});
+
+		// Only the recompute lifts it.
+		await h.store.reconcile(RANGE);
+		expect(await bucket(h)).toEqual({
+			revenueCents: 2100,
+			refundedCents: 0,
+			stateCounts: { paid: 2 },
+		});
+	});
+
+	test("money with no contributing order left is still reported, and a floored counter is announced", async () => {
+		const anomalies: { counter: string; docId: string; orderId: string }[] = [];
+		const h = makeReportingHarness(bound.storage, {
+			onAnomaly: (anomaly) => {
+				anomalies.push({
+					counter: anomaly.counter,
+					docId: anomaly.docId,
+					orderId: anomaly.orderId,
+				});
+			},
+		});
+		await seedPending(h, "c11", 5000);
+		await h.transitionOrder("c11", "paid");
+
+		// A transition OUT of a revenue state for an order the document never counted in —
+		// the shape a lost increment leaves. It takes the day's one contributor out of the
+		// revenue count while money it cannot account for stays behind.
+		await h.store.recordOrderEvent({
+			kind: "transition",
+			orderId: "c12",
+			orderCreatedAt: DAY,
+			currency: "USD",
+			fromState: "paid",
+			toState: "cancelled",
+			orderTotalCents: 1000,
+		});
+		const doc = await h.daily.get(BUCKET);
+		expect(doc?.revenueOrders).toBe(0);
+		expect(doc?.revenueCents).toBe(4000);
+
+		// The bucket must NOT vanish: a filter keyed only on the contributor counts would
+		// drop a day that is holding 4000.
+		expect(await h.store.revenueByPeriod(RANGE, "day")).toEqual([
+			{
+				bucketStart: "2026-07-04T00:00:00.000Z",
+				currency: "USD",
+				revenueCents: 4000,
+				refundedCents: 0,
+			},
+		]);
+
+		// And a decrement that really does hit the floor is announced rather than silently
+		// clamped — flooring is proof of drift, so it has to reach an operator.
+		await h.store.recordOrderEvent({
+			kind: "transition",
+			orderId: "c13",
+			orderCreatedAt: DAY,
+			currency: "USD",
+			fromState: "delivered",
+			toState: "cancelled",
+			orderTotalCents: 700,
+		});
+		expect(anomalies.map((anomaly) => anomaly.counter)).toContain("stateCounts.delivered");
+		expect(anomalies.map((anomaly) => anomaly.counter)).toContain("revenueOrders");
+		expect(anomalies.every((anomaly) => anomaly.docId === BUCKET)).toBe(true);
+		expect(anomalies.every((anomaly) => anomaly.orderId === "c13")).toBe(true);
+	});
+
 	test("a lost REFUND rollup is healed into the day the ORDER was created, never the day it was issued", async () => {
 		const h = makeReportingHarness(bound.storage);
 		await seedPending(h, "c8", 8000);

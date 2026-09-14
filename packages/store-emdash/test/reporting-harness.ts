@@ -50,6 +50,7 @@ import {
 	type ProductCommerceDoc,
 	type RefundEntryDoc,
 	type ReportingAppliedDoc,
+	type ReportingAnomaly,
 	type ReportingDailyDoc,
 	type ReportingOrderEvent,
 	type SkuOwnerDoc,
@@ -71,8 +72,10 @@ export interface ReportingHarnessOptions {
 	onCasAttempts?: (operation: string, attempts: number) => void;
 	/** Page ceiling for a report read. */
 	maxReportPages?: number;
-	/** Page ceiling for a recompute scan. */
+	/** Page ceiling for a recompute scan, per day. */
 	maxReconcilePages?: number;
+	/** Observer for the drift evidence the adapter announces (a floored counter). */
+	onAnomaly?: (anomaly: ReportingAnomaly) => void;
 }
 
 /** Everything a reporting suite may reach for, all over one storage instance. */
@@ -125,6 +128,7 @@ export function makeReportingHarness(
 		onCasAttempts: options.onCasAttempts,
 		maxReportPages: options.maxReportPages,
 		maxReconcilePages: options.maxReconcilePages,
+		onAnomaly: options.onAnomaly,
 	});
 
 	const daily = collectionOf<ReportingDailyDoc>(storage, REPORTING_DAILY_COLLECTION);

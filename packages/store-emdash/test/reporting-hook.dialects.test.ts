@@ -230,6 +230,67 @@ describeEachDialect("EmdashOrderStore reporting hook", (ctx) => {
 		expect(events).toHaveLength(2);
 	});
 
+	test("a RESERVED refund emits nothing, and finalizing it emits the refund and the flip", async () => {
+		const { writer, events } = recorder();
+		const h = makeOrderHarness(bound.storage, { reporting: writer });
+		await seeded(h, "h7", "paid", 800);
+		await captured(h, "h7", 800);
+
+		// Reserve-before-issue: the reservation holds ceiling capacity while the gateway
+		// leg is unconfirmed, so it is not money that came back and owes no event.
+		const reserved = await h.store.reserveRefund({
+			orderId: orderId("h7"),
+			amount: cents(800),
+			currency: currency("USD"),
+			kind: "gateway",
+			gateway: "stripe",
+			refundRef: null,
+			reason: "gateway return",
+			refundedBy: "admin@shop",
+			idempotencyKey: idempotencyKey("rf-h7"),
+		});
+		expect(reserved.outcome).toBe("recorded");
+		expect(events).toHaveLength(0);
+
+		// Finalizing it is what moves money, and it reaches the ceiling, so the flip comes
+		// with it — through a code path of its own, which is why it is asserted separately
+		// from `recordRefund`'s.
+		const finalized = await h.store.finalizeRefund({
+			idempotencyKey: idempotencyKey("rf-h7"),
+			refundRef: "re_h7",
+		});
+		expect(finalized.found).toBe(true);
+		expect(finalized.fullyRefunded).toBe(true);
+		expect(events).toEqual([
+			{
+				kind: "refund",
+				orderId: "h7",
+				orderCreatedAt: SEEDED_AT,
+				currency: "USD",
+				refundId: reserved.refund?.id,
+				refundedCents: 800,
+			},
+			{
+				kind: "transition",
+				orderId: "h7",
+				orderCreatedAt: SEEDED_AT,
+				currency: "USD",
+				fromState: "paid",
+				toState: "refunded",
+				orderTotalCents: 800,
+			},
+		]);
+
+		// A replay of the finalize is a benign duplicate that writes nothing, so it owes
+		// no second pair of events.
+		const replay = await h.store.finalizeRefund({
+			idempotencyKey: idempotencyKey("rf-h7"),
+			refundRef: "re_h7",
+		});
+		expect(replay.alreadyFinalized).toBe(true);
+		expect(events).toHaveLength(2);
+	});
+
 	test("a writer that throws leaves the transition committed and the order readable", async () => {
 		const h = makeOrderHarness(bound.storage, { reporting: throwing });
 		await seeded(h, "h5", "pending", 777);

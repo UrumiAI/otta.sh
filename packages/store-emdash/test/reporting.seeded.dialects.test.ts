@@ -286,6 +286,38 @@ describeEachDialect("EmdashReportingStore seeded aggregates", (ctx) => {
 		]);
 	});
 
+	test("a window that TRUNCATES its edge days counts only the orders inside the instants", async () => {
+		const h = await seeded(makeReportingHarness(bound.storage));
+		// 2026-07-09 holds four orders at 01:00, 02:00, 03:00 (USD) and 04:00 (EUR). A
+		// window opening at 02:30 on that day must exclude the first two and include the
+		// rest — a day-granular read would include all four, which is the approximation
+		// this adapter does not make.
+		const ragged = {
+			from: "2026-07-09T02:30:00.000Z",
+			to: "2026-07-09T23:59:59.999Z",
+		};
+		expect(await h.store.revenueByPeriod(ragged, "day")).toEqual(
+			await oracle().revenueByPeriod(ragged, "day"),
+		);
+		expect(await h.store.ordersByStatus(ragged)).toEqual([{ status: "pending", orderCount: 2 }]);
+		// The two `paid` orders at 01:00 and 02:00 are outside it, so the day reports no
+		// revenue at all even though its day DOCUMENT holds 2000.
+		expect((await h.daily.get("USD:2026-07-09"))?.revenueCents).toBe(2000);
+		expect(await h.store.revenueByPeriod(ragged, "day")).toEqual([]);
+
+		// The same truncation on the CLOSING edge, and across a multi-day window whose
+		// interior still comes from the documents.
+		const closing = { from: "2026-07-07T00:00:00.000Z", to: "2026-07-09T01:30:00.000Z" };
+		expect(await h.store.revenueByPeriod(closing, "day")).toEqual(
+			await oracle().revenueByPeriod(closing, "day"),
+		);
+		expect(await h.store.ordersByStatus(closing)).toEqual(await oracle().ordersByStatus(closing));
+		// And `topProducts` applies the same instants, as it always did.
+		expect(await h.store.topProducts(closing, "revenue", 10)).toEqual(
+			await oracle().topProducts(closing, "revenue", 10),
+		);
+	});
+
 	test("a refund on an order created in an EARLIER bucket lands in that earlier bucket", async () => {
 		const h = await seeded(makeReportingHarness(bound.storage));
 		// s1 was created on Sunday 2026-06-28 and refunded long afterwards; the 100
