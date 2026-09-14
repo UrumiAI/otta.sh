@@ -70,11 +70,14 @@ it stays visible until it closes:
   path moves in-process with the rest of the outbound topology. The reply is the same
   generic success either way, so the surface is still no account oracle.
 
-Two hold TTLs are also not configurable in this transport: the cart hold's and the
-checkout hold's take the domain's own defaults. Nothing in the plugin reads a TTL
-from anywhere, and a knob whose only value is the default would be a knob with no
-caller; when a deployment needs to move them they belong in the settings the store
-already holds.
+- **Two hold TTLs fall back to the domain's defaults** — a PARITY GAP, not a
+  decision. The deployment docs carry one environment variable that drives both the
+  cart hold and the checkout hold, and the settings aggregate this composition
+  builds a store for carries a hold TTL of its own; neither is read yet, so a
+  deployment that had moved its hold window would silently get fifteen minutes back.
+  Reading it belongs with the settings and scheduled-sweep wiring (a per-request read
+  for a value that changes almost never is a read on the hot path), and it must close
+  before a deployment flips to this transport.
 
 ### Narrower, never wider
 
