@@ -1,13 +1,14 @@
 /**
  * The domain's `orderTimelineContract` against `EmdashOrderStore`, on both Node
- * dialects — **staged** (see `test/order-contract-b2.ts`).
+ * dialects — **every case**, through the staged copy the three suites share (see
+ * `test/order-contract-b2.ts`, whose end state is a deletion).
  *
- * The state-change spine is what this increment owns, and it is the whole of what
- * runs: an event is appended inside the guarded flip, a replayed flip appends
- * none, events never leak across orders, and the merged timeline (audit spine +
- * notes) is chronological with a deterministic same-instant order. The four cases
- * that reach for `recordFulfillment`, `cancelOrder` or the reconciliation pair are
- * todos naming INC-B3.
+ * The state-change spine is the whole of what it asserts: an event is appended inside
+ * the guarded flip, a replayed flip appends none, events never leak across orders, and
+ * the merged timeline (audit spine + notes) is chronological with a deterministic
+ * same-instant order. The four cases that reach for `recordFulfillment`, `cancelOrder`
+ * or the reconciliation pair were todos until the refunds increment landed those
+ * methods; this suite now has no todo left.
  *
  * The notes half comes from `InMemoryOrderNotesStore`: `OrderNotesStore` is its own
  * port with its own increment, and the timeline's merge is not an order-store

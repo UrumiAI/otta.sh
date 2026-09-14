@@ -21,20 +21,41 @@ import { isStorageSerializationError } from "./storage-access.js";
 /**
  * The attempt ceiling per compare-and-set step.
  *
- * **Why 12.** Every failed attempt means a *different* writer committed to the
- * same document, so the attempts a writer can lose is bounded by how many peers
- * can successfully commit while it is in flight. For the shape that matters —
- * N shoppers racing for M units on one SKU — only M writes can ever succeed
- * before the guard turns every remaining caller into a clean `OUT_OF_STOCK` with
- * no write at all, so the observed depth tracks M (the stock on hand), not N (the
- * crowd). 12 leaves room for the flash-sale restock-in-the-middle case while
- * still failing fast enough that a wedged document surfaces as a retryable error
- * inside a request budget rather than as a hung request.
+ * **Why 24, and why it used to be 12.** Every failed attempt means a *different*
+ * writer committed to the same document, so what a writer can lose is bounded by
+ * how many peers can successfully commit while it is in flight — and that bound is
+ * a property of the DOCUMENT, not of the crowd.
  *
- * A change to this number is a change to the contention budget: measure first
- * (the race suite records the maximum depth observed), then move it.
+ * - The **inventory** bound is the units. N shoppers racing for M units on one SKU
+ *   produce at most M successful writes before the guard turns every remaining
+ *   caller into a clean `OUT_OF_STOCK` with no write at all, so the depth tracks M,
+ *   not N. 12 was chosen for that shape, with room for the flash-sale
+ *   restock-in-the-middle case; it is measured at 6 for the flash sale and at the
+ *   old ceiling only for the merchant removal shape, where a REFUSED removal still
+ *   writes its ledger entry and the writes are therefore not unit-bounded.
+ * - The **order document** bound is money movements, and it is roughly
+ *   `2 × (refunds that fit under the ceiling) + 1` — each gateway refund writes
+ *   TWICE (the reservation, then the finalize) and the ceiling-reaching one folds
+ *   the `→ refunded` flip into its second write. A 1,000-cent ceiling refunded 100
+ *   at a time is 10 refunds, so 21 peer writes, and the refunds increment measured
+ *   a depth of 11 against the old 12 — inside it, but only by luck of ordering.
+ *
+ * So 24 covers the worse of the two bounds instead of the better one. **The extra
+ * attempts buy jittered backoff on a path that would otherwise throw**
+ * {@link StorageContentionError}: a caller that was going to be told "too busy" now
+ * waits instead, and nothing about the invariants changes either way — a losing
+ * writer never applies its update, and an exhausted budget is still a typed
+ * retryable refusal rather than a wrong answer or a hung request. The worst-case
+ * wall time is bounded by {@link CAS_MAX_DELAY_MS}, which caps each sleep at 50 ms.
+ *
+ * A change to this number is a change to the contention budget: measure first (every
+ * race suite records the maximum depth observed), then move it. The per-shape
+ * assertions all bound the measured depth AT or BELOW this constant, so raising it
+ * never turns a passing shape green by accident — `CAS_ATTEMPT_BUDGET` in
+ * `test/inventory-crash-seams.dialects.test.ts` stays the tighter, hand-set 8 that
+ * the flash-sale shape is held to.
  */
-export const CAS_MAX_ATTEMPTS = 12;
+export const CAS_MAX_ATTEMPTS = 24;
 
 /** First backoff, in milliseconds. Doubles per attempt, then full-jittered. */
 export const CAS_BASE_DELAY_MS = 2;

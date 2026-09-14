@@ -225,8 +225,10 @@ export function isPaymentRefConflictError(err: unknown): err is PaymentRefConfli
  * loop without bound; hitting it is an operational condition (far more expirable
  * orders than the sweep's page budget), so it is a typed signal rather than a lie.
  *
- * **The remedy is to raise the page budget** (`EmdashOrderStoreOptions.maxExpiryPages`,
- * default 1000 pages of 100), not to retry the same call: nothing was written, but
+ * **The remedy is to raise the page budget** — `EmdashOrderStoreOptions.maxExpiryPages`
+ * for the expiry scan, `maxOutboxPages` for the email claim and settle scans (each
+ * default 1000 pages of 100, and each raised on its own, because the two scans are
+ * bounded by different things) — not to retry the same call: nothing was written, but
  * nothing was returned either, so a bare retry re-reads the same pages and stops in
  * the same place. `collected` says how many rows the scan had reached before it gave
  * up, which is how far the budget got — and `retryable` means only that the call is
@@ -245,17 +247,25 @@ export class ScanPageLimitError extends Error {
 	readonly pages: number;
 	/** What the scan had collected before it gave up — never silently returned. */
 	readonly collected: number;
+	/** WHICH page budget to raise — the remedy names the option, not a guess. */
+	readonly budgetOption: string;
 
-	constructor(operation: string, pages: number, collected: number) {
+	constructor(
+		operation: string,
+		pages: number,
+		collected: number,
+		budgetOption = "maxExpiryPages",
+	) {
 		super(
 			`${operation} reached its ${String(pages)}-page ceiling with more pages to read ` +
 				`(${String(collected)} rows collected before giving up) — returning them would have ` +
-				"been a silent truncation; raise the page budget (maxExpiryPages) rather than " +
+				`been a silent truncation; raise the page budget (${budgetOption}) rather than ` +
 				"re-running this call unchanged",
 		);
 		this.operation = operation;
 		this.pages = pages;
 		this.collected = collected;
+		this.budgetOption = budgetOption;
 	}
 }
 

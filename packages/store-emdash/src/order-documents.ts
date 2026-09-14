@@ -56,11 +56,12 @@
  * aggregate. One of the two corrections to ADR-0019 §4 recorded in this file (the
  * other is {@link PAYMENT_REFS_COLLECTION}).
  *
- * **What is declared but not yet written.** `searchKey`, `emailDueAt`,
- * `refunds`, `fulfillment`, `cancellation` and
- * `reconciliationResolution` are part of the shape NOW, so the later increments
- * (INC-B3 refunds/fulfillment/cancel, INC-B4 lists/search/outbox) add behaviour
- * without reshaping a collection that already holds live orders.
+ * **What is declared but not yet written.** `searchKey` and `emailDueAt` are part
+ * of the shape NOW, so INC-B4 (lists, search, the outbox lease) adds behaviour
+ * without reshaping a collection that already holds live orders. `refunds`,
+ * `fulfillment`, `cancellation` and `reconciliationResolution` were in the same
+ * position and are now written — by INC-B3's refund ceiling, its guarded
+ * `→ shipped`/`→ cancelled` flips and its compare-and-clear resolve.
  */
 import type {
 	Cents,
@@ -100,6 +101,22 @@ export const ORDER_KEYS_COLLECTION = "order_keys";
 export const PAYMENT_REFS_COLLECTION = "payment_refs";
 
 /**
+ * Collection name: refund idempotency key → the order that holds the refund.
+ *
+ * ADR-0019 §3's refunds row names it for one reason, and it is a shape fact rather
+ * than a convenience: the settle half of the reserve-before-issue protocol
+ * (`finalizeRefund`, `voidRefund`, `markRefundUnverified`,
+ * `getRefundByIdempotencyKey`) carries ONLY the key. An embedded `refunds[]` array
+ * cannot be found by a key without scanning every order document, so the key needs
+ * its own document to say which order to open. It doubles as the once-only claim
+ * that replaces `refunds.idempotency_key` UNIQUE (§4), and — like `order_keys` — it
+ * carries the whole prepared entry while `claimed`, so a crash between the claim and
+ * the order's compare-and-set is COMPLETED with the same refund id rather than
+ * re-minted.
+ */
+export const REFUND_KEYS_COLLECTION = "refund_keys";
+
+/**
  * One collection as the plugin descriptor declares it, widened past
  * `CollectionIndexDeclaration` in exactly one direction: an index entry may be a
  * COMPOSITE (`["state", "createdAt"]`), which ADR-0019 §4 declares for `orders`
@@ -115,7 +132,7 @@ export interface OrderCollectionIndexDeclaration {
 }
 
 /**
- * The two collections `EmdashOrderStore` reads and writes, with the indexes each
+ * The four collections `EmdashOrderStore` reads and writes, with the indexes each
  * must declare. A declared index is a **read contract**, not a performance knob:
  * a `where`/`orderBy` on an undeclared field is a runtime `StorageQueryError`, so
  * this list and the descriptor's must not drift.
@@ -128,8 +145,9 @@ export interface OrderCollectionIndexDeclaration {
  * the port forces: `listExpirable` scans `state = 'pending' AND
  * hold_expires_at <= :now`, and neither half may be an undeclared field.
  *
- * `order_keys` declares none — every access to it is by document id, which is
- * the whole point of keying a claim by the idempotency key.
+ * `order_keys`, `payment_refs` and `refund_keys` declare none — every access to
+ * each is by document id, which is the whole point of keying a claim by the key
+ * (or, for `payment_refs`, by the provider reference) it must make once-only.
  */
 export const ORDER_COLLECTIONS: Readonly<Record<string, OrderCollectionIndexDeclaration>> = {
 	[ORDERS_COLLECTION]: {
@@ -146,6 +164,8 @@ export const ORDER_COLLECTIONS: Readonly<Record<string, OrderCollectionIndexDecl
 	},
 	[ORDER_KEYS_COLLECTION]: {},
 	[PAYMENT_REFS_COLLECTION]: {},
+	// Every access is by document id — the whole point of keying a claim by the key.
+	[REFUND_KEYS_COLLECTION]: {},
 };
 
 /**
@@ -216,6 +236,13 @@ export interface OutboxEntryDoc {
 	leaseUntil: string | null;
 	sentAt: string | null;
 	createdAt: string;
+	/**
+	 * When the entry becomes sendable again after a failed attempt was rescheduled.
+	 * ABSENT on a freshly enqueued entry, which is due at `createdAt` — the field
+	 * exists only because a retry moves the due time forward, and R2's `emailDueAt`
+	 * is `max(dueAt, leaseUntil)`.
+	 */
+	dueAt?: string;
 }
 
 /**
@@ -233,10 +260,14 @@ export interface PaymentEntryDoc {
 }
 
 /**
- * One refund ledger row. **Declared by this increment, written by INC-B3**: the
- * ceiling arbitration, the four-state capacity lifecycle (ADR-0019 R6) and
- * `refund_keys` all belong to the refunds increment. The shape is here so that
- * increment adds a field's contents rather than a collection's shape.
+ * One refund ledger row, appended by the SAME compare-and-set that arbitrated the
+ * ceiling against this document's own `payments[]` and `refunds[]`.
+ *
+ * `status` is ADR-0019 R6's four-state capacity lifecycle: every non-`voided` row
+ * HOLDS ceiling capacity (`recorded` money that moved, `reserved` a slot held before
+ * issuance, `unverified` an ambiguous gateway outcome held in the safe direction),
+ * and `voided` RELEASES it while staying as an audit record of the attempt. Only
+ * `recorded` rows count toward the finalized sum that drives the `→ refunded` flip.
  */
 export interface RefundEntryDoc {
 	id: string;
@@ -329,7 +360,7 @@ export interface OrderDoc {
 	emailOutbox: OutboxEntryDoc[];
 	/** Settled payments, keyed by `providerRef`. */
 	payments: PaymentEntryDoc[];
-	/** The refunds ledger. Declared here, written by INC-B3. */
+	/** The refunds ledger; the ceiling is arbitrated against it in place. */
 	refunds: RefundEntryDoc[];
 	/**
 	 * DECLARED INDEX. The earliest `recordedAt` over the hold intents that still owe
@@ -352,11 +383,11 @@ export interface OrderDoc {
 	holdsReleased: HoldIntentDoc | null;
 	/** The settle anomaly marker; deliberately last-writer-wins (ADR-0019 §7.13). */
 	reconciliationFlag: string | null;
-	/** The admin disposition. Declared here, written by INC-B3. */
+	/** The admin disposition, written by the compare-and-clear `resolveReconciliation`. */
 	reconciliationResolution: ReconciliationResolution | null;
-	/** The shipping fulfillment. Declared here, written by INC-B3. */
+	/** The shipping fulfillment; it rides the guarded `→ shipped` flip. */
 	fulfillment: OrderFulfillment | null;
-	/** The structured cancellation. Declared here, written by INC-B3. */
+	/** The structured cancellation; it rides the guarded `→ cancelled` flip. */
 	cancellation: OrderCancellation | null;
 	createdAt: string;
 	updatedAt: string;
@@ -511,6 +542,113 @@ export function computeHoldsPendingAt(
 	for (const intent of [doc.holdsAdopted, doc.holdsCommitted, doc.holdsReleased]) {
 		if (!isOutstanding(intent) || intent === null) continue;
 		if (earliest === null || intent.recordedAt < earliest) earliest = intent.recordedAt;
+	}
+	return earliest;
+}
+
+/**
+ * `refund_keys/{refundIdempotencyKey}` — the durable once-only guard for a refund,
+ * and the ONLY handle the settle half of the protocol has.
+ *
+ * Two states, for the same reason `order_keys` has two. `claimed` is written
+ * create-if-absent BEFORE the order's compare-and-set and carries the WHOLE prepared
+ * entry, so a crash in between is completed with the SAME refund id, amount and
+ * `createdAt` rather than re-minted — and `driveFlip` is carried with it, because
+ * `recordRefund` (the one-shot manual path) and `reserveRefund` (the held slot)
+ * share the claim shape and differ only in whether a full refund may flip the order.
+ * `terminal` drops the payload once the entry is in the order document, which from
+ * then on IS the record.
+ *
+ * **A `claimed` key whose entry never landed does NOT block a retry**, and that is
+ * deliberate: the SQL inserted no row when arbitration rejected a refund, so the key
+ * stayed usable. Here the claim survives a rejected arbitration, and every path that
+ * meets a `claimed` key re-runs the arbitration from the carried intent — which
+ * makes the ceiling-rejection case and the crash case one code path instead of two.
+ */
+export type RefundKeyDoc =
+	| {
+			state: "claimed";
+			/** The order whose document holds (or will hold) the entry. */
+			orderId: string;
+			/** The fully prepared ledger row, so any replayer completes it verbatim. */
+			refund: RefundEntryDoc;
+			/** Whether a ceiling-reaching FINALIZED sum may drive `→ refunded`. */
+			driveFlip: boolean;
+			claimedAt: string;
+	  }
+	| {
+			state: "terminal";
+			orderId: string;
+			refundId: string;
+			recordedAt: string;
+	  };
+
+/** The refund an idempotency key minted inside this order, if any. */
+export function findRefund(doc: OrderDoc, key: string): RefundEntryDoc | undefined {
+	return doc.refunds.find((refund) => refund.idempotencyKey === key);
+}
+
+/**
+ * The ACTIVE sum the ceiling arbitrates against: every non-`voided` row (R6).
+ *
+ * Integer minor units throughout — the accumulator is the raw integer the branded
+ * `Cents` values already are, re-branded once at the boundary by the caller, exactly
+ * as the domain's own `sumRefunds`/`sumCapturedPayments` do it.
+ */
+export function activeRefundTotal(refunds: readonly RefundEntryDoc[]): number {
+	let total = 0;
+	for (const refund of refunds) if (refund.status !== "voided") total += refund.amount;
+	return total;
+}
+
+/** The FINALIZED sum — `recorded` rows only. What drives the `→ refunded` flip. */
+export function finalizedRefundTotal(refunds: readonly RefundEntryDoc[]): number {
+	let total = 0;
+	for (const refund of refunds) if (refund.status === "recorded") total += refund.amount;
+	return total;
+}
+
+/** Σ of the SUCCEEDED payments — "how much money we actually hold". */
+export function capturedPaymentTotal(payments: readonly PaymentEntryDoc[]): number {
+	let total = 0;
+	for (const payment of payments) if (payment.status === "succeeded") total += payment.amount;
+	return total;
+}
+
+/**
+ * When one outbox entry is next claimable, or `null` when it never will be again.
+ *
+ * `pending` is due at its `dueAt` (a reschedule moved it) or at `createdAt`;
+ * `sending` is due when its lease lapses, which is what makes a crashed
+ * dispatcher's row claimable again; `sent` and `failed` are terminal and drop out
+ * of the index entirely.
+ */
+export function outboxDueAt(entry: OutboxEntryDoc): string | null {
+	const due = entry.dueAt ?? entry.createdAt;
+	if (entry.status === "pending") return due;
+	if (entry.status === "sending") {
+		const lease = entry.leaseUntil;
+		return lease === null ? due : lease > due ? lease : due;
+	}
+	return null;
+}
+
+/**
+ * Recompute {@link OrderDoc.emailDueAt} — R2's single denormalized field — as the
+ * earliest due time over the order's non-terminal outbox entries, else `null`.
+ *
+ * The SQL claimed on `sent_at IS NULL AND status != 'failed' AND (lease_until IS
+ * NULL OR lease_until <= :now)`, whose OR and negation the filter algebra cannot
+ * express. One indexed scalar can, and like `holdsPendingAt` it is DERIVED on every
+ * write that touches the array rather than incremented, so it cannot drift from the
+ * entries it summarizes.
+ */
+export function computeEmailDueAt(doc: Pick<OrderDoc, "emailOutbox">): string | null {
+	let earliest: string | null = null;
+	for (const entry of doc.emailOutbox ?? []) {
+		const due = outboxDueAt(entry);
+		if (due === null) continue;
+		if (earliest === null || due < earliest) earliest = due;
 	}
 	return earliest;
 }

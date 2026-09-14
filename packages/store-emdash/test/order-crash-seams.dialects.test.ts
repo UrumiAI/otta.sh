@@ -4,7 +4,8 @@
  * Every case here parks or fails ONE real write and then reads the documents back,
  * so what a replay heals is the state the store really leaves behind rather than a
  * state a mock was told to report. The seams are exactly the windows the document
- * model has, and there are six of them:
+ * model has, and there are nine of them (twelve cases — three seams are opened from
+ * two sides each):
  *
  * 1. **The key claim landed, the order document did not.** The one window creation
  *    has. Any replayer finishes it from the payload the claim carries — including
@@ -24,8 +25,26 @@
  *    single compare-and-set is a stronger check than aborting one would be.
  * 6. **Expiry crashing after the flip, and after one release.** The release intent
  *    survives the crash, and completing it returns the units EXACTLY once.
+ * 7. **A refund claim landed, the order's compare-and-set did not.** The refund's
+ *    own window, and the reason `refund_keys` carries the whole prepared row: the
+ *    replay completes it with the SAME refund id rather than reserving twice.
+ * 8. **A reserve landed, the finalize crashed** — the status-guarded finalize
+ *    completes exactly once, and a void after a crashed void releases the capacity
+ *    exactly once (never twice, never not at all).
+ * 9. **A cancellation flipped, its release crashed.** The same shape as expiry's,
+ *    through the cancel path: the intent survives and the units come back once.
  */
-import { createOrderFromCart, expireOrders, idempotencyKey, type Order } from "@otta-sh/domain";
+import {
+	cents,
+	createOrderFromCart,
+	currency,
+	expireOrders,
+	idempotencyKey,
+	refundOrder,
+	type Order,
+	type RecordRefundInput,
+} from "@otta-sh/domain";
+import { buildRefundSeed, FakePaymentGateway } from "@otta-sh/domain/testing";
 import { expect, test } from "vitest";
 import {
 	collectionOf,
@@ -33,10 +52,12 @@ import {
 	normalizeOrderDoc,
 	ORDER_KEYS_COLLECTION,
 	ORDERS_COLLECTION,
+	REFUND_KEYS_COLLECTION,
 	RESERVATION_INDEX_COLLECTION,
 	type InventoryDoc,
 	type OrderDoc,
 	type OrderKeyDoc,
+	type RefundKeyDoc,
 	type ReservationIndexDoc,
 } from "../src/index.js";
 import { describeEachDialect } from "./describe-each-dialect.js";
@@ -88,6 +109,21 @@ function reservationIdsOf(order: Order): string[] {
 /** Await a call that MUST fail with the injected crash, and nothing else. */
 async function expectCrash(call: Promise<unknown>): Promise<void> {
 	await expect(call).rejects.toThrow(InjectedCrashError);
+}
+
+/** The reserve command shape, with the fields every refund seam shares. */
+function reserveInput(orderId: string, key: string, amount: number): RecordRefundInput {
+	return {
+		orderId: orderId as RecordRefundInput["orderId"],
+		amount: cents(amount),
+		currency: currency("USD"),
+		kind: "gateway",
+		gateway: "stripe",
+		refundRef: null,
+		reason: null,
+		refundedBy: "admin",
+		idempotencyKey: idempotencyKey(key),
+	};
 }
 
 describeEachDialect("order crash seams", (ctx) => {
@@ -569,5 +605,210 @@ describeEachDialect("order crash seams", (ctx) => {
 		expect(await onHands()).toEqual([5, 5]); // and nothing was re-adopted
 		// And the ordinary sweep, arriving late, finds nothing left to do.
 		expect(await expireOrders(clean.expireDeps)).toBe(0);
+	});
+	// -- the refund seams -----------------------------------------------------
+
+	/** A `paid` order carrying one captured payment, seeded the domain's own way. */
+	const seedPaid = async (id: string, totalCents = 1000) => {
+		const h = makeOrderHarness(bound.storage);
+		await buildRefundSeed(h.store)({ id, totalCents, gateway: "stripe" });
+		return h;
+	};
+
+	/** A twin whose ORDER-document writes crash, sharing the origin's collaborators. */
+	const crashingOrders = (origin: ReturnType<typeof makeOrderHarness>) => {
+		const crashing = failCall(
+			collectionOf<OrderDoc>(bound.storage, ORDERS_COLLECTION),
+			isUpdateWrite,
+			{
+				mode: "instead",
+			},
+		);
+		return makeOrderHarness(bound.storage, {
+			share: origin.shared,
+			storageForOrders: withCollection(bound.storage, ORDERS_COLLECTION, crashing.collection),
+		});
+	};
+
+	test("a refund claim whose order write never landed is completed by the replay, refund id and all", async () => {
+		const clean = await seedPaid("ord-rf-seam");
+		const orders = collectionOf<OrderDoc>(bound.storage, ORDERS_COLLECTION);
+		const refundKeys = collectionOf<RefundKeyDoc>(bound.storage, REFUND_KEYS_COLLECTION);
+		const key = "rf-seam";
+		const input = reserveInput("ord-rf-seam", key, 400);
+
+		// Fail the order document's read-modify-write, leaving only the claim.
+		await expectCrash(crashingOrders(clean).store.reserveRefund(input));
+
+		// Mid-protocol: the claim carries the WHOLE prepared row, and the order's
+		// ledger is still empty — no capacity is held by a row that does not exist.
+		const claimed = await refundKeys.get(key);
+		expect(claimed?.state).toBe("claimed");
+		const mintedId = claimed?.state === "claimed" ? claimed.refund.id : undefined;
+		expect(mintedId).toBeTruthy();
+		expect(normalizeOrderDoc((await orders.get("ord-rf-seam")) as OrderDoc).refunds).toHaveLength(
+			0,
+		);
+		// The key answers NULL, which is what makes the use-case re-reserve rather than
+		// resume — and the re-reserve is the completion.
+		expect(await clean.store.getRefundByIdempotencyKey(idempotencyKey(key))).toBeNull();
+
+		// The replay COMPLETES the claim: same refund id, one row, no double-reserve.
+		const replay = await clean.store.reserveRefund(input);
+		expect(replay.outcome).toBe("recorded");
+		expect(replay.refund?.id, "the SAME row the claim minted").toBe(mintedId);
+		const ledger = await clean.store.listRefunds(input.orderId);
+		expect(ledger, "never reserved twice").toHaveLength(1);
+		expect(ledger[0]?.status).toBe("reserved");
+		expect((await refundKeys.get(key))?.state, "promoted once the row exists").toBe("terminal");
+		// And a further replay is the benign duplicate, not a third attempt.
+		expect((await clean.store.reserveRefund(input)).outcome).toBe("duplicate");
+		expect(await clean.store.listRefunds(input.orderId)).toHaveLength(1);
+	});
+
+	test("a reserve whose finalize crashed is finalized exactly once by the status-guarded replay", async () => {
+		const clean = await seedPaid("ord-rf-final");
+		const key = "rf-final";
+		const input = reserveInput("ord-rf-final", key, 400);
+		expect((await clean.store.reserveRefund(input)).outcome).toBe("recorded");
+
+		// Crash the finalize's one write. The row must still be RESERVED, holding its
+		// capacity, with no provider reference stamped — a half-finalized row would be
+		// money recorded as moved that never did.
+		await expectCrash(
+			crashingOrders(clean).store.finalizeRefund({
+				idempotencyKey: idempotencyKey(key),
+				refundRef: "re_crashed",
+			}),
+		);
+		const held = await clean.store.getRefundByIdempotencyKey(idempotencyKey(key));
+		expect(held?.status).toBe("reserved");
+		expect(held?.refundRef).toBeNull();
+
+		// The replay finalizes it ONCE; a second same-ref finalize is the benign
+		// duplicate and writes nothing.
+		const first = await clean.store.finalizeRefund({
+			idempotencyKey: idempotencyKey(key),
+			refundRef: "re_ok",
+		});
+		expect(first.found).toBe(true);
+		expect(first.alreadyFinalized).toBe(false);
+		const again = await clean.store.finalizeRefund({
+			idempotencyKey: idempotencyKey(key),
+			refundRef: "re_ok",
+		});
+		expect(again.found).toBe(true);
+		expect(again.alreadyFinalized).toBe(true);
+		const ledger = await clean.store.listRefunds(input.orderId);
+		expect(ledger, "still ONE row").toHaveLength(1);
+		expect(ledger[0]?.status).toBe("recorded");
+		expect(ledger[0]?.refundRef).toBe("re_ok");
+		// A partial refund never flips the order, so the ledger row is the whole change.
+		expect((await clean.store.getById(input.orderId))?.state).toBe("paid");
+	});
+
+	test("a void whose write crashed releases the capacity exactly once on the replay", async () => {
+		const clean = await seedPaid("ord-rf-void");
+		const key = "rf-void";
+		// The reservation holds the WHOLE ceiling, so the capacity is observable: a
+		// second full refund is refused while it is held and admitted once it is not.
+		expect((await clean.store.reserveRefund(reserveInput("ord-rf-void", key, 1000))).outcome).toBe(
+			"recorded",
+		);
+		await expectCrash(crashingOrders(clean).store.voidRefund(idempotencyKey(key)));
+		// Still reserved ⇒ still holding capacity: the crashed void released nothing.
+		expect((await clean.store.getRefundByIdempotencyKey(idempotencyKey(key)))?.status).toBe(
+			"reserved",
+		);
+		expect(
+			(await clean.store.reserveRefund(reserveInput("ord-rf-void", "rf-void-b", 1000))).outcome,
+			"held capacity still blocks a peer",
+		).toBe("exceeds_ceiling");
+
+		// The replay wins the guarded flip; a SECOND void is a 0-row no-op, so the
+		// capacity is released once and not by every later caller.
+		expect(await clean.store.voidRefund(idempotencyKey(key))).toBe(true);
+		expect(await clean.store.voidRefund(idempotencyKey(key)), "guarded out of reserved").toBe(
+			false,
+		);
+		const ledger = await clean.store.listRefunds(reserveInput("ord-rf-void", key, 1000).orderId);
+		expect(ledger.filter((r) => r.status === "voided")).toHaveLength(1);
+		// Released for real: a fresh full refund now reaches the ceiling and flips.
+		const reclaim = await refundOrder(
+			{ orderStore: clean.store },
+			new FakePaymentGateway({ id: "stripe" }),
+			{
+				orderId: reserveInput("ord-rf-void", key, 1000).orderId,
+				amount: cents(1000),
+				currency: currency("USD"),
+				refundedBy: "admin",
+				idempotencyKey: idempotencyKey("rf-void-reclaim"),
+			},
+		);
+		expect(reclaim.ok && reclaim.fullyRefunded).toBe(true);
+	});
+
+	test("a cancellation crashing after the flip leaves the release owed, and the completion returns the units exactly once", async () => {
+		const clean = await seed([{ sku: "SKU-CX", product: "pcx" }]);
+		const orders = collectionOf<OrderDoc>(bound.storage, ORDERS_COLLECTION);
+		const cartId = await clean.cartWith([
+			{ sku: "SKU-CX", productId: "pcx", qty: 2, kind: "physical" },
+		]);
+		const res = await createOrderFromCart(clean.createDeps, {
+			cartId,
+			idempotencyKey: KEY,
+			buyerRef: "buyer@example.com",
+			paymentMethod: "stripe",
+		});
+		if (!res.ok) throw new Error(res.reason);
+		expect(await clean.onHand("SKU-CX")).toBe(3);
+
+		// Crash the INVENTORY write the release drives. The cancellation's own flip is
+		// already durable, so the call must still report `cancelled` — the same rule
+		// `expire` follows, for the same reason.
+		const crashingInventory = failCall(
+			collectionOf<InventoryDoc>(bound.storage, INVENTORY_COLLECTION),
+			nthUpdateWrite(1),
+			{ mode: "instead" },
+		);
+		const crashed = makeOrderHarness(bound.storage, {
+			share: clean.shared,
+			storageForInventory: withCollection(
+				bound.storage,
+				INVENTORY_COLLECTION,
+				crashingInventory.collection,
+			),
+		});
+		const cancelled = await crashed.store.cancelOrder({
+			orderId: res.order.id,
+			fromState: "pending",
+			reason: "out_of_stock",
+			detail: null,
+			cancelledBy: "ops",
+			idempotencyKey: idempotencyKey("cx-seam"),
+			enqueueEmail: true,
+		});
+		expect(cancelled.cancelled).toBe(true);
+		const flipped = await orders.get(res.order.id);
+		expect(flipped?.state).toBe("cancelled");
+		expect(flipped?.cancellation?.reason).toBe("out_of_stock");
+		// The intent is OWED, the indexed scalar makes it findable, and the failure is
+		// recorded loudly rather than swallowed.
+		expect(flipped?.holdsReleased?.completedAt).toBeNull();
+		expect(flipped?.holdsPendingAt).not.toBeNull();
+		expect(flipped?.reconciliationFlag).toContain("cancellation released no holds");
+		expect(await clean.onHand("SKU-CX"), "no units back yet").toBe(3);
+
+		// The completion returns them ONCE, and a second pass returns nothing further.
+		expect(await clean.store.completeHoldRelease(res.order.id)).toEqual({
+			completed: true,
+			lost: [],
+		});
+		expect(await clean.onHand("SKU-CX")).toBe(5);
+		expect(await clean.store.completeHoldRelease(res.order.id)).toEqual({
+			completed: false,
+			lost: [],
+		});
+		expect(await clean.onHand("SKU-CX"), "returned exactly once").toBe(5);
 	});
 });
