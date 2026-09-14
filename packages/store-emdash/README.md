@@ -133,15 +133,15 @@ conditional write.
 aggregate document per SKU, with the live holds embedded in it**, plus three
 per-key claim collections.
 
-| Collection | Doc id | Holds | Declared indexes |
-|---|---|---|---|
-| `inventory` | sku | `onHand`, the live `holds` map, a bounded applied-movement ring | — (id lookup only) |
-| `reservation_keys` | reserve idempotency key | the durable claim, then the terminal `ReserveResult` | — |
-| `reservation_index` | reservation id | `{ sku, idempotencyKey }` plus the reservation's terminal state | — |
-| `inventory_movements` | `stock:<key>` / `adjust:<key>` | the per-key intent, then its recorded answer | `sku`, `createdAt` |
+| Collection            | Doc id                         | Holds                                                           | Declared indexes   |
+| --------------------- | ------------------------------ | --------------------------------------------------------------- | ------------------ |
+| `inventory`           | sku                            | `onHand`, the live `holds` map, a bounded applied-movement ring | — (id lookup only) |
+| `reservation_keys`    | reserve idempotency key        | the durable claim, then the terminal `ReserveResult`            | —                  |
+| `reservation_index`   | reservation id                 | `{ sku, idempotencyKey }` plus the reservation's terminal state | —                  |
+| `inventory_movements` | `stock:<key>` / `adjust:<key>` | the per-key intent, then its recorded answer                    | `sku`, `createdAt` |
 
 **Why the holds live inside the inventory document.** An inventory decrement is
-not idempotent unless the row records *who applied it*. So the decrement is ONE
+not idempotent unless the row records _who applied it_. So the decrement is ONE
 `compareAndSet` on `inventory/{sku}` in which the `onHand >= qty` guard (computed
 in JS), the new count and the hold record all commit together — no oversell and
 once-only are the same atom.
@@ -156,7 +156,7 @@ reusing the **recorded** reservation id instead of minting a second one, so the
 decrement happens exactly once and every caller gets the same answer. A sweeper
 reaps claims that nothing ever replays.
 
-What the embedded aggregate removes is the SQL adapter's *second* window — a
+What the embedded aggregate removes is the SQL adapter's _second_ window — a
 `pending` reservation flipped to `held` separately from the decrement. The claim
 window cannot be removed by any single-document primitive, because the claim and
 the units necessarily live in different documents.
@@ -165,7 +165,7 @@ the units necessarily live in different documents.
 removed.** A caller sits between reading the aggregate and committing its
 `compareAndSet`; in that interval a peer completing the SAME claim can create the
 hold, commit it and PRUNE it. The waking caller then sees no hold under its key and
-a low `onHand` with nothing to show for it, and a *committed* prune returns no
+a low `onHand` with nothing to show for it, and a _committed_ prune returns no
 units — so a second hold written there would be permanent, silent stock loss. The
 mitigation is in the step: whenever `holds[key]` is absent, the key document is
 re-read, and a terminal one ends the attempt with the recorded answer and no write.
@@ -180,14 +180,14 @@ probed; a deterministic case pinning the mitigation lives in
 terminal `ReserveResult` is written to the key document **before** the prune, and a
 replay reads that document first. Prune-first-then-crash would let a replay
 conclude the key was fresh and decrement a second time. The prune is the second,
-idempotent step. That *ordering* is only observable under fault injection: this
+idempotent step. That _ordering_ is only observable under fault injection: this
 package's suites pin the consequence (a replay after a prune still answers from the
 key document, and creates no second hold), and the fault-injected ordering tests
 belong to the race-and-crash tier.
 
 **Why `reservation_index` is not optional.** Six port methods take reservation ids
 with no sku, and a hold embedded per SKU cannot be found from an id alone. The
-index document is written **before** the hold, so an id absent from it is *provably*
+index document is written **before** the hold, so an id absent from it is _provably_
 unknown — which is what lets `commitMany` throw `ReservationNotFoundError` for a
 truly unknown id while `adoptMany` folds one into `lost`. Its create-if-absent
 result is asserted: a colliding id is a loud `ReservationIdCollisionError`, never
@@ -272,10 +272,10 @@ increment renders, not for this store.
 `EmdashCartStore` implements the domain's `CartStore` over **one aggregate document
 per cart**, plus one lookup collection the port signature forces.
 
-| Collection | Doc id | Holds | Declared indexes |
-|---|---|---|---|
-| `carts` | cart id | `state`, `orderId`, `currency`, the `lines` map keyed by sku, the embedded mutation ledger, the denormalized `holdExpiresAt` | `state`, `holdExpiresAt` |
-| `cart_mutation_index` | mutation idempotency key | `{ cartId }` — a locator, never the record | — |
+| Collection            | Doc id                   | Holds                                                                                                                        | Declared indexes         |
+| --------------------- | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
+| `carts`               | cart id                  | `state`, `orderId`, `currency`, the `lines` map keyed by sku, the embedded mutation ledger, the denormalized `holdExpiresAt` | `state`, `holdExpiresAt` |
+| `cart_mutation_index` | mutation idempotency key | `{ cartId }` — a locator, never the record                                                                                   | —                        |
 
 **Three SQL features disappear into the shape.** `cart_lines (cart_id, sku)` UNIQUE
 becomes the lines map being keyed by sku — structural, and not an index, which
@@ -322,7 +322,7 @@ one to report — and every WRITE goes through the injected store.
 **The attach guard is a guarded WRITE, not a read.** `CartStore.upsertLine`'s
 contract makes the deadline stamp and the attach guard the same act: the SQL did
 both in `UPDATE reservations SET expires_at = :deadline WHERE id = :id AND
-state = 'held'`, and zero rows was `HoldExpiredError`. A *read* of the hold cannot
+state = 'held'`, and zero rows was `HoldExpiredError`. A _read_ of the hold cannot
 substitute — the sweep can reap it between the read and the cart write, and the line
 would be resurrected anyway — and dropping the stamp would break checkout outright,
 because `adopt`/`adoptMany` are scoped `state='held' AND expires_at > :now` and would
@@ -464,14 +464,14 @@ typed error rather than a crash. The file says so, rather than claiming otherwis
 `EmdashOrderStore` implements the domain's `OrderStore` over **one aggregate
 document per order**, plus one claim collection the idempotency key forces.
 
-| Collection | Doc id | Holds | Declared indexes |
-|---|---|---|---|
-| `orders` | order id | the header, the `readonly items` snapshot, `totals`, the ship-to, the append-only `events`, the first-wins `emailOutbox`, the `payments`/`refunds` ledgers, the three hold intents, and the denormalized `customerKey`/`buyerRefLower`/`searchKey`/`emailDueAt`/`holdsPendingAt` | `state`, `createdAt`, `customerKey`, `buyerRefLower`, `searchKey`, `emailDueAt`, `holdExpiresAt`, `holdsPendingAt`, `[state, createdAt]` |
-| `order_keys` | order idempotency key | the claim (carrying the whole prepared document), then its terminal record | — |
-| `payment_refs` | payment provider reference | `{ orderId }` — the GLOBAL once-only claim for a capture | — |
-| `refund_keys` | refund idempotency key | the claim (carrying the whole prepared refund row), then its terminal record | — |
-| `order_sku_index` | `${foldedSku}:${orderId}` | `{ sku, orderId, createdAt }` — the DERIVED pointer the search's line-sku arm reads | `[sku, createdAt]` |
-| `outbox_keys` | outbox entry id | `{ orderId }` — which order document holds that email-outbox entry | — |
+| Collection        | Doc id                     | Holds                                                                                                                                                                                                                                                                            | Declared indexes                                                                                                                         |
+| ----------------- | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `orders`          | order id                   | the header, the `readonly items` snapshot, `totals`, the ship-to, the append-only `events`, the first-wins `emailOutbox`, the `payments`/`refunds` ledgers, the three hold intents, and the denormalized `customerKey`/`buyerRefLower`/`searchKey`/`emailDueAt`/`holdsPendingAt` | `state`, `createdAt`, `customerKey`, `buyerRefLower`, `searchKey`, `emailDueAt`, `holdExpiresAt`, `holdsPendingAt`, `[state, createdAt]` |
+| `order_keys`      | order idempotency key      | the claim (carrying the whole prepared document), then its terminal record                                                                                                                                                                                                       | —                                                                                                                                        |
+| `payment_refs`    | payment provider reference | `{ orderId }` — the GLOBAL once-only claim for a capture                                                                                                                                                                                                                         | —                                                                                                                                        |
+| `refund_keys`     | refund idempotency key     | the claim (carrying the whole prepared refund row), then its terminal record                                                                                                                                                                                                     | —                                                                                                                                        |
+| `order_sku_index` | `${foldedSku}:${orderId}`  | `{ sku, orderId, createdAt }` — the DERIVED pointer the search's line-sku arm reads                                                                                                                                                                                              | `[sku, createdAt]`                                                                                                                       |
+| `outbox_keys`     | outbox entry id            | `{ orderId }` — which order document holds that email-outbox entry                                                                                                                                                                                                               | —                                                                                                                                        |
 
 **Two corrections to ADR-0019 §4, to be recorded when that ADR is next amended.**
 First, `payments.provider_ref` UNIQUE was a GLOBAL constraint, and the ADR maps it
@@ -606,12 +606,12 @@ key stayed usable, and here the crash case and the rejection case are one code p
 
 **Capacity has four states (ADR-0019 R6), and all four live in that same write.**
 
-| Status | Capacity | Set by |
-|---|---|---|
-| `recorded` | held; the only status that counts toward the `→ refunded` flip | `recordRefund` (the manual one-shot) or `finalizeRefund` |
-| `reserved` | held — a slot won before the provider was called | `reserveRefund` |
-| `unverified` | held, the safe direction, until a human re-checks the provider | `markRefundUnverified` |
-| `voided` | RELEASED; the row stays as an audit record of the attempt | `voidRefund` |
+| Status       | Capacity                                                       | Set by                                                   |
+| ------------ | -------------------------------------------------------------- | -------------------------------------------------------- |
+| `recorded`   | held; the only status that counts toward the `→ refunded` flip | `recordRefund` (the manual one-shot) or `finalizeRefund` |
+| `reserved`   | held — a slot won before the provider was called               | `reserveRefund`                                          |
+| `unverified` | held, the safe direction, until a human re-checks the provider | `markRefundUnverified`                                   |
+| `voided`     | RELEASED; the row stays as an audit record of the attempt      | `voidRefund`                                             |
 
 `finalizeRefund` is status-guarded (`reserved` or `unverified` only) and **never
 re-arbitrates** — its reservation already holds the capacity, so a finalize arriving
@@ -639,11 +639,11 @@ documents, and no primitive brackets them with the order write. Each is therefor
 **intent → per-id idempotent write → completion**, with the intent recorded in the
 order document by the same write as the state change that implies it:
 
-| Bracket | Intent recorded by | Per-id write | Completed by |
-|---|---|---|---|
-| adopt | `createFromCart`, before the use-case's `adoptMany` | `adoptMany` (idempotent per reservation id) | `completeHoldAdoption` |
-| commit | the `→ paid` flip, before settle's `commitMany` | the **singular** `commit` per id | `completeHoldCommit` |
-| release | the `→ expired` **and `→ cancelled`** flips | `releaseAdopted` per id, order-scoped | `completeHoldRelease` |
+| Bracket | Intent recorded by                                  | Per-id write                                | Completed by           |
+| ------- | --------------------------------------------------- | ------------------------------------------- | ---------------------- |
+| adopt   | `createFromCart`, before the use-case's `adoptMany` | `adoptMany` (idempotent per reservation id) | `completeHoldAdoption` |
+| commit  | the `→ paid` flip, before settle's `commitMany`     | the **singular** `commit` per id            | `completeHoldCommit`   |
+| release | the `→ expired` **and `→ cancelled`** flips         | `releaseAdopted` per id, order-scoped       | `completeHoldRelease`  |
 
 **`holdsPendingAt` is how the sweeper FINDS the work.** An intent lives inside a
 field, and the filter algebra can neither reach into one nor OR three together, so
@@ -703,11 +703,11 @@ folded order-id PREFIX **or** a folded `buyer_ref` PREFIX **or** an exact folded
 purchase-time line sku — the ratified narrowing (ADR-0019 §6.1), which is where the
 port's contract now sits rather than at the unanchored substring it once spelled.
 
-| Arm | Served by | Status |
-|---|---|---|
-| order-id PREFIX (anchored, folded on both sides, a whole id is its own prefix, `""` matches everything) | `startsWith` on `searchKey` = `orderId.toLowerCase()` | **unchanged** |
-| exact folded line sku, over the FROZEN lines, one row per order | `order_sku_index/{foldedSku}:{orderId}` — an equality on `sku`, keyset-ordered on the pointer's copy of `createdAt` | **unchanged** |
-| folded `buyer_ref` **PREFIX** (anchored, a whole address is its own prefix) | `startsWith` on `buyerRefLower` | **unchanged** — this store is why the arm is anchored |
+| Arm                                                                                                     | Served by                                                                                                           | Status                                                |
+| ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| order-id PREFIX (anchored, folded on both sides, a whole id is its own prefix, `""` matches everything) | `startsWith` on `searchKey` = `orderId.toLowerCase()`                                                               | **unchanged**                                         |
+| exact folded line sku, over the FROZEN lines, one row per order                                         | `order_sku_index/{foldedSku}:{orderId}` — an equality on `sku`, keyset-ordered on the pointer's copy of `createdAt` | **unchanged**                                         |
+| folded `buyer_ref` **PREFIX** (anchored, a whole address is its own prefix)                             | `startsWith` on `buyerRefLower`                                                                                     | **unchanged** — this store is why the arm is anchored |
 
 The third row is the ratified narrowing (ADR-0019 §6.1): the filter algebra has no
 substring operator, so the arm is anchored. It is a prefix rather than nothing because the
@@ -946,19 +946,19 @@ claim document per live sku. It also READS and WRITES the `inventory` collection
 above — the stock projections and the sku-rename carry — so a caller must bind both
 layouts.
 
-| Collection | Doc id | Holds | Declared indexes |
-|---|---|---|---|
+| Collection         | Doc id     | Holds                                                                                                                                                              | Declared indexes                                                               |
+| ------------------ | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------ |
 | `product_commerce` | product id | every `ProductCommerce` field, the embedded `variants` map, the publish-gate watermark, the recorded rename carries, and the denormalized `lifecycle`/`publishKey` | `productId`, `lifecycle`, `publishKey`, `productKind`, `taxClass`, `createdAt` |
-| `sku_owners` | sku | `{ ownerKind, ownerId, variantKey, live }` — the live-sku uniqueness claim | `sku` (unique; declared, **not** the enforcement) |
+| `sku_owners`       | sku        | `{ ownerKind, ownerId, variantKey, live }` — the live-sku uniqueness claim                                                                                         | `sku` (unique; declared, **not** the enforcement)                              |
 
 **Four SQL mechanisms become document writes.**
 
-| The SQL | Here |
-|---|---|
-| `INSERT … ON CONFLICT (product_id) DO UPDATE … WHERE <replay guard AND watermark guard>` | one `compareAndSet` whose guards are computed against the value it just read |
-| the compare-and-set on `updated_at` plus its zero-row classifier | the same classifier, in the same order, inside that write |
-| two **partial** unique indexes (`WHERE deleted_at IS NULL`, `WHERE orphaned_at IS NULL`) plus reciprocal cross-table checks | the `sku_owners` claim, whose `live` flag IS "unique among live rows only" |
-| a written-down lock order `product_commerce → inventory (sku order) → product_variants` | embedding, plus the intent-claim carry — there is no lock, so there is no order to get wrong |
+| The SQL                                                                                                                     | Here                                                                                         |
+| --------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `INSERT … ON CONFLICT (product_id) DO UPDATE … WHERE <replay guard AND watermark guard>`                                    | one `compareAndSet` whose guards are computed against the value it just read                 |
+| the compare-and-set on `updated_at` plus its zero-row classifier                                                            | the same classifier, in the same order, inside that write                                    |
+| two **partial** unique indexes (`WHERE deleted_at IS NULL`, `WHERE orphaned_at IS NULL`) plus reciprocal cross-table checks | the `sku_owners` claim, whose `live` flag IS "unique among live rows only"                   |
+| a written-down lock order `product_commerce → inventory (sku order) → product_variants`                                     | embedding, plus the intent-claim carry — there is no lock, so there is no order to get wrong |
 
 ### Two deviations from the design's index table, both forced
 
@@ -979,16 +979,16 @@ axes already narrowed.
 names `sku`, `active`, `taxClass`, `titleLower`; this store declares `productId`,
 `lifecycle`, `publishKey`, `productKind`, `taxClass`, `createdAt`.
 
-| Field | Change | Why |
-|---|---|---|
-| `taxClass` | kept | `countByTaxClass`'s only predicate |
-| `active` | replaced by `publishKey` | a boolean cannot be bound as a filter value on one dialect (above) |
-| `titleLower` | DROPPED | the search is a substring and the algebra has none (above) |
-| `sku` | DROPPED | nothing queries `product_commerce` by sku. Live-sku uniqueness is the `sku_owners` claim, reached by document id, and a variant's sku is not a field of its product document at all — an index on the product's own `sku` column would answer half the question and would be a read contract for a query never issued |
-| `lifecycle` | ADDED | the tombstone axis, as three states rather than a nullable column (below) |
-| `productKind` | ADDED | `ProductListFilter.productKind` is an equality the list pushes down |
-| `createdAt` | ADDED | the admin list ORDERS by it, and ordering on an undeclared field throws exactly as filtering on one does |
-| `productId` | ADDED | the two batch reads fetch a whole batch with one `productId in [...]` query rather than a `get` per id |
+| Field         | Change                   | Why                                                                                                                                                                                                                                                                                                                   |
+| ------------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `taxClass`    | kept                     | `countByTaxClass`'s only predicate                                                                                                                                                                                                                                                                                    |
+| `active`      | replaced by `publishKey` | a boolean cannot be bound as a filter value on one dialect (above)                                                                                                                                                                                                                                                    |
+| `titleLower`  | DROPPED                  | the search is a substring and the algebra has none (above)                                                                                                                                                                                                                                                            |
+| `sku`         | DROPPED                  | nothing queries `product_commerce` by sku. Live-sku uniqueness is the `sku_owners` claim, reached by document id, and a variant's sku is not a field of its product document at all — an index on the product's own `sku` column would answer half the question and would be a read contract for a query never issued |
+| `lifecycle`   | ADDED                    | the tombstone axis, as three states rather than a nullable column (below)                                                                                                                                                                                                                                             |
+| `productKind` | ADDED                    | `ProductListFilter.productKind` is an equality the list pushes down                                                                                                                                                                                                                                                   |
+| `createdAt`   | ADDED                    | the admin list ORDERS by it, and ordering on an undeclared field throws exactly as filtering on one does                                                                                                                                                                                                              |
+| `productId`   | ADDED                    | the two batch reads fetch a whole batch with one `productId in [...]` query rather than a `get` per id                                                                                                                                                                                                                |
 
 ### `lifecycle` is a three-state discriminator, and a variant may land first
 
@@ -1077,12 +1077,12 @@ exactly as it is for every other document write in this package.
   otherwise refuse forever. So the claim is a LEASE, and a live claim held by another
   owner resolves to one of four states:
 
-  | `ClaimStatus` | Meaning | Outcome |
-  |---|---|---|
-  | `held` | the owner's live product row (or non-orphaned variant) carries this sku | `SkuConflictError` |
-  | `owed` | the owner no longer carries it but still OWES a stock carry away from it | refused, at any age |
-  | `in-flight` | nothing backs it, and it is younger than the lease | refused |
-  | `abandoned` | nothing backs it, nobody owes it, and it is older than the lease | taken over |
+  | `ClaimStatus` | Meaning                                                                  | Outcome             |
+  | ------------- | ------------------------------------------------------------------------ | ------------------- |
+  | `held`        | the owner's live product row (or non-orphaned variant) carries this sku  | `SkuConflictError`  |
+  | `owed`        | the owner no longer carries it but still OWES a stock carry away from it | refused, at any age |
+  | `in-flight`   | nothing backs it, and it is younger than the lease                       | refused             |
+  | `abandoned`   | nothing backs it, nobody owes it, and it is older than the lease         | taken over          |
 
   A takeover also withdraws the empty inventory document, and only that one, which is
   what `SkuOwnerDoc.createsTarget` records; a seeded empty row is never withdrawn, so
@@ -1093,6 +1093,7 @@ exactly as it is for every other document write in this package.
   refused — `SKU_TAKEN`, or `SKU_STOCK_CONFLICT` where the target already had units —
   for up to the lease, and then succeeds. Nothing else is affected: a sku nobody was
   half-way through claiming behaves exactly as before.
+
 - **A writer overtaken while it was stalled.** The claim is proven when it is TAKEN, and
   the product document commits later; a writer that stalls past the lease between the two
   is legitimately overtaken, and its product compare-and-set — which guards the product
@@ -1126,6 +1127,7 @@ exactly as it is for every other document write in this package.
   that a THIRD writer renaming onto that sku is refused `SkuStockConflictError` on an
   occupancy nobody chose, until the newcomer stocks the sku (at which point the document
   is legitimately occupied) or a sweep clears it.
+
 - **The audit trail of a swept carry.** A carry finished by
   `completeRecordedRenames`/`completePendingSkuTransfer` writes NO `rename_out`/`rename_in`
   pair: the entry ids derive from the write's idempotency key, which a completion does not
@@ -1168,10 +1170,10 @@ The rename shapes are not hot-document shapes: the product document is contended
 by its own concurrent writers, and the carry's two inventory documents are contended by
 a rename and whatever else touches those skus.
 
-| shape | max CAS attempts |
-|---|---|
-| product sku renames, seed and restock races (`sku-rename-race.pg.test.ts`, 8 cases) | 4 |
-| variant renames and the two cross-grain rules (`variant-sku-rename-race.pg.test.ts`, 11 cases) | 2 |
+| shape                                                                                          | max CAS attempts |
+| ---------------------------------------------------------------------------------------------- | ---------------- |
+| product sku renames, seed and restock races (`sku-rename-race.pg.test.ts`, 8 cases)            | 4                |
+| variant renames and the two cross-grain rules (`variant-sku-rename-race.pg.test.ts`, 11 cases) | 2                |
 
 Both are reported per FILE by a final case that asserts them at or below
 `CAS_MAX_ATTEMPTS` (24) and strictly above zero, so a shape that silently stopped
@@ -1181,22 +1183,22 @@ contending would fail rather than pass quietly.
 
 `EmdashCouponStore` implements the whole `CouponStore` port. Four documents:
 
-| Collection | Doc id | Holds | Declared indexes |
-|---|---|---|---|
-| `coupons` | coupon id | the economics, the window, `usesCount`, and a best-effort `lastRedeemedKey` witness | `createdAt` |
-| `coupon_codes` | folded code | `{ code, couponId }` — the code-uniqueness claim, and the only way to reach a coupon by code | — |
-| `coupon_redemptions` | `${couponId}:${idempotencyKey}` | the per-key claim carrying the full intent, the bump-right `state` and its lease, then the RECORDED outcome | `couponId`, `orderId`, `createdAt`, `redemptionId`, `holdsUse` |
-| `coupon_customer_caps` | `${couponId}:${customerId}` | the keys currently holding a per-customer slot | — |
+| Collection             | Doc id                          | Holds                                                                                                       | Declared indexes                                               |
+| ---------------------- | ------------------------------- | ----------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `coupons`              | coupon id                       | the economics, the window, `usesCount`, and a best-effort `lastRedeemedKey` witness                         | `createdAt`                                                    |
+| `coupon_codes`         | folded code                     | `{ code, couponId }` — the code-uniqueness claim, and the only way to reach a coupon by code                | —                                                              |
+| `coupon_redemptions`   | `${couponId}:${idempotencyKey}` | the per-key claim carrying the full intent, the bump-right `state` and its lease, then the RECORDED outcome | `couponId`, `orderId`, `createdAt`, `redemptionId`, `holdsUse` |
+| `coupon_customer_caps` | `${couponId}:${customerId}`     | the keys currently holding a per-customer slot                                                              | —                                                              |
 
-| The SQL | Here |
-|---|---|
-| `uses_count + 1 WHERE max_uses IS NULL OR uses_count < max_uses` | two client-side branches — a guarded `updateIf` when capped, a plain delta when not |
-| `coupon_redemptions (coupon_id, idempotency_key)` UNIQUE | the document id, claimed create-if-absent |
+| The SQL                                                                      | Here                                                                                                                     |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `uses_count + 1 WHERE max_uses IS NULL OR uses_count < max_uses`             | two client-side branches — a guarded `updateIf` when capped, a plain delta when not                                      |
+| `coupon_redemptions (coupon_id, idempotency_key)` UNIQUE                     | the document id, claimed create-if-absent                                                                                |
 | the insert conflict that made a second caller of one key WAIT for the winner | that document's own `state`: `claimed → bumping` is a revision compare-and-set exactly one completer wins, under a lease |
-| a per-customer `COUNT(*)` taken under the coupon row's lock | the per-customer counter document, claimed BEFORE the bump |
-| `ROLLBACK` undoing a per-customer refusal | an explicit, idempotent compensation |
-| `uses_count - 1 WHERE uses_count > 0` | the mirror-image `updateIf` guard |
-| `DELETE … WHERE NOT EXISTS (redemptions)` | a `count()` on the coupon's redemptions holding a use, read before the delete |
+| a per-customer `COUNT(*)` taken under the coupon row's lock                  | the per-customer counter document, claimed BEFORE the bump                                                               |
+| `ROLLBACK` undoing a per-customer refusal                                    | an explicit, idempotent compensation                                                                                     |
+| `uses_count - 1 WHERE uses_count > 0`                                        | the mirror-image `updateIf` guard                                                                                        |
+| `DELETE … WHERE NOT EXISTS (redemptions)`                                    | a `count()` on the coupon's redemptions holding a use, read before the delete                                            |
 
 ### The redemption state machine
 
@@ -1341,12 +1343,12 @@ job, and not this store's to do on a request path.
 ADR-0019 §4 lists `coupons` keyed by **code** with a `createdAt` index, and
 `coupon_redemptions` indexed on `couponId` and `orderId`. What shipped:
 
-| Change | Why |
-|---|---|
+| Change                                                                     | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| -------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `coupons` is keyed by **coupon id**, and the code becomes a claim document | `redeem`, `findById`, `update` and `delete` are all given an id, and the money path must not pay a lookup to reach the counter. The admin list is keyset-ordered on `(createdAt, id)` — which is the host's own total order only when the document id IS that id. The ADR's own `uniqueIndexes` table offers exactly this alternative for `coupons.code`: "the document id, or a claim document". The coupon's index list is unchanged at `createdAt` alone as a result, and the code search needs no index because it is a document read |
-| `coupon_redemptions` adds `createdAt` | `listRedemptionsCreatedBefore` both RANGES and ORDERS on it, and ordering by an undeclared field throws exactly as filtering on one does |
-| `coupon_redemptions` adds `redemptionId` | `release` is given the GENERATED id, not the document id — the port hands back an opaque id exactly as the SQL adapter did |
-| `coupon_redemptions` adds `holdsUse` | a refused key keeps a document (that is what lets a replay answer the same way twice), and it must stay out of the delete guard, `releaseByOrder` and the reconciliation sweep. A boolean cannot be bound as a filter value on one dialect, so it is a STRING mirror — the same pattern as the product gate's `publishKey`, not a second invention |
+| `coupon_redemptions` adds `createdAt`                                      | `listRedemptionsCreatedBefore` both RANGES and ORDERS on it, and ordering by an undeclared field throws exactly as filtering on one does                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `coupon_redemptions` adds `redemptionId`                                   | `release` is given the GENERATED id, not the document id — the port hands back an opaque id exactly as the SQL adapter did                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `coupon_redemptions` adds `holdsUse`                                       | a refused key keeps a document (that is what lets a replay answer the same way twice), and it must stay out of the delete guard, `releaseByOrder` and the reconciliation sweep. A boolean cannot be bound as a filter value on one dialect, so it is a STRING mirror — the same pattern as the product gate's `publishKey`, not a second invention                                                                                                                                                                                        |
 
 The redemption's `state` and its lease are NOT indexed: nothing queries by them, and
 every reader that needs them already has the document.
@@ -1376,14 +1378,14 @@ unbounded one here, and the alternative is a per-customer index on the redemptio
 from the bounded wait a caller spends reading a peer's answer (`redeemAwait`), because
 they are different costs: one is a WRITE contending for an invariant, the other is reads.
 
-| shape | counter depth | wait depth |
-|---|---|---|
-| 50 racers on a 5-use cap (20 loops) | 2 | 1 |
-| two same-customer racers on a per-customer cap of 1 (15 loops) | 2 | 1 |
-| 20 racers completing ONE idempotency key | 1 | 4 |
-| 20 completers of one key WHILE 20 peer keys commit, capped and uncapped | 1 | — |
-| 40 racers on an UNCAPPED coupon | 1 | 1 |
-| 50 racers on a coupon with 95 uses left | 1 | 1 |
+| shape                                                                   | counter depth | wait depth |
+| ----------------------------------------------------------------------- | ------------- | ---------- |
+| 50 racers on a 5-use cap (20 loops)                                     | 2             | 1          |
+| two same-customer racers on a per-customer cap of 1 (15 loops)          | 2             | 1          |
+| 20 racers completing ONE idempotency key                                | 1             | 4          |
+| 20 completers of one key WHILE 20 peer keys commit, capped and uncapped | 1             | —          |
+| 40 racers on an UNCAPPED coupon                                         | 1             | 1          |
+| 50 racers on a coupon with 95 uses left                                 | 1             | 1          |
 
 The counter step is asserted at `<= 2` — a hard bound, not a measurement — and the
 overall depth against a hand-set `CAS_ATTEMPT_BUDGET` of 8, deliberately tighter than
@@ -1463,24 +1465,38 @@ the change without being touched.
 
 Per-shape depth and contention, as the suite reports them per case:
 
-| shape | max CAS attempts | typed contention failures |
-|---|---|---|
-| restock same key ×24 | 2 | 0 |
-| removeStock same key ×24 | 2 | 0 |
-| restock +10 racing 40 reserves on 5 units | 13 | 0 |
-| restock then 40 reserves on 15 units (sequenced) | 12 | 0 |
-| 20 removals racing 20 reserves on 12 units | 15 | 0 |
-| 10 partial refunds fitting one ceiling (N=20, gateway latency) | 11 | 0 |
-| N=24 full refunds on one ceiling | 2 | 0 |
-| N=30 reconciliation resolves on one flagged order | 2 | 0 |
-| 40 concurrent challenge requests at a per-address cap of 3 (15 loops) | 4 | 0 |
-| two concurrent crowds of 20 on two addresses, cap 3 each | 3 | 0 |
-| a consume freeing one slot against a crowd of 20 (10 loops) | 2 | 0 |
-| 30 concurrent registrations of one address (15 loops) | 1 | 0 |
-| 12 concurrent redeems of one address, get-or-create (8 loops) | 8 | 0 |
+| shape                                                                 | max CAS attempts | typed contention failures |
+| --------------------------------------------------------------------- | ---------------- | ------------------------- |
+| restock same key ×24                                                  | 2                | 0                         |
+| removeStock same key ×24                                              | 2                | 0                         |
+| restock +10 racing 40 reserves on 5 units                             | 13               | 0                         |
+| restock then 40 reserves on 15 units (sequenced)                      | 12               | 0                         |
+| 20 removals racing 20 reserves on 12 units                            | 15               | 0                         |
+| 10 partial refunds fitting one ceiling (N=20, gateway latency)        | 11               | 0                         |
+| N=24 full refunds on one ceiling                                      | 2                | 0                         |
+| N=30 reconciliation resolves on one flagged order                     | 2                | 0                         |
+| 40 concurrent challenge requests at a per-address cap of 3 (15 loops) | 4                | 0                         |
+| two concurrent crowds of 20 on two addresses, cap 3 each              | 3                | 0                         |
+| a consume freeing one slot against a crowd of 20 (10 loops)           | 2                | 0                         |
+| 30 concurrent registrations of one address (15 loops)                 | 1                | 0                         |
+| 12 concurrent redeems of one address, get-or-create (8 loops)         | 8                | 0                         |
+| 24 concurrent grants of one entitlement key (12 loops)                | 2                | 0                         |
+| 16 concurrent grants for one scope, distinct keys (10 loops)          | 2                | 0                         |
+| 16 concurrent settings updates on one key (10 loops)                  | 1                | 0                         |
+| 10 concurrent settings updates on distinct keys (8 loops)             | 8                | 0                         |
 
-The last two rows are the identity races (`login-challenge-race.pg.test.ts`,
-`customer-email-claim-race.pg.test.ts`), and the pair is worth reading together. The
+The last four rows are this tier's two races (`entitlement-grant-race.pg.test.ts`,
+`settings-mutation-race.pg.test.ts`), and they split the same way every claim in this
+package does. Three of them are **document-bound**: a grant key and a scope pointer are
+each taken once by a create-if-absent, so a peer is refused without contending again and
+the depth is the read-back, never the crowd. The fourth is **crowd-bound**, and it is the
+only one here that is: distinct-key settings updates are last-writer-wins by port
+contract, so nothing refuses anybody and a writer can lose its revision once per peer
+that commits ahead of it — the shipping/tax rules shape, measured at 8 with ten writers.
+Its budget is therefore asserted at `CAS_MAX_ATTEMPTS` rather than under it.
+
+The identity races (`login-challenge-race.pg.test.ts`,
+`customer-email-claim-race.pg.test.ts`) are worth reading as a pair. The
 registration stampede measures **1**: the first writer takes the claim and every peer is
 then refused by reading it, so nothing contends. The get-or-create measures **8**, and
 that depth is not contention at all — it is the bounded WAIT a redeemer spends re-reading
@@ -1547,6 +1563,7 @@ assertion that would fail if the write order were reversed.
   anything that reads only the aggregate. The two obligations go together: the
   sweeper drives per-id `commit` (or prune) rather than re-running the batch, and
   every expiry path checks the terminal state first.
+
 - **(h) a late same-key caller after the prune** — not duplicated here: it is the
   gated mid-flight case in `test/inventory-store-contract.dialects.test.ts`, which
   opens the same window with the same helper.
@@ -1556,21 +1573,21 @@ assertion that would fail if the write order were reversed.
 `EmdashShippingRulesStore` and `EmdashTaxRulesStore` implement the whole
 `ShippingRulesStore` and `TaxRulesStore` ports. Two aggregates, two claims:
 
-| Collection | Doc id | Holds | Declared indexes |
-|---|---|---|---|
-| `shipping_zones` | zone id | the zone's name and opaque region list, its `methods` map keyed by method id, and each method's `rates` map keyed by currency | — |
-| `shipping_method_owners` | method id | `{ zoneId }` — the store-wide method-id claim, and the FAST way to reach a method from an id alone (the heal scan below is the fallback) | — |
-| `tax_classes` | class id | the registry `name` (`null` when only rates live there) and the class's `rates` map keyed by rate id | — |
-| `tax_rate_owners` | rate id | `{ taxClassId }` — the store-wide rate-id claim, and the FAST way to reach a rate from an id alone (the heal scan below is the fallback) | — |
+| Collection               | Doc id    | Holds                                                                                                                                    | Declared indexes |
+| ------------------------ | --------- | ---------------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
+| `shipping_zones`         | zone id   | the zone's name and opaque region list, its `methods` map keyed by method id, and each method's `rates` map keyed by currency            | —                |
+| `shipping_method_owners` | method id | `{ zoneId }` — the store-wide method-id claim, and the FAST way to reach a method from an id alone (the heal scan below is the fallback) | —                |
+| `tax_classes`            | class id  | the registry `name` (`null` when only rates live there) and the class's `rates` map keyed by rate id                                     | —                |
+| `tax_rate_owners`        | rate id   | `{ taxClassId }` — the store-wide rate-id claim, and the FAST way to reach a rate from an id alone (the heal scan below is the fallback) | —                |
 
-| The SQL | Here |
-|---|---|
-| `shipping_methods.zone_id` / `shipping_rates.method_id` foreign keys | the child IS part of the parent document, so a child with no parent is unrepresentable; a create naming a missing parent throws where the insert was refused |
-| `DELETE … WHERE NOT EXISTS (children)`, twice for shipping and once for tax | the same emptiness test, read from the document the delete is guarded on and committed with `compareAndDelete` at that revision |
-| `shipping_methods.id` / `tax_rates.id` PRIMARY KEY | the two claim documents, created if absent |
-| `shipping_rates` PRIMARY KEY `(method_id, currency)` | the method's `rates` map key — uniqueness inside one document is structural |
-| `UPDATE … WHERE amount_cents = :expected` / `WHERE rate_bps = :expected` | the same expected-value comparison inside the aggregate's compare-and-set, re-evaluated on every attempt |
-| `ORDER BY id` on all four list reads | sorted in code after an unfiltered paged scan, because ordering needs a declared index and neither collection declares one |
+| The SQL                                                                     | Here                                                                                                                                                         |
+| --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `shipping_methods.zone_id` / `shipping_rates.method_id` foreign keys        | the child IS part of the parent document, so a child with no parent is unrepresentable; a create naming a missing parent throws where the insert was refused |
+| `DELETE … WHERE NOT EXISTS (children)`, twice for shipping and once for tax | the same emptiness test, read from the document the delete is guarded on and committed with `compareAndDelete` at that revision                              |
+| `shipping_methods.id` / `tax_rates.id` PRIMARY KEY                          | the two claim documents, created if absent                                                                                                                   |
+| `shipping_rates` PRIMARY KEY `(method_id, currency)`                        | the method's `rates` map key — uniqueness inside one document is structural                                                                                  |
+| `UPDATE … WHERE amount_cents = :expected` / `WHERE rate_bps = :expected`    | the same expected-value comparison inside the aggregate's compare-and-set, re-evaluated on every attempt                                                     |
+| `ORDER BY id` on all four list reads                                        | sorted in code after an unfiltered paged scan, because ordering needs a declared index and neither collection declares one                                   |
 
 ### Why two claim collections, where the design table names none
 
@@ -1619,10 +1636,10 @@ losing write while a peer commits the change, deterministically and on every dia
 contending peers are renames that touch no money at all, so the retry budget is
 really spent and the guard still admits exactly one editor.
 
-| shape (`rules-cas-race.pg.test.ts`, N=24, 12 loops) | max CAS attempts |
-|---|---|
-| tax `updateRate`, one rate, one expected value | 2 |
-| shipping `updateRate`, one rate, one expected value | 2 |
+| shape (`rules-cas-race.pg.test.ts`, N=24, 12 loops)      | max CAS attempts                  |
+| -------------------------------------------------------- | --------------------------------- |
+| tax `updateRate`, one rate, one expected value           | 2                                 |
+| shipping `updateRate`, one rate, one expected value      | 2                                 |
 | tax `updateRate` racing a storm of same-document renames | 6 (12 for the renames themselves) |
 
 The first two sit at 2 for the reason the guard exists: a loser's second attempt
@@ -1696,13 +1713,13 @@ both halves are pinned by the two seam cases above.
 — 100 documents a page, up to `maxListPages` (1000), with the ceiling raised as a typed
 `ScanPageLimitError` rather than a short answer.
 
-| Call | Extra reads |
-|---|---|
-| any id-keyed read or write whose claim RESOLVES (`getMethod`, `getRate`, `updateRate`, `deleteRate`, `updateMethod`, `deleteMethod`) | **none** — the claim is still the fast path |
-| `listZones`, `listMethods`, `listClasses`, `getRate(class, zone)`, `countRatesByClass`, `listRatesForZone` | **none** — none of them consults a claim, so the **checkout read never heals** |
-| `createMethod` / `createRate` with a fresh id | one full parent scan **per compare-and-set attempt** of the claim step, because the collision test runs through the healing lookup |
-| an id-keyed read or write for an id that does not exist (`getMethod("missing")`, a `not_found` update or delete) | one full parent scan per attempt, before answering `null` / `not_found` |
-| an id-keyed call whose claim is missing or points at the wrong parent | one full parent scan, plus the one claim write that re-establishes it |
+| Call                                                                                                                                 | Extra reads                                                                                                                        |
+| ------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| any id-keyed read or write whose claim RESOLVES (`getMethod`, `getRate`, `updateRate`, `deleteRate`, `updateMethod`, `deleteMethod`) | **none** — the claim is still the fast path                                                                                        |
+| `listZones`, `listMethods`, `listClasses`, `getRate(class, zone)`, `countRatesByClass`, `listRatesForZone`                           | **none** — none of them consults a claim, so the **checkout read never heals**                                                     |
+| `createMethod` / `createRate` with a fresh id                                                                                        | one full parent scan **per compare-and-set attempt** of the claim step, because the collision test runs through the healing lookup |
+| an id-keyed read or write for an id that does not exist (`getMethod("missing")`, a `not_found` update or delete)                     | one full parent scan per attempt, before answering `null` / `not_found`                                                            |
+| an id-keyed call whose claim is missing or points at the wrong parent                                                                | one full parent scan, plus the one claim write that re-establishes it                                                              |
 
 Both stores are admin-surface stores over collections sized by the merchant's zone and
 tax-class count, and the checkout reads are in the first two rows, which is what makes
@@ -1715,27 +1732,27 @@ that trade the right way round.
 `SessionStore` and `CustomerCredentialVerifier` ports. One aggregate, two claims,
 two ledgers:
 
-| Collection | Doc id | Holds | Declared indexes |
-|---|---|---|---|
-| `customers` | customer id | the account fields and the embedded `addresses` list | `emailLower` |
-| `customer_emails` | folded email | `{ customerId, claimedAt }` — the address-uniqueness claim, and the FAST way from an address to its account (the indexed query below is the fallback) | `emailLower` (unique) |
-| `sessions` | token **hash** | `{ sessionId, customerId, createdAt, expiresAt, revokedAt }` | `customerId` |
-| `login_challenges` | challenge id | `{ emailLower, tokenHash, expiresAt, consumedAt }` plus the `consumed` text mirror | `consumed`, `expiresAt` |
-| `login_challenge_claims` | folded email | the slots currently holding the per-address window | — |
+| Collection               | Doc id         | Holds                                                                                                                                                 | Declared indexes        |
+| ------------------------ | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- |
+| `customers`              | customer id    | the account fields and the embedded `addresses` list                                                                                                  | `emailLower`            |
+| `customer_emails`        | folded email   | `{ customerId, claimedAt }` — the address-uniqueness claim, and the FAST way from an address to its account (the indexed query below is the fallback) | `emailLower` (unique)   |
+| `sessions`               | token **hash** | `{ sessionId, customerId, createdAt, expiresAt, revokedAt }`                                                                                          | `customerId`            |
+| `login_challenges`       | challenge id   | `{ emailLower, tokenHash, expiresAt, consumedAt }` plus the `consumed` text mirror                                                                    | `consumed`, `expiresAt` |
+| `login_challenge_claims` | folded email   | the slots currently holding the per-address window                                                                                                    | —                       |
 
-| The SQL | Here |
-|---|---|
-| `customers.email` NOT NULL UNIQUE | the `customer_emails` claim, created if absent, taken **before** any customer write and re-asserted immediately before it |
-| `addresses.customer_id` with no foreign key | the addresses are embedded, and a `null` email is the "no account here" case the missing row produced |
-| `UPDATE/DELETE addresses WHERE id = :addressId AND customer_id = :customerId` | an explicit ownership check inside the caller's own document, taken on the read the write is guarded on |
-| `ORDER BY created_at, id` on the address book | sorted in code; the list is inside one document, so there is nothing to page |
-| `customer_sessions.token_hash` UNIQUE | the hash **is** the document id |
-| `WHERE token_hash = :hash AND revoked_at IS NULL AND expires_at > :now` | one document read, then two field reads on it |
-| `SET revoked_at = :now WHERE revoked_at IS NULL` | a compare-and-set guarded on the revision of a document whose `revokedAt` was still absent |
-| `ORDER BY created_at DESC, id DESC` on the session history | sorted in code after a bounded paged read on the `customerId` index |
-| `SET consumed_at = :now WHERE id = :id AND consumed_at IS NULL` | the same, on the challenge document; a lost race re-reads and answers `CONSUMED` |
-| `DELETE … WHERE consumed_at IS NOT NULL OR expires_at <= :now` | two bounded arms, because the filter algebra has no OR; the deletes deduplicate the overlap |
-| `SELECT count(*) … WHERE email = ? AND consumed_at IS NULL AND expires_at > :now`, **then** `INSERT` | the `login_challenge_claims` document: the count and the admission are one compare-and-set |
+| The SQL                                                                                              | Here                                                                                                                      |
+| ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `customers.email` NOT NULL UNIQUE                                                                    | the `customer_emails` claim, created if absent, taken **before** any customer write and re-asserted immediately before it |
+| `addresses.customer_id` with no foreign key                                                          | the addresses are embedded, and a `null` email is the "no account here" case the missing row produced                     |
+| `UPDATE/DELETE addresses WHERE id = :addressId AND customer_id = :customerId`                        | an explicit ownership check inside the caller's own document, taken on the read the write is guarded on                   |
+| `ORDER BY created_at, id` on the address book                                                        | sorted in code; the list is inside one document, so there is nothing to page                                              |
+| `customer_sessions.token_hash` UNIQUE                                                                | the hash **is** the document id                                                                                           |
+| `WHERE token_hash = :hash AND revoked_at IS NULL AND expires_at > :now`                              | one document read, then two field reads on it                                                                             |
+| `SET revoked_at = :now WHERE revoked_at IS NULL`                                                     | a compare-and-set guarded on the revision of a document whose `revokedAt` was still absent                                |
+| `ORDER BY created_at DESC, id DESC` on the session history                                           | sorted in code after a bounded paged read on the `customerId` index                                                       |
+| `SET consumed_at = :now WHERE id = :id AND consumed_at IS NULL`                                      | the same, on the challenge document; a lost race re-reads and answers `CONSUMED`                                          |
+| `DELETE … WHERE consumed_at IS NOT NULL OR expires_at <= :now`                                       | two bounded arms, because the filter algebra has no OR; the deletes deduplicate the overlap                               |
+| `SELECT count(*) … WHERE email = ? AND consumed_at IS NULL AND expires_at > :now`, **then** `INSERT` | the `login_challenge_claims` document: the count and the admission are one compare-and-set                                |
 
 ### The throttle was a race, and it is retired by construction
 
@@ -1766,11 +1783,11 @@ enumeration oracle.
 Every residual points the same way, which is the direction ADR-0019's rule (c)
 requires:
 
-| Crash | Residue | Cost | Heals by |
-|---|---|---|---|
+| Crash                                           | Residue                                     | Cost                  | Heals by              |
+| ----------------------------------------------- | ------------------------------------------- | --------------------- | --------------------- |
 | after the admission, before the challenge write | a slot naming a challenge nobody can redeem | one admission refused | the slot's own expiry |
-| after the consume, before the release | a slot for a spent challenge | one admission refused | the slot's own expiry |
-| the compensating release itself is lost | as above | one admission refused | the slot's own expiry |
+| after the consume, before the release           | a slot for a spent challenge                | one admission refused | the slot's own expiry |
+| the compensating release itself is lost         | as above                                    | one admission refused | the slot's own expiry |
 
 No sweeper is required, because every slot carries the expiry of the challenge it
 names and the next admission drops it. That is also the one place the window is
@@ -1840,13 +1857,13 @@ the claim. So the read **may write**, and it may raise `ScanPageLimitError` wher
 SQL could only answer `null` — both the price of never leaving a registered account
 unreachable by its own address. The cost is asymmetric on purpose:
 
-| Call | Extra reads |
-|---|---|
-| `getByEmail` whose claim RESOLVES | **none** — one claim read plus the document |
-| `get`, `update`, and every address and session method | **none** — none of them consults a claim |
-| `create` | one lookup per compare-and-set attempt of the claim step, because the collision test runs through the healing lookup |
-| `getByEmail` for an address nobody holds | one bounded indexed query, before answering `null` |
-| `getByEmail` whose claim is missing or stale | one bounded indexed query, plus the one claim write that re-establishes it |
+| Call                                                  | Extra reads                                                                                                          |
+| ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `getByEmail` whose claim RESOLVES                     | **none** — one claim read plus the document                                                                          |
+| `get`, `update`, and every address and session method | **none** — none of them consults a claim                                                                             |
+| `create`                                              | one lookup per compare-and-set attempt of the claim step, because the collision test runs through the healing lookup |
+| `getByEmail` for an address nobody holds              | one bounded indexed query, before answering `null`                                                                   |
+| `getByEmail` whose claim is missing or stale          | one bounded indexed query, plus the one claim write that re-establishes it                                           |
 
 ### A customer document can exist without a customer
 
@@ -1875,17 +1892,17 @@ credential material has a path onto an admin surface even by accident.
 `test/identity-crash-seams.dialects.test.ts`, both Node dialects, each reading the
 residue back before proving what a later caller sees:
 
-| Seam | Residue | What a later caller gets |
-|---|---|---|
-| claim taken, account write lost | none — the compensating release gives the address back | the address registers cleanly |
-| claim taken, account write **and** release lost | an orphan claim | refused for one abandon window, then taken over; no account is ever visible under the address meanwhile |
-| an account whose claim was deleted | none, after the next lookup | the account is found by address and the claim is written back |
-| slot taken, challenge write lost | none — the slot goes back | the full window is admittable |
-| slot taken, challenge write **and** release lost | a held slot | one admission fewer until the slot's expiry |
-| consume committed, release lost | a held slot for a spent challenge | the replay is `CONSUMED`; the window resets at the expiry |
-| an address update that loses its revision to a concurrent delete | none | the retry re-checks ownership and answers the miss rather than resurrecting the address |
-| a registrant parked past its lease, overtaken by a peer | none | its own re-assertion refuses before any account write: one account owns the address, and it is the peer's |
-| consume committed and slot released, then `#resolveCustomer` exhausts its budget | a spent challenge with no account resolved | the caller sees the typed retryable failure and the link cannot be replayed (`CONSUMED`) — one lost login, never a second redemption. Not enumerated in the suite: it needs a contention storm on a document only one caller writes |
+| Seam                                                                             | Residue                                                | What a later caller gets                                                                                                                                                                                                            |
+| -------------------------------------------------------------------------------- | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| claim taken, account write lost                                                  | none — the compensating release gives the address back | the address registers cleanly                                                                                                                                                                                                       |
+| claim taken, account write **and** release lost                                  | an orphan claim                                        | refused for one abandon window, then taken over; no account is ever visible under the address meanwhile                                                                                                                             |
+| an account whose claim was deleted                                               | none, after the next lookup                            | the account is found by address and the claim is written back                                                                                                                                                                       |
+| slot taken, challenge write lost                                                 | none — the slot goes back                              | the full window is admittable                                                                                                                                                                                                       |
+| slot taken, challenge write **and** release lost                                 | a held slot                                            | one admission fewer until the slot's expiry                                                                                                                                                                                         |
+| consume committed, release lost                                                  | a held slot for a spent challenge                      | the replay is `CONSUMED`; the window resets at the expiry                                                                                                                                                                           |
+| an address update that loses its revision to a concurrent delete                 | none                                                   | the retry re-checks ownership and answers the miss rather than resurrecting the address                                                                                                                                             |
+| a registrant parked past its lease, overtaken by a peer                          | none                                                   | its own re-assertion refuses before any account write: one account owns the address, and it is the peer's                                                                                                                           |
+| consume committed and slot released, then `#resolveCustomer` exhausts its budget | a spent challenge with no account resolved             | the caller sees the typed retryable failure and the link cannot be replayed (`CONSUMED`) — one lost login, never a second redemption. Not enumerated in the suite: it needs a contention storm on a document only one caller writes |
 
 ### What the identity tier does NOT carry
 
@@ -1896,3 +1913,180 @@ residue back before proving what a later caller sees:
   has nothing else to guard here.
 - **No sweeper.** Both claims heal in path: the email claim by the lookup's fallback,
   the throttle by the expiry every slot carries.
+
+## Entitlement, payment-event, settings and order-note document models
+
+The four smallest ports in the commerce layer, and the only tier where three of the
+four stores write exactly one document per call. Seven collections:
+
+| Collection            | Doc id                                              | What it is                                                               |
+| --------------------- | --------------------------------------------------- | ------------------------------------------------------------------------ |
+| `entitlements`        | grant idempotency key                               | one grant; the key IS the once-only                                      |
+| `entitlement_lookups` | `order:{orderId}:{sku}` / `buyer:{foldedRef}:{sku}` | a pointer from one authorization scope to the grant that satisfies it    |
+| `payment_events`      | dedupe key                                          | the received-events audit row                                            |
+| `payment_anomalies`   | a digest of the anomaly's own fields                | one alert-worthy settlement anomaly                                      |
+| `settings`            | `store`                                             | the operational settings singleton                                       |
+| `settings_mutations`  | mutation idempotency key                            | one mutation's recorded result, and the revision it was computed against |
+| `order_notes`         | note idempotency key                                | one append-only merchant annotation                                      |
+
+Declared indexes: `entitlements` declares `orderId`, `buyerRefLower`, `sku` and
+`state`; `order_notes` declares `orderId`; the other four declare nothing, because
+nothing queries them.
+
+### The delivery gate, and why its pointer is a cache
+
+`check` is the file-serving gate: no active grant, no download. The SQL served it
+with two composite indices — `(order_id, sku, state)` and
+`(lower(buyer_ref), sku, state)` — behind the predicate
+`state = 'active' AND sku = ? AND (order_id = ?)? AND (lower(buyer_ref) = ?)?`. Here
+the filter algebra is AND-only over single declared fields, so the composite becomes a
+conjunction of four declarations, and `state` is declared rather than filtered in code
+for a specific reason: a page of revoked grants must not be able to hide an active one
+behind the limit.
+
+That query alone is correct and indexed. The `entitlement_lookups` pointer sits in
+front of it so the hot single-scope path pays two keyed reads instead of an index
+scan — and it is therefore a **cache, never authority** (ADR-0019 rule (b)). Three
+consequences, all deliberate:
+
+- A pointer is re-validated against the grant it names. A pointer whose grant is
+  revoked, missing, or disagrees about the scope or the sku authorizes nothing.
+- When a pointer does not resolve, the gate queries and writes the pointer back, so
+  `check` is a read that may WRITE. That is the one mechanism healing both a crash
+  between the grant and its pointers and a pointer left on a revoked grant. Its cost
+  is one indexed page of one row, on the reads that miss only.
+- **Revocation needs no pointer maintenance**, which is why the store has no revoke
+  method to keep in step with one.
+
+The operator-authenticated shape — an order id AND a buyer reference — has no pointer
+of its own and goes straight to the query. A third key space for a conjunction no hot
+path takes would be cost without a read to serve.
+
+### The scope id is an authorization key, so its parts are escaped
+
+A scope is a pair, and joining two arbitrary strings with a separator is ambiguous:
+`("ord-a", "B:C")` and `("ord-a:B", "C")` collide under a raw join, and one document
+authorizing the other's delivery is a security bug rather than a collision statistic.
+Both value parts are percent-escaped before they are joined — `%` first, so escaping
+the escape cannot collapse two encodings onto one — and a case drives the collision
+end to end.
+
+### A scopeless check is refused, not answered `false`
+
+The SQL short-circuited a query with neither scope to `false`; so did the in-memory
+fake. Here it raises `EntitlementScopeRequiredError`, and that is a deliberate
+divergence in loudness (never in outcome — both are fail-closed, and nothing is served
+either way). The port's type requires a sku and makes both scopes optional, so a
+scopeless query is not a condition a storefront produces: it is a caller that lost its
+session or its order id somewhere above and is about to serve a file on the strength
+of a sku alone. `false` hides that as a refused download; the typed error names it.
+
+### Payment events: two collections, because a document id cannot be null
+
+The SQL kept deliveries and anomalies in one table separated by a nullable UNIQUE
+column — a delivery row carried a `dedupe_key`, an anomaly row carried a `kind` and a
+NULL key, and the nullable UNIQUE is what let many anomalies coexist while a real
+dedupe key collided. A document id cannot be null, so the two shapes become two
+collections, which states the separation in the schema rather than in a convention
+about which columns are set.
+
+Two divergences worth naming:
+
+- **A dedupe key redelivered against a DIFFERENT order still answers `false`.**
+  Faithful: the SQL's UNIQUE was global and its conflict clause silent. The loud
+  cross-order guard is the order store's `payment_refs/{providerRef}` claim, because
+  that is the write that moves the captured total and therefore the refund ceiling.
+  This store holds no order pointer of its own and deliberately duplicates none.
+- **`recordAnomaly` is genuinely idempotent, where the SQL was not.** The document id
+  is a SHA-256 of the anomaly's five fields, so a replay producing the identical
+  anomaly records it once; the SQL minted a fresh row id per call and wrote a second
+  indistinguishable row. Anything that differs — including the instant — is its own
+  document, and nothing is ever swallowed.
+
+### Settings: the claim carries the result AND the base revision
+
+The SQL did the whole of `update` inside one transaction: read current, merge, claim
+the key with the merged values, and — as the claim's winner only — upsert the row.
+Without a transaction the four steps become:
+
+```
+read    : settings/store, with its revision
+merge   : the patch over what was read (absolute fields, so an omitted field is a keep)
+claim   : settings_mutations/{key} create-if-absent, carrying the RESULT and that revision
+apply   : settings/store compare-and-set, pinned to the revision the claim recorded
+```
+
+The claim comes first because a claim with no settings write is **completable** and a
+settings write with no claim is not: the claim carries the result and the revision it
+was computed against, so any later caller with that key lands it with one pinned
+compare-and-set — and does NOT land it if a newer update has moved the revision. The
+reverse order would apply a value with no ledger row saying so, and the next replay of
+that key would recompute from the new state and apply a second time.
+
+`baseRevision` is the one field the SQL had no need for, and it is what makes "a stale
+replay never clobbers a newer update" true even when the original call died before
+applying. A replay never re-merges: the recorded result is returned as it was
+recorded.
+
+One shape is stricter here than in SQL. A caller that loses the pinned write to a
+concurrent DIFFERENT key re-reads, re-merges over the new base, and **rewrites its own
+claim** — which it owns by the revision its create returned — before applying again.
+So the recorded result and the applied value always agree; the SQL's row-locked
+transaction could record a result computed from a base another writer had already
+replaced.
+
+### Order notes: keyed by the idempotency key, in a child collection
+
+`order-documents.ts` records why notes are not embedded in the order aggregate: a note
+is operator-supplied free text with no natural bound, so embedding it would make the
+size of the hot money-path document a function of how much support wrote about it.
+
+The document id is the note's **idempotency key**, not a `{orderId}:{noteId}`
+composite as ADR-0019 §4 first had it (the table now carries the corrected form).
+Three reasons: the SQL's once-only was `order_notes.idempotency_key` UNIQUE,
+table-wide; ADR-0019's own mapping says that constraint "becomes the document id of
+its claim"; and a composite id would need a second claim document plus a crash seam
+between the two to buy nothing, since no caller holds a note id. Keying on
+`{orderId}:{noteId}` alone would have been worse than either — it would make one
+idempotency key admissible once PER ORDER, which is weaker than the constraint it
+replaces, and a case pins the cross-order behaviour.
+
+`listForOrder` pages the declared `orderId` index at 100 and applies
+`createdAt ASC, id ASC` in code: the pair has to be sorted together or the tie-break
+is not a tie-break, and a note id means nothing to a reader on its own. `createdAt` is
+fixed-width ISO-8601, so the comparison is dialect-identical. A list that exhausts its
+page budget raises `ScanPageLimitError` rather than truncating, because a short note
+list reads as "nobody wrote that".
+
+### Crash seams proven in this tier
+
+Only two of the four stores write more than one document, so only two have a seam.
+`test/misc-crash-seams.dialects.test.ts` (both Node dialects) and
+`test/d1/misc-crash-seams.d1.spec.ts` drive each from the forbidden side:
+
+| Crash                                               | Residue                        | Cost                                                   | Heals by                                                                                         |
+| --------------------------------------------------- | ------------------------------ | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
+| after the grant, before either pointer              | a grant no scope points at     | one indexed query per missing scope, once              | the next `check` on that scope, or a replayed grant                                              |
+| after the first pointer, before the second          | one scope pointed, one not     | as above, for that scope                               | as above                                                                                         |
+| after the mutation claim, before the settings write | a decision that has not landed | the update is invisible until someone replays that key | the next call with the same key, pinned to the recorded base                                     |
+| a crashed mutation overtaken by a newer key         | as above, permanently unlanded | the older update is never applied                      | nothing — and that is the guarantee: the pinned write refuses, so no double-apply and no clobber |
+
+`order_notes` and `payment_events` write one document each, so a lost write leaves
+NOTHING and the retry is a clean first attempt rather than a repair — which the last
+two cases in that file assert, since "there is no seam" is a claim that needs
+evidence too.
+
+### What this tier does NOT carry
+
+- **No revocation path.** The `EntitlementStore` port has `grant` and `check` and
+  nothing else, so the contract's revoke hook is implemented in the test harness as
+  the compare-and-set equivalent of the SQL harness's `UPDATE`. It is deliberately not
+  test surface on the production store: a revocation path with no caller belongs on
+  the port when one arrives.
+- **No settings validation.** The port's `update` is a _validated_ partial update and
+  the domain's `updateSettings` use-case is what validates it. A store that
+  re-validated would be a second, drifting copy of a rule the domain owns — and the
+  SQL adapter validates nothing either.
+- **No anomaly read surface.** Anomalies are written to be alerted on; nothing reads
+  them back, so `payment_anomalies` declares no index. The operator surface that
+  eventually reads them is a separate concern with its own indexes to declare.
