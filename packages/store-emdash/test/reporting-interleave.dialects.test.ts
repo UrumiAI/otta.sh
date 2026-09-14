@@ -24,7 +24,13 @@ import type { DateRange } from "@otta-sh/domain";
 import { expect, test } from "vitest";
 import { REPORTING_APPLIED_COLLECTION, REPORTING_DAILY_COLLECTION } from "../src/index.js";
 import { describeEachDialect } from "./describe-each-dialect.js";
-import { isUpdateWrite, parkCall, withCollection } from "./helpers/fault-injection.js";
+import {
+	isUpdateWrite,
+	isVersionedRead,
+	parkCall,
+	parkRead,
+	withCollection,
+} from "./helpers/fault-injection.js";
 import { REPORTING_LAYOUT } from "./reporting-collections.js";
 import { makeReportingHarness, type ReportingHarness } from "./reporting-harness.js";
 
@@ -94,6 +100,62 @@ describeEachDialect("EmdashReportingStore recompute interleaving", (ctx) => {
 				bucketStart: "2026-07-04T00:00:00.000Z",
 				currency: "USD",
 				revenueCents: 5000,
+				refundedCents: 0,
+			},
+		]);
+	});
+
+	test("the recompute PINS before it scans: a transition landing while the pin is held is not erased", async () => {
+		// This is the case that discriminates the ordering, and it fails against
+		// pin-after-scan. Parking the COMMIT does not: a scan-then-pin recompute loses that
+		// write too, because the peer moved the revision after it was taken. What separates
+		// the two orderings is a live write landing between the SCAN and the PIN — under
+		// scan-then-pin the pin then reads a revision NEWER than the scanned value, so the
+		// stale value commits successfully and the transition is erased, while pinning first
+		// makes the same interleaving re-read both.
+		const h = makeReportingHarness(bound.storage);
+		await h.seedOrder({
+			id: "i5",
+			state: "pending",
+			currency: "USD",
+			createdAt: DAY,
+			totalCents: 3000,
+		});
+		await h.seedOrder({
+			id: "i6",
+			state: "pending",
+			currency: "USD",
+			createdAt: DAY,
+			totalCents: 700,
+		});
+		// i6's rollup was lost, so the recompute has a real correction to commit.
+		await h.moveOrderDocument("i6", "paid");
+
+		// Park the FIRST day-document read — the pin itself.
+		const parked = parkRead(bound.collection(REPORTING_DAILY_COLLECTION), isVersionedRead);
+		const reconciler = makeReportingHarness(bound.storage, {
+			clock: h.clock,
+			storageForStore: withCollection(bound.storage, REPORTING_DAILY_COLLECTION, parked.collection),
+		});
+		const healing = reconciler.store.reconcile(RANGE);
+		await parked.arrived;
+
+		// A complete live event — order write, claim, bucket delta — lands while the pin is
+		// held. The day document now says one order is paid.
+		await h.transitionOrder("i5", "paid");
+		expect(await bucket(h)).toEqual({ revenueCents: 3000, stateCounts: { paid: 1, pending: 1 } });
+
+		parked.release();
+		await healing;
+
+		// Both transitions are counted. Under scan-then-pin this would read 700 with i5
+		// back in `pending`: its transition would have been committed away.
+		expect(await bucket(h)).toEqual({ revenueCents: 3700, stateCounts: { paid: 2 } });
+		expect(await h.store.revenueByPeriod(RANGE, "day")).toEqual([
+			{
+				bucketStart: "2026-07-04T00:00:00.000Z",
+				currency: "USD",
+				revenueCents: 3700,
 				refundedCents: 0,
 			},
 		]);
