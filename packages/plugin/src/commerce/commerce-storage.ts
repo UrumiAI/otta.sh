@@ -15,7 +15,9 @@
  * A DECLARED INDEX IS A READ CONTRACT, not a performance knob: a `where` or
  * `orderBy` on a field the collection never declared is a runtime error, not a
  * slow query. That is why this list and the host descriptor's must be the same
- * object rather than two lists that happen to agree — the descriptor imports it.
+ * object rather than two lists that happen to agree: the descriptor WILL import it
+ * when the deployment flips to this transport, and until then this is the list the
+ * test tiers bind their storage from.
  *
  * SANDBOX-CLEAN: type-only knowledge of the host, data only at runtime. Nothing
  * here executes host code, opens anything, or reads an environment.
@@ -50,9 +52,11 @@ export interface CommerceCollectionDeclaration {
 export type CommerceStorageLayout = Readonly<Record<string, CommerceCollectionDeclaration>>;
 
 /**
- * Every collection commerce truth occupies. The spread order is irrelevant —
- * the per-module constants declare disjoint collections, which the
- * no-collection-declared-twice case pins.
+ * Every collection commerce truth occupies. The spread order is irrelevant — the
+ * per-module constants declare disjoint collections, which is a property rather
+ * than a hope, so a case pins it: a collection declared by two modules would have
+ * one module's indexes silently win here, and the loser's reads would fail at
+ * runtime on a field it believed it had declared.
  */
 export const COMMERCE_STORAGE_COLLECTIONS: CommerceStorageLayout = {
 	...INVENTORY_COLLECTIONS,

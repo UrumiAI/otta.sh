@@ -64,7 +64,11 @@ export async function serviceTokenFromKv(ctx: PluginContext): Promise<string | u
  *    `content:write` — it never writes CMS content.
  *  - `network:request` — `ctx.http.fetch`, host-restricted via
  *    `allowedHosts`. No `network:request:unrestricted`.
- * No `storage`/`kv`/db capability — the plugin holds no commercial state.
+ * No `storage`/`kv`/db CAPABILITY — and not because the plugin holds no
+ * commercial state: it holds all of it. `ctx.storage` is where commerce truth
+ * lives (ADR-0018), and the host builds it on an always-available path with no
+ * capability string in its vocabulary to declare, which is why owning that state
+ * widens nothing here.
  */
 export const OTTA_PLUGIN_CAPABILITIES = ["content:read", "network:request"] as const;
 

@@ -138,7 +138,8 @@ describe.skipIf(PG === undefined)("storefront account pages (workerd sandbox)", 
 
 	test("the account pages add no new capability beyond network:request/allowedHosts", () => {
 		// The §6 ADR's "service sends email directly" holds in practice: the plugin
-		// declares no email:send, no ctx.storage — exactly the two capabilities.
+		// declares no email:send — exactly the two capabilities. (`ctx.storage` needs
+		// none: the host builds it ungated, ADR-0018.)
 		expect([...OTTA_PLUGIN_CAPABILITIES]).toEqual(["content:read", "network:request"]);
 	});
 });
