@@ -447,9 +447,10 @@ benign duplicate).
 One collection per aggregate, one per ledger with no aggregate, plus the lookup collections the port
 signatures force. Declared on the descriptor's `storage` field.
 
-Rows marked **†** were corrected on 2026-09-14 to match the adapters as built; see the
-[Amendment](#amendment-2026-09-14--phase-b-as-built) at the end of this record. A row with no **†** is
-still design, not code.
+**† means one thing: the row was verified against the adapter as built, on 2026-09-14.** Some daggered
+rows were corrected to match it and some already did; the mark says the row has been checked against
+code, not that it changed. A row with no **†** is still design. See the
+[Amendment](#amendment-2026-09-14--phase-b-as-built) at the end of this record.
 
 | Collection | Doc id | Declared indexes | Unique indexes |
 |---|---|---|---|
@@ -988,7 +989,7 @@ superset stays conformant.
 |---|---|---|---|
 | settings `update`: read the recorded mutation and return it if present, else claim `ON CONFLICT (idempotency_key) DO NOTHING` and apply | a replayed settings key returns the recorded result and never re-applies the patch | `settings_mutations/{key}` as a claim document carrying the recorded result | `settings-store-contract` "update replayed with the same idempotencyKey returns the recorded result and does not re-apply" |
 | entitlement `grant`: `ON CONFLICT (grant_idempotency_key) DO NOTHING`, then re-select and return the original | a grant is issued once | the grant key **is** the document id | `entitlement-store-contract` "grant is idempotent under grantIdempotencyKey — a replay grants once" |
-| entitlement `check`: **a query with neither an order nor a buyer reference returns false** | an **authorization boundary** — delivery must be scoped, and an unscoped check must never be a wildcard pass (ADR-0011) | the same refusal, written as an explicit early return before any read | `entitlement-store-contract`; the empty-scope branch itself is **not named by a test today** and the new suite must name it |
+| **†** entitlement `check`: **a query with neither an order nor a buyer reference is refused** | an **authorization boundary** — delivery must be scoped, and an unscoped check must never be a wildcard pass (ADR-0011) | a typed `EntitlementScopeRequiredError`, raised before any read — LOUDER than the SQL's `false`, which is a divergence in loudness and never in outcome (both fail closed, and nothing is served on either path) | `entitlement-store-contract`, plus the adapter case "a scopeless delivery check is refused with a typed error, and authorizes nothing", which is what now names the empty-scope branch |
 | address `update`/`delete`: `WHERE id = :addressId AND customer_id = :customerId` on **both** | **cross-customer isolation** — a security invariant, not a convenience | an **explicit ownership check** on the address inside the customer's own document, since a document id alone carries no owner. This must be written as a check, not inherited from a key shape | `address-book-contract` "update is customer-scoped: B cannot touch A's address (returns null)"; "delete is customer-scoped: B cannot delete A's address" |
 | session `validate`: `WHERE token_hash = :hash AND revoked_at IS NULL AND expires_at > :now`; `revoke`: guarded on `revoked_at IS NULL` | only a live, unexpired, unrevoked token authenticates; revoke is idempotent | the token hash is the document id; the two other clauses are field reads | `session-contract` "a revoked token no longer validates"; "an expired token no longer validates" |
 | credential `verifyChallenge`: single-use consume `SET consumed_at = :now WHERE id = :id AND consumed_at IS NULL`; zero rows is the `CONSUMED` answer | a magic link works exactly once | a compare-and-set on the challenge document guarded on the consumed field being absent | `credential-verifier-contract` "verifyChallenge with an already-consumed token returns CONSUMED…" |
@@ -1054,13 +1055,18 @@ by the same bounded budget.
   reference already claimed by another order, and an outbox entry id that cannot be located, now raise
   typed errors where the SQL was silent. Louder is right — both states are real and both were previously
   invisible — but each has a handler that must be written: a non-retryable acknowledgement plus an
-  anomaly for the first, a retry or the next tick for the second.
+  anomaly for the first, a retry or the next tick for the second. **A third joined them:** a delivery
+  check carrying neither scope throws where the SQL adapter and the in-memory fake both return `false`
+  (§7.17). It is fail-closed either way, and it is unreachable from a route that has an order id or a
+  session — so the obligation is narrow: a caller that can construct a scopeless query must handle a
+  throw rather than read a `false` as "not entitled", and the domain fake still answers `false`, which a
+  later `[Domain]` change should reconcile.
 - **Compensations replace rollbacks.** Where the SQL undid a write by aborting a transaction — the
   coupon per-customer refusal above all — the document model must write an explicit, idempotent
   compensation, and get its ordering right.
 - **Reporting becomes write-time work**, with past-bucket decrements and paged reads.
-- **†** **29 rows naming 32 collections** to declare and keep in step with the descriptor — one of them
-  not yet declared — their index lists part of the read contract. The count rose from the ~22 first
+- **†** **32 rows naming 35 collections** to declare and keep in step with the descriptor, their index
+  lists part of the read contract. The count rose from the ~22 first
   estimated, and every addition is a claim or locator document standing in for a lookup the port
   signatures force (§4).
 - **The orders search narrows** as recorded in 6.1.
