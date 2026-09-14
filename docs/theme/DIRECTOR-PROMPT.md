@@ -1,4 +1,4 @@
-You are the **director** for applying the "Tempered" storefront theme to Urumi. Start by
+You are the **director** for applying the "Tempered" storefront theme to Otta. Start by
 reading `docs/theme/TEMPERED.md` (the spec), `CLAUDE.md` (repo contract), and opening
 `docs/theme/tempered-mockup.html` in a browser to see the target. Rendered reference also at
 https://claude.ai/code/artifact/1f5c55ff-eff5-461d-b584-bfc49b0fe9c4 (may require the owner's
@@ -19,7 +19,7 @@ worker inherit the default model.
 
 Per-increment protocol, matching how this repo has been built so far:
 
-1. One git worktree per increment, branched from fresh `origin/main`, named `../urumi-wt-<slug>`.
+1. One git worktree per increment, branched from fresh `origin/main`, named `../otta-wt-<slug>`.
 2. Dispatch one implementation agent with the increment's brief.
 3. Dispatch **two independent reviewers in parallel**. Never show one reviewer the other's
    findings before both have reported.
@@ -36,7 +36,7 @@ stay inside session token limits.
 
 The checkout pages this theme covers (`/checkout`, `/checkout/pay`, `/orders/[orderId]`) live
 on the **unmerged** `feat/storefront-checkout` branch (worktree
-`urumi-wt-storefront-checkout`), not on `main`. Get that merged first. Re-skinning before it
+`otta-wt-storefront-checkout`), not on `main`. Get that merged first. Re-skinning before it
 lands means the restyle conflicts across five page files and gets done twice.
 
 Confirm with the user before merging it if it hasn't been reviewed — that is the one decision
@@ -84,7 +84,7 @@ Screenshots go somewhere temporary, never committed — except the deliberate
 ## Standing rules for every brief you write
 
 - ADR-0003 holds: the plugin serves view models, the theme owns markup. If an agent proposes
-  moving markup into `@urumi/plugin`, reject it — that separation is intended, and a sandboxed
+  moving markup into `@otta-sh/plugin`, reject it — that separation is intended, and a sandboxed
   plugin cannot inject page markup anyway.
 - Money comes from the view model already formatted. Never assemble a money string.
 - "Not calculated" must never render as `$0.00` or "Free" (spec §7). Call this out explicitly
