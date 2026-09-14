@@ -326,6 +326,17 @@ export class EmdashShippingRulesStore implements ShippingRulesStore {
 		return methodsOf(zone).map((method) => toShippingMethod(zone.zoneId, method));
 	}
 
+	/**
+	 * PORT-FACING CONSEQUENCE of the claim's third rule: this read MAY WRITE, and it
+	 * may throw where the SQL adapter could only return `null`. When the claim does
+	 * not resolve it scans the zones and, on finding the method, re-establishes the
+	 * claim — one claim write on a path the SQL adapter never wrote on. And because
+	 * the scan is bounded, an id that does not exist costs a full paged scan and can
+	 * raise {@link ScanPageLimitError} instead of answering `null`. Both are the price
+	 * of never leaving a priced method unreachable; the same is true of `getRate`,
+	 * `updateRate`, `deleteRate`, `updateMethod` and `deleteMethod`, which reach their
+	 * method the same way.
+	 */
 	async getMethod(methodId: string): Promise<ShippingMethod | null> {
 		const found = await this.#findMethod(methodId);
 		return found === null ? null : toShippingMethod(found.zone.doc.zoneId, found.method);
@@ -412,6 +423,8 @@ export class EmdashShippingRulesStore implements ShippingRulesStore {
 		return toShippingRate(input.methodId, doc);
 	}
 
+	/** As `getMethod`: reaching the method by id may write the claim back, and an
+	 *  unknown id pays a bounded scan rather than a single miss. */
 	async getRate(methodId: string, currency: Currency): Promise<ShippingRate | null> {
 		const found = await this.#findMethod(methodId);
 		const rate = found?.method.rates[currency];

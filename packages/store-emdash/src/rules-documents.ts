@@ -12,9 +12,9 @@
  * | Document | What it is |
  * |---|---|
  * | `shipping_zones/{zoneId}` | the zone, its `methods` map keyed by method id, and each method's `rates` map keyed by currency |
- * | `shipping_method_owners/{methodId}` | `{ zoneId }` — the method-id uniqueness claim, and the only way to reach a method from an id alone |
+ * | `shipping_method_owners/{methodId}` | `{ zoneId }` — the method-id uniqueness claim, and the FAST way to reach a method from an id alone (a bounded scan of the zones is the fallback) |
  * | `tax_classes/{classId}` | the class registry entry (`name`) and its `rates` map keyed by rate id |
- * | `tax_rate_owners/{rateId}` | `{ taxClassId }` — the rate-id uniqueness claim, and the only way to reach a rate from an id alone |
+ * | `tax_rate_owners/{rateId}` | `{ taxClassId }` — the rate-id uniqueness claim, and the FAST way to reach a rate from an id alone (a bounded scan of the classes is the fallback) |
  *
  * **Why the two claim documents exist.** NINE port methods take a child id with no
  * parent: `getMethod`, `updateMethod`, `deleteMethod`, `createRate`, `getRate`,

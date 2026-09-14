@@ -1544,9 +1544,9 @@ assertion that would fail if the write order were reversed.
 | Collection | Doc id | Holds | Declared indexes |
 |---|---|---|---|
 | `shipping_zones` | zone id | the zone's name and opaque region list, its `methods` map keyed by method id, and each method's `rates` map keyed by currency | — |
-| `shipping_method_owners` | method id | `{ zoneId }` — the store-wide method-id claim, and the only way to reach a method from an id alone | — |
+| `shipping_method_owners` | method id | `{ zoneId }` — the store-wide method-id claim, and the FAST way to reach a method from an id alone (the heal scan below is the fallback) | — |
 | `tax_classes` | class id | the registry `name` (`null` when only rates live there) and the class's `rates` map keyed by rate id | — |
-| `tax_rate_owners` | rate id | `{ taxClassId }` — the store-wide rate-id claim, and the only way to reach a rate from an id alone | — |
+| `tax_rate_owners` | rate id | `{ taxClassId }` — the store-wide rate-id claim, and the FAST way to reach a rate from an id alone (the heal scan below is the fallback) | — |
 
 | The SQL | Here |
 |---|---|
@@ -1655,6 +1655,9 @@ store has:
   rediscovered, re-claimed, and editable and deletable again.
 - **`createRate` refuses a second rate for one `(method, currency)`**, the SQL
   primary key's refusal, leaving the quoted price untouched.
+- **a claim naming the WRONG parent is re-pointed** at the parent that really holds
+  the child, by the same id-keyed lookup — the heal's second branch, and the one that
+  keeps a partially applied takeover from making a live child unreachable.
 
 ### The one residue, and why it is healed rather than prevented
 
@@ -1672,5 +1675,20 @@ same residue. So it is **healed instead**: `getMethod` and the rate methods fall
 to a bounded scan when the claim does not resolve and re-establish the claim, and the
 create path's collision test runs through that same lookup, so the residue can never
 become one id in two parents either. The heal is automatic, not operator work, and
-both halves are pinned by the two seam cases above. What a caller can observe in the
-meantime is one extra scan of a collection sized by the merchant's zone/class count.
+both halves are pinned by the two seam cases above.
+
+**What the fallback costs, exactly.** The scan is a paged read of the parent collection
+— 100 documents a page, up to `maxListPages` (1000), with the ceiling raised as a typed
+`ScanPageLimitError` rather than a short answer.
+
+| Call | Extra reads |
+|---|---|
+| any id-keyed read or write whose claim RESOLVES (`getMethod`, `getRate`, `updateRate`, `deleteRate`, `updateMethod`, `deleteMethod`) | **none** — the claim is still the fast path |
+| `listZones`, `listMethods`, `listClasses`, `getRate(class, zone)`, `countRatesByClass`, `listRatesForZone` | **none** — none of them consults a claim, so the **checkout read never heals** |
+| `createMethod` / `createRate` with a fresh id | one full parent scan **per compare-and-set attempt** of the claim step, because the collision test runs through the healing lookup |
+| an id-keyed read or write for an id that does not exist (`getMethod("missing")`, a `not_found` update or delete) | one full parent scan per attempt, before answering `null` / `not_found` |
+| an id-keyed call whose claim is missing or points at the wrong parent | one full parent scan, plus the one claim write that re-establishes it |
+
+Both stores are admin-surface stores over collections sized by the merchant's zone and
+tax-class count, and the checkout reads are in the first two rows, which is what makes
+that trade the right way round.

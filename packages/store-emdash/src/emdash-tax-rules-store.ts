@@ -393,6 +393,14 @@ export class EmdashTaxRulesStore implements TaxRulesStore {
 	 * cannot disagree.
 	 *
 	 * An id with no rate anywhere still answers `null`, as the missing row did.
+	 *
+	 * PORT-FACING CONSEQUENCE: every caller of this — `updateRate` and `deleteRate` —
+	 * MAY WRITE (the claim, created or re-pointed) on what the SQL adapter served with
+	 * a pure read, and MAY THROW {@link ScanPageLimitError} for an id that does not
+	 * exist, where the SQL adapter answered `not_found` from one statement. The
+	 * `(class, zone)` reads — `getRate`, `listRatesForZone`, `countRatesByClass` —
+	 * never come through here and are unaffected, which is what keeps the checkout
+	 * read free of it.
 	 */
 	async #findRate(rateId: string): Promise<{ held: HeldClass; rate: TaxRateDoc } | null> {
 		const owner = await this.#rateOwners.get(rateId);

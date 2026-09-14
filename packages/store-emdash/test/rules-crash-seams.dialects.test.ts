@@ -433,6 +433,47 @@ describeEachDialect("EmdashShippingRulesStore crash seams", (ctx) => {
 		// The price a shopper is being quoted is untouched.
 		expect((await plain.store.getRate("m-x", USD))?.amountCents).toBe(599);
 	});
+	test("(l) a claim naming the WRONG zone is re-pointed at the zone that holds the method", async () => {
+		const raw = bound.storage;
+		const plain = makeShippingRulesHarness(raw);
+		await plain.store.createZone({ id: "z-us", name: "US", regions: null });
+		await plain.store.createZone({ id: "z-eu", name: "EU", regions: null });
+		await plain.store.createMethod({
+			id: "m-x",
+			zoneId: "z-eu",
+			name: "EU flat",
+			type: "flat_rate",
+		});
+		await plain.store.createRate({
+			methodId: "m-x",
+			currency: USD,
+			amountCents: cents(599),
+			minSubtotalCents: null,
+		});
+		// The claim is made to name a zone that does NOT hold the method — the state a
+		// release that raced an adoption, or a partially applied takeover, can leave.
+		await plain.methodOwners.put("m-x", {
+			methodId: "m-x",
+			zoneId: "z-us",
+			claimedAt: "2026-07-10T00:00:00.000Z",
+		});
+
+		// The id-keyed read follows the claim, finds nothing, scans, and re-points it.
+		const found = await plain.store.getMethod("m-x");
+		expect(found?.zoneId).toBe("z-eu");
+		expect(found?.name).toBe("EU flat");
+		expect((await plain.methodOwners.get("m-x"))?.zoneId).toBe("z-eu");
+		// And the method is editable through the re-pointed claim.
+		expect((await plain.store.getRate("m-x", USD))?.amountCents).toBe(599);
+		expect(
+			await plain.store.updateRate(
+				"m-x",
+				USD,
+				{ amountCents: cents(650), minSubtotalCents: null },
+				cents(599),
+			),
+		).toMatchObject({ ok: true });
+	});
 });
 
 describeEachDialect("EmdashTaxRulesStore crash seams", (ctx) => {
@@ -763,6 +804,32 @@ describeEachDialect("EmdashTaxRulesStore crash seams", (ctx) => {
 		).toMatchObject({ ok: true });
 		expect((await plain.rateOwners.get("r1"))?.taxClassId).toBe("standard");
 		expect((await plain.store.getRate("standard", "z-us"))?.rateBps).toBe(825);
+		expect(await plain.store.deleteRate("r1")).toEqual({ ok: true });
+	});
+	test("(k) a claim naming the WRONG class is re-pointed at the class that holds the rate", async () => {
+		const plain = makeTaxRulesHarness(bound.storage);
+		await plain.store.createRate({
+			id: "r1",
+			taxClassId: "reduced",
+			zoneId: "z-us",
+			rateBps: 500,
+			appliesToShipping: false,
+		});
+		await plain.rateOwners.put("r1", {
+			rateId: "r1",
+			taxClassId: "standard",
+			claimedAt: "2026-07-10T00:00:00.000Z",
+		});
+
+		// The id-keyed edit follows the claim, finds nothing, scans, and re-points it.
+		const edited = await plain.store.updateRate(
+			"r1",
+			{ rateBps: 600, appliesToShipping: false },
+			500,
+		);
+		expect(edited).toMatchObject({ ok: true });
+		expect((await plain.rateOwners.get("r1"))?.taxClassId).toBe("reduced");
+		expect((await plain.store.getRate("reduced", "z-us"))?.rateBps).toBe(600);
 		expect(await plain.store.deleteRate("r1")).toEqual({ ok: true });
 	});
 });
