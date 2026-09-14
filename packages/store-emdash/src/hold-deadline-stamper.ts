@@ -32,6 +32,15 @@ export interface HoldDeadlineStamper {
 	 *
 	 * Idempotent: stamping the deadline a hold already carries writes nothing and
 	 * still reports `true`.
+	 *
+	 * `expiresAt` is NON-NULL, and that is a narrowing over what the first cut
+	 * accepted (a recorded follow-up from INC-B1's review). A stamp is always the
+	 * attach of a line to a LIVE hold, and `adopt`/`adoptMany` are scoped
+	 * `expires_at > :now`, so a hold stamped with no deadline could never be
+	 * adopted — writing one would create exactly the hold that checkout classifies
+	 * as lost. The domain never asks for it either: `expiresAt` is null on a cart
+	 * line only when `reservationId` is too (a digital line reserves nothing), and
+	 * that line never reaches a stamp. The type is what keeps it that way.
 	 */
-	stampHoldDeadline(reservationId: string, expiresAt: string | null): Promise<boolean>;
+	stampHoldDeadline(reservationId: string, expiresAt: string): Promise<boolean>;
 }

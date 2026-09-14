@@ -31,16 +31,56 @@ export { systemClock } from "./clock.js";
 export { collectionOf } from "./collection-of.js";
 export { EmdashCartStore, type EmdashCartStoreOptions } from "./emdash-cart-store.js";
 export {
+	EmdashOrderStore,
+	type EmdashOrderStoreOptions,
+	type HoldCompletionResult,
+} from "./emdash-order-store.js";
+export {
 	EmdashInventoryStore,
 	type EmdashInventoryStoreOptions,
 } from "./emdash-inventory-store.js";
 export type { HoldDeadlineStamper } from "./hold-deadline-stamper.js";
 export { uuidIdGen } from "./id-gen.js";
 export {
+	isNotImplementedInIncrementError,
+	isOrderNotFoundError,
+	isPaymentRefConflictError,
 	isReservationNotReleasableError,
+	isScanPageLimitError,
+	NotImplementedInIncrementError,
+	OrderIdCollisionError,
+	OrderNotFoundError,
+	PaymentRefConflictError,
 	ReservationIdCollisionError,
 	ReservationNotReleasableError,
+	ScanPageLimitError,
 } from "./errors.js";
+export {
+	computeHoldsPendingAt,
+	customerKeyFor,
+	findOutboxEntry,
+	foldBuyerRef,
+	isOutstanding,
+	newHoldIntent,
+	normalizeOrderDoc,
+	ORDER_COLLECTIONS,
+	ORDER_KEYS_COLLECTION,
+	ORDERS_COLLECTION,
+	PAYMENT_REFS_COLLECTION,
+	physicalReservationIds,
+	type HoldIntentDoc,
+	type OrderCollectionIndexDeclaration,
+	type OrderDoc,
+	type OrderEventDoc,
+	type OrderItemDoc,
+	type OrderKeyDoc,
+	type OrderTotalsDoc,
+	type OutboxEntryDoc,
+	type OutboxStatus,
+	type PaymentEntryDoc,
+	type PaymentRefDoc,
+	type RefundEntryDoc,
+} from "./order-documents.js";
 export {
 	adjustClaimId,
 	APPLIED_MOVEMENT_RING_SIZE,
