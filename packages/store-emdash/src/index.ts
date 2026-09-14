@@ -100,7 +100,11 @@ export {
 export {
 	adjustClaimId,
 	APPLIED_MOVEMENT_RING_SIZE,
+	APPLIED_TRANSFER_RING_SIZE,
 	findAppliedMovement,
+	hasAppliedTransfer,
+	liveHoldCount,
+	pushAppliedTransfer,
 	INVENTORY_COLLECTION,
 	INVENTORY_COLLECTIONS,
 	INVENTORY_MOVEMENTS_COLLECTION,
@@ -124,6 +128,46 @@ export {
 	type TerminalReservationState,
 	type TransferOut,
 } from "./inventory-documents.js";
+export {
+	EmdashProductCommerceStore,
+	type EmdashProductCommerceStoreOptions,
+} from "./emdash-product-commerce-store.js";
+export {
+	codeUnitAsc,
+	codeUnitDesc,
+	hasProductRow,
+	isOwnedBy,
+	lifecycleFor,
+	liveVariants,
+	newShellProductDoc,
+	newSkuOwnerDoc,
+	newVariantDoc,
+	normalizeProductDoc,
+	PRODUCT_COMMERCE_COLLECTION,
+	PRODUCT_COMMERCE_COLLECTIONS,
+	publishKeyFor,
+	resolveProductCurrency,
+	SKU_OWNERS_COLLECTION,
+	toProductCommerce,
+	toProductSummary,
+	toProductVariant,
+	toVariantSummary,
+	type ProductCommerceDoc,
+	type ProductLifecycle,
+	type ProductVariantDoc,
+	type PublishKey,
+	type SkuOwnerDoc,
+	type SkuOwnerKind,
+	type SkuOwnerRef,
+} from "./product-commerce-documents.js";
+export {
+	skuRenameLedgerId,
+	SkuStockTransfer,
+	skuTransferToken,
+	type SkuRenameDirection,
+	type SkuRenameLedgerDoc,
+	type SkuStockTransferOptions,
+} from "./sku-stock-transfer.js";
 export {
 	isStorageQueryError,
 	isStorageSerializationError,
