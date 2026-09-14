@@ -2,39 +2,33 @@
  * The `OrderStore` contract slices against `EmdashOrderStore`, on **D1** — the
  * dialect Otta actually ships on, through the host's OWN Kysely wiring.
  *
- * All three staged slices plus the refunds increment's three FULL domain suites run
- * here, not just the store contract: they cost little and they exercise the two things
- * only this tier can. First, `listExpirable` is a
- * real indexed `query()` with the host's limit clamp and cursor, against the
- * `json_extract` expressions D1 has to plan — on TWO declared fields at once
- * (`state` and `holdExpiresAt`), which is the first place in this package a
- * multi-field indexed predicate is exercised. Second, the order document is the
- * largest this package writes, and D1's SQLite build is where its serialization has
- * to hold.
+ * Six suites run here, not just the store contract: they cost little and they exercise
+ * the things only this tier can. `listExpirable` and the admin LIST are real indexed
+ * `query()` calls with the host's limit clamp and cursor, against the `json_extract`
+ * expressions D1 has to plan — the list reaches four declared fields (`state`,
+ * `createdAt`, `customerKey`/`buyerRefLower`, `searchKey`) plus a second collection for
+ * the by-sku arm, which is the widest indexed predicate this package issues anywhere.
+ * And the order document is the largest this package writes, so D1's SQLite build is
+ * where its serialization has to hold.
  *
- * The harness wiring is `test/order-harness.ts` and the staged slices are
- * `test/order-contract-b2.ts`, imported rather than restated — neither names a Node
- * driver, so both load inside `workerd`. Only the storage BINDING differs, and that
- * is what `describe-d1.ts` supplies, unchanged.
- *
- * The refunds, fulfillment and cancellation suites are the DOMAIN's own, run in full:
- * nothing is staged there (INC-B3 owns every case), and the refund ceiling in
- * particular is arithmetic on the document D1's SQLite build has to serialize — which
- * is the reason to spend the tier's time on it.
+ * The harness wiring is `test/order-harness.ts`. `orderStoreContract` runs through
+ * `test/order-store-contract-narrowed.ts` — the copy that exists only to hold the five
+ * cases the ratified search narrowing blocks; every other suite is the DOMAIN's own,
+ * run in full. Nothing here names a Node driver, so all of it loads inside `workerd`;
+ * only the storage BINDING differs, and that is what `describe-d1.ts` supplies.
  */
 import {
 	buildRefundSeed,
 	orderCancellationContract,
 	orderFulfillmentContract,
+	orderTimelineContract,
+	orderTransitionContract,
 	refundOrderContract,
 } from "@otta-sh/domain/testing";
 import { cancellationReleaseCase } from "../order-cancellation-release.js";
+import { orderListCases } from "../order-list-cases.js";
 import { ORDER_LAYOUT } from "../order-collections.js";
-import {
-	orderStoreContractB2,
-	orderTimelineContractB2,
-	orderTransitionContractB2,
-} from "../order-contract-b2.js";
+import { orderStoreContractNarrowed } from "../order-store-contract-narrowed.js";
 import {
 	makeOrderHarness,
 	orderStoreHarness,
@@ -45,14 +39,14 @@ import { useD1Storage } from "./describe-d1.js";
 
 const bound = useD1Storage(ORDER_LAYOUT);
 
-orderStoreContractB2(async () => orderStoreHarness(makeOrderHarness(bound.storage)), {
+orderStoreContractNarrowed(async () => orderStoreHarness(makeOrderHarness(bound.storage)), {
 	dialect: "d1",
 });
-orderTransitionContractB2(
+orderTransitionContract(
 	async () => orderTransitionHarness(makeOrderHarness(bound.storage, { countingIds: true })),
 	{ dialect: "d1" },
 );
-orderTimelineContractB2(
+orderTimelineContract(
 	async () => orderTimelineHarness(makeOrderHarness(bound.storage, { countingIds: true })),
 	{ dialect: "d1" },
 );
@@ -75,3 +69,7 @@ orderCancellationContract(
 // The release bracket's sharp edge on D1 too — a full-harness case, shared with the
 // Node dialect suite rather than restated (see `order-cancellation-release.ts`).
 cancellationReleaseCase(() => makeOrderHarness(bound.storage));
+// The document model's own list / search / customer-union / locator statements, on the
+// dialect Otta ships on — where the list's indexed `query()` is planned by D1's SQLite
+// build rather than by better-sqlite3 or pg.
+orderListCases(() => bound.storage);

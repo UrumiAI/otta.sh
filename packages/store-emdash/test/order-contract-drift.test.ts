@@ -1,52 +1,49 @@
 /**
- * The drift guard for the staged contract slices.
+ * The drift guard for the one contract copy that survives.
  *
- * `test/order-contract-b2.ts` carries a COPY of the cases INC-B2 owns, because the
- * domain's contract suites register every case for the whole port and offer no
- * per-case filter (see that file's docblock). A copy is a drift risk by nature: the
- * domain can edit, add or rename a case and the copy would keep asserting the old
- * one, silently, and the run would stay green.
+ * `test/order-store-contract-narrowed.ts` carries a COPY of `orderStoreContract`,
+ * because the domain's contract suites register every case for the whole port and offer no
+ * per-case filter — and FOUR of its cases assert an unanchored `buyer_ref` SUBSTRING that
+ * the ratified prefix-only search cannot serve (see that file's docblock). The transition
+ * and timeline suites need no copy any more and call the domain's own functions directly.
+ * A copy is a drift risk by nature: the domain can edit, add or rename a case and the copy
+ * would keep asserting the old one, silently, and the run would stay green.
  *
- * So this file closes the loop from the other side. It reads the three domain
- * contract suites as TEXT, extracts every `test("…")` title, and asserts that the
- * staged file's ACTIVE titles plus its `test.todo` names cover exactly that set —
- * no title missing, none invented, none left with a stale spelling. A domain-side
- * edit therefore fails here, in this package, naming the case.
+ * So this file closes the loop from the other side. It reads the ONE domain suite the copy
+ * stands in for — `order-store-contract.ts`, now the single authority file — as TEXT,
+ * extracts every `test("…")` title, and asserts that the copy's ACTIVE titles plus its
+ * `test.todo` names cover exactly that set: no title missing, none invented, none left with
+ * a stale spelling. A domain-side edit therefore fails here, in this package, naming the
+ * case.
  *
- * It is a text scan on purpose. Importing the suites would register all 68 cases
- * against a store that cannot serve most of them yet, which is the very thing the
- * staging exists to avoid; and the thing at risk is the TITLE, which is text.
+ * It is a text scan on purpose. Importing the suite would register the four blocked cases
+ * against a store that cannot serve them, which is the very thing the copy exists to avoid;
+ * and the thing at risk is the TITLE, which is text.
  *
- * **What it does NOT check, stated plainly: the case BODIES.** It compares title sets
- * and nothing else, so a domain-side edit to a copied case's assertions passes here.
- * That residual is why the copy's own rule is "the only edits it may receive are
- * DELETIONS", and why the staging's end state is a deletion rather than a long life:
- * the guard catches a case that was added, removed or renamed, not one that was
- * rewritten in place.
+ * **What it does NOT check, stated plainly: the case BODIES.** It compares title sets and
+ * nothing else, so a domain-side edit to a copied case's assertions passes here. That
+ * residual is why the copy's own rule is "the only edits it may receive are DELETIONS": the
+ * guard catches a case that was added, removed or renamed, not one that was rewritten in
+ * place.
  *
- * INC-B3 un-todo'd 13 cases (copying each body verbatim); of the 33 that remain, 32
- * are INC-B4's and one is NOT COVERAGE at all — the forced-rollback case, which cannot
- * be driven on a document store. So the suffix this file accepts is either
- * `— lands in INC-B4` (optionally with a parenthesized reason) or an explicit
- * `— not coverage: …`, and nothing else.
- *
- * When INC-B4 lands the last method, this file and the staged copy go away together:
- * the three `.dialects.test.ts` files call the domain suites directly and there is no
- * copy left to drift.
+ * **The pins, and the single accepted suffix.** 43 titles must be ACTIVE and 4 must be
+ * todos, and every todo name must end with
+ * ` — blocked on the ratified search narrowing; needs a [Domain] contract change` — the one
+ * form this file accepts. The earlier `— lands in INC-B4` / `— not coverage: …` suffixes are
+ * gone with the staging they described: every method is implemented, so a todo here can only
+ * ever mean a semantic the storage cannot serve, and the remedy is a `[Domain]` change
+ * rather than further adapter work. When that change lands, this file and the copy go away
+ * together and `order-store-contract.dialects.test.ts` calls the domain suite directly.
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 
-/** The domain source files whose titles are the authority. */
-const SUITES = [
-	"order-store-contract.ts",
-	"order-transition-contract.ts",
-	"order-timeline-contract.ts",
-] as const;
+/** The domain source file whose titles are the authority. */
+const SUITES = ["order-store-contract.ts"] as const;
 
 const DOMAIN_TESTING = new URL("../../domain/src/testing/", import.meta.url);
-const STAGED = new URL("./order-contract-b2.ts", import.meta.url);
+const STAGED = new URL("./order-store-contract-narrowed.ts", import.meta.url);
 
 /**
  * Read a file relative to this test, as text, with comments removed.
@@ -65,7 +62,8 @@ function read(url: URL): string {
  * Every title registered by `test("…")` in a source text.
  *
  * The pattern deliberately accepts only a double-quoted literal on the same line as
- * the call, which is what oxfmt emits for every case in all four files; a title
+ * the call, which is what oxfmt emits for every case in the two files this guard reads
+ * (the domain suite and the copy — the transition and timeline copies are gone); a title
  * spelled any other way would show up as a MISSING title rather than being silently
  * skipped, which is the failure direction this guard wants.
  */
@@ -74,13 +72,16 @@ function activeTitles(source: string): string[] {
 }
 
 /**
- * The marker a todo name must end with: either the owning increment (optionally
- * followed by a parenthesized note saying what the case is waiting for), or an
- * explicit `not coverage: <reason>` for the one case that will never become real here
- * — the property it pins cannot be driven on a document store at all, so naming an
- * increment would promise work nobody should do.
+ * The marker a todo name must end with, and there is now exactly ONE accepted form.
+ *
+ * A todo here no longer means "a later increment will build the method" — every method
+ * is built. It means the case asserts a search semantic the ratified narrowing cannot
+ * serve, and the remedy is a `[Domain]` change to the port/contract rather than any
+ * further adapter work. Spelling that out in the name is what stops the residue from
+ * being read as unfinished adapter work and quietly re-owned.
  */
-const TODO_SUFFIX = / — (?:lands in INC-B4(?: \([^)]*\))?|not coverage: .+)$/;
+const TODO_SUFFIX =
+	/ — blocked on the ratified search narrowing; needs a \[Domain\] contract change$/;
 
 /** Every `test.todo("…")` title, exactly as registered (the marker still attached). */
 function todoSourceTitles(source: string): string[] {
@@ -106,7 +107,7 @@ describe("staged order contract slices do not drift from the domain suites", () 
 
 	test("every domain case is either copied or registered as a named todo, and nothing else is", () => {
 		const domain = SUITES.flatMap((name) => activeTitles(read(new URL(name, DOMAIN_TESTING))));
-		expect(domain.length).toBeGreaterThan(60); // the scan found the suites at all
+		expect(domain.length).toBeGreaterThan(40); // the scan found the suite at all
 
 		const covered = new Set([...stagedActive, ...stagedTodos]);
 		const missing = domain.filter((title) => !covered.has(title));
@@ -116,16 +117,16 @@ describe("staged order contract slices do not drift from the domain suites", () 
 		expect(covered.size).toBe(new Set(domain).size);
 	});
 
-	test("every todo names the increment that owns it, and every copied case is active", () => {
+	test("every todo names the narrowing that blocks it, and every copied case is active", () => {
 		const todoSource = todoSourceTitles(staged);
 		for (const title of todoSource) {
-			expect(title, `todo without an owning increment: ${title}`).toMatch(TODO_SUFFIX);
+			expect(title, `todo without a stated blocker: ${title}`).toMatch(TODO_SUFFIX);
 		}
-		// The two halves of the staging, in the proportions the evidence publishes:
-		// INC-B2's 22 plus INC-B3's 13 (7 of its own, 6 the email-outbox lease made
-		// servable), against the 33 that remain — 32 the lists increment owes, and one
-		// that is not coverage on this store at all.
-		expect(todoSource).toHaveLength(33);
-		expect(stagedActive).toHaveLength(35);
+		// The proportions the evidence publishes: 43 of `orderStoreContract`'s 47 cases
+		// run against the document store. The 4 that do not are blocked on the buyer_ref
+		// arm being a PREFIX rather than the port's unanchored SUBSTRING — a mid-string
+		// fragment, a bare `%`/`_`, a bare `\`, and the count taken under that predicate.
+		expect(todoSource).toHaveLength(4);
+		expect(stagedActive).toHaveLength(43);
 	});
 });

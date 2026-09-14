@@ -4,7 +4,7 @@
  * Every case here parks or fails ONE real write and then reads the documents back,
  * so what a replay heals is the state the store really leaves behind rather than a
  * state a mock was told to report. The seams are exactly the windows the document
- * model has, and there are nine of them (twelve cases — three seams are opened from
+ * model has, and there are eleven of them (fourteen cases — three seams are opened from
  * two sides each):
  *
  * 1. **The key claim landed, the order document did not.** The one window creation
@@ -33,6 +33,16 @@
  *    exactly once (never twice, never not at all).
  * 9. **A cancellation flipped, its release crashed.** The same shape as expiry's,
  *    through the cancel path: the intent survives and the units come back once.
+ * 10. **The order document landed, its DERIVED by-sku index documents did not.** The
+ *    search's line-sku arm IS those documents, so the window is "the order exists and
+ *    cannot be found by the sku it bought". Any resolve of the key re-asserts them, and
+ *    because each is create-if-absent on the `(sku, orderId)` pair, the heal writes one
+ *    document however many times it runs.
+ * 11. **The outbox entry landed, its LOCATOR did not.** The locator is a second
+ *    document written after the flip, so this is the one tear the settle path has. It
+ *    HEALS rather than failing: a claimed entry is in the `emailDueAt` index by
+ *    construction, so one bounded walk finds it and writes the locator, and the next
+ *    settle is a `get` again.
  */
 import {
 	cents,
@@ -51,12 +61,17 @@ import {
 	INVENTORY_COLLECTION,
 	normalizeOrderDoc,
 	ORDER_KEYS_COLLECTION,
+	ORDER_SKU_INDEX_COLLECTION,
+	orderSkuIndexId,
 	ORDERS_COLLECTION,
+	OUTBOX_KEYS_COLLECTION,
 	REFUND_KEYS_COLLECTION,
 	RESERVATION_INDEX_COLLECTION,
 	type InventoryDoc,
 	type OrderDoc,
 	type OrderKeyDoc,
+	type OrderSkuIndexDoc,
+	type OutboxKeyDoc,
 	type RefundKeyDoc,
 	type ReservationIndexDoc,
 } from "../src/index.js";
@@ -810,5 +825,108 @@ describeEachDialect("order crash seams", (ctx) => {
 			lost: [],
 		});
 		expect(await clean.onHand("SKU-CX"), "returned exactly once").toBe(5);
+	});
+
+	test("an order whose by-sku index documents never landed is healed by the replay, and written once", async () => {
+		const clean = await seed([{ sku: "SKU-1", product: "p1" }]);
+		const skuIndex = collectionOf<OrderSkuIndexDoc>(bound.storage, ORDER_SKU_INDEX_COLLECTION);
+		const orders = collectionOf<OrderDoc>(bound.storage, ORDERS_COLLECTION);
+		const keys = collectionOf<OrderKeyDoc>(bound.storage, ORDER_KEYS_COLLECTION);
+
+		// Fail the DERIVED write, leaving the order document and a still-claimed key. The
+		// index is written before the key is promoted precisely so this window is the one
+		// the claim-completion path already heals.
+		const crashing = failCall(skuIndex, isClaimWrite, { mode: "instead" });
+		const crashed = makeOrderHarness(bound.storage, {
+			share: clean.shared,
+			storageForOrders: withCollection(
+				bound.storage,
+				ORDER_SKU_INDEX_COLLECTION,
+				crashing.collection,
+			),
+		});
+		const cartId = await clean.cartWith([
+			{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" },
+		]);
+		await expectCrash(
+			createOrderFromCart(crashed.createDeps, {
+				cartId,
+				idempotencyKey: KEY,
+				buyerRef: "buyer@example.com",
+				paymentMethod: "stripe",
+			}),
+		);
+
+		// The seam, read off storage: the order is durable, the pointer is not, so the
+		// search's sku arm cannot reach an order that plainly bought the sku.
+		const claim = await keys.get(KEY);
+		if (claim === null) throw new Error("the crashed create must leave its key behind");
+		const id = claim.orderId;
+		expect(await orders.get(id)).not.toBeNull();
+		expect(await skuIndex.get(orderSkuIndexId("sku-1", id))).toBeNull();
+		expect((await clean.store.listOrders({ search: "SKU-1" }, { limit: 25 })).orders).toEqual([]);
+
+		// Any resolve of the key heals it — and re-resolving writes no second document,
+		// because the pair IS the id. **The heal fires only on a key REPLAY** (any path
+		// through `#resolveKey`): a crashed create whose pointer never landed and whose key
+		// is never replayed stays a residual for the sweeper, not something a read repairs.
+		expect(await clean.store.getByIdempotencyKey(KEY)).not.toBeNull();
+		expect(await skuIndex.get(orderSkuIndexId("sku-1", id))).toMatchObject({
+			sku: "sku-1",
+			orderId: id,
+		});
+		expect(await clean.store.getByIdempotencyKey(KEY)).not.toBeNull();
+		expect((await skuIndex.query({ where: { sku: "sku-1" }, limit: 100 })).items).toHaveLength(1);
+		const found = await clean.store.listOrders({ search: "SKU-1" }, { limit: 25 });
+		expect(found.orders.map((o) => o.id)).toEqual([id]);
+		expect(await clean.store.countOrders({ search: "SKU-1" })).toBe(1);
+	});
+
+	test("an outbox entry whose locator never landed is settled anyway: the walk heals it, once", async () => {
+		const clean = await seed([{ sku: "SKU-1", product: "p1" }]);
+		const outboxKeys = collectionOf<OutboxKeyDoc>(bound.storage, OUTBOX_KEYS_COLLECTION);
+		const orders = collectionOf<OrderDoc>(bound.storage, ORDERS_COLLECTION);
+		const cartId = await clean.cartWith([
+			{ sku: "SKU-1", productId: "p1", qty: 1, kind: "physical" },
+		]);
+		const res = await createOrderFromCart(clean.createDeps, {
+			cartId,
+			idempotencyKey: KEY,
+			buyerRef: "buyer@example.com",
+			paymentMethod: "stripe",
+		});
+		if (!res.ok) throw new Error(res.reason);
+
+		// Fail the LOCATOR's create-if-absent. The flip itself is a different collection,
+		// so it lands: the entry exists and nothing says which order holds it.
+		const crashing = failCall(outboxKeys, isClaimWrite, { mode: "instead" });
+		const crashed = makeOrderHarness(bound.storage, {
+			share: clean.shared,
+			storageForOrders: withCollection(bound.storage, OUTBOX_KEYS_COLLECTION, crashing.collection),
+		});
+		await expectCrash(crashed.store.markPaid(res.order.id));
+
+		// The seam: the flip, the audit event and the outbox entry are all durable — one
+		// write — and only the bracketed locator is missing.
+		const torn = normalizeOrderDoc((await orders.get(res.order.id)) as OrderDoc);
+		expect(torn.state).toBe("paid");
+		expect(torn.emailOutbox).toHaveLength(1);
+		const entryId = torn.emailOutbox[0]?.id;
+		if (entryId === undefined) throw new Error("the won flip must have enqueued an entry");
+		expect(await outboxKeys.get(entryId)).toBeNull();
+
+		// The settle path HEALS rather than failing loudly: a claimed entry is in the
+		// `emailDueAt` index by construction, so one bounded walk finds it — and writes the
+		// locator, so the next settle is a single `get`.
+		const claimed = await clean.store.claimNextEmail(
+			"2026-07-10T00:00:00.000Z",
+			"2026-07-10T00:05:00.000Z",
+		);
+		expect(claimed?.id).toBe(entryId);
+		await clean.store.markEmailSent(entryId, "2026-07-10T00:00:01.000Z");
+		expect(await outboxKeys.get(entryId)).toEqual({ orderId: res.order.id });
+		const settled = normalizeOrderDoc((await orders.get(res.order.id)) as OrderDoc);
+		expect(settled.emailOutbox[0]?.status).toBe("sent");
+		expect(settled.emailDueAt).toBeNull();
 	});
 });
