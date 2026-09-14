@@ -464,7 +464,7 @@ still design, not code.
 | `refund_keys` | refund idempotency key | — | — |
 | **†** `payment_refs` | provider reference | — | — |
 | **†** `outbox_keys` | outbox entry id | — | — |
-| **†** `order_notes` (not yet declared — the notes adapter's) | `${orderId}:${noteId}` | `orderId` | — |
+| **†** `order_notes` | note idempotency key | `orderId` | — |
 | **†** `order_sku_index` | `${foldedSku}:${orderId}` | `[sku, createdAt]` | — |
 | **†** `product_commerce` | productId | `productId`, `lifecycle`, `publishKey`, `productKind`, `taxClass`, `createdAt` | — |
 | `sku_owners` | sku | — | `sku` (declared; **not** the enforcement) |
@@ -472,15 +472,18 @@ still design, not code.
 | **†** `coupon_codes` | folded code | — | — |
 | **†** `coupon_redemptions` | `${couponId}:${idempotencyKey}` | `couponId`, `orderId`, `createdAt`, `redemptionId`, `holdsUse` | — |
 | `coupon_customer_caps` | `${couponId}:${customerId}` | — | — |
-| `customers` | customerId | — | — |
-| `customer_emails` | folded email | — | `email` (declared; **not** the enforcement) |
-| `sessions` | token hash | `customerId` | — |
-| `login_challenges` | challengeId | `emailLower`, `expiresAt` | — |
-| `entitlements` | grant idempotency key | `customerId`, `scope` | — |
-| `payment_events` | dedupe key | — | — |
+| **†** `customers` | customerId | `emailLower` | — |
+| **†** `customer_emails` | folded email | — | `emailLower` (declared; **not** the enforcement) |
+| **†** `sessions` | token hash | `customerId` | — |
+| **†** `login_challenges` | challengeId | `consumed`, `expiresAt` | — |
+| **†** `login_challenge_claims` | folded email | — | — |
+| **†** `entitlements` | grant idempotency key | `orderId`, `buyerRefLower`, `sku`, `state` | — |
+| **†** `entitlement_lookups` | `order:{orderId}:{sku}` / `buyer:{foldedRef}:{sku}` | — | — |
+| **†** `payment_events` | dedupe key | — | — |
+| **†** `payment_anomalies` | digest of the anomaly's own fields | — | — |
 | `shipping_zones` / `tax_classes` | zoneId / classId | — | — |
 | **†** `shipping_method_owners` / `tax_rate_owners` | methodId / rateId | — | — |
-| `settings` / `settings_mutations` | `"store"` / mutation key | — | — |
+| **†** `settings` / `settings_mutations` | `"store"` / mutation key | — | — |
 | `reporting_daily` | `${currency}:${YYYY-MM-DD}` | `currency`, `date` | — |
 
 **† Why the claim collections outnumber the aggregates.** Six of the marked rows are one device under
@@ -1091,6 +1094,9 @@ this amendment records what building them changed. Everything marked **†** in 
 corrected in place by this amendment; this section says what changed, why, and where the living detail
 is. The decision itself — one document per aggregate, a coupling made idempotently completable and swept
 — is **unchanged and reaffirmed**: nothing built needed a rule this record does not already state.
+
+**2026-09-14 (later): §4 rows corrected to the declared layout after the identity and misc
+stores landed.**
 
 Three kinds of change are recorded, and they are worth keeping apart:
 
