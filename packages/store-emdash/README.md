@@ -1177,6 +1177,220 @@ Both are reported per FILE by a final case that asserts them at or below
 `CAS_MAX_ATTEMPTS` (24) and strictly above zero, so a shape that silently stopped
 contending would fail rather than pass quietly.
 
+## Coupon document model
+
+`EmdashCouponStore` implements the whole `CouponStore` port. Four documents:
+
+| Collection | Doc id | Holds | Declared indexes |
+|---|---|---|---|
+| `coupons` | coupon id | the economics, the window, `usesCount`, and a best-effort `lastRedeemedKey` witness | `createdAt` |
+| `coupon_codes` | folded code | `{ code, couponId }` — the code-uniqueness claim, and the only way to reach a coupon by code | — |
+| `coupon_redemptions` | `${couponId}:${idempotencyKey}` | the per-key claim carrying the full intent, the bump-right `state` and its lease, then the RECORDED outcome | `couponId`, `orderId`, `createdAt`, `redemptionId`, `holdsUse` |
+| `coupon_customer_caps` | `${couponId}:${customerId}` | the keys currently holding a per-customer slot | — |
+
+| The SQL | Here |
+|---|---|
+| `uses_count + 1 WHERE max_uses IS NULL OR uses_count < max_uses` | two client-side branches — a guarded `updateIf` when capped, a plain delta when not |
+| `coupon_redemptions (coupon_id, idempotency_key)` UNIQUE | the document id, claimed create-if-absent |
+| the insert conflict that made a second caller of one key WAIT for the winner | that document's own `state`: `claimed → bumping` is a revision compare-and-set exactly one completer wins, under a lease |
+| a per-customer `COUNT(*)` taken under the coupon row's lock | the per-customer counter document, claimed BEFORE the bump |
+| `ROLLBACK` undoing a per-customer refusal | an explicit, idempotent compensation |
+| `uses_count - 1 WHERE uses_count > 0` | the mirror-image `updateIf` guard |
+| `DELETE … WHERE NOT EXISTS (redemptions)` | a `count()` on the coupon's redemptions holding a use, read before the delete |
+
+### The redemption state machine
+
+The coupon is read first and nothing is written until it is found. Then:
+
+1. **claim** `coupon_redemptions/{couponId}:{key}` create-if-absent, carrying the whole
+   intent in state `claimed`. A claim that is already TERMINAL is the replay answer and
+   no counter is touched — including for a REFUSAL.
+2. **claim the per-customer slot**, when the customer is identified and a cap is in
+   force: add this key to `coupon_customer_caps/…`. The cap is full ⇒ record
+   `COUPON_MAX_PER_CUSTOMER`, having consumed no global headroom at all.
+3. **take the bump right**: `claimed → bumping`, a compare-and-set on the key
+   document's revision. Exactly one completer wins it, and only the winner reaches the
+   counter. A caller that loses reads the winner's answer back.
+4. **re-assert the right, then bump the counter.** A compare-and-set at the revision
+   step 3 produced re-stamps the lease and proves the step is still ours; only then does
+   the guarded statement run, and it guards the cap and nothing else.
+5. **record** `applied` (or `refused`, after compensating) on the key document.
+
+**Why step 3 exists, and why the guard carries nothing but the cap.** N callers
+completing ONE idempotency key — which is what a retried checkout looks like — must add
+exactly one use. Making the guarded statement itself once-only would mean pinning a
+per-key witness into its `where`, which turns the delta into a revision compare-and-set:
+every redemption then contends with every OTHER redemption of the same coupon, and the
+retry depth grows with the CROWD rather than with the headroom (50 racers against the
+24-attempt ceiling can exhaust it on a coupon with 95 uses left). Worse, it is not even
+sufficient: a peer's bump overwrites the shared witness field, and a same-key replayer
+that no longer sees its own key there bumps again. So once-only lives in the key
+document, where it is per KEY and contends with nothing, and the counter's guard is the
+invariant alone. Both halves are pinned by `coupon-no-over-redeem.pg.test.ts`: 20
+completers of one key while 20 peer keys commit, capped and uncapped.
+
+**The bump right is leased, because "slow" and "gone" look identical.** A step held by a
+live owner and one held by a crashed owner are the same document, and a taker that
+guesses wrong bumps twice. So `bumping` carries `bumpLeaseUntil` — `COUPON_BUMP_LEASE_MS`,
+**10 seconds** by default, overridable per store with the `bumpLeaseMs` option — and a
+waiter takes the step over only once that lapses. Until then it re-reads, and if it runs
+out of patience it raises the typed retryable `StorageContentionError` so the caller's own
+retry reads the recorded answer. That is the email-outbox lease (ADR-0019 R2) applied to
+the same problem, and `coupon-crash-seams.dialects.test.ts` pins it from the forbidden
+side: with the owner's `+1` PARKED, a second completer of the same key must refuse
+retryably rather than add a use behind its back.
+
+**What a crashed completer costs the next caller.** A waiter is bounded by the
+compare-and-set budget — about a second — so it can never outlast a ten-second lease.
+While the lease still stands, a call on that key is answered `STORAGE_CONTENTION`
+(retryable, nothing written); past it, the next call takes the step over and completes it.
+So a crash mid-bump makes ONE key unavailable for up to the lease, with a typed retryable
+answer the whole time, and the coupon itself stays fully usable by every other key. A
+deployment that would rather trade a shorter unavailable window for a higher chance of
+overtaking a merely slow owner can lower `bumpLeaseMs`; the counter stays exact either
+way, because the lease is not what protects it.
+
+**The right is re-asserted, not merely taken — and that is what protects the counter.**
+A lease cannot stop an owner from being descheduled past its own expiry, having its step
+legitimately taken over and finished, and then waking up. So immediately before the
+counter write, the owner compare-and-sets the key document at the revision it last held
+(which doubles as renewing the lease). The taker's write moved that revision, so the woken
+owner is refused, adds nothing, and reads the taker's recorded answer. The revision IS the
+owner token: anything that writes the key document invalidates it, which is stronger than
+any id the store could have minted. `a SLOW owner woken after a legitimate takeover is
+fenced at its heartbeat` is that case, and a design that skipped the re-assertion fails it
+at the first assertion, before the takeover even happens.
+
+**Clock skew, and which side loses.** `bumpLeaseUntil` is stamped from the OWNER's clock
+and compared against the READER's, so a reader running ahead by more than the remaining
+lease will call a live owner gone and take the step over early. With the re-assertion in
+front of every counter write that is a LATENCY fault rather than a correctness one: of two
+callers that both believe they own the step, whichever writes the key document first
+fences the other out at its next heartbeat, so the counter still moves exactly once. The
+loser is a caller — refused retryably, or reading the winner's answer — never the data.
+
+**The counter's attempt depth is 2, whatever the crowd.** A redemption's guarded `+1`
+can be refused for exactly one reason — the coupon reached its cap — and the next read
+settles that, so the step never retries more than once (plus one per concurrent RELEASE
+that hands headroom back mid-flight). Capped redemptions of one coupon are therefore NOT
+serialized against each other: nothing is pinned but the invariant, so nothing contends
+until the invariant actually binds.
+
+### Coupon crash seams proven
+
+`test/coupon-crash-seams.dialects.test.ts`, with the shared fault injector:
+
+- **a PARKED guarded update** — the claim has landed and the counter has NOT moved. This
+  is also the proof that the helper really intercepts `updateIf`; without it every seam
+  below could pass while injecting nothing.
+- **a LIVE owner is never overtaken** — the peer of a parked owner refuses retryably, and
+  the counter does not move behind the owner's back.
+- **after the key-doc create, before the slot claim** — the replay takes the slot once
+  and bumps once; the record was still `claimed`, which provably owns nothing.
+- **after the per-customer slot, before the `+1`** — the replay completes the bump and
+  takes no second slot: counters exact.
+- **after the `+1`, before the recorded answer** — the witness survives, so the taker
+  recognises the bump and does not repeat it: counters exact.
+- **the same, with a PEER bump overwriting the witness** — the documented residual,
+  asserted rather than argued: two redemptions, three uses. ONE HIGH, never low.
+- **a refused `+1`** — the slot is given back and the refusal recorded, so a per-customer
+  rejection consumes no global headroom and a global refusal leaves no slot consumed.
+- **after the refusal, BEFORE its compensation** — the replay re-runs both, and the slot
+  still comes back.
+- **after the compensation, before the recorded answer** — the replay refuses again and
+  releases nothing twice.
+- **two CONCURRENT replayers of a refused key** — one answer, one compensation. The loser
+  can take its slot AFTER the winner has compensated, which is why the compensation is
+  re-asserted by every caller that is told `COUPON_EXHAUSTED` rather than only by the one
+  that ran the refusal.
+- **a SLOW owner woken after a legitimate takeover** — the lease lapses while the owner
+  is parked, a taker completes the redemption, and the woken owner is fenced at its
+  heartbeat: one use, one `applied` answer, and the owner returns the taker's redemption
+  id. The case also pins the ORDER — with the park held, the counter has not moved.
+- **between a release's slot-free and its delete** — the replay deletes and decrements
+  exactly once.
+- **between a release's delete and its decrement** — the second accepted residual,
+  asserted rather than papered over: the counter is left one HIGH, never low, and a second
+  release is a no-op rather than a second decrement. A release claims its decrement by
+  DELETING the record, which is what makes a double release impossible; the price is that
+  a crash in between leaves one use nobody holds.
+
+**The residuals are all the same residual, in the same direction.** A guarded delta in one
+document cannot be made idempotent by anything written in another, so every place where a
+crash can fall between the counter and its record leaves the count at most ONE HIGH per
+crash. High refuses a redemption that might have fit; it never grants one that does not.
+Nothing here can leave it low, which is the direction that would over-redeem. There are
+three such places, and the third is worth stating precisely because it is the one the
+heartbeat does NOT close:
+
+1. a crash after the `+1` and before the recorded answer, where a peer has overwritten the
+   witness — the taker re-bumps;
+2. a crash between a release's delete and its decrement — the use stays counted;
+3. a pause of more than a FULL LEASE between the heartbeat and the `updateIf` it fences.
+   The two are adjacent storage calls, so reaching this means being descheduled for ten
+   seconds between consecutive statements — an order of magnitude longer than the entire
+   call is allowed to take, since the whole retry budget is 24 sleeps of at most 50 ms.
+   Closing it would need the two writes to be one, which is the atomicity this store does
+   not have; a shorter `bumpLeaseMs` widens it and a longer one narrows it.
+
+Making (1) or (2) exact needs a recount of the coupon's redemption documents — a sweeper
+job, and not this store's to do on a request path.
+
+### Four deviations from the design's index table, all forced
+
+ADR-0019 §4 lists `coupons` keyed by **code** with a `createdAt` index, and
+`coupon_redemptions` indexed on `couponId` and `orderId`. What shipped:
+
+| Change | Why |
+|---|---|
+| `coupons` is keyed by **coupon id**, and the code becomes a claim document | `redeem`, `findById`, `update` and `delete` are all given an id, and the money path must not pay a lookup to reach the counter. The admin list is keyset-ordered on `(createdAt, id)` — which is the host's own total order only when the document id IS that id. The ADR's own `uniqueIndexes` table offers exactly this alternative for `coupons.code`: "the document id, or a claim document". The coupon's index list is unchanged at `createdAt` alone as a result, and the code search needs no index because it is a document read |
+| `coupon_redemptions` adds `createdAt` | `listRedemptionsCreatedBefore` both RANGES and ORDERS on it, and ordering by an undeclared field throws exactly as filtering on one does |
+| `coupon_redemptions` adds `redemptionId` | `release` is given the GENERATED id, not the document id — the port hands back an opaque id exactly as the SQL adapter did |
+| `coupon_redemptions` adds `holdsUse` | a refused key keeps a document (that is what lets a replay answer the same way twice), and it must stay out of the delete guard, `releaseByOrder` and the reconciliation sweep. A boolean cannot be bound as a filter value on one dialect, so it is a STRING mirror — the same pattern as the product gate's `publishKey`, not a second invention |
+
+The redemption's `state` and its lease are NOT indexed: nothing queries by them, and
+every reader that needs them already has the document.
+
+### Two accepted divergences from the SQL adapter
+
+Both are narrowings, both are documented rather than discovered:
+
+- **A refusal is recorded permanently**, so a replay of an exhausted key answers
+  `COUPON_EXHAUSTED` again even if headroom has since been released. The SQL adapter
+  rolled its refusal back and kept no record, so a retry there could later succeed. A
+  stable answer per idempotency key is the property the document model is built on. A
+  refused record is also never removed by `delete` — it holds no use, so it never forbids
+  one; it stays because it is that answer, and because document ids are not reused.
+- **Codes are unique after case folding**, where the SQL unique index was
+  case-sensitive. That is the rule the admin list's case-insensitive exact search already
+  implies. `findByCode` stays case-SENSITIVE, by comparing the code the claim stores.
+
+A per-customer counter document exists only while `maxUsesPerCustomer` is in force, so
+RAISING a cap from null counts only the redemptions made while a cap was set; the SQL
+counted rows, which had no such window. Bounded arrays were preferred to a faithful
+unbounded one here, and the alternative is a per-customer index on the redemptions.
+
+### Coupon contention, measured
+
+`test/coupon-no-over-redeem.pg.test.ts` measures the counter step (`redeem`) separately
+from the bounded wait a caller spends reading a peer's answer (`redeemAwait`), because
+they are different costs: one is a WRITE contending for an invariant, the other is reads.
+
+| shape | counter depth | wait depth |
+|---|---|---|
+| 50 racers on a 5-use cap (20 loops) | 2 | 1 |
+| two same-customer racers on a per-customer cap of 1 (15 loops) | 2 | 1 |
+| 20 racers completing ONE idempotency key | 1 | 4 |
+| 20 completers of one key WHILE 20 peer keys commit, capped and uncapped | 1 | — |
+| 40 racers on an UNCAPPED coupon | 1 | 1 |
+| 50 racers on a coupon with 95 uses left | 1 | 1 |
+
+The counter step is asserted at `<= 2` — a hard bound, not a measurement — and the
+overall depth against a hand-set `CAS_ATTEMPT_BUDGET` of 8, deliberately tighter than
+`CAS_MAX_ATTEMPTS`, so raising the package ceiling can never turn a shape green by
+accident. The last row is the one that says the depth follows the headroom and not the
+crowd: 50 racers, a 24-attempt ceiling, and nobody retries at all.
+
 ## Contention budget
 
 R2 has no structural fix — the aggregate is written by read-modify-write, so a hot
