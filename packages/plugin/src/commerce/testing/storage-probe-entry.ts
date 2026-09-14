@@ -17,8 +17,14 @@
  */
 
 import { createSandboxWorker } from "../../sandbox-entry.js";
-import type { SandboxedPlugin } from "../../types.js";
+import type { PluginContext, SandboxedPlugin } from "../../types.js";
 import { InProcessCommerceClient } from "../in-process-commerce-client.js";
+
+/** The store, or a failure a route can report rather than a crash. */
+function storageOf(ctx: PluginContext): NonNullable<PluginContext["storage"]> {
+	if (ctx.storage === undefined) throw new Error("this fixture needs a document store");
+	return ctx.storage;
+}
 
 const probePlugin: SandboxedPlugin = {
 	routes: {
@@ -37,6 +43,62 @@ const probePlugin: SandboxedPlugin = {
 			// depends on a JOIN across two collections rather than a single document.
 			const batch = await client.getCommerceBatch([productId, "probe-absent"]);
 			return { written, read, batch };
+		},
+
+		/**
+		 * The CONDITIONAL WRITE, end to end through the bridge — the primitive every
+		 * no-oversell guarantee rests on, and the one whose failure mode is silent: a
+		 * store whose revisions never change agrees with every compare-and-set it is
+		 * handed. So this drives a real one: create, read the revision, write against
+		 * it, then write against the STALE revision and report what came back.
+		 */
+		"storage-probe/conditional-write": async (routeCtx, ctx) => {
+			const input = routeCtx.input as { docId?: string };
+			const docId = input.docId ?? "probe-doc";
+			const settings = storageOf(ctx)["settings"];
+			if (settings === undefined) throw new Error("the settings collection is not declared");
+
+			const created = await settings.compareAndSet(docId, null, { round: 1 });
+			const first = await settings.getVersioned(docId);
+			const staleRevision = first?.revision ?? null;
+			const applied = await settings.compareAndSet(docId, staleRevision, { round: 2 });
+			// The same revision a second time: the row has moved on, so this must NOT
+			// apply, and it must hand back the revision that won.
+			const rejected = await settings.compareAndSet(docId, staleRevision, { round: 3 });
+			const final = await settings.getVersioned(docId);
+			return {
+				created,
+				applied,
+				rejected,
+				staleRevision,
+				finalRevision: final?.revision ?? null,
+				finalValue: final?.value ?? null,
+			};
+		},
+
+		/**
+		 * A TYPED failure crossing the bridge. The adapters test storage errors by
+		 * SHAPE rather than by class, precisely because an error that travelled over a
+		 * bridge arrives as data — so this asks a collection to filter on a field it
+		 * never declared as an index (a programming error the store refuses) and
+		 * reports what the isolate actually caught.
+		 */
+		"storage-probe/undeclared-index": async (_routeCtx, ctx) => {
+			const settings = storageOf(ctx)["settings"];
+			if (settings === undefined) throw new Error("the settings collection is not declared");
+			try {
+				await settings.query({ where: { neverDeclared: "x" } });
+				return { threw: false };
+			} catch (err) {
+				const shape = err as { name?: unknown; message?: unknown; field?: unknown };
+				return {
+					threw: true,
+					isError: err instanceof Error,
+					name: typeof shape.name === "string" ? shape.name : null,
+					message: typeof shape.message === "string" ? shape.message : null,
+					field: typeof shape.field === "string" ? shape.field : null,
+				};
+			}
 		},
 	},
 };

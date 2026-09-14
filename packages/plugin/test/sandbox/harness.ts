@@ -15,11 +15,18 @@
  * before bundling (plan §6 step 1 / §8 Risk 5), so `pnpm build`'s real
  * package output is never test-specific.
  *
- * `sandbox-storage.ts` is overwritten the same way, and for the same reason: the
- * isolate cannot build a document store (it is a database, and the isolate has no
- * driver and must never acquire one), so the store lives in this process and the
- * copy's collections proxy to it. Every boot therefore has a REAL `ctx.storage`,
- * whichever entry it runs — see `sandbox/storage-bridge.ts`.
+ * `sandbox-storage.ts` is overwritten the same way when — and ONLY when — a boot
+ * asks for storage (`storage: true`). The isolate cannot build a document store (it
+ * is a database, and the isolate has no driver and must never acquire one), so the
+ * store lives in this process and the copy's collections proxy to it over loopback.
+ *
+ * THAT IS OPT-IN, and the reason is a claim several suites make: with a single
+ * baked `allowedHost`, the stub server's recorded requests ARE the plugin's entire
+ * egress. The bridge's proxy calls `fetch` directly — it is the host's side of a
+ * bridge, not plugin egress, so it is not subject to `allowedHosts` — and binding
+ * it into every boot would quietly make that claim false. A suite that does not ask
+ * for a document store therefore does not get one, and keeps a context byte-identical
+ * to the one it always had.
  */
 import { spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
@@ -75,6 +82,15 @@ export interface SandboxOptions {
 	 *  scaffold's `admin/scaffold/testing/geo-entry.ts`) can be booted through
 	 *  the same `createSandboxWorker` bridge by pointing here. */
 	entry?: string;
+	/**
+	 * Bind a REAL document store to `ctx.storage` for this boot (default: no).
+	 *
+	 * OPT-IN on purpose — see this module's doc: the bridge that carries it calls
+	 * `fetch` directly, so binding it unconditionally would falsify the "the stub's
+	 * recorded requests are the plugin's entire egress" claim every proxy suite
+	 * makes. Ask for it only in a suite that exercises storage.
+	 */
+	storage?: boolean;
 }
 
 export type InvocationOutcome = { result: unknown } | { error: string };
@@ -293,14 +309,18 @@ export async function loadPluginInSandbox(options: SandboxOptions): Promise<Sand
 	await materializeWorkspacePackages(workDir);
 
 	// The worker side of the document-store bridge, written over the scratch copy
-	// exactly as `manifest.ts` is: `src/` stays free of it, so the egress guard's
-	// "one sanctioned fetch call site" claim about the real sources holds.
-	const bridge = await storageBridge();
-	await writeFile(
-		path.join(srcDir, "sandbox-storage.ts"),
-		sandboxStorageSource(bridge.baseUrl, COMMERCE_STORAGE_COLLECTION_NAMES),
-		"utf8",
-	);
+	// exactly as `manifest.ts` is — and ONLY for a boot that asked for storage, so
+	// a proxy suite's egress claim stays true. `src/` stays free of it either way,
+	// which is what keeps the egress guard's "one sanctioned fetch call site" claim
+	// about the real sources honest.
+	if (options.storage === true) {
+		const bridge = await storageBridge();
+		await writeFile(
+			path.join(srcDir, "sandbox-storage.ts"),
+			sandboxStorageSource(bridge.baseUrl, COMMERCE_STORAGE_COLLECTION_NAMES),
+			"utf8",
+		);
+	}
 
 	const entryRel = options.entry ?? "sandbox-entry.ts";
 	const distDir = path.join(workDir, "dist");

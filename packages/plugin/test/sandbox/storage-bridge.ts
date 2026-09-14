@@ -105,7 +105,9 @@ async function start(): Promise<StorageBridge> {
 					reply(404, { error: serializeError(new Error(`unknown collection '${name}'`)) });
 					return;
 				}
-				const method = METHODS.find((candidate) => candidate === call.method);
+				const method = METHODS.find(
+					(candidate) => typeof call.method === "string" && candidate === call.method,
+				);
 				if (method === undefined) {
 					reply(400, {
 						error: serializeError(new Error(`unknown method '${String(call.method)}'`)),
@@ -114,7 +116,18 @@ async function start(): Promise<StorageBridge> {
 				}
 				const args = Array.isArray(call.args) ? call.args : [];
 				const target = collection as unknown as Record<string, (...rest: unknown[]) => unknown>;
+				// The name came from the closed list above, and the collection must
+				// actually answer it — a repository missing one of the nine is a wiring
+				// fault worth a loud reply rather than "x is not a function" in the isolate.
+				if (typeof target[method] !== "function") {
+					reply(400, { error: serializeError(new Error(`collection cannot ${method}`)) });
+					return;
+				}
 				const result = await target[method]!(...args);
+				// `undefined → null`, because JSON has no undefined: `put` and `delete`
+				// resolve void/boolean, and a void reply crosses as null and is read back
+				// as a void. The methods that return a document already answer `null` for
+				// "absent", so nothing ambiguous is created by the coercion.
 				reply(200, { result: result ?? null });
 			} catch (err) {
 				reply(500, { error: serializeError(err) });

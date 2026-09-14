@@ -198,6 +198,25 @@ function resultOf(outcome: unknown): Record<string, unknown> {
 }
 
 describe("storefront cart routes (workerd sandbox)", () => {
+	/**
+	 * THE EGRESS CLAIM, ASSERTED RATHER THAN STATED. The module doc above says the
+	 * stub's recorded requests are the plugin's entire network surface. That is only
+	 * true while nothing else in the boot can reach the network — which is why the
+	 * document-store bridge (a `fetch` the host side of a bridge makes, outside the
+	 * allowed-hosts gate) is OPT-IN per boot and this suite does not ask for it. A
+	 * route that exercised a second egress path would show up here as a count this
+	 * suite's own stub never recorded, so pin the shape: one cart round trip, one
+	 * recorded request, nothing else.
+	 */
+	test("the stub records every request the plugin makes and there is no second egress path", async () => {
+		stubServer.requests.length = 0;
+		const created = resultOf(await sandboxHandle.invokeRoute("storefront/cart/create", {}));
+		const cartId = String((created as { cartId?: unknown }).cartId);
+		// Exactly the calls that route makes, and not one more from anywhere else.
+		expect(stubServer.requests.map((req) => `${req.method} ${req.url}`)).toEqual(["POST /carts"]);
+		expect(cartId.length).toBeGreaterThan(0);
+	});
+
 	test("cart/create proxies POST /carts and returns the cart-cookie descriptor for the theme shim", async () => {
 		const result = resultOf(
 			await sandboxHandle.invokeRoute("storefront/cart/create", { currency: "USD" }),
