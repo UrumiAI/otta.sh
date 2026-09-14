@@ -29,7 +29,13 @@ reportingStoreContract(async () => makeReportingHarness(bound.storage), { dialec
 test("a crash between the claim and the counters under-counts, and the recompute repairs it", async () => {
 	const h = makeReportingHarness(bound.storage);
 	const day = "2026-07-04T09:00:00.000Z";
-	await h.seedOrder({ id: "d1a", state: "pending", currency: "USD", createdAt: day, totalCents: 1200 });
+	await h.seedOrder({
+		id: "d1a",
+		state: "pending",
+		currency: "USD",
+		createdAt: day,
+		totalCents: 1200,
+	});
 
 	const failing = failCall(bound.collection(REPORTING_DAILY_COLLECTION), () => true, {
 		mode: "instead",

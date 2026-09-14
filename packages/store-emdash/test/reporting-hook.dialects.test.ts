@@ -17,7 +17,8 @@
  *    transition committed, the order readable, and the caller's answer unchanged —
  *    the recompute is what makes the counters exact again.
  */
-import { createOrderFromCart, currency, idempotencyKey, cents } from "@otta-sh/domain";
+import { cents, createOrderFromCart, currency, idempotencyKey, orderId } from "@otta-sh/domain";
+import type { SeedOrderSummaryRow } from "@otta-sh/domain/testing";
 import { expect, test } from "vitest";
 import type { ReportingOrderEvent, ReportingRollupWriter } from "../src/index.js";
 import { describeEachDialect } from "./describe-each-dialect.js";
@@ -47,15 +48,36 @@ const throwing: ReportingRollupWriter = {
 const SEEDED_AT = "2026-07-10T00:00:00.000Z";
 
 /** One bare seeded order, at a known instant, state and total. */
-async function seeded(h: OrderHarness, id: string, state: string, total: number): Promise<void> {
+async function seeded(
+	h: OrderHarness,
+	id: string,
+	state: SeedOrderSummaryRow["state"],
+	total: number,
+): Promise<void> {
 	await h.seedOrder({
 		id,
-		state: state as never,
+		state,
 		currency: "USD",
 		createdAt: SEEDED_AT,
 		buyerRef: `${id}@example.test`,
 		totalCents: total,
-	} as never);
+	});
+}
+
+/**
+ * A captured payment, because the refund CEILING is what was captured (arbitrated
+ * against the frozen total), not what the order says it owes — a seeded order with no
+ * payments can be refunded by nothing at all.
+ */
+async function captured(h: OrderHarness, id: string, amount: number): Promise<void> {
+	await h.store.recordPayment({
+		orderId: orderId(id),
+		gateway: "stripe",
+		providerRef: `pi-${id}`,
+		amount: cents(amount),
+		currency: currency("USD"),
+		status: "succeeded",
+	});
 }
 
 describeEachDialect("EmdashOrderStore reporting hook", (ctx) => {
@@ -65,7 +87,7 @@ describeEachDialect("EmdashOrderStore reporting hook", (ctx) => {
 		const { writer, events } = recorder();
 		const h = makeOrderHarness(bound.storage, { reporting: writer });
 		await seeded(h, "h1", "pending", 4321);
-		expect(await h.store.markPaid("h1")).toBe(true);
+		expect(await h.store.markPaid(orderId("h1"))).toBe(true);
 		expect(events).toEqual([
 			{
 				kind: "transition",
@@ -83,8 +105,8 @@ describeEachDialect("EmdashOrderStore reporting hook", (ctx) => {
 		const { writer, events } = recorder();
 		const h = makeOrderHarness(bound.storage, { reporting: writer });
 		await seeded(h, "h2", "pending", 100);
-		expect(await h.store.markPaid("h2")).toBe(true);
-		expect(await h.store.markPaid("h2")).toBe(false);
+		expect(await h.store.markPaid(orderId("h2"))).toBe(true);
+		expect(await h.store.markPaid(orderId("h2"))).toBe(false);
 		expect(events).toHaveLength(1);
 	});
 
@@ -110,7 +132,7 @@ describeEachDialect("EmdashOrderStore reporting hook", (ctx) => {
 			{
 				kind: "transition",
 				orderId: res.order.id,
-				orderCreatedAt: res.order.createdAt.toISOString(),
+				orderCreatedAt: res.order.createdAt,
 				currency: "USD",
 				fromState: null,
 				toState: "pending",
@@ -132,8 +154,9 @@ describeEachDialect("EmdashOrderStore reporting hook", (ctx) => {
 		const { writer, events } = recorder();
 		const h = makeOrderHarness(bound.storage, { reporting: writer });
 		await seeded(h, "h3", "paid", 1000);
+		await captured(h, "h3", 1000);
 		const recorded = await h.store.recordRefund({
-			orderId: "h3" as never,
+			orderId: orderId("h3"),
 			amount: cents(250),
 			currency: currency("USD"),
 			kind: "manual",
@@ -160,8 +183,9 @@ describeEachDialect("EmdashOrderStore reporting hook", (ctx) => {
 		const { writer, events } = recorder();
 		const h = makeOrderHarness(bound.storage, { reporting: writer });
 		await seeded(h, "h4", "paid", 900);
+		await captured(h, "h4", 900);
 		const recorded = await h.store.recordRefund({
-			orderId: "h4" as never,
+			orderId: orderId("h4"),
 			amount: cents(900),
 			currency: currency("USD"),
 			kind: "manual",
@@ -193,7 +217,7 @@ describeEachDialect("EmdashOrderStore reporting hook", (ctx) => {
 		]);
 		// A replay of the same refund key writes nothing, so it owes no event.
 		await h.store.recordRefund({
-			orderId: "h4" as never,
+			orderId: orderId("h4"),
 			amount: cents(900),
 			currency: currency("USD"),
 			kind: "manual",
@@ -210,18 +234,19 @@ describeEachDialect("EmdashOrderStore reporting hook", (ctx) => {
 		const h = makeOrderHarness(bound.storage, { reporting: throwing });
 		await seeded(h, "h5", "pending", 777);
 		// The store's answer is unchanged: the flip won.
-		expect(await h.store.markPaid("h5")).toBe(true);
+		expect(await h.store.markPaid(orderId("h5"))).toBe(true);
 		expect((await h.orders.get("h5"))?.state).toBe("paid");
-		expect((await h.store.getById("h5" as never))?.state).toBe("paid");
+		expect((await h.store.getById(orderId("h5")))?.state).toBe("paid");
 		// And a second flip still refuses, so no state was left half-written.
-		expect(await h.store.markPaid("h5")).toBe(false);
+		expect(await h.store.markPaid(orderId("h5"))).toBe(false);
 	});
 
 	test("a writer that throws does not fail a refund either", async () => {
 		const h = makeOrderHarness(bound.storage, { reporting: throwing });
 		await seeded(h, "h6", "paid", 500);
+		await captured(h, "h6", 500);
 		const recorded = await h.store.recordRefund({
-			orderId: "h6" as never,
+			orderId: orderId("h6"),
 			amount: cents(500),
 			currency: currency("USD"),
 			kind: "manual",

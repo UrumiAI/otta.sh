@@ -43,35 +43,155 @@ interface SeedRefund {
 /** 20 orders over two months, two currencies and both week boundaries. */
 const SEED_ORDERS: SeedOrder[] = [
 	// Sunday 2026-06-28 — the week of Mon 2026-06-22.
-	{ id: "s1", state: "paid", currency: "USD", createdAt: "2026-06-28T23:59:59.999Z", totalCents: 1100 },
+	{
+		id: "s1",
+		state: "paid",
+		currency: "USD",
+		createdAt: "2026-06-28T23:59:59.999Z",
+		totalCents: 1100,
+	},
 	// Monday 2026-06-29 — a new week, still June.
-	{ id: "s2", state: "completed", currency: "USD", createdAt: "2026-06-29T00:00:00.000Z", totalCents: 2200 },
-	{ id: "s3", state: "pending", currency: "USD", createdAt: "2026-06-29T06:00:00.000Z", totalCents: 9900 },
+	{
+		id: "s2",
+		state: "completed",
+		currency: "USD",
+		createdAt: "2026-06-29T00:00:00.000Z",
+		totalCents: 2200,
+	},
+	{
+		id: "s3",
+		state: "pending",
+		currency: "USD",
+		createdAt: "2026-06-29T06:00:00.000Z",
+		totalCents: 9900,
+	},
 	// Tuesday 2026-06-30 — last day of the month, same week as s2.
-	{ id: "s4", state: "shipped", currency: "EUR", createdAt: "2026-06-30T12:00:00.000Z", totalCents: 3300 },
-	{ id: "s5", state: "refunded", currency: "EUR", createdAt: "2026-06-30T13:00:00.000Z", totalCents: 4400 },
+	{
+		id: "s4",
+		state: "shipped",
+		currency: "EUR",
+		createdAt: "2026-06-30T12:00:00.000Z",
+		totalCents: 3300,
+	},
+	{
+		id: "s5",
+		state: "refunded",
+		currency: "EUR",
+		createdAt: "2026-06-30T13:00:00.000Z",
+		totalCents: 4400,
+	},
 	// Wednesday 2026-07-01 — new MONTH, same week as s2/s4.
-	{ id: "s6", state: "delivered", currency: "USD", createdAt: "2026-07-01T00:00:00.001Z", totalCents: 5500 },
-	{ id: "s7", state: "cancelled", currency: "USD", createdAt: "2026-07-01T10:00:00.000Z", totalCents: 6600 },
-	{ id: "s8", state: "processing", currency: "EUR", createdAt: "2026-07-01T11:00:00.000Z", totalCents: 7700 },
+	{
+		id: "s6",
+		state: "delivered",
+		currency: "USD",
+		createdAt: "2026-07-01T00:00:00.001Z",
+		totalCents: 5500,
+	},
+	{
+		id: "s7",
+		state: "cancelled",
+		currency: "USD",
+		createdAt: "2026-07-01T10:00:00.000Z",
+		totalCents: 6600,
+	},
+	{
+		id: "s8",
+		state: "processing",
+		currency: "EUR",
+		createdAt: "2026-07-01T11:00:00.000Z",
+		totalCents: 7700,
+	},
 	// Sunday 2026-07-05 / Monday 2026-07-06 — the second week split.
-	{ id: "s9", state: "paid", currency: "USD", createdAt: "2026-07-05T22:00:00.000Z", totalCents: 1200 },
-	{ id: "s10", state: "paid", currency: "USD", createdAt: "2026-07-06T02:00:00.000Z", totalCents: 1300 },
-	{ id: "s11", state: "expired", currency: "EUR", createdAt: "2026-07-06T03:00:00.000Z", totalCents: 8800 },
-	{ id: "s12", state: "failed", currency: "USD", createdAt: "2026-07-06T04:00:00.000Z", totalCents: 7000 },
+	{
+		id: "s9",
+		state: "paid",
+		currency: "USD",
+		createdAt: "2026-07-05T22:00:00.000Z",
+		totalCents: 1200,
+	},
+	{
+		id: "s10",
+		state: "paid",
+		currency: "USD",
+		createdAt: "2026-07-06T02:00:00.000Z",
+		totalCents: 1300,
+	},
+	{
+		id: "s11",
+		state: "expired",
+		currency: "EUR",
+		createdAt: "2026-07-06T03:00:00.000Z",
+		totalCents: 8800,
+	},
+	{
+		id: "s12",
+		state: "failed",
+		currency: "USD",
+		createdAt: "2026-07-06T04:00:00.000Z",
+		totalCents: 7000,
+	},
 	// A ZERO-total order in a revenue-counting state: a bucket at 0, never absent.
-	{ id: "s13", state: "paid", currency: "GBP", createdAt: "2026-07-07T09:00:00.000Z", totalCents: 0 },
+	{
+		id: "s13",
+		state: "paid",
+		currency: "GBP",
+		createdAt: "2026-07-07T09:00:00.000Z",
+		totalCents: 0,
+	},
 	// A day whose ONLY activity is a refund (the order is `refunded`, so no revenue).
-	{ id: "s14", state: "refunded", currency: "USD", createdAt: "2026-07-08T09:00:00.000Z", totalCents: 2500 },
+	{
+		id: "s14",
+		state: "refunded",
+		currency: "USD",
+		createdAt: "2026-07-08T09:00:00.000Z",
+		totalCents: 2500,
+	},
 	// Several states on one day in one currency, so a state bucket holds more than 1.
-	{ id: "s15", state: "paid", currency: "USD", createdAt: "2026-07-09T01:00:00.000Z", totalCents: 1000 },
-	{ id: "s16", state: "paid", currency: "USD", createdAt: "2026-07-09T02:00:00.000Z", totalCents: 1000 },
-	{ id: "s17", state: "pending", currency: "USD", createdAt: "2026-07-09T03:00:00.000Z", totalCents: 1000 },
-	{ id: "s18", state: "pending", currency: "EUR", createdAt: "2026-07-09T04:00:00.000Z", totalCents: 1000 },
+	{
+		id: "s15",
+		state: "paid",
+		currency: "USD",
+		createdAt: "2026-07-09T01:00:00.000Z",
+		totalCents: 1000,
+	},
+	{
+		id: "s16",
+		state: "paid",
+		currency: "USD",
+		createdAt: "2026-07-09T02:00:00.000Z",
+		totalCents: 1000,
+	},
+	{
+		id: "s17",
+		state: "pending",
+		currency: "USD",
+		createdAt: "2026-07-09T03:00:00.000Z",
+		totalCents: 1000,
+	},
+	{
+		id: "s18",
+		state: "pending",
+		currency: "EUR",
+		createdAt: "2026-07-09T04:00:00.000Z",
+		totalCents: 1000,
+	},
 	// Outside every window asserted below — a refund against it must not leak in.
-	{ id: "s19", state: "paid", currency: "USD", createdAt: "2026-05-01T09:00:00.000Z", totalCents: 4000 },
+	{
+		id: "s19",
+		state: "paid",
+		currency: "USD",
+		createdAt: "2026-05-01T09:00:00.000Z",
+		totalCents: 4000,
+	},
 	// The last day of the widest window, so an inclusive `to` is exercised.
-	{ id: "s20", state: "completed", currency: "EUR", createdAt: "2026-07-10T23:00:00.000Z", totalCents: 9100 },
+	{
+		id: "s20",
+		state: "completed",
+		currency: "EUR",
+		createdAt: "2026-07-10T23:00:00.000Z",
+		totalCents: 9100,
+	},
 ];
 
 const SEED_REFUNDS: SeedRefund[] = [
@@ -256,7 +376,10 @@ describeEachDialect("EmdashReportingStore seeded aggregates", (ctx) => {
 			await seedManyDays(h);
 			const tight = makeReportingHarness(bound.storage, { maxReportPages: 1, clock: h.clock });
 			const failure = await tight.store
-				.revenueByPeriod({ from: "2026-01-01T00:00:00.000Z", to: "2026-05-31T23:59:59.999Z" }, "day")
+				.revenueByPeriod(
+					{ from: "2026-01-01T00:00:00.000Z", to: "2026-05-31T23:59:59.999Z" },
+					"day",
+				)
 				.then(
 					() => null,
 					(err: unknown) => err,

@@ -122,7 +122,9 @@ import {
 	type CancelOrderInput,
 	type CancelOrderStoreResult,
 	type CapturedPayment,
+	type Cents,
 	type Clock,
+	type Currency,
 	type CreateOrderInput,
 	type CreateOrderResult,
 	type CustomerId,
@@ -209,6 +211,7 @@ import {
 	type RefundKeyDoc,
 	searchKeyFor,
 } from "./order-documents.js";
+import type { ReportingRollupWriter } from "./reporting-documents.js";
 import type {
 	OrderBy,
 	StorageAccess,
@@ -265,7 +268,32 @@ export interface EmdashOrderStoreOptions {
 	 * hold-expiry backlog or the number of messages in flight.
 	 */
 	maxListPages?: number;
+	/**
+	 * Where this store reports its state transitions and finalized refunds, so the
+	 * reporting rollups can be kept without any read-time aggregate.
+	 *
+	 * **Additive in the strongest sense.** It defaults to a no-op, it is called only
+	 * AFTER the order write it describes is durable, it is never consulted for a
+	 * decision, and a writer that throws changes nothing about this store's answer —
+	 * reporting is derived data and a transition is not, so a reporting outage must
+	 * never be able to refuse a payment or lose a refund. The counters it feeds are
+	 * restored to exactness by a recompute, which is what makes swallowing the failure
+	 * the honest choice rather than a silent one.
+	 */
+	reporting?: ReportingRollupWriter;
 }
+
+/**
+ * The rollup writer a store that was given none reports to: nothing at all.
+ *
+ * A default rather than an optional call site, so every hook below is one
+ * unconditional line and no path can forget the `?.`.
+ */
+const NO_REPORTING: ReportingRollupWriter = {
+	async recordOrderEvent() {
+		// Reporting is opt-in; a store wired without it keeps no rollups.
+	},
+};
 
 /** How many pages `listExpirable` will walk before it refuses to loop further. */
 const MAX_EXPIRY_PAGES = 1000;
@@ -324,6 +352,7 @@ export class EmdashOrderStore implements OrderStore {
 	readonly #maxExpiryPages: number;
 	readonly #maxOutboxPages: number;
 	readonly #maxListPages: number;
+	readonly #reporting: ReportingRollupWriter;
 
 	constructor(options: EmdashOrderStoreOptions) {
 		this.#orders = collectionOf<OrderDoc>(options.storage, ORDERS_COLLECTION);
@@ -338,6 +367,7 @@ export class EmdashOrderStore implements OrderStore {
 		this.#maxExpiryPages = options.maxExpiryPages ?? MAX_EXPIRY_PAGES;
 		this.#maxOutboxPages = options.maxOutboxPages ?? MAX_OUTBOX_PAGES;
 		this.#maxListPages = options.maxListPages ?? MAX_LIST_PAGES;
+		this.#reporting = options.reporting ?? NO_REPORTING;
 		this.#retry = {
 			maxAttempts: options.maxCasAttempts,
 			onAttempts: options.onCasAttempts,
@@ -842,6 +872,8 @@ export class EmdashOrderStore implements OrderStore {
 				// The full-refund path composes `#flipped` rather than `#flip`, so it brackets
 				// its own locator — same ordering, same reason.
 				if (fullyRefunded) await this.#recordOutboxLocator(next, "refunded");
+				await this.#reportRefund(next, finalized.currency, finalized.id, finalized.amount);
+				if (fullyRefunded) await this.#reportTransition(next, doc.state, "refunded");
 				return casDone({
 					found: true,
 					alreadyFinalized: false,
@@ -1298,6 +1330,11 @@ export class EmdashOrderStore implements OrderStore {
 		// would leave a terminal key over an order the search cannot find by sku.
 		await this.#indexOrderSkus(normalizeOrderDoc(stored));
 		await this.#terminalizeKey(key, prepared.orderId);
+		// The order's ARRIVAL, reported only by the caller whose create actually landed:
+		// a replay or a heal completing somebody else's claim wrote no state and owes no
+		// event. `ordersByStatus` counts `pending` orders, so the rollups cannot learn
+		// about an order from its first transition alone.
+		if (written.applied) await this.#reportTransition(stored, null, stored.state);
 		return toOrder(normalizeOrderDoc(stored));
 	}
 
@@ -1464,15 +1501,20 @@ export class EmdashOrderStore implements OrderStore {
 					fullyRefunded = true;
 				}
 				const applied = await this.#orders.compareAndSet(orderId, current.revision, next);
-				return applied.applied
-					? casDone({
-							outcome: "recorded" as const,
-							refund: toRefundRecord(intent, orderId as OrderId),
-							fullyRefunded,
-							capturedTotal,
-							frozenTotal,
-						})
-					: CAS_RETRY;
+				if (!applied.applied) return CAS_RETRY;
+				// A RESERVED refund is not money that came back, so only a finalized one is
+				// reported; the ceiling-reaching one also reports the flip it folded in.
+				if (intent.status === "recorded") {
+					await this.#reportRefund(next, intent.currency, intent.id, intent.amount);
+				}
+				if (fullyRefunded) await this.#reportTransition(next, doc.state, "refunded");
+				return casDone({
+					outcome: "recorded" as const,
+					refund: toRefundRecord(intent, orderId as OrderId),
+					fullyRefunded,
+					capturedTotal,
+					frozenTotal,
+				});
 			},
 		);
 		if (result.refund !== null) {
@@ -1592,6 +1634,9 @@ export class EmdashOrderStore implements OrderStore {
 			// The locator, bracketed AFTER the flip (see `#recordOutboxLocator`). Only the
 			// enqueueing flip has one to record.
 			if (input.enqueueEmail) await this.#recordOutboxLocator(next, input.toState);
+			// The rollup, after everything this flip owes is durable. Reached only on a WON
+			// flip, and `casDone` ends the retry loop, so it fires exactly once per move.
+			await this.#reportTransition(next, input.fromState, input.toState);
 			return casDone<FlipOutcome>({ won: true, doc: next });
 		});
 	}
@@ -2040,6 +2085,59 @@ export class EmdashOrderStore implements OrderStore {
 			cursor = result.cursor;
 		}
 		throw new ScanPageLimitError("settleEmail", this.#maxOutboxPages, 0, "maxOutboxPages");
+	}
+
+	/**
+	 * Report one durable transition to the rollups, and swallow whatever it does.
+	 *
+	 * **The swallow is the contract, not laziness.** By the time this runs the state
+	 * write has committed, so a throw here would tell the caller its transition failed
+	 * when it did not — the worst possible lie about a payment. What is lost instead is a
+	 * counter, in the UNDER-counting direction, and the reporting adapter's recompute is
+	 * the routine that restores it. The retry helper would not absorb this throw either:
+	 * it only re-runs on a retryable storage abort, so an uncaught reporting failure
+	 * would escape as the store call's own error.
+	 */
+	async #reportTransition(
+		doc: OrderDoc,
+		fromState: OrderState | null,
+		toState: OrderState,
+	): Promise<void> {
+		try {
+			await this.#reporting.recordOrderEvent({
+				kind: "transition",
+				orderId: doc.orderId,
+				orderCreatedAt: doc.createdAt,
+				currency: doc.currency,
+				fromState,
+				toState,
+				orderTotalCents: doc.totals.total,
+			});
+		} catch {
+			// Swallowed by design — see this method's docblock.
+		}
+	}
+
+	/** Report one FINALIZED refund to the rollups. Swallowed for the same reason. */
+	async #reportRefund(
+		doc: OrderDoc,
+		currency: Currency,
+		refundId: string,
+		amount: Cents,
+	): Promise<void> {
+		try {
+			await this.#reporting.recordOrderEvent({
+				kind: "refund",
+				orderId: doc.orderId,
+				orderCreatedAt: doc.createdAt,
+				// The REFUND's currency, which is the bucket the money came back into.
+				currency,
+				refundId,
+				refundedCents: amount,
+			});
+		} catch {
+			// Swallowed by design — see `#reportTransition`.
+		}
 	}
 
 	#casOrder<T>(operation: string, step: (attempt: number) => Promise<CasStep<T>>): Promise<T> {

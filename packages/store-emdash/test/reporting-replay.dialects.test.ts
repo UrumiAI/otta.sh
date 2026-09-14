@@ -16,7 +16,11 @@
  */
 import { expect, test } from "vitest";
 import type { DateRange } from "@otta-sh/domain";
-import { isScanPageLimitError, type ReportingDailyDoc, type ReportingOrderEvent } from "../src/index.js";
+import {
+	isScanPageLimitError,
+	type ReportingDailyDoc,
+	type ReportingOrderEvent,
+} from "../src/index.js";
 import { describeEachDialect } from "./describe-each-dialect.js";
 import { REPORTING_LAYOUT } from "./reporting-collections.js";
 import { makeReportingHarness, type ReportingHarness } from "./reporting-harness.js";
@@ -49,7 +53,10 @@ const CURRENCIES = ["USD", "EUR"];
  * 18 orders spread over the window, each walked some distance down a chain and
  * some of them refunded. Returns every event in the order it was applied.
  */
-async function driveSequence(h: ReportingHarness, seed = 20_260_914): Promise<ReportingOrderEvent[]> {
+async function driveSequence(
+	h: ReportingHarness,
+	seed = 20_260_914,
+): Promise<ReportingOrderEvent[]> {
 	const rand = lcg(seed);
 	const events: ReportingOrderEvent[] = [];
 	for (let i = 0; i < 18; i++) {
@@ -129,7 +136,7 @@ describeEachDialect("EmdashReportingStore replay equivalence", (ctx) => {
 		for (const event of events) await h.store.recordOrderEvent(event);
 		expect(values(await h.dailyDocs())).toEqual(live);
 		// And a third time, out of order, is still nothing.
-		for (const event of [...events].reverse()) await h.store.recordOrderEvent(event);
+		for (const event of events.toReversed()) await h.store.recordOrderEvent(event);
 		expect(values(await h.dailyDocs())).toEqual(live);
 	});
 

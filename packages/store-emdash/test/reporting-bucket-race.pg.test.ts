@@ -19,6 +19,12 @@
  * anybody (every distinct event legitimately moves a counter), so a writer can lose
  * its revision once per peer that commits ahead of it. That is the shipping/tax-rules
  * shape, which is why the crowd is 24 rather than larger — see `CAS_MAX_ATTEMPTS`.
+ *
+ * **Measured at a depth of 12 at N=24**, four loops — the same depth the rules
+ * documents measure at the same crowd size, and half the 24-attempt ceiling. Nothing is
+ * refused at this size; the headroom is what the extra attempts buy, and a busier day
+ * would spend more of it before the typed contention refusal (which is retryable and
+ * writes nothing) rather than reporting a wrong total.
  */
 import { describe, expect, test } from "vitest";
 import { CAS_MAX_ATTEMPTS, isStorageContentionError } from "../src/index.js";
@@ -92,7 +98,9 @@ describe.skipIf(!PG_ENABLED)("reporting bucket contention [postgres]", () => {
 				expect(fx.maxAttempts()).toBeLessThanOrEqual(CAS_MAX_ATTEMPTS);
 			}
 			// Reported rather than only bounded: the depth IS the contention measurement.
-			console.log(`[reporting bucket race] deepest compare-and-set depth: ${String(fx.maxAttempts())}`);
+			console.log(
+				`[reporting bucket race] deepest compare-and-set depth: ${String(fx.maxAttempts())}`,
+			);
 		} finally {
 			await fx.close();
 		}

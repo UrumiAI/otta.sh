@@ -160,7 +160,7 @@ export function makeReportingHarness(
 				{
 					id: `ev-${orderId}-${String(doc.events.length + 1)}`,
 					at,
-					kind: "transition",
+					kind: "state_change",
 					fromState: from,
 					toState: toState as OrderState,
 					actor: null,
@@ -195,7 +195,7 @@ export function makeReportingHarness(
 					id: refundId,
 					amount: cents(amountCents),
 					currency: doc.currency,
-					kind: "partial",
+					kind: "manual",
 					gateway: "stripe",
 					refundRef: null,
 					reason: null,
@@ -215,7 +215,6 @@ export function makeReportingHarness(
 			refundedCents: amountCents,
 		};
 	};
-
 
 	return {
 		clock,
@@ -324,7 +323,7 @@ export function makeReportingHarness(
 				id: refundId,
 				amount: cents(row.amountCents),
 				currency: toCurrency(row.currency),
-				kind: "partial",
+				kind: "manual",
 				gateway: "stripe",
 				refundRef: null,
 				reason: null,
