@@ -131,8 +131,18 @@ export interface EmdashReportingStoreOptions {
 	random?: CasRetryOptions["random"];
 	/** Page ceiling for a report read. Raise it for a window wider than the budget. */
 	maxReportPages?: number;
-	/** Page ceiling for a recompute scan, PER DAY. Raised independently of the read
-	 *  budget: the two are bounded by different things (documents versus orders). */
+	/**
+	 * Budget ceiling for one day's recompute, PER DAY and per attempt. Raised independently
+	 * of the read budget: the two are bounded by different things (documents versus orders).
+	 *
+	 * One day's attempt spends one unit per page of orders, one per page of that day's
+	 * claims, and one per claim it has to absorb. So at the default of 1000 a day whose
+	 * claims are already absorbed — the steady state, and every closed day after its first
+	 * heal — costs about `orders/100 + claims/100` units and clears roughly 50,000 orders
+	 * in a day; a day being healed from nothing pays a unit per claim as well, which is
+	 * where the real limit sits: a few hundred orders' worth of first-time absorption per
+	 * call. Raise this, or chunk the range, for a history bigger than that.
+	 */
 	maxReconcilePages?: number;
 	/**
 	 * Where this adapter reports evidence of DRIFT — today, a counter that a decrement
@@ -415,6 +425,9 @@ export class EmdashReportingStore implements ReportingStore {
 				//    revision so the "already exact" short-circuit below and the pin agree on
 				//    ONE snapshot — re-reading the document there would let a commit be skipped
 				//    against a value newer than the one this attempt is pinned to.
+				// The per-currency pin reads are deliberately EXEMPT from the budget: there is one
+				// per currency the day holds, which is the store's currency count and not a
+				// function of its traffic, so charging them would buy nothing but noise.
 				const pinned = new Map<string, Versioned<ReportingDailyDoc> | null>();
 				for (const currency of await this.#dayCurrencies(day, budget)) {
 					pinned.set(currency, await this.#daily.getVersioned(reportingDailyDocId(currency, day)));
@@ -429,7 +442,7 @@ export class EmdashReportingStore implements ReportingStore {
 				const computed = computeDay(day, orders, now);
 
 				// 3. ABSORB, before a single counter is committed.
-				const absorbed = await this.#absorbDayClaims(orders, budget, now);
+				const absorbed = await this.#absorbDayClaims(day, orders, budget, now);
 				// A claim moved under us — a peer created or stamped one between the read and
 				// the write — so this day's premises are stale. Re-run it.
 				if (absorbed === "retry") return CAS_RETRY;
@@ -465,57 +478,53 @@ export class EmdashReportingStore implements ReportingStore {
 	}
 
 	/**
-	 * Absorb the claims a day's scanned orders PROVE, one indexed page per order.
+	 * Absorb the claims a day's scanned orders PROVE, as pages of one indexed read.
 	 *
 	 * The shape matters as much as the effect. A read per reconstructed event would be a
 	 * round trip per transition an order has ever made, every attempt and every sweep, and
 	 * every one of them widens the window in which a live delta invalidates the pin — a
 	 * busy day could spend the whole retry budget losing that race, and each failed attempt
 	 * leaves absorbed-but-uncommitted claims behind, which deepens the very under-count the
-	 * recompute is there to lift. So the claims are read the way the collection is indexed:
-	 * one `orderId` query per scanned order, and a guarded write only for a claim that is
-	 * not already absorbed.
+	 * recompute is there to lift. A query PER ORDER is the same mistake one step up: it
+	 * makes the cost a function of how many orders the day holds, so a large day exhausts
+	 * its budget and can never heal.
 	 *
-	 * **Every round trip is charged to the page budget** — one unit per claim-index page
-	 * (100 claims, the host's clamp) and one unit per claim that actually needs absorbing,
-	 * the same unit a page of orders costs. An unbudgeted pass is how a recompute over a
-	 * long history stops being bounded.
+	 * So a day's claims are read by the axis they are filed under — `date`, which is the
+	 * order's creation day and therefore the day being recomputed — and the pass costs **one
+	 * unit per claim-index page and one unit per claim absorbed**, the same unit a page of
+	 * orders costs. A claim an earlier run already absorbed costs neither: it is skipped
+	 * before any spend and before any write, which is what makes a steady-state recompute
+	 * cheap and a first heal the only expensive one.
 	 */
 	async #absorbDayClaims(
+		day: string,
 		orders: OrderDoc[],
 		budget: PageBudget,
 		now: string,
 	): Promise<{ claims: number } | "retry"> {
-		let claims = 0;
-		const byOrder = new Map<string, ReportingOrderEvent[]>();
-		for (const event of reconstructEvents(orders)) {
-			byOrder.set(event.orderId, [...(byOrder.get(event.orderId) ?? []), event]);
+		// The day's claims, as pages of ONE indexed query. A query per order would make the
+		// cost a function of the day's ORDER COUNT rather than of its size, and a day past a
+		// few hundred orders would then exhaust its budget and never heal again.
+		const present = new Map<string, ReportingAppliedDoc>();
+		let cursor: string | undefined;
+		for (;;) {
+			this.#spend(budget, "absorbReportingClaims", present.size);
+			const page = await this.#applied.query({ where: { date: day }, limit: PAGE_SIZE, cursor });
+			for (const { id, data } of page.items) present.set(id, data);
+			if (!page.hasMore || page.cursor === undefined) break;
+			cursor = page.cursor;
 		}
-		for (const [orderId, events] of byOrder) {
-			// One indexed page per order, paged only for an order with more than 100 claims.
-			const present = new Map<string, ReportingAppliedDoc>();
-			let cursor: string | undefined;
-			for (;;) {
-				this.#spend(budget, "reconcileReporting", claims);
-				const page = await this.#applied.query({
-					where: { orderId },
-					limit: PAGE_SIZE,
-					cursor,
-				});
-				for (const { id, data } of page.items) present.set(id, data);
-				if (!page.hasMore || page.cursor === undefined) break;
-				cursor = page.cursor;
-			}
-			for (const event of events) {
-				const claimId = claimIdFor(event);
-				const seen = present.get(claimId);
-				// Already absorbed by an earlier run — nothing to pay and nothing to write.
-				if (seen !== undefined && isAbsorbed(seen)) continue;
-				this.#spend(budget, "reconcileReporting", claims);
-				const outcome = await this.#absorbClaim(event, claimId, now);
-				if (outcome === "retry") return "retry";
-				if (outcome === "absorbed") claims++;
-			}
+
+		let claims = 0;
+		for (const event of reconstructEvents(orders)) {
+			const claimId = claimIdFor(event);
+			const seen = present.get(claimId);
+			// Already absorbed by an earlier run — nothing to pay and nothing to write.
+			if (seen !== undefined && isAbsorbed(seen)) continue;
+			this.#spend(budget, "absorbReportingClaims", claims);
+			const outcome = await this.#absorbClaim(event, claimId, now);
+			if (outcome === "retry") return "retry";
+			if (outcome === "absorbed") claims++;
 		}
 		return { claims };
 	}

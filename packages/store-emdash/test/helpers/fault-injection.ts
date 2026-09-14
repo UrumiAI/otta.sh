@@ -53,6 +53,8 @@ export type StorageMethodName = keyof StorageCollection;
  */
 export interface StorageCall {
 	readonly method: StorageMethodName;
+	/** The document id — an EMPTY string for `query` and `count`, which name no document
+	 *  and have one synthesized so a matcher can still read the field unconditionally. */
 	readonly id: string;
 	/** `null` for a create-if-absent; a string for an update; absent otherwise. */
 	readonly expectedRevision?: string | null;

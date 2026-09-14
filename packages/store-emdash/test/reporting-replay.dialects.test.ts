@@ -179,6 +179,42 @@ describeEachDialect("EmdashReportingStore replay equivalence", (ctx) => {
 		expect((failure as { budgetOption: string }).budgetOption).toBe("maxReconcilePages");
 	});
 
+	test("a day with more claims than fit one page reconciles inside a budget a per-order pass would refuse", async () => {
+		const h = makeReportingHarness(bound.storage);
+		const day = "2026-06-30T12:00:00.000Z";
+		// 60 orders, each transitioned once: 120 claims (an arrival and a transition each)
+		// on ONE day, so the day's claims span two pages at the host's 100 clamp.
+		for (let i = 0; i < 60; i++) {
+			const id = `b${String(i)}`;
+			await h.seedOrder({
+				id,
+				state: "pending",
+				currency: "USD",
+				createdAt: day,
+				totalCents: 100 + i,
+			});
+			await h.transitionOrder(id, "paid");
+		}
+		const range = { from: "2026-06-30T00:00:00.000Z", to: "2026-06-30T23:59:59.999Z" };
+		// The first run absorbs all 120 claims, which is the expensive pass by design.
+		await h.store.reconcile(range);
+		expect(
+			Object.values(await h.dailyDocs()).find((doc) => doc.date === "2026-06-30")?.stateCounts,
+		).toEqual({ paid: 60 });
+
+		// Now the cheap one, under a budget that a claim-read PER ORDER could not afford:
+		// that shape would spend 60 units on the claims alone, while paging the day's claims
+		// by their indexed `date` spends two — one per page — and nothing per already-absorbed
+		// claim.
+		const tight = makeReportingHarness(bound.storage, { maxReconcilePages: 10, clock: h.clock });
+		const done = await tight.store.reconcile(range);
+		expect(done.claimsAbsorbed).toBe(0);
+		expect(done.ordersScanned).toBe(60);
+		expect(
+			Object.values(await h.dailyDocs()).find((doc) => doc.date === "2026-06-30")?.stateCounts,
+		).toEqual({ paid: 60 });
+	});
+
 	test("the reads agree with the rollups the sequence produced, before and after a recompute", async () => {
 		const h = makeReportingHarness(bound.storage);
 		await driveSequence(h);

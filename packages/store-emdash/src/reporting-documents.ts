@@ -63,14 +63,17 @@ export interface ReportingCollectionIndexDeclaration {
  * document id is `{currency}:{date}` rather than the date alone, so a date-only
  * query cannot be answered by an id prefix.
  *
- * `reporting_applied` declares `orderId`: a recompute re-establishes the claims for
- * the orders it folded in, and an operator asking "which rollup events have been
- * applied to this order" is the diagnostic that makes an under-count legible.
+ * `reporting_applied` declares `date` and `orderId`. `date` is the one a recompute reads:
+ * a day's claims are exactly the claims whose `date` is that day, so they come back as
+ * pages of one indexed query rather than as a query per order — which is what keeps the
+ * recompute's cost a function of the day's SIZE rather than of its order count. `orderId`
+ * is the diagnostic axis: "which rollup events have been applied to this order" is the
+ * question that makes an under-count legible.
  */
 export const REPORTING_COLLECTIONS: Readonly<Record<string, ReportingCollectionIndexDeclaration>> =
 	{
 		[REPORTING_DAILY_COLLECTION]: { indexes: ["currency", "date"] },
-		[REPORTING_APPLIED_COLLECTION]: { indexes: ["orderId"] },
+		[REPORTING_APPLIED_COLLECTION]: { indexes: ["date", "orderId"] },
 	};
 
 /** The revenue-counting allow-list as a set — built once from the domain constant. */
@@ -152,7 +155,10 @@ export interface ReportingAppliedDoc {
 	/** INDEXED — which order this event belongs to. */
 	orderId: string;
 	kind: ReportingEventKind;
-	/** The `YYYY-MM-DD` bucket the event was applied to — the order's creation day. */
+	/**
+	 * INDEXED — the `YYYY-MM-DD` bucket the event was applied to, which is the order's
+	 * creation day. It is what a recompute pages a day's claims by.
+	 */
 	date: string;
 	currency: string;
 	/** The state left, or `null` when the order arrived (creation). Transitions only. */
