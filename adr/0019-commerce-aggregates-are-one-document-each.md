@@ -1,6 +1,10 @@
 # 0019. Commerce aggregates are one storage document per aggregate; idempotency is the document id
 
-- Status: accepted
+- Status: accepted, **amended 2026-09-14** — see
+  [Amendment 2026-09-14 — Phase B as built](#amendment-2026-09-14--phase-b-as-built). The decision is
+  unchanged and reaffirmed; the amendment corrects the statements the built adapters proved wrong, adds
+  the rows they proved missing, and states four rules that recurred. Every in-place correction carries a
+  **†**.
 - Date: 2026-09-13
 - Refines: [ADR-0002](./0002-adapter-based-split.md) — this record names the document model that
   satisfies the storage seam ADR-0002 designed, on a store with **no transactions**. The ports do not
@@ -57,18 +61,30 @@ genuine cross-aggregate edges, and only those.
 
 | Tier | Primitive | Used for |
 |---|---|---|
-| Lock-free fast path | `updateIf` — guard and arithmetic in one statement; no read, no retry | contended **pure-counter** writes, where the whole invariant is one comparison on one field |
+| Lock-free fast path | `updateIf` — guard and arithmetic in one statement; no read, no retry | **†** contended **single-guard** writes, where the whole invariant is one comparison on one field |
 | General read-modify-write | `compareAndSet(id, revision, nextDoc)` with bounded jittered retry | **everything multi-field**: arbitrary invariants computed in JS, committed atomically against one document |
 
 `updateIf` reports `applied: false` for an absent row **and** for a failed guard, deliberately
 indistinguishable — so a caller that needs to tell the two apart must read, which is itself a reason
 most writes are `compareAndSet`.
 
-**How many `updateIf` sites the design has, stated honestly: three are planned, and zero exist today.**
-They are coupon redemption's global counter bump (§3, R1), the coupon **release floor** guarded on
-`usesCount > 0` (§7.15), and the email-outbox lease (§3, R2). All three are pure-counter writes whose
-whole invariant is one comparison on one field; every other adapter write is `compareAndSet`. The count
-is a design property to be checked when those adapters are built, not a fact about the tree.
+**† How many `updateIf` sites the design has — recounted 2026-09-14, against the tree.** The original
+count was "three are planned, and zero exist today", and the tier was called *pure-counter*. Both are
+corrected. **Two sites exist and two is the whole set**: coupon redemption's global counter bump (§3, R1)
+and the coupon **release floor** guarded on `usesCount > 0` (§7.15) — both **guarding** the same field of
+the same document, one incrementing under a cap, one decrementing above a floor. (The bump's write also
+stamps a best-effort witness field alongside the delta. That is deliberately *not* part of its guard, and
+it is why the tier is named for what a write guards rather than for what it touches.) The third planned
+site, the **email-outbox lease** (§3, R2), was built as a **`compareAndSet`** instead and belongs in the
+tier below, for the reason that decides all of these: holding a lease means the writer must know *which*
+document state it is extending — a lapsed peer's lease is a takeover, an absent order is a bug — which is
+exactly the distinction `updateIf` refuses to report, since it conflates a failed guard with an absent
+row. Hence the tier's new name. The rule the recount leaves behind is sharper than a number: **`updateIf`
+is for a write whose entire invariant is one comparison on one field and whose caller needs no idea why
+it failed.** Everything else — including every lease — is `compareAndSet`.
+
+Both surviving sites take their refusal **decision from a prior read**, never from `applied: false`, for
+that same reason.
 
 **Reserve is a `compareAndSet` read-modify-write, permanently.** A guarded single statement cannot
 carry it: the hold must be recorded in the same write as the decrement, and the hold lives at a nested
@@ -191,8 +207,21 @@ looks live to anything reading only the aggregate.
 #### The contention budget, as numbers
 
 Read-modify-write on a hot SKU retries: bounded attempts with full-jittered backoff, ceiling
-`CAS_MAX_ATTEMPTS = 12`, first delay 2 ms doubling to a 50 ms cap. **This is a permanent budget** —
+**†** `CAS_MAX_ATTEMPTS = 24`, first delay 2 ms doubling to a 50 ms cap. **This is a permanent budget** —
 the aggregate is written by read-modify-write and there is no structural fix.
+
+**† The ceiling was raised from 12 to 24 on 2026-09-14, and the reason is that it is not one bound.** The
+original 12 was derived from inventory's shape, where **depth tracks the units on one document** (below):
+a writer loses at most M times before the guard turns every remaining caller into a clean refusal with no
+write at all. The **order** document has a different bound, because refunds are arbitrated inside its
+compare-and-set and a state flip contends with them: `2 × refunds-that-fit + 1 flip`. A shape with
+concurrent reserves and finalizes on one order therefore sits legitimately near 12 rather than near M+1,
+which made an exhausted budget a flake rather than a signal. The extra attempts buy jittered backoff on a
+path whose only other outcome is the typed retryable error; they do not weaken any invariant, because
+every invariant is enforced by the guard inside the write and not by the attempt count. The per-shape
+assertions and the tests' own tighter hand-set budget are unchanged, and the tighter one is deliberately
+kept below the package ceiling so raising the ceiling can never turn a shape green by accident. **A
+change to the ceiling is still a change to the budget: measure first, then move it.**
 
 | Shape | Attempts asserted | Typed contention failures asserted | Reported measurement |
 |---|---|---|---|
@@ -200,20 +229,32 @@ the aggregate is written by read-modify-write and there is no structural fix.
 | 1 unit, 100 racers | `<= 8`, and `<= 6` | — | 2 attempts |
 | restock +10 racing 40 reserves on 5 units, 15 loops | **not asserted** (logged per case) | **not asserted** | 12 attempts, 2–6 failures — **README measurement, no in-code figure** |
 | restock then 40 reserves on 15 units, sequenced, 10 loops | **not asserted** (logged per case) | `<= 5` **per loop** (×10 loops) | 12 attempts, 0–1 failures — **README measurement, no in-code figure** |
-| 20 removals racing 20 reserves on 12 units, 15 loops (**600 calls**) | `<= 12` (`CAS_MAX_ATTEMPTS`) | `<= 90`, i.e. 15% of calls | 12 attempts; **11–29** failures |
+| 20 removals racing 20 reserves on 12 units, 15 loops (**600 calls**) | `<= CAS_MAX_ATTEMPTS` | `<= 90`, i.e. 15% of calls | 12 attempts; **11–29** failures |
+
+**† The right-hand column predates the ceiling raise and is no longer the live figure.** The **merchant
+removal** shape is the one shape that reached the old ceiling and raised the typed error; raising
+`CAS_MAX_ATTEMPTS` took it two or three attempts deeper and its typed failures to **zero**, which is the
+whole point of the raise — attempts the loop now has are failures the caller no longer sees. The numbers
+here are kept only as the record of what was measured at 12. **The live per-shape tables live in
+`packages/store-emdash/README.md`** ("Contention budget", and "Coupon contention, measured" for the
+coupon counter), which is where they are re-measured; cite those rather than these, and do not re-copy
+figures into this record, because they drift and this record does not.
 
 Three honesty notes on that table. The right-hand column is a **record of measurement, not an
 assertion**: only the flash-sale shapes and the removal shape assert a depth at all, and the two restock
 shapes merely log theirs per case, so a regression there is caught by their contention and conservation
 assertions rather than by a depth ceiling. For the two restock rows the figures exist **only in the
 package README** — there is no in-code comment or assertion carrying them, so nothing in the source
-corroborates them and they should be re-measured rather than cited. The removal shape is the one row with
-a figure in both places, and they **disagree**: the race file's own comment says 11–29 while the README's
-table says 8–29. There the code comment is the figure to trust, and reconciling the README is a follow-up
-for whoever next touches it. Note also that the sequenced row's ceiling of 5 is **per loop**, asserted
-ten times, not a cumulative budget for the case.
+corroborates them and they should be re-measured rather than cited. **† The README/test disagreement this
+paragraph used to name is closed.** It recorded that the removal shape's figure differed between the race
+file's own comment and the README's table, and that the code comment was the one to trust; the README has
+since been reconciled to the test, and the shape's figures were re-measured after the ceiling raise
+besides. Note also that the sequenced row's ceiling of 5 is **per loop**, asserted ten times, not a
+cumulative budget for the case.
 
-`CAS_ATTEMPT_BUDGET = 8` is asserted to be strictly below `CAS_MAX_ATTEMPTS`. The two flash-sale
+`CAS_ATTEMPT_BUDGET = 8` — which lives in the crash-seam suite, not in the package's own constants — is
+asserted to be strictly below `CAS_MAX_ATTEMPTS`, and that separation is what makes the ceiling safe to
+move: a hand-set budget below the ceiling cannot be satisfied by raising it. The two flash-sale
 figures sit at M+1 and are stable across runs: only M writes can succeed before the guard turns every
 remaining caller into a clean `OUT_OF_STOCK` with **no write at all**, so a writer loses at most M
 times. **Depth tracks the units on one document, not the size of the crowd.**
@@ -250,9 +291,16 @@ increment, and until then the error propagating uncaught is the intended behavio
 | `reservation_index` holds `{ sku }` | it holds `{ sku, idempotencyKey }` **plus** the terminal state |
 | all four id-taking batch methods are `WHERE id IN (:ids)` | only `adoptMany` and `commitMany` take id sets; `adopt` is single-id and `releaseAdopted` is single-id **and** order-scoped |
 
-One further honesty note: `release` on a reservation that is neither live nor already released still
-throws an **untyped** `Error`, exactly as the SQL store did. Typing it is an open follow-up, not
-something this model fixed.
+One further honesty note, **† now closed (2026-09-14).** This said `release` on a reservation that is
+neither live nor already released still threw an **untyped** `Error`, exactly as the SQL store did, and
+that typing it was an open follow-up. It **is** typed: `ReservationNotReleasableError`, an **adapter**
+error carrying the reservation id, the state it was found in, and a structural `code` that survives a
+sandbox bridge. It is adapter-level rather than the domain's `ReservationNotHeldError` because that class
+is the port's `adjust` failure and its message would be false here; widening the port to cover `release`
+remains a domain change with its own PR. The reason it needed typing at all is a real caller: the cart
+expiry **swallows** this case, because a hold an order has already committed is not the cart's to return,
+and an untyped error forces that caller to match on a message. The message text is unchanged from the
+bare error it replaces, so nothing reading the text had to change.
 
 ### 3. The design the remaining adapters implement
 
@@ -264,16 +312,37 @@ description of code that exists.**
 | Order creation from a cart | **(b)** `order_keys/{idempotencyKey}` intent claim carrying the full intent, then **(a)** create-if-absent of one `orders/{orderId}` document holding header, `readonly items[]`, totals and address | replay once-only; snapshot immutability becomes structural | `order-store-contract`, `order-flow` | order-store core |
 | Refunds and their capacity | **(a)** `payments[]` and `refunds[]` embedded; the ceiling computed **inside** the read-modify-write and committed by the same compare-and-set; plus `refund_keys/{refundKey} → orderId`, because the settle path has only the key | ceiling never exceeded; refund once-only | `refund-order-contract`, `refund-race` | order-store refunds |
 | State transition | **(a)** the guarded flip, the `events[]` append and the first-wins `emailOutbox[]` entry are **ONE** compare-and-set guarded on revision and on `state === from` | transition once-only; audit completeness | `order-transition-contract`, `order-timeline-contract`, `outbox-dispatch` | order-store core |
-| Email-outbox lease | **(a)** one `updateIf` on the denormalized `emailDueAt` (R2 below) | a message is sent once and a crashed dispatcher's row becomes claimable again | `outbox-dispatch` | order-store lists |
-| Orders list, search and customer view | **(a)** three denormalized indexed fields — `searchKey`, `customerKey`, `emailDueAt`; the customer filter stays a union, expressed as `customerKey in [customerId, foldedBuyerRef]` (R3 below) | one row per order; count agrees with the page; a guest's not-yet-relinked orders are neither undercounted nor mislabelled | `order-store-contract` list cases, ADR-0017's refresh cases | order-store lists |
+| Email-outbox lease | **†** **(a)** `emailDueAt` as the denormalized candidate filter, claimed by a revision `compareAndSet` on the order document (R2 below), plus **(b)** an `outbox_keys/{entryId} → orderId` locator, because the dispatcher settles by entry id alone | a message is sent once and a crashed dispatcher's row becomes claimable again | `outbox-dispatch` | order-store lists |
+| Orders list, search and customer view | **†** **(a)** four denormalized indexed fields — `searchKey`, `buyerRefLower`, `customerKey`, `emailDueAt`; the customer filter stays a union and is resolved as **two merged indexed arms** counted by inclusion–exclusion, because R3's conditional fired (R3 below, and §6) | one row per order; count agrees with the page; a guest's not-yet-relinked orders are neither undercounted nor mislabelled | `order-store-contract` list cases, ADR-0017's refresh cases | order-store lists |
 | Hold adoption / commit across N SKUs | **(b)** the order document records the adoption/commit **intent** before any per-SKU write; each per-SKU write is idempotent by reservation id; a sweeper completes a partial set; reservation id → sku from `reservation_index` | a paid order never has a hold left un-committed and then reaped | `inventoryStoreContract` batch cases, multi-line checkout race | order-store core + sweeper |
-| Sku rename | **(b)** one compare-and-set on the source zeroes `onHand` and stamps `transferOut: { token, toSku, qty }`; the target applies iff `appliedTransfers` lacks the token (bounded ring); the source clears it. The held/adopted refusal is read from the **same** document | stock conservation; the held-stock refusal; idempotent replay | `product-commerce-store-contract`, `sku-rename-ledger`, `sku-rename-race`, `variant-sku-rename-race` | product-commerce store |
+| Sku rename | **(b)** one compare-and-set on the source zeroes `onHand` and stamps `transferOut: { token, toSku, qty }`; the target applies iff `appliedTransfers` lacks the token (bounded ring); the source clears it. **†** The carry runs **after** the product write commits, which makes the product document's own compare-and-set the mutual exclusion — and makes the held-stock refusal advisory rather than structural (§7.6) | stock conservation; the held-stock refusal **as a weakening**; idempotent replay | `product-commerce-store-contract`, `sku-rename-ledger`, `sku-rename-race`, `variant-sku-rename-race` | product-commerce store |
 | Live-sku uniqueness across two grains | **(b)** `sku_owners/{sku}` claim doc (R4 below) | one live owner per sku, across products **and** variants | `product-commerce-store-contract` precedence cases | product-commerce store |
 | Cart hold expiry | **(b)** guarded flip of the line to `expiring` (once-only token) → release the reservation → remove the line. Today's fixed **lock** order becomes a fixed **step** order. A sweeper completes a partial | hold expiry returns stock exactly once | `cart-store-contract`, `hold-expiry`, `cart-fence`, `no-oversell-cart` | cart store |
 | Coupon redemption | **(b)** then **(a)** — per-customer claim first, then the global counter (R1 below) | no over-redeem; **a per-customer rejection never consumes global headroom** | `coupon-store-contract`, `coupon-lifecycle`, `coupon-no-over-redeem` | coupon store |
 | Reporting rollups | **(b)** keyed on the order's **creation** day, so a transition decrements one bucket and increments another **in a past bucket**; `ordersByStatus` moves an order between state buckets; **refunds roll up independently of transitions**; idempotent per `(orderId, transition)` and **swept** | reported figures equal a from-scratch replay | `reporting-store-contract`, `reporting.seeded`, plus a crash-between-transition-and-rollup case **to be written** | reporting store + sweeper |
 
 Six of these needed a ruling, because the naive translation is wrong.
+
+**† R1, amended 2026-09-14 — once-only moved into the key document, and the bump step became a lease.**
+The inverted order below is as built and unchanged, but two things were added because neither the counter
+nor the per-customer claim can carry once-only for *N callers completing one idempotency key*, which is
+what a retried checkout looks like. First, **once-only lives in the redemption key document's own state
+machine** — `claimed → bumping → applied | refused`, where `claimed → bumping` is a one-winner revision
+compare-and-set and only the winner reaches the counter, every loser reading the winner's recorded answer
+back. That is what lets the `updateIf` guard **carry the cap and nothing else** (§1): pinning a per-key
+witness into the guard instead would turn the delta into a revision compare-and-set, making every
+redemption contend with every *other* redemption of the same coupon so retry depth grew with the
+**crowd** rather than the headroom — and it would not even be sufficient, because a peer's bump
+overwrites the shared witness and a same-key replayer that no longer sees its own key there bumps again.
+Second, **the bump right is leased**, because a step held by a slow owner and one held by a crashed owner
+are the same document: it carries a deadline (`COUPON_BUMP_LEASE_MS`, 10 s, overridable per store as
+`bumpLeaseMs`), a waiter takes it over only once that lapses, and until then it re-reads and finally
+raises the typed retryable contention error so the caller's own retry reads the recorded answer. The
+lease is re-asserted by a heartbeat compare-and-set immediately before every counter write, per retry —
+the cross-cutting owner-token rule in the Amendment. The **residual is one HIGH, never one LOW**: a `+1`
+that lands and then crashes before `applied` is recorded, with the lease lapsed and the witness
+overwritten, over-counts by one and never under-counts, so the coupon can only ever refuse a redemption
+it could have allowed. Exactness is restored by the coupon recount sweeper.
 
 **R1 — coupon redemption cannot roll back.** The SQL bumps the global counter and *then* counts the
 customer's redemptions, and a per-customer refusal is undone by the **transaction**. A transactionless
@@ -288,9 +357,20 @@ releases. The invariant to hold: **a per-customer rejection never consumes globa
 **R2 — the email lease has an OR and a negation.** The SQL claims on
 `sent_at IS NULL AND status != 'failed' AND (lease_until IS NULL OR lease_until <= now)`, which the
 filter algebra cannot express. Denormalize **one** indexed field, `emailDueAt`: `null` when the message
-is sent or failed, otherwise `max(dueAt, leaseUntil)`. The lease is then a single `updateIf` guarded on
-`emailDueAt <= now` that sets `emailDueAt = now + leaseLength` and increments attempts — so the
-lock-free path survives here.
+is sent or failed, otherwise `max(dueAt, leaseUntil)`. The candidate query is then one range on that
+field.
+
+**† Corrected 2026-09-14 — the claim is a `compareAndSet`, not an `updateIf`, and the lock-free path does
+not survive here.** This clause promised "a single `updateIf` guarded on `emailDueAt <= now` that sets
+`emailDueAt = now + leaseLength` and increments attempts". Two fields and an increment are already past
+what the tier is for (§1), but the deciding reason is a correctness one: the entry being leased is
+**embedded in an order document** alongside everything else that order's writers touch, so the write has
+to be a read-modify-write against that document's revision no matter how simple the guard reads. And a
+claimant must know *why* it failed — a lapsed peer's lease is a takeover, an absent order is a bug —
+which is exactly what `updateIf` refuses to report. So `emailDueAt` is the **candidate filter** and the
+revision compare-and-set is the **claim**, with the range re-applied to the fetched document. This is
+strictly stronger than the design asked for, and it is the shape every other lease in the package copied
+(§1, and the cross-cutting owner-token rule in the Amendment).
 
 **R3 — the customer filter is a UNION, and it stays one.** It is not a convenience OR that can be
 collapsed to a single equality. Orders are born with `customer_id = NULL` and are back-linked only at the
@@ -317,11 +397,28 @@ The created-at window needs no denormalization at all: it is half-open
 `createdAt >= from AND createdAt < to`, which maps to `gte`/`lt` directly.
 
 **R4 — live-sku uniqueness spans two grains.** `sku_owners/{sku}` is a claim document carrying
-`{ ownerKind: "product" | "variant", ownerId, live: boolean }`. A soft-delete or an orphaning
-**releases** the claim — delete the document, or set `live: false`, and a new claimant may take over a
-non-live document by compare-and-set. `SkuConflictError` outranks `SkuStockConflictError` exactly as
-today. The two partial unique indexes' semantics — unique **among live rows only** — thereby become a
-document invariant instead of a database feature the document store does not have.
+`{ ownerKind: "product" | "variant", ownerId, live: boolean }` — **†** and, as built, a `variantKey` for
+the variant grain, a `claimedAt` that makes it a lease, and a `createsTarget` flag (both below). A
+soft-delete or an orphaning **releases** the claim, and a new claimant may take over a released one by
+compare-and-set. `SkuConflictError` outranks `SkuStockConflictError` exactly as today. The two partial
+unique indexes' semantics — unique **among live rows only** — thereby become a document invariant instead
+of a database feature the document store does not have.
+
+**† R4, amended 2026-09-14 — the claim is a LEASE, and it is taken before the write it protects.** A
+claim taken and then abandoned by a process that dies cannot be given back in a `finally`, so a plain
+claim document would strand the sku forever. It therefore carries an age and resolves to one of four
+statuses — **held** (backed by a live owner document), **owed** (a peer still owes a stock carry on it,
+so it must not be taken no matter how old), **in-flight** (young enough that its holder is presumed
+alive) or **abandoned** (older than `CLAIM_ABANDON_AFTER_MS`, 60 s, overridable per store as
+`claimAbandonAfterMs`), and only an **abandoned** one may be taken over. The lease is why the owner-token
+rule exists: a writer parked past the abandon window is taken over, wakes, and would otherwise commit its
+product write against a sku it no longer holds, leaving **two live rows on one sku** — so the claim's
+revision is re-asserted by a heartbeat compare-and-set immediately before every sku-bearing product
+write, on **every attempt** of the retry loop, and an overtaken writer is refused with `SkuConflictError`
+(surfaced as `SKU_TAKEN`) rather than committing. Withdrawal is gated on a `createsTarget` flag recorded
+on the claim, which says whether this claim **created** the target's inventory document or **adopted** a
+pre-existing one: only a created one may be withdrawn, because withdrawing an adopted document would
+delete units that were never this owner's. The accepted residuals are named in the Amendment.
 
 **R5 — `adjust` loses its qty CAS and is serialised by the document revision instead.** The SQL
 serialised an adjust against a concurrent checkout on one hold with a CAS on the hold's own previous qty
@@ -350,6 +447,10 @@ benign duplicate).
 One collection per aggregate, one per ledger with no aggregate, plus the lookup collections the port
 signatures force. Declared on the descriptor's `storage` field.
 
+Rows marked **†** were corrected on 2026-09-14 to match the adapters as built; see the
+[Amendment](#amendment-2026-09-14--phase-b-as-built) at the end of this record. A row with no **†** is
+still design, not code.
+
 | Collection | Doc id | Declared indexes | Unique indexes |
 |---|---|---|---|
 | `inventory` | sku | — | — |
@@ -357,14 +458,19 @@ signatures force. Declared on the descriptor's `storage` field.
 | `reservation_index` | reservation id | — | — |
 | `inventory_movements` | `stock:<key>` / `adjust:<key>` | `sku`, `createdAt` | — |
 | `carts` | cartId | `state`, `holdExpiresAt` | — |
-| `orders` | orderId | `state`, `createdAt`, `customerKey`, `searchKey`, `[state, createdAt]`, `emailDueAt` | — |
+| **†** `cart_mutation_index` | cart mutation idempotency key | — | — |
+| **†** `orders` | orderId | `state`, `createdAt`, `customerKey`, `buyerRefLower`, `searchKey`, `emailDueAt`, `holdExpiresAt`, `holdsPendingAt`, `[state, createdAt]` | — |
 | `order_keys` | order idempotency key | — | — |
 | `refund_keys` | refund idempotency key | — | — |
-| `order_sku_index` | `${sku}:${orderId}` | `sku` | — |
-| `product_commerce` | productId | `sku`, `active`, `taxClass`, `titleLower` | — |
+| **†** `payment_refs` | provider reference | — | — |
+| **†** `outbox_keys` | outbox entry id | — | — |
+| **†** `order_notes` (not yet declared — the notes adapter's) | `${orderId}:${noteId}` | `orderId` | — |
+| **†** `order_sku_index` | `${foldedSku}:${orderId}` | `[sku, createdAt]` | — |
+| **†** `product_commerce` | productId | `productId`, `lifecycle`, `publishKey`, `productKind`, `taxClass`, `createdAt` | — |
 | `sku_owners` | sku | — | `sku` (declared; **not** the enforcement) |
-| `coupons` | code | `createdAt` | — |
-| `coupon_redemptions` | `${couponId}:${idempotencyKey}` | `couponId`, `orderId` | — |
+| **†** `coupons` | couponId | `createdAt` | — |
+| **†** `coupon_codes` | folded code | — | — |
+| **†** `coupon_redemptions` | `${couponId}:${idempotencyKey}` | `couponId`, `orderId`, `createdAt`, `redemptionId`, `holdsUse` | — |
 | `coupon_customer_caps` | `${couponId}:${customerId}` | — | — |
 | `customers` | customerId | — | — |
 | `customer_emails` | folded email | — | `email` (declared; **not** the enforcement) |
@@ -373,15 +479,56 @@ signatures force. Declared on the descriptor's `storage` field.
 | `entitlements` | grant idempotency key | `customerId`, `scope` | — |
 | `payment_events` | dedupe key | — | — |
 | `shipping_zones` / `tax_classes` | zoneId / classId | — | — |
+| **†** `shipping_method_owners` / `tax_rate_owners` | methodId / rateId | — | — |
 | `settings` / `settings_mutations` | `"store"` / mutation key | — | — |
 | `reporting_daily` | `${currency}:${YYYY-MM-DD}` | `currency`, `date` | — |
 
-Two corrections against the plan's table. The `orders` customer index is `customerKey`, not
-`customerId` (R3). And **`coupons` carries no `active` index** — the coupon table has no active or
-soft-delete column at all, so declaring `active` would be a read contract for a field nothing writes.
-It does, however, need **`createdAt`**: the admin coupon list is keyset-ordered on `(created_at, id)`
-with a dedicated index behind it, and ordering by an undeclared field throws exactly as filtering on one
-does. The list's only *filter* is a code search; its *ordering* is what `createdAt` serves.
+**† Why the claim collections outnumber the aggregates.** Six of the marked rows are one device under
+six names. `payment_refs`, `outbox_keys`, `cart_mutation_index`, `coupon_codes`,
+`shipping_method_owners` and `tax_rate_owners` each exist because a port method is handed an id — a
+provider reference, an outbox entry id, a mutation key, a code, a method id, a rate id — with **no
+parent**, and a fact embedded in a parent document cannot be found from one. That is
+`reservation_index`'s reason (§2) applied six more times, and each is create-if-absent on its own id,
+so the reverse lookup and the uniqueness are the same write. The package README's "The outbox locator"
+and "Why two claim collections, where the design table names none" carry the per-collection detail,
+including which bracket direction is healable. Two of the six answer a port method that takes a child
+id the port never pairs with a parent — nine such methods across the two rules stores.
+
+**† The product document's index list has no `sku` and no `titleLower`, and `active` is filtered
+through a text mirror.** Nothing queries `product_commerce` by sku — live-sku uniqueness is the
+`sku_owners` claim, reached by document id, and a variant's sku is not a field of its product document
+at all, so the index would answer half the question. `titleLower` is dropped because the port's title
+search is a **substring** and the filter algebra has none, so declaring it would be a read contract for
+a query never issued; that half of the search is resolved in memory over rows the indexed axes already
+narrowed. `active` stays a boolean field the port reads back, but the *filter* binds `publishKey`, an
+indexed two-value text mirror, because one dialect cannot bind a boolean as a `where` value.
+`lifecycle` (a three-state tombstone axis — the algebra has no negation, the archive view needs one,
+and a document may hold variants before its product row exists), `productKind` and `createdAt` are
+added for predicates and ordering the admin list actually issues, and `productId` for the two batch
+reads. The field-by-field difference is tabulated in the package README's "Two deviations from the
+design's index table, both forced".
+
+**† Coupons are keyed by id, with the code as a claim document.** `redeem`, `findById`, `update` and
+`delete` are all handed an id, and the money path must not pay a lookup to reach the counter; the admin
+list is keyset-ordered on `(createdAt, id)`, which is the host's own total order only when the document
+id **is** that id. This record's own `uniqueIndexes` table already offered the alternative for
+`coupons.code` — "the document id, or a claim document" — and the store took the second. Codes are
+unique after case folding, where the SQL unique index was case-sensitive; `findByCode` stays
+case-sensitive by comparing the code the claim stores. `coupon_redemptions` gains three indexes for
+reads that exist: `createdAt` (the reconciliation sweep both ranges and orders on it), `redemptionId`
+(`release` is handed the generated id, not the document id) and `holdsUse` — a **string** mirror of a
+boolean, the same device as `publishKey`, because a refused key keeps a permanent document and that
+document must stay out of the delete guard, `releaseByOrder` and the sweep. The redemption's state and
+its lease are deliberately **not** indexed: nothing queries by them.
+
+Two corrections against the plan's table. The `orders` customer index is `customerKey`, not `customerId`
+(R3) — **† and, because a contract case pins the cross-customer buyer-reference edge, R3's conditional
+fired: a second indexed `buyerRefLower` is declared alongside it, and the union is resolved as two merged
+arms (§6).** And **`coupons` carries no `active` index** — the coupon table has no active or soft-delete
+column at all, so declaring `active` would be a read contract for a field nothing writes. It does,
+however, need **`createdAt`**: the admin coupon list is keyset-ordered on `(created_at, id)` with a
+dedicated index behind it, and ordering by an undeclared field throws exactly as filtering on one does.
+The list's only *filter* is a code search; its *ordering* is what `createdAt` serves.
 
 **Idempotency is always a document id.** Every claim is `compareAndSet(id, null, …)`, a DB-level
 `INSERT … ON CONFLICT DO NOTHING` enforced by the storage table's PRIMARY KEY on
@@ -449,22 +596,57 @@ minute of deploy.
 `in`, prefix and the four range comparisons — **no substring, no negation and no OR**: a flat record
 joined with `AND` only.
 
-1. **The orders-list search narrows to a prefix-only denormalized `searchKey`. Ratified.** The old
-   predicate is an OR of three arms, and an AND-only filter with opaque per-query cursors cannot express
-   it — "issue two queries and merge under a stable sort" produces neither a correct next cursor nor a
-   correct count. All three arms denormalize into one indexed field with **prefix-only** semantics, a
-   user-visible narrowing on two axes: the buyer reference stops matching mid-string, and the composite
-   key changes what a partial id or sku matches. **The narrowing will be documented in the screen's
-   empty state at the lists/UI increment.** Widening the domain port instead remains available as a
-   separate change with its own PR.
+1. **The orders-list search narrows to anchored prefixes. Ratified.** The old predicate is an OR of
+   three arms, and an AND-only filter cannot express it in one query. The user-visible narrowing is on
+   the **buyer-reference** arm: it stops matching mid-string. A domain (`example.com`), or any fragment
+   that does not start the address, returns **nothing** — not an error and not a partial answer.
+   **The narrowing will be documented in the screen's empty state at the lists/UI increment.** Widening
+   the domain port instead remains available as a separate change with its own PR.
+
+   **† Amended 2026-09-14 — how the three arms are actually served.** This clause originally said all
+   three arms denormalize into **one** indexed field. They do not, and did not need to. As built they
+   are three: `searchKey` (the folded order id, one `startsWith`), `buyerRefLower` (the folded buyer
+   reference, one `startsWith`), and the `order_sku_index` pointer documents for the exact folded sku.
+   The composite-key concern the original wording carried is therefore moot — a partial id matches a
+   partial id and nothing else — and only the buyer-reference axis narrows. What makes three arms
+   legitimate is item 3's cursor; see the merge ruling below.
 2. **Correlated existence (search by line sku)** → `order_sku_index` documents, written after order
-   creation, derived and idempotent (so needing no atomicity), healed by the sweeper. They feed
-   `searchKey`.
-3. **Keyset pagination maps in shape but not in token.** The domain cursor is a value position; the host
-   cursor is an opaque host-minted string whose seek re-reads the cursor row by id. The adapter will
-   either round-trip the host token through the route or re-derive the position — **decided at the
-   order-store lists increment**, which must also write a **deleted-cursor-row** case, since a deleted
-   cursor row is a paging fault with no analogue today and **no such test exists anywhere in the tree.**
+   creation, derived and idempotent (so needing no atomicity), healed on read and by the sweeper. **†
+   They are a second query, not a contribution to `searchKey`**, and each carries a copy of the order's
+   frozen `createdAt` so the arm is keyset-bounded rather than a full resolution of every order that
+   ever bought the sku. Keying them by the `(sku, orderId)` **pair** is what makes "an order carrying
+   two matching lines appears once" a property of the document id rather than a de-duplication step
+   someone can forget.
+3. **Keyset pagination maps in shape but not in token. † Decided 2026-09-14: re-derive.** The domain
+   cursor is a value position; the host cursor is an opaque host-minted string whose seek re-reads the
+   cursor row by id, so a deleted cursor row breaks it. The adapter therefore **ignores the host token
+   and re-derives the position** from the port's own `OrderListCursor` (`{ createdAt, id }`): it seeks
+   with a coarse range on the declared index and applies the exact `createdAt DESC, id DESC` tie-break
+   in memory, because a true keyset tie-break needs an OR. A deleted cursor row is consequently **not a
+   paging fault** — the position still describes itself and paging continues from it — and the case that
+   pins it is written, where none existed anywhere in the tree before.
+
+   **† The two-query merge is UPHELD, under one precondition.** The rejection below was written on the
+   assumption of an opaque host-minted cursor, and item 3 retired that premise. The ruling, stated so
+   the precondition travels with it: **an OR may be resolved as N indexed queries — each contributing
+   its own top `limit + 1` — merged and re-sliced, and counted by inclusion–exclusion over the SAME
+   predicate function, exactly when the cursor is a self-describing value position.** Both halves are
+   load-bearing. The cursor is what makes "strictly after this position" decidable for a document from
+   *any* arm, so each arm can be paged independently and the top `limit + 1` of the merge is the true
+   page; the shared predicate function is what keeps the count from disagreeing with the page it
+   captions. Under an opaque per-query token neither holds, and the rejection stands. Two ORs are
+   resolved this way as built — the customer union (`customerKey` and `buyerRefLower`, counted by
+   inclusion–exclusion) and the sku arm (counted as a set difference).
+
+   **† The ordering invariant the merge needs, which is a one-dialect trap.** The adapter's total order
+   is `createdAt DESC, id DESC` in **code-unit** order, because that is the order the port's cursor
+   position is defined in. The host breaks its own `createdAt` ties on the id column under the
+   *database's* collation, and one dialect's default collation ignores punctuation at the primary level,
+   so host row order and code-unit order can disagree **inside a tie group**. The rule is therefore:
+   **an arm is drained to the end of its boundary `createdAt` tie group before anything is sliced.**
+   Truncating at the needed count in the host's row order lets a tied row fall off one page without
+   appearing on the next — a silent gap, on one dialect only, which is exactly what the proving case
+   observed when the drain was removed.
 4. **`limit` is clamped by the host** (50 default, 100 ceiling), so reads that sum day documents page: a
    one-year reporting window is four pages, not one.
 5. **No raw SQL and no host DB handle**, ever. Nothing in this design needs one.
@@ -588,9 +770,31 @@ unique-index lock before any inventory lock, so two products renaming onto each 
 deadlock, and a lock-order deadlock was never mapped to a typed error.
 *Invariant:* **stock conservation** across a rename; no rename out from under a live hold.
 *Now guaranteed by:* the intent-claim of §3 — source zeroed and stamped, target applying once by token,
-source clearing. The held/adopted refusal becomes **structural**, because the holds it checks are in the
-very document being written. A fixed lock order is replaced by a fixed step order, and there is no lock
-to order — which also retires the residual deadlock above.
+source clearing. A fixed lock order is replaced by a fixed step order, and there is no lock to order —
+which also retires the residual deadlock above.
+*† The held-stock refusal is NOT structural, and that is an accepted weakening — corrected 2026-09-14.*
+The clause this replaces claimed the refusal "becomes structural, because the holds it checks are in the
+very document being written". It is not, because the ratified step order is **carry after the product
+write**: the product's own document commits first, and only then does the move run. So a reservation
+landing in that window leaves the rename **committed with the carry owed**, where the SQL — which
+locked the source row before it counted holds — would have refused the whole operation atomically. What
+an observer sees is a product whose sku is the new one while its stock is still under the old one: a
+**phantom out-of-stock on the target, never an oversell**, because no unit is ever counted twice and the
+source's units stay exactly where a release of that hold expects them. The source sku's claim is held
+until the carry is terminal, so nobody else can take those units meanwhile, and a new rename of the same
+owner is refused with the same `SkuHeldStockError` until it completes. Completion is not deferred to a
+sweeper alone: **any later write on the product runs it first**, and the sweeper is the backstop. One
+consequence worth stating because an auditor will look for it — **which route completed the carry decides
+whether the audit trail is whole.** A completion driven from the product's own recorded intent, which is
+what a later product write and the product-side sweeper leg both do, moves the units *and* writes the
+paired `rename_out`/`rename_in` entries, because the recorded intent carries the command key they are
+derived from. A completion driven from the **inventory document's stamp** — the replayer's and the
+inventory sweeper leg's entry point — has no command key, so it deliberately writes **no pair** rather
+than invent entries it cannot attribute. The trail can therefore be honestly incomplete for a rename that
+crashed mid-flight, and only for that. The contract pins the sequential refusal, which is unchanged; the
+window is reachable only by a concurrent reserve and the adapter's crash-seam suite drives it
+deliberately. The package README's "What the carry cannot make atomic, stated exactly" is the full
+statement.
 *Proven by:* `product-commerce-store-contract`'s refusal cases at both grains, `sku-rename-ledger`, and
 `sku-rename-race`/`variant-sku-rename-race` — including the crossing-renames case where one side refuses
 typed and neither deadlocks, satisfied on documents by there being no lock at all.
@@ -600,19 +804,22 @@ typed and neither deadlocks, satisfied on documents by there being no lock at al
 *What the SQL guaranteed.* One transaction re-checked the deadline, returned the units and deleted the
 line, so a line could never be deleted without its units coming back. The re-check was the flip's own
 guard: `state = 'held'` **and** either a stamped deadline at or before now, **or** an unstamped hold
-older than the cutoff **that also has a cart-mutation ledger row** — an existence test which is what
-kept the cart sweep from reaping a hold no cart created. Only the flip winner incremented `on_hand` and
-deleted the line.
-*Invariant:* **exactly-once expiry.**
-*Now guaranteed by:* the intent-claim — a guarded flip of the line to `expiring` (the once-only token),
-then the release, then the removal, with a sweeper completing a partial. The null-deadline arm's scoping
-survives as a property of the cart document that owns the line: a hold with no cart line is not the cart
-sweep's to reap. Checkout keeps the shape it already has — a single guarded flip whose `state = 'active'`
-predicate is itself the write-once, so a replay reports "already done" rather than failing.
-*Proven by:* `cart-store-contract`/`hold-expiry`, whose cases are the specification here — an expired
-hold is released and its stock returns, a lazy read racing the sweep returns stock **exactly once**, a
-hold whose TTL was reset between listing and release is not reaped, a non-cart hold older than the TTL is
-not reaped — plus `cart-fence` and `no-oversell-cart.pg.test.ts`.
+older than the cutoff **that also has a cart-mutation ledger row** — an existence test which is what kept
+the cart sweep from reaping a hold no cart created. Only the flip winner incremented `on_hand` and
+deleted the line. *Invariant:* **exactly-once expiry.** *Now guaranteed by:* the intent-claim — a guarded
+flip of the line to `expiring` (the once-only token), then the release, then the removal, with a sweeper
+completing a partial. The null-deadline arm's scoping survives as a property of the cart document that
+owns the line: a hold with no cart line is not the cart sweep's to reap. **†** One thing to be exact
+about, because the SQL's guard was a single predicate and this is two steps: the indexed `holdExpiresAt`
+is only a **candidate filter**, a deliberate **superset**, and both of the SQL's arms — the stamped
+deadline at or before now, and the unstamped hold older than the cutoff that also has a mutation record —
+are **re-applied per fetched document** before anything is reaped. The index narrows; it does not decide.
+Checkout keeps the shape it already has — a single guarded flip whose `state = 'active'` predicate is
+itself the write-once, so a replay reports "already done" rather than failing. *Proven by:*
+`cart-store-contract`/`hold-expiry`, whose cases are the specification here — an expired hold is released
+and its stock returns, a lazy read racing the sweep returns stock **exactly once**, a hold whose TTL was
+reset between listing and release is not reaped, a non-cart hold older than the TTL is not reaped — plus
+`cart-fence` and `no-oversell-cart.pg.test.ts`.
 
 #### 7.8 The coupon guard — `uses_count + 1 WHERE max_uses IS NULL OR uses_count < max_uses`
 
@@ -621,13 +828,26 @@ meant exhausted. The `OR` made an uncapped coupon unconditional in the same stat
 cap was then checked **after** that bump, in the same transaction, by **counting** the customer's
 redemption rows — race-free because the coupon-row update had already taken the row lock — and its
 refusal was undone by **rolling the transaction back**, so a per-customer rejection consumed no global
-headroom.
-*Invariant:* **no over-redeem**, and no global headroom consumed by a per-customer refusal.
+headroom. *Invariant:* **no over-redeem**, and no global headroom consumed by a per-customer refusal.
 *Now guaranteed by:* R1's inverted order plus an idempotent compensation, because there is no rollback.
-*Proven by:* `coupon-store-contract`/`coupon-lifecycle` — the per-customer cap case, the guest-checkout
-degradation case, and the same-key replay — and `coupon-no-over-redeem.pg.test.ts`, where N concurrent
-redeems at cap M leave exactly M successes and two same-customer concurrent redeems at a per-customer cap
-of 1 leave exactly one.
+**†** The statement above that the counter's guard is "one statement" survives exactly, and deliberately:
+as built the `updateIf` guards the cap **and nothing else**, because once-only lives in the redemption
+key document's `claimed → bumping → applied | refused` state instead (amended R1). The uncapped case is a
+plain delta for the same reason the SQL's `OR` made it unconditional — an uncapped coupon has no
+invariant to violate. *† Two divergences from the SQL, both narrowings, both recorded rather than
+discovered.* First, **a refusal is recorded permanently**: a replay of an exhausted key answers exhausted
+again even if headroom has since been released, where the SQL rolled its refusal back and kept no record
+so a retry there could later succeed. A stable answer per idempotency key is the property the whole
+document model rests on. Second, **the per-customer counter document exists only while a cap is in
+force**, so adding or raising a cap later counts only the redemptions made while a cap was set — the SQL
+counted rows and had no such window. The alternative, a per-customer index over the redemption documents,
+was weighed and the bounded document preferred. *Proven by:* `coupon-store-contract`/`coupon-lifecycle` —
+the per-customer cap case, the guest-checkout degradation case, and the same-key replay — and
+`coupon-no-over-redeem.pg.test.ts`, where N concurrent redeems at cap M leave exactly M successes and two
+same-customer concurrent redeems at a per-customer cap of 1 leave exactly one; **†** plus the same-key
+shapes that pin the state machine — 20 completers of one key while 20 peer keys commit, capped and
+uncapped — and the crash seam that pins the lease from the forbidden side, with the owner's increment
+parked.
 
 #### 7.9 Order creation — `ON CONFLICT DO NOTHING` plus the snapshot inserts
 
@@ -681,24 +901,33 @@ earlier orders findable under the sku they were bought as. Alongside it, the **c
 own OR (`customer_id = :id OR lower(buyer_ref) = lower(:ref)`, folded JS-side), and the date filter was
 half-open: `created_at >= :from AND created_at < :to`.
 *Invariant:* **one row per order**, and the count agreeing with the page it captions.
-*Now guaranteed by:* the prefix-only `searchKey` denormalization (6.1) and the `customerKey`
-denormalization (R3) — one indexed field each, one row per order by construction, and a count sharing the
-identical predicate. The customer half remains a **union**, not an equality: it becomes
-`customerKey in [customerId, foldedBuyerRef]`, which the filter algebra supports directly and which a
-document matches at most once. R3 records the single edge that narrows and hands it to the lists
-increment. The sku arm's semantics survive as `order_sku_index` documents feeding
-`searchKey`, still derived from the **frozen** lines. The half-open window needs no denormalization at
-all: `gte` and `lt` express it directly.
-*Proven by:* the list and count cases in `order-store-contract`, ADR-0017's refresh cases, and a
-one-row-per-order case under a multi-line sku match. The **deleted-cursor-row case must be written** at
-the lists increment — no such test exists today, in any suite.
+*Now guaranteed by:* **† corrected 2026-09-14, because the lists adapter resolved this differently and
+better.** Three indexed arms, merged, not one denormalized field: an anchored `startsWith` on
+`searchKey` (the folded order id), an anchored `startsWith` on `buyerRefLower` (the folded buyer
+reference — the one axis that narrows), and the `order_sku_index` pointers for the exact folded sku,
+still derived from the **frozen** lines. One row per order survives twice over: the pointer's id is the
+`(sku, orderId)` pair, so an order with two matching lines owns exactly one, and the count adds the sku
+set as a **set difference** over the same predicate function rather than a second tally. The **customer**
+half also remains a union and also became two arms rather than one `in` clause: R3's conditional fired
+because a contract case pins the cross-customer edge — an order owned by one customer id whose buyer
+reference folds to the queried reference — so `customerKey` and `buyerRefLower` are queried separately
+and counted by **inclusion–exclusion**, which is what keeps an order matching both halves counted once.
+§6.3 records the precondition all of this rests on: a self-describing value-position cursor. The
+half-open window needs no denormalization at all: `gte` and `lt` express it directly.
+*Proven by:* the list and count cases in `order-store-contract` on every tier, ADR-0017's refresh cases,
+and a one-row-per-order case under a multi-line sku match. **†** The **deleted-cursor-row case is now
+written**, and so is the four-order tie-group case that pins the §6.3 drain — the one case that fails on
+a single dialect if the drain is removed. The store's own narrower statement, that a mid-string
+buyer-reference fragment finds nothing, is pinned in its package tests rather than in the shared
+contract, which deliberately asserts only the anchored floor so an adapter serving the unanchored
+superset stays conformant.
 
 #### 7.12 Inventory store — the remaining guards
 
 | Old guard | Invariant | Now guaranteed by | Proven by |
 |---|---|---|---|
 | `commit`: flip `WHERE id = :id AND state IN ('held','adopted')`; on zero rows re-read and return if already `committed`, else raise `ReservationCommitLostError` (or `ReservationNotFoundError` when no row exists) | commit once-only; a hold that is not live can never be silently committed | the reservation's terminal state in `reservation_index` plus the live hold in the aggregate; both typed errors preserved | `inventoryStoreContract` for the batch path. The singular commit-lost throw has **no case in the shared contract file**, but it *is* asserted twice outside it — `order-flow.dialects.test.ts` ("commit against a released reservation throws the loud `ReservationCommitLostError`; against a committed one it is a benign no-op") on every dialect, and the document adapter's own crash-seam suite, which asserts the same class for an orphaned index entry. Folding a case into the shared contract remains worthwhile |
-| `release`: `released` returns; any other non-live state throws an **untyped** `Error`; a lost flip inside the transaction is a **silent no-op** | stock returns exactly once | the same two reads, and a lost settle is still a silent no-op. **The untyped error is preserved as-is** — typing it is an open follow-up, not a change this model made | `inventoryStoreContract` "commit finalizes; release returns stock; double-commit and double-release are no-ops"; "release(unknownId) rejects with ReservationNotFoundError" |
+| `release`: `released` returns; any other non-live state throws an **untyped** `Error`; a lost flip inside the transaction is a **silent no-op** | stock returns exactly once | the same two reads, and a lost settle is still a silent no-op. **†** The throw is now **typed** — the adapter's `ReservationNotReleasableError`, naming the reservation and the state found — because the cart expiry deliberately swallows this case and must not do so by matching a message (§2) | `inventoryStoreContract` "commit finalizes; release returns stock; double-commit and double-release are no-ops"; "release(unknownId) rejects with ReservationNotFoundError" |
 | `#applyStockMovement`: ledger claim `ON CONFLICT (idempotency_key) DO NOTHING`, then an unconditional increment (restock) or a guarded `on_hand >= qty` decrement (removal) | stock conservation; movement once-only | the `inventory_movements/{prefixedKey}` claim plus one compare-and-set on the aggregate, with the ring as the in-flight witness | `inventoryStoreContract`; `restock-concurrency.pg.test.ts` |
 | the **key-consumption asymmetry**: an unknown sku throws inside the transaction, so claim and movement both roll back and **the key is NOT consumed**; a genuine `INSUFFICIENT_STOCK` is recorded in the ledger **inside the committing transaction**, so the key **IS** consumed | a refusal that is a fact about the sku is retryable; a refusal that is a fact about the stock is final | the document model reproduces it by ordering: the unknown-sku case exits **before** the claim is written, the insufficient-stock case writes the claim's recorded answer | `inventoryStoreContract` "unknown-sku reserve is OUTSIDE idempotency scope: the key is not consumed and stays usable once the sku exists" |
 | `StockMovementMismatchError` when a movement key is replayed with a different sku, direction or qty | one key means one movement | the claim document carries the full intent, so the comparison is a read of the same document | `inventoryStoreContract` "a stock-movement key reused for a different movement is rejected, never ok for the wrong movement" |
@@ -712,10 +941,13 @@ the lists increment — no such test exists today, in any suite.
 
 | Old guard | Invariant | Now guaranteed by | Proven by |
 |---|---|---|---|
-| `claimNextEmail`: `sent_at IS NULL AND status != 'failed' AND (lease_until IS NULL OR lease_until <= :now)`, claimed by re-applying the same predicate and setting `status='sending'`, a caller-supplied `lease_until` and `attempts + 1` | a message is sent once; a crashed dispatcher's row becomes claimable again | R2's single `emailDueAt` field and one `updateIf` guarded on `emailDueAt <= now` | `outbox-dispatch` "a crashed dispatcher run leaves the row claimable again after its lease expires"; "a failed send returns the row to pending; the next dispatch delivers it exactly once" |
+| `claimNextEmail`: `sent_at IS NULL AND status != 'failed' AND (lease_until IS NULL OR lease_until <= :now)`, claimed by re-applying the same predicate and setting `status='sending'`, a caller-supplied `lease_until` and `attempts + 1` | a message is sent once; a crashed dispatcher's row becomes claimable again | **† corrected 2026-09-14:** R2's single `emailDueAt` field as the **candidate filter**, with the predicate re-applied to the fetched document and the claim taken by a **revision `compareAndSet`** on the order document — not the `updateIf` R2 first promised (see R2) | `outbox-dispatch` "a crashed dispatcher run leaves the row claimable again after its lease expires"; "a failed send returns the row to pending; the next dispatch delivers it exactly once" |
+| **†** *(new 2026-09-14 — no SQL analogue)* settling an outbox entry by **entry id alone** | a message settled once; a lost locator never reads as "already drained" | `outbox_keys/{entryId} → orderId`, written **after** the flip that enqueued the entry, so the only reachable tear is "entry exists, locator does not" — which the settle path **heals** with one bounded walk of the `emailDueAt` index and then writes the locator so the next settle is a single read. The reverse ordering would leave a locator pointing at nothing, which nothing could heal. A walk that still finds nothing is **loud**, not quiet: an already-drained entry HAS a locator and never reaches the walk, so an unresolvable id means a live lease about to lapse and a second send — it raises the typed retryable `OutboxEntryUnlocatableError`, having written nothing. `maxOutboxPages` bounds the fallback **only**, and is a separate knob from `maxExpiryPages` on purpose: the two scans are bounded by different things, so squeezing one must not silently squeeze the other | the order crash-seam suite's locator cases |
+| **†** *(new 2026-09-14 — no SQL analogue)* `recordPayment`'s provider reference, **globally** | one provider reference means one payment, across **all** orders | `payment_refs/{providerRef} → orderId`, create-if-absent. The SQL's `ON CONFLICT (provider_ref) DO NOTHING` was per-table and **silent**; this throws `PaymentRefConflictError` when the reference is already claimed by **another** order, and a payment against a missing order throws a typed not-found. That is a deliberate loudening, and it has a consumer obligation: the settle path must map it to a **non-retryable acknowledgement plus an anomaly**, or a gateway retries forever | the order store's payment-reference cases |
+| **†** *(new 2026-09-14 — no SQL analogue)* cancellation releases the order's **adopted** holds | a cancelled order does not strand its holds; a **paid** order's spent units are never returned | The SQL's cancel was a pure envelope write, and the expiry sweep scans only `pending`, so a cancelled `pending` order strands its holds forever. The `→ cancelled` flip therefore records the same `holdsReleased` intent the `→ expired` flip does, state-guarded, and the release is completed idempotently by any replayer. What makes that safe on a **paid** order cancelled after settle is the inventory store's **`adopted`-only** guard on `releaseAdopted`: a `committed` hold is not adopted, so the release is an unconditional no-op, `onHand` is unchanged and spent units are never put back. That guard is load-bearing here, not incidental | the shared paid-cancellation case, registered on every dialect |
 | `resolveReconciliation`: compare-and-clear — sets the disposition and nulls the flag `WHERE id = :id AND reconciliation_flag = :expectedFlag` | a resolution never clobbers an anomaly re-raised since the operator read it | the same comparison inside the order document's compare-and-set, where the revision adds a second guard | `order-store-contract` "resolveReconciliation with a STALE expectedFlag is a 0-row miss: the re-flagged anomaly survives"; the non-flagged and once-only cases |
 | `flagReconciliation`: unguarded, **last-writer-wins** | an anomaly is always recordable | preserved as last-writer-wins on the field; it is deliberately not a CAS | `resolve-reconciliation-race.pg.test.ts` |
-| `recordPayment`: `ON CONFLICT (provider_ref) DO NOTHING` | a gateway redelivery records one payment | the provider reference keys the entry inside `payments[]`; a present key is a no-op | `refund-order-contract` captured-sum cases |
+| `recordPayment`: `ON CONFLICT (provider_ref) DO NOTHING` | a gateway redelivery records one payment | the provider reference keys the entry inside `payments[]`; a present key is a no-op — **†** and, for a reference already claimed by a **different** order, the new `payment_refs` row above | `refund-order-contract` captured-sum cases |
 | `voidRefund` / `markRefundUnverified`: guarded flips out of `status = 'reserved'` | capacity is released or held deliberately, never by accident | R6, inside the order document's compare-and-set | the three `refund-order-contract` cases named in R6 |
 | `order_totals.order_id` as PRIMARY KEY | one totals row per order | tautological once totals are a field of the order document | `order-store-contract` |
 | `linkGuestOrders`: `WHERE lower(buyer_ref) = :folded AND customer_id IS NULL` | a guest's orders attach to exactly one account and never re-attach | the same predicate, **plus rewriting `customerKey`** (R3) so the customer filter keeps working afterwards | `order-transition-contract`'s guest-linking cases — the two-customer case, and "linkGuestOrders matches buyer_ref case-insensitively — a mixed-case guest checkout still links", whose second call returning 0 pins the no-re-attach half. (`order-store-contract` never calls `linkGuestOrders`) |
@@ -724,17 +956,17 @@ the lists increment — no such test exists today, in any suite.
 
 | Old guard | Invariant | Now guaranteed by | Proven by |
 |---|---|---|---|
-| the mutation ledger: claim `ON CONFLICT (idempotency_key) DO NOTHING`, complete by upserting `completed = 1` with the resulting line and qty, and **short-circuit a replay by reading the recorded result inside the transaction before any work** | a retried cart mutation never re-does inventory-affecting work | the mutation map embedded in the cart document, read and written in the same compare-and-set | `cart-store-contract` "add is idempotent…", "increase is idempotent…", "adjust replay after an intervening different-key adjust is a no-op returning the recorded result and moves no stock" |
-| `upsertLine`'s hold stamp: `UPDATE reservations SET expires_at = :deadline WHERE id = :id AND state = 'held'`; zero rows raises `HoldExpiredError`. (It stamps the deadline; `state='held'` is a **precondition**, not something it sets) | a line is never visible attached to a hold that is no longer live | the same precondition read off the hold in the inventory document before the cart document is written | **no case in the shared contract file** — but the outcome *is* driven through the real Kysely adapter on every dialect by `reserve-cart-line-crash.dialects.test.ts` ("a late add replay after the sweep reaped its crashed hold does not resurrect a line"), which asserts the use-case's `HOLD_EXPIRED` reason rather than the class. The cart-store increment should re-point that case and add a store-level one |
+| the mutation ledger: claim `ON CONFLICT (idempotency_key) DO NOTHING`, complete by upserting `completed = 1` with the resulting line and qty, and **short-circuit a replay by reading the recorded result inside the transaction before any work** | a retried cart mutation never re-does inventory-affecting work | the mutation map embedded in the cart document, read and written in the same compare-and-set. **†** Two additions the port signatures force: the map is **bounded** at 64 *completed* records — a claimed-but-incomplete record is never pruned, so a bound can never eat an unfinished intent — and a second collection `cart_mutation_index/{idempotencyKey} → { cartId }` exists purely as a **locator**, because `recordedMutation(key)` and `expireHold(reservationId)` are handed no cart id and an embedded map cannot be found from a key alone. It is the `reservation_index` device again (§4) | `cart-store-contract` "add is idempotent…", "increase is idempotent…", "adjust replay after an intervening different-key adjust is a no-op returning the recorded result and moves no stock" |
+| `upsertLine`'s hold stamp: `UPDATE reservations SET expires_at = :deadline WHERE id = :id AND state = 'held'`; zero rows raises `HoldExpiredError`. (It stamps the deadline; `state='held'` is a **precondition**, not something it sets) | a line is never visible attached to a hold that is no longer live | **† corrected 2026-09-14.** It stays a guarded **write**, not a read. This row previously said the attach guard "becomes a read of the hold before the cart document is written"; that is wrong, and would have been a TOCTOU — between the read and the cart write the sweep can reap the hold and the line is resurrected anyway. The port's docblock is explicit that the deadline stamp *is* the attach guard, so the capability is declared adapter-locally (`HoldDeadlineStamper.stampHoldDeadline`, asked for by the cart store's constructor as `InventoryStore & HoldDeadlineStamper`) and is one guarded read-modify-write on the inventory aggregate in which the `held` precondition, the ownership check and the new deadline commit together. `true` is durable proof the hold was live at the instant of the write; `false` — never a throw — is an unknown, pruned or no-longer-`held` hold, and the cart store turns it into `HoldExpiredError`. `expiresAt` is non-null by type, because a hold stamped with no deadline could never be adopted. **No port was widened and no mandated write was dropped**; the order store must not re-stamp | Still **no case in the shared contract file**; the outcome was driven through the real Kysely adapter on every dialect by `reserve-cart-line-crash.dialects.test.ts` ("a late add replay after the sweep reaped its crashed hold does not resurrect a line"), which asserts the use-case's `HOLD_EXPIRED` reason rather than the class. **†** The cart store adds the store-level regression case the stamper needs — a stamped line whose hold is then adopted by `adoptMany` |
 | `(cart_id, sku)` unique upsert with a do-update conflict clause | one line per sku per cart | the lines map keyed by sku inside the cart document | `cart-store-contract` |
-| `adjustLine`'s correlated subselect: when a reservation exists the stored line qty is taken from the reservation's own qty rather than the caller's | the line qty and the hold qty can never diverge | one document write derives the line qty from the hold it just read | `cart-store-contract` "increase delta-reserves the difference"; "decrease partial-releases and always succeeds" |
+| `adjustLine`'s correlated subselect: when a reservation exists the stored line qty is taken from the reservation's own qty rather than the caller's | the line qty and the hold qty can never diverge | one document write derives the line qty from the hold it just read. **†** It also gained a **reconcile pass with no SQL analogue**: the SQL could lean on the subselect running inside the same transaction as the write, and there is no such transaction here, so convergence is made *provable* rather than assumed — the line is re-derived from the hold on a later pass if the two ever disagree | `cart-store-contract` "increase delta-reserves the difference"; "decrease partial-releases and always succeeds" |
 
 #### 7.15 Coupon store — the remaining guards
 
 | Old guard | Invariant | Now guaranteed by | Proven by |
 |---|---|---|---|
 | `delete … WHERE NOT EXISTS (SELECT … FROM coupon_redemptions WHERE coupon_id = coupons.id)`, returning a typed `in_use_by_redemptions` **result** rather than throwing | a coupon with history is never deleted out from under it | a count of the coupon's redemption documents read before the delete, with the same typed result | `coupon-store-contract` "delete is forbidden while a redemption references the coupon (in_use_by_redemptions)"; "delete becomes possible once the redemption is released" |
-| `release` / `releaseByOrder`: `uses_count - 1 WHERE uses_count > 0` — a **predicate guard**, so the counter never goes negative and a release at zero simply matches nothing | the counter never goes negative; release is idempotent | `updateIf` with the mirror-image guard `usesCount > 0` — the one place a pure-counter decrement keeps the lock-free path | `coupon-store-contract` "releaseCoupon on an already-released or never-redeemed id is a no-op, not an error"; "releaseByOrder … decrements uses_count, and is idempotent" |
+| `release` / `releaseByOrder`: `uses_count - 1 WHERE uses_count > 0` — a **predicate guard**, so the counter never goes negative and a release at zero simply matches nothing | the counter never goes negative; release is idempotent | `updateIf` with the mirror-image guard `usesCount > 0` — **†** one of the package's **two** `updateIf` sites, and the only decrement among them; both guard the same field of the same document, which is what makes the lock-free path safe here and nowhere else (§1). Its residual is **one HIGH, never one LOW** | `coupon-store-contract` "releaseCoupon on an already-released or never-redeemed id is a no-op, not an error"; "releaseByOrder … decrements uses_count, and is idempotent" |
 
 #### 7.16 Product-commerce store — the remaining guards
 
@@ -745,7 +977,7 @@ the lists increment — no such test exists today, in any suite.
 | `activate`/`deactivate`: `WHERE deleted_at IS NULL AND active = :from AND (active_updated_at IS NULL OR active_updated_at <= :watermark)` | an out-of-order publish cannot re-latch a newer transition; a soft-deleted row never resurrects | the same watermark comparison in the document | `product-commerce-store-contract` "out-of-order: deactivate@T2 (newer) then a STALE activate@T1 (older)…" |
 | `softDelete`: sets the tombstone `WHERE deleted_at IS NULL`, leaving the sku column intact — which **releases** the sku, because live-sku uniqueness is partial over non-deleted rows | delete is always a tombstone; the sku becomes reusable at once | the tombstone field plus **releasing the `sku_owners` claim** (R4), which is what makes the release explicit rather than a side effect of an index predicate | `product-commerce-store-contract` "softDelete sets deletedAt + active=false and retains the row (never a hard delete)" |
 | `upsertVariant`: `ON CONFLICT (product_id, variant_key) DO NOTHING`, plus a resurrect path gated on the row being orphaned **and** the incoming watermark being strictly newer | the variant key is the immutable identity; a re-declare never mints a second row; revival needs a strictly-newer delivery | the variants map keyed by variant key inside the product document, same gate | `product-commerce-store-contract` "upsertVariant RESURRECTS an orphaned variant…" |
-| the two **partial** unique indexes (`unique … WHERE deleted_at IS NULL` and `unique … WHERE orphaned_at IS NULL`) plus the **reciprocal** cross-grain checks, with `SkuConflictError` outranking `SkuStockConflictError` because the cross-table check runs first | one live owner per sku across products and variants, and the operator is told the more fundamental reason | R4's `sku_owners` claim document, with the precedence preserved by checking the claim before the stock | `product-commerce-store-contract` "PRECEDENCE: a product rename onto a sku a LIVE VARIANT holds refuses as SkuConflictError, never as a stock conflict"; `variant-sku-rename-race.pg.test.ts` |
+| the two **partial** unique indexes (`unique … WHERE deleted_at IS NULL` and `unique … WHERE orphaned_at IS NULL`) plus the **reciprocal** cross-grain checks, with `SkuConflictError` outranking `SkuStockConflictError` because the cross-table check runs first | one live owner per sku across products and variants, and the operator is told the more fundamental reason | R4's `sku_owners` claim document, with the precedence preserved by checking the claim before the stock. **†** The claim is a **lease**, so holding it is not enough: its revision is re-asserted by a heartbeat compare-and-set immediately before every applying sku-bearing write, on every retry, and an overtaken writer is refused `SkuConflictError` — one extra write per applying write, which is the ratified price of not letting a parked writer land two live rows on one sku (amended R4) | `product-commerce-store-contract` "PRECEDENCE: a product rename onto a sku a LIVE VARIANT holds refuses as SkuConflictError, never as a stock conflict"; `variant-sku-rename-race.pg.test.ts` |
 
 #### 7.17 Identity, entitlements, settings, rules, ledgers and reporting
 
@@ -759,7 +991,10 @@ the lists increment — no such test exists today, in any suite.
 | credential `verifyChallenge`: single-use consume `SET consumed_at = :now WHERE id = :id AND consumed_at IS NULL`; zero rows is the `CONSUMED` answer | a magic link works exactly once | a compare-and-set on the challenge document guarded on the consumed field being absent | `credential-verifier-contract` "verifyChallenge with an already-consumed token returns CONSUMED…" |
 | `issueChallenge`'s throttle: **count-then-insert, not transactional, over a table with no unique constraint** — a genuine race | rate limiting | **must not be inherited silently.** The identity increment owns making the throttle a claim document, or recording why it stays best-effort | the cap is tested ("rapid repeat requests hit the per-email cap…"); **the race is not**, and a case must be written |
 | shipping `deleteZone` / tax `deleteClass`: `NOT EXISTS` over children, returning typed `in_use_by_methods` / `in_use_by_rates` results | a zone or class with children is never deleted out from under them | children embedded in the parent document make the check a read of the same document | `shipping-rules-store-contract` "deleteZone is forbidden while a method still references it (in_use_by_methods)"; the tax twin |
-| `updateRate` / `updateTaxRate`: money CAS on `amount_cents = :expected` / `rate_bps = :expected`, misses classified `not_found` vs `stale` | a rate edit never silently overwrites a concurrent one | the same expected-value comparison inside the zone or class document's compare-and-set | `rules-stores-contract`, `rules-cas-race.pg.test.ts` |
+| `updateRate` / `updateTaxRate`: money CAS on `amount_cents = :expected` / `rate_bps = :expected`, misses classified `not_found` vs `stale` | a rate edit never silently overwrites a concurrent one | the same expected-value comparison inside the zone or class document's compare-and-set. **†** One consequence the SQL did not have: the value lives in a document that also holds the parent's name and its other children, so **unrelated writes contend for one revision**. A lost revision race is therefore retried by **re-reading and re-comparing**, never by re-submitting the decision — a caller that lost a real edit race is told `stale` on its next attempt instead of overwriting the change it should have seen. A wrong shipping fee or tax rate is money | `rules-stores-contract`, `rules-cas-race.pg.test.ts` |
+| **†** *(new 2026-09-14)* `updateZone` / `updateMethod` / `updateClass` — the **rename** edits, which the ports document with no `stale` outcome | a rename is always recordable | preserved as **last-writer-wins**: there is no business-rule refusal, so every writer of the document eventually commits. It is still written as a read-modify-write compare-and-set rather than a blind put, because the parent's children share the document and a blind put would delete a concurrently created method or rate. These are the **one exception** to "the retry bound is a property of the document": with no guard to refuse anybody, depth grows with the **crowd** rather than with the invariant | `rules-stores-contract`, `rules-cas-race.pg.test.ts` |
+| **†** *(new 2026-09-14)* `tax_rates` had **no** foreign key to `tax_classes`, and the contract relies on it: rates are created for classes nobody declared, and are counted and returned | a rate for an undeclared class is not lost | `tax_classes/{classId}` is the document that holds a class's **rates**, and its `name` says whether the class was ever declared. `null` is the undeclared case — created on demand by a rate, skipped by `listClasses`, `not_found` for `updateClass`/`deleteClass` (exactly what the missing row produced), adopted rather than collided with by a later create, and deleted with its last rate so an undeclared class leaves no litter | `rules-stores-contract` |
+| **†** *(new 2026-09-14)* `getRate(class, zone)` — the SQL had no unique index on that pair, so more than one rate can match and `LIMIT 1` chose arbitrarily | the checkout reads the same rate every time | the **lowest rate id** wins, by keeping the embedded rates sorted by id and taking the first match — deterministic where the SQL was not. This read goes **nowhere near** a claim document, so it never heals and never writes (see the Amendment's claim-document rule) | `rules-stores-contract` |
 | order notes `append` and payment events `dedupe`: `ON CONFLICT (idempotency_key) / (dedupe_key) DO NOTHING`, re-reading and returning on conflict | append once-only; a webhook redelivery is processed once | the key **is** the document id — notes inside the order document, payment events as their own claim collection | `order-notes-store-contract` "replaying the same idempotencyKey is once-only (appended:false, same note, no duplicate)"; payment-event dedupe has **no direct suite** and the new adapter should add one |
 | reporting `lowStock`: the join carries `product_commerce.deleted_at IS NULL` **as a join condition** | a soft-deleted product sharing a live sku neither duplicates the row nor titles it | the low-stock read filters on the product document's own tombstone before pairing it with inventory | `reporting-store-contract` "lowStock: a soft-deleted product sharing a live sku neither duplicates the row nor titles it" |
 | `parseAggregate`'s overflow guard: a summed aggregate outside the safe-integer range throws `RangeError` rather than silently losing precision | money is never silently wrong | rollup counters are summed with the same guard; **the rollup design must keep it**, since summing day documents in JS is exactly where precision would be lost | `parse-aggregate.test.ts` asserts it directly — a bigint string above the safe range and a non-integer both `toThrow(RangeError)`. **That suite lives in the package being deleted**, so it must be **re-pointed at the reporting adapter** rather than lost; owning increment: reporting rollups |
@@ -768,7 +1003,9 @@ the lists increment — no such test exists today, in any suite.
 
 **What becomes easier.** Several invariants stop being conventions and become structural: order snapshot
 immutability (a `readonly` array written once), "flipped but no event" (one write), one-totals-per-order
-(a field), and the held-stock refusal on a rename (a read of the document being written). Idempotency
+(a field). **†** The held-stock refusal on a rename was listed here too, as "a read of the document being
+written"; it is **struck**, because the ratified carry-after-product-write order makes it advisory rather
+than structural — see §7.6, where the weakening and what it costs are stated. Idempotency
 stops being a unique index anyone can forget and becomes a primary key. And **no host-side transactions
 exist anywhere**, which is a feature: a lock-order deadlock is **unreachable by construction**, because
 there are no locks to order — which retires the one deadlock the SQL avoidance never fully closed. The
@@ -784,24 +1021,45 @@ by the same bounded budget.
   per-value size limits** — which is why the cap is a hard assertion rather than a guideline: prune
   terminal holds after the terminal answer is written, bound the movement and transfer rings, measure the
   p99 document size and assert a cap at the order-store increments, and split notes into a child
-  collection if the number demands it.
+  collection if the number demands it. **†** It did: `notes[]` is **not** a field of the order document,
+  and order notes are a child collection keyed `${orderId}:${noteId}` (§4). The cart's mutation ledger
+  and the inventory transfer ring are bounded for the same reason, and a **claimed-but-incomplete**
+  ledger record is never pruned — only completed ones are, which is what keeps a bound from eating an
+  unfinished intent.
 - **Contention, with no structural fix.** A hot aggregate retries. The answer is §2's measured budget
   plus a typed retryable error — not an unbounded loop, which turns contention into a hung request, and
-  not a silent give-up. **One shape is asserted at the ceiling and two more were measured at it**, so the
-  budget is a real operating constraint rather than a theoretical one — though only the asserted one is a
-  guarantee. A change to the ceiling is a change to the budget: measure first, then move it.
+  not a silent give-up. **†** The shape that once sat **at** the ceiling — the merchant removal shape,
+  whose refused removals still write a ledger entry, so its writes are not bounded by the units — now
+  measures comfortably under it and asserts only `<= CAS_MAX_ATTEMPTS`, so **no shape sits at the ceiling
+  today**. That is the raise working, not the constraint disappearing: the budget is still real, and the
+  assertions are upper bounds rather than measurements. A change to the ceiling is a change to the
+  budget: measure first, then move it.
 - **Two windows instead of one atom**, plus a bounded ring-eviction residual — all three named, and all
   three covered by fault injection rather than argued away.
 - **Sweepers are load-bearing.** Unfinished movement claims, partial cross-SKU batches, partial cart
   expiries, partial sku transfers, claimed-but-unapplied coupon redemptions, derived search documents and
   reporting rollups all depend on a sweeper for their completion guarantee. A missing sweeper is a
-  correctness bug, not untidiness.
+  correctness bug, not untidiness. **†** The Amendment names the full set the adapters as built now
+  require, and which increment owns them.
+- **† Reads may write, and a read may throw where SQL could only return null.** Where a claim document
+  is the fast path rather than the definition of existence, an id-keyed read that does not resolve falls
+  back to a bounded parent scan and **re-establishes the claim** — so the read writes, and an id that
+  does not exist costs a full paged scan that can raise the typed page-limit error instead of answering
+  `null`. The Amendment states the rule and its cost table's location; the trade is deliberate, and the
+  checkout reads are on the free side of it.
+- **† Some refusals became louder than the SQL's, and that is a consumer obligation.** A provider
+  reference already claimed by another order, and an outbox entry id that cannot be located, now raise
+  typed errors where the SQL was silent. Louder is right — both states are real and both were previously
+  invisible — but each has a handler that must be written: a non-retryable acknowledgement plus an
+  anomaly for the first, a retry or the next tick for the second.
 - **Compensations replace rollbacks.** Where the SQL undid a write by aborting a transaction — the
   coupon per-customer refusal above all — the document model must write an explicit, idempotent
   compensation, and get its ordering right.
 - **Reporting becomes write-time work**, with past-bucket decrements and paged reads.
-- **Roughly 22 collections** to declare and keep in step with the descriptor, their index lists part of
-  the read contract.
+- **†** **29 rows naming 32 collections** to declare and keep in step with the descriptor — one of them
+  not yet declared — their index lists part of the read contract. The count rose from the ~22 first
+  estimated, and every addition is a claim or locator document standing in for a lookup the port
+  signatures force (§4).
 - **The orders search narrows** as recorded in 6.1.
 
 **Rejected alternatives.**
@@ -824,3 +1082,144 @@ by the same bounded budget.
 reserve lock-free again and retire the contention budget; a measured contention or document-size figure
 no pruning, bounding or lazy-loading can bring back inside budget; or the prefix-only search narrowing
 proving unacceptable, which is a port-widening change with its own record.
+
+## Amendment 2026-09-14 — Phase B as built
+
+The record above was written with **one** tier built — inventory — and the rest as design. The cart,
+order, product-commerce, coupon and shipping/tax-rules adapters have since been built against it, and
+this amendment records what building them changed. Everything marked **†** in the sections above was
+corrected in place by this amendment; this section says what changed, why, and where the living detail
+is. The decision itself — one document per aggregate, a coupling made idempotently completable and swept
+— is **unchanged and reaffirmed**: nothing built needed a rule this record does not already state.
+
+Three kinds of change are recorded, and they are worth keeping apart:
+
+- **Corrections.** Statements that were false. §1's `updateIf` count and tier name, §2's "`release` still
+  throws untyped" and its `CAS_MAX_ATTEMPTS` value, §3's R2 (the email lease is a compare-and-set, not an
+  `updateIf`), §6.1 (three arms, not one field) and §6.3 (the cursor is decided), §7.6's "the held-stock
+  refusal becomes structural", §7.11's single-field derivation, §7.13's lease row, §7.14's "the attach
+  guard becomes a read of the hold".
+- **Additions.** Collections, indexes and guards that had no row: §4's claim and locator collections and
+  every index list that moved, and the new §7.13 and §7.17 rows.
+- **Generalizations.** Four rules that recurred across the adapters and are now stated once, below.
+
+### The four cross-cutting rules
+
+These emerged independently in more than one adapter, which is the only reason they are stated as rules
+rather than as adapter facts.
+
+**(a) For a leased or claimed step, the owner's document revision IS the owner token, and it must be
+re-asserted by a compare-and-set immediately before every write it guards.** A lease's whole purpose is
+to let a step be taken over from an owner that has died — and a dead owner and a merely slow one are the
+same document. So the taker's rule (wait for the lease to lapse) is only half of it; without the other
+half a writer parked past the window wakes up and commits work it no longer has the right to do.
+Re-asserting the revision immediately before the guarded write shrinks that to the gap between two
+adjacent statements, and it must run on **every attempt** of the retry loop, carrying the revision
+forward from the heartbeat's own result. A failed re-assertion is a typed refusal, never a write. Three
+sites, reached separately and identically: the **sku claim's** heartbeat before every applying product
+write (R4, §7.16); the **coupon bump right's** heartbeat before every counter write (R1, §7.8); and the
+**rules child claims'** re-assertion before every embed, with the mirror rule on the way out — a delete
+**un-embeds first**, then releases only at a revision read *after* the un-embed and only if the claim
+still names this parent.
+
+**(b) A claim document is the fast path, not the definition of existence.** Nine port methods across the
+two rules stores take a child id the port never pairs with a parent, and the claim document is how they
+reach it — but a claim can be orphaned by a crash, and answering "not found" from a missing claim would
+strand an id that really is embedded. So an id-keyed read that does not resolve **falls back to a bounded
+scan of the parent collection and re-establishes the claim**, and the create path's collision test runs
+through the same lookup, which is what keeps one child id out of two parents. Three consequences follow,
+and all three are surprising enough to state: such a read **may write**; it **may throw** the typed
+page-limit error where the SQL could only return `null`; and the healing is automatic rather than
+operator work. The cost is not uniform and the asymmetry is the point — a claim that resolves costs
+nothing extra, and the checkout reads do not consult a claim at all, so they never heal and never pay.
+The package README's "The one residue, and why it is healed rather than prevented" tabulates the cost per
+call.
+
+**(c) A residual resolves toward over-refusal, never toward overselling or over-granting.** Where a
+window cannot be closed without cross-document atomicity, the surviving state is chosen so the system
+refuses something it could have allowed rather than allowing something it should have refused. The coupon
+counter's two residuals — a release compensation and a crash after the increment — are both **one HIGH,
+never one LOW**, so the coupon can only over-refuse. The sku rename's owed carry is a **phantom
+out-of-stock on the target, never an oversell** (§7.6). Inventory's ring-eviction residual re-applies a
+movement rather than inventing an answer. In every case exactness is restored by a **recount sweeper**,
+not by a tighter guard — which is the honest division of labour: the guard is responsible for never being
+wrong in the dangerous direction, the sweeper for eventually being exact.
+
+**(d) A lease constant is an operating parameter, so it is named, defaulted and overridable per store.**
+Two exist: the sku claim's abandon window (`CLAIM_ABANDON_AFTER_MS`, **60 s**, option
+`claimAbandonAfterMs`) and the coupon bump right's lease (`COUPON_BUMP_LEASE_MS`, **10 s**, option
+`bumpLeaseMs`). Both are justified against the same retry budget rather than picked: a write that retries
+at most `CAS_MAX_ATTEMPTS` (24) times with a backoff capped at 50 ms per sleep cannot legitimately hold a
+step for more than about a second, so a 10-second lease is an order of magnitude of headroom over the
+slowest honest owner, and 60 seconds is two — long enough that an in-flight writer is never mistaken for
+a dead one, short enough that the residue heals without an operator. They are overridable because a test
+needs to open the window deterministically and an operator on a slower host may need to widen it.
+
+### The residuals this amendment accepts
+
+Named rather than argued away, and each covered by a crash-seam case driven from the forbidden side:
+
+- **The heartbeat-to-write gap.** Re-assertion shrinks the takeover window to two adjacent statements;
+  it cannot remove it, because the re-assertion and the write it guards are different documents. The
+  exposure is bounded by one full lease.
+- **Clock skew costs a spurious retry, never data.** Both leases are compared against a clock the owner
+  and the taker read separately. Skew can make a taker think a live lease has lapsed — at which point the
+  owner's next re-assertion fails and it refuses, which is rule (a) working, not failing. No invariant
+  depends on the two clocks agreeing.
+- **An overtaken writer's empty target document survives** under the newcomer's sku, when the overtaken
+  claim had created it. `createsTarget` is what makes it withdrawable at all (R4); a claim that adopted a
+  pre-existing document must never have it withdrawn.
+- **A carry completed from the inventory document's stamp writes no rename audit pair** — the replayer's
+  and the inventory sweeper leg's route, because the audit entries are derived from a command key that
+  route does not have, and an entry invented there would claim a movement it cannot
+  attribute. A completion driven from the product's **recorded intent** — a later product write, or the
+  product-side sweeper leg — does write the pair. So the trail is honestly incomplete only for a rename
+  that crashed mid-flight (§7.6).
+- **The coupon counter's HIGH-only residuals**, per rule (c).
+
+### The sweepers the adapters now require
+
+**The sweepers are not designed here — the sweeper increment owns all of them**, including their
+scheduling, their batch sizes and their anomaly reporting. This record's obligation is only to say which
+ones the adapters as built now *depend* on, because a missing sweeper is a correctness bug (Consequences)
+and that list has grown:
+
+1. **Inventory movement claims** — mark a claim `applied` while its key is still witnessed by the
+   aggregate's ring or a hold's `lastMovementKey`, before eviction can occur (§2's sweeper contract).
+2. **Orphan reservation index entries, and claimed-but-never-completed reservation key documents.**
+3. **Partial cross-SKU hold batches** — driven from the order's own recorded intent via the
+   `holdsPendingAt` index and the singular per-id calls, **never** by re-running the batch: a batch skips
+   an id already terminal in the index, so a SKU caught between its terminal record and its prune is not
+   healed by a replay (§2).
+4. **Partial cart hold expiries** — a line flipped to `expiring` whose release or removal did not follow.
+5. **Partial sku transfers** — an owed carry whose source is stamped. Note this one has an in-path
+   healer too: **any later write on the product completes it first**, so the sweeper is the backstop
+   rather than the only route (§7.6).
+6. **† A coupon sweeper, which no earlier list named.** It completes or releases claimed-but-unapplied
+   redemptions, frees per-customer slots, and — this is the part rule (c) makes mandatory rather than
+   tidy — **recounts** the global counter, because the counter's accepted residuals are HIGH-only and a
+   recount is the only thing that restores exactness.
+7. **Derived search pointers and reporting rollups**, as already recorded.
+
+The rules and product-commerce claim healers need **no** sweeper leg: both heal in-path by rule (b), and
+the rules stores' residue is repaired by the next id-keyed read of the affected id. An orphaned claim
+misleads no reader and strands no id meanwhile — every id-taking method answers exactly as it would for
+an id that was never created, and the next create of that id takes the claim over.
+
+### Where the living detail is
+
+This record is the decision; `packages/store-emdash/README.md` is the detail, and it is the one to read
+for anything measured or per-method. In particular: "Contention budget" and "Coupon contention, measured"
+for the live per-shape figures — **do not copy them here, they drift**; "The admin list, the search and
+the keyset cursor" and "The outbox locator" for §6; "What the carry cannot make atomic, stated exactly"
+for §7.6's weakening; "The redemption state machine" for R1; "Two deviations from the design's index
+table, both forced" and "Four deviations from the design's index table, all forced" for §4's index lists;
+and "Why two claim collections, where the design table names none" plus "The one residue, and why it is
+healed rather than prevented" for rule (b).
+
+**Still open, and not closed by this amendment.** The `InventoryStore` port docblock does not document
+the retryable contention outcome of `reserve`/`adjust`, and the in-memory fake treats an unstamped hold
+as adoptable where the port, the SQL reference and the document adapter do not — both are docs-and-fake
+follow-ups in the domain, outside this record. The mapping of the retryable contention error to a
+retryable HTTP response is still owed by the route increments. And §5's substance is unchanged: the
+descriptor still declares no storage, so §4's lists become a **pinned** read contract only when it does.
