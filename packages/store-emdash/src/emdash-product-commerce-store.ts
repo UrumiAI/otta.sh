@@ -120,6 +120,27 @@ const LIST_PAGE_SIZE = 100;
 /** Default page ceiling for a bounded scan. 1000 × 100 pointers. */
 const MAX_LIST_PAGES = 1000;
 
+/**
+ * How many attempts a write spends waiting for a CONTENDED target claim before it
+ * refuses.
+ *
+ * The contended state is "this owner won the sku's claim while the target had no
+ * inventory document, and by the time the document was claimed one existed". Only two
+ * writers can produce it: a second call renaming the SAME product onto the SAME sku,
+ * which must not be refused a conflict the operator never created, and `seedOnHand`
+ * slipping into a one-write window, which is a genuine occupancy the port refuses.
+ * They are indistinguishable from the documents, so the write waits — the peer case
+ * resolves within a round trip, because the peer commits its product document right
+ * after claiming — and refuses if it does not.
+ *
+ * Small on purpose. Each attempt costs one jittered backoff from the shared retry
+ * schedule, so the refusal an operator eventually sees is still prompt.
+ */
+const TARGET_CLAIM_CONTENTION_ATTEMPTS = 6;
+
+/** A prepared sku axis, or a target claim contended by a peer of the same owner. */
+const CONTENDED = "contended" as const;
+
 export interface EmdashProductCommerceStoreOptions {
 	/**
 	 * The collections the plugin descriptor declared. Both
@@ -173,14 +194,23 @@ interface SkuClaimLedger {
 	createdTarget: string | null;
 	/** Set by the applying branch; suppresses the undo. */
 	committed: boolean;
+	/** How many attempts have found the target's claim contended by a peer. */
+	contended: number;
 }
 
-/** One resolved sku claim: whether it was already ours, and whether we just took it. */
+/** One resolved sku claim: whether it was already ours, and what it found. */
 interface SkuClaim {
 	/** The claim was ALREADY live and ours before this call touched it. */
 	readonly alreadyOurs: boolean;
 	/** This call created the claim (or took over a released one) and owns the rollback. */
 	readonly createdNow: boolean;
+	/**
+	 * The target sku already had an inventory document at the moment this owner won
+	 * its claim — so those units belong to nobody living, and "occupied is occupied"
+	 * applies at once rather than being contended with a peer. Always false when there
+	 * is no stock question to ask (a first sku assignment).
+	 */
+	readonly occupiedAtClaim: boolean;
 }
 
 export class EmdashProductCommerceStore implements ProductCommerceStore {
@@ -224,6 +254,42 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 	 */
 	completePendingSkuTransfer(sku: string): Promise<boolean> {
 		return this.#transfer.completePending(sku);
+	}
+
+	/**
+	 * Finish every stock carry `product_commerce/{productId}` still records — the
+	 * sweeper's entry point for the coupling the port cannot make atomic, and the
+	 * same completion the next ordinary write on this product would perform.
+	 *
+	 * Returns how many recorded carries it was able to finish. A carry whose source
+	 * still has a live hold cannot move yet: it keeps its record, the units stay on
+	 * the source, and it is counted as unfinished rather than reported as done.
+	 *
+	 * Idempotent, and safe to run concurrently with itself and with a write: the
+	 * move's own token guards the target's credit and the source's clear, so a second
+	 * run moves nothing.
+	 */
+	async completeRecordedRenames(productId: ProductId): Promise<number> {
+		const doc = await this.#products.get(productId);
+		if (doc === null) return 0;
+		const normalized = normalizeProductDoc(doc);
+		let finished = 0;
+		const settle = async (
+			records: Record<string, PendingRenameDoc> | undefined,
+			clear: (token: string) => Promise<void>,
+		): Promise<void> => {
+			await this.#settleRecorded(records, async (token) => {
+				finished++;
+				await clear(token);
+			});
+		};
+		await settle(normalized.pendingRenames, (token) => this.#clearProductStamp(productId, token));
+		for (const variant of Object.values(normalized.variants)) {
+			await settle(variant.pendingRenames, (token) =>
+				this.#clearVariantStamp(productId, variant.variantKey, token),
+			);
+		}
+		return finished;
 	}
 
 	// -- reads -----------------------------------------------------------------
@@ -478,7 +544,12 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 			throw new MissingProductIdError();
 		}
 		const ref: SkuOwnerRef = { kind: "product", productId: input.productId };
-		const ledger: SkuClaimLedger = { claimed: null, createdTarget: null, committed: false };
+		const ledger: SkuClaimLedger = {
+			claimed: null,
+			createdTarget: null,
+			committed: false,
+			contended: 0,
+		};
 		try {
 			return await this.#upsertApplying(input, key, ref, ledger);
 		} finally {
@@ -516,8 +587,10 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 				// `DO UPDATE` occupies by construction.
 				// Carries an earlier write recorded but did not finish are completed before
 				// this one moves the same skus; see `#settleRecorded`.
-				await this.#settleRecorded(doc.pendingRenames, clearStamp);
+				const owed = await this.#settleRecorded(doc.pendingRenames, clearStamp);
+				EmdashProductCommerceStore.#refuseWhileOwed(owed, doc.sku, input.sku);
 				const prepared = await this.#prepareSku(ledger, ref, doc.sku, input.sku, key);
+				if (prepared === CONTENDED) return CAS_RETRY;
 				const next: ProductCommerceDoc = {
 					...doc,
 					pendingRenames: EmdashProductCommerceStore.#withRecord(
@@ -548,6 +621,7 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 			// No product row yet — either no document at all, or a shell a variant
 			// created. Both are a CREATE, and neither has a prior sku to move from.
 			const prepared = await this.#prepareSku(ledger, ref, null, input.sku, key);
+			if (prepared === CONTENDED) return CAS_RETRY;
 			const base = doc ?? newShellProductDoc(input.productId, now);
 			const created: ProductCommerceDoc = {
 				...base,
@@ -607,7 +681,12 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 		expectedUpdatedAt: string,
 	): Promise<ProductCommerceUpdateResult> {
 		const ref: SkuOwnerRef = { kind: "product", productId: input.productId };
-		const ledger: SkuClaimLedger = { claimed: null, createdTarget: null, committed: false };
+		const ledger: SkuClaimLedger = {
+			claimed: null,
+			createdTarget: null,
+			committed: false,
+			contended: 0,
+		};
 		try {
 			return await this.#editApplying(input, key, expectedUpdatedAt, ref, ledger);
 		} finally {
@@ -659,8 +738,10 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 			}
 
 			// 5. Apply.
-			await this.#settleRecorded(doc.pendingRenames, clearStamp);
+			const owed = await this.#settleRecorded(doc.pendingRenames, clearStamp);
+			EmdashProductCommerceStore.#refuseWhileOwed(owed, doc.sku, input.sku);
 			const prepared = await this.#prepareSku(ledger, ref, doc.sku, input.sku, key);
+			if (prepared === CONTENDED) return CAS_RETRY;
 			const next: ProductCommerceDoc = {
 				...doc,
 				pendingRenames: EmdashProductCommerceStore.#withRecord(doc.pendingRenames, prepared.carry),
@@ -919,7 +1000,12 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 			productId: input.productId,
 			variantKey: input.variantKey,
 		};
-		const ledger: SkuClaimLedger = { claimed: null, createdTarget: null, committed: false };
+		const ledger: SkuClaimLedger = {
+			claimed: null,
+			createdTarget: null,
+			committed: false,
+			contended: 0,
+		};
 		try {
 			return await this.#variantEditApplying(input, key, expectedUpdatedAt, ref, ledger);
 		} finally {
@@ -974,8 +1060,10 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 				}
 			}
 
-			await this.#settleRecorded(existing.pendingRenames, clearStamp);
+			const owed = await this.#settleRecorded(existing.pendingRenames, clearStamp);
+			EmdashProductCommerceStore.#refuseWhileOwed(owed, existing.sku, input.sku);
 			const prepared = await this.#prepareSku(ledger, ref, existing.sku, input.sku, key);
+			if (prepared === CONTENDED) return CAS_RETRY;
 			const updated: ProductVariantDoc = {
 				...existing,
 				pendingRenames: EmdashProductCommerceStore.#withRecord(
@@ -1076,21 +1164,32 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 		currentSku: Sku | null,
 		nextSku: Sku | undefined,
 		commandKey: string,
-	): Promise<SkuPreparation> {
+	): Promise<SkuPreparation | typeof CONTENDED> {
 		if (nextSku === undefined) return { carry: null, releaseSku: null };
 		const claim = await this.#claimSku(nextSku, ref, currentSku);
 		if (claim.createdNow) ledger.claimed = nextSku;
 		if (currentSku === null || currentSku === nextSku) return { carry: null, releaseSku: null };
+		let outcome: "created" | "adopted" | "contended";
 		try {
-			if (await this.#transfer.prepare(currentSku, nextSku, claim.alreadyOurs)) {
-				ledger.createdTarget = nextSku;
-			}
+			outcome = await this.#transfer.prepare(currentSku, nextSku, {
+				targetIsOurs: claim.alreadyOurs,
+				occupiedAtClaim: claim.occupiedAtClaim,
+			});
 		} catch (err) {
 			// A refusal ends the call, so the claim goes back at once rather than waiting
 			// for the undo: the operator's next attempt must find the sku free.
 			await this.#undoClaims(ledger, ref);
 			throw err;
 		}
+		if (outcome === "contended") {
+			ledger.contended++;
+			if (ledger.contended > TARGET_CLAIM_CONTENTION_ATTEMPTS) {
+				await this.#undoClaims(ledger, ref);
+				throw new SkuStockConflictError(currentSku, nextSku);
+			}
+			return CONTENDED;
+		}
+		if (outcome === "created") ledger.createdTarget = nextSku;
 		return {
 			carry: {
 				token: skuTransferToken(commandKey, currentSku, nextSku),
@@ -1142,15 +1241,41 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 	async #settleRecorded(
 		records: Record<string, PendingRenameDoc> | undefined,
 		clearStamp: (token: string) => Promise<void>,
-	): Promise<void> {
+	): Promise<SkuHeldStockError | undefined> {
+		let blocked: SkuHeldStockError | undefined;
 		for (const carry of Object.values(records ?? {})) {
 			try {
 				await this.#transfer.move(carry.fromSku, carry.toSku, carry.token, carry.commandKey);
 				await clearStamp(carry.token);
 			} catch (err) {
 				if (!(err instanceof SkuHeldStockError)) throw err;
+				blocked ??= err;
 			}
 		}
+		return blocked;
+	}
+
+	/**
+	 * Refuse a NEW rename while this owner still owes an unfinished one.
+	 *
+	 * Without it a product could rename A→B, have that carry blocked by a hold on A,
+	 * and then rename B→C — leaving the first carry to eventually deposit A's units
+	 * into B, a sku nothing holds any more. Stock would still be conserved, but parked
+	 * under a name no longer in use.
+	 *
+	 * The refusal reports the error that blocked the outstanding carry, which is the
+	 * true reason and the one that clears by itself: the product's units are mid-move
+	 * and cannot move again until the hold on the source resolves. Writes that do NOT
+	 * touch the sku are unaffected — a title sync must never be refused by this.
+	 */
+	static #refuseWhileOwed(
+		blocked: SkuHeldStockError | undefined,
+		currentSku: Sku | null,
+		nextSku: Sku | undefined,
+	): void {
+		if (blocked === undefined) return;
+		if (nextSku === undefined || nextSku === currentSku) return;
+		throw blocked;
 	}
 
 	/**
@@ -1248,7 +1373,7 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 	 * `fromSku` is the sku the write is moving away from, needed to name both ends of
 	 * a stock refusal; `null` for a first assignment, which has no stock question.
 	 */
-	#claimSku(sku: string, ref: SkuOwnerRef, fromSku: string | null): Promise<SkuClaim> {
+	#claimSku(sku: string, ref: SkuOwnerRef, fromSku: Sku | null): Promise<SkuClaim> {
 		return this.#cas<SkuClaim>("claimSku", async () => {
 			const current = await this.#skuOwners.getVersioned(sku);
 			const at = this.#clock.now().toISOString();
@@ -1258,13 +1383,20 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 					null,
 					newSkuOwnerDoc(sku, ref, at),
 				);
-				return written.applied
-					? casDone<SkuClaim>({ alreadyOurs: false, createdNow: true })
-					: CAS_RETRY;
+				if (!written.applied) return CAS_RETRY;
+				return casDone<SkuClaim>({
+					alreadyOurs: false,
+					createdNow: true,
+					occupiedAtClaim: await this.#occupiedNow(sku, fromSku),
+				});
 			}
 			if (current.value.live) {
 				if (isOwnedBy(current.value, ref)) {
-					return casDone<SkuClaim>({ alreadyOurs: true, createdNow: false });
+					return casDone<SkuClaim>({
+						alreadyOurs: true,
+						createdNow: false,
+						occupiedAtClaim: false,
+					});
 				}
 				if (await this.#claimIsBacked(current.value, sku)) throw new SkuConflictError(sku);
 				if (fromSku !== null && (await this.#inventory.get(sku)) !== null) {
@@ -1277,10 +1409,26 @@ export class EmdashProductCommerceStore implements ProductCommerceStore {
 				current.revision,
 				newSkuOwnerDoc(sku, ref, at),
 			);
-			return written.applied
-				? casDone<SkuClaim>({ alreadyOurs: false, createdNow: true })
-				: CAS_RETRY;
+			if (!written.applied) return CAS_RETRY;
+			return casDone<SkuClaim>({
+				alreadyOurs: false,
+				createdNow: true,
+				occupiedAtClaim: await this.#occupiedNow(sku, fromSku),
+			});
 		});
+	}
+
+	/**
+	 * Does the sku have an inventory document RIGHT NOW — read the instant this owner
+	 * won its claim, which is what makes a later lost claim decidable.
+	 *
+	 * `false` without reading when there is no source sku: a first assignment moves no
+	 * stock, so there is no occupancy question and the document it finds is the one it
+	 * ADOPTS (THE FIRST-SKU ASYMMETRY).
+	 */
+	async #occupiedNow(sku: string, fromSku: Sku | null): Promise<boolean> {
+		if (fromSku === null || fromSku === sku) return false;
+		return (await this.#inventory.get(sku)) !== null;
 	}
 
 	/**

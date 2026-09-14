@@ -37,6 +37,7 @@ import {
 } from "@otta-sh/domain";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import {
+	CAS_MAX_ATTEMPTS,
 	collectionOf,
 	EmdashInventoryStore,
 	EmdashProductCommerceStore,
@@ -85,13 +86,22 @@ describe.skipIf(!PG_ENABLED)("sku rename concurrency [postgres]", () => {
 	let inventory: EmdashInventoryStore;
 	let inventoryDocs: ReturnType<typeof collectionOf<InventoryDoc>>;
 	let productDocs: ReturnType<typeof collectionOf<ProductCommerceDoc>>;
+	// The contention budget these shapes actually spend, measured rather than assumed;
+	// see the package README's contention table.
+	let maxCasDepth = 0;
 
 	beforeAll(async () => {
 		const db = await makePgStorage(PRODUCT_COMMERCE_LAYOUT, POOL);
 		storage = db.storage;
 		close = db.close;
 		const clock = new TickingClock("2026-07-10T00:00:00.000Z");
-		products = new EmdashProductCommerceStore({ storage, clock });
+		products = new EmdashProductCommerceStore({
+			storage,
+			clock,
+			onCasAttempts: (_operation, attempts) => {
+				if (attempts > maxCasDepth) maxCasDepth = attempts;
+			},
+		});
 		inventory = new EmdashInventoryStore({ storage, idGen: uuidIdGen, clock });
 		inventoryDocs = collectionOf<InventoryDoc>(storage, INVENTORY_COLLECTION);
 		productDocs = collectionOf<ProductCommerceDoc>(storage, PRODUCT_COMMERCE_COLLECTION);
@@ -588,4 +598,16 @@ describe.skipIf(!PG_ENABLED)("sku rename concurrency [postgres]", () => {
 			).toBeGreaterThanOrEqual(20);
 		}
 	}, 180_000);
+	// Reported per FILE rather than per case: every case here writes the same two
+	// document shapes, so one number describes the shape honestly and a per-case
+	// breakdown would only repeat it. Runs LAST, so it sees every case's depth.
+	test("the contention budget these shapes spend, measured", () => {
+		console.info(
+			`[sku rename] max compare-and-set depth ${String(maxCasDepth)}/${String(CAS_MAX_ATTEMPTS)}`,
+		);
+		expect(maxCasDepth, "the contention budget was not exhausted").toBeLessThanOrEqual(
+			CAS_MAX_ATTEMPTS,
+		);
+		expect(maxCasDepth, "the shapes really did contend").toBeGreaterThan(0);
+	});
 });

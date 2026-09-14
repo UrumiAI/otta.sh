@@ -153,37 +153,49 @@ export class SkuStockTransfer {
 	 *
 	 *  0. REFUSE while a live hold names the source (`SkuHeldStockError`). A read:
 	 *     atomicity for this one comes from the re-check inside {@link move}.
-	 *  1. CLAIM the target, create-if-absent (`SkuStockConflictError` on a lost
-	 *     claim). The claim IS the occupancy test, and holding it is what guarantees
-	 *     nobody can occupy the target between this phase and the move.
+	 *  1. CLAIM the target, create-if-absent. The claim IS the occupancy test, and
+	 *     holding it is what guarantees nobody can occupy the target between this
+	 *     phase and the move.
 	 *
 	 * A refusal writes nothing the caller can observe: the hold refusal fires before
 	 * the claim, and a lost claim is a write that never happened.
 	 *
-	 * Returns true when this call CREATED the target document, which is what the
-	 * caller needs in order to withdraw it again if it ends up not committing.
+	 * **Three outcomes, because a lost claim has two different meanings.**
 	 *
-	 * `targetIsOurs` says the caller ALREADY held the target sku's live claim before
-	 * this call — it did not take it just now. That is the one case in which an
-	 * existing target document is NOT a conflict, and the distinction cannot be made
-	 * from the inventory documents alone:
+	 * - `"created"` — the target had no document and this call made one. The caller
+	 *   owns withdrawing it again if it never commits.
+	 * - `"adopted"` — a document is there and it is legitimately this owner's to use:
+	 *   either `targetIsOurs` (the caller already held the sku's claim before this
+	 *   call — an earlier attempt of this same rename, `seedOnHand`'s always-attempt
+	 *   document, or a peer attempt that has already finished), or the document was
+	 *   NOT there when the sku's claim was won and therefore cannot be somebody
+	 *   else's units.
+	 * - `"contended"` — the document appeared AFTER this owner won the sku's claim and
+	 *   the caller did not previously hold that claim. Two writers can produce that:
+	 *   a second call renaming the SAME product onto the SAME sku (legitimate — it
+	 *   must not be refused a conflict the operator never created), and `seedOnHand`
+	 *   slipping in between (a genuine occupancy the port refuses). The two are
+	 *   indistinguishable from the documents alone, so the caller RETRIES briefly and
+	 *   refuses if the situation does not resolve; see the store's
+	 *   `#prepareSku`.
 	 *
-	 * - a genuine conflict is a target whose SKU the caller has just claimed and whose
-	 *   inventory document nonetheless exists, i.e. units belonging to nobody living,
-	 *   which is precisely what must never be merged;
-	 * - `targetIsOurs` means the sku is already this owner's, so an existing document
-	 *   under it is this owner's too — a claim from an earlier attempt of this very
-	 *   rename, `seedOnHand`'s always-attempt document, or the finished result of a
-	 *   peer attempt. There is no second party's count to reconcile.
-	 *
-	 * Without it, two concurrent writes renaming ONE product onto the SAME sku would
-	 * have the second refuse a conflict the operator never created.
+	 * `occupiedAtClaim` is the fact that separates the ordinary refusal from the
+	 * contended one: the target already had a document when this owner won the sku's
+	 * claim, so those units belong to nobody living and "occupied is occupied"
+	 * applies at once.
 	 */
-	async prepare(fromSku: string, toSku: string, targetIsOurs: boolean): Promise<boolean> {
+	async prepare(
+		fromSku: string,
+		toSku: string,
+		options: { targetIsOurs: boolean; occupiedAtClaim: boolean },
+	): Promise<"created" | "adopted" | "contended"> {
 		await this.#refuseOnLiveHolds(fromSku);
+		if (options.occupiedAtClaim && !options.targetIsOurs) {
+			throw new SkuStockConflictError(fromSku, toSku);
+		}
 		const claimed = await this.#inventory.compareAndSet(toSku, null, newInventoryDoc(toSku, 0));
-		if (!claimed.applied && !targetIsOurs) throw new SkuStockConflictError(fromSku, toSku);
-		return claimed.applied;
+		if (claimed.applied) return "created";
+		return options.targetIsOurs ? "adopted" : "contended";
 	}
 
 	/**
