@@ -26,14 +26,20 @@
  * one.
  *
  * **What they intercept, and the limit that implies.** `parkCall` and `failCall`
- * hook only the three WRITE methods the inventory adapter uses — `compareAndSet`,
- * `put` and `compareAndDelete`. Everything else, `updateIf` included, passes
- * straight through unparked and unfailed. That is correct today, because
- * `EmdashInventoryStore` writes exclusively through `compareAndSet`; it is also a
- * trap if that ever changes. **If an adapter moves a write onto `updateIf` (or any
- * other method), this helper must be extended to intercept it, or the seam tests
- * will silently stop covering that write** — they would pass while injecting
- * nothing.
+ * hook the four WRITE methods the adapters use — `compareAndSet`, `put`,
+ * `compareAndDelete` and `updateIf`. Everything else passes straight through
+ * unparked and unfailed, and a read is never intercepted at all.
+ *
+ * `updateIf` was added when the coupon adapter put the first GUARDED writes in the
+ * package on it (the redemption counter's `+1` and the release floor's `-1`): a
+ * crash seam around a guarded delta cannot be injected by wrapping
+ * `compareAndSet`, because no `compareAndSet` is involved. The warning the earlier
+ * note carried still stands and is worth keeping: **if an adapter moves a write
+ * onto a method this helper does not intercept, it must be extended, or the seam
+ * tests will silently stop covering that write** — they would pass while injecting
+ * nothing. `test/coupon-crash-seams.dialects.test.ts` pins the `updateIf` half of
+ * that from the other side, by asserting that a PARKED guarded update really does
+ * hold the counter still.
  */
 import type { StorageAccess, StorageCollection } from "../../src/index.js";
 
@@ -54,6 +60,9 @@ export interface StorageCall {
 
 /** Chooses which call a fault applies to. */
 export type CallMatcher = (call: StorageCall) => boolean;
+
+/** The GUARDED updates — `updateIf(id, { where, set, delta })`. */
+export const isGuardedUpdate: CallMatcher = (call) => call.method === "updateIf";
 
 /** The create-if-absent claim writes — `compareAndSet(id, null, …)`. */
 export const isClaimWrite: CallMatcher = (call) =>
@@ -174,6 +183,10 @@ export function parkCall<T>(
 				await park({ method: "compareAndDelete", id });
 				return raw.compareAndDelete(id, revision);
 			},
+			async updateIf(id, args) {
+				await park({ method: "updateIf", id });
+				return raw.updateIf(id, args);
+			},
 		}),
 		arrived,
 		release() {
@@ -242,6 +255,12 @@ export function failCall<T>(
 				const call: StorageCall = { method: "compareAndDelete", id };
 				if (!shouldFail(call)) return raw.compareAndDelete(id, revision);
 				if (mode === "after") await raw.compareAndDelete(id, revision);
+				throw new InjectedCrashError(call);
+			},
+			async updateIf(id, args) {
+				const call: StorageCall = { method: "updateIf", id };
+				if (!shouldFail(call)) return raw.updateIf(id, args);
+				if (mode === "after") await raw.updateIf(id, args);
 				throw new InjectedCrashError(call);
 			},
 		}),
@@ -341,6 +360,7 @@ export function countingCollection<T>(raw: StorageCollection<T>): CountingCollec
 			put: (id, data) => track("put", id, () => raw.put(id, data)),
 			compareAndSet: (id, revision, data) =>
 				track("compareAndSet", id, () => raw.compareAndSet(id, revision, data)),
+			updateIf: (id, args) => track("updateIf", id, () => raw.updateIf(id, args)),
 		}),
 		counts: {
 			of: (method) => calls.get(method)?.length ?? 0,
