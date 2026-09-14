@@ -12,8 +12,14 @@
  *    (`context.ts:619-671`): reject any host not in `ALLOWED_HOSTS`
  *    (`isHostAllowed`, `context.ts:601-611` — exact-match or `*`/`*.sub`
  *    wildcard) BEFORE ever calling the real `fetch`.
- *  - no `content`/`media`/`users`/`email`/`storage` on `ctx` at all — this
- *    plugin never declares those capabilities (sandbox-clean guard).
+ *  - bind `ctx.storage` to the document store `sandbox-storage.ts` hands over,
+ *    when there is one. That module is the injection seam the harness replaces
+ *    (see its own doc): a store cannot be built inside the isolate, so the
+ *    suites inject one from outside. `storage` is capability-free — the host
+ *    builds it on an always-available path and there is no capability string
+ *    for it (ADR-0018) — so nothing about the declared two changes here.
+ *  - no `content`/`media`/`users`/`email` on `ctx` at all — this plugin never
+ *    declares those capabilities (sandbox-clean guard).
  *
  * Otta does not depend on `~/em-dash`'s internal `packages/workerd`
  * package (DEVELOPMENT.md preamble — standalone repo); this file plus
@@ -23,6 +29,7 @@
  */
 import { ALLOWED_HOSTS } from "./manifest.js";
 import plugin from "./plugin.js";
+import { sandboxStorage } from "./sandbox-storage.js";
 import type { HttpAccess, KvAccess, PluginContext, RouteEntry, SandboxedPlugin } from "./types.js";
 
 function isHostAllowed(hostname: string, allowedHosts: readonly string[]): boolean {
@@ -114,6 +121,9 @@ export function createSandboxWorker(pluginDef: SandboxedPlugin) {
 	// invocation is readable by the next within the same worker — matching the
 	// host's persistence contract.
 	const kvStore = new Map<string, unknown>();
+	// Resolved ONCE per worker boot, like kv: the store outlives a request in a
+	// real deploy, and a per-request resolution would say otherwise.
+	const storage = sandboxStorage();
 
 	return {
 		async fetch(request: Request): Promise<Response> {
@@ -121,6 +131,9 @@ export function createSandboxWorker(pluginDef: SandboxedPlugin) {
 			const ctx: PluginContext = {
 				http: createHttpAccess(ALLOWED_HOSTS),
 				kv: createKvAccess(kvStore),
+				// Omitted rather than set to `undefined` when there is no store, so a
+				// bundle without one has the exact context shape it had before.
+				...(storage === undefined ? {} : { storage }),
 			};
 
 			try {

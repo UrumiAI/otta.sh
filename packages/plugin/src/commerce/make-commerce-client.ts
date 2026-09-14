@@ -24,7 +24,7 @@
  * buys exactly one thing: the ability to run the extracted
  * `commerceClientContract` against BOTH implementations and prove them
  * behaviourally identical before the HTTP one is removed. After that this
- * function unconditionally returns `new InProcessCommerceClient(ctx)`. **It is
+ * function unconditionally returns the in-process client. **It is
  * not permanent architecture and nothing may be designed around it.**
  *
  * ZERO BEHAVIOURAL CHANGE IN THIS INCREMENT. In `"http"` mode the client is
@@ -46,8 +46,13 @@ import { InProcessCommerceClient } from "./in-process-commerce-client.js";
  *
  * Async because the http branch awaits the write-gate token from write-only kv.
  * The in-process branch reads NO token — there is no service to authenticate
- * to — and the signature stays `Promise`-shaped so the nineteen call sites do
- * not have to change again when the branch is deleted.
+ * to, so there is nothing to authenticate WITH — and the signature stays
+ * `Promise`-shaped so the nineteen call sites do not have to change again when
+ * the branch is deleted.
+ *
+ * The in-process client constructs every commerce adapter over `ctx.storage`, so
+ * a context with no document store fails HERE, at construction, naming what is
+ * missing — never several frames later inside a storefront route.
  */
 export async function makeCommerceClientFor(
 	ctx: PluginContext,

@@ -16,11 +16,34 @@
  */
 
 import { describe, expect, test } from "vitest";
-import { NotImplementedError } from "../src/commerce/in-process-commerce-client.js";
+import { COMMERCE_STORAGE_COLLECTIONS } from "../src/commerce/commerce-storage.js";
+import { InProcessCommerceClient } from "../src/commerce/in-process-commerce-client.js";
+import { MISSING_STORAGE_MESSAGE } from "../src/commerce/in-process-commerce-stores.js";
 import { makeCommerceClient, makeCommerceClientFor } from "../src/commerce/make-commerce-client.js";
 import { COMMERCE_SERVICE_BASE_URL, SERVICE_TOKEN_KEY } from "../src/manifest.js";
 import { HttpCommerceClient } from "../src/product-commerce/http-commerce-client.js";
 import type { PluginContext } from "../src/types.js";
+import type { StorageAccess, StorageCollection } from "@otta-sh/store-emdash";
+
+/**
+ * A document store that EXISTS and is never used. This file is about which client
+ * the factory returns and which credential it reads on the way — not about
+ * commerce behaviour, which the client contract's in-process tier covers against
+ * a real store. So every collection the deployment declares is present (the
+ * in-process composition asks for each by name and fails loudly on a missing one)
+ * and every method refuses, so a case that quietly started doing commerce here
+ * would fail rather than pass.
+ */
+function refuseStorageCall(): never {
+	throw new Error("this suite asserts client selection, never commerce behaviour");
+}
+
+function makeUnusedStorage(): StorageAccess {
+	const collection = new Proxy({} as StorageCollection, { get: () => refuseStorageCall });
+	return Object.fromEntries(
+		Object.keys(COMMERCE_STORAGE_COLLECTIONS).map((name) => [name, collection]),
+	);
+}
 
 interface Recorded {
 	url: string;
@@ -36,6 +59,7 @@ function makeCtx(seed: Record<string, string> = {}): {
 	const requests: Recorded[] = [];
 	const kvReads: string[] = [];
 	const ctx: PluginContext = {
+		storage: makeUnusedStorage(),
 		http: {
 			async fetch(url: string, init?: RequestInit): Promise<Response> {
 				requests.push({ url, init });
@@ -103,42 +127,35 @@ describe("makeCommerceClient — http mode (today's only mode)", () => {
 	});
 });
 
-describe("makeCommerceClient — in-process mode (stub until a later increment)", () => {
-	test("returns the in-process stub, and reads NO service token", async () => {
+describe("makeCommerceClient — in-process mode", () => {
+	test("returns the in-process client, and reads NO service token", async () => {
 		const { ctx, kvReads } = makeCtx({ [SERVICE_TOKEN_KEY]: "SVC-write-gate" });
 		const client = await makeCommerceClientFor(ctx, "in-process");
+		expect(client).toBeInstanceOf(InProcessCommerceClient);
 		expect(client).not.toBeInstanceOf(HttpCommerceClient);
 		// There is no service to authenticate to, so the kv read must not happen.
 		expect(kvReads).toEqual([]);
 	});
 
-	test("EVERY method throws NotImplementedError", async () => {
+	test("the client spans the whole port — 25 methods, none of them the stub's", async () => {
 		const { ctx } = makeCtx();
 		const client = await makeCommerceClientFor(ctx, "in-process");
 		const methods = [...Object.getOwnPropertyNames(Object.getPrototypeOf(client))].filter(
 			(name) => name !== "constructor",
 		);
-
-		// The stub must cover the whole port — if the interface grows and the
-		// stub does not, `typecheck` fails first, but assert the count here too
-		// so a silently-dropped method cannot pass as "all methods throw".
+		// `typecheck` fails first if the port grows and the client does not, but the
+		// count is asserted here too so a silently-dropped method cannot pass.
 		expect(methods.length).toBe(25);
-
 		for (const name of methods) {
-			const fn = (client as unknown as Record<string, () => unknown>)[name];
-			expect(typeof fn, name).toBe("function");
-			// Sync throw or rejected promise — either is acceptable; assert the
-			// typed error either way.
-			let thrown: unknown;
-			try {
-				await (fn as (...args: unknown[]) => unknown).call(client);
-			} catch (err) {
-				thrown = err;
-			}
-			expect(thrown, name).toBeInstanceOf(NotImplementedError);
-			expect((thrown as Error).message, name).toBe(
-				"in-process commerce client lands in a later increment",
-			);
+			expect(typeof (client as unknown as Record<string, unknown>)[name], name).toBe("function");
 		}
+	});
+
+	test("a context with NO document store fails at construction, naming what is missing", async () => {
+		const { ctx } = makeCtx();
+		const { storage: _storage, ...withoutStorage } = ctx;
+		await expect(makeCommerceClientFor(withoutStorage, "in-process")).rejects.toThrow(
+			MISSING_STORAGE_MESSAGE,
+		);
 	});
 });
