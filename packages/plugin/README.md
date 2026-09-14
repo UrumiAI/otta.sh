@@ -57,6 +57,39 @@ own error surfaces as an awaited rejection carrying its structural `code`
 untouched. A compare-and-set budget exhausted under contention reaches the caller
 as the retryable error it is — a caller has to be able to see that.
 
+### Not yet wired
+
+Two gaps in the in-process transport are deliberate, and each is pinned by a test so
+it stays visible until it closes:
+
+- **`createOrder` has no payment gateway.** It composes an EMPTY gateway map, so
+  every payment method fails loudly rather than minting an order nobody can pay for.
+  The gateways move in-process with the payment adapters.
+- **`requestLoginLink` dispatches no mail.** It records the challenge — the login
+  itself works if you hold the token — and sends nothing, because the outbound mail
+  path moves in-process with the rest of the outbound topology. The reply is the same
+  generic success either way, so the surface is still no account oracle.
+
+Two hold TTLs are also not configurable in this transport: the cart hold's and the
+checkout hold's take the domain's own defaults. Nothing in the plugin reads a TTL
+from anywhere, and a knob whose only value is the default would be a knob with no
+caller; when a deployment needs to move them they belong in the settings the store
+already holds.
+
+### Narrower, never wider
+
+Two responses carry FEWER fields in this transport, deliberately, and neither can
+carry more by accident:
+
+- a customer's own order omits `createdAt`, the buyer reference, the customer id and
+  the ship-to snapshot — the account pages render none of them;
+- the raw commerce read omits the snapshot title, the compare-at price and the
+  inventory policy — no storefront consumer reads them off this port, and the title's
+  single writer is the content sync.
+
+The rule in both cases is that a projection is a whitelist: a field added to a model
+later stays private until someone adds it here on purpose.
+
 ### Running the proof
 
 The behavioural spec lives in `test/contracts/commerce-client-contract.ts` and is
