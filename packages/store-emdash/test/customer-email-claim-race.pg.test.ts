@@ -34,6 +34,11 @@ import { settleOne } from "./helpers/fault-injection.js";
  * The bound is a property of the claim document: an attempt is lost only when a peer
  * wrote the claim, and a claim a live account holds refuses every later caller with
  * no write at all. So the depth tracks the takeovers, not the crowd.
+ *
+ * Measured at 1 for the registration stampede at N=30 — the first writer takes the
+ * claim and every peer is then refused without contending for it — and at 8 for the
+ * get-or-create shape, where the depth is not contention at all but the bounded WAIT
+ * a redeemer spends re-reading until the winner's account document is readable.
  */
 const CAS_ATTEMPT_BUDGET = 12;
 
