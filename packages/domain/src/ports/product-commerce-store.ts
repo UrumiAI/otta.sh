@@ -15,14 +15,15 @@ import type { IdempotencyKey, ProductId, Sku } from "../money/ids.js";
  * array.
  *
  * `search` and `OrderListFilter.search` (an order-id PREFIX, a case-folded
- * `buyer_ref` SUBSTRING, or an exact case-folded purchase-time line SKU) have
- * converged on both shapes they share. A `title` is free text a merchant
- * partially remembers, so it matches as a case-insensitive SUBSTRING, exactly
- * as an order's `buyer_ref` does; and `sku` is a structured identifier a
+ * `buyer_ref` PREFIX, or an exact case-folded purchase-time line SKU) have
+ * converged on the shape they share. A `title` is free text a merchant partially
+ * remembers, so it matches as a case-insensitive SUBSTRING — WIDER than anything
+ * the orders list guarantees, whose text arms are both anchored prefixes; and
+ * `sku` is a structured identifier a
  * merchant quotes whole, so it stays an exact, case-insensitive match — which
  * is now the SAME rule the orders list applies to the sku frozen on an order
  * line, making `sku` the axis on which the two searches AGREE rather than the
- * one where they part. Neither takes the order id's PREFIX treatment (a sku is
+ * one where they part. Neither takes the orders list's PREFIX treatment (a sku is
  * short and readable and renders in full, where an order uuid renders only as a
  * short prefix). The two lists still read that sku from different TABLES — this
  * one from the live catalogue row, the orders list from the purchase-time

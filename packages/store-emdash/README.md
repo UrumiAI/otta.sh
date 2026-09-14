@@ -698,15 +698,16 @@ stating exactly, including what an operator loses.
 is a runtime `StorageQueryError` rather than a slow scan. The port's `listOrders`
 predicate needs an OR in two places, and each is resolved differently.
 
-**The search is an OR of three arms; all three are served, one of them narrowed.** The
-port spells it as a folded order-id PREFIX **or** a folded `buyer_ref` SUBSTRING **or** an
-exact folded purchase-time line sku.
+**The search is an OR of three arms, and all three are served.** The port guarantees a
+folded order-id PREFIX **or** a folded `buyer_ref` PREFIX **or** an exact folded
+purchase-time line sku — the ratified narrowing (ADR-0019 §6.1), which is where the
+port's contract now sits rather than at the unanchored substring it once spelled.
 
 | Arm | Served by | Status |
 |---|---|---|
 | order-id PREFIX (anchored, folded on both sides, a whole id is its own prefix, `""` matches everything) | `startsWith` on `searchKey` = `orderId.toLowerCase()` | **unchanged** |
 | exact folded line sku, over the FROZEN lines, one row per order | `order_sku_index/{foldedSku}:{orderId}` — an equality on `sku`, keyset-ordered on the pointer's copy of `createdAt` | **unchanged** |
-| `buyer_ref` **SUBSTRING** | `startsWith` on `buyerRefLower` | **NARROWED to a PREFIX** |
+| folded `buyer_ref` **PREFIX** (anchored, a whole address is its own prefix) | `startsWith` on `buyerRefLower` | **unchanged** — this store is why the arm is anchored |
 
 The third row is the ratified narrowing (ADR-0019 §6.1): the filter algebra has no
 substring operator, so the arm is anchored. It is a prefix rather than nothing because the
@@ -717,11 +718,13 @@ the address, returns **nothing** — not an error and not a partial answer. The 
 state says so at the UI increment, and widening it back out is a `[Domain]` change with its
 own PR.
 
-Four `orderStoreContract` cases stay registered as named todos until then, and they are
-exactly the assertions a prefix cannot make: the mid-string fragment, a bare `%`/`_`, a
-bare `\`, and `countOrders` taken under the substring predicate.
-`test/order-store-contract-narrowed.ts` is the copy that holds them (43 of the suite's 47
-cases run for real).
+All 47 `orderStoreContract` cases run for real here, on every tier, with no copy and no
+todo: the contract asserts the anchored prefix, the exact sku and the literal
+metacharacters — the floor every adapter must reach — and deliberately does NOT assert
+that a mid-string fragment fails, so an adapter serving the unanchored superset stays
+conformant too. This store's own narrower statement, that a mid-string fragment finds
+NOTHING, is pinned where it belongs: `test/order-list-cases.ts`, beside the rest of the
+document model's list and search statements.
 
 The metacharacter guarantees survive intact: the host escapes `%`, `_` and `\` before it
 builds the `LIKE`, so a prefix search is literal, and the sku arm is an equality with no

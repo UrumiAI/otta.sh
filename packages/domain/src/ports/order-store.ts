@@ -335,12 +335,12 @@ export interface OrderStore {
 	 * a typed RETRYABLE error rather than silently succeeding: a silent no-op would
 	 * report a delivery that was never recorded, and the entry would sit in
 	 * `sending` until its lease expired. The two adapter shapes differ
-	 * legitimately: a SQL store expresses this as a GUARDED UPDATE addressed by
-	 * primary key inside the same database the claim came from — its zero-row
-	 * outcome IS the no-op form, and cannot mean "looked in the wrong place" — while
-	 * a document store that must re-read the owning aggregate to reach the entry
-	 * throws when the entry is absent, because there a miss is indistinguishable
-	 * from a lost write.
+	 * legitimately: a SQL store addresses the row by PRIMARY KEY (`where id = :id`,
+	 * no further condition) inside the same database the claim came from, so its
+	 * zero-row outcome is the SILENT NO-OP form and cannot mean "looked in the wrong
+	 * place" — the row is simply gone — while a document store that must re-read the
+	 * owning aggregate to reach the entry throws when the entry is absent, because
+	 * there a miss is indistinguishable from a lost write.
 	 */
 	markEmailSent(id: string, now: string): Promise<void>;
 	/**
@@ -551,11 +551,14 @@ export interface OrderListFilter {
 	/**
 	 * The operator's free-text lookup: an order-id PREFIX, **or** a folded
 	 * `buyer_ref` PREFIX, **or** an EXACT purchase-time line sku, ORed, with
-	 * `lower()` applied to BOTH sides of all three arms — in SQL terms
-	 * `lower(id) LIKE lower(:s || '%')` OR `lower(buyer_ref) LIKE lower(:s || '%')`
-	 * OR `EXISTS (SELECT id FROM order_items WHERE order_id = orders.id AND
-	 * lower(sku) = lower(:s))` (`SELECT id` rather than `SELECT 1` only because
-	 * that is what the SQL adapters emit — an `EXISTS` never reads the projection).
+	 * `lower()` applied to BOTH sides of all three arms. Spelled in SQL — as the
+	 * FLOOR, not as any adapter's emitted statement — that is `lower(id) LIKE
+	 * lower(:s || '%')` OR `lower(buyer_ref) LIKE lower(:s || '%')` OR `EXISTS
+	 * (SELECT id FROM order_items WHERE order_id = orders.id AND lower(sku) =
+	 * lower(:s))`. No shipped adapter emits exactly that: the SQL stores emit the
+	 * unanchored `lower('%' || :s || '%')` on the buyer-reference arm (their
+	 * sanctioned superset, below), and a document store emits no SQL at all. The
+	 * spelling is here because a predicate is clearer as a predicate than as prose.
 	 *
 	 * THAT IS A FLOOR, NOT A CEILING — the ratified narrowing (ADR-0019 §6). The
 	 * contract suite GUARANTEES exactly this much of every adapter: a PREFIX of the
@@ -602,12 +605,17 @@ export interface OrderListFilter {
 	 * (`TEE-BLK-S`, `TEE-BLK-M`, …) into a search for one of them, which is a
 	 * different question from the one the operator asked.
 	 *
-	 * WHY `EXISTS`, NEVER A JOIN. `order_items` is 1:N; the list's contract is one
-	 * row per order (`listOrders` doc). An order carrying two matching lines must
-	 * appear ONCE — a join would return it twice, inflate the `limit + 1`
-	 * next-page probe, and make `countOrders` (which shares this predicate)
-	 * over-count the page it captions. Every adapter therefore expresses this half
-	 * as a correlated existence test, and the fake as `lines.some(...)`.
+	 * ONE ROW PER ORDER, WHATEVER THE SKU ARM MATCHES — and that is the INVARIANT,
+	 * not a mechanism. Lines are 1:N against the order; the list's contract is one
+	 * row per order (`listOrders` doc) and `countOrders` shares the predicate, so an
+	 * order carrying two matching lines must appear ONCE and count ONCE. Returning
+	 * it twice would inflate the `limit + 1` next-page probe, shrink the page and
+	 * make the count disagree with the caption it writes. HOW each adapter reaches
+	 * that is its own business: the SQL adapters express the arm as a correlated
+	 * `EXISTS` and never as a join onto `order_items` (a join is exactly the shape
+	 * that double-counts), the in-memory fake as `lines.some(...)`, and a document
+	 * store as a denormalized per-`(sku, order)` key whose id makes uniqueness
+	 * tautological. The contract pins the invariant on all of them.
 	 *
 	 * WHY THE FOLD IS EXPLICIT ON BOTH SIDES. A bare `LIKE` is case-SENSITIVE on
 	 * Postgres and ASCII-case-INSENSITIVE on SQLite; only an explicit `lower()`
@@ -629,15 +637,16 @@ export interface OrderListFilter {
 	 *
 	 * WILDCARDS ARE LITERAL. `%`, `_` and `\` (the escape character itself) are
 	 * `LIKE` metacharacters; a search containing them matches them as characters
-	 * (the adapters escape the pattern and pass `ESCAPE '\'`; the fake builds no
-	 * pattern at all, so `startsWith`/`includes` are literal by construction). The
+	 * (the SQL adapters escape the pattern and pass `ESCAPE '\'`; the fake and a
+	 * document store build no `LIKE` pattern at all, so their `startsWith`/
+	 * `includes` are literal by construction). The
 	 * sku half needs no escaping at all — an equality has no pattern language, so
 	 * a sku spelled `50%_OFF` is compared character for character.
 	 *
 	 * THE EMPTY STRING MATCHES EVERYTHING, because every string starts with `""`
 	 * (and, on an adapter serving the wider arm, contains it). That is the widest
-	 * filter this axis has, not the
-	 * narrowest — the inverted reading of "search for nothing". (The sku half does
+	 * filter this axis has, not the narrowest — the inverted reading of "search for
+	 * nothing". (The sku half does
 	 * not widen it further and does not narrow it: `""` equals no real sku, and
 	 * the id arm has already matched every row.) The service's query schema
 	 * requires `min(1)`, so the wire cannot send it; the boundary is pinned in the
@@ -645,9 +654,9 @@ export interface OrderListFilter {
 	 *
 	 * THE SEQUENTIAL SCAN IS THE DESIGN IN THE SQL ADAPTERS, not an oversight. The
 	 * unanchored substring THEY serve as their superset of the buyer-reference arm
-	 * cannot be served by a b-tree, so `idx_orders_buyer_ref_lower`
-	 * (migration `0022`) no longer backs this predicate; nor can the primary key
-	 * serve the anchored id half, since a default-collation b-tree answers
+	 * cannot be served by a b-tree, so `idx_orders_buyer_ref_lower` (migration
+	 * `0022`) no longer backs their predicate; nor can the primary key serve the
+	 * anchored id half, since a default-collation b-tree answers
 	 * `LIKE 'x%'` only with `text_pattern_ops`, and either way an OR arm that
 	 * must scan forces a scan for the whole predicate. A trigram/full-text index
 	 * was declined outright at this scale, and the shape of the cost was measured
@@ -719,7 +728,8 @@ export interface OrderListFilter {
  * not additive). `buyerRef` folds case (`lower() = lower()`) but stays EXACT —
  * it deliberately did NOT follow `search`'s widening to a prefix, because
  * this key is an IDENTITY predicate (whose orders are these?) rather than a
- * fuzzy lookup: a substring would fold two customers into one person's history,
+ * fuzzy lookup: an unanchored OR anchored fragment would fold two customers into
+ * one person's history (`amy@` reaches `amy@a.test` and `amy@b.test` alike),
  * and equality is what keeps `idx_orders_buyer_ref_lower` on the plan. It exists
  * as its own key — distinct from `search` — for that reason, and because
  * `search` ALSO matches an order-id prefix and a purchase-time line sku.

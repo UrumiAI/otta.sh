@@ -11,16 +11,18 @@
  * And the order document is the largest this package writes, so D1's SQLite build is
  * where its serialization has to hold.
  *
- * The harness wiring is `test/order-harness.ts`. `orderStoreContract` runs through
- * `test/order-store-contract-narrowed.ts` — the copy that exists only to hold the five
- * cases the ratified search narrowing blocks; every other suite is the DOMAIN's own,
- * run in full. Nothing here names a Node driver, so all of it loads inside `workerd`;
- * only the storage BINDING differs, and that is what `describe-d1.ts` supplies.
+ * The harness wiring is `test/order-harness.ts`. Every suite here is the DOMAIN's own,
+ * run in full — `orderStoreContract` included, now that the contract guarantees the
+ * ratified anchored PREFIX search this store serves rather than an unanchored
+ * substring it cannot; the narrowed copy that stood in for it is gone. Nothing here
+ * names a Node driver, so all of it loads inside `workerd`; only the storage BINDING
+ * differs, and that is what `describe-d1.ts` supplies.
  */
 import {
 	buildRefundSeed,
 	orderCancellationContract,
 	orderFulfillmentContract,
+	orderStoreContract,
 	orderTimelineContract,
 	orderTransitionContract,
 	refundOrderContract,
@@ -28,7 +30,6 @@ import {
 import { cancellationReleaseCase } from "../order-cancellation-release.js";
 import { orderListCases } from "../order-list-cases.js";
 import { ORDER_LAYOUT } from "../order-collections.js";
-import { orderStoreContractNarrowed } from "../order-store-contract-narrowed.js";
 import {
 	makeOrderHarness,
 	orderStoreHarness,
@@ -39,7 +40,7 @@ import { useD1Storage } from "./describe-d1.js";
 
 const bound = useD1Storage(ORDER_LAYOUT);
 
-orderStoreContractNarrowed(async () => orderStoreHarness(makeOrderHarness(bound.storage)), {
+orderStoreContract(async () => orderStoreHarness(makeOrderHarness(bound.storage)), {
 	dialect: "d1",
 });
 orderTransitionContract(

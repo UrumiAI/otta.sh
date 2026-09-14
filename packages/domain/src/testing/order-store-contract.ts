@@ -464,8 +464,10 @@ export function orderStoreContract(
 			// the set; it never reorders it.
 			const both = await h.store.listOrders({ search: "ord-" }, { limit: 25 });
 			expect(both.orders.map((o) => o.id)).toEqual(["ord-other", "ord-find-me"]);
-			// ANCHORED: a mid-string fragment of an id is NOT a match (the id half is
-			// a prefix, never a substring — that widening belongs to buyer_ref alone).
+			// ANCHORED: a mid-string fragment of an id is NOT a match. Both text arms
+			// are anchored under the ratified narrowing, so nothing in the guaranteed
+			// predicate reaches an id mid-string (an adapter serving the buyer-ref arm
+			// unanchored still never widens the ID arm).
 			const mid = await h.store.listOrders({ search: "find-me" }, { limit: 25 });
 			expect(mid.orders).toHaveLength(0);
 		});
@@ -822,7 +824,7 @@ export function orderStoreContract(
 			expect(orders.map((o) => o.id)).toEqual(["ord-both"]);
 		});
 
-		test("listOrders customer.buyerRef folds case but stays EXACT — it does NOT follow search's substring", async () => {
+		test("listOrders customer.buyerRef folds case but stays EXACT — it does NOT follow search's prefix", async () => {
 			const h = await makeHarness();
 			await h.seedOrder(summaryRow({ id: "a", buyerRef: "Buyer@Example.com" }));
 			await h.seedOrder(summaryRow({ id: "b", buyerRef: "someone-else@example.com" }));

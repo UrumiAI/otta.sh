@@ -17,3 +17,10 @@ Also documents the outbox locate semantics: an adapter that cannot locate the
 entry claimed by `claimNextEmail` must throw a typed retryable error from
 `markEmailSent`/`rescheduleEmail` rather than silently succeed; a SQL store's
 guarded update is the no-op form, a document store throws.
+
+Affected consumer, not changed here: the admin Orders search control still labels
+itself "Search order ID, buyer email, or exact SKU" and its empty state still reads
+as though a mid-string fragment would match. Both owe a copy change — the label and
+the empty state should say the order ID and the buyer email match from the START —
+in a follow-up change; `@otta-sh/admin-presentation` is deliberately untouched by
+this change.
