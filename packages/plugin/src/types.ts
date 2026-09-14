@@ -11,6 +11,8 @@
  * narrow subset — only what Otta's hooks/routes/widget actually touch.
  */
 
+import type { StorageAccess } from "@otta-sh/store-emdash";
+
 // -- content lifecycle hooks -------------------------------------------------
 
 /** `ContentHookEvent` (em-dash `types.ts:711-715`). */
@@ -78,14 +80,33 @@ export interface KvAccess {
 /**
  * The context passed to every hook/route handler. Otta's plugin declares
  * only `content:read` + `network:request` (manifest.ts) — so `http` is the
- * only capability-gated surface it ever receives. `kv` is available WITHOUT a
- * capability (verified above) and holds only non-secret display prefs. No
- * `content`/`media`/`users`/`email`/`storage`/`db` — declaring any of those
- * would fail the sandbox-clean guard (DEVELOPMENT.md §5).
+ * only capability-gated surface it ever receives. `kv` and `storage` are both
+ * available WITHOUT a capability: the host builds each on an always-available
+ * path, and there is no `storage` capability string in its vocabulary to declare
+ * (ADR-0018 decision 4). No `content`/`media`/`users`/`email`/`db` — declaring
+ * any of those would fail the sandbox-clean guard (DEVELOPMENT.md §5).
  */
 export interface PluginContext {
 	http: HttpAccess;
 	kv: KvAccess;
+	/**
+	 * The per-plugin DOCUMENT store commerce truth lives in (ADR-0018/0019):
+	 * collection name → that collection, built by the host from the descriptor's
+	 * declared `storage` collections and injected on every invocation.
+	 *
+	 * The type is the adapters' own structural `StorageAccess`, imported as a
+	 * TYPE ONLY — one shape shared by the code that binds it and the code that
+	 * consumes it, rather than a second hand-mirrored copy that would drift from
+	 * the adapters it has to satisfy. Nothing here executes host code.
+	 *
+	 * OPTIONAL, and that is a statement about the TRANSPORT rather than about the
+	 * host. A deploy always has it. The HTTP transport never reads it, and every
+	 * unit suite that hand-builds a `ctx` around a fake `http`/`kv` pair has no
+	 * document store to offer — so the in-process composition demands it by name
+	 * and fails loudly when a caller has none, which is a better failure than a
+	 * required field no existing caller could satisfy.
+	 */
+	storage?: StorageAccess;
 }
 
 // -- routes -------------------------------------------------------------------
