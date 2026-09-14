@@ -1535,3 +1535,100 @@ assertion that would fail if the write order were reversed.
 - **(h) a late same-key caller after the prune** — not duplicated here: it is the
   gated mid-flight case in `test/inventory-store-contract.dialects.test.ts`, which
   opens the same window with the same helper.
+
+## Shipping and tax rules document model
+
+`EmdashShippingRulesStore` and `EmdashTaxRulesStore` implement the whole
+`ShippingRulesStore` and `TaxRulesStore` ports. Two aggregates, two claims:
+
+| Collection | Doc id | Holds | Declared indexes |
+|---|---|---|---|
+| `shipping_zones` | zone id | the zone's name and opaque region list, its `methods` map keyed by method id, and each method's `rates` map keyed by currency | — |
+| `shipping_method_owners` | method id | `{ zoneId }` — the store-wide method-id claim, and the only way to reach a method from an id alone | — |
+| `tax_classes` | class id | the registry `name` (`null` when only rates live there) and the class's `rates` map keyed by rate id | — |
+| `tax_rate_owners` | rate id | `{ taxClassId }` — the store-wide rate-id claim, and the only way to reach a rate from an id alone | — |
+
+| The SQL | Here |
+|---|---|
+| `shipping_methods.zone_id` / `shipping_rates.method_id` foreign keys | the child IS part of the parent document, so a child with no parent is unrepresentable; a create naming a missing parent throws where the insert was refused |
+| `DELETE … WHERE NOT EXISTS (children)`, twice for shipping and once for tax | the same emptiness test, read from the document the delete is guarded on and committed with `compareAndDelete` at that revision |
+| `shipping_methods.id` / `tax_rates.id` PRIMARY KEY | the two claim documents, created if absent |
+| `shipping_rates` PRIMARY KEY `(method_id, currency)` | the method's `rates` map key — uniqueness inside one document is structural |
+| `UPDATE … WHERE amount_cents = :expected` / `WHERE rate_bps = :expected` | the same expected-value comparison inside the aggregate's compare-and-set, re-evaluated on every attempt |
+| `ORDER BY id` on all four list reads | sorted in code after an unfiltered paged scan, because ordering needs a declared index and neither collection declares one |
+
+### Why two claim collections, where the design table names none
+
+Eight port methods take a child id with **no parent**: `getMethod`,
+`updateMethod`, `deleteMethod` and the three shipping-rate methods keyed by
+`methodId`, plus tax's `updateRate` and `deleteRate` keyed by rate id. With the
+children embedded there is no document to read for those, and a scan would answer
+ambiguously the moment one child id could sit in two parents — which SQL made
+impossible with a primary key and which **no declared index enforces here** (see
+"Known gap: no physical indexes" above). One document answers both halves:
+create-if-absent on its id IS the uniqueness enforcement, and the parent id it
+carries IS the reverse lookup. It is the `reservation_index` device, for the
+reason ADR-0019 gives for that one.
+
+An **orphaned** claim — one whose parent does not hold the child — is the crash
+state, and the rule is that it misleads no reader and strands no id: every
+id-taking method answers exactly as it would for an id that was never created, and
+the next create of that id takes the claim over. A claim whose child really is
+embedded is a collision and is loud.
+
+### A tax rate may exist without its class
+
+`tax_rates` had **no** foreign key to `tax_classes`, and the contract relies on it:
+rates are created for classes nobody declared, `countRatesByClass` counts them, and
+`getRate`/`listRatesForZone` return them. So `tax_classes/{classId}` is the document
+that holds a class's RATES, and its `name` says whether the class was ever declared.
+`null` is the undeclared case — skipped by `listClasses`, `not_found` for
+`updateClass` and `deleteClass` (exactly what the missing row produced), adopted
+rather than collided with by a later `createClass`, and deleted along with its last
+rate so an undeclared class leaves no litter.
+
+### The money CAS, and the retry that must re-verify
+
+Both `updateRate`s guard a VALUE (`expectedAmountCents`, `expectedRateBps`), not a
+version — the ABA acceptance both ports document. The value lives in a document that
+also holds the parent's name and its other children, so unrelated writes contend for
+one revision, and a lost revision race is retried by **re-reading and re-comparing**,
+never by re-submitting the decision. A caller that lost a real edit race is therefore
+told `stale` on its next attempt instead of overwriting the change it should have
+seen — a wrong shipping fee or tax rate is money.
+
+That is pinned from both sides: `test/rules-crash-seams.dialects.test.ts` parks the
+losing write while a peer commits the change, deterministically and on every dialect;
+`test/rules-cas-race.pg.test.ts` drives it with a crowd, including a case whose
+contending peers are renames that touch no money at all, so the retry budget is
+really spent and the guard still admits exactly one editor.
+
+| shape (`rules-cas-race.pg.test.ts`, N=24, 12 loops) | max CAS attempts |
+|---|---|
+| tax `updateRate`, one rate, one expected value | 2 |
+| shipping `updateRate`, one rate, one expected value | 2 |
+| tax `updateRate` racing a storm of same-document renames | 6 (12 for the renames themselves) |
+
+The first two sit at 2 for the reason the guard exists: a loser's second attempt
+re-reads a value that has moved and stops, so depth does not grow with the crowd.
+
+### Rules crash seams proven
+
+`test/rules-crash-seams.dialects.test.ts`, over the one multi-document step each
+store has:
+
+- **the id was claimed, the parent embed never ran** — the orphan misleads no
+  reader (`getMethod`/`getRate` null, the edits and deletes `not_found`, the parent
+  still childless and still deletable), and the replay completes it exactly once.
+- **an orphaned claim is taken over** by a create in another parent, while a LIVE
+  child's id is never taken over — that collision is loud.
+- **the child was removed, its claim was never released** — same orphan, same
+  answers, and the id is reusable.
+- **claim-before-embed, the forbidden order** — pinned from the other side by
+  parking the embed: while it is parked the claim is already there and the child is
+  not yet readable. A store that embedded first would pass every replay case above
+  and fail here.
+- **a money edit that loses its revision** re-reads and is refused as `stale`,
+  carrying the peer's value.
+- **a parent delete racing a child create** refuses with the referential reason
+  rather than orphaning the child.
