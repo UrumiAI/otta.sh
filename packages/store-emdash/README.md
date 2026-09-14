@@ -2017,16 +2017,17 @@ Two divergences worth naming:
 prune** — an operator surface that lists and retires anomalies is owed, and it is what
 will decide the collection's indexes.
 
-### Settings: the claim carries the intent, and the result is stamped once
+### Settings: the claim carries the intent and the revision it was decided against
 
 The SQL did the whole of `update` inside one transaction: read current, merge, claim the
 key with the merged values, and — as the claim's winner only — upsert the row. Without a
 transaction the steps become:
 
 ```
-claim  : settings_mutations/{key} create-if-absent, carrying the PATCH and nothing else
-apply  : read settings/store + revision → merge the patch over it →
-         compare-and-set pinned to the revision just read
+claim  : settings_mutations/{key} create-if-absent, carrying the PATCH and the settings
+         revision the creator just read — both written once, never rewritten
+apply  : merge the patch over the current settings, compare-and-set — the CREATOR at the
+         revision it just read, anyone else at `decidedRevision` or not at all
 record : the claim's `result`, assigned EXACTLY ONCE, after that write committed
 ```
 
@@ -2043,24 +2044,40 @@ result means LANDED, and that result is single-assignment — written after the 
 write, guarded on the claim revision that still had `result: null`. Of any number of
 callers of one key, the first to record decides the answer and every other one reads it.
 
-Three consequences:
+**And a DECIDED claim is pinned to the revision it was decided against**, which is what
+makes the crash case safe rather than merely completable. Four consequences:
 
 - **A replay of a landed mutation writes nothing**, so a stale replay arriving after a
   newer update returns what its mutation applied and cannot clobber the newer value. The
   document-model suite pins that on the two documents' revisions rather than on their
   values.
-- **A replay of an un-landed claim completes it**: it merges the recorded patch over the
-  CURRENT settings and applies it. That is a late write, not a clobber-back — the
-  mutation never landed, and an absolute patch re-merged over a newer base cannot revert
-  a field another mutation set, because an omitted field is read from the base.
-- **Losing the apply re-merges over the new base**, which is why distinct-key updates
-  never lose each other's fields. The race drives that with field-disjoint patches,
-  where a lost update would be visible as a field reverting to its domain default.
+- **A caller that did NOT create the claim may apply it only at `decidedRevision`.** Past
+  that revision the patch was computed against a state that no longer exists, so applying
+  it would overwrite whatever replaced that state — the clobber the port forbids. It is
+  refused instead, with a non-retryable `SettingsMutationSupersededError` carrying the key
+  and both revisions, and nothing is written. The remedy is a fresh idempotency key, which
+  is a new decision against the current state. Merging cannot revert a field the patch
+  OMITS, because an omitted field is read from the base — but it says nothing at all about
+  the fields the patch NAMES, which is exactly what the pin is for.
+- **A non-creator completion can therefore succeed at most once, ever**, because applying
+  it moves the revision it was pinned to. The patch can never be applied twice.
+- **The creator keeps re-merging over the new base**, because its intent is live — it is
+  the call the operator is waiting on, not a replay of a decision made earlier. That is
+  why distinct-key updates never lose each other's fields, which the race drives with
+  field-disjoint patches, where a lost update would be visible as a field reverting to its
+  domain default.
+
+**A merge that changes nothing writes nothing.** If the patch's effect is already present
+in the document that was read, the mutation is recorded against the value that is there
+and no settings write is issued. It cannot mask a clobber — a no-op write clobbers nothing
+— and it does two useful things. It lets a mutation whose own write landed but whose stamp
+was lost be completed rather than refused; and it keeps a same-key stampede from refusing
+everybody but the creator, because every caller of one key merges the same patch to the
+same value, so the peers find the effect already present rather than a moved revision.
 
 A claim is a once-only record rather than a lease, which is why ADR-0019 rule (a) does
 not bind it: nobody can take it over, so there is no owner token to re-assert. The guard
-on the only value-bearing write is the settings document's own revision, re-read on every
-attempt and used immediately after.
+on the only value-bearing write is a revision read and used in the same attempt.
 
 ### Order notes: keyed by the idempotency key, in a child collection
 
@@ -2082,7 +2099,9 @@ weaker than the constraint it replaces, and a case pins the cross-order behaviou
 not a tie-break, and a note id means nothing to a reader on its own. `createdAt` is
 fixed-width ISO-8601, so the comparison is dialect-identical. A list that exhausts its
 page budget raises `ScanPageLimitError` rather than truncating, because a short note list
-reads as "nobody wrote that"; both the multi-page read and the ceiling have cases.
+reads as "nobody wrote that". Three cases cover it: a multi-page read, a multi-page read
+where every note shares one instant so the tie-break carries the whole ordering across the
+cursor, and the ceiling.
 
 ### Crash seams proven in this tier
 
@@ -2098,18 +2117,26 @@ all take.
 |---|---|---|---|
 | after the grant, before either pointer | a grant no scope points at | one indexed query per missing scope, once | the next `check` on that scope, or a replayed grant |
 | after the first pointer, before the second | one scope pointed, one not | as above, for that scope | as above |
-| after the mutation claim, before the settings write | a decision with no outcome | the update is invisible until someone replays that key | the next call with that key, merging the patch over the current value |
-| after the settings write, before the result stamp | an applied value with no recorded result | one redundant write of the same value on the completion | the next call with that key; the stamp is single-assignment, so the answer is stable |
-| the retry budget runs out after the claim was created | as the row above it | **the update applies LATER, not never** | as above |
+| after the mutation claim, before the settings write | a decision with no outcome | the update applies later, or is refused as superseded if something moved the settings first | the next call with that key, at `decidedRevision` only |
+| after the settings write, before the result stamp | an applied value with no recorded result | nothing: the completion's merge changes nothing, so it records without writing | the next call with that key |
+| the retry budget runs out after the claim was created | as the first settings row | **the update applies LATER, not never** — or not at all, if it is overtaken first | as above |
+| a creator lands while a concurrent replay of its key concludes "superseded" | none — the value is applied and stamped | the replay's caller is refused for an update that did land | nothing to heal: re-reading the claim returns the landed result |
 
-The last row is the one residual in this tier that does not resolve toward over-refusal,
-so it is named rather than filed under rule (c): `StorageContentionError` from a settings
-update whose claim already exists means the operator's change is decided and unlanded, and
-the next call with that key lands it. The error is retryable and nothing is lost, but the
-honest statement is "applies later" rather than "was refused" — and a caller that never
-retries leaves the claim for whoever does. No other step here has that shape: a grant's
-budget running out after the grant document landed leaves the grant authoritative, and
-both single-document stores write nothing at all.
+Two of those rows are worth reading twice. The budget row is the one residual in this tier
+that does not resolve toward over-refusal, so it is named rather than filed under rule (c):
+`StorageContentionError` from a settings update whose claim already exists means the
+operator's change is decided and unlanded, and the next call with that key lands it — at
+`decidedRevision`, or not at all if something has moved the settings since. The error is
+retryable and nothing is lost, but the honest statement is "applies later" rather than "was
+refused", and a caller that never retries leaves the claim for whoever does. No other step
+here has that shape: a grant's budget running out after the grant document landed leaves
+the grant authoritative, and both single-document stores write nothing at all.
+
+The last row is the accepted residual of the pin itself. A creator may land its value while
+a concurrent replay of the same key, reading a revision the creator's own write has just
+moved, concludes "superseded": the value was applied and the replay's caller was refused.
+That is over-refusal — never a double apply, never a clobber — and it is the direction this
+tier resolves every residual in.
 
 `order_notes` and `payment_events` write one document each, so a lost write leaves NOTHING
 and the retry is a clean first attempt rather than a repair — which two `"instead"` cases
