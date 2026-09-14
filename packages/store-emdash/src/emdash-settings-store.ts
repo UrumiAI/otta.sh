@@ -164,6 +164,11 @@ export class EmdashSettingsStore implements SettingsStore {
 			const base = await this.#settings.getVersioned(SETTINGS_DOC_ID);
 			const value: SettingsMutationDoc = {
 				patch,
+				// The read and this create are two statements, so the pin can be stale the
+				// moment it is written — a peer may commit between them. That only ever
+				// costs a later completion a refusal it might not have needed: the creator
+				// re-reads and is unaffected, and no write is admitted at a revision that is
+				// not current, which is the whole point.
 				decidedRevision: base?.revision ?? null,
 				createdAt: this.#clock.now().toISOString(),
 				result: null,
@@ -203,12 +208,15 @@ export class EmdashSettingsStore implements SettingsStore {
 
 			// A terminal refusal by a peer. The creator ignores it: its intent is live, and
 			// a peer's view of the revision says nothing about the call the operator is
-			// waiting on.
+			// waiting on. The current revision is read for the error rather than restated
+			// from the claim — the two are what the message contrasts, and a marker written
+			// by somebody else says only that they differed then, not what they are now.
 			if (!created && claim.value.supersededAt !== null) {
+				const seen = await this.#settings.getVersioned(SETTINGS_DOC_ID);
 				throw new SettingsMutationSupersededError(
 					idempotencyKey,
 					claim.value.decidedRevision,
-					claim.value.decidedRevision,
+					seen?.revision ?? null,
 				);
 			}
 

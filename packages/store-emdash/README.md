@@ -261,6 +261,13 @@ told the item is gone. The HTTP/route boundary maps it to **503** and a retry; t
 wiring is a later increment. The backoff `sleep` and jitter `random` are injectable
 through the store's options, so a suite need not wait on real timers.
 
+The other typed refusal that boundary owes a mapping is
+`SettingsMutationSupersededError` (see the settings section): **409**, and
+**non-retryable** — re-issuing the same idempotency key can never succeed, because
+the revision it is pinned to will not come back. The remedy the response should
+carry is a fresh key, which is a new decision against the current state. Recorded
+here as a forward note for the in-process client, alongside the 503 above.
+
 **No index beyond the four above.** Every access this adapter makes is by document
 id, including the reservation lookups — the port has no cross-SKU listing or
 expiry-scan method, so nothing here needs to query a field. The `sku`/`createdAt`

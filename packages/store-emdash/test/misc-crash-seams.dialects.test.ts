@@ -255,10 +255,19 @@ describeEachDialect("misc crash seams", (ctx) => {
 		expect(await live.settingsStore.get()).toEqual({ holdTtlMinutes: 99, lowStockThreshold: 7 });
 		expect((await live.settings.getVersioned(SETTINGS_DOC_ID))?.revision).toBe(before?.revision);
 		// And the claim is terminal: a further replay refuses the same way, so the patch
-		// cannot be applied later either.
-		await expect(
-			live.settingsStore.update({ holdTtlMinutes: 30 }, idempotencyKey("s1")),
-		).rejects.toBeInstanceOf(SettingsMutationSupersededError);
+		// cannot be applied later either — and its error reports the revision it read now,
+		// not the one the marker was written against, so the two never agree.
+		const terminal = await live.settingsStore
+			.update({ holdTtlMinutes: 30 }, idempotencyKey("s1"))
+			.then(
+				() => undefined,
+				(err: unknown) => err,
+			);
+		expect(terminal).toBeInstanceOf(SettingsMutationSupersededError);
+		if (isSettingsMutationSupersededError(terminal)) {
+			expect(terminal.currentRevision).not.toBe(terminal.decidedRevision);
+			expect(terminal.currentRevision).toBe(before?.revision);
+		}
 		expect((await live.mutations.get("s1"))?.result).toBeNull();
 	});
 
