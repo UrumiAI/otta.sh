@@ -20,6 +20,7 @@
  * | after the refusal, BEFORE the compensation | the replay refuses again and the slot still comes back |
  * | after the compensation, before the recorded answer | the replay refuses again and releases nothing twice |
  * | two CONCURRENT replayers of a refused key | one answer, one compensation, nothing released twice |
+ * | a SLOW owner woken after a legitimate takeover | it is fenced at its heartbeat and adds nothing |
  * | between a release's slot-free and its delete | the replay deletes and decrements exactly once |
  * | between a release's delete and its decrement | the counter is left HIGH, never low — and a second release is a no-op |
  *
@@ -197,12 +198,13 @@ describeEachDialect("coupon crash seams", (ctx) => {
 		const h = makeCouponHarness(bound.storage);
 		await h.store.create(coupon({ maxUses: 5 }));
 		const docId = couponRedemptionDocId("c1", "k-b");
-		// TWO read-modify-writes land on the key document: `claimed → bumping` first, then
-		// the recorded answer. The SECOND is the seam — the bump has already happened by
-		// then — so the matcher counts rather than taking the first match.
+		// THREE read-modify-writes land on the key document: `claimed → bumping`, then the
+		// heartbeat that fences the counter write, then the recorded answer. The THIRD is
+		// the seam — the bump has already happened by then — so the matcher counts rather
+		// than taking the first match.
 		const failing = failCall(
 			bound.collection<CouponRedemptionDoc>(COUPON_REDEMPTIONS_COLLECTION),
-			nthCall(2, onId(docId, isUpdateWrite)),
+			nthCall(3, onId(docId, isUpdateWrite)),
 			{ mode: "instead" },
 		);
 		const crashing = makeCouponHarness(bound.storage, {
@@ -269,10 +271,11 @@ describeEachDialect("coupon crash seams", (ctx) => {
 		expect((await h.store.redeem(redeemInput("k-other", { customer: "cust-2" }))).ok).toBe(true);
 
 		const docId = couponRedemptionDocId("c1", "k-d");
-		// Again the SECOND key-document update: the first is `claimed → bumping`.
+		// Again the recorded answer: the first two key-document updates are the bump right
+		// and its heartbeat.
 		const failing = failCall(
 			bound.collection<CouponRedemptionDoc>(COUPON_REDEMPTIONS_COLLECTION),
-			nthCall(2, onId(docId, isUpdateWrite)),
+			nthCall(3, onId(docId, isUpdateWrite)),
 			{ mode: "instead" },
 		);
 		const crashing = makeCouponHarness(bound.storage, {
@@ -463,10 +466,11 @@ describeEachDialect("coupon crash seams", (ctx) => {
 		const h = makeCouponHarness(bound.storage);
 		await h.store.create(coupon({ maxUses: 10 }));
 		const docId = couponRedemptionDocId("c1", "k-j");
-		// Crash after the `+1`, before the answer is recorded (the SECOND key-doc update).
+		// Crash after the `+1`, before the answer is recorded (the THIRD key-doc update:
+		// bump right, heartbeat, answer).
 		const failing = failCall(
 			bound.collection<CouponRedemptionDoc>(COUPON_REDEMPTIONS_COLLECTION),
-			nthCall(2, onId(docId, isUpdateWrite)),
+			nthCall(3, onId(docId, isUpdateWrite)),
 			{ mode: "instead" },
 		);
 		await expect(
@@ -526,5 +530,51 @@ describeEachDialect("coupon crash seams", (ctx) => {
 		expect(retried.ok).toBe(true);
 		if (retried.ok) expect(retried.replayed).toBe(true);
 		expect((await couponDoc())?.usesCount).toBe(1);
+	});
+
+	test("a SLOW owner woken after a legitimate takeover is fenced at its heartbeat", async () => {
+		// The mirror of the live-owner case, and the window a lease alone cannot close: an
+		// owner wins the step, is descheduled for longer than its own lease, a taker
+		// legitimately takes over and finishes — and then the owner wakes up. Its late
+		// `+1` must not land.
+		const h = makeCouponHarness(bound.storage);
+		await h.store.create(coupon({ maxUses: 5 }));
+		const docId = couponRedemptionDocId("c1", "k-slow");
+		// Park the write immediately BEFORE the counter: the second read-modify-write on
+		// the key document, which is the heartbeat that re-asserts the bump right (the
+		// first is `claimed → bumping`). A design that touched the counter without
+		// re-asserting anything would already have bumped by the time this park is held,
+		// which is what the assertion below pins.
+		const parked = parkCall(
+			bound.collection<CouponRedemptionDoc>(COUPON_REDEMPTIONS_COLLECTION),
+			nthCall(2, onId(docId, isUpdateWrite)),
+		);
+		const owner = wrappedTwin(h, COUPON_REDEMPTIONS_COLLECTION, parked.collection).store.redeem(
+			redeemInput("k-slow"),
+		);
+		await parked.arrived;
+
+		// The owner holds the step and has NOT touched the counter: it re-asserts its
+		// right first, always.
+		expect((await couponDoc())?.usesCount).toBe(0);
+		expect((await record("k-slow"))?.state).toBe("bumping");
+
+		// Its lease lapses while it is parked, so a taker is entitled to the step — and
+		// takes it, bumps once, and records the answer.
+		h.clock.advance(COUPON_BUMP_LEASE_MS + 1);
+		const taker = await h.store.redeem(redeemInput("k-slow"));
+		expect(taker.ok).toBe(true);
+		expect((await couponDoc())?.usesCount).toBe(1);
+		expect((await record("k-slow"))?.state).toBe("applied");
+
+		// Now wake the owner. Its heartbeat is a compare-and-set at a revision the taker
+		// has moved, so it is refused, it adds nothing, and it answers with the taker's
+		// recorded outcome.
+		parked.release();
+		const woken = await owner;
+		expect(woken.ok).toBe(true);
+		if (woken.ok && taker.ok) expect(woken.redemptionId).toBe(taker.redemptionId);
+		expect((await couponDoc())?.usesCount).toBe(1);
+		expect((await record("k-slow"))?.state).toBe("applied");
 	});
 });

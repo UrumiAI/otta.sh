@@ -208,7 +208,14 @@ export interface CouponRedemptionDoc {
 	 * cannot hold the step forever and a LIVE one is never overtaken. `null` in every
 	 * other state. It is the same device the email-outbox lease uses, for the same
 	 * reason: without it, "the owner is taking a while" and "the owner is gone" are
-	 * indistinguishable, and a taker that guesses wrong bumps the counter twice.
+	 * indistinguishable.
+	 *
+	 * It is stamped from the OWNER's clock and read against the READER's, so a reader
+	 * running ahead can call a live owner gone. That is a latency question and not a
+	 * correctness one, because the lease is not what protects the counter — the owner
+	 * re-asserts this document's REVISION immediately before every counter write, so of
+	 * two callers that both believe they own the step, the one whose write lands second
+	 * is fenced out and reads the first one's answer.
 	 */
 	readonly bumpLeaseUntil: string | null;
 	/** The indexed mirror of "this document holds a use" — {@link holdsUseFor}. */
@@ -284,14 +291,23 @@ export function normalizeCouponDoc(doc: CouponDoc): CouponDoc {
 	return { ...doc, usesCount: doc.usesCount ?? 0, lastRedeemedKey: doc.lastRedeemedKey ?? null };
 }
 
-/** As above, for a redemption document. */
+/**
+ * As above, for a redemption document.
+ *
+ * An absent `state` is DERIVED from the recorded outcome rather than defaulted to
+ * `claimed`: a document that carries an answer has finished, whatever it says about
+ * its state, and reading it as `claimed` would offer the bump step to a caller for
+ * work that is already recorded. No such shape can exist today — this store has
+ * never been released — so this is a belt, not a migration.
+ */
 export function normalizeRedemptionDoc(doc: CouponRedemptionDoc): CouponRedemptionDoc {
-	const state = doc.state ?? "claimed";
+	const outcome = doc.outcome ?? null;
+	const state = doc.state ?? (outcome === null ? "claimed" : outcome.ok ? "applied" : "refused");
 	return {
 		...doc,
 		state,
 		bumpLeaseUntil: doc.bumpLeaseUntil ?? null,
-		outcome: doc.outcome ?? null,
+		outcome,
 		holdsUse: holdsUseFor(state),
 		capClaimed: doc.capClaimed ?? false,
 	};

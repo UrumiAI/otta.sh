@@ -230,6 +230,20 @@ export interface EmdashCouponStoreOptions {
 	bumpLeaseMs?: number;
 }
 
+/**
+ * The bump step, as held by its owner: the document as written, and the REVISION
+ * that write returned.
+ *
+ * The revision is the owner token. Anything at all that writes the key document —
+ * a takeover, a release, another completer's finish — changes it, so a
+ * compare-and-set at this revision is a proof that the step is still ours, and no
+ * separate owner id is needed (or would be as strong).
+ */
+interface BumpRight {
+	readonly doc: CouponRedemptionDoc;
+	readonly revision: string;
+}
+
 /** What one resolved redemption claim is: the document, and how it got there. */
 interface ResolvedClaim {
 	readonly docId: string;
@@ -644,9 +658,9 @@ export class EmdashCouponStore implements CouponStore {
 			// nothing to compensate.
 			return this.#finish(claim, { ok: false, reason: "COUPON_MAX_PER_CUSTOMER" });
 		}
-		const owned = await this.#takeBumpRight(claim, cap !== null, "fresh");
-		if (owned === null) return this.#awaitOrTakeOver(coupon, claim);
-		return this.#runBump(coupon, { ...claim, doc: owned }, cap !== null);
+		const right = await this.#takeBumpRight(claim, cap !== null, "fresh");
+		if (right === null) return this.#awaitOrTakeOver(coupon, claim);
+		return this.#runBump(coupon, { ...claim, doc: right.doc }, right, cap !== null);
 	}
 
 	/**
@@ -661,16 +675,20 @@ export class EmdashCouponStore implements CouponStore {
 	 *   step already owned must NOT take it, or a late completer of the same key would
 	 *   walk straight past a live owner and bump a second time.
 	 * - `"lapsed"` takes it from a `bumping` document whose lease has run out — the
-	 *   healing path, re-checking the lease against the revision it is about to write,
-	 *   so an owner that renewed in the meantime is not overtaken.
+	 *   healing path.
 	 *
-	 * Returns the document as written, or `null` when the step was not available.
+	 * **Taking the step is not the same as still holding it.** Nothing here can stop the
+	 * winner from being descheduled for longer than its own lease and woken up after a
+	 * taker has finished the work, so the returned {@link BumpRight} carries the
+	 * REVISION this write produced, and the counter is only ever touched immediately
+	 * after a {@link #heartbeat} proves that revision is still current. Returns `null`
+	 * when the step was not available.
 	 */
 	async #takeBumpRight(
 		claim: ResolvedClaim,
 		capClaimed: boolean,
 		from: "fresh" | "lapsed",
-	): Promise<CouponRedemptionDoc | null> {
+	): Promise<BumpRight | null> {
 		const current = await this.#redemptions.getVersioned(claim.docId);
 		if (current === null) return null;
 		const doc = normalizeRedemptionDoc(current.value);
@@ -680,11 +698,39 @@ export class EmdashCouponStore implements CouponStore {
 			...doc,
 			state: "bumping",
 			holdsUse: holdsUseFor("bumping"),
-			bumpLeaseUntil: new Date(this.#clock.now().getTime() + this.#bumpLeaseMs).toISOString(),
+			bumpLeaseUntil: this.#leaseUntil(),
 			capClaimed: doc.capClaimed || capClaimed,
 		};
 		const written = await this.#redemptions.compareAndSet(claim.docId, current.revision, next);
-		return written.applied ? next : null;
+		return written.applied ? { doc: next, revision: written.revision } : null;
+	}
+
+	/**
+	 * Re-stamp the lease at the revision we last held — the fence in front of every
+	 * counter write.
+	 *
+	 * This is what closes the SLOW-OWNER window, which is not a crash and cannot be
+	 * ruled out by a lease alone: an owner can win the step, be descheduled past its
+	 * lease, have a taker legitimately take over and finish, and then wake up. Without
+	 * a fence its late `+1` would land and one redemption would count twice. With it,
+	 * the woken owner's compare-and-set fails — the taker's write moved the revision —
+	 * and it reads the taker's recorded answer instead of adding a use.
+	 *
+	 * It doubles as the heartbeat: a bump that legitimately takes several attempts
+	 * renews its lease on each one, so a live owner is not overtaken for being slow,
+	 * only for being gone.
+	 *
+	 * Returns the refreshed right, or `null` when the step is no longer ours.
+	 */
+	async #heartbeat(docId: string, held: BumpRight): Promise<BumpRight | null> {
+		const next: CouponRedemptionDoc = { ...held.doc, bumpLeaseUntil: this.#leaseUntil() };
+		const written = await this.#redemptions.compareAndSet(docId, held.revision, next);
+		return written.applied ? { doc: next, revision: written.revision } : null;
+	}
+
+	/** When a lease taken now lapses, by THIS caller's clock (see {@link #leaseLapsed}). */
+	#leaseUntil(): string {
+		return new Date(this.#clock.now().getTime() + this.#bumpLeaseMs).toISOString();
 	}
 
 	/**
@@ -702,6 +748,9 @@ export class EmdashCouponStore implements CouponStore {
 	 * this call, and there is no honest answer to return for that either.
 	 */
 	async #awaitOrTakeOver(coupon: CouponDoc, claim: ResolvedClaim): Promise<RedeemResult> {
+		// DELIBERATELY the same knob as the compare-and-set budget: both answer "how long
+		// may one call keep trying before it reports back", and a suite that wants a short
+		// wait wants a short budget. Splitting them would be two numbers to keep in step.
 		const patience = this.#retry.maxAttempts ?? BUMP_WAIT_ATTEMPTS;
 		for (let attempt = 1; attempt <= patience; attempt++) {
 			const doc = await this.#redemptions.get(claim.docId);
@@ -721,7 +770,19 @@ export class EmdashCouponStore implements CouponStore {
 		throw new StorageContentionError("redeem", patience);
 	}
 
-	/** Has the owner of this step stopped owning it? A `claimed` doc owns nothing. */
+	/**
+	 * Has the owner of this step stopped owning it? A `claimed` doc owns nothing.
+	 *
+	 * **The lease is compared across clocks, and it is worth saying which side loses.**
+	 * `bumpLeaseUntil` is stamped from the OWNER's `Clock` and read against the
+	 * READER's, so a reader whose clock runs ahead by more than the remaining lease
+	 * declares a live owner gone and takes the step over early. That used to be a
+	 * correctness problem; with the heartbeat in front of every counter write it is a
+	 * LATENCY one — the skewed pair still produces exactly one `+1`, because whichever
+	 * of the two writes the key document first fences the other out at its next
+	 * heartbeat. The loser is a caller, never the data: it is refused with the typed
+	 * retryable error, or it reads the winner's recorded answer.
+	 */
 	#leaseLapsed(doc: CouponRedemptionDoc): boolean {
 		if (doc.state !== "bumping") return true;
 		const until = doc.bumpLeaseUntil;
@@ -747,32 +808,49 @@ export class EmdashCouponStore implements CouponStore {
 		if (cap !== null && !(await this.#claimCustomerSlot(claim.doc, cap))) {
 			return this.#finish(claim, { ok: false, reason: "COUPON_MAX_PER_CUSTOMER" });
 		}
-		const owned = await this.#takeBumpRight(claim, cap !== null, "lapsed");
-		if (owned === null) {
-			const doc = await this.#redemptions.get(claim.docId);
-			const settled = doc === null ? null : normalizeRedemptionDoc(doc);
-			if (settled !== null && settled.outcome !== null) {
-				return answerOf(settled, settled.outcome, true);
-			}
-			throw new StorageContentionError("redeem", this.#retry.maxAttempts ?? BUMP_WAIT_ATTEMPTS);
-		}
-		const taken = { ...claim, doc: owned };
+		const right = await this.#takeBumpRight(claim, cap !== null, "lapsed");
+		if (right === null) return this.#answerOrContend(claim);
+		const taken = { ...claim, doc: right.doc };
 		const live = await this.#coupons.get(coupon.couponId);
-		if (live !== null && normalizeCouponDoc(live).lastRedeemedKey === owned.idempotencyKey) {
+		if (live !== null && normalizeCouponDoc(live).lastRedeemedKey === right.doc.idempotencyKey) {
 			return this.#finish(taken, { ok: true });
 		}
-		return this.#runBump(coupon, taken, cap !== null);
+		return this.#runBump(coupon, taken, right, cap !== null);
 	}
 
 	/** The counter write itself, plus the compensation its refusal owes. */
-	async #runBump(coupon: CouponDoc, claim: ResolvedClaim, capped: boolean): Promise<RedeemResult> {
-		if (await this.#bumpGlobal(coupon.couponId, claim.doc.idempotencyKey)) {
-			return this.#finish(claim, { ok: true });
-		}
+	async #runBump(
+		coupon: CouponDoc,
+		claim: ResolvedClaim,
+		right: BumpRight,
+		capped: boolean,
+	): Promise<RedeemResult> {
+		const bumped = await this.#bumpGlobal(coupon.couponId, claim, right);
+		// The step was taken away mid-flight: the taker owns the answer, and this caller
+		// reads it rather than adding a second use.
+		if (bumped === null) return this.#answerOrContend(claim);
+		if (bumped) return this.#finish(claim, { ok: true });
 		// The compensation the transaction used to be. Idempotent, and scoped to this
 		// key's own slot, so a second replayer cannot release it twice.
 		if (capped) await this.#releaseCustomerSlot(claim.doc);
 		return this.#finish(claim, { ok: false, reason: "COUPON_EXHAUSTED" });
+	}
+
+	/**
+	 * Read back the answer somebody else recorded, or refuse retryably.
+	 *
+	 * Where a caller lands when it discovers it no longer owns the bump step. It never
+	 * waits and never takes over: the owner it lost to has either finished — in which
+	 * case the answer is right here — or is still working, in which case the honest
+	 * reply is the typed retryable failure and the caller's own retry will read it.
+	 */
+	async #answerOrContend(claim: ResolvedClaim): Promise<RedeemResult> {
+		const doc = await this.#redemptions.get(claim.docId);
+		const settled = doc === null ? null : normalizeRedemptionDoc(doc);
+		if (settled !== null && settled.outcome !== null) {
+			return answerOf(settled, settled.outcome, true);
+		}
+		throw new StorageContentionError("redeem", this.#retry.maxAttempts ?? BUMP_WAIT_ATTEMPTS);
 	}
 
 	/**
@@ -827,33 +905,58 @@ export class EmdashCouponStore implements CouponStore {
 	}
 
 	/**
-	 * The guarded `+1` — the no-over-redeem statement, in its two branches.
+	 * The guarded `+1` — the no-over-redeem statement, in its two branches, each fenced
+	 * by a heartbeat on the key document.
 	 *
-	 * A CAPPED coupon is guarded on `usesCount < maxUses` and on NOTHING ELSE, which
-	 * is what keeps a redemption from ever waiting on a peer redemption of the same
-	 * coupon: once-only per key is the key document's job (see {@link #takeBumpRight}),
-	 * not the guard's. An UNCAPPED one takes a plain delta — there is no invariant to
-	 * violate — and because `updateIf` never inserts, a refusal there can only mean
-	 * the document is gone.
+	 * A CAPPED coupon is guarded on `usesCount < maxUses` and on NOTHING ELSE, which is
+	 * what keeps a redemption from ever waiting on a peer redemption of the same
+	 * coupon: once-only per key is the key document's job, not the guard's. An UNCAPPED
+	 * one takes a plain delta — there is no invariant to violate — and because
+	 * `updateIf` never inserts, a refusal there can only mean the document is gone.
+	 *
+	 * **Every attempt re-asserts the right first** ({@link #heartbeat}), carrying the
+	 * revision forward from the heartbeat's own result, so a slow owner cannot add a
+	 * late `+1` behind a taker that has already finished, and a legitimately retrying
+	 * owner renews its lease rather than looking abandoned. `null` means the step is no
+	 * longer ours and NOTHING was written.
 	 *
 	 * The refusal DECISION is taken from the READ (`usesCount >= maxUses`), never from
-	 * `applied: false`, because `updateIf` conflates a failed guard with an absent
-	 * row. So a refused write means only "the document moved, read it again" — and the
-	 * ONLY thing that can move it into refusing is the coupon reaching its cap, which
-	 * the next read settles. The attempt depth is therefore 2 in the worst case, plus
-	 * one per concurrent RELEASE that hands headroom back mid-flight.
+	 * `applied: false`, because `updateIf` conflates a failed guard with an absent row.
+	 * So a refused write means only "the document moved, read it again" — and the ONLY
+	 * thing that can move it into refusing is the coupon reaching its cap, which the
+	 * next read settles. The attempt depth is therefore 2 in the worst case, plus one
+	 * per concurrent RELEASE that hands headroom back mid-flight.
+	 *
+	 * **What is left, stated exactly.** Two-document atomicity does not exist here, so
+	 * the heartbeat and the `updateIf` are adjacent statements rather than one: an owner
+	 * descheduled BETWEEN them for longer than a full lease could still land a late
+	 * `+1`. That window is the gap between two consecutive storage calls, against a
+	 * 10-second lease and a retry budget whose entire worst case is 24 sleeps of at most
+	 * 50 ms (about a second) — so reaching it means a pause an order of magnitude longer
+	 * than the whole call is allowed to take, and the request would have failed on its
+	 * own deadline first. It is bounded the same way as the other two residuals: the
+	 * counter can only end HIGH.
 	 */
-	async #bumpGlobal(couponId: string, key: string): Promise<boolean> {
-		return this.#cas<boolean>("redeem", async () => {
+	async #bumpGlobal(
+		couponId: string,
+		claim: ResolvedClaim,
+		right: BumpRight,
+	): Promise<boolean | null> {
+		let held = right;
+		return this.#cas<boolean | null>("redeem", async () => {
+			const beat = await this.#heartbeat(claim.docId, held);
+			if (beat === null) return casDone(null);
+			held = beat;
 			const live = await this.#coupons.get(couponId);
 			if (live === null) throw new CouponNotFoundError(couponId);
-			const max = normalizeCouponDoc(live).maxUses;
-			if (max !== null && normalizeCouponDoc(live).usesCount >= max) return casDone(false);
+			const doc = normalizeCouponDoc(live);
+			const max = doc.maxUses;
+			if (max !== null && doc.usesCount >= max) return casDone(false);
 			const result = await this.#coupons.updateIf(couponId, {
 				where: max === null ? {} : { usesCount: { lt: max } },
 				// A best-effort witness for the takeover seam, never a guard: see
 				// `#takeOverBump`, and `CouponDoc.lastRedeemedKey`.
-				set: { lastRedeemedKey: key },
+				set: { lastRedeemedKey: claim.doc.idempotencyKey },
 				delta: { usesCount: { inc: 1 } },
 			});
 			if (result.applied) return casDone(true);
@@ -956,7 +1059,10 @@ export class EmdashCouponStore implements CouponStore {
 		if (coupon !== null) {
 			try {
 				// Through the lease-aware waiter, not straight into the takeover: a release
-				// must not overtake a live completer any more than a redemption may.
+				// must not overtake a live completer any more than a redemption may. The
+				// waiter can never outlast the lease — it is bounded by the compare-and-set
+				// budget, about a second — so a crashed owner's key answers typed-retryable
+				// here until a later call, past the lease, takes the step over.
 				await this.#awaitOrTakeOver(normalizeCouponDoc(coupon), { docId, doc, replayed: true });
 			} catch (err) {
 				if (!isStorageContentionError(err)) throw err;

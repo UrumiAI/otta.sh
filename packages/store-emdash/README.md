@@ -1211,7 +1211,9 @@ The coupon is read first and nothing is written until it is found. Then:
 3. **take the bump right**: `claimed → bumping`, a compare-and-set on the key
    document's revision. Exactly one completer wins it, and only the winner reaches the
    counter. A caller that loses reads the winner's answer back.
-4. **bump the counter** with one guarded statement — the cap and nothing else.
+4. **re-assert the right, then bump the counter.** A compare-and-set at the revision
+   step 3 produced re-stamps the lease and proves the step is still ours; only then does
+   the guarded statement run, and it guards the cap and nothing else.
 5. **record** `applied` (or `refused`, after compensating) on the key document.
 
 **Why step 3 exists, and why the guard carries nothing but the cap.** N callers
@@ -1229,13 +1231,43 @@ completers of one key while 20 peer keys commit, capped and uncapped.
 
 **The bump right is leased, because "slow" and "gone" look identical.** A step held by a
 live owner and one held by a crashed owner are the same document, and a taker that
-guesses wrong bumps twice. So `bumping` carries `bumpLeaseUntil` and a waiter takes the
-step over only once that lapses; until then it re-reads, and if it runs out of patience
-it raises the typed retryable `StorageContentionError` so the caller's own retry reads
-the recorded answer. That is the email-outbox lease (ADR-0019 R2) applied to the same
-problem, and `coupon-crash-seams.dialects.test.ts` pins it from the forbidden side: with
-the owner's `+1` PARKED, a second completer of the same key must refuse retryably rather
-than add a use behind its back.
+guesses wrong bumps twice. So `bumping` carries `bumpLeaseUntil` — `COUPON_BUMP_LEASE_MS`,
+**10 seconds** by default, overridable per store with the `bumpLeaseMs` option — and a
+waiter takes the step over only once that lapses. Until then it re-reads, and if it runs
+out of patience it raises the typed retryable `StorageContentionError` so the caller's own
+retry reads the recorded answer. That is the email-outbox lease (ADR-0019 R2) applied to
+the same problem, and `coupon-crash-seams.dialects.test.ts` pins it from the forbidden
+side: with the owner's `+1` PARKED, a second completer of the same key must refuse
+retryably rather than add a use behind its back.
+
+**What a crashed completer costs the next caller.** A waiter is bounded by the
+compare-and-set budget — about a second — so it can never outlast a ten-second lease.
+While the lease still stands, a call on that key is answered `STORAGE_CONTENTION`
+(retryable, nothing written); past it, the next call takes the step over and completes it.
+So a crash mid-bump makes ONE key unavailable for up to the lease, with a typed retryable
+answer the whole time, and the coupon itself stays fully usable by every other key. A
+deployment that would rather trade a shorter unavailable window for a higher chance of
+overtaking a merely slow owner can lower `bumpLeaseMs`; the counter stays exact either
+way, because the lease is not what protects it.
+
+**The right is re-asserted, not merely taken — and that is what protects the counter.**
+A lease cannot stop an owner from being descheduled past its own expiry, having its step
+legitimately taken over and finished, and then waking up. So immediately before the
+counter write, the owner compare-and-sets the key document at the revision it last held
+(which doubles as renewing the lease). The taker's write moved that revision, so the woken
+owner is refused, adds nothing, and reads the taker's recorded answer. The revision IS the
+owner token: anything that writes the key document invalidates it, which is stronger than
+any id the store could have minted. `a SLOW owner woken after a legitimate takeover is
+fenced at its heartbeat` is that case, and a design that skipped the re-assertion fails it
+at the first assertion, before the takeover even happens.
+
+**Clock skew, and which side loses.** `bumpLeaseUntil` is stamped from the OWNER's clock
+and compared against the READER's, so a reader running ahead by more than the remaining
+lease will call a live owner gone and take the step over early. With the re-assertion in
+front of every counter write that is a LATENCY fault rather than a correctness one: of two
+callers that both believe they own the step, whichever writes the key document first
+fences the other out at its next heartbeat, so the counter still moves exactly once. The
+loser is a caller — refused retryably, or reading the winner's answer — never the data.
 
 **The counter's attempt depth is 2, whatever the crowd.** A redemption's guarded `+1`
 can be refused for exactly one reason — the coupon reached its cap — and the next read
@@ -1271,6 +1303,10 @@ until the invariant actually binds.
   can take its slot AFTER the winner has compensated, which is why the compensation is
   re-asserted by every caller that is told `COUPON_EXHAUSTED` rather than only by the one
   that ran the refusal.
+- **a SLOW owner woken after a legitimate takeover** — the lease lapses while the owner
+  is parked, a taker completes the redemption, and the woken owner is fenced at its
+  heartbeat: one use, one `applied` answer, and the owner returns the taker's redemption
+  id. The case also pins the ORDER — with the park held, the counter has not moved.
 - **between a release's slot-free and its delete** — the replay deletes and decrements
   exactly once.
 - **between a release's delete and its decrement** — the second accepted residual,
@@ -1279,13 +1315,26 @@ until the invariant actually binds.
   DELETING the record, which is what makes a double release impossible; the price is that
   a crash in between leaves one use nobody holds.
 
-**The two residuals are the same residual, in the same direction.** A guarded delta in
-one document cannot be made idempotent by a witness in another, so each of the two
-places where a crash can fall between the counter and its record leaves the count at
-most ONE HIGH per crash. High refuses a redemption that might have fit; it never grants
-one that does not. Nothing here can leave it low, which is the direction that would
-over-redeem. Making either one exact needs a recount of the coupon's redemption
-documents — a sweeper job, and not this store's to do on a request path.
+**The residuals are all the same residual, in the same direction.** A guarded delta in one
+document cannot be made idempotent by anything written in another, so every place where a
+crash can fall between the counter and its record leaves the count at most ONE HIGH per
+crash. High refuses a redemption that might have fit; it never grants one that does not.
+Nothing here can leave it low, which is the direction that would over-redeem. There are
+three such places, and the third is worth stating precisely because it is the one the
+heartbeat does NOT close:
+
+1. a crash after the `+1` and before the recorded answer, where a peer has overwritten the
+   witness — the taker re-bumps;
+2. a crash between a release's delete and its decrement — the use stays counted;
+3. a pause of more than a FULL LEASE between the heartbeat and the `updateIf` it fences.
+   The two are adjacent storage calls, so reaching this means being descheduled for ten
+   seconds between consecutive statements — an order of magnitude longer than the entire
+   call is allowed to take, since the whole retry budget is 24 sleeps of at most 50 ms.
+   Closing it would need the two writes to be one, which is the atomicity this store does
+   not have; a shorter `bumpLeaseMs` widens it and a longer one narrows it.
+
+Making (1) or (2) exact needs a recount of the coupon's redemption documents — a sweeper
+job, and not this store's to do on a request path.
 
 ### Four deviations from the design's index table, all forced
 

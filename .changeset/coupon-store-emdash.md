@@ -12,8 +12,10 @@ redemptions of one coupon never contend until the cap actually binds. Once-only
 lives in the per-key document instead: its id IS the
 `(couponId, idempotencyKey)` pair, so create-if-absent claims it, and moving it
 from `claimed` to `bumping` is a revision compare-and-set that exactly one
-completer wins under a lease — so of N callers retrying one checkout, exactly one
-reaches the counter and the rest read its answer. The recorded outcome answers a
+completer wins under a lease, and the winner re-asserts that revision immediately
+before the counter write — so of N callers retrying one checkout exactly one reaches
+the counter, and one that stalls past its lease and wakes after somebody else
+finished is fenced out rather than adding a late use. The recorded outcome answers a
 replay for a refusal as much as for a success. The
 per-customer cap is claimed BEFORE the global counter and given back by an
 idempotent compensation if the counter refuses, so a per-customer rejection never
