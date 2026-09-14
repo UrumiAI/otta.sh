@@ -1535,3 +1535,160 @@ assertion that would fail if the write order were reversed.
 - **(h) a late same-key caller after the prune** — not duplicated here: it is the
   gated mid-flight case in `test/inventory-store-contract.dialects.test.ts`, which
   opens the same window with the same helper.
+
+## Shipping and tax rules document model
+
+`EmdashShippingRulesStore` and `EmdashTaxRulesStore` implement the whole
+`ShippingRulesStore` and `TaxRulesStore` ports. Two aggregates, two claims:
+
+| Collection | Doc id | Holds | Declared indexes |
+|---|---|---|---|
+| `shipping_zones` | zone id | the zone's name and opaque region list, its `methods` map keyed by method id, and each method's `rates` map keyed by currency | — |
+| `shipping_method_owners` | method id | `{ zoneId }` — the store-wide method-id claim, and the FAST way to reach a method from an id alone (the heal scan below is the fallback) | — |
+| `tax_classes` | class id | the registry `name` (`null` when only rates live there) and the class's `rates` map keyed by rate id | — |
+| `tax_rate_owners` | rate id | `{ taxClassId }` — the store-wide rate-id claim, and the FAST way to reach a rate from an id alone (the heal scan below is the fallback) | — |
+
+| The SQL | Here |
+|---|---|
+| `shipping_methods.zone_id` / `shipping_rates.method_id` foreign keys | the child IS part of the parent document, so a child with no parent is unrepresentable; a create naming a missing parent throws where the insert was refused |
+| `DELETE … WHERE NOT EXISTS (children)`, twice for shipping and once for tax | the same emptiness test, read from the document the delete is guarded on and committed with `compareAndDelete` at that revision |
+| `shipping_methods.id` / `tax_rates.id` PRIMARY KEY | the two claim documents, created if absent |
+| `shipping_rates` PRIMARY KEY `(method_id, currency)` | the method's `rates` map key — uniqueness inside one document is structural |
+| `UPDATE … WHERE amount_cents = :expected` / `WHERE rate_bps = :expected` | the same expected-value comparison inside the aggregate's compare-and-set, re-evaluated on every attempt |
+| `ORDER BY id` on all four list reads | sorted in code after an unfiltered paged scan, because ordering needs a declared index and neither collection declares one |
+
+### Why two claim collections, where the design table names none
+
+**Nine** port methods take a child id with **no parent**: `getMethod`,
+`updateMethod`, `deleteMethod`, `createRate`, `getRate`, `updateRate` and
+`deleteRate` on the shipping side (the last four keyed by `methodId`), plus tax's
+`updateRate` and `deleteRate` keyed by rate id. With the
+children embedded there is no document to read for those, and a scan would answer
+ambiguously the moment one child id could sit in two parents — which SQL made
+impossible with a primary key and which **no declared index enforces here** (see
+"Known gap: no physical indexes" above). One document answers both halves:
+create-if-absent on its id IS the uniqueness enforcement, and the parent id it
+carries IS the reverse lookup. It is the `reservation_index` device, for the
+reason ADR-0019 gives for that one.
+
+An **orphaned** claim — one whose parent does not hold the child — is the crash
+state, and the rule is that it misleads no reader and strands no id: every
+id-taking method answers exactly as it would for an id that was never created, and
+the next create of that id takes the claim over. A claim whose child really is
+embedded is a collision and is loud.
+
+### A tax rate may exist without its class
+
+`tax_rates` had **no** foreign key to `tax_classes`, and the contract relies on it:
+rates are created for classes nobody declared, `countRatesByClass` counts them, and
+`getRate`/`listRatesForZone` return them. So `tax_classes/{classId}` is the document
+that holds a class's RATES, and its `name` says whether the class was ever declared.
+`null` is the undeclared case — skipped by `listClasses`, `not_found` for
+`updateClass` and `deleteClass` (exactly what the missing row produced), adopted
+rather than collided with by a later `createClass`, and deleted along with its last
+rate so an undeclared class leaves no litter.
+
+### The money CAS, and the retry that must re-verify
+
+Both `updateRate`s guard a VALUE (`expectedAmountCents`, `expectedRateBps`), not a
+version — the ABA acceptance both ports document. The value lives in a document that
+also holds the parent's name and its other children, so unrelated writes contend for
+one revision, and a lost revision race is retried by **re-reading and re-comparing**,
+never by re-submitting the decision. A caller that lost a real edit race is therefore
+told `stale` on its next attempt instead of overwriting the change it should have
+seen — a wrong shipping fee or tax rate is money.
+
+That is pinned from both sides: `test/rules-crash-seams.dialects.test.ts` parks the
+losing write while a peer commits the change, deterministically and on every dialect;
+`test/rules-cas-race.pg.test.ts` drives it with a crowd, including a case whose
+contending peers are renames that touch no money at all, so the retry budget is
+really spent and the guard still admits exactly one editor.
+
+| shape (`rules-cas-race.pg.test.ts`, N=24, 12 loops) | max CAS attempts |
+|---|---|
+| tax `updateRate`, one rate, one expected value | 2 |
+| shipping `updateRate`, one rate, one expected value | 2 |
+| tax `updateRate` racing a storm of same-document renames | 6 (12 for the renames themselves) |
+
+The first two sit at 2 for the reason the guard exists: a loser's second attempt
+re-reads a value that has moved and stops, so depth does not grow with the crowd.
+
+**The exception to "depth is a property of the document, not the crowd".** The three
+structural edits — `updateZone`, `updateMethod`, `updateClass` — are LAST-WRITER-WINS
+by port contract: they have no guard to refuse them, so every one of N writers of the
+same document eventually commits, and a writer can lose its revision once per peer
+that commits ahead of it. Their worst-case depth is therefore the CROWD SIZE, not a
+property of the document: measured 12 at N=24 above, and past roughly N > 40 on one
+document the budget runs out and the caller gets `StorageContentionError` — nothing
+written, safe to retry. That is the documented shape of a rename storm on one zone or
+class, not a money path: no invariant is at risk either way, and every money edit on
+the same document still refuses cleanly as `stale`.
+
+### Rules crash seams proven
+
+`test/rules-crash-seams.dialects.test.ts`, over the one multi-document step each
+store has:
+
+- **the id was claimed, the parent embed never ran** — the orphan misleads no
+  reader (`getMethod`/`getRate` null, the edits and deletes `not_found`, the parent
+  still childless and still deletable), and the replay completes it exactly once.
+- **an orphaned claim is taken over** by a create in another parent, while a LIVE
+  child's id is never taken over — that collision is loud.
+- **the child was removed, its claim was never released** — same orphan, same
+  answers, and the id is reusable.
+- **claim-before-embed, the forbidden order** — pinned from the other side by
+  parking the embed: while it is parked the claim is already there and the child is
+  not yet readable. A store that embedded first would pass every replay case above
+  and fail here.
+- **a money edit that loses its revision** re-reads and is refused as `stale`,
+  carrying the peer's value.
+- **a parent delete racing a child create** refuses with the referential reason
+  rather than orphaning the child.
+- **a release cannot take a claim a peer has adopted**: the deleter is held between
+  its claim read and its `compareAndDelete`, the peer adopts the id for another
+  parent and embeds it, and the release then refuses — the peer's claim survives and
+  the child is reachable by id.
+- **a peer whose embed lands AFTER a release** still ends up reachable, editable and
+  in exactly ONE parent, and its id is refused to a second home. This is the
+  interleaving below.
+- **a child embedded with NO claim** — the residue, constructed directly — is
+  rediscovered, re-claimed, and editable and deletable again.
+- **`createRate` refuses a second rate for one `(method, currency)`**, the SQL
+  primary key's refusal, leaving the quoted price untouched.
+- **a claim naming the WRONG parent is re-pointed** at the parent that really holds
+  the child, by the same id-keyed lookup — the heal's second branch, and the one that
+  keeps a partially applied takeover from making a live child unreachable.
+
+### The one residue, and why it is healed rather than prevented
+
+The create's re-assertion closes every interleaving in which a release could take a
+LIVE child's claim away, bar one: a peer adopting the orphan **for the same parent**,
+with the deleter's claim read landing after the peer's re-assertion and its
+`compareAndDelete` landing before the peer's embed. The deleter's parent check then
+sees no child (it is not embedded yet) and its revision is current, so the release
+lands and the child arrives a moment later with no claim. The same state is reachable
+by a crash between an embed and the next re-assertion.
+
+Preventing it would need a post-embed compensation — undo the embed when a
+re-assertion fails — which has a crash window of its own and would leave exactly the
+same residue. So it is **healed instead**: `getMethod` and the rate methods fall back
+to a bounded scan when the claim does not resolve and re-establish the claim, and the
+create path's collision test runs through that same lookup, so the residue can never
+become one id in two parents either. The heal is automatic, not operator work, and
+both halves are pinned by the two seam cases above.
+
+**What the fallback costs, exactly.** The scan is a paged read of the parent collection
+— 100 documents a page, up to `maxListPages` (1000), with the ceiling raised as a typed
+`ScanPageLimitError` rather than a short answer.
+
+| Call | Extra reads |
+|---|---|
+| any id-keyed read or write whose claim RESOLVES (`getMethod`, `getRate`, `updateRate`, `deleteRate`, `updateMethod`, `deleteMethod`) | **none** — the claim is still the fast path |
+| `listZones`, `listMethods`, `listClasses`, `getRate(class, zone)`, `countRatesByClass`, `listRatesForZone` | **none** — none of them consults a claim, so the **checkout read never heals** |
+| `createMethod` / `createRate` with a fresh id | one full parent scan **per compare-and-set attempt** of the claim step, because the collision test runs through the healing lookup |
+| an id-keyed read or write for an id that does not exist (`getMethod("missing")`, a `not_found` update or delete) | one full parent scan per attempt, before answering `null` / `not_found` |
+| an id-keyed call whose claim is missing or points at the wrong parent | one full parent scan, plus the one claim write that re-establishes it |
+
+Both stores are admin-surface stores over collections sized by the merchant's zone and
+tax-class count, and the checkout reads are in the first two rows, which is what makes
+that trade the right way round.

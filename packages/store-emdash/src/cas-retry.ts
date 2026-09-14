@@ -40,6 +40,17 @@ import { isStorageSerializationError } from "./storage-access.js";
  *   at a time is 10 refunds, so 21 peer writes, and the refunds increment measured
  *   a depth of 11 against the old 12 — inside it, but only by luck of ordering.
  *
+ * - The **rules documents** (a shipping zone, a tax class) are the ONE exception to
+ *   "the bound is a property of the document": their three structural edits
+ *   (`updateZone`, `updateMethod`, `updateClass`) are last-writer-wins by port
+ *   contract, so they have no guard to refuse anybody and every writer of the same
+ *   document eventually commits. A writer can therefore lose its revision once per
+ *   peer that commits ahead of it, and the bound is the CROWD: measured 12 at N=24
+ *   (`test/rules-cas-race.pg.test.ts`), with roughly N > 40 on one document raising
+ *   {@link StorageContentionError} — nothing written, safe to retry. No invariant
+ *   rides on it; the money edits on those same documents keep refusing cleanly as
+ *   `stale`.
+ *
  * So 24 covers the worse of the two bounds instead of the better one. **The extra
  * attempts buy jittered backoff on a path that would otherwise throw**
  * {@link StorageContentionError}: a caller that was going to be told "too busy" now
