@@ -145,10 +145,34 @@ export type AppliedMovement =
  */
 export const APPLIED_MOVEMENT_RING_SIZE = 256;
 
-/** Reserved for INC-B5 (sku rename): the source document's transfer intent. */
+/**
+ * The source document's **transfer intent** — the whole of a sku rename's
+ * cross-document coupling, recorded in the same write that zeroes the source.
+ *
+ * A rename moves units between two documents, and no primitive here can write
+ * two documents atomically. So the move is made *idempotently completable*
+ * instead: one `compareAndSet` on the source sets `onHand → 0` **and** stamps
+ * this intent; the target then adds `qty` iff its
+ * {@link InventoryDoc.appliedTransfers} ring lacks `token`; then the source
+ * clears the intent. Every step is a no-op when it has already happened, so any
+ * replayer — the writer itself on retry, a later rename of the same sku, or a
+ * sweeper — finishes a partial from the source document alone.
+ *
+ * **Units in flight are still accounted for.** While this field is present the
+ * `qty` it names is out of `onHand` and not yet in the target, so a reader that
+ * must not lose a unit reads `onHand + (transferOut?.qty ?? 0)` for the source.
+ * Nothing on the hot reserve path does — a source mid-transfer is a sku no
+ * product holds any more — but the conservation argument depends on it.
+ */
 export interface TransferOut {
+	/**
+	 * The once-only token. DERIVED from the product write's own idempotency key
+	 * plus the two skus, never minted fresh, so a replay of the same rename
+	 * computes the same token and applies nothing a second time.
+	 */
 	token: string;
 	toSku: string;
+	/** Units to add to the target. Always a positive safe integer. */
 	qty: number;
 }
 
@@ -165,14 +189,14 @@ export interface InventoryDoc {
 	/** The bounded ring of recently applied movement keys; see the constant. */
 	appliedMovements?: AppliedMovement[];
 	/**
-	 * Declared for INC-B5's sku-rename carry-forward (`onHand → 0` plus the
-	 * transfer intent in one write). **Nothing in this increment reads or writes
-	 * it**; it is here so the document shape does not change under a rename later.
+	 * The sku-rename carry-forward's intent, present only between the write that
+	 * zeroed this document and the write that clears it. See {@link TransferOut}.
 	 */
 	transferOut?: TransferOut;
 	/**
-	 * Declared for INC-B5: the bounded ring of transfer tokens already applied to
-	 * this sku. **Unused in this increment.**
+	 * The bounded ring of transfer tokens already applied to this sku — what makes
+	 * the target half of a carry idempotent. Same device and same bound as
+	 * {@link InventoryDoc.appliedMovements}; see {@link APPLIED_TRANSFER_RING_SIZE}.
 	 */
 	appliedTransfers?: string[];
 }
@@ -323,4 +347,40 @@ export function pushAppliedMovement(
 	return next.length > APPLIED_MOVEMENT_RING_SIZE
 		? next.slice(next.length - APPLIED_MOVEMENT_RING_SIZE)
 		: next;
+}
+
+/**
+ * How many carry tokens a target document remembers.
+ *
+ * The ring makes the window between the source's stamp and the source's clear
+ * idempotent, and it is bounded for the same reason
+ * {@link APPLIED_MOVEMENT_RING_SIZE} is: the hot document must not grow without
+ * limit. The residual is the same shape too, and smaller in practice — reaching
+ * it takes this many *renames onto one sku*, and a sku that has ever held stock
+ * can never be renamed onto again at all (see the port's `SkuStockConflictError`),
+ * so in the shipped rule a target accumulates exactly one token in its life. The
+ * ring is sized against a future in which that rule relaxes, not against today.
+ */
+export const APPLIED_TRANSFER_RING_SIZE = 256;
+
+/** Has this carry already been added to the target's count? */
+export function hasAppliedTransfer(ring: readonly string[] | undefined, token: string): boolean {
+	return ring?.includes(token) === true;
+}
+
+/** Append a carry token to the ring, evicting the oldest entries past the bound. */
+export function pushAppliedTransfer(ring: readonly string[] | undefined, token: string): string[] {
+	const next = [...(ring ?? []).filter((existing) => existing !== token), token];
+	return next.length > APPLIED_TRANSFER_RING_SIZE
+		? next.slice(next.length - APPLIED_TRANSFER_RING_SIZE)
+		: next;
+}
+
+/** How many `held`/`adopted` reservations still reference this document's sku. */
+export function liveHoldCount(doc: InventoryDoc): number {
+	let live = 0;
+	for (const hold of Object.values(doc.holds ?? {})) {
+		if (hold.state === "held" || hold.state === "adopted") live++;
+	}
+	return live;
 }
