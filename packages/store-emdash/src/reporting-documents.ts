@@ -138,6 +138,15 @@ export type ReportingEventKind = "transition" | "refund";
  * or may not have moved the counters (the crash could have landed on either side of
  * the write), so nothing reads it to decide whether to apply. It is what makes the
  * residue legible to an operator and to the recompute's own report.
+ *
+ * **`absorbedAt` IS a gate, and it is the only one.** A recompute that has counted this
+ * event's effect absolutely — from the order document itself — takes away the right this
+ * claim confers, because a delta applied on top of an absolute recount is a double count.
+ * So the recompute stamps it before it commits its counters, and the delta path re-reads
+ * the claim immediately before EVERY bucket write and drops the delta when it is stamped
+ * (ADR-0019's cross-cutting rule (a): the token is re-asserted before every write it
+ * guards, on every attempt, because a writer parked past the moment its right was revoked
+ * must not wake up and commit anyway).
  */
 export interface ReportingAppliedDoc {
 	/** INDEXED — which order this event belongs to. */
@@ -157,6 +166,11 @@ export interface ReportingAppliedDoc {
 	claimedAt: string;
 	/** When the counter write was observed to land. Diagnostic — see the docblock. */
 	appliedAt: string | null;
+	/**
+	 * When a recompute counted this event's effect absolutely, revoking the right to
+	 * apply its delta. THE one gate — see the docblock.
+	 */
+	absorbedAt: string | null;
 }
 
 /**

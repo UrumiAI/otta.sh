@@ -392,6 +392,7 @@ export { EmdashSettingsStore, type EmdashSettingsStoreOptions } from "./emdash-s
 export {
 	EmdashReportingStore,
 	type EmdashReportingStoreOptions,
+	type ReportingAnomaly,
 	type ReportingReconcileResult,
 } from "./emdash-reporting-store.js";
 export {

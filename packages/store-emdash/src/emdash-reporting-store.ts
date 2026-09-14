@@ -31,15 +31,13 @@
  * responsible for never drifting in the dangerous direction, the recompute for
  * eventually being exact (ADR-0019's cross-cutting rule (c)).
  *
- * **The window is resolved to whole UTC days**, because the day is the grain. A window
- * whose bounds are day-aligned — which is what every caller of this port issues, and
- * what the domain's own contract windows are — is therefore EXACT against the SQL's
- * `created_at BETWEEN from AND to`. A window that cuts a day in half cannot be: this
- * adapter includes the whole of both edge days, where the statement would have counted
- * only the orders inside the instants. That is the one read divergence from the SQL
- * tier, it is in the direction of reporting more of an edge day rather than less, and
- * it is a property of the grain rather than a bug to fix — resolving it would mean
- * keeping a document per order, which is the read-time scan this design replaced.
+ * **The window is EXACT, whatever instants it names.** The day document is the counters
+ * for a whole day, so it can only answer for a day the window covers whole: the interior
+ * of a window is read from the documents, and an EDGE day the window truncates is
+ * computed from an instant-filtered scan of that day's orders instead (at most two such
+ * days, and only when a bound is not midnight). `created_at BETWEEN from AND to`
+ * therefore means the same thing here as it did in the statement this replaced, and a
+ * ragged window costs two bounded scans rather than an approximation.
  */
 import {
 	cents,
@@ -92,10 +90,28 @@ import type { StorageAccess, StorageCollection, WhereClause } from "./storage-ac
 /** The host clamps `limit` at 100, so that is the page every scan here reads. */
 const PAGE_SIZE = 100;
 
+/**
+ * The separator that joins two values into one grouping key.
+ *
+ * Written as the ESCAPE, never as a literal control character: a raw one in the source
+ * makes ripgrep and every diff viewer treat the whole file as binary, which silently
+ * hides it from the searches a reader would actually use to find it. It is `\u0000`
+ * rather than a printable character because a title may legitimately contain any of
+ * those, and a separator a value can spell would merge two groups into one.
+ */
+const KEY_SEP = "\u0000";
+
 /** Page ceiling for one report read. A year of daily buckets is four pages. */
 const MAX_REPORT_PAGES = 1000;
 
-/** Page ceiling for one recompute, across every day in its range. */
+/**
+ * Page ceiling for one recompute, PER DAY rather than per call.
+ *
+ * Per day because a recompute's cost is a property of the day: every day costs at least
+ * the page that lists its documents plus one page of orders, so a per-call budget would
+ * refuse a long range on VOLUME — a 400-day range would trip a 1000-page ceiling with
+ * nothing wrong — and the number that matters is how many orders one day can hold.
+ */
 const MAX_RECONCILE_PAGES = 1000;
 
 export interface EmdashReportingStoreOptions {
@@ -114,9 +130,32 @@ export interface EmdashReportingStoreOptions {
 	random?: CasRetryOptions["random"];
 	/** Page ceiling for a report read. Raise it for a window wider than the budget. */
 	maxReportPages?: number;
-	/** Page ceiling for a recompute scan. Raised independently of the read budget:
-	 *  the two are bounded by different things (documents versus orders). */
+	/** Page ceiling for a recompute scan, PER DAY. Raised independently of the read
+	 *  budget: the two are bounded by different things (documents versus orders). */
 	maxReconcilePages?: number;
+	/**
+	 * Where this adapter reports evidence of DRIFT — today, a counter that a decrement
+	 * would have driven below zero.
+	 *
+	 * Flooring is not a defensive nicety: it means a decrement arrived whose matching
+	 * increment is not in the document, so something was lost. The floor keeps the report
+	 * from showing a negative revenue, and this observer is what keeps it from being
+	 * silent. An operator seeing it should run a recompute over the day.
+	 */
+	onAnomaly?: (anomaly: ReportingAnomaly) => void;
+}
+
+/** Evidence that the counters have drifted from the orders. */
+export interface ReportingAnomaly {
+	kind: "floored";
+	/** Which counter the decrement would have driven negative. */
+	counter: string;
+	/** The day document it happened on. */
+	docId: string;
+	orderId: string;
+	/** What the counter held, and what the decrement asked for. */
+	held: number;
+	delta: number;
 }
 
 /** What a recompute did — the numbers a scheduled sweep logs. */
@@ -127,8 +166,8 @@ export interface ReportingReconcileResult {
 	documentsWritten: number;
 	/** How many orders the recompute read. */
 	ordersScanned: number;
-	/** How many claims it created or stamped, having folded their events in. */
-	claimsMarked: number;
+	/** How many claims it absorbed — created or stamped, having counted their events. */
+	claimsAbsorbed: number;
 }
 
 /** A paging budget shared by every scan inside one call. */
@@ -150,6 +189,7 @@ export class EmdashReportingStore implements ReportingStore {
 	readonly #retry: CasRetryOptions;
 	readonly #maxReportPages: number;
 	readonly #maxReconcilePages: number;
+	readonly #onAnomaly: (anomaly: ReportingAnomaly) => void;
 
 	constructor(options: EmdashReportingStoreOptions) {
 		this.#daily = collectionOf<ReportingDailyDoc>(options.storage, REPORTING_DAILY_COLLECTION);
@@ -164,6 +204,7 @@ export class EmdashReportingStore implements ReportingStore {
 		this.#clock = options.clock;
 		this.#maxReportPages = options.maxReportPages ?? MAX_REPORT_PAGES;
 		this.#maxReconcilePages = options.maxReconcilePages ?? MAX_RECONCILE_PAGES;
+		this.#onAnomaly = options.onAnomaly ?? (() => undefined);
 		this.#retry = {
 			maxAttempts: options.maxCasAttempts,
 			onAttempts: options.onCasAttempts,
@@ -222,6 +263,7 @@ export class EmdashReportingStore implements ReportingStore {
 			amountCents: event.kind === "refund" ? event.refundedCents : null,
 			claimedAt: now,
 			appliedAt: null,
+			absorbedAt: null,
 		};
 		const created = await this.#applied.compareAndSet(claimId, null, claim);
 		// A refused create means a peer holds this event. Its delta is that caller's to
@@ -229,20 +271,43 @@ export class EmdashReportingStore implements ReportingStore {
 		// exists to prevent.
 		if (!created.applied) return;
 
-		await this.#applyEvent(event, day, now);
+		if (!(await this.#applyEvent(event, day, claimId, now))) return;
 
 		// The stamp is a DIAGNOSTIC and never a gate (see `ReportingAppliedDoc`): it is
 		// what makes a claim-only residue legible. A lost stamp changes no answer, so the
-		// result is not inspected.
+		// result is not inspected — and a recompute that absorbed this claim in the
+		// meantime is exactly such a loss.
 		await this.#applied.compareAndSet(claimId, created.revision, { ...claim, appliedAt: now });
 	}
 
-	/** Move the day document's counters, under the compare-and-set retry budget. */
-	async #applyEvent(event: ReportingOrderEvent, day: string, now: string): Promise<void> {
+	/**
+	 * Move the day document's counters, under the compare-and-set retry budget.
+	 *
+	 * **The claim is re-read immediately before EVERY bucket write**, and the delta is
+	 * dropped if a recompute has absorbed it in the meantime. That is ADR-0019's
+	 * cross-cutting rule (a) applied to this step: the claim is the right to move these
+	 * counters, a recompute can take that right away by folding the event's effect in
+	 * absolutely, and a writer parked between its own claim and its own write must not
+	 * wake up and commit work it no longer has the right to do. Checking once, at the
+	 * top of the call, would leave exactly that window open — and it is not a narrow
+	 * one, because this path retries with backoff.
+	 *
+	 * Returns whether the delta was applied, so the caller knows whether the `appliedAt`
+	 * stamp still means anything.
+	 */
+	async #applyEvent(
+		event: ReportingOrderEvent,
+		day: string,
+		claimId: string,
+		now: string,
+	): Promise<boolean> {
 		const docId = reportingDailyDocId(event.currency, day);
-		await withCasRetry<void>(
+		return withCasRetry<boolean>(
 			"recordReportingEvent",
 			async () => {
+				// Re-asserted on every attempt, immediately before the write it guards.
+				const claim = await this.#applied.get(claimId);
+				if (claim !== null && claim.absorbedAt !== null) return casDone(false);
 				const held = await this.#daily.getVersioned(docId);
 				const base =
 					held === null
@@ -250,161 +315,164 @@ export class EmdashReportingStore implements ReportingStore {
 						: normalizeReportingDailyDoc(held.value);
 				const next =
 					event.kind === "transition"
-						? applyTransition(base, event, now)
+						? applyTransition(base, event, now, (anomaly) =>
+								this.#onAnomaly({ ...anomaly, docId, orderId: event.orderId }),
+							)
 						: applyRefund(base, event, now);
 				const written = await this.#daily.compareAndSet(docId, held?.revision ?? null, next);
-				return written.applied ? casDone(undefined) : CAS_RETRY;
+				return written.applied ? casDone(true) : CAS_RETRY;
 			},
 			this.#retry,
 		);
 	}
 
 	/**
-	 * Recompute every day document in the range from the ORDERS, and re-establish the
-	 * claims for the events it folded in.
+	 * Recompute every day document in the range from the ORDERS, and absorb the claims
+	 * for the events it folded in.
 	 *
-	 * This is the routine a scheduled sweep runs, and it is the definition the delta
-	 * stream is a cache of: a day's counters are whatever a scan of the orders created
-	 * that day says they are.
+	 * This is the routine a periodic heal runs, and it is the definition the delta stream
+	 * is a cache of: a day's counters are whatever a scan of the orders created that day
+	 * says they are.
 	 *
-	 * **It is safe to run while events are landing, and the day document's revision is
-	 * what makes it so.** Each day is recomputed and committed under one compare-and-set
-	 * pinned to the revision the recompute read; if a live event commits first the
-	 * recompute loses that write, RE-SCANS the day and recomputes. That is what makes the
-	 * re-attempt sound rather than a clobber: the hook writes the ORDER before it writes
-	 * the rollup, so any delta that has landed is a state the next scan can see, and a
-	 * delta that has not landed yet will be applied on top of a value that already
-	 * counts it — which is a no-op, because the claim it holds makes it once-only. The
-	 * one interleaving left is an event whose order write landed and whose rollup did
-	 * not: that is the under-count this routine exists for, and the next run takes it.
+	 * **It is safe to run while events are landing, and three things make it so.** They
+	 * are stated in the order the code does them, because the order is the argument:
 	 *
-	 * The claims are marked AFTER the counters, and each is marked applied: the counters
-	 * are absolute at that point, so an event already reflected in them must not be able
-	 * to move them again.
+	 * 1. **Pin before scanning.** Every day document this attempt may write has its
+	 *    revision read BEFORE the orders are scanned. Any bucket write that lands after
+	 *    that — a live delta — moves the revision, so the commit is refused and the whole
+	 *    day is re-scanned. Reading the orders first and pinning afterwards would do the
+	 *    opposite: a transition landing in between would be committed away, because the
+	 *    value in hand predates it and the revision would not say so.
+	 * 2. **Absorb the claims the scan folded in, before committing.** A claim is the
+	 *    right to move these counters; once a recompute has counted the event
+	 *    absolutely, that right is spent, and `absorbedAt` is how the claim says so. The
+	 *    claims absorbed are exactly the ones RECONSTRUCTED from the scanned orders —
+	 *    never every claim an order has — because a claim whose transition is not in the
+	 *    scanned document describes something the recompute did not count, and absorbing
+	 *    that one would drop its delta.
+	 * 3. **The delta re-reads its claim before every write** (`#applyEvent`). So an event
+	 *    whose order this recompute already counted, and whose own bucket write had not
+	 *    landed yet, becomes a SKIP rather than a second increment.
+	 *
+	 * What is left is one residue, and it is in the safe direction: a transition that
+	 * lands after the scan read its order but before the absorb reaches its claim is
+	 * absorbed without having been counted, and its delta is then skipped — an
+	 * UNDER-count, healed by the next run. A process that dies between the absorb and the
+	 * commit leaves the same shape. Neither can double-count, because nothing here ever
+	 * applies a delta whose claim is absorbed.
+	 *
+	 * The page budget is per DAY, so a long range is safe by construction; a caller
+	 * sweeping a large history should still chunk it (a month at a time keeps one call's
+	 * work, and one call's retries, bounded).
 	 */
 	async reconcile(range: DateRange): Promise<ReportingReconcileResult> {
 		const fromDay = dayKeyOf(range.from);
 		const toDay = dayKeyOf(range.to);
 		const days = dayKeysBetween(fromDay, toDay);
-		const budget: PageBudget = {
-			limit: this.#maxReconcilePages,
-			used: 0,
-			scanned: 0,
-			option: "maxReconcilePages",
-		};
 		let documentsWritten = 0;
-		let claimsMarked = 0;
+		let claimsAbsorbed = 0;
+		let ordersScanned = 0;
 		for (const day of days) {
-			const done = await this.#reconcileDay(day, budget);
+			const done = await this.#reconcileDay(day);
 			documentsWritten += done.written;
-			claimsMarked += done.claims;
+			claimsAbsorbed += done.claims;
+			ordersScanned += done.scanned;
 		}
-		return { days: days.length, documentsWritten, ordersScanned: budget.scanned, claimsMarked };
+		return { days: days.length, documentsWritten, ordersScanned, claimsAbsorbed };
 	}
 
-	async #reconcileDay(
-		day: string,
-		budget: PageBudget,
-	): Promise<{ written: number; claims: number }> {
-		return withCasRetry<{ written: number; claims: number }>(
+	/** One day, recomputed: pin, scan, absorb, commit. See `reconcile` for the order. */
+	async #reconcileDay(day: string): Promise<{
+		written: number;
+		claims: number;
+		scanned: number;
+	}> {
+		return withCasRetry<{ written: number; claims: number; scanned: number }>(
 			"reconcileReportingDay",
 			async () => {
+				// A FRESH budget per attempt: a budget carried across attempts would spend a
+				// re-scan's pages against the same ceiling and refuse a day that is well
+				// inside it, and would report a scan count that counts the same orders twice.
+				const budget: PageBudget = {
+					limit: this.#maxReconcilePages,
+					used: 0,
+					scanned: 0,
+					option: "maxReconcilePages",
+				};
 				const now = this.#clock.now().toISOString();
+
+				// 1. PIN: the currencies this day already has, and each document's revision,
+				//    read before anything is scanned.
+				const pinned = new Map<string, string | null>();
+				for (const currency of await this.#dayCurrencies(day, budget)) {
+					const held = await this.#daily.getVersioned(reportingDailyDocId(currency, day));
+					pinned.set(currency, held?.revision ?? null);
+				}
+
+				// 2. SCAN.
 				const orders = await this.#scanOrders(
 					{ createdAt: { gte: dayStartOf(day), lte: dayEndOf(day) } },
 					budget,
 					"reconcileReporting",
 				);
 				const computed = computeDay(day, orders, now);
-				const existing = await this.#dayDocIds(day, budget);
 
+				// 3. ABSORB, before a single counter is committed.
+				let claims = 0;
+				for (const event of reconstructEvents(orders)) {
+					const absorbed = await this.#absorbClaim(event, now);
+					// The claim moved under us — a peer stamped or created it between the read
+					// and the write — so this day's premises are stale. Re-run it.
+					if (absorbed === "retry") return CAS_RETRY;
+					if (absorbed === "absorbed") claims++;
+				}
+
+				// 4. COMMIT, each document against the revision pinned in step 1.
 				let written = 0;
-				for (const currency of [...new Set([...computed.keys(), ...existing])].toSorted()) {
+				for (const currency of [...new Set([...computed.keys(), ...pinned.keys()])].toSorted()) {
 					const docId = reportingDailyDocId(currency, day);
-					const held = await this.#daily.getVersioned(docId);
-					// A day that has lost every order keeps a ZEROED document rather than
-					// being deleted: a live event racing this write needs a revision to lose
-					// to, and an all-zero document is read as no bucket at all.
+					// A currency the scan found that the pin did not see is a create-if-absent:
+					// `null` is a real pin, and a peer creating it first loses this commit.
+					const revision = pinned.get(currency) ?? null;
+					// A day that has lost every order keeps a ZEROED document rather than being
+					// deleted: a live event racing this write needs a revision to lose to, and
+					// an all-zero document is read as no bucket at all.
 					const target = {
 						...(computed.get(currency) ?? newReportingDailyDoc(currency, day, now)),
 						updatedAt: now,
 					};
-					if (held !== null && sameCounters(normalizeReportingDailyDoc(held.value), target)) {
+					const current = revision === null ? null : await this.#daily.get(docId);
+					if (current !== null && sameCounters(normalizeReportingDailyDoc(current), target)) {
 						continue;
 					}
-					const applied = await this.#daily.compareAndSet(docId, held?.revision ?? null, target);
-					// A peer moved this day while the recompute was reading it. Re-scan: the
-					// value in hand was derived from an older snapshot of the orders.
+					const applied = await this.#daily.compareAndSet(docId, revision, target);
+					// A peer moved this day after it was pinned. Re-scan: the value in hand was
+					// derived from an older snapshot of the orders.
 					if (!applied.applied) return CAS_RETRY;
 					written++;
 				}
 
-				const claims = await this.#markClaims(orders, now);
-				return casDone({ written, claims });
+				return casDone({ written, claims, scanned: budget.scanned });
 			},
 			this.#retry,
 		);
 	}
 
 	/**
-	 * Create-or-stamp the claim for every event the recompute just folded in, so a
-	 * redelivery after a heal cannot move a counter that already counts it.
+	 * Absorb one reconstructed event's claim: the recompute has counted it absolutely, so
+	 * no delta for it may ever move these counters again.
 	 *
-	 * The events are read off the order itself: its append-only audit log carries every
-	 * `(fromState → toState)` pair the flips wrote, its refunds ledger carries every
-	 * finalized refund, and the arrival into its ORIGINAL state — the one the creating
-	 * write set, which the log records as the first event's `fromState` — is the event
-	 * creation owes. An order with no log at all is one whose current state is the state
-	 * it arrived in.
+	 * Creating the claim when it is absent is what makes a rollup collection restored from
+	 * nothing safe to run events against: the event is already counted, so its redelivery
+	 * must find a claim that says so. Absorbing an existing one is a compare-and-set at
+	 * the revision just read, so a concurrent applier is never overwritten — a refusal is
+	 * reported as `"retry"` rather than ignored, because it means the claim this day's
+	 * premises rest on has moved.
 	 */
-	async #markClaims(orders: OrderDoc[], now: string): Promise<number> {
-		let marked = 0;
-		for (const order of orders) {
-			const events: ReportingOrderEvent[] = [];
-			const origin = order.events[0]?.fromState ?? order.state;
-			if (origin !== null) {
-				events.push({
-					kind: "transition",
-					orderId: order.orderId,
-					orderCreatedAt: order.createdAt,
-					currency: order.currency,
-					fromState: null,
-					toState: origin,
-					orderTotalCents: order.totals.total,
-				});
-			}
-			for (const event of order.events) {
-				if (event.toState === null) continue;
-				events.push({
-					kind: "transition",
-					orderId: order.orderId,
-					orderCreatedAt: order.createdAt,
-					currency: order.currency,
-					fromState: event.fromState,
-					toState: event.toState,
-					orderTotalCents: order.totals.total,
-				});
-			}
-			for (const refund of order.refunds) {
-				if (refund.status !== FINALIZED_REFUND_STATUS) continue;
-				events.push({
-					kind: "refund",
-					orderId: order.orderId,
-					orderCreatedAt: order.createdAt,
-					currency: refund.currency,
-					refundId: refund.id,
-					refundedCents: refund.amount,
-				});
-			}
-			for (const event of events) {
-				if (await this.#markApplied(event, now)) marked++;
-			}
-		}
-		return marked;
-	}
-
-	/** One claim, created or stamped. `false` when it was already stamped. */
-	async #markApplied(event: ReportingOrderEvent, now: string): Promise<boolean> {
+	async #absorbClaim(
+		event: ReportingOrderEvent,
+		now: string,
+	): Promise<"absorbed" | "already" | "retry"> {
 		const claimId = claimIdFor(event);
 		const held = await this.#applied.getVersioned(claimId);
 		if (held === null) {
@@ -416,20 +484,22 @@ export class EmdashReportingStore implements ReportingStore {
 				fromState: event.kind === "transition" ? event.fromState : null,
 				toState: event.kind === "transition" ? event.toState : null,
 				refundId: event.kind === "refund" ? event.refundId : null,
+				// DIAGNOSTIC only on a reconstructed claim: the amount is read back off the
+				// order's own ledger, and nothing recomputes from the claim.
 				amountCents: event.kind === "refund" ? event.refundedCents : null,
 				claimedAt: now,
 				appliedAt: now,
+				absorbedAt: now,
 			});
-			return created.applied;
+			return created.applied ? "absorbed" : "retry";
 		}
-		if (held.value.appliedAt !== null) return false;
-		// Guarded on the revision that still had a null stamp, so a concurrent applier
-		// is never overwritten.
-		const stamped = await this.#applied.compareAndSet(claimId, held.revision, {
+		if (held.value.absorbedAt !== null) return "already";
+		const marked = await this.#applied.compareAndSet(claimId, held.revision, {
 			...held.value,
-			appliedAt: now,
+			appliedAt: held.value.appliedAt ?? now,
+			absorbedAt: now,
 		});
-		return stamped.applied;
+		return marked.applied ? "absorbed" : "retry";
 	}
 
 	// -- the read surface ------------------------------------------------------
@@ -446,9 +516,9 @@ export class EmdashReportingStore implements ReportingStore {
 				refundedCents: number;
 			}
 		>();
-		for (const doc of await this.#scanDays(range, "revenueByPeriod")) {
+		for (const doc of await this.#windowDays(range, "revenueByPeriod")) {
 			const bucketStart = bucketStartOf(doc.date, interval);
-			const key = `${bucketStart} ${doc.currency}`;
+			const key = `${bucketStart}${KEY_SEP}${doc.currency}`;
 			const group = groups.get(key) ?? {
 				bucketStart,
 				currency: doc.currency,
@@ -466,9 +536,17 @@ export class EmdashReportingStore implements ReportingStore {
 		return (
 			[...groups.values()]
 				// A bucket exists when EITHER half contributed, which is the SQL's union
-				// semantics: a day whose only activity was a refund is a row at revenue 0, and
-				// a genuinely zero-total order is a row rather than an absence.
-				.filter((group) => group.revenueOrders > 0 || group.refundEntries > 0)
+				// semantics: a day whose only activity was a refund is a row at revenue 0, and a
+				// genuinely zero-total order is a row rather than an absence. The MONEY is part
+				// of the test as well as the contributor counts — a floored `revenueOrders` over
+				// a non-zero `revenueCents` is drift, and dropping that bucket would hide money.
+				.filter(
+					(group) =>
+						group.revenueOrders > 0 ||
+						group.refundEntries > 0 ||
+						group.revenueCents !== 0 ||
+						group.refundedCents !== 0,
+				)
 				.toSorted((a, b) =>
 					a.bucketStart === b.bucketStart
 						? a.currency.localeCompare(b.currency)
@@ -485,7 +563,7 @@ export class EmdashReportingStore implements ReportingStore {
 
 	async ordersByStatus(range: DateRange): Promise<StatusCount[]> {
 		const counts = new Map<string, number>();
-		for (const doc of await this.#scanDays(range, "ordersByStatus")) {
+		for (const doc of await this.#windowDays(range, "ordersByStatus")) {
 			for (const [state, count] of Object.entries(doc.stateCounts)) {
 				counts.set(state, (counts.get(state) ?? 0) + count);
 			}
@@ -531,7 +609,7 @@ export class EmdashReportingStore implements ReportingStore {
 		for (const order of orders) {
 			if (!REVENUE_STATES.has(order.state)) continue;
 			for (const item of order.items) {
-				const key = `${item.productId} ${item.title}`;
+				const key = `${item.productId}${KEY_SEP}${item.title}`;
 				const group = groups.get(key) ?? {
 					productId: item.productId,
 					title: item.title,
@@ -625,23 +703,51 @@ export class EmdashReportingStore implements ReportingStore {
 	// -- the scans -------------------------------------------------------------
 
 	/**
-	 * Every day document in the window, in ascending date order, paged at the host's
-	 * clamp.
+	 * The day counters a window is made of — EXACTLY, whatever instants it names.
 	 *
-	 * A year of daily buckets in one currency is four pages, which is why the budget is
-	 * a budget rather than an assumption — and why exceeding it is a typed refusal. A
-	 * report that silently stopped at its last page would be a wrong number rather than
-	 * a missing one.
+	 * A day document is the counters for a WHOLE day, so it can only answer for a day the
+	 * window covers whole. The interior of the window is therefore read from the
+	 * documents, and each EDGE day the window truncates (at most two, and only when the
+	 * bound is not midnight) is computed from an instant-filtered scan of that day's
+	 * orders — the same machinery `topProducts` uses, over a single day's worth of rows.
+	 *
+	 * So there is no day-granular approximation here and no divergence from the statement
+	 * this replaced: `created_at BETWEEN from AND to` means the same thing in both. The
+	 * cost of a ragged window is bounded and visible: two extra order scans, paid only by
+	 * the caller that asks for one.
 	 */
-	async #scanDays(range: DateRange, operation: string): Promise<ReportingDailyDoc[]> {
+	async #windowDays(range: DateRange, operation: string): Promise<ReportingDailyDoc[]> {
+		if (range.to < range.from) return [];
 		const fromDay = dayKeyOf(range.from);
 		const toDay = dayKeyOf(range.to);
-		if (toDay < fromDay) return [];
+		// An edge day is one the window cuts: its start is before `from`, or its end is
+		// after `to`. Both bounds are inclusive, matching the statement's `BETWEEN`.
+		const partialFrom = range.from > dayStartOf(fromDay);
+		const partialTo = range.to < dayEndOf(toDay);
+
 		const docs: ReportingDailyDoc[] = [];
+		const budget: PageBudget = {
+			limit: this.#maxReportPages,
+			used: 0,
+			scanned: 0,
+			option: "maxReportPages",
+		};
+		for (const edge of edgeWindows(range, fromDay, toDay, partialFrom, partialTo)) {
+			const orders = await this.#scanOrders(
+				{ createdAt: { gte: edge.from, lte: edge.to } },
+				budget,
+				operation,
+			);
+			docs.push(...computeDay(edge.day, orders, edge.from).values());
+		}
+
+		const wholeFrom = partialFrom ? nextDay(fromDay) : fromDay;
+		const wholeTo = partialTo ? previousDay(toDay) : toDay;
+		if (wholeTo < wholeFrom) return docs;
 		let cursor: string | undefined;
 		for (let page = 0; page < this.#maxReportPages; page++) {
 			const result = await this.#daily.query({
-				where: { date: { gte: fromDay, lte: toDay } },
+				where: { date: { gte: wholeFrom, lte: wholeTo } },
 				orderBy: { date: "asc" },
 				limit: PAGE_SIZE,
 				cursor,
@@ -654,7 +760,7 @@ export class EmdashReportingStore implements ReportingStore {
 	}
 
 	/** The currencies a day already has a document for. */
-	async #dayDocIds(day: string, budget: PageBudget): Promise<string[]> {
+	async #dayCurrencies(day: string, budget: PageBudget): Promise<string[]> {
 		const currencies: string[] = [];
 		let cursor: string | undefined;
 		for (;;) {
@@ -703,6 +809,91 @@ export class EmdashReportingStore implements ReportingStore {
 	}
 }
 
+/**
+ * The instant-bounded sub-windows a ragged window needs computing from orders — the
+ * truncated first day, the truncated last day, or the single day when the window sits
+ * inside one.
+ */
+function edgeWindows(
+	range: DateRange,
+	fromDay: string,
+	toDay: string,
+	partialFrom: boolean,
+	partialTo: boolean,
+): { day: string; from: string; to: string }[] {
+	if (fromDay === toDay) {
+		return partialFrom || partialTo ? [{ day: fromDay, from: range.from, to: range.to }] : [];
+	}
+	const edges: { day: string; from: string; to: string }[] = [];
+	if (partialFrom) edges.push({ day: fromDay, from: range.from, to: dayEndOf(fromDay) });
+	if (partialTo) edges.push({ day: toDay, from: dayStartOf(toDay), to: range.to });
+	return edges;
+}
+
+/** The UTC day after this one. */
+function nextDay(dayKey: string): string {
+	return new Date(new Date(dayStartOf(dayKey)).getTime() + 86_400_000).toISOString().slice(0, 10);
+}
+
+/** The UTC day before this one. */
+function previousDay(dayKey: string): string {
+	return new Date(new Date(dayStartOf(dayKey)).getTime() - 86_400_000).toISOString().slice(0, 10);
+}
+
+/**
+ * Every rollup event a set of scanned orders PROVES has happened.
+ *
+ * Read off the orders themselves: the append-only audit log carries every
+ * `(fromState → toState)` pair the flips wrote, the refunds ledger every finalized
+ * refund, and the arrival into the order's ORIGINAL state — the one the creating write
+ * set, which the log records as its first event's `fromState` — is the event creation
+ * owes. An order with no log is one whose current state is the state it arrived in.
+ *
+ * Only these events may be absorbed. A claim whose transition is NOT here describes
+ * something these documents do not show, so a recompute over them has not counted it.
+ */
+function reconstructEvents(orders: OrderDoc[]): ReportingOrderEvent[] {
+	const events: ReportingOrderEvent[] = [];
+	for (const order of orders) {
+		const origin = order.events[0]?.fromState ?? order.state;
+		if (origin !== null) {
+			events.push({
+				kind: "transition",
+				orderId: order.orderId,
+				orderCreatedAt: order.createdAt,
+				currency: order.currency,
+				fromState: null,
+				toState: origin,
+				orderTotalCents: order.totals.total,
+			});
+		}
+		for (const event of order.events) {
+			if (event.toState === null) continue;
+			events.push({
+				kind: "transition",
+				orderId: order.orderId,
+				orderCreatedAt: order.createdAt,
+				currency: order.currency,
+				fromState: event.fromState,
+				toState: event.toState,
+				orderTotalCents: order.totals.total,
+			});
+		}
+		for (const refund of order.refunds) {
+			if (refund.status !== FINALIZED_REFUND_STATUS) continue;
+			events.push({
+				kind: "refund",
+				orderId: order.orderId,
+				orderCreatedAt: order.createdAt,
+				currency: refund.currency,
+				refundId: refund.id,
+				refundedCents: refund.amount,
+			});
+		}
+	}
+	return events;
+}
+
 /** Which claim an event is filed under. */
 function claimIdFor(event: ReportingOrderEvent): string {
 	return event.kind === "transition"
@@ -724,15 +915,26 @@ function applyTransition(
 	base: ReportingDailyDoc,
 	event: Extract<ReportingOrderEvent, { kind: "transition" }>,
 	now: string,
+	onFloor: (anomaly: { kind: "floored"; counter: string; held: number; delta: number }) => void,
 ): ReportingDailyDoc {
 	const counts: Record<string, number> = { ...base.stateCounts };
 	let revenueOrders = base.revenueOrders;
 	let revenueCents = base.revenueCents;
+	/** Decrement, never below zero, and SAY SO when the floor engages. */
+	const floor = (counter: string, held: number, delta: number): number => {
+		if (held >= delta) return held - delta;
+		onFloor({ kind: "floored", counter, held, delta });
+		return 0;
+	};
 	if (event.fromState !== null) {
-		counts[event.fromState] = Math.max(0, (counts[event.fromState] ?? 0) - 1);
+		counts[event.fromState] = floor(
+			`stateCounts.${event.fromState}`,
+			counts[event.fromState] ?? 0,
+			1,
+		);
 		if (REVENUE_STATES.has(event.fromState)) {
-			revenueOrders = Math.max(0, revenueOrders - 1);
-			revenueCents = Math.max(0, revenueCents - event.orderTotalCents);
+			revenueOrders = floor("revenueOrders", revenueOrders, 1);
+			revenueCents = floor("revenueCents", revenueCents, event.orderTotalCents);
 		}
 	}
 	counts[event.toState] = (counts[event.toState] ?? 0) + 1;
