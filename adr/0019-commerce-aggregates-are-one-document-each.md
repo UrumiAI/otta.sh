@@ -486,7 +486,7 @@ code, not that it changed. A row with no **†** is still design. See the
 | **†** `shipping_method_owners` / `tax_rate_owners` | methodId / rateId | — | — |
 | **†** `settings` / `settings_mutations` | `"store"` / mutation key | — | — |
 | **†** `reporting_daily` | `${currency}:${YYYY-MM-DD}` | `currency`, `date` | — |
-| **†** `reporting_applied` | `{orderId}:{fromState}>{toState}` — with an EMPTY `fromState` arm for an order's arrival, `{orderId}:>{toState}` — or `{orderId}:refund:{refundId}`; every part percent-escaped for `%`, `:` and `>`, so two ids cannot collide | `orderId` | — |
+| **†** `reporting_applied` | `{orderId}:{fromState}>{toState}` — with an EMPTY `fromState` arm for an order's arrival, `{orderId}:>{toState}` — or `{orderId}:refund:{refundId}`; every part percent-escaped for `%`, `:` and `>`, so two ids cannot collide | `date`, `orderId` | — |
 
 **† Why the claim collections outnumber the aggregates.** Six of the marked rows are one device under
 six names. `payment_refs`, `outbox_keys`, `cart_mutation_index`, `coupon_codes`,
