@@ -53,6 +53,8 @@ export type StorageMethodName = keyof StorageCollection;
  */
 export interface StorageCall {
 	readonly method: StorageMethodName;
+	/** The document id — an EMPTY string for `query` and `count`, which name no document
+	 *  and have one synthesized so a matcher can still read the field unconditionally. */
 	readonly id: string;
 	/** `null` for a create-if-absent; a string for an update; absent otherwise. */
 	readonly expectedRevision?: string | null;
@@ -144,6 +146,12 @@ export function withCollection(
 	return { ...storage, [name]: collection };
 }
 
+/** The VERSIONED reads — `getVersioned(id)`. A pin is one of these. */
+export const isVersionedRead: CallMatcher = (call) => call.method === "getVersioned";
+
+/** The index reads — `query(options)`. Matched on the method; a query has no id. */
+export const isQueryRead: CallMatcher = (call) => call.method === "query";
+
 /** A collection with one call held open, and the handles to observe and free it. */
 export interface ParkedCollection<T> {
 	readonly collection: StorageCollection<T>;
@@ -204,6 +212,72 @@ export function parkCall<T>(
 			async updateIf(id, args) {
 				await park({ method: "updateIf", id });
 				return raw.updateIf(id, args);
+			},
+		}),
+		arrived,
+		release() {
+			releaseGate?.();
+		},
+		parked: () => count,
+	};
+}
+
+/**
+ * Park the first matching READ — `get`, `getVersioned`, `query` or `count` — and perform it
+ * for real on release.
+ *
+ * The write arm above cannot express the ordering that matters for a read-modify-write
+ * against a pinned revision: what a recompute does BEFORE its own write decides whether the
+ * value it commits is stale. Parking the read that pins a revision holds exactly that
+ * window open, so "this value was read before that one" becomes a deterministic assertion
+ * rather than a reading of the code.
+ *
+ * It is a separate function rather than four more methods on {@link parkCall} on purpose:
+ * every existing caller of that one passes a matcher that would happily match a read, and
+ * silently parking a read for a suite that asked to park a write would change what those
+ * suites test.
+ */
+export function parkRead<T>(
+	raw: StorageCollection<T>,
+	match: CallMatcher,
+	options: { once?: boolean } = {},
+): ParkedCollection<T> {
+	const once = options.once ?? true;
+	let count = 0;
+	let releaseGate: (() => void) | undefined;
+	let announceArrival: (() => void) | undefined;
+	const arrived = new Promise<void>((resolve) => {
+		announceArrival = resolve;
+	});
+	const gate = new Promise<void>((resolve) => {
+		releaseGate = resolve;
+	});
+
+	const park = async (call: StorageCall): Promise<boolean> => {
+		if (!match(call) || (once && count > 0)) return false;
+		count++;
+		announceArrival?.();
+		await gate;
+		return true;
+	};
+
+	return {
+		collection: delegatingCollection(raw, {
+			async get(id) {
+				await park({ method: "get", id });
+				return raw.get(id);
+			},
+			async getVersioned(id) {
+				await park({ method: "getVersioned", id });
+				return raw.getVersioned(id);
+			},
+			async query(queryOptions) {
+				await park({ method: "query", id: "" });
+				return raw.query(queryOptions);
+			},
+			async count(where) {
+				await park({ method: "count", id: "" });
+				return raw.count(where);
 			},
 		}),
 		arrived,

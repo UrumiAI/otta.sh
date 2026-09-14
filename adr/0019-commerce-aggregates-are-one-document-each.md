@@ -485,7 +485,8 @@ code, not that it changed. A row with no **†** is still design. See the
 | `shipping_zones` / `tax_classes` | zoneId / classId | — | — |
 | **†** `shipping_method_owners` / `tax_rate_owners` | methodId / rateId | — | — |
 | **†** `settings` / `settings_mutations` | `"store"` / mutation key | — | — |
-| `reporting_daily` | `${currency}:${YYYY-MM-DD}` | `currency`, `date` | — |
+| **†** `reporting_daily` | `${currency}:${YYYY-MM-DD}` | `currency`, `date` | — |
+| **†** `reporting_applied` | `{orderId}:{fromState}>{toState}` — with an EMPTY `fromState` arm for an order's arrival, `{orderId}:>{toState}` — or `{orderId}:refund:{refundId}`; every part percent-escaped for `%`, `:` and `>`, so two ids cannot collide | `date`, `orderId` | — |
 
 **† Why the claim collections outnumber the aggregates.** Six of the marked rows are one device under
 six names. `payment_refs`, `outbox_keys`, `cart_mutation_index`, `coupon_codes`,
@@ -496,7 +497,12 @@ parent**, and a fact embedded in a parent document cannot be found from one. Tha
 so the reverse lookup and the uniqueness are the same write. The package README's "The outbox locator"
 and "Why two claim collections, where the design table names none" carry the per-collection detail,
 including which bracket direction is healable. Two of the six answer a port method that takes a child
-id the port never pairs with a parent — nine such methods across the two rules stores.
+id the port never pairs with a parent — nine such methods across the two rules stores. And
+`reporting_applied` is none of those six: like `coupon_redemptions` it is an IDEMPOTENCY claim
+whose parent is known (the order the event belongs to, and the day document its effect lands
+in), keyed by the event rather than by a lookup nobody else can serve — its second job is to
+be revocable, since a recompute that counts an event absolutely must be able to stop that
+event's delta from ever applying.
 
 **† The product document's index list has no `sku` and no `titleLower`, and `active` is filtered
 through a text mirror.** Nothing queries `product_commerce` by sku — live-sku uniqueness is the
@@ -1102,6 +1108,15 @@ is. The decision itself — one document per aggregate, a coupling made idempote
 
 **2026-09-14 (later): §4 rows corrected to the declared layout after the identity and misc
 stores landed.**
+
+**2026-09-14 (later still): §4 gains the reporting rollups' claim collection, and the
+`reporting_daily` row is confirmed as built. The rollups needed a second collection the
+earlier table did not name — one claim per `(order, transition)` and per `(order, refund)`,
+which is what makes a redelivered event a no-op — and its ordering against the counter
+write is the tier's residual choice: the claim is written FIRST, so a crash leaves an
+UNDER-count that the recompute repairs rather than money counted twice (rule (c)). The
+recompute itself is a method on the adapter, and scheduling it is a later change, as item 7
+of the list below already says.**
 
 Three kinds of change are recorded, and they are worth keeping apart:
 

@@ -390,6 +390,38 @@ export {
 } from "./settings-errors.js";
 export { EmdashSettingsStore, type EmdashSettingsStoreOptions } from "./emdash-settings-store.js";
 export {
+	EmdashReportingStore,
+	type EmdashReportingStoreOptions,
+	type ReportingAnomaly,
+	type ReportingReconcileResult,
+} from "./emdash-reporting-store.js";
+export {
+	addAggregate,
+	bucketStartOf,
+	dayEndOf,
+	dayKeyOf,
+	dayKeysBetween,
+	dayStartOf,
+	FINALIZED_REFUND_STATUS,
+	isAbsorbed,
+	newReportingDailyDoc,
+	normalizeReportingDailyDoc,
+	normalizeStateCounts,
+	REPORTING_APPLIED_COLLECTION,
+	REPORTING_COLLECTIONS,
+	REPORTING_DAILY_COLLECTION,
+	reportingDailyDocId,
+	reportingRefundClaimId,
+	reportingTransitionClaimId,
+	REVENUE_STATES,
+	type ReportingAppliedDoc,
+	type ReportingCollectionIndexDeclaration,
+	type ReportingDailyDoc,
+	type ReportingEventKind,
+	type ReportingOrderEvent,
+	type ReportingRollupWriter,
+} from "./reporting-documents.js";
+export {
 	ORDER_NOTES_COLLECTION,
 	ORDER_NOTES_COLLECTIONS,
 	sortOrderNotes,

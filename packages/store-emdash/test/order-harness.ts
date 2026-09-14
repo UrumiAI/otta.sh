@@ -67,6 +67,7 @@ import {
 	type InventoryDoc,
 	type OrderDoc,
 	type OrderKeyDoc,
+	type ReportingRollupWriter,
 	type ReservationIndexDoc,
 	type StorageAccess,
 	type StorageCollection,
@@ -103,6 +104,12 @@ export interface OrderHarnessOptions {
 	 * contract's same-instant cases need.
 	 */
 	countingIds?: boolean;
+	/**
+	 * The rollup writer the order store hands every transition and every finalized
+	 * refund. Omitted, the store's own no-op stands — which is what every suite but
+	 * the reporting-hook one wants.
+	 */
+	reporting?: ReportingRollupWriter;
 	/**
 	 * Reuse another harness's clock and non-storage collaborators, so a
 	 * fault-injected TWIN sees the same seeded catalogue, the same gateways and the
@@ -234,6 +241,7 @@ export function makeOrderHarness(
 		idGen,
 		clock,
 		...retry,
+		...(options.reporting === undefined ? {} : { reporting: options.reporting }),
 	});
 	const {
 		notesStore,
