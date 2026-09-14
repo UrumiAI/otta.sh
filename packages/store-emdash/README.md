@@ -261,6 +261,13 @@ told the item is gone. The HTTP/route boundary maps it to **503** and a retry; t
 wiring is a later increment. The backoff `sleep` and jitter `random` are injectable
 through the store's options, so a suite need not wait on real timers.
 
+The other typed refusal that boundary owes a mapping is
+`SettingsMutationSupersededError` (see the settings section): **409**, and
+**non-retryable** — re-issuing the same idempotency key can never succeed, because
+the revision it is pinned to will not come back. The remedy the response should
+carry is a fresh key, which is a new decision against the current state. Recorded
+here as a forward note for the in-process client, alongside the 503 above.
+
 **No index beyond the four above.** Every access this adapter makes is by document
 id, including the reservation lookups — the port has no cross-SKU listing or
 expiry-scan method, so nothing here needs to query a field. The `sku`/`createdAt`
@@ -1478,9 +1485,26 @@ Per-shape depth and contention, as the suite reports them per case:
 | a consume freeing one slot against a crowd of 20 (10 loops) | 2 | 0 |
 | 30 concurrent registrations of one address (15 loops) | 1 | 0 |
 | 12 concurrent redeems of one address, get-or-create (8 loops) | 8 | 0 |
+| 24 concurrent grants of one entitlement key (12 loops) | 2 | 0 |
+| 16 concurrent grants for one scope, distinct keys (10 loops) | 2 | 0 |
+| 16 concurrent settings updates on one key (10 loops) | 3 | 0 |
+| 10 concurrent settings updates, field-disjoint patches (8 loops) | 7 | 0 |
 
-The last two rows are the identity races (`login-challenge-race.pg.test.ts`,
-`customer-email-claim-race.pg.test.ts`), and the pair is worth reading together. The
+The last four rows are the entitlement and settings races
+(`entitlement-grant-race.pg.test.ts`, `settings-mutation-race.pg.test.ts`), and they split
+the way every claim in this package does. The two grant shapes are **document-bound**: a
+grant key and a scope pointer are each taken once by a create-if-absent, so a peer is
+refused without contending again and the depth is the read-back, never the crowd. The two
+settings shapes are not. The same-key stampede measures 3 because a caller can lose the
+settings write to a peer applying the identical value and then lose the result stamp to
+whoever recorded it first; the field-disjoint crowd measures 7 and is **crowd-bound**,
+because distinct-key updates are last-writer-wins by port contract, so nothing refuses
+anybody and a writer can lose its revision once per peer that commits ahead of it. That is
+the shipping/tax rules shape, which is why the settings budget is asserted at
+`CAS_MAX_ATTEMPTS` rather than under it.
+
+The identity races (`login-challenge-race.pg.test.ts`,
+`customer-email-claim-race.pg.test.ts`) are worth reading as a pair. The
 registration stampede measures **1**: the first writer takes the claim and every peer is
 then refused by reading it, so nothing contends. The get-or-create measures **8**, and
 that depth is not contention at all — it is the bounded WAIT a redeemer spends re-reading
@@ -1896,3 +1920,247 @@ residue back before proving what a later caller sees:
   has nothing else to guard here.
 - **No sweeper.** Both claims heal in path: the email claim by the lookup's fallback,
   the throttle by the expiry every slot carries.
+
+## Entitlement, payment-event, settings and order-note document models
+
+The four smallest ports in the commerce layer, and the only tier where two of the four
+stores write exactly one document per call. Seven collections:
+
+| Collection | Doc id | What it is |
+|---|---|---|
+| `entitlements` | grant idempotency key | one grant; the key IS the once-only |
+| `entitlement_lookups` | `order:{orderId}:{sku}` / `buyer:{foldedRef}:{sku}` | a pointer from one authorization scope to the grant that satisfies it |
+| `payment_events` | dedupe key | the received-events audit row |
+| `payment_anomalies` | a digest of the anomaly's own fields | one alert-worthy settlement anomaly |
+| `settings` | `store` | the operational settings singleton |
+| `settings_mutations` | mutation idempotency key | one mutation's intent, and — once — its result |
+| `order_notes` | note idempotency key | one append-only merchant annotation |
+
+Declared indexes: `entitlements` declares `orderId`, `buyerRefLower`, `sku` and `state`;
+`order_notes` declares `orderId`; the other four declare nothing, because nothing
+queries them.
+
+### The delivery gate, and why its pointer is a cache
+
+`check` is the file-serving gate: no active grant, no download. The SQL served it with
+two composite indices — `(order_id, sku, state)` and `(lower(buyer_ref), sku, state)` —
+behind the predicate
+`state = 'active' AND sku = ? AND (order_id = ?)? AND (lower(buyer_ref) = ?)?`. Here the
+filter algebra is AND-only over single declared fields, so the composite becomes a
+conjunction of four declarations, and `state` is declared rather than filtered in code
+for a specific reason: a page of revoked grants must not be able to hide an active one
+behind the limit.
+
+That query alone is correct and indexed. The `entitlement_lookups` pointer sits in front
+of it so the hot single-scope path pays two keyed reads instead of an index scan — and it
+is therefore a **cache, never authority** (ADR-0019 rule (b)). Three consequences, all
+deliberate:
+
+- A pointer is re-validated against the grant it names. A pointer whose grant is
+  revoked, missing, or disagrees about the scope or the sku authorizes nothing.
+- When a pointer does not resolve, the gate queries and writes the pointer back, so
+  `check` is a read that may WRITE. That is the one mechanism healing both a crash
+  between the grant and its pointers and a pointer left on a revoked grant. Its cost is
+  one indexed page of one row, on the reads that miss only.
+- **Revocation needs no pointer maintenance**, which is why the store has no revoke
+  method to keep in step with one.
+
+The operator-authenticated shape — an order id AND a buyer reference — has no pointer of
+its own and goes straight to the query. A third key space for a conjunction no hot path
+takes would be cost without a read to serve.
+
+**What a stale pointer costs, exactly.** A scope whose named grant has been revoked and
+then re-granted under a new key pays, per `check`, until the first one heals it: the
+pointer read, the named grant's read, and one indexed query of one row — three reads
+rather than two, plus one pointer write on the read that heals. `#claimLookup` on the new
+grant does NOT displace the stale pointer (an existing pointer is left alone, which is
+what makes one scope's pointer deterministic under concurrent grants), so the re-grant
+itself does not clear it; the next `check` does. That is the asymmetry rule (b) describes:
+a scope whose pointer resolves pays nothing extra, and the one that does not pays a
+bounded, self-clearing surcharge.
+
+### The scope id is an authorization key, so its parts are escaped
+
+A scope is a pair, and joining two arbitrary strings with a separator is ambiguous:
+`("ord-a", "B:C")` and `("ord-a:B", "C")` collide under a raw join, and one document
+authorizing the other's delivery is a security bug rather than a collision statistic.
+Both value parts are percent-escaped before they are joined — `%` first, so escaping the
+escape cannot collapse two encodings onto one — and a case drives the collision end to
+end.
+
+### A scopeless check is refused, not answered `false`
+
+The SQL short-circuited a query with neither scope to `false`; so did the in-memory fake.
+Here it raises `EntitlementScopeRequiredError`, and that is a deliberate divergence in
+loudness (never in outcome — both are fail-closed, and nothing is served either way). The
+port's type requires a sku and makes both scopes optional, so a scopeless query is not a
+condition a storefront produces: it is a caller that lost its session or its order id
+somewhere above and is about to serve a file on the strength of a sku alone. `false`
+hides that as a refused download; the typed error names it.
+
+### Payment events: two collections, because a document id cannot be null
+
+The SQL kept deliveries and anomalies in one table separated by a nullable UNIQUE column
+— a delivery row carried a `dedupe_key`, an anomaly row carried a `kind` and a NULL key,
+and the nullable UNIQUE is what let many anomalies coexist while a real dedupe key
+collided. A document id cannot be null, so the two shapes become two collections, which
+states the separation in the schema rather than in a convention about which columns are
+set.
+
+Two divergences worth naming:
+
+- **A dedupe key redelivered against a DIFFERENT order still answers `false`.** Faithful:
+  the SQL's UNIQUE was global and its conflict clause silent. The loud cross-order guard
+  is the order store's `payment_refs/{providerRef}` claim, because that is the write that
+  moves the captured total and therefore the refund ceiling. This store holds no order
+  pointer of its own and deliberately duplicates none.
+- **`recordAnomaly` is genuinely idempotent, where the SQL was not.** The document id is
+  a SHA-256 of the anomaly's five fields, so a replay producing the identical anomaly
+  records it once; the SQL minted a fresh row id per call and wrote a second
+  indistinguishable row. Anything that differs — including the instant — is its own
+  document, and nothing is ever swallowed.
+
+**`payment_anomalies` is write-only and unindexed, so it grows without a reader or a
+prune** — an operator surface that lists and retires anomalies is owed, and it is what
+will decide the collection's indexes.
+
+### Settings: the claim carries the intent and the revision it was decided against
+
+The SQL did the whole of `update` inside one transaction: read current, merge, claim the
+key with the merged values, and — as the claim's winner only — upsert the row. Without a
+transaction the steps become:
+
+```
+claim  : settings_mutations/{key} create-if-absent, carrying the PATCH and the settings
+         revision the creator just read — both written once, never rewritten
+apply  : merge the patch over the current settings, compare-and-set — the CREATOR at the
+         revision it just read, anyone else at `decidedRevision` or not at all
+record : the claim's `result`, assigned EXACTLY ONCE, after that write committed
+```
+
+**The claim cannot carry a pre-computed result.** The SQL's ledger row could store the
+merged values at claim time because the claim and the upsert were one transaction, so
+"claimed" and "applied" were the same instant. Split across two documents they are not,
+and a result recorded before the write is PROVISIONAL: if a peer moves the settings the
+mutation has to be re-decided against a newer base, and anything that read the
+provisional value holds an answer no state ever had — including a concurrent caller of
+the same key, which is how two callers of one key end up disagreeing.
+
+So the two halves are explicit. A claim with `result: null` means DECIDED; a claim with a
+result means LANDED, and that result is single-assignment — written after the settings
+write, guarded on the claim revision that still had `result: null`. Of any number of
+callers of one key, the first to record decides the answer and every other one reads it.
+
+**And a DECIDED claim is pinned to the revision it was decided against**, which is what
+makes the crash case safe rather than merely completable. Four consequences:
+
+- **A replay of a landed mutation writes nothing**, so a stale replay arriving after a
+  newer update returns what its mutation applied and cannot clobber the newer value. The
+  document-model suite pins that on the two documents' revisions rather than on their
+  values.
+- **A caller that did NOT create the claim may apply it only at `decidedRevision`.** Past
+  that revision the patch was computed against a state that no longer exists, so applying
+  it would overwrite whatever replaced that state — the clobber the port forbids. It is
+  refused instead, with a non-retryable `SettingsMutationSupersededError` carrying the key
+  and both revisions, and nothing is written. The remedy is a fresh idempotency key, which
+  is a new decision against the current state. Merging cannot revert a field the patch
+  OMITS, because an omitted field is read from the base — but it says nothing at all about
+  the fields the patch NAMES, which is exactly what the pin is for.
+- **A non-creator completion can therefore succeed at most once, ever**, because applying
+  it moves the revision it was pinned to. The patch can never be applied twice.
+- **The creator keeps re-merging over the new base**, because its intent is live — it is
+  the call the operator is waiting on, not a replay of a decision made earlier. That is
+  why distinct-key updates never lose each other's fields, which the race drives with
+  field-disjoint patches, where a lost update would be visible as a field reverting to its
+  domain default.
+
+**A merge that changes nothing writes nothing.** If the patch's effect is already present
+in the document that was read, the mutation is recorded against the value that is there
+and no settings write is issued. It cannot mask a clobber — a no-op write clobbers nothing
+— and it does two useful things. It lets a mutation whose own write landed but whose stamp
+was lost be completed rather than refused; and it keeps a same-key stampede from refusing
+everybody but the creator, because every caller of one key merges the same patch to the
+same value, so the peers find the effect already present rather than a moved revision.
+
+A claim is a once-only record rather than a lease, which is why ADR-0019 rule (a) does
+not bind it: nobody can take it over, so there is no owner token to re-assert. The guard
+on the only value-bearing write is a revision read and used in the same attempt.
+
+### Order notes: keyed by the idempotency key, in a child collection
+
+`order-documents.ts` records why notes are not embedded in the order aggregate: a note is
+operator-supplied free text with no natural bound, so embedding it would make the size of
+the hot money-path document a function of how much support wrote about it.
+
+The document id is the note's **idempotency key**, not a `{orderId}:{noteId}` composite
+as ADR-0019 §4 first had it (the table now carries the corrected form). Three reasons: the
+SQL's once-only was `order_notes.idempotency_key` UNIQUE, table-wide; ADR-0019's own
+mapping says that constraint "becomes the document id of its claim"; and a composite id
+would need a second claim document plus a crash seam between the two to buy nothing,
+since no caller holds a note id. Keying on `{orderId}:{noteId}` alone would have been
+worse than either — it would make one idempotency key admissible once PER ORDER, which is
+weaker than the constraint it replaces, and a case pins the cross-order behaviour.
+
+`listForOrder` pages the declared `orderId` index at 100 and applies
+`createdAt ASC, id ASC` in code: the pair has to be sorted together or the tie-break is
+not a tie-break, and a note id means nothing to a reader on its own. `createdAt` is
+fixed-width ISO-8601, so the comparison is dialect-identical. A list that exhausts its
+page budget raises `ScanPageLimitError` rather than truncating, because a short note list
+reads as "nobody wrote that". Three cases cover it: a multi-page read, a multi-page read
+where every note shares one instant so the tie-break carries the whole ordering across the
+cursor, and the ceiling.
+
+### Crash seams proven in this tier
+
+Two of the four stores have a multi-document step, so two have a seam.
+`test/misc-crash-seams.dialects.test.ts` (both Node dialects) and
+`test/d1/misc-crash-seams.d1.spec.ts` drive each from the forbidden side, in BOTH
+injection modes: `"instead"` asks what a missing write leaves behind, `"after"` asks what
+a caller who believed it FAILED is told when it retries over a write that really landed.
+The second is the shape a retrying webhook, a double-clicked Save and a resubmitted note
+all take.
+
+| Crash | Residue | Cost | Heals by |
+|---|---|---|---|
+| after the grant, before either pointer | a grant no scope points at | one indexed query per missing scope, once | the next `check` on that scope, or a replayed grant |
+| after the first pointer, before the second | one scope pointed, one not | as above, for that scope | as above |
+| after the mutation claim, before the settings write | a decision with no outcome | the update applies later, or is refused as superseded if something moved the settings first | the next call with that key, at `decidedRevision` only |
+| after the settings write, before the result stamp | an applied value with no recorded result | nothing: the completion's merge changes nothing, so it records without writing | the next call with that key |
+| the retry budget runs out after the claim was created | as the first settings row | **the update applies LATER, not never** — or not at all, if it is overtaken first | as above |
+| a creator lands while a concurrent replay of its key concludes "superseded" | none — the value is applied and stamped | the replay's caller is refused for an update that did land | nothing to heal: re-reading the claim returns the landed result |
+
+Two of those rows are worth reading twice. The budget row is the one residual in this tier
+that does not resolve toward over-refusal, so it is named rather than filed under rule (c):
+`StorageContentionError` from a settings update whose claim already exists means the
+operator's change is decided and unlanded, and the next call with that key lands it — at
+`decidedRevision`, or not at all if something has moved the settings since. The error is
+retryable and nothing is lost, but the honest statement is "applies later" rather than "was
+refused", and a caller that never retries leaves the claim for whoever does. No other step
+here has that shape: a grant's budget running out after the grant document landed leaves
+the grant authoritative, and both single-document stores write nothing at all.
+
+The last row is the accepted residual of the pin itself. A creator may land its value while
+a concurrent replay of the same key, reading a revision the creator's own write has just
+moved, concludes "superseded": the value was applied and the replay's caller was refused.
+That is over-refusal — never a double apply, never a clobber — and it is the direction this
+tier resolves every residual in.
+
+`order_notes` and `payment_events` write one document each, so a lost write leaves NOTHING
+and the retry is a clean first attempt rather than a repair — which two `"instead"` cases
+assert, since "there is no seam" is a claim that needs evidence too. Their `"after"` twins
+assert the other side: a note that landed is returned to its retry as `appended: false`,
+and a dedupe row that landed makes the retry a redelivery.
+
+### What this tier does NOT carry
+
+- **No revocation path.** The `EntitlementStore` port has `grant` and `check` and nothing
+  else, so the contract's revoke hook is implemented in the test harness as the
+  compare-and-set equivalent of the SQL harness's `UPDATE`. It is deliberately not test
+  surface on the production store: a revocation path with no caller belongs on the port
+  when one arrives.
+- **No settings validation.** The port's `update` is a *validated* partial update and the
+  domain's `updateSettings` use-case is what validates it. A store that re-validated
+  would be a second, drifting copy of a rule the domain owns — and the SQL adapter
+  validates nothing either.
+- **No anomaly read surface.** See the forward reference above: anomalies are written to
+  be alerted on, nothing reads them back, and the prune that will need indexes is owed.

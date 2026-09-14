@@ -338,3 +338,66 @@ export {
 	isCustomerIdCollisionError,
 } from "./identity-errors.js";
 export { hashToken, tokenHashEquals } from "./token-hash.js";
+export {
+	ENTITLEMENT_COLLECTIONS,
+	ENTITLEMENT_LOOKUPS_COLLECTION,
+	ENTITLEMENTS_COLLECTION,
+	entitlementLookupId,
+	isActiveGrant,
+	normalizeEntitlementDoc,
+	toEntitlement,
+	type EntitlementCollectionIndexDeclaration,
+	type EntitlementDoc,
+	type EntitlementLookupDoc,
+	type EntitlementScopeKind,
+	type StoredEntitlementDoc,
+} from "./entitlement-documents.js";
+export {
+	EntitlementScopeRequiredError,
+	isEntitlementScopeRequiredError,
+} from "./entitlement-errors.js";
+export {
+	EmdashEntitlementStore,
+	type EmdashEntitlementStoreOptions,
+} from "./emdash-entitlement-store.js";
+export {
+	EmdashPaymentEventStore,
+	PAYMENT_ANOMALIES_COLLECTION,
+	PAYMENT_EVENT_COLLECTIONS,
+	PAYMENT_EVENTS_COLLECTION,
+	paymentAnomalyId,
+	type EmdashPaymentEventStoreOptions,
+	type PaymentAnomalyDoc,
+	type PaymentEventCollectionIndexDeclaration,
+	type PaymentEventDoc,
+} from "./emdash-payment-event-store.js";
+export {
+	mergeSettings,
+	SETTINGS_COLLECTION,
+	SETTINGS_COLLECTIONS,
+	SETTINGS_DOC_ID,
+	SETTINGS_MUTATIONS_COLLECTION,
+	toOperationalSettings,
+	toPatchDoc,
+	type SettingsCollectionIndexDeclaration,
+	type SettingsDoc,
+	type SettingsMutationDoc,
+	type SettingsPatchDoc,
+} from "./settings-documents.js";
+export {
+	isSettingsMutationSupersededError,
+	SettingsMutationSupersededError,
+} from "./settings-errors.js";
+export { EmdashSettingsStore, type EmdashSettingsStoreOptions } from "./emdash-settings-store.js";
+export {
+	ORDER_NOTES_COLLECTION,
+	ORDER_NOTES_COLLECTIONS,
+	sortOrderNotes,
+	toOrderNote,
+	type OrderNoteDoc,
+	type OrderNotesCollectionIndexDeclaration,
+} from "./order-notes-documents.js";
+export {
+	EmdashOrderNotesStore,
+	type EmdashOrderNotesStoreOptions,
+} from "./emdash-order-notes-store.js";
