@@ -16,7 +16,9 @@ import { expect, test } from "vitest";
 import {
 	ENTITLEMENT_LOOKUPS_COLLECTION,
 	entitlementLookupId,
+	isSettingsMutationSupersededError,
 	SETTINGS_COLLECTION,
+	SETTINGS_DOC_ID,
 	type EntitlementLookupDoc,
 	type SettingsDoc,
 } from "../../src/index.js";
@@ -79,7 +81,7 @@ test("a grant with no scope pointer is still authorized, and the gate writes the
 	expect(await live.lookups.count()).toBe(2);
 });
 
-test("a crashed settings mutation is completed by its replay, and recorded exactly once", async () => {
+test("a crashed settings mutation never clobbers a newer update and is never double-applied", async () => {
 	const live = healthy();
 	await live.settingsStore.update(
 		{ holdTtlMinutes: 20, lowStockThreshold: 7 },
@@ -96,22 +98,27 @@ test("a crashed settings mutation is completed by its replay, and recorded exact
 	await expect(
 		crashed.settingsStore.update({ holdTtlMinutes: 30 }, idempotencyKey("s1")),
 	).rejects.toBeInstanceOf(InjectedCrashError);
-	// Decided, not landed: the intent is recorded and no result is.
+	// Decided, not landed: the intent and the revision it was decided against are
+	// recorded, and no result is.
 	expect((await live.mutations.get("s1"))?.patch).toEqual({ holdTtlMinutes: 30 });
 	expect((await live.mutations.get("s1"))?.result).toBeNull();
 	expect(await live.settingsStore.get()).toEqual({ holdTtlMinutes: 20, lowStockThreshold: 7 });
 
-	// A newer key moves the OTHER field while s1's decision is unlanded …
-	await live.settingsStore.update({ lowStockThreshold: 99 }, idempotencyKey("s2"));
-	// … and s1's completion merges over it rather than reverting it.
-	const completed = await live.settingsStore.update({ holdTtlMinutes: 30 }, idempotencyKey("s1"));
-	expect(completed).toEqual({ holdTtlMinutes: 30, lowStockThreshold: 99 });
-	expect(await live.settingsStore.get()).toEqual(completed);
+	// A newer key moves the SAME field while s1's decision is unlanded …
+	await live.settingsStore.update({ holdTtlMinutes: 99 }, idempotencyKey("s2"));
+	const before = await live.settings.getVersioned(SETTINGS_DOC_ID);
 
-	// Recorded once: a further replay writes nothing, on the tier that plans the write.
-	const stamped = await live.mutations.getVersioned("s1");
-	expect(await live.settingsStore.update({ holdTtlMinutes: 30 }, idempotencyKey("s1"))).toEqual(
-		completed,
-	);
-	expect((await live.mutations.getVersioned("s1"))?.revision).toBe(stamped?.revision);
+	// … so s1's completion is refused rather than merged over a state it was never
+	// computed from, on the tier that plans the write.
+	const failure = await live.settingsStore
+		.update({ holdTtlMinutes: 30 }, idempotencyKey("s1"))
+		.then(
+			() => undefined,
+			(err: unknown) => err,
+		);
+	expect(isSettingsMutationSupersededError(failure), String(failure)).toBe(true);
+	expect(await live.settingsStore.get()).toEqual({ holdTtlMinutes: 99, lowStockThreshold: 7 });
+	// Nothing was written: the revision is the proof, not the value.
+	expect((await live.settings.getVersioned(SETTINGS_DOC_ID))?.revision).toBe(before?.revision);
+	expect((await live.mutations.get("s1"))?.result).toBeNull();
 });

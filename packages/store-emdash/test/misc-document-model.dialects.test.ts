@@ -217,12 +217,17 @@ describeEachDialect("misc document model", (ctx) => {
 		expect(first?.result).toEqual({ holdTtlMinutes: 30, lowStockThreshold: 5 });
 		expect(first?.appliedRevision).not.toBeNull();
 		expect(first?.appliedAt).not.toBeNull();
+		expect(first?.supersededAt).toBeNull();
+		// It was decided against an ABSENT document, which is the pin a later completion
+		// would have had to write at.
+		expect(first?.decidedRevision).toBeNull();
 
 		// A partial patch keeps the other field, and the recorded result says so.
 		await h.settingsStore.update({ lowStockThreshold: 2 }, idempotencyKey("s2"));
 		const second = await h.mutations.get("s2");
 		expect(second?.patch).toEqual({ lowStockThreshold: 2 });
 		expect(second?.result).toEqual({ holdTtlMinutes: 30, lowStockThreshold: 2 });
+		expect(second?.decidedRevision).toBe(first?.appliedRevision);
 	});
 
 	test("a recorded result is single-assignment: a replay writes nothing at all", async () => {
@@ -263,6 +268,40 @@ describeEachDialect("misc document model", (ctx) => {
 		expect(notes.map((n) => n.body)).toEqual(
 			Array.from({ length: total }, (_unused, i) => `note ${String(i).padStart(3, "0")}`),
 		);
+	});
+
+	test("notes sharing one instant keep a stable order across the page boundary", async () => {
+		// The clock never advances, so `createdAt` cannot order any of them and the whole
+		// ordering rides on the id tie-break — applied in code AFTER the pages are joined.
+		// A single-page list would never exercise that: the cursor is where a per-page sort
+		// would silently produce a different sequence.
+		const h = harness();
+		const total = 105;
+		const keys = Array.from(
+			{ length: total },
+			(_unused, i) => `tied-${String(i).padStart(3, "0")}`,
+		);
+		const ids: string[] = [];
+		for (const key of keys) {
+			const { note } = await h.orderNotesStore.append({
+				orderId: orderId("ord-tied"),
+				author: "same-instant",
+				body: key,
+				idempotencyKey: idempotencyKey(key),
+			});
+			ids.push(note.id);
+		}
+		const stamps = new Set<string>();
+		for (const key of keys) stamps.add((await h.notes.get(key))?.createdAt ?? "");
+		expect(stamps.size, "every note must share one instant for this case to mean anything").toBe(1);
+
+		const notes = await h.orderNotesStore.listForOrder(orderId("ord-tied"));
+		expect(notes).toHaveLength(total);
+		// Deterministic: the id tie-break, over the whole set rather than per page.
+		expect(notes.map((n) => n.id)).toEqual(ids.toSorted());
+		// And stable: a second read is the identical sequence.
+		const again = await h.orderNotesStore.listForOrder(orderId("ord-tied"));
+		expect(again.map((n) => n.id)).toEqual(notes.map((n) => n.id));
 	});
 
 	test("a note list that exhausts its page budget refuses rather than truncating", async () => {

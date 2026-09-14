@@ -20,10 +20,11 @@
  *   under-serves nothing: the pointer is a cache, and the next `check` on that scope
  *   answers from the declared index and writes the pointer back.
  * - **A settings mutation claim, the settings write, and the result stamp.** The claim
- *   carries the patch only; the result is stamped after the write lands. So the
- *   residue of either gap is a mutation that was DECIDED and has not been recorded,
- *   and the next caller with that key completes it — merging the patch over what is
- *   there now, and recording exactly once.
+ *   carries the patch and the settings revision it was decided against; the result is
+ *   stamped after the write lands. So the residue of either gap is a mutation that was
+ *   DECIDED and not recorded, and the next caller with that key completes it — but only
+ *   AT that revision. Past it the completion is refused as superseded, because merging
+ *   cannot revert a field the patch OMITS and says nothing about the fields it names.
  *
  * `order_notes` and `payment_events` write one document per call, so they have no such
  * gap. Their cases are the other half of that claim: a lost write leaves NOTHING, and
@@ -34,11 +35,13 @@ import { expect, test } from "vitest";
 import {
 	ENTITLEMENT_LOOKUPS_COLLECTION,
 	entitlementLookupId,
+	isSettingsMutationSupersededError,
 	ORDER_NOTES_COLLECTION,
 	PAYMENT_EVENTS_COLLECTION,
 	SETTINGS_COLLECTION,
 	SETTINGS_DOC_ID,
 	SETTINGS_MUTATIONS_COLLECTION,
+	SettingsMutationSupersededError,
 	type EntitlementLookupDoc,
 	type OrderNoteDoc,
 	type PaymentEventDoc,
@@ -217,13 +220,12 @@ describeEachDialect("misc crash seams", (ctx) => {
 		expect(await live.mutations.count()).toBe(2);
 	});
 
-	test("an un-landed mutation completed after a newer update lands once, over the newer value", async () => {
-		// The port's no-clobber promise is about replaying a mutation whose result is
-		// RECORDED — that path writes nothing, and the document-model suite pins it on
-		// the revisions. A claim that never landed is a different thing: it is a
-		// decision with no outcome, and the only honest answer is an outcome, so the
-		// replay merges the patch over the current value. It cannot revert a field
-		// another mutation set, because an omitted field is read from the base.
+	test("an un-landed mutation overtaken by a newer update never clobbers it and is never double-applied", async () => {
+		// The port forbids exactly this: "a stale replay arriving after a newer update
+		// never clobbers it back". The claim records the settings revision it was DECIDED
+		// against, and a caller that did not decide it may write only at that revision —
+		// so once something else has moved the settings, the completion is refused rather
+		// than re-merged over a state the patch was never computed from.
 		const live = healthy();
 		await live.settingsStore.update(SEEDED, idempotencyKey("s0"));
 		const crashed = crashingOn<SettingsDoc>(live, SETTINGS_COLLECTION, isUpdateWrite, "instead");
@@ -231,25 +233,33 @@ describeEachDialect("misc crash seams", (ctx) => {
 			crashed.settingsStore.update({ holdTtlMinutes: 30 }, idempotencyKey("s1")),
 		).rejects.toBeInstanceOf(InjectedCrashError);
 
-		// A DIFFERENT key moves the settings forward while s1's decision is unlanded.
-		await live.settingsStore.update({ lowStockThreshold: 99 }, idempotencyKey("s2"));
+		// A DIFFERENT key moves the SAME field forward while s1's decision is unlanded.
+		await live.settingsStore.update({ holdTtlMinutes: 99 }, idempotencyKey("s2"));
+		const before = await live.settings.getVersioned(SETTINGS_DOC_ID);
 
-		const completed = await live.settingsStore.update({ holdTtlMinutes: 30 }, idempotencyKey("s1"));
-		// s2's field survived, and s1's landed on top of it: a late write, not a
-		// clobber-back.
-		expect(completed).toEqual({ holdTtlMinutes: 30, lowStockThreshold: 99 });
-		expect(await live.settingsStore.get()).toEqual(completed);
+		const failure = await live.settingsStore
+			.update({ holdTtlMinutes: 30 }, idempotencyKey("s1"))
+			.then(
+				() => undefined,
+				(err: unknown) => err,
+			);
+		expect(isSettingsMutationSupersededError(failure), String(failure)).toBe(true);
+		if (isSettingsMutationSupersededError(failure)) {
+			expect(failure.retryable).toBe(false);
+			expect(failure.idempotencyKey).toBe("s1");
+			expect(failure.decidedRevision).not.toBe(failure.currentRevision);
+		}
 
-		// ONCE: a further replay reads the recorded result and moves neither document.
-		const after = await live.mutations.getVersioned("s1");
-		const settingsAfter = await live.settings.getVersioned(SETTINGS_DOC_ID);
-		expect(await live.settingsStore.update({ holdTtlMinutes: 30 }, idempotencyKey("s1"))).toEqual(
-			completed,
-		);
-		expect((await live.mutations.getVersioned("s1"))?.revision).toBe(after?.revision);
-		expect((await live.settings.getVersioned(SETTINGS_DOC_ID))?.revision).toBe(
-			settingsAfter?.revision,
-		);
+		// s2's value stands, and NOTHING was written: the revision is the proof, not the
+		// value — a write of the same value would move it.
+		expect(await live.settingsStore.get()).toEqual({ holdTtlMinutes: 99, lowStockThreshold: 7 });
+		expect((await live.settings.getVersioned(SETTINGS_DOC_ID))?.revision).toBe(before?.revision);
+		// And the claim is terminal: a further replay refuses the same way, so the patch
+		// cannot be applied later either.
+		await expect(
+			live.settingsStore.update({ holdTtlMinutes: 30 }, idempotencyKey("s1")),
+		).rejects.toBeInstanceOf(SettingsMutationSupersededError);
+		expect((await live.mutations.get("s1"))?.result).toBeNull();
 	});
 
 	test("a settings write that landed before the crash is recorded by the replay, not applied twice", async () => {
@@ -267,15 +277,21 @@ describeEachDialect("misc crash seams", (ctx) => {
 		// The caller believed it failed. Its retry records the value that is already
 		// there — re-merging an absolute patch over its own effect is the same value —
 		// and answers with it.
+		const before = await live.settings.getVersioned(SETTINGS_DOC_ID);
 		const replay = await live.settingsStore.update({ holdTtlMinutes: 30 }, idempotencyKey("s1"));
 		expect(replay).toEqual({ holdTtlMinutes: 30, lowStockThreshold: 7 });
 		expect(await live.settingsStore.get()).toEqual(replay);
 		expect((await live.mutations.get("s1"))?.result).toEqual(replay);
+		// Not applied twice: the merge changed nothing, so nothing was written.
+		expect((await live.settings.getVersioned(SETTINGS_DOC_ID))?.revision).toBe(before?.revision);
 	});
 
 	test("a lost result stamp is completed by the next caller, and the value does not move", async () => {
 		// The third window: the settings write landed and the stamp that records it did
-		// not. The completion must reach the SAME value and record it exactly once.
+		// not. The completion re-merges the patch over what is there — which is its own
+		// effect, so the merge changes nothing — and a merge that changes nothing writes
+		// nothing. The settings revision is what proves it: a write of an identical value
+		// would still move it.
 		const live = healthy();
 		await live.settingsStore.update(SEEDED, idempotencyKey("s0"));
 		const crashed = crashingOn<SettingsMutationDoc>(
@@ -290,16 +306,21 @@ describeEachDialect("misc crash seams", (ctx) => {
 		const applied = { holdTtlMinutes: 30, lowStockThreshold: 7 };
 		expect(await live.settingsStore.get()).toEqual(applied);
 		expect((await live.mutations.get("s1"))?.result).toBeNull();
+		const before = await live.settings.getVersioned(SETTINGS_DOC_ID);
 
 		const replay = await live.settingsStore.update({ holdTtlMinutes: 30 }, idempotencyKey("s1"));
 		expect(replay).toEqual(applied);
 		expect((await live.mutations.get("s1"))?.result).toEqual(applied);
-		// And the stamp is single-assignment: a third call moves nothing.
+		expect((await live.mutations.get("s1"))?.appliedRevision).toBeNull();
+		expect((await live.settings.getVersioned(SETTINGS_DOC_ID))?.revision).toBe(before?.revision);
+
+		// And the stamp is single-assignment: a third call moves neither document.
 		const stamped = await live.mutations.getVersioned("s1");
 		expect(await live.settingsStore.update({ holdTtlMinutes: 30 }, idempotencyKey("s1"))).toEqual(
 			applied,
 		);
 		expect((await live.mutations.getVersioned("s1"))?.revision).toBe(stamped?.revision);
+		expect((await live.settings.getVersioned(SETTINGS_DOC_ID))?.revision).toBe(before?.revision);
 	});
 
 	// -- the two single-document stores ----------------------------------------

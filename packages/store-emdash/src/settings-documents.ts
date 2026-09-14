@@ -13,12 +13,21 @@
  * | `settings_mutations/{idempotencyKey}` | one mutation's INTENT, and — written exactly once, after a settings write lands — its result |
  *
  * **The claim separates DECIDED from LANDED, and only the landed half is an
- * answer.** On create it carries the patch and nothing else: the patch is the
- * intent, it is never rewritten, and a claim in that state means "this mutation was
- * admitted and has not landed yet". `result` is assigned exactly once, by a
- * compare-and-set that runs only after the settings write it describes has
- * committed — so a recorded result is always a value that really was applied, and
- * two callers of one key can never be handed different answers.
+ * answer.** On create it carries the patch and the settings revision its creator
+ * read, and nothing else: both are written once and never rewritten, and a claim in
+ * that state means "this mutation was admitted, against that revision, and has not
+ * landed yet". `result` is assigned exactly once, by a compare-and-set that runs
+ * only after the settings write it describes has committed — so a recorded result is
+ * always a value that really was applied, and two callers of one key can never be
+ * handed different answers.
+ *
+ * **`decidedRevision` is what keeps a stale completion from clobbering.** A caller
+ * that did not create the claim may only apply it by a compare-and-set at exactly
+ * that revision; if the revision has moved, the patch was computed against a state
+ * that no longer exists and the completion is refused (see
+ * `SettingsMutationSupersededError`). Because the pin is to one revision, a
+ * non-creator completion can succeed **at most once, ever** — applying it moves the
+ * revision it was pinned to — so the patch can never be applied twice.
  *
  * That is the whole reason the claim does not carry a pre-computed result. The SQL
  * could store the merged values at claim time because the claim and the upsert were
@@ -82,12 +91,24 @@ export interface SettingsPatchDoc {
  */
 export interface SettingsMutationDoc {
 	readonly patch: SettingsPatchDoc;
+	/**
+	 * The `settings/store` revision the CREATOR read before claiming, or `null` if the
+	 * document did not exist. Single-assigned: it is what a later completion is pinned
+	 * to, and rewriting it would be rewriting the decision.
+	 */
+	readonly decidedRevision: string | null;
 	readonly createdAt: string;
 	/** The settings this mutation actually applied, or `null` while un-landed. */
 	readonly result: OperationalSettings | null;
 	/** The `settings/store` revision the applying write produced. */
 	readonly appliedRevision: string | null;
 	readonly appliedAt: string | null;
+	/**
+	 * When a non-creator found the settings past {@link decidedRevision} and refused.
+	 * A terminal marker, never written over a LANDED result — and ignored by the
+	 * claim's own creator, whose intent is still live.
+	 */
+	readonly supersededAt: string | null;
 }
 
 /** Drop the keys a caller left undefined, so the stored intent says what it meant. */
@@ -117,8 +138,10 @@ export function toOperationalSettings(doc: SettingsDoc | null): OperationalSetti
  * Apply a partial patch: every field the caller omitted keeps its current value.
  *
  * The patch holds ABSOLUTE values rather than deltas, so re-merging it over a newer
- * base is safe and is exactly what every losing attempt does. It can never revert a
- * field another mutation set, because an omitted field is read from the base.
+ * base is what every losing attempt does. Merging cannot revert a field this patch
+ * OMITS, because an omitted field is read from the base — it says nothing about the
+ * fields the patch names, which is why a completion by anyone but the claim's creator
+ * is pinned to the revision it was decided against.
  */
 export function mergeSettings(
 	base: OperationalSettings,

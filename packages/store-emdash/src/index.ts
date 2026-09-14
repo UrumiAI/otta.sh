@@ -386,6 +386,10 @@ export {
 } from "./settings-documents.js";
 export { EmdashSettingsStore, type EmdashSettingsStoreOptions } from "./emdash-settings-store.js";
 export {
+	isSettingsMutationSupersededError,
+	SettingsMutationSupersededError,
+} from "./settings-errors.js";
+export {
 	ORDER_NOTES_COLLECTION,
 	ORDER_NOTES_COLLECTIONS,
 	sortOrderNotes,
