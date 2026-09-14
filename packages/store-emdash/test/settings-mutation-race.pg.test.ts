@@ -9,13 +9,18 @@
  * 1. N concurrent updates carrying ONE key apply the mutation once — one claim
  *    document, one applied value, and every caller handed the same result. This is the
  *    double-submit an operator produces by clicking Save twice.
- * 2. N concurrent updates carrying DISTINCT keys all record what they applied. The
- *    surviving value is one of them (last writer wins, as it did in SQL), and no
- *    caller is told it applied something it did not: the recorded result and the
- *    applied value agree, because a caller that loses the pinned write re-merges over
- *    the new base and rewrites its own claim before trying again.
+ * 2. N concurrent updates carrying DISTINCT keys and FIELD-DISJOINT patches lose
+ *    nothing. Half the crowd patches `holdTtlMinutes` and half `lowStockThreshold`, so
+ *    a lost update is visible rather than indistinguishable: a writer that committed a
+ *    value it decided against a stale base would carry the default it read for the
+ *    other field, reverting a peer's write. Both fields must survive in the final
+ *    value, and every recorded result must be a value that really was applied.
  */
-import { idempotencyKey, type OperationalSettings } from "@otta-sh/domain";
+import {
+	DEFAULT_OPERATIONAL_SETTINGS as DEFAULTS,
+	idempotencyKey,
+	type OperationalSettings,
+} from "@otta-sh/domain";
 import { describe, expect, test } from "vitest";
 import { settleOne } from "./helpers/fault-injection.js";
 import { MISC_LAYOUT } from "./misc-collections.js";
@@ -30,12 +35,15 @@ import { makePgStorage, PG_ENABLED } from "./describe-each-dialect.js";
  * contract, so nothing refuses anybody and every writer can lose its revision once
  * per peer that commits ahead of it. That is the shipping/tax rules shape
  * (`rules-cas-race.pg.test.ts`), and it is why this suite races ten writers rather
- * than twenty-four. The same-key shape is document-bound and measures far lower: the
- * claim admits one caller and the rest read its result.
+ * than twenty-four. The same-key shape is document-bound and measures far lower: every
+ * caller of one key merges the same patch to the same value, so a loser re-applies an
+ * identical value and then reads the single-assignment result.
  *
- * Measured at **1** for the same-key stampede at N=16 — the claim's winner never loses
- * a revision, and every peer resolves on its first attempt — and at **8** for the
- * distinct-key crowd at N=10, which is the crowd bound showing itself.
+ * Measured at **3** for the same-key stampede at N=16 — a caller can lose the settings
+ * write to a peer applying the identical value and then lose the result stamp to the
+ * peer that recorded it first, which is two losses before it reads the recorded answer —
+ * and at **7** for the field-disjoint crowd at N=10, which is the crowd bound showing
+ * itself.
  */
 const CAS_ATTEMPT_BUDGET = 24;
 
@@ -104,44 +112,67 @@ describe.skipIf(!PG_ENABLED)("settings mutation [postgres]", () => {
 		}
 	}, 180_000);
 
-	test("N concurrent updates with distinct keys each record what they applied, and one survives", async () => {
+	test("N concurrent updates with FIELD-DISJOINT patches lose nothing", async () => {
+		// Disjoint on purpose. A crowd patching the SAME field cannot detect a lost
+		// update: whatever value survives is somebody's, and a writer that committed a
+		// value decided against a stale base is indistinguishable from one that read the
+		// newest. Split the crowd across the two fields and a lost update is VISIBLE —
+		// the losing field reverts to its domain default, because a stale merge carries
+		// the default it read rather than the value a peer had already applied.
 		const N = 10;
 		const LOOPS = 8;
 		const fx = await fresh(N + 4);
 		try {
 			for (let loop = 0; loop < LOOPS; loop++) {
 				await fx.reset();
+				const holdValues = [31, 32, 33, 34, 35];
+				const stockValues = [41, 42, 43, 44, 45];
+				const patches: Partial<OperationalSettings>[] = [
+					...holdValues.map((holdTtlMinutes) => ({ holdTtlMinutes })),
+					...stockValues.map((lowStockThreshold) => ({ lowStockThreshold })),
+				];
 				const results = await Promise.all(
-					Array.from({ length: N }, (_unused, i) =>
-						settleOne(
-							fx.harness.settingsStore.update(
-								{ holdTtlMinutes: i + 1 },
-								idempotencyKey(`key-${String(i)}`),
-							),
-						),
+					patches.map((patch, i) =>
+						settleOne(fx.harness.settingsStore.update(patch, idempotencyKey(`key-${String(i)}`))),
 					),
 				);
 				expect(
 					results.filter((r) => r instanceof Error),
 					`loop ${String(loop)}: failures`,
 				).toHaveLength(0);
-				// Every caller was told what its own patch produced, and its claim says the
-				// same: the recorded result is never a value the caller did not apply.
+
+				// BOTH fields survive in the final value: neither half of the crowd was
+				// overwritten back to its default by a stale merge.
+				const applied: OperationalSettings = await fx.harness.settingsStore.get();
+				expect(holdValues, `loop ${String(loop)}: final holdTtlMinutes`).toContain(
+					applied.holdTtlMinutes,
+				);
+				expect(stockValues, `loop ${String(loop)}: final lowStockThreshold`).toContain(
+					applied.lowStockThreshold,
+				);
+
+				// And every recorded result is a value that really was applied: its own
+				// field is its own patch, and the other field is either the default it
+				// legitimately read or one of the peers' values — never anything invented.
 				for (let i = 0; i < N; i++) {
-					expect(results[i], `loop ${String(loop)}: result ${String(i)}`).toEqual({
-						holdTtlMinutes: i + 1,
-						lowStockThreshold: 5,
-					});
+					const patch = patches[i];
 					const claim = await fx.harness.mutations.get(`key-${String(i)}`);
-					expect(claim?.holdTtlMinutes, `loop ${String(loop)}: claim ${String(i)}`).toBe(i + 1);
+					expect(claim?.patch, `loop ${String(loop)}: claim ${String(i)} intent`).toEqual(patch);
+					const recorded = claim?.result;
+					expect(recorded, `loop ${String(loop)}: claim ${String(i)} result`).not.toBeNull();
+					expect(results[i], `loop ${String(loop)}: result ${String(i)}`).toEqual(recorded);
+					if (patch?.holdTtlMinutes !== undefined) {
+						expect(recorded?.holdTtlMinutes).toBe(patch.holdTtlMinutes);
+						expect([DEFAULTS.lowStockThreshold, ...stockValues]).toContain(
+							recorded?.lowStockThreshold,
+						);
+					} else {
+						expect(recorded?.lowStockThreshold).toBe(patch?.lowStockThreshold);
+						expect([DEFAULTS.holdTtlMinutes, ...holdValues]).toContain(recorded?.holdTtlMinutes);
+					}
 				}
 				expect(await fx.harness.mutations.count(), `loop ${String(loop)}: claims`).toBe(N);
 				expect(await fx.harness.settings.count(), `loop ${String(loop)}: singletons`).toBe(1);
-				// The surviving value is one of the ten, never a blend of them.
-				const applied: OperationalSettings = await fx.harness.settingsStore.get();
-				expect(results, `loop ${String(loop)}: the survivor is one of the results`).toContainEqual(
-					applied,
-				);
 			}
 			expect(fx.maxAttempts()).toBeLessThanOrEqual(CAS_ATTEMPT_BUDGET);
 		} finally {

@@ -35,7 +35,7 @@ import {
 	PAYMENT_EVENTS_COLLECTION,
 	SETTINGS_COLLECTION,
 	SETTINGS_MUTATIONS_COLLECTION,
-	type EntitlementDoc,
+	type StoredEntitlementDoc,
 	type EntitlementLookupDoc,
 	type OrderNoteDoc,
 	type PaymentAnomalyDoc,
@@ -79,7 +79,7 @@ export interface MiscHarness {
 	readonly settingsStore: EmdashSettingsStore;
 	readonly orderNotesStore: EmdashOrderNotesStore;
 	/** The documents, for the assertions the ports cannot express. */
-	readonly grants: StorageCollection<EntitlementDoc>;
+	readonly grants: StorageCollection<StoredEntitlementDoc>;
 	readonly lookups: StorageCollection<EntitlementLookupDoc>;
 	readonly events: StorageCollection<PaymentEventDoc>;
 	readonly anomalies: StorageCollection<PaymentAnomalyDoc>;
@@ -129,7 +129,7 @@ export function makeMiscHarness(
 	// The RAW collections, deliberately unwrapped by any fault injection: an
 	// observation is not a write, and a test that injected a fault into its own
 	// assertions would be reading a state the stores never produce.
-	const grants = collectionOf<EntitlementDoc>(storage, ENTITLEMENTS_COLLECTION);
+	const grants = collectionOf<StoredEntitlementDoc>(storage, ENTITLEMENTS_COLLECTION);
 	const lookups = collectionOf<EntitlementLookupDoc>(storage, ENTITLEMENT_LOOKUPS_COLLECTION);
 	const events = collectionOf<PaymentEventDoc>(storage, PAYMENT_EVENTS_COLLECTION);
 	const anomalies = collectionOf<PaymentAnomalyDoc>(storage, PAYMENT_ANOMALIES_COLLECTION);

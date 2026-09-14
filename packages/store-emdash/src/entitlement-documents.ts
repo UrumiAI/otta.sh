@@ -88,6 +88,23 @@ export interface EntitlementDoc {
 	readonly grantedAt: string;
 }
 
+/**
+ * The document as READ.
+ *
+ * `buyerRefLower` is optional on this side and required on {@link EntitlementDoc},
+ * which is the write side: a document written before that field existed would have no
+ * value for it, and the store's normalization derives one. Typing the read side
+ * separately is what keeps that guard LIVE — under a required type the `??` below is
+ * unreachable code the compiler cannot see, and the day an older document turns up it
+ * would be invisible to the buyer-scoped query rather than healed.
+ *
+ * Collections are typed to this shape, because a full {@link EntitlementDoc} is
+ * assignable to it: writes stay total, reads stay honest.
+ */
+export type StoredEntitlementDoc = Omit<EntitlementDoc, "buyerRefLower"> & {
+	readonly buyerRefLower?: string;
+};
+
 /** `entitlement_lookups/{scope}` — which grant satisfies one authorization scope. */
 export interface EntitlementLookupDoc {
 	/** The grant's document id: its grant-idempotency key. */
@@ -127,9 +144,10 @@ export function entitlementLookupId(kind: EntitlementScopeKind, key: string, sku
  * document written without it would be invisible to the buyer-scoped query, which
  * is a missed authorization rather than a cosmetic gap.
  */
-export function normalizeEntitlementDoc(doc: EntitlementDoc): EntitlementDoc {
-	const buyerRefLower = doc.buyerRefLower ?? foldBuyerRef(doc.buyerRef);
-	return buyerRefLower === doc.buyerRefLower ? doc : { ...doc, buyerRefLower };
+export function normalizeEntitlementDoc(doc: StoredEntitlementDoc): EntitlementDoc {
+	return doc.buyerRefLower === undefined
+		? { ...doc, buyerRefLower: foldBuyerRef(doc.buyerRef) }
+		: { ...doc, buyerRefLower: doc.buyerRefLower };
 }
 
 /** The port's shape. `id` is the entitlement's own id, not its document id. */

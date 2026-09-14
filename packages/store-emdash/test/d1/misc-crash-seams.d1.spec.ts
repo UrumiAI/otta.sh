@@ -79,7 +79,7 @@ test("a grant with no scope pointer is still authorized, and the gate writes the
 	expect(await live.lookups.count()).toBe(2);
 });
 
-test("a crashed settings mutation is completed by its replay, and never double-applied", async () => {
+test("a crashed settings mutation is completed by its replay, and recorded exactly once", async () => {
 	const live = healthy();
 	await live.settingsStore.update(
 		{ holdTtlMinutes: 20, lowStockThreshold: 7 },
@@ -96,15 +96,22 @@ test("a crashed settings mutation is completed by its replay, and never double-a
 	await expect(
 		crashed.settingsStore.update({ holdTtlMinutes: 30 }, idempotencyKey("s1")),
 	).rejects.toBeInstanceOf(InjectedCrashError);
-	expect((await live.mutations.get("s1"))?.holdTtlMinutes).toBe(30);
+	// Decided, not landed: the intent is recorded and no result is.
+	expect((await live.mutations.get("s1"))?.patch).toEqual({ holdTtlMinutes: 30 });
+	expect((await live.mutations.get("s1"))?.result).toBeNull();
 	expect(await live.settingsStore.get()).toEqual({ holdTtlMinutes: 20, lowStockThreshold: 7 });
 
-	// A newer key moves the settings on while s1's decision is unlanded …
-	await live.settingsStore.update({ holdTtlMinutes: 99 }, idempotencyKey("s2"));
-	// … so s1's replay returns what it decided and applies nothing.
-	expect(await live.settingsStore.update({ holdTtlMinutes: 30 }, idempotencyKey("s1"))).toEqual({
-		holdTtlMinutes: 30,
-		lowStockThreshold: 7,
-	});
-	expect(await live.settingsStore.get()).toEqual({ holdTtlMinutes: 99, lowStockThreshold: 7 });
+	// A newer key moves the OTHER field while s1's decision is unlanded …
+	await live.settingsStore.update({ lowStockThreshold: 99 }, idempotencyKey("s2"));
+	// … and s1's completion merges over it rather than reverting it.
+	const completed = await live.settingsStore.update({ holdTtlMinutes: 30 }, idempotencyKey("s1"));
+	expect(completed).toEqual({ holdTtlMinutes: 30, lowStockThreshold: 99 });
+	expect(await live.settingsStore.get()).toEqual(completed);
+
+	// Recorded once: a further replay writes nothing, on the tier that plans the write.
+	const stamped = await live.mutations.getVersioned("s1");
+	expect(await live.settingsStore.update({ holdTtlMinutes: 30 }, idempotencyKey("s1"))).toEqual(
+		completed,
+	);
+	expect((await live.mutations.getVersioned("s1"))?.revision).toBe(stamped?.revision);
 });

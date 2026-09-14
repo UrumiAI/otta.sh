@@ -11,6 +11,7 @@ import { expect, test } from "vitest";
 import {
 	entitlementLookupId,
 	isEntitlementScopeRequiredError,
+	isScanPageLimitError,
 	SETTINGS_DOC_ID,
 } from "../src/index.js";
 import { countingCollection, withCollection } from "./helpers/fault-injection.js";
@@ -203,22 +204,88 @@ describeEachDialect("misc document model", (ctx) => {
 
 	// -- settings --------------------------------------------------------------
 
-	test("the singleton lives under one fixed id, and the mutation records its base revision", async () => {
+	test("the singleton lives under one fixed id, and a mutation records intent then outcome", async () => {
 		const h = harness();
 		await h.settingsStore.update({ holdTtlMinutes: 30 }, idempotencyKey("s1"));
 		expect(await h.settings.count()).toBe(1);
-		const doc = await h.settings.get(SETTINGS_DOC_ID);
-		expect(doc?.holdTtlMinutes).toBe(30);
-		// The first mutation was computed against an ABSENT document, so its completing
-		// write is a create-if-absent.
+		expect((await h.settings.get(SETTINGS_DOC_ID))?.holdTtlMinutes).toBe(30);
+
+		// The claim carries the PATCH as written — the fields the caller asked for, and
+		// no others — plus the result it actually applied, stamped after the write.
 		const first = await h.mutations.get("s1");
-		expect(first?.baseRevision).toBeNull();
-		expect(first?.holdTtlMinutes).toBe(30);
-		// The second was computed against a real revision, and records it.
+		expect(first?.patch).toEqual({ holdTtlMinutes: 30 });
+		expect(first?.result).toEqual({ holdTtlMinutes: 30, lowStockThreshold: 5 });
+		expect(first?.appliedRevision).not.toBeNull();
+		expect(first?.appliedAt).not.toBeNull();
+
+		// A partial patch keeps the other field, and the recorded result says so.
 		await h.settingsStore.update({ lowStockThreshold: 2 }, idempotencyKey("s2"));
 		const second = await h.mutations.get("s2");
-		expect(second?.baseRevision).not.toBeNull();
-		expect(second?.holdTtlMinutes).toBe(30);
-		expect(second?.lowStockThreshold).toBe(2);
+		expect(second?.patch).toEqual({ lowStockThreshold: 2 });
+		expect(second?.result).toEqual({ holdTtlMinutes: 30, lowStockThreshold: 2 });
+	});
+
+	test("a recorded result is single-assignment: a replay writes nothing at all", async () => {
+		const h = harness();
+		await h.settingsStore.update({ holdTtlMinutes: 30 }, idempotencyKey("s1"));
+		const recorded = await h.mutations.getVersioned("s1");
+		const settingsBefore = await h.settings.getVersioned(SETTINGS_DOC_ID);
+
+		expect(await h.settingsStore.update({ holdTtlMinutes: 30 }, idempotencyKey("s1"))).toEqual(
+			recorded?.value.result,
+		);
+		// Neither document moved — the revision is the proof, not the value.
+		expect((await h.mutations.getVersioned("s1"))?.revision).toBe(recorded?.revision);
+		expect((await h.settings.getVersioned(SETTINGS_DOC_ID))?.revision).toBe(
+			settingsBefore?.revision,
+		);
+	});
+
+	// -- order notes, paged ----------------------------------------------------
+
+	test("an order with more notes than one page returns all of them, in append order", async () => {
+		const h = harness();
+		const total = 105;
+		for (let i = 0; i < total; i++) {
+			h.advance(1000);
+			await h.orderNotesStore.append({
+				orderId: orderId("ord-paged"),
+				author: "alice",
+				body: `note ${String(i).padStart(3, "0")}`,
+				idempotencyKey: idempotencyKey(`paged-${String(i)}`),
+			});
+		}
+		const notes = await h.orderNotesStore.listForOrder(orderId("ord-paged"));
+		expect(notes).toHaveLength(total);
+		// The host clamps a page at 100, so this crossed a cursor — and the ordering is
+		// applied AFTER the pages are joined, which is the part a single-page list would
+		// never exercise.
+		expect(notes.map((n) => n.body)).toEqual(
+			Array.from({ length: total }, (_unused, i) => `note ${String(i).padStart(3, "0")}`),
+		);
+	});
+
+	test("a note list that exhausts its page budget refuses rather than truncating", async () => {
+		const h = makeMiscHarness(bound.storage, { maxNotePages: 1 });
+		for (let i = 0; i < 101; i++) {
+			await h.orderNotesStore.append({
+				orderId: orderId("ord-budget"),
+				author: "alice",
+				body: `note ${String(i)}`,
+				idempotencyKey: idempotencyKey(`budget-${String(i)}`),
+			});
+		}
+		const failure = await h.orderNotesStore.listForOrder(orderId("ord-budget")).then(
+			() => undefined,
+			(err: unknown) => err,
+		);
+		// A short note list reads as "nobody wrote that", so the ceiling is loud and it
+		// names the budget to raise.
+		expect(isScanPageLimitError(failure), String(failure)).toBe(true);
+		if (isScanPageLimitError(failure)) {
+			expect(failure.budgetOption).toBe("maxNotePages");
+			expect(failure.operation).toBe("listNotesForOrder");
+			expect(failure.collected).toBe(100);
+		}
 	});
 });

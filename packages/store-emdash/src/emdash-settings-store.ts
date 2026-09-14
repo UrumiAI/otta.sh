@@ -2,40 +2,42 @@
  * `SettingsStore` over the settings singleton and a claim per mutation key.
  *
  * The SQL did the whole of `update` inside one transaction: read current, merge,
- * claim the key with the merged values, and — only as the claim's winner — upsert
- * the settings row. There is no transaction here, so the same four steps become a
- * claim document and a compare-and-set, in this order:
+ * claim the key with the merged values, and — as the claim's winner only — upsert
+ * the settings row. There is no transaction here, so the claim and the write are two
+ * documents, and the design turns on separating what was DECIDED from what LANDED:
  *
  * ```
- * read    : settings/store, with its revision
- * merge   : the patch over what was read (absolute fields, so a no-op field is a keep)
- * claim   : settings_mutations/{key} create-if-absent, carrying the RESULT and that revision
- * apply   : settings/store compare-and-set, pinned to the revision the claim recorded
+ * claim  : settings_mutations/{key} create-if-absent, carrying the PATCH and nothing else
+ * apply  : read settings/store + revision → merge the patch over it →
+ *          compare-and-set pinned to the revision just read
+ * record : the claim's `result`, assigned EXACTLY ONCE, after that write committed
  * ```
  *
- * **Why the claim comes before the write it guards.** A claim with no settings
- * write is completable: it carries the result and the revision that result was
- * computed against, so any later caller with the same key finishes it with one
- * pinned compare-and-set — applying it if nothing has moved, and skipping it if a
- * newer update has. A settings write with no claim would be the opposite: the value
- * is applied and no ledger row says so, so the next replay of that key recomputes
- * from the new state and applies a SECOND time. So the claim is first, and the
- * residue of a crash is an update that has been decided but not yet landed, which
- * the next replay lands.
+ * **A recorded result is always a value that really was applied.** It is written
+ * after the settings write, guarded on the claim revision that had `result: null`,
+ * so it is single-assignment: of any number of callers of one key, the first to
+ * record decides the answer and every other one reads it. That is what makes two
+ * callers of one key unable to disagree — the failure mode a claim carrying a
+ * PRE-COMPUTED result has, because a merged value stored before the write can be
+ * invalidated by a peer and then has to be re-decided against a newer base, leaving
+ * whoever read it holding an answer no state ever had.
  *
- * **A replay never re-merges.** The port's promise is that a replay returns the
- * RECORDED result, and that is read straight out of the claim — so a stale replay
- * arriving after a newer update returns what it originally produced and leaves the
- * newer value alone. The completing compare-and-set is what makes that true even
- * when the original call died before applying.
+ * **A replay reads the recorded result and writes nothing.** So a stale replay
+ * arriving after a newer update returns what its mutation applied and cannot clobber
+ * the newer value — the port's own promise.
  *
- * **Losing the apply to a concurrent DIFFERENT key re-computes, and rewrites this
- * call's own claim.** The SQL serialized those two callers with a row lock and let
- * the later one win with a value computed from the earlier one's state. Here the
- * loser's pinned compare-and-set fails, and it must not simply record a result it
- * never applied, so it re-reads, re-merges over the new base, and updates its own
- * claim — which it owns, by the revision its create returned — before applying
- * again. The recorded result and the applied value therefore always agree.
+ * **A replay of an UN-LANDED claim completes it instead.** A crash between the claim
+ * and the write leaves a decision with no outcome, and the only honest thing to
+ * return is an outcome, so the replay merges the recorded patch over the CURRENT
+ * settings and applies it. That is a late write, not a clobber-back: the mutation
+ * had never landed, and the patch holds absolute values, so re-merging cannot revert
+ * a field another mutation set in the meantime. The port's no-clobber clause is
+ * about replaying a mutation whose result is recorded, and that path writes nothing
+ * at all.
+ *
+ * **Losing the apply re-merges over the new base and tries again**, which is why
+ * distinct-key updates never lose each other's fields: the loser recomputes from
+ * what it can now see rather than re-committing a value it computed earlier.
  *
  * **Validation is not here.** The port's `update` is documented as a *validated*
  * partial update and the domain's `updateSettings` use-case (with
@@ -58,16 +60,16 @@ import {
 	SETTINGS_DOC_ID,
 	SETTINGS_MUTATIONS_COLLECTION,
 	toOperationalSettings,
-	toRecordedSettings,
+	toPatchDoc,
 	type SettingsDoc,
 	type SettingsMutationDoc,
 } from "./settings-documents.js";
-import type { StorageAccess, StorageCollection } from "./storage-access.js";
+import type { StorageAccess, StorageCollection, Versioned } from "./storage-access.js";
 
 export interface EmdashSettingsStoreOptions {
 	/** The collections the descriptor declared (`SETTINGS_COLLECTIONS`). */
 	storage: StorageAccess;
-	/** Stamps `updatedAt` on the singleton and `createdAt` on the claim. */
+	/** Stamps `updatedAt` on the singleton, and the claim's `createdAt`/`appliedAt`. */
 	clock: Clock;
 	/** Override the compare-and-set attempt ceiling (see `CAS_MAX_ATTEMPTS`). */
 	maxCasAttempts?: number;
@@ -105,84 +107,84 @@ export class EmdashSettingsStore implements SettingsStore {
 		return toOperationalSettings(await this.#settings.get(SETTINGS_DOC_ID));
 	}
 
-	/** Claim the key with the merged result, then apply it pinned to its base. */
+	/**
+	 * Claim the key with the patch, apply the patch, then record what it applied.
+	 *
+	 * One bounded step covers all three, because every one of them can lose a race
+	 * and the answer to each loss is to re-read and recompute. The step is written so
+	 * that each attempt reaches one of three ends: the recorded result (nothing
+	 * written), a value this call applied and recorded, or a value it applied that a
+	 * peer recorded first.
+	 */
 	async update(
 		patch: Partial<OperationalSettings>,
 		idempotencyKey: IdempotencyKey,
 	): Promise<OperationalSettings> {
-		// The replay fast path, and the completion of a crashed predecessor with it:
-		// the recorded result is returned either way, and the pinned write lands the
-		// update only if nothing has moved since it was decided.
-		const recorded = await this.#mutations.get(idempotencyKey);
-		if (recorded !== null) {
-			await this.#complete(recorded);
-			return toRecordedSettings(recorded);
-		}
-
-		// The revision of the claim THIS call created, once it has. It is how the loop
-		// tells its own claim from a peer's: only the creator ever rewrites one.
-		let mine: string | null = null;
-
+		const intent = toPatchDoc(patch);
 		return this.#cas<OperationalSettings>("updateSettings", async () => {
+			const claim = await this.#holdClaim(idempotencyKey, intent);
+			if (claim === undefined) return CAS_RETRY;
+			// The landed half: a recorded result is an answer, and this call writes
+			// nothing at all — which is what keeps a stale replay from clobbering a
+			// newer update.
+			if (claim.value.result !== null) return casDone(claim.value.result);
+
+			// The un-landed half, whether this call just created the claim or is
+			// completing somebody else's: merge over what is there NOW.
 			const current = await this.#settings.getVersioned(SETTINGS_DOC_ID);
-			const baseRevision = current?.revision ?? null;
-			const next = mergeSettings(toOperationalSettings(current?.value ?? null), patch);
+			const next = mergeSettings(toOperationalSettings(current?.value ?? null), claim.value.patch);
 			const now = this.#clock.now().toISOString();
+			const written = await this.#settings.compareAndSet(
+				SETTINGS_DOC_ID,
+				current?.revision ?? null,
+				{
+					...next,
+					updatedAt: now,
+				},
+			);
+			// A peer moved the settings between the read and here: recompute from the
+			// new base rather than re-committing a value decided against the old one.
+			if (!written.applied) return CAS_RETRY;
 
-			const claimed = await this.#mutations.compareAndSet(idempotencyKey, mine, {
-				...next,
-				baseRevision,
-				createdAt: now,
+			// Single assignment, guarded on the revision that still had `result: null`.
+			const recorded = await this.#mutations.compareAndSet(idempotencyKey, claim.revision, {
+				...claim.value,
+				result: next,
+				appliedRevision: written.revision,
+				appliedAt: now,
 			});
-			if (!claimed.applied) {
-				const held = await this.#mutations.getVersioned(idempotencyKey);
-				// Gone, or moved by nobody: recompute on the next attempt.
-				if (held === null) return CAS_RETRY;
-				if (mine !== null) {
-					// This call's own claim, at a revision it no longer holds. Nothing else
-					// writes a claim it did not create, so this is only reachable if the
-					// revision moved under us; carry it forward and recompute.
-					mine = held.revision;
-					return CAS_RETRY;
-				}
-				// A same-key peer claimed first: its result is THE result, and this call
-				// applies nothing. Completing it is how a crashed peer's decision lands.
-				await this.#complete(held.value);
-				return casDone(toRecordedSettings(held.value));
-			}
-			mine = claimed.revision;
+			if (recorded.applied) return casDone(next);
 
-			const written = await this.#settings.compareAndSet(SETTINGS_DOC_ID, baseRevision, {
-				...next,
-				updatedAt: now,
-			});
-			// A refusal means a peer moved the settings between the read and here, so the
-			// merge has to be redone over the new base — and the claim rewritten with it,
-			// which the next attempt does through `mine`.
-			return written.applied ? casDone(next) : CAS_RETRY;
+			// A peer recorded first. Its value is the answer for every caller of this
+			// key — and it landed too, so nothing here has to be undone.
+			const peer = await this.#mutations.get(idempotencyKey);
+			return peer?.result == null ? CAS_RETRY : casDone(peer.result);
 		});
 	}
 
 	/**
-	 * Land a claim's recorded result, if the base it was computed against is still
-	 * current.
+	 * The claim for this key, creating it if it is not there yet.
 	 *
-	 * Idempotent and safe to call on every replay: the compare-and-set applies at
-	 * most once, because applying it moves the revision it was pinned to. A refusal
-	 * is the expected outcome for a mutation that already landed OR for one a newer
-	 * update has overtaken — deliberately indistinguishable, because the action is the
-	 * same in both cases: leave the current value alone.
+	 * `undefined` means "a peer wrote it under me" — the caller retries and reads it.
+	 * The patch is written once and never rewritten: a claim IS the mutation's intent,
+	 * so a second call with the same key and a different patch gets the first patch,
+	 * which is what "the key decides, not the payload" means.
 	 */
-	async #complete(claim: SettingsMutationDoc): Promise<void> {
-		await this.#cas<void>("completeSettingsMutation", async () => {
-			await this.#settings.compareAndSet(SETTINGS_DOC_ID, claim.baseRevision, {
-				...toRecordedSettings(claim),
-				updatedAt: claim.createdAt,
-			});
-			// Either outcome is DONE. The retry loop is here only so a host-level
-			// retryable abort is retried rather than surfacing from a replay.
-			return casDone(undefined);
-		});
+	async #holdClaim(
+		idempotencyKey: string,
+		patch: SettingsMutationDoc["patch"],
+	): Promise<Versioned<SettingsMutationDoc> | undefined> {
+		const held = await this.#mutations.getVersioned(idempotencyKey);
+		if (held !== null) return held;
+		const value: SettingsMutationDoc = {
+			patch,
+			createdAt: this.#clock.now().toISOString(),
+			result: null,
+			appliedRevision: null,
+			appliedAt: null,
+		};
+		const created = await this.#mutations.compareAndSet(idempotencyKey, null, value);
+		return created.applied ? { value, revision: created.revision } : undefined;
 	}
 
 	#cas<T>(operation: string, step: () => Promise<CasStep<T>>): Promise<T> {

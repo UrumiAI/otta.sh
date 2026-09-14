@@ -63,6 +63,7 @@ import {
 	type EntitlementDoc,
 	type EntitlementLookupDoc,
 	type EntitlementScopeKind,
+	type StoredEntitlementDoc,
 } from "./entitlement-documents.js";
 import { EntitlementScopeRequiredError } from "./entitlement-errors.js";
 import { foldBuyerRef } from "./order-documents.js";
@@ -95,14 +96,14 @@ interface Scope {
 }
 
 export class EmdashEntitlementStore implements EntitlementStore {
-	readonly #grants: StorageCollection<EntitlementDoc>;
+	readonly #grants: StorageCollection<StoredEntitlementDoc>;
 	readonly #lookups: StorageCollection<EntitlementLookupDoc>;
 	readonly #idGen: IdGen;
 	readonly #clock: Clock;
 	readonly #retry: CasRetryOptions;
 
 	constructor(options: EmdashEntitlementStoreOptions) {
-		this.#grants = collectionOf<EntitlementDoc>(options.storage, ENTITLEMENTS_COLLECTION);
+		this.#grants = collectionOf<StoredEntitlementDoc>(options.storage, ENTITLEMENTS_COLLECTION);
 		this.#lookups = collectionOf<EntitlementLookupDoc>(
 			options.storage,
 			ENTITLEMENT_LOOKUPS_COLLECTION,
@@ -204,7 +205,9 @@ export class EmdashEntitlementStore implements EntitlementStore {
 	}
 
 	/** The first grant matching `where`, as `{ id, data }` — `id` is its grant key. */
-	async #firstMatch(where: WhereClause): Promise<{ id: string; data: EntitlementDoc } | undefined> {
+	async #firstMatch(
+		where: WhereClause,
+	): Promise<{ id: string; data: StoredEntitlementDoc } | undefined> {
 		const page = await this.#grants.query({ where, limit: 1 });
 		return page.items[0];
 	}

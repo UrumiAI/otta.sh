@@ -5,29 +5,34 @@
  * The SQL held a `settings` table whose primary key was a literal `'singleton'`
  * and a `settings_mutations` idempotency ledger keyed by the mutation key, and it
  * wrote both inside ONE transaction. There is no transaction here, so the two
- * writes become two documents and the claim carries what a replayer needs to
- * finish the pair:
+ * writes become two documents:
  *
  * | Document | What it is |
  * |---|---|
  * | `settings/store` | the current operational settings |
- * | `settings_mutations/{idempotencyKey}` | the recorded result of one mutation, and the revision it was computed against |
+ * | `settings_mutations/{idempotencyKey}` | one mutation's INTENT, and — written exactly once, after a settings write lands — its result |
  *
- * **The claim records the RESULT, not the patch.** That is the SQL's own choice —
- * its ledger row stored `hold_ttl_minutes` and `low_stock_threshold`, the merged
- * values, not the fields the caller sent — and it is what makes a replay cheap and
- * exact: the answer is read out of the claim, nothing is recomputed, and a stale
- * replay arriving after a newer update cannot clobber it back.
+ * **The claim separates DECIDED from LANDED, and only the landed half is an
+ * answer.** On create it carries the patch and nothing else: the patch is the
+ * intent, it is never rewritten, and a claim in that state means "this mutation was
+ * admitted and has not landed yet". `result` is assigned exactly once, by a
+ * compare-and-set that runs only after the settings write it describes has
+ * committed — so a recorded result is always a value that really was applied, and
+ * two callers of one key can never be handed different answers.
  *
- * **`baseRevision` is the one field the SQL had no need for.** Inside a
- * transaction, reading the current settings and upserting them was atomic; here a
- * crash can land between the claim and the settings write, and a later replayer has
- * to be able to finish the pair WITHOUT double-applying over a newer update. The
- * revision the result was computed against is exactly that guard: the completing
- * write is a compare-and-set pinned to it, so it applies if nothing has moved and
- * is a no-op if something has. `null` means the settings document did not exist
- * yet, which makes the completion a create-if-absent — the same guard, at the other
- * end.
+ * That is the whole reason the claim does not carry a pre-computed result. The SQL
+ * could store the merged values at claim time because the claim and the upsert were
+ * one transaction, so "claimed" and "applied" were the same instant. Split across
+ * two documents they are not, and a result recorded before the write is a
+ * PROVISIONAL one: if that write is then lost to a peer, the mutation has to be
+ * re-decided against a newer base, and anything that read the provisional value
+ * holds an answer no state ever had.
+ *
+ * **A claim is a once-only record, not a lease**, which is why ADR-0019's
+ * cross-cutting rule (a) does not bind it: nobody can take it over, so there is no
+ * owner token to re-assert. The guard on the only value-bearing write is the
+ * settings document's own revision, re-read on every attempt and used immediately
+ * after, which is what rule (a) asks for.
  */
 import type { OperationalSettings } from "@otta-sh/domain";
 import { DEFAULT_OPERATIONAL_SETTINGS } from "@otta-sh/domain";
@@ -62,16 +67,35 @@ export interface SettingsDoc {
 	readonly updatedAt: string;
 }
 
-/** `settings_mutations/{idempotencyKey}` — one mutation's recorded outcome. */
+/** The fields a mutation asked to change. An absent field means "keep what is there". */
+export interface SettingsPatchDoc {
+	readonly holdTtlMinutes?: number;
+	readonly lowStockThreshold?: number;
+}
+
+/**
+ * `settings_mutations/{idempotencyKey}` — one mutation's intent, then its outcome.
+ *
+ * `patch` is written once, on create, and never rewritten. `result` is `null` until
+ * a settings write lands and is then assigned exactly once. The pair IS the
+ * decided/landed distinction this store depends on.
+ */
 export interface SettingsMutationDoc {
-	readonly holdTtlMinutes: number;
-	readonly lowStockThreshold: number;
-	/**
-	 * The `settings/store` revision this result was computed against, or `null` if
-	 * the document did not exist yet. The completing write is pinned to it.
-	 */
-	readonly baseRevision: string | null;
+	readonly patch: SettingsPatchDoc;
 	readonly createdAt: string;
+	/** The settings this mutation actually applied, or `null` while un-landed. */
+	readonly result: OperationalSettings | null;
+	/** The `settings/store` revision the applying write produced. */
+	readonly appliedRevision: string | null;
+	readonly appliedAt: string | null;
+}
+
+/** Drop the keys a caller left undefined, so the stored intent says what it meant. */
+export function toPatchDoc(patch: Partial<OperationalSettings>): SettingsPatchDoc {
+	const doc: { holdTtlMinutes?: number; lowStockThreshold?: number } = {};
+	if (patch.holdTtlMinutes !== undefined) doc.holdTtlMinutes = patch.holdTtlMinutes;
+	if (patch.lowStockThreshold !== undefined) doc.lowStockThreshold = patch.lowStockThreshold;
+	return doc;
 }
 
 /**
@@ -89,21 +113,16 @@ export function toOperationalSettings(doc: SettingsDoc | null): OperationalSetti
 	};
 }
 
-/** The recorded result of a mutation, as the port returns it. */
-export function toRecordedSettings(doc: SettingsMutationDoc): OperationalSettings {
-	return { holdTtlMinutes: doc.holdTtlMinutes, lowStockThreshold: doc.lowStockThreshold };
-}
-
 /**
  * Apply a partial patch: every field the caller omitted keeps its current value.
  *
- * The patch holds ABSOLUTE values rather than deltas, which is why applying the
- * same one twice is harmless in itself — the guard `baseRevision` provides is
- * against clobbering a NEWER update, not against arithmetic.
+ * The patch holds ABSOLUTE values rather than deltas, so re-merging it over a newer
+ * base is safe and is exactly what every losing attempt does. It can never revert a
+ * field another mutation set, because an omitted field is read from the base.
  */
 export function mergeSettings(
 	base: OperationalSettings,
-	patch: Partial<OperationalSettings>,
+	patch: SettingsPatchDoc,
 ): OperationalSettings {
 	return {
 		holdTtlMinutes: patch.holdTtlMinutes ?? base.holdTtlMinutes,

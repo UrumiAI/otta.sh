@@ -350,6 +350,7 @@ export {
 	type EntitlementDoc,
 	type EntitlementLookupDoc,
 	type EntitlementScopeKind,
+	type StoredEntitlementDoc,
 } from "./entitlement-documents.js";
 export {
 	EntitlementScopeRequiredError,
@@ -377,10 +378,11 @@ export {
 	SETTINGS_DOC_ID,
 	SETTINGS_MUTATIONS_COLLECTION,
 	toOperationalSettings,
-	toRecordedSettings,
+	toPatchDoc,
 	type SettingsCollectionIndexDeclaration,
 	type SettingsDoc,
 	type SettingsMutationDoc,
+	type SettingsPatchDoc,
 } from "./settings-documents.js";
 export { EmdashSettingsStore, type EmdashSettingsStoreOptions } from "./emdash-settings-store.js";
 export {
