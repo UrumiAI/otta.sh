@@ -2279,9 +2279,9 @@ export function productCommerceStoreContract(
 			const { products } = await h.store.listProducts({ search: "widget-blue" }, { limit: 25 });
 			expect(products.map((p) => p.productId)).toEqual(["a"]);
 			// A substring of a sku must NOT match (exact-lower-equals only). The sku
-			// half is now the STRICTEST search axis in the product: an order's
-			// buyer_ref matches as a folded SUBSTRING and its id as a PREFIX, while
-			// a sku is quoted whole and stays exact.
+			// half is the STRICTEST search axis in the product: a product TITLE
+			// matches as a folded SUBSTRING and an order's buyer_ref and id each as a
+			// folded PREFIX, while a sku is quoted whole and stays exact.
 			const partial = await h.store.listProducts({ search: "widget" }, { limit: 25 });
 			expect(partial.products.map((p) => p.productId).toSorted()).toEqual([]);
 		});

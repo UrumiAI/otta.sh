@@ -114,7 +114,7 @@ export interface CouponStore {
 	 * `filter.search` is a case-insensitive EXACT match on `code` — a structured
 	 * identifier a merchant looks up precisely, and the strictest `search` in the
 	 * product: NEITHER `ProductListFilter.search`'s title-substring half NOR
-	 * `OrderListFilter.search`'s id-PREFIX / buyer_ref-SUBSTRING widening applies
+	 * `OrderListFilter.search`'s id-PREFIX / buyer_ref-PREFIX widening applies
 	 * here (that filter's THIRD arm, an exact-lower purchase-time line sku, is a
 	 * widening only in what it reaches, not in how it matches — it is the same
 	 * exact-identifier rule this one keeps). A coupon has no free-text field to
