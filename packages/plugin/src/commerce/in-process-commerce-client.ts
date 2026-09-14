@@ -5,9 +5,10 @@
  * commerce service and no egress at all (ADR-0018).
  *
  * WHAT THIS CLASS IS, AND WHAT IT IS NOT. It is a TRANSPORT adapter that happens
- * to have no wire: every method validates and brands its inputs, calls one
- * use-case, and serializes the result into the same value the HTTP client
- * returns. It holds no commerce rule of its own — a rule here would be a rule the
+ * to have no wire: every method checks its inputs against the bounds the wire's
+ * request schemas used to enforce (`commerce-input.ts` — read its doc, the
+ * watermark format is load-bearing), brands them, calls one use-case, and
+ * serializes the result into the same value the HTTP client returns. It holds no commerce rule of its own — a rule here would be a rule the
  * contract suites cannot see, and the port's whole value is that the two
  * implementations are interchangeable. Where the surface this replaces did
  * something beyond calling a use-case (the add's sku guard, the quote's per-line
@@ -24,7 +25,13 @@
  *    is structural rather than a filter. A foreign or unknown order is NOT_FOUND
  *    rather than a refusal, so the answer leaks no existence either.
  *
- * 2. NO STATUS CODES, IN EITHER DIRECTION. There is no HTTP here to translate, so
+ * 2. INPUT IS REFUSED AT THE BOUNDARY, BEFORE ANY STORE CALL. Removing the wire
+ *    removed the request schemas that stood in front of every call; they are
+ *    restored in `commerce-input.ts` and applied here first, so a bad input can
+ *    never reach a store. It rejects with a structural `INVALID_INPUT` code
+ *    carrying the field and the reason.
+ *
+ * 3. NO STATUS CODES, IN EITHER DIRECTION. There is no HTTP here to translate, so
  *    nothing is translated: where the port declares a typed result the refusal IS
  *    that value, and where it declares none, the domain's or the adapter's own
  *    error surfaces as an AWAITED REJECTION carrying its structural `code`
@@ -114,6 +121,25 @@ import type {
 } from "../product-commerce/commerce-client.js";
 import type { PluginContext } from "../types.js";
 import {
+	looksLikeEmail,
+	requireBatchIds,
+	requireBoundedProductId,
+	requireBoundedText,
+	requireCurrencyCode,
+	requireIdToken,
+	requireIdempotencyKey,
+	requireMoney,
+	requireNonNegativeInteger,
+	requireNullableInteger,
+	requireProductId,
+	requireQty,
+	requireShippingAddress,
+	requireSku,
+	requireTitle,
+	requireVariantKey,
+	requireWatermark,
+} from "./commerce-input.js";
+import {
 	createInProcessCommerceStores,
 	type InProcessCommerceStores,
 	type InProcessCommerceStoresOptions,
@@ -170,6 +196,21 @@ export class InProcessCommerceClient implements CommerceClient {
 		input: UpsertProductCommerceInput,
 		idempotencyKey: string,
 	): Promise<ProductCommerce> {
+		requireProductId(productId);
+		requireIdempotencyKey(idempotencyKey);
+		if (input.sku !== undefined) requireSku(input.sku);
+		if (input.price !== undefined) requireMoney("price", input.price);
+		if (input.title !== undefined) requireTitle(input.title);
+		if (input.weightGrams !== undefined) requireNullableInteger("weightGrams", input.weightGrams);
+		if (input.lengthMm !== undefined) requireNullableInteger("lengthMm", input.lengthMm);
+		if (input.widthMm !== undefined) requireNullableInteger("widthMm", input.widthMm);
+		if (input.heightMm !== undefined) requireNullableInteger("heightMm", input.heightMm);
+		if (input.initialOnHand !== undefined) {
+			requireNonNegativeInteger("initialOnHand", input.initialOnHand);
+		}
+		if (input.contentUpdatedAt !== undefined) {
+			requireWatermark("contentUpdatedAt", input.contentUpdatedAt);
+		}
 		const row = await upsertProductCommerce(
 			{ productCommerce: this.#stores.productCommerce, inventory: this.#stores.inventory },
 			{
@@ -194,11 +235,14 @@ export class InProcessCommerceClient implements CommerceClient {
 	}
 
 	async getProductCommerce(productId: string): Promise<ProductCommerce | null> {
+		requireProductId(productId);
 		const row = await getProductCommerce(this.#stores.productCommerce, toProductId(productId));
 		return row === null ? null : serializeCommerce(row);
 	}
 
 	async softDeleteProductCommerce(productId: string, idempotencyKey: string): Promise<void> {
+		requireProductId(productId);
+		requireIdempotencyKey(idempotencyKey);
 		await softDeleteProductCommerce(
 			this.#stores.productCommerce,
 			toProductId(productId),
@@ -211,6 +255,9 @@ export class InProcessCommerceClient implements CommerceClient {
 		idempotencyKey: string,
 		contentUpdatedAt: string,
 	): Promise<void> {
+		requireProductId(productId);
+		requireIdempotencyKey(idempotencyKey);
+		requireWatermark("contentUpdatedAt", contentUpdatedAt);
 		await activateProductCommerce(
 			this.#stores.productCommerce,
 			toProductId(productId),
@@ -224,6 +271,9 @@ export class InProcessCommerceClient implements CommerceClient {
 		idempotencyKey: string,
 		contentUpdatedAt: string,
 	): Promise<void> {
+		requireProductId(productId);
+		requireIdempotencyKey(idempotencyKey);
+		requireWatermark("contentUpdatedAt", contentUpdatedAt);
 		await deactivateProductCommerce(
 			this.#stores.productCommerce,
 			toProductId(productId),
@@ -235,6 +285,7 @@ export class InProcessCommerceClient implements CommerceClient {
 	/** A pure read. An id with no commerce row — or an incomplete one — is OMITTED
 	 *  rather than reported, exactly as the port's own contract says. */
 	async getCommerceBatch(productIds: string[]): Promise<ProductCommerceBatchItem[]> {
+		requireBatchIds(productIds);
 		const views = await listProductCommerceByIds(
 			this.#stores.productCommerce,
 			productIds.map((id) => toProductId(id)),
@@ -251,6 +302,7 @@ export class InProcessCommerceClient implements CommerceClient {
 	 * than optional.
 	 */
 	async listProductVariants(productId: string): Promise<ProductVariantSummaryWire[]> {
+		requireProductId(productId);
 		const rows = await listProductVariants(this.#stores.productCommerce, toProductId(productId));
 		return rows.filter((row) => row.orphanedAt === null).map(serializeVariantSummary);
 	}
@@ -261,6 +313,13 @@ export class InProcessCommerceClient implements CommerceClient {
 		input: UpsertProductVariantInput,
 		idempotencyKey: string,
 	): Promise<ProductVariantWire> {
+		requireProductId(productId);
+		requireVariantKey(variantKey);
+		requireIdempotencyKey(idempotencyKey);
+		if (input.title !== undefined) requireTitle(input.title);
+		if (input.contentUpdatedAt !== undefined) {
+			requireWatermark("contentUpdatedAt", input.contentUpdatedAt);
+		}
 		const row = await upsertProductVariant(
 			this.#stores.productCommerce,
 			{
@@ -290,6 +349,16 @@ export class InProcessCommerceClient implements CommerceClient {
 		expectedUpdatedAt: string,
 		idempotencyKey: string,
 	): Promise<VariantUpdateResult> {
+		requireProductId(productId);
+		requireVariantKey(variantKey);
+		requireIdempotencyKey(idempotencyKey);
+		requireWatermark("expectedUpdatedAt", expectedUpdatedAt);
+		if (input.sku !== undefined) requireSku(input.sku);
+		// STRICTLY POSITIVE here, unlike the product upsert: a zero-amount variant
+		// price was refused at the wire before the use-case ever saw it, and it has
+		// to be refused here for the same reason — an absent price is expressed by
+		// omitting the field, so a zero is a mistake rather than a clearing.
+		if (input.price !== undefined) requireMoney("price", input.price, { positive: true });
 		try {
 			const result = await updateProductVariantFields(
 				{ productCommerce: this.#stores.productCommerce, inventory: this.#stores.inventory },
@@ -342,6 +411,10 @@ export class InProcessCommerceClient implements CommerceClient {
 		idempotencyKey: string,
 		contentUpdatedAt: string,
 	): Promise<void> {
+		requireProductId(productId);
+		requireVariantKey(variantKey);
+		requireIdempotencyKey(idempotencyKey);
+		requireWatermark("contentUpdatedAt", contentUpdatedAt);
 		await deactivateProductVariant(
 			this.#stores.productCommerce,
 			toProductId(productId),
@@ -354,6 +427,7 @@ export class InProcessCommerceClient implements CommerceClient {
 	// ── cart ────────────────────────────────────────────────────────────────
 
 	async createCart(currency?: string): Promise<{ cartId: string }> {
+		if (currency !== undefined) requireCurrencyCode("currency", currency);
 		const cartId = await createCart(this.#cartDeps, toCurrency(currency ?? DEFAULT_CURRENCY));
 		return { cartId };
 	}
@@ -361,6 +435,7 @@ export class InProcessCommerceClient implements CommerceClient {
 	/** Runs the lazy hold expiry the use-case owns, then reads. An unknown cart is
 	 *  the typed token, never a rejection. */
 	async getCart(cartId: string): Promise<CartResult<{ cart: CartWire }>> {
+		requireIdToken("cartId", cartId);
 		const cart = await getCart(this.#cartDeps, cartId);
 		if (cart === null) return { ok: false, reason: "CART_NOT_FOUND" };
 		return { ok: true, cart: serializeCart(cart) };
@@ -394,6 +469,15 @@ export class InProcessCommerceClient implements CommerceClient {
 		qty: number,
 		idempotencyKey: string,
 	): Promise<CartResult<{ line: CartLineWire }>> {
+		requireIdToken("cartId", cartId);
+		requireSku(sku);
+		// The ADD's product id is bounded the way the add's own schema bounded it —
+		// non-empty and at most 200 characters, with NO charset rule. Tightening it to
+		// the opaque-id charset here would refuse ids the other transport accepts, and
+		// a divergence that refuses MORE is still a divergence.
+		if (productId !== null) requireBoundedProductId(productId);
+		requireQty(qty);
+		requireIdempotencyKey(idempotencyKey);
 		let kind: FulfillmentKind = "physical";
 		if (productId !== null) {
 			const resolved = await this.#resolveSellableUnit(toProductId(productId), sku);
@@ -426,6 +510,10 @@ export class InProcessCommerceClient implements CommerceClient {
 		qty: number,
 		idempotencyKey: string,
 	): Promise<CartResult<{ line: CartLineWire }>> {
+		requireIdToken("cartId", cartId);
+		requireIdToken("lineId", lineId);
+		requireQty(qty);
+		requireIdempotencyKey(idempotencyKey);
 		const result = await updateLine(
 			this.#cartDeps,
 			cartId,
@@ -442,6 +530,9 @@ export class InProcessCommerceClient implements CommerceClient {
 		lineId: string,
 		idempotencyKey: string,
 	): Promise<CartResult<Record<string, never>>> {
+		requireIdToken("cartId", cartId);
+		requireIdToken("lineId", lineId);
+		requireIdempotencyKey(idempotencyKey);
 		const result = await removeLine(
 			this.#cartDeps,
 			cartId,
@@ -470,6 +561,11 @@ export class InProcessCommerceClient implements CommerceClient {
 	 * that is infrastructure, not an answer about an account.
 	 */
 	async requestLoginLink(email: string): Promise<{ ok: true }> {
+		// CHECKED BUT NEVER REPORTED: a bound that fails here ends the call in the
+		// same generic success a valid address gets. This surface must answer
+		// identically whatever it is handed, so a refusal — of a bound OR of an
+		// address — would be a usable signal about which addresses exist.
+		if (!looksLikeEmail(email)) return { ok: true };
 		let address;
 		try {
 			address = toEmail(email);
@@ -481,6 +577,8 @@ export class InProcessCommerceClient implements CommerceClient {
 	}
 
 	async verifyLogin(challengeId: string, token: string): Promise<LoginVerifyResult> {
+		requireIdToken("challengeId", challengeId);
+		requireBoundedText("token", token, 1, 400);
 		const result = await verifyLogin(
 			{
 				credentialVerifier: this.#stores.credentialVerifier,
@@ -517,6 +615,7 @@ export class InProcessCommerceClient implements CommerceClient {
 	> {
 		const customerId = await this.#stores.sessionStore.validate(sessionToken);
 		if (customerId === null) return { ok: false, reason: "UNAUTHENTICATED" };
+		requireIdToken("orderId", orderId);
 		const order = await this.#stores.orderStore.getById(toOrderId(orderId));
 		if (order === null || order.customerId !== customerId) {
 			return { ok: false, reason: "NOT_FOUND" };
@@ -549,8 +648,12 @@ export class InProcessCommerceClient implements CommerceClient {
 		sku: string,
 		opts: { sessionToken?: string } = {},
 	): Promise<AuthedResult<{ active: boolean }>> {
+		requireSku(sku, 200);
 		const skuValue = toSku(sku);
 		if (scope.orderId !== undefined) {
+			// The check's own schema bounded this one as plain text, not as a path
+			// parameter — mirror that rather than the stricter path rule.
+			requireBoundedText("orderId", scope.orderId, 1, 200);
 			const active = await this.#stores.entitlementStore.check({
 				orderId: toOrderId(scope.orderId),
 				sku: skuValue,
@@ -586,6 +689,12 @@ export class InProcessCommerceClient implements CommerceClient {
 	 * be an N+1 on the hottest path in checkout.
 	 */
 	async quoteCheckout(input: QuoteRequestWire): Promise<QuoteResult> {
+		requireIdToken("cartId", input.cartId);
+		if (input.shippingZoneId !== undefined) requireIdToken("shippingZoneId", input.shippingZoneId);
+		if (input.shippingMethodId !== undefined) {
+			requireIdToken("shippingMethodId", input.shippingMethodId);
+		}
+		if (input.couponCode !== undefined) requireBoundedText("couponCode", input.couponCode, 1, 200);
 		const cart = await this.#stores.cartStore.get(input.cartId);
 		if (cart === null) return { ok: false, reason: "CART_NOT_FOUND" };
 		if (cart.lines.length === 0) return { ok: false, reason: "CART_EMPTY" };
@@ -655,6 +764,15 @@ export class InProcessCommerceClient implements CommerceClient {
 	 * the ship-to snapshot and the buyer reference cannot reach a page by accident.
 	 */
 	async createOrder(input: CheckoutRequestWire, idempotencyKey: string): Promise<CheckoutResult> {
+		requireIdToken("cartId", input.cartId);
+		requireIdempotencyKey(idempotencyKey);
+		requireBoundedText("buyerRef", input.buyerRef, 1, 320);
+		if (input.shippingZoneId !== undefined) requireIdToken("shippingZoneId", input.shippingZoneId);
+		if (input.shippingMethodId !== undefined) {
+			requireIdToken("shippingMethodId", input.shippingMethodId);
+		}
+		if (input.couponCode !== undefined) requireBoundedText("couponCode", input.couponCode, 1, 200);
+		if (input.shippingAddress !== undefined) requireShippingAddress(input.shippingAddress);
 		const result = await createOrderFromCart(this.#createOrderDeps, {
 			cartId: input.cartId,
 			idempotencyKey: toIdempotencyKey(idempotencyKey),
@@ -676,6 +794,7 @@ export class InProcessCommerceClient implements CommerceClient {
 	/** The capability read: the order id alone is the credential, so the reply is
 	 *  the public whitelist and never the operator's view. */
 	async getPublicOrder(orderId: string): Promise<PublicOrderResult> {
+		requireIdToken("orderId", orderId);
 		const order = await this.#stores.orderStore.getById(toOrderId(orderId));
 		if (order === null) return { ok: false, reason: "ORDER_NOT_FOUND" };
 		return { ok: true, order: serializePublicOrder(order) };
