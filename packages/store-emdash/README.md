@@ -2282,13 +2282,30 @@ A day that has lost every order keeps a ZEROED document rather than being delete
 event racing that write needs a revision to lose to, and an all-zero document reads as no
 bucket at all.
 
+**Reconcile a CLOSED day as a matter of course, and a live day only on demand.** Yesterday
+and older have no live events to race, so an attempt cannot lose its pin and the work is
+one pass; the current day is still receiving events, so a recompute over it may have to
+re-run and can leave the residue below. The page budget is per day, so a long range is
+bounded by construction — a caller sweeping a large history should still chunk it, a month
+at a time, to keep one call's work and one call's retries bounded.
+
+**The absorb pass is budgeted and indexed.** The claims for a day are read one `orderId`
+page per scanned order rather than one read per reconstructed event, and every round trip
+is charged to the same per-day budget a page of orders is: one unit per claim-index page
+(100 claims) and one unit per claim that actually needs absorbing. That is not
+bookkeeping — a round trip per transition an order has ever made would be paid on every
+attempt and every sweep, and each one widens the window in which a live delta invalidates
+the pin.
+
 **The residues, all in the under-counting direction.** A transition that lands after the
 scan read its order but before the absorb reaches its claim is absorbed without having been
 counted, and its delta is then skipped; a process that dies between the absorb and the
-commit leaves the same shape; and a range whose later days exhaust the page budget leaves
-the earlier days committed and the rest untouched. Every one of them is a day that reads
-low until the next run, and none of them can double-count, because nothing applies a delta
-whose claim is absorbed.
+commit leaves the same shape; a failed attempt leaves claims absorbed whose counters it
+never committed, so a day that loses its pin repeatedly reads lower each time until a run
+succeeds; and a range whose later days exhaust the page budget leaves the earlier days
+committed and the rest untouched. Every one of them is a day that reads low until the next
+successful run, and none of them can double-count, because nothing applies a delta whose
+claim is absorbed.
 
 ### The hook on the order store is additive, and never fatal
 
@@ -2313,9 +2330,14 @@ day the window truncates — at most two, and only when a bound is not midnight 
 from an instant-filtered scan of that day's orders, the same machinery `topProducts` uses.
 
 So `created_at BETWEEN from AND to` means the same thing here as it did in the statement
-this replaced: there is no day-granular approximation and no divergence to accept. The cost
-of a ragged window is visible and bounded — two extra order scans, paid only by the caller
-that asks for one — and the aligned windows a day-bounded report asks for pay nothing.
+this replaced, to the instant. The cost of a ragged window is visible and bounded — two
+extra order scans, paid only by the caller that asks for one — and the aligned windows a
+day-bounded report asks for pay nothing.
+
+One consequence is worth knowing before reading a ragged report: an edge day is computed
+from the ORDERS, so it is exact even when the rollups have drifted, while an interior day
+carries whatever its document holds. A single report can therefore mix an exact edge with
+an interior day that is reading low until the next recompute.
 
 ### Reporting crash seams proven
 
@@ -2329,6 +2351,8 @@ it heals:
 | crash before the claim | nothing applied | the redelivery applies it exactly once |
 | transition durable, rollup lost | the order in its OLD state bucket, no revenue claimed | `reconcile` |
 | refund durable, rollup lost | the order's day at `refundedCents: 0` | `reconcile`, into the order's creation day — never the day the refund was issued |
+| the CLAIM write landed and the caller then died | a spent claim over counters that never moved | only `reconcile` — every redelivery is a no-op, however often it is retried |
+| a decrement arriving with no matching increment | the counter floored at zero, the day's money still on the document | `reconcile`; meanwhile the anomaly observer has announced it and the bucket is still reported |
 
 ### Reporting contention, measured
 
